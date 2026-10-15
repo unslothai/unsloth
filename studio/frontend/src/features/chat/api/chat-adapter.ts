@@ -52,6 +52,9 @@ import { resolveSpeculativeType } from "@/lib/speculative-modes";
 
 import { getSkillsSnapshot, settleSkillsForText } from "./skills-api";
 
+const skillsForTools = () =>
+  useSkillsSwitchStore.getState().on === false ? [] : getSkillsSnapshot().skills;
+
 function messageText(content: unknown): string {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
@@ -71,10 +74,14 @@ function userTexts(
     .filter((message) => message?.role === "user")
     .map((message) => messageText(message.content));
 }
+import { endBrowserAgentRun } from "@/features/browser/agent/agent-store";
+import { browserAgentToolsForTurn } from "@/features/browser/agent/tools";
+import { shownBrowserChat } from "@/features/browser/panel-availability";
 import { projectHasSources } from "@/features/rag/api/rag-api";
 import {
   IMAGE_SENTINEL_TOOLS,
   SANDBOX_FILE_TOOLS,
+  SANDBOX_RUN_TOOLS,
   extractCreatedFiles,
   isSandboxFileList,
   isSandboxToolResult,
@@ -89,6 +96,7 @@ import {
   mcpUiReplayImages,
 } from "../mcp-apps/mcp-ui";
 import { isMcpToolName } from "../utils/mcp-tool-name";
+import { userMessageIdRequestField } from "../utils/rewind";
 import {
   type McpImage,
   planMcpImageBound,
@@ -179,6 +187,11 @@ import {
   type CodexReasoningLedger,
 } from "../codex-reasoning";
 import {
+  toolModelNoteTarget,
+  toolModelSuffixExtraContent,
+  withToolModelSuffix,
+} from "../tool-model-suffix";
+import {
   type GeminiContinuationReplay,
   type GeminiContinuationReplayTurn,
   type GeminiAnswerReplayPart,
@@ -253,6 +266,7 @@ import {
 } from "../provider-capabilities";
 import { selectCodeToolNames } from "./code-tool-placement";
 import { skillToolNames } from "./skill-tools";
+import { useSkillsSwitchStore } from "../stores/skills-switch-store";
 import { ragScopeContextLength } from "./rag-context-length";
 import {
   type PendingImageEditReference,
@@ -283,6 +297,7 @@ import {
 } from "../presets/preset-policy";
 import { ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
 import { useExternalProvidersStore } from "../stores/external-providers-store";
+import { takeThreadCompactionRequest } from "../stores/compact-request-store";
 import {
   shouldPreserveFullOutput,
   toolOutputKey,
@@ -326,6 +341,9 @@ import {
   getImageInputUnavailableReason,
 } from "../utils/image-input-support";
 import {
+  appendCompactionMarker,
+  type CompactionMarker,
+  compactionAnchorToolCallId,
   historyCannotHelp,
   latestTurnIsTheProblem,
   latestTurnOwnTokens,
@@ -992,6 +1010,7 @@ type SerializedToolResult = {
   content: string;
   tool_call_id: string;
   name?: string;
+  extra_content?: { studio_model_suffix: string };
 };
 
 type ToolPartReplayMetadata = {
@@ -1224,6 +1243,8 @@ function serializeToolResultPart(
     content,
     tool_call_id: tc.toolCallId,
     ...(tc.toolName ? { name: tc.toolName } : {}),
+    // Model-only feedback the backend re-appends on replay.
+    ...toolModelSuffixExtraContent(getToolReplayProvenance(tc)),
   };
 }
 
@@ -2287,16 +2308,18 @@ export async function buildLocalTokenCountExtras(
   // re-fetch for every counted user turn so skills created since page load match request pricing.
   await settleSkillsForText(userTexts(messages).join("\n"));
   const skillTools = skillToolNames(
-    getSkillsSnapshot().skills,
+    skillsForTools(),
     codeToolsEnabled,
     userTexts(messages),
   );
+  const browserTools = browserAgentToolsForTurn();
   if (
     !toolsEnabled &&
     !codeToolsEnabled &&
     !mcpEnabledForChat &&
     !ragOn &&
     !deepResearchEnabled &&
+    browserTools.length === 0 &&
     skillTools.length === 0
   ) {
     // Explicit false, not omission: the server defaults tools on. The permission level rides
@@ -2328,6 +2351,7 @@ export async function buildLocalTokenCountExtras(
       ...(codeToolsEnabled ? ["python", "terminal", "edit_file", "view_image"] : []),
       // match the request gate so token pricing includes only sent skill tools.
       ...skillTools,
+      ...browserTools,
     ],
     mcp_enabled: mcpEnabledForChat,
     // Top level, not inside rag_scope: an archived thread puts search_conversation and its
@@ -3058,8 +3082,15 @@ async function resolveAutoLoadCandidate(
       : `Loaded ${source.id}`,
   });
   if (!source.listVariants) {
-    const candidate = build(null);
-    return isSkipped(candidate) ? null : candidate;
+    const variants =
+      source.kind === "model" && rememberedVariant
+        ? [rememberedVariant, null]
+        : [null];
+    for (const variant of variants) {
+      const candidate = build(variant);
+      if (!isSkipped(candidate)) return candidate;
+    }
+    return null;
   }
   const downloaded = (await source.listVariants())
     .filter(
@@ -4956,6 +4987,7 @@ export function createOpenAIStreamAdapter(
         runtime.deepResearchEnabled &&
         !options.pairId &&
         (options.modelType === undefined || options.modelType === "base");
+      const browserTools = browserAgentToolsForTurn();
       const toolConfirmationIdsByBackendId = new Map<string, string>();
       // Local tool ids ("call_0") repeat across turns and panes, so scope by pane AND thread; the
       // reader has only threadListItem.remoteId.
@@ -5607,6 +5639,12 @@ export function createOpenAIStreamAdapter(
       );
 
       const threadKey = resolvedThreadId || "__default";
+      // A new chat's browser is the one on screen as it sends; a switch mid-run must not move it.
+      const browserChat = options.pairId
+        ? `compare:${options.pairId}`
+        : threadKey === "__default"
+          ? shownBrowserChat()
+          : undefined;
       // A first turn files its handles under "__default" and autosave re-keys them mid-run, so resolve per use.
       const liveThreadKey = (owner: () => void) =>
         threadKey === "__default"
@@ -5648,9 +5686,22 @@ export function createOpenAIStreamAdapter(
       // the local model still resident.
       const isMlxForCompaction =
         !isExternalModelId(params.checkpoint) && runtime.loadedIsMlx === true;
+      const isManagedEngineForCompaction =
+        !isExternalModelId(params.checkpoint) && runtime.loadedEngine === "vllm";
+      // Taken once, so a retried request still carries it and the next turn does not.
+      const compactNow =
+        takeThreadCompactionRequest(resolvedThreadId) &&
+        (isGgufForCompaction || isMlxForCompaction);
       const generationUserMessage = [...survivingMessages]
         .reverse()
         .find((message) => message.role === "user");
+      // Names the turn whose file changes /rewind can undo; a continuation reuses its turn's prompt.
+      // A temporary chat keeps no file history.
+      const userMessageIdField = userMessageIdRequestField(
+        resolvedThreadId && isThreadIncognito(resolvedThreadId)
+          ? undefined
+          : generationUserMessage?.id,
+      );
 
       // Durability gate keys on THIS turn's attachments only. The scans above walk post-prune history so an old
       // refused turn cannot mis-attribute media onto the next one - correct for building the request payload, but it
@@ -5900,6 +5951,7 @@ export function createOpenAIStreamAdapter(
       };
       let codexRoundToolCallIds: string[] = [];
       let contextTruncation: OpenAIChatChunk["context_truncated"];
+      let compactionMarkers: CompactionMarker[] | undefined;
       let providerCompaction: ProviderCompactionContentPart | undefined =
         continuationCompaction ?? undefined;
       let providerCompactionAfterToolCalls: number | undefined =
@@ -5931,6 +5983,7 @@ export function createOpenAIStreamAdapter(
         openaiCodexReasoning: codexReasoningLedger,
         openaiResponsesReasoning: openAIResponsesReasoningLedger,
         contextTruncation,
+        compactionMarkers,
         providerCompaction,
         providerCompactionAfterToolCalls,
         providerCompactionProviderType,
@@ -6637,7 +6690,7 @@ export function createOpenAIStreamAdapter(
             await settleSkillsForText(userTexts(outboundMessages).join("\n"));
           }
           const skillTools = skillToolNames(
-            getSkillsSnapshot().skills,
+            skillsForTools(),
             codeToolsEnabled,
             userTexts(outboundMessages),
           );
@@ -6791,7 +6844,7 @@ export function createOpenAIStreamAdapter(
               ...(externalCapabilities?.presencePenalty
                 ? { presence_penalty: params.presencePenalty }
                 : {}),
-              // studioLocalCodeTools, not codeToolsEnabled: a Code pill that resolved to the provider's
+              // studioLocalCodeTools, not codeToolsEnabled: a Tools pill that resolved to the provider's
               // sandbox is a hosted request and belongs below, where this body would 400 on permission_mode.
               ...(supportsStudioToolsForThisTurn &&
               (toolsEnabled ||
@@ -6800,6 +6853,7 @@ export function createOpenAIStreamAdapter(
                 ragEnabled ||
                 projectRagEnabled ||
                 skillTools.length > 0 ||
+                browserTools.length > 0 ||
                 // Armed research needs Studio's loop: deep_research is appended past every tool filter, but
                 // only for a request that asked for the loop at all.
                 deepResearchArmed)
@@ -6812,6 +6866,7 @@ export function createOpenAIStreamAdapter(
                       ...(toolsEnabled ? ["web_search"] : []),
                       ...skillTools,
                       ...studioLocalCodeTools,
+                      ...browserTools,
                       // Hosted tools with no local stand-in; their pills stay lit regardless, so listing only local
                       // names dropped Images/Fetch whenever another tool selected this branch. Search is excluded
                       // (Unsloth runs it above); Code rides along only when it resolved to the provider's sandbox.
@@ -6838,7 +6893,8 @@ export function createOpenAIStreamAdapter(
                     auto_heal_tool_calls: runtime.autoHealToolCalls,
                     // false, not omitted: omission follows UNSLOTH_TOOL_CALL_NUDGE, which the
                     // launchers set to 1 when unset, so this loop would keep nudging (#9686, #9125).
-                    nudge_tool_calls: false,
+                    // Browser use is the exception: a step announced and not taken ends the task.
+                    nudge_tool_calls: browserTools.length > 0 ? runtime.nudgeToolCalls : false,
                     deduplicate_tool_calls: runtime.deduplicateToolCalls,
                     // This branch runs the tools here, so say so by name: enabled_tools ["web_search"] is
                     // byte-identical to an older bundle's hosted search.
@@ -6846,6 +6902,7 @@ export function createOpenAIStreamAdapter(
                     ...(sandboxSessionId
                       ? { session_id: sandboxSessionId }
                       : {}),
+                    ...userMessageIdField,
                     ...(sandboxAttachments.length > 0
                       ? { sandbox_attachments: sandboxAttachments }
                       : {}),
@@ -6972,7 +7029,9 @@ export function createOpenAIStreamAdapter(
             ...ggufCompactionRequestFields({
               isGguf: isGgufForCompaction,
               isMlx: isMlxForCompaction,
+              isManagedEngine: isManagedEngineForCompaction,
               autoCompactEnabled: runtime.autoCompactEnabled,
+              compactNow,
             }),
             temperature: params.temperature,
             top_p: params.topP,
@@ -7004,6 +7063,7 @@ export function createOpenAIStreamAdapter(
               ? { sandbox_attachments: sandboxAttachments }
               : {}),
             ...(resolvedThreadId ? { thread_id: resolvedThreadId } : {}),
+            ...userMessageIdField,
             ...(useAdapter === undefined ? {} : { use_adapter: useAdapter }),
             ...localReasoningFields,
             ...(supportsPreserveThinking
@@ -7028,6 +7088,7 @@ export function createOpenAIStreamAdapter(
                 ragEnabled ||
                 projectRagEnabled ||
                 skillTools.length > 0 ||
+                browserTools.length > 0 ||
                 deepResearchArmed)
               ? {
                   enable_tools: true,
@@ -7041,6 +7102,7 @@ export function createOpenAIStreamAdapter(
                     ...(codeToolsEnabled
                       ? ["python", "terminal", "edit_file", "view_image"]
                       : []),
+                    ...browserTools,
                   ],
                   mcp_enabled: mcpEnabledForChat,
                   // Scope: thread_id = this thread's docs, kb_id = a KB, project_id = the thread's project
@@ -7289,6 +7351,14 @@ export function createOpenAIStreamAdapter(
                   contextTruncation,
                   chunk.context_truncated,
                 );
+                compactionMarkers = appendCompactionMarker(
+                  compactionMarkers,
+                  chunk.context_truncated,
+                  compactionAnchorToolCallId(
+                    toolCallParts,
+                    chunk.context_truncated,
+                  ),
+                );
                 const activeThreadId = useChatRuntimeStore.getState().activeThreadId;
                 // What must stay silent is a fit that returned the ORIGINAL messages: "older turns were
                 // removed" would be untrue and burns the once-per-thread flag. Not `fits`, which is also
@@ -7492,6 +7562,73 @@ export function createOpenAIStreamAdapter(
                       custom: liveCustom(),
                     },
                   };
+                  continue;
+                }
+                if (toolEvent.type === "tool_output" && toolEvent.browser_action) {
+                  // A browser tool asking this tab to act; it answers on its own request, so the stream never waits.
+                  const request = toolEvent.browser_action;
+                  const userText = userTexts(survivingMessages).join("\n");
+                  void import("@/features/browser/agent/executor").then(
+                    ({ parseBrowserAction, runBrowserAction }) => {
+                      const action = parseBrowserAction(request);
+                      if (action) {
+                        void runBrowserAction(action, {
+                          runKey: cancelId,
+                          chat: browserChat,
+                          // Resolved per action: a first turn is re-keyed from "__default" to its id.
+                          scope: liveThreadKey(serverCancel),
+                          userText,
+                          fullAccess: bypassPermissions,
+                          signal: runSignal,
+                        });
+                      }
+                    },
+                    // A stale chunk after an update: answer now rather than leave the tool waiting.
+                    () => {
+                      const raw = (request ?? {}) as Record<string, unknown>;
+                      if (typeof raw.id !== "string") return;
+                      void authFetch("/api/inference/browser-action-result", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                          action_id: raw.id,
+                          session_id: typeof raw.session_id === "string" ? raw.session_id : "",
+                          result: { ok: false, error: "the browser panel could not load; ask the user to reload Studio." },
+                        }),
+                      }).catch(() => undefined);
+                    },
+                  );
+                  continue;
+                }
+                if (toolEvent.type === "tool_model_note") {
+                  const at = toolModelNoteTarget(
+                    toolCallParts as Parameters<typeof toolModelNoteTarget>[0],
+                    (toolEvent.tool_call_id as string) || "",
+                  );
+                  const suffix =
+                    typeof toolEvent.suffix === "string" ? toolEvent.suffix : "";
+                  if (at !== -1 && suffix) {
+                    const existing = toolCallParts[at] as PositionedToolCallPart;
+                    toolCallParts[at] = {
+                      ...existing,
+                      provenance: withToolModelSuffix(
+                        existing.provenance as Record<string, unknown> | undefined,
+                        suffix,
+                      ),
+                    } as PositionedToolCallPart;
+                    // A stop before the next chunk saves only what was yielded.
+                    yield {
+                      content: liveAssistantContent(),
+                      metadata: {
+                        timing: buildTiming(
+                          streamStartTime,
+                          totalChunks,
+                          firstTokenTime,
+                        ),
+                        custom: liveCustom(),
+                      },
+                    };
+                  }
                   continue;
                 }
                 if (toolEvent.type === "tool_output") {
@@ -7767,7 +7904,7 @@ export function createOpenAIStreamAdapter(
                       }
                     } else if (
                       createdFiles.length > 0 ||
-                      SANDBOX_FILE_TOOLS.has(toolCallParts[idx].toolName ?? "")
+                      SANDBOX_RUN_TOOLS.has(toolCallParts[idx].toolName ?? "")
                     ) {
                       // Structured even with neither files nor images, because the session is the only record of
                       // WHERE this call ran: _created_file_sentinels emits nothing when a concurrent call shared
@@ -8780,6 +8917,19 @@ export function createOpenAIStreamAdapter(
           }
         }
 
+        if (
+          compactNow &&
+          !compactionMarkers?.some(
+            (marker) =>
+              marker.truncation.manual === true &&
+              marker.truncation.checkpoint_started === true,
+          )
+        ) {
+          toast.info("This chat was not compacted", {
+            description:
+              "Compaction needs the conversation archive and the default checkpoint policy.",
+          });
+        }
         const finalTiming = buildTiming(
           streamStartTime,
           totalChunks,
@@ -8818,6 +8968,7 @@ export function createOpenAIStreamAdapter(
               openaiCodexReasoning: codexReasoningLedger,
               openaiResponsesReasoning: openAIResponsesReasoningLedger,
               contextTruncation,
+              compactionMarkers,
               providerCompaction,
               providerCompactionAfterToolCalls,
               providerCompactionProviderType,
@@ -8997,6 +9148,7 @@ export function createOpenAIStreamAdapter(
               custom: {
                 ...reasoningDurationTracker.metadata(),
                 contextTruncation,
+                compactionMarkers,
                 providerCompaction,
                 providerCompactionAfterToolCalls,
                 providerCompactionProviderType,
@@ -9082,6 +9234,7 @@ export function createOpenAIStreamAdapter(
         // serverCancel narrows both clears: runs with no resolved thread id share the "__default" key.
         runtime.setThreadRunning(cleanupKey, false, { owner: serverCancel });
         runtime.clearThreadServerCancel(cleanupKey, serverCancel);
+        if (browserTools.length > 0) endBrowserAgentRun(cancelId);
       }
     },
   } satisfies ChatModelAdapter;

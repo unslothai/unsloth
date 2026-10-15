@@ -128,7 +128,6 @@ from ..kernels.bnb_override import install_bnb_nf4_override as _install_bnb_nf4_
 from ..tokenizer_utils import *
 from .vision import FastBaseModel, _is_text_seq2seq_config
 from .vision import (
-    _offload_embedding_unsupported_platform,
     _resolve_offload_embedding,
     offload_input_embedding,
     restore_input_embedding,
@@ -532,6 +531,57 @@ def fix_prepare_inputs_for_generation(module):
 torch_matmul = torch.matmul
 
 
+def _gqa_decode_scores(Qn, Kn, out):
+    """Q @ K^T for one decode token without repeating K per query head. Q (bsz, n_heads, 1, hd)
+    is viewed as (bsz, n_kv_heads, n_groups, hd) so each KV head is read in place; the scores
+    land in out's (bsz, n_heads, 1, cached_len) layout."""
+    bsz, n_heads, _, head_dim = Qn.shape
+    _, n_kv_heads, cached_len, _ = Kn.shape
+    n_groups = n_heads // n_kv_heads
+    torch_matmul(
+        Qn.view(bsz, n_kv_heads, n_groups, head_dim),
+        Kn.transpose(2, 3),
+        out = out.view(bsz, n_kv_heads, n_groups, cached_len),
+    )
+    return out
+
+
+def _gqa_decode_values(A, Vn, out):
+    """softmax(QK^T) @ V for one decode token, grouped like _gqa_decode_scores; writes out.
+    cuBLAS drops to a slow kernel when the reduction over the cache is not a multiple of 8, so
+    the aligned prefix is one bmm and the last few positions are accumulated on top."""
+    bsz, n_heads, _, cached_len = A.shape
+    _, n_kv_heads, _, head_dim = Vn.shape
+    n_groups = n_heads // n_kv_heads
+    A = A.view(bsz * n_kv_heads, n_groups, cached_len)
+    V = Vn.reshape(bsz * n_kv_heads, cached_len, head_dim)
+    O = out.view(bsz * n_kv_heads, n_groups, head_dim)
+    aligned = cached_len - cached_len % 8
+    if aligned == 0 or aligned == cached_len:
+        torch.bmm(A, V, out = O)
+    else:
+        torch.bmm(A[:, :, :aligned], V[:, :aligned], out = O)
+        O.baddbmm_(A[:, :, aligned:], V[:, aligned:])
+    return out
+
+
+class _LazyDeviceScratch(list):
+    """Per-device decode scratch, made on first use, so only devices holding layers get one."""
+
+    __slots__ = ("_make",)
+
+    def __init__(self, device_count, make):
+        super().__init__((None,) * device_count)
+        self._make = make
+
+    def __getitem__(self, index):
+        buffer = list.__getitem__(self, index)
+        if buffer is None:
+            buffer = self._make(torch.device(DEVICE_TYPE_TORCH, index))
+            list.__setitem__(self, index, buffer)
+        return buffer
+
+
 def LlamaAttention_fast_forward_inference(
     self,
     hidden_states: torch.Tensor,
@@ -605,8 +655,11 @@ def LlamaAttention_fast_forward_inference(
         else:
             self.temp_O = self.temp_QA[1][:, :, :hidden_size]
 
+        # Row stride kept a multiple of 8 so the grouped decode bmm stays on the fast cuBLAS path.
         self.attention = torch.empty(
-            (bsz, n_heads, 1, KV_CACHE_INCREMENT + seq_len), dtype = dtype, device = device
+            (bsz, n_heads, 1, KV_CACHE_INCREMENT + seq_len + (-seq_len) % 8),
+            dtype = dtype,
+            device = device,
         )
         self.scalar = 1.0 / math_sqrt(self.head_dim)
         self.half_head_dim = head_dim // 2
@@ -690,9 +743,9 @@ def LlamaAttention_fast_forward_inference(
         # Decode is more stable with boolean keep masks than additive bf16 masks.
         attention_mask = attention_mask.eq(0)
 
-    # Grouped query attention.
+    # Grouped query attention; bsz == 1 reads the KV heads in place below.
     _, _, cached_len, _ = Knn.shape
-    if bsz == 1 or ((not SDPA_HAS_GQA) and n_groups != 1):
+    if bsz != 1 and (not SDPA_HAS_GQA) and n_groups != 1:
         Knn = Knn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, cached_len, head_dim)
         Vnn = Vnn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, cached_len, head_dim)
         Knn = Knn.reshape(bsz, n_heads, cached_len, head_dim)
@@ -708,11 +761,11 @@ def LlamaAttention_fast_forward_inference(
     if bsz == 1:
         Qn *= self.scalar
         # (Q * scalar) @ K beats (Q @ K) * scalar for stopping overflows; see ggerganov/llama.cpp#7805.
-        A = torch_matmul(Qn, Knn.transpose(2, 3), out = self.attention[:, :, :, :cached_len])
+        A = _gqa_decode_scores(Qn, Knn, self.attention[:, :, :, :cached_len])
         if attention_mask is not None:
             A.masked_fill_(~attention_mask, float("-inf"))
         A[:] = torch_nn_functional_softmax(A, dim = -1, dtype = torch.float32)
-        A = torch_matmul(A, Vnn, out = Qn)
+        A = _gqa_decode_values(A, Vnn, Qn)
     else:
         if SDPA_HAS_GQA:
             A = scaled_dot_product_attention(
@@ -799,7 +852,8 @@ def fast_rms_layernorm_inference_gemma(
     X,
     out_weight = None,
 ):
-    XX = X.to(torch.float32)
+    # copy: for a float32 X, .to() returns X itself, and the decode loops keep X as the residual.
+    XX = X.to(torch.float32, copy = True)
     variance = XX.square().mean(-1, keepdim = True)
     variance += self.variance_epsilon
     XX *= variance.rsqrt_()
@@ -1027,6 +1081,27 @@ def _is_left_padded(attention_mask):
     return not bool(attention_mask[:, 0].all())
 
 
+class Gemma2AttentionMaskConverter(AttentionMaskConverter):
+    """Gemma2's window counts the current key as well as the preceding keys."""
+
+    @staticmethod
+    def _make_causal_mask(
+        input_ids_shape,
+        dtype,
+        device,
+        past_key_values_length = 0,
+        sliding_window = None,
+    ):
+        # The legacy converter counts preceding keys; its static helper also accepts zero for a one-key window.
+        return AttentionMaskConverter._make_causal_mask(
+            input_ids_shape,
+            dtype,
+            device,
+            past_key_values_length = past_key_values_length,
+            sliding_window = sliding_window - 1 if sliding_window is not None else None,
+        )
+
+
 # Ported from transformers models/llama/modeling_llama.py#L825
 def LlamaModel_fast_forward(
     self,
@@ -1243,7 +1318,7 @@ def LlamaModel_fast_forward(
             if attention_mask.dim() == 2:
                 # The SDPA helper returns None for an all-ones mask; the softcapping kernels need a tensor.
                 key_value_length = past_key_values_length + seq_length
-                dynamic_SWA_mask = AttentionMaskConverter(
+                dynamic_SWA_mask = Gemma2AttentionMaskConverter(
                     is_causal = True, sliding_window = self.config.sliding_window
                 ).to_4d(attention_mask, seq_length, inputs_embeds.dtype, key_value_length)
                 dynamic_GA_mask = AttentionMaskConverter(is_causal = True).to_4d(
@@ -1264,7 +1339,7 @@ def LlamaModel_fast_forward(
                 n = self.max_seq_length
                 # masked_fill makes things slower.
                 self.SWA_mask = (
-                    AttentionMaskConverter(
+                    Gemma2AttentionMaskConverter(
                         is_causal = True,
                         sliding_window = self.config.sliding_window,
                     )
@@ -1435,10 +1510,8 @@ def _LlamaModel_fast_forward_inference(
         temp_mlp = torch.empty(
             (2, bsz, 1, mlp_size), dtype = X.dtype, device = f"{DEVICE_TYPE_TORCH}:0"
         )
-        temp_gates, temp_ups = (
-            tuple(temp_mlp[0].to(torch.device(x)) for x in range(DEVICE_COUNT)),
-            tuple(temp_mlp[1].to(torch.device(x)) for x in range(DEVICE_COUNT)),
-        )
+        temp_gates = _LazyDeviceScratch(DEVICE_COUNT, temp_mlp[0].to)
+        temp_ups = _LazyDeviceScratch(DEVICE_COUNT, temp_mlp[1].to)
 
         seq_len = past_key_values[0][0].shape[-2]
         kv_seq_len = seq_len + 1
@@ -2543,6 +2616,36 @@ def _fused_lora_skip_reason(
     )
 
 
+def _resolve_all_linear(
+    model,
+    target_modules,
+    exclude_modules = None,
+):
+    """(modules "all-linear" resolves to, modules the adapter wraps) on a wrapped model, both as full paths."""
+    try:
+        from peft.tuners.tuners_utils import (
+            BaseTunerLayer,
+            _ExcludedModule,
+            _maybe_include_all_linear_layers,
+            check_target_module_exists,
+        )
+    except ImportError:
+        return None
+    base = model.get_base_model()
+    config = LoraConfig(target_modules = target_modules, exclude_modules = exclude_modules)
+    config = _maybe_include_all_linear_layers(config, base)
+    # A trained lm_head sits in a modules_to_save wrapper whose copies are Linear too; PEFT excluded it at creation.
+    resolved = {
+        name
+        for name in config.target_modules
+        if ".original_module" not in name
+        and ".modules_to_save." not in name
+        and not isinstance(check_target_module_exists(config, name), _ExcludedModule)
+    }
+    wrapped = {name for name, module in base.named_modules() if isinstance(module, BaseTunerLayer)}
+    return resolved, wrapped
+
+
 _DEFAULT_TARGET_MODULES = [
     "q_proj",
     "k_proj",
@@ -2718,8 +2821,7 @@ class FastLlamaModel:
         PeftModelForCausalLM.forward = PeftModel_fast_forward
         fix_prepare_inputs_for_generation(LlamaForCausalLM)
 
-        # Static KV Cache landed in 4.38.0 and made training much slower (#168,
-        # huggingface/transformers#27931), so the old rotary embeddings are retained.
+        # retain old rotary embeddings because the 4.38.0 static KV cache slows training.
         import transformers.models.llama.modeling_llama
 
         transformers.models.llama.modeling_llama.LlamaRotaryEmbedding = LlamaRotaryEmbedding
@@ -2736,7 +2838,7 @@ class FastLlamaModel:
         load_in_4bit = True,
         token = None,
         device_map = DEFAULT_DEVICE_MAP,
-        # Planner hints for device_map = "unsloth"; see resolve_unsloth_device_map.
+        # planner options apply only when device_map = "unsloth".
         device_map_planner_kwargs = None,
         rope_scaling = None,
         fix_tokenizer = True,
@@ -3183,9 +3285,7 @@ class FastLlamaModel:
                 requested_device_map(device_map),
                 model_name,
                 max_seq_length = max_seq_length,
-                offload_embedding = bool(offload_embedding)
-                and num_labels is None
-                and _offload_embedding_unsupported_platform() is None,
+                offload_embedding = bool(offload_embedding) and num_labels is None,
                 planner_kwargs = planner_kwargs_with_max_memory(device_map_planner_kwargs, kwargs),
                 skip_reason = _planner_skip_reason,
                 **planner_config_overrides(kwargs),
@@ -3484,8 +3584,23 @@ class FastLlamaModel:
                     )
 
                 allowed_args = inspect.getfullargspec(load_vllm).args
+                _vllm_model_name = resolve_vllm_model_path(
+                    model_name,
+                    token,
+                    revision = revision,
+                    cache_dir = kwargs.get("cache_dir"),
+                    local_files_only = kwargs.get("local_files_only", False),
+                    force_download = kwargs.get("force_download", False),
+                    use_safetensors = kwargs.get("use_safetensors"),
+                    from_tf = kwargs.get("from_tf", False),
+                    from_flax = kwargs.get("from_flax", False),
+                    subfolder = kwargs.get("subfolder"),
+                    weights_at_root = True,
+                    variant = kwargs.get("variant"),
+                    gguf_file = kwargs.get("gguf_file"),
+                )
                 load_vllm_kwargs = dict(
-                    model_name = model_name,
+                    model_name = _vllm_model_name,
                     config = model_config,
                     gpu_memory_utilization = gpu_memory_utilization,
                     max_seq_length = max_seq_length,
@@ -3753,28 +3868,9 @@ class FastLlamaModel:
             model._old_generate = model.generate
             unsloth_fast_generate.__doc__ = model._old_generate.__doc__
             model.generate = types.MethodType(unsloth_fast_generate, model)
-        # Zero weight[padding_idx] only for embeddings NOT tied to lm_head: when tied, zeroing the row
-        # forces pad logit = 0, which beats the negative logits of real tokens (Gemma) and makes the
-        # decoder emit <pad>. Skipped when eos_token == pad_token.
-        eos_token_id = getattr(tokenizer, "eos_token_id", None) if tokenizer is not None else None
-        pad_token_id = getattr(tokenizer, "pad_token_id", None) if tokenizer is not None else None
-        if tokenizer is not None and eos_token_id != pad_token_id:
-            lm_head = getattr(model, "lm_head", None)
-            lm_head_weight = getattr(lm_head, "weight", None) if lm_head is not None else None
-            with torch.no_grad():
-                for name, module in model.named_modules():
-                    if type(module) is torch.nn.Embedding:
-                        if (
-                            getattr(module, "weight", None) is not None
-                            and getattr(module, "padding_idx", None) is not None
-                        ):
-                            if module.padding_idx < module.weight.shape[0]:
-                                if (
-                                    lm_head_weight is not None
-                                    and module.weight.data_ptr() == lm_head_weight.data_ptr()
-                                ):
-                                    continue
-                                module.weight[module.padding_idx] = 0
+        from ..tokenizer_utils import zero_pad_embedding_rows
+
+        zero_pad_embedding_rows(model, tokenizer)
 
         # LAST: post_patch replaces the embedding modules and the QKV/MLP patching below replaces the
         # forwards a hook wraps, so an earlier attach is lost. Skipped under vLLM, which owns the
@@ -3928,10 +4024,10 @@ class FastLlamaModel:
             # modules_to_tie, which to_dict() drops, so read the config object.
             requested_modules_to_save = modules_to_save
             modules_to_save = list(peft_config["modules_to_save"] or [])
-            old_target_modules = list(peft_config["target_modules"]) + modules_to_save
-            old_target_modules += list(
-                getattr(model.peft_config["default"], "modules_to_tie", None) or []
-            )
+
+            # A str target_modules is one regex: compare it whole, not character by character.
+            def _as_list(targets):
+                return [targets] if isinstance(targets, str) else list(targets or [])
 
             # The new side is what THIS call asks for, through the same redirect; built from the stored
             # lists instead, a narrowed request would compare equal.
@@ -3940,7 +4036,20 @@ class FastLlamaModel:
                 requested_modules_to_save,
                 skip = _vllm_unmovable_embedding_modules(model, target_modules),
             )
-            new_target_modules = list(requested_targets) + list(requested_saved or [])
+            stored_targets = peft_config["target_modules"]
+            if isinstance(requested_targets, str) and requested_targets.lower() == "all-linear":
+                # PEFT stores "all-linear" expanded and, past 20 modules, compacted: compare resolved vs wrapped.
+                resolved = _resolve_all_linear(
+                    model, requested_targets, kwargs.get("exclude_modules")
+                )
+                if resolved is not None:
+                    requested_targets, stored_targets = resolved
+
+            old_target_modules = _as_list(stored_targets) + modules_to_save
+            old_target_modules += list(
+                getattr(model.peft_config["default"], "modules_to_tie", None) or []
+            )
+            new_target_modules = _as_list(requested_targets) + list(requested_saved or [])
             if isinstance(model, PeftModelForSequenceClassification):
                 # PeftModelForSequenceClassification.__init__ extends modules_to_save with these
                 # unconditionally, so the stored config names modules the caller never asked for. Mirror it, or
@@ -4123,16 +4232,20 @@ class FastLlamaModel:
                 f"to `modules_to_save`, so they are trained as full weight matrices.\n"
                 f"This uses more VRAM than LoRA. Please list them in `modules_to_save` directly."
             )
-        for module in target_modules:
-            try:
-                assert module in accepted_modules
-                final_modules.append(module)
-            except AssertionError as e:
-                final_modules.append(module)
-                print(
-                    "Unsloth: You added custom modules, but Unsloth hasn't optimized for this.\n"
-                    "Beware - your finetuning might be noticeably slower!"
-                )
+        if isinstance(target_modules, str):
+            # A str is one PEFT regex or "all-linear"; iterating it yields characters that suffix-match `layers.1`.
+            final_modules = target_modules
+        else:
+            for module in target_modules:
+                try:
+                    assert module in accepted_modules
+                    final_modules.append(module)
+                except AssertionError as e:
+                    final_modules.append(module)
+                    print(
+                        "Unsloth: You added custom modules, but Unsloth hasn't optimized for this.\n"
+                        "Beware - your finetuning might be noticeably slower!"
+                    )
 
         if hasattr(model, "_need_to_train_embeddings"):
             # embed_tokens/lm_head may already be trained, either as LoRA targets in final_modules or via
@@ -4216,8 +4329,12 @@ class FastLlamaModel:
             )
 
         if _moe_module_targets:
-            _added = [t for t in _moe_module_targets if t not in final_modules]
-            final_modules.extend(_added)
+            _added = [
+                t
+                for t in _moe_module_targets
+                if isinstance(final_modules, str) or t not in final_modules
+            ]
+            final_modules = add_moe_target_modules(final_modules, _moe_module_targets)
             if _added:
                 print(
                     f"Unsloth: Detected MoE model with per-expert Linear experts. "
@@ -4758,10 +4875,6 @@ class FastLlamaModel:
             disable_use_cache(model)
         except ImportError:
             pass
-        # Undo only the UNSLOTH_RETURN_LOGITS=1 that FastBaseModel.for_inference() forced in generate().
-        _return_logits = os.environ.pop("_UNSLOTH_RETURN_LOGITS_BEFORE_INFERENCE", None)
-        if _return_logits is not None:
-            os.environ["UNSLOTH_RETURN_LOGITS"] = _return_logits
         return model
 
 

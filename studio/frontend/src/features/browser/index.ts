@@ -32,7 +32,15 @@ export {
   HISTORY_RETENTION_DAYS,
   useBrowserPrefsStore,
 } from "./prefs-store";
-export { type FileViewMode, type OpenFileInput, useBrowserStore } from "./store";
+export { type FileViewMode, type OpenFileInput, chatKeyOfThread, useBrowserStore } from "./store";
+export { useBrowserAgentStore } from "./agent/agent-store";
+export {
+  DEFAULT_RULE as DEFAULT_AGENT_RULE,
+  type HistoryAccess,
+  type ScriptAccess,
+  type SiteRule,
+  normalizeSitePattern,
+} from "./agent/permissions";
 
 export { browserPanelAvailable, setBrowserPanelAvailable } from "./panel-availability";
 export { PinnedPageRow, usePinnedPages } from "./pinned-page-row";

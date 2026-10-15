@@ -327,15 +327,403 @@ def test_hidden_regions_with_inline_children_end_at_the_implied_close(
 
 
 def test_skipped_tag_implicitly_closes_hidden_paragraph():
-    # A skipped block (<nav>/<footer>) also closes an open <p>. The optional-close
-    # bookkeeping must run before the skip, or the never-closed <p hidden> keeps its
-    # hidden mark and swallows every following sibling.
+    # optional-close bookkeeping must run before skipped blocks or an unclosed hidden paragraph hides later siblings
     for skipped in ("nav", "footer"):
         html = f"<body><p hidden>secret<{skipped}>chrome</{skipped}>VISIBLE</body>"
         out = html_to_markdown(html)
         assert "secret" not in out
         assert "chrome" not in out
         assert "VISIBLE" in out
+
+
+@pytest.mark.parametrize("skipped", ["nav", "footer", "button"])
+@pytest.mark.parametrize("main_content", [False, True])
+def test_skipped_tag_closed_by_its_parent_keeps_the_rest_of_the_page(skipped, main_content):
+    html = (
+        f"<body><div><{skipped}><div><a href=/x>Menu</a></div></div>"
+        "<main><h1>Title</h1><p>Real text of the page that must reach the model.</p></main></body>"
+    )
+    out = html_to_markdown(html, main_content = main_content)
+    assert "Menu" not in out
+    assert "Real text of the page" in out
+
+
+@pytest.mark.parametrize("main_content", [False, True])
+def test_html_block_start_breaks_out_of_svg(main_content):
+    html = (
+        "<body><div><svg><div><a href=/x>Menu</a></div></div>"
+        "<main><h1>Title</h1><p>Real text of the page.</p></main></body>"
+    )
+    out = html_to_markdown(html, main_content = main_content)
+    assert "Menu" in out
+    assert "Real text of the page" in out
+
+
+@pytest.mark.parametrize("main_content", [False, True])
+def test_heading_button_after_foreign_breakout_is_kept(main_content):
+    html = "<svg><h1><button>Title</button></h1><p>Body text</p>"
+    out = html_to_markdown(html, main_content = main_content)
+    assert "Title" in out and "Body text" in out
+
+
+@pytest.mark.parametrize(
+    "outside",
+    [
+        "<div><template><p>Hidden</div><p>Template text</p></template></div>",
+        "<nav><template><p>Hidden</nav><p>Template text</p></template></nav>",
+    ],
+)
+def test_end_tag_outside_a_template_keeps_it_skipped(outside):
+    out = html_to_markdown(outside + "<p>After</p>")
+    assert "Hidden" not in out and "Template text" not in out
+    assert "After" in out
+
+
+@pytest.mark.parametrize(
+    "html",
+    [
+        "<form><nav>Hidden</form>Menu text</nav><p>After</p>",
+        "<span><nav>Hidden</span>Menu text</nav><p>After</p>",
+        "<a><nav>Hidden</a>Menu text</nav><p>After</p>",
+        "<b><nav>Hidden</b>Menu text</nav><p>After</p>",
+        "<div><select><option>Hidden</div>Menu text</select></div><p>After</p>",
+        (
+            "<div><table><tr><td><nav>Hidden</div>Menu text</nav></td></tr></table>"
+            "</div><p>After</p>"
+        ),
+        "<nav><table><tr><td>Hidden</nav>Menu text</td></tr></table></nav><p>After</p>",
+        "<nav><select><option>Hidden</nav>Menu text</select></nav><p>After</p>",
+        "<body><nav>Hidden</body>Menu text</nav><p>After</p>",
+    ],
+)
+@pytest.mark.parametrize("main_content", [False, True])
+def test_ancestor_end_tag_that_does_not_pop_a_skipped_element_keeps_it_skipped(html, main_content):
+    out = html_to_markdown(html, main_content = main_content)
+    assert "Hidden" not in out and "Menu text" not in out
+    assert "After" in out
+
+
+@pytest.mark.parametrize("main_content", [False, True])
+def test_matching_skipped_root_cannot_close_across_select_scope(main_content):
+    html = "<datalist><select><option>Hidden</datalist>Menu text</select></datalist><p>After</p>"
+    out = html_to_markdown(html, main_content = main_content)
+    assert "Hidden" not in out and "Menu text" not in out
+    assert "After" in out
+
+
+@pytest.mark.parametrize("main_content", [False, True])
+def test_dialog_skip_does_not_recover_through_implicitly_closed_paragraph(main_content):
+    html = "<p>intro<dialog>Hidden</p>Menu text</dialog><p>After</p>"
+    out = html_to_markdown(html, main_content = main_content)
+    assert "Hidden" not in out and "Menu text" not in out
+    assert "intro" in out and "After" in out
+
+
+@pytest.mark.parametrize("block", ["center", "dir", "listing", "search", "summary"])
+@pytest.mark.parametrize("main_content", [False, True])
+def test_block_start_closes_paragraph_before_skipped_form_chrome(block, main_content):
+    html = f"<p>intro<{block}><datalist>Hidden</p>Menu text</datalist></{block}><p>After</p>"
+    out = html_to_markdown(html, main_content = main_content)
+    assert "Hidden" not in out and "Menu text" not in out
+    assert "intro" in out and "After" in out
+
+
+@pytest.mark.parametrize("main_content", [False, True])
+def test_paragraph_start_recovery_stops_at_button_scope_barrier(main_content):
+    html = "<p hidden><object><center>SECRET</center></object><p>AFTER</p>"
+    out = html_to_markdown(html, main_content = main_content)
+    assert "SECRET" not in out
+    assert "AFTER" in out
+
+
+@pytest.mark.parametrize("table_tag", ["caption", "tbody", "td", "tfoot", "th", "thead", "tr"])
+@pytest.mark.parametrize("main_content", [False, True])
+def test_table_only_tag_outside_table_cannot_recover_skipped_content(table_tag, main_content):
+    html = f"<{table_tag}><nav>Hidden</{table_tag}>Menu text</nav><p>After</p>"
+    out = html_to_markdown(html, main_content = main_content)
+    assert "Hidden" not in out and "Menu text" not in out
+    assert "After" in out
+
+
+@pytest.mark.parametrize("main_content", [False, True])
+def test_caption_start_closes_the_active_cell_before_skip_recovery(main_content):
+    html = "<table><tr><td><caption><nav>Hidden</td>Menu text</nav></caption></table><p>After</p>"
+    out = html_to_markdown(html, main_content = main_content)
+    assert "Hidden" not in out and "Menu text" not in out
+    assert "After" in out
+
+
+@pytest.mark.parametrize("main_content", [False, True])
+def test_table_cell_start_reconciles_while_content_is_skipped(main_content):
+    html = "<table><tr><td><nav>Hidden<td></nav>Visible</td></tr></table>"
+    out = html_to_markdown(html, main_content = main_content)
+    assert "Hidden" not in out
+    assert "Visible" in out
+
+
+@pytest.mark.parametrize("main_content", [False, True])
+def test_nested_button_start_replaces_outer_skipped_button(main_content):
+    html = "<button>Title<button>Inner</button><nav>Hidden</button>Menu text</nav><p>After</p>"
+    out = html_to_markdown(html, main_content = main_content)
+    assert "Title" not in out and "Inner" not in out
+    assert "Hidden" not in out and "Menu text" not in out
+    assert "After" in out
+
+
+@pytest.mark.parametrize("foreign", ["<svg><g>", "<math><mrow>"])
+@pytest.mark.parametrize("main_content", [False, True])
+def test_foreign_button_start_does_not_close_html_button(foreign, main_content):
+    closing = "</g></svg>" if foreign.startswith("<svg") else "</mrow></math>"
+    html = (
+        f"<button>Title{foreign}<button>Inner</button>{closing}"
+        "<nav>Hidden</button>Menu text</nav><p>After</p>"
+    )
+    out = html_to_markdown(html, main_content = main_content)
+    assert "Title" not in out and "Inner" not in out and "Hidden" not in out
+    assert "Menu text" in out and "After" in out
+
+
+@pytest.mark.parametrize("root, descendant", [("svg", "foreignObject"), ("math", "mi")])
+@pytest.mark.parametrize("main_content", [False, True])
+def test_foreign_root_end_closes_through_foreign_descendant(root, descendant, main_content):
+    html = f"<{root}><{descendant}>Hidden</{root}><p>Real text</p>"
+    out = html_to_markdown(html, main_content = main_content)
+    assert "Hidden" not in out
+    assert "Real text" in out
+
+
+@pytest.mark.parametrize("main_content", [False, True])
+def test_foreign_end_tag_closes_through_integration_point(main_content):
+    html = "<svg><g><foreignObject></g><p>Visible</p></svg><p>After</p>"
+    out = html_to_markdown(html, main_content = main_content)
+    assert "Visible" in out and "After" in out
+
+
+@pytest.mark.parametrize("main_content", [False, True])
+def test_foreign_breakout_keeps_html_skipped_ancestor(main_content):
+    html = "<nav><svg><g><foreignObject></g><p>Hidden</p></nav><p>After</p>"
+    out = html_to_markdown(html, main_content = main_content)
+    assert "Hidden" not in out
+    assert "After" in out
+
+
+@pytest.mark.parametrize(
+    "html",
+    [
+        "<svg><foreignObject><div>Hidden</svg>Menu text</div></foreignObject></svg>",
+        "<math><mtext><div>Hidden</math>Menu text</div></mtext></math>",
+    ],
+)
+@pytest.mark.parametrize("main_content", [False, True])
+def test_foreign_root_end_stops_at_html_integration_descendant(html, main_content):
+    out = html_to_markdown(html + "<p>After</p>", main_content = main_content)
+    assert "Hidden" not in out and "Menu text" not in out
+    assert "After" in out
+
+
+@pytest.mark.parametrize("main_content", [False, True])
+def test_generic_datalist_end_stops_at_special_descendant(main_content):
+    html = "<datalist><nav>Hidden</datalist>Menu text</nav></datalist><p>After</p>"
+    out = html_to_markdown(html, main_content = main_content)
+    assert "Hidden" not in out and "Menu text" not in out
+    assert "After" in out
+
+
+@pytest.mark.parametrize("skipped", ["dialog", "footer", "nav"])
+@pytest.mark.parametrize("main_content", [False, True])
+def test_scoped_block_skip_end_pops_special_descendant(skipped, main_content):
+    html = f"<{skipped}><div>Hidden</{skipped}><main>Visible article</main>"
+    out = html_to_markdown(html, main_content = main_content)
+    assert "Hidden" not in out
+    assert "Visible article" in out
+
+
+@pytest.mark.parametrize("main_content", [False, True])
+def test_nested_form_start_is_ignored_before_datalist_end(main_content):
+    html = "<form><datalist>Hidden<form>ignored</datalist><p>Visible article</p></form>"
+    out = html_to_markdown(html, main_content = main_content)
+    assert "Hidden" not in out and "ignored" not in out
+    assert "Visible article" in out
+
+
+@pytest.mark.parametrize("main_content", [False, True])
+def test_foreign_form_end_clears_html_form_pointer(main_content):
+    html = "<form><svg><g>Hidden</form></g></svg><form hidden><p>SECRET</p></form><p>After</p>"
+    out = html_to_markdown(html, main_content = main_content)
+    assert "Hidden" not in out and "SECRET" not in out
+    assert "After" in out
+
+
+@pytest.mark.parametrize("main_content", [False, True])
+def test_matching_foreign_form_end_keeps_html_form_pointer(main_content):
+    html = "<form><svg><form>Hidden</form></svg><form hidden><p>SECRET</p></form><p>After</p>"
+    out = html_to_markdown(html, main_content = main_content)
+    assert "Hidden" not in out
+    assert "SECRET" in out and "After" in out
+
+
+@pytest.mark.parametrize("item", ["dd", "dt", "li"])
+@pytest.mark.parametrize("main_content", [False, True])
+def test_list_item_start_closes_paragraph_before_skip_recovery(item, main_content):
+    html = f"<p>intro<{item}><datalist>Hidden</p>Menu text</datalist><p>After</p>"
+    out = html_to_markdown(html, main_content = main_content)
+    assert "Hidden" not in out and "Menu text" not in out
+    assert "intro" in out and "After" in out
+
+
+@pytest.mark.parametrize("heading", ["h1", "h2", "h3", "h4", "h5", "h6"])
+@pytest.mark.parametrize("main_content", [False, True])
+def test_heading_start_closes_open_heading_before_skip_recovery(heading, main_content):
+    html = f"<{heading}>Title<h2>Sub</h2><nav>Hidden</{heading}>Menu text</nav><p>After</p>"
+    out = html_to_markdown(html, main_content = main_content)
+    assert "Title" in out and "Sub" in out and "After" in out
+    assert "Hidden" not in out and "Menu text" not in out
+
+
+@pytest.mark.parametrize("main_content", [False, True])
+def test_heading_start_only_pops_a_current_heading(main_content):
+    html = "<h1><span>Title<h2>Sub</h2><nav>Hidden</h1>Menu text</nav><p>After</p>"
+    out = html_to_markdown(html, main_content = main_content)
+    assert "Title" in out and "Sub" in out and "Menu text" in out and "After" in out
+    assert "Hidden" not in out
+
+
+@pytest.mark.parametrize("main_content", [False, True])
+def test_mismatched_heading_end_reconciles_before_skip_recovery(main_content):
+    html = "<h1>Title</h2><nav>Hidden</h1>Menu text</nav><p>After</p>"
+    out = html_to_markdown(html, main_content = main_content)
+    assert "Title" in out and "After" in out
+    assert "Hidden" not in out and "Menu text" not in out
+
+
+@pytest.mark.parametrize("main_content", [False, True])
+def test_table_start_closes_active_table_outside_cell(main_content):
+    html = "<table><table><tr><td>X</td></tr></table><nav>Hidden</table>Menu text</nav><p>After</p>"
+    out = html_to_markdown(html, main_content = main_content)
+    assert "X" in out and "After" in out
+    assert "Hidden" not in out and "Menu text" not in out
+
+
+@pytest.mark.parametrize("main_content", [False, True])
+def test_table_start_pops_skipped_descendant_of_active_table(main_content):
+    html = "<table><nav>Hidden<table><tr><td>X</td></tr></table><p>After</p>"
+    out = html_to_markdown(html, main_content = main_content)
+    assert "Hidden" not in out
+    assert "X" in out and "After" in out
+
+
+@pytest.mark.parametrize("main_content", [False, True])
+def test_table_start_inside_caption_remains_nested(main_content):
+    html = (
+        "<table><caption><nav>Hidden<table><tr><td>X</td></tr></table>"
+        "Menu text</nav></caption></table><p>After</p>"
+    )
+    out = html_to_markdown(html, main_content = main_content)
+    assert "Hidden" not in out and "X" not in out and "Menu text" not in out
+    assert "After" in out
+
+
+@pytest.mark.parametrize("main_content", [False, True])
+def test_custom_select_keeps_table_and_following_paragraph_suppressed(main_content):
+    html = "<select><table>Hidden</select><p>Real text</p>"
+    assert html_to_markdown(html, main_content = main_content) == ""
+
+
+@pytest.mark.parametrize(
+    "html",
+    [
+        "<section><nav>Hidden</section><p>Visible text</p>",
+        "<ul><li><nav>Hidden</li><li>Visible text</li></ul>",
+        "<table><tr><td><nav>Hidden</td><td>Visible text</td></tr></table>",
+        "<h1><nav>Hidden</h2><p>Visible text</p>",
+    ],
+)
+@pytest.mark.parametrize("main_content", [False, True])
+def test_ancestor_end_tag_that_pops_a_skipped_element_ends_suppression(html, main_content):
+    out = html_to_markdown(html, main_content = main_content)
+    assert "Hidden" not in out
+    assert "Visible text" in out
+
+
+@pytest.mark.parametrize(
+    "opening",
+    ["<blockquote>", "<pre>", "<a href='/real'>", "<ol><li>"],
+)
+def test_recovered_ancestor_flushes_open_content_buffers_before_scoring(opening):
+    real = "real article prose " * 20
+    decoy = "unrelated decoy prose " * 20
+    html = f"<article>{opening}{real}<nav>Hidden</article><main><p>{decoy}</p></main>"
+    out = html_to_markdown(html, main_content = True)
+    assert "real article prose" in out
+    assert "unrelated decoy prose" not in out
+
+
+def test_mismatched_heading_recovery_closes_the_open_heading_before_scoring():
+    real = "real article prose " * 20
+    decoy = "unrelated decoy prose " * 20
+    html = (
+        f"<article><h1>Real title<nav>Hidden</h2><p>{real}</p></article>"
+        f"<main><p>{decoy}</p></main>"
+    )
+    out = html_to_markdown(html, main_content = True)
+    assert "real article prose" in out
+    assert "unrelated decoy prose" not in out
+
+
+@pytest.mark.parametrize(
+    "foreign",
+    [
+        "<svg><foreignObject><p>Hidden</div>Menu text</p></foreignObject></svg>",
+        "<svg><desc><p>Hidden</div>Menu text</p></desc></svg>",
+        "<svg><title>Hidden</div>Menu text</title></svg>",
+        "<math><mi><p>Hidden</div>Menu text</p></mi></math>",
+        "<math><mo><p>Hidden</div>Menu text</p></mo></math>",
+        "<math><mn><p>Hidden</div>Menu text</p></mn></math>",
+        "<math><ms><p>Hidden</div>Menu text</p></ms></math>",
+        "<math><mtext><p>Hidden</div>Menu text</p></mtext></math>",
+        '<math><annotation-xml encoding="text/html"><p>Hidden</div>Menu text</p>'
+        "</annotation-xml></math>",
+        '<math><annotation-xml encoding="application/xhtml+xml"><p>Hidden</div>Menu text</p>'
+        "</annotation-xml></math>",
+    ],
+)
+@pytest.mark.parametrize("main_content", [False, True])
+def test_foreign_content_scope_barriers_keep_skipped_text_hidden(foreign, main_content):
+    html = f"<div>{foreign}</div><p>After</p>"
+    out = html_to_markdown(html, main_content = main_content)
+    assert "Hidden" not in out and "Menu text" not in out
+    assert "After" in out
+
+
+def test_html_element_named_like_foreign_barrier_does_not_block_recovery():
+    html = "<div><nav><foreignobject>Hidden</div>Visible</foreignobject></nav><p>After</p>"
+    out = html_to_markdown(html)
+    assert "Hidden" not in out
+    assert "Visible" in out and "After" in out
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        lambda n: "<body><nav><ul>" + "<li>x" * n + "</a>" * n + "</ul></nav>",
+        lambda n: "<body>"
+        + "<div>" * n
+        + "<nav><template>x"
+        + "</div>" * n
+        + "</template>"
+        + "</span>" * n,
+    ],
+)
+def test_stray_end_tags_in_a_skipped_menu_stay_linear(build):
+    import time
+
+    timings = []
+    for count in (1000, 8000):
+        start = time.perf_counter()
+        html_to_markdown(build(count), main_content = True)
+        timings.append(time.perf_counter() - start)
+    # eight times the input should remain well below quadratic growth
+    assert timings[1] < timings[0] * 24, timings
 
 
 @pytest.mark.parametrize(
@@ -737,6 +1125,103 @@ def test_fetch_page_text_falls_back_to_html_when_readme_api_fails(monkeypatch):
     assert "Unsloth Studio" in out
     assert "Uh oh!" not in out
     assert "There was an error while loading" not in out
+
+
+def test_fetch_page_text_reads_github_file_link_as_raw_file(monkeypatch):
+    source = "<!doctype html>\n<html>\n  <body><script>run()</script></body>\n</html>\n"
+    calls = []
+
+    def fake_fetch(
+        url,
+        timeout = 30,
+        extra_headers = None,
+        deadline = None,
+        cancel_event = None,
+    ):
+        calls.append(url)
+        if url.startswith("https://raw.githubusercontent.com/"):
+            return None, source, "text/plain"
+        return None, _GITHUB_PAGE, "text/html"
+
+    monkeypatch.setattr("core.inference.tools._fetch_url_raw", fake_fetch)
+    out = _fetch_page_text(
+        "https://github.com/unslothai/unsloth/blob/main/studio/frontend/index.html?plain=1#L3"
+    )
+    assert calls == [
+        "https://raw.githubusercontent.com/unslothai/unsloth/main/studio/frontend/index.html"
+    ]
+    assert out == source.strip()
+
+
+def test_fetch_page_text_falls_back_to_github_file_page_when_raw_fails(monkeypatch):
+    calls = []
+
+    def fake_fetch(
+        url,
+        timeout = 30,
+        extra_headers = None,
+        deadline = None,
+        cancel_event = None,
+    ):
+        calls.append(url)
+        if url.startswith("https://raw.githubusercontent.com/"):
+            return "Failed to fetch URL: HTTP 404 Not Found", "", ""
+        return None, _GITHUB_PAGE, "text/html"
+
+    monkeypatch.setattr("core.inference.tools._fetch_url_raw", fake_fetch)
+    out = _fetch_page_text("https://github.com/owner/repo/blob/v1.2/src/app.py")
+    assert calls == [
+        "https://raw.githubusercontent.com/owner/repo/v1.2/src/app.py",
+        "https://github.com/owner/repo/blob/v1.2/src/app.py",
+    ]
+    assert "Unsloth Studio" in out
+
+
+def test_fetch_page_text_keeps_semicolon_in_github_file_name(monkeypatch):
+    calls = []
+
+    def fake_fetch(
+        url,
+        timeout = 30,
+        extra_headers = None,
+        deadline = None,
+        cancel_event = None,
+    ):
+        calls.append(url)
+        return None, "file body", "text/plain"
+
+    monkeypatch.setattr("core.inference.tools._fetch_url_raw", fake_fetch)
+    _fetch_page_text("https://github.com/owner/repo/blob/main/t/foo;bar.py")
+    assert calls == ["https://raw.githubusercontent.com/owner/repo/main/t/foo;bar.py"]
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://github.com/unslothai/unsloth",
+        "https://github.com/unslothai/unsloth/tree/main/studio",
+        "https://github.com/unslothai/unsloth/blob/main",
+        "https://github.com/unslothai/unsloth/issues/123",
+        "https://example.com/owner/repo/blob/main/app.py",
+    ],
+)
+def test_fetch_page_text_leaves_other_github_urls_on_their_page(monkeypatch, url):
+    calls = []
+
+    def fake_fetch(
+        url,
+        timeout = 30,
+        extra_headers = None,
+        deadline = None,
+        cancel_event = None,
+    ):
+        calls.append(url)
+        return "Failed to fetch URL: HTTP 403", "", ""
+
+    monkeypatch.setattr("core.inference.tools._fetch_url_raw", fake_fetch)
+    _fetch_page_text(url)
+    assert not any("raw.githubusercontent.com" in c for c in calls)
+    assert calls[-1] == url
 
 
 _RAW_TEXT_PAGE = "line one\n    indented code\nline three"

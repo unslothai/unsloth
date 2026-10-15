@@ -34,6 +34,8 @@ function pendingRun(hasReservation = true) {
   let cancelled = false;
   let released = 0;
   let calls = 0;
+  let notified = 0;
+  let cancels = 0;
   let resolve!: (id: string) => void;
   let reject!: (error: Error) => void;
   const preflight = new Promise<string>((yes, no) => {
@@ -56,6 +58,12 @@ function pendingRun(hasReservation = true) {
     requestPromptQueueStop: (ids: string[]) => stops.push(ids),
     notifyPromptQueueRunFailed: (id: string) => failures.push(id),
     adoptPreStreamRunReservation: () => {},
+    notifyReplyFinished: () => {
+      notified += 1;
+    },
+    cancelReplyFinishedNotification: () => {
+      cancels += 1;
+    },
   };
   const factory = new Function(
     ...Object.keys(deps),
@@ -84,6 +92,8 @@ function pendingRun(hasReservation = true) {
     },
     released: () => released,
     calls: () => calls,
+    notified: () => notified,
+    cancels: () => cancels,
   };
 }
 
@@ -144,6 +154,26 @@ test("successful history persistence starts the adapter once", async () => {
   assert.deepEqual(await next, { value: { content: "answer" }, done: false });
   assert.equal((await w.run.next()).done, true);
   assert.equal(w.calls(), 1);
+  assert.equal(w.cancels(), 1, "a starting run cancels a pending reply notification");
+  assert.equal(w.notified(), 1);
   assert.deepEqual(w.stops, []);
   assert.deepEqual(w.failures, []);
+});
+
+test("a reply the user stopped mid-stream sends no reply notification", async () => {
+  const w = pendingRun();
+  const next = w.run.next();
+  w.resolve("chat");
+  assert.deepEqual(await next, { value: { content: "answer" }, done: false });
+  w.controller.abort();
+  assert.equal((await w.run.next()).done, true);
+  assert.equal(w.notified(), 0);
+});
+
+test("a failed history write sends no reply notification", async () => {
+  const w = pendingRun();
+  const next = w.run.next();
+  w.reject(new Error("history write failed"));
+  await assert.rejects(next, /history write failed/);
+  assert.equal(w.notified(), 0);
 });

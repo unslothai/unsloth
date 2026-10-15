@@ -889,10 +889,11 @@ class AudioCppBackend:
             )
         except cm.MusicRequestError as exc:
             raise RuntimeError(str(exc)) from exc
+        own_end = cm.self_ending_timeout(model.family, server.backend)
         ctype, data = server.post_json(
             "/v1/tasks/run",
             {"model": server.model_id, "request": request},
-            timeout = _GENERATE_TIMEOUT_SECONDS,
+            timeout = own_end or _GENERATE_TIMEOUT_SECONDS,
             cancel_event = cancel_event,
         )
         return _audio_from_task_response(ctype, data)
@@ -1003,7 +1004,7 @@ class AudioCppBackend:
         # The route sizes the wait from the full work (extend, continue length); the orchestrator
         # outlasts that same budget.
         timeout = float(music.get("timeout_s") or 0) or cm.timeout_seconds(
-            model.family, seconds, variations, server.backend == "cpu"
+            model.family, seconds, variations, server.backend
         )
         outputs: list[tuple[str, bytes, Optional[int]]] = []
         try:

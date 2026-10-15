@@ -71,6 +71,8 @@ import {
 import type { AudioHostState } from "./audio-host-state";
 import type { SttSidecar } from "./use-stt-sidecar";
 
+const STT_STATUS_POLL_MS = 30_000;
+
 export function useAudioModelSlot({
   active,
   activeRef,
@@ -87,8 +89,13 @@ export function useAudioModelSlot({
   isMac,
   status,
   releaseTranscribeSelection,
+  ejectTranscribeModel,
   ensureSttLoaded,
   sttGgufVariants,
+  sttEngines,
+  sttEngineFor,
+  refreshSttStatus,
+  sttLoadedModel,
   selectedSttRepoRef,
   setSelectedSttRepo,
   deferredSttLoad,
@@ -119,8 +126,13 @@ export function useAudioModelSlot({
   Pick<
     SttSidecar,
     | "releaseTranscribeSelection"
+    | "ejectTranscribeModel"
     | "ensureSttLoaded"
     | "sttGgufVariants"
+    | "sttEngines"
+    | "sttEngineFor"
+    | "refreshSttStatus"
+    | "sttLoadedModel"
     | "selectedSttRepoRef"
     | "setSelectedSttRepo"
     | "deferredSttLoad"
@@ -498,6 +510,8 @@ export function useAudioModelSlot({
         pending.isGguf,
       );
     },
+    onCancelled: invalidatePendingStagedTts,
+    onReset: invalidatePendingStagedTts,
   });
 
   useEffect(() => {
@@ -698,7 +712,7 @@ export function useAudioModelSlot({
           ? {
               repoId,
               sidecarKey: sttSidecarKeyFor(repoId),
-              engine: sttEngineForRepoId(repoId),
+              engine: sttEngineFor(repoId),
             }
           : null;
         sttLoadGeneration.current += 1;
@@ -782,6 +796,7 @@ export function useAudioModelSlot({
         if (!transitionMode("transcribe")) return;
         const sidecarKey = sttSidecarKeyFor(id);
         const engine = sttEngineForRepoId(id, meta.isGguf);
+        sttEngines.current.set(id.toLowerCase(), engine);
         if (meta.ggufVariant) {
           sttGgufVariants.current.set(id.toLowerCase(), meta.ggufVariant);
         } else {
@@ -889,6 +904,24 @@ export function useAudioModelSlot({
     ],
   );
 
+  // The sidecar unloads itself after its idle keep-alive and emits nothing, so re-read status
+  // while a model shows as loaded here.
+  useEffect(() => {
+    if (!active || mode !== "transcribe" || busy !== null || !sttLoadedModel)
+      return;
+    const refresh = () => {
+      if (!document.hidden) void refreshSttStatus();
+    };
+    const interval = window.setInterval(refresh, STT_STATUS_POLL_MS);
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", refresh);
+    };
+  }, [active, busy, mode, refreshSttStatus, sttLoadedModel]);
+
   const handleEject = useCallback(() => {
     if (busy !== null) {
       toast.info("Stop the active audio task before ejecting its model.");
@@ -907,11 +940,20 @@ export function useAudioModelSlot({
       const toastId = toast.loading("Unloading transcription model…");
       void (async () => {
         try {
-          await releaseTranscribeSelection();
-          toast.success("Transcription model unloaded", {
-            id: toastId,
-            duration: 1200,
-          });
+          const outcome = await ejectTranscribeModel();
+          if (outcome === "unloaded") {
+            toast.success("Transcription model unloaded", {
+              id: toastId,
+              duration: 1200,
+            });
+          } else if (outcome === "kept") {
+            toast.info(
+              "A different transcription model is loaded, so nothing was unloaded.",
+              { id: toastId },
+            );
+          } else {
+            toast.dismiss(toastId);
+          }
         } catch (error) {
           toast.error(
             error instanceof Error
@@ -977,6 +1019,7 @@ export function useAudioModelSlot({
     })();
   }, [
     busy,
+    ejectTranscribeModel,
     mode,
     refreshStatus,
     releaseTranscribeSelection,

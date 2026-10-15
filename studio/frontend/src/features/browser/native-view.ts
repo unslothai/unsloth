@@ -13,6 +13,7 @@ import { getAppliedInterfaceZoom, subscribeAppliedInterfaceZoom } from "@/featur
 import { toast } from "@/lib/toast";
 import { BROWSER_PAGE_INSET_VAR, CHAT_SETTINGS_INSET_VAR, cornerInsets } from "@/lib/toast-offset";
 import { hostOf } from "./address";
+import { agentDownloadRule } from "./agent/agent-store";
 import { approveChosenDownload, approveDownload, downloadSiteOf } from "./download-approval-queue";
 import { abandonDownload, beginDownload, finishDownload, useDownloadActivity } from "./download-activity";
 import { proxiedFavicon } from "./favicon";
@@ -117,6 +118,7 @@ function closeView(tabId: string): void {
   loadingPages.delete(tabId);
   recency = recency.filter((id) => id !== tabId);
   if (parkedView === tabId) parkedView = null;
+  background = background.filter((id) => id !== tabId);
   void call("browser_view_close", { tabId }).catch(() => undefined);
 }
 
@@ -167,7 +169,7 @@ function onDownloadPrompt(event: Extract<NativeEvent, { kind: "downloadPrompt" }
       ? Promise.resolve(false)
       : saveAs
         ? approveChosenDownload(url, name)
-        : approveDownload(url, name, asking);
+        : approveDownload(url, name, asking, tab ? agentDownloadRule(tab.id, asking, url) : null);
   const key = downloadKey(id);
   void decided
     .then(async (allow) => {
@@ -254,11 +256,17 @@ function onNativeEvent(event: NativeEvent): void {
       newTabTimes = newTabTimes.filter((time) => now - time < NEW_TAB_WINDOW_MS);
       if (newTabTimes.length < NEW_TABS_PER_WINDOW) {
         newTabTimes.push(now);
-        store.openUrl(event.url, { newTab: true, from: shownUrl(tab) });
+        // A page at work in a chat off screen opens its popups there, not over this chat's tabs.
+        if (tab.chat !== store.chat) store.openTabIn(tab.chat, event.url, { from: shownUrl(tab), background: true });
+        else store.openUrl(event.url, { newTab: true, from: shownUrl(tab) });
       } else {
         prompt(t("browser.native.externalPrompt", { host: hostOf(shownUrl(tab)), url: event.url }), {
           label: t("browser.native.open"),
-          onClick: () => store.openUrl(event.url, { newTab: true, from: shownUrl(tab) }),
+          onClick: () => {
+            const now = useBrowserStore.getState();
+            if (tab.chat !== now.chat) now.openTabIn(tab.chat, event.url, { from: shownUrl(tab), background: true });
+            else now.openUrl(event.url, { newTab: true, from: shownUrl(tab) });
+          },
         });
       }
       break;
@@ -407,6 +415,8 @@ function overlays(selector: string, rect: DOMRect | null, skip: string | null = 
   const boxes: DOMRect[] = [];
   for (const element of outsideThread(selector)) {
     if (element.closest("[data-native-page]")) continue;
+    // The dialog the browser opens in over compare, projects and phones holds the page, not covers it.
+    if (element.querySelector("[data-native-page]")) continue;
     if (skip && element.querySelector(skip)) continue;
     const box = element.getBoundingClientRect();
     if (box.width > 0 && box.height > 0 && (!rect || intersects(box, rect))) boxes.push(box);
@@ -435,7 +445,7 @@ type Input = { blocked: boolean; exclude: Bounds[] };
 
 const NO_INPUT: Input = { blocked: false, exclude: [] };
 
-function panelInput(rect: DOMRect): Input {
+function panelInput(rect: DOMRect, area: DOMRect | null): Input {
   // A menu away from the page owns it too, so a click on the page closes the menu, as anywhere else.
   if (overlays(BLOCKING_SELECTOR, rect).length > 0 || overlays(MENU_SELECTOR, null, HOVER_ONLY).length > 0) {
     return { blocked: true, exclude: [] };
@@ -447,6 +457,22 @@ function panelInput(rect: DOMRect): Input {
     height: Math.ceil(box.height) + 1,
     viewportWidth: window.innerWidth,
   }));
+  // The page view past the panel's edge, painted over by the app (holeClip): after a split drag it
+  // keeps its old frame until the resize lands, and input there belongs to the chat it sits under.
+  const frame = shownBounds ?? { x: rect.left, y: rect.top, width: rect.width, height: rect.height };
+  const left = Math.max(rect.left, area?.left ?? rect.left);
+  const right = Math.min(rect.right, area?.right ?? rect.right);
+  const strip = (from: number, to: number) =>
+    to - from >= 1 &&
+    exclude.push({
+      x: Math.floor(from),
+      y: frame.y,
+      width: Math.ceil(to - from),
+      height: frame.height,
+      viewportWidth: window.innerWidth,
+    });
+  strip(frame.x, left);
+  strip(right, frame.x + frame.width);
   return { blocked: false, exclude };
 }
 
@@ -490,6 +516,11 @@ let holed: HTMLElement[] = [];
 let holeSignature = "";
 let holeTab: string | null = null;
 let holeBounds: Bounds | null = null;
+// The panel around the page. A split drag pins the page at its old width, so while the panel
+// shrinks the page view overflows the handle. Resizing the view every frame would relayout the page
+// every frame, which the pin is there to avoid; on a layered page the app draws over it instead,
+// by cutting the hole no wider than the panel.
+let holeClip: DOMRect | null = null;
 
 function opaque(color: string): boolean {
   if (color === "transparent") return false;
@@ -511,7 +542,9 @@ function openHole(tabId: string, bounds: Bounds): void {
 function placeHole(): void {
   if (!holeBounds) return;
   const zoom = getAppliedInterfaceZoom() || 1;
-  const values = [holeBounds.x, holeBounds.y, holeBounds.width, holeBounds.height].map((value) => value / zoom);
+  const left = holeClip ? Math.max(holeBounds.x, holeClip.left) : holeBounds.x;
+  const right = holeClip ? Math.min(holeBounds.x + holeBounds.width, holeClip.right) : holeBounds.x + holeBounds.width;
+  const values = [left, holeBounds.y, Math.max(0, right - left), holeBounds.height].map((value) => value / zoom);
   for (const node of holed) HOLE_VARS.forEach((name, index) => node.style.setProperty(name, `${values[index]}px`));
 }
 
@@ -555,6 +588,24 @@ function closeHole(): void {
   holeTab = null;
   holeBounds = null;
   unmarkHole();
+}
+
+/** The panel body: the parent of the outermost page box (two nested boxes carry the attribute). */
+function panelArea(element: HTMLElement): HTMLElement | null {
+  let page = element.closest("[data-browser-page]");
+  for (let outer = page?.parentElement?.closest("[data-browser-page]"); outer; outer = outer.parentElement?.closest("[data-browser-page]")) {
+    page = outer;
+  }
+  return page?.parentElement ?? null;
+}
+
+/** Re-cuts the hole when the panel's edges move; cheap, so it runs every frame of a drag. */
+function clipHole(element: HTMLElement | null): void {
+  const area = element && layered ? panelArea(element)?.getBoundingClientRect() ?? null : null;
+  const same = area && holeClip ? area.left === holeClip.left && area.right === holeClip.right : area === holeClip;
+  if (same) return;
+  holeClip = area;
+  placeHole();
 }
 
 function visibleRect(element: HTMLElement): DOMRect | null {
@@ -602,7 +653,11 @@ function insetToasts(rect: DOMRect | null): void {
 
 function desiredView(): Desired {
   const page = pageRect();
-  if (layered) sendInput(page ? panelInput(page.rect) : NO_INPUT);
+  if (layered) {
+    const element = page ? placeholder(page.tab.id) : null;
+    const area = element ? (panelArea(element)?.getBoundingClientRect() ?? null) : null;
+    sendInput(page ? panelInput(page.rect, area) : NO_INPUT);
+  }
   else insetToasts(page?.rect ?? null);
   if (!page) return null;
   const { tab, entry, rect } = page;
@@ -644,8 +699,8 @@ function pruneViews(shown: string | null): void {
       resume.delete(tabId);
     }
   }
-  while (views.size > MAX_VIEWS) {
-    const oldest = recency.find((id) => id !== shown && views.has(id));
+  while (views.size - background.length > MAX_VIEWS) {
+    const oldest = recency.find((id) => id !== shown && views.has(id) && !background.includes(id));
     if (!oldest) break;
     closeView(oldest);
   }
@@ -680,6 +735,94 @@ export function whenNativeViewShown(tabId: string, timeoutMs = 1500): Promise<bo
 let snapshot: { tabId: string; element: HTMLElement; url: string } | null = null;
 let shownBounds: Bounds | null = null;
 const viewBounds = new Map<string, Bounds>();
+
+// Pages kept open while their chat is off screen: the agent at work in another chat. Newest last;
+// past the cap the oldest closes (and reopens where it got to, like any pruned view).
+const MAX_BACKGROUND = 3;
+let background: string[] = [];
+const openingInBackground = new Set<string>();
+let watchingBackground = false;
+// A panel is mounted (startNativeViews running), which prunes and closes hidden pages itself.
+let panelUp = false;
+
+/** Keeps `tabId`'s page open, and following its tab, while the panel shows another chat or none. */
+export function keepInBackground(tabId: string): void {
+  background = [...background.filter((id) => id !== tabId), tabId];
+  while (background.length > MAX_BACKGROUND) {
+    const oldest = background.shift();
+    if (oldest && oldest !== shownView && oldest !== parkedView && views.has(oldest)) closeView(oldest);
+  }
+  listenOnce();
+  if (!watchingBackground) {
+    watchingBackground = true;
+    useBrowserStore.subscribe(syncBackground);
+  }
+  syncBackground();
+}
+
+/** The page can close with the panel again; with no panel up, it closes now. */
+export function releaseBackground(tabId: string): void {
+  background = background.filter((id) => id !== tabId);
+  if (!panelUp && tabId !== shownView && views.has(tabId)) closeView(tabId);
+}
+
+/** Opens or moves each kept page its tab no longer matches; the panel owns the one it shows. */
+function syncBackground(): void {
+  if (background.length === 0) return;
+  const tabs = new Map(useBrowserStore.getState().tabs.map((tab) => [tab.id, tab]));
+  for (const tabId of [...background]) {
+    const tab = tabs.get(tabId);
+    if (!tab) {
+      releaseBackground(tabId);
+      continue;
+    }
+    const entry = currentEntry(tab);
+    if (tabId === shownView || tabId === parkedView || entry.kind !== "web" || openingInBackground.has(tabId)) continue;
+    const key = entryKey(entry);
+    if (views.get(tabId) === key) continue;
+    void openInBackground(tabId, entry.url, key);
+  }
+}
+
+async function openInBackground(tabId: string, url: string, key: number): Promise<void> {
+  openingInBackground.add(tabId);
+  const resumed = resume.get(tabId);
+  try {
+    if (views.has(tabId)) {
+      await call("browser_view_navigate", { tabId, url });
+    } else {
+      const bounds = viewBounds.get(tabId) ??
+        shownBounds ?? { x: 0, y: 0, width: Math.round(window.innerWidth / 2), height: window.innerHeight, viewportWidth: window.innerWidth };
+      openedTabs.add(tabId);
+      await call("browser_view_open_background", { tabId, url: resumed?.entry === key ? resumed.url : url, bounds });
+      viewBounds.set(tabId, bounds);
+      recency = [...recency.filter((id) => id !== tabId), tabId];
+    }
+    views.set(tabId, key);
+    if (useBrowserStore.getState().tabs.find((tab) => tab.id === tabId)?.nativeError) {
+      useBrowserStore.getState().updateTab(tabId, { nativeError: null });
+    }
+  } catch (cause) {
+    useBrowserStore.getState().updateTab(tabId, { loading: false, nativeError: error(cause) });
+    // Not retried here: the agent's next action asks again.
+    background = background.filter((id) => id !== tabId);
+  } finally {
+    openingInBackground.delete(tabId);
+  }
+  // Let go (run over, tab closed, cap) while it opened: nothing owns it now.
+  if (!background.includes(tabId) && !panelUp && tabId !== shownView && views.has(tabId)) closeView(tabId);
+  syncBackground();
+}
+
+/** True once `tabId`'s page is open (a kept page reopening after the cap closed it), false after `timeoutMs`. */
+export async function whenViewOpen(tabId: string, timeoutMs = 5000): Promise<boolean> {
+  const until = Date.now() + timeoutMs;
+  while (!views.has(tabId) || openingInBackground.has(tabId)) {
+    if (Date.now() > until) return false;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  return true;
+}
 
 function clearSnapshot(): void {
   if (!snapshot) return;
@@ -905,9 +1048,13 @@ let motionUntil = 0;
 
 export function startNativeViews(): () => void {
   listenOnce();
+  panelUp = true;
   let frame = 0;
   let sent = "";
   let resized: HTMLElement | null = null;
+  let resizedArea: HTMLElement | null = null;
+  // The panel resizing (a split drag) only re-cuts the hole: no full sync, no call to the view.
+  const areaObserver = new ResizeObserver(() => clipHole(resized));
   const resizeObserver = new ResizeObserver(() => schedule());
 
   const sync = () => {
@@ -919,9 +1066,13 @@ export function startNativeViews(): () => void {
     const element = desired ? placeholder(desired.tabId) : null;
     if (element !== resized) {
       if (resized) resizeObserver.unobserve(resized);
+      if (resizedArea) areaObserver.unobserve(resizedArea);
+      resizedArea = element && layered ? panelArea(element) : null;
       if (element) resizeObserver.observe(element);
+      if (resizedArea) areaObserver.observe(resizedArea);
       resized = element;
     }
+    clipHole(element);
     if (performance.now() < motionUntil) schedule();
     const key = JSON.stringify([epoch, coverRetry, desired]);
     if (key === sent) return;
@@ -968,13 +1119,16 @@ export function startNativeViews(): () => void {
     unzoom();
     overlays.disconnect();
     resizeObserver.disconnect();
+    areaObserver.disconnect();
     window.removeEventListener("resize", schedule);
     for (const type of MOTION_EVENTS) document.removeEventListener(type, moved, true);
     document.removeEventListener("pointerover", reachedPage, true);
     document.removeEventListener("pointerup", schedule, true);
     window.clearInterval(interval);
+    panelUp = false;
     tooltipHold = 0;
-    // close pages because hidden native views keep scripts and media running.
+    // close pages because hidden native views keep scripts and media running; a page at work
+    // in the background is only hidden.
     generation += 1;
     pending = null;
     parkedView = null;
@@ -983,6 +1137,7 @@ export function startNativeViews(): () => void {
     closeHole();
     sendInput(NO_INPUT);
     insetToasts(null);
-    for (const tabId of [...views.keys()]) closeView(tabId);
+    for (const tabId of [...views.keys()]) if (!background.includes(tabId)) closeView(tabId);
+    if (views.size > 0) void call("browser_view_show", { tabId: null }).catch(() => undefined);
   };
 }

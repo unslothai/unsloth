@@ -25,6 +25,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Spinner } from "@/components/ui/spinner";
+import { AgentBar } from "./agent/agent-bar";
 import {
   Tooltip,
   TooltipContent,
@@ -51,6 +52,7 @@ import { asPng, copyToClipboard, copyToClipboardFrom } from "@/lib/copy-to-clipb
 import { openExternalLink } from "@/lib/open-link";
 import { RefreshGlyph } from "@/lib/refresh-icon";
 import { ShieldAlertGlyph } from "@/lib/shield-alert-icon";
+import { SquareDashedMousePointerIcon } from "@/lib/annotate-icon";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
@@ -67,7 +69,6 @@ import {
   Copy01Icon,
   Folder01Icon,
   Link01Icon,
-  CursorRectangleSelection02Icon,
   Download01Icon,
   InternetIcon,
   MinusSignIcon,
@@ -152,6 +153,7 @@ import {
   type FileViewState,
   browserFile,
   cachedPage,
+  chatTabs,
   currentEntry,
   entryKey,
   pageDownload,
@@ -159,6 +161,7 @@ import {
 } from "./store";
 import { TabView } from "./tab-view";
 import { ZOOM_STEPS, canZoom, homeZoom, stepZoom, zoomTab } from "./zoom";
+import { useShallow } from "zustand/shallow";
 
 function tabAddress(tab: BrowserTab | undefined): string {
   if (!tab) return "";
@@ -226,8 +229,9 @@ const NAV_BUTTON =
   "size-8 rounded-md text-foreground disabled:hover:text-foreground disabled:opacity-30";
 const NAV_ICON = "size-4.5";
 const ANNOTATE_BUTTON = "size-8 shrink-0 rounded-full p-0 text-foreground";
-// The dashed box sits up-left of the glyph's centre, so nudge it to look centred.
-const ANNOTATE_GLYPH = "size-4.5 translate-x-[4%] translate-y-[4%]";
+// Half a pixel right and down: the frame's whole top-left corner and the pointer aimed back at it
+// read as up and left of centre, though the strokes are centred.
+const ANNOTATE_GLYPH = "size-4.5 translate-x-[0.5px] translate-y-[0.5px]";
 const NAV_STROKE = 2;
 const URLBAR =
   "bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] focus-within:bg-[color-mix(in_oklab,var(--foreground)_calc(9%*var(--contrast-wash-gain,1)),transparent)]";
@@ -1411,7 +1415,7 @@ function AnnotatePageButton({ tab }: { tab: BrowserTab | undefined }) {
           "bg-primary/12 text-primary hover:bg-primary/18 hover:text-primary dark:bg-primary/20 dark:hover:bg-primary/25",
       )}
     >
-      <HugeiconsIcon icon={CursorRectangleSelection02Icon} strokeWidth={1.75} className={ANNOTATE_GLYPH} />
+      <HugeiconsIcon icon={SquareDashedMousePointerIcon} strokeWidth={1.75} className={ANNOTATE_GLYPH} />
     </IconButton>
   );
 }
@@ -1644,7 +1648,7 @@ function BrowserFileToolbar({
           )}
         >
           <HugeiconsIcon
-            icon={CursorRectangleSelection02Icon}
+            icon={SquareDashedMousePointerIcon}
             strokeWidth={1.75}
             className={ANNOTATE_GLYPH}
           />
@@ -1969,7 +1973,7 @@ function FloatingFileToolbar({
           )}
         >
           <HugeiconsIcon
-            icon={CursorRectangleSelection02Icon}
+            icon={SquareDashedMousePointerIcon}
             strokeWidth={1.75}
             className={ANNOTATE_GLYPH}
           />
@@ -2390,7 +2394,7 @@ function liveTabIds(mounted: readonly string[], tabs: BrowserTab[], activeTabId:
 /** The chat's in-app browser, memoized so chat renders skip it. `active`: its chat is shown. */
 export const BrowserPanel = memo(function BrowserPanel({ active = true }: { active?: boolean }) {
   const t = useT();
-  const tabs = useBrowserStore((state) => state.tabs);
+  const tabs = useBrowserStore(useShallow(chatTabs));
   const activeTabId = useBrowserStore((state) => state.activeTabId);
   const device = useBrowserStore((state) => state.device);
   const annotateTabId = useBrowserStore((state) => state.annotateTabId);
@@ -2489,6 +2493,7 @@ export const BrowserPanel = memo(function BrowserPanel({ active = true }: { acti
           <BookmarksBar tab={activeTab} />
         )}
         {deviceWidth ? <DeviceBar /> : null}
+        <AgentBar activeTabId={activeTabId} />
         <div
           ref={setPageElement}
           data-browser-page=""

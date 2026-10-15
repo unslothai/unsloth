@@ -99,7 +99,7 @@ def test_causal_conv1d_reuses_torch_2_10_wheel_on_2_11():
     [
         None,
         _env("2.11.0+cpu", ""),
-        _env("2.11.0+cu130", "13.0", platform_tag = "win_amd64"),
+        _env("2.12.0+cu130", "13.0", platform_tag = "win_amd64"),
     ],
 )
 def test_causal_conv1d_has_no_wheel_off_linux_cuda(env):
@@ -336,7 +336,17 @@ def test_console_entry_drops_an_unwritable_ssl_keylog_file(tmp_path):
             "https://github.com/unslothai/unsloth/releases/download/prebuilt-wheels-cu13/"
             "flash_attn-2.8.4+cu13torch2.13cxx11abiTRUE-cp313-cp313-linux_x86_64.whl",
         ),
-        (_env("2.11.0+cu130", "13.0", platform_tag = "win_amd64"), None),
+        (
+            _env("2.11.0+cu130", "13.0", platform_tag = "win_amd64"),
+            "https://github.com/unslothai/unsloth/releases/download/prebuilt-wheels-cu13/"
+            "flash_attn-2.8.4+cu13torch2.11cxx11abiTRUE-cp313-cp313-win_amd64.whl",
+        ),
+        (
+            _env("2.10.0+cu130", "13.0", platform_tag = "win_amd64"),
+            "https://github.com/unslothai/unsloth/releases/download/prebuilt-wheels-cu13/"
+            "flash_attn-2.8.4+cu13torch2.10cxx11abiTRUE-cp313-cp313-win_amd64.whl",
+        ),
+        (_env("2.12.0+cu130", "13.0", platform_tag = "win_amd64"), None),
         (_env("2.11.0+cpu", ""), None),
     ],
 )
@@ -451,6 +461,28 @@ def test_causal_conv1d_still_installs_below_sm80(uv):
         == 0
     )
     assert run.installer_calls[0][-1].startswith(f"{_CC1D}/causal_conv1d-1.6.1+cu13torch2.10")
+
+
+@pytest.mark.parametrize(
+    "without_gpu, capability, installs",
+    [(False, "None", False), (True, "None", True), (True, "7 0", False), (True, "9 0", True)],
+)
+def test_setup_installs_mamba_ssm_before_a_gpu_is_visible(
+    uv, monkeypatch, without_gpu, capability, installs
+):
+    # An image build sees no GPU; a visible pre-Ampere one still skips. Linux, so Windows'
+    # triton-windows gate (its own test) does not answer first.
+    uv(False)
+    monkeypatch.setattr(kernel_install.sys, "platform", "linux")
+    monkeypatch.setattr(kernel_install, "_triton_version", lambda run: (3, 3))
+    run = _Runner([False, True], capability = capability)
+    assert (
+        kernel_install.install_kernel(
+            "mamba_ssm", _COLAB, run = run, exists = lambda url: True, install_without_gpu = without_gpu
+        )
+        == 0
+    )
+    assert bool(run.installer_calls) is installs
 
 
 def test_the_gpu_is_probed_once_for_every_sm80_kernel(capsys, monkeypatch):

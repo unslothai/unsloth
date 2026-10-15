@@ -124,7 +124,7 @@ def test_prefill_global_layers_see_past_the_window():
     kept = {idx: (m.reshape(-1, n, n)[0] == 0).cpu() for idx, m in masks.items()}
     assert torch.equal(kept[1][1:], causal[1:])
     assert not kept[0][-1, 1]
-    assert torch.equal(kept[0][1:], (causal & (q - k <= window))[1:])
+    assert torch.equal(kept[0][1:], (causal & (q - k < window))[1:])
 
 
 def test_decode_masks_follow_each_layer_device(monkeypatch):
