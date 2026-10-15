@@ -453,6 +453,7 @@ export const fr = {
       resubmit: "Cette page provient d'un formulaire. La recharger renvoie le formulaire, ce qui pourrait répéter son action.",
       upload: "L'envoi de fichiers ne fonctionne pas dans cette vue. Ouvrez la page dans le navigateur du système pour l'envoyer.",
       scriptNavigation: "Cette page a tenté d'aller à une autre adresse par script, ce que cette vue ne peut pas suivre. Ouvrez-la plutôt dans le navigateur du système.",
+      needsBrowser: "Cette page a tenté d'utiliser une fonction du navigateur que cette vue bloque, certaines parties peuvent donc ne pas fonctionner. Ouvrez-la plutôt dans le navigateur du système.",
     },
     native: {
       externalPrompt: "{host} veut ouvrir {url}",
