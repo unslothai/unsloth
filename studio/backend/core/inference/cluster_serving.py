@@ -606,6 +606,7 @@ class ClusterServing:
         # Workers the current load's probe found unusable; a commit without them stops them.
         self._down: set = set()
         self._native_ctx: bool = False
+        self._projector_url: bool = False
         # Workers this load (re)started: they hold none of the served split's buffers.
         self._started: set = set()
 
@@ -752,6 +753,9 @@ class ClusterServing:
                 "single",
                 "a context size of 0 opens the model's whole context",
             )
+            return request
+        if self._projector_url:
+            self.topology, self.reason = "single", "a projector fetched from a URL cannot be sized"
             return request
         forced = (os.environ.get(ENV_TOPOLOGY) or "").strip().lower().replace("-", "_") or None
         if forced == "single":
@@ -928,6 +932,15 @@ class ClusterServing:
         from core.inference.llama_cpp import _resolved_mmproj_offload
 
         host_projector = _resolved_mmproj_offload(extras, os.environ) is False
+        self._projector_url = bool(
+            self._has_projector
+            and not host_projector
+            and not disable_vision
+            and (
+                _flag_args(extras, frozenset({"--mmproj-url", "-mmu"}))
+                or (os.environ.get("LLAMA_ARG_MMPROJ_URL") or "").strip()
+            )
+        )
         dropped: List[str] = []
         if self._has_projector and host_projector:
             # --no-mmproj-offload: its bytes are host RAM, still loaded, so it stays a projector.

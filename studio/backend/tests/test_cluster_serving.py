@@ -1786,3 +1786,17 @@ def test_a_fit_ctx_floor_is_the_context_priced(monkeypatch):
     monkeypatch.setattr(ss, "estimate_kv_bytes", lambda path, ctx, k, v: seen.append(ctx) or 0)
     run(ss.before_load(_request(max_seq_length = 0, llama_extra_args = ["--fit-ctx", "16384"]), 4))
     assert seen == [16384]
+
+
+@pytest.mark.parametrize("env", [False, True])
+def test_a_projector_url_keeps_the_load_local(monkeypatch, env):
+    seen = _cluster_env(monkeypatch)
+    if env:
+        monkeypatch.setenv("LLAMA_ARG_MMPROJ_URL", "https://example.com/mmproj.gguf")
+    extra = [] if env else ["--mmproj-url", "https://example.com/mmproj.gguf"]
+    request = _request(llama_extra_args = extra)
+    assert run(ss.before_load(request, 4)) is request and seen == []
+    assert "URL" in ss.status()["reason"]
+    # With the vision switch off the URL projector is dropped, so the split goes ahead.
+    run(ss.before_load(_request(llama_extra_args = extra, disable_vision = True), 4))
+    assert ss.status()["topology"] == "layer_split"
