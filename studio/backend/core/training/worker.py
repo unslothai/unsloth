@@ -5671,7 +5671,36 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
                 loader = "parquet"
             else:
                 raise ValueError(f"Unsupported local dataset format: {all_files[0]}")
-            return load_dataset(loader, data_files = all_files, split = "train")
+            from datasets import Value
+            from utils.datasets.cells import csv_as_text_kwargs, typed_csv_columns
+
+            dataset = load_dataset(
+                loader,
+                data_files = all_files,
+                split = "train",
+                **csv_as_text_kwargs(all_files),
+            )
+            if loader != "csv":
+                return dataset
+            labels = typed_csv_columns(dataset) & {"label", "labels", "score", "scores"}
+            for column in labels:
+                dataset = dataset.cast_column(column, Value("float64"))
+            texts = [column for column in dataset.column_names if column not in labels]
+            kept = dataset.filter(
+                lambda *columns: [None not in cells for cells in zip(*columns)],
+                input_columns = texts,
+                batched = True,
+            )
+            if len(kept) < len(dataset):
+                event_queue.put(
+                    {
+                        "type": "warning",
+                        "message": f"Dropped {len(dataset) - len(kept):,} of {len(dataset):,} "
+                        "rows because a text cell was empty.",
+                        "ts": time.time(),
+                    }
+                )
+            return kept
 
         if hf_dataset:
             dataset = _load_embedding_hf_dataset(
