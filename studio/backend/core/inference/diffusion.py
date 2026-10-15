@@ -2251,7 +2251,9 @@ def _record_peak_probe(
             # the SDPA probe could not tell math from a fused kernel: a quadratic peak stored as linear would
             # under-size every larger request
             return
-        family, quant, speed_mode = _live_peak_identity(state)  # the key this render ran (``cfg:off`` included)
+        family, quant, speed_mode = _live_peak_identity(
+            state
+        )  # the key this render ran (``cfg:off`` included)
         pipe = state.pipe
         index = getattr(probe.device, "index", None)
         graphs = cuda_graph.live_graph_count(index)
@@ -8542,7 +8544,9 @@ class DiffusionBackend:
                         # the phase-table seed holds only where it was measured
                         pipe._unsloth_phase_seeds = _calibrated_activation(fam, target) is not None
                         # a CFG-capable family may place from a peak recorded without CFG (``cfg:off``)
-                        pipe._unsloth_peak_expects_cfg = bool(getattr(fam, "uses_negative_prompt", False))
+                        pipe._unsloth_peak_expects_cfg = bool(
+                            getattr(fam, "uses_negative_prompt", False)
+                        )
                     except Exception:  # noqa: BLE001
                         pass
                     peak_vae = planned_vae_saver_tag(pipe, plan)

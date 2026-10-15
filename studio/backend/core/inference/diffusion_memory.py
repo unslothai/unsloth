@@ -2375,7 +2375,9 @@ def without_cfg_off(label: str) -> str:
     return "|".join(part for part in str(label).split("|") if part != CFG_OFF_PART)
 
 
-def _learned_read_label(pipe: Any, family: Optional[str], quant: str, speed_mode: Optional[str]) -> tuple[str, bool]:
+def _learned_read_label(
+    pipe: Any, family: Optional[str], quant: str, speed_mode: Optional[str]
+) -> tuple[str, bool]:
     """``(label, cfg_off_only)``: True means CFG requests must be sized from the flat estimate."""
     from .diffusion_measured_peaks import lookup_bucket
 

@@ -1635,7 +1635,9 @@ def test_render_without_the_familys_cfg_records_under_its_cfg_off_key(monkeypatc
     assert diffusion._start_peak_probe(state) is None
 
 
-def test_cfg_family_places_from_its_cfg_off_peak_and_cfg_requests_take_the_flat_estimate(klein_pipe, monkeypatch):
+def test_cfg_family_places_from_its_cfg_off_peak_and_cfg_requests_take_the_flat_estimate(
+    klein_pipe, monkeypatch
+):
     monkeypatch.delenv(dm.LEARNED_PEAKS_CFG_OFF_ENV, raising = False)
     klein_pipe._unsloth_peak_expects_cfg = True
     plan = _klein_flat_plan()
@@ -1652,13 +1654,34 @@ def test_cfg_family_places_from_its_cfg_off_peak_and_cfg_requests_take_the_flat_
     new = dm.refine_plan_from_loaded_weights(klein_pipe, plan, **kw)
     assert new is not plan and new.estimates["measured_learned_cfg_off"] is True
     assert new.estimates["measured_runtime_headroom_mib"] == 3072
-    klein_pipe._unsloth_peak_identity = ("some-new-dit", "torchao:Int8Tensor|attn:native", "default")
-    klein_pipe._unsloth_measured_reserve = (3072, "some-new-dit", "default", None, None, 2600, 1024 * 1024, False, True, True)
+    klein_pipe._unsloth_peak_identity = (
+        "some-new-dit",
+        "torchao:Int8Tensor|attn:native",
+        "default",
+    )
+    klein_pipe._unsloth_measured_reserve = (
+        3072,
+        "some-new-dit",
+        "default",
+        None,
+        None,
+        2600,
+        1024 * 1024,
+        False,
+        True,
+        True,
+    )
     # a request without CFG is covered by the peak the load reserved
     assert dm.measured_request_extra_mib(klein_pipe, width = 1024, height = 1024, cfg = False) == 0
     # a CFG request (or unknown) is sized from the flat estimate: the doubled batch was never measured
-    flat = dm.estimate_image_runtime_mib(width = 1024, height = 1024, batch_size = 1, family = "some-new-dit")
-    assert dm.measured_request_extra_mib(klein_pipe, width = 1024, height = 1024, cfg = True) == flat - 3072 > 0
+    flat = dm.estimate_image_runtime_mib(
+        width = 1024, height = 1024, batch_size = 1, family = "some-new-dit"
+    )
+    assert (
+        dm.measured_request_extra_mib(klein_pipe, width = 1024, height = 1024, cfg = True)
+        == flat - 3072
+        > 0
+    )
     assert dm.measured_request_extra_mib(klein_pipe, width = 1024, height = 1024) == flat - 3072
     # once a CFG render is recorded, the CFG key wins
     mp.record(
@@ -1678,8 +1701,12 @@ def test_cfg_family_places_from_its_cfg_off_peak_and_cfg_requests_take_the_flat_
 
 
 def test_cfg_off_keys_are_wired_into_the_load_and_guard():
-    src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(encoding = "utf-8")
-    assert 'pipe._unsloth_peak_expects_cfg = bool(getattr(fam, "uses_negative_prompt", False))' in src
+    src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(
+        encoding = "utf-8"
+    )
+    assert (
+        'pipe._unsloth_peak_expects_cfg = bool(getattr(fam, "uses_negative_prompt", False))' in src
+    )
     assert "cfg = guard_cfg," in src
     assert 'plan.estimates.get("measured_learned_cfg_off", False),' in src
     src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(
