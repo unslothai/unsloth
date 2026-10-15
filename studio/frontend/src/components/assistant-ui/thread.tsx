@@ -9160,7 +9160,8 @@ const UserMessage: FC = () => {
 const UserActionBar: FC = () => {
   const ownsResearchMessage = useOwnsResearchMessage();
   const researchActive = useThreadResearchActive();
-  const setEditWithoutRunId = useChatRuntimeStore((s) => s.setEditWithoutRunMessageId);
+  const messageId = useAuiState(({ message }) => message.id);
+  const setEditWithoutRun = useChatRuntimeStore((s) => s.setEditWithoutRun);
   const editable = !ownsResearchMessage && !researchActive;
   return (
     <UserMessageActionBar>
@@ -9170,7 +9171,7 @@ const UserActionBar: FC = () => {
           <TooltipIconButton
             tooltip="Edit"
             className="aui-user-action-edit"
-            onClick={() => setEditWithoutRunId(null)}
+            onClick={() => setEditWithoutRun(messageId, false)}
           >
             <HugeiconsIcon
               icon={Edit03Icon}
@@ -9224,12 +9225,12 @@ const EditWithoutRunMenuItem: FC = () => {
   const aui = useAui();
   const messageId = useAuiState(({ message }) => message.id);
   const isRunning = useAuiState(({ thread }) => thread.isRunning);
-  const setEditWithoutRunId = useChatRuntimeStore((s) => s.setEditWithoutRunMessageId);
+  const setEditWithoutRun = useChatRuntimeStore((s) => s.setEditWithoutRun);
   return (
     <ActionBarMorePrimitive.Item
       disabled={isRunning}
       onSelect={() => {
-        setEditWithoutRunId(messageId);
+        setEditWithoutRun(messageId, true);
         aui.composer().beginEdit();
       }}
       className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
@@ -9251,14 +9252,11 @@ const EditComposer: FC = () => {
   const editEmpty = useAuiState(({ composer }) => composer.isEmpty);
   const messageId = useAuiState(({ message }) => message.id);
   const isRunning = useAuiState(({ thread }) => thread.isRunning);
-  const saveOnly = useChatRuntimeStore((s) => s.editWithoutRunMessageId === messageId);
+  const saveOnly = useChatRuntimeStore((s) => s.editWithoutRunMessageIds.includes(messageId));
   const incognito = useChatRuntimeStore((s) => s.incognito);
 
   useEffect(
-    () => () => {
-      const store = useChatRuntimeStore.getState();
-      if (store.editWithoutRunMessageId === messageId) store.setEditWithoutRunMessageId(null);
-    },
+    () => () => useChatRuntimeStore.getState().setEditWithoutRun(messageId, false),
     [messageId],
   );
 
@@ -9285,7 +9283,9 @@ const EditComposer: FC = () => {
   }, [aui, isComposingRef]);
 
   const saveEdit = useCallback(async () => {
-    if (isComposingRef.current || aui.thread().getState().isRunning) return;
+    // Enter submits without the button, so its disabled state is checked here too.
+    if (isComposingRef.current || researchActive || aui.thread().getState().isRunning) return;
+    if (aui.composer().getState().isEmpty) return;
     const newText = aui.composer().getState().text;
     const remoteId =
       aui.threadListItem().getState().remoteId ||
@@ -9308,7 +9308,7 @@ const EditComposer: FC = () => {
       console.error("UI: Error during save:", error);
       toast.error("Failed to save message edits.");
     }
-  }, [aui, incognito, isComposingRef, messageId]);
+  }, [aui, incognito, isComposingRef, messageId, researchActive]);
 
   return (
     <MessagePrimitive.Root className="aui-edit-composer-wrapper mx-auto flex w-full max-w-(--thread-content-max-width) flex-col py-3">
@@ -9340,7 +9340,7 @@ const EditComposer: FC = () => {
             </Button>
           </ComposerPrimitive.Cancel>
           {saveOnly ? (
-            <Button type="submit" size="sm" disabled={isRunning || editEmpty}>
+            <Button type="submit" size="sm" disabled={researchActive || isRunning || editEmpty}>
               Save
             </Button>
           ) : (

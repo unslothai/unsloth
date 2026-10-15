@@ -155,13 +155,13 @@ test("a prompt's bar ends in Delete then a More menu holding Edit without runnin
   const item = component("EditWithoutRunMenuItem");
   assert.match(item, /Edit without running/);
   assert.match(item, /disabled=\{isRunning\}/);
-  assert.match(item, /setEditWithoutRunId\(messageId\);\s*aui\.composer\(\)\.beginEdit\(\);/);
+  assert.match(item, /setEditWithoutRun\(messageId, true\);\s*aui\.composer\(\)\.beginEdit\(\);/);
 });
 
 test("the Edit button keeps sending: it clears save-only mode first", () => {
   assert.match(
     component("UserActionBar"),
-    /tooltip="Edit"[\s\S]*?onClick=\{\(\) => setEditWithoutRunId\(null\)\}/,
+    /tooltip="Edit"[\s\S]*?onClick=\{\(\) => setEditWithoutRun\(messageId, false\)\}/,
   );
 });
 
@@ -170,9 +170,26 @@ test("save-only edits write in place and never start a run", () => {
   assert.match(editor, /if \(saveOnly\) void saveEdit\(\);\s*else submitEdit\(\);/);
   const save = editor.slice(
     editor.indexOf("const saveEdit = useCallback("),
-    editor.indexOf("}, [aui, incognito, isComposingRef, messageId]);"),
+    editor.indexOf("}, [aui, incognito, isComposingRef, messageId, researchActive]);"),
   );
   assert.match(save, /plainText: true/);
   assert.doesNotMatch(save, /\.send\(|startRun/);
-  assert.match(editor, /\{saveOnly \? \(\s*<Button type="submit" size="sm" disabled=\{isRunning \|\| editEmpty\}>\s*Save/);
+  assert.match(editor, /\{saveOnly \? \(\s*<Button type="submit" size="sm" disabled=\{researchActive \|\| isRunning \|\| editEmpty\}>\s*Save/);
+  // Enter skips the button: the same guards run inside the save.
+  assert.match(save, /researchActive \|\| aui\.thread\(\)\.getState\(\)\.isRunning\) return;/);
+  assert.match(save, /if \(aui\.composer\(\)\.getState\(\)\.isEmpty\) return;/);
+});
+
+test("each open editor keeps its own save-only mode", () => {
+  // A set of prompt ids, not one slot: opening a second editor must not turn the first into Send.
+  const store = readSrc("features/chat/stores/chat-runtime-store.ts");
+  assert.match(store, /editWithoutRunMessageIds: readonly string\[\];/);
+  assert.match(
+    store,
+    /setEditWithoutRun: \(id, on\) =>\s*set\(\(s\) => \{\s*const ids = s\.editWithoutRunMessageIds\.filter\(\(x\) => x !== id\);\s*return \{ editWithoutRunMessageIds: on \? \[\.\.\.ids, id\] : ids \};/,
+  );
+  assert.match(
+    component("EditComposer"),
+    /const saveOnly = useChatRuntimeStore\(\(s\) => s\.editWithoutRunMessageIds\.includes\(messageId\)\);/,
+  );
 });
