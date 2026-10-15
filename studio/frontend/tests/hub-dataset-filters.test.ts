@@ -43,3 +43,9 @@ test("dataset filters count as active and reset the list's scroll", async () => 
   assert.match(page, /isDatasetMode &&\s*\(deferredDatasetModalities\.length > 0 \|\|\s*minRows !== undefined \|\|\s*maxRows !== undefined\)/);
   assert.match(page, /deferredCapabilityFilters,\s*deferredDatasetModalities,\s*searchFilters,/);
 });
+
+test("a row range alone lights the filter dot and Reset all", async () => {
+  const { readFileSync } = await import("node:fs");
+  const popover = readFileSync(new URL("../src/features/hub/catalog/model-search-filters.tsx", import.meta.url), "utf8");
+  assert.match(popover, /\(showModelFilters \|\| datasetSections\) && hasModelSearchFilters\(value\)/);
+});

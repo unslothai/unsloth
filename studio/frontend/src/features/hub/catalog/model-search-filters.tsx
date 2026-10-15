@@ -551,7 +551,7 @@ export function ModelSearchFiltersControl({
     modalities.length > 0 ||
     capabilities.length > 0 ||
     uploadersChanged ||
-    (showModelFilters && hasModelSearchFilters(value));
+    ((showModelFilters || datasetSections) && hasModelSearchFilters(value));
   return (
     <Popover open={open} onOpenChange={setOpen}>
       {/* Icon-sized so the Discover toolbar keeps its existing single-row layout. */}
