@@ -1,23 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-"""Guard the parallel zoo run, the serial reruns for tests that cannot share workers,
-and the split that moved all of them into their own job.
-
-The zoo suite used to run inside the `consolidated` cell, serially, for 418s of that
-cell's 17.2 minutes. It now runs in `consolidated-zoo`, a second matrix job over the
-same three (transformers, TRL) combos. Two things that were previously true by
-construction have to be asserted now that there are two jobs:
-
-  - the suite still runs under all three pins, and still runs at all. A matrix that
-    loses a combo, or a job whose steps drift away from the zoo ones, reduces coverage
-    without failing anything.
-  - the two jobs still install the same environment. The install lives in
-    .github/actions/core-cpu-setup so there is one copy of it, but the four steps above
-    that action (checkout, setup-python, the pip cache restore) and the job-level `env`
-    and `runs-on` are per-job and can drift silently. A zoo job on a different
-    transformers than the cell it was split out of would still be green, and would be
-    testing something nobody asked for.
-"""
+"""Guards the zoo split: all three pins must still run, and both Core jobs must share an environment."""
 
 from __future__ import annotations
 
@@ -34,11 +17,9 @@ ACTION = (
     Path(__file__).resolve().parents[2] / ".github" / "actions" / "core-cpu-setup" / "action.yml"
 )
 
-# The two halves of Core. Both run the same matrix; only their test steps differ.
 CORE_JOBS = ("consolidated", "consolidated-zoo")
 SETUP_ACTION = "./.github/actions/core-cpu-setup"
 
-# (ignored path, why it cannot share a worker with the rest of the suite)
 ISOLATED = [
     ("tests/test_mlx_generate.py", "8 failures under xdist that serial does not produce"),
     (
@@ -194,7 +175,6 @@ def test_the_mlx_group_runs_serially_and_skips_the_per_file_three() -> None:
     assert (
         "-n " not in _zoo_mlx_group()
     ), "the mlx group runs under xdist, which is the arrangement it exists to avoid"
-    # Per-file exclusions are applied while building the group, not on pytest itself.
     text = WORKFLOW.read_text(encoding = "utf-8")
     for path, _ in ISOLATED:
         name = path.rsplit("/", 1)[-1]
@@ -299,21 +279,14 @@ def test_both_halves_of_core_run_the_same_three_combos(jid: str) -> None:
 
 
 def test_both_halves_of_core_share_one_install_preamble() -> None:
-    """The install has one definition; the four steps around it are still per-job.
-
-    Checkout, setup-python and the pip cache restore are duplicated by necessity, and a
-    difference in any of them (a different interpreter, a cache scoped to other files)
-    makes the zoo job test a stack the cell it was split from never runs.
-    """
+    """The per-job preamble steps must match across both Core jobs, or the zoo job tests another stack."""
     a, b = (_preamble(jid) for jid in CORE_JOBS)
     assert len(a) == len(b), (
         f"the two Core jobs run {len(a)} and {len(b)} preamble steps. They install the "
         f"same environment, so their preambles have to be the same steps in the same order"
     )
     for left, right in zip(a, b):
-        # The pip cache `name` is the one field that MUST differ: a shared name is a
-        # shared key, and only the first job to finish on main would ever save.
-        # tests/studio/test_pip_cache_naming.py owns that rule.
+        # A shared pip cache name is a shared key; see tests/studio/test_pip_cache_naming.py.
         left, right = dict(left), dict(right)
         if "pip-cache-restore" in str(left.get("uses", "")):
             left["with"] = {k: v for k, v in left["with"].items() if k != "name"}
@@ -326,13 +299,7 @@ def test_both_halves_of_core_share_one_install_preamble() -> None:
 
 
 def test_both_halves_of_core_share_one_environment_and_one_runner() -> None:
-    """`env` and `runs-on` are job-level and cannot be factored into the action.
-
-    `runs-on` is included on purpose. The label is not cosmetic here: measured on this
-    repo, `ubuntu-latest` queues behind the org's backlog for a median 44.9 min while any
-    other Ubuntu label walks past in minutes, so two halves of one gate on two different
-    labels would make the split buy nothing.
-    """
+    """The env and runs-on must match: ubuntu-latest queues far longer than other Ubuntu labels."""
     a, b = (_job(jid) for jid in CORE_JOBS)
     assert a["env"] == b["env"], (
         f"the two Core jobs no longer share a job-level env:\n  only in consolidated: "

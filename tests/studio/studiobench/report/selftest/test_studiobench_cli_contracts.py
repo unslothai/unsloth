@@ -1,22 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The CLI decisions that decide what a run MEANS, taken out of the driver so they can be asserted.
-
-Each of these was a one-line condition whose failure was silent:
-
-  a null control that read as an ordinary A/B, because the two identical builds it had just
-  installed were on different ports;
-
-  two A/B sides installing into one home, so the treatment overwrote the base while the base was
-  running and both arms measured the same binaries;
-
-  a doctor that reported PASS with no browser engine downloaded, which is what `pip install
-  playwright` alone leaves behind;
-
-  a report scoring a standard payload against the DEFAULT tier's shorter ladder, so a rung the run
-  promised and never reached was dropped instead of scored INCOMPLETE.
-"""
+"""CLI decisions that decide what a run means, each a one-line condition whose failure was silent."""
 
 from __future__ import annotations
 
@@ -56,9 +41,6 @@ def _side(
     return side
 
 
-# ── the null control ────────────────────────────────────────────────────────────────────────
-
-
 def test_two_self_installed_copies_of_one_ref_are_a_null_control():
     """`--branch main --ab main`: same build, two ports, and it is the calibration run."""
 
@@ -95,17 +77,9 @@ def test_one_attached_studio_driven_twice_is_a_null_control():
     assert is_null_control(sides) is True
 
 
-# The stream-cost injection needs two origins. The injection is a CONTEXT init script gated on
-# `window.location.origin`, and both arms are driven by one browser context and one page, so the
-# origin is the only thing that can tell them apart. Two arms on one origin BOTH burn the injected
-# cost, the difference is zero, and `evaluate_stream_cost_recovery_gate` reports a recovery of
-# nothing and blames the accumulator, so the one flag whose job is to separate 'the change did
-# nothing' from 'the metric is not watching' answers the second when the truth is neither.
-# One attached Unsloth driven twice is not a mistake in general: it is a null control this tool
-# detects on purpose, pinned by the test above. It is only fatal with the injection on.
+# Stream-cost injection is gated on window.location.origin, so the two arms need distinct origins.
 
 
-# ── the stream-cost injection needs two origins ─────────────────────────────────────────────
 def _inject_args(attach, attach_b, *extra):
     return parse_args(["--attach", attach, "--ab", "main", "--attach-b", attach_b, *extra])
 
@@ -138,37 +112,22 @@ def test_a_trailing_slash_does_not_make_one_origin_into_two():
 @pytest.mark.parametrize(
     ("attach", "attach_b"),
     [
-        # The port a scheme does not spell out. Chromium reports `http://studio` for both.
         ("http://studio", "http://studio:80"),
         ("http://studio:80", "http://studio"),
         ("https://studio.example.com", "https://studio.example.com:443"),
-        # Case. The URL standard lower-cases the scheme and the host; a string compare does not.
         ("http://studio", "http://STUDIO"),
         ("http://studio", "HTTP://studio"),
-        # A path is not part of an origin.
         ("http://studio", "http://studio/app"),
     ],
 )
 def test_one_origin_spelled_two_ways_is_still_one_origin(attach, attach_b):
-    """REGRESSION. `origin_scoped` compares against `window.location.origin`, which is the URL
-    standard's canonical origin and not the URL as typed, so the refusal has to compare the same
-    thing or it refuses a different question from the one that matters.
-
-    Measured in chromium against real documents: `http://studio:80`, `http://STUDIO`,
-    `HTTP://studio` and `http://studio/app` all report an origin of `http://studio`, and the
-    shipped `origin_scoped` predicate built from any of those four ran on NONE of them. So the pair
-    below is one server under two names and the run goes wrong whichever way round it is spelled --
-    the treatment's injection gated on the dead spelling burns on neither arm, or the base's is the
-    dead one and the treatment's matches every document and both arms burn. Either way the
-    difference between the arms is zero and `evaluate_stream_cost_recovery_gate` reports a working
-    metric as under-attributing, which is the exact verdict this refusal exists to prevent."""
+    """One origin under many spellings: http://studio:80 and HTTP://STUDIO must both match http://studio."""
 
     args = _inject_args(attach, attach_b, "--inject-stream-cost-ms", "3")
     problem = stream_cost_injection_problem(side_specs(args, "main"), args.inject_stream_cost_ms)
 
     assert problem is not None, f"{attach} and {attach_b} are one origin"
     assert "origin" in problem
-    # And it says so in terms the caller can act on, because the two URLs they typed do differ.
     assert attach in problem and attach_b in problem
 
 
@@ -186,11 +145,7 @@ def test_the_predicate_and_the_refusal_read_the_same_origin():
 
 
 def test_localhost_and_the_loopback_address_are_two_origins():
-    """THE CONTROL THAT THE CANONICALISATION MUST NOT SWALLOW. `http://localhost:8000` and
-    `http://127.0.0.1:8000` reach the same server and are two ORIGINS to a browser -- chromium
-    reports each as itself -- so localStorage, the seed and the injection are all separate between
-    them. Folding them together would refuse a pair of arms the injection works perfectly well
-    against."""
+    """localhost and 127.0.0.1 are two browser origins, so canonicalisation must not fold them together."""
 
     args = _inject_args(
         "http://localhost:8000", "http://127.0.0.1:8000", "--inject-stream-cost-ms", "3"
@@ -220,9 +175,6 @@ def test_an_attached_side_and_a_self_installed_one_on_the_same_port_are_refused(
         ]
     )
     assert stream_cost_injection_problem(side_specs(args, "main"), args.inject_stream_cost_ms)
-
-
-# ── the controls: the refusal may not swallow a run that is fine ────────────────────────────
 
 
 def test_two_origins_may_inject():
@@ -259,14 +211,7 @@ def test_a_single_side_is_never_refused():
 
 
 def test_one_attached_studio_driven_twice_under_two_labels_is_still_a_null_control():
-    """`--attach U --attach-b U --branch main --ab fix`: one server, two names it cannot check.
-
-    The URL rule was stated and then not applied -- the ref comparison ran first, so the unequal
-    labels returned False before the equal URL was reached. One Unsloth measured against itself was
-    rendered as an ordinary A/B, free to publish temporal noise as an improvement, with
-    `noise_floor_from_null_control` skipped so nothing downstream had a floor to refuse it with.
-    With `--attach` the refs are free-form strings; only the URL names the deployed build.
-    """
+    """One attached server under two labels is a null control: the URL, not the ref, names the build."""
 
     sides = [
         _side("base", "main", "http://127.0.0.1:5401", False),
@@ -297,15 +242,7 @@ def test_two_owned_installs_of_different_refs_are_still_an_ordinary_ab():
 
 
 def test_a_ref_that_moved_between_the_two_installs_is_not_a_null_control():
-    """`--branch main --ab main` where `main` advanced during the base's install.
-
-    The two sides are cloned into separate repos and fetched one after the other, with a whole
-    clone, build and launch between them. The refs still match; the builds do not. Classified as a
-    null control, `compare` voids the run and empties `regressions`, and
-    `noise_floor_from_null_control` republishes the real delta as this machine's noise floor -- so
-    a 12% regression is erased AND becomes the floor every later A/B on that machine is judged
-    against.
-    """
+    """A ref that advanced between the two installs is not a null control: same ref, different builds."""
 
     sides = [
         _side("base", "main", "http://127.0.0.1:5399", True, commit = "a" * 40),
@@ -355,9 +292,6 @@ def test_a_null_control_states_the_commit_it_compared_with_itself():
     assert _ab_label(sides, True) == "null control: main @ aaaaaaaaaaaa vs itself"
 
 
-# ── one password per side ───────────────────────────────────────────────────────────────────
-
-
 def test_each_attached_side_authenticates_with_its_own_password():
     args = parse_args(
         [
@@ -391,9 +325,6 @@ def test_without_ab_there_is_one_side():
     assert len(side_specs(args, None)) == 1
 
 
-# ── one home per side ───────────────────────────────────────────────────────────────────────
-
-
 def test_ab_sides_never_share_an_explicit_home():
     base = side_home("/tmp/home", "/out", "base", ab = True)
     treatment = side_home("/tmp/home", "/out", "treatment", ab = True)
@@ -409,9 +340,6 @@ def test_without_home_each_side_lands_under_the_output_directory():
     assert side_home(None, "/out", "treatment", ab = True) == Path("/out/studio_home_treatment")
 
 
-# ── the doctor ──────────────────────────────────────────────────────────────────────────────
-
-
 def test_an_engine_with_a_note_is_not_installed():
     assert engines_installed("chromium, webkit (not installed), firefox (unavailable)") == [
         "chromium"
@@ -423,9 +351,6 @@ def test_an_engine_with_a_note_is_not_installed():
         == []
     )
     assert engines_installed("chromium, webkit, firefox") == ["chromium", "webkit", "firefox"]
-
-
-# ── the exit status ─────────────────────────────────────────────────────────────────────────
 
 
 def test_a_fully_resumed_run_is_a_success():
@@ -441,9 +366,6 @@ def test_a_run_that_did_nothing_at_all_is_still_a_failure():
 def test_one_failed_cell_fails_the_run():
     assert completion_exit_code([{"completed": True}, {"completed": False}], resumed = 2) == 1
     assert completion_exit_code([{"completed": True}], resumed = 0) == 0
-
-
-# ── the report ladder ───────────────────────────────────────────────────────────────────────
 
 
 def _rows(
@@ -523,12 +445,7 @@ def test_report_scores_the_rung_the_run_promised_and_never_reached(tmp_path, cap
 
 
 def test_a_rung_a_resume_added_is_still_owed_by_the_payload(tmp_path):
-    """1K completed, resumed with `--rungs 1K,10K`, killed after the new header and before the cell.
-
-    The ladder a payload owes is every rung any of its sessions promised. Reading the FIRST
-    `run_meta` alone declared only 1K, and a continuation that never reached its new top rung
-    scored COMPLETE -- the crash-beats-limp failure, arriving through the resume.
-    """
+    """The ladder is every rung any session promised, so a resume's added rung is still owed."""
 
     path = _resumed_payload(tmp_path, ["1K"], ["1K", "10K"], [1_000])
     assert recorded_ladder(path) == ["1K", "10K"]
@@ -558,20 +475,12 @@ def test_an_explicit_tier_still_wins(tmp_path):
     assert "100,000" not in summary and "100K" not in summary
 
 
-# ── --rungs is normalised and checked before anything is acquired ────────────────────────────
-
-
 def _rungs(value):
     return planned_rungs(parse_args(["--tier", "standard", "--rungs", value]))
 
 
 def test_a_space_after_the_comma_is_the_same_ladder():
-    """`--rungs "1K, 10K"` used to split to `[\"1K\", \" 10K\"]`.
-
-    Not a late crash only: `run_meta` records the rungs the run PROMISED before `build_cells`
-    reaches `RUNGS[rung]`, and `recorded_ladder` folds every header, so a resume mistyped this way
-    left a rung nothing can satisfy in a payload that was complete.
-    """
+    """Spaces around the commas in --rungs must not leave a rung name with a leading space."""
 
     assert _rungs("1K, 10K") == ["1K", "10K"]
     assert _rungs(" 1K , 10K ") == ["1K", "10K"]

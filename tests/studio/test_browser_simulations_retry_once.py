@@ -1,19 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The browser matrix retries a driver once, and exactly once.
-
-`Browser simulations` runs three Playwright drivers against five engines on three
-operating systems. That is enough surface that a hosted runner loses one of them for
-reasons that have nothing to do with the change under test: a dynamically imported
-module that fails to load on firefox, a webkit target that closes itself, in both cases
-after every assertion in the driver has already reported PASS. Each of those failed an
-unrelated pull request.
-
-One retry absorbs that. Two things have to stay true for it to be a gate rather than a
-mask: a driver that fails twice still fails the leg, and the retry stays at one. Neither
-is visible from a green run, so they are pinned here.
-"""
+"""Retries a flaky browser driver once; a driver that fails twice must still fail the leg."""
 
 from __future__ import annotations
 

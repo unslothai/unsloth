@@ -64,6 +64,7 @@ from loggers.media_progress import (
     reset_media_load_progress,
 )
 import asyncio
+import collections
 import contextvars
 import threading
 import weakref
@@ -74,13 +75,18 @@ from dataclasses import dataclass, fields as dataclass_fields, replace
 
 import re as _re
 from pydantic import BaseModel
-from urllib.parse import quote as _urlquote
+from urllib.parse import quote as _urlquote, unquote as _urlunquote
 
 # Model size extraction (shared with core/inference/llama_cpp.py)
 from utils.models import extract_model_size_b as _extract_model_size_b
 from utils.models.checkpoints import is_full_finetune_output
 
-from utils.api_errors import openai_error_body, anthropic_error_body, error_body_for_path
+from utils.api_errors import (
+    ANTHROPIC_TYPE_BY_STATUS,
+    anthropic_error_body,
+    error_body_for_path,
+    openai_error_body,
+)
 from utils.audio_tokens import GGUF_TTS_AUDIO_TYPES as _GGUF_TTS_AUDIO_TYPES
 from utils.first_token_timeout import (
     finish_first_token_wait,
@@ -3973,6 +3979,26 @@ def _request_is_saved_credential_workflow(request: Any) -> bool:
         logger.debug("external_provider.workflow_key_name_probe_failed", exc_info = True)
         return False
     return name == auth_storage.DEEP_RESEARCH_WORKFLOW_KEY_NAME
+
+
+# A UI session, the Deep Research key, or the key `unsloth start` minted for the owner's coding
+# agents. Every other API key, keyless caller and data-recipe key still gets nothing.
+def _request_may_use_saved_provider_key(request: Any) -> bool:
+    if not _request_has_api_key(request) or _request_is_saved_credential_workflow(request):
+        return True
+    token = _request_api_key_token(request)
+    if token is None:
+        return False
+    try:
+        verified = auth_storage.validate_api_key_account(token, touch = False)
+        if verified is None or verified[0].get("role") not in (None, "owner"):
+            return False
+        if verified[0].get("key_name") != auth_storage.UNSLOTH_START_API_KEY_NAME:
+            return False
+        return not auth_storage.is_internal_api_key(token)
+    except Exception:
+        logger.debug("external_provider.start_key_probe_failed", exc_info = True)
+        return False
 
 
 def _request_used_api_key(request: Any) -> bool:
@@ -8600,6 +8626,8 @@ def _unsloth_serving_fields(model_info: dict) -> dict:
 
 def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
     """Runtime state shared by load, dedupe, and status; duplicates echo active settings."""
+    from core.inference.chat_template_helpers import tts_voice_options
+
     fields = {
         name: getattr(llama_backend, name, getattr(llama_backend, f"_{name}", None))
         for name in _InferenceRuntimeFields.model_fields
@@ -8629,9 +8657,13 @@ def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
         context_length_enforced = True,
         context_length_fitted = None,
         context_unbounded_when_batched = False,
-        # llama-server never serves an audio GGUF; those load through the audio worker.
+        # audio.cpp GGUFs load through the audio worker; llama-server serves only codec TTS.
         audio_family = None,
-        audio_options = None,
+        audio_options = (
+            tts_voice_options(getattr(llama_backend, "_audio_type", None))
+            if getattr(llama_backend, "_is_audio", False)
+            else None
+        ),
         audio_workflows = None,
         audio_reference_text = None,
         audio_required_inputs = None,
@@ -17461,6 +17493,47 @@ def _ollama_ref_for_link(model_path: str) -> Optional[str]:
         return None
 
 
+def _names_the_resident_gguf(llama_backend, model_path: str) -> bool:
+    """Whether a client's ``model_path`` names the GGUF ``llama_backend`` runs.
+
+    A scan-folder load runs as its directory while /v1/models, status and the monitor publish its
+    repo id (the monitor as ``repo:QUANT``), and chat is served under that id, so /unload must
+    accept it too or it answers success and leaves the model loaded (#13766).
+    """
+    identifier = llama_backend.model_identifier
+    if (
+        identifier == model_path
+        or is_registered_native_path_label(identifier, model_path)
+        or _names_the_resident_model(identifier, model_path)
+    ):
+        return True
+    # A load in flight can still carry the previous model's advertised id.
+    if not getattr(llama_backend, "is_loaded", False):
+        return False
+    from core.inference.openai_auto_download import split_model_ref
+
+    published = [
+        getattr(llama_backend, "_openai_advertised_id", None),
+        _llama_public_model_id(llama_backend),
+    ]
+    if _matches_any(model_path, published):
+        return True
+    base, variant = split_model_ref(model_path)
+    resident_variant = getattr(llama_backend, "hf_variant", None) or ""
+    return (
+        bool(variant)
+        and variant.lower() == resident_variant.lower()
+        and _matches_any(base, published)
+    )
+
+
+def _names_the_resident_standard_model(backend, active: str, model_path: str) -> bool:
+    """``_names_the_resident_model`` plus the repo id auto-switch advertises for ``active``."""
+    return _names_the_resident_model(active, model_path) or _matches_any(
+        model_path, [getattr(backend, "_openai_advertised_id", None)]
+    )
+
+
 def _names_the_loading_model(loading: str, model_path: str) -> bool:
     """Whether a client's ``model_path`` names the load already in flight.
 
@@ -17481,7 +17554,7 @@ def _resident_standard_model_name(backend, model_path: str) -> str:
     name it was registered with rather than the id the client shows.
     """
     active = getattr(backend, "active_model_name", None)
-    if isinstance(active, str) and _names_the_resident_model(active, model_path):
+    if isinstance(active, str) and _names_the_resident_standard_model(backend, active, model_path):
         return active
     loaded = getattr(backend, "models", None)
     if isinstance(loaded, dict):
@@ -17509,7 +17582,11 @@ def _unload_evicts_standard_backend(backend, model_path: str) -> bool:
         return True
     if isinstance(active, str) and active and active.lower() == (model_path or "").lower():
         return True
-    if isinstance(active, str) and _names_the_resident_model(active, model_path):
+    if (
+        isinstance(active, str)
+        and active
+        and _names_the_resident_standard_model(backend, active, model_path)
+    ):
         return True
     if not isinstance(loaded, dict):
         return False
@@ -17544,9 +17621,7 @@ def _unload_may_evict(model_path: str) -> bool:
         return True
     llama_backend = get_llama_cpp_backend()
     if llama_backend.is_active and (
-        llama_backend.model_identifier == model_path
-        or is_registered_native_path_label(llama_backend.model_identifier, model_path)
-        or _names_the_resident_model(llama_backend.model_identifier, model_path)
+        _names_the_resident_gguf(llama_backend, model_path)
         # Up but not serving is mid-load, evicted whatever model was named.
         or not llama_backend.is_loaded
     ):
@@ -21792,11 +21867,7 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
             # Check if the GGUF backend has this model loaded or is loading it.
             llama_backend = get_llama_cpp_backend()
             if llama_backend.is_active and (
-                llama_backend.model_identifier == request.model_path
-                or is_registered_native_path_label(
-                    llama_backend.model_identifier, request.model_path
-                )
-                or _names_the_resident_model(llama_backend.model_identifier, request.model_path)
+                _names_the_resident_gguf(llama_backend, request.model_path)
                 or not llama_backend.is_loaded
             ):
                 # Read the identity before teardown clears it, so the row reads repo:QUANT.
@@ -21833,7 +21904,8 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
             # a slow SSE stream paused between tokens still holds, so a sync call would block
             # the loop that drives the stream's next token and the lock release.
             backend = await asyncio.to_thread(get_inference_backend)
-            if _unload_evicts_standard_backend(backend, request.model_path):
+            evicts = _unload_evicts_standard_backend(backend, request.model_path)
+            if evicts:
                 # Point of no return for the standard path, same rule as above.
                 _raise_or_cancel_active_generations(
                     force = request.force_cancel_active, action = "Unloading the model"
@@ -21851,12 +21923,14 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
             note_model_unloaded()
             account_access.clear_resident("chat")
             await asyncio.to_thread(release_chat_gpu_claim)
-            api_monitor.record_lifecycle(
-                event = "unload",
-                model = _lifecycle_model_label(request.model_path),
-                reason = "manual",
-            )
-            logger.info(f"Unloaded model: {request.model_path}")
+            # The no-op stays a 200 for stale tabs, but logging it read as an unload of whatever is resident.
+            if evicts:
+                api_monitor.record_lifecycle(
+                    event = "unload",
+                    model = _lifecycle_model_label(request.model_path),
+                    reason = "manual",
+                )
+                logger.info(f"Unloaded model: {request.model_path}")
             return UnloadResponse(status = "unloaded", model = request.model_path)
 
     except HTTPException:
@@ -22957,6 +23031,14 @@ def _audio_convert_problem(model_info: dict, label: str, run_inputs: dict) -> Op
     return None
 
 
+def _apply_builtin_voice(payload, voice: Optional[str], options) -> None:
+    """Send a requested built-in speaker as the ``voice`` option when the loaded model lists it
+    and the request set none."""
+    speakers = next((o.get("values") for o in options or () if o.get("name") == "voice"), None)
+    if voice in (speakers or ()) and "voice" not in (payload.audio_options or {}):
+        payload.audio_options = {**(payload.audio_options or {}), "voice": voice}
+
+
 async def _generate_tts_wav(
     text: str,
     payload: ChatCompletionRequest,
@@ -23023,6 +23105,9 @@ async def _generate_tts_wav(
         audio_type = getattr(llama_backend, "_audio_type", None)
         supported_audio_types = _GGUF_TTS_AUDIO_TYPES
         _audio_model_id = getattr(llama_backend, "model_identifier", None) or model_name
+        from core.inference.chat_template_helpers import tts_voice_options
+
+        _apply_builtin_voice(payload, voice, tts_voice_options(audio_type))
         gen = lambda: llama_backend.generate_audio_response(
             text = text,
             audio_type = llama_backend._audio_type,
@@ -23039,6 +23124,7 @@ async def _generate_tts_wav(
             repetition_penalty = payload.repetition_penalty,
             cancel_event = _audio_cancel,
             stats_holder = stats_holder,
+            audio_options = payload.audio_options,
         )
     else:
         backend = await asyncio.to_thread(get_inference_backend)
@@ -23051,16 +23137,7 @@ async def _generate_tts_wav(
         audio_type = model_info.get("audio_type")
         audio_family = model_info.get("audio_family")
         supported_audio_types = _TRANSFORMERS_TTS_AUDIO_TYPES
-        speakers = next(
-            (
-                o.get("values")
-                for o in model_info.get("audio_options") or ()
-                if o.get("name") == "voice"
-            ),
-            None,
-        )
-        if voice in (speakers or ()) and "voice" not in (payload.audio_options or {}):
-            payload.audio_options = {**(payload.audio_options or {}), "voice": voice}
+        _apply_builtin_voice(payload, voice, model_info.get("audio_options"))
         _audio_model_id = getattr(backend, "active_model_name", None) or model_name
         gen = lambda: backend.generate_audio_response(
             text = text,
@@ -28132,6 +28209,9 @@ def _build_external_messages(
         provider_type == "llama_cpp"
         or (provider_type == "vllm" and preserve_thinking is True)
         or _is_kimi_k3(provider_type, model)
+        # Thinking mode with tools answers 400 without it, and ignores it elsewhere
+        # (api-docs.deepseek.com/guides/thinking_mode).
+        or provider_type == "deepseek"
     )
     result = []
     for msg in messages:
@@ -28151,6 +28231,17 @@ def _build_external_messages(
                 and native["content"]
             ):
                 replay["extra_content"] = {"anthropic": {"content": native["content"]}}
+        if (
+            provider_type == "openai"
+            and not emit_message_extra_content
+            and msg.role == "assistant"
+            and isinstance(msg.extra_content, dict)
+            and msg.extra_content.get("openai_responses_reasoning")
+        ):
+            # OpenAI wants a tool call's reasoning items back with its outputs; only that key.
+            replay["extra_content"] = {
+                "openai_responses_reasoning": msg.extra_content["openai_responses_reasoning"]
+            }
         # Drop role=tool messages whose matching server-builtin tool_call was
         # filtered above. An orphan tool_result with no matching tool_call is
         # rejected by OpenAI Responses and Anthropic.
@@ -28195,6 +28286,7 @@ def _build_external_messages(
                     out["name"] = msg.name
             if emit_message_extra_content and msg.role == "assistant" and msg.extra_content:
                 out["extra_content"] = msg.extra_content
+
             result.append(out)
             continue
         # Assistant messages with content=None but populated tool_calls are
@@ -29276,10 +29368,7 @@ async def _proxy_to_external_provider(
                 resolve_provider_api_key_or_400,
                 payload.provider_id,
                 payload.encrypted_api_key,
-                allow_saved_key = (
-                    not _request_has_api_key(request)
-                    or _request_is_saved_credential_workflow(request)
-                ),
+                allow_saved_key = _request_may_use_saved_provider_key(request),
             )
     else:
         api_key = resolve_provider_api_key_or_400(
@@ -30656,6 +30745,253 @@ def _chat_image_preflight(payload: ChatCompletionRequest, parsed_image_b64) -> d
     }
 
 
+_CONNECTION_MODEL_PREFIX = "external::"
+
+
+# The id the chat picker gives a Connection model: external::<connection id>::<url-encoded model>.
+def _connection_model_ref(model: Any) -> Optional[tuple[str, str]]:
+    if not isinstance(model, str) or not model.startswith(_CONNECTION_MODEL_PREFIX):
+        return None
+    provider_id, _, encoded = model[len(_CONNECTION_MODEL_PREFIX) :].partition("::")
+    if not provider_id or not encoded:
+        return None
+    return provider_id, _urlunquote(encoded)
+
+
+# Provider replay metadata agent clients drop: Gemini 3 answers 400 to a functionCall without its
+# thoughtSignature (tool call extra_content), and Anthropic to a tool continuation without its signed
+# thinking (message extra_content). Keep both by the tool ids the client echoes back.
+_CONNECTION_TOOL_EXTRAS: collections.OrderedDict = collections.OrderedDict()
+_CONNECTION_TOOL_EXTRAS_MAX = 4096
+_CONNECTION_TOOL_EXTRAS_LOCK = threading.Lock()
+
+
+def _remember_connection_extra(subject: Optional[str], kind: str, tool_id: Any, extra: Any) -> None:
+    if not isinstance(tool_id, str) or not tool_id or not isinstance(extra, dict) or not extra:
+        return
+    key = (subject or "", kind, tool_id)
+    with _CONNECTION_TOOL_EXTRAS_LOCK:
+        _CONNECTION_TOOL_EXTRAS[key] = extra
+        _CONNECTION_TOOL_EXTRAS.move_to_end(key)
+        while len(_CONNECTION_TOOL_EXTRAS) > _CONNECTION_TOOL_EXTRAS_MAX:
+            _CONNECTION_TOOL_EXTRAS.popitem(last = False)
+
+
+def _connection_extra(subject: Optional[str], kind: str, tool_id: Any) -> Optional[dict]:
+    with _CONNECTION_TOOL_EXTRAS_LOCK:
+        return _CONNECTION_TOOL_EXTRAS.get((subject or "", kind, tool_id))
+
+
+class _ConnectionExtrasRecorder:
+    """One reply's tool ids (as the client sees them) and its message-level extra_content."""
+
+    def __init__(self, subject: Optional[str]) -> None:
+        self.subject = subject
+        self.tool_ids: list[str] = []
+        self.message_extra: Optional[dict] = None
+
+    def call(self, tool_id: Any, extra: Any) -> None:
+        if isinstance(tool_id, str) and tool_id:
+            self.tool_ids.append(tool_id)
+            _remember_connection_extra(self.subject, "call", tool_id, extra)
+            self._file_message_extra()
+
+    def message(self, extra: Any) -> None:
+        if isinstance(extra, dict) and extra:
+            self.message_extra = extra
+            self._file_message_extra()
+
+    def chunk(
+        self,
+        chunk: Any,
+        *,
+        calls: bool = True,
+    ) -> None:
+        for choice in (chunk.get("choices") if isinstance(chunk, dict) else None) or []:
+            delta = choice.get("delta") if isinstance(choice, dict) else None
+            if not isinstance(delta, dict):
+                continue
+            self.message(delta.get("extra_content"))
+            for call in (delta.get("tool_calls") if calls else None) or []:
+                if isinstance(call, dict):
+                    self.call(call.get("id"), call.get("extra_content"))
+
+    def _file_message_extra(self) -> None:
+        if self.message_extra:
+            for tool_id in self.tool_ids:
+                _remember_connection_extra(self.subject, "message", tool_id, self.message_extra)
+
+
+def _restore_connection_tool_extras(subject: Optional[str], messages: Any) -> None:
+    for message in messages or []:
+        is_dict = isinstance(message, dict)
+        tool_calls = message.get("tool_calls") if is_dict else getattr(message, "tool_calls", None)
+        message_extra = None
+        for call in tool_calls or []:
+            if not isinstance(call, dict):
+                continue
+            message_extra = message_extra or _connection_extra(subject, "message", call.get("id"))
+            if not call.get("extra_content"):
+                extra = _connection_extra(subject, "call", call.get("id"))
+                if extra:
+                    call["extra_content"] = extra
+        has_extra = (
+            message.get("extra_content") if is_dict else getattr(message, "extra_content", None)
+        )
+        if message_extra and not has_extra:
+            if is_dict:
+                message["extra_content"] = message_extra
+            else:
+                message.extra_content = message_extra
+
+
+async def _relay_recording_tool_extras(chunks, subject: Optional[str]):
+    recorder = _ConnectionExtrasRecorder(subject)
+    pending = ""
+    try:
+        async for chunk in chunks:
+            yield chunk
+            pending += chunk.decode("utf-8", "replace") if isinstance(chunk, bytes) else chunk
+            *complete, pending = pending.split("\n")
+            for line in complete:
+                if line.startswith("data:") and (
+                    '"tool_calls"' in line or '"extra_content"' in line
+                ):
+                    try:
+                        recorder.chunk(json.loads(line[5:]))
+                    except ValueError:
+                        pass
+    finally:
+        await chunks.aclose()
+
+
+async def _relay_split_thinking(
+    chunks,
+    stops: Any = None,
+    parse_thinking: bool = True,
+):
+    """Native thinking arrives as a leading <think> block in content (the Studio chat's form); OpenAI
+    clients read it from reasoning_content. The proxy forwards no stop sequences, so cut here."""
+    think = _ResponsesReasoningExtractor(parse_think_markers = parse_thinking, single_block = True)
+    stop = _StopSequenceFilter([stops] if isinstance(stops, str) else stops)
+    lines = _sse_data_lines(chunks)
+    try:
+        async for line in lines:
+            data = line[len("data:") :].strip() if line.startswith("data:") else ""
+            if data == "[DONE]":
+                reasoning, text = think.finish()
+                text = stop.feed(text) + stop.flush()
+                if reasoning or text:
+                    delta = {
+                        k: v for k, v in (("reasoning_content", reasoning), ("content", text)) if v
+                    }
+                    yield (
+                        "data: " + json.dumps({"choices": [{"index": 0, "delta": delta}]}) + "\n\n"
+                    )
+            elif data and '"choices"' in data:
+                try:
+                    chunk = json.loads(data)
+                except ValueError:
+                    chunk = None
+                if isinstance(chunk, dict):
+                    for choice in chunk.get("choices") or []:
+                        delta = choice.get("delta") if isinstance(choice, dict) else None
+                        if not isinstance(delta, dict):
+                            continue
+                        reasoning, text = think.feed(
+                            delta.get("content") if isinstance(delta.get("content"), str) else "",
+                            delta.get("reasoning_content"),
+                        )
+                        if choice.get("finish_reason"):
+                            tail_reasoning, tail_text = think.finish()
+                            reasoning, text = reasoning + tail_reasoning, text + tail_text
+                        text = stop.feed(text)
+                        if choice.get("finish_reason") and stop.hit is None:
+                            text += stop.flush()
+                        if stop.hit is not None:
+                            choice["finish_reason"] = "stop"
+                        delta.pop("reasoning_content", None)
+                        delta.pop("content", None)
+                        if text:
+                            delta["content"] = text
+                        if reasoning:
+                            delta["reasoning_content"] = reasoning
+                    line = "data: " + json.dumps(chunk)
+            yield line + "\n"
+            if stop.hit is not None:
+                yield "\ndata: [DONE]\n\n"
+                return
+    finally:
+        await lines.aclose()
+
+
+async def _chat_completion_from_connection_stream(response: StreamingResponse, model: str):
+    lines = _sse_data_lines(response.body_iterator)
+    try:
+        return await _collect_chat_completion(lines, model)
+    finally:
+        await lines.aclose()
+
+
+async def _collect_chat_completion(lines, model: str):
+    completion_id, created, finish, usage = None, int(time.time()), None, None
+    content, reasoning = "", ""
+    calls: dict[int, dict] = {}
+    async for line in lines:
+        data = line[len("data:") :].strip() if line.startswith("data:") else ""
+        if data == "[DONE]":
+            break
+        if not data:
+            continue
+        chunk = json.loads(data)
+        error = chunk.get("error")
+        if error:
+            message = error.get("message") if isinstance(error, dict) else str(error)
+            try:
+                status_code = int(error.get("code"))
+            except (AttributeError, TypeError, ValueError):
+                status_code = 502
+            if not 400 <= status_code <= 599:
+                status_code = 502
+            return JSONResponse(
+                status_code = status_code,
+                content = openai_error_body(message or "The connection failed.", status = status_code),
+            )
+        completion_id = completion_id or chunk.get("id")
+        usage = chunk.get("usage") or usage
+        for choice in chunk.get("choices") or []:
+            delta = choice.get("delta") or {}
+            content += delta.get("content") or ""
+            reasoning += delta.get("reasoning_content") or ""
+            for part in delta.get("tool_calls") or []:
+                call = calls.setdefault(
+                    part.get("index", len(calls)),
+                    {"id": None, "type": "function", "function": {"name": "", "arguments": ""}},
+                )
+                call["id"] = call["id"] or part.get("id")
+                function = part.get("function") or {}
+                call["function"]["name"] += function.get("name") or ""
+                call["function"]["arguments"] += function.get("arguments") or ""
+                if part.get("extra_content"):
+                    call["extra_content"] = part["extra_content"]
+            finish = choice.get("finish_reason") or finish
+    message: dict = {"role": "assistant", "content": content or None}
+    if reasoning:
+        message["reasoning_content"] = reasoning
+    if calls:
+        message["tool_calls"] = [calls[index] for index in sorted(calls)]
+    body = {
+        "id": completion_id or f"chatcmpl-{uuid.uuid4().hex}",
+        "object": "chat.completion",
+        "created": created,
+        "model": model,
+        "choices": [{"index": 0, "message": message, "finish_reason": finish or "stop"}],
+    }
+    if usage:
+        body["usage"] = usage
+    return JSONResponse(body)
+
+
 @router.post("/chat/completions")
 @account_access.gpu_busy_route
 async def openai_chat_completions(
@@ -30664,6 +31000,18 @@ async def openai_chat_completions(
     current_subject: str = Depends(get_current_subject),
 ):
     _admit_tool_access(payload)
+    connection = _connection_model_ref(payload.model)
+    if connection is not None and (payload.provider_id or payload.provider_type):
+        connection = None
+    collect = False
+    if connection is not None:
+        payload.provider_id, payload.external_model = connection
+        _restore_connection_tool_extras(current_subject, payload.messages)
+        # The proxy relays a stream:false provider body as is, so stream and answer from the chunks.
+        collect = payload.stream is not True
+        if collect:
+            payload.stream = True
+            payload.stream_options = {"include_usage": True}
     from auth.authentication import request_admitted_without_credential
 
     if (payload.provider_id or payload.provider_type) and request_admitted_without_credential(
@@ -30673,12 +31021,23 @@ async def openai_chat_completions(
             status_code = 403,
             detail = "External providers can only be used from the Unsloth UI or with an API key.",
         )
-    return await produce_openai_chat_completions(
+    response = await produce_openai_chat_completions(
         payload,
         request,
         current_subject,
         cancel_on_disconnect = True,
     )
+    if connection is None or not isinstance(response, StreamingResponse):
+        return response
+    response.body_iterator = _relay_split_thinking(
+        _relay_recording_tool_extras(response.body_iterator, current_subject),
+        payload.stop,
+        # Thinking switched off: a leading tag is the answer's own text.
+        parse_thinking = payload.enable_thinking is not False,
+    )
+    if collect:
+        return await _chat_completion_from_connection_stream(response, payload.model)
+    return response
 
 
 async def produce_openai_chat_completions(
@@ -37046,6 +37405,19 @@ async def loaded_inference_models(current_subject: str = Depends(get_current_sub
     return {"object": "list", "data": [{**entry, "loaded": True} for entry in models]}
 
 
+async def _openai_catalog_with_aliases(quant_pins: bool = False) -> list[dict]:
+    from utils.model_aliases import alias_model_objects
+
+    if quant_pins:
+        objects = await _openai_catalog_objects(quant_pins = True)
+    else:
+        objects = await _openai_catalog_objects()
+    aliases = await asyncio.to_thread(alias_model_objects, objects, _pinned_quant_row)
+    # The rewrite gives an alias precedence, so a same-named model row would never be served.
+    shadowed = {row["id"].lower() for row in aliases}
+    return [o for o in objects if str(o.get("id", "")).lower() not in shadowed] + aliases
+
+
 # Some OpenAI-compatible clients (notably DEVONthink) probe ``/v1/models/``
 # literally and do not follow FastAPI's automatic slash redirect. Register the
 # slash form directly so model discovery reaches authentication and returns the
@@ -37065,10 +37437,10 @@ async def openai_list_models(
     """
     wanted = {m.strip() for m in (output_modalities or "").split(",")}
     if not wanted & {"all", "decisions"}:
-        return {"object": "list", "data": await _openai_catalog_objects(quant_pins = True)}
+        return {"object": "list", "data": await _openai_catalog_with_aliases(quant_pins = True)}
     from routes.systemone import decision_model_objects
 
-    data = [] if wanted == {"decisions"} else await _openai_catalog_objects(quant_pins = True)
+    data = [] if wanted == {"decisions"} else await _openai_catalog_with_aliases(quant_pins = True)
     data += await asyncio.to_thread(decision_model_objects)
     return {"object": "list", "data": data}
 
@@ -37109,6 +37481,11 @@ def _pinned_quant_object(model_id: str, objects: list[dict]) -> Optional[dict]:
     return _quant_pin_object(listed, variant, _resident_gguf_quants)
 
 
+def _pinned_quant_row(model_id: str, objects: list[dict]) -> Optional[dict]:
+    pinned = _pinned_quant_object(model_id, objects)
+    return None if pinned is None else _with_openai_residency(pinned)
+
+
 def _quant_pin_object(listed: dict, variant: str, resident_quants) -> dict:
     """*listed* pinned to its on-disk *variant*: the loaded row when that quant is resident."""
     pinned_id = f"{listed['id']}:{variant}"
@@ -37142,13 +37519,17 @@ async def openai_retrieve_model(model_id: str, current_subject: str = Depends(ge
     # the full catalog -- which may hit the filesystem -- for unloaded ids. Match
     # case-insensitively, like the catalog loop below and the resolver's index.
     # Off-loop like the catalog helper, and for the same sync resolver-index work.
+    from utils.model_aliases import resolve_model_alias
+
     _loaded = await asyncio.to_thread(_openai_model_objects)
-    for entry in _loaded:
+    # An alias wins over a same-named loaded model, as the request rewrite does.
+    aliased = await asyncio.to_thread(resolve_model_alias, model_id)
+    for entry in [] if aliased else _loaded:
         eid = entry["id"]
         if isinstance(eid, str) and eid.lower() == model_id.lower():
             return _with_openai_residency({**entry, "loaded": True})
 
-    objects = await _openai_catalog_objects()
+    objects = await _openai_catalog_with_aliases()
     for model in objects:
         # Case-insensitive to match the resolver, which lowercases its index.
         mid = model.get("id")
@@ -39294,6 +39675,7 @@ class _ResponsesStreamTranslator:
         context_length: Optional[int],
         parse_think_markers: bool,
         healer: Optional[StreamToolCallHealer],
+        connection: bool = False,
     ) -> None:
         self.payload = payload
         self.request = request
@@ -39302,6 +39684,8 @@ class _ResponsesStreamTranslator:
         self.created_at = created_at
         self.model = model
         self.context_length = context_length
+        # A Connection relays an external provider's stream, read by its own rules below.
+        self.connection = connection
         self.custom_tool_names = _responses_custom_tool_names(payload.tools)
         self.namespaced_tool_names = _responses_namespaced_tool_names(payload.tools)
         self.full_reasoning = ""
@@ -39312,7 +39696,7 @@ class _ResponsesStreamTranslator:
         self.stream_finish_reason: Optional[str] = None
         self.extractor = _ResponsesReasoningExtractor(
             parse_think_markers = parse_think_markers,
-            single_block = _response_format_constrains_decoding(chat_req),
+            single_block = connection or _response_format_constrains_decoding(chat_req),
         )
         self.reasoning_state: dict[str, Any] = {
             "output_index": None,
@@ -39682,7 +40066,13 @@ class _ResponsesStreamTranslator:
             },
         )
 
-    def failed(self, exc: Exception) -> str:
+    def failed(
+        self,
+        exc: Exception,
+        *,
+        message: Optional[str] = None,
+        code: Optional[str] = None,
+    ) -> str:
         """In-band ``response.failed`` carrying everything streamed so far."""
         from core.inference.llama_keepwarm import mark_response_failed
 
@@ -39706,8 +40096,8 @@ class _ResponsesStreamTranslator:
                         "total_tokens": self.input_tokens + self.output_tokens,
                     },
                     "error": {
-                        "code": _responses_error_code(exc),
-                        "message": _friendly_error(exc),
+                        "code": code or _responses_error_code(exc),
+                        "message": message or _friendly_error(exc),
                     },
                 },
             },
@@ -39720,15 +40110,27 @@ class _ResponsesStreamTranslator:
             _drop_parallel_tool_call_deltas(chunk_data)
 
         choices = chunk_data.get("choices", [])
-        if not choices:
+        # A Connection can report a mid-stream error beside a non-empty choices array
+        # (OpenRouter does), so it is checked before choices there.
+        if not choices or (self.connection and chunk_data.get("error")):
             error_message = _monitor_openai_error_message(chunk_data)
             if error_message:
                 # A 200 SSE error payload is a failed generation: response.failed flags the scope,
                 # so no response.completed follows and no preview-owned slot is claimed.
                 api_monitor.fail(monitor_id, error_message)
                 self.terminated = True
-                yield self.failed(RuntimeError(error_message))
+                error = chunk_data.get("error")
+                yield self.failed(
+                    RuntimeError(error_message),
+                    message = error_message if self.connection else None,
+                    code = "rate_limit_exceeded"
+                    if self.connection
+                    and isinstance(error, dict)
+                    and str(error.get("code")) == "429"
+                    else None,
+                )
                 return
+        if not choices:
             self._apply_usage(chunk_data.get("usage"), chunk_data.get("timings"))
             return
         if choices[0].get("finish_reason"):
@@ -40202,12 +40604,27 @@ async def _responses_in_process_stream(
     )
 
 
+async def _sse_data_lines(chunks):
+    pending = ""
+    try:
+        async for chunk in chunks:
+            pending += chunk.decode("utf-8") if isinstance(chunk, bytes) else chunk
+            *complete, pending = pending.split("\n")
+            for line in complete:
+                yield line
+        if pending:
+            yield pending
+    finally:
+        await chunks.aclose()
+
+
 async def _responses_stream(
     payload: ResponsesRequest,
     messages: list[ChatMessage],
     request: Request,
     monitor_id: Optional[str] = None,
     current_subject: Optional[str] = None,
+    connection: Optional[tuple[str, str]] = None,
 ):
     """Handle a streaming Responses API call, emitting named SSE events.
 
@@ -40234,9 +40651,27 @@ async def _responses_stream(
     entry = (getattr(orchestrator, "models", None) or {}).get(
         getattr(orchestrator, "active_model_name", None)
     )
+    upstream = None
+    if connection is not None:
+        # A Connection model: the chat proxy serves it and the converter below relays its stream.
+        chat_req.provider_id, chat_req.external_model = connection
+        _restore_connection_tool_extras(current_subject, chat_req.messages)
+        chat_req.stream_options = {"include_usage": True}
+        request.state.skip_api_monitor = True
+        upstream = await produce_openai_chat_completions(
+            chat_req, request, current_subject, cancel_on_disconnect = True
+        )
+        if not isinstance(upstream, StreamingResponse):
+            return upstream
+        body = {
+            "tools": chat_req.tools,
+            "tool_choice": chat_req.tool_choice,
+            "response_format": chat_req.response_format,
+        }
+        cancel_event = threading.Event()
     # An NPU model streams through a provider proxy that keeps its own cancel event, and chat
     # answers a TTS model with a finished clip rather than a text stream.
-    if (
+    elif (
         not llama_backend.is_loaded
         and isinstance(entry, dict)
         and not (entry.get("is_audio") and entry.get("audio_type") != "whisper")
@@ -40244,7 +40679,7 @@ async def _responses_stream(
         return await _responses_in_process_stream(
             payload, chat_req, request, monitor_id, current_subject, resp_id, created_at
         )
-    if not llama_backend.is_loaded:
+    elif not llama_backend.is_loaded:
         _status, _detail = await _no_model_loaded_error(
             "Streaming /v1/responses requires a GGUF model loaded via llama-server or an "
             "in-process model. Use non-streaming /v1/responses or /v1/chat/completions.",
@@ -40254,60 +40689,61 @@ async def _responses_stream(
         )
         raise HTTPException(status_code = _status, detail = _detail)
 
-    # Direct pass-through bypasses the openai_chat_completions tool-image note and image gate.
-    if not llama_backend.is_vision:
-        _omit_tool_images(chat_req.messages)
-        if _messages_have_image(chat_req.messages):
-            raise HTTPException(
-                status_code = 400,
-                detail = "Image provided but current GGUF model does not support vision.",
+    if upstream is None:
+        # Direct pass-through bypasses the openai_chat_completions tool-image note and image gate.
+        if not llama_backend.is_vision:
+            _omit_tool_images(chat_req.messages)
+            if _messages_have_image(chat_req.messages):
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "Image provided but current GGUF model does not support vision.",
+                )
+
+        # Same bypass, same reason as the image gate: without this the non-streaming half of this
+        # very route folds a Studio tool thread and answers while the streaming half still ships
+        # role="tool" to a template that cannot render it, so one thread's replies depend on which
+        # half the client called.
+        if _folds_studio_tool_history(chat_req, llama_backend):
+            chat_req.messages = _folded_studio_tool_messages(chat_req.messages)
+
+        # Streaming /v1/responses builds the passthrough body directly (bypassing
+        # openai_chat_completions), so apply recommended sampling here too.
+        _fill_recommended_sampling_openai(
+            chat_req,
+            getattr(llama_backend, "model_identifier", None),
+            thinking = _sampling_thinking_mode(llama_backend, chat_req),
+        )
+        body = await _build_openai_passthrough_body_async(
+            chat_req, backend_ctx = llama_backend.context_length, llama_backend = llama_backend
+        )
+        body["stream_options"] = {"include_usage": True}
+        target_url = f"{llama_backend.base_url}/v1/chat/completions"
+        # The stream's own disconnect event, shared with the cancel/active-generation registries:
+        # this path decodes on llama-server, so a non-forced /unload must see it and refuse instead
+        # of tearing the server down mid-response. Entered inside the body generator below, so a
+        # response whose body never starts leaves nothing behind.
+        cancel_event = threading.Event()
+        _tracker = _TrackedCancel.for_payload(cancel_event, payload, resp_id)
+        try:
+            reservation, admission_config = await _openai_llama_admission_reserve_async(
+                request = request,
+                llama_backend = llama_backend,
+                # chat_req, not payload: a ResponsesRequest carries `input` and
+                # `max_output_tokens`, so the estimator found no `messages` and fell back to
+                # one equal cache share no matter how large the request really was.
+                payload = chat_req,
             )
-
-    # Same bypass, same reason as the image gate: without this the non-streaming half of this
-    # very route folds a Studio tool thread and answers while the streaming half still ships
-    # role="tool" to a template that cannot render it, so one thread's replies depend on which
-    # half the client called.
-    if _folds_studio_tool_history(chat_req, llama_backend):
-        chat_req.messages = _folded_studio_tool_messages(chat_req.messages)
-
-    # Streaming /v1/responses builds the passthrough body directly (bypassing
-    # openai_chat_completions), so apply recommended sampling here too.
-    _fill_recommended_sampling_openai(
-        chat_req,
-        getattr(llama_backend, "model_identifier", None),
-        thinking = _sampling_thinking_mode(llama_backend, chat_req),
-    )
-    body = await _build_openai_passthrough_body_async(
-        chat_req, backend_ctx = llama_backend.context_length, llama_backend = llama_backend
-    )
-    body["stream_options"] = {"include_usage": True}
-    target_url = f"{llama_backend.base_url}/v1/chat/completions"
-    # The stream's own disconnect event, shared with the cancel/active-generation registries:
-    # this path decodes on llama-server, so a non-forced /unload must see it and refuse instead
-    # of tearing the server down mid-response. Entered inside the body generator below, so a
-    # response whose body never starts leaves nothing behind.
-    cancel_event = threading.Event()
-    _tracker = _TrackedCancel.for_payload(cancel_event, payload, resp_id)
-    try:
-        reservation, admission_config = await _openai_llama_admission_reserve_async(
-            request = request,
-            llama_backend = llama_backend,
-            # chat_req, not payload: a ResponsesRequest carries `input` and
-            # `max_output_tokens`, so the estimator found no `messages` and fell back to
-            # one equal cache share no matter how large the request really was.
-            payload = chat_req,
-        )
-    except LlamaAdmissionQueueFull as exc:
-        _llama_admission_log(
-            "queue-full",
-            snapshot = exc.snapshot,
-            request = request,
-            mode = "responses_stream",
-            completion_id = resp_id,
-            level = "warning",
-        )
-        api_monitor.fail(monitor_id, str(exc))
-        raise _openai_admission_http_exception(exc, status_code = 429)
+        except LlamaAdmissionQueueFull as exc:
+            _llama_admission_log(
+                "queue-full",
+                snapshot = exc.snapshot,
+                request = request,
+                mode = "responses_stream",
+                completion_id = resp_id,
+                level = "warning",
+            )
+            api_monitor.fail(monitor_id, str(exc))
+            raise _openai_admission_http_exception(exc, status_code = 429)
 
     def _responses_admission_failed_sse(exc: Exception, *, code: str) -> str:
         # Emitted in-band after the 200 headers, so flag failed: the middleware must not
@@ -40350,7 +40786,9 @@ async def _responses_stream(
         # helper, not the raw identifier: after an auto-switch to a cached HF GGUF
         # the identifier is the snapshot path while the repo id lives in
         # _openai_advertised_id, so the raw form would stream a snapshot basename.
-        _clean_model = _llama_public_model_id(llama_backend, payload.model) or payload.model
+        _clean_model = payload.model
+        if upstream is None:
+            _clean_model = _llama_public_model_id(llama_backend, payload.model) or payload.model
         _allowed_tools = heal_gate(
             getattr(chat_req, "auto_heal_tool_calls", None),
             body.get("tools"),
@@ -40365,8 +40803,14 @@ async def _responses_stream(
             resp_id = resp_id,
             created_at = created_at,
             model = _clean_model,
-            context_length = llama_backend.context_length,
-            parse_think_markers = _responses_should_parse_think_markers(chat_req, llama_backend),
+            context_length = None if upstream is not None else llama_backend.context_length,
+            # A Connection's native thinking arrives as a leading <think> block even when thinking is on
+            # by default; only that block is read, so a literal tag later in the answer stays text.
+            parse_think_markers = (upstream is not None and chat_req.enable_thinking is not False)
+            or (
+                upstream is None and _responses_should_parse_think_markers(chat_req, llama_backend)
+            ),
+            connection = upstream is not None,
             healer = (
                 StreamToolCallHealer(_allowed_tools, body.get("tools")) if _allowed_tools else None
             ),
@@ -40381,11 +40825,7 @@ async def _responses_stream(
         # `async with`, explicit aclose of lines_iter BEFORE resp / client so
         # the innermost httpcore byte stream is finalised in this task (not via
         # the asyncgen GC in a sibling task).
-        client = httpx.AsyncClient(
-            timeout = _llama_streaming_generation_timeout(),
-            trust_env = False,
-            verify = _local_ssl_context(),
-        )
+        client = None
         resp = None
         lines_iter = None
         items_iter = None
@@ -40393,98 +40833,108 @@ async def _responses_stream(
         # Tracked per-run event: a client disconnect and a forced reload both land here.
         disconnect_event = cancel_event
         try:
-            req = client.build_request(
-                "POST",
-                target_url,
-                json = body,
-                headers = _openai_passthrough_upstream_headers(llama_backend = llama_backend),
-            )
-            first_token_deadline = start_first_token_wait(_first_token_timeout_s())
-            try:
-                # Same event the loop below polls: prefill can run for the whole first-token window,
-                # and only the send watcher can end it early.
-                resp = await _send_stream_with_preheader_cancel(
-                    client, req, disconnect_event, request = request
+            if upstream is not None:
+                items_iter = _sse_data_lines(
+                    _relay_recording_tool_extras(upstream.body_iterator, current_subject)
                 )
-                if resp is None:
-                    api_monitor.finish(monitor_id, "cancelled")
-                    return
-            except httpx.RequestError as e:
-                logger.error("responses stream: upstream unreachable: %s", e)
-                api_monitor.fail(monitor_id, _friendly_error(e))
-                # 200 headers already flushed; this is an in-band failure, so the
-                # middleware must not claim a preview-owned model for it.
-                mark_response_failed(getattr(request, "scope", None))
-                yield _sse(
-                    "response.failed",
-                    {
-                        "type": "response.failed",
-                        "response": {
-                            "id": resp_id,
-                            "object": "response",
-                            "created_at": created_at,
-                            "status": "failed",
-                            "model": _clean_model,
-                            "output": [],
-                            "error": {"code": "server_error", "message": _friendly_error(e)},
-                        },
-                    },
+            else:
+                client = httpx.AsyncClient(
+                    timeout = _llama_streaming_generation_timeout(),
+                    trust_env = False,
+                    verify = _local_ssl_context(),
                 )
-                return
-
-            if resp.status_code != 200:
-                err_bytes = await resp.aread()
-                err_text = err_bytes.decode("utf-8", errors = "replace")
-                logger.error(
-                    "responses stream upstream error: status=%s body=%s",
-                    resp.status_code,
-                    err_text[:500],
+                req = client.build_request(
+                    "POST",
+                    target_url,
+                    json = body,
+                    headers = _openai_passthrough_upstream_headers(llama_backend = llama_backend),
                 )
-                api_monitor.fail(monitor_id, err_text[:500])
-                # 200 headers already flushed; an upstream non-200 is an in-band
-                # failure, so the middleware must not claim a preview-owned model.
-                mark_response_failed(getattr(request, "scope", None))
-                yield _sse(
-                    "response.failed",
-                    {
-                        "type": "response.failed",
-                        "response": {
-                            "id": resp_id,
-                            "object": "response",
-                            "created_at": created_at,
-                            "status": "failed",
-                            "model": _clean_model,
-                            "output": [],
-                            "error": {
-                                "code": _responses_error_code(RuntimeError(err_text)),
-                                "message": _friendly_upstream_error(err_text[:500]),
+                first_token_deadline = start_first_token_wait(_first_token_timeout_s())
+                try:
+                    # Same event the loop below polls: prefill can run for the whole first-token window,
+                    # and only the send watcher can end it early.
+                    resp = await _send_stream_with_preheader_cancel(
+                        client, req, disconnect_event, request = request
+                    )
+                    if resp is None:
+                        api_monitor.finish(monitor_id, "cancelled")
+                        return
+                except httpx.RequestError as e:
+                    logger.error("responses stream: upstream unreachable: %s", e)
+                    api_monitor.fail(monitor_id, _friendly_error(e))
+                    # 200 headers already flushed; this is an in-band failure, so the
+                    # middleware must not claim a preview-owned model for it.
+                    mark_response_failed(getattr(request, "scope", None))
+                    yield _sse(
+                        "response.failed",
+                        {
+                            "type": "response.failed",
+                            "response": {
+                                "id": resp_id,
+                                "object": "response",
+                                "created_at": created_at,
+                                "status": "failed",
+                                "model": _clean_model,
+                                "output": [],
+                                "error": {"code": "server_error", "message": _friendly_error(e)},
                             },
                         },
-                    },
-                )
-                return
+                    )
+                    return
 
-            lines_iter = resp.aiter_lines()
-            disconnect_watcher = asyncio.create_task(
-                _await_disconnect_then_close(request, resp, disconnect_event)
-            )
-            items_iter = _aiter_llama_stream_items(
-                lines_iter,
-                cancel_event = disconnect_event,
-                request = request,
-                first_token_deadline = first_token_deadline,
-                response = resp,
-                keepalive_interval_s = _openai_passthrough_stream_keepalive_interval(),
-            )
+                if resp.status_code != 200:
+                    err_bytes = await resp.aread()
+                    err_text = err_bytes.decode("utf-8", errors = "replace")
+                    logger.error(
+                        "responses stream upstream error: status=%s body=%s",
+                        resp.status_code,
+                        err_text[:500],
+                    )
+                    api_monitor.fail(monitor_id, err_text[:500])
+                    # 200 headers already flushed; an upstream non-200 is an in-band
+                    # failure, so the middleware must not claim a preview-owned model.
+                    mark_response_failed(getattr(request, "scope", None))
+                    yield _sse(
+                        "response.failed",
+                        {
+                            "type": "response.failed",
+                            "response": {
+                                "id": resp_id,
+                                "object": "response",
+                                "created_at": created_at,
+                                "status": "failed",
+                                "model": _clean_model,
+                                "output": [],
+                                "error": {
+                                    "code": _responses_error_code(RuntimeError(err_text)),
+                                    "message": _friendly_upstream_error(err_text[:500]),
+                                },
+                            },
+                        },
+                    )
+                    return
+
+                lines_iter = resp.aiter_lines()
+                disconnect_watcher = asyncio.create_task(
+                    _await_disconnect_then_close(request, resp, disconnect_event)
+                )
+                items_iter = _aiter_llama_stream_items(
+                    lines_iter,
+                    cancel_event = disconnect_event,
+                    request = request,
+                    first_token_deadline = first_token_deadline,
+                    response = resp,
+                    keepalive_interval_s = _openai_passthrough_stream_keepalive_interval(),
+                )
             async for raw_line in items_iter:
                 if raw_line is _LLAMA_STREAM_KEEPALIVE:
                     yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
                     continue
                 if not raw_line:
                     continue
-                if not raw_line.startswith("data: "):
+                if not raw_line.startswith("data:"):
                     continue
-                data_str = raw_line[6:]
+                data_str = raw_line[5:]
                 if data_str.strip() == "[DONE]":
                     break
                 try:
@@ -40532,6 +40982,9 @@ async def _responses_stream(
 
         for event in translator.finish():
             yield event
+
+    if upstream is not None:
+        return _sse_streaming_response(event_generator(), monitor_id = monitor_id)
 
     async def admitted_event_generator():
         # Register for the body's whole lifetime, admission wait included: the run holds a decode
@@ -40658,6 +41111,7 @@ async def openai_responses(
     (output array, input_tokens/output_tokens, named SSE events for streaming).
     """
     _admit_tool_access(payload)
+    connection = _connection_model_ref(payload.model)
     for history_param in ("previous_response_id", "conversation"):
         if getattr(payload, history_param, None) is not None:
             raise HTTPException(
@@ -40711,47 +41165,48 @@ async def openai_responses(
                     param = "tool_choice",
                 ),
             )
-    if payload.stream:
+    if payload.stream or connection is not None:
         # streaming preflights here; non-streaming delegates its complete preflight to chat.
-        # Either source may serve the stream, so refuse before loading what chat would refuse.
-        _stream_chat_req = _build_chat_request(payload, messages, stream = True)
-        _stream_parts = _extract_content_parts(_stream_chat_req.messages, keep_tool_images = True)
-        _responses_has_image = _messages_have_image(messages)
-        # A text-only GGUF reads a tool result's image as a note, as in chat.
-        _tool_images_only = _responses_has_image and not _messages_have_image(
-            m for m in messages if m.role != "tool"
-        )
-        from utils.hardware import DeviceType, get_device
+        if connection is None:
+            # Either source may serve the stream, so refuse before loading what chat would refuse.
+            _stream_chat_req = _build_chat_request(payload, messages, stream = True)
+            _stream_parts = _extract_content_parts(_stream_chat_req.messages, keep_tool_images = True)
+            _responses_has_image = _messages_have_image(messages)
+            # A text-only GGUF reads a tool result's image as a note, as in chat.
+            _tool_images_only = _responses_has_image and not _messages_have_image(
+                m for m in messages if m.role != "tool"
+            )
+            from utils.hardware import DeviceType, get_device
 
-        _stream_needs_grammar = (
-            get_device() != DeviceType.MLX
-            and _response_format_constrains_decoding(_stream_chat_req)
-            and (
-                _explicit_studio_tool_loop_requested(_stream_chat_req)
-                or not _tools_outrank_response_format(_stream_chat_req, _stream_chat_req.tools)
+            _stream_needs_grammar = (
+                get_device() != DeviceType.MLX
+                and _response_format_constrains_decoding(_stream_chat_req)
+                and (
+                    _explicit_studio_tool_loop_requested(_stream_chat_req)
+                    or not _tools_outrank_response_format(_stream_chat_req, _stream_chat_req.tools)
+                )
             )
-        )
-        await _maybe_auto_switch_model(
-            _switch_model_for_payload(payload),
-            request,
-            current_subject,
-            require_vision = _responses_has_image,
-            claim_resident = False,
-            image_preflight = (
-                _chat_image_preflight(_stream_chat_req, _stream_parts[2])
-                if _responses_has_image
-                else None
-            ),
-            tool_images_only = _tool_images_only,
-            # Off an MLX host a non-GGUF target is transformers, which has no grammar engine.
-            gguf_only = _stream_needs_grammar,
-            gguf_only_reason = (
-                "response_format needs a grammar engine, and the transformers backend has none; "
-                "load an MLX or GGUF model to use it."
+            await _maybe_auto_switch_model(
+                _switch_model_for_payload(payload),
+                request,
+                current_subject,
+                require_vision = _responses_has_image,
+                claim_resident = False,
+                image_preflight = (
+                    _chat_image_preflight(_stream_chat_req, _stream_parts[2])
+                    if _responses_has_image
+                    else None
+                ),
+                tool_images_only = _tool_images_only,
+                # Off an MLX host a non-GGUF target is transformers, which has no grammar engine.
+                gguf_only = _stream_needs_grammar,
+                gguf_only_reason = (
+                    "response_format needs a grammar engine, and the transformers backend has none; "
+                    "load an MLX or GGUF model to use it."
+                )
+                if _stream_needs_grammar
+                else None,
             )
-            if _stream_needs_grammar
-            else None,
-        )
         monitor_id = None
         if not getattr(request.state, "skip_api_monitor", False):
             monitor_id = api_monitor.start(
@@ -40760,11 +41215,13 @@ async def openai_responses(
                 method = request.method,
                 model = payload.model,
                 prompt = _monitor_prompt_from_messages(messages),
-                context_length = _monitor_context_length(),
+                context_length = None if connection else _monitor_context_length(),
                 subject = current_subject,
             )
         try:
-            return await _responses_stream(payload, messages, request, monitor_id, current_subject)
+            response = await _responses_stream(
+                payload, messages, request, monitor_id, current_subject, connection
+            )
         except asyncio.CancelledError:
             # Before the stream exists, nothing else finishes the entry.
             api_monitor.finish(monitor_id, "cancelled")
@@ -40778,7 +41235,37 @@ async def openai_responses(
         except Exception as exc:
             api_monitor.fail(monitor_id, _friendly_error(exc))
             raise
+        if payload.stream or not isinstance(response, StreamingResponse):
+            return response
+        # A Connection streams whatever the client asked for; answer from the terminal event.
+        return await _responses_from_stream(response, payload)
     return await _responses_non_streaming(payload, messages, request, current_subject)
+
+
+async def _responses_from_stream(response: StreamingResponse, payload: ResponsesRequest):
+    terminal = None
+    async for line in _sse_data_lines(response.body_iterator):
+        if line.startswith("data:"):
+            event = json.loads(line[5:])
+            if event.get("type") in (
+                "response.completed",
+                "response.incomplete",
+                "response.failed",
+            ):
+                terminal = event["response"]
+    if terminal is None or terminal["status"] == "failed":
+        error = (terminal or {}).get("error") or {}
+        raise HTTPException(
+            status_code = 429 if error.get("code") == "rate_limit_exceeded" else 502,
+            detail = error.get("message") or "The connection failed.",
+        )
+    terminal.update(
+        temperature = payload.temperature,
+        top_p = payload.top_p,
+        max_output_tokens = payload.max_output_tokens,
+        instructions = payload.instructions,
+    )
+    return JSONResponse(terminal)
 
 
 # =====================================================================
@@ -42243,6 +42730,367 @@ async def _anthropic_chat_count(fields: dict, request, current_subject) -> int:
     return int(json.loads(counted.body)["input_tokens"])
 
 
+def _anthropic_connection_error_event(error: Any) -> str:
+    message = error.get("message") if isinstance(error, dict) else None
+    try:
+        code = int(error.get("code"))
+    except (AttributeError, TypeError, ValueError):
+        code = 500
+    # Keep the provider's class (an expired saved key is a 401, not a bad request).
+    status = code if code in ANTHROPIC_TYPE_BY_STATUS or 500 <= code < 600 else 400
+    return build_anthropic_sse_event(
+        "error", anthropic_error_body(message or "The connection failed.", status = status)
+    )
+
+
+class _StopSequenceFilter:
+    """Cut visible text at the first stop sequence, holding back a tail that could start one: the
+    provider proxy forwards no stop sequences, so the relay enforces them like llama-server does."""
+
+    def __init__(self, stops: Any) -> None:
+        self.stops = [stop for stop in stops or [] if isinstance(stop, str) and stop]
+        self.held = ""
+        self.hit: Optional[str] = None
+
+    def feed(self, text: str) -> str:
+        if not self.stops or self.hit is not None:
+            return "" if self.hit is not None else text
+        self.held += text
+        found = [(self.held.find(stop), stop) for stop in self.stops if stop in self.held]
+        if found:
+            index, self.hit = min(found)
+            out, self.held = self.held[:index], ""
+            return out
+        keep = max(len(stop) for stop in self.stops) - 1
+        cut = max(len(self.held) - keep, 0)
+        out, self.held = self.held[:cut], self.held[cut:]
+        return out
+
+    def flush(self) -> str:
+        out, self.held = self.held, ""
+        return out
+
+
+def _split_connection_text(chunk: dict, think: Any, stop: _StopSequenceFilter) -> dict:
+    """Native thinking arrives as <think> markup in content (the Studio chat's form): hand it to the
+    emitter as reasoning_content, and apply the stop sequences to what remains visible."""
+    choices = chunk.get("choices") or []
+    if not any(
+        isinstance(choice.get("delta"), dict)
+        and (choice["delta"].get("content") or choice["delta"].get("reasoning_content"))
+        for choice in choices
+    ):
+        return chunk
+    chunk = {**chunk, "choices": []}
+    for choice in choices:
+        delta = dict(choice.get("delta") or {})
+        text = delta.get("content") if isinstance(delta.get("content"), str) else ""
+        if think is not None:
+            reasoning, text = think.feed(text, delta.get("reasoning_content"))
+            delta["reasoning_content"] = reasoning or None
+        delta["content"] = stop.feed(text) or None
+        chunk["choices"].append(
+            {**choice, "delta": {k: v for k, v in delta.items() if v is not None}}
+        )
+    return chunk
+
+
+# The emitter closes a tool_use block as soon as another call's fragment arrives, so interleaved
+# parallel calls would close with partial arguments: hold calls whole until the reply finishes.
+def _hold_tool_calls(chunk: dict, held: dict) -> dict:
+    choices = chunk.get("choices") or []
+    if not any((choice.get("delta") or {}).get("tool_calls") for choice in choices):
+        return chunk
+    chunk = {**chunk, "choices": []}
+    for choice in choices:
+        delta = dict(choice.get("delta") or {})
+        for part in delta.pop("tool_calls", None) or []:
+            if not isinstance(part, dict):
+                continue
+            call = held.setdefault(
+                part.get("index", len(held)),
+                {"id": None, "name": "", "arguments": "", "extra_content": None},
+            )
+            call["id"] = call["id"] or part.get("id")
+            function = part.get("function") or {}
+            call["name"] += function.get("name") or ""
+            call["arguments"] += function.get("arguments") or ""
+            call["extra_content"] = part.get("extra_content") or call["extra_content"]
+        chunk["choices"].append({**choice, "delta": delta})
+    return chunk
+
+
+def _released_tool_calls(held: dict):
+    for index in sorted(held):
+        call = held[index]
+        part = {
+            "index": index,
+            "id": call["id"],
+            "type": "function",
+            "function": {"name": call["name"], "arguments": call["arguments"]},
+        }
+        if call["extra_content"]:
+            part["extra_content"] = call["extra_content"]
+        yield {"choices": [{"index": 0, "delta": {"tool_calls": [part]}}]}
+    held.clear()
+
+
+def _pending_connection_text(think: Optional[Any], stop: _StopSequenceFilter, held: dict):
+    """What is still held back once the reply ends: unterminated markup, a possible stop prefix,
+    then the buffered tool calls."""
+    reasoning, text = think.finish() if think is not None else ("", "")
+    text = stop.feed(text) + stop.flush() if stop.hit is None else ""
+    delta = {
+        key: value for key, value in (("reasoning_content", reasoning), ("content", text)) if value
+    }
+    if delta:
+        yield {"choices": [{"index": 0, "delta": delta}]}
+    yield from _released_tool_calls(held)
+
+
+async def _anthropic_events_from_openai_sse(
+    lines,
+    message_id: str,
+    model: str,
+    subject: Optional[str] = None,
+    *,
+    single_tool_use: bool = False,
+    stop_sequences: Any = None,
+    parse_thinking: bool = True,
+):
+    emitter = AnthropicPassthroughEmitter()
+    # Always, like the Studio chat: a provider can think by default with no thinking controls sent.
+    # Native thinking leads the reply, so only a leading block is read: a literal tag later in the
+    # answer (or inside JSON) stays text.
+    think = _ResponsesReasoningExtractor(parse_think_markers = parse_thinking, single_block = True)
+    stop = _StopSequenceFilter(stop_sequences)
+    recorder = _ConnectionExtrasRecorder(subject)
+    dropped: set[int] = set()
+    tool_blocks = 0
+
+    def relay(event: str, extras: list) -> Optional[str]:
+        nonlocal tool_blocks
+        if stop.hit is not None and event.startswith("event: message_delta"):
+            data = json.loads(event.partition("\ndata: ")[2])
+            data["delta"].update(stop_reason = "stop_sequence", stop_sequence = stop.hit)
+            return build_anthropic_sse_event(data["type"], data)
+        if not (extras or single_tool_use) or not event.startswith("event: content_block"):
+            return event
+        data = json.loads(event.partition("\ndata: ")[2])
+        index = data.get("index")
+        if (
+            data["type"] == "content_block_start"
+            and data["content_block"].get("type") == "tool_use"
+        ):
+            extra = extras.pop(0) if extras else None
+            # disable_parallel_tool_use: at most one tool_use, the way the local route caps it.
+            if single_tool_use and tool_blocks:
+                dropped.add(index)
+                return None
+            tool_blocks += 1
+            # The emitter renames tool ids (toolu_*): file the call's extras under the id it publishes.
+            recorder.call(data["content_block"].get("id"), extra)
+        if index in dropped:
+            return None
+        shift = sum(1 for gone in dropped if gone < index)
+        if not shift:
+            return event
+        data["index"] = index - shift
+        return build_anthropic_sse_event(data["type"], data)
+
+    def feed(chunk: dict):
+        extras = [
+            call.get("extra_content")
+            for choice in chunk.get("choices") or []
+            for call in (choice.get("delta") or {}).get("tool_calls") or []
+            if isinstance(call, dict) and call.get("id")
+        ]
+        for event in emitter.feed_chunk(chunk):
+            event = relay(event, extras)
+            if event is not None:
+                yield event
+
+    held: dict[int, dict] = {}
+    for event in emitter.start(message_id, model):
+        yield event
+    items = _sse_data_lines(lines)
+    try:
+        async for line in items:
+            data = line[len("data:") :].strip() if line.startswith("data:") else ""
+            if data == "[DONE]":
+                break
+            if not data:
+                continue
+            parsed = json.loads(data)
+            if parsed.get("error"):
+                yield _anthropic_connection_error_event(parsed["error"])
+                return
+            recorder.chunk(parsed, calls = False)
+            parsed = _split_connection_text(_hold_tool_calls(parsed, held), think, stop)
+            if stop.hit is not None:
+                for event in feed(parsed):
+                    yield event
+                break
+            finishes = [c for c in parsed.get("choices") or [] if c.get("finish_reason")]
+            if finishes:
+                # This chunk's own text goes before the held-back tail, then the finish.
+                text_part = {
+                    **{k: v for k, v in parsed.items() if k != "usage"},
+                    "choices": [{**c, "finish_reason": None} for c in parsed["choices"]],
+                }
+                for event in feed(text_part):
+                    yield event
+                for chunk in _pending_connection_text(think, stop, held):
+                    for event in feed(chunk):
+                        yield event
+                if stop.hit is not None:
+                    break
+                parsed = {
+                    **parsed,
+                    "choices": [
+                        {
+                            "index": c.get("index", 0),
+                            "delta": {},
+                            "finish_reason": c["finish_reason"],
+                        }
+                        for c in finishes
+                    ],
+                }
+            for event in feed(parsed):
+                yield event
+    finally:
+        await items.aclose()
+    for chunk in _pending_connection_text(think, stop, held):
+        for event in feed(chunk):
+            yield event
+    if stop.hit is not None:
+        for event in feed({"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}):
+            yield event
+    for event in emitter.finish():
+        event = relay(event, [])
+        if event is not None:
+            yield event
+
+
+def _anthropic_message_from_events(events: list[str]) -> dict:
+    message: dict = {}
+    blocks: list[dict] = []
+    partial_json: dict[int, str] = {}
+    for event in events:
+        data = json.loads(event.partition("\ndata: ")[2])
+        if data["type"] == "error":
+            status_code = next(
+                (
+                    code
+                    for code, err_type in ANTHROPIC_TYPE_BY_STATUS.items()
+                    if err_type == data["error"]["type"] and err_type != "api_error"
+                ),
+                502,
+            )
+            raise HTTPException(status_code = status_code, detail = data["error"]["message"])
+        if data["type"] == "message_start":
+            message = data["message"]
+        elif data["type"] == "content_block_start":
+            blocks.append(dict(data["content_block"]))
+        elif data["type"] == "content_block_delta":
+            block, delta = blocks[data["index"]], data["delta"]
+            if delta["type"] == "text_delta":
+                block["text"] += delta["text"]
+            elif delta["type"] == "thinking_delta":
+                block["thinking"] += delta["thinking"]
+            elif delta["type"] == "input_json_delta":
+                partial_json[data["index"]] = (
+                    partial_json.get(data["index"], "") + delta["partial_json"]
+                )
+        elif data["type"] == "message_delta":
+            message.update(data["delta"])
+            message["usage"] = data["usage"]
+    for index, text in partial_json.items():
+        try:
+            blocks[index]["input"] = json.loads(text)
+        except json.JSONDecodeError:
+            blocks[index]["input"] = {}
+    message["content"] = blocks
+    return message
+
+
+async def _anthropic_messages_via_connection(
+    payload: AnthropicMessagesRequest,
+    request: Request,
+    current_subject: str,
+    provider_id: str,
+    model: str,
+):
+    if payload.max_tokens is None:
+        raise HTTPException(
+            status_code = 400,
+            detail = anthropic_error_body(
+                "max_tokens: field required",
+                status = 400,
+                err_type = "invalid_request_error",
+            ),
+        )
+    _validate_anthropic_client_tools(payload.tools)
+    if _anthropic_requested_studio_tools(payload.tools) or payload.enable_tools is True:
+        raise HTTPException(
+            status_code = 400,
+            detail = "Unsloth server tools are not available with a Connection model.",
+        )
+    # Keep every turn's thinking: _build_external_messages drops it for providers that must not get it,
+    # and DeepSeek answers 400 when tools ride on a history without it.
+    messages = anthropic_messages_to_openai(
+        [m.model_dump() for m in payload.messages], payload.system, preserve_thinking = True
+    )
+    _restore_connection_tool_extras(current_subject, messages)
+    fields = {
+        "model": model,
+        "provider_id": provider_id,
+        "external_model": model,
+        "messages": messages,
+        "tools": anthropic_tools_to_openai(payload.tools or []) or None,
+        "tool_choice": anthropic_tool_choice_to_openai(payload.tool_choice),
+        "max_tokens": payload.max_tokens,
+        "stop": payload.stop_sequences or None,
+        "temperature": payload.temperature,
+        "top_p": payload.top_p,
+        "top_k": payload.top_k,
+        "min_p": payload.min_p,
+        "repetition_penalty": payload.repetition_penalty,
+        "presence_penalty": payload.presence_penalty,
+        "seed": payload.seed,
+        "session_id": payload.session_id,
+        "cancel_id": payload.cancel_id,
+        "response_format": _anthropic_response_format(payload, require_llama_compatibility = False),
+        "stream": True,
+        "stream_options": {"include_usage": True},
+    }
+    reasoning = _anthropic_reasoning_args(payload)
+    fields["enable_thinking"] = reasoning["enable_thinking"]
+    fields["reasoning_effort"] = reasoning["reasoning_effort"]
+    fields["preserve_thinking"] = reasoning.get("preserve_thinking")
+    chat_payload = ChatCompletionRequest(
+        **{name: value for name, value in fields.items() if value is not None}
+    )
+    response = await produce_openai_chat_completions(
+        chat_payload, request, current_subject, cancel_on_disconnect = True
+    )
+    if not isinstance(response, StreamingResponse):
+        return response
+    events = _anthropic_events_from_openai_sse(
+        response.body_iterator,
+        f"msg_{uuid.uuid4().hex[:24]}",
+        payload.model,
+        current_subject,
+        single_tool_use = isinstance(payload.tool_choice, dict)
+        and bool(payload.tool_choice.get("disable_parallel_tool_use")),
+        stop_sequences = payload.stop_sequences,
+        parse_thinking = chat_payload.enable_thinking is not False,
+    )
+    if payload.stream:
+        return _sse_streaming_response(events)
+    return JSONResponse(_anthropic_message_from_events([event async for event in events]))
+
+
 @router.post("/messages/count_tokens")
 async def anthropic_count_tokens(
     payload: AnthropicMessagesRequest,
@@ -42256,6 +43104,11 @@ async def anthropic_count_tokens(
     tokenizer, or a resident MLX model's through the chat count route, and returns
     ``{"input_tokens": int}`` only. Unlike /messages, max_tokens is NOT required here.
     """
+    if _connection_model_ref(payload.model) is not None:
+        raise HTTPException(
+            status_code = 400,
+            detail = "Token counting is not available for a Connection model.",
+        )
     # Reject malformed tools before the switch, like /messages, so an invalid
     # count request can't evict the loaded model.
     _validate_anthropic_client_tools(payload.tools)
@@ -42921,6 +43774,11 @@ async def anthropic_messages(
     JSON).
     """
     _admit_tool_access(payload)
+    connection = _connection_model_ref(payload.model)
+    if connection is not None:
+        return await _anthropic_messages_via_connection(
+            payload, request, current_subject, *connection
+        )
     await _route_to_extra_slot(_switch_model_for_payload(payload))
     llama_backend = get_llama_cpp_backend()
 
@@ -48442,11 +49300,209 @@ def _generate_failure_detail(message: str) -> str:
     return _GENERATE_FAILURE_FALLBACK
 
 
+# Keyed by account id, not account_scope(): the scope moves when the first managed account appears.
+_external_image_runs: dict[str, set] = {}
+_stopped_external_image_runs: set = set()
+
+
+def _external_image_run_active() -> bool:
+    return bool(_external_image_runs.get(current_account_id()))
+
+
+def _stop_external_image_runs() -> bool:
+    runs = [
+        task for task in _external_image_runs.get(current_account_id()) or () if not task.done()
+    ]
+    for task in runs:
+        _stopped_external_image_runs.add(task)
+        task.cancel()
+    return bool(runs)
+
+
+async def _external_image_generation(
+    body: DiffusionGenerateRequest, request: Request
+) -> DiffusionGenerateResponse:
+    from PIL import Image
+
+    from core.inference import image_gallery
+    from core.inference.llama_keepwarm import (
+        untrack_current_media_request,
+        untrack_current_request,
+    )
+
+    untrack_current_request(request.scope)
+    untrack_current_media_request(request.scope)
+    provider_id = body.provider_id.strip()
+    external_model = (body.model or "").strip()
+    if not external_model:
+        raise HTTPException(
+            status_code = 400,
+            detail = "model is required when using an external image connection.",
+        )
+    if (
+        body.init_image
+        or body.reference_images
+        or body.loras
+        or body.controlnet
+        or body.prompts
+        or body.seeds
+        or body.negative_prompt
+        or body.mask_image
+        or body.strength is not None
+        or body.upscale is not None
+        or body.workflow
+        or body.localized_edit
+        or body.sampler
+        or body.schedule_type
+    ):
+        raise HTTPException(
+            status_code = 400,
+            detail = "An external image connection only supports text to image.",
+        )
+
+    config = await asyncio.to_thread(providers_db.get_provider, provider_id)
+    if config is None:
+        raise HTTPException(status_code = 404, detail = f"Provider config not found: {provider_id}")
+    _refuse_decision_connection(config["provider_type"], config.get("api_type"))
+    if not config["is_enabled"]:
+        raise HTTPException(
+            status_code = 400,
+            detail = f"Provider '{config['display_name']}' is disabled.",
+        )
+    base_url = config["base_url"] or get_base_url(config["provider_type"])
+    if not base_url:
+        raise HTTPException(status_code = 400, detail = "The connection has no base URL.")
+    try:
+        base_url = validate_provider_base_url(base_url)
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from None
+
+    async with provider_config_guard(provider_id):
+        current = await asyncio.to_thread(providers_db.get_provider, provider_id)
+        routing_fields = ("provider_type", "base_url", "is_enabled")
+        if current is None or any(
+            current.get(field) != config.get(field) for field in routing_fields
+        ):
+            raise HTTPException(
+                status_code = 409,
+                detail = "Provider changed while the request was starting; retry.",
+            )
+        api_key = await asyncio.to_thread(
+            resolve_provider_api_key_or_400,
+            provider_id,
+            None,
+            allow_saved_key = not _request_has_api_key(request),
+        )
+        latest = await asyncio.to_thread(providers_db.get_provider, provider_id)
+        if latest is None or any(
+            latest.get(field) != current.get(field) for field in routing_fields
+        ):
+            raise HTTPException(
+                status_code = 409,
+                detail = "Provider changed while the request was starting; retry.",
+            )
+
+    client = ExternalProviderClient(
+        provider_type = config["provider_type"],
+        base_url = base_url,
+        api_key = api_key,
+        timeout = 600.0,
+    )
+    owner = current_account_id()
+    task = asyncio.create_task(
+        client.create_images(
+            prompt = body.prompt,
+            model = external_model,
+            n = body.batch_size,
+            size = f"{body.width}x{body.height}",
+        )
+    )
+    _external_image_runs.setdefault(owner, set()).add(task)
+    try:
+        try:
+            try:
+                encoded = await task
+            except asyncio.CancelledError:
+                if task not in _stopped_external_image_runs:
+                    task.cancel()
+                    raise
+                from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
+                raise HTTPException(status_code = 409, detail = DIFFUSION_CANCELLED_MSG) from None
+            images = []
+            for item in encoded:
+                image = Image.open(io.BytesIO(base64.b64decode(item)))
+                image.load()
+                images.append(image)
+        except HTTPException:
+            raise
+        except httpx.HTTPStatusError as exc:
+            raise HTTPException(
+                status_code = 502,
+                detail = (
+                    f"Image endpoint returned HTTP {exc.response.status_code}: {exc.response.text[:300]}"
+                ),
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise log_and_http_error(
+                exc,
+                502,
+                "Could not reach the image endpoint.",
+                event = "external_images.transport_error",
+                log = logger,
+            ) from exc
+        except Exception as exc:
+            raise HTTPException(
+                status_code = 502, detail = "The image endpoint did not return a usable image."
+            ) from exc
+
+        created_at = time.time()
+
+        def _persist() -> list[dict]:
+            return [
+                image_gallery.save(
+                    image,
+                    {
+                        "prompt": body.prompt,
+                        "width": image.width,
+                        "height": image.height,
+                        "steps": body.steps,
+                        "guidance": body.guidance,
+                        "seed": body.seed or 0,
+                        "batch_index": index,
+                        "batch_size": body.batch_size,
+                        "model": external_model,
+                        "model_kind": "connection",
+                        "created_at": created_at,
+                    },
+                )
+                for index, image in enumerate(images)
+            ]
+
+        try:
+            records = await asyncio.to_thread(_persist)
+        except Exception as exc:
+            logger.error("diffusion.persist_failed: %s", exc)
+            raise HTTPException(status_code = 500, detail = "Failed to save the generated image.")
+        return DiffusionGenerateResponse(images = [GalleryImage(**r) for r in records])
+    finally:
+        runs = _external_image_runs.get(owner)
+        if runs is not None:
+            runs.discard(task)
+            if not runs:
+                _external_image_runs.pop(owner, None)
+        _stopped_external_image_runs.discard(task)
+
+
 @studio_router.post("/images/generate", response_model = DiffusionGenerateResponse)
 @account_access.gpu_busy_route
 async def generate_diffusion_image(
-    request: DiffusionGenerateRequest, current_subject: str = Depends(get_current_subject)
+    request: DiffusionGenerateRequest,
+    http_request: Request,
+    current_subject: str = Depends(get_current_subject),
 ):
+    if request.provider_id:
+        return await _external_image_generation(request, http_request)
+
     from core.inference import image_gallery
     from core.inference.diffusion_engine_router import get_active_diffusion_engine
     from core.inference.diffusion_families import (
@@ -49416,11 +50472,18 @@ async def diffusion_load_progress(
 
 @studio_router.get("/images/generate-progress", response_model = DiffusionGenerateProgressResponse)
 async def diffusion_generate_progress(current_subject: str = Depends(get_current_subject)):
-    if account_access.managed_account() and account_access.generation_is_foreign("diffusion"):
+    external = _external_image_run_active()
+
+    def _hidden():
+        if external:
+            return DiffusionGenerateProgressResponse(active = True, target = "connection")
         return account_access.hidden_generate_progress_response(DiffusionGenerateProgressResponse)
+
+    if account_access.managed_account() and account_access.generation_is_foreign("diffusion"):
+        return _hidden()
     mine = account_access.generation_is_mine("diffusion")
     if not mine and account_access.resident_hidden("diffusion"):
-        return account_access.hidden_generate_progress_response(DiffusionGenerateProgressResponse)
+        return _hidden()
     from core.inference.diffusion_engine_router import get_active_diffusion_engine
 
     if (
@@ -49430,10 +50493,12 @@ async def diffusion_generate_progress(current_subject: str = Depends(get_current
             "diffusion", get_active_diffusion_engine().status().get("repo_id")
         )
     ):
-        return account_access.hidden_generate_progress_response(DiffusionGenerateProgressResponse)
+        return _hidden()
 
     progress = get_active_diffusion_engine().generate_progress()
     log_media_generation_progress("image", progress)
+    if external and not progress["active"]:
+        progress = {**progress, "active": True, "target": "connection"}
     # A finished generation still persisting its gallery record counts as active, so a reload probe keeps polling.
     if _diffusion_persist_active > 0 and not progress["active"]:
         progress = {**progress, "active": True}
@@ -49441,7 +50506,9 @@ async def diffusion_generate_progress(current_subject: str = Depends(get_current
 
 
 @studio_router.post("/images/generate/cancel")
-async def cancel_diffusion_generation(current_subject: str = Depends(get_current_subject)):
+async def cancel_diffusion_generation(
+    target: Optional[str] = None, current_subject: str = Depends(get_current_subject)
+):
     """Stop the in-flight image generation, mirroring POST /video/generate/cancel.
 
     Resolved through the engine router, so it stops a diffusers denoise (at its next step
@@ -49449,7 +50516,10 @@ async def cancel_diffusion_generation(current_subject: str = Depends(get_current
     generation's OWN request is what reports the outcome: it unwinds with the cancelled
     sentinel, which this module already maps to a 409. ``cancelled`` is False when nothing was
     running, so the page can settle its button back to Generate rather than wait for a
-    generation that already finished."""
+    generation that already finished. ``target=connection`` stops this account's runs on a
+    saved image connection instead."""
+    if target == "connection":
+        return {"cancelled": _stop_external_image_runs()}
     if account_access.generation_is_foreign("diffusion"):
         return {"cancelled": False}
     mine = account_access.generation_is_mine("diffusion")

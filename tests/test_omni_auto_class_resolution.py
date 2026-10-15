@@ -1,18 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Auto-class resolution for omni checkpoints, and what it must NOT move.
-
-`Qwen/Qwen3-Omni-30B-A3B-Instruct` names `Qwen3OmniMoeForConditionalGeneration`
-and so reads as a VLM, but transformers registers `qwen3_omni_moe` only under
-`AutoModelForTextToWaveform`. Every other auto class raises "Unrecognized
-configuration class" on it, which is a hard load failure before the weights are
-touched.
-
-The resolver is consulted ONLY when the already-chosen class has no mapping, so
-these tests spend as much effort on the models that must keep taking exactly
-the branch they take today as on the one that changes.
-"""
+"""The omni resolver runs only if the chosen auto class has no mapping, leaving other branches as-is."""
 
 import pytest
 
@@ -50,7 +39,6 @@ def test_omni_resolves_to_the_class_its_family_registered():
     config = _omni_config()
     resolved = _resolve_omni_auto_model(config)
     assert resolved is not None
-    # and it really maps, rather than merely being a different name to fail on
     assert resolve_model_class(resolved, config) is not None
 
 
@@ -104,7 +92,7 @@ class _CannotAnswer:
 
 
 class _WrongSignature:
-    def get_input_embeddings(self, input_ids):  # remote code does this
+    def get_input_embeddings(self, input_ids):
         raise AssertionError("must not be reached")
 
 
@@ -116,9 +104,9 @@ class _Normal:
 @pytest.mark.parametrize(
     "model, expected",
     [
-        (_CannotAnswer(), None),  # transformers 5 base impl raises
-        (_WrongSignature(), None),  # TypeError, not AttributeError
-        (object(), None),  # method absent entirely
+        (_CannotAnswer(), None),
+        (_WrongSignature(), None),
+        (object(), None),
         (_Normal(), "embeddings"),
     ],
 )
@@ -147,7 +135,6 @@ def test_offload_embedding_declines_a_model_it_cannot_inspect(requested, capsys)
     assert _resolve_offload_embedding(_NoEmbeddings(), requested) is False
     printed = capsys.readouterr().out
     if requested == "auto":
-        # the default declines silently: nobody asked for it
         assert "Not offloading embeddings" not in printed
     else:
         assert "Not offloading embeddings" in printed
@@ -163,7 +150,6 @@ def test_omni_reaches_the_vllm_guard_rather_than_the_language_model_path():
     assert not hasattr(config, "vision_config"), "premise: vision lives under thinker_config"
     assert "qwen3_omni_moe" not in VLLM_SUPPORTED_VLM, "premise: vLLM does not support it"
 
-    # what is_vlm_config now computes for it
     resolved = _resolve_omni_auto_model(config)
     is_vlm = resolved in [IMAGE_TEXT_CLASS]
     needs_processor = is_vlm or resolved in _multimodal_auto_classes()
@@ -219,7 +205,7 @@ def test_a_getter_that_cannot_take_zero_arguments_is_skipped():
         def get_input_embeddings(self, input_ids):
             raise AssertionError("must not be reached")
 
-    _tiny(WrongSignature).enable_input_require_grads()  # must not raise
+    _tiny(WrongSignature).enable_input_require_grads()
 
 
 def test_a_normal_model_still_gets_its_hook():
