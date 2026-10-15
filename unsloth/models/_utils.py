@@ -5520,6 +5520,9 @@ def patch_gradient_accumulation_fix(Trainer):
             _replan_auto_offload_safely(self)
             _block_swap_for_trainer_backend(self)
             _enable_ddp_batched_grad_copy(self)
+            if os.environ.get("UNSLOTH_OFFLOAD_OPTIMIZER_STATE", "0") != "0":
+                from ..optimizers.state_offload import install_optimizer_state_offload
+                install_optimizer_state_offload(self)
 
         _unsloth_trainer_init.__wrapped__ = _original_trainer_init
         Trainer.__init__ = _unsloth_trainer_init
