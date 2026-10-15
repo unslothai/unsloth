@@ -7,6 +7,7 @@ import type { ModelConfigHandoffRequest } from "@/features/model-picker";
 import {
   audioPickIsRoutable,
   curatedAudioInventoryTask,
+  speechGgufIsUndecodable,
 } from "@/features/model-picker/components/model-selector/audio-picker-policy";
 import {
   AUDIO_CATALOG,
@@ -227,7 +228,16 @@ export function hubAudioRunRefused(
   const audioTask = hubAudioTask(model, task);
   if (!audioTask || !CHAT_UNLOADABLE_AUDIO_TASKS.has(audioTask)) return false;
   const library = model.libraryName?.toLowerCase();
-  if (model.isGguf && (!library || LLAMA_CPP_GGUF_LIBRARIES.has(library)))
+  if (
+    model.isGguf &&
+    (!library || LLAMA_CPP_GGUF_LIBRARIES.has(library)) &&
+    !speechGgufIsUndecodable({
+      isGguf: true,
+      id,
+      baseModel: model.baseModel,
+      tags: model.tags,
+    })
+  )
     return false;
   return !hubModelRunsOnAudioPage(model, task);
 }

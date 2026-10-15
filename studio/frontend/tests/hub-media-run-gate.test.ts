@@ -268,6 +268,21 @@ test("Run refuses an audio model neither Audio nor chat can run", () => {
     false,
   );
   assert.equal(refused({ ...magpie, libraryName: undefined }), false);
+  // llama.cpp has no CSM decoder, whatever library the card names.
+  assert.equal(
+    refused(
+      audio({
+        id: "ggml-org/sesame-csm-1b-GGUF",
+        hubRepoId: "ggml-org/sesame-csm-1b-GGUF",
+        isGguf: true,
+        modelFormat: "gguf",
+        pipelineTag: "text-to-speech",
+        task: "text-generation",
+        tags: ["gguf", "text-to-speech"],
+      }),
+    ),
+    true,
+  );
   // Chat models, transcription and filesystem rows keep their chat Run.
   assert.equal(
     refused(
