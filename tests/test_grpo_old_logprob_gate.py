@@ -1,14 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""The no-grad old logprob forward in GRPO keeps TRL's gate.
-
-TRL computes old_per_token_logps only when generation and optimisation are misaligned, or when
-vLLM importance sampling correction is on. Its consumers (the IS ratio, the sampling delta
-metrics, the clip ratios) either run under that flag or treat None as per_token_logps.detach().
-Unsloth used to rewrite the gate to `or (self.use_vllm)`, which paid one extra full batch forward
-per step on every on-policy vLLM run with the correction off (the Unsloth default).
-"""
+"""GRPO keeps TRL's old logprob gate: rewriting it to `or (self.use_vllm)` paid a full no-grad
+forward per on-policy vLLM step with IS correction off, where old == per_token_logps.detach()."""
 
 from __future__ import annotations
 
