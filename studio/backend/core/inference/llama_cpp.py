@@ -14917,6 +14917,23 @@ class LlamaCppBackend:
         return ",".join(str(i) for i in ids)
 
     @staticmethod
+    def _pinned_child_visibility(gpu_indices) -> Optional[str]:
+        """``_child_visibility_for``, or None when the inherited CUDA mask must stand: a MIG
+        or unresolvable UUID mask the ids cannot be mapped back to, where a numeric pin would
+        be re-read against the whole host (a card the parent hid, or the whole MIG card)."""
+        mask = LlamaCppBackend._child_visibility_for(gpu_indices)
+        cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
+        if (
+            cvd is not None
+            and cvd.strip()
+            and mask == ",".join(str(int(i)) for i in gpu_indices)
+            and LlamaCppBackend._visible_devices_mask("CUDA_VISIBLE_DEVICES") is None
+            and LlamaCppBackend._visibility_mask_is_unmappable()
+        ):
+            return None
+        return mask
+
+    @staticmethod
     def _get_gpu_memory_nvml() -> list[tuple[int, int, int]]:
         """Free and total memory per NVIDIA GPU from NVML (studio/nvidia_probe.py in a child
         with a deadline), for a host whose nvidia-smi is absent, stale or hung: read as "no
@@ -15047,6 +15064,18 @@ class LlamaCppBackend:
                     gpus.append((idx, free_mib, total_mib))
                 # Match the docstring's sort-by-id guarantee (driver order isn't).
                 gpus.sort(key = lambda g: g[0])
+                _cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
+                if allowed is None and _cvd is not None and _cvd.strip():
+                    # A MIG / unresolvable UUID mask names devices these rows cannot be
+                    # matched to: listing every card sizes against GPUs the parent hid.
+                    # The NVML branch names slices and uuids.
+                    gpus = []
+                elif gpus:
+                    from utils.hardware import nvidia
+
+                    if nvidia.get_mig_gpu_indices() & {g[0] for g in gpus}:
+                        # A MIG card is one slice to CUDA, its row the whole card.
+                        gpus = []
                 if gpus:
                     LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES = True
                     # The CLI row is the carve-out, not the pool. Discrete rows unchanged.
@@ -31830,11 +31859,16 @@ class LlamaCppBackend:
                             "numbering; fitted the pinned mask to them: %s",
                             _companion_widen,
                         )
-                    self._emit_child_gpu_visibility(
-                        env,
-                        LlamaCppBackend._child_visibility_for(_pin_ids),
-                        prefer_rocr = True,
-                    )
+                    _child_mask = LlamaCppBackend._pinned_child_visibility(_pin_ids)
+                    if _child_mask is None:
+                        logger.info(
+                            "Keeping the inherited CUDA_VISIBLE_DEVICES=%s: GPU ids %s "
+                            "cannot be mapped to it.",
+                            os.environ.get("CUDA_VISIBLE_DEVICES"),
+                            _pin_ids,
+                        )
+                    else:
+                        self._emit_child_gpu_visibility(env, _child_mask, prefer_rocr = True)
                     _child_gpu_physical_ids = tuple(int(i) for i in _pin_ids)
                     _launch_pinned_ids = list(_pin_ids)
                 elif not is_vulkan_backend and not gpu_ids:

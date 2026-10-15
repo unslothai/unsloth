@@ -128,7 +128,7 @@ def test_the_refresh_asks_for_physical_rows_only(smi, monkeypatch):
     hw.get_physical_gpu_count()
     smi(1)
     hw.get_physical_gpu_count()
-    assert seen == [False, True]
+    assert seen == [True, True]
 
 
 def test_the_ttl_starts_after_the_probe_returns(smi, monkeypatch):

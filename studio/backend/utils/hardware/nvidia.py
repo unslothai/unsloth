@@ -150,6 +150,36 @@ def get_physical_gpu_count(gpu_rows_only: bool = False) -> Optional[int]:
     return None
 
 
+def get_mig_gpu_indices() -> set[int]:
+    """Physical indices of GPUs with MIG instances (indented ``MIG`` rows under their
+    ``GPU N:`` row in ``nvidia-smi -L``). CUDA sees such a card as one slice, so its
+    ``--query-gpu`` memory is the whole card's, not the device's. Empty on failure."""
+    try:
+        result = gpu_query.run_nvidia_smi(
+            [_nvidia_smi_executable(), "-L"],
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 5,
+            env = child_env_without_native_path_secret(),
+            **_windows_hidden_subprocess_kwargs(),
+        )
+    except Exception:
+        return set()
+    if result.returncode != 0 or not isinstance(result.stdout, str):
+        return set()
+    indices: set[int] = set()
+    current: Optional[int] = None
+    for line in result.stdout.splitlines():
+        if line.startswith("GPU "):
+            head = line[4:].split(":", 1)[0].strip()
+            current = int(head) if head.isdecimal() else None
+        elif current is not None and line.strip().startswith("MIG "):
+            indices.add(current)
+    return indices
+
+
 def get_primary_gpu_utilization() -> dict[str, Any]:
     try:
         result = gpu_query.run_nvidia_smi(

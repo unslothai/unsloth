@@ -6089,6 +6089,7 @@ def auto_select_gpu_ids(
 
     utilization = get_visible_gpu_utilization()
     devices = [d for d in utilization.get("devices", []) if d.get("index") not in _uncovered]
+    devices = _with_mig_instance_memory(devices)
     parent_ids = _covered(get_parent_visible_gpu_ids())
 
     if not devices:
@@ -6245,6 +6246,42 @@ def prepare_gpu_selection(
     return selected_gpu_ids, metadata
 
 
+def _with_mig_instance_memory(devices: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
+    """Replace a MIG card's whole-card nvidia-smi memory with the slice CUDA exposes
+    for it (NVML), or drop the reading when no slice reading exists so the ranking
+    skips it. Devices on cards without MIG instances are returned unchanged."""
+    if IS_ROCM or not devices:
+        return devices
+    try:
+        from . import nvidia
+
+        mig = nvidia.get_mig_gpu_indices() & {d.get("index") for d in devices}
+    except Exception:
+        return devices
+    if not mig:
+        return devices
+    slices: Dict[int, tuple[int, int]] = {}
+    try:
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        slices = {idx: (free, total) for idx, free, total in LlamaCppBackend._get_gpu_memory_nvml()}
+    except Exception as e:
+        logger.debug("NVML MIG slice probe failed: %s", e)
+    out = []
+    for device in devices:
+        idx = device.get("index")
+        if idx in mig:
+            free_mib, total_mib = slices.get(idx, (0, 0))
+            known = total_mib > 0
+            device = {
+                **device,
+                "vram_total_gb": round(total_mib / 1024, 2) if known else None,
+                "vram_used_gb": round(max(0, total_mib - free_mib) / 1024, 2) if known else None,
+            }
+        out.append(device)
+    return out
+
+
 def _nvidia_physical_gpu_row_count() -> Optional[int]:
     # Physical rows only: MIG instances created after startup add indented `nvidia-smi -L` rows, not GPUs.
     try:
@@ -6296,10 +6333,12 @@ def get_physical_gpu_count() -> int:
         count = None
         try:
             if IS_ROCM:
-                from . import amd as _smi_mod
+                from . import amd
+
+                count = amd.get_physical_gpu_count()
             else:
-                from . import nvidia as _smi_mod
-            count = _smi_mod.get_physical_gpu_count()
+                # MIG slices are indented `-L` rows under their card, not GPUs to offer.
+                count = _nvidia_physical_gpu_row_count()
         except Exception:
             pass
         if not IS_ROCM:
