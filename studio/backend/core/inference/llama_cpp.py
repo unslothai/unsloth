@@ -29275,16 +29275,21 @@ class LlamaCppBackend:
                     # while llama.cpp keeps the layers past the count, and their KV, in
                     # host RAM. Nothing here says which slice stays on the card, so this
                     # is the "engaged but unsized" case the fit abstains on.
+                    # Draft tensor overrides and draft CPU-MoE controls move drafter
+                    # weights to the host whatever -ngld says: the same unknown slice.
                     _draft_split_across_host = bool(
                         _mtp_draft_for_budget
-                        and _draft_is_split_across_host(
-                            _fit_extras,
-                            _fit_env,
-                            n_draft_layers = getattr(
-                                self._draft_backend_for(_mtp_draft_for_budget),
-                                "_n_layers",
-                                None,
-                            ),
+                        and (
+                            _draft_tensors_placed_off_card(_fit_extras, _fit_env)
+                            or _draft_is_split_across_host(
+                                _fit_extras,
+                                _fit_env,
+                                n_draft_layers = getattr(
+                                    self._draft_backend_for(_mtp_draft_for_budget),
+                                    "_n_layers",
+                                    None,
+                                ),
+                            )
                         )
                     )
                     _fit_margin_mib = (
@@ -29344,6 +29349,27 @@ class LlamaCppBackend:
                         _fit_model_size = None
                     elif _fit_model_size and not _fit_env_mmproj_on_host:
                         _fit_model_size += _fit_env_mmproj_bytes
+                    # Placements this footprint cannot split between card and host, so
+                    # they abstain like the resident-share estimate does. A projector
+                    # pinned to a named device (--mmproj-device / MTMD_BACKEND_DEVICE;
+                    # "none" or CPU keeps it in host RAM, a GPU name may be a companion
+                    # card) and a pass-through MoE cache (argv beats env, "0" turns it
+                    # off), which keeps the routed experts in host RAM.
+                    _fit_mmproj_device = _extra_args_device(
+                        _fit_extras, {"--mmproj-device", "-mmdev"}
+                    )
+                    if _fit_mmproj_device is None:
+                        _fit_mmproj_device = _fit_env.get("MTMD_BACKEND_DEVICE")
+                    _fit_cache_mib = _extra_args_device(_fit_extras, {"--moe-cache-mib"})
+                    if _fit_cache_mib is None:
+                        _fit_cache_mib = _fit_env.get("LLAMA_ARG_MOE_CACHE_MIB")
+                    if (
+                        _fit_mmproj_device is not None
+                        and (launch_mmproj_path or _fit_env_mmproj or _fit_env_mmproj_url)
+                    ) or (
+                        _fit_cache_mib is not None and str(_fit_cache_mib).strip() not in ("", "0")
+                    ):
+                        _fit_model_size = None
                     _fit_soft_overhead = _soft_overhead + self._inherited_mmproj_soft_overhead(
                         _fit_env_mmproj_bytes,
                         on_host = _fit_env_mmproj_on_host,

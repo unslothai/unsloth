@@ -1608,7 +1608,8 @@ def test_a_partial_draft_offload_leaves_the_drafter_unsized():
 
     compact = "".join(inspect.getsource(B.load_model).split())
     assert (
-        "_draft_split_across_host=bool(_mtp_draft_for_budgetand_draft_is_split_across_host("
+        "_draft_split_across_host=bool(_mtp_draft_for_budgetand("
+        "_draft_tensors_placed_off_card(_fit_extras,_fit_env)or_draft_is_split_across_host("
         in compact
     )
     # The same effective views the other overrides are classified on.
@@ -2418,3 +2419,194 @@ def test_an_integrated_cuda_soc_is_never_counted_twice(platform, monkeypatch):
     assert _mode(platform, "nvidia_discrete", 40 * GIB, 32 * 1024, monkeypatch) == FIT_MODE
     LlamaCppBackend._INTEGRATED_CUDA_IDS[LlamaCppBackend._integrated_cuda_mask_key()] = {0}
     assert _mode(platform, "nvidia_discrete", 40 * GIB, 32 * 1024, monkeypatch) is None
+
+
+# ------------------------- placements the resident share abstains on, at the launch
+
+
+def _placed_launch(
+    tmp_path,
+    monkeypatch,
+    *,
+    target_gib,
+    free_mib,
+    ram_gib,
+    extra_args = (),
+    env = None,
+    draft_gib = 0,
+    mmproj_gib = 0,
+    expert_gib = 0,
+):
+    """One real launch (mocked GPU and Popen) through the load-mode fit. Returns the
+    last --load-mode it emitted, or None when it kept llama.cpp's default loader."""
+    import os
+    import sys
+    from pathlib import Path
+
+    tests_dir = str(Path(__file__).resolve().parent)
+    if tests_dir not in sys.path:
+        sys.path.insert(0, tests_dir)
+    import utils.model_memory_settings as mm
+    import core.inference.llama_cpp as llama_cpp_module
+    from test_llama_cpp_placement import _CACHE_CAPS_ON, _launch, _moe_backend, _write_gguf
+
+    monkeypatch.setattr(llama_cpp_module, "_metal_capable_host", lambda: False)
+    monkeypatch.setattr(hardware, "is_apple_silicon", lambda: False)
+    monkeypatch.setattr(mm, "get_model_memory_settings", lambda: (False, False))
+    for name in ("get_keep_resident", "get_no_ram_reserve", "should_mlock"):
+        monkeypatch.setattr(mm, name, lambda: False)
+    for name in list(os.environ):
+        if name.startswith("LLAMA_ARG_") or name in ("MTMD_BACKEND_DEVICE", "UNSLOTH_MOE_CACHE"):
+            monkeypatch.delenv(name, raising = False)
+    for name, value in (env or {}).items():
+        monkeypatch.setenv(name, value)
+    tmp_path = Path(tmp_path)
+    tmp_path.mkdir(parents = True, exist_ok = True)
+    moe = expert_gib > 0
+    backend, gguf = _moe_backend(
+        tmp_path, size_gib = target_gib, memory = [(0, free_mib, 96_000)], moe = moe
+    )
+    sizes = {"draft": draft_gib, "mmproj": mmproj_gib}
+    backend._get_gguf_size_bytes = lambda path: int(
+        next((g for key, g in sizes.items() if key in str(path)), target_gib) * GIB
+    )
+    backend._can_estimate_kv = lambda: True
+    backend._estimate_kv_cache_bytes = lambda *a, **k: GIB // 4
+    backend._available_system_memory_mib = lambda: int(ram_gib * 1024)
+    backend._gguf_tensor_scan = lambda _path: (
+        "qwen3moe" if moe else "llama",
+        {},
+        int(expert_gib * GIB),
+    )
+    caps = dict(LlamaCppBackend.probe_server_capabilities.__func__(LlamaCppBackend, None))
+    caps.update(_CACHE_CAPS_ON)
+    caps["supports_load_mode"] = True
+    load_kwargs = dict(extra_args = list(extra_args))
+    if draft_gib:
+        caps.update({"mtp_token": "draft-mtp", "spec_draft_n_max_flag": "--spec-draft-n-max"})
+        monkeypatch.setattr(LlamaCppBackend, "_mtp_draft_kv_bytes", lambda self, *a, **k: 256 * MIB)
+        backend._resolve_launch_mtp_path = lambda **_k: "/fake/draft.gguf"
+        load_kwargs.update(mtp_draft_path = "/fake/draft.gguf", speculative_type = "mtp")
+    if mmproj_gib:
+        mmproj = _write_gguf(tmp_path / "mmproj.gguf", architecture = "clip")
+        backend._resolve_launch_mmproj_path = lambda **_kw: str(mmproj)
+        backend._mmproj_vram_bytes = lambda path: int(mmproj_gib * GIB) if path else 0
+        # A settled probe: an inconclusive one engages the flat MTP cushion, which abstains.
+        caps["mtp_probe_inconclusive"] = False
+        load_kwargs["is_vision"] = True
+    backend.probe_server_capabilities = lambda _binary = None: caps
+    cmd = _launch(backend, gguf, **load_kwargs)["cmd"]
+    modes = [cmd[i + 1] for i, tok in enumerate(cmd) if tok == "--load-mode"]
+    return modes[-1] if modes else None
+
+
+# 20 GiB target and a 16 GiB separate drafter on a 38,000 MiB card with 12 GiB of RAM.
+_DRAFTER = dict(target_gib = 20, draft_gib = 16, free_mib = 38_000, ram_gib = 12)
+
+
+@pytest.mark.parametrize(
+    "extra_args, env",
+    [
+        (["-otd", ".*=CPU"], {}),
+        (["--override-tensor-draft=exps=CPU"], {}),
+        (["-cmoed"], {}),
+        (["-ncmoed", "2"], {}),
+        ([], {"LLAMA_ARG_SPEC_DRAFT_CPU_MOE": "1"}),
+        ([], {"LLAMA_ARG_SPEC_DRAFT_N_CPU_MOE": "3"}),
+    ],
+)
+def test_draft_tensors_on_the_host_keep_the_default_loader(tmp_path, monkeypatch, extra_args, env):
+    """Draft tensor overrides and draft CPU-MoE controls move drafter weights into host
+    RAM whatever -ngld says, while mtp_bytes credits the whole drafter to the card. 16
+    GiB of drafter cannot sit pinned in 12 GiB of RAM, so the fit must not pick none."""
+    assert _placed_launch(tmp_path, monkeypatch, extra_args = extra_args, env = env, **_DRAFTER) is None
+
+
+@pytest.mark.parametrize(
+    "extra_args, env",
+    [([], {}), (["-ncmoed", "0"], {}), ([], {"LLAMA_ARG_SPEC_DRAFT_N_CPU_MOE": "0"})],
+    ids = ["gpu_drafter", "ncmoed_zero", "env_zero"],
+)
+def test_an_ordinary_gpu_drafter_still_takes_none(tmp_path, monkeypatch, extra_args, env):
+    """Negative control: a drafter whole on the card fits VRAM, so the pick stands."""
+    assert (
+        _placed_launch(tmp_path, monkeypatch, extra_args = extra_args, env = env, **_DRAFTER)
+        == FIT_MODE
+    )
+
+
+# 20 GiB target and an 8 GiB projector on a 40,000 MiB card with 4 GiB of RAM.
+_PROJECTOR = dict(target_gib = 20, mmproj_gib = 8, free_mib = 40_000, ram_gib = 4)
+
+
+@pytest.mark.parametrize(
+    "extra_args, env",
+    [
+        (["--mmproj-device", "none"], {}),
+        (["-mmdev=CPU"], {}),
+        (["-mmdev", "CUDA0"], {}),
+        ([], {"MTMD_BACKEND_DEVICE": "none"}),
+    ],
+)
+def test_a_projector_on_a_named_device_keeps_the_default_loader(
+    tmp_path, monkeypatch, extra_args, env
+):
+    """--mmproj-device none / CPU keeps the projector in host RAM and a GPU name may be
+    a companion card, while the footprint charges it to the pooled VRAM. The resident
+    share abstains there, and so does the load mode."""
+    assert (
+        _placed_launch(tmp_path, monkeypatch, extra_args = extra_args, env = env, **_PROJECTOR) is None
+    )
+
+
+def test_no_projector_device_still_takes_none(tmp_path, monkeypatch):
+    """Negative controls: the same projector with no device named, and a device named
+    with no projector configured."""
+    assert _placed_launch(tmp_path, monkeypatch, **_PROJECTOR) == FIT_MODE
+    assert (
+        _placed_launch(
+            tmp_path / "noproj",
+            monkeypatch,
+            extra_args = ["--mmproj-device", "none"],
+            **{**_PROJECTOR, "mmproj_gib": 0},
+        )
+        == FIT_MODE
+    )
+
+
+# An 80 GiB MoE with 60 GiB of routed experts on a 90,000 MiB card with 16 GiB of RAM.
+_CACHED = dict(target_gib = 80, expert_gib = 60, free_mib = 90_000, ram_gib = 16)
+
+
+@pytest.mark.parametrize(
+    "extra_args, env",
+    [
+        (["--moe-cache-mib", "auto"], {}),
+        (["--moe-cache-mib=4096"], {}),
+        ([], {"LLAMA_ARG_MOE_CACHE_MIB": "auto"}),
+        # argv beats env: a non-zero argv value over a disabling env.
+        (["--moe-cache-mib", "2048"], {"LLAMA_ARG_MOE_CACHE_MIB": "0"}),
+    ],
+)
+def test_a_pass_through_moe_cache_keeps_the_default_loader(tmp_path, monkeypatch, extra_args, env):
+    """A pass-through MoE cache keeps the routed experts in host RAM (60 GiB here, over
+    16 GiB of RAM) while the footprint credits them to the card."""
+    assert _placed_launch(tmp_path, monkeypatch, extra_args = extra_args, env = env, **_CACHED) is None
+
+
+@pytest.mark.parametrize(
+    "extra_args, env",
+    [
+        ([], {}),
+        (["--moe-cache-mib", "0"], {}),
+        ([], {"LLAMA_ARG_MOE_CACHE_MIB": "0"}),
+        # argv beats env: "0" in argv disables an inherited auto.
+        (["--moe-cache-mib", "0"], {"LLAMA_ARG_MOE_CACHE_MIB": "auto"}),
+    ],
+    ids = ["no_cache", "argv_zero", "env_zero", "argv_zero_over_env"],
+)
+def test_no_moe_cache_still_takes_none(tmp_path, monkeypatch, extra_args, env):
+    """Negative control: with the cache off every expert is on the card, which fits."""
+    assert (
+        _placed_launch(tmp_path, monkeypatch, extra_args = extra_args, env = env, **_CACHED) == FIT_MODE
+    )
