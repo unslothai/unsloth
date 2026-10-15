@@ -13,8 +13,7 @@ import importlib
 import runpy
 import sys
 
-# Where each locked vLLM keeps the prefix its middleware reads at request time: 0.26 in
-# serve/utils/server_utils, 0.30 in serve/middleware/authenticate.
+# vLLM 0.26 keeps the prefix in serve/utils/server_utils, 0.30 in serve/middleware/authenticate.
 for _name in (
     "vllm.entrypoints.serve.middleware.authenticate",
     "vllm.entrypoints.serve.utils.server_utils",

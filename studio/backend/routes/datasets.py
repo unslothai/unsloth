@@ -78,8 +78,7 @@ def check_format(
     current_subject: str = Depends(get_current_subject),
 ) -> CheckFormatResponse:
     hub_request = HubCheckFormatRequest.model_validate(request.model_dump(exclude = {"hf_token"}))
-    # Same credential as the header on a legacy route, so classified the same way: raw, it
-    # makes a UI session look like an API key and costs it its own cached dataset offline.
+    # Classify like the header token, or a UI session looks like an API key.
     body_token = (
         hf_token_arg(request.hf_token, allow_ambient_token = allow_ambient_token)
         if request.hf_token

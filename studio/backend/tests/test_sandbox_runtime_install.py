@@ -198,7 +198,6 @@ def route(x64_windows, monkeypatch):
 
 
 def test_owner_starts_the_install_even_from_a_remote_browser(route, monkeypatch):
-    # No administrator prompt is involved, so the local-console rule of Prepare this PC does not apply.
     monkeypatch.setattr(client_ip, "is_direct_local_request", lambda _request: False)
     with _client(OWNER) as client:
         response = client.post("/sandbox/setup", json = {"operation": "windows-runtime"})

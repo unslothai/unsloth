@@ -21,21 +21,13 @@ from utils.paths.sensitive import (
 
 
 def is_local_filesystem_root(path: str, *, _pathmod = os.path) -> bool:
-    """True for a bare local filesystem root -- POSIX ``/``, a drive root ``C:\\``,
-    or a device-namespace volume root like ``\\\\?\\C:\\`` or
-    ``\\\\?\\Volume{GUID}\\`` -- which sit above denied system dirs, but NOT a UNC
-    share root (``\\\\server\\share`` or its ``\\\\?\\UNC\\...`` form), which has
-    none under it and was registerable before this guard. ``splitdrive`` is empty
-    on POSIX servers, so this reduces to the plain ``dirname == self`` test there.
-    ``_pathmod`` lets tests drive ``ntpath`` semantics on a POSIX CI.
-    """
-    # Resolve the Windows device / extended-length namespace, where the local-volume spellings are all bare LOCAL volume roots (rejected) while only the UNC form is a UNC share, handled like a plain server share.
+    """Bare drive, volume or POSIX roots, which sit above denied system dirs; UNC share roots are not."""
+    # \\?\ and \\.\ local-volume spellings are bare volume roots (rejected); only UNC is a share.
     if path[:4].lower() in ("\\\\?\\", "\\\\.\\"):
         rest = path[4:]
         if rest[:4].lower() == "unc\\":
             path = "\\\\" + rest[4:]
         else:
-            # A device volume root is just the volume specifier (C:, Volume{GUID}) with no further component; a deeper path is an ordinary folder.
             core = rest.rstrip("\\/")
             return "\\" not in core and "/" not in core
     if _pathmod.dirname(path) != path:
@@ -171,7 +163,6 @@ def linux_media_mount_roots(
         try:
             if not child.is_dir():
                 continue
-            # The current user's folder is the parent of their mounts, not a volume.
             volume_dirs = list(child.iterdir()) if user and child.name == user else [child]
         except (OSError, RuntimeError, ValueError):
             continue
@@ -257,7 +248,7 @@ def _active_windows_drive_bitmask() -> int:
         return 0
 
 
-# A disconnected mapped drive stays set in the GetLogicalDrives bitmask, so ``os.path.isdir`` on it can block for tens of seconds. Bound each drive probe so one stale mapping cannot stall a whole folder-browser request.
+# A disconnected mapped drive can block isdir for tens of seconds; bound each probe.
 _DRIVE_PROBE_TIMEOUT_S = 2.0
 _probes_lock = threading.Lock()
 _probes_started: dict[str, float] = {}
@@ -294,7 +285,7 @@ def _readable_dirs_within(paths: Iterable[str], timeout: float) -> set[str]:
     for thread in threads:
         thread.join(max(0.0, deadline - time.monotonic()))
 
-    # Iterate the fixed input, not results.items(): a probe that timed out is still alive and may insert its key here, which would raise "dictionary changed size during iteration". results.get() is an atomic read.
+    # Iterate the input, not results.items(): a timed-out probe may still insert keys.
     return {path for path in paths if results.get(path)}
 
 
@@ -304,16 +295,7 @@ def _readable_dir_within(path: str, timeout: float) -> bool:
 
 
 def windows_drive_roots(drive_letters: Iterable[str] = string.ascii_uppercase) -> list[Path]:
-    """Readable logical drive roots (``C:\\``, ``D:\\`` ...) for the folder browser; the Windows analog of :func:`linux_run_media_mount_roots`.
-
-    Without it the allowlist and chips only reach the home drive, so a user
-    cannot navigate from ``C:`` to ``D:``/``E:``. ``GetLogicalDrives`` drops
-    unmapped letters; the rest are probed concurrently under a single timeout
-    and kept only if readable in time. A disconnected mapped drive stays active
-    in the bitmask and its ``os.path.isdir`` can hang for tens of seconds, so
-    parallel probing bounds the added delay at ~one timeout rather than one per
-    drive. Returns ``[]`` off Windows.
-    """
+    """Probes drives concurrently under one timeout, since a disconnected mapped drive can stall."""
     if platform.system() != "Windows":
         return []
 
@@ -333,6 +315,5 @@ def windows_drive_roots(drive_letters: Iterable[str] = string.ascii_uppercase) -
         seen.add(key)
         candidates.append(root_text)
 
-    # Bounded concurrent probe: an active bitmask bit can still be a disconnected mapping whose os.path.isdir blocks, so probe all at once.
     readable = _readable_dirs_within(candidates, _DRIVE_PROBE_TIMEOUT_S)
     return [Path(root_text) for root_text in candidates if root_text in readable]

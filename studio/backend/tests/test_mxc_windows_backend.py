@@ -19,11 +19,10 @@ from core.inference import mxc_read_grants, mxc_runtime, os_sandbox, tools
 
 @pytest.fixture(autouse = True)
 def _dacl_journal_outside_grants(monkeypatch, tmp_path):
-    # A venv at a checkout root puts tmp_path under the sys.prefix grant, which the journal guard refuses.
+    # A venv at the checkout root puts tmp_path under the sys.prefix grant, which the guard refuses.
     outside = Path(os.path.abspath(os.sep)) / "unsloth-test-dacl-journal-never-created"
     monkeypatch.setattr(mxc_runtime, "dacl_state_path", lambda: outside)
     monkeypatch.setattr(mxc_runtime, "dacl_state_dir", lambda: tmp_path)
-    # Unit tests never touch real ACLs; test_mxc_read_grants.py covers the grant itself.
     monkeypatch.setattr(mxc_read_grants, "ensure", lambda _roots: ())
     monkeypatch.setattr(mxc_read_grants, "revoke_recorded", lambda: ())
 
@@ -115,7 +114,6 @@ def test_unavailable_capability_names_the_host_prep_command(monkeypatch, tmp_pat
 
 
 def test_host_prep_is_not_advised_without_the_dacl_opt_in(monkeypatch, tmp_path):
-    # A bare --probe allows the fallback, so it reports host-prep steps Studio never needs.
     from core.inference import mxc_probe, sandbox_windows_mxc
 
     monkeypatch.setattr(sandbox_windows_mxc.sys, "platform", "win32")
@@ -455,7 +453,7 @@ def _policy_plan(workdir, mode = "auto"):
 
 
 def test_workdir_hard_links_within_it_are_allowed(monkeypatch, tmp_path):
-    # uv and pip hard-link from their caches; refusing every nlink > 1 bricked the chat.
+    # uv and pip hard-link from caches, so nlink > 1 must not be refused.
     from core.inference import mxc_policy
 
     workdir = tmp_path / "workdir"
@@ -640,7 +638,6 @@ def test_policy_mutation_is_refused_before_wxc_dispatch(monkeypatch):
         mxc_adapter.spawn(request)
 
 
-# Held with a switch off too: a deferred revocation or a switch turned on mid-build leaves entries it reads.
 @pytest.mark.parametrize("dacl, grants", [(True, True), (True, False), (False, True)])
 def test_a_launch_holds_the_read_grants_until_its_last_cleanup(monkeypatch, tmp_path, dacl, grants):
     from core.inference import sandbox_windows_mxc
@@ -769,7 +766,6 @@ def test_auto_spawn_failure_before_dispatch_uses_software_safeguards(monkeypatch
     prepared = os_sandbox.prepare_tool_launch(plan)
     os_sandbox.spawn_prepared_launch(prepared)
     assert calls == [plan.argv]
-    # Packages an earlier isolated call installed must not vanish on this fallback.
     assert str(packages) in envs[0]["PYTHONPATH"].split(os.pathsep)
     assert prepared.backend == "software-safeguards"
     assert prepared.execution_record.effective_mode == "software_safeguards"
@@ -901,7 +897,6 @@ def test_non_windows_capability_does_not_import_windows_backend(monkeypatch):
 
 
 def test_nested_runtime_grants_collapse_to_their_outermost_root(monkeypatch, tmp_path):
-    # Each DACL-tier grant re-walks its tree: a nested site-packages grant cost about 9s per call.
     from core.inference import mxc_policy
 
     prefix = tmp_path / "venv"

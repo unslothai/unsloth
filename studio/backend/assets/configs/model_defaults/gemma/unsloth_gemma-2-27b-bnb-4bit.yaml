@@ -1,9 +1,5 @@
-# Model defaults for unsloth/gemma-2-27b-bnb-4bit
-# Based on Gemma2_(9B)-Alpaca.ipynb (same defaults for larger models)
-
 training:
   max_seq_length: 2048
-  # num_epochs: 4
   num_epochs: 0
   learning_rate: 2e-4
   batch_size: 2

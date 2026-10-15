@@ -15,7 +15,7 @@ from typing import Any
 QUERY_CHUNK_ENV = "UNSLOTH_QWEN_IMAGE_ROCM_QUERY_CHUNKING"
 QUERY_CHUNK_SIZE = 512
 MIN_QUERY_TOKENS = 8192
-# gfx1151 and gfx1201 are measured; gfx1200 runs gfx1201's AOTriton kernels and tuning.
+# gfx1200 runs gfx1201's AOTriton kernels and tuning.
 CHUNKED_ARCHES = frozenset({"gfx1151", "gfx1200", "gfx1201"})
 
 

@@ -68,6 +68,5 @@ async def whisper_update_status(
     ),
     current_subject: str = Depends(get_current_subject),
 ) -> WhisperUpdateStatusResponse:
-    # Off the event loop: detection may probe the host and read GitHub.
     status = await asyncio.to_thread(get_update_status, force_refresh = force_refresh)
     return WhisperUpdateStatusResponse(**status)

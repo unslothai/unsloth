@@ -29,7 +29,6 @@ logger = logging.getLogger(__name__)
 _DEFAULT_HF_ENDPOINT = "https://huggingface.co"
 _DEFAULT_DATASETS_SERVER = "https://datasets-server.huggingface.co"
 
-# Reported when the configured value is not reachable by this client.
 DEFAULTS_BY_HEALTH_KEY = {
     "hf_endpoint": _DEFAULT_HF_ENDPOINT,
     "hf_datasets_server": _DEFAULT_DATASETS_SERVER,
@@ -38,12 +37,9 @@ DEFAULTS_BY_HEALTH_KEY = {
 _ds_mirror_warned = False
 # The CSP builder runs on every response, so each bad value is logged once.
 _rejected_warned: set[str] = set()
-# client_reachable_endpoint() runs per request too, so each configured endpoint
-# logs its per-client fallback once instead of on every /api/health call.
 _unreachable_warned: set[str] = set()
 
-# A source list is whitespace-separated and semicolon-delimited: any of these in an
-# endpoint would add sources or whole directives rather than one origin.
+# Any of these would add CSP sources or directives rather than one origin.
 _FORBIDDEN_CHARS = frozenset(" \t\r\n\f\v;,'\"\\")
 
 
@@ -77,15 +73,7 @@ def _port_is_valid(parts) -> bool:
 
 
 def _sanitize(candidate: str, default: str, var_name: str) -> str:
-    """Return ``candidate`` when it is a plain http(s) origin, else ``default``.
-
-    These values are interpolated into request URLs *and* into the
-    ``connect-src`` directive of the Content-Security-Policy header, so a value
-    carrying whitespace, a semicolon or a control character would inject extra
-    CSP sources or directives. Operators set these env vars themselves, so this
-    is a configuration guard rather than a defence against hostile input, but a
-    silently broken policy is the worst way to find that out.
-    """
+    """Plain http(s) origins only, since the value is copied into the CSP connect-src directive."""
     if not candidate:
         return default
     canonical, reason = _check(candidate)
@@ -110,11 +98,10 @@ def _check(candidate: str) -> tuple[str | None, str | None]:
     ):
         reason = "contains whitespace, a separator or a control character"
     elif not candidate.isascii():
-        # Starlette headers are latin-1, so an IDN host in the CSP 500s every
-        # response, and the Tauri builder has no IDNA encoder either.
+        # Starlette headers are latin-1, so an IDN host in the CSP would 500 every response.
         reason = "contains non-ASCII characters; use the punycode (xn--) form of the host"
     elif (parts := _split(candidate)) is None:
-        # urlsplit RAISES on "https://[", and _build_csp runs on every response.
+        # urlsplit raises on "https://[".
         reason = "is not a parseable URL"
     else:
         if parts.scheme not in ("http", "https"):
@@ -126,29 +113,24 @@ def _check(candidate: str) -> tuple[str | None, str | None]:
         elif parts.query or parts.fragment:
             reason = "carries a query string or fragment"
         elif not _port_is_valid(parts):
-            # "javascript:alert(1)" becomes a fine URL with a nonsense port.
             reason = "has an invalid port"
         elif parts.netloc.endswith(":"):
             reason = "has an empty port"
         elif "*" in parts.netloc:
             reason = "contains a wildcard host"
         elif parts.scheme == "http" and not is_loopback_host(parts.hostname):
-            # Hub calls carry the user's token, so http off-box puts it on the wire.
+            # Hub calls carry the user's token, so http off-box exposes it.
             reason = (
                 "is plain HTTP to a non-loopback host, which would put the Hub token on the wire"
             )
         else:
-            # Folded: RFC 3986 3.1, and the frontend keys its cache on this string.
+            # Scheme folded per RFC 3986 3.1; the frontend keys its cache on this string.
             return _canonical(parts, parts.scheme + candidate[len(parts.scheme) :]), None
     return None, reason
 
 
 def validate_hub_endpoint(raw: str) -> str:
-    """A user-entered endpoint in the form the env vars carry; ``""`` means the official Hub.
-
-    Same rules the environment values are held to, but a rejected value raises
-    ``ValueError`` with the reason instead of silently falling back.
-    """
+    """Same rules as the env values, but a rejected value raises ValueError rather than falling back."""
     value = raw.strip().rstrip("/")
     if not value:
         return ""
@@ -161,15 +143,7 @@ def validate_hub_endpoint(raw: str) -> str:
 
 
 def is_private_host(hostname: str | None) -> bool:
-    """Is this an address literal that is only meaningful on some local network?
-
-    RFC 1918 and friends, plus link-local and unique-local IPv6. Reserved and
-    documentation ranges count too, which is the conservative direction: an
-    address that is not routable on the internet is one whose meaning depends on
-    where you stand. A NAME is not private by this test even if it resolves to
-    such an address: there is nothing here to resolve it with, and a name at
-    least means the same thing to both ends when their DNS agrees.
-    """
+    """Local-network address literals only; a name is not private even if it resolves to one."""
     if not hostname:
         return False
     try:
@@ -180,17 +154,7 @@ def is_private_host(hostname: str | None) -> bool:
 
 
 def endpoint_is_reachable_by(endpoint: str, client_host: str | None) -> bool:
-    """Would a browser at ``client_host`` reach the SAME host this endpoint names?
-
-    A loopback endpoint names a proxy on the machine the BACKEND runs on, so it
-    means the browser's own localhost anywhere else. A private-network address
-    has the same problem one step out: through the managed tunnel, or from the
-    internet, ``https://10.0.0.5:8443`` is an address on the VISITOR's network,
-    where it is either dead or some unrelated service that would be offered the
-    user's Hub token. A private address is therefore reported only to a client
-    that is itself local, which keeps the ordinary LAN deployment working, and a
-    loopback one only to a loopback client.
-    """
+    """Loopback endpoints go only to loopback clients; private ones only to local clients, not remote."""
     parts = _split(endpoint)
     if parts is None:
         return True
@@ -203,14 +167,7 @@ def endpoint_is_reachable_by(endpoint: str, client_host: str | None) -> bool:
 
 
 def client_reachable_endpoint(client_host: str | None) -> str:
-    """The hub endpoint to hand to a browser at ``client_host``.
-
-    Everything the backend does itself keeps using ``get_hf_endpoint()``; this is
-    only for values that leave for a browser (``/api/health``, the publish link).
-    A remote client that cannot reach the configured endpoint gets the official
-    one instead, and the fallback is logged once per configured endpoint so the
-    operator can see why a tunnelled browser is not using the mirror.
-    """
+    """Falls back to the official Hub, logged once, when the client cannot reach the configured endpoint."""
     endpoint = get_hf_endpoint()
     if endpoint_is_reachable_by(endpoint, client_host):
         return endpoint
@@ -228,13 +185,8 @@ def client_reachable_endpoint(client_host: str | None) -> str:
 
 
 def _canonical(parts, folded: str) -> str:
-    """Compress an IPv6 literal host, leaving everything else untouched.
-
-    ``http://[0:0:0:0:0:0:0:1]`` and ``http://[::1]`` are the same host, but a
-    CSP host-source is matched as a string (CSP3 6.7.2.5), and the browser sends
-    the compressed form: the uncompressed source would not match its own request
-    and the policy would block the very mirror it names.
-    """
+    """Compresses IPv6 literals: CSP host-sources match as strings, and browsers send the compressed
+    form."""
     host = parts.hostname
     if not host or ":" not in host:
         return folded
@@ -251,46 +203,23 @@ def _canonical(parts, folded: str) -> str:
 
 
 def normalize_hf_endpoint_env() -> None:
-    """Make HF_ENDPOINT mean the same thing to huggingface_hub as it does here.
-
-    The library reads the variable itself, at import, with no normalisation and
-    no validation. A scheme-less ``hf-mirror.com`` therefore reaches it verbatim
-    and every ``HfApi`` / ``snapshot_download`` call fails on a missing scheme
-    while Studio's own requests work, and a value this module REJECTS -- a
-    plain-HTTP mirror off the machine, say -- would still be handed the user's
-    Hub token by the library while Studio itself fell back to huggingface.co.
-    Rewriting the variable before huggingface_hub is imported gives the whole
-    process, and the subprocesses that inherit this environment, one endpoint.
-    """
+    """Normalizes HF_ENDPOINT before huggingface_hub imports, which reads it raw and unvalidated."""
     raw = os.environ.get("HF_ENDPOINT")
     if raw is None:
         return
     if not raw.strip():
-        # Blank is not an endpoint, but the library would read it verbatim;
-        # clear it so Studio and huggingface_hub agree on the default.
+        # Blank is not an endpoint but huggingface_hub would read it verbatim.
         os.environ.pop("HF_ENDPOINT", None)
         return
     endpoint = get_hf_endpoint()
     if endpoint == _DEFAULT_HF_ENDPOINT:
-        # Rejected, or the official host: either way, unset asks for the default.
         os.environ.pop("HF_ENDPOINT", None)
     else:
         os.environ["HF_ENDPOINT"] = endpoint
 
 
 def csp_connect_sources() -> tuple[str, ...]:
-    """The two endpoints as CSP ``connect-src`` sources, i.e. origins only.
-
-    A CSP host-source carrying a path is matched *exactly* unless the path ends
-    in a solidus (CSP3 6.7.2.7), so listing a path-prefixed mirror verbatim --
-    ``https://hub.internal/hf`` -- allows exactly that one URL and blocks every
-    ``/hf/api/models`` request under it, in Chrome, Edge, Firefox and Safari
-    alike. The path belongs in the request URL, not in the policy, so the source
-    is reduced to scheme://host[:port].
-
-    A settings-saved endpoint stays out: the browser reaches it through the backend
-    relay, and this policy goes to every client, where a private address must not show.
-    """
+    """Origins only, since a CSP host-source with a path matches exactly; saved-only endpoints stay out."""
     from utils.hub_settings import saved_only_endpoints
 
     hidden = saved_only_endpoints()
@@ -302,16 +231,7 @@ def csp_connect_sources() -> tuple[str, ...]:
 
 
 def csp_asset_sources() -> tuple[str, ...]:
-    """Configured origins that ``img-src``/``media-src`` do not already cover.
-
-    Those directives carry a bare ``https:``, so an https mirror needs nothing
-    added. A loopback HTTP mirror does: its avatars (hf-owner-avatar.ts) and
-    README images (hf-readme.ts) are same-origin-relative to the endpoint, and
-    without this they are blocked while the API calls beside them succeed.
-
-    Returning only the http origins is what keeps an unconfigured deployment's
-    policy byte-identical to the pre-PR one.
-    """
+    """Only http origins: img-src and media-src already allow https, so an https mirror needs nothing."""
     return tuple(
         dict.fromkeys(source for source in csp_connect_sources() if source.startswith("http://"))
     )
@@ -323,11 +243,7 @@ def _origin_of(endpoint: str) -> str:
 
 
 def get_hf_endpoint() -> str:
-    """Return the configured HuggingFace hub endpoint (no trailing slash).
-
-    Wraps :func:`utils.utils.hf_endpoint_url` so callers get a value that is
-    safe for ``f"{endpoint}/path"`` concatenation.
-    """
+    """The configured hub endpoint, sanitized and without a trailing slash, for path concatenation."""
     return _sanitize(hf_endpoint_url().rstrip("/"), _DEFAULT_HF_ENDPOINT, "HF_ENDPOINT")
 
 
@@ -339,13 +255,7 @@ def browser_hf_endpoint() -> str:
 
 
 def get_hf_datasets_server() -> str:
-    """Return the datasets-server base URL (no trailing slash).
-
-    Returns ``HF_DATASETS_SERVER`` when set, otherwise the official
-    ``datasets-server.huggingface.co``.  A mirrored ``HF_ENDPOINT`` does
-    **not** implicitly apply here — Hub mirrors rarely proxy the
-    datasets-server API, so operators must opt in explicitly.
-    """
+    """A mirrored HF_ENDPOINT does not apply here; the datasets server needs its own HF_DATASETS_SERVER."""
     raw = (os.environ.get("HF_DATASETS_SERVER") or "").strip()
     if raw:
         endpoint = raw if "://" in raw else "https://" + raw

@@ -18,7 +18,6 @@ import sys
 import threading
 from typing import Any, Optional
 
-# name -> first transformers release exporting it.
 LTX2_OPTIONAL_TRANSFORMERS_NAMES: dict[str, str] = {
     "Gemma4UnifiedForConditionalGeneration": "5.10",
 }
@@ -60,7 +59,6 @@ def _make_placeholder(name: str, min_version: str) -> type:
 
 
 def _transformers_has(transformers: Any, name: str) -> bool:
-    # Lazy getattr imports the real module; a name that fails to import counts as missing, as diffusers would see it.
     try:
         value = getattr(transformers, name)
     except Exception:  # noqa: BLE001 -- AttributeError on an old release, RuntimeError on a broken lazy import
@@ -108,8 +106,7 @@ def ensure_ltx2_pipelines_importable(logger: Any = None) -> bool:
             _done = True
             return True
         try:
-            # First processing_utils import replaces sys.modules["transformers"] (direct_transformers_import), dropping
-            # names bound on the old object: settle the swap first.
+            # First processing_utils import replaces sys.modules['transformers']: settle the swap first.
             importlib.import_module("transformers.processing_utils")
         except Exception:  # noqa: BLE001 -- the pipeline import below reports whatever this was
             pass
@@ -146,7 +143,7 @@ def ensure_ltx2_pipelines_importable(logger: Any = None) -> bool:
             error = _import(_LTX2_PACKAGE)
             package = sys.modules.get(_LTX2_PACKAGE)
             if error is not None or package is None:
-                return False  # no diffusers, or one without LTX-2: nothing to shim
+                return False
             targets = [m for m in _modules_naming(package, missing) if m not in sys.modules]
             for module_name in targets:
                 error = _import(module_name)

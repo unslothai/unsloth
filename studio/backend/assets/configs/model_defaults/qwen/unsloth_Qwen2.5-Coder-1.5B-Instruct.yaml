@@ -1,10 +1,7 @@
-# Model defaults for unsloth/Qwen2.5-Coder-1.5B-Instruct
-# Based on Qwen2.5_Coder_(1.5B)-Tool_Calling.ipynb
 # Also applies to: unsloth/Qwen2.5-Coder-1.5B-Instruct-bnb-4bit, Qwen/Qwen2.5-Coder-1.5B-Instruct
 
 training:
   max_seq_length: 2048
-  # num_epochs: 4
   num_epochs: 0
   learning_rate: 2e-4
   batch_size: 2

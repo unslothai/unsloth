@@ -61,8 +61,7 @@ def hf_datasets_cache_roots() -> list[Path]:
         seen.add(resolved)
         roots.append(resolved)
 
-    # Keep this stdlib-only: training validates cached datasets before activating a Transformers
-    # sidecar, and importing datasets here would cache the base huggingface_hub module first.
+    # Stdlib-only: importing datasets here would cache base huggingface_hub before the sidecar.
     env_cache = os.environ.get("HF_DATASETS_CACHE")
     if env_cache:
         add(Path(env_cache))
@@ -563,7 +562,7 @@ def load_cached_hf_dataset(
         )
     dataset = load_dataset(**kwargs)
     if app_cache is not None:
-        # Advisory flag: a purged entry, read-only home or full disk must not discard a loaded dataset.
+        # Advisory: a failure must not discard a loaded dataset.
         try:
             mark_app_processed_dataset_cache_complete(app_cache)
         except UnsafeDatasetCachePathError:
@@ -618,12 +617,7 @@ def cached_dataset_candidates(
 
 
 def dataset_cache_can_answer(repo_id: str) -> bool:
-    """True if some cached copy of *repo_id* could satisfy a preview without the Hub.
-
-    Both caches count. ``datasets`` answers a streaming load from its own PREPARED cache,
-    which is where the measured leak was, while the hub snapshot backs the file-level
-    readers.
-    """
+    """Counts both the prepared datasets cache, which streaming loads use, and the hub snapshot."""
     if not repo_id:
         return False
     try:
@@ -641,21 +635,7 @@ def refuse_unauthorized_dataset_preview(
     *,
     offline: bool = False,
 ) -> None:
-    """Raise 404 when a cached dataset preview would be served to a caller who cannot reach it.
-
-    ``datasets`` satisfies a load from its own prepared cache without consulting the
-    credential, so an explicit token that cannot reach the repo is a leak online as well as
-    off. Both preview routes spelled this out separately, and not equivalently, under
-    comments claiming they mirrored each other; stating it once removes that trap.
-
-    The anonymous sentinel was refused only under a declared offline env, which left the
-    case that matters: a Hub merely unreachable is not a Hub declared absent, and the load
-    then falls back to the prepared cache all the same. It is now refused whenever the repo
-    is not public, which ``cached_read_refused`` answers for every reader alike.
-
-    ``offline`` is the caller's own cache-only intent, forwarded so a prefer-local request
-    does not put its credential and repo id on the wire for a branch that will not use them.
-    """
+    """Raises 404 for a cached preview the caller cannot reach, since datasets ignores the credential."""
     from fastapi import HTTPException
     from hub.utils.hf_tokens import cached_read_refused
 

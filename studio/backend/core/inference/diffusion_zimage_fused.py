@@ -30,7 +30,6 @@ _QKV_ATTR = "_unsloth_fused_qkv"
 
 _LOCK = threading.Lock()
 _STATE: dict = {}
-# device index -> (even lanes, odd lanes) fma form of this card's complex multiply, or None
 _FUSION: dict = {}
 
 

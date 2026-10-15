@@ -54,7 +54,6 @@ def test_room_shrinks_with_the_clip_and_never_goes_negative():
     # T4 after load: 9000 + 500 - (2500 + 2048 + estimate(25 frames) = 4869) = 83
     est = dm.estimate_video_runtime_mib(width = 1280, height = 704, num_frames = 25)
     assert short == 9500 - (2500 + dm.DEFAULT_BASE_OVERHEAD_MIB + est)
-    # already-resident bytes are demotable, so they count as available
     assert (
         vr.room_mib(width = 1280, height = 704, frames = 25, **{**common, "resident_mib_now": 4000})
         == short + 4000
@@ -124,9 +123,6 @@ def test_fit_failure_streams_everything_and_never_raises(monkeypatch):
     assert released
 
 
-# CUDA: real diffusers group offloading with a copy stream.
-
-
 def _streamed_net():
     torch = pytest.importorskip("torch")
     if not torch.cuda.is_available():
@@ -138,9 +134,7 @@ def _streamed_net():
         def __init__(self):
             super().__init__()
             self.proj_in = torch.nn.Linear(64, 1024)
-            self.blocks = torch.nn.ModuleList(
-                torch.nn.Linear(1024, 1024) for _ in range(6)
-            )  # ~4 MiB each
+            self.blocks = torch.nn.ModuleList(torch.nn.Linear(1024, 1024) for _ in range(6))
             self.proj_out = torch.nn.Linear(1024, 64)
 
         def forward(self, x):
@@ -165,7 +159,7 @@ def _streamed_net():
         non_blocking = True,
         low_cpu_mem_usage = True,
     )
-    # the production top-level group: re-pointed to its host copy on offload, as _apply_group_offload leaves it
+    # The production top-level group is re-pointed to its host copy on offload.
     assert dm._skip_top_level_copy_back(net)
     pipe = types.SimpleNamespace(transformer = net, components = {"transformer": net})
     return torch, net, pipe, x, ref
@@ -204,21 +198,18 @@ def test_top_level_and_block_prefix_stay_resident_bit_identical(monkeypatch):
 def test_prefix_is_sized_to_the_room_and_refit_per_request(monkeypatch):
     torch, net, pipe, x, ref = _streamed_net()
     block_mib = 4
-    _fit(pipe, monkeypatch, 1 + 3 * block_mib + 1)  # top-level (~0.5 MiB) + 3 blocks
+    _fit(pipe, monkeypatch, 1 + 3 * block_mib + 1)
     assert _placed(net) == ["cuda"] * 3 + ["cpu"] * 3
     assert next(net.proj_in.parameters()).device.type == "cuda"
     for _ in range(2):
         assert torch.equal(net(x.cuda()).cpu(), ref)
-    # a longer clip: less room, the prefix shrinks from its end
     _fit(pipe, monkeypatch, 1 + block_mib + 1)
     assert _placed(net) == ["cuda"] + ["cpu"] * 5
     for _ in range(2):
         assert torch.equal(net(x.cuda()).cpu(), ref)
-    # a short clip again: grows back
     _fit(pipe, monkeypatch, 1024)
     assert _placed(net) == ["cuda"] * 6
     assert torch.equal(net(x.cuda()).cpu(), ref)
-    # no room: everything streams, as plain group offloading
     _fit(pipe, monkeypatch, 0)
     assert _placed(net) == ["cpu"] * 6
     assert next(net.proj_in.parameters()).device.type == "cpu"
@@ -245,11 +236,9 @@ def test_measured_room_and_cover_lookup():
     )
     assert vr.measured_room_mib(peak_extra_mib = 20000, **common) == 0
     net = types.SimpleNamespace(_unsloth_video_peaks = {100: 1500, 300: 2500})
-    assert vr._measured_extra_mib(net, 100) == 2500  # every recorded request at least this large
+    assert vr._measured_extra_mib(net, 100) == 2500
     assert vr._measured_extra_mib(net, 200) == 2500
-    assert (
-        vr._measured_extra_mib(net, 301) is None
-    )  # larger than anything measured: the estimate sizes it
+    assert vr._measured_extra_mib(net, 301) is None
     assert vr._measured_extra_mib(types.SimpleNamespace(), 1) is None
 
 
@@ -261,7 +250,7 @@ def test_only_a_completed_request_is_recorded(monkeypatch):
     assert vr.record_request_peak(pipe) == 4000
     assert net._unsloth_video_peaks == {100: 4000}
     assert net._unsloth_video_pending is None
-    assert vr.record_request_peak(pipe) is None  # recorded once per fit
+    assert vr.record_request_peak(pipe) is None
 
 
 def test_video_request_path_records_the_peak_after_export():
@@ -274,7 +263,7 @@ def test_video_request_path_records_the_peak_after_export():
 
 def test_measured_peak_widens_the_next_request(monkeypatch):
     torch, net, pipe, x, ref = _streamed_net()
-    est = {"room": 1 + 4 + 1}  # top-level + 1 block from the estimate
+    est = {"room": 1 + 4 + 1}
     monkeypatch.setattr(vr, "room_mib", lambda **kw: est["room"])
     fit = lambda: vr.fit_for_request(
         pipe, device = "cuda", floor_mib = 1, width = 64, height = 64, frames = 1
@@ -284,14 +273,13 @@ def test_measured_peak_widens_the_next_request(monkeypatch):
     assert torch.equal(net(x.cuda()).cpu(), ref)
     vr.record_request_peak(pipe)
     net._unsloth_video_peaks = {64 * 64 * 1: 1}
-    fit()  # the measured room on a large card holds every block
+    fit()
     assert _placed(net) == ["cuda"] * 6
     assert torch.equal(net(x.cuda()).cpu(), ref)
     monkeypatch.setenv(vr.VIDEO_DIT_RESIDENT_MEASURED_ENV, "0")
     fit()
     assert _placed(net) == ["cuda"] + ["cpu"] * 5
     assert torch.equal(net(x.cuda()).cpu(), ref)
-    # a larger request than anything measured is sized by the estimate
     monkeypatch.delenv(vr.VIDEO_DIT_RESIDENT_MEASURED_ENV)
     vr.fit_for_request(pipe, device = "cuda", floor_mib = 1, width = 64, height = 64, frames = 2)
     assert _placed(net) == ["cuda"] + ["cpu"] * 5

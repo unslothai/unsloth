@@ -24,11 +24,8 @@ from typing import Any, Optional
 from utils.paths.storage_roots import account_path
 from utils.paths.path_utils import is_appledouble_metadata
 
-# Control map types. "passthrough": the supplied image IS the control map. "canny": derive an edge map here.
 CONTROL_TYPES = ("passthrough", "canny")
 
-# Diffusers quant schemes that cannot host ControlNet cleanly (torchao tensor subclasses); gated off like LoRA, along
-# with GGUF-via-diffusers.
 _DIFFUSERS_BLOCKED_QUANT = ("int8", "fp8", "nvfp4", "mxfp8")
 
 
@@ -55,8 +52,6 @@ class ResolvedControlNet:
     is_local: bool
 
 
-# Curated, family-tagged catalog. Union models (one model, many modes) are the default picks; local dirs and a bare
-# ``owner/name`` repo id also work.
 _CURATED: tuple[ControlNetCatalogEntry, ...] = (
     ControlNetCatalogEntry(
         id = "flux-union-pro",
@@ -94,11 +89,8 @@ def sanitize_id(raw: str) -> str:
 
 
 def _has_controlnet_weights(p: Path) -> bool:
-    """True when ``p`` holds a loadable diffusers ControlNet weight (or shard index).
-
-    Guards against advertising a config-only folder (interrupted download) that then fails deep in
-    ``from_pretrained``. Accepts the standard single-file weights, a shard index, or any
-    ``.safetensors`` shard."""
+    """Needs real weights, not only config, so an interrupted download is rejected before
+    from_pretrained."""
     names = (
         "diffusion_pytorch_model.safetensors",
         "diffusion_pytorch_model.bin",
@@ -128,7 +120,6 @@ def _scan_local() -> list[ControlNetCatalogEntry]:
     for p in children:
         if not p.is_dir():
             continue
-        # Require BOTH config and a loadable weight/index (a config-only folder is incomplete).
         if not (p / "config.json").exists() or not _has_controlnet_weights(p):
             continue
         entries.append(
@@ -159,19 +150,12 @@ def _catalog_by_id() -> dict[str, ControlNetCatalogEntry]:
 
 
 def resolve_controlnet(spec_id: str, *, family: Optional[str] = None) -> ResolvedControlNet:
-    """Resolve a ControlNet id to a loadable repo id / local dir.
-
-    Accepts a catalog/local id or a bare HF repo id (``owner/name``); the backend loads it with
-    ``from_pretrained``. Raises on an unknown id (caller maps to 400).
-
-    ``family`` enforces compatibility: a ControlNet is architecture-specific, so an entry tagged
-    for another family is rejected here rather than loaded through the wrong pipeline later.
-    """
+    """Refuses a ControlNet tagged for another family; it is architecture-specific and would load
+    wrongly."""
     entry = _catalog_by_id().get(spec_id)
     if entry is None:
         entry = next((e for e in _CURATED if e.repo_id and e.repo_id == spec_id), None)
     if entry is not None:
-        # A direct API call could send an entry for another family; reject it before any download.
         fam = (family or "").strip().lower()
         if entry.families and fam and fam not in {f.lower() for f in entry.families}:
             raise ValueError(
@@ -187,7 +171,7 @@ def resolve_controlnet(spec_id: str, *, family: Optional[str] = None) -> Resolve
             raise ValueError(f"ControlNet '{spec_id}' has no repo")
         return ResolvedControlNet(spec_id, entry.repo_id, is_local = False)
 
-    # A bare HF repo id (owner/name). STRICT shape so a filesystem-looking id can never reach from_pretrained.
+    # Strict shape so a filesystem-looking id never reaches from_pretrained.
     if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*", spec_id):
         return ResolvedControlNet(spec_id, spec_id, is_local = False)
 
@@ -196,7 +180,6 @@ def resolve_controlnet(spec_id: str, *, family: Optional[str] = None) -> Resolve
     )
 
 
-# Union ControlNet mode indices: a union model selects its head via an integer ``control_mode``.
 _UNION_CONTROL_MODES: dict[str, int] = {
     "canny": 0,
     "tile": 1,
@@ -209,14 +192,10 @@ _UNION_CONTROL_MODES: dict[str, int] = {
 
 
 def union_control_mode(spec_id: str, control_type: str) -> Optional[int]:
-    """The integer ``control_mode`` for a union ControlNet, or None.
-
-    A union model requires a concrete mode. A known mode maps to its index; ``passthrough`` (or
-    empty) defaults to 0 (canny head). An unknown/typo'd type raises ValueError so the route
-    returns a 400 instead of running the wrong head. A non-union entry returns None."""
+    """A typo'd control type raises so the route returns 400, never running the wrong union head."""
     entry = _catalog_by_id().get(spec_id)
     if entry is None:
-        # match on repo_id too (the catalog is keyed by short id), else the union runs the wrong head
+        # Catalog is keyed by short id; else the union runs the wrong head.
         entry = next((e for e in _CURATED if e.repo_id and e.repo_id == spec_id), None)
     if entry is None or not entry.is_union:
         return None
@@ -224,7 +203,7 @@ def union_control_mode(spec_id: str, control_type: str) -> Optional[int]:
     if ct in _UNION_CONTROL_MODES:
         return _UNION_CONTROL_MODES[ct]
     if ct in ("", "passthrough"):
-        return 0  # canny is the default head
+        return 0
     raise ValueError(
         f"Unknown control type {control_type!r} for a union ControlNet. Use one of: "
         f"{', '.join(sorted(_UNION_CONTROL_MODES))}, or passthrough."
@@ -232,11 +211,7 @@ def union_control_mode(spec_id: str, control_type: str) -> Optional[int]:
 
 
 def preprocess_control(image: Any, control_type: str) -> Any:
-    """Turn a source image into a control map.
-
-    ``passthrough`` returns the image unchanged. ``canny`` derives a dependency-free gradient edge
-    map (a rough stand-in for true Canny). Unknown types pass through so a new type never fails.
-    """
+    """Unknown control types pass through unchanged, so a new type never fails the request."""
     ct = (control_type or "passthrough").strip().lower()
     if ct != "canny":
         return image
@@ -248,11 +223,10 @@ def preprocess_control(image: Any, control_type: str) -> Any:
     mag = np.hypot(gx, gy)
     peak = float(mag.max())
     if peak <= 1e-6:
-        # A flat image has no edges, so the map is all black; returning the source would condition the ControlNet on raw
-        # luminance.
+        # Returning the source would condition on raw luminance.
         return Image.new("RGB", image.size, (0, 0, 0))
     mag = mag / peak * 255.0
-    edges = (mag > 40.0).astype(np.uint8) * 255  # white edges on black (ControlNet convention)
+    edges = (mag > 40.0).astype(np.uint8) * 255
     return Image.fromarray(edges).convert("RGB")
 
 
@@ -264,11 +238,7 @@ def supports_controlnet(
     model_kind: Optional[str],
     transformer_quant: Optional[str],
 ) -> bool:
-    """Whether the loaded model can apply a ControlNet.
-
-    diffusers only. Requires the family to declare a ControlNet pipeline. Blocked for the GGUF
-    path and torchao fp8/int8 dense (same as LoRA): they can't host the extra conditioning cleanly.
-    """
+    """Blocked for GGUF and torchao fp8/int8 dense, which cannot host the extra conditioning cleanly."""
     if not family or not has_controlnet_pipeline:
         return False
     if engine != "diffusers":

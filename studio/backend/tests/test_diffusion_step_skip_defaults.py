@@ -18,11 +18,9 @@ from core.inference.diffusion_families import default_generation_params
 from .test_diffusion_backend import _load_into, fake_runtime  # noqa: F401 - fixture
 
 
-# --------------------------------------------------------------------------------------------- schedule / policy
 def test_min_steps_raises_the_floor_but_never_lowers_it():
     assert ss.static_schedule(14, min_steps = 20) == ()
     assert ss.static_schedule(20, min_steps = 20) == ss.static_schedule(20)
-    # Below STATIC_MIN_STEPS stays off whatever is asked.
     assert ss.static_schedule(11, min_steps = 4) == ()
     assert ss.static_schedule(14, min_steps = 4) == ss.static_schedule(14)
 
@@ -53,14 +51,14 @@ DEV = "black-forest-labs/FLUX.1-dev"
         ((KREA,), "off", 28, None),
         ((KREA,), None, 28, None),
         ((KREA,), "default", 12, None),  # a short default schedule is never measured
-        ((DEV,), "default", 28, None),  # max-only row
+        ((DEV,), "default", 28, None),
         ((DEV,), "max", 28, {"every": 2, "min_steps": 20}),
-        # The unsloth mirror and a local path with the upstream as its base both resolve to the upstream row.
+        # The unsloth mirror and a local path based on the upstream both resolve to the upstream row.
         (("unsloth/FLUX.1-Krea-dev",), "default", 28, {"every": 2, "min_steps": 20}),
         (("/models/my-krea", KREA), "default", 28, {"every": 2, "min_steps": 20}),
         (("black-forest-labs/FLUX.1-schnell",), "max", 28, None),
         ((None,), "max", 28, None),
-        (KREA, "default", 28, {"every": 2, "min_steps": 20}),  # a bare string
+        (KREA, "default", 28, {"every": 2, "min_steps": 20}),
     ],
 )
 def test_plan_follows_the_tier_and_the_default_steps(table, ids, tier, steps, want):
@@ -71,7 +69,6 @@ def test_plan_follows_the_tier_and_the_default_steps(table, ids, tier, steps, wa
 def test_kill_switch_turns_auto_static_off(table, monkeypatch, value):
     monkeypatch.setenv(dcache.ENV_AUTO_STEP_SKIP, value)
     assert dcache.auto_static_skip_plan((KREA,), "default", 28) is None
-    # Auto falls back to what it did before: FBCache on max at 20+ steps, nothing on default.
     assert dcache.resolve_auto_step_cache("max", 28, static_plan = None) == dcache.TC_FBCACHE
     assert dcache.resolve_auto_step_cache("default", 28, static_plan = None) is None
 
@@ -89,7 +86,6 @@ def test_auto_settings_use_the_plan_unless_the_env_pins_every():
     assert ss.auto_static_settings(plan, env = {ss.ENV_EVERY: "2"})["every"] == 2
 
 
-# The shipped table: only the checkpoints that were measured, each at its default steps.
 MEASURED = {
     "Qwen/Qwen-Image-2.1": ("default", "max"),
     "Qwen/Qwen-Image": ("default", "max"),
@@ -109,7 +105,6 @@ def test_shipped_table_lists_only_measured_models():
         entry = {k: v for k, v in dcache.AUTO_STATIC_SKIP[repo.lower()].items() if k != "steps"}
         assert set(entry) == set(tiers)
         assert all(int(v) >= 2 for v in entry.values())
-        # The default tier never skips more than the max tier.
         assert entry.get("default", 99) <= entry["max"] or "default" not in entry
 
 
@@ -121,7 +116,7 @@ def test_every_measured_model_reaches_the_auto_floor_at_its_default_steps(repo):
     if repo.startswith(("Wan-AI", "hunyuanvideo-community/HunyuanVideo")):
         steps, _ = default_video_generation_params(repo)
     if repo == "MiniMaxAI/MiniMax-H3":
-        steps = 30  # the family default; no generation-defaults row
+        steps = 30  # family default; no generation-defaults row
     assert steps >= dcache.AUTO_STATIC_MIN_STEPS
     assert dcache.auto_static_skip_plan((repo,), "max", steps) is not None
 
@@ -145,7 +140,6 @@ def test_unmeasured_or_distilled_siblings_never_auto_skip(repo):
         assert dcache.auto_static_skip_plan((repo,), tier, max(steps, 50)) is None
 
 
-# --------------------------------------------------------------------------------------------- joint outputs (H3)
 class _JointDiT:
     """MiniMax-H3's shape: one call per step returning (video velocity, audio velocity) of different sizes."""
 
@@ -187,7 +181,7 @@ def test_joint_video_audio_outputs_are_skipped_stream_by_stream(mode):
         assert type(outs[i]) is tuple and video.shape == (1, 6, 2) and audio.shape == (1, 3)
         t = 1.0 - i / 30
         if plan[i] or mode == "taylor1":
-            # Computed, or extrapolated linearly in t, which is exact for these linear-in-t outputs.
+            # Linear extrapolation in t is exact for these linear-in-t outputs.
             assert torch.allclose(video, torch.full_like(video, t), atol = 1e-5)
             assert torch.allclose(audio, torch.full_like(audio, 2 * t), atol = 1e-5)
         else:
@@ -210,7 +204,6 @@ def test_a_non_tensor_member_still_declines():
     assert dit.calls == 25
 
 
-# --------------------------------------------------------------------------------------------- image loader
 def _probe_plan(entry):
     """The real plan function over a one-row table, whatever ids the loader passes (a tmp-path GGUF here)."""
 
@@ -271,7 +264,6 @@ def test_auto_load_installs_static_for_a_listed_model(
         assert status["transformer_cache"] == "static" and entry["value"] == "static"
         assert entry["requested"] is None and "UNSLOTH_DIFFUSION_AUTO_STEP_SKIP" in entry["reason"]
         assert fb == []
-        # The generate-time FBCache toggle is never armed over an engaged static skip.
         assert backend._state.cache_auto is False
     else:
         assert installs == []
@@ -313,7 +305,6 @@ def test_auto_static_declined_falls_back_to_the_previous_auto(fake_runtime, tmp_
     backend.unload()
 
 
-# --------------------------------------------------------------------------------------------- generate scope
 @pytest.mark.parametrize("auto", [True, False])
 def test_auto_skip_runs_on_txt2img_only_explicit_everywhere(
     fake_runtime, tmp_path, monkeypatch, auto
@@ -348,8 +339,7 @@ def test_auto_skip_runs_on_txt2img_only_explicit_everywhere(
 def test_deferred_default_tier_installs_the_auto_skip_on_the_third_image(
     fake_runtime, tmp_path, monkeypatch
 ):
-    # Speed unset (the UI default): a dense load stays eager, then the 3rd image engages `default`, and with it the
-    # model's default-tier skip. The first two renders stay full-step.
+    # Speed unset: dense load stays eager, the 3rd image engages `default` and its skip; first two full-step.
     from core.inference import diffusion as dmod
 
     from .test_diffusion_backend import DiffusionBackend
@@ -431,7 +421,7 @@ def _shifted(sigma, shift):
 
 
 def test_h3_audio_extrapolates_on_its_own_schedule():
-    # Video shift 12, audio shift 3 (MiniMax-H3 defaults); a video reference row at 1.0 and a text row.
+    # MiniMax-H3 defaults: video shift 12, audio shift 3.
     steps = 30
     dit = _H3DiT()
     pipe = types.SimpleNamespace(transformer = dit)
@@ -497,7 +487,7 @@ def test_a_failed_deferred_profile_takes_the_auto_skip_back_off(
     backend.unload()
 
 
-# Step counts the table rows were measured at (PR description); the auto skip never runs below them.
+# Step counts the table rows were measured at; the auto skip never runs below them.
 MEASURED_STEPS = {
     "Qwen/Qwen-Image-2.1": 25,
     "Qwen/Qwen-Image": 20,

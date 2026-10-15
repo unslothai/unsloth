@@ -21,7 +21,7 @@ const CODE_SHAPES = new Set(["auto", "module", "snippet"]);
 const SNIPPET_PREFIX = "(() => {\n";
 const SNIPPET_SUFFIX = "\n})();\nexport {};\n";
 const OXLINT_SUPPRESSED_RULES = ["no-unused-vars", "no-new-array"];
-// The caller kills only this wrapper, so a wedged oxlint has to die here or it is orphaned.
+// The caller kills only this wrapper, so a wedged oxlint must die here.
 const OXLINT_DEFAULT_BUDGET_MS = 30_000;
 const OXLINT_BUDGET_MARGIN_MS = 2_000;
 const OXLINT_MIN_TIMEOUT_MS = 1_000;
@@ -413,7 +413,7 @@ function runLintBatch(entries, budgetMs) {
       encoding: "utf8",
       cwd: TOOL_DIR,
       timeout: timeoutMs,
-      // SIGTERM is ignorable, and spawnSync then waits out the child regardless.
+      // SIGTERM is ignorable, and spawnSync then waits out the child.
       killSignal: "SIGKILL",
     });
     if (exec.error) {

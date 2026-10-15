@@ -56,12 +56,7 @@ def _resolve_scope(
     scope_project_id: str | None = None,
     scope_conversation_id: str | None = None,
 ) -> str | list[str] | None:
-    """KB (an explicit pick) is exclusive; project and thread scopes combine so a
-    project chat also retrieves from its own attached documents.
-
-    The conversation archive is exclusive too, and takes precedence: it is a different
-    corpus (this chat's evicted turns), so sharing a top-K would have old turns and
-    document passages crowd each other out."""
+    """The archive is exclusive and wins over KB; project and thread scopes combine."""
     if scope_conversation_id:
         return conversation_archive_scope(scope_conversation_id)
     if scope_kb_id:
@@ -113,20 +108,7 @@ CONVERSATION_RECALL_HEADER = (
 
 
 def format_conversation_recall(rows, hits) -> tuple[str, list[dict]]:
-    """`_format`, plus what a recalled conversation needs and a knowledge base does not.
-
-    Two additions, both presentation only:
-
-    * each block carries ``turn``, the position of that turn in the conversation, so the
-      passages can be told apart in time. Omitted where the archive predates the column,
-      because a missing ordinal is not a position of zero.
-    * a one-line header, emitted only when there are at least two passages, stating that
-      they are oldest first and that a later turn supersedes an earlier one. It says
-      SUPERSEDES rather than "is the answer", so a question about what was originally
-      said still reads the first block as the original. With a single passage the header
-      would be an ordering claim about nothing, and it would spend tokens on the rung the
-      over-budget backoff falls to when there is least room.
-    """
+    """Blocks carry their turn; with 2+ passages a header says a later turn supersedes an earlier one."""
     if not hits:
         return "No matching turns were found in this conversation.", []
     blocks: list[str] = []
@@ -147,12 +129,8 @@ def format_conversation_recall(rows, hits) -> tuple[str, list[dict]]:
                 "page": None,
                 "text": text,
                 "turn": int(ordinal) + 1 if ordinal is not None else None,
-                # createdAt is the tie-breaker _conversation_order needs: pre-ordinal rows have turn None and
-                # ordinals are not UNIQUE.
                 "chunkIndex": _row_value(r, "chunk_index"),
                 "createdAt": _row_value(r, "created_at"),
-                # And insertion order under that, for archives whose rows share a timestamp
-                # the clock was too coarse to separate; without it the merge key runs out.
                 "documentRowid": _row_value(r, "document_rowid"),
                 "score": round(float(h.score), 4) if h.score is not None else None,
             }
@@ -164,11 +142,7 @@ def format_conversation_recall(rows, hits) -> tuple[str, list[dict]]:
 
 
 def render_conversation_sources(sources: list[dict]) -> str:
-    """`render_sources` for recalled conversation: keeps ``turn`` and the header.
-
-    Used when two searches are merged into one block, where the sources are already built
-    and there are no rows left to read them from.
-    """
+    """Renders already-built recalled sources, keeping turn and header; no rows remain to rebuild them."""
     blocks: list[str] = []
     for i, s in enumerate(sources, 1):
         s["citationId"] = i
@@ -193,10 +167,7 @@ def _row_value(row, key: str):
 
 
 def render_sources(sources: list[dict]) -> str:
-    """Render a citation-source list to sequentially-numbered ``<chunk>`` blocks,
-    rewriting each source's ``citationId`` to match its 1-based position. Lets
-    independently-built source lists (a whole-document thread attachment plus
-    retrieved project passages) be merged under one citation numbering."""
+    """Renumbers citationId by position so separately built source lists merge under one numbering."""
     blocks: list[str] = []
     for i, s in enumerate(sources, 1):
         s["citationId"] = i
@@ -274,13 +245,7 @@ def search_for_autoinject(
     model_name: str | None = None,
     mode: str = "hybrid",
 ) -> tuple[str, list[dict]] | None:
-    """Forced-retrieval variant for auto-injection.
-
-    Returns ``(rendered_text, sources)`` only if some hit's cosine clears
-    ``min_dense_score``, else ``None`` (inject nothing). ``None`` keeps the
-    retrieved top-K without the optional-auto relevance gate. In ``lexical``
-    mode gated hits fall back to a dense 1-NN probe.
-    """
+    """Returns None, meaning inject nothing, unless some hit's cosine clears min_dense_score."""
     if not query or not query.strip():
         return None
     scope = _resolve_scope(scope_kb_id, scope_thread_id, scope_project_id)

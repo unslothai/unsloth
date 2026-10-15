@@ -19,11 +19,7 @@ _FALSY = frozenset({"0", "false", "no", "off"})
 
 
 def sentencepiece_should_be_disabled():
-    """Windows by default, every other platform only when asked.
-
-    An unrecognised value falls back to the platform default rather than raising: this runs at
-    the top of a process, where a typo in an environment variable must not be fatal.
-    """
+    """Windows defaults to disabled, elsewhere only when asked; an unrecognised value is never fatal."""
     value = (os.environ.get(DISABLE_SENTENCEPIECE_VARIABLE) or "").strip().lower()
     if value in _TRUTHY:
         return True
@@ -33,28 +29,14 @@ def sentencepiece_should_be_disabled():
 
 
 def disable_sentencepiece_on_windows():
-    """Make ``import sentencepiece`` fail the way an uninstalled package does.
-
-    On Windows the compiled extension is never handed to the loader, so a code integrity
-    policy has no file to refuse and the user gets no Bad Image dialog; a probe to find out
-    whether this machine would refuse it is itself that dialog. A ``None`` entry is CPython's
-    documented sentinel and makes the import raise ImportError, the ordinary "not installed"
-    state.
-
-    Must run before transformers is imported, which reads availability during its own import.
-    Once transformers is in sys.modules this declines rather than installing a sentinel it has
-    already contradicted. Returns True only when this call is what made it absent.
-    """
+    """Sets a None sys.modules sentinel so import fails as if uninstalled, and the DLL is never loaded."""
     if not sentencepiece_should_be_disabled():
         return False
     if "sentencepiece" in sys.modules:
-        # Already imported by something earlier, or already disabled by an earlier call.
-        # Replacing a live module would break whoever is holding it.
+        # Replacing a live or already-disabled module would break whoever holds it.
         return sys.modules["sentencepiece"] is None
     if "transformers" in sys.modules:
-        # Too late, and installing it anyway would be worse than doing nothing: transformers
-        # has already cached "installed", so the sentinel would only make the two disagree and
-        # a tokenizer that loads today would start raising ModuleNotFoundError.
+        # Too late: transformers cached "installed", so a sentinel would make working tokenizers raise.
         return False
     sys.modules["sentencepiece"] = None
     return True

@@ -102,7 +102,6 @@ def install_untiled_decode(
     if getattr(decode, "_unsloth_untiled_decode", False):
         return True
     stats = {"untiled": 0, "tiled": 0, "oom_fallback": 0}
-    # Smallest estimate that ran out of memory; never retried untiled.
     oom_need: list = []
 
     def gated(z: Any, *args: Any, **kwargs: Any) -> Any:

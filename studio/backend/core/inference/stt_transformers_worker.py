@@ -37,18 +37,14 @@ _CTX = mp.get_context("spawn")
 
 _BACKEND_PATH = str(Path(__file__).resolve().parent.parent.parent)
 
-# both bounds only break a hang: a cold-disk large-v3 load and a 30 minute transcription are legitimately slow
 _LOAD_TIMEOUT_SECONDS = 600.0
 _TRANSCRIBE_TIMEOUT_SECONDS = 600.0
-# How long a cancelled command gets before the child is killed. Generation stops within a token, but a load inside
-# from_pretrained never sees the cancel, and training is waiting for that memory.
+# A load inside from_pretrained never sees the cancel, so kill after a grace period.
 _CANCEL_GRACE_SECONDS = 10.0
 _SHUTDOWN_TIMEOUT_SECONDS = 10.0
 _POLL_SECONDS = 0.1
 _TIMESTAMPS_PER_SECOND = 50
 
-# Errors the child may report that the parent must re-raise as themselves; any other failure crosses as a RuntimeError
-# carrying the child's message.
 _FORWARDED_ERRORS = (
     "SttLoadCancelledError",
     "SttTranscriptionCancelledError",
@@ -97,19 +93,14 @@ def load_whisper(
     dtype_name: str,
     cancel_event = None,
 ) -> tuple:
-    """Load a Whisper model + processor from the local Hub cache. Child side.
-
-    local_files_only keeps the Model Hub the only download path; a cache miss
-    raises so the parent can surface SttModelNotDownloadedError.
-    """
+    """A cache miss raises, so the parent can report it as SttModelNotDownloadedError."""
     import torch
     from transformers import WhisperForConditionalGeneration, WhisperProcessor
 
     dtype = getattr(torch, dtype_name, None) or torch.float32
     processor = WhisperProcessor.from_pretrained(snapshot_path, local_files_only = True)
     _raise_if_cancelled(cancel_event)
-    # use_safetensors forces the pickle-free load path even if a pytorch_model.bin reached the cache; the selector and
-    # completeness check exclude them upstream.
+    # use_safetensors forces the pickle-free load path even if a .bin reached the cache.
     model = WhisperForConditionalGeneration.from_pretrained(
         snapshot_path, torch_dtype = dtype, local_files_only = True, use_safetensors = True
     )
@@ -127,11 +118,7 @@ def transcribe_window(
     generate_kwargs: dict,
     cancel_event = None,
 ):
-    """Run Whisper over one window of 16 kHz mono float32 PCM. Child side.
-
-    Feeds a pre-decoded array so nothing here touches the Transformers audio
-    path (torchcodec/ffmpeg); the parent decodes and windows.
-    """
+    """Takes pre-decoded PCM so the Transformers audio path (torchcodec, ffmpeg) is never used."""
     import numpy as np
     import torch
 
@@ -221,7 +208,6 @@ def transcribe_mlx_window(
 
 
 def _complete_segment_indices(tokens: list, generation_config) -> tuple:
-    # whisper's long-form seek decodes a segment cut off by the window again from the next window
     timestamp_begin = generation_config.no_timestamps_token_id + 1
     indexed_tokens = [
         (index, token)
@@ -246,18 +232,13 @@ def _supports_segment_timestamps(generation_config) -> bool:
 
 
 def _error_response(exc: BaseException) -> dict:
-    """Describe a failure so the parent can re-raise the same class.
-
-    The exception itself is not sent: an arbitrary Transformers or torch error
-    may not pickle, and a queue that fails to serialise costs the caller its
-    whole timeout instead of an error.
-    """
+    """Sends the class name and message, since an unpicklable exception would cost the caller the
+    timeout."""
     from core.inference.stt_sidecar import _is_missing_local_model_error
 
     kind = type(exc).__name__
     message = str(exc) or kind
     if kind not in _FORWARDED_ERRORS and _is_missing_local_model_error(exc):
-        # A local-cache miss means the model is not downloaded, not a broken runtime.
         kind = "SttModelNotDownloadedError"
         message = "The dictation model is not downloaded."
     return {"type": "error", "kind": kind, "error": message}
@@ -278,14 +259,7 @@ def run_stt_worker(
     ready_event = None,
     config: Optional[dict] = None,
 ) -> None:
-    """Child entrypoint: hold one Whisper model and answer transcription commands.
-
-    Returning ends the process, which is the only way to give the CUDA context
-    back, so a failed load and an unload both exit rather than idle.
-
-    Sets ready_event before touching a command, which is what tells the parent a
-    fresh interpreter came up here.
-    """
+    """Returning ends the process, the only way to give back the CUDA context; a failed load exits too."""
     import os
 
     os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
@@ -299,13 +273,8 @@ def run_stt_worker(
     except Exception as exc:  # noqa: BLE001 - logging setup must not fail dictation
         logger.debug("STT worker logging setup failed: %s", exc)
 
-    # Say this interpreter is up before any model work. Without it the parent has only the exit code, and Windows has no
-    # signals: a native crash inside the model load ends the child with a positive status there exactly as a child that
-    # never bootstrapped does, and reading that crash as a host that cannot spawn moves the same crashing load into the
-    # backend, which the backend does not survive. An Event, not a queue message: Queue.put only hands the object to a
-    # feeder thread, so a child that faults before that thread drains the buffer never delivers it (measured here, the
-    # queued word was lost in 17 of 20 runs). An Event is shared memory, set the moment it returns, and was lost in
-    # none.
+    # Signal readiness via a shared Event before model work: Queue.put can be lost if the child
+    # crashes, and on Windows exit codes cannot tell a crash from a failed bootstrap.
     if ready_event is not None:
         ready_event.set()
 
@@ -391,7 +360,6 @@ def run_stt_worker(
         except BaseException as exc:  # noqa: BLE001 - every failure is reported, then handled
             _send(resp_queue, _error_response(exc))
             if kind == "load":
-                # nothing is resident after a failed load, and the attempt may already have taken a context
                 return
 
 
@@ -418,17 +386,11 @@ class WhisperWorker:
         self._cmd_queue = None
         self._resp_queue = None
         self._cancel_event = None
-        # set by the child before any model work, so this separates a host that cannot bring a child up from a child
-        # that failed at something
         self._ready_event = None
         self._answered = False
-        # Set once close() found a child that outlived terminate and kill. The handle is kept so its memory stays
-        # accounted, but a child that answered neither signal answers no later command either, and its terminate left
-        # the queues liable to corruption, so it must never be handed to a later dictation.
+        # A child that ignored terminate and kill: kept for accounting, never reused.
         self.survived_kill = False
         self.device: Optional[str] = None
-        # Read by the sidecar the way it read the model's, so an English-only checkpoint still drops the task/language
-        # kwargs it rejects.
         self.generation_config = SimpleNamespace(is_multilingual = None)
 
     def start(
@@ -447,9 +409,7 @@ class WhisperWorker:
         )
         from utils.process_lifetime import adopt_pid, is_process_shutting_down
 
-        # One flag at every spawn: no _graceful_shutdown step unloads this sidecar and
-        # cancel_pending_loads only reaches the chat /load attempts, so without this a
-        # quit during an STT load starts a worker the step-7 sweep has already passed.
+        # Refuse to spawn once shutdown has begun; no shutdown step unloads this sidecar.
         if is_process_shutting_down():
             raise SttWorkerSpawnError(
                 "Unsloth is shutting down; not starting the dictation worker."
@@ -465,8 +425,6 @@ class WhisperWorker:
                 self._cancel_event = _CTX.Event()
                 self._ready_event = _CTX.Event()
                 self._process = _CTX.Process(
-                    # the shared shim binds the child to this process's lifetime and applies the Hub cache environment
-                    # before any import
                     target = run_without_native_path_secret,
                     args = ("core.inference.stt_transformers_worker", "run_stt_worker", cache_env),
                     kwargs = {
@@ -478,9 +436,7 @@ class WhisperWorker:
                     },
                     daemon = True,
                 )
-                # Local handle, and started through it: a concurrent teardown can clear
-                # self._process while start() is still returning, and re-reading the
-                # attribute afterwards would lose the only reference to a live child.
+                # Local handle: a concurrent teardown can clear self._process while start() returns.
                 _spawned_proc = self._process
                 _spawned_proc.start()
         except Exception as exc:  # noqa: BLE001 - any refusal to spawn reads the same
@@ -489,10 +445,7 @@ class WhisperWorker:
             raise SttWorkerSpawnError(
                 f"Could not start the dictation worker process: {exc}"
             ) from exc
-        adopt_pid(_spawned_proc.pid)  # terminate_all backstop for graceful exits
-        # Recheck once the pid is recorded: the latch can be set between the gate above
-        # and this record. Adoption runs first, so a child reaped here is still in the
-        # sweep record.
+        adopt_pid(_spawned_proc.pid)
         if is_process_shutting_down():
             logger.info("shutdown began during the spawn; reaping the new dictation worker")
             try:
@@ -563,25 +516,8 @@ class WhisperWorker:
         return process is not None and process.is_alive()
 
     def _never_bootstrapped(self, exc: BaseException) -> bool:
-        """Whether the child died without its fresh interpreter ever coming up.
-
-        start() returning says only that the exec worked: a frozen POSIX build
-        re-runs its own binary instead of an interpreter, so the child is gone
-        before it can read the load command. That is a host that cannot spawn,
-        which the caller answers by loading in process, not by trying the same
-        thing again on another device.
-
-        The child sets ready_event before it touches a command, so a positive
-        exitcode with the event never set is a child that never got that far.
-        The handshake is what makes this safe on Windows, where there are no
-        signals and a native fault surfaces as a positive status
-        (STATUS_ACCESS_VIOLATION reads as 3221225477) rather than the negative
-        exitcode POSIX reports one with: a crash inside the model load would
-        otherwise read as a host that cannot spawn, and be answered by running
-        that same load in the backend. A signal death (the box under memory
-        pressure, a driver fault) and any child that did answer keep their own
-        error.
-        """
+        """A child that dies before ready_event is a host that cannot spawn, not a native crash
+        during load."""
         if self._answered or not isinstance(exc, SttWorkerError):
             return False
         ready = self._ready_event
@@ -599,20 +535,8 @@ class WhisperWorker:
             self._cancel_event.set()
 
     def close(self, graceful_timeout: float = _SHUTDOWN_TIMEOUT_SECONDS) -> bool:
-        """Stop the child, which is what actually returns its accelerator memory.
-
-        graceful_timeout is how long the child gets to consume the queued
-        shutdown and exit by itself. Zero means that wait has already been
-        spent elsewhere -- the cancel grace in _await -- so go straight to
-        terminate rather than restart the clock on a caller that is already
-        out of patience.
-
-        Returns True only once the child is confirmed dead. A child that
-        survives terminate and kill (wedged in a driver call that outlives
-        SIGKILL) still holds its memory, so its handle and its adoption record
-        are KEPT: forgetting the pid would leave terminate_all and the next
-        startup sweep nothing to find it by.
-        """
+        """A child that survives kill keeps its handle and pid record, so terminate_all can still
+        find it."""
         process = self._process
         self.cancel()  # unblock a generation before asking the loop to exit
         if process is not None:
@@ -636,9 +560,7 @@ class WhisperWorker:
                     "pid record so the sweep can still reach it",
                     process.pid,
                 )
-                # Recorded on the handle, not just returned: a cancelled or timed-out command closes the worker from
-                # inside _await and raises over this answer, so the sidecar would keep offering the wedged child
-                # otherwise.
+                # Recorded on the handle: _await may close the worker and raise over this answer.
                 self.survived_kill = True
                 return False
             try:
@@ -654,7 +576,6 @@ class WhisperWorker:
         for handle in (self._cmd_queue, self._resp_queue):
             try:
                 if handle is not None:
-                    # The feeder thread must not outlive the queue it feeds.
                     handle.cancel_join_thread()
                     handle.close()
             except Exception:  # noqa: BLE001 - a closed queue is best effort
@@ -691,8 +612,7 @@ class WhisperWorker:
                     raise SttWorkerError(self._crash_message(phase))
                 if time.monotonic() >= deadline:
                     if cancel_deadline is not None:
-                        # A cancel landing near the end of the timeout is still a cancel: the caller is owed the phase's
-                        # own error (409 load, 499 transcription), and a child that ignored it ignores a shutdown.
+                        # A late cancel still owes the caller the phase's own error (409 load, 499 transcription).
                         self.close(graceful_timeout = 0.0)
                         self._raise_cancelled(phase)
                     self.close()
@@ -733,7 +653,6 @@ class WhisperWorker:
                 name = f"SIG{-exitcode}"
             detail = f"signal={name}"
             if name == "SIGKILL":
-                # The usual cause on a busy box, and the one the user can act on.
                 detail += "; the system may have killed it under memory pressure"
         what = "loading the dictation model" if phase == "load" else "transcribing"
         return f"The dictation worker stopped while {what} ({detail})."

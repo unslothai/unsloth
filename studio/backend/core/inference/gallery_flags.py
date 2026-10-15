@@ -37,8 +37,7 @@ logger = get_logger(__name__)
 
 _SCHEMA_VERSION = 1
 _STORE_NAME = ".flags.json"
-# Marks a store written over one whose ITEMS MAP was illegible: the old flags could not be carried forward, so the new
-# file is no proof that nothing is archived. See ``_carry_taint``.
+# Marks a store written over an illegible one: absence of a flag is not proof. See _carry_taint.
 _TAINT_KEY = "unreadable"
 _lock = threading.RLock()
 
@@ -61,12 +60,7 @@ class FlagsUnavailable(RuntimeError):
 
 
 def _valid_entry(entry: Any) -> bool:
-    """Whether an entry is exactly the shape this module writes.
-
-    The container being a dict is not enough. ``{"archived": null}`` is a dict, and every reader
-    turns it into "not archived", which is what ``clear`` deletes on. Nothing here ever writes a
-    non-bool ``archived`` or an unusable ``pinned_at``, so either one means the file was edited or
-    damaged and no field in it can be taken at face value."""
+    """A dict is not enough: a non-bool archived or bad pinned_at means the file was damaged."""
     if not isinstance(entry, dict):
         return False
     if "archived" in entry and not isinstance(entry["archived"], bool):
@@ -79,16 +73,7 @@ def _valid_entry(entry: Any) -> bool:
 
 
 def _sanitize_entry(entry: Any) -> Optional[dict[str, Any]]:
-    """The entry rewritten into a shape this module can read, or None when it held nothing.
-
-    Damage to ``archived`` is RESOLVED to True, never dropped. Dropping it would turn "we cannot
-    tell whether this was archived" into "this is active", and active is what ``clear`` deletes;
-    an item wrongly moved to the archive shelf is one click to undo, an item wrongly deleted is
-    gone. An ABSENT ``archived`` is not damage: unarchiving removes the key, so absent genuinely
-    means active. A non-dict entry has no readable field at all and only exists because something
-    was flagged, so it resolves the same safe way.
-
-    ``pinned_at`` is dropped instead, since losing a pin costs the user an ordering, not a file."""
+    """Damaged archived resolves to True, never dropped: clear deletes anything it reads as active."""
     if not isinstance(entry, dict):
         return {"archived": True}
     clean = dict(entry)
@@ -107,20 +92,15 @@ def _load(directory: Path) -> tuple[dict[str, Any], bool]:
     try:
         with open(_store_path(directory), encoding = "utf-8-sig") as f:
             data = json.load(f)
-        # Validate the shape, not just the version: a hand-edited ``items`` that is not a dict (e.g. ``[]``) would
-        # otherwise crash every lookup instead of failing safe.
         if (
             isinstance(data, dict)
             and data.get("version") == _SCHEMA_VERSION
             and isinstance(data.get("items"), dict)
         ):
-            # Written over an illegible store, so what it does NOT say is not evidence.
             if data.get(_TAINT_KEY):
                 return data, False
-            # Every ENTRY has to be readable too, not just the container. A malformed value is dropped by the readers
-            # below, which reads as "this id is not archived" -- enough for clear() to delete an archived file. So one
-            # bad entry costs the store its trust, but the surviving entries are still returned: listing should keep
-            # the flags it can read, and only destructive callers need to refuse.
+            # One bad entry costs the store its trust (clear() could delete an archived file), but
+            # readable entries are still returned; only destructive callers refuse.
             if all(_valid_entry(v) for v in data["items"].values()):
                 return data, True
             logger.warning(
@@ -139,26 +119,14 @@ def _load(directory: Path) -> tuple[dict[str, Any], bool]:
 
 
 def _carry_taint(data: dict[str, Any], trusted: bool) -> dict[str, Any]:
-    """``data`` prepared for a rewrite, marked when the old contents were illegible.
-
-    Entry-level damage is repaired by ``_sanitize_entry``, so readable flags survive and the store
-    earns its trust back. CONTAINER damage (truncated JSON, a non-dict ``items``, an unknown
-    version) leaves nothing to carry: ``_load`` substitutes an empty map, and writing that plainly
-    turns "we cannot say what was archived" into "nothing is", which is what ``clear()`` deletes on.
-    So the replacement is marked and destructive callers keep failing closed. Listing, pinning,
-    archiving and restoring still work; ``clear(include_archived = True)`` is the way out, since it
-    spares nothing and so needs no flags.
-    """
+    """Marks a store whose container was unreadable, so destructive callers fail closed until reset."""
     if not trusted and not data.get("items"):
         data[_TAINT_KEY] = True
     return data
 
 
 def _save(directory: Path, data: dict[str, Any]) -> None:
-    """Atomic write (tmp + os.replace), so a crash mid-write never leaves a truncated store.
-
-    Raises on failure. A silent miss would let the API report a pin or archive it never stored,
-    which the UI has already applied optimistically, so the action would quietly undo on reload."""
+    """Atomic tmp-then-replace write; raises on failure, since a silent miss reports an unstored pin."""
     path = _store_path(directory)
     tmp = directory / f".{_STORE_NAME}.tmp-{os.getpid()}"
     try:
@@ -195,10 +163,10 @@ def _file_lock(directory: Path):
                 fcntl.flock(fd, fcntl.LOCK_EX)
             locked = True
         except Exception:
-            pass  # locking unavailable; the thread lock still applies
+            pass
         yield locked
     finally:
-        # never let the release fail the call: a filesystem that cannot lock usually cannot unlock
+        # Never fail the call on release: a filesystem that cannot lock usually cannot unlock.
         try:
             if locked:
                 with contextlib.suppress(Exception):
@@ -214,13 +182,7 @@ def _file_lock(directory: Path):
 
 @contextlib.contextmanager
 def exclusive(directory: Path, *, require_file_lock: bool = False):
-    """Hold the store's write lock across a read-then-act sequence.
-
-    ``clear`` decides what to delete from a snapshot of the flags and then unlinks files, so an
-    archive landing in that window would be classified active from the stale snapshot and deleted
-    anyway -- after the PATCH had already told the user it was archived. Taking the same lock
-    ``set_flags`` takes serializes the two.
-    """
+    """Holds the write lock across read-then-act, so an archive cannot slip past clear's snapshot."""
     with _lock, _file_lock(directory) as file_locked:
         if require_file_lock and not file_locked:
             raise FlagsUnavailable(f"{_store_path(directory)} could not be locked")
@@ -249,12 +211,7 @@ def is_trusted(directory: Path) -> bool:
 
 
 def reset_locked(directory: Path) -> None:
-    """Replace the store with an empty, trusted one. For a caller already inside ``exclusive()``.
-
-    Only ``clear(include_archived = True)`` does this, and only after removing every item we own:
-    the taint protects files from a delete that cannot prove them active, and none are left. Without
-    it the escape hatch is not one, since the corrupt file survives the wipe and every later clear
-    still refuses, new media included."""
+    """Writes an empty, trusted store; safe only after every owned item is removed."""
     _save(directory, _empty())
 
 
@@ -270,10 +227,7 @@ def read_trusted(directory: Path) -> dict[str, dict[str, Any]]:
 
 
 def _finite(value: Any) -> Optional[float]:
-    """A stored number as a finite float, or None when absent or unusable.
-
-    Read at listing time, so a huge JSON int, NaN or infinity must read as unset rather than raise
-    or poison the sort."""
+    """Huge ints, NaN and infinity read as unset, so listing never raises or poisons the sort."""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     try:
@@ -292,8 +246,6 @@ def flags_for(items: dict[str, dict[str, Any]], item_id: str) -> dict[str, Any]:
     """The public record fields for one id, from an already-read ``items`` map."""
     entry = _entry(items, item_id)
     return {
-        # Reported through the same conversion the sort uses, so a value the ordering cannot use never shows as a pin
-        # the user then cannot explain.
         "pinned": _pinned_at(entry) is not None,
         "archived": bool(entry.get("archived")),
     }
@@ -327,12 +279,7 @@ def set_flags(
     pinned: Optional[bool] = None,
     archived: Optional[bool] = None,
 ) -> dict[str, Any]:
-    """Patch one id's flags; ``None`` leaves that flag alone. Returns the resulting flags.
-
-    Pinning stamps ``pinned_at`` (wall clock) so the pinned group can sort most-recent-first;
-    unpinning drops the key rather than storing False, keeping the store to only what is set.
-    An id whose flags all end up default is removed entirely, so toggling something on and off
-    again leaves no residue."""
+    """Unpinning drops the key rather than storing False, and an id left at defaults is removed entirely."""
     with _lock, _file_lock(directory):
         return set_flags_locked(directory, item_id, pinned = pinned, archived = archived)
 
@@ -360,27 +307,20 @@ def set_flags_locked(
     write land as one step. Separate for the same per-descriptor lock reason as ``forget_locked``."""
     import time
 
-    # A write REPAIRS the store rather than preserving what made it untrusted. Merging the bad entry straight back
-    # would leave every later clear() refused until someone fixed the file by hand, and refusing here instead would
-    # leave the user unable to pin anything at all. Dropping only the unreadable entries keeps the flags that still
-    # mean something.
+    # A write repairs the store: drop only unreadable entries so later clear() calls are not refused.
     data = _load_repaired(directory)
     items = data["items"]
     entry = dict(_entry(items, item_id))
     if pinned is not None:
         if pinned:
-            # Strictly ahead of every stamp stored, not just the wall clock: Windows advances time.time() in ~16 ms
-            # steps, so two pins a click apart landed on the same value and "most recently pinned leads" stopped
-            # holding for exactly the case the client serializes its PATCHes to preserve.
+            # Strictly ahead of every stored stamp: Windows time.time() advances in ~16 ms steps.
             latest = max(
                 (_pinned_at(v) for v in items.values() if _pinned_at(v) is not None),
                 default = float("-inf"),
             )
             now = time.time()
             nudged = math.nextafter(latest, math.inf) if latest != float("-inf") else now
-            # A store holding the largest finite float nudges to infinity, which json writes and _pinned_at then
-            # refuses, so the pin just reported would read back unset AND take the store's trust with it. Tie instead:
-            # those two fall back to mtime, which costs an ordering rather than the store.
+            # Do not nudge past max float (json writes inf, _pinned_at refuses it); tie and fall back to mtime.
             entry["pinned_at"] = (
                 now if now > latest else (nudged if math.isfinite(nudged) else latest)
             )
@@ -431,7 +371,6 @@ def _between(high: Optional[float], low: Optional[float], *, top: float) -> Opti
     ``top`` is used at the head of the group, so new media created later still sorts first."""
     if high is not None and low is not None:
         mid = (high + low) / 2
-        # Out of float precision: tie with the upper neighbour.
         return mid if low < mid < high else high
     if high is not None:
         return high - 1.0
@@ -443,12 +382,7 @@ def _between(high: Optional[float], low: Optional[float], *, top: float) -> Opti
 def place_locked(
     directory: Path, item_id: str, ordered: list[tuple[str, float]], *, after_id: Optional[str]
 ) -> dict[str, Any]:
-    """Move one id to just after ``after_id`` (None = front) and return its flags.
-
-    ``ordered`` is the shelf as listed, as ``(id, mtime)`` pairs. Only the moved item is rewritten,
-    with a key between its neighbours: ``pinned_at`` among pins, ``order_at`` otherwise. Dropping
-    between pins pins it, between unpinned items unpins it, and on the boundary keeps its state.
-    Call inside ``exclusive()``. Raises KeyError if ``after_id`` is not on the shelf."""
+    """Rewrites only the moved item, keyed between its neighbours; must be called inside exclusive()."""
     import time
 
     data = _load_repaired(directory)

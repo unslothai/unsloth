@@ -49,7 +49,6 @@ def _conv_forward(
         and pad[5] == 0
         and self.groups == 1
     ):
-        # The front zero frames meet weight[:, :, :-1]; only the last slice sees the frame.
         x2 = x[:, :, 0]
         if pad[0] or pad[1] or pad[2] or pad[3]:
             x2 = F.pad(x2, pad[:4])

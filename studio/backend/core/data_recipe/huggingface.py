@@ -28,7 +28,6 @@ def _resolve_recipe_artifact_path(artifact_path: str) -> Path:
     try:
         candidate = resolve_dataset_path(artifact_path).expanduser()
     except ValueError as exc:
-        # Outside every dataset root, so it never reaches the check below: a 500, not a refusal.
         raise RecipeDatasetPublishError(
             "This execution artifact is outside the Recipe Studio dataset storage."
         ) from exc
@@ -132,7 +131,7 @@ def publish_recipe_dataset(
             tags = None,
         )
         card.text = card.text.replace(_DATA_DESIGNER_FOOTER, _UNSLOTH_STUDIO_FOOTER)
-        # Data Designer drops the explicit token, so push the card ourselves to keep auth request-local.
+        # Data Designer drops the explicit token, so push the card ourselves.
         card.push_to_hub(repo_id, token = hf_token, repo_type = "dataset")
 
         client._upload_main_dataset_files(
@@ -160,9 +159,7 @@ def publish_recipe_dataset(
 
         from utils.hf_endpoint import get_hf_endpoint
 
-        # The upload went to get_hf_endpoint(); this URL is for the browser, where
-        # a loopback mirror is not the same host. The caller passes what its client
-        # can reach.
+        # Browser-facing URL: a loopback mirror is not the same host.
         return f"{link_endpoint or get_hf_endpoint()}/datasets/{repo_id}"
     except HuggingFaceHubClientUploadError as exc:
         raise RecipeDatasetPublishError(str(exc)) from exc

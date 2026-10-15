@@ -229,10 +229,9 @@ def _delete_impact_blocking(
         entry = {"repo_id": display, "size_bytes": base_bytes, "needed_by": holders}
         if holders:
             retained.append(entry)
-        # The SAME offerability test orphan_companions_response applies, since this row points at that list: a borrowed chat GGUF repo is a curated companion id but holds a denoiser, so advertising it sent the user to Free up space to remove a row that is never there.
+        # Same offerability test as orphan_companions_response, since this row points at that list.
         elif base_key in offerable and any(not _repo_holds_denoiser(r) for r in base_repos):
             freeable.append(entry)
-        # A base only a recorded link names: the orphan endpoint is table-only by design, so advertising it here pointed the user at a Free up space list it will never appear in.
 
     return {
         "repo_id": repo_id,
@@ -241,7 +240,6 @@ def _delete_impact_blocking(
         "cache_path": cache_path,
         "retained_companions": retained,
         "freeable_companions": freeable,
-        # Same predicate the destructive path uses: the native Qwen-Image encoder is a named quant inside a chat GGUF repo, so previewing only whole-repo deletes left Delete enabled and the refusal arriving after the user confirmed.
         "blocked_by": (
             companion_dependents(repo_id, scans, ignore_repo_ids = [repo_id])
             if companion_assets.is_companion_base(repo_id)
@@ -384,12 +382,11 @@ def _orphan_companions_blocking() -> dict:
         repos = [r for r in repos if not _repo_holds_denoiser(r)]
         if not repos:
             continue
-        # One row per cache root: a delete is scoped to a single cache, so pooling copies from several would promise bytes one removal cannot deliver.
         for repo in repos:
             size = _repo_blob_bytes(repo)
             if size <= 0:
                 continue
-            # The repo dir itself, not its parent: scoped_delete_root walks up to the models-- component, so a bare root resolves to nothing and the delete comes back "Invalid cache_path".
+            # scoped_delete_root walks up to models--, so pass the repo dir, not the root.
             try:
                 cache_path = str(Path(getattr(repo, "repo_path")))
             except (TypeError, OSError):

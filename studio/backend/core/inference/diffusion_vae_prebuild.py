@@ -92,7 +92,7 @@ def maybe_kick(
         if getattr(torch.version, "hip", None) or not torch.cuda.is_available():
             return False
         if compile_ctx is None or getattr(compile_ctx, "hit", False):
-            return False  # a restart's Triton cache already holds the kernels
+            return False
         job = plan(pipe)
         if job is None:
             return False
@@ -115,7 +115,6 @@ def _spawn(job: dict, logger: Any) -> bool:
     )
     from utils.process_lifetime import adopt_pid, is_process_shutting_down
 
-    # A quit during the load: the sweep may already have run, so a child started now would outlive the server.
     if is_process_shutting_down():
         return False
     ctx = mp.get_context("spawn")
@@ -186,7 +185,7 @@ def _child_entry(job: dict) -> None:
 
     from core.inference import diffusion_vae_fused
 
-    # Only diffusers' own exported VAE classes: the job names a class, it never picks a module to import.
+    # Only diffusers' own exported VAE classes: the job never picks a module to import.
     cls = getattr(diffusers, job["name"], None)
     if cls is None or getattr(cls, "__module__", None) != job["module"]:
         return

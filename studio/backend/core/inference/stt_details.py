@@ -18,7 +18,6 @@ ON_REQUEST_TIMESTAMPS = frozenset({"qwen3_asr"})
 _SPAN_KEYS = ("words", "segments", "speaker_turns")
 # VibeVoice-ASR counts its spans at 24 kHz whatever rate it was fed (and reports the input's rate).
 FIXED_SPAN_RATES = {"vibevoice_asr": 24000, "vibevoice_asr_streaming": 24000}
-# MOSS-Transcribe-Diarize embeds "[0.12][S01]" markers in its text; its segments carry the prose.
 _MARKED_TEXT_FAMILIES = frozenset({"moss_transcribe_diarize"})
 _MARKER_RE = re.compile(r"\[\d+(?:\.\d+)?\]|\[S\d+\]")
 
@@ -231,7 +230,6 @@ def normalize(payload: dict, family: str, sent_rate: int) -> dict:
     turns = _turns(payload.get("speaker_turns"), rate)
     if not segments and turns:
         segments = _segments(payload.get("speaker_turns"), rate)
-    # Diarized answers can come grouped per speaker; the player assumes time order.
     _by_time = lambda span: (span["start"], span["end"])  # noqa: E731
     words.sort(key = _by_time)
     segments.sort(key = _by_time)

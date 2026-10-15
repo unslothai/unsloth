@@ -23,8 +23,7 @@ import threading
 import time
 import uuid
 
-# Three follower keep-alive periods. Errs towards present: a stale stamp costs an idle slot for 45s,
-# reading a present user as absent costs them the decision.
+# Three follower keep-alive periods; errs towards present.
 _ATTENDED_FOR_S = 45.0
 
 _LOCK = threading.Lock()
@@ -47,10 +46,7 @@ def mark_subscriber_seen(
     follower: str,
     account_id: str = "",
 ) -> None:
-    """Record that ``follower`` is attached to ``account_id``'s ``run_id`` right now.
-
-    Called once per iteration of the run's SSE loop, so at least every keep-alive period.
-    """
+    """Called every SSE loop iteration, so the stamp refreshes at least once per keep-alive period."""
     if not run_id or not follower:
         return
     with _LOCK:
@@ -62,11 +58,7 @@ def subscriber_departed(
     follower: str,
     account_id: str = "",
 ) -> None:
-    """Drop only ``follower``'s stamp when its loop exits, leaving any other follower's alone.
-
-    Best effort: an abruptly closed generator never runs its cleanup, which is why ``is_attended``
-    expires by age rather than trusting this. This only buys promptness on a clean close.
-    """
+    """Best effort only: an abruptly closed generator skips this, so is_attended also expires by age."""
     if not run_id or not follower:
         return
     key = _key(account_id, run_id)
@@ -89,7 +81,6 @@ def is_attended(run_id: str, account_id: str = "") -> bool:
         followers = _SEEN.get(key)
         if not followers:
             return False
-        # Expired lazily; a reaper would need a thread for what this loop already does.
         for token, seen in list(followers.items()):
             if seen <= cutoff:
                 del followers[token]

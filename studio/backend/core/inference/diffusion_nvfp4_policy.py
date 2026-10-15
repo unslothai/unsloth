@@ -88,7 +88,6 @@ def _per_block(suffix: str, stem: str, blocks: tuple) -> tuple:
     )
 
 
-# Paired LPIPS(vgg) gap to fp8 < 0.05 at the upper 95% bound; artifacts at replaced policies are refused.
 ZIMG_RG76 = NVFP4Policy(
     policy_id = "zimg_rg76_v1",
     version = 1,
@@ -110,7 +109,6 @@ FLUX_R420 = NVFP4Policy(
     policy_id = "flux_r420_v1",
     version = 1,
     family = "flux.1",
-    # schnell only: dev and Krea-dev are separate weights and need their own gate runs.
     base_repos = ("black-forest-labs/flux.1-schnell",),
     rules = (
         Rule(suffix = "norm_out.linear", precision = PRECISION_NVFP4, expect = 1),
@@ -163,7 +161,6 @@ QWEN21_R020 = NVFP4Policy(
     expected_counts = {PRECISION_NVFP4: 48, PRECISION_FP8: 181, PRECISION_BF16: 3},
 )
 
-# 2512 is its own weights under the qwen-image family: qwen_p02_v1 stays the Qwen/Qwen-Image policy.
 QWEN2512_M120_ATTN8 = NVFP4Policy(
     policy_id = "qwen2512_m120_attn8_v1",
     version = 1,

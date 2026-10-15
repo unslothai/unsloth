@@ -26,14 +26,12 @@ from utils.paths import auth_db_path, ensure_dir
 DB_PATH = auth_db_path()
 DEFAULT_ADMIN_USERNAME = "unsloth"
 
-# Single source for the password policy; models/auth.py ChangePasswordRequest and the terminal
-# prompt both enforce it. Keep the unsloth_cli mirror in sync.
+# Keep in sync with models/auth.py ChangePasswordRequest and the unsloth_cli mirror.
 MIN_PASSWORD_LENGTH = 8
 
-# Plaintext bootstrap password file, deleted on first password change.
+# Plaintext, deleted on first password change.
 _BOOTSTRAP_PW_PATH = DB_PATH.parent / ".bootstrap_password"
 
-# In-process cache to avoid re-reading the file on every HTML serve.
 _bootstrap_password: Optional[str] = None
 
 
@@ -66,16 +64,11 @@ def _persist_bootstrap_password(password: str) -> None:
 
 
 def _normalise_bootstrap_file(raw: bytes, password: str) -> None:
-    """Append the LF a pre-newline release left off. Append-only, and only when the file is exactly the
-    credential: clear_bootstrap_password() may unlink or (when unlink fails, notably on Windows
-    while this descriptor is open) truncate through another descriptor after we read, so a rewrite
-    could restore revoked plaintext. An append cannot: worst case is a lone terminator over a
-    cleared file, which strips back to no bootstrap password. Pre-newline releases wrote no
-    terminator at all, so that is the only shape in the wild."""
+    """Append-only: a rewrite could restore revoked plaintext after clear_bootstrap_password() runs."""
     if raw != password.encode("utf-8"):
         return
 
-    # O_BINARY: Windows text mode turns the LF back into CRLF, the bug being fixed.
+    # O_BINARY: Windows text mode would turn LF back into CRLF.
     fd = os.open(
         _BOOTSTRAP_PW_PATH,
         os.O_WRONLY | os.O_APPEND | getattr(os, "O_BINARY", 0),
@@ -96,7 +89,7 @@ def _read_persisted_bootstrap_password() -> Optional[str]:
     if not _BOOTSTRAP_PW_PATH.is_file():
         return None
 
-    # An unreadable file must mean "no bootstrap password"; no caller handles a raise.
+    # An unreadable file means no bootstrap password; no caller handles a raise.
     try:
         raw = _BOOTSTRAP_PW_PATH.read_bytes()
         password = raw.decode("utf-8").strip()
@@ -133,7 +126,6 @@ def generate_bootstrap_password() -> str:
         options = diceware.handle_options(args = ["-n", "4", "-d", "", "-c"])
     )
 
-    # Persist so the same passphrase survives restarts until password change.
     ensure_dir(_BOOTSTRAP_PW_PATH.parent)
     _persist_bootstrap_password(_bootstrap_password)
 
@@ -162,7 +154,7 @@ def clear_bootstrap_password() -> None:
         try:
             _BOOTSTRAP_PW_PATH.unlink(missing_ok = True)
         except OSError as e:
-            # Truncate when removal fails: stale plaintext would otherwise be re-seeded if auth.db is recreated.
+            # Truncate when removal fails, else stale plaintext is re-seeded if auth.db is recreated.
             try:
                 _BOOTSTRAP_PW_PATH.write_text("", encoding = "utf-8")
                 cleared = True
@@ -176,7 +168,6 @@ def clear_bootstrap_password() -> None:
                     "cleared its contents so the old bootstrap password cannot be reused."
                 )
             else:
-                # Stale plaintext is still on disk and would be reused if auth.db is reset.
                 message = (
                     f"Warning: could not delete or clear {_BOOTSTRAP_PW_PATH.name} ({e}); "
                     "its old bootstrap password is still on disk. Remove it manually to "
@@ -186,10 +177,7 @@ def clear_bootstrap_password() -> None:
 
 
 def _hash_token(token: str) -> str:
-    """SHA-256 hash helper for refresh token storage. Plain SHA-256 is intentional: refresh tokens are
-    384-bit random strings, so a slow KDF adds no security while costing per-refresh latency. API
-    keys use the separate ``_pbkdf2_api_key`` helper, only to satisfy CodeQL's
-    ``py/weak-sensitive-data-hashing`` query."""
+    """Plain SHA-256 is deliberate: refresh tokens are 384-bit random, so a slow KDF buys nothing."""
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
@@ -204,8 +192,7 @@ def credential_generation(jwt_secret: str) -> str:
     return hashlib.sha256(jwt_secret.encode("utf-8")).hexdigest()
 
 
-# Downgrade fence: managed creds live in ``account_*`` with prefixed hashes, so a build without
-# account support 401s a managed login.
+# Downgrade fence: a build without account support 401s a managed login.
 _FENCE_PREFIX = "account:"
 _FENCED_HASH_SQL = "IN (?, ?)"
 _LEGACY_PASSWORD_HASH_SENTINEL = "managed-account"
@@ -275,8 +262,7 @@ def get_connection() -> sqlite3.Connection:
         except OSError:
             pass
     conn.row_factory = sqlite3.Row
-    # Set busy_timeout before journal_mode=WAL: switching journal mode needs a lock and would otherwise
-    # raise SQLITE_BUSY.
+    # busy_timeout before journal_mode=WAL, else the mode switch raises SQLITE_BUSY.
     try:
         conn.execute("PRAGMA busy_timeout=5000")
         conn.execute("PRAGMA journal_mode=WAL")
@@ -364,8 +350,7 @@ def get_connection() -> sqlite3.Connection:
     return conn
 
 
-# No lock needed: INSERT OR IGNORE is atomic and concurrent populations converge on the same value.
-# ── API-key PBKDF2 salt ────────────────────────────────────────────────
+# No lock needed: INSERT OR IGNORE is atomic and concurrent populations converge.
 _api_key_pbkdf2_salt_cache: Optional[bytes] = None
 
 
@@ -415,8 +400,7 @@ def _ensure_account_columns(conn: sqlite3.Connection, existing: set) -> None:
     if all(name in existing for name, _decl in _ACCOUNT_COLUMNS):
         _repair_owner_account_id(conn)
         return
-    # Both connections can see the columns missing: re-read under the write lock, where a losing
-    # ALTER is the other side's, not an error.
+    # Re-read under the write lock: a losing concurrent ALTER is not an error.
     conn.execute("BEGIN IMMEDIATE")
     try:
         existing = {row[1] for row in conn.execute("PRAGMA table_info(auth_user)")}
@@ -696,8 +680,7 @@ def _managed_account(conn: sqlite3.Connection, account_id: str):
 
 
 def _revoke_account_credentials(conn: sqlite3.Connection, row) -> None:
-    # These frozen legacy tables key on username; resolve it from the account id under the same
-    # write lock as the mutation.
+    # Legacy tables key on username; resolve it under the same write lock.
     conn.execute("DELETE FROM refresh_tokens WHERE username = ?", (row["username"],))
     conn.execute("DELETE FROM api_keys WHERE username = ?", (row["username"],))
     conn.execute("DELETE FROM account_api_keys WHERE account_id = ?", (row["account_id"],))
@@ -719,7 +702,7 @@ def issue_account_setup_code(
         username = validate_account_username(username)
     code = secrets.token_urlsafe(32)
     salt, pwd_hash = hash_password(code)
-    # Before the transaction: a first-run salt creation opens its own connection.
+    # Before the transaction: first-run salt creation opens its own connection.
     code_hash = _hash_setup_code(code)
     now = datetime.now(timezone.utc)
     expires_at = (now + timedelta(minutes = 60)).isoformat()
@@ -774,7 +757,7 @@ def authenticate_account_login(
     from auth.hashing import equalize_login_work, verify_password
 
     def miss():
-        # A miss without a hash to check costs what a wrong password costs.
+        # Equalize timing with a wrong-password check.
         equalize_login_work(password)
         return None
 
@@ -790,12 +773,11 @@ def authenticate_account_login(
         if row is None or not row["is_active"]:
             return miss()
         if row["must_change_password"]:
-            # The setup-code hash is the PBKDF2 round a miss would otherwise spend.
             if not row["setup_code_hash"] or not hmac.compare_digest(
                 row["setup_code_hash"], _hash_setup_code(password)
             ):
                 return None
-            # Compare-and-swap on expiry, activity and generation: no code is spent twice.
+            # Compare-and-swap on expiry, activity and generation so no code is spent twice.
             with conn:
                 cursor = conn.execute(
                     f"""UPDATE auth_user SET setup_code_hash = NULL, setup_code_expires_at = NULL
@@ -924,8 +906,7 @@ def delete_account(account_id: str, retire) -> None:
                 )
                 conn.execute("DELETE FROM auth_user WHERE account_id = ?", (account_id,))
         except Exception:
-            # The identity survives the rollback, so the roots must come back too; a failed
-            # restore is the error to report, the account staying disabled either way.
+            # Restore the roots too; a failed restore is the error to report.
             try:
                 if restore_roots is not None:
                     restore_roots()
@@ -972,7 +953,7 @@ def _get_or_create_api_key_pbkdf2_salt() -> bytes:
     return salt
 
 
-# Identity-challenge secret lives in auth.db so a port squatter cannot forge a proof; separate from the JWT secret.
+# In auth.db so a port squatter cannot forge a proof; separate from the JWT secret.
 _IDENTITY_SECRET_DB_KEY = "studio_identity_secret"
 _identity_secret_cache: Optional[bytes] = None
 
@@ -1007,8 +988,7 @@ def get_or_create_identity_secret() -> bytes:
     return secret
 
 
-# Dedicated AES-256 key: lives in auth.db so copying studio.db alone does not expose provider/HF
-# tokens, and survives password resets.
+# In auth.db so copying studio.db alone does not expose tokens; survives password resets.
 _CREDENTIAL_ENCRYPTION_KEY_DB_KEY = "credential_encryption_key_v1"
 _credential_encryption_key_cache: Optional[bytes] = None
 
@@ -1046,10 +1026,7 @@ def get_or_create_credential_encryption_key() -> bytes:
 
 
 def compute_identity_proof(nonce: bytes, host: str, port: int) -> str:
-    """HMAC-SHA256 proof that the caller holds this install's identity secret, bound to the loopback
-    address and port the connection landed on. A proof relayed from an Unsloth on a different
-    address or port was computed for that other endpoint and will not match the one the client
-    dialed."""
+    """HMAC bound to the connection's host and port, so a proof relayed from another endpoint fails."""
     try:
         host = ipaddress.ip_address(host).compressed
     except ValueError:
@@ -1058,7 +1035,7 @@ def compute_identity_proof(nonce: bytes, host: str, port: int) -> str:
     return hmac.new(get_or_create_identity_secret(), msg, hashlib.sha256).hexdigest()
 
 
-# Dedicated secret so rotating it revokes every shared preview link without touching logins.
+# Rotating this revokes every shared preview link without touching logins.
 _PREVIEW_LINK_SECRET_DB_KEY = "preview_link_secret"
 _preview_link_secret_cache: Optional[bytes] = None
 
@@ -1116,31 +1093,20 @@ _API_KEY_PBKDF2_ITERATIONS = 100_000
 DESKTOP_SECRET_PREFIX = "desktop-"
 _DESKTOP_SECRET_HASH_KEY = "desktop_secret_hash"
 _DESKTOP_SECRET_CREATED_AT_KEY = "desktop_secret_created_at"
-# `token_urlsafe(48)` is exactly 64 unpadded URL-safe characters, and no other shape can be behind a
-# stored hash. Keep in sync with the CLI minter (unsloth_cli/commands/studio.py) and the `desktop-`
-# alternation in core/inference/tool_loop_controller.py.
+# token_urlsafe(48) is exactly 64 chars. Keep in sync with unsloth_cli/commands/studio.py
+# and the desktop- alternation in core/inference/tool_loop_controller.py.
 _DESKTOP_SECRET_BODY = re.compile(r"\A[A-Za-z0-9_-]{64}\Z")
 
 
 def desktop_secret_is_well_formed(raw_secret: str) -> bool:
-    """Whether a candidate has the one shape :func:`create_desktop_secret` mints.
-
-    Syntactic only: a candidate that passes this still has to match the stored hash. It is separate
-    from validation, and cheap, because the desktop shell posts a deliberately invalid secret to
-    /api/auth/desktop-login to learn from the 401 that the backend is one it can manage. That probe
-    must cost no KDF and no rate-limit budget, or a live app throttles itself out of its own
-    backend.
-    """
+    """Syntax only and KDF-free, so the desktop shell's invalid-secret probe costs no rate-limit budget."""
     if not isinstance(raw_secret, str) or not raw_secret.startswith(DESKTOP_SECRET_PREFIX):
         return False
     return _DESKTOP_SECRET_BODY.match(raw_secret[len(DESKTOP_SECRET_PREFIX) :]) is not None
 
 
 def _pbkdf2_api_key(raw_key: str) -> str:
-    """PBKDF2-HMAC-SHA256 an API key with a persistent server-side salt. For API-key storage ONLY, not
-    refresh tokens: the slow KDF is only to appease CodeQL's ``py/weak-sensitive-data-hashing``
-    query, since API keys are random 128-bit tokens. The salt lives in ``app_secrets`` so dumping
-    ``api_keys`` alone cannot derive hashes."""
+    """API-key only; salt in ``app_secrets`` means dumping ``api_keys`` alone cannot derive hashes."""
     salt = _get_or_create_api_key_pbkdf2_salt()
     dk = hashlib.pbkdf2_hmac(
         "sha256",
@@ -1160,10 +1126,8 @@ def _hash_setup_code(code: str) -> str:
     return _pbkdf2_api_key(code)
 
 
-# Keyed by a salted HMAC, not the key; revocation/expiry are still enforced by the SQLite read, and
-# only known keys are cached.
+# Keyed by a salted HMAC; revocation/expiry are still enforced by the SQLite read.
 _api_key_hash_cache: dict[str, str] = {}
-# Whether each memoized key was minted internally; set once, since minting decides it.
 _api_key_internal_cache: dict[str, bool] = {}
 _API_KEY_HASH_CACHE_MAX = 4096
 _api_key_hash_cache_lock = threading.Lock()
@@ -1335,12 +1299,7 @@ _admin_created_this_process = False
 
 
 def admin_created_this_process() -> bool:
-    """Whether this process seeded the admin account, whoever called first.
-
-    run_server's pre-bind password gate calls ensure_default_admin() itself on a tunnel
-    launch, so by the time the lifespan calls it the answer is already False and a
-    first-boot check keyed on that return value silently does nothing.
-    """
+    """Use this, not ensure_default_admin()'s return value: an earlier caller may already have seeded it."""
     return _admin_created_this_process
 
 
@@ -1375,15 +1334,7 @@ def update_password(
     expect_password_hash: Optional[str] = None,
     preserve_desktop_secret: bool = False,
 ) -> Optional[str]:
-    """Update password, clear first-login requirement, rotate JWT secret. Returns the new JWT secret,
-    or None when nothing was updated. Callers that mint tokens must sign with the returned secret:
-    re-reading it would pick up a reset that landed between this commit and the mint.
-    ``revoke_refresh_tokens`` deletes the user's refresh tokens in the SAME transaction, since a
-    separate delete could fail after the password commit and leave a pre-change token able to mint
-    access tokens. ``expect_password_hash`` makes the write conditional on the credential the caller
-    verified still being current, returning False when it moved underneath.
-    ``preserve_desktop_secret`` keeps the local desktop credential valid, for a caller that already
-    authenticated as the desktop app and would otherwise break its own auto-auth."""
+    """Mint tokens with the returned JWT secret; re-reading could pick up a reset made after commit."""
     from .hashing import hash_password
 
     salt, pwd_hash = hash_password(new_password)
@@ -1434,13 +1385,7 @@ def save_refresh_token(
     is_desktop: bool = False,
     secret_gen: Optional[str] = None,
 ) -> None:
-    """
-    Store a hashed refresh token with its associated username and expiry.
-
-    ``secret_gen`` binds the token to a credential version; it defaults to the
-    current one, and callers that already verified a credential must pass the
-    version they verified rather than let this re-read a rotated one.
-    """
+    """Callers that verified a credential pass its ``secret_gen``; the default may re-read a rotated one."""
     token_hash = _fenced_hash(_hash_token(token), username)
     conn = get_connection()
     try:
@@ -1459,17 +1404,12 @@ def save_refresh_token(
 
 
 def consume_refresh_token(token: str) -> Optional[Tuple[str, bool, str]]:
-    """Atomically validate-and-delete a refresh token for single-use rotation. DELETE RETURNING fuses
-    validate and delete into one statement so two concurrent refresh requests cannot both consume
-    the same token. Returns ``(username, is_desktop, jwt_secret)``; the caller must mint the
-    replacement tokens against that secret so a rotation landing mid-refresh cannot issue a
-    post-rotation session from a pre-rotation token."""
+    """DELETE RETURNING makes validate-and-delete atomic, so two refreshes cannot both use one token."""
     token_hash = _hash_token(token)
     now = datetime.now(timezone.utc).isoformat()
     conn = get_connection()
     try:
-        # One transaction with the delete: an unstamped legacy row has no generation, so a later read could
-        # hand a reset's new secret to an older token.
+        # Same transaction as the delete, else a later read could hand a new secret to an older token.
         conn.execute("BEGIN IMMEDIATE")
         conn.execute(
             "DELETE FROM refresh_tokens WHERE expires_at < ?",
@@ -1580,12 +1520,8 @@ def create_desktop_secret() -> str:
 
 
 def validate_desktop_secret_with_credential(raw_secret: str) -> Optional[Tuple[str, str]]:
-    """Validate the desktop secret and return ``(username, jwt_secret)``. Both reads share one
-    transaction so the returned secret is the credential version the desktop secret was checked
-    against; a reset landing mid-request then invalidates the tokens minted from it rather than
-    blessing them."""
-    # Shape before KDF: this runs for unauthenticated callers, so anything spent before an
-    # attacker-chosen string can be rejected is theirs to spend.
+    """Both reads share one transaction, so the returned secret is the version the check used."""
+    # Shape check before KDF: unauthenticated callers must not buy KDF work.
     if not desktop_secret_is_well_formed(raw_secret):
         return None
 
@@ -1627,8 +1563,7 @@ def clear_desktop_secret() -> None:
 
 API_KEY_PREFIX = "sk-unsloth-"
 
-# The name is the only thing distinguishing internal keys by authority: Deep Research keys must
-# reach the saved connection, data-recipe keys only local /v1.
+# Name sets authority: Deep Research keys reach the saved connection, data-recipe keys only local /v1.
 DEEP_RESEARCH_WORKFLOW_KEY_NAME = "deep-research workflow"
 # What `unsloth start` mints for its coding agents (unsloth_cli/commands/start.py). Only a desktop
 # session can create a key with this name, and only the owner's may spend saved Connections.
@@ -1643,12 +1578,7 @@ def create_api_key(
     expect_gen: Optional[str] = None,
     account_id: Optional[str] = None,
 ) -> Tuple[str, dict]:
-    """Create a new API key for *username*. Returns ``(raw_key, row_dict)`` where *raw_key* is shown to
-    the user exactly once; the database only stores the PBKDF2 hash. Pass ``internal=True`` for keys
-    minted by workflows that should not appear in user-facing listings. ``expect_gen`` ties the
-    insert to the credential generation the request authenticated under, so a session revoked by a
-    concurrent password reset cannot mint a key that outlives it. Raises ``CredentialRotated`` if it
-    moved."""
+    """``expect_gen`` fences the insert so a password reset cannot mint a key that outlives it."""
     raw_key = API_KEY_PREFIX + secrets.token_hex(16)
     key_hash = _fenced_hash(_pbkdf2_api_key(raw_key), username)
     key_prefix = raw_key[len(API_KEY_PREFIX) : len(API_KEY_PREFIX) + 8]
@@ -1780,10 +1710,7 @@ def revoke_internal_api_key(key_id: int) -> bool:
 
 
 def is_internal_api_key(raw_key: str) -> bool:
-    """Whether *raw_key* is a workflow-minted internal key rather than a user's own. Lets
-    request-scoped code tell Unsloth's own background work from a third party using Unsloth as an
-    API server. Memoized, because this runs on the event loop for every API-key request and a key's
-    origin is fixed when it is minted."""
+    """Memoized: it runs on the event loop per API-key request, and a key's origin never changes."""
     if not raw_key.startswith(API_KEY_PREFIX):
         return False
     cache_id = _api_key_cache_id(raw_key)
@@ -1813,14 +1740,7 @@ def is_internal_api_key(raw_key: str) -> bool:
 
 
 def internal_api_key_name(raw_key: str) -> Optional[str]:
-    """The workflow name *raw_key* was minted under, or ``None`` if it is not internal.
-    ``is_internal_api_key`` answers "is this Unsloth's own key", which is far too coarse for
-    authorization: a data-recipe key runs inside a recipe the user authored, so treating it as equal
-    to the Deep Research hop would let that recipe spend any saved cloud credential. The name is
-    fixed when the key is minted and is the only durable thing separating the two. Deliberately not
-    memoized: this is read on the external-provider path once per request, and a stale answer would
-    be a stale authorization. The PBKDF2 derivation comes from the shared hash cache when it is
-    warm."""
+    """Authorization should use this, not is_internal_api_key, which is too coarse; not memoized."""
     if not raw_key.startswith(API_KEY_PREFIX):
         return None
     cache_id = _api_key_cache_id(raw_key)
@@ -1876,13 +1796,12 @@ def validate_api_key_account(raw_key: str, *, touch: bool = True) -> Optional[Tu
         row = cur.fetchone()
         if row is None:
             return None
-        # Real key: memoize so later requests skip the KDF. Bounded; clear on overflow.
+        # Memoize real keys to skip the KDF; bounded, cleared on overflow.
         if cached_hash is None:
             with _api_key_hash_cache_lock:
                 if len(_api_key_hash_cache) >= _API_KEY_HASH_CACHE_MAX:
                     _api_key_hash_cache.clear()
-                    # Clear both caches together: the origin cache is sized against the hash cache and would otherwise
-                    # grow past its bound.
+                    # Clear both caches together; the origin cache is sized against the hash cache.
                     _api_key_internal_cache.clear()
                 _api_key_hash_cache[cache_id] = key_hash
         if not row["is_active"]:

@@ -1,38 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""An accuracy floor for the plan-without-action classifier, on real model output.
-
-The rest of the tool-loop suites pin behaviour on hand-written example sentences,
-which is how the patterns here were tuned. That says nothing about how often the
-classifier is right on what models actually emit, so this file scores it against a
-corpus captured from local models (``tests/data/plan_vs_answer.jsonl``).
-
-How the corpus was built: three GGUF models (Qwen3-0.6B, Qwen3-1.7B,
-Llama-3.2-1B-Instruct) were driven through llama-server with the real Unsloth tool
-schemas over prompts spanning tool-requiring questions, questions needing no tool,
-list-formatted answers, ambiguous requests, non-English, and follow-ups issued after
-a tool had already run. Turns cut off by the token cap were dropped, since a
-truncation is not a stall.
-
-Every turn here is a *finished answer*: the turn called no tool, and when the
-production nudge was appended and the turn regenerated three times, not one retry
-produced a tool call. A forceful re-prompt could not extract an action, so there was
-no action left to take. Nudging these is wasted work, and in the GGUF loop the
-retry's text can then be discarded, which costs the user a visible answer.
-
-Measured when this landed, over the 300 turns:
-
-    tree                          nudged      retry discarded
-    before the classifier landed  36 (12.0%)  60 (20.2%)
-    classifier as first landed     5 ( 1.7%)   1 ( 0.3%)
-    with the #8907 sign-off fix    4 ( 1.3%)   0 ( 0.0%)
-
-The budgets below sit above the measured counts so that innocuous wording changes
-do not fail the build, and far below the first row so a real regression does.
-A failure prints the offending turns: fix the pattern, or if the turn really is a
-stall, correct its label here.
-"""
+"""Accuracy floor for the plan-without-action classifier, scored on a corpus of real model output."""
 
 import json
 from pathlib import Path
@@ -70,7 +39,6 @@ def test_corpus_is_intact():
     corpus = _corpus()
     assert len(corpus) == 300
     assert all(row["text"].strip() for row in corpus)
-    # Every row is a finished answer by construction.
     assert all(row["retry_tool_calls"] == 0 for row in corpus)
 
 

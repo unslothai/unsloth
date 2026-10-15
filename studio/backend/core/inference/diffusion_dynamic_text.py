@@ -17,7 +17,7 @@ SLICE_IDENTITY_ENV = "UNSLOTH_DIFFUSION_SLICE_IDENTITY_FIX"
 _SLICE_LOCK = threading.Lock()
 _SLICE_STATE: dict[str, Any] = {}
 
-# segments[0][0] (always 0) stays static: a symbol there trips torchao CantSplit (rows become ``s0 - s_start``).
+# segments[0][0] stays static: a symbol there trips torchao CantSplit.
 _QWEN_IMAGE_21_SOURCES: tuple[str, ...] = (
     "L['hidden_states']",
     "L['rotary_emb']",
@@ -32,7 +32,6 @@ _QWEN_IMAGE_21_SOURCES: tuple[str, ...] = (
     r"L\['segments'\]\[[1-9]\d*\]\[0\]$",
 )
 
-# Suffix regexes cover FBCache hook paths: ``L['kwargs'][...]`` and, after a graph break, ``___stack0[1][...]``.
 _QWEN_IMAGE_SOURCES: tuple[str, ...] = (
     "L['encoder_hidden_states']",
     "L['encoder_hidden_states_mask']",
@@ -42,7 +41,6 @@ _QWEN_IMAGE_SOURCES: tuple[str, ...] = (
     r".*\['image_rotary_emb'\]\[1\]$",
 )
 
-# MiniMax-H3: packed length S (transformer block), caption length (refiner block), timestep count (temb; i2v adds one).
 _MINIMAX_H3_SOURCES: tuple[str, ...] = (
     "L['hidden_states']",
     "L['adaln_indices']",
@@ -57,7 +55,7 @@ _FAMILY_SOURCES: dict[str, tuple[str, ...]] = {
     "MiniMaxH3Transformer3DModel": _MINIMAX_H3_SOURCES,
 }
 
-# Unbacked: a backed symbol specialises size 1, and H3's temb has 1 row on step 1, 2 after (a second compile).
+# Unbacked: a backed symbol specialises size 1, and H3's temb has 1 row then 2.
 _FAMILY_UNBACKED: dict[str, tuple[str, ...]] = {
     "MiniMaxH3Transformer3DModel": ("L['temb']",),
 }
@@ -73,7 +71,7 @@ def _compiler_config() -> Any:
         getattr(cfg, "dynamic_sources")
     except Exception:  # noqa: BLE001 - knob absent on this build
         return None
-    # 2.8+ only (is_dynamic_source): 2.7 caches its first read per process, so per-forward scoping leaks.
+    # 2.8+ only: 2.7 caches its first read per process, so per-forward scoping leaks.
     if not callable(getattr(builder, "is_dynamic_source", None)):
         return None
     return cfg
@@ -102,7 +100,6 @@ def unbacked_sources_for(transformer: Any) -> tuple[str, ...]:
 
 
 def sources_for(transformer: Any) -> tuple[str, ...]:
-    # A source is dynamic OR unbacked; without the unbacked knob it stays on the dynamic list.
     unbacked = set(unbacked_sources_for(transformer))
     return tuple(
         s for s in _FAMILY_SOURCES.get(type(transformer).__name__, ()) if s not in unbacked
@@ -111,7 +108,6 @@ def sources_for(transformer: Any) -> tuple[str, ...]:
 
 def fingerprint(transformer: Any, dynamic: Any) -> Optional[str]:
     if dynamic is True:
-        # dynamic=True already makes every dim dynamic; only the unbacked sources are armed (see install).
         unbacked = unbacked_sources_for(transformer)
         return "unbacked:" + ",".join(unbacked) if unbacked else None
     if dynamic is not None:
@@ -129,7 +125,7 @@ def _slice_identity_specialises() -> bool:
     from torch._dynamo.variables.base import NO_SUCH_SUBOBJ  # noqa: PLC0415
 
     if "get_real_python_backed_value" in vars(SliceVariable):
-        return False  # torch gives slices their own answer; trust it
+        return False
     if not callable(getattr(SliceVariable, "get_real_python_backed_value", None)):
         return False
     probe = SliceVariable([ConstantVariable.create(0), ConstantVariable.create(1)])
@@ -156,7 +152,6 @@ def install_slice_identity_fix(logger: Any = None) -> bool:
         original = SliceVariable.get_real_python_backed_value
 
         def get_real_python_backed_value(self: Any) -> object:
-            # Stock builds a fresh slice (identical to nothing): "no backing object" keeps every answer, minus the guard.
             if any(isinstance(item, SymNodeVariable) for item in getattr(self, "items", ())):
                 return NO_SUCH_SUBOBJ
             return original(self)
@@ -206,7 +201,6 @@ def install(
         return False
     if getattr(transformer, "_unsloth_dynamic_text", None) is not None:
         return True
-    # dynamic=True makes the slice bound symbolic too, so the fix keys on the family, not on what gets armed.
     if _arms_slice_bound(sources_for(transformer)):
         try:
             install_slice_identity_fix(logger)

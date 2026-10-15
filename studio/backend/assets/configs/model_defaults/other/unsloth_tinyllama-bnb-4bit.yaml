@@ -1,10 +1,7 @@
-# Model defaults for unsloth/tinyllama
-# Based on TinyLlama_(1.1B)-Alpaca.ipynb
 # Also applies to: TinyLlama/TinyLlama-1.1B-intermediate-step-1431k-3T
 
 training:
   max_seq_length: 4096
-  # num_epochs: 1
   num_epochs: 0
   learning_rate: 2e-5
   batch_size: 2

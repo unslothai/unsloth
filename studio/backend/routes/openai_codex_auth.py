@@ -141,7 +141,6 @@ async def cancel_oauth(
     _provider(provider_id)
     try:
         flow = codex_auth.get_flow(provider_id, flow_id)
-        # Closing a loopback server can wait for an in-flight callback.
         await codex_auth.cancel_flow(flow.id)
         async with codex_auth.provider_oauth_write_guard(provider_id):
             with current_credential_write(credential):
@@ -166,8 +165,7 @@ async def list_subscription_models(
     ]
     status = codex_auth.auth_status(provider_id)
     if status == "reauthorization_required":
-        # Something already marked this bundle, possibly another worker, after the last provider sync the browser
-        # saw. Saying only "curated" here would leave the editor presenting a dead connection as healthy.
+        # Another worker may have marked this bundle; do not present a dead connection as healthy.
         return {"models": curated, "source": "reauthorization_required"}
     if status != "connected":
         return {"models": curated, "source": "curated"}
@@ -177,9 +175,7 @@ async def list_subscription_models(
             provider_id, token, account_id, force = refresh
         )
     except (codex_auth.CodexAuthError, codex_client.CodexReauthorizationError) as exc:
-        # Say it in the answer rather than through a 401: the client's authFetch reads every 401 as an expired
-        # Unsloth session and retries, and the retry looks healthy. resolve_access has already marked the connection
-        # as needing reauthorization, so a source the picker does not treat as authoritative carries the signal.
+        # Not a 401: authFetch treats every 401 as an expired session and retries.
         logger.info(
             "openai_codex.model_list_reauthorization_required",
             provider_id = provider_id,
@@ -193,15 +189,12 @@ async def list_subscription_models(
             error_type = type(exc).__name__,
         )
         return {"models": curated, "source": "curated"}
-    # Only listed slugs are offered, but every slug the plan returned is reported so the
-    # picker can tell one it should stop offering from one this account cannot reach.
     offered = [model for model in models if model.get("listed")]
     if not offered:
         return {"models": curated, "source": "curated"}
     return {
         "models": offered,
-        # Full entries, not just ids: a hidden slug stays selectable, so the client needs
-        # its capabilities too or it will guess and offer what the chat route refuses.
+        # Full entries: hidden slugs stay selectable and the client needs their capabilities.
         "known": models,
         "source": "subscription",
     }

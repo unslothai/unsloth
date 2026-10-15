@@ -28,7 +28,7 @@ ENV_DEVICE = "UNSLOTH_SYSTEMONE_DEVICE"
 
 
 def _owner_setting(key: str) -> Any:
-    # Installation-wide: a managed account's API key must see the owner's switch, not its own database.
+    # Installation-wide: a managed account's API key must see the owner's switch.
     from storage.studio_db import get_app_setting
     from utils.account_context import OWNER, bind_account, reset_account
 
@@ -218,10 +218,7 @@ _LLAMA_GPU_CACHE: list = []  # [(monotonic time, (binary, mtime), answer)]
 
 
 def _llama_cpp_has_gpu() -> bool:
-    """Without torch the detector reports CPU: ask the installed llama-server for its GPUs.
-
-    Cached 60 s per binary path and mtime, so a switched or reinstalled build is probed again.
-    """
+    """Without torch, asks llama-server for its GPUs; cached 60 s per binary path and mtime."""
     try:
         from core.inference.llama_cpp import LlamaCppBackend
         from core.systemone.native_worker import resolve_binary

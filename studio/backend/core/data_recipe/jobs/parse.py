@@ -46,11 +46,9 @@ class ParsedUpdate:
     source_progress: SourceProgress | None = None
 
 
-# Best-effort parser from data-designer logs -> structured status for UI.
 _RE_SAMPLERS = re.compile(
     r"Preparing samplers to generate (?P<rows>\d+) records across (?P<cols>\d+) columns"
 )
-# Newer data-designer phrasing for the same stage; no column count is reported here.
 _RE_SAMPLING_SEED = re.compile(
     r"Sampling (?P<rows>\d+) records from .*?seed dataset", re.IGNORECASE
 )
@@ -338,7 +336,6 @@ def apply_update(job: Job, update: ParsedUpdate) -> None:
         _apply_source_progress(job, update.source_progress)
 
     if update.stage in USAGE_RESET_STAGES:
-        # Usage summary is a short block; reset on the next stage.
         job._in_usage_summary = False
 
     if update.usage_section_start is not None:

@@ -33,7 +33,7 @@ _SINGLE_KEYWORDS = (
 _LIST_KEYWORDS = {"allOf": False, "anyOf": None, "items": True, "oneOf": None, "prefixItems": True}
 
 
-# A generated wrapper, so a caller's own union of the same shape is never mistaken for one.
+# A distinct type, so a caller's own union of the same shape is never mistaken for one.
 class _RelaxedUnion(dict):
     original: Any = None
 
@@ -54,7 +54,6 @@ _OBJECT_ONLY = (
 
 def _wrap(schema: dict) -> _RelaxedUnion:
     if "$ref" in schema or "anyOf" in schema or "oneOf" in schema:
-        # templates read these outer fields; the grammar takes anyOf before them.
         fields = {
             key: schema[key]
             for key in (*_ANNOTATIONS, "type", "properties", "required")
@@ -62,9 +61,7 @@ def _wrap(schema: dict) -> _RelaxedUnion:
         }
         wrapped = _RelaxedUnion({**fields, "anyOf": [dict(_PERMISSIVE_OBJECT), schema]})
     else:
-        # Chat templates read the node's own type/properties/required; llama.cpp's grammar takes
-        # anyOf before them, so both stay. A type list keeps each other type with its own constraints,
-        # as llama.cpp expands it.
+        # Templates read type/properties/required; llama.cpp's grammar takes anyOf first, so keep both.
         kind = schema.get("type")
         scalar = {
             key: value
@@ -126,7 +123,6 @@ def _reorderable(
     target = _follow_refs(schema, root)
     if _optional_key_count(target) >= 2:
         return True
-    # A union reached only through a $ref is never walked as nested, so its branches decide.
     if target is not schema and id(target) not in seen:
         for keyword in ("anyOf", "oneOf"):
             branches = target.get(keyword)

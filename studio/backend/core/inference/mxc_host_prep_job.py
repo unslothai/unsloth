@@ -123,7 +123,6 @@ def start() -> HostPrepJob:
     with HOST_CHANGE_LOCK:
         setup = sandbox_setup_job.current()
         if setup is not None and setup.state == "running":
-            # Only the chained setup ends in this preparation; a runtime-only install never does.
             return sandbox_setup_job._joined(setup, sandbox_setup_plan.WINDOWS_SETUP)
         with _lock:
             if _current is not None and _current.state == "running":

@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""utils.prebuilt.llama_backend agrees with install_llama_prebuilt.py.
-
-The installer owns backend selection and writes the marker; the backend reads that
-marker directly on paths where spawning the installer is not an option (the
-model-load recovery gate runs per load, the status endpoints per poll). Two
-implementations of one contract drift, so this compares them on the same inputs
-rather than trusting a comment.
-"""
+"""The backend's marker reader must agree with install_llama_prebuilt.py, which writes the marker."""
 
 from __future__ import annotations
 
@@ -28,7 +21,6 @@ for _path in (str(_BACKEND), str(_STUDIO)):
 ilp = importlib.import_module("install_llama_prebuilt")
 from utils.prebuilt import llama_backend as backend_marker  # noqa: E402
 
-# Marker shapes shared by the installer and backend reader.
 MARKERS = [
     {},
     {"asset": "app-b1-linux-x64-cuda12-older.tar.gz"},
@@ -99,11 +91,7 @@ def test_the_api_offers_exactly_the_requestable_backends():
 
 
 def test_the_api_reports_an_unreadable_newer_backend_request_verbatim():
-    """A choice written by a newer Unsloth survives the response model.
-
-    Coercing it to "auto" would tell the picker this install is detecting when it
-    is not, and the picker would then happily overwrite the newer choice.
-    """
+    """An unreadable backend request from a newer Unsloth is reported verbatim, never coerced to auto."""
     from routes.llama import LlamaBackendStatusResponse
 
     response = LlamaBackendStatusResponse(backend_request = "sycl")
@@ -114,20 +102,18 @@ def test_the_api_reports_an_unreadable_newer_backend_request_verbatim():
 @pytest.mark.parametrize(
     "marker, chosen",
     [
-        # Detected, so crash recovery may still fall back to CPU placement.
         ({}, False),
         ({"llama_backend": None}, False),
         ({"llama_backend": ""}, False),
         ({"llama_backend": "auto"}, False),
         ({"backend_request": "auto"}, False),
-        # Legacy Vulkan stays eligible for automatic recovery.
+        # legacy Vulkan stays eligible for automatic recovery
         ({"asset": "llama-b1-bin-ubuntu-vulkan-x64.tar.gz"}, False),
-        # Chosen.
         ({"llama_backend": "vulkan"}, True),
         ({"force_cpu": True}, True),
         ({"backend_request": "vulkan"}, True),
         ({"backend_request": "cpu"}, True),
-        # Unreadable is chosen: undoing a choice we cannot name is the wrong guess.
+        # unreadable counts as chosen: undoing a choice we cannot name is the wrong guess
         ({"llama_backend": "sycl"}, True),
         ({"backend_request": "sycl"}, True),
     ],

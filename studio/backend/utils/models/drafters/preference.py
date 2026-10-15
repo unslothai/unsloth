@@ -40,11 +40,7 @@ def dspark_preference_key(name: str) -> tuple[int, str]:
 
 
 def mtp_precision_rank(name: str) -> int:
-    """MTP head precision preference: Q8_0 first. Correctness does not enter into
-    it, since the target verifies every drafted token, so this is purely which
-    head drafts fastest. Q8_0 measured both quicker and more accepted than bf16 on
-    Qwen3.8-Flash-Next: a draft step is dominated by the LM head, and that head is
-    cheaper to execute at 8 bits, so bf16 is larger and slower for no gain."""
+    """Q8_0 ranks first for draft speed only: the target verifies every drafted token anyway."""
     base = Path(name).name.lower()
     if "-q8_0" in base:
         return 0
@@ -60,19 +56,12 @@ def mtp_precision_rank(name: str) -> int:
 
 
 def mtp_preference_key(name: str) -> tuple[int, int, str]:
-    """Sort key picking the preferred MTP head by name alone.
-
-    The self-contained head wins the tie over the borrowing (``-shared-``) form:
-    ``--fit`` budgets a draft by loading it alone, which a borrowing head cannot do,
-    so the MTP context OOMs (unsloth#10322). Worth the 1.35 GB it costs at Q8_0.
-    """
+    """Prefers the self-contained MTP head over a ``-shared-`` one, which cannot load alone for --fit."""
     borrows = 1 if "shared" in Path(name).name.lower() else 0
     return mtp_precision_rank(name), borrows, Path(name).name.lower()
 
 
-# DFlash publishes the same precision vocabulary (and the published sidecar
-# carries no precision token at all, which lands in the catch-all rank), so the
-# ordering is shared rather than duplicated.
+# DFlash shares DSpark's precision vocabulary (the sidecar has none, landing in the catch-all).
 dflash_precision_rank = dspark_precision_rank
 
 
@@ -86,23 +75,7 @@ def dflash_repo_preference_key(
     weight_name: Optional[str] = None,
     other_weight_names: Iterable[str] = (),
 ) -> tuple[int, int, int, str]:
-    """Order DFlash sidecars in a repo listing / cache snapshot against the
-    weight actually being loaded.
-
-    dflash_preference_key ranks by precision and name alone, which is all a
-    single-model repo needs. A repo hosting more than one family also has to be
-    told which weight each sidecar belongs to, or ``dflash-model-A-Q8_0.gguf``
-    outranks the generic ``dflash-kquant.gguf`` on precision and model B is
-    launched with model A's drafter. Same rule the local scan applies in
-    detect_dflash_file, kept in one place so the download, the snapshot reuse
-    and the offline cache all pick the same file.
-
-    Three buckets: a sidecar naming this weight's family (most specific stem
-    first, as detect_mtp_file does), then one naming no weight present here,
-    then one naming a neighbour. The last is demoted rather than dropped, so a
-    repo whose only sidecar looks foreign still gets a fallback and today's
-    single-sidecar behaviour is unchanged.
-    """
+    """Demotes sidecars for another family below those for this weight, but keeps them as a fallback"""
     precision, sort_name = dflash_preference_key(name)
     if weight_name is not None and _drafter_matches_weight(name, weight_name, kind = "dflash"):
         return 0, _drafter_stem_rank(name, kind = "dflash"), precision, sort_name

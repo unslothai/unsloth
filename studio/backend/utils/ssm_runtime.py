@@ -356,13 +356,12 @@ def ssm_probe_identifier(model_name: str, base: str | None = None) -> str:
 
 
 def _is_importable(import_name: str) -> bool:
-    # Invalidate finder caches so a kernel installed earlier in this process is seen.
     importlib.invalidate_caches()
     try:
         __import__(import_name)
         return True
     except Exception as exc:
-        # An ABI-incompatible kernel (undefined symbol after a torch/CUDA upgrade) raises OSError/RuntimeError, not ImportError; treat any failure as "not importable" so the caller reinstalls or source-builds instead of hard-failing on a merely broken kernel.
+        # ABI-broken kernels raise OSError/RuntimeError, not ImportError; treat any failure as missing.
         logger.debug("%s is not importable (%s: %s)", import_name, type(exc).__name__, exc)
         return False
 
@@ -373,7 +372,7 @@ def _emit(status_cb: StatusCb, message: str) -> None:
         return
     try:
         status_cb(message)
-    except Exception:  # status is best-effort; never fail a load over a UI message
+    except Exception:  # best-effort; never fail a load over a UI message
         logger.debug("ssm_runtime status callback raised", exc_info = True)
 
 
@@ -399,7 +398,6 @@ def _heartbeat(status_cb: StatusCb, message: str) -> Iterator[None]:
         yield
     finally:
         done.set()
-        # Wait out a tick that already left done.wait().
         thread.join(timeout = 1)
 
 
@@ -446,7 +444,6 @@ def _install_kernel(
     wheel_available = url_exists(wheel_url) if wheel_url else False
     if wheel_available:
         _emit(status_cb, f"Installing {display_name} (prebuilt kernel) for this model...")
-        # Keep quiet downloads and unpacks within the inactivity deadline (#9398).
         with _heartbeat(
             status_cb,
             f"Still installing {display_name} (prebuilt kernel)...",

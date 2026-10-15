@@ -43,13 +43,7 @@ CONVERSATION_ARCHIVE_PREFIX = "convarchive_"
 
 
 def conversation_archive_scope(thread_id: str) -> str:
-    """Scope holding the turns a thread's rolling context window has evicted.
-
-    Deliberately NOT ``thread_scope``: with ``config.THREAD_WHOLE_DOC`` on, that scope is
-    rendered in full into every request, so archiving turns there would re-inject the
-    history and undo the compaction. A separate scope also keeps the archive out of the
-    attachments UI and the citation panel.
-    """
+    """Not thread_scope: under THREAD_WHOLE_DOC it renders whole into every request, re-injecting turns."""
     return f"{CONVERSATION_ARCHIVE_PREFIX}{thread_id}"
 
 
@@ -68,7 +62,6 @@ def _now() -> str:
 
 
 _TOKEN = re.compile(r"\w+", re.UNICODE)
-# Quotes mark a word being named rather than used; non-greedy and single-line so an unclosed quote spans nothing.
 _QUOTED = re.compile(r"\"([^\"\n]+)\"|\u201c([^\u201d\n]+)\u201d|'([^'\n]+)'|`([^`\n]+)`")
 
 
@@ -79,9 +72,7 @@ def _match_query(query: str) -> str:
     return " OR ".join(f'"{t}"' for t in toks)
 
 
-# A closed list of function words, so behaviour is identical on every install. no and not are
-# deliberately NOT here: they carry the whole difference in "what did I say not to delete?",
-# where dropping them leaves only terms BM25 floors at 1e-6.
+# Fixed list for reproducibility; 'no'/'not' deliberately excluded (they carry meaning).
 _ARCHIVE_STOPWORDS = frozenset(
     """
 a about all am an and any are as at be been being but by can could did do does doing
@@ -91,65 +82,28 @@ was we were what when where which who why will with would you your
 """.split()
 )
 
-# Identifier-ish tokens are how a person names one specific thing; a digit alone counts, since a
-# purely numeric subject has no other shape.
 _HAS_DIGIT = re.compile(r"\d", re.UNICODE)
 _HAS_LETTER = re.compile(r"[^\W\d_]", re.UNICODE)
 
 
 def _is_identifier(token: str, raw_tokens: frozenset[str]) -> bool:
-    """``raw_tokens`` is the query's tokens BEFORE lower-casing, tokenized once.
-
-    Once, and as a set, because the caller runs this per distinct token: re-scanning the
-    query text inside the loop made the whole function quadratic in the question's
-    length, which a pasted log turns into a multi-second stall on the request that
-    compacts the thread (48 KB of pasted text measured at 4.6s, 96 KB at 17.7s, against
-    2.3ms for the same text through `_match_query`).
-
-    The capitals rule needs CONTRAST, not just capitals: in a line with no lower case
-    anywhere every word satisfies it and the filter stops filtering. The caller passes an
-    empty ``raw_tokens`` for such a line, so shape alone decides there.
-    """
+    """Capitals need contrast: in an all-caps line every word passes, so raw_tokens is passed empty."""
     if "_" in token:
         return True
     if _HAS_DIGIT.search(token):
-        # A bare number needs LENGTH to be a name, else "answer in 2 sentences" filters the archive on "2".
+        # A bare number must be long to count as a name, else '2 sentences' filters on '2'.
         return bool(_HAS_LETTER.search(token)) or len(token) >= 3
     return len(token) >= 3 and token.upper() in raw_tokens
 
 
 def conversation_match_queries(query: str) -> list[str]:
-    """FTS5 expressions for searching a CONVERSATION ARCHIVE, most selective first.
-
-    Why the archive needs its own query shaping when `_match_query` is fine everywhere else: in a
-    per-thread archive the SUBJECT of the conversation is by construction present in many chunks, so
-    BM25 gives it almost no weight, while an incidental word from the question appears once and
-    dominates. Measured on an archive of 17 chunks about one variable: `zqxvara123` scored 0.16 and
-    `value`, from "what is the current value of X", scored 4.755, so ORing them lets the filler
-    decide the ranking.
-
-    So: first REQUIRE the identifier-like tokens, which restricts the candidates to chunks actually
-    about the thing asked about; then fall back to an OR over the content words. Two expressions
-    rather than one, because a filter that matches nothing must not mean "this archive has nothing
-    to say". A question made entirely of function words keeps all its tokens, since an empty
-    expression would make `search_lexical` return nothing at all.
-
-    SEVERAL identifiers are ORed, not ANDed. "What are the current values of A123 and B456" is two
-    questions in one envelope, and the turn answering either one names one of them: requiring both
-    keeps only the turns that DISCUSS the pair and drops both current assignments (measured on six
-    comparison turns plus one latest assignment each). The filter's job is to keep every slot on
-    something the question asked about, and the content-word pass still does the ranking.
-    """
+    """Identifier tokens are required first (ORed), then content words, as BM25 rewards incidental words."""
     tokens = list(dict.fromkeys(_TOKEN.findall(query.lower())))
     if not tokens:
         return []
-    # Identifier-ish: a token containing a digit (ZQXVARA123, 9134) or an underscore, or one in
-    # capitals and long enough not to be an "I" or an "OK". The capitals rule needs CONTRAST: in an
-    # all-caps line every word passes it and the filter filters nothing.
+    # All-caps queries disable the capitals rule: every word would pass it.
     raw_tokens = frozenset() if query == query.upper() else frozenset(_TOKEN.findall(query))
     identifiers = [t for t in tokens if _is_identifier(t, raw_tokens)]
-    # A QUOTED word is the subject whatever the stopword list thinks; quoted tokens stay out of
-    # identifiers, so this widens only the permissive pass.
     quoted = frozenset(
         token
         for match in _QUOTED.findall(query.lower())
@@ -164,21 +118,12 @@ def conversation_match_queries(query: str) -> list[str]:
 
 
 def lexical_matching_ids(conn: sqlite3.Connection, chunk_ids, expression: str) -> set:
-    """Which of ``chunk_ids`` match ``expression``, by the index's own tokenizer.
-
-    Membership, not ranking, and therefore not subject to any top-k window. A ranked pass
-    truncated at k answers "is this chunk among the k the index happened to return",
-    which is a different question and the wrong one when the scores are tied: FTS5 floors
-    the BM25 IDF of a term present in more than half the index at 1e-6, so the identifier
-    a whole thread is about orders nothing and the k that come back are arbitrary. Asking
-    the index directly, restricted to candidates already in hand, is exact however long
-    the thread gets.
-    """
+    """Membership, not ranking: asks the index which candidates match, so top-k cannot truncate ties."""
     ids = list(dict.fromkeys(chunk_ids))
     if not ids or not expression:
         return set()
     found: set = set()
-    # Chunked to stay under SQLITE_MAX_VARIABLE_NUMBER, which is 999 on older builds.
+    # Chunked under SQLITE_MAX_VARIABLE_NUMBER (999 on older builds).
     for start in range(0, len(ids), 500):
         batch = ids[start : start + 500]
         placeholders = ",".join("?" * len(batch))
@@ -268,20 +213,7 @@ def create_document(
     rowid: int | None = None,
     commit: bool = True,
 ) -> str:
-    """``created_at`` and ``rowid`` are for a REWRITE of a row that already exists.
-
-    A re-embed deletes the old row and inserts a new one for the same content, so stamping
-    it with the current time would say the turn was archived when its vectors were
-    rebuilt. That is not a cosmetic difference for an archived turn: an archive written
-    before `archive_ordinal` existed is ordered by `created_at` alone, so a rewrite that
-    takes a fresh timestamp moves that turn to the end of its own conversation.
-
-    ``rowid`` carries over one level down: rows archived in the same clock tick share a
-    `created_at` (routine on Windows, ~15.6 ms tick), so insertion order is all that
-    separates them and a fresh rowid sorts the rewritten turns behind the untouched ones.
-    Omitted, both arguments leave this byte for byte what every other caller has always
-    got: a NULL rowid is assigned exactly as if the column were not named.
-    """
+    """On a rewrite, carry created_at and rowid over so archived turns keep their place."""
     document_id = document_id or str(uuid.uuid4())
     conn.execute(
         "INSERT INTO documents(rowid, id, scope, kb_id, thread_id, project_id, filename, sha256, "
@@ -351,11 +283,7 @@ def list_documents(conn: sqlite3.Connection, scope: str) -> list[dict]:
 
 
 def list_all_documents(conn: sqlite3.Connection) -> list[dict]:
-    """Every uploaded document across all scopes (KBs, threads, projects).
-
-    Archived conversation turns are excluded: nobody uploaded them, so listing them would
-    show a chat's own history back as files the user never added.
-    """
+    """Lists uploaded documents across scopes; archived turns are excluded, since no user uploaded them."""
     rows = conn.execute(
         "SELECT id, scope, kb_id, thread_id, project_id, filename, sha256, status, error, "
         "num_chunks, stored_path, created_at, linked_folder_id "
@@ -368,13 +296,7 @@ def list_all_documents(conn: sqlite3.Connection) -> list[dict]:
 
 
 def next_archive_ordinal(conn: sqlite3.Connection, scope: str) -> int:
-    """The next conversation position for an archived turn group in this scope.
-
-    Deliberately not derived from `created_at`: every turn a single compaction evicts is
-    written microseconds apart, so wall-clock separates compaction EPOCHS and says
-    nothing about order WITHIN one. This counter does, because `archive_turns` allocates
-    it in `group_turns` order.
-    """
+    """A counter, not created_at, since one compaction writes its turns microseconds apart."""
     row = conn.execute(
         "SELECT COALESCE(MAX(archive_ordinal), -1) + 1 AS n FROM documents WHERE scope=?",
         (scope,),
@@ -388,10 +310,7 @@ def get_document(conn: sqlite3.Connection, document_id: str) -> dict | None:
 
 
 def document_rewrite_identity(conn: sqlite3.Connection, document_id: str) -> dict | None:
-    """What a re-embed carries over from the row it replaces. Separate from `get_document`
-    because `SELECT *` omits the implicit rowid and widening it would add the key to every
-    caller's dict.
-    """
+    """What a re-embed carries over (rowid, archive_ordinal, created_at); SELECT * would omit rowid."""
     row = conn.execute(
         "SELECT rowid, archive_ordinal, created_at FROM documents WHERE id=?", (document_id,)
     ).fetchone()
@@ -423,7 +342,6 @@ def reusable_document_by_hash(
 ) -> dict | None:
     """Newest completed, non-empty same-hash document in a live ``scope`` whose index can be
     copied. Extension must match (parsers branch on it) and so must the embedding identity."""
-    # rowid DESC is served by idx_documents_hash (no sort over every copy) and is newest-first.
     for row in conn.execute(
         "SELECT * FROM documents WHERE scope=? AND sha256=? AND status='completed' "
         "AND num_chunks > 0 AND NOT EXISTS "
@@ -441,12 +359,7 @@ def reusable_document_by_hash(
 
 
 def documents_by_hash(conn: sqlite3.Connection, scope: str, sha256: str) -> list[dict]:
-    """Every live copy of this text in the scope, oldest first.
-
-    The archive can legitimately hold more than one: a user who says the same thing twice
-    in one conversation said it twice, and the second time is often the one that matters.
-    Ordered so the nth copy lines up with the nth occurrence in the transcript.
-    """
+    """Every live copy in the scope, oldest first, so the nth copy matches the nth transcript occurrence."""
     rows = conn.execute(
         "SELECT id, archive_ordinal, embedding_model, created_at FROM documents "
         "WHERE scope=? AND sha256=? AND status!='failed' AND linked_folder_id IS NULL "
@@ -645,8 +558,7 @@ def _copy_chunk_rows(
     return chunk_ids
 
 
-# chunks_vec rowids this process wrote, per (db, document): chunk_id is unindexed in vec0, and the next
-# copy's donor is usually the one just written. Verified on read.
+# vec0 does not index chunk_id; cache rowids we wrote, verified on read.
 _VEC_ROWIDS_MAX = 256
 _vec_rowids: OrderedDict[tuple[str, str], list[int]] = OrderedDict()
 _vec_rowids_lock = threading.Lock()
@@ -686,7 +598,7 @@ def _donor_vectors(conn: sqlite3.Connection, source: dict, chunk_ids) -> list:
     rows = _donor_vectors_by_rowid(conn, source, chunk_ids)
     if rows is not None:
         return rows
-    # One pass over the partition: chunk ids are "<document id>:<index>" and ';' sorts right after ':'.
+    # Chunk ids are '<doc id>:<index>' and ';' sorts right after ':'.
     rows = conn.execute(
         "SELECT scope, chunk_id, embedding FROM chunks_vec "
         "WHERE scope=? AND chunk_id > ? AND chunk_id < ?",
@@ -722,7 +634,6 @@ def copy_document_index(
         rows is None
         or len(rows) != len(chunk_ids)
         or {r["chunk_id"] for r in rows} != chunk_ids.keys()
-        # chunks_vec may have been recreated at another width since the prefetch.
         or (rows and len(rows[0]["embedding"]) != 4 * (rag_db.vec_table_dim(conn) or 0))
     ):
         rows = _donor_vectors(conn, source, chunk_ids)
@@ -767,7 +678,6 @@ def copy_documents(
         )
         chunk_ids.update(_copy_chunk_rows(conn, source["id"], document_id, scope))
     if chunk_ids and rag_db.vec_table_exists(conn):
-        # vec0 scans the whole partition for any chunk filter, so read each source scope once.
         for source_scope in {source["scope"] for source, _ in documents}:
             conn.executemany(
                 "INSERT INTO chunks_vec(scope, chunk_id, embedding) VALUES(?,?,?)",
@@ -784,16 +694,7 @@ def copy_documents(
 
 
 def linked_folder_rows_exist(conn: sqlite3.Connection) -> bool:
-    """Whether anything here can be hidden by the linked-folder filters.
-
-    One EXISTS per thing they hide, so with all three empty the plain query returns the
-    same rows straight out of the FTS index.
-
-    A purged tombstone does not count: every knowledge base delete leaves one for good
-    and its scope keeps no documents, so counting it would end the fast path on the first
-    delete. Folder-owned documents are counted directly, not via `linked_folders`: a
-    crash before `_install_mapping` leaves one that outlives its folder row.
-    """
+    """Purged tombstones do not count, or every knowledge base delete would end the fast path."""
     return bool(
         conn.execute(
             "SELECT EXISTS(SELECT 1 FROM linked_folders) "
@@ -813,24 +714,7 @@ def search_lexical(
     newest_first: bool = False,
     oldest_first: bool = False,
 ):
-    """BM25 lexical search over one scope or several. Returns [(chunk_id, score)], higher = better.
-
-    `match_query` lets a caller supply the FTS5 expression itself; the conversation archive shapes
-    its own (see `conversation_match_queries`). Omitted, this is byte for byte what every other
-    caller has always got.
-
-    `newest_first` breaks TIES the other way round. FTS5 floors the IDF of a term the
-    whole index shares, so every hit on a per-thread archive's own subject scores the
-    same, and `ORDER BY s LIMIT k` then returns the k OLDEST rows: past k chunks on that
-    subject the newest assignment is unreachable at any k.
-
-    Both ordered forms SELECT rather than arrange: under the `LIMIT` they decide which rows
-    the caller is offered at all. So the tiebreak has to be
-    `conversation_archive._conversation_order` component for component, and ending it on a
-    chunk id ends it on a uuid4 -- which on a legacy archive, every ordinal NULL and one
-    clock tick over every row, IS the whole cut.
-    `test_the_candidate_window_is_cut_in_conversation_order` pins the two orders together.
-    """
+    """BM25 search; newest_first breaks ties newest-first, since LIMIT k would return the oldest rows."""
     mq = match_query if match_query is not None else _match_query(query)
     if not mq:
         return []
@@ -838,19 +722,14 @@ def search_lexical(
     if not scopes:
         return []
     placeholders = ",".join("?" * len(scopes))
-    # One snapshot for the gate and the read: WAL pins it at the transaction's first read, so a scope
-    # retired in between cannot land rows in a result the gate decided to run unfiltered.
+    # One snapshot for gate and read: WAL pins it at the first read.
     own_read_txn = not conn.in_transaction
-    # Read-only, but it has to end: an open snapshot blocks WAL checkpointing.
+    # Must end: an open snapshot blocks WAL checkpointing.
     if own_read_txn:
         conn.execute("BEGIN")
     try:
-        # The filtered form runs both subqueries for every matched row BEFORE the LIMIT, and with nothing
-        # linked that work is provably wasted (linked_folder_rows_exist).
         if oldest_first:
-            # `_conversation_order` component for component. The DOCUMENT rowid, not the
-            # chunk one: a re-embed rewrites the chunk rows and only the document's own
-            # rowid survives it (`create_document`'s `rowid`).
+            # Mirrors _conversation_order; uses document rowid since re-embeds rewrite chunk rows.
             sql = (
                 f"SELECT chunks_fts.chunk_id, bm25(chunks_fts) AS s FROM chunks_fts "
                 f"JOIN chunks c ON c.id=chunks_fts.chunk_id "
@@ -860,7 +739,6 @@ def search_lexical(
                 f"d.created_at ASC, d.rowid ASC, c.chunk_index ASC LIMIT ?"
             )
         elif newest_first:
-            # The mirror of the clause above, so the two halves cut the run at opposite ends.
             sql = (
                 f"SELECT chunks_fts.chunk_id, bm25(chunks_fts) AS s FROM chunks_fts "
                 f"JOIN chunks c ON c.id=chunks_fts.chunk_id "
@@ -929,12 +807,9 @@ def _search_dense(conn: sqlite3.Connection, scope, vector, k: int, embedding_mod
         return []
     dim = rag_db.vec_table_dim(conn)
     if dim is not None and dim != len(vector):
-        # The stale table cannot answer new-model queries: vec0 errors on the MATCH.
+        # vec0 errors on MATCH against a table of another dimension.
         return []
-    # The pre-tag spelling of the same request, kept acceptable so an existing index keeps answering after an upgrade.
     untagged = config.embedding_identity_model(embedding_model) or embedding_model
-    # dict.fromkeys collapses a scope named twice: a repeat would multiply that scope's fetch and emit
-    # its hits twice into the merge.
     scopes = list(
         dict.fromkeys(
             s
@@ -944,10 +819,7 @@ def _search_dense(conn: sqlite3.Connection, scope, vector, k: int, embedding_mod
             ).fetchone()
         )
     )
-    # Stale-model hits come from another space and can fill every fetched slot, so widen until k
-    # compatible ones survive the filter.
-    # Per scope, not across the merge: vec0 constrains its partition key by equality, so each scope has
-    # its own stale prefix.
+    # Widen per scope until k same-model hits survive: vec0 partitions by scope equality.
     kept: dict[str, list[tuple[str, float]]] = {}
     fetches = dict.fromkeys(scopes, max(k * 3, k + 10))
     pending = list(scopes)
@@ -982,10 +854,9 @@ def _search_dense(conn: sqlite3.Connection, scope, vector, k: int, embedding_mod
     return out[:k]
 
 
-# Past this many nearest neighbours the scope is effectively another embedder's, and a re-upload is the answer.
-# 4096 is also vec0's own ceiling, so raising this errors the query instead of widening it.
+# 4096 is vec0's own ceiling; raising this errors the query.
 _MAX_DENSE_FETCH = 4096
-# One id per bound parameter, kept under the oldest SQLITE_MAX_VARIABLE_NUMBER.
+# Kept under the oldest SQLITE_MAX_VARIABLE_NUMBER (999).
 _ID_BATCH = 900
 
 
@@ -1019,12 +890,7 @@ def _drop_incompatible(
 
 
 def count_untagged_documents(conn: sqlite3.Connection) -> int:
-    """Documents whose ``embedding_model`` predates backend tagging.
-
-    Either backend could have written them, because the llama-server fallback never
-    recorded that it had taken over, and nothing in the row says which pooling the
-    vectors came from. We keep serving them rather than drop a corpus or re-embed one
-    behind the user's back, so this exists to say how many are in that state."""
+    """Counts documents whose embedding_model predates backend tagging; they are still served as-is."""
     tags = " ".join(f"AND embedding_model NOT LIKE '{t}:%'" for t in config.EMBEDDING_IDENTITY_TAGS)
     row = conn.execute(
         f"SELECT COUNT(*) AS n FROM documents WHERE embedding_model IS NOT NULL {tags} "

@@ -23,7 +23,6 @@ _RESTRICTED_ZONES = (
     "PRC",
 )
 _RESTRICTED_WINDOWS_ZONES = ("China Standard Time",)
-# Public DNS and cloud resolvers of mainland China.
 _RESTRICTED_RESOLVER = re.compile(
     r"223\.5\.5\.5|223\.6\.6\.6|119\.29\.29\.29|114\.114\.11[45]\.11[0459]"
     r"|182\.254\.116\.116|119\.28\.28\.28|180\.76\.76\.76|1\.2\.4\.8|210\.2\.4\.8"
@@ -73,7 +72,7 @@ _Server._fields_ = [
 ]
 
 
-# The leading fields of IP_ADAPTER_ADDRESSES, through OperStatus.
+# Leading fields of IP_ADAPTER_ADDRESSES, through OperStatus.
 class _Adapter(ctypes.Structure):
     pass
 

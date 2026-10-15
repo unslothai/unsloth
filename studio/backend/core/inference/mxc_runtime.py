@@ -22,8 +22,7 @@ MXC_SCHEMA_VERSION = "0.8.0-alpha"
 PROFILE_ID = "unsloth-mxc-windows-processcontainer-v2"
 RELEASE_REPOSITORY = "microsoft/mxc"
 RELEASE_TAG = "v0.8.0"
-# Microsoft's @microsoft/mxc-sdk 0.8.0 npm package: every x64 binary is byte-identical to the
-# v0.8.0 release zip (358 MB, which adds only .pdb/.dwp symbols), at 26 MB.
+# @microsoft/mxc-sdk 0.8.0 npm: x64 binaries identical to the release zip, 26 MB vs 358 MB
 RELEASE_ASSET = "@microsoft/mxc-sdk@0.8.0"
 RELEASE_URL = "https://registry.npmjs.org/@microsoft/mxc-sdk/-/mxc-sdk-0.8.0.tgz"
 RELEASE_ARCHIVE_SIZE = 25_881_758
@@ -31,7 +30,6 @@ RELEASE_ARCHIVE_SHA256 = "06bb2399d7e98ab1907acf851e12a4e44748dd467b79d3e53c2f2f
 RELEASE_MEMBER = "package/bin/x64/wxc-exec.exe"
 WXC_EXEC_SIZE = 9_478_968
 WXC_EXEC_SHA256 = "6049c64723af1173c3739dc6cd6b2f33f6c021bb2832c4216233cba7f71aee9a"
-# Tier 3 host preparation, elevated; never needed by the BaseContainer path.
 RELEASE_HOST_PREP_MEMBER = "package/bin/x64/wxc-host-prep.exe"
 WXC_HOST_PREP_SIZE = 913_728
 WXC_HOST_PREP_SHA256 = "a9b8b14a11a1c5888641297c26abca547c2afa4435085c03ccfebd1deface310"
@@ -292,7 +290,6 @@ def _run_wxc_probe(
 def recover_dacl_state(env: dict[str, str] | None = None) -> bool:
     """Replay the DACL journal now; True only when wxc-exec reports no recovery error."""
     try:
-        # Longer than the advice probe: it runs right after a kill, often beside other DACL launches.
         completed = _run_wxc_probe(None, env, timeout = DACL_RECOVERY_SECONDS)
     except Exception as exc:  # noqa: BLE001 - an unknown outcome is not a clean one
         logger.warning("MXC DACL recovery did not run: %s", exc)

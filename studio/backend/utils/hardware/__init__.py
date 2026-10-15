@@ -55,12 +55,7 @@ from .vram_estimation import (
 
 
 def ensure_hardware_detected(epoch: Optional[int] = None) -> DeviceType:
-    """Detect once, from any thread; delegate so the live function always runs.
-
-    Wrapper rather than re-export, like export_capability() below: a re-export is an unused
-    module-level import, which scripts/verify_import_hoist.py flags. Must carry the epoch --
-    dropping it raises into the warm's _run_stage, leaving detection undone.
-    """
+    """Pass the epoch through: dropping it raises in the warm's _run_stage and leaves detection undone."""
     return _hardware.ensure_hardware_detected(epoch)
 
 

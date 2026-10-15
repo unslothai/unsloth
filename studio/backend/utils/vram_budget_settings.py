@@ -23,23 +23,20 @@ VRAM_BUDGET_SETTING_KEY = "vram_budget_fraction"
 
 VRAM_FRACTION_ENV_VAR = "UNSLOTH_VRAM_FRACTION"
 
-# Mirrored in per-model-config.ts as percent for the slider, a pair test_vram_budget_settings.py pins together. The default is the historical _CTX_FIT_VRAM_FRACTION / _GPU_PIN_VRAM_FRACTION.
+# Mirrored as percent in per-model-config.ts; test_vram_budget_settings.py pins the pair.
 VRAM_FRACTION_MIN = 0.80
 VRAM_FRACTION_MAX = 1.00
 VRAM_FRACTION_DEFAULT = 0.97
 
-# The slider steps in tenths, so 0.975 is legal. Quantising to that grid keeps a stored fraction exactly representable as the percent shown.
+# Slider steps in tenths of a percent; quantise so the stored value matches what is shown.
 VRAM_FRACTION_DECIMALS = 3
 
-# Read on the load path, so memo briefly to spare SQLite, as model_memory_settings.
 _CACHE_TTL_S = 2.0
 _cache_lock = threading.Lock()
 _cache: dict[tuple[str, str], tuple[float, Any]] = {}
-# Bumped on every write: a read that began before it must not cache its stale value, or the new
-# budget appears to revert for the rest of the TTL.
+# Bumped on every write so a read that began earlier does not cache a stale value.
 _generation: dict[tuple[str, str], int] = {}
 
-# Retries converge; the bound only stops a write storm spinning here forever.
 _MAX_REREADS = 3
 
 
@@ -61,7 +58,6 @@ def _cached_setting(key: str) -> Any:
             if _generation.get(cache_key, 0) == generation:
                 _cache[cache_key] = (time.monotonic(), stored)
                 return stored
-        # A write landed mid-read, so `stored` predates it and must not be cached.
     return stored
 
 
@@ -75,13 +71,13 @@ def _invalidate(key: str) -> None:
 def coerce_fraction(value: Any) -> Optional[float]:
     """A VRAM fraction in ``[VRAM_FRACTION_MIN, VRAM_FRACTION_MAX]``, else None. Accepts the stored JSON number and the raw environment string through the same path so a value can never be legal in one and not the other."""
     if isinstance(value, bool):
-        # bool is an int subclass, and True would otherwise read as 1.0.
+        # bool is an int subclass; True would read as 1.0.
         return None
     try:
         fraction = float(value)
     except (TypeError, ValueError):
         return None
-    # Two-sided on purpose: NaN loses every comparison, so this rejects it, where the one-sided form would let NaN through and NaN every per-GPU budget. Mirrors _parse_mem_fraction_env.
+    # Two-sided on purpose so NaN is rejected. Mirrors _parse_mem_fraction_env.
     if not VRAM_FRACTION_MIN <= fraction <= VRAM_FRACTION_MAX:
         return None
     return round(fraction, VRAM_FRACTION_DECIMALS)

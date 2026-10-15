@@ -29,7 +29,6 @@ def isolated(monkeypatch, tmp_path):
     monkeypatch.setattr(inference, "_managed_catalogs", {})
     monkeypatch.setattr(inference, "_CATALOG_CACHE", {"at": 0.0, "models": []})
     monkeypatch.setattr(inference, "_ADVERTISED_CACHE", {"at": None, "paths": {}})
-    # A first-time private repo is not public to an anonymous probe.
     monkeypatch.setattr(access, "repo_is_public", lambda *a, **k: False)
     yield
 
@@ -52,7 +51,6 @@ def downloads(monkeypatch):
     )
     monkeypatch.setattr(openai_auto_switch_settings, "idle_unload_is_configured", lambda: False)
 
-    # The Hub answers this private repo only for the caller's own token.
     class _Hub:
         def repo_info(
             self,

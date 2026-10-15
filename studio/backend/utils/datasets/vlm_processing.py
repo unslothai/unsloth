@@ -55,30 +55,25 @@ def generate_smart_vlm_instruction(
 
     text_sample = str(sample.get(text_column, ""))[:500]
 
-    # Task-specific keywords and their instructions
     task_patterns = {
-        # OCR / Transcription
         "ocr": {
             "keywords": ["ocr", "transcribe", "transcript"],
             "content_hints": [r"[A-Za-z\u0600-\u06FF]{10,}"],
             "instruction": "Transcribe all the text shown in this image.",
             "confidence": 0.9,
         },
-        # LaTeX / Math
         "latex": {
             "keywords": ["latex", "math", "formula", "equation"],
             "content_hints": [r"\\[a-z]+\{", r"\^", r"_", r"\\frac"],
             "instruction": "Convert this image to LaTeX notation.",
             "confidence": 0.95,
         },
-        # Caption / Description
         "caption": {
             "keywords": ["caption", "description", "describe"],
             "content_hints": [],
             "instruction": "Provide a detailed description of this image.",
             "confidence": 0.85,
         },
-        # Medical / Radiology
         "medical": {
             "keywords": [
                 "medical",
@@ -93,21 +88,18 @@ def generate_smart_vlm_instruction(
             "instruction": "Analyze this medical image and describe the key findings.",
             "confidence": 0.9,
         },
-        # Code / Programming
         "code": {
             "keywords": ["code", "program", "function", "algorithm"],
             "content_hints": [r"def |class |function|import |return "],
             "instruction": "Explain what this code visualization shows.",
             "confidence": 0.85,
         },
-        # Chart / Graph
         "chart": {
             "keywords": ["chart", "graph", "plot", "visualization", "diagram"],
             "content_hints": [r"\b(axis|legend|bar|line|pie|scatter)\b"],
             "instruction": "Describe this chart or graph, including key data points and trends.",
             "confidence": 0.85,
         },
-        # Document / Text Recognition
         "document": {
             "keywords": ["document", "page", "paragraph", "article"],
             "content_hints": [r"\n.*\n.*\n"],
@@ -116,7 +108,6 @@ def generate_smart_vlm_instruction(
         },
     }
 
-    # Score each task by column/dataset name and content matches
     best_match = None
     best_score = 0.0
 

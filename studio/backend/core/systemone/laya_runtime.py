@@ -22,11 +22,10 @@ logger = logging.getLogger(__name__)
 
 LOAD_WAIT_S = 20.0
 RUN_WAIT_S = 30.0
-# Bounded: each waiter holds a shared threadpool worker, so an unbounded queue stalls every sync route.
+# Bounded: each waiter holds a shared threadpool worker.
 MAX_PENDING = 8
 FAILURE_BACKOFF_S = 60.0
 _REQUIRED_DIRS = ("encoder", "tokenizer")
-# laya 0.3.5 ships inside Studio (see vendor/README.md), so the Decision API never installs anything.
 _VENDORED_LAYA = Path(__file__).resolve().parent.parent.parent / "vendor" / "laya"
 
 _state_lock = threading.Lock()
@@ -712,7 +711,7 @@ def _checkpoint_dir(checkpoint: Checkpoint, *, local_only: bool = False) -> Path
             )
         )
     folder = root / checkpoint.subfolder if checkpoint.subfolder else root
-    # Without these, laya falls back to downloading the base encoder from the Hub on every load.
+    # Without these, laya re-downloads the base encoder from the Hub on every load.
     missing = [name for name in _REQUIRED_DIRS if not (folder / name).is_dir()]
     if missing:
         raise FileNotFoundError(
@@ -722,11 +721,7 @@ def _checkpoint_dir(checkpoint: Checkpoint, *, local_only: bool = False) -> Path
 
 
 def _laya():
-    """The vendored laya package, registered as top-level ``laya`` (its modules import each other relatively).
-
-    Loaded by file path, not from ``sys.path``: a laya installed in the venv (Studio pinned one before
-    vendoring it) must not replace this copy, since this module drives laya internals.
-    """
+    """Loads the vendored laya by file path, so a venv-installed laya cannot replace this copy."""
     if (module := sys.modules.get("laya")) is not None:
         return module
     with _import_lock:
@@ -759,15 +754,7 @@ def _utf8_open(
     closefd = True,
     opener = None,
 ):
-    """``open`` for the vendored laya modules: text mode defaults to UTF-8.
-
-    laya reads ``rl_agent_config.json`` and ``tokenizer_config.json`` with a bare ``open()``,
-    which decodes with the locale's code page (ANSI on Windows, ASCII under a C locale). A
-    checkpoint whose tokenizer config holds non-ASCII special tokens then fails to read, and
-    ``_fix_tokenizer_config`` swallows that and skips the repair the model needs to load.
-    The vendored files stay byte-identical to the wheel (vendor/README.md), so the encoding is
-    supplied here, as each laya module's own ``open``.
-    """
+    """Defaults text mode to UTF-8, since laya's bare open() uses the locale code page."""
     if encoding is None and "b" not in mode:
         encoding = "utf-8"
     return open(
@@ -873,14 +860,14 @@ def download_plan(checkpoint: Checkpoint, preference: str | None = None) -> dict
 
 def _release_memory() -> None:
     gc.collect()
-    # MLX keeps freed buffers in its allocator cache until told otherwise; mlx below 0.24.1 names it mx.metal.clear_cache.
+    # Drop MLX's cached freed buffers; mlx below 0.24.1 names it mx.metal.clear_cache.
     if (mx := sys.modules.get("mlx.core")) is not None:
         clear = getattr(mx, "clear_cache", None) or getattr(
             getattr(mx, "metal", None), "clear_cache", None
         )
         if clear is not None:
             clear()
-    # Torch's allocator too; only already-initialised backends, so a CPU-only Studio never opens a device context.
+    # Only already-initialised backends, so CPU-only Studio never opens a device context.
     if (torch := sys.modules.get("torch")) is not None:
         try:
             if torch.cuda.is_initialized():
@@ -949,7 +936,6 @@ class _MLXAgent:
             k: clamp_temperature(v) for k, v in self.cfg.get("temperature_by_options", {}).items()
         }
         self._to_internal = laya.agent.Agent._to_internal
-        # As _precision does for fp16 checkpoints on CUDA: exact fp16 weights, fp16 matmuls, fp32 norms.
         # An unsloth-zoo without compute_dtype casts the whole model instead, so it stays fp32.
         mixed = "compute_dtype" in inspect.signature(load_decision_model).parameters
         self.dtype = mx.float16 if fp16_checkpoint and mixed and not _fp32_forced() else mx.float32
@@ -1092,7 +1078,7 @@ def _load_checkpoint(checkpoint: Checkpoint):
         return agent, "cuda"
     _laya()
 
-    # Evict only once the new checkpoint is on disk, so a long or failed download leaves the resident model serving.
+    # Evict only once the new checkpoint is on disk, so a failed download keeps the old model.
     _evict()
     # While training holds the GPU, a GPU model loads on CPU, as dictation does; see _misplaced.
     for_training = _training_active() and preferred_device() == "gpu"
@@ -1127,7 +1113,7 @@ def _build_laya(
         return _load_laya(str(root), subfolder = checkpoint.subfolder, device = device), device
     import torch
 
-    # Built on CPU and cast before the move, so the device never holds laya's fp32 copy.
+    # Cast before the move, so the device never holds laya's fp32 copy.
     weights, _ = _precision(torch.device(device), fp16_checkpoint)
     agent = _load_laya(
         str(root), subfolder = checkpoint.subfolder, device = "cpu", embedding_dtype = weights
@@ -1191,13 +1177,7 @@ def _load_laya(
     embedding_dtype = None,
     **kwargs,
 ):
-    """``laya.load`` without randomly initialising the encoder's vocabulary embedding.
-
-    laya builds a randomly initialised fp32 encoder and then loads the checkpoint over it. For mmBERT's
-    256000 x 768 embedding that init alone took ~3.2 GB of scratch RAM and ~8 s, all of it overwritten
-    by laya's strict load. The embedding is created with ``skip_init`` instead, in the dtype it will be
-    served in; the rest of the model, including buffers the checkpoint does not carry, is built as before.
-    """
+    """Builds the vocab embedding with skip_init in the serving dtype, avoiding a huge random init."""
     laya = _laya()
     hook = getattr(laya, "agent", None)
     if not hasattr(hook, "build_model"):
@@ -1231,11 +1211,9 @@ def _build_model(
         return original(cfg, encoder_dir = encoder_dir)
     config = AutoConfig.from_pretrained(encoder_dir)
     vocab_size, pad_token_id = config.vocab_size, getattr(config, "pad_token_id", None)
-    # ModernBERT reads pad_token_id only for this embedding; others keep it (RoBERTa's position ids).
+    # ModernBERT reads pad_token_id only for this embedding; others keep it (RoBERTa position ids).
     if config.model_type != "modernbert" or vocab_size <= 1:
         return original(cfg, encoder_dir = encoder_dir)
-    # A one-row placeholder, with row 0 standing in for the padding id so the check below can
-    # tell the embedding was sized and padded from the config.
     placeholder_pad = None if pad_token_id is None else 0
     config.vocab_size, config.pad_token_id = 1, placeholder_pad
     try:
@@ -1249,7 +1227,6 @@ def _build_model(
         or placeholder.padding_idx != placeholder_pad
         or encoder.config.vocab_size != vocab_size
     ):
-        # Not laid out like ModernBERT: build it laya's way.
         del encoder, placeholder
         return original(cfg, encoder_dir = encoder_dir)
     encoder.set_input_embeddings(
@@ -1294,11 +1271,7 @@ def _fp32_forced() -> bool:
 
 
 def _precision(device, fp16_checkpoint: bool):
-    """(weight dtype, compute dtype) for ``device``; ``(None, None)`` keeps laya's fp32 weights and compute.
-
-    An fp16 checkpoint held in fp16 is exact (fp16 -> fp32 is lossless), and fp16 compute tracked fp32 about
-    10x closer than bf16 on both GPU and CPU. Anything else follows the device: bf16 where it is native, else fp16.
-    """
+    """An fp16 checkpoint stays fp16 (exact); otherwise bf16 where native, else fp16."""
     import platform
 
     import torch
@@ -1313,12 +1286,11 @@ def _precision(device, fp16_checkpoint: bool):
         if is_rocm_torch(torch):
             bf16 = rocm_bf16_supported(torch, device.index)
         else:
-            # By capability: pre-Ampere NVIDIA reports is_bf16_supported() through slow emulation.
+            # By capability: pre-Ampere NVIDIA reports bf16 support through slow emulation.
             bf16 = torch.cuda.get_device_capability(device)[0] >= 8
         dtype = torch.bfloat16 if bf16 else torch.float16
         return dtype, dtype
-    # CPU only where the ISA has the format natively (AVX512-FP16 / AMX); emulated fp16 or bf16 is slower than fp32.
-    # Measured on x86 only, so other CPUs keep fp32.
+    # CPU only where the ISA has native fp16/bf16 (AVX512-FP16 / AMX); measured on x86 only.
     if device.type == "cpu" and platform.machine().lower() in ("x86_64", "amd64"):
         mkldnn = getattr(torch.ops, "mkldnn", None)
         try:
@@ -1336,12 +1308,7 @@ def _fp32_output(module, args, output):
 
 
 def _cast_matmul_weights(model, dtype) -> None:
-    """Cast the matmul and lookup weights only.
-
-    Norms stay fp32 (CPU layer_norm rejects low-precision parameters) and embedding outputs return to fp32,
-    so the residual stream keeps laya's precision. With bf16 compute this is bit-identical to fp32 weights,
-    since autocast rounds each weight to the same bf16 either way.
-    """
+    """Casts only Linear and Embedding weights; norms stay fp32 as CPU layer_norm rejects low precision."""
     import torch.nn as nn
     for module in model.modules():
         if isinstance(module, (nn.Linear, nn.Embedding)):
@@ -1363,7 +1330,7 @@ def _place(agent, device, fp16_checkpoint: bool) -> None:
     # Captured graphs point at the current weights; a move or recast replaces them.
     agent.__dict__.pop("_unsloth_graphs", None)
     weights, compute = _precision(device, fp16_checkpoint)
-    # Cast on the CPU side of the move: before moving to an accelerator, after coming back from one.
+    # Cast on the CPU side of the move: before going to an accelerator, after coming back.
     if device.type == "cpu":
         agent.model.to(device)
     if weights is None:
@@ -1374,7 +1341,6 @@ def _place(agent, device, fp16_checkpoint: bool) -> None:
         try:
             agent.model.to(device)
         except (RuntimeError, torch.cuda.OutOfMemoryError):
-            # Same fallback as laya's own loader: a device that cannot hold the model leaves it on CPU.
             logger.warning("Laya could not be placed on %s; running it on CPU", device)
             _place(agent, torch.device("cpu"), fp16_checkpoint)
             _release_memory()
@@ -1616,7 +1582,7 @@ def _to_laya(question: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-# Long states tokenized in growing prefixes; margin keeps kept tokens clear of the cut (prefix tokenization differs).
+# Prefix tokenization differs, so keep a margin clear of the cut.
 _PREFIX_MARGIN = 64
 _HEAD_CACHE_SIZE = 1024
 
@@ -1736,11 +1702,10 @@ def _forward(agent, items: list[dict[str, Any]]):
                     logits = _mlx_logits(agent, batch)
             return logits, int(batch["attention_mask"].sum())
         except RuntimeError as exc:
-            # MLX reports exhausted memory as "[malloc] Unable to allocate ..." or "Insufficient Memory".
             reason = str(exc).lower()
             if "memory" not in reason and "allocate" not in reason:
                 raise
-        # Past the handler, so the traceback no longer keeps the MLX arrays alive while the CPU copy loads.
+        # Past the handler, so the traceback no longer keeps the MLX arrays alive.
         logger.warning("Laya ran out of GPU memory; moving it to CPU")
         agent.model = None
         _release_memory()
@@ -1753,7 +1718,7 @@ def _forward(agent, items: list[dict[str, Any]]):
             )
             _place(cpu, cpu_device, fp16_checkpoint)
         except Exception:
-            # Callers hold _run_lock, so drop the half-moved agent here; the next request loads it again.
+            # Callers hold _run_lock, so drop the half-moved agent; the next request reloads it.
             _agent = _loaded = _device_name = None
             raise
         agent.model, agent.device, agent.dtype = cpu.model, cpu.device, cpu.dtype
@@ -1761,7 +1726,6 @@ def _forward(agent, items: list[dict[str, Any]]):
     try:
         logits = _run_model(agent, batch)
     except (RuntimeError, torch.cuda.OutOfMemoryError) as exc:
-        # Same fallback as laya's Agent.predict: a GPU that runs out of memory moves the model to CPU.
         reason = str(exc).lower()
         if agent.device.type == "cpu" or ("memory" not in reason and "cuda" not in reason):
             raise
@@ -1771,9 +1735,8 @@ def _forward(agent, items: list[dict[str, Any]]):
         _release_memory()
         logits = _run_model(agent, batch)
     if agent.dtype == torch.float16 and not bool(torch.isfinite(logits).all()):
-        # fp16 activations overflowed; the fp16 weights widen to fp32 exactly, so rerun at full precision.
+        # fp16 weights widen to fp32 exactly, so rerun at full precision.
         logger.warning("Laya overflowed in float16; continuing in float32")
-        # The graphs read the fp16 weights that .float() is about to replace.
         agent.__dict__.pop("_unsloth_graphs", None)
         agent.model.float()
         agent.dtype = torch.float32
@@ -1812,18 +1775,12 @@ def _run_model(agent, batch):
     if not _marker_head(agent.model):
         return _run_chunk(agent, batch)
     budget = _chunk_budget(agent.device)
-    # cat copies, so no result is a view into a CUDA graph's output buffer, which its next replay overwrites.
+    # cat copies: no result may view a CUDA graph's output buffer, which the next replay overwrites.
     return torch.cat([_run_chunk(agent, part) for part in _chunks(batch, budget)])
 
 
 def _chunk_budget(device):
-    """Padded tokens per forward, or None for one forward.
-
-    Splitting only saves memory: each extra forward costs a fixed overhead. On a CPU host memory is rarely the
-    limit and that overhead dominates (a 16-core Strix Halo ran the 64-question request 5x slower in 4096-token
-    chunks), so the CPU runs one forward. A GPU splits only past a share of its memory, so a large card keeps
-    one forward and its speed, and a small one still bounds its peak.
-    """
+    """Padded tokens per forward, or None for one pass; CPUs never split, as forward overhead dominates."""
     kind = getattr(device, "type", device)
     budget = _CHUNK_TOKENS.get(kind)
     if kind != "cuda" or budget is None:
@@ -1849,7 +1806,7 @@ def _run_chunk(agent, batch):
         fast
         and device.type == "cuda"
         and os.environ.get("UNSLOTH_SYSTEMONE_CUDA_GRAPHS", "") != "0"
-        # ROCm reports "cuda" too; as in diffusion_cuda_graph.py, graphs are CUDA only.
+        # ROCm reports "cuda" too; graphs are CUDA only.
         and not torch.version.hip
     ):
         graphs = agent.__dict__.get("_unsloth_graphs")
@@ -1862,7 +1819,6 @@ def _run_chunk(agent, batch):
     with torch.inference_mode(), _autocast(agent):
         args = [batch[name].to(device) for name in _INPUTS]
         if fast:
-            # No padding in the batch: no mask, so SDPA may pick its fastest kernel.
             return _decision_logits(
                 agent.model, *args, padded = not bool(batch["attention_mask"].all())
             )
@@ -1871,13 +1827,11 @@ def _run_chunk(agent, batch):
 
 
 _INPUTS = ("input_ids", "attention_mask", "marker_pos", "marker_mask", "qtype")
-# Smallest padded rows x tokens per forward; a larger request runs as several (see _chunk_budget). None: one forward.
 _CHUNK_TOKENS = {"cuda": 16384, "mlx": 8192, "cpu": None}
-# Activation bytes per padded token of the worst request (B200 fp16 41 KiB, gfx1151 137 KiB), with headroom.
+# Activation bytes per padded token of the worst request, with headroom.
 _TOKEN_BYTES = {"cuda": 48 << 10, "hip": 160 << 10}
-# Share of the GPU's total memory one Decision API forward may take before the request is split.
 _GPU_SHARE = 0.05
-# Padded rows x tokens above which a batch runs eagerly (B200: graphs win up to 8 x 1024, lose at 16 x 512).
+# Padded rows x tokens above which a batch runs eagerly (B200: graphs lose at 16 x 512).
 _GRAPH_TOKENS = 8192
 
 
@@ -1967,10 +1921,7 @@ def _head_layer(
     mask,
     markers = None,
 ):
-    """One eval-mode pre-norm ``TransformerEncoderLayer``; with ``markers``, only the rows at those positions.
-
-    Keys and values always span every token, so each marker row is exactly what the full layer gives it.
-    """
+    """Eval-mode pre-norm encoder layer; with markers, only those rows, as keys still span every token."""
     import torch
     import torch.nn.functional as F
 
@@ -1996,8 +1947,7 @@ def _head_layer(
         )
         q = q.view(batch, -1, heads, width // heads).transpose(1, 2)
         x = torch.gather(x, 1, index)
-    # Boolean attn_mask is True where attention is allowed (the inverse of src_key_padding_mask); SDPA
-    # applies dropout_p even in eval, so it is passed as 0.
+    # Bool attn_mask is True where attention is allowed; SDPA applies dropout_p even in eval.
     out = F.scaled_dot_product_attention(q, k, v, attn_mask = mask, dropout_p = 0.0)
     out = out.transpose(1, 2).reshape(batch, -1, width)
     x = x.add_(F.linear(out, attn.out_proj.weight, attn.out_proj.bias))
@@ -2014,11 +1964,7 @@ def _decision_logits(
     *,
     padded = True,
 ):
-    """The ``logits`` of laya's ``DecisionModel.forward``, computing only what they read.
-
-    The scorer only reads the option markers, so the last head layer runs at the markers alone, and the
-    action head Studio never returns is skipped.
-    """
+    """Computes only the logits the scorer reads: the last head layer runs at the option markers alone."""
     import torch.nn.functional as F
 
     h = model.encoder(input_ids = input_ids, attention_mask = attention_mask).last_hidden_state
@@ -2056,8 +2002,7 @@ class _CUDAGraphs:
         import torch
 
         self.agent = agent
-        # transformers 4.x wraps ModernBERT's embeddings and MLP in torch.compile on CUDA, which cannot run
-        # under capture; 5.x dropped that path, so this is what 5.x runs anyway.
+        # transformers 4.x wraps ModernBERT parts in torch.compile on CUDA, which cannot run under capture.
         config = getattr(getattr(agent.model, "encoder", None), "config", None)
         if getattr(config, "reference_compile", False) is not False:
             config.reference_compile = False
@@ -2065,7 +2010,7 @@ class _CUDAGraphs:
         self.broken = False
         self.pool = torch.cuda.graph_pool_handle()
         self.pool_bytes = 0
-        # One warm-up stream: the allocator caches blocks per stream, so a new stream per capture would strand them.
+        # One warm-up stream: the allocator caches blocks per stream.
         self.stream = torch.cuda.Stream(agent.device)
         free, _ = torch.cuda.mem_get_info(agent.device)
         self.max_pool_bytes = min(1 << 30, free // 10)
@@ -2090,14 +2035,14 @@ class _CUDAGraphs:
             "marker_mask": torch.ones((rows, options), dtype = torch.bool, device = device),
             "qtype": torch.zeros((rows,), dtype = torch.long, device = device),
         }
-        # Warm up off the default stream first, as torch.cuda.graph requires, so lazy init is not captured.
+        # torch.cuda.graph requires warm-up off the default stream so lazy init is not captured.
         self.stream.wait_stream(torch.cuda.current_stream(device))
         with torch.cuda.stream(self.stream):
             for _ in range(2):
                 self._forward(static)
         torch.cuda.current_stream(device).wait_stream(self.stream)
         graph = torch.cuda.CUDAGraph()
-        # thread_local: CUDA work on other Studio threads cannot break (or be broken by) this capture.
+        # thread_local: CUDA work on other Studio threads cannot break this capture.
         with torch.cuda.graph(graph, pool = self.pool, capture_error_mode = "thread_local"):
             logits = self._forward(static)
         return graph, static, logits
@@ -2123,7 +2068,6 @@ class _CUDAGraphs:
             try:
                 entry = self._capture(key)
             except Exception:
-                # e.g. transformers 4.x builds ModernBERT's sliding-window mask on the CPU every forward.
                 logger.warning(
                     "Laya cannot run in CUDA graphs here; running it eagerly", exc_info = True
                 )
@@ -2132,13 +2076,13 @@ class _CUDAGraphs:
             self.graphs[key] = entry
             self.pool_bytes += max(0, torch.cuda.memory_reserved(self.agent.device) - before)
             if self.pool_bytes > self.max_pool_bytes:
-                # Over budget: the pool is only released with every graph in it, so drop them all and stay eager.
+                # The pool is only released with every graph in it, so drop them all and stay eager.
                 logger.warning("Laya CUDA graphs need more memory than allowed; running eagerly")
                 self.graphs.clear()
                 self.broken = True
                 return None
         graph, static, logits = entry
-        # Padding tokens are masked; padding rows repeat row 0 so every row has a real token to attend to.
+        # Padding rows repeat row 0 so every row has a real token to attend to.
         static["input_ids"].zero_()
         static["attention_mask"].zero_()
         static["marker_pos"].zero_()
@@ -2377,7 +2321,7 @@ def status() -> dict[str, Any]:
             "device": _device_name,
             "holds_gpu": _holds_gpu(),
             "loading_model": _loading.name if _loading else None,
-            # Kept for the settings API: laya is vendored, so there is never an install in flight.
+            # Always False: laya is vendored, so no install is ever in flight; kept for the settings API.
             "installing": False,
             "error": failure[1] if failure else None,
             "error_model": failure[0].name if failure else None,

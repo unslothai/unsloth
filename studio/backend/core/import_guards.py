@@ -10,10 +10,7 @@ import sys
 
 
 def ensure_real_packages(*names: str) -> None:
-    """Drop sys.path entries where a bare `<name>/` dir (no __init__.py) shadows
-    the installed package as a namespace, import the real packages, restore
-    sys.path. No-op without a shadow. Pass dependency-first (e.g. "unsloth_zoo",
-    "unsloth"); imports run dependency-last."""
+    """Bare <name>/ dirs without __init__.py shadow packages as namespaces; pass dependency-first names."""
     import importlib
     import importlib.util
 
@@ -24,7 +21,6 @@ def ensure_real_packages(*names: str) -> None:
             spec = importlib.util.find_spec(name)
         except (ImportError, ValueError, AttributeError):
             spec = None
-        # real package -> spec.origin is its __init__; namespace shadow -> None/"namespace"
         if spec is None or spec.origin not in (None, "namespace"):
             continue
         dirs = {os.path.realpath(d) for d in (spec.submodule_search_locations or [])}
@@ -46,7 +42,7 @@ def ensure_real_packages(*names: str) -> None:
             del sys.modules[cached]
     try:
         importlib.invalidate_caches()
-        # import unsloth before unsloth_zoo: unsloth.__init__ runs GPU/bnb fixes zoo relies on
+        # Import unsloth before unsloth_zoo: unsloth.__init__ runs GPU/bnb fixes zoo relies on.
         for name in reversed(names):
             importlib.import_module(name)
     finally:

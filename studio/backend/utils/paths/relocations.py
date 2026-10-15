@@ -18,26 +18,19 @@ from typing import Callable, Optional
 
 from utils.account_context import is_owner_context
 
-# Fine-tunes and exports are not here: training history, chats and the model picker keep their
-# absolute paths, so moving them would strand those references.
+# Not fine-tunes/exports: history, chats and the picker hold their absolute paths.
 MOVABLE = ("uploads", "images", "videos", "audio")
 
 _SETTING = "library.locations"
 _lock = threading.Lock()
-# Keyed by the owner's database, so a test or a relaunch on another root never reads a stale map.
-# Each choice is {"path", "mount"}: `mount` is the drive or share the folder was on when picked.
-# One saved before mount points were recorded is its bare path, and is marked `bare` until its
-# folder is there to ask (while it is not, the drive is what it would name). A move under way also
-# keeps `moving_from`, the folder its files are leaving, until they have all left it, and
-# `moving_mount`, the drive or share that folder is on.
+# Keyed by the owner's database. Entries are {path, mount} plus bare/moving_from/moving_mount.
 _cache: dict[str, dict[str, dict]] = {}
-# Bumped by each write, so a load that read the database before one never caches what it read.
+# Bumped by each write so a load that read before it never caches stale data.
 _generation = 0
-# Resolving the database path walks the filesystem, and the galleries ask on every file lookup.
-# It only moves with the variables that place Studio's home (or a test swapping the function).
+# Resolving the db path walks the filesystem; it only moves with these variables.
 _HOME_VARIABLES = ("UNSLOTH_STUDIO_HOME", "STUDIO_HOME", "UNSLOTH_HOME")
 _db_keys: dict[tuple, str] = {}
-# Set by core.library: finishes the move of a kind whose `moving_from` a crash left behind.
+# Set by core.library: finishes a move a crash left behind.
 resume_move: Optional[Callable[[str], None]] = None
 
 
@@ -106,7 +99,6 @@ def _load() -> dict[str, dict]:
         isinstance(raw[kind], str) and not entry.get("bare") for kind, entry in chosen.items()
     )
     with _lock:
-        # Written meanwhile: what was read is older than what that write cached.
         if _generation != generation:
             return _cache.get(key, chosen)
         if learned:
@@ -130,9 +122,7 @@ def _chosen_entry(key: str) -> Optional[dict]:
     try:
         return _load().get(key)
     except sqlite3.OperationalError as exc:
-        # No settings table (a database made without Studio's schema): nothing was ever moved.
-        # Any other failure, a lock held too long among them, is raised: falling back would save
-        # into the default folder, where the file vanishes once the chosen one is read again.
+        # Other failures raise: falling back would save into the default folder and lose files.
         if "no such table" in str(exc):
             return None
         raise
@@ -149,10 +139,7 @@ class LocationUnavailable(OSError):
 
 
 def mount_point(path: Path) -> Optional[str]:
-    """The mount point `path` is under when that is not the system disk's root: a drive or share
-    mounted at a fixed folder (/mnt/usb, /media/me/Drive, a Windows mounted folder). None for a
-    folder on the system disk, or on a drive with a letter or volume of its own, which goes away
-    whole when it is unplugged."""
+    """A fixed-folder mount point; None for the system disk or a lettered drive, which goes away whole."""
     for candidate in (path, *path.parents):
         try:
             if os.path.ismount(candidate):
@@ -166,9 +153,8 @@ def _unavailable(entry: dict) -> bool:
     folder = Path(entry["path"])
     if not folder.is_dir():
         return True
-    # A fixed mount point stays behind as an empty folder once its drive is gone, and saves would
-    # land on the disk beneath it. The device number is not compared: it changes when a drive is
-    # plugged into another port, and the folder is still there then.
+    # An unmounted mount point is an empty dir; saves would land on the disk beneath.
+    # Device number is not compared: it changes when a drive moves ports.
     mount = entry.get("mount")
     return bool(mount) and not os.path.ismount(mount)
 
@@ -183,10 +169,7 @@ def _source_available(entry: dict) -> bool:
 
 
 def _in_use(entry: dict) -> Optional[Path]:
-    """The folder `entry` saves into now: its own, or, while a move cut short waits for the drive
-    it was moving onto, the folder the files were leaving, where those not moved yet still are.
-    That stays in use until the move is taken up again, even once the drive is back: the chosen
-    folder alone would hide what the folder standing in holds. None while neither is there."""
+    """While a move waits for its drive, the folder it leaves stays in use even after the drive returns."""
     source = entry.get("moving_from")
     standing_in = bool(source) and _source_available(entry) and Path(source).is_dir()
     if standing_in and entry.get("waiting"):

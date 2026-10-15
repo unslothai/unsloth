@@ -91,7 +91,7 @@ def _unwrap_oaep(ciphertext: bytes, *, what: str) -> bytes:
             ),
         )
     except Exception as exc:
-        # RSA-2048 ciphertext is exactly 256 bytes; log state to separate key mismatch from padding
+        # RSA-2048 ciphertext is exactly 256 bytes; log state to tell key mismatch from padding.
         logger.warning(
             "decrypt_api_key: RSA decrypt failed (%s, ciphertext_len=%d, expected=256, "
             "fingerprint=%s, exc=%s): %s",
@@ -155,7 +155,7 @@ def decrypt_api_key(encrypted_b64: str) -> str:
             )
             raise
     else:
-        # Lenient as this path was before the envelope: tightening it could reject a working key.
+        # Lenient as before the envelope: tightening could reject a working key.
         legacy_ciphertext = _b64decode_part(encrypted_b64, what = "legacy", validate = False)
         plaintext = _unwrap_oaep(legacy_ciphertext, what = "legacy")
 

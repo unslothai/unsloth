@@ -193,11 +193,7 @@ def int8_rotation_group() -> int:
 
 @lru_cache(maxsize = 1)
 def _row_major_op() -> Any:
-    """``unsloth_studio::native_row_major``: a row-major copy Inductor cannot re-layout, or None.
-
-    cuBLASLt runs int8 GEMMs only with a row-major activation. Inductor lays the int8 activation out in the stride
-    order of whatever produced it (a transposed view upstream, even one passed through ``.contiguous()``, which it
-    drops), so ``torch._int_mm`` can get it column-major and fail with CUBLAS_STATUS_NOT_SUPPORTED."""
+    """Row-major copy Inductor cannot re-layout; cuBLASLt int8 GEMMs fail on a column-major activation."""
     import torch
 
     ns = getattr(torch.ops, "unsloth_studio", None)
@@ -373,7 +369,6 @@ def native_linear_class():
         def _forward_int_mm(self, x: Any) -> Any:
             x2 = x.reshape(-1, self.in_features)
             rows = x2.shape[0]
-            # Eager materialises fp32 [rows, features] temporaries (inductor fuses them): cap them per chunk.
             chunk = _INT_MM_CHUNK_ELEMS // max(self.in_features, self.out_features)
             if torch.compiler.is_compiling() or rows <= chunk or chunk < 2 * _INT_MM_MIN_ROWS:
                 out = self._int_mm_rows(x2).to(x.dtype)
@@ -532,7 +527,6 @@ def _first_native_linear(module: Any) -> Any:
 
 
 def _rotation_group(module: Any, layer: Any) -> int:
-    # Every layer: rotation skips widths the group does not divide, so the first layer alone can read unrotated.
     try:
         return max(
             int(getattr(sub, "rot_group", 0) or 0)

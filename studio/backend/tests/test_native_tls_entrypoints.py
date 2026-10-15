@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Every spawned interpreter that talks HTTPS activates the OS trust store.
-
-Injection is process-local and does not survive a spawn, so a missing call is
-invisible until someone behind a TLS-inspecting proxy hits that one code path.
-No network: module-level calls are checked by AST, probe scripts by reading the
-assembled source off the module.
-"""
+"""Injection is process-local and lost on spawn, so every spawned HTTPS interpreter must activate it."""
 
 from __future__ import annotations
 
@@ -19,7 +13,6 @@ import pytest
 
 _BACKEND = Path(__file__).resolve().parent.parent
 
-# Modules whose fresh interpreter must activate at import, before any Hub call.
 _ENTRYPOINTS = [
     "main.py",
     "hub/workers/hf_download.py",
@@ -30,9 +23,7 @@ _ENTRYPOINTS = [
     "core/data_recipe/jobs/worker.py",
 ]
 
-# `python -c` children carry the gate as source. Read the assembled script off
-# the module: it is concatenated, so scraping AST literals would miss the
-# generated part.
+# Read the assembled script: it is concatenated, so AST literal scraping misses parts.
 _PROBE_SCRIPTS = [
     ("utils.transformers_version", "_PROBE_CONFIG_SCRIPT"),
     ("utils.models.model_config", "_VISION_CHECK_SCRIPT"),
@@ -66,8 +57,7 @@ def test_entrypoint_activates_native_tls_at_module_level(relative):
 @pytest.mark.parametrize(("module", "attr"), _PROBE_SCRIPTS)
 def test_probe_script_activates_before_it_downloads(module, attr):
     script = getattr(importlib.import_module(module), attr)
-    ast.parse(script)  # it is real source; a paste error only shows up in the child
-    # The shared helper, or the generated gate, which honours the opt-out itself.
+    ast.parse(script)
     activate = max(script.find("activate_native_tls"), script.find("inject_into_ssl"))
     assert activate != -1, f"{attr} lost its native TLS activation"
     if "inject_into_ssl" in script:
@@ -76,14 +66,7 @@ def test_probe_script_activates_before_it_downloads(module, attr):
 
 
 def test_prebuilt_core_gate_matches_the_generated_source():
-    """The one copy that cannot be generated at runtime, so assert it here.
-
-    prebuilt_core.py is vendored beside the backend and imports nothing from it,
-    so its gate is a paste. Drift here is silent: the installers would keep
-    downloading against certifi while everything else used the OS store.
-    Compare parsed statements, not text: ruff-format rewrites the paste (quote
-    style, line wrapping) without changing what it does.
-    """
+    """prebuilt_core.py's gate is a pasted copy, and drift is silent, so compare parsed AST, not text."""
     from utils.native_tls import inline_gate_source
 
     source = (_BACKEND.parent / "prebuilt_core.py").read_text(encoding = "utf-8")

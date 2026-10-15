@@ -15,7 +15,7 @@ def _accepted_by(field: str, value: str) -> bool:
     for validator in TrainingStartRequest.__pydantic_decorators__.field_validators.values():
         if field in validator.info.fields:
             try:
-                validator.func(value)  # already a bound classmethod
+                validator.func(value)
             except ValueError:
                 return False
             return True
@@ -34,7 +34,6 @@ def _offered_split(value: str):
     return _valid_option(value, _SPLIT_RE, reject_dotdot = True)
 
 
-# (value, offered_by, accepted_by)
 _SPLITS = ["train", "validation", "test", "train.clean", "tréin"]
 _CONFIGS = [
     "default",
@@ -105,8 +104,6 @@ def test_the_two_grammars_agree_over_a_generated_alphabet():
     for a in alphabet:
         for b in ("", "x", ".x"):
             value = f"tr{a}{b}"
-            # _valid_option normalizes (it strips), and the normalized string is what the
-            # picker offers, so that is what has to survive the start validator.
             offered_split = _offered_split(value)
             if offered_split is not None and not _split_accepted(offered_split):
                 mismatches.append(("split offered, start rejects", value, offered_split))

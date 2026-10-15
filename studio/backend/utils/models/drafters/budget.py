@@ -22,38 +22,7 @@ def dflash_budget_bytes(
     *,
     require_full_sizes: bool = False,
 ) -> int:
-    """A safe bound on the DFlash sidecar a load may end up resident on.
-
-    The largest candidate the fetch could end up on, not the best-ranked one.
-    The download can only read a candidate's header once it has paid for the
-    bytes, and a rejection falls through to the next name in the ranking, so any
-    candidate can be the file that lands, and the whole point of the fallback is
-    the case where it is a different, bigger one. Headers are unreadable from a
-    listing, so the ranking cannot narrow that down here, and over-estimating is
-    the established safe direction for a guard protecting a running training
-    job.
-
-    Each entry summed is a whole shard SET, not one file: a split sidecar is
-    picked as its first shard and the companion download then fetches every
-    sibling, all of which llama-server keeps resident. Sizing one shard would
-    halve a two-shard sidecar, and under-estimating is the direction that waves
-    a load through and then exhausts VRAM.
-
-    ``target_bytes`` drops what the fetch itself refuses: a drafter is a few layers of
-    its target, so a set at least that large is an ordinary weight wearing the prefix.
-    Zero means unknown and keeps every candidate.
-
-    An incomplete split set is refused for the same reason: the fetch turns those
-    families away on the shard count, so charging their listed part is a 409 for a
-    load that fits, which is what a mid-publication listing looks like.
-
-    ``require_full_sizes`` drops a loadable family whose listing did not size every
-    shard, instead of summing the shards it did size. A two-shard sidecar listed as
-    3 GiB plus an unknown is not a 3 GiB sidecar; llama-server maps both. Callers
-    that have somewhere else to go -- a cache measurement, then a flat reserve --
-    want that family excluded so they get there. Callers with no fallback are
-    better off with the partial sum than with nothing, so this is off by default.
-    """
+    """Safe over-estimate of the DFlash sidecar a load may land on: largest candidate, whole shard sets."""
 
     def _family(name: str, size: int) -> tuple[int, bool]:
         shards = list(extra_shards(sizes, name))

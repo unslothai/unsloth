@@ -55,9 +55,7 @@ from utils.gpu_memory_events import invalidates_gpu_memory as _invalidates_gpu_m
 
 logger = get_logger(__name__)
 
-# Upper bound for one request; music generation at long durations takes minutes.
 _GENERATE_TIMEOUT_SECONDS = 3600.0
-# Frames of a 30-second clip, the MiniMax convention the Audio page's music budget speaks in.
 _DEFAULT_MUSIC_SECONDS = 30.0
 _MAX_MUSIC_SECONDS = 240.0
 
@@ -112,11 +110,7 @@ def _wav_sample_rate(wav_bytes: bytes) -> int:
 
 
 def _music_seconds(max_new_tokens: Optional[int]) -> float:
-    """Map the shared speech-token budget onto a clip length.
-
-    The Audio page sends MiniMax's 25-frames-per-second budget for music; the same
-    number here means the same length, so one duration control drives every model.
-    """
+    """Maps the shared speech-token budget to seconds at 25 frames per second, MiniMax's music rate."""
     try:
         frames = int(max_new_tokens or 0)
     except (TypeError, ValueError):
@@ -126,7 +120,7 @@ def _music_seconds(max_new_tokens: Optional[int]) -> float:
     return max(5.0, min(_MAX_MUSIC_SECONDS, frames / 25.0))
 
 
-# Qwen3-TTS answers "unsupported language: en"; it wants the language's English name.
+# Qwen3-TTS rejects "en"; it wants the language's English name.
 _LANGUAGE_NAMES = {
     "zh": "Chinese",
     "en": "English",
@@ -140,7 +134,6 @@ _LANGUAGE_NAMES = {
     "it": "Italian",
 }
 _SPEAKER_LINE_RE = re.compile(r"^\s*Speaker\s*\d+\s*:", re.IGNORECASE | re.MULTILINE)
-# F5's usable speed range.
 _MIN_SPEED, _MAX_SPEED = 0.5, 2.0
 
 
@@ -327,13 +320,9 @@ class AudioCppBackend:
         self._model: Optional[AudioCppModel] = None
         self._server: Optional[AudioCppServer] = None
         self._server_lock = threading.RLock()
-        # ``model_options`` is not part of model equality: a changed overlap is only seen here.
         self._served_session: dict = {}
-        # Request-raised session options (Stable Audio max_batch); cleared when another model loads.
         self._session_overrides: dict[str, str] = {}
         self._status_patch: Optional[dict[str, Any]] = None
-
-    # Loading
 
     @_invalidates_gpu_memory("audio load")
     def load_model(
@@ -370,7 +359,6 @@ class AudioCppBackend:
         ):
             self.active_model_name = model_name
             return True
-        # Before any download: a runtime that cannot serve this model must fail fast, not after gigabytes.
         from core.inference.audio_cpp_server import model_runtime_problem
 
         problem = model_runtime_problem(model)
@@ -390,7 +378,6 @@ class AudioCppBackend:
                     "audio_type": model.audio_type,
                     "has_audio_input": False,
                     "model_path": model.id,
-                    # No token window: speech length is bounded by the server, music by duration.
                     "context_length": 0,
                     **model_info_fields(model),
                     "audio_cpp_backend": self._server.backend if self._server else None,
@@ -440,7 +427,6 @@ class AudioCppBackend:
             if cancel_event is None:
                 fetch()
             else:
-                # Cache root in the key: a retry after the cache moved must not join the old transfer.
                 _download_or_cancel((cache_dir, model.repo_id, path), fetch, cancel_event)
         return True
 
@@ -475,7 +461,6 @@ class AudioCppBackend:
                 self._server is None
                 or not self._server.alive()
                 or self._server.model != model
-                # Seed-VC's route: model equality leaves model_options out.
                 or _request_defaults(self._server.model) != _request_defaults(model)
             ):
                 logger.info("audio.cpp: (re)starting the server for %s", model.id)
@@ -484,8 +469,6 @@ class AudioCppBackend:
                 finally:
                     self._record_runtime()
             return self._server
-
-    # Generation
 
     def generate_audio_response(
         self,
@@ -533,7 +516,6 @@ class AudioCppBackend:
             )
         editing = workflow == "edit"
         converting = workflow == "convert"
-        # Speak in a saved voice sends a reference with workflow "speak": a clone too.
         cloning = not (editing or converting) and (workflow == "clone" or bool(audio_inputs))
         if editing and model.edit is None:
             raise RuntimeError(f"{model.display_name} cannot edit speech.")
@@ -685,7 +667,6 @@ class AudioCppBackend:
             server = self._server
         response_path = Path(output_dir) / ".response.json"
         try:
-            # The separation families refuse any other key.
             server.post_json_to_file(
                 "/v1/tasks/run",
                 {"model": server.model_id, "audio": str(source_path)},
@@ -716,8 +697,6 @@ class AudioCppBackend:
         return outputs
 
     def _restart_after_cancel(self) -> None:
-        # The server keeps computing the abandoned request; stopping it frees the GPU now and the next
-        # request starts a fresh one.
         with self._server_lock:
             self._stop_server_locked()
             self._record_runtime()
@@ -742,7 +721,7 @@ class AudioCppBackend:
             "input": speech_input(model, text),
             **defaults,
         }
-        # Family defaults win: Studio's generic temperature can stop one emitting its stop token (MOSS-TTS-Nano).
+        # Family defaults win: Studio's temperature can stop MOSS-TTS-Nano emitting its stop token.
         del temperature, top_p
         chosen = dict(options)
         voice = chosen.pop("voice", None)
@@ -780,12 +759,9 @@ class AudioCppBackend:
                 cancel_event = cancel_event,
             )
         except AudioCppRequestError as exc:
-            # 503 is a busy model, not a refused option. The server answers an option a family lacks with a
-            # 4xx or a 500 depending on where the family validates it, so both count as a refusal here.
+            # The server answers an unsupported option with 4xx or 500; 503 is just busy.
             if not requested or exc.status == 503 or not 400 <= exc.status < 600:
                 raise
-            # The request's own description and language are hints; the package's defaults and the
-            # user's options are not.
             logger.info(
                 "audio.cpp: %s rejected %s (%s); retrying without them",
                 model.family,
@@ -819,10 +795,7 @@ class AudioCppBackend:
         options: dict,
         cancel_event,
     ) -> bytes:
-        """Speak ``text`` in the voice of ``audio_inputs["reference"]`` (a server-local WAV path).
-
-        An emotion clip has no field on the speech endpoint, so that request goes to /v1/tasks/run
-        with the clip as top-level ``audio``."""
+        """An emotion clip has no field on the speech endpoint, so it is sent to /v1/tasks/run as audio."""
         clone = model.clone or CloneSpec()
         reference = audio_inputs.get("reference")
         if not reference:
@@ -1040,8 +1013,6 @@ class AudioCppBackend:
         except cm.MusicRequestError as exc:
             raise RuntimeError(str(exc)) from exc
         server = self._server_for_batch(model, batch, cancel_event)
-        # The route sizes the wait from the full work (extend, continue length); the orchestrator
-        # outlasts that same budget.
         timeout = float(music.get("timeout_s") or 0) or cm.timeout_seconds(
             model.family, seconds, variations, server.backend
         )
@@ -1073,8 +1044,6 @@ class AudioCppBackend:
             _write_outputs(output_dir, outputs)
         first = outputs[0][1]
         return first, _wav_sample_rate(first)
-
-    # Unloading
 
     @_invalidates_gpu_memory("audio unload")
     def unload_model(self, model_name: str) -> bool:

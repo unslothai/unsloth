@@ -45,7 +45,6 @@ def _patches_enabled() -> bool:
 _body_has = body_has
 
 
-# qwen-image: QwenImageTransformerBlock._modulate (modulation addcmul, all 4 call sites)
 def _qwen_modulate(
     self,
     x,
@@ -76,7 +75,6 @@ def _qwen_modulate(
         scale_result = scale.unsqueeze(1)
         gate_result = gate.unsqueeze(1)
 
-    # fused: x * (1 + scale_result) + shift_result
     return torch.addcmul(shift_result, x, 1 + scale_result), gate_result
 
 
@@ -93,7 +91,6 @@ def _spec_qwen_modulate():
     return (cls, "_modulate", _qwen_modulate)
 
 
-# z-image: ZImageTransformerBlock.forward (the 2 gated-residual addcmuls)
 def _zimage_forward(
     self,
     x: torch.Tensor,
@@ -139,13 +136,11 @@ def _zimage_forward(
             gate_msa, gate_mlp = gate_msa.tanh(), gate_mlp.tanh()
             scale_msa, scale_mlp = 1.0 + scale_msa, 1.0 + scale_mlp
 
-        # Attention block -- fused gated residual: x + gate_msa * attention_norm2(attn_out)
         attn_out = self.attention(
             self.attention_norm1(x) * scale_msa, attention_mask = attn_mask, freqs_cis = freqs_cis
         )
         x = torch.addcmul(x, gate_msa, self.attention_norm2(attn_out))
 
-        # FFN block -- fused gated residual: x + gate_mlp * ffn_norm2(feed_forward(...))
         x = torch.addcmul(
             x, gate_mlp, self.ffn_norm2(self.feed_forward(self.ffn_norm1(x) * scale_mlp))
         )
@@ -174,8 +169,6 @@ def _spec_zimage_forward():
     return (cls, "forward", _zimage_forward)
 
 
-# flux.1: FluxTransformerBlock / FluxSingleTransformerBlock. Block modulation goes via AdaLayerNormZero; here we fuse
-# the inline norm2 modulation and the gated residual adds.
 def _flux_double_forward(
     self,
     hidden_states,
@@ -202,11 +195,9 @@ def _flux_double_forward(
     elif len(attention_outputs) == 3:
         attn_output, context_attn_output, ip_attn_output = attention_outputs
 
-    # fused: hidden_states + gate_msa * attn_output
     hidden_states = torch.addcmul(hidden_states, gate_msa.unsqueeze(1), attn_output)
 
     norm_hidden_states = self.norm2(hidden_states)
-    # fused: norm * (1 + scale_mlp) + shift_mlp
     norm_hidden_states = torch.addcmul(
         shift_mlp[:, None], norm_hidden_states, 1 + scale_mlp[:, None]
     )
@@ -274,7 +265,6 @@ def _flux_single_forward(
 
     hidden_states = torch.cat([attn_output, mlp_hidden_states], dim = 2)
     gate = gate.unsqueeze(1)
-    # fused: residual + gate * proj_out(hidden_states)
     hidden_states = torch.addcmul(residual, gate, self.proj_out(hidden_states))
     if hidden_states.dtype == torch.float16:
         hidden_states = hidden_states.clip(-65504, 65504)
@@ -301,7 +291,6 @@ def _spec_flux_single():
     return (cls, "forward", _flux_single_forward)
 
 
-# flux.2-klein: Flux2TransformerBlock / Flux2SingleTransformerBlock. Modulation is INLINE, so fuse both;
 # scale/shift/gate are [B,1,dim], so no [:, None].
 def _flux2_double_forward(
     self,
@@ -436,7 +425,6 @@ def _spec_flux2_single():
     return (cls, "forward", _flux2_single_forward)
 
 
-# krea-2: Krea2TransformerBlock.forward (2 inline modulations + 2 gated residuals)
 def _krea2_block_forward(
     self,
     hidden_states,
@@ -446,7 +434,6 @@ def _krea2_block_forward(
 ):
     """``Krea2TransformerBlock.forward`` with the two inline modulations
     ``(1 + scale) * norm(x) + shift`` and the two gated residuals each fused to ``torch.addcmul``."""
-    # temb: (B, 1, 6 * hidden_size), shared across blocks; each block learns an additive table.
     modulation = temb.unflatten(-1, (6, -1)) + self.scale_shift_table
     prescale, preshift, pregate, postscale, postshift, postgate = modulation.unbind(-2)
 
@@ -479,7 +466,6 @@ def _spec_krea2_forward():
     return (cls, "forward", _krea2_block_forward)
 
 
-# Registry + lifecycle. Each entry is a zero-arg resolver returning (cls, attr, new_fn) or None. All COMPILE-SAFE.
 _SPECS: tuple[Callable[[], Optional[tuple]], ...] = (
     _spec_qwen_modulate,
     _spec_zimage_forward,
@@ -490,7 +476,6 @@ _SPECS: tuple[Callable[[], Optional[tuple]], ...] = (
     _spec_krea2_forward,
 )
 
-# (cls, attr) pairs we successfully patched, for an exact reverse.
 _patched: list[tuple] = []
 
 

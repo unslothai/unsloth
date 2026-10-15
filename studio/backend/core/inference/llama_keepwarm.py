@@ -24,34 +24,22 @@ logger = get_logger(__name__)
 
 _lock = threading.Lock()
 _inflight = 0
-# Subset of _inflight that is /p/ preview traffic.
 _preview_inflight = 0
 # Blocked on the unload gate, not yet in _inflight: the idle loop must not unload while one waits.
 _pending = 0
-# Subset of _pending that is /p/ preview traffic, so the busy guard can tell a queued Unsloth request from a queued
-# preview.
 _preview_pending = 0
-# Non-preview requests past FastAPI auth at the local-inference choke point. The preview busy guard counts these, not
-# raw _inflight, so a pre-auth/unauthenticated tracked request that never touches the model cannot starve public
-# previews.
+# Counted after FastAPI auth, so unauthenticated tracked requests cannot starve previews.
 _admitted_inference = 0
-# Bumped when a preview swap loads a new checkpoint. A non-preview request captures it before the lifecycle gate; if it
-# advanced by the time the gate is held, a preview swapped the model out from under it and the request is rejected (see
-# the middleware).
+# Bumped per preview swap; a non-preview request seeing it advance across the gate is rejected.
 _preview_swap_generation = 0
-# Non-zero while a preview swap is loading (before it takes the lifecycle gate until after it releases). Catches a
-# request that captures the counter AFTER the bump but BEFORE the gate releases: the middleware snapshots this flag at
-# entry and rejects if a swap was in progress.
+# Non-zero while a preview swap loads; catches requests captured after the bump but before release.
 _preview_swap_inflight = 0
 _last_active = time.monotonic()
-# The (id, quant) idle-unload last freed, so an alias/unknown request that would otherwise 503 against an empty backend
-# can reload it (set on unload, cleared on reload). The quant lets the reload restore the exact freed variant.
+# (id, quant) the idle unload freed, so an alias request can reload the exact variant.
 _last_unloaded_model = None
 # Slot KV manifest saved by the idle unload; whoever pops it owns deleting its files.
 _kv_resume = None
-# Guards inflight bumps against the idle-check-then-unload race and blocks new inference mid-swap. Process-wide, not
-# per-loop: the backend slot is shared across every event loop, so a per-loop gate would let a request on loop B start
-# while a swap on loop A tears it down.
+# Process-wide, not per-loop: the backend slot is shared across every event loop.
 _lifecycle_lock = threading.Lock()
 
 
@@ -62,9 +50,7 @@ _load_lock = threading.Lock()
 async def _unload_gate(
     cancel_event: threading.Event | None = None, lock: threading.Lock = _lifecycle_lock
 ):
-    # Acquire off the loop: non-blocking first (the common uncontended case), else poll a non-blocking acquire off a
-    # short sleep. Polling keeps the wait off this loop AND cancellation-safe -- a cancel lands during the sleep, when
-    # the gate is not held, so it never leaks (mirrors the auto-switch swap gate).
+    # Poll a non-blocking acquire so the wait stays off the loop and a cancel never leaks the gate.
     acquired = False
     try:
         while not lock.acquire(blocking = False):
@@ -90,39 +76,27 @@ _INFERENCE_SUFFIXES = (
     "/embeddings",
     "/responses",
     "/generate/stream",
-    "/audio/generate",  # direct GGUF TTS; can outlive the idle TTL
+    "/audio/generate",  # can outlive the idle TTL
     "/audio/speech",
-    # Image generation holds a multi-GB pipeline for the whole request; tracking it lets other_inference_request_count()
-    # see an in-flight generation so an API-key training start is refused (409). endswith avoids matching *-progress /
-    # */cancel.
+    # endswith avoids matching *-progress / */cancel.
     "/images/generate",
     "/images/generations",
-    # video runs as a background job, so this covers only the brief accept
     "/video/generate",
 )
 
-# Matched WHOLE, not by suffix. The suffix tuple above is an endswith test, so a bare "/videos" entry would also class
-# an unrouted /v1/anything/videos as inference: that 404s before any auth dependency, and this middleware only
-# excludes 401/403, so each such probe would refresh the chat model's idle timer and keep it resident for free.
+# Matched whole: a suffix "/videos" would let 404 probes keep the chat model warm.
 _INFERENCE_EXACT_PATHS = frozenset({"/v1/videos", "/api/inference/videos"})
 
-# Tracked above (they hold the GPU, so the in-flight count must see them) but served by the diffusion/video engines,
-# never the llama slot. A successful one therefore did NOT run against the resident chat model and must not adopt it
-# for Unsloth: clearing the marker on an image or video generation would leave a still-preview-owned checkpoint
-# looking Unsloth-owned, and the next preview for a different checkpoint would 503 on the slot guard.
+# Served by diffusion/video engines, never the llama slot: must not clear preview ownership.
 _NON_LLM_SLOT_SUFFIXES = (
     "/images/generate",
     "/images/generations",
     "/video/generate",
-    # The OpenAI videos route (/v1/videos + /api/inference/videos) runs the video backend only, exactly like
-    # /video/generate. It is tracked as an inference path, so without this it would claim the slot and clear preview
-    # ownership.
     "/videos",
 )
 
 
 def _is_preview_path(path: str) -> bool:
-    # Public checkpoint preview delegates to the chat handler on the same backend, so protect it from idle unload.
     return path.startswith("/p/") and path.endswith("/v1/chat/completions")
 
 
@@ -151,7 +125,7 @@ def _note_unpending(is_preview: bool = False) -> None:
 
 
 def _note_start(is_preview: bool = False) -> None:
-    # do not stamp _last_active here: while _inflight > 0 the model is already protected
+    # Do not stamp _last_active: while _inflight > 0 the model is already protected.
     global _inflight, _pending, _preview_inflight, _preview_pending
     with _lock:
         _pending = max(0, _pending - 1)
@@ -210,8 +184,7 @@ class InferenceActivityReservation:
 
 
 def _note_untracked_end(is_preview: bool = False) -> None:
-    # Drop a request that never used the local GGUF without stamping activity, so external-provider traffic can't keep
-    # the model warm.
+    # No activity stamp, so external-provider traffic cannot keep the model warm.
     global _inflight, _preview_inflight
     with _lock:
         _inflight = max(0, _inflight - 1)
@@ -234,13 +207,7 @@ def _note_activity() -> None:
 def other_inference_request_count(
     current_request_counted: bool = True, *, include_pending: bool = True
 ) -> int:
-    """Tracked inference requests other than the current route call.
-
-    The middleware counts requests before route code runs, so the caller is excluded by
-    default. Idle-unload counts pending waiters too (a swap holding the gate would unload
-    out from under them); the swap guard passes include_pending=False since a pending
-    request is blocked in the middleware and can't be the one a swap would interrupt.
-    """
+    """Counts tracked inference requests except the current one; idle unload also counts pending ones."""
     with _lock:
         active = _inflight
         if current_request_counted and active > 0:
@@ -258,20 +225,13 @@ def other_preview_inflight_count(current_request_counted: bool = True) -> int:
 
 
 def other_admitted_inference_count() -> int:
-    """Non-preview requests admitted to local inference (passed auth, reached the
-    _maybe_auto_switch_model / generate_stream choke point). The preview busy guard counts
-    these instead of raw _inflight, so a pre-auth/unauthenticated tracked request can't
-    block a preview. The current request is always a preview (never admitted), so no
-    self-exclusion is needed."""
+    """Admitted non-preview requests only, so a pre-auth request cannot block a preview swap."""
     with _lock:
         return _admitted_inference
 
 
 def other_non_preview_pending_count() -> int:
-    """Non-preview requests queued on the lifecycle gate (_pending, not yet in flight).
-    The preview swap guard must count these: a queued Unsloth request would otherwise start
-    against the model a preview swapped in while it waited. The current request is a preview
-    already in flight, so not in _pending."""
+    """Counts queued non-preview requests, which would otherwise start on a model a preview swapped in."""
     with _lock:
         return max(0, _pending - _preview_pending)
 
@@ -291,10 +251,7 @@ def _preview_swap_gen() -> int:
 
 
 def note_preview_swap_begin() -> None:
-    """Mark a preview swap in progress. Call before taking the lifecycle gate to load, pair
-    with note_preview_swap_end() after the gate releases, so a non-preview request arriving
-    at any point during the swap (including after the counter bumps but before the gate
-    releases) is rejected."""
+    """Marks a preview swap; call before taking the lifecycle gate, and end it once the gate releases."""
     global _preview_swap_inflight
     with _lock:
         _preview_swap_inflight += 1
@@ -312,17 +269,10 @@ def _preview_swap_active() -> bool:
 
 
 def preview_swapped_since_entry(scope) -> bool:
-    """True if a preview swap ran, or is running, since this request entered the middleware.
-    Extends the gate-wait reject flag to catch a non-preview request that passed the gate
-    BEFORE a swap (so it never set _PREVIEW_SWAP_REJECT_SCOPE_KEY) but is still pre-admission
-    when a preview swaps the model out from under it. entry_gen is None only when the
-    middleware never snapshotted it (non-dict/non-inference scope), so fall back to the
-    swap-in-progress flag alone."""
+    """True if a preview swap ran or runs since this request entered; previews never reject themselves."""
     if not isinstance(scope, dict):
         return False
-    # A preview carries its own ownership and may swap the model in (load_model_for_preview bumps the generation before
-    # serving its own chat), so it must never reject itself. Mirrors the middleware, which only flags non-preview
-    # scopes.
+    # A preview may swap the model in itself, so it must never reject itself.
     if _is_preview_path(scope.get("path") or ""):
         return False
     if scope.get(_PREVIEW_SWAP_REJECT_SCOPE_KEY):
@@ -335,44 +285,27 @@ def preview_swapped_since_entry(scope) -> bool:
 
 
 def _claim_non_preview_slot() -> None:
-    """A non-preview request that ran against the local model (2xx) adopts it for Unsloth,
-    so clear preview ownership -- a later preview for another checkpoint then 503s instead
-    of swapping the model out from under an active Unsloth conversation. Claiming on success
-    (not before) means a per-route-rejected request never strands a preview-owned model.
-    Lazily imported: routes.inference imports this module."""
+    """A 2xx non-preview request adopts the local model, so preview ownership is cleared on success."""
     try:
         from routes.inference import _set_preview_resident
         _set_preview_resident(None)
-    except Exception as exc:  # never let ownership bookkeeping break a response
+    except Exception as exc:
         logger.debug("preview-slot claim on completion failed: %s", exc)
 
 
-# Set on the scope by a route that proved this request will not touch llama.cpp (e.g. it proxied to an external
-# provider), so the keep-warm count excludes it and the middleware skips its end-decrement.
 _UNTRACKED_SCOPE_KEY = "_unsloth_keepwarm_untracked"
 
-# Set after middleware admission so the preview route can distinguish a real tracked request from direct unit/helper
-# calls that have no counters to move.
 _TRACKED_SCOPE_KEY = "_unsloth_keepwarm_tracked"
 
-# A preview route waits on its own serializer after middleware admission. While queued it must be pending, not active:
-# an Unsloth swap holds the lifecycle gate while draining active requests, and the queued preview needs that same gate
-# after it gets the serializer.
+# While queued a preview must be pending, not active, or it deadlocks on the lifecycle gate.
 _PREVIEW_SERIALIZER_WAIT_SCOPE_KEY = "_unsloth_keepwarm_preview_serializer_wait"
 
-# Set by the middleware on a non-preview scope when a preview swap advanced the counter while it waited on the gate;
-# _maybe_auto_switch_model then rejects it rather than serve the swapped-in checkpoint. Deferred to the route (not a
-# middleware 503) so an external-provider request that untracks and returns before that check is never rejected.
+# Rejected in the route, not middleware, so untracked external-provider requests pass.
 _PREVIEW_SWAP_REJECT_SCOPE_KEY = "_unsloth_keepwarm_preview_swap_reject"
 
-# The swap generation snapshot at middleware entry, on the scope so local-inference admission can also reject a
-# request that passed the gate BEFORE a swap (never got the gate-wait reject flag) but is still pre-auth when a
-# preview swaps in.
 _SWAP_GEN_AT_ENTRY_KEY = "_unsloth_keepwarm_swap_gen_at_entry"
 
-# Set on the scope by a streaming route that failed after its 200 headers (an SSE error chunk, a passthrough relaying a
-# mid-stream error while HTTP stays 200). The claim keys off HTTP status alone, so without this a failed stream would
-# adopt a preview-owned model for Unsloth; the claim skips a flagged response.
+# Claim keys off HTTP status, so a stream failing after 200 headers must flag this.
 _RESPONSE_FAILED_SCOPE_KEY = "_unsloth_keepwarm_response_failed"
 
 
@@ -384,9 +317,7 @@ def mark_response_failed(scope) -> None:
         scope[_RESPONSE_FAILED_SCOPE_KEY] = True
 
 
-# The current request's ASGI scope, set by the middleware so deep streaming error helpers can flag a failure without
-# threading the scope through every yield site. The middleware shares the streaming body's task, so the contextvar
-# reaches those generators.
+# Middleware shares the streaming body's task, so the contextvar reaches those generators.
 _current_response_scope: contextvars.ContextVar = contextvars.ContextVar(
     "_unsloth_current_response_scope", default = None
 )
@@ -428,8 +359,7 @@ def untrack_current_request(scope) -> None:
     if not isinstance(scope, dict) or scope.get(_UNTRACKED_SCOPE_KEY):
         return
     scope[_UNTRACKED_SCOPE_KEY] = True
-    # Keep the preview subset aligned with _inflight: a /p/ request must drop from both counters, or the busy guard sees
-    # phantom traffic.
+    # Drop from both counters, or the busy guard sees phantom traffic.
     _note_untracked_end(_is_preview_path(scope.get("path") or ""))
 
 
@@ -437,10 +367,7 @@ _ADMITTED_SCOPE_KEY = "_unsloth_keepwarm_admitted"
 
 
 def note_admitted_inference(scope) -> None:
-    """Mark a non-preview request as admitted local inference (passed auth, reached the
-    _maybe_auto_switch_model / generate_stream choke point), so the preview busy guard
-    counts it. Idempotent per scope; a no-op for preview (/p/) paths (own ownership) and
-    non-dict scopes."""
+    """Marks a non-preview request as admitted inference, counted by the preview busy guard; idempotent."""
     global _admitted_inference
     if not isinstance(scope, dict) or scope.get(_ADMITTED_SCOPE_KEY):
         return
@@ -458,14 +385,7 @@ def _note_admitted_end() -> None:
 
 
 def untrack_admitted_inference(scope) -> None:
-    """Drop an already-admitted request from the preview busy guard once the route knows it
-    will not run against the resident GGUF after all.
-
-    ``untrack_current_request`` covers only the in-flight counters; the admitted tally is
-    what ``load_model_for_preview`` reads, so a route that admitted at the auto-switch hook
-    and then served the request some other way keeps blocking preview swaps for its whole
-    duration. Pops the marker so the middleware's finally, which balances only a scope that
-    still carries it, cannot decrement a second time. Idempotent."""
+    """Drops it from the busy guard; the marker is popped so the finally cannot decrement twice."""
     if not isinstance(scope, dict) or not scope.pop(_ADMITTED_SCOPE_KEY, False):
         return
     _note_admitted_end()
@@ -512,8 +432,7 @@ def cancel_preview_serializer_wait(scope) -> None:
         return
     scope.pop(_PREVIEW_SERIALIZER_WAIT_SCOPE_KEY, None)
     _note_unpending(is_preview = True)
-    # Middleware must not run the normal active-request decrement after this pending request was removed, or it would
-    # stamp activity for a preview that never ran.
+    # Skip the normal decrement, or this stamps activity for a preview that never ran.
     scope[_UNTRACKED_SCOPE_KEY] = True
 
 
@@ -541,10 +460,7 @@ def note_model_loaded(backend = None) -> None:
 
 
 def note_model_unloaded() -> None:
-    """Record a deliberate (user/API) unload: drop any idle reload stash so the next request
-    can't resurrect the just-unloaded model. Unlike the idle loop (which stashes the freed
-    model for an alias reload), an explicit unload means "stay unloaded", so it must not
-    stamp activity."""
+    """Drops any idle reload stash so a deliberate unload is not undone by the next request."""
     _set_last_unloaded(None)
 
 
@@ -636,18 +552,7 @@ def _as_bytes(value) -> bytes:
 
 
 def _carries_bearer_credentials(scope, path: str = "") -> bool:
-    """Whether this request carries the credentials its route demands.
-
-    Every tracked media route depends on ``get_current_subject`` (HTTPBearer), so a request without
-    one is refused before any handler runs. Counting it anyway would still pin the pipeline: the
-    count is taken here, ahead of FastAPI parsing the body, and a client that opens the POST and
-    then withholds its body produces no response status either, so the 401/403 exclusion below never
-    gets to run -- one such connection, replaced as it times out, would keep a multi-GB pipeline
-    resident for good. Real clients always send the header. Keyless API access is the one case where
-    a route demands no bearer at all; its outer admission middleware records that decision before
-    keep-warm runs, so reuse the snapshot instead of repeating settings, listener and DNS work on
-    this loop.
-    """
+    """Counts only requests with the credentials their route demands; unauthenticated stalls cannot pin."""
     from utils.keyless_api_access import KEYLESS_ADMISSION_STATE_KEY
 
     state = scope.get("state")
@@ -655,8 +560,6 @@ def _carries_bearer_credentials(scope, path: str = "") -> bool:
         return True
     headers = scope.get("headers")
     if headers is None:
-        # A real ASGI server always populates headers; a caller that does not is not a client to second-guess, so keep
-        # the protection.
         return True
     for name, value in headers:
         if _as_bytes(name).lower() != b"authorization":
@@ -673,30 +576,22 @@ class LlamaKeepWarmMiddleware:
         self.app = app
 
     async def __call__(self, scope, receive, send):
-        # Inference endpoints are all POST; skipping non-POST avoids counting CORS preflight (OPTIONS). ``or ""``
-        # guards an explicit None path.
+        # Skip non-POST so CORS preflight (OPTIONS) is not counted.
         path = scope.get("path") or ""
         if scope.get("type") != "http" or scope.get("method") != "POST":
             await self.app(scope, receive, send)
             return
-        # An image/video generation gets the same bookkeeping against ITS backend, so the media idle unload cannot free
-        # the pipeline this request is about to generate on -- or the load it is about to start. The media load routes
-        # are tracked HERE only: they do not use the chat GGUF, so they must not stamp chat activity nor count towards
-        # other_inference_request_count().
+        # Media load routes are tracked only here: they must not stamp chat activity.
         from core.inference import media_keepwarm
 
         media_owner = media_keepwarm.owner_for_path(path)
         if media_owner is not None and not _carries_bearer_credentials(scope, path):
-            # Cannot reach the backend, so it must not hold it warm (see the helper). The chat count keeps its own rule:
-            # /p/{run}/v1/chat/completions is public by design, so a missing bearer there is not proof of anything.
             media_owner = None
         chat_tracked = _is_inference_path(path)
         if not chat_tracked and media_owner is None:
             await self.app(scope, receive, send)
             return
-        # Always track in-flight on inference paths, even when the feature is off, so a stream that starts before
-        # idle-unload is enabled can't be unloaded mid-response if the operator turns it on. Mark pending before the
-        # gate so the idle loop (which holds the gate while unloading) can't free the model while this request waits.
+        # Track even when the feature is off, and mark pending before the gate so idle unload waits.
         is_preview = _is_preview_path(path)
         if chat_tracked:
             set_current_response_scope(scope)
@@ -725,7 +620,6 @@ class LlamaKeepWarmMiddleware:
             try:
                 await media_keepwarm.begin_request(media_owner)
             except BaseException:
-                # a client that disconnects while waiting on this gate never reaches _finish
                 if chat_tracked:
                     _note_untracked_end(is_preview)
                 raise
@@ -733,14 +627,10 @@ class LlamaKeepWarmMiddleware:
                 scope[_MEDIA_TRACKED_SCOPE_KEY] = media_owner
         ended = {"done": False}
         status = {"code": None}
-        # Set once the terminal body frame (more_body False) is sent: only a response that completed cleanly adopts
-        # the model for Unsloth. A client disconnect after the 200 headers raises before that frame (an OSError that
-        # _SameTaskStreamingResponse turns into a CancelledError for the body generator, which finishes the monitor
-        # and re-raises without flagging the scope), so a cancelled stream never claims the slot.
+        # Set only on the terminal body frame, so a cancelled stream never claims the slot.
         completed = {"done": False}
 
         def _finish() -> None:
-            # A route that untracked itself already decremented; don't double-count.
             if ended["done"]:
                 return
             ended["done"] = True
@@ -751,41 +641,28 @@ class LlamaKeepWarmMiddleware:
                 media_keepwarm.end_request(media_owner, counted = code not in (401, 403))
             if not chat_tracked:
                 return
-            # A non-preview 2xx that completed cleanly ran against the local model and adopts it for Unsloth, so clear
-            # preview ownership. Skip on a per-route 4xx/5xx (never strand a preview-owned model), count_tokens
-            # (tokenize only), a failed/cancelled stream, and an untracked balance-only request. Claim BEFORE dropping
-            # the admitted count (and the in-flight count) below: load_model_for_preview's busy guard keys on
-            # other_admitted_inference_count(), so decrementing first opens a window where a preview sees no admitted
-            # Unsloth traffic and a still-preview-owned slot, swaps in, and this delayed claim then clears the wrong
-            # checkpoint; while still counted the guard refuses that swap.
+            # Claim BEFORE dropping the admitted count: the preview busy guard keys on it, and decrementing
+            # first lets a preview swap in before this claim clears the wrong checkpoint.
             if (
                 not is_preview
                 and isinstance(code, int)
                 and 200 <= code < 300
                 and completed["done"]
-                # Both count endpoints (/messages/count_tokens, /chat/count_tokens).
                 and not path.endswith("count_tokens")
-                # Image/video generation runs on the diffusion/video engine, not the llama slot.
                 and not path.endswith(_NON_LLM_SLOT_SUFFIXES)
                 and not scope.get(_RESPONSE_FAILED_SCOPE_KEY)
                 and not scope.get(_UNTRACKED_SCOPE_KEY)
             ):
                 _claim_non_preview_slot()
-            # Balance note_admitted_inference here (runs in the finally, so it cannot leak on any exit path), after
-            # the claim above and before the untracked / 401 early returns.
             if scope.get(_ADMITTED_SCOPE_KEY):
                 _note_admitted_end()
             if scope.get(_UNTRACKED_SCOPE_KEY):
                 return
-            # This middleware runs before FastAPI auth, so a 401/403 reaches here without touching llama.cpp. Balance
-            # _note_start but do NOT stamp activity, or repeated unauthenticated probes would keep the model warm
-            # forever.
+            # Runs before FastAPI auth: balance 401/403 but do not stamp activity.
             if code in (401, 403):
                 _note_untracked_end(is_preview)
                 return
-            # A preview that did not return 2xx never served tokens (429, bad-token 404, body-validation 4xx all exit
-            # before load_model_for_preview). Drop it like an untracked end so rejected public POSTs can't refresh the
-            # idle timer and pin the model in VRAM (a loaded-then-failed preview already stamped at load).
+            # A non-2xx preview never served tokens; do not let rejected public POSTs refresh the timer.
             if is_preview and not (isinstance(code, int) and 200 <= code < 300):
                 _note_untracked_end(is_preview)
                 return
@@ -794,14 +671,11 @@ class LlamaKeepWarmMiddleware:
         async def send_wrapper(message):
             if message.get("type") == "http.response.start":
                 status["code"] = message.get("status")
-            # Terminal body frame marks a clean end of a (possibly streaming) response.
             is_terminal = message.get("type") == "http.response.body" and not message.get(
                 "more_body", False
             )
             await send(message)
-            # Claim only after the terminal frame is actually delivered: a client that disconnects on the final write
-            # makes send() above raise, so completed stays False and the cut-off stream is not mistaken for a clean
-            # completion.
+            # Claim only after send() succeeds: a disconnect on the final write must not count as complete.
             if is_terminal:
                 completed["done"] = True
                 _finish()
@@ -815,8 +689,7 @@ class LlamaKeepWarmMiddleware:
 def _loaded_identity(backend):
     if not backend.is_loaded or not backend.model_identifier:
         return None
-    # Third slot is the advertised id (repo id) an auto-switch load sets on the backend; it's the override key, so an
-    # idle stash keyed by the concrete load path doesn't drop the user's saved launch flags on the alias reload.
+    # Use the advertised id: it is the override key, so alias reloads keep saved launch flags.
     advertised = getattr(backend, "_openai_advertised_id", None) or backend.model_identifier
     identity = (backend.model_identifier, getattr(backend, "hf_variant", None), advertised)
     companion_roots = tuple(getattr(backend, "_openai_gguf_companion_roots", ()) or ())
@@ -856,8 +729,6 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
     seen_model = None
     while True:
         await asyncio.sleep(poll_seconds)
-        # The image/video half of the tick, in its own guard so neither side can cost the other an iteration. Inert
-        # unless the media TTL is set.
         try:
             from core.inference.media_keepwarm import idle_unload_step
             await idle_unload_step()
@@ -871,8 +742,7 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
             from routes.inference import get_llama_cpp_backend, release_chat_gpu_claim
 
             backend = get_llama_cpp_backend()
-            # track by (id, variant): a (re)loaded model counts as activity so it survives one TTL before its first
-            # request
+            # A (re)loaded model counts as activity so it survives one TTL before its first request.
             async with _unload_gate():
                 if _is_idle(ttl) and await asyncio.to_thread(
                     unload_extra_models, _user_pinned, True
@@ -884,9 +754,9 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
                     seen_model = current
                     if current is not None:
                         _note_activity()
-                        _set_last_unloaded(None)  # a model is loaded; drop stale stash
+                        _set_last_unloaded(None)
                 if backend.is_loaded and await asyncio.to_thread(_user_pinned, backend):
-                    # loaded from the UI, so the user wants it resident; only models the API loaded are freed
+                    # Loaded from the UI, so keep it resident; only API-loaded models are freed.
                     continue
                 if backend.is_loaded and _is_idle(ttl):
                     freed = _loaded_identity(backend)
@@ -911,8 +781,7 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
                     if manifest and not await asyncio.to_thread(get_auto_unload_keep_kv):
                         _delete_resume_files(manifest)
                         manifest = None
-                    # A request may register _pending while an off-loop setting read runs. Recheck idleness before
-                    # unloading.
+                    # A request may register _pending during the off-loop setting read; recheck.
                     if not _is_idle(ttl):
                         if manifest:
                             _delete_resume_files(manifest)
@@ -923,14 +792,13 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
                         if manifest:
                             _delete_resume_files(manifest)
                         raise
-                    _set_last_unloaded(freed)  # let an alias request reload it
+                    _set_last_unloaded(freed)
                     if manifest and freed:
                         _set_kv_resume({"identity": freed, **manifest})
                         logger.info("Idle auto-unload: saved slot KV for restore on reload")
                     elif manifest:
                         _delete_resume_files(manifest)
-                    # As /unload: a kept claim hides the empty GPU from other accounts. After the
-                    # stash, so a failed release never loses the reload identity.
+                    # After the stash, so a failed release never loses the reload identity.
                     try:
                         from hub.services.models.account_access import clear_resident
                         from routes.inference import release_chat_gpu_claim
@@ -940,7 +808,6 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
                     except Exception as exc:  # noqa: BLE001 - the unload already happened
                         logger.debug("Idle auto-unload: claim release failed: %s", exc)
                     logger.info("Idle auto-unload: freed GGUF after %ss idle", ttl)
-                    # An idle unload stashes for reload and skips note_model_unloaded.
                     _note_idle_unload_event(freed)
                     seen_model = None
         except Exception as exc:

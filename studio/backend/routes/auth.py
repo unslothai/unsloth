@@ -60,10 +60,7 @@ def _account_id_of(username: str) -> "str | None":
 
 
 def _require_a_credential_of_its_own(what: str):
-    """Refuse a caller that nothing but keyless API access let in. For effects that outlive the setting: turning
-    keyless access back off does not withdraw a key it handed out, restore one it destroyed, or undo a sign-out
-    it forced. Listing keys is refused with them because it names the key to revoke.
-    """
+    """Refuse keyless-API-only callers: keys and sign-outs they cause outlive the keyless setting."""
 
     def dependency(no_credential: bool = Depends(authenticated_without_credential)) -> None:
         if no_credential:
@@ -91,7 +88,6 @@ def _cli_is_inside(prefix: str) -> bool:
         spec = importlib.util.find_spec("unsloth_cli")
         origin = getattr(spec, "origin", None)
         if not origin:
-            # A namespace package, or nothing found.
             return False
         return Path(origin).resolve().is_relative_to(Path(prefix).resolve())
     except (ImportError, OSError, ValueError, AttributeError):
@@ -99,38 +95,15 @@ def _cli_is_inside(prefix: str) -> bool:
 
 
 def _reset_password_command_on_path() -> str:
-    """The reset command in its PATH form, naming nothing about this host.
-
-    The absolute forms below are for the person sitting at the machine. This one is the only
-    shape safe to put in a response body, since an unauthenticated 401 is readable by any origin.
-    """
+    """PATH form only: an unauthenticated 401 body is readable by any origin, so no host paths here."""
     if os.name == "nt":
         return "unsloth.cmd studio reset-password"
     return "unsloth studio reset-password"
 
 
 def _reset_password_command() -> str:
-    """Shell command shown in the 'incorrect password' hint.
-
-    Prefer the absolute path to this install's ``unsloth`` launcher (sibling of the running interpreter) so the
-    hint works even when its dir isn't on PATH. POSIX paths are shell-quoted. On Windows we use the bare
-    absolute path only when it has no spaces (a quoted path differs between cmd and PowerShell); otherwise, or
-    if the launcher can't be located, fall back to the PATH form.
-
-    Windows never names unsloth.exe here, present or not. Existing is not the same as runnable: an Application
-    Control policy leaves the generated, unsigned unsloth.exe on disk and denies it at CreateProcess (issue
-    #8490), and a bare `unsloth` resolves to that same file because PATHEXT puts .EXE ahead of the .cmd shim.
-    Whoever is locked out of Unsloth is exactly who needs this command to work, so it must not be the one a
-    policy refuses. Preference order is therefore the interpreter's module entry, which needs no quoting in cmd
-    or PowerShell, then `unsloth.cmd` -- spelling the extension is what stops PATHEXT reaching for the
-    executable.
-
-    -I only when the package is inside this interpreter's own prefix. -I implies -s, so a ``pip install --user``
-    install would be told to run a command that cannot find itself; unsloth_cli/__main__.py documents that
-    exception and the bootstrap to use instead, and this prints that bootstrap. It is safe to show to either
-    shell: the trampoline contains single quotes only, so one pair of double quotes wraps it identically in cmd
-    and in PowerShell.
-    """
+    """Windows names unsloth.cmd, never unsloth.exe, which AppControl may deny; -I only inside the
+    prefix."""
     try:
         bin_dir = os.path.dirname(os.path.abspath(sys.executable))
         if os.name == "nt":
@@ -139,8 +112,7 @@ def _reset_password_command() -> str:
                 if _cli_is_inside(sys.prefix):
                     return f"{python} -I -m unsloth_cli studio reset-password"
                 return f'{python} -X utf8 -c "{_CLI_BOOTSTRAP}" studio reset-password'
-            # A spaced interpreter path cannot be written unquoted, so fall
-            # through to the PATH form below.
+            # A spaced interpreter path cannot be written unquoted: fall through to the PATH form.
         else:
             exe = os.path.join(bin_dir, "unsloth")
             if os.path.isfile(exe):
@@ -150,8 +122,8 @@ def _reset_password_command() -> str:
     return _reset_password_command_on_path()
 
 
-# Per-(ip, username) bucket + per-IP aggregate. Account bucket stops one user's typos from blocking others; the
-# aggregate stops username-rotation spray. Single-process only; multi-worker deployments need a shared store.
+# Per-(ip, user) bucket stops one user's typos blocking others; per-IP stops username spray.
+# Single-process only; multi-worker deployments need a shared store.
 _LOGIN_BUCKETS: dict[tuple[str, str], deque] = {}
 _LOGIN_IP_BUCKETS: dict[str, deque] = {}
 _LOGIN_BUCKETS_LOCK = threading.Lock()
@@ -159,13 +131,9 @@ _LOGIN_WINDOW_SECONDS = 60.0
 _LOGIN_MAX_FAILS = 5
 _LOGIN_IP_MAX_FAILS = 30
 _LOGIN_LOCKOUT_SECONDS = 60
-# Bucket-dict cap. On overflow, reclaim expired buckets; a new IP that still can't
-# fit falls back to a sharded overflow rather than evicting a hot bucket.
+# On overflow, reclaim expired buckets, then use sharded overflow rather than evict a hot bucket.
 _LOGIN_MAX_BUCKETS = 4096
-# Last full stale-sweep time; rate-limits the O(n) sweep under a burst of new IPs.
 _LAST_IP_PRUNE = 0.0
-# Sharded overflow for per-IP failures that can't get their own bucket. Each shard is a fixed-capacity dict
-# ``ip -> [count, window_start]``; when full, a new IP evicts the lowest-count entry and starts clean.
 _LOGIN_IP_OVERFLOW_SHARDS = 256
 _LOGIN_IP_OVERFLOW_MAX = 64
 _LOGIN_IP_OVERFLOW: list[dict] = [dict() for _ in range(_LOGIN_IP_OVERFLOW_SHARDS)]
@@ -183,12 +151,10 @@ def _overflow_record(ip: str, now: float) -> int:
         if now - entry[1] > _LOGIN_WINDOW_SECONDS:
             entry[0], entry[1] = 1, now
         else:
-            # Cap the count at the threshold: uncapped, a saturated source materializes one deque entry per failure
-            # (`[start] * carried`) while holding the login lock.
+            # Cap at the threshold so a saturated source cannot build a huge deque under the lock.
             entry[0] = min(entry[0] + 1, _LOGIN_IP_MAX_FAILS)
         return entry[0]
     if len(shard) >= _LOGIN_IP_OVERFLOW_MAX:
-        # Make room by dropping the lowest-count entry.
         del shard[min(shard, key = lambda k: shard[k][0])]
     shard[ip] = [1, now]
     return 1
@@ -214,17 +180,12 @@ def _overflow_take(ip: str, now: float) -> tuple[int, float]:
     entry = _overflow_shard(ip).pop(ip, None)
     if entry is None or now - entry[1] > _LOGIN_WINDOW_SECONDS:
         return 0, now
-    # Cap the carried count so the bucket migration never allocates more than the per-IP threshold
-    # worth of deque entries (defensive; _overflow_record already clamps).
     return min(entry[0], _LOGIN_IP_MAX_FAILS), entry[1]
 
 
-# Unrepresentable as a real username (leading NUL); folds unknown-user attempts
-# into one slot so attacker cardinality can't blow the bucket dict.
+# Leading NUL is not a real username; folds unknown users into one slot.
 _UNKNOWN_LOGIN_USER = "\x00unknown-user"
-# /desktop-login's own slot, NOT _UNKNOWN_LOGIN_USER: /login 429s on that bucket, so sharing it lets an
-# unauthenticated caller lock out every account with five attempts a minute, and behind a tunnel every
-# visitor is the same cloudflared peer.
+# Own slot: sharing /login's would let anyone lock out every account via the tunnel.
 _DESKTOP_LOGIN_USER = "\x00desktop-login"
 
 
@@ -244,13 +205,11 @@ def _normalize_forwarded_addr(value: str) -> str:
     if not value or value.lower() == "unknown":
         return ""
     if value.startswith("["):
-        # Bracketed IPv6, optionally with port.
         end = value.find("]")
         if end <= 0:
             return ""
         host = value[1:end]
     elif value.count(":") == 1:
-        # IPv4:port. Bare IPv6 has multiple colons → else branch.
         head, _, tail = value.rpartition(":")
         host = head if tail.isdigit() and head else value
     else:
@@ -276,13 +235,11 @@ def _client_ip(request: Request | None) -> str:
     if _trust_forwarded_for():
         xff = request.headers.get("x-forwarded-for", "")
         if xff:
-            # First entry is the originating client.
             normalized = _normalize_forwarded_addr(xff.split(",", 1)[0])
             if normalized:
                 return normalized
         fwd = request.headers.get("forwarded", "")
         if fwd:
-            # First element only; multi-element headers can't fork buckets.
             normalized = _forwarded_for_from_element(fwd.split(",", 1)[0])
             if normalized:
                 return normalized
@@ -298,10 +255,7 @@ def _unknown_user_key(request: Request | None) -> tuple[str, str]:
 
 
 def _desktop_login_key(request: Request | None) -> tuple[str, str]:
-    # The address is suffixed as well as the username, so the per-IP aggregate and its overflow shard are
-    # this route's own too. Sharing those with /login couples them in the direction that matters most:
-    # cloudflared and the desktop shell both reach the backend over loopback, so they are ONE address, and
-    # thirty password guesses through the tunnel would 429 the shell's valid secret exchange.
+    # Separate from /login: tunnel and shell share loopback, so guesses would 429 the shell.
     return (_client_ip(request) + _DESKTOP_LOGIN_USER, _DESKTOP_LOGIN_USER)
 
 
@@ -339,22 +293,18 @@ def _record_login_failure(key: tuple[str, str]) -> int:
     now = time.monotonic()
     ip, _username = key
     with _LOGIN_BUCKETS_LOCK:
-        # Keep the dict bounded without disabling throttling and without letting a spray reset a hot bucket: for a new
-        # IP at the cap, reclaim expired buckets (rate-limited) to make room.
         ip_bucket = _LOGIN_IP_BUCKETS.get(ip)
         if ip_bucket is None and len(_LOGIN_IP_BUCKETS) >= _LOGIN_MAX_BUCKETS:
             if now - _LAST_IP_PRUNE >= 1.0:
                 _prune_stale_ip_buckets(now)
                 _LAST_IP_PRUNE = now
         if ip_bucket is None and len(_LOGIN_IP_BUCKETS) >= _LOGIN_MAX_BUCKETS:
-            # Still full -- every bucket is hot. Count this failure in the IP's bounded overflow shard instead of
-            # evicting a live one, so the spray stays throttled but can't push out (and reset) any IP's own counter.
+            # Every bucket is hot: count in the overflow shard rather than evict a live bucket.
             ip_fails = _overflow_record(ip, now)
         else:
             if ip_bucket is None:
                 ip_bucket = _LOGIN_IP_BUCKETS[ip] = deque()
-                # Carry over any overflow failures this IP accrued while the dict was saturated, so straddling the
-                # overflow -> bucket transition can't double the effective per-IP limit.
+                # Carry overflow failures so the transition can't double the per-IP limit.
                 carried, start = _overflow_take(ip, now)
                 ip_bucket.extend([start] * carried)
             _prune_bucket(ip_bucket, now)
@@ -368,7 +318,6 @@ def _record_login_failure(key: tuple[str, str]) -> int:
             _prune_bucket(account_bucket, now)
             account_bucket.append(now)
             return len(account_bucket)
-        # Both dicts at cap (sustained spray): fall back to the per-IP count.
         return ip_fails
 
 
@@ -386,7 +335,6 @@ def _login_blocked(key: tuple[str, str]) -> int:
     now = time.monotonic()
     ip, _username = key
     with _LOGIN_BUCKETS_LOCK:
-        # Honor the IP's overflow shard regardless of current dict capacity
         ip_blocked = max(
             _blocked_for(_LOGIN_IP_BUCKETS.get(ip), now, _LOGIN_IP_MAX_FAILS),
             _overflow_blocked(ip, now),
@@ -399,13 +347,10 @@ def _clear_login_bucket(key: tuple[str, str]) -> None:
     with _LOGIN_BUCKETS_LOCK:
         _LOGIN_BUCKETS.pop(key, None)
         _LOGIN_IP_BUCKETS.pop(ip, None)
-        # A successful login resets the IP's throttle, including any overflow it accumulated during saturation (drop
-        # only this IP's entry, so a shard-mate's throttle is untouched).
         _overflow_shard(ip).pop(ip, None)
 
 
-# Sync def (not async): compute_identity_proof touches SQLite on the first call,
-# so FastAPI runs it in the threadpool rather than blocking the event loop.
+# Sync def: SQLite on first call, so FastAPI runs it in the threadpool.
 @router.get("/identity")
 def identity(nonce: str, request: Request) -> dict:
     """Challenge-response proof this is the real local Unsloth: caller sends a nonce,
@@ -423,8 +368,7 @@ def identity(nonce: str, request: Request) -> dict:
         raise HTTPException(
             status_code = status.HTTP_400_BAD_REQUEST, detail = "nonce must decode to 16-128 bytes"
         )
-    # The address + port the connection actually landed on. request.scope is getsockname, so this is the real local
-    # address even when bound to 0.0.0.0, never the client-controlled Host header.
+    # scope server is getsockname, never the client-controlled Host header.
     server = request.scope.get("server") or ("", 0)
     host = server[0] or ""
     port = server[1] if server[1] is not None else 0
@@ -442,7 +386,6 @@ def auth_status() -> AuthStatusResponse:
         if storage.is_initialized()
         else True
     )
-    # Only while the default password stands: that is what the deadline fires on.
     from auth.policy import installation_has_managed_accounts, login_mode
 
     return AuthStatusResponse(
@@ -459,15 +402,7 @@ def auth_status() -> AuthStatusResponse:
 
 
 def _login_failure_detail() -> str:
-    """Recovery hint for a rejected login. The name shown is a placeholder, not the submitted.
-
-    PATH form only: this body is produced before any credential is verified and the browser-served
-    default resolves CORS to ["*"], so an absolute path built from ``sys.executable`` would hand the
-    local account name and the install layout to any page the user happens to have open. The 429
-    beside this one withholds the client IP for the same reason. A bare ``unsloth`` does not resolve
-    from every shell, so the hint says which environment to run it in; the exact absolute command is
-    printed on the host's own console by run.py, where naming the install is the point.
-    """
+    """PATH form only: the body is unauthenticated, so it must not reveal the account or install layout."""
     command = _reset_password_command_on_path()
     where = "in the environment Unsloth is installed in"
     if policy.installation_is_multi_user():
@@ -491,14 +426,14 @@ async def login(payload: AuthLoginRequest, request: Request) -> Token:
     if blocked_for > 0:
         raise HTTPException(
             status_code = status.HTTP_429_TOO_MANY_REQUESTS,
-            # IP not interpolated into the body: behind a proxy/NAT it is misleading or an info leak.
+            # IP not in the body: behind a proxy it misleads or leaks.
             detail = (f"Too many failed login attempts. " f"Try again in {blocked_for} seconds."),
             headers = {"Retry-After": str(blocked_for)},
         )
 
     record = storage.get_user_and_secret(username)
     if record is None:
-        # Per-name buckets as for real accounts: a shared unknown bucket is an existence oracle.
+        # Per-name buckets: a shared unknown bucket is an existence oracle.
         hashing.equalize_login_work(payload.password)
         _record_login_failure(key)
         raise HTTPException(
@@ -523,7 +458,6 @@ async def login(payload: AuthLoginRequest, request: Request) -> Token:
 
     _clear_login_bucket(key)
     _clear_login_bucket(unknown_key)
-    # Issue against the credential version just verified.
     access_token = create_access_token(subject = username, secret = jwt_secret)
     refresh_token = create_refresh_token(subject = username, secret = jwt_secret)
     return Token(
@@ -554,8 +488,7 @@ async def logout(
     return Response(status_code = status.HTTP_204_NO_CONTENT)
 
 
-# Sync def (not async), as /identity is: validating the secret spends a 100k-iteration PBKDF2 and a
-# SQLite transaction, and on the event loop that is the thread serving every other request.
+# Sync def: PBKDF2 + SQLite would block the event loop.
 @router.post("/desktop-login", response_model = Token)
 def desktop_login(payload: DesktopLoginRequest, request: Request) -> Token | Response:
     """Exchange a local desktop secret for normal admin-subject tokens. Per-IP rate-limited.
@@ -564,10 +497,7 @@ def desktop_login(payload: DesktopLoginRequest, request: Request) -> Token | Res
     secret can be rejected, so without it one unauthenticated request buys unbounded work. On its
     own account bucket, contributing to the shared per-IP aggregate exactly as /login does.
     """
-    # Before the bucket is READ, not just before it is written: the shipped shell probes this route with a
-    # deliberately invalid secret on every preflight, every 15s watchdog tick and once per live candidate
-    # port, and reads anything but 401 as a backend it cannot manage (src-tauri/src/preflight/backend.rs,
-    # src-tauri/src/desktop_backend_owner.rs).
+    # Before reading the bucket: the desktop shell probes with an invalid secret, expects 401.
     if not storage.desktop_secret_is_well_formed(payload.secret):
         raise HTTPException(
             status_code = status.HTTP_401_UNAUTHORIZED,
@@ -591,8 +521,7 @@ def desktop_login(payload: DesktopLoginRequest, request: Request) -> Token | Res
             detail = "Desktop authentication failed",
         )
     username, jwt_secret = verified
-    # Safe to clear the aggregate as well now that the address is suffixed: it is this route's own entry,
-    # not /login's, so a desktop success cannot hand anyone a fresh password-guessing budget.
+    # Safe to clear the aggregate: the suffixed key is this route's own, not /login's.
     _clear_login_bucket(key)
 
     from auth.policy import installation_is_multi_user
@@ -680,8 +609,7 @@ async def set_desktop_initial_password(
             detail = "New password cannot contain spaces",
         )
 
-    # Conditional on the credential just read: a concurrent web password change or reset-password
-    # must not be overwritten by a caller that verified no password at all.
+    # Conditional on the credential just read, so a concurrent change is not overwritten.
     new_secret = storage.update_password(
         current_subject,
         payload.new_password,
@@ -742,9 +670,8 @@ async def change_password(
             detail = "New password must be different from the current password",
         )
 
-    # Single transaction: a separate refresh-token purge could fail after the password commit,
-    # leaving pre-change tokens able to mint access tokens. Conditional on the hash just
-    # verified, so a concurrent reset-password cannot be overwritten by it.
+    # Single transaction so pre-change refresh tokens cannot survive the password commit;
+    # conditional on the hash just verified so a concurrent reset-password is not overwritten.
     if current_subject == storage.DEFAULT_ADMIN_USERNAME:
         new_secret = storage.update_password(
             current_subject,

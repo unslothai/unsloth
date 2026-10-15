@@ -49,14 +49,11 @@ _OLLAMA_LOADABLE_LAYER_MEDIA_TYPES = frozenset(
     {
         "application/vnd.ollama.image.model",
         "application/vnd.ollama.image.projector",
-        # License text does not affect model behavior and does not need to be carried into llama.cpp.
         "application/vnd.ollama.image.license",
     }
 )
 
-# Modelfile metadata nearly every pulled model carries. llama.cpp uses the GGUF's own template
-# and defaults instead, so none of it reaches the load and none of it should hide the row.
-# `image.adapter` is deliberately absent: it changes the weights.
+# llama.cpp uses the GGUF's own template/defaults. `image.adapter` is absent: it changes weights.
 _OLLAMA_METADATA_LAYER_MEDIA_TYPES = frozenset(
     {
         "application/vnd.ollama.image.template",
@@ -67,10 +64,7 @@ _OLLAMA_METADATA_LAYER_MEDIA_TYPES = frozenset(
     }
 )
 
-# Layers the load drops without changing what it returns. `image.draft` only feeds
-# speculative decoding, which is output-equivalent by construction, so losing it costs
-# speed and nothing else; `image.embed` has been deprecated since ollama 0.1.2 and
-# ollama's own load ignores it too.
+# `image.draft` only feeds speculative decoding; `image.embed` is deprecated and ignored by ollama.
 _OLLAMA_IGNORABLE_LAYER_MEDIA_TYPES = frozenset(
     {
         "application/vnd.ollama.image.draft",
@@ -163,7 +157,6 @@ def _contained_link_path(link_dir: Path, link_name: str) -> Optional[Path]:
 
 def _ollama_links_roots(ollama_dir: Path) -> tuple[Path, ...]:
     """Where *ollama_dir*'s ``.gguf`` links can live, best first: beside the blobs, then Unsloth's cache (read-only installs), then the temp dir (sandboxed installs)."""
-    # Hashed so two Ollama roots cannot collide. A cache path, not a security boundary.
     try:
         digest = hashlib.sha256(str(ollama_dir.resolve()).encode()).hexdigest()[:12]
     except (OSError, RuntimeError):
@@ -219,7 +212,7 @@ def _make_ollama_blob_link(link_dir: Path, link_name: str, target: Path) -> Opti
         logger.debug("Could not resolve Ollama blob %s: %s", target, e)
         return None
 
-    # samefile, not size: `ollama pull` can swap a tag to a same-sized blob, leaving a stale link.
+    # samefile, not size: `ollama pull` can swap a tag to a same-sized blob.
     try:
         if link_path.exists() and os.path.samefile(str(link_path), str(resolved)):
             return str(link_path)
@@ -259,7 +252,6 @@ def _manifest_rel_path(tag_file: Path, manifests_root: Path) -> Optional[Path]:
     try:
         return tag_file.relative_to(manifests_root)
     except ValueError:
-        # ``manifests`` can be a symlink: a reference carries the canonical path, a scan its own.
         try:
             return Path(os.path.realpath(tag_file)).relative_to(os.path.realpath(manifests_root))
         except (OSError, ValueError):
@@ -502,17 +494,7 @@ def scan_ollama_dir(
     limit: Optional[int] = None,
     materialize_links: bool = False,
 ) -> List[LocalModelInfo]:
-    """Scan an Ollama models directory for downloaded models.
-
-    Ollama uses a content-addressable layout
-    (``manifests/<host>/<namespace>/<model>/<tag>`` + ``blobs/sha256-...``),
-    iterated via ``rglob`` to find every depth. Each manifest's ``model`` layer
-    holds the GGUF weights (vision models add a projector layer).
-
-    Scans are read-only by default and return an opaque manifest reference;
-    the load route later calls :func:`materialize_ollama_model_ref` to create a
-    ``.gguf`` symlink/hardlink, keeping GET /local free of filesystem writes.
-    """
+    """Read-only scan; the load route materializes the .gguf so GET /local does no filesystem writes."""
     manifests_root = ollama_dir / "manifests"
     if not manifests_root.is_dir():
         return []
@@ -532,7 +514,7 @@ def scan_ollama_dir(
                 continue
 
             lock = _materialization_lock(tag_file, ollama_dir) if materialize_links else None
-            # A load holds this tag; its lease keeps the link it made, so report that, never block.
+            # A load holds this tag; report it, never block.
             leased = lock is not None and not lock.acquire(blocking = False)
             try:
                 info = _ollama_model_info_from_manifest(
@@ -626,7 +608,6 @@ def _ollama_model_ref_info(ref: str) -> tuple[Path, dict, LocalModelInfo]:
         manifest = json.loads(tag_file.read_text(encoding = "utf-8-sig"))
     except (json.JSONDecodeError, OSError, UnicodeDecodeError) as e:
         raise ValueError(f"Could not read Ollama manifest: {e}") from e
-    # A manifest of JSON ``null`` is indistinguishable from passing none below, which re-reads.
     if not isinstance(manifest, dict):
         raise ValueError("Invalid Ollama manifest: top level must be a JSON object")
     info = _ollama_model_info_from_manifest(

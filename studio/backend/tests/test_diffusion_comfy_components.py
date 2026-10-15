@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Separate ComfyUI text-encoder / VAE files beside a single-file DiT (``diffusion_comfy_components.py``).
-
-Everything runs on CPU against tiny models and tiny synthetic safetensors files written in the ComfyUI
-layout: the key rules must load STRICTLY (nothing missing, nothing extra beyond the known-dead tensors),
-quantized layers must dequantize (scaled fp8) or stay int8 (ConvRot), unsupported formats must be refused
-by name, and the request / planner wiring must drop and re-price the replaced components.
-"""
+"""ComfyUI encoder and VAE files beside a single-file DiT; key rules must load strictly on CPU."""
 
 from __future__ import annotations
 

@@ -1,19 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Invariant: /api/health answers inside the desktop launcher's probe timeout,
-detected hardware or not.
-
-studio/src-tauri/src/preflight/backend.rs probes with a 2s client timeout right after
-TAURI_PORT is emitted, and a timeout is not retried: it falls through to
-"desktop_owned_backend_starting", a dead end the user has to clear by hand. That was safe
-while the lifespan detected inline, since TAURI_PORT came after detection; detection runs on
-the warm thread now and TAURI_PORT precedes it, so an unbounded wait inside health puts a
-cold `import torch` in front of that deadline. Nothing the launcher reads from health
-depends on detection, only chat_only does.
-
-CPU-only, no network, no GPU, no weights: the subprocess tests stub detection.
-"""
+"""/api/health must answer inside the launcher's probe timeout, because a timeout is never retried."""
 
 from __future__ import annotations
 
@@ -24,46 +12,13 @@ import subprocess
 import sys
 from pathlib import Path
 
-# What the stubs make detection cost. The regression these tests guard returns after
-# exactly this long, so it is also the number the timing ceiling has to stay clear of.
+# Detection cost under the stubs; the regression returns after exactly this long.
 _SLOW_DETECT_S = 10.0
-# How much wall clock, on top of the budget, the WARM request is allowed to spend.
-#
-# There are two bounds here and they guard different things. The cold call, the first one
-# this process serves, is what probe_ownerless_spawned_backend actually gets, so it is
-# bounded against the launcher's own timeout in
-# test_a_cold_health_call_answers_inside_the_launcher_deadline, setup included, because
-# setup counts against that deadline. This constant is the warm one, which is the
-# endpoint with its setup already paid, and it is tight because what remains does not
-# move. Dropping either leaves a hole: cold-only is what made this flaky, warm-only would
-# let a regression that adds a second of first-call import sail through.
-#
-# The warm ceiling still has to stay under the launcher deadline to mean anything, and is
-# asserted to be.
-#
-# It also has to stop flaking. It failed twice, at 1.63s and 1.69s, on two unrelated
-# branches 54 minutes apart, each time as the only failure in a run of about 30,780
-# tests. Neither was a regression; an unbounded wait measures 10.01s.
-#
-# Those two numbers were not the endpoint being slow. The budget wait is
-# deadline-accurate, polling against loop.time(), and the rest was one-time setup: the
-# lazy imports inside health_check, the anyio threadpool the auth dependency hops onto,
-# and TestClient's portal. Timing the first-ever call charged all of that to the
-# endpoint. The fix is to warm the app first, not to widen the number: measured after a
-# warm call, the request is 1.011-1.012s idle and 1.027-1.038s pinned to two CPUs under
-# six spinners, so it moves by about 27ms across a 6x change in load, against the 630ms
-# it moved before. The variance goes where it belongs, into the warm call.
-#
-# The portal is the one of those three that a warm request does not warm on its own: a
-# TestClient outside its context manager builds a fresh one per request. Measured, that
-# is 3.4ms idle and 3-33ms loaded, so it was never what made this flaky, but it is real
-# and it is now excluded by entering the client rather than by being tolerated.
-#
-# 0.5s of headroom against a post-warm overhead of ~45ms is roughly 11x, and leaves the
-# ceiling at 1.5s, comfortably inside the 2s the launcher allows.
+# Warm-call ceiling (cold call is bounded separately); fix flakes by warming, not widening.
+# Post-warm overhead is ~45ms; 0.5s leaves the ceiling at 1.5s, inside the 2s probe timeout.
 _POST_WARM_OVERHEAD_ALLOWANCE_S = 0.5
 
-_BACKEND_DIR = Path(__file__).resolve().parent.parent  # studio/backend
+_BACKEND_DIR = Path(__file__).resolve().parent.parent
 _MAIN_SRC = _BACKEND_DIR / "main.py"
 _PROBE_RS = _BACKEND_DIR.parent / "src-tauri" / "src" / "preflight" / "backend.rs"
 
@@ -79,17 +34,10 @@ def _run(snippet: str) -> subprocess.CompletedProcess:
 
 
 def _desktop_probe_timeout_s() -> float:
-    """The launcher's whole-client timeout, read out of the Rust it belongs to.
-
-    The builder's .timeout() and the shared loopback_http::client() constructor both take
-    it as a whole-seconds Duration, and the probe sets exactly one. Matching the Duration
-    rather than either call site keeps this working across that refactor while still
-    failing if the unit stops being seconds.
-    """
+    """Reads the probe's whole-client timeout from the Rust source as a seconds Duration."""
     assert _PROBE_RS.is_file(), f"{_PROBE_RS} moved; update this guard"
     rust = _PROBE_RS.read_text(encoding = "utf-8")
     probe = rust[rust.index("fn probe_ownerless_spawned_backend") :]
-    # Bound to this function; a later one must not be the source of the number.
     end = probe.find("\n}\n")
     if end != -1:
         probe = probe[: end + 3]
@@ -121,9 +69,7 @@ def test_the_budget_stays_under_the_desktop_probe_timeout():
         f"/api/health waits up to {budget}s for detection but the desktop probe "
         f"gives up at {probe_timeout}s"
     )
-    # Connect, routing and JSON share the same 2s, and the budget overruns whenever a
-    # C-extension import holds the GIL past it (0.24s measured at 1.5s). A budget that
-    # only just fits is one slow host away from the dead end.
+    # A C-extension import holding the GIL can overrun the budget (0.24s measured), so keep slack.
     assert probe_timeout - budget >= 0.9, (
         f"only {probe_timeout - budget}s of headroom between the health budget "
         f"and the {probe_timeout}s probe timeout"
@@ -253,9 +199,7 @@ def _probe(detect_seconds: float) -> dict:
     return json.loads(line[len("RESULT") :])
 
 
-# A pass that sets CHAT_ONLY False and then degrades, the shape every accelerator
-# branch has: the flag is assigned before the device-name probe that can raise, and
-# detect_hardware() restores the previous verdict on the way out.
+# Sets CHAT_ONLY False then degrades; detect_hardware() restores the previous verdict.
 _MID_PASS_SNIPPET = r"""
 import json, os, threading, time
 
@@ -299,14 +243,7 @@ print("RESULT" + json.dumps({
 
 
 def test_an_unsettled_pass_is_never_published_as_training_capable():
-    """chat_only with no snapshot must be the literal True, not the live global.
-
-    Every accelerator branch of _detect_hardware_locked assigns CHAT_ONLY = False and then
-    keeps probing (torch.xpu.get_device_name, the MLX stack check), and a raise there
-    degrades the host to CPU. DETECTION_COMPLETE stays clear throughout, so the reply is
-    marked provisional; with the kill switch on it is also marked deferred, and
-    hardware-verdict.ts stores data.chat_only verbatim for those. Reading the global
-    therefore flashes Train and Export on a host that ends up chat-only."""
+    """An unsettled pass must publish chat_only True, not the live global, or Train and Export flash on."""
     proc = _run(_MID_PASS_SNIPPET)
     assert (
         proc.returncode == 0
@@ -330,15 +267,11 @@ def test_health_answers_within_the_budget_while_detection_is_slow():
     budget = _main_constant("_HEALTH_DETECT_BUDGET_S")
     probe_timeout = _desktop_probe_timeout_s()
     ceiling = budget + _POST_WARM_OVERHEAD_ALLOWANCE_S
-    # The ceiling has to stay under the launcher's deadline, or a response this test
-    # accepts is one the desktop probe has already given up on.
     assert ceiling < probe_timeout, (
         f"a {ceiling}s ceiling is at or past the {probe_timeout}s the desktop probe "
         "allows, so this assertion would pass responses that dead-end the launch"
     )
-    # And it is only worth asserting while it still separates a bounded wait from an
-    # unbounded one, so widening the allowance far enough to stop discriminating fails
-    # here instead of quietly making this test vacuous.
+    # Fails if the allowance grows enough to stop separating bounded from unbounded waits.
     assert ceiling < _SLOW_DETECT_S / 2, (
         f"a {ceiling}s ceiling no longer separates the budget from a {_SLOW_DETECT_S}s "
         "unbounded wait; this assertion would pass against the regression it guards"
@@ -350,11 +283,7 @@ def test_health_answers_within_the_budget_while_detection_is_slow():
         "the TestClient was not entered, so _portal_factory built a separate blocking "
         "portal for each request and the cold call did not warm the timed one's portal"
     )
-    # The cold call has to have modelled the real case, detection still running, or it
-    # warmed nothing that matters and the request timed below is not warm. Asserted on
-    # STATE rather than on a duration: a duration check here would be the same subsecond
-    # wall-clock ceiling this change exists to remove, on the same contended runners,
-    # and it would say nothing about which path the call took.
+    # Asserted on state, not duration, to avoid a flaky wall-clock ceiling.
     assert result["cold_hardware_detecting"] is True, (
         "the cold call got a settled reply, so it did not exercise the wait and the "
         "timed request below is measuring one-time setup again"
@@ -367,7 +296,6 @@ def test_health_answers_within_the_budget_while_detection_is_slow():
         "health returned a provisional chat_only without saying so; a client "
         "cannot tell it apart from a measured one"
     )
-    # Conservative direction: never offer Train/Export on a host that may not have it.
     assert result["chat_only"] is True
 
 
@@ -415,17 +343,7 @@ print("RESULT" + json.dumps({"elapsed": time.perf_counter() - started}))
 
 
 def test_the_ceiling_still_catches_an_unbounded_wait():
-    """Calibration for _POST_WARM_OVERHEAD_ALLOWANCE_S, measured rather than argued.
-
-    Widening a timing assertion is only safe while it still fails the thing it exists to
-    catch. This builds the unbounded wait the sibling static guard forbids, times it, and
-    asserts it lands above the ceiling the budget test uses. If the allowance is ever
-    raised past the point of discriminating, this goes red and says so.
-
-    Deliberately a shorter detection than _SLOW_DETECT_S: the property is that an
-    unbounded wait tracks detection instead of the budget, and a shorter one shows that
-    while keeping the test cheap.
-    """
+    """The ceiling must still catch an unbounded wait, so the post-warm allowance stays discriminating."""
     detect_s = 6.0
     ceiling = _main_constant("_HEALTH_DETECT_BUDGET_S") + _POST_WARM_OVERHEAD_ALLOWANCE_S
     proc = _run(_UNBOUNDED_SNIPPET % {"detect_seconds": detect_s})
@@ -485,13 +403,7 @@ def test_health_does_not_await_detection_unbounded():
 
 
 def test_a_provisional_reply_is_not_cacheable_by_the_frontend():
-    """The provisional reply must not look authoritative to config/env.ts.
-
-    fetchDeviceType() sets ``fetched = data.device_type !== undefined`` and every later
-    non-forced call short-circuits on ``fetched``, so a provisional authed reply carrying
-    device_type pins chat_only=true for the rest of the SPA session on a GPU host: Train
-    hidden, /studio redirected to /chat. The sidebar's recovery poll runs only for
-    chat_only_reason === "mlx_unavailable", so it does not save it either."""
+    """A provisional reply must not carry device_type, or config/env.ts caches chat_only for the session."""
     result = _probe(_SLOW_DETECT_S)
 
     assert result["authed_hardware_detecting"] is True, "expected a provisional reply"
@@ -502,7 +414,6 @@ def test_a_provisional_reply_is_not_cacheable_by_the_frontend():
     assert not result[
         "authed_has_chat_only_reason"
     ], "chat_only_reason is meaningless before detection has run"
-    # The launcher-facing fields are unaffected.
     assert result["authed_has_version"]
 
 
@@ -516,10 +427,7 @@ def test_a_measured_reply_still_carries_the_authoritative_fields():
 
 
 def test_a_mid_detection_assignment_is_not_treated_as_finished():
-    """DEVICE goes non-None before detection has settled. The XPU branch assigns DEVICE and
-    CHAT_ONLY=False, then calls torch.xpu.get_device_name(0); if that raises, the host
-    degrades to CPU/chat-only. A waiter keyed on "DEVICE is not None" would have published
-    the intermediate value, reporting training available on a chat-only host."""
+    """DEVICE is set before detection settles, so waiters must not key on it or report false training."""
     import importlib
     import threading
 
@@ -542,21 +450,7 @@ def test_a_mid_detection_assignment_is_not_treated_as_finished():
 
 
 def test_a_cold_health_call_answers_inside_the_launcher_deadline():
-    """The launcher never gets the warm path.
-
-    probe_ownerless_spawned_backend calls /api/health immediately after startup, with no
-    warm-up, and does not retry: a response that misses its client timeout falls through
-    to "desktop_owned_backend_starting", a dead end the user has to clear by hand. So the
-    first call this process serves is on that deadline's critical path, lazy imports and
-    threadpool startup included, and it is bounded here against the launcher's own
-    timeout rather than against a subsecond number, because that setup legitimately
-    counts against it.
-
-    The sibling test bounds the same request warm and tightly. Neither replaces the
-    other: warm catches the endpoint regressing, cold catches setup growing until the
-    launch dead-ends. Timing only the warm one is a hole, and timing only the cold one is
-    what made this file flaky.
-    """
+    """The first health call after startup has no warm-up and must answer inside the launcher's deadline."""
     probe_timeout = _desktop_probe_timeout_s()
     result = _probe(_SLOW_DETECT_S)
     if result["cold_elapsed"] >= probe_timeout:

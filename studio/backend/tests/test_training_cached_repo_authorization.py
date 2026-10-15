@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Cached-path authorization for training starts.
-
-Companion to test_training_ambient_hf_token.py, which covers the token plumbing. These cover the
-path-to-repository mapping the model and dataset legs authorize against, where a miss is fail-OPEN:
-``cached_repo_ref_for_path`` returning ``None`` means the caller skips the access check entirely.
-"""
+"""A None from cached_repo_ref_for_path fails open and skips the access check."""
 
 import sys
 from pathlib import Path
@@ -37,8 +32,7 @@ def _make_repo(
             try:
                 link.symlink_to(Path("..") / ".." / "blobs" / f"blob{index}")
             except (OSError, NotImplementedError):
-                # Windows without Developer Mode refuses symlinks; the real cache falls back to
-                # copies there, so a plain file is the faithful layout rather than a skip.
+                # Windows without Developer Mode refuses symlinks; the cache falls back to copies.
                 link.write_text("{}")
     return snapshot
 
@@ -84,7 +78,6 @@ def test_cached_private_dataset_path_is_attributed_to_the_dataset_repo(cache_roo
 
     snapshot = _make_repo(cache_root, "datasets--org--private-data")
     assert cached_repo_ref_for_path(snapshot) == ("org/private-data", "dataset")
-    # The repo_type-restricted view still answers only for its own type.
     assert cached_repo_id_for_path(snapshot) is None
     assert cached_repo_id_for_path(snapshot, "dataset") == "org/private-data"
 
@@ -184,11 +177,7 @@ def test_an_unreadable_cache_root_authorizes_rather_than_skips(monkeypatch, tmp_
 
 
 def test_repo_ids_round_trip_through_the_cache_dir_name(cache_root):
-    """ "--" is forbidden inside a repo id, so the split is unambiguous.
-
-    Guards the mapping against a "fix" for a name that cannot exist: huggingface_hub's own
-    validate_repo_id rejects "org/my--model", and _scan_cached_repo parses the same way.
-    """
+    """Repo ids cannot contain a double hyphen, so the cache dir name splits unambiguously on it."""
     from huggingface_hub.utils import HFValidationError, validate_repo_id
 
     from hub.utils.hf_cache_state import cached_repo_ref_for_path
@@ -233,7 +222,6 @@ def test_local_dataset_paths_in_the_cache_require_caller_authorization(monkeypat
     assert error.value.status_code == 422
     assert seen == {"repo_id": "org/private-data", "repo_type": "dataset"}
 
-    # A UI session entitled to the saved login is unaffected.
     training_routes._refuse_unauthorized_cached_local_paths([target], None)
 
 
@@ -284,7 +272,6 @@ def test_diffusion_child_forwards_the_callers_own_token(monkeypatch):
 
     import os
 
-    # Trimmed, and the operator's credential is gone rather than sitting beside it.
     assert os.environ["HF_TOKEN"] == "caller-own-token"
     assert os.environ["HF_HUB_DISABLE_IMPLICIT_TOKEN"] == "0"
 
@@ -298,11 +285,9 @@ def test_diffusion_child_leaves_a_studio_session_alone(monkeypatch):
 
     import os
 
-    # conftest points HF_TOKEN_PATH at the isolated cache for every test, so the claim is that it
-    # is left where it was rather than redirected to devnull.
+    # conftest points HF_TOKEN_PATH at the isolated cache; it must stay unchanged.
     token_path_before = os.environ.get("HF_TOKEN_PATH")
-    # Both read as "unchanged", not as a literal value: another test in this worker may have left
-    # HF_HUB_DISABLE_IMPLICIT_TOKEN set, and the claim here is that this call does not set it.
+    # Compare to before: another test may have left HF_HUB_DISABLE_IMPLICIT_TOKEN set.
     implicit_before = os.environ.get("HF_HUB_DISABLE_IMPLICIT_TOKEN")
     for config in ({}, {"allow_ambient": True}):
         service._default_target(event_queue = None, stop_queue = None, config = config)
@@ -312,11 +297,7 @@ def test_diffusion_child_leaves_a_studio_session_alone(monkeypatch):
 
 
 def test_a_cached_diffusion_base_requires_caller_authorization(monkeypatch, cache_root):
-    """Scrubbing the child environment does not protect a base that is ALREADY cached.
-
-    _preflight_gated_base returns early for a local path and _assert_trusted_base_model accepts any
-    real pipeline directory, so from_pretrained read it off disk with no credential.
-    """
+    """Scrubbing the child env does not protect an already-cached base, which is read from disk."""
     import routes.training as training_routes
     from fastapi import HTTPException
 
@@ -346,7 +327,6 @@ def test_a_cached_diffusion_base_requires_caller_authorization(monkeypatch, cach
     assert error.value.detail["code"] == "hf_model_access_denied"
     assert seen["repo_id"] == "org/private-sdxl"
 
-    # A Hub id for a base this disk does not hold has nothing to disclose.
     training_routes._refuse_unauthorized_cached_local_paths(
         ["black-forest-labs/FLUX.2-klein-4B", ""],
         False,
@@ -357,11 +337,7 @@ def test_a_cached_diffusion_base_requires_caller_authorization(monkeypatch, cach
 def test_a_remote_named_cached_base_is_authorized_when_the_hub_probe_fails_open(
     monkeypatch, cache_root
 ):
-    """`org/private` names no path, and the HEAD that would cover it is best-effort.
-
-    `_preflight_gated_base` treats an unreachable Hub as "not a denial", so on an offline box the
-    scrubbed child still loaded the cached private copy. The disk is asked directly instead.
-    """
+    """A repo-named cached base must be authorized from disk, since an offline Hub probe fails open."""
     import routes.training as training_routes
     from fastapi import HTTPException
 
@@ -392,7 +368,6 @@ def test_a_remote_named_cached_base_is_authorized_when_the_hub_probe_fails_open(
     assert error.value.status_code == 422
     assert seen == {"repo_id": "org/private-sdxl", "repo_type": "model", "is_cached": True}
 
-    # A repo that is NOT on this disk has nothing to leak, so it is not refused.
     training_routes._refuse_unauthorized_cached_local_paths(
         ["org/never-downloaded"],
         False,
@@ -400,8 +375,7 @@ def test_a_remote_named_cached_base_is_authorized_when_the_hub_probe_fails_open(
     )
     assert seen["is_cached"] is False
 
-    # Nor does an interrupted download that left the repo directory and nothing under it: a
-    # public base would otherwise be refused the download it was entitled to.
+    # An interrupted download (empty repo dir) must not refuse a public base.
     (cache_root / "models--org--interrupted-base").mkdir()
     training_routes._refuse_unauthorized_cached_local_paths(
         ["org/interrupted-base"],
@@ -417,21 +391,14 @@ def test_a_remote_named_cached_base_is_authorized_when_the_hub_probe_fails_open(
 
 
 def test_the_worker_rebuilds_the_anonymous_sentinel_rather_than_none():
-    """`or None` handed an API key the AMBIENT caller class inside the worker.
-
-    The scrub covers network traffic only, and cache_reads_authorized(None) is True, so cached
-    private weights stayed readable for the repos the route never authorized: a LoRA checkpoint's
-    base, sibling scan targets, a fallback load target.
-    """
+    """Worker rebuilds the anonymous sentinel: None would authorize cached private weights."""
     from core.training.worker import _worker_hf_token
     from hub.utils.hf_tokens import AmbientAuthorizedToken, cache_reads_authorized, is_anonymous
 
-    # A tokenless API key: the sentinel, and it authorizes no cache read.
     token = _worker_hf_token({"allow_ambient": False})
     assert is_anonymous(token)
     assert cache_reads_authorized(token, repo_id = "org/private") is False
 
-    # A tokenless UI session keeps the ambient login, exactly as before.
     assert _worker_hf_token({"allow_ambient": True}) is None
     assert _worker_hf_token({}) is None
 
@@ -440,7 +407,6 @@ def test_the_worker_rebuilds_the_anonymous_sentinel_rather_than_none():
     assert own == "hf_caller"
     assert not isinstance(own, AmbientAuthorizedToken)
 
-    # A UI session's own token is entitled to ambient and must not be demoted by the trim.
     ui = _worker_hf_token({"allow_ambient": True, "hf_token": " hf_ui "})
     assert isinstance(ui, AmbientAuthorizedToken) and ui == "hf_ui"
     assert cache_reads_authorized(ui, repo_id = "org/private") is True
@@ -457,10 +423,7 @@ def test_the_worker_no_longer_launders_the_sentinel_through_or_none():
 
 
 def test_an_interrupted_download_is_not_evidence_of_a_cached_read(monkeypatch, cache_root):
-    """A repo DIRECTORY with no usable snapshot has disclosed nothing, so refusing it protects
-    nothing. Reachable because the anonymous rescue needs /auth-check, which an HF_ENDPOINT mirror
-    need not serve: there a PUBLIC model is rejected for bytes that were never on disk.
-    """
+    """A repo directory with no usable snapshot has disclosed nothing, so refusing it protects nothing."""
     from hub.utils.hf_cache_state import repo_cache_has_usable_snapshot
 
     metadata = ("config.json", "adapter_config.json")
@@ -468,20 +431,16 @@ def test_an_interrupted_download_is_not_evidence_of_a_cached_read(monkeypatch, c
     def usable(repo_id: str) -> bool:
         return repo_cache_has_usable_snapshot("model", repo_id, metadata)
 
-    # Interrupted: the repo dir exists, nothing under it does.
     (cache_root / "models--org--interrupted").mkdir()
     assert usable("org/interrupted") is False
 
-    # Present but empty: snapshots/<rev> with no metadata for the load to consume.
     (cache_root / "models--org--partial" / "snapshots" / "abc").mkdir(parents = True)
     assert usable("org/partial") is False
 
-    # A real one still counts, so the guard has not been blunted.
     snapshot = _make_repo(cache_root, "models--org--usable")
     assert (snapshot / "config.json").exists()
     assert usable("org/usable") is True
 
-    # Never downloaded at all: nothing to disclose and nothing to refuse.
     assert usable("org/absent") is False
 
 
@@ -513,18 +472,13 @@ def test_a_disabled_eval_path_is_not_authorized(monkeypatch, cache_root):
     marker = "request.local_eval_datasets if evaluation_enabled(request.eval_steps) else []"
     assert marker in source
 
-    # And the condition itself agrees with the validation above it.
     assert training_routes.evaluation_enabled(0) is False
     assert training_routes.evaluation_enabled(None) is False
     assert training_routes.evaluation_enabled(10) is True
 
 
 def test_only_the_effective_diffusion_fetch_target_is_authorized():
-    """The DiT trainer loads fetch_base_model, and for SDXL the two are equal by construction.
-
-    Authorizing the original base_model as well refused a public mirror whenever a stray or partial
-    snapshot of the gated upstream happened to sit in the cache.
-    """
+    """Authorize only the effective fetch target; checking the original base refuses public mirrors."""
     import inspect
 
     import routes.training as training_routes
@@ -575,8 +529,7 @@ def test_a_metadata_less_probe_ignores_repo_boilerplate(cache_root):
     (revision / "LICENSE").write_text("apache-2.0")
     assert repo_cache_has_usable_snapshot("model", "org/card-only") is False
 
-    # Anything else counts, including a format the loaders here do not know: skipping the check is
-    # the failure that matters, so the denylist never grows into an allowlist of weight formats.
+    # Unknown formats count: the denylist must never become a weight-format allowlist.
     (revision / "weights.unknown-format").write_bytes(b"w")
     assert repo_cache_has_usable_snapshot("model", "org/card-only") is True
 

@@ -1,9 +1,5 @@
-# Model defaults for unsloth/embeddinggemma-300m
-# Based on EmbeddingGemma_(300M).py embedding notebook
-
 training:
   max_seq_length: 1024
-  # num_epochs: 1
   num_epochs: 0
   learning_rate: 2e-5
   batch_size: 64

@@ -58,10 +58,8 @@ def _patch_create_causal_mask() -> None:
     params = inspect.signature(original).parameters
 
     def create_causal_mask_compat(*args, **kwargs):
-        # The pipeline calls this by keyword. Rename inputs_embeds -> input_embeds for the 5.x spelling.
         if "inputs_embeds" in kwargs and "inputs_embeds" not in params and "input_embeds" in params:
             kwargs["input_embeds"] = kwargs.pop("inputs_embeds")
-        # Supply cache_position when required and omitted: past_key_values is None, so positions run 0..seq_len-1.
         if "cache_position" in params and "cache_position" not in kwargs:
             embeds = kwargs.get("input_embeds", kwargs.get("inputs_embeds"))
             if embeds is not None:
@@ -72,8 +70,6 @@ def _patch_create_causal_mask() -> None:
     _CAUSAL_MASK_PATCHED = True
 
 
-# The fp8 attention is a fused ``qkv`` matrix (Q/K/V stacked, each ``hidden_size`` rows), read from config so a future
-# change cannot mis-split it.
 _QKV_SPLIT = ("to_q", "to_k", "to_v")
 
 
@@ -83,12 +79,7 @@ def _transformer_shard_paths(
     token: Optional[str],
     check_cancelled: Optional[Callable[[], None]] = None,
 ) -> list[str]:
-    """The local safetensors shard paths for ``repo_id/subfolder``.
-
-    Prefers the sharded index; falls back to the single-file name when the subfolder
-    ships one file. Resolves through a local dir when ``repo_id`` is a path, else the
-    Hub cache.
-    """
+    """Safetensors shard paths from the index or single file; repo_id may be a local directory."""
     check_cancelled = check_cancelled or (lambda: None)
     check_cancelled()
     from huggingface_hub import hf_hub_download
@@ -136,19 +127,13 @@ def _convert_fp8_state_dict(
     dtype,
     check_cancelled: Optional[Callable[[], None]] = None,
 ) -> dict:
-    """Dequantize + rename the vendor fp8 shards into the diffusers split layout.
-
-    A ``*.weight`` with a companion ``*.weight_scale`` is float8 per-channel (real weight =
-    ``fp8.float() * weight_scale[:, None]``). Fused ``attention.qkv`` -> ``to_q``/``to_k``/``to_v``
-    (Q/K/V order), ``attention.o`` -> ``to_out.0``. Dense tensors pass through cast to ``dtype``.
-    """
+    """Dequantises fp8 weights by their per-channel scale and splits fused qkv into to_q/to_k/to_v."""
     check_cancelled = check_cancelled or (lambda: None)
     import torch
 
     def dequantize(name: str):
         weight = raw[name].to(torch.float32)
         scale = raw[name + "_scale"].to(torch.float32)
-        # Per-channel scale, rank-aware broadcast (correct for a future non-2D quantized tensor).
         return (weight * scale.view(-1, *([1] * (weight.ndim - 1)))).to(dtype)
 
     converted: dict = {}
@@ -157,7 +142,6 @@ def _convert_fp8_state_dict(
         if key.endswith("_scale"):
             continue
         if key + "_scale" not in raw:
-            # Dense tensor (norms/biases/embeddings): load as-is.
             converted[key] = value.to(dtype)
             continue
         if key.endswith("attention.qkv.weight"):
@@ -252,13 +236,7 @@ def load_ideogram4_text_encoder(
     hf_token: Optional[str] = None,
     check_cancelled: Optional[Callable[[], None]] = None,
 ):
-    """The Qwen3-VL text encoder for ``repo_id``.
-
-    The ``-fp8`` repo stores it in the same float8-plus-per-channel-scale layout as its DiTs, but
-    its keys already match transformers Qwen3-VL (no fused qkv rename needed), so only the float8
-    dequant is required. The ``-nf4`` and dense repos fall through to the shared krea shim (which
-    also applies the rope_parameters remap).
-    """
+    """The -fp8 encoder needs only the float8 dequant: its keys already match Qwen3-VL, so no qkv rename."""
     check_cancelled = check_cancelled or (lambda: None)
     check_cancelled()
     token = hf_token or None
@@ -298,13 +276,12 @@ def load_ideogram4_text_encoder(
         if key + "_scale" in raw:
             weight = value.to(torch.float32)
             scale = raw[key + "_scale"].to(torch.float32)
-            # Rank-aware broadcast (matches _convert_fp8_state_dict).
             state_dict[key] = (weight * scale.view(-1, *([1] * (weight.ndim - 1)))).to(dtype)
         else:
             state_dict[key] = value.to(dtype)
 
     check_cancelled()
-    # build at the target dtype: this ~8B scaffold loads FIRST, so the fp32 default can OOM a 64 GB host
+    # Build at the target dtype: the fp32 default can OOM a 64 GB host.
     default_dtype = torch.get_default_dtype()
     torch.set_default_dtype(dtype)
     try:
@@ -325,13 +302,7 @@ def load_ideogram4_text_encoder(
 
 
 def ideogram4_repo_is_fp8(repo_id: str, hf_token: Optional[str] = None) -> bool:
-    """True when ``repo_id``'s transformer ships the vendor fp8 layout (a ``*.weight_scale`` key).
-
-    Those weights dequantize to a WIDER resident dtype, so on-disk bytes undershoot the bf16
-    footprint; memory planning uses this to reserve the real size for a LOCAL fp8 mirror (whose
-    path can't string-match ``base_repo``; ``-nf4`` mirrors have no marker and stay compressed).
-    Reads shard HEADERS only. Any failure resolves to False (caller uses the file-size estimate).
-    """
+    """Checks shard headers for a *.weight_scale key; such weights expand to a wider dtype in memory."""
     try:
         shard_paths = _transformer_shard_paths(repo_id, "transformer", hf_token or None)
         import safetensors
@@ -351,12 +322,7 @@ def load_ideogram4_transformer(
     hf_token: Optional[str] = None,
     check_cancelled: Optional[Callable[[], None]] = None,
 ):
-    """An ``Ideogram4Transformer2DModel`` for ``repo_id/subfolder`` (still on CPU).
-
-    If the shards carry the vendor fp8 layout, dequantizes + renames into the diffusers split
-    layout and loads into a config-constructed model. Already-split ``-nf4`` repos (with a
-    ``quantization_config``) delegate to stock ``from_pretrained`` so bnb re-applies the 4-bit weights.
-    """
+    """Vendor fp8 shards are dequantised and renamed; bnb -nf4 repos load via stock from_pretrained."""
     check_cancelled = check_cancelled or (lambda: None)
     check_cancelled()
     import diffusers
@@ -370,8 +336,7 @@ def load_ideogram4_transformer(
         repo_id, subfolder, token, check_cancelled = check_cancelled
     )
 
-    # Detect fp8 from shard HEADERS (keys() reads metadata only), checking all shards so a dense-first multi-shard
-    # export still routes to the dequant path. Only fp8 materializes tensors; -nf4 goes straight to from_pretrained.
+    # Check every shard header so a dense-first multi-shard fp8 export still dequantizes.
     is_fp8 = False
     for path in shard_paths:
         check_cancelled()
@@ -381,7 +346,6 @@ def load_ideogram4_transformer(
                 break
     check_cancelled()
     if not is_fp8:
-        # Already the diffusers split layout (-nf4): let from_pretrained re-apply its quantization_config.
         model_kwargs: dict[str, Any] = {"subfolder": subfolder, "torch_dtype": dtype}
         if token:
             model_kwargs["token"] = token
@@ -398,8 +362,6 @@ def load_ideogram4_transformer(
     check_cancelled()
     config.pop("quantization_config", None)
     hidden_size = int(config["attention_head_dim"]) * int(config["num_attention_heads"])
-    # build at the target dtype: from_config materializes the full ~9B module while the first DiT and the encoder are
-    # resident
     default_dtype = torch.get_default_dtype()
     torch.set_default_dtype(dtype)
     try:
@@ -410,8 +372,7 @@ def load_ideogram4_transformer(
     state_dict = _convert_fp8_state_dict(raw, hidden_size, dtype, check_cancelled = check_cancelled)
     check_cancelled()
     missing, unexpected = model.load_state_dict(state_dict, strict = False)
-    # rotary_emb.inv_freq is the only expected "missing" key (built in __init__); a real gap or leftover key must fail
-    # loudly rather than ship a partly random model.
+    # inv_freq is built in __init__; any other missing or leftover key must fail loudly.
     real_missing = [k for k in missing if not k.endswith("rotary_emb.inv_freq")]
     if real_missing or unexpected:
         raise RuntimeError(
@@ -420,7 +381,6 @@ def load_ideogram4_transformer(
         )
     check_cancelled()
     model.to(dtype)
-    # Preserve the published source precision after widening the tensors to bf16.
     return mark_source_precision(model, "fp8")
 
 
@@ -464,7 +424,6 @@ def load_ideogram4_pipeline(
     check_cancelled()
     import diffusers
 
-    # The pipeline's text-encoder call uses a 5.x create_causal_mask signature; adapt it first.
     _patch_create_causal_mask()
     check_cancelled()
 
@@ -483,8 +442,6 @@ def load_ideogram4_pipeline(
         repo_id, "transformer", dtype, hf_token = token, check_cancelled = check_cancelled
     )
     check_cancelled()
-    # The second DiT drives the unconditional branch of Ideogram's dual-branch CFG (same class and size, always
-    # required).
     unconditional_transformer = load_ideogram4_transformer(
         repo_id, "unconditional_transformer", dtype, hf_token = token, check_cancelled = check_cancelled
     )

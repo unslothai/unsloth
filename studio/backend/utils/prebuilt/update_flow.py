@@ -22,14 +22,11 @@ from utils.process_lifetime import adopt_pid, child_popen_kwargs, forget_pid, te
 
 logger = structlog.get_logger(__name__)
 
-# Markerless (source-build) resolve answers are memoized for 24h; only successful answers are cached so a network blip retries.
+# Only successful answers are cached so a network blip retries.
 RESOLVE_TTL_SECONDS = 24 * 60 * 60
 
-# Matches the installer's download progress lines, e.g. "Downloading x.zip:  35.0% (12.3 MiB/35.1 MiB) at 8.2 MiB/s".
 PROGRESS_LINE_RE = re.compile(r"(\d+(?:\.\d+)?)%\s*\(")
-# The installer announces each server it starts to validate a build.
 CHILD_PID_LINE_RE = re.compile(r"\AUNSLOTH_INSTALLER_CHILD (started|stopped) (\d+)\Z")
-# The download dominates the update; extract/validate fill the last slice.
 DOWNLOAD_PROGRESS_CEILING = 0.95
 
 
@@ -41,14 +38,14 @@ class InstallerExit(RuntimeError):
         self.returncode = returncode
 
 
-# Any installer log line. whisper.cpp updates run through this same helper, so the component is matched as a pattern rather than llama's alone. The prefix is also what separates the installer's own lines from the unprefixed system report it prints after them.
+# Component matched as a pattern: whisper.cpp updates share this helper.
 _PREBUILT_LOG_RE = re.compile(r"^\[[\w.-]+-prebuilt\]\s?(?P<body>.*)$")
-# The verdict line an installer logs before it exits: "prebuilt fallback reason:", "prebuilt install failed:", "prebuilt install refused:", "prebuilt busy reason:", "fatal helper error:", "fatal helper busy conflict:".
+# Verdict lines: fallback reason, install failed/refused, busy reason, fatal helper error/busy.
 _PREBUILT_VERDICT_RE = re.compile(
     r"^(?:prebuilt\b[^:]*\b(?:reason|failed|refused)"
     r"|fatal helper (?:error|busy conflict)):\s*(?P<detail>.*)$"
 )
-# A multi-line reason (the preflight failure lists one library per line) is logged one prefixed line at a time, so a verdict owns the prefixed lines that follow it. Bounded because only the installer's own framing bounds them.
+# A verdict owns the following prefixed lines (multi-line reasons); bounded.
 _VERDICT_CONTINUATION_LIMIT = 8
 
 
@@ -85,7 +82,7 @@ def _installer_verdict(lines: Sequence[str]) -> str | None:
     for line in lines:
         stripped = line.strip()
         if CHILD_PID_LINE_RE.match(stripped) is not None:
-            # A grandchild announcement is protocol, not output: it can land between a reason and its continuation lines without ending either.
+            # Grandchild announcements can land inside a verdict without ending it.
             continue
         log_line = _PREBUILT_LOG_RE.match(stripped)
         if log_line is None:
@@ -311,7 +308,7 @@ def managed_install_root(
         return marker_root
     if not binary:
         return None
-    # The server-path pin is an explicit user choice that wins in discovery, so never auto-replace its tree, even the user's own checkout.
+    # The server-path pin is an explicit user choice: never auto-replace its tree.
     if os.environ.get(server_path_var):
         return None
     p = Path(binary)
@@ -321,7 +318,6 @@ def managed_install_root(
     for parent in p.parents:
         if parent.name == dir_name:
             return parent
-    # PATH / system / custom install: not a managed tree, so do not offer.
     return None
 
 
@@ -403,19 +399,18 @@ def stream_installer(
         text = True,
         encoding = "utf-8",
         errors = "replace",
-        # Make the Python child emit the UTF-8 we decode above.
         env = utf8_child_env(env),
-        # Deliberately NOT start_new_session: the desktop stop path force-kills this process group, and a session of its own would leave the installer rewriting files after the app reports stopped.
+        # Not start_new_session: desktop stop kills this process group, which must include the installer.
         **child_popen_kwargs(),
     )
-    # The kwargs above are empty on macOS, so record it: an installer that outlives its owner keeps replacing files under the next launch.
+    # The kwargs are empty on macOS, so record the pid explicitly.
     adopt_pid(proc.pid)
     timed_out = threading.Event()
 
     announced = AnnouncedChildren()
 
     def _stop_announced() -> None:
-        # This process keeps running after an installer error, so no startup sweep is coming: a validation server left here holds the GPU and the staged files through the retry.
+        # No startup sweep follows an installer error, so stop its validation servers here.
         while True:
             pid = announced.take()
             if pid is None:
@@ -431,7 +426,7 @@ def stream_installer(
     watchdog.daemon = True
     watchdog.start()
     tail_lines: list[str] = []
-    # Two buckets, not one: a run can log a dozen rate-limit retries before the verdict line, and a single capped list would fill with retries and drop the verdict, which is the line the user needs.
+    # Two buckets: rate-limit retries must not push the verdict out of a capped list.
     verdict_lines: list[str] = []
     hint_lines: list[str] = []
     open_verdict = False
@@ -446,20 +441,17 @@ def stream_installer(
             log_line = None if child_line is not None else _PREBUILT_LOG_RE.match(stripped)
             body = log_line.group("body").strip() if log_line is not None else None
             if body is not None and _PREBUILT_VERDICT_RE.match(body) is not None:
-                # Restart the block: this verdict supersedes any earlier one.
                 verdict_lines = [line]
                 open_verdict = True
             elif open_verdict and body is not None:
                 if len(verdict_lines) <= _VERDICT_CONTINUATION_LIMIT:
                     verdict_lines.append(line)
             elif body is None and child_line is None:
-                # Where the unprefixed system report starts, the verdict ends. A grandchild announcement is protocol, not output, and never ends one.
                 open_verdict = False
             if not open_verdict and len(hint_lines) < 4 and is_github_rate_limit_text(line):
                 hint_lines.append(line)
             child = child_line
             if child is not None:
-                # Recorded while it runs and dropped when the installer says it stopped; one it never got to report stays for the sweep.
                 started, child_pid = child.group(1) == "started", int(child.group(2))
                 if started:
                     adopt_pid(child_pid)
@@ -477,7 +469,6 @@ def stream_installer(
         watchdog.cancel()
         if proc.poll() is not None:
             forget_pid(proc.pid)
-        # Anything it started and never reported as stopped, whether it timed out, exited nonzero, or died mid-line.
         _stop_announced()
     if timed_out.is_set():
         raise RuntimeError(f"installer timed out after {timeout_seconds}s")
@@ -547,7 +538,6 @@ def run_chained_update(phases: list[dict], *, job: dict, job_lock: threading.Loc
                 for later in phases[index + 1 :]:
                     if later.get("run") is not None:
                         job["phases"][later["name"]].update(state = PHASE_SKIPPED, reason = "aborted")
-                # A partial success keeps its messages and reload_required so the caller sees the earlier phase did land.
                 job.update(
                     state = JOB_ERROR,
                     message = " ".join(done_messages + [failure]),
@@ -575,7 +565,7 @@ def run_chained_update(phases: list[dict], *, job: dict, job_lock: threading.Loc
                 )
         if result.get("message"):
             done_messages.append(result["message"])
-        # Only phases affecting the primary llama server may raise the job-level reload flag: the frontend resyncs chat model state off it, and a whisper-only sidecar reload must not clear the chat checkpoint. Per-phase reload_required stays visible under job["phases"].
+        # Only primary llama phases may raise job reload: a whisper reload must not reset chat.
         if phase.get("affects_job_reload", True):
             reload_required = reload_required or bool(result.get("reload_required"))
             # The legacy job-level to_tag means "the llama build now installed"

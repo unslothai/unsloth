@@ -12,7 +12,7 @@ description = "Local Data Designer unstructured seed reader plugin"
 requires-python = ">=3.11"
 dependencies = [
   "data-designer-engine>=0.5.4,<0.6",
-  # <4: Windows on ARM installs pandas 3 (constraints.txt), and this plugin only reads and writes parquet.
+  # <4: Windows on ARM installs pandas 3; this plugin only reads/writes parquet.
   "pandas>=2,<4",
   "pymupdf>=1.24.0",
   "pymupdf4llm>=0.0.17",

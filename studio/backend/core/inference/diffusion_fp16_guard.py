@@ -19,7 +19,6 @@ FP16_GUARD_ENV = "UNSLOTH_STUDIO_FP16_GUARD"
 _MARK = "_unsloth_fp16_guard"
 _FP16_MAX = 65504.0
 
-# recipe -> (attention, ffn) scale, powers of two (exact in float16); None = finite in plain float16, no patch.
 RECIPES: dict[str, Optional[tuple[float, float]]] = {
     "native": None,
     "rescale_post_norm": (16.0, 128.0),
@@ -37,7 +36,6 @@ def family_fp16_guard(fam: Any) -> Optional[str]:
     return recipe if isinstance(recipe, str) and recipe in RECIPES else None
 
 
-# Checked before the dtype is chosen: a diffusers release that restructures the block keeps the float32 promotion.
 _RECIPE_TOKENS: dict[str, tuple[str, ...]] = {
     "rescale_post_norm": (
         "self.attention_norm2(",
@@ -60,7 +58,7 @@ def _recipe_supported(fam: Any, recipe: str) -> bool:
         return False
     key = (cls_name, recipe)
     if key not in _SUPPORTED:
-        # Runs from dtype resolution, ahead of load_pipeline's own guard: `import diffusers` imports torch._dynamo.
+        # Runs ahead of load_pipeline's own guard, and `import diffusers` imports torch._dynamo.
         try:
             from loggers import get_logger
             from utils.torch_warmup import close_dynamo_import_window

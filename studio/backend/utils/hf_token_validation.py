@@ -134,8 +134,7 @@ def _classify_response(response: object | None) -> TokenValidationResult:
 
 def _check_remote(token: str, *, endpoint: str) -> TokenValidationResult:
     try:
-        # HfApi.whoami has no timeout parameter in the pinned Hub client.
-        # Use its session and headers against the same whoami endpoint.
+        # HfApi.whoami has no timeout parameter, so call the endpoint directly.
         response = get_session().get(
             f"{endpoint}/api/whoami-v2",
             headers = build_hf_headers(token = token),
@@ -153,7 +152,7 @@ def validate_hf_token(token: str, *, rate_key: str) -> TokenValidationResult:
     if not normalized:
         return TokenValidationResult(status = "invalid")
     account_id = current_account_id()
-    # Per endpoint: a token one Hub rejects may be another's. The ModelScope adapter has no whoami.
+    # Per endpoint: a token one Hub rejects may be valid on another. ModelScope has no whoami.
     endpoint = hugging_face_endpoint() if active_source() == MODELSCOPE else HfApi().endpoint
     token_fingerprint = (account_id, _fingerprint(normalized), endpoint.rstrip("/"))
     account_rate_key = (account_id, rate_key)

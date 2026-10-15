@@ -17,14 +17,12 @@ from utils.prebuilt.whisper_layout import lookup_marker
 
 logger = structlog.get_logger(__name__)
 
-# 3 days matches Unsloth's typical whisper.cpp release cadence.
 STALENESS_THRESHOLD_DAYS = 3
 
 _INSTALL_MARKER_NAME = "UNSLOTH_WHISPER_PREBUILT_INFO.json"
 
 _marker_cache: dict[str, Optional[dict]] = {}
 _release_memo: dict[str, tuple[float, Optional[str]]] = {}
-# Newest-release asset sizes (name -> bytes), memoized like the tag (24h TTL).
 _assets_memo: dict[str, tuple[float, dict[str, int]]] = {}
 
 
@@ -129,7 +127,6 @@ def update_download_size_bytes(
     want = f"whisper-{latest_v}-{suffix}"
     if want in assets:
         return assets[want]
-    # Tag formatting can vary; fall back to the platform+accel suffix.
     for name, size in assets.items():
         if name.endswith(suffix):
             return size
@@ -173,7 +170,6 @@ def is_behind(installed: Optional[str], latest: Optional[str]) -> bool:
     installed_key, latest_key = parse_release_version(installed), parse_release_version(latest)
     if installed_key is not None and latest_key is not None:
         return latest_key > installed_key
-    # One side is unparseable and the tags already differ: treat as behind.
     return True
 
 
@@ -184,7 +180,6 @@ def check_prebuilt_freshness(
     now: Optional[datetime] = None,
 ) -> dict:
     """Returns {has_marker, stale, behind, installed_tag, latest_tag, installed_at_utc, age_days, published_repo, threshold_days}. behind = installed genuinely older than latest (see is_behind), stale = behind AND age >= threshold. Fails open on missing data (behind/stale stay False)."""
-    # The whisper marker records a single ``release_tag`` (e.g. v1.9.1-unsloth.2); both display and comparison use it directly.
     return _flow.check_freshness(
         binary_path,
         threshold_days = threshold_days,

@@ -46,8 +46,7 @@ DEFAULT_CONTEXT_LENGTH = 8192
 # Names the lemond install whose NPU passed `flm validate`, so a restart needs no new Enable.
 _VALIDATED_MARKER = "npu_validated.json"
 
-# Model modes Unsloth's chat cannot serve: embeddings and transcription have no chat endpoint,
-# and a single-turn ("flash") model answers only the first message of a conversation.
+# Unservable modes: no chat endpoint for embeddings/transcription; single-turn answers once
 _EXCLUDED_LABELS = frozenset({"embeddings", "transcription", "single-turn"})
 # Lemonade reports config.json max_position_embeddings, but FastFlowLM engines can fail above a lower
 # limit (FastFlowLM 1.0.7; recheck on pin bumps). https://fastflowlm.com/docs/models/qwen/#-model-card-qwen38-27b
@@ -640,14 +639,8 @@ class LemonadeNpuBackend:
         return model
 
     def download(self, model_id: str) -> Iterator[dict[str, Any]]:
-        """Download a model, yielding progress events, then a final ``complete`` one.
-
-        Studio fetches the files itself when it can read FastFlowLM's file list, which lets an
-        interrupted download continue where it stopped; lemond's pull then only registers the
-        model. Otherwise lemond downloads it and its events are relayed.
-
-        Raises unless lemond sent its ``complete`` event: a stream cut short leaves a partial model.
-        """
+        """Raises unless lemond sends its complete event, since a cut-short stream leaves a partial
+        model."""
         model = self._model(model_id)
         server = self._ensure_running()
         files = (
@@ -680,7 +673,6 @@ class LemonadeNpuBackend:
                 if line.startswith("event:"):
                     event = line[len("event:") :].strip() or "progress"
                     continue
-                # A plain JSON body instead of a stream: lemond's HTTP 200 error answer.
                 raw = line[len("data:") :] if line.startswith("data:") else line
                 if not line.startswith("data:") and not line.startswith("{"):
                     continue
@@ -721,7 +713,6 @@ class LemonadeNpuBackend:
     ) -> NpuModel:
         """Load a downloaded model onto the NPU and return it once lemond reports it resident."""
         with self._lock:
-            # Cleared before the load is published, so a cancel that sees it is never wiped.
             with self._commit_lock:
                 self._load_cancelled.clear()
                 self._loading = model_id
@@ -772,7 +763,6 @@ class LemonadeNpuBackend:
             finally:
                 self._loading = None
                 if replaced and not loaded and self._server is not None:
-                    # lemond may still hold the previous model, which Studio no longer records.
                     self._server.stop()
 
     def _raise_if_load_cancelled(self, model_id: str) -> None:

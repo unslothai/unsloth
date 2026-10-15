@@ -25,11 +25,8 @@ def hf_file_definitely_absent(
     revision: Optional[str] = None,
     token: Optional[str] = None,
 ) -> bool:
-    """Return True only when the Hub confirms that *filename* is absent.
-
-    Offline, authentication, rate-limit, and resolution failures return False so callers preserve
-    their existing download and error handling.
-    """
+    """True only when the Hub confirms absence; any other failure returns False so existing handling
+    runs."""
     try:
         from huggingface_hub import get_hf_file_metadata, hf_hub_url
         from huggingface_hub.errors import EntryNotFoundError, LocalEntryNotFoundError
@@ -45,7 +42,7 @@ def hf_file_definitely_absent(
             repo_type = repo_type,
             revision = revision,
         )
-        # A refused credential is not an answer about the file: ask once more without it.
+        # A refused credential says nothing about the file: retry anonymously.
         call_with_anonymous_retry(lambda sent: get_hf_file_metadata(url, token = sent), token)
     except LocalEntryNotFoundError:
         return False

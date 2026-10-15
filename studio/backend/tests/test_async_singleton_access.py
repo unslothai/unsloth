@@ -1,16 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Async handlers must not build the inference singleton on the event loop.
-
-Construction runs get_default_models() -> hw.get_device(), so the first caller waits
-for the background warm. Inline, that holds the event-loop thread for the whole torch
-import, stalling login, liveness and the deadline-bound desktop health probe.
-
-The offload has to stay at the call site, passing the route module's own
-`get_inference_backend` to a thread. A helper in orchestrator.py would resolve that
-module's global instead, bypassing callers that patch `routes.inference.get_inference_backend`.
-"""
+"""Async handlers must not build the singleton on the event loop, which stalls the torch import."""
 
 from __future__ import annotations
 
@@ -24,9 +15,7 @@ _BACKEND = Path(__file__).resolve().parent.parent
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
-# Every read below pins utf-8: Path.read_text() defaults to the locale encoding (cp1252
-# on Windows), which cannot decode routes/inference.py, so these guards would raise
-# instead of failing honestly.
+# Pin utf-8: locale default (cp1252) cannot decode routes/inference.py.
 _ROUTE_FILES = ("routes/inference.py", "routes/models.py")
 
 
@@ -69,9 +58,7 @@ def test_the_offload_is_actually_present():
             and node.func.attr == "to_thread"
             and any(isinstance(a, ast.Name) and a.id == "get_inference_backend" for a in node.args)
         )
-    # 13, not 14: the status poll's site became a non-constructing peek, which needs no
-    # offload at all. Lower the floor only when a site is removed that way, never when
-    # one goes back on the loop.
+    # Lower the floor only when a site becomes a non-constructing peek.
     assert total >= 13, f"expected the offloaded call sites to survive, found {total}"
 
 
@@ -80,12 +67,9 @@ def _sync_helpers_that_build_the_singleton(rel: str) -> set[str]:
     tree = ast.parse((_BACKEND / rel).read_text(encoding = "utf-8"))
     names = set()
     for fn in ast.walk(tree):
-        if not isinstance(fn, ast.FunctionDef):  # sync only
+        if not isinstance(fn, ast.FunctionDef):
             continue
-        # The peek helper is the module's injection seam: it invokes the getter only
-        # when that global has been patched, which is a test double, and otherwise
-        # returns orchestrator.peek_inference_backend(). Reading it as a builder would
-        # report every caller that deliberately stopped constructing.
+        # Peek helper only calls the getter when patched by a test double.
         if fn.name == "_peek_inference_backend":
             continue
         for sub in ast.walk(fn):
@@ -98,18 +82,13 @@ def _sync_helpers_that_build_the_singleton(rel: str) -> set[str]:
     return names
 
 
-# Workers that call a callable they are handed, on the worker thread. to_thread runs only its
-# first argument; a lambda further along is just passed to it, so it counts as off the loop only
-# when that worker is known to invoke it there. Pinned below by reading the worker itself.
-# Keyed by the qualified name the routes call it by, so an unrelated in_slot elsewhere is not
-# trusted: "module.function" -> (its file, the name and position of the parameter it calls).
+# to_thread workers known to invoke a passed callback on the worker thread.
 _WORKERS_THAT_RUN_THEIR_CALLBACK = {
     "model_slots.in_slot": ("core/inference/model_slots.py", "fn", 1),
 }
 
 
 def _executed_calls(lam: ast.Lambda) -> list[ast.Call]:
-    # A lambda with a yield in its own body is a generator function: calling it runs nothing.
     if any(isinstance(n, (ast.Yield, ast.YieldFrom)) for n in _nodes_in_scope([lam.body])):
         return []
     return _calls_run_in_scope([lam.body])
@@ -120,7 +99,6 @@ def _nodes_in_scope(roots: list[ast.AST]) -> list[ast.AST]:
     while stack:
         node = stack.pop()
         if isinstance(node, ast.GeneratorExp):
-            # Only the outermost iterable is evaluated when the generator is built.
             stack.append(node.generators[0].iter)
             continue
         if isinstance(node, (ast.Lambda, ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -138,10 +116,7 @@ def _calls_run_in_scope(roots: list[ast.AST]) -> list[ast.Call]:
 
 
 def _calls_inside_offloaded_lambdas(fn: ast.AST) -> set[int]:
-    """ids of the Call nodes in a lambda that asyncio.to_thread runs on its worker thread: the
-    lambda is to_thread's first argument, or a later argument to a worker listed in
-    _WORKERS_THAT_RUN_THEIR_CALLBACK. Any other lambda, stored or handed to a worker that might
-    return it, is not exempt."""
+    """Call nodes inside lambdas that to_thread runs on a worker; other lambdas get no exemption."""
     inside = set()
     for node in ast.walk(fn):
         if not (
@@ -185,10 +160,7 @@ def test_no_async_handler_reaches_the_singleton_through_a_sync_helper():
                 continue
             off_loop = _calls_inside_offloaded_lambdas(fn)
             for sub in ast.walk(fn):
-                # A bare Call to the helper runs it on the loop; passing it to
-                # to_thread makes it an ast.Name argument, never a Call. A call inside a
-                # lambda handed to to_thread runs on the worker thread too (#11591's
-                # get_active_generations does `to_thread(..., lambda: _loaded_satisfies(model))`).
+                # Passing the helper to to_thread makes it a Name, never a Call.
                 if (
                     isinstance(sub, ast.Call)
                     and isinstance(sub.func, ast.Name)
@@ -197,16 +169,10 @@ def test_no_async_handler_reaches_the_singleton_through_a_sync_helper():
                 ):
                     offenders.append(f"{rel}:{sub.lineno} async {fn.name} -> {sub.func.id}()")
 
-    # Empty on purpose. Both monitor helpers used to sit here as a known gap: they
-    # reached the singleton through a sync helper and were not individually offloaded,
-    # so they blocked during exactly the window this path exists to fix. Both now peek
-    # instead. Do not add a name back without an offload or a justification here.
+    # Empty on purpose: do not add a name without an offload or justification.
     known: set[str] = set()
 
-    # _resolves_to_resident is offloaded at its two singleton-reading call sites. The
-    # third, in _openai_catalog_objects, passes llama_only = True, under which the
-    # helper never evaluates the getter. This sweep matches on callee name and cannot
-    # see that, so exempt by argument rather than blanket-exempting the helper.
+    # llama_only=True never evaluates the getter, so exempt by argument.
     def _is_llama_only(site: str) -> bool:
         rel, rest = site.split(":", 1)
         lineno = int(rest.split(" ", 1)[0])
@@ -234,11 +200,7 @@ def test_no_async_handler_reaches_the_singleton_through_a_sync_helper():
 
 
 def test_the_offload_stays_at_the_call_site():
-    """No orchestrator-level async helper: it would bypass patched route globals.
-
-    tests/test_orchestrator_unload_cancel.py patches routes.inference.get_inference_backend.
-    An accessor defined in orchestrator.py resolves orchestrator's own global, so the patch
-    would not take and the test hangs on a load gate that never opens."""
+    """An orchestrator async accessor resolves its own global, so patches of the route module miss it."""
     orch = (_BACKEND / "core/inference/orchestrator.py").read_text(encoding = "utf-8")
     assert "async def get_inference_backend_async" not in orch, (
         "an async accessor in orchestrator.py bypasses callers that patch the "
@@ -246,10 +208,7 @@ def test_the_offload_stays_at_the_call_site():
     )
 
 
-# The read-only surface: these answer "what is loaded" and must never be the reason a
-# host imports torch. Each is polled from first paint or fired by a metadata-only
-# action, so building the singleton here defeats UNSLOTH_STUDIO_DISABLE_TORCH_WARM=1
-# until a genuinely hardware-dependent operation runs.
+# Read-only sites must never import torch (UNSLOTH_STUDIO_DISABLE_TORCH_WARM).
 _READ_ONLY_SITES = (
     ("routes/inference.py", "_monitor_active_model"),
     ("routes/inference.py", "get_status"),
@@ -272,8 +231,6 @@ def test_read_only_endpoints_never_construct_the_singleton():
         )
         assert fn is not None, f"{rel}:{name} moved; update this guard"
         for sub in ast.walk(fn):
-            # Both shapes: a bare call on the loop, and the name handed to to_thread,
-            # which still constructs and still imports torch.
             if isinstance(sub, ast.Name) and sub.id == "get_inference_backend":
                 offenders.append(f"{rel}:{sub.lineno} {name}")
     assert not offenders, (
@@ -327,7 +284,6 @@ def test_each_listed_worker_still_runs_the_callable_it_is_handed(worker):
     tree = ast.parse((_BACKEND / rel).read_text(encoding = "utf-8"))
     module, name = worker.split(".")
     assert Path(rel).stem == module
-    # Every scanned route that calls it by that name must have imported that module.
     for route in _ROUTE_FILES:
         source = (_BACKEND / route).read_text(encoding = "utf-8")
         if f"{worker}(" in source or f"{worker}," in source:
@@ -336,7 +292,6 @@ def test_each_listed_worker_still_runs_the_callable_it_is_handed(worker):
             ), f"{route} calls {worker} but does not import it from {rel}"
     fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == name)
     assert [a.arg for a in fn.args.args][position] == param, f"{worker}'s callback moved"
-    # A name bound to contextvars.copy_context() inside the worker: its .run is synchronous.
     contexts = {
         target.id
         for n in _nodes_in_scope(fn.body)
@@ -349,8 +304,7 @@ def test_each_listed_worker_still_runs_the_callable_it_is_handed(worker):
         for target in n.targets
         if isinstance(target, ast.Name)
     }
-    # Called directly, or run through contextvars' Context.run: forwarding it anywhere else could
-    # return it uncalled, so it does not count.
+    # Forwarding it elsewhere could return it uncalled.
     runs = [
         n
         for n in _calls_run_in_scope(fn.body)

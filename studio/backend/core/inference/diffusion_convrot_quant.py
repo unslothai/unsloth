@@ -34,7 +34,7 @@ INT8_ROTQUANT_ENV = "UNSLOTH_DIFFUSION_INT8_ROTQUANT"
 _OP_NAMESPACE = "unsloth_studio"
 _ROTQ_OP_NAME = "convrot_act_quant_int8"
 
-# (BLOCK_M group rows, BLOCK_K, num_warps, num_stages) per (major, minor); measured end to end. Absent = stock.
+# (BLOCK_M group rows, BLOCK_K, num_warps, num_stages) per (major, minor); absent = stock.
 _ROTQ_CONFIG = {
     (8, 0): (128, 32, 8, 3),  # A100
     (8, 9): (128, 32, 8, 3),  # L4
@@ -42,24 +42,22 @@ _ROTQ_CONFIG = {
 }
 _ROTQ_FALLBACK = (128, 32, 8, 3)
 _ROTQ_GROUPS = (256,)
-# Per-K tiles: (major, minor) -> ((K_lo, K_hi, tile), ...), first match wins, bounds inclusive; a tile whose BLOCK_M
-# cannot hold one whole row at that K is skipped. K 10240 stays on the default (a 64-row tile wastes 38% of it there).
+# Per-K tiles: first match wins, bounds inclusive; tiles whose BLOCK_M can't hold a row skipped.
 _ROTQ_NARROW = (64, 32, 4, 3)
 _ROTQ_K_TILES: dict = {
     cap: ((256, 8192, _ROTQ_NARROW), (11264, 16384, _ROTQ_NARROW))
     for cap in ((8, 0), (8, 9), (12, 0))
 }
 
-# (QMIN, QMAX, DIV, EPS): v1 _int8_symm_per_token_reduced_range_quant, v2 Int8Tensor.from_hp(PerRow, SYMMETRIC).
+# (QMIN, QMAX, DIV, EPS): v1 _int8_symm_per_token_reduced_range_quant, v2 Int8Tensor.from_hp.
 _ROTQ_QPARAMS = {
     "v1": (-127.0, 127.0, 127.0, 1e-5),
     "v2": (-128.0, 127.0, 127.5, 1.1920928955078125e-07),
 }
-# device index -> probed rotq tile (None = stock), and the per-K rules whose tile passed the probe there.
 _ROTQ_DEVICE: dict = {}
 _ROTQ_DEVICE_K: dict = {}
 _ROTQ_CALLS = [0]
-# Set once a device passed the probe; read by traced forwards (dynamo must not trace into the lru_cache'd registration).
+# Read by traced forwards: dynamo must not trace into the lru_cache'd registration.
 _ROTQ_HANDLE: Any = None
 
 
@@ -152,7 +150,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         EPS: tl.constexpr,
         FP32_SCALE: tl.constexpr,
     ):
-        # one program = ROWS whole activation rows, so the per-row amax closes inside the tile
+        # one program = whole rows, so the per-row amax closes inside the tile
         pid = tl.program_id(0)
         t = tl.arange(0, BLOCK_M)
         lr = t // NG
@@ -170,8 +168,8 @@ def _kernels() -> Optional[types.SimpleNamespace]:
             a_ptrs += BLOCK_K
             h_ptrs += BLOCK_K * G
         z = _rbf16(acc)
-        # s = bf16(max(bf16(amax / DIV), EPS)), q = clamp(rint(bf16(z * bf16(1 / s)))); FP32_SCALE (torchao >= 0.18
-        # Int8Tensor) keeps the reciprocal and the product in fp32.
+        # s = bf16(max(bf16(amax / DIV), EPS)), q = clamp(rint(bf16(z * bf16(1 / s))))
+        # FP32_SCALE (torchao >= 0.18 Int8Tensor) keeps the reciprocal and the product in fp32.
         j = tl.arange(0, ROWS_P2)
         sel = lr[:, None] == j[None, :]
         amax = tl.max(tl.where(sel, tl.max(tl.abs(z), axis = 1)[:, None], 0.0), axis = 0)
@@ -345,7 +343,7 @@ def _rotq_run(x2d: Any, group: int, v2: bool) -> tuple:
             return _rotq_launch(x2d, group, kind, cfg)
         except Exception:  # noqa: BLE001 - a failed launch keeps the stock math
             if cfg != _ROTQ_DEVICE.get(index) and _ROTQ_DEVICE_K.get(index):
-                _ROTQ_DEVICE_K[index] = ()  # drop the per-K tiles, keep the probed default
+                _ROTQ_DEVICE_K[index] = ()
                 return _rotq_run(x2d, group, v2)
             _ROTQ_DEVICE[index] = None
     return rotquant_reference(x2d, group, kind)
@@ -428,7 +426,6 @@ def rotquant_device_config(index: int) -> Optional[tuple]:
     return cfg
 
 
-# (M, K): ragged M, one-group rows, 21 groups (a ragged row count per tile), 56 and 128 groups (two rows / one row).
 _ROTQ_PROBE_SHAPES = ((257, 256 * 3), (33, 256 * 21), (130, 256 * 56), (17, 256 * 128))
 
 

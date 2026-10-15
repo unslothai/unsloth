@@ -32,7 +32,7 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
 REFRESH_TOKEN_EXPIRE_DAYS = 7
 
-# internal schemes, never sent by a client: no token at all, and a token to ignore if unusable
+# Internal schemes, never sent by a client.
 KEYLESS_SCHEME = "Keyless"
 KEYLESS_FALLBACK_SCHEME = "KeylessBearer"
 _KEYLESS_CREDENTIALS = HTTPAuthorizationCredentials(
@@ -50,12 +50,7 @@ def is_keyless(credentials: Optional[HTTPAuthorizationCredentials]) -> bool:
 
 
 def _names_a_session(token: str) -> bool:
-    """Whether this bearer claims an Unsloth sign-in this install actually knows. A session token stays
-    authoritative even under keyless API access: letting an expired one through would leave the app running as
-    the admin instead of prompting for a sign-in. The subject is confirmed against storage because the claim
-    itself is unverified here, so a token merely shaped like a JWT -- which is a legal value for the ``api_key``
-    the OpenAI SDKs always send -- is treated as the credential it is.
-    """
+    """Subject is checked in storage: the claim is unverified, so a JWT-shaped api_key still counts."""
     subject = _decode_subject_without_verification(token)
     return subject is not None and get_user_and_secret(subject) is not None
 
@@ -66,10 +61,7 @@ def bearer_names_a_session(token: str) -> bool:
 
 
 def bearer_is_valid_api_key(token: str) -> bool:
-    """Whether this bearer is an sk-unsloth key this install still accepts. Such a key authenticates as itself
-    even while keyless API access is on, so the callers below must not treat it as a credential the setting had
-    to stand in for. Asked ahead of the real validation, so it leaves ``last_used_at`` to that one.
-    """
+    """Checks an sk-unsloth key with touch=False, so only the later real validation updates last_used_at."""
     return (
         token.startswith(API_KEY_PREFIX)
         and validate_api_key_with_credential(token, touch = False) is not None
@@ -77,10 +69,7 @@ def bearer_is_valid_api_key(token: str) -> bool:
 
 
 def admitted_without_credential(credentials: Optional[HTTPAuthorizationCredentials]) -> bool:
-    """True when the keyless setting alone let this caller in. Narrower than ``is_keyless``, which also covers a
-    working API key that happened to arrive while the setting was on. Routes whose effect outlives the setting
-    need this stricter form: turning keyless access back off has to undo what it allowed.
-    """
+    """Keyless setting alone let this caller in; routes that outlive the setting need this stricter form."""
     if credentials is None:
         return False
     if credentials.scheme == KEYLESS_SCHEME:
@@ -272,10 +261,7 @@ def create_refresh_token(
     desktop: bool = False,
     secret: Optional[str] = None,
 ) -> str:
-    """Create a random refresh token, store its hash in SQLite, and return it. Refresh tokens are opaque (not
-    JWTs); expire after REFRESH_TOKEN_EXPIRE_DAYS. ``secret`` stamps the token with the credential version the
-    caller verified, so a rotation cannot leave a token minted from the replaced credential valid.
-    """
+    """``secret`` binds the token to the verified credential version, so a rotation revokes it."""
     token = secrets.token_urlsafe(48)
     expires_at = datetime.now(timezone.utc) + timedelta(days = REFRESH_TOKEN_EXPIRE_DAYS)
     save_refresh_token(
@@ -332,10 +318,7 @@ async def get_current_credential(
 async def authenticated_via_api_key(
     credentials: HTTPAuthorizationCredentials = Depends(security),
 ) -> bool:
-    """True when the caller used an sk-unsloth API key, not a UI session JWT. Lets routes treat
-    programmatic API callers differently from the Unsloth UI (e.g. refuse a teardown the UI would
-    allow). A keyless caller counts as an API caller too: it is the same programmatic surface, only
-    without the key, so every guard an API key faces still applies to it."""
+    """True for sk-unsloth keys and keyless callers, so every API-key guard also covers keyless access."""
     if is_keyless(credentials):
         return True
     return bool(credentials and credentials.credentials.startswith(API_KEY_PREFIX))
@@ -344,15 +327,12 @@ async def authenticated_via_api_key(
 async def credentials_for_token(
     request: Any, token: Optional[str]
 ) -> Optional[HTTPAuthorizationCredentials]:
-    """What ``security`` would resolve for a bearer the route read for itself. Routes that take the
-    token from somewhere the dependency cannot see, such as the ``?token=`` query param an ``<img
-    src>`` has to use, would otherwise miss keyless API access entirely and answer 401 on a scope
-    that covers them. None means no usable credential and no setting to stand in for one."""
+    """For a bearer the route reads itself (``?token=`` for img src), so keyless access still applies."""
     from utils.keyless_api_access import APPROVED_DUMMY_BEARERS, keyless_request_allowed
 
     if token is not None and not token.strip():
         token = None
-    # Settings/listener reads hit SQLite and DNS, so keep them off the event loop.
+    # Settings/listener reads hit SQLite and DNS; keep them off the event loop.
     if token and token not in APPROVED_DUMMY_BEARERS:
         return HTTPAuthorizationCredentials(scheme = "Bearer", credentials = token)
     eligible = await run_in_threadpool(keyless_request_allowed, request)
@@ -370,7 +350,7 @@ async def subject_for_header_or_query_token(request: Any, token: Optional[str]) 
     read for itself. An ``<img src>`` and the native save command fetch without a header."""
     header = request.headers.get("authorization") or ""
     header_token = header[7:] if header.lower().startswith("bearer ") else ""
-    # A blank header is the absent header, so the `?token=` such a caller sends is still owed.
+    # A blank header counts as absent, so a ?token= is still honored.
     credentials = await credentials_for_token(request, header_token.strip() or token or None)
     if credentials is None:
         raise HTTPException(
@@ -388,10 +368,7 @@ async def authenticated_without_credential(
 
 
 def require_ui_session_for_local_commands(via_api_key: bool) -> None:
-    """Refuse an sk-unsloth API key that asks to define a local (stdio) MCP command. stdio MCP runs a command on
-    this host as the backend user, outside the python/terminal sandbox, so only a UI session may choose what
-    runs. API keys keep http(s) MCP, and stdio servers the owner already configured.
-    """
+    """stdio MCP runs a command on the host outside the sandbox, so only a UI session may define one."""
     if via_api_key:
         raise HTTPException(
             status_code = status.HTTP_403_FORBIDDEN,
@@ -401,11 +378,7 @@ def require_ui_session_for_local_commands(via_api_key: bool) -> None:
 
 
 async def allow_ambient_hf_token(via_api_key: bool = Depends(authenticated_via_api_key)) -> bool:
-    """Whether a download this caller starts may fall back to the backend's own HF_TOKEN. A UI session already
-    gets the saved token from Settings, so the ambient one grants it nothing new. ``require_ui_session`` refuses
-    an sk-unsloth API key that same token, so it must not reach private repos by naming one in a download
-    instead; it sends its own token in ``X-Unsloth-HF-Token``.
-    """
+    """API keys get no ambient HF_TOKEN fallback, so they must send their own in X-Unsloth-HF-Token."""
     return not via_api_key
 
 
@@ -429,7 +402,6 @@ async def get_current_subject_allow_password_change(
     return subject
 
 
-# The literal the examples ship with; pasted unedited more often than a revoked key.
 API_KEY_PLACEHOLDER = f"{API_KEY_PREFIX}YOUR_KEY"
 
 
@@ -459,10 +431,7 @@ def _admin_credential() -> Tuple[str, Optional[str]]:
 async def _get_current_credential(
     credentials: HTTPAuthorizationCredentials, *, allow_password_change: bool
 ) -> Tuple[str, Optional[str]]:
-    """Validate the bearer and return ``(subject, credential generation)``. The generation is the
-    credential version this request actually authenticated against; routes that persist new
-    credentials must bind their write to it, or a reset landing mid-request would bless what it just
-    revoked. Credential reads run in the threadpool so stalled SQLite cannot block the event loop."""
+    """Routes that persist credentials must bind to this generation, or a reset mid-request blesses them."""
     if credentials.scheme == KEYLESS_SCHEME:
         _bind_owner()
         return await run_in_threadpool(_admin_credential)
@@ -521,7 +490,6 @@ async def _get_current_credential(
             detail = "Invalid token payload",
         )
     bind_account(AccountContext(record["account_id"], record["username"], record["role"]))
-    # A managed token carrying the desktop marker gets no owner password-change bypass.
     is_desktop = payload.get("desktop") is True and record.get("role") == "owner"
     if must_change_password and not allow_password_change and not is_desktop:
         raise HTTPException(

@@ -199,7 +199,6 @@ async def llama_update_status(
     ),
     current_subject: str = Depends(get_current_subject),
 ) -> LlamaUpdateStatusResponse:
-    # Off the event loop: detection may probe the host and read GitHub.
     status = await asyncio.to_thread(get_update_status, force_refresh = force_refresh)
     resp = LlamaUpdateStatusResponse(**status)
     _log_llama_update_progress(resp.job)
@@ -310,7 +309,6 @@ async def llama_backend_status(
     ),
     current_subject: str = Depends(get_current_subject),
 ) -> LlamaBackendStatusResponse:
-    # Off the event loop: resolving the options runs the installer's probe.
     status = await asyncio.to_thread(get_backend_status, force_refresh = force_refresh)
     return LlamaBackendStatusResponse(**status)
 

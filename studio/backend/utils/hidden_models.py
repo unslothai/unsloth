@@ -10,21 +10,17 @@ import re
 from pathlib import Path
 from typing import Optional
 
-# Hub repo id shape ("owner/name", no leading separator); anything else is treated as a local filesystem path.
 _HF_REPO_ID_RE = re.compile(r"^[A-Za-z0-9][\w.\-]*/[\w.\-]+$")
 
-# The llama.cpp install-validation probe repo. Always hidden.
 _PROBE_REPO_ID = "ggml-org/models"
-# The probe's on-disk filename. Carries the ".gguf" so it stays specific and does not hide unrelated repos like ``user/stories260K-finetune-GGUF``.
+# Include ".gguf" so repos like user/stories260K-finetune-GGUF are not hidden.
 _PROBE_FILENAME = "stories260k.gguf"
-# Keep previously cached defaults hidden after settings changes.
 _DEFAULT_EMBEDDING_REPO_IDS = {
     "unsloth/bge-small-en-v1.5",
     "unsloth/bge-small-en-v1.5-GGUF",
 }
-# Local copies do not always retain the repo id.
 _DEFAULT_EMBEDDING_PATH_BASENAMES = {"bge-small-en-v1.5"}
-# Curated dictation checkpoints (STT, never chat), hidden from chat inventory and pickers. The GGUF companions carry a raw .bin with no config.json, so config sniffing cannot catch them and they must be listed by id; the Qwen3-ASR GGUFs likewise, since llama.cpp loads one as a chat model that only answers with transcripts.
+# STT checkpoints; GGUF companions have no config.json, so they must be listed by id.
 _HIDDEN_STT_REPO_IDS = frozenset(
     {
         "unsloth/whisper-tiny",
@@ -43,12 +39,10 @@ _HIDDEN_STT_REPO_IDS = frozenset(
 )
 _HIDDEN_STT_REPO_IDS_LOWER = frozenset(repo_id.lower() for repo_id in _HIDDEN_STT_REPO_IDS)
 
-# audio.cpp's umbrella repo: every speech, music and ASR package lives in one of its subfolders, so
-# the cache holds GGUFs the chat index would otherwise offer as a chat model. The Audio page and
-# Voice settings reach them through the audio.cpp catalog instead.
+# audio.cpp umbrella repo; its GGUFs are reached through the audio.cpp catalog.
 _HIDDEN_AUDIO_CPP_REPO_IDS_LOWER = frozenset({"audio-cpp/audio.cpp-gguf"})
 
-# Curated Audio-page TTS checkpoints, which stay VISIBLE but must not be chat-loadable: a chat turn on one comes back as synthesized speech. Listed by id because config sniffing cannot catch them (Orpheus/OuteTTS are LlamaForCausalLM, Spark is Qwen2ForCausalLM) and a GGUF companion carries no tokenizer_config for the codec probe.
+# TTS checkpoints stay visible but not chat-loadable; config sniffing cannot catch them.
 _CURATED_TTS_REPO_IDS = frozenset(
     {
         "unsloth/orpheus-3b-0.1-ft",
@@ -162,10 +156,7 @@ def _path_basename_is_default_embedder(value: str) -> bool:
 
 
 def is_hidden_model(*values: str | None) -> bool:
-    """True if any id/path is the RAG embedding model (the effective embedder or its GGUF companion repo), the llama.cpp install validation probe (ggml-org/models / stories260K), or a curated/custom Whisper dictation model, so pickers hide them (GGUF and non-GGUF). None are usable chat models, and the probe can be cached as a side effect of installing the prebuilt llama-server and otherwise sorts smallest, so it would be auto-selected.
-
-    Hub repo ids are matched EXACTLY (case-insensitive full "owner/name"), so a custom embedder with a generic basename like "org/model" cannot substring hide unrelated cached repos such as "user/model-chat" or "org/model-GGUF". Existing paths take precedence over the identical ``owner/name`` repo shape, cache and LM Studio paths use exact repo-derived segments, and local copies of the static default embedder also use a boundary-aware basename fallback, which configured custom repos never do.
-    """
+    """Repo ids match exactly, not by substring, so a generic embedder basename cannot hide other repos."""
     from core.rag import config as rag_config
 
     hidden_repo_ids = {
@@ -195,18 +186,16 @@ def is_hidden_model(*values: str | None) -> bool:
             continue
         low = v.lower()
         if _HF_REPO_ID_RE.match(v):
-            # A repo id ("owner/name"): match the hidden set exactly.
             if low in hidden_repo_ids:
                 return True
             continue
-        # Split on both separators so a Windows-style path is matched on a POSIX interpreter and vice versa. Anything else is a filesystem path: the probe is matched by its exact filename (stories260K.gguf) and a configured local-path embedder by exact resolved path.
+        # Split on both separators so Windows and POSIX paths match on either OS.
         if low.replace("\\", "/").rsplit("/", 1)[-1] == _PROBE_FILENAME:
             return True
         if _path_basename_is_default_embedder(v):
             return True
         if _path_contains_repo_id(v, hidden_repo_ids):
             return True
-        # Custom Whisper checkpoints keep no curated repo id, so match by config.
         if _path_is_whisper_model(v):
             return True
         if exact_paths:

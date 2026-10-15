@@ -1,10 +1,7 @@
-# Model defaults for unsloth/Qwen2-7B
-# Based on Qwen2_(7B)-Alpaca.ipynb
 # Also applies to: unsloth/Qwen2-7B-bnb-4bit, Qwen/Qwen2-7B
 
 training:
   max_seq_length: 2048
-  # num_epochs: 4
   num_epochs: 0
   learning_rate: 2e-4
   batch_size: 2

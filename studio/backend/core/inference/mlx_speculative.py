@@ -200,11 +200,7 @@ def _cached_repos():
 
 
 def cached_drafters(target_name: str, target_config: dict) -> list:
-    """``(repo, source, named)`` for each cached drafter with weights whose config fits the target's shape.
-
-    ``named`` drafters carry the target's model name and come first, in auto's order; the rest fit
-    by shape alone (another generation or fine-tune of the same architecture) and follow.
-    """
+    """Drafters named for the target come first, then same-architecture ones that fit by shape alone."""
     from utils.utils import hf_cache_snapshot_dir_for_repo
 
     target, found = _alnum(target_name), []

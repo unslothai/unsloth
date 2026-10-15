@@ -28,12 +28,7 @@ def _family_base_repos() -> dict[str, str]:
 
 
 def family_inference_infos() -> list[dict[str, Any]]:
-    """Per-family bf16 component sizes + estimated resident footprint per quant scheme.
-
-    One dict per family (registry order): the bf16-resident component sizes and estimated resident
-    GB under bf16 and each scheme (bf16 = transformer + companions; each scheme scales the
-    transformer by its steady factor and adds the same companions).
-    """
+    """Per-family estimated resident GB under bf16 and each quant scheme, scaling only the transformer."""
     infos: list[dict[str, Any]] = []
     bases = _family_base_repos()
     for name, (transformer_gb, text_encoders_gb, vae_gb) in _FAMILY_BF16_GB.items():

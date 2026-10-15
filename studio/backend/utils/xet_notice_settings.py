@@ -15,7 +15,6 @@ from typing import Any
 
 XET_NOTICE_COUNT_KEY = "xet_notice_shown_count"
 
-# Enforced where the count is stored, so the two cannot disagree.
 XET_NOTICE_LIMIT = 3
 
 
@@ -44,15 +43,7 @@ def get_xet_notice_count() -> int:
 
 
 def reserve_xet_notice(seen_hint: int = 0) -> dict[str, Any]:
-    """Take one of the remaining notices, or report that none are left.
-
-    One transaction: get_app_setting and upsert_app_settings open a connection each,
-    so splitting the read and write lets two tabs both be granted. BEGIN IMMEDIATE
-    takes the write lock up front.
-
-    seen_hint is a legacy localStorage count. It can only raise the stored value, so
-    a client cannot talk its way back under the limit.
-    """
+    """BEGIN IMMEDIATE stops two tabs both taking a notice; seen_hint can only raise the count."""
     from storage.studio_db import get_connection
 
     hint = _coerce_count(seen_hint)

@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""``continue_final_message`` must describe the turn actually being sent.
-
-vLLM and llama.cpp forward the flag to the HF chat template, which appends a
-sentinel to whatever the last message is and truncates the rendered prompt
-there. With a trailing tool result that removes the assistant generation prompt
-and asks the model to continue the tool output, so the flag has to drop as soon
-as the loop stops ending its conversation on an assistant turn.
-"""
+"""continue_final_message must drop once the conversation no longer ends on an assistant turn."""
 
 import asyncio
 import json

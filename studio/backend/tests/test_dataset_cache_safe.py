@@ -37,14 +37,7 @@ _UNSET = object()
 
 @pytest.fixture(autouse = True)
 def _restore_process_symlink_state():
-    """_disable_hf_symlinks_for_process changes the env var and Hub's live flag for the whole worker.
-
-    A test that calls it without patching both first left HF_HUB_DISABLE_SYMLINKS=1 and
-    constants.HF_HUB_DISABLE_SYMLINKS=True behind, so every later test in that xdist worker cached
-    regular files instead of symlinks (test_gguf_header_delta's blob layout failed on CI that way).
-    `monkeypatch.delenv(..., raising = False)` on an unset variable records nothing to undo, so
-    restore all three pieces here whatever the test did.
-    """
+    """Restore HF_HUB_DISABLE_SYMLINKS and Hub's live flag, or later tests cache regular files."""
     from huggingface_hub import constants, file_download
 
     env = os.environ.get("HF_HUB_DISABLE_SYMLINKS", _UNSET)
@@ -131,8 +124,6 @@ def test_pre_1_x_hub_retries_by_updating_symlink_capability_cache(monkeypatch):
 
 
 def test_pre_1_9_hub_stops_re_probing_unknown_cache_dirs(monkeypatch, tmp_path):
-    # Before Hub 1.9 an unknown dir is probed again, losing the same race twice.
-    # Assert the mapping itself, since how each Hub reads it varies.
     from huggingface_hub import file_download
 
     monkeypatch.setattr(file_download, "_are_symlinks_supported_in_dir", {})

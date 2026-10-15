@@ -30,18 +30,14 @@ from utils.paths import studio_db_path
 
 logger = get_logger(__name__)
 
-# Gaps longer than this end a sitting-at-the-keyboard stretch: without the cap a thread reopened a
-# week later would report a week-long chat.
+# Gap that ends a session, so a thread reopened a week later is not a week-long chat.
 SESSION_GAP_SECONDS = 30 * 60
-# Cap on the daily activity series handed to the UI (the heatmap draws a year).
 MAX_DAILY_DAYS = 366
-# Widest real UTC offset is 14h; anything beyond that is a bad client value.
+# Widest real UTC offset is 14h.
 MAX_TZ_OFFSET_MINUTES = 14 * 60
-# Top-N lists returned to the client.
 TOP_MODELS = 8
 RECENT_RUNS = 5
-# Serve a memoised payload for this long even when the fingerprint is unchanged, so a chat that is
-# mid-stream still refreshes promptly.
+# TTL even with an unchanged fingerprint, so a mid-stream chat still refreshes.
 CACHE_TTL_SECONDS = 20.0
 
 _cache_lock = threading.Lock()
@@ -79,10 +75,7 @@ def _clean_str(value: Any) -> str:
 
 
 def _resolve_zone(tz_name: str, tz_offset_minutes: int):
-    """The caller's zone, preferring an IANA name over a single offset. A fixed offset is only correct
-    for the half of the year the caller happens to be in, so a winter message read during summer
-    lands an hour out and can cross midnight. An IANA name carries each date's own offset. The
-    offset stays as the fallback for callers that send no name, or hosts with no tzdata."""
+    """Prefers the IANA name: a fixed offset is wrong half the year and can shift dates past midnight."""
     if tz_name:
         try:
             return ZoneInfo(tz_name)
@@ -104,10 +97,7 @@ def _local_stamp(created_at_ms: int, zone) -> Optional[datetime]:
 
 
 def _streaks(days: set[date], today: date) -> dict[str, Any]:
-    """Current and longest run of consecutive active days. The current streak survives a day that has
-    not been used yet: a streak that ended yesterday is still "live" until today is over. Imported
-    history or a skewed client clock can date rows in the future; those are dropped up front so they
-    cannot pad the longest streak or be reported as the last active day either."""
+    """Drops rows dated after today up front, so a skewed client clock cannot pad the longest streak."""
     days = {day for day in days if day <= today}
     if not days:
         return {"current": 0, "longest": 0, "lastActiveDay": None}
@@ -210,7 +200,7 @@ def _fold_api_usage(conn, zone, subject: str) -> _ApiUsageFold:
         total_tokens = _as_int(row["total_tokens"])
         fold.prompt_tokens += prompt_tokens
         fold.completion_tokens += completion_tokens
-        # Preserve the provider's authoritative total even when it differs from the input/output sum.
+        # Keep the provider's total even when it differs from input+output.
         fold.total_tokens += total_tokens
         fold.requests += 1
 
@@ -225,7 +215,6 @@ def _fold_api_usage(conn, zone, subject: str) -> _ApiUsageFold:
                 model_id,
                 {"id": model_id, "label": _model_label(model_id), "messages": 0, "tokens": 0},
             )
-            # One terminal API request represents one model response in the combined leaderboard.
             model["messages"] += 1
             model["tokens"] += total_tokens
     return fold
@@ -246,13 +235,7 @@ def _merge_api_activity(chat: _MessageFold, api: _ApiUsageFold) -> None:
 
 
 def _fork_keepers(conn) -> dict[tuple[str, int, str], str]:
-    """For each original message, the one clone elected to stand in for it. A clone is normally ignored
-    because the original is counted instead. Once the original is gone, whether its thread was
-    deleted or just that row was pruned, the clones become the only record. Letting every sibling
-    count them would multiply the usage, so exactly one may. Electing per message rather than per
-    fork matters because fork_chat_thread copies one parent_id branch, not the whole thread: sibling
-    forks taken from a retry and a regeneration hold different rows, and a per-fork winner would
-    silently drop whatever only the loser carries."""
+    """Elects one clone per message, since a per-fork winner would drop rows only a losing fork has."""
     rows = conn.execute(
         """
         SELECT m.thread_id, m.created_at, m.role,
@@ -269,7 +252,6 @@ def _fork_keepers(conn) -> dict[tuple[str, int, str], str]:
         key = (row["source_id"], _as_int(row["created_at"]), row["role"])
         thread_id = row["thread_id"]
         current = best.get(key)
-        # Any stable winner works; lowest id keeps the choice reproducible.
         if current is None or thread_id < current:
             best[key] = thread_id
     return best
@@ -337,16 +319,12 @@ def _fold_messages(conn, zone) -> _MessageFold:
             thread_messages = 0
             previous_created = None
 
-        # Compare mode stores one thread per pane under a shared pair_id and the sidebar shows them as a
-        # single conversation, so counting them twice inflates the chat total.
+        # Compare-mode panes share a pair_id and show as one conversation.
         conversation_id = row["pair_id"] or thread_id
 
-        # A fork is its own visible conversation, so it counts towards the chat total from the moment it exists, before
-        # any new turn is added.
         fold.threads.add(conversation_id)
 
-        # Forking clones the whole ancestry keeping each copy's timestamp, so skip a clone while the row
-        # it came from is still countable; once that original is gone the elected fork stands in.
+        # Forks clone ancestry with timestamps; skip clones while the original row still counts.
         source_id = row["forked_from_thread_id"]
         if source_id and created_at < _as_int(row["thread_created_at"]):
             original = (source_id, created_at, row["role"])
@@ -389,8 +367,7 @@ def _fold_messages(conn, zone) -> _MessageFold:
             usage = usage if isinstance(usage, dict) else {}
             timing = timing if isinstance(timing, dict) else {}
 
-            # llama.cpp reports its own counters under serverTimings when the provider sends no usage chunk, and
-            # the response-details sheet already falls back to these.
+            # llama.cpp reports serverTimings when no usage chunk is sent.
             server = metadata.get("serverTimings")
             server = server if isinstance(server, dict) else {}
 
@@ -414,8 +391,7 @@ def _fold_messages(conn, zone) -> _MessageFold:
             fold.tool_calls += _as_int(timing.get("toolCallCount"))
             message_tokens = total_tokens
 
-            # responseDetails carries the model that actually answered, which differs from the requested
-            # checkpoint whenever a provider routes or resolves an alias.
+            # responseDetails names the model that actually answered (provider routing/aliases).
             details = metadata.get("responseDetails")
             details = details if isinstance(details, dict) else {}
             model_id = _clean_str(details.get("responseModelId")) or _clean_str(
@@ -466,18 +442,7 @@ def _daily_series(fold: _MessageFold, today: date, days: int) -> list[dict[str, 
 
 
 def _superseded(prefix: str = "r.") -> str:
-    """SQL for "a later run resumed from this one, so its counters live there". ``prefix`` must qualify
-    the outer row: the EXISTS subquery selects from the same table, so a bare column name would bind
-    to the subquery instead. ``create_run``'s resume claim sets ``resume_blocked`` and leaves
-    ``output_dir`` alone. Cancelling clears ``output_dir`` while setting the same flag, so the flag
-    alone cannot tell the two apart. ``delete_run`` never clears the flag, so the continuation has
-    to still be there; otherwise deleting it would strand the source at zero while its row and
-    metrics stay visible in history. The continuation also has to have reached the source's step.
-    ``create_run`` claims the source the moment a resume starts, but ``final_step`` is only written
-    on the first metric flush, so a continuation that fails before then would take the source's
-    completed work down with it. ``resumed_from_run_id`` records the lineage outright. Runs written
-    before that column existed fall back to matching ``output_dir``, which is weaker: cancelling a
-    continuation nulls its ``output_dir`` and breaks the match."""
+    """resume_blocked alone cannot tell a resumed run from a cancelled one, so a continuation must exist."""
     return f"""
         {prefix}resume_blocked = 1
         AND EXISTS (
@@ -511,15 +476,12 @@ def _training_stats(conn) -> dict[str, Any]:
         """
     ).fetchone()
 
-    # A resumed run continues its source's counters, so only a run superseded by a resume is dropped: create_run's
-    # claim sets resume_blocked while leaving output_dir intact, whereas cancelling clears it, so a cancelled run
-    # keeps the work it did do.
+    # Only runs superseded by a resume (resume_blocked) are dropped; cancelled runs keep their work.
     steps = conn.execute(
         f"SELECT COALESCE(SUM(r.final_step), 0) FROM training_runs r WHERE NOT ({_superseded()})"
     ).fetchone()[0]
 
-    # num_tokens is state.num_input_tokens_seen, a running total logged at each step, so summing the samples
-    # multiplies the real figure; take each run's final counter, the value get_run_metrics reports.
+    # num_tokens is a running total, so take each run's final value rather than summing.
     tokens = conn.execute(
         f"""
         SELECT COALESCE(SUM(run_tokens), 0) FROM (
@@ -555,8 +517,6 @@ def _training_stats(conn) -> dict[str, Any]:
         "recent": [
             {
                 "id": item["id"],
-                # A renamed run keeps the name the user gave it; otherwise fall back to the short model label rather
-                # than the full repo id.
                 "name": _clean_str(item["display_name"]) or _model_label(item["model_name"] or ""),
                 "modelLabel": _model_label(item["model_name"] or ""),
                 "datasetLabel": _model_label(item["dataset_name"] or ""),
@@ -640,14 +600,12 @@ def compute_profile_stats(
         _merge_api_activity(fold, api_fold)
         training = _training_stats(conn)
 
-        # "Today" has to match the buckets above, or the newest column and the current streak drift by a day
-        # whenever the caller is elsewhere.
+        # 'Today' must use the same zone as the buckets or streaks drift by a day.
         today = (_local_stamp(int(time.time() * 1000), zone) or datetime.now()).date()
         streak = _streaks(set(fold.by_day.keys()), today)
         daily = _daily_series(fold, today, days)
 
-        # The grid stops at today and the streaks ignore anything later, so a skewed client clock would
-        # otherwise name a peak day that is nowhere in the chart.
+        # Ignore future days so a skewed client clock cannot name a peak outside the chart.
         past_days = {day: bucket for day, bucket in fold.by_day.items() if day <= today}
         peak_day = max(past_days.items(), key = lambda item: item[1]["tokens"], default = None)
         models = sorted(

@@ -14,16 +14,14 @@ from typing import Any, Optional
 
 H3_DIT_RESIDENT_ENV = "UNSLOTH_H3_DIT_RESIDENT"
 
-# Decimal GB each phase of an H3 render needs on top of the resident set (B200 peaks at 12 / 16 / 24 / 40 GB caps).
-#   running block + prefetched next block + compiled workspace
+# Decimal GB each H3 render phase needs on top of the resident set (B200 peaks).
 H3_STREAM_WINDOW_GB = 1.5
-#   per million pixel-frames
 H3_ACTIVATION_GB_PER_MPIXEL_FRAME = 0.08
-#   fraction of the activations: 1-2 GB MLP buffers fragment the caching allocator (OOM at 1344x768x124 without it)
+# Fraction of activations: 1-2 GB MLP buffers fragment the allocator (OOM at 1344x768x124 without).
 H3_FRAGMENTATION_FRACTION = 0.5
 H3_VAE_DECODE_GB = 6.0
 H3_PHASE_OVERHEAD_GB = 1.8
-#   top-level group: 0.81 GB int8
+# Top-level group: 0.81 GB int8.
 H3_TOP_LEVEL_GB = 1.0
 
 
@@ -135,8 +133,7 @@ def make_resident(group: Any) -> None:
 
     if is_resident(group):
         return
-    # The instance attribute, not the class method: an instance override (pinned top group) is an onload path too.
-    # Except the prefetcher's own: a group leaving the stream must not count against its in-flight window.
+    # Instance attribute: an instance override is an onload path too, except the prefetcher's own.
     prefetcher = getattr(group, "_unsloth_prefetcher", None)
     owns = getattr(prefetcher, "owns", None)
     if callable(owns) and owns(group):
@@ -340,10 +337,7 @@ def _is_original_forward(fn: Any, module: Any) -> bool:
 
 
 def compile_blocks_below_offload_hooks(transformer: Any, logger: Any = None) -> int:
-    """Compile each streamed block's own ``forward`` instead of ``_call_impl``, so the group-offload hooks stay eager.
-
-    Traced hooks put residency and prefetch state into the guards: 40 graphs on the first render at 24 GB and more on
-    every resident-set change. ``UNSLOTH_H3_COMPILE_BELOW_HOOKS=0`` keeps the old placement."""
+    """Compile each block's forward, not _call_impl, so hook state never enters compiled guards."""
     if str(os.environ.get(H3_COMPILE_BELOW_HOOKS_ENV, "")).strip().lower() in (
         "0",
         "off",
@@ -389,11 +383,7 @@ H3_TOP_GROUP_PIN_ENV = "UNSLOTH_H3_TOP_GROUP_PIN"
 
 
 def pin_streamed_top_level_group(transformer: Any, logger: Any = None) -> bool:
-    """Give a block-streamed denoiser's top-level group a pinned host copy and the blocks' copy stream.
-
-    diffusers builds it without a stream, so every forward uploads it from pageable memory and copies it back (0.45 s
-    of a 1.5 s step at 12 GB). #12389's top-level pin skips torchao weights, which this checkpoint has.
-    ``UNSLOTH_H3_TOP_GROUP_PIN=0`` keeps diffusers' group."""
+    """diffusers builds the top group without a stream, so each forward uploads it from pageable memory."""
     if str(os.environ.get(H3_TOP_GROUP_PIN_ENV, "")).strip().lower() in ("0", "off", "false", "no"):
         return False
     from .video_minimax_h3_te import h3_te_pin_allowed
@@ -438,7 +428,6 @@ def pin_streamed_top_level_group(transformer: Any, logger: Any = None) -> bool:
         top.stream = stream
         top.low_cpu_mem_usage = False
         top.record_stream = True
-        # Blocking: nothing prefetches the top-level group.
         top.non_blocking = False
         with pinned_arena_for_group_offload():
             top.cpu_param_dict = top._init_cpu_param_dict()
@@ -516,8 +505,7 @@ def install_h3_stream_prefetch(
 
     if _pinned_memory_capped():
         depth = 1  # each in-flight group is pinned on the fly; diffusers' own path holds two near a ~1 GiB cap
-    # The prefetcher refuses groups whose onload_ is replaced: lift the outside-inference_mode wrappers (torchao v1
-    # int8 cannot be re-pointed inside it), install, then wrap its moves the same way.
+    # Prefetcher refuses replaced onload_: lift the wrappers (torchao int8), install, rewrap.
     groups = _all_offload_groups(transformer)
     # A top-level group the H3 pin left unstreamed (kill switch, host refusal) keeps its wrapper, so the generic
     # top-group adoption cannot pin it.
@@ -536,7 +524,6 @@ def install_h3_stream_prefetch(
         prefetcher = module_prefetcher(transformer)
         for group in groups:
             if getattr(group, "_unsloth_prefetcher", None) is prefetcher:
-                # owns() compares the instance onload_ with this
                 group._unsloth_prefetch_onload = group.__dict__.get("onload_")
         if prefetcher is not None:
             # (depth + 1) x the 0.8 GB top-level group would leave no block ahead once that group streams (12 GB).
@@ -544,7 +531,6 @@ def install_h3_stream_prefetch(
                 group_payload_bytes(top) if top is not None else 0,
                 [group_payload_bytes(g) for g in blocks],
             )
-            # end() puts groups copied ahead but never run back on the host copy; kick() queues copies
             for name in ("end", "kick"):
                 setattr(prefetcher, name, _outside_inference_mode(getattr(prefetcher, name)))
     return covered
@@ -591,11 +577,7 @@ def install_pinned_swap(
     logger: Any = None,
     label: str = "component",
 ) -> bool:
-    """Make a ComponentsManager-rotated module (H3's VAEs) move by re-pointing at a pinned in-place host copy.
-
-    Stock rotation uploads from pageable memory and copies back every park (3.0 s per VAE decode at 24 GB). A device
-    move uploads from the pinned copy, a CPU move only re-points; dtype changes or mismatched tensors take stock
-    ``nn.Module.to``. ``UNSLOTH_H3_VAE_PINNED_SWAP=0`` keeps stock moves."""
+    """Stock rotation uploads from pageable memory on every park; device moves use a pinned host copy."""
     if str(os.environ.get(H3_VAE_PINNED_SWAP_ENV, "")).strip().lower() in (
         "0",
         "off",

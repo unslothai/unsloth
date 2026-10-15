@@ -1,11 +1,7 @@
-# Model defaults for unsloth/Llasa-3B
-# Based on Llasa_TTS_(3B).ipynb and Llasa_TTS_(1B).ipynb
 # Also applies to: HKUSTAudio/Llasa-1B
-# added inference parameters from unsloth notebook
 
 training:
   max_seq_length: 2048
-  # num_epochs: 4
   num_epochs: 0
   learning_rate: 5e-4
   batch_size: 2

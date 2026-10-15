@@ -25,7 +25,7 @@ DEFAULT_ALPACA_TEMPLATE = """Below is an instruction that describes a task, pair
 ### Response:
 {}"""
 
-# Renders a single-turn conversation byte-identical to a DEFAULT_ALPACA_TEMPLATE row with an empty input.
+# Renders a single turn byte-identical to a DEFAULT_ALPACA_TEMPLATE row with an empty input.
 STUDIO_ALPACA_CHAT_TEMPLATE = (
     "{{ bos_token }}"
     "{% if messages[0]['role'] == 'system' %}"
@@ -48,8 +48,6 @@ STUDIO_ALPACA_CHAT_TEMPLATE = (
 
 _TEMPLATE_ERROR_COLUMN = "__chat_template_error"
 
-# Rows per batch when scanning or filtering the error column, so neither pass
-# materialises the whole column in Python.
 _ERROR_SCAN_BATCH = 10_000
 
 _TEMPLATE_PROBE_ROWS = 8
@@ -130,7 +128,6 @@ def get_tokenizer_chat_template(tokenizer, model_name):
         if has_chat_template:
             logger.info(f"📝 Using tokenizer's own chat template (no Unsloth template match)")
         else:
-            # Base model with no chat template: apply default ChatML.
             logger.info(f"📝 No chat template found — applying default ChatML template (base model)")
             try:
                 tokenizer = get_chat_template(
@@ -159,7 +156,6 @@ def get_training_chat_template(tokenizer, model_name, final_format):
             chat_template = "alpaca",
             **_chat_template_kwargs(),
         )
-        # Unsloth's "alpaca" template words the preamble differently and has no Input section.
         _set_chat_template(tokenizer, STUDIO_ALPACA_CHAT_TEMPLATE)
         logger.info(f"📝 Set alpaca chat template on tokenizer for model saving")
     except Exception as e:
@@ -213,7 +209,7 @@ def _row_tools(tools):
     return normalized
 
 
-def _sharegpt_tool_turns(conversation, content = "", probe = False):
+def _sharegpt_tool_turns(conversation, content = "", probe = False,):
     """Map ShareGPT ``function_call`` / ``observation`` turns to OpenAI tool turns, and the
     markers ``probe`` put in place of each call's arguments and each result; the conversation
     itself when it has neither role."""
@@ -321,7 +317,7 @@ def _one_call_per_message(turns):
     return split if len(split) != len(turns) else turns
 
 
-def _render_conversation(tokenizer, conversation, tools = None, fallback_without_tools = True):
+def _render_conversation(tokenizer, conversation, tools = None, fallback_without_tools = True,):
     candidates = []
     # None content for DeepSeek-style templates; one call per message for Llama 3.x and gpt-oss.
     for content in ("", None):
@@ -344,7 +340,7 @@ def _render_conversation(tokenizer, conversation, tools = None, fallback_without
     return _render_messages(tokenizer, conversation, tools, fallback_without_tools)
 
 
-def _render_messages(tokenizer, conversation, tools = None, fallback_without_tools = True):
+def _render_messages(tokenizer, conversation, tools = None, fallback_without_tools = True,):
     from core.inference.chat_template_helpers import _normalize_tool_call_arguments
 
     attempts = []
@@ -391,7 +387,7 @@ def _template_render_stats(tokenizer, rows):
     return rendered, advertised, tool_rows
 
 
-def _sample_template_rows(dataset, chat_column, limit = _TEMPLATE_PROBE_ROWS):
+def _sample_template_rows(dataset, chat_column, limit = _TEMPLATE_PROBE_ROWS,):
     """sample finite datasets evenly, adding one missed sparse tool row; stream from the front."""
     n_rows = len(dataset) if hasattr(dataset, "__len__") else 0
     sampled = []
@@ -473,7 +469,6 @@ def resolve_dataset_chat_template(tokenizer, model_name, dataset, chat_column):
         chosen = (model_name, getattr(tokenizer, "chat_template", None))
         setattr(tokenizer, _CHOSEN_TEMPLATE_ATTR, chosen)
     except Exception:
-        # Wrappers that reject new attributes cannot retain the choice across splits.
         pass
     return tokenizer, note
 
@@ -529,10 +524,7 @@ def apply_chat_template_to_dataset(
     num_proc = None,
     progress_callback = None,
 ):
-    """Apply the chat template to a dataset based on its format, returning a dict with the dataset, success status, warnings and errors.
-
-    ``dataset_info`` is the output of format_dataset() with metadata. ``custom_prompt_template`` is deprecated and non-None values are rejected, because Studio cannot persist a matching inference template. ``add_eos_token`` appends the tokenizer's eos_token to each ChatML text (Alpaca text always gets one), ``remove_bos_prefix`` strips a leading '<bos>' (Gemma and friends), ``custom_format_mapping`` maps custom columns to the standard format, and ``batch_size`` / ``num_proc`` control processing.
-    """
+    """Rejects a non-None custom_prompt_template: Studio cannot persist a matching inference template."""
     dataset = dataset_info["dataset"]
     final_format = dataset_info["final_format"]
     chat_column = dataset_info["chat_column"]
@@ -551,7 +543,7 @@ def apply_chat_template_to_dataset(
             "errors": errors,
         }
 
-    # A processor (Gemma 3 on the text path) keeps eos_token on its inner tokenizer.
+    # A processor keeps eos_token on its inner tokenizer.
     eos_token = (
         getattr(tokenizer, 'eos_token', None)
         or getattr(getattr(tokenizer, 'tokenizer', None), 'eos_token', None)
@@ -560,7 +552,6 @@ def apply_chat_template_to_dataset(
     if not eos_token and (add_eos_token or final_format == "alpaca"):
         warnings.append("Tokenizer has no eos_token, so EOS was not appended")
 
-    # CUSTOM FORMAT MAPPING (for non-standard datasets)
     if final_format == "unknown":
         if custom_format_mapping is None and auto_detect_mapping:
             if not dataset_info.get("auto_detection_attempted", False):
@@ -595,7 +586,6 @@ def apply_chat_template_to_dataset(
                 conversations = []
                 num_examples = len(examples[list(examples.keys())[0]])
 
-                # Preserve unmapped columns only if auto-detected.
                 preserved_columns = {}
                 if not is_user_provided:
                     all_columns = set(examples.keys())
@@ -615,10 +605,8 @@ def apply_chat_template_to_dataset(
                                 content = examples[col_name][i]
 
                                 if is_user_provided:
-                                    # User-mapped: include even if empty.
                                     convo.append({"role": role, "content": cell_text(content)})
                                 else:
-                                    # Auto-detected: skip empty.
                                     text = cell_text(content)
                                     if text.strip():
                                         convo.append({"role": role, "content": text})
@@ -631,7 +619,7 @@ def apply_chat_template_to_dataset(
                 return result
 
             try:
-                # Mirror the other call sites: omit eager-only kwargs (num_proc/desc) for streaming IterableDatasets, whose .map() rejects them.
+                # Streaming IterableDataset.map() rejects num_proc/desc.
                 custom_map_kwargs = {"batched": True, "batch_size": batch_size}
                 if not is_streaming_dataset(dataset):
                     custom_map_kwargs["desc"] = "Applying custom ChatML mapping"
@@ -649,7 +637,6 @@ def apply_chat_template_to_dataset(
                     "errors": errors
                 }
 
-    # ALPACA FORMAT
     if final_format == "alpaca":
 
         tokenizer = get_training_chat_template(tokenizer, model_name, final_format)
@@ -707,7 +694,6 @@ def apply_chat_template_to_dataset(
                 "errors": errors
             }
 
-    # CHATML FORMATS
     elif final_format in ["chatml_messages", "chatml_conversations"]:
 
         if not is_standardized:
@@ -827,11 +813,7 @@ def apply_chat_template_to_dataset(
                     _keep_streamed_row, input_columns = [error_column]
                 ).remove_columns(error_column)
             elif len(formatted_dataset):
-                # Everything here stays Arrow-side and batched. Reading the error column
-                # into a Python list, or building one index per surviving row, costs a
-                # measured 85 MB at 2M rows (70 MB of it the index list) and scales
-                # linearly, so a dataset of tens of millions of mostly valid rows could be
-                # killed during formatting.
+                # Stay Arrow-side and batched: Python lists here OOM on huge datasets.
                 n_total = len(formatted_dataset)
                 kept = formatted_dataset.filter(
                     lambda row_errors: [not row_error for row_error in row_errors],
@@ -889,7 +871,6 @@ def apply_chat_template_to_dataset(
                 "errors": errors
             }
 
-    # UNKNOWN FORMAT
     else:
         errors.append(
             f"Cannot apply chat template to format: {final_format}. "

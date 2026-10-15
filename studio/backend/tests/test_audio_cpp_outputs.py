@@ -36,7 +36,7 @@ def _wav(frames = 4410, fill = b"\x01\x00") -> bytes:
 def _float_wav(frames, channels = 2) -> bytes:
     data = b"\x00\x00\x00\x00" * frames * channels
     fmt = struct.pack("<HHIIHH", 3, channels, RATE, RATE * channels * 4, channels * 4, 32)
-    fmt += struct.pack("<H", 0)  # cbSize: an 18-byte fmt chunk
+    fmt += struct.pack("<H", 0)
     body = b"WAVE" + b"fmt " + struct.pack("<I", len(fmt)) + fmt
     body += b"data" + struct.pack("<I", len(data)) + data
     return b"RIFF" + struct.pack("<I", len(body)) + body
@@ -197,7 +197,6 @@ def test_duplicate_and_unsafe_ids_become_safe_unique_names(tmp_path):
 
 
 def test_a_large_answer_decodes_in_bounded_memory(tmp_path):
-    # Two ~30 MB base64 stems (~46 MB of audio): never held whole in memory.
     frames = 5_700_000
     stem = _wav(frames, fill = b"\x12\x34")
     encoded = base64.b64encode(stem)

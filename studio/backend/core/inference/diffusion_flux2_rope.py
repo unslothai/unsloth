@@ -20,7 +20,6 @@ _MODULE = "diffusers.models.transformers.transformer_flux2"
 _ATTR = "apply_rotary_emb"
 _LOCK = threading.Lock()
 _STOCK: dict = {}
-# Survives uninstall so a forward that looked up the patch just before teardown still reaches stock.
 _ORIGINAL: list = [None]
 
 
@@ -89,7 +88,6 @@ def _kernel() -> Optional[Callable]:
         cd = tl.load(COS + s * scs + 2 * i + 1, mask = mask, other = 0.0).to(tl.float32)
         se = tl.load(SIN + s * sss + 2 * i, mask = mask, other = 0.0).to(tl.float32)
         sd = tl.load(SIN + s * sss + 2 * i + 1, mask = mask, other = 0.0).to(tl.float32)
-        # stock: x.float() * cos + stack([-x_odd, x_even]).float() * sin, each product rounded on its own
         oe = xe * ce + (-xd) * se
         od = xd * cd + xe * sd
         oo = OUT + b * sob + s * sos + h * soh + 2 * i
@@ -100,7 +98,6 @@ def _kernel() -> Optional[Callable]:
         import torch
 
         B, S, H, D = x.shape
-        # Same layout stock returns: a dense input keeps its strides, anything else comes back contiguous.
         out = torch.empty_like(x)
         if out.stride(3) != 1:
             out = torch.empty((B, S, H, D), dtype = x.dtype, device = x.device)
@@ -172,7 +169,7 @@ def _fused_apply_rotary_emb(
     import torch
 
     stock = _STOCK.get(_ATTR) or _ORIGINAL[0]
-    # Checked before _kernel(): Dynamo graph-breaks on Triton's import path, so a compiled block stays whole on stock.
+    # Before _kernel(): Dynamo graph-breaks on Triton's import path.
     if torch.compiler.is_compiling():
         return stock(
             x,

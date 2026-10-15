@@ -137,12 +137,7 @@ _TERMINAL = ("completed", "cancelled", "error")
 
 
 def upsert_execution(execution: dict) -> bool:
-    """Returns False when the run's recipe does not exist or the id belongs to another recipe.
-
-    A snapshot older than the stored one (two tabs tracking one run) is accepted but dropped:
-    a lower lastEventId, a snapshot without analysis at the same lastEventId as one with it, or a
-    non-terminal status over a terminal one, never replaces it.
-    """
+    """Stale snapshots from two tabs tracking one run are accepted but never replace newer state."""
     conn = get_connection()
     try:
         cur = conn.execute(

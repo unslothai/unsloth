@@ -32,7 +32,7 @@ from utils.paths.storage_roots import account_path, ensure_account_dir
 logger = get_logger(__name__)
 
 MAX_BYTES = 50 * 1024 * 1024
-# Only the python tool can open these, so they get the larger cap its data files need.
+# Only the python tool opens these, so they get its larger cap.
 TOOL_ONLY_EXTENSIONS = frozenset(
     ".parquet .feather .arrow .orc .dta .sas7bdat .xpt .mat .npy .npz .safetensors .sqlite .sqlite3"
     " .db .gpkg .mbtiles .duckdb .zip .jar .whl .apk .tar .gz .tgz .bz2 .tbz2 .tbz .xz .txz .lzma"
@@ -45,9 +45,8 @@ _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _SWEEP_GRACE_SECONDS = 3600
 _SWEEP_INTERVAL_SECONDS = 600
 _sweep_lock = threading.Lock()
-# Held across save-publish and sweep check-and-remove, so a sweep never removes a just-refreshed file.
+# Held across save-publish and sweep so a sweep never removes a just-refreshed file.
 _file_lock = threading.Lock()
-# Per originals folder: each account has its own, and one account's sweep must not delay another's.
 _last_sweep: dict[Path, float] = {}
 _due: dict[Path, tuple[float, contextvars.Context]] = {}
 _due_changed = threading.Condition()
@@ -157,7 +156,7 @@ def sweep(force: bool = False) -> int:
                     if not is_original:
                         os.unlink(entry.path)
                     else:
-                        # The scan may be stale (fork/import); recheck, blocking new references until removed.
+                        # The scan may be stale; recheck, blocking new references until removed.
                         with chat_original_unreferenced(entry.name) as unreferenced:
                             if not unreferenced:
                                 continue

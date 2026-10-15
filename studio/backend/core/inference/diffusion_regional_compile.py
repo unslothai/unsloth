@@ -54,7 +54,7 @@ def ensure_repeated_blocks(model: Any) -> tuple[str, ...]:
 
 
 def _moe_infer_dense(self: Any, x: Any, flat_expert_indices: Any, flat_expert_weights: Any) -> Any:
-    # `where`, not a zero weight: an unpicked expert that overflows in fp16 must add 0, not 0 * inf = NaN.
+    # `where`, not a zero weight: an unpicked fp16 overflow must add 0, not 0 * inf = NaN.
     import torch
 
     k = self.num_activated_experts

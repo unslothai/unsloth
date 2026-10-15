@@ -25,9 +25,7 @@ def _new_client() -> httpx.AsyncClient:
     return httpx.AsyncClient(limits = _LIMITS, trust_env = False)
 
 
-# One client per running event loop: an httpx client binds its transport to the loop it first runs on, so a single
-# global instance breaks across a lifespan restart or a second test loop. Weak keys let a finished loop drop its
-# client.
+# One client per loop: httpx binds its transport to the first loop. Weak keys free dead loops.
 _clients: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, httpx.AsyncClient]" = (
     weakref.WeakKeyDictionary()
 )

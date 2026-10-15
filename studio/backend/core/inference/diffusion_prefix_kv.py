@@ -46,7 +46,6 @@ def compact_prefix_kv_cache(cache: Any) -> int:
 
 
 def _returned_cache(output: Any) -> Any:
-    # FLUX.2 builds the cache in the extract forward and returns it.
     cache = getattr(output, "kv_cache", None)
     if cache is None and isinstance(output, tuple):
         cache = next((o for o in output[1:] if o is not None and not hasattr(o, "shape")), None)

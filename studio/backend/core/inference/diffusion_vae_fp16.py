@@ -19,10 +19,7 @@ _SCALE_LOG2 = 8
 
 
 def _scale_plan(decoder: Any) -> Optional[tuple]:
-    """(convs, norms) scaling the residual stream after ``up_blocks[0]``'s upsampler; None for other layouts.
-
-    ``(conv, divide_weight)``: unscaled input divides weight + bias, already-scaled input (shortcut, later upsamplers)
-    only bias. ``norms`` read the scaled stream, so their eps shrinks by scale**2."""
+    """Unscaled inputs divide weight and bias, scaled ones only bias; norm eps shrinks by scale squared."""
     import torch
 
     up_blocks = list(getattr(decoder, "up_blocks", None) or ())
@@ -82,7 +79,7 @@ def enable_fp16_vae_decode(
     config = getattr(vae, "config", None)
     if type(vae).__name__ != "AutoencoderKL" or not getattr(config, "force_upcast", False):
         return False
-    # A decode compiled before this would sit inside the check, and its eager fallback would unwrap it.
+    # A decode compiled before this would sit inside the check and be unwrapped on fallback.
     if getattr(vae, "_unsloth_compiled_decode", False):
         return False
     try:
@@ -112,7 +109,7 @@ def enable_fp16_vae_decode(
             if m is not None
         ]
         fell_back: list = []
-        # Decode compile goes in this slot: the check stays eager (no graph break) and outlives a fallback.
+        # Decode compile goes in this slot: the check stays eager and outlives a fallback.
         slot = types.SimpleNamespace(decode = decode)
 
         def _fp32_call(fn: Any, parts: list, x: Any, *args: Any, **kwargs: Any) -> Any:

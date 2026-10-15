@@ -15,23 +15,23 @@ from loggers import get_logger
 logger = get_logger(__name__)
 
 
-# Below this the eager map costs seconds and does not pay for four workers. 10k is the smallest size the A/B measured a win at (first step 23.1s -> 12.1s).
+# Below this the eager map is fast enough; 10k rows is the smallest measured win.
 MIN_ROWS_FOR_ONLINE = 10_000
 
-# Measured: four workers stayed ahead of a B200 on a 0.6B model; more only costs.
+# Measured: four workers kept ahead of a B200 on a 0.6B model.
 MAX_ONLINE_WORKERS = 4
 
-# Fewer than this and the tokenizer falls behind the GPU: slower steps, not a faster start.
+# Fewer than this and the tokenizer falls behind the GPU.
 MIN_ONLINE_WORKERS = 2
 
 DEFAULT_PREFETCH_FACTOR = 4
 
 ENV_FLAG = "UNSLOTH_STUDIO_ONLINE_TOKENIZATION"
 
-# Presence means already tokenized, or a prompt/completion split the zoo tokenizes with a different function.
+# Already tokenized, or a prompt/completion split the zoo tokenizes differently.
 _PRETOKENIZED_COLUMNS = ("input_ids", "labels", "prompt", "completion")
 
-# Stamped on the view by :func:`attach_online_tokenization`; unsloth's `max_length` scan reads it as proof every row is already truncated to that width, instead of reading every row of a lazy split, the eager pass again.
+# unsloth's max_length scan trusts this as proof every row is already truncated.
 TRUNCATION_ATTESTATION_ATTR = "_unsloth_truncated_to"
 
 
@@ -340,7 +340,7 @@ def decide_online_tokenization(
         if resolved_max_steps_epochs is not None
         else _epoch_count(num_train_epochs, max_steps)
     )
-    # The lazy view re-tokenizes every pass: +2.9% of steady-state time measured over 2.4 epochs, paid per epoch against a one-off 97s map, so anything past a single pass keeps the Arrow cache. Measured 237.2s eager against 244.1s online, identical loss.
+    # The lazy view re-tokenizes every epoch (~3% slower), so multi-epoch runs stay eager.
     if not forced and epochs > 1.0:
         detail = (
             "step-capped run of unknown length"
@@ -409,7 +409,6 @@ def attach_online_tokenization(
     try:
         view = dataset.with_transform(transform, columns = [text_field])
     except TypeError:
-        # `datasets` without the `columns` kwarg: only the narrow read is lost.
         view = dataset.with_transform(transform)
     try:
         setattr(view, TRUNCATION_ATTESTATION_ATTR, int(max_length))
@@ -472,7 +471,7 @@ def _nested_loaders(loader: Any):
     """``loader`` and whatever it wraps, outermost first. ``accelerator.prepare`` returns a ``DataLoaderShard`` or a wrapper holding ``base_dataloader`` depending on version; the workers belong to whichever object owns ``_iterator``."""
     seen: list = []
     current = loader
-    for _ in range(4):  # a wrapper chain, not a graph: bounded on purpose
+    for _ in range(4):
         if current is None or any(current is item for item in seen):
             break
         seen.append(current)
@@ -505,7 +504,7 @@ def release_train_dataloader(trainer: Any) -> int:
     cache = getattr(trainer, "_unsloth_online_loader_cache", None)
     loader = cache.pop("loader", None) if isinstance(cache, dict) else None
 
-    # Restore the real bound method, so a reused trainer rebuilds instead of handing out a loader whose workers just went away.
+    # Restore the real method so a reused trainer does not reuse dead workers.
     try:
         trainer.__dict__.pop("get_train_dataloader", None)
         trainer._unsloth_online_memoized = False
@@ -516,7 +515,7 @@ def release_train_dataloader(trainer: Any) -> int:
     shut: list = []
     released += _shutdown_loader_workers(loader, shut)
 
-    # The EVAL loader inherits the same workers and persistent_workers, and torch keeps its _iterator alive once iterated, so eval workers outlive train() just as the train ones do. Worker count is a TrainingArguments setting and transformers keeps the eval loader in `_eval_dataloaders` (unchanged 4.51.3 through 5.5.0). Drop the memo too, so a later eval rebuilds.
+    # Eval loader workers also outlive train(); drop the memo so a later eval rebuilds.
     memo = getattr(trainer, "_eval_dataloaders", None)
     if isinstance(memo, dict):
         for key in list(memo.keys()):

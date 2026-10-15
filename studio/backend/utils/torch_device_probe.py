@@ -24,21 +24,19 @@ logger = logging.getLogger(__name__)
 DISABLE_ENV_VAR = "UNSLOTH_STUDIO_DISABLE_DEVICE_PROBE"
 ROCM_DLL_DIRS_ENV_VAR = "UNSLOTH_STUDIO_PROBE_ROCM_DLL_DIRS"
 
-# Allow for a cold torch import and driver initialization on a busy host.
 PROBE_TIMEOUT_SECONDS = 120.0
-# The child bounds its own lifetime if the parent disappears during the probe.
 _CHILD_SELF_LIMIT_SECONDS = 300.0
 _TERMINATE_GRACE_SECONDS = 5.0
 _STDERR_TAIL_CHARS = 600
-# SIGILL, SIGABRT, SIGBUS, SIGFPE, SIGSEGV. Deliberately not SIGKILL or SIGTERM, which say something killed the probe, not that the device cannot be used.
+# SIGILL/ABRT/BUS/FPE/SEGV; not SIGKILL/SIGTERM, which mean the probe was killed.
 _FATAL_SIGNALS = frozenset({4, 6, 7, 8, 11})
-# How a child reports that it stopped itself for running too long: the reserved exit status it uses on Windows, and SIGALRM from the kernel-enforced deadline everywhere else.
+# Reserved self-timeout status on Windows; elsewhere the child gets SIGALRM.
 _WATCHDOG_EXIT_STATUS = 70
 _SIGALRM_NUMBER = 14
-# What the MSVC CRT abort() leaves behind on Windows. It is a plain exit status rather than an NTSTATUS, so nothing else here would recognise it. Same value LlamaCppBackend._is_abort_exit already matches for GGML_ASSERT deaths.
+# MSVC CRT abort() exit status on Windows; matches LlamaCppBackend._is_abort_exit.
 _WINDOWS_ABORT_EXIT_STATUS = 3
 
-# Anything that changes which physical device a device string names, or which kernels the runtime emits for it: a change invalidates a cached verdict, since a stale pass could skip the probe on an untested device and a stale failure could pin a working one to CPU. The XPU selectors matter because _TORCH_DEVICE maps DeviceType.XPU to "xpu", so this probe runs there too.
+# Env vars that change which device or kernels a string names; changes invalidate cached verdicts.
 _DEVICE_IDENTITY_ENV_VARS = (
     "CUDA_VISIBLE_DEVICES",
     "HIP_VISIBLE_DEVICES",
@@ -49,7 +47,7 @@ _DEVICE_IDENTITY_ENV_VARS = (
     "ONEAPI_DEVICE_SELECTOR",
 )
 
-# The matmul tests allocation and vendor BLAS initialization. item() synchronizes the result so an asynchronous driver fault cannot escape after the child exits, and Windows DLL directories must be registered before importing torch, since those registrations are process-local.
+# item() syncs so async faults surface in the child; DLL dirs must be added before importing torch.
 _PROBE_SCRIPT = """
 import os
 import signal
@@ -130,12 +128,7 @@ def _rocm_dll_directories() -> list[str]:
 
 
 def _died_by_signal(returncode: int) -> bool:
-    """Whether the code represents a hard fault, not any death by signal.
-
-    SIGKILL and SIGTERM are excluded: the OOM killer, a container stop and an operator all produce them, and they are not evidence the device faulted. Matches the hard-fault set ``LlamaCppBackend._is_signal_crash`` already uses. They are not read as a pass either: the caller sends them to ``_unknown_verdict`` instead.
-
-    On Windows a native abort() takes both shapes, an NTSTATUS for an access violation and the CRT's plain exit status 3 when torch or a ROCm library calls abort() itself. The second reads as an ordinary non-zero exit, so without it a crashing device was reported as usable and the parent went on to repeat the crash in its own process.
-    """
+    """Windows exit status 3 is the CRT's abort(), so it counts as a fault; SIGKILL and SIGTERM do not."""
     if returncode < 0:
         return -returncode in _FATAL_SIGNALS
     if os.name != "nt":
@@ -175,12 +168,7 @@ def _identity_key() -> tuple[str | None, ...]:
 
 
 def device_can_allocate(device: str) -> bool:
-    """Return false unless the device is known to be usable.
-
-    False when the child crashes or times out, and also when it could not be spawned or its result could not be read: those last two are not evidence the device is fine, only that we do not know, and the outcomes are not symmetric, since guessing wrong towards CPU costs embedding speed while guessing wrong towards the accelerator costs the backend.
-
-    An ordinary exception from a child that RAN and reported still returns true, because the in-process loader raises the same error and reports it better than a silent downgrade to CPU. Results are cached per device and device-identity environment.
-    """
+    """False when the probe crashes, times out or its result is unreadable, since unknown is not usable."""
     return _device_can_allocate_cached(device, _identity_key())
 
 
@@ -203,7 +191,7 @@ def _device_can_allocate_cached(device: str, _identity: tuple[str | None, ...]) 
             encoding = "utf-8",
             errors = "replace",
             env = utf8_child_env(env),
-            # No child_popen_kwargs() here. Its Linux preexec_fn can deadlock when this multithreaded backend forks and executes Python before exec.
+            # No child_popen_kwargs(): its Linux preexec_fn can deadlock in this multithreaded process.
             **windows_hidden_subprocess_kwargs(),
         )
     except Exception:  # noqa: BLE001 - no child ran, so nothing was proven
@@ -250,7 +238,7 @@ def _device_can_allocate_cached(device: str, _identity: tuple[str | None, ...]) 
             return False
 
         if process.returncode < 0:
-            # An OOM kill or container stop is not evidence against the device but is not a clean run either, and reading it as a pass would send _load_device() into the death the probe prevents.
+            # OOM kill or container stop is not evidence either way; treating it as a pass is unsafe.
             return _unknown_verdict(
                 device,
                 f"was killed by signal {-process.returncode} without faulting",
@@ -258,7 +246,6 @@ def _device_can_allocate_cached(device: str, _identity: tuple[str | None, ...]) 
             )
         return True
     finally:
-        # A child handed to the asynchronous reaper remains adopted until it exits.
         if process.returncode is not None:
             forget_pid(process.pid)
 
@@ -279,7 +266,6 @@ def _terminate_and_drain(process: subprocess.Popen) -> str:
         except OSError:
             break
 
-    # Not confirmed dead, whether it outlived SIGKILL or could not be read.
     _reap_later(process)
     return stderr or ""
 

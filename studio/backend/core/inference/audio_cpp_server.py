@@ -47,13 +47,11 @@ logger = get_logger(__name__)
 BINARY_NAME = "audiocpp_server.exe" if sys.platform == "win32" else "audiocpp_server"
 INSTALL_RECORD = "UNSLOTH_AUDIO_CPP_PREBUILT_INFO.json"
 
-# Model load happens before the server answers, and a multi-GB music model can take a while from a cold disk.
 _SERVER_START_TIMEOUT_SECONDS = 600.0
 _PROBE_TIMEOUT_SECONDS = 2.0
-# A streamed answer is copied to its file in blocks this size; an error body is read up to the cap.
 _SINK_CHUNK_BYTES = 1 << 20
 _ERROR_BODY_BYTES = 64 * 1024
-# CUDA graph replay wedges these transducers mid-request (server spins, never answers); graphs off fixes it.
+# CUDA graph replay wedges these transducers mid-request.
 _NO_CUDA_GRAPH_FAMILIES = frozenset({"nemotron_asr", "parakeet_tdt"})
 _GPU_HOST_THREADS = 8
 # Startup output of a GPU backend that found no device, as opposed to a model that failed to load.
@@ -110,7 +108,6 @@ def _is_runnable(p: Path) -> bool:
     try:
         return p.is_file() and (sys.platform == "win32" or os.access(p, os.X_OK))
     except OSError:
-        # An unreadable install dir reads as engine-unavailable, never a 500.
         return False
 
 
@@ -178,14 +175,9 @@ _ESPEAK_DATA_NAMES = ("espeak-ng-data.bin", "espeak-ng-data.gguf", "espeak-ng-da
 
 
 def binary_has_espeak(binary: Optional[str]) -> bool:
-    """Whether this build can phonemize with eSpeak-ng: a static build ships its data beside the server.
-
-    Upstream bundles are built without it, so Kokoro, Piper, KittenTTS and Inflect cannot run on them.
-    """
+    """Upstream bundles lack eSpeak-ng data, so Kokoro, Piper, KittenTTS and Inflect cannot run on them."""
     if not binary:
         return False
-    # The data itself, not the install record: an install whose data was removed or quarantined
-    # would pass preflight and fail only at launch.
     bin_dir = Path(binary).parent
     return any((bin_dir / name).exists() for name in _ESPEAK_DATA_NAMES)
 
@@ -311,13 +303,11 @@ def child_env(binary: str) -> dict[str, str]:
     """Secrets scrubbed, home repointed at a scratch dir, co-located libs first on the loader path."""
     binary = str(Path(binary).resolve())
     env = scrub_env(os.environ)
-    # Per user and outside the install dir: eSpeak extracts data here, so a shared path lets another account plant it.
+    # Per user: eSpeak extracts data here, so a shared path lets another account plant it.
     isolate_home(env, str(_child_home_dir()))
     bin_dir = str(Path(binary).parent)
     runtime_dirs: list[str] = []
     if read_install_record(binary).get("backend") == "cuda" or not read_install_record(binary):
-        # A CUDA bundle installed without its cudart archive relies on the CUDA runtime torch ships,
-        # after the bundle's own directory so co-located DLLs still win.
         try:
             from utils.prebuilt.runtime_libs import python_runtime_dirs
             runtime_dirs = python_runtime_dirs()
@@ -334,8 +324,7 @@ def child_env(binary: str) -> dict[str, str]:
     return env
 
 
-# eSpeak-ng keeps its data dir in a fixed buffer (N_PATH_HOME: 160 bytes on POSIX, 230 on Windows), and
-# audio.cpp extracts it ~65 bytes below the child home (.cache/audio.cpp/espeak-data/<id>/espeak-ng-data).
+# eSpeak-ng's data dir buffer is 160 bytes on POSIX, 230 on Windows; audio.cpp adds ~65.
 _MAX_CHILD_HOME_LEN = 150 if sys.platform == "win32" else 85
 
 
@@ -419,11 +408,8 @@ class AudioCppServer:
         cancel_event: Optional[threading.Event] = None,
         on_process: Optional[Any] = None,
     ) -> "AudioCppServer":
-        """Launch the server for ``model`` loaded from ``model_path`` and wait until it serves.
-
-        ``on_process`` is called with the Popen as soon as it exists, so an owner can
-        terminate a start that training pre-empts.
-        """
+        """on_process gets the Popen as soon as it exists, so training can preempt and terminate a
+        start."""
         binary = ensure_binary()
         problem = model_runtime_problem(model, binary)
         if problem:
@@ -446,7 +432,6 @@ class AudioCppServer:
             "backend": backend,
             "lazy_load": False,
             "max_loaded_models": 1,
-            # Music generation can take minutes; the owner bounds its own wait and cancels.
             "busy_timeout_ms": 0,
             "models": [entry],
         }
@@ -456,8 +441,7 @@ class AudioCppServer:
         command = [binary, "--config", str(config_path), "--no-ui"]
         threads = _cpu_threads()
         if threads is None and backend != "cpu":
-            # The runtime's default is every core; on a many-core host its host-side work thrashes
-            # (Piper 0.44 s -> 0.18 s, Moonshine tiny 0.085 s -> 0.035 s per request at 8 on a B200).
+            # The runtime default (every core) thrashes on many-core hosts.
             threads = min(os.cpu_count() or 1, _GPU_HOST_THREADS)
         if threads:
             command += ["--threads", str(threads)]
@@ -491,7 +475,6 @@ class AudioCppServer:
                     **child_popen_kwargs(),
                 )
         except OSError as exc:
-            # A corrupt, quarantined or wrong-architecture binary: report it like any other runtime failure.
             shutil.rmtree(config_dir, ignore_errors = True)
             raise AudioCppUnavailableError(
                 f"The audio runtime could not be started: {exc}"
@@ -518,7 +501,6 @@ class AudioCppServer:
             return ""
         tail = data[-limit:]
         if len(data) > limit:
-            # The cut can split a path or token; drop that partial first line (or word, or all of it).
             parts = tail.split(b"\n", 1) if b"\n" in tail else tail.split(None, 1)
             tail = parts[1] if len(parts) == 2 else b""
         return tail.decode("utf-8", "replace").strip()
@@ -588,10 +570,8 @@ class AudioCppServer:
         cancel_event: Optional[threading.Event] = None,
         sink: Optional[BinaryIO] = None,
     ) -> tuple[int, str, bytes]:
-        """One HTTP round trip; a set ``cancel_event`` closes the socket and raises.
-
-        With a ``sink`` a 2xx body is streamed into it and ``b""`` returned (separation answers are
-        hundreds of MB)."""
+        """A sink streams a 2xx body into it and returns b'', since separation answers run to
+        hundreds of MB."""
         if cancel_event is not None and cancel_event.is_set():
             raise AudioCppRequestCancelledError("Request cancelled.")
         connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout = timeout)
@@ -629,8 +609,7 @@ class AudioCppServer:
             if cancel_event is None:
                 round_trip()
             else:
-                # Windows does not wake a blocked recv when another thread shuts the socket down, so
-                # the round trip runs on its own thread and a cancel returns without waiting for it.
+                # Windows does not wake a blocked recv on shutdown from another thread.
                 threading.Thread(target = round_trip, daemon = True).start()
                 while not done.wait(0.1):
                     if cancel_event.is_set():
@@ -719,8 +698,7 @@ class AudioCppServer:
                 process.wait(timeout = 10)
             except subprocess.TimeoutExpired:
                 process.kill()
-                # A killed server can sit in GPU context teardown well past 10 s on a busy card (Seed-VC
-                # took ~54 s); the music reload restarts it mid-session and must not fail on that.
+                # A killed server can sit in GPU teardown well past 10 s (Seed-VC took ~54 s).
                 try:
                     process.wait(timeout = 120)
                 except subprocess.TimeoutExpired:

@@ -184,8 +184,8 @@ _XS_DTYPES = pytest.mark.parametrize(
     [
         (4096, 12288, torch.float32, True),  # Qwen-Image / FLUX.1 MLP
         (4101, 3000, torch.float32, True),  # odd rows, N not a multiple of the chunk
-        (512, 12288, torch.bfloat16, False),  # bf16 weight scale, no bias
-        (17, 8, torch.float32, True),  # smallest eligible
+        (512, 12288, torch.bfloat16, False),
+        (17, 8, torch.float32, True),
     ],
 )
 def test_kernel_bit_exact_vs_eager_reference(m, n, ws_dtype, bias, xs_dtype):
@@ -200,7 +200,7 @@ def test_kernel_bit_exact_vs_eager_reference(m, n, ws_dtype, bias, xs_dtype):
 @needs_cuda
 @_XS_DTYPES
 def test_kernel_small_activations_take_the_exact_amax_path(xs_dtype):
-    # Every pre-activation negative: max|gelu| comes from the negative lobe, not gelu(max y).
+    # All pre-activations negative: max|gelu| comes from the negative lobe, not gelu(max y).
     c, xs, ws, b = _rand_inputs(256, 1024, bias = False, xs_dtype = xs_dtype)
     c = -c.abs() - 1
     q, s = fused._launch(c, xs, ws, b, None)
@@ -214,7 +214,7 @@ def test_kernel_small_activations_take_the_exact_amax_path(xs_dtype):
 def test_kernel_prefix_segment(transposed, xs_dtype):
     bsz, seq, heads, hd, n = 2, 300, 4, 64, 1024
     c, xs, ws, b = _rand_inputs(bsz * seq, n, xs_dtype = xs_dtype)
-    if transposed:  # SDPA output layout [B, H, S, D] seen as [B, S, H, D]
+    if transposed:  # SDPA output layout [B, H, S, D] viewed as [B, S, H, D]
         prefix = (
             (torch.randn(bsz, heads, seq, hd, device = "cuda") * 3).to(torch.bfloat16).transpose(1, 2)
         )
@@ -389,9 +389,9 @@ def _double_rounding_hits(c):
 def test_kernels_round_large_accumulators_like_torchao(xs_dtype):
     m, n = 64, 2048
     c = _bf16_tie_ints(m, n, 3)
-    assert _double_rounding_hits(c) > 100  # the inputs do reach the case
+    assert _double_rounding_hits(c) > 100
     _, xs, ws, b = _rand_inputs(m, n, xs_dtype = xs_dtype)
-    xs = (xs * 2**-10).to(xs_dtype)  # |c * xs| stays O(1-100): GELU / SiLU in their curved range
+    xs = (xs * 2**-10).to(xs_dtype)  # keeps |c * xs| in the curved range of GELU / SiLU
     q, s = fused._launch(c, xs, ws, b, None)
     q_ref, s_ref = fused.reference_dq_gelu_quant(c, xs, ws, b, None)
     assert torch.equal(s, s_ref) and torch.equal(q, q_ref)
@@ -443,7 +443,7 @@ def test_fake_ops_report_the_real_scale_dtype(xs_dtype):
 
 @needs_cuda
 def test_quantizing_leaves_fp32_matmul_precision_alone():
-    # The default handler's recommended_inductor_config_setter() turns on TF32 process-wide; Studio opts out.
+    # The default handler's config setter enables TF32 process-wide; Studio opts out.
     before = torch.get_float32_matmul_precision()
     _quantized_ff()
     assert torch.get_float32_matmul_precision() == before
@@ -490,7 +490,7 @@ def test_swiglu_mlps_bit_identical_to_stock_eager(kind, monkeypatch):
 
 
 def _assert_within_compile_floor(compiled, stock_compiled, eager):
-    # Inductor's own act-quant codegen is not eager-exact, so the bar is the stock compile's distance from eager.
+    # Inductor's act quant is not eager-exact, so the bar is stock compile's distance from eager.
     floor = (stock_compiled.float() - eager.float()).abs()
     ours = (compiled.float() - eager.float()).abs()
     assert ours.max().item() <= 1.5 * floor.max().item() + 1e-6
@@ -534,7 +534,7 @@ def test_offload_skips_install():
 @needs_cuda
 @pytest.mark.parametrize("kind", ["gelu", "swiglu"])
 def test_convrot_linears_keep_the_stock_forward(kind, monkeypatch):
-    # MiniMax-H3's ConvRotLinear rotates the input before the GEMM; the fused _int_mm would skip it.
+    # ConvRotLinear rotates the input before the GEMM; the fused _int_mm would skip it.
     from core.inference.diffusion_convrot import _install_rotation
 
     if kind == "gelu":
@@ -551,9 +551,7 @@ def test_convrot_linears_keep_the_stock_forward(kind, monkeypatch):
             .eval()
         )
         lins = (ff.net[0].proj, ff.net[2])
-    monkeypatch.setattr(
-        fused, "_SWIGLU_ALL_LAYOUTS", True
-    )  # the layout gate alone would already refuse diffusers SwiGLU
+    monkeypatch.setattr(fused, "_SWIGLU_ALL_LAYOUTS", True)
     for lin in lins:
         _install_rotation(lin, 16)
     assert fused.install(ff) == 0
@@ -579,7 +577,6 @@ def _swiglu_module(kind):
 
 @pytest.mark.parametrize("kind", ["diffusers_swiglu", "zimage", "flux2", "qwenimage21"])
 def test_swiglu_quality_gate_allows_zimage_only(kind):
-    # See _SWIGLU_ALL_LAYOUTS.
     ff = _swiglu_module(kind)
     assert fused._swiglu_candidate(ff) is (kind == "zimage")
     assert fused._swiglu_layout_allowed(ff) is (kind == "zimage")
@@ -595,7 +592,6 @@ def test_swiglu_install_count_follows_the_quality_gate(kind):
 
 
 def test_ineligible_resident_model_never_probes_the_kernels(monkeypatch):
-    # A bf16 / fp16 DiT already on the GPU has nothing to fuse: the Triton validation launch must not run.
     probed = []
     monkeypatch.setattr(fused, "resident_cuda_device", lambda m: torch.device("cuda", 0))
     monkeypatch.setattr(fused, "_device_ok", lambda index: probed.append(index) or True)
@@ -686,7 +682,7 @@ def _two_steps(model):
 
 
 def test_fused_flux_single_keeps_fbcache_hooks_installed_before(monkeypatch):
-    # Swap must go under the FBCache hooks, else the tail hook never records residuals and reuse reads None.
+    # Swap must go under the FBCache hooks, else the tail hook never records residuals.
     import copy
 
     model = _tiny_flux()
@@ -702,7 +698,6 @@ def test_fused_flux_single_keeps_fbcache_hooks_installed_before(monkeypatch):
     assert [b.__dict__.get("forward") for b in model.single_transformer_blocks] == wrappers
     assert len(calls) == len(model.single_transformer_blocks)
 
-    # Turning the cache off splices the hook's inner forward back: the fused forward must survive it.
     model.disable_cache()
     for b in model.single_transformer_blocks:
         assert b.forward.__func__ is fused._flux_single_forward
@@ -730,13 +725,12 @@ def test_fused_flux_single_then_fbcache_and_uninstall_keeps_hooks(monkeypatch):
     assert [b.__dict__.get("forward") for b in model.single_transformer_blocks] == wrappers
     calls.clear()
     out = _two_steps(model)
-    # Both caches now hold the first run's residuals; a fresh reference would round step 0 differently on some CPUs.
+    # Both caches hold run 1's residuals; a fresh reference rounds step 0 differently on some CPUs.
     ref = _two_steps(ref_model)
     assert torch.equal(out[0], ref[0]) and torch.equal(out[1], ref[1]) and not calls
 
 
 def test_fused_flux_single_rearms_a_compiled_cache_inner(monkeypatch):
-    # Deferred swap must re-arm the hooks' compiled inner on the fused forward, not bypass it.
     import copy
 
     from core.inference import diffusion_cache
@@ -869,7 +863,7 @@ def _int8tensor_config(cls):
 def _outlier_input():
     g = torch.Generator(device = "cpu").manual_seed(3)
     x = torch.randn(2, 150, 256, generator = g)
-    x[..., :4] *= 40  # a few heavy channels: what the rotation exists for
+    x[..., :4] *= 40
     return x.to(torch.bfloat16).cuda()
 
 
@@ -880,8 +874,7 @@ def _outlier_input():
 )
 def test_zimage_convrot_swiglu_fuses_and_matches_stock_eager(rotate, groups):
     if not groups[1] and not _act_scale_is_fp32():
-        # A plain w2 runs the SwiGLU kernel's own quant, which matches torchao's fp32-scale act quant (>= 0.18) only;
-        # this is the kernel's existing contract, unchanged here (the all-rotated MLP never reaches that quant).
+        # A plain w2 uses the kernel's own quant, matching torchao's fp32-scale act quant (>= 0.18) only.
         pytest.skip(
             "the fused SwiGLU kernel's act quant matches torchao >= 0.18 (fp32 activation scale) only"
         )
@@ -896,14 +889,13 @@ def test_zimage_convrot_swiglu_fuses_and_matches_stock_eager(rotate, groups):
         out = ff(x)
         torch._dynamo.reset()
         compiled = torch.compile(ff, fullgraph = True)(x)
-    # one rotation + one act quant for w1 and w3 instead of two of each: the same ops on the same input
     assert torch.equal(out, ref)
     _assert_within_compile_floor(compiled, stock_compiled, ref)
 
 
 @needs_cuda
 def test_zimage_convrot_swiglu_with_disagreeing_gate_and_value_keeps_stock():
-    ff = _zimage_convrot_ff(("w1",))  # w3 plain: the two halves no longer share one input
+    ff = _zimage_convrot_ff(("w1",))
     assert fused.install(ff) == 0
     assert not fused.is_installed(ff)
 
@@ -929,7 +921,7 @@ def test_act_quant_kernel_is_bit_exact_vs_torchao(m, k):
     x = x.to(torch.bfloat16).cuda()
     q, s = fused._act_quant_op()(x)
     rq, rs = fused.reference_act_quant(x)
-    # torchao's own scale dtype: bf16 up to 0.17, fp32 from 0.18
+    # torchao scale dtype: bf16 up to 0.17, fp32 from 0.18.
     assert s.dtype == rs.dtype == (torch.float32 if fused._act_scale_fp32() else torch.bfloat16)
     assert torch.equal(q, rq) and torch.equal(s, rs)
     with torch.no_grad():
@@ -965,9 +957,8 @@ def test_int8_linear_equals_the_module_without_the_zero_point_pass(
         torch._dynamo.reset()
         compiled = torch.compile(lambda t: fused.int8_linear(lin, t), fullgraph = True)(x)
         stock_compiled = torch.compile(lin, fullgraph = True)(x)
-    assert torch.equal(out, ref)  # y - 0 == y: the dropped term is exactly zero
+    assert torch.equal(out, ref)
     _assert_within_compile_floor(compiled, stock_compiled, ref)
-    # anything it cannot reproduce is the module itself
     small = x[:, :4]
     assert torch.equal(fused.int8_linear(lin, small), lin(small))
 
@@ -988,7 +979,7 @@ def test_kill_switch_makes_int8_linear_the_module(monkeypatch):
     def reached(*a, **k):
         raise Reached
 
-    # a Linear int8_linear would otherwise run itself
+    # Otherwise int8_linear would run a plain Linear itself.
     monkeypatch.setattr(fused, "_plain_int8_weight", lambda w: True)
     monkeypatch.setattr(fused, "_fast_act_quant", reached)
     lin = torch.nn.Linear(64, 32).cuda().to(torch.bfloat16)
@@ -1020,7 +1011,7 @@ def test_int8_linear_leaves_offload_hooks_and_off_device_weights_to_the_module(m
     monkeypatch.setattr(fused, "_fast_act_quant", reached)
     x = torch.randn(32, 64, device = "cuda", dtype = torch.bfloat16)
     lin = torch.nn.Linear(64, 32).cuda().to(torch.bfloat16)
-    with pytest.raises(Reached):  # the control: a bare Linear is run by int8_linear itself
+    with pytest.raises(Reached):
         fused.int8_linear(lin, x)
 
     calls = []
@@ -1031,11 +1022,9 @@ def test_int8_linear_leaves_offload_hooks_and_off_device_weights_to_the_module(m
             module.to("cuda")
             return args, kwargs
 
-    # a hook runs even when the weight already sits on the input's device
     hooked = torch.nn.Linear(64, 32).cuda().to(torch.bfloat16)
     add_hook_to_module(hooked, Onload())
     assert torch.equal(fused.int8_linear(hooked, x), hooked(x)) and calls == ["cuda", "cuda"]
-    # no hook and the weight elsewhere: module(x) (torch's own device error), never the int8 path
     off_device = torch.nn.Linear(64, 32).to(torch.bfloat16)
     with pytest.raises(RuntimeError):
         fused.int8_linear(off_device, x)

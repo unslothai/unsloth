@@ -58,7 +58,7 @@ def client_ip(request) -> str:
         return "_unknown"
     peer = request.client.host if request.client else None
     if _trust_forwarded_for():
-        # Rightmost hop = what the trusted proxy saw; the leftmost is spoofable.
+        # Rightmost hop is what the trusted proxy saw; the leftmost is spoofable.
         xff = request.headers.get("x-forwarded-for", "")
         if xff:
             normalized = _normalize_addr(xff.rsplit(",", 1)[-1])
@@ -72,7 +72,8 @@ def client_ip(request) -> str:
 
 
 def _is_loopback_ip(host: str | None) -> bool:
-    if not host or "%" in host:  # a scope id (::1%eth0) is never a plain loopback
+    # A scope id (::1%eth0) is never a plain loopback.
+    if not host or "%" in host:
         return False
     try:
         ip = ipaddress.ip_address(host)
@@ -82,8 +83,7 @@ def _is_loopback_ip(host: str | None) -> bool:
     return ip.is_loopback or (mapped is not None and mapped.is_loopback)
 
 
-# A loopback peer carrying any of these is a proxy/tunnel relaying a remote client, so the peer is the
-# proxy, not the caller: cloudflared sets cf-connecting-ip, reverse proxies set the rest.
+# A loopback peer with these headers is a proxy relaying a remote client.
 _PROXIED_CLIENT_HEADERS = (
     "cf-connecting-ip",
     "forwarded",
@@ -98,12 +98,12 @@ def _host_header_is_loopback(host_header: str | None) -> bool:
     if not host_header:
         return False
     host = host_header.strip()
-    if host.startswith("["):  # [IPv6] or [IPv6]:port
+    if host.startswith("["):
         end = host.find("]")
         if end == -1 or (host[end + 1 :] and not host[end + 1 :].startswith(":")):
-            return False  # unclosed bracket or junk after ] (e.g. [::1]evil)
+            return False
         host = host[1:end]
-    elif host.count(":") == 1:  # host:port
+    elif host.count(":") == 1:
         host = host.split(":", 1)[0]
     host = host.lower().rstrip(".")
     return host == "localhost" or _is_loopback_ip(host)

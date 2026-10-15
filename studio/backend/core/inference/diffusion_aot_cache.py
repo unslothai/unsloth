@@ -20,7 +20,6 @@ from . import diffusion_compile_config as compile_config
 _ENV = "UNSLOTH_DIFFUSION_SDPA_AOT_CACHE"
 _INDUCTOR_MODULE = "torch._inductor.config"
 _KNOB = "unsafe_marked_cacheable_functions"
-# The names check_node_safe builds: f"{target.__module__}.{target.__name__}".
 SDPA_HELPERS = ("torch.nn.attention._backend_from_string", "torch.nn.attention._sdpa_kernel")
 
 
@@ -49,7 +48,6 @@ def install(logger: Any = None) -> bool:
             callable(getattr(attention, name.rsplit(".", 1)[1], None)) for name in SDPA_HELPERS
         ):
             return False
-        # Both the recorded knob (re-applied on render threads) and this thread's live value.
         recorded = compile_config.get_knob(_INDUCTOR_MODULE, _KNOB)
         live = getattr(getattr(torch._inductor, "config", None), _KNOB, None)
         if not isinstance(recorded, dict) or not isinstance(live, dict):

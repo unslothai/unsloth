@@ -44,11 +44,7 @@ def other_owner(owner: str) -> str:
 
 
 def load_takes_the_gpu() -> bool:
-    """Whether this load will go through the arbiter and evict the current owner.
-
-    A CPU-only diffusion device releases ownership instead of acquiring it, so such a switch
-    interrupts nothing and must not wait on chat or the other media backend.
-    """
+    """A CPU-only diffusion device releases ownership instead, so this switch interrupts nothing."""
     try:
         from core.inference.diffusion_device import resolve_diffusion_device_target
         return resolve_diffusion_device_target().device != "cpu"
@@ -57,21 +53,12 @@ def load_takes_the_gpu() -> bool:
 
 
 def chat_busy(count_pending: bool = True) -> bool:
-    """Whether a chat request or load is in flight, so the GPU handoff would interrupt it.
-
-    The arbiter evicts chat unconditionally for the current owner, terminating a streaming
-    completion that has nothing to do with this switch.
-
-    ``count_pending`` is False once the lifecycle gate is held: a request blocked in the
-    middleware behind that gate has not started inference and cannot be interrupted, while one
-    admitted just before the gate was taken is already running and still can be.
-    """
+    """Requests queued behind the held gate are not counted, since they have not started inference."""
     try:
         from core.inference.llama_keepwarm import other_inference_request_count
     except Exception:  # noqa: BLE001 -- no chat stack means no chat work
         return False
     try:
-        # chat's counter covers media requests too, and none of those is using chat
         parked = switcher_count()
         counted = other_inference_request_count(
             current_request_counted = True, include_pending = count_pending
@@ -90,11 +77,7 @@ def backend_busy(backend: Any) -> bool:
 
 
 def other_backend_busy(owner: str) -> bool:
-    """Whether the other media backend is loading or generating, off the loop.
-
-    Guarded and lazy: an Unsloth that never opened the other page has no backend to ask, and
-    importing one just to find that out would drag torch in for nothing.
-    """
+    """Imported lazily, so an unopened other media page does not pull torch in just to answer."""
     import sys
 
     other = other_owner(owner)
@@ -122,32 +105,7 @@ async def drain(
     kind: str = "image",
     openai_errors: bool = True,
 ) -> bool:
-    """Wait out other tracked requests and any in-flight load or generation.
-
-    A request queued on this backend's switch lock is counted by the middleware but is not
-    doing any work, so it is discounted here: two concurrent requests for the same absent
-    model would otherwise each wait the other out and both return 409. Mirrors the chat
-    switch, which excludes its own waiters from ``_wait_for_model_switch_idle``.
-
-    The other media backend counts too, because the arbiter's cross-owner handoff unloads
-    whatever holds the GPU. So does chat, whether or not it is streaming. Both are skipped
-    entirely when this load does not take the GPU at all.
-
-    ``count_pending`` is False for the check made while holding the admission gate. A request
-    arriving then is counted pending and immediately blocks on that gate, so counting it would
-    abort a switch over a newcomer that cannot be touching the backend.
-
-    ``probe_deadline`` bounds the busy probes themselves, and is the switch budget rather than
-    this loop's deadline: the in-gate check evaluates the condition once with no time to wait,
-    and reusing that as the probe bound would report every backend busy. The probes need a bound
-    at all because ``loading_repo_ids`` takes the backend lock, which the loader holds across
-    pipeline assembly, so an unbounded probe outlives the response window.
-
-    ``check_chat`` stays on for the in-gate check, where ``count_pending`` is what makes it safe:
-    a chat request blocked behind the held lifecycle gate has not started inference and must not
-    abort the switch, but one admitted between the outer drain's last probe and this gate being
-    taken is already running and would be terminated by the handoff.
-    """
+    """Queued waiters are discounted, else two requests for one absent model each wait the other out."""
     from core.inference.media_keepwarm import other_request_count
 
     # device configuration is resolved once, not on every poll: that cost ~150 round-trips a switch
@@ -158,7 +116,6 @@ async def drain(
                 raise_if_other_accounts_active()
             except GpuBusyForAnotherAccountError as exc:
                 raise busy(kind, openai_errors, retry_after = exc.retry_after) from exc
-        # this request is itself tracked and itself a waiter, so it counts as neither
         others = other_request_count(
             owner, current_request_counted = True, count_pending = count_pending
         )

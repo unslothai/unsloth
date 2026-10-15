@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""diffusers 0.40 LTX-2 pipelines must import on the pinned transformers 5.5.
-
-diffusers 0.40.0 and main import ``Gemma4UnifiedForConditionalGeneration`` at module level in every
-``diffusers.pipelines.ltx2.pipeline_ltx2*`` module, and that class only exists from transformers 5.10. On the Studio
-pin every LTX-2 / LTX-2.3 load failed with ``cannot import name 'Gemma4UnifiedForConditionalGeneration' from
-'transformers'``. These tests build a fake transformers and a fake lazy diffusers with the same shape (including
-transformers replacing its own ``sys.modules`` entry when ``processing_utils`` is first imported) so they run
-hermetically on CPU without either package installed.
-"""
+"""diffusers 0.40 LTX-2 imports need transformers 5.10 at module level; tests fake both packages."""
 
 from __future__ import annotations
 
@@ -40,7 +32,7 @@ class ProcessorMixin:
 {extra}
 """
 
-# Mirrors transformers: the first processing_utils import replaces sys.modules["transformers"].
+# Mirrors transformers: processing_utils import replaces sys.modules['transformers'].
 _PROCESSING_UTILS = """
 import importlib.util
 import os
@@ -78,8 +70,7 @@ def __getattr__(name):
     return getattr(module, name)
 """
 
-# In real transformers the swap fires while `from transformers import (...)` resolves Gemma3 (modeling_gemma3 ->
-# modeling_layers -> processing_utils), i.e. before Gemma4Unified is looked up; importing it first mirrors that.
+# Real transformers swaps while resolving Gemma3, before Gemma4Unified is looked up.
 _PIPELINE = """
 from transformers import processing_utils  # noqa: F401
 from transformers import (
@@ -170,11 +161,9 @@ def test_ensure_makes_every_ltx2_pipeline_importable(fake_stack):
 
     assert diffusers.LTX2Pipeline.__name__ == "LTX2Pipeline"
     assert diffusers.LTX2ImageToVideoPipeline.__name__ == "LTX2ImageToVideoPipeline"
-    # The swap really happened, and neither module object keeps the stand-in afterwards.
     assert sys.modules["transformers"] is not original
     assert NAME not in sys.modules["transformers"].__dict__
     assert NAME not in original.__dict__
-    # A Gemma3 encoder still satisfies the annotation the pipeline carries.
     pipe = diffusers.LTX2Pipeline(
         text_encoder = sys.modules["transformers"].Gemma3ForConditionalGeneration()
     )
@@ -212,7 +201,6 @@ def test_placeholder_refuses_to_load(fake_stack):
 def test_new_transformers_is_left_alone(fake_stack):
     fake_stack(transformers_has_class = True)
     assert compat.ensure_ltx2_pipelines_importable() is True
-    # Nothing was pre-imported and the real class is the one the pipeline sees.
     assert "diffusers.pipelines.ltx2.pipeline_ltx2" not in sys.modules
     import diffusers.pipelines.ltx2.pipeline_ltx2 as mod
 

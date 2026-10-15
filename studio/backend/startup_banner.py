@@ -81,14 +81,7 @@ def print_studio_access_banner(
     lan_addresses: "tuple[str, ...]" = (),
     scheme: str = "http",
 ) -> None:
-    """Pretty-print URLs once the server is listening. Set ``include_stop_hint=False`` to omit the
-    trailing stop block; pair with :func:`print_studio_stop_hint` after inserting your own content.
-    ``lan_addresses`` are the addresses a runtime LAN listener (Settings > LAN access) is already
-    serving on. A loopback launch that carries one is not reachable on this machine only, so the
-    banner must say where else it answers. ``network_host`` is the address printed under "another
-    device on your network", defaulting to ``display_host``. A wildcard-bind caller passes both:
-    ``display_host`` can be a public WAN IP, which is the reachability probe's business and not what
-    a LAN peer can open (#8868)."""
+    """display_host may be a public WAN IP, which a LAN peer cannot open; pass network_host instead."""
     use_color = stdout_supports_color()
     dim = "\033[38;5;245m"
     title = "\033[38;5;150m"
@@ -113,7 +106,6 @@ def print_studio_access_banner(
     else:
         external_url = f"{scheme}://{display_host}:{port}"
 
-    # Falls back to display_host for a caller with only one address to give.
     resolved_network_host = network_host or display_host
     if ":" in resolved_network_host:
         network_url = f"{scheme}://[{resolved_network_host}]:{port}"
@@ -123,7 +115,6 @@ def print_studio_access_banner(
     # must show its real address, not http://127.0.0.1.
     loopback_bind = bind_host in ("127.0.0.1", "localhost", "::1")
 
-    # Use the loopback URL only when reachable on loopback; otherwise show the actual bound address.
     primary_url = loopback_url if listen_all or loopback_bind else external_url
     api_base = primary_url
 

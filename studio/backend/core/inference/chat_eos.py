@@ -17,7 +17,6 @@ torch / unsloth) so it is unit-testable without the full inference stack.
 
 from typing import Optional
 
-# Canonical assistant-turn-end markers per chat family.
 _CHAT_TURN_END_TOKENS = (
     "<|im_end|>",
     "<|eot_id|>",
@@ -25,10 +24,9 @@ _CHAT_TURN_END_TOKENS = (
     "<end_of_turn>",
     "<turn|>",
     "<|end|>",
-    "<|end_of_turn|>",  # OpenChat, distinct from Gemma's
+    "<|end_of_turn|>",
 )
-# harmony/gpt-oss uses <|end|> as a channel delimiter, not the turn end, and has its own streamer, so its eos is left
-# untouched.
+# harmony/gpt-oss uses <|end|> as a channel delimiter, not the turn end.
 _HARMONY_MARKERS = ("<|channel|>", "<|constrain|>")
 
 
@@ -41,15 +39,7 @@ def _eos_id_set(eos_token_id) -> set:
 
 
 def _collect_template_text(chat_template) -> str:
-    """Flatten a tokenizer ``chat_template`` into one scannable string.
-
-    Usually the template is a single jinja string, but multi-variant models
-    (e.g. Hermes-3: a ``default`` plus a ``tool_use`` template) expose it as a
-    ``{name: template}`` dict -- or, as stored in tokenizer_config.json, a list
-    of ``{"name": ..., "template": ...}`` dicts. Scanning only the ``str`` case
-    would skip turn-end detection for those valid models, so gather every string
-    leaf (variant names are harmless: they never contain the markers).
-    """
+    """Gathers every string leaf of chat_template, as multi-variant models store it as a dict or list."""
     if isinstance(chat_template, str):
         return chat_template
     if isinstance(chat_template, dict):
@@ -63,17 +53,7 @@ def _collect_template_text(chat_template) -> str:
 
 
 def resolve_chat_turn_end_eos_ids_using(template_tokenizer, id_tokenizer) -> list:
-    """eos of ``id_tokenizer`` plus any canonical turn-end marker the
-    ``template_tokenizer``'s chat_template uses, resolved to ids on ``id_tokenizer`` --
-    the tokenizer generation actually uses.
-
-    Pass the same tokenizer for both at load time. After a mapped ``get_chat_template``
-    pass the MAPPED tokenizer as ``template_tokenizer`` (it carries the effective
-    template) and the ORIGINAL generation tokenizer as ``id_tokenizer``: a mapped
-    template registered ``map_eos_token=True`` can hand back a tokenizer whose vocab
-    folds the turn-end token onto the doc-eos id, and generate_stream re-reads the
-    original tokenizer, so resolving ids on the mapped tokenizer would store the wrong
-    (doc-eos) id and let generation run past the real turn marker."""
+    """Resolve ids on the original tokenizer; a mapped one can fold turn-end onto the doc-eos id."""
     ids = _eos_id_set(getattr(id_tokenizer, "eos_token_id", None))
     template = _collect_template_text(getattr(template_tokenizer, "chat_template", None))
     if not template or any(h in template for h in _HARMONY_MARKERS):

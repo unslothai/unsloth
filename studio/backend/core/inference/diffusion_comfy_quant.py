@@ -133,11 +133,7 @@ def _layer_conf(raw: Any) -> tuple[Optional[str], bool, int]:
 
 
 def scan_comfy_quant(path: Optional[str]) -> Optional[ComfyQuantScan]:
-    """The ComfyUI quantization a safetensors single file declares, or None for a plain checkpoint.
-
-    Torch-free: reads the header and the few hundred bytes of ``.comfy_quant`` JSON. Never raises for
-    a file it cannot read as safetensors (the regular loader reports that); returns a scan whose
-    ``problems`` are non-empty for one it must refuse."""
+    """Torch-free header read; None for a plain checkpoint, and never raises on an unreadable file."""
     if not path or not str(path).lower().endswith(".safetensors") or not os.path.isfile(path):
         return None
     try:
@@ -284,15 +280,7 @@ def comfy_resident_mib(
     block_divisible: Optional[dict] = None,
     key_map: Any = None,
 ) -> Optional[int]:
-    """What the loader leaves resident for a ComfyUI-quantized file, priced from its header: a quantized
-    weight a runtime keeps costs its stored bytes, one that is dequantized costs ``numel * compute_bytes``
-    (2x an int8 / fp8 file), every other floating tensor is cast to the compute dtype. The file name says
-    nothing reliable here (an fp8 file Studio runs natively is not upcast; an int8 one with no runtime is).
-    ``keep_key(key)`` limits the count to the keys the loader reads (a file bundling other components);
-    an int8 layer whose name holds one of ``exclude_tokens`` is priced dequantized, as Studio's int8 filter
-    leaves it, and so is a layer the runtime filter skips (in / out features under ``min_features``, or fp8 features
-    not multiples of ``fp8_divisible``). ``key_map`` names layers as the loader's filter sees them (an original-layout
-    file). None when the header cannot be read. Torch-free."""
+    """Resident MiB from the header: kept int8/fp8 at stored size, dequantised at compute size."""
     try:
         scan = scan if scan is not None else scan_comfy_quant(path)
         if scan is None:
@@ -728,10 +716,7 @@ def comfy_int8_backend(
     *,
     offload: bool = False,
 ) -> Optional[str]:
-    """Which of Studio's int8 runtimes takes the int8 layers, by the rule its own int8 quant follows:
-    ``"torchao"`` (``Int8Tensor``) on a resident plan, ``"native"`` (the torchao-free twin, plain
-    buffers the offload hooks can move) under offload or on a host without the torchao path, None
-    (dequantize to bf16) where neither runs. ``UNSLOTH_DIFFUSION_COMFY_INT8=0`` always dequantizes."""
+    """int8 runtime: torchao when resident, native under offload, None to dequantise to bf16."""
     if (os.environ.get(COMFY_INT8_ENV) or "").strip().lower() in ("0", "off", "false", "no"):
         return None
     try:
@@ -759,13 +744,7 @@ def comfy_fp8_backend(
     *,
     offload: bool = False,
 ) -> Optional[str]:
-    """Which of Studio's fp8 runtimes takes the ``float8_e4m3fn`` layers, by the rule its own fp8 quant
-    follows: ``"torchao"`` (the per-row ``Float8Tensor`` and ``_scaled_mm``) on a resident plan whose GPU
-    passes Studio's fp8 probe, ``"native"`` (the torchao-free weight-only twin) where Studio's own fp8
-    quant runs natively (ROCm, the stubbed torchao), None (dequantize to bf16) where neither runs: an
-    older GPU, CPU, MPS, or an offloaded plan on the torchao path (the model offload hooks cannot move a
-    ``Float8Tensor``: "Attempted to set the storage of a tensor on device cuda:0 to a storage on ... cpu").
-    ``UNSLOTH_DIFFUSION_COMFY_FP8=0`` always dequantizes."""
+    """fp8 runtime: torchao when resident and probed, native on ROCm or stubbed torchao, else dequantise."""
     if (os.environ.get(COMFY_FP8_ENV) or "").strip().lower() in ("0", "off", "false", "no"):
         return None
     try:
@@ -834,11 +813,7 @@ def load_comfy_prequant(
     config_subfolder: str = "transformer",
     logger: Any = None,
 ) -> Any:
-    """A hosted (or local) ComfyUI-format prequant as the transformer Studio's own ``scheme`` checkpoint
-    rebuilds into, on the CPU: int8 layers as ``Int8Tensor`` under ConvRot-rotating Linears, fp8 layers as
-    per-row ``Float8Tensor``. Placement, small-M padding and the rest stay with the caller, exactly as for
-    Studio's own checkpoints. Raises ``ValueError`` for a file it must refuse: a format Studio cannot run,
-    layers of another scheme, or a recorded base model that is not ``base``."""
+    """Rebuilds a ComfyUI prequant on the CPU as Studio's scheme; ValueError for formats it cannot run."""
     name = os.path.basename(str(path))
     scan = scan_comfy_quant(path)
     if scan is None:
@@ -915,27 +890,7 @@ def load_comfy_quant_transformer(
     prepare_model: Any = None,
     keep_dtype: Any = None,
 ) -> Any:
-    """Build ``transformer_cls`` from the ComfyUI-quantized ``path``.
-
-    ``sf_kwargs`` are the ``from_single_file`` kwargs the caller would have used (``config``,
-    ``subfolder``, ``torch_dtype``, ``token``, ``cache_dir``, ``local_files_only``). With an
-    ``int8_backend`` (``comfy_int8_backend``) the int8 layers Studio's own int8 filter selects keep
-    their codes and scales, as torchao ``Int8Tensor`` weights under ConvRot-rotating Linears
-    (``"torchao"``) or as native int8 twins (``"native"``); with an ``fp8_backend``
-    (``comfy_fp8_backend``) the ``float8_e4m3fn`` layers Studio's own fp8 filter selects do the same,
-    as per-row ``Float8Tensor`` weights or native fp8 twins; with an ``nvfp4_backend`` / ``mxfp8_backend``
-    (``diffusion_comfy_block.comfy_block_backend``) the nvfp4 / mxfp8 layers the matching Studio filter selects
-    keep their codes on Studio's FlashInfer NVFP4 Linear / the ``torch._scaled_mm`` MXFP8 Linear. Everything
-    else is dequantized to the compute dtype. ``finalize`` applies the small-M padding here (the single-file path); the hosted
-    prequant loader passes False and pads after placement, as for its own checkpoints.
-
-    ``keep_key(key)`` limits the read to the DiT's keys of a file that bundles other components;
-    ``pre_convert(state)`` renames keys (never values) before the family converter runs. A family with no
-    diffusers single-file converter passes ``key_map(key, shape)`` (or registers it in ``original_layout``):
-    ``[(diffusers key, rows)]`` per file key, ``rows`` None (the whole tensor) or ``[(first row, n rows), ...]``;
-    ``prepare_model(model)`` reshapes the freshly built model before the weights load, and ``keep_dtype(key)``
-    names a dtype a file tensor keeps instead of the compute dtype. Raises ``ValueError`` for a checkpoint it
-    must refuse."""
+    """Builds the transformer from a ComfyUI quant; finalize=False leaves small-M padding to the caller."""
     import torch
     from safetensors.torch import load_file
 

@@ -1,28 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""State-changing auth, MCP and provider handlers must keep running on the event loop thread.
-
-Each of these reads (a row, the server list, a rate-limit bucket) and then writes based on what
-it read, with nothing below them serializing the pair:
-
-  * import_mcp_servers builds `seen_urls` and then inserts, and `mcp_servers.url` has no
-    uniqueness constraint.
-  * update_provider_config / migrate_provider_api_key read the row and then save a credential,
-    and `credential_secrets` has no foreign key to `providers`.
-  * login clears its admission check before verify_password reaches _record_login_failure, so
-    the bucket lock guards each call but not the sequence.
-  * refresh consumes a token and inserts its replacement, and logout deletes every token in
-    between without rotating the credential generation.
-
-They are await-free, so the loop is what makes those sequences atomic. In the threadpool, two
-imports duplicate a server row, an update racing a delete writes a credential for a provider that
-is gone, a burst of guesses passes admission together, and a logout leaves the refresh token that
-landed after it. The read-only handlers beside them do belong in the threadpool, so both
-directions are pinned here.
-
-Asserts which thread each handler ran on rather than racing two requests.
-"""
+"""State-changing auth, MCP and provider handlers must run on the event loop, not the threadpool."""
 
 from __future__ import annotations
 
@@ -55,7 +34,6 @@ class _Case(NamedTuple):
     status: int
 
 
-# The first store call is enough to identify the handler's dispatch thread.
 _MUTATIONS = {
     "mcp-import": _Case(
         "post",
@@ -144,7 +122,7 @@ def _drive(monkeypatch, case: _Case):
     """Run one route through real FastAPI dispatch; return (handler threads, loop thread)."""
     threads: list[int] = []
     monkeypatch.setattr(getattr(case.module, case.store), case.read, _record(threads, case.result))
-    # A failed login from an earlier test in this session would otherwise 429 this one.
+    # A failed login from an earlier test would otherwise 429 this one.
     monkeypatch.setattr(auth_routes, "_LOGIN_BUCKETS", {})
     monkeypatch.setattr(auth_routes, "_LOGIN_IP_BUCKETS", {})
 
@@ -162,7 +140,7 @@ def _drive(monkeypatch, case: _Case):
     loop_threads: list[int] = []
 
     @app.get("/loop-thread")
-    async def _loop_thread():  # Reference event-loop thread.
+    async def _loop_thread():
         loop_threads.append(threading.get_ident())
         return {}
 

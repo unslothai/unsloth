@@ -49,7 +49,6 @@ def _field(node):
         return node.attr
     if isinstance(node, nodes.Getitem) and isinstance(node.arg, nodes.Const):
         return node.arg.value
-    # `.get('tool_calls')` is the same read spelled as a call.
     if (
         isinstance(node, nodes.Call)
         and isinstance(node.node, nodes.Getattr)
@@ -75,7 +74,7 @@ def _checks_tool_role(node):
     """`message.role == 'tool'` - the branch that handles a tool result."""
     compares = list(node.find_all(nodes.Compare))
     if isinstance(node, nodes.Compare):
-        # `{% if m.role == 'tool' %}` IS the comparison, which find_all skips.
+        # find_all skips the node itself.
         compares.append(node)
     for compare in compares:
         if len(compare.ops) != 1 or compare.ops[0].op != "eq":
@@ -105,7 +104,6 @@ def _bound_names(node):
     """The names a `{% set %}` or `{% for %}` target binds, tuple targets included."""
     if isinstance(node, nodes.Tuple):
         return {name for item in node.items for name in _bound_names(item)}
-    # `{% set ns.catalog = ... %}` is an NSRef, already naming the container.
     while isinstance(node, (nodes.Getattr, nodes.Getitem)):
         node = node.node
     return {node.name} if isinstance(node, (nodes.Name, nodes.NSRef)) else set()
@@ -166,28 +164,20 @@ def _scan(body, aliases, guarded):
     for node in body:
         if isinstance(node, nodes.Output):
             for value in node.nodes:
-                # `{{ m.content if m.role == 'tool' else '' }}` holds its check in
-                # the expression, where an `{% if %}` usually would.
                 if _is_payload(value) and (
                     guarded or _reads_catalog(value, aliases) or _checks_tool_role(value)
                 ):
                     return True
         elif isinstance(node, nodes.ExprStmt):
-            # `{% do catalog.append(tools) %}`
             aliases |= _receiver_gaining_catalog(node.node, aliases, guarded)
             continue
         elif isinstance(node, nodes.Assign):
-            # `{% set _ = catalog.append(tools) %}`: the same mutation without `do`.
             aliases |= _receiver_gaining_catalog(node.node, aliases, guarded)
             if _reads_catalog(node.node, aliases) or guarded or _checks_tool_role(node.node):
-                # Three ways a name comes to hold tool-conditional content: LFM2 fills
-                # `ns.system_prompt` inside the guard and renders it outside; a guard
-                # runs the statement only when tools exist, so even a constant counts;
-                # and a stored `m.role == 'tool'` renders what the inline test does.
+                # Guarded statements count even for constants; LFM2 fills ns.system_prompt inside the guard.
                 aliases |= _bound_names(node.target)
             else:
-                # Plain names only: one field says nothing about the rest of the
-                # container. glm-4-9b-chat rebinds `tools` off a message.
+                # Plain names only; glm-4-9b-chat rebinds `tools` off a message.
                 aliases -= _rebound_names(node.target)
             continue
 
@@ -211,18 +201,15 @@ def _scan(body, aliases, guarded):
             _join(aliases, arms, exhaustive = bool(node.else_))
         elif isinstance(node, nodes.For):
             over_catalog = _reads_catalog(node.iter, aliases)
-            # `{% for m in messages if m.role == 'tool' %}`: the guard is the filter.
             filtered = node.test is not None and (
                 _reads_catalog(node.test, aliases) or _checks_tool_role(node.test)
             )
-            # Each item is catalog data, so the loop variable carries it too.
             bound = _bound_names(node.target) if over_catalog else frozenset()
             if _scan_maybe(node.body, aliases, guarded or over_catalog or filtered, bound):
                 return True
             if _scan_maybe(node.else_, aliases, guarded):
                 return True
         elif isinstance(node, nodes.With):
-            # `{% with catalog = tools %}` binds like a set, for the block only.
             bound = set()
             killed = set()
             for target, value in zip(node.targets, node.values):
@@ -233,7 +220,6 @@ def _scan(body, aliases, guarded):
             if _scan_maybe(node.body, aliases, guarded, bound, killed):
                 return True
         elif hasattr(node, "body"):
-            # Macros, blocks, filters, autoescape: the body can still render.
             if _scan_maybe(node.body, aliases, guarded):
                 return True
     return False
@@ -241,8 +227,7 @@ def _scan(body, aliases, guarded):
 
 def template_supports_tools(template) -> bool:
     """Inspect syntax only; rendering and parser support remain backend checks."""
-    # Outside the cache: lru_cache hashes first, so a dict-valued template would
-    # raise past every fail-closed branch below.
+    # Outside the cache: lru_cache hashes first, so a dict would raise past fail-closed branches.
     if not isinstance(template, str):
         return False
     # `str.__str__`, not `str(...)`: an override would raise out here, unhandled.

@@ -32,7 +32,7 @@ BROWSER_PREFIX = "/api/hub/modelscope"
 _KINDS = {"models": "model", "datasets": "dataset"}
 _NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _FILTER_SCAN_PAGES = 4
-# The browser cannot follow a redirect to ModelScope (no CORS), so small files are relayed.
+# Browser cannot follow a redirect to ModelScope (no CORS), so relay small files.
 _RELAY_LIMIT = 16 * 1024 * 1024
 _UPLOAD_REFUSAL = (
     "Uploading is unavailable while ModelScope is the model source. "
@@ -225,7 +225,7 @@ def build_router(*, browser: bool) -> APIRouter:
         session = browser and await signed_in(request)
         if browser and not session:
             if "authorization" in request.headers:
-                # A stale session: the page refreshes it on a 401, but cannot read a cross-origin redirect.
+                # Stale session: the page refreshes on 401 but cannot read a cross-origin redirect.
                 return _error(401, None, "Sign in again to browse ModelScope.")
             return RedirectResponse(ms.branch_url(kind, repo, revision, path), status_code = 302)
 

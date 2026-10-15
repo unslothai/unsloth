@@ -26,7 +26,7 @@ lora:
   lora_r: 64
   lora_alpha: 16
   lora_dropout: 0.0
-  target_modules: ""   # vision uses vision_all_linear by default
+  target_modules: ""
   vision_all_linear: true
   use_rslora: false
   use_loftq: false

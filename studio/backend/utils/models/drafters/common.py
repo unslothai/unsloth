@@ -9,10 +9,8 @@ import sys
 from pathlib import Path
 from typing import Iterable, Optional
 
-# model_config imports this module.
 
-
-# model_config imports this module, so the naming helpers are pulled in per call rather than at import; they stay where they are because they are constants and pure functions shared with non-drafter code (gguf_variants, the auto download paths), so the GGUF naming rules keep one home.
+# Imported per call: model_config imports this module.
 def is_published_drafter_filename(
     name: str,
     *,
@@ -43,7 +41,7 @@ def _drafter_pairing_stem(name: str, *, kind: str) -> str:
         stem,
         flags = re.IGNORECASE,
     )
-    # A borrowed MTP head is published as mtp-<model>-shared-<quant>.gguf, so -shared marks the head's FORM, not the family. Left in, the stem is <model>-shared, which never prefixes <model>-<quant>, so the local scan could not pair the head the hub picker prefers. MTP only: no other kind borrows.
+    # -shared marks a borrowed head's form, not its family; strip it so the stem pairs with <model>-<quant>.
     if kind == "mtp":
         stem = re.sub(r"-shared$", "", stem)
     return stem
@@ -129,7 +127,7 @@ def split_listing_is_complete(names: Iterable[str], name: str) -> bool:
         r"^" + re.escape(stem) + r"-(\d{5})-of-" + re.escape(match.group(3)) + r"\.gguf$",
         re.IGNORECASE,
     )
-    # Distinct indices inside 1..total, not a count: a mid-publication listing can hold 00001-of-00002 beside a stray 00003-of-00002, and counting would call that pair whole.
+    # Count distinct indices in 1..total: a stray 00003-of-00002 must not make a pair look whole.
     seen = set()
     for other in names:
         if Path(other).parent != parent:

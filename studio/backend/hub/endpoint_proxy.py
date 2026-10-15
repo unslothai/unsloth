@@ -63,7 +63,7 @@ def _client() -> httpx.AsyncClient:
     with _clients_lock:
         http = _clients.get(loop)
         if http is None:
-            # httpx drops Authorization when a redirect leaves the endpoint's origin (LFS CDNs).
+            # httpx drops Authorization when a redirect leaves the origin (LFS CDNs).
             http = _clients[loop] = httpx.AsyncClient(
                 timeout = httpx.Timeout(30.0, connect = 10.0),
                 follow_redirects = True,
@@ -74,7 +74,7 @@ def _client() -> httpx.AsyncClient:
         return http
 
 
-# Keyed per process: /api/health is unauthenticated, and a bare hash of a private host:port is brute-forceable.
+# Per-process key: /api/health is unauthenticated and a bare hash of host:port is brute-forceable.
 _TAG_KEY = secrets.token_bytes(32)
 
 
@@ -110,7 +110,7 @@ def _rebase_link(link: str, upstream: str, base: str) -> str:
 
 ANONYMOUS_ASSET_LIMIT = 20 * 1024 * 1024
 _ASSET_PATH = re.compile(r"^/(?:(?:datasets|spaces)/)?[^/]+/[^/]+/(?:resolve|raw)/[^/]+/.")
-# Served under Studio's origin, so only inert raster images, never markup or scripts.
+# Served under Studio's origin: only inert raster images.
 _ASSET_HEADERS = {
     "X-Content-Type-Options": "nosniff",
     "Content-Security-Policy": "default-src 'none'; sandbox",
@@ -148,7 +148,7 @@ def build_router(prefix: str, upstream: Callable[[], str], *, anonymous_pages: b
             return _refuse(409, "The Hub endpoint changed. Reload to browse it.")
         rest = f"/{rest}"
         segments = [unquote(segment) for segment in rest.split("/")]
-        # Re-split: an encoded slash can hide a dot segment from this check but not from the endpoint.
+        # Re-split: an encoded slash can hide a dot segment.
         if any(part in (".", "..") or "\\" in part for s in segments for part in s.split("/")):
             return _refuse(400, "Invalid path.")
         query = request.scope.get("query_string", b"").decode("latin-1")
@@ -163,7 +163,7 @@ def build_router(prefix: str, upstream: Callable[[], str], *, anonymous_pages: b
                 or not endpoint_is_reachable_by(endpoint, client_ip(request))
             ):
                 return _refuse(401, "Sign in again to browse the Hub.")
-            # A Location would name an endpoint only the owner may read: relay the asset instead.
+            # A Location would name an endpoint only the owner may read: relay instead.
             if not (_saved_only(endpoint) and not is_loopback_host(client_ip(request))):
                 return RedirectResponse(target, status_code = 302)
             if not _ASSET_PATH.match(rest):

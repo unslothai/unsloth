@@ -27,12 +27,11 @@ logger = structlog.get_logger(__name__)
 ENABLE_ENV_VAR = "UNSLOTH_STUDIO_STALL_WATCHDOG"
 
 BEAT_INTERVAL_S = 2.5
-# Healthy mac smoke runs: ~50ms worst latency, single-probe outliers to ~3.4s.
+# Healthy mac runs: ~50ms worst latency, single-probe outliers to ~3.4s.
 PROBE_SLOW_S = 1.0
-# 3 slow beats = 6-8.5s unresponsive: dumps before the shortest recorded stall (10.03s) ends.
+# 3 slow beats = 6-8.5s unresponsive, dumping before the shortest recorded stall (10s) ends.
 SLOW_PROBES_BEFORE_DUMP = 3
 DEAD_MAN_TIMEOUT_S = 8.0
-# Shared by both capture paths.
 DUMP_COOLDOWN_S = 600.0
 
 
@@ -105,7 +104,6 @@ class StallWatchdog:
         last_beat = time.monotonic()
         while not self._stop_event.is_set():
             beat_started = time.monotonic()
-            # Beat gap past the switch timeout: the switch fired; start the cooldown.
             gap = beat_started - last_beat
             if self._dead_man_armed and gap > self._dead_man_timeout_s:
                 self._last_dump = beat_started

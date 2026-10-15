@@ -39,7 +39,7 @@ from utils.paths.path_utils import drop_shadowed_appledouble_names
 
 logger = logging.getLogger(__name__)
 
-# Extensions the local-file loader (UnslothTrainer._loader_for_files) understands.
+# Must match UnslothTrainer._loader_for_files.
 SUPPORTED_EXTENSIONS = (".parquet", ".json", ".jsonl", ".csv")
 _JSON_EXTENSIONS = (".json", ".jsonl")
 _IGNORED_METADATA_FILENAMES = {
@@ -77,11 +77,7 @@ def boto3_available() -> bool:
 
 
 def _build_s3_client(s3_config: dict):
-    """Create a boto3 S3 client from the config dict.
-
-    Uses explicit access keys when provided, otherwise falls back to the
-    default credential chain (IAM role / instance profile / env / shared creds).
-    """
+    """Explicit keys win; otherwise the default credential chain (IAM role, env, shared files)."""
     require_explicit_credentials({"s3_dataset": s3_config})
     import boto3
 
@@ -97,7 +93,6 @@ def _build_s3_client(s3_config: dict):
             aws_access_key_id = access_key_id,
             aws_secret_access_key = secret_access_key,
         )
-    # IAM role / instance profile / ambient credentials
     return boto3.client("s3", region_name = region)
 
 
@@ -118,9 +113,7 @@ def _list_dataset_keys(client, bucket: str, prefix: Optional[str]) -> list[str]:
                 continue
             if key.lower().endswith(SUPPORTED_EXTENSIONS + _AUDIO_EXTENSIONS):
                 keys.append(key)
-    # A Mac sync uploads Finder metadata under the shard's own extension and
-    # _validate_single_extension_family cannot see it, so a key is dropped only when the object it
-    # would describe is in the same listing.
+    # Drop an AppleDouble key only when the object it describes is in the same listing.
     return drop_shadowed_appledouble_names(keys)
 
 
@@ -289,7 +282,7 @@ def _rewrite_json_manifest(manifest_path: str, resolve) -> None:
     try:
         data = None if manifest_path.lower().endswith(".jsonl") else json.loads(text)
     except json.JSONDecodeError:
-        data = None  # JSON Lines in a .json file
+        data = None
     if data is None:
         rows = [json.loads(line) for line in text.splitlines() if line.strip()]
         for row in rows:
@@ -299,7 +292,7 @@ def _rewrite_json_manifest(manifest_path: str, resolve) -> None:
                 f.write(json.dumps(row, ensure_ascii = False) + "\n")
         return
     if not isinstance(data, list):
-        return  # column-oriented JSON
+        return
     for row in data:
         _rewrite_row(row, resolve)
     with open(manifest_path, "w", encoding = "utf-8") as f:
@@ -327,14 +320,7 @@ def prepare_s3_dataset_download(
     dest_dir: Optional[str] = None,
     cancel_callback: Optional[Callable[[], bool]] = None,
 ) -> S3DatasetDownload:
-    """Download supported dataset files from S3 to a local directory.
-
-    Returns the local files plus the owned temporary directory, when one was
-    created. Call ``cleanup()`` after the dataset loader has materialized data.
-
-    Raises ``RuntimeError`` if boto3 is missing, and ``ValueError`` if the
-    bucket/prefix contains no supported dataset files.
-    """
+    """Caller owns any temp dir returned; call cleanup() after the loader has materialized the data."""
     if not boto3_available():
         raise RuntimeError("S3 dataset loading requires boto3. Install it with: pip install boto3")
 

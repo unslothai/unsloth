@@ -41,10 +41,9 @@ PROFILES = {
         "module": "vllm",
         "cuda": "cu130",
         "driver": 580,
-        # FlashInfer fetches the trtllm kernels it uses on demand rather than the whole cubin wheel.
-        # CUTLASS DSL loads its newest flavour the driver runs, and driver 580 runs CUDA 13.
+        # FlashInfer fetches trtllm kernels on demand; CUTLASS DSL loads the newest flavour driver 580 runs.
         "omit": ("flashinfer-cubin", "nvidia-cutlass-dsl-libs-cu12"),
-        # Newest first; each release pins one torch build (vLLM 0.27+ needs torch 2.13, 0.20-0.26 torch 2.11).
+        # Newest first; each release pins one torch build.
         "releases": (
             {"version": "0.30.0", "torch": "2.13.0", "lock": "vllm-linux-cu130-torch213"},
             {"version": "0.26.0", "torch": "2.11.0", "lock": "vllm-linux-cu130"},
@@ -103,8 +102,7 @@ PROFILES = {
 PYTHON = (3, 13)
 _BASE_PTH = "zz_unsloth_studio_base.pth"
 _BASE_MODULE = "_unsloth_studio_base"
-# Studio installs its own FlashInfer for NVFP4 diffusion; a jit-cache of another version fails the
-# engine's flashinfer import ("flashinfer-jit-cache version ... does not match"), so the engine never sees them.
+# A jit-cache of another FlashInfer version fails the engine's flashinfer import.
 _STUDIO_BASE_SOURCE = """import pkgutil, site, sys
 
 _HIDDEN = ("flashinfer", "flashinfer_jit_cache", "flashinfer_cubin")
@@ -315,9 +313,7 @@ def _torch_runtime() -> set[str]:
     return names
 
 
-# nvcc's cudafe stubs need the crt headers of its own release, so mixing releases breaks
-# FlashInfer's JIT (Colab: crt 13.4.59 with nvcc 13.0.88, "macro __cudaLaunch passed 2 arguments").
-# Shared only when Studio holds every one at the locked version, else the engine brings all of them.
+# nvcc's cudafe stubs need crt headers of the same release, so share only when all match.
 _TOOLCHAIN = frozenset({"nvidia-cuda-nvcc", "nvidia-cuda-crt", "nvidia-nvvm", "nvidia-cuda-cccl"})
 
 
@@ -349,7 +345,6 @@ def download_bytes(engine: str) -> int | None:
     if not sizes:
         return None
     wsl = wsl_host.active()
-    # A WSL engine is always a complete environment, plus the distro and uv on first setup.
     provided = {} if wsl else install_plan(engine)["provided"]
     omit = set(profile(engine).get("omit", ()))
     total = sum(
@@ -369,8 +364,7 @@ def download_bytes(engine: str) -> int | None:
     return total
 
 
-# Not engine dependencies, so absent from the compat file: the configs Studio's adapters build
-# (Int8WeightOnlyConfig and friends) use TorchAO 0.17's API, and 0.18 removed their version 1.
+# Studio's adapter configs use TorchAO 0.17's API; 0.18 removed their version 1.
 _ADAPTER_REQUIRES = {"torchao": ["==0.17.0"]}
 
 
@@ -443,8 +437,7 @@ def install_plan(engine: str) -> dict:
     def fits(name: str) -> bool:
         if _same_build(studio.get(name), lock.get(name, (None,))[0], cuda):
             return True
-        # Torch is the exact build; a CUDA library torch takes as a range (nvjitlink) only has to
-        # satisfy every locked package's requirement, since the engine then loads Studio's copy.
+        # Torch is exact; range-pinned CUDA libs only need to satisfy every locked requirement.
         specs = compat.get(name)
         return bool(
             name != "torch"
@@ -492,8 +485,7 @@ def link_cuda_home(env: Path, shared: bool) -> None:
     home = env / "cuda"
     (home / "lib64").mkdir(parents = True, exist_ok = True)
     trees = _cuda_trees(env, shared)
-    # One include tree, the engine's entries first: a Studio header such as curand_kernel.h
-    # quote-includes crt/ from beside itself, which then resolves to the engine's crt.
+    # Engine entries first: Studio headers quote-include crt/ which must resolve to the engine's.
     include = home / "include"
     if include.is_symlink():
         include.unlink()
@@ -673,7 +665,6 @@ def support_reason(
     from . import wsl_host
 
     if wsl_host.active():
-        # WSL itself is not a prerequisite: installing the engine sets it up.
         reason = wsl_host.support_reason()
         if reason:
             return reason
@@ -1156,7 +1147,6 @@ def install_environment() -> dict[str, str]:
     env["UV_CACHE_DIR"] = (
         os.environ.get("UV_CACHE_DIR") or recorded_cache or str(cache_root() / "uv")
     )
-    # The install checks import the engine, whose device detection needs the driver.
     if driver := driver_library_path(dict(os.environ)):
         env["LD_LIBRARY_PATH"] = driver
     env["PYTHONNOUSERSITE"] = "1"
@@ -1220,7 +1210,6 @@ def _run(
             encoding = "utf-8",
             errors = "replace",
             start_new_session = True,
-            # A windowed Studio has no console; wsl.exe would otherwise open one.
             creationflags = 0x08000000 if sys.platform == "win32" else 0,
             **child_popen_kwargs(),
         )
@@ -1449,7 +1438,6 @@ def _install(
                     else None,
                 },
             )
-            # Keep the active env and one previous version; every runtime lease (any Studio) is excluded.
             keep = {destination.name, prior["directory"] if prior else None}
             for old in root.glob("env-*"):
                 if old.name not in keep and old.is_dir() and not old.is_symlink():
@@ -1476,8 +1464,7 @@ def _install(
             lease.__exit__(None, None, None)
 
 
-# Runs in the engine's interpreter inside WSL: the non-shared half of link_cuda_home and
-# managed_engine._deep_gemm_unloadable, whose paths Windows cannot inspect.
+# Runs inside WSL: the parts of link_cuda_home Windows cannot inspect.
 _GUEST_FINALIZE = r"""
 import json, sys
 from pathlib import Path
@@ -1533,7 +1520,6 @@ def _install_wsl(engine: str, cancel: threading.Event) -> None:
         "UV_NO_CONFIG": "1",
         "UV_CONCURRENT_DOWNLOADS": "4",
         "UV_HTTP_RETRIES": "5",
-        # Cache and environments share the distro's ext4 disk.
         "UV_LINK_MODE": "hardlink",
         "DEBIAN_FRONTEND": "noninteractive",
         **(wsl_host.rocm_environment() if rocm else {}),
@@ -1733,10 +1719,8 @@ def remove(engine: str) -> dict:
             and wsl_host.wsl_exe() is not None
             and wsl_host.distro_name() in wsl_host.registered_distros()
         ):
-            # Forgetting the engine now would strand its files inside the distro.
             raise RuntimeError("WSL is not responding, so the engine cannot be removed. Try again.")
         if wsl_host.active() and wsl_host.distro_ready():
-            # The compile caches live beside the environments, not under them.
             wsl_host.guest(
                 [
                     "rm",

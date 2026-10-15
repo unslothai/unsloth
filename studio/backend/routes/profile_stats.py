@@ -33,8 +33,7 @@ async def get_profile_stats(
 ) -> dict[str, Any]:
     """Usage stats from the caller's database, bucketed in the caller's timezone (``tz``, or the ``tz_offset_minutes`` fallback)."""
     try:
-        # A cold pass parses every message's metadata JSON: ~90 ms at 10k messages, ~1.2 s at 260k. Off the event
-        # loop so it cannot stall token streaming when Settings is opened mid-generation.
+        # Cold pass can take ~1 s on large histories; keep it off the event loop.
         return await asyncio.to_thread(
             compute_profile_stats,
             days = days,

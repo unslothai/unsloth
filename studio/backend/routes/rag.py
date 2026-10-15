@@ -53,21 +53,14 @@ _UNAVAILABLE_DETAIL = "RAG is unavailable: the sqlite-vec extension could not be
 
 
 def _require_rag() -> None:
-    """Gate an endpoint on RAG being runnable here. Covers both halves of unavailable: sqlite-vec never
-    imported, and it imported but its native library will not load. 503 with a stated reason rather
-    than the 500 plus traceback a raising connection would produce, and rag_db's warn-once keeps the
-    log quiet however often this fires."""
+    """Returns 503 with a stated reason, not the 500 and traceback a raising connection would produce."""
     if not rag_db.rag_available():
         raise HTTPException(status_code = 503, detail = _UNAVAILABLE_DETAIL)
 
 
 @contextmanager
 def _rag_unavailable_as_503(cleanup_path: str | None = None) -> Iterator[None]:
-    """Report RagExtensionUnavailable as the same 503, wherever it is raised. _require_rag() has
-    normally answered for the session already; this closes the window where the very first request
-    is the one that discovers the missing library, and it reaches the connections ingestion opens
-    for itself. ``cleanup_path`` removes an upload that was saved before the failure, so nothing is
-    orphaned in the uploads root. Real database errors are left alone."""
+    """Maps RagExtensionUnavailable to 503 anywhere, removing the upload that cleanup_path names."""
     try:
         yield
     except rag_db.RagExtensionUnavailable as exc:
@@ -82,10 +75,7 @@ def _rag_connection() -> sqlite3.Connection:
 
 
 def _availability(available: bool) -> dict:
-    """Availability marker carried by the KB list, the one response that degrades rather than erroring.
-    Additive: a client that only reads the list is unaffected, one that reads this can say "RAG cannot run here"
-    instead of showing an empty page that looks ready to use and offering a Create that can only 503.
-    """
+    """Marks the KB list as degraded rather than erroring, so the UI can say RAG cannot run here."""
     return {
         "ragAvailable": available,
         "ragUnavailableReason": None if available else _UNAVAILABLE_DETAIL,
@@ -104,35 +94,29 @@ def _document_label(name: str) -> str:
     base = re.sub(r" +", " ", base).strip() or "document"
     if len(base) <= 200:
         return base
-    # Trim the stem, not the extension: _save_upload gates on the extension, so
-    # a plain truncation would reject a long-named .txt as "unsupported".
+    # Trim the stem: _save_upload gates on the extension.
     stem, ext = os.path.splitext(base)
     if not ext or len(ext) > 32:
         return base[:200]
     return stem[: 200 - len(ext)] + ext
 
 
-# Names treated as Windows paths. Each is also a legal POSIX filename; the list stays
-# narrow because splitting a real name loses part of it. One leading backslash counts as
-# UNC because multipart parsing unescapes "\\" to "\".
+# Kept narrow: splitting a real name loses part of it.
+# One leading backslash counts as UNC because multipart parsing unescapes "\\" to "\".
 _LOOKS_LIKE_WINDOWS_PATH = re.compile(r"^(?:[A-Za-z]:[\\/]|\\\\?|\.{1,2}\\)")
 
 
 def _sanitize_filename(name: str) -> str:
     """Label a browser upload, whose client-supplied name may carry a path."""
-    # Not ntpath.basename: it reads "P:L statement.pdf", how macOS stores a Finder "/",
-    # as drive "P:". Classify first: splitting on "/" would strip the drive from "C:/a\b".
+    # Not ntpath.basename: macOS names like "P:L x.pdf" would read as drive "P:".
+    # Classify first: splitting on "/" would strip the drive from "C:/a\b".
     raw = name or ""
     parts = re.split(r"[\\/]", raw) if _LOOKS_LIKE_WINDOWS_PATH.match(raw) else raw.split("/")
     return _document_label(parts[-1])
 
 
 def _persist_upload_stream(source, filename: str, *, empty_detail: str) -> tuple[str, str, str]:
-    """Copy a validated document stream into the managed uploads root.
-
-    Returns ``(stored_path, filename, content_hash)``; the digest spares ingestion a
-    second full read of the file.
-    """
+    """Returns the content hash so ingestion does not need a second full read of the file."""
     ext = os.path.splitext(filename)[1].lower()
     if ext not in config.UPLOAD_EXTS:
         raise HTTPException(
@@ -181,11 +165,7 @@ def _save_upload(file: UploadFile) -> tuple[str, str, str]:
 
 
 def _save_native_path_upload(lease: str) -> tuple[str, str, str]:
-    """Persist a desktop drop; returns (stored_path, filename, content_hash).
-
-    The webview never gets to name a path directly: Rust signs the path it saw and we
-    re-verify + re-stat that grant here before reading a byte.
-    """
+    """The webview names no path; the Rust-signed lease is re-verified before a single byte is read."""
     from utils.native_path_leases import NativePathLeaseError, verify_native_path_lease
 
     try:
@@ -200,7 +180,7 @@ def _save_native_path_upload(lease: str) -> tuple[str, str, str]:
         raise HTTPException(status_code = 400, detail = str(exc)) from exc
 
     account_path(grant.canonical_path)
-    # Path.name is one component, so a "\" in it is part of the name, as in "AC\DC.pdf".
+    # Path.name is one component, so a "\" in it is part of the name ("AC\DC.pdf").
     filename = _document_label(grant.canonical_path.name)
     try:
         with open(grant.canonical_path, "rb") as source:
@@ -431,11 +411,7 @@ def list_knowledge_bases(subject: str = Depends(get_current_subject)) -> dict:
     try:
         conn = rag_db.get_connection()
     except rag_db.RagExtensionUnavailable:
-        # RAG_AVAILABLE only covers the import; the native library can still fail to load per connection (a missing
-        # vec0 binary in the venv). The UI polls this list, so 500ing costs a traceback every few seconds for a
-        # condition that never changes in a session, and rag_db has warned once. The marker is the difference between
-        # "no knowledge bases yet" and "RAG cannot run here". Only the unavailable case degrades: a locked or corrupt
-        # database still raises.
+        # Degrade only when the vec0 native lib is unavailable; locked or corrupt DBs must still raise.
         return {"knowledgeBases": [], **_availability(False)}
     try:
         kbs = store.list_kbs(conn)
@@ -520,8 +496,7 @@ def _raise_if_scope_retired(scope: str, detail: str = "Knowledge base is being d
         raise HTTPException(status_code = 409, detail = detail)
 
 
-# The three upload routes stay sync so FastAPI runs them in the threadpool; their
-# copy + start_ingestion work would stall every other request on the event loop.
+# Upload routes stay sync so their blocking work runs in the threadpool.
 @router.post("/knowledge-bases/{kb_id}/documents")
 def upload_kb_document(
     kb_id: str,
@@ -584,7 +559,6 @@ def link_kb_folder(
     return _create_linked_folder("knowledge_base", kb_id, payload)
 
 
-# Stays sync for the reason above upload_kb_document.
 @router.post("/threads/{thread_id}/documents")
 def upload_thread_document(
     thread_id: str,
@@ -629,13 +603,10 @@ def _discard_document(document_id: str) -> None:
         store.delete_document(conn, document_id)
     finally:
         conn.close()
-    # Same uploads-root confinement as every other cleanup path, and best-effort for the same reason: on Windows
-    # commonpath raises across drives and os.remove raises while the ingestion worker still holds the file, neither
-    # of which should turn this into a 500.
+    # Best-effort: on Windows commonpath and os.remove can raise; must not 500.
     _remove_stored_upload(document.get("stored_path"))
 
 
-# Stays sync for the reason above upload_kb_document.
 @router.post("/projects/{project_id}/documents")
 def upload_project_document(
     project_id: str,
@@ -672,8 +643,7 @@ def upload_project_document(
     except Exception:
         _remove_stored_upload(stored_path)
         raise
-    # the project delete runs in the threadpool and can commit after the check above, once its own
-    # RAG cleanup has already listed the project's documents
+    # The threadpool project delete can commit after the check above.
     if get_chat_project(project_id) is None:
         _discard_document(document_id)
         raise HTTPException(status_code = 404, detail = "Project not found")
@@ -968,7 +938,6 @@ def folder_job_status(job_id: str, subject: str = Depends(get_current_subject)) 
     return _folder_job_view(row)
 
 
-# POST too, for the same reason as /jobs/{job_id}/events above.
 @router.post("/linked-folder-jobs/{job_id}/events")
 @router.get("/linked-folder-jobs/{job_id}/events", include_in_schema = False)
 def folder_job_events(
@@ -1043,7 +1012,6 @@ def extract_text(file: UploadFile = File(...), subject: str = Depends(get_curren
 @router.post("/search")
 def search(payload: SearchRequest, subject: str = Depends(get_current_subject)) -> dict:
     _require_rag()
-    # One connection for the whole request; the ownership check reads a single row.
     conn = _rag_connection()
     try:
         if payload.kb_id:
@@ -1090,8 +1058,7 @@ def search(payload: SearchRequest, subject: str = Depends(get_current_subject)) 
         conn.close()
 
 
-# Per-process secret so pdf.js range requests fetch the file without a bearer
-# header; tokens only work on this server instance.
+# Per-process secret so pdf.js range requests work without a bearer header.
 _PREVIEW_SECRET = secrets.token_bytes(32)
 _PREVIEW_TTL = 600
 
@@ -1100,8 +1067,7 @@ _CONTENT_TYPES = {
     ".txt": "text/plain; charset=utf-8",
     ".md": "text/markdown; charset=utf-8",
     ".markdown": "text/markdown; charset=utf-8",
-    # Served as plain text, never text/html: an uploaded HTML document rendered same-origin would
-    # execute its scripts with access to the app's storage.
+    # Never text/html: uploaded HTML would run scripts same-origin.
     ".html": "text/plain; charset=utf-8",
     ".htm": "text/plain; charset=utf-8",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -1176,8 +1142,7 @@ def document_file_url(
 def document_file_signed(document_id: str, token: str = Query(...)) -> FileResponse:
     """Serve the source file gated by the HMAC token (no bearer) so pdf.js range
     requests work."""
-    # Token first: this is the one endpoint with no bearer, and _require_rag() now opens
-    # a connection on its first call, which is not work an unverified token should buy.
+    # Verify the token first: this endpoint has no bearer auth.
     account = _verify_document_token(document_id, token)
     if account is None:
         raise HTTPException(status_code = 401, detail = "Invalid or expired token")
@@ -1203,6 +1168,6 @@ def document_file_signed(document_id: str, token: str = Query(...)) -> FileRespo
     return FileResponse(
         stored_path,
         media_type = _CONTENT_TYPES.get(ext, "application/octet-stream"),
-        # linked documents are named by a posix relative path, invalid in this header
+        # Linked documents are named by a posix relative path, invalid in this header.
         filename = doc["filename"].rsplit("/", 1)[-1],
     )

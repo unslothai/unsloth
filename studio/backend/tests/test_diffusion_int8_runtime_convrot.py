@@ -380,7 +380,7 @@ def _check_base_layers_rotated(model):
 
 
 def test_lora_baked_targets_rotate_their_base_layer_and_stay_exact():
-    # Studio attaches adapters before quantize_, so a LoRA target is "<suffix>.base_layer"
+    # Adapters attach before quantize_, so a LoRA target is '<suffix>.base_layer'.
     torch.manual_seed(0)
     model = _Tiny().float()
     for blk in model.transformer_blocks:
@@ -392,7 +392,7 @@ def test_lora_baked_targets_rotate_their_base_layer_and_stay_exact():
 
 @pytest.fixture
 def _fresh_peft_torchao_probe():
-    # peft caches is_torchao_available(); a value cached here leaks into later tests that block torchao
+    # peft caches is_torchao_available(); a cached value leaks into later tests that block torchao.
     is_torchao_available = pytest.importorskip("peft.import_utils").is_torchao_available
     is_torchao_available.cache_clear()
     yield
@@ -467,7 +467,6 @@ def test_zimage_int8_resolves_the_rotated_artifact_first_unless_killed(
     src = resolve_prequant_source(fam, "int8")
     names = candidate_filenames_of(src)
     assert src.location == "unsloth/Z-Image-Turbo-FP8"
-    # the plain artifact always stays in the chain behind it: not yet hosted, offline, or an older cache
     assert "Z-Image-Turbo-INT8.pt" in names
     assert (names[0] == "Z-Image-Turbo-INT8-ConvRot.safetensors") is rotated_first
     assert ("Z-Image-Turbo-INT8-ConvRot.safetensors" in names) is rotated_first
@@ -477,8 +476,7 @@ def test_zimage_int8_resolves_the_rotated_artifact_first_unless_killed(
 
 
 def test_zimage_rotated_set_is_exactly_the_int8_quantized_set(monkeypatch):
-    # The real Z-Image-Turbo skeleton on the meta device: ConvRot must cover every Linear the int8 filter quantizes
-    # (a quantized Linear left unrotated would be a silent accuracy hole) and nothing it does not.
+    # ConvRot must cover exactly the Linears int8 quantizes; an unrotated one is a silent accuracy hole.
     monkeypatch.delenv(tq.INT8_CONVROT_ENV)
     zmod = pytest.importorskip("diffusers.models.transformers.transformer_z_image")
     from accelerate import init_empty_weights
@@ -510,7 +508,6 @@ def test_zimage_rotated_set_is_exactly_the_int8_quantized_set(monkeypatch):
 
 
 def test_zimage_rotated_artifact_is_only_named_in_its_own_repo(monkeypatch):
-    # a variant base's repo (or any other repo a z-image family resolves) never gets the Turbo ConvRot name
     import dataclasses
 
     from core.inference.diffusion_families import detect_family

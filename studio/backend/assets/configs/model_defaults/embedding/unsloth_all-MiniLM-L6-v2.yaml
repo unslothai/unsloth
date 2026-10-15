@@ -1,9 +1,5 @@
-# Model defaults for unsloth/all-MiniLM-L6-v2
-# Based on All_MiniLM_L6_v2.py embedding notebook
-
 training:
   max_seq_length: 512
-  # num_epochs: 2
   num_epochs: 0
   learning_rate: 2e-4
   batch_size: 256

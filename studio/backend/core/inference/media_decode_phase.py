@@ -17,13 +17,7 @@ def decode_phase(
     on_decode: Any,
     attrs: "tuple[str, ...]" = DECODE_ATTRS,
 ):
-    """Call ``on_decode`` (at most once, must not raise) when a decoder is first entered.
-
-    The decode runs inside ``pipe()`` after the last step callback, so nothing outside can see it.
-    This is a HOST position: denoise kernels may still be queued, so a caller moving the step count
-    must treat it as a boundary mark (``_CompletedStepTicker.mark_boundary``). Wrappers are removed
-    on every exit, restoring any compiled decode the speed layer put in the instance ``__dict__``.
-    """
+    """Fires on_decode once at decoder entry, a host position that may trail queued denoise kernels."""
     fired = {"done": False}
     restore: list = []
 

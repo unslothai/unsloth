@@ -18,11 +18,7 @@ def not_on_modelscope(repo: str) -> str:
 
 
 def modelscope_missing(error: object, repo: Optional[str] = None) -> Optional[str]:
-    """The ModelScope adapter's missing-repo sentence carried by an error chain or text, else None.
-
-    `datasets` drops the Hub's message for a missing dataset, so when no link carries the
-    sentence and `repo` is given, a DatasetNotFoundError under the ModelScope source answers for it.
-    """
+    """datasets drops the missing-repo sentence, so a ModelScope DatasetNotFoundError stands in for it."""
     links: dict[int, object] = {}
     pending = [error]
     while pending:
@@ -42,7 +38,6 @@ def modelscope_missing(error: object, repo: Optional[str] = None) -> Optional[st
 
 
 def hf_error_status(exc: Exception) -> Optional[int]:
-    # Client-side HF errors should surface as the status they mean, not a generic 500.
     name = type(exc).__name__
     if name in (
         "RepositoryNotFoundError",
@@ -50,16 +45,13 @@ def hf_error_status(exc: Exception) -> Optional[int]:
         "EntryNotFoundError",
     ):
         return 404
-    # "I could not ask" is not "it is not there": these two say the Hub was unreachable or
-    # offline was forced, which is transient and retryable. Answering 404 told callers the
-    # repository was missing, and openai_auto_download caches that verdict for ten minutes.
+    # Unreachable/offline is transient, not 404: openai_auto_download caches 404 for ten minutes.
     if name in ("LocalEntryNotFoundError", "OfflineModeIsEnabled"):
         return 503
     if name == "GatedRepoError":
         return 403
     if name == "HFValidationError":
         return 400
-    # HfHubHTTPError subclasses carry the upstream response status.
     code = getattr(getattr(exc, "response", None), "status_code", None)
     if isinstance(code, int) and 400 <= code < 500:
         return code

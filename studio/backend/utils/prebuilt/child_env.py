@@ -34,7 +34,6 @@ SECRET_ENV_EXACT = frozenset(
         "SSH_AUTH_SOCK",
     }
 )
-# Case-insensitive substring markers for names we do not enumerate (no bare "KEY").
 SECRET_ENV_MARKERS = (
     "TOKEN",
     "SECRET",
@@ -45,7 +44,7 @@ SECRET_ENV_MARKERS = (
     "PRIVATE_KEY",
     "API_KEY",
 )
-# Proxy / index URLs embed creds in their value; the offline server never needs them.
+# Proxy/index URLs embed creds; the offline server never needs them.
 SECRET_ENV_URL_NAMES = frozenset(
     {
         "HTTP_PROXY",
@@ -60,7 +59,6 @@ SECRET_ENV_URL_NAMES = frozenset(
         "UV_EXTRA_INDEX_URL",
     }
 )
-# Also drop values with URL userinfo creds (scheme://user:secret@host).
 URL_USERINFO_RE = re.compile(r"://[^/@\s]+@")
 
 
@@ -82,10 +80,7 @@ def scrub_env(env: Mapping[str, str]) -> dict[str, str]:
     }
 
 
-# Filesystem pointers a downloaded binary could follow to on-disk credential stores. Dropped, not repointed: the offline
-# inference server needs none.
-# Those pointers are token caches under $HF_HOME, ~/.netrc and XDG config. Mirrors the cred-location list of the tools
-# bypass env (core/inference/tools.py).
+# Credential-store pointers are dropped, not repointed. Mirrors core/inference/tools.py list.
 CRED_LOCATION_ENV_NAMES = frozenset(
     {
         "HF_HOME",

@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Audio (TTS) generation applies recommended sampling + operator pins, like chat.
-
-Regression guard for the fix that moved the sampling fill ahead of the audio generators: a
-prior version resolved sampling only after the audio branches returned, so `unsloth run
---temperature` (UNSLOTH_SAMPLING_*) and per-model recommendations never reached audio
-generation. These exercise the transformers TTS path of ``generate_audio`` (the direct
-``/audio/generate`` route, which the chat-completions audio branches also delegate to).
-"""
+"""Sampling fill, including UNSLOTH_SAMPLING_*, must run before the audio branches return."""
 
 import asyncio
 import json
@@ -81,7 +74,6 @@ def _run_generate_audio(
 
     monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _noop_switch)
 
-    # Recommendation source == the Chat UI's .inference block.
     monkeypatch.setattr(ic, "load_inference_config", lambda mid: dict(recommended or {}))
     ic._recommended_sampling.cache_clear()
 
@@ -125,12 +117,12 @@ def test_moss_uses_the_published_audio_sampling_defaults(model_id):
 def test_audio_operator_pin_overrides_client(monkeypatch):
     monkeypatch.setenv("UNSLOTH_SAMPLING_TEMPERATURE", "0.9")
     captured = _run_generate_audio(monkeypatch, recommended = {"temperature": 1.0}, temperature = 0.2)
-    assert captured["temperature"] == 0.9  # operator pin wins even over an explicit client value
+    assert captured["temperature"] == 0.9
 
 
 def test_audio_client_explicit_preserved(monkeypatch):
     captured = _run_generate_audio(monkeypatch, recommended = {"temperature": 1.0}, temperature = 0.2)
-    assert captured["temperature"] == 0.2  # explicit client value preserved over recommendation
+    assert captured["temperature"] == 0.2
 
 
 def test_audio_generate_returns_the_exact_persisted_clip_id(monkeypatch):

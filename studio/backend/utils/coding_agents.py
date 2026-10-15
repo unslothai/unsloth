@@ -93,17 +93,12 @@ def deepseek_harness_executables_on_path(path: Optional[str] = None) -> list[str
 
 
 def _is_on_path(agent: str) -> bool:
-    # shutil.which returns None on a miss but PATH lookups can still raise, and this is advisory, so a lookup failure
-    # reads as "not installed" rather than breaking the endpoint.
     try:
         executable = shutil.which(_EXECUTABLES.get(agent, agent))
         if executable is None:
             return False
         if agent == "dsh":
-            # Detection runs when the settings panel opens, so it must not execute an
-            # arbitrary same-named program. Official npm/pnpm launchers contain one of
-            # the package or product markers above; explicit launches may additionally
-            # use the bounded --help probe for custom wrappers.
+            # Must not execute an arbitrary same-named program when the panel opens.
             if is_deepseek_harness_executable(executable, allow_execution = False):
                 return True
             return any(
@@ -118,9 +113,5 @@ def _is_on_path(agent: str) -> bool:
 
 
 def detect_installed_coding_agents() -> list[str]:
-    """Return the subset of CODING_AGENTS whose CLI binary is on PATH.
-
-    Order follows CODING_AGENTS, not discovery order, so callers can treat the
-    first entry as the preferred default among the installed agents.
-    """
+    """Ordered as CODING_AGENTS, so the first installed entry is the preferred default."""
     return [agent for agent in CODING_AGENTS if _is_on_path(agent)]

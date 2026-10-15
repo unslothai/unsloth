@@ -23,9 +23,8 @@ DEFAULT_HEAD = 0.2
 DEFAULT_TAIL = 0.1
 DEFAULT_EVERY = 2
 
-# Fewer steps leave no middle worth skipping, and a distilled few-step model has no step to spare.
 STATIC_MIN_STEPS = 12
-# Prefix-KV DiTs (Qwen-Image-2.1, FLUX.2 klein KV) return extra prompt rows on step 0, so reuse starts at step 1.
+# Prefix-KV DiTs return extra prompt rows on step 0, so reuse starts at step 1.
 MIN_HEAD_STEPS = 2
 
 ENV_MODE = "UNSLOTH_STATIC_SKIP_MODE"
@@ -167,7 +166,6 @@ def _split_output(out: Any) -> tuple:
             return out[0], lambda v: (v,)
         if len(out) == 1 and type(out[0]) is list and _same_shape_tensors(out[0]):
             return _torch().stack(out[0]), lambda v: (list(v.unbind(0)),)
-        # Joint (video, audio) predictions (MiniMax-H3), per stream; a non-tensor member (klein KV cache) declines.
         if len(out) >= 2 and all(_is_tensor(v) for v in out):
             return _Joint(out), lambda v: tuple(v.parts)
         return None, None
@@ -252,7 +250,6 @@ def _timestep_of(
     return None
 
 
-# MiniMax-H3 token_tags of the (video, audio) output streams; each stream steps its own shifted schedule.
 _JOINT_STREAM_TAGS = (0, 2)
 
 
@@ -294,7 +291,7 @@ def _extrapolate(v0: Any, t0: Any, v1: Any, t1: Any, t: Any) -> Any:
     step = t1 - t0
     safe = torch.where(step != 0, step, torch.ones_like(step))
     ratio = torch.where(step != 0, (t - t1) / safe, torch.zeros_like(step))
-    # A stream with no rows in the call reads inf: reuse instead of a NaN.
+    # A stream with no rows reads inf: reuse instead of a NaN.
     ratio = torch.where(torch.isfinite(ratio), ratio, torch.zeros_like(ratio))
     ratio = ratio.reshape([1] * v1.ndim) if v1.ndim else ratio.reshape(())
     v1f = v1.float()
@@ -326,7 +323,7 @@ class StaticStepSkip:
         auto: bool = False,
         logger: Any = None,
     ) -> None:
-        # First, so nothing update_wrapper copies over can shadow the state set below.
+        # First, so nothing update_wrapper copies can shadow the state set below.
         cls_forward = type(module).forward.__get__(module)
         try:
             update_wrapper(self, cls_forward)
@@ -334,7 +331,7 @@ class StaticStepSkip:
             pass
         self._t_slot = ("timestep", None)
         try:
-            # Pipelines filter kwargs by inspect.signature(transformer.forward); keep the real one visible.
+            # Pipelines filter kwargs by inspect.signature(transformer.forward); keep it visible.
             self.__signature__ = inspect.signature(cls_forward)
             self._t_slot = _timestep_slot(self.__signature__)
         except Exception:  # noqa: BLE001
@@ -351,9 +348,7 @@ class StaticStepSkip:
         self._warned_container = False
         self.stats = {"calls": 0, "computed": 0, "skipped": 0}
         self.last_stats = dict(self.stats)
-        # Account whose generation produced the counters; status shows them to that account only.
         self.owner: Optional[str] = None
-        # Of the last armed forward: the post-render reset empties the plan but status still reports it.
         self.planned_skips = 0
         self.reset(None)
 
@@ -385,7 +380,6 @@ class StaticStepSkip:
         if steps is not None:
             self.planned_skips = len(skips)
         self.step_signal = bool(step_signal)
-        # An empty schedule still counts, so status never reports the previous generation's skips.
         self.counting = steps is not None
         self.steps_ended = 0
         self.ordinal = 0
@@ -394,7 +388,6 @@ class StaticStepSkip:
         if keep_stats:
             return self
         if self.stats["calls"] or self.counting:
-            # Kept for status past the per-call reset; arming a new generation clears it (no stale counts).
             self.last_stats = dict(self.stats)
         self.stats = {"calls": 0, "computed": 0, "skipped": 0}
         if steps is not None and owner != self.owner:
@@ -497,7 +490,7 @@ class StaticStepSkip:
             t = (
                 _stream_timesteps(kwargs) if isinstance(last.value, _Joint) else None
             ) or _timestep_of(args, kwargs, self._t_slot)
-            # Only same-shape outputs combine: a prefix-KV step 0 is longer than every later step.
+            # Only same-shape outputs combine: a prefix-KV step 0 is longer.
             if (
                 prev.sig == last.sig
                 and tuple(prev.value.shape) == tuple(last.value.shape)
@@ -551,7 +544,6 @@ def install_static_step_skip(
     if transformer is None:
         _warn(logger, "pipeline has no transformer")
         return None
-    # A second denoiser takes part of the CFG trajectory this layer would not see.
     for attr in ("transformer_2", "unconditional_transformer"):
         other = getattr(pipe, attr, None)
         if other is not None and other is not transformer:
@@ -591,7 +583,7 @@ def install_static_step_skip(
         if prior_ctx is not None or callable(getattr(type(transformer), "cache_context", None)):
             skip._ctx = _context_wrapper(skip, transformer, prior_ctx)
             slots["cache_context"] = skip._ctx
-        # Written into the instance dict, like GraphedForward: nn.Module.__setattr__ would inspect it.
+        # Instance dict, like GraphedForward: nn.Module.__setattr__ would inspect it.
         slots["forward"] = skip
         slots[_SLOT] = skip
     except Exception as exc:  # noqa: BLE001 - best-effort, the load proceeds uncached

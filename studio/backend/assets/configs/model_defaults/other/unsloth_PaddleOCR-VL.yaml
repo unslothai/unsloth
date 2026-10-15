@@ -1,11 +1,7 @@
-# Model defaults for unsloth/PaddleOCR-VL
-# Based on Paddle_OCR_(1B)_Vision.ipynb
 # Also applies to: unsloth/PaddleOCR-VL
-# added inference parameters from unsloth notebook
 
 training:
   max_seq_length: 2048
-  # num_epochs: 4
   num_epochs: 0
   learning_rate: 5e-5
   batch_size: 4

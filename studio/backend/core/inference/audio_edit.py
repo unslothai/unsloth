@@ -106,8 +106,6 @@ def check_instructions(
             "Make fewer changes, or use DotTTS Edit."
         )
     before, after = _collapse(original), _collapse(edited)
-    # Runtime gets the instructions, history gets ``edited``: they must agree as bags of words
-    # (which occurrence of a repeated word is meant is the runtime's call).
     words = Counter(before.split())
     for instruction in items:
         match = INSTRUCTION_RE.match(str(instruction))
@@ -124,7 +122,6 @@ def check_instructions(
             return MISMATCH
         if not all(_collapse(n) and _collapse(n) in after for n in news):
             return MISMATCH
-        # Running bag, not the transcript: a word an earlier instruction removed is gone.
         if not all(words[token] > 0 for o in olds for token in o.split()):
             return MISMATCH
         for phrase in removed:

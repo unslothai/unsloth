@@ -32,7 +32,6 @@ __all__ = [
 
 AUDIO_DEVICE_CHOICES = ("auto", "cpu", "gpu")
 
-# Spellings other Studio surfaces already use; names arrive from a status echo.
 _CPU_ALIASES = frozenset({"cpu", "ram", "cpu_ram", "system", "system_ram"})
 _GPU_ALIASES = frozenset(
     {"gpu", "cuda", "rocm", "hip", "xpu", "mps", "metal", "accelerator", "accel"}
@@ -40,16 +39,7 @@ _GPU_ALIASES = frozenset(
 
 
 def normalize_audio_device(value: Optional[str]) -> str:
-    """Map any accepted spelling onto ``auto``/``cpu``/``gpu``.
-
-    Anything unrecognised becomes ``auto``: an unknown preference must not fail
-    a load, and detection is what the caller would have done regardless.
-
-    That fallback is for values the user did not type: ``UNSLOTH_AUDIO_DEVICE``,
-    and device names read back off a status payload. The HTTP models pin the
-    three canonical values instead, so a misspelled ``cpu`` is a 422 rather than
-    a silent placement back on the GPU.
-    """
+    """Unknown values become auto, but HTTP models pin the canonical values so a typo is a 422."""
     text = str(value or "").strip().lower()
     if not text:
         return "auto"
@@ -63,25 +53,12 @@ def normalize_audio_device(value: Optional[str]) -> str:
 
 
 def audio_device_default() -> str:
-    """The preference for a request that carries none (``UNSLOTH_AUDIO_DEVICE``).
-
-    Scope: the native audio backend and the three STT sidecars. It does NOT reach a
-    GGUF TTS model. llama.cpp placement is decided from ``gpu_memory_mode`` and
-    ``gpu_layers`` at request time, but nothing knows a GGUF is audio until
-    llama-server reports its ``_audio_type`` after the load, so there is no point
-    early enough to translate the default into zero offload. The Audio page does it
-    from the catalog it already has; a headless caller must send the GGUF placement
-    fields itself.
-    """
+    """Does not apply to GGUF TTS models, which take placement from gpu_memory_mode and gpu_layers."""
     return normalize_audio_device(os.environ.get("UNSLOTH_AUDIO_DEVICE"))
 
 
 def audio_device_forces_cpu(value: Optional[str]) -> bool:
-    """True when this preference means "load into CPU RAM".
-
-    ``None`` falls back to the environment default, so an older caller still
-    honours a server-wide setting.
-    """
+    """None falls back to the environment default, so older callers still honour a server-wide setting."""
     if value is None:
         return audio_device_default() == "cpu"
     return normalize_audio_device(value) == "cpu"
@@ -102,20 +79,6 @@ def audio_load_runs_on_cpu(audio_type: Optional[str], value: Optional[str]) -> b
 
 
 def mask_accelerators_for_cpu_audio(env: dict) -> None:
-    """Hide CUDA/ROCm from a worker whose weights stay in CPU RAM.
-
-    Placing the weights on CPU is not enough on its own: the worker runs
-    ``detect_hardware()`` first, and that calls ``torch.cuda.get_device_properties``,
-    which creates a context worth a few hundred MB. Masking first is what makes
-    "this load holds no VRAM" true.
-
-    Same values as the CPU embed server (``core/rag/embed_llama_server.py``):
-    blank for CUDA, ``-1`` for HIP because it reads the CUDA variable only when
-    its own is unset. An inherited ROCR mask is left alone, since clearing it
-    exposes more agents rather than fewer. XPU is not masked: its probe is
-    ``torch.xpu.is_available()`` and takes no context.
-
-    Call before importing torch. Mutates ``env`` in place.
-    """
+    """Call before importing torch: masking first stops detect_hardware() creating a CUDA context."""
     env["CUDA_VISIBLE_DEVICES"] = ""
     env["HIP_VISIBLE_DEVICES"] = "-1"

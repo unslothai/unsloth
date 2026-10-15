@@ -96,73 +96,51 @@ _MAX_ERROR_CHARS = 500
 _MAX_CONTEXT_CHARS = 12_000
 _MAX_CONTEXT_MESSAGE_CHARS = 4_000
 _MAX_SYNTHESIS_EVIDENCE_CHARS = 32_000
-# The synthesis prompt must fit the loaded context or it is silently truncated and the report
-# degenerates into an echo of the evidence tail. The context box accepts anything from 128 up, so
-# the budget adapts; unknown context keeps the full cap.
+# The synthesis prompt must fit context or it is silently truncated.
 _MIN_SYNTHESIS_EVIDENCE_CHARS = 1_500
-# Each section keeps a floor: overflow on a tiny context is recoverable, an empty prompt is not.
 _MIN_QUESTION_CHARS = 800
 _SYNTHESIS_EVIDENCE_CHARS_PER_TOKEN = 3.0
 _SYNTHESIS_CONTEXT_RESERVE_TOKENS = 4_096
 _SYNTHESIS_MAX_TOKENS = 16_384
-# Nothing between here and the provider bounds what is sent, and published caps reach 384_000.
 _SYNTHESIS_MAX_TOKENS_CEILING = 65_536
-# Deliberately pessimistic: overshooting the wall clock loses the run, undershooting shortens it.
 _SYNTHESIS_TOKENS_PER_SECOND = 50
 _CAP_UNREADABLE = object()
 _CAP_LOOKUP_ATTEMPTS = 3
 _CAP_LOOKUP_RETRY_SECONDS = 0.2
 _PROGRESS_FLUSH_CHARS = 512
 _PROGRESS_FLUSH_SECONDS = 0.25
-# _PROGRESS_FLUSH_CHARS / _PROGRESS_FLUSH_SECONDS * 64: both arms must scale from the same
-# written length, or the time arm's knee lands where a 65_536-token report ENDS and only it binds.
+# _PROGRESS_FLUSH_CHARS / _PROGRESS_FLUSH_SECONDS * 64; both arms scale from the same length.
 _PROGRESS_FLUSH_CHARS_PER_SECOND = 131_072
-# Providers whose thinking answers truncate below a floor; mirrors
-# EXTERNAL_MIN_OUTPUT_TOKENS_BY_PROVIDER in the same client module.
+# Mirrors EXTERNAL_MIN_OUTPUT_TOKENS_BY_PROVIDER in the client module.
 _EXTERNAL_MIN_OUTPUT_TOKENS_BY_PROVIDER = {"kimi": 16_000}
 _EXTERNAL_MIN_OUTPUT_TOKENS = 64
-# Below this loaded context the prompt scaffolding alone fills the window, so grounding is skipped.
 _AUTO_SCRAPE_MIN_CONTEXT_TOKENS = 8_192
-# OFF by default (UNSLOTH_RESEARCH_AUTO_SCRAPE=1): benchmarking showed no reliable accuracy gain
-# over snippets while adding latency, and it is safe only with the context gate in _research.
+# Off by default: no reliable accuracy gain over snippets, more latency.
 _AUTO_SCRAPE_TOP_K = 3
 _AUTO_SCRAPE_TOTAL_CHARS = 6_000
 _WEB_RAG_TOP_N = 6
 _WEB_RAG_MIN_SCORE = 0.30
-# routes.inference's 400 when nothing is loaded is transient, not a bad request.
 _MODEL_WAIT_POLL_SECONDS = 2.0
-# A model that keeps disappearing would re-send forever, so cap how many times one call may wait.
 _MAX_MODEL_WAITS = 3
 _NO_MODEL_LOADED_DETAIL = "No model loaded"
-# Every "no grammar engine here" refusal says this (routes, grammar_constraint); a re-send fixes those only.
 _NO_GRAMMAR_ENGINE_DETAIL = "needs a grammar engine"
-# routes.inference reports the same unloaded state this way when auto-switch finds no local match.
 _MODEL_NOT_FOUND_CODE = "model_not_found"
-# routes.inference 503s with this while an auto-switch to the run's model is still loading.
 _MODEL_SWITCH_FAILED_CODE = "model_switch_failed"
-# Used when the 503 carries no usable Retry-After, and as the step between switch retries.
 _MODEL_SWITCH_RETRY_SECONDS = 5.0
-# Long enough for a load already in flight; past that the refusal is the honest answer.
 _NAMED_MODEL_WAIT_SECONDS = 60.0
-# Transport keepalives prevent HTTP read timeouts without proving that a model is progressing.
 _MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS = 120.0
 _MODEL_OUTPUT_IDLE_TIMEOUT_SECONDS = 120.0
-# Cancellation is cooperative, so bound the unwind; a stuck iterator holds a timed-out call open for
-# the rest of the wall clock.
 _STREAM_CLEANUP_TIMEOUT_SECONDS = 5.0
-# The SSE comment routes/inference.py sends while queued, not while the backend is silent.
 _ADMISSION_WAIT_COMMENT = ": admission-wait"
 _ADMISSION_DONE_COMMENT = ": admission-done"
-# Queue notices arrive on the configured heartbeat, so allow for a few missed ones.
 _ADMISSION_HEARTBEAT_MISSES = 3
-# Also the ceiling for any budget, so the poll loop stays bounded however long generation itself runs.
 _DEFAULT_MODEL_TIMEOUT_SECONDS = 900.0
 _MAX_MODEL_WAIT_BUDGET_SECONDS = 3600.0
-# Past the hourly windows providers reset on, short of parking a run and its lease on one mistaken header.
+# Past providers' hourly reset windows.
 _MAX_RATE_LIMIT_WAIT_SECONDS = 3600.0
-# Retry waits measure against this: a key that expires mid-backoff fails auth without reaching the provider.
+# A key expiring mid-backoff fails auth without reaching the provider.
 _MODEL_CALL_KEY_LIFETIME_SECONDS = 2 * 60 * 60
-# Headroom so the named stall guards expire before HTTPX's own read timeout does.
+# Named stall guards must expire before HTTPX's own read timeout.
 _STREAM_READ_TIMEOUT_MARGIN_SECONDS = 30.0
 
 
@@ -190,9 +168,7 @@ def _synthesis_needs_recovery(report: str, finish_reason: str | None) -> bool:
     return finish_reason == "length" or not report
 
 
-# A shorter recovery outranks a usable first draft only when the provider positively says
-# it reached a natural stop. Missing and unknown reasons can instead mean a bare EOF after
-# partial text, while every supported report path normalizes natural completion to "stop".
+# Missing/unknown finish reasons may be a bare EOF, so only 'stop' counts as natural.
 _NATURAL_FINISH_REASONS = frozenset({"stop"})
 
 
@@ -213,13 +189,11 @@ def _auto_scrape_default() -> int:
         return 0
 
 
-# Nav menus, language sidebars and percent-encoded link lists are not evidence and derail retrieval.
 _MD_LINK = re.compile(r"\[([^\]]*)\]\([^)]*\)")
 _PERCENT_ESCAPE = re.compile(r"%[0-9A-Fa-f]{2}")
 _LIST_PREFIX = re.compile(r"^(?:[\*\-\+•]|\d+[.)])\s")
 _BLANK_RUN = re.compile(r"\n{3,}")
-# Bare tracking URLs arrive as one unbroken token (prose never has an 80-char word) and a small
-# model will latch onto and echo it.
+# Tracking URLs are single 80+ char tokens that small models echo.
 _LONG_TOKEN = re.compile(r"\S{80,}")
 
 
@@ -252,7 +226,6 @@ class LeaseLost(Exception):
 
 
 class ModelOutputIdleTimeout(httpx.ReadTimeout):
-    # Default message: the stream reader raises the class the deadline names.
     def __init__(self, message: str = "Local model stopped producing output"):
         super().__init__(message)
 
@@ -266,7 +239,6 @@ class ModelWallClockTimeout(httpx.ReadTimeout):
     pass
 
 
-# Every separator, not just "\n": one survivor lets provider text open a block of its own.
 _LINE_SEPARATOR = re.compile(r"[\r\n\v\f\x1c-\x1e\x85\u2028\u2029]+")
 
 
@@ -281,8 +253,7 @@ def _safe_error(exc: BaseException) -> str:
         return "Local model request timed out"
     if isinstance(exc, httpx.HTTPStatusError):
         return f"Local model request failed with HTTP {exc.response.status_code}"
-    # str() must stay the server's own text so routes/inference.py's token-count regex still matches;
-    # reading it here dropped the Model settings hint from an oversize refusal.
+    # str() must stay the server text: routes/inference.py's token-count regex matches it.
     friendly = getattr(exc, "friendly", None)
     text = friendly if isinstance(friendly, str) and friendly else str(exc)
     text = _LINE_SEPARATOR.sub(" ", text).strip()
@@ -298,12 +269,7 @@ def _research_question_context(
     user_message_id: str,
     override: str = "",
 ) -> tuple[str, str]:
-    """The question to research plus the conversation that led to it.
-
-    ``override`` is the question the model handed off, which folds in what the conversation
-    established and is what the user actually wants researched. The raw message stands in for
-    runs created without one.
-    """
+    """The handoff override folds in the conversation and wins; the raw user message is the fallback."""
     messages = list_chat_messages(thread_id)
     by_id = {str(message["id"]): message for message in messages}
     user = by_id.get(user_message_id)
@@ -348,16 +314,9 @@ def _positive_int_or_none(value: object) -> int | None:
 
 
 def _peek_inference_backend() -> Any:
-    """The orchestrator if one already exists, else None. Never constructs one.
-
-    A resumed durable run probes on uvicorn's loop, and constructing reaches
-    get_default_models() -> get_device(), so a cold probe would block the loop on the torch
-    import just to answer "nothing is loaded". A patched core.inference getter still wins:
-    that is the seam these probes are injected through.
-    """
+    """Returns the existing orchestrator or None; building one would block the loop on a torch import."""
     from core.inference import get_inference_backend
 
-    # Native / transformers: the orchestrator the API layer reads (not the subprocess singleton).
     try:
         from core.inference.orchestrator import get_inference_backend as _real
         from core.inference.orchestrator import peek_inference_backend
@@ -377,14 +336,7 @@ def _run_inference_request(run: dict) -> dict[str, Any]:
 
 
 def _loaded_context_length(inference: dict[str, Any] | None = None) -> int | None:
-    """Best-effort read of the active model's context window in tokens, or None if unknown.
-
-    Mirrors routes.inference._monitor_context_length (llama.cpp backend, else the inference
-    orchestrator) so grounding sizes evidence to the same context the API layer serves. The ML
-    backends live in a worker subprocess, so the core.inference.inference singleton is unpopulated
-    here and importing it pulls in the ML stack; read the orchestrator the routes use instead. A run
-    carrying a providerType runs on that connection, not on either local backend.
-    """
+    """Active model's context window, or None; reads the orchestrator the routes use, not the ML worker."""
     if _external_provider_run(inference):
         return None
     try:
@@ -415,11 +367,7 @@ def _loaded_context_length(inference: dict[str, Any] | None = None) -> int | Non
 
 
 def _estimate_prompt_tokens(messages: list[dict]) -> int:
-    """Conservative prompt token estimate for max_tokens clamping.
-
-    Uses the same chars-per-token heuristic as synthesis evidence budgeting so
-    Deep Research sizes output against the same context window it already probes.
-    """
+    """Conservative token estimate for clamping max_tokens; same chars-per-token heuristic as synthesis."""
     chars = 0
     for message in messages:
         content = message.get("content")
@@ -455,39 +403,26 @@ def _resolve_max_tokens(
     if max_tokens is None:
         requested = min(int(inference.get("maxTokens") or 4096), 8192)
     else:
-        # Re-capping a budget the caller already resolved is what truncated the report.
         requested = max(1, int(max_tokens))
-    # Defers rather than short-circuits: _loaded_context_length is already None for a run
-    # carrying a providerType.
     return _clamp_max_tokens_for_context(requested, messages, inference = inference)
 
 
 def _synthesis_max_tokens(inference: dict[str, Any], model_timeout_seconds: Any = None) -> int:
-    """The report's output budget, between `_report_floor` and `_synthesis_budget_ceiling`.
-
-    The client's ceiling is a limit the provider PUBLISHES, not one any request has survived.
-    """
+    """Output budget between _report_floor and the ceiling; the published cap is stated, not proven."""
     if not inference.get("providerType"):
         return _SYNTHESIS_MAX_TOKENS
     floor = _provider_output_floor(inference.get("providerType"))
     saved = _saved_connection_cap(inference.get("providerId"))
     if saved is _CAP_UNREADABLE:
-        # Neither signal is confirmable, so spend the smaller: losing a finished run to a
-        # transient lock costs far more.
         unconfirmed = _positive_int_or_none(inference.get("maxOutputTokens"))
         return max(min(unconfirmed or _SYNTHESIS_MAX_TOKENS, _SYNTHESIS_MAX_TOKENS), floor)
     resolved = _positive_int_or_none(inference.get("maxOutputTokens"))
     if resolved and not saved and inference.get("maxOutputTokensFromSavedCap") is True:
-        # The cap was the only thing holding this number up, and clearing it is what that
-        # field is FOR on an undocumented model.
         resolved = None
     if resolved:
-        # The run is durable, so the cap can have been lowered since the client resolved this.
         budget = min(resolved, saved) if saved else resolved
     else:
-        # Legacy run: the saved cap is connection-wide, so raising on it would be a guess.
         budget = _SYNTHESIS_MAX_TOKENS
-    # Below its provider floor a thinking answer is cut off before the report starts.
     return max(
         min(budget, _synthesis_budget_ceiling(model_timeout_seconds)),
         _report_floor(inference),
@@ -496,11 +431,7 @@ def _synthesis_max_tokens(inference: dict[str, Any], model_timeout_seconds: Any 
 
 
 def _report_floor(inference: dict[str, Any]) -> int:
-    """The budget every run had before a connection ceiling was read at all.
-
-    Only a model's own published limit may go below it, never an override sizing the chat
-    slider -- and `maxOutputTokens` arrives with the override already folded in.
-    """
+    """Pre-ceiling default: only a model's own published limit may lower it, never a chat override."""
     published = _positive_int_or_none(inference.get("maxOutputTokensPublished"))
     if published:
         return min(_SYNTHESIS_MAX_TOKENS, published)
@@ -508,16 +439,12 @@ def _report_floor(inference: dict[str, Any]) -> int:
 
 
 def _synthesis_budget_ceiling(model_timeout_seconds: Any = None) -> int:
-    """The most this run can usefully ask for, never below the previous default.
-
-    `_stream_completion` aborts at `modelTimeoutSeconds` WITHOUT returning the report it has
-    already streamed, while running out of budget merely truncates it under a notice.
-    """
+    """Timeout aborts without returning the streamed report; running out of budget only truncates it."""
     ceiling = _SYNTHESIS_MAX_TOKENS_CEILING
     timeout = model_timeout_seconds
     if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
         timeout = None
-    # 0 is "unlimited" in the budgets schema.
+    # 0 is 'unlimited' in the budgets schema.
     if timeout and timeout > 0:
         ceiling = min(ceiling, int(timeout * _SYNTHESIS_TOKENS_PER_SECOND))
     return max(ceiling, _SYNTHESIS_MAX_TOKENS)
@@ -530,11 +457,7 @@ def _provider_output_floor(provider_type: object) -> int:
 
 
 def _saved_connection_cap(provider_id: object) -> int | None | object:
-    """The connection's saved Max Output Tokens, None if it has none, else _CAP_UNREADABLE.
-
-    An unreadable row is not an uncapped connection: the cap may have been lowered since this
-    durable run was created, and spending the older ceiling is the request the user capped away.
-    """
+    """An unreadable cap is not uncapped: it may have been lowered since the durable run was created."""
     if not isinstance(provider_id, str):
         return None
     for attempt in range(_CAP_LOOKUP_ATTEMPTS):
@@ -542,7 +465,6 @@ def _saved_connection_cap(provider_id: object) -> int | None | object:
             provider = providers_db.get_provider(provider_id) or {}
         except Exception:
             logger.debug("research.provider_cap_probe_failed", exc_info = True)
-            # A read that lost the writer lock is transient, and this runs off the loop.
             if attempt + 1 < _CAP_LOOKUP_ATTEMPTS:
                 time.sleep(_CAP_LOOKUP_RETRY_SECONDS)
                 continue
@@ -569,9 +491,7 @@ def _custom_responses_rejects_sampling(inference: dict[str, Any]) -> bool:
     model = str(inference.get("externalModel") or inference.get("model") or "").strip().lower()
     if _OPENAI_NON_REASONING_CHAT_ALIAS.search(model):
         return False
-    # Sampling support is an upstream model contract, independent of the UI's reasoning
-    # toggle metadata. In particular, codex-mini and gpt-4.5 reject these fields without
-    # necessarily being marked reasoning-capable by the client that created a durable run.
+    # Upstream contract: codex-mini and gpt-4.5 reject sampling fields regardless of UI flags.
     return _OPENAI_RESPONSES_FIXED_SAMPLING_MODEL.match(model) is not None
 
 
@@ -610,9 +530,6 @@ def _synthesis_length_limit_error(
     requested_max_tokens: int,
     inference: dict[str, Any] | None = None,
 ) -> str:
-    # A saved connection never touched the loaded context, so neither half of the local
-    # wording holds: the cap it reached is the provider's own output limit, and Context
-    # Length in chat settings does not move it.
     if _external_provider_run(inference):
         return "Connected model report reached its output limit before completion"
     if _completion_hit_context_wall(
@@ -639,22 +556,12 @@ async def _response_format_unsupported(response: httpx.Response) -> bool:
         isinstance(error, dict)
         and error.get("code") == "unsupported_parameter"
         and error.get("param") == "response_format"
-        # Code and param alone also match the audio and tool-loop refusals, which no re-send fixes.
         and _NO_GRAMMAR_ENGINE_DETAIL in str(error.get("message") or "")
     )
 
 
 async def _model_unloaded(response: httpx.Response) -> str | None:
-    """Which "not servable right now" refusal this is, or None for any other failure.
-
-    All three are transient for a durable run, unlike any other 4xx. ``"empty"`` is
-    routes.inference's 400 for a backend with nothing loaded. ``"named"`` is its 404
-    model_not_found, which the same condition produces when auto-switch is on and the name resolves
-    to nothing local: a model mid-load or mid-update looks exactly like a model that will never
-    resolve, so the caller waits on it far more briefly. ``"switching"`` is its 503
-    model_switch_failed, raised while a swap to the run's model is still loading; the generic 5xx
-    backoff gave up in three seconds, well inside a real load.
-    """
+    """Names the transient refusal (empty, named, switching) a durable run waits out; None for others."""
     if response.status_code not in (400, 404, 503):
         return None
     try:
@@ -670,10 +577,7 @@ async def _model_unloaded(response: httpx.Response) -> str | None:
 
 
 def _retry_after_delay(raw: object) -> float | None:
-    """A Retry-After value as a delay in seconds, or None when it names none or has passed.
-
-    RFC 9110 defines the field as ``HTTP-date / delay-seconds``, and providers behind a CDN do
-    send dates. Reading only the number backs off a second inside a cooldown with minutes left."""
+    """Parses Retry-After as seconds or an HTTP-date, since CDNs send dates; None when absent or past."""
     if raw is None:
         return None
     text = str(raw).strip()
@@ -689,7 +593,7 @@ def _retry_after_delay(raw: object) -> float | None:
         if at is None:
             return None
         if at.tzinfo is None:
-            # RFC 9110 dates are GMT; a form that omits the zone is not a local time.
+            # RFC 9110 dates are GMT.
             at = at.replace(tzinfo = timezone.utc)
         delay = (at - datetime.now(timezone.utc)).total_seconds()
     return delay if delay > 0 else None
@@ -701,22 +605,14 @@ def _retry_after_seconds(response: httpx.Response) -> float | None:
 
 
 async def _peek_stream_head(lines: AsyncIterator[str]) -> str | None:
-    """The stream's first line, or None when it ends without one.
-
-    One line only: a queue notice belongs to the loop that refreshes the admission bound, and the
-    refusal below is always a stream's first line."""
+    """Returns only the first line: queue notices belong to another loop; a refusal is always first."""
     async for line in lines:
         return line
     return None
 
 
 def _stream_rate_limit_delay(head: str | None) -> float | None:
-    """The delay a proxied provider rate-limit refusal asks for: None when the stream does not
-    open with one, 0.0 when it names no delay.
-
-    core.inference.external_provider turns an upstream non-200 into a 200 stream carrying one
-    OpenAI-shaped error line, so a 429 survives only there: as ``code`` (``type`` for the ChatGPT
-    connection) plus the forwarded Retry-After."""
+    """Retry delay from a proxied 429 line: None if the stream has no such line, 0.0 if no delay."""
     if head is None or not head.startswith("data:"):
         return None
     try:
@@ -730,7 +626,6 @@ def _stream_rate_limit_delay(head: str | None) -> float | None:
         return None
     metadata = error.get("metadata")
     if isinstance(metadata, dict) and metadata.get("terminal"):
-        # Quota exhausted rather than throttled: no wait clears it, so surface it now.
         return None
     requested = error.get("retry_after")
     if requested is None and isinstance(metadata, dict):
@@ -749,13 +644,7 @@ async def _with_head(head: str | None, rest: AsyncIterator[str]) -> AsyncIterato
 
 
 def _rate_limit_wait(requested: float, remaining: float, headroom: float) -> float:
-    """How much of a provider's requested retry delay this call can afford.
-
-    The delay is the provider's, not a share of the model-load budget, so it is bounded by what is
-    left of the call minus the room the re-send needs; coming back early only spends an attempt on
-    the same refusal. The standing ceiling covers a run with no wall clock at all."""
-    # Never reserve all of what is left: a call whose wall clock equals its first-output budget would
-    # collapse every wait to zero.
+    """Bounds the provider's requested delay by what is left of the call, less room to re-send."""
     headroom = min(headroom, remaining / 2)
     return max(0.0, min(requested, _MAX_RATE_LIMIT_WAIT_SECONDS, remaining - headroom))
 
@@ -773,7 +662,6 @@ def _local_model_ready() -> bool:
     except Exception:
         logger.debug("research.model_probe_llama_failed", exc_info = True)
     try:
-        # No orchestrator yet is a real answer (nothing is loaded), not a failed probe.
         if getattr(_peek_inference_backend(), "active_model_name", None):
             return True
         probed = True
@@ -783,10 +671,7 @@ def _local_model_ready() -> bool:
 
 
 def _fit_source_catalog(catalog: str, max_chars: int) -> str:
-    """Trim whole catalog entries from the tail so every surviving URL stays citable.
-
-    Slicing mid-entry would hand the model a truncated URL, which the validator then strips.
-    """
+    """Drops whole catalog entries from the tail, never mid-entry, so every kept URL stays citable."""
     if max_chars <= 0 or len(catalog) <= max_chars:
         return catalog if max_chars > 0 else ""
     kept: list[str] = []
@@ -878,12 +763,7 @@ async def _wall_clock_timeout(seconds: float | None) -> AsyncIterator[None]:
 
 
 def _prompt_char_budget(reserve_tokens: int, inference: dict[str, Any] | None = None) -> int | None:
-    """Chars the whole prompt may occupy on the loaded context, or None when it is unknown.
-
-    The output reserve is capped at half the window: a flat reserve at or above the context
-    (4096 on the 4096-token GGUF floor) would leave a budget of 0 and empty the prompt, and a
-    truncated completion is far better than one that never saw the question.
-    """
+    """Prompt char budget; the output reserve is capped at half the window so a reserve cannot empty it."""
     ctx = _loaded_context_length(inference)
     if not ctx:
         return None
@@ -892,12 +772,7 @@ def _prompt_char_budget(reserve_tokens: int, inference: dict[str, Any] | None = 
 
 
 def _trimmable_budget(total: int | None, fixed_chars: int, hard_cap: int) -> int:
-    """Chars left for a trimmable section once the rest of the prompt is counted.
-
-    Budgeting one section against the context while the others are unbounded does not stop an
-    overflow: at a 2048-token context the untrimmable scaffolding alone is several times the
-    window. Returns 0 rather than a floor, since a short report beats a failed run.
-    """
+    """Chars left for a trimmable section; 0 rather than a floor, since a short report beats a failure."""
     if total is None:
         return hard_cap
     return max(0, min(hard_cap, total - fixed_chars))
@@ -921,8 +796,6 @@ def _bounded_synthesis_evidence(
         return "(none)"
     if max_chars <= 0:
         return ""
-    # Split evenly across notes: a per-note floor would let the earliest notes consume the whole budget
-    # and drop later steps entirely.
     separator = "\n\n"
     available = max(0, max_chars - len(separator) * (len(notes) - 1))
     base, remainder = divmod(available, len(notes))
@@ -945,13 +818,7 @@ def _fit_synthesis_context(
     fixed_chars: int = 0,
     inference: dict[str, Any] | None = None,
 ) -> tuple[str, list[str]]:
-    """Share the adaptive synthesis budget between evidence and JSON prompt blocks.
-
-    Payloads are considered in priority order. A payload that would consume the minimum evidence
-    allocation is replaced with an empty object. This keeps every emitted block valid JSON while
-    preventing model-derived state or an audit near its output cap from overflowing a small model
-    context.
-    """
+    """Shares the budget across JSON blocks by priority; an oversized one becomes {}, keeping JSON valid."""
     total_budget = _synthesis_evidence_budget(fixed_chars, inference)
     placeholder = "{}"
     minimum_evidence = min(_MIN_SYNTHESIS_EVIDENCE_CHARS, total_budget)
@@ -973,13 +840,7 @@ def _fit_synthesis_context(
 
 
 def _merge_scraped_evidence(raw_result: str, scraped_section: str) -> str:
-    """Combine the raw search snippets with grounded page-body chunks (additive).
-
-    Replacing ``raw_result`` with ``scraped_section`` regressed below snippet-only accuracy:
-    when the retrieved chunk was a distractor the answer-bearing snippet was lost. Keep the
-    snippets first and append the grounded excerpts. If either side is empty the other is
-    returned unchanged.
-    """
+    """Appends grounded excerpts after the snippets; replacing snippets lost answers to distractors."""
     raw = (raw_result or "").strip()
     scraped = (scraped_section or "").strip()
     if not scraped:
@@ -1045,15 +906,7 @@ def _preferred_step_error(current: str, candidate: str) -> str:
 
 
 def _run_moved_on(fresh: dict | None, attempt: int) -> bool:
-    """Whether the run this worker was running has since been re-pointed at a newer question.
-
-    A thread reuses its one run row for its lifetime, so between committing a terminal status and
-    writing the terminal reply the user can stop the run and ask something else: the row is reset,
-    its assistant binding moves, and the reply below (resolved by run id) would stamp "Research
-    cancelled." and researchStatus cancelled onto the NEW question's placeholder, where it stays
-    until that question reaches its own terminal write. retryCount is the attempt epoch, which
-    rebind_cancelled advances for exactly this reason.
-    """
+    """True once the user has re-pointed the run; a stale terminal reply would stamp the new question."""
     if not fresh:
         return True
     return int(fresh.get("retryCount") or 0) != attempt
@@ -1065,7 +918,7 @@ def _cited_sources(run: dict) -> list[dict]:
     return list(run.get("sources") or [])[:max_sources]
 
 
-# A WAL commit on a busy disk has held the writer lock for 37s; under the 120-second lease.
+# Below the 120-second lease; busy-disk WAL commits have held the lock for 37s.
 _TERMINAL_WRITE_DEADLINE_SECONDS = 60.0
 _TERMINAL_WRITE_RETRY_SECONDS = 1.0
 
@@ -1074,7 +927,6 @@ def _as_literal_markdown(text: str) -> str:
     """Provider text for a Markdown surface, as the one inline context nothing reparses."""
     longest = max((len(run) for run in re.findall(r"`+", text)), default = 0)
     fence = "`" * (longest + 1)
-    # A span whose content touches a backtick needs padding, which the renderer then strips.
     pad = " " if text.startswith("`") or text.endswith("`") else ""
     return f"{fence}{pad}{text}{pad}{fence}"
 
@@ -1119,7 +971,6 @@ def _update_assistant(
             return
     existing = get_chat_message(run["threadId"], message_id) or {}
     content = existing.get("content") if isinstance(existing.get("content"), list) else []
-    # Only replace this worker's text/source parts; retain artifacts, reasoning, and other extensions.
     replaced_types = {"text", "source"}
     if reasoning:
         replaced_types.add("reasoning")
@@ -1189,7 +1040,6 @@ class ResearchSupervisor:
         self._task: asyncio.Task | None = None
         self._cancel_events: dict[str, threading.Event] = {}
         self._lost_leases: set[str] = set()
-        # In memory, not read back on failure: every write that would store a draft can itself fail.
         self._report_drafts: dict[str, _ReportDraft] = {}
         self._last_claim_account: str | None = None
 
@@ -1209,7 +1059,6 @@ class ResearchSupervisor:
                 try:
                     await self._task
                 except asyncio.CancelledError:
-                    # Polling is intentionally sufficient for one local process; requests never own tasks.
                     pass
         finally:
             for account in job_accounts():
@@ -1252,12 +1101,8 @@ class ResearchSupervisor:
         tool_timeout: int,
         website_policy: dict | None,
     ) -> tuple[str, list[str]]:
-        """Concurrently read up to ``limit`` of this step's accepted source URLs and return the
-        chunks most relevant to the question as ``<chunk>`` evidence, plus the URLs read.
-
-        URLs are already access checked and deduplicated by the caller, so no new sources are
-        created. Failures, timeouts, unreadable pages, and low-relevance chunks are dropped;
-        the caller enforces cancellation."""
+        """Reads up to limit accepted URLs concurrently; failed or low-relevance pages are simply
+        dropped."""
         cap = max(0, min(limit, _AUTO_SCRAPE_TOP_K))
         if cap <= 0:
             return "", []
@@ -1306,7 +1151,6 @@ class ResearchSupervisor:
             )
         if not pages:
             return "", []
-        # Runs off the event loop, since embedding and the sqlite/vec index work are CPU/GPU bound.
         from core.rag import web_rank
 
         section, _sources = await asyncio.to_thread(
@@ -1482,8 +1326,7 @@ class ResearchSupervisor:
             except asyncio.CancelledError:
                 raise
             except sqlite3.OperationalError as exc:
-                # Losing the writer lock is normal for polling, not a fault; neither branch may re-raise, since that
-                # escapes the while loop and stops the supervisor for the life of the process.
+                # Never re-raise: it would stop the supervisor for the life of the process.
                 if is_sqlite_busy_error(exc):
                     logger.warning("research.supervisor_db_busy: %s", exc)
                 else:
@@ -1494,7 +1337,6 @@ class ResearchSupervisor:
                 await asyncio.sleep(1)
 
     def _claim_account_run(self):
-        # Round robin from the account after the last claim: runs are processed one at a time.
         accounts = job_accounts()
         start = 0
         for index, account in enumerate(accounts):
@@ -1506,7 +1348,6 @@ class ResearchSupervisor:
             try:
                 run = run_as(account, db.claim_next, self.worker_id)
             except Exception:
-                # The order is stable, so one corrupt database would shadow the accounts behind it.
                 logger.exception("research.claim_failed_for_account")
                 continue
             if run is not None:
@@ -1546,20 +1387,8 @@ class ResearchSupervisor:
         run: dict,
         max_seconds: float | None = None,
     ) -> bool:
-        """Wait, up to the run's model timeout, for a model to be loaded again; True if one was.
-
-        A durable run resumes after an Unsloth restart and is approved long after it was created, so
-        the model it was started with can be gone. Waiting keeps the run alive instead of ending it
-        on a non-retryable 400 that discards every step and source it gathered.
-
-        ``max_seconds`` bounds the wait for refusals that name the model rather than report an empty
-        backend. A load already in flight finishes inside it; anything else (an ejected model, a
-        llama.cpp update, a name that no longer resolves) needs a user action that no wait can
-        outlast, so surfacing the refusal beats burning the whole budget first.
-        """
+        """Waits up to the model timeout for a reload, so a resumed run survives its model being gone."""
         loop = asyncio.get_running_loop()
-        # Share the model budget across the allowed waits: spending it all on one lets the enclosing wall
-        # clock fire first and bury the real refusal.
         budget = _model_wait_budget(run)
         if max_seconds is not None:
             budget = min(budget, max_seconds)
@@ -1573,16 +1402,10 @@ class ResearchSupervisor:
         return False
 
     async def _wait_for_model_switch(self, run: dict, response: httpx.Response, waits: int) -> None:
-        """Wait out an in-flight model switch before re-sending.
-
-        A model is loaded, so ``_local_model_ready`` cannot tell this apart from success: only
-        the next send can. Honour the server's Retry-After and lengthen the gap each time, since
-        the swap it is waiting on loads a whole model.
-        """
+        """Waits out an in-flight model switch before re-sending, since a loaded model looks like
+        success."""
         run_id = run["id"]
         step = _retry_after_seconds(response) or _MODEL_SWITCH_RETRY_SECONDS
-        # Same budget share as _wait_for_local_model: one wait must leave room for the others and for the
-        # refusal, or the enclosing wall clock fires first and reports a timeout instead.
         remaining = min(step * waits, _NAMED_MODEL_WAIT_SECONDS, _model_wait_budget(run))
         logger.info("research.waiting_for_model_switch run_id=%s seconds=%.0f", run_id, remaining)
         while remaining > 0:
@@ -1628,18 +1451,12 @@ class ResearchSupervisor:
         task.add_done_callback(lambda finished: self._absorb_late_task(run_id, what, finished))
 
     async def _discard_task(self, run_id: str, task: asyncio.Task, what: str) -> None:
-        """Cancel a pending task and absorb its outcome, without waiting forever.
-
-        Awaiting it keeps a late error from surfacing as an unretrieved task exception;
-        bounding the wait keeps an iterator that declines cancellation from pinning the
-        caller here, and swallowing only its own outcome keeps the real error intact.
-        """
+        """Cancels a task, absorbing only its own outcome; the wait is bounded, so a stuck task
+        cannot hang."""
         task.cancel()
         try:
             await asyncio.wait({task}, timeout = _STREAM_CLEANUP_TIMEOUT_SECONDS)
         except asyncio.CancelledError:
-            # Must keep propagating, but the child outlives this frame, so hand it over first.
-            # Bound expired but the task lives on: absorb its outcome when it cooperates.
             self._absorb_when_done(run_id, task, what)
             raise
         if not task.done():
@@ -1671,7 +1488,6 @@ class ResearchSupervisor:
             remaining = at - asyncio.get_running_loop().time()
             if remaining > 0:
                 return min(0.2, remaining)
-            # Named by the caller, so a first-output deadline is never reported as a stall.
             raise expired()
 
         while True:
@@ -1684,12 +1500,9 @@ class ResearchSupervisor:
                 while not line_task.done():
                     await asyncio.wait({line_task}, timeout = timeout)
                     if self._cancel_event(run_id).is_set():
-                        # Set first: the finally must not spend the bound on it again.
                         discarded = True
                         await self._discard_task(run_id, line_task, "stream_iterator")
                         await self._check_active(run_id)
-                    # A line that arrived during the wait is earned; recomputing the deadline first would let an expiry
-                    # in the same turn discard it.
                     if line_task.done():
                         break
                     timeout = wait_timeout()
@@ -1725,12 +1538,10 @@ class ResearchSupervisor:
         token, key = await asyncio.to_thread(
             auth_storage.create_api_key,
             username = run["ownerSubject"],
-            # The name is load-bearing: the external-provider route scopes its saved-credential exception to
-            # exactly this workflow.
+            # Load-bearing: the external-provider route scopes its credential exception to this name.
             name = auth_storage.DEEP_RESEARCH_WORKFLOW_KEY_NAME,
             expires_at = expires,
             internal = True,
-            # Pinned to the claiming account: the username could name a recreated namesake.
             account_id = None if account.is_owner else account.account_id,
         )
         config = run["config"]
@@ -1743,19 +1554,14 @@ class ResearchSupervisor:
             "messages": messages,
             "stream": True,
             "stream_options": {"include_usage": True},
-            # Keep every model hop in this durable run on one isolated Codex prompt-cache session rather than
-            # sharing the transport fallback.
             "thread_id": f"research:{run['id']}",
-            # Both opt-outs are needed: --enable-tools overrides a per-request enable_tools, and an omitted
-            # enabled_tools resolves to every built-in, python and terminal included.
+            # Both opt-outs needed: omitted enabled_tools resolves to every built-in tool.
             "tool_choice": "none",
             "enabled_tools": [],
         }
         if not omit_sampling:
             payload["temperature"] = inference.get("temperature", 0.2)
 
-        # The route's _sanitize_config already refused anything but an enabled saved connection of a studio-
-        # tools-capable provider type.
         if inference.get("providerType"):
             payload.update(
                 {
@@ -1767,11 +1573,7 @@ class ResearchSupervisor:
         if not omit_sampling and inference.get("topP") is not None:
             payload["top_p"] = inference["topP"]
         if inference.get("providerType") in ("deepseek", "huggingface", "qwen", "mistral"):
-            # These providers forward reasoning fields verbatim, and a strict upstream rejects one the model lacks.
-            # Mistral documents reasoning_effort for mistral-small-latest and mistral-medium-3-5 only, so the
-            # planner opt-out must not reach mistral-large and the other non-reasoning models.
-            # `is not True`, not `is False`: a run from before these flags carries neither, and a
-            # thinking planner call on a resumed run beats a request the model rejects.
+            # Mistral supports reasoning_effort only on some models. 'is not True' handles legacy runs.
             if inference.get("supportsReasoning") is not True:
                 enable_thinking = None
                 inference = {
@@ -1863,7 +1665,6 @@ class ResearchSupervisor:
         try:
             await self._note_phase(run["id"], "phase.started", phase, call_id, step_position)
             model_timeout = float(config["budgets"]["modelTimeoutSeconds"])
-            # Configurable, capped by a finite run wall clock; legacy runs use the default.
             first_output_budget = float(
                 config["budgets"].get(
                     "firstOutputTimeoutSeconds", _MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS
@@ -1871,8 +1672,6 @@ class ResearchSupervisor:
             )
             if model_timeout > 0:
                 first_output_budget = min(first_output_budget, model_timeout)
-            # Unlimited only drops the total wall clock; this bound also caps the silence between queue notices,
-            # so it has to clear the heartbeat they are paced by.
             admission_gap_budget = max(
                 first_output_budget,
                 _MODEL_OUTPUT_IDLE_TIMEOUT_SECONDS,
@@ -1884,8 +1683,7 @@ class ResearchSupervisor:
                 if model_timeout
                 else httpx.Timeout(
                     first_output_budget,
-                    # Strictly looser than the guards above, so a stall is reported by name rather than as a message-
-                    # less HTTPX ReadTimeout.
+                    # Looser than the guards above so a stall is named, not a bare HTTPX ReadTimeout.
                     read = admission_gap_budget + _STREAM_READ_TIMEOUT_MARGIN_SECONDS,
                 )
             )
@@ -1902,7 +1700,6 @@ class ResearchSupervisor:
                 )
 
             call_started = loop.time()
-            # No backoff below may outlast this call's wall clock or the key the re-send authenticates with.
             retry_deadline = key_minted + _MODEL_CALL_KEY_LIFETIME_SECONDS
             if model_timeout:
                 retry_deadline = min(retry_deadline, call_started + model_timeout)
@@ -1912,7 +1709,6 @@ class ResearchSupervisor:
             ):
                 response: httpx.Response | None = None
                 send_task: asyncio.Task | None = None
-                # A retry builds a fresh task, so the guard starts over with it.
                 send_discarded = False
                 model_waits = 0
                 attempt = 0
@@ -1923,8 +1719,6 @@ class ResearchSupervisor:
                             and inference.get("providerType")
                             and phase in ("synthesis", "synthesis_recovery")
                         ):
-                            # This loop re-sends after a queue or rate-limit wait, so recovery
-                            # and every retry are bounded by the cap in force when they go out.
                             max_tokens = min(
                                 max_tokens,
                                 await asyncio.to_thread(
@@ -1942,7 +1736,6 @@ class ResearchSupervisor:
                             json = payload,
                             headers = {
                                 "Authorization": f"Bearer {token}",
-                                # Keep text-only intent across retries and model switches.
                                 "X-Unsloth-Require-Text": "1",
                             },
                         )
@@ -1952,7 +1745,6 @@ class ResearchSupervisor:
                             while not send_task.done():
                                 await asyncio.wait({send_task}, timeout = 0.2)
                                 if self._cancel_event(run["id"]).is_set():
-                                    # Set first: a send outlasting the bound is not waited on twice.
                                     send_discarded = True
                                     await self._discard_task(run["id"], send_task, "send")
                                     await self._check_active(run["id"])
@@ -1960,15 +1752,12 @@ class ResearchSupervisor:
                             response.raise_for_status()
                             first_output_deadline = loop.time() + first_output_budget
                         except (httpx.TransportError, httpx.HTTPStatusError) as exc:
-                            # Only reachable before a body byte is touched, so a re-send cannot duplicate report text.
                             if (
                                 not _external_provider_run(inference)
                                 and payload.get("response_format") == {"type": "json_object"}
                                 and isinstance(exc, httpx.HTTPStatusError)
                                 and await _response_format_unsupported(exc.response)
                             ):
-                                # No grammar engine here, but the prompts ask for JSON and the
-                                # output is validated. Retry once without it, after routing.
                                 del payload["response_format"]
                                 await exc.response.aclose()
                                 response = None
@@ -1995,14 +1784,11 @@ class ResearchSupervisor:
                             elif not retryable or attempt == 2:
                                 raise
                             if response is not None:
-                                # Manual stream mode owns the connection; release it to re-send.
                                 await response.aclose()
                                 response = None
                             if unloaded == "switching":
                                 await self._wait_for_model_switch(run, exc.response, model_waits)
                             elif unloaded:
-                                # Nothing loaded (restart, eject): wait for a model to come back, without
-                                # spending a transport attempt.
                                 if not await self._wait_for_local_model(
                                     run,
                                     _NAMED_MODEL_WAIT_SECONDS if unloaded == "named" else None,
@@ -2011,7 +1797,6 @@ class ResearchSupervisor:
                             else:
                                 delay = 2**attempt
                                 if rate_limited:
-                                    # This runs to minutes, so re-read the run while it waits.
                                     await self._wait_out_rate_limit(
                                         run,
                                         _retry_after_seconds(exc.response) or delay,
@@ -2023,13 +1808,11 @@ class ResearchSupervisor:
                                 attempt += 1
                                 await self._check_active(run["id"])
                             continue
-                        # A proxied provider 429 arrives as a 200 whose first line is the refusal, so the status
-                        # cannot see it; no body byte is used yet.
+                        # A proxied provider 429 can arrive as a 200 whose first line is the refusal.
                         stream = self._iter_stream_lines(run["id"], response, semantic_deadline)
                         head = await _peek_stream_head(stream)
                         throttled = _stream_rate_limit_delay(head)
                         if throttled is None or attempt == 2:
-                            # Out of attempts: let the stream raise the provider's own error.
                             break
                         await stream.aclose()
                         await response.aclose()
@@ -2043,11 +1826,7 @@ class ResearchSupervisor:
                         if self._cancel_event(run["id"]).is_set():
                             await self._check_active(run["id"])
                         if not line.startswith("data:"):
-                            # Queueing has no timeout by design, so suspend for it and start the budget when the slot
-                            # is granted.
                             if line.startswith(_ADMISSION_WAIT_COMMENT):
-                                # Unlimited has no wall clock behind this, so bound the gap between queue notices;
-                                # each notice refreshes it.
                                 first_output_deadline = (
                                     None if model_timeout else loop.time() + admission_gap_budget
                                 )
@@ -2059,14 +1838,10 @@ class ResearchSupervisor:
                             break
                         if not data:
                             continue
-                        # Arming research in the composer is the approval, so the plan is queued as it is stored
-                        # rather than parked for a second confirmation.
                         try:
                             chunk = json.loads(data)
                             _stream_error = stream_error_from_chunk(chunk)
                             if _stream_error is not None:
-                                # The server's own text names the cause and both token counts; flattening it to a
-                                # fixed string left the user nothing to act on.
                                 raise _stream_error
                             normalized_usage = _normalize_completion_usage(
                                 chunk.get("usage") if isinstance(chunk, dict) else None
@@ -2091,7 +1866,6 @@ class ResearchSupervisor:
                             semantic_output_at = loop.time()
                             report += text
                             pending_report += text
-                            # only a closing quote completes a title; per-token rescans cost ~170ms.
                             if preview_labels and '"' in text:
                                 emitted_labels = await self._emit_preview_labels(
                                     run["id"], phase, call_id, report, emitted_labels
@@ -2129,8 +1903,6 @@ class ResearchSupervisor:
                         try:
                             await response.aclose()
                         except Exception:
-                            # Closing a broken stream is best-effort and must not replace the generation result or the
-                            # error that caused teardown.
                             logger.warning(
                                 "research.stream_cleanup_failed run_id=%s",
                                 run["id"],
@@ -2138,16 +1910,13 @@ class ResearchSupervisor:
                             )
             await flush_progress()
             return report, reasoning, finish_reason, usage
-        # Not errors: the flush below would fail without writing.
         except (RunCancelled, LeaseLost):
             raise
         except Exception as exc:
-            # Before the flush, which only displays it; with the finish reason, which text cannot carry.
             if on_partial is not None:
                 on_partial(report, reasoning, finish_reason)
             if report_progress:
                 try:
-                    # Best effort: a progress update must not replace the error that stopped the run.
                     await flush_progress()
                 except Exception:
                     logger.warning(
@@ -2157,7 +1926,6 @@ class ResearchSupervisor:
                 exc, (ModelFirstOutputTimeout, ModelOutputIdleTimeout, ModelWallClockTimeout)
             ):
                 raise
-            # Transport backstop: HTTPX raises this with no message, so name the stall instead.
             if isinstance(exc, httpx.ReadTimeout):
                 if semantic_output_at is None:
                     raise ModelFirstOutputTimeout("Local model never produced output") from exc
@@ -2168,7 +1936,7 @@ class ResearchSupervisor:
                 ) from exc
             raise
         finally:
-            # revoked before the phase event, so a cancel there cannot leak a live key.
+            # Revoke before the phase event, so a cancel there cannot leak a live key.
             try:
                 await asyncio.to_thread(auth_storage.revoke_internal_api_key, int(key["id"]))
             except Exception:
@@ -2204,12 +1972,7 @@ class ResearchSupervisor:
     async def _note_phase(
         self, run_id: str, event_type: str, phase: str, call_id: str, step_position: int | None
     ) -> None:
-        """Bracket one model call with a timeline event.
-
-        Planning, per-step decisions, and the synthesis audit run with thinking disabled and
-        report progress off, so they emit nothing for their whole duration. Without these the
-        UI has no row to show and a multi-minute call looks like a stalled run.
-        """
+        """Brackets a silent model call with a timeline event so a long phase does not look like a stall."""
         try:
             await asyncio.to_thread(
                 db.append_worker_event,
@@ -2223,12 +1986,9 @@ class ResearchSupervisor:
                 },
             )
         except Exception:
-            # Best effort: a progress marker must never fail the run it is reporting on.
             logger.debug("research.phase_event_failed run_id=%s", run_id, exc_info = True)
 
     async def _process(self, run: dict) -> None:
-        # Everything this worker writes after a terminal status is only its to write while the run is still
-        # on that attempt.
         attempt = int(run.get("retryCount") or 0)
         cancel_event = self._cancel_event(run["id"])
         if await asyncio.to_thread(db.is_cancel_requested, run["id"]):
@@ -2309,8 +2069,7 @@ class ResearchSupervisor:
                 renewed = await asyncio.to_thread(db.heartbeat, run_id, self.worker_id)
             except Exception:
                 logger.warning("research.heartbeat_failed run_id=%s", run_id, exc_info = True)
-                # A busy SQLite writer is not proof that ownership was lost; retry briefly, but stop well before the
-                # 120-second lease expires.
+                # Retry busy SQLite briefly, but stop well before the 120-second lease expires.
                 consecutive_errors += 1
                 if consecutive_errors >= 10:
                     self._lost_leases.add(account_key(run_id))
@@ -2338,8 +2097,6 @@ class ResearchSupervisor:
             _planner_system_prompt(max_steps, run["config"].get("websitePolicy")),
             run["config"],
         )
-        # The question is budgeted before the history but is unbounded on its own (a pasted document arrives
-        # verbatim) and would overflow before planning.
         planning_total = _prompt_char_budget(
             _SYNTHESIS_CONTEXT_RESERVE_TOKENS, _run_inference_request(run)
         )
@@ -2396,7 +2153,6 @@ class ResearchSupervisor:
             raise
         run.update(result)
 
-    # The structured inline card renders the plan; no second markdown copy below it.
     async def _research(self, run: dict) -> None:
         # Completed steps on a queued run are ones a Retry kept (a fresh plan's steps are all pending).
         resuming = run.get("claimedFromStatus") == "running" or any(
@@ -2406,7 +2162,6 @@ class ResearchSupervisor:
         if not fresh or not fresh.get("plan"):
             raise ValueError("Approved plan is missing")
         run = fresh
-        # The attempt this pass belongs to, kept because ``run`` is re-read below.
         research_attempt = int(run.get("retryCount") or 0)
         budgets = run["config"]["budgets"]
         max_steps = int(budgets["maxSteps"])
@@ -2501,8 +2256,6 @@ class ResearchSupervisor:
                 )
                 for source in document_sources
             }
-            # Evidence must hold only chunks that reached the catalog, else the validator strips citations to
-            # the rest and synthesis builds claims on uncataloged text.
             accepted_rag_sources = []
             for source in restored_rag_sources:
                 source_key = str(
@@ -2563,8 +2316,6 @@ class ResearchSupervisor:
                 _AGENT_SYSTEM_PROMPT + (f"\n\n{policy_prompt}" if policy_prompt else ""),
                 run["config"],
             )
-            # A fixed 60k evidence tail is many times a small context and this runs every step, so an overflow
-            # here kills the run before it can synthesize.
             decision_total = _prompt_char_budget(
                 _SYNTHESIS_CONTEXT_RESERVE_TOKENS, _run_inference_request(run)
             )
@@ -2574,8 +2325,6 @@ class ResearchSupervisor:
                 len(decision_system),
                 decision_total,
             )
-            # The catalog is unbounded too (maxSources entries, snippets up to 4000 chars), so it is fitted
-            # before the sections that depend on what it leaves.
             decision_catalog = _fit_source_catalog(
                 source_catalog,
                 _trimmable_budget(
@@ -2682,8 +2431,7 @@ class ResearchSupervisor:
                 if action is None:
                     break
                 argument = action["query"]
-            # Persist model-derived state only after the action is final, so rejected decisions cannot leak
-            # stale notes into the executed step, resume state, or synthesis.
+            # Only after the action is final, so rejected decisions cannot leak stale state.
             next_state = _normalize_research_state(action.get("researchState"))
             if next_state:
                 research_state = next_state
@@ -2880,7 +2628,6 @@ class ResearchSupervisor:
                     else {}
                 ),
                 **({"researchState": research_state} if research_state else {}),
-                # tool_failed as well as step_failed: a tool error RAG rescued still records why.
                 **({"error": clean_result[:500]} if tool_failed or step_failed else {}),
             }
             await self._check_active(run["id"])
@@ -2926,8 +2673,6 @@ class ResearchSupervisor:
             f"   Chunk ID: {source.get('chunkId') or '(unknown)'}"
             for index, source in enumerate(document_sources, 1)
         )
-        # Model-derived JSON shares the evidence budget, and conversation history receives only what the
-        # fixed scaffold leaves.
         total_budget = _prompt_char_budget(
             _SYNTHESIS_CONTEXT_RESERVE_TOKENS, _run_inference_request(run)
         )
@@ -3081,7 +2826,6 @@ class ResearchSupervisor:
             """Keep the best report reached, so a later failure can still publish it. Ranked as
             the success path ranks its drafts: finished over cut off, then longer, then newest."""
             if not reason and finish_reason == "length":
-                # Without the token count, which only a call reaching its own end reports.
                 reason = _synthesis_length_limit_error(
                     None, requested_max_tokens = 0, inference = _run_inference_request(run)
                 ).rstrip(".")
@@ -3125,8 +2869,6 @@ class ResearchSupervisor:
         except Exception:
             if synthesis_max_tokens <= _SYNTHESIS_MAX_TOKENS:
                 raise
-            # The ways a connection can refuse a raised budget are not enumerable here, and
-            # failing would discard a run that already finished its research.
             logger.warning(
                 "research.synthesis_budget_refused run_id=%s budget=%s",
                 run["id"],
@@ -3148,7 +2890,7 @@ class ResearchSupervisor:
                 on_partial = _keep_partial,
             )
         report = _select_synthesis_report(report, synthesis_reasoning)
-        # Before the checks below, which can fail once the report already exists.
+        # Before the checks below, which can fail once the report exists.
         _keep_draft(report, synthesis_finish_reason)
         await self._check_active(run["id"])
         truncation_notice = ""
@@ -3193,8 +2935,6 @@ class ResearchSupervisor:
             except (RunCancelled, LeaseLost):
                 raise
             except Exception:
-                # Failing would discard the draft recovery was called to rescue, and its
-                # larger prompt can be refused at a budget the first request fit inside.
                 logger.warning(
                     "research.synthesis_recovery_failed run_id=%s budget=%s",
                     run["id"],
@@ -3206,13 +2946,7 @@ class ResearchSupervisor:
                 recovery_finish_reason, recovery_usage = None, None
             synthesis_reasoning += recovery_reasoning
             recovered = _select_synthesis_report(recovered_report, recovery_reasoning)
-            # A second attempt at the SAME report under the same budget, not a correction of
-            # the first. Reaching here means the first draft is empty or unfinished, so a
-            # recovery that ran to a natural stop wins outright, and only between two drafts
-            # of equal standing does the longer one win. Both tests measure the drafts
-            # through the same validators that run below, because those delete a
-            # model-authored source list and any invented citation: a draft must not win on
-            # padding that is about to be removed.
+            # A recovery reaching a natural stop wins; else the longer draft, measured post-validation.
             comparable_recovered = _delivered(recovered)
             comparable_report = _delivered(report)
             recovered_whole = (
@@ -3244,19 +2978,13 @@ class ResearchSupervisor:
                 "Local model returned no safely identifiable final report. Disable thinking or "
                 "use a compatible chat template and retry."
             )
-        # Above the report, and after the validators so they only ever see what the model
-        # wrote. Above, because a report that ran out of budget stops wherever it happened to
-        # be -- inside a code fence, a list, a quote -- and anything appended under an
-        # unterminated container is swallowed by it, whereas the first line of a document is
-        # inside nothing. The reader also learns the report is cut short before reading it.
-        # Recorded before the notice goes on: a delivery that fails writes its own.
+        # Notice goes above: a truncated report may end inside an open fence that would swallow it.
         _keep_draft(report, synthesis_finish_reason, truncation_notice)
         if truncation_notice:
             report = _report_under_notice(report, "Incomplete report.", f"{truncation_notice}.")
         reasoning = await asyncio.to_thread(db.get_reasoning_text, run["id"])
         if synthesis_reasoning and synthesis_reasoning not in reasoning:
             reasoning += synthesis_reasoning
-        # Renew ownership before syncing the discoverable chat message; a restarted worker can safely overwrite it.
         renewed = await asyncio.to_thread(db.heartbeat, run["id"], self.worker_id)
         if not renewed:
             await self._check_active(run["id"])

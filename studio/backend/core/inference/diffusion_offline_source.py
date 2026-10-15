@@ -13,7 +13,6 @@ import os
 from pathlib import Path, PurePosixPath
 from typing import Any, Optional
 
-# Any one locates the snapshot; the loader reports a genuinely missing file by name.
 _PROBE_FILES = (
     "tokenizer_config.json",
     "processor_config.json",

@@ -33,7 +33,6 @@ _UPLOAD_BUFFERS = 16
 _UPLOAD_MIN_TENSOR_BYTES = 1 << 20
 _UPLOAD_MIN_TOTAL_BYTES = 256 << 20
 
-# variant=None: from_pretrained never opens *.fp16.safetensors-style twins.
 _DEFAULT_WEIGHT_RE = re.compile(
     r"^(?:diffusion_pytorch_model|model)(?:-\d{5}-of-\d{5})?\.safetensors$"
 )
@@ -115,10 +114,7 @@ def start_prefetch(
     threads: int = _PREFETCH_THREADS,
     min_bytes: int = _PREFETCH_MIN_BYTES,
 ) -> Optional[LoadPrefetch]:
-    """Read the uncached parts of ``paths`` into the page cache on worker threads, in the given order.
-
-    None when switched off, when nothing needs it, or when the uncached bytes exceed half the available
-    host RAM (the reads would evict what the load itself needs). Never raises."""
+    """Skips when uncached bytes exceed half of host RAM, as the reads would evict the load's pages."""
     if not prefetch_enabled():
         return None
     try:
@@ -155,7 +151,6 @@ def start_prefetch(
                 )
             return None
         threads = max(1, int(threads))
-        # Thread i reads slice i of every file, files in load order, so the first file is warm first.
         plan: list[list[tuple[str, int, int]]] = [[] for _ in range(threads)]
         for path in pending:
             for index, (start, end) in enumerate(_slices(os.path.getsize(path), threads)):
@@ -362,7 +357,7 @@ def _upload_candidates(modules: Sequence[Any], device: Any) -> list[Any]:
                 continue
             seen.add(id(tensor))
             if type(tensor) not in (torch.Tensor, torch.nn.Parameter):
-                continue  # subclasses (torchao) keep their own .to
+                continue
             if tensor.device.type != "cpu" or tensor.is_sparse or tensor.is_quantized:
                 continue
             if not tensor.is_contiguous() or tensor.storage_offset() < 0:
@@ -515,11 +510,7 @@ def fast_upload(
     *,
     logger: Any = None,
 ) -> Iterator[int]:
-    """Inside the block, ``Tensor.to(device)`` on the modules' plain CPU tensors returns a ring-uploaded copy.
-
-    Wrap the existing placement call (``module.to(device)`` / ``pipe.to(device)``): it still decides
-    what moves and how parameters are re-wrapped; only the bytes arrive faster. Yields how many tensors
-    were staged (0 = the block runs exactly as without this wrapper)."""
+    """Inside the block, Tensor.to from CPU goes through a ring upload; placement itself is unchanged."""
     staged: dict[int, tuple[Any, Any]] = {}
     mode = None
     try:

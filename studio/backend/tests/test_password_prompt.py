@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Masked terminal password prompt (auth/terminal_prompt.py): reader echo and
-editing, the change loop's validation/re-prompt behavior, and the pure
-should-prompt gate. Drives the reader through a scripted fake getch, so no
-tty (and no msvcrt on Linux) is needed."""
+"""Masked terminal password prompt: echo, editing, re-prompt validation and the should-prompt gate."""
 
 from __future__ import annotations
 
@@ -43,9 +40,6 @@ def _read(
     return value, out.getvalue()
 
 
-# ── _read_password ───────────────────────────────────────────────────
-
-
 def test_reader_echoes_one_star_per_char(monkeypatch):
     value, out = _read(monkeypatch, list("secret") + ["\r"])
     assert value == "secret"
@@ -57,7 +51,6 @@ def test_reader_backspace_edits_and_erases_star(monkeypatch):
     value, out = _read(monkeypatch, list("abc") + ["\x7f"] + list("d") + ["\n"])
     assert value == "abd"
     assert "\b \b" in out
-    # 4 stars were printed (a, b, c, d); one was erased.
     assert out.count("*") == 4
 
 
@@ -68,7 +61,6 @@ def test_reader_backspace_on_empty_buffer_is_noop(monkeypatch):
 
 
 def test_reader_paste_burst_delivers_all_chars(monkeypatch):
-    # A paste can arrive as one multi-char read; every char must count.
     value, out = _read(monkeypatch, ["pasted-secret", "\r"])
     assert value == "pasted-secret"
     assert out.count("*") == len("pasted-secret")
@@ -108,11 +100,7 @@ def test_reader_windows_key_prefix_is_ignored(monkeypatch):
 
 
 def test_reader_holds_raw_mode_once_for_whole_line(monkeypatch):
-    # Regression: cbreak/no-echo must be held for the ENTIRE line, not toggled
-    # per keystroke. Re-enabling echo between reads opens a window where a
-    # keystroke arriving in the gap echoes the password in cleartext. Assert the
-    # raw-mode context wraps the whole read exactly once and every keystroke is
-    # read while it is active.
+    # cbreak/no-echo must span the whole line: toggling per key echoes keystrokes in the gap.
     events = []
 
     class _SpyRawMode:
@@ -136,9 +124,6 @@ def test_reader_holds_raw_mode_once_for_whole_line(monkeypatch):
     value = tp._read_password("P: ", out = io.StringIO())
     assert value == "s3cr3t!!"
     assert events == ["enter", "exit"]
-
-
-# ── prompt_for_password_change ───────────────────────────────────────
 
 
 def _run_loop(
@@ -252,7 +237,6 @@ def test_loop_ctrl_c_at_confirmation_aborts(monkeypatch):
 
 
 def test_loop_min_length_counts_code_points(monkeypatch):
-    # 8 unicode code points must pass a min_length of 8.
     pw = "pässwörd"
     assert len(pw) == 8
     ok, applied, _ = _run_loop(monkeypatch, _keys(pw, pw))
@@ -260,17 +244,14 @@ def test_loop_min_length_counts_code_points(monkeypatch):
     assert applied == [pw]
 
 
-# ── should_prompt_password_change ────────────────────────────────────
-
-
 @pytest.mark.parametrize(
     "tunnel,requires,stdin_tty,stderr_tty,expected",
     [
         (True, True, True, True, True),
-        (False, True, True, True, False),  # tunnel not starting (loopback no-op)
-        (True, False, True, True, False),  # password already changed
-        (True, True, False, True, False),  # piped stdin (headless)
-        (True, True, True, False, False),  # redirected stderr
+        (False, True, True, True, False),
+        (True, False, True, True, False),
+        (True, True, False, True, False),
+        (True, True, True, False, False),
         (False, False, False, False, False),
     ],
 )
@@ -287,8 +268,7 @@ def test_should_prompt_matrix(tunnel, requires, stdin_tty, stderr_tty, expected)
 
 
 def test_stream_eof_aborts_instead_of_submitting(monkeypatch):
-    # A dead stream ("" from _getch, e.g. a closed pty) must abort the line,
-    # never silently submit the partial password typed so far.
+    # A dead stream ('' from _getch) must abort, never submit the partial password.
     import io
 
     err = io.StringIO()
@@ -297,16 +277,12 @@ def test_stream_eof_aborts_instead_of_submitting(monkeypatch):
         tp._read_password("New password: ", out = err)
 
 
-# ── resolve_supplied_password: non-interactive --password / env / stdin ──
-
-
 def test_resolve_supplied_password_literal_value_and_note(monkeypatch):
     import io
 
     monkeypatch.delenv(tp.SUPPLIED_PASSWORD_ENV, raising = False)
     out = io.StringIO()
     assert tp.resolve_supplied_password("hunter2pw", out = out) == "hunter2pw"
-    # A literal value warns that it is visible in the process list / history.
     assert "process list" in out.getvalue()
 
 
@@ -353,11 +329,7 @@ def test_resolve_supplied_password_off_by_default(monkeypatch):
     assert tp.resolve_supplied_password(None) is None
 
 
-# ──────────────────────────────────────────────────────────────────────
-# A raw non-loopback bind is exposure too. `-H 0.0.0.0` starts no tunnel, so it
-# used to return False here and skip the gate, leaving the seeded admin password
-# live and served in the page to every host on the network.
-# ──────────────────────────────────────────────────────────────────────
+# A raw non-loopback bind (-H 0.0.0.0) is exposure too, even without a tunnel.
 
 
 def test_a_raw_exposed_bind_prompts_when_a_terminal_is_attached():
@@ -375,13 +347,7 @@ def test_a_raw_exposed_bind_prompts_when_a_terminal_is_attached():
 
 
 def test_a_raw_exposed_bind_stays_silent_without_a_terminal():
-    """Headless raw binds keep today's behaviour, deliberately.
-
-    Everything downstream of a True here is calibrated to publishing a public URL:
-    it refuses to launch when the deadline is disabled, and it deletes
-    .bootstrap_password, which long-running headless containers (the common use of
-    -H 0.0.0.0) are often logged into by reading. They keep the deadline instead.
-    """
+    """Headless raw binds stay silent and keep their deadline; downstream logic assumes a public URL."""
     from auth.terminal_prompt import should_prompt_password_change
     for stdin_tty, stderr_tty in ((False, False), (True, False), (False, True)):
         assert (
@@ -440,11 +406,7 @@ def test_the_default_keeps_old_callers_tunnel_only():
 
 
 def test_the_prompt_banner_does_not_claim_the_internet_for_a_lan_bind(monkeypatch):
-    """`-H 0.0.0.0` behind a NAT router is the LAN, not the public internet.
-
-    Saying "public internet" is false often enough to train people to ignore the
-    message, which is the one thing this prompt cannot afford.
-    """
+    """A LAN bind is not the public internet; saying so falsely trains people to ignore the banner."""
     import io
 
     from auth import terminal_prompt

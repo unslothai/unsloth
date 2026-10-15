@@ -143,8 +143,6 @@ class AudioCodecManager:
         self._bicodec_code_dir = None
         self._dac_audio_codec = None
         self._outetts_code_dir = None
-        # The loaders reuse a resident codec, so a later request gets the first
-        # placement rather than the one it asked for.
         self._codec_devices: dict = {}
 
     def load_codec(
@@ -160,7 +158,7 @@ class AudioCodecManager:
         elif audio_type == "dac":
             self._load_dac(device, model_repo_path)
         elif audio_type == "csm":
-            pass  # CSM decoding is built into the model (output_audio=True)
+            pass
         else:
             raise ValueError(f"Unknown audio_type: {audio_type}")
 
@@ -174,7 +172,6 @@ class AudioCodecManager:
         from snac import SNAC
         from utils.hf_cache_settings import active_hf_hub_cache
 
-        # Route weights to the selected cache; this can run in the main process.
         self._snac_model = (
             SNAC.from_pretrained(
                 model_repo_path or SNAC_REPOSITORY,
@@ -200,7 +197,6 @@ class AudioCodecManager:
             spark_code_dir,
         ).BiCodecTokenizer
 
-        # BiCodecTokenizer needs the MODEL repo path (has BiCodec/ weights)
         tokenizer_path = model_repo_path or spark_code_dir
         self._bicodec_repo_path = tokenizer_path
         self._bicodec_tokenizer = BiCodecTokenizer(tokenizer_path, device)
@@ -237,17 +233,11 @@ class AudioCodecManager:
         logger.info("Loaded DAC audio codec")
 
     def decode_snac(self, generated_ids: torch.Tensor, device: str) -> Tuple[bytes, int]:
-        """Decode SNAC tokens (Orpheus) into WAV bytes.
-
-        Finds the START_OF_SPEECH (128257) marker, extracts codes after it,
-        strips EOS (128258), redistributes 7-per-frame codes into 3 SNAC layers.
-        Returns (wav_bytes, 24000).
-        """
+        """Orpheus emits 7 codes per frame, redistributed into 3 SNAC layers; output is 24000 Hz WAV."""
         token_indices = (generated_ids == 128257).nonzero(as_tuple = True)
         if len(token_indices[1]) > 0:
             cropped = generated_ids[:, token_indices[1][-1] + 1 :]
         else:
-            # Fall back to the entire output if the marker is missing
             logger.warning("No START_OF_SPEECH token (128257) found — using full generated output")
             cropped = generated_ids
         row = cropped[0]
@@ -260,7 +250,7 @@ class AudioCodecManager:
 
         codes = [t.item() - 128266 for t in row]
 
-        # Redistribute into 3 SNAC layers (7 codes per frame → 1+2+4)
+        # Redistribute into 3 SNAC layers (7 codes per frame -> 1+2+4).
         layer_1, layer_2, layer_3 = [], [], []
         for i in range(len(codes) // 7):
             layer_1.append(codes[7 * i])
@@ -287,11 +277,7 @@ class AudioCodecManager:
         return _numpy_to_wav_bytes(waveform, 24000), 24000
 
     def decode_bicodec(self, generated_text: str, device: str) -> Tuple[bytes, int]:
-        """Decode BiCodec tokens (Spark-TTS) from generated text.
-
-        Extracts bicodec_semantic_N and bicodec_global_N tokens via regex.
-        Returns (wav_bytes, sample_rate).
-        """
+        """Reads Spark-TTS bicodec_semantic_N and bicodec_global_N tokens out of the generated text."""
         semantic_matches = re.findall(r"<\|bicodec_semantic_(\d+)\|>", generated_text)
         global_matches = re.findall(r"<\|bicodec_global_(\d+)\|>", generated_text)
 
@@ -306,7 +292,6 @@ class AudioCodecManager:
 
         semantic_ids = torch.tensor([int(t) for t in semantic_matches]).long().unsqueeze(0)
 
-        # Speaker encoder expects exactly 32 global tokens (token_num=32); pad with zeros or truncate.
         GLOBAL_TOKEN_NUM = 32
         if global_matches:
             raw = [int(t) for t in global_matches]
@@ -328,11 +313,7 @@ class AudioCodecManager:
         return _numpy_to_wav_bytes(wav_np, sr), sr
 
     def decode_dac(self, generated_text: str, device: str) -> Tuple[bytes, int]:
-        """Decode DAC tokens (OuteTTS) from generated text.
-
-        Extracts c1_N and c2_N codec code tokens via regex.
-        Returns (wav_bytes, 24000).
-        """
+        """Reads OuteTTS c1_N and c2_N codec code tokens from the text; always returns 24000 Hz audio."""
         c1 = list(map(int, re.findall(r"<\|c1_(\d+)\|>", generated_text)))
         c2 = list(map(int, re.findall(r"<\|c2_(\d+)\|>", generated_text)))
 
@@ -357,13 +338,8 @@ class AudioCodecManager:
         token_ids: Optional[list] = None,
         text: Optional[str] = None,
     ) -> Tuple[bytes, int]:
-        """Unified decode — dispatches to the right codec decoder.
-
-        ``device`` is what the caller would like. Where the codec is actually
-        resident wins: input tensors built on another device fail outright for SNAC
-        and DAC, and BiCodec would move a CPU-resident codec onto the card, taking
-        the VRAM a CPU RAM load promised not to take.
-        """
+        """device is only a preference: a codec already resident elsewhere decodes where it lives
+        instead."""
         device = self._codec_devices.get(audio_type, device)
         if audio_type == "snac":
             if not token_ids:

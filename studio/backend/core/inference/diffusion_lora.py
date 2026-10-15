@@ -31,7 +31,7 @@ from utils.paths.storage_roots import account_path
 from .diffusion_families import DIFFUSION_CANCELLED_MSG
 from utils.paths.path_utils import is_appledouble_metadata
 
-# Accepted LoRA formats. safetensors + gguf only (.pt is pickled -> excluded for safety).
+# .pt is pickled, excluded for safety.
 _NATIVE_EXTS = (".safetensors", ".gguf")
 _DIFFUSERS_EXTS = (".safetensors",)
 _ALL_EXTS = (".safetensors", ".gguf")
@@ -51,10 +51,9 @@ class LoraCatalogEntry:
     display_name: str
     source: str
     fmt: str
-    # Compatible family names (empty = unknown, shown but not family-gated).
     families: tuple[str, ...] = ()
     repo_id: Optional[str] = None
-    weight_name: Optional[str] = None  # file within the repo (hub)
+    weight_name: Optional[str] = None
     local_path: Optional[str] = None
     size_bytes: int = 0
     weight_default: float = 1.0
@@ -68,14 +67,12 @@ class ResolvedLora:
     """A LoRA resolved to a concrete local file, ready to apply."""
 
     id: str
-    alias: str  # sanitized stem for the <lora:ALIAS:w> tag / diffusers adapter name
+    alias: str
     path: str
     fmt: str
     weight: float
 
 
-# Curated, family-tagged catalog of known-good diffusion LoRAs (HF repos with a single-file weight). Local discovery and
-# any public HF LoRA repo id also work.
 def _krea2_lora(style: str, display_name: str) -> LoraCatalogEntry:
     """One official krea/Krea-2-LoRA-* style adapter (single ``{style}.safetensors``, trained on
     Krea-2-Raw for Krea-2-Turbo per Krea's guidance)."""
@@ -110,12 +107,7 @@ def loras_dir() -> Path:
 
 
 def sanitize_alias(raw: str) -> str:
-    """Deterministic, filesystem- and prompt-tag-safe alias from an id/stem.
-
-    The `<lora:NAME:w>` tag resolves NAME as a filename stem (no path separators, spaces, colons,
-    or angle brackets), and the diffusers PEFT adapter name also forbids "." (a module separator),
-    so dots are replaced too. The caller breaks cross-source collisions with a numeric suffix.
-    """
+    """Dots are replaced too, as PEFT forbids them; the tag NAME may not hold spaces or colons."""
     stem = raw.rsplit("/", 1)[-1]
     for ext in _ALL_EXTS:
         if stem.lower().endswith(ext):
@@ -348,7 +340,6 @@ def list_loras(
     if family:
         fam = family.strip().lower()
         merged = [e for e in merged if not e.families or fam in {f.lower() for f in e.families}]
-    # Stable order: local first, then by display name.
     merged.sort(key = lambda e: (e.source != "local", e.display_name.lower()))
     return merged
 
@@ -440,16 +431,7 @@ def resolve_one(
     cancel_event: Optional[threading.Event] = None,
     catalog: Optional[dict[str, LoraCatalogEntry]] = None,
 ) -> ResolvedLora:
-    """Resolve a request LoRA id + weight to a concrete local file.
-
-    Accepts a catalog/local id or a bare HF repo id (``owner/name[:weight_file.safetensors]``).
-    Downloads hub weights via the xet-fallback helper. Raises FileNotFoundError/ValueError on an
-    unresolvable/unsupported id, which the caller maps to a 400.
-
-    ``family`` (the loaded model family) enforces catalog family tags HERE, not only in the picker,
-    so a direct API client cannot load a LoRA tagged for another family through the wrong pipeline.
-    An untagged catalog entry (empty ``families``) stays unrestricted.
-    """
+    """Enforces family tags here, not only in the picker, so direct API calls cannot skip them."""
     # An empty token triggers an auth error instead of anonymous access; normalise to None.
     hf_token = hf_token.strip() if hf_token and hf_token.strip() else None
     entry = (_catalog_by_id() if catalog is None else catalog).get(spec_id)
@@ -475,13 +457,11 @@ def resolve_one(
         )
         return ResolvedLora(spec_id, sanitize_alias(spec_id), path, entry.fmt, weight)
 
-    # Not in the catalog: allow a bare public HF repo id (owner/name[:weight_file]).
     if "/" in spec_id:
         repo_id, _, weight_name = spec_id.partition(":")
         weight_name = weight_name or None
         if weight_name is not None:
-            # A client-supplied weight file must stay a plain filename inside the repo: reject traversal / absolute
-            # paths so it cannot resolve outside the HF cache dir.
+            # Reject traversal / absolute paths so the file stays inside the HF cache.
             if (
                 ".." in weight_name
                 or weight_name.startswith(("/", "\\", "~"))
@@ -515,14 +495,12 @@ def _pick_repo_weight_file(repo_id: str, hf_token: Optional[str]) -> str:
     safes = [f for f in files if f.lower().endswith(".safetensors") and "/" not in f]
     if len(safes) == 1:
         return safes[0]
-    # Prefer a lora-hinting filename, else the first safetensors, else a gguf.
     for f in safes:
         if "lora" in f.lower():
             return f
     if safes:
         return safes[0]
-    # The gguf fallback only: an imatrix is a .gguf holding no adapter and would be picked here, while a .safetensors
-    # is never one, so the candidates above stay untouched.
+    # gguf fallback only: skip imatrix files, which hold no adapter.
     ggufs = [
         f
         for f in files
@@ -546,11 +524,7 @@ def resolve_specs(
     hf_token: Optional[str] = None,
     cancel_event: Optional[threading.Event] = None,
 ) -> list[ResolvedLora]:
-    """Resolve request (id, weight) pairs, dropping zero-weight entries.
-
-    ``family`` (the loaded model family) enforces catalog family tags in :func:`resolve_one` for
-    direct API callers. Maps the named not-found/gated Hub errors to a 400 (URL scrubbed); does NOT
-    catch the base HfHubHTTPError, so a Hub 5xx stays a 500. A mid-download cancel maps to a 409."""
+    """Maps not-found and gated Hub errors to 400 but not base HfHubHTTPError, so a Hub 5xx stays a 500."""
     from huggingface_hub.errors import (
         EntryNotFoundError,
         GatedRepoError,
@@ -626,14 +600,7 @@ _TAG_RE = re.compile(r"<lora:([^:>]+):([^>]+)>")
 
 
 def inject_prompt_tags(prompt: str, resolved: list[ResolvedLora]) -> str:
-    """Append `<lora:ALIAS:WEIGHT>` tags for the selected adapters, using the validated weights.
-
-    sd-cli strips these tags before the model, so appending is safe. The validated weight (0-2)
-    must WIN over any user-typed `<lora:ALIAS:...>`, so strip ALL user tags first (unselected ones
-    are dead anyway, not in the managed dir) then append the validated ones.
-    """
-    # drop every user-typed tag: unselected ones are dead, selected ones must not override the validated weight / 0-2
-    # bounds
+    """Strips all user <lora:...> tags first so the validated weight wins over any typed weight."""
     cleaned = _TAG_RE.sub("", prompt)
     cleaned = re.sub(r"[ \t]{2,}", " ", cleaned).strip()
     tags = [f"<lora:{r.alias}:{_fmt_weight(r.weight)}>" for r in resolved]
@@ -644,13 +611,11 @@ def inject_prompt_tags(prompt: str, resolved: list[ResolvedLora]) -> str:
 
 
 def _fmt_weight(w: float) -> str:
-    # Stable, compact float formatting (no trailing zeros): 1.0 -> "1", 0.75 -> "0.75".
     s = f"{w:.4f}".rstrip("0").rstrip(".")
     return s or "0"
 
 
-# Families sd-cli's LoRA name-conversion supports (Qwen-Image has no branch). Matched by substring against the resolved
-# family name.
+# Families sd-cli LoRA name conversion supports (not Qwen-Image); substring match.
 _NATIVE_LORA_FAMILY_TOKENS = (
     "flux.1",
     "flux.2",
@@ -661,11 +626,9 @@ _NATIVE_LORA_FAMILY_TOKENS = (
     "sd3",
     "stable-diffusion",
 )
-# Diffusers quant schemes whose LoRA path is the load-time BAKE: adapters attach on the dense transformer BEFORE
-# torchao quantize_ + compile (peft's TorchaoLoraLinear dispatch needs quantizer metadata a manual quantize_ lacks).
-# Verified on peft 0.18.1 / torchao 0.17 / torch 2.10: scale 0 reproduces the quantized base bit-exactly.
+# Adapters bake on the dense transformer BEFORE torchao quantize_ + compile: peft's
+# TorchaoLoraLinear needs quantizer metadata a manual quantize_ lacks.
 _DIFFUSERS_LORA_BAKED_QUANT = ("int8", "fp8")
-# Prototype schemes with no validated LoRA path (and no shipped families needing one).
 _DIFFUSERS_LORA_BLOCKED_QUANT = ("nvfp4", "mxfp8")
 
 
@@ -677,27 +640,17 @@ def supports_lora(
     transformer_quant: Optional[str],
     compiled: bool = False,
 ) -> bool:
-    """Single gate for whether the current load can apply LoRA (status + backends).
-
-    Native (sd_cpp): GGUF via sd-cli, LoRA-capable families only (Qwen excluded). Diffusers:
-    bf16 / bnb-4bit apply at generation time (but NOT once the transformer is torch.compile'd:
-    diffusers needs the adapter loaded before compilation); torchao int8/fp8 apply via the
-    load-time bake (select adapters when loading; a different selection needs a reload), so
-    ``compiled`` does not gate them -- the bake precedes compilation by construction. The quant
-    check runs BEFORE the gguf-kind check because the quant fast path keeps the PICKER kind
-    ("gguf") while the effective transformer is a dense torchao build. nvfp4/mxfp8 stay
-    unsupported; GGUF-via-diffusers stays on the native engine for LoRA.
-    """
+    """Adapters load before torch.compile; torchao int8/fp8 bake at load, so compile does not gate them."""
     fam = (family or "").lower()
     if engine == "sd_cpp":
         return any(tok in fam for tok in _NATIVE_LORA_FAMILY_TOKENS)
     quant = (transformer_quant or "").lower()
     if quant in _DIFFUSERS_LORA_BAKED_QUANT:
-        return True  # load-time bake; adapters ride inside the compiled quantized build
+        return True
     if quant in _DIFFUSERS_LORA_BLOCKED_QUANT:
         return False
     if model_kind == "gguf":
-        return False  # GGUF diffusers transformer: use the native engine for LoRA
+        return False
     if compiled:
-        return False  # can't load an adapter onto an already-compiled transformer
+        return False
     return True

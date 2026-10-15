@@ -455,7 +455,6 @@ def fit_for_request(
         free, _total = torch.cuda.mem_get_info(dev)
         unused = int(torch.cuda.memory_reserved(dev)) - int(torch.cuda.memory_allocated(dev))
         current = resident_mib(module)
-        # an earlier request that never reached record_request_peak (cancelled, failed) leaves nothing measured
         module._unsloth_video_pending = None
         work = int(width) * int(height) * int(frames)
         room = room_mib(
@@ -500,7 +499,6 @@ def fit_for_request(
         module._unsloth_video_pending = (work, int(torch.cuda.memory_allocated(dev)), dev)
         module._unsloth_video_failed_captures = _failed_captures()
         try:
-            # release_resident_groups' restore reads it back; keep it at this request's room
             module._unsloth_resident_room = room if room > 0 else None
         except AttributeError:
             pass

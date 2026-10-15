@@ -15,7 +15,6 @@ if str(_backend_root) not in sys.path:
     sys.path.insert(0, str(_backend_root))
 
 
-# Earlier Qwen3.8 template: defaults to xhigh and rejects unsupported levels.
 QWEN38_EARLY_TEMPLATE = """
 {%- if enable_thinking is undefined or enable_thinking is true %}
     {%- set resolved_reasoning_effort = reasoning_effort|default('xhigh') %}
@@ -111,7 +110,6 @@ def test_no_effort_leaves_the_template_default():
         # Kimi-K3.
         ("medium", ["low", "high", "max"], "low"),
         ("xhigh", ["low", "high", "max"], "max"),
-        # Nothing to clamp onto.
         ("high", [], None),
         (None, ["low", "high"], None),
         ("turbo", ["low", "high"], None),

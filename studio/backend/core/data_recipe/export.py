@@ -155,7 +155,7 @@ def _add_images_to_archive(archive: zipfile.ZipFile, dataset_path: Path) -> None
         if not image_file.is_file():
             continue
         relative_path = image_file.relative_to(images_dir)
-        # Stored, not deflated: deflating already-compressed images bought nothing and cost 7x.
+        # Stored, not deflated: images are already compressed.
         archive.write(
             image_file,
             arcname = str(Path("images") / relative_path),
@@ -166,10 +166,7 @@ def _add_images_to_archive(archive: zipfile.ZipFile, dataset_path: Path) -> None
 def build_dataset_download(
     *, artifact_path: str, export_format: ExportFormat, filename_stem: str
 ) -> tuple[Path, str, str]:
-    """Return ``(temp_path, media_type, download_filename)``.
-
-    The caller is responsible for deleting ``temp_path`` after the response is sent.
-    """
+    """Returns (temp_path, media_type, download_filename); the caller deletes temp_path once sent."""
     try:
         dataset_path = _resolve_recipe_artifact_path(artifact_path)
     except RecipeDatasetPublishError as exc:
@@ -182,7 +179,7 @@ def build_dataset_download(
         tmp = tempfile.NamedTemporaryFile(delete = False, suffix = ".zip")
         tmp.close()
         zip_path = Path(tmp.name)
-        # Only a successful build's caller unlinks the temp file, so a failed one takes its own.
+        # Only a successful build's caller unlinks the temp file.
         try:
             with zipfile.ZipFile(zip_path, "w", compression = zipfile.ZIP_DEFLATED) as archive:
                 for parquet_file in _parquet_files(parquet_dir):
@@ -201,7 +198,7 @@ def build_dataset_download(
         image_files = _artifact_image_files(dataset_path)
         if not image_files:
             return jsonl_path, "application/x-ndjson", f"{stem}.jsonl"
-        # Rows reference these by relative path, so a bare JSONL loses every image.
+        # Rows reference images by relative path, so a bare JSONL loses them.
         zip_tmp = tempfile.NamedTemporaryFile(delete = False, suffix = ".zip")
         zip_tmp.close()
         zip_path = Path(zip_tmp.name)

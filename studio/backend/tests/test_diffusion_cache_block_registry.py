@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""First-block-cache metadata Unsloth registers for blocks diffusers has not.
-
-Separate from ``test_diffusion_cache.py``, which stubs ``diffusers`` through ``sys.modules``: this
-one needs the REAL registry, since the thing under test is whether a class the installed diffusers
-ships is known to it.
-"""
+"""Checks Unsloth's first-block-cache metadata against the real diffusers registry, not a stub."""
 
 from __future__ import annotations
 
@@ -16,12 +11,7 @@ from core.inference import diffusion_cache as dc
 
 
 def _registry_and_block():
-    """The real registry plus the 2.1 block, or a skip.
-
-    ``importorskip`` is not enough: importing diffusers drags in optional integrations, and a host
-    whose bitsandbytes cannot find CUDA raises RuntimeError rather than ImportError. That is an
-    environment fact, not a result.
-    """
+    """Skip instead of importorskip: a host whose bitsandbytes cannot find CUDA raises RuntimeError."""
     try:
         from diffusers.hooks._helpers import TransformerBlockRegistry
         from diffusers.models.transformers.transformer_qwenimage21 import (
@@ -33,13 +23,7 @@ def _registry_and_block():
 
 
 def test_the_qwen_image_21_block_is_registered_for_step_caching():
-    """diffusers ships no metadata for ``QwenImage21TransformerBlock``, so ``enable_cache`` raised
-    "Model class ... not registered." and every load of the family rendered uncached, which is the
-    whole step-cache saving gone on a 20+ step model and only visible in a log line.
-
-    The block is single stream: it takes ``hidden_states, modulation, rotary_emb, ...`` and returns
-    the hidden states alone, hence 0 and None.
-    """
+    """No metadata for QwenImage21TransformerBlock: enable_cache raised, so the family ran uncached."""
     registry, block = _registry_and_block()
 
     dc.register_unregistered_transformer_blocks()

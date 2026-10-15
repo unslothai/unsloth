@@ -25,11 +25,9 @@ from typing import Any, Collection, Optional
 
 from utils.account_context import current_account_id
 
-# Keyed by handle, not thread_id: a tool continuation can register before the previous leg
-# unregisters, and one key would drop the other.
+# Keyed by handle: a tool continuation can register before the previous leg unregisters.
 _ACTIVE: dict[str, dict[str, Any]] = {}
 _LOCK = threading.Lock()
-# Disabled or retired accounts: a generation registering late for one starts cancelled.
 _FENCED: set[str] = set()
 
 
@@ -71,8 +69,7 @@ class ActiveGeneration:
 
     def __enter__(self) -> "ActiveGeneration":
         with _LOCK:
-            # A durable supervisor registers before model loading starts and the route later enters its normal
-            # tracker with that same event and run, so borrow the outer registration.
+            # A durable supervisor registers first; borrow the outer registration.
             if self.run_id:
                 for entry in _ACTIVE.values():
                     if (
@@ -158,11 +155,7 @@ def active_thread_ids(
     exclude: Collection[threading.Event] = (),
     only: Optional[Collection[threading.Event]] = None,
 ) -> list[str]:
-    """Distinct conversation ids with a generation in flight, in start order.
-
-    A first turn that races persistence has no thread id yet: count() sees it,
-    this cannot name it.
-    """
+    """A first turn racing persistence has no thread id, so count() sees it but this list cannot."""
     seen: list[str] = []
     for e in snapshot(account_id, exclude, only):
         tid = e["thread_id"]

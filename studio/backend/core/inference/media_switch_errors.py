@@ -119,11 +119,7 @@ def format_available(ids: list[str]) -> str:
 
 
 async def bounded(coro, deadline: float, *, kind: str, openai_errors: bool):
-    """Await *coro* within the switch budget, refusing rather than outliving the response window.
-
-    The worker thread behind a ``to_thread`` keeps running after this returns; what matters is
-    that the request stops waiting on it, since the caller's connection is the thing on a clock.
-    """
+    """Stops the caller waiting at the deadline; the worker thread itself is left running."""
     remaining = deadline - time.monotonic()
     if remaining <= 0:
         # shield() yields a Future, which has no close(); a bare coroutine has no cancel().
@@ -139,11 +135,7 @@ async def bounded(coro, deadline: float, *, kind: str, openai_errors: bool):
 
 
 async def probe(fn, arg: Optional[Any], deadline: float, *, kind: str, openai_errors: bool) -> bool:
-    """Run a blocking busy probe off the loop, refusing rather than guessing on an overrun.
-
-    A spent budget is not a busy backend: reporting one sends the caller after a generation
-    that does not exist, where the slow-switch 503 says what actually happened.
-    """
+    """A spent budget is not a busy backend, so an overrun refuses with the slow-switch 503 instead."""
     remaining = deadline - time.monotonic()
     call = asyncio.to_thread(fn, arg) if arg is not None else asyncio.to_thread(fn)
     if remaining <= 0:

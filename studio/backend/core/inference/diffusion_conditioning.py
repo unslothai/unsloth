@@ -23,12 +23,10 @@ from typing import Any, Optional, Sequence
 
 LOCALIZED_EDIT_MODES = ("annotate", "paint", "mask")
 
-# Decoded pixels across ALL condition images of one call: ten 4096 px images would be over 600 MB of RGBA.
 MAX_CONDITION_SOURCE_PIXELS = 64_000_000
 
 MIN_OUTPUT_SIDE = 256
 
-# Upstream QwenImage21Pipeline's own ``output_resolution`` default.
 DEFAULT_REFERENCE_RESOLUTION = 1024
 
 
@@ -50,7 +48,6 @@ def check_conditioned_fields(
 ) -> None:
     """Refuse request fields an explicit ``workflow`` would drop, on either engine."""
     if workflow is not None:
-        # One pipeline call over the ordered images would drop these, so refuse rather than ignore them.
         for present, name in (
             (mask_image is not None, "mask_image"),
             (strength is not None, "strength"),
@@ -93,10 +90,7 @@ def check_output_size(fam: Any, width: int, height: int) -> None:
 
 
 def match_source_size(fam: Any, source_size: tuple[int, int], resolution: int) -> tuple[int, int]:
-    """Output (width, height) with the source's aspect ratio at a ``resolution`` squared area, on
-    the family grid and inside its bounds. Upstream's ``calculate_dimensions`` rounding, but from
-    Image 1 rather than the LAST reference. A source too elongated for both bounds keeps the short
-    side at the minimum and caps the long side, so the size is always one the request accepts."""
+    """Source aspect ratio at the target area, snapped to the family grid and bounds, from Image 1."""
     multiple = int(getattr(fam, "dimension_multiple", 16) or 16)
     max_side = int(getattr(fam, "max_output_side", 2048) or 2048)
     max_pixels = int(getattr(fam, "max_output_pixels", 2048 * 2048) or 2048 * 2048)
@@ -195,7 +189,6 @@ def apply_localized_edit(source: Any, localized: LocalizedEdit, budget: list[int
         return [painted if source.mode == "RGBA" else painted.convert(source.mode)]
     if localized.mode == "mask":
         mask = _decode_bounded(localized.image, "L", budget, "The mask")
-        # NEAREST keeps it binary; the threshold then fixes the polarity white = region.
         mask = _to_source_geometry(mask, source, "mask", Image.NEAREST)
         mask = mask.point(lambda v: 255 if v >= 128 else 0)
         if not mask.getbbox():

@@ -5,18 +5,12 @@ from typing import Optional
 
 from pydantic import BaseModel, Field, field_validator
 
-# Mirror the frontend's 64 KiB chat-template contract (per-model-config.ts) at the API boundary:
-# MaxBodyMiddleware only caps the whole request body, not this field.
+# Mirrors the frontend's 64 KiB limit; MaxBodyMiddleware caps only the whole body.
 MAX_CHAT_TEMPLATE_BYTES = 65_536
 
 
 def chat_template_byte_length(value: str) -> Optional[int]:
-    """UTF-8 length, or None if the string cannot be encoded at all.
-
-    JSON can carry an unpaired surrogate, as a truncated emoji paste produces.
-    json decodes it fine and .encode("utf-8") then raises. Callers treat None as
-    "reject": such a template can never render.
-    """
+    """UTF-8 byte length, or None for unpaired surrogates, which JSON accepts but cannot encode."""
     try:
         return len(value.encode("utf-8"))
     except UnicodeEncodeError:

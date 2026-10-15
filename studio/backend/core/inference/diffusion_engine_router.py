@@ -76,9 +76,7 @@ logger = get_logger(__name__)
 _DISABLE_TOKENS = frozenset({"0", "off", "false", "no"})
 _ENABLE_TOKENS = frozenset({"1", "on", "true", "yes"})
 
-# Resolved device backend -> the prebuilt sd-cli accelerator to install, used only for a force-native load on a GPU
-# host: without it the installer defaults to "cpu" and a forced ROCm/Intel generation silently runs on CPU. Unknown ->
-# "auto".
+# Force-native GPU loads only: without it the installer defaults to "cpu" and runs on CPU.
 _INSTALL_ACCELERATOR = {"rocm": "rocm", "cuda": "cuda", "xpu": "vulkan"}
 
 
@@ -146,7 +144,6 @@ def off_torch_sd_cpp_device(backend: Optional[str] = None) -> Optional[OffTorchD
         return None
     inventory = _physical_inventory()
     unanswered = set(inventory.get("unanswered") or ())
-    # Per vendor: an unanswered AMD probe says nothing about NVIDIA. Unknown naming nobody = cold cache.
     if vendor not in unanswered and not (inventory.get("unknown") and not unanswered):
         present = any(
             isinstance(device, dict)
@@ -349,9 +346,8 @@ def image_install_accelerator(backend: str) -> str:
     return _install_accelerator_for(backend)
 
 
-# The engine the current load committed to, and why a non-native choice was made. Mutated only under _lock.
 _lock = threading.Lock()
-# Serializes a whole engine switch (check -> unload -> publish); _lock alone is released during the slow unload().
+# Serializes a whole engine switch; _lock is released during the slow unload().
 _transition_lock = threading.Lock()
 _active_engine_name: str = ENGINE_DIFFUSERS
 _fallback_reason: Optional[str] = None
@@ -506,7 +502,6 @@ def cancel_generation_for_account(account_id: str) -> bool:
         engine = getattr(module, attribute, None) if module is not None else None
         if engine is None or engine._active_generate_account != account_id:
             continue
-        # cancel_generate rechecks the owner under its lock.
         if engine.cancel_generate(expected_account = account_id):
             cancelled = True
     return cancelled
@@ -532,9 +527,7 @@ def active_engine_name() -> str:
 def _activate(name: str, reason: Optional[str]) -> Any:
     global _active_engine_name, _fallback_reason
     with _transition_lock:
-        # Switching engines: unload the deactivated one first, else its model stays resident but unreachable (the
-        # evictor only targets the active engine), leaking 10+ GB. The unload is slow, so resolve under _lock but run
-        # unload() OUTSIDE it.
+        # Unload the old engine first (else it leaks VRAM), outside _lock since unload is slow.
         engine_to_unload = None
         old_name = None
         with _lock:
@@ -544,16 +537,11 @@ def _activate(name: str, reason: Optional[str]) -> Any:
             else:
                 _fallback_reason = reason if name == ENGINE_DIFFUSERS else None
         if engine_to_unload is not None:
-            # Publish the new engine only AFTER the old one unloads: the evictor unloads
-            # get_active_diffusion_engine(), so flipping the name first would let a concurrent acquire_for evict the
-            # new (empty) engine while the old model frees VRAM.
+            # Publish only after the old one unloads, or the evictor may evict the new empty engine.
             try:
                 engine_to_unload.unload()
             except Exception as exc:
-                # Do NOT publish the new engine after a failed teardown. The old model (or the resident sd-server)
-                # still holds its memory, and flipping the name would hide it from get_active_diffusion_engine(),
-                # which the evictor, /images/unload and the next load all resolve through, so the leak would be
-                # permanent. Leaving the old engine active keeps it reclaimable and lets the caller retry.
+                # Do not publish after a failed teardown: the old model would leak, hidden from the evictor.
                 logger.error("failed to unload previous engine %s: %s", old_name, exc)
                 raise RuntimeError(
                     f"Could not switch the diffusion engine to {name}: unloading the current "
@@ -573,15 +561,7 @@ def _activate(name: str, reason: Optional[str]) -> Any:
 
 
 def begin_load_on(expected_engine: Any, start: Callable[[], Any]) -> Any:
-    """Run ``start`` under the transition lock, refusing if the engine changed since selection.
-
-    A load route selects its engine, then yields (device probe, arbiter acquire) before it
-    registers the load. A second /images/load picking the OTHER engine can transition in that
-    gap and unload the still-idle engine this request captured, which would then load a model
-    nothing can reach: generate / status / unload and the arbiter's evictor all resolve through
-    get_active_diffusion_engine(). Re-checking under the same lock the switch takes makes
-    selection and registration one operation.
-    """
+    """Re-checks the engine under the transition lock; a second load can switch engines in the start gap."""
     with _transition_lock:
         if expected_engine is not get_active_diffusion_engine():
             raise RuntimeError(
@@ -641,10 +621,8 @@ def select_and_activate_engine(
     backend = target.backend
     off_torch = off_torch_sd_cpp_device(backend)
     if off_torch is not None:
-        # A card torch cannot see is only reachable natively, and torch's ordinals name other cards.
         prefer_native = True
         gpu_ordinal = None
-    # CPU always native-eligible; MPS only when enabled; a GPU backend never, unless forced
     policy_eligible = backend == "cpu" or (backend == "mps" and mps_enabled) or prefer_native
     fam_ok = family_sd_cpp_supported(fam)
 
@@ -652,18 +630,13 @@ def select_and_activate_engine(
     server_binary = None
     incapable_build = False
     if policy_eligible and fam_ok:
-        # Once, so server and CLI cannot disagree.
         selected_card = _selected_card(gpu_ordinal)
         install_accelerator = preferred_accelerator(
             image_install_accelerator(backend), selected_card
         )
         if off_torch is not None:
             install_accelerator = preferred_accelerator(off_torch.accelerator, selected_card)
-        # Probe the resident sd-server FIRST (the backend prefers it): a server-only install must still route to
-        # native and should not pay an sd-cli download. Install the accelerator-matched build so a forced-native GPU
-        # load gets the GPU server.
-        # Offline an ensure hands back the condemned ROCm build, so a substitute is refused; a
-        # DEFERRED upgrade keeps native for the teardown to land.
+        # Offline an ensure returns the condemned ROCm build; a deferred upgrade keeps native.
         upgrade_is_deferred = _managed_tree_in_use() and _install_allowed()
 
         def _accept(candidate):
@@ -692,12 +665,9 @@ def select_and_activate_engine(
             logger.warning(
                 "sd-server at %s is present but not runnable; not using it", server_binary
             )
-            # Held for the single recorder below.
             unlaunchable_server = server_binary
             server_binary = None
-        # sd-cli is the one-shot fallback: always LOCATE an existing binary, but auto-INSTALL only when there is no
-        # usable server. Probe runnability first, else a present but non-runnable binary passes as available and fails
-        # inside the background load.
+        # Probe runnability first, else a non-runnable binary fails inside the background load.
         binary = _accept(
             ensure_sd_cpp_binary(
                 allow_install = _install_allowed() and server_binary is None,
@@ -710,18 +680,11 @@ def select_and_activate_engine(
             unlaunchable_cli = binary
             binary = None
         if binary is None and server_binary is None and (unlaunchable_cli or unlaunchable_server):
-            # One strike per bundle, only when NEITHER executable runs: one failing alone says
-            # nothing about the accelerator, and two strikes from one install event would divert.
-            # Here, not in the load, because a build the router rejects never reaches the load.
+            # One strike per bundle, only when neither executable runs.
             note_unlaunchable_accelerator_build(
                 unlaunchable_cli or unlaunchable_server, card = selected_card
             )
-        # Runnable is not the same as capable. A build installed before this family's architecture
-        # existed upstream is reused untouched -- nothing upgrades a runnable build of the right
-        # accelerator -- and sd-cli only discovers it cannot read the model deep inside the load,
-        # which for the server means a failed load and for the one-shot path a backend that
-        # reported ready and dies on the first generation. Diffusers can run it, so drop the
-        # incapable binary here and let the fallback below say why.
+        # Runnable is not capable: an old build is never upgraded and fails late on new families.
         for name, candidate in (("sd-server", server_binary), ("sd-cli", binary)):
             if candidate and not sd_cpp_binary_runs_family(candidate, fam):
                 incapable_build = True
@@ -745,7 +708,6 @@ def select_and_activate_engine(
     if choice == ENGINE_SD_CPP:
         return _activate(ENGINE_SD_CPP, None)
 
-    # Explain the diffusers choice for status/telemetry.
     if not policy_eligible:
         reason = f"GPU backend '{backend}' uses diffusers"
     elif not fam_ok:
@@ -767,18 +729,8 @@ def select_and_activate_engine(
 def native_binary_installed(
     *, gpu_ordinal: Optional[int] = None, fam: Optional[DiffusionFamily] = None
 ) -> bool:
-    """Whether a RUNNABLE sd.cpp binary is already on disk, installing nothing to find out.
-
-    Separated from the prediction because the two answers differ where it matters: prediction
-    counts an absent binary as available whenever installing one is allowed, and a caller that
-    must know whether selection could still fall back to diffusers needs the unassumed answer.
-
-    Filters exactly as selection does, card included, or the plan stages the wrong engine's files.
-    Given ``fam``, that includes selection's architecture gate: a build that cannot run this family
-    is not a native route for it, and a prediction that says otherwise stages sd-cli's companion
-    VAE and text encoder for a load that goes to diffusers. Without ``fam`` the question is the
-    older one, "is there a binary at all".
-    """
+    """Answers whether a runnable sd.cpp binary exists on disk, never installing one, unlike the
+    prediction."""
     backend = resolve_diffusion_device_target().backend
     off_torch = off_torch_sd_cpp_device(backend)
     if off_torch is not None:

@@ -10,22 +10,16 @@ from typing import NoReturn, Optional, Sequence, Tuple
 
 
 def _normalize_standard_streams():
-    """Point missing std streams at the null device: sys.stdout/stderr/stdin are None in a process with no
-    valid std handles (a Windows pythonw or detached launch), so every .write() / .isatty() raises
-    AttributeError. MUST run before the `from loggers import ...` below: structlog binds `from sys import
-    stdout` at ITS import time and PrintLogger does ``self._file = file or stdout``, so a None stdout is
-    captured permanently and normalizing inside run_server() is too late."""
+    """Must run before the loggers import: structlog binds stdout at import, so a None stdout is kept."""
     for name, mode in (("stdin", "r"), ("stdout", "w"), ("stderr", "w")):
         if getattr(sys, name, None) is not None:
             continue
         try:
             stream = open(os.devnull, mode, encoding = "utf-8", errors = "replace")
         except Exception:
-            # Normalizing must never itself be what kills startup.
             continue
         setattr(sys, name, stream)
-        # sys.__stdout__ & co are None here too, and readers of those (rich reads sys.__stdout__.fileno() at
-        # import) otherwise fall back to fds 0/1/2, which this process does not have.
+        # sys.__stdout__ etc are None too; rich reads sys.__stdout__.fileno() at import.
         if getattr(sys, f"__{name}__", None) is None:
             setattr(sys, f"__{name}__", stream)
 
@@ -45,11 +39,7 @@ def _is_tegra():
 
 
 def _fix_torch_cuda_ld_path():
-    """Prepend torch's bundled CUDA libs to LD_LIBRARY_PATH, returning True if it was changed. PyTorch wheels
-    ship their own CUDA runtime in ``site-packages/nvidia/*/lib``; on Linux the dynamic linker reads
-    LD_LIBRARY_PATH before the RUNPATH baked into torch's .so files, so a pre-existing LD_LIBRARY_PATH
-    pointing at a different system CUDA (conda, a Docker base image) shadows torch's libs and triggers
-    "undefined symbol" on import. Detected without importing torch."""
+    """Prepends torch's bundled CUDA libs; a foreign LD_LIBRARY_PATH shadows them and breaks import."""
     if sys.platform != "linux":
         return False
     ld_path = os.environ.get("LD_LIBRARY_PATH", "")
@@ -80,7 +70,7 @@ def _fix_torch_cuda_ld_path():
 
         existing = ld_path.split(":")
         if existing[: len(lib_dirs)] == lib_dirs:
-            return False  # already at the front, nothing to do
+            return False
 
         torch_set = set(lib_dirs)
         cleaned = [p for p in existing if p not in torch_set]
@@ -94,10 +84,7 @@ _LD_FIXED_SENTINEL = "_UNSLOTH_STUDIO_LD_FIXED"
 
 
 def _maybe_reexec_for_cuda_ld_path():
-    """Re-exec once so the dynamic linker sees the corrected LD_LIBRARY_PATH: it is read at process start, so
-    editing os.environ in-process cannot fix the running interpreter. Call only from a true entry point,
-    never at import time, because os.execv replaces the whole process (an embedder such as Colab that does
-    ``from run import run_server`` must not be re-exec'd)."""
+    """Only from a true entry point: os.execv replaces the process, so embedders must not re-exec."""
     if _LD_FIXED_SENTINEL in os.environ:
         return
     if not _fix_torch_cuda_ld_path():
@@ -107,14 +94,13 @@ def _maybe_reexec_for_cuda_ld_path():
     os.execv(sys.executable, argv)
 
 
-# Suppress C-level dependency warnings globally (e.g. SwigPyPacked).
 os.environ["PYTHONWARNINGS"] = "ignore"
 
 backend_dir = Path(__file__).parent
 if str(backend_dir) not in sys.path:
     sys.path.insert(0, str(backend_dir))
 
-# First, so these vars land before anything below can size an OpenMP/BLAS pool. Imports stdlib only.
+# First, before anything sizes an OpenMP/BLAS pool. Imports stdlib only.
 from utils.cpu_threads import configure_cpu_threads
 
 try:
@@ -123,9 +109,8 @@ except ValueError as exc:
     configured = os.environ.get("UNSLOTH_CPU_THREADS")
     raise SystemExit(f"Error: Invalid UNSLOTH_CPU_THREADS value {configured!r}: {exc}") from None
 
-# Windows ROCm ships no distributed backend, so torchao and the CUDA-only xformers both die on import,
-# taking diffusers/transformers with them. A stub only seeds a name nothing has imported yet, so both must
-# precede the first import below. An xformers built for a newer torch fails the same import anywhere.
+# Windows ROCm has no distributed backend, so torchao and xformers die on import. Stubs must
+# precede the first import below.
 from core._torchao_stub import (
     alias_torchao_fqn_to_config,
     hide_xformers_built_for_another_torch,
@@ -138,8 +123,7 @@ hide_xformers_built_for_another_torch()
 install_torchao_windows_rocm_stub()
 alias_torchao_fqn_to_config()
 
-# Anaconda/conda-forge Python: seed platform._sys_version_cache before imports that trigger attrs ->
-# rich -> structlog -> platform crash (https://github.com/python/cpython/issues/102396).
+# Conda Python: seed platform._sys_version_cache (https://github.com/python/cpython/issues/102396).
 import _platform_compat  # noqa: F401
 
 from loggers import get_logger, install_uvicorn_duplicate_exception_filter
@@ -159,10 +143,7 @@ DISABLE_PUBLIC_CHECK_ENV = "UNSLOTH_STUDIO_DISABLE_PUBLIC_CHECK"
 
 
 def public_check_disabled() -> bool:
-    """True when the operator has turned off the third-party startup lookups. On a wildcard bind Unsloth
-    asks ifconfig.me for the public IP and check-host.net whether the port is reachable; both tell an
-    outside service this machine is running one, which lab and privacy-sensitive deployments do not
-    want (#7307 Problem 8)."""
+    """True when the operator opts out of the ifconfig.me and check-host.net startup lookups."""
     return os.environ.get(DISABLE_PUBLIC_CHECK_ENV, "").strip().lower() in {"1", "true", "yes"}
 
 
@@ -181,17 +162,10 @@ def _resolve_lan_ip(ip_version: int = 4) -> str:
 
 
 def _resolve_external_ip() -> str:
-    """Resolve the machine's external IP address: GCE metadata server, then ifconfig.me (skipped by
-    UNSLOTH_STUDIO_DISABLE_PUBLIC_CHECK), then the default route's own source address. This is the
-    INTERNET-facing address, used for the reachability probe and the Cloudflare messaging, not for
-    "another device on your network", which _network_share_host_for_bind answers. The fallback stays
-    a raw route lookup rather than _resolve_lan_ip, which filters out every address a LAN peer
-    cannot open (WSL's NAT side, link-local): right for an address we advertise, wrong for a last
-    resort."""
+    """Internet-facing address, not the LAN one; the last resort skips _resolve_lan_ip's LAN filtering."""
     import socket
     import urllib.request
 
-    # 1. GCE metadata server (<10ms on GCE, times out fast elsewhere).
     try:
         req = urllib.request.Request(
             "http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip",
@@ -204,7 +178,6 @@ def _resolve_external_ip() -> str:
     except Exception:
         pass
 
-    # 2. Public IP service. Third-party, so skippable; the LAN address below still works.
     if not public_check_disabled():
         try:
             with urllib.request.urlopen("https://ifconfig.me", timeout = 3) as resp:
@@ -214,8 +187,7 @@ def _resolve_external_ip() -> str:
         except Exception:
             pass
 
-    # 3. Fallback: the source address the default route picks. A UDP connect only
-    # fixes the local end of the socket; nothing is sent to the target.
+    # A UDP connect sends nothing; it only fixes the local end.
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.connect(("8.8.8.8", 80))
@@ -227,10 +199,7 @@ def _resolve_external_ip() -> str:
 
 
 def _install_uvicorn_startup_log_rewrite(bind_host: str) -> None:
-    """Rewrite Uvicorn's startup log line: swap a wildcard bind for the address this machine answers on, use
-    our Mac-aware stop hint, and rename the prefix to "Unsloth Studio running on". The line is a claim
-    about where the server is reachable, so the address is _network_share_host_for_bind's, resolved here
-    rather than passed in so no caller can hand it the internet-facing one (#8868)."""
+    """Resolves the network-share host here so no caller can pass in the internet-facing address."""
     import logging
     import re
 
@@ -309,7 +278,6 @@ def _localhost_ipv6_mismatch_url(bind_host: str, port: int) -> "str | None":
 
     ipv4_url = f"{_url_scheme}://127.0.0.1:{port}"
 
-    # Only warn once Unsloth is confirmed answering on IPv4 loopback.
     if _working_local_url(port) != ipv4_url:
         return None
 
@@ -331,9 +299,7 @@ def _localhost_ipv6_mismatch_url(bind_host: str, port: int) -> "str | None":
             if host == "::1":
                 has_ipv6_loopback = True
 
-    # A connection to ::1 is NOT evidence Unsloth is reachable there: Unsloth binds 127.0.0.1 only, so
-    # anything on ::1 is a different process. Dual-stack localhost is fine (browsers fall back to
-    # 127.0.0.1), so only the IPv6-only case strands the user.
+    # Unsloth binds 127.0.0.1 only, so anything on ::1 is another process; only IPv6-only strands.
     if has_ipv6_loopback and not has_ipv4_loopback:
         return ipv4_url
     return None
@@ -368,12 +334,8 @@ def _verify_global_reachability(
     port: int,
     wsl_nat: bool = False,
 ) -> None:
-    """Probe check-host.net to confirm display_host:port is reachable from the public internet. Synchronous so
-    output lands between the banner URLs and the stop hint. Bounded at ~15s; failures swallowed (verifier
-    failing is not Unsloth failing). Only meaningful for a wildcard bind, and skipped entirely by
-    UNSLOTH_STUDIO_DISABLE_PUBLIC_CHECK. ``wsl_nat`` skips the LAN note (the WSL hint replaces it)."""
+    """Failures are swallowed: a broken check-host.net probe is not a broken Unsloth."""
     global _public_reachable
-    # Reset to "unknown" each run; set True/False only when the probe decides.
     _public_reachable = None
     import ipaddress
     import json
@@ -395,7 +357,6 @@ def _verify_global_reachability(
 
     url = f"{_url_scheme}://{_url_host(display_host)}:{port}"
 
-    # Private/loopback/link-local addresses aren't globally routable.
     try:
         addr = ipaddress.ip_address(display_host)
         if addr.is_loopback or addr.is_private or addr.is_link_local:
@@ -412,7 +373,6 @@ def _verify_global_reachability(
     except ValueError:
         pass
 
-    # The probe hands display_host:port to a third party and asks it to connect.
     if public_check_disabled():
         logger.debug("Skipping the check-host.net probe (%s).", DISABLE_PUBLIC_CHECK_ENV)
         return
@@ -542,11 +502,7 @@ def _display_host_for_bind(host: str) -> str:
 
 
 def _network_share_host_for_bind(host: str) -> str:
-    """The address to hand another device on this LAN, or to build the API panel's direct base URL from.
-    Deliberately not _display_host_for_bind: that answers "what is this machine's internet-facing address",
-    and for a wildcard bind that can be a public WAN IP a LAN peer cannot route to (#8868). Only a family
-    the wildcard actually binds is resolved, so an IPv6-only launch is never advertised at an IPv4
-    address."""
+    """Not the internet-facing address: a wildcard bind's public WAN IP is unroutable from the LAN."""
     wildcard_versions = wildcard_ip_versions(host)
     if not wildcard_versions:
         return host
@@ -560,10 +516,10 @@ def _network_share_host_for_bind(host: str) -> str:
 def _is_wsl_nat() -> bool:
     from lan_access import _wsl_networking_mode
 
-    # "unknown" = WSL too old for wslinfo, which is NAT; "none" has no network at all.
+    # "unknown" = WSL too old for wslinfo, which is NAT.
     if _wsl_networking_mode() not in ("nat", "unknown"):
         return False
-    # Lazy import (every wildcard bind gets here); Docker Desktop containers also read "unknown".
+    # Docker Desktop containers also read "unknown".
     from utils.paths.file_manager import _in_container
 
     return not _in_container()
@@ -652,10 +608,7 @@ def _emit_startup_output(
     enable_tools: "Optional[bool]" = None,
     lan_addresses: "tuple[str, ...]" = (),
 ) -> None:
-    """Print the access banner, post-startup warnings, the tool-policy notice, then a single stop hint.
-    ``lan_addresses`` are the addresses a persisted Settings > LAN access auto-start has already bound. A
-    loopback launch carrying them is network reachable, so both the banner and the tool-policy notice must
-    say so."""
+    """A loopback launch with LAN addresses bound is network-reachable, so the banner must say so."""
     if secure:
         _emit_secure_startup_output(port, enable_tools)
         return
@@ -665,8 +618,6 @@ def _emit_startup_output(
         port = port,
         bind_host = host,
         display_host = display_host,
-        # The "from another device on your network" line needs the LAN address,
-        # not display_host's possibly-public one (#8868).
         network_host = _network_share_host_for_bind(host),
         include_stop_hint = False,
         lan_addresses = lan_addresses,
@@ -761,7 +712,6 @@ def _print_cloudflare_line(secure: bool = False, loopback_host: str = "127.0.0.1
                 warn,
             )
     elif _cloudflare_flag is False or _cloudflare_flag is None:
-        # None = off by default (no flag); False = explicit --no-cloudflare.
         _reason = "default" if _cloudflare_flag is None else "--no-cloudflare"
         if _public_reachable is True:
             _emit(
@@ -835,10 +785,7 @@ def _addresses_collide(recorded: "str | None", host: str, port: int) -> bool:
 
 
 def _is_port_free(host: str, port: int) -> bool:
-    """Check if a port is available for binding. For a ``0.0.0.0`` wildcard host, also check whether anything
-    is listening on ``127.0.0.1`` (and ``::1`` when IPv6 exists): an SSH tunnel may hold loopback while the
-    wildcard bind succeeds, making Unsloth unreachable via ``localhost``. A specific host is checked too:
-    Windows and macOS let a ``127.0.0.1`` bind sit beside another process's ``0.0.0.0`` listener."""
+    """Wildcard binds also check loopback: an SSH tunnel can hold 127.0.0.1 while 0.0.0.0 succeeds."""
     import socket
 
     sockets = []
@@ -854,12 +801,8 @@ def _is_port_free(host: str, port: int) -> bool:
             bound.append((family, sockaddr))
             probe = socket.socket(family, socktype, proto)
             sockets.append(probe)
-            # On Windows, SO_REUSEADDR lets a second socket bind a listening
-            # port when the incumbent also enabled it. That makes this probe
-            # report the port as free, then uvicorn fails with WinError 10048
-            # instead of letting _resolve_port fall back to the next port.
-            # POSIX keeps the option so a recently closed listener does not
-            # strand the preferred port in TIME_WAIT.
+            # Windows SO_REUSEADDR lets a second socket bind a listening port, so the probe would lie.
+            # POSIX keeps it so a TIME_WAIT listener does not strand the port.
             if sys.platform != "win32":
                 probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             if family == socket.AF_INET6 and hasattr(socket, "IPV6_V6ONLY"):
@@ -946,16 +889,14 @@ from utils.paths.storage_roots import studio_root as _studio_root
 # Legacy single-instance file; still read so `stop` finds an older build's server.
 _PID_FILE = _studio_root() / "studio.pid"
 PID_FILE_GLOB = "studio-*.pid"
-# Deliberately not a .pid: everything that globs PID_FILE_GLOB expects a bound server with a port in
-# the name, and a process that has not bound yet is not one.
+# Not a .pid: PID_FILE_GLOB readers expect a bound server with a port in the name.
 STARTUP_MARKER_GLOB = "studio-starting-*.marker"
 _OWN_STARTUP_MARKERS: "list[Path]" = []
 _STARTUP_MARKER_HOOK_REGISTERED = False
 
 
 def _pid_file_for_port(port: int) -> Path:
-    # PID in the name: 127.0.0.1 and ::1 can share a port, and one file per port
-    # would let the second bind overwrite the first.
+    # PID in the name: 127.0.0.1 and ::1 can share a port.
     return _studio_root() / f"studio-{port}-{os.getpid()}.pid"
 
 
@@ -966,8 +907,7 @@ def _pid_alive(pid: int) -> bool:
     except ImportError:
         pass
     if sys.platform == "win32":
-        # os.kill(pid, 0) raises OSError for every pid on Windows, so tasklist is
-        # the only usable probe here.
+        # os.kill(pid, 0) raises for every pid on Windows.
         import subprocess
         try:
             out = subprocess.run(
@@ -979,9 +919,7 @@ def _pid_alive(pid: int) -> bool:
                 timeout = 10,
             ).stdout
         except Exception:
-            # Unconfirmed means keep, matching the CLI's _pid_alive. Pruning a live server's record is what lets the
-            # next launch fall back past it and strand it; a stale record instead costs one clear "already running"
-            # message.
+            # Unconfirmed means keep, matching the CLI's _pid_alive.
             return True
         return f'"{int(pid)}"' in out
     try:
@@ -1009,7 +947,7 @@ def _read_pid_record(path: Path) -> "tuple[int, float | None, str | None] | None
     if not lines or not lines[0].strip().isdigit():
         return None
     try:
-        # isdigit() is not enough: a superscript two passes it but int() rejects it.
+        # isdigit() accepts superscripts that int() rejects.
         pid = int(lines[0].strip())
     except ValueError:
         return None
@@ -1027,10 +965,7 @@ def _read_pid_record(path: Path) -> "tuple[int, float | None, str | None] | None
 
 
 def _pid_is_studio_backend(pid: int, created_times: "Sequence[float | None]" = ()) -> bool:
-    """False only when a recorded start time proves this PID is a different process. Any recorded time matching
-    is enough: a stale record must not veto a live server that reused the PID. Untimed records cannot be
-    checked at all, so they are trusted, since a legacy `python run.py` has no telltale argv and guessing
-    from the command line rejected real servers."""
+    """Untimed records are trusted: command-line guessing wrongly rejected real legacy servers."""
     known = [c for c in created_times if c is not None]
     if not known:
         return True
@@ -1054,7 +989,6 @@ def _own_studio_on_port(port: int, host: str) -> "int | None":
             continue
         pid, created, address = record
         if not _pid_alive(pid):
-            # Pruning is a courtesy; an undeletable record must not abort startup.
             try:
                 path.unlink(missing_ok = True)
             except OSError:
@@ -1077,8 +1011,7 @@ def _legacy_studio_on_port(port: int) -> "int | None":
     pid, created, _address = record
     if not _pid_alive(pid):
         return None
-    # A current build writes a per-port file too, so its port is already known, and this port's records were
-    # just checked. Only count a record that still matches the live process: a stale one may share a reused PID.
+    # Only count a record still matching the live process; a stale one may share a reused PID.
     for other in _per_port_records():
         if other and other[0] == pid and _pid_is_studio_backend(pid, [other[1]]):
             return None
@@ -1091,11 +1024,7 @@ def _legacy_studio_on_port(port: int) -> "int | None":
 
 
 def write_startup_marker() -> None:
-    """Record that this process is coming up, before uvicorn starts. The per-port record cannot be written
-    until uvicorn reports the bound port, and lifespan startup runs well before that. Two overlapping
-    launches would otherwise each find no sibling and each clear the shared compiled cache, so a sibling
-    has to be discoverable from the moment it could do any clearing. Published under the same lock the
-    clear takes, so the marker cannot appear in the gap between a sibling's probe and its rmtree."""
+    """Written before uvicorn starts, under the cache-clear lock, so a sibling cannot miss it."""
     me = os.getpid()
     created = _process_create_time(me)
     body = f"{me}\n{created if created is not None else ''}\n"
@@ -1103,14 +1032,9 @@ def write_startup_marker() -> None:
         from utils.cache_cleanup import compiled_cache_lock, LOCK_BUSY
     except Exception:
         import contextlib
-
-        # No lock available means an unserialized publish, which is what this
-        # did before the lock existed. Startup still has to happen.
         compiled_cache_lock = contextlib.nullcontext
         LOCK_BUSY = None
-    # A longer budget than a clear takes: publishing behind a holder that is mid-rmtree is the case worth
-    # waiting out. Publishing anyway if the wait runs out is still right, because a marker that never appears
-    # makes this backend invisible.
+    # Wait out a holder mid-rmtree; publish anyway on timeout, or this backend stays invisible.
     with compiled_cache_lock(timeout = 30.0) as lock_state:
         published_unlocked = lock_state == LOCK_BUSY
         if published_unlocked:
@@ -1122,11 +1046,8 @@ def write_startup_marker() -> None:
         path = directory / f"studio-starting-{me}.marker"
         try:
             directory.mkdir(parents = True, exist_ok = True)
-            # Same layout as a per-port record, so _read_pid_record parses both.
-            # An unknown start time is a blank line, read back as None.
+            # Same layout as a per-port record; unknown start time is a blank line.
             path.write_text(body, encoding = "utf-8")
-            # Not appended twice: the path is the same file every time (this PID names it), and a duplicate entry
-            # would be popped and retried twice on the way out for no reason.
             if path not in _OWN_STARTUP_MARKERS:
                 _OWN_STARTUP_MARKERS.append(path)
         except OSError:
@@ -1135,8 +1056,7 @@ def write_startup_marker() -> None:
         return
     import atexit
 
-    # Registered here rather than beside the pid-file hook: startup can fail between these two points, and the
-    # marker has to go either way. Before the wait below, so an interrupt during it still takes the marker back.
+    # Register before the wait so an interrupt still removes the marker.
     global _STARTUP_MARKER_HOOK_REGISTERED
     if not _STARTUP_MARKER_HOOK_REGISTERED:
         atexit.register(_remove_startup_marker)
@@ -1145,17 +1065,12 @@ def write_startup_marker() -> None:
         _wait_out_a_running_cache_clear(compiled_cache_lock, LOCK_BUSY)
 
 
-# A clear is an rmtree of one directory. Five minutes is not how long that takes even on network storage; it
-# is how long to keep waiting before deciding that refusing to start is worse than starting on a cache that
-# may lose files underneath it.
+# Not how long a clear takes: how long before starting beats refusing to start.
 _CACHE_CLEAR_WAIT_SECONDS = 300.0
 
 
 def _wait_out_a_running_cache_clear(compiled_cache_lock, lock_busy) -> None:
-    """Block until whoever is clearing the compiled cache has finished. What this must not do is return to a
-    caller that immediately imports and compiles into a cache another backend is still deleting; taking the
-    lock and dropping it again is the wait. The lock is an OS file lock, released when its holder exits, so
-    a crashed backend cannot hold this here."""
+    """Taking and dropping the lock is the wait; the OS frees it when the clearing backend exits."""
     with compiled_cache_lock(timeout = _CACHE_CLEAR_WAIT_SECONDS) as state:
         if state == lock_busy:
             logger.warning(
@@ -1166,18 +1081,13 @@ def _wait_out_a_running_cache_clear(compiled_cache_lock, lock_busy) -> None:
             )
 
 
-# Enough attempts to outlast the usual Windows holder (an indexer or a scanner
-# with the file open), short enough that shutdown is not visibly delayed.
+# Outlast a typical Windows indexer/scanner holding the file.
 _MARKER_REMOVAL_ATTEMPTS = 5
 _MARKER_REMOVAL_BACKOFF_SECONDS = 0.2
 
 
 def _remove_startup_marker() -> None:
-    """Delete this process's startup markers, retrying a failure a few times. A path is dropped from the list
-    only once it is actually gone: a transient unlink failure would otherwise lose the only reference to
-    it, leaving a marker whose recorded start time still matches this process, so an embedded host that
-    keeps running would go on answering as a live backend and pin the compiled cache. The one guaranteed
-    later call is the atexit hook, which such a host may not reach for a long time."""
+    """A path leaves the list only once unlinked; a leftover marker would pin the compiled cache."""
     import time
 
     remaining = []
@@ -1189,8 +1099,6 @@ def _remove_startup_marker() -> None:
                 break
             except OSError:
                 if attempt + 1 == _MARKER_REMOVAL_ATTEMPTS:
-                    # Still tracked, so the atexit hook and any later call try
-                    # again; this is the floor, not the only chance.
                     remaining.append(path)
                     break
                 time.sleep(_MARKER_REMOVAL_BACKOFF_SECONDS)
@@ -1253,13 +1161,8 @@ def _live_sibling(records: "list", me: int, timed: "list") -> "int | None":
         pid, created, _address = record
         if pid == me or not _sibling_is_running(pid):
             continue
-        # Corroborate against other records for this PID, the way _legacy_studio_on_port does. studio.pid holds a
-        # bare PID with no start time, and an untimed record is trusted unconditionally, so on its own it would
-        # resurrect a server that died and had its PID reused. A timestamped record for the same PID that fails
-        # the check is evidence it is gone. Only a record written no earlier than this one counts: a pre-upgrade
-        # backend writes a bare studio.pid and nothing else, so if it starts on a PID a crashed current-version
-        # backend left a record for, the older timestamp describes a process that is gone, and letting it veto
-        # would clear the compiled cache under a serving legacy backend.
+        # studio.pid has no start time, so corroborate against timestamped records for this PID; only
+        # records no older than it count (a reused PID must not clear a live legacy backend's cache).
         corroborating = [
             other[1]
             for other, other_written in timed
@@ -1271,13 +1174,7 @@ def _live_sibling(records: "list", me: int, timed: "list") -> "int | None":
 
 
 def live_sibling_backend() -> "int | None":
-    """PID of another live Unsloth backend of this install, or None. Two of ours at once is a supported
-    configuration, and they share an install-tree compiled cache, so the second must not wipe it out from
-    under the first. All three records are read, because a sibling can be in a state where only one exists:
-    a startup marker while it is still binding, a per-port record once it has bound, and `studio.pid` alone
-    for a pre-upgrade server or one whose best-effort per-port write failed. Called before
-    `_write_pid_file`, so our own record is not there yet; the explicit pid check keeps it correct for the
-    marker, which is."""
+    """Reads the startup marker, per-port record and studio.pid, since any one may be the only record."""
     me = os.getpid()
     timed = _timed_records()
     return _live_sibling(timed + [_legacy_record()], me, timed)
@@ -1317,9 +1214,8 @@ def _abort_already_running(pid: int, port: int) -> "NoReturn":
     sys.exit(1)
 
 
-# Direct backend launches bypass the CLI's env re-export; do it here for real custom roots so unsloth-zoo's
-# import-time LLAMA_CPP_DEFAULT_DIR picks up the custom build. Skip legacy-default to avoid flipping
-# default-mode installs into env-override.
+# Direct launches bypass the CLI's env re-export; export custom roots so unsloth-zoo's
+# import-time LLAMA_CPP_DEFAULT_DIR sees them. Skip legacy-default.
 try:
     _LEGACY_STUDIO_ROOT = (Path.home() / ".unsloth" / "studio").resolve()
 except (OSError, ValueError):
@@ -1331,25 +1227,20 @@ except (OSError, ValueError):
 from utils.paths.storage_roots import unsloth_home as _unsloth_home
 
 _MASTER_ROOT = _unsloth_home()
-# A master root pointed at the legacy path still owns runtimes beside it, so the equality alone
-# would skip the export and leave unsloth_zoo on ~/.unsloth/llama.cpp.
+# A master root at the legacy path still owns runtimes beside it.
 if _STUDIO_ROOT_RESOLVED != _LEGACY_STUDIO_ROOT or _MASTER_ROOT is not None:
     if not os.environ.get("UNSLOTH_STUDIO_HOME"):
         os.environ["UNSLOTH_STUDIO_HOME"] = str(_STUDIO_ROOT_RESOLVED)
-    # The runtimes sit at the master root, beside studio/; deriving from the Studio root would
-    # pin a path one level too deep for every worker.
+    # Runtimes sit at the master root, beside studio/.
     _MANAGED_ROOT = _MASTER_ROOT or _STUDIO_ROOT_RESOLVED
     _MANAGED_LLAMA_CPP_PATH = _MANAGED_ROOT / "llama.cpp"
     if not os.environ.get("UNSLOTH_LLAMA_CPP_PATH"):
         os.environ["UNSLOTH_LLAMA_CPP_PATH"] = str(_MANAGED_LLAMA_CPP_PATH)
-    # The CLI and generated launchers can export this path before run.py starts.
-    # Preserve its managed provenance while leaving every other env pin explicit.
     from utils.llama_cpp_path_settings import mark_managed_llama_cpp_path
 
     mark_managed_llama_cpp_path(_MANAGED_LLAMA_CPP_PATH)
 
-# The studio bundles unsloth_zoo; declare unsloth present (as `import unsloth` does) so its lazy
-# submodule imports and the DiffusionGemma runner never trip the install guard on a clean install.
+# Declare unsloth present so unsloth_zoo's install guard passes on a clean install.
 os.environ.setdefault("UNSLOTH_IS_PRESENT", "1")
 
 
@@ -1365,30 +1256,23 @@ def _write_pid_file(port: int, host: str = ""):
     except OSError:
         pass
     try:
-        # Start time pins the record to this process; the bind address tells a
-        # later launch whether this server would actually block it.
         created = _process_create_time(os.getpid())
         address = ",".join(sorted(_bind_addresses(host, port))) if host else ""
         body = f"{os.getpid()}\n{'' if created is None else repr(created)}\n{address}"
-        # Write-then-rename: `stop` reads these concurrently, and a reader that
-        # catches the truncate window sees a corrupt record and deletes it.
+        # Write-then-rename: concurrent `stop` readers would delete a truncated record.
         tmp = path.with_name(path.name + ".tmp")
         try:
             tmp.write_text(body, encoding = "utf-8")
             os.replace(tmp, path)
         finally:
-            # A failed replace would otherwise leave the scratch file behind. It
-            # does not end in .pid, so no glob picks it up either way.
             tmp.unlink(missing_ok = True)
     except OSError:
         pass
     else:
         _OWN_PID_FILE = path
-    # An older CLI's `stop` only reads this one, and expects a bare PID. Written independently of the
-    # per-port record: if that one failed, this is the only thing keeping the server stoppable at all.
+    # An older CLI's `stop` reads only this file and expects a bare PID.
     try:
-        # Never take it from a server that is still running. A pre-upgrade server is recorded here and nowhere
-        # else, so overwriting its entry is exactly what strands it.
+        # Never take it from a running server: a pre-upgrade server is recorded only here.
         prior = _read_pid_record(_PID_FILE) if _PID_FILE.is_file() else None
         if prior is None or prior[0] == os.getpid() or not _pid_alive(prior[0]):
             _PID_FILE.write_text(str(os.getpid()), encoding = "utf-8")
@@ -1415,14 +1299,8 @@ def _legacy_heir() -> "int | None":
 
 
 def _remove_pid_file():
-    """Remove the records that belong to this process. _PID_FILE is checked even when the per-port
-    record was never written, since _write_pid_file writes the two independently. The startup marker
-    is deliberately NOT dropped here: _graceful_shutdown calls this before the server thread is
-    joined, and a backend still finishing an in-flight request is still importing from the cache, so
-    going invisible there would let a replacement clear it underneath. The marker goes when the
-    server thread actually ends, and from the atexit hook if the process exits first."""
-    # Nothing here may raise: _graceful_shutdown calls this at the end, and an unreadable or undeletable
-    # record must not abandon the rest of the exit path.
+    """Keeps the startup marker: a backend still finishing a request is importing from the cache."""
+    # Nothing here may raise: _graceful_shutdown calls this last.
     if _OWN_PID_FILE is not None:
         try:
             record = _read_pid_record(_OWN_PID_FILE) if _OWN_PID_FILE.is_file() else None
@@ -1433,8 +1311,7 @@ def _remove_pid_file():
     try:
         record = _read_pid_record(_PID_FILE) if _PID_FILE.is_file() else None
         if record is not None and record[0] == os.getpid():
-            # Hand the pointer to a live sibling rather than deleting it: an older CLI reads only this file, so
-            # dropping it while another server is still up leaves that server unstoppable.
+            # Hand off to a live sibling: older CLIs read only this file.
             heir = _legacy_heir()
             if heir is None:
                 _PID_FILE.unlink(missing_ok = True)
@@ -1448,8 +1325,7 @@ def _remove_pid_file():
 _CONSOLE_SHUTDOWN_BUDGET = 4.5
 
 
-# CTRL_CLOSE / CTRL_LOGOFF / CTRL_SHUTDOWN. Ctrl+C and Ctrl+Break (0 and 1) are
-# left out on purpose: Python already delivers those as signals.
+# Ctrl+C / Ctrl+Break (0, 1) are excluded: Python delivers them as signals.
 _CONSOLE_SHUTDOWN_EVENTS = (2, 5, 6)
 
 
@@ -1465,10 +1341,7 @@ def _run_console_shutdown(shutdown) -> None:
 
 
 def _install_windows_console_handler(shutdown) -> bool:
-    """Run the graceful shutdown when the console window is closed. Closing the window raises
-    CTRL_CLOSE_EVENT, which Python never turns into a signal, so neither a signal handler nor atexit runs.
-    ``shutdown`` takes no arguments and must not touch signal.signal: Windows runs this on a thread it
-    creates for the event and kills the process about five seconds later, so the work is bounded to fit."""
+    """Closing the console skips signal handlers and atexit, and Windows kills the process ~5s later."""
     if sys.platform != "win32":
         return False
     try:
@@ -1487,8 +1360,6 @@ def _install_windows_console_handler(shutdown) -> bool:
                 worker.start()
                 worker.join(timeout = _CONSOLE_SHUTDOWN_BUDGET)
                 return True
-            # Ctrl+C / Ctrl+Break already arrive as Python signals; pass them
-            # on rather than shutting down twice.
             return False
 
         callback = HANDLER(_on_console_event)
@@ -1521,11 +1392,7 @@ def _graceful_shutdown(server = None):
     children before exit; critical on Windows where atexit handlers are unreliable after Ctrl+C."""
     logger.info("Graceful shutdown initiated -- cleaning up subprocesses...")
 
-    # 0a. Latch "quitting" before any subsystem is torn down. Each step below refuses to
-    # respawn its OWN child once it has run, but a load still in flight can reach a
-    # different spawner afterwards: the orchestrator is stopped at step 2 and swept at
-    # step 7, and a helper load owns a backend no step touches at all. One flag, read at
-    # every spawn, covers the gaps between the steps.
+    # 0a. Latch "quitting" first: in-flight loads can reach spawners whose step already ran.
     try:
         from utils.process_lifetime import mark_process_shutting_down
         mark_process_shutting_down()
@@ -1547,7 +1414,6 @@ def _graceful_shutdown(server = None):
         logger.warning("Error stopping the training run for shutdown: %s", e)
 
     try:
-        # sys.modules: an install that never trained a diffusion LoRA does not import it here.
         _diffusion = sys.modules.get("core.training.diffusion_training_service")
         if _diffusion is not None and _diffusion._service is not None:
             from core.training.training import _SHUTDOWN_STOP_TIMEOUT_S
@@ -1584,9 +1450,7 @@ def _graceful_shutdown(server = None):
         from core.inference.model_slots import unload_extra_models
         from routes.inference import _llama_cpp_backend, cancel_pending_loads
 
-        # Before the kill: a load still in the lifecycle gate or in preflight is not yet
-        # holding anything the backend's own flag can see, and would spawn llama-server
-        # after this step had already run.
+        # Before the kill: a load in the lifecycle gate could spawn llama-server after this step.
         try:
             cancelled = cancel_pending_loads()
             if cancelled:
@@ -1594,8 +1458,7 @@ def _graceful_shutdown(server = None):
         except Exception as e:
             logger.warning("Could not cancel in-flight loads: %s", e)
         if _llama_cpp_backend is not None:
-            # teardown = True: an app-level stop, not the retry ladder reaping a child it
-            # is about to replace. Only the former may end an in-flight health wait.
+            # teardown = True: only an app-level stop may end an in-flight health wait.
             _llama_cpp_backend._kill_process(teardown = True)
         unload_extra_models()
     except Exception as e:
@@ -1619,17 +1482,15 @@ def _graceful_shutdown(server = None):
     try:
         from utils.process_lifetime import clear_breadcrumb, terminate_all
         terminate_all()
-        clear_breadcrumb()  # nothing left for the next startup to sweep
+        clear_breadcrumb()
     except Exception as e:
         logger.warning("Error in process-lifetime sweep: %s", e)
 
-    # Last: while cleanup runs the server is still alive, and dropping the record early leaves a retried
-    # `stop` or a new launch unable to find it.
+    # Last: a retried `stop` or new launch must still find the server during cleanup.
     _remove_pid_file()
     logger.info("All subprocesses cleaned up")
 
 
-# Bound the join so a stuck uvicorn shutdown cannot hang the terminal.
 _SERVER_SHUTDOWN_JOIN_TIMEOUT = 5.0
 
 
@@ -1663,8 +1524,7 @@ _url_scheme = "http"
 
 _shutdown_event = None
 
-# trycloudflare.com URL for wildcard binds (set by run_server, read by the banner);
-# None when there is no tunnel (loopback, disabled, or a silently-ignored failure).
+# Set by run_server for wildcard binds; None when there is no tunnel.
 _cloudflare_url = None
 
 
@@ -1674,13 +1534,11 @@ def _publish_cloudflare_url(app_state, cloudflare_url: "Optional[str]") -> None:
     app_state.cloudflare_url = cloudflare_url
 
 
-# Public reachability from the last _verify_global_reachability run: True when the probe confirmed
-# reachable, False when it confirmed NOT reachable, None when it did not run or could not decide.
+# True/False when the probe decided, None otherwise.
 _public_reachable = None
 
 _cloudflare_requested = False
-# Opt-in tri-state (mirrors the CLI): None = off by default, True = on, False = explicit
-# --no-cloudflare.
+# None = off by default, False = explicit --no-cloudflare.
 _cloudflare_flag = None
 
 
@@ -1701,13 +1559,11 @@ def _iter_frontend_fallback_candidates() -> "list[Path]":
         or str(Path.home() / ".unsloth" / "studio")
     )
     venv_dir = Path(home_str).expanduser() / "unsloth_studio"
-    # Installer venv site-packages.
     for pattern in (
         "lib/python*/site-packages/studio/frontend/dist",
         "Lib/site-packages/studio/frontend/dist",
     ):
         out.extend(venv_dir.glob(pattern))
-    # Editable source roots referenced from the installer venv.
     for sp_pattern in ("lib/python*/site-packages", "Lib/site-packages"):
         for sp in venv_dir.glob(sp_pattern):
             for finder in sp.glob("__editable___*_finder.py"):
@@ -1715,8 +1571,7 @@ def _iter_frontend_fallback_candidates() -> "list[Path]":
                     src = finder.read_text(encoding = "utf-8")
                 except (OSError, UnicodeDecodeError):
                     continue
-                # Tolerate single/multi-line dict literals; [^}]* rejects nested dicts, which the setuptools editable
-                # template never emits.
+                # [^}]* rejects nested dicts, which the setuptools editable template never emits.
                 m = re.search(r"^MAPPING\s*(?::[^=]*)?=\s*(\{[^}]*\})", src, re.M | re.S)
                 if not m:
                     continue
@@ -1724,7 +1579,6 @@ def _iter_frontend_fallback_candidates() -> "list[Path]":
                     mapping = ast.literal_eval(m.group(1))
                 except (SyntaxError, ValueError):
                     continue
-                # literal_eval can return a set/list/None if `{...}` isn't a dict.
                 if not isinstance(mapping, dict):
                     continue
                 studio_pkg = mapping.get("studio")
@@ -1764,10 +1618,7 @@ def _frontend_serving_mode(*, api_only: bool, desktop_owned: bool) -> tuple[bool
 
 
 def _missing_frontend_is_fatal(*, tunnel_only: bool) -> bool:
-    """Whether an unresolvable SPA build must abort startup. It must when the web UI is this launch's own
-    surface: a 404 on / is worse than a loud error. It must not for the desktop, which passes --api-only
-    with no --frontend and whose installer skips the frontend build; there the SPA only backs the optional
-    remote web UI, so aborting would kill the local API before TAURI_PORT is emitted."""
+    """Fatal only for the web UI; the desktop's --api-only launch would die before TAURI_PORT."""
     return not tunnel_only
 
 
@@ -1789,37 +1640,29 @@ class _TeeStream:
     def __init__(self, stream, log_fh):
         self._stream = stream
         self._log_fh = log_fh
-        # Last frame seen with no newline yet; superseded by the next frame, flushed
-        # ahead of the next real line.
         self._pending_frame = ""
 
     @staticmethod
     def _last_frame(line):
-        # A trailing "\r" terminates the line (CRLF, or tqdm's own sign-off); it does not open an empty
-        # redraw. Strip it first, as trim_line_endings does on the desktop side.
+        # A trailing "\r" terminates the line (CRLF, tqdm sign-off), not an empty redraw.
         line = line.rstrip("\r")
         if "\r" not in line:
             return line
         for frame in reversed(line.split("\r")):
             if frame.strip():
                 return frame
-        # All frames blank, so the line is blank. Return a frame, not the whole text: a bare CR reaching the
-        # file lands as CR CR LF once the handle adds its own terminator.
+        # Return a frame: a bare CR would land as CR CR LF.
         return line.rsplit("\r", 1)[-1]
 
     def _write_file(self, data):
-        # Not a continuation of a held frame: that would flush it unterminated and glue the next record on.
-        # print("", end = "") is enough to get here.
         if not data:
             return
-        # Overwhelmingly the common case, and the one that must stay cheap.
         if "\r" not in data and not self._pending_frame:
             self._log_fh.write(data)
             return
 
         if self._pending_frame and data[:1] not in ("\r", "\n"):
-            # Not a redraw of the held frame nor its terminator, so it is the next record. Close the frame off on
-            # its own line; concatenating costs a reader the JSON.
+            # Close the held frame on its own line; concatenating breaks a JSON reader.
             self._log_fh.write(self._pending_frame + "\n")
             self._pending_frame = ""
 
@@ -1830,8 +1673,7 @@ class _TeeStream:
             complete = head + newline
             self._log_fh.write("\n".join(self._last_frame(line) for line in complete.split("\n")))
         if tail:
-            # Unterminated remainder: hold it only if it is a redraw, else write it now so a hang cannot swallow
-            # real output.
+            # Hold an unterminated tail only if it is a redraw, so a hang cannot swallow real output.
             if "\r" in tail:
                 self._pending_frame = self._last_frame(tail)
             else:
@@ -1859,10 +1701,7 @@ class _TeeStream:
             pass
 
     def close(self):
-        # We do NOT own the console stream (it is the terminal / Jupyter kernel stream we wrapped), so closing
-        # the tee must never take the server down. Forward close() best-effort: on Colab that stream is an
-        # ipykernel OutStream whose close() can raise (ipython/ipykernel#867). A frame still held here has
-        # nothing left to supersede it, so land it.
+        # We do not own the console stream; forward close() best-effort (ipython/ipykernel#867).
         try:
             if self._pending_frame:
                 self._log_fh.write(self._pending_frame + "\n")
@@ -1896,17 +1735,7 @@ def _is_missing_watch_fd_thread(exc):
 
 
 def _harden_console_close(stream):
-    """Stop a displaced console stream's close() from aborting Unsloth startup.
-    ``_setup_server_disk_logging`` replaces ``sys.stdout``/``sys.stderr`` with a tee, changing the
-    object identity of the console stream, so a third-party logging handler that captured the
-    ORIGINAL stream (notably Colab's ``absl`` handler, whose ``close()`` skips
-    ``sys.stdout``/``sys.stderr`` but not a stream that is no longer either) calls ``close()`` on it
-    during logging teardown, via ``uvicorn.Config()`` -> ``dictConfig()`` -> ``logging.shutdown()``.
-    An ipykernel ``OutStream`` created with ``watchfd=False`` (the Colab default) never gains a
-    ``watch_fd_thread``, yet the affected ipykernel versions join that thread unconditionally in
-    ``close()`` and raise ``AttributeError`` (ipython/ipykernel#867), which aborts startup. So wrap
-    ``close()`` in a pass-through that swallows ONLY that AttributeError; a healthy close() runs
-    exactly as before and any other error still propagates."""
+    """Swallows only the AttributeError ipykernel raises from close() on a displaced stream."""
     if stream is None:
         return
     try:
@@ -1919,7 +1748,6 @@ def _harden_console_close(stream):
             return _orig_close(*args, **kwargs)
         except AttributeError as exc:
             if not _is_missing_watch_fd_thread(exc):
-                # A real teardown failure; never hide it.
                 raise
             # ipython/ipykernel#867: watchfd=False OutStream.close() joins a thread that was never created.
             return None
@@ -1927,15 +1755,11 @@ def _harden_console_close(stream):
     try:
         stream.close = _safe_close
     except (AttributeError, TypeError):
-        # A stream that forbids setting instance attributes; leave it as-is.
         pass
 
 
 def _setup_server_disk_logging():
-    """Tee stdout/stderr to ~/.unsloth/studio/logs/server/ and aim faulthandler at the same file so hard
-    crashes (access violations / SIGSEGV in the GPU runtime) leave a stack trace on disk. Also exports
-    PYTHONFAULTHANDLER=1 so child Python processes dump native-crash stacks to their captured stderr. Keeps
-    the newest 20 session logs; opt out with UNSLOTH_STUDIO_NO_FILE_LOG=1."""
+    """Tees output to disk so hard crashes leave a stack; UNSLOTH_STUDIO_NO_FILE_LOG=1 opts out."""
     if os.environ.get("UNSLOTH_STUDIO_NO_FILE_LOG") == "1":
         return None
     try:
@@ -1952,8 +1776,7 @@ def _setup_server_disk_logging():
         log_dir.mkdir(parents = True, exist_ok = True)
         stamp = time.strftime("%Y%m%d-%H%M%S")
         log_path = log_dir / f"server-{stamp}-pid{os.getpid()}.log"
-        # Line-buffered so the tail survives a hard kill; errors="replace" so a console encoding quirk can
-        # never take the server down.
+        # Line-buffered so the tail survives a hard kill.
         log_fh = open(log_path, "w", encoding = "utf-8", errors = "replace", buffering = 1)
     except Exception:
         return None
@@ -1964,22 +1787,17 @@ def _setup_server_disk_logging():
         faulthandler.enable(file = log_fh, all_threads = True)
     except Exception:
         pass
-    # Children (training workers) inherit: their native-crash stacks land on the stderr the server already
-    # captures.
+    # Children inherit, so native-crash stacks land on the captured stderr.
     os.environ.setdefault("PYTHONFAULTHANDLER", "1")
 
-    # Replacing the console streams orphans them from third-party "is this the live console?" checks, so
-    # guard their close() first (ipython/ipykernel#867).
+    # Guard the console streams' close() first (ipython/ipykernel#867).
     _harden_console_close(sys.stdout)
     _harden_console_close(sys.stderr)
 
-    # _normalize_standard_streams() ran at import, so these are never None; the tee's own None guards are
-    # defence-in-depth.
     sys.stdout = _TeeStream(sys.stdout, log_fh)
     sys.stderr = _TeeStream(sys.stderr, log_fh)
 
-    # Best-effort retention: keep the newest 20 session logs. `protect` says so explicitly rather than
-    # trusting the new file to sort newest, which two starts in the same second do not guarantee.
+    # Keep the newest 20; `protect` because same-second starts may not sort newest.
     try:
         from utils.log_retention import prune_log_dir
         prune_log_dir(log_dir, "server-*.log", protect = log_path)
@@ -2040,7 +1858,6 @@ def _consume_cloudflare_intent(cloudflare: "Optional[bool]", secure: bool) -> st
     if secure or cloudflare is True:
         return "enabled"
     if cloudflare is False:
-        # Only "the parent omitted the option" softens this into unselected.
         return "unset" if inherited == "unset" else "disabled"
     if inherited in {"unset", "enabled", "disabled"}:
         return inherited
@@ -2057,28 +1874,13 @@ def _stream_isatty(stream) -> bool:
         return False
 
 
-# How long a raw-bind prompt waits for the FIRST keystroke before launching
-# anyway; once someone is typing there is no deadline. 30s because the launches
-# that reach here unwatched allocate a pty and never read it (`docker run -dt`,
-# `tmux new -d`, CI runners) and need to bind promptly: a longer stall can trip a
-# healthcheck into a restart loop, while 30s stays inside a default Docker
-# HEALTHCHECK start period and is ample for anyone actually watching. Mirrored in
-# the CLI.
+# Wait for the FIRST keystroke only; detached ptys (`docker run -dt`, `tmux new -d`) never type,
+# and 30s stays inside a default Docker HEALTHCHECK start period. Mirrored in the CLI.
 _UNATTENDED_PROMPT_SECONDS = 30.0
 
 
 def _prompt_owns_the_terminal() -> bool:
-    """Whether this process may DRIVE the terminal, not merely see one.
-
-    A backgrounded shell job (`unsloth studio -H 0.0.0.0 &`) inherits the
-    terminal so isatty() is True, but the masked prompt calls termios.tcsetattr
-    and POSIX SIGTTOUs a background process group that does; the default action
-    stops the process, freezing the launch before the socket binds. Treat it as
-    no terminal.
-
-    True on any doubt (no job control, no controlling terminal, no fileno):
-    nothing can stop us there, so the isatty answer stands.
-    """
+    """A backgrounded job sees a TTY, but tcsetattr there sends SIGTTOU, so it must not prompt."""
     try:
         return os.tcgetpgrp(sys.stdin.fileno()) == os.getpgrp()
     except (AttributeError, OSError, ValueError):
@@ -2086,12 +1888,7 @@ def _prompt_owns_the_terminal() -> bool:
 
 
 def _exposure_phrase(*, tunnel_will_start: bool, host: str) -> str:
-    """Name where this launch will actually be reachable.
-
-    A tunnel is the public internet; a wildcard bind is every interface. A
-    CONCRETE bind (`-H 192.168.1.50`) is neither, since uvicorn listens on that
-    one address, and the operator acts on the address they typed anyway.
-    """
+    """A tunnel is the public internet, a wildcard bind every interface; a concrete host is neither."""
     if tunnel_will_start:
         return "on the public internet"
     if is_wildcard_host(host):
@@ -2108,56 +1905,22 @@ def _terminal_password_gate(
     frontend_served: bool,
     is_colab: bool = False,
 ) -> Tuple[bool, bool]:
-    """Force a terminal password change before the public tunnel goes up.
-
-    When the tunnel is about to publish Unsloth and the seeded admin password was
-    never changed, ask for a new one (masked, confirmed) before any public URL
-    exists. The CLI normally does this before re-exec'ing the backend; this is
-    the backstop for direct `python run.py` launches and older-CLI installs.
-    Must run BEFORE the uvicorn socket binds: on a wildcard bind the served HTML
-    injects the bootstrap credential, so a pre-gate listener would hand the
-    default password to anyone reaching the raw port while the operator types.
-
-    Returns (proceed, drop_bootstrap_injection):
-      proceed False -> abort the launch (interactive refusal, or a headless
-        public launch nothing would protect); fail closed.
-      drop_bootstrap_injection True -> caller must null
-        app.state.bootstrap_password: the password just changed (stale), or a
-        public URL is about to serve the default credential and must not leak it.
-
-    Without a usable terminal the prompt is skipped: proceed if the bootstrap
-    deadline (armed later) will protect the launch; if even that is disabled
-    (api-only, timeout 0) nothing protects it, so refuse. NOT wrapped in a broad
-    try/except: an auth storage failure must abort rather than expose the default.
-    """
+    """Must run before the socket binds: served HTML injects the default password on wildcard binds."""
     from auth.bootstrap_timeout import _is_exposed_bind
 
-    # A raw non-loopback bind (-H 0.0.0.0) starts no tunnel, so it used to skip
-    # this gate even though the served HTML injects the bootstrap credential for
-    # every host on the network. Scoped like the bootstrap deadline: web UI only,
-    # never api-only (API key, not the admin password) and never Colab (no inbound).
-    # secure = False deliberately: _is_exposed_bind counts --secure as exposed
-    # (for a tunnel the tunnel IS the exposure) but --secure forces a loopback
-    # bind, and the only question here is whether the socket itself is reachable.
+    # Raw non-loopback binds inject the bootstrap credential to the network too. Web UI only, never
+    # api-only or Colab. secure = False: only socket reachability matters here.
     bind_is_exposed = (
         _is_exposed_bind(host, False) and frontend_served and not api_only and not is_colab
     )
     if not tunnel_will_start and not bind_is_exposed:
         return True, False
 
-    # The parent already held this terminal open and got nothing. Repeating the
-    # wait would double the fallback (triple on the `studio run` path, which
-    # re-enters the CLI gate after re-exec) -- the startup stall the deadline was
-    # chosen to stay under. Consumed, not peeked, so it cannot leak into a later
-    # launch from the same environment.
+    # The parent already waited; consume (not peek) so it does not double the stall or leak.
     if os.environ.pop("UNSLOTH_STUDIO_UNATTENDED_PROMPT_DONE", "") and not tunnel_will_start:
         return True, False
 
-    # A raw-bind-only launch decides promptability BEFORE opening auth storage.
-    # Such a launch used to return above, so a headless container never reached
-    # ensure_default_admin() from here; doing so now would seed earlier, open the
-    # SQLite file sooner and give a read-only or locked home a new place to fail.
-    # Tunnel launches are unaffected: they always came here.
+    # Raw-bind-only launches decide promptability BEFORE opening auth storage.
     if not tunnel_will_start and not (
         _stream_isatty(sys.stdin) and _stream_isatty(sys.stderr) and _prompt_owns_the_terminal()
     ):
@@ -2188,15 +1951,10 @@ def _terminal_password_gate(
         stdin_isatty = _stream_isatty(sys.stdin),
         stderr_isatty = _stream_isatty(sys.stderr),
     ):
-        # Headless raw bind: leave it EXACTLY as it behaved before. The
-        # refuse-and-strip handling below is calibrated to publishing a public
-        # URL; here it would break long-running headless containers (the common
-        # use of -H 0.0.0.0) and delete the .bootstrap_password they are read
-        # from. The bootstrap deadline still arms.
+        # Headless raw bind: keep the old behaviour; refuse-and-strip would break -H 0.0.0.0 containers.
         if not tunnel_will_start:
             return True, False
-        # No terminal: only proceed if the bootstrap deadline will arm; api-only
-        # and TIMEOUT=0 never arm it, leaving the default credential public.
+        # api-only and TIMEOUT=0 never arm the deadline, leaving the default credential public.
         deadline_arms = should_arm_bootstrap_timeout(
             host = host,
             secure = secure,
@@ -2219,10 +1977,7 @@ def _terminal_password_gate(
                 flush = True,
             )
             return False, False
-        # The public page will not auto-fill the bootstrap credential and the seeded file may already be gone,
-        # so point recovery at a terminal-attached run / reset-password instead of reading it from disk.
-        # The ABSOLUTE form here: this line is stderr on the host, where naming the install is the point and
-        # a bare `unsloth` may not be on PATH. The 401 body deliberately carries only the PATH form.
+        # Absolute command here (stderr on the host); the 401 body carries only the PATH form.
         from routes.auth import _reset_password_command
 
         print(
@@ -2248,8 +2003,7 @@ def _terminal_password_gate(
         return _auth_hashing.verify_password(candidate, salt, pwd_hash)
 
     def _apply_change(new_password: str) -> None:
-        # Same effects as routes/auth.py change_password: rehash, rotate the JWT secret, revoke refresh tokens
-        # in the SAME transaction.
+        # Same as routes/auth.py change_password: rotate JWT secret, revoke refresh tokens in one txn.
         _auth_storage.update_password(_admin, new_password, revoke_refresh_tokens = True)
 
     changed = prompt_for_password_change(
@@ -2258,22 +2012,15 @@ def _terminal_password_gate(
         apply_change = _apply_change,
         out = sys.stderr,
         exposure = _exposure_phrase(tunnel_will_start = tunnel_will_start, host = host),
-        # A raw bind must never block a launch that used to start. A detached pty
-        # (`tmux new -d`, `docker run -dt`) passes every isatty and process-group
-        # test yet nobody will ever type, so an undeadlined read waits forever and
-        # the socket never binds; only that unattended first-key timeout proceeds
-        # on the bootstrap deadline. Ctrl+C / EOF is an explicit refusal and
-        # always fails closed. The tunnel waits forever instead.
+        # A detached pty passes isatty yet nobody types, so raw binds get a first-key timeout.
+        # Ctrl+C / EOF fails closed. The tunnel waits forever.
         first_key_timeout = None if tunnel_will_start else _UNATTENDED_PROMPT_SECONDS,
     )
     if changed is True:
         return True, True
     if changed is False or tunnel_will_start:
-        # Ctrl+C / EOF is an explicit refusal for any reachable UI launch.
         return False, False
-    # Which is sometimes NO protection: UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT=0 never
-    # arms the deadline, so say what will actually happen rather than promise a
-    # shutdown -- that is the one sentence an operator acts on.
+    # TIMEOUT=0 never arms the deadline, so say what will actually happen.
     deadline_arms = should_arm_bootstrap_timeout(
         host = host,
         secure = secure,
@@ -2308,18 +2055,13 @@ def _terminal_password_gate(
 
 
 def _apply_supplied_password(password_value: "Optional[str]") -> None:
-    """Non-interactively set the INITIAL admin password before the socket binds, for a direct ``python run.py``
-    launch. Only ever sets the FIRST password: an already-set one is a hard error, an invalid value fails
-    closed. NOT wrapped in a broad try/except: an auth storage failure must abort rather than expose the
-    default credential."""
+    """Sets only the first password; a storage failure aborts rather than exposing the default."""
     from auth import hashing as _auth_hashing
     from auth import storage as _auth_storage
     from auth.terminal_prompt import SUPPLIED_PASSWORD_ENV, resolve_supplied_password
 
     supplied = resolve_supplied_password(password_value)
-    # Strip the env var once read so child subprocesses (cloudflared, llama-server, code-exec tools) cannot
-    # inherit the plaintext via /proc/PID/environ. Unconditional: strips a leftover value even when a literal
-    # --password won.
+    # Strip so children cannot read the plaintext via /proc/PID/environ, even when --password won.
     os.environ.pop(SUPPLIED_PASSWORD_ENV, None)
     if not supplied:
         return
@@ -2371,11 +2113,8 @@ def _apply_supplied_password(password_value: "Optional[str]") -> None:
 
 
 def _apply_cli_tool_policy(enable_tools: "Optional[bool]") -> None:
-    """Honor an explicit --enable-tools/--disable-tools; None leaves the policy unset, so each request's own
-    enable_tools decides. The tools-on default for an omitted `enable_tools` belongs to `unsloth studio
-    run`, which installs it itself. Installing it here too would extend it to `unsloth studio`, the desktop
-    app and Colab, where paths built around "omitted means off" (n > 1, max_tool_calls_per_message: 0, the
-    pre-switch passthrough guard) would start seeing it."""
+    """None leaves policy unset, so each request decides; a tools-on default would reach launches
+    where omitted means off."""
     if enable_tools is None:
         return
     from state.tool_policy import set_tool_policy
@@ -2383,20 +2122,14 @@ def _apply_cli_tool_policy(enable_tools: "Optional[bool]") -> None:
     set_tool_policy(enable_tools)
 
 
-# Mirror unsloth_cli/commands/studio.py's _PARALLEL_*: the admission queue caps concurrent chats at the slot
-# count, so a direct launch matches the CLI. Defined above run_server() so embedders that omit it do not
-# serialise every chat.
+# Mirror CLI _PARALLEL_*; define above run_server() so embedders do not serialise chats.
 _PARALLEL_MIN = 1
 _PARALLEL_MAX = 64
 _PARALLEL_DEFAULT_PLAIN = 4
 
 
 def _drops_its_marker_on_failure(start):
-    """Take the startup marker back if the server never starts. An embedded caller keeps its process alive
-    across a failure (colab.py catches SystemExit and Exception around run_server) and no exit hook runs
-    then, so a marker left behind would answer every later sibling probe as a live backend. A decorator
-    rather than a renamed inner function: run_server's signature is a contract here, read both by
-    inspect.signature and by tests that parse the def out of this file."""
+    """Removes the startup marker on failure: an embedded host keeps running and no exit hook fires."""
     import functools
 
     @functools.wraps(start)
@@ -2404,9 +2137,8 @@ def _drops_its_marker_on_failure(start):
         try:
             return start(*args, **kwargs)
         except BaseException:
-            # Only when no server thread is left running. A KeyboardInterrupt during the readiness wait asks uvicorn
-            # to stop and re-raises without joining, so the thread may still be finishing lifespan; taking the marker
-            # back there makes a backend that is still up invisible to a sibling, which would then clear the cache.
+            # Only with no server thread left: a Ctrl+C during readiness leaves uvicorn finishing lifespan,
+            # and dropping the marker then would let a sibling clear the cache under a live backend.
             thread = _server_thread
             if thread is None or not thread.is_alive():
                 _remove_startup_marker()
@@ -2473,9 +2205,7 @@ def run_server(
 
     boot_started = time.perf_counter()
 
-    # --secure exposes ONLY the Cloudflare link, so --secure --no-cloudflare contradicts itself. Reject it
-    # before anything below touches a process global: the tee further down replaces sys.stdout/sys.stderr, and
-    # an embedder that catches this SystemExit would keep it, the log handle open, and nest another tee.
+    # Reject before touching process globals (the tee replaces sys.stdout/stderr).
     if secure and cloudflare is False:
         raise SystemExit(
             "--secure requires the Cloudflare tunnel; do not combine it with --no-cloudflare."
@@ -2500,28 +2230,20 @@ def run_server(
                 "choose an explicit port."
             )
 
-    # Windows cp1252 cannot encode emoji; reconfigure stdout to UTF-8. Before the tee, so it reaches the
-    # console stream rather than the wrapper.
+    # Before the tee, so it reaches the console stream.
     if sys.platform == "win32" and hasattr(sys.stdout, "reconfigure"):
         try:
             sys.stdout.reconfigure(encoding = "utf-8", errors = "replace")
         except Exception:
             pass
 
-    # Persist a session log + native-crash stacks BEFORE anything else, so even import-time failures leave
-    # evidence on disk: a native crash in the GPU runtime kills the process with no traceback, and a
-    # desktop-shortcut console closes before anything can be read.
+    # Session log + crash stacks BEFORE anything else, so import-time native crashes leave evidence.
     _session_log = _setup_server_disk_logging()
     if _session_log is not None and not silent:
         print(f"Session log: {_session_log}")
 
-    # Configure structlog only now, after the tee: PrintLoggerFactory captures sys.stdout at configure() time
-    # and cache_logger_on_first_use freezes it into any logger that has already emitted, so configuring first
-    # pins this module's logger to the console and keeps its lines out of the file just opened above. main.py
-    # configures too, but on import, which lands after the "startup begin" line below, so the clock appeared to
-    # jump hours between line one and line two; repeating configure() is safe and main.py's call still wins for
-    # its own service name. Imported here, not at module scope: `loggers` must be a real package to resolve
-    # `loggers.config`, and run.py is loaded by tests that stand a bare ModuleType in for it.
+    # After the tee: PrintLoggerFactory captures sys.stdout at configure() time. Imported here
+    # because tests stand a bare ModuleType in for `loggers`.
     from loggers.config import LogConfig
 
     LogConfig.setup_logging(
@@ -2542,13 +2264,11 @@ def run_server(
     )
     cloudflare_intent = _consume_cloudflare_intent(cloudflare, secure)
 
-    # Reap every child if the parent dies abnormally (terminal close, Task Manager kill, SIGKILL); must
-    # run before any child can spawn.
+    # Must run before any child can spawn.
     from utils.process_lifetime import initialize_parent_lifetime, reap_recorded_children
 
     initialize_parent_lifetime()
-    # macOS has neither PR_SET_PDEATHSIG nor job objects, so an Unsloth that crashed left its sidecars running.
-    # Sweep before spawning anything: a leftover holds VRAM, a port, and the files an update has to replace.
+    # macOS has no PR_SET_PDEATHSIG or job objects; sweep leftovers from a crash before spawning.
     try:
         reaped = reap_recorded_children()
         if reaped:
@@ -2556,18 +2276,15 @@ def run_server(
     except Exception as e:
         logger.warning("Could not sweep orphans from a previous run: %s", e)
 
-    # --secure exposes ONLY the Cloudflare link, so force a loopback bind and the raw port is never public (even
-    # -H 0.0.0.0). Otherwise keep the tri-state so the banner distinguishes "off by default" from an explicit
-    # --no-cloudflare.
+    # --secure forces loopback so the raw port is never public. Else keep the tri-state for the banner.
     if secure:
         cloudflare = True
         host = "127.0.0.1"
 
-    # `unsloth studio run` installs its own resolved policy and passes None here.
     _apply_cli_tool_policy(enable_tools)
 
-    # Set env vars BEFORE importing main so CORS middleware picks them up. secure api-only is a remote server
-    # behind Cloudflare, so it keeps the any-origin CORS profile; plain api-only stays locked to the Tauri app.
+    # Set env vars BEFORE importing main so CORS middleware picks them up. secure api-only keeps
+    # any-origin CORS (remote behind Cloudflare); plain api-only stays locked to the Tauri app.
     if api_only:
         os.environ["UNSLOTH_API_ONLY"] = "1"
     if secure:
@@ -2575,10 +2292,8 @@ def run_server(
 
     import asyncio
 
-    # nest_asyncio is for Colab/IPython, where the main thread already runs a loop the blocking waits below
-    # would collide with. Apply it only with a loop running and only on Python <= 3.13: on 3.14+ its global Task
-    # patch leaves asyncio.current_task() None (tracking moved into C), which breaks the background uvicorn loop
-    # and 500s every request. It is archived upstream, so no 3.14 fix is coming.
+    # nest_asyncio only with a running loop and Python <= 3.13: on 3.14 it breaks
+    # asyncio.current_task() and 500s every request (archived upstream).
     if sys.version_info < (3, 14):
         try:
             asyncio.get_running_loop()
@@ -2591,8 +2306,7 @@ def run_server(
     from threading import Thread, Event
     import uvicorn
 
-    # `from main import app` below loads torch/unsloth/transformers (~2 min cold, silent), so print a
-    # flushed heads-up (piped stdout is block-buffered).
+    # `from main import app` takes ~2 min cold; flush a heads-up.
     if not silent:
         print(
             "Loading Unsloth Studio, please wait... (this can take a few minutes)",
@@ -2606,22 +2320,18 @@ def run_server(
 
     import_started = time.perf_counter()
 
-    # Before the import, not just before uvicorn: this is what makes us visible to a sibling's own probe, and
-    # the earlier it lands the smaller the window in which two launches can each believe they are alone. The
-    # cache env has to be seeded first: main.py pins UNSLOTH_COMPILE_LOCATION at import time, which is after
-    # this point, and that variable is part of the coordination key.
+    # Before the import, to shrink the window where two launches think they are alone. The cache env
+    # must be seeded first: UNSLOTH_COMPILE_LOCATION is part of the coordination key.
     try:
         from utils.paths.storage_roots import setup_cache_env
         setup_cache_env()
     except Exception:  # noqa: BLE001
-        # main.py seeds it too, and does not depend on this having worked.
         pass
     write_startup_marker()
 
     from main import app, setup_frontend, _desktop_owner, _IS_COLAB
 
-    # Handed to lifespan as a callable, not a value: it is asked again at shutdown, when a sibling may have
-    # started since. On app.state rather than imported, because main.py must not import this module back.
+    # A callable, re-asked at shutdown. On app.state: main.py must not import this module.
     app.state.live_sibling_backend = live_sibling_backend
 
     logger.info(
@@ -2632,9 +2342,7 @@ def run_server(
         print("  - Starting server...", flush = True)
     from utils.paths import ensure_studio_directories
 
-    # Allow local stdio MCP servers on a loopback bind (the user's own machine), but never on Colab, which is a
-    # hosted VM reachable through its proxy. The gate reads the env var at request time, so this need not
-    # precede the import.
+    # Local stdio MCP on loopback binds, never on Colab. Read at request time.
     from utils.host_policy import apply_stdio_mcp_loopback_default
 
     apply_stdio_mcp_loopback_default(host, is_colab = _IS_COLAB)
@@ -2647,9 +2355,7 @@ def run_server(
     )
 
     original_port = port
-    # Refusing rather than falling back is for callers that cannot follow us to the new port. `studio run` reads
-    # app.state.server_port back and the desktop app reads TAURI_PORT, so both keep the plain fallback; only
-    # the bare launch benefits from the refusal.
+    # `studio run` and the desktop app follow port fallback; only the bare launch refuses.
     if abort_if_own_studio is None:
         abort_if_own_studio = not api_only
     port = _resolve_port(host, port, avoid_own_studio = abort_if_own_studio)
@@ -2680,15 +2386,12 @@ def run_server(
         if chosen is not None and setup_frontend(app, chosen, tunnel_only = _tunnel_only_frontend):
             _frontend_mounted = True
             if not silent:
-                # Resolve so logs show an absolute path for support.
                 try:
                     display = chosen.resolve()
                 except OSError:
                     display = chosen
                 print(f"[OK] Frontend loaded from {display}")
         elif not _missing_frontend_is_fatal(tunnel_only = _tunnel_only_frontend):
-            # Remote access serves nothing; the local API the desktop asked for still comes up. The tunnel gate
-            # already 404s every other request.
             logger.warning(
                 "No frontend build found, so Remote and LAN access will not serve the web UI. "
                 "Tried: %s",
@@ -2700,8 +2403,6 @@ def run_server(
                 or os.environ.get("STUDIO_HOME")
                 or str(Path.home() / ".unsloth" / "studio")
             )
-            # Windows shim: $STUDIO_HOME/bin/unsloth.exe; Linux/macOS venv binary:
-            # $STUDIO_HOME/unsloth_studio/bin/unsloth.
             home = Path(home_str).expanduser()
             if sys.platform == "win32":
                 installer_bin = home / "bin" / "unsloth.exe"
@@ -2719,8 +2420,7 @@ def run_server(
                 "Fix one of:\n"
                 f"  - run the installer's binary directly: {installer_bin} studio\n"
                 + (
-                    # An Application Control policy can block the generated unsloth.exe while the signed interpreter beside
-                    # it still runs, so name a route that does not go through it.
+                    # App Control can block the generated unsloth.exe while the signed interpreter still runs.
                     f"  - or through the interpreter: {sys.executable} -I -m unsloth_cli studio\n"
                     if sys.platform == "win32"
                     else ""
@@ -2730,12 +2430,9 @@ def run_server(
                 "  - reinstall: curl -fsSL https://unsloth.ai/install.sh | sh"
             )
 
-    # For the banner and the reachability probe; the startup log line resolves its own, LAN-only, answer.
     display_host = _display_host_for_bind(host)
     _install_uvicorn_startup_log_rewrite(host)
-    # LoggingMiddleware already logs every unhandled request exception with its full traceback as a structured
-    # event; without this uvicorn prints the same traceback again on stderr and the desktop shell copies it
-    # into tauri.log line by line.
+    # LoggingMiddleware already logs these with tracebacks; avoid duplicates in tauri.log.
     install_uvicorn_duplicate_exception_filter()
 
     logger.info(
@@ -2799,8 +2496,7 @@ def run_server(
         server_header = False,
         http = uvicorn_http_protocol(),
     )
-    # Colab only: trust X-Forwarded-* from Colab's reverse proxy so the app sees the real https origin.
-    # forwarded_allow_ips="*" is safe in Colab's single-user sandbox but too lax for local/standalone.
+    # forwarded_allow_ips="*" is safe only in Colab's single-user sandbox.
     if _IS_COLAB:
         config_kwargs["proxy_headers"] = True
         config_kwargs["forwarded_allow_ips"] = "*"
@@ -2814,13 +2510,10 @@ def run_server(
     _server = _ReadyServer(config)
     _shutdown_event = Event()
 
-    # Expose the actual bound port so handlers build loopback URLs at the real backend, not whatever a
-    # proxy/tunnel exposed. For ephemeral binds (port==0) leave it unset so handlers fall back to the request
-    # scope / base_url.
+    # Real bound port for loopback URLs; unset for ephemeral binds (port==0).
     app.state.server_port = port if port and port > 0 else None
     app.state.server_request_host = None
     app.state.server_url = _direct_server_url(host, port)
-    # raw bind address: the keyless exposure warning must tell loopback from a wildcard bind
     app.state.bind_host = host
     app.state.secure = secure
     app.state.llama_parallel_slots = llama_parallel_slots
@@ -2857,8 +2550,6 @@ def run_server(
         frontend_served = _serve_frontend and _frontend_mounted,
     )
 
-    # Expose a shutdown callable before the server accepts requests so /api/shutdown is ready as soon as
-    # readiness publishes.
     def _trigger_shutdown():
         _graceful_shutdown(_server)
         if _shutdown_event is not None:
@@ -2866,18 +2557,13 @@ def run_server(
 
     app.state.trigger_shutdown = _trigger_shutdown
 
-    # A supplied --password / UNSLOTH_STUDIO_PASSWORD / stdin sets the initial admin password before the
-    # gate and socket bind (direct `python run.py`; the CLI applies it in its own parent).
     _apply_supplied_password(password)
 
-    # Per launch, not per process: an embedded host may call run_server() again with different
-    # flags, and UNSLOTH_API_ONLY above is never cleared once set.
+    # Per launch: an embedded host may call run_server() again with different flags.
     app.state.api_only = api_only
     app.state.suppress_bootstrap_injection = False
 
-    # Never publish with the seeded default password active: prompt first (or warn / fail closed headless; see
-    # _terminal_password_gate). Runs BEFORE the socket binds so a pre-gate listener cannot hand out the
-    # injected credential.
+    # Runs BEFORE the socket binds so no listener hands out the injected default credential.
     _pw_proceed, _pw_drop_bootstrap = _terminal_password_gate(
         tunnel_will_start = _launch_tunnel_managed,
         host = host,
@@ -2887,7 +2573,6 @@ def run_server(
         is_colab = _IS_COLAB,
     )
     if not _pw_proceed:
-        # A raw bind passed neither flag, so naming them is a no-op for it.
         print(
             "Not starting Unsloth; set a new admin password first, or pass one "
             "non-interactively with --password / UNSLOTH_STUDIO_PASSWORD. "
@@ -2901,9 +2586,7 @@ def run_server(
         )
         sys.exit(1)
     if _pw_drop_bootstrap:
-        # Password just changed (stale) or a public URL is about to serve the default credential: do not leak it in
-        # the HTML. Lifespan runs AFTER this and re-reads the bootstrap password, so the flag (not a plain None)
-        # makes it skip that re-read.
+        # Lifespan runs AFTER this and re-reads the bootstrap password; the flag makes it skip that.
         app.state.suppress_bootstrap_injection = True
         app.state.bootstrap_password = None
 
@@ -2911,15 +2594,13 @@ def run_server(
 
     open_studio_tunnel_lifecycle()
 
-    # Run server in a daemon thread with explicit new_event_loop() + run_until_complete() (not asyncio.run) so
-    # nest_asyncio's patches do not interfere when Colab/IPython already runs a loop on the main thread.
+    # new_event_loop + run_until_complete, not asyncio.run, so nest_asyncio does not interfere.
     def _run():
         from utils.proactor_self_pipe import install_proactor_self_pipe_guard
 
         install_proactor_self_pipe_guard()
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        # settings > LAN access adds its listener to this loop from a request thread
         app.state.lan_access_loop = loop
         try:
             loop.run_until_complete(_server.serve())
@@ -2930,24 +2611,15 @@ def run_server(
             loop.close()
             if not ready_event.is_set():
                 startup_failed.set()
-            # An embedded host stays alive after the server thread ends, and a post-readiness failure in here never
-            # reaches run_server's caller, so nothing else takes these back: they would keep validating against the
-            # still-live host PID with no backend serving. This is also the point at which the backend has genuinely
-            # stopped serving, which is why the marker goes here rather than in _remove_pid_file.
+            # Embedded hosts outlive the server thread; this is where the backend truly stops serving.
             _remove_startup_marker()
             _remove_pid_file()
-            # The loop is closed above, so this is what an embedded host that calls run_server again needs to stop
-            # seeing the previous listener as live.
             from lan_access import close_lan_listener_lifecycle as _close_lan_listener
 
             _close_lan_listener()
 
-    # An embedded host (studio/backend/colab.py) can call run_server again in the same
-    # interpreter, and the shutdown flags are process- and module-wide, so a second
-    # session would otherwise refuse every spawn and every load it admitted. Cleared
-    # here, after `from main import app` above (reaching for the route module earlier
-    # would build the backend singleton ahead of the startup steps that must come
-    # first) and before uvicorn serves anything below.
+    # Embedded hosts (colab.py) may rerun run_server; clear the process-wide shutdown flags here,
+    # after `from main import app` and before uvicorn serves.
     try:
         from routes.inference import _llama_cpp_backend, begin_load_lifecycle
         from utils.process_lifetime import begin_process_lifecycle
@@ -2963,8 +2635,7 @@ def run_server(
     _server_thread = thread
     thread.start()
 
-    # Wait until uvicorn finishes lifespan startup and binds sockets, or until it exits/fails first. No
-    # deadline: a slow but live startup stays in progress.
+    # No deadline: a slow but live startup stays in progress.
     try:
         while not ready_event.is_set():
             if startup_failed.is_set() or not thread.is_alive():
@@ -2998,22 +2669,13 @@ def run_server(
     from utils.process_lifetime import mark_process_shutting_down, terminate_all
 
     atexit.register(terminate_all)
-    # LAST, so it runs FIRST: atexit is LIFO. Without it the sweep above takes its
-    # snapshot with the latch never set, because the only thing that sets it on this
-    # path is the backend's own _cleanup hook, registered when the routes singleton was
-    # built and therefore run AFTER this one. An embedded caller that lets the
-    # interpreter exit without _graceful_shutdown would otherwise get the unguarded
-    # behaviour this change exists to remove: a load still in flight passes its latch
-    # check and adopts a child the sweep has already gone past.
+    # LAST so it runs FIRST (atexit is LIFO): the sweep must see the shutdown latch set.
     atexit.register(mark_process_shutting_down)
 
-    # Output port for Tauri (api-only), only after sockets bind and startup is done. The headless
-    # `run --api-only` path opts out so it does not leak this line.
+    # Tauri port: print only after sockets bind and startup; headless run --api-only opts out.
     if api_only and emit_tauri_port:
         print(f"TAURI_PORT={port}", flush = True)
-        # Desktop-owned backends only (the owner env handshake): a headless `unsloth studio --api-only` has no app
-        # to bind its lifetime to and must survive its terminal (e.g. nohup). If the app dies without running its
-        # cleanup, exit instead of orphaning on the port.
+        # Desktop-owned backends only: a headless --api-only must survive its terminal (nohup).
         from main import _desktop_owner
         if _desktop_owner() is not None:
             from utils.parent_watchdog import start_parent_watchdog
@@ -3034,14 +2696,12 @@ def run_server(
     app.state.remote_access_ready = True
     app.state.lan_access_ready = True
 
-    # Free trycloudflare.com tunnel for wildcard binds (the raw ip:port is often unreachable). Started
-    # pre-banner and even when silent so the CLI banner can read app.state.cloudflare_url; torn down by
-    # _graceful_shutdown.
+    # Started even when silent so the CLI banner can read app.state.cloudflare_url.
     _cloudflare_enabled = _launch_tunnel_managed
     _cloudflare_requested = _cloudflare_enabled
 
     if _cloudflare_enabled:
-        try:  # best-effort: any failure must not block startup
+        try:
             from cloudflare_tunnel import start_studio_tunnel
             start_studio_tunnel(
                 port,
@@ -3051,13 +2711,11 @@ def run_server(
         except Exception as e:
             logger.debug("Cloudflare tunnel skipped: %s", e)
 
-    # Backstop for both launch- and settings-managed tunnels on abnormal exits.
     from cloudflare_tunnel import close_studio_tunnel_lifecycle
 
     atexit.register(close_studio_tunnel_lifecycle)
 
-    # --secure fails closed: no tunnel means no public link, so exit rather than silently fall back to a
-    # raw port.
+    # --secure fails closed: no tunnel, no raw-port fallback.
     if secure and not _cloudflare_url:
         print(
             "A secure Cloudflare link is not allowed, use --no-secure which provides a 0.0.0.0 link",
@@ -3067,9 +2725,7 @@ def run_server(
         _graceful_shutdown(_server)
         sys.exit(1)
 
-    # Time-box a freshly-exposed web UI: if nobody changes the seeded admin password within the deadline
-    # (default 1h), shut down rather than leave an unsecured public instance running. No-op for loopback,
-    # --api-only, Colab, an already-changed password, or UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT=0.
+    # Shut down a freshly exposed web UI if the seeded password is unchanged by the deadline.
     try:
         from auth import storage as _auth_storage
         from auth.bootstrap_timeout import (
@@ -3100,7 +2756,7 @@ def run_server(
                 "Unsloth will shut down in %ds unless the default admin password is changed.",
                 _bootstrap_timeout,
             )
-    except Exception as e:  # best-effort: never block startup on the timeout
+    except Exception as e:
         logger.warning("Bootstrap timeout not armed: %s", e)
 
     from utils.remote_access_settings import maybe_auto_start_remote_access
@@ -3183,7 +2839,6 @@ def _build_arg_parser():
         "admin password was never changed, Unsloth asks for a new one in the "
         "terminal before publishing the URL.",
     )
-    # Back-compat: accept --not-secure as a hidden alias for --no-secure.
     parser.add_argument(
         "--not-secure",
         dest = "secure",
@@ -3191,8 +2846,7 @@ def _build_arg_parser():
         default = argparse.SUPPRESS,
         help = argparse.SUPPRESS,
     )
-    # Tri-state tool policy: no flag means None (tools default on, a request's own enable_tools: false
-    # honored); --enable-tools/--disable-tools force on/off.
+    # None = tools default on and a request's enable_tools: false is honored.
     parser.add_argument(
         "--enable-tools",
         dest = "enable_tools",
@@ -3243,16 +2897,13 @@ def _build_arg_parser():
     return parser
 
 
-# For direct execution (also invoked by CLI via os.execvp / subprocess).
 if __name__ == "__main__":
-    # Correct a conflicting system CUDA on LD_LIBRARY_PATH before torch is imported (below, via run_server).
-    # Re-execs once on Linux so the dynamic linker uses torch's bundled CUDA libs.
+    # Before torch is imported: re-execs once on Linux so torch's bundled CUDA libs win.
     _maybe_reexec_for_cuda_ld_path()
 
     import signal
     import traceback
 
-    # Ensure stderr handles Unicode on Windows (non-ASCII path tracebacks).
     if sys.platform == "win32" and hasattr(sys.stderr, "reconfigure"):
         try:
             sys.stderr.reconfigure(encoding = "utf-8", errors = "replace")
@@ -3314,20 +2965,17 @@ if __name__ == "__main__":
     signal.signal(signal.SIGINT, _signal_handler)
     signal.signal(signal.SIGTERM, _signal_handler)
 
-    # On Windows, some terminals send SIGBREAK for Ctrl+C / Ctrl+Break.
     if hasattr(signal, "SIGBREAK"):
         signal.signal(signal.SIGBREAK, _signal_handler)
 
-    # NOT _signal_handler: Windows runs this on a thread it creates, and signal.signal() off the main thread
-    # raises, which would leave the window close doing no cleanup at all.
+    # Not _signal_handler: Windows runs this off the main thread, where signal.signal() raises.
     def _console_shutdown():
         _graceful_shutdown(_server)
         _shutdown_event.set()
 
     _install_windows_console_handler(_console_shutdown)
 
-    # Keep running until shutdown signal. Event.wait() without a timeout blocks at the C level on Linux,
-    # preventing SIGINT delivery; a short timeout in a loop lets the interpreter process pending signals.
+    # A timeout-less Event.wait() blocks SIGINT delivery on Linux.
     while not _shutdown_event.is_set():
         _shutdown_event.wait(timeout = 1)
     _wait_for_server_shutdown()

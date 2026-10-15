@@ -36,15 +36,12 @@ from core.inference.tool_loop_controller import (
 )
 from core.tool_healing import parse_tool_calls_from_text
 
-# Only the formats this healer's parser can promote -- narrower than the loops' broader TOOL_XML_SIGNALS. A loop-only
-# marker (Llama <|python_tag|>, bare [ARGS]) would buffer a streamed call as prose without promoting it, so keep a
-# healer-aligned list. Mistral's [TOOL_CALLS] IS promotable, so it stays in.
+# Only formats this parser can promote, narrower than TOOL_XML_SIGNALS.
 _HEAL_SIGNALS = (
     "<tool_call>",
     "<|tool_call>",
     "<function=",
     "[TOOL_CALLS]",
-    # TML Inkling native call marker (leaks as text when the server-side parser misses a narration-then-call turn).
     "<|content_invoke_tool_json|>",
 )
 
@@ -53,10 +50,7 @@ def _has_heal_signal(text: str) -> bool:
     return any(s in text for s in _HEAL_SIGNALS)
 
 
-# Read once at import (same convention as the other UNSLOTH_* switches).
 _HEALING_DISABLED = os.environ.get("UNSLOTH_DISABLE_TOOL_CALL_HEALING", "0") == "1"
-# Nudging is OPT-IN: per-request nudge_tool_calls=true, or flip the process default with UNSLOTH_TOOL_CALL_NUDGE=1 (e.g.
-# an `unsloth run` operator).
 _NUDGE_DEFAULT = os.environ.get("UNSLOTH_TOOL_CALL_NUDGE", "0") == "1"
 
 
@@ -71,8 +65,7 @@ def nudge_enabled(request_flag: Optional[bool], *, response_format: Any = None) 
 
 
 _MAX_SIGNAL_LEN = max(len(s) for s in _HEAL_SIGNALS)
-# A suspected-but-unclosed tool block larger than this is declared a false alarm and flushed, bounding memory on a
-# model rambling XML-lookalike text.
+# Bounds memory when a model rambles XML-lookalike text.
 _MAX_HOLD_CHARS = 64 * 1024
 
 
@@ -83,21 +76,7 @@ def heal_gate(
     *,
     response_format: Any = None,
 ) -> Optional[set]:
-    """Return the declared client-tool name set when healing applies, else None.
-
-    ``tools`` is the OpenAI-shaped list forwarded to llama-server
-    (``[{"type": "function", "function": {"name": ...}}, ...]``). The name set
-    doubles as the promotion allowlist so healed calls can never invent a tool
-    the client did not declare.
-
-    ``tool_choice`` (OpenAI shape) constrains the allowlist so healing never
-    contradicts the request: ``"none"`` forbids tool calls outright (text-form
-    markup stays text), and a forced ``{"type": "function", "function":
-    {"name": N}}`` narrows promotion to that one function. ``"auto"`` /
-    ``"required"`` / absent keep the full declared set.
-
-    A constraining ``response_format`` disables healing: schema strings resembling call markup would be promoted away.
-    """
+    """Declared tool names, which double as the promotion allowlist so healing never invents a tool."""
     if _HEALING_DISABLED or auto_heal is False:
         return None
     if tool_choice == "none":
@@ -188,12 +167,7 @@ def _promote(
     id_offset: int = 0,
     tool_schemas: Optional[dict] = None,
 ) -> list:
-    """Filter parsed calls to declared tools and normalize their arguments.
-
-    Bare string arguments on the client-tool passthrough use the declared
-    schema's single required string property. If the schema is ambiguous, the
-    call stays text instead of inventing a generic key.
-    """
+    """Ambiguous schemas keep the call as text rather than inventing a key for bare string arguments."""
     promoted = []
     for call in calls:
         function = call.get("function") if isinstance(call, dict) else None
@@ -264,14 +238,7 @@ def heal_openai_message(
     allowed_tools: set,
     tools: Optional[list] = None,
 ) -> bool:
-    """Promote text-form tool calls in a non-streaming OpenAI message. In place.
-
-    No-op (returns False) unless the message has NO structured ``tool_calls``
-    (grammar mode already worked when it does) and its content carries a tool
-    signal that parses into at least one declared call. Only the promoted
-    calls' markup spans are removed from the content; undeclared calls and
-    anything the parser did not consume stay in the text byte-intact.
-    """
+    """Edits in place; only promoted calls' markup is removed, undeclared calls stay byte-intact."""
     events = heal_openai_message_events(msg, allowed_tools, tools)
     if not events:
         return False
@@ -340,13 +307,8 @@ class StreamToolCallHealer:
         self._buffer = ""
         self._holding = False
         self._id_offset = 0
-        # Markup span each promoted call was cut from, keyed by its call id. Promotion is destructive -- the span
-        # never reaches the client -- so a caller that ends up DISCARDING a promoted call (a turn truncated at
-        # finish_reason "length" cannot be executed) has no other way to give the model's own words back. Bounded by
-        # _MAX_HOLD_CHARS per span.
+        # Promotion is destructive; keep spans so a discarded call can return the model's words.
         self._promoted_spans: dict[str, str] = {}
-        # Structured delta.tool_calls seen upstream: grammar mode already worked, so healing goes dormant and text
-        # relays verbatim.
         self.dormant = False
 
     @property
@@ -354,11 +316,7 @@ class StreamToolCallHealer:
         return self._id_offset > 0
 
     def promoted_source(self, call_id: str) -> str:
-        """The exact markup span a promoted call was cut from, or "".
-
-        Only for a caller that has to un-promote: relaying this alongside the
-        call would double the output, since the call already carries it.
-        """
+        """Only for un-promoting: relaying it next to the call would double the output."""
         return self._promoted_spans.get(call_id, "")
 
     def structured_tool_call_seen(self) -> list:
@@ -413,8 +371,6 @@ class StreamToolCallHealer:
             pos = 0
             run_end = spans[0][1]
             for order, (call, (start, end)) in enumerate(zip(parsed, spans)):
-                # Stop at the first gap or incomplete trailing block: leave it for the next pass to re-hold and stream
-                # incrementally, not flush as text early.
                 if order and start != run_end:
                     break
                 promoted = _promote(
@@ -424,27 +380,20 @@ class StreamToolCallHealer:
                     tool_schemas = self._tool_schemas,
                 )
                 if promoted:
-                    # Flush any leading text, then drop the promoted markup span.
                     if self._buffer[pos:start]:
                         events.append(("text", self._buffer[pos:start]))
                     events.append(("tool_call", promoted[0]))
                     self._promoted_spans[promoted[0]["id"]] = self._buffer[start:end]
                     self._id_offset += 1
                 else:
-                    # Undeclared/unusable name: markup is DATA, flush it (and prior text) verbatim.
                     events.append(("text", self._buffer[pos:end]))
                 pos = end
                 run_end = end
-            # Everything past the drained run (later blocks) stays and is rescanned.
             self._buffer = self._buffer[run_end:]
             self._holding = False
 
     def finalize(self) -> list:
-        """End of stream: last-chance heal of the residue, else flush it.
-
-        Events keep document order; only the promoted calls' markup spans are
-        dropped, every other residue byte flushes as text.
-        """
+        """Keeps event order; only promoted call markup is dropped and all other residue flushes as text."""
         if not self._buffer:
             return []
         residue, self._buffer = self._buffer, ""
@@ -486,11 +435,7 @@ class StreamToolCallHealer:
 
 
 def _first_choice_message(data: Any) -> Optional[dict]:
-    """First-choice message dict of a non-streaming chat response, else None.
-
-    Upstream error bodies can carry ``"message": null`` (or no choices at all),
-    so never assume the shape: a non-dict message means "nothing to heal".
-    """
+    """Upstream error bodies can carry a null message or no choices, so the shape is never assumed."""
     try:
         message = data["choices"][0]["message"]
     except (KeyError, IndexError, TypeError):
@@ -521,18 +466,13 @@ def response_has_promotable_calls(
     allowed_tools: set,
     tools: Optional[list] = None,
 ) -> bool:
-    """True when a non-streaming chat response carries a usable tool call
-    (structured naming a DECLARED tool, or text-form that healing would
-    promote). Used to decide whether a nudge retry actually improved on the
-    original response; a hallucinated undeclared call is not an improvement."""
+    """Used to judge a nudge retry: an undeclared hallucinated call is not an improvement."""
     message = _first_choice_message(data)
     if not message:
         return False
     tool_calls = message.get("tool_calls")
     if tool_calls:
-        # ALL structured calls must be declared: the caller forwards the whole list (and a parallel cap could keep only
-        # the FIRST one), so a mixed response with a single hallucinated name could still hand the client an undeclared
-        # tool.
+        # ALL structured calls must be declared: one hallucinated name would reach the client.
         return all(
             isinstance(tc, dict)
             and isinstance(tc.get("function"), dict)
@@ -550,12 +490,7 @@ def nudge_should_retry(
     allowed_tools: Optional[set],
     tools: Optional[list] = None,
 ) -> bool:
-    """True when the first response tried to call a tool but nothing healed.
-
-    Trigger only on: healing enabled (allowed_tools set), zero structured
-    calls, a tool signal present in the text, and zero promotable calls -- the
-    exact failure a single re-ask can fix. Clean prose never retries.
-    """
+    """Retry only when text has a tool signal that healing did not promote; clean prose never retries."""
     if not allowed_tools:
         return False
     message = _first_choice_message(data)
@@ -568,12 +503,7 @@ def nudge_should_retry(
 
 
 def nudge_messages(data: Any, allowed_tools: set) -> list:
-    """The two-message suffix appended for the single nudge retry.
-
-    The retry body is the original body plus this suffix, so the prompt prefix
-    is byte-identical and llama-server's slot/prefix cache is reused (same
-    shape as the enable-tools loop's reprompt).
-    """
+    """Appended to the original body so the prompt prefix stays byte-identical for llama-server's cache."""
     tool_hint = " or ".join(f"`{name}`" for name in sorted(allowed_tools)) or "an available tool"
     return [
         {"role": "assistant", "content": _last_assistant_text(data)},

@@ -167,12 +167,7 @@ def insert_secret_if_absent(credential_kind: str, scope_id: str, plaintext: str)
 
 
 def get_secret_with_presence(credential_kind: str, scope_id: str) -> "tuple[Optional[str], bool]":
-    """The decrypted credential, and whether a row is STORED at all, from ONE read.
-
-    Asking `get_secret` and then `secret_row_exists` is two connections for one question, and
-    the cache-read gate in hub/utils/hf_tokens.py asks it on every read of a cached repo. The
-    two answers must still be told apart: absent authorizes, unreadable must not.
-    """
+    """One read gives the secret and presence together; absent authorizes, but unreadable must not."""
     conn = get_connection()
     try:
         row = conn.execute(
@@ -269,14 +264,7 @@ def hf_token_row_exists() -> bool:
 
 
 def _note_a_credential_this_host_held() -> None:
-    """Record the identity of the token being replaced or removed, while it is still here.
-
-    The ledger of credentials this host has EVER held is what stops a tokenless caller
-    inheriting the downloads of one that has since been removed, and it used to be written only
-    where an authorization probe happened to read it. An operator who cleared the token first
-    left nothing behind. A row that exists but cannot be decrypted records the sentinel, since
-    an unreadable credential is still a credential this host held.
-    """
+    """Records the outgoing token's identity so a tokenless caller cannot inherit its downloads."""
     try:
         from hub.utils.hf_tokens import note_host_credential_identity
         note_host_credential_identity(get_hf_token(), a_credential_was_held = hf_token_row_exists())

@@ -23,22 +23,7 @@ def prune_log_dir(
     keep: int = DEFAULT_KEEP,
     protect: Optional[Path] = None,
 ) -> None:
-    """Delete all but the ``keep`` most recently modified ``pattern`` files in ``log_dir``.
-
-    ``protect`` is the log the caller is writing to. It is never deleted and counts as one
-    of the ``keep``, so the directory settles at ``keep``, not ``keep + 1``. Call this
-    *after* opening it: pruning first leaves an extra file every time, and the new file
-    only sorts newest until two loads share a second or a clock steps back.
-
-    Only regular files count. A directory matching the glob is not a log, and a symlink is
-    stat'd through but unlinked by name, so counting either shrinks how many real logs are
-    kept.
-
-    Best effort throughout: retention must never take down the thing it logs for, and
-    losing a race to a concurrent writer just leaves the file for the next call. One
-    unreadable entry skips that entry, not the directory -- a single dangling symlink used
-    to abort the sort and disable retention entirely.
-    """
+    """The protected log counts toward keep and is never deleted; call after opening it, not before."""
     if keep < 0:
         return
 
@@ -64,11 +49,10 @@ def prune_log_dir(
                 saw_protected = True
                 continue
         except OSError:
-            # Dangling symlink, vanished file, or an unreadable directory.
             continue
         entries.append((stat.st_mtime, path))
 
-    # The protected file occupies one of the slots, so the total stays at `keep`.
+    # The protected file occupies one slot.
     room = keep - 1 if saw_protected else keep
     entries.sort(key = lambda item: item[0])
     if room > 0:

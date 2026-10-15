@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A rendered chat prompt must carry exactly one BOS.
-
-Most templates emit it, so letting the tokenizer add another doubles it; zephyr and
-tinyllama-chat emit none, so suppressing specials unconditionally drops it. The deciding
-fact is whether the rendered text already starts with BOS.
-"""
+"""A rendered chat prompt carries one BOS, decided by whether the text already starts with it."""
 
 from __future__ import annotations
 
@@ -31,15 +26,7 @@ def _stub_if_missing(
     attrs = (),
     named_spec = False,
 ):
-    """Register a stub for a dep this job does not install. A real install is left alone.
-
-    Same helper and reason as test_vision_client_tools.py: core.inference.inference imports
-    unsloth and trl at module scope, which studio-backend-ci.yml does not install, so
-    unstubbed this file fails COLLECTION and takes the whole job down.
-
-    ``named_spec`` gives the stub a real ModuleSpec, which only torchao needs: transformers
-    probes it with find_spec, which raises ValueError on ``__spec__ = None``.
-    """
+    """Stub a missing dep so CI collection passes without unsloth and trl; real installs are kept."""
     if name in sys.modules:
         return
     try:
@@ -126,7 +113,6 @@ def test_rendered_prompt_carries_exactly_one_bos(template_emits_bos, auto_adds_b
 
 
 def test_template_that_omits_bos_keeps_the_tokenizer_one():
-    # Blanket add_special_tokens = False regressed exactly this shape.
     tokenizer = _tokenizer(auto_adds_bos = True)
     prompt = "user hello world"
 

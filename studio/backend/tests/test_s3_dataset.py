@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for the S3 dataset loader (core.training.s3_dataset).
-
-boto3 is optional and may be absent in CI, so the S3 client is mocked: a fake
-client provides a paginator over a synthetic bucket listing and writes files on
-download_file. No network or real AWS credentials are involved.
-"""
+"""S3 dataset loader tests mock the boto3 client, so no network or real AWS credentials are used."""
 
 import importlib.util
 import os
@@ -14,9 +9,7 @@ from pathlib import Path
 
 import pytest
 
-# Load the modules under test directly by path. Importing them through their
-# packages (core.training / models) would execute heavy package __init__ chains
-# (structlog, torch, …) that aren't needed for these unit tests.
+# Load by path to skip heavy package __init__ chains (structlog, torch).
 _BACKEND = Path(__file__).resolve().parents[1]
 
 
@@ -38,7 +31,6 @@ class _FakePaginator:
     def paginate(self, **kwargs):
         prefix = kwargs.get("Prefix")
         contents = [{"Key": k} for k in self._keys if prefix is None or k.startswith(prefix)]
-        # Emit in two pages to exercise pagination handling.
         mid = len(contents) // 2
         yield {"Contents": contents[:mid]}
         yield {"Contents": contents[mid:]}
@@ -68,9 +60,9 @@ def fake_client(monkeypatch):
     keys = [
         "datasets/train.parquet",
         "datasets/extra.parquet",
-        "datasets/notes.txt",  # filtered out (unsupported)
-        "datasets/subdir/",  # directory placeholder, skipped
-        "other/ignore.parquet",  # filtered out by prefix
+        "datasets/notes.txt",
+        "datasets/subdir/",
+        "other/ignore.parquet",
     ]
     client = _FakeS3Client(keys)
     monkeypatch.setattr(s3_dataset, "boto3_available", lambda: True)
@@ -94,8 +86,6 @@ def _cfg(**overrides):
 def test_downloads_only_supported_files_under_prefix(fake_client, tmp_path):
     files = s3_dataset.download_s3_dataset(_cfg(), dest_dir = str(tmp_path))
     names = sorted(os.path.basename(f) for f in files)
-    # txt is unsupported, the directory placeholder is skipped, and the
-    # "other/" key is excluded by the prefix filter.
     assert names == ["extra.parquet", "train.parquet"]
     for f in files:
         assert os.path.exists(f)
@@ -154,13 +144,12 @@ def test_raises_when_boto3_missing(monkeypatch, tmp_path):
 
 
 def test_basename_collisions_are_disambiguated(monkeypatch, tmp_path):
-    # Two keys share a basename under different sub-prefixes.
     client = _FakeS3Client(["datasets/a/train.parquet", "datasets/b/train.parquet"])
     monkeypatch.setattr(s3_dataset, "boto3_available", lambda: True)
     monkeypatch.setattr(s3_dataset, "_build_s3_client", lambda cfg: client)
     files = s3_dataset.download_s3_dataset(_cfg(), dest_dir = str(tmp_path))
     assert len(files) == 2
-    assert len(set(files)) == 2  # no overwrite
+    assert len(set(files)) == 2
 
 
 def test_basename_collision_skips_existing_generated_suffix(monkeypatch, tmp_path):
@@ -239,9 +228,6 @@ def test_cancel_callback_aborts_and_removes_temp_dir(monkeypatch, tmp_path):
     assert not target_dir.exists()
 
 
-# ── S3Config model (camelCase aliases + credential validation) ──
-
-
 def test_s3config_accepts_camelcase_aliases():
     cfg = S3Config.model_validate(
         {
@@ -253,7 +239,6 @@ def test_s3config_accepts_camelcase_aliases():
     )
     assert cfg.access_key_id == "AKIA"
     assert cfg.secret_access_key == "shh"
-    # model_dump() yields snake_case for the loader.
     assert cfg.model_dump()["access_key_id"] == "AKIA"
 
 

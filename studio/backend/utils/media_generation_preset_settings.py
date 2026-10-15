@@ -21,13 +21,8 @@ def _stored_settings(kind: MediaGenerationKind) -> dict:
 
 
 def _with_unknown_preserved(stored, updated):
-    """Carry forward what the writing build does not model.
-
-    A GET drops fields the reading build cannot validate, so the state it sends back is a lossy
-    view of the store. Without this, opening a store once with an older build would erase every
-    field a newer one had written. Only a background state write goes through here; replacing a
-    named preset is a deliberate whole-value overwrite by the user.
-    """
+    """Keeps stored fields this build does not model, since a GET drops them and a write would erase
+    them."""
     if not isinstance(stored, dict) or not isinstance(updated, dict):
         return updated
     merged = dict(updated)
@@ -51,11 +46,7 @@ def set_media_generation_preset_settings(
     settings: dict,
     preserve_recovered: Optional[Callable[[dict, dict], dict]] = None,
 ) -> None:
-    """Write the page's current recipe and selection, never the named presets.
-
-    Those have their own endpoints so a debounced state write can never race a save or a delete
-    into clobbering the list.
-    """
+    """Writes only recipe and selection; named presets, with their own endpoints, are never touched."""
     from storage.studio_db import upsert_app_settings
     with _settings_lock:
         stored = _stored_settings(kind)

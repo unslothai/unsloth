@@ -187,7 +187,7 @@ def mark_app_processed_dataset_cache_complete(entry: AppProcessedDatasetCache) -
     root = _resolved_app_processed_dataset_cache_root(create = False)
     if root is None:
         raise OSError("Dataset cache root is unavailable")
-    # Before resolve: a dangling swapped-in symlink would otherwise surface as FileNotFoundError.
+    # Before resolve: a dangling symlink would surface as FileNotFoundError.
     if entry.path.is_symlink() or entry.cache_dir.is_symlink():
         raise UnsafeDatasetCachePathError(f"Dataset cache path is a symlink: {entry.path}")
     entry_path = entry.path.resolve(strict = True)

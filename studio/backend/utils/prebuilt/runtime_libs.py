@@ -43,7 +43,6 @@ def dedupe_existing_dirs(paths: Iterable[str | Path]) -> list[str]:
     return unique
 
 
-# Debian multiarch dirs are built into ld.so's default search path, no ldconfig needed.
 _MULTIARCH_LIB_GLOBS: tuple[str, ...] = ("/lib/*-linux-gnu*", "/usr/lib/*-linux-gnu*")
 
 
@@ -158,11 +157,7 @@ _VENDORED_CUDA_ROOTS: tuple[tuple[Path, str], ...] = (
 def vendored_cuda_runtime_dirs(
     marker: object, *, roots: Optional[Iterable[tuple[Path, str]]] = None
 ) -> list[str]:
-    """Vendored dirs holding libcudart + libcublas for the marker's ``runtime_line`` major.
-
-    Empty when the loader already finds that pair. Callers append the result LAST
-    so it never displaces the runtime the build picked.
-    """
+    """Callers append these last so the vendored runtime never displaces the one the build picked."""
     if not sys.platform.startswith("linux"):
         return []
     runtime_line = marker.get("runtime_line") if isinstance(marker, dict) else None
@@ -209,9 +204,7 @@ def python_runtime_dirs() -> list[str]:
         pass
 
     for root in search_roots:
-        # A sys.path entry this user cannot stat makes is_dir() raise, and the
-        # caller turns that into an empty dir list, dropping every CUDA wheel dir.
-        # Kept in sync with install_llama_prebuilt.py's python_runtime_dirs.
+        # An unstat-able sys.path entry would drop every CUDA dir. Sync with install_llama_prebuilt.py.
         try:
             if not root.is_dir():
                 continue

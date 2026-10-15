@@ -37,18 +37,7 @@ def gguf_cache_snapshots(repo_id: str):
 
 
 def cached_gguf_source_partial(repo_id: str, quant: str, snapshot: Path) -> bool:
-    """Whether this snapshot's quant is incomplete by its own manifest, cancellation marker or blobs.
-
-    The per-snapshot twin of the readiness check a listing runs for the cache it names. A
-    caller merging remembered folders has to ask it about every source it reports: with
-    ``prefer_local_cache``/``offline`` there is no Hub answer to fall back on, so an
-    interrupted companion download would otherwise be advertised as a complete copy that
-    the picker offers to load instead of to resume.
-
-    Local-only by construction -- it reads the manifest and marker next to *snapshot* and
-    never consults the Hub -- and judged against that same snapshot's own repo cache
-    directory, since a cancellation marker belongs to the attempt that wrote it.
-    """
+    """Per-snapshot partial verdict from its own manifest, cancel marker and blobs; never asks the Hub."""
     from hub.utils import inventory_scan
 
     repo_cache_dir = snapshot.parent.parent
@@ -70,16 +59,7 @@ def _prefer_duplicate(
     candidate: Path,
     scoped_ready = None,
 ) -> bool:
-    """Whether *candidate* should replace *previous* as this quant's source.
-
-    Manifest verification alone misses a copy that its own snapshot state marks partial -- a
-    cancel marker or an unfinished companion -- which the merge then reports as unusable even
-    though a complete duplicate of the same quant exists. Rank on the full per-snapshot verdict
-    so the healthy copy wins, and keep the completed-vs-incomplete manifest rule it refines.
-
-    *scoped_ready* adds the one verdict no local rule can see: whether a copy satisfies the
-    companion set the CURRENT revision asks for, which only that copy's Hub answer knows.
-    """
+    """Ranks duplicate copies by the full per-snapshot verdict, so a complete copy beats a partial one."""
     if scoped_ready is not None:
         previous_ready = scoped_ready(previous, quant)
         candidate_ready = scoped_ready(candidate, quant)
@@ -113,9 +93,6 @@ class CachedGgufSource:
     variant: "GgufVariantInfo"
     snapshot: Path
     has_vision: bool
-    # Listed by the snapshot but incomplete by its own manifest, marker or shards. The
-    # fallback pass keeps such a source so a resume can name its folder; the merge then
-    # reports it partial instead of as a loadable copy.
     incomplete: bool = False
 
     @property
@@ -132,7 +109,6 @@ def cached_gguf_sources(repo_id: str, *, scoped_ready = None) -> dict[str, Cache
     sources = {}
     partials: dict[str, CachedGgufSource] = {}
     for snapshot in gguf_cache_snapshots(repo_id):
-        # Media GGUFs have a separate download/load pipeline and retain their existing scope.
         if _gguf_path_task(snapshot, (repo_id,)) not in CHAT_GGUF_TASKS:
             continue
         variants, has_vision = list_local_gguf_variants(str(snapshot))

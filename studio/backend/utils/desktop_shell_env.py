@@ -24,15 +24,13 @@ logger = logging.getLogger(__name__)
 
 DISABLE_ENV_VAR = "UNSLOTH_DISABLE_SHELL_ENV_IMPORT"
 
-# Set by src-tauri on every CLI child it owns (process.rs, DESKTOP_MANAGED_ENV).
 DESKTOP_MANAGED_ENV = "UNSLOTH_DESKTOP_MANAGED"
 
-# From the CLI's #7331 guard, which ran against a GUI environment that never had
-# the override: the arbiter travels, its verdict would say nothing here.
+# The CLI's guard ran in a different environment, so its verdict is not reused here.
 ROCM_INSTALLED_ARCH_ENV = "UNSLOTH_ROCM_INSTALLED_ARCH"
 HSA_OVERRIDE_ENV = "HSA_OVERRIDE_GFX_VERSION"
 
-# AMD/ROCm only: a wider list would change a GUI launch on someone else's stack.
+# AMD/ROCm only: a wider list would change GUI launches on other stacks.
 ROCM_SHELL_ENV_ALLOWLIST: tuple[str, ...] = (
     "HSA_OVERRIDE_GFX_VERSION",
     "PYTORCH_ROCM_ARCH",
@@ -42,18 +40,15 @@ ROCM_SHELL_ENV_ALLOWLIST: tuple[str, ...] = (
     "ROCM_HOME",
     "HIP_PATH",
     "HIP_PLATFORM",
-    # CK was being attempted on an arch it was not built for (#9926).
     "USE_CK",
     "TORCH_BLAS_PREFER_HIPBLASLT",
     "MIOPEN_USER_DB_PATH",
     "MIOPEN_CUSTOM_CACHE_DIR",
     "MIOPEN_FIND_MODE",
-    # Preserve shell overrides, including an explicit opt-out (0).
     "MIOPEN_SEARCH_CUTOFF",
     "HIP_VISIBLE_DEVICES",
     "ROCR_VISIBLE_DEVICES",
     "GPU_DEVICE_ORDINAL",
-    # DXG_DETECTION: main.py sets it for WSL, a host that set it by hand wins.
     "HSA_ENABLE_SDMA",
     "HSA_ENABLE_DXG_DETECTION",
     "HSA_XNACK",
@@ -61,7 +56,7 @@ ROCM_SHELL_ENV_ALLOWLIST: tuple[str, ...] = (
     "AMD_SERIALIZE_KERNEL",
     "GPU_MAX_HW_QUEUES",
 )
-# Not HSA_TOOLS_LIB: HSA dlopens it, which loads a library rather than tuning one.
+# Not HSA_TOOLS_LIB: HSA dlopens it, so it loads a library rather than tuning one.
 
 # Exception list, so a renamed bash/zsh still gets the unsloth#12678 probe.
 _NON_POSIX_SHELLS = frozenset(
@@ -70,10 +65,7 @@ _NON_POSIX_SHELLS = frozenset(
 
 
 def probe_command(shell: str, command: str) -> str:
-    """``command`` for ``shell -ilc`` without the exit-time history save (unsloth#12678).
-
-    ``RCS`` covers zsh's readonly HISTFILE; subshell first, as dash exits on a readonly unset.
-    """
+    """Unsets RCS to skip the exit-time history save; dash exits on a readonly unset, hence the subshell."""
     if os.path.basename(shell) in _NON_POSIX_SHELLS:
         return command
     return (
@@ -87,10 +79,7 @@ _AMD_VENDOR_ID = "4098"
 
 
 def host_has_amd_gpu() -> bool:
-    """Whether the amdgpu driver is presenting a GPU here.
-
-    The KFD topology, not torch: this runs before torch is imported.
-    """
+    """Reads the KFD topology rather than torch, because this runs before torch is imported."""
     if not sys.platform.startswith("linux"):
         return False
     try:
@@ -126,13 +115,7 @@ def _node_is_an_amd_gpu(properties: str) -> bool:
 
 
 def read_login_shell_env(shell: "str | None" = None, timeout: float = 15.0) -> dict:
-    """The environment an interactive login shell would have handed us, or ``{}``.
-
-    ``-i`` runs ``~/.zshrc`` and ``-l`` the profile chain; bash reaches
-    ``~/.bashrc`` only because the stock ``~/.profile`` sources it. ``env -0``
-    into a FILE: a newline in a value corrupts a line parse, and an rc that
-    backgrounds a job leaves that child holding a capture pipe.
-    """
+    """Env goes to a file: newlines in values break line parsing; background rc jobs can hold pipes."""
     shell = shell or os.environ.get("SHELL") or "/bin/sh"
     with tempfile.TemporaryDirectory(prefix = "unsloth-shell-env-") as work:
         target = os.path.join(work, "env")
@@ -153,7 +136,7 @@ def read_login_shell_env(shell: "str | None" = None, timeout: float = 15.0) -> d
             return {}
 
     out: dict = {}
-    # surrogateescape, as os.environ does: `replace` corrupts a path.
+    # surrogateescape, as os.environ does: replace would corrupt a path.
     for record in raw.decode("utf-8", "surrogateescape").split("\0"):
         name, sep, value = record.partition("=")
         if sep and name:
@@ -206,11 +189,7 @@ def select_missing_vars(
     shell_env,
     allowlist = ROCM_SHELL_ENV_ALLOWLIST,
 ) -> dict:
-    """The allowlisted names the shell has and this process does not.
-
-    Membership on both sides, never truthiness: exported empty is a statement, and
-    ``ROCR_VISIBLE_DEVICES=`` hides every agent.
-    """
+    """Test membership, not truthiness: an exported empty ROCR_VISIBLE_DEVICES= hides every agent."""
     out: dict = {}
     for name in allowlist:
         if name in environ:
@@ -229,7 +208,6 @@ def import_rocm_env_from_login_shell(
     environ = os.environ if environ is None else environ
     if str(environ.get(DISABLE_ENV_VAR, "")).strip() == "1":
         return {}
-    # Not a desktop launch: nothing was lost, so nothing is read.
     if str(environ.get(DESKTOP_MANAGED_ENV, "")).strip() != "1":
         return {}
     if not sys.platform.startswith("linux"):
@@ -263,29 +241,20 @@ def import_rocm_env_from_login_shell(
 
 
 def override_gfx_arch(value):
-    """The gfx arch an ``HSA_OVERRIDE_GFX_VERSION`` value names, or None.
-
-    In step with ``_hsa_override_gfx_arch`` in unsloth_cli/commands/studio.py,
-    install_python_stack.py and install.sh; the parity is tested.
-    """
+    """Kept in step with _hsa_override_gfx_arch in unsloth_cli and install.sh; a test checks parity."""
     if not isinstance(value, str) or not value:
         return None
-    # [0-9] rather than str.isdigit()/\d, both of which accept non-ASCII digits.
+    # [0-9] rather than isdigit()/\d, which accept non-ASCII digits.
     if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", value.strip()):
         return None
     major, minor, step = (int(part) for part in value.strip().split("."))
-    # Steppings are a single hex nibble; anything wider is not a real target.
     if not (0 <= step <= 15) or major <= 0 or minor > 9:
         return None
     return f"gfx{major}{minor}{step:x}"
 
 
 def override_contradicts_install(value, installed_arch) -> bool:
-    """Whether this override names an arch the installed ROCm wheels cannot serve.
-
-    False for a value that does not parse, matching the CLI guard, which leaves an
-    override it cannot read alone.
-    """
+    """False for an unparsable value, matching the CLI guard that leaves such an override alone."""
     if not installed_arch:
         return False
     named = override_gfx_arch(value)

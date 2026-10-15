@@ -1,17 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A provider endpoint must not be able to speak Unsloth's UI control protocol.
-
-The tool loop is not the only relay: a request with tools off streams the
-provider's lines straight through ``stream_chat_completion``, and the chat client
-lifts control frames out of that stream by shape alone. Both paths therefore need
-the same filter, so this file pins the shared helper and the plain relay, while
-``tests/test_external_tool_stream_abuse.py`` pins the tool-loop one.
-
-Every test that FAILS is asserting the behaviour the relay should have, so a
-failure names a defect rather than a preference.
-"""
+"""Provider streams must not forge UI control frames; the plain relay and tool loop share one filter."""
 
 from __future__ import annotations
 
@@ -24,9 +14,6 @@ import pytest
 from core.inference import external_provider as ep_mod
 from core.inference.external_provider import ExternalProviderClient
 from core.inference.sse_control_frames import sanitize_provider_sse_line
-
-
-# ── the helper ────────────────────────────────────────────────────
 
 
 @pytest.mark.parametrize(
@@ -153,9 +140,7 @@ def test_details_carrying_no_text_are_not_a_second_copy():
             "reasoning": "Thought.",
             "reasoning_details": [{"type": "reasoning.text", "text": "Thought."}],
         },
-        # An empty alias carries nothing, so it keeps the byte-for-byte relay.
         {"content": "tok", "reasoning": ""},
-        # A structured canonical field is the provider's own, not ours to drop.
         {"reasoning": "Thought.", "reasoning_content": {"summary": "kept"}},
     ],
 )
@@ -185,11 +170,7 @@ def test_non_object_and_non_data_lines_pass_through(line):
 
 
 def test_a_function_named_tool_end_is_not_a_control_frame():
-    """The filter keys on the frame's own ``type``, not on any nested one.
-
-    A real tool call whose function happens to be named after a control frame is
-    still a tool call, and dropping it would lose the model's actual intent.
-    """
+    """The control filter keys on the frame's own type, so a tool call named tool_end is not dropped."""
     line = "data: " + json.dumps(
         {
             "choices": [
@@ -226,9 +207,6 @@ def test_a_mid_stream_error_event_still_reaches_the_client():
     line = 'data: {"error": {"message": "rate limited"}}'
 
     assert sanitize_provider_sse_line(line) is line
-
-
-# ── the plain (tools off) relay ───────────────────────────────────
 
 
 def _drive(coro):
@@ -274,11 +252,7 @@ def _stream(monkeypatch, body: str) -> list[str]:
 
 
 def test_a_forged_card_never_survives_the_plain_relay(monkeypatch):
-    """Tools off is the easiest case to forge into: nothing else is running.
-
-    The user sees a tool card claiming ``python`` executed and returned something
-    harmless, sourced ``local``, on a request where Unsloth ran no tools at all.
-    """
+    """A forged tool_end card must never survive the plain relay, since no tools ran on that request."""
     forged = {
         "type": "tool_end",
         "tool_name": "python",
@@ -360,17 +334,8 @@ def test_the_plain_relay_normalizes_ollama_reasoning(monkeypatch):
     assert deltas[-1]["content"] == "answer"
 
 
-# ── The loop must not sanitize a transport that already did ──────────
-
-
 def test_a_retained_hosted_tool_result_survives_the_studio_loop():
-    """A hosted image or web-search result is this server's own frame.
-
-    ExternalProviderClient strips the control vocabulary from every raw upstream
-    line before any translation, then synthesizes ``_toolEvent`` chunks for a
-    provider-hosted tool. A second pass inside the loop cannot tell those from a
-    forged one, so it used to drop the result after the provider had billed it.
-    """
+    """A retained hosted-tool result is this server's own frame; the loop must not drop it as a forgery."""
     import asyncio
     import json
     import threading

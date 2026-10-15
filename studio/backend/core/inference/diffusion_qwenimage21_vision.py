@@ -19,7 +19,6 @@ _QUERY_ROWS = 512
 def _eager_vision_attention(module, query, key, value, attention_mask, **kwargs):
     from transformers.models.qwen3_vl.modeling_qwen3_vl import eager_attention_forward
 
-    # Dropout: keep the stock RNG sequence.
     if query.shape[-2] <= _QUERY_ROWS or kwargs.get("dropout", 0.0):
         return eager_attention_forward(module, query, key, value, attention_mask, **kwargs)
     import torch
@@ -35,7 +34,6 @@ def _eager_vision_attention(module, query, key, value, attention_mask, **kwargs)
         )
         del weights
         outputs.append(output)
-    # Transformers' attention interface returns [batch, query, heads, head_dim].
     return torch.cat(outputs, dim = 1), None
 
 
@@ -62,7 +60,6 @@ def configure_vision_attention(pipe, *, family, target, logger) -> bool:
     visual = getattr(getattr(encoder, "model", None), "visual", None)
     if visual is None or type(visual).__name__ != "Qwen3VLVisionModel":
         return False
-    # Correctness fix for native SDPA (Speed Off too); explicit non-SDPA backends are kept.
     if visual.config._attn_implementation != "sdpa":
         return False
     # Never skip silently: that renders blank images.

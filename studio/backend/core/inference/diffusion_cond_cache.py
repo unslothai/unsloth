@@ -40,8 +40,7 @@ from typing import Any, Optional
 
 _ENV_DIR = "UNSLOTH_DIFFUSION_COND_CACHE_DIR"
 
-# Bound arguments that never change the returned embeddings: device is a placement detail (the hit is moved there) and
-# no encode path draws RNG.
+# Never change the embeddings: device is placement only and no encode path draws RNG.
 _KEY_EXCLUDED_ARGS = frozenset({"device", "generator"})
 
 
@@ -60,8 +59,6 @@ def _json_safe(value: Any) -> bool:
     return False
 
 
-# Per-slot layout codes for _flatten/_unflatten (the leading int64 tensor): -1 = None, -2 = a bare tensor, n >= 0 = a
-# LIST of n tensors.
 _SLOT_NONE = -1
 _SLOT_TENSOR = -2
 
@@ -121,11 +118,8 @@ def install(
     te_quant: Any = None,
     logger: Any = None,
 ) -> bool:
-    """Wrap ``pipe.encode_prompt`` with the persistent cache. No-op (False) when
-    the env knob is unset, the pipe has no ``encode_prompt``, or setup fails.
-
-    Instance-level assignment only: the wrapper dies with the pipe on unload and
-    never mutates the pipeline class."""
+    """Instance-level wrapper of pipe.encode_prompt, so it dies with the pipe and never mutates the
+    class."""
     root = cache_dir()
     if root is None:
         return False
@@ -133,7 +127,7 @@ def install(
     if not callable(encode):
         return False
     try:
-        # Lazy: core.training imports parts of core.inference, so a module-level import would be circular.
+        # Lazy: avoids a circular import with core.training.
         from core.training.diffusion_train_extras import PersistentConditioningCache
         signature = inspect.signature(encode)
         cache = PersistentConditioningCache(root, family, 0)
@@ -142,9 +136,7 @@ def install(
             logger.warning("diffusion.cond_cache: install failed: %s", exc)
         return False
 
-    # Everything beyond the call arguments that changes the embedding numerics. A GGUF/single-file checkpoint takes
-    # its TEXT ENCODERS from the companion base repo, so the base identity keys the cache too; both carry a revision
-    # marker, so an advanced commit or an edited dir misses.
+    # GGUF checkpoints take text encoders from the base repo, so it keys the cache too.
     base_ref = base_repo if base_repo else repo_id
     load_fp = {
         "repo": str(repo_id),
@@ -159,7 +151,6 @@ def install(
 
     def cached_encode_prompt(*args: Any, **kwargs: Any) -> Any:
         try:
-            # LoRA may target the text encoders; adapters attached -> always encode.
             if getattr(pipe, "_unsloth_loras", ()):
                 return encode(*args, **kwargs)
             bound = signature.bind(*args, **kwargs)
@@ -225,11 +216,7 @@ def _diffusers_version() -> Optional[str]:
 
 
 def _source_revision(ref: Any) -> str:
-    """Revision marker for a checkpoint reference (see the shared helper for why).
-
-    Delegates to ``diffusion_train_extras.source_revision`` so the trainer's cache
-    namespace and this wrapper cannot drift apart on what counts as the same source.
-    """
+    """Delegates to the trainer's source_revision so both caches agree on what counts as the same source."""
     try:
         from core.training.diffusion_train_extras import source_revision  # noqa: PLC0415
         return source_revision(ref)

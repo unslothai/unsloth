@@ -67,10 +67,7 @@ def _rocm_clang_cl_present() -> bool:
 
 
 def _cc_needs_msvc_headers(cc: str) -> bool:
-    """Triton's own predicates decide, so this cannot disagree with what it does. They are imported
-    apart from `get_cc` because `is_clang_cl` only arrived in triton-windows 3.5.1.post23: importing
-    all three together failed on every earlier release and threw away a usable `get_cc` with it.
-    The fallback is what both predicates do, a case-insensitive basename match."""
+    """Imported apart from get_cc: is_clang_cl only exists in triton-windows 3.5.1.post23 and later."""
     try:
         from triton.runtime.build import is_clang_cl, is_msvc  # noqa: PLC0415
         return bool(is_msvc(cc) or is_clang_cl(cc))
@@ -80,10 +77,7 @@ def _cc_needs_msvc_headers(cc: str) -> bool:
 
 
 def _triton_cc() -> str:
-    """triton-windows 3.8.0.post28, what a bare `pip install triton-windows` gives you today, has no
-    `get_cc` at all: it was renamed `_find_compiler(language)`, whose "c" branch is the old body.
-    Without this the newest release never reaches the compiler question and answers from the wheel
-    layout instead."""
+    """Newest triton-windows renamed get_cc to _find_compiler(language); else the wheel layout decides."""
     try:
         from triton.runtime.build import get_cc  # noqa: PLC0415
     except ImportError:
@@ -130,12 +124,7 @@ def _toolchain_summary() -> str:
 
 
 def _compiles_a_trivial_translation_unit(cc: str, inc_dirs) -> bool | None:
-    """Ask the compiler instead of predicting it. None means the probe could not be run.
-
-    Header discovery is an inference and it is wrong in the expensive direction: clang-cl
-    locates MSVC through its own search, so on a measured R9700 it compiled with INCLUDE,
-    VCINSTALLDIR and WindowsSdkDir all cleared, injecting an -internal-isystem we can see
-    no trace of. Predicting from directories alone would disable torch.compile there."""
+    """Predicting from directories wrongly disables torch.compile; clang-cl finds MSVC itself."""
     import subprocess  # noqa: PLC0415
     import tempfile  # noqa: PLC0415
 
@@ -144,8 +133,7 @@ def _compiles_a_trivial_translation_unit(cc: str, inc_dirs) -> bool | None:
             src = os.path.join(tmp, "probe.c")
             with open(src, "w", encoding = "utf-8") as fh:
                 fh.write("#include <stdlib.h>\nint main(void){return 0;}\n")
-            # Syntax-only: no link, so a missing lib path cannot masquerade as a missing
-            # header, and nothing is written outside the temporary directory.
+            # Syntax-only: no link, so a missing lib cannot pass as a missing header.
             argv = [cc, "/Zs", src] + [f"/I{d}" for d in inc_dirs if d]
             done = subprocess.run(
                 argv,
@@ -224,12 +212,8 @@ def _crt_headers_reachable() -> bool:
         return True
     triton_dirs = _triton_include_dirs()
 
-    # The compiler is asked FIRST, because every check below it is inference and inference is
-    # wrong in both directions. It over-gates when clang-cl locates MSVC through its own search,
-    # which the directory listing cannot see. It under-gates on a partial or mismatched SDK: the
-    # two markers are only the entry points, and `vcruntime.h` includes `sal.h`, which lives in
-    # the SDK's `shared` directory rather than beside either marker, so a dir set can carry both
-    # markers and still fail to compile. Only a compile answers the question the JIT will ask.
+    # Ask the compiler first: directory inference over-gates (clang-cl's own MSVC search) and
+    # under-gates (vcruntime.h needs sal.h from the SDK shared dir).
     if triton_dirs is not None:
         try:
             verdict = _compiles_a_trivial_translation_unit(_triton_cc(), triton_dirs)
@@ -238,18 +222,14 @@ def _crt_headers_reachable() -> bool:
         if verdict is not None:
             return verdict
 
-    # Fallback, for a host where the probe could not be run at all. Unknown is not evidence of
-    # a broken toolchain, so these keep their fail-open shape.
+    # Fallback when the probe could not run; unknown is not evidence, so fail open.
     env_dirs = os.environ.get("INCLUDE", "").split(os.pathsep)
     if _headers_complete(env_dirs):
         return True
-    # INCLUDE is a positive signal only: unset is the normal case (Studio is not launched from a
-    # Developer Command Prompt), so only Triton's own search coming back empty may gate.
+    # INCLUDE is unset outside a Developer Command Prompt; only Triton's empty search may gate.
     if triton_dirs is None:
         return True
-    # Judged over the UNION, because that is what the compile sees: clang-cl reads INCLUDE as
-    # system include paths and Triton passes its own dirs as /I. Judging each alone rejects a
-    # split toolchain (VC toolset on INCLUDE, SDK discovered by Triton) that compiles fine.
+    # Judge the union: clang-cl reads INCLUDE and Triton passes its dirs as /I.
     return _headers_complete(triton_dirs + env_dirs)
 
 
@@ -315,7 +295,7 @@ def gate_torch_compile_on_windows(log: logging.Logger) -> None:
         return
 
     os.environ["TORCHDYNAMO_DISABLE"] = "1"
-    # This only turns off the compiles we own; Unsloth's @triton.jit kernels still need the toolchain.
+    # Unsloth's @triton.jit kernels still need the toolchain.
     log.warning(
         "Triton is installed but its C toolchain has no CRT headers, so its "
         "clang-cl JIT would fail on 'stdlib.h' (#7595). torch.compile disabled; "

@@ -34,7 +34,6 @@ BYTE_CAP = 2 * 1024 * 1024 * 1024
 REFERENCE_MAX_SECONDS = 30.0
 REFERENCE_RATE = 24000
 _MAX_CHANNELS = 2
-# Caps the stored rate so a 30 minute upload stays under ~350 MB however it was encoded.
 MAX_RATE = 48000
 _NAME_MAX = 255
 _STALE_TMP_SECONDS = 60 * 60
@@ -151,11 +150,7 @@ def transcode(
     max_seconds: Optional[float] = None,
     cut: bool = False,
 ) -> dict[str, Any]:
-    """Decode ``src`` into a 16-bit WAV at ``dst``: at ``rate`` (default the source's), mono, two
-    channels (``stereo``) or at most two channels. Past ``max_seconds`` it is cut when ``cut``, else refused with 413.
-
-    Streams frame by frame through FFmpeg's resampler (a voice reference must not alias) into a
-    temporary file renamed in at the end."""
+    """Streams through FFmpeg's resampler, since a voice reference must not alias; writes a temp file."""
     import av
 
     max_seconds = MAX_SECONDS if max_seconds is None else max_seconds
@@ -297,10 +292,7 @@ async def save_stream(
     *,
     max_bytes: Optional[int] = None,
 ) -> tuple[dict[str, Any], bool]:
-    """Stream an upload to disk, then decode it; ``(record, created)``.
-
-    The byte cap is checked as each chunk lands, so an oversize body is refused without being read
-    whole. The same audio (sha256) uploaded again within the TTL returns the existing record."""
+    """The byte cap is checked per chunk, so an oversize upload is refused before it is read whole."""
     import asyncio
 
     cap = AUDIO_INPUT_MAX_BYTES if max_bytes is None else max_bytes
@@ -478,7 +470,6 @@ def sweep(
         live.sort(reverse = True)
         running = 0
         for index, (_touched_at, input_id, size) in enumerate(live):
-            # Only kept inputs count toward the cap, so one eviction does not doom every older one.
             if running + size > byte_cap and index > 0 and input_id != keep:
                 removed += _remove(directory, input_id)
                 continue
@@ -491,7 +482,6 @@ def sweep(
             # "." = a crashed timed transcription's upload; full TTL (aligner downloads take an hour).
             elif name.startswith(("c-", "v-", ".")) and name.endswith(".wav") and age > ttl:
                 path.unlink(missing_ok = True)
-        # Music run folders a crash left behind.
         runs = directory / "runs"
         if runs.is_dir():
             for run in runs.iterdir():
@@ -530,7 +520,7 @@ def delete(input_id: str) -> bool:
 
 @dataclass(frozen = True)
 class Source:
-    kind: str  # "input" | "clip" | "voice"
+    kind: str
     id: str
     path: Path
     name: str
@@ -573,11 +563,7 @@ def prepared_path(
     max_seconds: Optional[float] = None,
     stereo: bool = False,
 ) -> Path:
-    """A cached copy of ``source`` at ``rate`` (mono, or stereo for music edits), cut to
-    ``max_seconds``, in this account's inputs.
-
-    An input's copies sit beside it as ``{id}.{rate}.{mono|stereo}[.m{n}].wav`` and go when it
-    goes; a clip's or voice's as ``c-``/``v-`` files the sweep removes after the TTL."""
+    """Input copies go with their input; clip and voice copies (c-/v- files) are swept after the TTL."""
     prefix = {"input": "", "clip": "c-", "voice": "v-"}[source.kind]
     cap = f".m{max_seconds:g}" if max_seconds is not None else ""
     layout = "stereo" if stereo else "mono"
@@ -596,7 +582,6 @@ def prepared_path(
         cut = True,
     )
     if source.kind != "input":
-        # Cloning from history or a saved voice may never upload, so expired copies go here too.
         sweep()
     return dst
 

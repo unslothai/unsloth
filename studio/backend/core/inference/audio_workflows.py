@@ -20,10 +20,8 @@ from core.inference.audio_cpp_models import (
 
 AUDIO_WORKFLOW_IDS = ("speak", "clone", "edit", "convert", "music", "separate", "transcribe")
 
-# Generation audio types that make music; every other generation audio type speaks.
 MUSIC_AUDIO_TYPES = frozenset(("minimax_music3", AUDIO_CPP_MUSIC_AUDIO_TYPE))
 
-# Audio types of a loaded model that transcribes rather than generates.
 _TRANSCRIBE_AUDIO_TYPES = frozenset(("whisper",))
 
 
@@ -46,13 +44,7 @@ def status_audio_workflows(is_audio: bool, audio_type: Optional[str]) -> list[st
 def inventory_audio_workflows(
     task: Optional[str], audio_type: Optional[str]
 ) -> Optional[list[str]]:
-    """Workflows a cached or local model row serves, from its pipeline task first.
-
-    audio.cpp music rows carry ``text-to-audio`` with no audio_type, so the task decides before
-    the audio_type does. A separation row is the exception: its ``audio-to-audio`` task is shared
-    with the kinds Studio has no page for, so its audio_type decides. None for a row that is not
-    an audio model.
-    """
+    """The pipeline task decides first, as music rows lack audio_type; separation is the exception."""
     if audio_type == AUDIO_CPP_SEP_AUDIO_TYPE:
         return ["separate"]
     if task == HUB_TASKS["music"]:

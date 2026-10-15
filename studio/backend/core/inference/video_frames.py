@@ -75,7 +75,6 @@ def uint8_video_frames(pipe: Any) -> Iterator[None]:
             return original(video, output_type, **kwargs)
         clips = []
         for batch in range(video.shape[0]):
-            # "pt" stops right after the denormalize the np / pil paths apply, on the same view they use.
             clip = device_uint8(postprocess(video[batch].permute(1, 0, 2, 3), "pt", **kwargs))
             if clip is None:
                 return original(video, output_type, **kwargs)

@@ -17,7 +17,6 @@ _SUPPORTED = ("0.6.6",)
 
 NVFP4_FAST_DISPATCH_ENV = "UNSLOTH_NVFP4_FAST_DISPATCH"
 
-# Weights only: an activation view would be unbounded.
 _TRANSPOSE_CACHE_MAX = 4096
 
 _LOCK = threading.Lock()
@@ -268,7 +267,6 @@ def _build_plan(key: tuple, device: Any, operands: list):
     )
     from flashinfer.utils import get_compute_capability
 
-    # The guard spans the whole builder: both allocation and profiling hit the CURRENT device.
     with torch.cuda.device(device):
         workspace = _get_cache_buf("mm_fp4_workspace", DEFAULT_WORKSPACE_SIZE, device)
         major, minor = get_compute_capability(device)

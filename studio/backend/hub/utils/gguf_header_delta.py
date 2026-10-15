@@ -509,12 +509,7 @@ def prepare_media_gguf(
     metadata_fn: Optional[Callable] = None,
     fetcher_fn: Optional[Callable] = None,
 ) -> DeltaResult:
-    """Single-file entry for the Images / Video load paths, run before ``hf_hub_download``.
-
-    Local checks first, no network: the file for the locally known target commit (``refs/<revision>``, or the commit
-    itself) must be missing and an older snapshot must hold the same path. That is the only case where a download
-    follows anyway. Then one HEAD for the current commit, size and sha256, and the rebuild. On success ``refs/<revision>``
-    names the new commit, so the caller's cache probe finds the rebuilt file."""
+    """Tries to rebuild the GGUF from an older snapshot before hf_hub_download; local checks come first."""
     t0 = time.perf_counter()
     try:
         if not delta_enabled() or not str(filename).lower().endswith(".gguf"):

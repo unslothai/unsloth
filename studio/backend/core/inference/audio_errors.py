@@ -13,13 +13,11 @@ from __future__ import annotations
 import re
 
 
-# Tagged on the worker's audio_error payload so the parent recognises the case without matching on prose.
 AUDIO_UNSUPPORTED_CODE = "audio_unsupported_backend"
 AUDIO_RUNTIME_ERROR_CODE = "audio_runtime_error"
 
 _MAX_RUNTIME_DETAIL_CHARS = 300
-# A network URL (kept: its tokens are redact_log_text's job), else an absolute POSIX, drive-letter,
-# UNC or file:// path, also after a ':' ("path:/home/..."). A "family:name" pair has no slash.
+# A URL is matched to keep it (its tokens are redact_log_text's job); else absolute/UNC/file:// paths.
 _ABSOLUTE_PATH_RE = re.compile(
     r"(?P<url>\b(?:https?|wss?|ftp)://[^\s\"'`,;]+)"
     r"|(?<![\w/])(?:file://)?(?:/|[A-Za-z]:[\\/]|\\\\)[^\s\"'`,;]+"
@@ -109,12 +107,7 @@ def _path_tail(match: "re.Match[str]") -> str:
 def audio_runtime_http_error(
     error: AudioRuntimeError, fallback: str = "An internal error occurred"
 ) -> tuple[int, str]:
-    """The HTTP status and client-safe ``detail`` for a runtime error.
-
-    A runtime 4xx (a refused input or option) is the request's fault and becomes 400, never a
-    401/403/404 the client would read as its own auth or routing; a busy runtime stays 503;
-    everything else is 500, as before, but with the runtime's reason instead of the fallback.
-    """
+    """A runtime 4xx is the request's fault, so it maps to 400 rather than an auth or routing code."""
     status = error.status
     if status == 503:
         code = 503

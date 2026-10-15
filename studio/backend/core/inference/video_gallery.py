@@ -175,7 +175,6 @@ def _record(
         "id": video_id,
         "url": f"/api/inference/video/gallery/{video_id}/file",
         **gallery_flags.flags_for(flags, video_id),
-        # The server's own sort key, so a client re-sort agrees with it (created_at can differ).
         "order_at": gallery_flags.order_rank(
             flags, video_id, _mtime(path) if (path := video_path(video_id)) else 0.0
         ),
@@ -210,12 +209,7 @@ def first_frame_webp(
     max_pixels: Optional[int] = None,
     max_height: Optional[int] = None,
 ) -> bytes:
-    """The first frame of a clip (a file or an open binary stream), at most `width` wide and
-    `max_height` tall (four widths unless given), as WebP.
-
-    ``container`` forces the demuxer instead of probing for one, and then nothing but the stream
-    itself is read: a probed HLS or concat playlist names other files to open. ``max_pixels``
-    refuses a frame larger than that before it is decoded."""
+    """First frame as WebP; a forced container reads only the stream, not files a probed playlist names."""
     import io
 
     try:
@@ -257,14 +251,7 @@ def first_frame_webp(
 
 
 def transcode_to_file(video_id: str, fmt: str) -> Optional[Path]:
-    """Re-encode a stored MP4 for the Download menu into a TEMP FILE and return its path, or None
-    when the id doesn't resolve. Raises RuntimeError on missing codec/deps (route 501s). The caller
-    owns the file and must delete it after serving.
-
-    A file rather than a buffer because the request caps allow 2048x2048 x 1024 frames: a VP9
-    export of a clip that size runs to hundreds of MB, and holding it as one ``bytes`` (then again
-    in the response) let a couple of concurrent export clicks exhaust the process. The MP4 route
-    already streams from disk; this makes the transcodes behave the same way."""
+    """Re-encodes to a temp file, not memory; the caller must delete it after serving."""
     # only transcode an Unsloth-owned clip, so a guessed stem for a foreign MP4 cannot be re-encoded out
     path = owned_video_path(video_id)
     if path is None:
@@ -281,7 +268,6 @@ def transcode_to_file(video_id: str, fmt: str) -> Optional[Path]:
         if normalized == "webm":
             _transcode_webm(path, dest)
         else:
-            # GIF is already bounded by _GIF_MAX_FRAMES / _GIF_MAX_EDGE, so it is built in memory and written out.
             dest.write_bytes(_transcode_gif(path))
     except BaseException:
         dest.unlink(missing_ok = True)
@@ -317,12 +303,9 @@ def _transcode_webm(path: Path, dest: Path) -> None:
             out_v.width = in_v.codec_context.width
             out_v.height = in_v.codec_context.height
             out_v.pix_fmt = "yuv420p"
-            # Realtime settings: VP9's default "good" profile is slow; cpu-used 8 + row-mt is much faster at a small
-            # quality cost.
+            # VP9 realtime: cpu-used 8 + row-mt is much faster at a small quality cost.
             out_v.options = {"deadline": "realtime", "cpu-used": "8", "row-mt": "1"}
-            # An LTX-2 clip carries a synchronized audio track and WebM is the web-embed format, so dropping it would
-            # hand back half the result. Opus is WebM's audio codec: resample to its 48 kHz grid and feed whole frames
-            # through a FIFO (960 samples per frame).
+            # Keep LTX-2 audio: Opus needs 48 kHz and whole 960-sample frames via a FIFO.
             in_a = src.streams.audio[0] if src.streams.audio else None
             out_a = fifo = resampler = None
             if in_a is not None:
@@ -338,7 +321,6 @@ def _transcode_webm(path: Path, dest: Path) -> None:
                     out_a = fifo = resampler = None
 
             def _drain_audio(flush: bool = False) -> None:
-                # frame_size is 0 until the container starts writing; 960 is libopus' own frame.
                 size = out_a.frame_size or 960
                 while True:
                     frame = fifo.read(size, partial = flush)
@@ -347,7 +329,6 @@ def _transcode_webm(path: Path, dest: Path) -> None:
                     for packet in out_a.encode(frame):
                         dst.mux(packet)
 
-            # demux both streams together so the muxer sees them interleaved rather than buffering every video packet
             for packet in src.demux(*([in_v] + ([in_a] if out_a is not None else []))):
                 if packet.dts is None:
                     continue
@@ -358,8 +339,7 @@ def _transcode_webm(path: Path, dest: Path) -> None:
                     continue
                 for frame in packet.decode():
                     for resampled in resampler.resample(frame):
-                        # let the FIFO time the output: the resampler's frames do not line up with Opus' fixed frame
-                        # size
+                        # FIFO times output: resampler frames do not match Opus' frame size.
                         resampled.pts = None
                         fifo.write(resampled)
                     _drain_audio()
@@ -375,8 +355,7 @@ def _transcode_webm(path: Path, dest: Path) -> None:
         raise RuntimeError(f"WebM export failed (libvpx-vp9 unavailable?): {exc}") from exc
 
 
-# Ceilings for a GIF export, which must hold every kept frame in memory before encoding. 720 px and 300 frames (25s at
-# the 12 fps target) bound that at roughly 150 MB for the widest clip a generate request allows.
+# GIF holds every frame in memory: 720 px / 300 frames bounds it at ~150 MB.
 _GIF_MAX_EDGE = 720
 _GIF_MAX_FRAMES = 300
 
@@ -396,11 +375,8 @@ def _transcode_gif(path: Path) -> bytes:
                 raise RuntimeError("GIF export failed: the clip has no video stream.")
             in_v = src.streams.video[0]
             rate = float(in_v.average_rate or 24)
-            # Full-rate GIFs are huge and stutter; ~12 fps (skipping source frames) is the sweet spot.
             step = max(1, round(rate / 12))
-            # Every kept frame is held as a paletted image until the encoder runs, so an unbounded walk is a memory bomb
-            # (a 2048x2048 clip of 1024 frames is >4 GB). Bound both axes: downscale past _GIF_MAX_EDGE and widen the
-            # step to at most _GIF_MAX_FRAMES. MP4 keeps the full clip.
+            # Bound both axes or a long clip is a memory bomb (>4 GB); MP4 keeps the full clip.
             total = in_v.frames or 0
             kept = (total + step - 1) // step if total else 0
             if kept > _GIF_MAX_FRAMES:
@@ -441,8 +417,7 @@ def _sidecar_path(video_id: str) -> Path:
     return gallery_dir() / f"{video_id}.json"
 
 
-# Sidecar keys every genuine Unsloth record carries. delete()/clear() own a pair only when its sidecar has all of
-# these, so a hand-dropped MP4 with a partial sidecar is neither counted as ours nor destroyed. Key-presence only.
+# Keys every genuine Unsloth sidecar carries; delete()/clear() only own pairs that have all.
 _REQUIRED_META = (
     "prompt",
     "width",
@@ -466,8 +441,7 @@ def _read_meta(sidecar: Path) -> Optional[dict[str, Any]]:
         meta = json.loads(raw)
     except (ValueError, TypeError):
         return None
-    # A parseable dict is not enough: a foreign ("{}") or different-schema sidecar lacks these keys, and
-    # delete()/clear() must never destroy a clip the gallery never surfaced.
+    # A foreign or other-schema sidecar lacks these keys and must never be deleted.
     if not isinstance(meta, dict) or any(k not in meta for k in _REQUIRED_META):
         return None
     return meta
@@ -483,10 +457,7 @@ def get_record(video_id: str) -> Optional[dict[str, Any]]:
 
 
 def owned_video_path(video_id: str) -> Optional[Path]:
-    """Resolve an id to its MP4 only when it is an Unsloth-owned clip (a readable sidecar), else
-    None. The serve and export routes use this instead of video_path() so a guessed stem for a
-    hand-dropped/orphan MP4 -- which list_videos/delete/clear already treat as not ours -- can't
-    be streamed or transcoded out. Mirrors the delete/clear ownership guard."""
+    """Owned clips only (readable sidecar); a guessed stem for a hand-dropped MP4 must not be streamed."""
     path = video_path(video_id)
     if path is None or _read_meta(_sidecar_path(video_id)) is None:
         return None
@@ -507,26 +478,13 @@ def list_videos(
     valid: Optional[Callable[[dict[str, Any]], bool]] = None,
     archived: bool = False,
 ) -> list[dict[str, Any]]:
-    """A window of videos for infinite scroll: pinned first (most recently pinned leading), then
-    newest-first by MP4 mtime (or the manual key once dragged).
-
-    mtime is a cheap stat ~= generation order; only the window's sidecars are read. limit=None
-    returns everything from ``offset`` on. A file without its pair is skipped.
-
-    ``archived`` selects WHICH shelf to page over, it does not widen one: False lists only active
-    clips, True lists only archived ones. The archived section needs its own scrollable page.
-
-    ``valid`` (optional) filters records BEFORE pagination, so ``offset`` / ``limit`` and has_more
-    all count over the accepted-record domain. Pass the route's schema validator: a sidecar that
-    parses as JSON but fails the response schema would otherwise be counted here yet dropped after
-    slicing, stalling infinite scroll."""
+    """Pinned then newest-first; valid filters run before slicing so has_more counts accepted clips."""
     try:
         paths = list(gallery_dir().glob("*.mp4"))
     except OSError:
         return []
     flags = gallery_flags.read(gallery_dir())
-    # Shelf split and pin sort run on file stems, BEFORE any sidecar is read, so they cost one dict lookup per file
-    # and leave the early break below intact.
+    # Shelf split and pin sort use stems only, before any sidecar read, keeping the early break.
     paths = [p for p in paths if gallery_flags.is_archived(flags, p.stem) == archived]
     paths.sort(
         key = lambda p: (
@@ -535,8 +493,7 @@ def list_videos(
         ),
         reverse = True,
     )
-    # Page over READABLE records, not raw files: filtering an orphan MP4 out of an already-sliced window would drop
-    # valid videos and make has_more wrong.
+    # Page over READABLE records, else orphans skew the window and has_more.
     want = None if limit is None else offset + limit
     records = []
     for path in paths:
@@ -561,8 +518,7 @@ def set_flags(
     """Patch one clip's pin/archive flags and return its updated record, or None when the id is
     not an Unsloth-owned clip. Ownership-gated like delete: a guessed stem for a hand-dropped or
     orphan MP4 must not become flaggable."""
-    # Ownership check and write under one lock, so a concurrent clear cannot delete the pair between them and leave this
-    # reporting success for a clip that is already gone.
+    # Ownership check and write under one lock so a concurrent clear cannot race them.
     with gallery_flags.exclusive(gallery_dir()):
         if owned_video_path(video_id) is None:
             return None
@@ -583,7 +539,6 @@ def move(video_id: str, after_id: Optional[str]) -> Optional[dict[str, Any]]:
         flags = gallery_flags.read(gallery_dir())
         if gallery_flags.is_archived(flags, video_id):
             return None
-        # Full shelf in listing order, so neighbours past the client's loaded window are known.
         try:
             paths = [
                 p
@@ -612,12 +567,10 @@ def delete(video_id: str) -> bool:
     path = video_path(video_id)
     if path is None:
         return False
-    # Only delete a pair we own (a readable sidecar); a foreign/orphan MP4 is invisible to list_videos, so a guessed
-    # id must not destroy it.
+    # Only delete pairs we own; a guessed id must not destroy a foreign MP4.
     if _read_meta(_sidecar_path(video_id)) is None:
         return False
-    # delete the MP4 FIRST: sidecar-first plus a failed unlink leaves a clip that vanished from the gallery with no
-    # retry
+    # Delete the MP4 FIRST: sidecar-first plus a failed unlink leaves an unretryable orphan.
     try:
         path.unlink()
     except OSError as exc:
@@ -627,29 +580,17 @@ def delete(video_id: str) -> bool:
         _sidecar_path(video_id).unlink()
     except OSError:
         pass
-    # Drop the flags with the pair, so the id cannot hand a stale pin to anything.
     gallery_flags.forget(gallery_dir(), [video_id])
     return True
 
 
 def clear(include_archived: bool = False, *, return_ids: bool = False) -> int | list[str]:
-    """Delete owned gallery pairs and return their count, or their ids when requested.
-
-    Archived clips are SPARED by default: archiving is how a user sets something aside, so a
-    "clear the gallery" action that destroyed the archive would defeat it. Pass
-    include_archived=True to remove those too.
-
-    Raises FlagsUnavailable when the archive has to be spared but the flag store cannot be read.
-    Fail CLOSED: read() answers "nothing is archived" for an unreadable store, which here would
-    quietly delete the very archive this promises to keep.
-
-    Foreign/orphan MP4s are preserved: list_videos already hides them, so clear must not destroy them."""
+    """Delete owned clips, sparing archived ones unless asked; fail closed if flags are unreadable."""
     removed = 0
     directory = gallery_dir()
-    # Hold the flag lock across the whole read-then-delete: an archive landing mid-loop would otherwise be judged active
-    # from the stale snapshot and deleted, after its PATCH had already reported success.
+    # Hold the flag lock across read-then-delete or a mid-loop archive is deleted after success.
     with gallery_flags.exclusive(directory):
-        # read flags BEFORE listing: nothing is unlinked if the store turns out to be untrusted
+        # Read flags BEFORE listing: nothing is unlinked if the store is untrusted.
         flags = {} if include_archived else gallery_flags.read_trusted(directory)
         try:
             paths = list(directory.glob("*.mp4"))
@@ -671,8 +612,7 @@ def clear(include_archived: bool = False, *, return_ids: bool = False) -> int | 
                 _sidecar_path(path.stem).unlink()
             except OSError:
                 pass
-        # Nothing left for an unreadable store to protect once every clip we own is gone, so this is where the escape
-        # hatch escapes: replace it, or every later default clear still refuses.
+        # Replace the unreadable store now, or every later default clear still refuses.
         if include_archived and not gallery_flags.is_trusted(directory):
             gallery_flags.reset_locked(directory)
         else:

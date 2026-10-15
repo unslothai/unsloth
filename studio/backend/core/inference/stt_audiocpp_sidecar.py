@@ -189,7 +189,6 @@ def _notify(on_phase: Optional[Callable[[str], None]], phase: str) -> None:
         logger.debug("audio.cpp: phase callback failed", exc_info = True)
 
 
-# Rows the dictation picker recommends, in order; any other audio.cpp ASR GGUF works too.
 AUDIO_CPP_STT_MODELS: tuple[str, ...] = RECOMMENDED_STT_MODELS
 
 
@@ -200,11 +199,8 @@ def resolve_audio_cpp_stt_model(
     network: bool = False,
     hf_token: Optional[str] = None,
 ) -> AudioCppModel:
-    """The audio.cpp ASR model a repo id, umbrella folder id or legacy key names.
-
-    ``network=False`` (loads and transcriptions) resolves from the HF cache, so dictation works
-    offline once downloaded; downloads resolve against the Hub.
-    """
+    """With network=False it resolves from the HF cache so dictation works offline; downloads use
+    the Hub."""
     if model is None or not str(model).strip():
         model = DEFAULT_AUDIO_CPP_STT_MODEL
     base, ref_variant = split_variant_ref(str(model).strip())
@@ -327,7 +323,6 @@ def is_available() -> bool:
     try:
         import av  # noqa: F401
     except Exception:
-        # No PyAV means every transcription fails on decode.
         return False
     return True
 
@@ -616,11 +611,10 @@ class AudioCppSttSidecar:
         self._server: Optional[AudioCppServer] = None
         self._model_id: Optional[str] = None
         self._model: Optional[AudioCppModel] = None
-        # The name the last client used for the loaded model: a legacy key (what Settings and dictation
-        # save) is reported back as that key, so their string comparisons keep matching.
+        # Legacy keys are reported back as-is so client string comparisons keep matching.
         self._loaded_as: Optional[str] = None
         self._forced_cpu = False
-        # Where the server actually runs: training also puts it on the CPU, without the user asking.
+        # Where the server actually runs: training also puts it on the CPU.
         self._launched_cpu = False
         # Tracked separately: ``model_options`` is not part of AudioCppModel equality.
         self._aligned = False
@@ -660,12 +654,7 @@ class AudioCppSttSidecar:
         return server.backend == "cpu"
 
     def keep_loaded_variant(self, model: Optional[str]) -> Optional[str]:
-        """``model`` pinned to the variant already loaded for that same row when it names none.
-
-        A variantless id means "this row", not "this row's default": Settings and dictation send the
-        bare row id, and resolving it afresh would swap a loaded Moonshine small for the default
-        tiny. An explicit variant, or another row, is left alone.
-        """
+        """A bare row id keeps the variant already loaded for that row, not the row's default."""
         loaded = self._model
         if loaded is None or not self._server_alive() or model is None or not str(model).strip():
             return model
@@ -673,7 +662,6 @@ class AudioCppSttSidecar:
         if variant is not None:
             return model
         ref = parse_identifier(base)
-        # A legacy key or sub-folder id names its own variant (``audiocpp-moonshine-tiny``).
         if ref is None or ref.variant_hint or ref.id.lower() != loaded.id.lower():
             return model
         return loaded.canonical_id
@@ -930,8 +918,8 @@ class AudioCppSttSidecar:
             try:
                 if cancel_event.is_set():
                     raise SttLoadCancelledError("Dictation model loading was cancelled.")
-                # Decided under the loading flag: training admission reads is_loading() without the lock. During training
-                # the model goes to CPU so a dictation cannot reclaim the VRAM training just freed.
+                # Decided under the loading flag: training admission reads is_loading() without the lock.
+                # During training the model goes to CPU so dictation cannot reclaim VRAM training freed.
                 run_on_cpu = _launches_on_cpu(entry, force_cpu)
                 self._release_locked()
                 _notify(on_phase, "loading")
@@ -976,14 +964,13 @@ class AudioCppSttSidecar:
         fast: bool = False,
         cancel_event: Optional[threading.Event] = None,
     ) -> dict:
-        del fast  # audio.cpp ASR families decode greedily; there is no beam knob to trade.
+        del fast
         self._raise_if_update_in_progress()
         ensure_engine_available()
         entry = resolve_audio_cpp_stt_model(self.keep_loaded_variant(model))
         if cancel_event is not None and cancel_event.is_set():
             raise SttTranscriptionCancelledError("Transcription cancelled.")
-        # A missing model fails before decoding so a long clip does not burn CPU only to 409. The
-        # cheap probe first: materialize prunes the link farm, which a warm request does not need.
+        # Fail before decoding so a long clip does not burn CPU only to 409.
         if not audio_cpp_files.is_downloaded(entry):
             self._ensure_model_downloaded(entry)
         decoded_audio = _decode_audio_bounded(audio, cancel_event)
@@ -1028,7 +1015,6 @@ class AudioCppSttSidecar:
             raise SttTranscriptionCancelledError("Transcription cancelled.")
         with self._lock:
             try:
-                # The caller's own name, so a legacy key stays the name status reports.
                 self.load(
                     target,
                     request_cancel_event = cancel_event,
@@ -1109,15 +1095,13 @@ class AudioCppSttSidecar:
                 data = post({k: v for k, v in body.items() if k != "language"})
             payload = json.loads(data.decode("utf-8"))
         except AudioCppRequestCancelledError as exc:
-            # The server keeps decoding the abandoned clip and would queue the next request behind it;
-            # stop it, as speech generation does (the caller holds self._lock).
+            # The server keeps decoding the abandoned clip and would queue the next request; stop it.
             self._release_locked()
             raise SttTranscriptionCancelledError("Transcription cancelled.") from exc
         except AudioCppRequestError as exc:
             # The runtime's own words reach the client, so strip paths and credentials first.
             detail = sanitize_runtime_detail(exc.detail) or "The audio runtime refused the request."
             if 400 <= exc.status < 500:
-                # The server rejected this clip or option (e.g. an unsupported language), not a broken runtime.
                 raise SttAudioDecodeError(detail) from exc
             note_runtime_inference_failure(str(exc))
             raise SttEngineUnavailableError(f"The audio runtime failed: {detail}") from exc
