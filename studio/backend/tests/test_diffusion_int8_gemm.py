@@ -1596,7 +1596,9 @@ def test_latency_gate_never_times_a_bucket_at_rows_from_another_bucket(monkeypat
     """Very large N caps the timed rows (int32 output under _TUNE_MAX_BYTES); a bucket whose capped M lands in a lower
     bucket must not take that bucket's timing: it stays on cuBLAS untimed."""
     default = g8._ARCH_CONFIG[(8, 0)]
-    calls = _fake_tune_env(monkeypatch, tmp_path, lambda tiles: {g8._CUBLAS: 7.8, **{t: 1.0 for t in tiles}})
+    calls = _fake_tune_env(
+        monkeypatch, tmp_path, lambda tiles: {g8._CUBLAS: 7.8, **{t: 1.0 for t in tiles}}
+    )
     big, huge = 65536, 131072  # cap 1536 rows (bucket 1), 768 rows (bucket 0)
     plan = g8.tune(0, {(big, 1024), (huge, 1024)})
     assert plan[(big, 1024, 0)] == default and plan[(big, 1024, 1)] == default
