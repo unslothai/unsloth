@@ -181,3 +181,31 @@ def test_install_fsdp2_hooks_patches_accelerate_without_a_trainer():
     assert getattr(accelerator_module.fsdp2_prepare_model, fsdp2._PATCHED, False)
     assert getattr(FullyShardedDataParallelPlugin.set_mixed_precision, fsdp2._PATCHED, False)
     assert hasattr(Accelerator, "no_sync")
+
+
+def test_an_explicit_policy_still_gets_float32_master_weights():
+    """Accelerator mixed_precision="no" with a launcher policy: the masters still need one dtype."""
+    model = torch.nn.Sequential(torch.nn.Linear(4, 4).to(torch.bfloat16), torch.nn.LayerNorm(4))
+    user = MixedPrecisionPolicy(param_dtype = torch.bfloat16, reduce_dtype = torch.bfloat16)
+    acc = _accelerator(user, "no", auto = False)
+    assert fsdp2.unify_trainable_dtypes(acc, model) is True
+    assert {p.dtype for p in model.parameters()} == {torch.float32}
+    assert acc.state.fsdp_plugin.mixed_precision_policy is user
+
+
+def _lora_like():
+    model = torch.nn.Sequential(torch.nn.Linear(4, 4).to(torch.bfloat16), torch.nn.Linear(4, 4))
+    model[0].requires_grad_(False)
+    return model
+
+
+def test_frozen_weights_are_upcast_only_where_torch_checks_them():
+    policy = MixedPrecisionPolicy(param_dtype = torch.bfloat16, reduce_dtype = torch.float32)
+    model = _lora_like()
+    assert fsdp2.unify_frozen_dtypes(_accelerator(policy, "bf16"), model, frozen_checked = False) is False
+    assert model[0].weight.dtype == torch.bfloat16
+    assert fsdp2.unify_frozen_dtypes(_accelerator(policy, "bf16"), model, frozen_checked = True) is True
+    assert {p.dtype for p in model.parameters()} == {torch.float32}
+    assert not model[0].weight.requires_grad
+    with pytest.raises(RuntimeError, match = "torch >= 2.8"):
+        fsdp2.unify_frozen_dtypes(_accelerator(None, "no"), _lora_like(), frozen_checked = True)

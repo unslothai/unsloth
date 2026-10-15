@@ -131,7 +131,8 @@ def fill_fsdp2_mixed_precision(accelerator):
 
 def unify_trainable_dtypes(accelerator, model):
     """bfloat16 full finetuning runs without autocast with float32 norms, which accelerate does not
-    upcast and FSDP2 refuses ("FSDP expects uniform original parameter dtype")."""
+    upcast and FSDP2 refuses ("FSDP expects uniform original parameter dtype"). A policy the caller
+    set is kept; only the master weights are upcast."""
     if str(getattr(accelerator, "mixed_precision", "no")) != "no":
         return False
     trainable = [p for p in model.parameters() if p.requires_grad and p.is_floating_point()]
@@ -143,19 +144,76 @@ def unify_trainable_dtypes(accelerator, model):
     except ImportError:
         return False
     plugin = getattr(getattr(accelerator, "state", None), "fsdp_plugin", None)
-    if plugin is None or getattr(plugin, "mixed_precision_policy", None) is not None:
+    if plugin is None:
         return False
     for p in trainable:
         if p.dtype != torch.float32:
             p.data = p.data.to(torch.float32)
-    plugin.mixed_precision_policy = MixedPrecisionPolicy(
-        param_dtype = torch.bfloat16, reduce_dtype = torch.float32
-    )
+    if getattr(plugin, "mixed_precision_policy", None) is None:
+        plugin.mixed_precision_policy = MixedPrecisionPolicy(
+            param_dtype = torch.bfloat16, reduce_dtype = torch.float32
+        )
+        how = "gathering them in bfloat16 for compute"
+    else:
+        how = "gathering them as the given mixed_precision_policy says"
     _print_rank0(
         "Unsloth: FSDP2 needs one dtype per unit, and the trainable weights mix bfloat16 and "
-        "float32. Keeping float32 master weights and gathering them in bfloat16 for compute."
+        f"float32. Keeping float32 master weights and {how}."
     )
     return True
+
+
+def _fsdp2_checks_frozen_dtypes():
+    """torch < 2.8 asserts one original dtype over every parameter of a unit, frozen ones included
+    (`FSDPParamGroup._init_mp_dtypes`); 2.8 checks only the trainable ones."""
+    try:
+        from torch.distributed.fsdp._fully_shard._fsdp_param_group import FSDPParamGroup
+        return "requires_grad" not in inspect.getsource(FSDPParamGroup._init_mp_dtypes)
+    except Exception:
+        pass
+    try:
+        major, minor = (int(x) for x in torch.__version__.split(".")[:2])
+        return (major, minor) < (2, 8)
+    except Exception:
+        return False
+
+
+def unify_frozen_dtypes(accelerator, model, frozen_checked = None):
+    """LoRA on torch < 2.8: float32 adapters next to frozen 16-bit weights in one unit. Upcast the
+    frozen weights too (what accelerate <= 1.12 did with `model.to(float32)`); the gather policy
+    casts them back down for compute."""
+    if frozen_checked is None:
+        frozen_checked = _fsdp2_checks_frozen_dtypes()
+    if not frozen_checked:
+        return False
+    dtypes = {p.dtype for p in model.parameters() if p.is_floating_point()}
+    if len(dtypes) <= 1:
+        return False
+    plugin = getattr(getattr(accelerator, "state", None), "fsdp_plugin", None)
+    if plugin is None:
+        return False
+    if (
+        getattr(plugin, "mixed_precision_policy", None) is None
+        and str(getattr(accelerator, "mixed_precision", "no")) == "no"
+    ):
+        raise RuntimeError(
+            f"Unsloth: FSDP2 on torch {torch.__version__} needs every parameter of a unit to share "
+            f"one dtype, but this model mixes {sorted(str(d) for d in dtypes)} and no mixed "
+            "precision is set to compute in 16-bit from float32 weights. Enable bf16 / fp16 mixed "
+            "precision, or use torch >= 2.8."
+        )
+    n = 0
+    for p in model.parameters():
+        # Quantized parameter subclasses keep their storage dtype.
+        if type(p) is torch.nn.Parameter and p.is_floating_point() and p.dtype != torch.float32:
+            p.data = p.data.to(torch.float32)
+            n += 1
+    if n:
+        _print_rank0(
+            f"Unsloth: FSDP2 on torch {torch.__version__} needs one dtype per unit, frozen weights "
+            f"included, so {n} 16-bit parameters are kept in float32 and gathered in the compute dtype."
+        )
+    return n > 0
 
 
 def _parents(model):
@@ -309,6 +367,7 @@ def install_fsdp2_prepare_hook():
     def fsdp2_prepare_model(accelerator, model, *args, **kwargs):
         fill_fsdp2_mixed_precision(accelerator)
         unify_trainable_dtypes(accelerator, model)
+        unify_frozen_dtypes(accelerator, model)
         model = original(accelerator, model, *args, **kwargs)
         after_fsdp2_wrap(accelerator, model)
         return model
