@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { type DocumentAnnotations, useChatRuntimeStore } from "@/features/chat";
+import { type DocumentAnnotations, onChatThreadsDeleted, useChatRuntimeStore } from "@/features/chat";
 import { create } from "zustand";
 import { unwrapRedirect } from "./address";
 import type { BrowserPage } from "./api";
 import { PageCache, cacheLimits, reportedDeviceMemory } from "./page-cache";
+import { setShownBrowserChat } from "./panel-availability";
 import { defaultZoom } from "./prefs-store";
 import { REACT_PREVIEW_KEY_PREFIX, REACT_PREVIEW_TYPE } from "./react-preview-type";
 
@@ -92,7 +93,19 @@ export type BrowserTab = {
   muted: boolean;
   /** The sidebar pin this tab shows (pinned-pages-store), kept as it navigates. */
   pinnedId: string | null;
+  /** The chat the tab belongs to (`BrowserState.chat`); the panel shows only that chat's tabs. */
+  chat: string;
 };
+
+type ChatBrowser = { open: boolean; activeTabId: string | null; fullView: boolean };
+
+/** The chat on screen before the chat page names it (chat-page.tsx `shownChatKey`). */
+export const NEW_CHAT = "new";
+
+/** A saved chat's key, as chat-page.tsx names the chat on screen. */
+export function chatKeyOfThread(threadId: string): string {
+  return `single:${threadId}`;
+}
 
 export type OpenFileInput = {
   blob: Blob;
@@ -175,6 +188,7 @@ const newId = (prefix: string) => `${prefix}-${Date.now().toString(36)}-${(nextI
 function createTab(entry: BrowserEntry, openKey: string | null = null): BrowserTab {
   return {
     id: newId("tab"),
+    chat: "",
     history: [entry],
     index: 0,
     title: entry.kind === "file" ? entry.name : "",
@@ -266,8 +280,22 @@ function releaseFiles(tabs: BrowserTab[]): void {
 
 type BrowserState = {
   open: boolean;
+  /** Every chat's tabs; the panel lists `chatTabs`, the shown chat's. */
   tabs: BrowserTab[];
   activeTabId: string | null;
+  /** The chat on screen. `open`, `activeTabId` and `fullView` are its; other chats keep theirs in `chats`. */
+  chat: string;
+  chats: Record<string, ChatBrowser>;
+  /** Puts `chat`'s tabs on screen, keeping the last chat's for when it comes back. A chat with none
+   *  gets a new tab while the panel is open, so the browser stays where the reader left it. */
+  showChat: (chat: string) => void;
+  /** A new chat got its id on its first save: its tabs go with it. */
+  adoptChat: (from: string, to: string) => void;
+  /** A web tab for `chat`, in front only when that chat is on screen (`background`: behind its front tab); its id. */
+  openTabIn: (chat: string, url: string, options?: { from?: string; background?: boolean }) => string | null;
+  forgetChat: (chat: string) => void;
+  /** `tabId` in front of `chat`'s open panel: now if it is on screen, else when it comes back. */
+  revealIn: (chat: string, tabId: string) => void;
   /** Bumped on open, so the panel re-expands after a drag shut. */
   openSequence: number;
   focusAddressSequence: number;
@@ -413,22 +441,33 @@ function moveTo(tab: BrowserTab, index: number): BrowserTab {
   };
 }
 
+export function chatTabs(state: Pick<BrowserState, "tabs" | "chat">): BrowserTab[] {
+  return state.tabs.filter((tab) => tab.chat === state.chat);
+}
+
 export const useBrowserStore = create<BrowserState>((set, get) => {
-  const openTab = (tab: BrowserTab, background = false, after?: string) => {
+  const openTab = (tab: BrowserTab, background = false, after?: string, chat = get().chat) => {
     set((state) => {
+      const owned = { ...tab, chat };
       const at = after ? state.tabs.findIndex((other) => other.id === after) : -1;
       const tabs = [...state.tabs];
-      tabs.splice(at < 0 ? tabs.length : at + 1, 0, tab);
+      tabs.splice(at < 0 ? tabs.length : at + 1, 0, owned);
+      if (chat !== state.chat) {
+        // Another chat's: it shows there next time, without moving this chat's panel.
+        const saved = state.chats[chat];
+        const activeTabId = background && saved?.activeTabId ? saved.activeTabId : owned.id;
+        return { tabs, chats: { ...state.chats, [chat]: { open: true, fullView: saved?.fullView ?? false, activeTabId } } };
+      }
       return {
         open: true,
         tabs,
-        activeTabId: background && state.activeTabId ? state.activeTabId : tab.id,
+        activeTabId: background && state.activeTabId ? state.activeTabId : owned.id,
         openSequence: state.openSequence + 1,
       };
     });
   };
   const focusExisting = (openKey: string): boolean => {
-    const existing = get().tabs.find((tab) => tab.openKey === openKey);
+    const existing = chatTabs(get()).find((tab) => tab.openKey === openKey);
     if (!existing) return false;
     set((state) => ({ open: true, activeTabId: existing.id, openSequence: state.openSequence + 1 }));
     return true;
@@ -438,6 +477,73 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
     open: false,
     tabs: [],
     activeTabId: null,
+    chat: NEW_CHAT,
+    chats: {},
+    showChat: (chat) => {
+      forgetDeletedChats();
+      const state = get();
+      if (chat === state.chat) return;
+      const chats = { ...state.chats };
+      if (state.tabs.some((tab) => tab.chat === state.chat)) {
+        chats[state.chat] = { open: state.open, activeTabId: state.activeTabId, fullView: state.fullView };
+      } else {
+        delete chats[state.chat];
+      }
+      const saved = chats[chat];
+      delete chats[chat];
+      const own = state.tabs.filter((tab) => tab.chat === chat);
+      const activeTabId =
+        saved && own.some((tab) => tab.id === saved.activeTabId) ? saved.activeTabId : (own.at(-1)?.id ?? null);
+      const open = saved ? saved.open : state.open;
+      // Not openTab: no address focus out of the composer, and no open bump, which closes the chat's research.
+      const fresh = open && own.length === 0 ? { ...createTab({ kind: "newtab" }), chat } : null;
+      set({
+        chat,
+        chats,
+        tabs: fresh ? [...state.tabs, fresh] : state.tabs,
+        activeTabId: fresh?.id ?? activeTabId,
+        open,
+        fullView: open && (saved ? saved.fullView : state.fullView),
+        annotateTabId: null,
+        renamingTabId: null,
+      });
+    },
+    adoptChat: (from, to) => {
+      if (from === to) return;
+      set((state) => {
+        const tabs = state.tabs.map((tab) => (tab.chat === from ? { ...tab, chat: to } : tab));
+        const chats = { ...state.chats };
+        const saved = chats[from];
+        delete chats[from];
+        if (saved && !chats[to]) chats[to] = saved;
+        return { tabs, chats, chat: state.chat === from ? to : state.chat };
+      });
+      for (const listener of adoptListeners) listener(from, to);
+    },
+    revealIn: (chat, tabId) => {
+      if (chat === get().chat) {
+        if (get().activeTabId !== tabId) get().activateTab(tabId);
+        if (!get().open) get().openPanel();
+        return;
+      }
+      set((state) => ({
+        chats: { ...state.chats, [chat]: { open: true, fullView: state.chats[chat]?.fullView ?? false, activeTabId: tabId } },
+      }));
+    },
+    openTabIn: (chat, url, options) => {
+      if (!isWeb(url)) return null;
+      const tab = createTab(webEntry(unwrapRedirect(url), undefined, undefined, options?.from));
+      openTab(tab, options?.background, undefined, chat);
+      return tab.id;
+    },
+    forgetChat: (chat) => {
+      for (const tab of get().tabs) if (tab.chat === chat) get().closeTab(tab.id);
+      set((state) => {
+        if (!(chat in state.chats)) return state;
+        const { [chat]: _forgotten, ...chats } = state.chats;
+        return { chats };
+      });
+    },
     openSequence: 0,
     focusAddressSequence: 0,
     bookmarkSequence: 0,
@@ -459,7 +565,7 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
         return { fileViews: { ...state.fileViews, [tabId]: next } };
       }),
     openPanel: () => {
-      if (get().tabs.length === 0) {
+      if (chatTabs(get()).length === 0) {
         get().newTab();
         return;
       }
@@ -478,10 +584,10 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
     duplicateTab: (tabId) => {
       const tab = get().tabs.find((candidate) => candidate.id === tabId);
       if (!tab) return;
-      openTab(copyTab(tab), false, tabId);
+      openTab(copyTab(tab), false, tabId, tab.chat);
     },
     openPinned: (pinnedId, url, title) => {
-      const shown = get().tabs.find((tab) => tab.pinnedId === pinnedId);
+      const shown = chatTabs(get()).find((tab) => tab.pinnedId === pinnedId);
       if (shown) {
         set((state) => ({ open: true, activeTabId: shown.id, openSequence: state.openSequence + 1 }));
         return;
@@ -500,16 +606,16 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
     setMuted: (tabId, muted) =>
       set((state) => ({ tabs: patchTab(state.tabs, tabId, (tab) => (tab.muted === muted ? tab : { ...tab, muted })) })),
     closeOtherTabs: (tabId) => {
-      for (const tab of get().tabs) if (tab.id !== tabId) get().closeTab(tab.id);
+      for (const tab of chatTabs(get())) if (tab.id !== tabId) get().closeTab(tab.id);
     },
     closeTabsToRight: (tabId) => {
-      const { tabs } = get();
+      const tabs = chatTabs(get());
       const index = tabs.findIndex((tab) => tab.id === tabId);
       if (index < 0) return;
       for (const tab of tabs.slice(index + 1)) get().closeTab(tab.id);
     },
     closeChatPages: () => {
-      for (const tab of get().tabs) {
+      for (const tab of chatTabs(get())) {
         if (tab.history.some((entry) => entry.kind === "file" && entry.chatPage)) get().closeTab(tab.id);
       }
     },
@@ -545,7 +651,7 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
         ...(openKey ? { openKey } : {}),
         ...(key?.startsWith("html:") ? { chatPage: true } : {}),
       };
-      const existing = openKey ? get().tabs.find((tab) => tab.openKey === openKey) : undefined;
+      const existing = openKey ? chatTabs(get()).find((tab) => tab.openKey === openKey) : undefined;
       if (openKey && existing) {
         focusExisting(openKey);
         if (page) get().setFileView(existing.id, { pageTarget: { page } });
@@ -627,32 +733,45 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
     activateTab: (tabId) => set({ activeTabId: tabId, annotateTabId: null }),
     moveTab: (tabId, index) =>
       set((state) => {
-        const from = state.tabs.findIndex((tab) => tab.id === tabId);
-        const to = Math.max(0, Math.min(index, state.tabs.length - 1));
-        if (from < 0 || from === to) return state;
-        const tabs = [...state.tabs];
-        const [moved] = tabs.splice(from, 1);
-        if (moved) tabs.splice(to, 0, moved);
+        // `index` is in the strip, which lists only the shown chat's tabs.
+        const strip = chatTabs(state);
+        const from = strip.findIndex((tab) => tab.id === tabId);
+        const to = Math.max(0, Math.min(index, strip.length - 1));
+        const moved = strip[from];
+        const target = strip[to];
+        if (!moved || !target || from === to) return state;
+        const tabs = state.tabs.filter((tab) => tab !== moved);
+        const at = tabs.indexOf(target);
+        tabs.splice(to > from ? at + 1 : at, 0, moved);
         return { tabs };
       }),
     closeTab: (tabId) => {
-      const { tabs, activeTabId } = get();
-      const index = tabs.findIndex((tab) => tab.id === tabId);
-      if (index < 0) return;
+      const { tabs, activeTabId, chat } = get();
+      const closing = tabs.find((tab) => tab.id === tabId);
+      if (!closing) return;
       const remaining = tabs.filter((tab) => tab.id !== tabId);
-      for (const entry of tabs[index]?.history ?? []) pageCache.delete(entry);
+      const siblings = tabs.filter((tab) => tab.chat === closing.chat);
+      const index = siblings.indexOf(closing);
+      const left = siblings.filter((tab) => tab !== closing);
+      for (const entry of closing.history) pageCache.delete(entry);
       releaseFiles(remaining);
       pageDownloads.delete(tabId);
       const { [tabId]: _closed, ...fileViews } = get().fileViews;
       const annotateTabId = get().annotateTabId === tabId ? null : get().annotateTabId;
       const renamingTabId = get().renamingTabId === tabId ? null : get().renamingTabId;
-      if (remaining.length === 0) {
-        set({ tabs: [], activeTabId: null, open: false, fullView: false, annotateTabId: null, renamingTabId, fileViews });
+      const next = (current: string | null) =>
+        current === tabId ? (left[Math.min(index, left.length - 1)]?.id ?? null) : current;
+      if (closing.chat !== chat) {
+        const { [closing.chat]: saved, ...chats } = get().chats;
+        if (saved && left.length > 0) chats[closing.chat] = { ...saved, activeTabId: next(saved.activeTabId) };
+        set({ tabs: remaining, chats, annotateTabId, renamingTabId, fileViews });
         return;
       }
-      const nextActive =
-        activeTabId === tabId ? (remaining[Math.min(index, remaining.length - 1)]?.id ?? null) : activeTabId;
-      set({ tabs: remaining, activeTabId: nextActive, annotateTabId, renamingTabId, fileViews });
+      if (left.length === 0) {
+        set({ tabs: remaining, activeTabId: null, open: false, fullView: false, annotateTabId: null, renamingTabId, fileViews });
+        return;
+      }
+      set({ tabs: remaining, activeTabId: next(activeTabId), annotateTabId, renamingTabId, fileViews });
     },
     updateTab: (tabId, patch) =>
       set((state) => {
@@ -678,3 +797,26 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
     splitWithChatOn: (chatSide) => set({ fullView: false, chatSide }),
   };
 });
+
+useBrowserStore.subscribe((state) => setShownBrowserChat(state.chat));
+
+const adoptListeners = new Set<(from: string, to: string) => void>();
+
+/** `listener(from, to)` when a new chat's state moves to its saved id, so state kept per chat elsewhere follows. */
+export function onChatAdopted(listener: (from: string, to: string) => void): () => void {
+  adoptListeners.add(listener);
+  return () => adoptListeners.delete(listener);
+}
+
+let watchingDeletes = false;
+
+/** A deleted chat's tabs go with it. Hooked on first use: the chat feature imports this module. */
+function forgetDeletedChats(): void {
+  if (watchingDeletes) return;
+  watchingDeletes = true;
+  onChatThreadsDeleted((threadIds, pairIds) => {
+    const store = useBrowserStore.getState();
+    for (const threadId of threadIds) store.forgetChat(chatKeyOfThread(threadId));
+    for (const pairId of pairIds) store.forgetChat(`compare:${pairId}`);
+  });
+}
