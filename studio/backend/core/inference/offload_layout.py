@@ -19,6 +19,8 @@ import os
 
 logger = logging.getLogger(__name__)
 
+# Hybrid Mamba-2 archs storing head_count_kv (and on Bolt expert_used_count) per layer.
+_NEMOTRON_H_ARCHS = frozenset({"nemotron_h", "nemotron_h_moe"})
 _BLOCK_RE = re.compile(r"^blk\.(\d+)\.(.+)$")
 
 # Sparse MoE experts: only expert_used_count of expert_count read per token, so host traffic is a small fraction of
@@ -462,6 +464,8 @@ def _layout_from_readers(readers, *, build: Optional[int] = None) -> ModelLayout
     if not n_kv_head or not key_len or not val_len:
         return ModelLayout()
 
+    # hybrid_layer_split already reads nemotron_h's per-layer head_count_kv and FFN map.
+    nemotron_h = arch in _NEMOTRON_H_ARCHS
     n_attention, n_recurrent, recurrent_known = hybrid_layer_split(
         arch,
         n_layers,
@@ -570,7 +574,12 @@ def _layout_from_readers(readers, *, build: Optional[int] = None) -> ModelLayout
         return ModelLayout()
 
     n_expert = int(_field(reader, f"{arch}.expert_count") or 0)
-    n_expert_used = int(_field(reader, f"{arch}.expert_used_count") or 0)
+    n_expert_used = _field(reader, f"{arch}.expert_used_count") or 0
+    if nemotron_h and isinstance(n_expert_used, (list, tuple)):
+        n_expert_used = max(
+            (int(n) for n in n_expert_used), default = 0
+        )  # per layer on Nemotron 3.5 Bolt
+    n_expert_used = int(n_expert_used)
     is_moe = bool(n_expert)
 
     spill: dict[int, int] = {}

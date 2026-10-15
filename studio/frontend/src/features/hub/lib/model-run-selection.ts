@@ -7,6 +7,7 @@ import type { ModelConfigHandoffRequest } from "@/features/model-picker";
 import {
   audioPickIsRoutable,
   curatedAudioInventoryTask,
+  speechGgufIsUndecodable,
 } from "@/features/model-picker/components/model-selector/audio-picker-policy";
 import {
   AUDIO_CATALOG,
@@ -197,6 +198,49 @@ export function hubModelRunsOnAudioPage(
     libraryName: model.libraryName,
     audioType,
   });
+}
+
+// Speech, music and separation tasks. ASR is left out: chat keeps its Run for transcription
+// models (MLX Whisper on Mac reaches Audio only from the picker).
+const CHAT_UNLOADABLE_AUDIO_TASKS: ReadonlySet<string> = new Set([
+  "text-to-speech",
+  "text-to-audio",
+  "audio-to-audio",
+]);
+
+// A speech GGUF from these stacks loads in llama.cpp, and chat reads an Orpheus-style codec
+// vocabulary at load, so a fine-tune named for no family still speaks there. Other libraries (nemo) do not load.
+const LLAMA_CPP_GGUF_LIBRARIES: ReadonlySet<string> = new Set([
+  "transformers",
+  "gguf",
+  "llama.cpp",
+]);
+
+/** Whether Run must refuse an audio model the Audio page cannot run, instead of handing it to
+ *  chat, which cannot load it either and would unload the chat model first. The chat picker
+ *  refuses the same picks. */
+export function hubAudioRunRefused(
+  model: SelectedModelView,
+  task: string | null,
+): boolean {
+  const id = model.hubRepoId;
+  if (!id || !routableToMediaPage(model.kind, model.localSource)) return false;
+  const audioTask = hubAudioTask(model, task);
+  if (!audioTask || !CHAT_UNLOADABLE_AUDIO_TASKS.has(audioTask)) return false;
+  const library = model.libraryName?.toLowerCase();
+  if (
+    audioTask === "text-to-speech" &&
+    model.isGguf &&
+    (!library || LLAMA_CPP_GGUF_LIBRARIES.has(library)) &&
+    !speechGgufIsUndecodable({
+      isGguf: true,
+      id,
+      baseModel: model.baseModel,
+      tags: model.tags,
+    })
+  )
+    return false;
+  return !hubModelRunsOnAudioPage(model, task);
 }
 
 export function isHubModelRunEligible({
