@@ -39289,17 +39289,12 @@ class _ResponsesStreamTranslator:
             "opened": False,
             "text": "",
         }
-        # Message items already closed mid-stream (a healed tool call splits
-        # the assistant text into separate message items, as native Responses
-        # streams do). Kept for the final response.completed snapshot.
+        # Message items a healed tool call closed mid-stream, for the response.completed snapshot.
         self.closed_message_states: list[dict] = []
-        # Per-tool-call state keyed by Chat Completions `tool_calls[].index`,
-        # stable across chunks for the same call. Values:
-        #   {output_index, item_id, call_id, name, arguments, opened}
+        # Keyed by chat `tool_calls[].index`, stable across a call's chunks.
         self.tool_call_state: dict[int, dict] = {}
         self.next_output_index = 0
-        # Text-form tool calls promoted back to structured calls (declared
-        # client tools only); dormant once grammar-mode structured deltas appear.
+        # Promotes text-form calls to declared client tools; dormant once structured deltas appear.
         self.healer = healer
         self.healed_tc_index = 0
         self.terminated = False
@@ -39309,10 +39304,8 @@ class _ResponsesStreamTranslator:
         return f"event: {event_name}\ndata: {json.dumps(payload)}\n\n"
 
     def _healed_tc(self, call: dict):
-        # Chat-delta shape for a healed call. Indexes live in a disjoint
-        # range so a healed call can never merge into a structured call's
-        # state slot; parallel_tool_calls=false caps healed calls too (the
-        # upstream cap ran before injection).
+        # Disjoint index range: a healed call never merges into a structured call's slot. The
+        # upstream parallel cap ran before injection, so it is applied here too.
         if self.payload.parallel_tool_calls is False and self.healed_tc_index >= 1:
             return None
         tc = {
@@ -39325,16 +39318,11 @@ class _ResponsesStreamTranslator:
         return tc
 
     def _tool_call_delta_events(self, tc: dict) -> list:
-        # One Chat Completions tool_calls delta -> Responses SSE events,
-        # allocating/merging per-call state (shared by the structured loop
-        # and the healer's promoted calls).
         events = []
         idx = tc.get("index", 0)
         st = self.tool_call_state.get(idx)
         fn = tc.get("function") or {}
         if st is None:
-            # First chunk for this tool call -- allocate an
-            # output_index and emit output_item.added.
             st = {
                 "output_index": self._claim_output_index(),
                 "item_id": f"fc_{uuid.uuid4().hex[:12]}",
@@ -39345,8 +39333,7 @@ class _ResponsesStreamTranslator:
             }
             self.tool_call_state[idx] = st
         else:
-            # Later chunks sometimes carry id/name only once; merge
-            # when present.
+            # id/name may arrive on a later chunk, once.
             if tc.get("id") and not st["call_id"]:
                 st["call_id"] = tc["id"]
             if fn.get("name") and not st["name"]:
@@ -39700,10 +39687,8 @@ class _ResponsesStreamTranslator:
         if not choices:
             error_message = _monitor_openai_error_message(chunk_data)
             if error_message:
-                # Upstream HTTP-200 SSE error payload (data: {"error": ...}) is a failed
-                # generation, not a usage-only frame. Fail the monitor and convert to
-                # response.failed (which flags the scope) so a later response.completed
-                # can't fire and the middleware can't claim a preview-owned slot.
+                # A 200 SSE error payload is a failed generation: response.failed flags the scope,
+                # so no response.completed follows and no preview-owned slot is claimed.
                 api_monitor.fail(monitor_id, error_message)
                 self.terminated = True
                 yield self.failed(RuntimeError(error_message))
@@ -39723,18 +39708,13 @@ class _ResponsesStreamTranslator:
             # time from the end of the thinking block instead.
             api_monitor.mark_first_token(monitor_id)
             yield from self._reasoning_text_events(reasoning_delta)
-        # Heal text-form tool calls in the visible stream (never in
-        # reasoning text): promoted calls join the structured tc loop
-        # below through the same state machinery, and healer events are
-        # emitted IN ORDER so text after a healed call never jumps ahead
-        # of the function_call item. Once a structured delta arrives,
-        # grammar mode worked and the healer goes dormant.
+        # Visible text only, never reasoning. Healer events keep their order so text after a
+        # healed call never jumps ahead of its function_call item.
         healer = self.healer
         if healer is not None and not healer.dormant:
             healed_events = []
             if delta.get("tool_calls"):
-                # Held text preceded the structured call; the call's own
-                # deltas follow in the structured loop below.
+                # Held text preceded the structured call.
                 healed_events = healer.structured_tool_call_seen()
                 if visible_delta:
                     healed_events.append(("text", visible_delta))
@@ -39758,11 +39738,8 @@ class _ResponsesStreamTranslator:
                 and self.healed_tc_index >= 1
                 and tc.get("index", 0) not in self.tool_call_state
             ):
-                # A healed call already consumed the single allowed slot;
-                # _drop_parallel_tool_call_deltas only sees native indexes,
-                # so a native index-0 call would still open a second
-                # function_call item. Skip it (and its later argument
-                # deltas, which never allocate a state either).
+                # A healed call took the single slot, and _drop_parallel_tool_call_deltas sees
+                # only native indexes, so a native call would open a second function_call item.
                 continue
             yield from self._tool_call_delta_events(tc)
 
@@ -39776,9 +39753,7 @@ class _ResponsesStreamTranslator:
             # Held-back markers can make this the FIRST output of all.
             api_monitor.mark_first_token(monitor_id)
             yield from self._reasoning_text_events(final_reasoning)
-        # Last-chance heal of any held residue (e.g. a tool block the model
-        # never closed) before the trailing visible text is flushed; events
-        # keep healer order so trailing text stays behind a healed call.
+        # Heal held residue (an unclosed tool block) before the trailing text, keeping healer order.
         healer = self.healer
         if healer is not None:
             events = (healer.feed(final_visible) if final_visible else []) + healer.finalize()
@@ -39849,9 +39824,7 @@ class _ResponsesStreamTranslator:
                 continue
 
             if kind == "message":
-                # Per-item text: message items closed mid-stream (healed-call
-                # rotation) already emitted their done events, so this state
-                # carries only its own text, not the whole stream's.
+                # Items closed mid-stream already emitted their done events: this one's text only.
                 _msg_text = st["text"]
                 yield self.sse(
                     "response.output_text.done",
@@ -39910,8 +39883,7 @@ class _ResponsesStreamTranslator:
                 yield self.sse("response.output_item.done", item_done)
                 continue
 
-            # If id/name never arrived (malformed upstream), synthesise so the
-            # client still sees a coherent frame sequence.
+            # id/name never arrived (malformed upstream): synthesise a coherent frame sequence.
             if not st["opened"]:
                 if not st["call_id"]:
                     st["call_id"] = f"call_{uuid.uuid4().hex[:12]}"
