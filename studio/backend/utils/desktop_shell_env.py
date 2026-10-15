@@ -254,7 +254,7 @@ def override_gfx_arch(value):
 
 
 def override_contradicts_install(value, installed_arch) -> bool:
-    """False for an unparseable value, matching the CLI guard that leaves such an override alone."""
+    """False for an unparsable value, matching the CLI guard that leaves such an override alone."""
     if not installed_arch:
         return False
     named = override_gfx_arch(value)

@@ -408,7 +408,7 @@ class AudioCppServer:
         cancel_event: Optional[threading.Event] = None,
         on_process: Optional[Any] = None,
     ) -> "AudioCppServer":
-        """on_process gets the Popen as soon as it exists, so training can pre-empt and terminate a
+        """on_process gets the Popen as soon as it exists, so training can preempt and terminate a
         start."""
         binary = ensure_binary()
         problem = model_runtime_problem(model, binary)

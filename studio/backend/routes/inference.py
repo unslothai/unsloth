@@ -1217,7 +1217,7 @@ def _add_empty_content_to_reasoning_deltas(chunk: dict) -> bool:
 def _normalize_openai_passthrough_sse_line(
     raw_line: str, *, cap_parallel_tool_calls: bool = False
 ) -> str:
-    """Relay comments, [DONE] and unparseable lines as-is; re-serialize only when a compat fix applies."""
+    """Relay comments, [DONE] and unparsable lines as-is; re-serialize only when a compat fix applies."""
     if not raw_line.startswith("data:"):
         return raw_line
     # Fast path: skip the JSON parse when neither key appears in the line.
@@ -31902,7 +31902,7 @@ def _flatten_monitor_prompt(value) -> str:
     return str(value)
 
 
-# Unparseable body defers to the post-switch re-read; a non-object JSON is rejected early.
+# Unparsable body defers to the post-switch re-read; a non-object JSON is rejected early.
 _UNPARSEABLE_BODY = object()
 
 

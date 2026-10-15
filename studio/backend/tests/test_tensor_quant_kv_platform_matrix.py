@@ -251,7 +251,7 @@ def test_the_load_intent_gained_no_field(tmp_path):
 def test_an_unparseable_inherited_cache_type_is_dropped(
     tmp_path, monkeypatch, platform, accelerator, bad
 ):
-    """An unparseable inherited LLAMA_ARG_CACHE_TYPE env value must be dropped, or both attempts fail."""
+    """An unparsable inherited LLAMA_ARG_CACHE_TYPE env value must be dropped, or both attempts fail."""
     backend, gguf = _cell_backend(tmp_path, monkeypatch, platform, accelerator)
     monkeypatch.setenv("LLAMA_ARG_CACHE_TYPE_K", bad)
     monkeypatch.setenv("LLAMA_ARG_CACHE_TYPE_V", "q8_0")

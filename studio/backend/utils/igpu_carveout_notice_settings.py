@@ -21,7 +21,7 @@ IGPU_CARVEOUT_NOTICE_KEY = "igpu_carveout_notice_dismissed_at_gb"
 
 
 def _coerce_gb(value: Any) -> Optional[float]:
-    """Unparseable reads as never dismissed; a corrupt row must not hide the notice permanently."""
+    """Unparsable reads as never dismissed; a corrupt row must not hide the notice permanently."""
     if isinstance(value, bool):
         return None
     if isinstance(value, (int, float)):

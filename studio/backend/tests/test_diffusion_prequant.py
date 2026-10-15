@@ -241,7 +241,7 @@ def test_usable_source_rejects_an_override_baked_for_another_scheme(
 
 
 def test_an_unreadable_override_is_not_usable(tmp_path, monkeypatch, restricted_load_available):
-    # an unparseable checkpoint is rejected by the loader too, so plan dense
+    # an unparsable checkpoint is rejected by the loader too, so plan dense
     import os
 
     ckpt = tmp_path / "model.pt"

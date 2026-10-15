@@ -3630,7 +3630,7 @@ def _python_builds_a_credential_path(code: str, workdir: "str | None") -> bool:
     try:
         tree = ast.parse(code)
     except (SyntaxError, RecursionError, MemoryError, ValueError):
-        # Syntax errors and unparseable snippets are "nothing to fold", not exceptions.
+        # Syntax errors and unparsable snippets are "nothing to fold", not exceptions.
         return False
     # Source order, since `os.chdir` moves later paths; string constants count too.
     nodes = sorted(
@@ -7025,7 +7025,7 @@ def _inline_python_is_high_risk(code: str) -> bool:
 
 
 def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
-    """Fails closed (prompts) on an unparseable command; `_depth` bounds recursion into `-c` payloads."""
+    """Fails closed (prompts) on an unparsable command; `_depth` bounds recursion into `-c` payloads."""
     if len(command) > _MAX_TERMINAL_SCAN_CHARS:
         # Far longer than any ordinary command, and screening it is superlinear, so it asks instead.
         return True

@@ -511,7 +511,7 @@ class _SlowRespawnBackend(_Backend):
 
 
 def test_streaming_keeps_the_stream_alive_while_the_server_respawns(monkeypatch):
-    """Keep-alives must continue during a respawn, or a proxy drops the stream before the retry."""
+    """Keepalives must continue during a respawn, or a proxy drops the stream before the retry."""
     monkeypatch.setattr(inf_mod, "_OPENAI_PASSTHROUGH_PENDING_RESPONSE_KEEPALIVE_S", 0.05)
     calls = []
     transport = _SlowDeadTransport(calls)

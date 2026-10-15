@@ -604,7 +604,7 @@ def test_an_absurdly_long_tool_name_is_dropped(executed):
 
 
 def test_non_json_arguments_still_reach_the_tool_as_a_dict(executed):
-    """Unparseable argument JSON is coerced into the schema's single required property, not run raw."""
+    """Unparsable argument JSON is coerced into the schema's single required property, not run raw."""
     transport = FakeTransport([_call_turn(arguments = "{not json at all"), _answer_turn()])
     _run(transport)
 
