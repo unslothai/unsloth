@@ -36,7 +36,15 @@ def _active_req_root(tmp_path_factory):
     main = root / "diffusers-main.txt"
     text = main.read_text(encoding = "utf-8")
     main.write_text(text.replace("\n# diffusers @ git+", "\ndiffusers @ git+"), encoding = "utf-8")
-    _ACTIVE_REQ_ROOT[:] = [root]
+    # Release-mode tests run on a copy with the commit line commented out, whichever state ships.
+    inactive = tmp_path_factory.mktemp("inactive_main") / "requirements"
+    shutil.copytree(REQ_ROOT, inactive)
+    off = inactive / "diffusers-main.txt"
+    off.write_text(
+        off.read_text(encoding = "utf-8").replace("\ndiffusers @ git+", "\n# diffusers @ git+"),
+        encoding = "utf-8",
+    )
+    _ACTIVE_REQ_ROOT[:] = [root, inactive]
     yield root
 
 
@@ -132,26 +140,35 @@ def test_the_main_build_pins_a_commit_and_runs_after_the_release():
     assert source.index(call) > source.rindex('req = REQ_ROOT / "diffusers-pin.txt"')
 
 
-def test_the_shipped_main_build_is_commented_out_but_keeps_its_commit():
-    """0.41.0 is on PyPI: nothing installs from git, and re-enabling is one uncomment away."""
-    assert _requirements(MAIN_FILE) == []
+def test_the_shipped_main_build_is_active_with_a_digest():
+    """FLUX.3 Klein is in no release (huggingface/diffusers#15046), so the pinned build ships active."""
+    lines = _requirements(MAIN_FILE)
+    assert len(lines) == 1 and re.fullmatch(r"diffusers @ git\+https://\S+@[0-9a-f]{40}", lines[0]), lines
     text = MAIN_FILE.read_text(encoding = "utf-8")
-    assert re.search(r"^# diffusers @ git\+https://\S+@[0-9a-f]{40}$", text, re.M), text
-    assert re.search(r"^# archive-sha256: [0-9a-f]{64}$", text, re.M)
-    module = _probe_module("install_python_stack_probe_shipped", active = False)
+    assert len(re.findall(r"^# archive-sha256: [0-9a-f]{64}$", text, re.M)) == 1
+    module = _probe_module("install_python_stack_probe_shipped", shipped = True)
+    assert module._diffusers_main_active() is True
+
+
+def test_the_release_mode_copy_is_commented_out_but_keeps_its_commit():
+    """Release mode (the state after a pin retires) is one comment away, and the probes read it as off."""
+    off = _ACTIVE_REQ_ROOT[1] / "diffusers-main.txt"
+    assert _requirements(off) == []
+    assert re.search(r"^# diffusers @ git\+https://\S+@[0-9a-f]{40}$", off.read_text(encoding = "utf-8"), re.M)
+    module = _probe_module("install_python_stack_probe_inactive", active = False)
     assert module._diffusers_main_active() is False
     assert module._diffusers_main_resident() is False
     assert module._diffusers_main_supersedes_release() is False
 
 
-def _probe_module(name: str, active: bool = True):
+def _probe_module(name: str, active: bool = True, shipped: bool = False):
     import importlib.util
 
     spec = importlib.util.spec_from_file_location(name, STACK)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    if active:
-        module.REQ_ROOT = _ACTIVE_REQ_ROOT[0]
+    if not shipped:
+        module.REQ_ROOT = _ACTIVE_REQ_ROOT[0] if active else _ACTIVE_REQ_ROOT[1]
     return module
 
 

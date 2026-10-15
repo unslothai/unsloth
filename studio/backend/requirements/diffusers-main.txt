@@ -1,7 +1,8 @@
-# DISABLED while diffusers-pin.txt's release carries every family: the requirement line is commented
-# out and every step of the git route does nothing. To re-enable for an unreleased model, uncomment it
-# with the new commit + archive-sha256 and add the minimum to _UNRELEASED_MIN_DIFFUSERS
-# (diffusion_families.py). When active it installs by default; UNSLOTH_DIFFUSERS_MAIN=0 opts out.
+# INSTALLED BY DEFAULT, on top of diffusers-pin.txt. Set UNSLOTH_DIFFUSERS_MAIN=0 to opt out.
+# Today that is FLUX.3 Image Klein: Diffusers support is open as huggingface/diffusers#15046 (branch
+# flux3-image in huggingface/diffusers itself, main plus additive FLUX.3 files only), so no release and no
+# main build can run it yet. The commit below is that branch's head. Bump it to the merge commit when the PR
+# merges, and comment it out again (and empty _UNRELEASED_MIN_DIFFUSERS) once a release carries it.
 #
 # A pinned commit of Diffusers main, for models whose support has merged upstream but has not
 # reached a release yet. The last one was Qwen-Image-2.1: it merged on 2026-09-18, four weeks after
@@ -24,8 +25,8 @@
 # ``_direct_reference_is_installed`` compares what is recorded in direct_url.json and needs no
 # network, while a branch ref costs a git ls-remote on every pass.
 #
-# This exact commit is the tree the Qwen-Image-2.1 FP8 and INT8 artifacts were built and measured
-# against, so what a user gets is what was tested, not "whatever main was that day".
+# This exact commit is the tree FLUX.3 Klein was rendered and compared against in Studio, so what a
+# user gets is what was tested, not "whatever the branch was that day".
 #
 # Why the URL still says git+ when most hosts have no git. It is the requirement, not the transport:
 # a host with no working git installs the same commit from
@@ -37,7 +38,7 @@
 # Unlike a clone, an archive's bytes are not checked against the commit, so pip and uv verify this
 # SHA-256 before building; no digest line means no zip route. Bump it with the commit:
 #   curl -sL https://github.com/huggingface/diffusers/archive/<commit>.zip | sha256sum
-# archive-sha256: 7b0d00b5b44f5ca1745d477ae4a0c2da125d58b89cff8470c422d3181a797a09
+# archive-sha256: 15825b0bcd673132c9ddb5a775ac50259e675881f24384df1145d7020e4f97e1
 #
 # Retiring a pin: bump diffusers-pin.txt to the release and comment the line out (done for 0.41.0).
-# diffusers @ git+https://github.com/huggingface/diffusers.git@80c7ed262aeffbeb43ef13ae04baeb9b84515a69
+diffusers @ git+https://github.com/huggingface/diffusers.git@ec288418a5efa32e9fd49eb7b193babce920a106

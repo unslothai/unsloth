@@ -445,7 +445,8 @@ def test_the_installer_exposes_the_repair_flag():
 def _release_mode(monkeypatch, installed):
     import importlib.metadata
 
-    monkeypatch.setattr(dr, "_main_pin_active", _REAL_MAIN_PIN_ACTIVE)
+    # Release mode is a commented-out main pin, whichever state the shipped file is in.
+    monkeypatch.setattr(dr, "_main_pin_active", lambda: False)
     monkeypatch.setattr(dr, "_installer_would_skip", _REAL_INSTALLER_WOULD_SKIP)
     real_version = importlib.metadata.version
     monkeypatch.setattr(
@@ -456,8 +457,9 @@ def _release_mode(monkeypatch, installed):
     _installed_diffusers(monkeypatch, None)  # an index install, whatever the host has
 
 
-def test_the_shipped_main_pin_is_inactive():
-    assert _REAL_MAIN_PIN_ACTIVE() is False
+def test_the_shipped_main_pin_is_active():
+    # FLUX.3 Klein needs the pinned build (huggingface/diffusers#15046 is unreleased).
+    assert _REAL_MAIN_PIN_ACTIVE() is True
 
 
 @pytest.mark.parametrize("installed", ["0.41.0", "0.41.0.post1"])
