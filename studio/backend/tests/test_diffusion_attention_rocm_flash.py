@@ -1118,7 +1118,7 @@ def test_max_abs_error_alone_rejects(max_rel, wins):
 
 
 @pytest.mark.parametrize(
-    "tokens, bucket", [(1, 1024), (900, 1024), (4096, 4096), (4608, 4096), (8191, 4096), (27280, 16384), (50000, 32768), (140000, 131072)]
+    "tokens, bucket", [(1, 256), (300, 256), (900, 512), (4096, 4096), (4608, 4096), (8191, 4096), (27280, 16384), (50000, 32768), (140000, 131072)]
 )
 def test_length_buckets(tokens, bucket):
     assert att._rocm_flash_bucket(tokens) == bucket
@@ -1131,9 +1131,10 @@ def _length_env(monkeypatch, verdicts):
     _apply_env(monkeypatch)
     timed = []
 
-    def fake_time(device, dtype, hidden, heads, head_dim, tokens = 4096):
-        timed.append(tokens)
-        return {**_GOOD, "flash_ms": verdicts[tokens], "tokens": tokens}
+    def fake_time(device, dtype, hidden, heads, head_dim, tokens = 4096, kv_tokens = None):
+        size = tokens if kv_tokens is None else (tokens, kv_tokens)
+        timed.append(size)
+        return {**_GOOD, "flash_ms": verdicts[size], "tokens": tokens, **({} if kv_tokens is None else {"kv_tokens": kv_tokens})}
 
     monkeypatch.setattr(att, "_time_rocm_flash_block", fake_time)
     dit = _Dit()
@@ -1148,12 +1149,12 @@ def _length_env(monkeypatch, verdicts):
 
 
 def test_unprobed_long_bucket_does_not_inherit_the_4096_verdict(monkeypatch):
-    dit, guarded, ran, timed = _length_env(monkeypatch, {4096: 70.0, 16384: 90.0, 1024: 70.0})
+    dit, guarded, ran, timed = _length_env(monkeypatch, {4096: 70.0, 16384: 90.0, (256, 1024): 70.0})
     assert timed == [4096]
-    # the load bucket: flash, no new timing; bucket 16384 timed now and flash loses there (twice, timed once); the
-    # longer side decides the bucket (1024)
+    # the load bucket: flash, no new timing; bucket 16384 timed now and flash loses there (twice, timed once); a short
+    # query over a long key is its own rectangle
     dit.run(guarded, [(4608, None), (27280, None), (20000, None), (16, 1200)])
-    assert timed == [4096, 16384, 1024]
+    assert timed == [4096, 16384, (256, 1024)]
     assert ran == ["flash", "native", "native", "flash"]
     assert att._ROCM_FLASH_ROUTED == {"slower or inexact at this length": 2}
 
@@ -1286,7 +1287,7 @@ def test_symbolic_length_guards_the_bucket_not_the_length(monkeypatch, compiled)
         __index__ = __int__
 
     n = Sym(27280)
-    assert att._rocm_flash_bucket(n) == 16384 and n.compared == [2048, 4096, 8192, 16384, 32768]
+    assert att._rocm_flash_bucket(n) == 16384 and n.compared == [512, 1024, 2048, 4096, 8192, 16384, 32768]
     dit, guarded, ran, timed = _length_env(monkeypatch, {4096: 70.0})
     monkeypatch.setattr(att, "_compiling", lambda: compiled)
     att._ROCM_FLASH_LOCAL.gate = getattr(dit, att.ROCM_FLASH_GATE_ATTR)
@@ -1567,3 +1568,86 @@ def test_both_generate_paths_mark_the_generation_boundary(module):
     gens = [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "generate"]
     called = {getattr(c.func, "id", None) for g in gens for c in ast.walk(g) if isinstance(c, ast.Call)}
     assert gens and {"begin_attention_run", "report_attention_run"} <= called
+
+
+
+# Compiled execution (should Studio compile on ROCm): every determined verdict seeds the bucket table, so a traced call
+# in an admitted bucket uses flash instead of "untimed length".
+
+
+@pytest.mark.parametrize("persisted", [False, True])
+def test_compiled_auto_load_runs_flash_at_the_admitted_bucket(monkeypatch, persisted):
+    dit, guarded, ran, timed = _length_env(monkeypatch, {4096: 70.0})
+    if persisted:  # a restart: the verdict comes from disk, not a probe, and must seed the table too
+        _restart(monkeypatch)
+        monkeypatch.setattr(att, "_ROCM_FLASH_BUCKETS", {})
+        dit, guarded, ran, timed = _length_env(monkeypatch, {})
+        assert timed == []
+    monkeypatch.setattr(att, "_compiling", lambda: True)
+    monkeypatch.setattr(att, "_rocm_flash_capturing", lambda: True)
+    att._ROCM_FLASH_LOCAL.gate = getattr(dit, att.ROCM_FLASH_GATE_ATTR)  # the hooks are eager, the block traced
+    try:
+        import torch
+
+        q = torch.zeros(1, 4608, 2, 16, dtype = torch.bfloat16)
+        assert att._rocm_flash_length_reason(q, q) is None  # flash, traced into the graph
+        q2 = torch.zeros(1, 9000, 2, 16, dtype = torch.bfloat16)
+        assert att._rocm_flash_length_reason(q2, q2) == "untimed length"  # never timed before tracing
+    finally:
+        att._ROCM_FLASH_LOCAL.gate = None
+
+
+# Cross-attention is timed as the rectangle that runs (long video query x short text key), never as a square.
+
+
+def test_cross_attention_is_not_decided_by_a_square_probe(monkeypatch):
+    dit, guarded, ran, timed = _length_env(
+        monkeypatch, {4096: 70.0, 16384: 60.0, (16384, 512): 90.0}
+    )
+    dit.run(guarded, [(27280, None), (27280, 512), (27280, 600)])  # 600 shares the 512 bucket
+    # the square 16k self-attention admits flash; the 27k x 512 cross-attention is timed as 16384 x 512 and loses
+    assert timed == [4096, 16384, (16384, 512)]
+    assert ran == ["flash", "native", "native"]
+    rec = att.ROCM_FLASH_ADMISSIONS[("cuda:0", "torch.bfloat16", 32, 2, 16, 16384, 512)]
+    assert rec["kv_tokens"] == 512 and rec["admitted"] is False
+
+
+def test_rectangular_probe_runs_on_cpu(monkeypatch):
+    torch = pytest.importorskip("torch")
+
+    def flash_attn_func(q, k, v, **kw):
+        assert q.shape[1] == 64 and k.shape[1] == 16
+        return torch.nn.functional.scaled_dot_product_attention(
+            q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2)
+        ).transpose(1, 2)
+
+    _diffusers_flash(monkeypatch, flash_attn_func)
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda *a, **k: None)
+    rec = att._time_rocm_flash_block("cpu", torch.bfloat16, 64, 4, 16, tokens = 64, kv_tokens = 16)
+    assert rec["tokens"] == 64 and rec["kv_tokens"] == 16 and rec["rel_l1"] == 0.0
+    assert att._rocm_flash_record_ok(rec)
+
+
+# A MiniMax-H3 named partition (pipe.transformer_ref behind a view) is reset, reported and memory-guarded too.
+
+
+def test_named_partition_is_in_run_accounting(monkeypatch):
+    from core.inference.video import _NamedDiTView
+
+    _rocm(monkeypatch)
+    guarded, ran = _guarded_flash(monkeypatch)
+    _apply_env(monkeypatch)
+    monkeypatch.setattr(att, "_time_rocm_flash_block", _timer([]))
+    ref = _Dit()
+    pipe = types.SimpleNamespace(transformer_ref = ref)
+    assert att._attention_dits(pipe) == []  # the stock enumeration cannot see it
+    view = _NamedDiTView(pipe, "transformer_ref")
+    assert att.apply_attention_backend(view, att.ROCM_FLASH_CANDIDATE, target = _target()) == "flash"
+    state = _state(pipe, "flash")
+    assert att.attention_may_run_native(pipe)
+    att.begin_attention_run(state)
+    ref(guarded, [True, True])
+    att.report_attention_run(state)
+    assert state.resolved["attention_backend"]["value"] == "native"
+    att.begin_attention_run(state)
+    assert getattr(ref, att.ROCM_FLASH_TALLY_ATTR) == {}
