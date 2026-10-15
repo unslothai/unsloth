@@ -53,7 +53,6 @@ test("with the setting off no list pays for a fit check", () => {
 
 test("a model is hidden only when it exceeds GPU memory plus RAM", () => {
   const gpu = { memoryTotalGb: 8, systemRamAvailableGb: 32, budgetKnown: true };
-  // On the card.
   assert.equal(
     hfModelFitsDevice(
       { id: "unsloth/a-GGUF", isGguf: true, estimatedSizeBytes: 4 * GB },
@@ -61,7 +60,6 @@ test("a model is hidden only when it exceeds GPU memory plus RAM", () => {
     ),
     true,
   );
-  // Over the card, but runs with CPU offload into RAM.
   assert.equal(
     hfModelFitsDevice(
       { id: "unsloth/b-GGUF", isGguf: true, estimatedSizeBytes: 14 * GB },
@@ -69,7 +67,6 @@ test("a model is hidden only when it exceeds GPU memory plus RAM", () => {
     ),
     true,
   );
-  // Past GPU and RAM together.
   assert.equal(
     hfModelFitsDevice(
       { id: "unsloth/c-GGUF", isGguf: true, estimatedSizeBytes: 40 * GB },
@@ -77,7 +74,6 @@ test("a model is hidden only when it exceeds GPU memory plus RAM", () => {
     ),
     false,
   );
-  // An undetected device hides nothing.
   assert.equal(
     hfModelFitsDevice(
       { id: "unsloth/c-GGUF", isGguf: true, estimatedSizeBytes: 40 * GB },
