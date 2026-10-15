@@ -30,6 +30,7 @@ the [final norm, lm_head] tail gathered from forward to backward, groups tied em
 5. `no_sync` on accelerate < 1.11 ignores FSDP2; it is mapped to `set_requires_gradient_sync`.
 6. Unsloth's bfloat16 full finetuning trains without autocast and keeps norms in float32; FSDP2
    needs one trainable dtype per unit, so float32 masters are kept and gathered in bfloat16.
+7. bitsandbytes 4-bit (QLoRA) weights are sharded too, keeping their QuantState (`fsdp2_qlora.py`).
 
 `UNSLOTH_FSDP2_ACCELERATE_DEFAULTS=1` skips 1 and 2.
 """
@@ -311,7 +312,15 @@ def install_fsdp2_prepare_hook():
     def fsdp2_prepare_model(accelerator, model, *args, **kwargs):
         fill_fsdp2_mixed_precision(accelerator)
         unify_trainable_dtypes(accelerator, model)
-        model = original(accelerator, model, *args, **kwargs)
+        from .fsdp2_qlora import fsdp2_qlora_wrap
+        with fsdp2_qlora_wrap(model, original) as qlora:
+            model = original(accelerator, model, *args, **kwargs)
+        if qlora is not None:
+            note = "" if qlora["patched"] else f" FSDPParam was not patched: {qlora['reason']}."
+            _print_rank0(
+                f"Unsloth: FSDP2 QLoRA: {qlora['params4bit']} 4-bit weights packed as "
+                f"{'/'.join(qlora['storage'])} ({qlora['converted']} repacked from uint8).{note}"
+            )
         after_fsdp2_wrap(accelerator, model)
         return model
 
