@@ -170,10 +170,6 @@ function RangeStops({
   // Thumbs stay inside the track, so stop i sits half a thumb in from each end.
   // A chip stands in for the label under it.
   const covered = (i: number) => i === lo || i === hi;
-  // A pill on an unlabelled stop sits between two labels, which give way to it.
-  const crowded = (i: number) =>
-    !covered(i) &&
-    [lo, hi].some((t) => spec.labels[t] === null && Math.abs(i - t) === 1);
   // The end labels and chips hug the track's ends instead of hanging past them.
   const edge = (i: number) =>
     i === 0 ? { left: 0 } : i === last ? { right: 0 } : undefined;
@@ -183,7 +179,7 @@ function RangeStops({
     spec.labels[i] ??
     (spec.stops[i] >= B ? `${spec.stops[i] / B}B` : `${spec.stops[i] / K}K`);
   return (
-    <fieldset className="group/section">
+    <fieldset>
       <legend className={SECTION_LABEL}>
         <HoverInfo label={spec.label}>{spec.about}</HoverInfo>
         {set && (
@@ -211,7 +207,7 @@ function RangeStops({
       <div className="relative mx-4.5 pt-7 pb-1">
         <div aria-hidden={true} className="absolute inset-x-0 top-0 h-5">
           {spec.labels.map((label, i) =>
-            (label === null && !covered(i)) || crowded(i) ? null : (
+            label === null && !covered(i) ? null : (
               <span
                 // biome-ignore lint/suspicious/noArrayIndexKey: fixed stops
                 key={i}
@@ -222,7 +218,7 @@ function RangeStops({
                   !edge(i) && "-translate-x-1/2",
                   covered(i)
                     ? cn(
-                        "-mx-1.5 -my-0.5 rounded-md px-1.5 py-0.5 font-semibold text-background",
+                        "-mx-1 -my-0.5 rounded-md px-1 py-0.5 font-semibold text-background",
                         RANGE_FILL,
                       )
                     : "text-muted-foreground",
@@ -252,14 +248,14 @@ function RangeStops({
         >
           <SliderPrimitive.Track className="relative h-1 w-full grow rounded-full bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)]">
             {spec.stops.map((_, i) =>
-              // Inside the picked range the fill runs unbroken.
-              i === 0 || i === last || (i >= lo && i <= hi) ? null : (
+              // Under the range, which covers them where it runs, so its fill stays unbroken.
+              i === 0 || i === last ? null : (
                 <span
                   // biome-ignore lint/suspicious/noArrayIndexKey: fixed stops
                   key={i}
                   aria-hidden={true}
                   style={{ left: at(i) }}
-                  className="absolute top-1/2 h-2 w-px -translate-x-1/2 -translate-y-1/2 bg-[color-mix(in_oklab,var(--foreground)_calc(20%*var(--contrast-wash-gain,1)),transparent)]"
+                  className="absolute top-1/2 h-3 w-px -translate-x-1/2 -translate-y-1/2 bg-[color-mix(in_oklab,var(--foreground)_calc(28%*var(--contrast-wash-gain,1)),transparent)]"
                 />
               ),
             )}
@@ -324,6 +320,35 @@ function MenuTick({
   );
 }
 
+/** A labelled switch, half of the switches row. */
+function SwitchField({
+  label,
+  title,
+  checked,
+  onCheckedChange,
+}: {
+  label: string;
+  title?: string;
+  checked: boolean;
+  onCheckedChange: (checked: boolean) => void;
+}) {
+  const id = useId();
+  return (
+    <div
+      title={title}
+      className="flex flex-1 items-center justify-between gap-3"
+    >
+      <label
+        htmlFor={id}
+        className="cursor-pointer text-ui-12 text-muted-foreground"
+      >
+        {label}
+      </label>
+      <Switch id={id} checked={checked} onCheckedChange={onCheckedChange} />
+    </div>
+  );
+}
+
 /** A labelled pill toggle, the Hugging Face / ModelScope switch's look. */
 function SegmentedRow<T extends string>({
   label,
@@ -342,8 +367,7 @@ function SegmentedRow<T extends string>({
       <div
         role="radiogroup"
         aria-label={label}
-        // The settings pane's track: the popover's surface otherwise sinks it a step darker.
-        className="hub-tab-toggle inline-flex h-8 items-center rounded-full [--hub-tab-track:color-mix(in_srgb,var(--foreground)_calc(6.5%*var(--contrast-wash-gain,1)),transparent)]"
+        className="hub-tab-toggle inline-flex h-8 items-center rounded-full"
       >
         {options.map(([key, text]) => {
           const active = value === key;
@@ -361,7 +385,8 @@ function SegmentedRow<T extends string>({
               className={cn(
                 "relative flex h-8 cursor-pointer items-center rounded-full px-3 text-xs font-medium transition-colors",
                 active
-                  ? "hub-tab-toggle-pill text-foreground"
+                  ? // The model picker's lifted pill on the sunk track, so the pick stands out.
+                    "hub-tab-toggle-pill text-foreground dark:bg-[color-mix(in_srgb,var(--accent),white_7.5%)]"
                   : "text-muted-foreground hover:text-foreground",
               )}
             >
@@ -384,14 +409,14 @@ function HoverInfo({ label, children }: { label: string; children: string }) {
         <span
           onPointerEnter={() => setOpen(true)}
           onPointerLeave={() => setOpen(false)}
-          className="flex cursor-help items-center gap-1 transition-colors hover:text-foreground"
+          className="group/title flex cursor-help items-center gap-1 transition-colors hover:text-foreground"
         >
           {label}
           <button
             type="button"
             aria-label={`About ${label.toLowerCase()}`}
-            // Shown only while its section is hovered or in use.
-            className="inline-flex cursor-help items-center opacity-0 transition-opacity focus-visible:opacity-100 group-focus-within/section:opacity-100 group-hover/section:opacity-100"
+            // Shown only while the title is hovered.
+            className="inline-flex cursor-help items-center opacity-0 transition-opacity focus-visible:opacity-100 group-hover/title:opacity-100"
           >
             <HugeiconsIcon
               icon={InformationCircleIcon}
@@ -425,6 +450,8 @@ export function ModelSearchFiltersControl({
   onUploadersChange,
   onReset,
   showModelFilters,
+  datasets,
+  onDatasetsChange,
   className,
 }: {
   value: ModelSearchFilters;
@@ -441,12 +468,15 @@ export function ModelSearchFiltersControl({
   /** Back to no filters: every capability, the default uploaders, no limits. */
   onReset: () => void;
   showModelFilters: boolean;
+  /** The list shows datasets: only the Datasets only switch applies. */
+  datasets: boolean;
+  onDatasetsChange: (value: boolean) => void;
   className?: string;
 }) {
   const [open, setOpen] = useState(false);
-  const baseOnlyId = useId();
   const unslothOnly = uploaders.length === 1 && uploaders[0] === "unsloth";
   const filtered =
+    datasets ||
     capabilities.length > 0 ||
     uploadersChanged ||
     (showModelFilters && hasModelSearchFilters(value));
@@ -485,129 +515,134 @@ export function ModelSearchFiltersControl({
         className="hub-menu-instant hub-composer-menu menu-soft-surface gap-0 overflow-hidden w-[calc(392px*var(--ui-space-scale,1))] max-w-[calc(100vw-1rem)] ring-0"
       >
         <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain [scrollbar-width:thin]">
-          <fieldset>
-            <legend className={SECTION_LABEL}>
-              Capabilities
-              {capabilities.length > 0 && (
-                <button
-                  type="button"
-                  onClick={() => onCapabilitiesChange([])}
-                  className="cursor-pointer transition-colors hover:text-foreground"
-                >
-                  Select all
-                </button>
-              )}
-            </legend>
-            <div className="grid grid-cols-2 gap-x-1">
-              {CAPABILITY_FILTER_OPTIONS.map((option) => {
-                const ticked = (key: HubCapabilityFilter) =>
-                  capabilities.length === 0 || capabilities.includes(key);
-                const checked = ticked(option.value);
-                const glyph = CAPABILITY_ICONS[option.value];
-                // Kept in the list's order, so it doesn't depend on click order.
-                const next = CAPABILITY_FILTER_OPTIONS.map(
-                  (o) => o.value,
-                ).filter((key) =>
-                  key === option.value ? !checked : ticked(key),
-                );
-                return (
-                  <MenuTick
-                    key={option.value}
-                    icon={
-                      glyph ? (
-                        <HugeiconsIcon
-                          icon={glyph}
-                          strokeWidth={2}
-                          className="size-4 shrink-0"
-                        />
-                      ) : (
-                        <BulbIcon className="size-4 shrink-0" />
-                      )
-                    }
-                    label={option.label}
-                    checked={checked}
-                    // The last tick stays: none would list nothing.
-                    locked={next.length === 0}
-                    onToggle={() =>
-                      onCapabilitiesChange(
-                        capabilities.length === 0 && isolateFirstCapability
-                          ? [option.value]
-                          : next.length === CAPABILITY_FILTER_OPTIONS.length
-                            ? []
-                            : next,
-                      )
-                    }
-                  />
-                );
-              })}
-            </div>
-          </fieldset>
-          {showModelFilters && (
+          {!datasets && (
             <>
+              <fieldset>
+                <legend className={SECTION_LABEL}>
+                  Capabilities
+                  {capabilities.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => onCapabilitiesChange([])}
+                      className="cursor-pointer transition-colors hover:text-foreground"
+                    >
+                      Select all
+                    </button>
+                  )}
+                </legend>
+                <div className="grid grid-cols-2 gap-x-1">
+                  {CAPABILITY_FILTER_OPTIONS.map((option) => {
+                    const ticked = (key: HubCapabilityFilter) =>
+                      capabilities.length === 0 || capabilities.includes(key);
+                    const checked = ticked(option.value);
+                    const glyph = CAPABILITY_ICONS[option.value];
+                    // Kept in the list's order, so it doesn't depend on click order.
+                    const next = CAPABILITY_FILTER_OPTIONS.map(
+                      (o) => o.value,
+                    ).filter((key) =>
+                      key === option.value ? !checked : ticked(key),
+                    );
+                    return (
+                      <MenuTick
+                        key={option.value}
+                        icon={
+                          glyph ? (
+                            <HugeiconsIcon
+                              icon={glyph}
+                              strokeWidth={2}
+                              className="size-4 shrink-0"
+                            />
+                          ) : (
+                            <BulbIcon className="size-4 shrink-0" />
+                          )
+                        }
+                        label={option.label}
+                        checked={checked}
+                        // The last tick stays: none would list nothing.
+                        locked={next.length === 0}
+                        onToggle={() =>
+                          onCapabilitiesChange(
+                            capabilities.length === 0 && isolateFirstCapability
+                              ? [option.value]
+                              : next.length === CAPABILITY_FILTER_OPTIONS.length
+                                ? []
+                                : next,
+                          )
+                        }
+                      />
+                    );
+                  })}
+                </div>
+              </fieldset>
+              {showModelFilters && (
+                <>
+                  <div
+                    aria-hidden={true}
+                    className={cn(
+                      SEPARATOR,
+                      "mt-[calc(5px*var(--ui-space-scale,1))]",
+                    )}
+                  />
+                  <div className="flex flex-col gap-2.5 pb-0.5">
+                    {RANGES.map((spec) => (
+                      <RangeStops
+                        key={spec.label}
+                        spec={spec}
+                        value={value}
+                        onChange={onChange}
+                      />
+                    ))}
+                  </div>
+                </>
+              )}
+              {/* Uploader is the Hub search's own scope, so it stays on ModelScope too. */}
               <div
                 aria-hidden={true}
                 className={cn(
                   SEPARATOR,
-                  "mt-[calc(5px*var(--ui-space-scale,1))]",
+                  showModelFilters
+                    ? "mt-2.5"
+                    : "mt-[calc(5px*var(--ui-space-scale,1))]",
                 )}
               />
-              <div className="flex flex-col gap-2.5 pb-0.5">
-                {RANGES.map((spec) => (
-                  <RangeStops
-                    key={spec.label}
-                    spec={spec}
-                    value={value}
-                    onChange={onChange}
-                  />
-                ))}
-              </div>
             </>
           )}
-          {/* Uploader is the Hub search's own scope, so it stays on ModelScope too. */}
-          <div
-            aria-hidden={true}
-            className={cn(
-              SEPARATOR,
-              showModelFilters
-                ? "mt-2.5"
-                : "mt-[calc(5px*var(--ui-space-scale,1))]",
+          <div className="flex flex-col gap-3 px-3 pt-[calc(9px*var(--ui-space-scale,1))] pb-[calc(7px*var(--ui-space-scale,1))]">
+            {/* Dataset search takes no owner scope. */}
+            {!datasets && (
+              <SegmentedRow
+                label="Uploader"
+                value={unslothOnly ? "unsloth" : "all"}
+                options={[
+                  ["unsloth", "Unsloth"],
+                  ["all", "All uploaders"],
+                ]}
+                onChange={(next) =>
+                  onUploadersChange(
+                    next === "unsloth" ? ["unsloth"] : [...HUB_UPLOADERS],
+                  )
+                }
+              />
             )}
-          />
-          <div className="flex flex-col gap-3 px-3 py-[calc(9px*var(--ui-space-scale,1))]">
-            <SegmentedRow
-              label="Uploader"
-              value={unslothOnly ? "unsloth" : "all"}
-              options={[
-                ["unsloth", "Unsloth"],
-                ["all", "All uploaders"],
-              ]}
-              onChange={(next) =>
-                onUploadersChange(
-                  next === "unsloth" ? ["unsloth"] : [...HUB_UPLOADERS],
-                )
-              }
-            />
-            {/* A Hub listing parameter (base_model_relation=base), so only where the Hub search runs. */}
-            {showModelFilters && (
-              <div
-                title="Hide quantizations, finetunes, adapters and merges"
-                className="flex h-8 items-center justify-between gap-3"
-              >
-                <label
-                  htmlFor={baseOnlyId}
-                  className="cursor-pointer text-ui-12 text-muted-foreground"
-                >
-                  Base only
-                </label>
-                <Switch
-                  id={baseOnlyId}
+            <div className="flex h-8 items-center gap-6">
+              {/* A Hub listing parameter (base_model_relation=base), so only where the Hub search runs. */}
+              {!datasets && showModelFilters && (
+                <SwitchField
+                  label="Base only"
+                  title="Hide quantizations, finetunes, adapters and merges"
                   checked={value.baseOnly === true}
                   onCheckedChange={(checked) =>
                     onChange({ ...value, baseOnly: checked || undefined })
                   }
                 />
-              </div>
-            )}
+              )}
+              {/* The toolbar's Models / Datasets switch, from here too. */}
+              <SwitchField
+                label="Datasets only"
+                checked={datasets}
+                onCheckedChange={onDatasetsChange}
+              />
+            </div>
           </div>
         </div>
         <div aria-hidden={true} className={cn(SEPARATOR, "mb-1.5 shrink-0")} />
@@ -617,7 +652,12 @@ export function ModelSearchFiltersControl({
             variant="ghost"
             size="xs"
             disabled={!filtered}
-            onClick={onReset}
+            onClick={() => {
+              onReset();
+              if (datasets) {
+                onDatasetsChange(false);
+              }
+            }}
           >
             Reset all
           </Button>

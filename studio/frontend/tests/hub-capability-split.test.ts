@@ -94,8 +94,8 @@ test("size and context are stepped ranges whose ends mean no limit", () => {
   const popover = readSrc("features/hub/catalog/model-search-filters.tsx");
   assert.match(popover, /\[1, 3, 6, 9, 12, 24, 32, 64, 128, 256, 500\]/);
   assert.match(popover, /\[16, 24, 32, 48, 64, 96, 128, 192, 256, 512, 1024\]/);
-  // Ticks stop inside the picked range so its fill runs unbroken.
-  assert.match(popover, /i === 0 \|\| i === last \|\| \(i >= lo && i <= hi\)/);
+  // Every inner stop draws a tick, under the range so its fill runs unbroken.
+  assert.match(popover, /i === 0 \|\| i === last \? null/);
   assert.match(popover, /\[spec\.min\]: next\[0\] === 0 \? undefined : spec\.stops\[next\[0\]\]/);
   assert.match(popover, /\[spec\.max\]: next\[1\] === last \? undefined : spec\.stops\[next\[1\]\]/);
   assert.doesNotMatch(popover, /Apply (filters|limits)/);
@@ -122,7 +122,10 @@ test("the range thumbs can share a stop, so <1B and >500B are reachable as limit
 
 test("Base only is a switch, off by default, for the Hub's own base_model_relation=base", () => {
   const popover = readSrc("features/hub/catalog/model-search-filters.tsx");
-  assert.match(popover, /<Switch\s+id=\{baseOnlyId\}\s+checked=\{value\.baseOnly === true\}/);
+  assert.match(popover, /label="Base only"[\s\S]{0,200}checked=\{value\.baseOnly === true\}/);
+  // Datasets only shares the row and flips the list to datasets, as the toolbar switch does.
+  assert.match(popover, /label="Datasets only"\s+checked=\{datasets\}/);
+  assert.match(readSrc("features/hub/catalog/models-toolbar.tsx"), /onResourceTypeChange\(on \? "datasets" : "models"\)/);
   assert.match(popover, /baseOnly: checked \|\| undefined/);
   assert.match(readSrc("features/hub/hooks/use-hub-model-search.ts"), /for \(const \[key, value\] of new URLSearchParams\(parameterFilter\)\)/);
 });
@@ -141,4 +144,9 @@ test("Text only never lists a media pipeline, even one no capability box claims"
   for (const task of ["image-text-to-image", "text-to-audio", "audio-to-audio", "video-to-video"]) {
     assert.match(viewModels, new RegExp(`"${task}",`));
   }
+});
+
+test("audio Diffusers pipelines are neither image nor video gen; a video family name is video gen", () => {
+  assert.deepEqual(generationKinds(["diffusers"], "text-to-audio", "someone/audio-ldm"), { image: false, video: false });
+  assert.match(readSrc("features/hub/lib/view-models.ts"), /key === "video-gen" && isVideoFamilyName\(row\.result\.id\)/);
 });

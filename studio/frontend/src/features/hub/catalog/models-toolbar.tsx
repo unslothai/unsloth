@@ -506,7 +506,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
           />
         )}
 
-        {showCapabilities && (
+        {isDiscover && !npuList && (
           <ModelSearchFiltersControl
             value={searchFilters}
             onChange={onSearchFiltersChange}
@@ -518,6 +518,10 @@ export const ModelsToolbar = memo(function ModelsToolbar({
             onUploadersChange={onUploadersChange}
             onReset={onResetFilters}
             showModelFilters={showModelFilters}
+            datasets={isDataset}
+            onDatasetsChange={(on) =>
+              onResourceTypeChange(on ? "datasets" : "models")
+            }
             className={cn(
               triggerBase,
               "relative inline-flex size-9 shrink-0 items-center justify-center rounded-full p-0",

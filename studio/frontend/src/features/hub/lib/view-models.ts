@@ -19,6 +19,7 @@ import {
   detectBaseModel,
   detectCapabilities,
   generationKinds,
+  isVideoFamilyName,
   HUB_CAPABILITY_FILTERS,
   type HubCapabilityFilter,
 } from "./model-capabilities";
@@ -307,6 +308,8 @@ export function matchesHubCapability(
   }
   if (key !== "image-gen" && key !== "video-gen")
     return matchesCapability(row.capabilities, key);
+  // A video family is video gen from its name alone: LTX GGUFs carry no pipeline tag.
+  if (key === "video-gen" && isVideoFamilyName(row.result.id)) return true;
   if (!matchesCapability(row.capabilities, "diffusion")) return false;
   const kinds = generationKinds(
     row.result.tags,

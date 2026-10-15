@@ -48,6 +48,18 @@ const VIDEO_GEN_TAGS = new Set([
 const VIDEO_GEN_ID_RE =
   /wan2|hunyuan[-_]?video|\bltx(?:[-_]?video|v|[-_]?\d)|minimax[-_]?h\d|cogvideo|mochi|skyreels|[-_]t2v\b|[-_]i2v\b/;
 
+const NEITHER_GEN_TASKS = new Set([
+  "video-to-video",
+  "text-to-audio",
+  "audio-to-audio",
+  "text-to-speech",
+]);
+
+/** A video family in the repo name (not the owner), e.g. LTX-2.3 or Wan2.2. */
+export function isVideoFamilyName(modelId: string): boolean {
+  return VIDEO_GEN_ID_RE.test(modelId.toLowerCase().split("/").pop() ?? "");
+}
+
 /** Which generation an image/video model does, from its tags and name. A video signal wins: several
  *  video repos carry an image tag for their first-frame path, and the picker reads them the same
  *  way. Anything else is taken for an image model, as most are. */
@@ -60,8 +72,13 @@ export function generationKinds(
   const pipeline = pipelineTag?.toLowerCase();
   // The repo name only: "hunyuanvideo-community/HunyuanImage-2.1" is an image model.
   const repo = modelId.toLowerCase().split("/").pop() ?? "";
-  // Video-to-video is neither: the Video page takes a prompt and reference images, never a video.
-  if (pipeline === "video-to-video" || tagSet.has("video-to-video")) {
+  // Neither: the Video page takes a prompt and reference images, never a video, and the audio
+  // tasks belong to the Audio pages.
+  if (
+    pipeline !== undefined
+      ? NEITHER_GEN_TASKS.has(pipeline)
+      : [...NEITHER_GEN_TASKS].some((task) => tagSet.has(task))
+  ) {
     return { image: false, video: false };
   }
   const video =
