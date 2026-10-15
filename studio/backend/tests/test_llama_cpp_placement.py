@@ -5182,6 +5182,7 @@ def _priced_cache_launch(
     mmproj = None,
     mtp_path = None,
     caps_extra = None,
+    ram_gib = 256,
     **load_kwargs,
 ):
     """A launch on _IN_BAND_CARD with GGUFs sized by path substring. Returns the
@@ -5203,7 +5204,7 @@ def _priced_cache_launch(
         backend._mmproj_vram_bytes = lambda path: int(sizes_gib["mmproj"] * _GIB) if path else 0
     backend._can_estimate_kv = lambda: True
     backend._estimate_kv_cache_bytes = lambda *a, **k: _GIB // 4
-    backend._available_system_memory_mib = lambda: 256 * 1024
+    backend._available_system_memory_mib = lambda: int(ram_gib * 1024)
     backend._gguf_tensor_scan = lambda _path: ("qwen3moe", {}, 15 * _GIB)
     full_caps = dict(LlamaCppBackend.probe_server_capabilities.__func__(LlamaCppBackend, None))
     full_caps.update(_CACHE_CAPS_ON)
@@ -5219,6 +5220,7 @@ def _vision_cache_launch(
     tmp_path,
     monkeypatch,
     extra_args = (),
+    ram_gib = 256,
 ):
     """A 1 GiB projector Studio's auto pin cannot move (a build without
     --no-mmproj-offload), so model_size_fit carries it."""
@@ -5232,6 +5234,7 @@ def _vision_cache_launch(
         caps_extra = {"mtp_probe_inconclusive": False, "supports_no_mmproj_offload": False},
         is_vision = True,
         extra_args = list(extra_args),
+        ram_gib = ram_gib,
     )
 
 
@@ -5298,6 +5301,112 @@ def test_a_cpu_named_projector_device_is_unpriced(tmp_path, _moe_cache_host, mon
     monkeypatch.delenv("MTMD_BACKEND_DEVICE", raising = False)
     _cmd, seen = _vision_cache_launch(tmp_path, monkeypatch, ["--mmproj-device", "CPU"])
     assert seen == []
+
+
+@pytest.mark.parametrize(
+    "extra_args, env",
+    [
+        (["--mmproj-device", "none"], {}),
+        (["-mmdev=none"], {}),
+        ([], {"MTMD_BACKEND_DEVICE": "none"}),
+        # A forced cache skips the share band, never the host-RAM admission.
+        (["--mmproj-device", "none"], {"UNSLOTH_MOE_CACHE": "on"}),
+        ([], {"MTMD_BACKEND_DEVICE": "none", "UNSLOTH_MOE_CACHE": "on"}),
+    ],
+    ids = ["argv", "short_equals", "env", "argv_forced_on", "env_forced_on"],
+)
+def test_a_known_cpu_projector_keeps_the_moe_cache(
+    tmp_path, _moe_cache_host, monkeypatch, extra_args, env
+):
+    """--mmproj-device none is host RAM (common/arg.cpp clears mmproj_use_gpu), the same
+    placement as --no-mmproj-offload, so with ample RAM the cache is admitted exactly as
+    it is for that flag rather than abstaining as for an unknown named device."""
+    monkeypatch.delenv("MTMD_BACKEND_DEVICE", raising = False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    cmd, _seen = _vision_cache_launch(tmp_path, monkeypatch, extra_args)
+    assert "--mmproj" in cmd and _has_moe_cache(cmd), cmd
+    assert _load_mode(cmd) == "none", cmd
+
+
+@pytest.mark.parametrize(
+    "ram_gib, cached", [(25, False), (26, True)], ids = ["ram_short", "ram_enough"]
+)
+@pytest.mark.parametrize(
+    "extra_args, env",
+    [
+        (["--no-mmproj-offload"], {}),
+        (["--mmproj-device", "none"], {}),
+        ([], {"MTMD_BACKEND_DEVICE": "none"}),
+        (["--mmproj-device", "none"], {"UNSLOTH_MOE_CACHE": "on"}),
+    ],
+    ids = ["no_offload", "argv_none", "env_none", "argv_none_forced_on"],
+)
+def test_a_cpu_projector_is_charged_to_host_ram_for_the_moe_cache(
+    tmp_path, _moe_cache_host, monkeypatch, extra_args, env, ram_gib, cached
+):
+    """The CPU projector's bytes are pinned host RAM: at 25 GiB the experts, prompt cache
+    and 1 GiB projector do not fit (the same launch with the projector on the GPU is
+    admitted there), at 26 GiB they do. --mmproj-device none tracks --no-mmproj-offload
+    on both sides of that line, forced on or not."""
+    monkeypatch.delenv("MTMD_BACKEND_DEVICE", raising = False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    cmd, _seen = _vision_cache_launch(tmp_path, monkeypatch, extra_args, ram_gib = ram_gib)
+    assert _has_moe_cache(cmd) is cached, cmd
+
+
+def test_a_gpu_projector_at_the_same_ram_gets_the_moe_cache(tmp_path, _moe_cache_host, monkeypatch):
+    """Control for the line above: at 25 GiB the projector on the GPU is admitted, so only
+    the host charge of a CPU projector keeps the cache off there."""
+    monkeypatch.delenv("MTMD_BACKEND_DEVICE", raising = False)
+    cmd, _seen = _vision_cache_launch(tmp_path, monkeypatch, [], ram_gib = 25)
+    assert _has_moe_cache(cmd), cmd
+
+
+@pytest.mark.parametrize(
+    "extra_args, env",
+    [
+        (["--mmproj-device", "none", "--mmproj-offload"], {}),
+        (["--mmproj-device", "none", "--mmproj-device", "CUDA1"], {}),
+        (["--mmproj-device", "NONE"], {}),
+        (["--mmproj-device", "none"], {"LLAMA_ARG_MMPROJ_OFFLOAD": "1"}),
+    ],
+    ids = ["offload_after", "gpu_after", "not_exactly_none", "env_offload"],
+)
+def test_a_projector_none_with_a_conflicting_placement_keeps_the_split(
+    tmp_path, _moe_cache_host, monkeypatch, extra_args, env
+):
+    """Controls: an explicit offload or a later GPU device leaves the projector placement
+    unknown (arg.cpp only matches the literal none), so the cache still abstains."""
+    monkeypatch.delenv("MTMD_BACKEND_DEVICE", raising = False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    cmd, _seen = _vision_cache_launch(tmp_path, monkeypatch, extra_args)
+    assert not _has_moe_cache(cmd), cmd
+
+
+@pytest.mark.parametrize(
+    "extra_args, env, expected",
+    [
+        (["--mmproj-device", "none"], {}, False),
+        (["-mmdev=none"], {}, False),
+        ([], {"MTMD_BACKEND_DEVICE": "none"}, False),
+        (["--no-mmproj-offload"], {}, False),
+        (["--mmproj-device", "none", "--mmproj-offload"], {}, True),
+        (["--mmproj-offload", "--mmproj-device", "none"], {}, True),
+        (["--mmproj-device", "none"], {"LLAMA_ARG_MMPROJ_OFFLOAD": "1"}, True),
+        (["--mmproj-device", "none", "-mmdev", "CUDA1"], {}, None),
+        (["--mmproj-device", "CUDA1"], {"MTMD_BACKEND_DEVICE": "none"}, None),
+        (["--mmproj-device", "NONE"], {}, None),
+        ([], {"MTMD_BACKEND_DEVICE": "CPU"}, None),
+        ([], {}, None),
+    ],
+)
+def test_the_resolved_projector_offload_reads_device_none(extra_args, env, expected):
+    """Device none is host RAM only where both offload spellings are silent; an explicit
+    offload keeps its (conservative) answer."""
+    assert llama_cpp_module._resolved_mmproj_offload(extra_args, env) is expected
 
 
 def _drafter_cache_launch(tmp_path, monkeypatch, extra_args):
