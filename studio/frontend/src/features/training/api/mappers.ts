@@ -198,16 +198,20 @@ export function buildTrainingStartPayload(
       ? [config.uploadedFile]
       : [];
   const s3Config = buildS3PayloadConfig(config);
+  const objective = isCpt || isDecision ? "sft" : config.trainingObjective;
+  const isRl = objective !== "sft";
+  // RL rows carry their own roles (prompt, answer, chosen, ...), not the chat-role mapping.
+  const roleMapping = isRl ? config.rlRoleMapping : config.datasetManualMapping;
   const customFormatMapping: Record<string, unknown> | undefined =
-    !isDecision && Object.keys(config.datasetManualMapping).length > 0
-      ? { ...config.datasetManualMapping }
+    !isDecision && Object.keys(roleMapping).length > 0
+      ? { ...roleMapping }
       : undefined;
 
   // Inject conversion advisor metadata into the mapping (__ prefix keys)
   const hasAdvisorMeta =
     config.datasetSystemPrompt ||
     Object.keys(config.datasetLabelMapping).length > 0;
-  if (customFormatMapping && hasAdvisorMeta) {
+  if (customFormatMapping && hasAdvisorMeta && !isRl) {
     if (config.datasetSystemPrompt) {
       customFormatMapping.__system_prompt = config.datasetSystemPrompt;
     }
@@ -296,9 +300,24 @@ export function buildTrainingStartPayload(
     use_dora: loraVariants && config.loraVariant === "dora",
     // CPT always trains on full sequences (no chat format masking)
     train_on_completions:
-      isEmbedding || isDecision || isCpt || isRawText
+      isEmbedding || isDecision || isCpt || isRawText || isRl
         ? false
         : config.trainOnCompletions,
+    objective,
+    rl_beta: isRl ? config.rlBeta : null,
+    rl_max_prompt_length: isRl ? config.rlMaxPromptLength : null,
+    grpo_num_generations: config.grpoNumGenerations,
+    grpo_max_completion_length:
+      objective === "grpo" ? config.grpoMaxCompletionLength : null,
+    grpo_temperature: config.grpoTemperature,
+    rl_system_prompt:
+      objective === "grpo" ? config.grpoSystemPrompt.trim() || null : null,
+    grpo_enable_thinking: config.grpoEnableThinking,
+    grpo_variant: config.grpoVariant,
+    grpo_mask_truncated_completions:
+      objective === "grpo" && config.grpoMaskTruncatedCompletions,
+    grpo_epsilon_high: objective === "grpo" ? config.grpoEpsilonHigh : null,
+    grpo_rewards: objective === "grpo" ? config.grpoRewards : [],
     finetune_vision_layers: config.finetuneVisionLayers,
     finetune_language_layers: config.finetuneLanguageLayers,
     finetune_attention_modules: config.finetuneAttentionModules,

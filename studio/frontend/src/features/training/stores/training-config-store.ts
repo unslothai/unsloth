@@ -6,6 +6,7 @@ import {
   LR_DEFAULT_DECISION_FULL,
   LR_DEFAULT_FULL,
   LR_DEFAULT_LORA,
+  RL_LEARNING_RATES,
 } from "@/config/training";
 import { getHfToken } from "@/features/hub";
 import { translate } from "@/i18n";
@@ -573,6 +574,13 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                 : {}),
             };
 
+            // Model YAML LRs are SFT-tuned; keep the RL objective's rate.
+            const objective = get().trainingObjective;
+            const rlLearningRate =
+              shouldApplyTrainingDefaults && !isDecision && objective !== "sft"
+                ? { learningRate: RL_LEARNING_RATES[objective] }
+                : {};
+
             // Fill a copied CPT run's missing history, but preserve values captured by
             // any method transition the user made while this request was pending.
             const fallbackProvenanceRefresh = options?.fillMethodProvenance
@@ -600,10 +608,13 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
 
             set({
               ...patch,
+              ...rlLearningRate,
               ...cptOverrides,
               ...cptTargetOverrides,
               ...deferredCompletionDefault,
-              ...(isDecision ? { datasetStreaming: false } : {}),
+              ...(isDecision
+                ? { datasetStreaming: false, trainingObjective: "sft" as const }
+                : {}),
               ...(restoreStreaming
                 ? {
                     ...streamingCompatiblePatch(nextStreamingState),
@@ -684,14 +695,19 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                   set({ isLoadingModelDefaults: false });
                   return;
                 }
+                const currentObjective = get().trainingObjective;
                 const lrPatch =
-                  !get().trainingMethodProvenance.learningRateManuallySet &&
-                  !modelConfigHasLR
-                    ? {
+                  get().trainingMethodProvenance.learningRateManuallySet ||
+                  (modelConfigHasLR && currentObjective === "sft")
+                    ? {}
+                    : {
                         learningRate:
-                          method === "full" ? LR_DEFAULT_FULL : LR_DEFAULT_LORA,
-                      }
-                    : {};
+                          currentObjective !== "sft"
+                            ? RL_LEARNING_RATES[currentObjective]
+                            : method === "full"
+                              ? LR_DEFAULT_FULL
+                              : LR_DEFAULT_LORA,
+                      };
                 set({
                   trainingMethod: method,
                   ...lrPatch,
@@ -1294,6 +1310,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             ...(patch.trainOnCompletions !== undefined
               ? { trainOnCompletionsDefaultPendingFor: null }
               : {}),
+            ...(trainingMethod === "cpt" ? { trainingObjective: "sft" } : {}),
           });
         },
         selectHfDataset: selectHfDatasetInternal,
@@ -1653,6 +1670,54 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           setUserEdit({ targetModules });
         },
         setS3Config: (s3Config) => setUserEdit({ s3Config }),
+        setTrainingObjective: (trainingObjective) => {
+          const state = get();
+          if (state.trainingObjective === trainingObjective) return;
+          // CPT is its own objective; the selector disables RL for it, this keeps the store honest.
+          // Decision models train a classifier head, so they stay on SFT too.
+          if (
+            (state.trainingMethod === "cpt" || state.modelType === "decision") &&
+            trainingObjective !== "sft"
+          ) {
+            return;
+          }
+          const patch: Partial<TrainingConfigState> = { trainingObjective };
+          if (!state.trainingMethodProvenance.learningRateManuallySet) {
+            patch.learningRate =
+              trainingObjective === "sft"
+                ? state.trainingMethod === "full"
+                  ? LR_DEFAULT_FULL
+                  : LR_DEFAULT_LORA
+                : RL_LEARNING_RATES[trainingObjective];
+          }
+          if (trainingObjective !== "sft") {
+            // TRL formats these rows itself; SFT-only toggles would be silently ignored.
+            patch.trainOnCompletions = false;
+            patch.packing = false;
+            patch.datasetStreaming = false;
+          }
+          setUserEdit(patch);
+        },
+        setRlBeta: (rlBeta) => setUserEdit({ rlBeta }),
+        setRlMaxPromptLength: (rlMaxPromptLength) =>
+          setUserEdit({ rlMaxPromptLength }),
+        setRlRoleMapping: (rlRoleMapping) => setUserEdit({ rlRoleMapping }),
+        setGrpoNumGenerations: (grpoNumGenerations) =>
+          setUserEdit({ grpoNumGenerations }),
+        setGrpoMaxCompletionLength: (grpoMaxCompletionLength) =>
+          setUserEdit({ grpoMaxCompletionLength }),
+        setGrpoTemperature: (grpoTemperature) =>
+          setUserEdit({ grpoTemperature }),
+        setGrpoSystemPrompt: (grpoSystemPrompt) =>
+          setUserEdit({ grpoSystemPrompt }),
+        setGrpoEnableThinking: (grpoEnableThinking) =>
+          setUserEdit({ grpoEnableThinking }),
+        setGrpoVariant: (grpoVariant) => setUserEdit({ grpoVariant }),
+        setGrpoMaskTruncatedCompletions: (grpoMaskTruncatedCompletions) =>
+          setUserEdit({ grpoMaskTruncatedCompletions }),
+        setGrpoEpsilonHigh: (grpoEpsilonHigh) =>
+          setUserEdit({ grpoEpsilonHigh }),
+        setGrpoRewards: (grpoRewards) => setUserEdit({ grpoRewards }),
         restoreRunConfig: (config) => {
           const selections = runConfigDraftSelections(config);
           const hyperparameters = mapBackendModelConfigToTrainingPatch({

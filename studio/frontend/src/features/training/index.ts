@@ -58,10 +58,32 @@ export type {
   ModelConfigResponse,
 } from "./api/models-api";
 export type {
+  RlMetricPoint,
   TrainingPhase,
   TrainingViewData,
   TrainingSeriesPoint,
 } from "./types/runtime";
+export {
+  deleteReward,
+  exportReward,
+  getRlSamples,
+  importReward,
+  listRewards,
+  previewRewards,
+} from "./api/rewards-api";
+export type {
+  RewardPreviewResponse,
+  RewardRecord,
+  RlSampleGroup,
+} from "./api/rewards-api";
+export { previewCell, useRlWorkspaceStore } from "./stores/rl-workspace-store";
+export {
+  formatScore,
+  readRewardHead,
+  ruleTags,
+  summarizeRule,
+} from "./lib/reward-summary";
+export type { RewardSummary, RuleType } from "./lib/reward-summary";
 export type {
   TrainingRunSummary,
   TrainingRunListResponse,
@@ -84,7 +106,11 @@ export {
   emitTrainingRunDeleted,
   emitTrainingRunsChanged,
 } from "./events";
-export { parseYamlConfig, serializeConfigToYaml } from "./lib/yaml-config";
+export {
+  parseYamlConfig,
+  parseYamlRlSettings,
+  serializeConfigToYaml,
+} from "./lib/yaml-config";
 export {
   type StartValidationResult,
   validateTrainingConfig,
