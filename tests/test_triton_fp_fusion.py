@@ -25,7 +25,11 @@ _NOT_LAUNCHES = {
     "utils.py": {"plan"},
     "nf4.py": {"kernel"},
     "triton_launch.py": {"kernel"},
+    "layernorm.py": {"kernel"},
+    "rms_layernorm.py": {"wrap(kernel)"},
 }
+# Launch helpers forwarding options to the excluded sites above: each call is checked instead.
+_LAUNCH_HELPERS = {"layernorm.py": "_launch", "rms_layernorm.py": "_launch"}
 
 
 def _launch_sites():
@@ -37,6 +41,13 @@ def _launch_sites():
         if "triton" not in src:
             continue
         for node in ast.walk(ast.parse(src)):
+            helper = _LAUNCH_HELPERS.get(path.name)
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == helper
+            ):
+                yield f"{rel}:{node.lineno}:{helper}", node
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Subscript):
                 name = ast.get_source_segment(src, node.func.value)
                 if name in _NOT_LAUNCHES.get(path.name, ()):
@@ -65,7 +76,10 @@ def test_nf4_options_and_warmup_carry_fp_fusion():
         if isinstance(node, ast.Call) and getattr(node.func, "attr", None) == "warmup"
     ]
     assert warmups and all(
-        any(k.arg == "enable_fp_fusion" and getattr(k.value, "value", None) is True for k in node.keywords)
+        any(
+            k.arg == "enable_fp_fusion" and getattr(k.value, "value", None) is True
+            for k in node.keywords
+        )
         for node in warmups
     )
 

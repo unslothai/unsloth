@@ -156,11 +156,14 @@ export const BUDGET = {
   // the previous limits there, so they are set to the measured build.
   // The downloads panel's "Starting…" row (#13738) adds 1,404 B raw / 353 B transfer (6,778,788 -> 6,780,192 B raw,
   // 2,038,337 -> 2,038,690 B transfer against 7c235de6f, one machine and build, Node 24, 95 chunks). Raised by that growth.
-  // Drafter training in the Train tab adds about 4.6 KB raw / 1.3 KB transfer (6,627.7 KB raw, 1,992.7 KB transfer
-  // measured against 5337c8f53, one machine and build, 95 chunks): its persisted training-store fields, their
-  // migration and the en strings hydrate at startup; the section itself is not in the startup set.
-  transferBytes: 2_040_600,
-  rawBytes: 6_786_900,
+  // The Image downloads > Info stamp row in Settings > Library, its search entry and strings (#13444) add 348 B
+  // raw / 83 B transfer to the eager settings and English locale chunks (6,780,553 -> 6,780,901 B raw,
+  // 2,038,848 -> 2,038,931 B transfer against 9f5b133254, one machine and build, Node 24, chunk count unchanged
+  // at 95). Raised by that growth.
+  // Drafter training in the Train tab: its persisted training-store fields, their migration and the en strings
+  // hydrate at startup; the section itself is not in the startup set. Set to the measured build.
+  transferBytes: 2_039_292,
+  rawBytes: 6_782_356,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

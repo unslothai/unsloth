@@ -5100,6 +5100,12 @@ class FastBaseModel:
         from ..tokenizer_utils import zero_pad_embedding_rows
 
         zero_pad_embedding_rows(model, tokenizer)
+        # One compiled region per decoder layer (_block_compile.py).
+        try:
+            from ._block_compile import patch_block_compile
+            patch_block_compile(model)
+        except Exception as e:
+            logger.warning(f"Unsloth: per-block compile not installed: {e}")
         return model
 
     @staticmethod
