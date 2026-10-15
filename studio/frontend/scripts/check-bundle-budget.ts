@@ -118,11 +118,11 @@ export const BUDGET = {
   // and build, Node 24, chunk count unchanged at 95), which put main 43 B raw over. Raised by that growth so
   // main's margin stays where it was.
   // Retiring whisper.cpp (#13753: the voice settings v2 migration and settling a saved whisper.cpp pick for the
-  // host) adds 1,390 B raw / 465 B transfer to the eager settings and chat chunks (6,764,964 -> 6,766,354 B raw,
-  // 2,033,544 -> 2,034,009 B transfer from 6c3bd16256, one machine and build, Node 24, chunk count unchanged at
+  // host) adds 1,367 B raw / 476 B transfer to the eager settings and chat chunks (6,764,964 -> 6,766,331 B raw,
+  // 2,033,544 -> 2,034,020 B transfer from 6c3bd16256, one machine and build, Node 24, chunk count unchanged at
   // 95). Raised by that growth so main's margin stays where it was.
-  transferBytes: 2_034_149,
-  rawBytes: 6_766_696,
+  transferBytes: 2_034_160,
+  rawBytes: 6_766_673,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

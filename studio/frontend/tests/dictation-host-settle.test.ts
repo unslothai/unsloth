@@ -73,3 +73,36 @@ test("only a retired whisper.cpp pick reads status, once per model", async () =>
   await settleSttModelForHost();
   assert.equal(statusReads, 1);
 });
+
+test("a pick no engine could serve yet is read again on the next call", async () => {
+  store.set(
+    "unsloth_voice_settings",
+    JSON.stringify({ state: { sttModel: "small" }, version: 1 }),
+  );
+  await useVoiceSettingsStore.persist.rehydrate();
+
+  let host = {
+    transformers: { available: false },
+    audiocpp: { available: false },
+    mtmd: { available: false },
+  };
+  let statusReads = 0;
+  const settleSttModelForHost = new Function(
+    "fetchSttStatus",
+    "useVoiceSettingsStore",
+    `${settleSource}; return settleSttModelForHost;`,
+  )(async () => {
+    statusReads++;
+    return host;
+  }, useVoiceSettingsStore) as () => Promise<void>;
+
+  await settleSttModelForHost();
+  assert.equal(useVoiceSettingsStore.getState().sttModelSource, "whisper-cpp");
+  // llama.cpp installed later in the same page.
+  host = { ...host, mtmd: { available: true } };
+  await settleSttModelForHost();
+  assert.equal(statusReads, 2);
+  assert.equal(useVoiceSettingsStore.getState().sttModel, "qwen3-asr-0.6b");
+  await settleSttModelForHost();
+  assert.equal(statusReads, 2);
+});

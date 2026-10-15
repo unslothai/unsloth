@@ -330,8 +330,8 @@ export function sttEngineStatusFor(
   return status.transformers;
 }
 
-// One status read settles each retired whisper.cpp pick; a failed read, or the model
-// changing again later, settles anew.
+// Concurrent callers share one status read. Once it lands a settled pick is no longer
+// "whisper-cpp", so nothing reads again; one no engine could serve yet reads on the next call.
 type HostSttModelSettle = { model: string; promise: Promise<void> };
 let hostSttModelSettle: HostSttModelSettle | null = null;
 
@@ -345,10 +345,7 @@ export function settleSttModelForHost(): Promise<void> {
     promise: fetchSttStatus().then(
       (status) => {
         useVoiceSettingsStore.getState().adoptHostSttModel(status);
-        // The model it settled on needs no second read.
-        if (hostSttModelSettle === settle) {
-          settle.model = useVoiceSettingsStore.getState().sttModel;
-        }
+        if (hostSttModelSettle === settle) hostSttModelSettle = null;
       },
       (error: unknown) => {
         if (hostSttModelSettle === settle) hostSttModelSettle = null;
