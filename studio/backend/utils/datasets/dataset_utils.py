@@ -375,7 +375,7 @@ def _apply_user_mapping_alpaca(
 
 def format_dataset(dataset, *args, **kwargs):
     """``_format_dataset``, but token-id rows no format matched route as pre-tokenized under any format except raw."""
-    bound = inspect.signature(_format_dataset).bind(dataset, *args, **kwargs)
+    bound = _FORMAT_DATASET_SIGNATURE.bind(dataset, *args, **kwargs)
     bound.apply_defaults()
     info = _format_dataset(*bound.args, **bound.kwargs)
     if (
@@ -835,6 +835,9 @@ def _format_dataset(
 
     else:
         raise ValueError(f"Unknown format_type: {format_type}")
+
+
+_FORMAT_DATASET_SIGNATURE = inspect.signature(_format_dataset)
 
 
 def format_and_template_dataset(
