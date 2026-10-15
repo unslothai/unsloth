@@ -265,6 +265,7 @@ class _Flux3KleinPipelineMixin:
         if any(not isinstance(p, str) for p in prompts):
             raise ValueError("FLUX.3 takes a text prompt (str) per image.")
         generators = generator if isinstance(generator, (list, tuple)) else None
+        negatives = list(negative_prompt) if isinstance(negative_prompt, (list, tuple)) else None
         # The text encoder sizes its window per prompt, so the blocks take ONE prompt per call. A batch of
         # distinct prompts, or one prompt with a generator per image, runs as one call per image.
         if len(prompts) > 1 or generators is not None:
@@ -274,6 +275,10 @@ class _Flux3KleinPipelineMixin:
             if generators is not None and len(generators) != count:
                 raise ValueError(
                     f"Got {len(generators)} generators for {count} images; pass one per image."
+                )
+            if negatives is not None and len(negatives) not in (1, count):
+                raise ValueError(
+                    f"Got {len(negatives)} negative prompts for {count} images; pass one, or one per image."
                 )
             calls = [
                 (prompts[i], generators[i] if generators is not None else generator, 1)
@@ -309,7 +314,12 @@ class _Flux3KleinPipelineMixin:
                     if seed is not None:
                         kwargs["latents"] = reference_noise(seed, int(height), int(width))
                 if negative_prompt is not None and not self.is_distilled:
-                    kwargs["negative_prompt"] = negative_prompt
+                    # A per-image list pairs entry i with call i (the blocks take one prompt per call).
+                    kwargs["negative_prompt"] = (
+                        negative_prompt
+                        if negatives is None
+                        else negatives[call_index if len(negatives) > 1 else 0]
+                    )
                 with self._step_hooks(
                     mp,
                     callback_on_step_end,

@@ -694,3 +694,98 @@ def test_quantized_gguf_pick_assembles_through_the_modular_loader(monkeypatch):
     assert isinstance(pipe, _Pipe)
     assert calls["repo"] == "/staged/klein" and calls["transformer"] is sentinel
     assert calls["device"] == "cuda"
+
+
+# ── review round 1 ───────────────────────────────────────────────────────────
+def test_split_calls_pair_each_prompt_with_its_own_negative():
+    face = _Face(distilled = False)
+    face(
+        prompt = ["a", "b"],
+        generator = ["g1", "g2"],
+        num_inference_steps = 1,
+        negative_prompt = ["na", "nb"],
+    )
+    assert [c["negative_prompt"] for c in face.mp.calls] == ["na", "nb"]
+    face = _Face(distilled = False)
+    face(prompt = "same", generator = ["g1", "g2"], num_inference_steps = 1, negative_prompt = ["n"])
+    assert [c["negative_prompt"] for c in face.mp.calls] == ["n", "n"]
+    with pytest.raises(ValueError):
+        _Face(distilled = False)(
+            prompt = ["a", "b", "c"],
+            generator = ["g1", "g2", "g3"],
+            num_inference_steps = 1,
+            negative_prompt = ["x", "y"],
+        )
+
+
+def test_every_flux3_image_is_its_own_generation_chunk():
+    # One chunk per image, so each image gets its own encode / denoise phase and text-encoder release.
+    from core.inference.diffusion import _generation_chunks
+
+    jobs = [("a", 1), ("a", 2), ("b", 3)]
+    for name in (FLUX3_KLEIN_FAMILY_NAME, FLUX3_KLEIN_BASE_FAMILY_NAME):
+        assert _generation_chunks(_family(name), jobs, 1) == [[j] for j in jobs]
+    # Other families keep one forward for the whole list.
+    other = next(f for f in families._FAMILIES if f.name == "flux.2-klein")
+    assert _generation_chunks(other, jobs, 1) == [jobs]
+
+
+def _modular_base(tmp_path):
+    root = tmp_path / "klein"
+    index = {"_class_name": "Flux3DistilledModularPipeline", "_blocks_class_name": FLUX3_DISTILLED_BLOCKS}
+    for component, lib, cls in (
+        ("text_encoder", "transformers", "Qwen3VLForConditionalGeneration"),
+        ("transformer", "diffusers", "Flux3Transformer2DModel"),
+        ("vae", "diffusers", "AutoencoderKLFlux2"),
+    ):
+        folder = root / component
+        folder.mkdir(parents = True)
+        (folder / "config.json").write_text("{}")
+        (folder / "model.safetensors").write_bytes(b"\0" * 16)
+        index[component] = [lib, cls, {"subfolder": component, "type_hint": [lib, cls]}]
+    (root / "modular_model_index.json").write_text(json.dumps(index))
+    return root
+
+
+def _flux3_installed(monkeypatch):
+    # The CPU suite runs on a released diffusers without the FLUX.3 blocks; the checks below come after that gate.
+    from core.inference import diffusion as d
+
+    monkeypatch.setattr(d, "assert_pipeline_class_available", lambda *a, **k: None)
+
+
+def test_a_local_modular_base_is_accepted_for_a_gguf_denoiser(tmp_path, monkeypatch):
+    from core.inference.diffusion import DiffusionBackend
+
+    _flux3_installed(monkeypatch)
+    base = _modular_base(tmp_path)
+    ggufs = tmp_path / "ggufs"
+    ggufs.mkdir()
+    (ggufs / "flux-3-image-klein-Q4_K_M.gguf").write_bytes(b"GGUF")
+    fam = DiffusionBackend().validate_load_request(
+        str(ggufs),
+        gguf_filename = "flux-3-image-klein-Q4_K_M.gguf",
+        family_override = FLUX3_KLEIN_FAMILY_NAME,
+        model_kind = "gguf",
+        base_repo = str(base),
+    )
+    assert fam.name == FLUX3_KLEIN_FAMILY_NAME
+
+
+def test_supplied_encoder_or_vae_files_are_refused_for_flux3(tmp_path, monkeypatch):
+    from core.inference.diffusion import DiffusionBackend
+
+    _flux3_installed(monkeypatch)
+    ggufs = tmp_path / "ggufs"
+    ggufs.mkdir()
+    (ggufs / "flux-3-image-klein-Q4_K_M.gguf").write_bytes(b"GGUF")
+    (ggufs / "vae.safetensors").write_bytes(b"\0" * 16)
+    for extra in ({"vae_file": "vae.safetensors"}, {"text_encoder_files": ["vae.safetensors"]}):
+        with pytest.raises(ValueError, match = "not supported for 'flux.3-klein'"):
+            DiffusionBackend().validate_load_request(
+                str(ggufs),
+                gguf_filename = "flux-3-image-klein-Q4_K_M.gguf",
+                family_override = FLUX3_KLEIN_FAMILY_NAME,
+                model_kind = "gguf",
+                **extra,
+            )

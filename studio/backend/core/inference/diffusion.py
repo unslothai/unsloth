@@ -1137,6 +1137,16 @@ def _with_supplied_components(load: Callable[..., dict]) -> Callable[..., dict]:
     return wrapper
 
 
+def _generation_chunks(family: Any, jobs: list, batch_size: int, *, layer_count: Any = None) -> list:
+    """Per-forward chunks of ``(prompt, seed)`` jobs. Layered: one input per forward. FLUX.3 runs one image per
+    modular call, so each image is its own chunk: every one then gets its own encode, denoise and decode phase, and
+    the text-encoder release that comes with entering denoise (one chunk of several images would release it once,
+    and the next image's encode would bring it back for the rest of the chunk)."""
+    if layer_count or is_flux3_family(family):
+        return [[job] for job in jobs]
+    return chunk_jobs(jobs, batch_size)
+
+
 def _te_quant_for_supplied_encoders(requested: Optional[str]) -> Optional[str]:
     """Unset / auto never re-casts a supplied encoder (it would fetch the hosted encoder the file replaces)."""
     if requested is None or str(requested).strip().lower() in ("", "auto"):
@@ -3442,6 +3452,14 @@ class DiffusionBackend:
                 "text_encoder_file / vae_file load beside a single-file or GGUF transformer; a full pipeline "
                 "(or a whole-pipeline single file) already carries its own text encoders and VAE."
             )
+        if is_flux3_family(fam):
+            # The supplied-component loader resolves classes from a model_index.json, which FLUX.3 does not ship, and
+            # its encoder is a Qwen3-VL with its processor in the same folder: refuse up front rather than load the
+            # official encoder and VAE in place of the files the user picked.
+            raise ValueError(
+                f"separate text encoder / VAE files are not supported for '{fam.name}' yet; omit "
+                "text_encoder_files and vae_file (the base repo's encoder and VAE are used)."
+            )
         if vae_file and fam.name == KREA2_FAMILY_NAME:
             raise ValueError(
                 f"a separate VAE file is not supported for '{fam.name}' yet; omit vae_file."
@@ -3706,7 +3724,11 @@ class DiffusionBackend:
             (fam.denoiser_attr,) if kind in ("gguf", "single_file") and not whole_file else ()
         )
         _assert_local_base_is_pipeline(
-            base_repo, excluded_components = excluded, config_only_model_components = whole_file
+            base_repo,
+            # FLUX.3 companions come from a Modular Diffusers base (modular_model_index.json, no model_index.json).
+            allow_modular = is_flux3_family(fam),
+            excluded_components = excluded,
+            config_only_model_components = whole_file,
         )
         local_root = Path(repo_id).expanduser()
         # Path-shaped: "."/".." prefix, a backslash (never in "org/name"), or an absolute path.
@@ -11376,7 +11398,7 @@ class DiffusionBackend:
                 # Per-forward chunks: the whole job list in ONE forward by default, bounded by an explicit batch_size
                 # cap; the OOM backoff below halves a failed chunk. Layered: one input per forward (the pipeline's
                 # per-prompt layer stride is only right for one).
-                chunks = [[job] for job in jobs] if layer_count else chunk_jobs(jobs, batch_size)
+                chunks = _generation_chunks(state.family, jobs, batch_size, layer_count = layer_count)
                 guard_width = guard_height = guard_target = None
                 guard_batch = 1
 
