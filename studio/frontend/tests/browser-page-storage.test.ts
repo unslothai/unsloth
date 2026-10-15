@@ -92,8 +92,9 @@ function openPage(url: string, tabId = "tab-1") {
   stopPages.push(
     onPageStorageWrite(({ origin: site, area, key, value, requested, from, url: writer, seq }) => {
       const own = from === self;
-      if (site === origin && area !== "session" && !(own && value !== requested)) {
-        const command = { command: "storageSync", area, key, value, url: writer ?? null, own, seq: own ? seq : null };
+      if (site === origin && area !== "session") {
+        const refused = own && value !== requested;
+        const command = { command: "storageSync", area, key, value, url: writer ?? null, own, seq: own ? seq : null, refused };
         deliver(() => message({ type: "unsloth:browser-command", ...command }));
       }
     }),
@@ -397,4 +398,45 @@ test("a clear's echo doesn't drop a key the page wrote after it", () => {
   assert.equal(page.window.localStorage.getItem("k"), "v");
   assert.equal(page.window.localStorage.getItem("old"), null);
   assert.deepEqual(readPageStorage("https://example.com", "tab-1").local, [["k", "v"]]);
+});
+
+test("another page's older write doesn't undo this page's write still on its way", () => {
+  reset();
+  const first = openPage("https://example.com/", "tab-1");
+  const second = openPage("https://example.com/", "tab-2");
+  deferred = [];
+  first.window.localStorage.setItem("k", "a");
+  second.window.localStorage.setItem("k", "b");
+  // The panel stores the first page's write and tells the second before the second's write lands.
+  deferred.shift()?.();
+  for (let i = deferred.length - 1; i >= 1; i--) {
+    deferred.splice(i, 1)[0]?.();
+  }
+  assert.equal(second.window.localStorage.getItem("k"), "b");
+  flush();
+  assert.equal(first.window.localStorage.getItem("k"), "b");
+  assert.equal(second.window.localStorage.getItem("k"), "b");
+});
+
+test("a value too large for the panel stays in its page when another page wrote the key first", () => {
+  reset();
+  const first = openPage("https://example.com/", "tab-1");
+  const second = openPage("https://example.com/", "tab-2");
+  const large = "x".repeat(140_000);
+  deferred = [];
+  first.window.localStorage.setItem("k", "small");
+  second.window.localStorage.setItem("k", large);
+  flush();
+  assert.equal(second.window.localStorage.getItem("k"), large);
+});
+
+test("a value refused for the site's total quota stays in its page and doesn't block later syncs", () => {
+  reset();
+  const first = openPage("https://example.com/", "tab-1");
+  const second = openPage("https://example.com/", "tab-2");
+  first.window.localStorage.setItem("fill", "y".repeat(120_000));
+  second.window.localStorage.setItem("k", "z".repeat(20_000));
+  assert.equal(second.window.localStorage.getItem("k")?.length, 20_000);
+  first.window.localStorage.setItem("k", "later");
+  assert.equal(second.window.localStorage.getItem("k"), "later");
 });

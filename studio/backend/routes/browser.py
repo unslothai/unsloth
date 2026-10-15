@@ -204,7 +204,9 @@ _PAGE_STORAGE_JS = r"""
           const store = {
             data,
             latest: new Map(),
+            acked: new Map(),
             clearedAt: 0,
+            clearAcked: 0,
             set: (key, value) => {
               data.set(key, value);
               sync(area, key, value);
@@ -239,9 +241,16 @@ _PAGE_STORAGE_JS = r"""
           else if (data.command === "storageSync" && (data.area === "local" || data.area === "cookie") && text(data.key) && text(data.value)) {
             const store = pageStores[data.area];
             if (!store) return;
+            // This page's write or clear of the key is still on its way: its own echo settles the key.
+            const pending = (key) =>
+              store.clearedAt > store.clearAcked || (key !== null && (store.latest.get(key) ?? 0) > (store.acked.get(key) ?? 0));
             const oldValue = data.key === null ? null : (store.data.get(data.key) ?? null);
             if (data.own === true) {
               const seq = Number(data.seq) || 0;
+              if (data.key === null) store.clearAcked = Math.max(store.clearAcked, seq);
+              else store.acked.set(data.key, Math.max(store.acked.get(data.key) ?? 0, seq));
+              // Refused by the panel's quota: the value stays in this page only.
+              if (data.refused === true) return;
               if (store.clearedAt > seq || (data.key !== null && (store.latest.get(data.key) ?? 0) > seq)) return;
               if (data.key === null) {
                 // Keys written after the clear stay.
@@ -249,6 +258,10 @@ _PAGE_STORAGE_JS = r"""
                 return;
               }
               if (data.value === null && oldValue !== null && !kept(data.key, oldValue)) return;
+            } else if (data.key === null ? Array.from(store.data.keys()).some(pending) : pending(data.key)) {
+              if (data.key !== null) return;
+              for (const key of Array.from(store.data.keys())) if (!pending(key)) store.data.delete(key);
+              return;
             }
             // Like a browser, a write that changes nothing fires no event (two pages could echo it forever).
             if (data.key === null ? !store.data.size : oldValue === data.value) return;

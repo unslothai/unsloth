@@ -35,6 +35,7 @@ export type FrameCommand =
       url: string | null;
       own: boolean;
       seq: number | null;
+      refused: boolean;
     }
   | { command: "annotateInstall"; code: string }
   | { command: "annotate"; on: boolean; color?: string }
@@ -239,7 +240,6 @@ export function PageFrame({
       if (!target || site !== origin || area === "session") return;
       const own = from === target;
       // The writer hears back too, so racing pages settle on the store's value; a refused value stays in its page.
-      if (own && value !== requested) return;
       const command: FrameCommand = {
         command: "storageSync",
         area,
@@ -248,6 +248,7 @@ export function PageFrame({
         url: url ?? null,
         own,
         seq: own ? (seq ?? null) : null,
+        refused: own && value !== requested,
       };
       target.contentWindow?.postMessage({ type: "unsloth:browser-command", ...command }, "*");
     });
