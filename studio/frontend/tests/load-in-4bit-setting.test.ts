@@ -111,3 +111,30 @@ test("every default-engine load path sends the choice, vLLM and SGLang never 4-b
     2,
   );
 });
+
+test("only a default-engine resident hydrates the switch, and an unload resets 16-bit", () => {
+  const applier = readSrc(
+    "features/chat/lib/apply-inference-status-to-store.ts",
+  );
+  const start = applier.indexOf("function residentEngineParams(");
+  const body = applier.slice(
+    applier.indexOf("return {", start),
+    applier.indexOf("} as const;", start),
+  );
+  const hydrate = new Function("status", `${body}};`) as (
+    status: Record<string, unknown>,
+  ) => Record<string, unknown>;
+  assert.equal(hydrate({ load_in_4bit: false }).loadIn4bit, false);
+  assert.equal(hydrate({ load_in_4bit: true }).loadIn4bit, true);
+  assert.equal(
+    hydrate({ engine: "vllm", load_in_4bit: false }).loadIn4bit,
+    true,
+  );
+  assert.equal(hydrate({ is_gguf: true, load_in_4bit: null }).loadIn4bit, true);
+
+  const runtime = readSrc("features/chat/hooks/use-chat-model-runtime.ts");
+  assert.match(
+    runtime,
+    /liveBeforeLoad\.params\.loadIn4bit === false &&\s*\(switchesModel \|\| !liveBeforeLoad\.params\.checkpoint\)/,
+  );
+});

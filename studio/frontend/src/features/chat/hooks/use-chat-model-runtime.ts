@@ -2004,14 +2004,18 @@ export function useChatModelRuntime() {
       let mlxLoadProgress = false;
       const liveBeforeLoad = useChatRuntimeStore.getState();
       // A switch without a saved config starts on the default engine, as the dedupe above assumes.
+      const switchesModel = Boolean(
+        liveBeforeLoad.params.checkpoint &&
+          (liveBeforeLoad.params.checkpoint !== modelId ||
+            (liveBeforeLoad.activeGgufVariant ?? null) !== (ggufVariant ?? null)),
+      );
       if (
         (typeof selection === "string" || !selection.config) &&
         !keepSpeculative &&
-        liveBeforeLoad.params.checkpoint &&
-        (liveBeforeLoad.params.checkpoint !== modelId ||
-          (liveBeforeLoad.activeGgufVariant ?? null) !== (ggufVariant ?? null)) &&
-        ((liveBeforeLoad.params.engine ?? "auto") !== "auto" ||
-          liveBeforeLoad.params.loadIn4bit === false)
+        (((liveBeforeLoad.params.engine ?? "auto") !== "auto" && switchesModel) ||
+          // An unload clears the checkpoint but not the precision, so 16-bit resets either way.
+          (liveBeforeLoad.params.loadIn4bit === false &&
+            (switchesModel || !liveBeforeLoad.params.checkpoint)))
       ) {
         liveBeforeLoad.setParams({
           ...liveBeforeLoad.params,

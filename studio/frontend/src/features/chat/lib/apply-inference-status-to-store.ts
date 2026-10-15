@@ -158,8 +158,9 @@ function residentEngineParams(status: InferenceStatusResponse) {
     engineKvCacheDtype: status.engine_kv_cache_dtype ?? "auto",
     engineSeed: status.engine_seed ?? null,
     engineGpuMemoryUtilization: status.engine_gpu_memory_utilization ?? null,
-    // As requested, so a model started with --no-load-in-4bit reloads in 16-bit too.
-    loadIn4bit: status.load_in_4bit !== false,
+    // As requested, so a model started with --no-load-in-4bit reloads in 16-bit too. vLLM / SGLang
+    // record false because they take engine_precision instead, which is no choice of this switch.
+    loadIn4bit: (status.engine ?? "auto") !== "auto" || status.load_in_4bit !== false,
   } as const;
 }
 
