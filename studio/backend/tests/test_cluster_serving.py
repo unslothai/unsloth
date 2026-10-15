@@ -2411,6 +2411,7 @@ def test_private_kv_streams_are_sized_per_slot(monkeypatch, extra, cells):
 
 def test_the_host_embedding_is_not_counted_as_freed(monkeypatch):
     _cluster_env(monkeypatch)
+    monkeypatch.setattr(cs, "_shares_host_memory", lambda device: False)
     monkeypatch.setattr(cs, "_local_gguf_header", lambda *a, **k: ({}, {0: GIB, -2: 3 * GIB}))
     out = run(ss.before_load(_request(), 4))
     backend = SimpleNamespace(
@@ -2928,6 +2929,7 @@ def test_token_embedding_lora_tensors_are_not_counted_as_freed(monkeypatch, tmp_
     monkeypatch.setattr(
         ss, "gguf_size_bytes", lambda path: 200 * GIB if path == "/models/big.gguf" else GIB
     )
+    monkeypatch.setattr(cs, "_shares_host_memory", lambda device: False)
     monkeypatch.setattr(cs, "_local_gguf_header", lambda *a, **k: ({}, {0: GIB, -2: GIB}))
     run(ss.before_load(_request(llama_extra_args = ["--lora", str(lora)]), 4))
     assert cs.state().plan.host_bytes == 2 * GIB  # the embedding and its adapter
@@ -2990,7 +2992,8 @@ def test_recurrent_state_skips_the_periodic_attention_layers():
     assert cs._recurrent_layers(dict(vals, **{"qwen3next.nextn_predict_layers": 4})) == 33
 
 
-@pytest.mark.parametrize("unified, untied", [(False, True), (True, True), (False, False)])
+@pytest.mark.parametrize("unified", [False, True])
+@pytest.mark.parametrize("untied", [False, True])
 def test_a_host_only_embedding_is_not_accelerator_demand(monkeypatch, unified, untied):
     _cluster_env(monkeypatch)
     monkeypatch.setattr(cs, "_shares_host_memory", lambda device: unified)
@@ -2998,9 +3001,10 @@ def test_a_host_only_embedding_is_not_accelerator_demand(monkeypatch, unified, u
     monkeypatch.setattr(cs, "_local_gguf_header", lambda *a, **k: (_llama_header(8), blocks))
     run(ss.before_load(_request(), 4))
     plan = cs.state().plan
-    off = 2 * GIB if untied and not unified else 0
-    assert plan.need_bytes - plan.kv_bytes == pytest.approx(250 * GIB - off)
-    assert plan.host_bytes == 2 * GIB - off
+    # Untied: the embedding leaves every device's share. Unified: all of it lands here.
+    assert plan.need_bytes - plan.kv_bytes == pytest.approx(250 * GIB - (2 * GIB if untied else 0))
+    assert plan.extra_bytes == (2 * GIB if unified else 0)
+    assert plan.host_bytes == (2 * GIB if not unified and not untied else 0)
 
 
 def test_a_build_without_kv_unified_is_planned_at_one_slot(monkeypatch):
@@ -3076,3 +3080,18 @@ def test_status_names_the_two_spark_split_a_malformed_config_keeps(monkeypatch):
     monkeypatch.setenv(cs.ENV_NODES, "bad host!")
     assert ss.current_topology() == "layer_split"
     assert ss.status()["topology"] == "layer_split" and ss.status()["cluster_config_error"]
+
+
+def test_a_small_share_worker_that_restarted_forces_a_relaunch(monkeypatch):
+    _cluster_env(monkeypatch)
+    out = run(ss.before_load(_request(), 4))
+    backend = SimpleNamespace(
+        _process = SimpleNamespace(args = ["/b/llama-server"] + out.llama_extra_args),
+        is_loaded = True,
+    )
+    run(ss.after_load(backend, 4))
+    # The residency credit rounds every worker's share to nothing (a whole layer kept back).
+    cs.state()._resident = {k: 0.0 for k in cs.state()._resident}
+    _cluster_env(monkeypatch, listing = LISTING + "\n")  # every worker reports its memory free
+    out = run(ss.before_load(_request(), 4))
+    assert out.force_reload is True

@@ -1446,8 +1446,19 @@ class ClusterServing:
             self.topology, self.reason = "single", "the load was cancelled"
             return request
         if self._backend is not None and getattr(self._backend, "is_loaded", False):
+            served = self._pre_load[2] if self._pre_load else None
+            # The served share itself (weights and KV), not the residency credit, which keeps a
+            # layer back and can round a small share down to nothing.
+            placed = (
+                {
+                    d.key: w * max(0.0, float(served.need_bytes or 0) - served.host_bytes)
+                    for d, w in zip(served.devices, served.weights)
+                }
+                if served is not None and served.topology == "layer_split"
+                else {}
+            )
             for d in devices:
-                held = self._resident.get(d.key, 0.0)
+                held = max(self._resident.get(d.key, 0.0), placed.get(d.key, 0.0))
                 if d.remote and held > 512 * 2**20 and d.free_bytes > d.total_bytes - held / 2:
                     # Its memory is free again: the worker restarted (or was replaced by hand)
                     # and lost the served layers, so equal arguments must relaunch.
@@ -1511,8 +1522,11 @@ class ClusterServing:
                 scratch_bytes = self._ctx_compute,
             )
 
-        # An untied input embedding stays in host RAM, which only a unified device draws on.
-        off_device = self._host_embd if self._untied and not unified else 0.0
+        # The input embedding stays whole in this machine's host RAM: off every device's share
+        # (untied; a tied model's output copy is still a lump), and all of it on a unified device.
+        off_device = self._host_embd if self._untied else 0.0
+        if unified:
+            local_extra += self._host_embd
         plan = plan_for(model_bytes - off_device)
         skipped = self._nextn_bytes  # in the plan's weights, never loaded on a split
         if plan.topology == "refuse" and self._nextn_bytes:
@@ -1523,7 +1537,8 @@ class ClusterServing:
         plan.kv_bytes = float(kv_bytes or 0)
         plan.uncertain_extra_bytes = self._uncertain_extra + checkpoints
         plan.layer_bytes = float(layer_bytes or 0.0)
-        plan.host_bytes = (self._host_embd - off_device) + (
+        # On unified memory the embedding is in extra_bytes, freed with the process like the rest.
+        plan.host_bytes = (0.0 if unified else self._host_embd - off_device) + (
             skipped if plan.topology == "layer_split" else 0.0
         )
         self.plan = plan
