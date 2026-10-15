@@ -662,6 +662,8 @@ export function ModelsPage() {
   );
   // Below lg the split detail pane overlays the list, so split view opens on the rows instead.
   const isCompactViewport = useIsCompact();
+  // The split view's auto-picked first row; an explicit selection or leaving split clears it.
+  const autoPreviewIdRef = useRef<string | null>(null);
   // Remembers the last non-split view so "Back to Hub" drops into the prior browsing layout.
   const lastNonSplitViewRef = useRef<AllModelsView>("two");
   const setAllModelsView = useCallback(
@@ -670,6 +672,7 @@ export function ModelsPage() {
       writeAllModelsViewPreference(view);
       // Leaving split view drops the inline preview so the user lands on the full hub list.
       if (view !== "split") {
+        autoPreviewIdRef.current = null;
         void navigate({
           to: "/hub",
           search: (prev) => ({ ...prev, model: undefined }),
@@ -1352,8 +1355,6 @@ export function ModelsPage() {
     return () => runConfigOpenCoordinator.cancel();
   }, [runConfigOpenCoordinator, selectedId]);
 
-  // The split view's auto-picked first row; an explicit selection clears it.
-  const autoPreviewIdRef = useRef<string | null>(null);
   const handleSelect = useCallback(
     (id: string) => {
       autoPreviewIdRef.current = null;
@@ -1369,6 +1370,7 @@ export function ModelsPage() {
   const handleCloseDetail = useCallback(() => {
     runConfigOpenCoordinator.cancel();
     setRunConfigOpening(null);
+    autoPreviewIdRef.current = null;
     // From split view, "Back to Hub" returns to the main hub feed (not the filtered list): leave
     // split mode, reset discover state, and clear the inline preview and channel.
     if (allModelsView === "split" && !isCompactViewport) {
