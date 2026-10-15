@@ -117,8 +117,11 @@ export const BUDGET = {
   // (6,764,579 -> 6,764,964 B raw, 2,033,464 -> 2,033,544 B transfer from 91f8457ab3 to 7b6b2a8e48, one machine
   // and build, Node 24, chunk count unchanged at 95), which put main 43 B raw over. Raised by that growth so
   // main's margin stays where it was.
+  // This PR's Routines sidebar and the latest main measure 6,607.3 KB raw / 1,981.4 KB transfer
+  // locally (Node 26, 95 chunks). Raw exceeds main's limit by 0.6 KB; the earlier CI merge build
+  // was 2.3 KB raw / 0.5 KB transfer over its then-current limit. Allow that small eager nav cost.
   transferBytes: 2_033_684,
-  rawBytes: 6_765_306,
+  rawBytes: 6_769_000,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

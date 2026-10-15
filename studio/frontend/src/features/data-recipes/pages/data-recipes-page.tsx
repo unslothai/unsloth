@@ -42,7 +42,7 @@ import {
   PlusSignIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useNavigate } from "@tanstack/react-router";
+import { Link, useNavigate } from "@tanstack/react-router";
 import type { ReactElement } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -430,36 +430,41 @@ export function DataRecipesPage(): ReactElement {
               Create and manage local recipe workflows.
             </p>
           </div>
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild={true}>
-              <Button type="button" data-tour="recipes-new" disabled={isBusy}>
-                <HugeiconsIcon icon={PlusSignIcon} className="size-4" />
-                New Recipe
-                <HugeiconsIcon
-                  icon={ChevronDownStandardIcon}
-                  className="size-4"
-                />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem
-                onSelect={() => {
-                  openNewRecipe().catch(() => undefined);
-                }}
-              >
-                <HugeiconsIcon icon={PlusSignIcon} className="size-4" />
-                Start Empty
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                onSelect={() => {
-                  setLearningDialogOpen(true);
-                }}
-              >
-                <HugeiconsIcon icon={CookBookIcon} className="size-4" />
-                Start from Learning Recipe
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" asChild>
+              <Link to="/routines">Routines</Link>
+            </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild={true}>
+                <Button type="button" data-tour="recipes-new" disabled={isBusy}>
+                  <HugeiconsIcon icon={PlusSignIcon} className="size-4" />
+                  New Recipe
+                  <HugeiconsIcon
+                    icon={ChevronDownStandardIcon}
+                    className="size-4"
+                  />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem
+                  onSelect={() => {
+                    openNewRecipe().catch(() => undefined);
+                  }}
+                >
+                  <HugeiconsIcon icon={PlusSignIcon} className="size-4" />
+                  Start Empty
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onSelect={() => {
+                    setLearningDialogOpen(true);
+                  }}
+                >
+                  <HugeiconsIcon icon={CookBookIcon} className="size-4" />
+                  Start from Learning Recipe
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
         </div>
 
         {ready ? (

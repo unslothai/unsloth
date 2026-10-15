@@ -726,6 +726,7 @@ export const ru = {
       library: "Библиотека",
       train: "Обучение",
       recipes: "Рецепты",
+      routines: "Регулярные задачи",
       images: "Изображения",
       video: "Видео",
       audio: "Аудио",

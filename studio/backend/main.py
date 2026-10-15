@@ -918,6 +918,11 @@ async def lifespan(app: FastAPI):
     app.state.research_supervisor = ResearchSupervisor(app)
     app.state.research_supervisor.start()
 
+    from core.routines import RoutineSupervisor
+
+    app.state.routine_supervisor = RoutineSupervisor(app)
+    app.state.routine_supervisor.start()
+
     from core.inference.chat_generation_runs import ChatGenerationSupervisor
 
     app.state.chat_generation_supervisor = ChatGenerationSupervisor(app)
@@ -1033,6 +1038,10 @@ async def lifespan(app: FastAPI):
     _research_supervisor = getattr(app.state, "research_supervisor", None)
     if _research_supervisor is not None:
         await _research_supervisor.stop()
+
+    _routine_supervisor = getattr(app.state, "routine_supervisor", None)
+    if _routine_supervisor is not None:
+        await asyncio.to_thread(_routine_supervisor.stop)
 
     _chat_generation_supervisor = getattr(app.state, "chat_generation_supervisor", None)
     if _chat_generation_supervisor is not None:
@@ -1804,6 +1813,11 @@ app.include_router(training_router, prefix = "/api/train", tags = ["training"])
 app.include_router(models_router, prefix = "/api/models", tags = ["models"])
 app.include_router(chat_history_router, prefix = "/api/chat", tags = ["chat"])
 app.include_router(research_runs_router, prefix = "/api/chat/research-runs", tags = ["research-runs"])
+app.include_router(
+    __import__("routes.routines", fromlist = ["router"]).router,
+    prefix = "/api/routines",
+    tags = ["routines"],
+)
 app.include_router(
     chat_generation_runs_router,
     prefix = "/api/inference/chat-runs",

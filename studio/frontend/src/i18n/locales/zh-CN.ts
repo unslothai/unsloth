@@ -721,6 +721,7 @@ export const zhCN = {
       library: "资料库",
       train: "训练",
       recipes: "配方",
+      routines: "例行任务",
       images: "图像",
       video: "视频",
       audio: "音频",

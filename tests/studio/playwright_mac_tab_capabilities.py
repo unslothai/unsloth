@@ -129,6 +129,7 @@ TABS = [
     ("/library", "library", "Library"),
     ("/images", "images", "Images"),
     ("/studio", "train", "Train"),
+    ("/routines", "routines", "Routines"),
     ("/video", "video", "Video"),
     ("/export", "export", "Export"),
 ]
@@ -150,7 +151,7 @@ _SIGNED_OUT_PATHS = ("/login", "/change-password")
 # once more. test_inline_row_ids_match_the_frontends_default_pinned_set holds this tuple to
 # the store's pinned set, in both directions, so neither a pin nor an unpin can leave an
 # assertion here silently observing nothing.
-INLINE_ROW_IDS = ("hub", "projects", "library", "images", "train")
+INLINE_ROW_IDS = ("hub", "projects", "library", "images", "train", "routines")
 # Pinned rows that stand down while something else on screen does their job, keyed to that something. Since #12016 the
 # Projects section shows as soon as projects have loaded, empty or not, and the Projects row yields to it
 # (projectsSectionShowing in app-sidebar.tsx). So on a fresh install the row is absent by design and the section is

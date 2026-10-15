@@ -102,6 +102,7 @@ export const SIDEBAR_NAV_ITEM_IDS = [
   "audio",
   "train",
   "recipes",
+  "routines",
   "export",
   "api",
 ] as const;
@@ -150,6 +151,7 @@ export const SIDEBAR_NAV_DEFAULT_PINNED: Record<SidebarNavItemId, boolean> = {
   audio: false,
   train: true,
   recipes: false,
+  routines: true,
   export: false,
   api: false,
 };
@@ -416,7 +418,18 @@ function sanitizeSidebarNav(value: unknown): SidebarNavItemPref[] {
     seen.add(source.id);
     items.push({ id: source.id, pinned: source.pinned !== false });
   }
-  // Ids added after the payload was written land at the end with their default.
+  // Keep the new Routines row beside Recipes in existing sidebar layouts.
+  if (!seen.has("routines")) {
+    const recipes = items.findIndex((item) => item.id === "recipes");
+    if (recipes >= 0) {
+      items.splice(recipes + 1, 0, {
+        id: "routines",
+        pinned: SIDEBAR_NAV_DEFAULT_PINNED.routines,
+      });
+      seen.add("routines");
+    }
+  }
+  // Other ids added after the payload was written land at the end with their default.
   for (const id of SIDEBAR_NAV_ITEM_IDS) {
     if (!seen.has(id)) items.push({ id, pinned: SIDEBAR_NAV_DEFAULT_PINNED[id] });
   }

@@ -723,6 +723,7 @@ export const ar = {
       library: "المكتبة",
       train: "تدريب",
       recipes: "الوصفات",
+      routines: "المهام الدورية",
       images: "الصور",
       video: "الفيديو",
       audio: "الصوت",
