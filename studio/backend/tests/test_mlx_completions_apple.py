@@ -44,13 +44,23 @@ def _greedy(backend, ids, **kw):
 
 
 def test_raw_prompt_matches_a_direct_untemplated_mlx_lm_run(backend):
-    from mlx_lm import generate
+    from mlx_lm import stream_generate
 
     resolved = backend.resolve_completion_prompt(_PROMPT)
     assert resolved["ids"] == backend._tokenizer.encode(_PROMPT, add_special_tokens = True)
     assert resolved["text"] == _PROMPT
 
-    direct = generate(backend._model, backend._tokenizer, prompt = resolved["ids"], max_tokens = 8)
+    # Decoded from the ids: mlx_lm's streaming detokenizer trims the first piece's leading
+    # space, which a raw continuation (and llama-server) keeps.
+    tokens = [
+        r.token
+        for r in stream_generate(
+            backend._model, backend._tokenizer, prompt = resolved["ids"], max_tokens = 8
+        )
+    ]
+    direct = backend._tokenizer.decode(
+        tokens, skip_special_tokens = True, clean_up_tokenization_spaces = False
+    )
     assert direct.strip()
     assert _greedy(backend, resolved["ids"]) == direct
     # Token ids resolve to themselves and decode as the same greedy text.
