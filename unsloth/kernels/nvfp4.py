@@ -533,7 +533,13 @@ def _split_sum(partial, out):
 
 def _needs_int64(*tensors):
     # Largest reachable element offset, not numel: a strided view can reach past 2**31 with fewer elements.
-    return max(sum((n - 1) * abs(st) for n, st in zip(t.shape, t.stride())) for t in tensors) >= 2**31
+    for t in tensors:
+        if t.is_contiguous():
+            if t.numel() > 2**31:
+                return True
+        elif sum((n - 1) * abs(st) for n, st in zip(t.shape, t.stride())) >= 2**31:
+            return True
+    return False
 
 
 def _scale_groups(packed, scale):
