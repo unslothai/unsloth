@@ -12,6 +12,8 @@ export type PreviewToken = [number, string, boolean];
 
 export type TokenPreviewSample = {
   tokens: PreviewToken[];
+  /** Every ID of the row, including the ones past the displayed tokens. */
+  input_ids: number[];
   num_tokens: number;
   num_trained: number;
   num_hidden: number;

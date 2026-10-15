@@ -218,3 +218,12 @@ def test_a_supplied_cache_folder_is_never_the_tokenizer_source(captured):
         )
     )
     assert "/somewhere" not in captured[-1][1]["tokenizer_source"]
+
+
+class _LegacySentencePiece:
+    def decode(self, ids):
+        return "quick"
+
+
+def test_a_sentencepiece_word_keeps_its_leading_space():
+    assert token_preview_worker._token_text(_LegacySentencePiece(), 1, "▁quick") == " quick"

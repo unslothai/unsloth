@@ -1737,19 +1737,6 @@ def _token_preview_rows(request: TokenPreviewRequest, hf_token) -> list[dict]:
     return rows
 
 
-def _tokenizer_cached(repo_id: str) -> bool:
-    from huggingface_hub import try_to_load_from_cache
-    from utils.hf_cache_settings import get_hf_cache_paths
-
-    try:
-        hit = try_to_load_from_cache(
-            repo_id, "tokenizer_config.json", cache_dir = str(get_hf_cache_paths().hub_cache)
-        )
-    except Exception:
-        return False
-    return isinstance(hit, str)
-
-
 @router.post("/token-preview")
 async def token_preview(
     request: TokenPreviewRequest,
@@ -1759,6 +1746,7 @@ async def token_preview(
     """Tokens and completion mask for a few rows of the selected dataset, or for ``text``, as
     training would produce them. Loads the tokenizer only, in a GPU-free subprocess."""
     from core.training.token_preview import TokenPreviewError, run_token_preview
+    from core.training.training import should_use_mlx_training_backend
     from routes.models import _require_model_access_or_caller_token
     from utils.account_context import current_account_id
     from hub.utils.hf_tokens import recording_a_request_token_fetch
@@ -1776,7 +1764,10 @@ async def token_preview(
     await _require_model_access_or_caller_token(model_name, hf_token)
     # By repo id, not the picked cache folder: a cached repo still resolves from disk, and a folder
     # path would skip the account checks above.
-    source = unsloth_public_mirror(model_name, request.load_in_4bit) or model_name
+    # Same repo the trainer reads: MLX loads the picked name as given (see _metadata_lookup_name).
+    source = model_name
+    if not should_use_mlx_training_backend():
+        source = unsloth_public_mirror(model_name, request.load_in_4bit) or model_name
     remote = not is_local_path(source)
     if remote and anonymous_and_offline(hf_token, repo_id = source):
         raise HTTPException(status_code = 404, detail = "This model is not available offline.")
@@ -1795,10 +1786,9 @@ async def token_preview(
             "train_on_completions": request.train_on_completions and not request.is_cpt,
             "max_seq_length": request.max_seq_length,
         }
-        # Recorded only when the tokenizer is not on disk yet, the one case where this call fetches it.
         fetch = (
             recording_a_request_token_fetch(hf_token, source, "model")
-            if remote and not _tokenizer_cached(source)
+            if remote
             else contextlib.nullcontext()
         )
         with fetch:

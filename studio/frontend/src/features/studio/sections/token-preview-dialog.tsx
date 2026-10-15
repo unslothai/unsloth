@@ -122,8 +122,7 @@ function SampleCard({
       ? Math.round((100 * sample.num_trained) / sample.num_tokens)
       : 0;
   const copyIds = async () => {
-    const ids = sample.tokens.map(([id]) => id);
-    if (await copyToClipboard(JSON.stringify(ids))) {
+    if (await copyToClipboard(JSON.stringify(sample.input_ids))) {
       toast.success(t("studio.dataset.tokenPreview.copied"));
     }
   };

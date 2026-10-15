@@ -69,6 +69,9 @@ def _token_text(tokenizer, token_id: int, raw: str) -> str:
     """The token as text. A piece holding part of a multi-byte character decodes to U+FFFD on its
     own, so its bytes are spelled out instead: Llama's "ű" after a space is "Ġ" + 0xC5, then 0xB1."""
     text = tokenizer.decode([token_id])
+    # Legacy SentencePiece decoding (Mistral, Llama 2) drops the word-initial space of a lone "▁" piece.
+    if raw.startswith("▁") and not text.startswith(" "):
+        text = " " + text
     if "\ufffd" not in text or not raw:
         return text
     if all(char in _BYTE_LEVEL for char in raw):
@@ -94,6 +97,7 @@ def _render_tokens(tokenizer, input_ids: list, labels: list | None) -> dict:
     )
     return {
         "tokens": tokens,
+        "input_ids": [int(token_id) for token_id in input_ids],
         "num_tokens": len(input_ids),
         "num_trained": trained_count,
         "num_hidden": max(0, len(input_ids) - len(shown)),
