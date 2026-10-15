@@ -69,8 +69,9 @@ uses every GPU on its host, so a managed host is listed only once.
 
 A load that sets its own placement (`--device`, `--split-mode`, `--tensor-split`, `-ot`, `--rpc`,
 a GPU selection, manual memory mode, the tensor-parallel toggle, `--fit off`, `--no-kv-offload`
-or a micro-batch above 512) is served here as asked. A model not downloaded yet has its KV cache
-sized from its header on the Hub; when that cannot be read, it is served here.
+or a micro-batch above 512) is served here as asked. The KV cache and the largest layer are sized
+from the GGUF header (read from the Hub for a model not downloaded yet); a model whose KV cache
+cannot be sized that way is served here.
 
 A worker that does not answer, or a managed one that cannot be started, is left out and named
 in the status; the load is planned over the rest.

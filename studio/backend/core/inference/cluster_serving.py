@@ -47,7 +47,6 @@ LIST_DEVICES_TIMEOUT_S = 60.0
 WORKER_START_TIMEOUT_S = 60.0
 REACH_TIMEOUT_S = 3.0
 # KV share of the weights reserved for a Hub GGUF whose header is not downloaded yet.
-KV_UNKNOWN_FRACTION = 0.2
 _MMPROJ_VRAM_SAFETY = 1.4  # LlamaCppBackend._MMPROJ_VRAM_SAFETY
 
 _MMPROJ_DEVICE_FLAGS = frozenset({"--mmproj-device", "-mmdev"})
@@ -169,9 +168,10 @@ _KV_KEY_SUFFIXES = (
 )
 
 
-def _gguf_kv_scalars(f: Any) -> Dict[str, Any]:
-    """general.architecture and the integer keys estimate_kv_bytes reads, from a GGUF header
-    stream; a per-layer array keeps its largest value."""
+def _read_gguf_header(f: Any, *, tensors: bool = False) -> Tuple[Dict[str, Any], Dict[int, int]]:
+    """From a GGUF header stream: general.architecture and the integer keys estimate_kv_bytes
+    reads (a per-layer array keeps its largest value), and with ``tensors`` the weight bytes of
+    each block in this file."""
 
     def read(n: int) -> bytes:
         data = f.read(n)
@@ -179,15 +179,15 @@ def _gguf_kv_scalars(f: Any) -> Dict[str, Any]:
             raise EOFError
         return data
 
-    magic, _version, _tensors, count = struct.unpack("<IIQQ", read(24))
+    magic, _version, n_tensors, count = struct.unpack("<IIQQ", read(24))
     if magic != 0x46554747:
-        return {}
+        return {}, {}
     out: Dict[str, Any] = {}
     for _ in range(count):
         key = read(struct.unpack("<Q", read(8))[0]).decode("utf-8", "replace")
         vtype = struct.unpack("<I", read(4))[0]
-        if key.startswith("tokenizer.") and "general.architecture" in out:
-            break  # the model keys precede the vocabulary
+        if not tensors and key.startswith("tokenizer.") and "general.architecture" in out:
+            return out, {}  # the model keys precede the vocabulary
         wanted = key.endswith(_KV_KEY_SUFFIXES)
         if vtype == 8:
             text = read(struct.unpack("<Q", read(8))[0])
@@ -207,43 +207,50 @@ def _gguf_kv_scalars(f: Any) -> Dict[str, Any]:
             elif atype in _GGUF_FIXED_SIZES:
                 f.seek(_GGUF_FIXED_SIZES[atype] * n, 1)
             else:
-                break
+                return out, {}
         elif wanted and vtype in _GGUF_INT_FORMATS:
             fmt = _GGUF_INT_FORMATS[vtype]
             out[key] = int(struct.unpack(fmt, read(struct.calcsize(fmt)))[0])
         elif vtype in _GGUF_FIXED_SIZES:
             f.seek(_GGUF_FIXED_SIZES[vtype], 1)
         else:
-            break
-    return out
-
-
-def _remote_kv_bytes(
-    model_path: str,
-    variant: Optional[str],
-    hf_token: Optional[str],
-    ctx: int,
-    cache_type: Optional[str],
-    cache_type_v: Optional[str],
-    ss: Any,
-) -> Optional[int]:
-    """estimate_kv_bytes for a Hub GGUF not downloaded yet, from its first shard's header read
-    over HTTP ranges; None when it cannot be read."""
+            return out, {}
+    blocks: Dict[int, int] = {}
+    if not tensors:
+        return out, blocks
     try:
-        from huggingface_hub import HfFileSystem
-        from utils.models.model_config import list_gguf_variants
+        from gguf.constants import GGML_QUANT_SIZES
+    except ImportError:
+        return out, {}
+    for _ in range(n_tensors):
+        name = read(struct.unpack("<Q", read(8))[0]).decode("utf-8", "replace")
+        n_dims = struct.unpack("<I", read(4))[0]
+        elements = 1
+        for _ in range(n_dims):
+            elements *= struct.unpack("<Q", read(8))[0]
+        ttype = struct.unpack("<I", read(4))[0]
+        read(8)  # data offset
+        match = re.match(r"blk\.(\d+)\.", name)
+        if match is None:
+            continue
+        if ttype not in GGML_QUANT_SIZES:
+            return out, {}
+        block_size, type_size = GGML_QUANT_SIZES[ttype]
+        index = int(match.group(1))
+        blocks[index] = blocks.get(index, 0) + elements // block_size * type_size
+    return out, blocks
 
-        variants, _vision = list_gguf_variants(model_path, hf_token)
-        chosen = ss._pick_variant(variants, str(variant).strip().casefold() if variant else "")
-        if chosen is None:
-            return None
-        fs = HfFileSystem(token = hf_token)
-        with fs.open(f"{model_path}/{chosen.filename}", "rb", block_size = 1 << 20) as f:
-            vals = _gguf_kv_scalars(f)
-    except Exception:
-        return None
+
+def _gguf_kv_scalars(f: Any) -> Dict[str, Any]:
+    return _read_gguf_header(f)[0]
+
+
+def _kv_from_scalars(
+    vals: Dict[str, Any], ctx: int, cache_type: Optional[str], cache_type_v: Optional[str], ss: Any
+) -> Optional[int]:
+    """estimate_kv_bytes's formula over header values read by _read_gguf_header."""
     arch = vals.get("general.architecture")
-    if not arch:
+    if not arch or ctx <= 0:
         return None
     n_layer = vals.get(f"{arch}.block_count")
     n_head = vals.get(f"{arch}.attention.head_count")
@@ -258,6 +265,43 @@ def _remote_kv_bytes(
         cache_type if cache_type_v is None else cache_type_v
     )
     return int(n_layer * int(ctx) * n_kv * head_dim * per_elem)
+
+
+def _local_gguf_header(path: str, ss: Any) -> Tuple[Dict[str, Any], Dict[int, int]]:
+    """_read_gguf_header over every shard of a local GGUF, blocks summed across shards."""
+    vals: Dict[str, Any] = {}
+    blocks: Dict[int, int] = {}
+    try:
+        for index, shard in enumerate(ss.gguf_shard_paths(path) or [path]):
+            with open(shard, "rb") as f:
+                shard_vals, shard_blocks = _read_gguf_header(f, tensors = True)
+            if index == 0:
+                vals = shard_vals
+            for block, size in shard_blocks.items():
+                blocks[block] = blocks.get(block, 0) + size
+    except Exception:
+        return vals, {}
+    return vals, blocks
+
+
+def _remote_gguf_header(
+    model_path: str, variant: Optional[str], hf_token: Optional[str], ss: Any
+) -> Tuple[Dict[str, Any], Dict[int, int]]:
+    """_read_gguf_header for a Hub GGUF not downloaded yet, from its first shard over HTTP
+    ranges; empty when it cannot be read."""
+    try:
+        from huggingface_hub import HfFileSystem
+        from utils.models.model_config import list_gguf_variants
+
+        variants, _vision = list_gguf_variants(model_path, hf_token)
+        chosen = ss._pick_variant(variants, str(variant).strip().casefold() if variant else "")
+        if chosen is None:
+            return {}, {}
+        fs = HfFileSystem(token = hf_token)
+        with fs.open(f"{model_path}/{chosen.filename}", "rb", block_size = 1 << 20) as f:
+            return _read_gguf_header(f, tensors = True)
+    except Exception:
+        return {}, {}
 
 
 _DRAFTER_FLAGS = frozenset({"--model-draft", "-md", "--spec-draft-model"})
@@ -778,6 +822,7 @@ class ClusterServing:
         self._native_ctx: bool = False
         self._projector_url: bool = False
         self._unsized_kv: bool = False
+        self._max_block: Optional[float] = None
         self._uncertain_extra: float = 0.0
         # Workers this load (re)started: they hold none of the served split's buffers.
         self._started: set = set()
@@ -1048,9 +1093,11 @@ class ClusterServing:
             if failed:
                 self.last_error += "; " + "; ".join(failed.values())
             logger.warning("cluster serving: %s", self.last_error)
-        layer_bytes = (
-            (model_bytes + kv_bytes) / self._n_layers if self._n_layers and model_bytes else None
-        )
+        layer_bytes = None
+        if self._n_layers and model_bytes:
+            # The largest block a tensor split can round onto a device, not the average one.
+            layer_weights = self._max_block or model_bytes / self._n_layers
+            layer_bytes = layer_weights + kv_bytes / self._n_layers
         from core.inference.llama_server_args import fit_target_margin_in
 
         # llama.cpp's fitter keeps an explicit --fit-target free on every device.
@@ -1118,6 +1165,18 @@ class ClusterServing:
         local_file = ss.cached_repo_file(model_path, variant)
         size = ss.gguf_size_bytes(local_file)
         self._n_layers = await asyncio.to_thread(_gguf_block_count, local_file, ss)
+        if local_file:
+            header, blocks = await asyncio.to_thread(_local_gguf_header, local_file, ss)
+        elif size is None:
+            header, blocks = await asyncio.to_thread(
+                _remote_gguf_header, model_path, variant, getattr(request, "hf_token", None), ss
+            )
+        else:
+            header, blocks = {}, {}
+        self._max_block = float(max(blocks.values())) if blocks else None
+        if not self._n_layers:
+            arch = header.get("general.architecture")
+            self._n_layers = header.get(f"{arch}.block_count") or None
         sidecars, _unknown = ss.sidecar_bytes(extras)
         # Adapters and control vectors sit beside the layers they modify, on every device.
         adapters, _unknown = ss.sidecar_bytes(_flag_args(extras, _ADAPTER_FLAGS))
@@ -1154,14 +1213,8 @@ class ClusterServing:
             )
         )
         dropped: List[str] = []
-        if self._has_projector and host_projector:
-            # --no-mmproj-offload: its bytes are host RAM, still loaded, so it stays a projector.
-            dropped = ss.sidecar_files(_flag_args(extras, frozenset({"--mmproj", "-mm"})))
-            env_file = env_projector
-            if env_file:
-                dropped.append(os.path.abspath(env_file))
-            dropped = list(dict.fromkeys(dropped))
-        elif self._has_projector and disable_vision:
+        # A --no-mmproj-offload projector stays charged: on unified memory host RAM is the pool.
+        if self._has_projector and disable_vision:
             # The vision switch drops a named image projector (and an unread URL); an audio-only
             # one stays, as the backend does.
             files = ss.sidecar_files(_flag_args(extras, frozenset({"--mmproj", "-mm"})))
@@ -1179,7 +1232,7 @@ class ClusterServing:
             projector = ss.auto_projector_file(
                 local_file, disable_vision = disable_vision
             ) or _quant_dir_projector(local_file, disable_vision, ss)
-            if projector and not host_projector:
+            if projector:
                 auto_bytes = int(ss.gguf_size_bytes(projector) or 0)
                 sidecars += auto_bytes
             self._has_projector = bool(projector)
@@ -1189,7 +1242,6 @@ class ClusterServing:
                 remote = await asyncio.to_thread(
                     _remote_projector_bytes, model_path, getattr(request, "hf_token", None)
                 )
-                remote = 0 if host_projector else remote
                 sidecars += remote
                 auto_bytes += remote
                 if disable_vision:
@@ -1268,21 +1320,10 @@ class ClusterServing:
             kv = await asyncio.to_thread(
                 ss.estimate_kv_bytes, local_file, ctx, cache_type, cache_type_v
             )
-        elif ctx and size:
-            kv = await asyncio.to_thread(
-                _remote_kv_bytes,
-                model_path,
-                variant,
-                getattr(request, "hf_token", None),
-                ctx,
-                cache_type,
-                cache_type_v,
-                ss,
-            )
+        if kv is None and ctx and size:
+            kv = _kv_from_scalars(header, ctx, cache_type, cache_type_v, ss)
             self._unsized_kv = kv is None
-        if kv is None:
-            kv = KV_UNKNOWN_FRACTION * float(size) if ctx and size else 0.0
-        kv = float(kv)
+        kv = float(kv or 0.0)
         return (None if size is None else float(size) + adapters), kv, float(sidecars)
 
     async def after_load(self, llama_backend: Any) -> None:

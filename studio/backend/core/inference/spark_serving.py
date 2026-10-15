@@ -3472,6 +3472,8 @@ async def before_load(
             if _STATE.peer_process is not None:
                 _STATE._note_retired_split(_STATE.peer_process)  # load_failed unloads the orphan
             await _STATE.detach()
+            # Arguments equal to the retired split's would read as already loaded, peer gone.
+            out = SparkServing._request_with(out, {"force_reload": True})
         return out
     if cluster_serving._STATE is not None and (
         cluster_serving._STATE.workers or cluster_serving._STATE._backend is not None

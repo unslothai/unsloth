@@ -240,7 +240,8 @@ def _cluster_env(
     monkeypatch.setattr(ss, "gguf_size_bytes", lambda path: model_bytes if path else None)
     monkeypatch.setattr(ss, "estimate_kv_bytes", lambda *a, **k: 0)
     monkeypatch.setattr(ss, "auto_projector_file", lambda *a, **k: None)
-    monkeypatch.setattr(cs, "_remote_kv_bytes", lambda *a, **k: None)
+    monkeypatch.setattr(cs, "_remote_gguf_header", lambda *a, **k: ({}, {}))
+    monkeypatch.setattr(cs, "_local_gguf_header", lambda *a, **k: ({}, {}))
     seen = []
 
     def fake_list(binary, endpoints):
@@ -564,9 +565,9 @@ def test_an_uncached_hub_model_reserves_room_for_its_kv(monkeypatch):
     _cluster_env(monkeypatch, model_bytes = 85 * GIB)
     monkeypatch.setattr(ss, "cached_repo_file", lambda path, variant: None)
     monkeypatch.setattr(ss, "remote_gguf_size_bytes", lambda *a, **k: 85 * GIB)
-    monkeypatch.setattr(cs, "_remote_kv_bytes", lambda *a, **k: 20 * GIB)
+    monkeypatch.setattr(cs, "_remote_gguf_header", lambda *a, **k: (_llama_header(8), {}))
     run(ss.before_load(_request(max_seq_length = 131072), 4))
-    # 85 GiB of weights alone fits here; with its 20 GiB of KV it does not, so it is split.
+    # 85 GiB of weights alone fits here; with its 40 GiB of KV it does not, so it is split.
     assert ss.status()["topology"] == "layer_split"
     run(ss.before_load(_request(max_seq_length = 0), 4))
     assert ss.status()["topology"] == "single"
@@ -828,13 +829,6 @@ def test_a_worker_that_breaks_the_combined_listing_is_dropped_and_listed_again(m
         out.llama_extra_args[out.llama_extra_args.index("--rpc") + 1]
         == "10.0.0.2:50052,10.0.0.4:50052"
     )
-
-
-def test_a_header_kv_estimate_that_fails_reserves_the_fallback(monkeypatch):
-    _cluster_env(monkeypatch, model_bytes = 85 * GIB)
-    monkeypatch.setattr(ss, "estimate_kv_bytes", lambda *a, **k: None)
-    run(ss.before_load(_request(max_seq_length = 8192), 4))
-    assert ss.status()["topology"] == "layer_split"
 
 
 @pytest.mark.parametrize(
@@ -1423,9 +1417,9 @@ def test_a_guessed_kv_reserve_is_not_counted_as_freed(monkeypatch):
     _cluster_env(monkeypatch, model_bytes = 90 * GIB)
     monkeypatch.setattr(ss, "cached_repo_file", lambda path, variant: None)
     monkeypatch.setattr(ss, "remote_gguf_size_bytes", lambda *a, **k: 90 * GIB)
-    monkeypatch.setattr(cs, "_remote_kv_bytes", lambda *a, **k: 18 * GIB)
+    monkeypatch.setattr(cs, "_remote_gguf_header", lambda *a, **k: (_llama_header(64), {}))
     out = run(ss.before_load(_request(model_path = "org/big-GGUF", max_seq_length = 8192), 4))
-    assert ss.status()["topology"] == "layer_split"  # 90 GiB + an estimated 18 GiB of KV
+    assert ss.status()["topology"] == "layer_split"  # 90 GiB + an estimated 20 GiB of KV
     backend = SimpleNamespace(
         _process = SimpleNamespace(args = ["/b/llama-server"] + out.llama_extra_args),
         is_loaded = True,
@@ -1612,19 +1606,21 @@ def test_cpu_placement_env_that_places_nothing_is_not_placement(monkeypatch, key
     assert ss.status()["topology"] == "layer_split" and seen
 
 
-def test_a_host_ram_projector_is_not_charged_to_a_gpu(monkeypatch, tmp_path):
+def test_a_host_ram_projector_is_still_charged(monkeypatch, tmp_path):
+    # On unified memory the host RAM it moves to is the same pool the layers use.
     _cluster_env(monkeypatch, model_bytes = 85 * GIB)
     monkeypatch.setattr(ss, "llama_server_supports", lambda flag, binary = None: True)
     mmproj = tmp_path / "mmproj.gguf"
     mmproj.write_bytes(b"x")
     sizes = {str(mmproj): 15 * GIB}
     monkeypatch.setattr(ss, "gguf_size_bytes", lambda path: sizes.get(str(path), 85 * GIB))
-    run(ss.before_load(_request(llama_extra_args = ["--mmproj", str(mmproj)]), 4))
-    assert ss.status()["topology"] == "layer_split"  # 85 + 15 GiB on the GPUs
-    extra = ["--mmproj", str(mmproj), "--no-mmproj-offload"]
-    request = _request(llama_extra_args = extra)
-    assert run(ss.before_load(request, 4)) is request
-    assert ss.status()["topology"] == "single"
+    out = run(
+        ss.before_load(
+            _request(llama_extra_args = ["--mmproj", str(mmproj), "--no-mmproj-offload"]), 4
+        )
+    )
+    assert ss.status()["topology"] == "layer_split"  # 85 + 15 GiB do not fit here
+    assert "--mmproj-device" not in out.llama_extra_args
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason = "the worker command runs under sh on the peer")
@@ -1972,7 +1968,17 @@ def test_an_uncached_model_whose_kv_cannot_be_read_stays_local(monkeypatch):
     assert "not downloaded yet" in ss.status()["reason"]
 
 
-def _gguf_header(kvs):
+def _llama_header(n_kv):
+    return {
+        "general.architecture": "llama",
+        "llama.block_count": 80,
+        "llama.attention.head_count": 64,
+        "llama.attention.head_count_kv": n_kv,
+        "llama.embedding_length": 8192,
+    }
+
+
+def _gguf_header(kvs, tensors = ()):
     import struct
 
     body = b""
@@ -1993,10 +1999,13 @@ def _gguf_header(kvs):
             body += struct.pack("<f", value)
         else:
             body += struct.pack("<I", value)
-    return struct.pack("<IIQQ", 0x46554747, 3, 0, len(kvs)) + body
+    for name, dims, ttype in tensors:
+        body += struct.pack("<Q", len(name)) + name.encode() + struct.pack("<I", len(dims))
+        body += b"".join(struct.pack("<Q", d) for d in dims) + struct.pack("<IQ", ttype, 0)
+    return struct.pack("<IIQQ", 0x46554747, 3, len(tensors), len(kvs)) + body
 
 
-def test_the_remote_header_reader_matches_the_local_kv_estimate(monkeypatch, tmp_path):
+def test_the_header_reader_matches_the_local_kv_estimate(monkeypatch, tmp_path):
     import io
 
     kvs = {
@@ -2009,7 +2018,13 @@ def test_the_remote_header_reader_matches_the_local_kv_estimate(monkeypatch, tmp
         "llama.embedding_length": (4, 8192),
         "tokenizer.ggml.tokens": (9, (8, ["x"] * 3)),
     }
-    vals = cs._gguf_kv_scalars(io.BytesIO(_gguf_header(kvs)))
+    tensors = [
+        ("token_embd.weight", [8192, 1000], 1),  # F16
+        ("blk.0.attn_q.weight", [8192, 8192], 0),  # F32
+        ("blk.1.ffn_up.weight", [256, 64], 12),  # Q4_K: 256 elements in 144 bytes
+        ("blk.1.attn_q.weight", [8192, 8192], 1),
+    ]
+    vals, blocks = cs._read_gguf_header(io.BytesIO(_gguf_header(kvs, tensors)), tensors = True)
     assert vals == {
         "general.architecture": "llama",
         "llama.block_count": 80,
@@ -2017,6 +2032,9 @@ def test_the_remote_header_reader_matches_the_local_kv_estimate(monkeypatch, tmp
         "llama.attention.head_count_kv": 8,
         "llama.embedding_length": 8192,
     }
+    assert blocks == {0: 8192 * 8192 * 4, 1: 64 * 144 + 8192 * 8192 * 2}
+    kv = cs._kv_from_scalars(vals, 8192, None, None, ss)
+    assert kv == 80 * 8192 * 8 * (8192 // 64) * 4  # f16 K + V, as estimate_kv_bytes computes
 
     class FakeFs:
         def __init__(self, token = None):
@@ -2029,7 +2047,7 @@ def test_the_remote_header_reader_matches_the_local_kv_estimate(monkeypatch, tmp
             block_size = None,
         ):
             assert path == "org/big-GGUF/Q4/big-00001-of-00002.gguf"
-            return io.BytesIO(_gguf_header(kvs))
+            return io.BytesIO(_gguf_header(kvs, tensors))
 
     import huggingface_hub
     from utils.models import model_config
@@ -2037,8 +2055,33 @@ def test_the_remote_header_reader_matches_the_local_kv_estimate(monkeypatch, tmp
     monkeypatch.setattr(huggingface_hub, "HfFileSystem", FakeFs)
     variant = SimpleNamespace(filename = "Q4/big-00001-of-00002.gguf", size_bytes = 1)
     monkeypatch.setattr(model_config, "list_gguf_variants", lambda repo, token: ([variant], False))
-    kv = cs._remote_kv_bytes("org/big-GGUF", None, None, 8192, None, None, ss)
-    assert kv == 80 * 8192 * 8 * (8192 // 64) * 4  # f16 K + V, as estimate_kv_bytes computes
+    assert cs._remote_gguf_header("org/big-GGUF", None, None, ss) == (vals, blocks)
+    shard = tmp_path / "big.gguf"
+    shard.write_bytes(_gguf_header(kvs, tensors))
+    monkeypatch.setattr(ss, "gguf_shard_paths", lambda path: [str(shard), str(shard)])
+    assert cs._local_gguf_header(str(shard), ss) == (vals, {b: 2 * n for b, n in blocks.items()})
+
+
+def test_the_rounding_reserve_is_the_largest_block(monkeypatch):
+    _cluster_env(monkeypatch)
+    monkeypatch.setattr(cs, "_gguf_block_count", lambda path, ss: 100)
+    run(ss.before_load(_request(), 4))
+    average = cs.state().plan.reason
+    monkeypatch.setattr(cs, "_local_gguf_header", lambda *a, **k: ({}, {0: 1 * GIB, 1: 5 * GIB}))
+    run(ss.before_load(_request(), 4))
+    # One layer is kept free per device: 4 x 2.5 GiB on average, 4 x 5 GiB for the largest.
+    assert "267.5 GiB usable" in average and "257.5 GiB usable" in cs.state().plan.reason
+
+
+def test_a_cached_model_whose_kv_cannot_be_read_stays_local(monkeypatch):
+    seen = _cluster_env(monkeypatch)
+    monkeypatch.setattr(ss, "estimate_kv_bytes", lambda *a, **k: None)
+    request = _request(max_seq_length = 8192)
+    assert run(ss.before_load(request, 4)) is request and seen == []
+    assert "could not be sized" in ss.status()["reason"]
+    monkeypatch.setattr(cs, "_local_gguf_header", lambda *a, **k: (_llama_header(8), {}))
+    run(ss.before_load(request, 4))
+    assert ss.status()["topology"] == "layer_split"  # the header reader sized it
 
 
 def test_a_projector_beside_a_quant_subdirectory_is_charged(monkeypatch, tmp_path):
@@ -2125,3 +2168,19 @@ def test_a_failed_load_after_retiring_stops_the_workers(monkeypatch):
     run(ss.load_failed())
     assert stopped == [1] and not cs.state().workers
     assert not cs.state().retire_on_commit
+
+
+def test_detaching_a_two_spark_split_forces_a_relaunch(monkeypatch):
+    _cluster_env(monkeypatch)
+    legacy = ss.state()
+    legacy.peer_process = SimpleNamespace(name = "ggml-rpc-server", alive = True)
+
+    async def fake_detach():
+        legacy.peer_process = legacy.attached_backend = None
+
+    monkeypatch.setattr(legacy, "detach", fake_detach)
+    monkeypatch.setattr(legacy, "_note_retired_split", lambda process: None)
+    out = run(ss.before_load(_request(), 4))
+    assert out.force_reload is True
+    out = run(ss.before_load(_request(), 4))
+    assert not getattr(out, "force_reload", False)  # nothing was detached this time
