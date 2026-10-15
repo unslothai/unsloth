@@ -28125,6 +28125,9 @@ def _build_external_messages(
         provider_type == "llama_cpp"
         or (provider_type == "vllm" and preserve_thinking is True)
         or _is_kimi_k3(provider_type, model)
+        # Thinking mode with tools answers 400 without it, and ignores it elsewhere
+        # (api-docs.deepseek.com/guides/thinking_mode).
+        or provider_type == "deepseek"
     )
     result = []
     for msg in messages:

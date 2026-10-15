@@ -63,3 +63,16 @@ def test_tool_transport_reasoning_policy(provider, value):
     )
     transport = OAICompatTransport(client, model = "test", preserve_thinking = value)
     assert transport.preserves_reasoning is (provider in ("llama_cpp", "vllm") and value is True)
+
+
+def test_deepseek_history_keeps_reasoning_for_tool_continuations():
+    # DeepSeek thinking mode answers 400 to a tool continuation without the turn's reasoning_content.
+    calls = [
+        {"id": "call_1", "type": "function", "function": {"name": "lookup", "arguments": "{}"}}
+    ]
+    message = ChatMessage(
+        role = "assistant", content = "", reasoning_content = "prior thought", tool_calls = calls
+    )
+    result = _build_external_messages([message], False, provider_type = "deepseek")
+    assert result[0]["reasoning_content"] == "prior thought"
+    assert result[0]["tool_calls"][0]["function"]["name"] == "lookup"
