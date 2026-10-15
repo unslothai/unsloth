@@ -547,9 +547,10 @@ def _rocm_auto_flash(target: Any, family: Any = None) -> bool:
     return _flash_attn_installed() and _rocm_flash_attn_runs(target)
 
 
-def _dit_attention_geometry(pipe: Any) -> Optional[tuple[int, int, int]]:
-    """(hidden, heads, head_dim) of the denoiser's most common attention module."""
-    counts: dict[tuple[int, int, int], int] = {}
+def _dit_attention_geometries(pipe: Any) -> tuple[tuple[int, int, int], ...]:
+    """Every distinct (hidden, heads, head_dim) among the attention modules of every denoiser DiT, read off ``to_q``
+    + ``heads``; flash is set on all of them, so all of them are timed."""
+    found: set[tuple[int, int, int]] = set()
     for dit in _attention_dits(pipe):
         modules = getattr(dit, "modules", None)
         if not callable(modules):
@@ -567,13 +568,10 @@ def _dit_attention_geometry(pipe: Any) -> Optional[tuple[int, int, int]]:
                     continue
                 if fout % heads:
                     continue
-                geo = (fin, heads, fout // heads)
-                counts[geo] = counts.get(geo, 0) + 1
+                found.add((fin, heads, fout // heads))
         except Exception:  # noqa: BLE001
             continue
-    if not counts:
-        return None
-    return max(counts.items(), key = lambda kv: kv[1])[0]
+    return tuple(sorted(found))
 
 
 def _time_rocm_flash_block(
@@ -658,14 +656,22 @@ def _rocm_flash_block_admitted(
         return False
     mode = _rocm_flash_mode()
     if mode == "1":
-        return True
-    geometry = _dit_attention_geometry(pipe)
-    if geometry is None:
+        return _install_rocm_flash_dispatch_guard()
+    geometries = _dit_attention_geometries(pipe)
+    if not geometries:
         return False
     device = _indexed_cuda_device(
         str(getattr(target, "torch_device", None) or getattr(target, "device", None) or "")
     )
     dtype = getattr(target, "dtype", None)
+    for geometry in geometries:
+        if not _rocm_flash_geometry_admitted(device, dtype, geometry, logger):
+            return False
+    # diffusers' flash backend raises on attn_mask: masked calls (e.g. mixed-padding batches) must run native
+    return _install_rocm_flash_dispatch_guard()
+
+
+def _rocm_flash_geometry_admitted(device: str, dtype: Any, geometry: tuple, logger: Any = None) -> bool:
     key = (device, str(dtype), *geometry)
     cached = ROCM_FLASH_ADMISSIONS.get(key)
     if cached is not None:
@@ -1129,6 +1135,23 @@ def _note_fa4_reroute(reason: str) -> None:
 
 # The hub FA4 launch (CuTe DSL, tvm-ffi) breaks a fullgraph compile 5 times per Flux block: keep it opaque, like Sage.
 _FA4_OP_NAME = "unsloth_studio::flash_4_hub_attention_nhd"
+
+
+# diffusers' flash (FA2) backend raises on any attn_mask; on ROCm those calls run native instead.
+_ROCM_FLASH_ROUTED: dict[str, int] = {}
+_ROCM_FLASH_ROUTED_LOGGED: set[str] = set()
+
+
+def _rocm_flash_reroute_reason(query: Any, key: Any, value: Any, attn_mask: Any) -> Optional[str]:
+    return "attn_mask" if attn_mask is not None else None
+
+
+def _install_rocm_flash_dispatch_guard() -> bool:
+    return _install_dispatch_guard(
+        "flash",
+        _rocm_flash_reroute_reason,
+        lambda reason: _note_reroute("ROCm flash attention", reason, _ROCM_FLASH_ROUTED, _ROCM_FLASH_ROUTED_LOGGED),
+    )
 
 
 def _install_fa4_dispatch_guard() -> bool:
@@ -2183,6 +2206,9 @@ def apply_attention_backend(
             and not _rocm_flash_attn_runs(target)
         ):
             backend = None
+        if backend == "flash" and target is not None and _is_cuda_rocm(target):
+            # An explicit request too: a masked call runs native instead of raising mid-generation.
+            _install_rocm_flash_dispatch_guard()
         if (
             backend == "_native_cudnn"
             and target is not None
