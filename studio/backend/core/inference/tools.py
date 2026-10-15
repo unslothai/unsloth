@@ -10150,13 +10150,14 @@ def _prepare_tool_launch(
     user_folder: bool = False,
 ):
     """Fall back only when the backend is unavailable; unsafe workdirs, build failures and (outside `full`) planner errors refuse."""
+    if user_folder and plan.requested_mode == "auto":
+        os_sandbox.recheck_overran_workdir(plan.workdir)
     if host_access_approved and plan.requested_mode == "auto":
         return _software_safeguards_launch(plan, "user_approved_host_access")
     # A project folder the owner picked is host access they granted: the isolation's workdir scan would refuse common
     # repositories (hard links from git clone --local, pnpm, uv) and walk large trees on every call. Decided up front,
     # never after a scan finding, which tool code could plant to drop its own boundary.
     if user_folder and plan.requested_mode == "auto":
-        os_sandbox.recheck_overran_workdir(plan.workdir)
         return _software_safeguards_launch(plan, "user_working_folder")
     try:
         prepared = os_sandbox.prepare_tool_launch(plan)

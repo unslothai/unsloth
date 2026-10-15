@@ -697,7 +697,7 @@ def test_a_chosen_project_folder_stops_asking_once_it_is_small_again(monkeypatch
     dead = socket.socket(socket.AF_UNIX)
     dead.bind("s")
     dead.close()
-    tools._prepare_tool_launch(plan, user_folder = True)
+    tools._prepare_tool_launch(plan, host_access_approved = True, user_folder = True)
     assert not os_sandbox.workdir_scan_overran(str(tmp_path))
 
 
