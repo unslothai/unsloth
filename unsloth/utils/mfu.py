@@ -15,8 +15,11 @@ Model FLOPs per non padding token, summed over every linear layer with n = in * 
     recompute                2n   every linear except the output head, when checkpointing
 Attention adds 4 * layers * heads * head_dim FLOPs per causal (query, key) pair in the forward
 (QK^T and AV), L * (L + 1) / 2 pairs for a sequence of length L, times 3 for forward plus
-backward and times 4 with checkpointing. Sliding windows, MoE routing, convolutions and
-embedding lookups are not counted, so those models report a lower bound.
+backward and times 4 with checkpointing. Experts held as `nn.Linear` in an `experts` ModuleList
+count top_k / num_experts of their weights; experts stored as 3D tensors (transformers 5),
+sliding windows, convolutions and embedding lookups are not counted, so those models report a
+lower bound. Encoder-decoder models are not reported. A model split over several GPUs with
+`device_map` reports the average per participating GPU.
 """
 
 __all__ = [
@@ -52,13 +55,39 @@ _PEAK_TFLOPS_16BIT = (
 _NO_BF16 = ("T4",)
 
 
-def _is_linear_leaf(module):
+def _linear_size(module):
     # PEFT LoRA wrappers expose in/out_features too but own no weight; their base_layer counts.
-    return (
-        "weight" in getattr(module, "_parameters", {})
-        and isinstance(getattr(module, "in_features", None), int)
-        and isinstance(getattr(module, "out_features", None), int)
-    )
+    if "weight" not in getattr(module, "_parameters", {}):
+        return None
+    for fan_in, fan_out in (("in_features", "out_features"), ("nx", "nf")):
+        fan_in = getattr(module, fan_in, None)
+        fan_out = getattr(module, fan_out, None)
+        if isinstance(fan_in, int) and isinstance(fan_out, int):
+            return fan_in * fan_out
+    return None
+
+
+def _is_linear_leaf(module):
+    return _linear_size(module) is not None
+
+
+def _expert_fractions(model):
+    """id(linear) -> share of tokens routed to it, for experts kept as a ModuleList of linears."""
+    config = _text_config(getattr(model, "config", None))
+    default_top_k = getattr(config, "num_experts_per_tok", None)
+    fractions = {}
+    for module in model.modules():
+        experts = getattr(module, "experts", None)
+        if not isinstance(experts, torch.nn.ModuleList) or len(experts) == 0:
+            continue
+        top_k = getattr(module, "top_k", None) or default_top_k
+        fraction = 0
+        if isinstance(top_k, int) and 0 < top_k <= len(experts):
+            fraction = top_k / len(experts)
+        for leaf in experts.modules():
+            if _is_linear_leaf(leaf):
+                fractions[id(leaf)] = fraction
+    return fractions
 
 
 def _output_head(model):
@@ -79,11 +108,14 @@ def count_linear_flops_per_token(model, gradient_checkpointing = False):
     head_leaves = set()
     if head is not None:
         head_leaves = {id(m) for m in head.modules() if _is_linear_leaf(m)}
+    experts = _expert_fractions(model)
     forward = input_grad = weight_grad = recompute = 0
     for module in model.modules():
-        if not _is_linear_leaf(module):
+        n = _linear_size(module)
+        if n is None:
             continue
-        n = module.in_features * module.out_features
+        if id(module) in experts:
+            n = n * experts[id(module)]
         forward += 2 * n
         input_grad += 2 * n
         if module.weight.requires_grad:
@@ -100,6 +132,8 @@ def count_linear_flops_per_token(model, gradient_checkpointing = False):
 
 
 def _text_config(config):
+    if config is None:
+        return None
     get_text_config = getattr(config, "get_text_config", None)
     if callable(get_text_config):
         try:
@@ -202,12 +236,17 @@ class UnslothMFUCallback(TrainerCallback):
         self._handle = None
         self._linear_per_token = 0
         self._attention_per_pair = 0
+        self._num_devices = 1
+        self._enabled = True
         self._reset()
 
     def _reset(self):
         self._tokens = 0
         self._pairs = 0
         self._window_start = None
+        self._excluded = 0.0
+        self._last_step_end = None
+        self._paused = False
 
     def _count_batch(self, module, args, kwargs):
         # Generation, reference and evaluation forwards run without grad and are not training FLOPs.
@@ -224,39 +263,64 @@ class UnslothMFUCallback(TrainerCallback):
     def on_train_begin(self, args, state, control, model = None, **kwargs):
         if model is None:
             return
+        config = getattr(model, "config", None)
+        # One length per sequence cannot describe separate source and target lengths.
+        self._enabled = not getattr(config, "is_encoder_decoder", False)
+        if not self._enabled:
+            return
         checkpointing = self.gradient_checkpointing
         if checkpointing is None:
             checkpointing = _gradient_checkpointing_on(model, args)
         self._linear_per_token, _ = count_linear_flops_per_token(model, checkpointing)
-        config = getattr(model, "config", None)
         self._attention_per_pair = (
             count_attention_flops_per_pair(config, checkpointing) if config is not None else 0
         )
+        devices = sorted(
+            {p.device.index for p in model.parameters() if p.device.type == "cuda"},
+            key = lambda index: -1 if index is None else index,
+        )
+        self._num_devices = max(len(devices), 1)
         if self.peak_tflops is None:
-            device = next(model.parameters()).device
-            self.peak_tflops = get_peak_tflops(
-                device if device.type == "cuda" else None, _training_dtype(model, args)
-            )
+            dtype = _training_dtype(model, args)
+            peaks = [get_peak_tflops(index, dtype) for index in devices] or [
+                get_peak_tflops(None, dtype)
+            ]
+            if all(peaks):
+                self.peak_tflops = sum(peaks) / len(peaks)
         if self._handle is None:
             self._handle = model.register_forward_pre_hook(self._count_batch, with_kwargs = True)
         self._reset()
 
     def on_step_begin(self, args, state, control, **kwargs):
+        now = time.perf_counter()
         if self._window_start is None:
-            self._window_start = time.perf_counter()
+            self._window_start = now
+        elif self._paused and self._last_step_end is not None:
+            self._excluded += now - self._last_step_end
+        self._paused = False
+
+    def on_step_end(self, args, state, control, **kwargs):
+        self._last_step_end = time.perf_counter()
+
+    def on_evaluate(self, args, state, control, **kwargs):
+        self._paused = True
+
+    def on_save(self, args, state, control, **kwargs):
+        self._paused = True
 
     def on_log(self, args, state, control, logs = None, **kwargs):
-        if logs is None or "loss" not in logs or self._window_start is None:
+        if not self._enabled or logs is None or "loss" not in logs or self._window_start is None:
             return
         tokens = int(self._tokens)
         pairs = int(self._pairs)
         if torch.cuda.is_available():
             torch.cuda.synchronize()
-        elapsed = time.perf_counter() - self._window_start
+        elapsed = time.perf_counter() - self._window_start - self._excluded
         self._reset()
         if tokens <= 0 or elapsed <= 0:
             return
         flops = tokens * self._linear_per_token + pairs * self._attention_per_pair
+        flops = flops / self._num_devices
         tflops = flops / elapsed / 1e12
         extra = {"train_tflops_per_gpu": tflops}
         if self.peak_tflops:

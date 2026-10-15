@@ -163,3 +163,107 @@ def test_callback_logs_tflops_and_mfu(tmp_path, monkeypatch):
         assert entry["train_tflops_per_gpu"] > 0
         assert entry["train_mfu"] == pytest.approx(entry["train_tflops_per_gpu"])
     assert callback._handle is None
+
+
+def test_gpt2_conv1d_projections_are_counted():
+    from transformers import GPT2Config, GPT2LMHeadModel
+
+    config = GPT2Config(n_embd = 16, n_layer = 2, n_head = 4, vocab_size = 64, n_positions = 32)
+    model = GPT2LMHeadModel(config)
+    # c_attn 16->48, attn c_proj 16->16, c_fc 16->64, mlp c_proj 64->16 per layer, plus the head.
+    expected = 2 * 12 * 16 * 16 + 16 * 64
+    total, parts = mfu.count_linear_flops_per_token(model)
+    assert parts["forward"] == 2 * expected
+
+
+class _Expert(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.up = torch.nn.Linear(8, 16, bias = False)
+        self.down = torch.nn.Linear(16, 8, bias = False)
+
+
+class _MoE(torch.nn.Module):
+    def __init__(self, top_k = None, num_experts_per_tok = None):
+        super().__init__()
+        self.config = type("Config", (), {"num_experts_per_tok": num_experts_per_tok})()
+        self.gate = torch.nn.Linear(8, 4, bias = False)
+        self.experts = torch.nn.ModuleList(_Expert() for _ in range(4))
+        if top_k is not None:
+            self.top_k = top_k
+
+
+def test_moe_experts_scaled_by_routed_share():
+    gate, expert = 8 * 4, 2 * 8 * 16
+    total, parts = mfu.count_linear_flops_per_token(_MoE(top_k = 2))
+    assert parts["forward"] == 2 * (gate + 2 * expert)
+    total, parts = mfu.count_linear_flops_per_token(_MoE(num_experts_per_tok = 1))
+    assert parts["forward"] == 2 * (gate + expert)
+    total, parts = mfu.count_linear_flops_per_token(_MoE())
+    assert parts["forward"] == 2 * gate
+
+
+class _State:
+    def __init__(self):
+        self.log_history = []
+        self.global_step = 1
+
+
+def test_eval_and_save_time_excluded_from_window(monkeypatch):
+    clock = iter([0.0, 1.0, 11.0, 12.0, 21.0, 22.0, 22.0])
+    monkeypatch.setattr(mfu.time, "perf_counter", lambda: next(clock))
+    monkeypatch.setenv("UNSLOTH_PEAK_TFLOPS", "1")
+    callback = mfu.UnslothMFUCallback()
+    callback.on_train_begin(None, _State(), None, model = _model())
+    linear = callback._linear_per_token
+    callback.on_step_begin(None, None, None)
+    callback.on_step_end(None, None, None)
+    callback.on_evaluate(None, None, None)
+    callback.on_step_begin(None, None, None)
+    callback.on_step_end(None, None, None)
+    callback.on_save(None, None, None)
+    callback.on_step_begin(None, None, None)
+    callback.on_step_end(None, None, None)
+    callback._tokens = torch.tensor(10**12 // linear)
+    logs = {"loss": 1.0}
+    callback.on_log(None, _State(), None, logs = logs)
+    # 22 s of wall time minus 10 s of evaluation and 9 s of checkpointing.
+    assert logs["train_tflops_per_gpu"] == pytest.approx((10**12 // linear) * linear / 3 / 1e12)
+    callback.on_train_end(None, None, None)
+
+
+def test_model_split_over_gpus_reports_per_gpu_average(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_PEAK_TFLOPS", "1")
+    model = _model()
+    devices = [torch.device("cuda", 0), torch.device("cuda", 1)]
+    fake = [type("P", (), {"device": devices[i % 2]})() for i in range(4)]
+    monkeypatch.setattr(model, "parameters", lambda *a, **k: iter(fake))
+    callback = mfu.UnslothMFUCallback()
+    callback.on_train_begin(None, _State(), None, model = model)
+    assert callback._num_devices == 2
+    monkeypatch.setattr(mfu.time, "perf_counter", lambda: 1.0)
+    callback._window_start = 0.0
+    callback._tokens = 1000
+    logs = {"loss": 1.0}
+    callback.on_log(None, _State(), None, logs = logs)
+    assert logs["train_tflops_per_gpu"] == pytest.approx(1000 * callback._linear_per_token / 2 / 1e12)
+    assert logs["train_mfu"] == pytest.approx(logs["train_tflops_per_gpu"])
+    callback.on_train_end(None, None, None)
+
+
+def test_encoder_decoder_models_are_not_reported(monkeypatch):
+    from transformers import T5Config, T5ForConditionalGeneration
+
+    monkeypatch.setenv("UNSLOTH_PEAK_TFLOPS", "1")
+    config = T5Config(
+        vocab_size = 64, d_model = 16, d_kv = 4, d_ff = 32, num_layers = 1, num_heads = 4
+    )
+    model = T5ForConditionalGeneration(config)
+    callback = mfu.UnslothMFUCallback()
+    callback.on_train_begin(None, _State(), None, model = model)
+    assert callback._handle is None
+    callback.on_step_begin(None, None, None)
+    callback._tokens = 1000
+    logs = {"loss": 1.0}
+    callback.on_log(None, _State(), None, logs = logs)
+    assert logs == {"loss": 1.0}
