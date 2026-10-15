@@ -343,7 +343,9 @@ def test_probe_verdict_is_kept_per_model_shape(_no_probe_state, monkeypatch):
     )
     assert nq.probe_mps_int8pack(big, torch.bfloat16, device = "cpu") is False
     assert seen == [(128, 256), (256, 512)]
-    assert first.ff._int8pack_layer_ok(torch.bfloat16) and not big[0]._int8pack_layer_ok(torch.bfloat16)
+    assert first.ff._int8pack_layer_ok(torch.bfloat16) and not big[0]._int8pack_layer_ok(
+        torch.bfloat16
+    )
     again = _toy_native()
     assert nq.probe_mps_int8pack(again, torch.bfloat16, device = "cpu") is True
     assert len(seen) == 2 and again.ff._int8pack_layer_ok(torch.bfloat16)
