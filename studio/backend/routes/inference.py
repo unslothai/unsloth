@@ -25144,6 +25144,18 @@ def _note_retired_alias_engine(
         _RETIRED_ALIAS_SERVED[kind].add(serving_engine)
 
 
+def _direct_stt_request_starts(
+    requested_engine: Optional[str],
+    serving_engine: str,
+    kind: str = "load",
+) -> None:
+    """A direct request takes the engine back before it starts as well as after, so a legacy
+    unload or cancel arriving while it runs cannot free what it is putting there. If it then
+    fails, an earlier alias model or download is left to the idle unload or to finish."""
+    if _resolve_stt_engine(requested_engine) != "gguf":
+        _note_retired_alias_engine(requested_engine, serving_engine, kind)
+
+
 def _retired_alias_engines(kind: str = "load") -> tuple[str, ...]:
     """The engines holding a model (or download) a retired whisper.cpp alias request started
     that nothing has released or taken over since. Only those are the alias's to free:
@@ -25628,6 +25640,7 @@ async def stt_download(
     before = module.download_status()
     running_id = before.get("download_id") if before.get("downloading") else None
     direct_mark = _direct_stt_note_mark(engine, "download")
+    _direct_stt_request_starts(payload.engine, engine, "download")
     try:
         # Transformers accepts custom `owner/model` repos, so confirm the repo is
         # a Whisper checkpoint (metadata-only) before snapshot_download pulls a
@@ -25736,6 +25749,7 @@ async def stt_load(
     resident = sidecar.loaded_model
     already_resident = resident is not None and resident == _stt_resolved_model_id(model, engine)
     direct_mark = _direct_stt_note_mark(engine)
+    _direct_stt_request_starts(payload.engine, engine)
     cancel_event = threading.Event()
     disconnect_watcher = asyncio.create_task(
         _await_stt_disconnect_then_cancel(request, sidecar, cancel_event)
@@ -25976,6 +25990,7 @@ async def _transcribe_audio_result(
             model, serving_engine
         )
         direct_mark = _direct_stt_note_mark(serving_engine)
+        _direct_stt_request_starts(engine, serving_engine)
         if source_path is not None and timestamps:
             await asyncio.to_thread(sidecar.ensure_aligner, model, on_phase, cancel_event)
             # Started with its aligner now, or transcribe_path would restart it.

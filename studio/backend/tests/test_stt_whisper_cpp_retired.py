@@ -267,6 +267,46 @@ def test_an_alias_load_nothing_overtook_still_frees_its_model(host):
     assert [list(engines) for engines, _ in host.unloads] == [["mtmd"]]
 
 
+def test_an_alias_cancel_during_a_direct_download_start_leaves_it_running(host, monkeypatch):
+    asyncio.run(
+        ri.stt_download(
+            SttLoadRequest(model = "small", engine = "gguf"), current_subject = "tester", hf_token = None
+        )
+    )
+    start = ri._start_account_stt_download
+
+    def start_then_a_legacy_cancel_arrives(*args, **kwargs):
+        download_id = start(*args, **kwargs)
+        # The direct transfer is cancellable before its request records the handoff.
+        asyncio.run(ri.stt_download_cancel(SttLoadRequest(model = "small", engine = "gguf"), "tester"))
+        return download_id
+
+    monkeypatch.setattr(ri, "_start_account_stt_download", start_then_a_legacy_cancel_arrives)
+    asyncio.run(
+        ri.stt_download(
+            SttLoadRequest(model = "small", engine = "transformers"),
+            current_subject = "tester",
+            hf_token = None,
+        )
+    )
+    assert host.cancels == []
+
+
+def test_an_alias_unload_during_a_direct_load_leaves_it_resident(host, monkeypatch):
+    host.pin(torch = False, audiocpp = True, mtmd = True)
+    _load("small", "gguf")
+    load, unload = ri._stt_lifecycle()
+
+    def load_then_a_legacy_unload_arrives(model, engine, *args, **kwargs):
+        load(model, engine, *args, **kwargs)
+        asyncio.run(ri.stt_unload(engine = "gguf", model = "small", current_subject = "tester"))
+
+    monkeypatch.setattr(ri, "_stt_lifecycle", lambda: (load_then_a_legacy_unload_arrives, unload))
+    host.unloads.clear()
+    _load(DEFAULT_MTMD_STT_MODEL, "mtmd")
+    assert host.unloads == []
+
+
 def test_an_alias_unloads_the_transformers_model(host):
     _load("small", "gguf")
     asyncio.run(ri.stt_unload(engine = "gguf", model = "small", current_subject = "tester"))
