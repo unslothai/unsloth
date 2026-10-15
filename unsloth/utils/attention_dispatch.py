@@ -97,7 +97,6 @@ def scaled_dot_product_attention(*args, **kwargs):
     return F.scaled_dot_product_attention(*args, **kwargs)
 
 
-
 def _per_device_backends(capabilities):
     """(flash runs, xformers runs, xformers rejects fp32, bf16 kernels) per CUDA device index, or None
     when every device has device 0's capability class, so homogeneous hosts never consult the table.
