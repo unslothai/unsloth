@@ -1,32 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""A CUDA spoof has to supply `torch._C._cuda_getCurrentRawStream`.
-
-`unsloth/kernels/utils.py` snapshots each device's raw stream AT IMPORT, inside
-`if DEVICE_COUNT > 0` -- a branch the spoof makes true by answering
-`torch.cuda.device_count()` with 1:
-
-    torch._C._cuda_getCurrentRawStream(index)
-
-A CPU-only torch wheel does not export that symbol. The spoof already knew as much -- it
-imports bitsandbytes before flipping `is_available()` precisely because bitsandbytes reads
-it -- but it only worked around the one importer and never supplied the symbol, so anything
-reading it afterwards still died.
-
-The notebooks smoke matrix showed it on exactly one leg: seven passed and
-`nb/Llama3.1_(8B)-GRPO.ipynb` failed with
-
-    AttributeError: module 'torch._C' has no attribute '_cuda_getCurrentRawStream'
-
-That leg's install cell is the one pulling vLLM and the CUDA userspace packages
-(cuda-python, cuda-bindings, flashinfer), which is what carried unsloth into the
-`DEVICE_COUNT > 0` branch on a CPU-only torch.
-
-Run in a subprocess: applying a spoof mutates the interpreter's torch for good, and this
-host's torch exports the symbol for real, so the absence has to be staged somewhere
-disposable.
-"""
+"""A CUDA spoof must supply torch._C._cuda_getCurrentRawStream; kernels/utils.py reads it at import."""
 
 from __future__ import annotations
 
@@ -87,7 +62,7 @@ def test_the_spoof_supplies_the_raw_stream_handle(filename):
         f"{filename} leaves torch._C._cuda_getCurrentRawStream absent, so importing unsloth "
         f"under it dies the way the GRPO smoke leg did: {printed}"
     )
-    # The null stream. Callers wrap it in ctypes.c_void_p, where 0 reads back as None.
+    # Callers wrap the null stream in ctypes.c_void_p, where 0 reads back as None.
     assert "POST ok None" in printed, printed
 
 

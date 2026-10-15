@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""unsloth#409: under FSDP the fused LoRA kernels read shard views (`matmul_lora`:
-`size mismatch, got input (20), mat (20x896), vec (3584)` on Qwen2.5-0.5B FULL_SHARD), so
-patch_peft_model must decline them. No GPU: the probe is env-driven, the wiring check textual.
-"""
+"""Fused LoRA kernels cannot read FSDP shard views, so patch_peft_model must decline them."""
 
 from __future__ import annotations
 

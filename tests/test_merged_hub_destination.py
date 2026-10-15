@@ -141,12 +141,12 @@ def saving(monkeypatch, tmp_path):
             records["uploads"].append({**kwargs, "files": files, "token": self.token})
             if records.get("fail_upload"):
                 raise OSError("upload failed")
-            # Overridable so a test can hand back a real-shaped CommitInfo, whose `pr_url` is
-            # the only place the pull request's own address exists.
+            # A real CommitInfo's `pr_url` is the only place the pull request's address exists.
             return records.get("commit_info", "commit-info")
 
     env = dict(
         os = os,
+        sys = sys,
         gc = gc,
         Path = Path,
         HfApi = Api,
@@ -157,6 +157,7 @@ def saving(monkeypatch, tmp_path):
             save = lambda: None,
             float16 = "float16",
             bfloat16 = "bfloat16",
+            float32 = "float32",
             cuda = SimpleNamespace(is_bf16_supported = lambda: False),
         ),
         get_token = lambda: "cached-fixture",
@@ -166,13 +167,11 @@ def saving(monkeypatch, tmp_path):
         _normalize_compressed_method = lambda method: None,
         _normalize_torchao_method = lambda method: None,
         _is_qwen3_5_vlm = lambda model: False,
-        # A Mistral-format view (#12144) refuses merged saves; these fixtures are not one.
         raise_if_merging_mistral_format_view = lambda model, save_method: None,
         lora_relative_to_original_base = lambda model: contextlib.nullcontext(),
         nullcontext = contextlib.nullcontext,
         logger = SimpleNamespace(warning_once = lambda *args: None),
-        # save_method="lora" leaves this module for the adapter save rather than the merge,
-        # so record the handover instead of re-implementing it.
+        # save_method="lora" hands off to the adapter save; record the handover.
         unsloth_save_model = lambda *args, **kwargs: (
             records["adapter_saves"].append({"args": args, "kwargs": kwargs}),
             (kwargs.get("save_directory"), None),
@@ -182,19 +181,19 @@ def saving(monkeypatch, tmp_path):
         "_push_merged_to_hub_revision",
         "unsloth_generic_save",
         "unsloth_generic_push_to_hub_merged",
-        # Real code, not stubs: these two decide what save_method="lora" and
-        # safe_serialization=None mean, which is what several tests below assert on.
+        # Real code, not stubs: tests below assert on what these two decide.
         "_normalize_safe_serialization",
         "_is_adapter_save_method",
         "_honours_safe_serialization",
         "_assert_export_target_is_not_base_with_lora_layers",
         "_refuse_unsaveable_text_core",
+        "_cast_state_dict_16bit",
+        "_requests_float32",
     }
     nodes = []
     for node in tree.body:
         if isinstance(node, ast.FunctionDef) and node.name in names:
-            # _normalize_safe_serialization must be defined before the functions that call
-            # it, which the source order already gives; only the decorators go.
+            # Source order already defines _normalize_safe_serialization first; only decorators go.
             node.decorator_list = []
             nodes.append(node)
         elif isinstance(node, ast.Assign) and any(
@@ -547,6 +546,8 @@ def test_default_full_finetune_push_uploads_16bit_safetensors(monkeypatch):
                     operation.path_in_repo: (
                         load_file(operation.path_or_fileobj)
                         if operation.path_in_repo.endswith(".safetensors")
+                        else json.loads(Path(operation.path_or_fileobj).read_text())
+                        if operation.path_in_repo == "config.json"
                         else None
                     )
                     for operation in kwargs["operations"]
@@ -576,13 +577,20 @@ def test_default_full_finetune_push_uploads_16bit_safetensors(monkeypatch):
     assert {tensor.dtype for tensor in commits[0]["model.safetensors"].values()} == {target}
     assert next(model.parameters()).dtype == torch.float32
 
+    # unsloth#5186: `dtype = float32` writes float32 tensors and config from a 16-bit model.
+    commits.clear()
+    model = model.to(torch.bfloat16)
+    save.unsloth_generic_push_to_hub_merged(
+        model, "owner/model", token = "fixture", dtype = torch.float32
+    )
+    assert next(model.parameters()).dtype == torch.bfloat16
+    assert {tensor.dtype for tensor in commits[0]["model.safetensors"].values()} == {torch.float32}
+    config = commits[0]["config.json"]
+    assert config.get("dtype", config.get("torch_dtype")) == "float32"
+
 
 def test_the_push_names_the_destination_and_not_the_staging_folder(saving, capsys):
-    """The staged save reports the temp folder it wrote, which is deleted moments later.
-
-    A caller asked for a repository, so the repository is what the output has to name; otherwise
-    the last thing printed is a success line pointing at a path that no longer exists.
-    """
+    """Name the requested repository, not the temp staging folder, which is deleted moments later."""
     env, records, _ = saving
     env["unsloth_generic_push_to_hub_merged"](FullModel(), "owner/model", token = "fixture")
     printed = capsys.readouterr().out
@@ -594,13 +602,10 @@ def test_the_push_names_the_destination_and_not_the_staging_folder(saving, capsy
     "kwargs,expected",
     [
         ({}, "https://huggingface.co/owner/model"),
-        # A branch upload is not on the repository's default branch.
         ({"revision": "my-branch"}, "https://huggingface.co/owner/model/tree/my-branch"),
-        # An existing pull request, addressed the way the Hub spells it.
         ({"revision": "refs/pr/3"}, "https://huggingface.co/owner/model/discussions/3"),
         # A fresh pull request: the repository page can hold no model files at all.
         ({"create_pr": True}, "https://huggingface.co/owner/model/discussions"),
-        # `create_pr` wins over the branch it was opened against.
         (
             {"create_pr": True, "revision": "my-branch"},
             "https://huggingface.co/owner/model/discussions",
@@ -676,8 +681,32 @@ def test_a_pickle_request_this_transformers_cannot_honour_is_reported(saving):
         return [message for message in said if "not a pickle" in message]
 
     assert push(NoSafeSerialization(), safe_serialization = False)
-    # A transformers that still takes it, a patched model whose original does, and the default
-    # `True`, are all silent.
     assert push(HonoursIt(), safe_serialization = False) == []
     assert push(Patched(), safe_serialization = False) == []
     assert push(NoSafeSerialization()) == []
+
+
+def test_merged_dtype_reaches_the_streaming_merger(saving):
+    """unsloth#5186: `dtype` reaches the zoo merge as `output_dtype`; the default stays None."""
+    env, records, _ = saving
+    env["unsloth_generic_push_to_hub_merged"](PeftModel(), "owner/model", token = "fixture")
+    assert records["merges"][-1]["output_dtype"] is None
+
+    sys.modules["unsloth_zoo.saving_utils"]._upcast_shard_to_float32 = lambda *args: None
+    env["unsloth_generic_push_to_hub_merged"](
+        PeftModel(), "owner/model", token = "fixture", dtype = "float32"
+    )
+    assert records["merges"][-1]["output_dtype"] == "float32"
+
+
+def test_merged_dtype_refuses_an_older_zoo(saving):
+    """An older unsloth_zoo ignores `output_dtype` and writes the base dtype, so refuse."""
+    env, records, _ = saving
+    prewarmed = []
+    env["_prewarm_base_model_hub_cache"] = lambda *args, **kwargs: prewarmed.append(args)
+    with pytest.raises(RuntimeError, match = "newer unsloth_zoo"):
+        env["unsloth_generic_push_to_hub_merged"](
+            PeftModel(), "owner/model", token = "fixture", dtype = "float32"
+        )
+    # Refused before the base model is downloaded into the Hub cache.
+    assert records["merges"] == [] and prewarmed == []
