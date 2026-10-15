@@ -96,7 +96,8 @@ def _err(x, ref):
 @pytest.mark.parametrize("dtype", [BF16, torch.float16, torch.float32])
 @pytest.mark.parametrize("packed", [False, True])
 @pytest.mark.parametrize(
-    "shape", [(2, 130, 32, 8, 128), (1, 77, 12, 4, 64), (2, 64, 8, 1, 256), (1, 33, 16, 16, 128)]
+    "shape",
+    [(2, 130, 32, 8, 128), (1, 77, 12, 4, 64), (2, 64, 8, 1, 256), (1, 33, 16, 16, 128), (1, 50, 20, 5, 128)],
 )
 def test_matches_unfused_within_rounding(shape, packed, dtype):
     bsz, seq, n_heads, n_kv, head_dim = shape
