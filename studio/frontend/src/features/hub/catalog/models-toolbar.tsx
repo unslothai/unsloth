@@ -13,10 +13,8 @@ import type { HfSortKey } from "@/features/hub/hooks/use-hub-model-search";
 import { useHubSource } from "@/lib/hf-endpoint";
 import { cn } from "@/lib/utils";
 import {
-  AiChipIcon,
   ArrowUpDownIcon,
   CancelCircleIcon,
-  Database02Icon,
   Delete02Icon,
   FolderSearchIcon,
   Search01Icon,
@@ -36,6 +34,7 @@ import {
   removeRecentSearch,
   useRecentSearches,
 } from "../lib/recent-searches";
+import type { DatasetModality } from "../lib/dataset-filters";
 import { FORMAT_FILTER_OPTIONS } from "../lib/view-models";
 import type {
   ModelFormatFilter,
@@ -76,6 +75,8 @@ export const ModelsToolbar = memo(function ModelsToolbar({
   capabilityFilters,
   onCapabilityFiltersChange,
   isolateFirstCapability,
+  datasetModalities,
+  onDatasetModalitiesChange,
   fitOnDeviceOnly,
   onFitOnDeviceOnlyChange,
   onManageLocalFolders,
@@ -112,6 +113,9 @@ export const ModelsToolbar = memo(function ModelsToolbar({
   onCapabilityFiltersChange: (value: HubCapabilityFilter[]) => void;
   /** Until the first change from the defaults, a capability pick keeps just that one. */
   isolateFirstCapability: boolean;
+  /** Empty means every modality. */
+  datasetModalities: DatasetModality[];
+  onDatasetModalitiesChange: (value: DatasetModality[]) => void;
   /** Shared with the chat model selector: hide models over the device budget. */
   fitOnDeviceOnly: boolean;
   onFitOnDeviceOnlyChange: (value: boolean) => void;
@@ -448,7 +452,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
             ariaLabel="Format filter"
             className={cn(
               triggerBase,
-              "w-[calc(144px*var(--ui-space-scale,1))]",
+              "w-[calc(160px*var(--ui-space-scale,1))]",
             )}
           />
         )}
@@ -461,7 +465,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
             ariaLabel="Sort models"
             className={cn(
               triggerBase,
-              "w-[calc(128px*var(--ui-space-scale,1))]",
+              "w-[calc(160px*var(--ui-space-scale,1))]",
             )}
             triggerContent={
               <span className="flex items-center gap-1">
@@ -506,97 +510,31 @@ export const ModelsToolbar = memo(function ModelsToolbar({
           />
         )}
 
-        {isDiscover && !npuList && (
-          <ModelSearchFiltersControl
-            value={searchFilters}
-            onChange={onSearchFiltersChange}
-            capabilities={capabilityFilters}
-            onCapabilitiesChange={onCapabilityFiltersChange}
-            isolateFirstCapability={isolateFirstCapability}
-            uploaders={uploaders}
-            uploadersChanged={uploadersChanged}
-            onUploadersChange={onUploadersChange}
-            onReset={onResetFilters}
-            showModelFilters={showModelFilters}
-            datasets={isDataset}
-            onDatasetsChange={(on) =>
-              onResourceTypeChange(on ? "datasets" : "models")
-            }
-            className={cn(
-              triggerBase,
-              "relative inline-flex size-9 shrink-0 items-center justify-center rounded-full p-0",
-            )}
-          />
-        )}
-
-        <div
-          className="hub-menu-trigger hub-tab-toggle relative inline-flex h-8 shrink-0 items-center rounded-full"
-          role="radiogroup"
-          aria-label="Resource type"
-        >
-          <span
-            aria-hidden="true"
-            className={cn(
-              "hub-tab-toggle-pill",
-              // Height-filling circle (matches the 3-view-tab toggle) that slides
-              // one button-width (w-8 = 32px) between the two options.
-              "pointer-events-none absolute inset-y-0 left-0 w-8 rounded-full transition-transform duration-200 ease-out",
-              resourceType === "datasets" ? "translate-x-8" : "translate-x-0",
-            )}
-          />
-          <Tooltip>
-            <TooltipTrigger asChild={true}>
-              <button
-                type="button"
-                role="radio"
-                aria-checked={resourceType === "models"}
-                aria-label="Models"
-                onClick={() => onResourceTypeChange("models")}
-                className={cn(
-                  "relative z-10 inline-flex size-8 items-center justify-center rounded-full transition-colors",
-                  resourceType === "models"
-                    ? "text-foreground"
-                    : "text-muted-foreground hover:text-foreground",
-                )}
-              >
-                <HugeiconsIcon
-                  icon={AiChipIcon}
-                  strokeWidth={1.75}
-                  className="size-4"
-                />
-              </button>
-            </TooltipTrigger>
-            <TooltipContent side="bottom" sideOffset={6}>
-              Models
-            </TooltipContent>
-          </Tooltip>
-          <Tooltip>
-            <TooltipTrigger asChild={true}>
-              <button
-                type="button"
-                role="radio"
-                aria-checked={resourceType === "datasets"}
-                aria-label="Datasets"
-                onClick={() => onResourceTypeChange("datasets")}
-                className={cn(
-                  "relative z-10 inline-flex size-8 items-center justify-center rounded-full transition-colors",
-                  resourceType === "datasets"
-                    ? "text-foreground"
-                    : "text-muted-foreground hover:text-foreground",
-                )}
-              >
-                <HugeiconsIcon
-                  icon={Database02Icon}
-                  strokeWidth={1.75}
-                  className="size-4"
-                />
-              </button>
-            </TooltipTrigger>
-            <TooltipContent side="bottom" sideOffset={6}>
-              Datasets
-            </TooltipContent>
-          </Tooltip>
-        </div>
+        {/* On every tab: its Datasets only switch replaces the old Models / Datasets toggle. */}
+        <ModelSearchFiltersControl
+          value={searchFilters}
+          onChange={onSearchFiltersChange}
+          capabilities={capabilityFilters}
+          onCapabilitiesChange={onCapabilityFiltersChange}
+          isolateFirstCapability={isolateFirstCapability}
+          uploaders={uploaders}
+          uploadersChanged={uploadersChanged}
+          onUploadersChange={onUploadersChange}
+          onReset={onResetFilters}
+          showModelFilters={showModelFilters}
+          datasets={isDataset}
+          modelSections={showCapabilities}
+          datasetSections={isDiscover && isDataset}
+          modalities={datasetModalities}
+          onModalitiesChange={onDatasetModalitiesChange}
+          onDatasetsChange={(on) =>
+            onResourceTypeChange(on ? "datasets" : "models")
+          }
+          className={cn(
+            triggerBase,
+            "relative inline-flex size-9 shrink-0 items-center justify-center rounded-full p-0",
+          )}
+        />
       </div>
     </div>
   );

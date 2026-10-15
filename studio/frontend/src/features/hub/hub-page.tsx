@@ -70,7 +70,6 @@ import {
   HUB_UPLOADERS,
   type HubUploader,
   hasModelSearchFilters,
-  isBaseModel,
   type ModelSearchFilters,
 } from "./lib/model-search-filters";
 import { ModelsToolbar } from "./catalog/models-toolbar";
@@ -123,6 +122,10 @@ import {
   registerRefresh,
   supersedingRefresh,
 } from "./lib/superseded-refresh";
+import {
+  type DatasetModality,
+  matchesDatasetFilters,
+} from "./lib/dataset-filters";
 import type { HubCapabilityFilter } from "./lib/model-capabilities";
 import { studioPageForTask } from "./lib/unsloth-support";
 import {
@@ -557,6 +560,16 @@ export function ModelsPage() {
   const [uploaderPick, setUploaderPick] = useState<HubUploader[] | null>(null);
   // Until the popover's first change from the defaults, a capability pick keeps just that one.
   const [firstPickArmed, setFirstPickArmed] = useState(true);
+  const [datasetModalities, setDatasetModalities] = useState<
+    DatasetModality[]
+  >([]);
+  const handlePopoverModalitiesChange = useCallback(
+    (next: DatasetModality[]) => {
+      setFirstPickArmed(false);
+      setDatasetModalities(next);
+    },
+    [],
+  );
   const handlePopoverCapabilitiesChange = useCallback(
     (next: HubCapabilityFilter[]) => {
       setFirstPickArmed(false);
@@ -693,6 +706,7 @@ export function ModelsPage() {
       setResourceType(next);
       setDownloadedFormat("all");
       setCapabilityFilters([]);
+      setDatasetModalities([]);
       setSearchFilters({});
       setUploaderPick(null);
       setFirstPickArmed(true);
@@ -727,6 +741,7 @@ export function ModelsPage() {
         setDirection("desc");
       }
       setCapabilityFilters([]);
+      setDatasetModalities([]);
       setSearchFilters({});
       setUploaderPick(null);
       setFirstPickArmed(true);
@@ -746,6 +761,7 @@ export function ModelsPage() {
     setSortBy(preset?.sort ?? "trendingScore");
     setDirection("desc");
     setCapabilityFilters([]);
+    setDatasetModalities([]);
     setSearchFilters({});
     setUploaderPick(null);
     setFirstPickArmed(true);
@@ -761,6 +777,7 @@ export function ModelsPage() {
     setResourceType("models");
     setQuery("");
     setCapabilityFilters([]);
+    setDatasetModalities([]);
     setSearchFilters({});
     setUploaderPick(null);
     setFirstPickArmed(true);
@@ -854,7 +871,6 @@ export function ModelsPage() {
     [hubSource, ownerScope, uploaders, storedSearchFilters],
   );
   const hasSearchFilters = hasModelSearchFilters(searchFilters);
-  const baseOnly = searchFilters.baseOnly === true;
   const hfToken = useHfTokenStore((s) => s.token);
   const debouncedHfToken = useDebouncedValue(hfToken, 500);
   const apiHfToken = hfApiToken(debouncedHfToken);
@@ -1017,44 +1033,59 @@ export function ModelsPage() {
     [visibleResults, modelDiscoveryInventorySignature],
   );
 
+  const deferredDatasetModalities = useDeferredValue(datasetModalities);
+  const { minRows, maxRows } = storedSearchFilters;
   const datasetDiscoverRows = useMemo<DiscoverRow[]>(() => {
     if (!isDatasetMode) return [];
-    return datasetResults.map((ds) => {
-      const owner = ds.id.includes("/") ? ds.id.split("/")[0] : "Hub";
-      const repo = ds.id.includes("/")
-        ? ds.id.split("/").slice(1).join("/")
-        : ds.id;
-      const summaryParts: string[] = [];
-      if (ds.taskCategories.length > 0)
-        summaryParts.push(ds.taskCategories.slice(0, 2).join(", "));
-      if (ds.totalExamples)
-        summaryParts.push(`${ds.totalExamples.toLocaleString()} rows`);
-      else if (ds.sizeCategory) summaryParts.push(ds.sizeCategory);
-      const lower = ds.id.toLowerCase();
-      return {
-        id: ds.id,
-        owner,
-        repo,
-        result: {
+    return datasetResults
+      .filter((ds) =>
+        matchesDatasetFilters(ds, deferredDatasetModalities, minRows, maxRows),
+      )
+      .map((ds) => {
+        const owner = ds.id.includes("/") ? ds.id.split("/")[0] : "Hub";
+        const repo = ds.id.includes("/")
+          ? ds.id.split("/").slice(1).join("/")
+          : ds.id;
+        const summaryParts: string[] = [];
+        if (ds.taskCategories.length > 0)
+          summaryParts.push(ds.taskCategories.slice(0, 2).join(", "));
+        if (ds.totalExamples)
+          summaryParts.push(`${ds.totalExamples.toLocaleString()} rows`);
+        else if (ds.sizeCategory) summaryParts.push(ds.sizeCategory);
+        const lower = ds.id.toLowerCase();
+        return {
           id: ds.id,
-          downloads: ds.downloads,
-          likes: ds.likes,
-          private: ds.private,
-          gated: ds.gated,
-          updatedAt: ds.updatedAt,
-          createdAt: ds.createdAt,
-          downloadsAllTime: ds.downloadsAllTime,
-          isGguf: false,
-          tags: ds.plainTags,
-        },
-        isAvailableOnDevice: availableSet.has(lower),
-        isPartialOnDevice: partialSet.has(lower),
-        isDownloadingOnDevice: partialSet.has(lower) && downloadingSet.has(lower),
-        summary: summaryParts.join(" · ") || ds.prettyName || "Dataset",
-        capabilities: [],
-      };
-    });
-  }, [isDatasetMode, datasetResults, availableSet, partialSet, downloadingSet]);
+          owner,
+          repo,
+          result: {
+            id: ds.id,
+            downloads: ds.downloads,
+            likes: ds.likes,
+            private: ds.private,
+            gated: ds.gated,
+            updatedAt: ds.updatedAt,
+            createdAt: ds.createdAt,
+            downloadsAllTime: ds.downloadsAllTime,
+            isGguf: false,
+            tags: ds.plainTags,
+          },
+          isAvailableOnDevice: availableSet.has(lower),
+          isPartialOnDevice: partialSet.has(lower),
+          isDownloadingOnDevice: partialSet.has(lower) && downloadingSet.has(lower),
+          summary: summaryParts.join(" · ") || ds.prettyName || "Dataset",
+          capabilities: [],
+        };
+      });
+  }, [
+    isDatasetMode,
+    datasetResults,
+    deferredDatasetModalities,
+    minRows,
+    maxRows,
+    availableSet,
+    partialSet,
+    downloadingSet,
+  ]);
 
   const discoverRows = isDatasetMode ? datasetDiscoverRows : modelDiscoverRows;
 
@@ -1088,8 +1119,6 @@ export function ModelsPage() {
               (key !== "audio" ||
                 matchesHubAudioTask(row.result.pipelineTag, linkedAudioTask)),
           )) &&
-        // The Hub filters Base only server-side; this covers listings that skip that parameter.
-        (!baseOnly || isBaseModel(row.result.tags)) &&
         (!activeChannel?.finetunableOnly || isUnslothFinetunable(row.result)) &&
         // Models already on disk stay visible regardless of device fit, matching the chat selector.
         (!fitOnDeviceOnly ||
@@ -1106,7 +1135,6 @@ export function ModelsPage() {
     checkpointQuantFormats,
     diffusionQuantFormats,
     deferredCapabilityFilters,
-    baseOnly,
     linkedAudioTask,
     activeChannel,
     fitOnDeviceOnly,
@@ -1311,12 +1339,14 @@ export function ModelsPage() {
       setInventoryTypeFilter("all");
     }
     setCapabilityFilters([]);
+    setDatasetModalities([]);
     setSearchFilters({});
     setUploaderPick(null);
     setFirstPickArmed(true);
   }, [isDiscoverTab, urlSection, navigate]);
   const handleResetPopoverFilters = useCallback(() => {
     setCapabilityFilters([]);
+    setDatasetModalities([]);
     setSearchFilters({});
     setUploaderPick(null);
     setFirstPickArmed(true);
@@ -1405,6 +1435,7 @@ export function ModelsPage() {
       setSortBy(preset?.sort ?? "trendingScore");
       setDirection("desc");
       setCapabilityFilters([]);
+      setDatasetModalities([]);
       setSearchFilters({});
       setUploaderPick(null);
       setFirstPickArmed(true);
@@ -1426,6 +1457,7 @@ export function ModelsPage() {
       if (next.trim() === "") {
         const preset = findChannel(DEFAULT_DISCOVER_CHANNEL);
         setCapabilityFilters([]);
+        setDatasetModalities([]);
         setSearchFilters({});
         setUploaderPick(null);
         setFirstPickArmed(true);
@@ -1526,6 +1558,7 @@ export function ModelsPage() {
     setSortBy(preset.sort);
     setDirection("desc");
     setCapabilityFilters([]);
+    setDatasetModalities([]);
     setSearchFilters({});
     setUploaderPick(null);
     setFirstPickArmed(true);
@@ -1588,6 +1621,7 @@ export function ModelsPage() {
       setResourceType("models");
       setDiscoverFormat("all");
       setCapabilityFilters([]);
+      setDatasetModalities([]);
       setSearchFilters({});
       setSortBrowseActive(false);
       // Base models come from other publishers, so search the whole Hub.
@@ -2025,6 +2059,8 @@ export function ModelsPage() {
           capabilityFilters={capabilityFilters}
           onCapabilityFiltersChange={handlePopoverCapabilitiesChange}
           isolateFirstCapability={firstPickArmed}
+          datasetModalities={datasetModalities}
+          onDatasetModalitiesChange={handlePopoverModalitiesChange}
           fitOnDeviceOnly={fitOnDeviceOnly}
           onFitOnDeviceOnlyChange={setFitOnDeviceOnly}
           onManageLocalFolders={handleManageLocalFolders}

@@ -53,12 +53,11 @@ test("the Images and Video pages' Search Hub links open their own pick", () => {
   assert.match(readSrc("app/routes/hub.tsx"), /search\.capability === "diffusion" \? "image-gen"/);
 });
 
-test("capabilities are picked in the filter popover, which sits by the Models / Datasets toggle", () => {
+test("capabilities are picked in the filter popover, after the sort menu", () => {
   const toolbar = readSrc("features/hub/catalog/models-toolbar.tsx");
   assert.doesNotMatch(toolbar, /ariaLabel="Capability filter"/);
   const filter = toolbar.indexOf("<ModelSearchFiltersControl");
-  const toggle = toolbar.indexOf('aria-label="Resource type"');
-  assert.ok(filter > toolbar.indexOf('ariaLabel="Sort models"') && filter < toggle);
+  assert.ok(filter > toolbar.indexOf('ariaLabel="Sort models"'));
   assert.match(toolbar, /capabilities=\{capabilityFilters\}/);
   const popover = readSrc("features/hub/catalog/model-search-filters.tsx");
   assert.match(popover, /CAPABILITY_FILTER_OPTIONS\.map\(\(option\) => \{/);
@@ -120,14 +119,13 @@ test("the range thumbs can share a stop, so <1B and >500B are reachable as limit
   assert.match(readSrc("features/hub/catalog/model-search-filters.tsx"), /minStepsBetweenThumbs=\{0\}/);
 });
 
-test("Base only is a switch, off by default, for the Hub's own base_model_relation=base", () => {
+test("Datasets only replaces the toolbar's Models / Datasets toggle", () => {
   const popover = readSrc("features/hub/catalog/model-search-filters.tsx");
-  assert.match(popover, /label="Base only"[\s\S]{0,200}checked=\{value\.baseOnly === true\}/);
-  // Datasets only shares the row and flips the list to datasets, as the toolbar switch does.
+  assert.doesNotMatch(popover, /Base only/);
   assert.match(popover, /label="Datasets only"[\s\S]{0,200}checked=\{datasets\}/);
-  assert.match(readSrc("features/hub/catalog/models-toolbar.tsx"), /onResourceTypeChange\(on \? "datasets" : "models"\)/);
-  assert.match(popover, /baseOnly: checked \|\| undefined/);
-  assert.match(readSrc("features/hub/hooks/use-hub-model-search.ts"), /for \(const \[key, value\] of new URLSearchParams\(parameterFilter\)\)/);
+  const toolbar = readSrc("features/hub/catalog/models-toolbar.tsx");
+  assert.doesNotMatch(toolbar, /aria-label="Resource type"/);
+  assert.match(toolbar, /onResourceTypeChange\(on \? "datasets" : "models"\)/);
 });
 
 test("LTX versions are video, and video-to-video is not offered as runnable video gen", () => {

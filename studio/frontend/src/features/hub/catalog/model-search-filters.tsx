@@ -19,11 +19,16 @@ import { AiSpeechIcon } from "@/lib/hugeicons-derived";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { Slider as SliderPrimitive } from "radix-ui";
 import {
+  ChartLineData01Icon,
+  CubeIcon,
+  File01Icon,
   FilterMailIcon,
   FlimSlateIcon,
   ImageIcon,
   InformationCircleIcon,
   LayoutTable02Icon,
+  Location01Icon,
+  Table01Icon,
   TextFontIcon,
   UndoIcon,
   ViewIcon,
@@ -37,6 +42,11 @@ import {
   type ModelSearchFilters,
   hasModelSearchFilters,
 } from "../lib/model-search-filters";
+import {
+  DATASET_MODALITIES,
+  DATASET_ROW_STOPS,
+  type DatasetModality,
+} from "../lib/dataset-filters";
 import { CAPABILITY_FILTER_OPTIONS } from "../lib/view-models";
 
 // The Hub rows' capability icons (catalog/shared.tsx), with Image gen on diffusion's and Video gen
@@ -58,7 +68,13 @@ const SECTION_LABEL =
 // Each section's content sits 17px from the lines on both sides; the instances trim or pad my-2 to it.
 const SEPARATOR = "mx-1 my-2 h-px bg-border";
 
-type LimitKey = "minParams" | "maxParams" | "minContext" | "maxContext";
+type LimitKey =
+  | "minParams"
+  | "maxParams"
+  | "minContext"
+  | "maxContext"
+  | "minRows"
+  | "maxRows";
 
 interface RangeSpec {
   label: string;
@@ -69,6 +85,8 @@ interface RangeSpec {
   stops: readonly number[];
   /** Index -> label; unlabelled stops show only a tick. */
   labels: readonly (string | null)[];
+  /** An unlabelled stop's pill text. */
+  format: (value: number) => string;
 }
 
 const B = 1e9;
@@ -95,6 +113,7 @@ const RANGES: readonly RangeSpec[] = [
       null,
       ">500B",
     ],
+    format: (n) => `${n / B}B`,
   },
   {
     label: "Context length",
@@ -117,8 +136,53 @@ const RANGES: readonly RangeSpec[] = [
       null,
       ">1M",
     ],
+    format: (n) => `${n / K}K`,
   },
 ];
+
+const ROW_UNITS: readonly [number, string][] = [
+  [1e12, "T"],
+  [1e9, "B"],
+  [1e6, "M"],
+  [1e3, "K"],
+];
+const DATASET_ROWS: RangeSpec = {
+  label: "Size (rows)",
+  about:
+    "The Hub's size category for the dataset. Datasets that don't publish one are left out.",
+  min: "minRows",
+  max: "maxRows",
+  stops: DATASET_ROW_STOPS,
+  labels: ["<1K", null, null, "1M", null, null, "1B", null, null, ">1T"],
+  format: (n) => {
+    const [scale, unit] = ROW_UNITS.find(([size]) => n >= size) ?? [1, ""];
+    return `${n / scale}${unit}`;
+  },
+};
+
+const MODALITY_LABELS: Record<DatasetModality, string> = {
+  "3d": "3D",
+  audio: "Audio",
+  document: "Document",
+  geospatial: "Geospatial",
+  image: "Image",
+  tabular: "Tabular",
+  text: "Text",
+  timeseries: "Time-series",
+  video: "Video",
+};
+
+const MODALITY_ICONS: Record<DatasetModality, IconSvgElement> = {
+  "3d": CubeIcon,
+  audio: AiSpeechIcon,
+  document: File01Icon,
+  geospatial: Location01Icon,
+  image: ImageIcon,
+  tabular: Table01Icon,
+  text: TextFontIcon,
+  timeseries: ChartLineData01Icon,
+  video: FlimSlateIcon,
+};
 
 const THUMB = 14;
 // The range, thumbs and value pills: a step off black in light, white in dark.
@@ -175,9 +239,7 @@ function RangeStops({
     i === 0 ? { left: 0 } : i === last ? { right: 0 } : undefined;
   const at = (i: number) =>
     `calc(${THUMB / 2}px + (100% - ${THUMB}px) * ${i / last})`;
-  const chip = (i: number) =>
-    spec.labels[i] ??
-    (spec.stops[i] >= B ? `${spec.stops[i] / B}B` : `${spec.stops[i] / K}K`);
+  const chip = (i: number) => spec.labels[i] ?? spec.format(spec.stops[i]);
   return (
     <fieldset>
       <legend className={SECTION_LABEL}>
@@ -320,7 +382,7 @@ function MenuTick({
   );
 }
 
-/** A labelled switch, half of the switches row; its note shows on hovering the label. */
+/** A labelled switch; its note shows on hovering the label. */
 function SwitchField({
   label,
   about,
@@ -451,6 +513,10 @@ export function ModelSearchFiltersControl({
   showModelFilters,
   datasets,
   onDatasetsChange,
+  modelSections,
+  datasetSections,
+  modalities,
+  onModalitiesChange,
   className,
 }: {
   value: ModelSearchFilters;
@@ -467,15 +533,22 @@ export function ModelSearchFiltersControl({
   /** Back to no filters: every capability, the default uploaders, no limits. */
   onReset: () => void;
   showModelFilters: boolean;
-  /** The list shows datasets: only the Datasets only switch applies. */
+  /** The list shows datasets. */
   datasets: boolean;
+  /** Capabilities, ranges and uploader apply (Discover models). */
+  modelSections: boolean;
+  /** Modalities and size apply (Discover datasets). */
+  datasetSections: boolean;
+  /** Empty means every modality ticked (no filter). */
+  modalities: DatasetModality[];
+  onModalitiesChange: (value: DatasetModality[]) => void;
   onDatasetsChange: (value: boolean) => void;
   className?: string;
 }) {
   const [open, setOpen] = useState(false);
   const unslothOnly = uploaders.length === 1 && uploaders[0] === "unsloth";
   const filtered =
-    datasets ||
+    modalities.length > 0 ||
     capabilities.length > 0 ||
     uploadersChanged ||
     (showModelFilters && hasModelSearchFilters(value));
@@ -514,7 +587,7 @@ export function ModelSearchFiltersControl({
         className="hub-menu-instant hub-composer-menu menu-soft-surface gap-0 overflow-hidden w-[calc(392px*var(--ui-space-scale,1))] max-w-[calc(100vw-1rem)] ring-0"
       >
         <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain [scrollbar-width:thin]">
-          {!datasets && (
+          {modelSections && (
             <>
               <fieldset>
                 <legend className={SECTION_LABEL}>
@@ -591,28 +664,9 @@ export function ModelSearchFiltersControl({
                         onChange={onChange}
                       />
                     ))}
-                    <div className="px-3 pb-[calc(5px*var(--ui-space-scale,1))]">
-                      <SegmentedRow
-                        label="Uploader"
-                        about="Unsloth lists Unsloth's own uploads. All uploaders searches every account on the Hub; a search starts there."
-                        value={unslothOnly ? "unsloth" : "all"}
-                        options={[
-                          ["unsloth", "Unsloth"],
-                          ["all", "All uploaders"],
-                        ]}
-                        onChange={(next) =>
-                          onUploadersChange(
-                            next === "unsloth"
-                              ? ["unsloth"]
-                              : [...HUB_UPLOADERS],
-                          )
-                        }
-                      />
-                    </div>
                   </div>
                 </>
               )}
-              {/* Uploader is the Hub search's own scope, so it stays on ModelScope too. */}
               <div
                 aria-hidden={true}
                 className={cn(
@@ -624,9 +678,77 @@ export function ModelSearchFiltersControl({
               />
             </>
           )}
+          {datasetSections && (
+            <>
+              <fieldset>
+                <legend className={SECTION_LABEL}>
+                  Modalities
+                  {modalities.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => onModalitiesChange([])}
+                      className="cursor-pointer transition-colors hover:text-foreground"
+                    >
+                      Select all
+                    </button>
+                  )}
+                </legend>
+                <div className="grid grid-cols-2 gap-x-1">
+                  {DATASET_MODALITIES.map((modality) => {
+                    const ticked = (key: DatasetModality) =>
+                      modalities.length === 0 || modalities.includes(key);
+                    const checked = ticked(modality);
+                    const next = DATASET_MODALITIES.filter((key) =>
+                      key === modality ? !checked : ticked(key),
+                    );
+                    return (
+                      <MenuTick
+                        key={modality}
+                        icon={
+                          <HugeiconsIcon
+                            icon={MODALITY_ICONS[modality]}
+                            strokeWidth={2}
+                            className="size-4 shrink-0"
+                          />
+                        }
+                        label={MODALITY_LABELS[modality]}
+                        checked={checked}
+                        locked={next.length === 0}
+                        onToggle={() =>
+                          onModalitiesChange(
+                            // Like Capabilities: the first pick from the defaults keeps just that one.
+                            modalities.length === 0 && isolateFirstCapability
+                              ? [modality]
+                              : next.length === DATASET_MODALITIES.length
+                                ? []
+                                : next,
+                          )
+                        }
+                      />
+                    );
+                  })}
+                </div>
+              </fieldset>
+              <div
+                aria-hidden={true}
+                className={cn(
+                  SEPARATOR,
+                  "mt-[calc(5px*var(--ui-space-scale,1))]",
+                )}
+              />
+              <div className="pb-0.5">
+                <RangeStops
+                  spec={DATASET_ROWS}
+                  value={value}
+                  onChange={onChange}
+                />
+              </div>
+              <div aria-hidden={true} className={cn(SEPARATOR, "mt-2.5")} />
+            </>
+          )}
           <div className="flex flex-col gap-3 px-3 pt-[calc(9px*var(--ui-space-scale,1))] pb-[calc(7px*var(--ui-space-scale,1))]">
-            {/* Dataset search takes no owner scope; with the ranges shown it sits under them. */}
-            {!datasets && !showModelFilters && (
+            {/* The Hub search's own scope, so it stays on ModelScope too; datasets take none. */}
+            {modelSections && (
               <SegmentedRow
                 label="Uploader"
                 about="Unsloth lists Unsloth's own uploads. All uploaders searches every account on the Hub; a search starts there."
@@ -642,22 +764,10 @@ export function ModelSearchFiltersControl({
                 }
               />
             )}
-            <div className="flex h-8 items-center gap-6">
-              {/* A Hub listing parameter (base_model_relation=base), so only where the Hub search runs. */}
-              {!datasets && showModelFilters && (
-                <SwitchField
-                  label="Base only"
-                  about="Hides quantizations, finetunes, adapters and merges, as the Hugging Face Hub's Base only does."
-                  checked={value.baseOnly === true}
-                  onCheckedChange={(checked) =>
-                    onChange({ ...value, baseOnly: checked || undefined })
-                  }
-                />
-              )}
-              {/* The toolbar's Models / Datasets switch, from here too. */}
+            <div className="flex h-8 items-center">
               <SwitchField
                 label="Datasets only"
-                about="Lists datasets instead of models, like the Models / Datasets switch."
+                about="Lists datasets instead of models."
                 checked={datasets}
                 onCheckedChange={onDatasetsChange}
               />
@@ -671,12 +781,7 @@ export function ModelSearchFiltersControl({
             variant="ghost"
             size="xs"
             disabled={!filtered}
-            onClick={() => {
-              onReset();
-              if (datasets) {
-                onDatasetsChange(false);
-              }
-            }}
+            onClick={onReset}
           >
             Reset all
           </Button>
