@@ -1079,7 +1079,6 @@ def test_ulysses_shards_contiguously_after_global_shift():
             assert cp.get_cp_manager() is manager
             shards.append(inputs)
         assert cp.get_cp_manager() is None
-    # 7 tokens pad to 8 (a multiple of size, not 2 * size); rank 0 keeps the first half.
     assert [s["input_ids"].tolist() for s in shards] == [[[1, 2, 3, 4]], [[5, 6, 7, 0]]]
     assert [s["shift_labels"].tolist() for s in shards] == [[[5, 6, 7, 8]], [[9, 10, -100, -100]]]
     assert [s["position_ids"].tolist() for s in shards] == [[[0, 1, 2, 3]], [[4, 5, 6, 7]]]
@@ -1098,7 +1097,6 @@ def test_ulysses_packed_batch_keeps_global_lengths_and_masks_document_starts():
         with _ulysses_manager(rank).apply(inputs):
             shards.append(inputs)
     assert all(s["packed_seq_lengths"] is lengths for s in shards)
-    # Positions reset per document; the last token of document 0 must not target document 1's first.
     assert torch.cat([s["position_ids"] for s in shards], 1).tolist() == [[0, 1, 2, 0, 1, 2, 3, 4]]
     shift = torch.cat([s["shift_labels"] for s in shards], 1).tolist()
     assert shift == [[11, 12, -100, 21, 22, 23, -100, -100]]

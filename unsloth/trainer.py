@@ -1863,7 +1863,6 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 # several classes, so a "yes" from the resolved one is not proof about the
                 # instance. A correct "no" has already turned both flags off, which is the
                 # condition the post-init check skips on, so leaving it armed is free.
-        # Ulysses gives attention whole sequences, so packing / padding-free still work there.
         is_ring_context_parallel = (getattr(config_arg, "context_parallel_size", 1) or 1) > 1 and (
             getattr(config_arg, "context_parallel_backend", None) or "ring"
         ) == "ring"

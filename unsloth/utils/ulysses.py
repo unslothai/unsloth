@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Ulysses sequence parallelism: all-to-all from sequence shards to head shards around attention.
-
-Each rank holds a contiguous slice of the sequence. Before attention Q/K/V are exchanged so every rank
-sees the whole sequence for H / N heads, attention runs through the normal dispatcher (varlen, FA3/FA4,
-SDPA, xformers all work since nothing is sharded along the sequence), then the output goes back to
-sequence shards. Packed metadata (cu_seqlens) therefore stays global.
-"""
+"""Ulysses sequence parallelism: all-to-all from sequence shards to head shards around attention."""
 
 from dataclasses import replace
 from typing import NamedTuple
@@ -25,7 +19,6 @@ __all__ = [
 
 
 def _all_to_all(x, scatter_dim, gather_dim, group):
-    # Chunk j of scatter_dim goes to rank j; received chunks are concatenated along gather_dim in rank order.
     world = dist.get_world_size(group)
     if world == 1:
         return x
@@ -50,7 +43,6 @@ class _AllToAll(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad):
-        # A permutation across ranks: the inverse exchange, no scaling.
         return _all_to_all(grad, ctx.gather_dim, ctx.scatter_dim, ctx.group), None, None, None
 
 
@@ -96,10 +88,7 @@ def ulysses_head_plan(n_heads, n_kv_heads, cp_size):
 
 
 def ulysses_attention(run_attention_fn, config, context, Q, K, V, group):
-    """Run attention for a sequence shard: Q [B, H, T/N, D], K/V [B, Hkv, T/N, D] (post RoPE).
-
-    Returns [B, T/N, H, D], the layout run_attention returns for the local shard.
-    """
+    """Q [B, H, T/N, D], K/V [B, Hkv, T/N, D] (post RoPE) -> [B, T/N, H, D]."""
     if context.attention_mask is not None or isinstance(context.causal_mask, torch.Tensor):
         raise RuntimeError(
             "Unsloth: Ulysses context parallelism does not take a dense attention mask; padding is "
@@ -113,8 +102,7 @@ def ulysses_attention(run_attention_fn, config, context, Q, K, V, group):
     size = dist.get_world_size(group)
     plan = ulysses_head_plan(context.n_heads, config.n_kv_heads, size)
     if plan.kv_replication > 1:
-        # Consecutive copies keep query head h on kv head h // n_groups after the split; autograd sums
-        # the copies' gradients back into the original kv head.
+        # Consecutive copies keep query head h on kv head h // n_groups after the split.
         K = K.repeat_interleave(plan.kv_replication, dim = 1)
         V = V.repeat_interleave(plan.kv_replication, dim = 1)
 
@@ -135,7 +123,6 @@ def ulysses_attention(run_attention_fn, config, context, Q, K, V, group):
 
 
 def _document_positions(packed_seq_lengths, total, device):
-    # Callers check sum(lengths) <= total first.
     lengths = [int(x) for x in torch.as_tensor(packed_seq_lengths).reshape(-1).tolist()]
     pieces = [torch.arange(length, device = device) for length in lengths]
     used = sum(lengths)

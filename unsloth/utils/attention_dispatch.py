@@ -530,7 +530,6 @@ class AttentionContext:
 
 
 def _ring_attention_active() -> bool:
-    # Ulysses hands whole sequences to the normal dispatcher, so only the ring needs SDPA.
     manager = get_cp_manager()
     return manager is not None and manager.backend == "ring"
 

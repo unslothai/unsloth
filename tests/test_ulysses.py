@@ -20,7 +20,6 @@ _MODULE = pathlib.Path(__file__).resolve().parents[1] / "unsloth" / "utils" / "u
 
 
 def _load():
-    # By path: importing the unsloth package needs an accelerator.
     spec = importlib.util.spec_from_file_location("_ulysses_under_test", _MODULE)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -58,7 +57,6 @@ class _Context:
 
 
 def _segment_mask(lengths, total):
-    # Block diagonal causal keep mask; the tokens past sum(lengths) form their own segment.
     lengths = [int(x) for x in lengths]
     if sum(lengths) < total:
         lengths.append(total - sum(lengths))
@@ -68,7 +66,6 @@ def _segment_mask(lengths, total):
 
 
 def _fake_run_attention(*, config, context, Q, K, V):
-    # SDPA reference that checks the context it is handed matches the tensors.
     assert Q.shape == (context.bsz, context.n_heads, context.q_len, context.head_dim), Q.shape
     assert K.shape == (context.bsz, config.n_kv_heads, context.kv_seq_len, context.head_dim)
     assert context.n_heads == config.n_kv_heads * config.n_groups
@@ -127,7 +124,6 @@ def _exchange_worker(rank, world):
     heads = U.seq_to_head(local, None)
     h = H // world
     torch.testing.assert_close(heads, full[:, rank * h : (rank + 1) * h], rtol = 0, atol = 0)
-    # Output direction: [B, T, h, D] -> [B, S, H, D].
     back = U.head_to_seq(heads.transpose(1, 2), None)
     torch.testing.assert_close(back, local.transpose(1, 2), rtol = 0, atol = 0)
 
@@ -141,7 +137,6 @@ def _attention_worker(rank, world, n_heads, n_kv, raw_len, lengths, dtype):
     K = torch.randn(B, n_kv, T, D, dtype = dtype)
     V = torch.randn(B, n_kv, T, D, dtype = dtype)
     W = torch.randn(B, T, n_heads, D, dtype = dtype)
-    # Padded tail holds zeros like a padded batch would carry junk; causal keeps real rows clean.
     Q[:, :, raw_len:] = 0
     K[:, :, raw_len:] = 0
     V[:, :, raw_len:] = 0
@@ -182,7 +177,6 @@ def _attention_worker(rank, world, n_heads, n_kv, raw_len, lengths, dtype):
 
 
 _CASES = {
-    # (n_heads, n_kv, dtype): MHA, GQA with kv heads split, MQA / GQA with kv heads replicated.
     2: [(4, 4, torch.float64), (4, 2, torch.float64), (4, 1, torch.float64)],
     4: [(8, 1, torch.float64), (8, 2, torch.float32), (8, 8, torch.float32)],
 }
@@ -190,12 +184,10 @@ _PACKED = {2: (4, 2), 4: (8, 1)}
 
 
 def _all_cases_worker(rank, world):
-    # One spawn per world size: starting ranks dominates the runtime.
     _exchange_worker(rank, world)
     for n_heads, n_kv, dtype in _CASES[world]:
         _attention_worker(rank, world, n_heads, n_kv, 4 * world + 3, None, dtype)
     raw_len = 6 * world + 1
-    # Documents straddle every shard boundary; the padded tail is covered as its own segment.
     lengths = [5, 3 * world - 2, raw_len - 3 * world - 3]
     n_heads, n_kv = _PACKED[world]
     _attention_worker(rank, world, n_heads, n_kv, raw_len, lengths, torch.float64)
@@ -273,7 +265,6 @@ def _real_dispatch_worker(rank, world, run_attention, AttentionConfig, Attention
     out = U.ulysses_attention(run_attention, config, context, Q[:, :, sl], K[:, :, sl], V[:, :, sl], None)
     torch.testing.assert_close(out, ref[:, sl], rtol = 1e-5, atol = 1e-5)
 
-    # Packed row: documents cross the shard seam, the pad tail is covered by the dispatcher.
     lengths = torch.tensor([3, T - 5], dtype = torch.int32)
     cu_seqlens = torch.zeros(3, dtype = torch.int32)
     cu_seqlens[1:] = torch.cumsum(lengths, 0)
@@ -304,7 +295,6 @@ def test_real_run_attention_sdpa_path():
     except Exception as exc:  # the unsloth package import needs an accelerator
         pytest.skip(f"unsloth.utils.attention_dispatch does not import here: {type(exc).__name__}")
     # Forked, not spawned: a fresh interpreter would re-import unsloth without the test GPU spoof.
-    # The workers only touch CPU tensors.
     if "fork" not in mp.get_all_start_methods():
         pytest.skip("needs the fork start method")
     _spawn(

@@ -92,8 +92,7 @@ def context_parallel_options(config) -> tuple:
 
 
 def _unsupported_attention(config) -> Optional[str]:
-    # The ring runs plain causal SDPA with no mask, window or logit softcap. Llama's forward (the only
-    # one allowed under either backend) also ignores these, so Ulysses refuses them too.
+    # Ring and Llama's forward ignore mask, window and softcap, so both backends refuse them.
     configs = [config]
     text_config = getattr(config, "text_config", None)
     if text_config is not None and text_config is not config:
@@ -163,7 +162,6 @@ def _supports_context_parallel(model) -> bool:
 
 
 def _self_attn_pre_forward_hook(_module, module_args, module_kwargs):
-    # Both backends run causal attention with no mask; right padding is already -100 in labels.
     if get_cp_manager() is not None and "attention_mask" in module_kwargs:
         module_kwargs["attention_mask"] = None
     return module_args, module_kwargs
@@ -213,7 +211,6 @@ class ContextParallelManager:
         if packed_seq_lengths is not None:
             if bsz != 1:
                 raise ValueError(f"Unsloth: packed batches must be a single row, got {bsz} rows.")
-            # Attention sees these global lengths; they must fit the row before anything is built.
             used = int(torch.as_tensor(packed_seq_lengths).sum())
             if used > seq_len:
                 raise ValueError(
@@ -243,7 +240,6 @@ class ContextParallelManager:
 
             labels = mask_packed_boundary_labels(labels, packed_seq_lengths)
             inputs["shift_labels"] = F.pad(labels, (0, 1), value = -100)[:, 1:].contiguous()
-        # The ring's load balancer splits the sequence into 2 * size chunks, Ulysses into size.
         pad = (-seq_len) % (self.size if ulysses else 2 * self.size)
         if pad:
             for name in _BUFFER_NAMES:
@@ -276,8 +272,7 @@ class ContextParallelManager:
 
     @contextlib.contextmanager
     def _ulysses_scope(self, inputs: dict) -> Iterator[None]:
-        # Contiguous shards; attention exchanges them for head shards (utils/ulysses.py), so
-        # packed_seq_lengths stays global.
+        # Contiguous shards; packed_seq_lengths stays global.
         rank = self.mesh.get_local_rank()
         for name in _BUFFER_NAMES:
             tensor = inputs.get(name)
@@ -493,7 +488,6 @@ def patch_sft_trainer() -> None:
         # Older accelerate ignores the "cp" mesh dim, so CP peers would get different batches.
         if Version(accelerate.__version__) < Version("1.10.0"):
             raise NotImplementedError("Unsloth: context parallelism needs accelerate >= 1.10.0.")
-        # Plain causal attention: the windowed mask Unsloth builds otherwise is dropped.
         model_config = getattr(self.model, "config", None)
         unsupported = _unsupported_attention(model_config)
         if unsupported is not None:
@@ -534,7 +528,6 @@ def patch_sft_trainer() -> None:
         _install_accelerator_state(self)
         # Packing (which ring disables) is the usual route to FA3 / FA4; the ring calls the same
         # flash ops those override, so scope them to train() here too. Idempotent per trainer.
-        # Ulysses runs the normal dispatcher on whole sequences, so it gets them either way.
         from .utils.packing import _scope_flash_attention_impl
 
         _scope_flash_attention_impl(self.model, self)
