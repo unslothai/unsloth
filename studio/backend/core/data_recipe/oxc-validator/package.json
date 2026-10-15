@@ -4,8 +4,8 @@
   "version": "0.0.1",
   "type": "module",
   "dependencies": {
-    "oxc-parser": "^0.152.0",
-    "oxc-transform": "0.152.0",
-    "oxlint": "^1.86.0"
+    "oxc-parser": "^0.153.0",
+    "oxc-transform": "0.153.0",
+    "oxlint": "^1.87.0"
   }
 }
