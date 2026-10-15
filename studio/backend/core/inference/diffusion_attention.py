@@ -518,7 +518,9 @@ ROCM_FLASH_PROBE_TOKENS = 4096  # the load-time bucket: a 1024^2 image DiT seque
 # lower edges on first use, so the 4096 verdict never decides a 30k-token video call, and a long-video x short-text
 # cross-attention is timed as that rectangle, not as square self-attention.
 ROCM_FLASH_MIN_BUCKET = 256
-ROCM_FLASH_LONG_PROBE = 16384  # from here the probe times fewer runs (one native SDPA call is seconds at 64k tokens)
+ROCM_FLASH_LONG_PROBE = (
+    16384  # from here the probe times fewer runs (one native SDPA call is seconds at 64k tokens)
+)
 # (device, dtype, hidden, heads, head_dim, tokens) -> admission record.
 ROCM_FLASH_ADMISSIONS: dict[tuple, dict] = {}
 # Bump when the block probe changes what it measures: every stored verdict is then re-timed.
@@ -767,7 +769,9 @@ def _rocm_flash_block_admitted(
     # diffusers' flash backend raises on attn_mask: masked calls (e.g. mixed-padding batches) must run native
     if not _install_rocm_flash_dispatch_guard():
         return False
-    gate: dict[tuple, frozenset] = {}  # (device, dtype, heads, head_dim) -> the full geometries sharing it
+    gate: dict[
+        tuple, frozenset
+    ] = {}  # (device, dtype, heads, head_dim) -> the full geometries sharing it
     for geometry in geometries:
         shape = (device, str(dtype), geometry[1], geometry[2])
         gate[shape] = gate.get(shape, frozenset()) | {tuple(geometry)}
@@ -902,7 +906,11 @@ def _native_sdpa_fused_serves(
     torch's own dispatcher with zero-size-storage views; otherwise (or when it cannot say) it runs the math backend."""
     try:
         import torch
-        from torch.backends.cuda import SDPAParams, can_use_efficient_attention, can_use_flash_attention
+        from torch.backends.cuda import (
+            SDPAParams,
+            can_use_efficient_attention,
+            can_use_flash_attention,
+        )
 
         cuda = torch.backends.cuda
 
@@ -925,7 +933,12 @@ def _native_sdpa_fused_serves(
 
 
 def _rocm_flash_probe_bytes(
-    geometry: tuple, tokens: int, kv_tokens: int, batch: int, dtype: Any, device: Any = "cuda"
+    geometry: tuple,
+    tokens: int,
+    kv_tokens: int,
+    batch: int,
+    dtype: Any,
+    device: Any = "cuda",
 ) -> int:
     """Upper bound on what ``_time_rocm_flash_block`` allocates: its weights, the block's widest activations and the
     fp32 accuracy outputs (measured on gfx1151: 5.46 GiB at Wan's 64k tokens, this gives 8.1 GiB). Unless a fused SDPA
@@ -949,6 +962,7 @@ def _rocm_flash_probe_fits(device: str, need: int) -> bool:
     25% + 256 MiB to spare. Unknown memory state counts as no room."""
     try:
         import torch
+
         free, _total = torch.cuda.mem_get_info(device)
         cached = torch.cuda.memory_reserved(device) - torch.cuda.memory_allocated(device)
         return free + max(int(cached), 0) >= need * 1.25 + (256 << 20)
@@ -1042,7 +1056,6 @@ def _real_number(value: Any) -> bool:
 def _rocm_flash_record_ok(rec: Any) -> bool:
     """Every field a verdict is derived from has the type and range the probe writes; anything else is a cache miss."""
     import math
-
     try:
         if not isinstance(rec, dict) or not isinstance(rec.get("finite"), bool):
             return False
@@ -1077,7 +1090,8 @@ def _rocm_flash_record_ok(rec: Any) -> bool:
                 isinstance(geometry.get(k), int)
                 and not isinstance(geometry.get(k), bool)
                 and geometry.get(k) > 0
-                for k in ("hidden", "heads", "head_dim") + (("context",) if "context" in geometry else ())
+                for k in ("hidden", "heads", "head_dim")
+                + (("context",) if "context" in geometry else ())
             )
         ):
             return False
@@ -1099,7 +1113,9 @@ def _rocm_flash_wins(rec: dict) -> bool:
         return False
 
 
-def _log_rocm_flash_verdict(logger: Any, device: str, geometry: tuple, rec: dict, source: str) -> None:
+def _log_rocm_flash_verdict(
+    logger: Any, device: str, geometry: tuple, rec: dict, source: str
+) -> None:
     """Never raises: the values are formatted defensively, whatever a record holds."""
 
     def num(value: Any, spec: str) -> str:
@@ -1146,7 +1162,9 @@ def _rocm_driver_version() -> str:
             names = ["amdhip64_7.dll", "amdhip64_6.dll", "amdhip64.dll"]
         else:
             with open("/proc/self/maps", encoding = "utf-8", errors = "replace") as f:
-                names = sorted({line.split()[-1] for line in f if "libamdhip64" in line and "/" in line})
+                names = sorted(
+                    {line.split()[-1] for line in f if "libamdhip64" in line and "/" in line}
+                )
         for name in names:
             try:
                 lib = ctypes.CDLL(name)
@@ -1185,7 +1203,9 @@ def _diffusers_flash_path_fingerprint() -> str:
     )
 
     flash = _AttentionBackendRegistry._backends[AttentionBackendName.FLASH]
-    while getattr(flash, _SAGE_GUARD_ATTR, False) and getattr(flash, "__wrapped__", None) is not None:
+    while (
+        getattr(flash, _SAGE_GUARD_ATTR, False) and getattr(flash, "__wrapped__", None) is not None
+    ):
         flash = flash.__wrapped__
     parts = []
     for fn in (dispatch_attention_fn, flash):
@@ -1216,9 +1236,7 @@ def _flash_attn_build_fingerprint() -> str:
         files.add(gpu_file)
         if gpu_file.endswith(".py"):  # Triton: the kernels are the Python sources beside it
             folder = os.path.dirname(gpu_file)
-            files.update(
-                os.path.join(folder, n) for n in os.listdir(folder) if n.endswith(".py")
-            )
+            files.update(os.path.join(folder, n) for n in os.listdir(folder) if n.endswith(".py"))
     elif "flash_attn_2_cuda" not in sys.modules:
         try:
             spec = importlib.util.find_spec("flash_attn_2_cuda")
@@ -1259,13 +1277,14 @@ def _rocm_flash_toolchain_key(device: str) -> Optional[str]:
         fa_version = getattr(fa, "__version__", None) or importlib.metadata.version("flash_attn")
         # flash_attn_interface reads exactly this to route to the Triton AMD kernels instead of the CK extension, and
         # falls back to Triton itself when the CK extension does not import; its USE_TRITON_ROCM is the outcome.
-        triton_amd = getattr(sys.modules.get("flash_attn.flash_attn_interface"), "USE_TRITON_ROCM", None)
+        triton_amd = getattr(
+            sys.modules.get("flash_attn.flash_attn_interface"), "USE_TRITON_ROCM", None
+        )
         if not isinstance(triton_amd, bool):
             triton_amd = os.environ.get("FLASH_ATTENTION_TRITON_AMD_ENABLE", "FALSE") == "TRUE"
         backend = "ck"
         if triton_amd:
             import triton
-
             backend = f"triton{triton.__version__}"
         src = inspect.getsource(_time_rocm_flash_block)
         return "|".join(
@@ -1316,7 +1335,6 @@ def _rocm_flash_cache_path(toolchain: Optional[str]) -> Optional[str]:
     if not root:
         try:
             from utils.paths.storage_roots import cache_root
-
             root = str(cache_root() / "diffusion_rocm_flash")
         except Exception:  # noqa: BLE001 - outside Studio: in-memory only
             return None
@@ -1327,7 +1345,6 @@ def _rocm_flash_cache_path(toolchain: Optional[str]) -> Optional[str]:
 
 def _load_rocm_flash_verdicts(path: Optional[str], toolchain: Optional[str]) -> dict:
     import json
-
     if path is None or not os.path.isfile(path):
         return {}
     try:
@@ -1343,7 +1360,9 @@ def _load_rocm_flash_verdicts(path: Optional[str], toolchain: Optional[str]) -> 
         return {}
 
 
-def _save_rocm_flash_verdict(path: Optional[str], toolchain: Optional[str], slot: str, rec: dict) -> None:
+def _save_rocm_flash_verdict(
+    path: Optional[str], toolchain: Optional[str], slot: str, rec: dict
+) -> None:
     """Best effort, under a file lock: merge what another process stored since, then write a temp file and replace."""
     if path is None:
         return
@@ -1355,7 +1374,6 @@ def _save_rocm_flash_verdict(path: Optional[str], toolchain: Optional[str], slot
         os.makedirs(os.path.dirname(path), exist_ok = True)
         try:
             from filelock import FileLock
-
             lock: Any = FileLock(f"{path}.lock", timeout = 60)
         except ImportError:
             lock = contextlib.nullcontext()
@@ -1818,7 +1836,9 @@ def _install_rocm_flash_dispatch_guard() -> bool:
         _rocm_flash_reroute_reason,
         lambda reason: (
             _note_rocm_flash_route(reason),
-            _note_reroute("ROCm flash attention", reason, _ROCM_FLASH_ROUTED, _ROCM_FLASH_ROUTED_LOGGED),
+            _note_reroute(
+                "ROCm flash attention", reason, _ROCM_FLASH_ROUTED, _ROCM_FLASH_ROUTED_LOGGED
+            ),
         ),
         ran = _note_rocm_flash_ran,
     )
@@ -1872,7 +1892,9 @@ def _track_rocm_flash_calls(pipe: Any) -> None:
             registry = getattr(pipe, _ROCM_FLASH_DITS_ATTR, None)
             if not isinstance(registry, list):
                 registry = []
-                setattr(pipe, _ROCM_FLASH_DITS_ATTR, registry)  # a named view writes through to the real pipe
+                setattr(
+                    pipe, _ROCM_FLASH_DITS_ATTR, registry
+                )  # a named view writes through to the real pipe
             if not any(dit is d for d in registry):
                 registry.append(dit)
         except Exception:  # noqa: BLE001
@@ -1886,7 +1908,11 @@ def _track_rocm_flash_calls(pipe: Any) -> None:
 
         # Also while Dynamo traces a compiled DiT (it replays these threading.local writes), so a traced call sees the
         # gate and runs native.
-        def pre(_module, _args, dit = dit) -> None:
+        def pre(
+            _module,
+            _args,
+            dit = dit,
+        ) -> None:
             outer = getattr(_ROCM_FLASH_LOCAL, "stack", None)
             if outer is None:
                 outer = _ROCM_FLASH_LOCAL.stack = []
@@ -1953,7 +1979,10 @@ def rocm_flash_ran(pipe: Any) -> Optional[tuple[str, str]]:
     if native == 0:
         return "flash", "ROCm flash_attn on every attention call of the last generation"
     if flash == 0:
-        return "native", f"ROCm flash_attn engaged, but every attention call of the last generation ran native SDPA ({why})"
+        return (
+            "native",
+            f"ROCm flash_attn engaged, but every attention call of the last generation ran native SDPA ({why})",
+        )
     return "flash", (
         f"ROCm flash_attn on {flash} of {flash + native} attention calls of the last generation; the rest ran native "
         f"SDPA ({why})"

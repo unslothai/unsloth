@@ -366,7 +366,14 @@ def test_apply_resolves_candidate_by_block_timing(monkeypatch, flash_ms, rel, en
     _apply_env(monkeypatch)
     timed = []
 
-    def fake_time(device, dtype, hidden, heads, head_dim, tokens = 4096):
+    def fake_time(
+        device,
+        dtype,
+        hidden,
+        heads,
+        head_dim,
+        tokens = 4096,
+    ):
         timed.append((device, hidden, heads, head_dim))
         return {
             "native_ms": 80.0,
@@ -481,7 +488,9 @@ def test_flash_attn_rejecting_the_diffusers_arguments_is_not_admitted(monkeypatc
     _apply_env(monkeypatch)
     monkeypatch.setattr(att, "_indexed_cuda_device", lambda d: "cpu")
 
-    def old_api(q, k, v):  # a build without dropout_p / softmax_scale / window_size / return_attn_probs
+    def old_api(
+        q, k, v
+    ):  # a build without dropout_p / softmax_scale / window_size / return_attn_probs
         return q
 
     _diffusers_flash(monkeypatch, old_api)
@@ -652,7 +661,14 @@ def test_every_attention_geometry_is_timed(monkeypatch, minority_wins, engaged):
     monkeypatch.setattr(att, "_attention_dits", lambda p: dits)
     timed = []
 
-    def fake_time(device, dtype, hidden, heads, head_dim, tokens = 4096):
+    def fake_time(
+        device,
+        dtype,
+        hidden,
+        heads,
+        head_dim,
+        tokens = 4096,
+    ):
         timed.append((hidden, heads, head_dim))
         flash = 60.0 if (hidden == 3072 or minority_wins) else 85.0
         return {
@@ -706,7 +722,14 @@ def test_num_heads_attention_modules_are_measured():
 
 
 def _timer(timed, flash_ms = 70.0):
-    def fake_time(device, dtype, hidden, heads, head_dim, tokens = 4096):
+    def fake_time(
+        device,
+        dtype,
+        hidden,
+        heads,
+        head_dim,
+        tokens = 4096,
+    ):
         timed.append((hidden, heads, head_dim))
         return {
             "native_ms": 80.0,
@@ -742,7 +765,9 @@ def test_block_verdict_persists_across_processes(monkeypatch, tmp_path, flash_ms
     assert len(timed) == 1 and len(_cache_files(tmp_path)) == 1
     _restart(monkeypatch)
     monkeypatch.setattr(
-        att, "_time_rocm_flash_block", lambda *a, **k: pytest.fail("re-timed despite a stored verdict")
+        att,
+        "_time_rocm_flash_block",
+        lambda *a, **k: pytest.fail("re-timed despite a stored verdict"),
     )
     pipe2, set_to2 = _pipe_with_attention()
     assert att.apply_attention_backend(pipe2, att.ROCM_FLASH_CANDIDATE, target = _target()) == engaged
@@ -783,7 +808,9 @@ def test_block_verdict_key_mismatch_retimes(monkeypatch, tmp_path, change):
     assert len(timed) == 2
 
 
-@pytest.mark.parametrize("payload", ["{not json", "", "[]", '{"key": "tc-A", "verdicts": {"x": 1}}'])
+@pytest.mark.parametrize(
+    "payload", ["{not json", "", "[]", '{"key": "tc-A", "verdicts": {"x": 1}}']
+)
 def test_corrupt_cache_file_retimes(monkeypatch, tmp_path, payload):
     _rocm(monkeypatch)
     _apply_env(monkeypatch)
@@ -799,7 +826,9 @@ def test_corrupt_cache_file_retimes(monkeypatch, tmp_path, payload):
     assert len(timed) == 2
     # the re-timed verdict replaced the torn file
     _restart(monkeypatch)
-    att.apply_attention_backend(_pipe_with_attention()[0], att.ROCM_FLASH_CANDIDATE, target = _target())
+    att.apply_attention_backend(
+        _pipe_with_attention()[0], att.ROCM_FLASH_CANDIDATE, target = _target()
+    )
     assert len(timed) == 2
 
 
@@ -845,7 +874,9 @@ def test_forced_modes_neither_read_nor_write_the_cache(monkeypatch, tmp_path, mo
     # a stored verdict that would say the opposite of the forced mode
     timed = []
     monkeypatch.setattr(att, "_time_rocm_flash_block", _timer(timed, 70.0 if mode == "0" else 90.0))
-    att.apply_attention_backend(_pipe_with_attention()[0], att.ROCM_FLASH_CANDIDATE, target = _target())
+    att.apply_attention_backend(
+        _pipe_with_attention()[0], att.ROCM_FLASH_CANDIDATE, target = _target()
+    )
     (path,) = _cache_files(tmp_path)
     before = path.read_bytes()
     _restart(monkeypatch)
@@ -882,7 +913,13 @@ def test_toolchain_key_names_the_flash_attn_build(monkeypatch):
     monkeypatch.delenv("FLASH_ATTENTION_TRITON_AMD_ENABLE", raising = False)
     ck = _REAL_TOOLCHAIN_KEY("cuda:0")
     assert ck is not None and ck.startswith(f"v{att.ROCM_FLASH_PROBE_VERSION}|")
-    for part in ("AMD Radeon 8060S", "|gfx1151|", "|hip7.1.0|", "|flash_attn2.8.3|", "/flash_attn|ck|"):
+    for part in (
+        "AMD Radeon 8060S",
+        "|gfx1151|",
+        "|hip7.1.0|",
+        "|flash_attn2.8.3|",
+        "/flash_attn|ck|",
+    ):
         assert part in ck, part
     fa.__version__ = "2.8.4"
     assert _REAL_TOOLCHAIN_KEY("cuda:0") != ck
@@ -899,7 +936,12 @@ def test_toolchain_key_names_the_flash_attn_build(monkeypatch):
 # A flash_attn rebuilt in place (same version, same path) must re-time: the key fingerprints the loaded kernel files.
 
 
-def _fake_build(monkeypatch, tmp_path, *, triton = False):
+def _fake_build(
+    monkeypatch,
+    tmp_path,
+    *,
+    triton = False,
+):
     import torch
 
     props = types.SimpleNamespace(name = "AMD Radeon 8060S", gcnArchName = "gfx1151")
@@ -958,20 +1000,28 @@ def test_rebuilt_flash_attn_binary_forces_retiming(monkeypatch, tmp_path):
 
     _rocm(monkeypatch)
     _apply_env(monkeypatch)
-    binary = _fake_build(monkeypatch, tmp_path)  # after _rocm, which installs a bare flash_attn module
+    binary = _fake_build(
+        monkeypatch, tmp_path
+    )  # after _rocm, which installs a bare flash_attn module
     monkeypatch.setattr(att, "_rocm_flash_toolchain_key", _REAL_TOOLCHAIN_KEY)
     assert _REAL_TOOLCHAIN_KEY("cuda:0") is not None
     timed = []
     monkeypatch.setattr(att, "_time_rocm_flash_block", _timer(timed))
-    att.apply_attention_backend(_pipe_with_attention()[0], att.ROCM_FLASH_CANDIDATE, target = _target())
+    att.apply_attention_backend(
+        _pipe_with_attention()[0], att.ROCM_FLASH_CANDIDATE, target = _target()
+    )
     _restart(monkeypatch)
-    att.apply_attention_backend(_pipe_with_attention()[0], att.ROCM_FLASH_CANDIDATE, target = _target())
+    att.apply_attention_backend(
+        _pipe_with_attention()[0], att.ROCM_FLASH_CANDIDATE, target = _target()
+    )
     assert len(timed) == 1  # same build: the stored verdict is used
     binary.write_bytes(b"\x7fELF v2 rebuilt")
     st = os.stat(binary)
     os.utime(binary, ns = (st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))
     _restart(monkeypatch)
-    att.apply_attention_backend(_pipe_with_attention()[0], att.ROCM_FLASH_CANDIDATE, target = _target())
+    att.apply_attention_backend(
+        _pipe_with_attention()[0], att.ROCM_FLASH_CANDIDATE, target = _target()
+    )
     assert len(timed) == 2
 
 
@@ -1027,7 +1077,9 @@ def test_malformed_cached_record_is_retimed(monkeypatch, tmp_path, field, value)
     _apply_env(monkeypatch)
     timed = []
     monkeypatch.setattr(att, "_time_rocm_flash_block", _timer(timed, 90.0))
-    att.apply_attention_backend(_pipe_with_attention()[0], att.ROCM_FLASH_CANDIDATE, target = _target())
+    att.apply_attention_backend(
+        _pipe_with_attention()[0], att.ROCM_FLASH_CANDIDATE, target = _target()
+    )
     (path,) = _cache_files(tmp_path)
     data = json.loads(path.read_text())
     (slot,) = data["verdicts"]
@@ -1060,14 +1112,31 @@ def test_non_finite_probe_verdict_is_stored_and_reused(monkeypatch, tmp_path):
     _apply_env(monkeypatch)
     timed = []
 
-    def nan_time(device, dtype, hidden, heads, head_dim, tokens = 4096):
+    def nan_time(
+        device,
+        dtype,
+        hidden,
+        heads,
+        head_dim,
+        tokens = 4096,
+    ):
         timed.append(1)
         return {**_GOOD, "finite": False, "rel_l1": float("nan"), "max_rel": float("nan")}
 
     monkeypatch.setattr(att, "_time_rocm_flash_block", nan_time)
-    assert att.apply_attention_backend(_pipe_with_attention()[0], att.ROCM_FLASH_CANDIDATE, target = _target()) is None
+    assert (
+        att.apply_attention_backend(
+            _pipe_with_attention()[0], att.ROCM_FLASH_CANDIDATE, target = _target()
+        )
+        is None
+    )
     _restart(monkeypatch)
-    assert att.apply_attention_backend(_pipe_with_attention()[0], att.ROCM_FLASH_CANDIDATE, target = _target()) is None
+    assert (
+        att.apply_attention_backend(
+            _pipe_with_attention()[0], att.ROCM_FLASH_CANDIDATE, target = _target()
+        )
+        is None
+    )
     assert len(timed) == 1
 
 
@@ -1077,7 +1146,12 @@ def test_implausible_probe_timing_is_native_and_not_stored(monkeypatch, tmp_path
     monkeypatch.setattr(
         att, "_time_rocm_flash_block", lambda *a, **k: {**_GOOD, "native_ms": 0.0, "flash_ms": 0.0}
     )
-    assert att.apply_attention_backend(_pipe_with_attention()[0], att.ROCM_FLASH_CANDIDATE, target = _target()) is None
+    assert (
+        att.apply_attention_backend(
+            _pipe_with_attention()[0], att.ROCM_FLASH_CANDIDATE, target = _target()
+        )
+        is None
+    )
     assert _cache_files(tmp_path) == []
 
 
@@ -1096,8 +1170,6 @@ def test_verdict_log_never_raises(rec):
 
     att._log_rocm_flash_verdict(Log(), "cuda:0", (3072, 24, 128), rec, "cached")
     att._log_rocm_flash_verdict(Log(), "cuda:0", (), rec, "cached")
-
-
 
 
 # Accuracy is judged on the raw attention output: a wrong attention the residual + FFN would hide is still rejected.
@@ -1134,7 +1206,18 @@ def test_max_abs_error_alone_rejects(max_rel, wins):
 
 
 @pytest.mark.parametrize(
-    "tokens, bucket", [(1, 256), (300, 256), (900, 512), (4096, 4096), (4608, 4096), (8191, 4096), (27280, 16384), (50000, 32768), (140000, 131072)]
+    "tokens, bucket",
+    [
+        (1, 256),
+        (300, 256),
+        (900, 512),
+        (4096, 4096),
+        (4608, 4096),
+        (8191, 4096),
+        (27280, 16384),
+        (50000, 32768),
+        (140000, 131072),
+    ],
 )
 def test_length_buckets(tokens, bucket):
     assert att._rocm_flash_bucket(tokens) == bucket
@@ -1147,7 +1230,17 @@ def _length_env(monkeypatch, verdicts):
     _apply_env(monkeypatch)
     timed = []
 
-    def fake_time(device, dtype, hidden, heads, head_dim, tokens = 4096, kv_tokens = None, ctx_dim = None, batch = 1):
+    def fake_time(
+        device,
+        dtype,
+        hidden,
+        heads,
+        head_dim,
+        tokens = 4096,
+        kv_tokens = None,
+        ctx_dim = None,
+        batch = 1,
+    ):
         size = tokens if kv_tokens is None else (tokens, kv_tokens)
         if batch != 1:
             size = (size, f"b{batch}")
@@ -1170,12 +1263,16 @@ def _length_env(monkeypatch, verdicts):
         )
         == "flash"
     )
-    monkeypatch.setattr(att, "_indexed_cuda_device", lambda d: "cuda:0" if d in ("cuda", "cpu") else d)
+    monkeypatch.setattr(
+        att, "_indexed_cuda_device", lambda d: "cuda:0" if d in ("cuda", "cpu") else d
+    )
     return dit, guarded, ran, timed
 
 
 def test_unprobed_long_bucket_does_not_inherit_the_4096_verdict(monkeypatch):
-    dit, guarded, ran, timed = _length_env(monkeypatch, {4096: 70.0, 16384: 90.0, (256, 1024): 70.0})
+    dit, guarded, ran, timed = _length_env(
+        monkeypatch, {4096: 70.0, 16384: 90.0, (256, 1024): 70.0}
+    )
     assert timed == [4096]
     # the load bucket: flash, no new timing; bucket 16384 timed now and flash loses there (twice, timed once); a short
     # query over a long key is its own rectangle
@@ -1189,13 +1286,20 @@ def test_50k_call_runs_flash_only_if_its_own_bucket_admitted_it(monkeypatch):
     # buckets are open ended: a 50k call is in [32768, 65536) and a 70k one in [65536, 131072), each timed for itself
     dit, guarded, ran, timed = _length_env(monkeypatch, {4096: 70.0, 32768: 90.0, 65536: 60.0})
     dit.run(guarded, [(50000, None), (70000, None), (140000, None)])
-    assert timed == [4096, 32768, 65536, 131072]  # 131072 -> KeyError in the fake timer: no verdict, native
+    assert timed == [
+        4096,
+        32768,
+        65536,
+        131072,
+    ]  # 131072 -> KeyError in the fake timer: no verdict, native
     assert ran == ["native", "flash", "native"]
 
 
 def test_bucket_probe_error_stays_native_without_retrying_every_call(monkeypatch):
     verdicts = {4096: 70.0}
-    dit, guarded, ran, timed = _length_env(monkeypatch, verdicts)  # 32768 -> KeyError in the fake timer
+    dit, guarded, ran, timed = _length_env(
+        monkeypatch, verdicts
+    )  # 32768 -> KeyError in the fake timer
     dit.run(guarded, [(40000, None), (40000, None)])
     assert timed == [4096, 32768] and ran == ["native", "native"]
     # A probe that raised is no verdict: the next generation retries it.
@@ -1213,7 +1317,9 @@ def test_bucket_probe_error_stays_native_without_retrying_every_call(monkeypatch
 def test_bucket_probe_without_room_beside_the_forward_is_deferred_not_rejected(monkeypatch):
     dit, guarded, ran, timed = _length_env(monkeypatch, {4096: 70.0, 32768: 60.0})
     needs = []
-    monkeypatch.setattr(att, "_rocm_flash_probe_fits", lambda device, need: needs.append(need) or False)
+    monkeypatch.setattr(
+        att, "_rocm_flash_probe_fits", lambda device, need: needs.append(need) or False
+    )
     dit.run(guarded, [(40000, None), (40000, None)])
     assert timed == [4096] and ran == ["native", "native"] and len(needs) == 1
     assert att._ROCM_FLASH_BUCKETS == {} and len(getattr(dit, att.ROCM_FLASH_DEFERRED_ATTR)) == 1
@@ -1266,7 +1372,9 @@ def test_probe_bound_adds_math_sdpa_scores_when_fused_sdpa_is_off(monkeypatch):
     fused = att._rocm_flash_probe_bytes(g, 16384, 16384, 1, torch.bfloat16)
     monkeypatch.setattr(att, "_native_sdpa_fused_serves", lambda *a: False)
     math = att._rocm_flash_probe_bytes(g, 16384, 16384, 1, torch.bfloat16)
-    assert math - fused == 2 * 24 * 16384 * 16384 * 4  # 48 GiB of fp32 scores + softmax at 16k x 16k
+    assert (
+        math - fused == 2 * 24 * 16384 * 16384 * 4
+    )  # 48 GiB of fp32 scores + softmax at 16k x 16k
 
 
 def test_fused_sdpa_eligibility_is_asked_for_the_probe_shape(monkeypatch):
@@ -1275,7 +1383,9 @@ def test_fused_sdpa_eligibility_is_asked_for_the_probe_shape(monkeypatch):
 
     def can_flash(params, debug):
         seen.append((tuple(params.query.shape), tuple(params.key.shape)))
-        return params.query.shape[2] < 32768  # a fused kernel that does not serve the longest bucket
+        return (
+            params.query.shape[2] < 32768
+        )  # a fused kernel that does not serve the longest bucket
 
     monkeypatch.setattr(torch.backends.cuda, "can_use_flash_attention", can_flash)
     monkeypatch.setattr(torch.backends.cuda, "can_use_efficient_attention", lambda p, d: False)
@@ -1283,16 +1393,23 @@ def test_fused_sdpa_eligibility_is_asked_for_the_probe_shape(monkeypatch):
     g = (3072, 24, 128)
     short = att._rocm_flash_probe_bytes(g, 16384, 16384, 1, torch.bfloat16, "cpu")
     long = att._rocm_flash_probe_bytes(g, 32768, 512, 2, torch.bfloat16, "cpu")
-    assert seen == [((1, 24, 16384, 128), (1, 24, 16384, 128)), ((2, 24, 32768, 128), (2, 24, 512, 128))]
+    assert seen == [
+        ((1, 24, 16384, 128), (1, 24, 16384, 128)),
+        ((2, 24, 32768, 128), (2, 24, 512, 128)),
+    ]
     assert short < 4 * 2**30  # fused: no score matrix
     assert long > 2 * 2 * 24 * 32768 * 512 * 4  # not served at 32k queries: math scores budgeted
-    monkeypatch.setattr(torch.backends.cuda, "flash_sdp_enabled", lambda: False)  # enabled flag off: math
-    assert att._rocm_flash_probe_bytes(g, 16384, 16384, 1, torch.bfloat16, "cpu") - short == 2 * 24 * 16384**2 * 4
+    monkeypatch.setattr(
+        torch.backends.cuda, "flash_sdp_enabled", lambda: False
+    )  # enabled flag off: math
+    assert (
+        att._rocm_flash_probe_bytes(g, 16384, 16384, 1, torch.bfloat16, "cpu") - short
+        == 2 * 24 * 16384**2 * 4
+    )
 
 
 def test_probe_tensors_are_drawn_on_the_device():
     import inspect
-
     src = inspect.getsource(att._time_rocm_flash_block)
     assert ".to(device, dtype)" not in src and "torch.Generator(device = device)" in src
 
@@ -1318,10 +1435,14 @@ def test_native_sdpa_baseline_keys_the_verdicts(monkeypatch, tmp_path):
 
 def test_probe_byte_bound_covers_the_measured_peak(monkeypatch):
     torch = pytest.importorskip("torch")
-    monkeypatch.setattr(att, "_native_sdpa_fused_serves", lambda *a: True)  # Studio's default, as measured
+    monkeypatch.setattr(
+        att, "_native_sdpa_fused_serves", lambda *a: True
+    )  # Studio's default, as measured
     # gfx1151, Wan2.2-5B layer (3072 hidden, 24 x 128), batch 1: measured probe peaks 0.31 GiB at 1024, 5.46 at 65536.
     for tokens, peak in ((1024, 0.31), (65536, 5.46)):
-        need = att._rocm_flash_probe_bytes((3072, 24, 128), tokens, tokens, 1, torch.bfloat16) / 2**30
+        need = (
+            att._rocm_flash_probe_bytes((3072, 24, 128), tokens, tokens, 1, torch.bfloat16) / 2**30
+        )
         assert peak <= need < 2 * peak
 
 
@@ -1371,7 +1492,14 @@ def test_explicit_flash_is_never_length_gated(monkeypatch, order, explicit):
     _apply_env(monkeypatch)
     timed = []
 
-    def fake_time(device, dtype, hidden, heads, head_dim, tokens = 4096):
+    def fake_time(
+        device,
+        dtype,
+        hidden,
+        heads,
+        head_dim,
+        tokens = 4096,
+    ):
         timed.append(tokens)
         return {**_GOOD, "flash_ms": 70.0 if tokens == 4096 else 90.0, "tokens": tokens}
 
@@ -1379,24 +1507,35 @@ def test_explicit_flash_is_never_length_gated(monkeypatch, order, explicit):
     auto_dit, explicit_dit = _Dit(), _Dit()
 
     def load_auto():
-        assert att.apply_attention_backend(
-            types.SimpleNamespace(transformer = auto_dit), att.ROCM_FLASH_CANDIDATE, target = _target()
-        ) == "flash"
+        assert (
+            att.apply_attention_backend(
+                types.SimpleNamespace(transformer = auto_dit),
+                att.ROCM_FLASH_CANDIDATE,
+                target = _target(),
+            )
+            == "flash"
+        )
 
     def load_explicit():
         if explicit == "flash":
-            backend = att.apply_attention_backend(types.SimpleNamespace(transformer = explicit_dit), "flash", target = _target())
+            backend = att.apply_attention_backend(
+                types.SimpleNamespace(transformer = explicit_dit), "flash", target = _target()
+            )
         else:
             monkeypatch.setenv(att.ROCM_FLASH_ENV, "1")
             backend = att.apply_attention_backend(
-                types.SimpleNamespace(transformer = explicit_dit), att.ROCM_FLASH_CANDIDATE, target = _target()
+                types.SimpleNamespace(transformer = explicit_dit),
+                att.ROCM_FLASH_CANDIDATE,
+                target = _target(),
             )
             monkeypatch.delenv(att.ROCM_FLASH_ENV)
         assert backend == "flash"
 
     for load in (load_auto, load_explicit) if order == "auto_first" else (load_explicit, load_auto):
         load()
-    monkeypatch.setattr(att, "_indexed_cuda_device", lambda d: "cuda:0" if d in ("cuda", "cpu") else d)
+    monkeypatch.setattr(
+        att, "_indexed_cuda_device", lambda d: "cuda:0" if d in ("cuda", "cpu") else d
+    )
     explicit_dit.run(guarded, [(40000, None)])
     assert ran == ["flash"] and timed == [4096]  # neither timed nor rerouted
     auto_dit.run(guarded, [(40000, None)])
@@ -1407,7 +1546,12 @@ def test_explicit_flash_is_never_length_gated(monkeypatch, order, explicit):
 
 def test_reapplying_explicit_flash_disarms_the_gate(monkeypatch):
     dit, guarded, ran, timed = _length_env(monkeypatch, {4096: 70.0, 32768: 90.0})
-    assert att.apply_attention_backend(types.SimpleNamespace(transformer = dit), "flash", target = _target()) == "flash"
+    assert (
+        att.apply_attention_backend(
+            types.SimpleNamespace(transformer = dit), "flash", target = _target()
+        )
+        == "flash"
+    )
     dit.run(guarded, [(40000, None)])
     assert ran == ["flash"] and timed == [4096]
 
@@ -1432,7 +1576,9 @@ def test_failed_forward_does_not_leave_its_gate_active(monkeypatch):
             raise RuntimeError("cancelled")
 
     dit = Boom()
-    att.apply_attention_backend(types.SimpleNamespace(transformer = dit), att.ROCM_FLASH_CANDIDATE, target = _target())
+    att.apply_attention_backend(
+        types.SimpleNamespace(transformer = dit), att.ROCM_FLASH_CANDIDATE, target = _target()
+    )
     with pytest.raises(RuntimeError):
         dit(torch.zeros(1))
     assert getattr(att._ROCM_FLASH_LOCAL, "gate", None) is None
@@ -1463,7 +1609,11 @@ class _Dit:
         self.hooks["pre"].append(fn)
         return fn
 
-    def register_forward_hook(self, fn, always_call = False):
+    def register_forward_hook(
+        self,
+        fn,
+        always_call = False,
+    ):
         self.hooks["post"].append(fn)
         return fn
 
@@ -1497,13 +1647,25 @@ def _guarded_flash(monkeypatch):
     backends = ad._AttentionBackendRegistry._backends
     ran = []
 
-    def fake_flash(query, key, value, attn_mask = None, **kw):
+    def fake_flash(
+        query,
+        key,
+        value,
+        attn_mask = None,
+        **kw,
+    ):
         if attn_mask is not None:
             raise ValueError("`attn_mask` is not supported for flash-attn 2.")
         ran.append("flash")
         return query
 
-    def fake_native(query, key, value, attn_mask = None, **kw):
+    def fake_native(
+        query,
+        key,
+        value,
+        attn_mask = None,
+        **kw,
+    ):
         ran.append("native")
         return query
 
@@ -1522,7 +1684,9 @@ def _state(pipe, backend):
         attention_backend: object
         resolved: dict
 
-    resolved = {"attention_backend": {"source": "auto", "value": backend or "native", "reason": "load"}}
+    resolved = {
+        "attention_backend": {"source": "auto", "value": backend or "native", "reason": "load"}
+    }
     return State(pipe, backend, resolved)
 
 
@@ -1536,9 +1700,17 @@ def _load(monkeypatch):
 @pytest.mark.parametrize(
     "masks, value, phrase",
     [
-        ([True, True], "native", "every attention call of the last generation ran native SDPA (attn_mask: 2)"),
+        (
+            [True, True],
+            "native",
+            "every attention call of the last generation ran native SDPA (attn_mask: 2)",
+        ),
         ([False, False], "flash", "on every attention call"),
-        ([True, False], "flash", "on 1 of 2 attention calls of the last generation; the rest ran native SDPA (attn_mask: 1)"),
+        (
+            [True, False],
+            "flash",
+            "on 1 of 2 attention calls of the last generation; the rest ran native SDPA (attn_mask: 1)",
+        ),
     ],
 )
 def test_badge_reports_the_routes_the_run_took(monkeypatch, masks, value, phrase):
@@ -1602,10 +1774,15 @@ def test_compiled_run_reports_routing_untracked(monkeypatch):
     monkeypatch.setattr(att, "_time_rocm_flash_block", _timer([]))
     dit, pipe, state = _load(monkeypatch)
     att.begin_attention_run(state)
-    dit.run(lambda *a, **k: None, [])  # a forward whose attention ran inside a compiled graph: nothing counted
+    dit.run(
+        lambda *a, **k: None, []
+    )  # a forward whose attention ran inside a compiled graph: nothing counted
     att.report_attention_run(state)
     entry = state.resolved["attention_backend"]
-    assert entry["value"] == "flash" and "not tracked for compiled or graphed attention" in entry["reason"]
+    assert (
+        entry["value"] == "flash"
+        and "not tracked for compiled or graphed attention" in entry["reason"]
+    )
 
 
 def test_route_tallies_are_per_thread(monkeypatch):
@@ -1619,7 +1796,10 @@ def test_route_tallies_are_per_thread(monkeypatch):
     monkeypatch.setattr(att, "_time_rocm_flash_block", _timer([]))
     a, _, _ = _load(monkeypatch)
     b = _Dit()
-    assert att.apply_attention_backend(types.SimpleNamespace(transformer = b), "flash", target = _target()) == "flash"
+    assert (
+        att.apply_attention_backend(types.SimpleNamespace(transformer = b), "flash", target = _target())
+        == "flash"
+    )
     inside = threading.Barrier(2)
     gates = {}
 
@@ -1647,7 +1827,9 @@ def test_route_tallies_are_per_thread(monkeypatch):
 
 
 @pytest.mark.parametrize("routed, quadratic", [(True, True), (False, False)])
-def test_memory_guard_budgets_quadratic_when_flash_can_hand_calls_to_native(monkeypatch, routed, quadratic):
+def test_memory_guard_budgets_quadratic_when_flash_can_hand_calls_to_native(
+    monkeypatch, routed, quadratic
+):
     import core.inference.diffusion as diffusion
 
     _rocm(monkeypatch)
@@ -1658,8 +1840,12 @@ def test_memory_guard_budgets_quadratic_when_flash_can_hand_calls_to_native(monk
     import core.inference.diffusion_qwenimage21_math as qm
 
     monkeypatch.setattr(qm, "bounded_math_attention", lambda pipe: False)
-    dit, pipe, state = _load(monkeypatch)  # Krea 2 style: auto admitted flash, but its calls are masked
-    if not routed:  # a flash pipe with no ROCm routing (e.g. NVIDIA flash): the fused kernel serves every call
+    dit, pipe, state = _load(
+        monkeypatch
+    )  # Krea 2 style: auto admitted flash, but its calls are masked
+    if (
+        not routed
+    ):  # a flash pipe with no ROCm routing (e.g. NVIDIA flash): the fused kernel serves every call
         setattr(dit, att._ROCM_FLASH_HOOKS_ATTR, None)
     assert diffusion._quadratic_attention(object(), state.attention_backend, pipe) is quadratic
 
@@ -1676,15 +1862,27 @@ def test_diffusers_dispatch_change_retimes(monkeypatch, tmp_path):
     monkeypatch.setattr(att, "_time_rocm_flash_block", _timer(timed))
     key = _REAL_TOOLCHAIN_KEY("cuda:0")
     assert key is not None and "|diffusers" in key and _REAL_TOOLCHAIN_KEY("cuda:0") == key
-    att.apply_attention_backend(_pipe_with_attention()[0], att.ROCM_FLASH_CANDIDATE, target = _target())
+    att.apply_attention_backend(
+        _pipe_with_attention()[0], att.ROCM_FLASH_CANDIDATE, target = _target()
+    )
     _restart(monkeypatch)
 
-    def _flash_attention(query, key, value, attn_mask = None, dropout_p = 0.0, is_causal = False, scale = None):
+    def _flash_attention(
+        query,
+        key,
+        value,
+        attn_mask = None,
+        dropout_p = 0.0,
+        is_causal = False,
+        scale = None,
+    ):
         return query  # a diffusers release whose flash wrapper changed
 
     monkeypatch.setitem(backends, ad.AttentionBackendName.FLASH, _flash_attention)
     assert _REAL_TOOLCHAIN_KEY("cuda:0") != key
-    att.apply_attention_backend(_pipe_with_attention()[0], att.ROCM_FLASH_CANDIDATE, target = _target())
+    att.apply_attention_backend(
+        _pipe_with_attention()[0], att.ROCM_FLASH_CANDIDATE, target = _target()
+    )
     assert len(timed) == 2
     # a Studio guard around the same function does not change it
     monkeypatch.setitem(backends, ad.AttentionBackendName.FLASH, ad._flash_attention)
@@ -1701,9 +1899,10 @@ def test_both_generate_paths_mark_the_generation_boundary(module):
     src = inspect.getsource(importlib.import_module(module))
     tree = ast.parse(src)
     gens = [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "generate"]
-    called = {getattr(c.func, "id", None) for g in gens for c in ast.walk(g) if isinstance(c, ast.Call)}
+    called = {
+        getattr(c.func, "id", None) for g in gens for c in ast.walk(g) if isinstance(c, ast.Call)
+    }
     assert gens and {"begin_attention_run", "report_attention_run"} <= called
-
 
 
 # Compiled execution: Studio does not compile the denoiser on ROCm today. Should it, an auto-gated DiT's traced calls
@@ -1734,16 +1933,31 @@ def test_compiled_auto_dit_runs_native_under_real_torch_compile(monkeypatch, aut
     _rocm(monkeypatch)
     ad = pytest.importorskip("diffusers.models.attention_dispatch")
     backends = ad._AttentionBackendRegistry._backends
-    monkeypatch.setitem(backends, ad.AttentionBackendName.FLASH, lambda query, key, value, attn_mask = None, **k: query + 1)
-    monkeypatch.setitem(backends, ad.AttentionBackendName.NATIVE, lambda query, key, value, attn_mask = None, **k: query - 1)
+    monkeypatch.setitem(
+        backends,
+        ad.AttentionBackendName.FLASH,
+        lambda query, key, value, attn_mask = None, **k: query + 1,
+    )
+    monkeypatch.setitem(
+        backends,
+        ad.AttentionBackendName.NATIVE,
+        lambda query, key, value, attn_mask = None, **k: query - 1,
+    )
     assert _REAL_GUARD()
     guarded = backends[ad.AttentionBackendName.FLASH]
     _apply_env(monkeypatch)
     monkeypatch.setattr(att, "_time_rocm_flash_block", _timer([]))  # 4096 admitted at load
     dit = _CompiledDit(guarded)
     backend = att.ROCM_FLASH_CANDIDATE if auto else "flash"
-    assert att.apply_attention_backend(types.SimpleNamespace(transformer = dit), backend, target = _target()) == "flash"
-    monkeypatch.setattr(att, "_indexed_cuda_device", lambda d: "cuda:0" if d in ("cuda", "cpu") else d)
+    assert (
+        att.apply_attention_backend(
+            types.SimpleNamespace(transformer = dit), backend, target = _target()
+        )
+        == "flash"
+    )
+    monkeypatch.setattr(
+        att, "_indexed_cuda_device", lambda d: "cuda:0" if d in ("cuda", "cpu") else d
+    )
     q = torch.zeros(1, 4608, 2, 16, dtype = torch.bfloat16)
     eager = dit(q)
     assert float(eager.flatten()[0]) == 1.0  # eager: the admitted 4096 bucket runs flash
@@ -1812,7 +2026,6 @@ def test_named_partition_is_in_run_accounting(monkeypatch):
     assert getattr(ref, att.ROCM_FLASH_TALLY_ATTR) == {}
 
 
-
 # Batch is part of the admission key: a batch-2 call is timed at batch 2, not decided by the batch-1 verdict.
 
 
@@ -1852,7 +2065,12 @@ def test_batched_probe_runs_on_cpu(monkeypatch):
         "cpu", torch.bfloat16, 64, 4, 16, tokens = 64, kv_tokens = 16, ctx_dim = 48, batch = 2
     )
     assert shapes[0] == ((2, 64, 4, 16), (2, 16, 4, 16))
-    assert rec["batch"] == 2 and rec["kv_tokens"] == 16 and rec["rel_l1"] == 0.0 and att._rocm_flash_record_ok(rec)
+    assert (
+        rec["batch"] == 2
+        and rec["kv_tokens"] == 16
+        and rec["rel_l1"] == 0.0
+        and att._rocm_flash_record_ok(rec)
+    )
 
 
 # Cross-attention reading a context of another width (to_k.in_features) is its own geometry, probed at that width.
@@ -1873,14 +2091,27 @@ def test_context_width_is_part_of_the_geometry(monkeypatch):
     original = att._attention_dits
     try:
         att._attention_dits = lambda p: [dit]
-        assert att._dit_attention_geometries(types.SimpleNamespace()) == ((32, 2, 16), (32, 2, 16, 48))
+        assert att._dit_attention_geometries(types.SimpleNamespace()) == (
+            (32, 2, 16),
+            (32, 2, 16, 48),
+        )
     finally:
         att._attention_dits = original
     _rocm(monkeypatch)
     _apply_env(monkeypatch)
     seen = []
 
-    def fake_time(device, dtype, hidden, heads, head_dim, tokens = 4096, kv_tokens = None, ctx_dim = None, batch = 1):
+    def fake_time(
+        device,
+        dtype,
+        hidden,
+        heads,
+        head_dim,
+        tokens = 4096,
+        kv_tokens = None,
+        ctx_dim = None,
+        batch = 1,
+    ):
         seen.append(ctx_dim)
         return {**_GOOD, "tokens": tokens}
 
@@ -1928,13 +2159,19 @@ def test_driver_change_retimes(monkeypatch, tmp_path):
     monkeypatch.setattr(att, "_time_rocm_flash_block", _timer(timed))
     key = _REAL_TOOLCHAIN_KEY("cuda:0")
     assert key is not None and "|driver:hipdriver70051234,amdgpu6.12.12|" in key
-    att.apply_attention_backend(_pipe_with_attention()[0], att.ROCM_FLASH_CANDIDATE, target = _target())
+    att.apply_attention_backend(
+        _pipe_with_attention()[0], att.ROCM_FLASH_CANDIDATE, target = _target()
+    )
     _restart(monkeypatch)
-    att.apply_attention_backend(_pipe_with_attention()[0], att.ROCM_FLASH_CANDIDATE, target = _target())
+    att.apply_attention_backend(
+        _pipe_with_attention()[0], att.ROCM_FLASH_CANDIDATE, target = _target()
+    )
     assert len(timed) == 1
     driver[0] = "driver:hipdriver70151234,amdgpu6.14.4"  # a driver upgrade, same torch wheel
     _restart(monkeypatch)
-    att.apply_attention_backend(_pipe_with_attention()[0], att.ROCM_FLASH_CANDIDATE, target = _target())
+    att.apply_attention_backend(
+        _pipe_with_attention()[0], att.ROCM_FLASH_CANDIDATE, target = _target()
+    )
     assert len(timed) == 2
 
 
