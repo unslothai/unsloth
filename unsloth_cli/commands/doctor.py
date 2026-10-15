@@ -13,6 +13,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 from typing import List, Optional, Tuple
 
@@ -74,10 +75,14 @@ def _free_port() -> int:
 
 
 def collect_gpus(torch) -> dict:
+    hip = getattr(torch.version, "hip", None)
+    # AMD SDK wheels leave version.hip unset and only say "rocm" in __version__.
+    if hip is None and "rocm" in str(torch.__version__).lower():
+        hip = str(torch.__version__).lower().split("rocm", 1)[1] or "unknown"
     info = {
         "torch": torch.__version__,
         "cuda": getattr(torch.version, "cuda", None),
-        "hip": getattr(torch.version, "hip", None),
+        "hip": hip,
         "nccl": None,
         "gpus": [],
     }
@@ -111,8 +116,12 @@ def collect_gpus(torch) -> dict:
 def driver_version(pynvml = None) -> Optional[str]:
     if pynvml is not None:
         try:
-            v = pynvml.nvmlSystemGetDriverVersion()
-            return v.decode() if isinstance(v, bytes) else str(v)
+            pynvml.nvmlInit()
+            try:
+                v = pynvml.nvmlSystemGetDriverVersion()
+                return v.decode() if isinstance(v, bytes) else str(v)
+            finally:
+                pynvml.nvmlShutdown()
         except Exception:
             pass
     if shutil.which("nvidia-smi") is None:
@@ -178,7 +187,7 @@ def nvml_topology(pynvml, gpus: List[dict]):
 
 
 def p2p_copy_probe(torch, count: int, mib: int = 16) -> dict:
-    """{(src, dst): "ok" | "corrupt" | "error: ..."} for every ordered GPU pair.
+    """{(src, dst): "ok" | "corrupt" | "error: ..." | "inconclusive: ..."} per ordered GPU pair.
 
     The destination is sentinel-filled first: on a translating IOMMU a PCIe peer copy
     can be dropped while CUDA reports success (scripts/p2p_integrity_probe.py).
@@ -189,9 +198,16 @@ def p2p_copy_probe(torch, count: int, mib: int = 16) -> dict:
         for dst in range(count):
             if src == dst:
                 continue
+            s = d = None
             try:
                 s = torch.arange(numel, dtype = torch.float32, device = f"cuda:{src}")
                 d = torch.full((numel,), _SENTINEL, dtype = torch.float32, device = f"cuda:{dst}")
+            except Exception as e:
+                # No copy was attempted, so this says nothing about peer copies.
+                out[(src, dst)] = f"inconclusive: could not allocate: {e}"
+                del s, d
+                continue
+            try:
                 d.copy_(s)
                 torch.cuda.synchronize(src)
                 torch.cuda.synchronize(dst)
@@ -226,13 +242,16 @@ def allreduce_smoke(
     )
     env.update(extra_env or {})
     procs = []
+    # Files, not pipes: an undrained pipe (e.g. NCCL_DEBUG=INFO on rank 1) blocks that
+    # rank inside the collective and the doctor would report a healthy system as hung.
+    logs = [tempfile.TemporaryFile(mode = "w+") for _ in range(world)]
     for rank in range(world):
         rank_env = dict(env, RANK = str(rank), LOCAL_RANK = str(rank))
         procs.append(
             subprocess.Popen(
                 [sys.executable, "-c", _SMOKE_WORKER],
                 env = rank_env,
-                stdout = subprocess.PIPE,
+                stdout = logs[rank],
                 stderr = subprocess.STDOUT,
                 text = True,
             )
@@ -240,16 +259,19 @@ def allreduce_smoke(
     # Startup (torch import, communicator init) is not covered by the collective timeout.
     deadline = time.monotonic() + timeout + 60
     hung = False
-    outputs = []
     for p in procs:
         try:
-            out, _ = p.communicate(timeout = max(1.0, deadline - time.monotonic()))
+            p.wait(timeout = max(1.0, deadline - time.monotonic()))
         except subprocess.TimeoutExpired:
             hung = True
             for q in procs:
                 q.kill()
-            out, _ = p.communicate()
-        outputs.append(out or "")
+            p.wait()
+    outputs = []
+    for f in logs:
+        f.seek(0)
+        outputs.append(f.read())
+        f.close()
     result = {"ok": False, "hung": hung, "busbw_gbps": None, "log": ""}
     for line in outputs[0].splitlines():
         if line.startswith("UNSLOTH_DOCTOR_RESULT"):
@@ -286,7 +308,8 @@ def verdict(
             "the pace of the slowest card, and bf16 / FlashAttention need every card to "
             "support them."
         )
-    bad_pairs = sorted(k for k, v in (p2p or {}).items() if v != "ok")
+    bad_pairs = sorted(k for k, v in (p2p or {}).items() if v == "corrupt" or v.startswith("error"))
+    unchecked = sorted(k for k, v in (p2p or {}).items() if v.startswith("inconclusive"))
     if bad_pairs:
         healthy = False
         hints.append(
@@ -294,7 +317,18 @@ def verdict(
             "NCCL_P2P_DISABLE=1 for every distributed run on this host, and check the "
             "kernel log for IOMMU faults: dmesg | grep -i -E 'DMAR|AMD-Vi'."
         )
-    if smoke is not None and not smoke["ok"]:
+    if unchecked:
+        hints.append(
+            f"Peer copies on {unchecked} were not tested: a GPU could not allocate the "
+            "16 MiB probe buffers. Free GPU memory and re-run `unsloth doctor --gpus`."
+        )
+    if smoke is not None and smoke.get("unverified"):
+        healthy = False
+        hints.append(
+            "This PyTorch build has no NCCL backend (for example on Windows), so GPU "
+            "collectives could not be tested and multi-GPU training here is unverified."
+        )
+    elif smoke is not None and not smoke["ok"]:
         healthy = False
         what = "hung" if smoke["hung"] else "failed"
         if smoke_no_p2p is not None and smoke_no_p2p["ok"]:
@@ -401,20 +435,24 @@ def doctor(
             for (a, b), v in sorted(p2p.items()):
                 peer = "yes" if torch.cuda.can_device_access_peer(a, b) else "no"
                 typer.echo(f"  {a}->{b}  peer_access={peer}  {v}")
-        backend = "nccl" if torch.distributed.is_nccl_available() else "gloo"
-        typer.echo(f"\n=== all_reduce smoke ({count} ranks, {backend}) ===")
-        smoke = allreduce_smoke(count, backend, timeout)
-        if smoke["ok"]:
-            typer.echo(f"  ok  busbw {smoke['busbw_gbps']:.2f} GB/s (64 MiB fp32)")
+        typer.echo(f"\n=== all_reduce smoke ({count} ranks, nccl) ===")
+        if not torch.distributed.is_nccl_available():
+            # A gloo run would put the tensors on the CPU and prove nothing about the GPUs.
+            smoke = {"ok": False, "hung": False, "unverified": True, "busbw_gbps": None, "log": ""}
+            typer.echo("  skipped: this PyTorch build has no NCCL backend")
         else:
-            typer.echo(f"  {'HUNG' if smoke['hung'] else 'FAILED'}\n{smoke['log']}")
-            if backend == "nccl" and os.environ.get("NCCL_P2P_DISABLE") is None:
-                smoke_no_p2p = allreduce_smoke(
-                    count, backend, timeout, extra_env = {"NCCL_P2P_DISABLE": "1"}
-                )
-                typer.echo(
-                    f"  retry with NCCL_P2P_DISABLE=1: {'ok' if smoke_no_p2p['ok'] else 'failed'}"
-                )
+            smoke = allreduce_smoke(count, "nccl", timeout)
+            if smoke["ok"]:
+                typer.echo(f"  ok  busbw {smoke['busbw_gbps']:.2f} GB/s (64 MiB fp32)")
+            else:
+                typer.echo(f"  {'HUNG' if smoke['hung'] else 'FAILED'}\n{smoke['log']}")
+                if os.environ.get("NCCL_P2P_DISABLE") is None:
+                    smoke_no_p2p = allreduce_smoke(
+                        count, "nccl", timeout, extra_env = {"NCCL_P2P_DISABLE": "1"}
+                    )
+                    typer.echo(
+                        f"  retry with NCCL_P2P_DISABLE=1: {'ok' if smoke_no_p2p['ok'] else 'failed'}"
+                    )
 
     healthy, hints = verdict(info, topology, p2p, smoke, smoke_no_p2p)
     typer.echo(f"\n=== Verdict: {'OK' if healthy else 'PROBLEMS FOUND'} ===")

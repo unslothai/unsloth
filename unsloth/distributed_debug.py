@@ -12,34 +12,20 @@ _DEBUG_DISTRIBUTED_ENV = (
     ("TORCH_NCCL_DUMP_ON_TIMEOUT", "1"),
     ("NCCL_DEBUG", "INFO"),
 )
-# Flight recorder ring size: torch >= 2.8 reads TORCH_FR_BUFFER_SIZE and warns that the fallback
-# TORCH_NCCL_TRACE_BUFFER_SIZE is deprecated, the only name torch 2.6 / 2.7 know. 2.7 / 2.8
-# default it to 0 (off).
+# Flight recorder ring size. Both names are needed: the recorder reads TORCH_FR_BUFFER_SIZE first
+# (torch >= 2.8), but ProcessGroupNCCL gates dump on timeout on TORCH_NCCL_TRACE_BUFFER_SIZE alone
+# (ProcessGroupNCCL.hpp, through 2.13), the only name torch 2.6 / 2.7 know. Costs torch >= 2.8 one
+# deprecation warning.
 _FR_BUFFER_NAMES = ("TORCH_FR_BUFFER_SIZE", "TORCH_NCCL_TRACE_BUFFER_SIZE")
 _FR_BUFFER_SIZE = "2000"
 
 
-def _flight_recorder_buffer_name(torch_version = None):
-    if torch_version is None:
-        try:
-            from importlib.metadata import version
-
-            torch_version = version("torch")
-        except Exception:
-            return _FR_BUFFER_NAMES[0]
-    try:
-        major, minor = (int(x) for x in torch_version.split("+")[0].split(".")[:2])
-    except ValueError:
-        return _FR_BUFFER_NAMES[0]
-    return _FR_BUFFER_NAMES[0] if (major, minor) >= (2, 8) else _FR_BUFFER_NAMES[1]
-
-
-def apply_debug_distributed_env(environ = None, torch_version = None):
+def apply_debug_distributed_env(environ = None):
     """Under UNSLOTH_DEBUG_DISTRIBUTED=1, enable NCCL / c10d hang diagnostics.
 
-    Variables the user already set are left alone, and the two flight recorder names
-    are treated as one setting, so an explicit TORCH_NCCL_TRACE_BUFFER_SIZE=0 is not
-    overridden through the newer name. Returns the names that were set.
+    Variables the user already set are left alone. The two flight recorder names are
+    one setting: a value given under either is copied to the other, so an explicit
+    TORCH_NCCL_TRACE_BUFFER_SIZE=0 is not overridden. Returns the names that were set.
     """
     environ = os.environ if environ is None else environ
     if environ.get("UNSLOTH_DEBUG_DISTRIBUTED", "0").lower() not in ("1", "true", "yes", "on"):
@@ -49,10 +35,11 @@ def apply_debug_distributed_env(environ = None, torch_version = None):
         if name not in environ:
             environ[name] = value
             changed.append(name)
-    if not any(name in environ for name in _FR_BUFFER_NAMES):
-        name = _flight_recorder_buffer_name(torch_version)
-        environ[name] = _FR_BUFFER_SIZE
-        changed.append(name)
+    given = [environ[name] for name in _FR_BUFFER_NAMES if name in environ]
+    for name in _FR_BUFFER_NAMES:
+        if name not in environ:
+            environ[name] = given[0] if given else _FR_BUFFER_SIZE
+            changed.append(name)
     dist = sys.modules.get("torch.distributed")
     try:
         initialized = dist is not None and dist.is_available() and dist.is_initialized()

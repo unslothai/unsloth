@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import sys
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -211,3 +212,89 @@ def test_doctor_without_gpus_exits_nonzero(monkeypatch):
     result, calls = _run_doctor(monkeypatch, _fake_torch(0), [])
     assert result.exit_code == 1 and calls == []
     assert "No GPU" in result.output
+
+
+def test_doctor_without_nccl_is_unverified_not_a_cpu_gloo_pass(monkeypatch):
+    torch = _fake_torch(2)
+    torch.distributed = SimpleNamespace(is_nccl_available = lambda: False)
+    result, calls = _run_doctor(monkeypatch, torch, [_smoke(True)])
+    assert calls == []
+    assert result.exit_code == 1, result.output
+    assert "no NCCL backend" in result.output and "Verdict: OK" not in result.output
+
+
+def test_p2p_allocation_failure_is_inconclusive_not_corruption():
+    class OomTorch:
+        float32 = "f32"
+
+        @staticmethod
+        def arange(*a, device, **k):
+            if device == "cuda:1":
+                raise RuntimeError("CUDA out of memory")
+            return SimpleNamespace()
+
+        full = arange
+        cuda = SimpleNamespace(empty_cache = lambda: None)
+
+    p2p = doctor_mod.p2p_copy_probe(OomTorch, 2, mib = 1)
+    assert all(v.startswith("inconclusive") for v in p2p.values()), p2p
+    healthy, hints = doctor_mod.verdict(_info(_gpu(0), _gpu(1)), None, p2p, _smoke(True), None)
+    assert healthy
+    assert not any("NCCL_P2P_DISABLE" in h for h in hints)
+    assert any("not tested" in h for h in hints)
+
+
+def test_rocm_wheel_without_version_hip_is_rocm():
+    torch = _fake_torch(0)
+    torch.__version__ = "2.5.1+rocm6.2"
+    torch.version = SimpleNamespace(cuda = None, hip = None)
+    assert doctor_mod.collect_gpus(torch)["hip"] == "6.2"
+
+
+def test_allreduce_smoke_survives_a_chatty_nonzero_rank(monkeypatch, tmp_path):
+    # Rank 1 writes far more than a pipe buffer (64 KiB) before rank 0 can finish.
+    worker = (
+        "import os, sys, time\n"
+        "if os.environ['RANK'] == '1':\n"
+        "    sys.stdout.write('x' * (4 << 20)); sys.stdout.flush(); sys.exit(0)\n"
+        "while not os.path.exists(os.environ['DONE']): time.sleep(0.05)\n"
+        "print('UNSLOTH_DOCTOR_RESULT ok=1 busbw_gbps=1.00', flush = True)\n"
+    )
+    done = tmp_path / "rank1_done"
+    monkeypatch.setattr(
+        doctor_mod, "_SMOKE_WORKER", worker.replace("os.environ['DONE']", repr(str(done)))
+    )
+    real_popen = doctor_mod.subprocess.Popen
+    procs = []
+
+    def popen(*a, **k):
+        p = real_popen(*a, **k)
+        procs.append(p)
+        if len(procs) == 2:
+            # Rank 0 only finishes once rank 1 has exited, like a collective would.
+            threading.Thread(target = lambda: (p.wait(), done.touch()), daemon = True).start()
+        return p
+
+    monkeypatch.setattr(doctor_mod.subprocess, "Popen", popen)
+    result = doctor_mod.allreduce_smoke(2, "gloo", timeout = -45, numel = 1024)
+    assert result["ok"] and not result["hung"], result["log"][-300:]
+
+
+def test_driver_version_initialises_nvml():
+    class Nvml:
+        ready = False
+
+        def nvmlInit(self):
+            self.ready = True
+
+        def nvmlShutdown(self):
+            self.ready = False
+
+        def nvmlSystemGetDriverVersion(self):
+            if not self.ready:
+                raise RuntimeError("Uninitialized")
+            return b"580.65"
+
+    nvml = Nvml()
+    assert doctor_mod.driver_version(nvml) == "580.65"
+    assert not nvml.ready
