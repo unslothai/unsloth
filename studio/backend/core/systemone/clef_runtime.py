@@ -53,6 +53,9 @@ def _fast_paths(folder: str) -> None:
         from utils.ssm_runtime import zoo_triton_causal_conv1d_usable
 
         if zoo_triton_causal_conv1d_usable():
+            # The hooks below also steer FLA off TileLang where it faults; keep that part.
+            from core.training.worker import _guard_fla_tilelang
+            _guard_fla_tilelang()
             return
         from core.training.worker import _ensure_causal_conv1d_fast_path, _install_fast_path_hooks
 
