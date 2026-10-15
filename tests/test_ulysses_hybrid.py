@@ -49,6 +49,8 @@ def _config(kind, **overrides):
             num_experts_per_tok = 1,
             moe_intermediate_size = 16,
             shared_expert_intermediate_size = 16,
+            # Dense MLPs: the MoE path may pick CUDA kernels in a forked CPU worker.
+            mlp_only_layers = list(range(common["num_hidden_layers"])),
         )
         return transformers.Qwen3NextConfig(**common), transformers.Qwen3NextForCausalLM
     return transformers.Qwen3_5TextConfig(**common), transformers.Qwen3_5ForCausalLM
@@ -60,6 +62,27 @@ def _model(kind, **overrides):
     model = cls(config).train()
     model.config._attn_implementation = "sdpa"
     return model
+
+
+def _force_torch_kernels(model):
+    # The parity check is about the exchange, not the kernels: fla / Triton would touch CUDA in a
+    # forked CPU worker whenever a GPU is visible. Only called inside the worker process.
+    import inspect
+
+    from unsloth.utils.packing import _hub_closure
+
+    for module in model.modules():
+        if not type(module).__name__.endswith("GatedDeltaNet"):
+            continue
+        globs = inspect.getmodule(type(module)).__dict__
+        for name in ("causal_conv1d_fn", "torch_chunk_gated_delta_rule"):
+            torch_function = _hub_closure(globs.get(name)).get("torch_function")
+            if torch_function is not None:
+                globs[name] = torch_function
+        if "chunk_gated_delta_rule" in vars(module):
+            # transformers 4.57 binds the kernels on the instance.
+            module.chunk_gated_delta_rule = globs["torch_chunk_gated_delta_rule"]
+            module.causal_conv1d_fn = None
 
 
 def _manager(size, rank):
@@ -80,6 +103,7 @@ def _parity_worker(rank, world, kind, control):
     ad.HAS_FLASH_ATTENTION = False
     ad.HAS_XFORMERS = False
     model = _model(kind)
+    _force_torch_kernels(model)
     ids = torch.randint(0, 64, (2, 13), generator = torch.Generator().manual_seed(1))
     shift = F.pad(ids, (0, 1), value = -100)[:, 1:]
     count = shift.ne(-100).sum()
