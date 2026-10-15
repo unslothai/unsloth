@@ -407,9 +407,22 @@ def _nvfp4_matmul_dx_kernel(
 _FUSED_CALLS = {"fwd": 0, "bwd": 0}
 
 
-def _fused_mode():
-    # 0 = always dense, 1 = always fused, unset = per-GPU row gate (UNSLOTH_NVFP4_FUSED_MAX_ROWS overrides); read per call.
-    return os.environ.get("UNSLOTH_NVFP4_FUSED", "auto").strip().lower()
+def _read_fused_env():
+    # UNSLOTH_NVFP4_FUSED: 0 = always dense, 1 = always fused, unset = per-GPU row gate (UNSLOTH_NVFP4_FUSED_MAX_ROWS
+    # overrides the limit).
+    rows = os.environ.get("UNSLOTH_NVFP4_FUSED_MAX_ROWS")
+    return os.environ.get("UNSLOTH_NVFP4_FUSED", "auto").strip().lower(), int(rows) if rows else None
+
+
+_FUSED_ENV = None
+
+
+def _fused_env():
+    # Read on the first NVFP4 call, not per call: two os.environ lookups would add about 1 us to every linear.
+    global _FUSED_ENV
+    if _FUSED_ENV is None:
+        _FUSED_ENV = _read_fused_env()
+    return _FUSED_ENV
 
 
 @functools.lru_cache(maxsize = None)
@@ -424,13 +437,15 @@ _IS_HIP = torch.version.hip is not None
 
 def _fused_ok(A, packed, scale, global_scale, inner):
     # Anything unusual keeps the dense path (and its errors).
-    mode = _fused_mode()
+    mode, rows = _fused_env()
     if mode in _FUSED_OFF or _IS_HIP or not A.is_cuda:
         return False
-    if A.dtype not in (torch.float16, torch.bfloat16) or A.numel() == 0 or A.shape[-1] != inner:
-        return False
     index = A.get_device()
-    if mode not in _FUSED_FORCE and A.numel() // inner > _fused_max_rows(index):
+    if mode not in _FUSED_FORCE:
+        limit = rows if rows is not None else _FUSED_MAX_ROWS.get(_device_capability(index), 0)
+        if A.numel() > limit * inner:  # unmeasured GPUs (limit 0) leave here
+            return False
+    if A.dtype not in (torch.float16, torch.bfloat16) or A.numel() == 0 or A.shape[-1] != inner:
         return False
     if A.dtype == torch.bfloat16 and _device_capability(index) < (8, 0):
         return False
@@ -453,13 +468,6 @@ def _fused_ok(A, packed, scale, global_scale, inner):
 
 # Max rows where fused beats dense (measured at N, K multiples of 64); unmeasured GPUs stay dense.
 _FUSED_MAX_ROWS = {(8, 0): 64, (8, 9): 256, (12, 0): 128}
-
-
-def _fused_max_rows(index):
-    override = os.environ.get("UNSLOTH_NVFP4_FUSED_MAX_ROWS")
-    if override:
-        return int(override)
-    return _FUSED_MAX_ROWS.get(_device_capability(index), 0)
 
 
 def _scale_args(scale):

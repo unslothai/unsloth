@@ -20,6 +20,14 @@ def N():
     return nvfp4
 
 
+@pytest.fixture(autouse = True)
+def live_env(N, monkeypatch):
+    # nvfp4 reads its flags once per process; these tests flip them between calls.
+    cached = N._fused_env
+    monkeypatch.setattr(N, "_fused_env", N._read_fused_env)
+    return cached
+
+
 @pytest.fixture
 def fused(monkeypatch):
     monkeypatch.setenv("UNSLOTH_NVFP4_FUSED", "1")
@@ -338,6 +346,14 @@ def test_row_gate_keeps_unaligned_shapes_dense(N, monkeypatch):
         monkeypatch.setenv("UNSLOTH_NVFP4_FUSED", "1")
         assert N._fused_ok(X, packed, scale, gs, k)
         monkeypatch.delenv("UNSLOTH_NVFP4_FUSED")
+
+def test_flags_are_read_once_per_process(N, live_env, monkeypatch):
+    monkeypatch.setattr(N, "_FUSED_ENV", None)
+    monkeypatch.setenv("UNSLOTH_NVFP4_FUSED", " Off ")
+    monkeypatch.setenv("UNSLOTH_NVFP4_FUSED_MAX_ROWS", "32")
+    assert live_env() == ("off", 32)
+    monkeypatch.setenv("UNSLOTH_NVFP4_FUSED", "1")
+    assert live_env() == ("off", 32)
 
 def test_offset_width_follows_the_strided_span(N):
     small = torch.empty((2, 4), device = "meta")
