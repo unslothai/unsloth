@@ -2138,9 +2138,23 @@ def _peak_model_identity(
     companion base and its revision for a GGUF / single-file load. ``unknown`` (no learned peak used or recorded)
     when a revision cannot be read."""
     from .diffusion_component_sizes import checkpoint_fingerprint
+    from .diffusion_families import mirror_repo
 
+    def _fingerprint(repo: Any, filename: Optional[str] = None) -> tuple[Any, Any]:
+        # Studio fetches a mirrored vendor base from its unsloth/ mirror (byte-identical), so a fresh install holds
+        # only the mirror: read the revision there when the vendor id has none, and name the repo it came from.
+        revision = checkpoint_fingerprint(repo, filename)
+        if revision or filename:
+            return repo, revision
+        mirror = mirror_repo(str(repo)) if repo else None
+        if mirror and mirror != str(repo):
+            mirrored = checkpoint_fingerprint(mirror)
+            if mirrored:
+                return mirror, mirrored
+        return repo, revision
+
+    repo_id, revision = _fingerprint(repo_id, gguf_filename)
     source = f"{repo_id}/{gguf_filename}" if gguf_filename else str(repo_id)
-    revision = checkpoint_fingerprint(repo_id, gguf_filename)
     if not revision:
         return "unknown"
     if str(revision).startswith("local:"):
@@ -2150,7 +2164,7 @@ def _peak_model_identity(
         revision = f"{revision}:{weights}"
     identity = f"{source}@{revision}"
     if (kind or "pipeline") != "pipeline" and base and str(base) != str(repo_id):
-        base_revision = checkpoint_fingerprint(base)
+        base, base_revision = _fingerprint(base)
         if not base_revision:
             return "unknown"
         if str(base_revision).startswith("local:"):
