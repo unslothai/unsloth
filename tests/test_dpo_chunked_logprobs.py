@@ -525,7 +525,7 @@ def test_stock_logps_hook_detects_overrides():
 
     class Patched(Stock):
         def concatenated_forward(self):
-            pass
+            return _unsloth_dpo_chunked_head  # noqa: F821  (only the name matters)
 
     class UserOverride(Patched):
         def get_batch_logps(self):
@@ -548,6 +548,15 @@ def test_stock_logps_hook_detects_overrides():
     assert hook(MetricsOverride(), "concatenated_forward")
     assert not hook(MetricsOverride(), "concatenated_forward", both)
     assert hook(Patched(), "concatenated_forward", both)
+
+    class WrapsForwardAndHook(Patched):
+        def concatenated_forward(self):
+            return super().concatenated_forward()
+
+        def get_batch_logps(self):
+            pass
+
+    assert not hook(WrapsForwardAndHook(), "concatenated_forward")
 
 
 def test_router_aux_loss_falls_back():

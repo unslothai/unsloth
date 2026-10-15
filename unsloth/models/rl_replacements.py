@@ -4701,11 +4701,13 @@ def _unsloth_stock_logps_hook(
     method,
     hooks = ("get_batch_logps",),
 ):
-    """False when a subclass overrides one of ``hooks`` below the class defining ``method``: TRL's body would call
-    the override (or it reads the full logits the chunked path replaces with stand-ins)."""
+    """False when a subclass overrides one of ``hooks`` below the class whose ``method`` is the rewritten one: TRL's
+    body would call the override (or it reads the full logits the chunked path replaces with stand-ins)."""
     owner = None
     for klass in type(self).__mro__:
-        if method in vars(klass):
+        # The rewritten body calls a chunked helper; a subclass method wrapping it via super() does not.
+        names = getattr(getattr(vars(klass).get(method), "__code__", None), "co_names", ())
+        if any(name.startswith("_unsloth_") and "chunked" in name for name in names):
             owner = klass
             break
     if owner is None:
