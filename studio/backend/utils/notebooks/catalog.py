@@ -43,7 +43,7 @@ _CATEGORY_RULES = (
     # Studio trains SFT / CPT only, so these recipes stay Colab-only.
     (
         "grpo",
-        ("grpo", "gspo", "reinforcement_learning", "nemo-gym", "-ppo", "-dpo", "-orpo"),
+        ("grpo", "gspo", "reinforcement_learning", "nemo_gym", "_ppo", "_dpo", "_orpo"),
     ),
     ("vision", ("vision", "_vl_", "ocr", "pixtral", "deepseek")),
     ("audio", ("audio", "tts", "whisper", "orpheus", "llasa", "csm", "spark_tts", "oute")),
@@ -75,7 +75,8 @@ def _text(value: Any) -> str | None:
 
 
 def _category(name: str) -> str:
-    lowered = name.lower()
+    # Upstream mixes "-" and "_" between words ("Tool_Calling" and "Tool-Calling").
+    lowered = name.lower().replace("-", "_")
     return next(
         (
             category

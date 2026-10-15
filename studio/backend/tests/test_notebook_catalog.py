@@ -86,3 +86,11 @@ def test_sft_recipes_stay_sft(name):
 @pytest.mark.parametrize("name", ["Gemma3N_(4B)-Audio.ipynb", "Gemma4_(E2B)-Audio.ipynb"])
 def test_audio_recipes_are_audio(name):
     assert catalog._category(name) == "audio"
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["Qwen3_(4B)-Tool_Calling.ipynb", "FunctionGemma_(270M)-Multi-Turn-Tool-Calling.ipynb"],
+)
+def test_tool_calling_recipes_are_code(name):
+    assert catalog._category(name) == "code"
