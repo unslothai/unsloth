@@ -851,3 +851,12 @@ test("the import compares the whole build and names baked LoRAs; ComfyUI's GPU S
   });
   assert.equal(parseComfyPrompt(graph)?.sampler, "dpmpp_2m_sde_gpu");
 });
+
+test("a Connection recipe keeps its marker; a ControlNet recipe is named as not applied", () => {
+  const defaults = { width: 1024, height: 1024, steps: 8, guidance: 3.5 };
+  assert.equal(recipeSettings({ prompt: "p", model_kind: "connection" }, defaults).model_kind, "connection");
+  assert.equal(recipeSettings({ prompt: "p", model_kind: "gguf" }, defaults).model_kind, undefined);
+  const page = readSrc("features/images/images-page.tsx");
+  assert.match(page, /settings\.seed === null && settings\.model_kind !== "connection"/);
+  assert.match(page, /notApplied\.unshift\(`ControlNet \$\{recipe\.controlnet\}`\)/);
+});

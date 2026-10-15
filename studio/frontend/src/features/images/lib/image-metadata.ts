@@ -615,6 +615,8 @@ export interface RestorableRecipe {
   reference_image_count?: number;
   reference_resolution?: number;
   localized_edit?: string | null;
+  // Only "connection" matters here: those runs never sent steps, guidance or a seed.
+  model_kind?: string;
   sampler?: string;
   schedule_type?: string;
 }
@@ -762,6 +764,7 @@ export function recipeSettings(
     reference_image_count: clamp(int(r.reference_image_count), 0, 9),
     reference_resolution: clamp(int(r.reference_resolution), 256, 2048),
     localized_edit: str(r.localized_edit) ?? null,
+    model_kind: r.model_kind === "connection" ? "connection" : undefined,
     sampler: str(r.sampler),
     schedule_type: str(r.schedule_type),
   };

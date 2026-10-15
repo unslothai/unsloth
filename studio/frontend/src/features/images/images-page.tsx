@@ -2678,7 +2678,7 @@ export function ImagesPage({
         localized_edit:
           localized === "annotate" || localized === "paint" || localized === "mask" ? localized : null,
       });
-      if (settings.seed === null) setSeed("");
+      if (settings.seed === null && settings.model_kind !== "connection") setSeed("");
       const loaded = status?.display_repo_id ?? status?.repo_id ?? null;
       const quant = typeof recipe.gguf_filename === "string" ? recipe.gguf_filename : null;
       if (settings.model && settings.model !== loaded) {
@@ -2706,6 +2706,9 @@ export function ImagesPage({
         ? recipe.baked_loras.filter((x): x is string => typeof x === "string")
         : [];
       if (baked.length > 0) notApplied.unshift(`baked LoRAs ${baked.join(", ")} (load-time)`);
+      if (typeof recipe.controlnet === "string" && recipe.controlnet) {
+        notApplied.unshift(`ControlNet ${recipe.controlnet}`);
+      }
       if (status?.loaded && status.supports_lora === false && settings.loras.length > 0) {
         notApplied.unshift("LoRAs");
       }
