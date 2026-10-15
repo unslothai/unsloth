@@ -230,6 +230,18 @@ def test_a_direct_load_alone_also_takes_the_engine_back(host):
     assert host.unloads == []
 
 
+def test_an_alias_load_that_reuses_a_direct_model_does_not_claim_it(host, monkeypatch):
+    host.pin(torch = False, audiocpp = True, mtmd = True)
+    _load(DEFAULT_MTMD_STT_MODEL, "mtmd")
+    resident = ri._stt_resolved_model_id(DEFAULT_MTMD_STT_MODEL, "mtmd")
+    monkeypatch.setattr(_Sidecar, "loaded_model", resident)
+    # The alias maps to that same Qwen3-ASR on llama.cpp and only reuses it.
+    _load("small", "gguf")
+    asyncio.run(ri._transcribe_audio_bytes(b"RIFFfake", "small", None, False, "gguf"))
+    asyncio.run(ri.stt_unload(engine = "gguf", model = "small", current_subject = "tester"))
+    assert host.unloads == []
+
+
 def test_a_failed_alias_load_does_not_mark_its_engine(host, monkeypatch):
     from core.inference.stt_sidecar import SttModelNotDownloadedError
 

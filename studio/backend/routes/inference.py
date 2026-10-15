@@ -25078,13 +25078,15 @@ def _note_retired_alias_engine(
     requested_engine: Optional[str],
     serving_engine: str,
     kind: str = "load",
+    reused: bool = False,
 ) -> None:
     """Record who now owns ``serving_engine``'s model (``kind`` "load") or download: a retired
-    alias request claims it, any other request takes it back."""
-    if _resolve_stt_engine(requested_engine) == "gguf":
-        _RETIRED_ALIAS_SERVED[kind].add(serving_engine)
-    else:
+    alias request claims one it started, any other request takes it back. An alias request
+    that only reused what was already there (``reused``) changes nothing."""
+    if _resolve_stt_engine(requested_engine) != "gguf":
         _RETIRED_ALIAS_SERVED[kind].discard(serving_engine)
+    elif not reused:
+        _RETIRED_ALIAS_SERVED[kind].add(serving_engine)
 
 
 def _retired_alias_engines(kind: str = "load") -> tuple[str, ...]:
@@ -25665,6 +25667,9 @@ async def stt_load(
     )
     sidecar = _stt_sidecar_for(engine)
     load_stt, _ = _stt_lifecycle()
+    # A load of the model already resident reuses it, and does not make it the caller's.
+    resident = sidecar.loaded_model
+    already_resident = resident is not None and resident == _stt_resolved_model_id(model, engine)
     cancel_event = threading.Event()
     disconnect_watcher = asyncio.create_task(
         _await_stt_disconnect_then_cancel(request, sidecar, cancel_event)
@@ -25690,7 +25695,7 @@ async def stt_load(
         raise HTTPException(status_code = 500, detail = safe_error_detail(e))
     finally:
         await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
-    _note_retired_alias_engine(payload.engine, engine)
+    _note_retired_alias_engine(payload.engine, engine, reused = already_resident)
     # The load lock is released and another account may have switched engines, so claim only ours.
     loaded = sidecar.loaded_model
     if loaded is not None and loaded == _stt_resolved_model_id(model, engine):
@@ -25900,6 +25905,10 @@ async def _transcribe_audio_result(
             else None
         )
         load_options = {"on_phase": on_phase} if on_phase is not None else {}
+        resident = getattr(sidecar, "loaded_model", None)
+        already_resident = resident is not None and resident == _stt_resolved_model_id(
+            model, serving_engine
+        )
         if source_path is not None and timestamps:
             await asyncio.to_thread(sidecar.ensure_aligner, model, on_phase, cancel_event)
             # Started with its aligner now, or transcribe_path would restart it.
@@ -25909,7 +25918,7 @@ async def _transcribe_audio_result(
                 load_stt, model, serving_engine, cancel_event, device = device, **load_options
             )
         )
-        _note_retired_alias_engine(engine, serving_engine)
+        _note_retired_alias_engine(engine, serving_engine, reused = already_resident)
         loaded = getattr(sidecar, "loaded_model", None)
         if loaded is not None and loaded == _stt_resolved_model_id(model, serving_engine):
             account_access.note_resident_account(f"stt:{serving_engine}", loaded)

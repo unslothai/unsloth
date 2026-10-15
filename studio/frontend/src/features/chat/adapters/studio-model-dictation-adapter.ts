@@ -58,6 +58,8 @@ const SILENCE_CUT_MS = 280;
 const VOICE_RMS = 0.015;
 // How long dictation waits for the host to settle the model before recording with the saved one.
 const HOST_SETTLE_WAIT_MS = 2_000;
+// How long a recorded segment then waits for that settle before it is sent anyway.
+const HOST_SETTLE_SEND_WAIT_MS = 15_000;
 
 // Prefer Opus (small, widely supported); fall back to whatever the browser records. The
 // backend decodes any of these with PyAV.
@@ -584,6 +586,9 @@ export class StudioModelDictationAdapter implements DictationAdapter {
       !usesExternalEndpoint && settings.sttModelSource === "whisper-cpp"
         ? settleSttModelForHost().catch(() => {})
         : null;
+    // Set while a slow settle is still out: segments wait on it so none is sent to a model
+    // this host may not run.
+    let settleBeforeSend: Promise<unknown> | null = null;
 
     const speechStartCallbacks = new Set<() => void>();
     const speechEndCallbacks = new Set<
@@ -719,6 +724,8 @@ export class StudioModelDictationAdapter implements DictationAdapter {
       worker = true;
       void (async () => {
         try {
+          if (settleBeforeSend) await settleBeforeSend;
+          if (cancelled) return;
           const text = await transcribeAudioBlob(item.blob, {
             model: sessionModel,
             language: sessionLanguage,
@@ -987,6 +994,12 @@ export class StudioModelDictationAdapter implements DictationAdapter {
               adoptSettledModel();
               preload();
             });
+            settleBeforeSend = Promise.race([
+              hostSettle,
+              new Promise((resolve) =>
+                setTimeout(resolve, HOST_SETTLE_SEND_WAIT_MS),
+              ),
+            ]);
           }
         }
         if (settledInTime) preload();

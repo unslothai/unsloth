@@ -94,8 +94,14 @@ test("dictation settles a retired whisper.cpp pick before it preloads or records
   // a slower read still switches later segments and preloads the settled model, never the stale pick.
   assert.match(
     listen,
-    /if \(!settledInTime\) \{[\s\S]*?void hostSettle\.then\(\(\) => \{\s*if \(ended \|\| cancelled\) return;\s*adoptSettledModel\(\);\s*preload\(\);/,
+    /if \(!settledInTime\) \{[\s\S]*?void hostSettle\.then\(\(\) => \{\s*if \(ended \|\| cancelled\) return;\s*adoptSettledModel\(\);\s*preload\(\);[\s\S]*?settleBeforeSend = Promise\.race\(\[\s*hostSettle,/,
   );
+  // and no segment is sent before that slow read lands (bounded, so a hung read cannot stall it).
+  assert.match(
+    listen,
+    /if \(settleBeforeSend\) await settleBeforeSend;\s*if \(cancelled\) return;\s*const text = await transcribeAudioBlob\(/,
+  );
+  assert.match(adapter, /HOST_SETTLE_SEND_WAIT_MS = 15_000/);
   assert.match(adapter, /HOST_SETTLE_WAIT_MS = 2_000/);
   // only a whisper.cpp pick reads status; the read is shared per model and retried after a failure.
   assert.match(adapter, /if \(sttModelSource !== "whisper-cpp"\) return Promise\.resolve\(\);/);
