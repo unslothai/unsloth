@@ -163,6 +163,31 @@ def _eligible(data_hp: Any, block_size: int, per_tensor_scale: Any, is_swizzled:
     )
 
 
+def _traced(data_hp: Any) -> bool:
+    """Whether this call is being traced into a graph rather than run eagerly.
+
+    ``torch.compiler.is_compiling()`` alone is not enough: torchao's NVFP4 linear reaches ``to_nvfp4`` from the
+    tensor subclass's dispatch, which AOTAutograd traces after Dynamo has finished, with that flag False. The
+    tensors there are fake, so a fake input (or an active tracing context) marks the call as traced."""
+    import torch
+
+    if torch.compiler.is_compiling():
+        return True
+    try:
+        from torch._subclasses.fake_tensor import is_fake
+
+        if is_fake(data_hp):
+            return True
+    except Exception:  # noqa: BLE001 - older torch: fall through to the tracing context
+        pass
+    try:
+        from torch._guards import TracingContext
+
+        return TracingContext.try_get() is not None
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _patched_to_nvfp4(
     data_hp,
     block_size: int = 16,
@@ -177,7 +202,7 @@ def _patched_to_nvfp4(
     # kernel in a profile.
     import torch
 
-    counting = not torch.compiler.is_compiling()
+    counting = not _traced(data_hp)
     # Eager calls (the load-time weight pass, speed tier off) keep torchao's own eager arithmetic, which divides by 6
     # where Inductor multiplies by 1/6: the kernel matches the COMPILED path bit for bit, so only traced calls use it.
     if counting or not _eligible(data_hp, block_size, per_tensor_scale, is_swizzled_scales, use_triton_kernel):
