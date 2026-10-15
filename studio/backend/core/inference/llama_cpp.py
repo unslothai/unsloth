@@ -27190,7 +27190,7 @@ class LlamaCppBackend:
                         ):
                             return False
                         # Advanced Arguments are last-wins; only Vulkan names map to probe ordinals.
-                        _pass_through_device = _extra_args_main_device(extra_args)
+                        _pass_through_device = _extra_args_main_device(_placement_extras)
                         if _pass_through_device is not None:
                             _named_devices = {
                                 name.strip().lower()
@@ -27557,7 +27557,9 @@ class LlamaCppBackend:
                             )
                             # _shared_memory describes the target's devices; a pinned
                             # drafter must name proved-discrete planned ones itself.
-                            _draft_pin_now = _extra_args_effective_draft_device_pin(extra_args)
+                            _draft_pin_now = _extra_args_effective_draft_device_pin(
+                                _placement_extras
+                            )
                             _draft_pin_discrete = _draft_pin_now is None or (
                                 is_vulkan_backend
                                 and {
@@ -27603,7 +27605,7 @@ class LlamaCppBackend:
                             or (_candidate_ids & (_shared_gpu_ids | _unclassified_gpu_ids))
                         ):
                             return 0
-                        _draft_pin = _extra_args_effective_draft_device_pin(extra_args)
+                        _draft_pin = _extra_args_effective_draft_device_pin(_placement_extras)
                         if _draft_pin is not None:
                             _draft_devices = {
                                 name.strip().lower()

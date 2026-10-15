@@ -6009,3 +6009,60 @@ def test_the_slot_walk_keeps_the_candidate_cards_host_pinned_discount(tmp_path):
     assert alone[:2] == ("draft-mtp", "3")
     assert beside[:2] == alone[:2]
     assert min(beside[2]) == min(alone[2])
+
+
+def _picker_owned_launch(
+    tmp_path,
+    *,
+    extra_args,
+    drafter = False,
+):
+    """Fit token and device for a 12 GiB target holding 6 GiB of host-pinned embeddings
+    on a 15 GB discrete Vulkan0 beside a small iGPU, both picked in the GPU picker."""
+    gib = 1024**3
+    backend, gguf = _backend(tmp_path, vulkan = True, memory = [(0, 15_000, 24_000), (1, 1_000, 0)])
+    probe = backend._run_vulkan_probe
+
+    def rows(*_a, **_kw):
+        out = probe()
+        out[1]["is_igpu"] = True
+        return out
+
+    backend._run_vulkan_probe = rows
+    backend._get_gguf_size_bytes = lambda path: (6 * gib if drafter else 12 * gib)
+    backend._host_pinned_vram_discount = lambda _path, *_a, draft_model = False, **_kw: (
+        3 * gib if drafter else (0 if draft_model else 6 * gib)
+    )
+    kwargs = {}
+    if drafter:
+        backend.probe_server_capabilities = lambda _binary = None: {
+            "mtp_token": "draft-mtp",
+            "spec_draft_n_max_flag": "--spec-draft-n-max",
+        }
+        backend._resolve_launch_mtp_path = lambda **_kwargs: "/fake/mtp.gguf"
+        kwargs = {"mtp_draft_path": "/fake/mtp.gguf", "speculative_type": "mtp"}
+    result = _launch(backend, gguf, gpu_ids = [0, 1], extra_args = extra_args, **kwargs)
+    cmd = result["cmd"]
+    return cmd[cmd.index("--fit") + 1], cmd[cmd.index("--device") + 1]
+
+
+@pytest.mark.parametrize("stale", [["--device", "none"], ["--device", "Vulkan1"]])
+def test_a_stripped_device_flag_does_not_decide_the_target_discount(tmp_path, stale):
+    # gpu_ids owns placement and strips these before launch, so they cannot cost a budget.
+    clean = _picker_owned_launch(tmp_path, extra_args = None)
+    assert clean == ("off", "Vulkan0")
+    assert _picker_owned_launch(tmp_path, extra_args = stale) == clean
+
+
+def test_a_stripped_device_flag_does_not_decide_the_initial_drafter_discount(tmp_path):
+    # The picker emits the drafter onto the target's own cards, not the stripped Vulkan1.
+    stale, _ = _draft_reserve_launch(tmp_path, extra_args = ["--device", "Vulkan1"])
+    clean, _ = _draft_reserve_launch(tmp_path, extra_args = None)
+    assert stale == clean
+
+
+def test_a_stripped_device_flag_does_not_decide_the_candidate_drafter_discount(tmp_path):
+    clean = _picker_owned_launch(tmp_path, extra_args = None, drafter = True)
+    assert clean == ("off", "Vulkan0")
+    stale = _picker_owned_launch(tmp_path, extra_args = ["--device", "Vulkan1"], drafter = True)
+    assert stale == clean
