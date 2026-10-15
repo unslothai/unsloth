@@ -90,3 +90,12 @@ test("dragging a chat menu row stays inside the list and saves the order once, o
   // layoutScroll on the settings pane would double-count its scroll against the constraints.
   assert.ok(!readSrc("features/settings/settings-dialog.tsx").includes("layoutScroll"));
 });
+
+test("a pinned Deep research sits right under Tools, not with the other pinned items", () => {
+  const src = readSrc("components/assistant-ui/thread.tsx");
+  const tools = src.indexOf("          Tools\n");
+  const research = src.indexOf("{deepResearchWithTools ? plusMenuNodes.deepResearch : null}");
+  const separator = src.indexOf("<DropdownMenuSeparator />", tools);
+  assert.ok(tools > 0 && research > tools && research < separator, "Deep research is not between Tools and the separator");
+  assert.match(src, /pinnedPlusItems\s*\.filter\(\(id\) => id !== "deepResearch"\)/);
+});

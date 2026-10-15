@@ -7268,6 +7268,8 @@ const ComposerToolsMenu: FC<{
   };
   const { pinned: pinnedPlusItems, overflow: overflowPlusItems } =
     splitPlusMenuItems(plusOrder, plusPins);
+  // Pinned Deep research sits with the tools it drives, under Tools, whatever its saved order.
+  const deepResearchWithTools = pinnedPlusItems.includes("deepResearch");
 
   return (
     <>
@@ -7361,6 +7363,7 @@ const ComposerToolsMenu: FC<{
             />
           ) : null}
         </DropdownMenuItem>
+        {deepResearchWithTools ? plusMenuNodes.deepResearch : null}
         {supportsBuiltinImageGeneration && (
           <DropdownMenuItem
             disabled={imageDisabled}
@@ -7384,9 +7387,11 @@ const ComposerToolsMenu: FC<{
         )}
         <DropdownMenuSeparator />
         {isDictating ? <BypassPermissionsMenuItem /> : null}
-        {pinnedPlusItems.map((id) => (
-          <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
-        ))}
+        {pinnedPlusItems
+          .filter((id) => id !== "deepResearch")
+          .map((id) => (
+            <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
+          ))}
         <DropdownMenuSub>
           <DropdownMenuSubTrigger>
             <MoreHorizontalIcon className="size-4" />
