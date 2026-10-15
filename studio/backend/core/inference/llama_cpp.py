@@ -7352,8 +7352,13 @@ def _moe_switch(name: str, env: Optional[Mapping[str, str]] = None) -> str:
 def _moe_resident_expert_share(
     shortfall_bytes: Optional[float], expert_bytes: Optional[int]
 ) -> Optional[float]:
-    """1 - shortfall / expert bytes (the fitter offloads experts first); None if unknown."""
-    if shortfall_bytes is None or not expert_bytes or expert_bytes <= 0:
+    """1 - shortfall / expert bytes (the fitter offloads experts first); None if unknown.
+    No shortfall keeps every expert on the GPU, whatever the expert bytes read."""
+    if shortfall_bytes is None:
+        return None
+    if shortfall_bytes <= 0:
+        return 1.0
+    if not expert_bytes or expert_bytes <= 0:
         return None
     return min(1.0, max(0.0, 1.0 - float(shortfall_bytes) / float(expert_bytes)))
 
@@ -28947,128 +28952,11 @@ class LlamaCppBackend:
                     # unpriced larger buffer could OOM, so they are left alone. A GPU-only -ot
                     # does not count for the same reason. A user --device none / cpu runs on
                     # the CPU with nothing to stream, like the CPU fallback.
-                    # use_fit is not a spill: the fitter keeps every layer on the card while the
-                    # footprint fits free VRAM less --fit-target; unpriceable counts as a spill.
-                    def _fitter_keeps_model_resident() -> bool:
-                        if not (gpus and effective_ctx > 0 and self._can_estimate_kv()):
-                            return False
-                        # Smart offload may still pin experts to CPU against Unsloth's budget.
-                        from core.inference.offload_planner import smart_offload_enabled
-
-                        if smart_offload_enabled(os.environ):
-                            return False
-                        # A drafter priced with a flat cushion has no draft-KV term here.
-                        if _flat_mtp_engages:
-                            return False
-                        _on = [g for g in gpus if gpu_indices is None or g[0] in gpu_indices]
-                        # Per-device placement (common/fit.cpp) can spill despite a pooled fit.
-                        if len(_on) != 1:
-                            return False
-                        _child_extras = (
-                            self._strip_device_extra_args(extra_args)
-                            if _gpu_ids_own_device_flags
-                            else extra_args
-                        )
-                        _child_env = dict(os.environ)
-                        if _gpu_ids_own_device_flags:
-                            self._clear_device_placement_env(_child_env)
-                        if _pass_through_overrides_placement(
-                            _child_extras,
-                            _child_env,
-                            len(_on),
-                            is_vulkan_backend = is_vulkan_backend,
-                            gpu_indices = gpu_indices,
-                        ):
-                            return False
-                        # A pass-through MoE cache (argv beats env) takes VRAM these terms do
-                        # not price, and with it the fitter keeps routed experts in host RAM.
-                        # "0" turns an inherited one off.
-                        _cache_mib = _extra_args_device(_child_extras, {"--moe-cache-mib"})
-                        if _cache_mib is None:
-                            _cache_mib = _child_env.get("LLAMA_ARG_MOE_CACHE_MIB")
-                        if _cache_mib is not None and str(_cache_mib).strip() not in ("", "0"):
-                            return False
-                        # The terms below are priced at Unsloth's --parallel; a larger
-                        # pass-through one is appended after it and wins (argv beats env).
-                        _np_override = _extra_args_n_parallel(_child_extras, {})
-                        if _np_override is not None and _np_override > n_parallel:
-                            return False
-                        # Likewise priced at Unsloth's -c, which fit.cpp leaves alone. Only a
-                        # later pass-through -c 0 lets llama.cpp pick (native, or trimmed
-                        # toward a --fit-ctx), so the context is unknown here.
-                        if parse_ctx_override(_child_extras) == 0:
-                            return False
-                        # A GPU projector Studio never sized; Vision off keeps only audio-only.
-                        _env_mmproj = _child_env.get("LLAMA_ARG_MMPROJ")
-                        # The emitted --mmproj replaces an inherited path (argv after env).
-                        if effective_is_vision:
-                            _env_mmproj = None
-                        # --mmproj-device / MTMD_BACKEND_DEVICE re-enable the GPU projector
-                        # (arg.cpp sets mmproj_use_gpu), so a CPU pin beside one abstains.
-                        _mmproj_dev = _extra_args_device(
-                            _child_extras, {"--mmproj-device", "-mmdev"}
-                        )
-                        if _mmproj_dev is None:
-                            _mmproj_dev = _child_env.get("MTMD_BACKEND_DEVICE")
-                        _mmproj_dev_gpu = bool(
-                            _mmproj_dev is not None and str(_mmproj_dev).strip().lower() != "none"
-                        )
-                        if _resolved_mmproj_offload(_child_extras, _child_env) is False:
-                            if _mmproj_dev_gpu:
-                                return False
-                        elif disable_vision:
-                            if _mmproj_env_is_audio_only(_env_mmproj):
-                                return False
-                        elif (
-                            _env_mmproj
-                            or _child_env.get("LLAMA_ARG_MMPROJ_URL")
-                            or (
-                                not launch_mmproj_path
-                                and extra_args_mmproj_auto(_child_extras, _child_env)
-                            )
-                        ):
-                            return False
-                        # --fit-target precedence: argv, Studio's emitted value, env, default.
-                        _supports_fit_target = bool(server_caps.get("supports_fit_target"))
-                        _auto_fit = gpu_memory_mode == "manual" and gpu_layers < 0
-                        _managed_mib = self._fit_target_margin_mib(
-                            auto_fit = _auto_fit,
-                            fit_target_delta_mib = _fit_target_delta_mib,
-                            supports_fit_target = _supports_fit_target,
-                        )
-                        # One child device: a per-device list applies entry 0.
-                        _margin_mib = fit_target_margin_in(_child_extras or (), None, device = 0)
-                        if _margin_mib is None:
-                            _emits = _supports_fit_target and (
-                                _auto_fit or _managed_mib != _LLAMA_FIT_TARGET_DEFAULT_MIB
-                            )
-                            _env_mib = (
-                                None if _emits else fit_target_margin_in((), _child_env, device = 0)
-                            )
-                            # An inherited 0 is a valid margin, not "unset".
-                            _margin_mib = _managed_mib if _env_mib is None else _env_mib
-                        _need = (
-                            model_size_fit
-                            + (
-                                _kv_bytes(effective_ctx)
-                                if _kv_offload_from_args(_child_extras, _child_env)
-                                else 0
-                            )
-                            + _mtp_bytes(effective_ctx)
-                            + _cc_bytes(effective_ctx, len(_on))
-                            + (len(_on) - 1) * _pipeline_overhead_bytes
-                        )
-                        _free = sum(max(0.0, free - _margin_mib) for _idx, free in _on)
-                        return _need <= _free * 1024 * 1024
-
                     _moe_experts_on_host = bool(
                         not (gpu_memory_mode == "manual" and gpu_layers >= 0)
                         and not intent.cpu_fallback
                         and not _device_selection_is_cpu(extra_args, os.environ)
-                        and (
-                            (use_fit and not _fitter_keeps_model_resident())
-                            or _expert_spill_places_tensors_on_cpu(extra_args, os.environ)
-                        )
+                        and (use_fit or _expert_spill_places_tensors_on_cpu(extra_args, os.environ))
                     )
                     _moe_spill_discrete_gpu = bool(
                         _moe_experts_on_host

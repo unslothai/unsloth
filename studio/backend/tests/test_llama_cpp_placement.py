@@ -4410,6 +4410,8 @@ def _fit_on_moe(
     kv_mib = 256,
     memory = None,
 ):
+    # The stub GGUF has no tensors to scan, so no expert bytes: residency has to come from
+    # the fitter's shortfall alone.
     _mib = 1024 * 1024
     size_mib = footprint_mib - 512 - 320 - kv_mib
     backend, gguf = _moe_backend(
@@ -4429,8 +4431,9 @@ def _fit_on_moe(
         (["--fit-target", "512"], {}, []),
         ([], {"LLAMA_ARG_FIT_TARGET": "512"}, []),
         ([], {"LLAMA_ARG_FIT_TARGET": "0"}, []),
-        (["--fit-target", "512,4096"], {}, []),
-        ([], {"LLAMA_ARG_FIT_TARGET": "512,4096"}, []),
+        # Applied positionally, so the entry this card gets is unknown: abstain.
+        (["--fit-target", "512,4096"], {}, ["2048"]),
+        ([], {"LLAMA_ARG_FIT_TARGET": "512,4096"}, ["2048"]),
     ],
     ids = [
         "default_margin",
@@ -4570,7 +4573,8 @@ def test_a_pass_through_moe_cache_is_not_certified_resident(
 @pytest.mark.parametrize(
     "extra_args, expect_ub",
     [
-        (["--fit-ctx", "1024"], []),
+        # A --fit-ctx Studio did not emit abstains (_fit_ctx_overridden).
+        (["--fit-ctx", "1024"], ["2048"]),
         (["-c", "0"], ["2048"]),
         (["-c", "0", "--fit-ctx", "1024"], ["2048"]),
         (["--ctx-size=0"], ["2048"]),
@@ -4580,179 +4584,14 @@ def test_a_pass_through_moe_cache_is_not_certified_resident(
 def test_a_pass_through_zero_ctx_is_not_certified_resident(
     tmp_path, _discrete_linux_host, extra_args, expect_ub
 ):
-    """fit.cpp trims context only when n_ctx is 0, so a lone --fit-ctx under Unsloth's -c
-    changes nothing; a later -c 0 lets llama.cpp choose a context the check never priced."""
+    """A later -c 0 lets llama.cpp choose a context the check never priced, and a --fit-ctx
+    Unsloth did not emit leaves the fit unpriced too, so both keep the raise."""
     backend, gguf = _fit_on_moe(tmp_path, 88_000)
     cmd = _launch(backend, gguf, n_ctx = 8192, n_parallel = 1, extra_args = extra_args)["cmd"]
 
     assert cmd[cmd.index("--fit") + 1] == "on", cmd
     assert cmd[cmd.index("-c") + 1] == "8192", cmd
     assert _ubatch_values(cmd) == expect_ub, cmd
-
-
-@pytest.mark.parametrize("name", ["LLAMA_ARG_MMPROJ", "LLAMA_ARG_MMPROJ_URL"])
-def test_an_inherited_projector_keeps_a_fit_on_moe_counted_as_spilled(
-    tmp_path, _discrete_linux_host, monkeypatch, name
-):
-    """An env projector is VRAM the footprint never sized."""
-    monkeypatch.setenv(name, "https://example.invalid/mmproj.gguf")
-    backend, gguf = _fit_on_moe(tmp_path, 88_000)
-    seen = []
-    eligible = backend._moe_cache_auto_eligible
-
-    def spy(**kwargs):
-        seen.append(kwargs["experts_on_host"])
-        return eligible(**kwargs)
-
-    backend._moe_cache_auto_eligible = spy
-    _launch(backend, gguf, n_ctx = 8192, n_parallel = 1)
-
-    # The projector's micro-batch floor emits 2048 either way: read the verdict instead.
-    assert seen == [True]
-
-
-@pytest.mark.parametrize(
-    "extra_args, env",
-    [(("--mmproj-auto",), {}), ((), {"LLAMA_ARG_MMPROJ_AUTO": "1"})],
-    ids = ["argv_mmproj_auto", "env_mmproj_auto"],
-)
-def test_an_auto_discovered_projector_keeps_a_fit_on_moe_counted_as_spilled(
-    tmp_path, _discrete_linux_host, monkeypatch, extra_args, env
-):
-    """--mmproj-auto can load a projector Studio never sized."""
-    for key, value in env.items():
-        monkeypatch.setenv(key, value)
-    backend, gguf = _fit_on_moe(tmp_path, 88_000)
-    seen = []
-    eligible = backend._moe_cache_auto_eligible
-
-    def spy(**kwargs):
-        seen.append(kwargs["experts_on_host"])
-        return eligible(**kwargs)
-
-    backend._moe_cache_auto_eligible = spy
-    _launch(backend, gguf, n_ctx = 8192, n_parallel = 1, extra_args = extra_args)
-
-    assert seen == [True]
-
-
-@pytest.mark.parametrize(
-    "extra_args, env",
-    [
-        ((), {"LLAMA_ARG_MMPROJ_URL": "https://example.invalid/mmproj.gguf"}),
-        (("--mmproj-auto",), {}),
-    ],
-    ids = ["env_url", "argv_mmproj_auto"],
-)
-def test_vision_off_drops_the_projector_from_the_residency_check(
-    tmp_path, _discrete_linux_host, monkeypatch, extra_args, env
-):
-    """Vision off loads no projector, so a model that fits stays resident."""
-    for key, value in env.items():
-        monkeypatch.setenv(key, value)
-    backend, gguf = _fit_on_moe(tmp_path, 88_000)
-    seen = []
-    eligible = backend._moe_cache_auto_eligible
-
-    def spy(**kwargs):
-        seen.append(kwargs["experts_on_host"])
-        return eligible(**kwargs)
-
-    backend._moe_cache_auto_eligible = spy
-    _launch(backend, gguf, n_ctx = 8192, n_parallel = 1, extra_args = extra_args, disable_vision = True)
-
-    assert seen == [False]
-
-
-@pytest.mark.parametrize(
-    "extra_args, env",
-    [
-        (("--no-mmproj-offload",), {"LLAMA_ARG_MMPROJ_URL": "https://example.invalid/mmproj.gguf"}),
-        (
-            (),
-            {
-                "LLAMA_ARG_MMPROJ_URL": "https://example.invalid/mmproj.gguf",
-                "LLAMA_ARG_NO_MMPROJ_OFFLOAD": "1",
-            },
-        ),
-        (("--mmproj-auto", "--no-mmproj-offload"), {}),
-    ],
-    ids = ["argv_no_offload", "env_no_offload", "auto_no_offload"],
-)
-def test_a_projector_kept_on_the_cpu_does_not_block_residency(
-    tmp_path, _discrete_linux_host, monkeypatch, extra_args, env
-):
-    """A projector pinned to the CPU takes no VRAM from the fitter."""
-    for key, value in env.items():
-        monkeypatch.setenv(key, value)
-    backend, gguf = _fit_on_moe(tmp_path, 88_000)
-    seen = []
-    eligible = backend._moe_cache_auto_eligible
-
-    def spy(**kwargs):
-        seen.append(kwargs["experts_on_host"])
-        return eligible(**kwargs)
-
-    backend._moe_cache_auto_eligible = spy
-    _launch(backend, gguf, n_ctx = 8192, n_parallel = 1, extra_args = extra_args)
-
-    assert seen == [False]
-
-
-@pytest.mark.parametrize(
-    "extra_args, env, expect_on_host",
-    [
-        (("--no-mmproj-offload", "--mmproj-device", "CUDA0"), {}, True),
-        (("--no-mmproj-offload", "-mmdev=CUDA0"), {}, True),
-        ((), {"LLAMA_ARG_NO_MMPROJ_OFFLOAD": "1", "MTMD_BACKEND_DEVICE": "CUDA0"}, True),
-        (("--no-mmproj-offload", "--mmproj-device", "none"), {}, False),
-    ],
-    ids = ["argv_device", "argv_inline_device", "env_device", "device_none"],
-)
-def test_an_mmproj_device_undoes_the_cpu_projector_fast_path(
-    tmp_path, _discrete_linux_host, monkeypatch, extra_args, env, expect_on_host
-):
-    """--mmproj-device sets mmproj_use_gpu again (common/arg.cpp), so a projector the
-    footprint priced as CPU-pinned may sit on the card: abstain rather than certify."""
-    monkeypatch.setenv("LLAMA_ARG_MMPROJ_URL", "https://example.invalid/mmproj.gguf")
-    for key, value in env.items():
-        monkeypatch.setenv(key, value)
-    backend, gguf = _fit_on_moe(tmp_path, 88_000)
-    seen = []
-    eligible = backend._moe_cache_auto_eligible
-
-    def spy(**kwargs):
-        seen.append(kwargs["experts_on_host"])
-        return eligible(**kwargs)
-
-    backend._moe_cache_auto_eligible = spy
-    _launch(backend, gguf, n_ctx = 8192, n_parallel = 1, extra_args = extra_args)
-
-    assert seen == [expect_on_host]
-
-
-def test_an_inherited_projector_path_replaced_by_the_launch_does_not_block_residency(
-    tmp_path, _discrete_linux_host, monkeypatch
-):
-    """The emitted --mmproj is parsed after LLAMA_ARG_MMPROJ and replaces it; the
-    launched projector is already in the footprint."""
-    monkeypatch.setenv("LLAMA_ARG_MMPROJ", str(tmp_path / "inherited-mmproj.gguf"))
-    backend, gguf = _fit_on_moe(tmp_path, 88_000)
-    mmproj = _write_gguf(tmp_path / "mmproj.gguf", architecture = "clip")
-    backend._resolve_launch_mmproj_path = lambda **_kw: str(mmproj)
-    backend._mmproj_vram_bytes = lambda _path: 128 * 1024 * 1024
-    seen = []
-    eligible = backend._moe_cache_auto_eligible
-
-    def spy(**kwargs):
-        seen.append(kwargs["experts_on_host"])
-        return eligible(**kwargs)
-
-    backend._moe_cache_auto_eligible = spy
-    cmd = _launch(backend, gguf, n_ctx = 8192, n_parallel = 1, is_vision = True)["cmd"]
-
-    assert cmd[cmd.index("--mmproj") + 1] == str(mmproj), cmd
-    assert seen == [False]
 
 
 def test_an_unsized_drafter_keeps_a_fit_on_moe_counted_as_spilled(tmp_path, _discrete_linux_host):
@@ -5352,6 +5191,9 @@ def test_the_resident_expert_share():
     assert share(3 * _GIB, 15 * _GIB) == pytest.approx(0.8)
     assert share(-_GIB, 15 * _GIB) == 1.0
     assert share(30 * _GIB, 15 * _GIB) == 0.0
+    # No shortfall means nothing spills, even when the scan read no expert bytes.
+    assert share(-_GIB, 0) == 1.0
+    assert share(0, None) == 1.0
 
 
 @pytest.mark.parametrize(
