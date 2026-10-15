@@ -1922,3 +1922,79 @@ def test_refine_tries_the_next_card_when_the_fast_link_one_cannot_hold_a_share(m
     assert refined.offload_policy == dm.OFFLOAD_NONE
     assert refined.secondary_ordinal == 2
     assert refined.secondary_components == ("text_encoder", "vae")
+
+
+def test_cfg_batch_merge_failure_runs_the_branch_plain(monkeypatch):
+    torch.manual_seed(0)
+    dit = _BatchDit()
+    latents = torch.randn(2, 4)
+    cond, uncond = _embeds()
+    reference = _batch_loop(dit, latents.clone(), 4, cond, uncond)
+    router = mg.CfgBatchRouter(dit)
+    dit.forward = router
+
+    def boom(first, second, batch):
+        raise RuntimeError("cat failed")
+
+    monkeypatch.setattr(mg, "_batch_leaves", boom)
+    out = _batch_loop(dit, latents.clone(), 4, cond, uncond)
+    torch.testing.assert_close(out, reference, rtol = 0, atol = 0)
+    assert "RuntimeError" in router.describe()["disabled_reason"]
+
+
+def test_cfg_batch_single_branch_request_after_a_guided_one_stops_batching():
+    torch.manual_seed(0)
+    dit = _BatchDit()
+    cond, uncond = _embeds()
+    router = mg.CfgBatchRouter(dit)
+    dit.forward = router
+    _batch_loop(dit, torch.randn(2, 4), 3, cond, uncond)
+    before = router.stats["batched_steps"]
+    latents = torch.randn(2, 4)
+    for _ in range(5):
+        latents = latents - dit(hidden_states = latents, timestep = torch.tensor(0.5), encoder_hidden_states = cond)[0]
+    # at most the first step of the new request is speculated; none after the single-branch step is seen
+    assert router.stats["batched_steps"] - before <= 1
+    assert router.template is None
+
+
+def test_cfg_batch_refuses_a_foreign_submodule_hook():
+    torch.manual_seed(0)
+    dit = _BatchDit()
+    seen = []
+    dit.proj.register_forward_hook(lambda m, i, o: seen.append(o.shape[0]))  # stateful, not Studio's
+    cond, uncond = _embeds()
+    router = mg.CfgBatchRouter(dit)
+    dit.forward = router
+    _batch_loop(dit, torch.randn(2, 4), 4, cond, uncond)
+    assert router.stats["batched_steps"] == 0
+    assert "hook" in router.describe()["last_unbatched_reason"]
+
+
+def test_cfg_batch_retimes_both_branches_when_guidance_resumes(monkeypatch):
+    dit = _BatchDit()
+    router = mg.CfgBatchRouter(dit)
+    dit.forward = router
+    step = [0]
+    priced = []
+    monkeypatch.setattr(router, "_can_time", lambda latent: True)
+
+    def timed(a, k):
+        router.plain_times.append(step[0])
+        return router._plain(a, k)
+
+    monkeypatch.setattr(router, "_timed_plain", timed)
+    monkeypatch.setattr(router, "_price", lambda: priced.append(list(router.plain_times)))
+    cond, uncond = _embeds()
+    latents = torch.randn(2, 4)
+    for i in range(2):  # single-branch steps first
+        step[0] = i
+        latents = latents - dit(hidden_states = latents, timestep = torch.tensor(0.5), encoder_hidden_states = cond)[0]
+    for i in range(2, 5):  # then guidance
+        step[0] = i
+        c = dit(hidden_states = latents, timestep = torch.tensor(0.5), encoder_hidden_states = cond)[0]
+        u = dit(hidden_states = latents, timestep = torch.tensor(0.5), encoder_hidden_states = uncond)[0]
+        latents = latents - 0.1 * (u + 4.0 * (c - u))
+        if priced:
+            break
+    assert priced and len(priced[0]) == 2 and priced[0][0] == priced[0][1]  # both from one guided step

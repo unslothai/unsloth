@@ -1244,18 +1244,19 @@ def _trusted_hook(fn: Any) -> bool:
     return _hook_origin(fn).startswith(_TRUSTED_HOOK_MODULES) and _portable(fn)
 
 
-def _hooks_present(module: Any) -> Optional[str]:
+def _hooks_present(module: Any, *, offload_hooks_ok: bool = False) -> Optional[str]:
     """Name of the first submodule carrying state a replica cannot inherit faithfully, else None: a non-offload hook
     registry (step caches), an accelerate hook, or a forward hook / instance forward override below the root whose
     captured state points at the source (deepcopy treats functions as atoms). Offload machinery (diffusers group
     offloading, Studio's prefetchers) is dropped by :func:`build_replica`, which holds every weight resident. The
     ROOT's torch forward hooks are fine: the source module's ``__call__`` runs them around the router for every
-    branch, and the copy does not carry them."""
+    branch, and the copy does not carry them. ``offload_hooks_ok``: accelerate's offload hooks pass too (CFG-batch
+    runs the source module itself, so they keep working)."""
     for name, sub in module.named_modules():
         kind = _registry_kind(sub)
         if kind == "other":
             return f"{name or '<root>'}._diffusers_hook ({', '.join(sorted(sub._diffusers_hook.hooks))})"
-        if getattr(sub, "_hf_hook", None) is not None:
+        if getattr(sub, "_hf_hook", None) is not None and not offload_hooks_ok:
             return f"{name or '<root>'}._hf_hook"
         if name:
             for attr in ("_forward_hooks", "_forward_pre_hooks"):
@@ -1263,7 +1264,7 @@ def _hooks_present(module: Any) -> Optional[str]:
                     if not _is_offload_object(hook) and not _trusted_hook(hook):
                         return f"{name}.{attr}"
         override = sub.__dict__.get("forward")
-        if override is None or isinstance(override, (types.MethodType, CfgParallelRouter)):
+        if override is None or isinstance(override, (types.MethodType, CfgParallelRouter, CfgBatchRouter)):
             # bound methods are rebound to the copy, the router is dropped
             continue
         if kind == "offload" or _is_offload_object(override):
@@ -2470,9 +2471,13 @@ class CfgBatchRouter:
         if latent is not None and self.prev_latent is not None and latent is self.prev_latent:
             self.branch += 1
         else:
-            if self.branch == 0 and self.prev_latent is not None and self.pricing is None:
-                # the previous step had one call: a single-branch loop has nothing to price, so stop syncing
-                self.timing_off = True
+            if self.branch == 0 and self.prev_latent is not None:
+                # The previous step made one call: a single-branch request. Forget the guided state (no speculation,
+                # no stale timing); a later guided step rebuilds it from scratch.
+                self.template = None
+                self.plain_times = []
+                if self.pricing is None:
+                    self.timing_off = True  # nothing to price: stop syncing
             self.branch = 0
             self.prev_latent = latent
             if self.kept is not None:  # the previous step never asked for its odd branch
@@ -2481,11 +2486,13 @@ class CfgBatchRouter:
             self.b0_leaves = dict(_leaves((args, kwargs)))
         if self.disabled_reason is not None or latent is None:
             return self._plain(args, kwargs)
-        if self.branch == 1:
-            self.timing_off = False  # guidance runs two branches after all: time the next step
+        if self.branch == 1 and self.timing_off:
+            # guidance resumed: retake both branch timings on the next step
+            self.timing_off = False
+            self.plain_times = []
         timing = self.pricing is None and not self.timing_off and self._can_time(latent)
         if self.branch == 0:
-            if self.template is not None:
+            if self.template is not None and not timing:  # unpriced: this step times both plain calls first
                 out = self._batched(args, kwargs, latent)
                 if out is not None:
                     return out
@@ -2590,9 +2597,10 @@ class CfgBatchRouter:
         if module.__dict__.get("forward") is not self:
             self._skip("an outer forward layer was installed after this router")
             return None
-        hooked = _registry_hooks_other(module)
+        # a step cache, or a foreign hook whose per-call state would see one doubled call: the CFG-parallel screen
+        hooked = _hooks_present(module, offload_hooks_ok = True)
         if hooked is not None:
-            self._skip(f"step cache present ({hooked})")
+            self._skip(f"stateful hook present ({hooked})")
             return None
         structure, kinds = self.template
         values: dict = {}
@@ -2619,16 +2627,24 @@ class CfgBatchRouter:
         if batch < 1:
             self._skip("latent without a batch dim")
             return None
-        try:
-            merged = _batch_leaves(first, second, batch)
-        except _NotBatchable as exc:
-            self._skip(str(exc))
-            return None
         if not self._memory_ok(latent.device):
             self._skip("not enough free memory for a second branch's activations")
             return None
-        b_args, b_kwargs = _rebuild((args, kwargs), merged)
-        snapshots = [(path, v.clone() if isinstance(v, torch.Tensor) else v) for path, v in second]
+        try:
+            merged = _batch_leaves(first, second, batch)
+            b_args, b_kwargs = _rebuild((args, kwargs), merged)
+            snapshots = [(path, v.clone() if isinstance(v, torch.Tensor) else v) for path, v in second]
+        except _NotBatchable as exc:
+            self._skip(str(exc))
+            return None
+        except Exception as exc:  # noqa: BLE001 - incl. OOM in the concatenation: the branch runs plain
+            merged = b_args = b_kwargs = snapshots = None
+            with contextlib.suppress(Exception):
+                torch.cuda.empty_cache()
+            self.disable(
+                f"merging the branches failed ({type(exc).__name__}: {exc}); one branch per call from here"
+            )
+            return None
         state = _hook_state([(m, m) for m in module.modules()])
         verify = (
             self.verify_batched > 0 and len(self.plain_times) == 2 and latent.device.type == "cuda"
