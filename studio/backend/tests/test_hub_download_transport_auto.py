@@ -381,6 +381,7 @@ def test_optional_loader_retries_with_gpu_init_disabled(monkeypatch):
     monkeypatch.setattr(importlib, "import_module", _fake_import)
     monkeypatch.delenv("UNSLOTH_ZOO_DISABLE_GPU_INIT", raising = False)
     monkeypatch.setattr(shim, "_gpu_present", lambda: False)
+    monkeypatch.setattr(shim, "_import_light", lambda name: None)
 
     assert shim._load_optional("unsloth_zoo.hf_xet_tuning") is sentinel
     assert attempts == [None, "1"]
@@ -393,6 +394,7 @@ def test_optional_loader_returns_none_when_truly_absent(monkeypatch):
         raise ModuleNotFoundError(name)
 
     monkeypatch.setattr(importlib, "import_module", _always_fail)
+    monkeypatch.setattr(shim, "_import_light", lambda name: None)
     for name in ("unsloth_zoo.hf_xet_tuning", "unsloth_zoo.hf_xet_health"):
         monkeypatch.delitem(sys.modules, name, raising = False)
     assert shim._load_optional("unsloth_zoo.hf_xet_tuning") is None

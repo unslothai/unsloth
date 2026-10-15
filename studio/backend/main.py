@@ -1799,6 +1799,11 @@ from utils.remote_access_settings import RemoteAccessStopResponseMiddleware  # n
 
 app.add_middleware(RemoteAccessStopResponseMiddleware)
 
+from auth.x_api_key import XApiKeyMiddleware  # noqa: E402
+
+# Added last so it is outermost: every Authorization reader below sees the rewritten header.
+app.add_middleware(XApiKeyMiddleware)
+
 app.include_router(auth_router, prefix = "/api/auth", tags = ["auth"])
 app.include_router(
     __import__("routes.accounts", fromlist = ["router"]).router,
