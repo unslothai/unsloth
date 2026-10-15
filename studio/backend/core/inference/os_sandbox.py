@@ -522,6 +522,18 @@ def workdir_scan_overran(workdir: str) -> bool:
     return bool(_overran_workdirs) and os.path.realpath(workdir) in _overran_workdirs
 
 
+def recheck_overran_workdir(workdir: str) -> None:
+    """For a folder launched without a scan: forget the overrun once it scans clean within budget."""
+    if not workdir_scan_overran(workdir):
+        return
+    try:
+        hazard = _hazard_within_wall_clock(workdir, WORKDIR_SCAN_ENTRIES, WORKDIR_SCAN_SECONDS)
+    except _ScanBudgetExceeded:
+        return
+    if hazard is None:
+        _overran_workdirs.discard(os.path.realpath(workdir))
+
+
 def cache_share_hazard(path: str, witness: "list[tuple] | None" = None) -> str | None:
     """Return a reason not to share this writable cache component, or None."""
     try:

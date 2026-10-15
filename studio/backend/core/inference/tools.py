@@ -10156,6 +10156,7 @@ def _prepare_tool_launch(
     # repositories (hard links from git clone --local, pnpm, uv) and walk large trees on every call. Decided up front,
     # never after a scan finding, which tool code could plant to drop its own boundary.
     if user_folder and plan.requested_mode == "auto":
+        os_sandbox.recheck_overran_workdir(plan.workdir)
         return _software_safeguards_launch(plan, "user_working_folder")
     try:
         prepared = os_sandbox.prepare_tool_launch(plan)
