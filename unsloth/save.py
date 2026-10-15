@@ -53,6 +53,7 @@ import json
 import shutil
 import pickle
 import gc
+import contextvars
 import functools
 from transformers.models.llama.modeling_llama import logger
 from .kernels import fast_dequantize, QUANT_STATE, get_lora_parameters_bias
@@ -906,18 +907,19 @@ def _stitch_mtp_head(model, save_directory):
     return report
 
 
-def _save_pretrained_unstitched(model):
-    """`model.save_pretrained` for savers that stitch the head themselves: the plain-save wrapper skips its
-    own stitch, wherever it sits in the wrapper chain (an export reload wraps it again from outside)."""
-    save = model.save_pretrained
+# Set while an Unsloth saver writes a checkpoint it stitches the head into itself, so the plain
+# `save_pretrained` wrapper (unsloth/models/speculative.py) does not stitch it a second time,
+# however the wrappers are stacked (an export reload wraps it again from outside).
+_INTERNAL_MTP_SAVE = contextvars.ContextVar("unsloth_internal_mtp_save", default = False)
 
-    @functools.wraps(save)
-    def call(*args, **kwargs):
-        from .models.speculative import internal_save
-        with internal_save():
-            return save(*args, **kwargs)
 
-    return call
+@contextmanager
+def _internal_mtp_save():
+    token = _INTERNAL_MTP_SAVE.set(True)
+    try:
+        yield
+    finally:
+        _INTERNAL_MTP_SAVE.reset(token)
 
 
 def _save_mtp_head_beside_adapter(model, save_directory):
@@ -1335,7 +1337,8 @@ def unsloth_save_model(
         if save_method == "lora":
             save_pretrained_settings["selected_adapters"] = None
 
-        _save_pretrained_unstitched(model)(**save_pretrained_settings)
+        with _internal_mtp_save():
+            model.save_pretrained(**save_pretrained_settings)
         if save_method == "lora":
             _save_mtp_head_beside_adapter(model, save_pretrained_settings["save_directory"])
         else:
@@ -1639,7 +1642,8 @@ def unsloth_save_model(
                 ignore_patterns = "*.md",
             )
         else:
-            _save_pretrained_unstitched(internal_model)(**save_pretrained_settings)
+            with _internal_mtp_save():
+                internal_model.save_pretrained(**save_pretrained_settings)
     finally:
         original_model = model
         while hasattr(original_model, "model"):
@@ -4303,7 +4307,8 @@ def unsloth_save_pretrained_gguf(
             os.makedirs(save_directory, exist_ok = True)
             # `gguf_directory` can point anywhere, and freeing bytes on one filesystem does nothing for a quantize pass writing to another: without this the merge could be deleted for a destination it cannot help, data gone and the export still out of space.
             try:
-                _save_pretrained_unstitched(self)(save_directory, state_dict = state_dict)
+                with _internal_mtp_save():
+                    self.save_pretrained(save_directory, state_dict = state_dict)
                 _stitch_mtp_head(self, save_directory)
                 if tokenizer is not None:
                     tokenizer.save_pretrained(save_directory)
@@ -5867,7 +5872,8 @@ def unsloth_generic_save(
         _written_tensor_names = list(state_dict.keys()) if state_dict is not None else None
 
         print(f"Unsloth: Saving full fine-tuned model to '{save_directory}' ...")
-        _save_pretrained_unstitched(model)(save_directory, **_save_kwargs)
+        with _internal_mtp_save():
+            model.save_pretrained(save_directory, **_save_kwargs)
         if (
             _stitch_mtp_head(model, save_directory) is not None
             and _written_tensor_names is not None

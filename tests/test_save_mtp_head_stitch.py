@@ -190,7 +190,8 @@ def test_plain_save_pretrained_keeps_the_head(save_module, tmp_path):
 
 
 def test_internal_savers_stitch_once(save_module, tmp_path, monkeypatch):
-    """Savers that stitch after writing bypass the wrapper, so one save writes the head once."""
+    """Inside `_internal_mtp_save` the plain-save wrapper does not stitch, even under an outer wrapper
+    (an export reload wraps `save_pretrained` again), so one save writes the head once."""
     import torch
     from unsloth.models.speculative import _wrap_save_pretrained
 
@@ -204,21 +205,10 @@ def test_internal_savers_stitch_once(save_module, tmp_path, monkeypatch):
     model = Plain()
     object.__setattr__(model, "_unsloth_mtp_head", _head(torch))
     _wrap_save_pretrained(model)
-    save_module._save_pretrained_unstitched(model)(str(tmp_path))
-    assert stitched == []
-    model.save_pretrained(str(tmp_path))
-    assert stitched == [str(tmp_path)]
-
-    # An export reload wraps save_pretrained again from outside (patch_saving_functions); the
-    # internal saver must still bypass the inner MTP wrapper.
     inner = model.save_pretrained
-
-    def outer(save_directory, *args, **kwargs):
-        return inner(save_directory, *args, **kwargs)
-
-    object.__setattr__(model, "save_pretrained", outer)
-    stitched.clear()
-    save_module._save_pretrained_unstitched(model)(str(tmp_path))
+    object.__setattr__(model, "save_pretrained", lambda *a, **k: inner(*a, **k))
+    with save_module._internal_mtp_save():
+        model.save_pretrained(str(tmp_path))
     assert stitched == []
     model.save_pretrained(str(tmp_path))
     assert stitched == [str(tmp_path)]
