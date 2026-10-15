@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Norm layers in modules_to_save on the FastLanguageModel path (#3235).
-
-The fast RMSNorm kernel computes dW for a trainable weight (#13594), so a norm named in
-modules_to_save trains there like lm_head / embed_tokens; anything else still raises.
-"""
+"""Norm layers in modules_to_save train on the FastLanguageModel path (#3235, needs #13594 dW)."""
 
 import pytest
 from real_accelerator import (
