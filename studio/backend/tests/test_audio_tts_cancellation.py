@@ -433,7 +433,6 @@ def test_legacy_yue2_watchdog_outlasts_its_own_ending():
     )
     cpu = dict(yue2, audio_cpp_backend = "cpu")
     assert timeout(900.0, "audiocpp_music", cpu, None) == 4 * 3600.0 + 60
-    # Other music families keep the token watchdog; the Music page keeps its route budget.
     stable = {"audio_family": "stable_audio", "audio_cpp_backend": "cuda"}
     assert timeout(900.0, "audiocpp_music", stable, None) == 900.0
     assert timeout(900.0, "audiocpp_tts", yue2, None) == 900.0

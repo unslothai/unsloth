@@ -2630,7 +2630,6 @@ def test_yue2_runs_to_its_own_ending_whatever_the_token_budget():
     for _path, body in srv.calls:
         options = body["request"]["options"]
         assert "semantic_max_tokens" not in options and "semantic_min_tokens" not in options
-    # The Music page's wait for the song's own end, which the orchestrator outlasts by 60 s.
     assert waits == [audio_cpp_music.self_ending_timeout("yue2", "cpu")] * 3 == [4 * 3600.0] * 3
     srv.backend = "cuda"
     b.generate_audio_response("[chorus] oh", instructions = "rock", max_new_tokens = 2048)

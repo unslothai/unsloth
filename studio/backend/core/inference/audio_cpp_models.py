@@ -265,8 +265,7 @@ MUSIC_SPECS: dict[str, MusicSpec] = {
         # Empty lyrics still sing; only this tag stays wordless.
         instrumental_lyrics = "[Instrumental]",
         rtf = 6.0,
-        # The lyrics set the length: any budget from the slider cut songs mid-verse (#13337), 1.5x too.
-        # Upstream YuE2 has no length input either; 360 s is its 9000-frame default cap.
+        # Any length budget cut songs mid-verse (#13337); upstream's own cap is 9000 frames = 360 s.
         self_ending_s = 360.0,
     ),
 }

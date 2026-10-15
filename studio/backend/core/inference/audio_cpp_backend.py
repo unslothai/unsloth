@@ -893,7 +893,6 @@ class AudioCppBackend:
         ctype, data = server.post_json(
             "/v1/tasks/run",
             {"model": server.model_id, "request": request},
-            # The Music page's wait for a self-ending model, which the orchestrator outlasts.
             timeout = own_end or _GENERATE_TIMEOUT_SECONDS,
             cancel_event = cancel_event,
         )
