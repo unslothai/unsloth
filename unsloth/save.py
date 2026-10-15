@@ -53,6 +53,7 @@ import json
 import shutil
 import pickle
 import gc
+import contextvars
 import functools
 from transformers.models.llama.modeling_llama import logger
 from .kernels import fast_dequantize, QUANT_STATE, get_lora_parameters_bias
@@ -819,6 +820,202 @@ def _strip_absent_mtp_declaration(config_dict, tensor_names):
         return False
 
 
+def _attached_mtp_head(model):
+    """The trained MTP head attached as `_unsloth_mtp_head` anywhere under PEFT wrappers, else None.
+
+    Walks `__dict__` / `_modules` directly: `getattr` on a PeftModel forwards misses down the
+    wrapper chain, so a plain lookup would answer for the wrong holder or recurse.
+    """
+    seen = set()
+    stack = [model]
+    while stack:
+        holder = stack.pop()
+        if holder is None or id(holder) in seen:
+            continue
+        seen.add(id(holder))
+        attributes = getattr(holder, "__dict__", {})
+        modules = attributes.get("_modules") or {}
+        head = attributes.get("_unsloth_mtp_head", modules.get("_unsloth_mtp_head"))
+        if head is not None:
+            return head
+        for name in ("base_model", "model", "language_model"):
+            child = modules.get(name, attributes.get(name))
+            if child is not None:
+                stack.append(child)
+    return None
+
+
+def _mtp_head_state_dict(head):
+    """Head-relative checkpoint names (`fc.weight`); `mtp_state_dict` excludes shared target tensors."""
+    getter = getattr(head, "mtp_state_dict", None)
+    return dict(getter() if callable(getter) else head.state_dict())
+
+
+def _mtp_head_info(head):
+    info = getattr(head, "_unsloth_mtp_info", None)
+    return dict(info) if isinstance(info, dict) else {}
+
+
+def _mtp_head_tensor_names(model):
+    """Checkpoint names the attached head will occupy, or [] when none is attached."""
+    head = _attached_mtp_head(model)
+    if head is None:
+        return []
+    # Qwen3.5 heads use relative names under `mtp.`; NextN heads (prefix "") already use full names.
+    prefix = _mtp_head_info(head).get("prefix")
+    prefix = "mtp." if prefix is None else prefix
+    return [prefix + name for name in _mtp_head_state_dict(head)]
+
+
+def _is_main_rank():
+    """Only one process writes the head when several save the same folder."""
+    try:
+        import torch.distributed as dist
+        return not (dist.is_available() and dist.is_initialized()) or dist.get_rank() == 0
+    except Exception:
+        return True
+
+
+def _refuse_mtp_variant(model, variant):
+    """Variant filenames (`model.<variant>.safetensors`) are not stitched; refuse before writing anything."""
+    if variant is not None and _attached_mtp_head(model) is not None:
+        raise NotImplementedError(
+            "Unsloth: saving a trained MTP head with `variant=` is not supported; save without `variant`."
+        )
+
+
+def _stitch_mtp_head(model, save_directory):
+    """Write the attached trained MTP head into a saved checkpoint. No-op when none is attached."""
+    head = _attached_mtp_head(model)
+    if head is None or not _is_main_rank():
+        return None
+    from unsloth_zoo.speculative.stitch import write_mtp_tensors
+
+    info = _mtp_head_info(head)
+    # NextN families (GLM, DeepSeek, Qwen3-Next, ...) say where their tensors live themselves.
+    stitch_kwargs = getattr(head, "stitch_kwargs", None)
+    report = write_mtp_tensors(
+        save_directory,
+        _mtp_head_state_dict(head),
+        append_prefix = info.get("prefix") or "mtp.",
+        **(stitch_kwargs() if callable(stitch_kwargs) else {}),
+    )
+    print(
+        f"Unsloth: Wrote the trained MTP head ({len(report['tensors_written'])} tensors, "
+        f"{report['mode']}) into '{save_directory}'."
+    )
+    return report
+
+
+# Set while an Unsloth saver writes a checkpoint it stitches the head into itself, so the plain
+# `save_pretrained` wrapper (unsloth/models/speculative.py) does not stitch it a second time,
+# however the wrappers are stacked (an export reload wraps it again from outside).
+_INTERNAL_MTP_SAVE = contextvars.ContextVar("unsloth_internal_mtp_save", default = False)
+
+
+@contextmanager
+def _internal_mtp_save():
+    token = _INTERNAL_MTP_SAVE.set(True)
+    try:
+        yield
+    finally:
+        _INTERNAL_MTP_SAVE.reset(token)
+
+
+def _save_mtp_head_beside_adapter(model, save_directory):
+    """LoRA saves keep the trained head as `mtp_head.safetensors` so a later merge can stitch it."""
+    head = _attached_mtp_head(model)
+    if not _is_main_rank():
+        return None
+    if head is None:
+        # A reused folder's earlier head would be re-attached to this unrelated adapter on load.
+        stale = os.path.join(save_directory, "mtp_head.safetensors")
+        if os.path.isfile(stale):
+            os.remove(stale)
+        return None
+    from unsloth_zoo.speculative.stitch import save_mtp_head
+
+    path = save_mtp_head(save_directory, _mtp_head_state_dict(head), _mtp_head_info(head))
+    print(f"Unsloth: Saved the trained MTP head to '{path}'.")
+    return path
+
+
+def _push_with_mtp_head(save_kwargs):
+    """Push for `unsloth_save_model` with a trained MTP head: save locally, stitch, upload the folder.
+
+    Every direct-to-hub writer streams the stock head from the original shards, so the head can
+    only be written into a local copy.
+    """
+    import tempfile
+    from huggingface_hub.errors import HfHubHTTPError
+
+    if not save_kwargs["is_main_process"]:
+        return save_kwargs["save_directory"], None
+    token = save_kwargs["token"] if save_kwargs["token"] is not None else get_token()
+    repo_id, username = _determine_username(save_kwargs["save_directory"], None, token)
+    api = HfApi(token = token)
+    api.create_repo(
+        repo_id = repo_id,
+        repo_type = "model",
+        private = save_kwargs["private"],
+        exist_ok = True,
+    )
+    revision = save_kwargs["revision"]
+    if revision is not None and not revision.startswith("refs/pr/"):
+        try:
+            api.create_branch(repo_id = repo_id, repo_type = "model", branch = revision, exist_ok = True)
+        except HfHubHTTPError as error:
+            if not save_kwargs["create_pr"] or error.response.status_code != 403:
+                raise
+    with tempfile.TemporaryDirectory(prefix = "unsloth-mtp-") as directory:
+        unsloth_save_model(
+            **{**save_kwargs, "save_directory": directory, "push_to_hub": False, "token": token}
+        )
+        # The card the hub path writes, staged here so it lands in this commit on this revision.
+        from huggingface_hub import ModelCard, hf_hub_download, metadata_save
+        from huggingface_hub.errors import EntryNotFoundError, LocalEntryNotFoundError
+
+        readme = os.path.join(directory, "README.md")
+        if not os.path.isfile(readme):
+            try:
+                shutil.copyfile(
+                    hf_hub_download(repo_id, "README.md", revision = revision, token = token),
+                    readme,
+                )
+            except LocalEntryNotFoundError:
+                raise  # offline or unreachable: never replace a card that may exist
+            except EntryNotFoundError:  # no card yet; any other failure must not replace one
+                config = save_kwargs["model"].config
+                ModelCard(
+                    MODEL_CARD.format(
+                        username = username,
+                        base_model = config._name_or_path,
+                        model_type = config.model_type,
+                        method = "finetuned",
+                        extra = "unsloth",
+                    )
+                ).save(readme)
+        tags = ModelCard.load(readme).data.tags or []
+        metadata = {
+            "tags": list(dict.fromkeys([*tags, *(save_kwargs.get("tags") or []), "unsloth"]))
+        }
+        if save_kwargs.get("datasets"):
+            metadata["datasets"] = save_kwargs["datasets"]
+        metadata_save(readme, metadata)
+        api.upload_folder(
+            folder_path = directory,
+            path_in_repo = ".",
+            repo_id = repo_id,
+            repo_type = "model",
+            commit_message = save_kwargs["commit_message"] or "Trained with Unsloth",
+            commit_description = save_kwargs.get("commit_description"),
+            revision = save_kwargs["revision"],
+            create_pr = save_kwargs["create_pr"],
+        )
+    print(f"Unsloth: Saved model with its trained MTP head to https://huggingface.co/{repo_id}")
+    return repo_id, username
+
+
 def _is_qwen3_5_vlm(model):
     config = getattr(model, "config", None)
     if config is None or not hasattr(config, "vision_config"):
@@ -943,6 +1140,10 @@ def unsloth_save_model(
     maximum_memory_usage: float = 0.9,
     datasets: Optional[List[str]] = None,
 ):
+    _refuse_mtp_variant(model, variant)
+    if push_to_hub and _attached_mtp_head(model) is not None:
+        return _push_with_mtp_head(dict(locals()))
+
     if isinstance(tokenizer, (PreTrainedTokenizerBase, ProcessorMixin)):
         tokenizer = patch_saving_functions(tokenizer)
 
@@ -1019,7 +1220,11 @@ def unsloth_save_model(
         print("This might take 5 minutes...")
 
         if hasattr(model, "merge_and_unload"):
+            mtp_head = _attached_mtp_head(model)
             model = model.merge_and_unload()
+            # merge_and_unload returns the inner model; keep the trained head with it.
+            if mtp_head is not None:
+                object.__setattr__(model, "_unsloth_mtp_head", mtp_head)
         print("Done.")
 
     if tags is not None:
@@ -1170,7 +1375,12 @@ def unsloth_save_model(
         if save_method == "lora":
             save_pretrained_settings["selected_adapters"] = None
 
-        model.save_pretrained(**save_pretrained_settings)
+        with _internal_mtp_save():
+            model.save_pretrained(**save_pretrained_settings)
+        if save_method == "lora":
+            _save_mtp_head_beside_adapter(model, save_pretrained_settings["save_directory"])
+        else:
+            _stitch_mtp_head(model, save_pretrained_settings["save_directory"])
 
         if push_to_hub and hasattr(model, "config"):
             print("Saved to https://huggingface.co/" + save_pretrained_settings["save_directory"])
@@ -1222,12 +1432,18 @@ def unsloth_save_model(
     if n_cpus is None:
         n_cpus = 1
 
+    # The trained MTP head is stitched into safetensors checkpoints only.
+    _keeps_mtp_head = _attached_mtp_head(model) is not None
+    if _keeps_mtp_head and not safe_serialization:
+        raise ValueError(
+            "Unsloth: a model with a trained MTP head saves as safetensors; drop `safe_serialization = False`."
+        )
     # Already `True` from the normalisation at the top of this function; the caller having
     # passed `None` is what keeps the downgrade below from undoing it.
     if _force_safe_serialization:
         save_pretrained_settings["safe_serialization"] = safe_serialization
 
-    elif safe_serialization and (n_cpus <= 2):
+    elif safe_serialization and (n_cpus <= 2) and not _keeps_mtp_head:
         logger.warning_once(
             f"Unsloth: You have {n_cpus} CPUs. Using `safe_serialization` is 10x slower.\n"
             f"We shall switch to Pytorch saving, which might take 3 minutes and not 30 minutes.\n"
@@ -1435,8 +1651,11 @@ def unsloth_save_model(
     new_config = model.config.to_dict()
     if "quantization_config" in new_config:
         del new_config["quantization_config"]
-    # The merged state dict is what gets written, so its keys decide MTP presence.
-    _strip_absent_mtp_declaration(new_config, state_dict.keys())
+    # The merged state dict is what gets written, so its keys decide MTP presence; a trained
+    # head attached to the model is stitched in right after the write.
+    _strip_absent_mtp_declaration(
+        new_config, list(state_dict.keys()) + _mtp_head_tensor_names(model)
+    )
     original_model = model
     new_config = type(model.config).from_dict(new_config)
     while hasattr(original_model, "model"):
@@ -1467,13 +1686,17 @@ def unsloth_save_model(
                 ignore_patterns = "*.md",
             )
         else:
-            internal_model.save_pretrained(**save_pretrained_settings)
+            with _internal_mtp_save():
+                internal_model.save_pretrained(**save_pretrained_settings)
     finally:
         original_model = model
         while hasattr(original_model, "model"):
             original_model = original_model.model
             original_model.config = old_config
         model.config = old_config
+    # Pushes with an attached head were rerouted to a local save at the top.
+    if not save_pretrained_settings["push_to_hub"]:
+        _stitch_mtp_head(model, save_pretrained_settings["save_directory"])
     print("Done.")
 
     if push_to_hub and hasattr(model, "config"):
@@ -3390,6 +3613,9 @@ def _gguf_reuses_loaded_checkpoint(model, state_dict = None):
         return False
     if state_dict is not None or getattr(model, "_unsloth_full_finetuning", False):
         return False
+    # The loaded folder holds the stock MTP head; a trained one needs a fresh checkpoint.
+    if _attached_mtp_head(model) is not None:
+        return False
     # A ModelScope load keeps its snapshot here, since `_name_or_path` holds the repo id (#3726).
     name_or_path = getattr(model, "_unsloth_modelscope_snapshot", None) or getattr(
         getattr(model, "config", None), "_name_or_path", None
@@ -4161,7 +4387,9 @@ def unsloth_save_pretrained_gguf(
             os.makedirs(save_directory, exist_ok = True)
             # `gguf_directory` can point anywhere, and freeing bytes on one filesystem does nothing for a quantize pass writing to another: without this the merge could be deleted for a destination it cannot help, data gone and the export still out of space.
             try:
-                self.save_pretrained(save_directory, state_dict = state_dict)
+                with _internal_mtp_save():
+                    self.save_pretrained(save_directory, state_dict = state_dict)
+                _stitch_mtp_head(self, save_directory)
                 if tokenizer is not None:
                     tokenizer.save_pretrained(save_directory)
             except Exception as e:
@@ -5666,6 +5894,7 @@ def unsloth_generic_save(
     datasets: Optional[List[str]] = None,
     dtype = None,
 ):
+    _refuse_mtp_variant(model, variant)
     if save_method == "merged_4bit":
         raise RuntimeError(
             "Unsloth: Merging into 4bit will cause your model to lose accuracy if you plan\n"
@@ -5679,7 +5908,13 @@ def unsloth_generic_save(
     # this function's own keywords.
     safe_serialization = _normalize_safe_serialization(safe_serialization)
 
-    if push_to_hub and (create_pr or revision is not None or not isinstance(model, PeftModel)):
+    # A trained MTP head can only be stitched into a local copy, which this route makes first.
+    if push_to_hub and (
+        create_pr
+        or revision is not None
+        or not isinstance(model, PeftModel)
+        or _attached_mtp_head(model) is not None
+    ):
         return _push_merged_to_hub_revision(dict(locals()))
 
     if isinstance(tokenizer, (PreTrainedTokenizerBase, ProcessorMixin)):
@@ -5708,6 +5943,11 @@ def unsloth_generic_save(
         # method, since `patch_saving_functions` wraps it in a `(*args, **kwargs)` passthrough
         # that would hide a transformers which does honour the request.
         _real_save = getattr(model, "original_model_save_pretrained", model.save_pretrained)
+        if safe_serialization is False and _attached_mtp_head(model) is not None:
+            # The trained head is stitched into safetensors checkpoints only; refuse before writing.
+            raise ValueError(
+                "Unsloth: a model with a trained MTP head saves as safetensors; drop `safe_serialization = False`."
+            )
         if safe_serialization is False and not _honours_safe_serialization(_real_save):
             logger.warning_once(
                 "Unsloth: this transformers always writes safetensors, so "
@@ -5728,6 +5968,12 @@ def unsloth_generic_save(
                 state_dict = _cast_state_dict_16bit(model, state_dict, _target_dtype)
         if is_qwen3_5_vlm:
             state_dict = _qwen3_5_vlm_state_dict_for_save(state_dict)
+        if _attached_mtp_head(model) is not None:
+            # A head registered as a submodule would otherwise be written under its attribute
+            # name; it is stitched in under its checkpoint names after the save instead.
+            if state_dict is None:
+                state_dict = model.state_dict()
+            state_dict = {k: v for k, v in state_dict.items() if "_unsloth_mtp_head." not in k}
         if state_dict is not None:
             _save_kwargs["state_dict"] = state_dict
 
@@ -5738,9 +5984,15 @@ def unsloth_generic_save(
         _written_tensor_names = list(state_dict.keys()) if state_dict is not None else None
 
         print(f"Unsloth: Saving full fine-tuned model to '{save_directory}' ...")
-        model.save_pretrained(save_directory, **_save_kwargs)
+        with _internal_mtp_save():
+            model.save_pretrained(save_directory, **_save_kwargs)
         if "16bit" in save_method and _requests_float32(dtype):
             _stamp_saved_config_float32(save_directory)
+        if (
+            _stitch_mtp_head(model, save_directory) is not None
+            and _written_tensor_names is not None
+        ):
+            _written_tensor_names = _written_tensor_names + _mtp_head_tensor_names(model)
         # Guarded: an older zoo must not raise once the weights are already on disk.
         try:
             from unsloth_zoo.saving_utils import reconcile_mtp_config
@@ -5828,6 +6080,9 @@ def unsloth_generic_save(
                 low_disk_space_usage = True,
                 use_temp_file = False,
             )
+        # Pushes with an attached head were rerouted to a local save above.
+        if not push_to_hub:
+            _stitch_mtp_head(model, save_directory)
 
     if push_to_hub and datasets:
         try:
@@ -6656,6 +6911,12 @@ def _unsloth_save_compressed_tensors(
     # Only the main process installs deps, merges, quantizes and uploads, mirroring the non-PEFT save path; other ranks return at once rather than race on dirs or run pip installs.
     if not is_main_process:
         return None
+    if _attached_mtp_head(model) is not None:
+        # The quantizer reloads through transformers, which drops native MTP tensors.
+        print(
+            "Unsloth: compressed-tensors exports do not carry the trained MTP head; use merged_16bit "
+            "or GGUF to keep it."
+        )
 
     # Prepare the quantization runtime BEFORE merging, so an unusable config fails fast instead of writing a full 16bit checkpoint first. Under the llm-compressor-main shadow the subprocess validates itself, so the workspace install / ceiling / scheme checks are skipped.
     _shadow_pythonpath = _compressed_quantize_pythonpath()
@@ -6911,6 +7172,12 @@ def _unsloth_save_torchao(
 
     if not is_main_process:
         return None
+    if _attached_mtp_head(model) is not None:
+        # The reload below drops native MTP tensors (the reason the head is stitched at all).
+        print(
+            f"Unsloth: torchao {kind} exports do not carry the trained MTP head; use merged_16bit or "
+            "GGUF to keep it."
+        )
 
     from transformers import (
         AutoModelForCausalLM,
