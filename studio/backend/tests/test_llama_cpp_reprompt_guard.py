@@ -485,6 +485,7 @@ def test_step_labelled_results_are_not_a_plan():
         "Step 1:\r\n1. Analyze the request.\r\n2. Draft the answer.",
         "**Step 1**\nRun the tests, then summarise.",
         "### Step 1\r\nSearch the web for the song list.",
+        "**Step 1**\n1. Search the web for the song list.\n2. Summarise it.",
     ]
     for content in plans:
         assert is_short_intent_without_action(content), content
