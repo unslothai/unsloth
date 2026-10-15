@@ -2133,3 +2133,119 @@ def test_cfg_batch_headroom_is_the_denoise_phase_when_calibrated():
     assert mg.plan_denoise_headroom_mib(plan) == 892
     # without a per-phase figure the conservative whole-request headroom stays
     assert mg.plan_denoise_headroom_mib(_plan()) == _plan().estimates["runtime_headroom_mib"]
+
+
+def _offload_style_wrapper(module, inner):
+    """An accelerate / diffusers style offload wrapper: functools.update_wrapper(partial(new_forward, module), inner)."""
+    import functools
+
+    def new_forward(mod, *a, **k):
+        return inner(*a, **k)
+
+    new_forward.__module__ = "accelerate.hooks"
+    return functools.update_wrapper(functools.partial(new_forward, module), inner)
+
+
+def test_cfg_batch_sees_an_outer_layer_under_an_offload_wrapper(monkeypatch):
+    class Outer:
+        _unsloth_outer_forward = True
+
+        def __init__(self, module):
+            self.inner = type(module).forward.__get__(module)
+
+        def __call__(self, *a, **k):
+            return self.inner(*a, **k)
+
+    class Pipe:
+        def __init__(self):
+            self.transformer = _BatchDit()
+
+    monkeypatch.setenv(mg.CFG_BATCH_ENV, "force")
+    hidden = Pipe()
+    hidden.transformer.forward = _offload_style_wrapper(hidden.transformer, Outer(hidden.transformer))
+    reason = mg.install_cfg_batch(hidden, offload_policy = "none")
+    assert reason is not None and "outer forward" in reason
+    # the same wrapper straight over the class forward still arms
+    plain = Pipe()
+    plain.transformer.forward = _offload_style_wrapper(
+        plain.transformer, type(plain.transformer).forward.__get__(plain.transformer)
+    )
+    assert mg.install_cfg_batch(plain, offload_policy = "none") is None
+
+
+@pytest.mark.parametrize("make_state", [lambda: [0], lambda: {}])
+def test_cfg_batch_refuses_a_mutable_container_argument(make_state):
+    torch.manual_seed(0)
+
+    class StateDit(_BatchDit):
+        def forward(self, hidden_states, timestep, encoder_hidden_states, state = None, return_dict = False):
+            self.calls += 1
+            if isinstance(state, list):
+                state[0] += 1
+            else:
+                state[len(state)] = 1
+            return (self.proj(hidden_states) * timestep + encoder_hidden_states.tanh(),)
+
+    def loop(dit, latents, steps, cond, uncond, state):
+        for i in range(steps):
+            t = torch.tensor(1.0 - i / steps)
+            c = dit(hidden_states = latents, timestep = t, encoder_hidden_states = cond, state = state)[0]
+            u = dit(hidden_states = latents, timestep = t, encoder_hidden_states = uncond, state = state)[0]
+            latents = latents - 0.1 * (u + 4.0 * (c - u))
+        return latents
+
+    dit = StateDit()
+    cond, uncond = _embeds()
+    router = mg.CfgBatchRouter(dit)
+    dit.forward = router
+    state = make_state()
+    loop(dit, torch.randn(2, 4), 4, cond, uncond, state)
+    assert router.stats["batched_steps"] == 0
+    assert (state[0] if isinstance(state, list) else len(state)) == 8  # every per-branch call reached the caller's state
+    assert "mutable" in router.describe()["last_unbatched_reason"]
+
+
+def test_cfg_batch_still_batches_none_and_tuple_arguments():
+    torch.manual_seed(0)
+
+    class KwDit(_BatchDit):
+        def forward(self, hidden_states, timestep, encoder_hidden_states, joint_attention_kwargs = None,
+                    guidance = None, ids = (), return_dict = False):
+            self.calls += 1
+            return (self.proj(hidden_states) * timestep + encoder_hidden_states.tanh(),)
+
+    dit = KwDit()
+    cond, uncond = _embeds()
+    router = mg.CfgBatchRouter(dit)
+    dit.forward = router
+    latents = torch.randn(2, 4)
+    for i in range(4):
+        t = torch.tensor(1.0 - i / 4)
+        kw = dict(timestep = t, joint_attention_kwargs = None, guidance = None, ids = (1, 2))
+        c = dit(hidden_states = latents, encoder_hidden_states = cond, **kw)[0]
+        u = dit(hidden_states = latents, encoder_hidden_states = uncond, **kw)[0]
+        latents = latents - 0.1 * (u + 4.0 * (c - u))
+    assert router.stats["batched_steps"] == 3
+
+
+def test_cfg_batch_passes_an_empty_attention_kwargs_dict_and_checks_it():
+    torch.manual_seed(0)
+
+    class KwDit(_BatchDit):
+        def forward(self, hidden_states, timestep, encoder_hidden_states, joint_attention_kwargs = None,
+                    return_dict = False):
+            self.calls += 1
+            return (self.proj(hidden_states) * timestep + encoder_hidden_states.tanh(),)
+
+    dit = KwDit()
+    cond, uncond = _embeds()
+    router = mg.CfgBatchRouter(dit)
+    dit.forward = router
+    kwargs_dict = {}  # FLUX.1 passes joint_attention_kwargs = {}
+    latents = torch.randn(2, 4)
+    for i in range(4):
+        t = torch.tensor(1.0 - i / 4)
+        c = dit(hidden_states = latents, timestep = t, encoder_hidden_states = cond, joint_attention_kwargs = kwargs_dict)[0]
+        u = dit(hidden_states = latents, timestep = t, encoder_hidden_states = uncond, joint_attention_kwargs = kwargs_dict)[0]
+        latents = latents - 0.1 * (u + 4.0 * (c - u))
+    assert router.stats["batched_steps"] == 3

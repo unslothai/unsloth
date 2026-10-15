@@ -2325,6 +2325,37 @@ def price_cfg_batch(
 
 # Non-tensor leaves both branches may share in one batched call: immutable plain values, dtypes / devices and the
 # empty containers _leaves returns as leaves.
+def _mutable_container(args: tuple, kwargs: dict) -> tuple[Optional[str], list]:
+    """(path of the first list / dict / set inside the call's arguments or None, the empty dicts passed). A batched
+    call rebuilds the containers it flattens, so a cache dict or counter list the model mutates would never see the
+    per-branch calls; only tuples of tensors and immutable values pass. An EMPTY dict is let through (FLUX.1 passes
+    ``joint_attention_kwargs = {}``): it is passed as is, and the caller checks it is still empty after the call."""
+    empties: list = []
+
+    def walk(value: Any, path: tuple, depth: int) -> Optional[str]:
+        if type(value) is dict and not value:
+            empties.append(value)
+            return None
+        if isinstance(value, (list, dict, set, bytearray)):
+            return "/".join(str(p) for p in path) or "<arg>"
+        if isinstance(value, tuple) and depth < 6:
+            for i, v in enumerate(value):
+                found = walk(v, path + (i,), depth + 1)
+                if found is not None:
+                    return found
+        return None
+
+    for i, v in enumerate(args):
+        found = walk(v, (i,), 0)
+        if found is not None:
+            return found, empties
+    for k, v in kwargs.items():
+        found = walk(v, (k,), 0)
+        if found is not None:
+            return found, empties
+    return None, empties
+
+
 def _batch_shareable(value: Any) -> bool:
     torch = _torch()
     if isinstance(value, (*_PLAIN_TYPES, torch.dtype, torch.device)):
@@ -2620,6 +2651,10 @@ class CfgBatchRouter:
         if hooked is not None:
             self._skip(f"stateful hook present ({hooked})")
             return None
+        mutable, shared_empty = _mutable_container(args, kwargs)
+        if mutable is not None:
+            self._skip(f"{mutable}: mutable container argument (the doubled call would not reach the caller's)")
+            return None
         structure, kinds = self.template
         values: dict = {}
         for path, kind in kinds.items():
@@ -2687,6 +2722,10 @@ class CfgBatchRouter:
             self.disable(
                 f"the batched call failed ({type(exc).__name__}: {exc}); one branch per call from here"
             )
+            return None
+        if any(d for d in shared_empty):
+            # the model wrote into a dict both branches share: one doubled call is not two calls
+            self.disable("the batched call mutated a shared argument dict; one branch per call from here")
             return None
         try:
             mine, other = _split_output(out, batch)
@@ -2758,29 +2797,44 @@ _CFG_BATCH: "weakref.WeakKeyDictionary[Any, CfgBatchRouter]" = weakref.WeakKeyDi
 
 
 def _outer_forward_layer(module: Any, forward: Any = _DROP) -> Optional[str]:
-    """Default-deny for the forward chain CFG-batch calls: only the class forward bound to ``module``, offload
-    machinery (diffusers group offload, accelerate, Studio's prefetchers) or a Studio forward patch may sit there.
-    Studio's outer layers (``_unsloth_outer_forward``: the static step skip) and anything foreign key state on separate
-    per-branch calls: its name, else None."""
+    """Default-deny for the forward chain CFG-batch calls, peeled layer by layer through offload wrappers (accelerate
+    and diffusers wrap with ``functools.update_wrapper``, so ``__wrapped__`` names the layer below; accelerate also
+    keeps ``_old_forward``). Every layer must be offload machinery or a Studio forward patch, and the chain must end at
+    the class forward bound to ``module`` or a Studio patch. Studio's outer layers (``_unsloth_outer_forward``: the
+    static step skip) anywhere in the chain, an offload wrapper that hides what it wraps, and anything foreign are
+    refused: its name, else None."""
     if forward is _DROP:
         forward = module.__dict__.get("forward")
     if forward is None:
         return None
-    if isinstance(forward, CfgBatchRouter):
-        forward = forward.orig_forward
-    if (
-        isinstance(forward, types.MethodType)
-        and forward.__self__ is module
-        and forward.__func__ is getattr(type(module).forward, "__func__", type(module).forward)
-    ):
-        return None
-    if _registry_kind(module) == "offload" or _is_offload_object(forward):
-        return None
-    if getattr(forward, "_unsloth_outer_forward", False):
-        return f"outer forward layer {type(forward).__name__}"
-    if _hook_origin(forward).startswith(_TRUSTED_HOOK_MODULES):
-        return None  # Studio's own forward patches below the outer layers
-    return f"outer forward layer {type(forward).__name__}"
+    class_forward = getattr(type(module).forward, "__func__", type(module).forward)
+    fn = forward
+    for _ in range(12):
+        if isinstance(fn, CfgBatchRouter):
+            fn = fn.orig_forward
+            continue
+        if getattr(fn, "_unsloth_outer_forward", False):
+            return f"outer forward layer {type(fn).__name__}"
+        if isinstance(fn, types.MethodType) and fn.__self__ is module and fn.__func__ is class_forward:
+            return None
+        if fn is class_forward:
+            return None
+        if _is_offload_object(fn):
+            below = getattr(fn, "__wrapped__", None)
+            if below is None and getattr(module, "_hf_hook", None) is not None:
+                below = getattr(module, "_old_forward", None)
+            if below is None:
+                return f"offload wrapper {type(fn).__name__} hides what it wraps"
+            fn = below
+            continue
+        if _hook_origin(fn).startswith(_TRUSTED_HOOK_MODULES):
+            below = getattr(fn, "__wrapped__", None)
+            if below is None:
+                return None  # a Studio forward patch at the bottom of the chain
+            fn = below
+            continue
+        return f"outer forward layer {type(fn).__name__}"
+    return "forward chain too deep to inspect"
 
 
 def cfg_batch_decline(pipe: Any, *, offload_policy: str) -> Optional[str]:
