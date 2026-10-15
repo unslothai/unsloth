@@ -973,12 +973,27 @@ def _vllm_unavailable_error():
     )
 
 
-def _reattach_saved_mtp_head(model, adapter_dir):
-    """A LoRA folder saved with a trained MTP head gets it back, so a later merge keeps it."""
-    if not isinstance(adapter_dir, str) or not os.path.isfile(
-        os.path.join(adapter_dir, "mtp_head.safetensors")
-    ):
+def _reattach_saved_mtp_head(
+    model,
+    adapter_dir,
+    token = None,
+    revision = None,
+):
+    """A LoRA folder (local or on the Hub) saved with a trained MTP head gets it back, so a later
+    merge keeps it."""
+    if not isinstance(adapter_dir, str):
         return
+    if not os.path.isfile(os.path.join(adapter_dir, "mtp_head.safetensors")):
+        if os.path.isdir(adapter_dir):
+            return
+        try:
+            from huggingface_hub import hf_hub_download
+            path = hf_hub_download(
+                adapter_dir, "mtp_head.safetensors", token = token, revision = revision
+            )
+        except Exception:
+            return  # no head uploaded beside this adapter
+        adapter_dir = os.path.dirname(path)
     try:
         from .speculative import attach_saved_mtp_head
         attach_saved_mtp_head(model, adapter_dir)
@@ -1877,7 +1892,7 @@ class FastLanguageModel(FastLlamaModel):
                 )
             if fast_pissa:
                 record_fast_pissa(model)
-            _reattach_saved_mtp_head(model, old_model_name)
+            _reattach_saved_mtp_head(model, old_model_name, token = token, revision = revision)
             model = dispatch_model.patch_peft_model(model, use_gradient_checkpointing)
             try:
                 from .vision import _lift_endpoint_hooks_onto_adapters
@@ -3209,7 +3224,7 @@ class FastModel(FastBaseModel):
             )
             if fast_pissa:
                 record_fast_pissa(model)
-            _reattach_saved_mtp_head(model, old_model_name)
+            _reattach_saved_mtp_head(model, old_model_name, token = token, revision = revision)
             try:
                 from .vision import _lift_endpoint_hooks_onto_adapters
                 _lift_endpoint_hooks_onto_adapters(model)
