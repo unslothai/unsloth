@@ -154,6 +154,7 @@ from .diffusion_memory import (
     apply_memory_plan,
     calibrated_image_activation,
     image_request_phase_mib,
+    guard_condition_pixels as _guard_condition_pixels,
     engage_vae_tiling,
     estimate_gguf_resident_mib,
     estimate_image_runtime_mib,
@@ -2057,11 +2058,24 @@ def _cfg_request_needs(
     height: Any,
     batch_size: int,
     condition_pixels: int,
-    tiled: bool,
+    controlnet: bool = False,
 ) -> Any:
-    """The CFG routers' per-phase memory for this request, from the generation guard's own inputs (canvas, batch,
-    reference / layer condition pixels); None when it cannot be computed (the routers then scale the load figures)."""
+    """The CFG routers' per-phase memory for ONE pipeline call (a chunk), from the exact inputs that call runs with: the
+    forward canvas, the chunk's real image count (the guard itself budgets one image off Windows, the OOM backoff being
+    its backstop), the guard's condition pixels (reference / layer images, plus the ControlNet canvas by the guard's own
+    rule), the VAE's live tiling state (a split may leave the secondary VAE untiled whatever the primary's verdict) and
+    the encoder bytes a text-encoder release holds off the card. None when it cannot be computed (the routers then
+    scale the load figures)."""
     try:
+        vae = getattr(pipe, "vae", None)
+        tiled = bool(getattr(vae, "use_tiling", False)) if vae is not None else False
+        condition_pixels = _guard_condition_pixels(
+            width = width,
+            height = height,
+            condition_pixels = condition_pixels,
+            calibrated_placement = bool(getattr(state, "calibrated_placement", False)),
+            controlnet = controlnet,
+        )
         calibrated = (
             _calibrated_activation(fam, target)
             if getattr(state, "calibrated_placement", False)
@@ -2079,12 +2093,31 @@ def _cfg_request_needs(
         releaser = getattr(state, "te_releaser", None)
         if releaser is not None:
             # released encoder weights come back onto their card for the encode
-            encode += int(releaser.releasable_bytes) // (1 << 20)
+            encode += int(releaser.held_bytes) // (1 << 20)
         return request_phase_needs(
             pipe, encode_mib = encode, denoise_mib = denoise, decode_mib = decode
         )
     except Exception:  # noqa: BLE001 - an estimate for an optional lever never fails a request
         return None
+
+
+def _chunk_cfg_needs(
+    state: Any, fam: Any, pipe: Any, guard_inputs: Optional[dict], chunk: Sequence[Any]
+) -> Any:
+    """:func:`_cfg_request_needs` for one chunk of jobs (its own image count), None without the guard's inputs."""
+    if not guard_inputs:
+        return None
+    return _cfg_request_needs(
+        state,
+        fam,
+        pipe,
+        guard_inputs["target"],
+        width = guard_inputs["width"],
+        height = guard_inputs["height"],
+        batch_size = max(1, len(chunk)),
+        condition_pixels = guard_inputs["condition_pixels"],
+        controlnet = bool(guard_inputs.get("controlnet")),
+    )
 
 
 def _quadratic_attention(
@@ -11027,8 +11060,9 @@ class DiffusionBackend:
                 # cap; the OOM backoff below halves a failed chunk. Layered: one input per forward (the pipeline's
                 # per-prompt layer stride is only right for one).
                 chunks = [[job] for job in jobs] if layer_count else chunk_jobs(jobs, batch_size)
-                # this request's per-phase memory for the CFG routers (None: they scale the load-time figures)
-                cfg_needs = None
+                # the guard's inputs, from which each chunk's CFG memory figure is built (None: the routers scale the
+                # load-time figures)
+                cfg_guard_inputs = None
 
                 try:
                     # The dimensions the forward runs at, not the sliders: img2img / inpaint / upscale / edit take
@@ -11098,16 +11132,12 @@ class DiffusionBackend:
                     restore_vae = _tile_for_verdict(
                         pipe, verdict, guard_target, guard_kwargs, guard_batch, restore_vae, logger
                     )
-                    cfg_needs = _cfg_request_needs(
-                        state,
-                        fam,
-                        pipe,
-                        guard_target,
+                    cfg_guard_inputs = dict(
+                        target = guard_target,
                         width = guard_width,
                         height = guard_height,
-                        batch_size = guard_batch,
                         condition_pixels = guard_condition_pixels,
-                        tiled = verdict.action == ACTIVATION_TILE,
+                        controlnet = guard_kwargs["controlnet"],
                     )
                 except ValueError:
                     raise  # the refusal itself: the route turns this into a 400 with the reason
@@ -11367,8 +11397,8 @@ class DiffusionBackend:
                                     pipe,
                                     guard_width,
                                     guard_height,
-                                    chunk_kwargs.get("num_inference_steps"),
-                                    cfg_needs,
+                                    denoise_steps,
+                                    _chunk_cfg_needs(state, fam, pipe, cfg_guard_inputs, chunk),
                                 ),
                                 _completed_step_poller(_pump),
                             ):

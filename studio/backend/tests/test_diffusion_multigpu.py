@@ -2836,8 +2836,10 @@ def test_request_scope_gets_the_effective_canvas_in_both_generate_paths():
     assert scope_args("diffusion.py") == [
         "guard_width",
         "guard_height",
-        "chunk_kwargs.get('num_inference_steps')",
-        "cfg_needs",
+        # the steps the pipeline really denoises (img2img / inpaint strength applied), not the requested count
+        "denoise_steps",
+        # each chunk's own figure (its real image count)
+        "_chunk_cfg_needs(state, fam, pipe, cfg_guard_inputs, chunk)",
     ]
     # video: the resolved request canvas (frames do not count)
     assert scope_args("video.py") == [
@@ -3471,7 +3473,7 @@ def test_cfg_routers_count_qwen_image_reference_tokens(monkeypatch):
     dit = _BatchDit()
     pipe = _RouterPipe(dit)
     needs = diffusion_mod._cfg_request_needs(
-        state, fam, pipe, None, width = 1024, height = 1024, batch_size = 1, condition_pixels = refs, tiled = False
+        state, fam, pipe, None, width = 1024, height = 1024, batch_size = 1, condition_pixels = refs
     )
     assert needs is not None and needs.denoise_mib == int(cal.denoise_mib * 3)
     batch = mg.CfgBatchRouter(dit, headroom_mib = cal.denoise_mib, headroom_reference_px = 1024 * 1024)
@@ -3500,3 +3502,65 @@ def test_cfg_routers_fall_back_to_scaling_the_load_figure_without_a_request_figu
     )
     parallel.begin_request(2048, 2048)
     assert parallel._room_mib(1) == 3000 * 4
+
+
+def _cfg_needs_fixture(monkeypatch, calibrated_placement = True, releaser = None):
+    from core.inference import diffusion as diffusion_mod
+
+    cal = dm.calibrated_image_activation("flux.2-klein")
+    state = type(
+        "S",
+        (),
+        {"calibrated_placement": calibrated_placement, "variant_hint": "flux.2-klein", "te_releaser": releaser},
+    )()
+    fam = type("F", (), {"name": "flux.2-klein"})()
+    monkeypatch.setattr(diffusion_mod, "_calibrated_activation", lambda f, t: cal)
+    pipe = _RouterPipe(_BatchDit())
+    pipe.vae = type("V", (), {"use_tiling": False})()
+    return diffusion_mod, cal, state, fam, pipe
+
+
+def test_cfg_request_needs_use_the_real_chunk_batch(monkeypatch):
+    diffusion_mod, cal, state, fam, pipe = _cfg_needs_fixture(monkeypatch)
+    inputs = {"target": None, "width": 1024, "height": 1024, "condition_pixels": 0, "controlnet": False}
+    one = diffusion_mod._chunk_cfg_needs(state, fam, pipe, inputs, [("p", 1)])
+    four = diffusion_mod._chunk_cfg_needs(state, fam, pipe, inputs, [("p", s) for s in range(4)])
+    # the guard budgets one image off Windows; a four-image chunk doubles four latents
+    assert one.denoise_mib == int(cal.denoise_mib) and four.denoise_mib == int(cal.denoise_mib * 4)
+    assert diffusion_mod._chunk_cfg_needs(state, fam, pipe, None, [("p", 1)]) is None
+
+
+def test_cfg_request_needs_include_the_controlnet_canvas(monkeypatch):
+    diffusion_mod, cal, state, fam, pipe = _cfg_needs_fixture(monkeypatch)
+    needs = diffusion_mod._cfg_request_needs(
+        state, fam, pipe, None, width = 1024, height = 1024, batch_size = 1, condition_pixels = 0, controlnet = True
+    )
+    # the guard's own rule: one output-sized canvas for a ControlNet under a calibrated placement
+    assert needs.denoise_mib == int(cal.denoise_mib * 2)
+    assert dm.guard_condition_pixels(
+        width = 1024, height = 1024, condition_pixels = 0, calibrated_placement = True, controlnet = True
+    ) == 1024 * 1024
+
+
+def test_cfg_request_needs_read_the_vae_live_tiling_state(monkeypatch):
+    diffusion_mod, cal, state, fam, pipe = _cfg_needs_fixture(monkeypatch)
+    kwargs = dict(width = 1024, height = 1024, batch_size = 1, condition_pixels = 0)
+    # the secondary's VAE left untiled (the primary's tile verdict does not switch it): the untiled decode
+    assert diffusion_mod._cfg_request_needs(state, fam, pipe, None, **kwargs).decode_mib == int(cal.decode_mib)
+    pipe.vae.use_tiling = True
+    assert diffusion_mod._cfg_request_needs(state, fam, pipe, None, **kwargs).decode_mib == int(cal.tiled_decode_mib)
+
+
+def test_cfg_request_needs_keep_released_encoder_bytes(monkeypatch):
+    from core.inference.diffusion_te_release import TextEncoderReleaser
+
+    releaser = object.__new__(TextEncoderReleaser)
+    releaser._slots = {}  # released: every slot is an empty tensor now
+    releaser._released = True
+    releaser._released_bytes = 3 << 30
+    assert releaser.releasable_bytes == 0 and releaser.held_bytes == 3 << 30
+    diffusion_mod, cal, state, fam, pipe = _cfg_needs_fixture(monkeypatch, releaser = releaser)
+    needs = diffusion_mod._cfg_request_needs(
+        state, fam, pipe, None, width = 1024, height = 1024, batch_size = 1, condition_pixels = 0
+    )
+    assert needs.encode_mib == int(cal.text_encoder_mib) + 3072

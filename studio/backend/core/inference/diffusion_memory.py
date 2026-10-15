@@ -4688,6 +4688,23 @@ def _activation_refusal_message(
     )
 
 
+def guard_condition_pixels(
+    *,
+    width: Optional[int],
+    height: Optional[int],
+    condition_pixels: int,
+    calibrated_placement: bool = False,
+    controlnet: bool = False,
+) -> int:
+    """The condition pixels the generation guard charges a request: the (weighted) reference / layer pixels, plus one
+    output-sized canvas for a ControlNet under a calibrated placement (the calibration measured only the unconditioned
+    denoise). Shared with the CFG routers' request figure so both price the same tokens."""
+    pixels = max(0, int(condition_pixels or 0))
+    if calibrated_placement and controlnet:
+        pixels += max(64, int(width or DEFAULT_IMAGE_WIDTH)) * max(64, int(height or DEFAULT_IMAGE_HEIGHT))
+    return pixels
+
+
 def image_activation_verdict(
     *,
     device_memory: DeviceMemory,
@@ -4756,10 +4773,13 @@ def image_activation_verdict(
         # Calibrated tiers measured only the unconditioned denoise; a ControlNet counts as one output-sized image.
         input_pixels = max(0, int(condition_pixels or 0))
         conditioned = bool(calibrated_placement) and (input_pixels > 0 or bool(controlnet))
-        if calibrated_placement and controlnet:
-            condition_pixels = input_pixels + max(64, int(width or DEFAULT_IMAGE_WIDTH)) * max(
-                64, int(height or DEFAULT_IMAGE_HEIGHT)
-            )
+        condition_pixels = guard_condition_pixels(
+            width = width,
+            height = height,
+            condition_pixels = input_pixels,
+            calibrated_placement = calibrated_placement,
+            controlnet = controlnet,
+        )
         needed = estimate_image_runtime_mib(
             width = width,
             height = height,

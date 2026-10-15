@@ -172,6 +172,14 @@ class TextEncoderReleaser:
         return self._released
 
     @property
+    def held_bytes(self) -> int:
+        """Bytes of encoder weights this releaser governs: what a release recorded while released (the slots then hold
+        empty tensors), else what is resident now. The next encode brings them back onto the encoder's card."""
+        if self._released:
+            return int(self._released_bytes)
+        return self.releasable_bytes
+
+    @property
     def releasable_bytes(self) -> int:
         return sum(
             getattr(owner, "_parameters" if is_param else "_buffers")[leaf].numel()
