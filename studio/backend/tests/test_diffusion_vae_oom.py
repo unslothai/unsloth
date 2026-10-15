@@ -858,7 +858,7 @@ def test_rejected_structural_fusion_restores_contiguous_layout(monkeypatch):
 
 
 def test_uninstall_restores_contiguous_layout(monkeypatch):
-    """Round 3 item 2: uninstall undoes the channels_last_3d relayout recorded for the fused passes."""
+    """Uninstall undoes the channels_last_3d relayout recorded for the fused passes."""
     from core.inference import diffusion_speed as S
 
     monkeypatch.delenv(S.VAE_CHANNELS_LAST_3D_ENV, raising = False)
@@ -898,7 +898,7 @@ class AutoencoderKLCleanNew(torch.nn.Module):
 
 
 def test_structural_rejected_when_every_norm_falls_back(monkeypatch):
-    """Round 5 item 3: a correct pairing whose norms all take group_norm_act's stock fallback fused nothing, so the
+    """A correct pairing whose norms all take group_norm_act's stock fallback fused nothing, so the
     calibration must reject it (before: counted as fused and accepted)."""
     monkeypatch.setattr(F, "runtime_ok", lambda: True)
     vae = AutoencoderKLCleanNew()
@@ -932,7 +932,7 @@ def test_kernel_calls_skip_the_temporal_stride_fallback(monkeypatch):
         y + 0
 
 
-# -- PR review round 7 regressions ------------------------------------------------------------------------------
+# -- Regressions ------------------------------------------------------------------------------------------------
 
 
 class _CausalNew(AutoencoderKLCleanNew):
@@ -954,7 +954,7 @@ class _CausalNew(AutoencoderKLCleanNew):
 
 
 def test_structural_probe_does_not_leak_cache_into_the_real_decode(monkeypatch):
-    """Round 7 item 1: the calibration's probe decodes must not leave cache entries the real decode reads."""
+    """The calibration's probe decodes must not leave cache entries the real decode reads."""
     monkeypatch.setattr(F, "runtime_ok", lambda: True)
     ref_vae = _CausalNew()
     torch.manual_seed(0)
@@ -972,7 +972,7 @@ def test_structural_probe_does_not_leak_cache_into_the_real_decode(monkeypatch):
 
 
 
-# -- PR review round 9 ------------------------------------------------------------------------------------------
+# -- Regressions ------------------------------------------------------------------------------------------------
 
 
 def test_required_deferred_return_raises_on_any_failure():
@@ -1090,7 +1090,7 @@ def test_one_session_spans_a_sliced_batch_decode(monkeypatch):
     assert _devices(pipe)["transformer"] == _CARD and O._SESSION_ATTR not in vae.__dict__
 
 
-# -- PR review round 10 -----------------------------------------------------------------------------------------
+# -- Regressions ------------------------------------------------------------------------------------------------
 
 
 def test_real_release_resident_groups_keeps_the_restore_of_a_partial_release(monkeypatch):
@@ -1173,7 +1173,7 @@ def test_component_whose_move_and_rollback_both_fail_gets_a_deferred_return(monk
     assert isinstance(m.__dict__.get(O._DEFERRED_ATTR), O.DeferredReturn)
 
 
-# -- PR review round 11 -----------------------------------------------------------------------------------------
+# -- Regressions ------------------------------------------------------------------------------------------------
 
 
 def test_trace_refuses_activation_fusion_for_hooked_or_inplace_reused_norms():
@@ -1527,7 +1527,7 @@ def test_structural_cache_kill_switch(monkeypatch, tmp_path):
     assert traces == [1]
 
 
-# -- PR review round 12 -----------------------------------------------------------------------------------------
+# -- Regressions ------------------------------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("reuse", [False, True])
@@ -1712,7 +1712,7 @@ def test_scope_heals_itself_after_a_rewrap_drops_it():
     assert getattr(vae.__dict__.get("decode"), "_unsloth_vae_oom_scope", False)
 
 
-# -- PR review round 13 -----------------------------------------------------------------------------------------
+# -- Regressions ------------------------------------------------------------------------------------------------
 
 
 def test_structural_traces_on_two_threads_keep_their_own_reader():
@@ -1962,7 +1962,7 @@ def test_scope_finds_a_compiled_guard_under_the_rocm_bf16_decode(monkeypatch):
         out = vae.decode(_z())
     assert calls == ["compiled", "compiled"] and out[0].dtype == torch.float32
 
-# -- PR review round 14 -----------------------------------------------------------------------------------------
+# -- Regressions ------------------------------------------------------------------------------------------------
 
 
 class _CompileFailed(RuntimeError):
@@ -2041,7 +2041,7 @@ def test_compile_fallback_keeps_the_scope(monkeypatch, slot_kind):
 
 
 def test_compiled_guard_behind_the_untiled_gate_reaches_the_ladder(monkeypatch):
-    """The gap left last round: the video untiled gate calls what it wraps through a closure (no slot), so a compiled
+    """The video untiled gate calls what it wraps through a closure (no slot), so a compiled
     guard under it was invisible and its tiled-attempt OOM escaped. Under the single placement rule the scope is
     outermost; it frees the card, retries the whole decode compiled, then with every guard eager."""
     from core.inference import diffusion_speed as S
@@ -2204,7 +2204,7 @@ def test_untiled_gate_tiled_retry_starts_clean(monkeypatch):
     assert torch.equal(out, z)  # the tiled decode started from a clean causal state
 
 
-# -- PR review round 15 -----------------------------------------------------------------------------------------
+# -- Regressions ------------------------------------------------------------------------------------------------
 
 
 def test_regional_compiled_blocks_take_the_eager_retry():
@@ -2395,7 +2395,7 @@ def test_drop_tracebacks_walks_cause_context_and_cycles():
         assert e.__traceback__ is None
 
 
-# -- PR review round 17 -----------------------------------------------------------------------------------------
+# -- Regressions ------------------------------------------------------------------------------------------------
 
 
 def test_dtype_wrapper_oom_climbs_to_the_vae_offload(monkeypatch):
