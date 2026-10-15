@@ -65,7 +65,6 @@ def _run_middleware(
     headers = None,
     path = "/v1/chat/completions",
     method = "POST",
-    skip_paths = (),
 ):
     seen = {}
 
@@ -87,7 +86,7 @@ def _run_middleware(
         if headers is not None
         else [(b"content-type", b"application/json"), (b"content-length", b"%d" % len(body))],
     }
-    asyncio.run(ModelAliasMiddleware(app, skip_paths)(scope, receive, None))
+    asyncio.run(ModelAliasMiddleware(app)(scope, receive, None))
     return seen
 
 
@@ -107,6 +106,8 @@ def test_middleware_rewrites_alias_and_content_length(store):
         (b'{"model": "unsloth/Qwen3-4B-GGUF", "messages": []}', {}),
         (b'{"model": "fast-chat"}', {"path": "/api/settings/x"}),
         (b'{"model": "fast-chat"}', {"path": "/v1/systemone"}),
+        (b'{"model": "fast-chat"}', {"path": "/api/inference/audio/stt/load"}),
+        (b'{"model": "fast-chat"}', {"path": "/v1/modelsx/chat/completions"}),
         (b'{"model": "fast-chat"}', {"method": "PUT"}),
         (b"not json", {}),
         (b'["model"]', {}),
@@ -116,7 +117,7 @@ def test_middleware_rewrites_alias_and_content_length(store):
         (b'{"model": "fast-chat"}', {"headers": []}),
         (
             b'{"model": "fast-chat"}',
-            {"path": "/v1/audio/inputs/", "skip_paths": ("/v1/audio/inputs",)},
+            {"path": "/v1/audio/inputs/"},
         ),
     ],
 )
@@ -329,3 +330,33 @@ def test_retrieve_alias_to_an_unloaded_pin_reports_status(store, monkeypatch):
     got = asyncio.run(inference.openai_retrieve_model("fast-chat", current_subject = "owner"))
     assert got["alias_for"] == "unsloth/Qwen3-4B-GGUF:Q4_K_M"
     assert got["status"] == {"value": "unloaded"}
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["/v1/chat/completions/", "/api/inference/chat/completions", "/v1/messages", "/v1/responses"],
+)
+def test_middleware_rewrites_on_every_chat_route(store, path):
+    set_model_aliases([{"name": "fast-chat", "model": "unsloth/Qwen3-4B-GGUF"}])
+    seen = _run_middleware(b'{"model": "fast-chat"}', path = path)
+    assert json.loads(seen["body"])["model"] == "unsloth/Qwen3-4B-GGUF"
+
+
+def test_saving_refuses_a_decision_model_id(store, monkeypatch):
+    from fastapi import HTTPException
+
+    import routes.inference as inference
+    import routes.settings as settings_routes
+    import routes.systemone as systemone
+
+    async def catalog():
+        return [{"id": "unsloth/Qwen3-4B-GGUF", "object": "model"}]
+
+    monkeypatch.setattr(inference, "_openai_catalog_objects", catalog)
+    monkeypatch.setattr(systemone, "decision_model_objects", lambda: [{"id": "clef"}])
+    payload = settings_routes.ModelAliasesPayload(
+        aliases = [{"name": "clef", "model": "unsloth/Qwen3-4B-GGUF"}]
+    )
+    with pytest.raises(HTTPException) as err:
+        asyncio.run(settings_routes.update_model_aliases_setting(payload, current_subject = "owner"))
+    assert err.value.status_code == 400

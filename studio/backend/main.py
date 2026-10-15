@@ -1702,7 +1702,7 @@ class MaxBodyMiddleware:
 # Added before MaxBodyMiddleware so it runs inside it: the body it reads is already capped.
 from utils.model_aliases import ModelAliasMiddleware  # noqa: E402
 
-app.add_middleware(ModelAliasMiddleware, skip_paths = _BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS)
+app.add_middleware(ModelAliasMiddleware)
 
 app.add_middleware(
     MaxBodyMiddleware,

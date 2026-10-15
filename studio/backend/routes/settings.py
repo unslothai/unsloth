@@ -2403,9 +2403,12 @@ async def update_model_aliases_setting(
     payload: ModelAliasesPayload, current_subject: str = Depends(get_current_subject)
 ) -> ModelAliasesResponse:
     from routes.inference import _openai_catalog_objects
+    from routes.systemone import decision_model_objects
     from utils.model_aliases import set_model_aliases
 
-    model_ids = [o["id"] for o in await _openai_catalog_objects() if isinstance(o.get("id"), str)]
+    # Decision ids (clef, laya-multilingual) are listed beside the catalog, so reserve them too.
+    objects = await _openai_catalog_objects() + await asyncio.to_thread(decision_model_objects)
+    model_ids = [o["id"] for o in objects if isinstance(o.get("id"), str)]
     try:
         aliases = await asyncio.to_thread(
             set_model_aliases, [entry.model_dump() for entry in payload.aliases], model_ids

@@ -17,9 +17,20 @@ MODEL_ALIASES_SETTING_KEY = "openai_api_model_aliases"
 MAX_MODEL_ALIASES = 100
 MAX_ALIAS_TARGET_LENGTH = 512
 _ALIAS_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
-_ALIAS_PATH_PREFIXES = ("/v1/", "/api/inference/")
-# Decision API ids (laya-multilingual, clef, ...) are not chat models, so an alias must never shadow one.
-_DECISION_API_PATH = "/v1/systemone"
+_ALIAS_PATH_PREFIXES = ("/v1", "/api/inference")
+# Chat-model routes only: media, lifecycle and Decision API routes use their own model ids
+# (an STT "small" selector, "clef"), which an alias must never rewrite.
+_ALIAS_ROUTES = frozenset(
+    (
+        "/chat/completions",
+        "/chat/count_tokens",
+        "/completions",
+        "/embeddings",
+        "/messages",
+        "/messages/count_tokens",
+        "/responses",
+    )
+)
 _MODEL_VALUE_RE = re.compile(rb'"model"\s*:\s*"([^"\\]*)"')
 
 
@@ -160,14 +171,8 @@ class ModelAliasMiddleware:
     """Swap an aliased ``model`` for its target before any route runs. Never reads the body when
     no alias is configured; registered inside MaxBodyMiddleware, so what it buffers is capped."""
 
-    def __init__(
-        self,
-        app,
-        skip_paths: Iterable[str] = (),
-    ):
+    def __init__(self, app):
         self.app = app
-        # MaxBodyMiddleware's upload passthroughs: their cap is the upload limit, not the JSON one.
-        self.skip_paths = frozenset((*skip_paths, _DECISION_API_PATH))
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http" or scope.get("method", "").upper() != "POST":
@@ -177,12 +182,13 @@ class ModelAliasMiddleware:
         root_path = scope.get("root_path") or ""
         if root_path and path.startswith(root_path):
             path = path[len(root_path) :] or "/"
+        prefix = next((p for p in _ALIAS_PATH_PREFIXES if path.startswith(p)), "")
         content_type = dict(scope.get("headers", [])).get(b"content-type", b"").lower()
         # JSON only: raw and multipart uploads stream past the body cap and must never be held.
         if (
-            not path.startswith(_ALIAS_PATH_PREFIXES)
+            not prefix
+            or path[len(prefix) :].rstrip("/") not in _ALIAS_ROUTES
             or b"json" not in content_type
-            or path.rstrip("/") in self.skip_paths
         ):
             await self.app(scope, receive, send)
             return
