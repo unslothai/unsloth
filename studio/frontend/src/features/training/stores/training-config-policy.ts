@@ -110,6 +110,7 @@ export const initialTrainingConfigState: TrainingConfigState = {
   isDatasetAudio: false,
   datasetCheckFailed: false,
   maxPositionEmbeddings: null,
+  drafterCapability: null,
   ...DEFAULT_HYPERPARAMS,
 };
 export function hasSeparateStreamingEvalSplit(

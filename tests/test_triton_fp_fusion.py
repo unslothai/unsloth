@@ -25,7 +25,11 @@ _NOT_LAUNCHES = {
     "utils.py": {"plan"},
     "nf4.py": {"kernel"},
     "triton_launch.py": {"kernel"},
+    "layernorm.py": {"kernel"},
+    "rms_layernorm.py": {"wrap(kernel)"},
 }
+# Launch helpers forwarding options to the excluded sites above: each call is checked instead.
+_LAUNCH_HELPERS = {"layernorm.py": "_launch", "rms_layernorm.py": "_launch"}
 
 
 def _launch_sites():
@@ -33,10 +37,13 @@ def _launch_sites():
         rel = path.relative_to(KERNELS)
         if rel.parts[0] == "moe" and rel.parts[1] in ("tests", "benchmark"):
             continue
-        src = path.read_text()
+        src = path.read_text(encoding = "utf-8")
         if "triton" not in src:
             continue
         for node in ast.walk(ast.parse(src)):
+            helper = _LAUNCH_HELPERS.get(path.name)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == helper:
+                yield f"{rel}:{node.lineno}:{helper}", node
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Subscript):
                 name = ast.get_source_segment(src, node.func.value)
                 if name in _NOT_LAUNCHES.get(path.name, ()):
@@ -54,11 +61,11 @@ def test_every_launch_requests_fp_fusion():
 
 
 def test_nf4_options_and_warmup_carry_fp_fusion():
-    nf4 = (KERNELS / "nf4.py").read_text()
+    nf4 = (KERNELS / "nf4.py").read_text(encoding = "utf-8")
     assert '"enable_fp_fusion": bool(fp_fusion)' in nf4
-    gemv = (KERNELS / "nf4_gemv.py").read_text()
+    gemv = (KERNELS / "nf4_gemv.py").read_text(encoding = "utf-8")
     assert gemv.count("enable_fp_fusion = True") == 2
-    int4 = ast.parse((KERNELS / "int4_packed.py").read_text())
+    int4 = ast.parse((KERNELS / "int4_packed.py").read_text(encoding = "utf-8"))
     warmups = [
         node
         for node in ast.walk(int4)

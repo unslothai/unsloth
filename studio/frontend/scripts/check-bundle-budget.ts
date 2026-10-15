@@ -156,8 +156,19 @@ export const BUDGET = {
   // the previous limits there, so they are set to the measured build.
   // The downloads panel's "Starting…" row (#13738) adds 1,404 B raw / 353 B transfer (6,778,788 -> 6,780,192 B raw,
   // 2,038,337 -> 2,038,690 B transfer against 7c235de6f, one machine and build, Node 24, 95 chunks). Raised by that growth.
-  transferBytes: 2_039_209,
-  rawBytes: 6_782_008,
+  // The Image downloads > Info stamp row in Settings > Library, its search entry and strings (#13444) add 348 B
+  // raw / 83 B transfer to the eager settings and English locale chunks (6,780,553 -> 6,780,901 B raw,
+  // 2,038,848 -> 2,038,931 B transfer against 9f5b133254, one machine and build, Node 24, chunk count unchanged
+  // at 95). Raised by that growth.
+  // Drafter training in the Train tab adds about 4.9 KB raw / 1.4 KB transfer (6,628.3 KB raw, 1,992.9 KB transfer
+  // measured against cd424654a, one machine and build, 95 chunks): its persisted training-store fields, their
+  // migration and the en strings hydrate at startup; the section itself is not in the startup set.
+  // The Run settings Load in 4-bit switch (#13841: the per-model field threaded through every chat load path and
+  // the resident-config check) adds 1,448 B raw / 433 B transfer, inline in the eager chat chunk (6,787,367 ->
+  // 6,788,815 B raw, 2,040,805 -> 2,041,238 B transfer against 4494fa58c, one machine and build, Node 24, chunk
+  // count unchanged at 95). Raised by that growth.
+  transferBytes: 2_041_433,
+  rawBytes: 6_788_948,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
