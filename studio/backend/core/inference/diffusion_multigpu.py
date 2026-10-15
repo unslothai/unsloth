@@ -1281,7 +1281,10 @@ def _trusted_hook(fn: Any) -> bool:
 
 
 def _hooks_present(
-    module: Any, *, offload_hooks_ok: bool = False, strict_bound: bool = False
+    module: Any,
+    *,
+    offload_hooks_ok: bool = False,
+    strict_bound: bool = False,
 ) -> Optional[str]:
     """Name of the first submodule carrying state a replica cannot inherit faithfully, else None: a non-offload hook
     registry (step caches), an accelerate hook, or a forward hook / instance forward override below the root whose
@@ -2170,12 +2173,15 @@ class CfgParallelRouter:
             free, _total = _free_total_mib(self.secondary.index)
             batch = (
                 int(self.prev_latent.shape[0])
-                if getattr(self.prev_latent, "dim", None) is not None and self.prev_latent.dim() >= 1
+                if getattr(self.prev_latent, "dim", None) is not None
+                and self.prev_latent.dim() >= 1
                 else None
             )
             room = max(
                 1024,
-                scaled_headroom_mib(self.headroom_mib, self.headroom_reference_px, self.request_px, batch),
+                scaled_headroom_mib(
+                    self.headroom_mib, self.headroom_reference_px, self.request_px, batch
+                ),
             )
             if free is not None and need_mib + room > free:
                 raise RuntimeError(
@@ -3136,7 +3142,11 @@ class CfgBatchRouter:
         if batched_s > _BATCH_MEASURED_FRACTION * plain:
             self.disabled_pending = f"measured no gain: one batched call {batched_s:.4f}s vs two plain calls {plain:.4f}s"
 
-    def _memory_ok(self, device: Any, batch: Optional[int] = None) -> bool:
+    def _memory_ok(
+        self,
+        device: Any,
+        batch: Optional[int] = None,
+    ) -> bool:
         if self.headroom_mib is None or getattr(device, "type", None) != "cuda":
             return True
         torch = _torch()
@@ -3156,7 +3166,9 @@ class CfgBatchRouter:
     def needed_mib(self, batch: Optional[int] = None) -> int:
         """The headroom the batched call needs for the second branch of ``batch`` samples (the latent's leading dim):
         the calibrated figure scaled by the request's canvas over the calibration canvas and by the batch, linearly."""
-        return scaled_headroom_mib(self.headroom_mib, self.headroom_reference_px, self.request_px, batch)
+        return scaled_headroom_mib(
+            self.headroom_mib, self.headroom_reference_px, self.request_px, batch
+        )
 
     def _take(self, args: tuple, kwargs: dict) -> Any:
         kept, self.kept = self.kept, None

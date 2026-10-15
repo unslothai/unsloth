@@ -2769,7 +2769,9 @@ def test_cfg_batch_headroom_scales_with_the_latent_batch():
     pipe = _RouterPipe(dit)
     with mg.cfg_request_scope(pipe, 1024, 1024):
         assert router.needed_mib(1) == 892
-        assert router.needed_mib(4) == 892 * 4  # four images in the chunk: four second-branch samples
+        assert (
+            router.needed_mib(4) == 892 * 4
+        )  # four images in the chunk: four second-branch samples
     with mg.cfg_request_scope(pipe, 2048, 2048):
         assert router.needed_mib(2) == 892 * 4 * 2
 
