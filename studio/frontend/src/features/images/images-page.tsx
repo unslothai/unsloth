@@ -276,9 +276,11 @@ import { drawInfoStamp, infoStampText } from "./lib/info-stamp";
 import {
   copyPngTextChunks,
   importedRecipe,
+  newerRecipeSchema,
   pngRecipe,
   readEmbeddedRecipe,
   recipeSettings,
+  unknownRecipeKeys,
   withJpegExif,
   withWebpExif,
 } from "./lib/image-metadata";
@@ -2632,13 +2634,36 @@ export function ImagesPage({
       });
       if (settings.seed === null) setSeed("");
       const loaded = status?.display_repo_id ?? status?.repo_id ?? null;
+      const quant = typeof recipe.gguf_filename === "string" ? recipe.gguf_filename : null;
       if (settings.model && settings.model !== loaded) {
-        toast(`Made with ${settings.model}`, {
+        toast(`Made with ${settings.model}${quant ? ` (${quant})` : ""}`, {
           description: "Load that model to reproduce this image.",
+        });
+      } else if (quant && status?.gguf_filename && quant !== status.gguf_filename) {
+        toast(`Made with ${quant}`, {
+          description: "Load that quant to reproduce this image exactly.",
+        });
+      }
+      // A newer Unsloth or another tool can record settings this build cannot apply: name them.
+      const notApplied = unknownRecipeKeys(recipe);
+      if (
+        settings.sampler &&
+        samplerOptions.length > 0 &&
+        !samplerOptions.some((o) => o.id === settings.sampler)
+      ) {
+        notApplied.unshift(`sampler ${settings.sampler}`);
+      }
+      if (notApplied.length > 0 || newerRecipeSchema(recipe)) {
+        toast.warning("Some settings in this image were not applied", {
+          description:
+            (notApplied.length > 0 ? `Not applied: ${notApplied.join(", ")}. ` : "") +
+            (newerRecipeSchema(recipe)
+              ? "It was made with a newer Unsloth; update to use every setting."
+              : "This model or build does not support them."),
         });
       }
     },
-    [restoreSettings, width, height, steps, guidance, status],
+    [restoreSettings, width, height, steps, guidance, status, samplerOptions],
   );
   // Desktop: Tauri delivers OS drops as paths and suppresses the DOM drop event.
   const importNativePath = useCallback(

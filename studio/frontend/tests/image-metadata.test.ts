@@ -11,8 +11,12 @@ import {
   parseA1111Parameters,
   parseComfyPrompt,
   pngTextChunks,
+  APPLIED_RECIPE_KEYS,
+  INFO_RECIPE_KEYS,
+  newerRecipeSchema,
   readEmbeddedRecipe,
   recipeSettings,
+  unknownRecipeKeys,
   withJpegExif,
   withWebpExif,
 } from "../src/features/images/lib/image-metadata.ts";
@@ -517,8 +521,47 @@ test("sampler and schedule come back from the recipe and from A1111 labels", () 
   );
   assert.equal(parsed?.sampler, "euler_a");
   assert.equal(parsed?.schedule_type, "exponential");
+  // Unknown labels stay as written so the import can say it did not apply them.
   assert.equal(
     parseA1111Parameters("a cat\nSteps: 20, Sampler: UniPC")?.sampler,
-    undefined,
+    "UniPC",
+  );
+});
+
+test("an older recipe without the newer fields still loads with the form's values", () => {
+  const defaults = { width: 1024, height: 1024, steps: 8, guidance: 3.5 };
+  // A recipe from before batch_seed, sampler, generator and schema_version existed.
+  const old = { prompt: "old", width: 512, height: 512, steps: 4, guidance: 0, seed: 7, created_at: 1 };
+  const settings = recipeSettings(old, defaults);
+  assert.equal(settings.seed, 7);
+  assert.equal(settings.batch_seed, null);
+  assert.equal(settings.sampler, undefined);
+  assert.equal(settings.batch_size, 1);
+  assert.deepEqual(unknownRecipeKeys(old), []);
+  assert.equal(newerRecipeSchema(old), false);
+  assert.equal(importedRecipe({ recipe: JSON.stringify(old) })?.prompt, "old");
+});
+
+test("a newer recipe loads what this build knows and names what it does not", () => {
+  const defaults = { width: 1024, height: 1024, steps: 8, guidance: 3.5 };
+  const future = {
+    ...JSON.parse(RECIPE),
+    schema_version: 2,
+    cfg_rescale: 0.7,
+    tiling: false,
+    empty_list: [],
+    unset: null,
+  };
+  const recipe = importedRecipe({ recipe: JSON.stringify(future) });
+  assert.ok(recipe);
+  const settings = recipeSettings(recipe, defaults);
+  assert.equal(settings.seed, 6630007);
+  assert.deepEqual(unknownRecipeKeys(recipe), ["cfg_rescale", "tiling"]);
+  assert.equal(newerRecipeSchema(recipe), true);
+  // Every key today's recipe writes is known, so a current image reports nothing.
+  assert.deepEqual(unknownRecipeKeys(JSON.parse(RECIPE)), []);
+  assert.equal(
+    new Set([...APPLIED_RECIPE_KEYS, ...INFO_RECIPE_KEYS]).size,
+    APPLIED_RECIPE_KEYS.length + INFO_RECIPE_KEYS.length,
   );
 });

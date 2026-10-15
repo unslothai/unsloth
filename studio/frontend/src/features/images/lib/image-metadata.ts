@@ -471,8 +471,9 @@ export interface ImportedRecipe {
 const A1111_FIELD =
   /\s*([A-Za-z][A-Za-z0-9 _-]*):\s*("(?:\\.|[^"\\])*"|[^,]*)(?:,|$)/g;
 const SIZE = /^(\d+)\s*x\s*(\d+)$/i;
+// An unknown label stays as written, so the import can name what it could not apply.
 const labelId = (labels: Record<string, string>, label: string) =>
-  Object.keys(labels).find((id) => labels[id] === label);
+  Object.keys(labels).find((id) => labels[id] === label) ?? label;
 
 /** AUTOMATIC1111 `parameters` text: prompt, optional `Negative prompt:` line, then `Key: value, ...`. */
 export function parseA1111Parameters(text: string): ImportedRecipe | null {
@@ -580,6 +581,85 @@ export interface RestorableRecipe {
   localized_edit?: string | null;
   sampler?: string;
   schedule_type?: string;
+}
+
+/** Recipe keys the import puts back on the form. */
+export const APPLIED_RECIPE_KEYS = [
+  "prompt",
+  "negative_prompt",
+  "width",
+  "height",
+  "steps",
+  "guidance",
+  "seed",
+  "batch_seed",
+  "batch_size",
+  "loras",
+  "workflow",
+  "strength",
+  "upscale",
+  "reference_image_count",
+  "reference_resolution",
+  "localized_edit",
+  "sampler",
+  "schedule_type",
+] as const;
+
+/** Recipe keys that describe the build or the record. Loading a model, and supplying the control
+ *  image a ControlNet needs, stay the user's call, so these are known but not applied. */
+export const INFO_RECIPE_KEYS = [
+  "model",
+  "model_kind",
+  "gguf_filename",
+  "transformer_quant",
+  "text_encoder_quant",
+  "memory_mode",
+  "offload_policy",
+  "speed_mode",
+  "attention_backend",
+  "transformer_cache",
+  "cpu_offload",
+  "baked_loras",
+  "controlnet",
+  "controlnet_guidance",
+  "batch_index",
+  "created_at",
+  "engine",
+  "generator",
+  "schema_version",
+] as const;
+
+/** Matches RECIPE_SCHEMA_VERSION in core/inference/image_gallery.py. */
+export const RECIPE_SCHEMA_VERSION = 1;
+
+const KNOWN_RECIPE_KEYS = new Set<string>([
+  ...APPLIED_RECIPE_KEYS,
+  ...INFO_RECIPE_KEYS,
+]);
+
+/** Settings a file carries that this build does not know (a newer Unsloth, or another tool), so the
+ *  import can say they were not applied instead of dropping them silently. Empty values are skipped. */
+export function unknownRecipeKeys(r: ImportedRecipe): string[] {
+  return Object.keys(r).filter((key) => {
+    if (KNOWN_RECIPE_KEYS.has(key)) {
+      return false;
+    }
+    const v = r[key];
+    return !(
+      v === null ||
+      v === undefined ||
+      v === "" ||
+      (Array.isArray(v) && v.length === 0)
+    );
+  });
+}
+
+/** True when the recipe was written by a newer recipe schema than this build reads. */
+export function newerRecipeSchema(r: ImportedRecipe): boolean {
+  return (
+    typeof r.schema_version === "number" &&
+    r.schema_version > RECIPE_SCHEMA_VERSION
+  );
 }
 
 const clamp = (
