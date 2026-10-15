@@ -25,6 +25,7 @@ __all__ = ["get_mtp_head", "attach_saved_mtp_head"]
 import functools
 import inspect
 import os
+import time
 
 
 def _zoo_speculative():
@@ -67,6 +68,13 @@ def _checkpoint_source(model):
     return None
 
 
+def _loaded_revision(model, source, revision):
+    """The commit the weights were loaded from, so a Hub lookup reads that head, not the default branch's."""
+    if revision is not None or not isinstance(source, str) or os.path.isdir(source):
+        return revision
+    return getattr(getattr(model, "config", None), "_commit_hash", None)
+
+
 def get_mtp_head(
     model,
     source = None,
@@ -95,7 +103,9 @@ def get_mtp_head(
     from unsloth_zoo.speculative.mtp import build_mtp_head, load_mtp_state_dict
 
     parts = speculative.resolve_text_parts(model)
-    source = source or _checkpoint_source(model)
+    if source is None:
+        source = _checkpoint_source(model)
+        revision = _loaded_revision(model, source, revision)
     family = speculative.mtp_family_name(parts["config"])
     if family is None:
         raise NotImplementedError(
@@ -193,10 +203,13 @@ def _wrap_save_pretrained(model):
                     "Unsloth: `create_pr = True` cannot carry the trained MTP head. Save locally, then "
                     "upload the folder with `HfApi().upload_folder(..., create_pr = True)`."
                 )
+        started = time.time()
         result = original(save_directory, *args, **kwargs)
         if internal or not os.path.isdir(save_directory):
             return result
-        if os.path.isfile(os.path.join(save_directory, "adapter_config.json")):
+        adapter_config = os.path.join(save_directory, "adapter_config.json")
+        # Written by this save, not left over from an adapter saved here before.
+        if os.path.isfile(adapter_config) and os.path.getmtime(adapter_config) >= started - 1:
             files = (
                 ["mtp_head.safetensors"]
                 if _save_mtp_head_beside_adapter(model, save_directory)

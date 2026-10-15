@@ -598,3 +598,37 @@ def test_mtp_push_never_replaces_a_card_it_could_not_read(save_module, monkeypat
             )
         )
     assert uploads == []
+
+
+def test_stale_adapter_config_does_not_turn_a_full_save_into_a_sidecar(
+    save_module, tmp_path, monkeypatch
+):
+    import os
+
+    import torch
+    from unsloth.models.speculative import _wrap_save_pretrained
+
+    out = tmp_path / "reused"
+    out.mkdir()
+    (out / "adapter_config.json").write_text("{}")
+    os.utime(out / "adapter_config.json", (1, 1))
+    stitched, sidecars = [], []
+    monkeypatch.setattr(save_module, "_stitch_mtp_head", lambda m, d: stitched.append(d))
+    monkeypatch.setattr(
+        save_module, "_save_mtp_head_beside_adapter", lambda m, d: sidecars.append(d)
+    )
+    model = torch.nn.Module()
+    object.__setattr__(model, "save_pretrained", lambda save_directory, **kwargs: None)
+    object.__setattr__(model, "_unsloth_mtp_head", _head(torch))
+    _wrap_save_pretrained(model)
+    model.save_pretrained(str(out))
+    assert stitched == [str(out)] and sidecars == []
+
+
+def test_get_mtp_head_reads_the_loaded_commit(tmp_path):
+    from unsloth.models.speculative import _loaded_revision
+
+    model = SimpleNamespace(config = SimpleNamespace(_name_or_path = "org/m", _commit_hash = "abc123"))
+    assert _loaded_revision(model, "org/m", None) == "abc123"
+    assert _loaded_revision(model, "org/m", "dev") == "dev"
+    assert _loaded_revision(model, str(tmp_path), None) is None
