@@ -1023,11 +1023,11 @@ class FastLanguageModel(FastLlamaModel):
     @staticmethod
     @functools.wraps(FastLlamaModel.get_peft_model)
     def get_peft_model(model, *args, **kwargs):
+        raise_if_unsaved_reap(model)
         if getattr(model, "_unsloth_slow_diffusion", False):
             return FastDiffusionModel.get_peft_model(
                 model, **_diffusion_peft_kwargs(model, args, kwargs)
             )
-        raise_if_unsaved_reap(model)
         return FastLlamaModel.get_peft_model(model, *args, **kwargs)
 
     @staticmethod
@@ -1923,13 +1923,13 @@ class FastModel(FastBaseModel):
 
     @staticmethod
     def get_peft_model(model, *args, **kwargs):
+        raise_if_unsaved_reap(model)
         # Route text-diffusion models (slow path) to the transformers-only PEFT helper.
         if getattr(model, "_unsloth_slow_diffusion", False):
             return FastDiffusionModel.get_peft_model(
                 model,
                 **_diffusion_peft_kwargs(model, args, kwargs, FastBaseModel.get_peft_model),
             )
-        raise_if_unsaved_reap(model)
         return FastBaseModel.get_peft_model(model, *args, **kwargs)
 
     @staticmethod

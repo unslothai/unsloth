@@ -483,6 +483,11 @@ def reap_prune(
             "Unsloth: run REAP on the base model before `get_peft_model`, or merge the LoRA "
             "adapters first (`model = model.merge_and_unload()`)."
         )
+    if getattr(model, "vllm_engine", None) is not None:
+        raise RuntimeError(
+            "Unsloth: REAP cannot update the attached vLLM engine, so `fast_generate` would keep the "
+            "unpruned experts. Load the model without `fast_inference = True` to prune it."
+        )
     if dataset is None or isinstance(dataset, str) or not _is_token_rows(dataset):
         if tokenizer is None:
             raise ValueError("Unsloth: REAP needs a tokenizer unless the dataset has `input_ids`.")
@@ -498,6 +503,15 @@ def reap_prune(
     if (n_group is None) != (topk_group is None):
         n_group = topk_group = None
 
+    # Calibration runs each decoder stack alone on right padded text, which needs causal attention.
+    if getattr(model, "_unsloth_slow_diffusion", False) or any(
+        getattr(c, "use_bidirectional_attention", None) == "all"
+        or str(getattr(c, "model_type", "")).startswith("diffusion")
+        for c in configs
+    ):
+        raise ValueError(
+            "Unsloth: REAP supports causal language models, not bidirectional or diffusion ones."
+        )
     for config in configs:
         if getattr(config, "zero_expert_num", None):
             raise ValueError(
@@ -723,7 +737,12 @@ def reap_prune(
             if getattr(config, key, None) == num_experts:
                 setattr(config, key, kept_count)
         # MTP layers live outside `layers` and are not pruned; they would be rebuilt at the new count.
-        for key in ("num_nextn_predict_layers", "num_mtp_layers", "mtp_num_layers"):
+        for key in (
+            "num_nextn_predict_layers",
+            "num_mtp_layers",
+            "mtp_num_layers",
+            "mtp_num_hidden_layers",
+        ):
             value = getattr(config, key, None)
             if isinstance(value, int) and value > 0:
                 setattr(config, key, 0)

@@ -243,6 +243,14 @@ def test_rejects_bad_requests():
         reap.reap_prune(model, None, sparsity = 0.9, dataset = samples, device = "cpu")
     with pytest.raises(ValueError, match = r"in \(0, 1\)"):
         reap.reap_prune(model, None, sparsity = 1.0, dataset = samples, device = "cpu")
+    model.vllm_engine = object()
+    with pytest.raises(RuntimeError, match = "vLLM engine"):
+        reap.reap_prune(model, None, sparsity = 0.25, dataset = samples, device = "cpu")
+    del model.vllm_engine
+    model.config.use_bidirectional_attention = "all"
+    with pytest.raises(ValueError, match = "causal"):
+        reap.reap_prune(model, None, sparsity = 0.25, dataset = samples, device = "cpu")
+    model.config.use_bidirectional_attention = None
     model.peft_config = {}
     with pytest.raises(RuntimeError, match = "get_peft_model"):
         reap.reap_prune(model, None, sparsity = 0.25, dataset = samples, device = "cpu")
