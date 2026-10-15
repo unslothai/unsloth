@@ -124,8 +124,11 @@ export const BUDGET = {
   // native view, and the off-screen question strings) adds 5,278 B raw / 1,928 B transfer (6,765,003 ->
   // 6,770,281 B raw, 2,033,563 -> 2,035,491 B transfer against a8585676d4, one machine and build, Node 24,
   // chunk count unchanged at 95), raised by that.
-  transferBytes: 2_035_705,
-  rawBytes: 6_770_942,
+  // The Notebooks page (#6650: its sidebar row, route and English strings; the page itself is lazy) adds
+  // 3,355 B raw / 972 B transfer against 2a8def3bde (one machine and build, Node 24, chunk count 95 -> 96),
+  // raised by that.
+  transferBytes: 2_036_677,
+  rawBytes: 6_774_297,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
