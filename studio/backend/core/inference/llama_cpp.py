@@ -19754,7 +19754,10 @@ class LlamaCppBackend:
                                     self._feed_forward_length = max(
                                         self._feed_forward_length_by_layer
                                     )
-                                elif attr in ("expert_used_count", "expert_feed_forward_length") and val_a:
+                                elif (
+                                    attr in ("expert_used_count", "expert_feed_forward_length")
+                                    and val_a
+                                ):
                                     # Per-layer on Nemotron 3.5 Bolt; the widest layer sizes the graph.
                                     setattr(self, f"_{attr}", max(int(x) for x in val_a))
                             else:
