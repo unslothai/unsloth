@@ -2136,6 +2136,26 @@ class TestTheSizingSitesReadTheClampedFigure:
                 passed = threaded.get(node.name)
                 if passed and passed <= set(self._CLAMPED):
                     clamped_params.update(arg.arg for arg in node.args.args)
+        # A local first bound to a clamped figure, then only lowered with `min(...)`, is clamped too.
+        derived: set[str] = set()
+        assigns = [
+            node
+            for node in ast.walk(loop)
+            if isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+        ]
+        for node in assigns:
+            if isinstance(node.value, ast.Name) and node.value.id in self._CLAMPED:
+                derived.add(node.targets[0].id)
+        for node in assigns:
+            target = node.targets[0].id
+            if target not in derived:
+                continue
+            value = node.value
+            lowered = isinstance(value, ast.Call) and getattr(value.func, "id", None) == "min"
+            if not (isinstance(value, ast.Name) and value.id in self._CLAMPED) and not lowered:
+                derived.discard(target)
         unclamped = []
         for call in ast.walk(loop):
             if not isinstance(call, ast.Call):
@@ -2143,7 +2163,7 @@ class TestTheSizingSitesReadTheClampedFigure:
             name = getattr(call.func, "id", None)
             if name in self._SIZERS and len(call.args) >= 2:
                 read = getattr(call.args[1], "id", None)
-                if read not in self._CLAMPED and read not in clamped_params:
+                if read not in self._CLAMPED and read not in clamped_params and read not in derived:
                     unclamped.append(f"{name}({read})")
             if name == "_fit_with_instruction_pins":
                 for keyword in call.keywords:
