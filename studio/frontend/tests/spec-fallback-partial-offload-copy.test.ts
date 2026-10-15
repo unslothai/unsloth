@@ -76,3 +76,19 @@ test("the forced-ngram stand-down reaches the settings notice", () => {
     "the label must come from loadedSpeculativeType",
   );
 });
+
+/**
+ * Smart offload drops a drafter the build supports to keep more of the model on the GPU and
+ * records "drafter_planner". Without a case the default blames the installed llama.cpp build,
+ * which names the wrong cause and offers an update that changes nothing.
+ */
+test("a drafter the offload planner dropped has its own notice", () => {
+  const branch = settings.match(
+    /case "drafter_planner":[\s\S]*?return `([^`]+)`;/,
+  );
+  assert.ok(branch, "specFallbackMessage has no drafter_planner case");
+  const copy = branch[1];
+  assert.doesNotMatch(copy, /llama\.cpp|update/i);
+  assert.match(copy, /Settings/);
+  assert.match(copy, /\$\{drafter\}/);
+});

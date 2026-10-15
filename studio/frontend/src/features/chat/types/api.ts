@@ -507,7 +507,8 @@ export interface InferenceStatusResponse {
   /** Why a speculative drafter was disabled despite being requested. "binary_no_mtp"/
    *  "binary_outdated": updating llama.cpp would re-enable it. "runtime_error": the build could
    *  not run it. "drafter_not_found": its sidecar was unavailable. "drafter_no_vram": an
-   *  Auto-mode fit downgrade. "mla_mtp_disabled" and "mtp_partial_offload": Auto-mode policy
+   *  Auto-mode fit downgrade. "drafter_planner": smart offload gave the drafter's VRAM to the
+   *  model's layers. "mla_mtp_disabled" and "mtp_partial_offload": Auto-mode policy
    *  downgrades where MTP costs more than it wins. Null otherwise. */
   /** Which drafter the resolution was about: "mtp", "dspark" or "dflash". Auto resolves the kind
    *  itself, so speculative_type still reads "auto" and a fallback leaves the engaged type at
