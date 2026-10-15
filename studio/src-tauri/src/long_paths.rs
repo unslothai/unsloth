@@ -90,7 +90,6 @@ fn enable(owner: isize) -> EnableLongPathsOutcome {
         s.encode_wide().chain(std::iter::once(0)).collect()
     }
 
-    // Turned on since the explainer opened (another installer, an admin): no prompt.
     if status() == LongPathsStatus::Enabled {
         return EnableLongPathsOutcome::Enabled;
     }
@@ -138,7 +137,6 @@ fn enable(owner: isize) -> EnableLongPathsOutcome {
         return EnableLongPathsOutcome::Failed;
     }
     if !info.hProcess.is_null() {
-        // Consent is already given here; reg.exe itself takes milliseconds.
         let mut code: u32 = 1;
         unsafe {
             if WaitForSingleObject(info.hProcess, 60_000) == WAIT_TIMEOUT {
