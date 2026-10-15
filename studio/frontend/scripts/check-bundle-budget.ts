@@ -130,12 +130,15 @@ export const BUDGET = {
   // Word list numbering through the default style and basedOn (#13755) adds 228 B raw / 39 B transfer to the
   // eager attachment reader (6,770,962 -> 6,771,190 B raw, 2,035,676 -> 2,035,715 B transfer against 7ae1a5386,
   // one machine and build, Node 24, chunk count unchanged at 95). Raised by that growth.
+  // The "Only show models that fit" Settings row adds 289 B raw / 77 B transfer (6,771,372 -> 6,771,661 B raw,
+  // 2,035,798 -> 2,035,875 B transfer against 52a3fbefe, 95 chunks, identical under Node 22.22.2 and 24). Main
+  // already measured 111 B raw / 54 B transfer over the previous limits, so they are set to the measured build.
   // Retiring whisper.cpp (#13753: the voice settings v2 migration and settling a saved whisper.cpp pick for the
-  // host) adds 1,468 B raw / 562 B transfer to the eager settings and chat chunks (6,771,190 -> 6,772,658 B raw,
-  // 2,035,715 -> 2,036,277 B transfer against 1a76e88853, one machine and build, Node 24, chunk count unchanged at
-  // 95). Raised by that growth so main's margin stays where it was.
-  transferBytes: 2_036_306,
-  rawBytes: 6_772_729,
+  // host) adds 1,468 B raw / 519 B transfer to the eager settings and chat chunks (6,771,709 -> 6,773,177 B raw,
+  // 2,035,904 -> 2,036,423 B transfer against ffa8fc3b9e, one machine and build, Node 24, chunk count unchanged at
+  // 95). Raised by that growth on top of the limits above so main's margin stays where it was.
+  transferBytes: 2_036_394,
+  rawBytes: 6_773_129,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
