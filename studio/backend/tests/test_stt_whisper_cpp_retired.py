@@ -4,8 +4,8 @@
 """whisper.cpp is retired: its engine aliases are served by another engine.
 
 Old frontends, MCP and API callers keep sending ``engine="gguf"``. With PyTorch the
-same Whisper key runs on Transformers; without it the request runs audio.cpp's default
-Qwen3-ASR, then llama.cpp's, and only then reaches Transformers' "needs PyTorch" 501.
+same Whisper key runs on Transformers; without it the request runs llama.cpp's
+Qwen3-ASR, then audio.cpp's, and only then reaches Transformers' "needs PyTorch" 501.
 whisper-server is installed and healthy in every test here, and every path into it
 raises, so nothing can quietly land on it.
 """
