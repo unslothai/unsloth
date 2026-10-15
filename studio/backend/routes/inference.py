@@ -47375,6 +47375,22 @@ def _generate_failure_detail(message: str) -> str:
     return _GENERATE_FAILURE_FALLBACK
 
 
+_external_image_runs: dict[Optional[str], set] = {}
+_stopped_external_image_runs: set = set()
+
+
+def _external_image_run_active() -> bool:
+    return bool(_external_image_runs.get(account_access.account_scope()))
+
+
+def _stop_external_image_runs() -> bool:
+    runs = _external_image_runs.get(account_access.account_scope()) or set()
+    for task in runs:
+        _stopped_external_image_runs.add(task)
+        task.cancel()
+    return bool(runs)
+
+
 async def _external_image_generation(
     body: DiffusionGenerateRequest, request: Request
 ) -> DiffusionGenerateResponse:
@@ -47398,6 +47414,14 @@ async def _external_image_generation(
         or body.controlnet
         or body.prompts
         or body.seeds
+        or body.negative_prompt
+        or body.mask_image
+        or body.strength is not None
+        or body.upscale is not None
+        or body.workflow
+        or body.localized_edit
+        or body.sampler
+        or body.schedule_type
     ):
         raise HTTPException(
             status_code = 400,
@@ -47452,66 +47476,90 @@ async def _external_image_generation(
         api_key = api_key,
         timeout = 600.0,
     )
-    try:
-        encoded = await client.create_images(
+    owner = account_access.account_scope()
+    task = asyncio.create_task(
+        client.create_images(
             prompt = body.prompt,
             model = external_model,
             n = body.batch_size,
             size = f"{body.width}x{body.height}",
         )
-        images = []
-        for item in encoded:
-            image = Image.open(io.BytesIO(base64.b64decode(item)))
-            image.load()
-            images.append(image)
-    except httpx.HTTPStatusError as exc:
-        raise HTTPException(
-            status_code = 502,
-            detail = (
-                f"Image endpoint returned HTTP {exc.response.status_code}: {exc.response.text[:300]}"
-            ),
-        ) from exc
-    except httpx.HTTPError as exc:
-        raise log_and_http_error(
-            exc,
-            502,
-            "Could not reach the image endpoint.",
-            event = "external_images.transport_error",
-            log = logger,
-        ) from exc
-    except Exception as exc:
-        raise HTTPException(
-            status_code = 502, detail = "The image endpoint did not return a usable image."
-        ) from exc
-
-    created_at = time.time()
-
-    def _persist() -> list[dict]:
-        return [
-            image_gallery.save(
-                image,
-                {
-                    "prompt": body.prompt,
-                    "width": image.width,
-                    "height": image.height,
-                    "steps": body.steps,
-                    "guidance": body.guidance,
-                    "seed": body.seed or 0,
-                    "batch_index": index,
-                    "batch_size": body.batch_size,
-                    "model": external_model,
-                    "created_at": created_at,
-                },
-            )
-            for index, image in enumerate(images)
-        ]
-
+    )
+    _external_image_runs.setdefault(owner, set()).add(task)
     try:
-        records = await asyncio.to_thread(_persist)
-    except Exception as exc:
-        logger.error("diffusion.persist_failed: %s", exc)
-        raise HTTPException(status_code = 500, detail = "Failed to save the generated image.")
-    return DiffusionGenerateResponse(images = [GalleryImage(**r) for r in records])
+        try:
+            try:
+                encoded = await task
+            except asyncio.CancelledError:
+                if task not in _stopped_external_image_runs:
+                    task.cancel()
+                    raise
+                from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
+
+                raise HTTPException(status_code = 409, detail = DIFFUSION_CANCELLED_MSG) from None
+            images = []
+            for item in encoded:
+                image = Image.open(io.BytesIO(base64.b64decode(item)))
+                image.load()
+                images.append(image)
+        except HTTPException:
+            raise
+        except httpx.HTTPStatusError as exc:
+            raise HTTPException(
+                status_code = 502,
+                detail = (
+                    f"Image endpoint returned HTTP {exc.response.status_code}: {exc.response.text[:300]}"
+                ),
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise log_and_http_error(
+                exc,
+                502,
+                "Could not reach the image endpoint.",
+                event = "external_images.transport_error",
+                log = logger,
+            ) from exc
+        except Exception as exc:
+            raise HTTPException(
+                status_code = 502, detail = "The image endpoint did not return a usable image."
+            ) from exc
+
+        created_at = time.time()
+
+        def _persist() -> list[dict]:
+            return [
+                image_gallery.save(
+                    image,
+                    {
+                        "prompt": body.prompt,
+                        "width": image.width,
+                        "height": image.height,
+                        "steps": body.steps,
+                        "guidance": body.guidance,
+                        "seed": body.seed or 0,
+                        "batch_index": index,
+                        "batch_size": body.batch_size,
+                        "model": external_model,
+                        "model_kind": "connection",
+                        "created_at": created_at,
+                    },
+                )
+                for index, image in enumerate(images)
+            ]
+
+        try:
+            records = await asyncio.to_thread(_persist)
+        except Exception as exc:
+            logger.error("diffusion.persist_failed: %s", exc)
+            raise HTTPException(status_code = 500, detail = "Failed to save the generated image.")
+        return DiffusionGenerateResponse(images = [GalleryImage(**r) for r in records])
+    finally:
+        runs = _external_image_runs.get(owner)
+        if runs is not None:
+            runs.discard(task)
+            if not runs:
+                _external_image_runs.pop(owner, None)
+        _stopped_external_image_runs.discard(task)
 
 
 @studio_router.post("/images/generate", response_model = DiffusionGenerateResponse)
@@ -48511,6 +48559,8 @@ async def diffusion_generate_progress(current_subject: str = Depends(get_current
 
     progress = get_active_diffusion_engine().generate_progress()
     log_media_generation_progress("image", progress)
+    if not progress["active"] and _external_image_run_active():
+        progress = {**progress, "active": True}
     # A finished generation still persisting its gallery record counts as active, so a reload probe keeps polling.
     if _diffusion_persist_active > 0 and not progress["active"]:
         progress = {**progress, "active": True}
@@ -48518,7 +48568,9 @@ async def diffusion_generate_progress(current_subject: str = Depends(get_current
 
 
 @studio_router.post("/images/generate/cancel")
-async def cancel_diffusion_generation(current_subject: str = Depends(get_current_subject)):
+async def cancel_diffusion_generation(
+    target: Optional[str] = None, current_subject: str = Depends(get_current_subject)
+):
     """Stop the in-flight image generation, mirroring POST /video/generate/cancel.
 
     Resolved through the engine router, so it stops a diffusers denoise (at its next step
@@ -48526,7 +48578,10 @@ async def cancel_diffusion_generation(current_subject: str = Depends(get_current
     generation's OWN request is what reports the outcome: it unwinds with the cancelled
     sentinel, which this module already maps to a 409. ``cancelled`` is False when nothing was
     running, so the page can settle its button back to Generate rather than wait for a
-    generation that already finished."""
+    generation that already finished. ``target=connection`` stops this account's runs on a
+    saved image connection instead."""
+    if target == "connection":
+        return {"cancelled": _stop_external_image_runs()}
     if account_access.generation_is_foreign("diffusion"):
         return {"cancelled": False}
     mine = account_access.generation_is_mine("diffusion")

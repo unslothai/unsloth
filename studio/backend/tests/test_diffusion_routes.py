@@ -3092,3 +3092,79 @@ def test_external_connection_refuses_a_key_read_after_the_connection_moved(clien
     resp = _post_generate(client, prompt = "a sloth", provider_id = "conn-1", model = "qwen-image")
     assert resp.status_code == 409
     assert sent == []
+
+
+def test_stop_cancels_a_connection_run_and_progress_shows_it(client, monkeypatch):
+    import asyncio
+
+    import httpx
+
+    started = asyncio.Event()
+    calls = []
+
+    async def handler(req):
+        calls.append(req)
+        started.set()
+        await asyncio.sleep(30)
+        return httpx.Response(500)
+
+    _external_image_connection(monkeypatch, handler)
+
+    async def run():
+        transport = httpx.ASGITransport(app = client.app)
+        async with httpx.AsyncClient(transport = transport, base_url = "http://t") as ac:
+            gen = asyncio.create_task(
+                ac.post(
+                    "/api/inference/images/generate",
+                    json = {"prompt": "a sloth", "provider_id": "conn-1", "model": "qwen-image"},
+                )
+            )
+            await asyncio.wait_for(started.wait(), 5)
+            progress = (await ac.get("/api/inference/images/generate-progress")).json()
+            local = (await ac.post("/api/inference/images/generate/cancel")).json()
+            stop = (
+                await ac.post("/api/inference/images/generate/cancel?target=connection")
+            ).json()
+            resp = await asyncio.wait_for(gen, 5)
+            after = (await ac.get("/api/inference/images/generate-progress")).json()
+            return progress, local, stop, resp, after
+
+    progress, local, stop, resp, after = asyncio.run(run())
+    assert progress["active"] is True
+    assert local == {"cancelled": False}
+    assert stop == {"cancelled": True}
+    assert resp.status_code == 409
+    assert after["active"] is False
+    assert len(calls) == 1
+    assert client.get("/api/inference/images/gallery").json()["images"] == []
+
+
+def test_external_connection_refuses_options_it_cannot_forward(client, monkeypatch):
+    import httpx
+
+    sent = []
+    _external_image_connection(monkeypatch, lambda req: sent.append(req) or httpx.Response(500))
+    for extra in ({"negative_prompt": "blurry"}, {"sampler": "euler"}, {"strength": 0.5}):
+        resp = _post_generate(
+            client, prompt = "a sloth", provider_id = "conn-1", model = "qwen-image", **extra
+        )
+        assert resp.status_code == 400, (extra, resp.text)
+    assert sent == []
+
+
+def test_connection_images_are_marked_in_the_gallery(client, monkeypatch):
+    import base64
+    import io
+
+    import httpx
+    from PIL import Image
+
+    def handler(req):
+        buf = io.BytesIO()
+        Image.new("RGB", (64, 64)).save(buf, format = "PNG")
+        return httpx.Response(200, json = {"data": [{"b64_json": base64.b64encode(buf.getvalue()).decode()}]})
+
+    _external_image_connection(monkeypatch, handler)
+    resp = _post_generate(client, prompt = "a sloth", provider_id = "conn-1", model = "qwen-image")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["images"][0]["model_kind"] == "connection"
