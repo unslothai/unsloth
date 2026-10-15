@@ -97,9 +97,11 @@ def test_shared_stop_queue_reports_a_direct_cancel_once():
 
 
 def test_shared_stop_queue_waits_on_an_unset_event_after_delivery(monkeypatch):
-    stop_event = threading.Event()
+    # After a cancel there is nothing left to deliver; a blocking get must still block.
+    stop_event, cancel_event = threading.Event(), threading.Event()
     stop_event.set()
-    stop_queue = _SharedStopQueue(stop_event, threading.Event())
+    cancel_event.set()
+    stop_queue = _SharedStopQueue(stop_event, cancel_event)
     stop_queue.get(timeout = 0)
 
     class WaitReached(Exception):
