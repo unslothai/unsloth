@@ -282,10 +282,13 @@ def test_keepwarm_sees_the_markers_a_route_sets_on_an_aliased_request(store):
     from core.inference import llama_keepwarm
     from core.inference.llama_keepwarm import LlamaKeepWarmMiddleware, note_admitted_inference
 
+    # Relative to the process-wide counter: tests sharing an xdist worker can leave it raised.
+    baseline = llama_keepwarm.other_admitted_inference_count()
+
     async def route(scope, receive, send):
         await receive()
         note_admitted_inference(scope)
-        assert llama_keepwarm.other_admitted_inference_count() == 1
+        assert llama_keepwarm.other_admitted_inference_count() == baseline + 1
         await send({"type": "http.response.start", "status": 200, "headers": []})
         await send({"type": "http.response.body", "body": b"{}", "more_body": False})
 
@@ -306,7 +309,7 @@ def test_keepwarm_sees_the_markers_a_route_sets_on_an_aliased_request(store):
     }
     set_model_aliases([{"name": "fast-chat", "model": "unsloth/Qwen3-4B-GGUF"}])
     asyncio.run(LlamaKeepWarmMiddleware(ModelAliasMiddleware(route))(scope, receive, send))
-    assert llama_keepwarm.other_admitted_inference_count() == 0
+    assert llama_keepwarm.other_admitted_inference_count() == baseline
 
 
 def test_retrieve_alias_to_an_unloaded_pin_reports_status(store, monkeypatch):
