@@ -21,7 +21,16 @@ import threading
 import time
 from typing import Any, Callable, Iterator, Optional
 
-logger = logging.getLogger(__name__)
+def _module_logger() -> Any:
+    # Studio's structured logger; stdlib logging alone is not routed at info level.
+    try:
+        from loggers import get_logger
+        return get_logger(__name__)
+    except Exception:  # noqa: BLE001
+        return logging.getLogger(__name__)
+
+
+logger = _module_logger()
 
 ENV = "UNSLOTH_DIFFUSION_ROCM_COMPILE"
 
@@ -117,10 +126,8 @@ def rocm_block_compile_probe(device: Any = None) -> tuple[bool, str]:
             return _result[index]
         ok, why = _probe(torch, index)
         (logger.info if ok else logger.warning)(
-            "diffusion.speed: ROCm regional compile probe on cuda:%s: %s (%s)",
-            index,
-            "ok" if ok else "failed, staying eager",
-            why,
+            f"diffusion.speed: ROCm regional compile probe on cuda:{index}: "
+            f"{'ok' if ok else 'failed, staying eager'} ({why})"
         )
         if not ok and "OutOfMemoryError" in why:
             if memo is not None:
