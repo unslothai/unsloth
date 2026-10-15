@@ -18,6 +18,13 @@ os.environ["UNSLOTH_IS_PRESENT"] = "1"
 # an explicit override, including "0".
 os.environ.setdefault("TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL", "1")
 
+# UNSLOTH_FSDP2=1 under plain torchrun: export accelerate's FSDP2 launch env before transformers or
+# accelerate read it. A conflicting launch (DeepSpeed, FSDP_VERSION=1) raises here, on every rank.
+from .fsdp2_launch import apply_unsloth_fsdp2_launch_env as _apply_fsdp2_env
+
+_apply_fsdp2_env()
+del _apply_fsdp2_env
+
 # Before transformers, which reads sentencepiece availability during its own import. On Windows
 # the extension is never imported at all: a code integrity policy can refuse it by reputation,
 # and any probe to find out whether this machine will is itself the refusal the user sees. See
