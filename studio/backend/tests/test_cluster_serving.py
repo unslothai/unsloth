@@ -1717,3 +1717,62 @@ def test_a_managed_worker_finds_the_studio_venvs_cuda_runtime(tmp_path, venv):
     assert ld[0] == str(bindir) and ld[-1] == "/keep"
     for sub in ("nvidia/cuda_runtime/lib", "nvidia/cublas/lib", "torch/lib"):
         assert any(os.path.realpath(d) == str(nv / sub) for d in ld), sub
+
+
+def test_a_sized_kv_cache_is_not_counted_as_freed_either(monkeypatch):
+    _cluster_env(monkeypatch, model_bytes = 90 * GIB)
+    monkeypatch.setattr(ss, "estimate_kv_bytes", lambda *a, **k: 20 * GIB)
+    out = run(ss.before_load(_request(max_seq_length = 8192), 4))
+    assert ss.status()["topology"] == "layer_split"
+    backend = SimpleNamespace(
+        _process = SimpleNamespace(args = ["/b/llama-server"] + out.llama_extra_args),
+        is_loaded = True,
+    )
+    run(ss.after_load(backend, 4))
+    assert sum(cs.state()._resident.values()) == pytest.approx(90 * GIB)
+
+
+@pytest.mark.parametrize("off", [["--spec-draft-ngl", "0"], ["--spec-draft-device", "cpu"]])
+def test_a_drafter_kept_on_the_cpu_is_not_charged_to_a_gpu(monkeypatch, tmp_path, off):
+    _cluster_env(monkeypatch, model_bytes = 90 * GIB)
+    monkeypatch.setattr(ss, "llama_server_supports", lambda flag, binary = None: True)
+    drafter = tmp_path / "draft.gguf"
+    drafter.write_bytes(b"x")
+    sizes = {str(drafter): 10 * GIB}
+    monkeypatch.setattr(ss, "gguf_size_bytes", lambda path: sizes.get(str(path), 90 * GIB))
+    run(ss.before_load(_request(llama_extra_args = ["-md", str(drafter)]), 4))
+    assert ss.status()["topology"] == "layer_split"  # 90 + 10 GiB on the GPUs
+    request = _request(llama_extra_args = ["-md", str(drafter)] + off)
+    assert run(ss.before_load(request, 4)) is request
+    assert ss.status()["topology"] == "single"
+
+
+def test_a_projector_the_args_disable_is_not_charged(monkeypatch, tmp_path):
+    _cluster_env(monkeypatch, model_bytes = 85 * GIB)
+    monkeypatch.setattr(ss, "llama_server_supports", lambda flag, binary = None: True)
+    mmproj = tmp_path / "mmproj.gguf"
+    mmproj.write_bytes(b"x")
+    sizes = {str(mmproj): 15 * GIB}
+    monkeypatch.setattr(ss, "gguf_size_bytes", lambda path: sizes.get(str(path), 85 * GIB))
+    request = _request(llama_extra_args = ["--mmproj", str(mmproj), "--no-mmproj"])
+    assert run(ss.before_load(request, 4)) is request
+    assert ss.status()["topology"] == "single"
+
+
+@pytest.mark.parametrize("env", [False, True])
+def test_a_zero_context_keeps_the_load_local(monkeypatch, env):
+    seen = _cluster_env(monkeypatch)
+    if env:
+        monkeypatch.setenv("LLAMA_ARG_CTX_SIZE", "0")
+    extra = [] if env else ["-c", "0"]
+    request = _request(llama_extra_args = extra, max_seq_length = 0)
+    assert run(ss.before_load(request, 4)) is request and seen == []
+    assert "context size of 0" in ss.status()["reason"]
+
+
+def test_a_fit_ctx_floor_is_the_context_priced(monkeypatch):
+    _cluster_env(monkeypatch)
+    seen = []
+    monkeypatch.setattr(ss, "estimate_kv_bytes", lambda path, ctx, k, v: seen.append(ctx) or 0)
+    run(ss.before_load(_request(max_seq_length = 0, llama_extra_args = ["--fit-ctx", "16384"]), 4))
+    assert seen == [16384]

@@ -249,12 +249,12 @@ class ClusterPlan:
     extra_bytes: float = 0.0
     # Where the projector / drafter was charged; kept even when it gets no layers.
     sidecar_device: Optional[Device] = None
-    # A KV reserve sized without the model's header: never counted as freed by a replacement.
-    guessed_kv_bytes: float = 0.0
+    # Never counted as freed by a replacement: the KV estimate is not the cache's real layout.
+    kv_bytes: float = 0.0
 
     def resident(self) -> Dict[Tuple[str, str], float]:
         """What this plan puts on each device, so a replacement load can count it as freed."""
-        held = max(0.0, float(self.need_bytes or 0) - self.guessed_kv_bytes)
+        held = max(0.0, float(self.need_bytes or 0) - self.kv_bytes)
         out = {d.key: w * held for d, w in zip(self.devices, self.weights)}
         local = self.sidecar_device or next((d for d in self.devices if not d.remote), None)
         if local is not None:
@@ -605,7 +605,7 @@ class ClusterServing:
         self._resident: Dict[Tuple[str, str], float] = {}
         # Workers the current load's probe found unusable; a commit without them stops them.
         self._down: set = set()
-        self._kv_guessed: bool = False
+        self._native_ctx: bool = False
         # Workers this load (re)started: they hold none of the served split's buffers.
         self._started: set = set()
 
@@ -747,6 +747,12 @@ class ClusterServing:
             self.topology, self.reason = "single", "the fitter is off; placement is the caller's"
             return request
         model_bytes, kv_bytes, local_extra = await self._size(request, n_parallel, flags, ss)
+        if self._native_ctx:
+            self.topology, self.reason = (
+                "single",
+                "a context size of 0 opens the model's whole context",
+            )
+            return request
         forced = (os.environ.get(ENV_TOPOLOGY) or "").strip().lower().replace("-", "_") or None
         if forced == "single":
             self.topology, self.reason = "single", f"forced by {ENV_TOPOLOGY}=single"
@@ -838,8 +844,7 @@ class ClusterServing:
             layer_bytes = layer_bytes,
             margin_bytes = margin,
         )
-        if self._kv_guessed:
-            plan.guessed_kv_bytes = float(kv_bytes or 0)
+        plan.kv_bytes = float(kv_bytes or 0)
         self.plan = plan
         if plan.topology == "refuse":
             self.topology, self.reason, self.plan, self.block = self._pre_load
@@ -975,6 +980,21 @@ class ClusterServing:
                 except OSError:
                     file_size = 0
             sidecars += int(file_size)
+        from core.inference.llama_cpp import _extra_args_draft_offloaded_to_cpu
+
+        if _extra_args_draft_offloaded_to_cpu(extras, os.environ):
+            # --spec-draft-ngl 0 / --spec-draft-device cpu: the drafter's weights stay in host RAM.
+            drafts = ss.sidecar_files(_flag_args(extras, _DRAFTER_FLAGS))
+            drafts += [
+                os.path.abspath(v)
+                for v in (os.environ.get(k, "").strip() for k in _DRAFTER_ENV)
+                if v
+            ]
+            dropped += [p for p in dict.fromkeys(drafts) if p not in dropped]
+        if extra_args_disable_mmproj(extras):
+            # --no-mmproj suppresses a projector the args name.
+            named_mm = ss.sidecar_files(_flag_args(extras, frozenset({"--mmproj", "-mm"})))
+            dropped += [p for p in named_mm if p not in dropped]
         for path in dropped:
             sidecars -= int(ss.gguf_size_bytes(path) or 0)
         if size is None:
@@ -989,6 +1009,13 @@ class ClusterServing:
                 cache_type = requested
             if not ss._last_operand(extras, ss._CACHE_TYPE_V_FLAGS):
                 cache_type_v = requested
+        from core.inference.llama_server_args import fit_ctx_in
+
+        argv_ctx = ss._last_operand(extras, ss._CTX_SIZE_FLAGS)
+        env_ctx = (os.environ.get("LLAMA_ARG_CTX_SIZE") or "").strip()
+        self._native_ctx = argv_ctx == "0" or (
+            not argv_ctx and not getattr(request, "max_seq_length", None) and env_ctx == "0"
+        )
         if not ctx:
             # llama-server takes the context from its environment when neither argv nor the
             # request sets one.
@@ -996,12 +1023,14 @@ class ClusterServing:
                 ctx = max(0, int((os.environ.get("LLAMA_ARG_CTX_SIZE") or "0").strip()))
             except ValueError:
                 ctx = 0
+        floor = fit_ctx_in(extras, os.environ)
+        if not ctx and floor and floor > 0:
+            ctx = floor  # the fitter never goes below --fit-ctx
         kv = None
         if local_file and ctx:
             kv = await asyncio.to_thread(
                 ss.estimate_kv_bytes, local_file, ctx, cache_type, cache_type_v
             )
-        self._kv_guessed = kv is None
         if kv is None:
             kv = KV_UNKNOWN_FRACTION * float(size) if ctx and size else 0.0
         kv = float(kv)
