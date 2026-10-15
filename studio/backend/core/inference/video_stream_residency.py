@@ -187,10 +187,39 @@ def _covering(peaks: dict, work: int) -> Optional[int]:
     return max(covering) if covering else None
 
 
+def _store_key(key: Any) -> Any:
+    """``key`` as persisted: the device in it is a process-local ordinal (``cuda:0``), so the GPU's name rides along
+    and workers with different ``CUDA_VISIBLE_DEVICES`` never share one card's peaks with another."""
+    if not isinstance(key, tuple) or len(key) != 5:
+        return key
+    if dict(key[4]).get("revision", "?") in ("", "None", "unknown"):
+        return None  # the exact weights are unknown (an unreadable local build): nothing persists for them
+    try:
+        from .diffusion_measured_peaks import device_name
+        name = device_name(key[3]) if key[3] else None
+    except Exception:  # noqa: BLE001
+        name = None
+    return (key, name)
+
+
+def _key_peaks(key: Any) -> dict:
+    """This process's peaks for ``key``, merged with the persisted store's (other processes' measurements) at every
+    read; the store's own mtime cache keeps that a stat when nothing changed."""
+    peaks = _PEAKS.setdefault(key, {})
+    try:
+        from .diffusion_measured_peaks import work_peaks
+        for work, extra in work_peaks(_store_key(key)).items():
+            if extra > peaks.get(work, 0):
+                peaks[work] = extra
+    except Exception:  # noqa: BLE001 - no store: this process's peaks only
+        pass
+    return peaks
+
+
 def measured_extra_mib(key: Any, work: int) -> Optional[int]:
     if key is None or not measured_enabled():
         return None
-    return _covering(_PEAKS.get(key) or {}, int(work))
+    return _covering(_key_peaks(key), int(work))
 
 
 def _measured_extra_mib(module: Any, work: int) -> Optional[int]:
@@ -199,7 +228,7 @@ def _measured_extra_mib(module: Any, work: int) -> Optional[int]:
     peaks it recorded itself; the module's own mode-blind table is the fallback for an untagged one."""
     key = getattr(module, "_unsloth_video_calibration_key", None)
     if key is not None:
-        return _covering(_PEAKS.get(key) or {}, work)
+        return _covering(_key_peaks(key), work)
     return _covering(getattr(module, "_unsloth_video_peaks", None) or {}, work)
 
 
@@ -227,11 +256,104 @@ def arm_request(
         module._unsloth_video_calibration_key = key
         if not rearm:
             return True
+        dev = _open_window(module, dev)
         torch.cuda.reset_peak_memory_stats(dev)
         work = int(width) * int(height) * int(frames)
         module._unsloth_video_pending = (work, int(torch.cuda.memory_allocated(dev)), dev)
+        module._unsloth_video_failed_captures = _failed_captures()
         return True
     except Exception:  # noqa: BLE001 -- an unarmed request keeps the estimate
+        return False
+
+
+def _open_window(module: Any, dev: Any) -> Any:
+    """Register this request's peak measurement on its card (``diffusion_measured_peaks.open_window``), replacing a
+    stale one; returns the indexed device."""
+    import torch
+
+    from .diffusion_measured_peaks import close_window, open_window
+
+    if dev.index is None:
+        dev = torch.device("cuda", torch.cuda.current_device())
+    stale = getattr(module, "_unsloth_video_window", None)
+    if stale is not None:
+        close_window(stale[0], stale[1])
+    module._unsloth_video_window = (dev, open_window(dev))
+    graphs = _live_graphs(dev)
+    generation = _capture_generation(dev)
+    accounted = getattr(module, "_unsloth_video_graphs", None)
+    if accounted is None or graphs < accounted:
+        # the load's own graphs (every request starts above them), or fewer after a reset freed some
+        first = accounted is None
+        module._unsloth_video_graphs = accounted = graphs
+        if first or graphs <= 0:
+            # nothing alive on the card; a drop to a non-zero count may be another pipeline's reset, so a capture
+            # this one made unrecorded keeps the generation dirty
+            module._unsloth_video_graph_gen = generation
+    if getattr(module, "_unsloth_video_graph_gen", None) is None:
+        module._unsloth_video_graph_gen = generation
+    # graphs a discarded request recorded stay allocated, also one that replaced an evicted graph (same count): a
+    # peak above that start would omit them
+    module._unsloth_video_graphs_clean = (
+        graphs == accounted and generation <= module._unsloth_video_graph_gen
+    )
+    return dev
+
+
+def _capture_generation(dev: Any) -> int:
+    try:
+        from .diffusion_cuda_graph import capture_generation
+        return capture_generation(getattr(dev, "index", None))
+    except Exception:  # noqa: BLE001
+        return -1
+
+
+def _live_graphs(dev: Any) -> int:
+    try:
+        from .diffusion_cuda_graph import live_graph_count
+        return live_graph_count(getattr(dev, "index", None))
+    except Exception:  # noqa: BLE001
+        return -1
+
+
+def discard_request(pipe: Any) -> None:
+    """Drop a request's armed measurement without recording it (cancel, failure, refusal): its window would otherwise
+    mark every later measurement on the card as overlapped. A no-op after ``record_request_peak``."""
+    module = getattr(pipe, "transformer", None)
+    if module is None:
+        return
+    try:
+        module._unsloth_video_pending = None
+        window = getattr(module, "_unsloth_video_window", None)
+        module._unsloth_video_window = None
+        if window is not None:
+            from .diffusion_measured_peaks import close_window
+            close_window(window[0], window[1])
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _failed_captures() -> int:
+    try:
+        from .diffusion_cuda_graph import failed_capture_count
+        return failed_capture_count()
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def _keyed_graphs_live(pipe: Any, key: Any) -> bool:
+    """False when ``key`` names CUDA graphs that ``live_status`` reports dropped or never engaged for this load."""
+    try:
+        optims = dict(key[4]).get("speed_optims", "")
+        if "cuda_graph" not in str(optims):
+            return True
+        from .diffusion_cuda_graph import live_status
+
+        _, live = live_status(
+            None, ("cuda_graph",), tuple(getattr(pipe, "_unsloth_cuda_graphs", ()) or ())
+        )
+        return "cuda_graph" in live
+    except Exception:  # noqa: BLE001 - unreadable: no key names this render
         return False
 
 
@@ -247,7 +369,15 @@ def record_request_peak(pipe: Any, *, logger: Any = None) -> Optional[int]:
         module._unsloth_video_pending = None
         work, start, dev = pending
         extra = (int(torch.cuda.max_memory_allocated(dev)) - int(start)) >> 20
-        if extra <= 0:
+        window = getattr(module, "_unsloth_video_window", None)
+        module._unsloth_video_window = None
+        if window is not None:
+            from .diffusion_measured_peaks import close_window
+
+            # closed after the read: a render arming in between would otherwise reset the peak unseen
+            if not close_window(window[0], window[1]):
+                return None  # another render on the card reset the peak meanwhile
+        if extra <= 0 or not getattr(module, "_unsloth_video_graphs_clean", True):
             return None
         peaks = getattr(module, "_unsloth_video_peaks", None)
         if not isinstance(peaks, dict):
@@ -255,9 +385,42 @@ def record_request_peak(pipe: Any, *, logger: Any = None) -> Optional[int]:
             module._unsloth_video_peaks = peaks
         peaks[work] = max(extra, peaks.get(work, 0))
         key = getattr(module, "_unsloth_video_calibration_key", None)
-        if key is not None:
-            shared = _PEAKS.setdefault(key, {})
-            shared[work] = max(extra, shared.get(work, 0))
+        # a failed capture absorbed an OOM: this peak is that attempt's, keep it out of the keyed and persisted peaks
+        # a load keyed with CUDA graphs whose graphs no longer run (a poisoned wrapper after a failed capture runs
+        # eager without counting a new failure) records an eager peak a graph-capturing load would undershoot
+        if (
+            key is not None
+            and _failed_captures() == getattr(module, "_unsloth_video_failed_captures", 0)
+            and _keyed_graphs_live(pipe, key)
+        ):
+            graphs, generation = _live_graphs(dev), _capture_generation(dev)
+            stored_key = _store_key(key)
+            try:
+                from .diffusion_memory import stream_window_pad_mib
+
+                # on the streamed baseline, as image peaks: a later request of the key may stream groups this request
+                # kept resident; an unknown placement enters neither the keyed table nor the store
+                pad = stream_window_pad_mib(pipe)
+            except Exception:  # noqa: BLE001
+                pad = None
+            held: list = []
+            if pad is not None:
+                shared = _key_peaks(key)
+                shared[work] = max(extra + pad, shared.get(work, 0))
+                # an unpersistable key keeps this process's table only, where max wins: nothing lower can be stored
+                # later
+                if stored_key is None:
+                    held.append(True)
+                else:
+                    try:
+                        from .diffusion_measured_peaks import record_work
+                        record_work(stored_key, work, extra + pad, held = held)
+                    except Exception:  # noqa: BLE001 - persistence is best-effort
+                        pass
+            if held:
+                # the store holds this sample: it covers the graphs the request recorded; unpersisted, they stay dirty
+                module._unsloth_video_graphs = graphs
+                module._unsloth_video_graph_gen = generation
         _COUNTS["recorded"] += 1
         if logger is not None:
             logger.info("video.dit_resident: request peak %d MiB above its start recorded", extra)
@@ -331,8 +494,10 @@ def fit_for_request(
             _keep_groups_resident(module, room, dev, logger)
             promoted = max(0, resident_mib(module) - after_release)
         kept = resident_mib(module)
+        dev = _open_window(module, dev)
         torch.cuda.reset_peak_memory_stats(dev)
         module._unsloth_video_pending = (work, int(torch.cuda.memory_allocated(dev)), dev)
+        module._unsloth_video_failed_captures = _failed_captures()
         try:
             module._unsloth_resident_room = room if room > 0 else None
         except AttributeError:

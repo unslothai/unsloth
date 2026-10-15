@@ -177,7 +177,13 @@ INTENT_SIGNAL = re.compile(
     r"|(?:^|[.!?]\s+)\s*first\s*[,:–—-]?\s+(?:i|we|let['’]?s|let us)\b"
     r"|(?:^|[.!?]\s+)\s*first\s*[,:–—-]?\s+" + _ACTION_VERB + r"\b"
     r"|"
-    r"\b(?:step \d+:?|here['\u2019]?s (?:my |the |a )?(?:plan|approach))"
+    # "Step N" counts only before an action (same line, next non-blank line or its list item) or as a "Step N:" heading:
+    # a bare match re-prompted finished answers like "Step 1 result: 391", re-running every tool.
+    r"\bstep \d+[ \t*_]*(?::[ \t*_\r]*$|(?:[:,.)\u2013\u2014-][ \t*_]*)?(?:\r?\n(?:[ \t]*\r?\n)?[ \t*_#>-]*(?:\d+[.)][ \t*_]*)?)?(?:(?:let['’]?s|let us)\b|"
+    + _ACTION_VERB
+    + r"\b))"
+    r"|"
+    r"\bhere['\u2019]?s (?:my |the |a )?(?:plan|approach)"
     r"|"
     r"\b(?:now i|next i)\b"
     r")"

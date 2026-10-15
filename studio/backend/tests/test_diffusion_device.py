@@ -183,7 +183,15 @@ def test_rocm_target(monkeypatch):
     t = dd.resolve_diffusion_device_target()
     assert (t.device, t.backend, t.vendor) == ("cuda", "rocm", "amd")
     assert t.dtype == BF16
-    assert t.supports_default_torch_compile is False
+    assert t.supports_default_torch_compile is True
+
+
+def test_rocm_target_compile_kill_switch(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ROCM_COMPILE", "0")
+    torch = _make_torch(cuda_available = True, bf16_supported = True)
+    _install(monkeypatch, torch, studio_device = "cuda", is_rocm = True)
+    t = dd.resolve_diffusion_device_target()
+    assert t.backend == "rocm" and t.supports_default_torch_compile is False
 
 
 def test_rocm_without_bf16_uses_fp16(monkeypatch):
@@ -292,6 +300,18 @@ def test_from_torch_device_cuda(monkeypatch):
     t = dd.diffusion_device_target_from_torch_device("cuda:0", FP32)
     assert (t.device, t.backend, t.vendor, t.dtype) == ("cuda", "cuda", "nvidia", FP32)
     assert t.is_cuda_torch_device
+
+
+def test_from_torch_device_tag_only_rocm(monkeypatch):
+    # AMD SDK / Radeon wheels: no torch.version.hip, ROCm only in __version__. Must stay ROCm so the
+    # probe and UNSLOTH_DIFFUSION_ROCM_COMPILE apply.
+    torch = _make_torch()
+    torch.__version__ = "2.9.0+rocm7.1.0"
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ROCM_COMPILE", "0")
+    t = dd.diffusion_device_target_from_torch_device("cuda:1", BF16)
+    assert (t.backend, t.vendor, t.ordinal) == ("rocm", "amd", 1)
+    assert t.supports_default_torch_compile is False
 
 
 def test_from_torch_device_mps_and_cpu(monkeypatch):
@@ -951,3 +971,95 @@ def test_a_multi_card_pick_declines_to_rank_when_ranking_is_barred(monkeypatch):
     assert probed == []
     with pytest.raises(ValueError):
         dd.resolve_selected_cuda_ordinal([9], allow_ranking = False)
+
+
+# ── MPS allocation cap ────────────────────────────────────────────────
+
+GIB = 1024**3
+
+
+@pytest.mark.parametrize(
+    "recommended_gib, ram_gib, expected_cap_gib",
+    [
+        (5.33, 8, 6.5),  # 8 GB Mac: RAM - 1.5 GiB floor reserve
+        (10.67, 16, 14.4),  # RAM - 10%
+        (96, 128, 115.2),
+        (5.0, 5.5, 5.0),  # reserve would go below the working set: never cap under it
+    ],
+)
+def test_mps_ratio_caps_below_ram_never_below_working_set(
+    recommended_gib, ram_gib, expected_cap_gib
+):
+    ratio = dd.mps_high_watermark_ratio(int(recommended_gib * GIB), int(ram_gib * GIB))
+    cap_gib = ratio * recommended_gib
+    assert cap_gib == pytest.approx(expected_cap_gib, rel = 1e-3)
+    assert cap_gib < ram_gib
+    assert 1.0 <= ratio <= 2.0
+    assert cap_gib < 1.7 * recommended_gib  # tighter than torch's own default, which is above RAM
+
+
+def test_mps_ratio_unknown_readings_mean_no_cap():
+    assert dd.mps_high_watermark_ratio(None, 16 * GIB) is None
+    assert dd.mps_high_watermark_ratio(10 * GIB, 0) is None
+    assert dd.mps_high_watermark_ratio("x", 16 * GIB) is None
+
+
+def _mps_cap_torch(
+    recorded,
+    *,
+    recommended = 10 * GIB,
+    fraction_raises = False,
+):
+    torch = _make_torch(mps_available = True, mps_probe = "pass")
+
+    def _set(fraction):
+        if fraction_raises:
+            raise AttributeError("old torch")
+        recorded.append(fraction)
+
+    torch.mps = types.SimpleNamespace(
+        recommended_max_memory = lambda: recommended, set_per_process_memory_fraction = _set
+    )
+    return torch
+
+
+def test_mps_target_sets_finite_cap(monkeypatch):
+    monkeypatch.delenv(dd.MPS_HIGH_WATERMARK_ENV, raising = False)
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_ALLOW_OVERSIZED_LOAD", raising = False)
+    monkeypatch.setattr(dd, "_total_ram_bytes", lambda: 16 * GIB)
+    recorded = []
+    _install(monkeypatch, _mps_cap_torch(recorded), studio_device = "mlx")
+    assert dd.resolve_diffusion_device_target().device == "mps"
+    assert recorded == [pytest.approx(14.4 / 10, rel = 1e-3)]
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {dd.MPS_HIGH_WATERMARK_ENV: "0.0"},  # explicit "no cap" stays no cap
+        {dd.MPS_HIGH_WATERMARK_ENV: "1.2"},
+        {"UNSLOTH_DIFFUSION_ALLOW_OVERSIZED_LOAD": "1"},
+    ],
+)
+def test_mps_cap_respects_user_override(monkeypatch, env):
+    monkeypatch.delenv(dd.MPS_HIGH_WATERMARK_ENV, raising = False)
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_ALLOW_OVERSIZED_LOAD", raising = False)
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.setattr(dd, "_total_ram_bytes", lambda: 16 * GIB)
+    recorded = []
+    _install(monkeypatch, _mps_cap_torch(recorded), studio_device = "mlx")
+    assert dd.resolve_diffusion_device_target().device == "mps"
+    assert recorded == []
+    if dd.MPS_HIGH_WATERMARK_ENV in env:
+        import os
+        assert os.environ[dd.MPS_HIGH_WATERMARK_ENV] == env[dd.MPS_HIGH_WATERMARK_ENV]
+
+
+def test_mps_cap_failure_keeps_target(monkeypatch):
+    monkeypatch.delenv(dd.MPS_HIGH_WATERMARK_ENV, raising = False)
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_ALLOW_OVERSIZED_LOAD", raising = False)
+    monkeypatch.setattr(dd, "_total_ram_bytes", lambda: 16 * GIB)
+    _install(monkeypatch, _mps_cap_torch([], fraction_raises = True), studio_device = "mlx")
+    t = dd.resolve_diffusion_device_target()
+    assert t.device == "mps" and t.dtype == BF16

@@ -779,7 +779,22 @@ def bwrap_install_command() -> str | None:
 
 
 def linux_unavailable_remediation() -> str:
-    missing = [name for name in _LINUX_REQUIRED_BINARIES if shutil.which(name) is None]
+    from . import sandbox_linux
+
+    try:
+        sandbox_linux._trusted_bwrap_path()
+    except sandbox_linux.BwrapUntrustedError as exc:
+        # Installing another copy would be refused the same way; say what to change instead.
+        if exc.pinned or exc.hidden_root:
+            return f"{exc}. {_FALLBACK_NOTE}"
+    except SandboxUnavailableError:
+        pass
+    # A pinned bwrap need not be on PATH.
+    missing = (
+        []
+        if os.environ.get(sandbox_linux.BWRAP_PATH_ENV)
+        else [name for name in _LINUX_REQUIRED_BINARIES if shutil.which(name) is None]
+    )
     if missing:
         command = bwrap_install_command()
         # Installing bwrap alone leaves it blocked on Ubuntu 23.10+.

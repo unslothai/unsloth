@@ -266,6 +266,20 @@ def _terminate(proc: "subprocess.Popen") -> None:
         pass
 
 
+def binary_accelerator(binary: Optional[str]) -> Optional[str]:
+    """Accelerator class from the install record, else a cached probe listing (no subprocess); None if unknown."""
+    if not binary:
+        return None
+    try:
+        from core.inference import sd_cpp_backend  # noqa: PLC0415 - the backend imports this module
+        return (
+            sd_cpp_backend._installed_accelerator_of(binary)
+            or sd_cpp_backend.sd_cpp_listed_device(binary, probe = False)[0]
+        )
+    except Exception:  # noqa: BLE001 - unknown keeps the default speed flags
+        return None
+
+
 def _binary_name(stem: str) -> str:
     return f"{stem}.exe" if sys.platform == "win32" else stem
 
@@ -666,14 +680,17 @@ class SdCppEngine:
     ) -> Path:
         """Speed flags skip any offload flag; a set cancel_event kills the sd-cli process tree."""
         offload = list(offload or [])
+        binary = self._require_binary()
         speed = [
             f
-            for f in native_speed_flags(native_speed, [*offload, *(extra_args or ())])
+            for f in native_speed_flags(
+                native_speed, [*offload, *(extra_args or ())], binary_accelerator(binary)
+            )
             if f not in offload
         ]
         merged_extra = speed + list(extra_args or [])
         cmd = build_sd_cpp_command(
-            self._require_binary(),
+            binary,
             files,
             params,
             output_path = str(self._prepare_out(output_path)),

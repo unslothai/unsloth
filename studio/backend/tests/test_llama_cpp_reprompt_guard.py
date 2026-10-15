@@ -402,6 +402,44 @@ def test_numbered_list_is_not_an_answer_artifact():
         assert not _would_reprompt(content), content
 
 
+def test_step_labelled_results_are_not_a_plan():
+    """Step-labelled results are not a plan; "Step N" before an action still is."""
+    from core.inference.tool_call_parser import is_short_intent_without_action
+
+    answers = [
+        "- Step 1 result: 391\n- Step 2 result: 5050\n- Step 3 result: 1048576",
+        "Here are the results:\n\n- **Step 1 line for 400:** `400 160000`\n"
+        "- **Sum of squares of 1..400:** 21,413,400",
+        "**Step 1:** Printed the table; the last line is 400 160000.",
+        "In step 3 of the recipe, fold in the eggs.",
+        "### Step 1\nResult: 391",
+        "Step 1: I found 391.",
+        "Step 2: we got 5050.",
+    ]
+    for content in answers:
+        assert not is_short_intent_without_action(content), content
+
+    plans = [
+        "Step 1: search for the song list.",
+        "**Step 1**: Run the tests, then summarise.",
+        "Step 2 - let's check the logs.",
+        "Step 1, search the web for the song list.",
+        "Step 1: I'll search for the song list.",
+        "Step 1:\r\n1. Analyze the request.\r\n2. Draft the answer.",
+        "**Step 1**\nRun the tests, then summarise.",
+        "### Step 1\r\nSearch the web for the song list.",
+        "**Step 1**\n1. Search the web for the song list.\n2. Summarise it.",
+        "Step 1.\nSearch the web for the song list.",
+        "**Step 1**\n1. **Search** the web for the song list.",
+        "### Step 1\n\nSearch the web for the song list.",
+    ]
+    for content in plans:
+        assert is_short_intent_without_action(content), content
+
+
+# ── End-to-end guard semantics on realistic responses ──────────────
+
+
 def _would_reprompt(content: str) -> bool:
     """Return True if the re-prompt block at llama_cpp.py would fire."""
     from core.inference.llama_cpp import _REPROMPT_MAX_CHARS

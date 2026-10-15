@@ -952,7 +952,7 @@ def dense_quant_host_capable(target: Any) -> bool:
     # No inductor means no fast path to advertise (host-level only).
     from .diffusion_speed import compile_eligible
 
-    if not compile_eligible(target, is_gguf = False, family = None):
+    if not compile_eligible(target, is_gguf = False, family = None, probe = False):
         return False
     # Not redundant: a torchao import failure (ABI skew) rejects every scheme.
     if torchao_unavailable_reason() is not None:
@@ -1519,7 +1519,13 @@ def _make_quant_config(scheme: str, fast_accum: Optional[bool] = None) -> Any:
     if scheme == TQ_NVFP4:
         from torchao.prototype.mx_formats import NVFP4DynamicActivationNVFP4WeightConfig
 
-        # CUTLASS FP4, not the default Triton kernel (needs MSLK, else the probe fails).
+        from .diffusion_nvfp4_act_quant import install_nvfp4_act_quant_patch
+
+        # Before quantize_: the load-time weight pass stays on torchao (eager); compiled activations use the kernel.
+        install_nvfp4_act_quant_patch()
+
+        # Select the CUTLASS FP4 path, not the default Triton kernel (which needs MSLK): on a Blackwell box with
+        # CUTLASS FP4 but no MSLK the default fails the smoke probe and falls back to GGUF.
         try:
             return _quiet_config(NVFP4DynamicActivationNVFP4WeightConfig, use_triton_kernel = False)
         except TypeError:  # older torchao without the knob
