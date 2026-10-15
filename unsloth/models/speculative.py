@@ -147,6 +147,9 @@ def get_mtp_head(
 
 
 def _takes_push_to_hub(fn):
+    # Unsloth's loaders wrap save_pretrained as (self, *args, **kwargs); read the wrapped one.
+    if getattr(fn, "__name__", "") == "unsloth_model_save_pretrained":
+        fn = getattr(getattr(fn, "__self__", None), "original_model_save_pretrained", fn)
     try:
         return "push_to_hub" in inspect.signature(fn).parameters
     except (TypeError, ValueError):

@@ -971,6 +971,20 @@ def _push_with_mtp_head(save_kwargs):
         unsloth_save_model(
             **{**save_kwargs, "save_directory": directory, "push_to_hub": False, "token": token}
         )
+        if save_kwargs.get("datasets"):
+            # In the staged README, so the attribution lands in this commit on this revision.
+            from huggingface_hub import hf_hub_download, metadata_save
+
+            readme = os.path.join(directory, "README.md")
+            if not os.path.isfile(readme):
+                try:
+                    shutil.copyfile(
+                        hf_hub_download(repo_id, "README.md", revision = revision, token = token),
+                        readme,
+                    )
+                except Exception:
+                    pass  # new repo or no card yet
+            metadata_save(readme, {"datasets": save_kwargs["datasets"]})
         api.upload_folder(
             folder_path = directory,
             path_in_repo = ".",
@@ -980,17 +994,6 @@ def _push_with_mtp_head(save_kwargs):
             revision = save_kwargs["revision"],
             create_pr = save_kwargs["create_pr"],
         )
-    if save_kwargs.get("datasets"):
-        # The local save skips the Hub card, so attribute the datasets as the hub path does.
-        try:
-            from huggingface_hub import metadata_update
-            metadata_update(
-                repo_id, {"datasets": save_kwargs["datasets"]}, overwrite = True, token = token
-            )
-        except Exception as error:
-            logger.warning_once(
-                f"Unsloth: could not update datasets metadata for {repo_id}: {error}"
-            )
     print(f"Unsloth: Saved model with its trained MTP head to https://huggingface.co/{repo_id}")
     return repo_id, username
 
@@ -1411,12 +1414,18 @@ def unsloth_save_model(
     if n_cpus is None:
         n_cpus = 1
 
+    # The trained MTP head is stitched into safetensors checkpoints only.
+    _keeps_mtp_head = _attached_mtp_head(model) is not None
+    if _keeps_mtp_head and not safe_serialization:
+        raise ValueError(
+            "Unsloth: a model with a trained MTP head saves as safetensors; drop `safe_serialization = False`."
+        )
     # Already `True` from the normalisation at the top of this function; the caller having
     # passed `None` is what keeps the downgrade below from undoing it.
     if _force_safe_serialization:
         save_pretrained_settings["safe_serialization"] = safe_serialization
 
-    elif safe_serialization and (n_cpus <= 2):
+    elif safe_serialization and (n_cpus <= 2) and not _keeps_mtp_head:
         logger.warning_once(
             f"Unsloth: You have {n_cpus} CPUs. Using `safe_serialization` is 10x slower.\n"
             f"We shall switch to Pytorch saving, which might take 3 minutes and not 30 minutes.\n"

@@ -836,7 +836,7 @@ def test_the_docstrings_describe_none_as_the_stronger_safetensors_request():
         source.count("`None` is stronger than the default") == 4
     ), "all four save_method docstrings have to describe None the same way"
     # The behaviour the prose describes, read from the code rather than trusted.
-    assert "elif safe_serialization and (n_cpus <= 2):" in source
+    assert "elif safe_serialization and (n_cpus <= 2) and not _keeps_mtp_head:" in source
     assert "if _force_safe_serialization:" in source
 
 
