@@ -1640,6 +1640,15 @@ else:
     from ._gpu_init import *
     from ._gpu_init import __version__
 
+    # Raw `Accelerator.prepare()` loops never reach the Trainer init that also installs these, and
+    # `Accelerator(fsdp_plugin = ...)` leaves no launcher env to gate on. Inert unless FSDP2 wraps.
+    try:
+        from .models.fsdp2 import install_fsdp2_hooks as _install_fsdp2_hooks
+        _install_fsdp2_hooks()
+        del _install_fsdp2_hooks
+    except Exception:
+        pass
+
     def get_gpu_memory_stats():
         """Return CUDA/ROCm/XPU/NPU device stats, peak memory, and total memory in GiB."""
         try:

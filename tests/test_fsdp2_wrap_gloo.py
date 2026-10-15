@@ -212,7 +212,14 @@ def test_per_block_wrap_keeps_fused_layers_on_whole_weights(tmp_path):
     assert r["spy_calls"] == N_LAYERS * 9
     assert r["spy_saw_shard"] == 0, "a direct .weight read saw a DTensor shard inside a block"
     assert r["spy_full_shapes"]
-    assert r["direct_read_units"] >= 1, "lm_head's unit is not gathered before the CausalLM forward"
+    import accelerate.utils.fsdp_utils as fsdp_utils
+
+    if hasattr(fsdp_utils, "_find_final_norm"):
+        # accelerate >= 1.14 gives [final norm, lm_head] their own unit, which nothing would gather.
+        assert r["direct_read_units"] >= 1, "lm_head's unit is not gathered before the CausalLM forward"
+    else:
+        # Older accelerate leaves lm_head in the root unit, which its own pre-forward gathers.
+        assert r["direct_read_units"] == 0
     assert r["last_block_gathered"] is True
     assert r["first_block_gathered"] is False
     assert r["loss_diff"] < 1e-5

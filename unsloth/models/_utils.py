@@ -5498,6 +5498,11 @@ def patch_gradient_accumulation_fix(Trainer):
                     apply_accepts_loss_kwargs_fix(model)
                 except Exception:
                     pass
+            try:
+                from .fsdp2 import install_fsdp2_policy_provenance
+                install_fsdp2_policy_provenance()
+            except Exception:
+                pass
             _original_trainer_init(self, *args, **kwargs)
             try:
                 accelerator = getattr(self, "accelerator", None)
