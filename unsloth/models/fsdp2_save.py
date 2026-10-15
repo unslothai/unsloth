@@ -71,7 +71,9 @@ _SAVE_COUNTER = [0]
 
 def _save_timeout():
     try:
-        return datetime.timedelta(seconds = float(os.environ.get("UNSLOTH_FSDP2_SAVE_TIMEOUT", 7 * 86400)))
+        return datetime.timedelta(
+            seconds = float(os.environ.get("UNSLOTH_FSDP2_SAVE_TIMEOUT", 7 * 86400))
+        )
     except ValueError:
         return datetime.timedelta(days = 7)
 
@@ -110,8 +112,11 @@ def _gather_full(param, DTensor):
         stride.insert(0, acc)
         acc *= size
     gathered = DTensor.from_local(
-        as_bytes, param.device_mesh, param.placements,
-        shape = torch.Size(shape), stride = tuple(stride),
+        as_bytes,
+        param.device_mesh,
+        param.placements,
+        shape = torch.Size(shape),
+        stride = tuple(stride),
     ).full_tensor()
     return gathered.view(param.dtype)
 
@@ -122,8 +127,16 @@ def _rebuild(param, full, module):
     if quant_state is None:
         return torch.nn.Parameter(full, requires_grad = param.requires_grad)
     from bitsandbytes.nn import Params4bit
+
     new = torch.Tensor._make_subclass(Params4bit, full, False)
-    for key in ("quant_state", "blocksize", "compress_statistics", "quant_type", "quant_storage", "bnb_quantized"):
+    for key in (
+        "quant_state",
+        "blocksize",
+        "compress_statistics",
+        "quant_type",
+        "quant_storage",
+        "bnb_quantized",
+    ):
         if hasattr(param, key):
             setattr(new, key, getattr(param, key))
     new.module = module
@@ -131,7 +144,12 @@ def _rebuild(param, full, module):
 
 
 @contextlib.contextmanager
-def fsdp2_gathered(model, trainable_only = False, offload_to_cpu = True, include = None):
+def fsdp2_gathered(
+    model,
+    trainable_only = False,
+    offload_to_cpu = True,
+    include = None,
+):
     """Yields None for a model FSDP2 does not shard (nothing happens). Otherwise every rank must
     enter; rank 0 sees whole parameters (and yields True), the other ranks yield False and should
     not write. `trainable_only` gathers just the trainable parameters (enough for an adapter save),
@@ -168,7 +186,11 @@ def fsdp2_gathered(model, trainable_only = False, offload_to_cpu = True, include
             seen.add(id(param))
             if not isinstance(param, DTensor):
                 continue
-            if trainable_only and not param.requires_grad and not (include and include(name, param)):
+            if (
+                trainable_only
+                and not param.requires_grad
+                and not (include and include(name, param))
+            ):
                 continue
             full = _gather_full(param, DTensor)
             if not writer:
@@ -232,7 +254,11 @@ def _wrap_accelerate_adapter_only():
             continue
 
         @functools.wraps(fn)
-        def wrapper(*args, _fn = fn, **kwargs):
+        def wrapper(
+            *args,
+            _fn = fn,
+            **kwargs,
+        ):
             if not kwargs.get("adapter_only", False):
                 return _fn(*args, **kwargs)
             _ADAPTER_ONLY[0] += 1

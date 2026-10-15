@@ -5810,7 +5810,11 @@ def _fsdp2_peft_saved_frozen(model, arguments):
 
     def include(name, param):
         parts = name.split(".")
-        return id(param) in embeddings or "modules_to_save" in parts or any(a in parts for a in adapters)
+        return (
+            id(param) in embeddings
+            or "modules_to_save" in parts
+            or any(a in parts for a in adapters)
+        )
 
     return include
 

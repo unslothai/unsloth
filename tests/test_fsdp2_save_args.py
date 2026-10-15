@@ -14,13 +14,27 @@ from unsloth import save as unsloth_save  # noqa: E402
 from unsloth.models import fsdp2_save  # noqa: E402
 
 
-def _merged(self, save_directory, tokenizer = None, save_method = "merged_16bit", push_to_hub = False,
-            token = None, is_main_process = True, state_dict = None):
+def _merged(
+    self,
+    save_directory,
+    tokenizer = None,
+    save_method = "merged_16bit",
+    push_to_hub = False,
+    token = None,
+    is_main_process = True,
+    state_dict = None,
+):
     return ("wrote", state_dict)
 
 
 class _Model:
-    def original_model_save_pretrained(self, save_directory, is_main_process = True, state_dict = None, **kwargs):
+    def original_model_save_pretrained(
+        self,
+        save_directory,
+        is_main_process = True,
+        state_dict = None,
+        **kwargs,
+    ):
         return ("wrote", state_dict)
 
 
@@ -54,8 +68,14 @@ def test_peft_saves_gather_the_frozen_tensors_peft_writes():
     from peft import LoraConfig, get_peft_model
     from transformers import LlamaConfig, LlamaForCausalLM
 
-    cfg = LlamaConfig(hidden_size = 32, intermediate_size = 64, num_hidden_layers = 1, num_attention_heads = 2,
-                      num_key_value_heads = 1, vocab_size = 64)
+    cfg = LlamaConfig(
+        hidden_size = 32,
+        intermediate_size = 64,
+        num_hidden_layers = 1,
+        num_attention_heads = 2,
+        num_key_value_heads = 1,
+        vocab_size = 64,
+    )
     model = get_peft_model(LlamaForCausalLM(cfg), LoraConfig(r = 2, target_modules = ["q_proj"]))
     model.add_adapter("other", LoraConfig(r = 2, target_modules = ["q_proj"]))
     include = unsloth_save._fsdp2_peft_saved_frozen(model, {})
@@ -67,5 +87,7 @@ def test_peft_saves_gather_the_frozen_tensors_peft_writes():
     names = {n for n, p in model.named_parameters() if include(n, p)}
     assert not any("embed_tokens" in n for n in names), names
     model.original_model_save_pretrained = model.save_pretrained
-    arguments = unsloth_save._fsdp2_save_arguments(_forwarding, model, ("out", True, None, False), {})
+    arguments = unsloth_save._fsdp2_save_arguments(
+        _forwarding, model, ("out", True, None, False), {}
+    )
     assert arguments["save_embedding_layers"] is False

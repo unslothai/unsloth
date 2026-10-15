@@ -37,7 +37,11 @@ def _load(name):
 fsdp_mod = pytest.importorskip("torch.distributed.fsdp")
 if not hasattr(fsdp_mod, "fully_shard"):
     pytest.skip("torch has no FSDP2 fully_shard", allow_module_level = True)
-if sys.platform == "win32" or not torch.distributed.is_available() or not torch.distributed.is_gloo_available():
+if (
+    sys.platform == "win32"
+    or not torch.distributed.is_available()
+    or not torch.distributed.is_gloo_available()
+):
     pytest.skip("needs torch.distributed with gloo", allow_module_level = True)
 
 N_LAYERS = 3
@@ -76,7 +80,11 @@ class _Model(torch.nn.Module):
         return self.head(x)
 
 
-def _shard(model, world_size, ignored = None):
+def _shard(
+    model,
+    world_size,
+    ignored = None,
+):
     from torch.distributed.device_mesh import init_device_mesh
     from torch.distributed.fsdp import fully_shard
 
@@ -108,13 +116,19 @@ def _case_gather(rank, world_size, m):
     with m.fsdp2_gathered(model, trainable_only = True) as writer:
         out["trainable_writer"] = writer
         out["trainable_only"] = sorted(
-            {("plain" if not _is_dtensor(p) else "dtensor", p.requires_grad) for p in model.parameters()}
+            {
+                ("plain" if not _is_dtensor(p) else "dtensor", p.requires_grad)
+                for p in model.parameters()
+            }
         )
 
     # A frozen parameter the save still writes (an inactive adapter, an embedding).
     with m.fsdp2_gathered(model, trainable_only = True, include = lambda name, p: True) as writer:
         out["included"] = sorted(
-            {("plain" if not _is_dtensor(p) else "dtensor", p.requires_grad) for p in model.parameters()}
+            {
+                ("plain" if not _is_dtensor(p) else "dtensor", p.requires_grad)
+                for p in model.parameters()
+            }
         )
 
     with m.fsdp2_gathered(model) as writer:
@@ -125,10 +139,14 @@ def _case_gather(rank, world_size, m):
             ref = dict(reference.named_parameters())
             got = dict(model.named_parameters())
             out["names_match"] = sorted(ref) == sorted(got)
-            out["plain_cpu"] = all(not _is_dtensor(p) and p.device.type == "cpu" for p in got.values())
+            out["plain_cpu"] = all(
+                not _is_dtensor(p) and p.device.type == "cpu" for p in got.values()
+            )
             out["exact"] = all(torch.equal(got[k].detach(), ref[k].detach()) for k in ref)
             out["state_dict_keys"] = sorted(model.state_dict()) == sorted(reference.state_dict())
-            out["requires_grad_kept"] = all(got[k].requires_grad == ref[k].requires_grad for k in ref)
+            out["requires_grad_kept"] = all(
+                got[k].requires_grad == ref[k].requires_grad for k in ref
+            )
         else:
             out["all_dtensor_on_other_rank"] = all(_is_dtensor(p) for p in model.parameters())
     out["all_dtensor_after"] = all(_is_dtensor(p) for p in model.parameters())
@@ -137,7 +155,11 @@ def _case_gather(rank, world_size, m):
     opt = torch.optim.SGD([p for p in model.parameters() if p.requires_grad], lr = 0.1)
     ref_opt = torch.optim.SGD([p for p in reference.parameters() if p.requires_grad], lr = 0.1)
     import torch.distributed as dist
-    xs = [torch.randn(6, 37, generator = torch.Generator().manual_seed(100 + r)) for r in range(world_size)]
+
+    xs = [
+        torch.randn(6, 37, generator = torch.Generator().manual_seed(100 + r))
+        for r in range(world_size)
+    ]
     model(xs[rank]).square().mean().backward()
     opt.step()
     sum(reference(xr).square().mean() for xr in xs).div(world_size).backward()
@@ -158,16 +180,32 @@ def _case_gather_4bit(rank, world_size, m):
 
     def lin(seed):
         torch.manual_seed(seed)
-        layer = bnb.nn.Linear4bit(128, 96, bias = False, compute_dtype = torch.bfloat16,
-                                  quant_type = "nf4", quant_storage = torch.bfloat16)
-        layer.weight = bnb.nn.Params4bit(torch.randn(96, 128) * 0.05, requires_grad = False,
-                                         quant_type = "nf4", quant_storage = torch.bfloat16,
-                                         blocksize = 64, module = layer)
+        layer = bnb.nn.Linear4bit(
+            128,
+            96,
+            bias = False,
+            compute_dtype = torch.bfloat16,
+            quant_type = "nf4",
+            quant_storage = torch.bfloat16,
+        )
+        layer.weight = bnb.nn.Params4bit(
+            torch.randn(96, 128) * 0.05,
+            requires_grad = False,
+            quant_type = "nf4",
+            quant_storage = torch.bfloat16,
+            blocksize = 64,
+            module = layer,
+        )
         return layer.to("cpu")
 
     model = torch.nn.Sequential(lin(0), lin(1))
-    before = [(l.weight.data.view(torch.uint8).clone(),
-               bnb.functional.dequantize_4bit(l.weight.data, l.weight.quant_state)) for l in model]
+    before = [
+        (
+            l.weight.data.view(torch.uint8).clone(),
+            bnb.functional.dequantize_4bit(l.weight.data, l.weight.quant_state),
+        )
+        for l in model
+    ]
     info = q.prepare_fsdp2_qlora(model)
     mesh = init_device_mesh("cpu", (world_size,))
     for layer in model:
@@ -179,13 +217,17 @@ def _case_gather_4bit(rank, world_size, m):
             checks = []
             for layer, (raw, deq) in zip(model, before):
                 w = layer.weight
-                checks.append(dict(
-                    params4bit = type(w).__name__ == "Params4bit",
-                    quant_state = w.quant_state is not None,
-                    bytes_equal = torch.equal(w.data.view(torch.uint8), raw),
-                    dequant_equal = torch.equal(bnb.functional.dequantize_4bit(w.data, w.quant_state), deq),
-                    module = w.module is layer,
-                ))
+                checks.append(
+                    dict(
+                        params4bit = type(w).__name__ == "Params4bit",
+                        quant_state = w.quant_state is not None,
+                        bytes_equal = torch.equal(w.data.view(torch.uint8), raw),
+                        dequant_equal = torch.equal(
+                            bnb.functional.dequantize_4bit(w.data, w.quant_state), deq
+                        ),
+                        module = w.module is layer,
+                    )
+                )
             out["checks"] = checks
             # bitsandbytes' own state dict (what save_pretrained writes) has the QuantState entries.
             out["absmax_keys"] = sum(k.endswith("weight.absmax") for k in model.state_dict())
@@ -204,7 +246,10 @@ def _case_replicated(rank, world_size, m, hooked):
     opt = torch.optim.SGD([p for p in model.parameters() if p.requires_grad], lr = 0.5)
     ref_opt = torch.optim.SGD([p for p in reference.parameters() if p.requires_grad], lr = 0.5)
     for step in range(3):
-        xs = [torch.randn(6, 37, generator = torch.Generator().manual_seed(10 * step + r)) for r in range(world_size)]
+        xs = [
+            torch.randn(6, 37, generator = torch.Generator().manual_seed(10 * step + r))
+            for r in range(world_size)
+        ]
         opt.zero_grad()
         model(xs[rank]).square().mean().backward()
         opt.step()
@@ -231,11 +276,22 @@ def _case_dcp_bnb(rank, world_size, m):
     import torch.distributed.checkpoint.state_dict as dcp
 
     torch.manual_seed(0)
-    layer = bnb.nn.Linear4bit(128, 64, bias = False, compute_dtype = torch.bfloat16,
-                              quant_type = "nf4", quant_storage = torch.bfloat16)
-    layer.weight = bnb.nn.Params4bit(torch.randn(64, 128) * 0.05, requires_grad = False,
-                                     quant_type = "nf4", quant_storage = torch.bfloat16,
-                                     blocksize = 64, module = layer)
+    layer = bnb.nn.Linear4bit(
+        128,
+        64,
+        bias = False,
+        compute_dtype = torch.bfloat16,
+        quant_type = "nf4",
+        quant_storage = torch.bfloat16,
+    )
+    layer.weight = bnb.nn.Params4bit(
+        torch.randn(64, 128) * 0.05,
+        requires_grad = False,
+        quant_type = "nf4",
+        quant_storage = torch.bfloat16,
+        blocksize = 64,
+        module = layer,
+    )
     model = torch.nn.Sequential(layer.to("cpu"), torch.nn.Linear(64, 8))
     q.prepare_fsdp2_qlora(model)
     fully_shard(model, mesh = init_device_mesh("cpu", (world_size,)))
@@ -253,18 +309,28 @@ def _case_dcp_bnb(rank, world_size, m):
     expected = {k: v.clone() for k, v in sd.items()}
     with torch.no_grad():
         model[1].weight.zero_()
-    dcp.set_model_state_dict(model, sd if rank == 0 else {},
-                             options = StateDictOptions(full_state_dict = True, broadcast_from_rank0 = True, strict = False))
+    dcp.set_model_state_dict(
+        model,
+        sd if rank == 0 else {},
+        options = StateDictOptions(full_state_dict = True, broadcast_from_rank0 = True, strict = False),
+    )
     restored = model[1].weight.full_tensor()
     out["roundtrip"] = rank != 0 or torch.equal(restored, expected["1.weight"])
     # A full DCP state dict of an unsharded 4-bit model keeps what dequantizes it.
     plain = torch.nn.Sequential(
         bnb.nn.Linear4bit(128, 64, bias = False, compute_dtype = torch.bfloat16, quant_type = "nf4")
     )
-    plain[0].weight = bnb.nn.Params4bit(torch.randn(64, 128) * 0.05, requires_grad = False,
-                                        quant_type = "nf4", blocksize = 64, module = plain[0])
+    plain[0].weight = bnb.nn.Params4bit(
+        torch.randn(64, 128) * 0.05,
+        requires_grad = False,
+        quant_type = "nf4",
+        blocksize = 64,
+        module = plain[0],
+    )
     plain = plain.to("cpu")
-    out["full_keys"] = sorted(dcp.get_model_state_dict(plain, options = StateDictOptions(cpu_offload = True)))
+    out["full_keys"] = sorted(
+        dcp.get_model_state_dict(plain, options = StateDictOptions(cpu_offload = True))
+    )
     # accelerate's adapter-only path drops it (and no longer fails).
     import accelerate.utils.fsdp_utils as fsdp_utils
 
@@ -273,10 +339,22 @@ def _case_dcp_bnb(rank, world_size, m):
     class _Net(torch.nn.Module):
         def __init__(self):
             super().__init__()
-            self.q = bnb.nn.Linear4bit(128, 64, bias = False, compute_dtype = torch.bfloat16, quant_type = "nf4",
-                                       quant_storage = torch.bfloat16)
-            self.q.weight = bnb.nn.Params4bit(torch.randn(64, 128) * 0.05, requires_grad = False, quant_type = "nf4",
-                                              quant_storage = torch.bfloat16, blocksize = 64, module = self.q)
+            self.q = bnb.nn.Linear4bit(
+                128,
+                64,
+                bias = False,
+                compute_dtype = torch.bfloat16,
+                quant_type = "nf4",
+                quant_storage = torch.bfloat16,
+            )
+            self.q.weight = bnb.nn.Params4bit(
+                torch.randn(64, 128) * 0.05,
+                requires_grad = False,
+                quant_type = "nf4",
+                quant_storage = torch.bfloat16,
+                blocksize = 64,
+                module = self.q,
+            )
 
         def forward(self, x):
             return self.q(x)
@@ -284,8 +362,11 @@ def _case_dcp_bnb(rank, world_size, m):
     peft_model = get_peft_model(_Net().to("cpu"), LoraConfig(r = 4, target_modules = ["q"]))
     q.prepare_fsdp2_qlora(peft_model)
     fully_shard(peft_model, mesh = init_device_mesh("cpu", (world_size,)))
-    sd = fsdp_utils._get_model_state_dict(peft_model, adapter_only = True, sd_options = StateDictOptions(
-        full_state_dict = True, cpu_offload = True))
+    sd = fsdp_utils._get_model_state_dict(
+        peft_model,
+        adapter_only = True,
+        sd_options = StateDictOptions(full_state_dict = True, cpu_offload = True),
+    )
     out["adapter_keys"] = sorted(k.split("q.", 1)[-1] for k in sd)
     return out
 
@@ -306,15 +387,20 @@ def _case_slow_writer(rank, world_size, m):
 
 def _worker(rank, world_size, port, case, queue):
     try:
-        os.environ.update(MASTER_ADDR = "127.0.0.1", MASTER_PORT = str(port),
-                          RANK = str(rank), WORLD_SIZE = str(world_size))
+        os.environ.update(
+            MASTER_ADDR = "127.0.0.1",
+            MASTER_PORT = str(port),
+            RANK = str(rank),
+            WORLD_SIZE = str(world_size),
+        )
         import torch.distributed as dist
 
         import datetime
 
         timeout = datetime.timedelta(seconds = 4) if case == "slow_writer" else None
-        dist.init_process_group("gloo", rank = rank, world_size = world_size,
-                                **({"timeout": timeout} if timeout else {}))
+        dist.init_process_group(
+            "gloo", rank = rank, world_size = world_size, **({"timeout": timeout} if timeout else {})
+        )
         m = _load("fsdp2_save")
         if case == "slow_writer":
             result = _case_slow_writer(rank, world_size, m)
@@ -339,7 +425,10 @@ def _run(case, world_size = 2):
     ctx = mp.get_context("spawn")
     queue = ctx.Queue()
     port = _free_port()
-    procs = [ctx.Process(target = _worker, args = (r, world_size, port, case, queue)) for r in range(world_size)]
+    procs = [
+        ctx.Process(target = _worker, args = (r, world_size, port, case, queue))
+        for r in range(world_size)
+    ]
     for p in procs:
         p.start()
     results = {}
@@ -382,10 +471,12 @@ def test_gather_rebuilds_params4bit_with_exact_bytes():
     assert all(r["dtensor_after"] for r in results.values()), results
 
 
-@pytest.mark.skipif(not hasattr(torch.distributed.fsdp, "fully_shard") or
-                    "ignored_params" not in __import__("inspect").signature(
-                        torch.distributed.fsdp.fully_shard).parameters,
-                    reason = "fully_shard has no ignored_params")
+@pytest.mark.skipif(
+    not hasattr(torch.distributed.fsdp, "fully_shard")
+    or "ignored_params"
+    not in __import__("inspect").signature(torch.distributed.fsdp.fully_shard).parameters,
+    reason = "fully_shard has no ignored_params",
+)
 def test_unsharded_trainable_params_need_their_grads_averaged():
     base = _run("replicated")
     assert not base[0]["head_is_dtensor"], base
@@ -408,7 +499,9 @@ def test_dcp_state_dict_of_bitsandbytes_4bit():
     assert r["after_keys"] == ["1.bias", "1.weight"], r
     assert all(x["roundtrip"] for x in results.values()), results
     assert "0.weight.absmax" in r["full_keys"], r["full_keys"]
-    assert r["adapter_keys"] == ["lora_A.default.weight", "lora_B.default.weight"], r["adapter_keys"]
+    assert r["adapter_keys"] == ["lora_A.default.weight", "lora_B.default.weight"], r[
+        "adapter_keys"
+    ]
 
 
 def test_a_slow_writer_does_not_time_out_the_other_ranks():
