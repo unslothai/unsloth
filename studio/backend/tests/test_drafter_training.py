@@ -542,3 +542,16 @@ def test_phase_mtp_saves_head_beside_adapter(fake_zoo, tmp_path, monkeypatch):
     assert manifest["strategy"] == "mtp" and manifest["files"] == ["mtp_head.safetensors"]
     assert manifest["vllm"] == {"method": "mtp", "num_speculative_tokens": 2}
     assert (tmp_path / "mtp_head.safetensors").is_file()
+
+
+def test_capability_refuses_without_the_zoo_drafter_trainers(monkeypatch):
+    """An unsloth_zoo without the drafter trainers must not advertise a drafter it cannot train."""
+    from core.training import drafter
+
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.speculative.eagle3", None)
+    monkeypatch.setattr(
+        drafter, "_text_config", lambda *a, **k: pytest.fail("config read before the zoo check")
+    )
+    cap = drafter.drafter_capability("unsloth/Qwen3.5-2B")
+    assert cap["supported"] is False and cap["strategy"] is None
+    assert "unsloth_zoo" in cap["reason"]
