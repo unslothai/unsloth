@@ -359,15 +359,6 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     artifacts: [gguf("unsloth/FLUX.2-klein-9B-GGUF")],
   },
   {
-    // FLUX.3 Image Klein (distilled): text to image and up to 10 reference images. The GGUFs pair with the
-    // official repo for the Qwen3-VL text encoder and the FLUX.2 VAE.
-    canonicalId: "black-forest-labs/flux-3-image-klein",
-    displayName: "FLUX.3 Image Klein",
-    description: "Text-to-image and image editing",
-    scope: "image",
-    artifacts: [gguf("unsloth/flux-3-image-klein-GGUF")],
-  },
-  {
     canonicalId: "unsloth/Qwen-Image-Edit-2511",
     displayName: "Qwen-Image-Edit 2511",
     description: "Image editing",

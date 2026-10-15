@@ -789,3 +789,45 @@ def test_supplied_encoder_or_vae_files_are_refused_for_flux3(tmp_path, monkeypat
                 model_kind = "gguf",
                 **extra,
             )
+
+
+# ── review round 2 ───────────────────────────────────────────────────────────
+def test_the_face_carries_the_flux3_lora_loader(monkeypatch):
+    # Studio's LoRA path calls load_lora_weights / set_adapters / unload_lora_weights on the pipe; the pinned
+    # Diffusers build ships them for FLUX.3 as Flux3LoraLoaderMixin (transformer-only). Fake modules, so the
+    # test does not depend on which diffusers this environment has.
+    from core.inference import diffusion_flux3 as f3
+
+    class DiffusionPipeline:
+        pass
+
+    class Flux3LoraLoaderMixin:
+        _lora_loadable_modules = ["transformer"]
+
+        def load_lora_weights(self, *a, **k):
+            return "loaded"
+
+        def set_adapters(self, *a, **k):
+            return "set"
+
+        def unload_lora_weights(self):
+            return "unloaded"
+
+    fake = types.ModuleType("diffusers")
+    fake.DiffusionPipeline = DiffusionPipeline
+    loaders = types.ModuleType("diffusers.loaders")
+    loaders.Flux3LoraLoaderMixin = Flux3LoraLoaderMixin
+    fake.loaders = loaders
+    monkeypatch.setitem(sys.modules, "diffusers", fake)
+    monkeypatch.setitem(sys.modules, "diffusers.loaders", loaders)
+    monkeypatch.setattr(f3, "_PIPELINE_CLASS", None)
+    cls = f3.flux3_pipeline_class()
+    assert issubclass(cls, Flux3LoraLoaderMixin) and issubclass(cls, DiffusionPipeline)
+    for name in ("load_lora_weights", "set_adapters", "unload_lora_weights"):
+        assert callable(getattr(cls, name, None)), name
+    # The face's own __call__ still wins over anything a loader mixin defines.
+    assert cls.__call__ is f3._Flux3KleinPipelineMixin.__call__
+    # A build without the loader still assembles (no LoRA methods, as before).
+    del loaders.Flux3LoraLoaderMixin
+    monkeypatch.setattr(f3, "_PIPELINE_CLASS", None)
+    assert not hasattr(f3.flux3_pipeline_class(), "load_lora_weights")

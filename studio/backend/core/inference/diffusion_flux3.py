@@ -170,9 +170,15 @@ def flux3_pipeline_class() -> type:
     global _PIPELINE_CLASS
     if _PIPELINE_CLASS is None:
         from diffusers import DiffusionPipeline
-        _PIPELINE_CLASS = type(
-            "Flux3KleinPipeline", (_Flux3KleinPipelineMixin, DiffusionPipeline), {}
-        )
+
+        # The pinned build's FLUX.3 LoRA loader (transformer-only, like the FLUX.2 one): load_lora_weights,
+        # set_adapters and unload_lora_weights act on self.transformer, the same module the blocks run.
+        try:
+            from diffusers.loaders import Flux3LoraLoaderMixin as lora
+        except ImportError:
+            lora = None
+        bases = (_Flux3KleinPipelineMixin,) + ((lora,) if lora is not None else ()) + (DiffusionPipeline,)
+        _PIPELINE_CLASS = type("Flux3KleinPipeline", bases, {})
     return _PIPELINE_CLASS
 
 

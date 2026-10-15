@@ -285,6 +285,11 @@ for (const id of OLD_PIPELINE_MODELS) {
 assert.equal(loadSpecFor("unsloth/Z-Image-Turbo-GGUF", IMAGE_CATALOG)?.kind, "gguf");
 assert.equal(loadSpecFor("someone/unknown", IMAGE_CATALOG), null);
 
+// Not published on the Hub yet: offering it would send every pick to a missing repo. Drop this when it is uploaded.
+for (const unpublished of ["unsloth/flux-3-image-klein-GGUF"]) {
+  assert.equal(artifactForRepoId(unpublished, IMAGE_CATALOG), null, `unpublished repo offered: ${unpublished}`);
+}
+
 // Every old curated id is still present as an option (backwards compat).
 const imageOptionIds = new Set(catalogToModelOptions(IMAGE_CATALOG).map((o) => o.id));
 for (const id of [
@@ -296,7 +301,6 @@ for (const id of [
   "unsloth/FLUX.1-dev-GGUF",
   "unsloth/FLUX.2-klein-4B-GGUF",
   "unsloth/FLUX.2-klein-9B-GGUF",
-  "unsloth/flux-3-image-klein-GGUF",
   "unsloth/Qwen-Image-Edit-2511-GGUF",
   "unsloth/FLUX.1-Kontext-dev-GGUF",
   ...Object.keys(OLD_SAFETENSORS_MODELS),
