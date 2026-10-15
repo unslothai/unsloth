@@ -3041,3 +3041,40 @@ def test_rocm_load_local_oom_wins_over_a_concurrent_global_success(monkeypatch):
         assert rc.rocm_block_compile_probe()[0] is False
     assert rc.rocm_block_compile_probe()[0] is True
     rc._reset_for_tests()
+
+
+def test_rocm_probe_waits_for_a_compilable_model(monkeypatch):
+    # No denoiser to compile: neither the plan nor the speed primitive it hands the family to may run the probe.
+    from core.inference.diffusion_autoopt import apply as apply_mod
+    from core.inference.diffusion_autoopt import plan as plan_mod
+
+    _rc, calls = _probe_must_not_run(monkeypatch)
+    pipe = types.SimpleNamespace(transformer = None)
+    fam = types.SimpleNamespace(name = "z-image", supports_torch_compile = True)
+    p = plan_mod.build_plan(pipe, _rocm_bf16(), family = fam, backend = "image", speed_mode = "default")
+    assert p.step("compiled").attempt is False
+    assert p.reason("compiled") == "no denoiser transformer or whole-compile U-Net"
+    assert p.compile_declined_by_model is True
+    seen = []
+
+    def _apply(family, logger):
+        seen.append(ds_mod.compile_eligible(_rocm_bf16(), is_gguf = False, family = family))
+        return {}
+
+    apply_mod.run_speed_layer(
+        pipe, _rocm_bf16(), family = fam, backend = "image", speed_mode = "default", apply = _apply
+    )
+    assert seen == [False] and calls == []
+
+
+def test_rocm_probe_still_runs_for_a_compilable_model(monkeypatch):
+    from core.inference.diffusion_autoopt import plan as plan_mod
+
+    _rc, calls = _probe_must_not_run(monkeypatch)
+    monkeypatch.setattr(plan_mod.targets, "denoiser_dits", lambda pipe: [object()])
+    fam = types.SimpleNamespace(name = "z-image", supports_torch_compile = True)
+    p = plan_mod.build_plan(
+        types.SimpleNamespace(), _rocm_bf16(), family = fam, backend = "image", speed_mode = "default"
+    )
+    assert p.compile_declined_by_model is False
+    assert len(calls) == 1
