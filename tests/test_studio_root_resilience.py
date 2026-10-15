@@ -16,11 +16,7 @@ STORAGE_ROOTS = REPO_ROOT / "studio" / "backend" / "utils" / "paths" / "storage_
 LLAMA_CPP = REPO_ROOT / "studio" / "backend" / "core" / "inference" / "llama_cpp.py"
 
 
-# storage_roots.py imports `loggers`, which is studio/backend/loggers. Nothing in this file put
-# studio/backend on sys.path, so these tests only passed when a tests/studio module happened to
-# have been imported into the same process first -- true while the whole tree ran as one pytest
-# session, and false the moment tests/studio runs on its own runner. Two tests then failed with
-# ModuleNotFoundError: No module named 'loggers', which names neither this file nor the cause.
+# storage_roots.py imports `loggers` from studio/backend, so put it on sys.path explicitly.
 _BACKEND = REPO_ROOT / "studio" / "backend"
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
@@ -43,15 +39,11 @@ def test_infer_studio_home_swallows_permission_error(tmp_path, monkeypatch):
     sys.modules.pop("sr_perm", None)
     mod = _load("sr_perm", STORAGE_ROOTS)
     with mock.patch.object(Path, "is_file", side_effect = PermissionError("denied")):
-        # Must NOT raise.
         assert mod._infer_studio_home_from_venv() is None
 
 
 def test_infer_studio_home_refuses_the_docker_app_dir(tmp_path, monkeypatch):
-    """The Docker image keeps the venv under UNSLOTH_STUDIO_APP and links it into the
-    Studio home, so sys.prefix resolves to the app dir, which carries the sentinels.
-    Adopting it would send studio.db and auth/ into the container layer instead of the
-    volume; inference must decline so the later defaults apply."""
+    """Inference must decline the Docker app dir, else studio.db and auth/ land in the container layer."""
     app = tmp_path / "unsloth-studio-app"
     venv = app / "unsloth_studio"
     venv.mkdir(parents = True)
@@ -100,11 +92,9 @@ def test_kill_orphan_catches_oserror_from_studio_root():
     resolves the install root through the shared _resolved_studio_root_and_is_legacy()
     classifier, which swallows (ImportError, OSError, ValueError) on the probe."""
     src = LLAMA_CPP.read_text(encoding = "utf-8")
-    # Cleanup delegates to the shared classifier rather than importing studio_root inline.
     assert "LlamaCppBackend._resolved_studio_root_and_is_legacy()" in _method_body(
         src, "_kill_orphaned_servers"
     ), "_kill_orphaned_servers must resolve the root via _resolved_studio_root_and_is_legacy()"
-    # The shared classifier catches both the resolve() failure and the outer studio_root() probe.
     classifier = _method_body(src, "_resolved_studio_root_and_is_legacy")
     assert "studio_root as _sr" in classifier, "classifier must probe studio_root()"
     assert "except (OSError, ValueError):" in classifier, "inner resolve() probe must be guarded"
@@ -124,10 +114,7 @@ def _exec_search_roots_block(
     _resolved_studio_root_and_is_legacy() classifier it delegates to -- with a
     controlled studio_root() and resolve(), without importing the heavy module."""
     src = LLAMA_CPP.read_text(encoding = "utf-8")
-    # Shared root classifier (holds the defensive try/except for studio_root()).
-    # End the slice at the next sibling def/decorator at the same indent rather
-    # than the literal "@staticmethod" string, so a future docstring mentioning a
-    # decorator can't truncate the helper mid-body and break exec().
+    # End at the next sibling def so a docstring mentioning a decorator cannot truncate it.
     helper_start = src.index("def _resolved_studio_root_and_is_legacy")
     indent = " " * (helper_start - src.rfind("\n", 0, helper_start) - 1)
     nxt_def = src.find(f"\n{indent}def ", helper_start + 1)
@@ -135,7 +122,6 @@ def _exec_search_roots_block(
     sibling = [idx for idx in (nxt_def, nxt_dec) if idx != -1]
     helper_end = min(sibling) if sibling else len(src)
     helper = textwrap.dedent(src[helper_start:helper_end])
-    # search_roots derivation inside _find_llama_server_binary (delegates to the classifier).
     block_start = src.index('legacy_llama = Path.home() / ".unsloth" / "llama.cpp"')
     block_end = src.index("for unsloth_home in search_roots:", block_start)
     block = textwrap.dedent(" " * 8 + src[block_start:block_end])
@@ -178,10 +164,8 @@ def test_search_roots_keeps_custom_when_resolve_fails(tmp_path):
     custom = tmp_path / "custom_studio"
     custom.mkdir()
     roots = _exec_search_roots_block(home = home, studio_root_value = custom, resolve_raises = True)
-    # On resolve() failure, the inner except falls back to direct equality;
-    # custom != legacy_studio so the custom root must remain in search_roots.
+    # On resolve() failure the fallback is direct equality, so the custom root must remain.
     assert custom / "llama.cpp" in roots, f"custom root dropped on resolve() failure: {roots}"
-    # custom-mode discovery excludes the legacy tree to match _kill_orphaned_servers.
     assert (
         home / ".unsloth" / "llama.cpp"
     ) not in roots, f"legacy llama path must not appear in custom-mode search_roots: {roots}"

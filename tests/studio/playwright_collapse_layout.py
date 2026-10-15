@@ -1,86 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""What a collapsible toggle costs, and why that cost is a property of the WHOLE document.
-
-Radix's `CollapsibleContentImpl` runs a layout effect on every `open` change that writes
-`transitionDuration: 0s` and `animationName: none`, reads `getBoundingClientRect()`, then writes
-the styles back. The read is a synchronous layout, and it is UNCONDITIONAL: it does not ask
-whether any stylesheet consumes the `--radix-collapsible-content-height` it publishes. Blink's
-layout is O(total layout objects) rather than O(dirty objects), so that one read is charged for
-walking the entire document, not the pane that changed.
-
-This drives studio/frontend/smoke-collapse-layout.html, whose design point is that THE PANE'S OWN
-CONTENT IS IDENTICAL IN EVERY RUN. Only the filler around it changes size. So a toggle that gets
-more expensive as `fillers` grows cannot be paying for the pane, and the extra cost has nowhere to
-come from except the rest of the document.
-
-The four arms and what each is for:
-
-    radix-height     Radix content plus the `animate-collapsible-*` height keyframes. Today's
-                     mechanism, and the baseline the other three are read against.
-    radix-grid       Radix content plus a `grid-template-rows: 0fr -> 1fr` transition, with nothing
-                     consuming `--radix-collapsible-content-height`. This arm exists TO BE
-                     DISPROVED. If it forces the same full-document layout as radix-height, then
-                     swapping the keyframes is not the fix, because the measurement Radix does is
-                     not conditional on anything reading its result.
-    unmeasured-grid  The local `UnmeasuredCollapsible` plus the same grid transition, and no
-                     measurement at all. This is the arm that should not scale.
-    reasoning        The real reasoning primitives, which follow GRID_COLLAPSE_REASONING_ENABLED.
-                     Run the page once per flag value for the real before/after rather than a
-                     model of it; the flag is a build-time constant, so this driver records the
-                     value it found in the checkout it served rather than choosing one.
-
-The documented expectation, stated here as what the arms are FOR and deliberately NOT asserted
-below: radix-height and radix-grid both force the full-document layout, unmeasured-grid does not.
-
-Two independent numbers are collected per cell, because each covers the other's blind spot:
-
-    tracing          `Layout` trace events carry `args.beginData.dirtyObjects`, `totalObjects` and
-                     `partialLayout` alongside the event's own duration, which is the only place
-                     the "milliseconds of layout for a handful of dirty objects against a
-                     six-figure tree" shape is visible at all.
-    Performance      `Performance.getMetrics` before and after the toggles gives `LayoutCount` and
-                     `LayoutDuration`, which are cheap, stable, and cannot be thrown off by a
-                     trace category being renamed upstream. If the two disagree, the trace parse
-                     is the side to suspect.
-
-READ THE FORCED COLUMN, NOT THE TOTAL. Both mechanisms animate a property that layout depends on,
-`height` on one side and `grid-template-rows` on the other, so both lay out on every animation
-frame and the raw layout count mostly counts frames. What separates the arms is the layout Blink
-did SYNCHRONOUSLY because script asked for a geometry it had invalidated, and the trace names those
-exactly: only a script-forced layout carries `args.beginData.stackTrace`, and on the Radix arms
-that stack reads `commitHookLayoutEffects` into the collapsible's `getBoundingClientRect`. The
-report keeps both, and the forced count is the one the arms differ on.
-
-One property of the page worth knowing before reading its radix-grid row: that arm barely animates.
-Radix's presence machinery keys off animation events, and the arm has only a transition, so the
-pane unmounts immediately on close and mounts already at `1fr` on open. Its total layout count is
-therefore small for a reason that has nothing to do with the measurement, which is a second reason
-to read the forced column there.
-
-The last thing each cell does is grow the content of an OPEN pane and check that the rendered
-height followed it, which is the case a height captured at toggle time gets wrong and `1fr` gets
-right by construction. Note what that check can and cannot see here: the height keyframes carry
-`fill-mode-forwards` only on close, so once the open animation ends the pane is back to its
-natural height and growth after that point is followed on every arm. The clipping this looks for
-is what a captured height that OUTLIVED its animation would produce, so a clean row is the
-expected reading and a dirty one is a real regression, not the other way round.
-
-There is no performance budget here on purpose. This is a measurement probe, and layout timings
-vary by more across machines than the effect being measured varies across a healthy tree, so a
-hard threshold would be flaky in CI and would be tuned away rather than fixed. It exits non-zero
-only for a harness failure: a page that never became ready, an arm that rendered nothing, a filler
-parameter that was ignored, a trace that captured no layouts at all.
-
-Run:
-    python tests/studio/playwright_collapse_layout.py
-    python tests/studio/playwright_collapse_layout.py --arm radix-grid --fillers 5000
-    python tests/studio/playwright_collapse_layout.py --json > collapse-layout.json
-
-It starts and stops its own vite dev server. Point it at one you already have with
-SMOKE_BASE_URL, or move the port it picks with SMOKE_PORT.
-"""
+"""Measures whether a collapsible toggle's forced layout grows with document size, not the pane."""
 
 from __future__ import annotations
 
@@ -105,11 +26,9 @@ from _playwright_robust import (  # noqa: E402
 )
 
 PORT = int(os.environ.get("SMOKE_PORT", "5217"))
-# Unset: start and stop our own server.
 _EXTERNAL = os.environ.get("SMOKE_BASE_URL", "").strip()
 BASE = _EXTERNAL or f"http://127.0.0.1:{PORT}"
 OWNS_SERVER = not _EXTERNAL
-# Under logs/ like every sibling harness; logs/ is gitignored, so the tree stays clean.
 OUT = Path(os.environ.get("PW_ART_DIR", "logs/playwright-collapse-layout"))
 LABEL = "collapse-layout"
 SMOKE_PAGE = "smoke-collapse-layout.html"
@@ -117,38 +36,25 @@ SMOKE_ENTRY = "smoke-collapse-layout-main.tsx"
 
 ARMS = ("radix-height", "radix-grid", "unmeasured-grid", "reasoning")
 
-# The flag the `reasoning` arm follows is a build-time constant, so the page cannot report it. Read it out of the
-# source vite is serving instead, and record it beside the numbers: a before/after table with no note of which side of
-# the flag it came from is unreadable a week later.
+# The flag is build-time, so read it from the source vite serves and record it with the numbers.
 FLAG_SOURCE = FRONTEND / "src" / "components" / "assistant-ui" / "thread-feature-flags.ts"
 
-# Two document sizes, because the claim is about SCALING and a single size cannot show it. The small one is a plausible
-# thread; the large one is where O(total layout objects) stops being a rounding error. One filler row is a block of a
-# dozen inline boxes, so the layout-object count is roughly forty times the row count, and the report prints the element
-# count the page measured rather than trusting this parameter.
+# Two sizes because the claim is about scaling; layout objects are roughly 40x the row count.
 DEFAULT_FILLERS = (200, 5000)
 DEFAULT_PANE_PARAGRAPHS = int(os.environ.get("SMOKE_COLLAPSE_PANE_PARAGRAPHS", "40"))
 DEFAULT_CYCLES = int(os.environ.get("SMOKE_COLLAPSE_CYCLES", "6"))
-# Unthrottled by default: unlike a streaming render, a forced full-document layout is expensive on any machine, so there
-# is nothing here that needs slowing down to become visible. Kept as a knob because throttling scales both sides of the
-# comparison equally and can lift the signal on a box whose layout is fast enough that the small-filler column reads as
-# noise.
+# Throttling scales both sides equally; kept only as a knob for very fast hosts.
 DEFAULT_THROTTLE = int(os.environ.get("SMOKE_COLLAPSE_THROTTLE", "1"))
 
-# The pane animates for 200ms. Everything below waits past that, so a measurement never lands
-# while the transition is still running and the arms are never compared at different points of it.
+# The pane animates for 200ms; measurements wait past it.
 SETTLE_MS = 400
-# Deliberately INSIDE the 200ms, for the mid-flight growth check below.
+# Deliberately inside the 200ms transition.
 MIDFLIGHT_GROW_DELAY_MS = 60
 GROW_PARAGRAPHS = 20
-# Enough of a forced-layout stack to reach the frame that names the effect it ran from.
 STACK_FRAMES_KEPT = 4
-# A five-thousand-row page is a real render in a dev server on a cold module graph.
 READY_TIMEOUT_MS = 180_000
 
-# `Layout` is emitted under `devtools.timeline`;
-# The parse below matches on the event NAME and records whatever category it arrived under, so an upstream
-# recategorisation shows up in the report as a changed category rather than as a silent zero.
+# Match on event name and record the category, so an upstream recategorisation shows up, not a zero.
 TRACE_CATEGORIES = (
     "devtools.timeline",
     "disabled-by-default-devtools.timeline",
@@ -156,9 +62,7 @@ TRACE_CATEGORIES = (
     "blink.user_timing",
 )
 
-# Clicking through Playwright would put its own hit-testing, and the layout reads that come with it, inside the trace
-# window. The whole cycle also runs in one evaluate so a round trip cannot land between the open and the close of a
-# single toggle.
+# Toggle inside one evaluate so Playwright hit-testing and round trips stay out of the trace window.
 TOGGLE_CYCLES_JS = """
 async ([cycles, settleMs]) => {
   const trigger = () => document.querySelector('[data-probe="trigger"]');
@@ -186,17 +90,14 @@ CLICK_TRIGGER_JS = """
 }
 """
 
-# The arm mounted, and the hooks App installs in its effect are there to drive it. Checked separately from
-# `__probeReady`, which is published from module scope and is therefore set even when the arm threw during render.
+# __probeReady is set from module scope even when the arm threw during render.
 ARM_DRIVABLE_JS = """
 () => Boolean(document.querySelector('[data-probe="trigger"]'))
     && typeof window.__probeGrow === "function"
     && typeof window.__probeReset === "function"
 """
 
-# `overflowPx` is the whole streaming question in one number: how far the last paragraph's bottom sits below the pane's
-# own box. A height animated to a value captured at toggle time clips whatever arrived afterwards; `1fr` re-resolves
-# against the content every frame and cannot.
+# A height animated to a toggle-time value clips later content; `1fr` re-resolves every frame.
 PANE_SNAPSHOT_JS = """
 () => {
   const content = document.querySelector('[data-probe="content"]');
@@ -225,14 +126,8 @@ def info(message: str) -> None:
 
 
 def reasoning_flag_in_source() -> bool | None:
-    """GRID_COLLAPSE_REASONING_ENABLED as written in the checkout this harness serves.
-
-    None when the file cannot be read, which is the honest answer under SMOKE_BASE_URL: the
-    server is then someone else's tree and this one says nothing about it.
-    """
-    # SMOKE_BASE_URL serves a bundle built somewhere else, so the local working tree is not evidence about it. Reading
-    # it anyway would label a flag-on bundle as flag-off in the report, which is the one thing the `reasoning` arm
-    # exists to get right.
+    """Returns None when the file is unreadable or SMOKE_BASE_URL serves someone else's tree."""
+    # An external bundle was built elsewhere, so the local flag source says nothing about it.
     if _EXTERNAL:
         return None
     try:
@@ -253,11 +148,7 @@ def delta(before: dict[str, float], after: dict[str, float], name: str) -> float
 
 
 def start_tracing(cdp) -> list[dict]:
-    """Begin a trace and return the list the `dataCollected` batches will land in.
-
-    ReportEvents mode delivers nothing until `Tracing.end`, so the list stays empty until
-    `stop_tracing` has pumped the events through.
-    """
+    """ReportEvents mode delivers nothing until Tracing.end, so the returned list stays empty until then."""
     collected: list[dict] = []
     cdp.on("Tracing.dataCollected", lambda payload: collected.extend(payload.get("value") or []))
     cdp.send(
@@ -280,13 +171,7 @@ def stop_tracing(
     *,
     timeout_s: float = 60.0,
 ) -> list[dict]:
-    """End the trace and block until Chromium says it has handed over every batch.
-
-    Reading `collected` straight after `Tracing.end` returns whatever happened to have arrived,
-    which on a large trace is a truncated one, and a truncated trace is indistinguishable from a
-    cheap toggle. The wait is a `wait_for_timeout` rather than a `sleep` because the sync API only
-    dispatches CDP events while it is inside a call into the driver.
-    """
+    """Waits for Tracing.tracingComplete; sleep would not dispatch CDP events, so use wait_for_timeout."""
     done = {"seen": False}
     cdp.on("Tracing.tracingComplete", lambda _payload: done.__setitem__("seen", True))
     cdp.send("Tracing.end")
@@ -299,28 +184,13 @@ def stop_tracing(
 
 
 def _frame_label(frame: dict) -> str:
-    """`functionName file.js:line`, with the dev server's URL and cache-busting query dropped.
-
-    The full URL is three quarters host and `?v=` hash, which pushes the part that identifies the
-    code off the end of any line the table prints.
-    """
+    """Drops the dev server URL and cache-busting ?v= query so file:line stays visible in a table."""
     url = str(frame.get("url") or "?").split("?")[0].rsplit("/", 1)[-1]
     return f"{frame.get('functionName') or '(anonymous)'} {url}:{frame.get('lineNumber', '?')}"
 
 
 def summarise_layouts(events: list[dict]) -> dict:
-    """Fold the `Layout` events into the numbers this probe is about.
-
-    `totalObjects` is the size of the tree under the relayout root and `dirtyObjects` the count
-    that actually needed it, so their ratio is the statement being tested. `partialLayout` is
-    Blink's own verdict on scope: false means it laid out the whole document.
-
-    A `stackTrace` in `beginData` is present only when script forced the layout, which is why it
-    is split out here: the unqualified count is mostly animation frames and does not separate the
-    arms. It needs `disabled-by-default-devtools.timeline.stack` to be recorded, so a run whose
-    forced column is zero everywhere is a run whose categories did not arrive, not a tree that
-    stopped measuring.
-    """
+    """Only forced layouts carry a stackTrace, so an all-zero forced column means categories are missing."""
     durations: list[float] = []
     forced_durations: list[float] = []
     dirty: list[int] = []
@@ -338,7 +208,6 @@ def summarise_layouts(events: list[dict]) -> dict:
         categories.add(str(event.get("cat", "")))
         begin = (event.get("args") or {}).get("beginData") or {}
         stack = begin.get("stackTrace") or []
-        # Complete ("X") events carry `dur`.
         if event.get("dur") is None:
             without_duration += 1
         else:
@@ -351,9 +220,7 @@ def summarise_layouts(events: list[dict]) -> dict:
             total.append(begin["totalObjects"])
             if stack:
                 forced_total.append(begin["totalObjects"])
-        # Several frames, not one. The top of a forced-layout stack is an anonymous callee inside the bundled
-        # dependency, which names the file but not the reason; the frame that says this ran from a layout effect is a
-        # few down. Together they make a row attributable instead of arguable.
+        # The top frame is an anonymous dependency callee; the layout-effect frame is a few down.
         if stack:
             sources.add(" <- ".join(_frame_label(frame) for frame in stack[:STACK_FRAMES_KEPT]))
         scope = begin.get("partialLayout")
@@ -383,14 +250,7 @@ def summarise_layouts(events: list[dict]) -> dict:
 
 
 def grow_probe(page) -> dict:
-    """Grow the content of an OPEN pane and report whether the rendered height followed it.
-
-    Two growths, because they fail differently. The settled one is the easy case. The mid-flight
-    one starts while the open animation is still running, which is where a height captured at
-    toggle time is already stale by the time it is applied, and is the shape of reasoning text
-    streaming into a pane the reader has just opened.
-    """
-    # The toggle loop ran whole cycles, so the pane is closed and this click opens it.
+    """Grows an open pane twice, settled and mid-animation, to catch a height captured at toggle time."""
     page.evaluate(CLICK_TRIGGER_JS)
     page.wait_for_timeout(SETTLE_MS)
     settled_before = page.evaluate(PANE_SNAPSHOT_JS)
@@ -398,8 +258,6 @@ def grow_probe(page) -> dict:
     page.wait_for_timeout(SETTLE_MS)
     settled_after = page.evaluate(PANE_SNAPSHOT_JS)
 
-    # Back to a closed pane at the original size, so the mid-flight run opens from the state the settled one did rather
-    # than from a pane that is already half as long again.
     page.evaluate("() => window.__probeReset()")
     page.wait_for_timeout(SETTLE_MS)
     page.evaluate(CLICK_TRIGGER_JS)
@@ -408,8 +266,6 @@ def grow_probe(page) -> dict:
     page.evaluate(CLICK_TRIGGER_JS)
     page.wait_for_timeout(MIDFLIGHT_GROW_DELAY_MS)
     page.evaluate("(n) => window.__probeGrow(n)", GROW_PARAGRAPHS)
-    # Twice the settle, because this growth lands during the transition and the row has to finish resolving against
-    # content that changed underneath it.
     page.wait_for_timeout(SETTLE_MS * 2)
     midflight_after = page.evaluate(PANE_SNAPSHOT_JS)
     return {
@@ -422,12 +278,7 @@ def grow_probe(page) -> dict:
 
 
 def run_cell(context, arm: str, fillers: int, options: argparse.Namespace) -> dict:
-    """One arm at one document size, on a page of its own.
-
-    A fresh page per cell rather than a re-navigation: the layout tree, the style engine's caches
-    and the metrics counters all start clean, and `Performance.getMetrics` is cumulative per page,
-    so a shared page would make every cell after the first a delta against a warmed engine.
-    """
+    """Each cell gets a fresh page, since Performance.getMetrics is cumulative per page."""
     url = (
         f"{BASE}/{SMOKE_PAGE}?arm={arm}&fillers={fillers}"
         f"&paneParagraphs={options.pane_paragraphs}"
@@ -438,8 +289,6 @@ def run_cell(context, arm: str, fillers: int, options: argparse.Namespace) -> di
     problems: list[str] = []
     try:
         page.goto(url, wait_until = "domcontentloaded", timeout = READY_TIMEOUT_MS)
-        # The page publishes `__probeReady` after two frames and puts the element count in it, so "document size" in the
-        # report is measured rather than being the parameter restated.
         page.wait_for_function("() => Boolean(window.__probeReady)", timeout = READY_TIMEOUT_MS)
         ready = page.evaluate("() => window.__probeReady")
 
@@ -451,10 +300,8 @@ def run_cell(context, arm: str, fillers: int, options: argparse.Namespace) -> di
                 f"installed; page errors so far: {errors}"
             ) from exc
 
-        # Re-read the size AFTER the arm is drivable, and do not trust the value captured above.
         ready["elements"] = page.evaluate("() => document.getElementsByTagName('*').length")
 
-        # The page echoes the query it parsed.
         if ready.get("arm") != arm:
             problems.append(f"asked for arm {arm!r}, page reports {ready.get('arm')!r}")
         if ready.get("fillers") != fillers:
@@ -467,14 +314,11 @@ def run_cell(context, arm: str, fillers: int, options: argparse.Namespace) -> di
 
         cdp = context.new_cdp_session(page)
         cdp.send("Performance.enable")
-        # After load, so the page's own build is never throttled in, and recorded in the report so
-        # a difference between cells can never be an artefact of uneven throttling.
+        # Throttle after load so the page build is never throttled.
         if options.throttle > 1:
             cdp.send("Emulation.setCPUThrottlingRate", {"rate": options.throttle})
 
-        # One discarded cycle. The first open mounts the pane's content and resolves its styles for the first time,
-        # which is real work that has nothing to do with the toggle and would otherwise dominate the first
-        # measured cycle.
+        # Discard one cycle: the first open mounts and styles the content, which would dominate.
         page.evaluate(TOGGLE_CYCLES_JS, [1, SETTLE_MS])
 
         collected = start_tracing(cdp)
@@ -530,11 +374,7 @@ def render_table(cells: list[dict]) -> str:
 
 
 def render_scaling(cells: list[dict]) -> str:
-    """Small versus large, per arm. This is the comparison the whole page exists to make.
-
-    Read against the forced layouts, since that is the column the arms differ on; the totals are
-    dominated by whatever the arm animates.
-    """
+    """Compares small and large document sizes per arm, read on the forced layouts, not the totals."""
     by_arm: dict[str, list[dict]] = {}
     for cell in cells:
         by_arm.setdefault(cell["arm"], []).append(cell)
@@ -597,13 +437,7 @@ def _px(value) -> str:
 
 
 def collect_failures(report: dict) -> list[str]:
-    """Harness failures only.
-
-    Nothing here reads a duration. A probe that failed when a toggle got slower would be red on
-    the tree it is meant to describe, and the first fix for that is always to raise the number.
-    What it does refuse is a run that measured nothing, because those are the ones that look like
-    a clean result.
-    """
+    """Reports harness failures only, never timing: a run that measured nothing must not look clean."""
     failures: list[str] = []
     cells = report["cells"]
     if not cells:
@@ -641,10 +475,7 @@ def collect_failures(report: dict) -> list[str]:
                 "the streaming check measured nothing"
             )
 
-    # The forced column is the one the arms are read on, and it is the one that goes quietly to zero: it needs the
-    # disabled-by-default stack category, and a trace without it reports every arm as forcing nothing, which looks like
-    # the fix already landed everywhere. radix-height is the anchor, because Radix's measurement is unconditional
-    # upstream and cannot legitimately read zero, so this is only asserted on a sweep that includes it.
+    # The forced column needs the disabled-by-default stack category; radix-height cannot legitimately read zero.
     ran_radix_height = [cell for cell in cells if cell["arm"] == "radix-height"]
     if ran_radix_height and not any(cell["trace"]["forced_layouts"] for cell in cells):
         failures.append(
@@ -654,8 +485,6 @@ def collect_failures(report: dict) -> list[str]:
             f"{sorted({c for cell in cells for c in cell['trace']['categories']})}"
         )
 
-    # A sweep whose cells all rendered the same document proves nothing about scaling, and the flat table it produces
-    # reads like a result rather than like a broken parameter.
     by_arm: dict[str, list[dict]] = {}
     for cell in cells:
         by_arm.setdefault(cell["arm"], []).append(cell)
@@ -753,8 +582,7 @@ def run(options: argparse.Namespace) -> dict:
     }
     with sync_playwright() as p:
         browser = p.chromium.launch(headless = not options.headful, args = chromium_launch_args())
-        # A fixed viewport, because a filler row's height depends on how many times it wraps and therefore on the width;
-        # a default that varied by machine would move the layout-object count between runs of the same command.
+        # Fixed viewport: row height depends on wrapping, so a varying width would move the layout-object count.
         context = browser.new_context(viewport = {"width": 1200, "height": 900})
         try:
             for arm in options.arms:
@@ -770,7 +598,6 @@ def run(options: argparse.Namespace) -> dict:
 def main(argv: list[str] | None = None) -> int:
     global _LOG
     options = parse_args(sys.argv[1:] if argv is None else argv)
-    # Everything human goes to stderr under --json, so stdout stays a single parseable document.
     if options.json:
         _LOG = sys.stderr
 
