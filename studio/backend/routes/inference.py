@@ -40119,6 +40119,13 @@ async def _responses_in_process_stream(
             for event in translator.finish():
                 yield event
         except asyncio.CancelledError:
+            task = asyncio.current_task()
+            # A source that turns its own Stop into CancelledError (the managed engine tool path)
+            # ends like any stopped run; only the consumer's cancellation propagates.
+            if source.cancelled and not (task is not None and task.cancelling()):
+                mark_response_failed(getattr(request, "scope", None))
+                api_monitor.finish(monitor_id, "cancelled")
+                return
             cancelled = True
             source.cancel_event.set()
             api_monitor.finish(monitor_id, "cancelled")

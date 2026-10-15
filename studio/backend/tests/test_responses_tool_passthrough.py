@@ -4117,6 +4117,7 @@ class TestResponsesInProcessStream:
         taken = -1,
         entry = {},
         headers = (),
+        raise_on_stop = False,
     ):
         # Streams an in-process run of `chunks`; taken >= 0 cancels after that many events,
         # None disconnects before the body starts.
@@ -4135,6 +4136,8 @@ class TestResponsesInProcessStream:
                     for i, chunk in enumerate(chunks):
                         if i == stop_at:
                             event.set()  # a Stop through the run's tracked event
+                            if raise_on_stop:  # as the managed vLLM / SGLang tool path does
+                                raise asyncio.CancelledError()
                         yield f"data: {json.dumps(chunk)}\n\n"
                     yield "data: [DONE]\n\n"
                 except BaseException as exc:
@@ -4173,6 +4176,12 @@ class TestResponsesInProcessStream:
 
         seen["lines"] = asyncio.run(run())
         return seen
+
+    def test_a_source_raising_on_stop_still_ends_the_stream_cleanly(self, monkeypatch):
+        seen = self._run(monkeypatch, self._CHUNKS, stop_at = 2, raise_on_stop = True)
+        events = "".join(seen["lines"])
+        assert "response.created" in events and "response.completed" not in events
+        assert ("cancelled",) in seen["finish"]
 
     def test_delegated_chat_never_offers_a_control_channel_it_cannot_relay(self, monkeypatch):
         # An approval_id in a dropped tool_start frame would leave the tool loop waiting.
