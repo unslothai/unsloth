@@ -62,6 +62,8 @@ export const ja = {
       never: "許可しない",
       scripts: "スクリプトの実行",
       scriptsDescription: "モデルがページ上でスクリプトを実行できるかどうかを選択します。各スクリプトは実行前に表示されます",
+      cursor: "カーソルを表示",
+      cursorDescription: "モデルがページ上でクリック、入力、ドラッグする位置にポインターを表示します",
       askEveryTime: "その都度確認",
       permissionsTitle: "エージェントの権限",
       permissionsDescription: "既定の動作を選び、特定のサイトに例外を追加します。パスワードや支払い情報の欄は、この設定にかかわらず入力されません。",
@@ -260,7 +262,7 @@ export const ja = {
     annotationScreenshotsAlways: "常に含める",
     annotationScreenshotsNever: "含めない",
     clearDataSetting: "閲覧データを消去",
-    clearDataSettingDescription: "閲覧履歴、ダウンロード履歴、キャッシュされたページを消去します。ページには Cookie やサイトデータは保存されません。",
+    clearDataSettingDescription: "閲覧履歴、ダウンロード履歴、キャッシュされたページを消去します。ページの Cookie やサイトデータは Studio を再読み込みするまでのみ保持されます。",
     manage: "管理",
     fullView: {
       enter: "全画面表示",
@@ -436,7 +438,7 @@ export const ja = {
     },
     clearData: {
       title: "閲覧データを消去しますか？",
-      description: "閲覧履歴、ダウンロード履歴、キャッシュされたページを消去します。ダウンロードしたファイルはコンピュータに残ります。",
+      description: "閲覧履歴、ダウンロード履歴、キャッシュされたページ、サイトの Cookie とデータを消去し、サイトからログアウトします。ダウンロードしたファイルはコンピューターに残ります。",
       cancel: "キャンセル",
       confirm: "データを消去",
       done: "閲覧データを消去しました",
@@ -452,6 +454,7 @@ export const ja = {
       resubmit: "このページはフォーム送信の結果です。再読み込みするとフォームが再送信され、同じ操作が繰り返される可能性があります。",
       upload: "この表示ではファイルをアップロードできません。送信するにはシステムのブラウザでページを開いてください。",
       scriptNavigation: "このページはスクリプトで別のアドレスに移動しようとしましたが、この表示では追従できません。システムのブラウザで開いてください。",
+      needsBrowser: "このページはこの表示でブロックされるブラウザ機能を使おうとしたため、一部が動作しない可能性があります。システムのブラウザで開いてください。",
     },
     native: {
       externalPrompt: "{host} が {url} を開こうとしています",
@@ -2574,6 +2577,9 @@ export const ja = {
         showMemoryBar: "VRAM 使用量バーを表示",
         showMemoryBarDescription:
           "ダウンロード済みモデルの行の下に、推定 VRAM 使用量を表示します。内訳は重み、実際に読み込まれるコンテキスト長での KV キャッシュ、および投機的デコードの下書き用に確保される領域です。",
+        fitOnDeviceOnly: "収まるモデルのみ表示",
+        fitOnDeviceOnlyDescription:
+          "このデバイスの GPU メモリと RAM に収まらないモデルを、モデル選択と Hub で非表示にします。ダウンロード済みのモデルは引き続き表示されます。",
       },
       menu: {
         title: "チャットメニュー",
