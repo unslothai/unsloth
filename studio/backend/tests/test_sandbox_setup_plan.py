@@ -12,6 +12,8 @@ import pytest
 from core.inference import os_sandbox, sandbox_setup_plan as plan_mod
 from utils import client_ip
 
+_REAL_BWRAP_STATE = plan_mod._bwrap_state
+
 
 @pytest.fixture(autouse = True)
 def _fresh():
@@ -174,6 +176,27 @@ def test_bwrap_state_follows_the_launchers_trust_check(monkeypatch, tmp_path):
     monkeypatch.setattr(plan_mod, "trusted_system_binary", lambda name: "/usr/bin/bwrap")
     if os.geteuid() != 0:
         assert plan_mod._bwrap_state() == "shadowed"
+
+
+@pytest.mark.parametrize("pinned", [False, True], ids = ["namespace-hidden", "pinned"])
+def test_a_refused_bwrap_installing_cannot_fix_gets_no_install(linux, monkeypatch, pinned):
+    from core.inference import sandbox_linux
+
+    linux["tool"]("apt-get", "bwrap")
+    monkeypatch.setattr(plan_mod, "_bwrap_state", _REAL_BWRAP_STATE)
+
+    def refuse():
+        raise sandbox_linux.BwrapUntrustedError(
+            f"set {sandbox_linux.BWRAP_PATH_ENV}=/usr/bin/bwrap",
+            pinned = pinned,
+            hidden_root = not pinned,
+        )
+
+    monkeypatch.setattr(sandbox_linux, "_trusted_bwrap_path", refuse)
+    plan = plan_mod.detect(False)
+    assert plan.action is None and plan.manual_command == ""
+    assert sandbox_linux.BWRAP_PATH_ENV in plan.reason
+    assert "not installed" not in plan.reason
 
 
 def test_an_unblocked_host_with_bwrap_needs_nothing(linux):
@@ -485,3 +508,90 @@ def test_windows_commands_paste_into_windows_powershell():
         "& 'C:\\Users\\Jane Doe\\python.exe' 'C:\\Users\\Jane Doe\\studio\\install_mxc_prebuilt.py' "
         "'--install-dir' 'x'\n& 'C:\\it''s\\python.exe' '--prepare-host'"
     )
+
+
+@pytest.mark.parametrize(
+    "build,ubr,expected",
+    [
+        (26200, 6584, ("26200.6584", "26200.9278")),  # 25H2 held back by a feature-update policy
+        (26100, 9277, ("26100.9277", "26100.9278")),
+        (26200, 9278, None),
+        (26300, 9549, ("26300.9549", "26300.9550")),
+        (26120, 1, None),  # no published floor: say nothing rather than guess
+    ],
+)
+def test_windows_names_the_update_that_adds_the_builtin_container(
+    monkeypatch, build, ubr, expected
+):
+    import types
+
+    class Key:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    winreg = types.SimpleNamespace(
+        HKEY_LOCAL_MACHINE = object(),
+        OpenKey = lambda *_a: Key(),
+        QueryValueEx = lambda _key, _name: (ubr, 4),
+    )
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(
+        sys,
+        "getwindowsversion",
+        lambda: types.SimpleNamespace(build = build, product_type = 1),
+        raising = False,
+    )
+    monkeypatch.setitem(sys.modules, "winreg", winreg)
+    assert plan_mod.windows_builtin_container_update() == expected
+
+
+def test_windows_builtin_container_hint_is_silent_when_unreadable(monkeypatch):
+    import types
+
+    def refuse(*_a):
+        raise OSError("access denied")
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(
+        sys,
+        "getwindowsversion",
+        lambda: types.SimpleNamespace(build = 26200, product_type = 1),
+        raising = False,
+    )
+    monkeypatch.setitem(
+        sys.modules, "winreg", types.SimpleNamespace(HKEY_LOCAL_MACHINE = 0, OpenKey = refuse)
+    )
+    assert plan_mod.windows_builtin_container_update() is None
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert plan_mod.windows_builtin_container_update() is None
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason = "reads this PC's registry")
+def test_windows_builtin_container_hint_reads_this_pc():
+    update = plan_mod.windows_builtin_container_update()
+    if update is not None:
+        current, required = update
+        assert current.split(".")[0] == required.split(".")[0]
+        assert int(current.split(".")[1]) < int(required.split(".")[1])
+
+
+def test_windows_server_gets_no_builtin_container_hint(monkeypatch):
+    import types
+
+    def refuse(*_a):
+        raise AssertionError("the registry is not read on Server")
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(
+        sys,
+        "getwindowsversion",
+        lambda: types.SimpleNamespace(build = 26100, product_type = 3),
+        raising = False,
+    )
+    monkeypatch.setitem(
+        sys.modules, "winreg", types.SimpleNamespace(HKEY_LOCAL_MACHINE = 0, OpenKey = refuse)
+    )
+    assert plan_mod.windows_builtin_container_update() is None

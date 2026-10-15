@@ -62,6 +62,8 @@ export const ja = {
       never: "許可しない",
       scripts: "スクリプトの実行",
       scriptsDescription: "モデルがページ上でスクリプトを実行できるかどうかを選択します。各スクリプトは実行前に表示されます",
+      cursor: "カーソルを表示",
+      cursorDescription: "モデルがページ上でクリック、入力、ドラッグする位置にポインターを表示します",
       askEveryTime: "その都度確認",
       permissionsTitle: "エージェントの権限",
       permissionsDescription: "既定の動作を選び、特定のサイトに例外を追加します。パスワードや支払い情報の欄は、この設定にかかわらず入力されません。",
@@ -84,6 +86,9 @@ export const ja = {
     },
     agent: {
       working: "Unsloth がこのタブで操作しています",
+      waiting: "{chat} のブラウザで Unsloth があなたの回答を待っています",
+      otherChat: "別のチャット",
+      show: "表示",
       stop: "停止",
       allow: "許可",
       deny: "拒否",
@@ -1364,6 +1369,8 @@ export const ja = {
       installRuntimeFailed: "ランタイムのインストールに失敗しました。",
       installRuntimeError: "ランタイムのインストールを開始できませんでした。",
       unsupportedArch: "Windows サンドボックス (MXC) は x64 版 Windows でのみ動作するため、この PC では使用できません。",
+      builtinNeedsUpdate:
+        "Windows の組み込みコンテナーにはビルド {required} 以降が必要ですが、この PC は {current} です。管理者の手順なしで使うには最新の Windows Update をインストールするか、下のフォールバック サンドボックスをオンにしてください。",
       unsupportedBuild: "Windows サンドボックス (MXC) には Windows 11 24H2 (ビルド 26100) 以降が必要なため、この PC では使用できません。",
       permissionsIntro: "ツールが先に確認するタイミングと、Python とターミナルを OS サンドボックス内でも実行するかを選びます。",
       permissionLabel: "ツールの権限",

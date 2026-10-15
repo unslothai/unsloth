@@ -295,6 +295,65 @@ def metal_placement_flags(offload: Sequence[str]) -> list[str]:
     return [f for f in flags if f not in offload]
 
 
+# 1 / 0 forces sd.cpp's --mmap on / off on macOS; unset decides from the installed build (``mac_mmap_flags``).
+SD_CPP_MMAP_ENV = "UNSLOTH_DIFFUSION_SD_CPP_MMAP"
+# leejet/stable-diffusion.cpp#2037 (master-907) maps mmapped weights through Metal device buffers. Older builds accept
+# --mmap but hand Metal a CPU buffer it cannot address, so the flag is only safe from this build on.
+METAL_MMAP_MIN_BUILD = 907
+_INSTALL_RECORD = ".unsloth-sd-cpp-install.json"
+
+
+def sd_cpp_build_number(tag: Optional[str]) -> Optional[int]:
+    """``N`` of a ``master-N-<sha>[-u<sha>]`` release tag, else None."""
+    import re
+
+    m = re.match(r"^master-(\d+)(?:-|$)", str(tag or "").strip())
+    return int(m.group(1)) if m else None
+
+
+@functools.lru_cache(maxsize = 8)
+def _installed_sd_cpp_tag(binary: str) -> Optional[str]:
+    """The release tag Studio's installer recorded next to ``binary`` (the binary sits at or a few levels under the
+    install root). None for a binary the installer did not place (``SD_CLI_PATH``, PATH, a source build)."""
+    import json
+    from pathlib import Path
+
+    try:
+        path = Path(binary).resolve()
+    except Exception:  # noqa: BLE001
+        return None
+    for parent in list(path.parents)[:3]:
+        try:
+            with open(parent / _INSTALL_RECORD, "r", encoding = "utf-8") as f:
+                rec = json.load(f)
+        except (OSError, ValueError):
+            continue
+        tag = rec.get("tag") if isinstance(rec, dict) else None
+        return tag if isinstance(tag, str) and tag else None
+    return None
+
+
+def mac_mmap_flags(binary: Optional[str], extra_args: Optional[Sequence[str]] = None) -> list[str]:
+    """``["--mmap"]`` on macOS when ``binary`` maps weights correctly on Metal, else nothing.
+
+    With it, GGUF / safetensors weights stay clean file-backed pages (Metal wraps them in place, the CPU backend reads
+    them in place) instead of a second anonymous copy, which on unified memory is the copy that swaps: upstream measured
+    a Qwen-Image 2.1 Q4_K_M peak footprint of 10.2 -> 1.4 GB on an M1 Pro, pixel-identical. Fails closed on a build it
+    cannot date; ``UNSLOTH_DIFFUSION_SD_CPP_MMAP`` = 1 / 0 forces it either way."""
+    import os
+    import sys
+
+    if sys.platform != "darwin" or "--mmap" in (extra_args or ()):
+        return []
+    forced = os.environ.get(SD_CPP_MMAP_ENV, "").strip().lower()
+    if forced in ("0", "false", "no", "off"):
+        return []
+    if forced in ("1", "true", "yes", "on"):
+        return ["--mmap"]
+    build = sd_cpp_build_number(_installed_sd_cpp_tag(str(binary))) if binary else None
+    return ["--mmap"] if build is not None and build >= METAL_MMAP_MIN_BUILD else []
+
+
 # Everything on the CPU backend. sd.cpp prefers GPU -> integrated GPU -> CPU and only `--backend` changes which
 # backend EXECUTES the graph (`--offload-to-cpu` moves parameters, not compute), so this is the one flag that removes
 # ggml-metal entirely.
@@ -506,6 +565,7 @@ def build_sd_cpp_command(
     if offload:
         cmd += offload
     cmd += metal_placement_flags(offload)
+    cmd += mac_mmap_flags(binary, extra_args)
     if verbose:
         cmd += ["-v"]
     if extra_args:
@@ -598,6 +658,7 @@ def build_sd_cpp_video_command(
     if offload:
         cmd += offload
     cmd += metal_placement_flags(offload)
+    cmd += mac_mmap_flags(binary, extra_args)
     if verbose:
         cmd.append("-v")
     if extra_args:
@@ -712,6 +773,7 @@ def build_sd_cpp_server_command(
         f for f in native_speed_flags(native_speed, backend_args, accelerator) if f not in offload
     ]
     cmd += placement
+    cmd += mac_mmap_flags(binary, extra_args)
     if verbose:
         cmd += ["-v"]
     if extra_args:

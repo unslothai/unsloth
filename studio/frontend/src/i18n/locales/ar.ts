@@ -61,6 +61,8 @@ export const ar = {
       never: "أبدًا",
       scripts: "تشغيل البرامج النصية",
       scriptsDescription: "اختر ما إذا كان يمكن للنماذج تشغيل برامج نصية على الصفحات. يُعرض عليك كل برنامج نصي قبل تشغيله",
+      cursor: "إظهار المؤشر",
+      cursorDescription: "يعرض مؤشرًا حيث تنقر النماذج وتكتب وتسحب في الصفحة",
       askEveryTime: "السؤال في كل مرة",
       permissionsTitle: "أذونات الوكيل",
       permissionsDescription: "اختر الإعدادات الافتراضية وأضف استثناءات لمواقع محددة. لا تُملأ حقول كلمات المرور والدفع أبدًا مهما كانت هذه الإعدادات.",
@@ -83,6 +85,9 @@ export const ar = {
     },
     agent: {
       working: "يتصفح Unsloth في علامة التبويب هذه",
+      waiting: "يحتاج Unsloth إلى ردك في المتصفح من أجل {chat}",
+      otherChat: "محادثة أخرى",
+      show: "عرض",
       stop: "إيقاف",
       allow: "السماح",
       deny: "الرفض",
@@ -1362,6 +1367,8 @@ export const ar = {
       installRuntimeFailed: "فشل تثبيت بيئة التشغيل.",
       installRuntimeError: "تعذر بدء تثبيت بيئة التشغيل.",
       unsupportedArch: "يعمل وضع حماية Windows (MXC) على Windows x64 فقط، لذا فهو غير متاح على هذا الكمبيوتر.",
+      builtinNeedsUpdate:
+        "تحتاج الحاوية المدمجة في Windows إلى الإصدار {required} أو أحدث، بينما يعمل هذا الكمبيوتر بالإصدار {current}. ثبّت آخر تحديث لـ Windows لاستخدامها دون خطوة مسؤول، أو فعّل وضع الحماية الاحتياطي أدناه.",
       unsupportedBuild: "يتطلب وضع حماية Windows (MXC) إصدار Windows 11 24H2 (البنية 26100) أو أحدث، لذا فهو غير متاح على هذا الكمبيوتر.",
       permissionsIntro: "اختر متى تسأل الأدوات أولاً، وما إذا كان Python والطرفية يعملان أيضاً داخل وضع حماية نظام التشغيل.",
       permissionLabel: "أذونات الأدوات",

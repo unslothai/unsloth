@@ -113,8 +113,25 @@ export const BUDGET = {
   // Keeping the tool pills in step with the loaded model's tool support (#13621) adds 1.2 KB raw / 0.4 KB
   // transfer to the eager chat chunk (6,753,387 -> 6,754,540 B raw, 2,029,398 -> 2,029,795 B transfer
   // against 97ed9415f7, before #13649, one machine and build), raised by that.
-  transferBytes: 2_033_604,
-  rawBytes: 6_764_921,
+  // Offering the newest audio.cpp release in updates (#13589) adds 385 B raw / 80 B transfer to the eager set
+  // (6,764,579 -> 6,764,964 B raw, 2,033,464 -> 2,033,544 B transfer from 91f8457ab3 to 7b6b2a8e48, one machine
+  // and build, Node 24, chunk count unchanged at 95), which put main 43 B raw over. Raised by that growth so
+  // main's margin stays where it was.
+  // Naming the Windows update that adds MXC's built-in container (#13798) adds 358 B raw / 93 B transfer, its
+  // string in the eager English locale (6,765,003 -> 6,765,361 B raw against 3c0061e16, one machine and build,
+  // Node 24, chunk count unchanged at 95), which put main 55 B raw over. Raised by that growth.
+  // Each chat keeping its own browser tabs (#13800: the store's per-chat state, background pages in the
+  // native view, and the off-screen question strings) adds 5,278 B raw / 1,928 B transfer (6,765,003 ->
+  // 6,770,281 B raw, 2,033,563 -> 2,035,491 B transfer against a8585676d4, one machine and build, Node 24,
+  // chunk count unchanged at 95), raised by that.
+  // Always allow on browser agent prompts (#13777) adds 91 B raw / 42 B transfer to the eager chat chunk
+  // (6,770,922 -> 6,771,013 B raw, 2,035,640 -> 2,035,682 B transfer against cd947468f1, one machine and build,
+  // Node 24, chunk count unchanged at 95), which put main 71 B raw over. Raised by that growth.
+  // Word list numbering through the default style and basedOn (#13755) adds 228 B raw / 39 B transfer to the
+  // eager attachment reader (6,770,962 -> 6,771,190 B raw, 2,035,676 -> 2,035,715 B transfer against 7ae1a5386,
+  // one machine and build, Node 24, chunk count unchanged at 95). Raised by that growth.
+  transferBytes: 2_035_744,
+  rawBytes: 6_771_261,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

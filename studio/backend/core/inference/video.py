@@ -145,6 +145,7 @@ from .diffusion_speed import (
     SPEED_OFF,
     apply_speed_optims,
     arm_graphs_after_placement,
+    rocm_probe_load_scoped,
     resolve_speed_mode,
     restore_backend_flags,
     settle_compile_fallback,
@@ -6457,6 +6458,7 @@ class VideoBackend:
     # ── the load itself ──────────────────────────────────────────────────────
 
     @_invalidates_gpu_memory("video load")
+    @rocm_probe_load_scoped
     @scoped_local_files_only
     def load_pipeline(
         self,
@@ -7716,6 +7718,8 @@ class VideoBackend:
             from .video_ltx25 import ltx25_te_outcome
             text_encoder_outcome = ltx25_te_outcome(ltx25_client)
         else:
+            from .diffusion_te_truncate import truncate_text_encoders
+            truncate_text_encoders(pipe, logger = logger)
             text_encoder_outcome = quantize_text_encoders(
                 pipe,
                 target,

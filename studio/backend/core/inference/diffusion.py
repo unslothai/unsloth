@@ -189,8 +189,10 @@ from .diffusion_speed import (
     apply_speed_optims,
     engage_pinned_denoisers,
     auto_dynamic_active,
+    _gguf_dequant_compilable,
     compile_eligible,
     compiled_shapes_are_static,
+    rocm_probe_load_scoped,
     family_compiles_regionally,
     fp16_compile_explicit_only,
     fp16_unet_offloaded,
@@ -2049,7 +2051,12 @@ def _memory_request_forces_offload(memory_mode: Optional[str], cpu_offload: bool
 
 
 def _pipeline_quant_uncompilable_reason(
-    target: Any, fam: Any, speed_mode: Optional[str], *, model_kind: str
+    target: Any,
+    fam: Any,
+    speed_mode: Optional[str],
+    *,
+    model_kind: str,
+    probe: bool = False,
 ) -> Optional[str]:
     """Why a PIPELINE load must keep its dense weights rather than quantise them, or None.
 
@@ -2059,7 +2066,9 @@ def _pipeline_quant_uncompilable_reason(
     bf16. GGUF is out of scope, substituting dense base weights and falling back to the packed file.
 
     speed=off is absent on purpose: an engaged quant upgrades it to `default`, and an AUTO request
-    under it is rewritten to off long before either caller."""
+    under it is rewritten to off long before either caller.
+
+    ``probe``: only the loader, which owns the evicted card, runs the allocating ROCm compile probe."""
     if model_kind != "pipeline":
         return None
     # A string compare, not resolve_speed_mode: this runs on the route, where an unvalidated value must not raise.
@@ -2068,13 +2077,37 @@ def _pipeline_quant_uncompilable_reason(
             "Speed is set to 'eager', and a quantised transformer that is not compiled runs far "
             "slower than the bf16 weights it replaces. Pick a compiling speed mode to combine the two"
         )
-    if not compile_eligible(target, is_gguf = False, family = fam):
+    if not compile_eligible(target, is_gguf = False, family = fam, probe = probe):
         return (
             "this process cannot run a torch.compile (no Triton, TORCHDYNAMO_DISABLE, or a "
             "family/device that does not compile), and a quantised transformer that is not "
             "compiled runs far slower than the bf16 weights it replaces"
         )
     return None
+
+
+def _compile_cache_wanted(
+    pipe: Any, target: Any, fam: Any, *, is_gguf: bool, speed_mode: str, offload_active: bool
+) -> bool:
+    """``compile_eligible`` for the compile-cache gate; on a dense ROCm load the allocating probe runs only once the
+    plan finds something in the model to compile."""
+    if is_gguf or getattr(target, "backend", None) != "rocm":
+        return compile_eligible(target, is_gguf = is_gguf, family = fam)
+    if not compile_eligible(target, is_gguf = False, family = fam, probe = False):
+        return False
+    try:
+        from .diffusion_autoopt import plan as plan_mod
+        step = plan_mod.build_plan(
+            pipe,
+            target,
+            family = fam,
+            backend = "image",
+            speed_mode = speed_mode,
+            offload_active = offload_active,
+        ).step("compiled")
+    except Exception:  # noqa: BLE001 - no plan: the probing predicate decides as before
+        return compile_eligible(target, is_gguf = False, family = fam)
+    return bool(step is not None and step.attempt)
 
 
 def _plan_proves_resident(plan: Any) -> bool:
@@ -5931,6 +5964,7 @@ class DiffusionBackend:
         return DiffusionBackend._union_over_cached_revs(base, _params, staged_dir) * 2
 
     @_invalidates_gpu_memory("diffusion load")
+    @rocm_probe_load_scoped
     @_account_owned_load
     @_plans_at_requested_speed
     @scoped_local_files_only
@@ -7547,11 +7581,6 @@ class DiffusionBackend:
                                         _load_token,
                                     )
 
-                    # The same helper the route preflight asked, so the two cannot disagree.
-                    pipeline_quant_uncompilable = _pipeline_quant_uncompilable_reason(
-                        target, fam, speed_mode, model_kind = kind
-                    )
-
                     # Quantise dense bf16 pipeline denoisers in place. The blocker excludes UNet and pre-quantised
                     # pipelines; offloaded plans stay dense unless whole-module.
                     if (
@@ -7561,6 +7590,15 @@ class DiffusionBackend:
                         and normalize_transformer_quant(transformer_quant) is not None
                         and (dense_transformer_supported(target) or native_scheme is not None)
                     ):
+                        # The same helper the route preflight asked; probed only for an engaged torchao request
+                        # (a native scheme never reads it).
+                        pipeline_quant_uncompilable = (
+                            None
+                            if native_scheme is not None
+                            else _pipeline_quant_uncompilable_reason(
+                                target, fam, speed_mode, model_kind = kind, probe = True
+                            )
+                        )
                         # from_pretrained widens a raw fp8/int8 checkpoint to bf16, erasing the one thing the blocker
                         # below reads, so recover it from the shard header (Ideogram's loader stamps its own).
                         # `fetch_base` too: a LOCAL diffusers directory stages nothing, so `_base_local_dir` is None
@@ -7799,7 +7837,8 @@ class DiffusionBackend:
                         and effective_speed == SPEED_OFF
                         and transformer_quant_engaged is None
                         and not comfy_compile
-                        and compile_eligible(target, is_gguf = False, family = fam)
+                        # Non-probing: _engage_deferred_profile runs the ROCm probe if the 3rd image arrives.
+                        and compile_eligible(target, is_gguf = False, family = fam, probe = False)
                         and not fp16_compile_explicit_only(target)
                     )
                     # Speed optims run BEFORE placement, so snapshot the global backend flags first for unload restore.
@@ -7974,7 +8013,37 @@ class DiffusionBackend:
                     # first compiled forward pays the 25-58s compile once.
                     if (
                         effective_speed in (SPEED_DEFAULT, SPEED_MAX)
-                        and compile_eligible(target, is_gguf = gguf_transformer, family = fam)
+                        # ROCm GGUF default compiles only the dequant: gate on that predicate, never the regional probe.
+                        # On max the dequant is the fallback when the regional compile is refused, so it keeps the cache.
+                        and (
+                            _gguf_dequant_compilable(
+                                True,
+                                getattr(target, "device", None) == "cuda",
+                                bool(getattr(fam, "supports_torch_compile", True)),
+                                target,
+                            )
+                            if gguf_transformer
+                            and effective_speed == SPEED_DEFAULT
+                            and getattr(target, "backend", None) == "rocm"
+                            else _compile_cache_wanted(
+                                pipe,
+                                target,
+                                fam,
+                                is_gguf = gguf_transformer,
+                                speed_mode = effective_speed,
+                                offload_active = plan.offload_policy != OFFLOAD_NONE,
+                            )
+                            or (
+                                gguf_transformer
+                                and getattr(target, "backend", None) == "rocm"
+                                and _gguf_dequant_compilable(
+                                    True,
+                                    getattr(target, "device", None) == "cuda",
+                                    bool(getattr(fam, "supports_torch_compile", True)),
+                                    target,
+                                )
+                            )
+                        )
                         and not fp16_unet_offloaded(
                             target, pipe, offload_active = plan.offload_policy != OFFLOAD_NONE
                         )
@@ -8085,6 +8154,9 @@ class DiffusionBackend:
                             "diffusion.text_encoder: dropped unused lm_head (%.2fM params); hidden states unchanged",
                             te_trim["params"] / 1e6,
                         )
+                    from .diffusion_te_truncate import truncate_text_encoders
+
+                    truncate_text_encoders(pipe, logger = logger)
                     # Quantise the dense companion text encoder(s) before placement so offload moves the smaller
                     # weights.
                     te_outcome = quantize_text_encoders(
@@ -10247,6 +10319,8 @@ class DiffusionBackend:
                     tc.update(tc_before)
             raise
 
+    # Outside load_pipeline (3rd generation): its own probe scope, so one OOM is not re-probed by plan and apply.
+    @rocm_probe_load_scoped
     def _engage_deferred_profile(self, state: _LoadState) -> None:
         """Engage the deferred `default` speed profile at the start of the 3rd generation this
         session. The load left the pipe fully eager (bit-identical reference); by the 3rd image
@@ -10287,7 +10361,14 @@ class DiffusionBackend:
             entry["value"] = attention_engaged or "native"
             object.__setattr__(state, "resolved", {**state.resolved, "attention_backend": entry})
         gguf_transformer = state.kind == "gguf" and state.transformer_quant is None
-        if compile_eligible(target, is_gguf = gguf_transformer, family = state.family):
+        if _compile_cache_wanted(
+            state.pipe,
+            target,
+            state.family,
+            is_gguf = gguf_transformer,
+            speed_mode = SPEED_DEFAULT,
+            offload_active = state.offload_policy != OFFLOAD_NONE,
+        ):
             compile_ctx = compile_cache.begin(
                 family = state.family.name,
                 # U-Net families (SDXL) carry the denoiser as pipe.unet.
