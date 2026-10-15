@@ -24,7 +24,7 @@ from typing import Any
 FAST_ACT_QUANT_ENV = "UNSLOTH_NVFP4_FAST_ACT_QUANT"
 
 _LOCK = threading.Lock()
-_STATE: dict = {"installed": False, "verified": None, "reason": "", "eager_calls": 0, "fallback": 0}
+_STATE: dict = {"installed": False, "verified": None, "reason": "", "fallback": 0}
 _OP = None
 # Tile shape (rows x 16*g elements per program): the fastest bit-identical one of 48 swept on B200.
 _TILE = {"rows": 8, "g": 16, "warps": 2}
@@ -173,11 +173,14 @@ def _patched_to_nvfp4(
     act_quant_kwargs = None,
 ):
     # Nothing mutable is read or written while Dynamo traces: a guard on a counter recompiles every call. The kill
-    # switch is read once, at install; eager calls are counted, compiled ones show up as the kernel in a profile.
+    # switch is read once, at install; eager calls are counted (as torchao fallbacks), compiled ones show up as the
+    # kernel in a profile.
     import torch
 
     counting = not torch.compiler.is_compiling()
-    if not _eligible(data_hp, block_size, per_tensor_scale, is_swizzled_scales, use_triton_kernel):
+    # Eager calls (the load-time weight pass, speed tier off) keep torchao's own eager arithmetic, which divides by 6
+    # where Inductor multiplies by 1/6: the kernel matches the COMPILED path bit for bit, so only traced calls use it.
+    if counting or not _eligible(data_hp, block_size, per_tensor_scale, is_swizzled_scales, use_triton_kernel):
         if counting:
             _STATE["fallback"] += 1
         return _ORIGINAL(
@@ -192,8 +195,6 @@ def _patched_to_nvfp4(
     from torchao.prototype.mx_formats.nvfp4_tensor import NVFP4Tensor
     from torchao.prototype.mx_formats.utils import hp_data_dims_to_swizzled_scale_dims_nvfp4
 
-    if counting:
-        _STATE["eager_calls"] += 1
     m, k = data_hp.shape
     # A Triton launch lands on the CURRENT device, not the tensor's: guard it like every other NVFP4 launch.
     with torch.cuda.device(data_hp.device):
