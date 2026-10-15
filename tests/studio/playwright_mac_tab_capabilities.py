@@ -129,6 +129,7 @@ TABS = [
     ("/library", "library", "Library"),
     ("/images", "images", "Images"),
     ("/studio", "train", "Train"),
+    ("/routines", "routines", "Routines"),
     ("/video", "video", "Video"),
     ("/export", "export", "Export"),
 ]
