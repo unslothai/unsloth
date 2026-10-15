@@ -365,7 +365,9 @@ def _gemma4_router_hook():
         return
     _BAND_CHECK[0] = check
 
-    @functools.wraps(router, updated = ())
+    # wraps() copies the router's markers: zoo's sdpa patches skip a function carrying theirs, so
+    # a later model load does not wrap this again with it as the fallback (an endless loop).
+    @functools.wraps(router)
     def sdpa_attention_forward(
         module,
         query,
@@ -512,7 +514,8 @@ def _nf4_in_blocks():
     if getattr(current, "_unsloth_block_nf4", False):
         return
 
-    @functools.wraps(current, updated = ())
+    # wraps() copies bnb_override's marker, so a later install does not take this as its fallback.
+    @functools.wraps(current)
     def forward(self, x, *args, **kwargs):
         if _IN_BLOCK[0] and torch.compiler.is_compiling() and not args and not kwargs:
             weight = self.weight
@@ -555,7 +558,14 @@ def _wrap(cls, compile_options):
     @functools.wraps(original)
     def forward(self, hidden_states, *args, **kwargs):
         mode = self.__dict__.get("_unsloth_block_mode", _FIRST_MODE)
-        if mode == _OFF or kwargs.get("past_key_values") is not None or not _enabled():
+        # Training only: eval / generation keep the stock forward, so their logits match
+        # transformers bit for bit (Inductor's bf16 fusions round differently).
+        if (
+            mode == _OFF
+            or not self.training
+            or kwargs.get("past_key_values") is not None
+            or not _enabled()
+        ):
             return original(self, hidden_states, *args, **kwargs)
         if _GDN_OP[0] is None and hasattr(self, "linear_attn"):
             _prepare_gdn(self, hidden_states)

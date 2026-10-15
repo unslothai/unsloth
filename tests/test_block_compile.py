@@ -112,6 +112,11 @@ def test_compile_failure_falls_back(monkeypatch, fails_in):
         assert calls == ["full", "split"]  # then the stock forward, never compiled again
     # The mode is per layer: a sibling of the same class still starts compiled.
     assert "_unsloth_block_mode" not in cls().__dict__
+    # Eval keeps the stock forward (logits equal transformers bit for bit).
+    calls.clear()
+    sibling = cls().eval()
+    sibling(x)
+    assert calls == []
 
 
 def test_gemma4_band_fast_path_in_blocks(monkeypatch):
@@ -141,6 +146,11 @@ def test_gemma4_band_fast_path_in_blocks(monkeypatch):
     M._gemma4_router_hook()
     wrapped = ALL_ATTENTION_FUNCTIONS["sdpa"]
     assert wrapped is not router
+    # Carries zoo's marker, so zoo's patch on a later model load does not wrap it again
+    # with it as the fallback (that loop recursed forever).
+    assert wrapped._unsloth_gemma4_flash
+    M._gemma4_router_hook()
+    assert ALL_ATTENTION_FUNCTIONS["sdpa"] is wrapped
 
     class Gemma4TextAttention(torch.nn.Module):
         is_sliding, sliding_window, is_causal = True, 64, True
