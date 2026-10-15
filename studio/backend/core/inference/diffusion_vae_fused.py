@@ -560,7 +560,9 @@ def group_norm_act(
         num_warps = 4,
     )  # fmt: skip
     if not torch.compiler.is_compiling():
-        _GN_KERNEL_RUNS[0] += 1  # read by the structural calibration: only a completed Triton launch counts
+        _GN_KERNEL_RUNS[0] += (
+            1  # read by the structural calibration: only a completed Triton launch counts
+        )
     out = out.permute(0, 4, 1, 2, 3)  # B, C, T', H', W'
     shape = x.shape
     if ndim == 5:

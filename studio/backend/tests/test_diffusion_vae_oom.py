@@ -704,12 +704,18 @@ def test_overlap_factor_searches_the_interval_above_the_floor():
 class _TallTileProbeOOM(_UntiledProbeOOMWanLike):
     """16 px-tall (2-latent) inputs: the 8-latent height tiles never seam, only the width tiles do."""
 
-    def _decode(self, z, return_dict = True):
+    def _decode(
+        self,
+        z,
+        return_dict = True,
+    ):
         if z.shape[-1] != 64 and not self.use_tiling:
             self.untiled_probes += 1
             raise _FakeOOM()
         if z.shape[-1] == 64:
-            self.seen.append((self.use_tiling, self.tile_sample_min_height, self.tile_sample_min_width))
+            self.seen.append(
+                (self.use_tiling, self.tile_sample_min_height, self.tile_sample_min_width)
+            )
             if not self.use_tiling or self.tile_sample_min_width > self.fits:
                 raise _FakeOOM()
         return (z.repeat_interleave(8, -1).repeat_interleave(8, -2) + 1,)
@@ -733,7 +739,11 @@ class _BatchProbeWanLike(_WanLike):
         super().__init__(fits)
         self.probe_batches = []
 
-    def _decode(self, z, return_dict = True):
+    def _decode(
+        self,
+        z,
+        return_dict = True,
+    ):
         if z.shape[-1] != 64:
             self.probe_batches.append(int(z.shape[0]))
         return super()._decode(z, return_dict)
@@ -754,7 +764,12 @@ def test_probe_crop_takes_one_batch_element():
 class _TembWanLike(_WanLike):
     """LTX-2-shaped ``_decode(z, temb, ...)``: ``temb`` must match ``z``'s batch."""
 
-    def _decode(self, z, temb = None, return_dict = True):
+    def _decode(
+        self,
+        z,
+        temb = None,
+        return_dict = True,
+    ):
         if temb is not None and temb.shape[0] != z.shape[0]:
             raise ValueError(f"temb batch {temb.shape[0]} != latent batch {z.shape[0]}")
         return super()._decode(z, return_dict)
@@ -776,7 +791,11 @@ class _ActiveLog(_WanLike):
         super().__init__(fits)
         self.active = []
 
-    def _decode(self, z, return_dict = True):
+    def _decode(
+        self,
+        z,
+        return_dict = True,
+    ):
         self.active.append((self.use_tiling, O.oom_halving_active(self)))
         return super()._decode(z, return_dict)
 
@@ -817,7 +836,11 @@ class AutoencoderKLCleanNew(torch.nn.Module):
         super().__init__()
         self.decoder = _CleanDec(c)
 
-    def _decode(self, z, return_dict = True):
+    def _decode(
+        self,
+        z,
+        return_dict = True,
+    ):
         return (self.decoder(z),)
 
 
@@ -843,7 +866,9 @@ def test_kernel_calls_skip_the_temporal_stride_fallback(monkeypatch):
     norm = torch.nn.GroupNorm(4, 8)
     state = types.SimpleNamespace(kernel_calls = 0, calls = 0)
     fast = F._fast_gn_maybe_act(norm, True, state)
-    x = torch.randn(1, 8, 3, 4, 5).transpose(2, 3).contiguous().transpose(2, 3)  # T stride != H * H stride
+    x = (
+        torch.randn(1, 8, 3, 4, 5).transpose(2, 3).contiguous().transpose(2, 3)
+    )  # T stride != H * H stride
     assert x.stride(2) != x.shape[3] * x.stride(3)
     with torch.no_grad():
         y = fast(x)

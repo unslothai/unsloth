@@ -314,10 +314,14 @@ def install(vae: Any, logger: Any = None) -> bool:
 
         lat_h, lat_w = axis_latents("height"), axis_latents("width")
         # The unprobed floor only looks at axes this input actually tiles (an axis it fits in has no seam).
-        seamed = [n for n, size in ((lat_h, int(z.shape[-2])), (lat_w, int(z.shape[-1]))) if size > n]
+        seamed = [
+            n for n, size in ((lat_h, int(z.shape[-2])), (lat_w, int(z.shape[-1]))) if size > n
+        ]
         lat = min(seamed) if seamed else UNPROBED_MIN_LATENTS
         sl = [slice(None)] * z.dim()
-        sl[0] = slice(0, 1)  # one sample: seam quality is per sample, and the untiled reference must not scale with batch
+        sl[0] = slice(
+            0, 1
+        )  # one sample: seam quality is per sample, and the untiled reference must not scale with batch
         # two tiles along each axis, so each axis gets a seam
         sl[-1] = slice(0, min(int(z.shape[-1]), 2 * lat_w))
         sl[-2] = slice(0, min(int(z.shape[-2]), 2 * lat_h))
