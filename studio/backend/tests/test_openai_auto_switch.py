@@ -12379,6 +12379,17 @@ def test_an_npu_model_named_by_a_request_switches_when_on(monkeypatch):
     assert [call.model_path for call in rec.calls] == [_NPU_MODEL]
 
 
+def test_an_npu_switch_loads_with_the_saved_context_length(monkeypatch):
+    backend, rec = _wired(monkeypatch, _FakeBackend("unsloth/A-GGUF"), None)
+    monkeypatch.setattr(
+        settings,
+        "get_model_override",
+        lambda model_id: {"max_seq_length": 16384} if model_id == _NPU_MODEL else {},
+    )
+    _run_hook(_NPU_MODEL)
+    assert [(call.model_path, call.max_seq_length) for call in rec.calls] == [(_NPU_MODEL, 16384)]
+
+
 def test_an_npu_model_named_with_the_switch_off_says_how_to_load_it(monkeypatch):
     backend, rec = _wired(monkeypatch, _FakeBackend("unsloth/A-GGUF"), None, enabled = False)
     with pytest.raises(HTTPException) as excinfo:

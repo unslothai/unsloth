@@ -11209,12 +11209,18 @@ async def _auto_switch_npu_model(
     """
     from core.inference.gpu_arbiter import require_no_foreign_generations
     from core.inference.llama_keepwarm import inference_lifecycle_gate, model_load_gate
-    from utils.openai_auto_switch_settings import get_openai_auto_switch_enabled
+    from utils.openai_auto_switch_settings import (
+        get_model_override,
+        get_openai_auto_switch_enabled,
+        resolve_fit_max_seq_length,
+    )
 
     if _auto_switch_opted_out(fastapi_request) or not get_openai_auto_switch_enabled():
         return
     if await asyncio.to_thread(_loaded_satisfies, named_model):
         return
+    # The context length saved in the model's settings, as a picker load sends it.
+    max_seq_length = resolve_fit_max_seq_length(get_model_override(named_model), is_gguf = False)
     cancel_event = getattr(getattr(fastapi_request, "state", None), "generation_cancel_event", None)
 
     def _raise_if_cancelled() -> None:
@@ -11236,7 +11242,7 @@ async def _auto_switch_npu_model(
                         return
                     require_no_foreign_generations(path = switch_path)
                     await _load_model_impl(
-                        LoadRequest(model_path = named_model),
+                        LoadRequest(model_path = named_model, max_seq_length = max_seq_length or 0),
                         fastapi_request,
                         current_subject,
                         current_request_counted = True,
