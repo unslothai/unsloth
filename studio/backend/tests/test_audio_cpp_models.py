@@ -1497,7 +1497,11 @@ def test_audio_options_reach_the_request_validated():
         "hi", audio_options = {"voice": "am_adam", "speed": 1.5, "bogus": 1, "mode": "zzz"}
     )
     body = srv.calls[0][1]
-    assert body["voice"] == "am_adam" and body["options"] == {"speed": 1.5}
+    assert body["voice"] == "am_adam" and body["options"] == {
+        "speed": 1.5,
+        "mode": "a",
+        "text_chunk_size": 240,
+    }
 
 
 def test_speech_retry_keeps_package_defaults_and_user_options_and_covers_500():
@@ -1561,7 +1565,13 @@ def test_minimax_takes_the_caption_as_input_and_lyrics_and_duration_as_options()
     request = srv.calls[0][1]["request"]
     assert request["text"] == "lofi" and request["seed"] == "3"
     # The runtime rejects duration_sec beside duration_seconds ("conflicting option values").
-    assert request["options"] == {"top_k": 9, "lyrics": "[verse] hi"}
+    assert request["options"] == {
+        "top_k": 9,
+        "lyrics": "[verse] hi",
+        "ar_guidance_scale": 1.5,
+        "guidance_scale": 1.7,
+        "num_inference_steps": 30,
+    }
     assert request["duration_seconds"] == 20.0
     with pytest.raises(RuntimeError, match = "needs lyrics"):
         b.generate_audio_response("", instructions = "lofi")
