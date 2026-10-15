@@ -486,8 +486,12 @@ def reap_prune(
             "modules (an `experts` module with 3D expert weights next to a `gate` / `router`)."
         )
 
+    layer_names = {id(m): n for n, m in model.named_modules()}
     for layer in layers:
         moe = _layer_moe(layer, num_experts)
+        # Every refusal happens here, before any layer is sliced.
+        if moe is not None:
+            _check_weights(moe[2], moe[3], layer_names[id(moe[1])])
         if moe is not None and any(hasattr(m, "tid2eid") for m in moe[3].modules()):
             raise ValueError(
                 "Unsloth: REAP does not support hash-routed MoE layers (fixed token to expert "
@@ -576,7 +580,6 @@ def reap_prune(
             f"({len(ids)} samples, {n_tokens} tokens, {len(batches)} batches, hidden {width})."
         )
         rebuilt_layers = 0
-        layer_names = {id(m): n for n, m in model.named_modules()}
         for index, layer in enumerate(layers):
             moved = False
             layer_device = _layer_device(layer, device)
@@ -598,7 +601,6 @@ def reap_prune(
             if moe is not None:
                 _, block, experts, router = moe
                 block_name = layer_names[id(block)]
-                _check_weights(experts, router, block_name)
                 norm = _residual_split(layer, block)
                 residuals = []
                 if norm is not None:
@@ -684,6 +686,14 @@ def reap_prune(
         for key in _NUM_EXPERTS_KEYS:
             if getattr(config, key, None) == num_experts:
                 setattr(config, key, kept_count)
+        # MTP layers live outside `layers` and are not pruned; they would be rebuilt at the new count.
+        for key in ("num_nextn_predict_layers", "num_mtp_layers", "mtp_num_layers"):
+            value = getattr(config, key, None)
+            if isinstance(value, int) and value > 0:
+                setattr(config, key, 0)
+                print(
+                    f"Unsloth: REAP set {key} = 0, since the MTP layers keep the old expert count."
+                )
     # Wrappers cache the count too (Mixtral / Jamba pass model.num_experts to the router aux loss).
     for module in model.modules():
         for key in _NUM_EXPERTS_MODULE_KEYS:
@@ -703,6 +713,8 @@ def reap_prune(
         for module in model.modules():
             if "name_or_path" in module.__dict__:
                 module.name_or_path = save_directory
+        if getattr(model, "_unsloth_modelscope_snapshot", None):
+            model._unsloth_modelscope_snapshot = save_directory
     model._unsloth_reap_saved = save_directory
     if report_path is not None:
         os.makedirs(os.path.dirname(os.path.abspath(report_path)), exist_ok = True)

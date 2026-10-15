@@ -318,3 +318,14 @@ def test_per_expert_router_tensors_in_child_modules_are_sliced(build, tmp_path):
     ids = torch.tensor([_samples(n = 1, seed = 9)[0]])
     with torch.no_grad():
         torch.testing.assert_close(reloaded(ids).logits, model(ids).logits)
+
+
+def test_unsupported_weights_refuse_before_any_layer_is_pruned():
+    model = _qwen3_moe()
+    experts = model.model.layers[2].mlp.experts
+    experts.down_proj = torch.nn.Parameter(
+        torch.zeros(experts.down_proj.shape, dtype = torch.int8), requires_grad = False
+    )
+    with pytest.raises(RuntimeError, match = "16-bit or 32-bit"):
+        reap.reap_prune(model, None, sparsity = 0.25, dataset = _samples(), device = "cpu")
+    assert model.model.layers[1].mlp.experts.gate_up_proj.shape[0] == 16
