@@ -1,15 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-# Flash attention for head_dim > 256 (Gemma-4 global layers use head_dim 512).
-# FlashAttention-2 and SDPA's flash / cuDNN backends stop at head_dim 256, so these
-# layers fall to SDPA's memory-efficient or math backend, plus a dense 4D mask for
-# padded or packed batches. The tiling (small M/N blocks so a 512 wide row fits in
-# registers, separate dK/dV and dQ passes) follows axolotl's flash_attn_d512.py
-# (Apache-2.0, https://github.com/axolotl-ai-cloud/axolotl). Unlike that kernel this
-# one reads GQA kv heads in place and takes any mask whose allowed keys per query
-# row form one interval [lo, hi] with lo and hi non-decreasing down the rows:
-# causal, bidirectional, packed documents, right padding and sliding windows.
+# Flash attention for head_dim > 256 (Gemma-4 global layers), where FA2 and SDPA's
+# flash / cuDNN backends stop. Tiling follows axolotl's flash_attn_d512.py (Apache-2.0,
+# https://github.com/axolotl-ai-cloud/axolotl); this one reads GQA kv heads in place and
+# takes any mask whose allowed keys per row are one interval [lo, hi], lo and hi
+# non-decreasing down the rows (causal, packed, right padding, sliding window).
 # UNSLOTH_HD512_ATTENTION=0 leaves SDPA untouched.
 
 import functools
