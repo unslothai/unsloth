@@ -116,11 +116,10 @@ _cross_entropy_forward = triton.heuristics(
 @functools.lru_cache(maxsize = None)
 def _chunked_evict_at(device_type, index):
     # Each logits chunk is read once: evict_first measured faster on T4 / L4 / A100 / RTX PRO 6000,
-    # but slower on B200 (sm_100). The fused forward and the backward measured slower with it.
-    if device_type == "cuda" and torch.version.hip is None:
-        if torch.cuda.get_device_capability(index)[0] == 10:
-            return ""
-    return "evict_first"
+    # but slower on B200 (sm_100) and unmeasured on ROCm. The fused forward and the backward measured slower with it.
+    if device_type != "cuda" or torch.version.hip is not None:
+        return ""
+    return "" if torch.cuda.get_device_capability(index)[0] == 10 else "evict_first"
 
 
 def _chunked_evict_policy(device):
