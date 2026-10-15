@@ -3,7 +3,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { parseFrameMessage } from "../src/features/browser/frame-message.ts";
+import { frameNotice, parseFrameMessage } from "../src/features/browser/frame-message.ts";
 
 const from = (message: Record<string, unknown>) => parseFrameMessage({ source: "unsloth-browser", ...message });
 
@@ -52,6 +52,16 @@ test("valid messages keep only known fields", () => {
 test("an upload notice carries nothing a page could fill", () => {
   assert.deepEqual(from({ type: "upload", url: "https://evil.example/" }), { type: "upload" });
   assert.deepEqual(from({ type: "scriptNavigation", url: "https://evil.example/" }), { type: "scriptNavigation" });
+});
+
+test("a page the sandbox refused a feature reaches the panel as a bare notice", () => {
+  assert.deepEqual(from({ type: "needsBrowser", url: "https://evil.example/" }), { type: "needsBrowser" });
+});
+
+test("the sandbox notice stays until the page goes, the others time out", () => {
+  assert.deepEqual(frameNotice("needsBrowser", "t1"), { id: "browser-needsBrowser-t1", duration: Number.POSITIVE_INFINITY });
+  assert.deepEqual(frameNotice("upload", "t1"), { id: "browser-upload-t1" });
+  assert.deepEqual(frameNotice("scriptNavigation", "t2"), { id: "browser-scriptNavigation-t2" });
 });
 
 test("a page's zoom is a step in, out or back to 100%, and nothing else", () => {

@@ -10,6 +10,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import functools
 import triton
 import triton.language as tl
 import torch
@@ -33,6 +34,7 @@ def layernorm_forward(
     eps: tl.constexpr,
     LONG_INDEXING: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
+    HAS_BIAS: tl.constexpr = True,
 ):
     row_idx = tl.program_id(0)
     if LONG_INDEXING:
@@ -48,7 +50,6 @@ def layernorm_forward(
     # Per torchtune's Fp32LayerNorm, all modules are in float32.
     X_row = tl.load(X + col_offsets, mask = mask, other = 0).to(tl.float32)
     W_row = tl.load(W + col_offsets, mask = mask, other = 0).to(tl.float32)
-    b_row = tl.load(b + col_offsets, mask = mask, other = 0).to(tl.float32)
 
     mean_X = tl.sum(X_row, axis = 0) / n_cols
     # (X[0] - mean) == -mean, so mask it out.
@@ -59,8 +60,27 @@ def layernorm_forward(
     inv_var = tl.math.rsqrt(row_var + eps_f32)
     tl.store(r, inv_var)
     tl.store(mu, mean_X)
-    output = (XX * inv_var) * W_row + b_row
+    output = (XX * inv_var) * W_row
+    if HAS_BIAS:
+        output += tl.load(b + col_offsets, mask = mask, other = 0).to(tl.float32)
     tl.store(Y + col_offsets, output, mask = mask)
+
+
+@triton.jit
+def _layernorm_backward_row(dY, X, W_row, r, mu, row_idx, col_offsets, mask, n_cols: tl.constexpr):
+    # Approximately follows karpathy/llm.c doc/layernorm/layernorm.md
+    # Per torchtune's Fp32LayerNorm, all modules are in float32.
+    dY_row = tl.load(dY + col_offsets, mask = mask, other = 0).to(tl.float32)
+    X_row = tl.load(X + col_offsets, mask = mask, other = 0).to(tl.float32)
+
+    inv_var = tl.load(r + row_idx).to(tl.float32)
+    mean = tl.load(mu + row_idx).to(tl.float32)
+    normed = (X_row - mean) * inv_var
+    dY_W = dY_row * W_row
+    dX_row = dY_W - tl.sum(dY_W, axis = 0) / n_cols - normed * tl.sum(dY_W * normed, axis = 0) / n_cols
+    dX_row = dX_row * inv_var
+    tl.store(dY + col_offsets, dX_row, mask = mask)
+    return dY_row, normed
 
 
 @triton.jit
@@ -83,24 +103,104 @@ def layernorm_backward(
         row_idx = row_idx.to(tl.int64)
     col_offsets = tl.arange(0, BLOCK_SIZE)
     mask = col_offsets < n_cols
-
-    dY += row_idx * dY_row_stride
-    X += row_idx * X_row_stride
-    r += row_idx
-    mu += row_idx
-
-    dY_row = tl.load(dY + col_offsets, mask = mask, other = 0).to(tl.float32)
-    X_row = tl.load(X + col_offsets, mask = mask, other = 0).to(tl.float32)
     W_row = tl.load(W + col_offsets, mask = mask, other = 0).to(tl.float32)
-    b_row = tl.load(b + col_offsets, mask = mask, other = 0).to(tl.float32)
+    _layernorm_backward_row(
+        dY + row_idx * dY_row_stride,
+        X + row_idx * X_row_stride,
+        W_row,
+        r,
+        mu,
+        row_idx,
+        col_offsets,
+        mask,
+        n_cols,
+    )
 
-    inv_var = tl.load(r).to(tl.float32)
-    mean = tl.load(mu).to(tl.float32)
-    normed = (X_row - mean) * inv_var
-    dY_W = dY_row * W_row
-    dX_row = dY_W - tl.sum(dY_W, axis = 0) / n_cols - normed * tl.sum(dY_W * normed, axis = 0) / n_cols
-    dX_row = dX_row * inv_var
-    tl.store(dY + col_offsets, dX_row, mask = mask)
+
+# dW / dB follow flash-linear-attention's layer_norm_bwd_kernel_row (fla/modules/norm/layernorm.py,
+# MIT licence, Copyright (c) 2023-2026 Songlin Yang, Yu Zhang, Zhiyuan Li).
+@triton.jit
+def layernorm_backward_dw(
+    dY,
+    dY_row_stride: tl.constexpr,
+    X,
+    X_row_stride: tl.constexpr,
+    W,
+    r,
+    mu,
+    dW,
+    dB,
+    n_rows,
+    rows_per_program,
+    n_cols: tl.constexpr,
+    LONG_INDEXING: tl.constexpr,
+    BLOCK_SIZE: tl.constexpr,
+    TRAIN_W: tl.constexpr,
+    TRAIN_B: tl.constexpr,
+):
+    pid = tl.program_id(0)
+    col_offsets = tl.arange(0, BLOCK_SIZE)
+    mask = col_offsets < n_cols
+    W_row = tl.load(W + col_offsets, mask = mask, other = 0).to(tl.float32)
+    dW_acc = tl.zeros((BLOCK_SIZE,), dtype = tl.float32)
+    dB_acc = tl.zeros((BLOCK_SIZE,), dtype = tl.float32)
+    row_start = pid * rows_per_program
+    for i in range(row_start, tl.minimum(row_start + rows_per_program, n_rows)):
+        row_idx = i
+        if LONG_INDEXING:
+            row_idx = i.to(tl.int64)
+        dY_row, normed = _layernorm_backward_row(
+            dY + row_idx * dY_row_stride,
+            X + row_idx * X_row_stride,
+            W_row,
+            r,
+            mu,
+            row_idx,
+            col_offsets,
+            mask,
+            n_cols,
+        )
+        if TRAIN_W:
+            dW_acc += dY_row * normed
+        if TRAIN_B:
+            dB_acc += dY_row
+    if TRAIN_W:
+        tl.store(dW + pid * n_cols + col_offsets, dW_acc, mask = mask)
+    if TRAIN_B:
+        tl.store(dB + pid * n_cols + col_offsets, dB_acc, mask = mask)
+
+
+@triton.jit
+def _layernorm_sum_partials(
+    partials, out0, out1, n_programs, n_cols, BLOCK_ROWS: tl.constexpr, BLOCK_COLS: tl.constexpr
+):
+    # Not torch.sum: Inductor reorders it, so eager and compiled bytes would differ.
+    which = tl.program_id(1)
+    cols = tl.program_id(0) * BLOCK_COLS + tl.arange(0, BLOCK_COLS)
+    col_mask = cols < n_cols
+    partials += which * n_programs * n_cols
+    acc = tl.zeros((BLOCK_ROWS, BLOCK_COLS), dtype = tl.float32)
+    for start in tl.range(0, n_programs, BLOCK_ROWS, num_stages = 3):
+        rows = start + tl.arange(0, BLOCK_ROWS)
+        mask = (rows < n_programs)[:, None] & col_mask[None, :]
+        acc += tl.load(partials + rows[:, None] * n_cols + cols[None, :], mask = mask, other = 0)
+    total = tl.sum(acc, axis = 0)
+    if which == 0:
+        tl.store(out0 + cols, total.to(out0.dtype.element_ty), mask = col_mask)
+    else:
+        tl.store(out1 + cols, total.to(out1.dtype.element_ty), mask = col_mask)
+
+
+# Half of each SM's warps (not fla's one program per SM) measured best on A100 and T4.
+@functools.lru_cache(maxsize = None)
+def _dw_slots(device):
+    try:
+        props = torch.cuda.get_device_properties(device)
+        return int(props.multi_processor_count), max(
+            1, int(props.max_threads_per_multi_processor) // 64
+        )
+    except Exception:
+        return 128, 32
 
 
 class Fast_Layernorm(torch.autograd.Function):
@@ -111,7 +211,8 @@ class Fast_Layernorm(torch.autograd.Function):
         X = X.reshape(-1, dim).contiguous()
         # The kernels read W and b at unit stride, and these are the ones saved for backward.
         W = W.contiguous()
-        b = b.contiguous()
+        has_bias = b is not None
+        b = b.contiguous() if has_bias else W
         n_rows, n_cols = X.shape
         BLOCK_SIZE, num_warps = calculate_settings(n_cols)
         device = X.device
@@ -133,6 +234,7 @@ class Fast_Layernorm(torch.autograd.Function):
                 eps,
                 LONG_INDEXING = long_indexing(X, Y, block = BLOCK_SIZE),
                 BLOCK_SIZE = BLOCK_SIZE,
+                HAS_BIAS = has_bias,
                 num_warps = num_warps,
             )
         ctx.eps = eps
@@ -148,25 +250,72 @@ class Fast_Layernorm(torch.autograd.Function):
         dY = dY.reshape(-1, dim).contiguous()
         X, W, b, r, mu = ctx.saved_tensors
         n_rows, n_cols = dY.shape
+        train_w, train_b = ctx.needs_input_grad[1], ctx.needs_input_grad[2]
+        LONG_INDEXING = long_indexing(dY, X, block = ctx.BLOCK_SIZE)
 
+        if not (train_w or train_b):
+            with torch_gpu_device(dY.device):
+                layernorm_backward[(n_rows,)](
+                    dY,
+                    dY.stride(0),
+                    X,
+                    X.stride(0),
+                    W,
+                    b,
+                    r,
+                    mu,
+                    n_cols,
+                    ctx.eps,
+                    LONG_INDEXING = LONG_INDEXING,
+                    BLOCK_SIZE = ctx.BLOCK_SIZE,
+                    num_warps = ctx.num_warps,
+                )
+            return dY.view(*shape), None, None, None
+
+        sms, warps_per_sm = _dw_slots(dY.device)
+        programs = max(1, min(n_rows, sms * max(1, warps_per_sm // ctx.num_warps)))
+        rows_per_program = max(1, triton.cdiv(n_rows, programs))
+        programs = max(1, triton.cdiv(n_rows, rows_per_program))
+        # Every program stores its partial row, so empty suffices unless nothing launches.
+        alloc = torch.empty if n_rows > 0 else torch.zeros
+        partials = alloc(
+            (train_w + train_b, programs, n_cols), dtype = torch.float32, device = dY.device
+        )
+        if n_rows > 0:
+            with torch_gpu_device(dY.device):
+                layernorm_backward_dw[(programs,)](
+                    dY,
+                    dY.stride(0),
+                    X,
+                    X.stride(0),
+                    W,
+                    r,
+                    mu,
+                    partials[0],
+                    partials[-1],
+                    n_rows,
+                    rows_per_program,
+                    n_cols,
+                    LONG_INDEXING = LONG_INDEXING,
+                    BLOCK_SIZE = ctx.BLOCK_SIZE,
+                    TRAIN_W = train_w,
+                    TRAIN_B = train_b,
+                    num_warps = ctx.num_warps,
+                )
+        dW = torch.empty(n_cols, dtype = W.dtype, device = dY.device) if train_w else None
+        dB = torch.empty(n_cols, dtype = b.dtype, device = dY.device) if train_b else None
+        outs = [t for t in (dW, dB) if t is not None]
         with torch_gpu_device(dY.device):
-            layernorm_backward[(n_rows,)](
-                dY,
-                dY.stride(0),
-                X,
-                X.stride(0),
-                W,
-                b,
-                r,
-                mu,
+            _layernorm_sum_partials[(triton.cdiv(n_cols, 64), len(outs))](
+                partials,
+                outs[0],
+                outs[-1],
+                programs,
                 n_cols,
-                ctx.eps,
-                LONG_INDEXING = long_indexing(dY, X, block = ctx.BLOCK_SIZE),
-                BLOCK_SIZE = ctx.BLOCK_SIZE,
-                num_warps = ctx.num_warps,
+                BLOCK_ROWS = 64,
+                BLOCK_COLS = 64,
             )
-        dX = dY.view(*shape)
-        return dX, None, None, None, None
+        return dY.view(*shape), dW, dB, None
 
 
 def fast_layernorm(layernorm, X):
