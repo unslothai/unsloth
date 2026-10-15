@@ -8685,6 +8685,8 @@ class LlamaCppBackend:
         self._full_attention_interval: Optional[int] = None
         self._recurrent_layers: Optional[list[bool]] = None
         self._indexer_key_length: Optional[int] = None
+        # attention.compress_ratios: per-layer list or a scalar; any non-zero pools the indexer.
+        self._indexer_compress_ratios = None
         self._hyper_connection_count: Optional[int] = None
         self._ple_layers: Optional[list[int]] = None
         self._ple_ngram_size: Optional[int] = None
@@ -18181,16 +18183,25 @@ class LlamaCppBackend:
         FULL n_ctx_seq. llama-memory-hybrid-idx.cpp fills n_head_kv_arr with 1 and sets
         n_embd_head_k_full to indexer_head_size, leaving n_embd_head_v alone, so it is one head of
         attention.indexer.key_length for K against one of attention.value_length for V. 576 MiB at
-        65536 on Qwen3.8-Flash-Next, 26% of the cache and in neither reader.
+        65536 on Qwen3.8-Flash-Next, 26% of the cache and in neither reader. Builds from b10889
+        allocate K only, pooled rows twice as wide from b11330 (offload_layout.indexer_cache_widths,
+        shared with the layout reader); an unknown build keeps the K + V charge.
         """
-        from core.inference.offload_layout import INDEXER_CACHE_ARCHS
+        from core.inference.offload_layout import INDEXER_CACHE_ARCHS, indexer_cache_widths
 
         arch = str(getattr(self, "_architecture", None) or "").strip().lower()
         key_len = getattr(self, "_indexer_key_length", None) or 0
         val_len = self._kv_value_length or 0
         if arch not in INDEXER_CACHE_ARCHS or not key_len or not val_len:
             return 0
-        return int(n_attn * total_cells * (key_len * bpe_k + val_len * bpe_v))
+        try:
+            build = self.probe_build_number()
+        except Exception:
+            build = None
+        k_width, v_width = indexer_cache_widths(
+            key_len, val_len, getattr(self, "_indexer_compress_ratios", None), build
+        )
+        return int(n_attn * total_cells * (k_width * bpe_k + v_width * bpe_v))
 
     def _ple_conv_state_bytes(
         self,
@@ -18746,6 +18757,7 @@ class LlamaCppBackend:
                 "_full_attention_interval",
                 "_recurrent_layers",
                 "_indexer_key_length",
+                "_indexer_compress_ratios",
                 "_hyper_connection_count",
                 "_ple_layers",
                 "_ple_ngram_size",
@@ -20158,6 +20170,7 @@ class LlamaCppBackend:
         self._full_attention_interval = None
         self._recurrent_layers = None
         self._indexer_key_length = None
+        self._indexer_compress_ratios = None
         self._hyper_connection_count = None
         self._ple_layers = None
         self._ple_ngram_size = None
@@ -20296,6 +20309,7 @@ class LlamaCppBackend:
                                         f"{arch}.attention.shared_kv_layers": "shared_kv_layers",
                                         f"{arch}.attention.recurrent_layers": "recurrent_layers",
                                         f"{arch}.attention.indexer.key_length": "indexer_key_length",
+                                        f"{arch}.attention.compress_ratios": "indexer_compress_ratios",
                                         f"{arch}.hyper_connection.count": "hyper_connection_count",
                                         f"{arch}.ple.layers": "ple_layers",
                                         f"{arch}.ple.ngram_size": "ple_ngram_size",
@@ -20363,6 +20377,8 @@ class LlamaCppBackend:
                                 elif attr == "sliding_window_pattern" and val_a is not None:
                                     self._sliding_window_pattern = [bool(x) for x in val_a]
                                     sliding_window_pattern_period = None
+                                elif attr == "indexer_compress_ratios" and val_a is not None:
+                                    self._indexer_compress_ratios = [int(x) for x in val_a]
                                 elif attr == "recurrent_layers" and val_a is not None:
                                     self._recurrent_layers = [bool(x) for x in val_a]
                                 elif attr == "ple_layers" and val_a is not None:
@@ -33384,6 +33400,7 @@ class LlamaCppBackend:
                     """``_drop_tensor_spill``, plus the locals the plan rewrote."""
                     nonlocal n_parallel, _spill_keeps_every_layer_on_gpu
                     nonlocal effective_ctx, max_available_ctx
+                    nonlocal kv_cache_unified, _auto_ctx_checkpoints, _auto_ckpt_emitted
                     reverted = self._drop_tensor_spill(run_cmd, why)
                     if reverted is run_cmd:
                         return run_cmd
@@ -33399,6 +33416,16 @@ class LlamaCppBackend:
                             n_parallel = max(1, int(_restored))
                         except (TypeError, ValueError):
                             pass
+                        # The checkpoint cap is per slot and was decided at the plan's count; the
+                        # same re-decide the single-sequence and arch-crash retries make.
+                        if _auto_ckpt_emitted:
+                            reverted = self._without_flag_pairs(reverted, _auto_ckpt_emitted)
+                            _auto_ckpt_emitted = []
+                        _auto_ctx_checkpoints = _decide_auto_ctx_checkpoints()
+                        _auto_ckpt_emitted = _emit_auto_ctx_checkpoints(reverted)
+                    # The restored argv may carry --kv-unified again (_spill_plan_append), and the
+                    # published geometry and slot-save estimate read this local.
+                    kv_cache_unified = _kv_unified_from_args(reverted)
                     # And the context: left at the plan's value, the fallback advertises a context
                     # the child it launched does not serve, and /props never corrects the ceiling.
                     if "-c" in (getattr(self, "_spill_plan_restore", None) or {}):
@@ -34266,6 +34293,12 @@ class LlamaCppBackend:
                     and gpu_indices
                     and self._kernel_image_invalid("\n".join(self._stdout_lines[-80:]))
                 ):
+                    # Studio's -lzm was decided off the CRASHED devices' mmap support, and an
+                    # integrated sibling turns llama.cpp's auto off; left in, "on" pages a table
+                    # through a device that cannot map it. Auto decides again for the respawn
+                    # (when there is none the load fails and the argv is not used again).
+                    if _emitted_lazy_mode:
+                        cmd = _without_subsequence(cmd, ["-lzm", _emitted_lazy_mode])
                     _crashed = sorted(set(gpu_indices))
                     # _detected_gpus, not gpus: the post-picker enumeration this launch
                     # planned against, and unlike `gpus` it survives the manual mode that
@@ -36582,6 +36615,7 @@ class LlamaCppBackend:
             self._full_attention_interval = None
             self._recurrent_layers = None
             self._indexer_key_length = None
+            self._indexer_compress_ratios = None
             self._hyper_connection_count = None
             self._ple_layers = None
             self._ple_ngram_size = None
@@ -38305,6 +38339,12 @@ class LlamaCppBackend:
             return None
         # Keyed on file IDENTITY, not name: the backend outlives a load, so re-quantising to the
         # same path would otherwise plan against the OLD tensor table.
+        # The build prices the indexer cache (offload_layout.indexer_cache_widths), so it is part
+        # of the key: an updated llama-server re-reads the layout.
+        try:
+            build = self.probe_build_number()
+        except Exception:
+            build = None
         try:
             paths = [model_path]
             if all_shards:
@@ -38314,17 +38354,18 @@ class LlamaCppBackend:
                 model_path,
                 tuple((p, os.stat(p).st_size, os.stat(p).st_mtime_ns) for p in paths),
                 all_shards,
+                build,
             )
         except OSError:
-            key = (model_path, None, all_shards)
+            key = (model_path, None, all_shards, build)
         cached = getattr(self, "_spill_layout_cache", None)
         if cached is not None and cached[0] == key:
             return cached[1]
         try:
             layout = (
-                layout_from_gguf(model_path, all_shards = True)
+                layout_from_gguf(model_path, all_shards = True, build = build)
                 if all_shards
-                else layout_from_gguf(model_path)
+                else layout_from_gguf(model_path, build = build)
             )
         except Exception as e:  # unreadable, truncated, or an arch we cannot bucket
             logger.debug("Tensor spill: cannot read layout from %s (%s)", model_path, e)

@@ -238,13 +238,19 @@ def split_shard_paths(path: str) -> Optional[list[str]]:
     ]
 
 
-def layout_from_gguf(path: str, *, all_shards: bool = False) -> ModelLayout:
+def layout_from_gguf(
+    path: str,
+    *,
+    all_shards: bool = False,
+    build: Optional[int] = None,
+) -> ModelLayout:
     """Read ``path`` into a :class:`ModelLayout`.
 
     Returns an incomplete layout (``complete = False``) rather than raising when
     anything required is missing, so a surprising GGUF makes the planner abstain
     instead of failing a load that llama.cpp would have handled.
-    ``all_shards`` reads every sibling shard; all of them must be present.
+    ``all_shards`` reads every sibling shard; all of them must be present. ``build`` is the
+    llama.cpp build the layout is priced for (see :func:`indexer_cache_widths`).
     """
     try:
         from gguf import GGUFReader
@@ -260,7 +266,7 @@ def layout_from_gguf(path: str, *, all_shards: bool = False) -> ModelLayout:
         return ModelLayout()
 
     try:
-        return _layout_from_readers(readers)
+        return _layout_from_readers(readers, build = build)
     except Exception as exc:
         logger.debug("offload layout: cannot interpret %s (%s)", path, exc)
         return ModelLayout()
@@ -297,6 +303,34 @@ _FULL_ATTENTION_INTERVAL_DEFAULT: dict[str, int] = {
 # MQA: one head, attention.indexer.key_length wide for K and the model's own attention.value_length
 # for V, since llama-memory-hybrid-idx.cpp overrides n_head_kv_arr and n_embd_head_k_full only.
 INDEXER_CACHE_ARCHS: frozenset[str] = frozenset({"qwen4exp"})
+
+# ggml-org/llama.cpp#28330 (first in b10889) builds the indexer cache as an MLA-shaped one, so it
+# allocates K only (llama-memory-hybrid-idx.cpp sets both n_embd_head_*_mla_impl). #29751 (b11330)
+# then widened a pooled qwen4exp row to "raw key | pooled key", indexer_kpool_row = 2 whenever any
+# attention.compress_ratios entry is non-zero (models/qwen4exp.cpp:load_arch_hparams).
+INDEXER_K_ONLY_BUILD = 10889
+INDEXER_POOLED_ROW_BUILD = 11330
+
+
+def indexer_cache_widths(
+    key_len: int,
+    val_len: int,
+    compress_ratios = None,
+    build: Optional[int] = None,
+) -> tuple[int, int]:
+    """``(k_width, v_width)`` elements per cell of the indexer cache for llama.cpp ``build``.
+
+    Shared by the layout reader and the backend estimator so the two price one cache. An unknown
+    build keeps the conservative K + V charge of the builds before #28330.
+    """
+    key_len = max(0, int(key_len or 0))
+    if build is None or build < INDEXER_K_ONLY_BUILD:
+        return key_len, max(0, int(val_len or 0))
+    if build < INDEXER_POOLED_ROW_BUILD:
+        return key_len, 0
+    ratios = compress_ratios if isinstance(compress_ratios, (list, tuple)) else (compress_ratios,)
+    pooled = any(int(r or 0) > 0 for r in ratios)
+    return key_len * (2 if pooled else 1), 0
 
 
 # Architectures whose recurrent rows hold a Kimi-Delta-Attention state rather than a Mamba one, so
@@ -383,11 +417,11 @@ def hybrid_layer_split(
     return n_attention, n_recurrent, known
 
 
-def _layout_from_reader(reader) -> ModelLayout:
-    return _layout_from_readers([reader])
+def _layout_from_reader(reader, *, build: Optional[int] = None) -> ModelLayout:
+    return _layout_from_readers([reader], build = build)
 
 
-def _layout_from_readers(readers) -> ModelLayout:
+def _layout_from_readers(readers, *, build: Optional[int] = None) -> ModelLayout:
     """One reader per shard, the first carrying the metadata."""
     reader = readers[0]
     # Split GGUF: llama.cpp loads every sibling shard (llama-model-loader.cpp:590-618), but GGUFReader memmaps only the
@@ -451,15 +485,20 @@ def _layout_from_readers(readers) -> ModelLayout:
     kv_per_token = kv_heads_total * (int(key_len) + int(val_len)) * 2
 
     # The indexer cache holds the full n_ctx_seq like the attention one does, so the product CAN
-    # express it: one head of attention.indexer.key_length for K plus one of value_length for V,
-    # on every dense-attention row.
+    # express it: one head on every dense-attention row, as wide as this build allocates it.
     indexer_key_len = (
         int(_field(reader, f"{arch}.attention.indexer.key_length") or 0)
         if arch in INDEXER_CACHE_ARCHS
         else 0
     )
     if indexer_key_len:
-        kv_per_token += int(n_attention) * (indexer_key_len + int(val_len)) * 2
+        k_width, v_width = indexer_cache_widths(
+            indexer_key_len,
+            int(val_len),
+            _field(reader, f"{arch}.attention.compress_ratios"),
+            build,
+        )
+        kv_per_token += int(n_attention) * (k_width + v_width) * 2
 
     # Charging every layer the full context above is the safe direction for the TOTAL; what it
     # cannot say is which layers hold the big caches.

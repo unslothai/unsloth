@@ -1030,7 +1030,7 @@ def test_the_layout_cache_notices_a_gguf_replaced_in_place(tmp_path, monkeypatch
 
     reads: list[int] = []
 
-    def _fake(path):
+    def _fake(path, **_kw):
         reads.append(len(reads))
         return ModelLayout(arch = "llama", n_layers = len(reads), complete = True)
 
