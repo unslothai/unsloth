@@ -633,8 +633,7 @@ def _native_qwen3_moe_4x_model(with_visual = False):
 
 
 def _explicit_list_regex(model, leaves):
-    """What FastLanguageModel builds for an explicit list: finetune_vision_layers=False routes it
-    through get_peft_regex, whose text-only branch skips mlp.experts.<i>."""
+    """FastLanguageModel's regex for an explicit list (skips mlp.experts.<i>)."""
     import importlib
 
     stub = sys.modules.get("unsloth_zoo.peft_utils")
@@ -652,8 +651,7 @@ def _explicit_list_regex(model, leaves):
 
 
 def test_explicit_leaf_list_reaches_native_per_expert_linears():
-    """FastLanguageModel.get_peft_model(target_modules=[..., gate/up/down_proj]) on Qwen3-MoE
-    under transformers 4.x must LoRA the routed experts, as an unrouted leaf list does in PEFT."""
+    """An explicit gate/up/down list must LoRA native experts, as plain PEFT does."""
     U = _utils()
     model = _native_qwen3_moe_4x_model()
     leaves = ["q_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
@@ -670,7 +668,6 @@ def test_explicit_leaf_list_reaches_native_per_expert_linears():
     assert matched == peft_leaf_match
     assert "model.layers.0.mlp.gate" not in matched  # the router stays frozen
 
-    # A down-only request widens to down_proj alone.
     regex = _explicit_list_regex(model, ["q_proj", "down_proj"])
     widened, _, found = U.widen_target_regex_to_expert_submodules(
         model, regex, ["q_proj", "down_proj"], auto_regex = True, explicit_leaves = True
@@ -682,19 +679,17 @@ def test_explicit_leaf_list_reaches_native_per_expert_linears():
 def test_explicit_leaf_list_widening_respects_the_family_filters():
     U = _utils()
     leaves = ["q_proj", "gate_proj", "up_proj", "down_proj"]
-    # Attention-only request: nothing to widen.
     model = _native_qwen3_moe_4x_model()
     regex = _explicit_list_regex(model, ["q_proj", "o_proj"])
     kept, _, found = U.widen_target_regex_to_expert_submodules(
         model, regex, ["q_proj", "o_proj"], auto_regex = True, explicit_leaves = True
     )
     assert kept == regex and found == []
-    # The auto regex (target_modules=None) keeps native experts off, as before.
     kept, _, found = U.widen_target_regex_to_expert_submodules(
         model, regex, regex, auto_regex = True
     )
     assert kept == regex and found == []
-    # A native expert tower outside the language layers stays out with vision off.
+    # Native experts outside language layers stay out.
     model = _native_qwen3_moe_4x_model(with_visual = True)
     regex = _explicit_list_regex(model, leaves)
     widened, _, found = U.widen_target_regex_to_expert_submodules(

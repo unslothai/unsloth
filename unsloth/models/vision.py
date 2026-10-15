@@ -4593,7 +4593,6 @@ class FastBaseModel:
 
         # Only a regex generated here may be widened to expert submodules below.
         _target_modules_auto_regex = False
-        # Set when the caller's explicit leaf list was routed through get_peft_regex below.
         _target_modules_from_explicit_list = False
         if target_modules is None or target_modules == "all-linear":
             target_modules = get_peft_regex(

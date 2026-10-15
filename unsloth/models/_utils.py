@@ -9197,7 +9197,6 @@ def _remote_expert_parents(model):
 
 
 def _native_expert_parents(model, target_modules):
-    """Parents of native ``experts.<i>`` blocks in a decoder layer the scoped regex already reaches."""
     try:
         pattern = re.compile(target_modules)
     except re.error:
@@ -9214,7 +9213,7 @@ def _native_expert_parents(model, target_modules):
     parents = set()
     for parent in blocks:
         layer = parent.rpartition(".")[0]
-        # Same decoder layer as a leaf the family filters kept: a vision tower stays out.
+        # Only layers the regex already reaches: keeps a vision tower out.
         if not layer or not any(r == layer or r.startswith(layer + ".") for r in reached_layers):
             continue
         parents.add(
@@ -9227,11 +9226,8 @@ def widen_target_regex_to_expert_submodules(
     model, target_modules, detect_targets, auto_regex: bool, explicit_leaves: bool = False
 ):
     """Widen a generated regex to ``experts.<i>.<leaf>``; a user-written regex is never widened.
-
-    *explicit_leaves* marks a regex built from the caller's explicit leaf list (FastLanguageModel
-    passes finetune_vision_layers=False, which routes the list through get_peft_regex). Unrouted,
-    PEFT suffix-matches that list onto native per-expert Linears (Qwen3-MoE / Mixtral on
-    transformers 4.x), so those experts are widened too; the auto regex keeps them off."""
+    explicit_leaves: the caller's list went through get_peft_regex, which skips native experts
+    that plain PEFT would match, so widen those too."""
     if not auto_regex or not isinstance(target_modules, str):
         return target_modules, detect_targets, []
     # Remote expert blocks only: widening native ones (Qwen3-MoE on 4.x) LoRAs every routed expert.
