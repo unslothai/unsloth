@@ -521,3 +521,19 @@ def test_size_based_wrap_counts_packed_weights_as_uint8(storage):
     assert policy(uint8_block) and policy(packed_block)
     original = fsdp_utils.fsdp2_prepare_auto_wrap_policy._unsloth_original
     assert not original(plugin, packed_block)(packed_block)
+    # Only the counting changes: accelerate's FSDP2 size policy compares with `>`, so does this one.
+    for threshold in (uint8_numel - 1, uint8_numel):
+        plugin.min_num_params = threshold
+        assert (
+            fsdp_utils.fsdp2_prepare_auto_wrap_policy(plugin, uint8_block)(uint8_block)
+            == original(plugin, uint8_block)(uint8_block)
+        )
+
+
+def test_unquantized_params4bit_is_not_byte_viewed():
+    m = _load_module()
+    lin = bnb.nn.Linear4bit(128, 64, bias = False, quant_storage = torch.bfloat16)
+    dense = lin.weight.data.clone()
+    assert not lin.weight.bnb_quantized and lin.weight.is_floating_point()
+    assert m.params4bit_to_uint8_storage(torch.nn.Sequential(lin)) == (0, 0)
+    assert lin.weight.dtype == dense.dtype and torch.equal(lin.weight.data, dense)
