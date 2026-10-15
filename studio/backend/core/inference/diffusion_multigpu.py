@@ -464,19 +464,24 @@ def price_cfg_parallel(
     replica_bytes: int = 0,
     primary_s: Optional[float] = None,
 ) -> dict[str, Any]:
-    """One card (``primary + branch``) vs CFG-parallel (``max(primary, branch + copy)``: the primary keeps its branch,
-    the replica runs ``branch`` after its copies). Chosen when it is at most ``_PRICE_PARALLEL_FRACTION`` of one card.
+    """One card (``primary + branch``) vs CFG-parallel (``in_copy + max(primary, branch + out_copy)``). The router
+    copies the step's inputs to the replica card BEFORE the primary branch is queued (a copy queued after it would wait
+    for it on the source stream), so the input copy delays both branches and sits outside the overlap; the replica's
+    output copy back overlaps the primary branch. Chosen when it is at most ``_PRICE_PARALLEL_FRACTION`` of one card.
     ``branch_s`` = the measured odd branch, ``primary_s`` = the measured even branch of the same step (``branch_s``
-    when unmeasured). With equal branches this is the old rule: copy <= 0.8 of a branch."""
+    when unmeasured)."""
     measured = bool(link_in_gib_s and link_out_gib_s)
     if measured:
-        copy_s = in_bytes / (link_in_gib_s * (1 << 30)) + out_bytes / (link_out_gib_s * (1 << 30))
+        in_copy_s = in_bytes / (link_in_gib_s * (1 << 30))
+        out_copy_s = out_bytes / (link_out_gib_s * (1 << 30))
         build_s: Optional[float] = replica_bytes / (link_in_gib_s * (1 << 30))
     else:
-        copy_s, build_s = 0.0, None
+        in_copy_s = out_copy_s = 0.0
+        build_s = None
+    copy_s = in_copy_s + out_copy_s
     primary = branch_s if primary_s is None else primary_s
     single = primary + branch_s
-    parallel = max(primary, branch_s + copy_s)
+    parallel = in_copy_s + max(primary, branch_s + out_copy_s)
     # an unmeasured link is unknown, not free: one card until a probe measures it (retried on the next request)
     chosen = (
         "cfg_parallel" if measured and parallel <= _PRICE_PARALLEL_FRACTION * single else "single"
@@ -487,6 +492,8 @@ def price_cfg_parallel(
         "primary_branch_s": round(primary, 4),
         "branch_s": round(branch_s, 4),
         "copy_s": round(copy_s, 4),
+        "in_copy_s": round(in_copy_s, 4),
+        "out_copy_s": round(out_copy_s, 4),
         "single_step_s": round(single, 4),
         "cfg_parallel_step_s": round(parallel, 4),
         "replica_build_s_est": None if build_s is None else round(build_s, 3),

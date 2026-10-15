@@ -1042,8 +1042,23 @@ def estimate_image_runtime_mib(
         # Planning call: reserve what the generation guard charges a decomposition, not one 1024x1024 frame.
         w = h = _QWEN_LAYERED_CANVAS
         cond = (_QWEN_LAYERED_LAYERS + 1) * w * h
-    pixel_scale = ((w * h + cond) * batch) / float(DEFAULT_IMAGE_WIDTH * DEFAULT_IMAGE_HEIGHT)
-    return max(1024, int(8192 * max(0.25, pixel_scale) * _family_activation_multiplier(family)))
+    return max(
+        1024, int(8192 * guard_pixel_scale(w * h, cond, batch) * _family_activation_multiplier(family))
+    )
+
+
+# The smallest share of the 1024x1024 activation figure any request is charged: below it fixed costs (attention
+# workspaces, kernel scratch, the allocator's granularity) dominate and stop shrinking with the canvas.
+_GUARD_PIXEL_SCALE_FLOOR = 0.25
+
+
+def guard_pixel_scale(target_pixels: int, condition_pixels: int = 0, batch: int = 1) -> float:
+    """The generation guard's pixel curve: (target + weighted condition pixels) x batch over 1024x1024, never below
+    ``_GUARD_PIXEL_SCALE_FLOOR``. Shared by the whole-request estimate and the per-phase CFG figures."""
+    scale = (
+        (max(0, int(target_pixels)) + max(0, int(condition_pixels or 0))) * max(1, int(batch or 1))
+    ) / float(DEFAULT_IMAGE_WIDTH * DEFAULT_IMAGE_HEIGHT)
+    return max(_GUARD_PIXEL_SCALE_FLOOR, scale)
 
 
 def image_request_phase_mib(
@@ -1064,7 +1079,7 @@ def image_request_phase_mib(
 
     Calibrated families (each phase measured at 1024x1024, one image):
       encode  = text_encoder_mib x prompts
-      denoise = denoise_mib x (target + weighted condition pixels) / 1024^2 x images (the guard's own curve)
+      denoise = denoise_mib x guard_pixel_scale(target, condition pixels, images) (the guard's own curve, floor kept)
       decode  = per image: tiled_decode_mib when the VAE tiles (canvas-independent), else decode_mib x canvas / 1024^2;
                 x images unless the VAE is sliced (one image at a time)
     Others: every phase is the guard's whole-request estimate for this call's images (it already includes the decode)."""
@@ -1086,7 +1101,7 @@ def image_request_phase_mib(
     per_image_decode = calibrated.tiled_decode_mib if tiled else calibrated.decode_mib * (w * h / reference)
     return (
         int(calibrated.text_encoder_mib * encoded),
-        int(calibrated.denoise_mib * (w * h + cond) / reference * images),
+        int(calibrated.denoise_mib * guard_pixel_scale(w * h, cond, images)),
         int(per_image_decode * (1 if sliced else images)),
     )
 

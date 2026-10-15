@@ -4333,3 +4333,35 @@ def test_every_replica_card_choice_goes_through_select_replica_card(monkeypatch)
     monkeypatch.setattr(router, "_secondary_free_mib", lambda: 10)
     router._build_replica()
     assert len(calls) == 3 and router.replica is None and "lacks room" in router.describe()["disabled_reason"]
+
+
+def test_calibrated_denoise_room_keeps_the_guards_floor():
+    # 256x256 is 1/16 of the reference token area: the guard charges at least a quarter of the measured figure
+    _enc, denoise, _dec = dm.image_request_phase_mib(width = 256, height = 256, calibrated = _CAL)
+    assert denoise == int(_CAL.denoise_mib * 0.25)
+    assert dm.guard_pixel_scale(256 * 256) == 0.25 and dm.guard_pixel_scale(2048 * 2048) == 4.0
+
+
+def test_guard_and_phase_figures_share_one_pixel_curve(monkeypatch):
+    monkeypatch.setattr(dm, "guard_pixel_scale", lambda target, cond = 0, batch = 1: 3.0)
+    assert dm.image_request_phase_mib(width = 512, height = 512, calibrated = _CAL)[1] == int(_CAL.denoise_mib * 3.0)
+    assert dm.estimate_image_runtime_mib(width = 512, height = 512) == int(8192 * 3.0)
+
+
+def test_cfg_parallel_price_charges_the_input_copy_outside_the_overlap():
+    # the inputs are copied before the primary branch is queued: in_copy + max(primary, branch + out_copy)
+    price = mg.price_cfg_parallel(
+        branch_s = 1.0,
+        primary_s = 2.0,
+        in_bytes = int(0.9 * (1 << 30)),
+        out_bytes = 0,
+        link_in_gib_s = 1.0,
+        link_out_gib_s = 1.0,
+    )
+    assert price["cfg_parallel_step_s"] == 2.9  # not max(2.0, 1.9) = 2.0
+    assert price["strategy"] == "single"  # 2.9 > 0.9 x 3.0
+    assert price["in_copy_s"] == 0.9 and price["out_copy_s"] == 0.0
+    out_only = mg.price_cfg_parallel(
+        branch_s = 1.0, primary_s = 2.0, in_bytes = 0, out_bytes = int(0.9 * (1 << 30)), link_in_gib_s = 1.0, link_out_gib_s = 1.0
+    )
+    assert out_only["cfg_parallel_step_s"] == 2.0  # the output copy back overlaps the primary branch
