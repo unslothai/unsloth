@@ -513,6 +513,11 @@ class TestMergeSizing:
         # either: `_FakeModel` has no adapter, so nothing here reaches `merge_and_overwrite_lora`.
         assert sized == [_merge_preflight_ask(10 * GB, 0)]
 
+    def test_a_float32_merge_is_four_bytes_per_parameter(self, sized):
+        """unsloth#5186: `dtype = float32` doubles the checkpoint, so Kaggle must budget for it."""
+        S._preflight_merge_disk(_FakeModel(), "model", "merged_16bit", widen_to_float32 = True)
+        assert sized == [_merge_preflight_ask(20 * GB, 0)]
+
     @pytest.mark.parametrize("save_method", ["merged 16bit", "MERGED_16BIT", " merged-16bit "])
     def test_supported_spellings_are_measured_too(self, sized, save_method):
         """`unsloth_save_model` normalizes spaces, so these are the same export."""

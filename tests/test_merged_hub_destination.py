@@ -158,6 +158,7 @@ def saving(monkeypatch, tmp_path):
             save = lambda: None,
             float16 = "float16",
             bfloat16 = "bfloat16",
+            float32 = "float32",
             cuda = SimpleNamespace(is_bf16_supported = lambda: False),
         ),
         get_token = lambda: "cached-fixture",
@@ -190,6 +191,7 @@ def saving(monkeypatch, tmp_path):
         "_honours_safe_serialization",
         "_assert_export_target_is_not_base_with_lora_layers",
         "_refuse_unsaveable_text_core",
+        "_requests_float32",
     }
     nodes = []
     for node in tree.body:
@@ -576,6 +578,13 @@ def test_default_full_finetune_push_uploads_16bit_safetensors(monkeypatch):
     target = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
     assert {tensor.dtype for tensor in commits[0]["model.safetensors"].values()} == {target}
     assert next(model.parameters()).dtype == torch.float32
+
+    # unsloth#5186: `dtype = float32` keeps the full fine-tune at float32 instead of casting.
+    commits.clear()
+    save.unsloth_generic_push_to_hub_merged(
+        model, "owner/model", token = "fixture", dtype = torch.float32
+    )
+    assert {tensor.dtype for tensor in commits[0]["model.safetensors"].values()} == {torch.float32}
 
 
 def test_the_push_names_the_destination_and_not_the_staging_folder(saving, capsys):

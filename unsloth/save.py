@@ -3226,6 +3226,12 @@ def _merge_writer_disposition(model, save_method):
     return (True, True) if takes_generic_fallback else (False, False)
 
 
+def _requests_float32(dtype):
+    if isinstance(dtype, str):
+        return dtype.strip().lower().removeprefix("torch.") in ("float32", "fp32", "f32")
+    return dtype is torch.float32
+
+
 def _preflight_merge_disk(
     model,
     save_directory,
@@ -3235,6 +3241,7 @@ def _preflight_merge_disk(
     forwards_state_dict = False,
     writes_model_verbatim = False,
     writer_runs_merge_guard = False,
+    widen_to_float32 = False,
 ):
     """Kaggle only: send a merge that cannot fit in /kaggle/working to /tmp. Never raises. A merge short of space on an ordinary machine is already handled by unsloth_zoo's own guard, which knows about shard streaming and the push_to_hub fallbacks; this exists so the ~20GB Kaggle working directory stops being the ceiling when a terabyte of overlay is mounted beside it. Skipped when pushing to the hub, where `save_directory` is a repo id and rewriting it would push to the wrong repository. `forwards_state_dict`: the writer hands a supplied `state_dict` to `save_pretrained` for a 16-bit save, casting floating entries to two bytes, as `unsloth_generic_save` does; `unsloth_save_model`'s merge path instead rebuilds the dict from the merged layers and drops what it was given. `writes_model_verbatim`: the writer copies what it holds with no cast at all, which is `unsloth_save_model`'s generic architecture fallback, so the checkpoint is the dict's own bytes at its own dtypes, or the resident parameters' bytes when no dict was supplied. `writer_runs_merge_guard`: the writer is `unsloth_generic_save`, whose PEFT branch is the only caller of `merge_and_overwrite_lora` here and so the only writer bringing its `free * 0.95` guard, deliberately separate from the two SIZING flags since a compressed export is cast to two bytes and sized accordingly yet reserves nothing unless there is an adapter to merge. `_merge_writer_disposition` decides the first two for the public entrypoint."""
     if push_to_hub:
@@ -3266,6 +3273,9 @@ def _preflight_merge_disk(
             need = _cast_16bit_state_dict_bytes(supplied_dict)
         else:
             need = model_16bit_bytes(model)
+        # `dtype = float32` on merged_16bit writes four bytes per parameter, not two.
+        if widen_to_float32 and method == "merged_16bit":
+            need *= 2
         if need <= 0:
             return save_directory
         # What the torchao staging directory costs on whatever filesystem tempfile resolves to; zero for every other export, which stages nothing.
@@ -5659,7 +5669,10 @@ def unsloth_generic_save(
         if ("16bit" in save_method or is_qwen3_5_vlm) and state_dict is None:
             state_dict = model.state_dict()
         if "16bit" in save_method:
-            _target_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+            if _requests_float32(dtype):
+                _target_dtype = torch.float32
+            else:
+                _target_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
             state_dict = {
                 k: v.to(dtype = _target_dtype) if v.is_floating_point() else v
                 for k, v in state_dict.items()
@@ -5847,6 +5860,7 @@ def unsloth_generic_save_pretrained_merged(
         forwards_state_dict = True,
         # And it is the writer that runs merge_and_overwrite_lora when there IS one, which no other entrypoint here does.
         writer_runs_merge_guard = True,
+        widen_to_float32 = _requests_float32(dtype),
     )
 
     _compressed = _normalize_compressed_method(save_method)
