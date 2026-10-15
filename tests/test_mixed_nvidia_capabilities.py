@@ -22,7 +22,9 @@ MODEL_UTILS = REPO_ROOT / "unsloth" / "models" / "_utils.py"
 DEVICE_TYPE_PY = REPO_ROOT / "unsloth" / "device_type.py"
 
 if not hasattr(dt, "torch"):
-    pytest.skip("device_type stub or MLX host; the real probes are not loaded", allow_module_level = True)
+    pytest.skip(
+        "device_type stub or MLX host; the real probes are not loaded", allow_module_level = True
+    )
 
 SM80, SM86, SM75, SM90, SM61 = (8, 0), (8, 6), (7, 5), (9, 0), (6, 1)
 
@@ -190,9 +192,7 @@ def _run_pre_volta(fake, monkeypatch, capsys):
         'if DEVICE_TYPE == "cuda" and torch.cuda.is_available():',
         '\nif DEVICE_TYPE == "hip":\n    try:\n        import bitsandbytes',
     )
-    namespace = _module_namespace(
-        dt, fake, monkeypatch, apply_pre_volta_compile_workaround = record
-    )
+    namespace = _module_namespace(dt, fake, monkeypatch, apply_pre_volta_compile_workaround = record)
     exec(compile(body, str(DEVICE_TYPE_PY), "exec"), namespace)
     return applied, capsys.readouterr().out
 
