@@ -3712,7 +3712,8 @@ def grpo_trainer_compute_loss(function_name, function):
         completion_token_count = completion_mask.sum().clamp(min = 1.0)
 
         def masked_batch_mean(x):
-            if x.shape[1] == 1:  # when importance_sampling_level == "sequence"
+            # Sequence level only when the mask is wider: a one-token completion is token level and must stay masked.
+            if x.shape[1] == 1 and completion_mask.shape[1] != 1:
                 return x.mean()
             else:
                 return (x * completion_mask).sum() / completion_token_count
