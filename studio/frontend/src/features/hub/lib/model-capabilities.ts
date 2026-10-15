@@ -144,6 +144,7 @@ const DIFFUSION_TAGS = new Set([
   "text-to-video",
   "image-to-video",
   "image-text-to-video",
+  "image-text-to-image",
   "unconditional-image-generation",
 ]);
 

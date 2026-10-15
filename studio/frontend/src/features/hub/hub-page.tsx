@@ -1304,6 +1304,7 @@ export function ModelsPage() {
         resourceType,
         deferredFormatFilter,
         deferredCapabilityFilters,
+        deferredDatasetModalities,
         searchFilters,
         inventoryTypeFilter,
         effectiveSort,
@@ -1316,6 +1317,7 @@ export function ModelsPage() {
       resourceType,
       deferredFormatFilter,
       deferredCapabilityFilters,
+      deferredDatasetModalities,
       searchFilters,
       inventoryTypeFilter,
       effectiveSort,
@@ -1820,6 +1822,10 @@ export function ModelsPage() {
           ((isModelDiscover && hasSearchFilters) ||
             deferredFormatFilter !== "all" ||
             deferredCapabilityFilters.length > 0 ||
+            (isDatasetMode &&
+              (deferredDatasetModalities.length > 0 ||
+                minRows !== undefined ||
+                maxRows !== undefined)) ||
             (tab === "downloaded" && typeFilterActive)),
         typeFilterActive,
         // A single format filter makes every row's format dot the same; Recommended mixes GGUF and checkpoints.
@@ -1852,6 +1858,9 @@ export function ModelsPage() {
       discoverManualFetchAvailable,
       deferredFormatFilter,
       deferredCapabilityFilters,
+      deferredDatasetModalities,
+      minRows,
+      maxRows,
       hasSearchFilters,
       inventoryTypeFilter,
     ],

@@ -303,7 +303,10 @@ export function matchesHubCapability(
       ) &&
       // A generator neither box claims (video-to-video), or a media task the detector misses.
       !matchesCapability(row.capabilities, "diffusion") &&
-      !MEDIA_OUTPUT_TASKS.has(row.result.pipelineTag?.toLowerCase() ?? "")
+      !MEDIA_OUTPUT_TASKS.has(row.result.pipelineTag?.toLowerCase() ?? "") &&
+      !(row.result.tags ?? []).some((tag) =>
+        MEDIA_OUTPUT_TASKS.has(tag.toLowerCase()),
+      )
     );
   }
   if (key !== "image-gen" && key !== "video-gen")

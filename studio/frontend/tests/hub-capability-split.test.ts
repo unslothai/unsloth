@@ -158,3 +158,11 @@ test("a Diffusers pipeline that makes neither images nor video gets no generatio
 test("a new search starts on every uploader", () => {
   assert.match(readSrc("features/hub/hub-page.tsx"), /\} else if \(query\.trim\(\) === ""\) \{[\s\S]{0,160}setUploaderPick\(null\);/);
 });
+
+test("image-text-to-image is image gen; Text only checks media tasks in tags too", () => {
+  assert.equal(
+    detectCapabilities([], "image-text-to-image", "someone/edit-model").some((c) => c.key === "diffusion"),
+    true,
+  );
+  assert.match(readSrc("features/hub/lib/view-models.ts"), /\(row\.result\.tags \?\? \[\]\)\.some\(\(tag\) =>\s*MEDIA_OUTPUT_TASKS\.has\(tag\.toLowerCase\(\)\)/);
+});

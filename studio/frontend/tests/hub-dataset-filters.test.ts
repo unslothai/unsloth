@@ -36,3 +36,10 @@ test("a size bucket matches when it overlaps the row range", () => {
   // No size published: left out once a range is set.
   assert.equal(matchesDatasetFilters({ modalities: [] }, [], 1e3, undefined), false);
 });
+
+test("dataset filters count as active and reset the list's scroll", async () => {
+  const { readFileSync } = await import("node:fs");
+  const page = readFileSync(new URL("../src/features/hub/hub-page.tsx", import.meta.url), "utf8");
+  assert.match(page, /isDatasetMode &&\s*\(deferredDatasetModalities\.length > 0 \|\|\s*minRows !== undefined \|\|\s*maxRows !== undefined\)/);
+  assert.match(page, /deferredCapabilityFilters,\s*deferredDatasetModalities,\s*searchFilters,/);
+});
