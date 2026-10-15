@@ -586,6 +586,10 @@ export const fr = {
   chatMenu: {
     more: "Options de la discussion",
     copy: "Copier",
+    compact: "Compacter la conversation",
+    compactQueued: "Compactage demandé pour le prochain message",
+    compactEmpty: "Rien à compacter pour le moment",
+    compactUnsupported: "Le compactage nécessite un modèle GGUF ou MLX prenant en charge les outils",
   },
   welcome: {
     goodToSeeYou: "Ravi de vous voir",
@@ -1865,7 +1869,23 @@ export const fr = {
           "Modèle Hugging Face ou chemin local utilisé pour indexer et rechercher vos documents. La valeur par défaut est {defaultModel}.",
         searchPlaceholder: "Rechercher n'importe quel modèle sur HF",
         reindexWarning:
-          "N'affecte que les documents nouvellement indexés. Téléversez à nouveau les documents existants après avoir changé de modèle.",
+          "N'affecte que les documents nouvellement indexés. Ré-encodez les documents existants après avoir changé de modèle.",
+        reembed: {
+          label: "Ré-encoder les documents",
+          staleOne:
+            "1 document a été indexé avec un autre modèle d'embedding, la recherche sémantique l'ignore donc.",
+          staleMany:
+            "{count} documents ont été indexés avec un autre modèle d'embedding, la recherche sémantique les ignore donc.",
+          staleArchived:
+            "L'historique de chat antérieur a été indexé avec un autre modèle d'embedding, la recherche sémantique l'ignore donc.",
+          running: "Ré-encodage : {done} sur {total}",
+          action: "Ré-encoder",
+          stop: "Arrêter",
+          startFailed: "Impossible de lancer le ré-encodage",
+          stopped: "Ré-encodage interrompu",
+          finished: "Documents ré-encodés",
+          finishedWithFailures: "{count} n'ont pas pu être ré-encodés",
+        },
         emptyError:
           "Saisissez un identifiant de modèle Hugging Face ou un chemin local.",
         loadError: "Échec du chargement du paramètre du modèle d'embedding.",
@@ -3055,6 +3075,22 @@ export const fr = {
         "Les applications utilisant ce jeton perdent immédiatement l’accès. Cette action est irréversible.",
       revokeAction: 'Révoquer "{name}"',
       revoking: "Révocation...",
+      audioApi: {
+        title: "API audio",
+        description: "Synthèse vocale, clonage de voix, transcription et les flux de la page Audio.",
+        speak: "Parler",
+        clone: "Cloner",
+        transcribe: "Transcrire",
+        workflows: "Flux",
+        separate: "Séparer",
+        convert: "Convertir",
+        music: "Musique",
+        edit: "Modifier",
+        placeholderModel: "Aucun modèle téléchargé ne peut encore exécuter cet exemple : le modèle affiché n'est qu'un exemple. Téléchargez-en un d'abord sur la page Audio.",
+        autoSwitchOff:
+          "Le modèle ne se charge par son nom que si le changement automatique de modèle est activé. Activez-le, ou chargez d'abord le modèle sur sa page Audio.",
+        useViaApi: "Utiliser via l'API",
+      },
       decisionApi: {
         title: "API de décision",
         docs: "Documentation",
@@ -3134,6 +3170,7 @@ export const fr = {
       desktopAppVersion: "Version de l’application de bureau",
       desktopAppVersionUnavailable: "Indisponible",
       llamaCppVersion: "Version de llama.cpp",
+      audioCppVersion: "Version d'audio.cpp",
       hardware: "Matériel",
       gpu: "GPU",
       cuda: "CUDA",

@@ -586,6 +586,10 @@ export const ptBR = {
   chatMenu: {
     more: "Opções do chat",
     copy: "Copiar",
+    compact: "Compactar conversa",
+    compactQueued: "A compactação foi solicitada para a próxima mensagem",
+    compactEmpty: "Ainda não há nada para compactar",
+    compactUnsupported: "A compactação requer um modelo GGUF ou MLX com suporte a ferramentas",
   },
   welcome: {
     goodToSeeYou: "Que bom ver você",
@@ -1855,7 +1859,23 @@ export const ptBR = {
           "Modelo do Hugging Face ou caminho local usado para indexar e buscar seus documentos. O padrão é {defaultModel}.",
         searchPlaceholder: "Buscar qualquer modelo no HF",
         reindexWarning:
-          "Afeta apenas documentos recém-indexados. Reenvie os documentos existentes após alterar o modelo.",
+          "Afeta apenas documentos recém-indexados. Reincorpore os documentos existentes após alterar o modelo.",
+        reembed: {
+          label: "Reincorporar documentos",
+          staleOne:
+            "1 documento foi indexado com outro modelo de embedding, então a busca semântica o ignora.",
+          staleMany:
+            "{count} documentos foram indexados com outro modelo de embedding, então a busca semântica os ignora.",
+          staleArchived:
+            "O histórico de chat anterior foi indexado com outro modelo de embedding, então a busca semântica o ignora.",
+          running: "Reincorporando: {done} de {total}",
+          action: "Reincorporar",
+          stop: "Parar",
+          startFailed: "Não foi possível iniciar a reincorporação",
+          stopped: "Reincorporação interrompida",
+          finished: "Documentos reincorporados",
+          finishedWithFailures: "{count} não puderam ser reincorporados",
+        },
         emptyError: "Insira um id de modelo do Hugging Face ou um caminho local.",
         loadError: "Falha ao carregar a configuração do modelo de embedding.",
         saveError: "Falha ao salvar o modelo de embedding.",
@@ -3026,6 +3046,22 @@ export const ptBR = {
         "Aplicativos que usam este token perderão o acesso imediatamente. Esta ação não pode ser desfeita.",
       revokeAction: 'Revogar "{name}"',
       revoking: "Revogando...",
+      audioApi: {
+        title: "API de áudio",
+        description: "Fala, clonagem de voz, transcrição e os fluxos da página Áudio.",
+        speak: "Falar",
+        clone: "Clonar",
+        transcribe: "Transcrever",
+        workflows: "Fluxos",
+        separate: "Separar",
+        convert: "Converter",
+        music: "Música",
+        edit: "Editar",
+        placeholderModel: "Nenhum modelo baixado consegue rodar este exemplo ainda, então o modelo mostrado é só ilustrativo. Baixe um antes na página Áudio.",
+        autoSwitchOff:
+          "O modelo só é carregado pelo nome com a troca automática de modelo ativada. Ative-a ou carregue antes o modelo na página de Áudio dele.",
+        useViaApi: "Usar via API",
+      },
       decisionApi: {
         title: "API de decisões",
         docs: "Documentação",
@@ -3105,6 +3141,7 @@ export const ptBR = {
       desktopAppVersion: "Versão do aplicativo de desktop",
       desktopAppVersionUnavailable: "Indisponível",
       llamaCppVersion: "Versão do llama.cpp",
+      audioCppVersion: "Versão do audio.cpp",
       hardware: "Hardware",
       gpu: "GPU",
       cuda: "CUDA",

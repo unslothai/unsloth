@@ -260,6 +260,7 @@ import {
   takeEffortDisplacedByPin,
   threadScopedOverride,
   resolvePreserveThinkingOnLoad,
+  resolveToolsEnabledOnLoad,
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
 import { wantsDownloadManagerStaging } from "./utils/model-download-staging";
@@ -274,7 +275,6 @@ import {
   comparePairReadState,
   resolveComparePaneThreadIds,
 } from "./utils/compare-pane-threads";
-import { clearNewChatDraft } from "./utils/composer-draft";
 import { isChatThreadDeleted } from "./utils/chat-thread-tombstones";
 import {
   getStoredChatThread,
@@ -2887,7 +2887,6 @@ export function ChatPage({
   );
 
   const handleDesktopNewChat = useCallback(() => {
-    clearNewChatDraft();
     const runtime = useChatRuntimeStore.getState();
     runtime.setActiveThreadId(null);
     runtime.setActiveProjectId(currentProjectId);
@@ -3197,6 +3196,8 @@ export function ChatPage({
         supports_preserve_thinking: providerSupportsPreserveThinking(provider?.providerType),
       }),
       supportsTools: supportsStudioToolsHere,
+      deepResearchEnabled: resolveToolsEnabledOnLoad(supportsStudioToolsHere)
+        .deepResearchEnabled,
       supportsBuiltinWebSearch,
       supportsBuiltinCodeExecution,
       supportsBuiltinImageGeneration,
