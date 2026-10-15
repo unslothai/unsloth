@@ -3456,9 +3456,21 @@ def _run_mlx_training(event_queue, stop_queue, config):
 
     if (
         config.get("train_on_completions", False)
+        and dataset_final_format == "pretokenized"
+        and not has_custom_labels(dataset)
+    ):
+        # zoo's MLX masker re-tokenizes text, so token-id rows have nothing it can mask (CUDA masks input_ids).
+        _send(
+            "warning",
+            message = (
+                "'Train on completions' is not available for pre-tokenized datasets on Mac: "
+                "training will run on full sequences. Add a labels column to choose the trained tokens."
+            ),
+        )
+    if (
+        config.get("train_on_completions", False)
         and not raw_text_mode
-        and dataset_final_format != "raw_text"
-        and not (dataset_final_format == "pretokenized" and has_custom_labels(dataset))
+        and dataset_final_format not in ("raw_text", "pretokenized")
     ):
         _send("status", status_message = "Configuring response-only training...")
         # No catch: the helper handles detection failures and double misses, so an exception here is a real masking
