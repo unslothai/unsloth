@@ -1997,7 +1997,8 @@ export function ImagesPage({
   }, [loraCapable, residentBuildKey, status?.resolved, loras]);
 
   // Refresh the ControlNet options when the loaded family changes, and clear a stale selection.
-  const controlnetCapable = Boolean(!external && status?.loaded && status?.supports_controlnet);
+  const controlnetSupported = Boolean(status?.loaded && status?.supports_controlnet);
+  const controlnetCapable = !external && controlnetSupported;
   const negativeCapable = !external && status?.supports_negative_prompt !== false;
   const samplerOptions = (!external && status?.loaded ? status.samplers : null) ?? NO_SAMPLERS;
   // The checkpoint, not residentDefaults: community SDXL files all share the SDXL base repo.
@@ -2020,7 +2021,7 @@ export function ImagesPage({
     [samplerChoice, samplerModelKey, samplerOptions],
   );
   useEffect(() => {
-    if (!controlnetCapable) {
+    if (!controlnetSupported) {
       setAvailableControlNets([]);
       setControlnetId("");
       setControlImage(null);
@@ -2039,7 +2040,7 @@ export function ImagesPage({
     return () => {
       cancelled = true;
     };
-  }, [controlnetCapable, status?.family]);
+  }, [controlnetSupported, status?.family]);
 
   // The control types offered for the selected ControlNet: a union model advertises several.
   const controlTypeOptions = useMemo(() => {

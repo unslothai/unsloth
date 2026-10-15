@@ -77,3 +77,11 @@ test("any local load takes the page back from a connection", async () => {
   const head = load.slice(0, load.indexOf("if (pollTimer.current) clearTimeout(pollTimer.current);"));
   assert.match(head, /setExternalModelId\(null\);/);
 });
+
+test("a connected pick hides ControlNet without clearing the local setup", async () => {
+  const { readSrc } = await import("./helpers/kit.ts");
+  const page = readSrc("features/images/images-page.tsx");
+  const effect = page.slice(page.indexOf("setAvailableControlNets([]);") - 120);
+  assert.match(effect.slice(0, 160), /if \(!controlnetSupported\) \{/);
+  assert.match(page, /\}, \[controlnetSupported, status\?\.family\]\);/);
+});
