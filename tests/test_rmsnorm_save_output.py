@@ -152,3 +152,13 @@ def test_views_of_a_saved_norm_output_are_not_overwritten(monkeypatch):
         chunks = torch.split(y.view(-1, 128), [5, 11], dim = 0)
         for chunk in chunks:
             assert fast_lora._may_overwrite_input(chunk.unsqueeze(0)) is not enabled
+
+
+@cuda
+def test_guard_does_not_sync_inside_cuda_graph_capture():
+    w = torch.full((8,), 0.5, device = "cuda")
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        # Inside capture the check would need .item(): fall back to saving X, cache nothing.
+        assert not rms_layernorm._save_output_ok(w, False, torch.bfloat16)
+    assert rms_layernorm._save_output_ok(w, False, torch.bfloat16)

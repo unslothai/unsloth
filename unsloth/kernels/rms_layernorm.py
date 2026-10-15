@@ -791,6 +791,9 @@ def _save_output_ok(W, gemma, dtype):
     cached = getattr(W, "_unsloth_save_output", None)
     if cached is not None and cached[0] == key:
         return cached[1]
+    if W.device.type == "cuda" and torch.cuda.is_current_stream_capturing():
+        # .item() would sync inside CUDA graph capture: save X for this call, check eagerly later.
+        return False
     with torch.no_grad():
         w = W.float() + 1.0 if gemma else W.float()
         ok = bool((w.isfinite().all() & (w.abs().amin() >= 16 * torch.finfo(dtype).tiny)).item())
