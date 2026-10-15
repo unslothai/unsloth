@@ -1038,3 +1038,56 @@ def test_stop_while_saving_drops_the_drafter():
     src = _source("core/training/drafter.py")
     save = src.index("write_manifest(output_dir, manifest)")
     assert "if should_stop():" in src[save - 300 : save]
+
+
+def test_vllm_retries_once_without_a_drafter_that_breaks_startup(tmp_path, monkeypatch):
+    from collections import deque
+
+    from core.inference import engine_adapters, managed_engine
+
+    monkeypatch.setattr(
+        engine_adapters, "vllm_speculative_args", lambda model: ["--speculative-config", "{}"]
+    )
+    engine = object.__new__(managed_engine.ManagedEngine)
+    engine.engine, engine._tail, engine.phase = "vllm", deque(), "starting"
+    calls = []
+
+    def start(*args):
+        calls.append(args[5])
+        if not args[5].get("no_speculative_config"):
+            raise RuntimeError("drafter OOM")
+        return "up"
+
+    engine._start_seq_limited = start
+    assert engine.start(str(tmp_path), 4096, [0], {}) == "up"
+    assert [c.get("no_speculative_config") for c in calls] == [None, True]
+    engine.engine = "sglang"
+    calls.clear()
+    with pytest.raises(RuntimeError):
+        engine.start(str(tmp_path), 4096, [0], {})
+    assert len(calls) == 1
+
+
+def test_hub_manifest_recovery_uses_the_load_credential(monkeypatch, tmp_path):
+    """A private Hub adapter's drafter files are fetched with the token the checkpoint loaded with."""
+    from core.export import drafter_export
+
+    calls = []
+
+    def fake_download(
+        repo_id,
+        filename,
+        token = None,
+    ):
+        calls.append((filename, token))
+        path = tmp_path / filename
+        path.write_text(json.dumps({"strategy": "mtp"}) if filename == "drafter.json" else "{}")
+        return str(path)
+
+    import huggingface_hub
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", fake_download)
+    assert drafter_export.training_manifest("owner/private-adapter", "hf_secret") == {
+        "strategy": "mtp"
+    }
+    assert calls and all(token == "hf_secret" for _, token in calls)

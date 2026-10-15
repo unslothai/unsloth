@@ -729,6 +729,7 @@ class ExportBackend:
     def __init__(self):
         self.inference_backend = get_inference_backend()
         self.current_checkpoint = None
+        self._checkpoint_token = None
         self.current_model = None
         self.current_tokenizer = None
         self.is_vision = False
@@ -757,6 +758,7 @@ class ExportBackend:
             self.current_model = None
             self.current_tokenizer = None
             self.current_checkpoint = None
+            self._checkpoint_token = None
             self._audio_type = None
             self.decision = None
 
@@ -1043,6 +1045,7 @@ class ExportBackend:
             self.current_model = model
             self.current_tokenizer = tokenizer
             self.current_checkpoint = checkpoint_path
+            self._checkpoint_token = token
 
             if self._audio_type:
                 model_type = f"Audio ({self._audio_type})"
@@ -2015,7 +2018,11 @@ class ExportBackend:
         try:
             from core.export.drafter_export import package_merged
             info = package_merged(
-                self.current_checkpoint, final_dir, verifier = repo_id, allow_mtp = allow_mtp
+                self.current_checkpoint,
+                final_dir,
+                verifier = repo_id,
+                allow_mtp = allow_mtp,
+                token = self._checkpoint_token,
             )
             if info:
                 logger.info(f"Packaged the trained {info['strategy']} drafter into {final_dir}")
@@ -2029,7 +2036,12 @@ class ExportBackend:
     ) -> bool:
         try:
             from core.export.drafter_export import package_lora
-            return package_lora(self.current_checkpoint, adapter_dir, head_saved) is not None
+            return (
+                package_lora(
+                    self.current_checkpoint, adapter_dir, head_saved, token = self._checkpoint_token
+                )
+                is not None
+            )
         except Exception as exception:
             logger.warning(f"Could not carry the drafter manifest with the adapter: {exception}")
             return False
@@ -2055,7 +2067,9 @@ class ExportBackend:
         try:
             from core.export.drafter_export import package_gguf
 
-            info, files = package_gguf(self.current_checkpoint, merged_dir, gguf_dir, ggufs)
+            info, files = package_gguf(
+                self.current_checkpoint, merged_dir, gguf_dir, ggufs, token = self._checkpoint_token
+            )
             if info:
                 logger.info(f"Packaged the trained {info['strategy']} drafter with the GGUF export")
             return files

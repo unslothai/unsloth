@@ -546,8 +546,45 @@ class ManagedEngine:
         model_path = None,
     ):
         """``model`` is the served name; ``model_path`` is what the engine loads when they differ."""
-        args = (model, context, gpu_ids, env, cancel_event)
         options = dict(options or {})
+        try:
+            return self._start_seq_limited(
+                model, context, gpu_ids, env, cancel_event, options, trust_remote_code, model_path
+            )
+        except Exception as exc:
+            if (
+                self.engine != "vllm"
+                or options.get("no_speculative_config")
+                or (cancel_event is not None and cancel_event.is_set())
+            ):
+                raise
+            from core.inference.engine_adapters import vllm_speculative_args
+
+            if not vllm_speculative_args(model_path or model):
+                raise
+            # A drafter trained with the fine-tune must not keep the model itself from loading.
+            from loggers import get_logger
+
+            get_logger(__name__).warning(
+                "vLLM did not start with the trained drafter (%s); retrying without it.", exc
+            )
+            self._tail.clear()
+            self.phase = "starting"
+            return self._start_seq_limited(
+                model,
+                context,
+                gpu_ids,
+                env,
+                cancel_event,
+                {**options, "no_speculative_config": True},
+                trust_remote_code,
+                model_path,
+            )
+
+    def _start_seq_limited(
+        self, model, context, gpu_ids, env, cancel_event, options, trust_remote_code, model_path
+    ):
+        args = (model, context, gpu_ids, env, cancel_event)
         key = (
             self.engine,
             model_path or model,

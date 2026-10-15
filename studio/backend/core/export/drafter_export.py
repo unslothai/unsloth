@@ -33,17 +33,17 @@ def _read_json(path: str) -> Optional[dict]:
     return data if isinstance(data, dict) else None
 
 
-def _hub_adapter_snapshot(repo_id: str) -> Optional[str]:
+def _hub_adapter_snapshot(repo_id: str, token = None) -> Optional[str]:
     """A Hub adapter's cached files (its manifest and MTP head): the loader re-attached that head."""
     if os.path.isabs(repo_id) or repo_id.count("/") != 1:
         return None
     try:
         from huggingface_hub import hf_hub_download
 
-        path = hf_hub_download(repo_id, DRAFTER_MANIFEST)
+        path = hf_hub_download(repo_id, DRAFTER_MANIFEST, token = token)
         for name in ("adapter_config.json", "mtp_head.safetensors"):
             try:
-                hf_hub_download(repo_id, name)
+                hf_hub_download(repo_id, name, token = token)
             except Exception:
                 pass
         return os.path.dirname(path)
@@ -51,10 +51,11 @@ def _hub_adapter_snapshot(repo_id: str) -> Optional[str]:
         return None
 
 
-def training_manifest(checkpoint_dir: Optional[str]) -> Optional[dict]:
-    """The manifest the training run wrote, when its drafter is still complete on disk."""
+def training_manifest(checkpoint_dir: Optional[str], token = None) -> Optional[dict]:
+    """The manifest the training run wrote, when its drafter is still complete on disk. `token` is
+    the credential the checkpoint was loaded with (a private Hub adapter)."""
     if checkpoint_dir and not os.path.isdir(checkpoint_dir):
-        checkpoint_dir = _hub_adapter_snapshot(checkpoint_dir)
+        checkpoint_dir = _hub_adapter_snapshot(checkpoint_dir, token)
     if not checkpoint_dir or not os.path.isdir(checkpoint_dir):
         return None
     manifest = _read_json(os.path.join(checkpoint_dir, DRAFTER_MANIFEST))
@@ -142,13 +143,14 @@ def package_merged(
     *,
     verifier: Optional[str] = None,
     allow_mtp: bool = True,
+    token = None,
 ) -> Optional[dict]:
     """Write `drafter.json` (and copy the EAGLE-3 drafter) into a merged export. None when the run
     trained no drafter. `verifier` is what the drafter's config names as its target: the Hub repo on a
     push, else the base model id (vLLM refuses a local verifier path inside a speculators config, so
     local serving passes the target explicitly). `allow_mtp` is False for exports that cannot carry
     a stitched head (compressed-tensors, torchao): only an EAGLE-3 drafter ships with those."""
-    manifest = training_manifest(checkpoint_dir)
+    manifest = training_manifest(checkpoint_dir, token)
     if manifest is None or (manifest["strategy"] == "mtp" and not allow_mtp):
         clear_stale(final_dir)
         return None
@@ -193,12 +195,16 @@ def eagle3_gguf_name(ggufs: list[str]) -> str:
 
 
 def package_gguf(
-    checkpoint_dir: Optional[str], merged_dir: Optional[str], gguf_dir: str, ggufs: list[str]
+    checkpoint_dir: Optional[str],
+    merged_dir: Optional[str],
+    gguf_dir: str,
+    ggufs: list[str],
+    token = None,
 ) -> tuple[Optional[dict], list[str]]:
     """(drafter info, extra files written into gguf_dir). The MTP head is already inside each GGUF; an
     EAGLE-3 drafter is converted beside them against the merged target (the converter reads its config
     and tokenizer). Raises when the drafter cannot be converted: a pair missing its drafter is incomplete."""
-    manifest = training_manifest(checkpoint_dir)
+    manifest = training_manifest(checkpoint_dir, token)
     engines = _engines(manifest) if manifest else {}
     if manifest is None or not engines["llama_cpp"]:
         clear_stale(gguf_dir, ggufs)
@@ -251,11 +257,12 @@ def package_lora(
     checkpoint_dir: Optional[str],
     adapter_dir: str,
     head_saved: Optional[bool] = None,
+    token = None,
 ) -> Optional[dict]:
     """Carry the training manifest with a LoRA export that kept the trained MTP head beside it, so a
     later merge / GGUF of that adapter still marks the head as trained (Studio's MTP launch policy).
     `head_saved` overrides the sidecar check (a Hub push saves the adapter elsewhere)."""
-    manifest = training_manifest(checkpoint_dir)
+    manifest = training_manifest(checkpoint_dir, token)
     if head_saved is None:
         head_saved = os.path.isfile(os.path.join(adapter_dir, "mtp_head.safetensors"))
     if manifest is None or manifest["strategy"] != "mtp" or not head_saved:
