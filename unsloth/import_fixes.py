@@ -264,6 +264,64 @@ if not UNSLOTH_ENABLE_LOGGING:
     )
 
 
+def fix_torch_compiler_disable_unless_decode():
+    """torch < 2.8 marks `fn` itself in `compiler.disable(fn, recursive = False)`, so zoo's
+    decode-aware disable disabled the function it runs: hand it a copy to disable."""
+    import functools
+    import types
+
+    try:
+        import torch
+        import unsloth_zoo.temporary_patches.utils as zoo_utils
+    except Exception:
+        return
+    current = getattr(zoo_utils, "torch_compiler_disable_unless_decode", None)
+    if current is None or getattr(current, "_unsloth_disable_copy", False):
+        return
+
+    def _probe(x):
+        return x
+
+    try:
+        if torch.compiler.disable(_probe, recursive = False) is not _probe:
+            return
+    except Exception:
+        return
+    real_disable = torch.compiler.disable
+
+    def _copy(fn):
+        clone = types.FunctionType(
+            fn.__code__.replace(), fn.__globals__, fn.__name__, fn.__defaults__, fn.__closure__
+        )
+        clone.__kwdefaults__ = fn.__kwdefaults__
+        clone.__dict__.update(fn.__dict__)
+        clone.__qualname__ = fn.__qualname__
+        clone.__module__ = fn.__module__
+        return clone
+
+    def disable_copy(
+        fn = None,
+        *args,
+        **kwargs,
+    ):
+        if isinstance(fn, types.FunctionType):
+            fn = _copy(fn)
+        return real_disable(fn, *args, **kwargs)
+
+    @functools.wraps(current)
+    def torch_compiler_disable_unless_decode(func = None, *, recursive = False):
+        if func is None:
+            return functools.partial(torch_compiler_disable_unless_decode, recursive = recursive)
+        torch.compiler.disable = disable_copy
+        try:
+            return current(func, recursive = recursive)
+        finally:
+            torch.compiler.disable = real_disable
+
+    torch_compiler_disable_unless_decode._unsloth_disable_copy = True
+    zoo_utils.torch_compiler_disable_unless_decode = torch_compiler_disable_unless_decode
+
+
 def fix_torch_check_is_size():
     """Shim torch._check_is_size if a future torch removes it (bitsandbytes 4-bit
     dequant calls it). The FutureWarning is silenced in suppress_cuda_printf."""
