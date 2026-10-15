@@ -3208,9 +3208,25 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
     context_parallel_size : Optional[int] = field(
         default = 1,
         metadata = {'help': 'Ranks per context parallel group (SDPA ring attention). 1 disables it.'},
+    )
+    context_parallel_backend : Optional[str] = field(
+        default = 'ring',
+        metadata = {'help': 'Context parallel attention backend: ring.'},
+    )
+    context_parallel_rotate_method : Optional[str] = field(
+        default = 'allgather',
+        metadata = {'help': 'Ring KV rotation: allgather or alltoall.'},
     )"""
-        max_seq_length_call += "context_parallel_size = 1,"
-        max_seq_length_post += "\n        self.context_parallel_size = context_parallel_size"
+        max_seq_length_call += (
+            "context_parallel_size = 1,"
+            "context_parallel_backend = 'ring',"
+            "context_parallel_rotate_method = 'allgather',"
+        )
+        max_seq_length_post += (
+            "\n        self.context_parallel_size = context_parallel_size"
+            "\n        self.context_parallel_backend = context_parallel_backend"
+            "\n        self.context_parallel_rotate_method = context_parallel_rotate_method"
+        )
 
     if "output_dir" in call_args:
         saving_check = (

@@ -940,12 +940,19 @@ class UnslothTrainingArguments(TrainingArguments):
         self.q_galore_config = q_galore_config
         self.embedding_learning_rate = embedding_learning_rate
         self.loraplus_lr_ratio = loraplus_lr_ratio
-        # Not a field of the pristine SFTConfig captured at import.
-        context_parallel_size = kwargs.pop("context_parallel_size", 1)
-        if "context_parallel_size" in getattr(TrainingArguments, "__dataclass_fields__", {}):
-            kwargs["context_parallel_size"] = context_parallel_size
+        # Not fields of the pristine SFTConfig captured at import.
+        context_parallel = {
+            "context_parallel_size": kwargs.pop("context_parallel_size", 1),
+            "context_parallel_backend": kwargs.pop("context_parallel_backend", "ring"),
+            "context_parallel_rotate_method": kwargs.pop(
+                "context_parallel_rotate_method", "allgather"
+            ),
+        }
+        fields = getattr(TrainingArguments, "__dataclass_fields__", {})
+        kwargs.update({k: v for k, v in context_parallel.items() if k in fields})
         super().__init__(*args, **kwargs)
-        self.context_parallel_size = context_parallel_size
+        for key, value in context_parallel.items():
+            setattr(self, key, value)
         self.embedding_learning_rate = embedding_learning_rate
         self.loraplus_lr_ratio = loraplus_lr_ratio
         if self.eval_steps is not None and self.eval_strategy != "steps":

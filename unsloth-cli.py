@@ -188,6 +188,12 @@ def _build_sft_config(SFTConfig, args, is_mlx, bf16_supported):
     )
     if getattr(args, "context_parallel_size", 1) > 1:
         config_kwargs["context_parallel_size"] = args.context_parallel_size
+        config_kwargs["context_parallel_backend"] = getattr(
+            args, "context_parallel_backend", "ring"
+        )
+        config_kwargs["context_parallel_rotate_method"] = getattr(
+            args, "context_parallel_rotate_method", "allgather"
+        )
         # Required under CP; older transformers releases default it to False.
         config_kwargs["average_tokens_across_devices"] = True
     if is_mlx:
@@ -472,6 +478,20 @@ if __name__ == "__main__":
         type = int,
         default = 1,
         help = "Ranks per context parallel group (SDPA ring attention, torchrun, PyTorch >= 2.7).",
+    )
+    training_group.add_argument(
+        "--context_parallel_backend",
+        type = str,
+        default = "ring",
+        choices = ["ring"],
+        help = "Context parallel attention backend.",
+    )
+    training_group.add_argument(
+        "--context_parallel_rotate_method",
+        type = str,
+        default = "allgather",
+        choices = ["allgather", "alltoall"],
+        help = "How ring attention rotates KV shards between ranks.",
     )
 
     report_group = parser.add_argument_group("📊 Report Options")

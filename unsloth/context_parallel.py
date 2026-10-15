@@ -20,6 +20,106 @@ except (ImportError, AttributeError):
     DeviceMesh = None
     DTensor = None
 
+try:
+    # Re-exported from _context_parallel._attention on torch >= 2.10; defined here on 2.7 - 2.9.
+    from torch.distributed.tensor.experimental._attention import _cp_options, set_rotate_method
+except (ImportError, AttributeError):
+    _cp_options = None
+    set_rotate_method = None
+
+try:
+    from torch.nn.attention import SDPBackend, sdpa_kernel
+except ImportError:
+    SDPBackend = None
+    sdpa_kernel = None
+
+_CP_BACKENDS = ("ring", "ulysses")
+_ROTATE_METHODS = ("allgather", "alltoall")
+
+
+def _torch_supports_context_parallel() -> bool:
+    from packaging.version import Version
+
+    return context_parallel is not None and Version(
+        Version(torch.__version__).base_version
+    ) >= Version("2.7.0")
+
+
+def _ring_sdpa_backends():
+    # Only kernels the CP dispatcher rings: the math kernel would silently attend over the local shard.
+    if SDPBackend is None:
+        return None
+    backends = [SDPBackend.FLASH_ATTENTION, SDPBackend.EFFICIENT_ATTENTION]
+    cudnn = getattr(SDPBackend, "CUDNN_ATTENTION", None)
+    op = getattr(torch.ops.aten, "_scaled_dot_product_cudnn_attention", None)
+    if cudnn is not None and op is not None:
+        import importlib
+
+        for name in (
+            "torch.distributed.tensor.experimental._context_parallel._attention",
+            "torch.distributed.tensor.experimental._attention",
+        ):
+            try:
+                handled = getattr(importlib.import_module(name), "custom_ops", None)
+            except ImportError:
+                continue
+            if isinstance(handled, dict) and op.default in handled:
+                backends.append(cudnn)
+                break
+    return backends
+
+
+def context_parallel_options(config) -> tuple:
+    """(size, backend, rotate_method) from a training config, validated before any dataset work."""
+    size = getattr(config, "context_parallel_size", 1)
+    size = 1 if size is None else size
+    if isinstance(size, bool) or not isinstance(size, int) or size < 1:
+        raise ValueError(
+            f"Unsloth: context_parallel_size must be a positive integer, got {size!r}."
+        )
+    backend = getattr(config, "context_parallel_backend", None) or "ring"
+    if backend not in _CP_BACKENDS:
+        raise ValueError(
+            f"Unsloth: context_parallel_backend must be one of {_CP_BACKENDS}, got {backend!r}."
+        )
+    rotate_method = getattr(config, "context_parallel_rotate_method", None) or "allgather"
+    if rotate_method not in _ROTATE_METHODS:
+        raise ValueError(
+            "Unsloth: context_parallel_rotate_method must be one of "
+            f"{_ROTATE_METHODS}, got {rotate_method!r}."
+        )
+    if size > 1 and backend == "ulysses":
+        raise NotImplementedError(
+            "Unsloth: context_parallel_backend = 'ulysses' is not available yet; use 'ring'."
+        )
+    return size, backend, rotate_method
+
+
+def _ring_unsupported_attention(config) -> Optional[str]:
+    # The ring runs plain causal SDPA with no mask, window or logit softcap.
+    configs = [config]
+    text_config = getattr(config, "text_config", None)
+    if text_config is not None and text_config is not config:
+        configs.append(text_config)
+    for c in configs:
+        if c is None:
+            continue
+        layer_types = getattr(c, "layer_types", None)
+        if layer_types and any(t != "full_attention" for t in layer_types):
+            kinds = sorted({t for t in layer_types if t != "full_attention"})
+            return f"{', '.join(kinds)} layers"
+        # Any positive window, even with use_sliding_window off: Unsloth's masks read it directly.
+        sliding_window = getattr(c, "sliding_window", None)
+        if (isinstance(sliding_window, int) and sliding_window > 0) or getattr(
+            c, "use_sliding_window", None
+        ) is True:
+            return "sliding window attention"
+        if getattr(c, "attention_chunk_size", None):
+            return "chunked attention"
+        if getattr(c, "attn_logit_softcapping", None):
+            return "attention logit softcapping"
+    return None
+
 
 def _unregister_cp_sharding_rules() -> None:
     # torch 2.10 - 2.12 register CP sharding rules and skip removing them when the step raises.
@@ -72,8 +172,10 @@ def _self_attn_pre_forward_hook(_module, module_args, module_kwargs):
 
 
 class ContextParallelManager:
-    def __init__(self, size: int):
+    def __init__(self, size: int, backend: str = "ring", rotate_method: str = "allgather"):
         self.size = size
+        self.backend = backend
+        self.rotate_method = rotate_method
         world_size = dist.get_world_size()
         # DeviceMesh is SPMD (per-group meshes hang); accelerate reads "cp" to feed CP peers one batch.
         self.device_mesh = DeviceMesh(
@@ -129,6 +231,24 @@ class ContextParallelManager:
                     inputs[name] = F.pad(tensor, (0, pad), value = _PAD_VALUES.get(name, 0))
 
     @contextlib.contextmanager
+    def _rotate_method_scope(self) -> Iterator[None]:
+        # Process-wide torch state, read in forward and backward: set per step, restored after.
+        rotate_method = getattr(self, "rotate_method", "allgather")
+        if _cp_options is None or set_rotate_method is None:
+            if rotate_method != "allgather":
+                raise RuntimeError(
+                    f"Unsloth: this PyTorch cannot set the ring rotate method to {rotate_method!r}."
+                )
+            yield
+            return
+        previous = _cp_options.rotate_method
+        set_rotate_method(rotate_method)
+        try:
+            yield
+        finally:
+            _cp_options.rotate_method = previous
+
+    @contextlib.contextmanager
     def apply(self, inputs: dict) -> Iterator[None]:
         self._prepare_inputs(inputs)
         buffers = [
@@ -143,9 +263,16 @@ class ContextParallelManager:
         sdpa = F.scaled_dot_product_attention
         dispatcher = getattr(DTensor, "_op_dispatcher", None)
         handlers = getattr(dispatcher, "_custom_op_handlers", None)
+        ring_backends = _ring_sdpa_backends()
         raised = False
         try:
-            with context_parallel(
+            # The SDPA backend flags are global, so the checkpoint recompute on autograd's
+            # device thread sees the same pin; the caller runs backward inside this scope.
+            with (
+                sdpa_kernel(ring_backends)
+                if ring_backends is not None
+                else contextlib.nullcontext()
+            ), self._rotate_method_scope(), context_parallel(
                 self.mesh,
                 buffers = buffers,
                 buffer_seq_dims = [1] * len(buffers),
@@ -235,6 +362,9 @@ def patch_sft_trainer() -> None:
 
     @functools.wraps(original_init)
     def patched_init(self, *args, **kwargs):
+        # Bad options fail before the trainer tokenizes or packs the dataset.
+        config = kwargs["args"] if "args" in kwargs else (args[1] if len(args) > 1 else None)
+        context_parallel_options(config)
         original_init(self, *args, **kwargs)
         self._context_parallel_manager = None
         # Unsloth's attention ignores transformers' own CP: it would stay local to each shard.
@@ -244,15 +374,17 @@ def patch_sft_trainer() -> None:
                 "Unsloth: use SFTConfig(context_parallel_size = N) instead of "
                 "parallelism_config with cp_size > 1."
             )
-        size = int(getattr(getattr(self, "args", None), "context_parallel_size", 1) or 1)
+        size, backend, rotate_method = context_parallel_options(getattr(self, "args", None))
         if size <= 1:
             _install_accelerator_state(self)
             return
         # train() would swap in a fresh model without the attention hooks or the support check.
         if getattr(self, "model_init", None) is not None:
             raise NotImplementedError("Unsloth: context parallelism does not support model_init.")
-        if context_parallel is None:
-            raise RuntimeError("Unsloth: context_parallel_size > 1 needs PyTorch >= 2.7.")
+        if not _torch_supports_context_parallel():
+            raise RuntimeError(
+                f"Unsloth: context_parallel_size > 1 needs PyTorch >= 2.7, found {torch.__version__}."
+            )
         if not (dist.is_available() and dist.is_initialized()):
             raise RuntimeError(
                 "Unsloth: context_parallel_size > 1 needs torch.distributed. "
@@ -278,6 +410,13 @@ def patch_sft_trainer() -> None:
                 "Unsloth: context parallelism needs loss_type = 'nll' without "
                 "label_smoothing_factor or compute_loss_func."
             )
+        # HF only computes num_items_in_batch for models taking loss kwargs; without it each shard
+        # would be a local mean (NaN on an empty shard) instead of a share of the global token sum.
+        if getattr(self, "model_accepts_loss_kwargs", True) is False:
+            raise NotImplementedError(
+                "Unsloth: context parallelism needs a model whose forward accepts loss kwargs "
+                "(num_items_in_batch)."
+            )
         # Eval counts tokens per shard; only a cross-rank token count weights shards correctly (empty shard = NaN).
         if getattr(self.args, "average_tokens_across_devices", True) is False:
             raise NotImplementedError(
@@ -290,10 +429,10 @@ def patch_sft_trainer() -> None:
         if Version(accelerate.__version__) < Version("1.10.0"):
             raise NotImplementedError("Unsloth: context parallelism needs accelerate >= 1.10.0.")
         # The ring runs plain causal SDPA: the windowed mask Unsloth builds otherwise is dropped.
-        sliding_window = getattr(getattr(self.model, "config", None), "sliding_window", None)
-        if isinstance(sliding_window, int) and sliding_window > 0:
+        unsupported = _ring_unsupported_attention(getattr(self.model, "config", None))
+        if unsupported is not None:
             raise NotImplementedError(
-                "Unsloth: context parallelism does not support sliding window attention."
+                f"Unsloth: ring context parallelism does not support {unsupported}."
             )
         if not _supports_context_parallel(self.model):
             raise NotImplementedError(
@@ -314,11 +453,19 @@ def patch_sft_trainer() -> None:
         _refuse_iterable_datasets(
             getattr(self, "train_dataset", None), getattr(self, "eval_dataset", None)
         )
-        manager = ContextParallelManager(size)
+        manager = ContextParallelManager(size, backend, rotate_method)
         self._context_parallel_manager = manager
         manager.attach_attention_hooks(self.model)
         _install_accelerator_state(self)
-        print(f"Unsloth: Context parallelism enabled with size = {size}.")
+        # Packing (which ring disables) is the usual route to FA3 / FA4; the ring calls the same
+        # flash ops those override, so scope them to train() here too. Idempotent per trainer.
+        from .utils.packing import _scope_flash_attention_impl
+
+        _scope_flash_attention_impl(self.model, self)
+        print(
+            f"Unsloth: Context parallelism enabled with size = {size} "
+            f"({backend}, rotate_method = {rotate_method})."
+        )
 
     @functools.wraps(original_prediction_step)
     def patched_prediction_step(self, model, inputs, *args, **kwargs):
@@ -386,7 +533,19 @@ def patch_sft_trainer() -> None:
     def patched_training_step(self, model, inputs, *args, **kwargs):
         manager = getattr(self, "_context_parallel_manager", None)
         if manager is not None:
-            # Counted before sharding on every CP peer; HF divides the same for parallelism_config.
+            num_items = args[0] if args else kwargs.get("num_items_in_batch")
+            # Without a count the loss is a per-shard mean: wrong weights, NaN on an empty shard.
+            # HF's None-ness does not depend on the rank, so every rank raises before any collective.
+            if num_items is None and hasattr(inputs, "get") and inputs.get("labels") is not None:
+                raise RuntimeError(
+                    "Unsloth: context parallelism needs num_items_in_batch in training_step; "
+                    "this transformers / trainer path did not pass one."
+                )
+            # With average_tokens_across_devices HF sums the count over all W = D x N ranks before
+            # sharding, while every CP peer still holds the same batch: that sum is N x the unique
+            # target count C. Dividing by N once gives C; HF then scales the loss by W and DDP
+            # averages over W, so the update is sum over ranks of (shard loss sum) / C.
+            # HF divides the same way only for its own parallelism_config CP, refused above.
             if args and args[0] is not None:
                 args = (args[0] / manager.size, *args[1:])
             elif kwargs.get("num_items_in_batch") is not None:
