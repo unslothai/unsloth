@@ -3354,6 +3354,11 @@ def _gguf_reuses_loaded_checkpoint(model, state_dict = None):
         return False
     if state_dict is not None or getattr(model, "_unsloth_full_finetuning", False):
         return False
+    # REAP pruned in memory: the loaded folder still holds every expert.
+    if getattr(model, "_unsloth_reap_report", None) and not getattr(
+        model, "_unsloth_reap_saved", None
+    ):
+        return False
     # A ModelScope load keeps its snapshot here, since `_name_or_path` holds the repo id (#3726).
     name_or_path = getattr(model, "_unsloth_modelscope_snapshot", None) or getattr(
         getattr(model, "config", None), "_name_or_path", None
