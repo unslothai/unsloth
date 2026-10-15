@@ -948,7 +948,11 @@ def main():
             browser = getattr(p, engine).launch(**options)
             page = browser.new_page(viewport = {"width": 1280, "height": 1000})
             page.add_init_script(FIXTURE)
-            page.goto(url, wait_until = "domcontentloaded")
+            # The first load runs Vite's dependency optimizer and transforms the whole module graph
+            # from a cold cache, and on Windows CI two of these drivers do that at once. Module
+            # scripts run before DOMContentLoaded, so the default 30s has timed out there on a page
+            # that then loads fine; allow the same 120s the mount wait below already does.
+            page.goto(url, wait_until = "domcontentloaded", timeout = 120_000)
             page.wait_for_function("!!window.__settingsSmoke", timeout = 120000)
             output.parent.mkdir(parents = True, exist_ok = True)
             result = {"engine": engine, "version": browser.version}

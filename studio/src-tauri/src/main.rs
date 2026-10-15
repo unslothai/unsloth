@@ -10,6 +10,8 @@ mod browser_downloads;
 mod browser_layer;
 mod browser_open_with;
 mod browser_proxy;
+#[cfg(target_os = "linux")]
+mod browser_linux;
 mod browser_webview;
 mod commands;
 #[cfg(target_os = "linux")]
@@ -1086,6 +1088,23 @@ fn confirm_update_during_training(app: &tauri::AppHandle) -> bool {
         .buttons(MessageDialogButtons::OkCancelCustom(
             "Update anyway".to_string(),
             "Keep training".to_string(),
+        ))
+        .blocking_show()
+}
+
+fn confirm_update_during_downloads(app: &tauri::AppHandle) -> bool {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+
+    app.dialog()
+        .message(
+            "Downloads are still running. Updating now stops the backend and \
+             cancels the downloads in progress.",
+        )
+        .kind(MessageDialogKind::Warning)
+        .title("Downloads in progress")
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "Update anyway".to_string(),
+            "Keep downloading".to_string(),
         ))
         .blocking_show()
 }
@@ -2248,10 +2267,16 @@ fn main() {
         .manage(native_file_dialogs::NativeSaveRegistry::default())
         .manage(browser_webview::new_browser_views())
         .manage(browser_downloads::new_browser_downloads())
-        .invoke_handler(tauri::generate_handler![
+        .invoke_handler(|invoke| {
+            if invoke.message.webview().label() != "main" || invoke.message.webview().window().label() != "main" {
+                invoke.resolver.reject("Studio commands are only available to the main webview");
+                return true;
+            }
+            let handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
             app_menu::set_app_menu_actions,
             browser_webview::browser_view_supported,
             browser_webview::browser_view_show,
+            browser_webview::browser_view_open_background,
             browser_webview::browser_view_navigate,
             browser_webview::browser_view_action,
             browser_webview::browser_view_zoom,
@@ -2349,7 +2374,9 @@ fn main() {
             get_launch_at_login,
             set_launch_at_login,
             set_tray_server_status,
-        ])
+            ];
+            handler(invoke)
+        })
         .setup(|app| {
             // Resolve here, before any window path can ask: this consumes the relaunch marker.
             let launched_hidden = was_launched_hidden(app.handle().clone());
@@ -2444,6 +2471,11 @@ fn main() {
                 has_visible_windows: false,
                 ..
             } => show_main_window(app),
+            #[cfg(target_os = "linux")]
+            tauri::RunEvent::ExitRequested { .. } => {
+                // window-state only saves windows with one webview; detach browser tabs first.
+                browser_webview::close_all(app);
+            }
             tauri::RunEvent::Exit => {
                 // Safety net for framework-driven exits. When another path already owns
                 // cleanup, this blocks the main event-loop thread until that path is done.

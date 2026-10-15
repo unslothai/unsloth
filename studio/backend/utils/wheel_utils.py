@@ -139,6 +139,12 @@ _UNSLOTH_PREBUILT_PLATFORMS: dict[str, tuple[str, frozenset[str] | None]] = {
     "win_arm64": ("TRUE", frozenset({"cp311", "cp312", "cp313"})),
 }
 
+# (platform, torch minor) cells outside _UNSLOTH_PREBUILT_TORCH_MM, with their interpreters. Upstream's torch2.10 wheels (and their 2.11 reuse above) have no Windows asset, so win_amd64 torch 2.10 and 2.11 are ours; an existing install keeps its minor (a fresh one takes 2.13 on cp313), hence three interpreters.
+_UNSLOTH_PREBUILT_EXTRA_CELLS: dict[tuple[str, str], frozenset[str]] = {
+    ("win_amd64", "2.10"): frozenset({"cp311", "cp312", "cp313"}),
+    ("win_amd64", "2.11"): frozenset({"cp311", "cp312", "cp313"}),
+}
+
 # Windows on ARM has one CUDA torch, NVIDIA's 2.14.0+cu134 (CUDA 13.4, the first with a Windows ARM64 nvcc), and NVIDIA publishes flash-attn for it, so only these two are ours there.
 _UNSLOTH_WIN_ARM64_PREFIXES = frozenset({"causal_conv1d", "mamba_ssm"})
 _WIN_ARM64_TORCH_MM = "2.14"
@@ -200,15 +206,19 @@ def unsloth_prebuilt_wheel_url(*, filename_prefix: str, env: dict[str, str] | No
     """
     if env is None:
         return None
-    if env.get("torch_mm") not in _UNSLOTH_PREBUILT_TORCH_MM:
+    platform_tag = str(env.get("platform_tag") or "")
+    extra_pythons = _UNSLOTH_PREBUILT_EXTRA_CELLS.get((platform_tag, str(env.get("torch_mm"))))
+    if env.get("torch_mm") not in _UNSLOTH_PREBUILT_TORCH_MM and extra_pythons is None:
         return None
     # cu13 only. The workflow builds against the CUDA 13 toolkit and nothing else.
     if env.get("cuda_major") != "13":
         return None
-    platform_spec = _UNSLOTH_PREBUILT_PLATFORMS.get(str(env.get("platform_tag") or ""))
+    platform_spec = _UNSLOTH_PREBUILT_PLATFORMS.get(platform_tag)
     if platform_spec is None:
         return None
     cxx11abi, published_pythons = platform_spec
+    if extra_pythons is not None:
+        published_pythons = extra_pythons
     if env.get("platform_tag") == "win_arm64" and (
         filename_prefix not in _UNSLOTH_WIN_ARM64_PREFIXES
         or env.get("torch_mm") != _WIN_ARM64_TORCH_MM

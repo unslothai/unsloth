@@ -100,6 +100,7 @@ from ..kernels import (
     post_patch_loss_function,
 )
 from ..kernels.bnb_override import install_bnb_nf4_override as _install_bnb_nf4_override
+from ..kernels.rope_embedding import register_split_model
 from ._utils import (
     __version__,
     importlib_version,
@@ -303,6 +304,7 @@ def _infer_device_map_from_loaded_model(model, skip = ()):
 
 def _repair_dispatch_hooks(model):
     """Give a dispatched module its hook back after the load replaced it. `dispatch_model` hooks every map entry; what drops the hook is our own `post_patch` -> `patch_model_and_tokenizer`, which installs a NEW Embedding and Linear over the same weights, so `_hf_hook` dies with the old module. Not tied-specific: `tie_word_embeddings = False` fails identically. Unrepaired, a split model raises `index is on cuda:0, different from other tensors on cuda:1` at the first embedding lookup."""
+    register_split_model(model)
     device_map = getattr(model, "hf_device_map", None)
     if not device_map or len(set(device_map.values())) < 2:
         return 0
@@ -1168,6 +1170,48 @@ def _is_sparse_moe_config(config):
     return bool(
         getattr(text_config, "num_experts", None) or getattr(text_config, "enable_moe_block", False)
     )
+
+
+def _fp8_moe_fast_inference_refusal(config):
+    """Refusal reason for FP8 sparse MoE + fast_inference, else None (old zoo shares no FP8 experts)."""
+    try:
+        from unsloth_zoo.empty_model import fp8_moe_checkpoint_scheme
+    except Exception:
+        fp8_moe_checkpoint_scheme = None
+    if fp8_moe_checkpoint_scheme is not None:
+        scheme = fp8_moe_checkpoint_scheme(config)
+        if scheme is None or scheme[0]:
+            return None
+        return scheme[1]
+    text_config = getattr(config, "text_config", None) or config
+    if not (
+        _is_sparse_moe_config(config)
+        or getattr(text_config, "num_local_experts", None)
+        or getattr(text_config, "n_routed_experts", None)
+    ):
+        return None
+    quant = getattr(config, "quantization_config", None) or getattr(
+        text_config, "quantization_config", None
+    )
+    if not quant:
+        return None
+    if not isinstance(quant, dict):
+        quant = quant.to_dict() if hasattr(quant, "to_dict") else dict(vars(quant))
+    method = str(quant.get("quant_method", "")).lower()
+    if "fp8" not in method or method.startswith("mx"):
+        return None
+    # Experts left unquantized by the checkpoint stay 16-bit in vLLM and are shared as before.
+    skipped = [
+        entry
+        for key in ("modules_to_not_convert", "ignore", "ignored_layers", "exclude_modules")
+        for entry in (quant.get(key, None) or ())
+    ]
+    if any(
+        isinstance(entry, str) and re.search(r"(^|[.:*])experts($|[.$*])", entry)
+        for entry in skipped
+    ):
+        return None
+    return "this unsloth_zoo cannot share FP8 MoE experts with vLLM (upgrade unsloth_zoo)"
 
 
 def _zoo_supports_moe_fast_inference():
@@ -3755,6 +3799,8 @@ class FastBaseModel:
                     finally:
                         # The load deep-copied the config; give the caller's object its fp8 block back.
                         disarm_fp8_to_nf4(model_config)
+                # Before extracting the text core, which does not carry hf_device_map over.
+                fall_back_from_flash_attention_on_pre_ampere(model)
                 model = _text_trainable_core(
                     model, text_intent = bool(text_only) if text_intent is None else bool(text_intent)
                 )
@@ -3898,6 +3944,17 @@ class FastBaseModel:
                         f"model {model_type_arch}: vLLM's bitsandbytes MoE experts cannot be shared with the "
                         "training model, and vLLM does not serve LoRA on bitsandbytes MoE experts.\n"
                         "Load in 16-bit (load_in_4bit = False, load_in_8bit = False), or set fast_inference = False."
+                    )
+
+                # Refuse unsupported FP8 MoE before vLLM allocates the engine.
+                fp8_moe_refusal = _fp8_moe_fast_inference_refusal(model_config)
+                if fp8_moe_refusal is not None:
+                    raise NotImplementedError(
+                        f"Unsloth: fast_inference = True cannot share the FP8 MoE experts of {model_type_arch} "
+                        f"with training: {fp8_moe_refusal}.\n"
+                        "Supported: block FP8 checkpoints (quant_method = 'fp8', weight_block_size = [128, 128], "
+                        "dynamic activations). Load the 16-bit (BF16) checkpoint with fast_inference = True, "
+                        "or set fast_inference = False."
                     )
 
                 allowed_args = inspect.getfullargspec(load_vllm).args
@@ -4844,6 +4901,9 @@ class FastBaseModel:
         float32_mixed_precision = None,
     ):
         reject_alora(model)
+        from ..import_fixes import fix_transformers_voxtral_realtime_inplace_audio_add
+
+        fix_transformers_voxtral_realtime_inplace_audio_add()
         full_finetuning = os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1"
 
         if type(float32_mixed_precision) is bool:
@@ -4994,28 +5054,9 @@ class FastBaseModel:
             m.for_training = functools.partial(FastBaseModel.for_training, m)
             m.for_inference = functools.partial(FastBaseModel.for_inference, m)
             m = m.model
-        # Set weight[padding_idx] = 0 only for embeddings NOT tied with the lm_head: when tied, zeroing the padding row zeros the lm_head row and forces logit = 0 for the pad token. Only when the tokenizer is defined, since eos_token == pad_token sometimes.
-        pad_token_id = getattr(tokenizer, "pad_token_id", None)
-        lm_head = getattr(model, "lm_head", None)
-        lm_head_weight = getattr(lm_head, "weight", None) if lm_head is not None else None
-        if tokenizer is not None and getattr(tokenizer, "eos_token_id", None) != pad_token_id:
-            with torch.no_grad():
-                for name, module in model.named_modules():
-                    if type(module) is torch.nn.Embedding:
-                        if (
-                            getattr(module, "weight", None) is not None
-                            and getattr(module, "padding_idx", None) is not None
-                        ):
-                            if (
-                                module.padding_idx == pad_token_id
-                                and module.padding_idx < module.weight.shape[0]
-                            ):
-                                if (
-                                    lm_head_weight is not None
-                                    and module.weight.data_ptr() == lm_head_weight.data_ptr()
-                                ):
-                                    continue
-                                module.weight[module.padding_idx] = 0
+        from ..tokenizer_utils import zero_pad_embedding_rows
+
+        zero_pad_embedding_rows(model, tokenizer)
         return model
 
     @staticmethod

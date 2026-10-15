@@ -904,6 +904,16 @@ def _display_model_spec(model: str, variant: Optional[str]) -> str:
     return f"{repo}:{selected_variant}" if selected_variant else model
 
 
+def _model_status(
+    base: str,
+    key: str,
+    model_id: Optional[str] = None,
+) -> dict:
+    # Studio serving several models answers for the one serving model_id; an older one ignores it.
+    query = f"?{urlencode({'model': model_id})}" if model_id else ""
+    return _http_json("GET", f"{base}/api/inference/status{query}", key)
+
+
 def _subagent_model_id(
     base: str,
     key: str,
@@ -917,7 +927,7 @@ def _subagent_model_id(
     variant = requested_variant or inline_variant
     if not variant:
         try:
-            status = _http_json("GET", f"{base}/api/inference/status", key)
+            status = _model_status(base, key, model_id)
         except Exception:
             status = {}
             typer.echo(
@@ -2025,10 +2035,14 @@ def _model_id_matches(
     return str(actual).casefold() == str(requested).casefold()
 
 
-def _inference_status(base: str, key: str) -> dict:
+def _inference_status(
+    base: str,
+    key: str,
+    model_id: Optional[str] = None,
+) -> dict:
     """Runtime state of the resident model. {} means "cannot prove anything" (older server), never "nothing is set"."""
     try:
-        return _http_json("GET", f"{base}/api/inference/status", key)
+        return _model_status(base, key, model_id)
     except Exception:
         return {}
 
@@ -2223,23 +2237,21 @@ def _resolve_model(
         requested, attach_public_id = _resident_load_target(models, status_snapshot, allow_casefold)
         inferred_differs = _load_settings_differ(status_snapshot, load, overrides)
         # preload_check deliberately survives: it is the only gate before the load evicts the shared model (_require_gguf_for_codex runs after _connect returns). An older server answers this listing from the full catalog, which also carries cached-but-unloaded entries (loaded == False); matching one would skip /api/inference/load and leave the agent pointed at a model that is not resident, so only attach to an entry that is actually loaded.
-    match = (
-        None
-        if requested and load_has_overrides
-        else next(
-            (
-                m
-                for m in models
-                if _model_id_matches(m.get("id"), requested, allow_casefold = allow_casefold)
-                and m.get("loaded") is not False
-            ),
-            None,
-        )
+    loaded_match = next(
+        (
+            m
+            for m in models
+            if _model_id_matches(m.get("id"), requested, allow_casefold = allow_casefold)
+            and m.get("loaded") is not False
+        ),
+        None,
     )
+    match = None if requested and load_has_overrides else loaded_match
     if requested and match is None:
         load_requested = True
         # Only here is an evicting load certain: the gate must not reject a request the resident model already satisfies (a path-loaded GGUF shown as a bare basename can collide with a non-GGUF unsloth/<name>).
-        active = next((m for m in models if m.get("loaded") is not False), None)
+        # A load of a model already served replaces it in its own slot, which may not be the primary.
+        active = loaded_match or next((m for m in models if m.get("loaded") is not False), None)
         # On the inferred path the target came from status, so catalog order can name a different entry (a speech sidecar listed first). Using it would make the survivor probe below report the wrong model as still serving.
         if attach_public_id is not None:
             active = next(
@@ -2272,7 +2284,7 @@ def _resolve_model(
             # The loaded listing shows only the basename, so confirm a path request against the identifier the server loaded, else /new/foo.gguf reads as resident because /old/foo.gguf is.
             if resident_serves_request and _is_model_path(requested):
                 try:
-                    status = _http_json("GET", f"{base}/api/inference/status", key)
+                    status = _model_status(base, key, requested)
                 except Exception:
                     status = {}
                 loaded_paths = {
@@ -2287,7 +2299,7 @@ def _resolve_model(
                 )
             if resident_serves_request and load.gguf_variant:
                 try:
-                    status = _http_json("GET", f"{base}/api/inference/status", key)
+                    status = _model_status(base, key, requested)
                 except Exception:
                     status = {}
                 resident_variant = status.get("gguf_variant") if status.get("is_gguf") else None
@@ -2327,7 +2339,7 @@ def _resolve_model(
         elif active_id and load.gguf_variant:
             # Same repo id but an explicit quant still replaces the resident weights; the loaded listing does not carry a variant for every resident model, so ask the status endpoint.
             try:
-                status = _http_json("GET", f"{base}/api/inference/status", key)
+                status = _model_status(base, key, active_id)
             except Exception:
                 status = {}
             resident = status.get("gguf_variant") if status.get("is_gguf") else None
@@ -2336,6 +2348,19 @@ def _resolve_model(
                     f"Switching the Unsloth server from {active_id}:{resident} "
                     f"to {requested}:{load.gguf_variant}."
                 )
+                typer.echo("This unloads the current model for every attached session.")
+                announced_switch = True
+            elif loaded_match is not None and _load_settings_differ(status, load, overrides):
+                typer.echo(f"Applying new load settings to {active_id}.")
+                typer.echo("This unloads the current model for every attached session.")
+                announced_switch = True
+        elif active_id and loaded_match is not None:
+            try:
+                status = _model_status(base, key, active_id)
+            except Exception:
+                status = {}
+            if _load_settings_differ(status, load, overrides):
+                typer.echo(f"Applying new load settings to {active_id}.")
                 typer.echo("This unloads the current model for every attached session.")
                 announced_switch = True
         elif not active_id and _inference_status(base, key).get("yours") is False:
@@ -2371,6 +2396,14 @@ def _resolve_model(
             resident_variant = status_snapshot.get("gguf_variant")
             if resident_variant and not str(requested).lower().endswith(".gguf"):
                 payload["gguf_variant"] = resident_variant
+        elif loaded_match is not None and not str(requested).lower().endswith(".gguf"):
+            # Same for a named model already served, read from the slot serving it.
+            try:
+                status = _model_status(base, key, loaded_match["id"])
+            except Exception:
+                status = {}
+            if status.get("is_gguf") and status.get("gguf_variant"):
+                payload["gguf_variant"] = status["gguf_variant"]
         if "max_seq_length" in overrides:
             payload["max_seq_length"] = load.max_seq_length
         if "load_in_4bit" in overrides:
@@ -3008,7 +3041,7 @@ def _attach_gguf_check(
 def _require_gguf_for_agent(agent: _GgufAgent, base: str, key: str, model_id: str) -> None:
     # Only a definite "no" rejects: the callers wrap this in `except BaseException: _shutdown_auto_served()`, so guessing kills a server that may have just loaded a GGUF.
     try:
-        status = _http_json("GET", f"{base}/api/inference/status", key)
+        status = _model_status(base, key, model_id)
     except urllib.error.HTTPError:
         # Not evidence: get_status 500s from its own probes with a GGUF resident.
         return
@@ -4612,7 +4645,7 @@ def _connect(
             # That server was started FROM these knobs, so inferring a target here would reload what was just loaded.
             infer_resident = server is None,
         )
-        status = _inference_status(base, key) if model else {}
+        status = _inference_status(base, key, entry["id"]) if model else {}
         # A GGUF can be active while the resolved entry is another resident model.
         if status.get("memory_warning") and any(
             _model_id_matches(
@@ -6947,7 +6980,7 @@ def opencode(
     as_subagent = as_subagent or auto_route
     _check_app_flags(app, ctx.args, as_subagent)
     command_name, opencode_v2 = _opencode_command()
-    install_hint = _npm_install_hint("@opencode-ai/cli@beta" if opencode_v2 else "opencode-ai")
+    install_hint = _npm_install_hint("@opencode/cli" if opencode_v2 else "opencode-ai")
     _require_agent_for_launch(command_name, install_hint, launch and not app)
     server_options = ServerOptions(
         enable_tools = enable_tools,
@@ -7054,7 +7087,7 @@ def opencode(
             )
         return
     opencode_model = f"{_OPENCODE_PROVIDER}/{entry['id']}"
-    # The inline OPENCODE_CONFIG_CONTENT below pins the model in the highest-priority layer, so the session model is forced without a --model flag. Only add --model for an interactive bare launch, as a convenience so the TUI opens on our model: it is omitted for passthrough, where inserting it before a subcommand can be misparsed, and for --no-launch, where the printed command is consumed by drivers that append a subcommand such as `run <prompt>` and a leading --model would land before it. Those paths rely on the inline pin instead.
+    # The inline OPENCODE_CONFIG_CONTENT pin below selects the model, so no path passes --model: it misparses before a passthrough subcommand, lands before the `run <prompt>` drivers append to a --no-launch recipe, and OpenCode 2 rejects it on the root command, which a V2 build whose --version probe fails would get (#13747).
     native_auto = False
     route_native_auto = yolo and (opencode_v2 or _opencode_supports_native_auto(command_name))
     if ctx.args:
@@ -7066,9 +7099,7 @@ def opencode(
         )
         command = [command_name, *opencode_args]
     elif launch:
-        opencode_args = [] if opencode_v2 else ["--model", opencode_model]
-        if opencode_v2:
-            opencode_args = _opencode_v2_standalone_args(opencode_args)
+        opencode_args = _opencode_v2_standalone_args([]) if opencode_v2 else []
         opencode_args, native_auto = _opencode_native_auto_args(
             opencode_args,
             route_native_auto,
@@ -7469,7 +7500,7 @@ def vibe(
     if "temperature" not in request_body:
         # Vibe always sends a temperature, which the server honours over the model's
         # recommended one, so pass the recommendation along explicitly.
-        status = _inference_status(base, key)
+        status = _inference_status(base, key, entry["id"])
         recommended = (status.get("inference") or {}).get("temperature")
         if recommended is not None and any(
             _model_id_matches(entry["id"], status_id, allow_casefold = is_loopback_url(base))
