@@ -14,10 +14,13 @@ Model FLOPs per non padding token, summed over every linear layer with n = in * 
     backward weight grads    2n   only linears whose weight requires grad
     recompute                2n   every linear except the output head, when checkpointing
 Attention adds 4 * layers * heads * head_dim FLOPs per causal (query, key) pair in the forward
-(QK^T and AV), L * (L + 1) / 2 pairs for a sequence of length L, times 3 for forward plus
-backward and times 4 with checkpointing. Experts held as `nn.Linear` in an `experts` ModuleList
+(QK^T and AV), L * (L + 1) / 2 pairs for a sequence of length L (L * L when every attention
+layer is bidirectional), times 3 for forward plus backward and times 4 with checkpointing. The
+output head is charged only for the last `logits_to_keep` positions when the forward passes it.
+Only the active copy of a PEFT `modules_to_save` wrapper is counted. Experts held as `nn.Linear` in an `experts` ModuleList
 count top_k / num_experts of their weights; experts stored as 3D tensors (transformers 5),
-sliding windows, convolutions and embedding lookups are not counted, so those models report a
+sliding windows, convolutions, embedding lookups and the vision / audio towers of multimodal
+models (only the text decoder and head are walked) are not counted, so those models report a
 lower bound. Encoder-decoder models are not reported. A model split over several GPUs with
 `device_map` reports the average per participating GPU.
 """
@@ -103,16 +106,58 @@ def _output_head(model):
     return None
 
 
-def count_linear_flops_per_token(model, gradient_checkpointing = False):
+def _inactive_leaves(model):
+    """ids of modules a PEFT modules_to_save wrapper holds but does not run this forward."""
+    skipped = set()
+    for module in model.modules():
+        copies = getattr(module, "modules_to_save", None)
+        original = getattr(module, "original_module", None)
+        if not isinstance(copies, torch.nn.ModuleDict) or not isinstance(original, torch.nn.Module):
+            continue
+        active = getattr(module, "active_adapters", None) or []
+        if isinstance(active, str):
+            active = [active]
+        # Mirrors ModulesToSaveWrapper.forward: any missing or disabled adapter runs the original.
+        if getattr(module, "disable_adapters", False) or not active or any(a not in copies for a in active):
+            used = original
+        else:
+            used = copies[active[0]]
+        held = {id(m) for m in original.modules()} | {id(m) for m in copies.modules()}
+        skipped |= held - {id(m) for m in used.modules()}
+    return skipped
+
+
+def _non_text_leaves(model):
+    """ids of modules outside the text decoder and head of a multimodal model."""
+    config = getattr(model, "config", None)
+    if config is None or _text_config(config) is config:
+        return set()
+    try:
+        decoder = model.get_decoder()
+    except Exception:
+        decoder = None
+    get_base_model = getattr(model, "get_base_model", None)
+    root = get_base_model() if callable(get_base_model) else model
+    if not isinstance(decoder, torch.nn.Module) or decoder is root or decoder is model:
+        return set()
+    keep = {id(m) for m in decoder.modules()}
+    head = _output_head(model)
+    if head is not None:
+        keep |= {id(m) for m in head.modules()}
+    return {id(m) for m in model.modules() if id(m) not in keep}
+
+
+def _linear_flops(model, gradient_checkpointing = False):
     head = _output_head(model)
     head_leaves = set()
     if head is not None:
         head_leaves = {id(m) for m in head.modules() if _is_linear_leaf(m)}
+    skipped = _inactive_leaves(model) | _non_text_leaves(model)
     experts = _expert_fractions(model)
-    forward = input_grad = weight_grad = recompute = 0
+    forward = input_grad = weight_grad = recompute = head_total = 0
     for module in model.modules():
         n = _linear_size(module)
-        if n is None:
+        if n is None or id(module) in skipped:
             continue
         if id(module) in experts:
             n = n * experts[id(module)]
@@ -120,7 +165,11 @@ def count_linear_flops_per_token(model, gradient_checkpointing = False):
         input_grad += 2 * n
         if module.weight.requires_grad:
             weight_grad += 2 * n
-        if gradient_checkpointing and id(module) not in head_leaves:
+            if id(module) in head_leaves:
+                head_total += 2 * n
+        if id(module) in head_leaves:
+            head_total += 4 * n
+        elif gradient_checkpointing:
             recompute += 2 * n
     breakdown = {
         "forward": forward,
@@ -128,7 +177,17 @@ def count_linear_flops_per_token(model, gradient_checkpointing = False):
         "weight_grad": weight_grad,
         "recompute": recompute,
     }
-    return forward + input_grad + weight_grad + recompute, breakdown
+    return forward + input_grad + weight_grad + recompute, breakdown, head_total
+
+
+def count_linear_flops_per_token(model, gradient_checkpointing = False):
+    total, breakdown, _ = _linear_flops(model, gradient_checkpointing)
+    return total, breakdown
+
+
+def _all_attention_bidirectional(model):
+    flags = [m.is_causal for m in model.modules() if isinstance(getattr(m, "is_causal", None), bool)]
+    return bool(flags) and not any(flags)
 
 
 def _text_config(config):
@@ -235,13 +294,17 @@ class UnslothMFUCallback(TrainerCallback):
         self.gradient_checkpointing = gradient_checkpointing
         self._handle = None
         self._linear_per_token = 0
+        self._head_per_token = 0
         self._attention_per_pair = 0
+        self._bidirectional = False
         self._num_devices = 1
+        self._devices = []
         self._enabled = True
         self._reset()
 
     def _reset(self):
         self._tokens = 0
+        self._head_tokens = 0
         self._pairs = 0
         self._window_start = None
         self._excluded = 0.0
@@ -258,7 +321,17 @@ class UnslothMFUCallback(TrainerCallback):
         lengths = lengths.to(torch.int64)
         # Kept on device: one host sync per log window, not per micro batch.
         self._tokens = self._tokens + lengths.sum()
-        self._pairs = self._pairs + (lengths * (lengths + 1) // 2).sum()
+        keep = kwargs.get("logits_to_keep")
+        if torch.is_tensor(keep) and keep.dim() == 1 and keep.numel() > 0:
+            keep = keep.numel()
+        if isinstance(keep, int) and not isinstance(keep, bool) and keep > 0:
+            self._head_tokens = self._head_tokens + lengths.clamp(max = keep).sum()
+        else:
+            self._head_tokens = self._head_tokens + lengths.sum()
+        if self._bidirectional:
+            self._pairs = self._pairs + (lengths * lengths).sum()
+        else:
+            self._pairs = self._pairs + (lengths * (lengths + 1) // 2).sum()
 
     def on_train_begin(self, args, state, control, model = None, **kwargs):
         if model is None:
@@ -271,7 +344,9 @@ class UnslothMFUCallback(TrainerCallback):
         checkpointing = self.gradient_checkpointing
         if checkpointing is None:
             checkpointing = _gradient_checkpointing_on(model, args)
-        self._linear_per_token, _ = count_linear_flops_per_token(model, checkpointing)
+        total, _, self._head_per_token = _linear_flops(model, checkpointing)
+        self._linear_per_token = total - self._head_per_token
+        self._bidirectional = _all_attention_bidirectional(model)
         self._attention_per_pair = (
             count_attention_flops_per_pair(config, checkpointing) if config is not None else 0
         )
@@ -280,6 +355,7 @@ class UnslothMFUCallback(TrainerCallback):
             key = lambda index: -1 if index is None else index,
         )
         self._num_devices = max(len(devices), 1)
+        self._devices = [index for index in devices if index is not None]
         if self.peak_tflops is None:
             dtype = _training_dtype(model, args)
             peaks = [get_peak_tflops(index, dtype) for index in devices] or [
@@ -312,14 +388,21 @@ class UnslothMFUCallback(TrainerCallback):
         if not self._enabled or logs is None or "loss" not in logs or self._window_start is None:
             return
         tokens = int(self._tokens)
+        head_tokens = int(self._head_tokens)
         pairs = int(self._pairs)
         if torch.cuda.is_available():
-            torch.cuda.synchronize()
+            # A model split with device_map may still be running kernels on the other GPUs.
+            for index in self._devices or [None]:
+                torch.cuda.synchronize(index)
         elapsed = time.perf_counter() - self._window_start - self._excluded
         self._reset()
         if tokens <= 0 or elapsed <= 0:
             return
-        flops = tokens * self._linear_per_token + pairs * self._attention_per_pair
+        flops = (
+            tokens * self._linear_per_token
+            + head_tokens * self._head_per_token
+            + pairs * self._attention_per_pair
+        )
         flops = flops / self._num_devices
         tflops = flops / elapsed / 1e12
         extra = {"train_tflops_per_gpu": tflops}
@@ -338,8 +421,10 @@ class UnslothMFUCallback(TrainerCallback):
 
 def add_mfu_callback(trainer, **kwargs):
     """Register an UnslothMFUCallback first, so reporting callbacks see the fields it adds."""
-    for callback in trainer.callback_handler.callbacks:
+    callbacks = trainer.callback_handler.callbacks
+    for index, callback in enumerate(callbacks):
         if isinstance(callback, UnslothMFUCallback):
+            callbacks.insert(0, callbacks.pop(index))
             return callback
     callback = UnslothMFUCallback(**kwargs)
     trainer.callback_handler.callbacks.insert(0, callback)

@@ -267,3 +267,97 @@ def test_encoder_decoder_models_are_not_reported(monkeypatch):
     logs = {"loss": 1.0}
     callback.on_log(None, _State(), None, logs = logs)
     assert logs == {"loss": 1.0}
+
+
+def test_modules_to_save_counts_only_the_active_copy():
+    peft = pytest.importorskip("peft")
+    model = peft.get_peft_model(
+        _model(),
+        peft.LoraConfig(
+            r = 2, target_modules = ["q_proj", "v_proj"], modules_to_save = ["lm_head"], lora_dropout = 0.0
+        ),
+    )
+    total, parts = mfu.count_linear_flops_per_token(model)
+    assert parts["forward"] == 2 * (N + LORA)
+    assert parts["weight_grad"] == 2 * (LORA + HEAD)
+
+
+def test_on_log_synchronizes_every_participating_gpu(monkeypatch):
+    calls = []
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda device = None: calls.append(device))
+    callback = mfu.UnslothMFUCallback(peak_tflops = 1)
+    callback._devices = [0, 1]
+    callback._linear_per_token = 1
+    callback._window_start = 0.0
+    callback._tokens = 10
+    callback.on_log(None, _State(), None, logs = {"loss": 1.0})
+    assert calls == [0, 1]
+
+
+def test_vision_tower_is_not_charged_per_text_token():
+    from transformers import CLIPVisionConfig, LlamaConfig, LlavaConfig, LlavaForConditionalGeneration
+
+    text = _model().config
+    vision = CLIPVisionConfig(
+        hidden_size = 16, intermediate_size = 32, num_hidden_layers = 1, num_attention_heads = 4,
+        image_size = 8, patch_size = 4,
+    )
+    model = LlavaForConditionalGeneration(LlavaConfig(text_config = text, vision_config = vision))
+    total, parts = mfu.count_linear_flops_per_token(model)
+    assert parts["forward"] == 2 * N
+
+
+def test_bidirectional_encoder_counts_square_pairs():
+    from transformers import BertConfig, BertModel
+
+    config = BertConfig(
+        vocab_size = 64, hidden_size = 16, num_hidden_layers = 1, num_attention_heads = 4,
+        intermediate_size = 32,
+    )
+    model = BertModel(config).train()
+    callback = mfu.UnslothMFUCallback(peak_tflops = 1)
+    callback.on_train_begin(None, _State(), None, model = model)
+    callback._count_batch(model, (), {"attention_mask": torch.tensor([[1, 1, 1, 0]])})
+    assert int(callback._pairs) == 9
+    causal = mfu.UnslothMFUCallback(peak_tflops = 1)
+    causal.on_train_begin(None, _State(), None, model = _model().train())
+    causal._count_batch(model, (), {"attention_mask": torch.tensor([[1, 1, 1, 0]])})
+    assert int(causal._pairs) == 6
+    callback.on_train_end(None, None, None)
+    causal.on_train_end(None, None, None)
+
+
+def test_output_head_charged_only_for_logits_to_keep(monkeypatch):
+    model = _model().train()
+    callback = mfu.UnslothMFUCallback(peak_tflops = 1)
+    callback.on_train_begin(None, _State(), None, model = model)
+    assert callback._head_per_token == 6 * HEAD
+    assert callback._linear_per_token == 6 * LAYERS
+    mask = torch.ones(2, 4, dtype = torch.long)
+    callback._count_batch(model, (), {"attention_mask": mask, "logits_to_keep": 1})
+    callback._count_batch(model, (), {"attention_mask": mask})
+    assert int(callback._tokens) == 16
+    assert int(callback._head_tokens) == 2 + 8
+    monkeypatch.setattr(mfu.time, "perf_counter", lambda: 1.0)
+    callback._window_start = 0.0
+    callback._pairs = 0
+    logs = {"loss": 1.0}
+    callback.on_log(None, _State(), None, logs = logs)
+    assert logs["train_tflops_per_gpu"] == pytest.approx((16 * 6 * LAYERS + 10 * 6 * HEAD) / 1e12)
+    callback.on_train_end(None, None, None)
+
+
+def test_add_mfu_callback_moves_an_existing_callback_first(tmp_path):
+    from transformers import Trainer, TrainingArguments
+
+    existing = mfu.UnslothMFUCallback()
+    trainer = Trainer(
+        model = _model(),
+        args = TrainingArguments(output_dir = str(tmp_path), report_to = [], use_cpu = True),
+        callbacks = [existing],
+    )
+    assert trainer.callback_handler.callbacks[0] is not existing
+    assert mfu.add_mfu_callback(trainer) is existing
+    assert trainer.callback_handler.callbacks[0] is existing
+    assert sum(isinstance(c, mfu.UnslothMFUCallback) for c in trainer.callback_handler.callbacks) == 1
