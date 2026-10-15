@@ -602,7 +602,9 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
         "function stopLocalPromptQueueRun(run: PromptQueueRun)",
         "function stopLocalPromptQueueRunsForThreadIds(threadIds: string[])",
     )
-    assert "if (plan.refreshTargetIdleWait)" in local_queue_stop
+    # #10428: a model change holds unsent local prompts for Resume instead of dropping them.
+    assert "item.blockedByModelFailure = true;" in local_queue_stop
+    assert "item.target.releaseModel();" in local_queue_stop
     assert "refreshPromptQueueTargetIdleWait(run);" in local_queue_stop
     assert "claimPreStreamRunReservation(reservationToken);" in RUNTIME_PROVIDER
     assert "if (!reservation.claimed)" in PRE_STREAM_RESERVATION
@@ -853,18 +855,16 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     )
     assert "force_cancel_active:" in SHARED_COMPOSER
     assert (
-        "useChatRuntimeStore.getState().activeThreadId ===\n"
-        "          (usageThreadKey ?? activeThreadIdAtRunStart)" in CHAT_ADAPTER
-    )
-    assert (
         "findLatestUserAudioBase64(\n        survivingMessages,\n        !queuedRunSettings"
         in CHAT_ADAPTER
     )
     assert "if (audioBase64 && !queuedRunSettings)" in CHAT_ADAPTER
+    # The live meter write (turn end and tool handoffs share it) files per thread and paints only
+    # the run's own visible thread on the run's own model.
     assert ".setThreadContextUsage(usageThreadKey, usage)" in CHAT_ADAPTER
     assert re.search(
-        r"usageThreadIsVisible\s*&&\s*"
-        r"useChatRuntimeStore\.getState\(\)\.params\.checkpoint\s*===\s*params\.checkpoint",
+        r"store\.activeThreadId\s*===\s*\(usageThreadKey \?\? activeThreadIdAtRunStart\)\s*&&\s*"
+        r"store\.params\.checkpoint\s*===\s*params\.checkpoint",
         CHAT_ADAPTER,
     )
 

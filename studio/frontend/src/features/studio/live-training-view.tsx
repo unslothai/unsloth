@@ -12,6 +12,7 @@ import type { ReactElement } from "react";
 import { useEffect, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { ChartsSection } from "./sections/charts-section";
+import { OffloadPanel } from "./sections/offload-panel";
 import { ProgressSection } from "./sections/progress-section";
 import {
   type RunConfigOverride,
@@ -195,6 +196,7 @@ export function LiveTrainingView(): ReactElement {
             configOverride={runConfigOverride}
           />
         </div>
+        <OffloadPanel isTrainingRunning={viewData.isTrainingRunning} />
         <ChartsSection
           currentStep={viewData.currentStep}
           totalSteps={viewData.totalSteps}

@@ -26,6 +26,8 @@ const EVENT: &str = "unsloth-browser";
 const MAIN_WEBVIEW: &str = "main";
 const MAIN_WINDOW: &str = "main";
 const URL_POLL: Duration = Duration::from_millis(800);
+/// How far left of the window a parked page sits, in logical pixels.
+const PARK_GAP: f64 = 64.0;
 /// macOS 14+ data store for pages (fixed, so it persists).
 #[cfg(target_os = "macos")]
 const PAGE_DATA_STORE: [u8; 16] = *b"unsloth-browser1";
@@ -158,6 +160,10 @@ struct ViewsState {
     muted: HashSet<String>,
     /// Tabs whose view committed a page of its own since it opened or was last sent somewhere; until then a download's site is the address asked for (or the opener).
     committed: HashSet<String>,
+    /// Hidden tabs shown just off the window for a screenshot (`show_for_capture`); a switch leaves them be.
+    capturing: HashSet<String>,
+    /// Where `browser_view_show` last put each tab, for a capture that a switch overtook (`end_capture`).
+    placed: HashMap<String, Rect>,
 }
 
 pub fn new_browser_views() -> BrowserViews {
@@ -1214,6 +1220,8 @@ fn create_view<R: Runtime>(
         .add_child(builder, position, size)
         .map_err(|error| error.to_string())?;
     #[cfg(target_os = "macos")]
+    crate::browser_layer::place(&webview);
+    #[cfg(target_os = "macos")]
     crate::browser_context_downloads::watch(&webview, &tab);
     // A muted tab whose view closed (four at most stay open) opens muted again.
     if app.state::<BrowserViews>().inner.lock().unwrap().muted.contains(&tab) {
@@ -1362,7 +1370,41 @@ pub fn browser_view_supported() -> bool {
     false
 }
 
+/// Whether pages sit under the app's webview (`browser_layer`). Elsewhere covered pages are snapshotted.
+/// Asked once per load of the app, so it also drops input state a reload left behind.
+#[tauri::command]
+pub fn browser_view_layered<R: Runtime>(webview: Webview<R>) -> Result<bool, String> {
+    require_main(&webview)?;
+    #[cfg(target_os = "macos")]
+    {
+        if crate::browser_layer::set_input(false, &[]) {
+            let _ = webview.run_on_main_thread(crate::browser_layer::reroute_moves);
+        }
+        Ok(browser_view_supported())
+    }
+    #[cfg(not(target_os = "macos"))]
+    Ok(false)
+}
+
+/// The panel UI over the page: all of it while a menu or dialog is open, else clickable rects.
+#[tauri::command]
+pub fn browser_view_input<R: Runtime>(
+    webview: Webview<R>,
+    blocked: bool,
+    exclude: Vec<ViewBounds>,
+) -> Result<(), String> {
+    require_main(&webview)?;
+    #[cfg(target_os = "macos")]
+    if crate::browser_layer::set_input(blocked, &exclude) {
+        let _ = webview.run_on_main_thread(crate::browser_layer::reroute_moves);
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = (blocked, exclude);
+    Ok(())
+}
+
 /// Show a tab's page at `bounds` (created at `url` first time), hide the rest; `None` hides all.
+/// `parked` moves the page just off-window instead of hiding it, so it keeps painting under its snapshot.
 /// Async: creating a webview from a sync command deadlocks on Windows (Tauri known issue).
 #[tauri::command]
 pub async fn browser_view_show<R: Runtime>(
@@ -1371,22 +1413,36 @@ pub async fn browser_view_show<R: Runtime>(
     tab_id: Option<String>,
     url: Option<String>,
     bounds: Option<ViewBounds>,
+    parked: Option<bool>,
 ) -> Result<(), String> {
     require_main(&webview)?;
     let app = webview.app_handle().clone();
+    let parked = parked.unwrap_or(false);
     let target = match (&tab_id, &bounds) {
         (Some(tab_id), Some(bounds)) => Some(match app.get_webview(&label_for(tab_id)?) {
             Some(view) => {
-                let (position, size) = logical_rect(&webview, bounds);
-                view.set_bounds(Rect {
+                let (mut position, size) = logical_rect(&webview, bounds);
+                if parked {
+                    position.x = -size.width - PARK_GAP;
+                }
+                let rect = Rect {
                     position: position.into(),
                     size: size.into(),
-                })
-                .map_err(|error| error.to_string())?;
+                };
+                state
+                    .inner
+                    .lock()
+                    .unwrap()
+                    .placed
+                    .insert(tab_id.clone(), rect);
+                view.set_bounds(rect).map_err(|error| error.to_string())?;
                 view
             }
+            None if parked => return Err("no page to park".into()),
             None => {
                 let url = parse_page_url(url.as_deref().ok_or("no address to open")?)?;
+                #[cfg(target_os = "macos")]
+                crate::browser_layer::install(&webview);
                 create_view(&webview, tab_id, url, bounds)?
             }
         }),
@@ -1400,13 +1456,96 @@ pub async fn browser_view_show<R: Runtime>(
     if let Some(view) = &target {
         view.show().map_err(|error| error.to_string())?;
     }
+    let capturing: HashSet<String> = state
+        .inner
+        .lock()
+        .unwrap()
+        .capturing
+        .iter()
+        .filter_map(|tab_id| label_for(tab_id).ok())
+        .collect();
     for view in browser_views(&app) {
-        if Some(view.label()) != target.as_ref().map(|view| view.label()) {
+        if Some(view.label()) != target.as_ref().map(|view| view.label())
+            && !capturing.contains(view.label())
+        {
             let _ = view.hide();
         }
     }
     set_shown(&state, &mut state.inner.lock().unwrap(), shown);
     Ok(())
+}
+
+/// Opens a tab's page without showing it: the agent at work in a chat that isn't on screen. Made
+/// just off the window and hidden, so nothing flashes and the page on screen stays.
+#[tauri::command]
+pub async fn browser_view_open_background<R: Runtime>(
+    webview: Webview<R>,
+    tab_id: String,
+    url: String,
+    bounds: ViewBounds,
+) -> Result<(), String> {
+    require_main(&webview)?;
+    let label = label_for(&tab_id)?;
+    if webview.app_handle().get_webview(&label).is_some() {
+        return Ok(());
+    }
+    let url = parse_page_url(&url)?;
+    #[cfg(target_os = "macos")]
+    crate::browser_layer::install(&webview);
+    let off_window = ViewBounds {
+        x: -bounds.width - PARK_GAP,
+        ..bounds
+    };
+    let page = create_view(&webview, &tab_id, url, &off_window)?;
+    if let Err(error) = page.hide() {
+        // The frontend never records a view that failed to open, so it would never close this one.
+        let _ = close_view(&page);
+        return Err(error.to_string());
+    }
+    Ok(())
+}
+
+/// A hidden page paints nothing to capture (WebView2 doesn't render it; WebKit's snapshot waits
+/// on a paint that never comes), so it shows just off the window for the shot. True if it did.
+pub(crate) fn show_for_capture<R: Runtime>(
+    views: &BrowserViews,
+    page: &Webview<R>,
+    tab_id: &str,
+) -> bool {
+    {
+        let mut inner = views.inner.lock().unwrap();
+        if inner.shown.as_deref() == Some(tab_id) || !inner.capturing.insert(tab_id.to_string()) {
+            return false;
+        }
+    }
+    let size = page
+        .bounds()
+        .ok()
+        .zip(page.window().scale_factor().ok())
+        .map(|(rect, factor)| rect.size.to_logical::<f64>(factor))
+        .unwrap_or(LogicalSize::new(1024.0, 768.0));
+    let position = LogicalPosition::new(-size.width - PARK_GAP, 0.0);
+    let _ = page.set_bounds(Rect {
+        position: position.into(),
+        size: size.into(),
+    });
+    if page.show().is_err() {
+        views.inner.lock().unwrap().capturing.remove(tab_id);
+        return false;
+    }
+    true
+}
+
+/// Hides a page `show_for_capture` showed. One that became the shown page meanwhile goes back
+/// where the switch put it, not off the window.
+pub(crate) fn end_capture<R: Runtime>(views: &BrowserViews, page: &Webview<R>, tab_id: &str) {
+    let mut inner = views.inner.lock().unwrap();
+    inner.capturing.remove(tab_id);
+    if inner.shown.as_deref() != Some(tab_id) {
+        let _ = page.hide();
+    } else if let Some(rect) = inner.placed.get(tab_id) {
+        let _ = page.set_bounds(*rect);
+    }
 }
 
 #[tauri::command]
@@ -1606,6 +1745,140 @@ pub async fn browser_view_annotate<R: Runtime>(
     serde_json::from_str(&inner).map_err(|error| error.to_string())
 }
 
+// The panel's browser agent (frontend agent/page-agent.ts): installed on first use per page, then
+// each call runs one command and returns `{ installed, result }`.
+const AGENT_SCRIPT: &str = r#"(() => {
+  const key = Symbol.for("unsloth.agent");
+  const command = __COMMAND__;
+  if (!window[key] && command.install) {
+    try {
+__CODE__
+    } catch (error) {}
+  }
+  const agent = window[key];
+  if (!agent) return JSON.stringify({ installed: false, result: null });
+  return JSON.stringify({ installed: true, result: agent.run(command.op) });
+})()"#;
+const MAX_AGENT_OP: usize = 65_536;
+
+#[derive(Debug, Deserialize)]
+pub struct AgentCommand {
+    op: serde_json::Map<String, serde_json::Value>,
+    code: Option<String>,
+}
+
+fn agent_script(command: &AgentCommand) -> Result<String, String> {
+    let code = command.code.as_deref().unwrap_or("");
+    if code.len() > MAX_ANNOTATE_CODE {
+        return Err("agent code too large".into());
+    }
+    let args = serde_json::json!({ "install": !code.is_empty(), "op": command.op }).to_string();
+    if args.len() > MAX_AGENT_OP {
+        return Err("agent command too large".into());
+    }
+    let (head, rest) = AGENT_SCRIPT
+        .split_once("__COMMAND__")
+        .ok_or("bad agent script")?;
+    let (middle, tail) = rest.split_once("__CODE__").ok_or("bad agent script")?;
+    Ok(format!("{head}{args}{middle}{code}{tail}"))
+}
+
+/// Runs a browser agent command in a tab's page. The panel checks the result, since the page
+/// shares the agent's world and can write to it.
+#[tauri::command]
+pub async fn browser_view_agent<R: Runtime>(
+    webview: Webview<R>,
+    tab_id: String,
+    command: AgentCommand,
+) -> Result<serde_json::Value, String> {
+    require_main(&webview)?;
+    let page = view(webview.app_handle(), &tab_id)?;
+    let script = agent_script(&command)?;
+    eval_json(&page, script).await
+}
+
+// Spliced past the CSP; the document check is its own statement since spliced code can close any wrapper.
+const EVAL_SCRIPT: &str = r#"(() => {
+  const agent = window[Symbol.for("unsloth.agent")];
+  if (!agent || typeof agent.owns !== "function" || agent.owns(__DOC__) !== true) throw new Error("not the approved document");
+})();
+JSON.stringify({ installed: true, result: window[Symbol.for("unsloth.agent")].evaluate(__ID__, __DOC__, async () => {
+__CODE__
+}) });"#;
+// browser_agent.py allows 8000 characters, of up to 4 bytes each.
+const MAX_EVAL_CODE: usize = 32_000;
+
+fn eval_script(id: &str, doc: &str, code: &str) -> Result<String, String> {
+    if doc.len() < 2
+        || doc.len() > 16
+        || !doc.starts_with('r')
+        || !doc[1..].chars().all(|c| c.is_ascii_digit())
+    {
+        return Err("bad document ref".into());
+    }
+    if id.is_empty()
+        || id.len() > 64
+        || !id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err("bad script id".into());
+    }
+    if code.len() > MAX_EVAL_CODE {
+        return Err("script too large".into());
+    }
+    // Single pass over the template, so the code can't inject a placeholder.
+    let mut out = String::with_capacity(EVAL_SCRIPT.len() + code.len() + 96);
+    let mut rest = EVAL_SCRIPT;
+    for (marker, value) in [
+        ("__DOC__", format!("\"{doc}\"")),
+        ("__ID__", format!("\"{id}\"")),
+        ("__DOC__", format!("\"{doc}\"")),
+        ("__CODE__", code.to_string()),
+    ] {
+        let (head, tail) = rest.split_once(marker).ok_or("bad eval script")?;
+        out.push_str(head);
+        out.push_str(&value);
+        rest = tail;
+    }
+    out.push_str(rest);
+    Ok(out)
+}
+
+#[tauri::command]
+pub async fn browser_view_eval<R: Runtime>(
+    webview: Webview<R>,
+    tab_id: String,
+    id: String,
+    doc: String,
+    code: String,
+) -> Result<serde_json::Value, String> {
+    require_main(&webview)?;
+    let page = view(webview.app_handle(), &tab_id)?;
+    let script = eval_script(&id, &doc, &code)?;
+    eval_json(&page, script).await
+}
+
+async fn eval_json<R: Runtime>(
+    page: &Webview<R>,
+    script: String,
+) -> Result<serde_json::Value, String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let tx = Mutex::new(Some(tx));
+    page.eval_with_callback(script, move |result| {
+        if let Some(tx) = tx.lock().unwrap().take() {
+            let _ = tx.send(result);
+        }
+    })
+    .map_err(|error| error.to_string())?;
+    let result = tokio::time::timeout(Duration::from_secs(5), rx)
+        .await
+        .map_err(|_| "page did not answer".to_string())?
+        .map_err(|error| error.to_string())?;
+    let inner = serde_json::from_str::<String>(&result).map_err(|error| error.to_string())?;
+    serde_json::from_str(&inner).map_err(|error| error.to_string())
+}
+
 /// Mute or unmute a tab's page. Windows mutes the whole view (Web Audio too) and keeps it muted
 /// across loads; macOS mutes the page's media, and each page it loads after (see `MUTE_SCRIPT`).
 #[tauri::command]
@@ -1671,6 +1944,7 @@ pub fn browser_view_close<R: Runtime>(
         inner.urls.remove(&tab_id);
         inner.committed.remove(&tab_id);
         inner.download_starts.remove(&tab_id);
+        inner.placed.remove(&tab_id);
         // `muted` stays: a pruned view reopens muted; unmuting is what forgets it.
         if inner.shown.as_deref() == Some(tab_id.as_str()) {
             set_shown(&state, &mut inner, None);
@@ -2193,6 +2467,47 @@ mod tests {
             code: "x".repeat(MAX_ANNOTATE_CODE + 1)
         })
         .is_err());
+    }
+
+    #[test]
+    fn agent_code_and_command_are_spliced_once() {
+        let mut op = serde_json::Map::new();
+        op.insert("op".into(), "find".into());
+        op.insert("query".into(), "__CODE__".into());
+        let script = agent_script(&AgentCommand {
+            op: op.clone(),
+            code: Some("window.x = '__COMMAND__';".into()),
+        })
+        .unwrap();
+        assert!(script.contains(
+            r#"const command = {"install":true,"op":{"op":"find","query":"__CODE__"}};"#
+        ));
+        assert!(script.contains("window.x = '__COMMAND__';"));
+        let bare = agent_script(&AgentCommand { op, code: None }).unwrap();
+        assert!(bare.contains(r#""install":false"#));
+        assert!(agent_script(&AgentCommand {
+            op: serde_json::Map::new(),
+            code: Some("x".repeat(MAX_ANNOTATE_CODE + 1)),
+        })
+        .is_err());
+    }
+
+    #[test]
+    fn eval_code_is_spliced_once_and_ids_are_plain() {
+        let script = eval_script("s1-a_B", "r100001", "return '__ID__' + '__DOC__';").unwrap();
+        let check = script
+            .find(r#"agent.owns("r100001") !== true) throw"#)
+            .unwrap();
+        let run = script
+            .find(r#".evaluate("s1-a_B", "r100001", async () => {"#)
+            .unwrap();
+        assert!(check < run && script[check..run].contains("})();"));
+        assert!(script.contains("return '__ID__' + '__DOC__';"));
+        assert!(eval_script("a\"); evil(\"", "r1", "").is_err());
+        assert!(eval_script("", "r1", "").is_err());
+        assert!(eval_script("s1", "r1\"", "").is_err());
+        assert!(eval_script("s1", "", "").is_err());
+        assert!(eval_script("s1", "r1", &"x".repeat(MAX_EVAL_CODE + 1)).is_err());
     }
 
     #[test]

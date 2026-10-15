@@ -3,8 +3,6 @@
 
 """Dataset utilities for format detection, conversion, and template application. Entry points: check_dataset_format (lightweight check whether manual mapping is needed, for the frontend), format_dataset (detects and normalizes dataset formats) and format_and_template_dataset (end-to-end processing with chat template). Internal utilities live in format_detection, format_conversion, chat_templates, vlm_processing, data_collators and model_mappings."""
 
-import json
-
 from .format_detection import (
     detect_dataset_format,
     detect_multimodal_dataset,
@@ -217,7 +215,10 @@ def _apply_user_mapping(
                             )
                         )
             conversations.append(convo)
-        return {"conversations": conversations}
+        mapped = {"conversations": conversations}
+        if "tools" in examples:
+            mapped["tools"] = examples["tools"]
+        return mapped
 
     return dataset.map(
         _convert,
@@ -230,9 +231,11 @@ def _apply_user_mapping(
 def _extract_column_value(val, col: str, label_mapping: dict) -> str:
     if isinstance(val, dict):
         if "text" not in val:
-            return json.dumps(val, ensure_ascii = False)
+            return cell_text(val)
         inner = val["text"]
         val = inner[0] if isinstance(inner, list) and inner else inner
+    if isinstance(val, list) and any(isinstance(item, (dict, list)) for item in val):
+        return cell_text(val)
 
     names = label_mapping.get(col)
     if not isinstance(names, dict):
@@ -289,7 +292,10 @@ def _apply_template_mapping(
                 convo.append({"role": "assistant", "content": "\n".join(asst_parts)})
 
             conversations.append(convo)
-        return {"conversations": conversations}
+        mapped = {"conversations": conversations}
+        if "tools" in examples:
+            mapped["tools"] = examples["tools"]
+        return mapped
 
     return dataset.map(
         _convert,
@@ -304,7 +310,11 @@ def _apply_user_mapping_alpaca(
     mapping: dict,
     batch_size: int = 1000,
 ):
-    """Apply user-provided column mapping to convert dataset to Alpaca format. Accepts any format's role names, normalises via _TO_CHATML, then maps user -> instruction, system -> input, assistant -> output. Advisor ``__label_mapping`` names label values; ``__system_prompt`` is prepended to instruction, since system-role columns already fill input. Returns a dataset with instruction/input/output columns."""
+    """convert user mappings to Alpaca instruction, input, and output columns.
+
+    role names are normalized through ``_TO_CHATML`` and ``__label_mapping`` names label values.
+    ``__system_prompt`` prepends instruction because mapped system columns already fill input.
+    """
     meta = {k: v for k, v in mapping.items() if k.startswith("__")}
     column_roles = {k: v for k, v in mapping.items() if not k.startswith("__")}
     system_prompt = meta.get("__system_prompt", "")

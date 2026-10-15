@@ -262,7 +262,7 @@ const f5SpeedDialectPanel: AudioToolPanel<SpeedDialectValue> = {
         max={2}
         step={0.05}
         disabled={disabled}
-        displayValue={`${value.speed.toFixed(2)}×`}
+        format={(v) => `${v.toFixed(2)}×`}
         onChange={(speed) => onChange({ ...value, speed })}
       />
       {specs.some((spec) => spec.name === "dialect") ? (

@@ -72,6 +72,51 @@ export function insetPastChatSettings(offset: ToastOffset): {
   };
 }
 
+type InsetStyle = Pick<
+  CSSStyleDeclaration,
+  "setProperty" | "removeProperty" | "getPropertyValue"
+>;
+
+const insetScopes = new Set<HTMLElement>();
+const insetValues = new Map<string, string>();
+
+function removeCornerInset(name: string): string {
+  const previous = insetValues.get(name) ?? "";
+  insetValues.delete(name);
+  for (const scope of insetScopes) scope.style.removeProperty(name);
+  return previous;
+}
+
+function setCornerInset(name: string, value: string | null): void {
+  if (!value) {
+    removeCornerInset(name);
+    return;
+  }
+  insetValues.set(name, value);
+  for (const scope of insetScopes) scope.style.setProperty(name, value);
+}
+
+export const cornerInsets: { style: InsetStyle } = {
+  style: {
+    setProperty: setCornerInset,
+    removeProperty: removeCornerInset,
+    getPropertyValue: (name: string) => insetValues.get(name) ?? "",
+  },
+};
+
+export function cornerInsetScope(
+  element: HTMLElement | null,
+): (() => void) | undefined {
+  if (!element) return undefined;
+  insetScopes.add(element);
+  for (const [name, value] of insetValues) {
+    element.style.setProperty(name, value);
+  }
+  return () => {
+    insetScopes.delete(element);
+  };
+}
+
 type InsetPanel = {
   offsetWidth: number;
   parentElement: { clientWidth: number } | null;

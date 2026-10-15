@@ -343,5 +343,8 @@ test("main, edit and comparison composers use the setting and expose settings ac
   );
   assert.match(compare, /scrollTarget: "chat-composer"/);
   const page = readSrc("features/chat/chat-page.tsx");
-  assert.match(page, /showContextWindowUsage &&\s*view.mode === "single"/);
+  assert.match(
+    page,
+    /showContextWindowUsage &&[\s\S]{0,100}view\.mode === "project" && activeThreadId != null/,
+  );
 });

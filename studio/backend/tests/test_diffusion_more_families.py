@@ -682,6 +682,98 @@ def test_qwen_image_21_is_reachable_end_to_end_not_just_detectable():
     )
 
 
+def test_qwen_image_21_turbo_loads_as_its_own_checkpoint_of_the_family():
+    """The official 8-step distill is trusted, gets its card's defaults, loads its own hosted denoisers (never 2.1's),
+    and shares 2.1's text encoder."""
+    from core.inference.diffusion_families import (
+        default_generation_params,
+        detect_family,
+        family_prequant_repo,
+    )
+    from core.inference.diffusion_te_prequant import te_base_equivalent
+
+    turbo = "Qwen/Qwen-Image-2.1-Turbo"
+    fam = detect_family(turbo)
+    assert fam is not None and fam.name == "qwen-image-2.1"
+    assert _is_trusted_diffusion_repo(turbo)
+    # The card's recipe, for the repo, its GGUFs and a renamed local copy alike; the base keeps its own.
+    for identifier in (
+        turbo,
+        "qwen_image_2.1_turbo_Q4_K_M.gguf",
+        "/models/qwen-image-21-turbo",
+        "/models/qwen_image_21_turbo",
+        "/models/qwen-image-21_turbo",
+        "/models/qwenimage21-turbo",
+        "/models/qwenimage21_turbo",
+        "/models/qwenimage21turbo",
+        "qwenimage21turbo-Q4_K_M.gguf",
+    ):
+        assert default_generation_params(identifier) == (8, 1.0), identifier
+    for identifier in ("Qwen/Qwen-Image-2.1", "/models/qwen_image_21", "/models/qwenimage21"):
+        assert default_generation_params(identifier) == (25, 1.0), identifier
+    # Turbo's own int8 / fp8 denoisers, never 2.1's; nvfp4 (not hosted for Turbo) quantizes at load.
+    for scheme in ("int8", "fp8"):
+        assert (
+            family_prequant_repo(fam, scheme, base_repo = turbo) == "unsloth/Qwen-Image-2.1-Turbo-FP8"
+        )
+        assert (
+            family_prequant_repo(fam, scheme, base_repo = "Qwen/Qwen-Image-2.1")
+            == "unsloth/Qwen-Image-2.1-FP8"
+        )
+    assert family_prequant_repo(fam, "nvfp4", base_repo = turbo) is None
+    # Its Qwen3-VL encoder is byte-identical to 2.1's, so the hosted int8 ConvRot encoder serves both.
+    assert te_base_equivalent("Qwen/Qwen-Image-2.1", turbo)
+    assert not te_base_equivalent("Qwen/Qwen-Image", turbo)
+
+
+def test_qwen_image_21_turbo_resolves_its_own_artifact_names(monkeypatch):
+    """Turbo's repo is asked for Turbo's files, in the same order 2.1's repo is asked for 2.1's, and declares only
+    files it hosts. 2.1's chain is unchanged."""
+    from core.inference.diffusion_families import detect_family
+    from core.inference.diffusion_prequant import resolve_prequant_source
+
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_INT8_CONVROT", raising = False)
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_PREQUANT_COMFY", "0")
+    fam = detect_family("Qwen/Qwen-Image-2.1")
+    expected = {
+        ("Qwen/Qwen-Image-2.1", "int8"): (
+            "unsloth/Qwen-Image-2.1-FP8",
+            ("Qwen-Image-2.1-INT8-ConvRot.safetensors", "Qwen-Image-2.1-INT8.safetensors"),
+        ),
+        ("Qwen/Qwen-Image-2.1", "fp8"): (
+            "unsloth/Qwen-Image-2.1-FP8",
+            ("Qwen-Image-2.1-FP8.safetensors",),
+        ),
+        ("Qwen/Qwen-Image-2.1-Turbo", "int8"): (
+            "unsloth/Qwen-Image-2.1-Turbo-FP8",
+            (
+                "Qwen-Image-2.1-Turbo-INT8-ConvRot.safetensors",
+                "Qwen-Image-2.1-Turbo-INT8.safetensors",
+            ),
+        ),
+        ("Qwen/Qwen-Image-2.1-Turbo", "fp8"): (
+            "unsloth/Qwen-Image-2.1-Turbo-FP8",
+            ("Qwen-Image-2.1-Turbo-FP8.safetensors",),
+        ),
+    }
+    for (base, scheme), (repo, declared) in expected.items():
+        source = resolve_prequant_source(fam, scheme, base_repo = base)
+        assert source.location == repo, (base, scheme)
+        assert source.declared_filenames == declared, (base, scheme)
+        assert source.filename == declared[0], (base, scheme)
+        names = [
+            n
+            for n in (source.filename, *source.fallback_filenames)
+            if not n.startswith("transformer_")
+        ]
+        assert all(("-Turbo-" in n) == ("Turbo" in base) for n in names), names
+    # The ConvRot kill switch drops the rotated name for both repos alike.
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_INT8_CONVROT", "0")
+    for base in ("Qwen/Qwen-Image-2.1", "Qwen/Qwen-Image-2.1-Turbo"):
+        source = resolve_prequant_source(fam, "int8", base_repo = base)
+        assert not any("ConvRot" in n for n in (source.filename, *source.fallback_filenames))
+
+
 def test_every_image_family_base_repo_is_loadable():
     """The general form of the above, so the next family cannot ship inert the same way."""
     from core.inference.diffusion_families import _FAMILIES
@@ -747,10 +839,11 @@ def test_qwen_image_21_gguf_reaches_sd_cpp_with_its_own_vae_and_a_qwen3vl_encode
 def test_the_pinned_prebuilt_is_one_that_can_load_qwen_image_21():
     """The route is only real if the binary the installer pins understands the architecture.
 
-    The tag STRING cannot answer this: every mirror build resolves to the same master-813 base, so
-    the August build and the current one are indistinguishable by name. What is asserted here is the
-    pin itself, against the release verified to render this family (26.9s at 1024 on one B200,
-    Q4_K_M denoiser, bf16 VAE, Q4_K_M Qwen3-VL encoder). Bump both together or not at all.
+    The tag STRING cannot answer this: two mirror builds can share an upstream base, so the name does
+    not say whether a build carries the architecture. What is asserted here is the pin itself,
+    against the release verified to render this family through Studio's native engine (512x512,
+    12 steps, Q4_K_M, one B200: cuda12 and cuda13 bundles, 26s / 36s, identical images). Bump both
+    together or not at all.
     """
     import importlib.util
     from pathlib import Path
@@ -760,13 +853,15 @@ def test_the_pinned_prebuilt_is_one_that_can_load_qwen_image_21():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
 
-    assert module.DEFAULT_TAG == "master-813-bfbef5b-u1d02858", (
+    assert module.DEFAULT_TAG == "master-951-f89d9b1-uafac7a7", (
         "the pinned prebuilt must be one built from a tree carrying Qwen-Image-2.1; "
         f"{module.DEFAULT_TAG} is not"
     )
 
 
-def test_a_minimum_that_has_not_shipped_does_not_prescribe_an_impossible_upgrade():
+def test_a_minimum_that_has_not_shipped_does_not_prescribe_an_impossible_upgrade(
+    monkeypatch, tmp_path
+):
     """``pip install -U 'diffusers>=0.41.0'`` has no candidate while 0.41.0 is unreleased, so the
     refusal has to name the pinned main build Studio actually installs for this class.
 
@@ -774,22 +869,30 @@ def test_a_minimum_that_has_not_shipped_does_not_prescribe_an_impossible_upgrade
     host whose git exits non-zero: the install keeps diffusers 0.40.0, and the old text sent the
     reader to `pip install -r diffusers-main.txt`, which resolves the same git+https requirement
     and fails identically. The quoted zip URL needs no git, so it is the one line here that has to
-    stay true, hence the check that it names the commit the pin file actually carries."""
+    stay true, hence the check that it names the commit the pin file actually carries.
+
+    0.41.0 has since shipped, so this runs as the next unreleased pin would: the minimum marked
+    unreleased and diffusers-main.txt with its commit line uncommented."""
     import pathlib
     import re as _re
 
-    from core.inference.diffusion_families import (
-        _PIPELINE_MIN_DIFFUSERS,
-        _UNRELEASED_MIN_DIFFUSERS,
-        _too_old_message,
+    from core.inference import diffusion_families as families
+    from core.inference.diffusion_families import _PIPELINE_MIN_DIFFUSERS, _too_old_message
+
+    shipped = pathlib.Path(__file__).resolve().parents[1] / "requirements" / "diffusers-main.txt"
+    pin = tmp_path / "diffusers-main.txt"
+    pin.write_text(
+        shipped.read_text(encoding = "utf-8").replace("\n# diffusers @ git+", "\ndiffusers @ git+"),
+        encoding = "utf-8",
     )
+    monkeypatch.setattr(families, "_DIFFUSERS_MAIN_PIN", pin)
+    monkeypatch.setattr(families, "_UNRELEASED_MIN_DIFFUSERS", frozenset({"0.41.0"}))
 
     message = _too_old_message("QwenImage21Pipeline", "qwen-image-2.1", "0.40.0")
     assert "pip install -U 'diffusers>=0.41.0'" not in message
     assert "has not been released yet" in message
     assert "git --version" in message, "the likely cause has to be checkable by the reader"
 
-    pin = pathlib.Path(__file__).resolve().parents[1] / "requirements" / "diffusers-main.txt"
     commit = _re.search(r"@([0-9a-fA-F]{40})\b", pin.read_text(encoding = "utf-8"))
     assert commit is not None, "the main pin must carry a full commit for the zip route to exist"
     assert (
@@ -803,7 +906,20 @@ def test_a_minimum_that_has_not_shipped_does_not_prescribe_an_impossible_upgrade
     # Every unreleased entry must still be a minimum some class actually declares, so a stale one
     # cannot sit here unnoticed after its release ships.
     declared = set(_PIPELINE_MIN_DIFFUSERS.values())
-    assert _UNRELEASED_MIN_DIFFUSERS <= declared, sorted(_UNRELEASED_MIN_DIFFUSERS - declared)
+    monkeypatch.undo()
+    unreleased = families._UNRELEASED_MIN_DIFFUSERS
+    assert unreleased <= declared, sorted(unreleased - declared)
+
+
+def test_qwen_image_21_on_0_40_points_at_the_released_0_41():
+    """0.41.0 is on PyPI: a 0.40.0 install is told to update, not sent to a git build."""
+    from core.inference.diffusion_families import _UNRELEASED_MIN_DIFFUSERS, _too_old_message
+
+    assert "0.41.0" not in _UNRELEASED_MIN_DIFFUSERS
+    message = _too_old_message("QwenImage21Pipeline", "qwen-image-2.1", "0.40.0")
+    assert "pip install -U 'diffusers>=0.41.0'" in message
+    assert "Settings, Check for updates" in message
+    assert "has not been released yet" not in message and "git" not in message, message
 
 
 def test_qwen_image_21_takes_reference_images_but_is_not_an_edit_only_family():
@@ -831,3 +947,110 @@ def test_qwen_image_21_takes_reference_images_but_is_not_an_edit_only_family():
     edit = detect_family("Qwen/Qwen-Image-Edit-2511")
     assert edit is not None and edit.name == "qwen-image-edit" and edit.edit is True
     assert edit.pipeline_class != fam.pipeline_class
+
+
+@pytest.mark.parametrize(
+    "name, card, expected",
+    [
+        ("qwen_image_2.1_turbo-Q4_K_M.gguf", None, "Qwen/Qwen-Image-2.1-Turbo"),
+        ("qwen-image-2.1-Q4_K_M.gguf", None, "Qwen/Qwen-Image-2.1"),
+        # A card tag decides when there is one, even an untrusted one that falls back to the default.
+        ("qwen_image_2.1_turbo-Q4_K_M.gguf", "someone/else", "Qwen/Qwen-Image-2.1"),
+    ],
+)
+def test_a_local_turbo_gguf_resolves_the_turbo_base_by_name(
+    monkeypatch, tmp_path, name, card, expected
+):
+    from core.inference import diffusion as dmod
+    from core.inference.diffusion_families import detect_family_for_pick
+
+    monkeypatch.setattr(dmod, "_hf_base_model", lambda repo_id, token: card)
+    monkeypatch.setattr(dmod, "_remember_companion_base", lambda repo_id, base: None)
+    fam = detect_family_for_pick(str(tmp_path), name, "qwen-image-2.1")
+    assert dmod._resolve_base_repo(str(tmp_path), None, fam, None, name) == expected
+
+
+@pytest.mark.parametrize(
+    "name, expected",
+    [
+        ("flux-2-klein-9b.safetensors", "black-forest-labs/FLUX.2-klein-9B"),
+        ("flux-2-klein-9b-fp8.safetensors", "black-forest-labs/FLUX.2-klein-9B"),
+        ("flux-2-klein-9b-Q4_K_M.gguf", "black-forest-labs/FLUX.2-klein-9B"),
+        ("flux-2-klein-base-9b.safetensors", "black-forest-labs/FLUX.2-klein-base-9B"),
+        ("flux-2-klein-base-4b.safetensors", "black-forest-labs/FLUX.2-klein-base-4B"),
+        ("flux-2-klein-4b.safetensors", "black-forest-labs/FLUX.2-klein-4B"),
+        ("flux-2-klein-4b-Q4_K_M.gguf", "black-forest-labs/FLUX.2-klein-4B"),
+    ],
+)
+def test_a_local_klein_file_resolves_its_variant_base_by_name(
+    monkeypatch, tmp_path, name, expected
+):
+    from core.inference import diffusion as dmod
+    from core.inference.diffusion_compat import flux2_pick_mismatch
+    from core.inference.diffusion_families import detect_family_for_pick
+
+    monkeypatch.setattr(dmod, "_hf_base_model", lambda repo_id, token: None)
+    monkeypatch.setattr(dmod, "_remember_companion_base", lambda repo_id, base: None)
+    fam = detect_family_for_pick(str(tmp_path), name, "flux.2-klein")
+    base = dmod._resolve_base_repo(str(tmp_path), None, fam, None, name)
+    assert base == expected
+    if name.endswith(".gguf"):
+        import core.inference.diffusion_compat as compat
+
+        dim = 4096 if "9b" in name else 3072
+        monkeypatch.setattr(compat, "flux2_inner_dim_for_pick", lambda *a, **k: dim)
+        assert flux2_pick_mismatch(fam, str(tmp_path), name, base) is None
+
+
+@pytest.mark.parametrize(
+    "repo, gguf, expected",
+    [
+        (
+            "someone/Qwen-Image-2.1-GGUF",
+            "qwen-image-2.1-turbo-Q4_K_M.gguf",
+            "Qwen/Qwen-Image-2.1-Turbo",
+        ),
+        ("someone/Qwen-Image-2.1-Turbo-GGUF", "model-Q4_K_M.gguf", "Qwen/Qwen-Image-2.1-Turbo"),
+        # The selected file decides: a plain 2.1 file in a Turbo-named repo or folder keeps 2.1.
+        ("someone/Qwen-Image-2.1-Turbo-GGUF", "qwen_image_2.1_Q4_K_M.gguf", None),
+        ("/models/qwen-image-2.1-turbo", "qwenimage21-Q8_0.gguf", None),
+        ("someone/Qwen-Image-2.1-GGUF", "qwen-image-2.1-Q4_K_M.gguf", None),
+    ],
+)
+def test_the_selected_file_decides_the_named_variant(repo, gguf, expected):
+    from core.inference.diffusion_families import named_variant_base
+    assert named_variant_base(detect_family("Qwen/Qwen-Image-2.1"), repo, gguf) == expected
+
+
+@pytest.mark.parametrize(
+    "base, expected",
+    [
+        ("Qwen/Qwen-Image-2.1-Turbo", "unsloth/Qwen-Image-2.1-Turbo-FP8"),
+        # A local Turbo pipeline: the Turbo artifact when the loader's tail compare accepts it, else none at all.
+        ("/models/Qwen-Image-2.1-Turbo", "unsloth/Qwen-Image-2.1-Turbo-FP8"),
+        ("/models/qwen_image_21_turbo", None),
+        ("/models/Qwen-Image-2.1", "unsloth/Qwen-Image-2.1-FP8"),
+        ("Qwen/Qwen-Image-2.1", "unsloth/Qwen-Image-2.1-FP8"),
+    ],
+)
+def test_a_local_turbo_pipeline_never_plans_the_2_1_artifact(base, expected):
+    from core.inference.diffusion_families import family_prequant_repo
+    fam = detect_family("Qwen/Qwen-Image-2.1")
+    for scheme in ("int8", "fp8"):
+        assert family_prequant_repo(fam, scheme, base_repo = base) == expected, (base, scheme)
+
+
+def test_an_opaque_local_load_with_a_shipped_grid_runs_its_step_count():
+    from core.inference.diffusion import _generation_defaults_for
+    from core.inference.diffusion_families import generation_params_with_grid
+
+    grid = (1.0, 0.978453, 0.95418, 0.926626, 0.89508, 0.845148, 0.704534, 0.414568)
+    # No name matches: the grid's own count, not the fallback's 9 (which would resample it).
+    assert generation_params_with_grid(grid, "/models/opaque", "/models/opaque") == (8, 0.0)
+    assert _generation_defaults_for("/models/opaque", None, "/models/opaque", grid) == {
+        "steps": 8,
+        "guidance": 0.0,
+    }
+    # A name still decides first, and no grid keeps the fallback.
+    assert generation_params_with_grid(grid, "Qwen/Qwen-Image-2.1-Turbo") == (8, 1.0)
+    assert generation_params_with_grid(None, "/models/opaque") == (9, 0.0)

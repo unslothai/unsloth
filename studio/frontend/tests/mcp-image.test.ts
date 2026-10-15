@@ -5,10 +5,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  changedImageMappings,
   imageFieldCandidates,
   mcpImageMappingsEnabled,
   modelVisibleMessage,
   toolOnlyImages,
+  unmappedImageFields,
+  withImageField,
 } from "../src/features/chat/api/mcp-image.ts";
 
 const PRIVATE = "data:image/png;base64,UFJJVkFURQ==";
@@ -97,4 +100,96 @@ test("mapping candidates are the top-level string fields", () => {
     ["image", "url"],
   );
   assert.deepEqual(imageFieldCandidates(undefined), []);
+});
+
+test("the add list leaves out pairs that are already mapped", () => {
+  const options = [
+    { tool: "search_by_file", field: "filePath" },
+    { tool: "search_by_file", field: "imageBase64" },
+    { tool: "search_by_url", field: "url" },
+  ];
+  assert.deepEqual(
+    unmappedImageFields(options, [
+      { tool: "search_by_file", field: "imageBase64", encoding: "data_url" },
+    ]),
+    [options[0], options[2]],
+  );
+  assert.deepEqual(unmappedImageFields(options, []), options);
+});
+
+test("adding a field keeps one row per tool, in place", () => {
+  const mapped = [
+    { tool: "search_by_file", field: "imageBase64", encoding: "data_url" },
+    { tool: "search_by_url", field: "url", encoding: "base64" },
+  ] as const;
+  assert.deepEqual(
+    withImageField(mapped, { tool: "search_by_file", field: "filePath" }),
+    [
+      { tool: "search_by_file", field: "filePath", encoding: "base64" },
+      mapped[1],
+    ],
+  );
+  assert.deepEqual(withImageField(mapped, { tool: "lookup", field: "image" }), [
+    ...mapped,
+    { tool: "lookup", field: "image", encoding: "base64" },
+  ]);
+});
+
+test("a tool saved with two rows keeps one after picking a field", () => {
+  const saved = [
+    { tool: "search_by_file", field: "imageBase64", encoding: "data_url" },
+    { tool: "search_by_url", field: "url", encoding: "base64" },
+    { tool: "search_by_file", field: "filePath", encoding: "base64" },
+  ] as const;
+  assert.deepEqual(
+    withImageField(saved, { tool: "search_by_file", field: "file" }),
+    [{ tool: "search_by_file", field: "file", encoding: "base64" }, saved[1]],
+  );
+});
+
+test("changing a row's encoding keeps that field and its tool's other rows go", () => {
+  const saved = [
+    { tool: "search_by_file", field: "imageBase64", encoding: "base64" },
+    { tool: "search_by_file", field: "filePath", encoding: "base64" },
+  ] as const;
+  assert.deepEqual(withImageField(saved, saved[1], "data_url"), [
+    { tool: "search_by_file", field: "filePath", encoding: "data_url" },
+  ]);
+});
+
+test("an edit leaves unchanged mappings out of the update", () => {
+  const saved = [
+    { tool: "search_by_file", field: "imageBase64", encoding: "base64" },
+    { tool: "search_by_file", field: "filePath", encoding: "base64" },
+  ] as const;
+  assert.equal(changedImageMappings(saved, [...saved]), undefined);
+  const edited = [{ ...saved[0], encoding: "data_url" as const }];
+  assert.deepEqual(changedImageMappings(saved, edited), edited);
+  assert.deepEqual(changedImageMappings([], []), undefined);
+});
+
+test("any mapping edit on a legacy server sends one row per tool", () => {
+  const saved = [
+    { tool: "search_by_file", field: "imageBase64", encoding: "data_url" },
+    { tool: "search_by_file", field: "filePath", encoding: "base64" },
+    { tool: "search_by_url", field: "url", encoding: "base64" },
+  ] as const;
+  assert.deepEqual(
+    changedImageMappings(
+      saved,
+      withImageField(saved, { tool: "lookup", field: "image" }),
+    ),
+    [
+      saved[0],
+      saved[2],
+      { tool: "lookup", field: "image", encoding: "base64" },
+    ],
+  );
+  assert.deepEqual(
+    changedImageMappings(
+      saved,
+      saved.filter((m) => m.tool !== "search_by_url"),
+    ),
+    [saved[0]],
+  );
 });

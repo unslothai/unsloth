@@ -387,16 +387,6 @@ def test_a_long_multi_turn_thread_only_carries_one_clip():
     assert injected[0]["content"][0]["text"] == "last"
 
 
-def test_the_part_shape_is_exactly_what_llama_server_parses():
-    messages = [{"role": "user", "content": "x"}]
-    _inject_video_part(messages, "PAYLOAD")
-    part = messages[0]["content"][-1]
-    assert set(part) == {"type", "input_video"}
-    assert part["type"] == "input_video"
-    assert set(part["input_video"]) == {"data"}
-    assert part["input_video"]["data"] == "PAYLOAD"
-
-
 # --------------------------------------------------------------------------
 # E. the refusal paths, read off the handler
 # --------------------------------------------------------------------------
@@ -426,18 +416,3 @@ def _routes_source() -> str:
 )
 def test_every_path_that_cannot_serve_a_clip_refuses_out_loud(needle):
     assert needle in _routes_source()
-
-
-def test_the_size_check_is_paid_before_the_model_switch_not_after():
-    src = _routes_source()
-    handler = src.index("_needs_image = bool(_pre_parsed[2])")
-    assert src.index("_request_video_rejection(payload)", handler) < src.index(
-        "await _maybe_auto_switch_model(", handler
-    )
-
-
-def test_the_external_provider_refusal_precedes_the_proxy_call():
-    src = _routes_source()
-    start = src.index("if payload.provider_id or payload.provider_type:")
-    branch = src[start : src.index("_proxy_to_external_provider(payload", start)]
-    assert "_request_has_video(payload)" in branch

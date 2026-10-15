@@ -38,24 +38,24 @@ from models.providers import (
     validate_provider_reasoning_contract,
 )
 
-# Local servers, not hosted APIs: each applies the model's own chat template on the way in, so a prompt built here is
-# templated just like an in-process one (#7066). "custom" is a user-supplied OpenAI-compatible base_url, i.e. how a
-# self-hosted vLLM or llama.cpp registers without its preset. Unknown endpoint means assume a template applies:
-# sweeping a hosted API costs a space in delimiter-like text, not sweeping a local one costs a forged turn.
+# custom endpoints are treated as local because skipping their chat template can forge a turn (#7066).
 _TEMPLATE_APPLYING_PROVIDERS = frozenset({"vllm", "llama_cpp", "ollama", "custom", "lemonade"})
 
 # only vLLM and llama.cpp document both continuation flags on /v1/chat/completions.
 _CONTINUATION_FLAG_PROVIDERS = frozenset({"vllm", "llama_cpp"})
 
-# custom may reject include_usage; OpenAI Responses supplies usage, while listed streams require it.
-_USAGE_STREAM_OPTION_PROVIDERS = frozenset({"vllm", "llama_cpp", "openrouter", "kimi", "lemonade"})
+# custom may reject include_usage; OpenAI Responses returns usage without it; listed streams need it.
+_USAGE_STREAM_OPTION_PROVIDERS = frozenset(
+    {"vllm", "llama_cpp", "ollama", "openrouter", "kimi", "lemonade", "qwen"}
+)
 
 # launch-time windows are absent from catalogues; custom covers unregistered self-hosted servers.
 _SERVED_WINDOW_PROVIDERS = frozenset({"vllm", "llama_cpp", "custom"})
-# refresh quickly enough to detect a server restart within one or two turns.
+# refresh within one or two turns to detect server restarts.
 _SERVED_WINDOW_TTL_S = 60.0
 _SERVED_WINDOW_TIMEOUT_S = 5.0
 _served_windows: dict[tuple[str, str, str], tuple[float, Optional[int]]] = {}
+_served_versions: dict[tuple[str, str], tuple[float, bool]] = {}
 
 
 def _positive_int(value: Any) -> Optional[int]:
@@ -519,9 +519,7 @@ def _extract_web_search_action(item: dict[str, Any]) -> dict[str, Any]:
     return arguments
 
 
-# Families that accept `prompt_cache_retention: "24h"`. Everything else 400s with "prompt_cache_retention is not
-# supported on this model" and the turn dies (openai/codex#39397), while an unmatched model just falls back to
-# in-memory caching -- so guess narrow.
+# unsupported families return 400 for `prompt_cache_retention`; omit it to retain in-memory caching.
 _OPENAI_EXTENDED_CACHE_FAMILY = re.compile(r"^(?:gpt-5(?:\.\d+)?(?:[-.]|$)|gpt-4\.1$)")
 
 
@@ -529,19 +527,26 @@ class _AnthropicThinkingSpec(NamedTuple):
     prefixes: tuple[str, ...]
     kind: Literal["adaptive", "manual"]
     efforts: tuple[str, ...]
-    # Claude 5 thinks unless told otherwise, so "Thinking: off" must send an explicit disable. Fable/Mythos 5 400 on
-    # it (thinking is always on).
+    # off must be explicit; Fable/Mythos 5 and Opus 5.5 reject it; Sonnet 5.5 uses `between_tools`.
     thinking_default_on: bool = False
     can_disable: bool = True
+    disable_type: str = "disabled"
 
 
 _ANTHROPIC_THINKING_SPECS = (
     _AnthropicThinkingSpec(
-        prefixes = ("claude-fable-5", "claude-mythos-5"),
+        prefixes = ("claude-fable-5", "claude-mythos-5", "claude-opus-5-5"),
         kind = "adaptive",
         efforts = ("none", "low", "medium", "high", "xhigh", "max"),
         thinking_default_on = True,
         can_disable = False,
+    ),
+    _AnthropicThinkingSpec(
+        prefixes = ("claude-sonnet-5-5",),
+        kind = "adaptive",
+        efforts = ("none", "low", "medium", "high", "xhigh", "max"),
+        thinking_default_on = True,
+        disable_type = "between_tools",
     ),
     _AnthropicThinkingSpec(
         prefixes = ("claude-opus-5", "claude-sonnet-5"),
@@ -842,6 +847,30 @@ def _apply_mistral_reasoning_controls(
 _REASONING_EFFORT_LEVELS = frozenset({"minimal", "low", "medium", "high", "xhigh", "max"})
 _DEEPSEEK_EFFORT_ALIASES = {"minimal": "low", "medium": "high", "xhigh": "high"}
 _LOCAL_SERVER_EFFORT_ALIASES = {"minimal": "low", "xhigh": "high", "max": "high"}
+# vLLM 0.21.0 widened chat-completions reasoning_effort to none | minimal | low | medium | high | xhigh | max; older
+# servers 400 on the extra levels (vllm/entrypoints/openai/chat_completion/protocol.py at v0.20.0 vs v0.21.0).
+_VLLM_FULL_EFFORT_RELEASE = "0.21.0"
+
+
+def _vllm_takes_full_effort(version: Any) -> bool:
+    """A pre-release or unparsable version keeps the low | medium | high subset."""
+    from packaging.version import InvalidVersion, Version
+    try:
+        return isinstance(version, str) and Version(version) >= Version(_VLLM_FULL_EFFORT_RELEASE)
+    except InvalidVersion:
+        return False
+
+
+def _vllm_reasoning_turns(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """vLLM 0.17+ reads a past turn's thinking from `reasoning` alone, 0.12-0.14 from `reasoning_content`
+    (chat_utils.py), so both go out and either server version keeps it."""
+    out = []
+    for message in messages:
+        thought = message.get("reasoning_content") if isinstance(message, dict) else None
+        if message.get("role") == "assistant" and isinstance(thought, str) and thought:
+            message = {**message, "reasoning": thought}
+        out.append(message)
+    return out
 
 
 def _apply_deepseek_reasoning_controls(
@@ -857,6 +886,27 @@ def _apply_deepseek_reasoning_controls(
         return
     if enable_thinking is True:
         body["thinking"] = {"type": "enabled"}
+
+
+_KIMI_K3_EFFORT_ALIASES = {"minimal": "low", "medium": "high", "xhigh": "max"}
+
+
+def _is_kimi_k3(provider_type: Optional[str], model: Optional[str]) -> bool:
+    return provider_type == "kimi" and (model or "").strip().lower() == "kimi-k3"
+
+
+def _apply_kimi_k3_controls(body: dict[str, Any], reasoning_effort: Optional[str]) -> None:
+    """kimi-k3 always reasons and has no `thinking` field; effort is low | high | max (server default max), output
+    is capped by `max_completion_tokens`, and its fixed sampling (presence_penalty incl.) is to be omitted.
+    https://platform.kimi.ai/docs/guide/kimi-k3-quickstart"""
+    body.pop("thinking", None)
+    body.pop("presence_penalty", None)
+    if "max_tokens" in body:
+        body["max_completion_tokens"] = body.pop("max_tokens")
+    effort = (reasoning_effort or "").strip().lower()
+    effort = _KIMI_K3_EFFORT_ALIASES.get(effort, effort)
+    if effort in ("low", "high", "max"):
+        body["reasoning_effort"] = effort
 
 
 def _apply_qwen_reasoning_controls(body: dict[str, Any], enable_thinking: Optional[bool]) -> None:
@@ -1717,6 +1767,7 @@ class ExternalProviderClient:
                 messages,
                 model,
                 max_tokens,
+                reasoning_effort,
             ):
                 yield line
             return
@@ -1732,7 +1783,9 @@ class ExternalProviderClient:
 
         body: dict[str, Any] = {
             "model": model,
-            "messages": messages,
+            "messages": _vllm_reasoning_turns(messages)
+            if self.provider_type == "vllm"
+            else messages,
             "stream": stream,
             "temperature": temperature,
             "presence_penalty": presence_penalty,
@@ -1766,12 +1819,14 @@ class ExternalProviderClient:
         for field in provider_info.get("body_omit", ()):
             body.pop(field, None)
 
-        if self.provider_type == "llama_cpp" and preserve_thinking is not None:
+        if self.provider_type in ("llama_cpp", "vllm") and preserve_thinking is not None:
             body["chat_template_kwargs"] = {"preserve_thinking": preserve_thinking}
 
         # Kimi thinking is a top-level body field. kimi-k2-thinking is always on (ignore the toggle); kimi-k2.6
         # defaults on, can be disabled. `keep: all` preserves every chunk for the UI panel.
-        if self.provider_type == "kimi" and enable_thinking is not None:
+        if _is_kimi_k3(self.provider_type, model):
+            _apply_kimi_k3_controls(body, reasoning_effort)
+        elif self.provider_type == "kimi" and enable_thinking is not None:
             if model == "kimi-k2-thinking":
                 # Always on; ignore client toggle to avoid an API-level reject.
                 pass
@@ -1793,7 +1848,13 @@ class ExternalProviderClient:
             # that kwarg alone: vLLM through 0.16 types the top-level reasoning_effort as low | medium | high and 400s
             # on "none".
             effort = (reasoning_effort or "").strip().lower()
-            effort = _LOCAL_SERVER_EFFORT_ALIASES.get(effort, effort)
+            if effort in _LOCAL_SERVER_EFFORT_ALIASES:
+                if self.provider_type != "vllm":
+                    effort = _LOCAL_SERVER_EFFORT_ALIASES[effort]
+                elif not await self.served_vllm_takes_full_effort():
+                    # The ladder is the template's own (Qwen3.8 rejects "high"), so a level an older vLLM cannot
+                    # carry falls back to the template default rather than a neighbour it may refuse.
+                    effort = ""
             thinking = False if effort == "none" else enable_thinking
             if thinking is not None:
                 tpl_kw = body.get("chat_template_kwargs")
@@ -1801,7 +1862,7 @@ class ExternalProviderClient:
                     tpl_kw = {}
                 tpl_kw["enable_thinking"] = bool(thinking)
                 body["chat_template_kwargs"] = tpl_kw
-            if effort in ("low", "medium", "high"):
+            if effort in ("minimal", "low", "medium", "high", "xhigh", "max"):
                 body["reasoning_effort"] = effort
         elif self.provider_type == "ollama":
             _apply_ollama_reasoning_controls(body, enable_thinking, reasoning_effort)
@@ -2120,7 +2181,11 @@ class ExternalProviderClient:
             )
 
     async def _stream_kimi_web_search(
-        self, messages: list[dict[str, Any]], model: str, max_tokens: Optional[int]
+        self,
+        messages: list[dict[str, Any]],
+        model: str,
+        max_tokens: Optional[int],
+        reasoning_effort: Optional[str] = None,
     ) -> AsyncGenerator[str, None]:
         """Kimi $web_search round-trip, per https://platform.kimi.ai/docs/guide/use-web-search: POST
         messages with tools=[{type: "builtin_function", function: {name: "$web_search"}}] and
@@ -2153,6 +2218,8 @@ class ExternalProviderClient:
         provider_info = get_provider_info(self.provider_type) or {}
         for field in provider_info.get("body_omit", ()):
             body.pop(field, None)
+        if _is_kimi_k3(self.provider_type, model):
+            _apply_kimi_k3_controls(body, reasoning_effort)
 
         tool_call_id = "kimi_web_search"
         synthetic_id = f"chatcmpl-{self.provider_type}-synthetic"
@@ -2174,6 +2241,8 @@ class ExternalProviderClient:
         )
 
         tool_calls_acc: dict[int, dict[str, Any]] = {}
+        # A reasoning model's tool-call turn is replayed whole, reasoning included, or the follow-up is rejected.
+        reasoning_parts: list[str] = []
         try:
             async with _client().stream(
                 "POST",
@@ -2218,6 +2287,8 @@ class ExternalProviderClient:
                             if not isinstance(choice, dict):
                                 continue
                             delta = choice.get("delta") or {}
+                            if isinstance(delta.get("reasoning_content"), str):
+                                reasoning_parts.append(delta["reasoning_content"])
                             for tc in delta.get("tool_calls") or []:
                                 if not isinstance(tc, dict):
                                     continue
@@ -2361,6 +2432,8 @@ class ExternalProviderClient:
             "content": "",
             "tool_calls": list(tool_calls_acc.values()),
         }
+        if reasoning_parts:
+            assistant_msg["reasoning_content"] = "".join(reasoning_parts)
         tool_msgs = [
             {
                 "role": "tool",
@@ -2876,22 +2949,19 @@ class ExternalProviderClient:
                 effort = "none"
             elif enable_thinking is True:
                 effort = "medium"
-        # Models that think by default need an explicit disable; omitting the field leaves thinking on. Anthropic only
-        # accepts it at effort <= high, so send it alone (server default effort is high).
+        # send default-on disables alone: Anthropic defaults to valid `high` effort, while higher efforts reject them.
         if (
             effort == "none"
             and thinking_spec
             and thinking_spec.thinking_default_on
             and thinking_spec.can_disable
         ):
-            body["thinking"] = {"type": "disabled"}
-        # Normalize one semantic Thinking control into Anthropic's two model-era APIs: adaptive effort on Claude 4.6+,
-        # manual budget_tokens on 4.5.
+            body["thinking"] = {"type": thinking_spec.disable_type}
+        # the shared control maps to adaptive effort on Claude 4.6+ and manual `budget_tokens` on Claude 4.5.
         if effort and effort != "none":
-            # Anthropic rejects top_k whenever thinking is enabled.
+            # Anthropic rejects `top_k` while thinking is enabled.
             body.pop("top_k", None)
-            # 4.5/4.6 require temperature=1 with thinking and forbid top_p in the same request; 4.7 removed
-            # temperature entirely (any value 400s), so skip the override there.
+            # Claude 4.5/4.6 require `temperature=1` and forbid `top_p` with thinking; Claude 4.7 rejects temperature.
             if not sampling_removed:
                 body["temperature"] = 1
             body.pop("top_p", None)
@@ -2899,9 +2969,7 @@ class ExternalProviderClient:
                 thinking_spec is None and _anthropic_model_newer_than_specs(model)
             )
             if adaptive:
-                # Force display="summarized": it defaults to "omitted" on Opus 4.7, which emits an empty thinking
-                # block and leaves the panel blank. Harmless no-op on 4.6. An unlisted id older than that gets no
-                # thinking field, since Claude 4.5 and earlier reject the adaptive shape.
+                # summarized display prevents blank Opus 4.7 panels; unlisted older models reject adaptive thinking.
                 body["thinking"] = {"type": "adaptive", "display": "summarized"}
                 # Adaptive effort lives under `output_config.effort`, not top-level (top-level 400s "Extra inputs are
                 # not permitted"). Allowed: low|medium|high|xhigh|max.
@@ -4075,7 +4143,143 @@ class ExternalProviderClient:
         _GEMINI_REMOTE_IMAGE_MAX_TOTAL_BYTES = 14 * 1024 * 1024
         _remote_image_count = 0
         _remote_image_total_bytes = 0
-        for msg in messages:
+        _gemini_image_parts: dict[tuple[int, int], dict[str, Any]] = {}
+        for msg_idx in range(len(messages) - 1, -1, -1):
+            msg = messages[msg_idx]
+            content = msg.get("content")
+            if msg.get("role") in ("system", "tool") or not isinstance(content, list):
+                continue
+            for part_idx, part in enumerate(content):
+                if not isinstance(part, dict) or part.get("type") != "image_url":
+                    continue
+                url = part.get("image_url", {}).get("url", "")
+                if url.startswith("data:"):
+                    header, _, b64data = url.partition(",")
+                    media_type = (
+                        header.split(";")[0].replace("data:", "").strip().lower() or "image/jpeg"
+                    )
+                    # Reject non-image data URLs (e.g. data:text/html); they would 400 the request as
+                    # inlineData. Mirrors the remote-fetch path's Content-Type check.
+                    if not media_type.startswith("image/"):
+                        logger.info(
+                            "Gemini inlineData: refusing non-image data URL media_type=%s",
+                            media_type,
+                        )
+                    elif b64data:
+                        # data: URLs share the same caps as fetched URLs so inline payloads do not bypass
+                        # them.
+                        _data_approx_bytes = (len(b64data) * 3) // 4
+                        if _remote_image_count >= _GEMINI_REMOTE_IMAGE_MAX_COUNT:
+                            logger.info(
+                                "Gemini inlineData: per-request count cap %d reached, dropping image",
+                                _GEMINI_REMOTE_IMAGE_MAX_COUNT,
+                            )
+                        elif (
+                            _remote_image_total_bytes + _data_approx_bytes
+                            > _GEMINI_REMOTE_IMAGE_MAX_TOTAL_BYTES
+                        ):
+                            logger.info(
+                                "Gemini inlineData: per-request byte cap reached, dropping image",
+                            )
+                        else:
+                            _remote_image_count += 1
+                            _remote_image_total_bytes += _data_approx_bytes
+                            _gemini_image_parts[(msg_idx, part_idx)] = {
+                                "inlineData": {
+                                    "mimeType": media_type,
+                                    "data": b64data,
+                                }
+                            }
+                elif url:
+                    # fileData.fileUri only accepts Files-API URIs and YouTube; everything else is downloaded
+                    # and inlined. Parse host explicitly so e.g. https://evil.com/youtube.com/x is not
+                    # mis-detected.
+                    try:
+                        _parsed_image_url = urlparse(url)
+                    except (ValueError, UnicodeError):
+                        _parsed_image_url = None
+                    if _parsed_image_url is None:
+                        _img_scheme = ""
+                        _img_host = ""
+                        _img_path = ""
+                    else:
+                        _img_scheme = (_parsed_image_url.scheme or "").lower()
+                        _img_host = (_parsed_image_url.hostname or "").lower()
+                        _img_path = _parsed_image_url.path or ""
+                    _is_native_uri = (
+                        _img_scheme == "https"
+                        and _img_host == "generativelanguage.googleapis.com"
+                        and _img_path.startswith("/v1beta/files/")
+                    )
+                    _is_youtube = _img_scheme == "https" and (
+                        _img_host == "youtu.be"
+                        or _img_host == "youtube.com"
+                        or _img_host.endswith(".youtube.com")
+                    )
+                    _guessed, _ = mimetypes.guess_type(_img_path)
+                    _media_type = (
+                        _guessed
+                        if isinstance(_guessed, str) and _guessed.startswith("image/")
+                        else "image/jpeg"
+                    )
+                    if _is_youtube:
+                        # YouTube URIs must use video/mp4; the default image/jpeg yields a 400.
+                        _gemini_image_parts[(msg_idx, part_idx)] = {
+                            "fileData": {
+                                "fileUri": url,
+                                "mimeType": "video/mp4",
+                            }
+                        }
+                    elif _is_native_uri:
+                        _gemini_image_parts[(msg_idx, part_idx)] = {
+                            "fileData": {
+                                "fileUri": url,
+                                "mimeType": _media_type,
+                            }
+                        }
+                    elif _remote_image_count >= _GEMINI_REMOTE_IMAGE_MAX_COUNT:
+                        logger.info(
+                            "Gemini image fetch: per-request count cap %d reached, dropping image",
+                            _GEMINI_REMOTE_IMAGE_MAX_COUNT,
+                        )
+                    else:
+                        # Refuse pre-fetch when the per-request byte budget is spent; pass the remainder so
+                        # over-budget URLs reject on Content-Length.
+                        _remaining_bytes = (
+                            _GEMINI_REMOTE_IMAGE_MAX_TOTAL_BYTES - _remote_image_total_bytes
+                        )
+                        if _remaining_bytes <= 0:
+                            logger.info(
+                                "Gemini image fetch: per-request byte cap already reached, dropping image",
+                            )
+                        else:
+                            # Count attempts before awaiting so slow URLs do not each burn the timeout.
+                            _remote_image_count += 1
+                            _fetched = await _safe_fetch_image_for_gemini(
+                                url,
+                                _media_type,
+                                max_bytes = _remaining_bytes,
+                            )
+                            if _fetched is not None:
+                                _final_mime, _b64 = _fetched
+                                # base64 expands ~4/3 — recover bytes from len(_b64).
+                                _approx_bytes = (len(_b64) * 3) // 4
+                                if (
+                                    _remote_image_total_bytes + _approx_bytes
+                                    > _GEMINI_REMOTE_IMAGE_MAX_TOTAL_BYTES
+                                ):
+                                    logger.info(
+                                        "Gemini image fetch: per-request byte cap reached, dropping image",
+                                    )
+                                else:
+                                    _remote_image_total_bytes += _approx_bytes
+                                    _gemini_image_parts[(msg_idx, part_idx)] = {
+                                        "inlineData": {
+                                            "mimeType": _final_mime,
+                                            "data": _b64,
+                                        }
+                                    }
+        for msg_idx, msg in enumerate(messages):
             role = msg.get("role")
             content = msg.get("content", "")
             if role == "system":
@@ -4098,7 +4302,7 @@ class ExternalProviderClient:
                 if content:
                     parts.append({"text": content})
             elif isinstance(content, list):
-                for part in content:
+                for part_idx, part in enumerate(content):
                     if not isinstance(part, dict):
                         continue
                     ptype = part.get("type")
@@ -4107,152 +4311,72 @@ class ExternalProviderClient:
                         if text:
                             parts.append({"text": text})
                     elif ptype == "image_url":
-                        url = part.get("image_url", {}).get("url", "")
-                        if url.startswith("data:"):
-                            header, _, b64data = url.partition(",")
-                            media_type = (
-                                header.split(";")[0].replace("data:", "").strip().lower()
-                                or "image/jpeg"
-                            )
-                            # Reject non-image data URLs (e.g. data:text/html); they would 400 the request as
-                            # inlineData. Mirrors the remote-fetch path's Content-Type check.
-                            if not media_type.startswith("image/"):
-                                logger.info(
-                                    "Gemini inlineData: refusing non-image data URL media_type=%s",
-                                    media_type,
-                                )
-                            elif b64data:
-                                # data: URLs share the same caps as fetched URLs so inline payloads do not bypass
-                                # them.
-                                _data_approx_bytes = (len(b64data) * 3) // 4
-                                if _remote_image_count >= _GEMINI_REMOTE_IMAGE_MAX_COUNT:
-                                    logger.info(
-                                        "Gemini inlineData: per-request count cap %d reached, dropping image",
-                                        _GEMINI_REMOTE_IMAGE_MAX_COUNT,
-                                    )
-                                elif (
-                                    _remote_image_total_bytes + _data_approx_bytes
-                                    > _GEMINI_REMOTE_IMAGE_MAX_TOTAL_BYTES
-                                ):
-                                    logger.info(
-                                        "Gemini inlineData: per-request byte cap reached, dropping image",
-                                    )
-                                else:
-                                    _remote_image_count += 1
-                                    _remote_image_total_bytes += _data_approx_bytes
-                                    parts.append(
-                                        {
-                                            "inlineData": {
-                                                "mimeType": media_type,
-                                                "data": b64data,
-                                            }
-                                        }
-                                    )
-                        elif url:
-                            # fileData.fileUri only accepts Files-API URIs and YouTube; everything else is downloaded
-                            # and inlined. Parse host explicitly so e.g. https://evil.com/youtube.com/x is not
-                            # mis-detected.
-                            try:
-                                _parsed_image_url = urlparse(url)
-                            except (ValueError, UnicodeError):
-                                _parsed_image_url = None
-                            if _parsed_image_url is None:
-                                _img_scheme = ""
-                                _img_host = ""
-                                _img_path = ""
-                            else:
-                                _img_scheme = (_parsed_image_url.scheme or "").lower()
-                                _img_host = (_parsed_image_url.hostname or "").lower()
-                                _img_path = _parsed_image_url.path or ""
-                            _is_native_uri = (
-                                _img_scheme == "https"
-                                and _img_host == "generativelanguage.googleapis.com"
-                                and _img_path.startswith("/v1beta/files/")
-                            )
-                            _is_youtube = _img_scheme == "https" and (
-                                _img_host == "youtu.be"
-                                or _img_host == "youtube.com"
-                                or _img_host.endswith(".youtube.com")
-                            )
-                            _guessed, _ = mimetypes.guess_type(_img_path)
-                            _media_type = (
-                                _guessed
-                                if isinstance(_guessed, str) and _guessed.startswith("image/")
-                                else "image/jpeg"
-                            )
-                            if _is_youtube:
-                                # YouTube URIs must use video/mp4; the default image/jpeg yields a 400.
-                                parts.append(
-                                    {
-                                        "fileData": {
-                                            "fileUri": url,
-                                            "mimeType": "video/mp4",
-                                        }
-                                    }
-                                )
-                            elif _is_native_uri:
-                                parts.append(
-                                    {
-                                        "fileData": {
-                                            "fileUri": url,
-                                            "mimeType": _media_type,
-                                        }
-                                    }
-                                )
-                            elif _remote_image_count >= _GEMINI_REMOTE_IMAGE_MAX_COUNT:
-                                logger.info(
-                                    "Gemini image fetch: per-request count cap %d reached, dropping image",
-                                    _GEMINI_REMOTE_IMAGE_MAX_COUNT,
-                                )
-                            else:
-                                # Refuse pre-fetch when the per-request byte budget is spent; pass the remainder so
-                                # over-budget URLs reject on Content-Length.
-                                _remaining_bytes = (
-                                    _GEMINI_REMOTE_IMAGE_MAX_TOTAL_BYTES - _remote_image_total_bytes
-                                )
-                                if _remaining_bytes <= 0:
-                                    logger.info(
-                                        "Gemini image fetch: per-request byte cap already reached, dropping image",
-                                    )
-                                else:
-                                    # Count attempts before awaiting so slow URLs do not each burn the timeout.
-                                    _remote_image_count += 1
-                                    _fetched = await _safe_fetch_image_for_gemini(
-                                        url,
-                                        _media_type,
-                                        max_bytes = _remaining_bytes,
-                                    )
-                                    if _fetched is not None:
-                                        _final_mime, _b64 = _fetched
-                                        # base64 expands ~4/3 — recover bytes from len(_b64).
-                                        _approx_bytes = (len(_b64) * 3) // 4
-                                        if (
-                                            _remote_image_total_bytes + _approx_bytes
-                                            > _GEMINI_REMOTE_IMAGE_MAX_TOTAL_BYTES
-                                        ):
-                                            logger.info(
-                                                "Gemini image fetch: per-request byte cap reached, dropping image",
-                                            )
-                                        else:
-                                            _remote_image_total_bytes += _approx_bytes
-                                            parts.append(
-                                                {
-                                                    "inlineData": {
-                                                        "mimeType": _final_mime,
-                                                        "data": _b64,
-                                                    }
-                                                }
-                                            )
-            # Gemini 3 strict function-calling requires text-part thoughtSignatures to be replayed on history; the
-            # frontend stows the latest one as extra_content.google.thought_signature on the assistant message and we
-            # pin it onto the last text part here.
-            if role == "assistant" and parts:
+                        _image_part = _gemini_image_parts.get((msg_idx, part_idx))
+                        if _image_part is not None:
+                            parts.append(_image_part)
+            # Gemini history must keep every native thought/answer boundary intact so a signature is never moved
+            # onto adjacent unsigned text. The frontend carries those exact parts because OpenAI reasoning_content
+            # is not otherwise replayed to native Gemini.
+            if role == "assistant":
                 _msg_extra = msg.get("extra_content") if isinstance(msg, dict) else None
                 if isinstance(_msg_extra, dict):
                     _msg_g = _msg_extra.get("google") or {}
                     if isinstance(_msg_g, dict):
+                        _replayed_thoughts: list[dict[str, Any]] = []
+                        _thought_parts = _msg_g.get("thought_parts")
+                        if isinstance(_thought_parts, list):
+                            for _thought_part in _thought_parts:
+                                if not isinstance(_thought_part, dict):
+                                    continue
+                                _thought_text = _thought_part.get("text")
+                                _thought_sig = _thought_part.get(
+                                    "thought_signature"
+                                ) or _thought_part.get("thoughtSignature")
+                                if not isinstance(_thought_text, str):
+                                    continue
+                                if _thought_sig is not None and (
+                                    not isinstance(_thought_sig, str) or not _thought_sig
+                                ):
+                                    continue
+                                _replayed_thought: dict[str, Any] = {
+                                    "text": _thought_text,
+                                    "thought": True,
+                                }
+                                if isinstance(_thought_sig, str):
+                                    _replayed_thought["thoughtSignature"] = _thought_sig
+                                _replayed_thoughts.append(_replayed_thought)
+                        _signed_answers = _msg_g.get("answer_parts")
+                        _replayed_answers: list[dict[str, Any]] = []
+                        if isinstance(_signed_answers, list):
+                            for _signed_answer in _signed_answers:
+                                if not isinstance(_signed_answer, dict):
+                                    continue
+                                _answer_text = _signed_answer.get("text")
+                                _answer_sig = _signed_answer.get(
+                                    "thought_signature"
+                                ) or _signed_answer.get("thoughtSignature")
+                                if not isinstance(_answer_text, str):
+                                    continue
+                                if _answer_sig is not None and (
+                                    not isinstance(_answer_sig, str) or not _answer_sig
+                                ):
+                                    continue
+                                _answer_part: dict[str, Any] = {"text": _answer_text}
+                                if isinstance(_answer_sig, str):
+                                    _answer_part["thoughtSignature"] = _answer_sig
+                                _replayed_answers.append(_answer_part)
+                        if _replayed_answers:
+                            # `content` is the UI's merged rendering of these exact native parts. Replace its text
+                            # rather than appending a second copy, and keep empty signature-only parts intact.
+                            parts = [
+                                *_replayed_thoughts,
+                                *_replayed_answers,
+                                *(part for part in parts if "text" not in part),
+                            ]
+                        else:
+                            parts[:0] = _replayed_thoughts
                         _msg_sig = _msg_g.get("thought_signature") or _msg_g.get("thoughtSignature")
-                        if isinstance(_msg_sig, str) and _msg_sig:
+                        if not _replayed_answers and isinstance(_msg_sig, str) and _msg_sig:
                             for _idx in range(len(parts) - 1, -1, -1):
                                 if "text" in parts[_idx]:
                                     parts[_idx] = {
@@ -4591,8 +4715,7 @@ class ExternalProviderClient:
             }
             thinking_budget: Optional[int] = None
             if effort_lc == "none" or enable_thinking is False:
-                # Pro-tier 2.5 rejects budget=0 (400 "only works in thinking mode"), so coerce to a small positive
-                # value.
+                # Gemini 2.5 Pro rejects zero, so use a small positive budget.
                 thinking_budget = 128 if _is_pro_thinking_only else 0
             elif effort_lc in _EFFORT_TO_BUDGET:
                 thinking_budget = _EFFORT_TO_BUDGET[effort_lc]
@@ -4602,12 +4725,17 @@ class ExternalProviderClient:
                 gen_config["thinkingConfig"] = {
                     "thinkingBudget": thinking_budget,
                 }
+        if (
+            "thinkingConfig" in gen_config
+            and effort_lc not in ("none", "off")
+            and enable_thinking is not False
+        ):
+            gen_config["thinkingConfig"]["includeThoughts"] = True
 
         if gen_config:
             body["generationConfig"] = gen_config
 
-        # Hosted tools: googleSearch (grounding) and codeExecution. Image-mode rejects codeExecution; only Gemini 3
-        # image models accept googleSearch.
+        # Image models reject codeExecution; only Gemini 3 image models accept googleSearch.
         def _gemini_image_model_allows_google_search(_m: str) -> bool:
             return (
                 _m.startswith("gemini-3-pro-image")
@@ -4877,8 +5005,12 @@ class ExternalProviderClient:
             }
             return f"data: {_json.dumps(chunk)}"
 
-        def _text_chunk(text: str, extra_content: Optional[dict[str, Any]] = None) -> str:
-            delta: dict[str, Any] = {"content": text}
+        def _text_chunk(
+            text: str,
+            extra_content: Optional[dict[str, Any]] = None,
+            field: str = "content",
+        ) -> str:
+            delta: dict[str, Any] = {field: text}
             if extra_content:
                 delta["extra_content"] = extra_content
             chunk = {
@@ -4895,13 +5027,41 @@ class ExternalProviderClient:
             return f"data: {_json.dumps(chunk)}"
 
         def _gemini_part_extra(part: dict[str, Any]) -> Optional[dict[str, Any]]:
-            """Return ``{"google": {"thought_signature": ...}}`` when the Gemini stream part carries
-            a `thoughtSignature` we must replay on a follow-up turn (Gemini 3 image editing and
-            tool contexts both require an exact signature echo)."""
+            """Return replay metadata for one Gemini native stream part.
+
+            Thought and answer parts keep their exact boundaries, including unsigned text beside signed
+            text and signature-only empty parts. Gemini validates a signature against the part it originally
+            signed, so collapsing these to one scalar signature corrupts follow-up history.
+            """
             sig = part.get("thoughtSignature") or part.get("thought_signature")
-            if isinstance(sig, str) and sig:
-                return {"google": {"thought_signature": sig}}
-            return None
+            valid_sig = sig if isinstance(sig, str) and sig else None
+            google: dict[str, Any] = {}
+            if valid_sig is not None:
+                google["thought_signature"] = valid_sig
+            if part.get("thought") is True:
+                thought_part: dict[str, Any] = {"text": part.get("text", "")}
+                if valid_sig is not None:
+                    thought_part["thought_signature"] = valid_sig
+                google["thought_part"] = thought_part
+                if valid_sig is not None:
+                    google["thought"] = True
+            elif ("text" in part and isinstance(part.get("text"), str)) or (
+                valid_sig is not None
+                and not any(
+                    key in part
+                    for key in (
+                        "functionCall",
+                        "executableCode",
+                        "codeExecutionResult",
+                        "inlineData",
+                    )
+                )
+            ):
+                answer_part: dict[str, Any] = {"text": part.get("text", "")}
+                if valid_sig is not None:
+                    answer_part["thought_signature"] = valid_sig
+                google["answer_part"] = answer_part
+            return {"google": google} if google else None
 
         # Gemini finish reasons -> OpenAI vocabulary.
         _finish_reason_map: dict[str, Optional[str]] = {
@@ -5100,14 +5260,18 @@ class ExternalProviderClient:
                                 for part in parts:
                                     if not isinstance(part, dict):
                                         continue
-                                    # Text delta. Stow part-level `thoughtSignature` on the delta so Gemini 3 turns
-                                    # needing an exact signature echo round-trip cleanly.
+                                    # Preserve thoughtSignature for Gemini 3's exact follow-up echo.
                                     text = part.get("text")
                                     _part_extra = _gemini_part_extra(part)
                                     if isinstance(text, str) and text:
                                         yield _text_chunk(
                                             text,
                                             extra_content = _part_extra,
+                                            field = (
+                                                "reasoning_content"
+                                                if part.get("thought")
+                                                else "content"
+                                            ),
                                         )
                                     elif _part_extra is not None and not any(
                                         k in part
@@ -5118,8 +5282,7 @@ class ExternalProviderClient:
                                             "inlineData",
                                         )
                                     ):
-                                        # Empty-content part carrying a thoughtSignature: emit an empty delta to
-                                        # preserve the signature.
+                                        # Emit an empty delta when a signature has no payload.
                                         yield _text_chunk(
                                             "",
                                             extra_content = _part_extra,
@@ -7469,6 +7632,35 @@ class ExternalProviderClient:
         body = props.json()
         settings = body.get("default_generation_settings") if isinstance(body, dict) else None
         return _positive_int(settings.get("n_ctx") if isinstance(settings, dict) else None)
+
+    async def served_vllm_takes_full_effort(self) -> bool:
+        """Read GET /version once a minute; an unreadable answer keeps the low | medium | high subset."""
+        if self.provider_type != "vllm":
+            return False
+        now = time.monotonic()
+        key = (self.base_url, hashlib.sha256((self.api_key or "").encode()).hexdigest())
+        cached = _served_versions.get(key)
+        if cached is not None and cached[0] > now:
+            return cached[1]
+        full = False
+        try:
+            response = await _client().get(
+                f"{self.base_url.removesuffix('/v1')}/version",
+                headers = self._auth_headers(),
+                timeout = _SERVED_WINDOW_TIMEOUT_S,
+            )
+            response.raise_for_status()
+            body = response.json()
+            full = _vllm_takes_full_effort(body.get("version") if isinstance(body, dict) else None)
+        except httpx.ConnectError as exc:
+            logger.info("No vLLM version from %s: %s", self.base_url, exc)
+            return False
+        except (httpx.HTTPError, ValueError) as exc:
+            logger.info("No vLLM version from %s: %r", self.base_url, exc)
+        for stale in [k for k, (expiry, _) in _served_versions.items() if expiry <= now]:
+            del _served_versions[stale]
+        _served_versions[key] = (now + _SERVED_WINDOW_TTL_S, full)
+        return full
 
     async def served_context_window(self, model: str) -> Optional[int]:
         """cache served windows and missing results for one minute to limit silent-server reads."""

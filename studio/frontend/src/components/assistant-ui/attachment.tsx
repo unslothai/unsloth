@@ -26,6 +26,7 @@ import {
   PASTED_TEXT_PREVIEW_MAX_CHARS,
   attachmentFileKind,
   attachmentKindLabel,
+  COMPOSER_ATTACHMENT_MAX_ROWS,
   composerAttachmentsOverflow,
   sentAttachmentLayout,
   type AttachmentFileKind,
@@ -42,6 +43,7 @@ import {
 } from "@/features/chat";
 import { formatBytes } from "@/features/hub";
 import { useAppearanceCustomStore } from "@/features/settings";
+import { ComposerAttachmentByIdProvider } from "@/components/assistant-ui/stale-safe-scopes";
 import { cn } from "@/lib/utils";
 import { useShallow } from "zustand/shallow";
 import {
@@ -74,16 +76,16 @@ import {
 } from "react";
 import { ScrollPane } from "./scroll-pane";
 
-const CARD_SLOT =
+export const CARD_SLOT =
   "shrink-0 w-[calc((100%_-_var(--spacing)*8)/5)] min-w-[calc(7rem*var(--ui-space-scale,1))]";
-const CARD_SIZE = "h-[calc(7rem*var(--ui-space-scale,1))] w-full";
+export const CARD_SIZE = "h-[calc(7rem*var(--ui-space-scale,1))] w-full";
 const SENT_IMAGE_SIZE = "size-[calc(9rem*var(--ui-space-scale,1))]";
 const SENT_IMAGE_SIZE_COMPACT = "size-[calc(5rem*var(--ui-space-scale,1))]";
 const SENT_ROW_WIDTH = "w-[calc(18rem*var(--ui-space-scale,1))]";
-const CARD_EDGE =
+export const CARD_EDGE =
   "border border-[color-mix(in_oklab,var(--foreground)_calc(12%*var(--contrast-edge-gain,1)),transparent)]";
 // No fill, so cards take the composer background; hover still tints.
-const CARD_SURFACE =
+export const CARD_SURFACE =
   "hover:bg-[color-mix(in_oklab,var(--foreground)_6%,transparent)]";
 
 const useAttachmentKind = (): {
@@ -685,8 +687,6 @@ const SENT_FILE_COMPONENTS = {
   Document: SentFileItem,
   File: SentFileItem,
 };
-const CARD_COMPONENTS = { Attachment: ComposerAttachmentCard };
-
 export const UserMessageAttachments: FC = () => {
   const setting = useAppearanceCustomStore(
     (s) => s.customization.sentAttachments,
@@ -718,8 +718,14 @@ export const UserMessageAttachments: FC = () => {
 };
 
 // The layout decision is a DOM data attribute, never state, so a resize or new card re-renders no card.
-export const ComposerAttachments: FC<{ className?: string }> = ({ className }) => {
+export const ComposerAttachments: FC<{
+  className?: string;
+  /** One scrolling row once the thread has messages, so the strip does not push the reply up. */
+  oneRowInChat?: boolean;
+}> = ({ className, oneRowInChat = false }) => {
   const count = useAuiState(({ composer }) => composer.attachments.length);
+  const inChat = useAuiState(({ thread }) => !thread.isEmpty);
+  const maxRows = oneRowInChat && inChat ? 1 : COMPOSER_ATTACHMENT_MAX_ROWS;
   const ref = useRef<HTMLDivElement | null>(null);
   const previousCount = useRef(count);
 
@@ -738,6 +744,7 @@ export const ComposerAttachments: FC<{ className?: string }> = ({ className }) =
         width,
         card?.getBoundingClientRect().width ?? 0,
         Number.parseFloat(style.columnGap) || 0,
+        maxRows,
       );
       const next = strip ? "strip" : "wrap";
       if (el.dataset.layout !== next) el.dataset.layout = next;
@@ -763,20 +770,35 @@ export const ComposerAttachments: FC<{ className?: string }> = ({ className }) =
       observer.disconnect();
       el.removeEventListener("wheel", onWheel);
     };
-  }, [count]);
+  }, [count, maxRows]);
 
   return (
     <div
       ref={ref}
       data-reload-snapshot-sensitive
       className={cn(
-        "aui-composer-attachments aui-composer-attachment-cards mb-4 flex w-full flex-row flex-wrap gap-2 px-1.5 pt-0.5 pb-1 empty:hidden data-[layout=strip]:flex-nowrap data-[layout=strip]:overflow-x-auto data-[layout=strip]:overscroll-x-contain",
+        "aui-composer-attachments aui-composer-attachment-cards mb-[calc(0.5rem*var(--ui-space-scale,1))] flex w-full flex-row flex-wrap gap-2 px-1.5 pt-0.5 pb-1 empty:hidden data-[layout=strip]:flex-nowrap data-[layout=strip]:overflow-x-auto data-[layout=strip]:overscroll-x-contain",
         className,
       )}
     >
-      <ComposerPrimitive.Attachments components={CARD_COMPONENTS} />
+      <ComposerAttachmentCardList />
     </div>
   );
+};
+
+// Not ComposerPrimitive.Attachments: its index keys remount every card after a removed one,
+// and each remount blanks its preview and decodes the image again.
+const ComposerAttachmentCardList: FC = () => {
+  const ids = useAuiState(
+    useShallow(({ composer }) =>
+      composer.attachments.map((attachment) => attachment.id),
+    ),
+  );
+  return ids.map((id) => (
+    <ComposerAttachmentByIdProvider key={id} id={id}>
+      <ComposerAttachmentCard />
+    </ComposerAttachmentByIdProvider>
+  ));
 };
 
 export const ComposerAddAttachment: FC = () => {
@@ -795,3 +817,5 @@ export const ComposerAddAttachment: FC = () => {
     </ComposerPrimitive.AddAttachment>
   );
 };
+
+export { AttachmentKindIcon, FileCardBody };
