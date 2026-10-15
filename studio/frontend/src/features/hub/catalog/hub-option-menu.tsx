@@ -39,16 +39,10 @@ export function HubOptionMenu<T extends string>({
   title,
   triggerContent,
   footer,
-  values,
-  onValuesChange,
 }: {
   value: T;
   options: readonly HubOption<T>[];
   onValueChange: (value: T) => void;
-  /** Multi-select: the picked options, none meaning `value` (the "all" option). Clicking one
-   *  toggles it and keeps the menu open; picking `value` clears the rest. */
-  values?: readonly T[];
-  onValuesChange?: (values: T[]) => void;
   className?: string;
   contentClassName?: string;
   ariaLabel: string;
@@ -67,28 +61,11 @@ export function HubOptionMenu<T extends string>({
   const idBase = useId();
   const listboxId = `${idBase}-listbox`;
 
-  const multiple = values !== undefined && onValuesChange !== undefined;
-  const isChecked = useCallback(
-    (option: T) =>
-      multiple
-        ? values.length === 0
-          ? option === value
-          : values.includes(option)
-        : option === value,
-    [multiple, value, values],
-  );
   const selectedIndex = useMemo(() => {
-    const index = options.findIndex((option) => isChecked(option.value));
+    const index = options.findIndex((option) => option.value === value);
     return index >= 0 ? index : 0;
-  }, [options, isChecked]);
+  }, [options, value]);
   const selected = options[selectedIndex];
-  const multiLabel =
-    multiple && values.length > 1 ? (
-      <>
-        {options.find((option) => option.value === values[0])?.label ?? values[0]}
-        <span className="text-muted-foreground"> +{values.length - 1}</span>
-      </>
-    ) : null;
   const resolvedActiveIndex =
     options.length === 0 || activeIndex < 0
       ? -1
@@ -111,20 +88,10 @@ export function HubOptionMenu<T extends string>({
     (index: number) => {
       const option = options[index];
       if (!option) return;
-      if (multiple) {
-        if (option.value === value) onValuesChange([]);
-        else if (values.includes(option.value)) onValuesChange(values.filter((v) => v !== option.value));
-        // In the menu's order, so the trigger's first label doesn't depend on click order.
-        else {
-          const next = new Set([...values, option.value]);
-          onValuesChange(options.map((o) => o.value).filter((v) => next.has(v)));
-        }
-        return;
-      }
       onValueChange(option.value);
       closeAndRestoreFocus();
     },
-    [closeAndRestoreFocus, multiple, onValueChange, onValuesChange, options, value, values],
+    [closeAndRestoreFocus, onValueChange, options],
   );
 
   const handleOpenChange = useCallback(
@@ -219,7 +186,6 @@ export function HubOptionMenu<T extends string>({
         >
           <span className="min-w-0 flex-1 truncate text-left">
             {triggerContent ??
-              multiLabel ??
               selected?.triggerLabel ??
               selected?.label ??
               value}
@@ -248,7 +214,6 @@ export function HubOptionMenu<T extends string>({
           id={listboxId}
           role="listbox"
           aria-label={ariaLabel}
-          aria-multiselectable={multiple || undefined}
           aria-activedescendant={activeOptionId}
           tabIndex={0}
           onKeyDown={handleContentKeyDown}
@@ -256,7 +221,7 @@ export function HubOptionMenu<T extends string>({
           className="outline-none"
         >
           {options.map((option, index) => {
-            const selectedOption = isChecked(option.value);
+            const selectedOption = option.value === value;
             const activeOption = index === resolvedActiveIndex;
             return (
               <div

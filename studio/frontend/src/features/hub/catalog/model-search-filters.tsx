@@ -15,33 +15,34 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
-import {
-  AiChipIcon,
-  Database02Icon,
-  FilterIcon,
-} from "@hugeicons/core-free-icons";
+import { FilterIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useId, useState } from "react";
 import {
   type ModelSearchFilters,
   hasModelSearchFilters,
 } from "../lib/model-search-filters";
-import type { ResourceTypeFilter } from "../types";
+import type { HubCapabilityFilter } from "../lib/model-capabilities";
+import { CAPABILITY_FILTER_OPTIONS } from "../lib/view-models";
 
-/** The Hub's filter popover: Models or Datasets, then (where the Hub search takes them) size,
- *  context and publisher limits. */
+const ROUND_CHECKBOX =
+  "pointer-events-none size-3.5 rounded-full dark:border-[color-mix(in_oklab,var(--foreground)_calc(60%*var(--contrast-edge-gain,1)),transparent)] dark:data-checked:border-primary [&_svg]:!size-2.5";
+
+/** The Hub's filter popover: capabilities (applied as they are ticked), then (where the Hub
+ *  search takes them) size, context and publisher limits. */
 export function ModelSearchFiltersControl({
   value,
   onChange,
-  resourceType,
-  onResourceTypeChange,
+  capabilities,
+  onCapabilitiesChange,
   showModelFilters,
   className,
 }: {
   value: ModelSearchFilters;
   onChange: (value: ModelSearchFilters) => void;
-  resourceType: ResourceTypeFilter;
-  onResourceTypeChange: (value: ResourceTypeFilter) => void;
+  /** None picked means every capability; a model with any of the picks is listed. */
+  capabilities: HubCapabilityFilter[];
+  onCapabilitiesChange: (value: HubCapabilityFilter[]) => void;
   showModelFilters: boolean;
   className?: string;
 }) {
@@ -76,7 +77,7 @@ export function ModelSearchFiltersControl({
                 className="size-4"
               />
               {((showModelFilters && hasModelSearchFilters(value)) ||
-                resourceType === "datasets") && (
+                capabilities.length > 0) && (
                 <span
                   aria-hidden="true"
                   className="absolute right-1.5 top-1.5 size-1.5 rounded-full bg-primary"
@@ -94,44 +95,65 @@ export function ModelSearchFiltersControl({
         sideOffset={8}
         collisionPadding={12}
         onCloseAutoFocus={(event) => event.preventDefault()}
-        className="hub-menu-instant menu-soft-surface w-[calc(288px*var(--ui-space-scale,1))] max-w-[calc(100vw-1rem)] rounded-[18px] p-1.5 ring-0"
+        className="hub-menu-instant menu-soft-surface w-[calc(288px*var(--ui-space-scale,1))] max-w-[calc(100vw-1rem)] rounded-[18px] p-3 pb-2.5 ring-0"
       >
-        <div
-          role="radiogroup"
-          aria-label="Show"
-          className="grid grid-cols-2 gap-1 rounded-full bg-muted p-1"
-        >
-          {(
-            [
-              ["models", "Models", AiChipIcon],
-              ["datasets", "Datasets", Database02Icon],
-            ] as const
-          ).map(([kind, label, icon]) => (
-            <button
-              key={kind}
-              type="button"
-              role="radio"
-              aria-checked={resourceType === kind}
-              onClick={() => onResourceTypeChange(kind)}
-              className={cn(
-                "inline-flex h-7 cursor-pointer items-center justify-center gap-1.5 rounded-full text-ui-12p5 transition-colors",
-                resourceType === kind
-                  ? "bg-background text-foreground shadow-sm dark:bg-card"
-                  : "text-muted-foreground hover:text-foreground",
-              )}
-            >
-              <HugeiconsIcon
-                icon={icon}
-                strokeWidth={1.75}
-                className="size-3.5"
-              />
-              {label}
-            </button>
-          ))}
-        </div>
+        <fieldset className="flex flex-col gap-1">
+          <legend className="mb-1.5 flex w-full items-baseline justify-between px-0.5 text-ui-12p5 font-medium text-foreground">
+            Capabilities
+            {capabilities.length > 0 ? (
+              <button
+                type="button"
+                onClick={() => onCapabilitiesChange([])}
+                className="cursor-pointer text-ui-11 font-normal text-muted-foreground transition-colors hover:text-foreground"
+              >
+                Clear
+              </button>
+            ) : (
+              <span className="text-ui-11 font-normal text-muted-foreground">
+                any match
+              </span>
+            )}
+          </legend>
+          <div className="grid grid-cols-2 gap-x-2">
+            {CAPABILITY_FILTER_OPTIONS.map((option) => {
+              const checked = capabilities.includes(option.value);
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  role="checkbox"
+                  aria-checked={checked}
+                  onClick={() =>
+                    // Kept in the list's order, so it doesn't depend on click order.
+                    onCapabilitiesChange(
+                      CAPABILITY_FILTER_OPTIONS.map((o) => o.value).filter(
+                        (key) =>
+                          key === option.value
+                            ? !checked
+                            : capabilities.includes(key),
+                      ),
+                    )
+                  }
+                  className={cn(
+                    "flex cursor-pointer select-none items-center gap-2 rounded-[10px] px-0.5 py-1.5 text-left text-ui-12p5 transition-colors hover:text-foreground",
+                    checked ? "text-foreground" : "text-muted-foreground",
+                  )}
+                >
+                  <Checkbox
+                    checked={checked}
+                    tabIndex={-1}
+                    aria-hidden={true}
+                    className={ROUND_CHECKBOX}
+                  />
+                  {option.label}
+                </button>
+              );
+            })}
+          </div>
+        </fieldset>
         {showModelFilters && (
           <form
-            className="flex flex-col gap-3 pt-3"
+            className="-mx-3 mt-2.5 flex flex-col gap-3 border-t border-border/60 px-3 pt-3"
             onSubmit={(event) => {
               event.preventDefault();
               if (invalid) {
@@ -193,13 +215,13 @@ export function ModelSearchFiltersControl({
                   organizationsOnly: !(draft.organizationsOnly ?? false),
                 });
               }}
-              className="-mx-1.5 flex cursor-pointer select-none items-center gap-2 rounded-[10px] px-1.5 py-1.5 text-left text-ui-12p5 text-muted-foreground transition-colors hover:text-foreground"
+              className="flex cursor-pointer select-none items-center gap-2 rounded-[10px] px-0.5 py-1 text-left text-ui-12p5 text-muted-foreground transition-colors hover:text-foreground"
             >
               <Checkbox
                 checked={draft.organizationsOnly ?? false}
                 tabIndex={-1}
                 aria-hidden={true}
-                className="pointer-events-none size-3.5 rounded-full dark:border-[color-mix(in_oklab,var(--foreground)_calc(60%*var(--contrast-edge-gain,1)),transparent)] dark:data-checked:border-primary [&_svg]:!size-2.5"
+                className={ROUND_CHECKBOX}
               />
               Organizations only (hide personal accounts)
             </button>
@@ -213,7 +235,7 @@ export function ModelSearchFiltersControl({
                 Minimum must not exceed maximum.
               </p>
             )}
-            <div className="-mx-1.5 flex justify-end gap-1.5 border-t border-border/60 px-1.5 pb-0.5 pt-2.5">
+            <div className="-mx-3 flex justify-end gap-1.5 border-t border-border/60 px-3 pt-2.5">
               <Button
                 type="button"
                 variant="ghost"

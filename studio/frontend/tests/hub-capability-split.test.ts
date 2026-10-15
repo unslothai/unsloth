@@ -47,11 +47,15 @@ test("the Images and Video pages' Search Hub links open their own pick", () => {
   assert.match(readSrc("app/routes/hub.tsx"), /search\.capability === "diffusion" \? "image-gen"/);
 });
 
-test("Models or Datasets is chosen in the filter popover, not a separate toggle", () => {
+test("capabilities are picked in the filter popover, which sits by the Models / Datasets toggle", () => {
   const toolbar = readSrc("features/hub/catalog/models-toolbar.tsx");
-  assert.doesNotMatch(toolbar, /aria-label="Resource type"/);
-  assert.match(toolbar, /onResourceTypeChange=\{onResourceTypeChange\}/);
+  assert.doesNotMatch(toolbar, /ariaLabel="Capability filter"/);
+  const filter = toolbar.indexOf("<ModelSearchFiltersControl");
+  const toggle = toolbar.indexOf('aria-label="Resource type"');
+  assert.ok(filter > toolbar.indexOf('ariaLabel="Sort models"') && filter < toggle);
+  assert.match(toolbar, /capabilities=\{capabilityFilters\}/);
   const popover = readSrc("features/hub/catalog/model-search-filters.tsx");
-  assert.match(popover, /role="radiogroup"\s+aria-label="Show"/);
+  assert.match(popover, /CAPABILITY_FILTER_OPTIONS\.map\(\(option\) => \{/);
+  assert.match(popover, /role="checkbox"\s+aria-checked=\{checked\}/);
   assert.match(popover, /\{showModelFilters && \(/);
 });
