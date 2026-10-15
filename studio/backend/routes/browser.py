@@ -448,6 +448,42 @@ _FRAME_HTML = r"""<!doctype html>
           post({ type: "navigate", url, newTab: Boolean(newTab), background: Boolean(background) });
         };
         /* PAGE_STORAGE_JS */
+        let refused = false;
+        const tellRefused = () => {
+          if (refused) return;
+          refused = true;
+          post({ type: "needsBrowser" });
+        };
+        // Only IndexedDB's refusals: a refused service worker or cache rarely breaks a page.
+        const refusals = new WeakSet();
+        // Other sites' scripts report errors as "Script error." with no error, so IndexedDB's is noted as thrown.
+        let indexedDbThrew = false;
+        const refusedByIndexedDb = (error) => {
+          if (error?.name !== "SecurityError") return false;
+          refusals.add(error);
+          return true;
+        };
+        for (const name of ["open", "deleteDatabase", "databases"]) {
+          const original = IDBFactory.prototype[name];
+          if (typeof original !== "function") continue;
+          IDBFactory.prototype[name] = function (...args) {
+            try {
+              const result = original.apply(this, args);
+              return name === "databases" ? result.catch((error) => { refusedByIndexedDb(error); throw error; }) : result;
+            } catch (error) {
+              if (refusedByIndexedDb(error)) {
+                indexedDbThrew = true;
+                setTimeout(() => { indexedDbThrew = false; });
+              }
+              throw error;
+            }
+          };
+        }
+        window.addEventListener("error", (event) => { if (event.error ? refusals.has(event.error) : indexedDbThrew) tellRefused(); });
+        window.addEventListener("unhandledrejection", (event) => { if (refusals.has(event.reason)) tellRefused(); });
+        for (const type of ["fullscreenerror", "webkitfullscreenerror"]) {
+          document.addEventListener(type, () => { if (!document.fullscreenEnabled) tellRefused(); }, true);
+        }
         /* BROWSER_NETWORK_JS */
         const shellPathname = location.pathname;
         // Throttle to 200 ms: some sites replaceState per scroll.
@@ -921,6 +957,7 @@ _FRAME_HTML = r"""<!doctype html>
         const script = `<script>(${boot.toString()})(${JSON.stringify(cfg).replace(/</g, "\\u003c")});<\/script>`;
         page = document.createElement("iframe");
         page.setAttribute("sandbox", "allow-scripts allow-forms");
+        page.setAttribute("allowfullscreen", "");
         page.srcdoc = inject(data.html, base + script);
         document.body.appendChild(page);
         // A script navigation the page's hooks missed (no Navigation API) hits the lock below; the
