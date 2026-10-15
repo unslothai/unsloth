@@ -77,8 +77,15 @@ def unwrap(layer: Optional[Layer]) -> bool:
         owner.__dict__.pop(LAYERS_ATTR, None)
     current = owner.__dict__.get(attr, _MISSING)
     if current is layer.fn:
-        if layer.had_own:
-            owner.__dict__[attr] = layer.original
+        # A saved entry that is itself a removed (pass-through) layer collapses to what that layer had replaced.
+        original = layer.original
+        for _ in range(16):
+            inner_layer = getattr(original, "_unsloth_layer", None)
+            if inner_layer is None or inner_layer.active or original is not inner_layer.fn:
+                break
+            original = inner_layer.original
+        if original is not _MISSING:
+            owner.__dict__[attr] = original
         else:
             owner.__dict__.pop(attr, None)
         return True

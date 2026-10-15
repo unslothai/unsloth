@@ -258,7 +258,7 @@ def test_host_ram_short_keeps_component(monkeypatch):
 def test_restore_that_runs_out_of_memory_returns_on_next_forward(monkeypatch):
     m = _on_card(64)
     session = O.DecodeSession(None, _FakeDevice())
-    session.log.append(("moved:transformer", *session._component_undo("transformer", m)))
+    session.log.append(session._component_change("transformer", m))
     m.to(torch.float32)
     calls = []
 
@@ -313,8 +313,8 @@ def test_vae_restore_oom_keeps_offload_hooks_and_retries(monkeypatch):
     monkeypatch.setattr(O, "_return_to", ret)
     session = O.DecodeSession(vae, cpu)
     O._apply_vae_offload(vae, cpu)
-    session.log.append(("vae_offload", lambda: O._undo_vae_offload(vae, cpu),
-                        lambda exc: O._defer(vae, cpu, "vae_offload", lambda: O._undo_vae_offload(vae, cpu), False, vae)))
+    session.log.append(O.Change("vae_offload", lambda: O._remove_vae_offload(vae, cpu), lambda: O._park_vae(vae, cpu),
+                                lambda retry, exc: O._defer(vae, cpu, "vae_offload", retry, False, vae)))
     session.restore()
     monkeypatch.undo()
     assert session.log == []
@@ -365,7 +365,7 @@ def test_execution_device_resolves_the_card_while_a_component_waits_on_the_host(
     monkeypatch.setattr(O, "_return_to", ret)
     session = O.DecodeSession(pipe.vae, card)
     unet.to("meta")
-    session.log.append(("moved:unet", *session._component_undo("unet", unet)))
+    session.log.append(session._component_change("unet", unet))
     session.restore()
     assert next(unet.parameters()).device.type == "meta"
     assert pipe._execution_device == card  # fail-before: meta
@@ -420,6 +420,7 @@ def test_step_a_drops_graphs_and_repins_resident_groups(monkeypatch):
     )  # fmt: skip
     vae, pipe = _setup(cap = 16384 + 1000, untiled_need = 10000, tiled_need = 500)
     pipe._unsloth_cuda_graphs = ("h",)
+    pipe.components["text_encoder"]._unsloth_resident_room = 1  # holds resident offload groups
     vae._decode(_z())
     assert events[0] == ("graphs", ("h",)) and events[1][0] == "release" and events[-1] == ("repin",)
 
@@ -1051,3 +1052,86 @@ def test_one_session_spans_a_sliced_batch_decode(monkeypatch):
     assert moves == ["off", "off", "on", "on"]  # once for the whole batch
     assert [s[0] for s in vae.seen] == [False, False, False, False]  # slice 1 failed once; 2 and 3 fit freed
     assert _devices(pipe)["transformer"] == _CARD and O._SESSION_ATTR not in vae.__dict__
+
+
+# -- PR review round 10 -----------------------------------------------------------------------------------------
+
+
+def test_real_release_resident_groups_keeps_the_restore_of_a_partial_release(monkeypatch):
+    """Item 4283219211: diffusion_memory.release_resident_groups caught a failure part way and returned None, so the
+    groups it had already demoted were never re-pinned. It now returns the restore for them (the failing one too)."""
+    from core.inference import diffusion_memory as M
+
+    class G:
+        def __init__(self):
+            self._unsloth_resident = True
+            self._unsloth_resident_bytes = 1 << 20
+
+    groups = [G(), G(), G()]
+    module = torch.nn.Linear(2, 2)
+    module._unsloth_resident_room = 1
+    module._unsloth_resident_device = "cpu"
+    pipe = types.SimpleNamespace(components = {"transformer": module})
+    demoted = []
+
+    def release(group):
+        if len(demoted) == 1:
+            raise RuntimeError("copy stream failed")
+        group._unsloth_resident = False
+        demoted.append(group)
+
+    repinned = []
+    monkeypatch.setattr(M, "_offload_groups", lambda m: groups)
+    monkeypatch.setattr(M, "_release_group", release)
+    monkeypatch.setattr(M, "_keep_groups_resident", lambda m, room, dev, logger, only: repinned.append(set(only)))
+    restore = M.release_resident_groups(pipe, 1 << 30)
+    assert restore is not None and len(demoted) == 1
+    restore()
+    assert repinned == [{id(groups[2]), id(groups[1])}]
+
+
+def test_unwrapping_an_outer_layer_collapses_a_removed_inner_layer():
+    """Item 4283219222: inner layer removed while the outer one wraps it, then the outer removed: the slot must go
+    back to what the inner one had replaced (here: nothing, the class method), not to the dead inner dispatch."""
+    class C:
+        def f(self):
+            return "class"
+
+    c = C()
+    inner = L.wrap(c, "f", "inner", lambda fn, layer: lambda: "inner:" + fn())
+    outer = L.wrap(c, "f", "outer", lambda fn, layer: lambda: "outer:" + fn())
+    assert c.f() == "outer:inner:class"
+    assert L.unwrap(inner) is False and c.f() == "outer:class"
+    assert L.unwrap(outer) is True
+    assert "f" not in c.__dict__ and c.f() == "class"
+    bound = types.MethodType(lambda self: "bound", c)
+    c.f = bound
+    inner = L.wrap(c, "f", "inner", lambda fn, layer: lambda: "inner:" + fn())
+    outer = L.wrap(c, "f", "outer", lambda fn, layer: lambda: "outer:" + fn())
+    L.unwrap(inner)
+    L.unwrap(outer)
+    assert c.__dict__["f"] is bound
+
+
+def test_component_whose_move_and_rollback_both_fail_gets_a_deferred_return(monkeypatch):
+    """Item 4283219189: the move to the host failed part way and moving it back failed too; the component was left
+    split across devices with nothing recorded. Now it is settled whole on the host with a deferred return."""
+    m = _on_card(64)
+    calls = []
+
+    def to_host(module):
+        calls.append("host")
+        if len(calls) == 1:
+            next(module.parameters()).data = next(module.parameters()).data.to(torch.float32)
+            raise _FakeOOM()
+        module.to(torch.float32)
+
+    def back(module, device):
+        raise _FakeOOM()
+
+    monkeypatch.setattr(O, "_to_host", to_host)
+    monkeypatch.setattr(O, "_return_to", back)
+    session = O.DecodeSession(None, _FakeDevice())
+    assert session.apply(lambda: O._to_host(m), session._component_change("transformer", m)) is False
+    assert session.log == [] and all(p.dtype == torch.float32 for p in m.parameters())
+    assert isinstance(m.__dict__.get(O._DEFERRED_ATTR), O.DeferredReturn)

@@ -2743,6 +2743,19 @@ def release_resident_groups(
     blocks from the last); returns a callable pinning exactly those groups again, or None when nothing was resident.
     A request larger than the measured placement reserved (reference images, a bigger canvas, a batch) then runs as
     the flat plan. ``denoisers_only`` leaves the text encoders' groups alone (the prompt encode needs them)."""
+    released: list = []
+    streamed: set = set()
+
+    def restore() -> None:
+        for module in released:
+            _keep_groups_resident(
+                module,
+                module._unsloth_resident_room,
+                module._unsloth_resident_device,
+                logger,
+                only = streamed,
+            )
+
     try:
         import torch
 
@@ -2756,8 +2769,6 @@ def release_resident_groups(
             return None
         modules.sort(key = lambda m: 0 if _is_text_encoder_module(pipe, m) else 1)
         left = int(need_mib) * 1024 * 1024
-        released: list = []
-        streamed: set = set()
         for module in modules:
             for group in reversed(_offload_groups(module) or []):
                 if left <= 0:
@@ -2768,11 +2779,12 @@ def release_resident_groups(
                 state = getattr(module, "_unsloth_stream_state", None)
                 if isinstance(state, dict):
                     state["streamed"] = 1
-                _release_group(group)
+                # Recorded before demoting: a release that fails part way is still re-pinned by ``restore``.
                 streamed.add(id(group))
-                left -= int(getattr(group, "_unsloth_resident_bytes", 0))
                 if module not in released:
                     released.append(module)
+                _release_group(group)
+                left -= int(getattr(group, "_unsloth_resident_bytes", 0))
         if not released:
             return None
         for module in released:
@@ -2789,21 +2801,12 @@ def release_resident_groups(
                 reason,
             )
 
-        def restore() -> None:
-            for module in released:
-                _keep_groups_resident(
-                    module,
-                    module._unsloth_resident_room,
-                    module._unsloth_resident_device,
-                    logger,
-                    only = streamed,
-                )
-
         return restore
     except Exception as exc:  # noqa: BLE001 - the guard still refuses what cannot fit
         if logger is not None:
             logger.warning("diffusion.memory: releasing resident groups failed (%s)", exc)
-        return None
+        # groups released before the failure stay streamed until the caller re-pins them: hand back their restore
+        return restore if released else None
 
 
 def resident_group_mib(pipe: Any) -> int:
