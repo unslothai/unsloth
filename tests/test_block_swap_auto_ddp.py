@@ -439,7 +439,6 @@ def test_a_sharded_trainer_refuses_an_explicit_swap(monkeypatch, backend):
     check = ns["_block_swap_for_trainer_backend"]
     with pytest.raises(ValueError, match = r"offload_layers = 2 .*offload_layers = 0"):
         check(_swapped_model(mark = False, swapped = (2, 3), **{backend: True}))
-    # No swap, nothing to refuse.
     assert check(_swapped_model(mark = False, swapped = (), **{backend: True})) == []
     no_swap = _swapped_model(mark = False, **{backend: True})
     no_swap.model._unsloth_block_swap = None
