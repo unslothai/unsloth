@@ -91,10 +91,11 @@ def _inference_double(
     inference._peek_inference_backend = lambda: orchestrator
     inference._orchestrator_public_model_id = lambda b: b.active_model_name
 
-    async def _objects():
+    async def _objects(quant_pins = False):
         return catalog
 
     inference._openai_catalog_objects = _objects
+    inference.model_slots = types.SimpleNamespace(visible_loading = lambda: None)
     return inference
 
 
@@ -368,7 +369,7 @@ def test_no_ui_route_or_public_asset_takes_a_forwarded_get_path():
     if not frontend.is_dir():
         pytest.skip("frontend sources not present in this checkout")
     mod = _load()
-    forwarded = {path for method, path in mod._PASSTHROUGH_ROUTES if method == "GET"}
+    forwarded = {path for method, path in mod._SERVED_ROUTES if method == "GET"}
     public = (
         {p.name.lower() for p in (frontend / "public").iterdir()}
         if (frontend / "public").is_dir()
@@ -471,8 +472,10 @@ def test_the_probe_paths_are_admitted_under_keyless_inference_scope():
     from utils.keyless_api_access import _INFERENCE_ROUTES
 
     assert ("GET", "/v1/models") in _INFERENCE_ROUTES, "baseline moved; re-derive this"
-    for path in ("/props", "/v1/props", "/version"):
+    for path in ("/props", "/v1/props", "/version", "/models"):
         assert ("GET", path) in _INFERENCE_ROUTES, path
+    for path in ("/models/load", "/models/unload"):
+        assert ("POST", path) not in _INFERENCE_ROUTES, path
     # Not the Ollama paths: they are not served at all.
     for path in ("/api/tags", "/api/show", "/api/version"):
         assert ("GET", path) not in _INFERENCE_ROUTES, path
@@ -562,7 +565,7 @@ def test_a_bare_llama_route_404s_on_every_method_a_client_would_use():
         for path in (
             "/chat/completions",
             "/responses",
-            "/models",
+            "/models/sse",
             "/tools",
             "/audio/transcriptions",
         ):
@@ -1018,7 +1021,7 @@ def test_a_get_probe_404s_in_api_only_mode(path):
 def test_api_only_mode_still_serves_the_three_real_routes():
     mod = _load()
     with _api_only_client(mod) as c:
-        for path in ("/props", "/v1/props", "/version"):
+        for path in ("/props", "/v1/props", "/version", "/models"):
             r = c.get(path)
             assert r.status_code == 200, (path, r.status_code)
             assert "application/json" in r.headers["content-type"], path
@@ -1078,3 +1081,401 @@ def test_props_hides_a_resident_that_belongs_to_another_account(monkeypatch):
     )
     with _client(mod) as c:
         assert c.get("/props").json()["model_path"] == "unsloth/Qwen3.8-27B-GGUF"
+
+
+# ── Open WebUI llama.cpp model management (#10610) ──────────────────────────
+
+QWEN = "unsloth/Qwen3.8-27B-GGUF"
+
+
+def _management(
+    load_status = 200,
+    catalog = None,
+    backend = None,
+):
+    """The routes double plus Studio's load and unload lifecycle, recording what they were asked."""
+    mod = _load(backend = backend, catalog = catalog)
+    double = mod._inference()
+    calls = []
+
+    async def _load_gated(
+        request,
+        fastapi_request,
+        current_subject,
+        *,
+        user_initiated = False,
+    ):
+        calls.append(("load", request.model_path, request.gguf_variant, request._advertised_id))
+        if load_status != 200:
+            raise HTTPException(status_code = load_status, detail = "busy")
+        return {"status": "loaded", "model": request.model_path}
+
+    async def _unload_impl(request, current_subject):
+        calls.append(("unload", request.model_path))
+        return {"status": "unloaded", "model": request.model_path}
+
+    async def _tunnel_safe_json(coro, *, label):
+        return await coro
+
+    async def _gpu_ids_resolve(gpu_ids, kind):
+        return True
+
+    double.load_model_gated = _load_gated
+    double._unload_model_impl = _unload_impl
+    double._tunnel_safe_json = _tunnel_safe_json
+    double._override_gpu_ids_still_resolve = _gpu_ids_resolve
+    return mod, calls
+
+
+@pytest.fixture
+def _no_local_gguf(monkeypatch):
+    import core.inference.local_model_resolver as resolver
+    import utils.openai_auto_switch_settings as overrides
+
+    monkeypatch.setattr(resolver, "resolve_trusted_cached_local_gguf", lambda *a, **k: None)
+    monkeypatch.setattr(resolver, "resolve_local_gguf", lambda *a, **k: None)
+    monkeypatch.setattr(overrides, "resolve_override_for_load", lambda *a, **k: (None, {}))
+    monkeypatch.setattr(resolver, "local_target_is_gguf", lambda *a, **k: True)
+    return resolver
+
+
+def test_management_list_is_the_v1_chat_catalog():
+    media = {"id": "unsloth/FLUX.2-klein-GGUF", "task": "text-to-image", "loaded": True}
+    mod, _ = _management(catalog = CATALOG + [media])
+    with _client(mod) as c:
+        for path in ("/models", "/models/"):
+            r = c.get(path)
+            assert r.status_code == 200, path
+            assert r.json() == {"object": "list", "data": CATALOG}
+
+
+def test_management_load_resolves_a_listed_id_through_studios_load(_no_local_gguf):
+    mod, calls = _management()
+    with _client(mod) as c:
+        assert c.post("/models/load", json = {"model": QWEN}).status_code == 200
+        # A quant this machine does not have is refused, never fetched.
+        assert c.post("/models/load/", json = {"model": QWEN.lower() + ":Q8_0"}).status_code == 404
+    assert calls == [("load", QWEN, None, None)]
+
+
+def test_management_load_keeps_a_colon_in_an_exact_row_id(_no_local_gguf):
+    """An NPU row such as "lemonade:qwen" is the id itself, not a repo with a quant pin."""
+    row = {"id": "lemonade:qwen", "object": "model", "loaded": True}
+    mod, calls = _management(catalog = [row])
+    with _client(mod) as c:
+        assert c.post("/models/load", json = {"model": "lemonade:qwen"}).status_code == 200
+    assert calls == [("load", "lemonade:qwen", None, None)]
+
+
+def test_management_load_keeps_the_listed_alias_advertised(monkeypatch, _no_local_gguf):
+    """A path load would otherwise reappear in /v1/models under the path's basename."""
+    monkeypatch.setattr(
+        _no_local_gguf,
+        "resolve_local_gguf",
+        lambda requested, **k: ("/models/qwen", "UD-Q4_K_XL", "lmstudio-community/qwen"),
+    )
+    mod, calls = _management()
+    with _client(mod) as c:
+        r = c.post("/models/load", json = {"model": QWEN})
+    assert r.status_code == 200
+    # The answer names the listed row, never the on-disk path.
+    assert r.json() == {"success": True, "model": QWEN}
+    assert calls == [("load", "/models/qwen", "UD-Q4_K_XL", "lmstudio-community/qwen")]
+
+
+def test_management_load_applies_saved_launch_settings(monkeypatch, _no_local_gguf):
+    """The settings auto-switch would launch this row with, looked up by path then alias."""
+    import utils.openai_auto_switch_settings as overrides
+
+    monkeypatch.setattr(
+        _no_local_gguf,
+        "resolve_local_gguf",
+        # A single-file GGUF resolves with no quant, and is still llama.cpp's.
+        lambda requested, **k: ("/models/qwen.gguf", None, QWEN),
+    )
+    asked = []
+
+    def _override(
+        load_id,
+        alias_id = None,
+        variant = None,
+    ):
+        asked.append((load_id, alias_id, variant))
+        return load_id, {"n_parallel": 2, "kv_cache_dtype": "q8_0", "gpu_layers": 20}
+
+    monkeypatch.setattr(overrides, "resolve_override_for_load", _override)
+    mod, _ = _management()
+    seen = []
+    double = mod._inference()
+    original = double.load_model_gated
+
+    async def _capture(request, *args, **kwargs):
+        seen.append((request.n_parallel, request.cache_type_kv, request.gpu_layers))
+        return await original(request, *args, **kwargs)
+
+    double.load_model_gated = _capture
+    with _client(mod) as c:
+        assert c.post("/models/load", json = {"model": QWEN}).status_code == 200
+    assert asked == [("/models/qwen.gguf", QWEN, None)]
+    assert seen == [(2, "q8_0", 20)]
+
+
+def test_management_unload_maps_the_advertised_alias_to_the_resident(_no_local_gguf):
+    """/unload matches the resident's identifier, not an alias such as an LM Studio name."""
+    mod, calls = _management()
+    with _client(mod) as c:
+        r = c.post("/models/unload", json = {"model": QWEN.lower()})
+    assert r.status_code == 200
+    # The answer names the listed id, never the resident's path.
+    assert r.json() == {"success": True, "model": QWEN}
+    assert calls == [("unload", "/media/models/qwen/model.gguf")]
+
+
+def test_management_unload_of_an_idle_row_never_reaches_the_lifecycle(_no_local_gguf):
+    """/unload releases a managed account's shared resident before it compares names."""
+    mod, calls = _management()
+    with _client(mod) as c:
+        r = c.post("/models/unload", json = {"model": CATALOG[1]["id"]})
+    assert r.json() == {"success": True, "model": CATALOG[1]["id"]}
+    assert calls == []
+
+
+def test_management_unload_cancels_a_load_under_the_path_it_runs_as(monkeypatch, _no_local_gguf):
+    monkeypatch.setattr(
+        _no_local_gguf,
+        "resolve_local_gguf",
+        lambda requested, **k: ("/models/laguna", "Q4_K_M", requested),
+    )
+    backend = _Backend(loaded = False)
+    backend.is_active = True
+    backend.model_identifier = "/models/laguna"
+    backend._openai_advertised_id = None
+    mod, calls = _management(backend = backend)
+    with _client(mod) as c:
+        assert c.post("/models/unload", json = {"model": CATALOG[1]["id"]}).status_code == 200
+    assert calls == [("unload", "/models/laguna")]
+
+
+@pytest.mark.parametrize("path", ["/models/load", "/models/unload"])
+def test_management_rejects_unlisted_task_or_missing_models(path, _no_local_gguf):
+    media = {"id": "unsloth/FLUX.2-klein-GGUF", "task": "text-to-image", "loaded": True}
+    mod, calls = _management(catalog = CATALOG + [media])
+    with _client(mod) as c:
+        assert c.post(path, json = {"model": "someone/else"}).status_code == 404
+        # Image, video and speech rows load through their own engines, not /load and /unload.
+        assert c.post(path, json = {"model": media["id"]}).status_code == 404
+        assert c.post(path, json = {"model": ""}).status_code == 422
+        assert c.post(path, json = {}).status_code == 422
+    assert calls == []
+
+
+def test_management_load_keeps_studios_error_status(_no_local_gguf):
+    mod, _ = _management(load_status = 409)
+    with _client(mod) as c:
+        assert c.post("/models/load", json = {"model": QWEN}).status_code == 409
+
+
+def test_management_requires_a_credential():
+    mod, calls = _management()
+    app = FastAPI()
+    app.include_router(mod.router)
+    with TestClient(app) as c:
+        assert c.get("/models").status_code == 401
+        for path in ("/models/load", "/models/unload"):
+            assert c.post(path, json = {"model": QWEN}).status_code == 401
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    "method, path",
+    [
+        ("POST", "/models"),
+        ("DELETE", "/models"),
+        ("HEAD", "/models/load"),
+        ("GET", "/models/load"),
+        ("GET", "/models/unload"),
+        ("GET", "/models/sse"),
+    ],
+)
+def test_unserved_management_operations_still_404(method, path):
+    mod, _ = _management()
+    with _client(mod) as c:
+        r = c.request(method, path, json = {} if method == "POST" else None)
+    assert r.status_code == 404, (method, path, r.status_code)
+    assert "text/html" not in r.headers.get("content-type", "")
+
+
+def test_management_unload_matches_an_ollama_tag_before_its_suffix(_no_local_gguf):
+    """ ":latest" is part of the advertised Ollama id, not a quant pin to strip first."""
+    tag = "ollama/llama3:latest"
+    backend = _Backend()
+    backend.model_identifier = "ollama-manifest:/models/llama3/latest"
+    backend._openai_advertised_id = tag
+    mod = _load(backend = backend, catalog = [{"id": tag, "object": "model", "loaded": True}])
+    calls = []
+
+    async def _unload_impl(request, current_subject):
+        calls.append(request.model_path)
+
+    async def _tunnel_safe_json(coro, *, label):
+        return await coro
+
+    mod._inference()._unload_model_impl = _unload_impl
+    mod._inference()._tunnel_safe_json = _tunnel_safe_json
+    with _client(mod) as c:
+        r = c.post("/models/unload", json = {"model": tag})
+    assert r.json() == {"success": True, "model": tag}
+    assert calls == ["ollama-manifest:/models/llama3/latest"]
+
+
+def test_management_unload_finds_a_path_loaded_row_with_no_alias_stamp(monkeypatch, _no_local_gguf):
+    """A Studio load by path advertises nothing, yet the catalog lists the row under its own id."""
+    monkeypatch.setattr(
+        _no_local_gguf,
+        "resolve_local_gguf",
+        lambda requested, **k: ("/models/lms/qwen", None, requested),
+    )
+    backend = _Backend()
+    backend.model_identifier = "/models/lms/qwen"
+    backend._openai_advertised_id = None
+    mod, calls = _management(backend = backend)
+    with _client(mod) as c:
+        assert c.post("/models/unload", json = {"model": QWEN}).status_code == 200
+    assert calls == [("unload", "/models/lms/qwen")]
+
+
+def test_management_unload_leaves_an_unrelated_load_alone(monkeypatch, _no_local_gguf):
+    monkeypatch.setattr(
+        _no_local_gguf,
+        "resolve_local_gguf",
+        lambda requested, **k: ("/models/laguna", None, requested),
+    )
+    backend = _Backend(loaded = False)
+    backend.is_active = True
+    backend.model_identifier = "/models/other"
+    backend._openai_advertised_id = None
+    mod, calls = _management(backend = backend)
+    with _client(mod) as c:
+        assert c.post("/models/unload", json = {"model": CATALOG[1]["id"]}).status_code == 200
+    assert calls == []
+
+
+def test_management_unload_keeps_a_resident_of_another_quant(monkeypatch, _no_local_gguf):
+    # Both quants are on disk; only the resident one may be unloaded.
+    monkeypatch.setattr(
+        _no_local_gguf,
+        "resolve_local_gguf",
+        lambda requested, **k: (
+            "/media/models/qwen/model.gguf",
+            requested.rpartition(":")[2],
+            QWEN,
+        ),
+    )
+    backend = _Backend()
+    backend.hf_variant = "UD-Q4_K_XL"
+    mod, calls = _management(backend = backend)
+    with _client(mod) as c:
+        assert c.post("/models/unload", json = {"model": QWEN + ":Q8_0"}).status_code == 200
+        assert c.post("/models/unload", json = {"model": QWEN + ":UD-Q4_K_XL"}).status_code == 200
+    assert calls == [("unload", "/media/models/qwen/model.gguf")]
+
+
+def test_management_unload_of_a_bare_id_ignores_the_preferred_quant(monkeypatch, _no_local_gguf):
+    """A bare id resolves to the preferred quant on disk, which need not be the resident one."""
+    monkeypatch.setattr(
+        _no_local_gguf,
+        "resolve_local_gguf",
+        lambda requested, **k: ("/media/models/qwen/model.gguf", "Q4_K_M", requested),
+    )
+    backend = _Backend()
+    backend.hf_variant = "Q8_0"
+    mod, calls = _management(backend = backend)
+    with _client(mod) as c:
+        assert c.post("/models/unload", json = {"model": QWEN}).status_code == 200
+    assert calls == [("unload", "/media/models/qwen/model.gguf")]
+
+
+def test_management_unload_cancels_a_switch_while_the_old_model_stays_active(
+    monkeypatch, _no_local_gguf
+):
+    monkeypatch.setattr(
+        _no_local_gguf,
+        "resolve_local_gguf",
+        lambda requested, **k: ("/models/laguna", None, requested),
+    )
+    orchestrator = types.SimpleNamespace(
+        active_model_name = "/models/old",
+        get_loading_model = lambda: "/models/laguna",
+        _openai_advertised_id = None,
+    )
+    mod = _load(backend = _Backend(loaded = False), orchestrator = orchestrator)
+    double = mod._inference()
+    calls = []
+
+    async def _unload_impl(request, current_subject):
+        calls.append(request.model_path)
+
+    async def _tunnel_safe_json(coro, *, label):
+        return await coro
+
+    double._unload_model_impl = _unload_impl
+    double._tunnel_safe_json = _tunnel_safe_json
+    with _client(mod) as c:
+        assert c.post("/models/unload", json = {"model": CATALOG[1]["id"]}).status_code == 200
+    assert calls == ["/models/laguna"]
+
+
+def test_management_unload_refuses_a_pin_this_machine_does_not_have(_no_local_gguf):
+    mod, calls = _management()
+    with _client(mod) as c:
+        assert c.post("/models/unload", json = {"model": QWEN + ":Q8_0"}).status_code == 404
+    assert calls == []
+
+
+def test_management_unload_never_reaches_another_accounts_resident(monkeypatch):
+    """The caller's catalog shows the row unloaded; matching the global resident would reveal it."""
+    mod, calls = _management(catalog = [{**CATALOG[0], "loaded": False}])
+    monkeypatch.setattr(mod, "_resident_hidden_from_caller", lambda: True)
+    with _client(mod) as c:
+        r = c.post("/models/unload", json = {"model": QWEN})
+    assert r.json() == {"success": True, "model": QWEN}
+    assert calls == []
+
+
+@pytest.mark.parametrize("suffix", ["latest", ""])
+def test_management_refuses_a_suffix_that_is_not_a_quant(suffix):
+    mod, calls = _management()
+    with _client(mod) as c:
+        for path in ("/models/load", "/models/unload"):
+            assert c.post(path, json = {"model": f"{QWEN}:{suffix}"}).status_code == 404, path
+    assert calls == []
+
+
+def test_management_unload_compares_a_legacy_pin_by_its_resolved_quant(monkeypatch, _no_local_gguf):
+    monkeypatch.setattr(
+        _no_local_gguf,
+        "resolve_local_gguf",
+        lambda requested, **k: ("/media/models/qwen/model.gguf", "Q4_K_M", QWEN),
+    )
+    backend = _Backend()
+    backend.hf_variant = "Q4_K_M"
+    mod, calls = _management(backend = backend)
+    with _client(mod) as c:
+        assert c.post("/models/unload", json = {"model": QWEN + ":BF16"}).status_code == 200
+    assert calls == [("unload", "/media/models/qwen/model.gguf")]
+
+
+def test_management_unload_routes_a_kept_slot_quant_past_the_primary(monkeypatch, _no_local_gguf):
+    """Q4 on the primary, Q8 kept in a slot: the Q8 pin goes to /unload, which routes it to the slot."""
+    monkeypatch.setattr(
+        _no_local_gguf,
+        "resolve_local_gguf",
+        lambda requested, **k: ("/media/models/qwen/model.gguf", "Q8_0", QWEN),
+    )
+    backend = _Backend()
+    backend.hf_variant = "Q4_K_M"
+    pin = {"id": QWEN + ":Q8_0", "object": "model", "loaded": True}
+    mod, calls = _management(backend = backend, catalog = CATALOG + [pin])
+    with _client(mod) as c:
+        assert c.post("/models/unload", json = {"model": pin["id"]}).status_code == 200
+    assert calls == [("unload", pin["id"])]

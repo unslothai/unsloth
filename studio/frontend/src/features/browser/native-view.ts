@@ -408,6 +408,8 @@ function overlays(selector: string, rect: DOMRect | null, skip: string | null = 
   const boxes: DOMRect[] = [];
   for (const element of outsideThread(selector)) {
     if (element.closest("[data-native-page]")) continue;
+    // The dialog the browser opens in over compare, projects and phones holds the page, not covers it.
+    if (element.querySelector("[data-native-page]")) continue;
     if (skip && element.querySelector(skip)) continue;
     const box = element.getBoundingClientRect();
     if (box.width > 0 && box.height > 0 && (!rect || intersects(box, rect))) boxes.push(box);
@@ -436,7 +438,7 @@ type Input = { blocked: boolean; exclude: Bounds[] };
 
 const NO_INPUT: Input = { blocked: false, exclude: [] };
 
-function panelInput(rect: DOMRect): Input {
+function panelInput(rect: DOMRect, area: DOMRect | null): Input {
   // A menu away from the page owns it too, so a click on the page closes the menu, as anywhere else.
   if (overlays(BLOCKING_SELECTOR, rect).length > 0 || overlays(MENU_SELECTOR, null, HOVER_ONLY).length > 0) {
     return { blocked: true, exclude: [] };
@@ -448,6 +450,22 @@ function panelInput(rect: DOMRect): Input {
     height: Math.ceil(box.height) + 1,
     viewportWidth: window.innerWidth,
   }));
+  // The page view past the panel's edge, painted over by the app (holeClip): after a split drag it
+  // keeps its old frame until the resize lands, and input there belongs to the chat it sits under.
+  const frame = shownBounds ?? { x: rect.left, y: rect.top, width: rect.width, height: rect.height };
+  const left = Math.max(rect.left, area?.left ?? rect.left);
+  const right = Math.min(rect.right, area?.right ?? rect.right);
+  const strip = (from: number, to: number) =>
+    to - from >= 1 &&
+    exclude.push({
+      x: Math.floor(from),
+      y: frame.y,
+      width: Math.ceil(to - from),
+      height: frame.height,
+      viewportWidth: window.innerWidth,
+    });
+  strip(frame.x, left);
+  strip(right, frame.x + frame.width);
   return { blocked: false, exclude };
 }
 
@@ -491,6 +509,11 @@ let holed: HTMLElement[] = [];
 let holeSignature = "";
 let holeTab: string | null = null;
 let holeBounds: Bounds | null = null;
+// The panel around the page. A split drag pins the page at its old width, so while the panel
+// shrinks the page view overflows the handle. Resizing the view every frame would relayout the page
+// every frame, which the pin is there to avoid; on a layered page the app draws over it instead,
+// by cutting the hole no wider than the panel.
+let holeClip: DOMRect | null = null;
 
 function opaque(color: string): boolean {
   if (color === "transparent") return false;
@@ -512,7 +535,9 @@ function openHole(tabId: string, bounds: Bounds): void {
 function placeHole(): void {
   if (!holeBounds) return;
   const zoom = getAppliedInterfaceZoom() || 1;
-  const values = [holeBounds.x, holeBounds.y, holeBounds.width, holeBounds.height].map((value) => value / zoom);
+  const left = holeClip ? Math.max(holeBounds.x, holeClip.left) : holeBounds.x;
+  const right = holeClip ? Math.min(holeBounds.x + holeBounds.width, holeClip.right) : holeBounds.x + holeBounds.width;
+  const values = [left, holeBounds.y, Math.max(0, right - left), holeBounds.height].map((value) => value / zoom);
   for (const node of holed) HOLE_VARS.forEach((name, index) => node.style.setProperty(name, `${values[index]}px`));
 }
 
@@ -556,6 +581,24 @@ function closeHole(): void {
   holeTab = null;
   holeBounds = null;
   unmarkHole();
+}
+
+/** The panel body: the parent of the outermost page box (two nested boxes carry the attribute). */
+function panelArea(element: HTMLElement): HTMLElement | null {
+  let page = element.closest("[data-browser-page]");
+  for (let outer = page?.parentElement?.closest("[data-browser-page]"); outer; outer = outer.parentElement?.closest("[data-browser-page]")) {
+    page = outer;
+  }
+  return page?.parentElement ?? null;
+}
+
+/** Re-cuts the hole when the panel's edges move; cheap, so it runs every frame of a drag. */
+function clipHole(element: HTMLElement | null): void {
+  const area = element && layered ? panelArea(element)?.getBoundingClientRect() ?? null : null;
+  const same = area && holeClip ? area.left === holeClip.left && area.right === holeClip.right : area === holeClip;
+  if (same) return;
+  holeClip = area;
+  placeHole();
 }
 
 function visibleRect(element: HTMLElement): DOMRect | null {
@@ -603,7 +646,11 @@ function insetToasts(rect: DOMRect | null): void {
 
 function desiredView(): Desired {
   const page = pageRect();
-  if (layered) sendInput(page ? panelInput(page.rect) : NO_INPUT);
+  if (layered) {
+    const element = page ? placeholder(page.tab.id) : null;
+    const area = element ? (panelArea(element)?.getBoundingClientRect() ?? null) : null;
+    sendInput(page ? panelInput(page.rect, area) : NO_INPUT);
+  }
   else insetToasts(page?.rect ?? null);
   if (!page) return null;
   const { tab, entry, rect } = page;
@@ -909,6 +956,9 @@ export function startNativeViews(): () => void {
   let frame = 0;
   let sent = "";
   let resized: HTMLElement | null = null;
+  let resizedArea: HTMLElement | null = null;
+  // The panel resizing (a split drag) only re-cuts the hole: no full sync, no call to the view.
+  const areaObserver = new ResizeObserver(() => clipHole(resized));
   const resizeObserver = new ResizeObserver(() => schedule());
 
   const sync = () => {
@@ -920,9 +970,13 @@ export function startNativeViews(): () => void {
     const element = desired ? placeholder(desired.tabId) : null;
     if (element !== resized) {
       if (resized) resizeObserver.unobserve(resized);
+      if (resizedArea) areaObserver.unobserve(resizedArea);
+      resizedArea = element && layered ? panelArea(element) : null;
       if (element) resizeObserver.observe(element);
+      if (resizedArea) areaObserver.observe(resizedArea);
       resized = element;
     }
+    clipHole(element);
     if (performance.now() < motionUntil) schedule();
     const key = JSON.stringify([epoch, coverRetry, desired]);
     if (key === sent) return;
@@ -969,6 +1023,7 @@ export function startNativeViews(): () => void {
     unzoom();
     overlays.disconnect();
     resizeObserver.disconnect();
+    areaObserver.disconnect();
     window.removeEventListener("resize", schedule);
     for (const type of MOTION_EVENTS) document.removeEventListener(type, moved, true);
     document.removeEventListener("pointerover", reachedPage, true);

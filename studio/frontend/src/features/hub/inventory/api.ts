@@ -12,6 +12,7 @@ import { localPathCacheKey } from "@/features/hub/lib/local-path";
 import { isHuggingFaceOffline } from "@/features/hub/lib/network";
 import { fingerprintToken } from "@/features/hub/lib/token-fingerprint";
 import { bumpInventoryVersion } from "@/features/hub/stores/inventory-events";
+import { notifyModelDeleted } from "@/lib/model-lifecycle-events";
 import {
   discardDeletedInventoryHints,
   discardDeletedModelInventoryHints,
@@ -62,6 +63,8 @@ export interface CachedGgufRepo {
   pipeline_tag?: string | null;
   task?: string | null;
   audio_type?: string | null;
+  audio_workflows?: string[] | null;
+  umbrella_folder?: boolean;
   tags?: string[];
   library_name?: string | null;
 }
@@ -226,6 +229,8 @@ export interface GgufVariantsResponse {
   default_variant: string | null;
   /** True when Hub metadata or a complete cached download plan proves companion readiness. */
   dependencies_resolved?: boolean;
+  /** "mlx" for precision folders of an MLX repo. */
+  variant_format?: string | null;
 }
 
 async function parseJsonOrThrow<T>(
@@ -357,17 +362,17 @@ export interface DeleteImpact {
   blocked_by: string[];
 }
 
-/** What a delete would actually reclaim and leave behind. Never throws: the confirm dialog
- * still has to open if this preview is unavailable, it just falls back to the plain wording. */
+/** return the delete preview or `null` so confirmation still opens when unavailable. */
 export async function fetchDeleteImpact(
   repoId: string,
   variant?: string | null,
   cachePath?: string | null,
+  hfToken?: string | null,
 ): Promise<DeleteImpact | null> {
   try {
     const response = await authFetch("/api/hub/delete-impact", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...hubTokenHeader(hfToken) },
       body: JSON.stringify(
         variant
           ? { repo_id: repoId, variant, ...(cachePath ? { cache_path: cachePath } : {}) }
@@ -427,8 +432,42 @@ export async function deleteCachedModel(
     await throwIfNotOk(response);
     discardDeletedModelInventoryHints(repoId, variant);
     bumpInventoryVersion();
+    notifyModelDeleted(repoId);
   } finally {
     invalidateGgufVariantsCache(repoId);
+  }
+}
+
+export const DELETABLE_LOCAL_SOURCES: ReadonlySet<string> = new Set([
+  "models_dir",
+  "lmstudio",
+  "custom",
+  "ollama",
+  "hermes",
+  "omlx",
+]);
+
+/** `id` (the row's load id) picks between Ollama tags that share one blob path. */
+export async function revealLocalModel(path: string, id?: string): Promise<void> {
+  const response = await authFetch("/api/hub/local/reveal", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path, id }),
+  });
+  await throwIfNotOk(response);
+}
+
+export async function deleteLocalModel(path: string, id?: string): Promise<void> {
+  const response = await authFetch("/api/hub/local/delete", {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path, id }),
+  });
+  try {
+    await throwIfNotOk(response);
+    bumpInventoryVersion();
+  } finally {
+    invalidateGgufVariantsCache(path);
   }
 }
 

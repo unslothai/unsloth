@@ -122,8 +122,13 @@ test("buying, posting, signing in and POST forms ask; ordinary clicks and search
   assert.equal(gateElement("click", element({ name: "Post reply" }), page, open, NONE).kind, "ask");
   assert.equal(gateElement("click", element({ name: "Show more results" }), page, open, NONE).kind, "allow");
   const login = element({ name: "Continue", submits: true, formMethod: "post", formAction: "https://shop.example/login", formHasPassword: true });
-  const signIn = gateElement("click", login, page, open, NONE);
+  // Only a password the user filled in makes it a sign-in; an empty one still asks, as sending a form.
+  const signIn = gateElement("click", { ...login, formPasswordFilled: true }, page, open, NONE);
   assert.ok(signIn.kind === "ask" && signIn.ask === "signIn");
+  const emptyPassword = { ...login, formMethod: "get" };
+  const send = gateElement("click", emptyPassword, page, open, NONE);
+  assert.ok(send.kind === "ask" && send.ask === "submit" && send.prompt === "Submit this form on shop.example?");
+  assert.equal(gateElement("click", { ...emptyPassword, formHasPassword: false }, page, open, NONE).kind, "allow");
   const comment = element({ name: "Save", submits: true, formMethod: "post", formAction: "https://shop.example/c" });
   assert.ok(gateElement("click", comment, page, open, NONE).kind === "ask");
   const search = element({ role: "searchbox", tag: "input", name: "Search", formAction: "https://shop.example/s" });
@@ -147,14 +152,29 @@ test("buying, posting, signing in and POST forms ask; ordinary clicks and search
 
 test("the durable gate keeps every browser tool on the live-tab stream", async () => {
   registerBundlerResolver();
-  const { BROWSER_AGENT_TOOLS, BROWSER_HISTORY_TOOL, BROWSER_SCREENSHOT_TOOL } = await import(
+  const { BROWSER_AGENT_TOOLS, BROWSER_HISTORY_TOOL, BROWSER_SCREENSHOT_TOOL, BROWSER_SCRIPT_TOOL } = await import(
     "../src/features/browser/agent/tools.ts"
   );
   const { BROWSER_EXECUTED_TOOLS } = await import("../src/features/chat/api/durable-gate.ts");
   assert.deepEqual(
     [...BROWSER_EXECUTED_TOOLS].sort(),
-    [...BROWSER_AGENT_TOOLS, BROWSER_SCREENSHOT_TOOL, BROWSER_HISTORY_TOOL].sort(),
+    [...BROWSER_AGENT_TOOLS, BROWSER_SCREENSHOT_TOOL, BROWSER_HISTORY_TOOL, BROWSER_SCRIPT_TOOL].sort(),
   );
+});
+
+test("Run scripts set to Never drops browser_evaluate from the turn", async () => {
+  registerBundlerResolver();
+  const { browserAgentToolsForTurn } = await import("../src/features/browser/agent/tools.ts");
+  const { useBrowserAgentStore } = await import("../src/features/browser/agent/agent-store.ts");
+  const { setBrowserPanelAvailable } = await import("../src/features/browser/panel-availability.ts");
+  setBrowserPanelAvailable(true);
+  useBrowserAgentStore.setState({ enabled: true, historyAccess: "ask", scriptAccess: "ask" });
+  assert.ok(browserAgentToolsForTurn().includes("browser_evaluate"));
+  useBrowserAgentStore.setState({ scriptAccess: "never" });
+  const tools = browserAgentToolsForTurn();
+  assert.ok(!tools.includes("browser_evaluate"));
+  assert.ok(tools.includes("browser_click") && tools.includes("browser_history"));
+  setBrowserPanelAvailable(false);
 });
 
 test("a form posting to a blocked site is refused", () => {
@@ -164,7 +184,12 @@ test("a form posting to a blocked site is refused", () => {
 });
 
 const permissions = (sites: AgentPermissions["sites"], defaults = NONE.defaults): AgentPermissions => ({ defaults, sites });
-const rule = (browsing: "allow" | "ask" | "block", actions: "ask" | "allow" = "ask") => ({ browsing, actions, downloads: "ask" as const });
+const rule = (browsing: "allow" | "ask" | "block", actions: "ask" | "allow" = "ask", unlabelled: "ask" | "allow" = "ask") => ({
+  browsing,
+  actions,
+  downloads: "ask" as const,
+  unlabelled,
+});
 
 test("site patterns are normalized hosts, and the most specific rule wins", () => {
   assert.equal(normalizeSitePattern("https://www.Example.com/path?q=1"), "example.com");
@@ -194,10 +219,10 @@ test("site rules decide navigation before the new-site check", () => {
   assert.equal(gateNavigation("https://careful.example/b", navigation({ permissions: rules, currentUrl: "https://careful.example/a" })).kind, "allow");
   assert.equal(gateNavigation("https://never.example/", navigation({ permissions: rules, userText: "never.example" })).kind, "block");
   // Default Blocked: only the sites with their own rule open.
-  const allowlist = permissions({ "allowed.example": rule("allow") }, { browsing: "block", actions: "ask", downloads: "ask" });
+  const allowlist = permissions({ "allowed.example": rule("allow") }, { browsing: "block", actions: "ask", downloads: "ask", unlabelled: "ask" });
   assert.equal(gateNavigation("https://other.example/", navigation({ permissions: allowlist, userText: "other.example" })).kind, "block");
   assert.equal(gateNavigation("https://allowed.example/", navigation({ permissions: allowlist })).kind, "allow");
-  const open = permissions({}, { browsing: "allow", actions: "ask", downloads: "ask" });
+  const open = permissions({}, { browsing: "allow", actions: "ask", downloads: "ask", unlabelled: "ask" });
   assert.equal(gateNavigation("https://made-up.example/?data=1", navigation({ permissions: open })).kind, "allow");
 });
 
@@ -212,10 +237,18 @@ test("Always allow for actions skips the prompt, never the password and file rul
 
 test("stored permissions are checked, so a bad value never reads as allow", () => {
   const checked = checkedPermissions({
-    defaults: { browsing: "yes", actions: "allow", downloads: 1 },
-    sites: { "Example.com": { browsing: "allow" }, "bad host": { browsing: "allow" } },
+    defaults: { browsing: "yes", actions: "allow", downloads: 1, unlabelled: "always" },
+    sites: {
+      "Example.com": { browsing: "allow" },
+      "bad host": { browsing: "allow" },
+      "canvas.example": { browsing: "allow", unlabelled: "allow" },
+    },
   });
-  assert.deepEqual(checked.defaults, { browsing: "ask", actions: "allow", downloads: "ask" });
-  assert.deepEqual(Object.keys(checked.sites), ["example.com"]);
-  assert.deepEqual(checked.sites["example.com"], { browsing: "allow", actions: "ask", downloads: "ask" });
+  assert.deepEqual(checked.defaults, { browsing: "ask", actions: "allow", downloads: "ask", unlabelled: "ask" });
+  assert.deepEqual(Object.keys(checked.sites).sort(), ["canvas.example", "example.com"]);
+  // A rule saved before Unlabelled clicks existed reads as ask.
+  assert.deepEqual(checked.sites["example.com"], { browsing: "allow", actions: "ask", downloads: "ask", unlabelled: "ask" });
+  assert.equal(checked.sites["canvas.example"]?.unlabelled, "allow");
+  assert.equal(ruleFor("https://app.canvas.example/", checked).rule.unlabelled, "allow");
+  assert.equal(ruleFor("https://other.example/", checked).rule.unlabelled, "ask");
 });

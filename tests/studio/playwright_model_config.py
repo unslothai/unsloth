@@ -292,6 +292,10 @@ with sync_playwright() as p:
     def _is_load(req) -> bool:
         return req.method == "POST" and "/api/inference/load" in req.url
 
+    # Short requests whose missing end event is a lost event after 30 s of no progress, never work in progress.
+    def _is_lost_event_candidate(req) -> bool:
+        return "/api/settings/" in req.url or "/api/inference/validate" in req.url
+
     def _commit_started(req):
         try:
             if _is_commit(req):
@@ -358,13 +362,16 @@ with sync_playwright() as p:
             seen = (_commits["started"], len(_commits["inflight"]), len(_commits["loads_ended"]))
             if seen != progress[0]:
                 progress[:] = [seen, time.monotonic()]
-            # 30 s with nothing tracked starting or ending, while only settings writes are open,
-            # is a lost event rather than work in progress. Any open /load, /validate or /unload
-            # keeps the full timeout: the frontend awaits /unload before /load, and a large GGUF
-            # teardown can take minutes.
+            # 30 s with nothing tracked starting or ending, while only settings writes or /validate
+            # are open, is a lost event rather than work in progress. /validate answers in under a
+            # second on CI; on PR #13678's run (and main's 38452407726) one never reported its end,
+            # though the server logged every validate answered within 1 s, and each later step then
+            # sat out the full 180 s on that same stale entry until the 720 s cap killed the script.
+            # Any open /load or /unload keeps the full timeout: the frontend awaits /unload before
+            # /load, and a large GGUF teardown can take minutes.
             if (
                 _commits["inflight"]
-                and all("/api/settings/" in req.url for req in _commits["inflight"])
+                and all(_is_lost_event_candidate(req) for req in _commits["inflight"])
                 and not _pending_loads()
                 and time.monotonic() - progress[1] > 30
             ):
@@ -396,7 +403,7 @@ with sync_playwright() as p:
                 info(f"WARN {what}: the load flow ended without sending /api/inference/load")
             elif outcome == "stalled":
                 info(
-                    f"WARN {what}: nothing changed for 30s with only settings writes open; still counted in "
+                    f"WARN {what}: nothing changed for 30s with only settings writes or /validate open; still counted in "
                     f"flight: {sorted(f'{req.method} {req.url}' for req in _commits['inflight'])}"
                 )
                 # Those events are not coming; carrying them would stall every later wait too.
@@ -1494,6 +1501,55 @@ with sync_playwright() as p:
             close_picker()
     except Exception as e:
         soft_fail(f"migration idempotency check errored: {e}")
+
+    # ─────────────────────────────────────────────────────
+    # 6. Hub Run keeps its run settings on a page loaded at /hub (HARD).
+    #    Run mounts Chat there, and the new composer's autofocus used to dismiss them.
+    # ─────────────────────────────────────────────────────
+    step("Hub Run opens run settings on a page loaded at /hub")
+    try:
+        page.goto(f"{BASE}/hub?tab=downloaded", wait_until = "domcontentloaded", timeout = 60_000)
+        # The row's own button; "More options for <repo>" also names the model.
+        row = page.get_by_role("button", name = re.compile(rf"^\S*{re.escape(MODEL_HINT)}\S*$", re.I))
+        heading = page.get_by_role("heading", name = re.compile(re.escape(MODEL_HINT), re.I))
+        row.first.wait_for(state = "visible", timeout = 60_000)
+
+        # The Hub selects its first row once the list lands, which can replace an early click.
+        def model_selected() -> bool:
+            if _count(heading):
+                return True
+            row.first.click()
+            return False
+
+        wait_until(
+            model_selected, timeout_s = 60, what = "Hub selecting the model", interval_s = 2, page = page
+        )
+        page.locator("button").filter(has_text = re.compile(r"^\s*Run\s*$")).last.click()
+        page.wait_for_url(re.compile(r"/chat(\?|$)"), timeout = 30_000)
+        settings = page.get_by_role("button", name = "Back to model list", exact = True)
+        # Sampled for a while: settings that open and are then dismissed must not pass on one sight.
+        seen = []
+        for _ in range(5):
+            page.wait_for_timeout(1000)
+            seen.append(_count(settings) > 0 and settings.first.is_visible())
+        shoot("11-hub-run-settings")
+        if all(seen):
+            info("OK Hub Run kept run settings open on a page loaded at /hub")
+            # The composer ignores focus() while the settings are open, and must stop once they close.
+            page.keyboard.press("Escape")
+            settings.first.wait_for(state = "hidden", timeout = 10_000)
+            composer = page.locator('textarea[aria-label="Message input"]').first
+            composer.evaluate("el => el.focus()")
+            if composer.evaluate("el => el === document.activeElement"):
+                info("OK composer takes focus again after the run settings close")
+            else:
+                fail("composer could not be focused after the Hub Run settings closed")
+        else:
+            fail(
+                f"Hub Run lost its run settings on a page loaded at /hub (visible per second: {seen})"
+            )
+    except Exception as e:
+        fail(f"Hub Run check errored: {e}")
 
     # ─────────────────────────────────────────────────────
     if page_errors:

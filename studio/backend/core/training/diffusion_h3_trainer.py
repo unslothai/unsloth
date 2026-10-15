@@ -81,6 +81,9 @@ from core.training.diffusion_train_common import (
     _latent_cache_forced,
     _latent_cache_over_budget,
     _restore_perf_flags,
+    enable_diffusion_gradient_checkpointing,
+    reset_training_peak_memory,
+    training_peak_memory_gb,
     h3_train_unsupported_reason,
     flow_bf16_trainable,
     native_bf16_supported_xpu,
@@ -531,7 +534,13 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
     from peft import LoraConfig
     from peft.utils import get_peft_model_state_dict
 
-    from core.training.diffusion_dit_trainer import _int8_quantize_base, _make_optimizer
+    from core.training.diffusion_dit_trainer import (
+        _compile_engagement_warning,
+        _dynamo_compile_counters,
+        _int8_quantize_base,
+        _make_optimizer,
+        _maybe_compile_transformer,
+    )
 
     out_dir = Path(cfg.output_dir).expanduser()
     clip_paths = [p for p, _ in pairs]
@@ -638,11 +647,7 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
         )
     )
     if cfg.gradient_checkpointing:
-        import functools
-        import torch.utils.checkpoint as _ckpt
-        transformer.enable_gradient_checkpointing(
-            gradient_checkpointing_func = functools.partial(_ckpt.checkpoint, use_reentrant = False)
-        )
+        enable_diffusion_gradient_checkpointing(transformer)
     cast_training_params(transformer, dtype = torch.float32)
     lora_params = [p for p in transformer.parameters() if p.requires_grad]
     if not lora_params:
@@ -658,6 +663,10 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
         _int8_quantize_base(transformer, cfg.resolved_family)
 
     ema = LoRAEMA(transformer, decay = cfg.ema_decay) if getattr(cfg, "ema_decay", 0.0) else None
+    # dynamic=True keeps one graph per block across caption lengths; int8 stays eager like the DiT families.
+    compiled = _maybe_compile_transformer(
+        transformer, cfg, base_precision == "nf4", device, on_event, base_precision
+    )
     optimizer = _make_optimizer(lora_params, cfg.learning_rate)
     lr_sched = get_scheduler(
         cfg.lr_scheduler,
@@ -671,7 +680,7 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
     _emit(
         on_event,
         "model_load_completed",
-        compiled = False,
+        compiled = compiled,
         base_precision = base_precision,
         sequence_length = h3_packed_sequence_length(
             max(e.shape[1] for e in caption_embeds.values()), num_frames, height, width
@@ -692,6 +701,8 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
     t_start = time.time()
     t_steady = None
     done = 0
+    reset_training_peak_memory(device)
+    compile_watch = _dynamo_compile_counters() if compiled else None
     for opt_step in range(cfg.train_steps):
         optimizer.zero_grad(set_to_none = True)
         step_loss = 0.0
@@ -769,9 +780,13 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
         now = time.time()
         if done == 1:
             t_steady = now
+        if compile_watch is not None:
+            reason = _compile_engagement_warning(compile_watch, _dynamo_compile_counters())
+            if reason:
+                _emit(on_event, "warning", message = reason)
+                compile_watch = None
         if done % cfg.log_every == 0 or done == cfg.train_steps:
-            if device == "cuda":
-                peak_gb = round(torch.cuda.max_memory_allocated() / 1e9, 2)
+            peak_gb = training_peak_memory_gb(device)
             per_step = cfg.gradient_accumulation_steps
             if t_steady is not None and done > 1:
                 sps = round((done - 1) * per_step / max(now - t_steady, 1e-6), 3)

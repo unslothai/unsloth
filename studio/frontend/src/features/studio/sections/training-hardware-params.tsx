@@ -36,7 +36,10 @@ export function TrainingHardwareParams(): ReactElement {
       selectedGpuIds: state.selectedGpuIds,
       setGpuSelection: state.setGpuSelection,
       // The server rejects DDP for these: neither path is rank-aware.
-      ddpModel: !state.isEmbeddingModel && state.modelType !== "decision",
+      ddpModel:
+        !state.isEmbeddingModel &&
+        state.modelType !== "embeddings" &&
+        state.modelType !== "decision",
     })),
   );
   // Training consumes physical torch device IDs; inference's `pinnable` also

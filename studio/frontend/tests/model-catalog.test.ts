@@ -220,6 +220,29 @@ test("vLLM and llama.cpp resolve by bare model name and clamp to low / medium / 
   assert.equal(getExternalReasoningCapabilities("custom", "openai/gpt-oss-20b").supportsReasoning, false);
 });
 
+test("vLLM forwards the model's own ladder; llama.cpp still clamps it", () => {
+  // Qwen3.8's template accepts low / medium / xhigh only and raises on "high".
+  const qwen = getExternalReasoningCapabilities("vllm", "Qwen/Qwen3.8-27B");
+  assert.deepEqual([...qwen.reasoningEffortLevels], ["none", "low", "medium", "xhigh"]);
+  const glm = getExternalReasoningCapabilities("vllm", "zai-org/GLM-5.3-FP8");
+  assert.deepEqual([...glm.reasoningEffortLevels], ["low", "high", "max"]);
+  const gguf = getExternalReasoningCapabilities("llama_cpp", "Qwen3.8-27B-Q4_K_M.gguf");
+  assert.deepEqual([...gguf.reasoningEffortLevels], ["none", "low", "medium", "high"]);
+});
+
+test("a flagged vLLM connection takes a catalogued ladder and keeps the switch otherwise", () => {
+  const flagged = { isReasoningProvider: true };
+  const qwen = getExternalReasoningCapabilities("vllm", "Qwen/Qwen3.8-27B", flagged);
+  assert.equal(qwen.reasoningStyle, "reasoning_effort");
+  assert.deepEqual([...qwen.reasoningEffortLevels], ["none", "low", "medium", "xhigh"]);
+  for (const model of ["my-served-name", "Qwen/Qwen3.5-35B-A3B"]) {
+    const caps = getExternalReasoningCapabilities("vllm", model, flagged);
+    assert.equal(caps.reasoningStyle, "enable_thinking", model);
+    assert.equal(caps.supportsReasoning, true, model);
+    assert.equal(caps.supportsReasoningOff, true, model);
+  }
+});
+
 test("Gemini aliases outside the prefix tables fall back to the snapshot", () => {
   const caps = getExternalReasoningCapabilities("gemini", "gemini-omni-flash-preview");
   assert.equal(caps.supportsReasoning, true);

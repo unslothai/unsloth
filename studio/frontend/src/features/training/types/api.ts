@@ -49,6 +49,7 @@ export interface TrainingStartRequest {
   max_steps: number | null;
   save_steps: number;
   eval_steps: number;
+  early_stopping_patience?: number;
   weight_decay: number;
   max_grad_norm?: number | null;
   max_grad_value?: number | null;

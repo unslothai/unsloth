@@ -46,7 +46,7 @@ SOURCE_TEXT_EXTS = frozenset(
     """
     .text .log .mdx .rst .adoc .asciidoc .org .textile .wiki .tex .latex .sty .cls .bib .rmd .qmd
     .srt .vtt .sbv .ass .ssa .sub .lrc
-    .csv .tsv .psv .json .jsonl .ndjson .jsonc .json5 .geojson .har .avsc .xml .yaml .yml .toml .ini
+    .csv .tsv .psv .json .jsonl .ndjson .jsonc .json5 .geojson .kml .gpx .har .avsc .xml .yaml .yml .toml .ini
     .cfg .conf .cnf .env .properties .plist .edn .ron .cue .lock .mod .sum .reg .desktop .service
     .po .pot .strings .resx .xliff .xlf .ics .vcf .eml .mbox .m3u8 .pls
     .css .scss .sass .less .styl .svg .vue .svelte .astro .pug .jade .haml .slim .ejs .erb .hbs
@@ -70,7 +70,7 @@ SOURCE_TEXT_EXTS = frozenset(
 )
 DOCUMENT_UPLOAD_EXTS = frozenset(
     """
-    .doc .docm .dotx .dotm .xls .xlsx .xlsm .xltx .xltm .ppt .pptx .pptm .potx .potm .ppsx .ppsm
+    .doc .docm .dotx .dotm .xls .xlt .xlsx .xlsm .xltx .xltm .ppt .pps .pptx .pptm .potx .potm .ppsx .ppsm
     .odt .ods .odp .ott .ots .otp .msg .eml .mht .mhtml .rtf .epub .xhtml .xht
     """.split()
 )
@@ -181,14 +181,17 @@ def embedding_identity_matches(stored: str | None, current: str) -> bool:
     return stored == (embedding_identity_model(current) or current)
 
 
-def effective_embedding_model() -> str:
+def effective_embedding_model(fresh: bool = False) -> str:
     """The embedding model actually in use: the persisted Settings override when
     one is stored, else ``EMBEDDING_MODEL`` (env/default). Read at call time so a
-    Settings change applies without a restart."""
+    Settings change applies without a restart; ``fresh`` also skips the short cache and
+    raises rather than fall back."""
     try:
         from utils.embedding_model_settings import get_rag_embedding_model
-        return get_rag_embedding_model()
+        return get_rag_embedding_model(fresh = fresh)
     except Exception:  # noqa: BLE001 - settings store unavailable (tests, early boot)
+        if fresh:
+            raise
         return EMBEDDING_MODEL
 
 

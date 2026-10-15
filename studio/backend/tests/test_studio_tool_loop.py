@@ -336,6 +336,56 @@ def test_a_resumed_reply_does_not_merge_over_the_compaction_it_follows(executed)
     assert follow_up[0]["extra_content"]["anthropic"]["content"] == [summary]
 
 
+def test_the_searched_branch_carries_replayed_results_as_the_model_saw_them(executed):
+    from core.inference.tool_loop_controller import TOOL_ERROR_NUDGE
+
+    branch = [
+        {"role": "user", "content": "run it"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_a",
+                    "type": "function",
+                    "function": {"name": "python", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_a", "name": "python", "content": "Error: boom"},
+        {"role": "user", "content": "what failed earlier"},
+    ]
+    transport = FakeTransport(
+        [
+            [
+                _sse(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call_c",
+                                "function": {
+                                    "name": "search_conversation",
+                                    "arguments": '{"query":"failed"}',
+                                },
+                            }
+                        ]
+                    }
+                ),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "boom"}), _sse(finish = "stop"), _DONE],
+        ]
+    )
+
+    _run(transport, tools = [_tool("search_conversation")], messages = branch)
+
+    searched = executed[0]["conversation_branch"]
+    assert searched[2]["content"] == "Error: boom" + TOOL_ERROR_NUDGE
+    assert searched[2]["content"] == transport.requests[0]["messages"][2]["content"]
+
+
 def test_a_conversation_search_here_gets_the_active_branch(executed):
     """The provider loops share the local paths' tool catalogue.
 
@@ -1736,3 +1786,46 @@ def test_reasoning_replay_during_tool_rounds_is_opt_in(executed, preserve):
     assert assistant.get("reasoning_content") == ("First thought." if preserve else None)
     assert assistant["tool_calls"][0]["function"]["name"] == "web_search"
     assert transport.requests[1]["messages"][-1]["role"] == "tool"
+
+
+@pytest.mark.parametrize("field", ["reasoning", "reasoning_content"])
+def test_preserved_thinking_before_a_tool_call_reaches_the_next_turn(executed, field):
+    # vLLM 0.11+ streams thinking as `reasoning`, llama-server as `reasoning_content`.
+    transport = FakeTransport(
+        [
+            [
+                _sse({field: "look it up"}),
+                _sse({"tool_calls": [_call_delta(0, "call_r", "web_search", '{"query":"u"}')]}),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "ok"}), _sse(finish = "stop"), _DONE],
+        ],
+        heals = False,
+    )
+    transport.preserves_reasoning = True
+    _run(transport)
+    assistant = [
+        message
+        for message in transport.requests[1]["messages"]
+        if message.get("role") == "assistant"
+    ][-1]
+    assert assistant["reasoning_content"] == "look it up"
+
+
+def test_a_trailing_image_turn_takes_the_notice_as_a_text_part():
+    from core.inference.studio_tool_loop import _append_user_turn
+
+    image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
+    conversation = [{"role": "user", "content": [{"type": "text", "text": "Screenshot:"}, image]}]
+    _append_user_turn(conversation, "Stop now.")
+    assert conversation == [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Screenshot:"},
+                image,
+                {"type": "text", "text": "\n\nStop now."},
+            ],
+        }
+    ]
