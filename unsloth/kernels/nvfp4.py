@@ -224,8 +224,8 @@ def _nvfp4_weight_tile(
         (BLOCK_R, BLOCK_K // 16, 16),
     )
     w = tl.reshape(values * group_scale[:, :, None], (BLOCK_R, BLOCK_K))
-    # Padding past K stays 0 even under an inf scale (0 * inf), as dense never sees those lanes.
-    w = tl.where((k0 + tl.arange(0, BLOCK_K))[None, :] < half_cols * 2, w, 0.0)
+    # Padding (rows past n_rows, lanes past K) stays 0 even when scaling gives 0 * inf or 0 / 0.
+    w = tl.where(row_ok & ((k0 + tl.arange(0, BLOCK_K))[None, :] < half_cols * 2), w, 0.0)
     return w.to(OUT_DTYPE)
 
 

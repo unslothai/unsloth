@@ -295,6 +295,19 @@ def test_inf_scale_in_the_last_group_matches_dense(N, fused, monkeypatch):
     assert torch.equal(Y, ref)
 
 
+def test_zero_global_scale_with_a_partial_row_tile_matches_dense(N, fused, monkeypatch):
+    dtype = _dtypes()[0]
+    packed, scale, gs = _random_nvfp4(72, 128, global_scale = 0.0)  # 72 rows: a partial N tile in dX
+    packed[:] = 0x22
+    G = torch.rand(4, 72, device = "cuda", dtype = dtype) + 0.1
+    before = _calls(N)
+    dX = N._nvfp4_matmul_bwd(G, packed, scale, gs)
+    assert _calls(N)["bwd"] == before["bwd"] + 1
+    monkeypatch.setenv("UNSLOTH_NVFP4_FUSED", "0")
+    ref = N._nvfp4_matmul_bwd(G, packed, scale, gs)
+    assert torch.isinf(ref).all() and torch.equal(dX, ref)
+
+
 def test_column_strided_e4m3_scales(N, fused, monkeypatch):
     dtype = _dtypes()[0]
     packed, scale, gs = _random_nvfp4(64, 128)
