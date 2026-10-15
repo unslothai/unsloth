@@ -9201,20 +9201,14 @@ def _native_expert_parents(model, target_modules):
         pattern = re.compile(target_modules)
     except re.error:
         return set()
-    reached_layers = set()
-    blocks = []
-    for name, _ in model.named_modules():
-        matched = _EXPERT_BLOCK_PATTERN.search(name)
-        if matched is not None:
-            if name[matched.start() :].lstrip(".").startswith("experts."):
-                blocks.append(name[: matched.start()])
-        elif ".experts." not in name and pattern.fullmatch(name):
-            reached_layers.add(name.rsplit(".", 2)[0])
     parents = set()
-    for parent in blocks:
-        layer = parent.rpartition(".")[0]
-        # Only layers the regex already reaches: keeps a vision tower out.
-        if not layer or not any(r == layer or r.startswith(layer + ".") for r in reached_layers):
+    for name, _ in model.named_modules():
+        matched = _EXPERT_SUBMODULE_PATTERN.search(name)
+        if matched is None or not name[matched.start() :].lstrip(".").startswith("experts."):
+            continue
+        parent = name[: matched.start()]
+        # In scope only if the regex takes this leaf as a dense one in the same block: keeps a vision tower out.
+        if not parent or not pattern.fullmatch(f"{parent}.{matched.group(1)}"):
             continue
         parents.add(
             r"\.".join(r"\d+" if part.isdigit() else re.escape(part) for part in parent.split("."))

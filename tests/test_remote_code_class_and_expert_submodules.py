@@ -586,7 +586,7 @@ def test_sentence_transformer_probes_use_the_loads_options(monkeypatch):
         assert "_remote_class_probe_kwargs" in splats, call.lineno
 
 
-def _native_qwen3_moe_4x_model(with_visual = False):
+def _native_qwen3_moe_4x_model(with_visual = False, dense_first = False):
     """Qwen3-MoE / Mixtral on transformers 4.x: native per-expert Linears under mlp.experts.<i>."""
 
     class _NativeExpert(torch.nn.Module):
@@ -611,15 +611,16 @@ def _native_qwen3_moe_4x_model(with_visual = False):
             self.experts = torch.nn.ModuleList([_NativeExpert() for _ in range(4)])
 
     class _DecoderLayer(torch.nn.Module):
-        def __init__(self):
+        def __init__(self, dense = False):
             super().__init__()
             self.self_attn = _Attn()
-            self.mlp = _SparseMoe()
+            self.mlp = _NativeExpert() if dense else _SparseMoe()
 
     class _Body(torch.nn.Module):
         def __init__(self):
             super().__init__()
-            self.layers = torch.nn.ModuleList([_DecoderLayer() for _ in range(2)])
+            # dense_first: DeepSeek-V3's first_k_dense_replace layout.
+            self.layers = torch.nn.ModuleList([_DecoderLayer(dense_first and i == 0) for i in range(2)])
 
     class _Qwen3Moe(torch.nn.Module):
         def __init__(self):
@@ -677,14 +678,18 @@ def test_explicit_leaf_list_reaches_native_per_expert_linears():
         re.fullmatch(widened, n) for n in names if n.endswith((".gate_proj", ".up_proj"))
     )
 
-    # Expert-only lists: no attention leaf, every layer sparse.
-    for leaves in (["down_proj"], ["gate_proj", "up_proj", "down_proj"]):
-        regex = _explicit_list_regex(model, leaves)
-        widened, _, _ = U.widen_target_regex_to_expert_submodules(
-            model, regex, leaves, auto_regex = True, explicit_leaves = True
-        )
-        matched = {n for n in names if re.fullmatch(widened, n)}
-        assert matched == {n for n in names if n.rpartition(".")[2] in leaves}
+    # MLP-only lists: no attention leaf, every layer sparse or a dense first layer.
+    for dense_first in (False, True):
+        model = _native_qwen3_moe_4x_model(dense_first = dense_first)
+        names = [n for n, m in model.named_modules() if isinstance(m, torch.nn.Linear)]
+        for leaves in (["down_proj"], ["gate_proj", "up_proj", "down_proj"]):
+            regex = _explicit_list_regex(model, leaves)
+            widened, _, _ = U.widen_target_regex_to_expert_submodules(
+                model, regex, leaves, auto_regex = True, explicit_leaves = True
+            )
+            matched = {n for n in names if re.fullmatch(widened, n)}
+            assert matched == {n for n in names if n.rpartition(".")[2] in leaves}
+            assert any(".experts." in n for n in matched)
 
 
 def test_explicit_leaf_list_widening_respects_the_family_filters():
