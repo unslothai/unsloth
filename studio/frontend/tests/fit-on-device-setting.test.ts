@@ -82,3 +82,28 @@ test("a model is hidden only when it exceeds GPU memory plus RAM", () => {
     true,
   );
 });
+
+test("a safetensors row on a discrete GPU is kept only when its badge would not say exceeds", () => {
+  // 24 GB card with 64 GB of RAM. The GGUF rule sized a 32B or 70B safetensors repo at the
+  // smallest GGUF quant and counted RAM offload, which the transformers loader refuses.
+  const gpu = { memoryTotalGb: 24, systemRamAvailableGb: 64, budgetKnown: true };
+  const row = (id: string, totalParams: number) => ({ id, totalParams, isGguf: false });
+  // 14B: 14 * 0.9 + 1.4 = 14 GB, under the card.
+  assert.equal(hfModelFitsDevice(row("org/m-14B", 14e9), gpu), true);
+  // 24B: 23 GB, the badge's "tight" band, still kept.
+  assert.equal(hfModelFitsDevice(row("org/m-24B", 24e9), gpu), true);
+  // 32B and 70B: 30.2 and 64.4 GB, badged "exceeds".
+  assert.equal(hfModelFitsDevice(row("org/m-32B", 32e9), gpu), false);
+  assert.equal(hfModelFitsDevice(row("org/m-70B", 70e9), gpu), false);
+  // A host memory pool and MLX ids keep the quant rule.
+  assert.equal(
+    hfModelFitsDevice(row("org/m-32B", 32e9), gpu, { hostPooledMemory: true }),
+    true,
+  );
+  assert.equal(hfModelFitsDevice(row("mlx-community/m-32B", 32e9), gpu), true);
+  // GGUF rows are unchanged: the same 32B repo as a GGUF is kept on its quant size.
+  assert.equal(
+    hfModelFitsDevice({ id: "org/m-32B-GGUF", totalParams: 32e9, isGguf: true }, gpu),
+    true,
+  );
+});

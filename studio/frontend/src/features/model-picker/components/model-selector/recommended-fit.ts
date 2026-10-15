@@ -5,6 +5,7 @@
 // the device. No React/DOM deps so they are easy to test.
 
 import { classifyGgufFit } from "../../../../lib/gguf-fit.ts";
+import { checkVramFit, estimateLoadingVram } from "../../../../lib/vram.ts";
 import {
   audioCppDisplayName,
   isAudioCppFolderId,
@@ -216,11 +217,21 @@ export function fitsDevice(opts: {
   return requireKnown ? false : true;
 }
 
+/** A safetensors chat load on a discrete GPU: transformers in 4-bit, with no CPU offload, since
+ *  `raise_if_offloaded` (utils/hardware/hardware.py) refuses a model that spills. So it is judged
+ *  on the calibrated 4-bit load estimate against VRAM alone, the same `estimateLoadingVram` /
+ *  `checkVramFit` verdict the row's badge shows. The GGUF rule scored it at the smallest GGUF
+ *  quant and credited half of system RAM, so the filter kept rows badged "exceeds". */
+function fitsTransformersLoad(params: number, gpuGb: number): boolean {
+  return checkVramFit(estimateLoadingVram(params, "qlora"), gpuGb) !== "exceeds";
+}
+
 /** Fit predicate for one Hub listing row, shared by the chat model selector and the Hub page
- *  filter. GGUF repos use metadata size or the smallest-quant estimate. Safetensors / MLX
- *  always use the params-based estimate, matching the badge's quantized-load assumption,
- *  since their estimatedSizeBytes is the full-precision checkpoint. `curatedSizeBytes`
- *  outranks both. Anything still unsizable is hidden; an unknown device budget keeps all. */
+ *  filter. GGUF repos use metadata size or the smallest-quant estimate. A safetensors row on a
+ *  discrete GPU takes the verdict its own badge shows (see `fitsTransformersLoad`). MLX, and
+ *  safetensors on a host memory pool, use the params-based quant estimate, since their
+ *  estimatedSizeBytes is the full-precision checkpoint. `curatedSizeBytes` outranks all of
+ *  these. Anything still unsizable is hidden; an unknown device budget keeps all. */
 export function hfModelFitsDevice(
   model: {
     id: string;
@@ -236,7 +247,8 @@ export function hfModelFitsDevice(
   },
   /** `budgetFraction` is the user's saved VRAM Budget: omitted scores against the loader's
    *  default, so a caller that forgets it judges rows on a replaced budget. `mediaLoad` picks
-   *  the diffusion rule for an Images / Video row. */
+   *  the diffusion rule for an Images / Video row. `hostPooledMemory` marks a GPU whose memory
+   *  is a window into host RAM (a Mac, an APU), which keeps safetensors rows on the quant rule. */
   opts: {
     budgetFraction?: number;
     gpuCount?: number;
@@ -251,10 +263,21 @@ export function hfModelFitsDevice(
   )
     return true;
   const params = model.totalParams ?? paramsFromId(model.id);
+  const isGguf = isGgufId(model.id, model.isGguf);
+  if (
+    params &&
+    model.curatedSizeBytes == null &&
+    !isGguf &&
+    !isMlxId(model.id) &&
+    !opts.mediaLoad &&
+    !opts.hostPooledMemory &&
+    gpu.memoryTotalGb > 0
+  )
+    return fitsTransformersLoad(params, gpu.memoryTotalGb);
   const quantBytes = params ? estimateQuantBytes(params) : undefined;
   const sizeBytes =
     model.curatedSizeBytes ??
-    (isGgufId(model.id, model.isGguf)
+    (isGguf
       ? (model.estimatedSizeBytes ?? quantBytes)
       : (quantBytes ?? model.estimatedSizeBytes));
   return fitsDevice({
