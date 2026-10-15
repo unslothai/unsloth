@@ -671,13 +671,16 @@ def test_ddp_ranks_split_only_when_every_rank_needs_the_same_count(tmp_path, oth
 
 
 @pytest.mark.parametrize("key", ["rope_scaling", "rope_parameters"])
-def test_longrope_steps_aside_for_split_and_balance(key):
+@pytest.mark.parametrize("kind", ["longrope", "dynamic"])
+def test_length_dependent_rope_steps_aside_for_split_and_balance(key, kind):
     trainer, _ = _fake_trainer()
     assert tb._exactness_blocker(trainer) is None
-    config = SimpleNamespace(
-        **{key: {"rope_type": "longrope", "original_max_position_embeddings": 4096}}
-    )
+    config = SimpleNamespace(**{key: {"rope_type": kind, "original_max_position_embeddings": 4096}})
     trainer.model = SimpleNamespace(config = config)
-    assert "LongRoPE" in tb._exactness_blocker(trainer)
+    assert kind in tb._exactness_blocker(trainer)
+    # Per layer type (transformers 5 rope_parameters).
+    nested = {"full_attention": {"rope_type": kind}, "sliding_attention": {"rope_type": "default"}}
+    trainer.model = SimpleNamespace(config = SimpleNamespace(**{key: nested}))
+    assert kind in tb._exactness_blocker(trainer)
     trainer.model = SimpleNamespace(config = SimpleNamespace(**{key: {"rope_type": "llama3"}}))
     assert tb._exactness_blocker(trainer) is None

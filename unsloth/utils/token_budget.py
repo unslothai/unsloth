@@ -378,21 +378,31 @@ def _exactness_blocker(trainer):
         )
     if _router_aux_loss_active(trainer):
         return "the MoE router auxiliary loss is active"
-    if _uses_longrope(trainer):
-        return "LongRoPE picks short or long frequencies from each forward's length"
+    rope = _length_dependent_rope(trainer)
+    if rope is not None:
+        return f"{rope} RoPE picks its frequencies from each forward's length"
     return None
 
 
-def _uses_longrope(trainer):
+def _length_dependent_rope(trainer):
+    """LongRoPE or dynamic RoPE anywhere in the text config (flat or per layer type): both pick
+    frequencies from each forward's length, which splitting or regrouping changes."""
     config = getattr(getattr(trainer, "model", None), "config", None)
     config = getattr(config, "text_config", None) or config
+
+    def kinds(value):
+        if isinstance(value, Mapping):
+            kind = value.get("rope_type", value.get("type"))
+            if kind is not None:
+                yield str(kind).lower()
+            for item in value.values():
+                yield from kinds(item)
+
     for name in ("rope_scaling", "rope_parameters"):
-        scaling = getattr(config, name, None)
-        if isinstance(scaling, Mapping):
-            kind = scaling.get("rope_type", scaling.get("type", ""))
-            if str(kind).lower() == "longrope":
-                return True
-    return False
+        for kind in kinds(getattr(config, name, None)):
+            if kind in ("longrope", "dynamic"):
+                return kind
+    return None
 
 
 def _note_once(trainer, message):
