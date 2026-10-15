@@ -2837,12 +2837,14 @@ def test_request_scope_gets_the_effective_canvas_in_both_generate_paths():
         "guard_width",
         "guard_height",
         "chunk_kwargs.get('num_inference_steps')",
+        "cfg_needs",
     ]
     # video: the resolved request canvas (frames do not count)
     assert scope_args("video.py") == [
         "request_shape.get('width')",
         "request_shape.get('height')",
         "request_shape.get('steps')",
+        "_cfg_video_request_needs(pipe, request_shape)",
     ]
 
 
@@ -3383,3 +3385,118 @@ def test_cfg_parallel_long_render_builds_on_step_two_and_engages(monkeypatch):
     with mg.cfg_request_scope(pipe, 512, 512, steps = 8):
         router.request_step = 3
         assert router._remaining_steps() == 6
+
+
+def _on_cards(monkeypatch, placement):
+    """``_module_device`` answering ``placement[id(module)]`` (cuda ordinal), else the CPU."""
+    monkeypatch.setattr(
+        mg,
+        "_module_device",
+        lambda m: torch.device("cuda", placement[id(m)]) if id(m) in placement else torch.device("cpu"),
+    )
+
+
+def test_cfg_parallel_long_clip_on_the_vae_card_uses_the_request_decode(monkeypatch):
+    dit = _BatchDit()
+    pipe = _RouterPipe(dit)
+    pipe.vae = torch.nn.Linear(2, 2)
+    _on_cards(monkeypatch, {id(pipe.vae): 1})
+    # the load's whole-request headroom, sized at the family's default clip
+    router = mg.CfgParallelRouter(dit, primary = "cuda:0", secondary = "cuda:1", headroom_mib = 4000, vae_ordinal = 1)
+    dit.forward = router
+    monkeypatch.setattr(mg, "_free_total_mib", lambda ordinal: (8000, 80000))
+    latent = torch.randn(1, 4)
+    with mg.cfg_request_scope(pipe, 1280, 720):
+        router._check_capacity(latent)  # no request figure: the load figure fits
+    assert router.shape_disabled is None
+    encode, denoise, decode = dm.video_request_phase_mib(width = 1280, height = 720, num_frames = 241)
+    assert decode > 8000  # a 241-frame 720p decode peak
+    needs = mg.request_phase_needs(pipe, encode_mib = encode, denoise_mib = denoise, decode_mib = decode)
+    assert needs.decode_ordinal == 1
+    with mg.cfg_request_scope(pipe, 1280, 720, 30, needs):
+        assert router._room_mib(1) == decode
+        router.capacity_checked = False
+        router._check_capacity(latent)
+    assert router.shape_disabled is not None and "lacks room" in router.shape_disabled
+
+
+def test_cfg_parallel_replica_on_a_text_encoder_card_keeps_encode_room(monkeypatch):
+    class Pipe:
+        transformer = _Dit()
+        text_encoder = torch.nn.Linear(2, 2)
+
+    pipe = Pipe()
+    monkeypatch.setattr(
+        mg,
+        "_module_device",
+        lambda m: torch.device("cuda", 1 if m is Pipe.text_encoder else 0),
+    )
+    probes = {
+        0: _probe(0, 20000, {1: 20.0, 2: 2.0}),
+        1: _probe(1, 5000, {0: 20.0}),  # fastest link, hosts the text encoder: a 6000 MiB encode does not fit
+        2: _probe(2, 4000, {0: 2.0}),
+    }
+    monkeypatch.setattr(mg, "probe_devices", lambda ordinals, measure = True: probes)
+    monkeypatch.setattr(mg, "cfg_parallel_decline", lambda pipe, **k: None)
+    monkeypatch.delenv(mg.LINK_ENV, raising = False)
+    with mg.selection_scope(mg.MultiGpuSelection(primary = 0, secondaries = (1, 2))):
+        reason = mg._install_cfg_parallel_only(
+            pipe, offload_policy = "none", headroom_mib = 1000, encode_headroom_mib = 6000
+        )
+    assert reason is None, reason
+    router = mg._CFG_ROUTERS[pipe]
+    assert router.secondary == torch.device("cuda", 2)
+    # per request too: the retained replica sits beside the next request's encode on the encoder's card
+    router.secondary = torch.device("cuda", 1)
+    assert router._room_mib(1) == 6000
+    needs = mg.request_phase_needs(Pipe, encode_mib = 7000, denoise_mib = 1500, decode_mib = 2000)
+    assert needs.encode_ordinals == (1,)
+    router.request_needs = needs
+    assert router._room_mib(1) == 7000
+    router.secondary = torch.device("cuda", 2)
+    assert router._room_mib(1) == 1500
+    plan = type("P", (), {"estimates": {"calibrated_denoise_mib": 900, "calibrated_encode_mib": 2200}})()
+    assert mg.plan_encode_headroom_mib(plan) == 2200
+
+
+def test_cfg_routers_count_qwen_image_reference_tokens(monkeypatch):
+    from core.inference import diffusion as diffusion_mod
+
+    cal = dm.calibrated_image_activation("qwen-image-2.1")
+    # two 1024x1024 reference images beside the 1024x1024 output: the guard's condition pixels
+    refs = 2 * 1024 * 1024
+    state = type("S", (), {"calibrated_placement": True, "variant_hint": "qwen-image-2.1", "te_releaser": None})()
+    fam = type("F", (), {"name": "qwen-image-2.1"})()
+    monkeypatch.setattr(diffusion_mod, "_calibrated_activation", lambda f, t: cal)
+    dit = _BatchDit()
+    pipe = _RouterPipe(dit)
+    needs = diffusion_mod._cfg_request_needs(
+        state, fam, pipe, None, width = 1024, height = 1024, batch_size = 1, condition_pixels = refs, tiled = False
+    )
+    assert needs is not None and needs.denoise_mib == int(cal.denoise_mib * 3)
+    batch = mg.CfgBatchRouter(dit, headroom_mib = cal.denoise_mib, headroom_reference_px = 1024 * 1024)
+    dit.forward = batch
+    with mg.cfg_request_scope(pipe, 1024, 1024, 20, needs):
+        # the doubled call's gate charges the reference tokens, not just the output canvas
+        assert batch.needed_mib(1) == int(cal.denoise_mib * 3)
+    parallel = mg.CfgParallelRouter(
+        _BatchDit(), primary = "cuda:0", secondary = "cuda:1", headroom_mib = cal.denoise_mib,
+        headroom_reference_px = 1024 * 1024,
+    )
+    parallel.begin_request(1024, 1024, needs = needs)
+    assert parallel._room_mib(1) == int(cal.denoise_mib * 3)
+
+
+def test_cfg_routers_fall_back_to_scaling_the_load_figure_without_a_request_figure():
+    dit = _BatchDit()
+    pipe = _RouterPipe(dit)
+    batch = mg.CfgBatchRouter(dit, headroom_mib = 1000, headroom_reference_px = 1024 * 1024)
+    dit.forward = batch
+    with mg.cfg_request_scope(pipe, 2048, 2048):
+        assert batch.needed_mib(2) == 1000 * 4 * 2
+    parallel = mg.CfgParallelRouter(
+        _BatchDit(), primary = "cuda:0", secondary = "cuda:1", headroom_mib = 1000,
+        headroom_reference_px = 1024 * 1024, decode_headroom_mib = 3000, vae_ordinal = 1,
+    )
+    parallel.begin_request(2048, 2048)
+    assert parallel._room_mib(1) == 3000 * 4

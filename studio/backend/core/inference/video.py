@@ -109,6 +109,8 @@ from .diffusion_multigpu import (
     plan_denoise_headroom_mib,
     plan_denoise_reference_px,
     plan_decode_headroom_mib,
+    plan_encode_headroom_mib,
+    request_phase_needs,
     cfg_request_scope,
     release_cfg_inputs,
     is_split as multigpu_is_split,
@@ -117,6 +119,7 @@ from .diffusion_multigpu import (
     with_load_selection,
 )
 from .diffusion_memory import (
+    video_request_phase_mib,
     DEFAULT_BASE_OVERHEAD_MIB,
     DEFAULT_GROUP_BLOCKS,
     MEMORY_MODE_AUTO,
@@ -290,6 +293,21 @@ from .family_profile import trusted_repo_ids as _trusted_repo_ids  # noqa: E402
 
 _TRUSTED_NON_GGUF_VIDEO_REPOS = _trusted_repo_ids(_VIDEO_REGISTRY)
 
+
+def _cfg_video_request_needs(pipe: Any, request_shape: dict) -> Any:
+    """The CFG routers' per-phase memory for this clip, from the generation guard's own video estimator (canvas and
+    frames: the decode peak grows with the clip); None when it cannot be computed (the routers scale load figures)."""
+    try:
+        encode, denoise, decode = video_request_phase_mib(
+            width = request_shape.get("width"),
+            height = request_shape.get("height"),
+            num_frames = request_shape.get("frames"),
+        )
+        return request_phase_needs(
+            pipe, encode_mib = encode, denoise_mib = denoise, decode_mib = decode
+        )
+    except Exception:  # noqa: BLE001 - an estimate for an optional lever never fails a request
+        return None
 
 def _gguf_quant_token(filename: Optional[str]) -> Optional[str]:
     """The quant a GGUF filename names (``Q4_K_M``, ``BF16``), as the status reports it in ``gguf_variant``."""
@@ -8310,6 +8328,7 @@ class VideoBackend:
                 headroom_mib = plan_denoise_headroom_mib(plan),
                 headroom_reference_px = plan_denoise_reference_px(plan),
                 decode_headroom_mib = plan_decode_headroom_mib(plan),
+                encode_headroom_mib = plan_encode_headroom_mib(plan),
             )
             # Opt-in (UNSLOTH_DIFFUSION_BG_COMPILE=1): off by default so the same seed twice repeats.
             from . import diffusion_bg_compile as bg_compile
@@ -10819,6 +10838,7 @@ class VideoBackend:
                                 request_shape.get("width"),
                                 request_shape.get("height"),
                                 request_shape.get("steps"),
+                                _cfg_video_request_needs(pipe, request_shape),
                             )
                         )
                         # The decoded clip becomes uint8 on the GPU, bit-identical to the np / pil export (video_frames).

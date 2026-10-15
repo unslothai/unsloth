@@ -800,6 +800,75 @@ def scaled_headroom_mib(
     return need
 
 
+def plan_encode_headroom_mib(plan: Any) -> Optional[int]:
+    """The calibrated text-encode phase's room above the weights, None without a per-phase figure (the whole-request
+    figure then covers it)."""
+    estimates = getattr(plan, "estimates", None) or {}
+    if not estimates.get("calibrated_denoise_mib"):
+        return None
+    value = estimates.get("calibrated_encode_mib")
+    return int(value) if value else None
+
+
+_TEXT_ENCODER_ATTRS = ("text_encoder", "text_encoder_2", "text_encoder_3", "text_encoder_4")
+
+
+@dataclasses.dataclass(frozen = True)
+class PhaseNeeds:
+    """One request's activation room above the resident weights per phase, in MiB (batch, canvas, frames and
+    reference tokens included), with the cards the encode and decode run on. The denoise runs on every card a CFG
+    router uses. The phases run one after another, never together: a card's need is the max over the phases it runs."""
+
+    encode_mib: Optional[int] = None
+    denoise_mib: Optional[int] = None
+    decode_mib: Optional[int] = None
+    encode_ordinals: tuple[int, ...] = ()
+    decode_ordinal: Optional[int] = None
+
+    def room_on(self, ordinal: Optional[int]) -> int:
+        room = int(self.denoise_mib or 0)
+        if ordinal is not None and ordinal in self.encode_ordinals and self.encode_mib:
+            room = max(room, int(self.encode_mib))
+        if ordinal is not None and ordinal == self.decode_ordinal and self.decode_mib:
+            room = max(room, int(self.decode_mib))
+        return room
+
+
+def _cuda_ordinal(module: Any) -> Optional[int]:
+    try:
+        device = _module_device(module) if module is not None else None
+    except Exception:  # noqa: BLE001
+        return None
+    return device.index if getattr(device, "type", None) == "cuda" else None
+
+
+def text_encoder_ordinals(pipe: Any) -> tuple[int, ...]:
+    """CUDA cards holding one of ``pipe``'s text encoders (resident there: an offloaded one encodes on the primary)."""
+    found = []
+    for attr in _TEXT_ENCODER_ATTRS:
+        ordinal = _cuda_ordinal(getattr(pipe, attr, None))
+        if ordinal is not None and ordinal not in found:
+            found.append(ordinal)
+    return tuple(found)
+
+
+def request_phase_needs(
+    pipe: Any,
+    *,
+    encode_mib: Optional[int],
+    denoise_mib: Optional[int],
+    decode_mib: Optional[int],
+) -> PhaseNeeds:
+    """A request's per-phase needs (from the generation guard's own estimator) placed on ``pipe``'s cards."""
+    return PhaseNeeds(
+        encode_mib = None if encode_mib is None else int(encode_mib),
+        denoise_mib = None if denoise_mib is None else int(denoise_mib),
+        decode_mib = None if decode_mib is None else int(decode_mib),
+        encode_ordinals = text_encoder_ordinals(pipe),
+        decode_ordinal = _cuda_ordinal(getattr(pipe, "vae", None)),
+    )
+
+
 def plan_decode_headroom_mib(plan: Any) -> Optional[int]:
     """The calibrated VAE decode phase's room above the weights, None when the plan has no per-phase figure (then
     :func:`plan_denoise_headroom_mib` is the whole-request figure, which already includes the decode peak)."""
@@ -1898,11 +1967,18 @@ class CfgParallelRouter:
         candidates: Optional[Sequence[int]] = None,
         decode_headroom_mib: Optional[int] = None,
         vae_ordinal: Optional[int] = None,
+        encode_headroom_mib: Optional[int] = None,
+        te_ordinals: Sequence[int] = (),
     ):
         torch = _torch()
-        # the VAE decode's room above its weights, required on the replica card only when it hosts the VAE
+        # Load-time (calibrated) phase figures, the fallback when a request supplies none: the VAE decode's room is
+        # required on the replica card only when it hosts the VAE, the text encode's only when it hosts an encoder
         self.decode_headroom_mib = decode_headroom_mib
         self.vae_ordinal = vae_ordinal
+        self.encode_headroom_mib = encode_headroom_mib
+        self.te_ordinals = tuple(int(o) for o in te_ordinals)
+        # this request's per-phase needs (Studio's generation guard estimator), when supplied
+        self.request_needs: Optional[PhaseNeeds] = None
         # the odd branch's activations on the replica card, priced like CFG-batch's (canvas and batch scaled)
         self.headroom_mib = headroom_mib
         self.headroom_reference_px = headroom_reference_px
@@ -2166,10 +2242,21 @@ class CfgParallelRouter:
         return int(free)
 
     def _room_mib(self, batch: Optional[int]) -> int:
-        """Activation room the replica card needs beside the replica: the odd branch's denoise activations, and when
-        that card also runs the VAE decode, the decode peak (the two phases do not overlap: the routers' inputs are
-        released at decode entry), both scaled by canvas and batch."""
+        """Activation room the replica card needs beside the (retained) replica: the max over the phases that card
+        runs. The odd branch's denoise always; the VAE decode when it hosts the VAE (the routers' inputs are released at
+        decode entry); the text encode when it hosts an encoder (the replica stays across requests, so it sits beside
+        the next request's encode). Phases are sequential, so the max, not the sum. The request's own figures when the
+        generate path supplied them; else the load-time figures, denoise and decode scaled by canvas and batch."""
+        needs = self.request_needs
+        if needs is not None and needs.denoise_mib:
+            return needs.room_on(self.secondary.index)
         room = scaled_headroom_mib(self.headroom_mib, self.headroom_reference_px, self.request_px, batch)
+        if (
+            self.encode_headroom_mib
+            and self.secondary.index is not None
+            and self.secondary.index in self.te_ordinals
+        ):
+            room = max(room, int(self.encode_headroom_mib))
         if (
             self.decode_headroom_mib
             and self.vae_ordinal is not None
@@ -2259,8 +2346,10 @@ class CfgParallelRouter:
         height: Any = None,
         steps: Any = None,
         steps_fn: Optional[Callable[[], Any]] = None,
+        needs: Optional[PhaseNeeds] = None,
     ) -> None:
         self.release_inputs()
+        self.request_needs = needs
         self.branch = 0
         self.singles = 0
         self.b0_s = None
@@ -2312,6 +2401,7 @@ class CfgParallelRouter:
 
     def end_request(self) -> None:
         self.release_inputs()
+        self.request_needs = None
 
     def release_inputs(self) -> None:
         """Drop every tensor kept between calls (the replica and per-load pricing stay)."""
@@ -2636,10 +2726,12 @@ def install_cfg_parallel(
     headroom_mib: Optional[int] = None,
     headroom_reference_px: Optional[int] = None,
     decode_headroom_mib: Optional[int] = None,
+    encode_headroom_mib: Optional[int] = None,
 ) -> Optional[str]:
     """Arm CFG-parallel when a secondary card can hold a replica, else CFG-batch for an offloaded denoiser.
     Returns the CFG-parallel decline reason or None. ``headroom_mib``: the batched call's extra activation need.
-    ``decode_headroom_mib``: the VAE decode's room, required on a replica card that also hosts the VAE."""
+    ``decode_headroom_mib`` / ``encode_headroom_mib``: the plan's calibrated VAE decode / text encode room, required
+    on a replica card that also hosts the VAE / a text encoder."""
     reason = _install_cfg_parallel_only(
         pipe,
         offload_policy = offload_policy,
@@ -2647,6 +2739,7 @@ def install_cfg_parallel(
         headroom_mib = headroom_mib,
         headroom_reference_px = headroom_reference_px,
         decode_headroom_mib = decode_headroom_mib,
+        encode_headroom_mib = encode_headroom_mib,
     )
     if (
         reason is not None
@@ -2676,6 +2769,7 @@ def _install_cfg_parallel_only(
     headroom_mib: Optional[int] = None,
     headroom_reference_px: Optional[int] = None,
     decode_headroom_mib: Optional[int] = None,
+    encode_headroom_mib: Optional[int] = None,
 ) -> Optional[str]:
     selection = current_selection()
     reason = cfg_parallel_decline(pipe, offload_policy = offload_policy, selection = selection)
@@ -2705,12 +2799,19 @@ def _install_cfg_parallel_only(
             vae_ordinal = (
                 vae_device.index if getattr(vae_device, "type", None) == "cuda" else None
             )
+            te_ordinals = text_encoder_ordinals(pipe)
+            load_needs = PhaseNeeds(
+                encode_mib = encode_headroom_mib,
+                denoise_mib = room,
+                decode_mib = decode_headroom_mib,
+                encode_ordinals = te_ordinals,
+                decode_ordinal = vae_ordinal,
+            )
 
             def room_on(o: int) -> int:
-                # a card that also runs the VAE decode needs the decode peak too (phases do not overlap)
-                if decode_headroom_mib and o == vae_ordinal:
-                    return max(room, int(decode_headroom_mib))
-                return room
+                # the max over the phases that card runs (they never overlap): denoise, plus the VAE decode / the text
+                # encode where it hosts the VAE / an encoder (the replica is kept across requests)
+                return load_needs.room_on(o)
 
             fits = [
                 o
@@ -2736,6 +2837,8 @@ def _install_cfg_parallel_only(
                     candidates = fits,
                     decode_headroom_mib = decode_headroom_mib,
                     vae_ordinal = vae_ordinal,
+                    encode_headroom_mib = encode_headroom_mib,
+                    te_ordinals = te_ordinals,
                 )
                 try:
                     _CFG_ROUTERS[pipe] = router
@@ -2816,11 +2919,13 @@ def cfg_request_scope(
     width: Any = None,
     height: Any = None,
     steps: Any = None,
+    needs: Optional[PhaseNeeds] = None,
 ) -> Iterator[None]:
     """One Studio generate request around ``pipe()``: the routers forget every per-request field on entry and drop
     every retained tensor on exit. Outside this scope the routers infer request boundaries from the call pattern.
     ``steps``: the request's denoise steps when Studio knows them; else the scheduler's timesteps, read when the
-    first replica build is decided (the pipeline has set them by then)."""
+    first replica build is decided (the pipeline has set them by then). ``needs``: the request's per-phase memory from
+    the generation guard's estimator (:func:`request_phase_needs`); without it the routers scale the load-time figures."""
     routers = _routers_of(pipe)
     scheduler = getattr(pipe, "scheduler", None)
     steps_fn = None
@@ -2831,7 +2936,7 @@ def cfg_request_scope(
             return len(timesteps) if timesteps is not None else None
 
     for router in routers:
-        router.begin_request(width, height, steps, steps_fn)
+        router.begin_request(width, height, steps, steps_fn, needs)
     try:
         yield
     finally:
@@ -3142,6 +3247,7 @@ class CfgBatchRouter:
         self.prev_override = module.__dict__.get("forward")
         self.headroom_mib = headroom_mib
         # the canvas (pixels) ``headroom_mib`` was calibrated at; scaled linearly to the request's canvas
+        self.request_needs: Optional[PhaseNeeds] = None
         self.headroom_reference_px = headroom_reference_px
         self.request_px: Optional[int] = None
         # every batched call checks the denoiser for state its forward advances (slots collected once per load)
@@ -3202,8 +3308,10 @@ class CfgBatchRouter:
         height: Any = None,
         steps: Any = None,
         steps_fn: Optional[Callable[[], Any]] = None,
+        needs: Optional[PhaseNeeds] = None,
     ) -> None:
         self.release_inputs()
+        self.request_needs = needs
         self.branch = 0
         self.timing_off = False
         if self.pricing is None:
@@ -3216,6 +3324,7 @@ class CfgBatchRouter:
     def end_request(self) -> None:
         self.release_inputs()
         self.request_px = None
+        self.request_needs = None
 
     def release_inputs(self) -> None:
         """Drop every tensor kept between calls; a pending verdict is applied first."""
@@ -3574,7 +3683,12 @@ class CfgBatchRouter:
 
     def needed_mib(self, batch: Optional[int] = None) -> int:
         """The headroom the batched call needs for the second branch of ``batch`` samples (the latent's leading dim):
-        the calibrated figure scaled by the request's canvas over the calibration canvas and by the batch, linearly."""
+        the request's denoise figure from the generation guard's estimator (canvas, batch, frames and reference tokens
+        included) when the generate path supplied it; else the load-time calibrated figure scaled by the request's
+        canvas over the calibration canvas and by the batch, linearly."""
+        needs = self.request_needs
+        if needs is not None and needs.denoise_mib:
+            return int(needs.denoise_mib)
         return scaled_headroom_mib(
             self.headroom_mib, self.headroom_reference_px, self.request_px, batch
         )

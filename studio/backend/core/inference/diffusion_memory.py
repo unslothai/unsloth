@@ -1046,6 +1046,54 @@ def estimate_image_runtime_mib(
     return max(1024, int(8192 * max(0.25, pixel_scale) * _family_activation_multiplier(family)))
 
 
+def image_request_phase_mib(
+    *,
+    width: Optional[int],
+    height: Optional[int],
+    batch_size: int = 1,
+    family: Optional[str] = None,
+    condition_pixels: int = 0,
+    calibrated: Optional["CalibratedImageActivation"] = None,
+    tiled: bool = False,
+) -> tuple[int, int, int]:
+    """(encode, denoise, decode) MiB above the weights for one image request, on the generation guard's own curve:
+    target plus (already weighted) condition pixels, times the batch, over 1024x1024. Calibrated families scale each
+    measured phase by it (the decode by the output canvas alone; a tiled decode is canvas-independent); the rest
+    charge every phase the guard's whole-request estimate."""
+    w = max(64, int(width or DEFAULT_IMAGE_WIDTH))
+    h = max(64, int(height or DEFAULT_IMAGE_HEIGHT))
+    batch = max(1, int(batch_size or 1))
+    cond = max(0, int(condition_pixels or 0))
+    if calibrated is None:
+        whole = estimate_image_runtime_mib(
+            width = width,
+            height = height,
+            batch_size = batch_size,
+            family = family,
+            condition_pixels = condition_pixels,
+        )
+        return whole, whole, whole
+    reference = float(DEFAULT_IMAGE_WIDTH * DEFAULT_IMAGE_HEIGHT)
+    tokens = (w * h + cond) * batch / reference
+    canvas = w * h * batch / reference
+    decode = calibrated.tiled_decode_mib if tiled else calibrated.decode_mib * canvas
+    return int(calibrated.text_encoder_mib), int(calibrated.denoise_mib * tokens), int(decode)
+
+
+def video_request_phase_mib(
+    *,
+    width: Optional[int],
+    height: Optional[int],
+    num_frames: Optional[int],
+    batch_size: int = 1,
+) -> tuple[int, int, int]:
+    """(encode, denoise, decode) MiB for one video request: the generation guard's whole-request estimate (its decode
+    peak scales with the frames) times the batch, charged to every phase (video has no per-phase calibration)."""
+    whole = estimate_video_runtime_mib(width = width, height = height, num_frames = num_frames)
+    whole *= max(1, int(batch_size or 1))
+    return whole, whole, whole
+
+
 def estimate_video_runtime_mib(
     *, width: Optional[int], height: Optional[int], num_frames: Optional[int]
 ) -> int:
@@ -1950,6 +1998,8 @@ def plan_diffusion_memory(
             # the denoise phase alone: what a second guidance branch in the same call adds (CFG-batch's memory gate)
             estimates["calibrated_denoise_mib"] = int(calibrated_activation.denoise_mib)
             # the decode phase alone: a CFG-parallel replica on the card that hosts the VAE must leave room for it
+            # the encode phase alone: a replica kept on a card that hosts a text encoder sits beside the next encode
+            estimates["calibrated_encode_mib"] = int(calibrated_activation.text_encoder_mib)
             estimates["calibrated_decode_mib"] = int(
                 calibrated_activation.tiled_decode_mib if tile else calibrated_activation.decode_mib
             )

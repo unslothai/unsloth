@@ -107,6 +107,8 @@ from .diffusion_multigpu import (
     plan_denoise_headroom_mib,
     plan_denoise_reference_px,
     plan_decode_headroom_mib,
+    plan_encode_headroom_mib,
+    request_phase_needs,
     cfg_request_scope,
     release_cfg_inputs,
     invalidate_cfg_replica,
@@ -151,6 +153,7 @@ from .diffusion_memory import (
     OFFLOAD_STREAMING,
     apply_memory_plan,
     calibrated_image_activation,
+    image_request_phase_mib,
     engage_vae_tiling,
     estimate_gguf_resident_mib,
     estimate_image_runtime_mib,
@@ -2041,6 +2044,46 @@ def _calibrated_activation(fam: Any, target: Any) -> Any:
     try:
         return activation if sdpa_subquadratic_confirmed(target) else None
     except Exception:  # noqa: BLE001 - unprobed attention keeps the flat estimate
+        return None
+
+
+def _cfg_request_needs(
+    state: Any,
+    fam: Any,
+    pipe: Any,
+    target: Any,
+    *,
+    width: Any,
+    height: Any,
+    batch_size: int,
+    condition_pixels: int,
+    tiled: bool,
+) -> Any:
+    """The CFG routers' per-phase memory for this request, from the generation guard's own inputs (canvas, batch,
+    reference / layer condition pixels); None when it cannot be computed (the routers then scale the load figures)."""
+    try:
+        calibrated = (
+            _calibrated_activation(fam, target)
+            if getattr(state, "calibrated_placement", False)
+            else None
+        )
+        encode, denoise, decode = image_request_phase_mib(
+            width = width,
+            height = height,
+            batch_size = batch_size,
+            family = getattr(state, "variant_hint", None),
+            condition_pixels = condition_pixels,
+            calibrated = calibrated,
+            tiled = tiled,
+        )
+        releaser = getattr(state, "te_releaser", None)
+        if releaser is not None:
+            # released encoder weights come back onto their card for the encode
+            encode += int(releaser.releasable_bytes) // (1 << 20)
+        return request_phase_needs(
+            pipe, encode_mib = encode, denoise_mib = denoise, decode_mib = decode
+        )
+    except Exception:  # noqa: BLE001 - an estimate for an optional lever never fails a request
         return None
 
 
@@ -8508,6 +8551,7 @@ class DiffusionBackend:
                         headroom_mib = plan_denoise_headroom_mib(plan),
                         headroom_reference_px = plan_denoise_reference_px(plan),
                         decode_headroom_mib = plan_decode_headroom_mib(plan),
+                        encode_headroom_mib = plan_encode_headroom_mib(plan),
                     )
                     te_releaser = te_release.maybe_install(pipe, plan, logger = logger)
                     state = _LoadState(
@@ -10983,6 +11027,8 @@ class DiffusionBackend:
                 # cap; the OOM backoff below halves a failed chunk. Layered: one input per forward (the pipeline's
                 # per-prompt layer stride is only right for one).
                 chunks = [[job] for job in jobs] if layer_count else chunk_jobs(jobs, batch_size)
+                # this request's per-phase memory for the CFG routers (None: they scale the load-time figures)
+                cfg_needs = None
 
                 try:
                     # The dimensions the forward runs at, not the sliders: img2img / inpaint / upscale / edit take
@@ -11051,6 +11097,17 @@ class DiffusionBackend:
                     verdict = raise_on_image_activation_shortfall(**guard_kwargs)
                     restore_vae = _tile_for_verdict(
                         pipe, verdict, guard_target, guard_kwargs, guard_batch, restore_vae, logger
+                    )
+                    cfg_needs = _cfg_request_needs(
+                        state,
+                        fam,
+                        pipe,
+                        guard_target,
+                        width = guard_width,
+                        height = guard_height,
+                        batch_size = guard_batch,
+                        condition_pixels = guard_condition_pixels,
+                        tiled = verdict.action == ACTIVATION_TILE,
                     )
                 except ValueError:
                     raise  # the refusal itself: the route turns this into a 400 with the reason
@@ -11311,6 +11368,7 @@ class DiffusionBackend:
                                     guard_width,
                                     guard_height,
                                     chunk_kwargs.get("num_inference_steps"),
+                                    cfg_needs,
                                 ),
                                 _completed_step_poller(_pump),
                             ):
