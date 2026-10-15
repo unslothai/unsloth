@@ -1143,6 +1143,10 @@ VLLM_SUPPORTED_VLM = [
     "qwen3_5_moe",
     "gemma4",
     "gemma4_text",
+    "gemma4_unified",
+    "gemma4_unified_text",
+    "muse_glimmer",
+    "muse_glimmer_text",
 ]
 
 
@@ -1158,11 +1162,42 @@ def _zoo_supports_idefics3_fast_inference():
         return False
 
 
+def _zoo_supports_new_vlm_fast_inference(model_types):
+    # Older unsloth_zoo releases rebuild these with wrong / missing weights from vLLM.
+    try:
+        from types import SimpleNamespace
+        from unsloth_zoo.empty_model import _is_gemma4_config, get_model_layer_config
+
+        if "gemma4_unified" in model_types or "gemma4_unified_text" in model_types:
+            if not _is_gemma4_config(SimpleNamespace(model_type = "gemma4_unified")):
+                return False
+        if "muse_glimmer" in model_types or "muse_glimmer_text" in model_types:
+            if (
+                "model.vision_tower.layers.{kk}.attn.proj"
+                not in get_model_layer_config()["vision_layers"]
+            ):
+                return False
+        return True
+    except Exception:
+        return False
+
+
 # Need an unsloth_zoo that rebuilds MoE blocks from vLLM.
 VLLM_ZOO_MOE_VLM = ("qwen3_5_moe", "gemma4", "gemma4_text")
-# Dense Gemma-4 shares the model type but aborts in vLLM's audio-encoder profiling, and in
-# 4-bit hits a bnb loader vLLM >= 0.28 moved out of tree. Only MoE checkpoints pass.
-VLLM_MOE_ONLY_VLM = ("gemma4", "gemma4_text")
+# Dense Gemma-4 (E2B / E4B) needs a zoo that turns vLLM's audio profiling off (audio limit 0).
+VLLM_DENSE_NEEDS_ZOO_VLM = ("gemma4", "gemma4_text")
+
+
+def _zoo_supports_dense_gemma4_fast_inference():
+    # Older unsloth_zoo leaves the clipped vision linears of dense Gemma-4 clamping at +-inf.
+    try:
+        from unsloth_zoo.empty_model import get_model_layer_config
+        return (
+            "model.vision_tower.encoder.layers.{kk}.self_attn.q_proj.input_min"
+            in get_model_layer_config()["vision_layers"]
+        )
+    except Exception:
+        return False
 
 
 def _is_sparse_moe_config(config):
@@ -3167,16 +3202,21 @@ class FastBaseModel:
                     "Unsloth: Idefics3 fast_inference needs a newer unsloth_zoo. "
                     "Please run `pip install --upgrade unsloth_zoo`."
                 )
+            if not _zoo_supports_new_vlm_fast_inference(model_types):
+                raise RuntimeError(
+                    f"Unsloth: {model_type_arch} fast_inference needs a newer unsloth_zoo. "
+                    "Please run `pip install --upgrade unsloth_zoo`."
+                )
         # Outside the VLM block: text_only = True has is_vlm_config False.
         if (
             fast_inference
-            and any(arch in VLLM_MOE_ONLY_VLM for arch in model_types)
+            and any(arch in VLLM_DENSE_NEEDS_ZOO_VLM for arch in model_types)
             and not _is_sparse_moe_config(auto_config)
+            and not _zoo_supports_dense_gemma4_fast_inference()
         ):
             raise RuntimeError(
-                f"Unsloth: fast_inference = True is only supported for the MoE {model_type_arch} "
-                "checkpoints (such as gemma-4-26B-A4B), not the dense ones yet. "
-                "Please set fast_inference = False."
+                f"Unsloth: dense {model_type_arch} fast_inference needs a newer unsloth_zoo. "
+                "Please run `pip install --upgrade unsloth_zoo`, or set fast_inference = False."
             )
         if (
             fast_inference

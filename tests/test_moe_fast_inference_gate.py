@@ -60,30 +60,27 @@ def test_a_config_without_text_config_is_read_directly():
     assert is_moe(SimpleNamespace()) is False
 
 
-def test_dense_gemma4_is_refused_at_the_gate():
-    """Dense Gemma-4 shares the gemma4 model type, so the allowlist alone would admit it."""
-    assert set(_module_constant("VLLM_MOE_ONLY_VLM")) == {"gemma4", "gemma4_text"}
-    gate, parents = _gate("not the dense ones yet")
+def test_dense_gemma4_is_refused_only_with_an_old_zoo():
+    """Dense Gemma-4 shares the gemma4 model type; an old zoo leaves vLLM profiling its audio encoder."""
+    assert set(_module_constant("VLLM_DENSE_NEEDS_ZOO_VLM")) == {"gemma4", "gemma4_text"}
+    gate, parents = _gate("needs a newer unsloth_zoo", "_zoo_supports_dense_gemma4_fast_inference")
     # text_only = True sets is_vlm_config False, so the gate must not sit under it.
     assert not any("is_vlm_config" in test for test in parents)
-    only_moe = {"VLLM_MOE_ONLY_VLM": _module_constant("VLLM_MOE_ONLY_VLM"), "fast_inference": True}
-    assert _evaluate(gate, model_types = ["gemma4"], auto_config = GEMMA4_DENSE, **only_moe)
+    base = {
+        "VLLM_DENSE_NEEDS_ZOO_VLM": _module_constant("VLLM_DENSE_NEEDS_ZOO_VLM"),
+        "fast_inference": True,
+    }
+    old = {**base, "_zoo_supports_dense_gemma4_fast_inference": lambda: False}
+    new = {**base, "_zoo_supports_dense_gemma4_fast_inference": lambda: True}
+    assert _evaluate(gate, model_types = ["gemma4"], auto_config = GEMMA4_DENSE, **old)
     assert _evaluate(
-        gate,
-        model_types = ["gemma4_text", "gemma4"],
-        auto_config = GEMMA4_DENSE.text_config,
-        **only_moe,
+        gate, model_types = ["gemma4_text", "gemma4"], auto_config = GEMMA4_DENSE.text_config, **old
     )
-    assert not _evaluate(gate, model_types = ["gemma4"], auto_config = GEMMA4_MOE, **only_moe)
+    assert not _evaluate(gate, model_types = ["gemma4"], auto_config = GEMMA4_DENSE, **new)
+    assert not _evaluate(gate, model_types = ["gemma4"], auto_config = GEMMA4_MOE, **old)
+    assert not _evaluate(gate, model_types = ["qwen3_5"], auto_config = QWEN3_5_DENSE, **old)
     assert not _evaluate(
-        gate, model_types = ["gemma4_text"], auto_config = GEMMA4_MOE.text_config, **only_moe
-    )
-    assert not _evaluate(gate, model_types = ["qwen3_5"], auto_config = QWEN3_5_DENSE, **only_moe)
-    assert not _evaluate(
-        gate,
-        **{**only_moe, "fast_inference": False},
-        model_types = ["gemma4"],
-        auto_config = GEMMA4_DENSE,
+        gate, **{**old, "fast_inference": False}, model_types = ["gemma4"], auto_config = GEMMA4_DENSE
     )
 
 
@@ -205,3 +202,42 @@ def test_bnb_moe_loads_are_refused_without_load_in_4bit():
     assert not refused(False, "google/gemma-4-26B-A4B-it", None)
     assert not refused(False, "Qwen/Qwen3.6-35B-A3B-FP8", "fp8", QWEN3_5_MOE, ("qwen3_5_moe",))
     assert not refused(False, "unsloth/gemma-4-E2B-it-bnb-4bit", "bitsandbytes", GEMMA4_DENSE)
+
+
+def _zoo_probe():
+    for node in TREE.body:
+        if (
+            isinstance(node, ast.FunctionDef)
+            and node.name == "_zoo_supports_dense_gemma4_fast_inference"
+        ):
+            namespace = {}
+            exec(
+                compile(ast.Module(body = [node], type_ignores = []), str(VISION_PATH), "exec"),
+                namespace,
+            )
+            return namespace["_zoo_supports_dense_gemma4_fast_inference"]
+    raise AssertionError("_zoo_supports_dense_gemma4_fast_inference not found")
+
+
+def test_dense_gemma4_zoo_probe_reads_the_clamp_bound_templates(monkeypatch):
+    import sys
+    import types
+
+    probe = _zoo_probe()
+    bound = "model.vision_tower.encoder.layers.{kk}.self_attn.q_proj.input_min"
+
+    def install(vision_layers):
+        module = types.ModuleType("unsloth_zoo.empty_model")
+        if vision_layers is not None:
+            module.get_model_layer_config = lambda: {"vision_layers": set(vision_layers)}
+        package = sys.modules.get("unsloth_zoo") or types.ModuleType("unsloth_zoo")
+        monkeypatch.setitem(sys.modules, "unsloth_zoo", package)
+        monkeypatch.setitem(sys.modules, "unsloth_zoo.empty_model", module)
+        monkeypatch.setattr(package, "empty_model", module, raising = False)
+
+    install({bound, "model.vision_tower.encoder.layers.{kk}.self_attn.q_proj"})
+    assert probe() is True
+    install({"model.vision_tower.encoder.layers.{kk}.self_attn.q_proj"})
+    assert probe() is False
+    install(None)
+    assert probe() is False
