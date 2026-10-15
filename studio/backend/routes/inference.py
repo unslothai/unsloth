@@ -47384,7 +47384,11 @@ def _external_image_run_active() -> bool:
 
 
 def _stop_external_image_runs() -> bool:
-    runs = _external_image_runs.get(account_access.account_scope()) or set()
+    runs = [
+        task
+        for task in _external_image_runs.get(account_access.account_scope()) or ()
+        if not task.done()
+    ]
     for task in runs:
         _stopped_external_image_runs.add(task)
         task.cancel()
@@ -47397,9 +47401,13 @@ async def _external_image_generation(
     from PIL import Image
 
     from core.inference import image_gallery
-    from core.inference.llama_keepwarm import untrack_current_request
+    from core.inference.llama_keepwarm import (
+        untrack_current_media_request,
+        untrack_current_request,
+    )
 
     untrack_current_request(request.scope)
+    untrack_current_media_request(request.scope)
     provider_id = body.provider_id.strip()
     external_model = (body.model or "").strip()
     if not external_model:

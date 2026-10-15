@@ -3180,3 +3180,53 @@ def test_a_connection_run_reports_active_even_when_local_progress_is_hidden(clie
         inference_routes._external_image_runs, account_access.account_scope(), {object()}
     )
     assert client.get("/api/inference/images/generate-progress").json()["active"] is True
+
+
+def test_a_connection_call_leaves_the_media_tracker(client, monkeypatch):
+    import base64
+    import io
+
+    import httpx
+    from PIL import Image
+
+    import core.inference.llama_keepwarm as kw
+    import core.inference.media_keepwarm as mk
+
+    client.app.add_middleware(kw.LlamaKeepWarmMiddleware)
+    seen = []
+
+    def handler(req):
+        seen.append(mk._TRACKERS[mk.DIFFUSION].outstanding())
+        buf = io.BytesIO()
+        Image.new("RGB", (64, 64)).save(buf, format = "PNG")
+        return httpx.Response(200, json = {"data": [{"b64_json": base64.b64encode(buf.getvalue()).decode()}]})
+
+    _external_image_connection(monkeypatch, handler)
+    before = mk._TRACKERS[mk.DIFFUSION].outstanding()
+    resp = client.post(
+        "/api/inference/images/generate",
+        json = {"prompt": "a sloth", "provider_id": "conn-1", "model": "qwen-image"},
+        headers = {"Authorization": "Bearer session"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert seen == [before]
+    assert mk._TRACKERS[mk.DIFFUSION].outstanding() == before
+
+
+def test_stop_after_the_connection_answered_is_not_acknowledged(client, monkeypatch):
+    import asyncio
+
+    import hub.services.models.account_access as account_access
+
+    async def run():
+        done = asyncio.get_running_loop().create_future()
+        done.set_result(None)
+        task = asyncio.ensure_future(done)
+        await task
+        inference_routes._external_image_runs[account_access.account_scope()] = {task}
+        try:
+            return inference_routes._stop_external_image_runs()
+        finally:
+            inference_routes._external_image_runs.clear()
+
+    assert asyncio.run(run()) is False
