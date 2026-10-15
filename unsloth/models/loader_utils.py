@@ -143,6 +143,7 @@ def fsdp_version_requested():
     """
     try:
         from accelerate.state import AcceleratorState
+
         shared = AcceleratorState._shared_state
         plugin = shared.get("fsdp_plugin", None)
         if plugin is not None:
