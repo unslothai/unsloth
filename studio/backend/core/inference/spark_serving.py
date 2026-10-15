@@ -3500,6 +3500,15 @@ async def before_load(
                 await cluster.shutdown()
 
             state()._on_plan_accepted = retire_cluster
+        cluster = cluster_serving._STATE
+        if (
+            replacing
+            and cluster.retire_on_commit
+            and cluster.block
+            and getattr(cluster._backend, "is_loaded", False)
+        ):
+            # after_load retires the workers, so the primary using them must not be kept as is.
+            request = SparkServing._request_with(request, {"force_reload": True})
     if not enabled():
         return request
     st = state()

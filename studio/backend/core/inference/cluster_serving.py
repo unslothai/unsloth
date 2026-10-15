@@ -277,6 +277,8 @@ def _local_gguf_header(path: str, ss: Any) -> Tuple[Dict[str, Any], Dict[int, in
                 shard_vals, shard_blocks = _read_gguf_header(f, tensors = True)
             if index == 0:
                 vals = shard_vals
+            if not shard_blocks:
+                return vals, {}
             for block, size in shard_blocks.items():
                 blocks[block] = blocks.get(block, 0) + size
     except Exception:
@@ -298,8 +300,25 @@ def _remote_gguf_header(
         if chosen is None:
             return {}, {}
         fs = HfFileSystem(token = hf_token)
-        with fs.open(f"{model_path}/{chosen.filename}", "rb", block_size = 1 << 20) as f:
-            return _read_gguf_header(f, tensors = True)
+        first = str(chosen.filename)
+        shards = [first]
+        match = re.search(r"-00001-of-(\d{5})\.gguf$", first, re.IGNORECASE)
+        if match:
+            total = int(match.group(1))
+            stem = first[: match.start()]
+            shards = [f"{stem}-{i:05d}-of-{total:05d}.gguf" for i in range(1, total + 1)]
+        vals: Dict[str, Any] = {}
+        blocks: Dict[int, int] = {}
+        for index, shard in enumerate(shards):
+            with fs.open(f"{model_path}/{shard}", "rb", block_size = 1 << 20) as f:
+                shard_vals, shard_blocks = _read_gguf_header(f, tensors = True)
+            if index == 0:
+                vals = shard_vals
+            if not shard_blocks:
+                return vals, {}  # a shard without a readable tensor table leaves the max unknown
+            for block, size in shard_blocks.items():
+                blocks[block] = blocks.get(block, 0) + size
+        return vals, blocks
     except Exception:
         return {}, {}
 
@@ -456,11 +475,15 @@ class ClusterPlan:
     sidecar_device: Optional[Device] = None
     # Never counted as freed by a replacement: the KV estimate is not the cache's real layout.
     kv_bytes: float = 0.0
+    layer_bytes: float = 0.0
 
     def resident(self) -> Dict[Tuple[str, str], float]:
         """What this plan puts on each device, so a replacement load can count it as freed."""
         held = max(0.0, float(self.need_bytes or 0) - self.kv_bytes)
-        out = {d.key: w * held for d, w in zip(self.devices, self.weights)}
+        # Whole-layer rounding can leave a device a layer short of its share.
+        out = {
+            d.key: max(0.0, w * held - self.layer_bytes) for d, w in zip(self.devices, self.weights)
+        }
         local = self.sidecar_device or next((d for d in self.devices if not d.remote), None)
         if local is not None:
             out[local.key] = out.get(local.key, 0.0) + max(
@@ -1113,6 +1136,7 @@ class ClusterServing:
         )
         plan.kv_bytes = float(kv_bytes or 0)
         plan.uncertain_extra_bytes = self._uncertain_extra
+        plan.layer_bytes = float(layer_bytes or 0.0)
         self.plan = plan
         if plan.topology == "refuse":
             self.topology, self.reason, self.plan, self.block = self._pre_load
@@ -1156,6 +1180,15 @@ class ClusterServing:
             # MTP state and a drafter Studio picks are resolved after this plan, outside its budget.
             updates["speculative_type"] = "off"
             self.reason += "; speculative decoding off for the split"
+        served = list(self._pre_load[3]) if self._pre_load else []
+        served_rpc = served[served.index("--rpc") + 1].split(",") if "--rpc" in served[:-1] else []
+        if (
+            self._backend is not None
+            and getattr(self._backend, "is_loaded", False)
+            and self._started & set(served_rpc)
+        ):
+            # A restarted worker holds none of the served model: equal arguments must relaunch.
+            updates["force_reload"] = True
         return ss.SparkServing._request_with(request, updates)
 
     async def _size(self, request, n_parallel, extras, ss) -> Tuple[Optional[float], float, float]:

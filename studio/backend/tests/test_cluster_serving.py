@@ -1425,7 +1425,11 @@ def test_a_guessed_kv_reserve_is_not_counted_as_freed(monkeypatch):
         is_loaded = True,
     )
     run(ss.after_load(backend, 4))
-    assert sum(cs.state()._resident.values()) == pytest.approx(90 * GIB)
+    plan = cs.state().plan
+    # Weights only, a layer short per device for whole-layer rounding.
+    expected = sum(max(0.0, w * 90 * GIB - plan.layer_bytes) for w in plan.weights)
+    assert plan.layer_bytes > 0
+    assert sum(cs.state()._resident.values()) == pytest.approx(expected)
 
 
 @pytest.mark.parametrize("env", [False, True])
@@ -2046,7 +2050,7 @@ def test_the_header_reader_matches_the_local_kv_estimate(monkeypatch, tmp_path):
             mode,
             block_size = None,
         ):
-            assert path == "org/big-GGUF/Q4/big-00001-of-00002.gguf"
+            opened.append(path)
             return io.BytesIO(_gguf_header(kvs, tensors))
 
     import huggingface_hub
@@ -2055,11 +2059,17 @@ def test_the_header_reader_matches_the_local_kv_estimate(monkeypatch, tmp_path):
     monkeypatch.setattr(huggingface_hub, "HfFileSystem", FakeFs)
     variant = SimpleNamespace(filename = "Q4/big-00001-of-00002.gguf", size_bytes = 1)
     monkeypatch.setattr(model_config, "list_gguf_variants", lambda repo, token: ([variant], False))
-    assert cs._remote_gguf_header("org/big-GGUF", None, None, ss) == (vals, blocks)
+    opened = []
+    doubled = {b: 2 * n for b, n in blocks.items()}
+    assert cs._remote_gguf_header("org/big-GGUF", None, None, ss) == (vals, doubled)
+    assert opened == [
+        "org/big-GGUF/Q4/big-00001-of-00002.gguf",
+        "org/big-GGUF/Q4/big-00002-of-00002.gguf",
+    ]
     shard = tmp_path / "big.gguf"
     shard.write_bytes(_gguf_header(kvs, tensors))
     monkeypatch.setattr(ss, "gguf_shard_paths", lambda path: [str(shard), str(shard)])
-    assert cs._local_gguf_header(str(shard), ss) == (vals, {b: 2 * n for b, n in blocks.items()})
+    assert cs._local_gguf_header(str(shard), ss) == (vals, doubled)
 
 
 def test_the_rounding_reserve_is_the_largest_block(monkeypatch):
@@ -2184,3 +2194,37 @@ def test_detaching_a_two_spark_split_forces_a_relaunch(monkeypatch):
     assert out.force_reload is True
     out = run(ss.before_load(_request(), 4))
     assert not getattr(out, "force_reload", False)  # nothing was detached this time
+
+
+def test_a_restarted_served_worker_forces_a_relaunch(monkeypatch):
+    _cluster_env(monkeypatch)
+    out = run(ss.before_load(_request(), 4))
+    backend = SimpleNamespace(
+        _process = SimpleNamespace(args = ["/b/llama-server"] + out.llama_extra_args),
+        is_loaded = True,
+    )
+    run(ss.after_load(backend, 4))
+    out = run(ss.before_load(_request(), 4))
+    assert not getattr(out, "force_reload", False)
+
+    async def restart(self):
+        self._started.add("10.0.0.3:50052")
+        return {}
+
+    monkeypatch.setattr(cs.ClusterServing, "_ensure_workers", restart)
+    out = run(ss.before_load(_request(), 4))
+    assert out.force_reload is True
+
+
+def test_retiring_a_served_split_forces_a_relaunch(monkeypatch):
+    _cluster_env(monkeypatch)
+    out = run(ss.before_load(_request(), 4))
+    backend = SimpleNamespace(
+        _process = SimpleNamespace(args = ["/b/llama-server"] + out.llama_extra_args),
+        is_loaded = True,
+    )
+    run(ss.after_load(backend, 4))
+    monkeypatch.delenv(cs.ENV_NODES)
+    monkeypatch.setattr(ss, "is_spark", lambda: False)
+    out = run(ss.before_load(_request(), 4))
+    assert out.force_reload is True and cs.state().retire_on_commit
