@@ -696,7 +696,9 @@ test("the import names a sampler or schedule the loaded model does not offer", (
   const start = page.indexOf("const notApplied = unknownRecipeKeys(recipe);");
   assert.ok(start > 0);
   const block = page.slice(start, page.indexOf("[restoreSettings,", start));
-  assert.match(block, /notApplied\.unshift\(`sampler \$\{settings\.sampler\}`\)/);
+  assert.match(block, /notApplied\.unshift\(`sampler \$\{labelOf\(SAMPLER_LABELS, settings\.sampler\)\}`\)/);
+  assert.match(block, /notApplied\.unshift\(`schedule \$\{labelOf\(SCHEDULE_LABELS, settings\.schedule_type\)\}`\)/);
+  assert.match(page, /Object\.hasOwn\(labels, id\)/);
   assert.match(block, /offered\.schedule_types\.includes\(settings\.schedule_type\)/);
   assert.match(block, /newerRecipeSchema\(recipe\)/);
   // A loaded model with no sampler choice still names a recorded sampler.

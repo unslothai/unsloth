@@ -302,6 +302,7 @@ import {
   type SamplerChoice,
   samplerRecipeLabel,
   samplerRequestFields,
+  SAMPLER_LABELS,
   SCHEDULE_LABELS,
   withSamplerChoice,
 } from "./lib/sampler-choice";
@@ -353,6 +354,10 @@ function useImageModels(
 // support; null = always. Each conditioned workflow names the images it consumed for the restore
 // toast, since a recipe keeps the scalar settings but not the uploads. Keys are the backend's own
 // workflow strings; txt2img is absent because it restores completely.
+// Own keys only: an imported id like "constructor" must not read Object.prototype.
+const labelOf = (labels: Record<string, string>, id: string) =>
+  Object.hasOwn(labels, id) ? labels[id] : id;
+
 const CONDITIONED_WORKFLOW_INPUTS: Record<string, string> = {
   img2img: "the source image",
   inpaint: "the source image and mask",
@@ -2645,20 +2650,20 @@ export function ImagesPage({
       const notApplied = unknownRecipeKeys(recipe);
       if (status?.loaded && samplerOptions.length === 0) {
         if (settings.schedule_type && settings.schedule_type !== AUTOMATIC_SCHEDULE) {
-          notApplied.unshift(`schedule ${settings.schedule_type}`);
+          notApplied.unshift(`schedule ${labelOf(SCHEDULE_LABELS, settings.schedule_type)}`);
         }
         if (settings.sampler && settings.sampler !== DEFAULT_SAMPLER) {
-          notApplied.unshift(`sampler ${settings.sampler}`);
+          notApplied.unshift(`sampler ${labelOf(SAMPLER_LABELS, settings.sampler)}`);
         }
       } else if (samplerOptions.length > 0) {
         const offered = samplerOptions.find((o) => o.id === (settings.sampler ?? DEFAULT_SAMPLER));
         if (!offered) {
-          notApplied.unshift(`sampler ${settings.sampler}`);
+          notApplied.unshift(`sampler ${labelOf(SAMPLER_LABELS, settings.sampler ?? DEFAULT_SAMPLER)}`);
         } else if (
           settings.schedule_type &&
           !offered.schedule_types.includes(settings.schedule_type)
         ) {
-          notApplied.unshift(`schedule ${settings.schedule_type}`);
+          notApplied.unshift(`schedule ${labelOf(SCHEDULE_LABELS, settings.schedule_type)}`);
         }
       }
       if (notApplied.length > 0 || newerRecipeSchema(recipe)) {
