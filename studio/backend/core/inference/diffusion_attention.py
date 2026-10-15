@@ -490,6 +490,17 @@ def auto_attention_reason(engaged: Optional[str]) -> str:
     return f"{engaged} attention upgrade"
 
 
+def attention_status_reason(requested: Optional[str], engaged: Optional[str]) -> str:
+    """Status reason for the load's attention pick: the auto reason for None / "auto", else "requested"."""
+    try:
+        is_auto = normalize_attention_backend(requested) == ATTN_AUTO
+    except ValueError:
+        is_auto = False
+    if is_auto or not engaged:
+        return auto_attention_reason(engaged)
+    return "requested"
+
+
 def _is_cuda_rocm(target: Any) -> bool:
     return getattr(target, "device", None) == "cuda" and not _is_cuda_nvidia(target)
 

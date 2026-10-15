@@ -532,11 +532,15 @@ def test_auto_attention_reason_names_the_engaged_kernel():
 
 
 def test_status_reason_is_derived_from_the_engaged_backend():
-    src = open(
-        att.__file__.replace("diffusion_attention.py", "diffusion.py"), encoding = "utf-8"
-    ).read()
-    assert src.count("auto_attention_reason(attention_engaged)") == 2
-    assert '"cuDNN fused attention upgrade"' not in src
+    def read(name):
+        return open(att.__file__.replace("diffusion_attention.py", name), encoding = "utf-8").read()
+
+    image, video = read("diffusion.py"), read("video.py")
+    assert image.count("attention_status_reason(attention_backend, attention_engaged)") == 1
+    assert image.count("auto_attention_reason(attention_engaged)") == 1
+    assert '"cuDNN fused attention upgrade"' not in image
+    assert video.count("attention_status_reason(attention_backend, attention_engaged)") == 2
+    assert "cuDNN fused attention on NVIDIA" not in video
 
 
 # Review: masked attention (HunyuanVideo 1.5 mixed padding) must never reach diffusers' flash backend, which raises on
@@ -1789,3 +1793,15 @@ def test_driver_version_reads_without_raising(monkeypatch):
     monkeypatch.setattr(att, "_ROCM_DRIVER_VERSION", [])
     v = att._rocm_driver_version()
     assert v.startswith("driver:") and att._rocm_driver_version() is v
+
+
+# The status reason follows the request (auto vs explicit), not a hard-coded NVIDIA string.
+
+
+def test_attention_status_reason():
+    assert att.attention_status_reason(None, "flash") == "verified ROCm flash attention"
+    assert att.attention_status_reason("auto", "flash") == "verified ROCm flash attention"
+    assert att.attention_status_reason(None, "_native_cudnn") == "cuDNN fused attention upgrade"
+    assert att.attention_status_reason(None, None) == "diffusers default"
+    assert att.attention_status_reason("flash", "flash") == "requested"
+    assert att.attention_status_reason("flash", None) == "diffusers default"

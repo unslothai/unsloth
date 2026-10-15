@@ -207,6 +207,7 @@ from .diffusion_vae_fp16 import enable_fp16_vae_decode
 from .diffusion_vae_tiling import install as install_wide_vae_tiles
 from .diffusion_attention import (
     apply_attention_backend,
+    attention_status_reason,
     auto_attention_reason,
     normalize_attention_backend,
     sdpa_math_only,
@@ -8308,11 +8309,7 @@ class DiffusionBackend:
                             "attention_backend": (
                                 attention_backend,
                                 attention_engaged or "native",
-                                auto_attention_reason(attention_engaged)
-                                if attention_engaged and attention_backend is None
-                                else "diffusers default"
-                                if attention_engaged is None
-                                else "requested",
+                                attention_status_reason(attention_backend, attention_engaged),
                             ),
                             "memory_mode": (
                                 memory_mode,
