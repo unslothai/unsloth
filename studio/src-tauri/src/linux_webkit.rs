@@ -180,15 +180,8 @@ fn rendering_plan(
         && gles_usable
         && supports_force_shared_memory(webkit_version);
 
-    // Compositing-off is opt-in only (`UNSLOTH_WEBKIT_DISABLE_COMPOSITING=1`).
-    //
-    // #9734 auto-applied it on Wayland + NVIDIA + mixed GPU vendors + open kernel module
-    // because that one host froze under FORCE_SHM and DISABLE_DMABUF. #13875 is the same
-    // static shape (Intel iGPU + NVIDIA open module) and crashes on launch with
-    // WEBKIT_DISABLE_COMPOSITING_MODE alone (Wayland Error 71 / missing explicit-sync
-    // acquire point), while DISABLE_DMABUF or FORCE_SHM works. Prefer the NVIDIA Wayland
-    // transport workaround for that class of host; the freeze-host opt-in survives a
-    // restart without a new predicate.
+    // Opt-in only. Do not auto-apply it on Wayland NVIDIA mixed-GPU open-module hosts (#9734):
+    // #13875 has that shape and crashes with Error 71 under it, while DISABLE_DMABUF works.
     let setting = env(DISABLE_COMPOSITING_SETTING);
     let requested = |wanted: bool| setting.as_deref().and_then(compositing_setting) == Some(wanted);
     if requested(true) {
@@ -1151,16 +1144,12 @@ mod tests {
             RenderingPlan::PreserveEnvironment
         );
     }
-    // Compositing is opt-in. #9734's static mixed-GPU + open-module predicate is gone
-    // because the same shape crashes on launch under DISABLE_COMPOSITING alone (#13875).
 
     const WAYLAND: &[(&str, &str)] = &[(WAYLAND_DISPLAY, "wayland-0")];
 
     #[test]
     fn wayland_nvidia_mixed_open_hosts_get_the_dmabuf_workaround() {
-        // #13875: CachyOS Wayland, Intel Arrow Lake iGPU + RTX 5080 on the open module,
-        // stock WebKitGTK 2.54.1. DISABLE_COMPOSITING caused Error 71; DISABLE_DMABUF and
-        // FORCE_SHM both worked. The #9734 freeze host opts in with the setting below.
+        // #13875: Arrow Lake iGPU + RTX 5080, open module. Compositing off crashed with Error 71.
         assert_eq!(
             plan_on_graphics(WAYLAND, true),
             RenderingPlan::Apply(RenderingWorkaround::DisableDmabuf, NVIDIA_WAYLAND_REASON)
@@ -1199,8 +1188,6 @@ mod tests {
 
     #[test]
     fn the_setting_settles_a_report_without_a_new_predicate() {
-        // Both directions without shipping code: a host that still needs compositing off
-        // (#9734 freeze) opts in; anyone who does not need it opts out and keeps dmabuf.
         let forced: &[(&str, &str)] = &[(DISABLE_COMPOSITING_SETTING, "1")];
         assert_eq!(
             plan_on_graphics(forced, false),
@@ -1297,9 +1284,6 @@ mod tests {
             RenderingPlan::PreserveEnvironment
         );
     }
-
-    // Probe helpers kept under test: the #9734 static compositing gate is gone (#13875),
-    // but the sysfs/procfs rules still matter if a future runtime freeze detector returns.
 
     /// Is more than one GPU vendor present, e.g. an Intel iGPU beside an NVIDIA dGPU?
     fn mixed_gpu_vendors_in(dir: &str) -> bool {
