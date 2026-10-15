@@ -299,9 +299,7 @@ class Fast_Layernorm(torch.autograd.Function):
         programs, rows_per_program = _dw_programs(device, n_rows, ctx.num_warps)
         # Every program stores its partial row, so empty suffices unless nothing launches.
         alloc = torch.empty if n_rows > 0 else torch.zeros
-        partials = alloc(
-            (train_w + train_b, programs, n_cols), dtype = torch.float32, device = device
-        )
+        partials = alloc((train_w + train_b, programs, n_cols), dtype = torch.float32, device = device)
         dW = torch.empty(n_cols, dtype = W.dtype, device = device) if train_w else None
         dB = torch.empty(n_cols, dtype = b.dtype, device = device) if train_b else None
         outs = [t for t in (dW, dB) if t is not None]

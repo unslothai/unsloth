@@ -33,12 +33,17 @@ REPO = "unsloth/Muse-Spark-Open-816B-A42B-GGUF"
 STEM = "Muse-Spark-Open-816B-A42B"
 # Shard counts as published.
 _SPLITS = {
-    "UD-IQ1_S": 5, "UD-IQ1_M": 6, "UD-IQ2_XXS": 6, "UD-IQ2_S": 7,
-    "UD-IQ3_XXS": 8, "UD-Q2_K_XL": 8, "UD-Q3_K_XL": 10, "UD-Q4_K_XL": 12,
+    "UD-IQ1_S": 5,
+    "UD-IQ1_M": 6,
+    "UD-IQ2_XXS": 6,
+    "UD-IQ2_S": 7,
+    "UD-IQ3_XXS": 8,
+    "UD-Q2_K_XL": 8,
+    "UD-Q3_K_XL": 10,
+    "UD-Q4_K_XL": 12,
 }
 FILES = [".gitattributes", "LICENSE.md", "README.md", "USE_POLICY.md", "imatrix_unsloth.gguf"] + [
-    f"{q}/{STEM}-{q}-{i:05d}-of-{n:05d}.gguf"
-    for q, n in _SPLITS.items() for i in range(1, n + 1)
+    f"{q}/{STEM}-{q}-{i:05d}-of-{n:05d}.gguf" for q, n in _SPLITS.items() for i in range(1, n + 1)
 ]
 
 
@@ -73,7 +78,6 @@ MUSE_SPARK_IDS = [
 @pytest.mark.parametrize("model_id", MUSE_SPARK_IDS)
 def test_every_id_shape_resolves_to_published_sampling(model_id):
     from utils.inference.inference_config import load_inference_config
-
     config = load_inference_config(model_id)
     for key, want in EXPECTED_SAMPLING.items():
         assert config[key] == want, f"{model_id}: {key} was {config[key]}, expected {want}"
@@ -110,7 +114,8 @@ def test_variant_menu_lists_exactly_the_eight_quants(monkeypatch):
     from utils.models import model_config
 
     monkeypatch.setattr(
-        model_config, "_hub_model_info_slow_link",
+        model_config,
+        "_hub_model_info_slow_link",
         lambda repo, token, files_metadata = True: _model_info(FILES),
     )
     variants, has_vision = model_config.list_gguf_variants(REPO)
@@ -135,7 +140,10 @@ def test_every_quant_resolves_to_its_first_shard_and_siblings(monkeypatch, quant
 def test_imatrix_is_never_picked_as_the_model(tmp_path):
     from utils.models import model_config
 
-    assert model_config._pick_best_gguf([f for f in FILES if f.endswith(".gguf")]) != "imatrix_unsloth.gguf"
+    assert (
+        model_config._pick_best_gguf([f for f in FILES if f.endswith(".gguf")])
+        != "imatrix_unsloth.gguf"
+    )
     (tmp_path / "imatrix_unsloth.gguf").write_bytes(b"GGUF")
     assert model_config.detect_gguf_model(str(tmp_path / "imatrix_unsloth.gguf")) is None
     assert model_config.detect_gguf_model(str(tmp_path)) is None
