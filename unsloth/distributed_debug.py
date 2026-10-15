@@ -30,6 +30,21 @@ def apply_debug_distributed_env(environ = None):
     environ = os.environ if environ is None else environ
     if environ.get("UNSLOTH_DEBUG_DISTRIBUTED", "0").lower() not in ("1", "true", "yes", "on"):
         return []
+    dist = sys.modules.get("torch.distributed")
+    try:
+        initialized = dist is not None and dist.is_available() and dist.is_initialized()
+    except Exception:
+        initialized = False
+    if initialized:
+        # Too late to take effect, and ProcessGroupNCCL threads read the environment
+        # concurrently (setenv races getenv), so leave it untouched.
+        print(
+            "Unsloth: UNSLOTH_DEBUG_DISTRIBUTED=1 is set but the process group already exists, "
+            "so it was not applied. Import unsloth before init_process_group, or export "
+            "the variables in the launcher.",
+            file = sys.stderr,
+        )
+        return []
     changed = []
     for name, value in _DEBUG_DISTRIBUTED_ENV:
         if name not in environ:
@@ -40,16 +55,4 @@ def apply_debug_distributed_env(environ = None):
         if name not in environ:
             environ[name] = given[0] if given else _FR_BUFFER_SIZE
             changed.append(name)
-    dist = sys.modules.get("torch.distributed")
-    try:
-        initialized = dist is not None and dist.is_available() and dist.is_initialized()
-    except Exception:
-        initialized = False
-    if initialized and changed:
-        print(
-            "Unsloth: UNSLOTH_DEBUG_DISTRIBUTED=1 was applied after the process group was "
-            "created, so torch.distributed will not see it. Import unsloth before "
-            "init_process_group, or export the variables in the launcher.",
-            file = sys.stderr,
-        )
     return changed

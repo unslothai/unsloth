@@ -71,3 +71,15 @@ def test_hook_runs_before_torch_is_imported():
         if first_torch is None and ("import torch" in src or "from torch" in src):
             first_torch = node.lineno
     assert hook is not None and (first_torch is None or hook < first_torch)
+
+
+def test_existing_process_group_leaves_the_environment_untouched(monkeypatch, capsys):
+    import sys
+    import types
+
+    dist = types.SimpleNamespace(is_available = lambda: True, is_initialized = lambda: True)
+    monkeypatch.setitem(sys.modules, "torch.distributed", dist)
+    env = {"UNSLOTH_DEBUG_DISTRIBUTED": "1"}
+    assert _module().apply_debug_distributed_env(env) == []
+    assert env == {"UNSLOTH_DEBUG_DISTRIBUTED": "1"}
+    assert "already exists" in capsys.readouterr().err

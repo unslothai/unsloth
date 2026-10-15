@@ -401,10 +401,13 @@ def test_allreduce_smoke_reaps_ranks_when_the_wait_is_interrupted(monkeypatch):
         started.append(real_popen(*args, **kwargs))
         return started[-1]
 
+    interrupted = []
+
     def interrupted_wait(self, timeout = None):
-        if timeout is not None:
+        if timeout is not None and not interrupted:
+            interrupted.append(True)
             raise KeyboardInterrupt
-        return real_wait(self)
+        return real_wait(self, timeout = timeout)
 
     real_wait = doctor_mod.subprocess.Popen.wait
     monkeypatch.setattr(doctor_mod, "_SMOKE_WORKER", "import time; time.sleep(60)")
@@ -419,15 +422,37 @@ def test_allreduce_smoke_reaps_ranks_when_the_wait_is_interrupted(monkeypatch):
 def test_peer_copy_probe_has_a_deadline(monkeypatch):
     release = threading.Event()
 
-    def wedged(torch, count):
+    def wedged(torch, count, out, active):
+        out[(0, 1)] = "ok"
+        active.append((0, 2))
         release.wait(30)
-        return {}
+        return out
 
     monkeypatch.setattr(doctor_mod, "p2p_copy_probe", wedged)
-    out, hung = doctor_mod.p2p_copy_probe_with_deadline(None, 2, 0.2)
+    out, hung = doctor_mod.p2p_copy_probe_with_deadline(None, 3, 0.2)
     release.set()
-    assert hung and set(out) == {(0, 1), (1, 0)}
-    assert all(v.startswith("error:") and "hung" in v for v in out.values())
+    assert hung and len(out) == 6
+    # Finished pairs keep their result; only the wedged pair is an error, the rest untested.
+    assert out[(0, 1)] == "ok"
+    assert out[(0, 2)].startswith("error:") and "hung" in out[(0, 2)]
+    assert all(v.startswith("inconclusive") for k, v in out.items() if k not in ((0, 1), (0, 2)))
+    healthy, hints = doctor_mod.verdict(
+        _info(_gpu(0), _gpu(1), _gpu(2)), None, out, _smoke(True), None
+    )
+    assert not healthy and any("[(0, 2)]" in h and "NCCL_P2P_DISABLE" in h for h in hints)
+
+
+def test_peer_copy_probe_crash_is_inconclusive_not_ok(monkeypatch):
+    def crashing(torch, count, out, active):
+        out[(0, 1)] = "ok"
+        raise RuntimeError("CUDA error: an illegal memory access was encountered")
+
+    monkeypatch.setattr(doctor_mod, "p2p_copy_probe", crashing)
+    out, hung = doctor_mod.p2p_copy_probe_with_deadline(None, 2, 5)
+    assert not hung and out[(0, 1)] == "ok"
+    assert out[(1, 0)].startswith("inconclusive") and "illegal memory access" in out[(1, 0)]
+    _, hints = doctor_mod.verdict(_info(_gpu(0), _gpu(1)), None, out, _smoke(True), None)
+    assert any("not tested" in h and "illegal memory access" in h for h in hints)
 
 
 def test_doctor_reports_a_gpu_enumeration_failure(monkeypatch):

@@ -207,34 +207,55 @@ def p2p_copy_probe_with_deadline(torch, count: int, timeout: float):
     Returns (results, hung)."""
     import threading
 
-    box = {}
-    worker = threading.Thread(
-        target = lambda: box.setdefault("out", p2p_copy_probe(torch, count)), daemon = True
-    )
+    out = {}
+    active = []
+    crashed = []
+
+    def run():
+        try:
+            p2p_copy_probe(torch, count, out = out, active = active)
+        except Exception as e:
+            crashed.append(f"{type(e).__name__}: {e}")
+
+    worker = threading.Thread(target = run, daemon = True)
     worker.start()
     worker.join(timeout)
-    if worker.is_alive():
-        msg = f"error: peer copy probe did not finish within {timeout:.0f}s (hung)"
-        return {(a, b): msg for a in range(count) for b in range(count) if a != b}, True
-    return box.get("out", {}), False
+    hung = worker.is_alive()
+    # Snapshot: a hung worker may still write. Pairs finished before the deadline keep their result.
+    results = dict(out)
+    for a in range(count):
+        for b in range(count):
+            if a == b or (a, b) in results:
+                continue
+            if hung and active and active[-1] == (a, b):
+                results[(a, b)] = f"error: peer copy did not finish within {timeout:.0f}s (hung)"
+            elif hung:
+                results[(a, b)] = "inconclusive: not reached before the probe deadline"
+            elif crashed:
+                results[(a, b)] = f"inconclusive: probe stopped: {crashed[0]}"
+    return results, hung
 
 
 def p2p_copy_probe(
     torch,
     count: int,
     mib: int = 16,
+    out: Optional[dict] = None,
+    active: Optional[list] = None,
 ) -> dict:
     """{(src, dst): "ok" | "corrupt" | "error: ..." | "inconclusive: ..."} per ordered GPU pair.
 
     The destination is sentinel-filled first: on a translating IOMMU a PCIe peer copy
     can be dropped while CUDA reports success (scripts/p2p_integrity_probe.py).
     """
-    out = {}
+    out = {} if out is None else out
     numel = mib * 1024 * 1024 // 4
     for src in range(count):
         for dst in range(count):
             if src == dst:
                 continue
+            if active is not None:
+                active.append((src, dst))
             s = d = None
             try:
                 s = torch.arange(numel, dtype = torch.float32, device = f"cuda:{src}")
@@ -331,16 +352,21 @@ def allreduce_smoke(
                 hung = True
                 for q in procs:
                     q.kill()
-                p.wait()
+                break
         for f in logs:
             f.seek(0)
             outputs.append(f.read())
     finally:
-        # Ctrl-C on a hung run must not leave ranks holding GPU contexts behind.
+        # Ctrl-C on a hung run must not leave ranks holding GPU contexts behind. Bounded:
+        # a rank stuck in an uninterruptible driver call may never be reaped.
         for q in procs:
             if q.poll() is None:
                 q.kill()
-                q.wait()
+        for q in procs:
+            try:
+                q.wait(timeout = 10)
+            except subprocess.TimeoutExpired:
+                hung = True
         for f in logs:
             f.close()
     result = {"ok": False, "hung": hung, "busbw_gbps": None, "log": ""}
@@ -389,9 +415,10 @@ def verdict(
             "kernel log for IOMMU faults: dmesg | grep -i -E 'DMAR|AMD-Vi'."
         )
     if unchecked:
+        reason = p2p[unchecked[0]][len("inconclusive: ") :]
         hints.append(
-            f"Peer copies on {unchecked} were not tested: a GPU could not allocate the "
-            "16 MiB probe buffers. Free GPU memory and re-run `unsloth doctor --gpus`."
+            f"Peer copies on {unchecked} were not tested ({reason}). Free GPU memory and "
+            "re-run `unsloth doctor --gpus`."
         )
     if smoke is not None and smoke.get("unverified"):
         healthy = False
