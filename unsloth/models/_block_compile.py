@@ -47,9 +47,14 @@ _SKIP = {"GptOssDecoderLayer"}
 
 
 def _enabled():
-    return os.environ.get("UNSLOTH_BLOCK_COMPILE", "1") != "0" and os.environ.get(
-        "UNSLOTH_COMPILE_DISABLE", "0"
-    ) not in ("1", "partial")
+    # UNSLOTH_FORCE_FLOAT32 (fp16 GPUs, Gemma-style models): zoo's float32 patches round to fp16 at
+    # chosen points and keep SDPA out of the graph. Inductor drops those intermediate roundings
+    # (emulate_precision_casts is off), so a block there moved LoRA grads 11% vs stock (gemma-3-1b).
+    return (
+        os.environ.get("UNSLOTH_BLOCK_COMPILE", "1") != "0"
+        and os.environ.get("UNSLOTH_COMPILE_DISABLE", "0") not in ("1", "partial")
+        and os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") != "1"
+    )
 
 
 def _writes_globals(code):
@@ -299,6 +304,37 @@ def _route_causal_conv(gdn):
             space["causal_conv1d_fn"] = _causal_conv1d_adapter(fn, _causal_depthwise_conv)
 
 
+_SM_COUNT = {}
+
+
+def _route_sm_count():
+    # fla's gated-norm backward asks Triton's driver for the SM count; on ROCm that is
+    # hip_utils.get_device_properties, which Dynamo cannot trace (4 breaks per Qwen3.5 block,
+    # gfx1151, torch 2.11). The count is fixed per device: read it eagerly, look it up in the trace.
+    for name, module in list(sys.modules.items()):
+        if module is None or "fla." not in name:
+            continue
+        fn = getattr(module, "get_multiprocessor_count", None)
+        if not callable(fn) or getattr(fn, "_unsloth_block_adapter", False):
+            continue
+        try:
+            _SM_COUNT[name] = {i: int(fn(i)) for i in range(torch.cuda.device_count())}
+        except Exception:
+            continue
+
+        @functools.wraps(fn, updated = ())
+        def get_multiprocessor_count(
+            tensor_idx = 0,
+            _original = fn,
+            _key = name,
+        ):
+            count = _SM_COUNT[_key].get(tensor_idx)
+            return _original(tensor_idx) if count is None else count
+
+        get_multiprocessor_count._unsloth_block_adapter = True
+        module.get_multiprocessor_count = get_multiprocessor_count
+
+
 def _prepare_gdn(layer, hidden_states):
     """Self-check fla's opaque op on this layer's shapes, then point the GatedDeltaNet forward's
     chunk kernel at the adapter. Runs eagerly, before the first trace."""
@@ -306,6 +342,10 @@ def _prepare_gdn(layer, hidden_states):
     if gdn is None or _GDN_OP[0] is not None:
         return
     _GDN_OP[0] = False
+    try:
+        _route_sm_count()
+    except Exception:
+        pass
     try:
         from ._gdn_op import _fla_ops
 

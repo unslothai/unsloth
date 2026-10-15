@@ -185,6 +185,32 @@ def test_kill_switch(monkeypatch):
     monkeypatch.setenv("UNSLOTH_BLOCK_COMPILE", "1")
     monkeypatch.setenv("UNSLOTH_COMPILE_DISABLE", "1")
     assert not M._enabled()
+    monkeypatch.setenv("UNSLOTH_COMPILE_DISABLE", "0")
+    assert M._enabled()
+    monkeypatch.setenv("UNSLOTH_FORCE_FLOAT32", "1")
+    assert not M._enabled()
+
+
+def test_sm_count_is_read_outside_the_trace(monkeypatch):
+    # Stands in for Triton's hip_utils.get_device_properties, which Dynamo cannot trace.
+    M = _load()
+    fla = types.ModuleType("fake.fla.modules.fused_norm_gate")
+    calls = []
+
+    @torch._dynamo.disable
+    def get_multiprocessor_count(tensor_idx = 0):
+        calls.append(tensor_idx)
+        return 7
+
+    fla.get_multiprocessor_count = get_multiprocessor_count
+    monkeypatch.setitem(sys.modules, fla.__name__, fla)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
+    monkeypatch.setattr(M, "_SM_COUNT", {})
+    M._route_sm_count()
+    out = torch.compile(
+        lambda x: x * fla.get_multiprocessor_count(0), fullgraph = True, backend = "eager"
+    )(torch.ones(2))
+    assert out.tolist() == [7.0, 7.0] and calls == [0]
 
 
 def _grads_after_step(layers, run, x):
