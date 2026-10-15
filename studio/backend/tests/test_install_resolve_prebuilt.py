@@ -1464,6 +1464,23 @@ def test_a_masked_mixed_host_never_moves_to_vulkan(
     assert ilp._should_auto_vulkan_for_amd_windows(host, FORK) is False
 
 
+def test_a_forwarded_arch_behind_a_probed_igpu_is_not_the_probe_pick(_unpinned_amd_env):
+    # Probe saw only the gfx1103 iGPU; setup forwarded gfx1010. Re-picking over the augmented
+    # list would skip the iGPU and mistake the forward for the probe's own pick.
+    host = _windows_amd_host(rocm_gfx_target = "gfx1103", rocm_gfx_targets = ["gfx1103"])
+    host = ilp._apply_host_overrides(host, override_rocm_gfx = "gfx1010")
+    assert ilp._active_rocm_gfx_target(host) == "gfx1010"
+    assert host.rocm_gfx_forwarded is True
+    assert ilp._should_auto_vulkan_for_amd_windows(host, FORK) is False
+
+
+def test_a_forward_matching_the_probe_pick_still_takes_vulkan(_unpinned_amd_env):
+    host = _windows_amd_host(rocm_gfx_target = "gfx1010", rocm_gfx_targets = ["gfx1010", "gfx1034"])
+    host = ilp._apply_host_overrides(host, override_rocm_gfx = "gfx1010")
+    assert host.rocm_gfx_forwarded is False
+    assert ilp._should_auto_vulkan_for_amd_windows(host, FORK) is True
+
+
 def test_a_manual_arch_keeps_the_all_cards_rule(_unpinned_amd_env, monkeypatch):
     monkeypatch.setenv("UNSLOTH_ROCM_GFX_ARCH", "gfx1010")
     host = _windows_amd_host(rocm_gfx_target = "gfx1010", rocm_gfx_targets = ["gfx1010", "gfx1034"])

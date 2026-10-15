@@ -424,6 +424,8 @@ class HostInfo:
     has_amd_gpu_without_rocm: bool = False
     rocm_gfx_target: str | None = None
     rocm_gfx_targets: list[str] = field(default_factory = list)
+    # rocm_gfx_target is a forwarded arch the probe never reported, not the probe's pick.
+    rocm_gfx_forwarded: bool = False
     # (major, minor) from platform.mac_ver(); None off macOS or if unparseable.
     # Skips a macos prebuilt whose minimum-OS exceeds this host.
     macos_version: tuple[int, int] | None = None
@@ -3345,6 +3347,7 @@ def _apply_host_overrides(
             # that card regardless of HIP_VISIBLE_DEVICES. An empty probe still yields
             # [gfx], so the driver-only host the forward exists for keeps auto-Vulkan.
             rocm_gfx_targets = list(dict.fromkeys([*_physical, gfx])),
+            rocm_gfx_forwarded = gfx not in _physical,
         )
     # The arch a previous install recorded, replayed by the updater. A remembered
     # probe result, not an operator override, so it only fills a gap: a host whose
@@ -10203,10 +10206,11 @@ def _should_auto_vulkan_for_amd_windows(host: HostInfo, published_repo: str | No
     targets = list(dict.fromkeys([*_host_rocm_gfx_targets(host), active]))
     # Mixed host whose active card has no HIP bundle (gfx1010 at device 0 beside a gfx1034):
     # no HIP prebuilt can serve the card HIP runs on, while Vulkan runs on both. Only when the
-    # active arch is the unmasked probe's own pick: a forwarded arch the probe did not choose,
+    # active arch is the unmasked probe's own pick: a forwarded arch the probe never reported,
     # or UNSLOTH_ROCM_GFX_ARCH, keeps the all-cards rule.
     if (
         not os.environ.get("UNSLOTH_ROCM_GFX_ARCH")
+        and not host.rocm_gfx_forwarded
         and active == _pick_rocm_gfx_target(" ".join(targets))
         and not _gfx_is_windows_hip_supported(active, published_repo)
     ):
