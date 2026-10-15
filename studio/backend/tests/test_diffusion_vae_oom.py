@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""diffusion_vae_oom: the halved-tile retry ladder (CPU, fake OOMs) and the structural fused GroupNorm(+SiLU) match."""
+"""diffusion_vae_oom: the offload-first OOM ladder (CPU, fake OOMs and a fake card) and the structural fused
+GroupNorm(+SiLU) match."""
 
 import types
 
@@ -13,169 +14,426 @@ from core.inference import diffusion_vae_oom as O  # noqa: E402
 from core.inference import diffusion_vae_fused as F  # noqa: E402
 
 
+_REAL_RETURN_TO = O._return_to
+
+
 class _FakeOOM(RuntimeError):
     def __init__(self):
         super().__init__("CUDA out of memory. Tried to allocate 2.00 GiB")
 
 
-class _WanLike(torch.nn.Module):
-    """Stock-diffusers-shaped tiling attrs; decode OOMs while the tile side exceeds ``fits``."""
+_CARD = torch.float64  # a float64 tensor stands in for one on the decode's card; float32 is on the host
+
+
+class _Budget:
+    """A fake card: what is resident there (pipeline modules, the VAE weights) plus the decode's need must fit."""
+
+    def __init__(self, cap):
+        self.cap = cap
+
+    def resident(self, modules):
+        return sum(
+            int(t.numel()) * t.element_size()
+            for m in modules
+            for t in [*m.parameters(), *m.buffers()]
+            if t.dtype == _CARD
+        )
+
+
+class _VaeLike(torch.nn.Module):
+    """Stock-diffusers-shaped tiling attrs; a decode needs ``untiled_need`` bytes untiled, ``tiled_need`` tiled, on top
+    of everything resident on the fake card (the VAE's own weights included)."""
 
     spatial_compression_ratio = 8
 
-    def __init__(self, fits: int):
+    def __init__(self, budget, pipe_modules, untiled_need, tiled_need, weight_bytes = 4096):
         super().__init__()
         self.use_tiling = False
         self.tile_sample_min_height = 256
         self.tile_sample_min_width = 256
         self.tile_sample_stride_height = 192
         self.tile_sample_stride_width = 192
-        self.fits = fits
-        self.seam_below = 0
+        self.conv = torch.nn.Linear(weight_bytes // 8, 1, bias = False)
+        self.budget, self.pipe_modules = budget, pipe_modules
+        self.untiled_need, self.tiled_need = untiled_need, tiled_need
         self.seen = []
+        self.cleared = 0
 
     def enable_tiling(self):
         self.use_tiling = True
 
-    def _decode(
-        self,
-        z,
-        return_dict = True,
-    ):
-        side = z.shape[-1] * 8 if not self.use_tiling else self.tile_sample_min_height
-        if z.shape[-1] == 64:  # the full latent; the quality probe decodes a smaller corner crop
-            self.seen.append(
-                (self.use_tiling, self.tile_sample_min_height, self.tile_sample_stride_height)
-            )
-        else:  # the probe crop always fits
-            out = z.repeat_interleave(8, -1).repeat_interleave(8, -2) + 1
-            # tiles under ``seam_below`` px decode with a visible error
-            return (
-                out
-                + (
-                    1.0
-                    if self.use_tiling and self.tile_sample_min_height < self.seam_below
-                    else 0.0
-                ),
-            )
-        if side > self.fits:
+    def clear_cache(self):
+        self.cleared += 1
+
+    def _decode(self, z, return_dict = True):
+        self.seen.append(
+            (self.use_tiling, dict(O.tile_attrs(self)), self.conv.weight.dtype == _CARD)
+        )
+        need = self.tiled_need if self.use_tiling else self.untiled_need
+        if self.budget.resident([*self.pipe_modules, self]) + need > self.budget.cap:
             raise _FakeOOM()
-        return (z.repeat_interleave(8, -1).repeat_interleave(8, -2) + 1,)
+        # deterministic, and tiled differs from untiled so a test can tell which ran
+        return (z.repeat_interleave(8, -1).repeat_interleave(8, -2) + (0.5 if self.use_tiling else 0.0),)
 
 
-def test_halved_keeps_overlap_fraction_and_floor():
-    attrs = {
-        "tile_sample_min_height": 256,
-        "tile_sample_stride_height": 192,
-        "tile_latent_min_size": 32,
-    }
-    assert O.halved(attrs, 8, 1) == {
-        "tile_sample_min_height": 128, "tile_sample_stride_height": 96, "tile_latent_min_size": 16,
-    }  # fmt: skip
-    assert O.halved(attrs, 8, 2)["tile_sample_min_height"] == 64  # the 8-latent floor
-    assert O.halved(attrs, 8, 3) is None
-    assert O.halved({}, 8, 1) is None
+class _Pipe:
+    def __init__(self, **components):
+        self.components = components
+        for k, v in components.items():
+            setattr(self, k, v)
 
 
-def test_halved_overlap_factor_geometry_tiles_exactly():
-    """HunyuanImage-2.1: 384 px / 12-latent tiles at f=0.25. A plain halving (6 latents) steps 4 latents but keeps
-    144 px per tile, so diffusers' stock tiled decode returns a too-large image; it lands on the 8-latent floor."""
-    attrs = {"tile_sample_min_size": 384, "tile_latent_min_size": 12}
-    assert O.halved(attrs, 32, 1, 0.25) == {"tile_sample_min_size": 256, "tile_latent_min_size": 8}
-    assert O.halved(attrs, 32, 2, 0.25) is None
-    kl = {"tile_sample_min_size": 1024, "tile_latent_min_size": 128}
-    assert O.halved(kl, 8, 3, 0.25) == {"tile_sample_min_size": 128, "tile_latent_min_size": 16}
-    assert (
-        O.halved(kl, 8, 4, 0.25)["tile_latent_min_size"] == 8 and O.halved(kl, 8, 5, 0.25) is None
-    )
-    ltx = {"tile_sample_min_height": 512, "tile_sample_stride_height": 448}
-    assert O.halved(ltx, 32, 1) == {"tile_sample_min_height": 256, "tile_sample_stride_height": 224}
-    assert O.halved(ltx, 32, 2) is None
+def _on_card(nbytes):
+    m = torch.nn.Linear(nbytes // 8, 1, bias = False)
+    return m.to(_CARD)
 
 
-def test_untiled_oom_retries_tiled_then_halves_and_restores():
-    vae = _WanLike(fits = 128)
-    assert O.install(vae)
-    z = torch.zeros(1, 4, 1, 64, 64)
-    out = vae._decode(z)
-    assert out[0].shape[-2:] == (512, 512)
-    # untiled -> tiled at stock 256 -> halved 128 (stride 96)
-    assert vae.seen == [(False, 256, 192), (True, 256, 192), (True, 128, 96)]
-    assert vae.use_tiling is False and vae.tile_sample_min_height == 256
-    assert vae.tile_sample_stride_height == 192
+@pytest.fixture(autouse = True)
+def _fake_card(monkeypatch):
+    """The ladder only frees a CUDA card: let the meta device stand in for one, and host RAM be plentiful."""
+    monkeypatch.setattr(O, "_device_of", lambda z: _FakeDevice())
+    monkeypatch.setattr(O, "_host_free_mib", lambda: 1 << 20)
+    monkeypatch.setattr(O, "_empty_cache", lambda device: None)
+    yield
+
+
+class _FakeDevice:
+    type = "cuda"
+
+
+
+def _whole_on(module, device):
+    tensors = [*module.parameters(), *module.buffers()]
+    return bool(tensors) and all(t.dtype == _CARD for t in tensors)
+
+
+@pytest.fixture(autouse = True)
+def _fake_moves(monkeypatch):
+    monkeypatch.setattr(O, "_whole_on", _whole_on)
+    monkeypatch.setattr(O, "_return_to", lambda module, device: module.to(_CARD))
+    monkeypatch.setattr(O, "_to_host", lambda module: module.to(torch.float32))
+    yield
+
+
+def _setup(cap, untiled_need, tiled_need, other = 8192, tiled = False, can_free = True):
+    budget = _Budget(cap)
+    transformer = _on_card(other) if can_free else torch.nn.Linear(4, 1)
+    text_encoder = _on_card(other // 2) if can_free else torch.nn.Linear(4, 1)
+    vae = _VaeLike(budget, [transformer, text_encoder], untiled_need, tiled_need)
+    vae.to(_CARD)
+    vae.use_tiling = tiled
+    pipe = _Pipe(transformer = transformer, text_encoder = text_encoder, vae = vae, tokenizer = object())
+    assert O.install(vae, pipe = pipe)
+    return vae, pipe
+
+
+def _z():
+    return torch.ones(1, 4, 1, 8, 8)
+
+
+def _devices(pipe):
+    return {n: next(m.parameters()).dtype for n, m in pipe.components.items() if isinstance(m, torch.nn.Module)}
+
+
+def test_decode_that_fits_is_untouched():
+    vae, pipe = _setup(cap = 1 << 20, untiled_need = 100, tiled_need = 10)
+    before = _devices(pipe)
+    out = vae._decode(_z())
+    assert vae.seen == [(False, O.tile_attrs(vae), True)]
+    assert torch.equal(out[0], _z().repeat_interleave(8, -1).repeat_interleave(8, -2))
+    assert _devices(pipe) == before
+    assert vae._unsloth_vae_oom_stats["oom"] == 0
+
+
+def test_step_a_frees_the_pipeline_and_retries_the_same_untiled_decode():
+    """Fail-before: untiled needs more than is free beside the transformer and text encoder; with them on the host it
+    fits. The retry is the SAME untiled decode (bit-identical), not a tiled one, and both come back."""
+    # resident: 8192 + 4096 + 4096 (vae) = 16384; untiled 10000 fits only once 12288 is freed
+    vae, pipe = _setup(cap = 16384 + 1000, untiled_need = 10000, tiled_need = 500)
+    before = _devices(pipe)
+    out = vae._decode(_z())
+    assert [s[0] for s in vae.seen] == [False, False]  # untiled stays untiled
+    assert torch.equal(out[0], _z().repeat_interleave(8, -1).repeat_interleave(8, -2))
     stats = vae._unsloth_vae_oom_stats
-    assert stats["tiled_retry"] == 1 and stats["recovered"] == 1
+    assert stats["recovered_by"] == "freed" and stats["tiled_retry"] == 0 and stats["offload_retry"] == 0
+    assert _devices(pipe) == before  # restored to the card
+    assert O._SESSION_ATTR not in vae.__dict__
 
 
-def test_tiled_level_is_memoised_per_shape():
-    vae = _WanLike(fits = 64)
-    vae.use_tiling = True
-    O.install(vae)
-    z = torch.zeros(1, 4, 1, 64, 64)
-    vae._decode(z)
-    assert [s[1] for s in vae.seen] == [256, 128, 64]
-    vae.seen.clear()
-    vae._decode(z)
-    assert [s[1] for s in vae.seen] == [64]  # straight to the level that fit
-    assert vae.tile_sample_min_height == 256
+def test_step_b_stock_tiles_when_freeing_is_not_enough():
+    vae, pipe = _setup(cap = 16384 + 1000, untiled_need = 10**9, tiled_need = 2000)
+    stock = O.tile_attrs(vae)
+    out = vae._decode(_z())
+    assert [s[0] for s in vae.seen] == [False, False, True]
+    assert all(s[1] == stock for s in vae.seen)  # never below the stock tiles
+    assert vae._unsloth_vae_oom_stats["recovered_by"] == "tiled"
+    assert torch.equal(out[0], _z().repeat_interleave(8, -1).repeat_interleave(8, -2) + 0.5)
+    assert vae.use_tiling is False and _devices(pipe)["transformer"] == _CARD
 
 
-def test_halved_tiles_that_seam_are_refused():
-    vae = _WanLike(fits = 64)
-    vae.seam_below = 128  # 64 px tiles fit but seam; 128 px tiles are clean but OOM
-    vae.use_tiling = True
-    O.install(vae)
-    with pytest.raises(RuntimeError, match = "visible seams"):
-        vae._decode(torch.zeros(1, 4, 1, 64, 64))
-    stats = vae._unsloth_vae_oom_stats
-    assert stats["quality_refused"] == 1 and stats["probe_psnr"][2] < O.MIN_PSNR_DB
-    assert stats["probe_psnr"][1] >= O.MIN_PSNR_DB
-    assert vae.tile_sample_min_height == 256
+def test_step_c_offloads_the_vae_at_stock_tiles(monkeypatch):
+    """Fail-before: even tiled, the VAE's own weights leave no room; streaming them from the host does."""
+    offloads = []
+
+    def fake_offload(self):
+        offloads.append(1)
+        self.vae.conv.to(torch.float32)
+        self.vae_offloaded = True
+        return True
+
+    monkeypatch.setattr(O.DecodeSession, "offload_vae", fake_offload)
+    monkeypatch.setattr(O.DecodeSession, "_undo_vae_offload", lambda self: self.vae.conv.to(_CARD))
+    vae, pipe = _setup(cap = 4096 + 100, untiled_need = 10**9, tiled_need = 3000, tiled = True)
+    stock = O.tile_attrs(vae)
+    vae._decode(_z())
+    # tiled caller: (a) same tiled decode, no separate (b), then (c) tiled with the VAE off the card
+    assert vae.seen == [(True, stock, True), (True, stock, True), (True, stock, False)]
+    assert vae._unsloth_vae_oom_stats["recovered_by"] == "offload" and offloads == [1]
+    assert vae.conv.weight.dtype == _CARD  # the VAE is back on the card
+    assert _devices(pipe)["text_encoder"] == _CARD
 
 
-def test_floor_raises_and_non_oom_propagates():
-    vae = _WanLike(fits = 1)
-    vae.use_tiling = True
-    O.install(vae)
-    with pytest.raises(RuntimeError, match = "every tile size"):
-        vae._decode(torch.zeros(1, 4, 1, 64, 64))
-    assert vae.tile_sample_min_height == 256
+def test_every_step_fails_raises_and_restores(monkeypatch):
+    monkeypatch.setattr(O.DecodeSession, "offload_vae", lambda self: False)
+    vae, pipe = _setup(cap = 1, untiled_need = 10**9, tiled_need = 10**9)
+    before = _devices(pipe)
+    with pytest.raises(RuntimeError, match = "even with the rest of the pipeline"):
+        vae._decode(_z())
+    assert _devices(pipe) == before
+    assert all(s[1] == O.tile_attrs(vae) for s in vae.seen)
+    assert vae.use_tiling is False and vae.cleared >= 2  # the causal cache is cleared between attempts
 
-    vae = _WanLike(fits = 10**6)
-    O.install(vae)
-    vae._decode = types.MethodType(lambda self, z: (_ for _ in ()).throw(ValueError("x")), vae)
-    O.install(vae)
-    with pytest.raises(ValueError):
-        vae._decode(torch.zeros(1))
+
+def test_nothing_to_free_skips_the_identical_retry(monkeypatch):
+    monkeypatch.setattr(O.DecodeSession, "offload_vae", lambda self: False)
+    vae, pipe = _setup(cap = 4096 + 600, untiled_need = 10**9, tiled_need = 500, can_free = False)
+    vae._decode(_z())
+    assert [s[0] for s in vae.seen] == [False, True]
+    assert vae._unsloth_vae_oom_stats["freed_retry"] == 0
+
+
+def test_offload_hooked_and_shared_components_stay(monkeypatch):
+    """Components an offload mechanism places (accelerate / group offload) are left to it; the VAE never moves in (a)."""
+    vae, pipe = _setup(cap = 16384 + 1000, untiled_need = 10**9, tiled_need = 10**9)
+    pipe.components["transformer"]._hf_hook = object()
+    monkeypatch.setattr(O.DecodeSession, "offload_vae", lambda self: False)
+    moved = []
+    real = torch.nn.Module.to
+
+    def spy(self, *a, **k):
+        if a and a[0] == torch.float32:
+            moved.append(self)
+        return real(self, *a, **k)
+
+    monkeypatch.setattr(torch.nn.Module, "to", spy)
+    with pytest.raises(RuntimeError):
+        vae._decode(_z())
+    assert moved == [pipe.components["text_encoder"]]
+
+
+def test_host_ram_short_keeps_component(monkeypatch):
+    monkeypatch.setattr(O, "_host_free_mib", lambda: 1)
+    session = O.DecodeSession(None, _FakeDevice())
+    pipe = _Pipe(transformer = _on_card(1 << 20))
+    session.free_others(pipe)
+    assert session.moved == []
+
+
+def test_restore_that_runs_out_of_memory_returns_on_next_forward(monkeypatch):
+    m = _on_card(64)
+    session = O.DecodeSession(None, _FakeDevice())
+    session.moved = [("transformer", m)]
+    m.to(torch.float32)
+    calls = []
+
+    def flaky(module, device):
+        calls.append(1)
+        if len(calls) == 1:
+            raise _FakeOOM()
+        module.to(_CARD)
+
+    monkeypatch.setattr(O, "_return_to", flaky)
+    session.restore()
+    assert next(m.parameters()).dtype == torch.float32
+    m(torch.zeros(1, 8, dtype = _CARD))
+    assert next(m.parameters()).dtype == _CARD and len(m._forward_pre_hooks) == 0
+
+
+def test_step_a_drops_graphs_and_repins_resident_groups(monkeypatch):
+    from core.inference import diffusion_cuda_graph as G
+    from core.inference import diffusion_memory as M
+
+    events = []
+    monkeypatch.setattr(G, "reset_all", lambda handles: events.append(("graphs", tuple(handles))))
+    monkeypatch.setattr(
+        M, "release_resident_groups",
+        lambda pipe, need, logger = None, reason = "": (events.append(("release", need)), lambda: events.append(("repin",)))[1],
+    )  # fmt: skip
+    vae, pipe = _setup(cap = 16384 + 1000, untiled_need = 10000, tiled_need = 500)
+    pipe._unsloth_cuda_graphs = ("h",)
+    vae._decode(_z())
+    assert events[0] == ("graphs", ("h",)) and events[1][0] == "release" and events[-1] == ("repin",)
 
 
 def test_untiled_gate_keeps_its_own_fallback():
-    vae = _WanLike(fits = 128)
-    O.install(vae)
+    vae, pipe = _setup(cap = 16384 + 1000, untiled_need = 10000, tiled_need = 500)
 
     def gate(*a, **k):
         return None
 
     gate._unsloth_untiled_decode = True
-    vae.decode = gate
-    with pytest.raises(RuntimeError, match = "out of memory"):
-        vae._decode(torch.zeros(1, 4, 1, 64, 64))
-    assert vae.seen == [(False, 256, 192)]
+
+    def bf16_decode(*a, **k):  # the ROCm bf16 decode exposes the gate only through __wrapped__
+        return gate(*a, **k)
+
+    bf16_decode.__wrapped__ = gate
+    for outer in (gate, bf16_decode):
+        vae.seen.clear()
+        vae.decode = outer
+        with pytest.raises(RuntimeError, match = "out of memory"):
+            vae._decode(_z())
+        assert [s[0] for s in vae.seen] == [False]  # the gate retries tiled itself
 
 
 def test_kill_switch(monkeypatch):
+    vae, pipe = _setup(cap = 16384 + 1000, untiled_need = 10000, tiled_need = 500)
     monkeypatch.setenv(O.OOM_RETRY_ENV, "0")
-    vae = _WanLike(fits = 128)
-    assert O.install(vae) is False
-    assert "_decode" not in vae.__dict__
+    with pytest.raises(RuntimeError, match = "out of memory"):
+        vae._decode(_z())  # installed, switched off at call time: the OOM surfaces as on main
+    assert len(vae.seen) == 1
+    other = _VaeLike(_Budget(1), [], 1, 1)
+    assert O.install(other) is False and "_decode" not in other.__dict__
 
 
-def test_uninstall_restores_class_decode():
-    vae = _WanLike(fits = 10**6)
+def test_non_oom_propagates():
+    vae, pipe = _setup(cap = 1 << 20, untiled_need = 1, tiled_need = 1)
+    O.uninstall(vae)
+    vae._decode = types.MethodType(lambda self, z: (_ for _ in ()).throw(ValueError("x")), vae)
     O.install(vae)
+    with pytest.raises(ValueError):
+        vae._decode(_z())
+
+
+def test_uninstall_restores_class_decode_and_reinstall_keeps_pipe():
+    vae, pipe = _setup(cap = 1 << 20, untiled_need = 1, tiled_need = 1)
     assert "_decode" in vae.__dict__
     O.uninstall(vae)
     assert "_decode" not in vae.__dict__
+    assert O.install(vae) and O._pipe_of(vae) is pipe
+
+
+def test_no_halving_api_left():
+    for name in ("halved", "MIN_TILE_LATENTS", "MIN_PSNR_DB", "oom_halving_active"):
+        assert not hasattr(O, name)
+
+
+def test_real_vae_offload_hooks_round_trip(monkeypatch):
+    """Step (c)'s real mechanism on a tiny diffusers VAE (CPU onload stands in for the card): leaf-level hooks decode
+    bit-identically and are fully removed afterwards, weights back where they were."""
+    diffusers = pytest.importorskip("diffusers")
+    torch.manual_seed(0)
+    vae = diffusers.AutoencoderKL(
+        block_out_channels = (8, 16), down_block_types = ("DownEncoderBlock2D",) * 2,
+        up_block_types = ("UpDecoderBlock2D",) * 2, latent_channels = 4, norm_num_groups = 4, layers_per_block = 1,
+    ).eval()  # fmt: skip
+    z = torch.randn(1, 4, 8, 8)
+    monkeypatch.setattr(O, "_return_to", _REAL_RETURN_TO)
+    with torch.no_grad():
+        ref = vae.decode(z).sample
+    session = O.DecodeSession(vae, _FakeDevice())
+    session.device = torch.device("cpu")
+    import diffusers.hooks as H
+    H.apply_group_offloading(vae, onload_device = torch.device("cpu"), offload_type = "leaf_level")
+    session.vae_offloaded = True
+    with torch.no_grad():
+        out = vae.decode(z).sample
+    assert torch.equal(out, ref)
+    session.restore()
+    assert not O._hooked(vae)
+    with torch.no_grad():
+        assert torch.equal(vae.decode(z).sample, ref)
+
+
+def test_compiled_decode_oom_frees_then_retries_compiled():
+    """Step (a) under a compiled decode retries the compiled callable itself (same kernels), not the eager path."""
+    vae, pipe = _setup(cap = 16384 + 1000, untiled_need = 10000, tiled_need = 500)
+    calls = []
+
+    def eager(z, return_dict = True):
+        calls.append("eager")
+        return vae._decode(z, return_dict)
+
+    def compiled(z, return_dict = True):
+        calls.append("compiled")
+        if vae.budget.resident([*vae.pipe_modules, vae]) + vae.untiled_need > vae.budget.cap:
+            try:
+                raise _FakeOOM()
+            except _FakeOOM as oom:
+                raise RuntimeError("compiled graph failed") from oom
+        return ("ok",)
+
+    compiled._unsloth_compiled_decode = True
+    compiled._unsloth_eager_decode = eager
+    vae.decode = compiled
+    O.uninstall(vae)
+    assert O.install(vae)
+    before = _devices(pipe)
+    assert vae.decode(_z()) == ("ok",)
+    assert calls == ["compiled", "compiled"]
+    assert vae._unsloth_vae_oom_stats["recovered_by"] == "freed_compiled" and _devices(pipe) == before
+
+
+def test_compiled_decode_oom_falls_to_the_eager_ladder_sharing_the_session():
+    vae, pipe = _setup(cap = 16384 + 1000, untiled_need = 10**9, tiled_need = 500)
+    calls = []
+
+    def eager(z, return_dict = True):
+        calls.append("eager")
+        assert O._SESSION_ATTR in vae.__dict__  # the eager ladder reuses the compiled guard's session
+        return vae._decode(z, return_dict)
+
+    def compiled(z, return_dict = True):
+        calls.append("compiled")
+        raise _FakeOOM()
+
+    compiled._unsloth_compiled_decode = True
+    compiled._unsloth_eager_decode = eager
+    vae.decode = compiled
+    O.uninstall(vae)
+    assert O.install(vae)
+    before = _devices(pipe)
+    out = vae.decode(_z())
+    assert calls == ["compiled", "compiled", "eager"]
+    assert vae._unsloth_vae_oom_stats["recovered_by"] == "tiled" and out[0].shape[-1] == 64
+    assert _devices(pipe) == before and O._SESSION_ATTR not in vae.__dict__
+
+
+def test_compiled_guard_absent_without_compile():
+    vae, pipe = _setup(cap = 1 << 20, untiled_need = 1, tiled_need = 1)
+    assert "decode" not in vae.__dict__
+
+
+def test_is_oom_walks_the_cause_chain():
+    class OutOfMemoryError(RuntimeError):
+        pass
+
+    try:
+        try:
+            raise OutOfMemoryError("CUDA out of memory")
+        except OutOfMemoryError as inner:
+            raise RuntimeError("backend compiler failed") from inner
+    except RuntimeError as exc:
+        wrapped = exc
+    assert O.is_oom(wrapped)
+    assert not O.is_oom(RuntimeError("backend compiler failed"))
+
+
+def test_speed_layer_compiled_guard_exposes_eager():
+    from core.inference import diffusion_speed as S
+
+    eager = lambda *a, **k: "eager"  # noqa: E731
+    guarded = S._guard_compiled_decode(types.SimpleNamespace(), lambda *a, **k: "compiled", eager, None)
+    assert guarded._unsloth_compiled_decode is True and guarded._unsloth_eager_decode is eager
 
 
 # -- structural fused GroupNorm(+SiLU) --------------------------------------------------------------------------
@@ -352,138 +610,6 @@ def test_structural_engages_on_uncovered_class(name):
         assert torch.equal(vae.decode(z, return_dict = False)[0].float(), ref)
 
 
-def test_wide_tiles_defer_to_halved_stock_tiles_on_oom(monkeypatch):
-    """Real tiny diffusers QwenImage VAE behind Studio's wide tiles: every tile wider than 16 latents OOMs; the wide
-    tiles (32-latent floor) and the stock 32-latent tiles fail, the halved stock tiles (16 latents) decode."""
-    diffusers = pytest.importorskip("diffusers")
-    from core.inference import diffusion_vae_tiling as vt
-
-    monkeypatch.delenv(vt.WIDE_TILES_ENV, raising = False)
-    monkeypatch.setenv(vt.MAX_TILE_ENV, "1")
-    torch.manual_seed(0)
-    vae = diffusers.AutoencoderKLQwenImage(
-        base_dim = 8, z_dim = 4, dim_mult = [1, 2, 4, 4], num_res_blocks = 1, attn_scales = [],
-        temperal_downsample = [False, True, True], latents_mean = [0.0] * 4, latents_std = [1.0] * 4,
-    ).eval()  # fmt: skip
-    z = torch.randn(1, 4, 1, 48, 48, generator = torch.Generator().manual_seed(1))
-    with torch.no_grad():
-        ref = vae.decode(z).sample
-    vae.enable_tiling()
-    assert vt.install(vae)
-    assert O.install(vae)
-    stock_tile = vae.tile_sample_min_height
-    sides = []
-    real_decoder = vae.decoder.forward
-
-    def decoder(x, *a, **k):
-        sides.append(int(x.shape[-1]))
-        if x.shape[-1] > 16:
-            raise _FakeOOM()
-        return real_decoder(x, *a, **k)
-
-    monkeypatch.setattr(vae.decoder, "forward", decoder)
-    with torch.no_grad():
-        out = vae.decode(z).sample
-    assert out.shape == ref.shape and torch.isfinite(out).all()
-    assert max(sides) > 16 and sides[-1] <= 16  # the wide / stock tiles were tried first
-    stats = vae._unsloth_vae_oom_stats
-    assert stats["halvings"] == 1 and stats["recovered"] == 1
-    assert vae.tile_sample_min_height == stock_tile and not vae.__dict__.get(
-        "_unsloth_vae_oom_halvings"
-    )
-    # the halved tiles still blend: no hard seam against the untiled decode
-    assert (out - ref).abs().mean() < 0.1
-
-
-# -- PR review round 1 regressions ------------------------------------------------------------------------------
-
-
-class _StaleCacheWanLike(_WanLike):
-    """A failed full-size attempt leaves a stale frame cache; any decode before ``clear_cache`` runs out of memory."""
-
-    def __init__(self, fits):
-        super().__init__(fits)
-        self.stale = False
-
-    def clear_cache(self):
-        self.stale = False
-
-    def _decode(
-        self,
-        z,
-        return_dict = True,
-    ):
-        if self.stale:
-            raise _FakeOOM()
-        try:
-            return super()._decode(z, return_dict)
-        except _FakeOOM:
-            self.stale = True
-            raise
-
-
-def test_cache_released_before_the_quality_probe():
-    """Item 1: the probe of the next level must not run against the failed attempt's stale cache. Before the fix the
-    8-latent level's probe ran out of memory and was refused, though 64 px tiles fit."""
-    vae = _StaleCacheWanLike(fits = 64)
-    vae.use_tiling = True
-    O.install(vae)
-    out = vae._decode(torch.zeros(1, 4, 1, 64, 64))
-    assert out[0].shape[-2:] == (512, 512)
-    stats = vae._unsloth_vae_oom_stats
-    assert stats["quality_refused"] == 0 and stats["recovered"] == 1
-    assert stats["probe_psnr"][2] == 99.0
-
-
-class _WrongCropWanLike(_WanLike):
-    """At 128 px tiles the tiled probe crop comes back a different size than the untiled crop."""
-
-    def _decode(
-        self,
-        z,
-        return_dict = True,
-    ):
-        out = super()._decode(z, return_dict)
-        if z.shape[-1] != 64 and self.use_tiling and self.tile_sample_min_height == 128:
-            return (out[0][..., :-8],)
-        return out
-
-
-def test_probe_shape_mismatch_falls_through_to_the_next_level():
-    """Item 2: a mismatched probe crop marks that level unusable and the ladder moves on. Before the fix the
-    subtraction raised a non-OOM RuntimeError out of the decode."""
-    vae = _WrongCropWanLike(fits = 64)
-    vae.use_tiling = True
-    O.install(vae)
-    out = vae._decode(torch.zeros(1, 4, 1, 64, 64))
-    assert out[0].shape[-2:] == (512, 512)
-    stats = vae._unsloth_vae_oom_stats
-    assert stats["probe_psnr"][1] == "shape" and stats["recovered"] == 1
-    assert [s[1] for s in vae.seen] == [
-        256,
-        64,
-    ]  # the unusable 128 px level was never attempted at full size
-
-
-def test_untiled_gate_found_through_wrapped_chain():
-    """Item 3: the ROCm bf16 decode wraps the untiled gate and exposes it only via ``__wrapped__``."""
-    vae = _WanLike(fits = 128)
-    O.install(vae)
-
-    def gate(*a, **k):
-        return None
-
-    gate._unsloth_untiled_decode = True
-
-    def bf16_decode(*a, **k):
-        return gate(*a, **k)
-
-    bf16_decode.__wrapped__ = gate
-    vae.decode = bf16_decode
-    with pytest.raises(RuntimeError, match = "out of memory"):
-        vae._decode(torch.zeros(1, 4, 1, 64, 64))
-    assert vae.seen == [(False, 256, 192)]  # no tiled retry of its own: the gate owns it
-
 
 class AutoencoderKLTileableNew(AutoencoderKLSomethingNew):
     spatial_compression_ratio = 8
@@ -549,134 +675,6 @@ def test_rejected_structural_fusion_restores_contiguous_layout(monkeypatch):
     assert vae.decoder.proj3d.weight.is_contiguous()
 
 
-def test_halving_continues_on_the_axis_above_the_floor():
-    """An axis already at the 8-latent floor keeps its size while the other keeps halving."""
-    attrs = {"tile_sample_min_height": 256, "tile_sample_min_width": 128}
-    assert O.halved(attrs, 8, 1) == {"tile_sample_min_height": 128, "tile_sample_min_width": 64}
-    assert O.halved(attrs, 8, 2) == {"tile_sample_min_height": 64, "tile_sample_min_width": 64}
-    assert O.halved(attrs, 8, 3) is None
-
-
-class _UntiledProbeOOMWanLike(_WanLike):
-    """The untiled reference crop of the quality probe never fits."""
-
-    def __init__(self, fits):
-        super().__init__(fits)
-        self.untiled_probes = 0
-
-    def _decode(
-        self,
-        z,
-        return_dict = True,
-    ):
-        if z.shape[-1] != 64 and not self.use_tiling:
-            self.untiled_probes += 1
-            raise _FakeOOM()
-        return super()._decode(z, return_dict)
-
-
-def test_unprobed_level_is_remembered_with_the_working_level():
-    """A level allowed after its probe ran out of memory is not probed again once it is the remembered level."""
-    vae = _UntiledProbeOOMWanLike(fits = 128)
-    vae.use_tiling = True
-    O.install(vae)
-    z = torch.zeros(1, 4, 1, 64, 64)
-    assert vae._decode(z)[0].shape[-2:] == (512, 512)
-    assert vae.untiled_probes == 1 and vae._unsloth_vae_oom_stats["probe_psnr"][1] is None
-    vae.seen.clear()
-    assert vae._decode(z)[0].shape[-2:] == (512, 512)
-    assert vae.untiled_probes == 1
-    assert [s[1] for s in vae.seen] == [128]
-
-
-def test_ratio_from_tile_geometry_when_nothing_else_publishes_it():
-    class _Bare:
-        tile_sample_min_size = 512
-        tile_latent_min_size = 32
-
-    assert O._spatial_ratio(_Bare()) == 16
-
-
-# -- PR review round 3 regressions ------------------------------------------------------------------------------
-
-
-class _ShapeLog(_WanLike):
-    """Full latents are >= 48 latents wide; narrower calls are probe crops. Logs every call."""
-
-    def __init__(self, fits):
-        super().__init__(fits)
-        self.calls = []
-
-    def _decode(
-        self,
-        z,
-        return_dict = True,
-    ):
-        full = z.shape[-1] >= 48
-        self.calls.append((full, self.use_tiling, self.tile_sample_min_height, tuple(z.shape[-2:])))
-        side = z.shape[-1] * 8 if not self.use_tiling else self.tile_sample_min_height
-        if full and side > self.fits:
-            raise _FakeOOM()
-        return (z.repeat_interleave(8, -1).repeat_interleave(8, -2) + 1,)
-
-
-def _probes(vae):
-    return [
-        c for c in vae.calls if not c[0] and not c[1]
-    ]  # untiled decodes of a crop = probe references
-
-
-def test_quality_verdict_is_kept_per_shape():
-    """Round 3 item 1: a second latent shape is probed again; a known shape's memoised level stays probe-free."""
-    vae = _ShapeLog(fits = 128)
-    vae.use_tiling = True
-    O.install(vae)
-    vae._decode(torch.zeros(1, 4, 1, 64, 64))
-    assert len(_probes(vae)) == 1
-    vae._decode(torch.zeros(1, 4, 1, 48, 48))
-    assert len(_probes(vae)) == 2  # before: the 64x64 verdict was reused for 48x48
-    vae.calls.clear()
-    vae._decode(torch.zeros(1, 4, 1, 64, 64))
-    assert _probes(vae) == [] and [c[2] for c in vae.calls] == [128]
-
-
-@pytest.mark.parametrize("fits, level_side", [(256, 256), (128, 128)])
-def test_untiled_caller_reuses_the_remembered_level(fits, level_side):
-    """Round 3 item 3: an untiled caller that recovered through the stock tiles (256) or halved tiles (128) goes
-    straight to that size next time instead of retrying the untiled decode that failed."""
-    vae = _ShapeLog(fits = fits)
-    O.install(vae)
-    z = torch.zeros(1, 4, 1, 64, 64)
-    vae._decode(z)
-    vae.calls.clear()
-    out = vae._decode(z)
-    assert out[0].shape[-2:] == (512, 512)
-    full = [c for c in vae.calls if c[0]]
-    assert full == [(True, True, level_side, (64, 64))], full
-    assert vae.use_tiling is False and vae.tile_sample_min_height == 256
-    # a tiled caller of the same shape keeps its own memo
-    vae.use_tiling = True
-    vae.calls.clear()
-    vae._decode(z)
-    assert [c for c in vae.calls if c[0]][0][2] == 256
-
-
-class _NarrowWidth(_ShapeLog):
-    def __init__(self, fits):
-        super().__init__(fits)
-        self.tile_sample_min_width = 128
-        self.tile_sample_stride_width = 96
-
-
-def test_probe_crop_is_sized_per_axis():
-    """Round 3 item 4: level 1 halves height to 16 latents and width to 8; the crop spans two tiles on each axis
-    (32 x 16), not two of the smaller one on both (16 x 16)."""
-    vae = _NarrowWidth(fits = 128)
-    vae.use_tiling = True
-    O.install(vae)
-    vae._decode(torch.zeros(1, 4, 1, 64, 64))
-    assert [c[3] for c in _probes(vae)] == [(32, 16)]
-
 
 def test_uninstall_restores_contiguous_layout(monkeypatch):
     """Round 3 item 2: uninstall undoes the channels_last_3d relayout recorded for the fused passes."""
@@ -693,132 +691,6 @@ def test_uninstall_restores_contiguous_layout(monkeypatch):
     assert "_unsloth_channels_last_modules" not in vae.__dict__
 
 
-def test_overlap_factor_searches_the_interval_above_the_floor():
-    """With overlap 0.2 the 8-latent floor never tiles exactly; 10 latents does, so the ladder goes 32 -> 15 -> 10."""
-    attrs = {"tile_sample_min_size": 256, "tile_latent_min_size": 32}
-    assert O.halved(attrs, 8, 1, 0.2) == {"tile_sample_min_size": 120, "tile_latent_min_size": 15}
-    assert O.halved(attrs, 8, 2, 0.2) == {"tile_sample_min_size": 80, "tile_latent_min_size": 10}
-    assert O.halved(attrs, 8, 3, 0.2) is None
-
-
-class _TallTileProbeOOM(_UntiledProbeOOMWanLike):
-    """16 px-tall (2-latent) inputs: the 8-latent height tiles never seam, only the width tiles do."""
-
-    def _decode(
-        self,
-        z,
-        return_dict = True,
-    ):
-        if z.shape[-1] != 64 and not self.use_tiling:
-            self.untiled_probes += 1
-            raise _FakeOOM()
-        if z.shape[-1] == 64:
-            self.seen.append(
-                (self.use_tiling, self.tile_sample_min_height, self.tile_sample_min_width)
-            )
-            if not self.use_tiling or self.tile_sample_min_width > self.fits:
-                raise _FakeOOM()
-        return (z.repeat_interleave(8, -1).repeat_interleave(8, -2) + 1,)
-
-
-def test_unprobed_floor_ignores_an_axis_the_input_fits_in():
-    vae = _TallTileProbeOOM(fits = 128)
-    vae.tile_sample_min_height = 64  # 8 latents: at the floor already
-    vae.tile_sample_stride_height = 48
-    vae.use_tiling = True
-    O.install(vae)
-    out = vae._decode(torch.zeros(1, 4, 1, 8, 64))
-    assert out[0].shape[-2:] == (64, 512)
-    stats = vae._unsloth_vae_oom_stats
-    assert stats["recovered"] == 1 and stats["quality_refused"] == 0
-    assert vae.seen[-1][2] == 128  # width tiles halved to 16 latents
-
-
-class _BatchProbeWanLike(_WanLike):
-    def __init__(self, fits):
-        super().__init__(fits)
-        self.probe_batches = []
-
-    def _decode(
-        self,
-        z,
-        return_dict = True,
-    ):
-        if z.shape[-1] != 64:
-            self.probe_batches.append(int(z.shape[0]))
-        return super()._decode(z, return_dict)
-
-
-def test_probe_crop_takes_one_batch_element():
-    vae = _BatchProbeWanLike(fits = 64)
-    vae.use_tiling = True
-    O.install(vae)
-    out = vae._decode(torch.zeros(4, 4, 1, 64, 64))
-    assert out[0].shape[0] == 4 and out[0].shape[-2:] == (512, 512)
-    assert vae.probe_batches and set(vae.probe_batches) == {1}
-
-
-# -- PR review round 5 regressions ------------------------------------------------------------------------------
-
-
-class _TembWanLike(_WanLike):
-    """LTX-2-shaped ``_decode(z, temb, ...)``: ``temb`` must match ``z``'s batch."""
-
-    def _decode(
-        self,
-        z,
-        temb = None,
-        return_dict = True,
-    ):
-        if temb is not None and temb.shape[0] != z.shape[0]:
-            raise ValueError(f"temb batch {temb.shape[0]} != latent batch {z.shape[0]}")
-        return super()._decode(z, return_dict)
-
-
-def test_probe_slices_batch_sized_args_with_the_latent():
-    """Round 5 item 1: the probe crop is one sample, so a batch-sized positional ``temb`` must follow it."""
-    vae = _TembWanLike(fits = 128)
-    vae.use_tiling = True
-    O.install(vae)
-    z = torch.zeros(2, 4, 1, 64, 64)
-    out = vae._decode(z, torch.zeros(2, 3), return_dict = False)
-    assert out[0].shape[0] == 2 and out[0].shape[-2:] == (512, 512)
-    assert vae._unsloth_vae_oom_stats["probe_psnr"][1] == 99.0
-
-
-class _ActiveLog(_WanLike):
-    def __init__(self, fits):
-        super().__init__(fits)
-        self.active = []
-
-    def _decode(
-        self,
-        z,
-        return_dict = True,
-    ):
-        self.active.append((self.use_tiling, O.oom_halving_active(self)))
-        return super()._decode(z, return_dict)
-
-
-def test_stock_tile_retry_marks_the_retry_active():
-    """Round 5 item 2: the level-0 (stock tile) retry must read as an active retry, so the wide-tile wrappers hand
-    over to stock tiling instead of rerunning the wide planner that failed."""
-    vae = _ActiveLog(fits = 256)
-    O.install(vae)
-    vae._decode(torch.zeros(1, 4, 1, 64, 64))
-    assert vae.active == [(False, False), (True, True)]
-    assert O.oom_halving_active(vae) is False
-
-
-def test_wide_tile_wrappers_read_the_active_marker():
-    import inspect
-
-    from core.inference import diffusion_vae_tiling as vt
-    from core.inference import video_ltx2_vae_tiles as lt
-
-    for mod in (vt, lt):
-        src = inspect.getsource(mod.install)
-        assert "oom_halving_active(self)" in src and "_unsloth_vae_oom_halvings" not in src
 
 
 class _CleanDec(torch.nn.Module):
@@ -914,58 +786,3 @@ def test_structural_probe_does_not_leak_cache_into_the_real_decode(monkeypatch):
     assert torch.allclose(out, ref, atol = 1e-6), (out - ref).abs().max()
 
 
-def test_is_oom_walks_the_cause_chain():
-    """Round 7 item 3: a compiler error wrapping an OutOfMemoryError is an OOM."""
-    class OutOfMemoryError(RuntimeError):
-        pass
-
-    try:
-        try:
-            raise OutOfMemoryError("CUDA out of memory")
-        except OutOfMemoryError as inner:
-            raise RuntimeError("backend compiler failed") from inner
-    except RuntimeError as exc:
-        wrapped = exc
-    assert O.is_oom(wrapped)
-    assert not O.is_oom(RuntimeError("backend compiler failed"))
-
-
-def test_compiled_decode_oom_retries_on_the_eager_path():
-    """Round 7 item 2: a runtime OOM out of the speed layer's compiled decode (traced, so the _decode retry was a
-    pass-through) is retried eagerly through the halved-tile ladder."""
-    vae = _WanLike(fits = 128)
-    vae.use_tiling = True
-    eager_calls = []
-
-    def eager(z, return_dict = True):
-        eager_calls.append(1)
-        return vae._decode(z, return_dict)
-
-    def compiled(z, return_dict = True):
-        try:
-            raise _FakeOOM()
-        except _FakeOOM as oom:
-            raise RuntimeError("compiled graph failed") from oom
-
-    compiled._unsloth_compiled_decode = True
-    compiled._unsloth_eager_decode = eager
-    vae.decode = compiled
-    assert O.install(vae)
-    out = vae.decode(torch.zeros(1, 4, 1, 64, 64))
-    assert out[0].shape[-2:] == (512, 512) and eager_calls == [1]
-    stats = vae._unsloth_vae_oom_stats
-    assert stats["compiled_oom"] == 1 and stats["recovered"] == 1 and stats["halvings"] == 1
-
-
-def test_compiled_guard_absent_without_compile():
-    vae = _WanLike(fits = 128)
-    assert O.install(vae)
-    assert "decode" not in vae.__dict__
-
-
-def test_speed_layer_compiled_guard_exposes_eager():
-    from core.inference import diffusion_speed as S
-
-    eager = lambda *a, **k: "eager"  # noqa: E731
-    guarded = S._guard_compiled_decode(types.SimpleNamespace(), lambda *a, **k: "compiled", eager, None)
-    assert guarded._unsloth_compiled_decode is True and guarded._unsloth_eager_decode is eager
