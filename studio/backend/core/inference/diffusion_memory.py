@@ -2362,9 +2362,7 @@ def learned_peak_label(
     return label
 
 
-# A CFG-capable family's render without guidance records under ``<label>|cfg:off`` (no doubled denoiser batch). A load
-# reads it only when the label has no CFG peak; ``UNSLOTH_DIFFUSION_LEARNED_PEAKS_CFG_OFF=0`` neither records nor
-# reads it (such renders record nothing, as before).
+# Renders without guidance on a CFG-capable family; read only when no CFG peak exists.
 CFG_OFF_PART = "cfg:off"
 LEARNED_PEAKS_CFG_OFF_ENV = "UNSLOTH_DIFFUSION_LEARNED_PEAKS_CFG_OFF"
 
@@ -2378,8 +2376,7 @@ def without_cfg_off(label: str) -> str:
 
 
 def _learned_read_label(pipe: Any, family: Optional[str], quant: str, speed_mode: Optional[str]) -> tuple[str, bool]:
-    """The label a load reads its learned peak under: ``quant``, or its ``cfg:off`` key for a CFG-capable family that
-    has only renders without guidance recorded (then True: requests running CFG are sized from the flat estimate)."""
+    """``(label, cfg_off_only)``: True means CFG requests must be sized from the flat estimate."""
     from .diffusion_measured_peaks import lookup_bucket
 
     if (
@@ -2800,9 +2797,7 @@ def refine_plan_from_loaded_weights(
             return plan
         dense_mib = None if _pipe_denoisers_hold_torchao(pipe) else dit
         compute_bytes = _denoiser_compute_bytes(pipe)
-        # The dense eager table was measured on fp16 / fp32 unpacked weights only. A bf16 denoiser and a GGUF / int8
-        # packed one (a whole Linear dequantized per forward) place from the peak this machine recorded for the exact
-        # build (learned-only): without one the lookup answers None and the flat plan stands.
+        # The dense table covers fp16 / fp32 unpacked weights only: bf16 and packed denoisers use a learned peak alone.
         static_seed = not (
             dense_mib is not None and (compute_bytes is None or _pipe_denoisers_hold_packed(pipe))
         )
@@ -3497,7 +3492,6 @@ def measured_request_extra_mib(
     # after the load only places the NEXT load, it must not stream resident groups for a request the same size as one
     # that just completed. An unseeded family was placed from its learned peak, which is all there is to check against.
     sized["phase_seeds"] = bool(getattr(pipe, "_unsloth_phase_seeds", False))
-    # a load placed from its learned peak alone (bf16 / packed dense denoiser) never reads the fp16 dense table
     sized["static_seed"] = bool(reserve[8]) if len(reserve) > 8 and reserve[8] is not None else True
     need = measured_image_runtime_mib(family, speed_mode, **sized)
     learned = reserve[5] if len(reserve) > 5 else None

@@ -2066,9 +2066,7 @@ def _live_peak_identity(state: Any) -> tuple:
             speed = None  # a background compile is still pending: this render runs eager under a compiled tier
     except Exception:  # noqa: BLE001
         speed = None
-    # A family that can run classifier-free guidance keys a render without it (no doubled denoiser batch) under its
-    # own ``cfg:off`` part: a load reads it only when no CFG peak exists, and the request guard then sizes any CFG
-    # request from the flat estimate. An unknown guidance mode, or CFG on a family that never runs it, records nothing.
+    # Unknown guidance, or CFG on a family that never runs it, records nothing.
     family_obj = getattr(state, "family", None)
     expects_cfg = bool(getattr(family_obj, "uses_negative_prompt", False))
     cfg = getattr(pipe, "_unsloth_peak_cfg", expects_cfg)
@@ -2085,8 +2083,7 @@ def _live_peak_identity(state: Any) -> tuple:
 
 
 def _peak_identity_matches(state: Any, identity: Any) -> bool:
-    """The render runs the configuration the load's identity names (a ``cfg:off`` render of a CFG-capable family
-    matches its load: only the key it records under differs)."""
+    """The render runs the configuration the load's identity names (``cfg:off`` aside)."""
     family, label, speed = _live_peak_identity(state)
     return (family, without_cfg_off(label), speed) == tuple(identity)
 
