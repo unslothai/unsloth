@@ -756,7 +756,12 @@ def _rms_sum_partials(partials, W, wrap):
     programs, n_cols = partials.shape
     dW = torch.empty(n_cols, dtype = W.dtype, device = partials.device)
     wrap(_rms_sum_dw_partials)[(triton.cdiv(n_cols, 64),)](
-        partials, dW, programs, n_cols, BLOCK_ROWS = 64, BLOCK_COLS = 64,
+        partials,
+        dW,
+        programs,
+        n_cols,
+        BLOCK_ROWS = 64,
+        BLOCK_COLS = 64,
         enable_fp_fusion = True,
     )
     return dW

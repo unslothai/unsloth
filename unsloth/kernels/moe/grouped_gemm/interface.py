@@ -264,7 +264,9 @@ def _grouped_gemm_forward_impl(
 
     is_fake = _is_tracing(X, W)
     if not is_fake:
-        compiled_kernel: triton.compiler.CompiledKernel = kernel[grid](**kernel_args, enable_fp_fusion = True)
+        compiled_kernel: triton.compiler.CompiledKernel = kernel[grid](
+            **kernel_args, enable_fp_fusion = True
+        )
         if autotune:
             log_kernel_info(compiled_kernel, kernel.best_config)
         else:
@@ -404,7 +406,9 @@ def _grouped_gemm_dX_impl(
 
     is_fake = _is_tracing(dY, W)
     if not is_fake:
-        compiled_kernel: triton.compiler.CompiledKernel = kernel[grid](**kernel_args, enable_fp_fusion = True)
+        compiled_kernel: triton.compiler.CompiledKernel = kernel[grid](
+            **kernel_args, enable_fp_fusion = True
+        )
 
         if autotune:
             log_kernel_info(compiled_kernel, kernel.best_config)
@@ -550,7 +554,9 @@ def _grouped_gemm_dW_impl(
 
     is_fake = _is_tracing(X, dY)
     if not is_fake:
-        compiled_kernel: triton.compiler.CompiledKernel = kernel[grid](**kernel_args, enable_fp_fusion = True)
+        compiled_kernel: triton.compiler.CompiledKernel = kernel[grid](
+            **kernel_args, enable_fp_fusion = True
+        )
 
         if autotune:
             log_kernel_info(compiled_kernel, kernel.best_config)

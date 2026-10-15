@@ -315,7 +315,9 @@ def _launch(kernel, launchers, key, grid, args, **constexprs):
     if _FAST_LAUNCH is not False:
         compiled = launchers.get(key)
         if compiled is None:
-            compiled = launchers[key] = kernel.warmup(*args, grid = grid, **constexprs, enable_fp_fusion = True)
+            compiled = launchers[key] = kernel.warmup(
+                *args, grid = grid, **constexprs, enable_fp_fusion = True
+            )
         try:
             compiled[grid](*args)
             _FAST_LAUNCH = True

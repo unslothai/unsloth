@@ -257,7 +257,9 @@ def act_quant(x: torch.Tensor, block_size: int = 128) -> tuple[torch.Tensor, tor
         return (triton.cdiv(x.numel(), meta["BLOCK_SIZE"]),)
 
     with _fp8_triton_device_context(x):
-        act_quant_kernel[grid](x, y, s, BLOCK_SIZE = block_size, LONG_INDEXING = long_indexing(x), enable_fp_fusion = True)
+        act_quant_kernel[grid](
+            x, y, s, BLOCK_SIZE = block_size, LONG_INDEXING = long_indexing(x), enable_fp_fusion = True
+        )
     return y, s
 
 
@@ -558,7 +560,16 @@ def fp8_rowwise_gemv(X, weight, weight_scale):
     block_n = 1 if N <= 4096 else (4 if N <= 32768 else 8)
     with _fp8_triton_device_context(X, static_device_count = True):
         _fp8_rowwise_gemv_kernel[(triton.cdiv(N, block_n),)](
-            X, weight, scale, out, N, K, weight.stride(0), BLOCK_N = block_n, BLOCK_K = 512, num_warps = 2,
+            X,
+            weight,
+            scale,
+            out,
+            N,
+            K,
+            weight.stride(0),
+            BLOCK_N = block_n,
+            BLOCK_K = 512,
+            num_warps = 2,
             enable_fp_fusion = True,
         )
     return out

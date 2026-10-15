@@ -18,7 +18,10 @@ KERNELS = pathlib.Path(__file__).resolve().parents[1] / "unsloth" / "kernels"
 # Subscript calls that are not launches, or forward options already carrying enable_fp_fusion.
 _NOT_LAUNCHES = {
     "bnb_override.py": {"_FALLBACK"},
-    "int4_packed.py": {"compiled", "call"},  # a CompiledKernel built by warmup(enable_fp_fusion=True)
+    "int4_packed.py": {
+        "compiled",
+        "call",
+    },  # a CompiledKernel built by warmup(enable_fp_fusion=True)
     "utils.py": {"plan"},
     "nf4.py": {"kernel"},
     "triton_launch.py": {"kernel"},
@@ -45,9 +48,7 @@ def test_every_launch_requests_fp_fusion():
     sites = list(_launch_sites())
     assert len(sites) >= 25, [s for s, _ in sites]
     missing = [
-        site
-        for site, node in sites
-        if not any(k.arg == "enable_fp_fusion" for k in node.keywords)
+        site for site, node in sites if not any(k.arg == "enable_fp_fusion" for k in node.keywords)
     ]
     assert not missing, f"Triton launches without enable_fp_fusion: {missing}"
 
@@ -78,7 +79,11 @@ def _compiled_options(kernel):
     for table in tables:
         for compiled in table.values():
             meta = compiled.metadata
-            value = meta.get("enable_fp_fusion") if isinstance(meta, dict) else getattr(meta, "enable_fp_fusion", None)
+            value = (
+                meta.get("enable_fp_fusion")
+                if isinstance(meta, dict)
+                else getattr(meta, "enable_fp_fusion", None)
+            )
             ptx = compiled.asm.get("ptx", "") if hasattr(compiled, "asm") else ""
             seen.append((value, "fma.rn" in ptx))
     return seen
@@ -103,7 +108,9 @@ def exercise(device = "cuda"):
     out = {}
     g = torch.Generator(device = device).manual_seed(0)
     dt = torch.bfloat16 if torch.cuda.get_device_capability(device) >= (8, 0) else torch.float16
-    rnd = lambda *s, dtype = dt: torch.randn(*s, generator = g, device = device, dtype = torch.float32).to(dtype)
+    rnd = lambda *s, dtype = dt: torch.randn(*s, generator = g, device = device, dtype = torch.float32).to(
+        dtype
+    )
 
     norm = torch.nn.Module()
     norm.weight = torch.nn.Parameter(rnd(256))
@@ -134,19 +141,29 @@ def exercise(device = "cuda"):
     e, gg, dw = rnd(32, 512), rnd(32, 512), rnd(32, 512)
     e3, g3 = e.view(2, 16, 512), gg.view(2, 16, 512)
     out["swiglu_fwd"] = (swiglu.swiglu_fg_kernel(e3, g3),)
-    out["swiglu_bwd"] = tuple(t.clone() for t in swiglu.swiglu_DWf_DW_dfg_kernel(dw.clone(), e.clone(), gg.clone()))
+    out["swiglu_bwd"] = tuple(
+        t.clone() for t in swiglu.swiglu_DWf_DW_dfg_kernel(dw.clone(), e.clone(), gg.clone())
+    )
     out["geglu_exact_fwd"] = (geglu.geglu_exact_forward_kernel(e3, g3),)
-    out["geglu_exact_bwd"] = tuple(t.clone() for t in geglu.geglu_exact_backward_kernel(dw.clone(), e.clone(), gg.clone()))
+    out["geglu_exact_bwd"] = tuple(
+        t.clone() for t in geglu.geglu_exact_backward_kernel(dw.clone(), e.clone(), gg.clone())
+    )
     out["geglu_approx_fwd"] = (geglu.geglu_approx_forward_kernel(e3, g3),)
-    out["geglu_approx_bwd"] = tuple(t.clone() for t in geglu.geglu_approx_backward_kernel(dw.clone(), e.clone(), gg.clone()))
+    out["geglu_approx_bwd"] = tuple(
+        t.clone() for t in geglu.geglu_approx_backward_kernel(dw.clone(), e.clone(), gg.clone())
+    )
 
     # Hand-built NF4 state so bitsandbytes is not needed.
     n, kk, bs, bs2 = 256, 512, 64, 256
-    W_u8 = torch.randint(0, 256, (n * kk // 2, 1), generator = g, device = device, dtype = torch.int32).to(torch.uint8)
+    W_u8 = torch.randint(
+        0, 256, (n * kk // 2, 1), generator = g, device = device, dtype = torch.int32
+    ).to(torch.uint8)
     n_blocks = n * kk // bs
     code = torch.linspace(-1, 1, 16, device = device)
     code2 = torch.linspace(-1, 1, 256, device = device)
-    absmax_q = torch.randint(0, 256, (n_blocks,), generator = g, device = device, dtype = torch.int32).to(torch.uint8)
+    absmax_q = torch.randint(0, 256, (n_blocks,), generator = g, device = device, dtype = torch.int32).to(
+        torch.uint8
+    )
     absmax2 = torch.rand(n_blocks // bs2, generator = g, device = device) + 0.5
     offset = torch.tensor(0.1, device = device)
     args = (W_u8, absmax_q, code2, absmax2, offset, code, bs, bs2)
@@ -165,7 +182,9 @@ def exercise(device = "cuda"):
     meta = {}
     for module in modules:
         for attr, value in vars(module).items():
-            options = _compiled_options(value) if hasattr(value, "run") or hasattr(value, "fn") else []
+            options = (
+                _compiled_options(value) if hasattr(value, "run") or hasattr(value, "fn") else []
+            )
             if options:
                 meta[f"{module.__name__.rsplit('.', 1)[-1]}.{attr}"] = options
     return out, meta
@@ -179,7 +198,12 @@ def _child():
     from unsloth.kernels import nf4
 
     _, meta = exercise()
-    print("A1META " + json.dumps({"meta": meta, "hip": bool(torch.version.hip), "mul_rn": bool(nf4._HAS_MUL_RN)}))
+    print(
+        "A1META "
+        + json.dumps(
+            {"meta": meta, "hip": bool(torch.version.hip), "mul_rn": bool(nf4._HAS_MUL_RN)}
+        )
+    )
 
 
 def _run_child(tmp_path, default):
@@ -200,11 +224,9 @@ def _needs_gpu():
     try:
         sys.path.insert(0, str(pathlib.Path(__file__).parent / "_shared"))
         from real_accelerator import has_real_cuda
-
         real = has_real_cuda()
     except Exception:
         import torch
-
         real = torch.cuda.is_available()
     if not real:
         pytest.skip("needs a CUDA / ROCm GPU")
@@ -248,5 +270,9 @@ def test_compiled_kernels_keep_fp_fusion(tmp_path, default):
     assert not bad, f"compiled without enable_fp_fusion=True: {bad}"
     if not result["hip"]:
         # Contraction really happened: fma.rn in PTX.
-        for name in ("rope_embedding._rope_embedding", "geglu._exact_forward_kernel", "swiglu._DWf_DW_dfg_kernel"):
+        for name in (
+            "rope_embedding._rope_embedding",
+            "geglu._exact_forward_kernel",
+            "swiglu._DWf_DW_dfg_kernel",
+        ):
             assert all(fma for _, fma in meta[name]), (name, meta[name])
