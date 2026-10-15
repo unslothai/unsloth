@@ -454,7 +454,25 @@ def test_common_cuda_dtype_requires_native_bf16_on_every_selected_gpu(
         lambda *args, **kwargs: SimpleNamespace(returncode = 0, stdout = output),
     )
     monkeypatch.setattr(ddp, "_nvidia_smi_child_env", lambda: {})
+    monkeypatch.delenv("CUDA_DEVICE_ORDER", raising = False)
     assert ddp._common_cuda_dtype(gpu_ids) == expected
+
+
+def test_common_cuda_dtype_judges_every_card_when_cuda_order_differs(monkeypatch):
+    from utils.hardware import gpu_query
+
+    output = "0, 8.6\n1, 7.5\n2, 8.6\n"
+    monkeypatch.setattr(
+        gpu_query,
+        "run_nvidia_smi",
+        lambda *args, **kwargs: SimpleNamespace(returncode = 0, stdout = output),
+    )
+    monkeypatch.setattr(ddp, "_nvidia_smi_child_env", lambda: {})
+    monkeypatch.setenv("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
+    assert ddp._common_cuda_dtype([0, 2]) == "bf16"
+    # FASTEST_FIRST can map CUDA id 2 to the Turing card at nvidia-smi index 1.
+    monkeypatch.setenv("CUDA_DEVICE_ORDER", "FASTEST_FIRST")
+    assert ddp._common_cuda_dtype([0, 2]) == "fp16"
 
 
 def test_common_cuda_dtype_falls_back_to_fp16_when_probe_fails(monkeypatch):

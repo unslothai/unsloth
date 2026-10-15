@@ -119,3 +119,21 @@ def test_ddp_stop_decision_comes_from_the_agreement(monkeypatch, peer_flags, exp
     # A stop polled in after the snapshot does not change this step's decision.
     owner.should_stop = True
     assert owner._ddp_agreed_stop == expected[1]
+
+
+def test_ddp_finalization_follows_the_agreement_not_a_late_stop():
+    trainer = MagicMock()
+    trainer.is_world_process_zero.return_value = True
+    owner = SimpleNamespace(
+        trainer = trainer,
+        tokenizer = MagicMock(),
+        _patch_adapter_config = MagicMock(),
+        _update_progress = MagicMock(),
+        _early_stopping_summary = lambda: "",
+        should_stop = True,  # polled in after the ranks agreed to finish normally
+        save_on_stop = True,
+        _ddp_agreed_stop = (False, True),
+    )
+    _trainer_method("_finalize_training")(owner, "/tmp/ddp-output")
+    assert trainer._save_checkpoint.call_count == 0
+    assert trainer.save_model.call_count == 1

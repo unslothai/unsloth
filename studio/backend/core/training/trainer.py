@@ -1160,7 +1160,12 @@ class UnslothTrainer:
             if hasattr(self.trainer, "is_world_process_zero")
             else getattr(getattr(self.trainer, "args", None), "process_index", 0) == 0
         )
-        if self.should_stop and self.save_on_stop:
+        # Under DDP the last collective agreement decides, never a stop polled in after it.
+        should_stop, save_on_stop = getattr(self, "_ddp_agreed_stop", None) or (
+            self.should_stop,
+            self.save_on_stop,
+        )
+        if should_stop and save_on_stop:
             self.trainer._save_checkpoint(self.trainer.model, trial = None)
             self.trainer.save_model()
             if is_writing_rank:
@@ -1174,7 +1179,7 @@ class UnslothTrainer:
                     f"Training stopped. {self._early_stopping_summary()}Model saved to {output_dir}"
                 ),
             )
-        elif self.should_stop:
+        elif should_stop:
             msg = f"{label} training cancelled" if label else "Training cancelled"
             logger.info(f"\n{msg}.\n")
             self._update_progress(is_training = False, status_message = "Training cancelled.")
