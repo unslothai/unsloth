@@ -132,7 +132,6 @@ def _output_head(trainer, model):
     if weight.shape[0] == weight.shape[1]:
         try:
             from .rl_replacements import _unsloth_grpo_hidden_states_signal
-
             trusted = any(_unsloth_grpo_hidden_states_signal(m) is True for m in (model, unwrapped))
         except Exception:
             trusted = False
@@ -145,7 +144,6 @@ def _logit_transforms(unwrapped):
     config = getattr(unwrapped, "config", None)
     try:
         from unsloth_zoo.device_map_planner import detect_logit_transforms
-
         found = detect_logit_transforms(config)
         return (
             float(found["logit_scale_multiply"] or 0.0),
@@ -159,7 +157,6 @@ def _logit_transforms(unwrapped):
             _unsloth_get_final_logit_softcapping,
             _unsloth_resolve_logit_scales,
         )
-
         multiply, divide = _unsloth_resolve_logit_scales(config)
         softcap = _unsloth_get_final_logit_softcapping(unwrapped)
     except Exception:
@@ -182,7 +179,6 @@ def _forward_hidden_states(model, unwrapped, head_weight, args, kwargs):
     tensor = outputs.logits
     try:
         from .rl_replacements import _unsloth_grpo_returns_hidden_states
-
         is_hidden = _unsloth_grpo_returns_hidden_states(unwrapped, tensor, head_weight)
     except Exception:
         is_hidden = tensor.shape[-1] == head_weight.shape[1] != head_weight.shape[0]
@@ -235,7 +231,12 @@ def _token_logps(
     return per_token_logps, mean_logits, lssp
 
 
-def unsloth_fused_dpo_concatenated_forward(trainer, model, batch, is_ref_model = False):
+def unsloth_fused_dpo_concatenated_forward(
+    trainer,
+    model,
+    batch,
+    is_ref_model = False,
+):
     """TRL 0.22-0.28 ``DPOTrainer.concatenated_forward`` for text-only decoder models, scored
     from hidden states. Returns ``None`` (run TRL's own) whenever the inputs leave that case."""
     if not fused_preference_loss_enabled() or _zoo_kernels() is None:
@@ -262,7 +263,9 @@ def unsloth_fused_dpo_concatenated_forward(trainer, model, batch, is_ref_model =
     completion_attention_mask = concatenated_batch["completion_attention_mask"]
     input_ids = torch.cat((prompt_input_ids, completion_input_ids), dim = 1)
     attention_mask = torch.cat((prompt_attention_mask, completion_attention_mask), dim = 1)
-    loss_mask = torch.cat((torch.zeros_like(prompt_attention_mask), completion_attention_mask), dim = 1)
+    loss_mask = torch.cat(
+        (torch.zeros_like(prompt_attention_mask), completion_attention_mask), dim = 1
+    )
 
     max_length = trainer.max_length
     if max_length is not None and max_length < attention_mask.size(1):
@@ -297,7 +300,9 @@ def unsloth_fused_dpo_concatenated_forward(trainer, model, batch, is_ref_model =
     else:
         model_kwargs["attention_mask"] = attention_mask
 
-    hidden, is_hidden = _forward_hidden_states(model, unwrapped, head[0], (input_ids,), model_kwargs)
+    hidden, is_hidden = _forward_hidden_states(
+        model, unwrapped, head[0], (input_ids,), model_kwargs
+    )
 
     labels = torch.roll(input_ids, shifts = -1, dims = 1)
     loss_mask = torch.roll(loss_mask, shifts = -1, dims = 1).bool()
@@ -305,12 +310,18 @@ def unsloth_fused_dpo_concatenated_forward(trainer, model, batch, is_ref_model =
         labels = labels[:, -logits_to_keep:]
         loss_mask = loss_mask[:, -logits_to_keep:]
     if hidden.shape[:2] != labels.shape[:2]:
-        hidden = hidden[:, -labels.shape[1]:]
+        hidden = hidden[:, -labels.shape[1] :]
 
     labels[~loss_mask] = 0
     use_weighting = getattr(trainer, "use_weighting", False)
     per_token_logps, mean_logits, log_sum_sq_probs = _token_logps(
-        hidden, is_hidden, head, transforms, labels, loss_mask, want_lssp = use_weighting,
+        hidden,
+        is_hidden,
+        head,
+        transforms,
+        labels,
+        loss_mask,
+        want_lssp = use_weighting,
     )
     del hidden
     unrolled_logps = per_token_logps
@@ -333,7 +344,9 @@ def unsloth_fused_dpo_concatenated_forward(trainer, model, batch, is_ref_model =
             all_weights = (per_token_logps_adjusted * loss_mask).sum(-1) / loss_mask.sum(-1)
             chosen_weights = all_weights[:num_examples]
             rejected_weights = all_weights[num_examples:]
-            output["policy_weights"] = torch.clamp(torch.exp(chosen_weights + rejected_weights), max = 1)
+            output["policy_weights"] = torch.clamp(
+                torch.exp(chosen_weights + rejected_weights), max = 1
+            )
 
     if getattr(args, "rpo_alpha", None) is not None or "sft" in loss_type:
         # F.cross_entropy(chosen logits[:, :-1], labels[:, :-1], ignore_index = 0), mean over kept tokens.
@@ -352,7 +365,9 @@ def unsloth_fused_dpo_concatenated_forward(trainer, model, batch, is_ref_model =
         public_lengths = torch.min(chosen_lengths, rejected_lengths)
         public_lengths = torch.cat([public_lengths, public_lengths], dim = 0)
         seq_len = per_token_logps.size(1)
-        position_ids = torch.arange(seq_len, device = per_token_logps.device).expand_as(per_token_logps)
+        position_ids = torch.arange(seq_len, device = per_token_logps.device).expand_as(
+            per_token_logps
+        )
         ld_mask = position_ids < public_lengths.unsqueeze(1)
         mask = position_ids < completion_lengths.unsqueeze(1)
         front_mask = (ld_mask & mask).float()
@@ -379,7 +394,12 @@ def unsloth_fused_dpo_concatenated_forward(trainer, model, batch, is_ref_model =
     return output
 
 
-def unsloth_fused_orpo_concatenated_forward(trainer, model, batch, method = "orpo"):
+def unsloth_fused_orpo_concatenated_forward(
+    trainer,
+    model,
+    batch,
+    method = "orpo",
+):
     """TRL ``ORPOTrainer`` / ``CPOTrainer.concatenated_forward`` (0.22 through the 1.x
     experimental copies) for decoder-only models, scored from hidden states. ``None`` means
     run TRL's own."""
@@ -440,7 +460,12 @@ def unsloth_fused_orpo_concatenated_forward(trainer, model, batch, method = "orp
     )
     score_mask = logps_mask | nll_mask if need_nll else logps_mask
     per_token_logps, _, _ = _token_logps(
-        hidden[:, :-1], is_hidden, head, transforms, target_ids, score_mask,
+        hidden[:, :-1],
+        is_hidden,
+        head,
+        transforms,
+        target_ids,
+        score_mask,
     )
 
     if need_nll:

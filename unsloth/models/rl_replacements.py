@@ -481,9 +481,11 @@ def _insert_after_docstring(function, lines):
     if not isinstance(node, ast.FunctionDef) or not node.body:
         return function
     first = node.body[0]
-    has_docstring = isinstance(first, ast.Expr) and isinstance(
-        getattr(first, "value", None), ast.Constant
-    ) and isinstance(first.value.value, str)
+    has_docstring = (
+        isinstance(first, ast.Expr)
+        and isinstance(getattr(first, "value", None), ast.Constant)
+        and isinstance(first.value.value, str)
+    )
     source_lines = function.split("\n")
     anchor = node.body[1] if has_docstring and len(node.body) > 1 else first
     indent = re.match(r"[ \t]*", source_lines[anchor.lineno - 1]).group(0)

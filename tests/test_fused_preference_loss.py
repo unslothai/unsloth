@@ -43,7 +43,11 @@ def _zoo_preference_loss():
     spec = importlib.util.find_spec("unsloth_zoo")
     if spec is None or not spec.submodule_search_locations:
         pytest.skip("unsloth_zoo not installed")
-    path = pathlib.Path(list(spec.submodule_search_locations)[0]) / "fused_losses" / "preference_loss.py"
+    path = (
+        pathlib.Path(list(spec.submodule_search_locations)[0])
+        / "fused_losses"
+        / "preference_loss.py"
+    )
     if not path.exists():
         pytest.skip("unsloth_zoo without fused_losses/preference_loss.py")
     return _load("_zoo_preference_loss_under_test", path)
@@ -70,11 +74,20 @@ class HiddenStatesLlama(LlamaForCausalLM):
     calls = 0
     hidden_calls = 0
 
-    def forward(self, input_ids = None, attention_mask = None, position_ids = None,
-                logits_to_keep = 0, use_cache = None, **kwargs):
+    def forward(
+        self,
+        input_ids = None,
+        attention_mask = None,
+        position_ids = None,
+        logits_to_keep = 0,
+        use_cache = None,
+        **kwargs,
+    ):
         type(self).calls += 1
         hidden = self.model(
-            input_ids = input_ids, attention_mask = attention_mask, position_ids = position_ids,
+            input_ids = input_ids,
+            attention_mask = attention_mask,
+            position_ids = position_ids,
             use_cache = False,
         ).last_hidden_state
         if logits_to_keep:
@@ -88,11 +101,22 @@ class HiddenStatesLlama(LlamaForCausalLM):
         return CausalLMOutputWithPast(logits = logits)
 
 
-def _model(seed, softcap = 0.0, bias = False, vocab = VOCAB, hidden = HIDDEN):
+def _model(
+    seed,
+    softcap = 0.0,
+    bias = False,
+    vocab = VOCAB,
+    hidden = HIDDEN,
+):
     torch.manual_seed(seed)
     config = LlamaConfig(
-        vocab_size = vocab, hidden_size = hidden, intermediate_size = 32, num_hidden_layers = 2,
-        num_attention_heads = 2, num_key_value_heads = 2, max_position_embeddings = 64,
+        vocab_size = vocab,
+        hidden_size = hidden,
+        intermediate_size = 32,
+        num_hidden_layers = 2,
+        num_attention_heads = 2,
+        num_key_value_heads = 2,
+        max_position_embeddings = 64,
         tie_word_embeddings = False,
     )
     model = HiddenStatesLlama(config).double()
@@ -125,8 +149,8 @@ def _rows(gen, n, lo, hi, pad, left):
     for i, length in enumerate(lengths.tolist()):
         tokens = torch.randint(1, VOCAB, (length,), generator = gen)
         if left:
-            ids[i, width - length:] = tokens
-            mask[i, width - length:] = 1
+            ids[i, width - length :] = tokens
+            mask[i, width - length :] = 1
         else:
             ids[i, :length] = tokens
             mask[i, :length] = 1
@@ -142,9 +166,12 @@ def _dpo_batch(seed, n = 3):
     chosen_ids, chosen_mask = _rows(gen, n, 1, 7, PAD, left = False)
     rejected_ids, rejected_mask = _rows(gen, n, 1, 5, PAD, left = False)
     return {
-        "prompt_input_ids": prompt_ids, "prompt_attention_mask": prompt_mask,
-        "chosen_input_ids": chosen_ids, "chosen_attention_mask": chosen_mask,
-        "rejected_input_ids": rejected_ids, "rejected_attention_mask": rejected_mask,
+        "prompt_input_ids": prompt_ids,
+        "prompt_attention_mask": prompt_mask,
+        "chosen_input_ids": chosen_ids,
+        "chosen_attention_mask": chosen_mask,
+        "rejected_input_ids": rejected_ids,
+        "rejected_attention_mask": rejected_mask,
     }
 
 
@@ -161,28 +188,58 @@ def _dpo_trainer(module, model, ref_model, fused, **overrides):
         compute_ref_log_probs = DPOTrainer.compute_ref_log_probs
         null_ref_context = DPOTrainer.null_ref_context
 
-        def concatenated_forward(self, model, batch, is_ref_model = False):
+        def concatenated_forward(
+            self,
+            model,
+            batch,
+            is_ref_model = False,
+        ):
             if fused:
-                out = module.unsloth_fused_dpo_concatenated_forward(self, model, batch, is_ref_model)
+                out = module.unsloth_fused_dpo_concatenated_forward(
+                    self, model, batch, is_ref_model
+                )
                 assert out is not None, "fused path declined a supported case"
                 return out
             return DPOTrainer.concatenated_forward(self, model, batch, is_ref_model = is_ref_model)
 
     trainer = Stub()
     loss_type = overrides.pop("loss_type", "sigmoid")
-    if loss_type == "aot_pair" and "aot_unpaired" in __import__("inspect").getsource(DPOTrainer.dpo_loss):
+    if loss_type == "aot_pair" and "aot_unpaired" in __import__("inspect").getsource(
+        DPOTrainer.dpo_loss
+    ):
         loss_type = "aot_unpaired"
     trainer.__dict__.update(
-        accelerator = _Accelerator(), model = model, ref_model = ref_model,
-        is_encoder_decoder = False, aux_loss_enabled = False, is_peft_model = False,
-        ref_adapter_name = None, _peft_has_been_casted_to_bf16 = False,
-        padding_value = PAD, pad_token_id = PAD, label_pad_token_id = -100,
-        max_length = None, truncation_mode = "keep_end", use_logits_to_keep = False,
-        padding_free = False, loss_type = loss_type if isinstance(loss_type, list) else [loss_type],
-        loss_weights = None, beta = 0.1, label_smoothing = 0.0, reference_free = False,
-        f_divergence_type = "reverse_kl", f_divergence_params = {}, use_weighting = False,
+        accelerator = _Accelerator(),
+        model = model,
+        ref_model = ref_model,
+        is_encoder_decoder = False,
+        aux_loss_enabled = False,
+        is_peft_model = False,
+        ref_adapter_name = None,
+        _peft_has_been_casted_to_bf16 = False,
+        padding_value = PAD,
+        pad_token_id = PAD,
+        label_pad_token_id = -100,
+        max_length = None,
+        truncation_mode = "keep_end",
+        use_logits_to_keep = False,
+        padding_free = False,
+        loss_type = loss_type if isinstance(loss_type, list) else [loss_type],
+        loss_weights = None,
+        beta = 0.1,
+        label_smoothing = 0.0,
+        reference_free = False,
+        f_divergence_type = "reverse_kl",
+        f_divergence_params = {},
+        use_weighting = False,
     )
-    args = dict(use_liger_loss = False, use_liger_kernel = False, rpo_alpha = None, ld_alpha = None, discopop_tau = 0.05)
+    args = dict(
+        use_liger_loss = False,
+        use_liger_kernel = False,
+        rpo_alpha = None,
+        ld_alpha = None,
+        discopop_tau = 0.05,
+    )
     for key in list(overrides):
         if key in args:
             args[key] = overrides.pop(key)
@@ -199,7 +256,11 @@ def _run(trainer, model, batch):
     return loss.detach(), metrics, grads
 
 
-def _assert_same(base, head, tol = 1e-9):
+def _assert_same(
+    base,
+    head,
+    tol = 1e-9,
+):
     (loss_b, metrics_b, grads_b), (loss_h, metrics_h, grads_h) = base, head
     assert torch.isfinite(loss_b)
     torch.testing.assert_close(loss_h, loss_b, rtol = tol, atol = tol)
@@ -241,7 +302,9 @@ DPO_CASES = [
 ]
 
 
-@pytest.mark.parametrize("case", DPO_CASES, ids = lambda c: "-".join(f"{k}={v}" for k, v in c.items()) or "default")
+@pytest.mark.parametrize(
+    "case", DPO_CASES, ids = lambda c: "-".join(f"{k}={v}" for k, v in c.items()) or "default"
+)
 @pytest.mark.parametrize("reference", ["ref_model", "precomputed"])
 def test_dpo_matches_trl(dpo_module, monkeypatch, case, reference):
     case = dict(case)
@@ -259,7 +322,10 @@ def test_dpo_matches_trl(dpo_module, monkeypatch, case, reference):
             # TRL precompute_ref_log_probs stores these per row; reuse the reference pass of this arm.
             with torch.no_grad():
                 ref_chosen, ref_rejected = trainer.compute_ref_log_probs(run_batch)
-            run_batch["ref_chosen_logps"], run_batch["ref_rejected_logps"] = ref_chosen, ref_rejected
+            run_batch["ref_chosen_logps"], run_batch["ref_rejected_logps"] = (
+                ref_chosen,
+                ref_rejected,
+            )
         HiddenStatesLlama.hidden_calls = 0
         results.append(_run(trainer, model, run_batch))
         if fused:
@@ -274,7 +340,9 @@ def test_dpo_policy_equals_reference_gives_log2(dpo_module, monkeypatch):
     model = _model(0)
     trainer = _dpo_trainer(dpo_module, model, _model(0), fused = True)
     loss, metrics = trainer.get_batch_loss_metrics(model, _dpo_batch(seed = 5))
-    assert loss.item() == pytest.approx(torch.log(torch.tensor(2.0, dtype = torch.float64)).item(), abs = 1e-12)
+    assert loss.item() == pytest.approx(
+        torch.log(torch.tensor(2.0, dtype = torch.float64)).item(), abs = 1e-12
+    )
     assert metrics["rewards/margins"] == pytest.approx(0.0, abs = 1e-12)
 
 
@@ -286,13 +354,22 @@ def test_dpo_declines_vision_and_flag_off(dpo_module, monkeypatch):
     batch["pixel_values"] = torch.zeros(3, 1)
     assert dpo_module.unsloth_fused_dpo_concatenated_forward(trainer, model, batch) is None
     monkeypatch.setenv("UNSLOTH_FUSED_PREFERENCE_LOSS", "0")
-    assert dpo_module.unsloth_fused_dpo_concatenated_forward(trainer, model, _dpo_batch(seed = 3)) is None
+    assert (
+        dpo_module.unsloth_fused_dpo_concatenated_forward(trainer, model, _dpo_batch(seed = 3))
+        is None
+    )
 
 
 def test_dpo_falls_back_to_logits_when_forward_ignores_flag(dpo_module, monkeypatch):
     """A forward that ignores UNSLOTH_RETURN_HIDDEN_STATES still gets TRL's numbers."""
     monkeypatch.setattr(dpo_module, "_logit_transforms", lambda unwrapped: (0.0, 0.0, 0.0))
-    monkeypatch.setattr(HiddenStatesLlama, "forward", lambda self, *a, **k: LlamaForCausalLM.forward(self, *a, **{x: y for x, y in k.items() if x != "use_cache"}))
+    monkeypatch.setattr(
+        HiddenStatesLlama,
+        "forward",
+        lambda self, *a, **k: LlamaForCausalLM.forward(
+            self, *a, **{x: y for x, y in k.items() if x != "use_cache"}
+        ),
+    )
     batch = _dpo_batch(seed = 3)
     results = []
     for fused in (False, True):
@@ -308,17 +385,26 @@ def _orpo_batch(seed, n = 3):
     prompt_lengths = torch.randint(1, 5, (n,), generator = gen).tolist()
     prompts = [torch.randint(1, VOCAB, (p,), generator = gen) for p in prompt_lengths]
     for side, hi in (("chosen", 7), ("rejected", 5)):
-        answers = [torch.randint(1, VOCAB, (int(torch.randint(1, hi + 1, (1,), generator = gen)),), generator = gen) for _ in range(n)]
+        answers = [
+            torch.randint(
+                1, VOCAB, (int(torch.randint(1, hi + 1, (1,), generator = gen)),), generator = gen
+            )
+            for _ in range(n)
+        ]
         width = max(len(p) + len(a) for p, a in zip(prompts, answers))
         ids = torch.full((n, width), PAD, dtype = torch.long)
         mask = torch.zeros((n, width), dtype = torch.long)
         labels = torch.full((n, width), -100, dtype = torch.long)
         for i, (p, a) in enumerate(zip(prompts, answers)):
             row = torch.cat([p, a])
-            ids[i, :len(row)] = row
-            mask[i, :len(row)] = 1
-            labels[i, len(p):len(row)] = a
-        batch[f"{side}_input_ids"], batch[f"{side}_attention_mask"], batch[f"{side}_labels"] = ids, mask, labels
+            ids[i, : len(row)] = row
+            mask[i, : len(row)] = 1
+            labels[i, len(p) : len(row)] = a
+        batch[f"{side}_input_ids"], batch[f"{side}_attention_mask"], batch[f"{side}_labels"] = (
+            ids,
+            mask,
+            labels,
+        )
     return batch
 
 
@@ -341,7 +427,9 @@ def _orpo_trainer(module, model, method, fused, **overrides):
 
         def concatenated_forward(self, model, batch):
             if fused:
-                out = module.unsloth_fused_orpo_concatenated_forward(self, model, batch, method = method)
+                out = module.unsloth_fused_orpo_concatenated_forward(
+                    self, model, batch, method = method
+                )
                 if out is not None:
                     return out
                 assert fused == "auto", "fused path declined a supported case"
@@ -353,9 +441,18 @@ def _orpo_trainer(module, model, method, fused, **overrides):
         Stub.cpo_loss = Trainer.cpo_loss
     trainer = Stub()
     trainer.__dict__.update(
-        accelerator = _Accelerator(), is_encoder_decoder = False, aux_loss_enabled = False,
-        padding_value = PAD, pad_token_id = PAD, label_pad_token_id = -100, beta = 0.1,
-        loss_type = "sigmoid", cpo_alpha = 1.0, simpo_gamma = 0.5, label_smoothing = 0.0, alpha = 0.0,
+        accelerator = _Accelerator(),
+        is_encoder_decoder = False,
+        aux_loss_enabled = False,
+        padding_value = PAD,
+        pad_token_id = PAD,
+        label_pad_token_id = -100,
+        beta = 0.1,
+        loss_type = "sigmoid",
+        cpo_alpha = 1.0,
+        simpo_gamma = 0.5,
+        label_smoothing = 0.0,
+        alpha = 0.0,
     )
     trainer.__dict__.update(overrides)
     return trainer
@@ -409,7 +506,9 @@ def test_orpo_under_ddp_find_unused_falls_back(dpo_module, monkeypatch, tmp_path
 
     batch = _orpo_batch(seed = 4)
     reference = _run(_orpo_trainer(dpo_module, _model(0), "orpo", False), _model(0), batch)
-    dist.init_process_group("gloo", init_method = f"file://{tmp_path / 'store'}", rank = 0, world_size = 1)
+    dist.init_process_group(
+        "gloo", init_method = f"file://{tmp_path / 'store'}", rank = 0, world_size = 1
+    )
     try:
         for find_unused in (True, False):
             model = _model(0)
@@ -448,7 +547,9 @@ def test_orpo_under_compiled_ddp_find_unused_falls_back(dpo_module, monkeypatch,
 
     batch = _orpo_batch(seed = 4)
     reference = _run(_orpo_trainer(dpo_module, _model(0), "orpo", False), _model(0), batch)
-    dist.init_process_group("gloo", init_method = f"file://{tmp_path / 'store'}", rank = 0, world_size = 1)
+    dist.init_process_group(
+        "gloo", init_method = f"file://{tmp_path / 'store'}", rank = 0, world_size = 1
+    )
     try:
         for find_unused in (True, False):
             model = _model(0)
@@ -481,10 +582,14 @@ def test_orpo_under_fsdp1_falls_back(dpo_module, monkeypatch, tmp_path):
             return getattr(model, "module", model)
 
     batch = _orpo_batch(seed = 4)
-    dist.init_process_group("gloo", init_method = f"file://{tmp_path / 'store'}", rank = 0, world_size = 1)
+    dist.init_process_group(
+        "gloo", init_method = f"file://{tmp_path / 'store'}", rank = 0, world_size = 1
+    )
     try:
         model = _model(0)
-        wrapped = FullyShardedDataParallel(model, device_id = torch.device("cpu"), use_orig_params = True)
+        wrapped = FullyShardedDataParallel(
+            model, device_id = torch.device("cpu"), use_orig_params = True
+        )
         trainer = _orpo_trainer(dpo_module, model, "orpo", "auto", accelerator = Unwrapping())
         assert dpo_module._output_head(trainer, wrapped) == (None, None)
         HiddenStatesLlama.hidden_calls = 0
@@ -515,9 +620,17 @@ def test_square_head_needs_explicit_hidden_states_signal(dpo_module, monkeypatch
     monkeypatch.setattr(dpo_module, "__package__", package.__name__)
     monkeypatch.setattr(dpo_module, "_logit_transforms", lambda unwrapped: (0.0, 0.0, 0.0))
     if honours_flag:
-        monkeypatch.setattr(HiddenStatesLlama, "__UNSLOTH_SUPPORTS_RETURN_HIDDEN_STATES__", True, raising = False)
+        monkeypatch.setattr(
+            HiddenStatesLlama, "__UNSLOTH_SUPPORTS_RETURN_HIDDEN_STATES__", True, raising = False
+        )
     else:
-        monkeypatch.setattr(HiddenStatesLlama, "forward", lambda self, *a, **k: LlamaForCausalLM.forward(self, *a, **{x: y for x, y in k.items() if x != "use_cache"}))
+        monkeypatch.setattr(
+            HiddenStatesLlama,
+            "forward",
+            lambda self, *a, **k: LlamaForCausalLM.forward(
+                self, *a, **{x: y for x, y in k.items() if x != "use_cache"}
+            ),
+        )
     batch = _orpo_batch(seed = 4)
     results = []
     for fused in (False, "auto"):
@@ -546,15 +659,23 @@ def test_rl_replacement_injects_dispatch_only_when_enabled(monkeypatch):
     namespace = {"os": os, "re": __import__("re"), "textwrap": __import__("textwrap")}
     exec(text[start:end], namespace)
     monkeypatch.setenv("UNSLOTH_FUSED_PREFERENCE_LOSS", "0")
-    assert namespace["dpo_trainer_fused_preference_forward"]("concatenated_forward", source) == source
+    assert (
+        namespace["dpo_trainer_fused_preference_forward"]("concatenated_forward", source) == source
+    )
     monkeypatch.setenv("UNSLOTH_FUSED_PREFERENCE_LOSS", "1")
     patched = namespace["dpo_trainer_fused_preference_forward"]("concatenated_forward", source)
     assert patched != source
     compile(__import__("textwrap").dedent(patched), "<patched>", "exec")
     lines = patched.split("\n")
     doc = lines.index('        """Doc."""')
-    assert lines[doc + 1].strip().startswith("from unsloth.models.dpo import unsloth_fused_dpo_concatenated_forward")
-    assert namespace["dpo_trainer_fused_preference_forward"]("concatenated_inputs", source) == source
+    assert (
+        lines[doc + 1]
+        .strip()
+        .startswith("from unsloth.models.dpo import unsloth_fused_dpo_concatenated_forward")
+    )
+    assert (
+        namespace["dpo_trainer_fused_preference_forward"]("concatenated_inputs", source) == source
+    )
 
 
 @pytest.mark.parametrize("kind", ["forward_hook", "pre_hook", "hf_hook", "subclass"])
