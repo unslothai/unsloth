@@ -260,6 +260,39 @@ def test_kill_switch_and_fallbacks(N, monkeypatch):
         N.nvfp4_linear(X, packed, scale[:, :2], gs)
 
 
+def test_degenerate_operands_stay_dense(N, fused):
+    dtype = _dtypes()[0]
+    packed, scale, gs = _random_nvfp4(64, 128)
+    X = torch.randn(4, 128, device = "cuda", dtype = dtype)
+    assert N._fused_ok(X, packed, scale, gs, 128)
+    assert not N._fused_ok(X, packed, scale, gs[:0], 128)  # empty global scale
+    assert not N._fused_ok(X, packed[:0], scale[:0], gs, 128)  # zero output features
+
+
+def test_extra_scale_columns_are_ignored(N, fused, monkeypatch):
+    dtype = _dtypes()[0]
+    packed, scale, gs = _random_nvfp4(64, 96)  # K = 96 leaves a partial last K tile
+    wide = torch.cat([scale, torch.full_like(scale[:, :2], float("nan"))], dim = 1)
+    X = torch.randn(4, 96, device = "cuda", dtype = dtype)
+    before = _calls(N)
+    Y = N._nvfp4_matmul_fwd(X, packed, wide, gs)
+    assert _calls(N)["fwd"] == before["fwd"] + 1
+    assert torch.equal(Y, N._nvfp4_matmul_fwd(X, packed, scale, gs))
+    G = torch.randn(4, 64, device = "cuda", dtype = dtype)
+    assert torch.equal(N._nvfp4_matmul_bwd(G, packed, wide, gs), N._nvfp4_matmul_bwd(G, packed, scale, gs))
+
+
+def test_double_backward_takes_the_dense_dx(N, fused):
+    dtype = _dtypes()[0]
+    packed, scale, gs = _random_nvfp4(64, 128)
+    X = torch.randn(4, 128, device = "cuda", dtype = dtype, requires_grad = True)
+    out = N.nvfp4_linear(X, packed, scale, gs)
+    (gX,) = torch.autograd.grad(out.float().square().sum(), X, create_graph = True)
+    assert gX.requires_grad
+    (ggX,) = torch.autograd.grad(gX.float().sum(), X)
+    assert torch.isfinite(ggX).all() and ggX.abs().sum() > 0
+
+
 def test_offset_width_follows_the_strided_span(N):
     small = torch.empty((2, 4), device = "meta")
     assert not N._needs_int64(small)

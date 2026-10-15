@@ -197,10 +197,14 @@ def _nvfp4_weight_tile(
     BLOCK_K: tl.constexpr,
     SCALE_E4M3_BYTES: tl.constexpr,
     OUT_DTYPE: tl.constexpr,
+    INT64_OFFSETS: tl.constexpr,
 ):
     # Rounded like dense: E2M1 * (block scale / global scale) in fp32, then one cast; out-of-range decodes to 0.
     c = k0 // 2 + tl.arange(0, BLOCK_K // 2)
     g = k0 // 16 + tl.arange(0, BLOCK_K // 16)
+    if INT64_OFFSETS:
+        c = c.to(tl.int64)
+        g = g.to(tl.int64)
     row_ok = rows[:, None] < n_rows
     byte = tl.load(
         packed_ptr + rows[:, None] * stride_pr + c[None, :] * stride_pc,
@@ -209,7 +213,8 @@ def _nvfp4_weight_tile(
     ).to(tl.int32)
     scale = tl.load(
         scale_ptr + rows[:, None] * stride_sr + g[None, :] * stride_sc,
-        mask = row_ok & (g[None, :] < scale_cols),
+        # Scales past the logical width (half_cols * 2 // 16 groups) are ignored, as dense slices them off.
+        mask = row_ok & (g[None, :] < scale_cols) & (g[None, :] < (half_cols + 7) // 8),
         other = 0,
     )
     scale = _e4m3_to_float(scale.to(tl.int32)) if SCALE_E4M3_BYTES else scale.to(tl.float32)
@@ -273,6 +278,8 @@ def _nvfp4_matmul_fwd_kernel(
     acc = tl.zeros((BLOCK_M, BLOCK_N), dtype = tl.float32)
     for k0 in range(k_start, k_end, BLOCK_K):
         rk = k0 + tl.arange(0, BLOCK_K)
+        if INT64_OFFSETS:
+            rk = rk.to(tl.int64)
         x = tl.load(
             x_ptr + rm[:, None] * stride_xm + rk[None, :] * stride_xk,
             mask = (rm[:, None] < M) & (rk[None, :] < k_end),
@@ -295,6 +302,7 @@ def _nvfp4_matmul_fwd_kernel(
             BLOCK_K,
             SCALE_E4M3_BYTES,
             x_ptr.dtype.element_ty,
+            INT64_OFFSETS,
         )
         acc = tl.dot(x, tl.trans(w), acc)
     tl.store(
@@ -350,6 +358,7 @@ def _nvfp4_matmul_dx_kernel(
     rk = pid_k * BLOCK_K + tl.arange(0, BLOCK_K)
     if INT64_OFFSETS:
         rm = rm.to(tl.int64)
+        rk = rk.to(tl.int64)
     global_scale = tl.load(global_scale_ptr).to(tl.float32)
     acc = tl.zeros((BLOCK_M, BLOCK_K), dtype = tl.float32)
     for n0 in range(n_start, n_end, BLOCK_N):
@@ -378,6 +387,7 @@ def _nvfp4_matmul_dx_kernel(
             BLOCK_K,
             SCALE_E4M3_BYTES,
             g_ptr.dtype.element_ty,
+            INT64_OFFSETS,
         )
         acc = tl.dot(g, w, acc)
     tl.store(
@@ -421,8 +431,10 @@ def _fused_ok(A, packed, scale, global_scale, inner):
         packed.device == A.device
         and scale.device == A.device
         and global_scale.device == A.device
+        and global_scale.numel() >= 1
         and packed.dtype == torch.uint8
         and packed.dim() == 2
+        and packed.shape[0] > 0
         and not _is_transposed_view(packed)
         and scale.dtype in (torch.float8_e4m3fn, torch.float32, torch.float16, torch.bfloat16)
         and scale.dim() == 2
@@ -598,7 +610,10 @@ def _nvfp4_matmul_fwd(
 def _nvfp4_matmul_bwd(
     grad: torch.Tensor, packed: torch.Tensor, scale: torch.Tensor, global_scale: torch.Tensor
 ) -> torch.Tensor:
-    if _fused_ok(grad, packed, scale, global_scale, packed.shape[0]):
+    # create_graph: the raw launch has no autograd history, so differentiate through the dense matmul.
+    if not (grad.requires_grad and torch.is_grad_enabled()) and _fused_ok(
+        grad, packed, scale, global_scale, packed.shape[0]
+    ):
         return _nvfp4_matmul_dx_fused(grad, packed, scale, global_scale.reshape(-1)[:1])
     return torch.matmul(grad, nvfp4_dequantize(packed, scale, global_scale, grad.dtype))
 
