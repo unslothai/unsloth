@@ -59,13 +59,23 @@ def normalize_model_aliases(raw: Any) -> list[dict[str, str]]:
     return aliases
 
 
+_normalized: tuple[Any, list[dict[str, str]]] = (None, [])
+
+
 def get_model_aliases() -> list[dict[str, str]]:
+    global _normalized
     from utils.openai_auto_switch_settings import _cached_setting
-    try:
-        return normalize_model_aliases(_cached_setting(MODEL_ALIASES_SETTING_KEY, None))
-    except ValueError:
-        # A row the current rules reject (hand-edited db) disables aliases instead of 500ing /v1.
-        return []
+
+    raw = _cached_setting(MODEL_ALIASES_SETTING_KEY, None)
+    # The settings cache hands back the same object until it refreshes: validate once per object.
+    if raw is not _normalized[0]:
+        try:
+            aliases = normalize_model_aliases(raw)
+        except ValueError:
+            # A row the current rules reject (hand-edited db) disables aliases instead of 500ing /v1.
+            aliases = []
+        _normalized = (raw, aliases)
+    return _normalized[1]
 
 
 def set_model_aliases(raw: Any, model_ids: Iterable[str] = ()) -> list[dict[str, str]]:
