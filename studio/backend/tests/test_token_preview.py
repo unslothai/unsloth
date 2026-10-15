@@ -2,6 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import asyncio
+import os
 import sys
 import threading
 import types
@@ -143,3 +144,35 @@ def test_stop_does_not_wait_behind_a_preview_in_flight():
     with service._lock:
         service.stop()
     assert terminated.is_set()
+
+
+_TINY = "trl-internal-testing/tiny-Qwen3ForCausalLM"
+
+
+@pytest.fixture
+def real_worker():
+    if os.environ.get("HF_HUB_OFFLINE") == "1":
+        pytest.skip("needs the Hub for the tiny tokenizer")
+    config = {"model_name": _TINY, "tokenizer_source": _TINY, "hf_token": None}
+
+    def run(**payload):
+        return token_preview.run_token_preview(("owner", _TINY, _TINY, None), config, payload)
+
+    yield run
+    token_preview.stop_token_preview_worker()
+
+
+def test_the_subprocess_tokenizes_and_masks_typed_text(real_worker):
+    text = "Árvíztűrő ű ő"
+    plain = real_worker(text = text, train_on_completions = False, max_seq_length = 128)
+    sample = plain["samples"][0]
+    assert sample["num_tokens"] == sample["num_trained"] > 0
+    assert all(isinstance(token[0], int) for token in sample["tokens"])
+
+    chat = "<|im_start|>user\nhi<|im_end|>\n<|im_start|>assistant\nhello<|im_end|>\n"
+    masked = real_worker(text = chat, train_on_completions = True, max_seq_length = 128)
+    assert masked["masking"]["applied"] is True
+    trained = "".join(
+        piece for _, piece, is_trained in masked["samples"][0]["tokens"] if is_trained
+    )
+    assert trained.startswith("hello") and "user" not in trained
