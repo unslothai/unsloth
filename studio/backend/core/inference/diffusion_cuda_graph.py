@@ -1960,18 +1960,33 @@ def set_bypass(handles: Any, on: bool) -> None:
             pass
 
 
-def reset_all(handles: Any) -> None:
+def _holds_graphs(handle: Any) -> bool:
+    """True while ``handle`` (or its fallback handle) still holds a captured graph."""
+    if getattr(handle, "cache", None):
+        return True
+    fallback = getattr(handle, "fallback_handle", None)
+    return fallback is not None and fallback is not handle and _holds_graphs(fallback)
+
+
+def reset_all(handles: Any, strict: bool = False) -> None:
     """Drop every captured graph, for every handle (the weights changed).
 
     Drops the pool token with the last graph: a stale token dies on the allocator's
     "use_count > 0 INTERNAL ASSERT FAILED", raised after ``torch.cuda.graph`` entered its side
-    stream, so the thread is left off the default stream too."""
+    stream, so the thread is left off the default stream too. ``strict``: raise when a handle failed
+    to reset or still holds a graph (a caller about to move weights must not leave one that could replay)."""
+    failed: list = []
     for handle in handles or ():
         try:
             handle.reset()
-        except Exception:  # noqa: BLE001 - optimisation only
-            pass
+        except Exception as exc:  # noqa: BLE001 - optimisation only, unless strict
+            failed.append(f"{type(handle).__name__}: {type(exc).__name__}: {exc}")
+            continue
+        if strict and _holds_graphs(handle):
+            failed.append(f"{type(handle).__name__}: still holds a captured graph")
     _drop_pool_if_unused()
+    if strict and failed:
+        raise RuntimeError("could not drop every captured CUDA graph: " + "; ".join(failed))
 
 
 def uninstall_all(handles: Any, *, logger: Any = None) -> None:

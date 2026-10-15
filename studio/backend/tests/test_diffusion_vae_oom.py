@@ -413,7 +413,7 @@ def test_step_a_drops_graphs_and_repins_resident_groups(monkeypatch):
     from core.inference import diffusion_memory as M
 
     events = []
-    monkeypatch.setattr(G, "reset_all", lambda handles: events.append(("graphs", tuple(handles))))
+    monkeypatch.setattr(G, "reset_all", lambda handles, strict = False: events.append(("graphs", tuple(handles))))
     monkeypatch.setattr(
         M, "release_resident_groups",
         lambda pipe, need, logger = None, reason = "": (events.append(("release", need)), lambda: events.append(("repin",)))[1],
@@ -903,7 +903,9 @@ def test_kernel_calls_skip_the_temporal_stride_fallback(monkeypatch):
     with torch.no_grad():
         y = fast(x)
     assert state.calls == 1 and state.kernel_calls == 0
-    assert torch.allclose(y, torch.nn.functional.silu(norm(x)), atol = 1e-5)
+    # the activated values (what the paired SiLU reads); any other reader sees the stock norm output
+    assert torch.allclose(F._plain(y), torch.nn.functional.silu(norm(x)), atol = 1e-5)
+    assert torch.allclose(y, norm(x), atol = 1e-5)
 
 
 # -- PR review round 7 regressions ------------------------------------------------------------------------------
@@ -1533,7 +1535,7 @@ def test_fused_activation_mark_only_for_the_traced_silu():
         y = fast(x)
         assert torch.allclose(F._silu_passthrough(other)(y), torch.nn.functional.silu(y))
         y = fast(x)
-        assert F._silu_passthrough(matched)(y) is y
+        assert torch.allclose(F._silu_passthrough(matched)(y), torch.nn.functional.silu(norm(x)), atol = 1e-6)
 
 
 class _DoubleSiluDec(torch.nn.Module):
@@ -1683,3 +1685,248 @@ def test_scope_heals_itself_after_a_rewrap_drops_it():
     del vae.decode  # the slot back to the class method: scope gone
     vae.decode(_z())
     assert getattr(vae.__dict__.get("decode"), "_unsloth_vae_oom_scope", False)
+
+
+# -- PR review round 13 -----------------------------------------------------------------------------------------
+
+
+def test_structural_traces_on_two_threads_keep_their_own_reader():
+    """Item 4285966457: the reader callback was one class attribute, so a second thread's trace finishing while the
+    first was mid-run cleared it, and the first trace missed a residual read of its norm output (a false exclusive
+    pairing). The callback is per thread and traces run one at a time."""
+    import threading
+
+    shared_norm, shared_act = torch.nn.GroupNorm(4, 8), torch.nn.SiLU()
+    other_norm, other_act = torch.nn.GroupNorm(4, 8), torch.nn.SiLU()
+    paused, resume = threading.Event(), threading.Event()
+
+    def run_shared():
+        x = torch.randn(1, 8, 4, 4)
+        h = shared_norm(x)
+        paused.set()
+        resume.wait(timeout = 2)  # the other thread's trace runs to completion here (before: unlocked)
+        return shared_act(h) + h  # residual read of the norm output: shared, not exclusive
+
+    result = {}
+
+    def a():
+        result["a"] = F._trace_group_norm_silu([shared_norm], [shared_act], run_shared)
+
+    def b():
+        paused.wait(timeout = 2)
+        result["b"] = F._trace_group_norm_silu(
+            [other_norm], [other_act], lambda: other_act(other_norm(torch.randn(1, 8, 4, 4)))
+        )
+        resume.set()
+
+    ta, tb = threading.Thread(target = a), threading.Thread(target = b)
+    ta.start()
+    tb.start()
+    ta.join(10)
+    tb.join(10)
+    calls_a, consumed_a, _, info_a = result["a"]
+    assert calls_a == [1] and consumed_a == [0] and info_a["shared"] == [1]
+    calls_b, consumed_b, _, _ = result["b"]
+    assert calls_b == [1] and consumed_b == [1]
+
+
+class _WideResidualDec(torch.nn.Module):
+    """Reads its norm output only through the SiLU on small inputs (the calibration crop); above a width threshold it
+    also adds the raw norm output back (a residual that only appears at full shape)."""
+
+    def __init__(self, threshold = 16):
+        super().__init__()
+        self.threshold = threshold
+        self.norm = torch.nn.GroupNorm(4, 8)
+        self.act = torch.nn.SiLU()
+        self.norm2 = torch.nn.GroupNorm(4, 8)
+        self.act2 = torch.nn.SiLU()
+        self.conv = torch.nn.Conv2d(8, 8, 3, padding = 1)
+
+    def forward(self, x):
+        h = self.norm(x)
+        out = self.conv(self.act(h))
+        if x.shape[-1] > self.threshold:
+            out = out + h  # the raw norm output, at full shape only
+            g = self.norm2(h)  # a norm reading it too
+        else:
+            g = self.norm2(out)
+        return self.act2(g) + out
+
+
+class AutoencoderKLWideResidual(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.decoder = _WideResidualDec()
+
+    def _decode(self, z, return_dict = True):
+        return (self.decoder(z),)
+
+
+def test_fused_activation_is_exact_when_full_shape_dataflow_differs_from_the_crop(monkeypatch):
+    """Item 4285966466: the crop trace proves the SiLU is the norm's only reader, but at full width the decoder also
+    adds the raw norm output back and feeds it to another norm. The fused output gives only the paired SiLU the
+    activated values; every other reader gets the stock norm output, so the decode matches stock at any shape."""
+    vae = AutoencoderKLWideResidual()
+    z_small, z_wide = torch.randn(1, 8, 12, 12), torch.randn(1, 8, 12, 40)
+    with torch.no_grad():
+        ref_wide = vae._decode(z_wide)[0]
+        ref_small = vae._decode(z_small)[0]
+    _fake_kernel(monkeypatch)
+    F.install_structural(vae)
+    with torch.no_grad():
+        vae._decode(z_wide)  # calibrates on the 16-latent crop (width 16: no residual), then decodes full width
+        state = vae._unsloth_vae_structural
+        assert state.status == "ok" and state.gn_silu == 2  # both pairings proven exclusive on the crop
+        out_wide = vae._decode(z_wide)[0]
+        out_small = vae._decode(z_small)[0]
+    assert torch.allclose(out_wide, ref_wide, atol = 1e-6)
+    assert torch.allclose(out_small, ref_small, atol = 1e-6)
+
+
+def test_fused_output_read_by_another_norm_is_read_as_stock():
+    norm, norm2 = torch.nn.GroupNorm(4, 8), torch.nn.GroupNorm(4, 8)
+    state = types.SimpleNamespace(kernel_calls = 0, calls = 0)
+    fast, fast2 = F._fast_gn_maybe_act(norm, True, state), F._fast_gn_maybe_act(norm2, False, state)
+    x = torch.randn(1, 8, 4, 4)
+    with torch.no_grad():
+        assert torch.allclose(fast2(fast(x)), norm2(norm(x)), atol = 1e-6)
+        y = fast(x)
+        assert torch.allclose(torch.cat([y, y]), torch.cat([norm(x), norm(x)]), atol = 1e-6)
+        assert y.shape == norm(x).shape and y.dtype == x.dtype
+
+
+def test_inplace_paired_silu_leaves_the_activated_values_for_later_readers():
+    norm, act = torch.nn.GroupNorm(4, 8), torch.nn.SiLU(inplace = True)
+    fast = F._fast_gn_maybe_act(norm, True, types.SimpleNamespace(kernel_calls = 0, calls = 0), [act])
+    x = torch.randn(1, 8, 4, 4)
+    with torch.no_grad():
+        n = norm(x)
+        a = torch.nn.functional.silu(n, inplace = True)
+        ref = a + n  # stock: the in-place SiLU overwrote n
+        y = fast(x)
+        got = F._silu_passthrough(act)(y) + y
+    assert torch.allclose(got, ref, atol = 1e-6)
+
+
+def test_structural_cache_key_follows_the_checkpoint_dtype_and_hooks():
+    """Item 4285966472: the key ignored the weights, so one checkpoint's verdict authorised another of the same
+    class / config. It now hashes every decoder tensor's name / shape / dtype and leading values, plus hook state."""
+    torch.manual_seed(0)
+    a = AutoencoderKLCleanNew()
+    b = AutoencoderKLCleanNew()
+    with torch.no_grad():
+        b.decoder.norm_out.weight.copy_(a.decoder.norm_out.weight)
+        b.decoder.norm_out.bias.copy_(a.decoder.norm_out.bias)
+
+    def key(v):
+        return F.structural_cache_key(v, F._plain_group_norms(v.decoder), F._plain_silus(v.decoder), None)
+
+    assert key(a) is not None and key(a) == key(b)
+    with torch.no_grad():
+        b.decoder.norm_out.weight.add_(0.01)  # a fine-tune of the same config
+    assert key(a) != key(b)
+    c = AutoencoderKLCleanNew()
+    c.load_state_dict(a.state_dict())
+    k_a = key(a)
+    c.to(torch.float64)
+    assert key(c) != k_a  # another dtype
+    c = AutoencoderKLCleanNew()
+    c.load_state_dict(a.state_dict())
+    assert key(c) == k_a
+    h = c.decoder.norm_out.register_forward_hook(lambda *args: None)
+    assert key(c) != k_a  # hooks change what the trace may prove
+    h.remove()
+    meta = AutoencoderKLCleanNew().to("meta")
+    assert key(meta) is None  # no identity: no cached verdict
+
+
+def test_strict_graph_reset_reports_a_handle_that_kept_its_graph():
+    from core.inference import diffusion_cuda_graph as G
+
+    class Handle:
+        def __init__(self, fail = False, keep = False):
+            self.cache, self.fail, self.keep = {"shape": "graph"}, fail, keep
+
+        def reset(self):
+            if self.fail:
+                raise RuntimeError("reset failed")
+            if not self.keep:
+                self.cache.clear()
+            return self
+
+    G.reset_all([Handle(fail = True)])  # lenient: swallowed, as every other caller expects
+    G.reset_all([Handle(), Handle()], strict = True)
+    with pytest.raises(RuntimeError, match = "captured CUDA graph"):
+        G.reset_all([Handle(), Handle(fail = True)], strict = True)
+    with pytest.raises(RuntimeError, match = "captured CUDA graph"):
+        G.reset_all([Handle(keep = True)], strict = True)
+
+
+def test_step_a_moves_no_weight_when_a_graph_could_not_be_dropped(monkeypatch):
+    """Item 4285966487: reset_all swallowed a handle's failure and step (a) then moved weights under a graph that
+    could still replay old addresses. A strict reset failure now stops step (a) before any move; the ladder goes on
+    (stock tiles here)."""
+    from core.inference import diffusion_cuda_graph as G
+
+    class Stuck:
+        cache = {"k": "graph"}
+
+        def reset(self):
+            raise RuntimeError("cannot drop")
+
+    moves = []
+    monkeypatch.setattr(O, "_to_host", lambda m: (moves.append(m), m.to(torch.float32)))
+    vae, pipe = _setup(cap = 16384 + 1000 + 4096, untiled_need = 10000, tiled_need = 500)
+    pipe._unsloth_cuda_graphs = (Stuck(),)
+    out = vae.decode(_z())[0] if "decode" in vae.__dict__ else vae._decode(_z())[0]
+    assert moves == []  # nothing moved under the stuck graph
+    assert _devices(pipe)["transformer"] == _CARD and _devices(pipe)["text_encoder"] == _CARD
+    assert vae._unsloth_vae_oom_stats.get("recovered_by") == "tiled"
+    assert out is not None
+
+
+def test_scope_finds_a_compiled_guard_under_the_rocm_bf16_decode(monkeypatch):
+    """Item 4285966482: ROCm order is compile, then the bf16 decode wraps the compiled guard, then the OOM retry. The
+    bf16 wrapper exposed the guard only through __wrapped__, so the scope went on top as a plain layer and a compiled
+    OOM escaped. The bf16 decode now calls through a mutable slot, and discovery walks every wrapper kind, so the
+    scope sits under the bf16 cast, around the compiled guard."""
+    from core.inference import diffusion_device as D
+
+    budget = _Budget(16384 + 1000)
+    transformer, text_encoder = _on_card(8192), _on_card(4096)
+    vae = _PublicVae(budget, [transformer, text_encoder], 10000, 500)
+    vae.to(_CARD)
+    vae.dtype = torch.float32
+    pipe = _Pipe(transformer = transformer, text_encoder = text_encoder, vae = vae)
+    calls = []
+
+    def compiled(z, return_dict = True):
+        calls.append("compiled")
+        if budget.resident([transformer, text_encoder, vae]) + 10000 > budget.cap:
+            raise _FakeOOM()
+        return (z,)
+
+    def guard(*a, **k):
+        return compiled(*a, **k)
+
+    guard._unsloth_compiled_decode = True
+    guard._unsloth_eager_decode = vae.decode
+    vae.decode = guard
+    monkeypatch.setattr(D, "_rocm_bf16_decode_arch", lambda torch_, target: "gfx1151")
+    monkeypatch.setenv(D.VAE_BF16_DECODE_ENV, "autocast")
+    target = types.SimpleNamespace(device = "cuda", backend = "rocm")
+    assert D.install_rocm_vae_bf16_decode(pipe, target) == "autocast"
+    bf16 = vae.__dict__["decode"]
+    assert O.install(vae, pipe = pipe)
+    assert vae.__dict__["decode"] is bf16  # the cast stays outermost
+    slot = bf16._unsloth_decode_slot
+    assert getattr(slot.decode, "_unsloth_vae_oom_scope", False) and slot.decode.__wrapped__ is guard
+    assert O.ensure_outermost(vae)  # and it counts as in place (no churn)
+    assert vae.__dict__["decode"] is bf16 and slot.decode.__wrapped__ is guard
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        out = vae.decode(_z())
+    assert calls == ["compiled", "compiled"] and out[0].dtype == torch.float32

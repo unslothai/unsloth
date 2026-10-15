@@ -100,8 +100,20 @@ def unwrap(layer: Optional[Layer]) -> bool:
             except Exception:  # noqa: BLE001 - read-only callable: the pass-through still holds
                 pass
             break
-        fn = getattr(fn, "__wrapped__", None)
+        fn = next_layer(fn)
     return False
 
 
-__all__ = ["LAYERS_ATTR", "Layer", "find", "unwrap", "wrap"]
+def next_layer(fn: Any) -> Any:
+    """What the decode wrapper ``fn`` calls through to: the decode in its mutable slot (an eager outer wrapper that
+    keeps what it wraps rewritable: the fp16 non-finite check, the ROCm bf16 decode) when it has one, otherwise its
+    ``__wrapped__``. Every walker of a decode chain uses this, so a slot is never skipped."""
+    slot = getattr(fn, "_unsloth_decode_slot", None)
+    if slot is not None:
+        inner = getattr(slot, "__dict__", {}).get("decode")
+        if inner is not None:
+            return inner
+    return getattr(fn, "__wrapped__", None)
+
+
+__all__ = ["LAYERS_ATTR", "Layer", "find", "next_layer", "unwrap", "wrap"]

@@ -50,7 +50,7 @@ class World:
     def __call__(self, point):
         self.points.append(point)
         self.n += 1
-        if self.at is not None and self.n == self.at:
+        if self.at is not None and self.n in (self.at if isinstance(self.at, tuple) else (self.at,)):
             self.fired = point
             raise FakeOOM(point) if self.kind == "oom" else Injected(point)
 
@@ -126,7 +126,7 @@ class Budget:
 
 def build(cap, world, monkeypatch, tiled = False, variant = "base"):
     budget = Budget(cap, world)
-    transformer = torch.nn.Linear(8, 8, bias = False).to(CARD)
+    transformer = torch.nn.Linear(8, 8).to(CARD)  # two tensors: a move can stop part way
     text_encoder = torch.nn.Linear(8, 8, bias = False).to(CARD)
     text_encoder._diffusers_hook = types.SimpleNamespace(hooks = {"group_offloading": 1})
     text_encoder._unsloth_resident_room = 1
@@ -180,19 +180,55 @@ def build(cap, world, monkeypatch, tiled = False, variant = "base"):
         world("vae_hooks:readd")
         v.fake_hooks = True
 
-    def hook_resident(pipe_, device, logger = None):
-        # diffusion_memory.hook_resident_denoiser: block offload hooks, every group resident; on failure it undoes
+    def unhook():
+        for g in transformer.__dict__.pop("_fake_groups", None) or ():
+            groups.remove(g)
+        transformer.__dict__.pop("_diffusers_hook", None)
+        transformer.__dict__.pop("_unsloth_resident_room", None)
+
+    def hook_resident(pipe_, device, logger = None, resident = True):
+        # diffusion_memory.hook_resident_denoiser: the apply moves the weights to their host copies under block
+        # offload hooks, then (resident) every group is pinned back on the card. A failure removes the hooks and
+        # returns the weights; when that return itself fails it raises, the transformer split with no hooks.
+        if getattr(transformer, "_fake_groups", None) is not None:
+            return False
         world("torchao:hook")
-        transformer._fake_groups = [Group(), Group()]
-        groups.extend(transformer._fake_groups)
-        transformer._unsloth_resident_room = 1
+        own = [Group(), Group()]
+        for g in own:
+            g._unsloth_resident = False
+        transformer._fake_groups = own
+        groups.extend(own)
         transformer._diffusers_hook = types.SimpleNamespace(hooks = {"group_offloading": 1})
+        try:
+            _move(transformer, HOST, world, "torchao_out")
+            if resident:
+                _move(transformer, CARD, world, "torchao_keep")
+                for g in own:
+                    g._unsloth_resident = True
+                transformer._unsloth_resident_room = 1
+        except Exception:  # noqa: BLE001
+            unhook()
+            _move(transformer, CARD, world, "torchao_back")
+            return False
         return True
+
+    def return_torchao(pipe_, device, logger = None, torch_hooks = None):
+        own = getattr(transformer, "_fake_groups", None)
+        if own is not None:  # streamed under hooks: every group resident again
+            _move(transformer, CARD, world, "torchao_repin")
+            for g in own:
+                g._unsloth_resident = True
+            transformer._unsloth_resident_room = 1
+            return
+        unhook()
+        _move(transformer, CARD, world, "torchao_back")
 
     monkeypatch.setattr(M, "release_resident_groups", release)
     monkeypatch.setattr(M, "hook_resident_denoiser", hook_resident)
+    monkeypatch.setattr(M, "return_torchao_denoiser", return_torchao, raising = False)
+    monkeypatch.setattr(M, "module_forward_hook_ids", lambda m: {}, raising = False)
     monkeypatch.setattr(O, "_holds_torchao", lambda m: variant == "torchao" and m is transformer)
-    monkeypatch.setattr(G, "reset_all", lambda handles: world("graphs:reset"))
+    monkeypatch.setattr(G, "reset_all", lambda handles, strict = False: world("graphs:reset"))
     monkeypatch.setattr(O, "_to_host", lambda m: _move(m, HOST, world, "out"))
     monkeypatch.setattr(O, "_return_to", lambda m, d: _move(m, CARD, world, "back"))
     monkeypatch.setattr(O, "_apply_vae_offload", apply_offload)
@@ -240,8 +276,10 @@ def check(pipe, budget, before, override, later, world, outcome):
     # the transformer: on the card, or a working deferred return resolving the card (a torchao one hooked by
     # step (a) is placed by its groups, checked below)
     deferred = transformer.__dict__.get(O._DEFERRED_ATTR)
-    if getattr(transformer, "_fake_groups", None) is not None:
-        pass
+    if getattr(transformer, "_fake_groups", None) is not None and deferred is None:
+        # hooked by step (a): groups resident (checked below) and the weights where those groups keep them
+        assert all(p.dtype == (CARD if all(g._unsloth_resident for g in transformer._fake_groups) else HOST)
+                   for p in transformer.parameters()), ctx  # fmt: skip
     elif deferred is None:
         assert all(p.dtype == CARD for p in transformer.parameters()), ctx
     else:
@@ -322,7 +360,8 @@ def test_fault_injection_covers_every_mutation_point():
     kinds = {p.split(":")[0] for v, cap, tiled in itertools.product(VARIANTS, CAPS, (False, True))
              for p in _points(cap, tiled, v)}  # fmt: skip
     for point in ("graphs", "groups", "out", "back", "vae_hooks", "vae_out", "vae_back", "decode",
-                  "graphs_reset", "resident_groups", "moved", "vae_offload", "torchao", "torchao_hooks"):  # fmt: skip
+                  "graphs_reset", "resident_groups", "moved", "vae_offload", "torchao", "torchao_hooks",
+                  "torchao_out", "torchao_keep"):  # fmt: skip
         assert point in kinds, (point, kinds)
 
 
@@ -362,3 +401,40 @@ def test_unfaulted_ladder_reaches_its_step(cap, variant, monkeypatch):
         assert (raised is not None) == (cap == 1)
         if cap != 20:
             assert len({(t, s) for _, t, s in pipe.vae.slices}) <= 1  # one path for the whole batch
+
+
+def _torchao_double_cases():
+    """Item 4285966491: the torchao hook conversion fails (first fault, inside hook_resident_denoiser) AND its own
+    return to the card fails (second fault, any later point): the transformer is left split between host and card
+    with no hooks, and the session must still leave it on the card, streamed under hooks, or with a deferred return."""
+    mp = pytest.MonkeyPatch()
+    cases = []
+    try:
+        for cap, tiled in itertools.product((13, 8, 2), (False, True)):
+            pts = _run(cap, None, "oom", mp, tiled, verify = False, variant = "torchao").points
+            firsts = [i + 1 for i, p in enumerate(pts) if p.startswith(("torchao_out:", "torchao_keep:"))]
+            for a1 in firsts:
+                n = _run(cap, a1, "oom", mp, tiled, verify = False, variant = "torchao").decode_points
+                cases += [(cap, tiled, a1, a2, kind) for a2 in range(a1 + 1, n + 1) for kind in ("oom", "error")]
+    finally:
+        mp.undo()
+    return cases
+
+
+TORCHAO_DOUBLE = _torchao_double_cases()
+
+
+def test_torchao_double_faults_reach_the_split_state():
+    assert len(TORCHAO_DOUBLE) >= 50, len(TORCHAO_DOUBLE)
+    mp = pytest.MonkeyPatch()
+    try:
+        cap, tiled, a1, a2, kind = next(c for c in TORCHAO_DOUBLE if c[4] == "oom")
+        world = _run(cap, (a1, a1 + 1), "oom", mp, tiled, verify = False, variant = "torchao")
+    finally:
+        mp.undo()
+    assert world.points[a1].startswith("torchao_back:"), world.points[a1 - 1:a1 + 2]
+
+
+@pytest.mark.parametrize("cap,tiled,a1,a2,kind", TORCHAO_DOUBLE)
+def test_torchao_conversion_and_its_return_both_fail(cap, tiled, a1, a2, kind, monkeypatch):
+    _run(cap, (a1, a2), kind, monkeypatch, tiled, variant = "torchao")

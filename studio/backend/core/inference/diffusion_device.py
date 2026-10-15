@@ -12,6 +12,7 @@ the capability flags optimisation paths key off.
 from __future__ import annotations
 
 import os
+import types
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Optional
@@ -294,6 +295,9 @@ def install_rocm_vae_bf16_decode(
     if mode == "weights" and not parts:
         mode = "autocast"  # no separable decode half: cast nothing
 
+    # The wrapped decode lives in a mutable slot (as the fp16 decode's does): a layer that must sit under this cast (a
+    # compiled decode guard under the OOM scope) can be found and rewrapped in place.
+    slot = types.SimpleNamespace(decode = decode)
     if mode == "weights":
         for part in parts:
             part.to(torch.bfloat16)
@@ -303,16 +307,17 @@ def install_rocm_vae_bf16_decode(
         def _bf16_decode(z: Any, *args: Any, **kwargs: Any) -> Any:
             if isinstance(z, torch.Tensor) and z.is_floating_point():
                 z = z.to(torch.bfloat16)
-            return _as_float32(decode(z, *args, **kwargs), torch)
+            return _as_float32(slot.decode(z, *args, **kwargs), torch)
 
     else:
 
         def _bf16_decode(*args: Any, **kwargs: Any) -> Any:
             with torch.autocast(device_type = "cuda", dtype = torch.bfloat16):
-                out = decode(*args, **kwargs)
+                out = slot.decode(*args, **kwargs)
             return _as_float32(out, torch)
 
     _bf16_decode._unsloth_bf16_decode = True  # type: ignore[attr-defined]
+    _bf16_decode._unsloth_decode_slot = slot  # type: ignore[attr-defined]
     _bf16_decode.__wrapped__ = decode  # type: ignore[attr-defined]
     vae.decode = _bf16_decode
     vae._unsloth_bf16_decode_mode = mode

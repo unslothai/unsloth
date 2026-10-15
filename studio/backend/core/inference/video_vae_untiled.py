@@ -90,7 +90,9 @@ def _in_chain(fn: Any, target: Any) -> bool:
             return False
         if fn is target:
             return True
-        fn = getattr(fn, "__wrapped__", None)
+        from .decode_layers import next_layer  # noqa: PLC0415
+
+        fn = next_layer(fn)
     return False
 
 

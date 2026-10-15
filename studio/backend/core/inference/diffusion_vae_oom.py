@@ -113,7 +113,7 @@ def _outer_gate_owns_untiled(vae: Any) -> bool:
             return False
         if getattr(fn, "_unsloth_untiled_decode", False):
             return True
-        fn = getattr(fn, "__wrapped__", None)
+        fn = decode_layers.next_layer(fn)
     return False
 
 
@@ -122,6 +122,12 @@ def _outer_gate_owns_untiled(vae: Any) -> bool:
 
 def _module_tensors(module: Any) -> list:
     return [*module.parameters(), *module.buffers()]
+
+
+def _group_hooked(module: Any) -> bool:
+    """Under diffusers group offloading hooks (it streams where it is)."""
+    hooks = getattr(getattr(module, "_diffusers_hook", None), "hooks", None) or {}
+    return any("group_offloading" in str(name) for name in hooks)
 
 
 def _hooked(module: Any) -> bool:
@@ -401,7 +407,8 @@ class DecodeSession:
 
             def reset() -> None:
                 from . import diffusion_cuda_graph
-                diffusion_cuda_graph.reset_all(graphs)
+                # strict: a handle that failed to reset (or still holds a graph) aborts step (a) before any move
+                diffusion_cuda_graph.reset_all(graphs, strict = True)
 
             if not self.apply(reset, Change("graphs_reset", lambda: None)):
                 return 0
@@ -429,11 +436,32 @@ class DecodeSession:
         from . import diffusion_memory
 
         hooked: list = []
+        torch_hooks = diffusion_memory.module_forward_hook_ids(transformer)
+        device, logger = self.device, self.logger
 
         def do() -> None:
-            hooked.append(bool(diffusion_memory.hook_resident_denoiser(pipe, self.device, self.logger)))
+            # a failure whose own return to the card fails raises: split between host and card, no hooks
+            hooked.append(bool(diffusion_memory.hook_resident_denoiser(pipe, device, logger)))
 
-        if not self.apply(do, Change("torchao_hooks", lambda: None)):
+        def undo() -> None:
+            # Installed: the hooks stay (every group re-pinned by the release's restore, as after an oversized
+            # request). Otherwise back to where it started from wherever it is: split -> whole on the card; settled
+            # (streamed under hooks) -> every group resident again. Idempotent: a clean refusal moves nothing.
+            if not (hooked and hooked[0]):
+                diffusion_memory.return_torchao_denoiser(pipe, device, logger, torch_hooks)
+
+        def settle() -> None:
+            # cannot come back whole: stream it under block offload hooks (the load's flat plan), so it still runs
+            if _group_hooked(transformer):
+                return  # already streams (a re-pin that failed part way leaves some groups streamed: it runs)
+            if not diffusion_memory.hook_resident_denoiser(pipe, device, logger, resident = False):
+                raise RuntimeError("the transformer could not be streamed under offload hooks")
+
+        def defer(retry: Callable[[], None], exc: BaseException) -> None:
+            # streamed under hooks it runs where it is; split with no hooks it cannot, so a failed return raises
+            _defer(transformer, device, "torchao_hooks:transformer", retry, not _group_hooked(transformer), self.vae)
+
+        if not self.apply(do, Change("torchao_hooks", undo, settle, defer)):
             return False
         return bool(hooked and hooked[0])
 
@@ -827,11 +855,20 @@ def install(vae: Any, logger: Any = None, pipe: Any = None) -> bool:
 def _compiled_decode_owner(vae: Any) -> Any:
     """The object whose ``decode`` slot holds the speed layer's compiled decode guard (the VAE, or the slot an eager
     outer wrapper calls through), or None when the decode is not compiled whole."""
-    outer = vae.__dict__.get("decode")
-    for owner in (vae, getattr(outer, "_unsloth_decode_slot", None)):
-        fn = getattr(owner, "__dict__", {}).get("decode") if owner is not None else None
+    # Walk the whole chain (``__wrapped__`` of every wrapper kind, and the mutable slot an eager outer wrapper calls
+    # through: fp16 non-finite check, ROCm bf16 decode), not just the first level.
+    owner: Any = vae
+    fn = vae.__dict__.get("decode")
+    seen: set = set()
+    while fn is not None and id(fn) not in seen and len(seen) < 64:
+        seen.add(id(fn))
         if getattr(fn, "_unsloth_compiled_decode", False) and callable(getattr(fn, "_unsloth_eager_decode", None)):
-            return owner
+            return owner if getattr(owner, "__dict__", {}).get("decode") is fn else None
+        slot = getattr(fn, "_unsloth_decode_slot", None)
+        if slot is not None:
+            owner, fn = slot, getattr(slot, "__dict__", {}).get("decode")
+        else:
+            fn = getattr(fn, "__wrapped__", None)
     return None
 
 
@@ -847,7 +884,6 @@ def _scope_intact(vae: Any) -> bool:
     if layer is None or not layer.active:
         return False
     fn = vae.__dict__.get("decode")
-    slot_owner = getattr(fn, "_unsloth_decode_slot", None)
     for _ in range(32):
         if fn is None:
             break
@@ -855,10 +891,7 @@ def _scope_intact(vae: Any) -> bool:
             return True
         if any(getattr(fn, m, False) for m in _BELOW_SCOPE_MARKERS) and not getattr(fn, "_unsloth_vae_oom_scope", False):
             return False
-        nxt = getattr(fn, "__wrapped__", None)
-        if nxt is None and slot_owner is not None:
-            nxt, slot_owner = slot_owner.__dict__.get("decode"), None
-        fn = nxt
+        fn = decode_layers.next_layer(fn)
     return False
 
 
