@@ -158,6 +158,11 @@ def test_linux_groups_overlap_and_collect_every_result(tmp_path, failing):
             timeout = 15,
         )
         assert result.returncode == bool(failing), result.stdout + result.stderr
+        # a failing check is named in an annotation, not only inside its group's log
+        label = failing.removesuffix("_smoke")
+        assert (f"::error title=Browser smoke {label}::" in result.stdout) == bool(
+            failing
+        ), result.stdout
         records = {name: json.loads((tmp_path / f"{name}.json").read_text()) for name in CHECKS}
         order = (tmp_path / "order.log").read_text().splitlines()
         assert sorted(order) == sorted(CHECKS)
@@ -206,6 +211,10 @@ def test_linux_cancel_stops_both_active_harnesses(tmp_path):
         process.send_signal(signal.SIGTERM)
         stdout, stderr = process.communicate(timeout = 10)
         assert process.returncode == 143, stdout + stderr
+        # the groups write to files: a cancelled or timed-out step still prints what both had run
+        assert "::group::data_settings" in stdout and "::group::settings_tabs" in stdout, (
+            stdout + stderr
+        )
         for name, record in zip(CHECKS[:2], records):
             assert (tmp_path / f"{name}.stopped").exists()
             with pytest.raises(ProcessLookupError):
@@ -221,3 +230,15 @@ def test_linux_cancel_stops_both_active_harnesses(tmp_path):
                 os.kill(record["pid"], signal.SIGKILL)
             except ProcessLookupError:
                 pass
+
+
+def test_linux_groups_step_times_out_before_the_job():
+    """A job timeout is a cancellation, which skips the failure-only artifact upload; the step's
+    own bound fires first, so a hung check fails the step and its logs are uploaded."""
+    job = yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))["jobs"]["build"]
+    step = next(
+        s
+        for s in job["steps"]
+        if s.get("name") == "Browser smoke groups for data settings and frontend controls"
+    )
+    assert 0 < step["timeout-minutes"] < job["timeout-minutes"]

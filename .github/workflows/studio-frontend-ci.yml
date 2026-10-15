@@ -438,11 +438,16 @@ jobs:
             tests/studio/test_code_block_flicker_contract.py -q
 
       # Keep data settings separate from the shorter checks. Each group owns its cache.
+      # The step bound fires before the job's: a job timeout is a cancellation, which skips the
+      # failure-only artifact upload, so a hung check would leave no log anywhere.
       - name: Browser smoke groups for data settings and frontend controls
         working-directory: ${{ github.workspace }}
+        timeout-minutes: 15
         run: |
           mkdir -p logs
           group_pids=()
+          # The groups write to files, so their output reaches the step log only here: on every
+          # exit, including a timeout or a cancel, after both groups have stopped.
           cleanup() {
             for pid in "${group_pids[@]}"; do
               kill -TERM "$pid" 2>/dev/null || true
@@ -450,6 +455,7 @@ jobs:
             for pid in "${group_pids[@]}"; do
               wait "$pid" 2>/dev/null || true
             done
+            cat logs/playwright-frontend-data.log logs/playwright-frontend-controls.log 2>/dev/null || true
           }
           trap cleanup EXIT
           trap 'exit 130' INT
@@ -471,7 +477,7 @@ jobs:
             check_pid=
             echo "$name: exit $status"
             echo "::endgroup::"
-            [ "$status" -eq 0 ] || group_failed=1
+            [ "$status" -eq 0 ] || { echo "::error title=Browser smoke $name::$name exited $status"; group_failed=1; }
           }
 
           (
@@ -510,7 +516,6 @@ jobs:
             wait "$pid" || failed=1
           done
           group_pids=()
-          cat logs/playwright-frontend-data.log logs/playwright-frontend-controls.log
           exit "$failed"
 
       - name: Browser smoke for the MCP App tool bridge
