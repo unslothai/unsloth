@@ -8,6 +8,8 @@ export interface StampSource {
   model: string | null;
   seed: number;
   created_at: number;
+  // A Connection run sends no seed to its provider, so none is stamped.
+  model_kind?: string | null;
 }
 
 const BRAND = "Unsloth";
@@ -35,7 +37,7 @@ export function infoStampText(image: StampSource): string {
   const parts = [
     stampModelName(image.model),
     stampDateTime(image.created_at),
-    `Seed: ${image.seed}`,
+    image.model_kind === "connection" ? "" : `Seed: ${image.seed}`,
   ];
   return parts.filter(Boolean).join(" | ");
 }

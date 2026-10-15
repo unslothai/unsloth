@@ -689,3 +689,20 @@ def test_every_recipe_key_is_known_to_the_image_import():
     assert sorted(written - known) == []
     version = re.search(r"export const RECIPE_SCHEMA_VERSION = (\d+);", ts)
     assert version and int(version.group(1)) == gallery.RECIPE_SCHEMA_VERSION
+
+
+def test_connection_images_record_no_local_engine(monkeypatch):
+    monkeypatch.setattr(gallery, "_engine", lambda: "diffusers")
+    base = {
+        "prompt": "p",
+        "width": 8,
+        "height": 8,
+        "steps": 1,
+        "guidance": 0,
+        "seed": 1,
+        "created_at": 1.0,
+    }
+    local = gallery.save(_img(), dict(base))
+    remote = gallery.save(_img(), {**base, "model_kind": "connection"})
+    assert local["engine"] == "diffusers"
+    assert remote["engine"] is None

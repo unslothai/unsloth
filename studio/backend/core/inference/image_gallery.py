@@ -129,7 +129,8 @@ def save(image: Any, meta: dict[str, Any]) -> dict[str, Any]:
     """Persist a PIL image with its recipe embedded; return the gallery record."""
     image_id = uuid.uuid4().hex
     meta = {
-        "engine": _engine(),
+        # A Connection run never touched the local engine.
+        "engine": None if meta.get("model_kind") == "connection" else _engine(),
         "generator": _generator(),
         **meta,
         "schema_version": RECIPE_SCHEMA_VERSION,

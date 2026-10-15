@@ -2688,7 +2688,7 @@ export function ImagesPage({
         });
       } else if (settings.model && status?.loaded) {
         // Same model, another build: null on either side means dense / no quant.
-        const differs = (["gguf_filename", "transformer_quant", "text_encoder_quant"] as const).filter(
+        const differs = (["gguf_filename", "transformer_quant", "text_encoder_quant", "transformer_cache", "attention_backend"] as const).filter(
           (key) =>
             Object.hasOwn(recipe, key) &&
             status[key] !== undefined &&

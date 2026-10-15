@@ -101,3 +101,9 @@ test("a stamp too long for a narrow image shortens the model, then the date, nev
   // A stamp that fits is drawn unchanged.
   assert.equal(layoutInfoStamp(ctx, 1024, 1024, "m | 2026-10-15 03:15:47 | Seed: 1").text, "m | 2026-10-15 03:15:47 | Seed: 1");
 });
+
+test("a Connection image is stamped without a seed", () => {
+  const text = infoStampText({ model: "openai/gpt-image-1", seed: 42, created_at: 0, model_kind: "connection" });
+  assert.ok(!text.includes("Seed"), text);
+  assert.ok(infoStampText({ model: "m", seed: 42, created_at: 0 }).endsWith("Seed: 42"));
+});

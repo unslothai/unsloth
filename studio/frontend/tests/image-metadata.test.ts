@@ -810,7 +810,7 @@ test("ComfyUI denoise below 1 imports as img2img at that strength", () => {
 
 test("the import warns when the loaded model runs at another precision than the recipe", () => {
   const page = readSrc("features/images/images-page.tsx");
-  assert.match(page, /"transformer_quant", "text_encoder_quant"\] as const\)\.filter/);
+  assert.match(page, /"transformer_quant", "text_encoder_quant", "transformer_cache", "attention_backend"\] as const\)\.filter/);
   assert.match(page, /\(recipe\[key\] \?\? null\) !== \(status\[key\] \?\? null\)/);
 });
 
@@ -843,7 +843,7 @@ test("the import names LoRAs and a negative prompt the loaded model cannot apply
 
 test("the import compares the whole build and names baked LoRAs; ComfyUI's GPU SDE sampler stays distinct", () => {
   const page = readSrc("features/images/images-page.tsx");
-  assert.match(page, /\(\["gguf_filename", "transformer_quant", "text_encoder_quant"\] as const\)\.filter/);
+  assert.match(page, /\(\["gguf_filename", "transformer_quant", "text_encoder_quant", "transformer_cache", "attention_backend"\] as const\)\.filter/);
   assert.match(page, /notApplied\.unshift\(`baked LoRAs \$\{baked\.join\(", "\)\} \(load-time\)`\)/);
   const graph = JSON.stringify({
     "1": { class_type: "CLIPTextEncode", inputs: { text: "a fox" } },
