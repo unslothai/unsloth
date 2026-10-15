@@ -1408,7 +1408,7 @@ def test_every_offline_reachable_route_refuses_before_it_reads(monkeypatch):
     for owner, name in (
         (models_routes.get_model_config, "/config"),
         (models_routes.scan_model_remote_code, "scan-remote-code"),
-        (formatting.check_format_response, "check-format"),
+        (formatting.load_preview_slice, "check-format"),
     ):
         source = inspect.getsource(owner)
         assert any(

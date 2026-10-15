@@ -188,7 +188,11 @@ def _layout_from_readers(readers) -> ModelLayout:
         # with neither attention nor an FFN; the rest are dense or MoE FFN blocks.
         heads = [int(h) for h in list(n_kv_head)[:n_layers]]
         ffn = _field(reader, f"{arch}.feed_forward_length")
-        ffn = [int(f) for f in list(ffn)[:n_layers]] if isinstance(ffn, (list, tuple)) else [0] * len(heads)
+        ffn = (
+            [int(f) for f in list(ffn)[:n_layers]]
+            if isinstance(ffn, (list, tuple))
+            else [0] * len(heads)
+        )
         n_attention = sum(1 for h in heads if h > 0)
         n_recurrent = sum(1 for h, f in zip(heads, ffn) if h == 0 and f == 0)
         kv_per_token = sum(heads) * (int(key_len) + int(val_len)) * 2
@@ -212,7 +216,9 @@ def _layout_from_readers(readers) -> ModelLayout:
     n_expert = int(_field(reader, f"{arch}.expert_count") or 0)
     n_expert_used = _field(reader, f"{arch}.expert_used_count") or 0
     if nemotron_h and isinstance(n_expert_used, (list, tuple)):
-        n_expert_used = max((int(n) for n in n_expert_used), default = 0)  # per layer on Nemotron 3.5 Bolt
+        n_expert_used = max(
+            (int(n) for n in n_expert_used), default = 0
+        )  # per layer on Nemotron 3.5 Bolt
     n_expert_used = int(n_expert_used)
     is_moe = bool(n_expert)
 

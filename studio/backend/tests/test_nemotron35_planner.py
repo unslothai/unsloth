@@ -59,7 +59,12 @@ _FFN = [0, 1536, 0, 0, 2048, 0, 0, 2304]
 _SSM = {"inner_size": 8192, "state_size": 128, "group_count": 8, "conv_kernel": 4}
 
 
-def _nemotron_fields(arch = "nemotron_h_moe", heads = _HEADS, used = (0, 9, 0, 0, 9, 0, 0, 9), **extra):
+def _nemotron_fields(
+    arch = "nemotron_h_moe",
+    heads = _HEADS,
+    used = (0, 9, 0, 0, 9, 0, 0, 9),
+    **extra,
+):
     fields = {
         "general.architecture": arch,
         f"{arch}.block_count": len(heads),
@@ -160,8 +165,13 @@ def _backend(**dims):
 
 
 def test_latent_moe_width_uses_the_latent_size():
-    common = dict(embedding_length = 4096, expert_used_count = 22, expert_feed_forward_length = 2688,
-                  expert_shared_feed_forward_length = 5376, n_experts = 512)
+    common = dict(
+        embedding_length = 4096,
+        expert_used_count = 22,
+        expert_feed_forward_length = 2688,
+        expert_shared_feed_forward_length = 5376,
+        n_experts = 512,
+    )
     latent = _backend(moe_latent_size = 1024, **common)._compute_activation_width()
     assert latent == 22 * (2 * 1024 + 3 * 2688) + 3 * 5376
     # No latent key: the formula every other MoE arch gets, unchanged.
@@ -191,14 +201,19 @@ def test_per_layer_expert_dims_and_latent_size_are_read(tmp_path):
 
     path = tmp_path / "bolt.gguf"
     a = "nemotron_h_moe"
-    _write_gguf(path, a, {
-        f"{a}.block_count": 4,
-        f"{a}.embedding_length": 64,
-        f"{a}.expert_count": 8,
-        f"{a}.expert_used_count": [0, 9, 0, 9],
-        f"{a}.expert_feed_forward_length": [0, 1536, 0, 2560],
-        f"{a}.moe_latent_size": 16,
-    }, [("blk.0.attn_norm.weight", 64)])
+    _write_gguf(
+        path,
+        a,
+        {
+            f"{a}.block_count": 4,
+            f"{a}.embedding_length": 64,
+            f"{a}.expert_count": 8,
+            f"{a}.expert_used_count": [0, 9, 0, 9],
+            f"{a}.expert_feed_forward_length": [0, 1536, 0, 2560],
+            f"{a}.moe_latent_size": 16,
+        },
+        [("blk.0.attn_norm.weight", 64)],
+    )
     b = LlamaCppBackend(manages_processes = False)
     b._read_gguf_metadata(str(path))
     assert b._expert_used_count == 9
@@ -211,13 +226,18 @@ def _nextn_gguf(tmp_path, arch, nextn):
     kv = {f"{arch}.block_count": 3, f"{arch}.embedding_length": 64}
     if nextn:
         kv[f"{arch}.nextn_predict_layers"] = nextn
-    _write_gguf(path, arch, kv, [
-        ("token_embd.weight", 256),
-        ("blk.0.attn_norm.weight", 64),
-        ("blk.1.ffn_up_exps.weight", 512),
-        ("blk.2.nextn.eh_proj.weight", 1024),
-        ("blk.2.ffn_up_exps.weight", 2048),
-    ])
+    _write_gguf(
+        path,
+        arch,
+        kv,
+        [
+            ("token_embd.weight", 256),
+            ("blk.0.attn_norm.weight", 64),
+            ("blk.1.ffn_up_exps.weight", 512),
+            ("blk.2.nextn.eh_proj.weight", 1024),
+            ("blk.2.ffn_up_exps.weight", 2048),
+        ],
+    )
     return str(path)
 
 
@@ -285,7 +305,9 @@ def test_dflash_compute_reserve_covers_the_measurement_without_double_counting(d
     (572 MiB) priced Bolt + LiLiCorr 224 MiB over what llama.cpp allocates."""
     from core.inference.llama_cpp import LlamaCppBackend
 
-    reserve = (LlamaCppBackend._MTP_DRAFT_COMPUTE_BYTES + LlamaCppBackend._DFLASH_DRAFT_COMPUTE_BYTES) / MIB
+    reserve = (
+        LlamaCppBackend._MTP_DRAFT_COMPUTE_BYTES + LlamaCppBackend._DFLASH_DRAFT_COMPUTE_BYTES
+    ) / MIB
     measured = _DFLASH_MEASURED_COMPUTE_MIB[drafter]
     assert reserve >= measured
     assert reserve - max(_DFLASH_MEASURED_COMPUTE_MIB.values()) < 8
