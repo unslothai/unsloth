@@ -408,7 +408,10 @@ def test_pretokenized_padding_is_dropped_via_attention_mask():
 def test_latent_moe_scores_expert_outputs_in_hidden_space():
     # Nemotron-H with moe_latent_size: experts run in a latent space and fc2_latent_proj maps
     # their summed output back, so ||f_j|| is taken after that projection.
-    from transformers import NemotronHConfig, NemotronHForCausalLM
+    NemotronHConfig = getattr(transformers, "NemotronHConfig", None)
+    if NemotronHConfig is None:
+        pytest.skip("this transformers has no Nemotron-H")
+    from transformers import NemotronHForCausalLM
 
     config = NemotronHConfig(
         vocab_size = 96,
@@ -436,8 +439,9 @@ def test_latent_moe_scores_expert_outputs_in_hidden_space():
     ).eval()
     samples = _samples()
     block = model.model.layers[0].mixer
-    inputs = []
-    hook = block.register_forward_pre_hook(lambda module, args: inputs.append(args[0][0]))
+    # The experts call's own inputs (latent states, routing): the router's return tuple varies by version.
+    calls = []
+    hook = block.experts.register_forward_pre_hook(lambda module, args: calls.append(args[:3]))
     with torch.no_grad():
         for x in samples:
             model(torch.tensor([x]))
@@ -445,10 +449,8 @@ def test_latent_moe_scores_expert_outputs_in_hidden_space():
     total = torch.zeros(8, dtype = torch.float64)
     count = torch.zeros(8, dtype = torch.float64)
     with torch.no_grad():
-        for x in inputs:
-            _, weights, index = block.gate(x)
-            latent = block.fc1_latent_proj(x)
-            for t in range(x.shape[0]):
+        for latent, index, weights in calls:
+            for t in range(latent.shape[0]):
                 for s in range(index.shape[1]):
                     e = int(index[t, s])
                     f = block.experts(
