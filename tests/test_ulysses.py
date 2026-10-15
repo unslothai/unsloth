@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Ulysses sequence parallel exchange, KV replication and batch prep, on CPU gloo ranks."""
+"""Ulysses sequence parallel exchange and KV replication, on CPU gloo ranks."""
 
 import importlib.util
 import os
