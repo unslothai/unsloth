@@ -547,7 +547,8 @@ _WRAPPED_PACKING_SETUP = (
     "    except Exception:\n"
     "        _unsloth_pack_has_strategy = True\n"
     "    _unsloth_wrapped_packing = packing and (\n"
-    '        getattr(args, "packing_strategy", None) in ("wrapped", "bfd_split")\n'
+    # bfd_split (TRL >= 1.0) and its TRL 0.29 name bfd-requeue split overflow into later rows, so early truncation drops it.
+    '        getattr(args, "packing_strategy", None) in ("wrapped", "bfd_split", "bfd-requeue")\n'
     "        or not _unsloth_pack_has_strategy\n"
     "    )\n"
 )
