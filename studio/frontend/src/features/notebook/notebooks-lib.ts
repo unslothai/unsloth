@@ -2,7 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
-import { useTrainingConfigStore } from "@/features/training";
+import {
+  isTrainingModelTypeSupportedOnDevice,
+  useTrainingConfigStore,
+} from "@/features/training";
+import type { ModelType } from "@/types/training";
 import { useT } from "@/i18n";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import { toast } from "@/lib/toast";
@@ -41,9 +45,25 @@ export async function fetchNotebookCatalog(
   return (await response.json()) as NotebookCatalogResponse;
 }
 
+const CATEGORY_MODEL_TYPE: Partial<Record<string, ModelType>> = {
+  audio: "audio",
+  embedding: "embeddings",
+};
+
 /** Studio trains SFT / CPT only; RL and preference recipes stay Colab-only. */
 export function studioSupportsNotebook(notebook: NotebookCatalogEntry): boolean {
   return notebook.category !== "grpo";
+}
+
+/** The model types the Train picker refuses on this device (audio, embeddings on Mac). */
+export function deviceSupportsNotebook(
+  notebook: NotebookCatalogEntry,
+  deviceType?: string,
+): boolean {
+  return isTrainingModelTypeSupportedOnDevice(
+    CATEGORY_MODEL_TYPE[notebook.category] ?? null,
+    deviceType,
+  );
 }
 
 function normalizeNotebookSearch(text: string): string {

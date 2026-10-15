@@ -51,6 +51,7 @@ import {
 import {
   fetchNotebookCatalog,
   notebookMatchesQuery,
+  deviceSupportsNotebook,
   type NotebookCatalogEntry,
   studioSupportsNotebook,
   useOpenNotebookInStudio,
@@ -185,10 +186,15 @@ function NotebookCard({
 }): ReactElement {
   const t = useT();
   const style = categoryStyle(notebook.category);
-  const supported = studioSupportsNotebook(notebook);
-  const disabledHint = supported
-    ? studioDisabledHint
-    : t("notebooks.studioDisabled.unsupportedMethod");
+  const deviceType = usePlatformStore((s) => s.deviceType);
+  const methodSupported = studioSupportsNotebook(notebook);
+  const supported =
+    methodSupported && deviceSupportsNotebook(notebook, deviceType);
+  const disabledHint = !methodSupported
+    ? t("notebooks.studioDisabled.unsupportedMethod")
+    : !supported
+      ? t("studio.params.notSupportedAppleSilicon")
+      : studioDisabledHint;
 
   return (
     <article
@@ -217,7 +223,7 @@ function NotebookCard({
           </h2>
           <p className="line-clamp-2 text-xs text-muted-foreground">
             {!supported
-              ? t("notebooks.studioDisabled.unsupportedMethod")
+              ? disabledHint
               : notebook.studio_model
                 ? t("notebooks.studioModelReady", { model: notebook.studio_model })
                 : t("notebooks.studioManualConfigure")}
