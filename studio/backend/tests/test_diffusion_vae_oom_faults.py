@@ -235,6 +235,8 @@ def build(cap, world, monkeypatch, tiled = False, variant = "base"):
     monkeypatch.setattr(O, "_remove_vae_offload", remove_offload)
     monkeypatch.setattr(O, "_park_vae", park)
     monkeypatch.setattr(O, "_whole_on", lambda m, d: all(p.dtype == CARD for p in m.parameters()))
+    monkeypatch.setattr(O, "_whole_on_host", lambda m: all(p.dtype == HOST for p in m.parameters()), raising = False)
+    monkeypatch.setattr(O, "_vae_hooked", lambda m: bool(getattr(m, "fake_hooks", False)), raising = False)
     monkeypatch.setattr(O, "_hooked", lambda m: bool(getattr(m, "fake_hooks", False)) or (
         getattr(m, "_diffusers_hook", None) is not None))  # fmt: skip
     monkeypatch.setattr(O, "_host_free_mib", lambda: 1 if variant == "host_short" else 1 << 20)
@@ -271,6 +273,19 @@ def check(pipe, budget, before, override, later, world, outcome):
     # later slices stay on the recovered path (never back to a cheaper mode than an earlier slice used)
     modes = [STEPS[(t, s)] for _, t, s in vae.slices]
     assert modes == sorted(modes), (ctx, vae.slices)
+    # a VAE left split (its repair is REQUIRED) never decodes before it is repaired: while the repair still fails,
+    # the next decode raises that clear error instead of decoding with the inconsistent VAE
+    vdef = vae.__dict__.get(O._DEFERRED_ATTR)
+    if vdef is not None:
+        # optional only when it is checked to stream whole from the host; anything else is a required repair
+        streams = vae.fake_hooks and all(p.dtype == HOST for p in vae.parameters())
+        assert vdef.required == (not streams), (ctx, vdef.required, streams)
+    if vdef is not None and vdef.required:
+        world.at, world.kind = (world.n + 1, world.n + 2), "oom"  # the repair and its settle both fail again
+        vae.slices.clear()
+        with pytest.raises(RuntimeError, match = "cannot return"):
+            vae.decode(torch.zeros(1, 4, 1, 2, 2))
+        assert vae.slices == [], ctx
     world.at = None  # memory frees up: everything deferred must now find its way back
     budget.cap = 10**6
     # the transformer: on the card, or a working deferred return resolving the card (a torchao one hooked by
@@ -290,7 +305,8 @@ def check(pipe, budget, before, override, later, world, outcome):
     # resident groups: all re-pinned, or all streamed (the flat plan) with a deferred re-pin
     resident = [g._unsloth_resident for g in budget.groups]
     if not all(resident):
-        assert not any(resident), (ctx, resident)
+        # all streamed (the flat plan), or a mix when the re-pin and its flat-plan settle both stopped part way:
+        # every group keeps its hooks, so each runs where it is; a deferred re-pin brings them all back
         anchors = [m for m in (transformer, text_encoder) if O._DEFERRED_ATTR in m.__dict__]
         assert anchors, ctx
         for m in anchors:
@@ -301,7 +317,6 @@ def check(pipe, budget, before, override, later, world, outcome):
     if vdef is None:
         assert not vae.fake_hooks and all(p.dtype == CARD for p in vae.parameters()), ctx
     else:
-        assert vae.fake_hooks and all(p.dtype == HOST for p in vae.parameters()), ctx
         assert O.settle_deferred(vae), ctx
         assert not vae.fake_hooks and all(p.dtype == CARD for p in vae.parameters()), ctx
     assert O._SESSION_ATTR not in vae.__dict__, ctx
@@ -438,3 +453,37 @@ def test_torchao_double_faults_reach_the_split_state():
 @pytest.mark.parametrize("cap,tiled,a1,a2,kind", TORCHAO_DOUBLE)
 def test_torchao_conversion_and_its_return_both_fail(cap, tiled, a1, a2, kind, monkeypatch):
     _run(cap, (a1, a2), kind, monkeypatch, tiled, variant = "torchao")
+
+
+_RESTORE_POINTS = (":undo", ":settle", "back:", "vae_back:", "vae_park:", "vae_hooks:remove", "vae_hooks:readd",
+                   "groups:repin", "torchao_back:", "torchao_repin:", "groups:release")  # fmt: skip
+
+
+def _restore_double_cases():
+    """Item 4287727812: a restore (undo) that fails, then a second fault anywhere after it (in the settle / park /
+    deferred path): every Change's settle + defer pairing must leave a coherent module or a REQUIRED repair."""
+    mp = pytest.MonkeyPatch()
+    cases = []
+    try:
+        for variant, cap, tiled in itertools.product(VARIANTS, (13, 8, 2), (False, True)):
+            pts = _run(cap, None, "oom", mp, tiled, verify = False, variant = variant).points
+            firsts = [i + 1 for i, p in enumerate(pts) if any(k in p for k in _RESTORE_POINTS)]
+            for a1 in firsts:
+                n = _run(cap, a1, "oom", mp, tiled, verify = False, variant = variant).decode_points
+                cases += [(variant, cap, tiled, a1, a2) for a2 in range(a1 + 1, min(n, a1 + 8) + 1)]
+    finally:
+        mp.undo()
+    return cases
+
+
+RESTORE_DOUBLE = _restore_double_cases()
+
+
+def test_restore_double_faults_cover_the_park_path():
+    assert len(RESTORE_DOUBLE) >= 200, len(RESTORE_DOUBLE)
+    assert any(c[0] == "base" and c[2] in (False, True) for c in RESTORE_DOUBLE)
+
+
+@pytest.mark.parametrize("variant,cap,tiled,a1,a2", RESTORE_DOUBLE)
+def test_restore_and_its_settle_both_fail(variant, cap, tiled, a1, a2, monkeypatch):
+    _run(cap, (a1, a2), "oom", monkeypatch, tiled, variant = variant)

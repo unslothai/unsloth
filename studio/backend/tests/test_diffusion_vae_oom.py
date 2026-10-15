@@ -113,6 +113,8 @@ def _fake_moves(monkeypatch):
     monkeypatch.setattr(O, "_whole_on", _whole_on)
     monkeypatch.setattr(O, "_return_to", lambda module, device: module.to(_CARD))
     monkeypatch.setattr(O, "_to_host", lambda module: module.to(torch.float32))
+    monkeypatch.setattr(O, "_whole_on_host", lambda module: all(
+        t.dtype == torch.float32 for t in [*module.parameters(), *module.buffers()]), raising = False)  # fmt: skip
     yield
 
 
@@ -2370,3 +2372,59 @@ def test_drop_tracebacks_walks_cause_context_and_cycles():
     e, seen = exc, 0
     for e in (exc, exc.__context__, exc.__context__.__cause__):
         assert e.__traceback__ is None
+
+
+# -- PR review round 17 -----------------------------------------------------------------------------------------
+
+
+def test_dtype_wrapper_oom_climbs_to_the_vae_offload(monkeypatch):
+    """Item 4287727804: the inner _decode succeeded but the fp16-shaped wrapper's own check ran out of memory, and
+    freeing the rest of the pipeline was not enough; the scope re-raised, since only the _decode ladder (which never
+    saw this OOM) knew the later rungs. The scope now climbs the one ladder (same rungs, same session): freed, stock
+    tiles, then the VAE's weights streamed from the host, which is what fits here."""
+    offloads = []
+    monkeypatch.setattr(O, "_apply_vae_offload", lambda vae, device: (offloads.append(1), vae.conv.to(torch.float32)))
+    budget = _Budget(4096 + 100)
+    transformer, text_encoder = _on_card(8192), _on_card(4096)
+    vae = _PublicVae(budget, [transformer, text_encoder], 1, 1)
+    vae.to(_CARD)
+    pipe = _Pipe(transformer = transformer, text_encoder = text_encoder, vae = vae)
+    _fp16_shaped(vae, budget, own_need = 3000)  # fits only once the VAE's 4096 bytes leave the card
+    assert O.install(vae, pipe = pipe)
+    before = _devices(pipe)
+    out = vae.decode(_z())
+    assert out[0].shape[-1] == 64 and offloads == [1]
+    stats = vae._unsloth_vae_oom_stats
+    assert stats["recovered_by"] == "offload" and stats["outer_oom"] == 1
+    assert _devices(pipe) == before  # everything came back after the decode
+
+
+def test_split_vae_never_decodes_before_its_required_repair(monkeypatch):
+    """Item 4287727812: undoing the VAE offload failed and parking it failed too, so the VAE was split with no
+    working streamed path, yet its deferred return was optional: the next decode ran on the inconsistent VAE. The
+    return is required unless the VAE is CHECKED to stream whole from the host, and a decode whose required repair
+    still fails raises that clear error instead of decoding."""
+    vae, pipe = _setup(cap = 1 << 20, untiled_need = 1, tiled_need = 1)
+    session = O.DecodeSession(vae, _FakeDevice())
+    calls = []
+
+    def fail_back():
+        vae.conv.to(torch.float32)  # part of the way, then out of memory
+        raise _FakeOOM()
+
+    def fail_park():
+        raise _FakeOOM()
+
+    change = O.Change("vae_offload", fail_back, fail_park,
+                      lambda retry, exc: O._defer(vae, _FakeDevice(), "vae_offload", retry,
+                                                  lambda: not O._vae_streams(vae), vae))  # fmt: skip
+    session.rollback(change)
+    deferred = vae.__dict__[O._DEFERRED_ATTR]
+    assert deferred.required  # split, not streaming: required
+    seen_before = len(vae.seen)
+    with pytest.raises(RuntimeError, match = "cannot return"):
+        vae.decode(_z()) if "decode" in vae.__dict__ else vae._decode(_z())
+    assert len(vae.seen) == seen_before  # it did not decode
+    deferred.pending[:] = [("vae_offload", lambda: vae.conv.to(_CARD))]  # memory frees up: the repair succeeds
+    vae._decode(_z())
+    assert O._DEFERRED_ATTR not in vae.__dict__ and len(vae.seen) == seen_before + 1

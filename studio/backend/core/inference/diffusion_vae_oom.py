@@ -251,10 +251,10 @@ class DeferredReturn:
 
     no_grad = False
 
-    def __init__(self, module: Any, device: Any, required: bool) -> None:
+    def __init__(self, module: Any, device: Any, required: Any) -> None:
         self.module_ref = weakref.ref(module)
         self.execution_device = device
-        self.required = required
+        self.required_checks: list = [required]
         self.pending: list = []  # (label, undo)
         self.handle = module.register_forward_pre_hook(self._pre_hook)
         self.owns_hf_hook = "_hf_hook" not in module.__dict__
@@ -278,6 +278,18 @@ class DeferredReturn:
 
     def _pre_hook(self, module: Any, args: Any) -> None:
         self.attempt()
+
+    @property
+    def required(self) -> bool:
+        """Whether the module cannot run where it is, CHECKED now (each pending way back registers a bool or a
+        predicate on the module's current state): a settle that later succeeded makes it optional again."""
+        for check in self.required_checks:
+            try:
+                if check() if callable(check) else check:
+                    return True
+            except Exception:  # noqa: BLE001 - its state cannot be read: treat it as not runnable
+                return True
+        return False
 
     def add(self, label: str, undo: Callable[[], None]) -> None:
         self.pending.append((label, undo))
@@ -317,13 +329,14 @@ class DeferredReturn:
             del module.__dict__[_DEFERRED_ATTR]
 
 
-def _defer(module: Any, device: Any, label: str, undo: Callable[[], None], required: bool, owner: Any) -> None:
+def _defer(module: Any, device: Any, label: str, undo: Callable[[], None], required: Any, owner: Any) -> None:
     """Hand ``undo`` to ``module``'s deferred return (one per module); ``owner`` (the VAE) records the module so
     uninstall can settle it."""
     deferred = module.__dict__.get(_DEFERRED_ATTR)
     if deferred is None:
         deferred = DeferredReturn(module, device, required)
-    deferred.required = deferred.required or required
+    else:
+        deferred.required_checks.append(required)
     deferred.add(label, undo)
     if owner is not None:
         record = owner.__dict__.setdefault(_RECORD_ATTR, {})
@@ -478,14 +491,16 @@ class DecodeSession:
 
         def settle() -> None:
             # cannot come back whole: stream it under block offload hooks (the load's flat plan), so it still runs
-            if _group_hooked(transformer):
-                return  # already streams (a re-pin that failed part way leaves some groups streamed: it runs)
-            if not diffusion_memory.hook_resident_denoiser(pipe, device, logger, resident = False):
+            # (already under hooks: a re-pin that failed part way leaves some groups streamed, which runs)
+            if not _group_hooked(transformer) and not diffusion_memory.hook_resident_denoiser(
+                pipe, device, logger, resident = False
+            ):
                 raise RuntimeError("the transformer could not be streamed under offload hooks")
 
         def defer(retry: Callable[[], None], exc: BaseException) -> None:
-            # streamed under hooks it runs where it is; split with no hooks it cannot, so a failed return raises
-            _defer(transformer, device, "torchao_hooks:transformer", retry, not _group_hooked(transformer), self.vae)
+            # required until it is checked to stream under offload hooks (split with no hooks it cannot run)
+            _defer(transformer, device, "torchao_hooks:transformer", retry, lambda: not _group_hooked(transformer),
+                   self.vae)  # fmt: skip
 
         if not self.apply(do, Change("torchao_hooks", undo, settle, defer)):
             return False
@@ -519,11 +534,17 @@ class DecodeSession:
                 got.pop()
 
         def settle() -> None:
-            # re-pinning failed part way: stream every group again, the load's flat plan
-            diffusion_memory.release_resident_groups(pipe, 1 << 30, self.logger, reason = "a failed re-pin")
+            # re-pinning failed part way: stream every group again, the load's flat plan; what this release streams
+            # is re-pinned by the deferred retry too (its restore joins the ones the retry runs)
+            restore = diffusion_memory.release_resident_groups(pipe, 1 << 30, self.logger, reason = "a failed re-pin")
+            if restore is not None:
+                got.append(restore)
 
         def defer(retry: Callable[[], None], exc: BaseException) -> None:
-            _defer(anchor, self.device, "resident_groups", retry, False, self.vae)
+            # Optional only while every offload group is checked to keep its hooks: a group, resident or streamed,
+            # then runs where it is (a re-pin and a flat-plan settle that both stopped part way leave a mix of
+            # the two, which still runs); the re-pin is retried before the next forward.
+            _defer(anchor, self.device, "resident_groups", retry, lambda: not _groups_hooked(pipe), self.vae)
 
         change = Change("resident_groups", undo, settle, defer)
         if not self.apply(do, change):
@@ -590,13 +611,22 @@ class DecodeSession:
             self._note("diffusion.vae_oom: %s (%d MiB) stays on the card: host RAM is short", type(vae).__name__, mib)
             return False
 
+        settled: list = []
+
         def settle() -> None:
+            settled.clear()
             _park_vae(vae, device)
+            settled.append(True)
 
         def defer(retry: Callable[[], None], exc: BaseException) -> None:
-            self._note("diffusion.vae_oom: %s stays streamed from the host (%s); it returns at its next decode",
-                       type(vae).__name__, exc)  # fmt: skip
-            _defer(vae, device, "vae_offload", retry, False, vae)
+            # optional only when the VAE verifiably streams whole from the host under its offload hooks; otherwise
+            # (the park failed too: split, maybe hookless) the next decode must not run before it is repaired
+            streams = bool(settled) and _vae_streams(vae)
+            settled.clear()
+            self._note("diffusion.vae_oom: %s %s (%s); it returns at its next decode", type(vae).__name__,
+                       "stays streamed from the host" if streams else "is split between host and card", exc)  # fmt: skip
+            # required until it is checked to stream whole from the host (a later settle can establish that)
+            _defer(vae, device, "vae_offload", retry, lambda: not _vae_streams(vae), vae)
 
         change = Change("vae_offload", lambda: _remove_vae_offload(vae, device), settle, defer)
         if not self.apply(lambda: _apply_vae_offload(vae, device), change):
@@ -621,6 +651,28 @@ def _remove_vae_offload(vae: Any, device: Any) -> None:
     _return_to(vae, device)
 
 
+def _groups_hooked(pipe: Any) -> bool:
+    """Every component placed by resident offload groups still carries its group offloading hooks."""
+    comps = [m for m in (getattr(pipe, "components", {}) or {}).values() if getattr(m, "_unsloth_resident_room", None)]
+    return all(_group_hooked(m) for m in comps)
+
+
+def _whole_on_host(module: Any) -> bool:
+    tensors = [*module.parameters(), *module.buffers()]
+    return all(getattr(t.device, "type", None) == "cpu" for t in tensors)
+
+
+def _vae_hooked(vae: Any) -> bool:
+    """The VAE carries its own leaf-level group offloading hooks (not merely a deferred return's ``_hf_hook``)."""
+    return _group_hooked(vae)
+
+
+def _vae_streams(vae: Any) -> bool:
+    """Checked, not assumed: the VAE's offload hooks are on and every weight is on the host, so it decodes
+    (streamed) as it is."""
+    return _vae_hooked(vae) and _whole_on_host(vae)
+
+
 def _park_vae(vae: Any, device: Any) -> None:
     """Whole on the host with the offload hooks on: the VAE still decodes (streamed)."""
     from .diffusion_memory import _remove_group_offload_hooks
@@ -640,14 +692,18 @@ def _undo_vae_offload(vae: Any, device: Any) -> None:
         raise
 
 
-def settle_deferred(module: Any) -> bool:
-    """Run ``module``'s pending deferred returns now; True when nothing is left pending."""
+def settle_deferred(module: Any, strict: bool = False) -> bool:
+    """Run ``module``'s pending deferred returns now; True when nothing is left pending. ``strict``: a REQUIRED
+    repair that still fails raises (its clear error), so the caller never runs the module in an inconsistent state;
+    an optional one (it runs as it is) returns False."""
     deferred = getattr(module, "__dict__", {}).get(_DEFERRED_ATTR)
     if deferred is None:
         return True
     try:
         return deferred.attempt()
     except Exception:  # noqa: BLE001 - still out of memory: the deferred return stays
+        if strict:
+            raise
         return False
 
 
@@ -682,6 +738,61 @@ def free_first(vae: Any, z: Any = None) -> bool:
     if isinstance(stats, dict):
         stats["freed_first"] = stats.get("freed_first", 0) + int(freed)
     return freed
+
+
+def _ladder_steps(tiled_now: bool, can_tile: bool, eager_rung: bool = False) -> list:
+    """The ladder's rungs, the one list both the ``_decode`` retry and the outer decode scope climb, in order:
+    (name, tiled, offload_vae, eager). "freed": the rest of the pipeline off the card, the same decode again;
+    "eager" (scope only, a compiled guard below): every compiled guard on its eager path, where the ``_decode``
+    ladder runs too; "tiled": stock tile sizes; "offload": the VAE's weights streamed from the host."""
+    steps: list = [("freed", tiled_now, False, False)]
+    if eager_rung:
+        steps.append(("eager", tiled_now, False, True))
+    if can_tile and not tiled_now:
+        steps.append(("tiled", True, False, eager_rung))
+    steps.append(("offload", tiled_now or can_tile, True, eager_rung))
+    return steps
+
+
+_STEP_TEXT = {"freed": "with the rest of the pipeline off the card", "eager": "on the eager path",
+              "tiled": "tiled at stock tile sizes", "offload": "with the VAE weights streamed from the host"}  # fmt: skip
+
+
+def _climb(vae: Any, session: "DecodeSession", steps: list, attempt: Callable, stats: dict, z: Any,
+           logger: Any) -> tuple:  # fmt: skip
+    """Run ``steps`` in order, each rung's state change through ``session`` (applied once per logical decode: a
+    rung a nested climb already took is skipped), then ``attempt(tiled, eager)``. (True, out, rung) on the first
+    attempt that returns; (False, None, None) when none does."""
+    for name, tiled, offload_vae, eager in steps:
+        _release_cache(z, vae)
+        if name == "freed":
+            t0 = time.perf_counter()
+            freed = session.free_others(_pipe_of(vae))
+            stats["free_s"] = round(time.perf_counter() - t0, 3)
+            if not freed:
+                continue  # nothing (more) was freed: the same decode would fail the same way
+        elif offload_vae and not session.offload_vae():
+            continue
+        if logger is not None:
+            logger.warning("diffusion.vae_oom: %s decode ran out of memory; retrying %s", type(vae).__name__,
+                           _STEP_TEXT[name])  # fmt: skip
+        stats[f"{name}_retry"] = stats.get(f"{name}_retry", 0) + 1
+        failed = False
+        try:
+            out = attempt(tiled, eager)
+        except Exception as exc:  # noqa: BLE001
+            if not is_oom(exc) and not offload_vae:
+                raise
+            if not is_oom(exc) and logger is not None:
+                # the streamed decode itself broke (an offload hook the VAE does not support): the render fails on
+                # the out-of-memory it already had, not on the fallback
+                logger.warning("diffusion.vae_oom: streamed %s decode failed (%s)", type(vae).__name__, exc)
+            drop_tracebacks(exc)
+            failed = True
+        if not failed:
+            return True, out, name
+        stats["oom"] = stats.get("oom", 0) + 1
+    return False, None, None
 
 
 _RETRY_LAYER = "vae_oom_retry"
@@ -750,8 +861,9 @@ def install(vae: Any, logger: Any = None, pipe: Any = None) -> bool:
             if owns:
                 holder = {"session": None}
                 vae.__dict__[_SESSION_ATTR] = holder
-                settle_deferred(vae)
             try:
+                if owns:
+                    settle_deferred(vae, strict = True)  # a split VAE never decodes before it is repaired
                 return _retrying(z, args, kwargs, holder)
             finally:
                 depth[0] -= 1
@@ -764,16 +876,14 @@ def install(vae: Any, logger: Any = None, pipe: Any = None) -> bool:
         def _retrying(z: Any, args: tuple, kwargs: dict, holder: dict) -> Any:
             stats["calls"] += 1
             tiled_now = bool(getattr(vae, "use_tiling", False))
-            steps: list = [("freed", tiled_now, False)]
-            if can_tile and not tiled_now:
-                steps.append(("tiled", True, False))
-            steps.append(("offload", tiled_now or can_tile, True))
+            steps = _ladder_steps(tiled_now, can_tile)
             recovered = holder.get("recovered")
             if recovered is not None:
                 # A later slice / frame of a decode an earlier one recovered: the same mode (tiling as it recovered,
                 # the VAE still streamed if it was), so one decode's samples come out of one path.
-                start = [n for n, _, _ in steps].index(recovered) if recovered in [n for n, _, _ in steps] else 0
-                name, tiled, _ = steps[start]
+                names = [step[0] for step in steps]
+                start = names.index(recovered) if recovered in names else 0
+                name, tiled = steps[start][:2]
                 try:
                     return _attempt(z, args, kwargs, tiled)
                 except Exception as exc:  # noqa: BLE001
@@ -814,42 +924,14 @@ def install(vae: Any, logger: Any = None, pipe: Any = None) -> bool:
             session = holder.get("session")
             if session is None:
                 session = holder["session"] = DecodeSession(vae, _device_of(z), logger)
-            for name, tiled, offload_vae in steps:
-                _release_cache(z, vae)
-                if name == "freed":
-                    t0 = time.perf_counter()
-                    freed = session.free_others(_pipe_of(vae))
-                    stats["free_s"] = round(time.perf_counter() - t0, 3)
-                    if not freed:
-                        continue  # nothing (more) was freed: the same decode would fail the same way
-                elif offload_vae and not session.offload_vae():
-                    continue
-                if logger is not None:
-                    logger.warning(
-                        "diffusion.vae_oom: %s decode ran out of memory; retrying %s",
-                        type(vae).__name__,
-                        {"freed": "with the rest of the pipeline off the card", "tiled": "tiled at stock tile sizes",
-                         "offload": "with the VAE weights streamed from the host"}[name],
-                    )  # fmt: skip
-                stats[f"{name}_retry"] += 1
-                failed = False
-                try:
-                    out = _attempt(z, args, kwargs, tiled)
-                except Exception as exc:  # noqa: BLE001
-                    if not is_oom(exc) and not offload_vae:
-                        raise
-                    if not is_oom(exc) and logger is not None:
-                        # the streamed decode itself broke (an offload hook the VAE does not support): the render
-                        # fails on the out-of-memory it already had, not on the fallback
-                        logger.warning("diffusion.vae_oom: streamed %s decode failed (%s)", type(vae).__name__, exc)
-                    drop_tracebacks(exc)
-                    failed = True
-                if not failed:
-                    stats["recovered"] += 1
-                    stats["recovered_by"] = name
-                    holder["recovered"] = name
-                    return out
-                stats["oom"] += 1
+            ok, out, name = _climb(vae, session, steps, lambda tiled, eager: _attempt(z, args, kwargs, tiled),
+                                   stats, z, logger)  # fmt: skip
+            if ok:
+                stats["recovered"] += 1
+                stats["recovered_by"] = name
+                holder["recovered"] = name
+                return out
+            holder["exhausted"] = True  # the scope above does not climb the same rungs again
             stats["failed"] += 1
             _release_cache(z, vae)
             # Nothing recovered: the decode's own out-of-memory surfaces, with what was tried
@@ -966,42 +1048,57 @@ def _install_scope(vae: Any, logger: Any = None) -> bool:
             z = args[0] if args else kwargs.get("z")
             failures: list = []
             try:
-                # a VAE left streamed by an earlier restore that ran out of memory comes back first, if it fits now
-                settle_deferred(vae)
+                # a VAE left streamed by an earlier restore that ran out of memory comes back first, if it fits now;
+                # one left split (a required repair) never decodes before it is repaired: its clear error surfaces
+                settle_deferred(vae, strict = True)
                 ok, out = _try(args, kwargs, failures)
                 if ok:
                     return out
                 compiled = _compiled_below(vae, inner)
+                if holder.get("exhausted") and not compiled:
+                    raise failures[0]  # the _decode ladder already climbed every rung for this OOM
                 stats = vae.__dict__.get("_unsloth_vae_oom_stats")
-                if isinstance(stats, dict):
-                    stats["outer_oom"] = stats.get("outer_oom", 0) + 1
-                    if compiled:
-                        stats["compiled_oom"] = stats.get("compiled_oom", 0) + 1
+                if not isinstance(stats, dict):
+                    stats = {}
+                stats["outer_oom"] = stats.get("outer_oom", 0) + 1
+                if compiled:
+                    stats["compiled_oom"] = stats.get("compiled_oom", 0) + 1
                 session = holder.get("session")
                 if session is None:
                     session = holder["session"] = DecodeSession(vae, _device_of(z), logger)
-                _release_cache(z, vae)
-                if session.free_others(_pipe_of(vae)):
-                    if logger is not None:
-                        logger.warning("diffusion.vae_oom: %s decode ran out of memory; retrying with the rest of the "
-                                       "pipeline off the card", type(vae).__name__)  # fmt: skip
-                    ok, out = _try(args, kwargs, failures)
-                    if ok:
-                        if isinstance(stats, dict):
-                            stats["recovered"] = stats.get("recovered", 0) + 1
-                            stats["recovered_by"] = "freed_compiled" if compiled else "freed"
-                        return out
-                    _release_cache(z, vae)
-                if not compiled:
-                    raise failures[0]
-                if logger is not None:
-                    logger.warning("diffusion.vae_oom: compiled %s decode ran out of memory; retrying eager",
-                                   type(vae).__name__)  # fmt: skip
-                from . import diffusion_bg_compile  # noqa: PLC0415
+                # The same rungs as the _decode ladder, for an OOM it never saw (a compiled graph, a dtype wrapper's
+                # own allocation): each attempt is the whole decode, wrappers included.
+                can_tile = callable(getattr(vae, "enable_tiling", None)) and hasattr(vae, "use_tiling")
+                tiled_now = bool(getattr(vae, "use_tiling", False))
 
-                # the one force-eager signal every compiled guard reads (whole decode, regional blocks, CUDA graphs)
-                with diffusion_bg_compile.force_eager():
-                    return inner(*args, **kwargs)
+                def attempt(tiled: bool, eager: bool) -> Any:
+                    from . import diffusion_bg_compile  # noqa: PLC0415
+
+                    prev = bool(getattr(vae, "use_tiling", False))
+                    try:
+                        if can_tile:
+                            vae.use_tiling = tiled
+                        if eager:
+                            # the one force-eager signal every compiled guard reads (whole decode, regional blocks)
+                            with diffusion_bg_compile.force_eager():
+                                return inner(*args, **kwargs)
+                        return inner(*args, **kwargs)
+                    finally:
+                        if can_tile:
+                            vae.use_tiling = prev
+
+                ok, out, name = _climb(vae, session, _ladder_steps(tiled_now, can_tile, compiled), attempt, stats,
+                                       z, logger)  # fmt: skip
+                if not ok:
+                    raise failures[0]
+                stats["recovered"] = stats.get("recovered", 0) + 1
+                if name == "freed" and compiled:
+                    stats["recovered_by"] = "freed_compiled"
+                elif name != "eager" or holder.get("recovered") is None:
+                    stats["recovered_by"] = name  # an eager retry the _decode ladder recovered keeps its rung
+                else:
+                    stats["recovered_by"] = holder["recovered"]
+                return out
             finally:
                 failures.clear()
                 _close_scope(vae, holder, z)
