@@ -4116,6 +4116,7 @@ class TestResponsesInProcessStream:
         stop_at = None,
         taken = -1,
         entry = {},
+        headers = (),
     ):
         # Streams an in-process run of `chunks`; taken >= 0 cancels after that many events,
         # None disconnects before the body starts.
@@ -4126,6 +4127,7 @@ class TestResponsesInProcessStream:
 
         async def fake_chat(chat_req, request, subject):
             seen.update(req = chat_req, skip = request.state.skip_api_monitor)
+            seen["ui"] = inf_mod._ui_stream_events_enabled(request)
             event = seen["event"] = request.state.generation_cancel_event
 
             async def body():
@@ -4154,7 +4156,7 @@ class TestResponsesInProcessStream:
         monkeypatch.setattr(inf_mod, "get_inference_backend", lambda: orchestrator)
         monkeypatch.setattr(inf_mod, "_peek_inference_backend", lambda: orchestrator)
         monkeypatch.setattr(inf_mod.api_monitor, "finish", lambda _id, *a: seen["finish"].append(a))
-        request = seen["request"] = Request({"type": "http", "headers": []})
+        request = seen["request"] = Request({"type": "http", "headers": list(headers)})
         payload = ResponsesRequest(input = "hi", stream = True, thread_id = "t1", generation_run_id = "r1")
 
         async def run():
@@ -4171,6 +4173,15 @@ class TestResponsesInProcessStream:
 
         seen["lines"] = asyncio.run(run())
         return seen
+
+    def test_delegated_chat_never_offers_a_control_channel_it_cannot_relay(self, monkeypatch):
+        # An approval_id in a dropped tool_start frame would leave the tool loop waiting.
+        seen = self._run(monkeypatch, self._CHUNKS, headers = [(b"x-unsloth-events", b"1")])
+        assert seen["ui"] is False
+        # Restored after the call: the outer request still carries its own opt-in.
+        import routes.inference as inf_mod
+
+        assert inf_mod._ui_stream_events_enabled(seen["request"]) is True
 
     def test_chat_chunks_stream_the_same_events_as_llama_server(self, monkeypatch):
         import re

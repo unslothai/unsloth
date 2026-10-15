@@ -30552,9 +30552,10 @@ def _ui_stream_events_enabled(request: Optional[Request]) -> bool:
     """Whether this request opted into Unsloth's UI control frames on an OpenAI stream."""
     if request is None:
         return False
-    # A compat route delegating to chat opts in without touching the client's headers.
-    if getattr(getattr(request, "state", None), "ui_stream_events", False):
-        return True
+    # A compat route delegating to chat decides, since only it knows whether it relays them.
+    delegated = getattr(getattr(request, "state", None), "ui_stream_events", None)
+    if delegated is not None:
+        return bool(delegated)
     headers = getattr(request, "headers", None)
     if headers is None:
         return False
@@ -40059,6 +40060,8 @@ class _InProcessChatStream:
                 request,
                 skip_api_monitor = True,
                 generation_cancel_event = cancel_event,
+                # Only a server-tool caller relays chat's control frames; elsewhere an approval
+                # prompt would be lost, so the client's opt-in is hidden.
                 ui_stream_events = tool_names is not None,
             ),
             _delegated_tool_selection(tool_names),
