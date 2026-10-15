@@ -733,9 +733,6 @@
   html.dark .hub-composer-menu .hub-menu-row:is(:hover, [data-highlighted]) {
     background-color: rgb(255 255 255 / calc(0.1 * var(--contrast-wash-gain, 1)));
   }
-  .hub-composer-menu .hub-menu-row.text-primary:is(:hover, [data-highlighted]) {
-    color: var(--primary);
-  }
 
   .hub-menu-instant *,
   .hub-menu-instant *::before,

@@ -15,11 +15,18 @@ import {
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import {
+  BrainIcon,
   FilterMailIcon,
+  FlimSlateIcon,
+  HeadphonesIcon,
+  ImageIcon,
   InformationCircleIcon,
+  SparklesIcon,
+  TextFontIcon,
   Tick02Icon,
+  ViewIcon,
 } from "@hugeicons/core-free-icons";
-import { HugeiconsIcon } from "@hugeicons/react";
+import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { useId, useState } from "react";
 import {
   HUB_UPLOADERS,
@@ -29,6 +36,18 @@ import {
 } from "../lib/model-search-filters";
 import type { HubCapabilityFilter } from "../lib/model-capabilities";
 import { CAPABILITY_FILTER_OPTIONS } from "../lib/view-models";
+
+// The Hub rows' capability icons (catalog/shared.tsx), with Image gen on diffusion's and Video gen
+// on the Video page's.
+const CAPABILITY_ICONS: Record<HubCapabilityFilter, IconSvgElement> = {
+  text: TextFontIcon,
+  reasoning: BrainIcon,
+  vision: ViewIcon,
+  audio: HeadphonesIcon,
+  embedding: SparklesIcon,
+  "image-gen": ImageIcon,
+  "video-gen": FlimSlateIcon,
+};
 
 const UPLOADER_LABELS: Record<HubUploader, string> = {
   unsloth: "Unsloth",
@@ -41,13 +60,15 @@ const SECTION_LABEL =
   "flex w-full items-center justify-between px-3 pt-1.5 pb-1 text-ui-12 text-muted-foreground";
 const SEPARATOR = "mx-1 my-1 h-px bg-border/50";
 
-/** A composer-menu row that ticks: green with a check when on. */
+/** A composer-menu row that ticks: a check on the right when on. */
 function MenuTick({
+  icon,
   label,
   checked,
   locked,
   onToggle,
 }: {
+  icon?: IconSvgElement;
   label: string;
   checked: boolean;
   /** The last tick of a group, which stays. */
@@ -64,10 +85,16 @@ function MenuTick({
         if (!locked) onToggle();
       }}
       className={cn(
-        "hub-menu-row relative flex w-full cursor-pointer select-none items-center py-2 pr-9 pl-3 text-left text-sm aria-disabled:cursor-default",
-        checked && "font-medium text-primary",
+        "hub-menu-row relative flex w-full cursor-pointer select-none items-center gap-3 py-2 pr-9 pl-3 text-left text-sm aria-disabled:cursor-default",
       )}
     >
+      {icon && (
+        <HugeiconsIcon
+          icon={icon}
+          strokeWidth={2}
+          className="size-4 shrink-0"
+        />
+      )}
       <span className="truncate">{label}</span>
       {checked && (
         <HugeiconsIcon
@@ -77,6 +104,37 @@ function MenuTick({
         />
       )}
     </button>
+  );
+}
+
+/** An i that shows its note while hovered, not on focus, so opening the popover doesn't pop it. */
+function HoverInfo({ label, children }: { label: string; children: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <Tooltip open={open}>
+      <TooltipTrigger asChild={true}>
+        <button
+          type="button"
+          aria-label={`About ${label.toLowerCase()}`}
+          onPointerEnter={() => setOpen(true)}
+          onPointerLeave={() => setOpen(false)}
+          className="inline-flex cursor-help items-center transition-colors hover:text-foreground"
+        >
+          <HugeiconsIcon
+            icon={InformationCircleIcon}
+            strokeWidth={1.75}
+            className="size-3.5"
+          />
+        </button>
+      </TooltipTrigger>
+      <TooltipContent
+        side="top"
+        sideOffset={6}
+        className="max-w-[calc(240px*var(--ui-space-scale,1))]"
+      >
+        {children}
+      </TooltipContent>
+    </Tooltip>
   );
 }
 
@@ -156,7 +214,7 @@ export function ModelSearchFiltersControl({
         sideOffset={8}
         collisionPadding={12}
         onCloseAutoFocus={(event) => event.preventDefault()}
-        className="hub-menu-instant hub-composer-menu menu-soft-surface gap-0 w-[calc(296px*var(--ui-space-scale,1))] max-w-[calc(100vw-1rem)] ring-0"
+        className="hub-menu-instant hub-composer-menu menu-soft-surface gap-0 w-[calc(344px*var(--ui-space-scale,1))] max-w-[calc(100vw-1rem)] ring-0"
       >
         <fieldset>
           <legend className={SECTION_LABEL}>
@@ -183,6 +241,7 @@ export function ModelSearchFiltersControl({
               return (
                 <MenuTick
                   key={option.value}
+                  icon={CAPABILITY_ICONS[option.value]}
                   label={option.label}
                   checked={checked}
                   // The last tick stays: none would list nothing.
@@ -238,32 +297,11 @@ export function ModelSearchFiltersControl({
                   <legend className={SECTION_LABEL}>
                     <span className="flex items-center gap-1">
                       {label}
-                      <Tooltip>
-                        <TooltipTrigger asChild={true}>
-                          <button
-                            type="button"
-                            aria-label={`About ${label.toLowerCase()}`}
-                            className="inline-flex cursor-help items-center transition-colors hover:text-foreground"
-                          >
-                            <HugeiconsIcon
-                              icon={InformationCircleIcon}
-                              strokeWidth={1.75}
-                              className="size-3.5"
-                            />
-                          </button>
-                        </TooltipTrigger>
-                        <TooltipContent
-                          side="top"
-                          sideOffset={6}
-                          className="max-w-[calc(240px*var(--ui-space-scale,1))]"
-                        >
-                          {about}
-                        </TooltipContent>
-                      </Tooltip>
+                      <HoverInfo label={label}>{about}</HoverInfo>
                     </span>
                     {unit}
                   </legend>
-                  <div className="grid grid-cols-2 gap-1.5">
+                  <div className="grid grid-cols-2 gap-1.5 px-3">
                     {([min, max] as const).map((key, index) => (
                       <Input
                         key={key}
@@ -319,7 +357,7 @@ export function ModelSearchFiltersControl({
               })}
             </fieldset>
             <div aria-hidden={true} className={SEPARATOR} />
-            <div className="flex justify-end gap-1.5 px-1 pt-1">
+            <div className="flex justify-end gap-1.5 px-3 pt-1">
               <Button
                 type="button"
                 variant="ghost"

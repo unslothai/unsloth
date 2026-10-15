@@ -236,7 +236,6 @@ export function HubOptionMenu<T extends string>({
                 onPointerEnter={() => activateIndex(index)}
                 className={cn(
                   "hub-menu-row relative flex w-full min-w-0 cursor-pointer select-none items-center py-2 pr-9 pl-3 text-left text-sm outline-none transition-colors",
-                  selectedOption && "font-medium text-primary",
                 )}
               >
                 <span className="flex min-w-0 flex-1 items-center gap-2.5 overflow-hidden whitespace-normal break-words">

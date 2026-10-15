@@ -481,7 +481,6 @@ export const ModelsToolbar = memo(function ModelsToolbar({
                       onClick={() => onFitOnDeviceOnlyChange(!fitOnDeviceOnly)}
                       className={cn(
                         "hub-menu-row relative flex w-full cursor-pointer select-none items-center py-2 pr-9 pl-3 text-left text-sm",
-                        fitOnDeviceOnly && "font-medium text-primary",
                       )}
                     >
                       Only show models that fit
