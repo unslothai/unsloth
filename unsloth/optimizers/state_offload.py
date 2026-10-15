@@ -6,7 +6,7 @@
 State lives in pinned host memory between steps and visits the GPU only inside optimizer.step,
 so peak memory is max(activations, optimizer state) instead of their sum. The step runs in chunks
 of UNSLOTH_OFFLOAD_OPTIMIZER_STATE_CHUNK_MB (default 1024) of state, so the step itself never holds
-all of it on device either.
+all of it on device either (parameter-local optimizers only, see _CHUNK_SAFE_MODULES).
 """
 
 import copy
@@ -45,6 +45,32 @@ def _innermost(optimizer):
     while isinstance(getattr(optimizer, "optimizer", None), torch.optim.Optimizer):
         optimizer = optimizer.optimizer
     return optimizer
+
+
+# Classes whose step only touches parameters that have a gradient, so stepping one chunk at a time
+# is the same update. Others (schedulefree advances group["k"] on every call) step unchunked.
+_CHUNK_SAFE_MODULES = ("torch.optim.", "bitsandbytes.", "transformers.optimization", "unsloth.optimizers.")
+
+
+def _chunk_safe(optimizer):
+    for cls in type(optimizer).__mro__:
+        if "step" in vars(cls):
+            return cls.__module__.startswith(_CHUNK_SAFE_MODULES)
+    return False
+
+
+def _tensor_attrs(value):
+    # Tensors held by state objects such as GaLoreProjector (__slots__, no __dict__).
+    if isinstance(value, (torch.Tensor, dict, list, tuple, str, int, float, bool)) or value is None:
+        return ()
+    names = set(getattr(value, "__dict__", ()))
+    for cls in type(value).__mro__:
+        slots = vars(cls).get("__slots__", ())
+        names.update((slots,) if isinstance(slots, str) else slots)
+    return [
+        (name, getattr(value, name)) for name in sorted(names)
+        if isinstance(getattr(value, name, None), torch.Tensor)
+    ]
 
 
 def _synchronize(device):
@@ -91,6 +117,12 @@ class _StateOffloader:
         devices = set()
         for param, state in self._states(params):
             for key, value in state.items():
+                for name, local in _tensor_attrs(value):
+                    if local.device.type == "cpu":
+                        continue
+                    devices.add(local.device)
+                    setattr(value, name, self._host_buffer(param, (key, name), local))
+                    self.offloaded[(param, (key, name))] = local.device
                 is_dtensor = DTensor is not None and isinstance(value, DTensor)
                 local = value._local_tensor if is_dtensor else value
                 if not isinstance(local, torch.Tensor) or local.device.type == "cpu":
@@ -115,6 +147,10 @@ class _StateOffloader:
     def restore(self, params = None):
         for param, state in self._states(params):
             for key, value in state.items():
+                for name, local in _tensor_attrs(value):
+                    device = self.offloaded.get((param, (key, name)))
+                    if device is not None and local.device != device:
+                        setattr(value, name, local.to(device, non_blocking = True))
                 device = self.offloaded.get((param, key))
                 if device is None:
                     continue
@@ -135,9 +171,17 @@ class _StateOffloader:
         # (other gradients hidden) bounds the on-device state to chunk_bytes instead of all of it.
         chunks, chunk, size = [], [], 0
         state = self.optimizer.state
+        groups = {p: g for g in self.optimizer.param_groups for p in g["params"]}
         for p in params:
-            held = [v for v in state.get(p, {}).values() if isinstance(v, torch.Tensor)]
-            nbytes = sum(v.numel() * v.element_size() for v in held) if held else 8 * p.numel()
+            held = []
+            for v in state.get(p, {}).values():
+                held += [v] if isinstance(v, torch.Tensor) else [t for _, t in _tensor_attrs(v)]
+            if held:
+                nbytes = sum(v.numel() * v.element_size() for v in held)
+            else:
+                # Not stepped yet: Adam-style moments (a third with amsgrad), at least fp32 each.
+                moments = 3 if groups.get(p, {}).get("amsgrad") else 2
+                nbytes = moments * max(p.element_size(), 4) * p.numel()
             if chunk and size + nbytes > self.chunk_bytes:
                 chunks.append(chunk)
                 chunk, size = [], 0
@@ -159,7 +203,7 @@ class _StateOffloader:
         chunks = self._chunks(params)
         closure = args[0] if args else kwargs.get("closure")
         # A closure recomputes the loss on every call, so it must run once over all parameters.
-        if len(chunks) <= 1 or closure is not None:
+        if len(chunks) <= 1 or closure is not None or not _chunk_safe(optimizer):
             self.restore()
             return
         # Step each chunk here through the class step (the hooks see `inside` and return), then
@@ -202,6 +246,14 @@ def offload_optimizer_state(optimizer, pin_memory = True, chunk_bytes = None):
     optimizer = _innermost(optimizer)
     if not isinstance(optimizer, torch.optim.Optimizer):
         return None
+    # transformers' LayerWiseDummyOptimizer (galore/apollo *_layerwise): the real per-parameter
+    # optimizers live in optimizer_dict and step from gradient hooks.
+    layerwise = getattr(optimizer, "optimizer_dict", None)
+    if isinstance(layerwise, dict):
+        unique = {id(o): o for o in layerwise.values()}.values()
+        offloaders = [offload_optimizer_state(o, pin_memory, chunk_bytes) for o in unique]
+        offloaders = [o for o in offloaders if o is not None]
+        return offloaders or None
     existing = getattr(optimizer, "_unsloth_state_offloader", None)
     if existing is not None:
         return existing

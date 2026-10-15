@@ -186,3 +186,101 @@ def test_chunked_step_bounds_device_state_and_keeps_grads():
     assert peak < 16 << 20
     assert _state_devices(optimizer) == {"cpu"}
     assert offloader.steps == 2
+
+
+class _GroupCountingSGD(torch.optim.SGD):
+    # Like schedulefree: group-level bookkeeping advances on every step call.
+    def step(self, closure = None):
+        for group in self.param_groups:
+            group["k"] = group.get("k", 0) + 1
+        return super().step(closure)
+
+
+def test_group_global_optimizer_steps_once_per_step():
+    module = _module()
+    params = [torch.nn.Parameter(torch.randn(16)) for _ in range(3)]
+    optimizer = _GroupCountingSGD(params, lr = 0.1)
+    offloader = module._StateOffloader(optimizer, chunk_bytes = 1)
+    optimizer.register_step_pre_hook(offloader._pre_step)
+    optimizer.register_step_post_hook(offloader._post_step)
+    expected = [p.detach() - 0.1 for p in params]
+    for p in params:
+        p.grad = torch.ones_like(p)
+    optimizer.step()
+    assert optimizer.param_groups[0]["k"] == 1
+    for p, e in zip(params, expected):
+        assert torch.allclose(p, e)
+
+
+def test_chunk_safety_by_step_owner():
+    module = _module()
+    p = [torch.nn.Parameter(torch.randn(2))]
+    assert module._chunk_safe(torch.optim.AdamW(p))
+    assert not module._chunk_safe(_GroupCountingSGD(p, lr = 0.1))
+
+
+def test_unstepped_chunk_size_counts_amsgrad_moment():
+    module = _module()
+    n = 1000
+    params = [torch.nn.Parameter(torch.randn(n)) for _ in range(2)]
+    # 8 bytes per fp32 parameter would fit both in 20n; amsgrad holds 12n each.
+    plain = module._StateOffloader(torch.optim.AdamW(params), chunk_bytes = 20 * n)
+    assert len(plain._chunks(params)) == 1
+    amsgrad = module._StateOffloader(torch.optim.AdamW(params, amsgrad = True), chunk_bytes = 20 * n)
+    assert len(amsgrad._chunks(params)) == 2
+
+
+class _Projector:
+    __slots__ = ("ortho_matrix", "rank")
+
+    def __init__(self, ortho_matrix):
+        self.ortho_matrix = ortho_matrix
+        self.rank = 2
+
+
+def test_nested_state_tensors_are_sized():
+    module = _module()
+    param = torch.nn.Parameter(torch.randn(4))
+    optimizer = torch.optim.AdamW([param])
+    optimizer.state[param]["projector"] = _Projector(torch.zeros(1000))
+    offloader = module._StateOffloader(optimizer, chunk_bytes = 1)
+    assert [name for name, _ in module._tensor_attrs(optimizer.state[param]["projector"])] == ["ortho_matrix"]
+    other = torch.nn.Parameter(torch.randn(4))
+    assert len(offloader._chunks([param, other])) == 2
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
+def test_nested_state_object_round_trip():
+    module = _module()
+    param = torch.nn.Parameter(torch.randn(64, device = "cuda"))
+    optimizer = torch.optim.AdamW([param], lr = 1e-3)
+    param.grad = torch.ones_like(param)
+    optimizer.step()
+    ortho = torch.randn(64, 8, device = "cuda")
+    projector = _Projector(ortho.clone())
+    optimizer.state[param]["projector"] = projector
+    offloader = module.offload_optimizer_state(optimizer)
+    assert projector.ortho_matrix.device.type == "cpu"
+    assert offloader.offloaded_bytes >= ortho.numel() * 4
+    offloader.restore()
+    assert projector.ortho_matrix.device.type == "cuda"
+    assert torch.equal(projector.ortho_matrix, ortho)
+    param.grad = torch.ones_like(param)
+    optimizer.step()
+    assert projector.ortho_matrix.device.type == "cpu"
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
+def test_layerwise_optimizer_dict_is_offloaded():
+    module = _module()
+    LayerWiseDummyOptimizer = pytest.importorskip("transformers.trainer_pt_utils").LayerWiseDummyOptimizer
+    params = [torch.nn.Parameter(torch.randn(256, device = "cuda")) for _ in range(2)]
+    optimizer_dict = {p: torch.optim.AdamW([p], lr = 1e-3) for p in params}
+    dummy = LayerWiseDummyOptimizer(optimizer_dict = optimizer_dict, lr = 1e-3)
+    offloaders = module.offload_optimizer_state(dummy)
+    assert offloaders is not None and len(offloaders) == 2
+    for p in params:
+        p.grad = torch.ones_like(p)
+        optimizer_dict[p].step()
+    for inner in optimizer_dict.values():
+        assert _state_devices(inner) == {"cpu"}
