@@ -485,7 +485,8 @@ if __name__ == "__main__":
         default = "ring",
         choices = ["ring", "ulysses"],
         help = "Context parallel attention backend: ring (SDPA ring attention) or ulysses "
-        "(all-to-all over heads; keeps packing and FA3 / FA4, needs heads divisible by the size).",
+        "(all-to-all over heads; keeps packing and the usual attention kernels, needs heads "
+        "divisible by the size).",
     )
     training_group.add_argument(
         "--context_parallel_rotate_method",

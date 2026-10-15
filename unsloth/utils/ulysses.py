@@ -34,7 +34,7 @@ def _all_to_all(x, scatter_dim, gather_dim, group):
             f"Unsloth: Ulysses cannot split dim {scatter_dim} of size {x.shape[scatter_dim]} "
             f"across {world} ranks."
         )
-    send = torch.stack(x.chunk(world, dim = scatter_dim), dim = 0).contiguous()
+    send = torch.stack(x.chunk(world, dim = scatter_dim), dim = 0)
     recv = torch.empty_like(send)
     dist.all_to_all_single(recv, send, group = group)
     return torch.cat(recv.unbind(0), dim = gather_dim)
@@ -135,7 +135,7 @@ def ulysses_attention(run_attention_fn, config, context, Q, K, V, group):
 
 
 def _document_positions(packed_seq_lengths, total, device):
-    lengths = [int(x) for x in packed_seq_lengths.tolist()]
+    lengths = [int(x) for x in torch.as_tensor(packed_seq_lengths).reshape(-1).tolist()]
     pieces = [torch.arange(length, device = device) for length in lengths]
     used = sum(lengths)
     if used > total:

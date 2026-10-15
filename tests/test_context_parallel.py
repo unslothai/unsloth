@@ -156,7 +156,10 @@ def test_training_step_divides_the_pre_shard_token_count_by_cp_size(monkeypatch)
     batch = lambda: {"input_ids": torch.ones(1, 8, dtype = torch.long)}
     trainer.training_step(None, batch(), torch.tensor(12.0))
     trainer.training_step(None, batch(), num_items_in_batch = torch.tensor(12.0))
-    assert [(k, float(n)) for k, n in seen] == [("train", 3.0), ("train", 3.0)]
+    trainer.training_step(None, batch(), torch.tensor(12))
+    assert [(k, float(n)) for k, n in seen] == [("train", 3.0)] * 3
+    # An integer count stays an integer (float32 loses exactness above 2**24 targets).
+    assert seen[-1][1].dtype == torch.int64
 
 
 def test_shift_labels_is_not_an_eval_label_name():
@@ -300,19 +303,18 @@ def test_eval_loss_is_the_token_mean_even_with_an_empty_shard(monkeypatch, world
     counts = []
 
     def all_reduce(tensor, group = None):
-        if group is None:  # token count over the world: every rank holds the same count
-            counts.append(int(tensor))
-            tensor.mul_(world_size)
-        else:  # loss over the CP group: add the peer's shard (2 targets)
-            tensor.add_(2 / (counts[0] * world_size // manager.size))
+        # Only the loss is reduced, over the CP group: add the peer's shard (2 targets, 1 each).
+        assert group == "cp"
+        counts.append(group)
+        tensor.add_(2 / 2)
 
     monkeypatch.setattr(cp.dist, "all_reduce", all_reduce)
     # 9 tokens pad to 12; shifted, the 2 targets sit at positions 6 and 7 (second half).
     labels = torch.tensor([[-100] * 7 + [1, 1]])
     batch = lambda: {"input_ids": torch.ones(1, 9, dtype = torch.long), "labels": labels.clone()}
     loss, logits, labels_out = trainer.prediction_step(None, batch(), True)
-    # 2 targets at one unit each: the token mean is 1.0 (a per-shard mean would be NaN here).
-    assert counts == [2] and loss.item() == pytest.approx(1.0)
+    # This replica's token mean, whatever the number of replicas (a per-shard mean would be NaN).
+    assert counts == ["cp"] and loss.item() == pytest.approx(1.0)
     assert logits is None and labels_out is None
     with pytest.raises(NotImplementedError, match = "loss-only"):
         trainer.prediction_step(None, batch(), False)
@@ -536,7 +538,10 @@ def test_find_unused_parameters_is_off_under_cp_unless_the_user_set_it(monkeypat
         cp,
         "ContextParallelManager",
         lambda size, *rest: types.SimpleNamespace(
-            size = size, device_mesh = object(), attach_attention_hooks = lambda model: None
+            size = size,
+            backend = "ring",
+            device_mesh = object(),
+            attach_attention_hooks = lambda model: None,
         ),
     )
     args = types.SimpleNamespace(
@@ -599,7 +604,9 @@ def test_cp_state_is_reinstalled_at_train_after_another_trainer(monkeypatch):
     trainer = object.__new__(Trainer)
     trainer.accelerator = types.SimpleNamespace(state = state)
     trainer.args = types.SimpleNamespace(ddp_find_unused_parameters = None)
-    trainer._context_parallel_manager = types.SimpleNamespace(size = 2, device_mesh = mesh)
+    trainer._context_parallel_manager = types.SimpleNamespace(
+        size = 2, backend = "ring", device_mesh = mesh
+    )
     # A later non-CP trainer cleared the shared state; train() must put the CP mesh back.
     assert trainer.train() == "trained"
     assert state.device_mesh is mesh
@@ -738,7 +745,10 @@ def _gated_trainer(monkeypatch, model = None, **args_overrides):
     def manager(size, backend = "ring", rotate_method = "allgather"):
         built.append((size, backend, rotate_method))
         return types.SimpleNamespace(
-            size = size, device_mesh = object(), attach_attention_hooks = lambda model: None
+            size = size,
+            backend = backend,
+            device_mesh = object(),
+            attach_attention_hooks = lambda model: None,
         )
 
     monkeypatch.setattr(cp, "ContextParallelManager", manager)
@@ -1092,4 +1102,59 @@ def test_ulysses_keeps_varlen_and_routes_attention_through_the_exchange(monkeypa
     manager.backend = "ring"
     with pytest.raises(ValueError, match = "context_parallel_backend = 'ulysses'"):
         ad.select_attention_backend(True)
+
+
+def test_inherited_trainer_methods_are_resolved_per_call(monkeypatch):
+    # Trainer.train patched after import (e.g. unsloth_zoo's fast grad params) must still run.
+    import trl
+
+    class Base:
+        def train(self):
+            return "base"
+
+        def training_step(self, *a, **k):
+            pass
+
+        evaluate = evaluation_loop = prediction_step = training_step
+
+    class Trainer(Base):
+        def __init__(self):
+            pass
+
+    monkeypatch.setattr(trl, "SFTTrainer", Trainer)
+    cp.patch_sft_trainer()
+    monkeypatch.setattr(Base, "train", lambda self: "patched later")
+    assert Trainer().train() == "patched later"
+
+
+def test_ulysses_head_counts_are_checked_at_init(monkeypatch):
+    import types
+
+    config = types.SimpleNamespace(num_attention_heads = 3, num_key_value_heads = 3)
+    model = types.SimpleNamespace(config = config)
+    Trainer, _, built = _gated_trainer(monkeypatch, model = model, context_parallel_backend = "ulysses")
+    with pytest.raises(ValueError, match = "divisible by context_parallel_size"):
+        Trainer()
+    assert built == []
+    config.num_attention_heads = config.num_key_value_heads = 4
+    Trainer()
+    assert built == [(2, "ulysses", "allgather")]
+
+
+@pytest.mark.parametrize("backend", ["ring", "ulysses"])
+def test_only_ring_needs_sm80(monkeypatch, backend):
+    import types
+
+    config = types.SimpleNamespace(num_attention_heads = 4, num_key_value_heads = 4)
+    Trainer, _, built = _gated_trainer(
+        monkeypatch, model = types.SimpleNamespace(config = config), context_parallel_backend = backend
+    )
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a: (7, 5))
+    if backend == "ring":
+        with pytest.raises(NotImplementedError, match = "compute capability"):
+            Trainer()
+    else:
+        Trainer()
+        assert built == [(2, "ulysses", "allgather")]
 
