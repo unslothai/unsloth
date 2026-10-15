@@ -481,6 +481,39 @@ def test_reexec_omits_default_gpu_memory_mode(monkeypatch):
     assert "--gpu-memory-mode" not in captured[0]["argv"]
 
 
+def test_reexec_forwards_engine_parallelism_and_gpus(monkeypatch):
+    result, captured = _invoke_run(
+        monkeypatch,
+        ["--model", "unsloth/Qwen3-8B", "--engine", "vllm"]
+        + ["--engine-parallelism", "data", "--gpus", "0,2"],
+    )
+    assert len(captured) == 1, result.output
+    argv = captured[0]["argv"]
+    assert _value_after(argv, "--engine-parallelism") == "data", argv
+    assert _value_after(argv, "--gpus") == "0,2", argv
+
+
+def test_reexec_omits_default_engine_parallelism_and_gpus(monkeypatch):
+    """Default runs keep the argv older studio-venv launchers already accept."""
+    result, captured = _invoke_run(monkeypatch, _BASE)
+    assert len(captured) == 1, result.output
+    assert "--engine-parallelism" not in captured[0]["argv"]
+    assert "--gpus" not in captured[0]["argv"]
+
+
+@pytest.mark.parametrize(
+    ("extra", "message"),
+    [
+        (["--engine-parallelism", "data"], "--engine-parallelism applies only to --engine"),
+        (["--gpus", "0,x"], "--gpus takes comma-separated GPU indices"),
+    ],
+)
+def test_bad_engine_parallelism_or_gpus_is_refused_before_reexec(monkeypatch, extra, message):
+    result, captured = _invoke_run(monkeypatch, _BASE + extra)
+    assert result.exit_code == 2 and not captured
+    assert message in result.output
+
+
 def test_reexec_forwards_speculative_options(monkeypatch):
     result, captured = _invoke_run(
         monkeypatch,
