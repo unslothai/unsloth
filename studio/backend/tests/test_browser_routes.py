@@ -106,7 +106,6 @@ def test_the_shell_tells_the_panel_when_the_sandbox_refuses_a_feature():
     ):
         assert guard in boot, guard
     assert boot.index("IDBFactory.prototype[name] = ") < boot.index("const shellPathname")
-    # A refused service worker or cache alone is no reason to leave the panel.
     assert "securityError(" not in boot
     # The page may replace DOMException or Promise before it touches IndexedDB.
     assert "instanceof DOMException" not in boot and "instanceof Promise" not in boot
