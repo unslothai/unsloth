@@ -25,6 +25,7 @@ import {
 } from "./model-capabilities";
 export {
   detectResultFormat,
+  hasRecommendedCheckpointLikes,
   isUnslothFinetunable,
   matchesFormat,
   matchesRecommended,
