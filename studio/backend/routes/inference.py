@@ -25023,9 +25023,10 @@ def _resolve_stt_engine(engine: Optional[str]) -> str:
     )
 
 
-# Engines a retired whisper.cpp alias request downloaded, loaded or transcribed on in this
-# process, so a later alias unload or cancel still reaches one the host would no longer pick.
-_RETIRED_ALIAS_SERVED: set[str] = set()
+# Engines whose resident model ("load") or running download ("download") a retired whisper.cpp
+# alias request started, so a later alias unload or cancel still reaches one the host would no
+# longer pick. A direct request on the engine, or releasing it, hands it back.
+_RETIRED_ALIAS_SERVED: dict[str, set[str]] = {"load": set(), "download": set()}
 
 
 def _resolve_serving_stt_engine(engine: Optional[str]) -> str:
@@ -25073,21 +25074,28 @@ def _serving_stt_model(
     return model
 
 
-def _note_retired_alias_engine(requested_engine: Optional[str], serving_engine: str) -> None:
-    """Remember the engine a retired alias request loaded, started a download or transcribed on."""
+def _note_retired_alias_engine(
+    requested_engine: Optional[str],
+    serving_engine: str,
+    kind: str = "load",
+) -> None:
+    """Record who now owns ``serving_engine``'s model (``kind`` "load") or download: a retired
+    alias request claims it, any other request takes it back."""
     if _resolve_stt_engine(requested_engine) == "gguf":
-        _RETIRED_ALIAS_SERVED.add(serving_engine)
+        _RETIRED_ALIAS_SERVED[kind].add(serving_engine)
+    else:
+        _RETIRED_ALIAS_SERVED[kind].discard(serving_engine)
 
 
-def _retired_alias_engines() -> tuple[str, ...]:
-    """Every engine a retired whisper.cpp alias request may have landed on.
+def _retired_alias_engines(kind: str = "load") -> tuple[str, ...]:
+    """Every engine a retired whisper.cpp alias request's model (or download) may be on.
 
-    The one it resolves to now, plus each one an alias request actually ran on
-    in this process: what can serve it (PyTorch, llama.cpp, audio.cpp) can
-    change mid-session, while a model loaded directly on another engine is not
-    the alias's to free.
+    The one it resolves to now, plus each one whose model or download an alias request
+    started and nothing has released or taken over since: what can serve it (PyTorch,
+    llama.cpp, audio.cpp) can change mid-session, while a model loaded directly on another
+    engine is not the alias's to free.
     """
-    engines = {_resolve_serving_stt_engine("gguf"), *_RETIRED_ALIAS_SERVED}
+    engines = {_resolve_serving_stt_engine("gguf"), *_RETIRED_ALIAS_SERVED[kind]}
     return tuple(name for name in ("transformers", "mtmd", "audiocpp") if name in engines)
 
 
@@ -25588,7 +25596,7 @@ async def stt_download(
         raise HTTPException(status_code = 422, detail = str(e))
     except SttModelCompatibilityError as e:
         raise HTTPException(status_code = 422, detail = str(e))
-    _note_retired_alias_engine(payload.engine, engine)
+    _note_retired_alias_engine(payload.engine, engine, "download")
     return JSONResponse(content = {**module.download_status(), "download_id": download_id})
 
 
@@ -25608,7 +25616,7 @@ async def stt_download_cancel(
         # A retired alias download may have started on another engine than the
         # one it resolves to now (llama.cpp repaired mid-download), so reach
         # each, scoped to its mapped model and the download id.
-        engines += [name for name in _retired_alias_engines() if name != engine]
+        engines += [name for name in _retired_alias_engines("download") if name != engine]
     status = None
     for name in engines:
         result = await asyncio.to_thread(
@@ -25621,6 +25629,8 @@ async def stt_download_cancel(
         # Report the engine that stopped something, else the one serving now.
         if status is None or (result.get("cancelled") and not status.get("cancelled")):
             status = result
+        if result.get("cancelled"):
+            _RETIRED_ALIAS_SERVED["download"].discard(name)
     return JSONResponse(content = status)
 
 
@@ -25778,6 +25788,10 @@ async def stt_unload(
     failed: list[str] = []
     for engines, expected in unload_requests:
         failed += await asyncio.to_thread(unload_stt, engines, expected_model = expected, wait = wait)
+    # An engine left empty no longer holds anything an alias request loaded.
+    for name in targets:
+        if _stt_resident_model(name) is None:
+            _RETIRED_ALIAS_SERVED["load"].discard(name)
     if failed:
         raise HTTPException(
             status_code = 500,

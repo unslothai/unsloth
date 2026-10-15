@@ -79,7 +79,7 @@ def host(monkeypatch):
     monkeypatch.setattr(GgmlSttSidecar, "transcribe", _whisper_cpp_must_not_run)
     monkeypatch.setattr(ggml_module, "start_model_download", _whisper_cpp_must_not_run)
     monkeypatch.setattr(ri.account_access, "managed_account", lambda: False)
-    monkeypatch.setattr(ri, "_RETIRED_ALIAS_SERVED", set())
+    monkeypatch.setattr(ri, "_RETIRED_ALIAS_SERVED", {"load": set(), "download": set()})
     monkeypatch.setattr(ri, "_prepare_runtime_fallback_checkpoint", lambda *_a: None)
 
     def load(
@@ -182,6 +182,27 @@ def test_an_alias_unload_still_frees_llama_cpp_after_pytorch_is_installed(host):
     host.pin(torch = True, audiocpp = True, mtmd = True)
     asyncio.run(ri.stt_unload(engine = "gguf", model = "small", current_subject = "tester"))
     assert host.unloads == [(["transformers"], "small"), (["mtmd"], DEFAULT_MTMD_STT_MODEL)]
+
+
+def test_a_direct_load_takes_the_engine_back_from_the_alias(host):
+    host.pin(torch = False, audiocpp = True, mtmd = True)
+    asyncio.run(ri._transcribe_audio_bytes(b"RIFFfake", "small", None, False, "gguf"))
+    host.pin(torch = True, audiocpp = True, mtmd = True)
+    # The alias's model is released, then Qwen3-ASR is loaded on llama.cpp directly.
+    asyncio.run(ri.stt_unload(current_subject = "tester"))
+    _load(DEFAULT_MTMD_STT_MODEL, "mtmd")
+    host.unloads.clear()
+    asyncio.run(ri.stt_unload(engine = "gguf", model = "small", current_subject = "tester"))
+    assert host.unloads == [(["transformers"], "small")]
+
+
+def test_a_direct_load_alone_also_takes_the_engine_back(host):
+    host.pin(torch = False, audiocpp = True, mtmd = True)
+    _load("small", "gguf")
+    host.pin(torch = True, audiocpp = True, mtmd = True)
+    _load(DEFAULT_MTMD_STT_MODEL, "mtmd")
+    asyncio.run(ri.stt_unload(engine = "gguf", model = "small", current_subject = "tester"))
+    assert host.unloads == [(["transformers"], "small")]
 
 
 def test_a_failed_alias_load_does_not_mark_its_engine(host, monkeypatch):

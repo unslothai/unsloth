@@ -1204,7 +1204,7 @@ def test_gguf_unload_targets_transformers_fallback_without_whisper_server(monkey
 
     monkeypatch.setattr(ggml_module, "is_available", lambda: False)  # no whisper-server
     monkeypatch.setattr(stt_module, "is_available", lambda: True)
-    monkeypatch.setattr(ri, "_RETIRED_ALIAS_SERVED", set())
+    monkeypatch.setattr(ri, "_RETIRED_ALIAS_SERVED", {"load": set(), "download": set()})
 
     calls: list = []
 
