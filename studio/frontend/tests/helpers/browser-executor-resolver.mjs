@@ -10,9 +10,10 @@ const stub = (source) => ({ url: `data:text/javascript,${encodeURIComponent(sour
 const STUBS = {
   "../page-frame": "export const requestFrameAgent = (tabId, op, code) => globalThis.__frameAgent(tabId, op, code);",
   "../capture": "export const screenshotPage = async () => null;",
-  "../native-view": "export const hasNativeView = () => false; export const nativeAction = () => {};",
+  // Off unless a test sets globalThis.__nativeView, which then answers the view's calls.
+  "../native-view": "export const hasNativeView = () => Boolean(globalThis.__nativeView); export const nativeAction = () => {};",
   "../native-support":
-    "export const useNativeBrowser = { getState: () => ({ enabled: false }) }; export const callNative = async () => null;",
+    "export const useNativeBrowser = { getState: () => ({ enabled: Boolean(globalThis.__nativeView) }) }; export const callNative = async (cmd, args) => globalThis.__nativeView?.(cmd, args) ?? null;",
   "../panel-availability": "export const browserPanelAvailable = () => true;",
   "../history-store": "export const useBrowserHistoryStore = { getState: () => ({ recordVisit() {} }) };",
 };

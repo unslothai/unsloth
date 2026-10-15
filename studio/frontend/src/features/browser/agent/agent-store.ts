@@ -16,7 +16,8 @@ import {
   ruleFor,
 } from "./permissions";
 
-export type AgentPrompt = Question & { id: number };
+/** `always`: the bar offers Always allow, as the answer can be kept for this chat. */
+export type AgentPrompt = Question & { id: number; always: boolean };
 /** `always`: allowed, and not asked again for this kind of action on this site in this chat. */
 export type Answer = false | "once" | "always";
 
@@ -97,7 +98,7 @@ const answers = new Map<number, (answer: Answer) => void>();
 let nextQuestion = 1;
 
 /** Ask the user in the agent bar; false when they decline or the run ends first. */
-export function askUser(question: Question, signal?: AbortSignal): Promise<Answer> {
+export function askUser(question: Question, signal?: AbortSignal, always = false): Promise<Answer> {
   return new Promise((resolve) => {
     const id = nextQuestion++;
     const finish = (answer: Answer) => {
@@ -116,7 +117,7 @@ export function askUser(question: Question, signal?: AbortSignal): Promise<Answe
     const current = useBrowserAgentStore.getState().question;
     if (current) answers.get(current.id)?.(false);
     answers.set(id, finish);
-    useBrowserAgentStore.setState({ question: { ...question, id } });
+    useBrowserAgentStore.setState({ question: { ...question, id, always } });
   });
 }
 

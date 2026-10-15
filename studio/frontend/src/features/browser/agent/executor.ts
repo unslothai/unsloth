@@ -400,11 +400,11 @@ async function untilFilled(tab: BrowserTab, since: number, signal?: AbortSignal)
   return (await waitOnPage(tab.id, (now) => currentEntry(now) !== entry, since, FILL_QUIET_MAX_MS, signal, FILL_IDLE_QUIET_MS)) === "loading";
 }
 
-async function pass(gate: Gate, signal?: AbortSignal): Promise<string | null> {
+async function pass(gate: Gate, signal?: AbortSignal, remember = true): Promise<string | null> {
   if (gate.kind === "allow") return null;
   if (gate.kind === "block") return `Not done: ${gate.reason}.`;
   const { ask, host, name, detail } = gate;
-  const allowed = await askInPanel({ ask, host, name, detail }, signal);
+  const allowed = await askInPanel({ ask, host, name, detail }, signal, remember);
   // Not gate.prompt: it quotes the page's label, and errors reach the model outside the fence.
   return allowed ? null : `The user declined ${DECLINED[ask]} on ${host || "this page"}. Do something else, or ask them.`;
 }
@@ -420,17 +420,17 @@ const DECLINED: Record<Question["ask"], string> = {
 };
 
 /** Questions show in the panel's agent bar, so the panel has to be on screen to ask. A script is asked every time. */
-async function askInPanel(question: Question, signal?: AbortSignal): Promise<Answer> {
+async function askInPanel(question: Question, signal?: AbortSignal, remember = true): Promise<Answer> {
   // As askUser does: a stopped action isn't answered, even by Always allow.
   if (signal?.aborted) return false;
   // A click is asked about by its label, so Always allow covers that button, not every risky one.
   const key = [question.ask, question.host, question.ask === "click" ? question.name : ""].join("\n");
   // "__default" is a new chat's first turn that hasn't got its id yet, which another new chat can share.
-  const chat = question.ask === "script" || !scope || scope === "__default" ? undefined : scope;
+  const chat = !remember || question.ask === "script" || !scope || scope === "__default" ? undefined : scope;
   if (chat && alwaysAllowed.get(chat)?.has(key)) return "always";
   const store = useBrowserStore.getState();
   if (!store.open) store.openPanel();
-  const answer = await askUser(question, signal);
+  const answer = await askUser(question, signal, Boolean(chat));
   if (answer === "always" && chat) alwaysAllowed.set(chat, (alwaysAllowed.get(chat) ?? new Set()).add(key));
   return answer;
 }
@@ -567,7 +567,8 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
     } else if (nativeMove) {
       // History from before this chat, or from the user browsing in the tab: where it leads is unknown.
       const where = action.op === "back" ? "the previous page" : "the next page";
-      const refused = await pass({ kind: "ask", ask: "open", host: where, name: "", detail: "", prompt: `Open ${where}?` }, signal);
+      // Not kept by Always allow: `where` names no site, so it would answer for wherever a later move leads.
+      const refused = await pass({ kind: "ask", ask: "open", host: where, name: "", detail: "", prompt: `Open ${where}?` }, signal, false);
       if (refused) return { ok: false, error: refused };
     }
     const since = Date.now();

@@ -115,8 +115,63 @@ test("Always allow isn't kept for a new chat's first turn before it has an id", 
   const chat = { runKey: "r", scope: "__default", userText: "open https://shop.example.com/" };
   await runBrowserAction({ id: "e0", sessionId: "s", op: "navigate", url: "https://shop.example.com/", direction: "down", policy }, chat);
   const click = (id: string) => runBrowserAction({ id, sessionId: "s", op: "click", x: 40, y: 20, direction: "down", policy }, chat);
-  assert.equal(await askedBy(click("e1"), (id) => answerQuestion(id, true, true)), "click");
+  let offered: boolean | undefined;
+  assert.equal(await askedBy(click("e1"), (id) => {
+    offered = useBrowserAgentStore.getState().question?.always;
+    answerQuestion(id, true, true);
+  }), "click");
+  assert.equal(offered, false, "Always allow offered where it can't be kept");
   assert.equal(await askedBy(click("e2"), (id) => answerQuestion(id, true)), "click");
+});
+
+test("Always allow isn't kept for a native Back whose destination is unknown", async () => {
+  globals.__authFetch = async () => new Response(null, { status: 200 });
+  const page = async (_tabId: string, op: Record<string, unknown>) => {
+    if (op.op === "status") return { installed: true, result: { ok: true, quietMs: 1000, doc: "r1" } };
+    return { installed: true, result: { ok: true, text: "page", links: [] } };
+  };
+  globals.__frameAgent = page;
+  const chat = { runKey: "r", scope: "chat-g", userText: "open https://shop.example.com/" };
+  await runBrowserAction({ id: "g0", sessionId: "s", op: "navigate", url: "https://shop.example.com/", direction: "down", policy }, chat);
+  const tabId = useBrowserAgentStore.getState().tabId ?? "";
+  globals.__nativeView = async (_cmd: string, args: { command: { op: Record<string, unknown> } }) => page(tabId, args.command.op);
+  try {
+    const back = (id: string) => {
+      // History from before this chat: the view can go back, but not where to.
+      useBrowserStore.getState().updateTab(tabId, { nativeHistory: { back: true, forward: false } });
+      return runBrowserAction({ id, sessionId: "s", op: "back", direction: "down", policy }, chat);
+    };
+    let offered: boolean | undefined;
+    assert.equal(await askedBy(back("g1"), (id) => {
+      offered = useBrowserAgentStore.getState().question?.always;
+      answerQuestion(id, true, true);
+    }), "open");
+    assert.equal(offered, false);
+    // Another chat in between: the trail starts over, so the next Back is unnamed again.
+    await runBrowserAction({ id: "g2", sessionId: "s", op: "navigate", url: "https://shop.example.com/", direction: "down", policy }, { ...chat, scope: "chat-x" });
+    await runBrowserAction({ id: "g3", sessionId: "s", op: "navigate", url: "https://shop.example.com/", direction: "down", policy }, chat);
+    assert.equal(await askedBy(back("g4"), (id) => answerQuestion(id, false)), "open", "an unnamed Back reused Always allow");
+  } finally {
+    delete globals.__nativeView;
+  }
+});
+
+test("Always allow is offered for a click in a chat with an id", async () => {
+  globals.__authFetch = async () => new Response(null, { status: 200 });
+  globals.__frameAgent = async (_tabId: string, op: Record<string, unknown>) => {
+    if (op.op === "status") return { installed: true, result: { ok: true, quietMs: 1000, doc: "r1" } };
+    if (op.op === "describe") return { installed: true, result: { ok: true, info: buy, hit: "r5", sig: "s" } };
+    return { installed: true, result: { ok: true, text: "page", links: [] } };
+  };
+  const chat = { runKey: "r", scope: "chat-h", userText: "open https://shop.example.com/" };
+  await runBrowserAction({ id: "h0", sessionId: "s", op: "navigate", url: "https://shop.example.com/", direction: "down", policy }, chat);
+  let offered: boolean | undefined;
+  const click = runBrowserAction({ id: "h1", sessionId: "s", op: "click", x: 40, y: 20, direction: "down", policy }, chat);
+  assert.equal(await askedBy(click, (id) => {
+    offered = useBrowserAgentStore.getState().question?.always;
+    answerQuestion(id, false);
+  }), "click");
+  assert.equal(offered, true);
 });
 
 test("Always allow doesn't answer for an action that was stopped", async () => {

@@ -42,11 +42,11 @@ export function AgentBar({ activeTabId }: { activeTabId: string | null }) {
             <Button type="button" size="xs" variant="ghost" onClick={() => answerQuestion(question.id, false)}>
               {t("browser.agent.deny")}
             </Button>
-            {script ? null : (
+            {question.always ? (
               <Button type="button" size="xs" variant="outline" onClick={() => answerQuestion(question.id, true, true)}>
                 {t("browser.agentSettings.alwaysAllow")}
               </Button>
-            )}
+            ) : null}
             <Button
               type="button"
               size="xs"
