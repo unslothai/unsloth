@@ -39,7 +39,6 @@ _ROTATE_METHODS = ("allgather", "alltoall")
 
 def _torch_supports_context_parallel() -> bool:
     from packaging.version import Version
-
     return context_parallel is not None and Version(
         Version(torch.__version__).base_version
     ) >= Version("2.7.0")
@@ -54,7 +53,6 @@ def _ring_sdpa_backends():
     op = getattr(torch.ops.aten, "_scaled_dot_product_cudnn_attention", None)
     if cudnn is not None and op is not None:
         import importlib
-
         for name in (
             "torch.distributed.tensor.experimental._context_parallel._attention",
             "torch.distributed.tensor.experimental._attention",
@@ -148,7 +146,6 @@ def get_cp_manager() -> Optional["ContextParallelManager"]:
 
 def _supports_context_parallel(model) -> bool:
     from .models.llama import LlamaAttention_fast_forward
-
     forwards = [
         getattr(type(module).forward, "__func__", type(module).forward)
         for name, module in model.named_modules()
@@ -241,7 +238,6 @@ class ContextParallelManager:
         if inputs.get("shift_labels") is None and labels is not None:
             # Shard-local labels cannot see document starts on another shard: mask them here.
             from .utils.packing import mask_packed_boundary_labels
-
             labels = mask_packed_boundary_labels(labels, packed_seq_lengths)
             inputs["shift_labels"] = F.pad(labels, (0, 1), value = -100)[:, 1:].contiguous()
         pad = (-seq_len) % (self.size if ulysses else 2 * self.size)
@@ -312,14 +308,18 @@ class ContextParallelManager:
         raised = False
         try:
             with (
-                sdpa_kernel(ring_backends)
-                if ring_backends is not None
-                else contextlib.nullcontext()
-            ), self._rotate_method_scope(), context_parallel(
-                self.mesh,
-                buffers = buffers,
-                buffer_seq_dims = [1] * len(buffers),
-                no_restore_buffers = set(buffers),
+                (
+                    sdpa_kernel(ring_backends)
+                    if ring_backends is not None
+                    else contextlib.nullcontext()
+                ),
+                self._rotate_method_scope(),
+                context_parallel(
+                    self.mesh,
+                    buffers = buffers,
+                    buffer_seq_dims = [1] * len(buffers),
+                    no_restore_buffers = set(buffers),
+                ),
             ):
                 yield
         except BaseException:
@@ -371,10 +371,7 @@ def _check_fsdp2_parallelism_config(accelerator) -> None:
     pc = getattr(getattr(accelerator, "state", None), "parallelism_config", None)
     if pc is None:
         return
-    others = {
-        name: getattr(pc, f"{name}_size", 1) or 1
-        for name in ("dp_replicate", "tp", "sp")
-    }
+    others = {name: getattr(pc, f"{name}_size", 1) or 1 for name in ("dp_replicate", "tp", "sp")}
     others = {name: n for name, n in others.items() if n > 1}
     if others:
         raise NotImplementedError(

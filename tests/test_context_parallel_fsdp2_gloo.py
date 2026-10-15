@@ -139,7 +139,12 @@ def _worker(rank, port, out_dir):
         result["param_mesh"] = next(model.parameters()).device_mesh.mesh.tolist()
 
         class Trainer:
-            def training_step(self, model, inputs, num_items_in_batch = None):
+            def training_step(
+                self,
+                model,
+                inputs,
+                num_items_in_batch = None,
+            ):
                 logits = model(inputs["input_ids"]).float()
                 loss = torch.nn.functional.cross_entropy(
                     logits.reshape(-1, VOCAB),
@@ -162,7 +167,10 @@ def _worker(rank, port, out_dir):
         # transformers sums the pre-shard counts over every rank (cp peers count the same row twice).
         count = (labels[dp_index, 1:] != -100).sum().reshape(1)
         dist.all_reduce(count)
-        inputs = {"input_ids": ids[dp_index : dp_index + 1], "labels": labels[dp_index : dp_index + 1]}
+        inputs = {
+            "input_ids": ids[dp_index : dp_index + 1],
+            "labels": labels[dp_index : dp_index + 1],
+        }
         trainer.training_step(model, inputs, count.clone())
         result["local_tokens"] = int(inputs["input_ids"].shape[1])
 

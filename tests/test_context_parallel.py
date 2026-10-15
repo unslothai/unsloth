@@ -420,7 +420,6 @@ def test_deepspeed_and_fsdp1_are_refused(monkeypatch, distributed_type, fsdp_ver
 
 def _fsdp2_accelerator(parallelism_config = None):
     import types
-
     return types.SimpleNamespace(
         distributed_type = types.SimpleNamespace(name = "FSDP"),
         state = types.SimpleNamespace(
@@ -786,16 +785,24 @@ def test_cp_dtensor_dispatcher_is_torn_down_when_the_step_raises(monkeypatch):
     assert dispatcher._custom_op_handlers is original and unregistered == [1]
 
 
-
-
-def _gated_trainer(monkeypatch, model = None, accelerator = None, **args_overrides):
+def _gated_trainer(
+    monkeypatch,
+    model = None,
+    accelerator = None,
+    **args_overrides,
+):
     """A trainer that clears every CP gate, with the manager stubbed (no process group)."""
     import types
 
     _cp_env(monkeypatch)
     built = []
 
-    def manager(size, backend = "ring", rotate_method = "allgather", fsdp2 = False):
+    def manager(
+        size,
+        backend = "ring",
+        rotate_method = "allgather",
+        fsdp2 = False,
+    ):
         built.append((size, backend, rotate_method) + (("fsdp2",) if fsdp2 else ()))
         return types.SimpleNamespace(
             size = size,
@@ -855,9 +862,7 @@ def test_cp_option_defaults_and_size_one():
     import types
 
     assert cp.context_parallel_options(None) == (1, "ring", "allgather")
-    config = types.SimpleNamespace(
-        context_parallel_size = 1, context_parallel_backend = "ulysses"
-    )
+    config = types.SimpleNamespace(context_parallel_size = 1, context_parallel_backend = "ulysses")
     assert cp.context_parallel_options(config) == (1, "ulysses", "allgather")
     config = types.SimpleNamespace(
         context_parallel_size = 4, context_parallel_rotate_method = "alltoall"
@@ -995,7 +1000,11 @@ def test_ring_pins_sdpa_to_kernels_the_dispatcher_rings(monkeypatch, raises):
     with contextlib.suppress(RuntimeError):
         with manager.apply({"input_ids": torch.ones(1, 4, dtype = torch.long)}):
             seen.append(
-                (cuda.flash_sdp_enabled(), cuda.mem_efficient_sdp_enabled(), cuda.math_sdp_enabled())
+                (
+                    cuda.flash_sdp_enabled(),
+                    cuda.mem_efficient_sdp_enabled(),
+                    cuda.math_sdp_enabled(),
+                )
             )
             if raises:
                 raise RuntimeError("boom")
@@ -1022,7 +1031,6 @@ def test_cudnn_is_pinned_only_where_the_ring_handles_it():
 
 def test_unsloth_training_arguments_keep_the_cp_options():
     from unsloth.trainer import UnslothTrainingArguments
-
     args = UnslothTrainingArguments(
         output_dir = "unused",
         context_parallel_size = 2,
@@ -1147,7 +1155,10 @@ def test_ulysses_refuses_packed_lengths_longer_than_the_row():
 
 
 def test_ring_refuses_packed_batches():
-    inputs = {"input_ids": torch.ones(1, 4, dtype = torch.long), "packed_seq_lengths": torch.tensor([4])}
+    inputs = {
+        "input_ids": torch.ones(1, 4, dtype = torch.long),
+        "packed_seq_lengths": torch.tensor([4]),
+    }
     manager = _manager()
     manager.backend = "ring"
     with pytest.raises(ValueError, match = "ring context parallelism does not support packing"):
@@ -1227,7 +1238,6 @@ def test_only_ring_needs_sm80(monkeypatch, backend):
     else:
         Trainer()
         assert built == [(2, "ulysses", "allgather")]
-
 
 
 @pytest.mark.parametrize("fsdp2", [False, True])
