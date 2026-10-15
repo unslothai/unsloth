@@ -198,6 +198,7 @@ def _nvfp4_weight_tile(
     SCALE_E4M3_BYTES: tl.constexpr,
     OUT_DTYPE: tl.constexpr,
     INT64_OFFSETS: tl.constexpr,
+    MASK_PAD: tl.constexpr,
 ):
     # Rounded like dense: E2M1 * (block scale / global scale) in fp32, then one cast; out-of-range decodes to 0.
     c = k0 // 2 + tl.arange(0, BLOCK_K // 2)
@@ -213,8 +214,7 @@ def _nvfp4_weight_tile(
     ).to(tl.int32)
     scale = tl.load(
         scale_ptr + rows[:, None] * stride_sr + g[None, :] * stride_sc,
-        # Scales past the logical width (half_cols * 2 // 16 groups) are ignored, as dense slices them off.
-        mask = row_ok & (g[None, :] < scale_cols) & (g[None, :] < (half_cols + 7) // 8),
+        mask = row_ok & (g[None, :] < scale_cols),
         other = 0,
     )
     scale = _e4m3_to_float(scale.to(tl.int32)) if SCALE_E4M3_BYTES else scale.to(tl.float32)
@@ -224,8 +224,8 @@ def _nvfp4_weight_tile(
         (BLOCK_R, BLOCK_K // 16, 16),
     )
     w = tl.reshape(values * group_scale[:, :, None], (BLOCK_R, BLOCK_K))
-    # Padding (rows past n_rows, lanes past K) stays 0 even when scaling gives 0 * inf or 0 / 0.
-    w = tl.where(row_ok & ((k0 + tl.arange(0, BLOCK_K))[None, :] < half_cols * 2), w, 0.0)
+    if MASK_PAD:  # a partial tile: padding stays 0 even when scaling gives 0 * inf or 0 / 0
+        w = tl.where(row_ok & ((k0 + tl.arange(0, BLOCK_K))[None, :] < half_cols * 2), w, 0.0)
     return w.to(OUT_DTYPE)
 
 
@@ -257,6 +257,7 @@ def _nvfp4_matmul_fwd_kernel(
     GROUP_M: tl.constexpr,
     SCALE_E4M3_BYTES: tl.constexpr,
     INT64_OFFSETS: tl.constexpr,
+    MASK_PAD: tl.constexpr,
 ):
     # Split K writes fp32 partials [split, M, N], summed in a fixed order afterwards (deterministic).
     pid = tl.program_id(0)
@@ -306,6 +307,7 @@ def _nvfp4_matmul_fwd_kernel(
             SCALE_E4M3_BYTES,
             x_ptr.dtype.element_ty,
             INT64_OFFSETS,
+            MASK_PAD,
         )
         acc = tl.dot(x, tl.trans(w), acc)
     tl.store(
@@ -343,6 +345,7 @@ def _nvfp4_matmul_dx_kernel(
     GROUP_M: tl.constexpr,
     SCALE_E4M3_BYTES: tl.constexpr,
     INT64_OFFSETS: tl.constexpr,
+    MASK_PAD: tl.constexpr,
 ):
     pid = tl.program_id(0)
     split_id = tl.program_id(1)
@@ -391,6 +394,7 @@ def _nvfp4_matmul_dx_kernel(
             SCALE_E4M3_BYTES,
             g_ptr.dtype.element_ty,
             INT64_OFFSETS,
+            MASK_PAD,
         )
         acc = tl.dot(g, w, acc)
     tl.store(
@@ -532,6 +536,11 @@ def _needs_int64(*tensors):
     return max(sum((n - 1) * abs(st) for n, st in zip(t.shape, t.stride())) for t in tensors) >= 2**31
 
 
+def _scale_groups(packed, scale):
+    # Scales past the logical width are ignored, as dense slices them off.
+    return min(scale.shape[1], -(-packed.shape[1] // 8))
+
+
 def _per_split(k_red, split, block):
     return triton.cdiv(triton.cdiv(k_red, split), block) * block
 
@@ -549,12 +558,12 @@ def _nvfp4_matmul_fwd_fused(X, packed, scale, global_scale):
     with _fp8_triton_device_context(packed):
         _nvfp4_matmul_fwd_kernel[grid](
             X2, packed, scale, global_scale, buf,
-            M, N, K, packed.shape[1], scale.shape[1],
+            M, N, K, packed.shape[1], _scale_groups(packed, scale),
             X2.stride(0), X2.stride(1), packed.stride(0), packed.stride(1),
             scale.stride(0), scale.stride(1), buf.stride(-2), buf.stride(-1), stride_s,
             _per_split(K, split, BK),
             BLOCK_M = BM, BLOCK_N = BN, BLOCK_K = BK, GROUP_M = 8,
-            SCALE_E4M3_BYTES = e4m3, INT64_OFFSETS = int64,
+            SCALE_E4M3_BYTES = e4m3, INT64_OFFSETS = int64, MASK_PAD = N % BN != 0 or K % BK != 0,
             num_warps = warps, num_stages = stages, enable_fp_fusion = True,
         )  # fmt: skip
         Y = _split_sum(buf, Y)
@@ -575,12 +584,12 @@ def _nvfp4_matmul_dx_fused(grad, packed, scale, global_scale):
     with _fp8_triton_device_context(packed):
         _nvfp4_matmul_dx_kernel[grid](
             G, packed, scale, global_scale, buf,
-            M, N, K, packed.shape[1], scale.shape[1],
+            M, N, K, packed.shape[1], _scale_groups(packed, scale),
             G.stride(0), G.stride(1), packed.stride(0), packed.stride(1),
             scale.stride(0), scale.stride(1), buf.stride(-2), buf.stride(-1), stride_s,
             _per_split(N, split, BN),
             BLOCK_M = BM, BLOCK_N = BN, BLOCK_K = BK, GROUP_M = 8,
-            SCALE_E4M3_BYTES = e4m3, INT64_OFFSETS = int64,
+            SCALE_E4M3_BYTES = e4m3, INT64_OFFSETS = int64, MASK_PAD = N % BN != 0 or K % BK != 0,
             num_warps = warps, num_stages = stages, enable_fp_fusion = True,
         )  # fmt: skip
         dX = _split_sum(buf, dX)
