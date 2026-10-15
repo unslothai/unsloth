@@ -3637,7 +3637,14 @@ def _runtime_gfx_target(
         if gfx_devices
         else None
     )
-    _strix_first = runtime_gfx in _STRIX_APU_GFX
+    # Strix defers only where the discrete card's wheel can be installed and will run: a readable
+    # ROCm version (the versionless path has no generic tag for it) and no HSA override (which
+    # spoofs every agent, the dGPU included). Otherwise it keeps its own per-arch index, as before.
+    _strix_first = (
+        runtime_gfx in _STRIX_APU_GFX
+        and _detect_rocm_version() is not None
+        and _hsa_override_gfx_arch(os.environ.get("HSA_OVERRIDE_GFX_VERSION")) is None
+    )
     if (runtime_gfx in _SHADOWING_INTEGRATED_GFX or _strix_first) and not _visible_devices_pinned():
         # Unpinned mixed host: only enumeration order put the integrated GPU first, and the
         # wheel family is picked for ONE arch, so letting the APU decide strands the discrete
@@ -6609,8 +6616,18 @@ def _ensure_rocm_torch() -> "bool | None":
         # This branch installs for the inferred arch without asking the mask layers, so an
         # ordinal the guess cannot account for reaches the wheel the preflight already
         # declines. An explicit arch is exempt above, and no ordinal contradicts it.
-        and (_gfx_override_env or _runtime_gfx_target(_inferred_linux_gfx)[0] is not None)
+        and (
+            _gfx_override_env
+            or (_inferred_target := _runtime_gfx_target(_inferred_linux_gfx)[0]) is not None
+        )
     ):
+        # The discrete card a leading Strix deferred to, when it has an index of its own.
+        if (
+            not _gfx_override_env
+            and _inferred_target != _inferred_linux_gfx
+            and _amd_arch_index_url(_inferred_target) is not None
+        ):
+            _inferred_linux_gfx = _inferred_target
         index_url = _amd_arch_index_url(_inferred_linux_gfx)
         if index_url is not None:
             # The bare arch _amd_arch_index_url resolved the URL from: stripping the suffix there is

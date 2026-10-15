@@ -4751,6 +4751,11 @@ _amd_prefer_discrete_gfx() {
     case "${3:-}:$_apdg_sel" in
         torch:gfx1150|torch:gfx1151|torch:gfx1152) _apdg_strix=1 ;;
     esac
+    # A readable HSA override spoofs every agent, the dGPU included: keep the Strix wheels.
+    if [ -n "$_apdg_strix" ] && [ -n "${HSA_OVERRIDE_GFX_VERSION:-}" ] && \
+       [ -n "$(_hsa_override_gfx_arch "$HSA_OVERRIDE_GFX_VERSION" 2>/dev/null)" ]; then
+        _apdg_strix=""
+    fi
     if [ -z "$_apdg_strix" ] && ! _amd_gfx_is_shadowing_integrated "$_apdg_sel"; then
         printf '%s' "$_apdg_sel"
         return 0
@@ -7187,6 +7192,8 @@ case "$_torch_index_leaf" in
                 case "$_gfx_igpu" in
                     gfx1150|gfx1151|gfx1152)
                         if [ "$_runtime_gfx" != "$_gfx_igpu" ]; then
+                            # Set by the Strix's own Radeon name; the generic index picked above decides.
+                            _amd_gpu_radeon=false
                             echo "" >&2
                             echo "  [WARN] Multiple AMD GPUs detected; installing torch for $_runtime_gfx instead of the" >&2
                             echo "  [WARN] integrated $_gfx_igpu, whose arch-specific wheels carry no $_runtime_gfx kernels." >&2
@@ -7562,6 +7569,11 @@ elif _has_amd_rocm_gpu; then
     _amd_unsup_read=""
     if [ "$_torch_index_pinned" != true ]; then
         _amd_unsup_read=$(_probe_amd_gfx_arch 2>/dev/null) || _amd_unsup_read=""
+        # Runtime-less gfx1153 is only inferable, as in get_torch_index_url's CPU warning.
+        if [ -z "$_amd_unsup_read" ] && \
+           [ "$(_infer_linux_amd_gfx_arch 2>/dev/null || true)" = gfx1153 ]; then
+            _amd_unsup_read=gfx1153
+        fi
         _amd_hsa_gfx=$(_hsa_override_gfx_arch "${HSA_OVERRIDE_GFX_VERSION:-}" 2>/dev/null) || _amd_hsa_gfx=""
         [ -n "$_amd_hsa_gfx" ] && [ -z "${UNSLOTH_ROCM_GFX_ARCH:-}" ] && _amd_unsup_read="$_amd_hsa_gfx"
         _amd_unsup_read=$(printf '%s\n' "$_amd_unsup_read" | sed 's/:.*$//' | tr '[:upper:]' '[:lower:]' \

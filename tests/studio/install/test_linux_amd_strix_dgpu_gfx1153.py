@@ -283,3 +283,93 @@ def test_install_sh_inferred_gfx1153_warns_and_takes_cpu(monkeypatch):
     url, err = guards._run_sh_get_torch_index_url("gfx1153")
     assert url.endswith("/cpu"), (url, err)
     assert "AMD GPU detected (gfx1153) -- Unsloth has no ROCm PyTorch wheels" in err, err
+
+
+# ── Strix deferral only where the discrete wheel installs and runs ─────────
+
+
+def test_python_strix_keeps_its_index_when_the_rocm_version_is_unreadable():
+    # Versionless: no generic tag can serve the dGPU, so the Strix route main installed stays.
+    calls = routing._run_install(gfx_devices = ("gfx1151", "gfx1100"), rocm_version = None)
+    assert _STRIX_INDEX in calls, calls
+
+
+@pytest.mark.parametrize("devices", [("gfx1151", "gfx1100"), ("gfx1151", "gfx1201")])
+def test_python_strix_keeps_its_index_under_an_hsa_override(devices):
+    # The override spoofs every agent, the dGPU included, so dGPU wheels would never load.
+    calls = routing._run_install(
+        gfx_devices = devices, rocm_version = (7, 1), env = {"HSA_OVERRIDE_GFX_VERSION": "11.5.1"}
+    )
+    assert "gfx120X-all" not in calls and "whl/rocm7.1" not in calls, calls
+
+
+def test_python_inferred_install_uses_the_deferred_discrete_card():
+    calls = routing._run_install(
+        gfx_devices = ("gfx1151", "gfx1201"),
+        inferred = "gfx1151",
+        rocm_version = (7, 1),
+        rocm_gpu_visible = False,
+    )
+    assert "repo.amd.com/rocm/whl/gfx120X-all" in calls and _STRIX_INDEX not in calls, calls
+
+
+@_POSIX
+@pytest.mark.parametrize("hsa,expected", [("", "gfx1201"), ("11.5.1", "gfx1151")])
+def test_install_sh_strix_keeps_its_index_under_an_hsa_override(hsa, expected):
+    source = _INSTALL_SH.read_text(encoding = "utf-8")
+    script = (
+        rocm_support._gpu_record_helpers(source)
+        + "\nunset HIP_VISIBLE_DEVICES ROCR_VISIBLE_DEVICES CUDA_VISIBLE_DEVICES\n"
+        + (f"export HSA_OVERRIDE_GFX_VERSION={hsa}\n" if hsa else "unset HSA_OVERRIDE_GFX_VERSION\n")
+        + "_amd_prefer_discrete_gfx \"$(printf 'gfx1151\\ngfx1201')\" gfx1151 torch\n"
+    )
+    out = subprocess.run(["bash", "-c", script], capture_output = True, text = True, timeout = 60)
+    assert out.stdout.strip() == expected, out
+
+
+@_POSIX
+def test_install_sh_strix_handoff_clears_the_radeon_downloader():
+    # rocminfo's "Radeon 8060S" set the flag; the dGPU's generic index must not be overridden.
+    source = _INSTALL_SH.read_text(encoding = "utf-8")
+    start = source.find('case "$_torch_index_leaf" in\n    rocm[0-9]*)')
+    end = source.find("\nfi  # _torch_index_pinned guard", start)
+    script = (
+        "set -euo pipefail\n"
+        + rocm_support._extract_sh_function_body(source, "_rocm_leaf_below")
+        + "\n"
+        + rocm_support._gpu_record_helpers(source)
+        + "\n"
+        + 'TORCH_INDEX_URL="https://download.pytorch.org/whl/rocm7.1"\n'
+        + '_torch_index_leaf="rocm7.1"\n'
+        + "_torch_index_pinned=false\nSKIP_TORCH=false\n_amd_gpu_radeon=true\n"
+        + "_gfx_rocm64_target=false\n"
+        + "unset HSA_OVERRIDE_GFX_VERSION HIP_VISIBLE_DEVICES ROCR_VISIBLE_DEVICES\n"
+        + "unset CUDA_VISIBLE_DEVICES UNSLOTH_ROCM_GFX_ARCH UNSLOTH_PYTORCH_MIRROR\n"
+        + "unset UNSLOTH_AMD_ROCM_MIRROR\n"
+        + "rocminfo() { printf 'Name: gfx1151\\nName: gfx1030\\n'; }\n"
+        + source[start:end]
+        + '\nprintf "RADEON:%s\\n" "$_amd_gpu_radeon"\n'
+    )
+    out = subprocess.run(["bash", "-c", script], capture_output = True, text = True, timeout = 60)
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip().rsplit("RADEON:", 1)[-1] == "false", out.stdout
+
+
+@_POSIX
+def test_install_sh_final_summary_keeps_the_inferred_gfx1153():
+    source = _INSTALL_SH.read_text(encoding = "utf-8")
+    start = source.find("elif _has_amd_rocm_gpu; then\n    # The arch read fine")
+    end = source.find('elif [ "$_torch_index_leaf" = xpu ]; then', start)
+    assert start >= 0 and end >= 0
+    script = (
+        rocm_support._extract_sh_function_body(source, "_hsa_override_gfx_arch")
+        + "\nstep() { printf 'STEP:%s\\n' \"$2\"; }\n"
+        + "_has_amd_rocm_gpu() { return 0; }\n_probe_amd_gfx_arch() { :; }\n"
+        + "_infer_linux_amd_gfx_arch() { echo gfx1153; }\n"
+        + "_torch_index_pinned=false\nunset HSA_OVERRIDE_GFX_VERSION UNSLOTH_ROCM_GFX_ARCH\n"
+        + "if false; then :\n"
+        + source[start:end]
+        + "fi\n"
+    )
+    out = subprocess.run(["bash", "-c", script], capture_output = True, text = True, timeout = 60)
+    assert "AMD GPU (gfx1153, no ROCm PyTorch wheels -- CPU fallback)" in out.stdout, out
