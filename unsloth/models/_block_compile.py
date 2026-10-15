@@ -621,6 +621,8 @@ def _wrap(cls, compile_options):
             or not _enabled()
         ):
             return original(self, hidden_states, *args, **kwargs)
+        if not self.__dict__.get("_unsloth_block_moe_done", False):
+            _experts_outside(self)
         if _GDN_OP[0] is None and hasattr(self, "linear_attn"):
             _prepare_gdn(self, hidden_states)
         if hidden_states.dim() == 3 and hidden_states.shape[1] > 1:
@@ -695,6 +697,50 @@ def _torch_supported():
     # 36-69 graphs and QLoRA grads moved 5.4% vs the stock forward; 2.7.1 matched exactly.
     from packaging.version import Version
     return Version(torch.__version__.split("+")[0]) >= Version("2.7")
+
+
+def _experts_of(module):
+    while module is not None:
+        if type(module).__name__.endswith("Experts"):
+            return module
+        module = getattr(module, "base_layer", None)
+    return None
+
+
+def _lora_would_fold(experts):
+    # Traced, zoo's MoE LoRA cannot measure whether the experts forward reads its LoRA stash; it
+    # asks the bytecode, and a forward that does not read it gets the LoRA delta folded into every
+    # expert's weights on every call (baddbmm + bmm over the whole stack).
+    try:
+        from unsloth_zoo.temporary_patches import moe_utils as zoo_moe
+        reads = zoo_moe._forward_statically_reads_stash(experts)
+        if not reads and zoo_moe._interface_route_reads_stash(experts):
+            reads = True
+    except Exception:
+        return False
+    return reads is False
+
+
+def _experts_outside(layer):
+    # gemma-4-26B-A4B bf16 LoRA, A100-80GB: 875 ms/step stock, 950 with the experts traced inside
+    # each block (LoRA folded), 631 with them outside (one break each). Where the stash is read
+    # (Qwen3.6-35B-A3B bf16: 516 -> 465 ms inside) the experts stay in the block.
+    # Runs at the layer's first call, after get_peft_model has wrapped the experts.
+    layer.__dict__["_unsloth_block_moe_done"] = True
+    mode = os.environ.get("UNSLOTH_BLOCK_MOE", "auto")
+    if mode == "inside":
+        return
+    for _, module in layer.named_modules():
+        if getattr(module, "_unsloth_block_outside", False):
+            continue
+        experts = _experts_of(module)
+        if experts is None:  # named_modules() is pre-order: the outermost wrapper comes first
+            continue
+        if mode != "outside" and not _lora_would_fold(experts):
+            continue
+        module.forward = torch.compiler.disable(module.forward)
+        for inner in module.modules():
+            inner._unsloth_block_outside = True
 
 
 def patch_block_compile(model):

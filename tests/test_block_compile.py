@@ -410,3 +410,51 @@ def test_disable_unless_decode_keeps_original_traceable_on_old_torch(monkeypatch
     assert disabled_copy is not attention and disabled_copy.__code__ is not attention.__code__
     assert disabled_copy(1) == attention(1) == 2
     assert torch.compiler.disable is old_disable
+
+
+def test_moe_experts_run_outside_the_block(monkeypatch):
+    M = _load()
+
+    class ToyExperts(torch.nn.Module):
+        def forward(self, x):
+            return x * 2
+
+    class LoraWrapper(torch.nn.Module):  # PEFT-style wrapper around the experts
+        def __init__(self):
+            super().__init__()
+            self.base_layer = ToyExperts()
+
+        def forward(self, x):
+            return self.base_layer(x) + 1
+
+    layer = torch.nn.Module()
+    layer.mlp = torch.nn.Module()
+    layer.mlp.experts = LoraWrapper()
+    layer.self_attn = torch.nn.Linear(4, 4)
+    monkeypatch.setattr(M, "_lora_would_fold", lambda experts: True)
+    M._experts_outside(layer)
+    outer = layer.mlp.experts
+    assert (
+        outer.forward.__func__ is not LoraWrapper.forward
+        if hasattr(outer.forward, "__func__")
+        else True
+    )
+    assert outer._unsloth_block_outside and outer.base_layer._unsloth_block_outside
+    assert not getattr(layer.self_attn, "_unsloth_block_outside", False)
+    from torch._dynamo.utils import counters
+
+    counters.clear()
+    out = torch.compile(lambda x: layer.mlp.experts(x) * 3, backend = "eager")(torch.ones(2))
+    assert out.tolist() == [9.0, 9.0] and sum(counters["graph_break"].values()) >= 1
+    # A stash-reading experts forward (no fold) stays inside; so does everything under "inside".
+    monkeypatch.setattr(M, "_lora_would_fold", lambda experts: False)
+    other = torch.nn.Module()
+    other.experts = LoraWrapper()
+    M._experts_outside(other)
+    assert not getattr(other.experts, "_unsloth_block_outside", False)
+    monkeypatch.setattr(M, "_lora_would_fold", lambda experts: True)
+    monkeypatch.setenv("UNSLOTH_BLOCK_MOE", "inside")
+    third = torch.nn.Module()
+    third.experts = LoraWrapper()
+    M._experts_outside(third)
+    assert not getattr(third.experts, "_unsloth_block_outside", False)
