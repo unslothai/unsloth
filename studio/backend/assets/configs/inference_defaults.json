@@ -306,6 +306,13 @@
       "min_p": 0.01,
       "repetition_penalty": 1.0
     },
+    "nemotron-3.5": {
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "top_k": -1,
+      "min_p": 0.01,
+      "repetition_penalty": 1.0
+    },
     "nemotron": {
       "temperature": 1.0,
       "top_p": 1.0,
@@ -441,7 +448,7 @@
     "devstral", "pixtral",
     "deepseek-v4", "deepseek-r1", "deepseek-v3", "deepseek-ocr",
     "glm-5", "glm-4",
-    "nemotron",
+    "nemotron-3.5", "nemotron",
     "minimax-m2.7", "minimax-m2.5", "minimax",
     "gpt-oss", "granite-4",
     "kimi-k3", "kimi-k2", "kimi",

@@ -160,8 +160,11 @@ export const BUDGET = {
   // raw / 83 B transfer to the eager settings and English locale chunks (6,780,553 -> 6,780,901 B raw,
   // 2,038,848 -> 2,038,931 B transfer against 9f5b133254, one machine and build, Node 24, chunk count unchanged
   // at 95). Raised by that growth.
-  transferBytes: 2_039_292,
-  rawBytes: 6_782_356,
+  // Drafter training in the Train tab adds about 4.9 KB raw / 1.4 KB transfer (6,628.3 KB raw, 1,992.9 KB transfer
+  // measured against cd424654a, one machine and build, 95 chunks): its persisted training-store fields, their
+  // migration and the en strings hydrate at startup; the section itself is not in the startup set.
+  transferBytes: 2_041_000,
+  rawBytes: 6_787_500,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
