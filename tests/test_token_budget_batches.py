@@ -159,9 +159,12 @@ class _TinyLM(torch.nn.Module):
         logits = self.head(torch.tanh(self.emb(batch["input_ids"])))
         shift_logits = logits[:, :-1].reshape(-1, 32)
         shift_labels = batch["labels"][:, 1:].reshape(-1)
-        return torch.nn.functional.cross_entropy(
-            shift_logits, shift_labels, ignore_index = -100, reduction = "sum"
-        ) / num_items
+        return (
+            torch.nn.functional.cross_entropy(
+                shift_logits, shift_labels, ignore_index = -100, reduction = "sum"
+            )
+            / num_items
+        )
 
 
 def _grads(model, batches, num_items):
@@ -238,7 +241,11 @@ class _FakeAccelerator:
 def _fake_trainer():
     seen = []
 
-    def training_step(model, inputs, num_items_in_batch = None):
+    def training_step(
+        model,
+        inputs,
+        num_items_in_batch = None,
+    ):
         seen.append((inputs["input_ids"].shape[1], num_items_in_batch))
         return torch.tensor(float(inputs["input_ids"].shape[1]) / num_items_in_batch)
 
@@ -302,7 +309,9 @@ def test_balanced_dataloader_end_to_end_with_accelerate_shards(monkeypatch):
         trainer = SimpleNamespace(
             training_step = None,
             get_train_dataloader = lambda: loader,
-            args = SimpleNamespace(gradient_accumulation_steps = ga, average_tokens_across_devices = True),
+            args = SimpleNamespace(
+                gradient_accumulation_steps = ga, average_tokens_across_devices = True
+            ),
             model_accepts_loss_kwargs = True,
         )
         tb.install_token_budget(trainer)
@@ -315,18 +324,32 @@ def test_balanced_dataloader_end_to_end_with_accelerate_shards(monkeypatch):
     for s in range(steps):
         step_rows = [i for r in range(ws) for b in per_rank[r][s * ga : (s + 1) * ga] for i in b]
         assert sorted(step_rows) == list(range(s * ga * ws * bs, (s + 1) * ga * ws * bs))
-        tokens = [sum(lengths[i] for b in per_rank[r][s * ga : (s + 1) * ga] for i in b) for r in range(ws)]
+        tokens = [
+            sum(lengths[i] for b in per_rank[r][s * ga : (s + 1) * ga] for i in b)
+            for r in range(ws)
+        ]
         assert max(tokens) - min(tokens) <= max(lengths)
 
 
 class _MeanLabelSmoother:
     # transformers < 5 LabelSmoother.__call__ signature: no num_items_in_batch, returns a per-call mean.
-    def __call__(self, model_output, labels, shift_labels = False):
+    def __call__(
+        self,
+        model_output,
+        labels,
+        shift_labels = False,
+    ):
         raise AssertionError("not called")
 
 
 class _CountLabelSmoother:
-    def __call__(self, model_output, labels, shift_labels = False, num_items_in_batch = None):
+    def __call__(
+        self,
+        model_output,
+        labels,
+        shift_labels = False,
+        num_items_in_batch = None,
+    ):
         raise AssertionError("not called")
 
 
@@ -347,7 +370,9 @@ def _moe_model(coef):
         ({"model": _moe_model(0.0)}, True),
     ],
 )
-def test_split_steps_aside_when_chunk_losses_do_not_sum_exactly(monkeypatch, capsys, override, splits):
+def test_split_steps_aside_when_chunk_losses_do_not_sum_exactly(
+    monkeypatch, capsys, override, splits
+):
     monkeypatch.setenv("UNSLOTH_TOKEN_BUDGET", "16")
     monkeypatch.delenv("UNSLOTH_TOKEN_BALANCE", raising = False)
     trainer, seen = _fake_trainer()
@@ -364,7 +389,10 @@ def test_split_steps_aside_when_chunk_losses_do_not_sum_exactly(monkeypatch, cap
 
 
 def test_split_refuses_media_keys_and_per_sample_metadata():
-    rows = {"input_ids": torch.ones(4, 8, dtype = torch.long), "labels": torch.ones(4, 8, dtype = torch.long)}
+    rows = {
+        "input_ids": torch.ones(4, 8, dtype = torch.long),
+        "labels": torch.ones(4, 8, dtype = torch.long),
+    }
     assert len(tb.split_batch_by_token_budget(rows, 8)) == 4
     # Flattened images that happen to total B rows still must not be paired row by row.
     for extra in (
@@ -409,7 +437,9 @@ def _shard_steps(n, bs, ga, ws, balance, **trainer_kwargs):
         per_rank.append(list(shard))
     steps = []
     for s in range(-(-len(per_rank[0]) // ga)):
-        steps.append(sorted(i for r in range(ws) for b in per_rank[r][s * ga : (s + 1) * ga] for i in b))
+        steps.append(
+            sorted(i for r in range(ws) for b in per_rank[r][s * ga : (s + 1) * ga] for i in b)
+        )
     return steps, active
 
 
@@ -426,7 +456,11 @@ def test_balance_keeps_every_step_including_the_even_batches_tail(monkeypatch, n
 
 @pytest.mark.parametrize(
     "override",
-    [{"model_accepts_loss_kwargs": False}, {"label_smoother": _MeanLabelSmoother()}, {"aux_loss_enabled": True}],
+    [
+        {"model_accepts_loss_kwargs": False},
+        {"label_smoother": _MeanLabelSmoother()},
+        {"aux_loss_enabled": True},
+    ],
 )
 def test_balance_steps_aside_when_slot_grouping_changes_the_loss(monkeypatch, capsys, override):
     monkeypatch.setenv("UNSLOTH_TOKEN_BALANCE", "1")
@@ -446,7 +480,9 @@ def test_real_label_smoother_is_classified_by_its_signature():
     uses_count = tb._loss_uses_step_count(trainer)
     if int(transformers.__version__.split(".")[0]) < 5:
         assert not uses_count
-    assert uses_count == ("num_items_in_batch" in __import__("inspect").signature(smoother.__call__).parameters)
+    assert uses_count == (
+        "num_items_in_batch" in __import__("inspect").signature(smoother.__call__).parameters
+    )
 
 
 def test_split_refuses_pairwise_masks():
@@ -460,8 +496,19 @@ class _CountingTensor(torch.Tensor):
     host_reads = 0
 
     @classmethod
-    def __torch_function__(cls, func, types, args = (), kwargs = None):
-        if func in (torch.Tensor.__int__, torch.Tensor.item, torch.Tensor.tolist, torch.Tensor.__bool__):
+    def __torch_function__(
+        cls,
+        func,
+        types,
+        args = (),
+        kwargs = None,
+    ):
+        if func in (
+            torch.Tensor.__int__,
+            torch.Tensor.item,
+            torch.Tensor.tolist,
+            torch.Tensor.__bool__,
+        ):
             cls.host_reads += 1
         return super().__torch_function__(func, types, args, kwargs or {})
 

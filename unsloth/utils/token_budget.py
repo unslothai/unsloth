@@ -32,7 +32,11 @@ _TOKEN_BALANCE_ENV = "UNSLOTH_TOKEN_BALANCE"
 _TOKEN_BUDGET_ENV = "UNSLOTH_TOKEN_BUDGET"
 
 
-def karmarkar_karp(values, k, equal_size = False):
+def karmarkar_karp(
+    values,
+    k,
+    equal_size = False,
+):
     """Split indices of `values` into `k` groups with near-equal sums (largest differencing method).
 
     With `equal_size`, `len(values)` must be a multiple of `k` and every group gets the same count.
@@ -289,9 +293,7 @@ def split_batch_by_token_budget(batch, budget):
         return [batch]
     if not _splittable_keys(batch):
         return [batch]
-    if input_ids.shape[0] == 1 and (
-        "packed_seq_lengths" in batch or "position_ids" in batch
-    ):
+    if input_ids.shape[0] == 1 and ("packed_seq_lengths" in batch or "position_ids" in batch):
         chunks = _split_padding_free(batch, int(budget))
     else:
         chunks = _split_rows(batch, int(budget))
@@ -345,7 +347,10 @@ def _router_aux_loss_active(trainer):
     if hasattr(config, "get_text_config"):
         configs.append(config.get_text_config())
     for cfg in configs:
-        if getattr(cfg, "output_router_logits", False) and getattr(cfg, "router_aux_loss_coef", 1.0) != 0:
+        if (
+            getattr(cfg, "output_router_logits", False)
+            and getattr(cfg, "router_aux_loss_coef", 1.0) != 0
+        ):
             return True
     return False
 
@@ -355,7 +360,9 @@ def _exactness_blocker(trainer):
     if "lomo" in str(getattr(getattr(trainer, "args", None), "optim", "")).lower():
         return "LOMO optimizers update the weights on every backward"
     if not _loss_uses_step_count(trainer):
-        return "the loss is a per-micro-batch mean (no shared num_items_in_batch, or label smoothing)"
+        return (
+            "the loss is a per-micro-batch mean (no shared num_items_in_batch, or label smoothing)"
+        )
     if _router_aux_loss_active(trainer):
         return "the MoE router auxiliary loss is active"
     return None
@@ -395,7 +402,9 @@ def _balance_dataloader(trainer, dataloader):
     sampler = batch_sampler.sampler
     if isinstance(sampler, TokenBalancedSampler):
         return True
-    if not isinstance(sampler, (torch.utils.data.RandomSampler, torch.utils.data.SequentialSampler)):
+    if not isinstance(
+        sampler, (torch.utils.data.RandomSampler, torch.utils.data.SequentialSampler)
+    ):
         # group_by_length / batch_rebalance already pick their own order.
         return False
     lengths = _dataset_lengths(getattr(dataloader, "dataset", None))
@@ -443,7 +452,13 @@ def install_token_budget(trainer):
         original_training_step = trainer.training_step
         trainer._unsloth_token_budget_splits = 0
 
-        def training_step(model, inputs, num_items_in_batch = None, *args, **kwargs):
+        def training_step(
+            model,
+            inputs,
+            num_items_in_batch = None,
+            *args,
+            **kwargs,
+        ):
             accelerator = getattr(trainer, "accelerator", None)
             distributed_type = str(getattr(accelerator, "distributed_type", "NO")).upper()
             # Only None (loss would be a per-chunk mean), plain or DDP: DeepSpeed and FSDP count micro-steps themselves.
