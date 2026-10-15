@@ -549,9 +549,8 @@ elif DEVICE_TYPE == "cuda":
     if "including_emulation" in str(inspect.signature(old_is_bf16_supported)):
 
         def is_bf16_supported(including_emulation = False):
-            return old_is_bf16_supported(including_emulation) and (
-                including_emulation or SUPPORTS_BFLOAT16
-            )
+            supported = old_is_bf16_supported(including_emulation)
+            return supported if including_emulation else (supported and SUPPORTS_BFLOAT16)
 
         torch.cuda.is_bf16_supported = is_bf16_supported
     else:
