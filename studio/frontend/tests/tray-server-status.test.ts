@@ -14,9 +14,7 @@ const MAIN = readText("../../src-tauri/src/main.rs");
 
 /** Module-scope and in-hook functions differ in indent, so match the declaration's own. */
 function hookFunction(hook: string, name: string): string {
-  const declaration = hook.match(
-    new RegExp(`^([ ]*)function ${name}\\(`, "m"),
-  );
+  const declaration = hook.match(new RegExp(`^([ ]*)function ${name}\\(`, "m"));
   if (!declaration || declaration.index === undefined) {
     throw new Error(`${name} is gone from use-tauri-backend.ts`);
   }
@@ -35,7 +33,9 @@ function trayToggleLabel(rust: string): string {
 function enabledStatuses(rust: string): string[] {
   const table = trayToggleLabel(rust);
   const enabled: string[] = [];
-  for (const arm of table.matchAll(/^\s*(.+?)\s*=>\s*\([^)]*,\s*(true|false)\)/gm)) {
+  for (const arm of table.matchAll(
+    /^\s*(.+?)\s*=>\s*\([^)]*,\s*(true|false)\)/gm,
+  )) {
     if (arm[2] !== "true" || arm[1] === "_") continue;
     for (const status of arm[1].matchAll(/"([^"]*)"/g)) enabled.push(status[1]);
   }
@@ -133,11 +133,37 @@ test("an unlisted status falls through rather than going unhandled", async () =>
   }
 });
 
+// The command list passed to .invoke_handler: either written inline, or built inside a
+// closure that gates the caller first (`let handler = tauri::generate_handler![...]`), which
+// is how main.rs registers it since #13717. Read the bracketed list after the first
+// generate_handler! that follows .invoke_handler(, whichever shape wraps it.
+function registeredCommands(rust: string): string {
+  const call = rust.indexOf(".invoke_handler(");
+  assert.ok(
+    call >= 0,
+    "main.rs no longer calls .invoke_handler(, so nothing is registered",
+  );
+  const macro = rust.indexOf("tauri::generate_handler![", call);
+  assert.ok(
+    macro >= 0,
+    "no tauri::generate_handler![ follows .invoke_handler( in main.rs",
+  );
+  const open = macro + "tauri::generate_handler!".length;
+  let depth = 0;
+  for (let i = open; i < rust.length; i++) {
+    if (rust[i] === "[") depth++;
+    else if (rust[i] === "]" && --depth === 0) return rust.slice(open + 1, i);
+  }
+  assert.fail("the generate_handler! list in main.rs is never closed");
+}
+
 test("set_tray_server_status is registered, so the invoke can be answered", async () => {
   const rust = MAIN;
-  const handler = rust.slice(
-    rust.indexOf("invoke_handler(tauri::generate_handler!["),
-    rust.indexOf("])", rust.indexOf("invoke_handler(tauri::generate_handler![")),
+  const handler = registeredCommands(rust);
+  assert.match(
+    handler,
+    /(?<!\w)set_app_menu_actions(?!\w)/,
+    "the generate_handler! list read from main.rs is not the command list",
   );
   assert.match(
     handler,
