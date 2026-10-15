@@ -53,11 +53,11 @@ test("the Images and Video pages' Search Hub links open their own pick", () => {
   assert.match(readSrc("app/routes/hub.tsx"), /search\.capability === "diffusion" \? "image-gen"/);
 });
 
-test("capabilities are picked in the filter popover, after the sort menu", () => {
+test("capabilities are picked in the filter popover, which sits right after the search", () => {
   const toolbar = readSrc("features/hub/catalog/models-toolbar.tsx");
   assert.doesNotMatch(toolbar, /ariaLabel="Capability filter"/);
   const filter = toolbar.indexOf("<ModelSearchFiltersControl");
-  assert.ok(filter > toolbar.indexOf('ariaLabel="Sort models"'));
+  assert.ok(filter > toolbar.indexOf("<Input") && filter < toolbar.indexOf('ariaLabel="Sort models"'));
   assert.match(toolbar, /capabilities=\{capabilityFilters\}/);
   const popover = readSrc("features/hub/catalog/model-search-filters.tsx");
   assert.match(popover, /CAPABILITY_FILTER_OPTIONS\.map\(\(option\) => \{/);

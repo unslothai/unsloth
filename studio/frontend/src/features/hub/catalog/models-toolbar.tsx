@@ -387,6 +387,31 @@ export const ModelsToolbar = memo(function ModelsToolbar({
       </div>
 
       <div className="flex min-w-0 flex-wrap items-center gap-2 lg:flex-[0_0_auto] lg:flex-nowrap lg:justify-end">
+        {/* Beside the search, on every tab: its Datasets only switch replaces the old Models / Datasets toggle. */}
+        <ModelSearchFiltersControl
+          value={searchFilters}
+          onChange={onSearchFiltersChange}
+          capabilities={capabilityFilters}
+          onCapabilitiesChange={onCapabilityFiltersChange}
+          isolateFirstCapability={isolateFirstCapability}
+          uploaders={uploaders}
+          uploadersChanged={uploadersChanged}
+          onUploadersChange={onUploadersChange}
+          onReset={onResetFilters}
+          showModelFilters={showModelFilters}
+          datasets={isDataset}
+          modelSections={showCapabilities}
+          datasetSections={isDiscover && isDataset}
+          modalities={datasetModalities}
+          onModalitiesChange={onDatasetModalitiesChange}
+          onDatasetsChange={(on) =>
+            onResourceTypeChange(on ? "datasets" : "models")
+          }
+          className={cn(
+            triggerBase,
+            "relative inline-flex size-9 shrink-0 items-center justify-center rounded-full p-0",
+          )}
+        />
         {tab === "downloaded" && !isDataset && (
           <Tooltip>
             <TooltipTrigger asChild={true}>
@@ -510,31 +535,6 @@ export const ModelsToolbar = memo(function ModelsToolbar({
           />
         )}
 
-        {/* On every tab: its Datasets only switch replaces the old Models / Datasets toggle. */}
-        <ModelSearchFiltersControl
-          value={searchFilters}
-          onChange={onSearchFiltersChange}
-          capabilities={capabilityFilters}
-          onCapabilitiesChange={onCapabilityFiltersChange}
-          isolateFirstCapability={isolateFirstCapability}
-          uploaders={uploaders}
-          uploadersChanged={uploadersChanged}
-          onUploadersChange={onUploadersChange}
-          onReset={onResetFilters}
-          showModelFilters={showModelFilters}
-          datasets={isDataset}
-          modelSections={showCapabilities}
-          datasetSections={isDiscover && isDataset}
-          modalities={datasetModalities}
-          onModalitiesChange={onDatasetModalitiesChange}
-          onDatasetsChange={(on) =>
-            onResourceTypeChange(on ? "datasets" : "models")
-          }
-          className={cn(
-            triggerBase,
-            "relative inline-flex size-9 shrink-0 items-center justify-center rounded-full p-0",
-          )}
-        />
       </div>
     </div>
   );
