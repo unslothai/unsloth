@@ -105,6 +105,13 @@ def test_no_npu_says_so():
         prepare_npu_model(_Studio(supported = False), "lemonade:qwen3-0.6b-FLM", print)
 
 
+def test_an_npu_left_off_names_the_flag():
+    studio = _Studio(supported = False)
+    studio.status["hardware"] = {"present": True, "family": "XDNA2", "enabled": False}
+    with pytest.raises(NpuCliError, match = "UNSLOTH_STUDIO_ENABLE_NPU=1"):
+        prepare_npu_model(studio, "lemonade:qwen3-0.6b-FLM", print)
+
+
 def test_an_unknown_model_lists_the_real_ones():
     with pytest.raises(NpuCliError, match = "gemma3-1b-FLM"):
         prepare_npu_model(_Studio(ready = True), "lemonade:nope-FLM", print)

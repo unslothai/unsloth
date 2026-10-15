@@ -78,9 +78,27 @@ def test_only_xdna2_is_supported(tmp_path, monkeypatch, device, supported):
     monkeypatch.setattr(
         npu, "_linux_probe", lambda: probe(tmp_path / "devices", tmp_path / "module")
     )
+    monkeypatch.setenv(npu.ENABLE_ENV, "1")
     info = npu.detect_amd_npu()
     assert info["present"] is True
     assert info["supported"] is supported
+
+
+@pytest.mark.parametrize("value", [None, "", "0", "false"])
+def test_an_xdna2_npu_is_off_without_the_flag(tmp_path, monkeypatch, value):
+    _device(tmp_path, "0000:c4:00.1", "1022", "17f0", driver = "amdxdna")
+    probe = npu._linux_probe
+    monkeypatch.setattr(npu.sys, "platform", "linux")
+    monkeypatch.setattr(
+        npu, "_linux_probe", lambda: probe(tmp_path / "devices", tmp_path / "module")
+    )
+    if value is None:
+        monkeypatch.delenv(npu.ENABLE_ENV, raising = False)
+    else:
+        monkeypatch.setenv(npu.ENABLE_ENV, value)
+    info = npu.detect_amd_npu()
+    assert info["present"] is True and info["family"] == "XDNA2"
+    assert info["enabled"] is False and info["supported"] is False
 
 
 def test_detection_never_raises(monkeypatch):
@@ -89,4 +107,10 @@ def test_detection_never_raises(monkeypatch):
 
     monkeypatch.setattr(npu.sys, "platform", "linux")
     monkeypatch.setattr(npu, "_linux_probe", broken)
-    assert npu.detect_amd_npu() == {"present": False, "error": "sysfs", "supported": False}
+    monkeypatch.delenv(npu.ENABLE_ENV, raising = False)
+    assert npu.detect_amd_npu() == {
+        "present": False,
+        "error": "sysfs",
+        "enabled": False,
+        "supported": False,
+    }

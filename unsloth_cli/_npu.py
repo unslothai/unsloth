@@ -82,11 +82,17 @@ def _prepare_npu_model(
     status = _read_json(_call(request, "GET", "/api/npu/status", 60))
     if not status.get("supported"):
         hardware = status.get("hardware") or {}
-        reason = (
-            "no AMD Ryzen AI NPU was found on this machine"
-            if not hardware.get("present")
-            else f"{hardware.get('name') or 'this NPU'} is not supported (an XDNA2 NPU is needed)"
-        )
+        if not hardware.get("present"):
+            reason = "no AMD Ryzen AI NPU was found on this machine"
+        elif hardware.get("family") == "XDNA2" and hardware.get("enabled") is False:
+            reason = (
+                "the NPU is off by default. Start Unsloth Studio with "
+                "UNSLOTH_STUDIO_ENABLE_NPU=1 to use it"
+            )
+        else:
+            reason = (
+                f"{hardware.get('name') or 'this NPU'} is not supported (an XDNA2 NPU is needed)"
+            )
         raise NpuCliError(f"{model_id} runs on the AMD NPU, but {reason}.")
     if not status.get("ready"):
         echo("Enabling the NPU runtime (Lemonade and FastFlowLM, about 47 MB)...")
