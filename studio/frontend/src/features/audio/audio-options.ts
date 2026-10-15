@@ -61,6 +61,35 @@ export function parseAudioOptions(raw: unknown): AudioOptionSpec[] {
   return specs;
 }
 
+/** The options one workflow of the loaded model takes: its own list where the status gives one
+ *  (`audio_options_by_workflow`), else the primary list (`audio_options`). */
+export function audioOptionSpecsFor(
+  status:
+    | {
+        audio_options?: unknown;
+        audio_options_by_workflow?: Record<string, unknown> | null;
+      }
+    | null
+    | undefined,
+  workflow: string,
+): AudioOptionSpec[] {
+  return parseAudioOptions(
+    status?.audio_options_by_workflow?.[workflow] ?? status?.audio_options,
+  );
+}
+
+/** A slider needs a range and a value to sit on: without a default it would rest at the
+ *  minimum and look like a setting, so such an option gets a number box instead. */
+export function audioOptionUsesSlider(spec: AudioOptionSpec): boolean {
+  return (
+    (spec.type === "int" || spec.type === "float") &&
+    spec.min != null &&
+    spec.max != null &&
+    spec.max > spec.min &&
+    spec.default != null
+  );
+}
+
 /** `value` as this option accepts it, or undefined when it cannot be: numbers are clamped to the
  *  declared range and ints rounded, an enum takes only its listed values. */
 export function coerceAudioOptionValue(
@@ -96,7 +125,8 @@ export function audioOptionDisplayValue(
   return spec.default ?? undefined;
 }
 
-/** Only user-set values the schema still accepts; the rest use server defaults. */
+/** The values to send: only ones the user set and the schema still accepts. The server fills
+ *  every other option with the same recommended default the controls show. */
 export function audioOptionsForRequest(
   specs: readonly AudioOptionSpec[],
   values: AudioOptionValues,

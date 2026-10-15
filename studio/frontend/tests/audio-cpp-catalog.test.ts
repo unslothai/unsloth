@@ -778,7 +778,7 @@ test("GGUF runtime speech trades sampling controls for the model's own options",
     /\{musicGeneration \|\|\s*samplingControls \|\|\s*audioOptionSpecs\.length > 0 \? \(\s*<AdvancedDisclosure/,
   );
   assert.match(page, /!musicGeneration && samplingControls && temperatureEdited/);
-  assert.match(page, /parseAudioOptions\(status\?\.audio_options\)/);
+  assert.match(page, /audioOptionSpecsFor\(status, workflow\)/);
   assert.match(page, /\{ audio_options: requestOptions \}/);
   assert.match(page, /"Voice or style description"/);
 });

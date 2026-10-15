@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { installLocalStorageFake } from "./helpers/kit.ts";
+import { installLocalStorageFake, readSrc } from "./helpers/kit.ts";
 
 installLocalStorageFake();
 const {
@@ -12,6 +12,8 @@ const {
   audioOptionDisplayValue,
   audioOptionFloatStep,
   audioOptionLabel,
+  audioOptionSpecsFor,
+  audioOptionUsesSlider,
   audioOptionsForRequest,
   audioVoiceLabel,
   coerceAudioOptionValue,
@@ -151,4 +153,112 @@ test("built-in voices read as names, and Kokoro ids also name their language", (
   assert.equal(audioVoiceLabel("uncle_fu", "qwen3_tts"), "Uncle Fu");
   assert.equal(audioVoiceLabel("af_heart", "kitten_tts"), "Af Heart");
   assert.equal(audioVoiceLabel("Custom Voice.wav", null), "Custom Voice.wav");
+});
+
+test("each workflow reads its own option list, else the primary one", () => {
+  const status = {
+    audio_options: [{ name: "voice", type: "enum", values: ["a", "b"], default: "a" }],
+    audio_options_by_workflow: {
+      clone: [{ name: "emotion_alpha", type: "float", min: 0, max: 1, default: 1 }],
+      convert: [],
+    },
+  };
+  assert.deepEqual(
+    audioOptionSpecsFor(status, "speak").map((spec) => spec.name),
+    ["voice"],
+  );
+  assert.deepEqual(
+    audioOptionSpecsFor(status, "clone").map((spec) => spec.name),
+    ["emotion_alpha"],
+  );
+  // An empty list is the workflow's own answer, not a gap to fill from the primary list.
+  assert.deepEqual(audioOptionSpecsFor(status, "convert"), []);
+  assert.deepEqual(
+    audioOptionSpecsFor(status, "edit").map((spec) => spec.name),
+    ["voice"],
+  );
+  assert.deepEqual(
+    audioOptionSpecsFor({ ...status, audio_options_by_workflow: null }, "clone").map(
+      (spec) => spec.name,
+    ),
+    ["voice"],
+  );
+  assert.deepEqual(audioOptionSpecsFor(null, "speak"), []);
+
+  // Every generation hook picks its own workflow's list.
+  const hooks = {
+    speech: "workflow",
+    clone: '"clone"',
+    edit: '"edit"',
+    convert: '"convert"',
+  } as const;
+  for (const [hook, workflow] of Object.entries(hooks)) {
+    const source = readSrc(`features/audio/hooks/use-${hook}-generation.ts`);
+    assert.ok(
+      source.includes(`audioOptionSpecsFor(status, ${workflow})`),
+      `use-${hook}-generation reads its own list`,
+    );
+    assert.ok(!source.includes("parseAudioOptions("), `use-${hook}-generation`);
+  }
+  // Clone and Edit rails show the list their requests are validated against.
+  const page = readSrc("features/audio/audio-page.tsx");
+  assert.match(page, /audioOptionSpecs=\{clone\.audioOptionSpecs\}/);
+  assert.match(page, /audioOptionSpecs=\{edit\.audioOptionSpecs\}/);
+});
+
+test("a slider only shows for a bounded number with a default", () => {
+  const [steps, guidance, free, flag] = parseAudioOptions([
+    { name: "steps", type: "int", min: 1, max: 100, default: 8 },
+    { name: "guidance", type: "float", min: 0, max: 10 },
+    { name: "shift", type: "float", min: 1, default: 3 },
+    { name: "flag", type: "bool", default: false },
+  ]);
+  assert.equal(audioOptionUsesSlider(steps), true);
+  // No default: a number box with "Model default", not a slider resting at its minimum.
+  assert.equal(audioOptionUsesSlider(guidance), false);
+  assert.equal(audioOptionUsesSlider(free), false);
+  assert.equal(audioOptionUsesSlider(flag), false);
+  assert.equal(audioOptionDisplayValue(guidance, {}), undefined);
+  const fields = readSrc("features/audio/audio-options-fields.tsx");
+  assert.match(fields, /audioOptionUsesSlider\(spec\)/);
+  assert.match(fields, /"Model default"/);
+});
+
+test("Reset model options returns every control to the recommended value", () => {
+  const specs = parseAudioOptions(YUE2_OPTIONS);
+  const model = "audio-cpp/Yue2-3B-GGUF";
+  saveAudioOptionValues(model, {
+    num_inference_steps: 120,
+    guidance_scale: 4,
+    cot: "full",
+    abc: true,
+  });
+  assert.deepEqual(Object.keys(audioOptionsForRequest(specs, readAudioOptionValues(model))), [
+    "num_inference_steps",
+    "guidance_scale",
+    "cot",
+    "abc",
+  ]);
+  // What the reset handler does: forget the model's stored values.
+  saveAudioOptionValues(model, {});
+  const values = readAudioOptionValues(model);
+  assert.deepEqual(values, {});
+  assert.deepEqual(
+    specs.map((spec) => audioOptionDisplayValue(spec, values)),
+    specs.map((spec) => spec.default ?? undefined),
+  );
+  assert.deepEqual(
+    specs.map((spec) => audioOptionDisplayValue(spec, values)),
+    [50, 1.5, "off", false, undefined, undefined],
+  );
+  // Nothing user-set is sent, so the server fills the same recommended defaults.
+  assert.deepEqual(audioOptionsForRequest(specs, values), {});
+  const raw = globalThis.localStorage.getItem(AUDIO_OPTIONS_STORAGE_KEY);
+  assert.ok(!raw || !(JSON.parse(raw) as Record<string, unknown>)["audio-cpp/yue2-3b-gguf"]);
+
+  const hook = readSrc("features/audio/hooks/use-speech-generation.ts");
+  assert.match(
+    hook,
+    /handleAudioOptionsReset = useCallback\(\(\) => \{\s*setAudioOptionValues\(\{\}\);\s*saveAudioOptionValues\(audioOptionsModel, \{\}\);/,
+  );
 });

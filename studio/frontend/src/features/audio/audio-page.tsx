@@ -651,7 +651,6 @@ export function AudioPage({
     setSelectedId,
     pendingTranscribeRelease,
     replayQueuedTtsPick,
-    audioOptionSpecs,
     audioOptionValues,
     sttRepo: cloneSttRepo,
   });
@@ -672,7 +671,6 @@ export function AudioPage({
     setSelectedId,
     pendingTranscribeRelease,
     replayQueuedTtsPick,
-    audioOptionSpecs,
     audioOptionValues,
     sttRepo: cloneSttRepo,
   });
@@ -693,7 +691,6 @@ export function AudioPage({
     setSelectedId,
     pendingTranscribeRelease,
     replayQueuedTtsPick,
-    audioOptionSpecs,
     audioOptionValues,
     sttRepo: cloneSttRepo,
   });
@@ -1912,13 +1909,19 @@ export function AudioPage({
                     <AudioActiveProvider value={active}>
                       <CloneRail
                         {...railProps}
+                        audioOptionSpecs={clone.audioOptionSpecs}
                         clone={clone}
                         historyClips={clips}
                       />
                     </AudioActiveProvider>
                   ) : ttsWorkflow === "edit" ? (
                     <AudioActiveProvider value={active}>
-                      <EditRail {...railProps} edit={edit} historyClips={clips} />
+                      <EditRail
+                        {...railProps}
+                        audioOptionSpecs={edit.audioOptionSpecs}
+                        edit={edit}
+                        historyClips={clips}
+                      />
                     </AudioActiveProvider>
                   ) : ttsWorkflow === "convert" ? (
                     <AudioActiveProvider value={active}>

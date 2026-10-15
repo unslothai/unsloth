@@ -3,6 +3,7 @@
 
 // JSX-free so the node test runner can load it; clone-panels.tsx / speak-panels.tsx add Components.
 
+import type { AudioOptionSpec } from "../audio-options";
 import { type AudioSourceSelection, sourceRefOf } from "../audio-run-request";
 import { INDEX_TTS2_EMOTIONS, emotionVectorString } from "../clone-policy";
 import type { AudioSourceStatus } from "../hooks/audio-source-state";
@@ -12,6 +13,25 @@ type AudioToolPanelLogic<V> = Omit<AudioToolPanel<V>, "Component">;
 
 const clamp = (x: number, lo: number, hi: number) =>
   Math.min(hi, Math.max(lo, x));
+
+// A panel starts where the server would: the option's declared default, which it fills when unset.
+function numberDefault(
+  specs: readonly AudioOptionSpec[],
+  name: string,
+  fallback: number,
+): number {
+  const value = specs.find((spec) => spec.name === name)?.default;
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function boolDefault(
+  specs: readonly AudioOptionSpec[],
+  name: string,
+  fallback: boolean,
+): boolean {
+  const value = specs.find((spec) => spec.name === name)?.default;
+  return typeof value === "boolean" ? value : fallback;
+}
 
 export interface TimbreOnlyValue {
   timbreOnly: boolean;
@@ -23,7 +43,9 @@ export const qwen3TimbreLogic: AudioToolPanelLogic<TimbreOnlyValue> = {
   workflows: ["clone"],
   title: "Timbre only",
   claims: ["x_vector_only_mode"],
-  initial: () => ({ timbreOnly: false }),
+  initial: (specs) => ({
+    timbreOnly: boolDefault(specs, "x_vector_only_mode", false),
+  }),
   toRequest: (value) =>
     value.timbreOnly
       ? {
@@ -67,11 +89,11 @@ export const indexTts2EmotionLogic: AudioToolPanelLogic<EmotionValue> = {
     "use_emotion_text",
     "emotion_text",
   ],
-  initial: () => ({
+  initial: (specs) => ({
     mode: "text",
     text: "",
     vector: INDEX_TTS2_EMOTIONS.map(() => 0),
-    alpha: 0.7,
+    alpha: numberDefault(specs, "emotion_alpha", 0.7),
     source: null,
   }),
   toRequest: (value): AudioRunPatch => {
@@ -123,7 +145,10 @@ export const chatterboxExpressivenessLogic: AudioToolPanelLogic<ExpressivenessVa
     workflows: ["clone"],
     title: "Expressiveness",
     claims: ["exaggeration", "guidance_scale"],
-    initial: () => ({ exaggeration: 0.5, guidance: 0.5 }),
+    initial: (specs) => ({
+      exaggeration: numberDefault(specs, "exaggeration", 0.5),
+      guidance: numberDefault(specs, "guidance_scale", 0.5),
+    }),
     toRequest: (value) => ({
       options: {
         exaggeration: clamp(value.exaggeration, 0, 2),
