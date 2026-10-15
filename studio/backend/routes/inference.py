@@ -40052,6 +40052,20 @@ class _InProcessChatStream:
                 except json.JSONDecodeError:
                     continue
 
+    async def next_chunk(self, chunks):
+        """The next of ``chunks``, or None at its end, a Stop the source raised included."""
+        try:
+            return await chunks.__anext__()
+        except StopAsyncIteration:
+            return None
+        except asyncio.CancelledError:
+            # The managed engine tool path turns its own Stop into CancelledError; that ends
+            # the stream like any stopped run, and only the consumer's cancellation propagates.
+            task = asyncio.current_task()
+            if self.cancelled and not (task is not None and task.cancelling()):
+                return None
+            raise
+
     async def close(self, *, cancelled: bool) -> None:
         if self._started:
             await _close_openai_admitted_stream_iterator(self._iterator, cancelled = cancelled)
@@ -40104,7 +40118,7 @@ async def _responses_in_process_stream(
         cancelled = False
         try:
             yield translator.created()
-            async for chunk in chunks:
+            while (chunk := await source.next_chunk(chunks)) is not None:
                 if chunk is _LLAMA_STREAM_KEEPALIVE:
                     yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
                     continue
@@ -40119,13 +40133,6 @@ async def _responses_in_process_stream(
             for event in translator.finish():
                 yield event
         except asyncio.CancelledError:
-            task = asyncio.current_task()
-            # A source that turns its own Stop into CancelledError (the managed engine tool path)
-            # ends like any stopped run; only the consumer's cancellation propagates.
-            if source.cancelled and not (task is not None and task.cancelling()):
-                mark_response_failed(getattr(request, "scope", None))
-                api_monitor.finish(monitor_id, "cancelled")
-                return
             cancelled = True
             source.cancel_event.set()
             api_monitor.finish(monitor_id, "cancelled")
