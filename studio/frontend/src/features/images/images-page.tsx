@@ -2659,7 +2659,6 @@ export function ImagesPage({
         }
       }
       const notApplied = unknownRecipeKeys(recipe);
-      // Baked adapters are part of the load, not the request.
       const baked = Array.isArray(recipe.baked_loras)
         ? recipe.baked_loras.filter((x): x is string => typeof x === "string")
         : [];
