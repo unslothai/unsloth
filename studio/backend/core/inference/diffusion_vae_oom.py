@@ -49,16 +49,21 @@ def _is_oom_one(exc: BaseException) -> bool:
 
 def is_oom(exc: BaseException) -> bool:
     """An allocator failure, also when wrapped: torch.compile re-raises an OOM inside a compiler error whose own
-    message is generic, so ``__cause__`` / ``__context__`` are walked (bounded)."""
+    message is generic, and a compiled or parallel decode can report it as an ``ExceptionGroup`` member, so
+    ``__cause__``, ``__context__`` and group members are walked (bounded)."""
     seen: set = set()
-    cur: Optional[BaseException] = exc
-    for _ in range(8):
+    pending: list = [exc]
+    while pending and len(seen) < 32:
+        cur = pending.pop(0)
         if cur is None or id(cur) in seen:
-            return False
+            continue
         seen.add(id(cur))
         if _is_oom_one(cur):
             return True
-        cur = cur.__cause__ or cur.__context__
+        members = getattr(cur, "exceptions", None)
+        if isinstance(members, (tuple, list)):
+            pending.extend(m for m in members if isinstance(m, BaseException))
+        pending.extend((cur.__cause__, cur.__context__))
     return False
 
 

@@ -585,6 +585,27 @@ def test_is_oom_walks_the_cause_chain():
     assert not O.is_oom(RuntimeError("backend compiler failed"))
 
 
+def test_is_oom_walks_exception_group_members():
+    import builtins
+
+    class Group(Exception):  # ExceptionGroup's shape, also on Python < 3.11
+        def __init__(self, msg, exceptions):
+            super().__init__(msg)
+            self.exceptions = tuple(exceptions)
+
+    oom = RuntimeError("CUDA out of memory. Tried to allocate 2.00 GiB")
+    groups = [Group("decode failed", [ValueError("cancelled"), oom])]
+    if hasattr(builtins, "ExceptionGroup"):
+        groups.append(builtins.ExceptionGroup("decode failed", [ValueError("cancelled"), oom]))
+    for group in groups:
+        assert O.is_oom(group)
+        assert O.is_oom(Group("outer", [group]))
+    assert not O.is_oom(Group("decode failed", [ValueError("cancelled"), KeyError("x")]))
+    cyclic = Group("cycle", [])
+    cyclic.exceptions = (cyclic,)
+    assert not O.is_oom(cyclic)
+
+
 def test_speed_layer_compiled_guard_exposes_eager():
     from core.inference import diffusion_speed as S
 
