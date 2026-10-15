@@ -148,11 +148,11 @@ import {
 } from "./workflows";
 import {
   ParamSlider,
+  buildExternalModelId,
   isDecisionConnection,
   parseExternalModelId,
   useExternalProvidersStore,
 } from "@/features/chat";
-import { buildExternalModelId } from "@/features/chat/external-providers";
 import { ModelLoadDescription } from "@/features/chat/components/model-load-status";
 import {
   type ImageGenerationPresetParams,
