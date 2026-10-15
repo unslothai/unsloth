@@ -261,7 +261,7 @@ export const fr = {
     annotationScreenshotsAlways: "Toujours inclure",
     annotationScreenshotsNever: "Ne jamais inclure",
     clearDataSetting: "Effacer les données de navigation",
-    clearDataSettingDescription: "Efface l’historique de navigation, l’historique des téléchargements et les pages en cache. Les pages ne conservent aucun cookie ni aucune donnée de site.",
+    clearDataSettingDescription: "Efface l’historique de navigation, l’historique des téléchargements et les pages en cache. Les pages ne conservent les cookies et les données de site que jusqu’au rechargement de Studio.",
     manage: "Gérer",
     fullView: {
       enter: "Plein écran",
@@ -437,7 +437,7 @@ export const fr = {
     },
     clearData: {
       title: "Effacer les données de navigation ?",
-      description: "Cette action efface votre historique de navigation, l’historique des téléchargements et les pages en cache. Les fichiers téléchargés restent sur votre ordinateur.",
+      description: "Cela efface l'historique de navigation, l'historique des téléchargements, les pages en cache ainsi que les cookies et données de sites, ce qui vous déconnecte des sites. Les fichiers téléchargés restent sur votre ordinateur.",
       cancel: "Annuler",
       confirm: "Effacer les données",
       done: "Données de navigation effacées",
@@ -453,6 +453,7 @@ export const fr = {
       resubmit: "Cette page provient d'un formulaire. La recharger renvoie le formulaire, ce qui pourrait répéter son action.",
       upload: "L'envoi de fichiers ne fonctionne pas dans cette vue. Ouvrez la page dans le navigateur du système pour l'envoyer.",
       scriptNavigation: "Cette page a tenté d'aller à une autre adresse par script, ce que cette vue ne peut pas suivre. Ouvrez-la plutôt dans le navigateur du système.",
+      needsBrowser: "Cette page a tenté d'utiliser une fonction du navigateur que cette vue bloque, certaines parties peuvent donc ne pas fonctionner. Ouvrez-la plutôt dans le navigateur du système.",
     },
     native: {
       externalPrompt: "{host} veut ouvrir {url}",

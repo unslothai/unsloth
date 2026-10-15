@@ -1,34 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Two ubuntu-latest jobs stopped taking a runner slot. Neither may stop being checked.
-
-Measured over 400 completed main push runs, both were pure slot overhead: seconds of
-execution behind a queue of about three hours.
-
-    Security audit :: pytest tests/security         72 s exec, 11096 s queue
-    Unsloth export capability :: capability (ubuntu-latest)
-                                                    67 s exec, 10642 s queue
-
-They were dealt with differently, because they are different problems.
-
-The security suite MOVED, into `Workflow trigger lint`. What makes that safe is that the
-host's harden-runner block is identical to the one the job carried, so the suite runs
-under exactly the isolation it had. The obvious alternative host, `Lint CI`, is where the
-lockfile and load-orchestrator lanes went, and it is wrong for this one: Lint CI installs
-shellcheck from apt, so its runner has to permit escalation and an apt mirror. Absorbing a
-security gate there would weaken it. That is the property asserted here, not the fact of
-the move.
-
-The capability leg was DELETED, because it was already duplicated: Backend CI runs
-`pytest tests/` without ignoring `tests/test_export_capability.py`, so the file executes
-there on ubuntu-latest either way. That justification is only true while the ignore list
-stays as it is, and adding one line to it would silently delete the coverage rather than
-turn anything red. So the ignore list is what gets asserted.
-
-Both are the same failure shape: a change that looks unrelated makes a check stop running
-without failing anything.
-"""
+"""Security suite moved to a host with identical isolation; Backend CI must still run the export test"""
 
 from __future__ import annotations
 
@@ -96,12 +69,7 @@ def test_the_security_suite_is_not_left_running_twice() -> None:
 
 
 def test_the_absorbing_job_did_not_weaken_the_isolation() -> None:
-    """The whole reason this host was chosen over Lint CI.
-
-    The suite carried `egress-policy: block`, `disable-sudo: true` and six endpoints.
-    Landing it on a runner that allows more than that is a downgrade wearing the costume
-    of a cleanup, and nothing else would report it.
-    """
+    """The absorbing host must keep egress-policy block, disable-sudo and the same six endpoints."""
     original = {
         "api.github.com:443",
         "github.com:443",
@@ -123,11 +91,7 @@ def test_the_absorbing_job_did_not_weaken_the_isolation() -> None:
 
 
 def test_the_absorbing_job_stays_unfiltered() -> None:
-    """It is also the host that makes the suite run MORE often, not less.
-
-    security-audit.yml's pull_request is path-filtered. This workflow's is not, and must
-    never be -- see its header and scripts/lint_workflow_triggers.py.
-    """
+    """The absorbing workflow's pull_request trigger must stay unfiltered, so the suite runs on every PR."""
     triggers = _doc(TRIGGER_LINT).get(True) or _doc(TRIGGER_LINT).get("on") or {}
     pull_request = triggers.get("pull_request")
     assert not isinstance(pull_request, dict) or not (
@@ -150,11 +114,7 @@ def test_the_capability_job_kept_the_leg_nothing_else_covers() -> None:
 
 
 def test_backend_ci_still_runs_the_file_the_ubuntu_leg_used_to() -> None:
-    """The ubuntu leg was dropped BECAUSE Backend CI covers it. Keep that true.
-
-    One line added to that job's --ignore list would remove the coverage on every
-    platform at once, and no test would fail.
-    """
+    """Backend CI must not name the capability test file, which means it is being ignored or deselected."""
     text = BACKEND_CI.read_text(encoding = "utf-8")
     assert "test_export_capability" not in text, (
         "studio-backend-ci.yml now names tests/test_export_capability.py, which almost "

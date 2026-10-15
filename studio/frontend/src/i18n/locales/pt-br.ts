@@ -261,7 +261,7 @@ export const ptBR = {
     annotationScreenshotsAlways: "Sempre incluir",
     annotationScreenshotsNever: "Nunca incluir",
     clearDataSetting: "Limpar dados de navegação",
-    clearDataSettingDescription: "Limpa o histórico de navegação, o histórico de downloads e as páginas em cache. As páginas não guardam cookies nem dados de sites.",
+    clearDataSettingDescription: "Limpa o histórico de navegação, o histórico de downloads e as páginas em cache. As páginas guardam cookies e dados de sites só até o Studio ser recarregado.",
     manage: "Gerenciar",
     fullView: {
       enter: "Visualização completa",
@@ -437,7 +437,7 @@ export const ptBR = {
     },
     clearData: {
       title: "Limpar dados de navegação?",
-      description: "Isso limpa seu histórico de navegação, o histórico de downloads e as páginas em cache. Os arquivos baixados continuam no seu computador.",
+      description: "Isso limpa o histórico de navegação, o histórico de downloads, as páginas em cache e os cookies e dados de sites, o que encerra sua sessão nos sites. Os arquivos baixados continuam no seu computador.",
       cancel: "Cancelar",
       confirm: "Limpar dados",
       done: "Dados de navegação limpos",
@@ -453,6 +453,7 @@ export const ptBR = {
       resubmit: "Esta página veio de um formulário. Carregá-la de novo reenvia o formulário, o que pode repetir o que ele fez.",
       upload: "O envio de arquivos não funciona nesta visualização. Abra a página no navegador do sistema para enviá-lo.",
       scriptNavigation: "Esta página tentou ir para outro endereço por script, o que esta visualização não consegue acompanhar. Abra-a no navegador do sistema.",
+      needsBrowser: "Esta página tentou usar um recurso do navegador que esta visualização bloqueia, então partes dela podem não funcionar. Abra-a no navegador do sistema.",
     },
     native: {
       externalPrompt: "{host} quer abrir {url}",

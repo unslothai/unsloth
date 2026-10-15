@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""#3726: a ModelScope load must record the repo id, not the local snapshot, and the
-16bit merge must fetch its base from ModelScope.
-
-unsloth cannot be imported on GPU-less hosts, so the helpers are extracted via ast and
-exec'd against fakes, like the other GPU-free saving tests."""
+"""ModelScope loads record the repo id, not the snapshot path, and the 16bit merge fetches from it."""
 
 from __future__ import annotations
 

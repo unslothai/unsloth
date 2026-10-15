@@ -260,7 +260,7 @@ export const it = {
     annotationScreenshotsAlways: "Includi sempre",
     annotationScreenshotsNever: "Non includere mai",
     clearDataSetting: "Cancella dati di navigazione",
-    clearDataSettingDescription: "Cancella la cronologia di navigazione, la cronologia download e le pagine nella cache. Le pagine non conservano cookie né dati dei siti.",
+    clearDataSettingDescription: "Cancella la cronologia di navigazione, la cronologia download e le pagine nella cache. Le pagine conservano cookie e dati dei siti solo fino al ricaricamento di Studio.",
     manage: "Gestisci",
     fullView: {
       enter: "Vista completa",
@@ -436,7 +436,7 @@ export const it = {
     },
     clearData: {
       title: "Cancellare i dati di navigazione?",
-      description: "Verranno cancellate la cronologia di navigazione, la cronologia download e le pagine nella cache. I file scaricati restano sul tuo computer.",
+      description: "Questo cancella cronologia di navigazione, cronologia dei download, pagine in cache e cookie e dati dei siti, disconnettendoti dai siti. I file scaricati restano sul computer.",
       cancel: "Annulla",
       confirm: "Cancella dati",
       done: "Dati di navigazione cancellati",
@@ -452,6 +452,7 @@ export const it = {
       resubmit: "Questa pagina deriva da un modulo. Ricaricarla invia di nuovo il modulo e potrebbe ripeterne l'azione.",
       upload: "Il caricamento di file non funziona in questa vista. Apri la pagina nel browser di sistema per inviarlo.",
       scriptNavigation: "Questa pagina ha provato ad andare a un altro indirizzo tramite script, cosa che questa vista non può seguire. Aprila nel browser di sistema.",
+      needsBrowser: "Questa pagina ha provato a usare una funzione del browser che questa vista blocca, quindi alcune parti potrebbero non funzionare. Aprila nel browser di sistema.",
     },
     native: {
       externalPrompt: "{host} vuole aprire {url}",
