@@ -230,7 +230,15 @@ except ModuleNotFoundError:
 except:
     raise
 
-# Re-assert: unsloth_zoo's patch_torch_compile may pop TORCHINDUCTOR_COMPILE_THREADS.
+try:
+    from .import_fixes import fix_torch_compiler_disable_unless_decode
+    fix_torch_compiler_disable_unless_decode()
+    del fix_torch_compiler_disable_unless_decode
+except Exception:
+    pass
+
+# Re-assert after unsloth_zoo's patch_torch_compile, which historically popped
+# TORCHINDUCTOR_COMPILE_THREADS.
 if os.environ.get("UNSLOTH_FORCE_SINGLE_COMPILE_WORKER", "0") == "1":
     try:
         torch._inductor.config.compile_threads = 1
