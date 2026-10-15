@@ -53,6 +53,8 @@ def _calls(node):
         ),
         ("unsloth_save_pretrained_gguf", {"_stitch_mtp_head"}),
         ("_gguf_reuses_loaded_checkpoint", {"_attached_mtp_head"}),
+        # torchao's reload drops native MTP tensors: say so instead of exporting it silently.
+        ("_unsloth_save_torchao", {"_attached_mtp_head"}),
     ],
 )
 def test_save_paths_are_wired(tree, function, expected):
@@ -222,13 +224,19 @@ def test_reattach_is_a_no_op_without_a_saved_head(tmp_path):
         if isinstance(n, ast.FunctionDef) and n.name == "_reattach_saved_mtp_head"
     ]
     assert calls, "loader.py lost _reattach_saved_mtp_head"
-    source = (SAVE_PY.parent / "models" / "loader.py").read_text(encoding = "utf-8")
-    assert (
-        source.count(
-            "_reattach_saved_mtp_head(model, old_model_name, token = token, revision = revision)"
-        )
-        == 2
-    )
+    sites = [
+        n
+        for n in ast.walk(loader_tree)
+        if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "_reattach_saved_mtp_head"
+    ]
+    assert len(sites) == 2
+    for site in sites:
+        assert {k.arg for k in site.keywords} == {
+            "token",
+            "revision",
+            "cache_dir",
+            "local_files_only",
+        }
 
 
 def _tiny_glm(tmp_path, torch):
@@ -306,18 +314,28 @@ class _AdapterSaver:
         (Path(save_directory) / "adapter_config.json").write_text("{}")
 
 
-def _wrapped_adapter(torch):
+def _wrapped_adapter(torch, pushes = True):
+    """`pushes`: transformers' save_pretrained (takes push_to_hub), else PEFT's (does not)."""
     from unsloth.models.speculative import _wrap_save_pretrained
 
     model = torch.nn.Module()
     calls = []
+
+    def transformers_save(
+        save_directory,
+        push_to_hub = False,
+        **kwargs,
+    ):
+        calls.append(dict(kwargs, push_to_hub = push_to_hub))
+        Path(save_directory).mkdir(parents = True, exist_ok = True)
+        (Path(save_directory) / "adapter_config.json").write_text("{}")
 
     def save_pretrained(save_directory, **kwargs):
         calls.append(kwargs)
         Path(save_directory).mkdir(parents = True, exist_ok = True)
         (Path(save_directory) / "adapter_config.json").write_text("{}")
 
-    object.__setattr__(model, "save_pretrained", save_pretrained)
+    object.__setattr__(model, "save_pretrained", transformers_save if pushes else save_pretrained)
     object.__setattr__(model, "_unsloth_mtp_head", _head(torch))
     _wrap_save_pretrained(model)
     return model, calls
@@ -357,6 +375,29 @@ def test_plain_save_push_uploads_the_head(save_module, tmp_path, monkeypatch):
     )
 
 
+def test_plain_save_push_skips_peft_and_refuses_create_pr(save_module, tmp_path, monkeypatch):
+    import huggingface_hub
+    import torch
+
+    uploads = []
+
+    class Api:
+        def __init__(self, token = None):
+            pass
+
+        def upload_folder(self, **kwargs):
+            uploads.append(kwargs)
+
+    monkeypatch.setattr(huggingface_hub, "HfApi", Api)
+    peft_model, _ = _wrapped_adapter(torch, pushes = False)
+    peft_model.save_pretrained(str(tmp_path / "a"), push_to_hub = True, repo_id = "me/adapter")
+    assert (tmp_path / "a" / "mtp_head.safetensors").is_file() and uploads == []
+    model, calls = _wrapped_adapter(torch)
+    with pytest.raises(ValueError, match = "create_pr"):
+        model.save_pretrained(str(tmp_path / "b"), push_to_hub = True, repo_id = "me/m", create_pr = True)
+    assert calls == [] and uploads == []
+
+
 def test_adapter_save_without_a_head_drops_a_stale_one(save_module, tmp_path):
     import torch
 
@@ -383,11 +424,18 @@ def test_hub_adapter_reattaches_its_head(tmp_path, monkeypatch):
     head_file = tmp_path / "snap" / "mtp_head.safetensors"
     head_file.parent.mkdir()
     head_file.write_bytes(b"h")
-    monkeypatch.setattr(huggingface_hub, "hf_hub_download", lambda repo, name, **k: str(head_file))
+    seen = []
+    monkeypatch.setattr(
+        huggingface_hub, "hf_hub_download", lambda repo, name, **k: seen.append(k) or str(head_file)
+    )
     attached = []
     monkeypatch.setattr(speculative, "attach_saved_mtp_head", lambda model, d: attached.append(d))
-    loader._reattach_saved_mtp_head(object(), "me/adapter", token = "t")
+    loader._reattach_saved_mtp_head(
+        object(), "me/adapter", token = "t", cache_dir = "/c", local_files_only = True
+    )
     assert attached == [str(head_file.parent)]
+    # The adapter's own cache and offline mode, else an offline load reads the default cache.
+    assert seen[0]["cache_dir"] == "/c" and seen[0]["local_files_only"] is True
 
     def missing(*a, **k):
         raise FileNotFoundError("no head")
@@ -395,3 +443,50 @@ def test_hub_adapter_reattaches_its_head(tmp_path, monkeypatch):
     monkeypatch.setattr(huggingface_hub, "hf_hub_download", missing)
     loader._reattach_saved_mtp_head(object(), "me/other")
     assert attached == [str(head_file.parent)]
+
+
+def test_mtp_push_keeps_the_datasets_metadata(save_module, monkeypatch):
+    import huggingface_hub
+
+    calls = []
+
+    class Api:
+        def __init__(self, token = None):
+            pass
+
+        def create_repo(self, **kwargs):
+            pass
+
+        def upload_folder(self, **kwargs):
+            calls.append(("upload", kwargs["repo_id"]))
+
+    monkeypatch.setattr(save_module, "HfApi", Api)
+    monkeypatch.setattr(save_module, "_determine_username", lambda d, u, t: ("me/m", "me"))
+    monkeypatch.setattr(save_module, "unsloth_save_model", lambda **kwargs: None)
+    monkeypatch.setattr(
+        huggingface_hub,
+        "metadata_update",
+        lambda repo, meta, **k: calls.append(("meta", repo, meta)),
+    )
+    save_module._push_with_mtp_head(
+        dict(
+            is_main_process = True,
+            save_directory = "m",
+            token = "t",
+            private = False,
+            revision = None,
+            create_pr = False,
+            commit_message = None,
+            datasets = ["org/data"],
+        )
+    )
+    assert calls == [("upload", "me/m"), ("meta", "me/m", {"datasets": ["org/data"]})]
+
+
+def test_get_mtp_head_returns_the_attached_head(save_module):
+    import torch
+    from unsloth.models.speculative import get_mtp_head
+
+    head = _head(torch)
+    model = _wrapped(torch, head, registered = False)
+    assert get_mtp_head(model) is head

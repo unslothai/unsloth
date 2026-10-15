@@ -978,6 +978,8 @@ def _reattach_saved_mtp_head(
     adapter_dir,
     token = None,
     revision = None,
+    cache_dir = None,
+    local_files_only = False,
 ):
     """A LoRA folder (local or on the Hub) saved with a trained MTP head gets it back, so a later
     merge keeps it."""
@@ -989,7 +991,12 @@ def _reattach_saved_mtp_head(
         try:
             from huggingface_hub import hf_hub_download
             path = hf_hub_download(
-                adapter_dir, "mtp_head.safetensors", token = token, revision = revision
+                adapter_dir,
+                "mtp_head.safetensors",
+                token = token,
+                revision = revision,
+                cache_dir = cache_dir,
+                local_files_only = local_files_only,
             )
         except Exception:
             return  # no head uploaded beside this adapter
@@ -1892,7 +1899,14 @@ class FastLanguageModel(FastLlamaModel):
                 )
             if fast_pissa:
                 record_fast_pissa(model)
-            _reattach_saved_mtp_head(model, old_model_name, token = token, revision = revision)
+            _reattach_saved_mtp_head(
+                model,
+                old_model_name,
+                token = token,
+                revision = revision,
+                cache_dir = kwargs.get("cache_dir"),
+                local_files_only = local_files_only,
+            )
             model = dispatch_model.patch_peft_model(model, use_gradient_checkpointing)
             try:
                 from .vision import _lift_endpoint_hooks_onto_adapters
@@ -3224,7 +3238,14 @@ class FastModel(FastBaseModel):
             )
             if fast_pissa:
                 record_fast_pissa(model)
-            _reattach_saved_mtp_head(model, old_model_name, token = token, revision = revision)
+            _reattach_saved_mtp_head(
+                model,
+                old_model_name,
+                token = token,
+                revision = revision,
+                cache_dir = kwargs.get("cache_dir"),
+                local_files_only = local_files_only,
+            )
             try:
                 from .vision import _lift_endpoint_hooks_onto_adapters
                 _lift_endpoint_hooks_onto_adapters(model)
