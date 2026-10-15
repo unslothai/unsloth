@@ -3207,6 +3207,11 @@ def test_confirm_gate_needs_stream():
         )
         is True
     )
+    # A catalog deferred behind mcp_tool_search loads MCP tools, which can prompt.
+    assert (
+        _confirm_gate_needs_stream(req(permission_mode = "auto"), selected_names = ["mcp_tool_search"])
+        is True
+    )
     # But a selectable unsafe tool, an unrestricted (omitted) selection, MCP, or an
     # explicit confirm flag all still require streaming under auto.
     assert (

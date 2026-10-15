@@ -88,6 +88,13 @@ import {
 import { modelIdsMatch } from "@/features/hub/lib/model-identity";
 import { CONVERSATION_MARKDOWN_LABEL } from "./utils/conversation-markdown";
 import { pasteClipboardFiles } from "./utils/clipboard-files";
+import {
+  composerDraftKey,
+  latestDraft,
+  publishDraft,
+  subscribeDraft,
+  writeComposerDraft,
+} from "./utils/composer-draft";
 import { confirmStopRunningChatsIfNeeded } from "./utils/confirm-stop-running-chats";
 import { requestLocalPromptQueueStop } from "./utils/prompt-queue-boundary";
 import {
@@ -218,6 +225,7 @@ import {
   reconcilePersistedGpuIds,
   resolveLoadedSpeculativeSettings,
   resolvePreserveThinkingOnLoad,
+  resolveToolsEnabledOnLoad,
   persistGpuMemoryModeOnLoad,
   resolveSpeculativeSettingsForLoad,
   saveSpeculativeType,
@@ -641,7 +649,50 @@ export function SharedComposer({
     }
     navigate({ to: "/chat" });
   }, [navigate, onExitCompare]);
-  const [text, setText] = useState("");
+  const incognito = useChatRuntimeStore((s) => s.incognito);
+  const [text, setText] = useState(() =>
+    useChatRuntimeStore.getState().incognito ? "" : latestDraft(),
+  );
+  const [draftSource] = useState(() => Symbol("compare composer"));
+  // Text that came from the chat composer or another tab, so it isn't published back.
+  const remoteDraftRef = useRef<string | null>(null);
+  const unsavedDraftRef = useRef<string | null>(null);
+  const incognitoBeforeRef = useRef(incognito);
+  useEffect(() => {
+    // Leaving a temporary chat (Compare can mount just before it resets) restores the saved draft.
+    if (incognitoBeforeRef.current !== incognito) {
+      incognitoBeforeRef.current = incognito;
+      if (!incognito) {
+        remoteDraftRef.current = latestDraft();
+        setText(remoteDraftRef.current);
+      }
+      return;
+    }
+    if (incognito || text === remoteDraftRef.current) return;
+    remoteDraftRef.current = null;
+    publishDraft(text, draftSource);
+    // Emptied (a send, or cleared by hand): gone at once, so a reload can't bring back a sent prompt.
+    if (text === "") {
+      writeComposerDraft(composerDraftKey(), "");
+      unsavedDraftRef.current = null;
+      return;
+    }
+    unsavedDraftRef.current = text;
+    const timer = setTimeout(() => {
+      writeComposerDraft(composerDraftKey(), text);
+      unsavedDraftRef.current = null;
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [text, incognito, draftSource]);
+  // Leaving Compare inside the debounce still saves what was typed.
+  useEffect(
+    () => () => {
+      if (unsavedDraftRef.current !== null) {
+        writeComposerDraft(composerDraftKey(), unsavedDraftRef.current);
+      }
+    },
+    [],
+  );
   const shortcutLabels = composerShortcutLabels(sendShortcut, isMacPlatform(), text);
   const [running, setRunning] = useState(false);
   const [comparing, setComparing] = useState(false);
@@ -669,6 +720,13 @@ export function SharedComposer({
     },
     [],
   );
+  useEffect(() => {
+    if (incognito) return;
+    return subscribeDraft(draftSource, (next) => {
+      remoteDraftRef.current = next;
+      setCurrentText(next);
+    });
+  }, [incognito, draftSource, setCurrentText]);
   // Attachments still classifying or converting; a ref so runPromptList reads it synchronously.
   const attachingRef = useRef(0);
   useEffect(() => {
@@ -2058,6 +2116,9 @@ export function SharedComposer({
           supportsPreserveThinking: resp.supports_preserve_thinking ?? false,
           preserveThinking: resolvePreserveThinkingOnLoad(resp),
           supportsTools: resp.supports_tools ?? false,
+          deepResearchEnabled: resolveToolsEnabledOnLoad(
+            resp.supports_tools ?? false,
+          ).deepResearchEnabled,
           kvCacheDtype: resp.cache_type_kv ?? null,
           loadedKvCacheDtype: resp.cache_type_kv ?? null,
           ...mlxRuntimeStateFrom(resp),

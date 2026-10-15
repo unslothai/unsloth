@@ -26,7 +26,8 @@
 #
 # AMD hosts: a leading --rocm (or UNSLOTH_ROCM=1) runs the ROCm image and passes
 # the AMD device nodes instead of --gpus, which is NVIDIA-only.
-#   bash docker/run.sh --rocm python /workspace/smoke_test_rocm.py
+#   UNSLOTH_WORKSPACE_VOLUME= bash docker/run.sh --rocm python /workspace/smoke_test_rocm.py
+# (no /workspace volume: it would keep the first image's copy of the smoke test)
 #
 # Overridable env:
 #   UNSLOTH_IMAGE=unsloth/unsloth:latest    image and tag to pull/run
@@ -43,6 +44,8 @@
 #   UNSLOTH_STUDIO_VOLUME=unsloth-studio    named volume for Studio's data (accounts,
 #                                           chats, outputs) at /opt/unsloth-studio;
 #                                           set it empty to run without one
+#   UNSLOTH_WORKSPACE_VOLUME=unsloth-workspace  named volume for /workspace (unsloth-workspace-rocm
+#                                           under --rocm); empty to skip it
 #   UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S=120  how long a training run gets to save a
 #                                           checkpoint on docker stop; --stop-timeout is
 #                                           set 30s above it
@@ -185,6 +188,14 @@ STUDIO_VOLUME="${UNSLOTH_STUDIO_VOLUME-unsloth-studio}"
 STUDIO_MOUNT=()
 if [ -n "$STUDIO_VOLUME" ]; then
     STUDIO_MOUNT=(-v "$STUDIO_VOLUME":/opt/unsloth-studio)
+fi
+# per image family: a new volume keeps the files of the first image that mounts it
+WORKSPACE_DEFAULT=unsloth-workspace
+[[ $ROCM -eq 1 ]] && WORKSPACE_DEFAULT=unsloth-workspace-rocm
+WORKSPACE_VOLUME="${UNSLOTH_WORKSPACE_VOLUME-$WORKSPACE_DEFAULT}"
+WORKSPACE_MOUNT=()
+if [ -n "$WORKSPACE_VOLUME" ]; then
+    WORKSPACE_MOUNT=(-v "$WORKSPACE_VOLUME":/workspace)
 fi
 
 mkdir -p "$HF_CACHE" "$TRITON_CACHE"
@@ -540,6 +551,7 @@ exec docker run --rm ${TTY_FLAG[@]+"${TTY_FLAG[@]}"} \
     --stop-timeout "$STOP_TIMEOUT" \
     --ulimit memlock=-1 \
     --ulimit stack=67108864 \
+    ${WORKSPACE_MOUNT[@]+"${WORKSPACE_MOUNT[@]}"} \
     -v "$HF_CACHE":/workspace/.cache/huggingface \
     -v "$TRITON_CACHE":/workspace/.cache/triton \
     -v "$WORK_DIR":/workspace/host \

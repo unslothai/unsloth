@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Delete preflight and orphaned-companion cleanup for image-model assets.
-
-Three answers live here, all derived from the cache scan at call time (see ``hub.utils.companion_assets`` for why nothing is counted): :func:`delete_impact_response` (what a pending delete reclaims and what it leaves behind), :func:`companion_dependents` (who still needs a companion base, used as a delete guard) and :func:`orphan_companions_response` (companion bases no installed model needs any more).
-
-Sizes are real on-disk blob bytes from the HF cache scan, deduped per blob, not Hub metadata: the number in a delete dialog has to be the number the disk gives back.
-"""
+"""delete previews and orphan cleanup report deduplicated HF cache blob bytes, not Hub metadata."""
 
 from __future__ import annotations
 
@@ -18,20 +13,20 @@ from typing import Optional
 from fastapi import HTTPException
 from loggers import get_logger
 
-from hub.utils import companion_assets
+from hub.utils import companion_assets, download_registry
 from hub.utils.gguf import gguf_variant_key
 from hub.services.models import cache_inventory
 from hub.services.models.common import _is_main_gguf_filename
 from hub.utils.paths import is_valid_gguf_variant as _is_valid_gguf_variant
 from hub.utils.paths import is_valid_repo_id as _is_valid_repo_id
-from utils.paths.path_utils import is_appledouble_metadata
 
 logger = get_logger(__name__)
 
 
 def _repo_blob_bytes(repo_info, *, only = None) -> int:
-    """On-disk bytes of *repo_info*, deduped by blob so a file shared across revisions counts once. ``only`` is an optional predicate on the snapshot-relative file name."""
+    """return deduplicated bytes; filtered blobs count only if every snapshot reference matches."""
     unique: dict[str, int] = {}
+    retained: set[str] = set()
     for revision in getattr(repo_info, "revisions", ()) or ():
         rev_id = getattr(revision, "commit_hash", None) or str(id(revision))
         snapshot = getattr(revision, "snapshot_path", None)
@@ -43,20 +38,21 @@ def _repo_blob_bytes(repo_info, *, only = None) -> int:
                     name = Path(path).relative_to(Path(snapshot)).as_posix()
                 except ValueError:
                     pass
-            if only is not None and not only(name):
-                continue
             from hub.services.models.cache_inventory import _blob_key
 
-            unique[_blob_key(f, f"{rev_id}:{name}")] = int(getattr(f, "size_on_disk", 0) or 0)
-    return sum(unique.values())
+            key = _blob_key(f, f"{rev_id}:{name}")
+            if only is not None and not only(name, Path(path) if path else None):
+                retained.add(key)
+                continue
+            unique[key] = int(getattr(f, "size_on_disk", 0) or 0)
+    return sum(size for key, size in unique.items() if key not in retained)
 
 
-# One definition, so the orphan listing and the delete preview cannot disagree about which cached repos are leftovers (see companion_assets.repo_holds_denoiser).
 _repo_holds_denoiser = companion_assets.repo_holds_denoiser
 
 
 def _account_scans() -> list:
-    """A managed caller previews only the repos its grants cover; other accounts' downloads stay unseen."""
+    """managed callers see only repositories covered by their grants."""
     scans = cache_inventory.all_hf_cache_scans()
     access = cache_inventory._account_access()
     if not access.managed_account():
@@ -82,50 +78,71 @@ def _repos_by_id(cache_scans) -> dict[str, list]:
     return out
 
 
-def _variant_keys(repo_info, variant: str) -> set[str]:
-    """The variant keys *variant* names in *repo_info*, from the destructive path's own resolver. The inventory and the delete both identify a row by ``gguf_variant_key``, which for a path-qualified checkpoint (``distilled/ltx-2.3-22b-distilled-Q6_K``) is not the bare quant label. Comparing labels here made the preview miss the file entirely: 0 B reclaimed, and the last checkpoint of a repo read as if a sibling survived, so its companions were described as retained rather than freed."""
+def _variant_keys(
+    repo_info,
+    variant: str,
+    preferred_path: Optional[str] = None,
+) -> set[str]:
+    """use deletion keys because path-qualified checkpoints do not match bare quant labels."""
     from hub.services.models.deletion import _variant_keys_to_delete
-    return {key.lower() for key in _variant_keys_to_delete(repo_info, variant)}
+    return {key.lower() for key in _variant_keys_to_delete(repo_info, variant, preferred_path)}
 
 
-def _variant_bytes(repo_info, variant: str) -> int:
-    from hub.services.models.deletion import _audio_cpp_package_scope
+def _variant_bytes(
+    repo_info,
+    variant: str,
+    preferred_path: Optional[str] = None,
+) -> int:
+    from hub.services.models.deletion import (
+        _audio_cpp_package_scope,
+        _main_gguf_variant_keys,
+        _main_key,
+    )
 
-    wanted = _variant_keys(repo_info, variant)
-    own, protected = _audio_cpp_package_scope(repo_info, variant)
+    wanted = _variant_keys(repo_info, variant, preferred_path)
+    main_keys = _main_gguf_variant_keys(repo_info, preferred_path)
+    package_files, protected = _audio_cpp_package_scope(repo_info, variant)
 
-    def _matches(name: str) -> bool:
-        if name in protected:
-            return False
-        return name in own or (
-            _is_main_gguf_filename(name) and gguf_variant_key(name).lower() in wanted
+    def _matches(name: str, path: Optional[Path]) -> bool:
+        return (
+            path is not None
+            and name not in protected
+            and (
+                name in package_files
+                or (_is_main_gguf_filename(name) and _main_key(path, main_keys) in wanted)
+            )
         )
 
     return _repo_blob_bytes(repo_info, only = _matches)
 
 
-def _remaining_main_gguf_variants(repo_info, *, excluding: Optional[str] = None) -> set[str]:
-    skip = _variant_keys(repo_info, excluding) if excluding else set()
-    found: set[str] = set()
-    for revision in getattr(repo_info, "revisions", ()) or ():
-        snapshot = getattr(revision, "snapshot_path", None)
-        for f in getattr(revision, "files", ()) or ():
-            name = str(getattr(f, "file_name", "") or "")
-            path = getattr(f, "file_path", None)
-            if path and snapshot:
-                try:
-                    name = Path(path).relative_to(Path(snapshot)).as_posix()
-                except ValueError:
-                    pass
-            if not _is_main_gguf_filename(name):
-                continue
-            # The delete this previews ignores proven metadata, so counting it here would report a checkpoint as surviving that the deletion itself does not see.
-            if path and is_appledouble_metadata(Path(path)):
-                continue
-            key = gguf_variant_key(name).lower()
-            if key and key not in skip:
-                found.add(key)
-    return found
+def _remaining_main_gguf_variants(
+    repo_info,
+    *,
+    excluding: Optional[str] = None,
+    preferred_path: Optional[str] = None,
+) -> set[str]:
+    from hub.services.models.deletion import (
+        _audio_cpp_package_scope,
+        _main_gguf_variant_keys,
+        _repo_file_matches,
+    )
+
+    skip = _variant_keys(repo_info, excluding, preferred_path) if excluding else set()
+    package_files, protected = (
+        _audio_cpp_package_scope(repo_info, excluding) if excluding else (frozenset(), frozenset())
+    )
+    removed_package_paths = {
+        snap
+        for snap, _blob, name in _repo_file_matches(repo_info, lambda name: name in package_files)
+        if name not in protected
+    }
+    # deletion keys keep sibling builds with the same quant distinct
+    return {
+        key.lower()
+        for path, key in _main_gguf_variant_keys(repo_info, preferred_path).items()
+        if path not in removed_package_paths and key and key.lower() not in skip
+    }
 
 
 def companion_dependents(
@@ -134,14 +151,14 @@ def companion_dependents(
     *,
     ignore_repo_ids = (),
 ) -> list[str]:
-    """Installed checkpoints that would still need *base_repo_id* after ignoring *ignore_repo_ids*, sorted for a stable message. Empty means the base is safe to remove."""
+    """return sorted checkpoints needing *base_repo_id*; an empty result makes it removable."""
     scans = cache_scans if cache_scans is not None else cache_inventory.all_hf_cache_scans()
     required = companion_assets.required_companion_bases(scans, ignore_repo_ids = ignore_repo_ids)
     return sorted(required.get((base_repo_id or "").strip().lower(), set()))
 
 
 def _variant_is_a_required_companion_asset(repo_id: str, variant: str) -> bool:
-    """The deletion guard's predicate, shared so the preview and the refusal cannot disagree."""
+    """share the deletion guard so preview and refusal agree."""
     from hub.services.models.deletion import _variant_is_a_required_companion_asset as _impl
     return _impl(repo_id, variant)
 
@@ -150,6 +167,7 @@ def _delete_impact_blocking(
     repo_id: str,
     variant: Optional[str],
     cache_path: Optional[str] = None,
+    preferred_path: Optional[str] = None,
 ) -> dict:
     scans = _account_scans()
     by_id = _repos_by_id(scans)
@@ -157,7 +175,7 @@ def _delete_impact_blocking(
     all_copies = by_id.get(key, [])
     from hub.utils.gguf_sources import cached_gguf_action_path
 
-    cache_path = cached_gguf_action_path(repo_id, variant, cache_path)
+    cache_path = cached_gguf_action_path(repo_id, variant, cache_path, preferred_path)
     repos = all_copies
     surviving = []
     if cache_path:
@@ -176,21 +194,25 @@ def _delete_impact_blocking(
 
     reclaimed = 0
     for repo_info in repos:
-        reclaimed += _variant_bytes(repo_info, variant) if variant else _repo_blob_bytes(repo_info)
+        reclaimed += (
+            _variant_bytes(repo_info, variant, preferred_path)
+            if variant
+            else _repo_blob_bytes(repo_info)
+        )
 
-    # Would this delete leave the repo with no runnable checkpoint? Only then can its companions become reclaimable;
-    # while a sibling quant survives they stay in use.
+    # companions become reclaimable only when no runnable checkpoint survives
     removes_last_checkpoint = not any(_repo_holds_denoiser(repo) for repo in surviving)
     if variant:
         for repo_info in repos:
-            if _remaining_main_gguf_variants(repo_info, excluding = variant):
+            if _remaining_main_gguf_variants(
+                repo_info, excluding = variant, preferred_path = preferred_path
+            ):
                 removes_last_checkpoint = False
                 break
 
     ignore = [repo_id] if removes_last_checkpoint else []
     required_after = companion_assets.required_companion_bases(scans, ignore_repo_ids = ignore)
 
-    # Companion bases THIS pick uses, from the same derivation the loader's resolver feeds.
     own_bases = companion_assets.required_companion_bases(
         [_SingleRepoScan(repos)] if repos else [],
     )
@@ -230,7 +252,7 @@ def _delete_impact_blocking(
 
 
 class _SingleRepoScan:
-    """Adapter presenting a fixed repo list with the attribute the derivation reads."""
+    """present a fixed repo list through the scan interface."""
 
     def __init__(self, repos):
         self.repos = repos
@@ -310,8 +332,9 @@ async def delete_impact_response(
     repo_id: str,
     variant: Optional[str] = None,
     cache_path: Optional[str] = None,
+    hf_token: Optional[str] = None,
 ) -> dict:
-    """What a delete of *repo_id* (/*variant*) would reclaim, retain, and be blocked by."""
+    """preview bytes, retained assets, and blockers for deleting *repo_id* or its *variant*."""
     from core.inference.audio_cpp_models import cached_folder_target
 
     folder = await asyncio.to_thread(cached_folder_target, repo_id, (variant or "").strip() or None)
@@ -327,7 +350,23 @@ async def delete_impact_response(
     variant = (variant or "").strip() or None
     if variant is not None and not _is_valid_gguf_variant(variant):
         raise HTTPException(status_code = 400, detail = f"Invalid gguf_variant: {variant!r}")
-    return await asyncio.to_thread(_delete_impact_blocking, repo_id, variant, cache_path)
+    preferred_path = None
+    if variant is not None:
+        try:
+            from hub.services.models import gguf_variants
+            preferred_path = await gguf_variants.cached_gguf_variant_source_path(
+                repo_id, variant, hf_token
+            )
+        except Exception as exc:  # noqa: BLE001 -- local readiness is the offline fallback
+            logger.debug(
+                "Could not resolve the scoped GGUF source for %s [%s]: %s",
+                repo_id,
+                variant,
+                download_registry.scrub_secrets(str(exc), hf_token = hf_token),
+            )
+    return await asyncio.to_thread(
+        _delete_impact_blocking, repo_id, variant, cache_path, preferred_path
+    )
 
 
 def _orphan_companions_blocking() -> dict:
@@ -341,7 +380,7 @@ def _orphan_companions_blocking() -> dict:
         if required.get(base_key):
             continue
         repos = by_id[base_key]
-        # A repo holding a runnable denoiser is a model the user installed: a companion fetch takes everything BUT transformer/, while a pipeline pick takes it, so its presence answers whether the user asked for this repo. Per COPY, since a delete is scoped to one cache root.
+        # exclude user-installed copies with denoisers; companion fetches omit transformer/ and orphan rows are per root
         repos = [r for r in repos if not _repo_holds_denoiser(r)]
         if not repos:
             continue

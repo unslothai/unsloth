@@ -20,6 +20,7 @@ on:
 
       - 'tests/studio/playwright_strip_ansi_smoke.py'
       - 'tests/studio/playwright_composer_icons.py'
+      - 'tests/studio/playwright_tooltip_switch.py'
       - 'tests/studio/playwright_titlebar_blur.py'
       - 'tests/studio/playwright_chat_autoscroll.py'
       - 'tests/studio/playwright_research_freeze.py'
@@ -61,6 +62,7 @@ on:
       - 'tests/studio/test_frontend_dep_removal.py'
       - 'tests/studio/playwright_strip_ansi_smoke.py'
       - 'tests/studio/playwright_composer_icons.py'
+      - 'tests/studio/playwright_tooltip_switch.py'
       - 'tests/studio/playwright_titlebar_blur.py'
       - 'tests/studio/playwright_chat_autoscroll.py'
       - 'tests/studio/playwright_research_freeze.py'
@@ -451,6 +453,11 @@ jobs:
         working-directory: ${{ github.workspace }}
         timeout-minutes: 3
         run: python3 tests/studio/playwright_composer_icons.py chromium
+
+      - name: Icon tooltips follow the pointer between neighbours
+        working-directory: ${{ github.workspace }}
+        timeout-minutes: 3
+        run: python3 tests/studio/playwright_tooltip_switch.py chromium
 
       - name: Titlebar modal blur and window controls (Chromium)
         working-directory: ${{ github.workspace }}

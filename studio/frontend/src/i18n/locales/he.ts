@@ -671,6 +671,10 @@ export const he = {
   chatMenu: {
     more: "אפשרויות צ'אט",
     copy: "העתקה",
+    compact: "כווץ שיחה",
+    compactQueued: "התבקש כיווץ שיחה עבור ההודעה הבאה",
+    compactEmpty: "אין עדיין מה לכווץ",
+    compactUnsupported: "כיווץ שיחה דורש מודל GGUF או MLX עם תמיכה בכלים",
   },
   welcome: {
     goodToSeeYou: "טוב לראות אותך",
@@ -1954,7 +1958,21 @@ export const he = {
           "מודל Hugging Face או נתיב מקומי המשמש לאינדוקס וחיפוש במסמכים שלך. ברירת המחדל היא {defaultModel}.",
         searchPlaceholder: "חפש כל מודל ב-HF",
         reindexWarning:
-          "משפיע רק על מסמכים שיאונדקסו מעתה ואילך. העלה מחדש מסמכים קיימים לאחר שינוי המודל.",
+          "משפיע רק על מסמכים שיאונדקסו מעתה ואילך. לאחר שינוי המודל, הטמע מחדש מסמכים קיימים.",
+        reembed: {
+          label: "הטמעה מחדש של מסמכים",
+          staleOne: "מסמך אחד אונדקס במודל הטמעה אחר, ולכן החיפוש הסמנטי מדלג עליו.",
+          staleMany: "{count} מסמכים אונדקסו במודל הטמעה אחר, ולכן החיפוש הסמנטי מדלג עליהם.",
+          staleArchived:
+            "היסטוריית צ'אט קודמת אונדקסה במודל הטמעה אחר, ולכן החיפוש הסמנטי מדלג עליה.",
+          running: "מטמיע מחדש: {done} מתוך {total}",
+          action: "הטמעה מחדש",
+          stop: "עצור",
+          startFailed: "לא ניתן להתחיל הטמעה מחדש",
+          stopped: "ההטמעה מחדש נעצרה",
+          finished: "המסמכים הוטמעו מחדש",
+          finishedWithFailures: "לא ניתן היה להטמיע מחדש {count}",
+        },
         emptyError: "הזן מזהה מודל ב-Hugging Face או נתיב מקומי.",
         loadError: "טעינת הגדרת מודל השיבוץ נכשלה.",
         saveError: "שמירת מודל השיבוץ נכשלה.",
@@ -3126,6 +3144,23 @@ export const he = {
         "יישומים המשתמשים בטוקן זה יאבדו גישה באופן מיידי. לא ניתן לבטל פעולה זו.",
       revokeAction: 'בטל את "{name}"',
       revoking: "מבטל...",
+      audioApi: {
+        title: "API שמע",
+        description: "דיבור, שיבוט קול, תמלול ותהליכי העבודה של דף השמע.",
+        speak: "דיבור",
+        clone: "שיבוט",
+        transcribe: "תמלול",
+        workflows: "תהליכי עבודה",
+        separate: "הפרדה",
+        convert: "המרה",
+        music: "מוזיקה",
+        edit: "עריכה",
+        placeholderModel:
+          "אף מודל שהורד עדיין לא יכול להריץ את הדוגמה הזו, ולכן המודל המוצג הוא ממלא מקום. הורד קודם מודל בדף השמע.",
+        autoSwitchOff:
+          "המודל נטען לפי שם רק כשהחלפת מודל אוטומטית פועלת. הפעל אותה, או טען קודם את המודל בדף השמע שלו.",
+        useViaApi: "שימוש דרך API",
+      },
       decisionApi: {
         title: "ממשק API להחלטות",
         docs: "תיעוד",
@@ -3206,6 +3241,7 @@ export const he = {
       desktopAppVersion: "גרסת אפליקציית Desktop",
       desktopAppVersionUnavailable: "לא זמין",
       llamaCppVersion: "גרסת llama.cpp",
+      audioCppVersion: "גרסת audio.cpp",
       hardware: "חומרה",
       gpu: "GPU",
       cuda: "CUDA",
