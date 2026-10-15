@@ -47,6 +47,10 @@ import { AccessGlyphs } from "./shared";
 export const RESULT_CARD_HEIGHT_PX = 78;
 export const RESULT_ROW_GAP_PX = 8;
 export const RESULT_ROW_HEIGHT_PX = RESULT_CARD_HEIGHT_PX + RESULT_ROW_GAP_PX;
+// Phone widths (below md) use a shorter card; ResultCard's max-md classes match it.
+export const RESULT_CARD_MOBILE_HEIGHT_PX = 66;
+export const RESULT_ROW_MOBILE_HEIGHT_PX =
+  RESULT_CARD_MOBILE_HEIGHT_PX + RESULT_ROW_GAP_PX;
 export const RESULT_GRID_HEIGHT_PX = 64;
 export const RESULT_GRID_ROW_GAP_PX = 8;
 export const RESULT_GRID_ROW_HEIGHT_PX =
@@ -468,17 +472,17 @@ export const ResultCard = memo(function ResultCard({
       type="button"
       aria-label={row.repo}
       onClick={() => onSelect(row.id)}
-      className="hub-result-row hub-result-card group/row @container flex h-full w-full cursor-pointer items-center gap-3.5 px-4 text-left outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset"
+      className="hub-result-row hub-result-card group/row @container flex h-full w-full cursor-pointer items-center gap-3.5 px-4 text-left max-md:gap-3 max-md:px-3 outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset"
     >
       <OwnerAvatar
         owner={row.owner}
         repoName={row.repo}
-        className="size-[calc(52px*var(--ui-space-scale,1))] shrink-0 rounded-[16px] text-ui-16 ring-1 ring-[rgb(0_0_0_/_calc(0.05*var(--contrast-edge-gain,1)))] dark:ring-[rgb(255_255_255_/_calc(0.1*var(--contrast-edge-gain,1)))]"
+        className="size-[calc(52px*var(--ui-space-scale,1))] shrink-0 rounded-[16px] text-ui-16 max-md:size-[calc(42px*var(--ui-space-scale,1))] max-md:rounded-[13px] max-md:text-ui-14 ring-1 ring-[rgb(0_0_0_/_calc(0.05*var(--contrast-edge-gain,1)))] dark:ring-[rgb(255_255_255_/_calc(0.1*var(--contrast-edge-gain,1)))]"
         remote={false}
       />
       <div className="flex min-w-0 flex-1 flex-col">
         <div className="flex min-w-0 items-center gap-2">
-          <span className="truncate text-ui-15 font-semibold leading-ui-18 text-foreground">
+          <span className="truncate text-ui-15 font-semibold leading-ui-18 text-foreground max-md:text-ui-14">
             {row.repo}
           </span>
           <TitleMarkers

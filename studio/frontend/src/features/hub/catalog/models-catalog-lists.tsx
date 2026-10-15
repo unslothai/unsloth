@@ -40,6 +40,7 @@ import {
   NetworkErrorState,
   SkeletonList,
 } from "./catalog-states";
+import { useIsMobile } from "@/hooks/use-mobile";
 import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import {
   CATALOG_COLUMN_GAP_PX,
@@ -50,9 +51,11 @@ import {
   type AllModelsView,
   type InventorySort,
   RESULT_CARD_HEIGHT_PX,
+  RESULT_CARD_MOBILE_HEIGHT_PX,
   RESULT_GRID_HEIGHT_PX,
   RESULT_GRID_ROW_HEIGHT_PX,
   RESULT_ROW_HEIGHT_PX,
+  RESULT_ROW_MOBILE_HEIGHT_PX,
   RESULT_SPLIT_HEIGHT_PX,
   RESULT_SPLIT_ROW_HEIGHT_PX,
   ResultCard,
@@ -139,8 +142,17 @@ export function DiscoverList({
   showFormatDots?: boolean;
 }) {
   const isSplit = view === "split";
-  const rowHeight = isSplit ? RESULT_SPLIT_ROW_HEIGHT_PX : RESULT_ROW_HEIGHT_PX;
-  const cellHeight = isSplit ? RESULT_SPLIT_HEIGHT_PX : RESULT_CARD_HEIGHT_PX;
+  const isMobile = useIsMobile();
+  const rowHeight = isSplit
+    ? RESULT_SPLIT_ROW_HEIGHT_PX
+    : isMobile
+      ? RESULT_ROW_MOBILE_HEIGHT_PX
+      : RESULT_ROW_HEIGHT_PX;
+  const cellHeight = isSplit
+    ? RESULT_SPLIT_HEIGHT_PX
+    : isMobile
+      ? RESULT_CARD_MOBILE_HEIGHT_PX
+      : RESULT_CARD_HEIGHT_PX;
 
   return (
     <>
