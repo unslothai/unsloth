@@ -1012,3 +1012,45 @@ def test_chat_completions_keep_a_literal_think_tag_inside_the_answer(v1, monkeyp
 
     assert resp.status_code == 200, resp.text
     assert _chat_text(resp, stream) == answer
+
+
+@pytest.mark.parametrize("stream", [True, False])
+def test_responses_fail_on_a_provider_error_beside_choices(v1, monkeypatch, stream):
+    # OpenRouter's mid-stream errors carry both `error` and a non-empty choices array.
+    import routes.inference as inf
+
+    class MidStreamError(FakeExternalClient):
+        def stream_chat_completion(self, **kwargs):
+            async def gen():
+                yield 'data: {"choices": [{"index": 0, "delta": {"content": "par"}}]}'
+                yield (
+                    'data: {"error": {"message": "Rate limited.", "code": "429"}, '
+                    '"choices": [{"index": 0, "delta": {"content": ""}, "finish_reason": "error"}]}'
+                )
+                yield "data: [DONE]"
+
+            return gen()
+
+    monkeypatch.setattr(inf, "ExternalProviderClient", MidStreamError)
+    resp = v1.post(
+        "/v1/responses", json = {"model": CONNECTION_MODEL, "input": "hi", "stream": stream}
+    )
+
+    if stream:
+        events = _sse(resp.text)
+        assert events[-1]["type"] == "response.failed"
+        assert events[-1]["response"]["error"]["code"] == "rate_limit_exceeded"
+    else:
+        assert resp.status_code == 429
+        assert "Rate limited." in resp.text
+
+
+def test_responses_keep_a_literal_think_tag_inside_the_answer(v1, monkeypatch):
+    import routes.inference as inf
+
+    answer = 'Here is the template: {"template": "<think>example</think>"}'
+    monkeypatch.setattr(inf, "ExternalProviderClient", _content_stream(answer[:20], answer[20:]))
+    body = v1.post("/v1/responses", json = {"model": CONNECTION_MODEL, "input": "hi"}).json()
+
+    message = next(item for item in body["output"] if item["type"] == "message")
+    assert message["content"][0]["text"] == answer

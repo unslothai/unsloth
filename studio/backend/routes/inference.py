@@ -39722,10 +39722,11 @@ async def _responses_stream(
         # From the chat chunks; applied once before finish, so chunk order does not matter.
         stream_finish_reason: Optional[str] = None
         extractor = _ResponsesReasoningExtractor(
-            # A Connection's native thinking arrives as <think> markup even when thinking is on by default.
+            # A Connection's native thinking arrives as a leading <think> block even when thinking is on
+            # by default; only that block is read, so a literal tag later in the answer stays text.
             parse_think_markers = upstream is not None
             or _responses_should_parse_think_markers(chat_req, llama_backend),
-            single_block = _response_format_constrains_decoding(chat_req),
+            single_block = upstream is not None or _response_format_constrains_decoding(chat_req),
         )
         reasoning_state: dict[str, Any] = {"output_index": None, "item_id": None, "opened": False}
         message_state: dict[str, Any] = {
@@ -40250,7 +40251,9 @@ async def _responses_stream(
                     _drop_parallel_tool_call_deltas(chunk_data)
 
                 choices = chunk_data.get("choices", [])
-                if not choices:
+                # A Connection can report a mid-stream error beside a non-empty choices array
+                # (OpenRouter does), so it is checked before choices there.
+                if not choices or (upstream is not None and chunk_data.get("error")):
                     error_message = _monitor_openai_error_message(chunk_data)
                     if error_message:
                         # Upstream HTTP-200 SSE error payload (data: {"error": ...}) is a failed
@@ -40266,6 +40269,7 @@ async def _responses_stream(
                                 failed["response"]["error"]["code"] = "rate_limit_exceeded"
                         yield _sse("response.failed", failed)
                         return
+                if not choices:
                     _apply_usage(chunk_data.get("usage"), chunk_data.get("timings"))
                     continue
                 if choices[0].get("finish_reason"):
