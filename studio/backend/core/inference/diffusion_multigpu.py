@@ -2329,7 +2329,7 @@ def _mutable_container(args: tuple, kwargs: dict) -> tuple[Optional[str], list]:
     """(path of the first list / dict / set inside the call's arguments or None, the empty dicts passed). A batched
     call rebuilds the containers it flattens, so a cache dict or counter list the model mutates would never see the
     per-branch calls; only tuples of tensors and immutable values pass. An EMPTY dict is let through (FLUX.1 passes
-    ``joint_attention_kwargs = {}``): it is passed as is, and the caller checks it is still empty after the call."""
+    ``joint_attention_kwargs = {}``): the batched call gets a fresh empty stand-in, checked still empty afterwards."""
     empties: list = []
 
     def walk(value: Any, path: tuple, depth: int) -> Optional[str]:
@@ -2651,7 +2651,7 @@ class CfgBatchRouter:
         if hooked is not None:
             self._skip(f"stateful hook present ({hooked})")
             return None
-        mutable, shared_empty = _mutable_container(args, kwargs)
+        mutable, _empty = _mutable_container(args, kwargs)
         if mutable is not None:
             self._skip(
                 f"{mutable}: mutable container argument (the doubled call would not reach the caller's)"
@@ -2687,6 +2687,13 @@ class CfgBatchRouter:
             return None
         try:
             merged = _batch_leaves(first, second, batch)
+            # The caller's empty dicts never reach the speculative call: each gets a fresh empty stand-in, so a
+            # write during the doubled call cannot dirty the object the plain rerun and the caller will use.
+            stand_ins = []
+            for path, value in list(merged.items()):
+                if type(value) is dict and not value:
+                    merged[path] = {}
+                    stand_ins.append(merged[path])
             b_args, b_kwargs = _rebuild((args, kwargs), merged)
             snapshots = [
                 (path, v.clone() if isinstance(v, torch.Tensor) else v) for path, v in second
@@ -2725,11 +2732,9 @@ class CfgBatchRouter:
                 f"the batched call failed ({type(exc).__name__}: {exc}); one branch per call from here"
             )
             return None
-        if any(d for d in shared_empty):
-            # the model wrote into a dict both branches share: one doubled call is not two calls
-            self.disable(
-                "the batched call mutated a shared argument dict; one branch per call from here"
-            )
+        if any(stand_ins):
+            # the model writes into that dict: one doubled call is not two calls (the caller's dict is untouched)
+            self.disable("the batched call wrote into an argument dict; one branch per call from here")
             return None
         try:
             mine, other = _split_output(out, batch)

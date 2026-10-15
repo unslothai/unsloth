@@ -2284,3 +2284,36 @@ def test_cfg_batch_passes_an_empty_attention_kwargs_dict_and_checks_it():
         )[0]
         latents = latents - 0.1 * (u + 4.0 * (c - u))
     assert router.stats["batched_steps"] == 3
+
+
+def test_cfg_batch_speculation_never_writes_the_callers_empty_dict():
+    torch.manual_seed(0)
+
+    class WritingDit(_BatchDit):
+        def forward(self, hidden_states, timestep, encoder_hidden_states, joint_attention_kwargs = None,
+                    return_dict = False):
+            self.calls += 1
+            out = self.proj(hidden_states) * timestep + encoder_hidden_states.tanh() + len(joint_attention_kwargs)
+            if hidden_states.shape[0] == 4:  # writes only inside the doubled call
+                joint_attention_kwargs["seen"] = True
+            return (out,)
+
+    def loop(dit, latents, kw):
+        for i in range(4):
+            t = torch.tensor(1.0 - i / 4)
+            c = dit(hidden_states = latents, timestep = t, encoder_hidden_states = cond, joint_attention_kwargs = kw)[0]
+            u = dit(hidden_states = latents, timestep = t, encoder_hidden_states = uncond, joint_attention_kwargs = kw)[0]
+            latents = latents - 0.1 * (u + 4.0 * (c - u))
+        return latents
+
+    cond, uncond = _embeds()
+    latents = torch.randn(2, 4)
+    dit = WritingDit()
+    reference = loop(dit, latents.clone(), {})
+    router = mg.CfgBatchRouter(dit)
+    dit.forward = router
+    caller = {}
+    out = loop(dit, latents.clone(), caller)
+    assert caller == {}
+    torch.testing.assert_close(out, reference, rtol = 0, atol = 0)
+    assert "dict" in router.describe()["disabled_reason"]
