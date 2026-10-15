@@ -6066,3 +6066,56 @@ def test_a_stripped_device_flag_does_not_decide_the_candidate_drafter_discount(t
     assert clean == ("off", "Vulkan0")
     stale = _picker_owned_launch(tmp_path, extra_args = ["--device", "Vulkan1"], drafter = True)
     assert stale == clean
+
+
+@pytest.mark.parametrize("host_pinned_gib", [0, 4])
+def test_the_drafterless_retry_reserves_the_weights_that_land_in_vram(tmp_path, host_pinned_gib):
+    """The restored-slot plan other loads place against prices the same weights as the
+    first launch: the file less its host-pinned embeddings, plus the KV cache."""
+    gib = 1024**3
+    backend, gguf = _per_slot_mtp_backend(tmp_path, gb_per_slot = 3.0)
+    backend._torch_unified_memory_classification_known = lambda ids = None: True
+    backend._host_pinned_vram_discount = lambda _path, *_a, draft_model = False, **_kw: (
+        0 if draft_model else host_pinned_gib * gib
+    )
+    cmds = []
+
+    def fake_popen(cmd, **kwargs):
+        if not cmd or str(cmd[0]) != "/fake/llama-server":
+            return _REAL_POPEN(cmd, **kwargs)
+        cmds.append(list(cmd))
+        return type(
+            "Process",
+            (),
+            {
+                "pid": 123,
+                "stdout": (),
+                "poll": lambda self: None,
+                "terminate": lambda self: None,
+                "wait": lambda self, timeout = None: 0,
+                "kill": lambda self: None,
+            },
+        )()
+
+    def fake_health(timeout = None, **_kw):
+        backend._stdout_lines = []
+        return "draft-mtp" not in cmds[-1]
+
+    backend._wait_for_health = fake_health
+    with patch.object(subprocess, "Popen", side_effect = fake_popen):
+        assert backend.load_model(
+            GgufLoadIntent(
+                gguf_path = str(gguf),
+                model_identifier = "test",
+                n_ctx = 0,
+                n_parallel = 4,
+                n_parallel_from_default = True,
+                speculative_type = "auto",
+            )
+        )
+
+    first, retry = cmds[0], cmds[-1]
+    assert int(first[first.index("--parallel") + 1]) < 4
+    assert "draft-mtp" not in retry and retry[retry.index("--parallel") + 1] == "4"
+    # 16 GiB file and a flat 1 GiB KV estimate, all on the one card.
+    assert backend._planned_vram_mib == {0: (16 - host_pinned_gib + 1) * 1024}

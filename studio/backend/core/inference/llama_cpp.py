@@ -35008,8 +35008,15 @@ class LlamaCppBackend:
                                 n_ubatch = _ubatch_for_slots(n_parallel),
                                 flash_attn = planned_flash_attn,
                             )
+                            # The same weights the first launch's plan priced.
                             self._pending_plan_mib = _gpu_plan_mib(
-                                gguf_size + mmproj_size + kv_cache_bytes,
+                                (
+                                    gguf_size
+                                    if _model_weight_vram_bytes is None
+                                    else _model_weight_vram_bytes
+                                )
+                                + mmproj_size
+                                + kv_cache_bytes,
                                 list(self._pending_plan_mib),
                                 gpus,
                             )
