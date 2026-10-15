@@ -122,3 +122,24 @@ test("a compare pane's run drives its pair's browser, whatever the sidebar shows
   assert.equal(useBrowserStore.getState().tabs.find((tab) => tab.id === tabId)?.chat, "compare:pair1");
   assert.equal(agentChat(chatKeyOfThread("pane-thread")).tabId, null);
 });
+
+test("a new chat's run keeps its page when the chat is saved between actions", async () => {
+  globals.__native = true;
+  const store = useBrowserStore.getState();
+  store.closePanel();
+  store.showChat("single:draft");
+  await navigate("d1", "__default", "https://draft.example/");
+  assert.equal(resultOf("d1")?.ok, true, resultOf("d1")?.error);
+  const tabId = agentChat("single:draft").tabId;
+  assert.ok(tabId);
+  store.adoptChat("single:draft", chatKeyOfThread("saved"));
+  assert.equal(agentChat(chatKeyOfThread("saved")).tabId, tabId);
+  assert.equal(agentChat("single:draft").tabId, null);
+  // The next action names the saved chat and reads the same page, not a second one.
+  await runBrowserAction(
+    { id: "d2", sessionId: "s", op: "snapshot", direction: "down", policy },
+    { runKey: "run-__default", scope: "saved", userText: "" },
+  );
+  assert.equal(resultOf("d2")?.ok, true, resultOf("d2")?.error);
+  assert.equal(useBrowserStore.getState().tabs.filter((tab) => tab.chat === chatKeyOfThread("saved")).length, 1);
+});

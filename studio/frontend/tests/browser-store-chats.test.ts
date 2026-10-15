@@ -119,8 +119,27 @@ test("a deleted chat's tabs and panel state go with it; the chat on screen keeps
   assert.ok(popup);
   assert.ok(gone in useBrowserStore.getState().chats);
   // Chat deletion reaches the store through the chat feature's listener.
-  (globalThis as { __chatDeleted?: (ids: string[]) => void }).__chatDeleted?.(["gone"]);
+  (globalThis as { __chatDeleted?: (ids: string[], pairIds: string[]) => void }).__chatDeleted?.(["gone"], []);
   assert.equal(useBrowserStore.getState().tabs.some((tab) => tab.chat === gone), false);
   assert.equal(gone in useBrowserStore.getState().chats, false);
   assert.deepEqual(urls(), ["https://kept.example/"]);
+});
+
+test("deleting the chat on screen drops its tabs; deleting a comparison drops its pair's browser", () => {
+  const store = useBrowserStore.getState();
+  const deleted = (globalThis as { __chatDeleted?: (threadIds: string[], pairIds: string[]) => void }).__chatDeleted;
+  store.closePanel();
+  store.showChat(chatKeyOfThread("current"));
+  store.openUrl("https://current.example/");
+  deleted?.(["current"], []);
+  assert.equal(useBrowserStore.getState().tabs.some((tab) => tab.chat === chatKeyOfThread("current")), false);
+  assert.equal(useBrowserStore.getState().open, false);
+  // The next chat shown does not bring the deleted one's state back.
+  store.showChat(chatKeyOfThread("next"));
+  assert.equal(chatKeyOfThread("current") in useBrowserStore.getState().chats, false);
+
+  store.openTabIn("compare:pair9", "https://pair.example/", { background: true });
+  deleted?.(["left", "right"], ["pair9"]);
+  assert.equal(useBrowserStore.getState().tabs.some((tab) => tab.chat === "compare:pair9"), false);
+  assert.equal("compare:pair9" in useBrowserStore.getState().chats, false);
 });

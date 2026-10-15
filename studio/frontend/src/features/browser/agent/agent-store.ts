@@ -107,6 +107,16 @@ export function patchAgentChat(chat: string, patch: Partial<AgentChat>): void {
   }));
 }
 
+/** A new chat saved under its id keeps its run, tab and pending question. */
+export function adoptAgentChat(from: string, to: string): void {
+  useBrowserAgentStore.setState((state) => {
+    const moved = state.chats[from];
+    if (!moved) return state;
+    const { [from]: _moved, ...chats } = state.chats;
+    return { chats: chats[to] ? chats : { ...chats, [to]: moved } };
+  });
+}
+
 const answers = new Map<number, (allow: boolean) => void>();
 let nextQuestion = 1;
 

@@ -348,7 +348,10 @@ export async function deleteChatItems(
   // clear composer drafts so deleted threads leave no orphan keys.
   for (const id of threadIds) clearComposerDraft(id);
 
-  markChatThreadsDeleted(threadIds);
+  markChatThreadsDeleted(
+    threadIds,
+    items.filter((item) => item.type === "compare").map((item) => item.id),
+  );
   notifyChatHistoryUpdated();
 
   if (activeId !== undefined && items.some((item) => item.id === activeId)) {

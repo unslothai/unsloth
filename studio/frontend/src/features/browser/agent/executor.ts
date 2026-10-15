@@ -15,8 +15,8 @@ import { hasNativeView, keepInBackground, nativeAction, releaseBackground, whenV
 import { callNative, useNativeBrowser } from "../native-support";
 import { requestFrameAgent } from "../page-frame";
 import { browserPanelAvailable } from "../panel-availability";
-import { type BrowserTab, chatKeyOfThread, currentEntry, useBrowserStore } from "../store";
-import { agentChat, askUser, onBrowserAgentRunEnd, patchAgentChat, setActiveAction, useBrowserAgentStore } from "./agent-store";
+import { type BrowserTab, chatKeyOfThread, currentEntry, onChatAdopted, useBrowserStore } from "../store";
+import { adoptAgentChat, agentChat, askUser, onBrowserAgentRunEnd, patchAgentChat, setActiveAction, useBrowserAgentStore } from "./agent-store";
 import { type Gate, type Question, type SitePolicy, gateElement, gateNavigation, hostOfUrl, navigationBlocks } from "./gate";
 import { type SiteRule, ruleFor } from "./permissions";
 import { type AgentAnswer, type ElementInfo, pageAgentSource } from "./page-agent";
@@ -164,6 +164,13 @@ function chatOf(context: ActionContext): string {
   const scope = context.scope;
   return scope && scope !== "__default" ? chatKeyOfThread(scope) : useBrowserStore.getState().chat;
 }
+
+onChatAdopted((from, to) => {
+  const session = sessions.get(from);
+  sessions.delete(from);
+  if (session && !sessions.has(to)) sessions.set(to, Object.assign(session, { chat: to }));
+  adoptAgentChat(from, to);
+});
 
 // A chat's page stays open in the background only while its run lasts.
 onBrowserAgentRunEnd((chat) => {

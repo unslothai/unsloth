@@ -84,22 +84,22 @@ for (const t of loadTombstones()) {
 }
 gc();
 
-const deletedListeners = new Set<(threadIds: string[]) => void>();
+const deletedListeners = new Set<(threadIds: string[], pairIds: string[]) => void>();
 
 export function markChatThreadDeleted(threadId: string): void {
   deletedThreads.set(threadId, { id: threadId, deletedAt: nowMs() });
   gc();
   persist();
-  for (const listener of deletedListeners) listener([threadId]);
+  for (const listener of deletedListeners) listener([threadId], []);
 }
 
-/** `listener(threadIds)` when chats are deleted, so state kept per chat elsewhere can go too. */
-export function onChatThreadsDeleted(listener: (threadIds: string[]) => void): () => void {
+/** `listener(threadIds, pairIds)` when chats are deleted, so state kept per chat elsewhere can go too. */
+export function onChatThreadsDeleted(listener: (threadIds: string[], pairIds: string[]) => void): () => void {
   deletedListeners.add(listener);
   return () => deletedListeners.delete(listener);
 }
 
-export function markChatThreadsDeleted(threadIds: Iterable<string>): void {
+export function markChatThreadsDeleted(threadIds: Iterable<string>, pairIds: string[] = []): void {
   const now = nowMs();
   const ids = [...threadIds];
   for (const id of ids) {
@@ -107,7 +107,7 @@ export function markChatThreadsDeleted(threadIds: Iterable<string>): void {
   }
   gc();
   persist();
-  for (const listener of deletedListeners) listener(ids);
+  for (const listener of deletedListeners) listener(ids, pairIds);
 }
 
 export function isChatThreadDeleted(threadId: string): boolean {

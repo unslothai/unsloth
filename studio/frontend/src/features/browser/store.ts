@@ -511,16 +511,18 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
         renamingTabId: null,
       });
     },
-    adoptChat: (from, to) =>
+    adoptChat: (from, to) => {
+      if (from === to) return;
       set((state) => {
-        if (from === to) return state;
         const tabs = state.tabs.map((tab) => (tab.chat === from ? { ...tab, chat: to } : tab));
         const chats = { ...state.chats };
         const saved = chats[from];
         delete chats[from];
         if (saved && !chats[to]) chats[to] = saved;
         return { tabs, chats, chat: state.chat === from ? to : state.chat };
-      }),
+      });
+      for (const listener of adoptListeners) listener(from, to);
+    },
     revealIn: (chat, tabId) => {
       if (chat === get().chat) {
         if (get().activeTabId !== tabId) get().activateTab(tabId);
@@ -538,7 +540,6 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
       return tab.id;
     },
     forgetChat: (chat) => {
-      if (chat === get().chat) return;
       for (const tab of get().tabs) if (tab.chat === chat) get().closeTab(tab.id);
       set((state) => {
         if (!(chat in state.chats)) return state;
@@ -800,13 +801,23 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
   };
 });
 
+const adoptListeners = new Set<(from: string, to: string) => void>();
+
+/** `listener(from, to)` when a new chat's state moves to its saved id, so state kept per chat elsewhere follows. */
+export function onChatAdopted(listener: (from: string, to: string) => void): () => void {
+  adoptListeners.add(listener);
+  return () => adoptListeners.delete(listener);
+}
+
 let watchingDeletes = false;
 
 /** A deleted chat's tabs go with it. Hooked on first use: the chat feature imports this module. */
 function forgetDeletedChats(): void {
   if (watchingDeletes) return;
   watchingDeletes = true;
-  onChatThreadsDeleted((threadIds) => {
-    for (const threadId of threadIds) useBrowserStore.getState().forgetChat(chatKeyOfThread(threadId));
+  onChatThreadsDeleted((threadIds, pairIds) => {
+    const store = useBrowserStore.getState();
+    for (const threadId of threadIds) store.forgetChat(chatKeyOfThread(threadId));
+    for (const pairId of pairIds) store.forgetChat(`compare:${pairId}`);
   });
 }

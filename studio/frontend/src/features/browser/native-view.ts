@@ -262,7 +262,11 @@ function onNativeEvent(event: NativeEvent): void {
       } else {
         prompt(t("browser.native.externalPrompt", { host: hostOf(shownUrl(tab)), url: event.url }), {
           label: t("browser.native.open"),
-          onClick: () => store.openUrl(event.url, { newTab: true, from: shownUrl(tab) }),
+          onClick: () => {
+            const now = useBrowserStore.getState();
+            if (tab.chat !== now.chat) now.openTabIn(tab.chat, event.url, { from: shownUrl(tab), background: true });
+            else now.openUrl(event.url, { newTab: true, from: shownUrl(tab) });
+          },
         });
       }
       break;
