@@ -272,6 +272,8 @@ def _ctx_compute_bytes(
     flash_attn: bool,
     n_parallel: int,
     what: str = "",
+    kv_unified: bool = True,
+    swa_full: bool = False,
 ) -> Optional[int]:
     """The loader's per-device context-dependent compute scratch on a layer split (with
     ``what="checkpoint"`` one slot's context checkpoint, with ``"recurrent"`` the per-slot recurrent
@@ -301,6 +303,20 @@ def _ctx_compute_bytes(
             return int(est._ctx_checkpoint_bytes(cache_type, flash_attn = flash_attn))
         if what == "recurrent":
             return int(est._rollback_state_bytes(n_parallel))
+        if what == "kv":
+            # Architecture-aware: compact sliding-window layers, one MLA latent, attention-only
+            # hybrids. 0 when the metadata does not allow it.
+            return int(
+                est._estimate_kv_cache_bytes(
+                    ctx,
+                    cache_type,
+                    swa_full = swa_full,
+                    n_parallel = n_parallel,
+                    kv_unified = kv_unified,
+                    n_ubatch = ubatch,
+                    flash_attn = flash_attn,
+                )
+            )
         return int(
             est._compute_buffer_ctx_bytes(
                 ctx,
@@ -1076,6 +1092,29 @@ class ClusterServing:
     ) -> Any:
         from core.inference import spark_serving as ss
 
+        out = await self._plan_load(
+            request,
+            n_parallel,
+            inherited_extra_args = inherited_extra_args,
+            cancel_event = cancel_event,
+        )
+        if not self._passthrough and self.topology != "layer_split" and self._serving_split():
+            # Every path that drops a served split (forced single, caller placement, a plan that
+            # now fits here): the route strips the old block, so equal arguments would keep the
+            # primary on remote buffers this load no longer plans.
+            out = ss.SparkServing._request_with(out, {"force_reload": True})
+        return out
+
+    async def _plan_load(
+        self,
+        request: Any,
+        n_parallel: int,
+        *,
+        inherited_extra_args: Optional[List[str]] = None,
+        cancel_event: Any = None,
+    ) -> Any:
+        from core.inference import spark_serving as ss
+
         self._cancel_event = cancel_event
         self.in_flight = True
         self._alongside = bool(getattr(request, "alongside", False)) or bool(
@@ -1307,10 +1346,6 @@ class ClusterServing:
         self.topology, self.reason = plan.topology, plan.reason
         if plan.topology != "layer_split":
             self.block = []
-            if self._serving_split():
-                # The route strips the old block, so equal arguments would keep the primary on
-                # remote buffers the new plan no longer has.
-                return ss.SparkServing._request_with(request, {"force_reload": True})
             return request
         # RPC<k> counts devices over the probed --rpc list, so every endpoint that exposed one stays
         # in it even at zero weight; one that exposed none takes no number and is left out.
@@ -1599,7 +1634,22 @@ class ClusterServing:
         if not flash_attn and ss.kv_bytes_per_elem(v_type) < 2.0:
             kv_v = "f16"  # without flash attention a quantized V cache starts as f16 (loader retry)
         if cells and size:
-            kv = _kv_from_scalars(header, cells, cache_type, kv_v, ss)
+            # The loader's own estimator first; one cache type, so the heavier axis.
+            loader_kv = await asyncio.to_thread(
+                _ctx_compute_bytes,
+                local_file,
+                header_kv,
+                ctx,
+                min(batch, ubatch),
+                max((k_type, kv_v or v_type), key = ss.kv_bytes_per_elem),
+                flash_attn,
+                n_parallel,
+                "kv",
+                kv_unified = unified,
+                swa_full = any(str(a).split("=", 1)[0] == "--swa-full" for a in extras)
+                or bool((os.environ.get("LLAMA_ARG_SWA_FULL") or "").strip()),
+            )
+            kv = loader_kv or _kv_from_scalars(header, cells, cache_type, kv_v, ss)
         if kv is None and local_file and cells:
             kv = await asyncio.to_thread(ss.estimate_kv_bytes, local_file, cells, cache_type, kv_v)
         compute = await asyncio.to_thread(

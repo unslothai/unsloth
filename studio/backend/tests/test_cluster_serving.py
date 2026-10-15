@@ -2524,10 +2524,14 @@ def test_the_compute_reserve_prices_the_lighter_cache_axis_and_planned_flash_att
     monkeypatch.setattr(ss, "llama_server_supports", lambda flag, binary = None: True)
     extra = ["-ctk", "f16", "-ctv", "q4_0"]
     run(ss.before_load(_request(max_seq_length = 8192, llama_extra_args = extra), 4))
-    assert seen[0][4] == "q4_0" and seen[0][5] is True  # a quantized V forces flash attention on
+    assert [a for a in seen if not a[7:]][0][4] == "q4_0" and [a for a in seen if not a[7:]][0][
+        5
+    ] is True  # a quantized V forces flash attention on
     seen.clear()
     run(ss.before_load(_request(max_seq_length = 8192, llama_extra_args = ["-fa", "auto"]), 4))
-    assert seen[0][5] is False  # auto is priced as the costlier answer, as the loader does
+    assert [a for a in seen if not a[7:]][0][
+        5
+    ] is False  # auto is priced as the costlier answer, as the loader does
 
 
 def test_an_invalid_config_keeps_the_served_split_record(monkeypatch):
@@ -2660,3 +2664,38 @@ def test_checkpoints_are_priced_with_the_heavier_cache_axis(monkeypatch):
     run(ss.before_load(_request(max_seq_length = 8192, llama_extra_args = extra), 4))
     checkpoint = [a for a in seen if a[7:] == ("checkpoint",)]
     assert checkpoint and checkpoint[0][4] == "f16"
+
+
+@pytest.mark.parametrize(
+    "env, extra",
+    [
+        ({cs.ENV_TOPOLOGY: "single"}, []),
+        ({}, ["--device", "CUDA0"]),
+        ({}, ["--no-kv-offload"]),
+    ],
+)
+def test_every_path_that_drops_a_served_split_forces_a_relaunch(monkeypatch, env, extra):
+    _cluster_env(monkeypatch)
+    out = run(ss.before_load(_request(), 4))
+    backend = SimpleNamespace(
+        _process = SimpleNamespace(args = ["/b/llama-server"] + out.llama_extra_args),
+        is_loaded = True,
+    )
+    run(ss.after_load(backend, 4))
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    out = run(ss.before_load(_request(llama_extra_args = extra), 4))
+    assert ss.status()["topology"] == "single" and out.force_reload is True
+
+
+def test_the_loaders_architecture_aware_kv_estimate_wins(monkeypatch):
+    _cluster_env(monkeypatch)
+    monkeypatch.setattr(cs, "_local_gguf_header", lambda *a, **k: (_llama_header(8), {}))
+    monkeypatch.setattr(
+        cs, "_ctx_compute_bytes", lambda *a, **k: 5 * GIB if a[7:] == ("kv",) else 0
+    )
+    run(ss.before_load(_request(max_seq_length = 8192, ctx_checkpoints = 0), 4))
+    assert cs.state().plan.kv_bytes == 5 * GIB  # e.g. compact sliding-window layers
+    monkeypatch.setattr(cs, "_ctx_compute_bytes", lambda *a, **k: 0)
+    run(ss.before_load(_request(max_seq_length = 8192, ctx_checkpoints = 0), 4))
+    assert cs.state().plan.kv_bytes == cs._kv_from_scalars(_llama_header(8), 8192, None, None, ss)
