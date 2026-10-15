@@ -47,6 +47,10 @@ def _checkpoint_source(model):
         if holder is None or id(holder) in seen:
             continue
         seen.add(id(holder))
+        # ModelScope loads keep the repo id in the config and the downloaded weights here.
+        snapshot = holder.__dict__.get("_unsloth_modelscope_snapshot")
+        if isinstance(snapshot, str) and os.path.isdir(snapshot):
+            return snapshot
         config = getattr(holder, "config", None)
         name = getattr(config, "_name_or_path", None)
         if name:
@@ -142,20 +146,40 @@ def _wrap_save_pretrained(model):
 
     @functools.wraps(original)
     def save_pretrained(save_directory, *args, **kwargs):
+        from ..save import (
+            _INTERNAL_MTP_SAVE,
+            _refuse_mtp_variant,
+            _save_mtp_head_beside_adapter,
+            _stitch_mtp_head,
+        )
+
+        internal = _INTERNAL_MTP_SAVE.get()
+        if not internal:
+            _refuse_mtp_variant(model, kwargs.get("variant"))
         result = original(save_directory, *args, **kwargs)
-        from ..save import _INTERNAL_MTP_SAVE, _save_mtp_head_beside_adapter, _stitch_mtp_head
-
-        if (
-            _INTERNAL_MTP_SAVE.get()
-            or kwargs.get("push_to_hub")
-            or not os.path.isdir(save_directory)
-        ):
+        if internal or not os.path.isdir(save_directory):
             return result
-
         if os.path.isfile(os.path.join(save_directory, "adapter_config.json")):
-            _save_mtp_head_beside_adapter(model, save_directory)
+            files = (
+                ["mtp_head.safetensors"]
+                if _save_mtp_head_beside_adapter(model, save_directory)
+                else []
+            )
         else:
-            _stitch_mtp_head(model, save_directory)
+            report = _stitch_mtp_head(model, save_directory)
+            files = list(report["files_touched"]) if report else []
+        if kwargs.get("push_to_hub") and files:
+            # transformers uploaded the folder before the head existed; send the head files after it.
+            from huggingface_hub import HfApi
+            HfApi(token = kwargs.get("token")).upload_folder(
+                repo_id = kwargs.get("repo_id")
+                or str(save_directory).rstrip(os.sep).split(os.sep)[-1],
+                folder_path = save_directory,
+                allow_patterns = files,
+                commit_message = "Add the trained MTP head",
+                revision = kwargs.get("revision"),
+                create_pr = bool(kwargs.get("create_pr", False)),
+            )
         return result
 
     save_pretrained._unsloth_saves_mtp_head = True

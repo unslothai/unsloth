@@ -925,7 +925,13 @@ def _internal_mtp_save():
 def _save_mtp_head_beside_adapter(model, save_directory):
     """LoRA saves keep the trained head as `mtp_head.safetensors` so a later merge can stitch it."""
     head = _attached_mtp_head(model)
-    if head is None or not _is_main_rank():
+    if not _is_main_rank():
+        return None
+    if head is None:
+        # A reused folder's earlier head would be re-attached to this unrelated adapter on load.
+        stale = os.path.join(save_directory, "mtp_head.safetensors")
+        if os.path.isfile(stale):
+            os.remove(stale)
         return None
     from unsloth_zoo.speculative.stitch import save_mtp_head
 

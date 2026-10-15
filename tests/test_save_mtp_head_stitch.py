@@ -223,7 +223,12 @@ def test_reattach_is_a_no_op_without_a_saved_head(tmp_path):
     ]
     assert calls, "loader.py lost _reattach_saved_mtp_head"
     source = (SAVE_PY.parent / "models" / "loader.py").read_text(encoding = "utf-8")
-    assert source.count("_reattach_saved_mtp_head(model, old_model_name)") == 2
+    assert (
+        source.count(
+            "_reattach_saved_mtp_head(model, old_model_name, token = token, revision = revision)"
+        )
+        == 2
+    )
 
 
 def _tiny_glm(tmp_path, torch):
@@ -286,3 +291,107 @@ def test_nextn_head_round_trips_through_save_pretrained(save_module, tmp_path):
     # Saving again over a checkpoint that now carries the head rewrites it in place.
     report = save_module._stitch_mtp_head(fresh, str(out))
     assert report["mode"] == "replaced"
+
+
+class _AdapterSaver:
+    """A model whose save_pretrained writes an adapter folder, like PEFT's."""
+
+    def __init__(self, torch):
+        self.module = torch.nn.Module()
+        self.saved = []
+
+    def save_pretrained(self, save_directory, **kwargs):
+        self.saved.append(kwargs)
+        Path(save_directory).mkdir(parents = True, exist_ok = True)
+        (Path(save_directory) / "adapter_config.json").write_text("{}")
+
+
+def _wrapped_adapter(torch):
+    from unsloth.models.speculative import _wrap_save_pretrained
+
+    model = torch.nn.Module()
+    calls = []
+
+    def save_pretrained(save_directory, **kwargs):
+        calls.append(kwargs)
+        Path(save_directory).mkdir(parents = True, exist_ok = True)
+        (Path(save_directory) / "adapter_config.json").write_text("{}")
+
+    object.__setattr__(model, "save_pretrained", save_pretrained)
+    object.__setattr__(model, "_unsloth_mtp_head", _head(torch))
+    _wrap_save_pretrained(model)
+    return model, calls
+
+
+def test_plain_save_refuses_a_variant_before_writing(save_module, tmp_path):
+    import torch
+
+    model, calls = _wrapped_adapter(torch)
+    with pytest.raises(NotImplementedError):
+        model.save_pretrained(str(tmp_path / "v"), variant = "foo")
+    assert calls == []
+
+
+def test_plain_save_push_uploads_the_head(save_module, tmp_path, monkeypatch):
+    import huggingface_hub
+    import torch
+
+    uploads = []
+
+    class Api:
+        def __init__(self, token = None):
+            self.token = token
+
+        def upload_folder(self, **kwargs):
+            uploads.append(kwargs)
+
+    monkeypatch.setattr(huggingface_hub, "HfApi", Api)
+    model, _ = _wrapped_adapter(torch)
+    out = tmp_path / "me-adapter"
+    model.save_pretrained(str(out), push_to_hub = True, repo_id = "me/adapter", token = "t")
+    assert (out / "mtp_head.safetensors").is_file()
+    assert (
+        uploads
+        and uploads[0]["repo_id"] == "me/adapter"
+        and uploads[0]["allow_patterns"] == ["mtp_head.safetensors"]
+    )
+
+
+def test_adapter_save_without_a_head_drops_a_stale_one(save_module, tmp_path):
+    import torch
+
+    (tmp_path / "mtp_head.safetensors").write_bytes(b"old")
+    save_module._save_mtp_head_beside_adapter(torch.nn.Module(), str(tmp_path))
+    assert not (tmp_path / "mtp_head.safetensors").exists()
+
+
+def test_modelscope_snapshot_is_the_head_source(tmp_path):
+    import torch
+    from unsloth.models.speculative import _checkpoint_source
+
+    model = torch.nn.Module()
+    model.config = type("C", (), {"_name_or_path": "Org/Model"})()
+    assert _checkpoint_source(model) == "Org/Model"
+    model._unsloth_modelscope_snapshot = str(tmp_path)
+    assert _checkpoint_source(model) == str(tmp_path)
+
+
+def test_hub_adapter_reattaches_its_head(tmp_path, monkeypatch):
+    import huggingface_hub
+    from unsloth.models import loader, speculative
+
+    head_file = tmp_path / "snap" / "mtp_head.safetensors"
+    head_file.parent.mkdir()
+    head_file.write_bytes(b"h")
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", lambda repo, name, **k: str(head_file))
+    attached = []
+    monkeypatch.setattr(speculative, "attach_saved_mtp_head", lambda model, d: attached.append(d))
+    loader._reattach_saved_mtp_head(object(), "me/adapter", token = "t")
+    assert attached == [str(head_file.parent)]
+
+    def missing(*a, **k):
+        raise FileNotFoundError("no head")
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", missing)
+    loader._reattach_saved_mtp_head(object(), "me/other")
+    assert attached == [str(head_file.parent)]
