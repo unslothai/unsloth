@@ -29,7 +29,6 @@ def _fake_context_parallel(sharded):
 
 
 def test_none_position_ids_and_shift_labels_are_rebuilt():
-    # A collator may carry the keys with None: positions must still be global, targets pre-shifted.
     inputs = {
         "input_ids": torch.ones(1, 4, dtype = torch.long),
         "labels": torch.tensor([[1, 2, 3, 4]]),
@@ -46,7 +45,6 @@ def test_labels_shift_before_sharding_and_pad_to_load_balancer_chunks():
     labels = torch.tensor([[-100, 5, 6, 7, 8, 9]])
     inputs = {"input_ids": torch.tensor([[1, 5, 6, 7, 8, 9]]), "labels": labels.clone()}
     manager._prepare_inputs(inputs)
-    # 6 tokens -> 8 (2 * size chunks); the target of token t is label t + 1, even across a shard seam.
     assert inputs["shift_labels"].tolist() == [[5, 6, 7, 8, 9, -100, -100, -100]]
     assert inputs["labels"].tolist() == [[-100, 5, 6, 7, 8, 9, -100, -100]]
     assert inputs["position_ids"].tolist() == [[0, 1, 2, 3, 4, 5, 6, 7]]
@@ -107,8 +105,7 @@ def test_backend_is_sdpa_under_cp_and_packing_is_refused(monkeypatch):
 
 
 def test_sdpa_is_looked_up_per_call(monkeypatch):
-    # context_parallel swaps torch.nn.functional.scaled_dot_product_attention for ring attention;
-    # a name bound at import would silently keep attending to the local shard only.
+    # A name bound at import would keep attending to the local shard only.
     calls = []
     monkeypatch.setattr(
         torch.nn.functional, "scaled_dot_product_attention", lambda *a, **k: calls.append(1)
@@ -158,13 +155,11 @@ def test_training_step_divides_the_pre_shard_token_count_by_cp_size(monkeypatch)
     trainer.training_step(None, batch(), num_items_in_batch = torch.tensor(12.0))
     trainer.training_step(None, batch(), torch.tensor(12))
     assert [(k, float(n)) for k, n in seen] == [("train", 3.0)] * 3
-    # An integer count stays an integer (float32 loses exactness above 2**24 targets).
     assert seen[-1][1].dtype == torch.int64
 
 
 def test_shift_labels_is_not_an_eval_label_name():
-    # find_labels treats every forward parameter containing "label" as required: a named
-    # shift_labels made plain eval batches look label-less (KeyError 'prompt' in prediction_step).
+    # A named shift_labels made find_labels treat it as a required eval label.
     from transformers.utils import find_labels
     from unsloth.models.llama import CausalLM_fast_forward, LlamaModel_fast_forward_inference
 
@@ -176,7 +171,6 @@ def test_shift_labels_is_not_an_eval_label_name():
 
 @pytest.mark.parametrize("opt_out", [False, True])
 def test_gqa_stays_native_under_cp_unless_opted_out(monkeypatch, opt_out):
-    # The ring all-gathers and accumulates K/V: expanding to n_heads multiplies that memory.
     if opt_out:
         monkeypatch.setenv("UNSLOTH_CP_GQA", "0")
     monkeypatch.setattr(cp, "context_parallel", _fake_context_parallel([]))
@@ -208,7 +202,6 @@ def test_gqa_stays_native_under_cp_unless_opted_out(monkeypatch, opt_out):
 
 
 def test_every_rank_builds_the_same_global_mesh(monkeypatch):
-    # DeviceMesh is SPMD; per-group rank lists ([0, 1] vs [2, 3]) hang process group creation.
     built = []
 
     class FakeMesh:
@@ -264,7 +257,6 @@ def _patched_trainer(monkeypatch, **init_attrs):
             return contextlib.nullcontext()
 
         def compute_loss(self, model, inputs):
-            # One unit of loss per target on this rank's shard, over the count it was given.
             assert inputs["use_cache"] is False
             targets = inputs["shift_labels"].ne(-100).sum()
             return targets.float() / inputs["num_items_in_batch"]
@@ -292,7 +284,6 @@ def test_eval_loss_is_the_token_mean_even_with_an_empty_shard(monkeypatch, world
 
     @contextlib.contextmanager
     def first_half(mesh, buffers, buffer_seq_dims, no_restore_buffers):
-        # This rank's shard: the first half, which holds no targets (its peer holds both).
         for buffer in buffers:
             buffer.data = buffer[:, : buffer.shape[1] // 2].clone()
         yield
@@ -307,17 +298,14 @@ def test_eval_loss_is_the_token_mean_even_with_an_empty_shard(monkeypatch, world
     counts = []
 
     def all_reduce(tensor, group = None):
-        # Only the loss is reduced, over the CP group: add the peer's shard (2 targets, 1 each).
         assert group == "cp"
         counts.append(group)
         tensor.add_(2 / 2)
 
     monkeypatch.setattr(cp.dist, "all_reduce", all_reduce)
-    # 9 tokens pad to 12; shifted, the 2 targets sit at positions 6 and 7 (second half).
     labels = torch.tensor([[-100] * 7 + [1, 1]])
     batch = lambda: {"input_ids": torch.ones(1, 9, dtype = torch.long), "labels": labels.clone()}
     loss, logits, labels_out = trainer.prediction_step(None, batch(), True)
-    # This replica's token mean, whatever the number of replicas (a per-shard mean would be NaN).
     assert counts == ["cp"] and loss.item() == pytest.approx(1.0)
     assert logits is None and labels_out is None
     with pytest.raises(NotImplementedError, match = "loss-only"):
@@ -518,7 +506,7 @@ def test_a_later_non_cp_trainer_drops_the_installed_mesh(monkeypatch):
     Trainer()
     assert state.device_mesh is None
     other = object()
-    state.device_mesh = other  # someone else's mesh (e.g. accelerate's own) is left alone
+    state.device_mesh = other
     Trainer()
     assert state.device_mesh is other
 
@@ -567,7 +555,6 @@ def test_find_unused_parameters_is_off_under_cp_unless_the_user_set_it(monkeypat
         label_smoothing_factor = 0.0,
         ddp_find_unused_parameters = user_value,
     )
-    # What the Trainer builds for a PeftModel when the user leaves the argument as None.
     handler = types.SimpleNamespace(
         find_unused_parameters = True if user_value is None else user_value
     )
@@ -587,7 +574,6 @@ def test_find_unused_parameters_is_off_under_cp_unless_the_user_set_it(monkeypat
 
 
 def test_active_manager_is_visible_from_the_autograd_device_thread(monkeypatch):
-    # On CUDA the reentrant checkpoint recompute runs on autograd's device thread, not this one.
     import threading
 
     monkeypatch.setattr(cp, "context_parallel", _fake_context_parallel([]))
@@ -646,7 +632,7 @@ def test_sdpa_is_restored_when_the_cp_step_raises(monkeypatch):
 
     @contextlib.contextmanager
     def leaky(mesh, buffers, buffer_seq_dims, no_restore_buffers):
-        F.scaled_dot_product_attention = lambda *a, **k: None  # torch < 2.13 has no finally here
+        F.scaled_dot_product_attention = lambda *a, **k: None  # torch < 2.13
         yield
         F.scaled_dot_product_attention = original
 
@@ -663,7 +649,6 @@ def test_sdpa_is_restored_when_the_cp_step_raises(monkeypatch):
 def test_eval_gather_keeps_one_loss_per_cp_group(monkeypatch, remainder):
     import types
 
-    # 3 replicas x CP 2; each rank returns its 2 per-example losses, CP peers identical.
     per_rank = [torch.tensor([10.0 * r + 1, 10.0 * r + 2]) for r in (0, 0, 1, 1, 2, 2)]
     accelerator = types.SimpleNamespace(
         gather = lambda t: torch.cat(per_rank),
@@ -675,7 +660,6 @@ def test_eval_gather_keeps_one_loss_per_cp_group(monkeypatch, remainder):
     trainer.accelerator = accelerator
     trainer._context_parallel_manager = _manager(size = 2)
     out = trainer.evaluation_loop()
-    # One copy per replica, then the last-batch truncation counts replicas, not CP duplicates.
     expected = [1.0, 2.0, 11.0, 12.0, 21.0, 22.0]
     assert out.tolist() == (expected[:remainder] if remainder else expected)
 
@@ -750,7 +734,6 @@ def test_cp_dtensor_dispatcher_is_torn_down_when_the_step_raises(monkeypatch):
     assert dispatcher._custom_op_handlers is original and unregistered == [1]
 
 
-# --- options, gates and per-step torch state -------------------------------------------
 
 
 def _gated_trainer(monkeypatch, model = None, **args_overrides):
@@ -918,12 +901,10 @@ def test_training_step_refuses_a_missing_token_count_with_labels(monkeypatch):
         trainer.training_step(None, dict(batch))
     with pytest.raises(RuntimeError, match = "num_items_in_batch"):
         trainer.training_step(None, dict(batch), None)
-    # A collator may hand over pre-shifted targets only.
     shifted = {"input_ids": torch.ones(1, 4, dtype = torch.long), "shift_labels": torch.ones(1, 4)}
     with pytest.raises(RuntimeError, match = "num_items_in_batch"):
         trainer.training_step(None, shifted)
     assert cp.get_cp_manager() is None
-    # No labels (a custom loss path never gets this far) and a real count both run.
     trainer.training_step(None, {"input_ids": torch.ones(1, 4, dtype = torch.long)})
     trainer.training_step(None, dict(batch), torch.tensor(4.0))
 
@@ -964,7 +945,6 @@ def test_ring_pins_sdpa_to_kernels_the_dispatcher_rings(monkeypatch, raises):
             )
             if raises:
                 raise RuntimeError("boom")
-    # The math kernel is not ring-dispatched: it would attend over the local shard only.
     assert seen == [(True, True, False)]
     assert (
         cuda.flash_sdp_enabled(),
@@ -1142,7 +1122,6 @@ def test_ulysses_keeps_varlen_and_routes_attention_through_the_exchange(monkeypa
 
 
 def test_inherited_trainer_methods_are_resolved_per_call(monkeypatch):
-    # Trainer.train patched after import (e.g. unsloth_zoo's fast grad params) must still run.
     import trl
 
     class Base:

@@ -925,7 +925,6 @@ def LlamaAttention_fast_forward(
     if past_key_value is not None:
         kv_seq_len += past_key_value[0].shape[-2]
 
-    # Under context parallelism position_ids are this rank's global positions, up to size x q_len.
     cp_manager = get_cp_manager()
     rope_seq_len = kv_seq_len * cp_manager.size if cp_manager is not None else kv_seq_len
 
@@ -1770,7 +1769,6 @@ def CausalLM_fast_forward(fast_forward_inference):
         hidden_states = hidden_states.to(lm_head_device)
         if labels is not None:
             labels = labels.to(lm_head_device)
-        # Context parallelism shifts before sharding.
         if shift_labels is not None:
             shift_labels = shift_labels.to(lm_head_device)
 

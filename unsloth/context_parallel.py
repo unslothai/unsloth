@@ -46,7 +46,7 @@ def _torch_supports_context_parallel() -> bool:
 
 
 def _ring_sdpa_backends():
-    # Only kernels the CP dispatcher rings: the math kernel would silently attend over the local shard.
+    # The math kernel is not ringed: it would attend over the local shard only.
     if SDPBackend is None:
         return None
     backends = [SDPBackend.FLASH_ATTENTION, SDPBackend.EFFICIENT_ATTENTION]
@@ -118,7 +118,6 @@ def _unsupported_attention(config) -> Optional[str]:
 
 
 def _unregister_cp_sharding_rules() -> None:
-    # torch 2.10 - 2.12 register CP sharding rules and skip removing them when the step raises.
     try:
         from torch.distributed.tensor.experimental._context_parallel._sharding_rules import (
             unregister_cp_sharding_rules,
@@ -131,8 +130,7 @@ def _unregister_cp_sharding_rules() -> None:
 from .device_type import DEVICE_TYPE_TORCH
 from .utils.ulysses import _document_positions, ulysses_head_plan
 
-# A module global, not a ContextVar: on CUDA autograd runs backward (and so the reentrant
-# checkpoint recompute) on its own device thread, where a ContextVar set here reads as unset.
+# A module global, not a ContextVar: CUDA runs backward (and checkpoint recompute) on another thread.
 _ACTIVE_MANAGER: Optional["ContextParallelManager"] = None
 
 # shift_labels is built before sharding so each shard's last token keeps its next-token target.
@@ -140,7 +138,6 @@ _BUFFER_NAMES = ("input_ids", "attention_mask", "labels", "position_ids", "shift
 _PAD_VALUES = {"labels": -100, "shift_labels": -100, "attention_mask": 0, "input_ids": 0}
 
 
-# AcceleratorState is process-wide; a later non-CP trainer must not inherit our mesh.
 _INSTALLED_MESH = []
 
 
@@ -149,10 +146,8 @@ def get_cp_manager() -> Optional["ContextParallelManager"]:
 
 
 def _supports_context_parallel(model) -> bool:
-    # Llama forward (Llama, Qwen2, Gemma): RoPE from global position_ids, SDPA via the patched F.
     from .models.llama import LlamaAttention_fast_forward
 
-    # Every attention layer: one without ring attention would attend over its local shard only.
     forwards = [
         getattr(type(module).forward, "__func__", type(module).forward)
         for name, module in model.named_modules()
@@ -176,7 +171,6 @@ class ContextParallelManager:
         self.backend = backend
         self.rotate_method = rotate_method
         world_size = dist.get_world_size()
-        # DeviceMesh is SPMD (per-group meshes hang); accelerate reads "cp" to feed CP peers one batch.
         self.device_mesh = DeviceMesh(
             DEVICE_TYPE_TORCH,
             torch.arange(world_size).reshape(world_size // size, size),
@@ -189,7 +183,6 @@ class ContextParallelManager:
         return self.mesh.get_group()
 
     def attach_attention_hooks(self, model: torch.nn.Module) -> None:
-        # Marked on the module: a second CP trainer on the same model must not stack another hook.
         for name, module in model.named_modules():
             if name.endswith("self_attn") and not getattr(module, "_unsloth_cp_hooked", False):
                 module.register_forward_pre_hook(
@@ -226,7 +219,6 @@ class ContextParallelManager:
                 torch.arange(seq_len, device = input_ids.device).expand(bsz, -1).contiguous()
             )
         mask = inputs.get("attention_mask")
-        # The hook drops the mask: only 2D right padding is safe (causal) and shards on dim 1.
         if isinstance(mask, torch.Tensor) and (
             mask.ndim != 2 or (mask[:, 1:] > mask[:, :-1]).any()
         ):
@@ -300,16 +292,13 @@ class ContextParallelManager:
         ]
         global _ACTIVE_MANAGER
         previous, _ACTIVE_MANAGER = _ACTIVE_MANAGER, self
-        # torch < 2.13 does not tear down its CP dispatcher (SDPA patch, DTensor handlers,
-        # sharding rules) when the step raises (OOM, KeyboardInterrupt, a caught eval error).
+        # torch < 2.13 leaves its CP dispatcher installed when the step raises.
         sdpa = F.scaled_dot_product_attention
         dispatcher = getattr(DTensor, "_op_dispatcher", None)
         handlers = getattr(dispatcher, "_custom_op_handlers", None)
         ring_backends = _ring_sdpa_backends()
         raised = False
         try:
-            # The SDPA backend flags are global, so the checkpoint recompute on autograd's
-            # device thread sees the same pin; the caller runs backward inside this scope.
             with (
                 sdpa_kernel(ring_backends)
                 if ring_backends is not None
@@ -347,13 +336,11 @@ def _refuse_iterable_datasets(*datasets) -> None:
 
 
 def _cp_gather_for_metrics(accelerator, size: int):
-    # CP peers return the same reduced loss: keep one copy per group, else accelerate's
-    # remainder truncation of the last batch keeps CP duplicates and drops other replicas.
+    # Keep one loss per CP group, else last-batch truncation keeps duplicates and drops replicas.
     def gather(tensor, *args, **kwargs):
         if not isinstance(tensor, torch.Tensor) or tensor.ndim == 0:
             return accelerator.gather_for_metrics(tensor, *args, **kwargs)
         gathered = accelerator.gather(tensor)
-        # Ranks are (dp_replicate, cp) row-major, as in ContextParallelManager's mesh.
         gathered = gathered.reshape(-1, size, *tensor.shape)[:, 0].reshape(-1, *tensor.shape[1:])
         state = accelerator.gradient_state
         if state.end_of_dataloader and state.remainder > 0:
@@ -394,7 +381,6 @@ def patch_sft_trainer() -> None:
         accelerator = getattr(self, "accelerator", None)
         state = getattr(accelerator, "state", None)
         if manager is None:
-            # AcceleratorState is process-wide: a non-CP trainer must not inherit a CP mesh.
             if _INSTALLED_MESH and getattr(state, "device_mesh", None) is _INSTALLED_MESH[0]:
                 state.device_mesh = None
             return
@@ -402,9 +388,7 @@ def patch_sft_trainer() -> None:
             return
         accelerator.state.device_mesh = manager.device_mesh
         _INSTALLED_MESH[:] = [manager.device_mesh]
-        # A PEFT model is not a PreTrainedModel, so the Trainer asks DDP for find_unused_parameters,
-        # which fails with reentrant checkpointing ("mark a variable ready only once"). transformers
-        # 5.x builds the DDP handler at init, 4.x rebuilds it from the argument when it wraps the model.
+        # PEFT makes the Trainer ask DDP for find_unused_parameters, which breaks reentrant checkpointing.
         if getattr(self.args, "ddp_find_unused_parameters", None) in (None, False):
             self.args.ddp_find_unused_parameters = False
             handler = getattr(accelerator, "ddp_handler", None)
@@ -413,7 +397,6 @@ def patch_sft_trainer() -> None:
 
     @functools.wraps(original_init)
     def patched_init(self, *args, **kwargs):
-        # Bad options fail before the trainer tokenizes or packs the dataset.
         config = kwargs["args"] if "args" in kwargs else (args[1] if len(args) > 1 else None)
         context_parallel_options(config)
         original_init(self, *args, **kwargs)
@@ -465,19 +448,15 @@ def patch_sft_trainer() -> None:
                 "Unsloth: context parallelism needs loss_type = 'nll' without "
                 "label_smoothing_factor or compute_loss_func."
             )
-        # HF only computes num_items_in_batch for models taking loss kwargs; without it each shard
-        # would be a local mean (NaN on an empty shard) instead of a share of the global token sum.
         if getattr(self, "model_accepts_loss_kwargs", True) is False:
             raise NotImplementedError(
                 "Unsloth: context parallelism needs a model whose forward accepts loss kwargs "
                 "(num_items_in_batch)."
             )
-        # prediction_loop gathers without the CP dedupe in evaluation_loop.
         if getattr(self.args, "use_legacy_prediction_loop", False):
             raise NotImplementedError(
                 "Unsloth: context parallelism needs use_legacy_prediction_loop = False."
             )
-        # Eval counts tokens per shard; only a cross-rank token count weights shards correctly (empty shard = NaN).
         if getattr(self.args, "average_tokens_across_devices", True) is False:
             raise NotImplementedError(
                 "Unsloth: context parallelism needs average_tokens_across_devices = True."
@@ -485,7 +464,6 @@ def patch_sft_trainer() -> None:
         import accelerate
         from packaging.version import Version
 
-        # Older accelerate ignores the "cp" mesh dim, so CP peers would get different batches.
         if Version(accelerate.__version__) < Version("1.10.0"):
             raise NotImplementedError("Unsloth: context parallelism needs accelerate >= 1.10.0.")
         model_config = getattr(self.model, "config", None)
@@ -509,7 +487,6 @@ def patch_sft_trainer() -> None:
                 "(Llama, Qwen2, Gemma)."
             )
         accelerator = getattr(self, "accelerator", None)
-        # DeepSpeed's loader ignores cp; FSDP2 needs a parallelism_config with the mesh.
         distributed_type = getattr(getattr(accelerator, "distributed_type", None), "name", "NO")
         if distributed_type != "NO" and not distributed_type.startswith("MULTI_"):
             raise NotImplementedError(
@@ -526,8 +503,7 @@ def patch_sft_trainer() -> None:
         self._context_parallel_manager = manager
         manager.attach_attention_hooks(self.model)
         _install_accelerator_state(self)
-        # Packing (which ring disables) is the usual route to FA3 / FA4; the ring calls the same
-        # flash ops those override, so scope them to train() here too. Idempotent per trainer.
+        # The ring calls the flash ops FA3 / FA4 override, so scope them to train() here too.
         from .utils.packing import _scope_flash_attention_impl
 
         _scope_flash_attention_impl(self.model, self)
@@ -553,23 +529,16 @@ def patch_sft_trainer() -> None:
         if not isinstance(shift_labels, torch.Tensor):
             with manager.apply(inputs):
                 return original_prediction_step(self, model, inputs, *args, **kwargs)
-        # Our own count: whether the trainer passes one to eval, and how it rescales the loss, differs
-        # across transformers / TRL versions (none = per-shard means, NaN on an empty shard). Counted
-        # before sharding, when every CP peer holds this replica's whole batch.
         inputs["num_items_in_batch"] = shift_labels.ne(-100).sum().clamp_min(1)
-        # A loss-only pass: no KV cache held across a long-context forward.
         inputs.setdefault("use_cache", False)
         with manager.apply(inputs), torch.no_grad(), self.compute_loss_context_manager():
             loss = self.compute_loss(model, inputs).detach()
-        # Sum of the shards = this replica's token mean, as a non-CP device returns for its batch,
-        # so the eval loop's remainder truncation and mean over replicas match non-CP.
         dist.all_reduce(loss, group = manager.mesh.get_group())
         return loss, None, None
 
     @functools.wraps(original_train)
     def patched_train(self, *args, **kwargs):
         if getattr(self, "_context_parallel_manager", None) is not None:
-            # train_dataset may have been replaced after __init__ checked it.
             _refuse_iterable_datasets(getattr(self, "train_dataset", None))
         _install_accelerator_state(self)
         return original_train(self, *args, **kwargs)
@@ -578,7 +547,6 @@ def patch_sft_trainer() -> None:
     def patched_evaluate(self, *args, **kwargs):
         if getattr(self, "_context_parallel_manager", None) is not None:
             eval_dataset = args[0] if args else kwargs.get("eval_dataset")
-            # None means the trainer's current eval_dataset (it may have been replaced); a str names one.
             if eval_dataset is None or isinstance(eval_dataset, str):
                 current = self.eval_dataset
                 eval_dataset = (
@@ -601,7 +569,6 @@ def patch_sft_trainer() -> None:
     def patched_evaluation_loop(self, *args, **kwargs):
         manager = getattr(self, "_context_parallel_manager", None)
         if manager is not None:
-            # transformers 4.x resets gather_function after every loop, so set it per loop.
             self.gather_function = _cp_gather_for_metrics(self.accelerator, manager.size)
         return original_evaluation_loop(self, *args, **kwargs)
 
@@ -610,8 +577,6 @@ def patch_sft_trainer() -> None:
         manager = getattr(self, "_context_parallel_manager", None)
         if manager is not None:
             num_items = args[0] if args else kwargs.get("num_items_in_batch")
-            # Without a count the loss is a per-shard mean: wrong weights, NaN on an empty shard.
-            # HF's None-ness does not depend on the rank, so every rank raises before any collective.
             if (
                 num_items is None
                 and hasattr(inputs, "get")
@@ -621,12 +586,7 @@ def patch_sft_trainer() -> None:
                     "Unsloth: context parallelism needs num_items_in_batch in training_step; "
                     "this transformers / trainer path did not pass one."
                 )
-            # With average_tokens_across_devices HF sums the count over all W = D x N ranks before
-            # sharding, while every CP peer still holds the same batch: that sum is N x the unique
-            # target count C. Dividing by N once gives C; HF then scales the loss by W and DDP
-            # averages over W, so the update is sum over ranks of (shard loss sum) / C.
-            # HF divides the same way only for its own parallelism_config CP, refused above.
-            # Exact: CP peers hold the same batch, so the sum is a multiple of N.
+            # HF summed the count over all D x N ranks while CP peers share a batch: divide by N (exact).
             if args and args[0] is not None:
                 args = (args[0] // manager.size, *args[1:])
             elif kwargs.get("num_items_in_batch") is not None:
