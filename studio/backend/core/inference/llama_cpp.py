@@ -18206,6 +18206,49 @@ class LlamaCppBackend:
         )
         return int(n_attn * total_cells * (k_width * bpe_k + v_width * bpe_v))
 
+    def _kv_bytes_outside_moe_share_bands(
+        self,
+        n_ctx: int,
+        cache_type_kv: Optional[str] = None,
+        *,
+        n_parallel: int = 1,
+        kv_unified: bool = True,
+        flash_attn: bool = True,
+    ) -> int:
+        """The part of ``_estimate_kv_cache_bytes`` the MoE resident-share bands never saw.
+
+        _MOE_CACHE_MIN/MAX_RESIDENT_SHARE and _MOE_SPILL_UB_MAX_RESIDENT_LOSS were measured
+        against shares whose KV term had no qwen4exp lightning-indexer cache and no PLE conv
+        rows (Qwen3.8-Flash-Next is one of the models the cache band was read on). Both are
+        real allocations (the 768 MiB second KV buffer at -c 131072 on b11541) and placement
+        keeps charging them, but feeding them into a share moves the measured band edges: at
+        18 GB free and -c 131072 the raise flipped off and Flash-Next lost 27-42% of its
+        prompt speed for 2-4% of decode (Gate B1). Path 2 of _estimate_kv_cache_parts is the
+        only one that adds either, so every other model answers 0.
+        """
+        if not self._can_estimate_kv() or n_ctx <= 0 or self._uses_mla_cache():
+            return 0
+        if self._ssm_inner_size is None:
+            return 0
+        n_layers = self._n_layers  # type: ignore[assignment]
+        if self._target_kv_excludes_nextn():
+            n_layers = max(1, n_layers - (self._nextn_predict_layers or 0))
+        hybrid_split = self._hybrid_layer_split(n_layers)
+        if hybrid_split is None:
+            return 0
+        bpe_k, bpe_v = self._kv_elem_bytes_launched(cache_type_kv, flash_attn)
+        _slots, streams, cells_per_stream = _kv_cache_cell_layout(n_ctx, n_parallel, kv_unified)
+        indexer = self._indexer_cache_bytes(
+            hybrid_split[0], cells_per_stream * streams, bpe_k, bpe_v
+        )
+        # _mamba_recurrent_state_bytes adds the PLE rows only when it prices a recurrent state.
+        ple = (
+            self._ple_conv_state_bytes(n_parallel)
+            if self._mamba_recurrent_state_bytes(n_parallel)
+            else 0
+        )
+        return int(indexer + ple)
+
     def _ple_conv_state_bytes(
         self,
         n_parallel: int = 1,
@@ -29544,7 +29587,9 @@ class LlamaCppBackend:
                         except ValueError:
                             return True
 
-                    def _fitter_vram_shortfall() -> Optional[float]:
+                    def _fitter_vram_shortfall(share_basis: bool = False) -> Optional[float]:
+                        """``share_basis`` prices KV on the basis the MoE share bands were
+                        measured on (_kv_bytes_outside_moe_share_bands)."""
                         if not (gpus and effective_ctx > 0 and self._can_estimate_kv()):
                             return None
                         # Not abstained on under UNSLOTH_SMART_OFFLOAD. Both readers (the spill
@@ -29654,6 +29699,17 @@ class LlamaCppBackend:
                             + _compute_buffer_pipeline
                             + (
                                 _kv_bytes(effective_ctx)
+                                - (
+                                    self._kv_bytes_outside_moe_share_bands(
+                                        effective_ctx,
+                                        cache_type_kv,
+                                        n_parallel = n_parallel,
+                                        kv_unified = planned_kv_unified,
+                                        flash_attn = planned_flash_attn,
+                                    )
+                                    if share_basis
+                                    else 0
+                                )
                                 if _kv_offload_from_args(_child_extras, _child_env)
                                 else 0
                             )
@@ -29671,7 +29727,7 @@ class LlamaCppBackend:
                         if self.n_moe_layers <= 0:
                             return None
                         try:
-                            _short = _fitter_vram_shortfall()
+                            _short = _fitter_vram_shortfall(share_basis = True)
                             if _short is None:
                                 return None
                             _scan = self._gguf_tensor_scan(model_path) or (None, {}, 0)
