@@ -29,7 +29,6 @@ from core.inference import tools as tools_module  # noqa: E402
 from core.inference.context_window import _reply_floor  # noqa: E402
 from test_no_progress_tool_results import (  # noqa: E402
     _WEB_SEARCH_TOOL,
-    _call,
     _done,
     _make_backend,
     _sse,
@@ -45,8 +44,19 @@ def _tool(name):
     return {**_WEB_SEARCH_TOOL, "function": {**_WEB_SEARCH_TOOL["function"], "name": name}}
 
 
-def _named_call(name):
-    return _call("run it").replace('"web_search"', json.dumps(name))
+def _batch(name, calls):
+    return _sse(
+        {
+            "tool_calls": [
+                {
+                    "index": i,
+                    "id": f"call_{i}",
+                    "function": {"name": name, "arguments": json.dumps({"query": f"q{i}"})},
+                }
+                for i in range(calls)
+            ]
+        }
+    )
 
 
 def _run_one_call(
@@ -58,6 +68,7 @@ def _run_one_call(
     tool_name = "web_search",
     vision = False,
     count = lambda *_a, **_k: _SPENT,
+    calls = 1,
 ):
     received: list[object] = []
     results: list[str] = []
@@ -73,7 +84,7 @@ def _run_one_call(
 
     backend = _make_backend(
         monkeypatch,
-        [[_named_call(tool_name), _done()], [_sse({"content": "Done."}), _done()]],
+        [[_batch(tool_name, calls), _done()], [_sse({"content": "Done."}), _done()]],
         [],
     )
     backend._effective_context_length = _CTX
@@ -154,3 +165,21 @@ def test_compaction_off_reserves_the_images_a_result_can_add(monkeypatch, tool_n
 
     assert vision == int((_CTX - reserve) * 0.99) - _SPENT
     assert text_only == int((_CTX - _reply_floor(_CTX)) * 0.99) - _SPENT
+
+
+def test_compaction_off_keeps_the_reserve_when_pending_calls_are_estimated(monkeypatch):
+    # The thread counts exactly but the batch's pending arguments do not.
+    def _count(
+        messages,
+        _unused = None,
+        tools = None,
+        **_k,
+    ):
+        if tools is None and all(m.get("role") == "assistant" for m in messages):
+            raise RuntimeError("template rejects adjacent assistant turns")
+        return _SPENT
+
+    off, _ = _run_one_call(monkeypatch, context_overflow = None, count = _count, calls = 2)
+    on, _ = _run_one_call(monkeypatch, context_overflow = "truncate_oldest", count = _count, calls = 2)
+
+    assert off == on

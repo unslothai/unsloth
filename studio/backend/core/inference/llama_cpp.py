@@ -41685,6 +41685,7 @@ class LlamaCppBackend:
                                     # run nearer one or two. Under-priced, the first result
                                     # is handed room the later ARGUMENTS already occupy.
                                     _pending_args = 0
+                                    _pending_exact = True
                                     if _pending_msgs:
                                         try:
                                             _pending_args = self.count_chat_tokens(
@@ -41695,6 +41696,7 @@ class LlamaCppBackend:
                                                 "result budget: pending call count failed",
                                                 exc_info = True,
                                             )
+                                            _pending_exact = False
                                             _pending_args = 2 * estimate_messages_tokens_dense(
                                                 _pending_msgs
                                             )
@@ -41716,6 +41718,7 @@ class LlamaCppBackend:
                                             _exact_prompt_tokens is not None
                                             or (_compact_after_execution and _compacted_turn_tokens)
                                         )
+                                        and _pending_exact
                                         and messages_without_unpriced_media(conversation)
                                         is conversation
                                     ):
@@ -41726,17 +41729,18 @@ class LlamaCppBackend:
                                             else _ctx
                                         )
                                         _reserve = min(_requested, _reply_floor(_ctx))
-                                        # Images a result returns join the thread after this
-                                        # fit, unpriced, as do the batch's earlier ones.
+                                        # Images join the thread after the whole batch, unpriced:
+                                        # the ones already collected, and this call's own.
+                                        _images = sum(map(len, batch_mcp_images))
                                         if (
                                             mcp_is_image_tool(decision.tool_name)
                                             and image_share is None
                                             and self.is_vision
                                         ):
-                                            _batch_images = sum(map(len, batch_mcp_images))
+                                            _images += MCP_MAX_MODEL_IMAGES
+                                        if _images:
                                             _reserve += min(
-                                                MCP_MAX_TOTAL_MODEL_IMAGES,
-                                                _batch_images + MCP_MAX_MODEL_IMAGES,
+                                                MCP_MAX_TOTAL_MODEL_IMAGES, _images
                                             ) * _mcp_image_tokens(self)
                                         _result_max_tokens = min(
                                             _reserve, _requested, max(1, _ctx // 4)
