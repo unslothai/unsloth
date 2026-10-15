@@ -333,6 +333,7 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
                     DO_LOGIT_SCALING = DO_LOGIT_SCALING,
                     LOGIT_SCALE = logit_scaling,
                     num_warps = num_warps,
+                    enable_fp_fusion = True,
                 )
         else:
             # For large vocabs > 65336 like Gemma 256K
@@ -365,6 +366,7 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
                     DO_LOGIT_SCALING = DO_LOGIT_SCALING,
                     LOGIT_SCALE = logit_scaling,
                     num_warps = 32 if not is_cdna() else 16,
+                    enable_fp_fusion = True,
                 )
             # logsumexp(chunked_logsumexp) - x, with the -x done separately.
             logsumexp = torch.logsumexp(logsumexp, dim = 1)
@@ -414,6 +416,7 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
                 DO_LOGIT_SCALING = ctx.DO_LOGIT_SCALING,
                 LOGIT_SCALE = ctx.logit_scaling,
                 num_warps = 8,
+                enable_fp_fusion = True,
             )
         return (
             dlogits,
@@ -451,6 +454,10 @@ def fast_cross_entropy_loss(
         n_items = torch.count_nonzero(labels != -100)
     if torch.is_tensor(n_items):
         n_items = n_items.to(device)
+        # No labelled tokens (all -100): loss 0 and zero grads, not 0 / 0 = NaN.
+        n_items = torch.where(n_items == 0, torch.ones_like(n_items), n_items)
+    elif n_items == 0:
+        n_items = 1
     return loss.sum() / n_items
 
 

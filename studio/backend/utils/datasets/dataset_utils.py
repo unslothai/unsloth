@@ -3,7 +3,7 @@
 
 """Dataset utilities for format detection, conversion, and template application. Entry points: check_dataset_format (lightweight check whether manual mapping is needed, for the frontend), format_dataset (detects and normalizes dataset formats) and format_and_template_dataset (end-to-end processing with chat template). Internal utilities live in format_detection, format_conversion, chat_templates, vlm_processing, data_collators and model_mappings."""
 
-import json
+import inspect
 
 from .format_detection import (
     detect_dataset_format,
@@ -28,6 +28,7 @@ from .chat_templates import (
 )
 from .cells import cell_text, cell_turns, message_list_columns
 from .raw_text import prepare_raw_text_dataset
+from .pretokenized import PRETOKENIZED_FORMAT, is_pretokenized_dataset
 from .vlm_processing import generate_smart_vlm_instruction
 from .data_collators import DeepSeekOCRDataCollator, VLMDataCollator
 from .model_mappings import TEMPLATE_TO_MODEL_MAPPER
@@ -111,6 +112,18 @@ def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
                 "detected_format": "custom_heuristic",
                 "columns": columns,
                 "suggested_mapping": heuristic_mapping,
+                "detected_image_column": None,
+                "detected_text_column": None,
+                "is_image": multimodal_info["is_image"],
+                "multimodal_columns": multimodal_info.get("multimodal_columns"),
+                **audio_fields,
+            }
+        elif is_pretokenized_dataset(dataset):
+            return {
+                "requires_manual_mapping": False,
+                "detected_format": PRETOKENIZED_FORMAT,
+                "columns": columns,
+                "suggested_mapping": None,
                 "detected_image_column": None,
                 "detected_text_column": None,
                 "is_image": multimodal_info["is_image"],
@@ -233,9 +246,11 @@ def _apply_user_mapping(
 def _extract_column_value(val, col: str, label_mapping: dict) -> str:
     if isinstance(val, dict):
         if "text" not in val:
-            return json.dumps(val, ensure_ascii = False)
+            return cell_text(val)
         inner = val["text"]
         val = inner[0] if isinstance(inner, list) and inner else inner
+    if isinstance(val, list) and any(isinstance(item, (dict, list)) for item in val):
+        return cell_text(val)
 
     names = label_mapping.get(col)
     if not isinstance(names, dict):
@@ -358,7 +373,31 @@ def _apply_user_mapping_alpaca(
     )
 
 
-def format_dataset(
+def format_dataset(dataset, *args, **kwargs):
+    """``_format_dataset``, but token-id rows no format matched route as pre-tokenized under any format except raw."""
+    bound = _FORMAT_DATASET_SIGNATURE.bind(dataset, *args, **kwargs)
+    bound.apply_defaults()
+    info = _format_dataset(*bound.args, **bound.kwargs)
+    if (
+        info["final_format"] == "unknown"
+        and bound.arguments["format_type"] != "raw"
+        and not bound.arguments["custom_format_mapping"]
+        and is_pretokenized_dataset(dataset)
+    ):
+        info = {
+            **info,
+            "dataset": dataset,
+            "detected_format": PRETOKENIZED_FORMAT,
+            "final_format": PRETOKENIZED_FORMAT,
+            "chat_column": None,
+            "is_standardized": True,
+            "requires_manual_mapping": False,
+            "warnings": [],
+        }
+    return info
+
+
+def _format_dataset(
     dataset,
     format_type = "auto",
     tokenizer = None,
@@ -798,6 +837,9 @@ def format_dataset(
         raise ValueError(f"Unknown format_type: {format_type}")
 
 
+_FORMAT_DATASET_SIGNATURE = inspect.signature(_format_dataset)
+
+
 def format_and_template_dataset(
     dataset,
     model_name,
@@ -1077,7 +1119,7 @@ def format_and_template_dataset(
             raw_text_column = raw_text_column,
         )
 
-        if dataset_info["final_format"] == "raw_text":
+        if dataset_info["final_format"] in ("raw_text", PRETOKENIZED_FORMAT):
             summary = get_dataset_info_summary(dataset_info)
             return {
                 "dataset": dataset_info["dataset"],

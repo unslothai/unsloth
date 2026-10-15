@@ -617,7 +617,7 @@ def test_responses_endpoint_wires_auto_switch_before_streaming_dispatch():
     src = inspect.getsource(inference_route.openai_responses)
     assert "_maybe_auto_switch_model" in src
     hook_at = src.index("_maybe_auto_switch_model")
-    assert src.index("if payload.stream:") < hook_at
+    assert src.index("if payload.stream or connection is not None:") < hook_at
     assert hook_at < src.index("_responses_stream")
 
 
@@ -4544,6 +4544,7 @@ def test_completions_rejects_ignored_params_without_switch(monkeypatch, extra, p
         {"echo": False, "suffix": "", "best_of": 1},
         {"echo": None, "suffix": None, "best_of": None},
         {"best_of": 2, "n": 2},
+        {"best_of": 2, "n_cmpl": 2},
     ],
 )
 def test_completions_default_ignored_params_still_proxy(monkeypatch, extra):
@@ -4614,6 +4615,32 @@ def test_require_vision_rejects_text_target_before_switch(monkeypatch):
         )
     assert exc.value.status_code == 400
     assert rec.calls == []  # rejected before the load
+
+
+def test_anthropic_text_target_rejection_names_the_image_block(monkeypatch):
+    from models.inference import AnthropicImageBlock, AnthropicMessage, AnthropicMessagesRequest
+
+    backend, rec = _wired(
+        monkeypatch, _FakeBackend("org/A-GGUF"), ("/local/B.gguf", "Q8_0", "org/B-GGUF")
+    )
+    monkeypatch.setattr(inference_route, "_target_is_vision", lambda _p, _v = None, _i = True: False)
+    image = AnthropicImageBlock(
+        type = "image", source = {"type": "base64", "media_type": "image/png", "data": "AAAA"}
+    )
+    payload = AnthropicMessagesRequest(
+        model = "org/B-GGUF",
+        max_tokens = 16,
+        messages = [
+            AnthropicMessage(role = "user", content = "hi"),
+            AnthropicMessage(role = "assistant", content = "hello"),
+            AnthropicMessage(role = "user", content = [{"type": "text", "text": "what?"}, image]),
+        ],
+    )
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.anthropic_messages(payload, object(), "tester"))
+    assert exc.value.status_code == 400
+    assert exc.value.detail["error"]["message"].startswith("messages.2.content.1.image: ")
+    assert rec.calls == []
 
 
 def test_require_vision_allows_vision_target(monkeypatch):
@@ -12341,3 +12368,62 @@ def test_tensor_split_requires_matching_gpu_ids_at_the_settings_boundary(ids):
         settings_route.ModelOverridePayload(
             model_id = "org/split-GGUF", gpu_ids = ids, tensor_split = [3, 1]
         )
+
+
+@pytest.mark.parametrize("reload", [False, True], ids = ["switch", "idle reload"])
+def test_completions_echo_to_a_gguf_target_is_refused_before_it_loads_on_mlx(monkeypatch, reload):
+    from utils import hardware
+
+    monkeypatch.setattr(hardware, "get_device", lambda: hardware.DeviceType.MLX)
+    if reload:
+        _, rec = _wired(monkeypatch, _FakeBackend(None), None, enabled = False)
+        _stash(monkeypatch)
+    else:
+        _, rec = _wired(monkeypatch, _FakeBackend("org/A-GGUF"), ("/p/B", "Q8_0", "org/B-GGUF"))
+    body = {"model": "org/B-GGUF", "prompt": "hi", "echo": True}
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.openai_completions(_json_body_request(body), "tester"))
+    assert exc.value.detail["error"]["param"] == "echo" and rec.calls == []
+
+
+def test_completions_switch_admits_an_mlx_target_only_for_what_it_serves(monkeypatch):
+    from utils import hardware
+
+    seen = []
+
+    async def _switch(_request, _subject, **kw):
+        seen.append(kw)
+        raise RuntimeError("stop")
+
+    monkeypatch.setattr(inference_route, "_should_validate_before_switch", lambda: True)
+    monkeypatch.setattr(inference_route, "_auto_switch_from_request_body", _switch)
+    for device, body in (
+        (hardware.DeviceType.MLX, {"prompt": {"prompt_string": "p"}}),
+        (hardware.DeviceType.MLX, {"prompt": "p", "echo": True}),
+        (hardware.DeviceType.MLX, {"prompt": "p", "typical_p": 0.5}),
+        (hardware.DeviceType.CUDA, {"prompt": "p"}),
+        (hardware.DeviceType.CUDA, {"prompt": "p", "typical_p": 0.5}),
+    ):
+        monkeypatch.setattr(hardware, "get_device", lambda: device)
+        with pytest.raises(RuntimeError):
+            asyncio.run(inference_route.openai_completions(_json_body_request(body), "tester"))
+    assert [(kw["gguf_only"], kw["gguf_only_reason"]) for kw in seen] == [
+        (False, None),
+        (False, None),
+        (True, "'typical_p' is not supported for MLX models."),
+        (True, None),
+        # A GGUF-only host keeps the GGUF refusal: no MLX reason, no grammar compiled.
+        (True, None),
+    ]
+
+
+def test_completions_on_mlx_refuses_an_audio_cpp_target_before_it_loads(monkeypatch):
+    from utils import hardware
+
+    monkeypatch.setattr(hardware, "get_device", lambda: hardware.DeviceType.MLX)
+    target = "audio-cpp/audio.cpp-gguf/HTDemucs-6stems-GGUF"
+    _, rec = _wired(monkeypatch, _FakeBackend("org/A-GGUF"), (target, None, target))
+    body = {"model": target, "prompt": "hello"}
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.openai_completions(_json_body_request(body), "tester"))
+    assert exc.value.status_code == 400 and rec.calls == []

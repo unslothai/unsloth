@@ -16,7 +16,10 @@ import {
   useHubInventory,
 } from "@/features/hub";
 import { useMemo } from "react";
-import { allowedHiddenModelIdMatches } from "../components/model-selector/audio-picker-policy";
+import {
+  allowedHiddenModelIdMatches,
+  umbrellaFolderRowAllowed,
+} from "../components/model-selector/audio-picker-policy";
 import {
   type FamilyOverrideArtifactKind,
   taskOpaqueArtifactSupportsFamilyOverride,
@@ -54,6 +57,7 @@ function toCachedGgufRepo(row: CachedInventoryRow): CachedGgufRepo {
     partial_resumable: row.partialResumable,
     task: row.task ?? null,
     audio_type: row.audioType ?? null,
+    audio_workflows: row.audioWorkflows ?? null,
     has_variant_state: row.hasVariantState ?? false,
   };
 }
@@ -118,6 +122,7 @@ export function useChatPickerInventory(
     kind: "models",
     enabled: options.enabled,
     includeLocal: true,
+    includeUmbrellaFolders: true,
   });
 
   const cachedGguf = useMemo(
@@ -127,6 +132,7 @@ export function useChatPickerInventory(
           (row) =>
             row.modelFormat === "gguf" &&
             isListableCachedRow(row) &&
+            umbrellaFolderRowAllowed(row, options.allowedHiddenModelIds) &&
             (!isHiddenModelId(row.repoId) ||
               allowedHiddenModelIdMatches(
                 options.allowedHiddenModelIds,
@@ -147,6 +153,9 @@ export function useChatPickerInventory(
             // task, and a task of null is what every unclassified CHAT repo carries, so without
             // this it lands in the chat On Device list as a load that cannot succeed.
             !row.companion &&
+            // Same for a base repo a GGUF image load borrowed its VAE / text encoder from: a click
+            // reads it as a torn download and fetches the full denoiser. The Hub still lists it.
+            !row.companionPrefetch &&
             (!isHiddenModelId(row.repoId) ||
               allowedHiddenModelIdMatches(
                 options.allowedHiddenModelIds,

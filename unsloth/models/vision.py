@@ -100,6 +100,7 @@ from ..kernels import (
     post_patch_loss_function,
 )
 from ..kernels.bnb_override import install_bnb_nf4_override as _install_bnb_nf4_override
+from ..kernels.rope_embedding import register_split_model
 from ._utils import (
     __version__,
     importlib_version,
@@ -303,6 +304,7 @@ def _infer_device_map_from_loaded_model(model, skip = ()):
 
 def _repair_dispatch_hooks(model):
     """Give a dispatched module its hook back after the load replaced it. `dispatch_model` hooks every map entry; what drops the hook is our own `post_patch` -> `patch_model_and_tokenizer`, which installs a NEW Embedding and Linear over the same weights, so `_hf_hook` dies with the old module. Not tied-specific: `tie_word_embeddings = False` fails identically. Unrepaired, a split model raises `index is on cuda:0, different from other tensors on cuda:1` at the first embedding lookup."""
+    register_split_model(model)
     device_map = getattr(model, "hf_device_map", None)
     if not device_map or len(set(device_map.values())) < 2:
         return 0
@@ -962,21 +964,6 @@ def _embeddings_are_tied(input_embeddings, output_embeddings):
     return w_in is w_out or w_in.data_ptr() == w_out.data_ptr()
 
 
-def _offload_embedding_unsupported_platform():
-    # Offloaded embeddings do not work on Windows or WSL.
-    if bool(os.environ.get("WSL_DISTRO_NAME") or os.environ.get("WSL_INTEROP")):
-        return "WSL"
-    if os.name == "nt":
-        return "Windows"
-    # Docker on WSL2 has no WSL_* variables but shares the *-microsoft-standard-WSL2 kernel (unslothai/unsloth#3511).
-    try:
-        if "microsoft" in os.uname().release.lower():
-            return "WSL"
-    except Exception:
-        pass
-    return None
-
-
 def _embedding_dispatch_device(input_embeddings):
     # accelerate's hook re-sends the ids to the device it recorded, after our offload pre-hook already sent them to the CPU weight. Returns that device, or None.
     hook = getattr(input_embeddings, "_hf_hook", None)
@@ -1022,9 +1009,6 @@ def _resolve_offload_embedding(
 
     if not automatic and not offload_embedding:
         return False
-    platform_name = _offload_embedding_unsupported_platform()
-    if platform_name is not None:
-        return _decline(f"offloading is unsupported on {platform_name}.")
     try:
         in_embed = model.get_input_embeddings()
         out_embed = (
@@ -1118,7 +1102,7 @@ def offload_spare_embeddings(model, require_frozen = True):
     """offload_embedding = "auto" under memory pressure: move every input-side embedding that
     lm_head does not share (and, after get_peft_model, that is frozen) to host RAM. A tied input
     embedding stays, but Gemma 3n / 4 per-layer tables still go. Returns the bytes moved."""
-    if _offload_embedding_unsupported_platform() is not None or is_distributed():
+    if is_distributed():
         return 0
     try:
         found, out_embed = _input_side_embeddings(model)
@@ -1185,6 +1169,10 @@ VLLM_SUPPORTED_VLM = [
     "qwen3_5_moe",
     "gemma4",
     "gemma4_text",
+    "gemma4_unified",
+    "gemma4_unified_text",
+    "muse_glimmer",
+    "muse_glimmer_text",
 ]
 
 
@@ -1200,18 +1188,96 @@ def _zoo_supports_idefics3_fast_inference():
         return False
 
 
+def _zoo_supports_new_vlm_fast_inference(model_types):
+    """Only Gemma-4 Unified / Muse Glimmer loads probe the zoo; every other model passes."""
+    unified = any(t in ("gemma4_unified", "gemma4_unified_text") for t in model_types)
+    muse = any(t in ("muse_glimmer", "muse_glimmer_text") for t in model_types)
+    if not (unified or muse):
+        return True
+    try:
+        from types import SimpleNamespace
+        from unsloth_zoo.empty_model import _is_gemma4_config, get_model_layer_config
+
+        if unified and not _is_gemma4_config(SimpleNamespace(model_type = "gemma4_unified")):
+            return False
+        if muse and (
+            "model.vision_tower.layers.{kk}.attn.proj"
+            not in get_model_layer_config()["vision_layers"]
+        ):
+            return False
+        return True
+    except Exception:
+        return False
+
+
 # Need an unsloth_zoo that rebuilds MoE blocks from vLLM.
 VLLM_ZOO_MOE_VLM = ("qwen3_5_moe", "gemma4", "gemma4_text")
-# Dense Gemma-4 shares the model type but aborts in vLLM's audio-encoder profiling, and in
-# 4-bit hits a bnb loader vLLM >= 0.28 moved out of tree. Only MoE checkpoints pass.
-VLLM_MOE_ONLY_VLM = ("gemma4", "gemma4_text")
+# Dense Gemma-4 (E2B / E4B) needs a zoo that turns vLLM's audio profiling off (audio limit 0).
+VLLM_DENSE_NEEDS_ZOO_VLM = ("gemma4", "gemma4_text")
+
+
+def _zoo_supports_dense_gemma4_fast_inference():
+    # Older unsloth_zoo leaves the clipped vision linears of dense Gemma-4 clamping at +-inf.
+    try:
+        from unsloth_zoo.empty_model import get_model_layer_config
+        return (
+            "model.vision_tower.encoder.layers.{kk}.self_attn.q_proj.input_min"
+            in get_model_layer_config()["vision_layers"]
+        )
+    except Exception:
+        return False
 
 
 def _is_sparse_moe_config(config):
     text_config = getattr(config, "text_config", None) or config
     return bool(
-        getattr(text_config, "num_experts", None) or getattr(text_config, "enable_moe_block", False)
+        getattr(text_config, "num_experts", None)
+        or getattr(text_config, "num_local_experts", None)
+        or getattr(text_config, "n_routed_experts", None)
+        or getattr(text_config, "enable_moe_block", False)
     )
+
+
+def _fp8_moe_fast_inference_refusal(config):
+    """Refusal reason for FP8 sparse MoE + fast_inference, else None (old zoo shares no FP8 experts)."""
+    try:
+        from unsloth_zoo.empty_model import fp8_moe_checkpoint_scheme
+    except Exception:
+        fp8_moe_checkpoint_scheme = None
+    if fp8_moe_checkpoint_scheme is not None:
+        scheme = fp8_moe_checkpoint_scheme(config)
+        if scheme is None or scheme[0]:
+            return None
+        return scheme[1]
+    text_config = getattr(config, "text_config", None) or config
+    if not (
+        _is_sparse_moe_config(config)
+        or getattr(text_config, "num_local_experts", None)
+        or getattr(text_config, "n_routed_experts", None)
+    ):
+        return None
+    quant = getattr(config, "quantization_config", None) or getattr(
+        text_config, "quantization_config", None
+    )
+    if not quant:
+        return None
+    if not isinstance(quant, dict):
+        quant = quant.to_dict() if hasattr(quant, "to_dict") else dict(vars(quant))
+    method = str(quant.get("quant_method", "")).lower()
+    if "fp8" not in method or method.startswith("mx"):
+        return None
+    # Experts left unquantized by the checkpoint stay 16-bit in vLLM and are shared as before.
+    skipped = [
+        entry
+        for key in ("modules_to_not_convert", "ignore", "ignored_layers", "exclude_modules")
+        for entry in (quant.get(key, None) or ())
+    ]
+    if any(
+        isinstance(entry, str) and re.search(r"(^|[.:*])experts($|[.$*])", entry)
+        for entry in skipped
+    ):
+        return None
+    return "this unsloth_zoo cannot share FP8 MoE experts with vLLM (upgrade unsloth_zoo)"
 
 
 def _zoo_supports_moe_fast_inference():
@@ -2969,7 +3035,7 @@ class FastBaseModel:
         full_finetuning = False,
         token = None,
         device_map = DEFAULT_DEVICE_MAP,
-        # Planner hints for device_map = "unsloth"; see resolve_unsloth_device_map.
+        # planner options apply only when device_map = "unsloth".
         device_map_planner_kwargs = None,
         trust_remote_code = False,
         model_types = None,
@@ -3163,15 +3229,20 @@ class FastBaseModel:
                     "Please run `pip install --upgrade unsloth_zoo`."
                 )
         # Outside the VLM block: text_only = True has is_vlm_config False.
+        if fast_inference and not _zoo_supports_new_vlm_fast_inference(model_types):
+            raise RuntimeError(
+                f"Unsloth: {model_type_arch} fast_inference needs a newer unsloth_zoo. "
+                "Please run `pip install --upgrade unsloth_zoo`."
+            )
         if (
             fast_inference
-            and any(arch in VLLM_MOE_ONLY_VLM for arch in model_types)
+            and any(arch in VLLM_DENSE_NEEDS_ZOO_VLM for arch in model_types)
             and not _is_sparse_moe_config(auto_config)
+            and not _zoo_supports_dense_gemma4_fast_inference()
         ):
             raise RuntimeError(
-                f"Unsloth: fast_inference = True is only supported for the MoE {model_type_arch} "
-                "checkpoints (such as gemma-4-26B-A4B), not the dense ones yet. "
-                "Please set fast_inference = False."
+                f"Unsloth: dense {model_type_arch} fast_inference needs a newer unsloth_zoo. "
+                "Please run `pip install --upgrade unsloth_zoo`, or set fast_inference = False."
             )
         if (
             fast_inference
@@ -3507,9 +3578,7 @@ class FastBaseModel:
                 requested_device_map(device_map),
                 model_name,
                 max_seq_length = max_seq_length,
-                # Windows / WSL decline the offload later: a plan counting on it would leave a streamed table unhooked.
-                offload_embedding = bool(offload_embedding)
-                and _offload_embedding_unsupported_platform() is None,
+                offload_embedding = bool(offload_embedding),
                 planner_kwargs = planner_kwargs_with_max_memory(device_map_planner_kwargs, kwargs),
                 placement = "spread",
                 skip_reason = _planner_skip_reason
@@ -3796,6 +3865,8 @@ class FastBaseModel:
                     finally:
                         # The load deep-copied the config; give the caller's object its fp8 block back.
                         disarm_fp8_to_nf4(model_config)
+                # Before extracting the text core, which does not carry hf_device_map over.
+                fall_back_from_flash_attention_on_pre_ampere(model)
                 model = _text_trainable_core(
                     model, text_intent = bool(text_only) if text_intent is None else bool(text_intent)
                 )
@@ -3923,16 +3994,14 @@ class FastBaseModel:
                 from unsloth_zoo.utils import get_quant_type
 
                 # Mirrors load_vllm's bnb loader test, so prequantized bnb-4bit is refused too.
+                # Every sparse MoE, text ones too: vLLM's MoE LoRA layer rejects the bnb MoE
+                # method ("Old-style modular kernel not supported", vLLM 0.31 lora/layers/fused_moe.py).
                 if (
-                    (
-                        load_in_4bit
-                        or load_in_8bit
-                        or str(model_name).lower().endswith("-bnb-4bit")
-                        or get_quant_type(model_config) == "bitsandbytes"
-                    )
-                    and any(arch in VLLM_ZOO_MOE_VLM for arch in model_types)
-                    and _is_sparse_moe_config(model_config)
-                ):
+                    load_in_4bit
+                    or load_in_8bit
+                    or str(model_name).lower().endswith("-bnb-4bit")
+                    or get_quant_type(model_config) == "bitsandbytes"
+                ) and _is_sparse_moe_config(model_config):
                     raise NotImplementedError(
                         f"Unsloth: fast_inference = True does not support bitsandbytes weights (load_in_4bit / load_in_8bit = True "
                         "or a prequantized bnb-4bit checkpoint) for the sparse MoE "
@@ -3941,9 +4010,35 @@ class FastBaseModel:
                         "Load in 16-bit (load_in_4bit = False, load_in_8bit = False), or set fast_inference = False."
                     )
 
+                # Refuse unsupported FP8 MoE before vLLM allocates the engine.
+                fp8_moe_refusal = _fp8_moe_fast_inference_refusal(model_config)
+                if fp8_moe_refusal is not None:
+                    raise NotImplementedError(
+                        f"Unsloth: fast_inference = True cannot share the FP8 MoE experts of {model_type_arch} "
+                        f"with training: {fp8_moe_refusal}.\n"
+                        "Supported: block FP8 checkpoints (quant_method = 'fp8', weight_block_size = [128, 128], "
+                        "dynamic activations). Load the 16-bit (BF16) checkpoint with fast_inference = True, "
+                        "or set fast_inference = False."
+                    )
+
                 allowed_args = inspect.getfullargspec(load_vllm).args
+                _vllm_model_name = resolve_vllm_model_path(
+                    model_name,
+                    token,
+                    revision = _revision,
+                    cache_dir = kwargs.get("cache_dir"),
+                    local_files_only = local_files_only,
+                    force_download = kwargs.get("force_download", False),
+                    use_safetensors = kwargs.get("use_safetensors"),
+                    from_tf = kwargs.get("from_tf", False),
+                    from_flax = kwargs.get("from_flax", False),
+                    subfolder = kwargs.get("subfolder"),
+                    weights_at_root = True,
+                    variant = kwargs.get("variant"),
+                    gguf_file = kwargs.get("gguf_file"),
+                )
                 load_vllm_kwargs = dict(
-                    model_name = model_name,
+                    model_name = _vllm_model_name,
                     config = model_config,
                     gpu_memory_utilization = gpu_memory_utilization,
                     max_seq_length = max_seq_length,
@@ -4692,20 +4787,20 @@ class FastBaseModel:
             target_parameters = packed_expert_target_parameters(
                 model, target_parameters, _packed_leaves
             )
+            # vLLM serves Nemotron-H's relu2 experts only via the 2D FusedMoEWithLoRA; load_lora refuses a stacked adapter.
+            if (
+                target_parameters
+                and getattr(model, "vllm_engine", None) is not None
+                and getattr(getattr(model, "config", None), "model_type", None) == "nemotron_h"
+            ):
+                print(
+                    "Unsloth: fast_inference (vLLM) cannot serve LoRA on Nemotron-H's MoE experts, so they stay frozen "
+                    f"({target_parameters} not trained). Use fast_inference = False to train them."
+                )
+                target_parameters = None
 
         if _moe_module_targets:
-            if isinstance(target_modules, (list, tuple)):
-                target_modules = list(target_modules) + [
-                    target for target in _moe_module_targets if target not in target_modules
-                ]
-            elif isinstance(target_modules, str):
-                _expert_leaves = sorted({t.rsplit(".", 1)[0] for t in _moe_module_targets})
-                _expert_alt = (
-                    r".*\.experts\.(?:"
-                    + "|".join(re.escape(leaf) for leaf in _expert_leaves)
-                    + r")\.\d+"
-                )
-                target_modules = f"(?:{target_modules})|(?:{_expert_alt})"
+            target_modules = add_moe_target_modules(target_modules, _moe_module_targets)
             print(
                 f"Unsloth: Detected MoE model with per-expert Linear experts. "
                 f"Enabling LoRA on {len(_moe_module_targets)} expert projection modules."
@@ -4870,6 +4965,9 @@ class FastBaseModel:
         float32_mixed_precision = None,
     ):
         reject_alora(model)
+        from ..import_fixes import fix_transformers_voxtral_realtime_inplace_audio_add
+
+        fix_transformers_voxtral_realtime_inplace_audio_add()
         full_finetuning = os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1"
 
         if type(float32_mixed_precision) is bool:
@@ -5020,28 +5118,9 @@ class FastBaseModel:
             m.for_training = functools.partial(FastBaseModel.for_training, m)
             m.for_inference = functools.partial(FastBaseModel.for_inference, m)
             m = m.model
-        # Set weight[padding_idx] = 0 only for embeddings NOT tied with the lm_head: when tied, zeroing the padding row zeros the lm_head row and forces logit = 0 for the pad token. Only when the tokenizer is defined, since eos_token == pad_token sometimes.
-        pad_token_id = getattr(tokenizer, "pad_token_id", None)
-        lm_head = getattr(model, "lm_head", None)
-        lm_head_weight = getattr(lm_head, "weight", None) if lm_head is not None else None
-        if tokenizer is not None and getattr(tokenizer, "eos_token_id", None) != pad_token_id:
-            with torch.no_grad():
-                for name, module in model.named_modules():
-                    if type(module) is torch.nn.Embedding:
-                        if (
-                            getattr(module, "weight", None) is not None
-                            and getattr(module, "padding_idx", None) is not None
-                        ):
-                            if (
-                                module.padding_idx == pad_token_id
-                                and module.padding_idx < module.weight.shape[0]
-                            ):
-                                if (
-                                    lm_head_weight is not None
-                                    and module.weight.data_ptr() == lm_head_weight.data_ptr()
-                                ):
-                                    continue
-                                module.weight[module.padding_idx] = 0
+        from ..tokenizer_utils import zero_pad_embedding_rows
+
+        zero_pad_embedding_rows(model, tokenizer)
         return model
 
     @staticmethod

@@ -153,6 +153,7 @@ import {
   type FileViewState,
   browserFile,
   cachedPage,
+  chatTabs,
   currentEntry,
   entryKey,
   pageDownload,
@@ -160,6 +161,7 @@ import {
 } from "./store";
 import { TabView } from "./tab-view";
 import { ZOOM_STEPS, canZoom, homeZoom, stepZoom, zoomTab } from "./zoom";
+import { useShallow } from "zustand/shallow";
 
 function tabAddress(tab: BrowserTab | undefined): string {
   if (!tab) return "";
@@ -227,7 +229,9 @@ const NAV_BUTTON =
   "size-8 rounded-md text-foreground disabled:hover:text-foreground disabled:opacity-30";
 const NAV_ICON = "size-4.5";
 const ANNOTATE_BUTTON = "size-8 shrink-0 rounded-full p-0 text-foreground";
-const ANNOTATE_GLYPH = "size-4.5";
+// Half a pixel right and down: the frame's whole top-left corner and the pointer aimed back at it
+// read as up and left of centre, though the strokes are centred.
+const ANNOTATE_GLYPH = "size-4.5 translate-x-[0.5px] translate-y-[0.5px]";
 const NAV_STROKE = 2;
 const URLBAR =
   "bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] focus-within:bg-[color-mix(in_oklab,var(--foreground)_calc(9%*var(--contrast-wash-gain,1)),transparent)]";
@@ -2390,7 +2394,7 @@ function liveTabIds(mounted: readonly string[], tabs: BrowserTab[], activeTabId:
 /** The chat's in-app browser, memoized so chat renders skip it. `active`: its chat is shown. */
 export const BrowserPanel = memo(function BrowserPanel({ active = true }: { active?: boolean }) {
   const t = useT();
-  const tabs = useBrowserStore((state) => state.tabs);
+  const tabs = useBrowserStore(useShallow(chatTabs));
   const activeTabId = useBrowserStore((state) => state.activeTabId);
   const device = useBrowserStore((state) => state.device);
   const annotateTabId = useBrowserStore((state) => state.annotateTabId);

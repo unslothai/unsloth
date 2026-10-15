@@ -5082,6 +5082,52 @@ def patch_enable_input_require_grads():
     logger.info("Unsloth: Patched enable_input_require_grads for vision model compatibility")
 
 
+_VOXTRAL_REALTIME_MODULE = "transformers.models.voxtral_realtime.modeling_voxtral_realtime"
+
+
+def fix_transformers_voxtral_realtime_inplace_audio_add():
+    """VoxtralRealtimeModel.forward does `inputs_embeds += audio_embeds`; with input gradients on that is a
+    leaf requiring grad, so step 1 raises (#3013, transformers <= 5.19). Hand it a non-leaf copy. Lazy: only
+    once transformers imported the module."""
+    cls = getattr(sys.modules.get(_VOXTRAL_REALTIME_MODULE), "VoxtralRealtimeModel", None)
+    if cls is None or getattr(cls.forward, "_unsloth_inplace_audio_fix", False):
+        return
+    try:
+        if "inputs_embeds +=" not in inspect.getsource(cls.forward):
+            return
+    except Exception:
+        return
+    import torch
+
+    original = cls.forward
+
+    @functools.wraps(original)
+    def forward(
+        self,
+        input_ids = None,
+        *args,
+        **kwargs,
+    ):
+        if args or not torch.is_grad_enabled():
+            return original(self, input_ids, *args, **kwargs)
+        inputs_embeds = kwargs.get("inputs_embeds")
+        # input_ids is read only for this lookup, so passing the embeddings instead is equivalent.
+        if inputs_embeds is None and input_ids is not None:
+            inputs_embeds, input_ids = self.get_input_embeddings()(input_ids), None
+        if (
+            isinstance(inputs_embeds, torch.Tensor)
+            and inputs_embeds.is_leaf
+            and inputs_embeds.requires_grad
+        ):
+            inputs_embeds = inputs_embeds.clone()
+        if inputs_embeds is not None:
+            kwargs["inputs_embeds"] = inputs_embeds
+        return original(self, input_ids, **kwargs)
+
+    forward._unsloth_inplace_audio_fix = True
+    cls.forward = forward
+
+
 def patch_unsafe_trainer_rng_load():
     """Harden Trainer._load_rng_state against CVE-2026-1839 (RCE from a malicious
     rng_state.pth on resume). Hardens only the rng torch.load, via a thread-local
@@ -5217,6 +5263,58 @@ def patch_bitsandbytes_paged_optimizer_resume():
 
     _unsloth_load_state_dict._unsloth_repage = True
     Optimizer8bit.load_state_dict = _unsloth_load_state_dict
+
+
+def patch_bitsandbytes_optimizer_step_sync():
+    """Skip Optimizer8bit.step's per-parameter sync_gpu for non-paged optimizers on the default stream.
+    Paged state needs it to order prefetch (bnb 41a9c708); non-paged it only stalls the host, output bit-identical."""
+    if "bitsandbytes" not in sys.modules:
+        return
+    try:
+        import bitsandbytes.optim.optimizer as bnb_optimizer
+    except Exception:
+        return
+    Optimizer8bit = getattr(bnb_optimizer, "Optimizer8bit", None)
+    step = getattr(Optimizer8bit, "step", None)
+    sync_gpu = getattr(bnb_optimizer, "sync_gpu", None)
+    if step is None or sync_gpu is None or getattr(step, "_unsloth_no_sync", False):
+        return
+    try:
+        if "sync_gpu(p)" not in inspect.getsource(step):
+            return
+    except (OSError, TypeError):
+        return
+    import contextvars
+
+    skip = contextvars.ContextVar("unsloth_bnb_skip_sync", default = False)
+
+    @functools.wraps(sync_gpu)
+    def _unsloth_sync_gpu(t):
+        if skip.get():
+            return None
+        return sync_gpu(t)
+
+    import torch
+
+    def _on_default_streams(optimizer):
+        # bnb kernels run on the legacy default stream; off it the sync is the only ordering.
+        devices = {p.device for group in optimizer.param_groups for p in group["params"]}
+        return bool(devices) and all(
+            d.type == "cuda" and torch.cuda.current_stream(d) == torch.cuda.default_stream(d)
+            for d in devices
+        )
+
+    @functools.wraps(step)
+    def _unsloth_step(self, *args, **kwargs):
+        token = skip.set(not getattr(self, "is_paged", False) and _on_default_streams(self))
+        try:
+            return step(self, *args, **kwargs)
+        finally:
+            skip.reset(token)
+
+    _unsloth_step._unsloth_no_sync = True
+    bnb_optimizer.sync_gpu = _unsloth_sync_gpu
+    Optimizer8bit.step = _unsloth_step
 
 
 def _raised_in_triton_host_build(exc):
@@ -8925,6 +9023,9 @@ _PEFT_MOE_CONVERSION_PATTERNS = {
     "qwen3_omni_moe": "qwen2_moe",
     "qwen3_omni_moe_thinker": "qwen2_moe",
     "solar_open": "qwen2_moe",
+    # Keyed by class name, not model type: transformers (main, October 2026) aliases the
+    # unlimited_ocr text model's class to qwen2_moe, and the lookup keeps its case.
+    "UnlimitedOcrTextModel": "qwen2_moe",
 }
 
 # MoE-named types whose conversion family is NOT one of the two fused ones, so peft's
@@ -9026,7 +9127,8 @@ class _UnavailableConversionPatternMap(dict):
 
     def _is_moe(self, key):
         name = str(key).lower()
-        if name in _PEFT_MOE_CONVERSION_PATTERNS:
+        # Both spellings: model types are lowercase, the class-name aliases are not.
+        if key in _PEFT_MOE_CONVERSION_PATTERNS or name in _PEFT_MOE_CONVERSION_PATTERNS:
             return True
         if name in _PEFT_MOE_NAMED_NOT_FUSED or name in _PEFT_MOE_NAMED_NOT_CONVERTED:
             return False

@@ -1,27 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The wheels we build ourselves, and the resolver that has to find them.
-
-Upstream publishes prebuilt flash-attn / causal-conv1d / mamba-ssm wheels against torch 2.10 and
-2.11, reused through 2.12. torch 2.13 broke the extension ABI (materialize_cow_storage, the
-c10_cuda_check_implementation signature) and 2.14 broke it again, so from 2.13 on the wheels come
-from .github/workflows/prebuilt-cuda-wheels.yml and a release on this repository.
-
-Two halves have to agree for that to work at all, and they live in different languages in
-different directories: the workflow decides what a wheel is CALLED, and wheel_utils decides what
-the installer ASKS FOR. A disagreement between them is a 404 and a five-hour source build, and
-neither half can notice it alone. So the central test here builds the filename both ways for
-every cell the workflow can produce and asserts they are the same string.
-
-The rest pins what must not move:
-
-* 2.4 through 2.12 keep resolving to upstream, unchanged, including the 2.11/2.12 reuse;
-* the override is Linux x86_64, cu13, cxx11abiTRUE only, so Windows, macOS, aarch64, CUDA 12 and
-  a non-C++11-ABI torch keep exactly the behaviour they have today;
-* the workflow stays dispatch-only, keeps `contents: write` on the publish job alone, and keeps
-  every action pinned to a SHA, because it signs and publishes binaries under our identity.
-"""
+"""Workflow wheel names must equal what the resolver asks for, or installs 404; override is cu13 only."""
 
 from __future__ import annotations
 
@@ -84,18 +64,10 @@ def triggers(doc: dict) -> dict:
     return doc.get(True) if True in doc else doc.get("on")
 
 
-# ── The two halves agree ──────────────────────────────────────────────────────
-
-
 class TestWorkflowAndResolverAgree:
     def test_every_cell_the_workflow_builds_is_what_the_resolver_asks_for(self):
-        """The one test this whole file exists for.
-
-        The workflow renames its build output to prebuilt_wheels.wheel_name(...); the installer
-        downloads the basename of unsloth_prebuilt_wheel_url(...). Nothing else checks that
-        those are the same string, and if they ever differ the symptom is a 404 on a user's
-        machine rather than a red run here.
-        """
+        """Nothing else checks the workflow's wheel name matches the installer's download; a
+        mismatch is a 404."""
         checked = 0
         for package, spec in prebuilt_wheels.SPECS.items():
             for torch_version in prebuilt_wheels.TORCH_VERSIONS:
@@ -112,13 +84,49 @@ class TestWorkflowAndResolverAgree:
                     assert url.rsplit("/", 1)[1] == built
                     assert url.startswith(OUR_BASE)
                     checked += 1
-        # 3 packages x 2 torch minors x 3 interpreters. A silently emptied table would
-        # otherwise pass this class without asserting anything.
+        # 3 packages x 2 torch minors x 3 interpreters; guards against an emptied table.
         assert checked == 18
 
     def test_the_versions_published_are_the_versions_resolved(self):
         for package, spec in prebuilt_wheels.SPECS.items():
             assert wheel_utils._UNSLOTH_PREBUILT_VERSIONS[spec["dist"]] == spec["version"], package
+
+    def test_every_extra_cell_the_workflow_builds_is_what_the_resolver_asks_for(self):
+        """win_amd64 torch 2.10 to 2.12: outside TORCH_VERSIONS, so the class above does not see them."""
+        checked = 0
+        for (platform, torch_mm), pythons in wheel_utils._UNSLOTH_PREBUILT_EXTRA_CELLS.items():
+            built_torches = prebuilt_wheels._platform_torches(platform)
+            torch_version = next(v for v in built_torches if v.startswith(f"{torch_mm}."))
+            assert torch_version not in prebuilt_wheels.TORCH_VERSIONS
+            for python_version in prebuilt_wheels.PYTHON_VERSIONS:
+                tag = prebuilt_wheels.python_tag(python_version)
+                for package, spec in prebuilt_wheels.SPECS.items():
+                    url = wheel_utils.unsloth_prebuilt_wheel_url(
+                        filename_prefix = spec["dist"],
+                        env = env(
+                            torch_mm = torch_mm,
+                            python_tag = tag,
+                            platform_tag = platform,
+                        ),
+                    )
+                    if tag not in pythons:
+                        assert url is None
+                        continue
+                    built = prebuilt_wheels.wheel_name(
+                        package, torch_version, python_version, platform
+                    )
+                    assert url == f"{OUR_BASE}{built}"
+                    checked += 1
+        assert checked == 18
+        extra = {
+            (platform, prebuilt_wheels.torch_minor(v))
+            for platform in prebuilt_wheels.PLATFORMS
+            for v in prebuilt_wheels._platform_torches(platform)
+            if v not in prebuilt_wheels.TORCH_VERSIONS
+        }
+        # The resolver only asks for cells the workflow builds. A new cell is built and published
+        # before the resolver asks for it, so users never get a 404 in between.
+        assert set(wheel_utils._UNSLOTH_PREBUILT_EXTRA_CELLS) <= extra
 
     def test_the_two_torch_tables_are_the_same_set(self):
         built = {prebuilt_wheels.torch_minor(version) for version in prebuilt_wheels.TORCH_VERSIONS}
@@ -128,9 +136,6 @@ class TestWorkflowAndResolverAgree:
         workflow = yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))
         default = triggers(workflow)["workflow_dispatch"]["inputs"]["release_tag"]["default"]
         assert default == wheel_utils.UNSLOTH_PREBUILT_RELEASE_TAG
-
-
-# ── The override fires exactly where it should ────────────────────────────────
 
 
 class TestOverrideScope:
@@ -199,9 +204,6 @@ class TestOverrideScope:
             filename_prefix = "flash_attn", env = env(python_tag = python_tag)
         )
         assert url is not None and f"-{python_tag}-{python_tag}-" in url
-
-
-# ── Nothing that worked before changed ────────────────────────────────────────
 
 
 class TestBackwardsCompatible:
@@ -275,9 +277,6 @@ class TestBackwardsCompatible:
         )
 
 
-# ── The build plan ────────────────────────────────────────────────────────────
-
-
 class TestMatrix:
     def test_defaults_are_both_torch_minors_on_cp313(self):
         include = prebuilt_wheels.build_matrix()
@@ -304,7 +303,7 @@ class TestMatrix:
         [
             {"packages": "flash-attn; rm -rf /"},
             {"packages": "torchvision"},
-            {"torches": "2.12.0"},
+            {"torches": "2.9.0"},
             {"torches": "$(whoami)"},
             {"pythons": "3.9"},
             {"pythons": "3.13 && curl evil"},
@@ -369,9 +368,7 @@ class TestMatrix:
 
     def test_flash_attn_archs_cover_what_we_claim(self):
         archs = prebuilt_wheels.SPECS["flash-attn"]["env"]["FLASH_ATTN_CUDA_ARCHS"].split(";")
-        # 86 and 89 are covered by the 80 cubin, which is forward compatible across the minor
-        # versions of its major. Those two must NOT be listed: each one is a full extra pass
-        # over every kernel for nothing.
+        # 86 and 89 run on the forward-compatible 80 cubin; listing them adds full passes.
         assert archs == ["80", "90", "100", "120"]
 
 
@@ -508,9 +505,6 @@ other = {
         assert result.returncode == 1
 
 
-# ── The workflow itself ───────────────────────────────────────────────────────
-
-
 @pytest.fixture(scope = "module")
 def workflow():
     return yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))
@@ -617,7 +611,6 @@ class TestWorkflow:
         assert '"torch", "flash-attn"' in run and '"mamba-ssm"' in run and '"causal-conv1d"' in run
         assert "--constraint" in run
         assert "pip freeze | grep -E '^(torch|triton)=='" in run
-        # The wheel itself still goes in without dependency resolution.
         assert "--no-deps" in run.split("importlib.import_module")[0]
         lines = run.splitlines()
         start = next(i for i, line in enumerate(lines) if line.endswith("<<'PY'"))
@@ -665,7 +658,6 @@ class TestWorkflow:
 class TestWarmSlices:
     def test_the_slices_compile_every_object_exactly_once(self):
         objects = [f"/src/build/temp/csrc/kernel_{i:03d}.o" for i in range(97)]
-        # ninja lists rules and phony targets too, and nothing guarantees order or uniqueness.
         listing = "\n".join(
             [f"{o}: cuda_compile" for o in reversed(objects)]
             + [f"{objects[0]}: cuda_compile", "/src/build/temp/flash_api.o: compile", "all: phony"]
@@ -768,6 +760,96 @@ class TestWarmWiring:
         assert pattern.endswith("*")
         assert uploaded.startswith(pattern[:-1])
         assert uploaded[len(pattern) - 1 :] == "${{ matrix.shard }}"
+
+
+class TestFatbinCompression:
+    """nvcc compresses only PTX by default; uncompressed cubins made flash-attn 1.49 GB."""
+
+    def test_every_cell_compresses_every_fatbin_image(self):
+        flags = prebuilt_wheels.NVCC_APPEND_FLAGS.split()
+        assert "-compress-all" in flags
+        assert flags[flags.index("-compress-all") - 1] == "-Xfatbin"
+        assert "--compress-mode=size" in flags
+        everywhere = ",".join(prebuilt_wheels.PLATFORMS)
+        cells = prebuilt_wheels.build_matrix(torches = "2.13.0,2.14.0", platforms = everywhere)
+        cells += prebuilt_wheels.build_matrix(
+            torches = "2.10.0,2.11.0,2.12.0", pythons = "3.12", platforms = "win_amd64"
+        )
+        assert {cell["platform"] for cell in cells} == set(prebuilt_wheels.PLATFORMS)
+        for cell in cells:
+            assert cell["nvcc_append_flags"] == prebuilt_wheels.NVCC_APPEND_FLAGS
+            assert cell["ccache_tag"] == prebuilt_wheels.CCACHE_TAG
+            assert (
+                cell["max_extension_mb"]
+                == prebuilt_wheels.SPECS[cell["package"]]["max_extension_mb"]
+            )
+            # Never through the word-split build_env.
+            assert "compress" not in cell["build_env"]
+
+    def test_warm_and_build_append_the_flags_before_compiling(self, workflow):
+        for job, step_name in (
+            ("warm", "Compile slice ${{ matrix.shard }} of ${{ matrix.shards }}"),
+            ("build", "Build the wheel"),
+        ):
+            assert workflow["jobs"][job]["env"]["FATBIN_FLAGS"] == "${{ matrix.nvcc_append_flags }}"
+            script = next(s for s in workflow["jobs"][job]["steps"] if s.get("name") == step_name)[
+                "run"
+            ]
+            # Appended, so the Windows _USE_MATH_DEFINES already in NVCC_APPEND_FLAGS survives.
+            assert (
+                'export NVCC_APPEND_FLAGS="${NVCC_APPEND_FLAGS:+$NVCC_APPEND_FLAGS }$FATBIN_FLAGS"'
+                in script
+            )
+            # An empty value would compile, and in warm save, uncompressed objects under the tag.
+            assert 'if [ -z "$FATBIN_FLAGS" ]' in script
+            assert script.index("NVCC_APPEND_FLAGS=") < script.index("prebuilt_wheels") or (
+                script.index("NVCC_APPEND_FLAGS=") < script.index("bdist_wheel")
+            )
+
+    def test_no_ccache_from_before_the_flags_is_restored(self, workflow):
+        """ccache does not hash NVCC_APPEND_FLAGS, so the cache key has to carry them."""
+        keyed = [
+            step
+            for job in workflow["jobs"].values()
+            for step in job.get("steps", [])
+            if "actions/cache" in step.get("uses", "")
+        ]
+        assert len(keyed) == 2
+        for step in keyed:
+            keys = [step["with"]["key"], *step["with"].get("restore-keys", "").splitlines()]
+            for key in filter(None, (k.strip() for k in keys)):
+                assert key.startswith(
+                    "prebuilt-ccache-${{ matrix.platform }}-${{ matrix.ccache_tag }}-"
+                ), key
+
+    def test_the_size_gate_runs_before_the_wheel_leaves_the_build(self, workflow):
+        names = [s.get("name") for s in workflow["jobs"]["build"]["steps"]]
+        gate = names.index("Check the extension size")
+        assert names.index("Name the wheel the way upstream names it") < gate
+        assert gate < names.index("Smoke test the wheel in a fresh venv")
+        run = workflow["jobs"]["build"]["steps"][gate]["run"]
+        assert run.startswith("python ../unsloth/.github/scripts/prebuilt_wheels.py size-gate ")
+        assert '--package "$PACKAGE"' in run
+
+    @pytest.mark.parametrize("megabytes, status", [(0.001, 0), (0.0001, 1)])
+    def test_size_gate(self, tmp_path, monkeypatch, megabytes, status):
+        import zipfile
+
+        wheel = tmp_path / "flash_attn-2.8.4-cp313-cp313-linux_x86_64.whl"
+        with zipfile.ZipFile(wheel, "w") as archive:
+            archive.writestr("flash_attn_2_cuda.cpython-313-x86_64-linux-gnu.so", b"x" * 500)
+            archive.writestr("flash_attn/__init__.py", b"")
+        monkeypatch.setitem(prebuilt_wheels.SPECS["flash-attn"], "max_extension_mb", megabytes)
+        assert prebuilt_wheels.main(["size-gate", "--package", "flash-attn", str(wheel)]) == status
+
+    def test_size_gate_refuses_a_wheel_without_an_extension(self, tmp_path):
+        import zipfile
+
+        wheel = tmp_path / "x.whl"
+        with zipfile.ZipFile(wheel, "w") as archive:
+            archive.writestr("x/__init__.py", b"")
+        with pytest.raises(SystemExit):
+            prebuilt_wheels.main(["size-gate", "--package", "flash-attn", str(wheel)])
 
 
 def test_release_lookups_do_not_pass_arg_to_gh_jq():

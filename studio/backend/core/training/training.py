@@ -261,6 +261,7 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
         "train_split": values.get("train_split", "train"),
         "eval_split": values.get("eval_split"),
         "eval_steps": values.get("eval_steps", 0.00),
+        "early_stopping_patience": values.get("early_stopping_patience", 0),
         "dataset_streaming": values.get("dataset_streaming", False),
         "dataset_slice_start": values.get("dataset_slice_start"),
         "dataset_slice_end": values.get("dataset_slice_end"),
@@ -450,6 +451,8 @@ def _apply_model_cache_pin(config: dict[str, Any], warnings: list[str]) -> None:
         config["actual_model_repo_id"] = None
         config["model_snapshot_path"] = None
         config["model_revision"] = None
+        # Nothing is pinned, so an offline start's pin has nothing left to validate.
+        config["require_validated_model_snapshot"] = False
         return
     requested_pin = config.get("model_snapshot_path")
     require_validated_snapshot = bool(config.get("require_validated_model_snapshot"))
@@ -842,6 +845,7 @@ class _MLXTrainerAdapter:
         use_rslora: bool = False,
         use_loftq: bool = False,
         use_dora: bool = False,
+        random_state: int = 3407,
     ) -> bool:
         if use_gradient_checkpointing is _UNSET:
             # This entry overrides load_model's, so default to the mode recorded there.

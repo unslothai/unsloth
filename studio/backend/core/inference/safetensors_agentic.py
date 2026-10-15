@@ -69,6 +69,8 @@ from core.inference.tool_loop_controller import (
     append_deferred_nudges,
     awaiting_approval_status,
     coerce_tool_arguments,
+    restore_replayed_tool_results,
+    with_appended_text,
     status_for_tool,
     tool_call_limit_nudge,
     tool_event_provenance,
@@ -669,7 +671,7 @@ def run_safetensors_tool_loop(
         from core.inference.mcp_image import note_attached_image
         from core.inference.tools import mcp_image_targets
         messages = note_attached_image(messages, mcp_image_targets(_active_tool_names(tools)))
-    conversation = list(messages)
+    conversation = restore_replayed_tool_results(messages)
     # Where the caller's own attachment sits in the seeded sink. The cap is about what
     # the loop RE-SENDS, so that entry is never the one it drops -- but it is not the
     # whole seed: a resumed chat seeds replayed pictures too, and exempting those would
@@ -680,7 +682,8 @@ def run_safetensors_tool_loop(
     # switch to safetensors, so search_conversation is advertised here too and needs the
     # same filtering: the stored rows are the whole DAG, and Retry leaves the replaced
     # response in them.
-    _live_branch = list(messages)
+    # Restored dicts are new; the branch matches by identity.
+    _live_branch = list(conversation)
     # ...and the replies and tool results the loop adds to it: a fit can evict this request's
     # own earlier tool exchange into the archive, where the client's messages alone would
     # refuse it. Not the loop's user turns: those are its own notices, and recall searches
@@ -755,10 +758,14 @@ def run_safetensors_tool_loop(
     unrestricted_tools = not tools
     # Gate telling a genuine NAME[ARGS] rehearsal from inactive-name prose; built from the
     # ORIGINAL tools list so a spent one-shot still reads as a tool name. None = unrestricted.
-    _enabled_names_gate = None if unrestricted_tools else set(_active_tool_names(tools))
+    from core.inference.tools import mcp_loadable_specs
+
+    # Plus the MCP tools a search can load mid-turn (#10997).
+    _loadable_mcp = [] if unrestricted_tools else mcp_loadable_specs(tools)
+    _detect_tools = [] if unrestricted_tools else list(tools or []) + _loadable_mcp
+    _enabled_names_gate = None if unrestricted_tools else set(_active_tool_names(_detect_tools))
     # Detection must see the same names as the strip gate (ORIGINAL list, incl. a spent
     # one-shot), else its repeat is stripped but never drained and the turn ends blank.
-    _detect_tools = [] if unrestricted_tools else list(tools or [])
     # Sanitized at construction: prepare_call authorizes against the controller, so a tool
     # dropped from the prompt for unsafe markup must leave the controller too. The gates above
     # keep the ORIGINAL names: those decide what LOOKS like a call, not what may run (#7066).
@@ -839,7 +846,12 @@ def run_safetensors_tool_loop(
         tool_protocol_active = not final_attempt_done and (unrestricted_tools or bool(active_tools))
         tool_xml_signals = TOOL_XML_SIGNALS if tool_protocol_active else ()
         # Gate the markerless bare-JSON form on enabled names so an ordinary JSON answer isn't misread as a call.
-        _enabled_tool_names = None if unrestricted_tools else set(_active_tool_names(active_tools))
+        _enabled_tool_names = (
+            None
+            if unrestricted_tools
+            else set(_active_tool_names(active_tools))
+            | (set(_active_tool_names(_loadable_mcp)) if active_tools else set())
+        )
 
         # Refit every iteration: tool results grow the prompt after the first turn. Given
         # the prompt, this turn's tools and the live branch; returns `messages` and `events`.
@@ -1802,7 +1814,9 @@ def run_safetensors_tool_loop(
             completion = tool_controller.record_result(decision, result)
             if provisional_match:
                 provisional_resolved = True
-            _turn_executed_real_tool = True
+            # Loading MCP tools is not a tool round, or a budget of one could never call what it found.
+            if decision.tool_name != "mcp_tool_search":
+                _turn_executed_real_tool = True
             yield completion.tool_end_event()
             conversation.append(completion.tool_message())
             # Parsed only when there is a sink for them.
@@ -1877,10 +1891,13 @@ def run_safetensors_tool_loop(
                 last_reprompt_text = ""
         if _executed_tool_iters >= max_tool_iterations and not final_attempt_done:
             final_attempt_done = True
-            if over_cap:
+            # Ride a trailing user turn, as the GGUF loop does.
+            if over_cap or conversation[-1].get("role") == "user":
                 conversation[-1] = {
                     **conversation[-1],
-                    "content": f"{conversation[-1]['content']}\n\n{BUDGET_EXHAUSTED_NUDGE}",
+                    "content": with_appended_text(
+                        conversation[-1]["content"], f"\n\n{BUDGET_EXHAUSTED_NUDGE}"
+                    ),
                 }
             else:
                 conversation.append({"role": "user", "content": BUDGET_EXHAUSTED_NUDGE})

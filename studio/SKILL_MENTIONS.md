@@ -2,7 +2,7 @@
 
 With an enabled skill in the effective model's Unsloth Studio tool catalog, Unsloth Studio reads
 the complete `SKILL.md` for an explicit `@skill-name` **before the first
-generation**. With Code off, the composer offers `read_skill` alone, and only for
+generation**. With Tools off, the composer offers `read_skill` alone, and only for
 a thread whose user messages mention an enabled skill, so a plain chat stays out
 of the tool loop. It does not depend on a model calling `read_skill`. This loads
 instructions, not referenced resources, scripts, or skill creation. Existing
@@ -53,5 +53,5 @@ second time. Continue/partial-assistant resumes do not activate old mentions.
 The Studio chat-completions path covers local GGUF, safetensors, managed engines,
 and external Studio-owned tool loops (including the shared Codex transport). It
 does not change client-tool passthrough or introduce mention execution in unrelated
-Anthropic/OpenAI compatibility endpoints. Tool-less native models and Code-off
+Anthropic/OpenAI compatibility endpoints. Tool-less native models and Tools-off
 requests retain their existing behavior.

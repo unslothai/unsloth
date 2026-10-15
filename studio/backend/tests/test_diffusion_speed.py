@@ -1910,10 +1910,32 @@ def test_the_loader_keys_the_compile_bundle_on_the_vae_decode_decision():
     src = (Path(__file__).resolve().parents[1] / "core" / "inference" / "diffusion.py").read_text(
         encoding = "utf-8"
     )
-    assert src.count('"vae_decode": vae_decode_compile_allowed(') == 2
-    assert '"vae_decode": vae_decode_compile_allowed(pipe, effective_speed)' in src
-    assert '"vae_decode": vae_decode_compile_allowed(state.pipe, SPEED_DEFAULT)' in src
-    assert ds_mod.vae_decode_compile_allowed is not None
+    # Both compile-cache begins (load, and the deferred 3rd-image profile) key through the one resolver ...
+    assert src.count("autoopt.compile_cache_kwargs(") == 2
+    assert "deferred = True" in src
+    # ... which keys vae_decode on the same decision the speed pass makes for that tier.
+    from core.inference.diffusion_autoopt.plan import compile_cache_kwargs
+
+    seen = []
+    orig = ds_mod.vae_decode_compile_allowed
+    try:
+        ds_mod.vae_decode_compile_allowed = lambda pipe, mode: seen.append(mode) or mode == "max"
+        pipe = types.SimpleNamespace(transformer = None)
+        assert (
+            compile_cache_kwargs(pipe, speed_mode = "max", fullgraph = True, offload_below_hooks = False)[
+                "vae_decode"
+            ]
+            is True
+        )
+        assert (
+            compile_cache_kwargs(
+                pipe, speed_mode = "max", fullgraph = True, offload_below_hooks = False, deferred = True
+            )["vae_decode"]
+            is False
+        )
+    finally:
+        ds_mod.vae_decode_compile_allowed = orig
+    assert seen == ["max", "default"]
 
 
 def test_stream_merging_dit_compiles_dynamic_once_inductor_proves_the_split(monkeypatch):
@@ -2548,3 +2570,564 @@ def test_int8_gemm_install_follows_the_denoiser_placement(
         denoiser_offloaded = denoiser_offloaded,
     )
     assert seen == [expected]
+
+
+def test_compile_eligible_on_rocm_follows_the_probe(monkeypatch):
+    from core.inference import diffusion_rocm_compile as rc
+
+    monkeypatch.delenv("TORCHDYNAMO_DISABLE", raising = False)
+    ds_mod.torch_compile_runtime_available.cache_clear()
+    rocm = types.SimpleNamespace(
+        device = "cuda",
+        dtype = "bfloat16",
+        backend = "rocm",
+        ordinal = None,
+        supports_default_torch_compile = True,
+    )
+    monkeypatch.setattr(ds_mod, "_is_bfloat16", lambda d: d == "bfloat16")
+    monkeypatch.setattr(rc, "rocm_block_compile_works", lambda device = None: False)
+    assert ds_mod.compile_eligible(rocm, is_gguf = False, family = _family()) is False
+    monkeypatch.setattr(rc, "rocm_block_compile_works", lambda device = None: True)
+    assert ds_mod.compile_eligible(rocm, is_gguf = False, family = _family()) is True
+    monkeypatch.setattr(rc, "rocm_block_compile_works", lambda device = None: 1 / 0)
+    cuda = types.SimpleNamespace(
+        device = "cuda", dtype = "bfloat16", backend = "cuda", supports_default_torch_compile = True
+    )
+    assert ds_mod.compile_eligible(cuda, is_gguf = False, family = _family()) is True
+
+
+def test_rocm_compile_probe_settings(monkeypatch):
+    from core.inference import diffusion_rocm_compile as rc
+
+    rc._reset_for_tests()
+    monkeypatch.setenv(rc.ENV, "0")
+    assert rc.rocm_block_compile_probe() == (False, f"{rc.ENV}=0") and not rc.rocm_compile_allowed()
+    monkeypatch.setenv(rc.ENV, "1")
+    assert rc.rocm_block_compile_probe()[0] is True and rc.rocm_compile_allowed()
+
+
+def _rocm_bf16(dtype = "bfloat16"):
+    return types.SimpleNamespace(
+        device = "cuda",
+        dtype = dtype,
+        backend = "rocm",
+        ordinal = None,
+        supports_default_torch_compile = True,
+    )
+
+
+def _probe_must_not_run(monkeypatch):
+    from core.inference import diffusion_rocm_compile as rc
+
+    monkeypatch.delenv("TORCHDYNAMO_DISABLE", raising = False)
+    monkeypatch.delenv(rc.ENV, raising = False)
+    ds_mod.torch_compile_runtime_available.cache_clear()
+    monkeypatch.setattr(ds_mod, "_is_bfloat16", lambda d: d == "bfloat16")
+    monkeypatch.setattr(ds_mod, "_is_float16", lambda d: d == "float16")
+    calls = []
+    monkeypatch.setattr(
+        rc, "rocm_block_compile_works", lambda device = None: calls.append(device) or True
+    )
+    rc._reset_for_tests()
+    return rc, calls
+
+
+def test_rocm_preflight_never_runs_the_allocating_probe(monkeypatch):
+    # The route preflight and the polled status route run before eviction: they read the probe, never run it.
+    from core.inference import diffusion as dmod
+    from core.inference import diffusion_transformer_quant as tq
+
+    rc, calls = _probe_must_not_run(monkeypatch)
+    assert (
+        dmod._pipeline_quant_uncompilable_reason(
+            _rocm_bf16(), _family(), None, model_kind = "pipeline"
+        )
+        is None
+    )
+    assert ds_mod.compile_eligible(_rocm_bf16(), is_gguf = False, family = None, probe = False) is True
+    monkeypatch.setattr(tq, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(tq, "torchao_unavailable_reason", lambda: "stop here")
+    assert tq.dense_quant_host_capable(_rocm_bf16()) is False
+    assert calls == []
+    # A recorded failure is honoured without re-probing; the loader (probe=True) runs it.
+    rc._result[rc._index(None)] = (False, "boom")
+    assert ds_mod.compile_eligible(_rocm_bf16(), is_gguf = False, family = None, probe = False) is False
+    rc._reset_for_tests()
+    assert (
+        dmod._pipeline_quant_uncompilable_reason(
+            _rocm_bf16(), _family(), None, model_kind = "pipeline", probe = True
+        )
+        is None
+    )
+    assert len(calls) == 1
+
+
+def test_rocm_probe_oom_is_held_for_the_load_and_retried_at_the_next(monkeypatch):
+    from core.inference import diffusion_rocm_compile as rc
+
+    monkeypatch.delenv(rc.ENV, raising = False)
+    torch = pytest.importorskip("torch")
+    monkeypatch.setattr(torch.version, "hip", "6.4", raising = False)
+    monkeypatch.setattr(rc, "_index", lambda device: 0)
+    calls = []
+    answers = iter([(False, "OutOfMemoryError: HIP out of memory"), (True, "ok")])
+    monkeypatch.setattr(rc, "_probe", lambda torch, index: calls.append(1) or next(answers))
+    rc._reset_for_tests()
+    with rc.load_scope():
+        assert rc.rocm_block_compile_probe()[0] is False
+        # Same load: no second compile/OOM, and a non-probing read still sees "unprobed".
+        assert rc.rocm_block_compile_probe()[0] is False
+        assert rc.rocm_block_compile_known() is None
+    assert len(calls) == 1
+    with rc.load_scope():
+        assert rc.rocm_block_compile_probe()[0] is True
+    assert rc.rocm_block_compile_known() is True and len(calls) == 2
+    rc._reset_for_tests()
+
+
+def test_rocm_probe_oom_outside_a_load_is_never_cached(monkeypatch):
+    from core.inference import diffusion_rocm_compile as rc
+
+    monkeypatch.delenv(rc.ENV, raising = False)
+    torch = pytest.importorskip("torch")
+    monkeypatch.setattr(torch.version, "hip", "6.4", raising = False)
+    monkeypatch.setattr(rc, "_index", lambda device: 0)
+    calls = []
+    monkeypatch.setattr(
+        rc, "_probe", lambda torch, index: calls.append(1) or (False, "OutOfMemoryError: x")
+    )
+    rc._reset_for_tests()
+    rc.rocm_block_compile_probe()
+    rc.rocm_block_compile_probe()
+    assert len(calls) == 2 and rc.probe_result(0) is None
+    rc._reset_for_tests()
+
+
+def test_rocm_known_read_does_not_wait_for_a_running_probe(monkeypatch):
+    import threading
+
+    from core.inference import diffusion_rocm_compile as rc
+
+    monkeypatch.delenv(rc.ENV, raising = False)
+    monkeypatch.setattr(rc, "_index", lambda device: 0)
+    rc._reset_for_tests()
+    out = []
+    with rc._lock:  # a probe in progress holds this for seconds
+        t = threading.Thread(target = lambda: out.append(rc.rocm_block_compile_known()), daemon = True)
+        t.start()
+        t.join(2)
+        assert not t.is_alive() and out == [None]
+
+
+def test_rocm_fp16_never_pays_the_probe(monkeypatch):
+    from core.inference.diffusion_autoopt.plan import compile_ineligible_reason
+
+    _rc, calls = _probe_must_not_run(monkeypatch)
+    assert ds_mod.compile_eligible(_rocm_bf16("float16"), is_gguf = False, family = _family()) is False
+    assert compile_ineligible_reason(_rocm_bf16("float16"), _family()).startswith("dtype")
+    assert calls == []
+
+
+def test_rocm_kill_switch_also_stops_the_gguf_dequant_compile(monkeypatch):
+    from core.inference import diffusion_rocm_compile as rc
+
+    monkeypatch.delenv("TORCHDYNAMO_DISABLE", raising = False)
+    ds_mod.torch_compile_runtime_available.cache_clear()
+    cuda = types.SimpleNamespace(backend = "cuda")
+    monkeypatch.setenv(rc.ENV, "0")
+    assert ds_mod._gguf_dequant_compilable(True, True, True, _rocm_bf16()) is False
+    assert ds_mod._gguf_dequant_compilable(True, True, True, cuda) is True
+    monkeypatch.setenv(rc.ENV, "auto")
+    assert ds_mod._gguf_dequant_compilable(True, True, True, _rocm_bf16()) is True
+
+
+def test_loader_probes_rocm_only_for_an_engaged_pipeline_quant():
+    # speed=off with quant off must not pay the allocating probe: the loader's probe=True call sits inside the
+    # engaged-quant branch.
+    import ast
+    import inspect
+
+    from core.inference import diffusion as dmod
+
+    tree = ast.parse(inspect.getsource(dmod))
+    parents = {c: p for p in ast.walk(tree) for c in ast.iter_child_nodes(p)}
+    calls = [
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Call)
+        and getattr(n.func, "id", None) == "_pipeline_quant_uncompilable_reason"
+        and any(k.arg == "probe" and getattr(k.value, "value", None) is True for k in n.keywords)
+    ]
+    assert len(calls) == 1
+    node, guards = calls[0], []
+    while node in parents:
+        child, node = node, parents[node]
+        if isinstance(node, ast.If) and child in node.body:
+            guards.append(ast.unparse(node.test))
+    assert any("normalize_transformer_quant(transformer_quant) is not None" in g for g in guards)
+
+
+def _diffusion_calls(name):
+    import ast
+    import inspect
+
+    from core.inference import diffusion as dmod
+
+    tree = ast.parse(inspect.getsource(dmod))
+    parents = {c: p for p in ast.walk(tree) for c in ast.iter_child_nodes(p)}
+    calls = [
+        n for n in ast.walk(tree) if isinstance(n, ast.Call) and getattr(n.func, "id", None) == name
+    ]
+    return calls, parents
+
+
+def test_deferred_speed_profile_arms_without_running_the_rocm_probe():
+    import ast
+
+    calls, parents = _diffusion_calls("compile_eligible")
+    deferred = []
+    for c in calls:
+        node = c
+        while node in parents and not isinstance(node, ast.Assign):
+            node = parents[node]
+        if isinstance(node, ast.Assign) and any(
+            getattr(t, "id", None) == "speed_deferred" for t in node.targets
+        ):
+            deferred.append(c)
+    assert deferred and all(
+        any(k.arg == "probe" and getattr(k.value, "value", None) is False for k in c.keywords)
+        for c in deferred
+    )
+
+
+def test_native_quant_never_runs_the_rocm_probe():
+    import ast
+
+    calls, parents = _diffusion_calls("_pipeline_quant_uncompilable_reason")
+    probing = [
+        c
+        for c in calls
+        if any(k.arg == "probe" and getattr(k.value, "value", None) is True for k in c.keywords)
+    ]
+    assert len(probing) == 1
+    node, guarded = probing[0], False
+    while node in parents:
+        child, node = node, parents[node]
+        if (
+            isinstance(node, ast.IfExp)
+            and child is node.orelse
+            and ast.unparse(node.test) == "native_scheme is not None"
+        ):
+            guarded = True
+    assert guarded
+
+
+def test_rocm_kill_switch_declines_the_planned_dequant_step(monkeypatch):
+    import torch
+
+    from core.inference import diffusion_rocm_compile as rc
+    from core.inference.diffusion_autoopt import plan as plan_mod
+
+    pipe = types.SimpleNamespace(transformer = None)
+    fam = types.SimpleNamespace(name = "z-image", supports_torch_compile = True)
+    rocm = types.SimpleNamespace(
+        device = "cuda", backend = "rocm", dtype = torch.bfloat16, supports_default_torch_compile = True
+    )
+    monkeypatch.setenv(rc.ENV, "0")
+    p = plan_mod.build_plan(
+        pipe, rocm, family = fam, backend = "image", speed_mode = "default", is_gguf = True
+    )
+    assert p.step("compiled_dequant").attempt is False
+    assert p.reason("compiled_dequant") == f"{rc.ENV}=0"
+    monkeypatch.setenv(rc.ENV, "1")
+    p = plan_mod.build_plan(
+        pipe, rocm, family = fam, backend = "image", speed_mode = "default", is_gguf = True
+    )
+    assert p.step("compiled_dequant").attempt is True
+
+
+def test_rocm_gguf_default_compile_cache_gate_uses_the_dequant_predicate():
+    # A regional probe failure recorded by an earlier dense load must not close the GGUF dequant cache context.
+    import ast
+
+    calls, parents = _diffusion_calls("_gguf_dequant_compilable")
+    gated = []
+    for c in calls:
+        node = c
+        while node in parents and not isinstance(node, ast.If):
+            node = parents[node]
+        if isinstance(node, ast.If) and "compile_cache.begin(" in ast.unparse(node.body[0]):
+            gated.append((c, parents[c]))
+    assert len(gated) == 2
+    c, ifexp = gated[0]
+    assert isinstance(ifexp, ast.IfExp) and ifexp.body is c
+    test = ast.unparse(ifexp.test)
+    assert "gguf_transformer" in test and "SPEED_DEFAULT" in test and "'rocm'" in test
+    # max: a refused regional compile falls back to the dequant, which keeps the cache context open.
+    assert isinstance(ifexp.orelse, ast.BoolOp) and isinstance(ifexp.orelse.op, ast.Or)
+    regional, fallback = ifexp.orelse.values
+    assert getattr(regional.func, "id", None) == "_compile_cache_wanted"
+    assert "'rocm'" in ast.unparse(fallback) and gated[1][0] in list(ast.walk(fallback))
+
+
+def test_rocm_probe_runs_on_wheels_without_a_hip_version(monkeypatch):
+    from core.inference import diffusion_rocm_compile as rc
+
+    monkeypatch.delenv(rc.ENV, raising = False)
+    torch = pytest.importorskip("torch")
+    monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    monkeypatch.setattr(torch, "__version__", "2.9.0+rocm7.1.0")
+    monkeypatch.setattr(rc, "_index", lambda device: 0)
+    monkeypatch.setattr(rc, "_probe", lambda torch, index: (False, "compiled block disagrees"))
+    rc._reset_for_tests()
+    assert rc.rocm_block_compile_probe() == (False, "compiled block disagrees")
+    rc._reset_for_tests()
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        RuntimeError("HIP out of memory. Tried to allocate 2.00 MiB"),
+        type("OutOfMemoryError_", (RuntimeError,), {})("boom"),
+    ],
+)
+def test_rocm_probe_wrapped_oom_stays_transient(monkeypatch, exc):
+    from core.inference import diffusion_rocm_compile as rc
+
+    monkeypatch.delenv(rc.ENV, raising = False)
+    torch = pytest.importorskip("torch")
+    monkeypatch.setattr(torch.version, "hip", "6.4", raising = False)
+    monkeypatch.setattr(rc, "_index", lambda device: 0)
+    wrapped = RuntimeError("backend='inductor' raised: compile failed")
+    wrapped.__cause__ = exc
+
+    class _Boom:
+        def __getattr__(self, name):
+            raise wrapped
+
+    monkeypatch.setattr(torch, "device", lambda *a, **k: _Boom().device)
+    rc._reset_for_tests()
+    ok, why = rc.rocm_block_compile_probe()
+    assert ok is False and "OutOfMemoryError" in why
+    assert rc.rocm_block_compile_known() is None
+    assert rc.probe_result(0) is None
+    rc._reset_for_tests()
+
+
+def test_rocm_probe_oom_of_one_load_is_never_reused_by_an_overlapping_load(monkeypatch):
+    # Overlapping image / video loads: an older load's OOM, whenever it lands, belongs to that load alone.
+    import threading
+
+    from core.inference import diffusion_rocm_compile as rc
+
+    monkeypatch.delenv(rc.ENV, raising = False)
+    torch = pytest.importorskip("torch")
+    monkeypatch.setattr(torch.version, "hip", "6.4", raising = False)
+    monkeypatch.setattr(rc, "_index", lambda device: 0)
+    answers = iter([(False, "OutOfMemoryError: HIP out of memory"), (True, "ok")])
+    monkeypatch.setattr(rc, "_probe", lambda torch, index: next(answers))
+    rc._reset_for_tests()
+    newer_started, older_done = threading.Event(), threading.Event()
+    seen = {}
+
+    def _newer():
+        with rc.load_scope():
+            newer_started.set()
+            older_done.wait(5)
+            seen["newer"] = rc.rocm_block_compile_probe()[0]
+
+    t = threading.Thread(target = _newer)
+    t.start()
+    newer_started.wait(5)
+    with rc.load_scope():  # the older load reaches its probe only after the newer load began
+        seen["older"] = rc.rocm_block_compile_probe()[0]
+    older_done.set()
+    t.join(5)
+    assert seen == {"older": False, "newer": True}
+    rc._reset_for_tests()
+
+
+def test_rocm_probe_index_keeps_an_integer_ordinal(monkeypatch):
+    from core.inference import diffusion_rocm_compile as rc
+
+    torch = pytest.importorskip("torch")
+
+    def _old_device(*args, **kwargs):  # torch 2.4: no torch.device(int)
+        if args and isinstance(args[0], int):
+            raise TypeError("device() received an invalid combination of arguments")
+        return types.SimpleNamespace(index = None)
+
+    monkeypatch.setattr(torch, "device", _old_device)
+    assert rc._index(1) == 1
+    assert rc._index(3) == 3
+
+
+@pytest.mark.parametrize("which", ["image", "video"])
+@pytest.mark.parametrize("token", [None, 7])
+def test_every_load_pipeline_call_runs_in_its_own_rocm_probe_scope(monkeypatch, which, token):
+    # Direct calls and begin_load workers (token passed) alike: the OOM memo is the load's own.
+    from core.inference import diffusion_rocm_compile as rc
+
+    if which == "image":
+        from core.inference import diffusion as mod
+        backend = mod.DiffusionBackend()
+    else:
+        from core.inference import video as mod
+        backend = mod.VideoBackend()
+    scopes = []
+
+    class _Stop(Exception):
+        pass
+
+    def _stop(*a, **k):
+        scopes.append(rc._load_oom.get())
+        raise _Stop
+
+    monkeypatch.setattr(backend, "validate_load_request", _stop)
+    if which == "image":
+        monkeypatch.setattr(backend, "_raise_if_load_cancelled", lambda token: None)
+    with pytest.raises(_Stop):
+        backend.load_pipeline(repo_id = "x/y", _load_token = token)
+    assert scopes == [{}] and rc._load_oom.get() is None
+
+
+def test_rocm_probe_leaves_the_process_rng_untouched():
+    from core.inference import diffusion_rocm_compile as rc
+
+    torch = pytest.importorskip("torch")
+    torch.manual_seed(1234)
+    before = torch.random.get_rng_state().clone()
+    rc._probe(torch, 0)  # builds the block, then fails to reach a GPU on this host
+    assert torch.equal(torch.random.get_rng_state(), before)
+
+
+def test_deferred_profile_engagement_runs_in_its_own_rocm_probe_scope(monkeypatch):
+    # It engages at the 3rd generation, after load_pipeline's scope closed: one OOM must hold for the engagement.
+    from core.inference import diffusion as dmod
+    from core.inference import diffusion_rocm_compile as rc
+
+    backend = dmod.DiffusionBackend()
+    scopes = []
+
+    class _Stop(Exception):
+        pass
+
+    def _stop(state):
+        scopes.append(rc._load_oom.get())
+        raise _Stop
+
+    monkeypatch.setattr(backend, "_state_device_target", _stop)
+    state = types.SimpleNamespace(speed_deferred = True)
+    with pytest.raises(_Stop):
+        backend._engage_deferred_profile(state)
+    assert scopes == [{}] and rc._load_oom.get() is None
+
+
+def test_rocm_load_local_oom_wins_over_a_concurrent_global_success(monkeypatch):
+    from core.inference import diffusion_rocm_compile as rc
+
+    monkeypatch.delenv(rc.ENV, raising = False)
+    torch = pytest.importorskip("torch")
+    monkeypatch.setattr(torch.version, "hip", "6.4", raising = False)
+    monkeypatch.setattr(rc, "_index", lambda device: 0)
+    monkeypatch.setattr(
+        rc, "_probe", lambda torch, index: (False, "OutOfMemoryError: HIP out of memory")
+    )
+    rc._reset_for_tests()
+    with rc.load_scope():
+        assert rc.rocm_block_compile_probe()[0] is False
+        rc._result[0] = (True, "ok")  # another load on the same card probed successfully meanwhile
+        assert rc.rocm_block_compile_probe()[0] is False
+    assert rc.rocm_block_compile_probe()[0] is True
+    rc._reset_for_tests()
+
+
+def test_rocm_probe_waits_for_a_compilable_model(monkeypatch):
+    # No denoiser to compile: neither the plan nor the speed primitive it hands the family to may run the probe.
+    from core.inference.diffusion_autoopt import apply as apply_mod
+    from core.inference.diffusion_autoopt import plan as plan_mod
+
+    _rc, calls = _probe_must_not_run(monkeypatch)
+    pipe = types.SimpleNamespace(transformer = None)
+    fam = types.SimpleNamespace(name = "z-image", supports_torch_compile = True)
+    p = plan_mod.build_plan(pipe, _rocm_bf16(), family = fam, backend = "image", speed_mode = "default")
+    assert p.step("compiled").attempt is False
+    assert p.reason("compiled") == "no denoiser transformer or whole-compile U-Net"
+    assert p.compile_declined_by_model is True
+    seen = []
+
+    def _apply(family, logger):
+        seen.append(ds_mod.compile_eligible(_rocm_bf16(), is_gguf = False, family = family))
+        return {}
+
+    apply_mod.run_speed_layer(
+        pipe, _rocm_bf16(), family = fam, backend = "image", speed_mode = "default", apply = _apply
+    )
+    assert seen == [False] and calls == []
+
+
+def test_rocm_probe_still_runs_for_a_compilable_model(monkeypatch):
+    from core.inference.diffusion_autoopt import plan as plan_mod
+
+    _rc, calls = _probe_must_not_run(monkeypatch)
+    monkeypatch.setattr(plan_mod.targets, "denoiser_dits", lambda pipe: [object()])
+    fam = types.SimpleNamespace(name = "z-image", supports_torch_compile = True)
+    p = plan_mod.build_plan(
+        types.SimpleNamespace(), _rocm_bf16(), family = fam, backend = "image", speed_mode = "default"
+    )
+    assert p.compile_declined_by_model is False
+    assert len(calls) == 1
+
+
+def test_rocm_probe_answer_is_read_without_waiting_for_another_probe(monkeypatch):
+    import threading
+
+    from core.inference import diffusion_rocm_compile as rc
+
+    monkeypatch.delenv(rc.ENV, raising = False)
+    monkeypatch.setattr(rc, "_index", lambda device: 1)
+    monkeypatch.setattr("core.inference.rocm_bf16.is_rocm_torch", lambda torch: True)
+    rc._reset_for_tests()
+    rc._result[1] = (True, "cached")
+    out = []
+    with rc._lock:  # a probe on another card holds this for seconds
+        t = threading.Thread(target = lambda: out.append(rc.rocm_block_compile_probe()), daemon = True)
+        t.start()
+        t.join(2)
+        assert not t.is_alive() and out == [(True, "cached")]
+    rc._reset_for_tests()
+
+
+def test_rocm_probe_never_rewinds_the_shared_rng(monkeypatch):
+    # A concurrent consumer of the default CPU generator must not see its draws undone by a probe snapshot/restore.
+    from core.inference import diffusion_rocm_compile as rc
+
+    torch = pytest.importorskip("torch")
+
+    def _no_fork(*args, **kwargs):
+        raise AssertionError("fork_rng snapshots and restores the shared generator")
+
+    monkeypatch.setattr(torch.random, "fork_rng", _no_fork)
+    monkeypatch.setattr(torch, "compile", lambda module, **kwargs: module)
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda *args, **kwargs: None)
+    torch.manual_seed(1234)
+    before = torch.random.get_rng_state().clone()
+    ok, why = rc._probe(torch, 0, device = torch.device("cpu"))
+    assert ok, why
+    assert torch.equal(torch.random.get_rng_state(), before)
+
+
+def test_compile_cache_gate_skips_the_rocm_probe_for_a_model_with_nothing_to_compile(monkeypatch):
+    from core.inference import diffusion as dmod
+
+    _rc, calls = _probe_must_not_run(monkeypatch)
+    fam = types.SimpleNamespace(name = "z-image", supports_torch_compile = True)
+    pipe = types.SimpleNamespace(transformer = None)
+    wanted = dmod._compile_cache_wanted(
+        pipe, _rocm_bf16(), fam, is_gguf = False, speed_mode = "default", offload_active = False
+    )
+    assert wanted is False and calls == []
+    cuda = types.SimpleNamespace(**{**vars(_rocm_bf16()), "backend": "cuda"})
+    assert dmod._compile_cache_wanted(
+        pipe, cuda, fam, is_gguf = False, speed_mode = "default", offload_active = False
+    ) is ds_mod.compile_eligible(cuda, is_gguf = False, family = fam)

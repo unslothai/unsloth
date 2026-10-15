@@ -859,11 +859,12 @@ test("closing the last Downloads button dismisses its result, but a button swapp
 });
 
 test("the agent's Downloads rule covers its tab while a chat run is using it, and just after", async () => {
-  const { agentDownloadRule, endBrowserAgentRun, useBrowserAgentStore } = await import(
+  const { agentDownloadRule, endBrowserAgentRun, patchAgentChat, useBrowserAgentStore } = await import(
     "../src/features/browser/agent/agent-store.ts"
   );
-  const blocked = { browsing: "ask", actions: "ask", downloads: "block" } as const;
-  useBrowserAgentStore.setState({ tabId: "t1", runKey: "run1", permissions: { defaults: blocked, sites: {} } });
+  const blocked = { browsing: "ask", actions: "ask", downloads: "block", unlabelled: "ask" } as const;
+  useBrowserAgentStore.setState({ permissions: { defaults: blocked, sites: {} } });
+  patchAgentChat("single:c1", { tabId: "t1", runKey: "run1" });
   assert.equal(agentDownloadRule("t1", "https://example.com/", "https://example.com/f.pdf"), "block");
   assert.equal(agentDownloadRule("t2", "https://example.com/", "https://example.com/f.pdf"), null);
   // Another run ending leaves this one alone; this one ending hands the tab back to the user.

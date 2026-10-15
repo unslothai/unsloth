@@ -165,7 +165,7 @@ def weight_dequant_block(
         triton.cdiv(N, meta["BLOCK_SIZE"]),
     )
     with _fp8_triton_device_context(x):
-        weight_dequant_kernel[grid](x, s, y, M, N, BLOCK_SIZE = block_size)
+        weight_dequant_kernel[grid](x, s, y, M, N, BLOCK_SIZE = block_size, enable_fp_fusion = True)
     return y
 
 
@@ -257,7 +257,9 @@ def act_quant(x: torch.Tensor, block_size: int = 128) -> tuple[torch.Tensor, tor
         return (triton.cdiv(x.numel(), meta["BLOCK_SIZE"]),)
 
     with _fp8_triton_device_context(x):
-        act_quant_kernel[grid](x, y, s, BLOCK_SIZE = block_size, LONG_INDEXING = long_indexing(x))
+        act_quant_kernel[grid](
+            x, y, s, BLOCK_SIZE = block_size, LONG_INDEXING = long_indexing(x), enable_fp_fusion = True
+        )
     return y, s
 
 
@@ -420,6 +422,7 @@ def w8a8_block_fp8_matmul_triton(
             LONG_INDEXING = long_indexing(A, B, C),
             # Default 4 warps starve 128x128 tiles (8 is 1.3-2.1x faster from M >= 128); smaller decode tiles gain nothing.
             num_warps = 8 if BLOCK_SIZE_M == 128 else 4,
+            enable_fp_fusion = True,
         )
     return C
 
@@ -464,18 +467,39 @@ fp8_block_matmul = (
 )
 
 
+def _rocm_fp8e4nv_kernel_supported(device):
+    # AMD triton's supported_fp8_dtypes (third_party/amd/backend/compiler.py): no fp8e4nv before 3.3;
+    # 3.3 adds gfx940-942 / gfx950, 3.4 gfx942 / gfx950 / gfx12*, and 3.5+ lists it on every arch
+    # (software-emulated without OCP fp8 hardware; ran correctly on gfx1151 with triton 3.6).
+    try:
+        version = Version(triton.__version__).release[:2]
+        if version >= (3, 5):
+            return True
+        if version < (3, 3):
+            return False
+        arch = torch.cuda.get_device_properties(device).gcnArchName.split(":")[0].lower()
+    except Exception:
+        return False
+    if version >= (3, 4):
+        return arch in ("gfx942", "gfx950") or arch.startswith("gfx12")
+    return arch in ("gfx940", "gfx941", "gfx942", "gfx950")
+
+
 @functools.lru_cache(maxsize = None)
 def _fp8_device_lacks_kernel(device):
     # A device's capability cannot change, so look it up once. Tests that simulate another
     # card must call _fp8_device_lacks_kernel.cache_clear().
-    return torch.version.hip is None and torch.cuda.get_device_capability(device) < (8, 9)
+    if torch.version.hip is not None:
+        return not _rocm_fp8e4nv_kernel_supported(device)
+    return torch.cuda.get_device_capability(device) < (8, 9)
 
 
 def _fp8_kernel_unsupported(tensor, kernel_dtype = None):
     """True when triton here cannot compile this fp8 dtype, so kernels taking it must be avoided.
 
     triton adds fp8e4nv only from sm89 on, so compare the full (major, minor): sm89 (4090,
-    L40S, L4) does support it. ROCm lists fp8e4nv always and its capability is gfx-derived.
+    L40S, L4) does support it. ROCm's capability is gfx-derived, so it is gated on the gfx arch
+    and triton version instead (_rocm_fp8e4nv_kernel_supported).
 
     kernel_dtype is the fp8 dtype the kernel really handles. It defaults to the tensor's own,
     which is right for a dequant, but a forward must pass e4m3fn: act_quant emits e4m3fn
@@ -536,7 +560,17 @@ def fp8_rowwise_gemv(X, weight, weight_scale):
     block_n = 1 if N <= 4096 else (4 if N <= 32768 else 8)
     with _fp8_triton_device_context(X, static_device_count = True):
         _fp8_rowwise_gemv_kernel[(triton.cdiv(N, block_n),)](
-            X, weight, scale, out, N, K, weight.stride(0), BLOCK_N = block_n, BLOCK_K = 512, num_warps = 2
+            X,
+            weight,
+            scale,
+            out,
+            N,
+            K,
+            weight.stride(0),
+            BLOCK_N = block_n,
+            BLOCK_K = 512,
+            num_warps = 2,
+            enable_fp_fusion = True,
         )
     return out
 

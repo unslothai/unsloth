@@ -1,40 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Regression tests for issue #7331 -- Unsloth segfaults at startup on Strix Halo.
-
-Reporter: Ryzen AI MAX+ 395 with Radeon 8060S (Strix Halo, physically gfx1151),
-Linux Mint, ROCm 6.3.42134, single GPU. Their rocminfo reported **gfx1100** because
-HSA_OVERRIDE_GFX_VERSION=11.0.0 -- the circulated Strix Halo workaround -- makes ROCr
-hand the spoofed ISA to every consumer. The installer believed it, routed torch to
-download.pytorch.org/whl/rocm6.3 (torch>=2.4,<2.11.0 -> 2.9.1+rocm6.3), and the first
-allocation ran gfx1100 kernels on gfx1151 silicon and died with SIGSEGV. The reporter
-later self-corrected the hardware to "gfx1151 / Strix Halo" and pointed at
-pytorch/pytorch#173367.
-
-Unsloth already infers gfx1151 from the product name in /proc/cpuinfo and already
-routes gfx1151 to repo.amd.com/rocm/whl/gfx1151/ with torch>=2.11.0. The spoof
-defeated it: the ISA probe answered, so the correct inference was discarded and the
-Strix reroute intersected {gfx1151, gfx1150, gfx1152} against ["gfx1100"].
-
-The mocks are shaped as the reporter's host, and deliberately not more:
-
-  * ``_infer_linux_amd_gfx_arch -> "gfx1151"``   the cpuinfo product-name path,
-    which is right and was being thrown away.
-  * ``_detect_amd_gfx_codes -> ["gfx1100"]``     one device, the spoofed ISA. ONE
-    arch matters: the correction only fires for a single-arch probe, so the mixed
-    Strix-APU-plus-dGPU host the current precedence protects (#7305) is filtered
-    out before the evidence ladder is consulted.
-  * ``_has_rocm_gpu -> True``                    rocminfo enumerates fine; not the
-    runtime-less #7301 case.
-  * ``_detect_rocm_version -> (6, 3)``           the reporter's ROCm, below the
-    (7, 13) AMD per-arch floor, so the reroute gate is open.
-  * ``HSA_OVERRIDE_GFX_VERSION = "11.0.0"``      the whole premise. With it unset
-    every test here must fall back to today's behaviour.
-
-There is no AMD hardware and no ROCm CI in this repo, so torch, rocminfo and pip
-are all mocked; nothing below was validated on real silicon.
-"""
+"""An HSA_OVERRIDE_GFX_VERSION spoof made Strix Halo probe as gfx1100 and the installer trusted it."""
 
 from __future__ import annotations
 
@@ -62,7 +29,7 @@ _INSTALL_SH = PACKAGE_ROOT / "install.sh"
 
 # torch probe stdout: "<version>|<hip>|<cuda>". An empty HIP field = CPU/CUDA torch.
 _CPU_TORCH = "2.10.0+cpu||\n"
-_ROCM63_TORCH = "2.9.1+rocm6.3|6.3.42134|\n"  # what the reporter ended up with
+_ROCM63_TORCH = "2.9.1+rocm6.3|6.3.42134|\n"
 
 
 @pytest.fixture(autouse = True)
@@ -87,20 +54,7 @@ def _run_install(
     kfd_targets = (),
     env_probe = None,
 ):
-    """Drive _ensure_rocm_torch() over the reporter's host and return the pip calls.
-
-    ``env_probe``, when a dict is passed, records os.environ["HSA_OVERRIDE_GFX_VERSION"]
-    at the moment torch is installed. That instant is the one that matters: patch.dict
-    restores the environment on exit, so an assertion made after the call cannot see a
-    pop, and the env the install ends with is what later processes inherit.
-
-    ``reprobe_devices`` is what rocminfo reports once HSA_OVERRIDE_GFX_VERSION is
-    stripped; None means the re-probe answers with the same arch and so cannot
-    disprove the spoof, the shape with no honest reading that must be declined.
-
-    ``kfd_targets`` is what the kernel reports, defaulting to empty (no KFD sysfs, the
-    common CI case) so each test names the evidence source it exercises.
-    """
+    """Runs _ensure_rocm_torch() on a mocked host; env_probe reads the override while torch installs."""
     probe = MagicMock()
     probe.returncode = 0
     probe.stdout = torch_probe_stdout
@@ -117,9 +71,7 @@ def _run_install(
         return list(dict.fromkeys(codes)) if dedup else codes
 
     _env = {"HSA_OVERRIDE_GFX_VERSION": "11.0.0"} if env is None else env
-    # The real _infer_linux_amd_gfx_arch() returns UNSLOTH_ROCM_GFX_ARCH before it ever
-    # looks at /proc/cpuinfo; a stub ignoring it would make the escape-hatch test assert
-    # nothing.
+    # The real function returns UNSLOTH_ROCM_GFX_ARCH first; a stub ignoring it asserts nothing.
     if _env.get("UNSLOTH_ROCM_GFX_ARCH"):
         inferred = _env["UNSLOTH_ROCM_GFX_ARCH"]
 
@@ -137,15 +89,11 @@ def _run_install(
         patch.object(stack_mod, "_infer_linux_amd_gfx_arch", return_value = inferred),
         patch.object(stack_mod, "_detect_amd_gfx_codes", side_effect = _fake_detect),
         patch.object(stack_mod, "_detect_rocm_version", return_value = rocm_version),
-        # create = True: without it, a tree predating the fix raises AttributeError,
-        # which fails for the wrong reason. With it, the old code runs untouched and
-        # fails on the assertion instead.
+        # create=True so a pre-fix tree fails on the assertion, not on AttributeError.
         patch.object(stack_mod, "_kfd_gfx_targets", return_value = list(kfd_targets), create = True),
         patch.dict(os.environ, _env, clear = False),
     ):
-        # patch.dict cannot REMOVE a key the outer environment sets, and each of these
-        # silently decides the outcome: the UNSLOTH_* pair redirects the index, HSA_* is
-        # the premise, and a stray visible-device mask re-indexes gfx_devices.
+        # patch.dict cannot remove outer keys, and each of these silently decides the outcome.
         for _stale in (
             "UNSLOTH_ROCM_GFX_ARCH",
             "UNSLOTH_AMD_ROCM_MIRROR",
@@ -160,9 +108,6 @@ def _run_install(
             with patch("subprocess.run", return_value = probe):
                 stack_mod._ensure_rocm_torch()
     return str(pip.call_args_list) + str(pip_try.call_args_list)
-
-
-# ── The reported host ────────────────────────────────────────────────────────
 
 
 class TestSpoofedStrixHaloRouting:
@@ -195,10 +140,7 @@ class TestSpoofedStrixHaloRouting:
         assert "torch>=2.11.0,<2.12.0" in calls, calls
 
     def test_uncorroborated_spoof_is_left_alone(self):
-        """The shape with no honest answer: the kernel is silent and the re-probe still
-        says gfx1100 with the override stripped, which is exactly what a real gfx1100
-        dGPU looks like. Rerouting a working machine to the wrong wheels is worse than
-        #7331 itself, so this host keeps today's routing rather than a coin flip."""
+        """Without kernel evidence a real gfx1100 dGPU looks like the spoof, so routing is kept."""
         calls = _run_install(reprobe_devices = None, rocm_version = (7, 1))
         assert "repo.amd.com" not in calls, calls
         assert "rocm7.1" in calls, calls
@@ -210,18 +152,12 @@ class TestSpoofedStrixHaloRouting:
         assert "repo.amd.com/rocm/whl/gfx1150/" in calls, calls
 
 
-# ── Everything the correction must NOT touch ─────────────────────────────────
-
-
 class TestPrecedenceStillHolds:
     """The runtime-visible arch keeps winning outside the one narrow spoof shape.
     These are the cases the #7305 precedence exists for."""
 
     def test_no_override_set_keeps_todays_behaviour(self):
-        """Without the override there is no evidence of a spoof, so a probe that
-        disagrees with the product name is taken at face value. This is
-        test_rocm_support.py::test_inference_yields_to_runtime_visible_gpu's premise,
-        deliberately unchanged."""
+        """Without the override there is no spoof evidence, so the probe is taken at face value."""
         calls = _run_install(env = {}, rocm_version = (7, 1))
         assert "gfx1151" not in calls, calls
         assert "rocm7.1" in calls, calls
@@ -238,10 +174,7 @@ class TestPrecedenceStillHolds:
         assert "rocm7.1" in calls, calls
 
     def test_mixed_host_with_two_devices_is_never_corrected(self):
-        """The mixed Strix APU + discrete AMD GPU host, override set globally so the APU
-        spoofs to gfx1100 too. The probe reports two DEVICES, so the correction declines
-        and today's visible-mask selection decides. This is what makes the single-device
-        requirement load-bearing rather than decorative."""
+        """Two visible devices must decline the correction, so today's visible-mask selection decides."""
         calls = _run_install(
             gfx_devices = ("gfx1100", "gfx1100"),
             reprobe_devices = ["gfx1151", "gfx1100"],
@@ -267,15 +200,8 @@ class TestPrecedenceStillHolds:
         assert "repo.amd.com/rocm/whl/gfx1151/" in calls, calls
 
     def test_real_gfx1100_dgpu_in_a_ryzen_ai_max_chassis(self):
-        """The nastiest shape. The product name comes from the CPU model in
-        /proc/cpuinfo, so a Ryzen AI Max machine infers gfx1151 whatever card is in the
-        slot; drop a real RX 7900 XTX in it (APU off in the BIOS, so one device) and a
-        user carrying the override for an unrelated reason presents EXACTLY the
-        reporter's fingerprint: inferred gfx1151, probed gfx1100, one device, override
-        naming gfx1100.
-
-        Only the kernel tells them apart, and it must be believed: gfx_target_version
-        110000 is a real gfx1100 and the card keeps its own wheels."""
+        """A real gfx1100 dGPU in a Ryzen AI Max chassis looks like the spoof; the kernel tells them
+        apart."""
         calls = _run_install(
             kfd_targets = ["gfx1100"],
             reprobe_devices = ["gfx1100"],
@@ -286,10 +212,8 @@ class TestPrecedenceStillHolds:
         assert "rocm7.1" in calls, calls
 
     def test_real_gfx1100_dgpu_with_no_kfd_sysfs(self):
-        """The same card in a container with no /sys/class/kfd, so only the re-probe can
-        arbitrate: it answers gfx1100 with the override stripped, which is evidence FOR
-        the probe. This is what the removed "override names the probe, so assume a spoof"
-        fallback used to get wrong."""
+        """With no KFD sysfs, the re-probe alone decides; its gfx1100 answer is evidence for the
+        real card."""
         calls = _run_install(kfd_targets = (), reprobe_devices = ["gfx1100"], rocm_version = (7, 1))
         assert "repo.amd.com" not in calls, calls
         assert "gfx1151" not in calls, calls
@@ -320,10 +244,7 @@ class TestPrecedenceStillHolds:
         assert "repo.amd.com" not in calls, calls
 
     def test_masked_mixed_host_reprobes_the_whole_machine(self):
-        """ROCR_VISIBLE_DEVICES pinned to the dGPU on a Strix + 7900 XTX box collapses
-        the probe to one gfx1100, so the single-arch premise holds and the kernel is
-        unavailable in the container. The re-probe must clear the mask as well as the
-        override, or the second GPU that vetoes the correction stays hidden."""
+        """The re-probe must clear ROCR_VISIBLE_DEVICES too, or a masked second GPU stays hidden."""
         calls = _run_install(
             env = {
                 "HSA_OVERRIDE_GFX_VERSION": "11.0.0",
@@ -349,9 +270,6 @@ class TestPrecedenceStillHolds:
         )
         assert "gfx1151" not in calls, calls
         assert "rocm6.3" in calls, calls  # the gfx906 legacy index
-
-
-# ── The HSA_OVERRIDE_GFX_VERSION -> gfx reading ──────────────────────────────
 
 
 class TestHsaOverrideArch:
@@ -427,9 +345,6 @@ class TestKfdGfxTargets:
         assert stack_mod._kfd_gfx_targets() == ["gfx90a", "gfx1100"]
 
 
-# ── install.sh parity ────────────────────────────────────────────────────────
-
-
 def _sh_func(name: str) -> str:
     """Extract one top-level POSIX function definition out of install.sh."""
     source = _INSTALL_SH.read_text(encoding = "utf-8")
@@ -447,8 +362,7 @@ def _run_sh(script: str, env = None) -> str:
     preamble = (
         _sh_func("_hsa_override_gfx_arch")
         + _sh_func("_hsa_spoofed_physical_gfx")
-        # The kernel source is stubbed: CI has no /sys/class/kfd and the point here is
-        # the DECISION; node parsing is unit-tested on the Python side.
+        # CI has no /sys/class/kfd; node parsing is unit-tested on the Python side.
         + "\n_kfd_gfx_targets() { printf '%s\\n' \"${FAKE_KFD:-}\" | awk 'NF'; }\n"
     )
     _env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin")}
@@ -465,10 +379,7 @@ def _run_sh(script: str, env = None) -> str:
 
 
 class TestInstallShParity:
-    """install.sh routes the curl | sh install #7331 was reported against, so it must
-    reach the same verdict as install_python_stack.py: a host a `studio update` fixes
-    and a fresh install re-breaks is the worst outcome. These EXECUTE the shell helpers
-    rather than grepping for them."""
+    """install.sh must match install_python_stack.py's verdict; these tests execute its shell helpers."""
 
     @pytest.mark.parametrize(
         "value,expected",
@@ -555,17 +466,15 @@ class TestInstallShParity:
                 ],
                 ["gfx90a", "gfx1100"],
             ),
-            (["vendor_id 4098\n"], []),  # no gtv line
-            (["vendor_id 4098\ngfx_target_version notanumber\n"], []),  # malformed
-            ([""], []),  # empty properties
-            ([], []),  # no nodes at all
+            (["vendor_id 4098\n"], []),
+            (["vendor_id 4098\ngfx_target_version notanumber\n"], []),
+            ([""], []),
+            ([], []),
         ],
     )
     def test_kfd_reader_matches_python(self, tmp_path, nodes, expected):
-        """The shell KFD parser EXECUTED against a fabricated topology tree.
-        gfx_target_version is major*10000 + minor*100 + stepping in hex (110501 ->
-        gfx1151); decoding it decimally, or letting a CPU / NVIDIA node through, would
-        misroute every Strix host. Only the sysfs root differs from the shipped one."""
+        """The KFD parser must match Python's gfx_target_version decoding, or every Strix host is
+        misrouted."""
         root = tmp_path / "nodes"
         root.mkdir()
         for i, body in enumerate(nodes):
@@ -577,11 +486,8 @@ class TestInstallShParity:
         assert [c for c in got.split("\n") if c] == expected
 
     def test_reprobe_falls_through_to_amd_smi_like_python_does(self, tmp_path):
-        """rocminfo FAILS on the host this feature exists for: strip the override on a
-        ROCm stack older than the physical arch and hsa_init errors with no agents
-        listed. amd-smi reads the driver and still answers, and _detect_amd_gfx_codes
-        falls through to it, so install.sh must too or a `studio update` fixes a host a
-        fresh `curl | sh` install leaves on the segfaulting wheels."""
+        """rocminfo fails on older ROCm once the override is stripped; install.sh must fall back to
+        amd-smi."""
         _bin = tmp_path / "bin"
         _bin.mkdir()
         (_bin / "rocminfo").write_text(
@@ -604,7 +510,6 @@ class TestInstallShParity:
         got = _run_sh('_hsa_spoofed_physical_gfx "gfx1151" "gfx1100\ngfx1100" 2>/dev/null', env = env)
         assert got == "gfx1151", got
 
-        # The Python side, same host, so the parity claim is asserted and not assumed.
         with (
             patch.dict(os.environ, env, clear = False),
             patch.object(stack_mod, "_kfd_gfx_targets", return_value = []),
@@ -623,8 +528,7 @@ class TestInstallShParity:
         _unset = [
             ln for ln in _sh_func("_hsa_spoofed_physical_gfx").splitlines() if "(unset " in ln
         ]
-        # One per re-probe tool (rocminfo, then the two amd-smi fallbacks); any that
-        # dropped fewer would re-probe a masked or still-spoofed machine.
+        # One per re-probe tool; fewer would re-probe a masked or spoofed machine.
         assert _unset, _unset
         for _line in _unset:
             for _var in (
@@ -665,14 +569,8 @@ class TestInstallShParity:
             assert _var not in seen["env"], _var
 
 
-# ── Randomized shell/Python parity ───────────────────────────────────────────
-
-# A fake rocminfo shared by both implementations, so each executes its OWN re-probe
-# (env stripping included) rather than a mock. It models the behaviour under test: ROCr
-# renames every agent to HSA_OVERRIDE_GFX_VERSION's target when set, and reports the
-# physical arch when not; ROCR_VISIBLE_DEVICES selects agents. The output repeats the
-# token per Name / ISA line, which is what makes the shell's raw `grep -oE` produce
-# several lines per single GPU.
+# Shared fake rocminfo: ROCr renames agents to HSA_OVERRIDE_GFX_VERSION's target and repeats
+# the token per Name/ISA line, so the shell's raw grep yields several lines per GPU.
 _FAKE_ROCMINFO = r"""#!/bin/sh
 _phys="${FAKE_PHYSICAL:-}"
 _spoof=$(printf '%s' "${HSA_OVERRIDE_GFX_VERSION:-}" | awk '
@@ -710,10 +608,7 @@ def fake_rocminfo(tmp_path_factory):
 
 
 def _shapes(seed: int, count: int):
-    """A randomized host matrix: override x physical arches x probed arches x KFD
-    contents x mask. The override values include what users actually produce (empty,
-    whitespace, non-numeric, wrong component count, absurd magnitudes), which reach the
-    same helper as 11.0.0."""
+    """Randomized host matrix; override values include empty, malformed and absurd strings users produce."""
     import random
 
     rng = random.Random(seed)
@@ -741,7 +636,6 @@ def _shapes(seed: int, count: int):
     inferreds = arches + [""]
     for _ in range(count):
         physical = [rng.choice(arches) for _ in range(rng.choice([0, 1, 1, 1, 2, 2, 3]))]
-        # The probe list as install.sh builds it: raw tokens, repeated per agent.
         probed = []
         for _a in physical:
             probed.extend([_a] * rng.choice([1, 2, 2, 3]))
@@ -756,10 +650,7 @@ def _shapes(seed: int, count: int):
 
 
 class TestRandomizedParity:
-    """install.sh and install_python_stack.py must reach the SAME verdict on every host
-    shape, or a `studio update` fixes a machine a fresh `curl | sh` install re-breaks.
-    The named shapes above pin the rules; this pins the whole space, including the
-    re-probe, which they cannot reach on a box with no rocminfo."""
+    """install.sh and install_python_stack.py must agree on every host shape, including the re-probe."""
 
     @pytest.mark.parametrize("seed", [0, 1])
     def test_verdicts_agree(self, seed, fake_rocminfo):
@@ -831,8 +722,7 @@ class TestRandomizedParity:
                 )
             if py is None:
                 continue
-            # Corroborated by the kernel or by the unspoofed physical truth the
-            # re-probe reads back. Never by the variable alone.
+            # Corroborated by the kernel or the unspoofed re-probe, never by the variable alone.
             assert shape["kfd"] == [py] or list(dict.fromkeys(shape["physical"])) == [py], (
                 shape,
                 py,
@@ -841,12 +731,7 @@ class TestRandomizedParity:
 
 
 class TestCallSiteParity:
-    """The parity a helper-level comparison cannot see: each side builds its OWN probe
-    input from the same rocminfo the way its call site does. install.sh feeds
-    `rocminfo | grep -oE 'gfx...'` STRAIGHT in, so one GPU arrives as two or three
-    repeated tokens, while install_python_stack.py splits on agent headers and gets one
-    entry per device. A pre-shaped list hides that difference, and it is exactly what
-    decides whether the correction fires on the host #7331 was reported from."""
+    """install.sh's grep yields repeated tokens per GPU, so input must come from each call site."""
 
     @pytest.mark.parametrize(
         "override", ["", "11.0.0", "11.5.1", "10.3.0", "garbage", "999999.0.0"]
@@ -881,7 +766,6 @@ class TestCallSiteParity:
             if mask:
                 env["ROCR_VISIBLE_DEVICES"] = mask
 
-            # install.sh's call site, verbatim: raw grep output, duplicates and all.
             sh_probe = _sp.run(
                 [
                     "/bin/sh",
@@ -902,7 +786,6 @@ class TestCallSiteParity:
                 else ""
             )
 
-            # install_python_stack.py's call site: one entry per agent.
             with (
                 patch.dict(os.environ, env, clear = False),
                 patch.object(stack_mod, "_kfd_gfx_targets", return_value = list(kfd)),
@@ -938,20 +821,12 @@ class TestCallSiteParity:
                 )
         assert not divergences, divergences[:5]
         if override == "11.0.0":
-            # Guards against the sweep passing because neither side ever fires: 11.0.0
-            # on a gfx1151 chassis is the reported case and MUST correct somewhere.
+            # 11.0.0 on a gfx1151 chassis is the reported case and must correct somewhere.
             assert corrections, f"no shape corrected across {shapes} shapes"
 
 
-# ── Clearing the confirmed spoof from the launched runtime ───────────────────
-
-
 class TestConfirmedSpoofIsClearedBeforeLaunch:
-    """Routing the wheels is only half of #7331. ROCr rebuilds the agent from
-    HSA_OVERRIDE_GFX_VERSION in every later process (libhsakmt's topology.c writes
-    props->EngineId straight from the variable) and AMD's per-gfx index ships code
-    objects for one arch only, so a runtime still reporting gfx1100 gets a gfx1151 wheel
-    with no code for the device it sees and fails at the first allocation."""
+    """ROCr rebuilds the agent from HSA_OVERRIDE_GFX_VERSION in later processes; clear a disproved one."""
 
     def test_reroute_clears_the_variable_it_disproved(self):
         probe = {}
@@ -1001,15 +876,8 @@ class TestConfirmedSpoofIsClearedBeforeLaunch:
             "the clear must be guarded by the corroborated-spoof verdict, never "
             "applied to a host whose override was not disproved"
         )
-        # Two clears of the caller's own environment, one per branch that installs native
-        # per-arch wheels: the Strix rocm* reroute above, and the no-version reroute, which
-        # produces a gfx* leaf and so never reaches this branch. The only other unset scopes
-        # three variables inside the re-probe's subshell. Every other branch keeps the
-        # override, which on generic wheels is what makes the GPU usable at all.
-        #
-        # The count alone is the weak half of this assertion, so each clear is also required
-        # to sit under a corroborated-spoof guard. Adding an unguarded third would keep the
-        # count honest and still strand a host whose override was never disproved.
+        # One clear per native per-arch branch, each under a corroborated-spoof guard; other branches
+        # keep the override, which generic wheels need.
         _lasting = [
             i
             for i, ln in enumerate(source.splitlines())
@@ -1038,16 +906,7 @@ def _spoof_clear_guard() -> str:
 
 
 def test_no_torch_keeps_the_override_because_no_per_gfx_wheels_are_installed():
-    """--no-torch must not clear the spoof, since it installs nothing to replace it.
-
-    Clearing is only sound because native per-gfx wheels are going in on that branch.
-    `--no-torch` (and the Intel Mac auto-detection, which sets the same SKIP_TORCH)
-    reaches the reroute and installs no torch, so clearing there strands the host with
-    the generic wheels it already had AND no override, its only source of usable kernels.
-
-    Executes the guard as written rather than matching its text, so a rewrite that keeps
-    the words and loses the behaviour still fails.
-    """
+    """Clearing the spoof is sound only when per-gfx wheels are installed; with --no-torch it must stay."""
     guard = _spoof_clear_guard()
     assert "SKIP_TORCH" in guard, guard
 

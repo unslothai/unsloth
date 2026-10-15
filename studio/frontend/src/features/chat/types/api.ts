@@ -49,6 +49,9 @@ export interface ListLorasResponse {
 export interface LoadModelRequest {
   engine_parallelism?: "tensor" | "pipeline" | "data";
   engine_precision?: "auto" | "bf16" | "fp16" | "int4" | "int8" | "fp8";
+  engine_kv_cache_dtype?: "auto" | "fp8";
+  engine_seed?: number | null;
+  engine_gpu_memory_utilization?: number | null;
   engine?: "auto" | "vllm" | "sglang";
   model_path: string;
   /** Opaque client attempt ID used to cancel only this in-flight load. */
@@ -207,6 +210,8 @@ export interface GgufVariantsResponse {
   dependencies_resolved?: boolean;
   /** Native max context from GGUF metadata; present once a variant is downloaded. */
   context_length?: number | null;
+  /** "mlx" for precision folders of an MLX repo. */
+  variant_format?: string | null;
 }
 
 export function isMultimodalResponse(
@@ -231,6 +236,9 @@ export function isMultimodalResponse(
 export interface LoadModelResponse {
   engine_parallelism?: "tensor" | "pipeline" | "data";
   engine_precision?: "auto" | "bf16" | "fp16" | "int4" | "int8" | "fp8";
+  engine_kv_cache_dtype?: "auto" | "fp8";
+  engine_seed?: number | null;
+  engine_gpu_memory_utilization?: number | null;
   engine?: "auto" | "vllm" | "sglang";
   is_mlx?: boolean;
   evicted?: string[];
@@ -359,6 +367,9 @@ export interface UnloadModelRequest {
 export interface InferenceStatusResponse {
   engine_parallelism?: "tensor" | "pipeline" | "data";
   engine_precision?: "auto" | "bf16" | "fp16" | "int4" | "int8" | "fp8";
+  engine_kv_cache_dtype?: "auto" | "fp8";
+  engine_seed?: number | null;
+  engine_gpu_memory_utilization?: number | null;
   engine?: "auto" | "vllm" | "sglang";
   is_mlx?: boolean;
   is_npu?: boolean;
@@ -745,6 +756,8 @@ export interface OpenAIChatCompletionsRequest {
   max_tool_calls_per_message?: number;
   tool_call_timeout?: number;
   session_id?: string;
+  /** The user message that started this turn; keys the turn's file checkpoints for /rewind. */
+  user_message_id?: string;
   cancel_id?: string;
   provider_id?: string;
   provider_type?: string;
@@ -762,7 +775,7 @@ export interface OpenAIChatCompletionsRequest {
    *  container. OpenAI cloud and the gpt-5.5 family only. */
   openai_code_exec_container_id?: string | null;
   /** Anthropic code_execution container id from the prior response in this thread. When set and the
-   *  Code pill is on, the backend forwards a top-level `container` on /v1/messages so filesystem
+   *  Tools pill is on, the backend forwards a top-level `container` on /v1/messages so filesystem
    *  state persists; unset is auto-created. */
   anthropic_code_exec_container_id?: string | null;
   /** Anthropic fast-mode toggle. Opus 4.6 / 4.7 only; dropped silently elsewhere. */
@@ -825,6 +838,8 @@ export interface OpenAIChatChunk {
     boundary_messages?: number;
     // true when this fit started a checkpoint, including inside the current tool loop
     checkpoint_started?: boolean;
+    // true while the checkpoint in force was started by /compact
+    manual?: boolean;
     // true when the provider summarized earlier turns instead of Unsloth dropping them
     summarized?: boolean;
     // boundary text lets the count be re-derived after deleting an already evicted prompt

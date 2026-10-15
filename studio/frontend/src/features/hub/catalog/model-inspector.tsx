@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useVllmAvailable } from "@/features/model-picker";
+import { useVllmAvailable, useVllmPlatform } from "@/features/model-picker";
 import { useHfEndpoint, useHubName } from "@/lib/hf-endpoint";
 import {
   Tooltip,
@@ -40,6 +40,7 @@ import {
   RamMemoryIcon,
   Share05Icon,
 } from "@hugeicons/core-free-icons";
+import { TextToSpeechIcon } from "@/lib/hugeicons-derived";
 import type { IconSvgElement } from "@hugeicons/react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { memo, useDeferredValue, useMemo } from "react";
@@ -49,6 +50,7 @@ import { useDatasetSize } from "../hooks/use-dataset-size";
 import {
   type HubModelRunSelection,
   hubModelRunsOnAudioPage,
+  isEmbeddingOnly,
   isHubModelRunEligible,
 } from "../lib/model-run-selection";
 import { studioPageForTask } from "../lib/unsloth-support";
@@ -511,6 +513,7 @@ export const ModelInspector = memo(function ModelInspector({
   const supportLibraryName = model?.libraryName;
   const supportQuantMethod = model?.quantMethod;
   const vllmAvailable = useVllmAvailable();
+  const vllmPlatform = useVllmPlatform();
   const unslothSupport = useMemo<UnslothSupport>(() => {
     return classifyUnslothSupport({
       modelId: supportModelId,
@@ -520,9 +523,11 @@ export const ModelInspector = memo(function ModelInspector({
       deviceType,
       quantMethod: supportQuantMethod,
       vllmAvailable,
+      vllmPlatform,
     });
   }, [
     vllmAvailable,
+    vllmPlatform,
     deviceType,
     supportLibraryName,
     supportModelId,
@@ -600,6 +605,21 @@ export const ModelInspector = memo(function ModelInspector({
       ? (selection: HubModelRunSelection) =>
           onRun(selection, audioPage ? "audio" : mediaPage)
       : undefined;
+  // A precision folder downloads as it loads, so it need not be on device.
+  const isMlx =
+    !model.isGguf &&
+    (model.libraryName?.toLowerCase() === "mlx" ||
+      Boolean(model.tags?.some((tag) => tag.toLowerCase() === "mlx")));
+  const precisionRunAction =
+    isMlx &&
+    onRun &&
+    !isDataset &&
+    !isEmbeddingOnly(model) &&
+    !runsOnMediaRuntime &&
+    !chatOnlyMeasured &&
+    unslothSupport.status !== "unsupported"
+      ? (selection: HubModelRunSelection) => onRun(selection, mediaPage)
+      : undefined;
 
   const languages = parseLanguageTags(model.tags);
   const datasetSizeBytes =
@@ -650,7 +670,12 @@ export const ModelInspector = memo(function ModelInspector({
           {!isDataset && (
             <span className="inline-flex h-6 items-center gap-1.5 rounded-full bg-muted px-2.5 text-ui-11p5 font-medium text-foreground dark:bg-[rgb(255_255_255_/_calc(0.04*var(--contrast-wash-gain,1)))]">
               <HugeiconsIcon
-                icon={CubeIcon}
+                icon={
+                  model.pipelineTag === "text-to-speech" ||
+                  model.pipelineTag === "text-to-audio"
+                    ? TextToSpeechIcon
+                    : CubeIcon
+                }
                 strokeWidth={1.75}
                 className="size-3 text-muted-foreground"
               />
@@ -755,6 +780,8 @@ export const ModelInspector = memo(function ModelInspector({
               onRun={runAction}
               runPending={runConfigPending}
               onChange={onInventoryChange}
+              isMlx={isMlx}
+              onRunPrecision={precisionRunAction}
             />
           )}
         </InspectorDownloadSlot>

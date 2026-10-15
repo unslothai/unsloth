@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-Present the Unsloth team. See /studio/LICENSE.AGPL-3.0
 
-"""docker/Dockerfile.studio-rocm ships JupyterLab and the notebooks beside Unsloth
-Studio, as unsloth/unsloth:studio does on CUDA, minus its sshd. Dockerfile.studio
-inherits JupyterLab and the notebook tooling from the CUDA core image; the ROCm base
-carries none of that, so the ROCm file installs it itself, and the two can drift
-apart without any build noticing. These pin each piece to the CUDA file it mirrors,
-and the entrypoint hooks the services depend on. Static reads: no AMD GPU, no
-Docker, no network.
-"""
+"""The ROCm base has no JupyterLab or notebook tooling, so each piece is pinned to its CUDA source."""
 
 from __future__ import annotations
 
@@ -84,8 +77,6 @@ def _branding_module():
     return module
 
 
-# ── JupyterLab itself ────────────────────────────────────────────────────────
-
 JUPYTER_PINS = ("jupyterlab", "notebook", "ipywidgets")
 
 
@@ -98,7 +89,6 @@ def test_jupyterlab_is_pinned_to_the_cuda_core_image():
             f"{pkg}=={rocm[pkg] or '(unpinned)'} in Dockerfile.studio-rocm but "
             f"{cuda[pkg]} in docker/Dockerfile: the two images would ship different notebook stacks"
         )
-    # the labext-builder stage builds the extension against the jupyterlab it will run under
     (jl,) = cuda["jupyterlab"]
     assert (
         _read(ROCM_STUDIO).count(f'"jupyterlab=={jl}"') == 2
@@ -106,18 +96,15 @@ def test_jupyterlab_is_pinned_to_the_cuda_core_image():
 
 
 NOT_MIRRORED = {
-    # no ROCm wheel on any pytorch.org rocm leaf; the shim forwards a notebook's own install
+    # No torchcodec wheel on any pytorch.org rocm leaf; notebook installs of it are forwarded.
     "torchcodec",
-    # the ROCm base already carries a newer protobuf than the CUDA pin
+    # The ROCm base already carries a newer protobuf than the CUDA pin.
     "protobuf",
 }
 
 
 def test_the_notebook_runtime_pins_match_the_cuda_core_image():
-    """docker/Dockerfile bakes what the notebooks' install cells declare (soundfile,
-    evaluate, librosa, decord, ...); the shim then keeps those cells from moving the
-    stack. The ROCm image runs the same notebooks, so it carries the same pins, or the
-    AMD-* audio, TTS and vision notebooks fail on their first import here."""
+    """The ROCm image runs the same notebooks, so it must carry the same pins or the AMD notebooks fail."""
     cuda = _read(CUDA_BASE)
     cuda_runs = [
         r for r in _instructions(CUDA_BASE, "RUN") if '"soundfile==' in r or '"decord==' in r
@@ -135,7 +122,6 @@ def test_the_notebook_runtime_pins_match_the_cuda_core_image():
     for pkg in NOT_MIRRORED:
         assert pkg in cuda, f"{pkg} is no longer in docker/Dockerfile; drop it from NOT_MIRRORED"
         assert f'"{pkg}==' not in rocm, f"{pkg} is now baked; drop it from NOT_MIRRORED"
-    # torchcodec dlopens system ffmpeg, and the CUDA image installs it for that
     (apt,) = [
         r for r in _instructions(ROCM_STUDIO, "RUN") if "apt-get install" in r and "supervisor" in r
     ]
@@ -152,12 +138,8 @@ def test_jupyterlab_goes_into_the_base_venv_and_leaves_torch_alone():
     ), "the install must assert the base venv's torch is the same before and after"
 
 
-# ── the labextension, theme and branding chain ───────────────────────────────
-
-
 def test_the_labextension_lands_where_the_branding_guard_looks():
     branding = _branding_module()
-    # the guard joins with os.path, and it only ever runs inside the (Linux) image
     paths = {
         key: value.replace("\\", "/") if isinstance(value, str) else value
         for key, value in branding.resolve_paths(
@@ -199,9 +181,6 @@ def test_the_branding_chain_matches_the_cuda_studio_image():
     assert branding(ROCM_STUDIO) == branding(CUDA_STUDIO)
 
 
-# ── the notebooks and their tooling ──────────────────────────────────────────
-
-
 def test_the_notebook_tooling_matches_the_cuda_core_image():
     def helpers(path: Path) -> set[str]:
         (src,) = [src for _, src, dest in _copies(path) if dest == "/opt/unsloth-nb/"]
@@ -224,11 +203,7 @@ def test_the_notebooks_are_baked_where_the_sync_script_looks():
     assert "/opt/unsloth-notebooks/.unsloth_template_commit" in text
     assert "/opt/unsloth-notebooks" in _read(DOCKER / "unsloth_sync_notebooks.sh")
     assert "ARG UNSLOTH_NOTEBOOKS_REF" in text, "CI has to be able to pin the notebooks commit"
-    # the AMD-* set is the point of the image, so an upstream ref without one fails the build
     assert "grep -c '^AMD-'" in text
-
-
-# ── the services ───────────────────────────────────────────────────────
 
 
 def test_every_supervisord_program_is_installed_by_the_dockerfile():
@@ -247,10 +222,7 @@ def test_every_supervisord_program_is_installed_by_the_dockerfile():
             ), f"supervisord runs {command}, which the Dockerfile never copies"
             assert command in chmod, f"{command} is copied but not made executable"
         elif command == "/usr/sbin/sshd":
-            # supervisord.conf is shared with the CUDA image, which does run sshd.
-            # This image leaves openssh-server out, so the program has no binary and
-            # must never be started: studio_launch.sh's `command -v sshd` gate keeps
-            # UNSLOTH_ENABLE_SSHD false, and the image default agrees.
+            # supervisord.conf is shared with the CUDA image; sshd is absent here and must never start.
             assert "openssh-server" not in apt
             assert "command -v sshd >/dev/null 2>&1" in _read(LAUNCH)
             assert _env(ROCM_STUDIO)["UNSLOTH_ENABLE_SSHD"] == "false"
@@ -269,20 +241,14 @@ def test_the_launcher_is_the_command_and_the_ports_are_exposed():
     assert "unsloth-studio-home" not in cmd, "the home link moved into the entrypoint"
     env = _env(ROCM_STUDIO)
     (expose,) = _instructions(ROCM_STUDIO, "EXPOSE")
-    # no 22: this image has no sshd, unlike the CUDA one
     assert set(expose.split()) == {env["UNSLOTH_STUDIO_PORT"], env["JUPYTER_PORT"]}
-    # supervisord.conf expands these before the launcher has exported anything
+    # supervisord.conf expands these before the launcher has exported anything.
     for name in ("JUPYTER_PORT", "UNSLOTH_ENABLE_SSHD", "UNSLOTH_STUDIO_STOP_WAIT_S"):
         assert name in env, f"supervisord's %(ENV_{name})s needs an image default"
 
 
 def test_login_shells_keep_the_rocm_variables():
-    """studio_launch.sh writes the container's env into /etc/profile.d, filtered by
-    prefix. Nothing here arrives over SSH, but a JupyterLab terminal and `docker exec
-    -it ... bash -l` are both login shells, and `docker run -e` values reach neither
-    otherwise. The image's ROCBLAS_USE_HIPBLASLT and a user's HSA_OVERRIDE_GFX_VERSION
-    have to make it through, or a terminal trains on a different ROCm configuration
-    than the Studio and Jupyter processes."""
+    """Login shells need ROCBLAS_USE_HIPBLASLT and HSA_OVERRIDE_GFX_VERSION kept by the profile.d filter."""
     match = re.search(r'keep\s*=\s*re\.compile\(r"(.*?)"\)', _read(LAUNCH))
     assert match, "the profile.d keep pattern moved"
     keep = re.compile(match.group(1))
@@ -299,19 +265,13 @@ def test_login_shells_keep_the_rocm_variables():
     assert not keep.search("HOME") and not keep.search("LANG")
 
 
-# ── the entrypoint hooks the services depend on ──────────────────────────────
-
-
 def test_the_entrypoint_links_the_studio_home_before_anything_reads_it():
-    """supervisord starts Studio from $UNSLOTH_STUDIO_HOME/bin/unsloth, a link into
-    the app dir that unsloth-studio-home creates; a volume mounted on the home hides
-    the build-time link, so the entrypoint has to run the linker on every start,
-    before the GPU checks that may exit. Mirrors entrypoint.sh on the CUDA image."""
+    """A volume on the home hides the build link, so relinking must precede the GPU checks on every
+    start."""
     body = _read(ENTRYPOINT)
     linker = body.index("/usr/local/bin/unsloth-studio-home")
     assert linker < body.index("Check 1"), "the home link has to precede the GPU checks"
     assert "/usr/local/bin/unsloth-studio-home" in _read(CUDA_ENTRYPOINT)
-    # the studio image reinstalls the entrypoint, since the published base predates the hooks
     (base_dest,) = [dest for _, src, dest in _copies(ROCM_BASE) if src == ["entrypoint-rocm.sh"]]
     assert (base_dest,) == tuple(
         dest for _, src, dest in _copies(ROCM_STUDIO) if src == ["entrypoint-rocm.sh"]
@@ -332,9 +292,6 @@ def test_the_entrypoint_syncs_the_notebooks_before_every_exec():
         ), f"exec at offset {pos} is not preceded by sync_notebooks but by {preceding!r}"
 
 
-# ── the publisher ────────────────────────────────────────────────────────────
-
-
 def test_the_publisher_passes_every_build_arg_the_final_stage_declares():
     """Each ARG after the final FROM is a ref a RUN layer is keyed on. One the
     publisher leaves at its default bakes a mutable 'main' that docker matches on
@@ -351,13 +308,10 @@ def test_the_publisher_passes_every_build_arg_the_final_stage_declares():
     assert step["with"]["file"] == "./docker/Dockerfile.studio-rocm"
     passed = dict(ln.split("=", 1) for ln in step["with"]["build-args"].splitlines() if ln)
     assert declared <= set(passed), declared - set(passed)
-    # the base by digest, so a newer run's :latest cannot slip under this build
+    # Base pinned by digest so a newer :latest cannot slip under this build.
     assert "@${{ needs.build.outputs.digest }}" in passed["BASE_IMAGE"]
     for name in declared:
         assert passed[name].startswith("${{ needs.prepare.outputs."), (name, passed[name])
-
-
-# ── the build context ────────────────────────────────────────────────────────
 
 
 def test_every_copy_source_is_allowed_by_the_dockerignore():
