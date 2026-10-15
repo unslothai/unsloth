@@ -29,7 +29,6 @@ export function isMemoryEstimateRefusal(
   );
 }
 
-/** Not when the run already sent the override: then the refusal means something else changed. */
 export function shouldOfferGenerateAnyway(input: {
   error: unknown;
   allowOversizedSent: boolean;
@@ -46,7 +45,6 @@ export function allowOversizedField(
   return persistedSetting || oneShot ? true : undefined;
 }
 
-/** A retry started while the refused run is still busy is dropped by the generate guard. */
 export function shouldRunQueuedOversizedRetry(input: {
   queued: boolean;
   busy: unknown;

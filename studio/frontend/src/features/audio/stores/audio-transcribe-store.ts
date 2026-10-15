@@ -11,7 +11,6 @@ export type TranscriptView = "text" | "segments";
 
 interface AudioTranscribeState {
   source: AudioSourceSelection | null;
-  /** Empty means Auto. */
   language: string;
   timestamps: boolean;
   speakers: boolean;

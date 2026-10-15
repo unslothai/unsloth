@@ -78,11 +78,9 @@ import {
 
 const MODES: RefreshMode[] = ["live", "3s", "manual"];
 
-// Rescan cadence for log files that did not exist when the tab was opened.
 // Slower than the poll: a directory walk rather than a tail read.
 const SOURCE_RESCAN_MS = 10_000;
 
-// how close to the bottom the pane must be scrolled for auto-follow to stay on
 const FOLLOW_THRESHOLD_PX = 40;
 
 function readStoredMode(): RefreshMode {
@@ -146,35 +144,28 @@ export function DebuggingTab() {
   const [mode, setMode] = useState<RefreshMode>(readStoredMode);
   const [buffer, setBuffer] = useState<LogBufferState>(EMPTY_BUFFER);
   const [realpath, setRealpath] = useState<string | null>(null);
-  // the logs directory the backend resolved, opened by the folder button
   const [logRoot, setLogRoot] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [dropped, setDropped] = useState(false);
-  // A burst larger than one response continues on the next poll, which in
-  // manual mode never comes unless the user knows to ask for it.
+  // In manual mode the continuation poll never comes unless the user asks.
   const [morePending, setMorePending] = useState(false);
-  // File logging is off and an older session's log is still on disk, so the pane shows real content
-  // that will never grow. Unsaid, a stale log is indistinguishable from a live one.
+  // File logging is off but an old log is on disk; say so, or it looks live.
   const [staleSession, setStaleSession] = useState(false);
-  // Each button tracks only its own request: the export takes seconds and must
-  // not lock out "Show in folder", which is how the user reaches the result.
+  // Per-button state so the slow export does not lock out "Show in folder".
   const [exporting, setExporting] = useState(false);
   const [revealing, setRevealing] = useState(false);
   const [filter, setFilter] = useState("");
   const [wrap, setWrap] = useState(true);
-  // mirrors pinnedRef for the jump-to-latest button; the ref stays the source of
-  // truth so the scroll handler does not re-render the pane on every line
+  // Mirrors pinnedRef for the jump button; the ref stays the source of truth so scrolling
+  // does not re-render the pane.
   const [following, setFollowing] = useState(true);
   const { copied, copy } = useCopyFeedback();
   const { copied: pathCopied, copy: copyPath } = useCopyFeedback();
 
-  // In a ref as well as state: the poll loop must not restart per line arrived.
+  // A ref too, so the poll loop does not restart per line.
   const cursorRef = useRef<string | null>(null);
-  // Counts source changes, so an in-flight request can tell its view moved.
   const selectionRef = useRef(0);
-  // The selection in flight, not a bare flag: a poll for the newly picked source
-  // must not be swallowed by a slow read of the one the user just left, or the
-  // new pane stays empty (in manual mode, for good).
+  // The selection in flight, not a flag, so a slow read of the old source cannot swallow the new poll.
   const inFlightRef = useRef<number | null>(null);
   const paneRef = useRef<HTMLPreElement | null>(null);
   const pinnedRef = useRef(true);
@@ -188,7 +179,7 @@ export function DebuggingTab() {
     }
   }, [mode]);
 
-  // Selection order: a response older than the last one that selected never overrides it.
+  // A response older than the last selecting one never overrides it.
   const sourceFetchSeqRef = useRef(0);
   const appliedSourceFetchRef = useRef(0);
 
@@ -196,8 +187,7 @@ export function DebuggingTab() {
     async (options: { signal?: AbortSignal; reselect?: boolean } = {}) => {
       const seq = ++sourceFetchSeqRef.current;
       try {
-        // Bounded like the tail read: the poll loop and its failure recovery
-        // both await this, so an unanswered /sources would freeze both.
+        // Bounded: the poll loop and its recovery both await /sources.
         const requestedFor = pendingLogRequestKey(
           useSettingsDialogStore.getState(),
         );
@@ -223,7 +213,6 @@ export function DebuggingTab() {
           (requested
             ? result.sources.find((source) => source.family === requested)
             : undefined);
-        // Only the request this fetch was made for.
         const stillTheSameRequest =
           pendingLogRequestKey(dialog) === requestedFor;
         if (fromFailure && stillTheSameRequest)
@@ -250,7 +239,6 @@ export function DebuggingTab() {
     return () => controller.abort();
   }, [refreshSources]);
 
-  // A request that arrives while this panel is ALREADY mounted.
   const pendingLogRequest = useSettingsDialogStore(pendingLogRequestKey);
   useEffect(() => {
     if (pendingLogRequest === NO_PENDING_LOG_REQUEST) return;
@@ -263,16 +251,13 @@ export function DebuggingTab() {
     async (error: unknown, signal?: AbortSignal) => {
       if (isAbort(error)) return;
       if (isRequestTimeout(error)) {
-        // Not the raw message: the backstop duration is an internal number, and
-        // the user needs the consequence.
+        // The backstop duration is internal; show the consequence.
         setNotice(t("settings.debugging.timeout"));
         return;
       }
       if (isLogSourceGone(error)) {
-        // The id we hold is no longer enumerated (file removed, or pushed out of the per-family
-        // window). The backend sends 404 so the picker rebuilds; without this the loop re-polls a
-        // dead id forever. Reselecting the server's default terminates: it comes from the same
-        // walk, and "nothing at all" is a 200 with a status, not another 404.
+        // 404 means the id is no longer enumerated; reset so the loop does not poll a dead id.
+        // Reselecting the default terminates, since "nothing at all" is a 200.
         cursorRef.current = null;
         await refreshSources({ signal, reselect: true });
         return;
@@ -282,8 +267,7 @@ export function DebuggingTab() {
     [refreshSources, t],
   );
 
-  // The llama runner writes a NEW file per load attempt, so a list fetched at mount goes stale
-  // exactly when it matters: fail a load with the tab open and that failure's log is not offered.
+  // The llama runner writes a new file per load attempt, so the mount-time list goes stale.
   const rescanSourcesIfStale = useCallback(
     async (signal?: AbortSignal) => {
       if (Date.now() - lastSourceScanRef.current < SOURCE_RESCAN_MS) return;
@@ -298,9 +282,7 @@ export function DebuggingTab() {
       const selection = selectionRef.current;
       if (inFlightRef.current === selection) return;
       inFlightRef.current = selection;
-      // Without the timeout a request that never settles pins inFlightRef
-      // forever: every poll returns at the guard above and the pane freezes with
-      // no error, since the catch never runs. A dropped tunnel does it.
+      // Without the timeout a hung request pins inFlightRef and the pane freezes silently.
       try {
         const page = await withRequestTimeout(
           (requestSignal) =>
@@ -312,8 +294,7 @@ export function DebuggingTab() {
           REQUEST_TIMEOUT_MS,
           signal,
         );
-        // A manual refresh carries no abort signal, so one in flight across a
-        // source switch would land the old file's lines under the new pick.
+        // A manual refresh has no abort signal and could land the old file's lines under the new pick.
         if (
           isPageStale({
             requestSelection: selection,
@@ -344,22 +325,18 @@ export function DebuggingTab() {
         if (selection === selectionRef.current)
           await onPollFailed(error, signal);
       } finally {
-        // Only if a poll for a newer selection has not taken the slot.
         if (inFlightRef.current === selection) inFlightRef.current = null;
       }
     },
     [onPollFailed, sourceId, t],
   );
 
-  // Switching source starts a fresh read rather than appending to the old file.
   useEffect(() => {
     selectionRef.current += 1;
     cursorRef.current = null;
     setBuffer(EMPTY_BUFFER);
     setRealpath(null);
-    // Every notice below describes the file being left, so all of them go with it. Clearing only
-    // `dropped` let a failed first read on the new source keep claiming the OLD one's state, and in
-    // manual mode nothing retries: the pane sat there calling a live log a frozen session.
+    // Every notice describes the file being left, so reset all of them; manual mode never retries.
     setDropped(false);
     setMorePending(false);
     setStaleSession(false);
@@ -371,8 +348,7 @@ export function DebuggingTab() {
     let timer: number | undefined;
     let stopped = false;
 
-    // A self-scheduling timeout, not setInterval: the next poll is queued only
-    // once the previous settled, so a slow link builds no backlog.
+    // Self-scheduling so a slow link builds no backlog.
     const tick = async () => {
       if (stopped) return;
       if (
@@ -395,7 +371,6 @@ export function DebuggingTab() {
     };
   }, [mode, poll, rescanSourcesIfStale]);
 
-  // stripped once per line so the filter matches exactly what the pane shows
   const plainLines = useMemo(() => buffer.lines.map(stripAnsi), [buffer.lines]);
   const trimmedFilter = filter.trim().toLowerCase();
   const visibleLines = useMemo(
@@ -427,8 +402,6 @@ export function DebuggingTab() {
   const onScroll = useCallback(() => {
     const pane = paneRef.current;
     if (!pane) return;
-    // Stop chasing the bottom once the user scrolls up, so a traceback stays
-    // readable while the app keeps logging.
     const pinned =
       pane.scrollHeight - pane.scrollTop - pane.clientHeight <
       FOLLOW_THRESHOLD_PX;
@@ -455,15 +428,14 @@ export function DebuggingTab() {
     setExporting(true);
     try {
       const savedPath = await exportAllLogs();
-      // A path only comes back on desktop. In a browser the file is wherever
-      // that browser puts downloads, which we cannot name.
+      // Only desktop returns a path; a browser's download location is unknown.
       if (savedPath) {
         toast.success(
           t("settings.debugging.downloadedTo", { path: savedPath }),
           {
             action: {
               label: t("settings.debugging.showInFolder"),
-              // The folder the archive went to, not the one the logs came from.
+              // The archive's folder, not the logs' folder.
               onClick: () => {
                 void revealSavedArchive(savedPath).catch((error: unknown) => {
                   toast.error(t("settings.debugging.openLogsFolderFailed"), {
@@ -495,7 +467,6 @@ export function DebuggingTab() {
   }, [t]);
 
   const groupedSources = useMemo(() => groupByFamily(sources), [sources]);
-  // the selected file's path, else the log root the footer falls back to showing
   const shownPath = realpath ?? logRoot;
   const modeLabel = (candidate: RefreshMode) =>
     t(
@@ -640,7 +611,6 @@ export function DebuggingTab() {
                     count: buffer.lines.length,
                   })}
             </span>
-            {/* a failed read is explained by the notice below; a live chip beside it would contradict it */}
             {notice ? null : (
               <span
                 className={cn(

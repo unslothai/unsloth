@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Kept OUT of api.ts on purpose: api.ts imports the auth barrel, which the test runner cannot
-// load, so anything defined there is untestable. That is how a normalizer silently dropping the
-// backend's Auto verdict shipped green.
+// Kept out of api.ts, which imports the auth barrel the test runner cannot load.
 
 export interface DownloadTransportCapability {
   available: boolean | null;
@@ -13,12 +11,10 @@ export interface DownloadTransportCapability {
 export interface DownloadTransportCapabilities {
   http: DownloadTransportCapability;
   xet: DownloadTransportCapability;
-  // What "auto" resolves to right now, and why. Server-side because only the backend can see this
-  // machine's RAM, hf_xet build, and recent Xet failures.
+  // Server-side: only the backend sees RAM, the hf_xet build and recent Xet failures.
   auto_resolves_to?: "xet" | "http";
   auto_reason?: string | null;
-  // Whether an interrupted HTTP transfer leaves bytes the next attempt can append to. Server-side
-  // because only the backend knows which huggingface_hub writer is installed.
+  // Server-side: only the backend knows which huggingface_hub writer is installed.
   partials_resumable?: boolean;
 }
 
@@ -28,11 +24,10 @@ export const DOWNLOAD_TRANSPORT_CAPABILITIES_FALLBACK: DownloadTransportCapabili
     available: null,
     reason: "Couldn't verify Xet support with the Unsloth backend.",
   },
-  // Unknown backend state: stay on Xet, the download-time ladder still falls back to HTTP.
+  // Unknown backend state: stay on Xet; the download-time ladder still falls back to HTTP.
   auto_resolves_to: "xet",
   auto_reason: null,
-  // Unverified means "do not promise a resume". Continuing a partial is honest either way; only
-  // the byte-resume wording would be a lie.
+  // Unverified means do not promise a byte resume.
   partials_resumable: false,
 };
 export function normalizeDownloadTransportCapability(
@@ -79,15 +74,13 @@ export function normalizeDownloadTransportCapabilities(
       candidate.xet,
       DOWNLOAD_TRANSPORT_CAPABILITIES_FALLBACK.xet,
     ),
-    // Carry the backend's verdict through. Dropping these left effectiveTransportMode("auto")
-    // reading undefined, so Auto always resolved to Xet whatever the machine's health was.
+    // Carry the verdict through, or Auto always resolves to Xet.
     auto_resolves_to:
       candidate.auto_resolves_to === "http" || candidate.auto_resolves_to === "xet"
         ? candidate.auto_resolves_to
         : DOWNLOAD_TRANSPORT_CAPABILITIES_FALLBACK.auto_resolves_to,
     auto_reason:
       typeof candidate.auto_reason === "string" ? candidate.auto_reason : null,
-    // Anything but an explicit true (older backend, junk value) stays false.
     partials_resumable: candidate.partials_resumable === true,
   };
 }

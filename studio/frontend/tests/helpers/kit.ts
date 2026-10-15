@@ -8,10 +8,7 @@ import { register } from "node:module";
 import type { ResidentAdoptionState } from "../../src/features/hub/lib/adopt-inference-status.ts";
 import type { ResidentStatusRefreshTargets } from "../../src/features/hub/lib/resident-status-refresh.ts";
 
-/**
- * A module under `src` read as text, path relative to `src` so it survives a test
- * file moving. Shape assertions need the shipped file, not a copy of it.
- */
+/** A `src` module read as text, path relative to `src`. */
 export function readSrc(relative: string): string {
   return readFileSync(new URL(`../../src/${relative}`, import.meta.url), "utf8");
 }
@@ -19,17 +16,12 @@ export function readSrc(relative: string): string {
 const UI_SPACE_SCALE =
   /calc\(\s*(-?[\d.]+(?:px|rem|em))\s*\*\s*var\(--ui-space-scale\s*,\s*1\)\s*\)/g;
 
-/**
- * Source with --ui-space-scale collapsed to the length it resolves to at the
- * default UI font size. Shape assertions reason in px, and every length in such
- * a comparison moves by the same factor, so reading the authored base keeps
- * them true at any font size.
- */
+/** Source with --ui-space-scale collapsed to its default-font-size length. */
 export function atDefaultUiScale(source: string): string {
   return source.replace(UI_SPACE_SCALE, "$1");
 }
 
-/** A repository file read as text, relative to `studio/frontend/tests` like the `new URL` it replaces. Prefer `readSrc` under `src`. */
+/** A repo file read as text, relative to `studio/frontend/tests`. */
 export function readText(relative: string): string {
   return readFileSync(new URL(`../${relative}`, import.meta.url), "utf8");
 }
@@ -38,15 +30,11 @@ export function readSrcAsync(relative: string): Promise<string> {
   return readFile(new URL(`../../src/${relative}`, import.meta.url), "utf8");
 }
 
-/**
- * Teach the loader the two resolution rules vite and tsconfig's "bundler" mode give the
- * app. Call before dynamically importing any src module that resolves that way.
- */
+/** Register vite/tsconfig "bundler" resolution. Call before importing such src modules. */
 export function registerBundlerResolver(): void {
   register("../bundler-resolver.mjs", import.meta.url);
 }
 
-/** Register the bundler resolver with store dependency stubs. */
 export function registerStoreStubResolver(): void {
   register("../store-stub-resolver.mjs", import.meta.url);
 }
@@ -57,13 +45,7 @@ export type StorageFake = {
   removeItem: (key: string) => void;
 };
 
-/**
- * An in-memory localStorage, installed on globalThis under both names the app reads it
- * by. The returned map is the backing store, so a test can stage records before import.
- *
- * The window it installs keeps the listeners registered against it, so `fireWindowEvent`
- * can deliver a cross-tab "storage" event to a store that subscribed on construction.
- */
+/** In-memory localStorage plus a window whose listeners `fireWindowEvent` can drive. */
 export function installLocalStorageFake(): {
   store: Map<string, string>;
   storage: StorageFake & Pick<Storage, "length" | "key">;
@@ -83,8 +65,7 @@ export function installLocalStorageFake(): {
   };
   const listeners = new Map<string, Set<(event: unknown) => void>>();
   Object.assign(globalThis, {
-    // A location too: lib/api-base reads its protocol, pulled in transitively.
-    // Stores that sync across tabs subscribe to "storage" on construction.
+    // lib/api-base reads location.protocol; cross-tab stores subscribe to "storage".
     window: {
       localStorage: storage,
       location: { protocol: "http:" },
@@ -97,8 +78,7 @@ export function installLocalStorageFake(): {
         listeners.get(type)?.delete(fn);
       },
     },
-    // A window implies a document: code guarded on `typeof window` reaches for
-    // one, and a fake without it is a browser no browser ever is.
+    // Code guarded on `typeof window` also reaches for document.
     document: {
       visibilityState: "visible",
       addEventListener: () => undefined,
@@ -109,7 +89,6 @@ export function installLocalStorageFake(): {
   return {
     store,
     storage,
-    /** Deliver `event` to every window listener for `type`. Returns how many ran. */
     fireWindowEvent: (type: string, event: unknown) => {
       const set = listeners.get(type);
       for (const fn of set ?? []) {
@@ -120,7 +99,6 @@ export function installLocalStorageFake(): {
   };
 }
 
-/** The chat-runtime store as it stands before anything has hydrated it. */
 export function emptyStore(
   overrides: Partial<ResidentAdoptionState> = {},
 ): ResidentAdoptionState {
@@ -129,13 +107,11 @@ export function emptyStore(
     checkpointIsExternal: false,
     activeGgufVariant: null,
     modelLoading: false,
-    // Off by default, as the setting is, so a test opts in to the stash case.
     idleUnloadArmed: false,
     ...overrides,
   };
 }
 
-/** Records the store actions adoptResidentModelStatus takes, in order. */
 export function spies() {
   const calls: string[] = [];
   const previouslySeen: { checkpoint: string | null; ggufVariant: string | null }[] =
@@ -158,7 +134,6 @@ export function spies() {
   };
 }
 
-/** A window/document pair whose events and visibility a test drives by hand. */
 export function fakeTargets(): ResidentStatusRefreshTargets & {
   hidden: boolean;
   fire: (target: "window" | "document", type: string) => void;

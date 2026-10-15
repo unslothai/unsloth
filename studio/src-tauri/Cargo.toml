@@ -1,11 +1,6 @@
 [package]
 name = "unsloth-studio"
-# Placeholder, not the released app version. release-desktop.yml rewrites this
-# field (and the unsloth-studio entry in Cargo.lock) to the dispatched
-# studio_version before every release build, so editing it here changes nothing
-# that ships. tauri.conf.json declares no version of its own, which is why the
-# app version comes from this field rather than from there. The stale CalVer
-# below is also the wrong shape: release builds always write SemVer, e.g. 0.1.52-beta.
+# Placeholder: release-desktop.yml rewrites this (and Cargo.lock) to the SemVer studio_version.
 version = "2026.4.8"
 description = "Unsloth Desktop App"
 authors = ["Unsloth AI"]
@@ -14,8 +9,7 @@ edition = "2021"
 rust-version = "1.89"
 
 [dependencies]
-# Windows executable-resource icons and ICO entry selection (tauri #15274 / #15241).
-# unstable: child webviews in the main window, for the browser panel's pages (browser_webview.rs).
+# unstable: child webviews in the main window for the browser panel (browser_webview.rs).
 tauri = { version = "~2.12.0", features = ["tray-icon", "unstable"] }
 tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 tauri-plugin-autostart = "2"
@@ -54,7 +48,6 @@ libc = "0.2"
 signal-hook = "0.4"
 
 [dev-dependencies]
-# A paused clock for the address poll's tests (browser_webview.rs).
 tokio = { version = "1", features = ["test-util"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -69,7 +62,6 @@ objc2-web-kit = { version = "0.3.2", default-features = false, features = ["std"
 block2 = "0.6"
 
 [target.'cfg(target_os = "linux")'.dependencies]
-# PNG output for the browser panel's screenshots (browser_capture.rs); gtk already builds it.
 cairo-rs = { version = "0.18", features = ["png"] }
 gdk = "0.18"
 gdk-pixbuf = "0.18"
@@ -80,7 +72,7 @@ webkit2gtk-sys = "2.0.2"
 webkit2gtk = "2.0.2"
 
 [target.'cfg(windows)'.dependencies]
-# Keep these versions aligned with Tauri's WebView2 controller bindings.
+# Keep aligned with Tauri's WebView2 controller bindings.
 webview2-com = "0.39.1"
 winreg = "0.55"
 windows = { version = "0.62.2", features = ["Win32_System_Threading"] }

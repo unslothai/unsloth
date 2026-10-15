@@ -12,8 +12,6 @@ import {
 import type { LocalizedEditMode } from "./api";
 import { ANNOTATION_COLORS, TRANSPARENCY_CHECKER } from "./edit-conditioning";
 
-/** Draws the localized-edit layer over the source at its NATIVE resolution: an RGBA layer of
- *  coloured strokes for annotate, a white-on-black mask for paint and mask. */
 export function LocalizedEditCanvas({
   image,
   mode,
@@ -38,13 +36,11 @@ export function LocalizedEditCanvas({
   const dirty = useRef(false);
   const last = useRef<{ x: number; y: number } | null>(null);
   const used = useRef<Set<string>>(new Set());
-  // Drawing waits until the layer for THIS source, mode and clear has been sized.
   const layerKey = `${resetKey}|${mode}|${image}`;
   const [readyFor, setReadyFor] = useState<string | null>(null);
   const ready = readyFor === layerKey;
 
-  // A new source, a new mode or Clear starts a blank layer at the source's natural size. The old
-  // layer is dropped at once, not on load, so Generate never pairs it with the new source.
+  // The old layer is dropped at once so Generate never pairs it with the new source.
   useEffect(() => {
     let live = true;
     drawing.current = false;
@@ -85,7 +81,6 @@ export function LocalizedEditCanvas({
 
   const radius = useCallback(() => {
     const base = Math.min(dims.current.w, dims.current.h) || 1024;
-    // Annotations are outlines, so a fraction of the region brush.
     const pct = mode === "annotate" ? brushPct / 4 : brushPct;
     return Math.max(1.5, (pct / 100) * base);
   }, [brushPct, mode]);

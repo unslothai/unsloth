@@ -16,7 +16,6 @@ const modeStep: TourStep = {
   ),
 };
 
-/** Create and Train swap the whole page body, so each mode gets the anchors it actually has. */
 export function buildImagesTourSteps({
   pageMode,
 }: {

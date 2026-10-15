@@ -3,7 +3,6 @@
 
 import { PROVIDER_LOGOS } from "../hub/lib/provider-logos";
 
-// API provider names differ from the model hub's publisher IDs.
 const HUB_PROVIDER_IDS = new Map([
   ["openai", "openai"],
   ["openai_codex", "openai"],
@@ -18,7 +17,6 @@ const HUB_LOGO_PATHS = new Map(
   PROVIDER_LOGOS.map(({ id, logoPath }) => [id, logoPath]),
 );
 
-// Gemini keeps its own mark; the hub uses Google's logo for Gemma models.
 const CONNECTION_LOGO_PATHS = new Map([
   ["gemini", "/provider-logos/gemini.svg"],
   ["anthropic", "/provider-logos/anthropic.svg"],
@@ -30,7 +28,6 @@ const CONNECTION_LOGO_PATHS = new Map([
   ["typesafe", "/provider-logos/typesafe.svg"],
 ]);
 
-/** Public asset path shared by Connections, agent icons, and the model picker. */
 export function providerLogoPath(
   providerType: string | undefined | null,
 ): string | undefined {

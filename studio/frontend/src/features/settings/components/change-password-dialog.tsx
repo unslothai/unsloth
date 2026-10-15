@@ -169,8 +169,7 @@ async function requestPasswordChange(
   );
   const detail = await unauthorizedDetail(response);
   if (response.status === 401 && detail !== WRONG_CURRENT_PASSWORD_DETAIL) {
-    // Retry token/session 401s, but never turn the endpoint's
-    // "wrong current password" validation into a session refresh/logout.
+    // Never turn a "wrong current password" response into a session refresh or logout.
     if (await refreshSession()) {
       response = await postChangePassword(
         initial,
@@ -189,14 +188,8 @@ async function requestPasswordChange(
 }
 
 /**
- * Change the signed-in account's password from Settings, reusing the existing
- * POST /api/auth/change-password endpoint. The forced first-login flow lives at
- * /change-password and bounces non-forced users to /login, so day-to-day changes
- * need their own self-contained entry point here.
- *
- * ``initial`` switches to the desktop route that sets the first password: the
- * desktop app authenticates with a local secret and never saw the seeded
- * password, so it has no current password to supply.
+ * The forced first-login flow at /change-password bounces non-forced users, so Settings needs
+ * its own entry. ``initial`` sets the first desktop password, where none is known.
  */
 export function ChangePasswordDialog({
   initial = false,

@@ -8,7 +8,6 @@ import ts from "typescript";
 
 import { readSrc } from "./helpers/kit.ts";
 
-// Exercise production event handlers with a deterministic state seam.
 function renderer() {
   const source = readSrc("components/assistant-ui/markdown-text.tsx");
   const parsed = ts.createSourceFile(

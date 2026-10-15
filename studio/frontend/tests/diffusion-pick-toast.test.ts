@@ -46,7 +46,6 @@ test("a newer pick replaces the older toast, and the stale pick cannot touch it"
   assert.deepEqual(shown()[1], { kind: "dismiss", id: older });
 
   calls.length = 0;
-  // The superseded pick's plan resolves late and cleans up after itself.
   pick.dismiss(older);
   pick.setPhase(older, "downloading", 1);
   assert.deepEqual(shown(), []);
@@ -71,7 +70,6 @@ test("progress shows only while downloading, and each phase starts from its own 
 });
 
 test("a download-only plan staged after the pick's own never shows in its toast", () => {
-  // A queued download-only plan uses the same progress hook after the pick finishes.
   const pick = make();
   const id = pick.show();
   pick.setPhase(id, "downloading", 3);
@@ -87,7 +85,6 @@ test("a download-only plan staged after the pick's own never shows in its toast"
 });
 
 test("the Images and Video toasts never share an id", () => {
-  // Both pages stay mounted and share Sonner's store.
   const images = make();
   const video = createPickToast({ describe: (phase) => phase });
   const imagesId = images.show();
@@ -125,7 +122,6 @@ test("a toast the user closed is not raised again by the next tick", () => {
   calls.length = 0;
   pick.progress({ downloadedBytes: 3, totalBytes: 10, plan: 1 });
   assert.deepEqual(shown(), []);
-  // The load then raises its own toast rather than reusing the closed id.
   assert.equal(pick.take(id), undefined);
 });
 
@@ -145,7 +141,6 @@ test("a cancelled or retired pick drops its toast", () => {
 });
 
 test("every cancelled pick drops its toast on both pages", () => {
-  // A cancelled pick can no longer load, so a toast left up would promise a load that never comes.
   for (const page of ["features/images/images-page.tsx", "features/video/video-page.tsx"]) {
     const lines = readSrc(page).split("\n");
     const cancels = lines.flatMap((line, i) => (line.includes("pickGuard.cancel();") ? [i] : []));

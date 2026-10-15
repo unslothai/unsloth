@@ -57,10 +57,8 @@ export async function resumeTrainingRun(runId: string): Promise<boolean> {
         payload.hf_token,
       );
 
-    // Upgrade consent first, then the custom-code gate, like a fresh start: a resume
-    // after a reinstall can face the same unknown architecture the first run installed for.
-    // The upgrade check already read this model's config, so carry its custom-code
-    // verdict into the next gate rather than let that gate's fallback re-derive it.
+    // Upgrade consent, then the custom-code gate, like a fresh start; carry the upgrade check's
+    // custom-code verdict forward.
     const upgradeVerdict = { requiresTrustRemoteCode: false };
     if (
       !(await confirmResumeTransformersUpgrade(
@@ -227,8 +225,7 @@ async function loadResumePayload(
 
   const outputDir = detail.run.output_dir;
   if (!(detail.run.can_resume && outputDir)) {
-    // The server explains a provenance refusal precisely; blaming the checkpoint here would
-    // contradict it, and this guard fires before any request, so its wording is all the user sees.
+    // The server explains provenance refusals; this pre-request wording must not contradict it.
     throw new Error(
       detail.run.resume_blocked_reason || translate(RESUME_UNAVAILABLE_ERROR),
     );
@@ -271,10 +268,9 @@ async function confirmResumeTransformersUpgrade(
   const outcome = await confirmTrainingTransformersUpgrade({
     modelName: payload.model_name,
     hfToken: payload.hf_token ?? null,
-    // Same pin the custom-code gate below resolves, so both read one config.json.
+    // Same pin as the custom-code gate, so both read one config.json.
     modelCachePin: resumeModelCachePin(payload),
-    // The stored run decides whether an install is even offerable: this checkpoint may
-    // be attested against a 4-bit load the latest sidecar permanently refuses.
+    // The checkpoint may be attested against a 4-bit load the latest sidecar refuses.
     resumeRunId: runId,
   });
   verdict.requiresTrustRemoteCode = outcome.requiresTrustRemoteCode;
@@ -284,10 +280,7 @@ async function confirmResumeTransformersUpgrade(
   return outcome.proceed || attempt.cancel(outcome.error);
 }
 
-/** The copy of the model this resume loads, for every gate that has to inspect it.
- *
- * One resolution, so the upgrade check and the custom-code scan can never end up
- * reading different config.json files for the same start. */
+/** One resolution so the upgrade check and custom-code scan read the same config.json. */
 function resumeModelCachePin(payload: TrainingStartRequest) {
   return resolveResumeRemoteCodeCache({
     actualModelRepoId: payload.actual_model_repo_id,

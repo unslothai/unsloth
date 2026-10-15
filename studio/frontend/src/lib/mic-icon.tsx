@@ -3,7 +3,6 @@
 
 import type { FC } from "react";
 
-/** Microphone icon used by the chat composer and the Voice settings tab. */
 export const MicIcon: FC<{ className?: string }> = ({ className }) => (
   <svg
     className={className}

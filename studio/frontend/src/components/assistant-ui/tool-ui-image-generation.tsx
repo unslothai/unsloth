@@ -21,17 +21,7 @@ import {
   ToolFallbackTrigger,
 } from "./tool-fallback";
 
-/**
- * Renders the synthetic `_toolEvent` chunks emitted by
- * `_stream_openai_responses` when OpenAI's Responses-API `image_generation`
- * tool fires. The backend stashes the base64 image on `image_b64` of the
- * tool_end event (keeping the JSON small); the adapter repackages it into a
- * structured `result` (image_b64, image_mime e.g. "image/png", size? e.g.
- * "1024x1024", quality?, background?).
- * The `tool_start` carries the revised prompt as `args.prompt` plus
- * `args.kind: "image"`. Without this, ToolFallback would print the prompt as
- * JSON with an empty Result block (the "no image" symptom).
- */
+/** OpenAI image_generation events; the adapter repackages tool_end's `image_b64` as `result`. */
 interface ImageGenerationArgs {
   // Straight off the wire; the provider decides the JSON type, not this file.
   prompt?: unknown;
@@ -41,12 +31,7 @@ interface ImageGenerationArgs {
   openai_reasoning_item?: unknown;
 }
 
-/**
- * Straight off the wire, like the args above. Only `image_b64` is type-guarded
- * before use; `size`, `quality` and `background` are copied verbatim from the
- * provider (external_provider.py:5883) and on the Gemini path so is `image_mime`
- * (:4481). Unsloth takes a user-set `base_url`, so none of them is ours.
- */
+/** Off the wire from a user-set `base_url`: only `image_b64` is type-guarded. */
 interface ImageGenerationResult {
   image_b64?: string;
   image_mime?: unknown;
@@ -177,8 +162,7 @@ const ImageGenerationToolUIImpl: ToolCallMessagePartComponent = ({
     typeof result === "object" &&
     typeof (result as ImageGenerationResult).image_b64 === "string";
   const imageResult = isImageResult ? (result as ImageGenerationResult) : null;
-  // Coerced for the same reason `prompt` is: these reach `.match`,
-  // `.toLowerCase` and `Array.join`, all of which throw on a non-string.
+  // Coerced like `prompt`: these reach string methods that throw on a non-string.
   const size = toolArgText(imageResult?.size);
   const quality = toolArgText(imageResult?.quality);
   const imageDimensions = parseImageSize(size);
@@ -358,11 +342,7 @@ const ImageGenerationToolUIImpl: ToolCallMessagePartComponent = ({
                 />
               </button>
               <div
-                // Out of find-in-page's reach, like the response model badge: from `sm` up these
-                // actions are transparent until the card is hovered, so "Edit" would be counted and
-                // walked to under a highlight nobody can see. The index leaves opacity alone, since
-                // every user message fades in and reading it would drop one mid-fade. Marked whole
-                // rather than per breakpoint, which costs finding a button label on a phone.
+                // Out of find-in-page's reach: these actions are invisible until hover from `sm` up.
                 {...{ [FIND_SKIP_ATTRIBUTE]: "" }}
                 className="pointer-events-none absolute inset-x-0 bottom-0 z-20 flex items-end justify-between gap-2 bg-gradient-to-t from-black/55 via-black/20 to-transparent p-3 opacity-100 transition-opacity sm:opacity-0 sm:group-hover/generated-image:opacity-100 sm:group-focus-within/generated-image:opacity-100"
               >

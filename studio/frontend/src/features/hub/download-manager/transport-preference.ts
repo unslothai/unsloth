@@ -19,8 +19,7 @@ import {
 } from "./constants";
 export type { TransportMode } from "./constants";
 
-/** This browser's own override. Exported because it outranks the install-wide setting, so
- * "Reset all local preferences" has to clear it. */
+/** Outranks the install-wide setting, so "Reset all local preferences" must clear it. */
 export const TRANSPORT_MODE_STORAGE_KEY = "unsloth.studio.transportMode";
 const STORAGE_KEY = TRANSPORT_MODE_STORAGE_KEY;
 const CHANGE_EVENT = "unsloth:transport-preference-change";
@@ -30,12 +29,11 @@ type TransportCapabilitiesState = {
   isLoading: boolean;
 };
 
-// The install's setting, cached because the download path reads it synchronously.
+// Cached because the download path reads it synchronously.
 let installMode: TransportMode | null = null;
 let installModeInFlight: Promise<TransportMode | null> | null = null;
 let installModeInFlightIsRefresh = false;
 
-/** This browser's own choice, or null when it has never made one. */
 function readStored(): TransportMode | null {
   if (typeof window === "undefined") {
     return null;
@@ -56,14 +54,11 @@ function loadInstallMode(refresh: boolean): Promise<TransportMode | null> {
 }
 
 function hydrateInstallMode(refresh = false): Promise<TransportMode | null> {
-  // Only the API layer decides what may be shared: riding on an ordinary hydration already in
-  // flight would hand back the value this refresh went to replace.
+  // A refresh must not share an ordinary in-flight hydration that returns the stale value.
   if (installModeInFlight && (!refresh || installModeInFlightIsRefresh)) {
     return installModeInFlight;
   }
-  // Not shared, but not thrown away either: a download started before the first hydration
-  // answers overtakes it with a refresh, and if that refresh fails there is still a request
-  // coming with the install's real choice.
+  // Keep the superseded request as a fallback if the refresh fails.
   const superseded = refresh ? installModeInFlight : null;
   const pending = loadInstallMode(refresh)
     // Keep what we loaded: discarding it on a transient failure sent the next download to Auto.
@@ -79,13 +74,11 @@ function hydrateInstallMode(refresh = false): Promise<TransportMode | null> {
   return pending;
 }
 
-/** The preference as currently known, without waiting on the install setting. */
 export function getTransportMode(): TransportMode {
   return pickTransportMode(readStored(), installMode);
 }
 
-/** The preference, waiting for the install setting when this browser has no choice of its own.
- * Re-read rather than cached, since another browser can change it mid-session. */
+/** Re-read rather than cached, since another browser can change it mid-session. */
 export async function resolveTransportMode(): Promise<TransportMode> {
   const stored = readStored();
   if (stored !== null) {
@@ -113,15 +106,13 @@ export function useTransportMode(): [
     };
     window.addEventListener(CHANGE_EVENT, handleLocal);
     window.addEventListener("storage", handleStorage);
-    // Another surface saved it: adopt it unless this browser has its own choice.
     const unsubscribe = subscribeDownloadTransportSettings((settings) => {
       installMode = isTransportMode(settings.mode)
         ? settings.mode
         : installMode;
       setMode(getTransportMode());
     });
-    // Refreshed, like the download path: reading the cache here showed the old mode in the
-    // toggle while the next download already ran on the one another browser had set.
+    // Refresh rather than read the cache, or the toggle shows a stale mode.
     void hydrateInstallMode(true).then(() => setMode(getTransportMode()));
     return () => {
       window.removeEventListener(CHANGE_EVENT, handleLocal);
@@ -134,14 +125,12 @@ export function useTransportMode(): [
     next: TransportMode,
     opts: { persist?: boolean } = {},
   ) => {
-    // A fallback this machine forced, not a choice: reflect it and write nothing. Stored, it
-    // would outrank the install setting and survive hf_xet being repaired.
+    // A forced fallback, not a choice: do not persist, or it outranks the install setting.
     if (opts.persist === false) {
       setMode(next);
       return;
     }
-    // Persist first, reflect after: downloads re-read localStorage, so an optimistic setMode()
-    // before a failed write would show a transport the downloads do not use.
+    // Persist first, reflect after: downloads re-read localStorage.
     let savedLocally = true;
     try {
       window.localStorage.setItem(STORAGE_KEY, next);
@@ -152,15 +141,11 @@ export function useTransportMode(): [
       setMode(next);
       window.dispatchEvent(new Event(CHANGE_EVENT));
     }
-    // And the install's setting, so other browsers follow. With storage blocked this is the
-    // only store, and the subscription keeps the reflect-after rule holding through it.
     void updateDownloadTransportSettings(next).catch((error) => {
       console.warn(
         "Couldn't save the download transport for this install.",
         error,
       );
-      // Said out loud either way: the row calls this setting install-wide, so a local-only
-      // save is a mismatch and no save at all is a click that did nothing.
       toast.error(
         savedLocally
           ? "Saved for this browser, but not for this install."
@@ -172,8 +157,7 @@ export function useTransportMode(): [
   return [mode, set];
 }
 
-/** Whether an interrupted HTTP transfer leaves resumable bytes on this backend. False until
- * the capabilities land, so no card flashes a resume promise it may take back. */
+/** False until capabilities land, so no card flashes a resume promise. */
 export function useHttpPartialsResumable(): boolean {
   const { capabilities } = useDownloadTransportCapabilities();
   return capabilities?.partials_resumable === true;

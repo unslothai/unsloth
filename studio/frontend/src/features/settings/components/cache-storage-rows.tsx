@@ -28,7 +28,7 @@ import {
 } from "../api/caches";
 import { SettingsRow } from "./settings-row";
 
-/** Decimal units, matching the disk readings the Storage section already shows. */
+/** Decimal units, matching the Storage section's disk readings. */
 export function formatCacheSize(bytes: number): string {
   const safe = Number.isFinite(bytes) && bytes > 0 ? bytes : 0;
   if (safe >= 1e9) {
@@ -73,22 +73,14 @@ const OPT_IN_COST_KEYS: Partial<Record<CacheKey, TranslationKey>> = {
   hf_datasets: "settings.resources.storage.caches.datasetsCost",
 };
 
-/** Caches whose contents are the repositories the Hub inventory reports. */
 const HUB_INVENTORY_KEYS: ReadonlySet<CacheKey> = new Set<CacheKey>([
   "hf_hub",
   "hf_datasets",
 ]);
 
-/** What a confirmation is about: everything reclaimable, or one opt-in cache. */
 type PurgeTarget = { kind: "bulk" } | { kind: "single"; key: CacheKey };
 
-/**
- * The body of the confirmation for clearing one cache, as translation keys.
- *
- * The generic assurance ends with "downloaded models ... are not touched",
- * which is true of a bulk clear and the opposite of the truth for the model
- * cache itself, so the hub clear says only what it costs.
- */
+/** The generic text says downloaded models are untouched, which is false for the hub cache. */
 export function singleClearDescriptionKeys(key: CacheKey): TranslationKey[] {
   const cost = OPT_IN_COST_KEYS[key];
   const spared: TranslationKey[] =
@@ -110,9 +102,7 @@ export function CacheStorageRows() {
   const [target, setTarget] = useState<PurgeTarget | null>(null);
   const [clearing, setClearing] = useState(false);
 
-  // A measurement installs itself only while it is the newest one asked for.
-  // Two can overlap and finish in either order, so without this the rows can
-  // settle on the folder the user moved off. A purge claims a number too.
+  // Only the newest measurement installs itself; overlapping ones finish in any order.
   const latestRequest = useRef(0);
 
   const refresh = useCallback(
@@ -138,15 +128,12 @@ export function CacheStorageRows() {
     [t],
   );
 
-  // Models Folder sits above these rows in the same section and saving it bumps
-  // the inventory version. Without this the Hugging Face rows keep the old
-  // folder's path and size beside a Clear that acts on the new one.
+  // Saving Models Folder bumps the inventory version; re-measure so rows match the new folder.
   const inventoryVersion = useInventoryVersion();
   const measuredVersion = useRef(inventoryVersion);
 
   useEffect(() => {
-    // A move must force the re-measure, since the memoised reading is the one
-    // being replaced. The first load is not forced: a cold walk costs seconds.
+    // A move forces a re-measure; the first load does not, since a cold walk costs seconds.
     const moved = measuredVersion.current !== inventoryVersion;
     measuredVersion.current = inventoryVersion;
     void refresh(moved ? { refresh: true } : {});
@@ -163,9 +150,7 @@ export function CacheStorageRows() {
       const outcome = await purgeCaches(keys);
       if (request === latestRequest.current) setInventory(outcome.inventory);
       if (keys.some((key) => HUB_INVENTORY_KEYS.has(key))) {
-        // Every cached model or dataset just went, so the Hub and the picker
-        // hear about it the way they do for a delete. The mark takes our own
-        // bump, or the rows would pay a cold walk for what they already hold.
+        // Our own bump is marked so the rows skip a cold walk for data they already hold.
         bumpInventoryVersion();
         measuredVersion.current = getInventoryVersion();
       }
@@ -188,7 +173,6 @@ export function CacheStorageRows() {
       });
     } finally {
       setClearing(false);
-      // Whatever measurement this superseded will not clear it.
       if (request === latestRequest.current) setLoading(false);
     }
   };
@@ -301,9 +285,6 @@ export function CacheStorageRows() {
                   <Button
                     variant="ghost"
                     size="xs"
-                    // loading and loadError, like the buttons above: the rows
-                    // show the last inventory that arrived while a clear
-                    // resolves its key against the current folder.
                     disabled={
                       loading ||
                       clearing ||
@@ -342,7 +323,7 @@ export function CacheStorageRows() {
               {t("common.cancel")}
             </Button>
             <Button
-              // A failed measurement is the same hazard as one still running.
+              // A failed measurement is as unsafe as one still running.
               disabled={loading || clearing || loadError !== null}
               className="bg-destructive hover:bg-destructive/90 text-destructive-foreground"
               onClick={() =>

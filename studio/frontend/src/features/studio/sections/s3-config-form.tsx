@@ -18,10 +18,6 @@ const DEFAULT_S3_CONFIG: S3Config = {
   useIamRole: false,
 };
 
-/**
- * Inline S3 dataset configuration form. Shown in the dataset section when the
- * selected source is "s3"; reads and writes the shared training-config store.
- */
 export function S3ConfigForm() {
   const t = useT();
   const { s3Config, setS3Config } = useTrainingConfigStore(

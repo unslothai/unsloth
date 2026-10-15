@@ -10,20 +10,16 @@ import type { RemoteCodeScan } from "../types";
 
 interface ConfirmArgs {
   modelName: string;
-  // Resolves the same findings + fingerprint for gated/private repos.
   hfToken?: string | null;
   preferLocalCache?: boolean;
   modelLocalPath?: string | null;
   modelSnapshotPath?: string | null;
   modelSnapshotRepoId?: string | null;
-  // Coarse fallback when the scan endpoint is unreachable.
   requiresTrustRemoteCode?: boolean;
-  // Called on approval with the pinning fingerprint.
   onApprove: (fingerprint: string | null) => void;
 }
 
-/** Gate a load that may need trust_remote_code: scan, show the consent dialog, and on
-*  approval call onApprove with the pinning fingerprint. Returns false if declined. */
+/** Scan, ask for consent, and call onApprove with the pinning fingerprint. False if declined. */
 export async function confirmRemoteCodeIfNeeded({
   modelName,
   hfToken,
@@ -63,13 +59,11 @@ export async function confirmRemoteCodeIfNeeded({
     };
   }
 
-  // No custom code and nothing unsafe: proceed without trust_remote_code. Models needing it ship
-  // auto_map and hit the dialog below, so the flag is only ever enabled via approval.
+  // Models needing remote code ship auto_map and hit the dialog, so the flag is only set via approval.
   if (!scan.requiresTrustRemoteCode && scan.unsafeFiles.length === 0) {
     return true;
   }
 
-  // Already approved this exact code and nothing unsafe flagged: reuse without re-prompting.
   if (
     scan.alreadyApproved &&
     scan.unsafeFiles.length === 0 &&
@@ -83,8 +77,7 @@ export async function confirmRemoteCodeIfNeeded({
     .getState()
     .requestConsent(scan);
   if (!confirmed) {
-    // Declined: purge every repo our scan first downloaded (a LoRA scan pulls adapter + base).
-    // Fall back to the primary flag for an older backend.
+    // Declined: purge every repo the scan first downloaded (a LoRA scan pulls adapter + base).
     const toPurge =
       scan.scanCreatedRepos.length > 0
         ? scan.scanCreatedRepos

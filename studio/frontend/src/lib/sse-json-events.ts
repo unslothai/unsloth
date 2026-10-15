@@ -5,7 +5,6 @@ import { takeSseFrame } from "./sse-framing.ts";
 
 const LINE_BREAK = /\r?\n/;
 
-/** Pull every complete frame out of `buffer`, returning their data payloads and the rest. */
 function drainFrames(buffer: string): { payloads: string[]; rest: string } {
   const payloads: string[] = [];
   let rest = buffer;
@@ -33,22 +32,14 @@ function readWithStall(
   return reader.read().finally(() => clearTimeout(stall));
 }
 
-/**
- * Yield the JSON payload of each `data:` frame until the stream ends or sends [DONE].
- *
- * `stallMs` bounds the silence between frames. A reverse proxy such as a Cloudflare
- * tunnel can hold a whole event stream until the response completes, and no origin
- * header or padding prevents it, so the only recourse is to abandon a silent stream.
- * The generator ends rather than throwing, which is indistinguishable from a normal
- * close and lets a caller reconcile by polling.
- */
+/** `stallMs` abandons silent streams (proxies like Cloudflare can buffer SSE); ends without throwing. */
 export async function* readSseJsonEvents<T>(
   body: ReadableStream<Uint8Array>,
   stallMs?: number,
 ): AsyncGenerator<T> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
-  // cancelling resolves the pending read as done, so the generator ends without an error
+  // Cancelling resolves the pending read as done, so the generator ends without an error.
   const cancel = () => {
     reader.cancel().catch(() => undefined);
   };
@@ -71,7 +62,7 @@ export async function* readSseJsonEvents<T>(
       }
     }
   } finally {
-    // release the stream lock now instead of leaking the reader until GC
+    // Release the stream lock now instead of leaking the reader until GC.
     cancel();
   }
 }

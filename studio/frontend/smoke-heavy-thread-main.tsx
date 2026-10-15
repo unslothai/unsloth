@@ -1,36 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Harness page for tests/studio/playwright_heavy_thread.py: the real Thread holding a HEAVY thread, so the
-// measured cost of typing, scrolling, opening a menu, deleting and re-opening is the app's own and grows the way
-// a long session's does.
-// The axis is CHARACTERS OF THREAD CONTENT, not messages. Users report the slowdown after "long generations with
-// any code cells and/or text", which is a statement about volume, so a fixture of N short paragraphs would
-// measure the wrong variable. The content mix is the one the report names, and every kind of it is present at
-// every size because the fixture is built in whole CYCLES of one message per kind (~26K characters a cycle).
-// Building "until the budget runs out" instead would give the smallest size only the first few kinds, and the
-// curve would then be reporting a change of fixture, not of size.
-//   prose                long multi-paragraph answers
-//   python fence         a large highlighted code fence
-//   typescript fence     a second language, so one grammar is not the whole Shiki story
-//   python tool call     collapsible card with a code-execution result pane
-//   bash tool call       code_execution card, the other result-pane shape
-//   html artifact        a full ```html document, which Unsloth collapses into an artifact card
-//   render_html tool     the HTML canvas artifact, as a tool part rather than a fence
-//   svg fence            a highlighted fence that also renders an inline <img> preview
-//   image parts          a raster PNG data URL and a unique SVG data URL, as image content parts
-//   json fence           one very long line, the shape that behaves worst in a highlighter
-// Two honest limits, both of which the harness's own docstring repeats. The HTML artifact renders as an artifact
-// CARD here, not as a live preview: the <iframe> lives in ArtifactSurface on the chat page and loads its content
-// from the backend (/api/inference/artifact-preview-frame), so it cannot exist on a backend-free smoke page. What
-// is measured is the in-thread cost of an artifact, which is what a scroll pays. And `python` results carry
-// `images: []`, since a non-empty list makes the card fetch each image from the backend, which would put a
-// network round trip inside a timed region.
-// Same shape as smoke-autoscroll.html and smoke-thread-weight.html: a vite entry, no backend, no auth. Thread
-// itself and the message bodies are real on purpose; mocking either deletes the measurement. The runtime is
-// synthetic, a local runtime whose model adapter never runs, seeded through `thread.import`. useLocalRuntime
-// rather than useExternalStoreRuntime: the delete path under measurement is `thread.export()` ->
-// MessageRepository -> `thread.import()`, which only the local runtime backs.
+// Harness for tests/studio/playwright_heavy_thread.py: real Thread with a heavy thread built in
+// whole cycles of mixed content; local runtime since delete uses thread.export/import.
 
 import { Thread } from "@/components/assistant-ui/thread";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -52,36 +24,14 @@ import { type ReactElement, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./src/index.css";
 
-// The local runtime's thread list item reports a synthetic `__LOCALID_...` remoteId, which is truthy, so the
-// fork-count badges really do ask the backend. Answering them here, before anything mounts, keeps that off the
-// wire entirely; answering them from the Playwright side instead would put a round trip to another process inside
-// a timed region. An explicit allowlist, never a blanket `/api/` match: a blanket match resolves EVERY request the
-// measured interactions make before Playwright emits it, so `stray_api_requests` stays at zero and the fan-out
-// this harness exists to detect becomes invisible to it. Narrowing it is what made the two entries below visible
-// in the first place. Each entry answers a request the harness itself provokes, with the body that endpoint
-// really returns, so no round trip lands inside a timed region. Anything NOT listed here goes to the network and
-// trips the stray counter, which is the point.
+// Explicit allowlist, never a blanket `/api/` match: unlisted requests must trip the stray counter.
 const STUBBED_API: ReadonlyArray<readonly [RegExp, string]> = [
-  // The fork-count badges. One GET per THREAD, not per message: fork-count-store subscribes once per rendered
-  // thread and refreshes on CHAT_HISTORY_UPDATED_EVENT, which the delete action fires, so the harness provokes it
-  // during seeding and again inside the measured actions. The endpoint used to be per message,
-  // `/threads/{id}/messages/{id}/forks` answering `{"count":n}`, and that is the shape this allowlist was written
-  // against. The per-thread endpoint replaced it and this entry was not moved with it, so every one of these went
-  // to the dev server and the run failed its own stray-request check. Match the shape the app actually requests,
-  // and answer with the body it actually returns: `getThreadForkCounts` reads `data.counts` and builds a Map from
-  // it, so `{"counts":{}}` is "no message has forks" and renders no badge on any message. An empty `{}` body would
-  // leave the same empty Map today, but it is not what the endpoint returns, and a stub that answers a shape the
-  // endpoint never sends is how this drifted in the first place.
+  // Fork-count badges, one GET per thread; answer with the real `{"counts":{}}` shape.
   [/\/api\/chat\/threads\/[^/]+\/forks$/, '{"counts":{}}'],
-  // The delete action's own persistence. deleteThreadMessage syncs the exported repository whenever remoteId is
-  // truthy, which the synthetic id always is, so this is the fixture maintaining itself rather than app fan-out.
-  // Left on the wire it is 3 round trips inside the delete measurement, and it fails the run's own stray check.
+  // The delete action's own persistence (synthetic remoteId is truthy).
   [/\/api\/chat\/threads\/[^/]+\/messages$/, '{"messages":[]}'],
   [/\/api\/chat\/threads\/[^/]+$/, "{}"],
-  // App fan-out, NOT fixture upkeep: re-opening a thread asks for the project list and the knowledge bases.
-  // Stubbed so a dev-server round trip does not land inside the reopen window, which would be measuring the
-  // network rather than the render. They are recorded in `__stubbedApi` and printed as "stubbed api requests"
-  // rather than being silently swallowed, because two whole-endpoint GETs per reopen is a real cost.
+  // App fan-out on reopen, stubbed but recorded in `__stubbedApi`.
   [/\/api\/chat\/projects(\?|$)/, '{"projects":[]}'],
   [/\/api\/rag\/knowledge-bases(\?|$)/, '{"knowledge_bases":[]}'],
 ];
@@ -95,7 +45,6 @@ window.fetch = (input, init) => {
     typeof input === "string" ? input : ((input as Request).url ?? String(input));
   for (const [pattern, body] of STUBBED_API) {
     if (pattern.test(url)) {
-      // Recorded, not silently swallowed, so a run can still show what was answered locally.
       stubbedApiCalls.push(url);
       return Promise.resolve(
         new Response(body, {
@@ -108,10 +57,7 @@ window.fetch = (input, init) => {
   return realFetch(input, init);
 };
 
-// Content generators. Every generator takes the block index and produces content that is UNIQUE to it. That is
-// not decoration: code-plugin.ts caches highlighted tokens keyed on the exact source string, so a fixture that
-// repeats one fence would highlight it once and hand back the cached result for every other copy, and the Shiki
-// cost would vanish from the curve.
+// Content must be unique per block: code-plugin.ts caches highlighting on the exact source.
 
 const PROSE_SENTENCES = [
   "The reception of a long thread is decided by what the renderer does on every interaction, not by what it did once at load.",
@@ -198,8 +144,6 @@ function typescriptFence(index: number, targetChars: number): string {
 }
 
 function jsonFence(index: number, targetChars: number): string {
-  // One very long line on purpose. A single-line document is the shape that behaves worst in a
-  // highlighter and in any code that scans for line boundaries.
   const entries: string[] = [];
   let step = 0;
   let body = "";
@@ -214,8 +158,6 @@ function jsonFence(index: number, targetChars: number): string {
 }
 
 function htmlArtifact(index: number, targetChars: number): string {
-  // A full document, which is what Unsloth treats as an artifact rather than as a code block,
-  // and it draws on a <canvas> so the fixture carries the shape users call a canvas artifact.
   const head = [
     "<!doctype html>",
     "<html>",
@@ -245,9 +187,7 @@ function htmlArtifact(index: number, targetChars: number): string {
 }
 
 function svgFence(index: number, targetChars: number): string {
-  // Unsloth renders a highlighted fence AND an inline <img> preview for an svg fence, so this one block buys both
-  // a Shiki pass and an image decode. No <script>, no on*= handlers, no <foreignObject>: any of those make the
-  // preview refuse to render and the block silently becomes an ordinary code fence.
+  // No <script>, on*= or <foreignObject>: any of those disable the inline svg preview.
   const open = [`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 160" width="320" height="160">`];
   const close = ["</svg>"];
   const body: string[] = [];
@@ -298,19 +238,12 @@ function bashOutput(index: number, targetChars: number): string {
   return lines.join("\n");
 }
 
-// 64x64 RGB PNG, 288 bytes. A real raster decode rather than a 1x1 placeholder, and small enough
-// that its data URL does not dominate the character budget it is counted against.
 const PNG_DATA_URL =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAA50lEQVR42u3PkVIlAABA0VcTBEEQBEGwECwEQRAEwUIQBAtBEARBEFwIgiAIgiAIFoIgCIIgWFi4EARBEARBEAQLQdBXBM3cmfMDZzDAERzFMRzHCZzEKZzGHziDP3EW53AeF3ARl/AXLuMKruJvXMN13MBN3MJt3EFwF/dwHw/wEI/wGE/wFP/gGZ7jBV7iFV7jDf7Ffyje4h3e4wM+4hM+4wu+4hv+x3f8wOHB8NC3VqBAgQIFChQoUKBAgQIFChQoUKBAgQIFChQoUKBAgQIFChQoUKBAgQIFChQoUKBAgQIFCny9T1mrnz8ZmAtoAAAAAElFTkSuQmCC";
 
 const pngCache = new Map<number, string>();
 
-/**
- * A PNG that is unique to this block, so each one is a separate decode rather than a cache hit on the last.
- * Drawn and exported here rather than embedded as a literal because assistant-ui only accepts
- * `data:image/(png|jpeg|jpg|gif|webp);base64,` for an image part and drops anything else with a console warning:
- * an SVG data URL, which would have been the easy way to vary the bytes, is silently discarded.
- */
+/** Unique PNG per block. assistant-ui drops non png/jpeg/gif/webp data URLs, so no SVG. */
 function pngDataUrl(index: number): string {
   const cached = pngCache.get(index);
   if (cached !== undefined) return cached;
@@ -341,7 +274,6 @@ function pngDataUrl(index: number): string {
 
 type Part = NonNullable<Exclude<ThreadMessageLike["content"], string>>[number];
 
-/** One block: the user's prompt and the assistant messages it produced. */
 type Block = { user: string; assistant: ThreadMessageLike[] };
 
 function textPart(text: string): Part {
@@ -385,8 +317,7 @@ function buildBlock(index: number): Block {
         ],
       };
     case 3:
-      // python is one of the two tools the renderer never folds into a tool GROUP, so its card
-      // stays a top-level collapsible even when it sits next to other calls.
+      // python is never folded into a tool group, so its card stays top-level.
       return {
         user: ask,
         assistant: [
@@ -399,9 +330,7 @@ function buildBlock(index: number): Block {
                 toolCallId: `heavy-python-${index}`,
                 toolName: "python",
                 args: { code: pythonScript(index, 900) },
-                // All three keys, or the card falls back to stringifying the whole object.
-                // `images` stays empty: a non-empty list makes the card fetch each one from a
-                // backend this page does not have.
+                // All three keys or the card stringifies the object; non-empty `images` would hit the backend.
                 result: { text: toolOutput(index, 1400), images: [], sessionId: `heavy-${index}` },
               },
             ],
@@ -409,9 +338,7 @@ function buildBlock(index: number): Block {
         ],
       };
     case 4:
-      // No text part in this message on purpose. CodeExecutionToolUI is a CONTROLLED collapsible
-      // that force-closes itself as soon as its message carries text, so a card with prose beside
-      // it cannot be held open for the measurement.
+      // No text part: CodeExecutionToolUI force-closes once its message carries text.
       return {
         user: ask,
         assistant: [
@@ -485,8 +412,6 @@ function buildBlock(index: number): Block {
             role: "assistant",
             content: [
               textPart(`Two attachments for block ${index}: a rendered plot and a chart.`),
-              // One repeated attachment and one that is unique to this block: a thread has both,
-              // and only the second is a fresh decode every time.
               { type: "image", image: PNG_DATA_URL },
               { type: "image", image: pngDataUrl(index) },
               textPart(prose(index, 400)),
@@ -539,43 +464,18 @@ type Plan = {
   expectedPerCycle: Record<string, number>;
 };
 
-/**
- * What one cycle must put on screen. The Python side multiplies these by the cycle count and fails the run if the
- * DOM holds fewer. This is not belt and braces: assistant-ui drops an image part whose data URL is not
- * `data:image/(png|jpeg|jpg|gif|webp);base64,` with nothing but a console.warn, and a fixture that quietly loses
- * its images still renders 300K characters of prose and code and still produces a rising curve, of the wrong
- * thing.
- */
+/** Per-cycle DOM expectations; assistant-ui silently drops bad image parts. */
 const EXPECTED_PER_CYCLE: Record<string, number> = {
-  // Two image parts in the image block, plus the inline preview the svg fence renders.
   images: 3,
-  // The python card and the code_execution card. render_html renders an artifact card instead.
   toolParts: 2,
   collapsibleOutputs: 2,
   codeExecutionPanes: 2,
-  // The full ```html document and the render_html tool call.
   artifactCards: 2,
-  // python, typescript, json, svg, the html document, and the two tool result panes.
   codeBlocks: 7,
-  /*
-     * THE CODE ITSELF, in characters: the one size measure deferral cannot move.
-     * This was a floor of 2,500 highlighted tokens, doing two jobs at once. Off-screen fences now render as a plain
-     * shell, so tokens partly measure where the viewport is: the same fixture renders 1,322 per cycle where it
-     * rendered 3,216. Characters do not move, because the shell carries the same text node: 12,660 for one cycle
-     * and 51,081 for four (2 of 5 and 15 of 20 fences deferred), and Chromium, Firefox and WebKit each report
-     * 12,660 to the character.
-     * Floor 12,000 against 12,660; a cycle is seven blocks averaging ~1,800 chars, so losing any one block still
-     * fails. The other job, telling a settled thread from one still building itself, is now
-     * `unhighlightedMountedFences`, asked per block.
-     */
+  /* Code characters, not tokens: deferred fences render as plain shells. 12,660 per cycle. */
   codeChars: 12000,
 };
 
-/**
- * Whole cycles of one block per kind until `targetChars` is reached, never fewer than one. Whole cycles, not
- * "blocks until the budget runs out": a partial cycle would give the smallest size only the first few kinds of
- * content, so the curve across sizes would be reporting a change of fixture as well as a change of size.
- */
 function buildThread(targetChars: number): { messages: ThreadMessageLike[]; plan: Plan } {
   const messages: ThreadMessageLike[] = [];
   let chars = 0;
@@ -609,7 +509,6 @@ function buildThread(targetChars: number): { messages: ThreadMessageLike[]; plan
   };
 }
 
-// A run would need a backend. Seeding goes through `thread.import`, which does not use this.
 const NEVER_RUNS: ChatModelAdapter = {
   run: () => {
     throw new Error("smoke-heavy-thread does not run the model");
@@ -624,27 +523,17 @@ function HeavyThreadApi({
   setMounted: (value: boolean) => void;
 }): null {
   const aui = useAui();
-  // What seed() last built. The delete action removes a message from the REPOSITORY, so without
-  // a way to put it back every repetition after the first measures a shorter thread than the one
-  // the harness took its census of.
+  // Delete is destructive to the repository, so keep the seed to restore it.
   const seeded = useRef<ThreadMessageLike[]>([]);
 
   useEffect(() => {
     const api = {
-      /** Replace the thread with whole cycles of content until `targetChars` is reached. */
       seed(targetChars: number): Plan {
         const built = buildThread(targetChars);
         seeded.current = built.messages;
         aui.thread().import(ExportedMessageRepository.fromArray(built.messages));
         return built.plan;
       },
-      /**
-             * Like seed(), then N one-word messages after it. Used by the viewport-gap measurement in #9058: the tail
-             * makes the first mount commit land entirely on compact rows, which is the worst case for a fixed-size
-             * initial window. It REPLACES rather than appends, and the heavy part is the same buildThread() call seed()
-             * makes, so every census count for `targetChars` is identical to seed(targetChars). The only difference is
-             * the tail, which is text parts only: no fences, images or tool calls.
-             */
       seedCompactTail(targetChars: number, tailMessages: number): Plan {
         const built = buildThread(targetChars);
         const messages = built.messages.slice();
@@ -659,12 +548,7 @@ function HeavyThreadApi({
         aui.thread().import(ExportedMessageRepository.fromArray(messages));
         return { ...built.plan, messages: messages.length };
       },
-      /**
-             * The empty band below the last mounted row, in px. gapBottom is measured against the viewport's BOTTOM
-             * EDGE, not against scrollHeight, so the viewport's own bottom spacer counts as the gap it always was and
-             * the caller subtracts spacerHeight to get the part the mount window is responsible for. Computed any other
-             * way the numbers stop being comparable across sizes.
-             */
+      /** Gap below the last mounted row, measured to the viewport bottom edge. */
       gapMetrics(): Record<string, number> {
         const element = api.viewport();
         if (!element) return { ok: 0 };
@@ -691,21 +575,11 @@ function HeavyThreadApi({
           spacerHeight: spacer ? Math.round(spacer.getBoundingClientRect().height) : 0,
         };
       },
-      /**
-             * Put the seeded thread back, and answer with how many messages that is. Deleting a message is destructive
-             * to the repository, not to the view, so re-opening does not undo it. Restoring is the same import seed()
-             * does: cheap on the harness side, and it is untimed, but every timed repetition then runs on the same
-             * fixture rather than on a thread that is one message shorter each time round.
-             */
       restore(): number {
         aui.thread().import(ExportedMessageRepository.fromArray(seeded.current));
         return seeded.current.length;
       },
-      /**
-             * Open every tool card. Radix unmounts collapsed content, so a thread of closed cards carries no result
-             * panes at all and the "tool calls with collapsible output" half of the fixture would be a row of buttons. A
-             * user who has just watched those tools run is looking at them open, which is the state worth measuring.
-             */
+      /** Radix unmounts collapsed content, so open the cards to measure result panes. */
       expandTools(): number {
         const triggers = Array.from(
           document.querySelectorAll<HTMLElement>('[data-slot="tool-fallback-trigger"]'),
@@ -715,34 +589,22 @@ function HeavyThreadApi({
         }
         return triggers.length;
       },
-      /** Leave the thread. The runtime keeps the messages; the view is torn down. */
       closeThread(): void {
         setMounted(false);
       },
-      /** Come back to it, which rebuilds every message from nothing. */
       openThread(): void {
         setMounted(true);
       },
       isOpen(): boolean {
         return mounted;
       },
-      /**
-             * One selector pass. Polling for a deletion has to read this, not counts(): counts() is a dozen
-             * document-wide queries including a walk of every element, so at 300K characters a poll loop built on it
-             * would spend more time measuring than the delete itself takes.
-             */
+      /** Cheap single query for polling; counts() is too expensive at large sizes. */
       messageCount(): number {
         return document.querySelectorAll("[data-role]").length;
       },
-      /** Highlighted tokens. Shiki runs after the <pre> exists, so counting <pre> gates nothing. */
       highlightedTokenCount(): number {
         return document.querySelectorAll("pre code span").length;
       },
-      /**
-             * Everything a caller might use to prove the fixture landed. A harness that asks for 300K characters of
-             * mixed content and silently renders 200K of prose measures the wrong thing, so the Python side prints
-             * every one of these and fails on any that is zero.
-             */
       counts(): Record<string, number> {
         return {
           messages: document.querySelectorAll("[data-role]").length,
@@ -751,26 +613,14 @@ function HeavyThreadApi({
           domNodes: document.getElementsByTagName("*").length,
           codeBlocks: document.querySelectorAll("pre").length,
           highlightedTokens: document.querySelectorAll("pre code span").length,
-          /*
-                     * HOW MUCH CODE IS ON THE PAGE. `highlightedTokens` cannot answer that any more: a deferred fence
-                     * renders as a plain shell, so tokens measure where the reader is looking. The shell holds the same text
-                     * node the highlighted block holds (which is also why selection, clipboard and find-in-page are
-                     * identical across the two states), so characters read the same either way and still drop if the fixture
-                     * loses code.
-                     */
+          /* Characters, not tokens: deferred shells hold the same text node. */
           codeChars: Array.from(document.querySelectorAll("pre code")).reduce(
             (total, node) => total + (node.textContent?.length ?? 0),
             0,
           ),
           fenceBlocks: document.querySelectorAll('[data-streamdown="code-block"]').length,
           deferredFences: document.querySelectorAll("[data-unsloth-fence-deferred]").length,
-          /*
-                     * A fence that is NEITHER deferred NOR highlighted, at rest: the settlement half of the old token floor,
-                     * asked per block. Streamdown mounts a code block on its own unhighlighted fallback and colours it from
-                     * a passive effect, so this state exists for a frame on any build and a settled thread must hold none.
-                     * Stronger than a floor on the total, which one stuck block passes as long as the others make up the
-                     * count.
-                     */
+          /* Neither deferred nor highlighted at rest; a settled thread must hold none. */
           unhighlightedMountedFences: Array.from(
             document.querySelectorAll('[data-streamdown="code-block"]'),
           ).filter(
@@ -779,17 +629,14 @@ function HeavyThreadApi({
               block.querySelector("pre code span") === null,
           ).length,
           toolParts: document.querySelectorAll(".aui-tool-fallback-root").length,
-          // The collapsible CONTENT ELEMENT, which Radix keeps in the tree for its collapse animation. It is present
-          // whether the card is open or shut, so it counts cards, not visible panes: measured at 25000 chars it reads
-          // 2 with every card closed and 2 again after expandTools(). Do NOT gate a wait on this; such a gate is
-          // satisfied by a thread of closed cards and cannot fail. Use codeExecutionPanes, which is 0 then 2.
+          // Present whether open or shut, so never gate a wait on it; use codeExecutionPanes.
           collapsibleOutputs: document.querySelectorAll(
             '[data-slot="tool-fallback-content"]',
           ).length,
           codeExecutionPanes: document.querySelectorAll(
             '[data-slot="tool-fallback-content"] pre',
           ).length,
-          // ArtifactCard carries no class of its own; the accessible name is its stable handle.
+          // ArtifactCard has no class; the accessible name is its stable handle.
           artifactCards: document.querySelectorAll('button[aria-label^="Open "]').length,
           images: document.querySelectorAll("img").length,
           katexNodes: document.querySelectorAll(".katex").length,
@@ -812,14 +659,10 @@ function HeavyThreadApi({
       composer(): HTMLTextAreaElement | null {
         return document.querySelector<HTMLTextAreaElement>(".aui-composer-input");
       },
-      /**
-             * What the RUNTIME thinks the composer holds. Reading the textarea back instead would only echo the value
-             * the caller just wrote, so a keystroke that never reached React would still look like it landed.
-             */
+      /** Read from the runtime: the textarea would just echo what the caller wrote. */
       composerText(): string {
         return aui.composer().getState().text;
       },
-      /** Items in the open action menu. An empty popover satisfies "the menu opened". */
       openMenuItemCount(): number {
         return document.querySelectorAll(".aui-action-bar-more-item").length;
       },
@@ -827,11 +670,7 @@ function HeavyThreadApi({
         const messages = document.querySelectorAll<HTMLElement>('[data-role="assistant"]');
         return messages[messages.length - 1] ?? null;
       },
-      /**
-             * The last assistant message's action-bar button with accessible name `label`. TooltipIconButton puts that
-             * name in an `sr-only` span rather than an aria-label, so this matches on text and stays correct if the
-             * styling classes are renamed.
-             */
+      /** TooltipIconButton puts the name in an sr-only span, so match on text. */
       actionButton(label: string): HTMLButtonElement | null {
         const last = api.lastAssistantMessage();
         if (!last) return null;
@@ -847,14 +686,11 @@ function HeavyThreadApi({
 
 function Harness(): ReactElement {
   const runtime = useLocalRuntime(NEVER_RUNS);
-  // The runtime lives outside this flag, so unmounting Thread leaves the messages intact. That is
-  // what re-opening a thread costs: the view is rebuilt, the data is not re-fetched.
   const [mounted, setMounted] = useState(true);
   return (
     <TooltipProvider>
       <AssistantRuntimeProvider runtime={runtime}>
         <HeavyThreadApi mounted={mounted} setMounted={setMounted} />
-        {/* Thread is flex-1 basis-0 min-h-0, so it needs a bounded flex parent to scroll. */}
         <div
           data-smoke="heavy-thread"
           style={{ display: "flex", flexDirection: "column", height: "100vh" }}
@@ -866,10 +702,7 @@ function Harness(): ReactElement {
   );
 }
 
-// Thread reaches useNavigate (the fork action, the composer tools menu). Without a router in context tanstack's
-// useRouter still works, but console.warns on every render of every action bar, which scales with the thread and
-// is serialised over the debugging channel. A memory router with one route removes that without pulling in the
-// app shell.
+// A memory router avoids per-render useRouter console warnings without the app shell.
 const rootRoute = createRootRoute({ component: Harness });
 const router = createRouter({
   routeTree: rootRoute,

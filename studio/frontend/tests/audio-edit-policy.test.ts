@@ -33,10 +33,8 @@ const ready: Input = {
 };
 
 const NONE = { source: null, sourceDurationS: null };
-// Mid-transcription, before any transcript.
 const BLANK = { transcript: "", edited: "", transcribing: true };
 
-// Actions as ids, or as full objects where the label matters.
 const check = (rows: [Input, string | null, (string | Action)[]?][]) => {
   for (const [input, reason, actions] of rows) {
     const blocker = P.editBlocker(input);
@@ -50,10 +48,8 @@ const check = (rows: [Input, string | null, (string | Action)[]?][]) => {
 };
 
 test("Edit's blockers come in rail order, each with its action", () => {
-  // Every step is wrong at once; fixing one reveals the next.
   const empty: Input = { ...ready, ...NONE, ...BLANK, panelError: "no" };
   const picked = { ...empty, source: ready.source, sourceDurationS: 31 };
-  // A take the 30 s timer stopped can run a frame over; the server allows that too.
   const fits = { ...picked, sourceDurationS: 30.02 };
   const transcribed = { ...fits, transcribing: false };
   const typed = {
@@ -66,7 +62,6 @@ test("Edit's blockers come in rail order, each with its action", () => {
   check([
     [empty, P.EDIT_NO_SOURCE, ["add-recording"]],
     [{ ...empty, sourceError: "Not audio." }, "Not audio."],
-    // Uploading or recording: wait, rather than ask for a recording.
     [{ ...empty, sourceBusy: true }, P.EDIT_SOURCE_BUSY],
     [
       { ...picked, sourceExpired: true },
@@ -77,7 +72,6 @@ test("Edit's blockers come in rail order, each with its action", () => {
     [fits, P.EDIT_TRANSCRIBING],
     [transcribed, P.EDIT_TRANSCRIPT_EMPTY, ["transcribe", "type-transcript"]],
     [typed, P.EDIT_NO_CHANGES, [{ id: "focus-changes", label: "Go to ②" }]],
-    // Deleting every word would send an empty text the run route refuses with a 422.
     [{ ...typed, edited: "  " }, P.EDIT_CHANGES_EMPTY],
     [changed, "no"],
     [
@@ -86,7 +80,6 @@ test("Edit's blockers come in rail order, each with its action", () => {
     ],
     [{ ...changed, panelError: null }, null],
     [ready, null],
-    // An unknown length does not block; the server checks it again.
     [{ ...ready, sourceDurationS: null }, null],
     [{ ...ready, transcript: LONG, edited: `${LONG} x` }, A.EDIT_TOO_LONG],
   ]);
@@ -134,7 +127,6 @@ test("each edit panel applies only to its family, and only when the model can ed
     [DOTS, "edit", ["edit-dots_tts"]],
     [VEVO, "edit", ["edit-vevo2"]],
     [FIRE, "edit", ["edit-firered_audio"]],
-    // DotTTS-MF is dots_tts but lists no edit.
     [ctx("dots_tts", "speak"), "edit", []],
     [ctx("qwen3_tts", "clone", "edit"), "edit", []],
     [DOTS, "speak", []],
@@ -156,7 +148,6 @@ test("the panels claim the options the adapters set, so Advanced hides them", ()
 });
 
 test("collectToolRequest returns the adapter's reason and adds nothing to the request", () => {
-  // Six separate changes: every other word.
   const six = "OKAY, I'm CEMO and WHAT you JUST heard WASN'T a HUMAN voice.";
   const rows: [Ctx, Inputs, string | null][] = [
     [FIRE, core(`${S2} Really.`), A.FIRERED_INSERT_AT_END],
@@ -165,7 +156,6 @@ test("collectToolRequest returns the adapter's reason and adds nothing to the re
     [DOTS, core(S2.replace("human", "<robot>")), A.DOTS_BAD_CHARACTERS],
     [DOTS, core(S2, "delivery"), A.DELIVERY_NEEDS_FIRERED],
     [FIRE, core(S2, "delivery"), null],
-    // Without the page's edit inputs a panel never blocks.
     [FIRE, { text: "" }, null],
   ];
   for (const [c, inputs, error] of rows) {

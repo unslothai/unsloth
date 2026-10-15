@@ -63,7 +63,6 @@ export async function updateKeylessApiAccess(
   return fromApi(await res.json());
 }
 
-/** who can reach this server once a scope is on */
 export function keylessAudience(
   exposure: KeylessApiAccessExposure | null,
 ): string {

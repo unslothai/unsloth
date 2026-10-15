@@ -8,8 +8,7 @@ async function readTauriAppVersion(): Promise<string> {
   return getVersion();
 }
 
-// Callers gate this on isTauri: null means desktop without a readable version,
-// and never reaching the loader is what keeps the row off browser builds.
+// Callers gate this on isTauri; null means desktop without a readable version.
 export async function loadDesktopAppVersion(
   readVersion: VersionReader = readTauriAppVersion,
 ): Promise<string | null> {

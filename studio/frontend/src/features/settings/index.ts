@@ -83,8 +83,7 @@ export {
   stepInterfaceScale,
   useInterfaceScaleStore,
 } from "./stores/interface-scale-store";
-// The runtime module, not the store, so consumers outside this feature do not have to pull
-// zustand in with them. native-drop-position.ts imports it directly for that reason.
+// The runtime module, not the store, so outside consumers do not pull in zustand.
 export {
   NATIVE_MAC_TITLEBAR_HEIGHT_VAR,
   NATIVE_MAC_TRAFFIC_LIGHT_INSET_VAR,

@@ -54,8 +54,7 @@ export function useDefaultChatTemplate(
 ): DefaultChatTemplateState {
   const token = useHfTokenStore((s) => s.token);
   const inventoryVersion = useInventoryVersion();
-  // The native token is part of the identity: a picked GGUF resolves its template through the
-  // lease, not the model id, so two picks of the same basename must not share a cache entry.
+  // A picked GGUF resolves its template through the native-token lease, so the token is part of the key.
   const cacheKey =
     enabled && modelId
       ? `${modelId}::${ggufVariant ?? ""}::${token}::${inventoryVersion}::${nativePathToken ?? ""}`
@@ -81,8 +80,7 @@ export function useDefaultChatTemplate(
         if (controller.signal.aborted) {
           return;
         }
-        // Cache the terminal result, including a null "no default template", so reopening the viewer for
-        // such a model reuses it instead of re-running the backend or Hugging Face lookup.
+        // Cache null results too, to avoid re-running the lookup.
         cacheTemplate(cacheKey, template);
         setFetched({
           key: cacheKey,

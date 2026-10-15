@@ -21,17 +21,7 @@ import type {
 import { useCallback, useEffect, useState } from "react";
 import { useChatActive, useChatNavigationStore } from "@/features/chat";
 
-/**
- * Allow / Always allow / Deny controls for a tool call paused awaiting the
- * user's confirmation. Rendered alongside every tool card (built-in and
- * MCP) so the gate works for all tools, not just the ones using the
- * fallback renderer.
- *
- * A card is "awaiting" only when the adapter registered a backend-gated
- * pending call for it (see `toolConfirmations` in the runtime store), so
- * non-gated cards -- toggle off, or external-provider tools that already
- * ran -- never show controls.
- */
+/** Shown only when the adapter registered a backend-gated pending call for this card. */
 export function ToolConfirmationControls({
   toolCallId,
   toolName,
@@ -64,14 +54,10 @@ export function ToolConfirmationControls({
 
   const [decided, setDecided] = useState(false);
   const [pending, setPending] = useState<"allow" | "deny" | null>(null);
-  // "retry" is a post that failed on the way out and is worth pressing again; "gone" is an approval
-  // the backend is no longer holding, where pressing again can only fail the same way. They were one
-  // flag, and the shared copy told the user to retry something that could never succeed.
+  // "retry" can succeed on another press; "gone" means the backend no longer holds the approval.
   const [failure, setFailure] = useState<"retry" | "gone" | null>(null);
   const failed = failure !== null;
 
-  // Still awaiting our decision: a gated pending entry exists, the tool has
-  // not produced a result, and the card is in its running state.
   const awaiting =
     confirmation !== undefined &&
     result === undefined &&
@@ -90,12 +76,9 @@ export function ToolConfirmationControls({
           decision,
         );
         if (ok) {
-          // The session-wide grant is recorded only once the backend has actually taken the
-          // decision. Granting it up front on the click meant a press that visibly failed still
-          // silently auto-approved this tool for every later call in the session.
+          // Record the session grant only after the backend accepted, or a failed press auto-approves.
           if (alsoAlways && autoAllowKey) allowToolAlways(autoAllowKey, toolName);
-          // Only hide the controls once the backend confirms it matched the pending call --
-          // otherwise the generation would stay blocked with no way to retry.
+          // Hide only once the backend confirms, or the generation stays blocked with no retry.
           setDecided(true);
           clearToolConfirmation(toolCallId);
         } else {
@@ -117,27 +100,19 @@ export function ToolConfirmationControls({
     ],
   );
 
-  // Tools the user marked "Always allow" (this session) approve themselves.
   useEffect(() => {
     if (showControls && autoAllowed && pending === null && !failed) {
       void resolve("allow");
     }
   }, [showControls, autoAllowed, pending, failed, resolve]);
 
-  // ⏎ / Esc, only while this card is asking: an auto-approved one answers itself. Off route the
-  // chat pane is hidden rather than unmounted, so without the active check a bare key would decide
-  // a request nobody can see. With a second request parked, in the other Compare pane or further up
-  // the thread, the chord has no way to say which one it means, so both cards fall back to their
-  // buttons.
+  // Chords only while this card asks and the chat is visible; with a second request parked, both
+  // cards fall back to buttons.
   const chatActive = useChatActive();
   const soleRequest = useChatRuntimeStore(
     (s) => Object.keys(s.toolConfirmations).length === 1,
   );
-  // A sidebar selection answers Escape already, and that listener does not consume the key, so both
-  // would run off one press and deny a call the user was only dismissing a selection with. Escape
-  // there costs nothing to undo and this does not, so this is the one that waits. Enter goes with
-  // it: the buttons are still there, and a card that takes half its keys is worse to explain than
-  // one that takes none.
+  // A sidebar selection also handles Escape without consuming it; defer so dismissing it cannot deny.
   const selectionActive = useChatNavigationStore((s) => s.selectionActive);
   const keyboardReady =
     !disclosure &&
@@ -147,9 +122,7 @@ export function ToolConfirmationControls({
     showControls &&
     pending === null &&
     !(autoAllowed && !failed);
-  // The Chat route stays mounted under a dialog, so `keyboardReady` still says
-  // yes while the request is hidden behind one. Answering a tool call the user
-  // cannot see must not be reachable by accident, so both chords ask here.
+  // The Chat route stays mounted under a dialog; never answer a tool call the user cannot see.
   const chatCovered = () => isSurfaceBackgrounded(COMPOSER_INPUT_SELECTOR);
   useShortcut(
     "approveToolRequest",
@@ -172,10 +145,7 @@ export function ToolConfirmationControls({
     {
       enabled: keyboardReady,
       skipInTextFields: true,
-      // A request usually arrives with the composer still focused from the prompt that caused it,
-      // and Escape types nothing there, so the gate would hold the decline back at the one moment
-      // it is most wanted. Enter above gets no such pass: that key sends. Every other field keeps
-      // its Escape, the queued-prompt editor and the settings search included.
+      // Escape is allowed from the composer (it types nothing there); Enter is not, since it sends.
       textFieldException: COMPOSER_INPUT_SELECTOR,
     },
   );

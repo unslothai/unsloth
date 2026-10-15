@@ -223,7 +223,6 @@ export function useSpeechGeneration({
     ? "music"
     : nativeAudioInstructionsKind(status?.audio_type);
 
-  // Instruction panels edit the page's instruction draft; other panels keep a value per model.
   const voices = useAudioVoicesStore((state) => state.voices);
   const voicesLoaded = useAudioVoicesStore(
     (state) => state.loaded && !state.error,

@@ -46,8 +46,7 @@ function isStructuredResult(val: unknown): val is StructuredResult {
     "text" in val &&
     "images" in val &&
     "sessionId" in val &&
-    // Persisted content can carry anything, and the card maps over this and
-    // reads name off each entry.
+    // Persisted content can carry anything, and the card reads name off each entry.
     isSandboxFileList(v.files)
   );
 }
@@ -59,10 +58,7 @@ function PythonToolImage({
   sessionId: string;
   filename: string;
 }) {
-  // The same hook assistant markdown uses for an on-disk image, so the authed fetch, the object URL
-  // and its revocation live in one place instead of two. A failed or cancelled image stays as its
-  // accessible alt text. Keyed by url inside the hook: a re-used element reads idle, not the
-  // previous file's blob, and a stale response cannot write state for a url it was not fetched for.
+  // Shared hook: authed fetch, object URL lifetime, keyed by url so stale responses cannot land.
   const { ref, state } = useSandboxImage(pythonToolImagePath(sessionId, filename));
 
   return (
@@ -105,8 +101,7 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
     output = "";
   }
 
-  // Show the fuller live stream over a truncated result, keeping its exit
-  // status. Session-transient: after a reload only the result remains.
+  // Prefer the fuller live stream over a truncated result; after a reload only the result remains.
   const paneScope = useToolPaneScope();
   const fullOutput = useToolOutputFor(
     useChatRuntimeStore((s) => s.toolFullOutput),
@@ -115,8 +110,7 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
   );
   const displayOutput = preferSanitizedFullToolOutput(fullOutput, output);
 
-  // The gate only opens once the call parsed, so a pending approval means the script is
-  // written even while the args status still reads as streaming.
+  // The gate opens only once the call parsed, so pending approval means the script is written.
   const awaitingApproval = useToolAwaitingApproval(toolCallId);
   const isWriting = isWritingCode && !awaitingApproval;
   const collapseByDefault = useChatPreferencesStore(
@@ -135,12 +129,8 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
   ) : null;
 
   return (
-    // Status, output and images collapse from history; the executed script renders outside
-    // ToolFallbackContent so it stays visible on reopen (#7165) -- a script is an artifact, a
-    // one-line command is not. That holds unless tool calls are set to collapsed, where the
-    // script moves inside the collapsible, behind one click. awaitingApproval is the exception: a
-    // decision about a script needs the script on screen. Created files stay outside even when the
-    // card is collapsed (#10425).
+    // The script renders outside ToolFallbackContent so it stays visible on reopen, except with
+    // tool calls set to collapsed; awaiting approval always shows it. Created files stay outside.
     <ToolFallbackRoot
       defaultOpen={isRunning}
       awaitingApproval={awaitingApproval}
@@ -154,7 +144,6 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
       <ToolFallbackContent>
         {collapseByDefault && scriptCell}
         <div className="border-l-2 border-muted-foreground/20 pl-2">
-          {/* Output */}
           {isRunning ? (
             <>
               <div className="mt-2 flex items-center gap-2 text-sm text-muted-foreground">
@@ -182,7 +171,6 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
             </div>
           ) : null}
 
-          {/* Images from Python tool execution */}
           {images.length > 0 && sessionId && (
             <div className="mt-2 flex flex-col gap-2">
               {images.map((filename) => (

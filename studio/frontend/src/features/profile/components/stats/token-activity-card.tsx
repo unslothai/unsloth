@@ -37,7 +37,6 @@ const CELL_GAP = 3;
 const COLUMN_WIDTH = CELL_SIZE + CELL_GAP;
 const MIN_COLUMNS = 8;
 const HEAT_OPACITY = [0, 0.4, 0.62, 0.8, 1] as const;
-// Weekly and cumulative are on/off, so they use one flat shade.
 const SOLID_LEVEL = 4;
 const MODES: ActivityMode[] = ["daily", "weekly", "cumulative"];
 
@@ -47,10 +46,6 @@ type Cell = {
   value: number;
 };
 
-/**
- * Trim the series to the most recent `columns` weeks, ending on a partial
- * current week. The grid never scrolls, so older days fall off the left.
- */
 function buildColumns(
   daily: ProfileStatsDay[],
   values: number[],
@@ -61,7 +56,6 @@ function buildColumns(
 
   const lastDay = daily.at(-1);
   if (!lastDay) return [];
-  // Days after today in the final (partial) week.
   const trailing =
     DAYS_PER_WEEK -
     1 -
@@ -69,12 +63,10 @@ function buildColumns(
   const capacity = columns * DAYS_PER_WEEK - trailing;
   const start = Math.max(0, daily.length - capacity);
   const visible = daily.slice(start);
-  // Cumulative is a running total over what the grid shows, so a narrow card
-  // that drops older weeks has to rebase off the last hidden day.
+  // Cumulative rebases off the last hidden day when older weeks are trimmed.
   const baseline = windowBaseline(values, start, mode);
 
   const cells: Cell[] = [];
-  // Pad so every column is a Monday-started week.
   const firstVisible = visible[0];
   if (!firstVisible) return [];
   const leading = (parseDayKey(firstVisible.date).getDay() + 6) % DAYS_PER_WEEK;
@@ -96,7 +88,6 @@ function buildColumns(
   return grid;
 }
 
-/** Month captions under the grid, one per column where the month turns over. */
 function buildMonthLabels(grid: Cell[][], locale: string) {
   const formatter = new Intl.DateTimeFormat(locale, { month: "short" });
   const labels: Array<{ key: string; column: number; text: string }> = [];
@@ -107,7 +98,6 @@ function buildMonthLabels(grid: Cell[][], locale: string) {
     const date = parseDayKey(firstDay.date);
     if (date.getMonth() === lastMonth) continue;
     lastMonth = date.getMonth();
-    // Skip a label that would collide with the previous one, or run off the end.
     const previous = labels.at(-1);
     if (previous && columnIndex - previous.column < 3) continue;
     if (columnIndex > grid.length - 3) continue;
@@ -120,10 +110,6 @@ function buildMonthLabels(grid: Cell[][], locale: string) {
   return labels;
 }
 
-/**
- * Per-column totals for the bar modes. Shading every day of an active week
- * instead would fill the grid solid and hide the shape.
- */
 function columnSummary(column: Cell[]) {
   let value = 0;
   let tokens = 0;
@@ -137,13 +123,11 @@ function columnSummary(column: Cell[]) {
   return { value, tokens, firstDay };
 }
 
-/** Bar height in cells, at least one for any activity. */
 function barHeight(value: number, peakValue: number): number {
   if (value <= 0 || peakValue <= 0) return 0;
   return Math.max(1, Math.round((value / peakValue) * DAYS_PER_WEEK));
 }
 
-/** How many week columns fit the card's current width. */
 function useVisibleColumns(maxColumns: number) {
   const ref = useRef<HTMLDivElement>(null);
   const [columns, setColumns] = useState(maxColumns);
@@ -191,7 +175,6 @@ function Block({
   );
 }
 
-/** Daily: each day shaded by its own volume. */
 function DayColumn({
   column,
   peak,
@@ -230,7 +213,6 @@ function DayColumn({
   );
 }
 
-/** Weekly and cumulative: one flat bar per column, anchored to the bottom. */
 function BarColumn({
   column,
   peak,
@@ -244,8 +226,7 @@ function BarColumn({
   const locale = useLocale();
   const summary = columnSummary(column);
   const height = barHeight(summary.value, peak);
-  // The bar is scaled by summary.value, which in cumulative mode is the
-  // running total. The tooltip says "week of", so it reports that week.
+  // In cumulative mode the bar is the running total, but the tooltip reports that week.
   const title = summary.firstDay
     ? t("settings.profile.stats.weekTooltip", {
         date: dateFormatter.format(parseDayKey(summary.firstDay)),
@@ -386,16 +367,12 @@ export function TokenActivityCard({ daily }: { daily: ProfileStatsDay[] }) {
     () => buildColumns(daily, values, columns, mode),
     [daily, values, columns, mode],
   );
-  // The app language, not the browser's: those differ whenever the user picks
-  // a language in Settings, and it has to be a dependency so switching while
-  // the panel is open rebuilds the formatters.
+  // The app language, not the browser's, and a dependency so switching rebuilds formatters.
   const locale = useLocale();
   const monthLabels = useMemo(
     () => buildMonthLabels(grid, locale),
     [grid, locale],
   );
-  // Daily scales against the busiest day, the bar modes against the busiest
-  // column, so a full-height bar always means the peak week.
   const peak = useMemo(
     () =>
       shaded
@@ -481,7 +458,6 @@ export function TokenActivityCard({ daily }: { daily: ProfileStatsDay[] }) {
         </div>
       }
     >
-      {/* Measured, never scrolled: the grid is trimmed to fit instead. */}
       <div ref={ref} className="w-full overflow-hidden">
         {charted ? (
           <WeekChart grid={grid} mode={mode} dateFormatter={dateFormatter} />

@@ -40,7 +40,6 @@ import {
 import { usePlatformStore } from "@/config/env";
 import { capturedContextLength } from "./preset-policy";
 
-/** Load/runtime knobs saved in a chat preset (excludes per-model-only blobs). */
 export type PresetLoadConfig = Pick<
   PerModelConfig,
   | "customContextLength"
@@ -91,8 +90,7 @@ export const EMPTY_PRESET_LOAD_CONFIG: PresetLoadConfig = {
 function toComparablePerModelConfig(
   config: PresetLoadConfig,
 ): PerModelConfig {
-  // Compared as a pin, not as whichever field the backend of the moment writes it in:
-  // the same preset replayed elsewhere holds that length in the other field.
+  // Compared as a pin: the same preset elsewhere stores the length in the other field.
   const pin = savedContextPin(config);
   return {
     ...DEFAULT_PER_MODEL_CONFIG,
@@ -104,13 +102,7 @@ function toComparablePerModelConfig(
   };
 }
 
-/** A context as a preset may carry it, or null if it is not a length at all.
- *
- *  One bound for capture and for reading a saved preset back, since clamping only on the
- *  way to storage would send one window on the first replay and another after saving. The
- *  upper bound is what `/load` accepts; the lower is the control's own minimum, because a
- *  pin the control cannot represent is one the user cannot undo.
- */
+/** One bound for capture and read-back so replays agree; min is the control's own minimum. */
 function requestableContextLength(value: unknown): number | null {
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
     return null;
@@ -191,8 +183,7 @@ export function normalizePresetLoadConfig(
       typeof partial.nUbatch === "number" && Number.isFinite(partial.nUbatch)
         ? Math.max(N_BATCH_MIN, Math.min(N_BATCH_MAX, Math.round(partial.nUbatch)))
         : null,
-    // Through the same normalizers the per-model store uses, so a hand-edited or older preset cannot
-    // smuggle in a mode or dtype the panel cannot show.
+    // Normalized so old or hand-edited presets cannot carry values the panel cannot show.
     loadMode: canonicalizeLoadMode(partial.loadMode),
     specDraftCacheDtype:
       typeof partial.specDraftCacheDtype === "string" &&
@@ -245,7 +236,6 @@ export function capturePresetLoadConfig(): PresetLoadConfig | undefined {
   });
   const platform = usePlatformStore.getState();
   const isMlx = isServedByMlx(isGguf, platform.deviceType, platform.chatOnlyReason);
-  // The same bound a saved preset is read back under; this one replays from memory first.
   const effectiveContextLength = requestableContextLength(
     capturedContextLength({
       isGguf,
@@ -253,8 +243,7 @@ export function capturePresetLoadConfig(): PresetLoadConfig | undefined {
       loadedContextLength: store.loadedContextLength,
     }),
   );
-  // A diffusion GGUF is still a GGUF: its resolved context has to capture like
-  // any other. Only the reasoning flags, which it takes none of, are suppressed.
+  // Diffusion GGUFs capture context too; only reasoning flags are suppressed.
   const capturesReasoning = isGguf && !store.loadedIsDiffusion;
   const captured: PresetLoadConfig = {
     customContextLength: effectiveContextLength ?? null,
@@ -378,8 +367,7 @@ export function formatPresetLoadConfigSummary(
   if (config.reasoningBudget !== -1) {
     parts.push(`Reasoning ${config.reasoningBudget}`);
   }
-  // A marker, not the text: the message is free prose up to 8 KiB. Without it a
-  // message-only preset is non-default but summarises to null, hiding both lines.
+  // A marker, not the text, or a message-only preset summarises to null.
   if (config.reasoningBudgetMessage) {
     parts.push("Budget msg");
   }

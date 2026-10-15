@@ -17,7 +17,6 @@ export interface YoutubeTranscript {
   truncated: boolean;
 }
 
-/** Fetch a video's captions as plain text. `languages` is preference order. */
 export async function fetchYoutubeTranscript(
   url: string,
   languages: string[],

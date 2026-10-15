@@ -10,12 +10,7 @@ import {
 } from "@/components/ui/tooltip";
 import type { ComponentProps, ReactNode } from "react";
 
-/**
- * A transcript toolbar button: Copy, Download and the like, above a code cell or beside a
- * thinking trace's header. Icon only, because these sit in narrow headers next to each other
- * and the word only repeats what the glyph already says. The label is not dropped: it is the
- * accessible name and it is what the tooltip shows on hover.
- */
+/** Icon-only transcript toolbar button; the label is the accessible name and the tooltip. */
 export function IconActionButton({
   label,
   children,

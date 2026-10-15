@@ -28,7 +28,6 @@ export const DEFAULT_CHATS_PREFS: ChatsPrefs = {
   pinnedFirst: true,
 };
 
-// Separate from the Library store so file-tab view and sort settings never apply to chats.
 export const useChatsPrefsStore = create<ChatsPrefs & { set: (patch: Partial<ChatsPrefs>) => void }>()(
   persist(
     (set) => ({
@@ -38,8 +37,6 @@ export const useChatsPrefsStore = create<ChatsPrefs & { set: (patch: Partial<Cha
     {
       name: LIBRARY_CHATS_PREFS_STORAGE_KEY,
       version: 3,
-      // v2: list is the default view. v3: Last modified is the default date, so an untouched
-      // Last active moves with it.
       migrate: (persisted, version) => {
         const saved = { ...((persisted ?? {}) as Partial<ChatsPrefs>) };
         if (version < 2) saved.view = "list";

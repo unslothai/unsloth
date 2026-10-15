@@ -77,7 +77,7 @@ export function buildValidatorColumn(
       validator_type: "local_callable",
       // biome-ignore lint/style/useNamingConvention: api schema
       validator_params: {
-        // backend resolves this marker to a real callable.
+        // The backend resolves this marker to a real callable.
         // biome-ignore lint/style/useNamingConvention: api schema
         validation_function: `${OXC_VALIDATION_FN_MARKER}:${codeLang}:${config.oxc_validation_mode}:${config.oxc_code_shape ?? "auto"}`,
       },

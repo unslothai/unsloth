@@ -30,10 +30,8 @@ function partialFormatFamily(
 }
 
 /**
- * The family an unclassified PARTIAL row can be PROVEN to belong to, or null. The backend writes a transport
- * only for snapshot partials and hardcodes none for a GGUF (`services/models/common.py`, `cache_inventory.py`).
- * The converse is WRONG: a snapshot partial with neither a cancel marker nor a manifest also reports none
- * (`utils/inventory_scan.py`), so an absent transport must not be read as "GGUF". Null for a complete row.
+ * Family an unclassified partial row can be proven to belong to, or null. An absent transport
+ * does not mean GGUF: snapshot partials without a marker report none too.
  */
 export function provenUnknownPartialFamily(
   row: Pick<CachedInventoryRow | LocalInventoryRow, "partialTransport">,
@@ -60,7 +58,7 @@ function knownFamiliesMatchUnknownRow(
 ): boolean {
   if (!families?.size) return false;
   if (families.size > 1) return true;
-  // A complete row has no transport, so the test below would always say "gguf" and keep it beside a safetensors row; any known family shadows it instead.
+  // A complete row has no transport, so any known family shadows it.
   if (!row.partial) return true;
   return families.has(row.partialTransport ? "model" : "gguf");
 }
@@ -83,7 +81,6 @@ export function findCompleteHfCacheLocalRow(
   );
 }
 
-// Keyed by repo (scoped jobs never share the row key) and family; unknown family marks every family.
 export function activeDownloadRepoKeys(
   jobs: readonly {
     kind?: DownloadKind;

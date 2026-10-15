@@ -53,28 +53,24 @@ import { notifyGalleryChanged } from "@/lib/gallery-flags";
 import { translate, useLocale, useT } from "@/i18n";
 import { toast } from "@/lib/toast";
 
-/** Archived items shown per page; "Show more" pulls the next page. Matches ArchivedChatsView. */
+/** Matches ArchivedChatsView. */
 const ARCHIVED_PAGE_SIZE = 20;
 const SEARCH_PAGE_SIZE = 200;
 
-// Blob budget for archived thumbnails. Far smaller than the gallery strip's 192 MB: these are 40px
-// rows in a settings list, and only the loaded pages are ever on screen.
+// Far smaller than the gallery's 192 MB: these are 40px rows and only loaded pages show.
 const ARCHIVED_THUMB_BUDGET_BYTES = 32 * 1024 * 1024;
 
-// Retries for a thumbnail that failed to load, and the step between them. Capped so a row whose
-// file is genuinely gone stops asking instead of retrying for as long as the dialog is open.
+// Capped so a row whose file is gone stops retrying.
 const THUMB_RETRY_LIMIT = 2;
 const THUMB_RETRY_DELAY_MS = 750;
 
 export type ArchivedMediaKind = "images" | "videos" | "audio";
 
-/** The shape both galleries share, once flattened for this list. */
 interface ArchivedRow {
   id: string;
   title: string;
-  /** Epoch ms, so images (epoch seconds) and videos (ISO 8601) render the same way. */
+  /** Epoch ms, normalised from image epoch seconds and video ISO 8601. */
   createdAt: number;
-  /** Relative, auth-protected URL of the underlying file. */
   url: string;
 }
 
@@ -84,26 +80,18 @@ interface ArchivedPage {
   nextAudioCursor: AudioGalleryCursor | null;
 }
 
-/**
- * The archived shelf for one media gallery, modelled on ArchivedChatsView: rows with restore and
- * delete, revealed a page at a time. Unlike chats there is nothing readable to identify a result
- * by, so each row carries a thumbnail alongside its prompt.
- */
+/** Modelled on ArchivedChatsView, with a thumbnail since results have no readable title. */
 export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
   const t = useT();
   const locale = useLocale();
   const isImages = kind === "images";
   const isAudio = kind === "audio";
   const [rows, setRows] = useState<ArchivedRow[]>([]);
-  // `showMore` reads the row count and the drop count from refs, not state: both can change while
-  // its request is in flight, and a stale closure is exactly what makes it skip a row. The ref is
-  // written with every list change rather than during render, so it is current the moment a drop
-  // lands instead of one render later.
+  // Refs, written on every list change, so an in-flight showMore never reads stale counts.
   const rowsRef = useRef<ArchivedRow[]>([]);
   const audioCursor = useRef<AudioGalleryCursor | null>(null);
   const mutations = useRef(0);
-  // Restores and deletes in flight. The counter above is an EDGE, so a page starting after it moves
-  // and landing before the row is dropped sees it hold still. A page applies only while this is zero.
+  // Restores and deletes in flight; a page applies only while this is zero.
   const pendingMutations = useRef(0);
   const loadingMore = useRef(false);
   const putRows = useCallback((next: ArchivedRow[]) => {
@@ -148,11 +136,9 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
   }
   const [loading, setLoading] = useState(true);
   const [thumbs, setThumbs] = useState<Record<string, string>>({});
-  // Archived images and video posters are object URLs, so "Show more" a few times would otherwise
-  // pin their bytes until unmount. Budget them like the main galleries do.
+  // Object URLs would pin bytes until unmount, so budget them like the main galleries.
   const blobs = useRef(new BlobUrlCache(ARCHIVED_THUMB_BUDGET_BYTES));
-  // Only rows on screen fetch a thumbnail, and only rows off screen are evicted. Together those
-  // two rules keep memory bounded without ever blanking a row the user is looking at.
+  // Only visible rows fetch and only hidden rows are evicted, so memory stays bounded.
   const listRef = useRef<HTMLDivElement | null>(null);
   const [visible, setVisible] = useState<ReadonlySet<string>>(new Set());
 
@@ -230,14 +216,12 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
     };
   }, [loadPage, kind, putRows]);
 
-  // Revoke everything still cached, once, on unmount.
   useEffect(() => {
     const cache = blobs.current;
     return () => cache.clear();
   }, []);
 
-  // Track which rows are actually on screen. Without a visibility signal (jsdom, old webviews)
-  // every row counts as visible, which is the old eager behaviour rather than a blank list.
+  // Without IntersectionObserver (jsdom, old webviews) every row counts as visible.
   useEffect(() => {
     const root = listRef.current;
     if (!root) return;
@@ -265,7 +249,6 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
           return next;
         });
       },
-      // A little margin so a row is fetched just before it scrolls into view.
       { rootMargin: "200px 0px" },
     );
     for (const el of root.querySelectorAll("[data-archived-id]"))
@@ -276,18 +259,14 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
     };
   }, [displayed, loading]);
 
-  // Thumbnails for VISIBLE rows that do not have one yet. `requested` is a ref, not state, so a
-  // landing thumbnail cannot re-enter this effect and refetch the rest.
+  // A ref so a landing thumbnail cannot re-enter this effect.
   const requested = useRef<Set<string>>(new Set());
-  // The latest visibility set. A fetch that lands after the user scrolled would otherwise prune
-  // against the set its own effect run closed over, protecting a row that has since gone off
-  // screen and evicting one that is on it.
+  // Latest visibility, so a late fetch prunes against current rows, not its closure.
   const visibleRef = useRef<ReadonlySet<string>>(visible);
   useEffect(() => {
     visibleRef.current = visible;
   }, [visible]);
-  // Prune on VISIBILITY, not only after a fetch. Rows leaving the viewport are what makes their
-  // blobs evictable, and at the end of a shelf nothing fetches again, so the budget stopped binding.
+  // Prune on visibility too: at the end of a shelf nothing fetches, so the budget stopped binding.
   useEffect(() => {
     const evicted = blobs.current.prune(visible);
     if (evicted.length === 0) return;
@@ -298,19 +277,13 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
       return next;
     });
   }, [visible]);
-  // Failed attempts per row. Clearing `requested` on a failure changes nothing this effect
-  // watches, so a visible row would stay blank until the user happened to scroll it away and
-  // back. The tick schedules the retry; the count stops a permanently broken row from looping.
+  // The tick schedules a retry for a visible failed row; the count stops a broken row looping.
   const failures = useRef(new Map<string, number>());
   const [retryTick, setRetryTick] = useState(0);
-  // Only an unmount has to discard a fetch that already completed. A plain effect re-run (a
-  // scroll, another page) leaves that work perfectly usable, and throwing it away is what left
-  // rows blank: `requested` outlives the effect, so nothing would ever fetch them again.
+  // Only an unmount discards completed fetches; `requested` outlives effect re-runs.
   const alive = useRef(true);
   useEffect(() => {
-    // Set on the way in, not just cleared on the way out: StrictMode runs setup, cleanup, setup in
-    // development, so a flag only cleared by the cleanup would stay false for the rest of the
-    // dialog's life and discard every thumbnail that landed.
+    // Set on entry too: StrictMode runs setup, cleanup, setup.
     alive.current = true;
     return () => {
       alive.current = false;
@@ -324,8 +297,7 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
         if (cancelled) return;
         if (!visible.has(row.id)) continue;
         if (requested.current.has(row.id)) continue;
-        // Checked here too, not only where the retry is scheduled: a failure clears `requested`, so
-        // any later run of this effect would refetch a permanently missing file without limit.
+        // Also checked here, since a failure clears `requested`.
         if ((failures.current.get(row.id) ?? 0) > THUMB_RETRY_LIMIT) continue;
         requested.current.add(row.id);
         try {
@@ -335,8 +307,7 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
               : await videoThumbnailQueue.run(() =>
                   fetchGalleryVideoThumbnail(row.id),
                 );
-            // Dropped from the list, or the dialog closed: there is no row left to show it on,
-            // and caching it after the unmount sweep would leak the blob.
+            // Caching after the unmount sweep would leak the blob.
             if (
               !alive.current ||
               !rowsRef.current.some((r) => r.id === row.id)
@@ -346,12 +317,9 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
               return;
             }
             blobs.current.set(row.id, url, bytes);
-            // Successful load: forget the earlier failures, or a single transient one after an
-            // eviction would land past the cap and leave the row blank with no retry scheduled.
+            // Reset failures on success so a later transient failure does not hit the cap.
             failures.current.delete(row.id);
-            // Evict the coldest thumbnails back within budget, never one that is on screen. Since
-            // only visible rows are fetched, an evicted row is off screen by definition; clearing
-            // it from `requested` lets it fetch again when it scrolls back and this effect re-runs.
+            // Evicted rows are off screen by definition; clearing `requested` lets them refetch later.
             const evicted = blobs.current.prune(visibleRef.current);
             setThumbs((prev) => {
               const next = { ...prev, [row.id]: url };
@@ -361,13 +329,11 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
               }
               return next;
             });
-            // Stale generation: stop iterating, but keep what this fetch already paid for.
+            // Stale generation: stop, but keep what this fetch already paid for.
             if (cancelled) return;
             continue;
           }
         } catch {
-          // A missing thumbnail still leaves a usable, actionable row, so a failure is not fatal.
-          // Schedule the retry rather than only clearing the flag, which nothing would act on.
           requested.current.delete(row.id);
           const attempts = (failures.current.get(row.id) ?? 0) + 1;
           failures.current.set(row.id, attempts);
@@ -384,17 +350,13 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
     };
   }, [rows, isImages, isAudio, kind, visible, retryTick]);
 
-  // Drop a row, then top the page back up if that emptied it while more remain, so the list never
-  // dead-ends with rows still unreachable behind a hidden "Show more".
+  // Top the page back up so the list never dead-ends behind a hidden "Show more".
   const dropRow = useCallback(
     (id: string) => {
       putRows(rowsRef.current.filter((r) => r.id !== id));
-      // Every drop shifts the rows behind it up by one, so an offset taken before this point is
-      // now short. `showMore` uses the counter to notice and re-page instead of skipping a row.
+      // Every drop shifts later rows up, so showMore re-pages instead of skipping one.
       mutations.current += 1;
-      // Release the thumbnail with the row. Its element unmounts without the observer reporting it,
-      // so the id would sit in `visible` forever and permanently protect its blob from eviction,
-      // walking the cache past its budget one restore at a time.
+      // The observer never reports the unmount, so the id would protect its blob forever.
       blobs.current.delete(id);
       requested.current.delete(id);
       setVisible((prev) => {
@@ -414,8 +376,7 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
   );
 
   async function handleRestore(row: ArchivedRow) {
-    // Held for the whole round trip: the server shortens the shelf when it processes this, so a
-    // page read inside that window sees it at the offset it captured with nothing to notice.
+    // Held for the round trip: the server shortens the shelf while processing this.
     mutations.current += 1;
     pendingMutations.current += 1;
     try {
@@ -435,8 +396,7 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
   }
 
   async function handleDelete(row: ArchivedRow) {
-    // Held for the whole round trip: the server shortens the shelf when it processes this, so a
-    // page read inside that window sees it at the offset it captured with nothing to notice.
+    // Held for the round trip: the server shortens the shelf while processing this.
     mutations.current += 1;
     pendingMutations.current += 1;
     try {
@@ -532,7 +492,6 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
         if (action === "restore") restored = true;
       }
     } finally {
-      // refresh the persistent gallery once, including after a partially successful batch.
       if (restored) notifyGalleryChanged(kind);
       running.current = false;
       setBusy(false);

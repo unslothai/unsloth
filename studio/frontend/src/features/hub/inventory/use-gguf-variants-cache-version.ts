@@ -15,8 +15,7 @@ export function useGgufVariantsCacheVersion(repoId?: string | null): string {
   );
 }
 
-/** One snapshot over several repos. Invalidation is per repo, so a caller
- *  watching a list has to read every repo's version, not just the global one. */
+/** Invalidation is per repo, so read every repo's version, not just the global one. */
 export function useGgufVariantsCacheVersions(
   repoIds: readonly string[],
 ): string {

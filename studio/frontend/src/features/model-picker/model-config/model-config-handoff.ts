@@ -88,7 +88,6 @@ function leafName(id: string): string {
   return separator >= 0 ? trimmed.slice(separator + 1) : trimmed;
 }
 
-/** The settings target for the model /api/inference/status reports as loaded. */
 export function residentModelConfigTarget({
   modelId,
   ggufVariant,
@@ -102,9 +101,7 @@ export function residentModelConfigTarget({
   isLora: boolean;
   contextLength: number | null;
 }): ModelPickTarget {
-  // A standalone .gguf has no quant to choose between, but the loader labels it from its filename and
-  // /status echoes that back. Keying settings by it would write "<path>:Q4_K_M" while all other
-  // settings entry points use the bare path.
+  // /status labels a standalone .gguf with a quant; other entry points key settings by the bare path.
   const settingsGgufVariant = isStandaloneGgufPath(modelId)
     ? null
     : ggufVariant;

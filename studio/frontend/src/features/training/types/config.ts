@@ -61,7 +61,6 @@ export interface TrainingMethodProvenance {
   trainOnCompletionsBeforeCpt: boolean | null;
 }
 
-/** Column-to-role mapping, e.g. { "problem": "user", "solution": "assistant", "context": "system" } */
 export type DatasetManualMapping = Record<string, string>;
 
 /** "auto" retrains a native MTP head when the model has one, else trains an EAGLE-3 drafter. */

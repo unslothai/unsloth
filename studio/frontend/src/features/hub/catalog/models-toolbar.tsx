@@ -45,8 +45,7 @@ import { type HubOption, HubOptionMenu } from "./hub-option-menu";
 import { ModelSearchFiltersControl } from "./model-search-filters";
 import { RecentSearches } from "./recent-searches";
 
-// Widened so the format dropdown can carry the "Fine-tune ready" pseudo-option,
-// which opens the curated channel instead of becoming the active format filter.
+// Includes the "Fine-tune ready" pseudo-option, which opens a channel rather than filtering.
 type FormatMenuValue = ModelFormatFilter | "finetune";
 
 const SORT_OPTIONS: ReadonlyArray<{
@@ -121,13 +120,11 @@ export const ModelsToolbar = memo(function ModelsToolbar({
   onFitOnDeviceOnlyChange: (value: boolean) => void;
   onManageLocalFolders: () => void;
   onFreeUpSpace: () => void;
-  /** Opens the curated "Fine-tune ready" channel (discover only). Exposed as a
-   *  format-dropdown option rather than a standalone feed section. */
+  /** Opens the curated "Fine-tune ready" channel (discover only). */
   onOpenFineTune: () => void;
   npuAvailable?: boolean;
 }) {
-  // Recent searches surface while the empty search field is focused, only on
-  // Discover (on-device search is a local filter and isn't recorded).
+  // Recent searches show only on Discover; on-device search is a local filter.
   const recentSearches = useRecentSearches();
   const [searchFocused, setSearchFocused] = useState(false);
   const isDiscover = tab === "discover";
@@ -137,7 +134,6 @@ export const ModelsToolbar = memo(function ModelsToolbar({
     query.trim() === "" &&
     recentSearches.length > 0;
 
-  // Anchored to the toolbar bottom so wrapped filter rows stay clickable.
   const toolbarRef = useRef<HTMLDivElement | null>(null);
   const searchWrapRef = useRef<HTMLDivElement | null>(null);
   const [recentPanelTop, setRecentPanelTop] = useState<number | undefined>();
@@ -163,7 +159,6 @@ export const ModelsToolbar = memo(function ModelsToolbar({
   }, [showRecentSearches]);
 
   const isDataset = resourceType === "datasets";
-  // The NPU catalog is short and has no Hub metadata to filter or sort by.
   const npuList = formatFilter === "npu" && !isDataset;
   const hasTrailing = Boolean(query) || (isDiscover && isLoading);
   const formatOptions = useMemo<HubOption<FormatMenuValue>[]>(() => {
@@ -212,8 +207,6 @@ export const ModelsToolbar = memo(function ModelsToolbar({
         ),
       });
     }
-    // "Fine-tune ready" is a curated channel (bnb-4bit checkpoints), not a
-    // format: it opens the channel rather than setting the filter (onValueChange).
     if (tab === "discover") {
       options.push({
         value: "finetune",
@@ -313,8 +306,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
           className="pointer-events-none absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
         />
         <Input
-          // `type="search"` plus these flags stop password managers and noisy
-          // text assistance from acting on this field.
+          // Stops password managers and text assistance from acting on this field.
           type="search"
           name="hub-search"
           autoComplete="off"
@@ -357,8 +349,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
           <button
             type="button"
             aria-label="Clear search"
-            // Keep focus on the input so clearing reveals recent searches
-            // rather than dismissing the field.
+            // Keep focus on the input so clearing reveals recent searches.
             onMouseDown={(event) => event.preventDefault()}
             onClick={() => onQueryChange("")}
             className="absolute right-2.5 top-1/2 inline-flex size-6 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground/70 transition-colors hover:text-foreground"

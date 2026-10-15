@@ -43,7 +43,6 @@ export const useAudioConvertStore = create<AudioConvertState>()(
       pitch: 0,
       sourceText: "",
       compareSide: "converted",
-      // The transcript belongs to the recording: a new one brings its own, or none.
       setSource: (source) =>
         set((state) =>
           state.source?.kind === source?.kind && state.source?.id === source?.id

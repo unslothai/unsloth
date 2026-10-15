@@ -3,8 +3,7 @@
 
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 
-// Hugeicons "AI Security 03" (stroke-rounded). A four-point sparkle inside a
-// shield. https://hugeicons.com/icon/ai-security-03
+// Hugeicons "AI Security 03" (stroke-rounded).
 export const SparklesIcon: IconSvgElement = [
   [
     "path",
@@ -28,12 +27,6 @@ export const SparklesIcon: IconSvgElement = [
   ],
 ];
 
-/**
- * AI Security shield glyph wrapped as a lucide-compatible component so it can drop
- * into the permission-mode option list alongside lucide icons (same className /
- * strokeWidth props). strokeWidth is a number here (lucide style); Hugeicons
- * accepts it directly.
- */
 export function SparklesGlyph({
   className,
   strokeWidth,

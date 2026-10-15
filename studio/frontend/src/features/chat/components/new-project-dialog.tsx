@@ -40,8 +40,6 @@ function currentRoute(): string {
   return window.location.pathname + window.location.search;
 }
 
-// Create-project dialog for the composer, sidebar and projects page. Creating opens the new
-// project; `onCreated` overrides that for callers with their own follow-up.
 export function NewProjectDialog({
   open,
   onOpenChange,
@@ -63,10 +61,8 @@ export function NewProjectDialog({
   const [staged, setStaged] = useState<StagedSource[]>([]);
   const [folders, setFolders] = useState<StagedFolder[]>([]);
   const [busy, setBusy] = useState(false);
-  // A desktop drop reaches `staged` only once its native registration settles. Creating before
-  // then would upload without the files the user just dropped.
+  // A desktop drop reaches `staged` only after native registration; wait before creating.
   const [stagingDrop, setStagingDrop] = useState(false);
-  // Same for a folder pick still resolving over IPC.
   const [pickingFolder, setPickingFolder] = useState(false);
   const nameImeRef = useRef(newInputImeState());
   const nameImeHandlers = {
@@ -81,8 +77,7 @@ export function NewProjectDialog({
   // they have navigated away.
   const mounted = useRef(true);
   useEffect(() => {
-    // Set on setup, not just cleared on cleanup: StrictMode replays setup/cleanup/setup, which would
-    // otherwise leave this false forever.
+    // Set on setup too: StrictMode replays setup/cleanup/setup.
     mounted.current = true;
     return () => {
       mounted.current = false;
@@ -97,8 +92,7 @@ export function NewProjectDialog({
     setPickingFolder(false);
   }
 
-  // Every close path routes through here: callers keep this mounted, so a draft left behind would
-  // resurface, and upload, on the next project.
+  // Every close path routes here: a leftover draft would resurface on the next project.
   function close() {
     if (busy) return;
     reset();
@@ -109,12 +103,9 @@ export function NewProjectDialog({
     const trimmed = name.trim();
     if (!trimmed || busy || stagingDrop || pickingFolder) return;
     setBusy(true);
-    // Sidebar callers keep this mounted across routes, so unmounting alone cannot tell whether the
-    // user has moved on during a slow upload.
     const origin = currentRoute();
     try {
       const project = await createChatProject(trimmed);
-      // Upload before closing so the Sources panel lists them on first fetch.
       // Folders first: their leases expire in minutes, and uploads can be slow.
       await linkStagedFolders(project.id, folders);
       await uploadStagedSources(project.id, staged);
@@ -155,7 +146,6 @@ export function NewProjectDialog({
         <DialogHeader>
           <DialogTitle className="text-ui-21">{title}</DialogTitle>
         </DialogHeader>
-        {/* Name field: folder glyph in its own cell, divided from the input. */}
         <div className="flex items-stretch overflow-hidden rounded-[16px] border border-border bg-background transition-colors focus-within:border-ring has-[input:disabled]:opacity-50 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]">
           <span className="flex w-10 shrink-0 items-center justify-center pl-1 text-muted-foreground">
             <HugeiconsIcon

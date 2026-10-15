@@ -14,10 +14,9 @@ import {
 import type { HelpAction } from "@/components/help-actions";
 import type { SettingsTab } from "@/features/settings";
 
-/** Go > Settings opens each page of the Settings dialog. */
 export type SettingsMenuAction = `settings-${SettingsTab}`;
 
-/** Actions the desktop File, View, Go and Help menus send (src-tauri/src/app_menu.rs). */
+/** Actions the desktop menus send (src-tauri/src/app_menu.rs). */
 export type AppMenuAction =
   | HelpAction
   | SettingsMenuAction
@@ -80,8 +79,7 @@ export const MENU_CHORDS: Partial<
   "help-send-feedback": {},
 };
 
-/** Chords the native macOS menu keeps (Quit, Close, Minimize, Hide, Hide Others, Edit, Enter
- *  Full Screen). Two items on one key equivalent means one silently loses, so ours skip them. */
+/** Chords the native macOS menu keeps; two items on one key equivalent means one silently loses. */
 export const NATIVE_MENU_CHORDS: ReadonlySet<string> = new Set([
   "Mod+KeyQ",
   "Mod+KeyW",
@@ -97,8 +95,7 @@ export const NATIVE_MENU_CHORDS: ReadonlySet<string> = new Set([
   "Mod+Ctrl+KeyF",
 ]);
 
-/** A binding as a native accelerator. Only Cmd or Ctrl chords, since a bare key there would take
- *  typing away from text fields, and none a native item already has. */
+/** Only Cmd/Ctrl chords: a bare key would steal typing from text fields. */
 function toAccelerator(value: string | null): string | null {
   const binding = parseBinding(value);
   if (!binding || !(binding.mod || binding.ctrl)) return null;
@@ -114,7 +111,6 @@ function toAccelerator(value: string | null): string | null {
     .join("+");
 }
 
-/** What each menu item should show for these shortcut overrides. */
 export function menuAccelerators(
   overrides: Parameters<typeof resolveBinding>[0],
 ): Partial<Record<AppMenuAction, string | null>> {

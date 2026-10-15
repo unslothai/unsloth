@@ -51,7 +51,6 @@ export interface EditRunInput {
   mode: EditMode;
   delivery?: EditDelivery | null;
   advanced?: AudioOptionValues | null;
-  /** The text of a Delivery run with no transcript. */
   sourceName?: string | null;
 }
 
@@ -285,7 +284,6 @@ export function buildEditRun(
   return run;
 }
 
-/** The progress line for a chained run, or null when it is one pass. */
 export function editPhaseLabel(
   adapter: EditAdapter,
   run: AudioTextRunRequest,

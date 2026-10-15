@@ -91,8 +91,6 @@ export function resolveUiProviderTypeFromConfig(
   if (configProviderType !== CUSTOM_BACKEND_PROVIDER_TYPE) {
     return configProviderType;
   }
-  // Names are editable labels, not provider identity. Repair stale local custom state before
-  // applying any legacy heuristic when the saved endpoint is OpenAI-managed.
   if (isOpenAIManagedEndpoint(configBaseUrl)) {
     return CUSTOM_BACKEND_PROVIDER_TYPE;
   }
@@ -106,8 +104,7 @@ export function resolveUiProviderTypeFromConfig(
   if (matchingCustomPreset) {
     return matchingCustomPreset.providerType;
   }
-  // A non-OpenAI hostname can be a corporate proxy for the real OpenAI API. Without a
-  // built-in legacy label there is no safe way to infer that the saved row was custom.
+  // A non-OpenAI host may proxy OpenAI, so without a legacy label we cannot infer custom.
   return configProviderType;
 }
 
@@ -117,9 +114,7 @@ export function mergeLearnedModelCapabilities(
   supportsStudioTools: boolean | undefined,
 ): Record<string, { vision?: boolean; studio_tools?: boolean }> {
   const fromRegistry = registryCapabilities ?? {};
-  // A plan-listed slug is learned at runtime and the registry cannot describe it, so rewriting this
-  // map from the registry alone would drop it and leave the composer reading "unknown" as allowed
-  // again on the next start.
+  // Plan-listed slugs are learned at runtime, so the map cannot be rebuilt from the registry alone.
   const capabilities: Record<string, { vision?: boolean; studio_tools?: boolean }> = {};
   for (const [modelId, capability] of Object.entries(stored ?? {})) {
     if (modelId !== PROVIDER_CAPABILITY_WILDCARD && !(modelId in fromRegistry)) {
@@ -141,9 +136,7 @@ export function pruneProviderModelIds(
   providerType: string,
   modelIds: string[],
 ): string[] {
-  // Anthropic has no entry: a `-YYYYMMDD` id is the canonical name for the whole pre-4.6
-  // generation, not a snapshot. This mirrored the backend denylist and outlived it, stripping those
-  // ids from the server catalog, the seeds and saved selections alike.
+  // Anthropic has no entry: a -YYYYMMDD id is the canonical pre-4.6 name, not a snapshot.
   if (providerType === "openai") {
     return modelIds.filter((id) => !OPENAI_DEPRECATED_MODELS.has(id));
   }
@@ -156,10 +149,7 @@ export function pruneProviderModelIds(
   return modelIds;
 }
 
-/** Which model ids a synced connection ends up with: server, else browser-saved, else seed. The
- *  saved list is pruned BEFORE the emptiness test: a browser selection made up entirely of
- *  retired slugs is no selection at all, and resolving to it empties the picker and sends that
- *  empty list to a backend that rejects it. `serverModels` and `defaultModels` arrive pruned. */
+/** Prunes the saved list before the emptiness test so all-retired selections fall through. */
 export function resolveSyncedModelIds(
   providerType: string,
   serverModels: string[],
@@ -172,7 +162,6 @@ export function resolveSyncedModelIds(
 }
 
 
-/** Carry browser-local provider knobs through a backend sync rebuild. */
 export function mergeLocalProviderOptions(
   existing: ExternalProviderConfig | undefined,
   synced: ExternalProviderConfig,
@@ -207,7 +196,6 @@ export function mergeLocalProviderOptions(
 
 
 
-/** Merge enabled backend provider configs with local store state. */
 export async function syncExternalProvidersFromBackend(
   existingProviders: ExternalProviderConfig[],
   isCurrent?: () => boolean,
@@ -218,9 +206,7 @@ export async function syncExternalProvidersFromBackend(
   ]);
 
   for (const entry of registryRows) {
-    // Self-hosted model ids are user-supplied, so there is no per-model entry to key off. The
-    // registry declares studio_tools once per provider type; park it under the wildcard so the
-    // per-model lookup can fall back to it.
+    // Self-hosted ids are user-supplied, so studio_tools is parked under the wildcard.
     const capabilities = mergeLearnedModelCapabilities(
       getProviderModelCapabilities(entry.provider_type),
       entry.model_capabilities,
@@ -228,9 +214,7 @@ export async function syncExternalProvidersFromBackend(
     );
     setProviderModelCapabilities(entry.provider_type, capabilities);
   }
-  // Writing per returned entry can only correct what came back. Capabilities are persisted in
-  // localStorage and outlive the backend that wrote them, so a provider the registry has stopped
-  // listing would otherwise keep its last `studio_tools: true` forever.
+  // Persisted capabilities outlive the backend, so prune providers the registry dropped.
   pruneProviderModelCapabilities(registryRows.map((entry) => entry.provider_type));
   const configRows = await reconcileLegacyProviderKeys(loadedConfigRows, {
     getLegacyKey: getExternalProviderApiKey,
@@ -310,8 +294,7 @@ export async function syncExternalProvidersFromBackend(
       const synced: ExternalProviderConfig = {
         id: config.id,
         providerType: uiProviderType,
-        // Beside the UI type, which disagrees for a legacy row saved as `openai`: only the stored type
-        // decides what the backend accepts.
+        // Only the stored type decides what the backend accepts (legacy rows differ from the UI type).
         backendProviderType: config.provider_type,
         name: config.display_name,
         baseUrl: config.base_url ?? "",
@@ -349,8 +332,7 @@ export async function syncExternalProvidersFromBackend(
 }
 
 const MODEL_CATALOG_TTL_MS = 24 * 60 * 60 * 1000;
-// The live catalog is stored per provider type, so only the provider's own endpoint may write it; a connection
-// pointed at a compatible gateway keeps the built-in tables instead of overwriting OpenRouter's entries.
+// Only the provider's own endpoint may write the per-type live catalog, not a gateway.
 const MODEL_CATALOG_PROVIDER_BASE_URLS: Record<string, string> = {
   openrouter: "https://openrouter.ai/api/v1",
 };
@@ -382,8 +364,6 @@ export async function refreshProviderModelCatalogs(
   for (const provider of providers) {
     const providerType = provider.providerType;
     if (!usesProviderCatalogEndpoint(provider)) continue;
-    // A successful fetch makes the catalog fresh, so later connections of the same type skip;
-    // a failed one leaves it stale and the next connection gets a turn.
     const fetchedAt = providerModelCatalogFetchedAt(providerType);
     if (fetchedAt != null && Date.now() - fetchedAt < MODEL_CATALOG_TTL_MS) continue;
     try {

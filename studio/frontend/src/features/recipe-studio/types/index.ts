@@ -95,7 +95,6 @@ export type CategoryConditionalParams = {
 export type SamplerConfig = {
   id: string;
   kind: "sampler";
-  // ui-only
   advancedOpen?: boolean;
   // biome-ignore lint/style/useNamingConvention: api schema
   sampler_type: SamplerType;
@@ -217,7 +216,6 @@ export type LlmTraceType = "none" | "last_message" | "all_messages";
 export type LlmConfig = {
   id: string;
   kind: "llm";
-  // ui-only
   advancedOpen?: boolean;
   // biome-ignore lint/style/useNamingConvention: api schema
   llm_type: LlmType;
@@ -235,7 +233,7 @@ export type LlmConfig = {
   // biome-ignore lint/style/useNamingConvention: api schema
   tool_alias?: string;
   scores?: Score[];
-  // ui-only, serialized into multi_modal_context for DataDesigner
+  // ui-only, serialized into multi_modal_context
   // biome-ignore lint/style/useNamingConvention: ui schema
   image_context?: LlmImageContextConfig;
   // biome-ignore lint/style/useNamingConvention: api schema
@@ -297,21 +295,17 @@ export type ExpressionConfig = {
 export type ValidatorConfig = {
   id: string;
   kind: "validator";
-  // ui-only
   advancedOpen?: boolean;
   name: string;
   drop?: boolean;
   // biome-ignore lint/style/useNamingConvention: api schema
   target_columns: string[];
-  // ui-only
   validator_type: ValidatorType;
   // biome-ignore lint/style/useNamingConvention: api schema
   code_lang: ValidatorCodeLang;
-  // ui-only (used for OXC validators)
   oxc_validation_mode: OxcValidationMode;
-  // ui-only (used for OXC validators)
   oxc_code_shape: OxcCodeShape;
-  // ui ergonomics (serialized to int in payload)
+  // serialized to int in payload
   batch_size: string;
 };
 
@@ -320,23 +314,19 @@ export type MarkdownNoteConfig = {
   kind: "markdown_note";
   name: string;
   markdown: string;
-  // ui-only
   note_color?: string;
-  // ui-only (0-100 as string for slider/input ergonomics)
+  // ui-only, 0-100 as a string
   note_opacity?: string;
 };
 
 export type SeedConfig = {
   id: string;
   kind: "seed";
-  // ui-only
   advancedOpen?: boolean;
   name: string;
   drop?: boolean;
-  // ui-only: explicit per-column drop for structured seed sources (hf/local)
   seed_drop_columns?: string[];
   seed_source_type: SeedSourceType;
-  // ui-only (serialized in seed_config)
   hf_repo_id: string;
   hf_subset?: string;
   hf_split?: string;
@@ -344,7 +334,7 @@ export type SeedConfig = {
   hf_token?: string;
   hf_endpoint?: string;
   local_file_name?: string;
-  // ui-only: stable per-block id for uploads, since node ids collide across imports
+  // Stable per-block upload id, since node ids collide across imports.
   unstructured_upload_uid?: string;
   unstructured_file_ids?: string[];
   unstructured_file_names?: string[];
@@ -364,14 +354,10 @@ export type SeedConfig = {
   // biome-ignore lint/style/useNamingConvention: api schema
   github_max_comments_per_item?: string;
   resolved_paths?: string[];
-  // ui-only
   seed_preview_rows?: Record<string, unknown>[];
-  // ui-only (string for input ergonomics)
   unstructured_chunk_size?: string;
-  // ui-only (string for input ergonomics)
   unstructured_chunk_overlap?: string;
   seed_splits?: string[];
-  // ui-only
   // biome-ignore lint/style/useNamingConvention: ui schema
   seed_globs_by_split?: Record<string, string>;
   seed_columns?: string[];

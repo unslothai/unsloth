@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-// streamdown 2.5 parseMarkdownIntoBlocks with blockTokens instead of Lexer.lex (vercel/streamdown#608):
-// inline lexing of one long backslash line costs seconds (#11376). Drop when streamdown is bumped past #608.
+// streamdown 2.5 parseMarkdownIntoBlocks using blockTokens (vercel/streamdown#608): inline lexing
+// of one long backslash line takes seconds. Drop once streamdown includes #608.
 
 import { Lexer, type Token } from "marked";
 

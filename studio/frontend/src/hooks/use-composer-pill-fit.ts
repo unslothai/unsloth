@@ -4,14 +4,12 @@
 import { useCallback, useLayoutEffect, useState } from "react";
 
 /**
- * Value for the pill row's `data-pill-compact` attribute.
  * - `undefined`: every pill keeps its label.
  * - `"first"`: only the leading permission pill drops to its icon.
- * - `"true"`: every pill drops to its icon (the existing compact look).
+ * - `"true"`: every pill drops to its icon.
  */
 export type PillCompact = undefined | "first" | "true";
 
-/** Escalation order: give up the least label space that still fits. */
 const STAGES: PillCompact[] = [undefined, "first", "true"];
 
 function applyStage(row: HTMLElement, stage: PillCompact) {
@@ -22,14 +20,10 @@ function applyStage(row: HTMLElement, stage: PillCompact) {
   }
 }
 
-/**
- * True while the row is one visual line: not wrapped inside itself, and nothing
- * after it (the dictate/send cluster) pushed underneath it.
- */
+/** Not wrapped, and nothing after it (dictate/send) pushed underneath. */
 function fitsOnOneLine(row: HTMLElement) {
   const rect = row.getBoundingClientRect();
-  // Tallest child is one line; a wrapped row is about double. Measured, not a
-  // constant, so the UI font-scale setting cannot break the check.
+  // Measured, not a constant, so the UI font-scale setting cannot break the check.
   let lineHeight = 0;
   for (const child of Array.from(row.children)) {
     lineHeight = Math.max(lineHeight, child.getBoundingClientRect().height);
@@ -46,8 +40,7 @@ function fitsOnOneLine(row: HTMLElement) {
     sibling = sibling.nextElementSibling
   ) {
     const siblingRect = sibling.getBoundingClientRect();
-    // Skips the hidden file inputs, and the textarea that flex `order` moves
-    // to the row above in single chat.
+    // Skips hidden file inputs and the textarea that flex `order` moves above in single chat.
     if (siblingRect.width === 0) {
       continue;
     }
@@ -58,13 +51,7 @@ function fitsOnOneLine(row: HTMLElement) {
   return true;
 }
 
-/**
- * Collapses `row` by the least amount that keeps it on one line, writes the
- * winning `data-pill-compact` value to it, and returns that value.
- * `forceCompact` skips measuring: nothing narrower is on offer.
- *
- * Exported for the unit test; components use the hook below.
- */
+/** `forceCompact` skips measuring. Exported for the unit test. */
 export function measurePillCompact(
   row: HTMLElement,
   forceCompact: boolean,
@@ -73,11 +60,10 @@ export function measurePillCompact(
     applyStage(row, "true");
     return "true";
   }
-  // Falls through to the narrowest stage when even that overflows.
   let fitted: PillCompact = "true";
   for (const stage of STAGES) {
     applyStage(row, stage);
-    // Reading geometry after the write forces the reflow this needs.
+    // Reading geometry after the write forces the needed reflow.
     if (fitsOnOneLine(row)) {
       fitted = stage;
       break;
@@ -87,17 +73,7 @@ export function measurePillCompact(
   return fitted;
 }
 
-/**
- * Keeps the composer's tool pills on one line with the dictate/send controls.
- *
- * The count rule (`forceCompact`) cannot see label widths, so four long labels
- * ("Run automatically" next to "Deep research") still overflowed and dropped
- * the mic and send button onto a second line. This measures the laid-out row
- * and collapses only as far as it takes to fit.
- *
- * Returns a callback ref for the row and the `data-pill-compact` value to
- * render on it, so React keeps the attribute the measurement settled on.
- */
+/** `forceCompact` counts pills but cannot see label widths, so measure the laid-out row. */
 export function useComposerPillFit(forceCompact: boolean) {
   const [row, setRow] = useState<HTMLElement | null>(null);
   const [compact, setCompact] = useState<PillCompact>(
@@ -116,8 +92,7 @@ export function useComposerPillFit(forceCompact: boolean) {
     if (!row) {
       return;
     }
-    // One measurement per frame: the observers also fire for the transient
-    // sizes the escalation loop itself produces.
+    // One measurement per frame: observers also fire for the escalation loop's own sizes.
     let frame = 0;
     const schedule = () => {
       if (frame) {
@@ -128,16 +103,14 @@ export function useComposerPillFit(forceCompact: boolean) {
         measure(row);
       });
     };
-    // First pass runs before paint, so the row never flashes wrapped.
+    // Before paint, so the row never flashes wrapped.
     measure(row);
     const resize = new ResizeObserver(schedule);
     resize.observe(row);
-    // The composer line owns the width the row has to fit into.
     if (row.parentElement) {
       resize.observe(row.parentElement);
     }
-    // A model capability toggle adds or removes a pill without necessarily
-    // resizing what the observer above watches.
+    // A capability toggle can add a pill without resizing anything observed.
     const mutations = new MutationObserver(schedule);
     mutations.observe(row, { childList: true });
     return () => {

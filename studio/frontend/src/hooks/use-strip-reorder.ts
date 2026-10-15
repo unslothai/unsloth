@@ -4,7 +4,6 @@
 import type React from "react";
 import { useCallback, useRef, useState } from "react";
 
-/** Where a drop would land: on one side of one tile. */
 export interface StripDropCue {
   id: string;
   edge: "before" | "after";
@@ -13,19 +12,13 @@ export interface StripDropCue {
 // Custom type so other drop targets do not read the drag as a file or link.
 const DRAG_TYPE = "application/x-unsloth-gallery-item";
 
-/** Whether the event came from the tile's own DOM, not a portalled menu or dialog inside it. */
+/** Ignore events from portalled menus or dialogs inside the tile. */
 function fromTile(event: React.SyntheticEvent<HTMLElement>): boolean {
   return event.currentTarget.contains(event.target as Node);
 }
 
-/**
- * Drag-to-reorder for a gallery strip: horizontal (Images, Video) or, with `axis: "y"`, a vertical
- * list (Audio history).
- *
- * Tracked on the strip so gaps and ends are drop targets. Tiles carry `data-reorder-id` in display
- * order. A drop reports the id the tile now follows (null = front). Alt + Left / Right (Up / Down
- * on a list) moves the focused tile one slot. Drags that did not start on a tile are ignored.
- */
+/** Tiles carry `data-reorder-id` in display order; a drop reports the id it now follows
+ * (null = front). Alt + arrows move the focused tile one slot. */
 export function useStripReorder(
   onMove: (id: string, afterId: string | null) => void,
   { axis = "x" }: { axis?: "x" | "y" } = {},
@@ -43,7 +36,6 @@ export function useStripReorder(
     setCue(null);
   }, []);
 
-  /** The drop at pointer position `at` along the axis, or null if the tile would not move. */
   function resolve(
     strip: HTMLElement,
     at: number,
@@ -58,7 +50,6 @@ export function useStripReorder(
     });
     if (index < 0) index = tiles.length;
     const from = order.indexOf(dragged);
-    // Either side of the dragged tile is a no-op.
     if (from < 0 || index === from || index === from + 1) return null;
     return {
       afterId: index === 0 ? null : order[index - 1],

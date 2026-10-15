@@ -26,7 +26,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 export interface FolderBrowserProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  /** Called with the absolute path the user confirmed. */
   onSelect: (path: string) => void;
   /** Optional initial directory. Defaults to the user's home on the server. */
   initialPath?: string;
@@ -38,8 +37,7 @@ export interface FolderBrowserProps {
 
 function splitBreadcrumb(path: string): { label: string; value: string }[] {
   if (!path) return [];
-  // Detect path style BEFORE normalizing: on POSIX `\` is a valid filename char, so rewriting it
-  // would mangle names like `my\backup`. Only drive-letter or UNC paths convert.
+  // Detect path style before normalizing: `\` is a valid POSIX filename char.
   const isWindowsDrive =
     /^[A-Za-z]:[\\/]/.test(path) || /^[A-Za-z]:$/.test(path);
   const isUnc = /^\\\\/.test(path);
@@ -48,7 +46,6 @@ function splitBreadcrumb(path: string): { label: string; value: string }[] {
   const segments = normalized.split("/");
   const parts: { label: string; value: string }[] = [];
 
-  // POSIX absolute path: leading empty segment from split("/")
   if (segments[0] === "") {
     parts.push({ label: "/", value: "/" });
     let cur = "";
@@ -60,8 +57,7 @@ function splitBreadcrumb(path: string): { label: string; value: string }[] {
     return parts;
   }
 
-  // Windows drive path: use `C:/` as the crumb value so clicking the drive root goes to the drive
-  // root, not the drive-relative CWD (`C:` alone is CWD-on-C).
+  // Use `C:/` so the crumb goes to the drive root (`C:` alone is CWD-on-C).
   if (/^[A-Za-z]:$/.test(segments[0])) {
     const driveRoot = `${segments[0]}/`;
     let cur = driveRoot;
@@ -74,7 +70,6 @@ function splitBreadcrumb(path: string): { label: string; value: string }[] {
     return parts;
   }
 
-  // Fallback: relative / UNC-ish. Render as-is as a single crumb.
   return [{ label: path, value: path }];
 }
 
@@ -106,7 +101,6 @@ export function FolderBrowser({
     abortRef.current = ctrl;
     setLoading(true);
     setError(null);
-    // Forward the signal so cancelled navigation aborts the backend enumeration, not just the response.
     browseFolders(target, hidden, ctrl.signal)
       .then((res) => {
         if (ctrl.signal.aborted) return;
@@ -115,13 +109,11 @@ export function FolderBrowser({
       })
       .catch((err) => {
         if (ctrl.signal.aborted) return;
-        // Surface the error; if the first request (e.g. a bad initialPath) fails, fall back to HOME so
-        // the modal stays navigable.
+        // If the first request fails, fall back to HOME so the modal stays navigable.
         const message = err instanceof Error ? err.message : String(err);
         setError(message);
         if (opts?.fallbackOnError && target !== undefined) {
-          // Re-issue without a target, so the backend defaults to HOME. Do not recurse if HOME itself
-          // fails (the allowlist always has HOME).
+          // No target means HOME; do not recurse if HOME itself fails.
           queueMicrotask(() => navigate(undefined, hidden));
         }
       })
@@ -130,12 +122,10 @@ export function FolderBrowser({
       });
   }
 
-  // Fetch only on closed -> open; later navigation is driven by `navigate()`,
-  // so `path` is deliberately kept out of the dependency list.
+  // Fetch only on closed -> open; `path` is deliberately not a dependency.
   // biome-ignore lint/correctness/useExhaustiveDependencies: only reopening resets navigation to the initial path
   useEffect(() => {
     if (!open) return;
-    // fallbackOnError: recover into HOME if initialPath is bad, rather than showing an empty modal.
     navigate(initialPath, showHidden, { fallbackOnError: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
@@ -165,7 +155,6 @@ export function FolderBrowser({
           </DialogDescription>
         </DialogHeader>
 
-        {/* Breadcrumb */}
         <div className="flex flex-wrap items-center gap-0.5 border-t border-border px-6 py-2 font-mono text-ui-11 text-muted-foreground">
           {crumbs.length === 0 ? (
             <span className="text-muted-foreground/80">(loading…)</span>
@@ -188,7 +177,6 @@ export function FolderBrowser({
           )}
         </div>
 
-        {/* Suggestions (quick-pick chips) */}
         {data?.suggestions && data.suggestions.length > 0 && (
           <div className="flex flex-wrap gap-1 border-t border-border px-6 py-2">
             {data.suggestions.map((s) => (
@@ -206,10 +194,6 @@ export function FolderBrowser({
           </div>
         )}
 
-        {/* Entry list. Keep the list mounted while a refetch is in flight (e.g.
-        toggling Show hidden) and just dim it, so the dialog doesn't collapse and
-        flash. The full-height spinner only shows on the first load, when there
-        is no data yet. */}
         <div className="max-h-64 min-h-24 overflow-y-auto border-t border-border">
           {error && (
             <div className="px-6 py-3 text-xs text-destructive">{error}</div>
@@ -229,7 +213,6 @@ export function FolderBrowser({
                 loading && "pointer-events-none opacity-50",
               )}
             >
-              {/* Up row */}
               {data.parent !== null && (
                 <button
                   type="button"
@@ -299,7 +282,6 @@ export function FolderBrowser({
           )}
         </div>
 
-        {/* Footer */}
         <DialogFooter className="flex items-center justify-between gap-2 border-t border-border px-6 py-3">
           <label
             htmlFor="folder-browser-show-hidden"

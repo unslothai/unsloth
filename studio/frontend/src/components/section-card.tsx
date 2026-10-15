@@ -17,7 +17,6 @@ interface SectionCardProps {
 }
 
 const accentStyles = {
-  // Brand accent variant; follows the active palette via --control-accent.
   emerald: {
     border: "ring-control-accent/20",
     iconBox: "ring-control-accent/25 bg-control-accent/10 text-control-accent",
@@ -63,7 +62,6 @@ export function SectionCard({
       {featured && (
         <div className="pointer-events-none absolute inset-x-0 top-0 h-24 bg-gradient-to-b from-control-accent/[0.04] to-transparent" />
       )}
-      {/* Header */}
       <div className="flex items-center gap-3">
         <div
           className={cn(
@@ -86,7 +84,6 @@ export function SectionCard({
         </div>
         {headerAction && <div className="shrink-0">{headerAction}</div>}
       </div>
-      {/* Content */}
       {children}
     </div>
   );

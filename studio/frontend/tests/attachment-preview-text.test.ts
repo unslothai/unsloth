@@ -73,7 +73,6 @@ function descendants(node: StubNode): StubNode[] {
   return node.childNodes.flatMap((child) => [child, ...descendants(child)]);
 }
 
-/** DOMParser is absent under node, so the extractor is driven over a hand-built tree. */
 async function withStubDom<T>(
   build: (source: string) => StubNode,
   run: () => T | Promise<T>,
@@ -100,8 +99,6 @@ async function withStubDom<T>(
   }
 }
 
-// The preview reads a sent attachment back out of the text the adapter built,
-// so every wrapper the adapters write has to round-trip.
 test("parseAttachmentText unwraps a labelled document header", () => {
   const parsed = parseAttachmentText("[PDF: report.pdf]\nline one\nline two");
   assert.deepEqual(parsed, {
@@ -155,8 +152,7 @@ test("countAttachmentTextLines counts empty and single-line text", () => {
   assert.equal(countAttachmentTextLines("one\ntwo\n"), 3);
 });
 
-// The sent audio part only carries "mp3" or "wav", so an OGG or FLAC upload
-// would be mislabelled without the attachment's own content type.
+// The sent audio part only carries "mp3" or "wav", so the attachment's own MIME is needed.
 test("attachmentAudioSrc keeps the uploaded audio MIME", () => {
   const part = { data: "AAA", format: "wav" };
   assert.equal(
@@ -173,8 +169,6 @@ test("attachmentAudioSrc keeps the uploaded audio MIME", () => {
   );
 });
 
-// An extension-only upload reaches the sent preview with an empty content type
-// and format "wav", so the filename is what identifies the container.
 test("attachmentAudioSrc falls back to the extension for untyped uploads", () => {
   const part = { data: "AAA", format: "wav" };
   assert.equal(
@@ -191,8 +185,6 @@ test("attachmentAudioSrc falls back to the extension for untyped uploads", () =>
   );
 });
 
-// The text and HTML adapters accept uploads with no size limit, so opening a
-// preview must not materialize the whole file.
 test("readAttachmentText reads a bounded slice of a large text file", async () => {
   const oversized = new File(["a".repeat(2_000_000)], "huge.txt", {
     type: "text/plain",
@@ -271,7 +263,6 @@ test("readAttachmentText does not decode a file only the python tool reads", asy
   });
 });
 
-// the adapter sends the extraction; the preview shows the markup unextracted
 test("readAttachmentText previews an html file as its markup", async () => {
   const markup = "<p>Drag to rotate<br>Scroll to zoom</p>";
   const file = new File([markup], "page.html", { type: "text/html" });
@@ -283,7 +274,6 @@ test("readAttachmentText previews an html file as its markup", async () => {
   });
 });
 
-/** textContent runs a whole page onto one line, and this extraction is what the html adapter sends the model. */
 test("extractHtmlAttachmentText keeps the line structure of the page", async () => {
   const extracted = await withStubDom(
     () =>
@@ -382,9 +372,7 @@ test("isAudioAttachment matches by MIME and by extension", () => {
   assert.equal(isAudioAttachment(undefined, undefined), false);
 });
 
-// CompositeAttachmentAdapter checks TextAttachmentAdapter before the
-// document-specific adapters, so a browser-declared text MIME wins over a
-// misleading extension in both the sent payload and its preview.
+// CompositeAttachmentAdapter checks TextAttachmentAdapter first, so a text MIME wins over extension.
 test("readAttachmentText follows text adapter precedence over document extensions", async () => {
   for (const name of ["notes.pdf", "notes.docx", "notes.html"]) {
     const file = new File([`plain text from ${name}`], name, {
@@ -401,8 +389,6 @@ test("readAttachmentText follows text adapter precedence over document extension
   }
 });
 
-// Stored payloads have no size limit, so unwrapping must copy at most the
-// capped body rather than the whole attachment.
 test("parseAttachmentText caps the body it copies out of a wrapper", () => {
   const body = "d".repeat(300_000);
   const tagged = parseAttachmentText(
@@ -422,8 +408,6 @@ test("parseAttachmentText caps the body it copies out of a wrapper", () => {
   assert.equal(bare.truncated, true);
 });
 
-// A File the preview only ever asks for its size and its bytes, so the read can
-// be observed without materializing a document-sized buffer.
 function fakeDocumentFile(
   name: string,
   size: number,
@@ -453,8 +437,7 @@ function docxBytes(documentXml: string): Uint8Array {
   });
 }
 
-// unpdf and mammoth parse on the main thread, so an oversized document has to be
-// refused before its bytes are read, not after.
+// unpdf and mammoth parse on the main thread, so oversized documents are refused before reading.
 test("readAttachmentText refuses an oversized pdf before reading it", async () => {
   const reads: string[] = [];
   const oversized = fakeDocumentFile(
@@ -725,8 +708,6 @@ test("a pdf with a damaged form field still reads its text", async () => {
   assert.equal(await extractPdfAttachmentText(damaged), "Budget: 4200");
 });
 
-// The bytes are requested synchronously, so the extractor is reached without
-// waiting on unpdf, which the preview test does not exercise.
 test("readAttachmentText reads a pdf under the ceiling", () => {
   const reads: string[] = [];
   const small = fakeDocumentFile(
@@ -740,8 +721,7 @@ test("readAttachmentText reads a pdf under the ceiling", () => {
   assert.deepEqual(reads, ["small.pdf"]);
 });
 
-// mammoth's node build takes a buffer rather than an arrayBuffer, so the small
-// case asserts the archive cleared both guards and reached mammoth itself.
+// mammoth's node build takes a buffer, not an arrayBuffer.
 test("readAttachmentText lets a normal docx through to the extractor", async () => {
   const reads: string[] = [];
   const bytes = docxBytes("<w:document><w:body/></w:document>");
@@ -756,7 +736,6 @@ test("readAttachmentText lets a normal docx through to the extractor", async () 
   }
 });
 
-// A DOCX is a zip, so a small upload can still declare a huge document.xml.
 test("readAttachmentText refuses a docx that declares an oversized document.xml", async () => {
   const reads: string[] = [];
   const bytes = docxBytes("a".repeat(11 * 1024 * 1024));
@@ -768,9 +747,7 @@ test("readAttachmentText refuses a docx that declares an oversized document.xml"
   );
 });
 
-// mammoth reads "_rels/.rels" first and "[Content_Types].xml" next, and picks
-// the body part out of "word/_rels/document.xml.rels", so a bomb parked in any
-// of them never passes through word/*.xml.
+// mammoth reads _rels/.rels, [Content_Types].xml and word/_rels/document.xml.rels too.
 test("readAttachmentText refuses an oversized docx part outside word/*.xml", async () => {
   const huge = "a".repeat(11 * 1024 * 1024);
   const parts = [
@@ -812,9 +789,7 @@ function relationships(entries: Array<[string, string]>): Uint8Array {
   );
 }
 
-// mammoth resolves the body and its styles/numbering/note parts through the
-// relationships and parses whatever they point at as XML, so a target named
-// "payload.bin" is inflated on the main thread even though no suffix says XML.
+// mammoth parses any relationship target as XML regardless of suffix.
 test("readAttachmentText refuses an oversized docx part reached through a relationship", async () => {
   const huge = strToU8("a".repeat(11 * 1024 * 1024));
 
@@ -850,8 +825,6 @@ test("readAttachmentText refuses an oversized docx part reached through a relati
   );
 });
 
-// extractRawText never reads an image part, so a document that merely embeds a
-// large picture still previews: the bound follows what mammoth parses.
 test("readAttachmentText lets a docx with a large embedded image through", async () => {
   const reads: string[] = [];
   const bytes = zipSync({
@@ -874,9 +847,6 @@ test("readAttachmentText lets a docx with a large embedded image through", async
   }
 });
 
-// mammoth hands the relationships to a real XML parser, so every attribute
-// form that parser resolves has to resolve here too: a target it reaches and
-// the guard does not is inflated on the main thread unbounded.
 test("readAttachmentText refuses a relationship target in any XML attribute form", async () => {
   const huge = strToU8("a".repeat(11 * 1024 * 1024));
   const type =
@@ -927,11 +897,6 @@ test("readAttachmentText refuses a relationship target in any XML attribute form
   }
 });
 
-/**
- * A relationship inside non-element markup is text to mammoth's parser, so it
- * must not select the bounded part in either direction: it cannot stand in for
- * the real target and hide it, and it cannot refuse a document mammoth reads.
- */
 test("readAttachmentText ignores a relationship inside non-element markup", async () => {
   const huge = strToU8("a".repeat(11 * 1024 * 1024));
   const type =
@@ -991,7 +956,6 @@ test("readAttachmentText ignores a relationship inside non-element markup", asyn
   }
 });
 
-/** The XML declaration every real .rels file opens with is a processing instruction too, so stripping them must not cost a live relationship. */
 test("readAttachmentText keeps resolving a rels file that opens with its xml declaration", async () => {
   const bytes = zipSync({
     "[Content_Types].xml": strToU8("<Types/>"),
@@ -1009,9 +973,6 @@ test("readAttachmentText keeps resolving a rels file that opens with its xml dec
   );
 });
 
-// findPartPaths only opens the package parts and what the relationships point
-// at, so an .xml part nothing references is never inflated. Custom XML data is
-// a standard payload and may be large, so the suffix must not decide.
 test("readAttachmentText lets a docx with a large unreferenced xml part through", async () => {
   const reads: string[] = [];
   const bytes = zipSync({
@@ -1034,8 +995,7 @@ test("readAttachmentText lets a docx with a large unreferenced xml part through"
   }
 });
 
-// The composer empties itself before it awaits send(), so a part that only
-// fails there takes the typed message with it: add() has to decide instead.
+// The composer empties itself before awaiting send(), so add() must refuse oversized parts.
 test("getDocxAttachmentError refuses an oversized part before the attachment is added", async () => {
   const bytes = zipSync({
     "[Content_Types].xml": strToU8("<Types/>"),
@@ -1067,7 +1027,6 @@ test("getDocxAttachmentError refuses an oversized part before the attachment is 
   assert.equal(await getDocxAttachmentError(ok), null);
 });
 
-/** Rewrites every field holding `size` down to `declared`, the way a crafted archive lies about a part. */
 function understateDeclaredSizes(
   archive: Uint8Array,
   size: number,
@@ -1088,12 +1047,7 @@ function understateDeclaredSizes(
   return patched;
 }
 
-/**
- * Inflated sizes as jszip sees them: the whole stream, whatever the archive
- * declares. `unzipSync` cannot answer this, since it allocates each entry at
- * its declared size and stops there, which is why the declared size proves
- * nothing about what mammoth would decompress.
- */
+/** Inflated sizes as jszip sees them; fflate's unzipSync stops at the declared size. */
 function inflatedSizes(archive: Uint8Array): Map<string, number> {
   const sizes = new Map<string, number>();
   const unzip = new Unzip();
@@ -1112,12 +1066,6 @@ function inflatedSizes(archive: Uint8Array): Map<string, number> {
   return sizes;
 }
 
-/**
- * jszip takes each part's size from the central directory and inflates the part
- * in full before it can be rejected, so a lying header still expands inside
- * mammoth. fflate allocates the entry at the declared size and stops, so the
- * repack is what contains the lie.
- */
 test("repackDocxAttachmentArchive bounds a part that lies about its size", () => {
   const body = strToU8("a".repeat(30 * 1024 * 1024));
   const archive = zipSync(
@@ -1154,7 +1102,6 @@ test("repackDocxAttachmentArchive keeps an honest archive intact", () => {
   }
 });
 
-/** Every part can sit under the XML ceiling while the archive as a whole still unpacks to more than the webview can hold. */
 test("repackDocxAttachmentArchive refuses an archive that unpacks past the ceiling", () => {
   const part = new Uint8Array(9 * 1024 * 1024);
   const files: Record<string, Uint8Array> = {
@@ -1285,7 +1232,7 @@ test("linearizeDocxMath keeps equations in the body, tables and notes", async ()
   }
 });
 
-// Same cases and expected text as the backend reader's test_docx_equation_structures.
+// Same cases and expected text as the backend's test_docx_equation_structures.
 const OMML_CASES: [string, string][] = [
   [
     '<m:nary><m:naryPr><m:chr m:val="∑"/></m:naryPr><m:sub>{i=1}</m:sub><m:sup>{n}</m:sup><m:e>{i}</m:e></m:nary>',
@@ -1345,7 +1292,6 @@ test("linearizeDocxMath writes equations as the backend does and leaves other pa
   try {
     const plain = archive('<w:p><w:r><w:t>oMath is only a word here</w:t></w:r></w:p>');
     assert.equal(linearizeDocxMath(plain), plain);
-    // How Chromium's DOMParser returns a part cut short at an XML error.
     const truncated = archive(
       '<parsererror xmlns="http://www.w3.org/1999/xhtml"/><w:p><m:oMath><m:r><m:t>x</m:t></m:r></m:oMath></w:p>',
     );
@@ -2058,12 +2004,7 @@ test("attachmentTextLanguage maps source files and leaves prose alone", () => {
   assert.equal(attachmentTextLanguage(undefined, null), null);
 });
 
-/**
- * Every extension and entity table here is a plain object literal, so a key
- * that names a member of Object.prototype resolves to a function rather than
- * missing. The entity case is the one that matters: a resolved target would
- * carry the source text of that function and bound a path mammoth never reads.
- */
+/** Tables are plain object literals, so Object.prototype member names must not resolve. */
 test("prototype member names do not resolve as table entries", async () => {
   assert.equal(attachmentTextLanguage("notes.constructor", null), null);
   assert.equal(attachmentTextLanguage("notes.toString", null), null);
@@ -2100,9 +2041,6 @@ test("parseAttachmentText keeps an unterminated tag as plain text", () => {
 });
 
 test("a preview is never stricter than the adapter that took the file", async () => {
-  // .html belongs to the HTML adapter, which sends a legacy page happily. The
-  // preview went through the strict text decoder and threw on the same file,
-  // so opening an attachment that had already been accepted failed.
   const head = new TextEncoder().encode(
     '<!doctype html><meta charset="windows-1252"><body>Caf',
   );
@@ -2116,8 +2054,6 @@ test("a preview is never stricter than the adapter that took the file", async ()
   assert.equal(typeof preview.text, "string");
   assert.ok(preview.text.includes("Caf"));
 
-  // A file the text adapter does own stays strict: mojibake reaching the model
-  // is worse than a message saying the encoding could not be read.
   const { UndecodableTextError } = await import(
     "../src/features/chat/text-attachment-accept.ts"
   );
@@ -2373,7 +2309,6 @@ test("a thumbnail repack restores only image parts the kept elements reference",
     ),
     "word/media/one.png": new Uint8Array([1, 2, 3]),
     "word/media/two.png": new Uint8Array([4, 5, 6]),
-    // Past the per-part ceiling, so the first pass leaves it out.
     "word/chunk.mht": new Uint8Array(11 * 1024 * 1024),
   });
   const kept = Object.keys(unzipSync(repackDocxPreviewArchive("a.docx", bytes, 3, { keptImagesOnly: true }).archive));

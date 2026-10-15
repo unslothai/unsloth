@@ -22,8 +22,7 @@ import {
   hasExpired,
 } from "../bootstrap-deadline";
 
-// Bootstrap credentials injected into index.html by the backend (only present
-// while default admin must_change_password is true)
+// Injected into index.html by the backend while the default admin must change its password.
 declare global {
   interface Window {
     __UNSLOTH_BOOTSTRAP__?: { username: string; password: string };
@@ -88,8 +87,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
     let canceled = false;
 
     async function initializeAuthForm(): Promise<void> {
-      // Always check the server first; localStorage flags can be stale (e.g. tokens from a previous
-      // install). /api/auth/status is the source of truth for requires_password_change.
+      // Server first: localStorage flags can be stale (e.g. tokens from a previous install).
       try {
         const result = await fetchAuthStatus();
         const requiresChange = result.login_mode === "multi"
@@ -98,21 +96,17 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
         if (!canceled) {
           setInitialized(result.initialized);
           setRequiresPasswordChange(requiresChange);
-          // One clock sample for both: nowMs is otherwise still the mount time
-          // until the first tick, which adds the request duration to the figure
-          // and renders a 0 from the server as "shuts down in 0 seconds".
+          // One clock sample, or the request duration skews the countdown.
           const sampledNow = Date.now();
           setNowMs(sampledNow);
           setDeadlineAt(
             deadlineFromStatus(result.bootstrap_deadline_seconds, sampledNow),
           );
 
-          // Server truth wins; keep localStorage in sync both ways.
           if (requiresChange !== mustChangePassword()) {
             setMustChangePassword(requiresChange);
           }
 
-          // Redirect between login / change-password per server state
           if (mode === "login" && requiresChange) {
             navigate({ to: "/change-password" });
             return;
@@ -122,7 +116,6 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
             return;
           }
 
-          // On login, skip to the app if a valid session exists and no password change is required.
           if (isLoginMode && !requiresChange) {
             if (hasRefreshToken()) {
               const refreshed = await refreshSession();
@@ -161,7 +154,6 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
     signalReady();
   }, [statusLoading, signalReady]);
 
-  // Seed password from bootstrap credentials injected into HTML by web CLI.
   useEffect(() => {
     function loadBootstrap() {
       const bootstrap = window.__UNSLOTH_BOOTSTRAP__;
@@ -195,9 +187,8 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
   const switchLinkTo = "/login";
   const switchLinkText = "Back to login";
   const currentPassword = password || window.__UNSLOTH_BOOTSTRAP__?.password || "";
-  // On first boot the backend injects __UNSLOTH_BOOTSTRAP__ and we silently
-  // reuse that password; the Current password input is only rendered for the
-  // admin-forced must_change_password path where no bootstrap is available.
+  // First boot reuses the injected bootstrap password; the Current password field is only for the
+  // admin-forced change path.
   const hasBootstrapPassword = Boolean(window.__UNSLOTH_BOOTSTRAP__?.password);
   const changingFromSetupCode =
     !isLoginMode && sessionAccount(getAuthToken())?.isOwner === false;
@@ -335,12 +326,8 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
       if (replaced) return;
       navigate({ to: getPostAuthRoute() });
     } catch (err: unknown) {
-      // The backend returns the correct PATH-based command ("unsloth studio
-      // reset-password"), which the installer puts on PATH on every platform.
-      // Do NOT rewrite it to a relative Windows path like
-      // ".\unsloth_studio\Scripts\unsloth.exe ..." -- that only resolves inside
-      // the Unsloth home dir and fails with CommandNotFoundException elsewhere.
-      // Show the backend message as-is.
+      // Show the backend's PATH-based command as-is; a relative Windows path only resolves in the
+      // Unsloth home dir.
       const msg = err instanceof Error ? err.message : "Auth failed.";
       setError(msg);
     } finally {

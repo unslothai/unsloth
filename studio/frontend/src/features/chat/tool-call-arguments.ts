@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** `true` when `text` is exactly one JSON object and nothing else. */
 function isSingleJsonObject(text: string): boolean {
   try {
     const value = JSON.parse(text);
@@ -11,11 +10,7 @@ function isSingleJsonObject(text: string): boolean {
   }
 }
 
-/** One slot's accumulated argument text, cut into the top-level JSON objects it holds:
- *  `complete` closed, `tail` still being written. A second top-level `{` means the stream
- *  reused the slot for another parallel call, which is what turns two calls into
- *  `{"url":"a"}{"url":"b"}`. Text that is not a run of whole objects comes back whole in
- *  `tail`, leaving streams this was never meant for alone. */
+/** Splits slot text into top-level JSON objects; a second `{` means a reused parallel slot. */
 export function splitTopLevelJsonObjects(text: string): {
   complete: string[];
   tail: string;
@@ -30,14 +25,12 @@ export function splitTopLevelJsonObjects(text: string): {
   for (let i = 0; i < text.length; i += 1) {
     const ch = text[i];
     if (inString) {
-      // A backslash escapes one character, so a run of them toggles.
       if (escaped) escaped = false;
       else if (ch === "\\") escaped = true;
       else if (ch === '"') inString = false;
       continue;
     }
     if (depth === 0) {
-      // Between objects only whitespace, "\r\n" as readily as "\n".
       if (ch === "{") {
         depth = 1;
         start = i;
@@ -73,10 +66,7 @@ export function splitTopLevelJsonObjects(text: string): {
   };
 }
 
-/** `splitTopLevelJsonObjects` over a string that only ever grows. Rescanning per fragment is
- *  O(N^2): a 20 KB argument sent a character at a time took about a second and a half on the
- *  thread that paints the stream. `feed` takes the same string extended, never a rewritten
- *  one, so a caller that splits a slot drops its scan. */
+/** Incremental split for an append-only string; rescanning per fragment is O(N^2). */
 export function createBoundaryScan(): {
   feed: (text: string) => { complete: string[]; tail: string };
 } {
@@ -85,7 +75,6 @@ export function createBoundaryScan(): {
   let inString = false;
   let escaped = false;
   let scanned = 0;
-  // Once unsplittable, appending can never make it splittable again.
   let unsplittable = false;
   const complete: string[] = [];
 
@@ -139,11 +128,8 @@ export function createBoundaryScan(): {
   };
 }
 
-/** The `function.arguments` string to replay for a stored tool call. `argsText` is what the
- *  provider streamed and is preferred so replay is byte-exact. Text that does not parse would
- *  be replayed on every later request in the thread, and strict chat templates reject the
- *  whole request rather than one call, so it falls back to the structured args. `{ _raw }` is
- *  the adapter's marker for unparsable text, so a thread carrying one replays as `{}`. */
+/** Prefers streamed argsText for byte-exact replay; unparsable text falls back since strict
+ *  templates reject the whole request. `{ _raw }` marks unparsable text and replays as `{}`. */
 export function toolCallReplayArguments(
   argsText: string | undefined,
   args: unknown,
@@ -151,30 +137,22 @@ export function toolCallReplayArguments(
   if (
     typeof argsText === "string" &&
     argsText.length > 0 &&
-    // One object, because that is what `function.arguments` is. A run of them, an array, a scalar or
-    // a half-written object gets the whole request rejected, not just the one call.
     isSingleJsonObject(argsText)
   ) {
     return argsText;
   }
   const serialized = JSON.stringify(args ?? {});
-  // Not a set of named parameters, whatever else it might be.
   if (serialized === undefined || !isSingleJsonObject(serialized)) {
     return "{}";
   }
   const parsed = JSON.parse(serialized) as Record<string, unknown>;
   const keys = Object.keys(parsed);
-  // The adapter writes `{ _raw }` holding the exact text it could not parse, so a lone `_raw`
-  // whose value IS that text is the marker, and replaying it would send a parameter no tool
-  // declares. `_raw` is not reserved and an MCP server's schema is its own, so recognise it only
-  // when the surviving text proves it: a thread stored before `argsText` was kept has nothing to
-  // compare against, and guessing from the value's shape would discard a real argument.
+  // Treat `{ _raw }` as the adapter marker only when its value equals the surviving argsText.
   if (
     keys.length === 1 &&
     keys[0] === "_raw" &&
     typeof parsed._raw === "string" &&
-    // Non-empty, or the equality proves nothing: the adapter only writes the marker for parsed text,
-    // so `{ _raw: "" }` is a real argument.
+    // Non-empty: the adapter never writes the marker for empty text, so `{ _raw: "" }` is real.
     parsed._raw.length > 0 &&
     parsed._raw === argsText
   ) {
@@ -196,8 +174,7 @@ export function toolCallArgumentsText(
       JSON.parse(exactText);
       return exactText;
     } catch {
-      // Unparseable text cannot be these arguments, and this card is an approval
-      // boundary, so fall back to the structured ones.
+      // This card is an approval boundary, so unparsable text falls back to structured args.
     }
   }
   return JSON.stringify(args ?? {});
@@ -374,10 +351,7 @@ function mergeJsonNode(node: JsonTextNode, current: unknown): string {
   return stringifyJson(current);
 }
 
-/**
- * Unchanged values keep their original JSON lexemes (an executed integer past 2**53 stays
- * exact); keys in `overwrittenKeys` are re-serialized from the tool_end object.
- */
+/** Unchanged values keep their JSON lexemes (big ints stay exact); overwritten keys re-serialize. */
 export function mergedToolCallArgumentsText(
   previousText: unknown,
   mergedArgs: unknown,
@@ -419,13 +393,7 @@ export function mergedToolCallArgumentsText(
   }
 }
 
-/**
- * The argument text one streamed delta contributes to its call's slot.
- *
- * The API specifies `function.arguments` as a string fragment; llama-server has shipped an
- * already-decoded object instead (ggml-org/llama.cpp#20198), and dropping it loses the call's
- * whole payload. Any other non-string contributes nothing rather than `"undefined"`.
- */
+/** llama-server may send decoded objects (ggml-org/llama.cpp#20198); other non-strings give "". */
 export function streamedToolCallArguments(value: unknown): string {
   if (typeof value === "string") {
     return value;

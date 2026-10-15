@@ -11,9 +11,8 @@ import { downloadRecipeJobDataset } from "../../api";
 import type { RecipeExecutionRecord } from "../../execution-types";
 import { hasCompleteLocalDataset } from "../../executions/execution-helpers";
 
-/** Whether the bytes are known to have landed: a browser anchor click resolves before the request
- * is even sent, while the native downloader streams and rejects a non-2xx. "partial" is the rows
- * this client still holds, written when the server no longer has the run. */
+/** "started": a browser anchor click resolves before the request is sent. "partial": rows
+ * this client still holds, when the server no longer has the run. */
 export type DownloadOutcome = "saved" | "started" | "partial";
 
 function sanitizeFilenameStem(value: string): string {
@@ -46,10 +45,8 @@ export async function downloadExecutionDataset(
 ): Promise<DownloadOutcome> {
   const filenameStem = buildDownloadFilename(execution);
 
-  // The backend export pages the whole dataset; the rows here are one page of it.
   if (execution.jobId) {
     try {
-      // A real authenticated request, so an unexportable run fails before anything is claimed.
       const { url, filename } = await downloadRecipeJobDataset(execution.jobId, {
         artifactPath: execution.artifact_path,
         filename: filenameStem,
@@ -60,8 +57,7 @@ export async function downloadExecutionDataset(
       if (isDownloadCancelled(error)) {
         throw error;
       }
-      // An artifact-backed run must not fall through here: its images live beside the parquet,
-      // and a bare JSONL loses them.
+      // An artifact-backed run keeps images beside the parquet; a bare JSONL would lose them.
       if (execution.artifact_path) {
         throw error;
       }

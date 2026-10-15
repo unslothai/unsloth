@@ -12,7 +12,6 @@ import {
 } from "../../utils/stats-format";
 import { StatMeter, StatRow, StatsCard } from "./stat-primitives";
 
-/** Left column: the "how you use Unsloth" numbers. */
 export function ActivityInsightsCard({ stats }: { stats: ProfileStats }) {
   const t = useT();
   const locale = useLocale();
@@ -119,7 +118,6 @@ export function ActivityInsightsCard({ stats }: { stats: ProfileStats }) {
   );
 }
 
-/** Right column: model leaderboard, ranked by tokens exchanged. */
 export function TopModelsCard({ stats }: { stats: ProfileStats }) {
   const t = useT();
   const locale = useLocale();

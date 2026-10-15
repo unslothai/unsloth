@@ -215,9 +215,6 @@ function LocalGgufVariantList({
               )}
             >
               <span className="min-w-0 flex-1 truncate font-mono">
-                {/* The key is the selection identity and can be path-qualified
-                    ("distilled/ltx-2.3-22b-distilled-Q6_K"); the label is what it reads as.
-                    onSelect and the recommended check still key on variant.quant. */}
                 {ggufVariantDisplayLabel(variant)}
               </span>
               {variant.quant === defaultVariant ? (
@@ -567,8 +564,7 @@ export function LocalRecipeModelSelector({
             return;
           }
         } catch {
-          // Non-GGUF local models commonly have no variant endpoint;
-          // fall through to regular selection so they stay choosable.
+          // Non-GGUF local models often have no variant endpoint; fall through so they stay choosable.
         } finally {
           setProbingVariantModelId(null);
         }
@@ -588,7 +584,7 @@ export function LocalRecipeModelSelector({
   );
 
   return (
-    // modal keeps the list wheel-scrollable inside dialog scroll locks
+    // modal keeps the list wheel-scrollable inside dialog scroll locks.
     <Popover open={open} onOpenChange={handleOpenChange} modal={true}>
       <PopoverTrigger asChild={true}>
         <SelectorTrigger

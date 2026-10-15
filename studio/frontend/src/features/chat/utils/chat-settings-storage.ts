@@ -158,9 +158,8 @@ function sanitizeInferenceParams(
   if (typeof value.fastMode === "boolean") {
     params.fastMode = value.fastMode;
   }
-  // Bounded here as well as in the panel: this gates the hydration read and the outgoing PUT alike.
   if (value.seed === null) {
-    // Kept, not dropped: the server merge overwrites the keys it receives and removes none.
+    // Kept as null: the server merge overwrites received keys and removes none.
     params.seed = null;
   } else if (
     typeof value.seed === "number" &&
@@ -173,9 +172,7 @@ function sanitizeInferenceParams(
   return hasKeys(params) ? params : undefined;
 }
 
-// Not capped. The server merge never removes keys and keeps an existing key in its original
-// position, so a load-time trim would permanently hide the oldest entries: editing one of those
-// models would write an update the next reload silently drops. Entries are a dozen numbers each.
+// Not capped: the server never removes keys, so trimming would hide entries permanently.
 function sanitizeInferenceParamsByModel(
   value: unknown,
 ): Record<string, PersistedInferenceParams> | undefined {
@@ -255,7 +252,6 @@ function sanitizeInt(value: unknown, min: number): number | undefined {
     : undefined;
 }
 
-/** Read-only migration; outgoing numeric patches do not imply user intent. */
 export function normalizeSavedChatSettings(value: unknown): PersistedChatSettings {
   const settings = sanitizeChatSettings(value);
   if (settings.inferenceParams) {
@@ -474,16 +470,9 @@ export function loadLegacyChatSettings(): PersistedChatSettings {
 
 export interface LoadedChatSettings {
   settings: PersistedChatSettings;
-  /** The GET answered, so a mirrored field missing from `settings` is missing on the server too.
-   *  False when the read fell back to this browser's legacy storage: nothing is then known about the
-   *  server, and treating every field as absent would back this browser's stale values over another's. */
+  /** False after a legacy-storage fallback, when nothing is known about the server. */
   fromServer: boolean;
-  /**
-   * Whether these values are what the server holds. False when a legacy import
-   * merged local values but failed to save them: the server answered, so
-   * absence is still authoritative, but the merge exists only in this session
-   * and a later re-read would silently drop it.
-   */
+  /** False when a legacy merge failed to save; it exists only in this session. */
   persisted: boolean;
 }
 
@@ -516,7 +505,6 @@ export async function loadChatSettingsWithLegacyImport(): Promise<LoadedChatSett
         persisted: true,
       };
     } catch {
-      // The GET still answered (empty), so absence remains authoritative.
       return { settings: legacySettings, fromServer: true, persisted: false };
     }
   }

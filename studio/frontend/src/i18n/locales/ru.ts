@@ -468,7 +468,6 @@ export const ru = {
       clearDataFailed: "Не удалось очистить данные сайтов. Повторите попытку.",
     },
   },
-  // English fallback until this experimental feature is translated.
   managedEngines: en.managedEngines,
   sandboxSetup: {
     levelTitle: "Песочница ОС недоступна",
@@ -674,7 +673,6 @@ export const ru = {
     shutdown: "Выключить",
   },
   shell: {
-    // The Help submenu of the account menu, and the desktop app's Help menu.
     helpMenu: {
       documentation: "Документация",
       keyboardShortcuts: "Сочетания клавиш",
@@ -743,11 +741,8 @@ export const ru = {
       export: "Экспорт",
       recents: "Недавние",
       noChatsYet: "Пока нет чатов",
-      // Shown under an empty project folder in the sidebar.
       noChats: "Нет чатов",
-      // Shown in the Projects section when every project is pinned, so it has no rows.
       allProjectsPinned: "Все проекты закреплены",
-      // Same, when some of them are filed in custom sections instead.
       allProjectsFiled: "Все проекты закреплены или находятся в разделах",
       noProjects: "Нет проектов",
       showMore: "Показать больше",
@@ -848,11 +843,9 @@ export const ru = {
       organizeChats: "Настроить чаты",
       organizeProjects: "Настроить проекты",
       sortPinnedChats: "Сортировать закреплённые чаты",
-      // Header of the menu's section-visibility toggles.
       show: "Показывать",
       newSection: "Новый раздел",
     },
-    // User-made sidebar sections that group chats and projects.
     sections: {
       createTitle: "Новый раздел",
       createDescription: "Группируйте чаты и проекты как угодно",
@@ -863,16 +856,13 @@ export const ru = {
       edit: "Изменить",
       remove: "Удалить раздел",
       markAllRead: "Отметить все как прочитанные",
-      // The row menu's one submenu for projects and sections, and its headings.
       moveTo: "Переместить в",
       section: "Раздел",
       sectionsHeading: "Разделы",
       removeFromProject: "Убрать из проекта",
       newSection: "Новый раздел",
       removeFromSection: "Убрать из раздела",
-      // Names the project or section the row leaves; the two above are for when it is not one.
       removeFrom: "Убрать из {name}",
-      // Shown in a section with nothing filed in it yet.
       empty: "Перетащите сюда чаты или проекты",
       sectionOptions: "Параметры раздела",
       newChatInSection: "Новый чат в «{name}»",
@@ -2350,7 +2340,6 @@ export const ru = {
           updateChecksDisabled:
             "Проверка обновлений отключена (UNSLOTH_DISABLE_UPDATE_CHECK=1), поэтому доступные бэкенды не запрашиваются.",
         },
-        // Не отображается: дополнительные слова для поиска по настройкам.
         llamaBackendKeywords:
           "llama.cpp backend gguf инференс cuda rocm hip vulkan metal cpu gpu ускоритель prebuilt переключить движок",
       },
@@ -2371,7 +2360,6 @@ export const ru = {
         reloadRequired: "Перезагрузите модель, чтобы применить новые параметры памяти.",
         loadError: "Не удалось загрузить настройки памяти модели",
         saveError: "Не удалось сохранить настройки памяти модели",
-        // Not rendered: extra terms the settings search matches these rows on.
         modelMemoryKeywords:
           "mlock memlock ulimit vram gpu память озу резидентный закрепить блокировать держать загружен выгрузка простой mmap no-mmap load-mode подкачка",
       },
@@ -2502,8 +2490,6 @@ export const ru = {
       docsLabel: "Открыть документацию по unsloth start",
       agentDocs: "Открыть документацию по настройке {agent}",
       copyGeneratedCommand: "Копировать сформированную команду",
-      // English is the baseline until translated: the three-part sentence is assembled around an
-      // inline link and needs restructuring first.
       automaticSettingsNote:
         "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
       configurationNote:
@@ -4147,7 +4133,6 @@ export const ru = {
       all: "Все",
       chats: "Чаты",
     },
-    // The Chats tab: conversations and projects, kept apart from every file tab.
     chats: {
       sections: {
         chats: "Чаты",

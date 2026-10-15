@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Pages pinned to the sidebar from a tab's menu. Each shows in the sidebar's Pinned section and
-// opens in a tab of its own; the tab showing it carries its id (BrowserTab.pinnedId).
+// The tab showing a pinned page carries its id (BrowserTab.pinnedId).
 
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
@@ -12,7 +11,6 @@ import { MAX_TITLE_CHARS, MAX_URL_CHARS } from "./history-store";
 export type PinnedPage = {
   id: string;
   url: string;
-  /** The page's title when it was pinned, or the name it was given. */
   title: string;
   pinnedAt: number;
 };

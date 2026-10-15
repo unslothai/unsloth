@@ -33,8 +33,7 @@ function isStudioLoopbackHost(host: string): boolean {
   }
 }
 
-// mcp_servers has no UNIQUE(url); normalize Studio's in-process Decisions endpoint so a preset
-// toggle reuses rows saved under older ports and every backend-accepted loopback spelling.
+// mcp_servers has no UNIQUE(url); normalize loopback spellings so presets reuse old rows.
 export function normalizeMcpUrl(url: string): string {
   const trimmed = (url || "").trim().replace(/\/+$/, "");
   const comparable = trimmed.replace(/[\t\n\r]/g, "");

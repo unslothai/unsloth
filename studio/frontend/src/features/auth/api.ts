@@ -29,11 +29,10 @@ let refreshInflight: Promise<boolean> | null = null;
 let refreshInflightToken: string | null = null;
 let logoutGeneration = 0;
 
-// #10520: sums to 10.5s, just past the launcher's 10s HEALTH_PROBE_TIMEOUT. Guarded by
+// Sums to 10.5s, just past the launcher's 10s HEALTH_PROBE_TIMEOUT. Guarded by
 // `the_frontend_retry_ladder_outlives_one_probe_budget` in src-tauri/src/commands.rs.
 const TAURI_FETCH_RETRY_DELAYS_MS = [250, 750, 1500, 3000, 5000] as const;
-// A network error is not an answer: retrying a committed POST creates a second API key,
-// project or job, so non-idempotent methods keep the shorter ladder.
+// Retrying a committed POST duplicates it, so non-idempotent methods keep a shorter ladder.
 const TAURI_FETCH_RETRY_DELAYS_UNSAFE_MS = [250, 750, 1500] as const;
 const IDEMPOTENT_METHODS = new Set(["GET", "HEAD", "OPTIONS", "PUT", "DELETE"]);
 
@@ -94,9 +93,7 @@ async function fetchWithTauriNetworkRetry(
       ) {
         throw error;
       }
-      // Tauri only, below the guard above. `fetch` cannot tell a refused port from a silent
-      // one and the native side can, so ask it once on the FIRST failure rather than sleeping
-      // out #10520's 10.5s ladder to be told what the refusal already proved.
+      // Ask the native side once on the first failure: fetch cannot tell refused from silent.
       if (attempt === 0 && (await nativeBackendIsGone())) throw error;
       await wait(delays[attempt]);
       beforeRetry?.();
@@ -198,14 +195,7 @@ async function nativeBackendIsAlive(): Promise<boolean> {
 /** `check_backend_is_gone` and NOT `check_backend_present`: presence reports a backend of ours that has not bound its port yet as absent. */
 let nativeGoneInflight: { port: number; probe: Promise<boolean> } | null = null;
 
-/**
- * Whether the retry ladder has anything left to wait for.
- *
- * Only ever answers true on positive proof, so every failure mode below returns false and
- * leaves the ladder exactly as long as it is today: the browser build, which has no native
- * side to ask; a port the webview has not been given yet; and a shell too old to carry the
- * command, whose rejected `invoke` is caught here.
- */
+/** True only on positive proof; every failure mode (browser, no port, old shell) returns false. */
 async function nativeBackendIsGone(): Promise<boolean> {
   if (!isTauri) {
     return false;
@@ -233,7 +223,6 @@ async function nativeBackendIsGone(): Promise<boolean> {
   try {
     return await probe;
   } finally {
-    // Identity, not the port: a probe for a newer port owns the slot now.
     if (nativeGoneInflight === inflight) {
       nativeGoneInflight = null;
     }
@@ -241,8 +230,7 @@ async function nativeBackendIsGone(): Promise<boolean> {
 }
 
 async function asTransportFailure(err: unknown): Promise<unknown> {
-  // fetch TypeError = offline | backend down | CORS/DNS. Tagged so callers tell "never reached"
-  // from "rejected"; under Tauri the launcher is asked before claiming the backend is gone.
+  // TypeError means the request never reached the backend; Tauri asks the launcher first.
   if (!(err instanceof TypeError)) return err;
   if (
     !isTauri &&
@@ -256,8 +244,7 @@ async function asTransportFailure(err: unknown): Promise<unknown> {
       { unslothTransportFailure: true },
     );
   }
-  // A failed fetch in the webview is not proof the backend died, and "please relaunch it"
-  // throws away a running backend and whatever it has in flight.
+  // A failed webview fetch does not prove the backend died; relaunching would kill its work.
   if (await nativeBackendIsAlive()) {
     return Object.assign(new Error(BACKEND_NOT_ANSWERING_MESSAGE), {
       unslothTransportFailure: true,
@@ -356,8 +343,8 @@ export async function authFetch(
   init?: RequestInit,
   options?: AuthFetchOptions,
 ): Promise<Response> {
-  // Another tab is mid-switch: its new tokens are published before this tab reloads, so a
-  // request now would carry this tab's account content under the next account's credentials.
+  // Another tab is mid-switch: a request now would carry this account's content under the
+  // next account's credentials.
   if (accountTransitionPending())
     throw new Error("Another tab is switching accounts; this tab will reload.");
   const resolvedInput = typeof input === "string" ? apiUrl(input) : input;
@@ -457,9 +444,7 @@ async function postLogout(
 }
 
 export async function logout(): Promise<void> {
-  // Server-side revoke. If the access token is expired the 401 fires before revoke runs, so
-  // rotate via the refresh token and retry to revoke the family. The finally generation bump
-  // invalidates in-flight refreshes.
+  // An expired access token 401s before revoke runs, so rotate via the refresh token and retry.
   try {
     let response = await postLogout(getAuthToken());
     if (response && response.status === 401 && getRefreshToken()) {

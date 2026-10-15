@@ -23,8 +23,7 @@ export function useToolActivityOpen(isRunning: boolean, hasText: boolean) {
   useEffect(() => {
     const previous = previousVisibility.current;
     previousVisibility.current = visibility;
-    // Regenerate reuses this card, so a re-run of the same call would otherwise inherit the
-    // previous round's hand-set state. Same rule the reasoning block applies to its round.
+    // Regenerate reuses this card; clear the previous round's hand-set state like reasoning does.
     const startedNewRound = startsNewToolRound(isRunning, previousRunning.current);
     previousRunning.current = isRunning;
     setState((current) => {

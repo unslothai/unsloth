@@ -14,8 +14,7 @@ import { formatMessageDate } from "@/lib/format-message-date";
 import { messageTimestamp } from "@/lib/message-timestamp";
 import type { FC } from "react";
 
-/** When the message was written, heading the More menu, with the details button beside it.
- *  The menu renders only while open, so no timer. */
+/** The menu renders only while open, so no timer. */
 export const MessageMenuTime: FC<{ onShowDetails: () => void }> = ({
   onShowDetails,
 }) => {
@@ -28,7 +27,6 @@ export const MessageMenuTime: FC<{ onShowDetails: () => void }> = ({
       : null;
 
   return (
-    // One item, so the time opens the details as the button beside it does.
     <Tooltip>
       <TooltipTrigger asChild={true}>
         <ActionBarMorePrimitive.Item
@@ -55,7 +53,6 @@ export const MessageMenuTime: FC<{ onShowDetails: () => void }> = ({
           </span>
         </ActionBarMorePrimitive.Item>
       </TooltipTrigger>
-      {/* Above, so it never covers the time. The full date leads, where the time's title gave it. */}
       <TooltipContent side="top" className="tooltip-compact">
         {date
           ? `${date.toLocaleString(locale, { dateStyle: "full", timeStyle: "short" })} · See response details`

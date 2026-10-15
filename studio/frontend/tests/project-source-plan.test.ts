@@ -38,8 +38,7 @@ test("an unnamed model falls back to its position, so the two never collide", ()
 });
 
 test("a LoRA compare names the adapter halves apart, not twice the same", () => {
-  // The base/lora compare toggles the adapter on one loaded checkpoint, so both
-  // threads record the same modelId; the model name alone cannot tell them apart.
+  // Base/lora compare share one checkpoint, so modelId cannot tell the threads apart.
   const plans = planChatItemSources(
     { id: "p1", title: "Fix my regex", type: "pair" },
     [
@@ -54,8 +53,7 @@ test("a LoRA compare names the adapter halves apart, not twice the same", () => 
 });
 
 test("two panes on the same checkpoint fall back to their position", () => {
-  // Same repo, different quant: the variant is not part of modelId, and the
-  // colon suffix is stripped anyway, so both labels read "Qwen3-8B-GGUF".
+  // The quant variant is not part of modelId.
   const plans = planChatItemSources(
     { id: "p1", title: "Fix my regex", type: "pair" },
     [
@@ -71,9 +69,7 @@ test("two panes on the same checkpoint fall back to their position", () => {
 });
 
 test("a pane keeps its number whichever half answered last", () => {
-  // listStoredChatThreads sorts by updatedAt, so the pane that finished last
-  // arrives first. Numbering by arrival would label model2's source "- 1" and
-  // swap the two names between saves of the same pair.
+  // Stored threads are sorted by updatedAt, so numbering by arrival would swap names.
   const panes = [
     { id: "t1", modelId: "unsloth/Qwen3-8B-GGUF:Q4_K_M", modelType: "model1" },
     { id: "t2", modelId: "unsloth/Qwen3-8B-GGUF:Q8_0", modelType: "model2" },
@@ -97,8 +93,6 @@ test("a LoRA pair keeps its naming when the model name is what collides", () => 
     { id: "t2", modelType: "lora" },
   ];
   const item = { id: "p1", title: "Fix my regex", type: "pair" };
-  // No modelId at all: the label itself falls back to the pane, which must not
-  // move with arrival order either.
   assert.deepEqual(planChatItemSources(item, [...halves].reverse()), [
     { id: "t2", title: "Fix my regex - fine-tuned" },
     { id: "t1", title: "Fix my regex - base" },

@@ -6,7 +6,6 @@ import {
   schemaDeclaresRepairGuards,
 } from "../src/features/chat/utils/openapi-support.ts";
 
-/** The shape FastAPI serves for the patch model. */
 function documentWith(properties: Record<string, unknown>) {
   return {
     components: {
@@ -34,12 +33,11 @@ test("a backend that declares the fields enforces the guards", () => {
 });
 
 test("a backend from before the fields does not", () => {
-  // It drops the unknown fields and writes anyway, so the migration stays off.
+  // Old backends drop unknown fields and write anyway, so the migration stays off.
   assert.equal(schemaDeclaresRepairGuards(documentWith(OLD_PROPERTIES)), false);
 });
 
 test("half the guards is not enough", () => {
-  // Only the pair rejects a repair based on a deleted prompt.
   assert.equal(
     schemaDeclaresRepairGuards(
       documentWith({ ...OLD_PROPERTIES, expectedTitle: { type: "string" } }),
@@ -69,7 +67,6 @@ test("a schema that arrived settles the question either way", () => {
   const supported = readGuardProbe(true, documentWith(GUARDED));
   assert.deepEqual(supported, { supported: true, settled: true });
 
-  // An old backend is a real answer, so it is worth remembering.
   assert.deepEqual(readGuardProbe(true, documentWith(OLD_PROPERTIES)), {
     supported: false,
     settled: true,
@@ -77,8 +74,7 @@ test("a schema that arrived settles the question either way", () => {
 });
 
 test("an HTTP failure is a moment, not an answer", () => {
-  // 401 while the token warms up, 503 at startup. Caching one would park the
-  // migration for the session.
+  // 401/503 are transient, so caching one would park the migration for the session.
   assert.deepEqual(readGuardProbe(false, null), {
     supported: false,
     settled: false,

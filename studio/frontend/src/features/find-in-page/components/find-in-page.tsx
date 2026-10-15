@@ -143,16 +143,11 @@ function FindBarLoading({
   );
 }
 
-/**
- * Lightweight controller; the bar and search engine load only when opened.
- */
 export function FindInPage({ enabled = true }: { enabled?: boolean }) {
   const t = useT();
-  // Session state belongs to the mounted shell: closing keeps the query, while signing out and
-  // unmounting the shell drops it without keeping a module-global user value.
+  // Session state lives in the mounted shell, so unmounting on sign-out drops the query.
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
-  /** What the bar searches: the chat (null), or a find target such as the browser's page. */
   const [scope, setScope] = useState<string | null>(null);
   const [focusToken, setFocusToken] = useState(0);
   const loadingSelectionRef = useRef<{
@@ -280,7 +275,6 @@ export function FindInPage({ enabled = true }: { enabled?: boolean }) {
     });
   }, []);
 
-  // The browser asks for its page from its menu, or when the chord is pressed inside the page.
   useEffect(
     () =>
       onFindRequest((targetId) => {
@@ -289,10 +283,8 @@ export function FindInPage({ enabled = true }: { enabled?: boolean }) {
     [enabled, requestFocus],
   );
 
-  // The chord works from text fields, including the composer and an already-open find input.
   useShortcut("findInPage", () => requestFocus(), {
     enabled,
-    // A modal backgrounds the shell and owns the chord while its surface is active.
     claims: () => !isFindScopeBackgrounded(),
   });
 
@@ -301,7 +293,7 @@ export function FindInPage({ enabled = true }: { enabled?: boolean }) {
   useDocumentFlag("data-find-bar-open", enabled && open && foreground);
 
   if (!enabled || !open) return null;
-  // Top layer, outside any stacking context. Hidden (not unmounted) under a modal so it returns as it was.
+  // Hidden, not unmounted, under a modal so it returns as it was.
   return createPortal(
     <div
       data-find-bar-layer=""

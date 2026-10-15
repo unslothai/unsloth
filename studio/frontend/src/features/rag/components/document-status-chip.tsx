@@ -75,7 +75,6 @@ export function DocumentStatusChip({
         status === "failed" && "border-destructive/40 text-destructive",
       )}
     >
-      {/* file, or folder when the doc is a project-wide source */}
       <HugeiconsIcon
         icon={shared ? Folder02Icon : FileEmpty02Icon}
         strokeWidth={2}

@@ -18,7 +18,6 @@ import {
 
 const ACCEPTED_EXTENSIONS = [".txt", ".pdf", ".docx", ".md"];
 
-/** One queued upload: browser bytes, or a desktop drop the backend redeems. */
 type UploadCandidate = {
   name: string;
   size: number;
@@ -178,10 +177,8 @@ export function UnstructuredDropZone({
       if (!needsServerRemove) return;
       deletedIdsRef.current.add(entry.id);
       removeUnstructuredFile(blockId, entry.id).catch(() => {
-        // Skip if the drop zone unmounted or its block changed: the id no
-        // longer belongs here and restoring would leak it into another block.
+        // The id would leak into another block if the zone unmounted or its block changed.
         if (!mountedRef.current || blockIdRef.current !== blockId) return;
-        // Still exists server-side (counts toward quota); restore it at its original position.
         deletedIdsRef.current.delete(entry.id);
         onFilesChange((prev) => {
           const next = [...prev];
@@ -199,12 +196,10 @@ export function UnstructuredDropZone({
     [blockId, onFilesChange],
   );
 
-  // Tauri suppresses webview drop events, so the plain `onDrop` this zone
-  // carried was dead on desktop (#9036).
+  // Tauri suppresses webview drop events, so a plain onDrop is dead on desktop.
   const { ref: dropRef, dragging: isDragOver, dragHandlers } = useNativeFileDrop({
     onFiles: handleFiles,
-    // A seed corpus can run to hundreds of MB, so the backend redeems the
-    // signed path itself rather than routing bytes through the webview.
+    // A seed corpus can be hundreds of MB, so the backend redeems the signed path itself.
     onNativeIntents: (intents) =>
       uploadCandidates(
         intents.map((intent) => ({
@@ -236,9 +231,7 @@ export function UnstructuredDropZone({
   return (
     <div className="space-y-2">
       <div
-        // Stays hit-testable while disabled: pointer-events-none hides it from
-        // elementFromPoint, so a native drop misses this target and falls
-        // through to the window instead of saying the block is busy.
+        // Stays hit-testable while disabled so a native drop reports busy instead of falling through.
         className={`nodrag flex flex-col items-center justify-center rounded-md border-2 border-dashed px-4 py-6 text-center transition-colors ${
           isDragOver
             ? "border-ring-strong bg-primary/5"
@@ -292,7 +285,6 @@ export function UnstructuredDropZone({
                   className="size-4 text-red-500"
                 />
               )}
-              {/* Queued local upload, so keep the name out of the snapshot. */}
               <span data-reload-snapshot-sensitive className="flex-1 truncate">
                 {entry.name}
               </span>

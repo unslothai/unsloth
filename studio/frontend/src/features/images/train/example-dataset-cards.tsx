@@ -25,15 +25,12 @@ import {
   importDiffusionDatasetExample,
 } from "../api";
 
-// Best-effort preview thumbnails from the public HF datasets-server, cached per repo at module
-// level so re-renders do not refetch. A repo the server cannot serve resolves to an empty list
-// and the card renders without previews.
+// Module-level cache so re-renders do not refetch; unservable repos resolve to [].
 const _previewCache = new Map<string, Promise<string[]>>();
 
 async function fetchPreviews(repo: string): Promise<string[]> {
   if (!hasDatasetsServer()) return [];
-  // Keyed by server too: an empty result cached against the default would
-  // otherwise never be retried against a mirror that arrives later.
+  // Keyed by server too, so an empty result is retried against a later mirror.
   const base = getHfDatasetsServerBase();
   const cacheKey = `${base}::${repo}`;
   const cached = _previewCache.get(cacheKey);
@@ -67,7 +64,6 @@ async function fetchPreviews(repo: string): Promise<string[]> {
   return p;
 }
 
-// "Dog (DreamBooth subject)" -> "Dog": one-line rows drop the parenthetical.
 export function shortExampleLabel(label: string): string {
   return label.replace(/\s*\(.*$/, "");
 }
@@ -98,9 +94,6 @@ function ExamplePreviews({ repo }: { repo: string }) {
   );
 }
 
-// One-click example-dataset importers. Each card shows the license before import plus preview
-// thumbnails; on success the parent refreshes its dataset list and selects the folder. One card
-// per row: the config column is narrow, so a two-column grid wrapped titles one word per line.
 export function ExampleDatasetCards({
   examples,
   busyId,
@@ -110,7 +103,6 @@ export function ExampleDatasetCards({
   examples: DiffusionDatasetExample[];
   busyId: string | null;
   onImport: (ex: DiffusionDatasetExample) => void;
-  /** Spacing above, which the caller sets: what sits above this block varies. */
   className?: string;
 }) {
   if (examples.length === 0) return null;
@@ -127,7 +119,6 @@ export function ExampleDatasetCards({
             className="flex min-w-0 flex-col gap-2.5 rounded-lg border border-border px-4 py-3"
           >
             <div className="flex min-w-0 items-center gap-1.5">
-              {/* Both are truncated, so the full text lives in a tooltip. */}
               <Tooltip>
                 <TooltipTrigger asChild={true}>
                   <span className="min-w-0 flex-1 truncate text-xs font-medium">
@@ -148,14 +139,12 @@ export function ExampleDatasetCards({
             <p className="line-clamp-2 text-ui-11 leading-snug text-muted-foreground">
               {ex.description}
             </p>
-            {/* The card's action, so: bottom right, on the thumbnail row. */}
             <div className="flex min-w-0 items-end justify-between gap-3">
               <ExamplePreviews repo={ex.repo} />
               <Button
                 type="button"
                 size="sm"
                 variant="outline"
-                // ml-auto keeps it right-aligned even when the previews are missing.
                 className="ml-auto h-7 shrink-0 px-3 text-xs"
                 onClick={() => onImport(ex)}
                 disabled={busyId !== null}
@@ -170,7 +159,6 @@ export function ExampleDatasetCards({
   );
 }
 
-// Shared import helper so the panel's dropdown and the cards import identically.
 export async function runExampleImport(
   ex: DiffusionDatasetExample,
 ): Promise<DiffusionDatasetImportResult> {

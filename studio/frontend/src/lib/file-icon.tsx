@@ -5,7 +5,7 @@ import { FileEmpty02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { ComponentProps } from "react";
 
-// The file icon as a component, for slots that take one. Stroke 2 matches the lucide icons beside it.
+// Stroke 2 matches the lucide icons beside it.
 export const FileGlyph = (
   props: Omit<ComponentProps<typeof HugeiconsIcon>, "icon">,
 ) => <HugeiconsIcon icon={FileEmpty02Icon} strokeWidth={2} {...props} />;

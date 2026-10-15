@@ -5,9 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { loadWithStubs, stubJsxRuntime } from "./helpers/module-stubs.ts";
 
-// The source menu refetches on mount, on open and after every mutation, so its fetches
-// overlap. Its fallback moves a chat off a deleted KB, which only works if an answer
-// from before the delete cannot land after the one from after it.
+// Menu fetches overlap, so an answer from before a KB delete must not land after a later one.
 
 type Rows = Array<{ id: string; name: string }>;
 
@@ -112,12 +110,10 @@ test("a list fetched before a delete cannot land after the one fetched after it"
   const app = harness();
   app.render();
   assert.equal(app.pending.length, 1);
-  // The active KB is deleted while the mount fetch is still out.
   app.listeners.forEach((onChanged) => onChanged());
   assert.equal(app.pending.length, 2);
 
-  // Both answers arrive before the next render, so React batches them and the fallback
-  // sees only whichever landed last.
+  // Both answers arrive before the next render, so React batches them.
   app.pending[1]([]);
   app.pending[0]([{ id: "kb-1", name: "Product docs" }]);
   await flush();

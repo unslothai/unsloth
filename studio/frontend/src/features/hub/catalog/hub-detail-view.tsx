@@ -17,7 +17,6 @@ export function HubDetailView({
 }: InspectorProps & { onBack: () => void; compact?: boolean }) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [scrolled, setScrolled] = useState(false);
-  // Split pane is narrower than the full-page overlay; tighter measure reads better.
   const measure = compact
     ? "mx-auto w-full max-w-[var(--hub-measure-compact)] px-5 sm:px-5"
     : "mx-auto w-full max-w-[var(--hub-measure)] px-5 sm:px-8";
@@ -36,8 +35,6 @@ export function HubDetailView({
 
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
-      {/* Same top scroll fade as the left column. The sticky back-bar, when
-          shown, sits above and hides it. */}
       <div
         aria-hidden="true"
         data-scrolled={scrolled || undefined}
@@ -46,9 +43,7 @@ export function HubDetailView({
       <div
         ref={scrollRef}
         data-hub-scroll="true"
-        // Mirror the catalog's gutter strategy so the centered column lines up with the top bar:
-        // the full overlay reserves an equal both-edges gutter to stay symmetric; split pins a
-        // narrow pane so it nudges the scrollbar in from the edge with a right gutter only.
+        // Mirror the catalog's gutter strategy so the column lines up with the top bar.
         className={cn(
           "min-h-0 flex-1 overflow-x-hidden overflow-y-auto [overflow-anchor:none] [scrollbar-width:thin]",
           compact
@@ -59,8 +54,6 @@ export function HubDetailView({
         <div
           className={cn(
             "hub-detail-bar sticky top-0 z-20",
-            // In split view on large screens the list sits alongside, so "Back
-            // to Hub" is redundant; keep it only for the overlay where it's hidden.
             compact && "lg:hidden",
           )}
           data-scrolled={scrolled || undefined}

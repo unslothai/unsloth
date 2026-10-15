@@ -8,26 +8,16 @@ export interface SystemGpuDevice {
   indexKind: GpuIndexKind | null;
   name: string;
   memoryTotalGb: number;
-  /** Free VRAM at fetch time, or total VRAM when usage is unavailable. */
   memoryFreeGb: number;
   /** Whether free memory was reported, including a real zero. */
   memoryFreeKnown?: boolean;
-  /** A Vulkan iGPU: memoryTotalGb is a capped view of system RAM rather than a
-   *  pool beside it. Per device, not per host: a mixed inventory pairs one of
-   *  these with a discrete card, and a pin naming only the discrete card can
-   *  still spill to host RAM. */
+  /** A Vulkan iGPU: memoryTotalGb is a capped view of system RAM. Per device, since a mixed
+   * inventory pairs it with a discrete card. */
   sharedMemory: boolean;
-  /** host-backed portion of memoryTotalGb when sharedMemory is true. */
   sharedMemoryHostBackedGb?: number | null;
-  /** This device and the host are ONE pool (Apple Silicon, a ROCm APU), so its
-   *  VRAM is not memory beside system RAM. Per device for the same reason
-   *  sharedMemory is: a pin naming only a discrete card on a mixed machine does
-   *  not share anything, and judging it against a host-wide flag threw away the
-   *  system RAM that pin can really spill into. */
+  /** Device and host are ONE pool (Apple Silicon, ROCm APU). Per device, like sharedMemory. */
   unifiedMemory?: boolean;
-  /** Whether `index` is safe to send as gpu_ids. */
   pinnable: boolean;
-  /** Whether the separate DiffusionGemma runner can use this physical ID. */
   diffusionPinnable: boolean;
 }
 
@@ -80,11 +70,7 @@ export function pinnableGpuContext(
   };
 }
 
-/**
- * Selection context when the backend namespace may be known before its device
- * membership. A temporarily unavailable Vulkan inventory still proves that
- * physical IDs are incompatible, but cannot yet range-check Vulkan ordinals.
- */
+/** A known namespace still rules out physical IDs even before Vulkan membership is known. */
 export function resolveGpuSelectionContext(
   devices: SystemGpuDevice[] | null,
   forDiffusion = false,
@@ -135,11 +121,8 @@ export function reconcileGpuSelection(
     : { ids: null, indexKind: null };
 }
 
-/** The device a bare "cuda" load lands on: visible ordinal 0, i.e. torch's current device.
- * `index` stays PHYSICAL on the nvidia-smi path (index_kind "physical"), and a reordering
- * CUDA_VISIBLE_DEVICES such as "3,1" maps ordinal 0 to physical GPU 3 while the minimum
- * physical index is GPU 1, so ranking by `index` sizes the pick against the wrong card on a
- * heterogeneous host. Only an older backend that omits visible_ordinal falls back to `index`. */
+/** Visible ordinal 0, not the minimum physical `index`: a reordering CUDA_VISIBLE_DEVICES like
+ * "3,1" maps ordinal 0 to GPU 3. Older backends without visible_ordinal fall back to `index`. */
 export function pickLoadDevice<
   T extends { index?: number; visible_ordinal?: number },
 >(devices: T[]): T | undefined {

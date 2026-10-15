@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Which rows of a monitor snapshot are traffic this session has not shown yet.
-// Split out of the overlay so it can be driven without a browser.
+// Split out of the overlay so it can be tested without a browser.
 
 import type { ApiMonitorEntry } from "@/features/chat/types/api";
 
@@ -18,18 +17,13 @@ export interface WatchedResponse {
 }
 
 export interface ApiMonitorWatch {
-  /** The first snapshot has been folded in and its backlog written off. */
   seeded: boolean;
-  /** Ids already shown. A set, not "the newest id": finishing moves an entry to the
-   * front, so the head flips without any new traffic. */
+  /** A set, not "the newest id": finishing moves an entry to the front. */
   seenIds: Set<string>;
   /** performance.now() when this watch began; monotonic, so a clock step cannot move it. */
   watchStartedAt: number;
-  /** This seed follows a stay on the full page rather than starting a session. */
   resumed: boolean;
-  /** The snapshot already folded in. The overlay's observer re-runs on any store change,
-   * not only on a new poll, and a second fold would spend a pending re-arm on a snapshot
-   * from before the stand down. */
+  /** The observer re-runs on any store change; a second fold would spend a pending re-arm. */
   lastFolded: WatchedResponse | null;
 }
 
@@ -43,11 +37,7 @@ export function createWatch(nowMs: number): ApiMonitorWatch {
   };
 }
 
-/**
- * Re-anchor as the poll stands up, and only while unseeded: the first snapshot can land
- * long after mount (a hidden tab issues no fetch), and dating the backlog from mount
- * would write that whole gap off as history.
- */
+/** Re-anchor as the poll stands up, only while unseeded: the first snapshot can land much later. */
 export function startWatching(watch: ApiMonitorWatch, nowMs: number): void {
   if (!watch.seeded) {
     watch.watchStartedAt = nowMs;
@@ -60,13 +50,7 @@ export function rearmWatch(watch: ApiMonitorWatch): void {
   watch.resumed = true;
 }
 
-/**
- * The poll also stands down for the auto-open opt out, and calls still land behind it.
- * By the time the user turns automatic opening back on those are backlog, not a reason to
- * pop the panel over the composer, so write them off exactly as a stay on the full page
- * does. An unseeded watch has no backlog to write off: re-arming it would silence the
- * first snapshot of a session that merely started out opted out.
- */
+/** Write off calls that landed during an opt-out, unless unseeded (no backlog yet). */
 export function standDownWatch(watch: ApiMonitorWatch): void {
   if (!watch.seeded) {
     return;
@@ -74,11 +58,7 @@ export function standDownWatch(watch: ApiMonitorWatch): void {
   rearmWatch(watch);
 }
 
-/**
- * When this watch began, on the server's clock. Server ``time.time()`` minus a browser
- * *duration*, never minus a browser timestamp, so a clock disagreeing with the server's cancels
- * instead of skewing the answer. Null on a backend with no clock field.
- */
+/** Server time minus a browser duration, so clock skew cancels; null without a server clock. */
 function historyCutoff(
   watch: ApiMonitorWatch,
   response: WatchedResponse,
@@ -99,20 +79,16 @@ function isHistory(entry: WatchedEntry, cutoff: number | null): boolean {
   if (cutoff == null || !Number.isFinite(entry.started_at)) {
     return true;
   }
-  // Finished before the first snapshot is not the same as started before we did: a call
-  // made while the tab was hidden is already terminal when the poll finally runs.
+  // A call made while the tab was hidden is already terminal at the first poll.
   return entry.started_at <= cutoff;
 }
 
-/** Fold a snapshot in and report whether it holds API-key traffic not shown yet. */
 export function observeResponse(
   watch: ApiMonitorWatch,
   response: WatchedResponse,
   nowMs: number,
 ): boolean {
-  // Fold each snapshot once. The observer re-runs when the store changes, with the same
-  // snapshot in hand; folding it again would seed a re-arm from before the stand down and
-  // leave the backlog that landed behind it counting as new traffic.
+  // Fold each snapshot once; a refold would count the stand-down backlog as new.
   if (watch.lastFolded === response) {
     return false;
   }
@@ -123,9 +99,7 @@ export function observeResponse(
     const { resumed } = watch;
     watch.resumed = false;
     const cutoff = historyCutoff(watch, response, nowMs);
-    // A rearm is not a fresh watch. isHistory keeps a running row on purpose: at a first
-    // snapshot nobody has seen it. Off the full page the opposite holds, since that page
-    // was showing this same feed, so mark everything it could show as read.
+    // Returning from the full page, which showed this feed, marks everything as read.
     watch.seenIds = new Set(
       entries
         .filter((entry) => resumed || isHistory(entry, cutoff))

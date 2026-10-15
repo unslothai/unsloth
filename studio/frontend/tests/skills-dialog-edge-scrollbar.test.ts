@@ -12,7 +12,6 @@ const DIALOG = await readFile(
 const DIALOG_UI = await readFile(new URL("../src/components/ui/dialog.tsx", import.meta.url), "utf8");
 
 test("the Skills list and editor scroll on the dialog's right edge", () => {
-  // The offset only lands on the edge while it matches DialogContent's own padding.
   assert.match(DIALOG_UI, /rounded-4xl px-7 pt-8 pb-7/);
   const scrollers = [...DIALOG.matchAll(/className="hover-scrollbar [^"]*"/g)].map((m) => m[0]);
   assert.equal(scrollers.length, 2);

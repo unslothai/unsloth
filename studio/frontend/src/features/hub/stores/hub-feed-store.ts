@@ -25,12 +25,7 @@ export interface HubFeedState {
   clearForToken: (tokenFingerprint: string) => void;
 }
 
-/**
- * What a persisted feed entry belongs to: the endpoint AND the token. Freshness
- * is an equality check on this, so folding the endpoint in stops a huggingface.co
- * feed being rendered after Studio restarts against a mirror. Entries from an
- * older build hold a bare fingerprint and are refetched once.
- */
+/** Feed entries are keyed on endpoint AND token, so a mirror never shows a huggingface.co feed. */
 export function feedIdentity(
   endpoint: string,
   token: string | null | undefined,

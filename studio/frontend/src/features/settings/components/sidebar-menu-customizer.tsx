@@ -42,7 +42,6 @@ const ITEM_META: Record<
 function FixedRow({ icon, label }: { icon: IconSvgElement; label: string }) {
   return (
     <div className="flex h-9 items-center gap-2.5 rounded-lg px-2 text-muted-foreground/70">
-      {/* Spacer where the drag handle sits on movable rows. */}
       <span className="size-4" aria-hidden="true" />
       <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-4" />
       <span className="text-ui-13">{label}</span>
@@ -64,8 +63,6 @@ function MovableRow({ item }: { item: SidebarMenuItemPref }) {
       dragListener={false}
       dragControls={controls}
       layout="position"
-      // Rows sit flat on the dialog surface; the dragged row lifts above its
-      // siblings so it stays readable while crossing them.
       whileDrag={{
         backgroundColor: "var(--popover)",
         boxShadow: "0 4px 16px rgb(0 0 0 / 0.18)",
@@ -109,11 +106,6 @@ function MovableRow({ item }: { item: SidebarMenuItemPref }) {
   );
 }
 
-/**
- * Show/hide and reorder the optional sidebar profile menu items. The pinned
- * entries (Settings on top; Help, Log out, Shutdown below) are rendered as
- * static rows so the final menu layout is obvious.
- */
 export function SidebarMenuCustomizer() {
   const t = useT();
   const sidebarMenu = useAppearanceCustomStore(

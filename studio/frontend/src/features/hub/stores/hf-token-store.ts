@@ -110,8 +110,7 @@ function persistTokenToBackend(token: string): void {
   persistenceChain = persistenceChain
     .catch(() => undefined)
     .then(async () => {
-      // Collapse rapid field edits before they reach the network. In-flight
-      // writes remain ordered, so an older response can never win last.
+      // In-flight writes stay ordered, so an older response never wins last.
       if (revision !== persistenceRevision) return;
 
       const legacyTokenBeforeSave = loadLegacyToken();
@@ -124,9 +123,7 @@ function persistTokenToBackend(token: string): void {
           : await clearSavedHfToken();
 
         if (notificationRevisionBeforeWrite !== backendNotificationRevision) {
-          // A cross-tab commit landed while this write's response was delayed.
-          // Read until no newer notification arrives during the GET, so the
-          // value applied below is the backend's latest committed credential.
+          // A cross-tab commit landed meanwhile: re-read until no newer notification arrives during the GET.
           let notificationRevision: number;
           do {
             notificationRevision = backendNotificationRevision;
@@ -160,7 +157,6 @@ function persistTokenToBackend(token: string): void {
 }
 
 
-/** Wait until the latest queued token edit is durable, or surface its save error. */
 export async function waitForHfTokenPersistence(): Promise<void> {
   while (true) {
     const revision = persistenceRevision;
@@ -189,7 +185,7 @@ export const useHfTokenStore = create<HfTokenStore>((set) => {
     return token;
   };
   return {
-    // Legacy value remains available until authenticated bootstrap reconciles it.
+    // Legacy value remains until authenticated bootstrap reconciles it.
     token: loadLegacyToken(),
 
     isPersisting: false,
@@ -208,7 +204,6 @@ let serverCredentialHydrated = false;
 
 let authSessionRevision = 0;
 
-/** Retain a pre-v12 training-store token as migration input until server save succeeds. */
 export function stageLegacyHfTokenForMigration(value: string): void {
   if (serverCredentialHydrated) return;
   const token = normalizeHfToken(value);
@@ -231,7 +226,6 @@ export function stageLegacyHfTokenForMigration(value: string): void {
 let hydrationPromise: Promise<void> | null = null;
 let hydrationReplayRequested = false;
 
-/** Server-first, retry-safe migration and hydration after authentication. */
 export function hydrateHfTokenFromBackend(): Promise<void> {
   if (hydrationPromise) return hydrationPromise;
   const sessionRevision = authSessionRevision;
@@ -285,7 +279,6 @@ export function hydrateHfTokenFromBackend(): Promise<void> {
 }
 
 
-/** Re-read after an active hydration when another tab reports a newer backend value. */
 export async function refreshHfTokenFromBackend(): Promise<void> {
 
   backendNotificationRevision += 1;
@@ -330,7 +323,6 @@ export function getHfToken(): string {
   return useHfTokenStore.getState().token;
 }
 
-// Keep a plain zustand store's `hfToken` in sync with the shared token.
 export function mirrorHfTokenInto<T extends { hfToken: string }>(store: {
   getState: () => T;
   setState: (partial: Partial<T>) => void;

@@ -94,8 +94,7 @@ function TabStrip({
   function onPointerMove(event: ReactPointerEvent<HTMLDivElement>) {
     const current = drag.current;
     if (!current || current.id !== event.pointerId) return;
-    // Released off the strip before a drag captured the pointer: the strip never saw the release,
-    // and a hover must not scroll it.
+    // The strip never saw a release that happened before capture, so hover must not scroll.
     if ((event.buttons & 1) === 0) {
       drag.current = null;
       return;
@@ -115,7 +114,6 @@ function TabStrip({
     drag.current = null;
   }
 
-  // The click that ends a drag must not also switch tab.
   function onClickCapture(event: ReactMouseEvent) {
     if (!dragged.current) return;
     dragged.current = false;
@@ -133,7 +131,7 @@ function TabStrip({
       onPointerCancel={onPointerEnd}
       onLostPointerCapture={onPointerEnd}
       onClickCapture={onClickCapture}
-      // Important: index.css's unlayered `* { scrollbar-width: thin }` outranks any utility.
+      // index.css's unlayered `* { scrollbar-width: thin }` outranks any utility, hence `!`.
       className="-mx-2 -mb-3 -mt-1 overflow-x-auto px-2 pb-3 pt-1 [scrollbar-width:none]! [&::-webkit-scrollbar]:hidden!"
       style={{ marginRight: reserve || undefined, maskImage: mask, WebkitMaskImage: mask }}
     >
@@ -184,7 +182,6 @@ export function LibraryHeader({
       setControlsWidth(controlsNode.getBoundingClientRect().width);
       const top = row.getBoundingClientRect().top;
       setCovered(top < controlsNode.getBoundingClientRect().bottom);
-      // Stuck once the title scrolls on past the row's margin.
       const gap = top - titleNode.getBoundingClientRect().bottom;
       setStuck(gap > Number.parseFloat(getComputedStyle(row).marginTop) + 1);
     };
@@ -206,8 +203,6 @@ export function LibraryHeader({
 
   return (
     <>
-      {/* No height of its own: the controls hang from it over the title row, then stick level with
-          the tabs, whose row is as tall as they are plus its padding. */}
       <div className="@container pointer-events-none sticky top-4 z-30 flex h-0 justify-end">
         <div ref={controlsRef} className="pointer-events-auto">
           {controls}

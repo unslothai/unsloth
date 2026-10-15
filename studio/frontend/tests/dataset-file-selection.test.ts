@@ -19,15 +19,13 @@ import {
 
 import { readSrcAsync, readText } from "./helpers/kit.ts";
 
-/** a picked file of a given byte size. chunking reads only `size`, so the payload is stubbed:
- *  materializing it made these cases allocate over a gigabyte between them. */
+/** Payload is stubbed because chunking reads only `size`. */
 function sized(name: string, bytes: number): File {
   const file = new File([], name);
   Object.defineProperty(file, "size", { value: bytes });
   return file;
 }
 
-/** a picked file; `path` stands in for the webkitRelativePath a folder pick carries. */
 function picked(name: string, path?: string): File {
   const file = new File(["x"], name);
   if (path !== undefined) {
@@ -44,13 +42,9 @@ test("accepts exactly the extensions the backend accepts", async () => {
     return [...match[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]).sort();
   };
 
-  // .caption sidecars and metadata/captions .jsonl are older caption formats the trainer
-  // still reads, so a backend that widens either list must widen the picker with it.
   assert.deepEqual([...DATASET_IMAGE_EXTS].sort(), literals("_DIFFUSION_DATASET_IMAGE_EXTS"));
   assert.deepEqual([...DATASET_TEXT_EXTS].sort(), literals("_DIFFUSION_DATASET_TEXT_EXTS"));
 
-  // clips are defined once, in core/training/diffusion_clip_formats.py, and read from there by
-  // both the routes and the trainer's clip discovery. The picker has to mirror that same list.
   const clipSource = readText("../../backend/core/training/diffusion_clip_formats.py");
   const clipMatch = /CLIP_EXTS\s*=\s*frozenset\(\{([^}]+)\}\)/.exec(clipSource);
   assert.ok(clipMatch, "CLIP_EXTS not found in diffusion_clip_formats.py");
@@ -59,9 +53,6 @@ test("accepts exactly the extensions the backend accepts", async () => {
     [...clipMatch[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]).sort(),
   );
 
-  // the two halves must stay DISJOINT: every rule that widened to media relies on an extension
-  // belonging to exactly one kind, so a container that is also an image extension would make
-  // the same file count twice and pick an arbitrary branch in the summary.
   const overlap = DATASET_IMAGE_EXTS.filter((e) => DATASET_CLIP_EXTS.includes(e));
   assert.deepEqual(overlap, []);
   assert.equal(DATASET_MEDIA_EXTS.length, DATASET_IMAGE_EXTS.length + DATASET_CLIP_EXTS.length);
@@ -111,8 +102,6 @@ test("keeps clips alongside the caption files paired to them", () => {
 });
 
 test("reports an image and a clip sharing a stem, which would share one caption sidecar", () => {
-  // the sidecar is keyed on the stem alone, so cat.png and cat.mp4 collide exactly as two
-  // images would; training.py refuses the batch, and catching it here says so before the upload.
   const result = selectDatasetFiles([picked("cat.png"), picked("cat.mp4"), picked("cat.txt")]);
 
   assert.deepEqual(result.files.map((f) => f.name), ["cat.png", "cat.txt"]);
@@ -125,7 +114,6 @@ test("a clip already in the folder holds its sidecar against a new image of that
 });
 
 test("reports basenames a folder pick would flatten together", () => {
-  // a dataset folder is flat, so both of these would be stored as cat.png.
   const result = selectDatasetFiles([
     picked("cat.png", "set/train/cat.png"),
     picked("cat.png", "set/val/cat.png"),
@@ -138,7 +126,6 @@ test("reports basenames a folder pick would flatten together", () => {
 });
 
 test("reports two images sharing a stem, which would share one caption sidecar", () => {
-  // training.py refuses the whole batch on this; catching it here keeps the upload honest.
   const result = selectDatasetFiles([picked("cat.png"), picked("cat.jpg"), picked("cat.txt")]);
 
   assert.deepEqual(result.files.map((f) => f.name), ["cat.png", "cat.txt"]);
@@ -146,8 +133,6 @@ test("reports two images sharing a stem, which would share one caption sidecar",
 });
 
 test("leaves case-variant names to the backend, which knows if the filesystem folds case", () => {
-  // on ext4 these are two distinct files the upload accepts; refusing here would block a
-  // legitimate dataset and give a reason that is false for that filesystem.
   const result = selectDatasetFiles([picked("Cat.png"), picked("cat.PNG")]);
 
   assert.equal(result.files.length, 2);
@@ -161,8 +146,6 @@ test("folds case on the stem rule, which training.py applies whatever the filesy
 });
 
 test("clashes an extension-case pair of one stem spelling, as _shares_sidecar does", () => {
-  // cat.png and cat.PNG share the exact stem, so both resolve to cat.txt and the backend
-  // rejects them on every filesystem. Cat.png and cat.PNG differ in stem case and are exempt.
   assert.deepEqual(selectDatasetFiles([picked("cat.png"), picked("cat.PNG")]).collisions, [
     { kind: "stem", first: "cat.png", second: "cat.PNG" },
   ]);
@@ -170,8 +153,6 @@ test("clashes an extension-case pair of one stem spelling, as _shares_sidecar do
 });
 
 test("compares every accepted variant, since the stem exemption is not transitive", () => {
-  // Cat.png exempts cat.PNG and cat.png individually, but those two share an exact stem and
-  // training.py compares each new name against every earlier one.
   const result = selectDatasetFiles([picked("Cat.png"), picked("cat.PNG"), picked("cat.png")]);
 
   assert.deepEqual(result.collisions, [
@@ -180,8 +161,6 @@ test("compares every accepted variant, since the stem exemption is not transitiv
 });
 
 test("skips names the upload refuses outright, before any slice is committed", () => {
-  // Path(".png").suffix is empty and the endpoint rejects any name holding "..", so accepting
-  // either here would commit earlier slices and then fail on a later one.
   const result = selectDatasetFiles([
     picked("cat.png"),
     picked(".png"),
@@ -193,7 +172,6 @@ test("skips names the upload refuses outright, before any slice is committed", (
 });
 
 test("keeps a dotfile named in the file dialog, where the user chose it deliberately", () => {
-  // no webkitRelativePath means a plain multi-select, unlike a tree walk that surfaces .thumbs.
   const result = selectDatasetFiles([picked(".cover.png"), picked("cat.png")]);
 
   assert.deepEqual(result.files.map((f) => f.name), [".cover.png", "cat.png"]);
@@ -208,13 +186,11 @@ test("ignores dot-directories, so re-picking a dataset folder skips its .thumbs 
   ]);
 
   assert.deepEqual(result.files.map((f) => f.name), ["cat.png"]);
-  // hidden entries are not "unsupported", so they are not reported as skipped.
   assert.equal(result.skipped, 0);
   assert.deepEqual(result.collisions, []);
 });
 
 test("keeps a picked folder whose own name starts with a dot", () => {
-  // webkitRelativePath is rooted at the folder the user chose, so its name is not a reason to skip.
   const result = selectDatasetFiles([
     picked("cat.png", ".photos/cat.png"),
     picked("dog.png", ".photos/nested/dog.png"),
@@ -228,9 +204,6 @@ test("an empty or fully rejected pick yields no files", () => {
   assert.equal(selectDatasetFiles([picked("notes.pdf")]).files.length, 0);
 });
 
-// -- drop handling -------------------------------------------------------------------------
-
-/** a FileSystemFileEntry over one File. */
 function fileEntry(name: string, onFile?: () => void) {
   return {
     isFile: true,
@@ -244,7 +217,6 @@ function fileEntry(name: string, onFile?: () => void) {
   } as unknown as FileSystemEntry;
 }
 
-/** a FileSystemDirectoryEntry whose reader hands back `children` in 100-entry batches. */
 function dirEntry(name: string, children: FileSystemEntry[]) {
   return {
     isFile: false,
@@ -254,7 +226,7 @@ function dirEntry(name: string, children: FileSystemEntry[]) {
       let cursor = 0;
       return {
         readEntries(resolve: (batch: FileSystemEntry[]) => void) {
-          // mirrors Chrome, which never returns more than 100 entries per call.
+          // Chrome never returns more than 100 entries per readEntries call.
           const batch = children.slice(cursor, cursor + 100);
           cursor += batch.length;
           resolve(batch);
@@ -275,7 +247,6 @@ test("reads a dropped folder past the 100-entry readEntries batch limit", async 
   const children = Array.from({ length: 250 }, (_, i) => fileEntry(`img_${i}.png`));
   const out = await filesFromDataTransfer(transfer([dirEntry("set", children)]));
 
-  // a single readEntries call would stop at 100 and silently drop the rest.
   assert.equal(out.length, 250);
 });
 
@@ -299,19 +270,16 @@ test("gives dropped files their folder path, so a collision names both sides", a
 });
 
 test("normalizes to the stored name, so a leading space is not a second destination", () => {
-  // training.py stores Path(name).name.strip(), so " cat.png" and "cat.png" are one file.
   const result = selectDatasetFiles([picked(" cat.png"), picked("cat.png")]);
 
   assert.equal(result.files.length, 1);
   assert.equal(result.collisions.length, 1);
 
-  // and the same normalisation groups them into one request rather than two repeat uploads.
   const chunks = chunkDatasetUpload([sized(" cat.png", 1), sized("cat.png", 1)], 1024 * 1024);
   assert.equal(chunks.length, 1);
 });
 
 test("rejects a drop whose items do not all resolve to entries", async () => {
-  // a partly resolvable drop would otherwise upload a subset under an all-or-nothing contract.
   const dt = {
     items: [
       { kind: "file", webkitGetAsEntry: () => fileEntry("ok.png") },
@@ -331,8 +299,6 @@ test("keeps casefold-equal names in one request, which the backend can only comp
   ];
   const chunks = chunkDatasetUpload(files, 1024 * 1024 * 1024);
 
-  // a plain 500-file slice would put Cat.png and cat.png in separate repeat uploads, where the
-  // second silently replaces the first on a case-insensitive dataset folder.
   const holding = chunks.filter((c) => c.some((f) => f.name.toLowerCase() === "cat.png"));
   assert.equal(holding.length, 1);
   assert.equal(holding[0].filter((f) => f.name.toLowerCase() === "cat.png").length, 2);
@@ -352,21 +318,18 @@ test("splits on the byte cap too, not only the part count", () => {
 });
 
 test("strips what Python strips, so a name the endpoint refuses is not read as accepted", () => {
-  // trim() also removes U+FEFF, which str.strip() keeps: the part carries "cat.png﻿" and
-  // the endpoint reads its suffix as ".png﻿", so the client must not see a plain image.
+  // trim() removes U+FEFF but Python str.strip() keeps it, so the backend sees a non-image suffix.
   const bom = selectDatasetFiles([picked("cat.png\ufeff")]);
   assert.deepEqual(bom.files, []);
   assert.equal(bom.skipped, 1);
 
-  // ...and the other direction: str.strip() removes these, trim() does not, so the endpoint
-  // stores a plain "cat.png" and the client must not drop the file as unsupported.
+  // str.strip() removes these but trim() does not, so the backend stores a plain cat.png.
   for (const ch of ["\u001c", "\u001d", "\u001e", "\u001f", "\u0085"]) {
     const sel = selectDatasetFiles([picked(`cat.png${ch}`)]);
     assert.equal(sel.imageCount, 1, `U+${ch.codePointAt(0)?.toString(16)} must be stripped`);
     assert.equal(sel.skipped, 0);
   }
 
-  // ordinary whitespace both agree on, still folded onto one destination
   assert.equal(selectDatasetFiles([picked(" cat.png\t")]).imageCount, 1);
 });
 
@@ -379,9 +342,6 @@ test("sends case-variant groups first, so their refusal lands before anything co
   ];
   const chunks = chunkDatasetUpload(files, 500 * mb);
 
-  // a case-insensitive dataset folder refuses the pair, so it must ride in the first request:
-  // refused there, nothing has been committed. Keeping it whole is what lets the backend
-  // compare both names at all.
   assert.deepEqual(
     chunks[0].slice(0, 2).map((f) => f.name),
     ["Cat.png", "cat.png"],
@@ -417,13 +377,9 @@ test("reports a stem the dataset folder already holds, which a split top-up woul
     first: "cat.png",
     second: "top-up/cat.jpg",
   });
-  // a repeat upload of the same name is how the endpoint accumulates, so it must stay allowed
   assert.equal(existingStemClash([picked("cat.png")], held), null);
-  // an exact stem match still clashes, extension case notwithstanding
   assert.equal(existingStemClash([picked("cat.PNG")], held)?.first, "cat.png");
-  // only a differing stem case is exempt, which is where _shares_sidecar stops
   assert.equal(existingStemClash([picked("Cat.png")], held), null);
-  // a caption never shares a sidecar with an image
   assert.equal(existingStemClash([picked("cat.txt")], held), null);
   assert.equal(existingStemClash([picked("bird.png")], held), null);
 });
@@ -438,11 +394,9 @@ test("flags metadata keyed on a subfolder, which flattening would silently unmat
   const flat = new File(['{"file_name": "001.png", "text": "a cat"}\n'], "metadata.jsonl");
   assert.equal(await metadataKeyedOnSubfolders([flat]), null);
 
-  // metadata written on windows keys rows with a backslash
   const win = new File(['{"file_name": "images\\\\001.png"}\n'], "metadata.jsonl");
   assert.equal(await metadataKeyedOnSubfolders([win]), "metadata.jsonl");
 
-  // _load_metadata_captions falls back on the first TRUTHY key, so an empty file_name defers
   const blank = new File(
     ['{"file_name": "", "image": "images/001.png"}\n'],
     "metadata.jsonl",
@@ -470,17 +424,13 @@ test("uses the flat list when the entries API is unavailable", async () => {
 });
 
 test("the labeling grid is gated on images, not just its toggle", async () => {
-  // A mixed folder keeps its listing on clip_count alone, so deleting the last image leaves the
-  // grid with no toggle to close it unless the grid itself sits inside the same guard.
   const source = await readSrcAsync("features/images/train/diffusion-train-panel.tsx");
   const guard = "{selectedDataset.image_count > 0 && (";
   const toggle = source.indexOf("<LabelingGridToggle");
   const grid = source.indexOf("<DatasetLabelingGrid");
   assert.ok(toggle > 0 && grid > 0);
-  // The guard opening the block the toggle sits in.
   const start = source.lastIndexOf(guard, toggle);
   assert.ok(start > 0, "the toggle is not inside an image_count guard");
-  // Walk to that block's matching close brace.
   let depth = 0;
   let end = -1;
   for (let i = start; i < source.length; i += 1) {

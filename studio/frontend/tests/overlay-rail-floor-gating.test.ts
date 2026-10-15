@@ -2,21 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * A card in the bottom-right rail may not reserve height it does not paint.
- *
- * The rail is bottom-anchored, so dead space inside a card lifts everything
- * visible off the corner. #10117 put an ungated floor on the llama.cpp banner
- * whose changelog only renders once opened: 204.2px reserved, 147.3px painted.
- * Fixed by #10229.
- *
- * The rule pinned here, rather than a spelling: a floor may only be reserved
- * when the thing it protects is on screen. Two gates satisfy it, the CSS
- * `has-[[data-slot=...]]:` and a React predicate that also renders the panel.
- * The suite that missed #10117 asserted the floor was PRESENT, so a spelling
- * check can be edited into agreement with the bug it should catch.
- *
- * Read from the source: the node suite has no DOM. The geometry itself is in
- * tests/studio/playwright_update_banner_layout.py.
+ * A rail floor may only be reserved when what it protects is on screen: the rail is
+ * bottom-anchored, so dead space lifts every visible card. Geometry lives in Playwright.
  */
 
 import assert from "node:assert/strict";
@@ -43,14 +30,9 @@ const parse = (path: URL, name: string): ts.SourceFile =>
 
 const provider = parse(src("app/provider.tsx"), "provider.tsx");
 
-/** The rails, matched on the corner they are anchored to. */
 const RAIL_ANCHOR = "pointer-events-none fixed bottom-0 right-4";
 
-/**
- * Every component that ends up in a rail. Two sources: literal children of an
- * anchored rail miss whatever the Tauri layer takes through `{children}`, and
- * `positioned={false}` misses a card that takes no such prop.
- */
+/** Literal rail children miss Tauri `{children}`; `positioned={false}` misses prop-less cards. */
 function railChildren(): string[] {
   const names = new Set<string>();
   const visit = (node: ts.Node): void => {
@@ -84,7 +66,6 @@ function railChildren(): string[] {
   return [...names].sort();
 }
 
-/** Where `name` is imported from, resolved on disk. Barrels followed one hop. */
 function sourceOf(name: string): { path: URL; label: string } | null {
   let specifier: string | null = null;
   for (const statement of provider.statements) {
@@ -121,10 +102,7 @@ function sourceOf(name: string): { path: URL; label: string } | null {
   return followed ? { path: followed, label: `${base}/${hop[1]}` } : null;
 }
 
-/**
- * Any spelling, since a rule that knows only `min-h-[calc(` is retired by
- * rewriting it. `min-h-0` removes the flex `auto` default, so it is not a floor.
- */
+/** Any spelling counts; `min-h-0` only removes the flex auto default, so it is no floor. */
 const FLOOR_TOKEN = /(^|:)min-h-(?!0$)\S+/;
 
 /** getText() keeps the quotes, which are not class tokens. */
@@ -150,12 +128,7 @@ function floorLiterals(file: ts.SourceFile): ts.Node[] {
   return found;
 }
 
-/**
- * The protected panels and the slots they declare, read out of the tree, not
- * matched by name: a substring rule accepts a `<ChangelogToggle>` and a free
- * `data-slot` accepts `card-footer`, which an always-present footer makes
- * permanent. A panel is one rendering the shared notes layout root.
- */
+/** Read from the tree, not by name: substring matches accept toggles and footer slots. */
 function notesPanels(): { components: Set<string>; slots: Set<string> } {
   const components = new Set<string>();
   const slots = new Set<string>();
@@ -177,7 +150,6 @@ function notesPanels(): { components: Set<string>; slots: Set<string> } {
 
 const NOTES = notesPanels();
 
-/** Is every floor in `literal` gated by `:has()` on a slot the panel declares? */
 function gatedByHas(literal: ts.Node): boolean {
   const tokens = classTokens(literal).filter(isFloor);
   return (
@@ -189,11 +161,7 @@ function gatedByHas(literal: ts.Node): boolean {
   );
 }
 
-/**
- * `whenTrue` only. A floor in the other branch applies when its predicate is
- * false, which is no gate at all: `showFailure ? "shrink-0" : "<floor>"`, the
- * shape #8367 shipped, floors every state except the one named.
- */
+/** `whenTrue` only: a floor in the else branch applies whenever the predicate is false. */
 function branchConditions(literal: ts.Node): string[] {
   const conditions: string[] = [];
   let node: ts.Node = literal;
@@ -208,16 +176,10 @@ function branchConditions(literal: ts.Node): string[] {
   return conditions;
 }
 
-/**
- * Rendering something is not enough: `changelogAvailable` renders the toggle and
- * is true while the panel is closed, which is #10117 exactly. It must render the
- * notes themselves.
- */
 /** The className painted inside this floor's own slot: its element's first child. */
 function paintedSurface(literal: ts.Node): string | null {
   let node: ts.Node | undefined = literal;
   while (node && !ts.isJsxAttribute(node)) node = node.parent;
-  // attribute -> attributes -> opening tag
   const opening = node?.parent?.parent;
   if (!opening || !ts.isJsxOpeningElement(opening)) return null;
   const owner = opening.parent;
@@ -234,6 +196,7 @@ function paintedSurface(literal: ts.Node): string | null {
   return null;
 }
 
+/** The predicate must render the notes, not just the toggle, which shows while closed. */
 function gatesTheNotes(source: string, condition: string): boolean {
   const name = condition.trim();
   if (!/^[A-Za-z_$][\w$]*$/.test(name)) return false;
@@ -281,7 +244,7 @@ reserved unconditionally and nothing checks it.`,
     );
 
     const literals = floorLiterals(file);
-    if (literals.length === 0) return; // No floor, nothing to gate.
+    if (literals.length === 0) return;
 
     for (const literal of literals) {
       const gated =
@@ -309,8 +272,7 @@ Floor found in: ${literal.getText().slice(0, 200)}
 Ternary conditions around it: ${branchConditions(literal).join(", ") || "(none)"}`,
       );
 
-      // This floor's own painted child, not any `grow` in the file: an alternate
-      // branch carrying one would answer for a surface that does not.
+      // This floor's own painted child: another branch's `grow` would vouch for the wrong surface.
       const surface = paintedSurface(literal);
       assert.ok(
         surface,

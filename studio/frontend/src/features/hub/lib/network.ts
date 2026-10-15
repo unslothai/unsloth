@@ -9,11 +9,7 @@ const REMOTE_OFFLINE_TTL_MS = 30_000;
 const HUGGING_FACE_ORIGIN = "https://huggingface.co";
 const noopUnsubscribe = () => undefined;
 
-/**
- * Origin the Hub traffic actually goes to. The backoff maps key on the request
- * origin, so this has to follow HF_ENDPOINT too: keying a mirror deployment on
- * huggingface.co would probe an origin nothing ever talks to.
- */
+/** Follows HF_ENDPOINT, since the backoff maps key on the request origin. */
 function defaultHubOrigin(): string {
   try {
     return new URL(getHfEndpoint()).origin;
@@ -25,11 +21,8 @@ function defaultHubOrigin(): string {
 type RemoteNetworkScope = string | readonly string[];
 
 /**
- * Why a Hub request failed. Browsers collapse CORS, DNS, TLS interception and
- * real outages into one opaque TypeError, so "network-opaque" says what we can
- * prove, not what happened. Only CSP can be named, via its violation event.
- * "auth-rejected" is the Hub answering, and refusing the credential: it never
- * backs the origin off, since the Hub is reachable and a retry can succeed.
+ * Browsers collapse CORS, DNS, TLS and outages into one TypeError, so "network-opaque" is what
+ * we can prove. "auth-rejected" never backs the origin off.
  */
 export type HubFailureKind =
   | "aborted"
@@ -41,7 +34,7 @@ export type HubFailureKind =
 
 export interface HubFailure {
   kind: HubFailureKind;
-  /** Already sanitised: safe to render. Never contains a full URL or a token. */
+  /** Already sanitised: never contains a full URL or a token. */
   message: string;
   /** Origin only, never the full request URL (which carries the search query). */
   origin: string | null;
@@ -49,7 +42,6 @@ export interface HubFailure {
   retryable: boolean;
 }
 
-/** Error thrown by fetchWithTimeout carrying a classified, renderable failure. */
 export class HubFetchError extends Error {
   readonly failure: HubFailure;
 
@@ -65,9 +57,7 @@ export function isHubFetchError(error: unknown): error is HubFetchError {
 }
 
 const remoteOfflineUntilByOrigin = new Map<string, number>();
-// The TTL controls when we retry; this controls what we tell the user. Cleared
-// only by a success, so the cause outlives the backoff window and the panel can
-// still say why after the window has lapsed.
+// Cleared only by a success, so the cause outlives the backoff window.
 const lastFailureByOrigin = new Map<string, HubFailure>();
 
 function isNavigatorOffline(): boolean {
@@ -82,10 +72,7 @@ function emitNetworkStatusChange(): void {
 }
 
 export function getBrowserOfflineRetryDelayMs(): number {
-  // Keyed off the empirical remote-offline TTL, not navigator.onLine, so
-  // recovery doesn't stall on platforms where navigator.onLine is stuck false.
-  // The earliest live window, not the latest: the phase reads one feed's, so
-  // waking on the longest would leave it reporting a state it had already left.
+  // Uses the empirical TTL, not navigator.onLine; the earliest live window, not the latest.
   return Math.max(
     0,
     getEarliestRemoteOfflineUntil() - Date.now(),
@@ -113,7 +100,6 @@ function getRemoteOfflineUntil(scope: RemoteNetworkScope): number {
   return until;
 }
 
-/** The soonest live window anywhere, or 0 when nothing is backing off. */
 function getEarliestRemoteOfflineUntil(): number {
   const now = Date.now();
   let until = 0;
@@ -136,16 +122,11 @@ export function isRemoteNetworkOffline(
 }
 
 export function isHuggingFaceOffline(): boolean {
-  // navigator.onLine is advisory only (false-reports offline on WSL2 / some WebKitGTK/Tauri
-  // webviews). The authoritative signal is the empirical remote-offline TTL, set when a real fetch
-  // fails and cleared on next success; navigator's online/offline events still drive re-evaluation.
+  // navigator.onLine is advisory (false offline on WSL2 / some WebKitGTK webviews).
   return isRemoteNetworkOffline(defaultHubOrigin());
 }
 
-/**
- * Availability of a Hub origin. A lapsed backoff means "probing", not
- * "available": only a success promotes an origin, which stops the flapping.
- */
+/** A lapsed backoff is "probing"; only a success promotes to "available". */
 export type HubPhase = "available" | "probing" | "unavailable";
 
 export function getHubPhase(origin: string = defaultHubOrigin()): HubPhase {
@@ -174,7 +155,6 @@ export function markRemoteNetworkOnline(origin?: string): void {
     emitNetworkStatusChange();
     return;
   }
-  // The cause goes with the window: a success is what proves the block lifted.
   const hadWindow = remoteOfflineUntilByOrigin.delete(origin);
   const hadFailure = lastFailureByOrigin.delete(origin);
   if (!hadWindow && !hadFailure) {
@@ -193,9 +173,7 @@ export function markRemoteNetworkOffline(
   const ttl = typeof originOrTtl === "number" ? originOrTtl : ttlMs;
   const nextUntil = Date.now() + ttl;
   const previousUntil = remoteOfflineUntilByOrigin.get(origin) ?? 0;
-  // The cause has to describe the window in force: recording a newer cause while keeping a longer
-  // window left the panel naming a spent failure while a different, still-live one held it
-  // unavailable. A first cause is always taken, so nothing the user sees goes unexplained.
+  // The cause must describe the window in force; a first cause is always taken.
   const takesWindow = nextUntil > previousUntil;
   const records =
     failure !== undefined && (takesWindow || !lastFailureByOrigin.has(origin));
@@ -214,7 +192,6 @@ export function markRemoteNetworkOffline(
   emitNetworkStatusChange();
 }
 
-/** Let Retry re-probe now. The failure stays until a request succeeds. */
 export function clearRemoteBackoff(
   origin: string = defaultHubOrigin(),
 ): void {
@@ -278,10 +255,7 @@ function hostLabel(origin: string | null): string {
   }
 }
 
-/**
- * Build a renderable failure. Drops the request URL: it carries the search query
- * and can carry an internal hostname. Only the origin's host survives.
- */
+/** Drops the request URL (search query, internal hostnames); only the host survives. */
 export function classifyFetchFailure(
   error: unknown,
   origin: string | null,
@@ -328,19 +302,11 @@ export function classifyFetchFailure(
   };
 }
 
-// What the Hub says when it refuses the credential itself: an expired or revoked
-// OAuth token ("OAuth token verification failed"), a bad key ("Invalid credentials
-// in Authorization header"), or a bare 401. A 403 is left out on purpose: it is
-// the answer for a gated or private repo the token is valid for, not a rejection.
+// 403 is excluded on purpose: it means a gated/private repo, not a rejected token.
 const HUB_TOKEN_REJECTED_RE =
   /invalid credentials|invalid (?:user )?(?:access )?token|oauth token verification failed|token (?:has )?(?:expired|been revoked)/i;
 
-/**
- * The failure for a Hub that answered and refused the saved token. Built from
- * the HTTP status when the caller has it, else from the SDK's error text, which
- * is all a paginated listing keeps. Null for anything else, including 403, 404,
- * 429 and 5xx, so those keep their own wording.
- */
+/** Null for anything but a refused token, including 403, 404, 429 and 5xx. */
 export function hubAuthFailure(
   error: { status?: number | null; message?: string | null },
   origin: string | null = defaultHubOrigin(),
@@ -360,11 +326,7 @@ export function hubAuthFailure(
   };
 }
 
-/**
- * Drop the trailer @huggingface/hub's createApiError appends to every message
- * ("... URL: <full request url>. Request ID: ..."). The URL carries the user's
- * search query, and on a private deployment the mirror's hostname.
- */
+/** Strips the SDK's "URL: ... Request ID: ..." trailer, which leaks the query and host. */
 export function sanitizeHubErrorMessage(message: string): string {
   if (!message) return message;
   const cleaned = message.replace(/\.?\s*URL:\s*\S+(\.\s*Request ID:\s*\S+)?\.?\s*$/, "");
@@ -408,10 +370,7 @@ export async function fetchWithTimeout(
       throw error;
     }
     const failure = classifyFetchFailure(error, origin, { timedOut });
-    // Connectivity failures only. A timeout is per-request, and the short ones
-    // belong to optional assets (avatar, README, dataset size), so one slow
-    // endpoint would take the whole origin down for 30s while the API was fine.
-    // The caller still gets the classified timeout and can retry at once.
+    // Connectivity failures only: a slow optional asset timing out must not take the origin down.
     if (origin && !timedOut && isNetworkFetchError(error)) {
       markRemoteNetworkOffline(origin, REMOTE_OFFLINE_TTL_MS, failure);
     }

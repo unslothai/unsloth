@@ -1,14 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The System tab's host verdict, run rather than pattern-matched.
-//
-// The verdict lives in resources-tab.tsx as `hostUnread && !hasGpu` and the preservation rule
-// in the callbacks useSystemInfo hands to setSystemInfo; delete either and the existing
-// settledFailureStatus cases still pass. So lift both and evaluate them, the way
-// chat-only-route-guard.test.ts lifts the route guard out of __root.tsx (a .tsx pulls in the
-// whole app and cannot be imported here). DEFAULT_SYSTEM is shaped like a CPU-only host, so
-// rendering it told an AMD/ROCm user "No visible GPU detected".
+// The verdict and preservation rule live in .tsx files that cannot be imported, so lift and
+// evaluate them. DEFAULT_SYSTEM looks CPU-only, so rendering it misreports GPU hosts.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -24,7 +18,6 @@ function lift(src: string, pattern: RegExp, what: string, where: string): string
   return found[0];
 }
 
-// hostReading's parameter is the block's only annotation; dropping it keeps this plain node.
 const verdict = [
   lift(tabSrc, /const hasGpu =\n?[\s\S]*?;/, "hasGpu", "resources-tab.tsx"),
   lift(tabSrc, /const hostUnread = [\s\S]*?;/, "hostUnread", "resources-tab.tsx"),
@@ -37,7 +30,6 @@ const verdict = [
   ),
 ].join("\n");
 
-// The GPU-devices section's fallback: what a host with no device rows reads.
 const gpuSection = lift(
   tabSrc,
   /gpuUnknown \? gpuUnknownLabel : t\("settings\.resources\.gpu\.noGpu"\)/,
@@ -45,7 +37,6 @@ const gpuSection = lift(
   "resources-tab.tsx",
 );
 
-// t() returns its key, so a failure names the string the user would have seen.
 const t = (key: string) => key;
 
 interface Snapshot {
@@ -120,7 +111,6 @@ test("before the host has been read, the tab says it is checking, not that there
 });
 
 test("after the read settles empty, the tab says so, and still does not claim there is no GPU", () => {
-  // Distinct from "checking": with live updates off nothing retries.
   const out = verdictFor(cpuShaped("unavailable"));
   assert.equal(out.gpuUnknown, true);
   assert.equal(out.gpuSection, UNREADABLE);
@@ -129,7 +119,6 @@ test("after the read settles empty, the tab says so, and still does not claim th
 });
 
 test("the Environment rows wait for the same read", () => {
-  // Its backend is "cpu" and its package list empty: the verdict the GPU sections refuse.
   for (const status of ["pending", "unavailable"]) {
     const out = verdictFor(cpuShaped(status));
     assert.equal(out.backendRow, UNKNOWN, `backend row on a ${status} host`);
@@ -138,12 +127,9 @@ test("the Environment rows wait for the same read", () => {
 });
 
 test("no tile fabricates a usage percentage for a host it has not read", () => {
-  // percent null draws a dash and an empty bar. An unread host is not an idle one, so no
-  // tile may pass 0. Asserted on the source, since percent is a prop, not a derivation.
+  // An unread host is not an idle one, so no tile may pass 0.
   const tiles = tabSrc.match(/<MetricTile\b[\s\S]*?\/>/g) ?? [];
-  // Every tile the tab renders, not a fixed four: the models-disk tile (#12724) is a fifth that
-  // only mounts when the models folder sits on another drive. Counting the opening tags on their
-  // own catches a tile the self-closing match above failed to capture, which the loop would skip.
+  // Count opening tags too: the optional models-disk tile may be missed by the match above.
   const opened = (tabSrc.match(/<MetricTile\b/g) ?? []).length;
   assert.ok(tiles.length >= 4, `the Live monitor's tiles: found ${tiles.length}`);
   assert.equal(tiles.length, opened, "every <MetricTile> is captured whole");
@@ -159,7 +145,6 @@ test("no tile fabricates a usage percentage for a host it has not read", () => {
 });
 
 test("the two non-answers are worded for the whole host, not just its GPUs", () => {
-  // "Checking for GPUs..." is wrong beside a RAM reading, so those tiles take common.loading.
   const detail = lift(tabSrc, /const hostUnreadDetail =\n?[\s\S]*?;/, "hostUnreadDetail", "resources-tab.tsx");
   const forStatus = (status: string) =>
     new Function("systemInfo", "t", `${detail}\nreturn hostUnreadDetail;`)({ status }, t);
@@ -194,11 +179,8 @@ test("a host with a GPU gets none of the three fallbacks", () => {
   }
 });
 
-// The two rules useSystemInfo applies to its own state.
-
 test("a failed poll preserves the whole reading on screen, not just its status", () => {
-  // settledFailureStatus("ready") does not prove this: the branch acting on it rebuilds from
-  // DEFAULT_SYSTEM, and only the identity short-circuit keeps the reading.
+  // Only the identity short-circuit keeps the reading; the branch rebuilds from DEFAULT_SYSTEM.
   const branch = lift(
     hookSrc,
     /\(previous\) => \{\n\s*const status = settledFailureStatus\([\s\S]*?\n\s*\}/,
@@ -223,8 +205,7 @@ test("a failed poll preserves the whole reading on screen, not just its status",
 });
 
 test("a success published by another consumer clears a placeholder but not a reading", () => {
-  // Nothing retries a settled placeholder while polling is off, so without this the tab keeps
-  // saying the hardware is unreadable after the shared cache has recovered.
+  // Nothing retries a settled placeholder while polling is off.
   const rule = lift(
     hookSrc,
     /\(previous\) => \(previous\.status === "ready" \? previous : info\)/,

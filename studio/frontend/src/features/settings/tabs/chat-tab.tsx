@@ -390,7 +390,7 @@ export function ChatTab() {
   const setFoldToolActivityIntoThinking = useChatPreferencesStore(
     (state) => state.setFoldToolActivityIntoThinking,
   );
-  // Cannot coexist with always expanded. The stored preference is left alone so it comes back.
+  // Fold cannot coexist with always expanded; the stored fold preference is kept so it comes back.
   const foldBlockedByAlwaysExpanded = toolVisibility === "expanded";
   const pastedTextMinChars = useChatPreferencesStore(
     (state) => state.pastedTextMinChars,
@@ -398,9 +398,7 @@ export function ChatTab() {
   const setPastedTextMinChars = useChatPreferencesStore(
     (state) => state.setPastedTextMinChars,
   );
-  // The platform's own paste-without-formatting chord, which the composer reads
-  // as "put it in the box" whatever this threshold says. macOS carries it on
-  // Option, that being the chord its Edit menu binds.
+  // The composer always pastes this chord as plain text; macOS binds it on Option.
   const macPlatform = isMacPlatform();
   const plainPasteLabel = formatBindingLabel(
     { code: "KeyV", mod: true, ctrl: false, shift: true, alt: macPlatform },
@@ -720,7 +718,6 @@ export function ChatTab() {
         </SettingsRow>
         <SettingsRow
           label={t("settings.chat.tools.foldIntoThinking")}
-          // Says why the row is off rather than letting a checked switch do nothing.
           description={t(
             foldBlockedByAlwaysExpanded
               ? "settings.chat.tools.foldIntoThinkingBlocked"

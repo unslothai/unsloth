@@ -1,10 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Reads and ejects for the indicator. Reads are best-effort and independent: a
-// chat-only host has no video runtime, and that must not blank the other rows.
-// images/video/api-monitor are reached directly, as api-monitor-page.tsx does:
-// their indexes re-export pages __root.tsx keeps out of the eager bundle.
+// Reads are independent so a missing runtime does not blank other rows. Feature modules are
+// imported directly because their indexes re-export pages kept out of the eager bundle.
 
 import { authFetch } from "@/features/auth";
 import {
@@ -36,13 +34,10 @@ import {
   verifyResident,
 } from "./loaded-models-sources";
 
-/** What describeInferenceStatus reads, without importing the chat types path. */
 type InferenceStatus = NonNullable<
   Parameters<typeof describeInferenceStatus>[0]
 >;
 
-/** Read the chat runtime directly, as the dictation read below does, rather
- *  than through the chat barrel. */
 async function readInferenceStatus(
   signal?: AbortSignal,
 ): Promise<InferenceStatus | null> {
@@ -61,12 +56,9 @@ async function readSttStatus(
   return (await response.json()) as SttStatusResponse;
 }
 
-// A runtime that accepts the connection and never answers would leave the whole batch pending
-// forever, and with it the in-flight guard gating every later refresh. Well past a cold status
-// probe, so a slow-but-healthy read still lands and only a real hang trips it.
+// A runtime that never answers would block every later refresh; well past a cold probe.
 const READ_TIMEOUT_MS = 10_000;
 
-/** null on failure or timeout: one stalled runtime must not empty the list. */
 async function settled<T>(
   read: (signal: AbortSignal) => Promise<T>,
 ): Promise<T | null> {
@@ -81,16 +73,8 @@ async function settled<T>(
 }
 
 /**
- * The same bound for the eject path's *reads*, but the failure is raised rather
- * than swallowed. Without it a runtime that accepts the connection and never
- * answers leaves the eject pending forever, so the row keeps its spinner and
- * stays disabled until the page is reloaded.
- *
- * Deliberately not applied to the unloads themselves. Those block on the
- * runtime's generate lock while the in-flight denoise or clip winds down, which
- * is routinely tens of seconds, and aborting the fetch would not cancel the
- * teardown: the eject would report a failure while the memory was being freed.
- * A stale read is cheap to retry; a half-reported unload is not.
+ * Bounds eject reads but rethrows. Not applied to unloads: they wait on the generate lock
+ * for tens of seconds, and aborting would not cancel the teardown.
  */
 async function bounded<T>(
   read: (signal: AbortSignal) => Promise<T>,
@@ -104,19 +88,11 @@ async function bounded<T>(
 }
 
 /**
- * Everything resident right now, across all four runtimes.
- *
- * `previous` is what the card is showing. A read that failed or timed out comes
- * back as null, which is not evidence the runtime is empty: dropping its rows
- * would take the model off the card, and with all four failing on one blip of a
- * remote Unsloth the whole card would vanish while everything stayed loaded. So
- * an unreadable source keeps what it last showed and a readable one is always
- * replaced, including by an empty answer, which is how an unload still clears.
+ * A failed read is not evidence the runtime is empty: an unreadable source keeps its last
+ * rows, a readable one is always replaced (even by an empty answer).
  */
 export type LoadedModelsRead = {
   entries: LoadedModelEntry[];
-  /** Sources whose status did not come back, so nothing in this read is
-   *  evidence about them. */
   unreadable: LoadedModelSource[];
 };
 
@@ -150,7 +126,6 @@ export async function readLoadedModels(
   return { entries, unreadable };
 }
 
-/** Release the model this row names, and only that one. See eject-chat-model.ts. */
 async function ejectChatRow(entry: LoadedModelEntry): Promise<EjectOutcome> {
   const { unloadedAliases, stillResident, replacedBy } = await ejectChatModel(
     entry.name,
@@ -159,7 +134,6 @@ async function ejectChatRow(entry: LoadedModelEntry): Promise<EjectOutcome> {
         const status = await bounded(getInferenceStatus);
         const checkpoint = resolveInferenceCheckpointId(status);
         if (!checkpoint) return null;
-        // Both spellings: status reports the load path, the store the repo id.
         return {
           checkpoint,
           aliases: [checkpoint, status.active_model].filter(
@@ -175,16 +149,13 @@ async function ejectChatRow(entry: LoadedModelEntry): Promise<EjectOutcome> {
   );
   if (stillResident) return { status: "stillResident", model: stillResident };
   if (replacedBy) return { status: "replaced", resident: replacedBy };
-  // Nothing released and nothing in its place: the runtime was already idle.
   if (unloadedAliases.length === 0) return { status: "alreadyFree" };
-  // Only when the row's model is really gone. A reload during the run leaves it
-  // resident and still usable, so emptying the picker would be wrong.
+  // Only when the model is really gone: a reload during the run leaves it usable.
   clearChatSelectionFor(unloadedAliases);
   return { status: "ejected" };
 }
 
-/** Clear the picker only when it names something this eject released: chat can
- *  hold an external selection while a local model is resident. */
+/** Chat can hold an external selection while a local model is resident. */
 function clearChatSelectionFor(aliases: string[]): void {
   const store = useChatRuntimeStore.getState();
   const selected = store.params.checkpoint;
@@ -195,43 +166,26 @@ function clearChatSelectionFor(aliases: string[]): void {
 }
 
 /**
- * How an eject ended. `replaced` means the row named a model the runtime no
- * longer holds, so nothing was unloaded: these endpoints carry no model id and
- * would have released whatever took its place. `alreadyFree` is the same read
- * of a runtime holding nothing at all, kept apart from `ejected` so a stale row
- * cannot report an unload that never ran.
+ * `replaced`: the runtime holds another model, so nothing was unloaded (these endpoints
+ * carry no model id). `alreadyFree`: it held nothing.
  */
 export type EjectOutcome =
   | { status: "ejected" }
   | { status: "alreadyFree" }
   | { status: "replaced"; resident: string }
   | { status: "stillResident"; model: string }
-  // The unload was accepted but the read that confirms it did not answer, so neither "done" nor
-  // "failed" is true. Reported as its own outcome rather than collapsed into either, since the
-  // whole point of the confirming read is that a 200 from this endpoint is not evidence.
+  // Unload accepted but the confirming read did not answer: neither done nor failed.
   | { status: "unverified" };
 
-/** `unload` could not confirm what the runtime holds, which is not the same as
- *  confirming it holds nothing. */
 const UNVERIFIED = Symbol("unverified");
 
-/**
- * The three identity-less unloads, guarded by a fresh read of their runtime.
- * `unload` resolves to a model still resident afterwards, null once free, or
- * UNVERIFIED when the confirming read did not answer.
- *
- * This narrows the window to the round trip rather than closing it, since only
- * a backend that took the model id could do that, but the row itself is up to a
- * whole poll old and that is the part worth not trusting.
- */
+/** Narrows the stale-row window to the round trip; only a model-id unload could close it. */
 async function ejectRuntimeRow(
   entry: LoadedModelEntry,
   resident: string | null,
   unload: () => Promise<string | null | typeof UNVERIFIED>,
 ): Promise<EjectOutcome> {
   const verdict = verifyResident(entry.name, resident, modelIdsMatch);
-  // Nothing resident: the row is stale and its memory is already free. Said
-  // plainly rather than as an eject, which would claim an unload never issued.
   if (!resident) return { status: "alreadyFree" };
   if (verdict !== "match") return { status: "replaced", resident };
   const stillResident = await unload();
@@ -241,7 +195,6 @@ async function ejectRuntimeRow(
     : { status: "ejected" };
 }
 
-/** Release one row, after checking the runtime still holds what the row names. */
 export async function ejectLoadedModel(
   entry: LoadedModelEntry,
 ): Promise<EjectOutcome> {
@@ -255,7 +208,6 @@ export async function ejectLoadedModel(
         before.loaded ? before.repo_id : null,
         async () => {
           const after = await unloadDiffusionModel();
-          // The page owning this runtime keeps its own copy of the status.
           notifyModelEjected("image");
           return after.loaded ? (after.repo_id ?? entry.name) : null;
         },
@@ -276,10 +228,8 @@ export async function ejectLoadedModel(
     case "stt": {
       const engine = entry.sttEngine;
       if (!engine) throw new Error("This row names no dictation engine.");
-      // Dictation loads on demand and releases when idle, so the engine's
-      // resident model can change with no user action at all.
+      // Dictation loads and releases on its own, so the resident model can change unprompted.
       const before = await bounded(readSttStatus);
-      // Unreadable status: say so rather than unload blind or claim success.
       if (!before) {
         throw new Error(
           "Could not read dictation status, so nothing was ejected.",
@@ -296,13 +246,9 @@ export async function ejectLoadedModel(
             { method: "POST" },
           );
           if (!response.ok) throw new Error(await readErrorDetail(response));
-          // The unload response body is a fixed {loaded_model: null}, and the backend silently
-          // serves `gguf` from the transformers engine when whisper-server is absent, so a 200 is
-          // not evidence this engine let go. Re-read and report what it actually holds.
+          // The unload body is fixed and the backend may serve `gguf` from transformers, so re-read.
           const after = await bounded(readSttStatus);
-          // A non-2xx read is null too, and reading that as "nothing left"
-          // would toast success and drop the row for a model still holding
-          // memory, which is the exact case this re-read exists to catch.
+          // A failed read is null too; treating it as empty would hide a model still holding memory.
           if (!after) return UNVERIFIED;
           return sttEngineStatus(after, engine)?.loaded_model ?? null;
         },

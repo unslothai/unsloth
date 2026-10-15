@@ -84,16 +84,13 @@ test("falls back for a title that leaves nothing usable", () => {
 });
 
 test("falls back where the backend would list the source as _.md", () => {
-  // The backend collapses anything outside [A-Za-z0-9._-] to "_", so a title
-  // with no ASCII word character would otherwise arrive as "_.md".
+  // The backend collapses non [A-Za-z0-9._-] to "_".
   assert.equal(projectSourceFileName("你好世界"), "chat.md");
   assert.equal(projectSourceFileName("разговор"), "chat.md");
   assert.equal(projectSourceFileName("\u{1f600}\u{1f680}"), "chat.md");
-  // One ASCII character is enough to keep the title.
   assert.equal(projectSourceFileName("Qwen 你好"), "Qwen 你好.md");
 });
 
-/** Any surrogate left over once the well-formed pairs are removed is a half. */
 function loneSurrogates(text: string): number {
   return (
     text.replace(/[\ud800-\udbff][\udc00-\udfff]/g, "").match(/[\ud800-\udfff]/g)

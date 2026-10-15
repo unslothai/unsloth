@@ -104,7 +104,7 @@ export function OpenAICodexConnect({
       const url = next.authorization_url || next.verification_url;
       if (url) {
         if (!isTrustedCodexAuthUrl(url)) throw new Error("The authorization URL was not trusted.");
-        // Sign-in needs the provider's cookies, which the browser panel does not keep.
+        // Sign-in needs provider cookies, which the browser panel does not keep.
         openExternalLink(url);
       }
     } catch (cause) {

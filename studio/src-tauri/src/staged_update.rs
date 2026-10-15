@@ -1,10 +1,5 @@
 //! Cleans up what the 805-807 background update left on disk. Nothing here activates a stage.
-//!
-//! Those releases cloned the managed runtime into `.update-stage`, swapped it in at the next
-//! launch and kept the replaced trees in `.update-prev` until a health probe confirmed the new
-//! backend. An install that took such an update can still carry a half-written stage, an
-//! unconfirmed runtime, or rollback trash. Every step below is a rename or a delete, so
-//! running it twice does nothing the first run did not.
+//! Every step is a rename or a delete, so it is idempotent.
 
 use crate::process_identity::ProcessOrigin;
 use log::{info, warn};
@@ -39,8 +34,7 @@ fn live_entry(home: &Path, name: &str) -> PathBuf {
     }
 }
 
-/// The 807 journal also carried `backend_version` and `shell_version`. Unknown fields are
-/// ignored, so a journal from any of 805-807 still parses.
+/// Unknown fields are ignored, so a journal from any of 805-807 still parses.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
 struct ActivationJournal {
     #[serde(default)]
@@ -51,27 +45,20 @@ fn read_journal(path: &Path) -> Option<ActivationJournal> {
     serde_json::from_str(&fs::read_to_string(path).ok()?).ok()
 }
 
-/// Undo whatever a 805-807 background update left behind, then never stage again.
 pub(crate) fn reconcile_legacy_at_launch(home: &Path) {
     remove_stale_trash(home);
-    // Written by the old shell's fail-fast path and by this wheel's refusal; read by nothing here.
     let _ = fs::remove_file(home.join(FAILED_MARKER));
-    // Before the rollback, not after: a READY stage must never be activated, and a rollback that
-    // still saw one would leave unrestored entries live beside the restored runtime.
+    // Before the rollback: a READY stage must never be activated, and a rollback that saw one
+    // would leave unrestored entries live.
     discard_stage(home);
     if let Err(error) = roll_back_unconfirmed(home) {
         warn!("[staged-update] could not restore the previous runtime: {error}");
     }
 }
 
-/// Settle a deferred legacy rollback before an update mutates the live runtime.
-///
-/// `reconcile_legacy_at_launch` leaves a PENDING journal alone while a backend is on the tree,
-/// which is right at launch and wrong afterwards: a classic update would install into a runtime
-/// the journal still names as something to undo, and the next idle launch would restore the
-/// pre-update trees over it. Refusing beats updating a runtime about to be replaced by a backup.
+/// Settle a deferred legacy rollback before an update mutates the live runtime, or the next idle
+/// launch would restore the pre-update trees over it.
 pub(crate) fn reconcile_before_update(home: &Path) -> Result<(), String> {
-    // Nothing a 805-807 update left behind, so nothing to probe for.
     if !home.join(PREV_DIR).is_dir() && !home.join(STAGE_DIR).exists() {
         return Ok(());
     }
@@ -79,8 +66,7 @@ pub(crate) fn reconcile_before_update(home: &Path) -> Result<(), String> {
 }
 
 fn reconcile_before_update_with(home: &Path, in_use: bool) -> Result<(), String> {
-    // Restarting is the whole fix: an idle launch finishes the rollback itself, and on POSIX the
-    // backend this update would replace is usually the one holding the tree.
+    // Restarting is the fix: an idle launch finishes the rollback itself.
     const RESTART: &str =
         "An unfinished background update from an earlier release is still waiting on a \
          running backend. Quit Unsloth, reopen it, and update again.";
@@ -95,9 +81,8 @@ fn reconcile_before_update_with(home: &Path, in_use: bool) -> Result<(), String>
     Ok(())
 }
 
-/// A rename, not a delete: `.update-stage` holds a clone of the managed venv and every native
-/// helper, and unlinking a torch tree here would hold the runtime gate through all of setup.
-/// Move it into the trash namespace a later launch sweeps anyway.
+/// A rename, not a delete: unlinking a torch-sized tree here would hold the runtime gate through
+/// all of setup.
 fn discard_stage(home: &Path) {
     discard_stage_with(home, |from, to| fs::rename(from, to));
 }
@@ -114,16 +99,14 @@ fn discard_stage_with(home: &Path, rename: impl Fn(&Path, &Path) -> std::io::Res
         });
         return;
     }
-    // Also off the launch path. On Windows the rename fails exactly when a file inside is still
-    // open, which is the multi-gigabyte case the background delete exists for. Nothing activates
-    // a stage any more, so a tree that outlives this call is inert.
+    // Off the launch path: on Windows the rename fails when a file inside is open. A stage that
+    // survives is inert.
     std::thread::spawn(move || {
         let _ = fs::remove_dir_all(stage);
     });
 }
 
-/// Distinct within a launch as well as between launches: a coarse clock can hand two calls the
-/// same reading, and the second rename would land on the first call's trash directory.
+/// A coarse clock can repeat, so the counter keeps trash names distinct within a launch.
 static TRASH_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 fn trash_path(home: &Path, label: &str) -> PathBuf {
@@ -161,16 +144,12 @@ fn remove_stale_trash(home: &Path) {
     });
 }
 
-/// Quarantine the confirmed backup, then unlink it off that path.
-///
-/// A delete in place would take entries out from under the marker vouching for the live runtime,
-/// and an interrupted one would leave a `.update-prev` the next launch reads as an unconfirmed
-/// activation and rolls back to. The rename is the whole decision, and it is atomic.
+/// Quarantine the confirmed backup by atomic rename, then unlink it. A delete in place could leave
+/// a `.update-prev` the next launch rolls back to.
 fn quarantine_confirmed_previous(home: &Path, prev: PathBuf) {
     let trash = trash_path(home, "confirmed");
     if fs::rename(&prev, &trash).is_err() {
-        // Still confirmed and consistent, and every step here repeats safely: leave it for the
-        // next launch rather than start a delete that could strand the marker.
+        // Still consistent: leave it for the next launch rather than strand the marker.
         warn!("[staged-update] could not quarantine the confirmed backup, leaving it for the next launch");
         return;
     }
@@ -180,8 +159,7 @@ fn quarantine_confirmed_previous(home: &Path, prev: PathBuf) {
 }
 
 fn roll_back_unconfirmed(home: &Path) -> Result<(), String> {
-    // `live_tree_in_use` reads every pid record and, on Windows, probes the managed environment.
-    // An install that never took a 805-807 update has nothing to decide and must not pay for it.
+    // `live_tree_in_use` is costly; installs that never took a 805-807 update skip it.
     if !home.join(PREV_DIR).is_dir() {
         return Ok(());
     }
@@ -191,12 +169,10 @@ fn roll_back_unconfirmed(home: &Path) -> Result<(), String> {
 fn roll_back_unconfirmed_with(home: &Path, in_use: bool) -> Result<(), String> {
     let prev = home.join(PREV_DIR);
     if prev.join(CONFIRMED_MARKER).is_file() {
-        // 807 vouched for the runtime that is live now. Keep it and drop the copy off the launch path.
         quarantine_confirmed_previous(home, prev);
         return Ok(());
     }
     if prev.join(ROLLED_BACK_MARKER).is_file() {
-        // The restore already happened; only the bookkeeping is left.
         let _ = fs::remove_dir_all(&prev);
         return Ok(());
     }
@@ -209,8 +185,7 @@ fn roll_back_unconfirmed_with(home: &Path, in_use: bool) -> Result<(), String> {
         return Ok(());
     }
     if in_use {
-        // Renaming the tree under a live process is unsafe and this runtime was never confirmed,
-        // so leave the marker and decide at the next launch.
+        // Never rename the tree under a live process; defer to the next launch.
         info!("[staged-update] runtime still in use, deferring the rollback decision");
         return Ok(());
     }
@@ -233,9 +208,8 @@ fn roll_back_unconfirmed_with(home: &Path, in_use: bool) -> Result<(), String> {
     Ok(())
 }
 
-/// An entry the previous runtime did not have is moved aside rather than left: a legacy install
-/// has nothing to put back for tiered sidecars, so the restored backend would otherwise import
-/// from an environment nothing ever confirmed.
+/// Entries the previous runtime lacked are moved aside, so the restored backend does not import
+/// from unconfirmed sidecars.
 fn restore_previous_runtime(
     home: &Path,
     previous: &Path,
@@ -280,12 +254,9 @@ fn rename_tracked(
     Ok(())
 }
 
-/// Pids that claim to be a backend of this install.
-///
-/// Mirrors `live_sibling_backend` in studio/backend/run.py and reads all three record kinds,
-/// since a backend may have only one: a startup marker while binding, a per-port record once
-/// bound, a bare `studio.pid` otherwise. Markers matter most: the backend keeps its marker after
-/// dropping its pid records, and renaming the tree in that window moves it under a live importer.
+/// Pids claiming to be a backend of this install. Mirrors `live_sibling_backend` in run.py and
+/// reads startup markers, per-port records and `studio.pid`; a backend may have only one. Markers
+/// matter most: a backend keeps its marker after dropping its pid records.
 fn recorded_pids(home: &Path) -> Vec<u32> {
     let mut pids = Vec::new();
     let mut timed = Vec::new();
@@ -295,7 +266,6 @@ fn recorded_pids(home: &Path) -> Vec<u32> {
             let Some(name) = name.to_str() else {
                 continue;
             };
-            // Markers share the per-port record layout, so both carry the start time.
             let pid = name
                 .strip_suffix(".marker")
                 .and_then(|rest| rest.strip_prefix("studio-starting-"))
@@ -320,7 +290,6 @@ fn recorded_pids(home: &Path) -> Vec<u32> {
     }
     if let Ok(body) = fs::read_to_string(home.join("studio.pid")) {
         if let Some(pid) = body.lines().next().and_then(|l| l.trim().parse::<u32>().ok()) {
-            // It carries no start time, so alone it would re-add a pid proved reused.
             if !timed.contains(&pid) {
                 pids.push(pid);
             }
@@ -356,9 +325,7 @@ mod tests {
 
     const READY_MARKER: &str = "READY.json";
 
-    /// Always one level below a private container: `live_entry` resolves the native helpers
-    /// against the parent, so a home directly under the temp directory would have the rollback
-    /// renaming whatever sits beside it.
+    /// One level below a private container: `live_entry` resolves helpers against the parent.
     fn temp_home(name: &str) -> PathBuf {
         let home = std::env::temp_dir()
             .join(format!(
@@ -374,9 +341,7 @@ mod tests {
         home
     }
 
-    /// Two code paths drop a tree on a background thread, and Windows refuses to remove a
-    /// directory while another handle walks inside it, so a racing teardown fails with
-    /// ERROR_ACCESS_DENIED. Retry until the deleter is done.
+    /// Windows refuses to remove a dir another thread is walking (ERROR_ACCESS_DENIED); retry.
     fn cleanup(home: PathBuf) {
         for _ in 0..100 {
             if fs::remove_dir_all(&home).is_ok() || !home.exists() {
@@ -408,7 +373,6 @@ mod tests {
         fs::read_to_string(root.join(name).join("tag")).unwrap_or_default()
     }
 
-    /// The marker bodies 805-807 wrote, versions and all.
     fn write_marker(path: &Path, previous_entries: &[String]) {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         let body = serde_json::json!({
@@ -425,8 +389,7 @@ mod tests {
         write_marker(&stage.join(READY_MARKER), &[]);
     }
 
-    /// What 805-807 did at activation: live trees into `.update-prev`, staged trees into their
-    /// place, a PENDING journal naming what was displaced.
+    /// What 805-807 did at activation.
     fn activate_by_hand(home: &Path) -> Vec<String> {
         let stage = home.join(STAGE_DIR);
         let prev = home.join(PREV_DIR);
@@ -459,12 +422,10 @@ mod tests {
 
         reconcile_legacy_at_launch(&home);
 
-        // Renamed aside rather than unlinked, so the stage is unreachable once the call returns.
         assert!(!home.join(STAGE_DIR).exists());
         assert_eq!(tag(&home, "unsloth_studio"), "old");
         assert!(!home.join(PREV_DIR).exists());
 
-        // Safe to repeat: nothing left to do and nothing undone.
         reconcile_legacy_at_launch(&home);
         assert_eq!(tag(&home, "unsloth_studio"), "old");
         cleanup(home);
@@ -472,8 +433,7 @@ mod tests {
 
     #[test]
     fn a_ready_stage_is_discarded_before_the_rollback_it_would_otherwise_survive() {
-        // 807 crashed mid-swap: the managed venv is the staged one, the sidecars are not, and the
-        // stage still holds the entries the swap never reached.
+        // 807 crashed mid-swap: the venv is staged, the sidecars are not.
         let home = temp_home("ready-stage-and-pending");
         make_runtime(&home, "old");
         stage_ready(&home);
@@ -491,7 +451,6 @@ mod tests {
 
         reconcile_legacy_at_launch(&home);
 
-        // The discard runs first, so the rollback cannot leave a fourth staged entry live.
         for name in RUNTIME_ENTRIES {
             assert_eq!(tag(&home, name), "old", "{name}");
         }
@@ -507,8 +466,6 @@ mod tests {
         stage_ready(&home);
         let stage = home.join(STAGE_DIR);
 
-        // Windows refuses the rename while a file inside is open, the one case the background
-        // delete exists for, so the fallback runs off the launch path too.
         discard_stage_with(&home, |_, _| Err(std::io::Error::other("rename refused")));
 
         wait_gone(&stage);
@@ -535,7 +492,6 @@ mod tests {
 
     #[test]
     fn a_retained_desktop_update_bundle_survives_the_cleanup() {
-        // The classic update installs this bundle after the backend step, in the same directory.
         let home = temp_home("bundle");
         make_runtime(&home, "old");
         stage_ready(&home);
@@ -568,7 +524,6 @@ mod tests {
     fn the_compatibility_failure_marker_is_removed_at_launch() {
         let home = temp_home("failed-marker");
         make_runtime(&home, "old");
-        // What an 807 shell's `--stage` attempt against this wheel leaves behind.
         fs::write(
             home.join(FAILED_MARKER),
             r#"{"backend_version": "2026.9.1", "shell_version": "0.1.807-beta"}"#,
@@ -687,7 +642,6 @@ mod tests {
 
         reconcile_legacy_at_launch(&home);
 
-        // The restore already ran; this launch neither redoes it nor leaves a marker.
         assert!(!home.join(FAILED_MARKER).exists());
         assert_eq!(tag(&home, "unsloth_studio"), "old");
         assert!(!prev.exists());
@@ -705,7 +659,6 @@ mod tests {
 
         reconcile_legacy_at_launch(&home);
 
-        // The superseded runtime is dropped on a background thread.
         wait_gone(&prev);
         assert_eq!(tag(&home, "unsloth_studio"), "new");
         assert!(!prev.exists());
@@ -723,8 +676,6 @@ mod tests {
 
         roll_back_unconfirmed_with(&home, false).unwrap();
 
-        // Renamed, not emptied: a delete in place would take entries out from under the
-        // confirmation, and an interrupted one would leave a backup with no marker.
         assert!(!prev.exists());
         assert_eq!(tag(&home, "unsloth_studio"), "new");
 
@@ -739,13 +690,11 @@ mod tests {
         make_runtime(&home, "old");
         stage_ready(&home);
         activate_by_hand(&home);
-        // The launch found a backend on the tree and left the decision for later.
         roll_back_unconfirmed_with(&home, true).unwrap();
         assert!(home.join(PREV_DIR).join(PENDING_MARKER).is_file());
 
         reconcile_before_update_with(&home, false).unwrap();
 
-        // Settled here, so no later launch can put this backup back over the update.
         assert_eq!(tag(&home, "unsloth_studio"), "old");
         assert!(!home.join(PREV_DIR).exists());
         cleanup(home);
@@ -760,9 +709,7 @@ mod tests {
 
         let error = reconcile_before_update_with(&home, true).unwrap_err();
 
-        // Restarting is what settles it, so the message says that and not a path.
         assert!(error.contains("Quit Unsloth"), "{error}");
-        // Nothing moved, so the launch after this one still has its decision to make.
         assert_eq!(tag(&home, "unsloth_studio"), "new");
         assert!(home.join(PREV_DIR).join(PENDING_MARKER).is_file());
         cleanup(home);
@@ -782,10 +729,8 @@ mod tests {
     #[test]
     fn rollback_takes_back_sidecars_the_failed_update_added() {
         let home = temp_home("rollback-extra");
-        // A legacy install: the managed venv is there, the tiered sidecars are not.
         fs::create_dir_all(home.join("unsloth_studio")).unwrap();
         fs::write(home.join("unsloth_studio").join("tag"), "old").unwrap();
-        // The 807 update built all of them and swapped them in.
         stage_ready(&home);
         activate_by_hand(&home);
         assert_eq!(tag(&home, "unsloth_studio"), "new");
@@ -795,7 +740,6 @@ mod tests {
 
         assert_eq!(tag(&home, "unsloth_studio"), "old");
         for name in [".venv_t5_530", ".venv_t5_550", ".venv_t5_510"] {
-            // The restored backend must not find the unconfirmed update's sidecars.
             assert!(!home.join(name).exists(), "{name}");
         }
         cleanup(home);
@@ -834,14 +778,11 @@ mod tests {
         activate_by_hand(&home);
         assert_eq!(tag(&home, "unsloth_studio"), "new");
 
-        // Force-closed after activation: a backend is alive on the new tree, so
-        // renaming it out from under that process is not an option.
         roll_back_unconfirmed_with(&home, true).unwrap();
 
         assert_eq!(tag(&home, "unsloth_studio"), "new");
         assert!(home.join(PREV_DIR).join(PENDING_MARKER).is_file());
 
-        // Once nothing holds the tree, the rollback it was owed still happens.
         roll_back_unconfirmed_with(&home, false).unwrap();
 
         assert_eq!(tag(&home, "unsloth_studio"), "old");
@@ -869,11 +810,9 @@ mod tests {
         cleanup(home);
     }
 
-    /// This process, whose real start time the guard can be measured against.
     fn live_pid_or_skip(home: &Path) -> Option<u32> {
         let me = std::process::id();
         if crate::process_identity::process_start_time_secs(me).is_none() {
-            // The OS will not say, so neither the reuse guard nor its assertion can fire.
             fs::remove_dir_all(home).ok();
             return None;
         }
@@ -884,7 +823,6 @@ mod tests {
     fn a_startup_marker_counts_as_a_live_tree_record() {
         let home = temp_home("markers");
         let me = std::process::id();
-        // What a backend has while binding, and keeps after dropping its pid records.
         fs::write(
             home.join(format!("studio-starting-{me}.marker")),
             format!("{me}\n"),
@@ -901,7 +839,6 @@ mod tests {
         let Some(me) = live_pid_or_skip(&home) else {
             return;
         };
-        // A start time nowhere near this process: the pid has since been handed out again.
         fs::write(
             home.join(format!("studio-8888-{me}.pid")),
             format!("{me}\n1.0\n"),
@@ -917,7 +854,6 @@ mod tests {
     fn a_bare_record_with_no_timed_evidence_still_counts() {
         let home = temp_home("bare");
         let me = std::process::id();
-        // A pre-upgrade backend, or one whose per-port write failed.
         fs::write(home.join("studio.pid"), format!("{me}\n")).unwrap();
 
         assert!(recorded_pids(&home).contains(&me));

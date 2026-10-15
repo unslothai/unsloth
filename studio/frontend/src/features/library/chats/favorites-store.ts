@@ -6,9 +6,7 @@ import { persist } from "zustand/middleware";
 
 export const LIBRARY_CHAT_FAVORITES_STORAGE_KEY = "unsloth_library_chat_favorites";
 
-// Starred chats, projects and sections, stored locally like pins. Listed only in Favorites and Chats.
 export interface ChatFavoritesState {
-  /** Chat row ids: a thread id, or a compare pair's id. Newest star first. */
   chatIds: string[];
   projectIds: string[];
   sectionIds: string[];

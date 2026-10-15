@@ -90,14 +90,11 @@ function formatGb(value: number | null | undefined): string {
   return `${safe.toFixed(digits)} GB`;
 }
 
-// RAM/VRAM come from the backend in binary units (bytes / 1024**3), matching
-// nvidia-smi and PyTorch, so label those readouts GiB. Disk stays on formatGb
-// because the backend reports disk in decimal GB (bytes / 1e9).
+// RAM/VRAM are binary (GiB, like nvidia-smi); disk is decimal GB.
 function formatGiB(value: number | null | undefined): string {
   const safe = isFiniteNumber(value) ? Math.max(0, value) : 0;
   const digits = safe >= 10 ? 1 : 2;
-  // digits is never 0, so toFixed always leaves a decimal point and trimming
-  // trailing zeros cannot reach an integer digit. "64.0" reads as "64".
+  // digits is never 0, so trimming cannot eat integer digits.
   const text = safe.toFixed(digits).replace(/\.?0+$/, "");
   return `${text} GiB`;
 }
@@ -138,8 +135,7 @@ function MetricTile({
   label: string;
   value: string;
   detail: string;
-  // null = usage unknown (e.g. Windows ROCm perf counter): show a dash and
-  // empty bar rather than a fabricated 0%.
+  // null = unknown (e.g. Windows ROCm perf counter); show a dash, not 0%.
   percent: number | null;
   showUsage?: boolean;
   extraDetail?: string;
@@ -165,7 +161,6 @@ function MetricTile({
           </span>
         )}
       </div>
-      {/* Both lines truncate, so carry the full text: the GPU states are sentences. */}
       <div className="min-w-0">
         <div
           title={value}
@@ -225,11 +220,8 @@ function deviceOrdinal(device: GpuDevice): number | undefined {
   return device.visible_ordinal ?? device.index;
 }
 
-/** A GPU the OS enumerates that this PyTorch cannot open, from /api/system's
- * `gpu.physical_devices`. `index` is the probe's own row number, vendor-local and
- * NOT a pin. Declared here instead of widened onto SystemGpuInfo on purpose: these
- * are display-only, and that shared type is what model fit budgets against and what
- * the training device picker pins from, where an unusable card must never appear. */
+/** OS-enumerated GPU this PyTorch cannot open; `index` is vendor-local, NOT a pin. Kept off
+ * SystemGpuInfo so fit budgets and the device picker never see an unusable card. */
 interface PhysicalGpuDevice {
   vendor?: string;
   index?: number;
@@ -238,9 +230,7 @@ interface PhysicalGpuDevice {
   source?: string;
 }
 
-/** Why the devices above are unusable, from /api/system's `gpu.mismatch`. Absent on
- * a healthy host and on one that genuinely has no GPU, so its presence is the whole
- * signal. `reason` is "torch_cpu_build" or "torch_cuda_unavailable". */
+/** Present only when GPUs are unusable. `reason`: "torch_cpu_build" | "torch_cuda_unavailable". */
 interface GpuTorchMismatch {
   reason?: string;
   torch_version?: string | null;
@@ -367,9 +357,7 @@ export function ResourcesTab() {
     const usageDevices = display.usageDevices;
     const gpuMemoryTotals = gpuMemoryTotalsGb(usageDevices);
     const vramTotal = gpuMemoryTotals.total;
-    // null usage = unknown (e.g. Windows ROCm perf counter); 0 would fabricate a
-    // total, so the device's own row stays unknown. The host figure can still be
-    // known when no device's is (#7452).
+    // null usage is unknown; 0 would fabricate a total. The host figure can still be known.
     const perDeviceKnown = gpuVramUsedIsPerDevice(usageDevices);
     const vramUsed = resolveGpuVramUsedGb(display.usageGpu);
     const vramUsageKnown = vramUsed !== null;
@@ -472,15 +460,13 @@ export function ResourcesTab() {
   const cpuFrequencyLabel = formatFrequency(systemInfo.cpu?.frequency_mhz);
   const hasGpu =
     (displayedGpu?.available ?? false) && metrics.devices.length > 0;
-  // The placeholder reads as a CPU-only host, so rendering it tells an AMD/ROCm user their
-  // card is unused. Until the host is read, say which non-answer it is: checking, or empty.
+  // The placeholder reads as CPU-only, so say checking or empty until the host is read.
   const hostUnread = systemInfo.status !== "ready";
   const gpuUnknown = hostUnread && !hasGpu;
   const gpuUnknownLabel =
     systemInfo.status === "unavailable"
       ? t("settings.resources.gpu.unreadable")
       : t("settings.resources.gpu.detecting");
-  // "Checking for GPUs" is the wrong sentence beside a RAM tile; the failure wording fits.
   const hostUnreadDetail =
     systemInfo.status === "unavailable"
       ? t("settings.resources.gpu.unreadable")
@@ -519,11 +505,9 @@ export function ResourcesTab() {
           shared: formatGiB(metrics.vramShared),
         })
       : formatGiB(metrics.vramTotal);
-  // The placeholder's cpu backend and empty package list are not facts about the host either.
   const hostReading = (value: string) => (hostUnread ? unknownLabel : value);
-  // systemInfo.gpu rather than displayedGpu: this describes the TRAINING view of the host,
-  // and a Vulkan llama.cpp makes displayedGpu fall back to the inference inventory, which is
-  // precisely the host that must be told. Gated on the read having settled.
+  // systemInfo.gpu, not displayedGpu: a Vulkan llama.cpp makes displayedGpu use the inference
+  // inventory, hiding the training problem.
   const gpuInventory = hostUnread
     ? null
     : ((systemInfo.gpu ?? null) as GpuPhysicalInventory | null);
@@ -584,7 +568,6 @@ export function ResourcesTab() {
 
       <SettingsSection title={t("settings.resources.liveMonitor.title")}>
         <div className="grid gap-2 py-3 sm:grid-cols-2">
-          {/* An unread host is not an idle one: percent null is MetricTile's "unknown". */}
           <MetricTile
             label={t("settings.resources.liveMonitor.cpu")}
             value={hostReading(cpuFrequencyLabel ?? cpuCoresLabel)}
@@ -883,8 +866,7 @@ export function ResourcesTab() {
         {hasGpu ? (
           metrics.devices.map((device, index) => {
             const ordinal = deviceOrdinal(device);
-            // Preserve null (unknown, e.g. Windows ROCm perf counter); coercing
-            // to 0 would render a fabricated 0 used / full free.
+            // Preserve null (unknown); 0 would render a fabricated reading.
             const total = device.memory_total_gb ?? null;
             const used = device.vram_used_gb ?? null;
             const free =
@@ -913,9 +895,6 @@ export function ResourcesTab() {
             // Its total is mostly system RAM, so "VRAM" beside it overstates the card (#8942).
             const sharedSplit = deviceSharedMemorySplitGb(device);
             return (
-              // Name over backend on the left, figures over the meter on the
-              // right. The meter tracks the figures' width rather than the
-              // pane's, so it reads as one device's usage, not a rule.
               <div
                 key={`${device.index ?? index}-${device.name ?? "gpu"}`}
                 className="flex min-w-0 flex-wrap items-center justify-between gap-x-4 gap-y-2 py-3 max-[992px]:flex-col max-[992px]:items-stretch"
@@ -1015,8 +994,7 @@ export function ResourcesTab() {
             );
           })
         ) : gpuMismatch ? (
-          // Not "no visible GPU": the cards are listed directly above. Its own branch, so the
-          // CPU-only host's line below stays exactly as it was.
+          // Not "no visible GPU": the unusable cards are listed above.
           <div className="py-3 text-sm text-muted-foreground">
             {t("settings.resources.gpu.noUsableGpu")}
           </div>

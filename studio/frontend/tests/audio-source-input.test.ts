@@ -247,7 +247,6 @@ test("a superseded microphone request releases its stream", () => {
     hook,
     /if \(ticket !== acquisition\.current \|\| !activeRef\.current\) \{\s*for \(const track of stream\.getTracks\(\)\) track\.stop\(\);/,
   );
-  // Leaving the Audio page ends a recording.
   assert.match(
     hook,
     /activeRef\.current = active;\s*if \(!active\) stopRecording\(\);/,
@@ -325,7 +324,6 @@ test("a history pick carries a transcript only from speech clips", async () => {
   for (const workflow of ["speak", "clone", "edit"]) {
     assert.equal(clipReference({ ...clip, workflow }).transcript, "Hello there.");
   }
-  // Convert and Music prompts are labels, not what the clip says.
   assert.equal(clipReference({ ...clip, workflow: "convert" }).transcript, null);
   assert.equal(clipReference({ ...clip, workflow: "music" }).transcript, null);
 });
@@ -353,8 +351,7 @@ test("an upload that replaces a selection clears it, so a failed upload cannot r
 });
 
 test("a long history prompt or voice name truncates and keeps the duration visible", () => {
-  // Grid items default to min-width: auto; without a minmax(0, 1fr) column one long prompt
-  // made its row thousands of pixels wide and pushed the duration off the card.
+  // Grid items default to min-width: auto, so a minmax(0, 1fr) column is needed for long prompts.
   const historyList = card.slice(card.indexOf('tab === "history"'));
   assert.match(historyList, /<ul className="[^"]*\bmin-w-0\b[^"]*grid-cols-\[minmax\(0,1fr\)\]/);
   assert.match(historyList, /<li key=\{clip\.id\} className="min-w-0">/);
@@ -367,7 +364,6 @@ test("a long history prompt or voice name truncates and keeps the duration visib
 
 test("a saved voice cannot take a name another voice already has", () => {
   const dialog = readSrc("features/audio/components/save-voice-dialog.tsx");
-  // Case-insensitive, and the voice being edited may keep its own name.
   assert.match(
     dialog,
     /voice\.id !== voiceId &&\s*voice\.name\.trim\(\)\.toLowerCase\(\) === clean\.toLowerCase\(\)/,
@@ -379,8 +375,6 @@ test("a saved voice cannot take a name another voice already has", () => {
 });
 
 test("a deleted clip or voice keeps the card in error, which holds Clone's Generate", () => {
-  // A 404 for a history clip or saved voice fails the card instead of marking it loaded, and the
-  // card refetches (and fails again) after Dismiss while the stale selection stays.
   assert.match(hook, /"This saved voice was deleted\. Pick another one\."/);
   assert.match(hook, /"This clip was deleted\. Pick another one\."/);
   const generation = readSrc("features/audio/hooks/use-clone-generation.ts");

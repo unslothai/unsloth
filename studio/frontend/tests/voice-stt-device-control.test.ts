@@ -18,7 +18,7 @@ test("changing the dictation device releases only this tab's model", () => {
 });
 
 test("switching device never kills a transcription being decoded", () => {
-  // The default drains for 30s and releases anyway, throwing the recording away.
+  // The default drains for 30s and then releases, discarding the recording.
   assert.match(voiceTab, /wait: false/);
   assert.match(adapter, /if \(options\?\.wait === false\) params\.set\("wait", "false"\)/);
 });
@@ -32,7 +32,7 @@ test("the unload API still takes the engine and model that scoping needs", () =>
 });
 
 test("the device preference travels with every load and transcribe", () => {
-  // A load that omits it reads as "no opinion", so the setting never applies.
+  // An omitted device reads as "no opinion", so the setting never applies.
   assert.match(adapter, /device: resolvedDevice/);
   assert.match(
     adapter,

@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// RFC 4180 CSV parser: handles quoted fields with embedded newlines/commas.
 export function parseCsv(text: string): string[][] {
   // Tauri text reads keep the BOM our exports write; File.text() strips it.
   if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);

@@ -15,8 +15,6 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useState } from "react";
 import { useVoiceSettingsStore } from "../stores/voice-settings-store";
 
-// Full-page editor for the dictation dictionary. Kept on its own subpage so a
-// long list of entries does not crowd the main Voice settings.
 export function DictationDictionaryView({ onBack }: { onBack: () => void }) {
   const t = useT();
   const dictionary = useVoiceSettingsStore((s) => s.dictionary);
@@ -74,8 +72,7 @@ export function DictationDictionaryView({ onBack }: { onBack: () => void }) {
             <Input
               value={entry}
               onChange={(e) => updateDictionaryEntry(index, e.target.value)}
-              // Tabbing to this row's remove button must not commit-splice the
-              // row first, which shifts indices and deletes the wrong entry.
+              // Tabbing to remove must not commit-splice first, which would delete the wrong entry.
               onBlur={(e) => {
                 if (
                   e.relatedTarget instanceof HTMLElement &&
@@ -95,8 +92,7 @@ export function DictationDictionaryView({ onBack }: { onBack: () => void }) {
               size="icon"
               className="size-8 shrink-0 text-muted-foreground hover:text-destructive"
               data-remove-index={index}
-              // Keep the click from blurring an empty input first, which would
-              // commit-splice this row and make onClick delete the next one.
+              // Prevent blur on an empty input, which would splice this row and delete the next.
               onMouseDown={(e) => e.preventDefault()}
               onClick={() => removeDictionaryEntry(index)}
               aria-label={t("settings.voice.dictionary.removeEntryAria", {

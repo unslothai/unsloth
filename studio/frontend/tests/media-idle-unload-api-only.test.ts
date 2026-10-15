@@ -1,12 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// "Only unload models loaded by the API" vetoes the media TTL outright: every resident image
-// or video model is one the user loaded from Unsloth, so there is nothing the setting would
-// let go of. The switch that lifts the veto used to render only while the CHAT idle unload
-// was active, so a user who had turned that off after enabling the option saw the media row
-// go straight to "paused" with no control anywhere to explain it or undo it -- the feature
-// was unusable without re-enabling chat unloading first.
+// The API-only switch must render without chat idle unload, or the media TTL row is stuck paused.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -15,9 +10,6 @@ import { readSrc } from "./helpers/kit.ts";
 
 const SECTION = readSrc("features/settings/components/model-auto-switch-section.tsx");
 
-// The JSX guard the given row is rendered under: the nearest conditional above it at the
-// section's own indentation, so a `{settings.foo}` prop inside a neighbouring row is not
-// mistaken for one.
 const GUARD = "\n      {settings";
 
 function guardFor(labelKey: string): string {
@@ -30,13 +22,11 @@ test("the API-only switch is reachable whenever a media TTL is saved", () => {
 });
 
 test("it is still reachable from the chat TTL alone", () => {
-  // The media TTL is off by default, so this stays the ordinary way in.
   assert.match(guardFor("apiOnly"), /idleUnloadActive/);
 });
 
 test("the KV-save option stays with the chat TTL it belongs to", () => {
-  // It persists llama.cpp slot KV; there is no media equivalent, so widening the API-only
-  // row must not drag it along.
+  // keepKv is llama.cpp slot KV only; no media equivalent.
   const guard = guardFor("keepKv");
   assert.match(guard, /idleUnloadActive/);
   assert.doesNotMatch(guard, /mediaAutoUnloadIdleSeconds/);

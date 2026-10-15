@@ -21,12 +21,10 @@ export type WorkflowId =
   | "reference"
   | "edit";
 
-/** The Images workflows, shared by the page and the sidebar submenu. `requires` is the backend
- *  workflow id (status.workflows) the loaded model must support; null = always available. */
+/** `requires` is the backend workflow id the loaded model must support; null = always. */
 export const WORKFLOW_TABS: Array<{
   id: WorkflowId;
   label: string;
-  /** Page heading, when the sidebar's short label would read oddly on its own. Falls back to `label`. */
   heading?: string;
   requires: string | null;
   icon: IconSvgElement;
@@ -35,7 +33,6 @@ export const WORKFLOW_TABS: Array<{
   {
     id: "create",
     label: "Create",
-    // The sidebar nests this under Images, so "Create" alone is clear there.
     heading: "Create images",
     requires: null,
     // Not the pencil: that is the sidebar's New chat icon.
@@ -86,7 +83,6 @@ export const WORKFLOW_TABS: Array<{
   },
 ];
 
-/** Backend workflow id (what the PNG recipe stores) to the Recipe popover label. */
 export const BACKEND_WORKFLOW_RECIPE_LABELS: Record<string, string> = {
   txt2img: "Create",
   img2img: "Transform",
@@ -103,7 +99,6 @@ export function recipeWorkflowLabel(workflow: string | null | undefined): string
   return BACKEND_WORKFLOW_RECIPE_LABELS[workflow] ?? workflow;
 }
 
-/** Placeholder hint per workflow, showing what each one is for. */
 export const WORKFLOW_EXAMPLE_PROMPTS: Record<WorkflowId, string> = {
   create:
     "A cozy wooden cabin on a snowy mountain at dusk, warm light glowing from the windows, pine trees and gently falling snow. Cinematic photo, soft golden light.",

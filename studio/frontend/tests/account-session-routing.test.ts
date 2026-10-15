@@ -48,10 +48,8 @@ for (const [desktop, loginMode, change, expected] of [
   });
 }
 
-// Account settings are read once per session, and a session still owing a password change is
-// refused them with a 403. The bootstrap sign-in on /change-password stores its tokens before the
-// change, so "has a token" is not "may read settings": a read in that gap leaves personalization
-// unhydrated for the whole session. The gate agrees with the route the session is sent to.
+// A session still owing a password change is refused settings (403) though it holds tokens,
+// so the read gate must follow the route, not token presence.
 for (const [desktop, loginMode, token, change, expected] of [
   [false, "single", false, false, false],
   [false, "single", true, true, false],

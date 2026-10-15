@@ -10,7 +10,6 @@ import type {
 } from "./api";
 import { type SizeLimits, fitSize, matchSourceSize } from "./image-size.ts";
 
-/** Colours offered for annotations, named the way an instruction refers to them. */
 export const ANNOTATION_COLORS: ReadonlyArray<{ name: string; value: string }> =
   [
     { name: "red", value: "#ff2020" },
@@ -19,7 +18,6 @@ export const ANNOTATION_COLORS: ReadonlyArray<{ name: string; value: string }> =
     { name: "yellow", value: "#ffd400" },
   ];
 
-/** Checkerboard behind images that may be transparent, so alpha reads as alpha. */
 export const TRANSPARENCY_CHECKER: CSSProperties = {
   backgroundImage:
     "repeating-conic-gradient(rgb(128 128 128 / 0.28) 0% 25%, transparent 0% 50%)",
@@ -29,7 +27,6 @@ export const TRANSPARENCY_CHECKER: CSSProperties = {
 /** Total inputs when the backend does not say: the FLUX.2 reference limit it has always had. */
 export const DEFAULT_MAX_CONDITION_IMAGES = 4;
 
-/** Images the page may add after the source; a separate mask takes one slot. */
 export function maxAdditionalImages(
   conditioning: DiffusionConditioning | null | undefined,
   localizedMode: LocalizedEditMode | null,
@@ -39,7 +36,6 @@ export function maxAdditionalImages(
   return Math.max(0, total - 1 - (localizedMode === "mask" ? 1 : 0));
 }
 
-/** Image number of additional slot ``index`` (after the source and any separate mask). */
 export function additionalImageNumber(
   index: number,
   localizedMode: LocalizedEditMode | null,
@@ -53,7 +49,6 @@ export const REFERENCE_DETAIL_LABELS: Record<number, string> = {
   2048: "High (2048)",
 };
 
-/** The build's canvas tier when listed, else 1024; never an automatic 2048. */
 export function seedReferenceResolution(
   allowed: readonly number[],
   tier: number,
@@ -64,7 +59,6 @@ export function seedReferenceResolution(
   return allowed[0];
 }
 
-/** The official Qwen-Image-2.1 2K sizes, offered when the loaded model allows them. */
 export const OFFICIAL_2K_PRESETS: ReadonlyArray<{
   label: string;
   width: number;
@@ -89,7 +83,6 @@ export function presetsWithin(limits: SizeLimits) {
   );
 }
 
-// The model card's prompt format for transparent output.
 export const TRANSPARENCY_PREFIX = "This is an RGBA image with transparency.";
 export const TRANSPARENCY_SUFFIX =
   "The image has alpha channel and the background is transparent.";
@@ -132,7 +125,6 @@ function joinWords(words: readonly string[]): string {
 
 export type EditSizing = "source" | "custom";
 
-/** Unified edit output size: Image 1's aspect ratio at the chosen area, or the custom size fitted. */
 export function resolveEditSize(
   sizing: EditSizing,
   source: { width: number; height: number } | null,
@@ -151,7 +143,6 @@ export function resolveEditSize(
   return fitSize(custom.width, custom.height, limits);
 }
 
-/** The conditioned half of a Reference / unified Edit request. Empty slots are dropped in order. */
 export function conditionedRequestFields(opts: {
   workflow: "edit" | "reference";
   initImage: string;
@@ -190,7 +181,6 @@ export function conditionedRequestFields(opts: {
   };
 }
 
-/** What a restored conditioned recipe needs supplied again, for the restore toast. */
 export function restoreInputsNote(image: {
   workflow?: string | null;
   reference_image_count?: number | null;

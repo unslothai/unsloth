@@ -6,10 +6,9 @@ import {
   formatBindingValue,
 } from "../../settings/lib/keyboard-shortcuts.ts";
 
-/** 1 zooms in, -1 out, 0 back to 100%. */
 export type ZoomDirection = 1 | -1 | 0;
 
-/** Chord per direction. A user shortcut bound to one of these wins. */
+/** A user shortcut bound to one of these wins. */
 export const ZOOM_CHORDS: Record<ZoomDirection, string> = {
   1: "Mod+Equal",
   [-1]: "Mod+Minus",
@@ -21,7 +20,6 @@ type ZoomKeyEvent = Pick<
   "key" | "code" | "metaKey" | "ctrlKey" | "altKey" | "shiftKey"
 >;
 
-/** Browser-style zoom keys: Cmd on macOS, Ctrl elsewhere, Shift optional, keypad included. */
 export function zoomDirectionForKey(
   event: ZoomKeyEvent,
   mac: boolean,
@@ -41,10 +39,6 @@ export function zoomDirectionForKey(
   return null;
 }
 
-/**
- * Whether a user shortcut takes this press instead: one bound to the canonical chord, or to the
- * exact keys pressed (Mod+Shift+Equal, a keypad key).
- */
 export function zoomChordTaken(
   event: ZoomKeyEvent,
   direction: ZoomDirection,

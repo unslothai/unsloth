@@ -95,7 +95,6 @@ export function EditRecipePage({ recipeId }: EditRecipePageProps): ReactElement 
     signalReady();
   }, [loadState.status, signalReady]);
 
-  // The version this editor is built on, so a save over another window's newer copy is refused.
   const editedVersion = useRef<number | undefined>(undefined);
   const loadedRecord = loadState.status === "ready" ? loadState.record : null;
   useEffect(() => {

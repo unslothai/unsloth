@@ -15,7 +15,6 @@ import {
   useExternalProvidersStore,
 } from "./stores/external-providers-store";
 
-/** Keeps manual IDs and the user's picks, drops IDs the server no longer lists, enables new ones. */
 export function mergeReloadedModels(
   models: readonly string[],
   previousCatalog: readonly string[],
@@ -43,7 +42,7 @@ function autoReloadConnections(): ExternalProviderConfig[] {
 }
 
 export function startLlamaCppAutoReload(intervalMs = 10_000): () => void {
-  // id -> endpoint + catalog last reloaded (absent: offline); the catalog catches restarts between polls.
+  // id -> endpoint + catalog last reloaded (absent: offline).
   const online = new Map<string, string>();
   const inFlight = new Set<string>();
   let stopped = false;
@@ -62,14 +61,13 @@ export function startLlamaCppAutoReload(intervalMs = 10_000): () => void {
       const key = `${endpoint(provider)}|${catalog.join("\n")}`;
       // A server still starting can list nothing: keep the last good selection.
       if (stopped || catalog.length === 0) return;
-      // Skip only while this tab still shows the catalog: a late settings sync can restore older lists.
+      // A late settings sync can restore older lists, so skip only while this catalog is shown.
       const shown = useExternalProvidersStore.getState().providers.find((p) => p.id === provider.id);
       if (online.get(provider.id) === key && sameList(catalog, shown?.availableModels ?? [])) return;
-      // Merge against the saved row, not this tab's copy, so tabs agree on what the user picked.
+      // Merge against the saved row so tabs agree on the user's picks.
       const saved = (await listProviderConfigs()).find((c) => c.id === provider.id);
       const latest = autoReloadConnections().find((p) => p.id === provider.id);
       if (stopped || !saved || !latest || endpoint(latest) !== endpoint(provider)) return;
-      // Rows saved before model lists reached the backend hold neither: only then trust this tab.
       const hasSaved =
         (saved.models?.length ?? 0) > 0 || (saved.available_models?.length ?? 0) > 0;
       const previousModels = hasSaved ? (saved.models ?? []) : latest.models;
@@ -81,7 +79,6 @@ export function startLlamaCppAutoReload(intervalMs = 10_000): () => void {
         const row = useExternalProvidersStore.getState().providers.find((p) => p.id === provider.id);
         return row?.models !== latest.models || row?.availableModels !== latest.availableModels;
       };
-      // A manual save is in flight or landed since the read: skip, the next probe merges against it.
       if (providerSavesInFlight.has(provider.id) || edited()) return;
       if (!sameList(models, previousModels) || !sameList(catalog, previousCatalog)) {
         await updateProviderConfig(provider.id, { models, availableModels: catalog });

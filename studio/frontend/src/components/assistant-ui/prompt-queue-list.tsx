@@ -52,7 +52,6 @@ type PromptQueueListProps = {
   onResume: () => void;
 };
 
-/** The queue engine owns dispatch and validates every mutation against live IDs. */
 const MENU_OR_TRIGGER = "[data-slot='dropdown-menu-content'], [data-queue-menu]";
 
 export function PromptQueueList({
@@ -113,8 +112,7 @@ export function PromptQueueList({
     inputRef.current?.select();
   }, [activeEditingId]);
 
-  // Some IMEs never send compositionend, which would wedge the Enter gate
-  // below. Drop the flag after a quiet spell, as the composer's watchdog does.
+  // Some IMEs never send compositionend; drop the flag after a quiet spell.
   const setComposing = useCallback((next: boolean) => {
     composingRef.current = next;
     if (composingTimerRef.current) clearTimeout(composingTimerRef.current);
@@ -225,12 +223,10 @@ export function PromptQueueList({
                         onCompositionStart={() => setComposing(true)}
                         onCompositionUpdate={() => setComposing(true)}
                         onCompositionEnd={() => setComposing(false)}
-                        // Blur commits or cancels any composition first, so it is
-                        // a safe unconditional reset.
+                        // Blur commits or cancels any composition first, so this reset is safe.
                         onBlur={() => setComposing(false)}
                         onKeyDown={(event) => {
-                          // The candidate window owns this key, Escape included:
-                          // cancelling here would discard the draft instead.
+                          // The candidate window owns this key; cancelling here would discard the draft.
                           if (
                             event.nativeEvent.isComposing ||
                             event.nativeEvent.keyCode === 229
@@ -239,15 +235,11 @@ export function PromptQueueList({
                             return;
                           }
                           if (composingRef.current) {
-                            // Candidate-confirming Enter can arrive as
-                            // non-composing; keep it gated. It follows the
-                            // composition immediately, so the gate is not
-                            // re-armed here and a stuck flag times out.
+                            // Candidate-confirming Enter can arrive as non-composing; keep it gated.
                             if (event.key === "Enter") {
                               if (!event.shiftKey) event.preventDefault();
                               return;
                             }
-                            // Any other key means the composition really ended.
                             setComposing(false);
                           }
                           if (event.key === "Escape") {
@@ -256,8 +248,6 @@ export function PromptQueueList({
                             finishEditing();
                             return;
                           }
-                          // Same chord as the composer send. The helper owns the
-                          // repeat and Shift+Enter guards.
                           if (
                             composerSubmitIntent(
                               {
@@ -279,9 +269,7 @@ export function PromptQueueList({
                             saveEditing();
                           }
                         }}
-                        // Negative margins move the resize grip out to the corner,
-                        // stopping short of the radius so it is not clipped; the
-                        // matching padding keeps the text where it was.
+                        // Negative margins move the resize grip to the corner; padding keeps the text.
                         className="-mr-1.5 -mb-1.5 block max-h-36 min-h-12 w-[calc(100%+0.375rem)] resize-y border-0 bg-transparent pt-0 pr-1.5 pb-1.5 pl-1 text-sm text-foreground outline-none"
                         aria-label={t("promptQueue.editLabel", { position })}
                       />
@@ -416,8 +404,7 @@ export function PromptQueueList({
                       className="w-56 rounded-2xl border border-border/60 p-1.5 shadow-lg"
                       // Opening the menu must not select an item on pointer release.
                       onPointerUpCapture={(event) => event.preventDefault()}
-                      // A queued send focuses the composer: stay open and take focus back, or Escape lands there.
-                      // Any other focus move, or one a pointer just caused, dismisses as before.
+                      // A queued send focuses the composer, so stay open; other focus moves dismiss.
                       onFocusOutside={(event) => {
                         const { target, relatedTarget, timeStamp } =
                           event.detail.originalEvent;

@@ -102,8 +102,6 @@ function selectionIntersectsElement(
   return false;
 }
 
-// Plain text in the message column: a header line and, when open, the thoughts
-// under it. No box, no icon. Outer spacing comes from the message body's rhythm.
 export const reasoningVariants = cva("aui-reasoning-root w-full", {
   variants: {
     variant: {
@@ -138,11 +136,8 @@ function ReasoningRoot({
 }: ReasoningRootProps) {
   const collapsibleRef = useRef<HTMLDivElement>(null);
   const [uncontrolledOpen, setUncontrolledOpen] = useState(defaultOpen);
-  // The lock starts in the click handler; the grid transition only starts once React has
-  // committed the `0fr` class, so an exact ANIMATION_DURATION releases the scroll container
-  // while the row is still shrinking and lets the remaining height change shift the thread.
-  // Same margin as the collapse backstop, and only on the grid path: `tool-group` and
-  // `tool-fallback` still animate height and keep the plain duration.
+  // The grid transition starts only after React commits `0fr`, so the lock needs the backstop
+  // margin on this path; tool-group and tool-fallback keep the plain duration.
   const lockScroll = useCollapseScrollLock(
     collapsibleRef,
     GRID_COLLAPSE_REASONING_ENABLED
@@ -155,8 +150,7 @@ function ReasoningRoot({
 
   const handleOpenChange = useCallback(
     (open: boolean) => {
-      // Native scroll anchoring can move the focused header when a long transcript
-      // opens below it. Preserve its position through either direction of the animation.
+      // Native scroll anchoring can move the focused header when a long transcript opens below it.
       lockScroll();
       if (!isControlled) {
         setUncontrolledOpen(open);
@@ -182,8 +176,6 @@ function ReasoningRoot({
     ...props,
   };
 
-  // Same props either way. The only difference is which primitive receives them, and the
-  // unmeasured one is a drop-in for the subset of Radix's surface this pane uses.
   return GRID_COLLAPSE_REASONING_ENABLED ? (
     <UnmeasuredCollapsible {...rootProps}>{children}</UnmeasuredCollapsible>
   ) : (
@@ -200,7 +192,6 @@ function ReasoningTrigger({
 }: ComponentProps<typeof CollapsibleTrigger> & {
   active?: boolean;
   duration?: number;
-  /** Tool calls hidden under this block, named so a closed block is not silent about them. */
   foldedToolCount?: number;
 }) {
   const foldedSummary = foldedToolSummary(foldedToolCount);
@@ -218,8 +209,7 @@ function ReasoningTrigger({
       )}
       {...props}
     >
-      {/* No overflow clipping: with leading-none the line box is the font size, and hidden
-          overflow cuts the descenders off "Thinking" and "Worked". */}
+      {/* No overflow clipping: it cuts the descenders off "Thinking" and "Worked". */}
       <span
         data-slot="reasoning-trigger-label"
         className="aui-reasoning-trigger-label-wrapper relative inline-block whitespace-nowrap leading-none"
@@ -239,7 +229,6 @@ function ReasoningTrigger({
           </span>
         )}
       </span>
-      {/* Outside the label so it reads while the block is still working and closed. */}
       {foldedSummary ? (
         <span className="whitespace-nowrap leading-none">
           {"\u00b7 "}
@@ -280,15 +269,8 @@ function ReasoningContent({
         closeDurationMs={ANIMATION_DURATION}
         className={cn(
           shared,
-          // No `animate-collapsible-*`, so nothing consumes `--radix-collapsible-content-height`
-          // and nothing needs to know the content's height. `1fr` resolves against the content on
-          // every frame, which is also what makes this correct while reasoning is still streaming
-          // into an open pane: the row simply tracks the growing content instead of holding a
-          // height captured at toggle time. The duration is unconditional here. The height
-          // keyframes needed a per-state duration because they were two different animations; this
-          // is one transition run in both directions. `prefers-reduced-motion` still reaches it:
-          // index.css forces `transition-duration: 0.01ms !important` on every element, and this is
-          // a transition.
+          // `1fr` tracks content every frame, so streaming into an open pane needs no measured height.
+          // Reduced motion still applies: index.css forces transition-duration on every element.
           "duration-(--animation-duration)",
           className,
         )}
@@ -403,8 +385,6 @@ function ReasoningCopyButton({
   );
 }
 
-// Keep an existing selection intact when a live trace crosses the windowing threshold.
-// An already-long saved trace is bounded on its first render.
 function useReasoningTranscriptMode({
   messageId,
   reasoningDocuments,
@@ -424,8 +404,7 @@ function useReasoningTranscriptMode({
   }>({ messageId, active: wantsWindow });
   useEffect(() => {
     if (!session.anchor) return;
-    // The transcript captures this only on its first mount. Reopening the block
-    // later must not replay a reading position from the threshold transition.
+    // Captured only on first mount; reopening must not replay the threshold reading position.
     const timer = setTimeout(
       () => setSession((current) => ({ ...current, anchor: undefined })),
       0,
@@ -644,10 +623,7 @@ const ReasoningGroupImpl: ReasoningGroupComponent = (props) => {
   return <ReasoningGroupBlock {...props} foldTurn={foldToolActivity} />;
 };
 
-// A thin line closing the trace when the answer comes right after it, so the two do not read
-// as one text. Rendered inside whatever is last under the header, so it hides with it.
-// Full --border, not 60% of it: at 60% the line was 14/255 off the dark background and
-// 19/255 off the light one, which is under the rule rather than a quiet version of it.
+// Full --border: at 60% the line was nearly invisible on both themes.
 function ReasoningEndRule() {
   return (
     <div
@@ -674,7 +650,6 @@ const FoldedReasoningRound: ReasoningGroupComponent = ({
   const open = useReasoningRoundStore(
     (state) => roundKey !== null && (state.open[roundKey] ?? false),
   );
-  // Streaming while this round is the last thinking so far and only calls follow it.
   const isStreaming = useAuiState(({ message }) => {
     if (message.status?.type !== "running") return false;
     const parts = message.parts;
@@ -832,8 +807,7 @@ const ReasoningGroupBlock = ({
     }
   }, [isReasoningStreaming]);
 
-  // Reset per-round open state. Regenerate reuses this instance, so a hand-opened block would
-  // stay pinned open. Adjusted during render, not in an effect, so no stale open reaches the DOM.
+  // Reset per round: regenerate reuses this instance. Adjusted during render so no stale open paints.
   const [wasStreaming, setWasStreaming] = useState(isReasoningStreaming);
   if (wasStreaming !== isReasoningStreaming) {
     setWasStreaming(isReasoningStreaming);
@@ -851,7 +825,6 @@ const ReasoningGroupBlock = ({
     setTailExpanded(false);
   }
 
-  // Whatever the setting says, until this block is toggled by hand.
   const isOpen = resolveReasoningOpen({
     isStreaming: isReasoningStreaming,
     visibility,
@@ -899,9 +872,7 @@ const ReasoningGroupBlock = ({
   }, [foldLead, isOpen, roundKey]);
   useLayoutEffect(() => () => clearReasoningRound(roundKey), [roundKey]);
 
-  // Opening by hand grows the block downward and leaves the header where it is. The viewport
-  // would otherwise treat the growth as new content and pin the bottom, which shoves the header
-  // up. Streaming keeps following: the auto-open is not a click and the stream should track.
+  // Detach from bottom on a manual open, or the viewport pins the bottom and shoves the header up.
   const detachFromBottom = useDetachThreadFromBottom();
   const handleOpenChange = useCallback(
     (open: boolean) => {
@@ -922,7 +893,6 @@ const ReasoningGroupBlock = ({
         <ReasoningTrigger
           className="min-w-0"
           active={isReasoningStreaming}
-          // Prefer server timing when available.
           duration={persistedDuration ?? duration}
           foldedToolCount={isOpen ? 0 : foldedToolCount}
         />

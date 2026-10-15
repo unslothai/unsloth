@@ -94,7 +94,6 @@ function pdfLine(span: Element): Range[] {
     });
 }
 
-/** A block's own content: an image whole, a list item up to the lists nested in it. */
 function blockRange(block: Element): Range {
   const range = document.createRange();
   if (block.tagName === "IMG") {
@@ -786,7 +785,6 @@ function markNumber<Item extends { id: number }>(items: Item[], id: number | nul
 const SURFACE =
   "border border-border bg-background text-foreground shadow-[0_8px_28px_-6px_rgba(0,0,0,0.18)] dark:border-white/10 dark:bg-neutral-800 dark:text-white dark:shadow-[0_12px_40px_-4px_rgba(0,0,0,0.85),0_4px_12px_-2px_rgba(0,0,0,0.6)]";
 
-/** Voice typing into a comment, as the composer's microphone does. */
 function useCommentDictation(draft: string, onDraft: (value: string) => void) {
   const t = useT();
   const session = useRef<ReturnType<StudioDictationAdapter["listen"]> | null>(null);
@@ -1093,7 +1091,6 @@ export function WebAnnotateLayer({
   const send = async () => {
     const outgoing = committed();
     if (outgoing.length === 0 || !sendAnnotations || sending) return;
-    // One at a time: a second click while staging would add the annotations twice.
     setSending(true);
     // Keep the open comment and close its form, so a native view shows again for the screenshot.
     setItems(outgoing);

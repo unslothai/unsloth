@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// One model load prepares the same token three times: the progress pollers, validateModel
-// and loadModel. Each preparation used to be its own POST /api/hub/token/validate, three
-// sequential round trips on the load's critical path. Drive the real module and count.
+// One model load prepares the same token three times; these count the validate round trips.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -11,8 +9,7 @@ import test from "node:test";
 import { installLocalStorageFake } from "./helpers/kit.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 
-// The module registers its logout listener at import time, so the window has to exist
-// before loadWithStubs runs and has to keep the registration for the test to fire it.
+// The module registers its logout listener at import time, so the window must exist first.
 const { fireWindowEvent } = installLocalStorageFake();
 
 type ValidationStatus = "valid" | "invalid" | "unavailable" | "missing";
@@ -26,7 +23,6 @@ type ConfirmToken = {
 
 const SESSION_CLEARED = "unsloth:auth-session-cleared";
 
-// The store the module subscribes to, so a test can drive a Settings token change.
 function tokenStoreStub(initial: string | null = null) {
   let listener: ((state: { token: string }) => void) | null = null;
   let current = initial;
@@ -87,8 +83,6 @@ function load(
       "./api": {
         validateHfToken: async () => {
           calls.n += 1;
-          // A per-call gate when a queue is supplied, so one request can settle while
-          // another is still pending; otherwise the single shared gate, or none.
           const own = gates ? gates[calls.n - 1] : gate;
           if (own) {
             await own.promise;
@@ -116,7 +110,6 @@ test("a burst of preparations for one valid token validates once", async () => {
     assert.deepEqual(result, { proceed: true, token: "hf_valid" });
   }
 
-  // The sequential case is the real one: pollers, then validateModel, then loadModel.
   await mod.prepareHfTokenForUse("hf_valid");
   assert.equal(calls.n, 1);
 });
@@ -132,8 +125,7 @@ test("distinct tokens are validated separately", async () => {
 });
 
 test("a non-definitive verdict is never reused", async () => {
-  // "unavailable" proves nothing, so caching it would suppress the warning dialog for a
-  // token that is in fact bad.
+  // "unavailable" proves nothing, so caching it would hide the warning for a bad token.
   const calls = { n: 0 };
   const mod = load("unavailable", calls);
 
@@ -168,7 +160,6 @@ test("forgetting a token drops an unexpired window", async () => {
 
 
 test("a logout drops the cached bearer token", async () => {
-  // The cache holds the raw credential, so it must not outlive the session that made it.
   const calls = { n: 0 };
   const mod = load("valid", calls);
 
@@ -200,8 +191,7 @@ test("replacing the stored credential drops the superseded key", async () => {
 
 
 test("a logout mid-validation does not let the reply repopulate the cache", async () => {
-  // Clearing the maps cannot cancel a request already in flight; without a generation
-  // the late resolution writes the raw token back and expiry never runs to remove it.
+  // Clearing the maps cannot cancel an in-flight request; a generation stops its late write.
   const calls = { n: 0 };
   const gate = makeGate();
   const mod = load("valid", calls, tokenStoreStub(), gate);
@@ -218,8 +208,7 @@ test("a logout mid-validation does not let the reply repopulate the cache", asyn
 
 
 test("replacing the token that was already stored drops its window", async () => {
-  // zustand does not fire subscribe on install, so without seeding lastKnownStoredToken
-  // the first replacement reads as initialization and the old credential keeps its slot.
+  // zustand does not fire subscribe on install, so lastKnownStoredToken must be seeded.
   const calls = { n: 0 };
   const tokenStore = tokenStoreStub("hf_old");
   const mod = load("valid", calls, tokenStore);
@@ -235,8 +224,6 @@ test("replacing the token that was already stored drops its window", async () =>
 
 
 test("a replacement request is not evicted by the old one settling", async () => {
-  // forget() drops the in-flight entry, a new preparation takes the slot, and the old
-  // promise's finally must not then delete that live replacement.
   // "unavailable" is never cached, so sharing is observable purely through the count.
   const calls = { n: 0 };
   const gates = [makeGate(), makeGate(), makeGate()];
@@ -248,7 +235,6 @@ test("a replacement request is not evicted by the old one settling", async () =>
   const replacement = mod.prepareHfTokenForUse("hf_a");
   assert.equal(calls.n, 2, "the replacement did not start its own request");
 
-  // Only the first settles; the replacement is still in flight.
   gates[0].open();
   await stale;
 

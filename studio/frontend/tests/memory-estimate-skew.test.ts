@@ -1,18 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Version skew in both directions across /api/inference/estimate-memory.
-//
-// OLD BACKEND + NEW BUNDLE: the route is not there. Every failure shape must reach the
-// panel as an unavailable estimate -- the row hides, and the Load button is not a party
-// to any of it -- and the shape that says the ROUTE is missing, rather than that this
-// request failed, is worth remembering so a slider drag does not POST into the void
-// once per settings change forever.
-//
-// NEW BACKEND + OLD BUNDLE is not a thing (the bundle ships with the backend), but the
-// field-level reverse is: a backend predating the drafter split, or one that never
-// reported kv_estimable, must degrade to the documented fallbacks, not to a confident
-// zero.
+// Old backend: every failure hides the row, and a missing route is memoized.
+// Field skew: missing fields degrade to documented fallbacks, not zero.
 
 import assert from "node:assert/strict";
 import { register } from "node:module";
@@ -29,7 +19,6 @@ const {
 
 const REQUEST = { modelPath: "unsloth/Qwen3-8B-GGUF", ggufVariant: "Q4_K_M" };
 
-/** A complete, current response. The skew cases below delete fields from it. */
 const FULL = {
   available: true,
   reason: null,
@@ -89,26 +78,19 @@ test.after(() => {
   native.setNativePathHandler(null);
 });
 
-// ---------------------------------------------------------------------------
-// OLD BACKEND + NEW BUNDLE: every failure shape hides the row and nothing else
-
 test("every non-OK status comes back unavailable rather than throwing", async () => {
   for (const code of [400, 401, 403, 404, 405, 409, 422, 429, 500, 501, 502, 503]) {
     resetMemoryEstimateRouteMemo();
     answer(() => status(code));
     const estimate = await fetchMemoryEstimate(REQUEST);
     assert.equal(estimate.available, false, `status ${code}`);
-    // The row reads `!estimate?.available` and returns null, so it hides. Nothing
-    // here can reject, so nothing reaches the panel's own error path.
     assert.equal(estimate.totalBytes, 0, `status ${code}`);
     assert.equal(estimate.gpuBytes, 0, `status ${code}`);
   }
 });
 
 test("an HTML 200 from a proxy is unavailable, not a crash", async () => {
-  // A captive portal or a dev proxy serving its own page with a 200. `response.json()`
-  // rejects on this, and an unhandled rejection here is a rejected promise inside the
-  // panel's effect rather than a hidden row.
+  // A 200 HTML page from a proxy makes response.json() reject.
   answer(
     () =>
       new Response("<!doctype html><html><body>Sign in</body></html>", {
@@ -152,15 +134,10 @@ test("a 200 with an empty object degrades to every documented default", async ()
   assert.equal(estimate.gpuLayers, null);
 });
 
-// ---------------------------------------------------------------------------
-// THE MEMO
-
 test("a 404 is remembered, so the next settings change does not POST again", async () => {
   answer(() => status(404));
   assert.equal((await fetchMemoryEstimate(REQUEST)).available, false);
   assert.equal(requests.length, 1);
-  // A drag of the context slider, a KV dtype change, a new pin: all of them re-key the
-  // hook and would each have fired their own request at a route that is not there.
   for (let i = 0; i < 20; i++) {
     assert.equal((await fetchMemoryEstimate(REQUEST)).available, false);
   }
@@ -178,9 +155,7 @@ test("405 and 501 are remembered for the same reason", async () => {
 });
 
 test("a transient 500 CANNOT latch the memo", async () => {
-  // The requirement this test exists for. A backend that is answering at all, however
-  // badly, is not one that is missing the route, and a 500 during a restart would
-  // otherwise blank the row for the rest of the session.
+  // A 500 during restart must not blank the row for the session.
   answer(() => status(500));
   await fetchMemoryEstimate(REQUEST);
   await fetchMemoryEstimate(REQUEST);
@@ -199,13 +174,10 @@ test("no other failing status latches either", async () => {
 });
 
 test("a 500 arriving after a 404 clears the memo rather than leaving it standing", async () => {
-  // The backend was replaced under us: the new one is up but unhealthy. That is
-  // evidence the OLD answer no longer applies, so the memo must not survive it.
   let code = 404;
   answer(() => status(code));
   await fetchMemoryEstimate(REQUEST);
   assert.equal(requests.length, 1);
-  // Still memoized: this call is suppressed.
   await fetchMemoryEstimate(REQUEST);
   assert.equal(requests.length, 1);
   resetMemoryEstimateRouteMemo();
@@ -233,13 +205,8 @@ test("resetting the memo re-probes", async () => {
   assert.equal(requests.length, 2);
 });
 
-// ---------------------------------------------------------------------------
-// FIELD-LEVEL SKEW: a backend predating parts of the response
-
 test("a pre-split backend keeps the 'all of it is on the GPU' reading", async () => {
-  // drafter_runtime_gpu_bytes did not exist before the placement split. Defaulting it
-  // to 0 would silently drop a real VRAM charge off the row and paint a load that does
-  // not fit as one that does.
+  // Defaulting the missing field to 0 would drop a real VRAM charge.
   const { drafter_runtime_gpu_bytes, ...preSplit } = FULL;
   void drafter_runtime_gpu_bytes;
   answer(() => json(preSplit));
@@ -249,17 +216,13 @@ test("a pre-split backend keeps the 'all of it is on the GPU' reading", async ()
 });
 
 test("an explicit zero GPU share is a real answer, not an absent field", async () => {
-  // --spec-draft-ngl 0 puts the whole drafter in host RAM, and the row says so. The
-  // fallback must not fire here and claim it is on the card.
   answer(() => json({ ...FULL, drafter_runtime_gpu_bytes: 0 }));
   const estimate = await fetchMemoryEstimate(REQUEST);
   assert.equal(estimate.drafterRuntimeGpuBytes, 0);
 });
 
 test("a missing kv_estimable degrades to the floor path, not a confident total", async () => {
-  // The KV cache is the one term that can dwarf all the others, so an older backend
-  // that cannot vouch for it must produce the amber, prefixed, "unknown" reading
-  // rather than a total the row would print in plain text.
+  // An older backend without kv_estimable must yield an unknown reading.
   const { kv_estimable, ...older } = FULL;
   void kv_estimable;
   answer(() => json(older));
@@ -290,8 +253,7 @@ test("a missing kv_on_gpu keeps the pre-flag assumption", async () => {
 });
 
 test("a field arriving as a string or a non-finite number does not become a figure", async () => {
-  // JSON.parse turns 1e999 into Infinity without complaint, and a backend that
-  // stringified its numbers is a real skew shape. `?? 0` sees neither.
+  // JSON.parse yields Infinity for 1e999, and ?? 0 sees neither that nor strings.
   answer(() =>
     new Response(
       '{"available": true, "kv_estimable": true, "total_bytes": 1e999, "gpu_bytes": "6442450944", "weights_bytes": -1, "n_ctx": null, "n_parallel": "4", "layer_count": 1e999}',
@@ -309,7 +271,6 @@ test("a field arriving as a string or a non-finite number does not become a figu
   const { classifyMemoryFit } = await import(
     "../src/features/model-picker/model-config/memory-fit.ts"
   );
-  // And nothing drawn from them claims a fit.
   assert.equal(classifyMemoryFit(estimate.totalBytes, 24), "unknown");
 });
 
@@ -345,12 +306,8 @@ test("a boolean sent as the string 'false' is not read as true", async () => {
   const estimate = await fetchMemoryEstimate(REQUEST);
   assert.equal(estimate.available, false);
   assert.equal(estimate.kvEstimable, false);
-  // Absent-shaped, so the documented default stands rather than a coerced true.
   assert.equal(estimate.kvOnGpu, true);
 });
-
-// ---------------------------------------------------------------------------
-// The request itself
 
 test("the settings that move the answer are all on the wire", async () => {
   answer(() => json(FULL));
@@ -371,7 +328,6 @@ test("the settings that move the answer are all on the wire", async () => {
   assert.equal(body.n_parallel, 4);
   assert.deepEqual(body.selected_gpu_ids, [0, 1]);
   assert.deepEqual(body.llama_extra_args, ["--foo"]);
-  // The credential is sent, but the panel never keys on it: see estimate-context.
   assert.equal(body.hf_token, null);
 });
 

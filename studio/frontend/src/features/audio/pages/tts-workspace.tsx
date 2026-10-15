@@ -156,8 +156,7 @@ export function TtsRailFields({
     : allAudioOptionSpecs;
   return (
     <>
-      {/* Field inlined: its label needs a form control to point
-          at, and PillTabs is a tablist with its own name. */}
+      {/* Field inlined: its label needs a form control, and PillTabs is a tablist. */}
       <div className="grid gap-1.5">
         <span className="text-ui-13 font-medium text-foreground">
           Load model into
@@ -186,9 +185,7 @@ export function TtsRailFields({
             { value: "cpu", label: "CPU RAM" },
           ]}
         />
-        {/* Phrased as what the next load will do, not as the resident
-            model's state: a model loaded by another tab or client can
-            be on the other device, and status does not report it. */}
+        {/* Phrased as the next load: another client may have loaded the model on the other device. */}
         <p className="text-ui-11p5 leading-snug text-muted-foreground">
           {audioDevice === "cpu"
             ? "New loads go into system RAM instead of the GPU. Slower to generate, and no GPU memory is used."
@@ -524,7 +521,6 @@ export function TtsOutput({
       clip: AudioGalleryClip,
       place: "selected" | "history",
     ) => string | null;
-    /** Replaces the selected clip's waveform, such as Convert's Source/Converted compare. */
     renderPlayer?: (
       clip: AudioGalleryClip,
       src: string,
@@ -532,7 +528,6 @@ export function TtsOutput({
     ) => ReactNode;
     useAgainLabel?: string;
     showCopyText?: boolean;
-    /** Replaces the plain player; `focusRef` goes on its first control. */
     selectedPlayer?: (
       clip: AudioGalleryClip,
       src: string,

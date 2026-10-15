@@ -12,13 +12,7 @@ import { TokenActivityCard } from "./token-activity-card";
 import { TrainingHighlightsCard } from "./training-card";
 
 /**
- * Everything below the personalization form on the Profile tab: headline
- * numbers, activity grid, insights and training.
- *
- * All of it comes from `/api/profile/stats`, which reads local history only.
- *
- * Loaded lazily by `profile-stats-panel.tsx` so none of it reaches the main
- * bundle, since the Profile tab is the only place it renders.
+ * Loaded lazily by `profile-stats-panel.tsx` to keep it out of the main bundle.
  */
 export function ProfileStatsContent() {
   const t = useT();

@@ -79,7 +79,6 @@ export function getTranscript(
   return fetchJson(transcriptUrl(id), { signal });
 }
 
-/** null clears a name back to "Speaker N". */
 export function renameTranscriptSpeakers(
   id: string,
   names: Record<string, string | null>,

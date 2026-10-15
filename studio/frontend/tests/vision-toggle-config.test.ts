@@ -1,10 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Persistence for the Disable Vision toggle. The per-model config store has no
-// migration step, so a new field has to survive both directions on its own: a
-// blob written before the field existed must still load, and a blob carrying it
-// must not be silently erased by a build that has never heard of it.
+// The per-model config store has no migration step, so a new field must survive old and new builds.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -31,8 +28,7 @@ const { loadedConfigSignature } = await import(
 );
 
 const STORAGE_KEY = "unsloth_model_configs";
-// Ceiling shipped by the last build BEFORE the toggle. A record stamped at or
-// below it is readable, and therefore erasable, by that build.
+// Ceiling of the last build before the toggle; records at or below it can be erased by it.
 const PRE_VISION_CEILING = 3;
 
 function config(overrides: Partial<PerModelConfig> = {}): PerModelConfig {
@@ -53,14 +49,12 @@ test("vision is on by default", () => {
 });
 
 test("a blob written before the toggle existed still loads", () => {
-  // The key is genuinely absent, not present-and-undefined, the way an older
-  // build's JSON would have it.
+  // Genuinely absent, as an older build's JSON has it.
   const { disableVision: _omitted, ...legacy } = DEFAULT_PER_MODEL_CONFIG;
   assert.equal(
     normalizePerModelConfig(legacy as Record<string, unknown>).disableVision,
     false,
   );
-  // And junk in the slot must not silently drop the projector.
   for (const bad of ["true", 1, null, {}]) {
     assert.equal(
       normalizePerModelConfig({
@@ -101,8 +95,6 @@ test("an older build cannot reach a vision-off record and erase it", () => {
       "would accept this record, drop disableVision, and erase it on its next save",
   );
 
-  // Replay what that build actually does: read every record it is allowed to
-  // interpret, drop the key it does not know, write the result back.
   const map = JSON.parse(store.get(STORAGE_KEY) as string) as Record<
     string,
     Record<string, unknown>
@@ -125,16 +117,13 @@ test("an older build cannot reach a vision-off record and erase it", () => {
 });
 
 test("a record with no new field stays inside an older build's reach", () => {
-  // The other half of the rule: only a record carrying a NEWER field is put out
-  // of reach. Stamping every record v4 would quarantine the whole store.
+  // Only records carrying a NEWER field are stamped out of reach, not the whole store.
   store.clear();
   savePerModelConfig("some/gguf", "Q4_K_M", config({ kvCacheDtype: "q8_0" }));
   assert.ok((storedRecord().version as number) <= PRE_VISION_CEILING);
 });
 
 test("flipping the toggle changes the signature, so a reload is not deduped away", () => {
-  // Without this the server stays up with the projector resident while the UI
-  // shows Vision as off.
   assert.notEqual(
     loadedConfigSignature(config({ disableVision: false })),
     loadedConfigSignature(config({ disableVision: true })),

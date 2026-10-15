@@ -1,15 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** How the estimated footprint sits against the memory available to hold it, and the single
- *  note the row prints about it. Split out of model-config-page.tsx and kept free of `@/`
- *  ALIAS imports so `tests/` can load it under `node --experimental-strip-types`, which does
- *  not resolve that alias. Imports below are RELATIVE with explicit extensions for the same
- *  reason; an `@/` spelling breaks the three tests that load this module directly. */
+/** Free of `@/` imports (relative, explicit extensions) so tests load it under
+ *  `node --experimental-strip-types`. */
 
-// The fit vocabulary and unit formatting live in src/lib/memory/, shared with the Hub memory
-// bar so the two surfaces cannot describe one load differently. Re-exported here because
-// this module is the panel's entry point and its call sites are unchanged.
+// Shared with the Hub memory bar via src/lib/memory/; re-exported for existing call sites.
 export {
   classifyMemoryFit,
   worseMemoryFit,
@@ -29,14 +24,9 @@ import type {
 } from "../../../hooks/gpu-selection.ts";
 import { gpuMemoryTotalsGb, sharesHostMemory } from "../../../hooks/gpu-vram.ts";
 
-/** A memory figure in bytes, to two decimals. @deprecated Prefer `formatBytesGiB` from
- *  `@/lib/memory/format`, whose name says which unit it takes. This alias exists because a
- *  SECOND exported `formatMemoryGb` in lib/model-memory.ts took gigabytes and printed a
- *  different label, with the same name and signature. The divide was always by 1024^3, so
- *  every figure was a gibibyte labelled as a gigabyte, overstating each by 7.4% (#9570). */
+/** @deprecated Prefer `formatBytesGiB` from `@/lib/memory/format`. Bytes in, GiB out. */
 export const formatMemoryGb = formatBytesGiB;
 
-/** Progressively shorter labels; compact lower bounds round down. */
 export function memoryFigureCandidates(
   bytes: number,
   bounded: boolean,
@@ -56,71 +46,51 @@ export function memoryFigureCandidates(
   return [...new Set(candidates)];
 }
 
-/** At most one note under the figures, most actionable first. */
 export interface MemoryAdvisory {
-  /** `warn` is amber; `muted` is body text. */
   tone: "warn" | "muted";
   text: string;
 }
 
-/** The estimate fields the verdicts read, structurally. */
 export interface MemoryFitEstimate {
-  /** The share of the total that lands on the GPU under the requested offload. */
   gpuBytes: number;
-  /** Weights + KV + compute, wherever they land. */
   totalBytes: number;
   /** False when the GGUF header could not size the cache, so the figures are a floor. */
   kvEstimable: boolean;
-  /** A charged drafter whose cache could not be sized, so the figures are a floor. */
   drafterKvUnsized: boolean;
   adaptersUnsized: boolean;
   /** `--n-cpu-moe` is set, so the GPU figure ignores it and reads high. */
   moeOffloadUnmodelled: boolean;
   /** False when the loader will shrink the priced context to fit. Absent reads as pinned. */
   contextIsPinned?: boolean;
-  /** `gpuBytes` at the context the loader stops shrinking at, sent with an unpinned context. */
   gpuFloorBytes?: number | null;
-  /** Whether a load still over the card at the floor moves layers to the CPU. */
   floorCanOffload?: boolean;
-  /** The context the figures were priced at. */
   nCtx?: number;
 }
 
-/** What the load may draw on, as resolved by resolveMemoryCapacityGb and the host. */
 export interface MemoryFitCapacity {
-  /** VRAM available, or the shared pool where there is only one. 0 when unknown. */
+  /** VRAM, or the shared pool where there is only one. 0 when unknown. */
   gpuCapacityGb: number;
-  /** GPU plus host RAM, the ceiling an offloaded load works against. 0 when unknown. */
+  /** GPU plus host RAM. 0 when unknown. */
   totalCapacityGb: number;
-  /** Host RAM alone. Bytes pinned OUTSIDE the GPU have to fit in this, and unused VRAM cannot
-   *  help them, so it is a separate question from the total. */
+  /** Bytes pinned outside the GPU must fit here; unused VRAM cannot help them. */
   systemRamCapacityGb: number;
-  /** VRAM free on the usable cards right now. Warns only. */
   freeGpuCapacityGb: number;
-  /** Distinguishes an exhausted GPU budget from an unknown reading. */
   freeGpuCapacityKnown?: boolean;
-  /** Reserve hidden by clamping the current usable VRAM to zero. */
   freeGpuReserveDeficitGb?: number;
-  /** Available host RAM after the loader's reserve. Warns only. */
   usableSystemRamGb: number;
-  /** Distinguishes exhausted RAM from an unknown reading. */
   usableSystemRamKnown?: boolean;
-  /** Host reserve hidden by clamping current usable RAM to zero. */
   systemRamReserveDeficitGb?: number;
   /** GPU and host draw on the same memory, so an offloaded byte is not a freed one. */
   singleMemoryPool: boolean;
-  /** Resident bytes returned to the requested pools on unload. Free-memory verdicts only. */
+  /** Resident bytes freed by unload. Free-memory verdicts only. */
   reclaimableTotalBytes?: number;
-  /** The GPU share of the above. */
   reclaimableGpuBytes?: number;
 }
 
-/** Ignore invalid or negative credits. */
 function reclaimableBytes(value: number | undefined): number {
   return Number.isFinite(value) && (value as number) > 0 ? (value as number) : 0;
 }
 
-/** Keep known host credit; require modelled placement in the requested pool for VRAM. */
 export function resolveReclaimableMemoryCredit(
 	estimate:
 		| (Pick<MemoryFitEstimate, "totalBytes" | "gpuBytes"> & {
@@ -186,7 +156,7 @@ export function resolveReclaimableMemoryCredit(
 					shared_memory_host_backed_gb: device.sharedMemoryHostBackedGb,
 				})),
 			).dedicated;
-	// File-backed pages may already count as available RAM. Their pool split is unknown.
+	// File-backed pages may already count as available RAM; their pool split is unknown.
 	const gpuMayUseHost =
 		appleUnifiedMemory ||
 		!topologyKnown ||
@@ -210,44 +180,34 @@ export function resolveReclaimableMemoryCredit(
 }
 
 export interface MemoryFitResult {
-  /** The estimate places the entire load in separate system RAM. */
   cpuOnly: boolean;
-  /** The GPU verdict before the free-memory warning is folded in. */
   rawGpuFit: MemoryFitVerdict;
-  /** What the GPU figure is coloured with: rawGpuFit, nudged to tight under pressure. */
   gpuFit: MemoryFitVerdict;
-  /** The footprint against post-unload availability, capped at a warning by its caller. */
   freeGpuFit: MemoryFitVerdict;
   gpuPressured: boolean;
-  /** Bytes this placement pins outside the GPU. */
   hostShareBytes: number;
   usableHostFit: MemoryFitVerdict;
   hostPressured: boolean;
-  /** The host share against physical RAM. "unknown" where there is only one pool. */
+  /** "unknown" where there is only one pool. */
   hostShareFit: MemoryFitVerdict;
-  /** What the total figure is coloured with. */
   totalFit: MemoryFitVerdict;
-  /** The figures are a lower bound, so they are printed with a leading marker. */
   bounded: boolean;
-  /** The marker itself, empty when the figures are a real estimate. */
   prefix: string;
   advisory: MemoryAdvisory | null;
 }
 
-/** Whether Auto has a usable GPU estimate at its context floor. */
 function hasContextFloor(estimate: MemoryFitEstimate): boolean {
   return estimate.contextIsPinned === false && Number.isFinite(estimate.gpuFloorBytes);
 }
 
-/** Use the GPU floor when Auto's native context exceeds capacity. Keep host terms at
- *  native as an upper bound: the fitted context is unknown and cache growth can be nonlinear. */
+/** Use the GPU floor when Auto's native context exceeds capacity; host terms stay at native as an
+ *  upper bound since the fitted context is unknown. */
 function autoContextFigures(
   estimate: MemoryFitEstimate,
   capacity: MemoryFitCapacity,
   cpuOnly: boolean,
 ): { gpuBytes: number; totalBytes: number; contextShrinks: boolean } {
   const native = { gpuBytes: estimate.gpuBytes, totalBytes: estimate.totalBytes, contextShrinks: false };
-  // Avoid coercing invalid figures into a fit.
   if (
     cpuOnly ||
     !hasContextFloor(estimate) ||
@@ -259,7 +219,6 @@ function autoContextFigures(
   const nativeFit = capacity.singleMemoryPool
     ? classifyMemoryFit(estimate.totalBytes, capacity.totalCapacityGb)
     : classifyMemoryFit(estimate.gpuBytes, capacity.gpuCapacityGb);
-  // A context that fits is opened at its native length.
   if (nativeFit !== "exceeds") {
     return native;
   }
@@ -271,11 +230,8 @@ function autoContextFigures(
   };
 }
 
-/** Every verdict the row shows, plus the one note it prints. `_host_offload_shortfall_message`
- *  refuses a load whose offloaded weights exceed psutil's AVAILABLE memory less a reserve,
- *  not the physical total, so a 70 GB host share read as fitting a 128 GB box with 32 GB
- *  free. The free-memory verdicts here WARN instead: the bytes a pending load reclaims are
- *  mostly the resident model's own, which Studio unloads first. */
+/** The backend refuses against AVAILABLE memory, not physical; these free-memory verdicts only
+ *  warn because the reclaimed bytes are mostly the resident model's, which unloads first. */
 export function resolveMemoryFit(
   estimate: MemoryFitEstimate,
   capacity: MemoryFitCapacity,
@@ -289,19 +245,15 @@ export function resolveMemoryFit(
     cpuOnly,
   );
   const rawGpuFit = classifyMemoryFit(gpuBytes, capacity.gpuCapacityGb);
-  // Studio unloads the resident model BEFORE the replacement allocates, so its bytes are about to
-  // be free rather than competing. Charging them counted a model against ITSELF: reloading an
-  // unchanged config warned it would not fit the memory its own resident copy held. Free-memory
-  // questions only -- unloading frees memory, it does not add any, so capacity is untouched.
+  // The resident model unloads before the replacement allocates, so its bytes count as free.
+  // Free-memory questions only; capacity is untouched.
   const reclaimableTotal = reclaimableBytes(capacity.reclaimableTotalBytes);
   // Clamped: a GPU share above its own total would credit the host share a negative amount.
   const reclaimableGpu = Math.min(
     reclaimableBytes(capacity.reclaimableGpuBytes),
     reclaimableTotal,
   );
-  // One pool means the WHOLE load draws on that memory, so the pressure question goes to the
-  // total rather than a GPU share that is not a separate reservation. Asking it of gpuBytes
-  // alone let a partly CPU-offloaded load on a Vulkan iGPU look comfortable.
+  // One pool: ask the pressure question of the total, not a GPU share.
   const freeGpuFit = classifyAvailableMemory(
     singleMemoryPool ? totalBytes : gpuBytes,
     capacity.freeGpuCapacityGb,
@@ -310,13 +262,11 @@ export function resolveMemoryFit(
     capacity.freeGpuReserveDeficitGb,
   );
   const gpuPressured = freeGpuFit === "exceeds" || freeGpuFit === "tight";
-  // Guarded, not subtracted blind: a non-finite figure makes the difference NaN, which
-  // `Math.max(0, ...)` propagates rather than clamps. 0 classifies the same and is printable.
+  // Guarded: a non-finite figure gives NaN, which Math.max propagates.
   const hostShareBytes =
     Number.isFinite(totalBytes) && Number.isFinite(gpuBytes)
       ? Math.max(0, totalBytes - gpuBytes)
       : 0;
-  // Same question for the other pool, with the same credit. See the two notes above.
   const usableHostFit = classifyAvailableMemory(
     singleMemoryPool ? totalBytes : hostShareBytes,
     capacity.usableSystemRamGb,
@@ -327,9 +277,7 @@ export function resolveMemoryFit(
   const hostPressured =
     usableHostFit === "exceeds" || usableHostFit === "tight";
   const gpuFit = rawGpuFit === "fits" && gpuPressured ? "tight" : rawGpuFit;
-  // The host share must fit host RAM on its own: unused VRAM cannot hold bytes pinned outside
-  // the GPU, so the combined ceiling alone called a 70 GB CPU placement a fit on a 24 GB card
-  // plus 64 GB of RAM. Skipped where the two are one pool.
+  // The host share must fit host RAM on its own; unused VRAM cannot hold it. Skipped for one pool.
   const hostShareFit: MemoryFitVerdict = singleMemoryPool
     ? "unknown"
     : classifyMemoryFit(hostShareBytes, capacity.systemRamCapacityGb);
@@ -338,9 +286,7 @@ export function resolveMemoryFit(
     capacity.totalCapacityGb,
   );
   const totalFit = worseMemoryFit(combinedFit, hostShareFit);
-  // Lower bound, not an estimate. Both routes here UNDER-count by a term that grows with
-  // context: no attention dims, so the target cache is missing, or a drafter that is a
-  // repository rather than a file, so its cache is missing while its weights are counted.
+  // Lower bound: an unsized target cache or a repo drafter's missing cache undercounts with context.
   const bounded =
     !estimate.kvEstimable ||
     estimate.drafterKvUnsized ||
@@ -383,7 +329,6 @@ interface AdvisoryVerdicts {
   rawGpuFit: MemoryFitVerdict;
   gpuPressured: boolean;
   hostPressured: boolean;
-  /** The native-context figure exceeds the pool, but Auto context shrinks it to fit. */
   contextShrinks: boolean;
 }
 
@@ -401,7 +346,7 @@ function classifyAvailableMemory(
   ) {
     return "unknown";
   }
-  // Pressure is a fraction of post-unload availability, not just allocation growth.
+  // Pressure is a fraction of post-unload availability.
   const afterUnloadGb = availableGb + Math.max(
     0,
     reclaimedBytes / 1024 ** 3 - reclaimableBytes(reserveDeficitGb),
@@ -411,7 +356,6 @@ function classifyAvailableMemory(
   return classifyMemoryFit(bytes, afterUnloadGb);
 }
 
-/** Explain why Auto's native estimate can exceed capacity without a warning. */
 function contextShrinksAdvisory(estimate: MemoryFitEstimate): MemoryAdvisory {
   const nCtx = estimate.nCtx;
   const priced =
@@ -424,11 +368,7 @@ function contextShrinksAdvisory(estimate: MemoryFitEstimate): MemoryAdvisory {
   };
 }
 
-/** At most one note, most actionable first. An unsizable cache outranks any verdict drawn from
- *  the figures, since it says they are incomplete. Branches on `kvEstimable`, not `bounded`:
- *  both make the figures a floor, but only this one is about the header. The pool split used
- *  to gate the whole tail, making the shared-pool pressure copy dead code, so a single-pool
- *  host had one reachable note. The pool question now decides the WORDING, not the branch. */
+/** An unsizable cache outranks any verdict. Branches on `kvEstimable`, not `bounded`. */
 export function resolveMemoryAdvisory(
   estimate: MemoryFitEstimate,
   verdicts: AdvisoryVerdicts,
@@ -479,8 +419,7 @@ export function resolveMemoryAdvisory(
         text: "Exceeds shared memory. Try a shorter context or smaller model; CPU offloading adds no memory.",
       };
     }
-    // One pool, so one pressure question however it was measured: the GPU's free reading and the
-    // host's available reading are two views of the same bytes.
+    // One pool: GPU free and host available are two views of the same bytes.
     if (verdicts.hostPressured || verdicts.gpuPressured) {
       return {
         tone: "muted",
@@ -489,7 +428,7 @@ export function resolveMemoryAdvisory(
           : "Fits this machine, but little memory is free right now. Free memory or try Auto context.",
       };
     }
-    // Free-memory pressure takes priority because the loader fits against available memory.
+    // Free-memory pressure first: the loader fits against available memory.
     if (verdicts.contextShrinks) {
       return contextShrinksAdvisory(estimate);
     }
@@ -521,7 +460,6 @@ export function resolveMemoryAdvisory(
     };
   }
   if (verdicts.gpuFit === "exceeds") {
-    // At Auto's floor, further relief requires CPU offload, if these settings allow it.
     if (hasContextFloor(estimate)) {
       return {
         tone: "warn",
@@ -541,7 +479,6 @@ export function resolveMemoryAdvisory(
       text: "Fits system RAM, but little is free right now. Free memory, or try a shorter context or smaller model.",
     };
   }
-  // Tight still fits the card.
   if ((verdicts.rawGpuFit === "fits" || verdicts.rawGpuFit === "tight") && verdicts.gpuPressured) {
     return {
       tone: "muted",
@@ -550,22 +487,16 @@ export function resolveMemoryAdvisory(
         : "Fits this GPU, but little VRAM is free right now. Free memory or try Auto context.",
     };
   }
-  // As above, show free-memory pressure before the Auto note.
   if (verdicts.contextShrinks) {
     return contextShrinksAdvisory(estimate);
   }
   return null;
 }
 
-/** What `resolveKvNote` joins its items with, and what `glueNoteItems` splits on. */
 export const NOTE_SEPARATOR = " · ";
 
-/** A separated caption, breakable only between its items. A caption like "f16 - 262,144 tokens
- *  - 4 slots" does not fit a narrow panel, and the browser breaks at the last space that
- *  fits, orphaning "slots". Gluing each item with U+00A0 leaves one break opportunity per
- *  bullet, and gluing the bullet to the item that FOLLOWS it puts the break before it. A note
- *  with NO separator is returned untouched: it is ordinary prose, and gluing it made a single
- *  unbreakable run that overflows the caption column rather than wrapping. */
+/** Glue each item with U+00A0 so lines break only before a separator. Prose without one is
+ *  returned untouched, or it would not wrap. */
 export function glueNoteItems(note: string): string {
   const items = note.split(NOTE_SEPARATOR);
   if (items.length < 2) {
@@ -579,7 +510,6 @@ export function glueNoteItems(note: string): string {
     .join(" ");
 }
 
-/** The KV line's caption: dtype, what was priced, and where it lives. */
 export function resolveKvNote(estimate: {
   cacheTypeKv: string | null;
   nCtx: number;
@@ -588,8 +518,7 @@ export function resolveKvNote(estimate: {
 }): string {
   return [
     estimate.cacheTypeKv ?? "f16",
-    // Off the wire, so it is not trusted to be a number: `.toLocaleString()` on a null throws, and
-    // one bad field must not take the whole panel down.
+    // Off the wire: toLocaleString() on null throws and would take the panel down.
     `${Number.isFinite(estimate.nCtx) ? Math.max(0, estimate.nCtx).toLocaleString() : "0"} tokens`,
     Number.isFinite(estimate.nParallel) && estimate.nParallel > 1
       ? `${estimate.nParallel} slots`
@@ -600,11 +529,7 @@ export function resolveKvNote(estimate: {
     .join(" · ");
 }
 
-/** Where the draft cache actually sits, read from its own GPU share rather than kvOnGpu.
- *  kvOnGpu is the TARGET cache's placement and the two are set by different flags:
- *  `--no-kv-offload` moves the target, `--spec-draft-ngl 0` moves the drafter. Off the target
- *  flag this line was wrong in both directions. Under MTP the term is split across both
- *  placements, a third case no boolean could express. */
+/** Uses the drafter's own GPU share, not kvOnGpu: different flags move each, and MTP splits it. */
 export function resolveDraftCacheNote(
   drafterRuntimeGpuBytes: number,
   drafterRuntimeBytes: number,

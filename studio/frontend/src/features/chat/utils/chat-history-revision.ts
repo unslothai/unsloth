@@ -1,27 +1,21 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// How a history change crosses documents: the event chat-api raises alongside it is
-// same-document. Only that something changed is published, never a chat id or any text.
+// Cross-document signal only; publishes that something changed, never ids or text.
 export const CHAT_HISTORY_REVISION_KEY = "unsloth_chat_history_revision";
 
-// Long enough to swallow a generation's per-chunk saves, short enough that a tab going quiet
-// publishes before anyone reads a stale row. Exported for the tests.
+// Long enough to absorb per-chunk saves, short enough to publish before stale reads.
 export const CROSS_TAB_REVISION_DEBOUNCE_MS = 500;
 
 let revisionWriteTimer: ReturnType<typeof setTimeout> | null = null;
 
-/** Whether a same-document history event came from the coalesced streaming autosave rather than a
- *  structural change. A listener that retires work on a history change needs the difference:
- *  chunk saves arrive faster than any debounce, so treating one as structural starves that work
- *  for a whole generation. Anything without the detail counts as structural, including the event
- *  the cross-tab listener re-raises. */
+/** Coalesced chunk saves must not count as structural, or listeners starve all generation. */
 export function isCoalescedHistoryEvent(event: Event): boolean {
   return (event as CustomEvent<{ coalesce?: boolean }>).detail?.coalesce === true;
 }
 
 function storage(): Storage | null {
-  // no window under node, and the localStorage getter itself throws in some privacy modes
+  // No window under node, and the localStorage getter throws in some privacy modes.
   try {
     if (typeof window === "undefined") return null;
     return window.localStorage;
@@ -47,18 +41,13 @@ function clearPending(): boolean {
   return true;
 }
 
-/** Publishes a history change to the other documents. `coalesce` is for the per-chunk streaming
- *  path alone, where a write per chunk would block this tab and wake every other one. A
- *  structural change must not use it: sharing the stream's quiet window leaves a deleted chat
- *  live in another tab for a whole generation. */
+/** `coalesce` is only for per-chunk streaming; structural changes must publish promptly. */
 export function publishChatHistoryRevision(coalesce: boolean): void {
   if (!coalesce) {
-    // Anything still waiting says no more than this does.
     clearPending();
     writeRevision();
     return;
   }
-  // Rescheduled rather than left to run, so a generation collapses into one write instead of one per debounce period.
   clearPending();
   revisionWriteTimer = setTimeout(() => {
     revisionWriteTimer = null;
@@ -66,12 +55,11 @@ export function publishChatHistoryRevision(coalesce: boolean): void {
   }, CROSS_TAB_REVISION_DEBOUNCE_MS);
 }
 
-/** Publishes a coalesced write that is still waiting. Nothing to do when none is. */
 export function flushChatHistoryRevision(): void {
   if (clearPending()) writeRevision();
 }
 
-// A coalesced write would otherwise leave with the page, stranding the other tabs.
+// A pending coalesced write would otherwise be lost when the page unloads.
 if (typeof window !== "undefined") {
   window.addEventListener("pagehide", flushChatHistoryRevision);
 }

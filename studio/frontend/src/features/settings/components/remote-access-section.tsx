@@ -195,7 +195,7 @@ function RemoteUrlPanel({ url }: { url: string | null }) {
   );
 }
 
-// The desktop owner signs in with a local secret, so this password is for remote browsers only.
+// The desktop owner uses a local secret, so this password is for remote browsers only.
 function RemotePasswordRow({
   status,
   onDone,
@@ -235,8 +235,7 @@ export function RemoteAccessSection() {
     usePlatformStore.setState({ cloudflareUrl: next.url });
   }, []);
 
-  // A password change rotates credentials outside this section's requests;
-  // discard any in-flight poll and re-read so the block resolves at once.
+  // A password change rotates credentials, so drop in-flight polls and re-read.
   const refreshStatus = useCallback(() => {
     mutationEpoch.current += 1;
     setPollEnabled(true);
@@ -316,8 +315,7 @@ export function RemoteAccessSection() {
     } finally {
       setBusy(null);
       pollSuppressed.current = false;
-      // A stop through the tunnel latches polling off when its own origin dies.
-      // Any later action means the user is on a reachable origin, so resume.
+      // A tunnel stop latches polling off; any later action means the origin is reachable.
       setPollEnabled(true);
       setPollRevision((revision) => revision + 1);
     }

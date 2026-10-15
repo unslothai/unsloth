@@ -55,7 +55,6 @@ export const RESULT_GRID_HEIGHT_PX = 64;
 export const RESULT_GRID_ROW_GAP_PX = 8;
 export const RESULT_GRID_ROW_HEIGHT_PX =
   RESULT_GRID_HEIGHT_PX + RESULT_GRID_ROW_GAP_PX;
-// Compact rows for the split-view master pane.
 export const RESULT_SPLIT_HEIGHT_PX = 56;
 export const RESULT_SPLIT_ROW_HEIGHT_PX =
   RESULT_SPLIT_HEIGHT_PX + RESULT_ROW_GAP_PX;
@@ -106,7 +105,6 @@ const INVENTORY_SORTS: { value: InventorySort; label: string }[] = [
   { value: "size", label: "Size" },
 ];
 
-// Sort picker as a compact dropdown pill so it sits beside the view-mode tabs.
 export function InventorySortControl({
   value,
   onChange,
@@ -123,8 +121,7 @@ export function InventorySortControl({
       ariaLabel="Sort downloads"
       align="end"
       title={selected?.label}
-      // Capped and shrinkable so a long label truncates instead of wrapping
-      // the "On device" heading beside these pills in the narrow split pane.
+      // Capped and shrinkable so a long label truncates instead of wrapping the heading.
       className="h-8 min-w-[calc(72px*var(--ui-space-scale,1))] max-w-[calc(124px*var(--ui-space-scale,1))] shrink text-ui-11p5"
       triggerContent={
         <span className="flex min-w-0 items-center gap-1">
@@ -140,7 +137,6 @@ export function InventorySortControl({
   );
 }
 
-// Model-type filter pill (Text / Vision / Embedding / …) beside the sort pill.
 export function InventoryTypeFilterControl({
   value,
   onChange,
@@ -159,8 +155,6 @@ export function InventoryTypeFilterControl({
       ariaLabel="Filter by model type"
       align="end"
       title={selected?.label}
-      // Capped and shrinkable so a long label ("Speech to text") truncates
-      // instead of wrapping the "On device" heading beside these pills.
       className="h-8 min-w-[calc(72px*var(--ui-space-scale,1))] max-w-[calc(124px*var(--ui-space-scale,1))] shrink text-ui-11p5"
     />
   );
@@ -201,8 +195,6 @@ export function HubListHeader({
             type="button"
             onClick={onBack}
             aria-label="Back to feed"
-            // Pull the button left so the inset chevron lines up with the
-            // avatars below, just inside the row hover's left edge.
             className="hub-section-chevron -ml-3 inline-flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground"
           >
             <ChevronLeftIcon
@@ -230,7 +222,6 @@ export function HubListHeader({
                 type="button"
                 aria-label="Refresh"
                 onClick={onRefresh}
-                // Tiny drop so the icon aligns with the heading text.
                 className="inline-flex size-7 shrink-0 translate-y-px cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
               >
                 <HugeiconsIcon

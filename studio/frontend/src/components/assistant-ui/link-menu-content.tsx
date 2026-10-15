@@ -153,7 +153,7 @@ export function FileMenuContent({ file }: { file: ContextFile }) {
   const navigate = useNavigate();
   const contentType = file.contentType ?? "";
   const kind = textFileKind(file.name, contentType);
-  // Spreadsheet text (CSV/TSV) previews as a sheet but copies as the text it is.
+  // CSV/TSV previews as a sheet but copies as text.
   const copyable = kind !== null || /\.(csv|tsv)$/i.test(file.name) || /^text\//i.test(contentType);
   const local = file.sandbox !== undefined && backendIsLocal();
   const failed = (key: "linkMenu.openFailed" | "linkMenu.revealFailed" | "linkMenu.saveFailed") => () =>
@@ -183,7 +183,7 @@ export function FileMenuContent({ file }: { file: ContextFile }) {
   const tabType = browserTabType(file.name, contentType);
   const openInTab = () => {
     if (!tabType) return;
-    // Opened now, while the click still counts for the popup blocker; loading can take a fetch.
+    // Opened now, while the click still counts for the popup blocker.
     const tab = window.open("", "_blank");
     if (tab) tab.opener = null;
     void file

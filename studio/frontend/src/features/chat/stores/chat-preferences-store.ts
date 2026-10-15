@@ -88,7 +88,6 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
       confirmDeleteChats: true,
       setConfirmDeleteChats: (confirmDeleteChats) =>
         set({ confirmDeleteChats }),
-      // Off by default: deleting files is the destructive half, so it stays opt in.
       alwaysDeleteChatFiles: false,
       setAlwaysDeleteChatFiles: (alwaysDeleteChatFiles) =>
         set({ alwaysDeleteChatFiles }),
@@ -105,7 +104,6 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
         set({ thinkingVisibility }),
       toolVisibility: DEFAULT_TOOL_VISIBILITY,
       setToolVisibility: (toolVisibility) => set({ toolVisibility }),
-      // Off by default: it hides rows the thread shows today, so it stays opt in.
       foldToolActivityIntoThinking: false,
       setFoldToolActivityIntoThinking: (foldToolActivityIntoThinking) =>
         set({ foldToolActivityIntoThinking }),
@@ -136,7 +134,7 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
           : persisted,
       merge: (persisted, current) => {
         const saved = persisted as Partial<ChatPreferencesState> | undefined;
-        // Records written before the three-state settings carry the two booleans instead.
+        // Records written before the three-state settings carry two booleans instead.
         const legacy = persisted as
           | {
               collapseThinkingByDefault?: unknown;

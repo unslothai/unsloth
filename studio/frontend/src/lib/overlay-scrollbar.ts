@@ -1,20 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/**
- * Publishes the pointer-active strip of an overlay scrollbar for right-edge
- * controls. Classic scrollbars take layout space, so their gutter stays unset.
- */
+/** Classic scrollbars take layout space, so their gutter stays unset. */
 
 export const OVERLAY_SCROLLBAR_GUTTER_VAR = "--overlay-scrollbar-gutter";
 
-/** Ignore widths too large to be a scrollbar. */
 const MAX_GUTTER_PX = 48;
 
 /** Re-measuring forces layout, so resize bursts are coalesced. */
 const RESIZE_SETTLE_MS = 200;
 
-/** `reliable` is false when the sweep could not read the DOM at all. */
 type Measurement = { gutter: number; reliable: boolean };
 
 function measure(doc: Document): Measurement {
@@ -51,19 +46,16 @@ function measure(doc: Document): Measurement {
       }
       gutter = offset;
     }
-    // Hit testing unusable here: a width is indistinguishable from no scrollbar.
     return { gutter: 0, reliable: false };
   } finally {
     body.removeChild(probe);
   }
 }
 
-/** Pointer-active scrollbar width, or 0 when nothing reliable was read. */
 export function measureOverlayScrollbarGutter(doc: Document): number {
   return measure(doc).gutter;
 }
 
-/** Publishes a positive gutter on the root element. */
 export function applyOverlayScrollbarGutter(doc: Document): number {
   const { gutter, reliable } = measure(doc);
   const root = doc.documentElement;
@@ -83,7 +75,6 @@ export function applyOverlayScrollbarGutter(doc: Document): number {
   return gutter;
 }
 
-/** Re-measures after resizing, refocusing, or returning to the page. */
 export function watchOverlayScrollbarGutter(win: Window): () => void {
   const doc = win.document;
   let resizeTimer: ReturnType<typeof setTimeout> | undefined;

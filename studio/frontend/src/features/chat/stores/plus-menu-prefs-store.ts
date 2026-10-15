@@ -4,8 +4,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
-// Adjustable items in the composer "+" menu. The core items and the "More" overflow itself are
-// always shown and are intentionally NOT represented here.
+// Core items and the "More" overflow are always shown and intentionally not listed here.
 export type PlusMenuItemId =
   | "deepResearch"
   | "chatWithFiles"

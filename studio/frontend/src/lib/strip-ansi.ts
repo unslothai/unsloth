@@ -18,7 +18,6 @@ function isCsiFinal(code: number): boolean {
   return code >= 0x40 && code <= 0x7e;
 }
 
-/** CSI parameter (0x30-0x3f) and intermediate (0x20-0x2f) bytes. */
 function isCsiParameterOrIntermediate(code: number): boolean {
   return code >= 0x20 && code <= 0x3f;
 }
@@ -36,7 +35,6 @@ function isC1StringControlIntroducer(code: number): boolean {
   return code === C1_DCS || code === C1_SOS || code === C1_PM || code === C1_APC;
 }
 
-/** Advance past an OSC / DCS / SOS / PM / APC payload. */
 function consumeStringControl(
   text: string,
   afterIntro: number,
@@ -76,15 +74,13 @@ function consumeCsi(text: string, afterIntro: number): number {
   ) {
     cursor += 1;
   }
-  // An aborted CSI (ESC/C1/newline before the final byte) leaves the cursor on
-  // the offending byte so a following sequence is not swallowed with it.
+  // An aborted CSI leaves the cursor on the offending byte so the next sequence is not swallowed.
   if (cursor < text.length && isCsiFinal(text.charCodeAt(cursor))) {
     cursor += 1;
   }
   return cursor;
 }
 
-/** Strip ECMA-48 CSI / SCS / OSC / string-control sequences in one linear pass. */
 export function stripAnsi(text: string): string {
   let out = "";
   let index = 0;
@@ -108,7 +104,6 @@ export function stripAnsi(text: string): string {
       index = consumeStringControl(text, index + 1, false);
       continue;
     }
-    // Other C1 bytes are single control functions and have no printable form.
     if (code >= 0x80 && code <= 0x9f) {
       index += 1;
       continue;
@@ -159,9 +154,7 @@ export function stripAnsi(text: string): string {
 }
 
 
-/** Tail-line cap so a huge output never mounts a megabyte <pre> block. */
 const TAIL_LINES = 2000;
-/** Char backstop for pathological single-line outputs. */
 const TAIL_CHARS = 200_000;
 
 export interface ToolOutputTail {
@@ -186,11 +179,7 @@ export function tailToolOutput(text: string): ToolOutputTail {
   return { visible, hiddenLines, hiddenChars };
 }
 
-/**
- * JSON.stringify replacer stripping ANSI from string values and object keys.
- * A replacer sees values after toJSON, so Date and friends keep serializing
- * normally; pre-walking the object would have flattened them to {}.
- */
+/** A replacer sees values after toJSON, so Dates still serialize; pre-walking flattened them to {}. */
 function stripAnsiReplacer(_key: string, value: unknown): unknown {
   if (typeof value === "string") {
     return stripAnsi(value);
@@ -208,8 +197,7 @@ function stripAnsiReplacer(_key: string, value: unknown): unknown {
     return value;
   }
 
-  // A stripped key can collide with a real key (or another stripped key). Keep
-  // every field visible rather than silently dropping one through fromEntries.
+  // A stripped key can collide with another; keep every field rather than dropping one.
   const plainKeys = new Set(
     entries
       .filter(({ key, cleanedKey }) => key === cleanedKey)
@@ -236,7 +224,6 @@ function stripAnsiReplacer(_key: string, value: unknown): unknown {
   );
 }
 
-/** Plain-text tool result for a <pre>: strings directly, objects as stripped JSON. */
 export function stringifyToolResult(result: unknown): string {
   return typeof result === "string"
     ? stripAnsi(result)

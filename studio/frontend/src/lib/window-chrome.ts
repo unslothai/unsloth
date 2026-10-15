@@ -30,7 +30,6 @@ export function getWindowChromeTop(): number {
   return chromeTop;
 }
 
-/** Re-read after --studio-window-chrome-top or the value it references changes. */
 export function refreshWindowChromeTop(): void {
   const next = readChromeTop();
   if (next === chromeTop) {
@@ -53,7 +52,6 @@ export function useWindowChromeTop(): number {
   return useSyncExternalStore(subscribe, getWindowChromeTop, () => 0);
 }
 
-/** Adds the titlebar to the top collision padding so popups size and flip below it. */
 export function clearOfWindowChrome(
   padding: CollisionPadding | undefined,
   top: number,

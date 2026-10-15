@@ -335,10 +335,7 @@ async fn authenticate_with_stale_port_retry(
     match exchange_desktop_secret(client, backend.port, secret).await {
         Ok(Some(tokens)) => Ok((Some(tokens), backend)),
         Ok(None) => {
-            // 401 means the backend is reachable but the cached secret is stale.
-            // Keep using the same backend so the next desktop_auth_inner attempt
-            // provisions a new secret for the server we are retrying instead of
-            // switching to an unrelated discovered/attached backend.
+            // 401: the secret is stale. Keep this backend so the retry provisions a secret for it.
             Ok((None, backend))
         }
         Err(error) if should_retry_with_discovered_port(backend.source, &error) => {

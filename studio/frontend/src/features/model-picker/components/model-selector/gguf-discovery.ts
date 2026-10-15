@@ -15,7 +15,6 @@ function withHubState<V extends GgufVariantDetail>(
     update_available: published?.update_available ?? local.update_available,
     pending_drafter_filename: drafter?.pending_drafter_filename,
     pending_drafter_size_bytes: drafter?.pending_drafter_size_bytes,
-    // The Hub's sizes count companions (mmproj, drafter) and an update's new revision.
     ...(published
       ? {
           size_bytes: published.size_bytes,
@@ -40,7 +39,6 @@ export async function loadPickerGgufVariants<T extends GgufVariantsResponse>(
   try {
     cached = await list(true);
   } catch (error) {
-    // A disk answer the Hub can still give (moved cache, token-only access) falls back to it.
     if (options.signal?.aborted || !options.canDiscoverRemote()) throw error;
     return list(false);
   }
@@ -66,13 +64,13 @@ export async function loadPickerGgufVariants<T extends GgufVariantsResponse>(
       default_variant: remote.default_variant ?? cached.default_variant,
     };
   } catch {
-    // A remote timeout or connection error must not replace the usable disk answer.
+    // A remote error must not replace the usable disk answer.
     return cached;
   }
 }
 
-/** Whether a reachable Hub reports an update or a missing companion for a cached quant: only the
- *  expander carries those actions, so the collapsed row must give way. */
+/** Whether the Hub reports an update or missing companion for a cached quant; only the
+  *  expander carries those actions. */
 export async function hubWithdrawsSoleQuant<T extends GgufVariantsResponse>(
   listRemote: () => Promise<T>,
   quant: string,

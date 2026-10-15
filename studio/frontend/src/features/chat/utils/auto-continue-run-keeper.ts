@@ -1,12 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** Wires the automatic-continuation lease keeper to the runs actually in flight. The keeper itself
- *  is in `continuation.ts` and knows nothing about this app; all it asks is "is thread X
- *  generating right now", which `runningByThreadId` answers per thread and regardless of what is
- *  on screen. The prompt queue uses the same field for completion detection, so detection
- *  survives navigation. */
-
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import { issuedRunFrom } from "./auto-continue-issued-run";
 import {
@@ -21,14 +15,8 @@ import {
 
 const keeper = createAutoContinueLeaseKeeper({
   signal: {
-    /** Generating, and not the image gate settling its waiters. A continuation carrying an image the
-     *  loaded model cannot read is refused before any request is made, and the gate pulses this
-     *  field true and then false so compare mode's `waitForRunEnd` resolves. To a hold waiting for
-     *  its own run to start, that pair reads as the run starting and finishing: it arms on the
-     *  first and is released on the second, with the `done` marker that tells every other tab for a
-     *  day that the message HAS been continued, which the failure that follows cannot undo. So the
-     *  pulse is not counted as a run. Only when the gate is ALL that holds the flag: a real run
-     *  sharing the key still answers yes. */
+    /** Ignores the image gate's true/false pulse, which would otherwise mark the message continued.
+     *  A real run sharing the key still counts. */
     isRunning: (threadId) => {
       const state = useChatRuntimeStore.getState();
       return (
@@ -50,10 +38,7 @@ function tick(): void {
   }
 }
 
-/** A run that failed before it ever reached `runningByThreadId`. The adapter wrapper catches
- *  everything `adapter.run` throws and announces it per thread, which is the only signal
- *  separating a preflight that FAILED from one that is merely long. Nothing here reads a clock:
- *  a slow run emits no event and keeps its hold and its renewals. */
+/** The adapter wrapper's per-thread failure event is the only way to tell failed from slow. */
 function onRunFailed(event: Event): void {
   const threadId = (event as CustomEvent<PromptQueueRunFailedEventDetail>)
     .detail?.threadId;
@@ -69,12 +54,8 @@ function onRunFailed(event: Event): void {
 
 let listening = false;
 
-/** Hold `messageId`'s lease for as long as `threadId`'s own run is generating. Called by the
- *  continuation bar at the moment it starts a run, the last point at which anything knows both
- *  ids: the bar unmounts as soon as the continuation's sibling becomes selected. `threadId` is
- *  the key the run files itself under, `threadListItem.remoteId`. A thread with no remote id yet
- *  files under a shared placeholder that is not safe to watch, so nothing is held and its lease
- *  runs out its TTL, the same outcome as a tab closing mid-run. */
+/** Called when the bar starts a run (it unmounts right after). Threads without a remote id
+ *  share a placeholder, so nothing is held and the lease runs out its TTL. */
 export function holdAutoContinueRun(
   messageId: string,
   threadId: string | undefined,
@@ -83,8 +64,6 @@ export function holdAutoContinueRun(
     return;
   }
   keeper.hold(messageId, threadId);
-  // Registered with the first hold rather than at import, so a module nobody continues in adds no
-  // listener. Once, and never removed: it is one handler for the tab.
   if (!listening && typeof window !== "undefined") {
     listening = true;
     window.addEventListener(PROMPT_QUEUE_RUN_FAILED_EVENT, onRunFailed);
@@ -92,8 +71,7 @@ export function holdAutoContinueRun(
   timer ??= setInterval(tick, AUTO_CONTINUE_LEASE_RENEW_MS);
 }
 
-/** The only thing that ends a hold whose preflight the user STOPPED: that run raises no failure
- *  and never reached the stream flag, so without it the hold renewed until the tab closed. */
+/** Ends holds whose preflight the user stopped; those raise no failure and never stream. */
 export function watchAutoContinueRun(
   messageId: string,
   threadId: string | undefined,

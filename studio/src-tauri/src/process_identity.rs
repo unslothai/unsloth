@@ -2,49 +2,30 @@
 
 use std::path::{Path, PathBuf};
 
-/// Absolute path of the executable behind `pid`, when the OS will say.
-///
-/// None means unknown, never "no such process": a pid belonging to another user
-/// is refused on every platform here, and callers must not read that as absence.
+/// None means unknown, never "no such process": another user's pid is refused everywhere.
 pub(crate) fn executable_path(pid: u32) -> Option<PathBuf> {
     executable_path_impl(pid)
 }
 
-/// Where a live process is running from, relative to an install tree.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ProcessOrigin {
-    /// Positively this install.
     InsideTree,
-    /// Running an interpreter this install's venv defers to, so it may be ours
-    /// and may be any other program using the same base interpreter.
+    /// Running the venv's base interpreter: may be ours or any other program using it.
     SharedInterpreter,
-    /// Positively not this install.
     Elsewhere,
-    /// The OS would not say.
     Unknown,
 }
 
-/// The interpreters a backend of an install may appear to be running.
 pub(crate) struct TreeInterpreters {
     shared: Vec<PathBuf>,
-    /// A venv is there but its `pyvenv.cfg` could not be read, so the base
-    /// interpreter behind it is unknown. A damaged install is exactly the state
-    /// that triggers a repair, so this must not read as "definitely not ours".
+    /// An unreadable `pyvenv.cfg` is a damaged install, which must not read as "not ours".
     base_unknown: bool,
 }
 
-/// Where `pid` is running from.
-///
-/// `interpreters` covers the executables a process inside the tree may be
-/// running without the tree appearing anywhere in its image path. On unix uv
-/// symlinks `bin/python` at the base interpreter, which `install.sh` documents,
-/// and both `/proc/{pid}/exe` and `proc_pidpath` report the resolved target. On
-/// Windows uv's `Scripts/python.exe` is a trampoline that spawns the base
-/// interpreter as a child, so the image is the base one there too.
+/// `interpreters` covers images outside the tree: uv symlinks `bin/python` to the base on unix,
+/// and on Windows `Scripts/python.exe` is a trampoline that spawns the base interpreter.
 pub(crate) fn origin_of(pid: u32, tree: &Path, interpreters: &TreeInterpreters) -> ProcessOrigin {
-    // argv[0] keeps the path as invoked, so it still names the venv where the
-    // image path no longer does. Positive evidence only: a process can be given
-    // any argv, and there is no platform where its absence means anything.
+    // argv[0] keeps the path as invoked. Positive evidence only: argv can be anything.
     if let Some(argv0) = first_argument(pid) {
         if path_is_within(&argv0, tree) {
             return ProcessOrigin::InsideTree;
@@ -68,14 +49,11 @@ pub(crate) fn origin_of(pid: u32, tree: &Path, interpreters: &TreeInterpreters) 
 }
 
 fn is_same_path(left: &Path, right: &Path) -> bool {
-    // Simplified on both sides: canonicalize hands back an extended-length
-    // \\?\C:\... path on Windows while QueryFullProcessImageNameW hands back a
-    // plain one, and comparing those two forms never matches.
+    // canonicalize returns `\\?\C:\...` while QueryFullProcessImageNameW returns a plain path.
     simplified(left).to_string_lossy().to_lowercase()
         == simplified(right).to_string_lossy().to_lowercase()
 }
 
-/// A Windows extended-length path in its ordinary form. A no-op elsewhere.
 fn simplified(path: &Path) -> PathBuf {
     let text = path.to_string_lossy();
     if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
@@ -87,12 +65,8 @@ fn simplified(path: &Path) -> PathBuf {
     }
 }
 
-/// The command line's argv[0] for `pid`.
-///
-/// Linux only. macOS needs a KERN_PROCARGS2 sysctl and Windows reads the
-/// remote PEB, neither of which is implemented. On those two a backend started
-/// through a venv is therefore a shared-interpreter answer rather than a
-/// positive one, which still blocks on a record naming the port.
+/// Linux only; macOS (KERN_PROCARGS2) and Windows (remote PEB) are not implemented, so they get
+/// a shared-interpreter answer, which still blocks on a port record.
 #[cfg(target_os = "linux")]
 fn first_argument(pid: u32) -> Option<PathBuf> {
     let cmdline = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
@@ -108,12 +82,7 @@ fn first_argument(_pid: u32) -> Option<PathBuf> {
     None
 }
 
-/// Interpreters a backend of this install may be running through.
-///
-/// Both venv layouts, since `~/.unsloth/studio` is shared with the CLI
-/// installer and an older install still has the `.venv` one. Canonicalized so
-/// the comparison meets the same resolved path the OS reports; an entry that
-/// does not resolve is dropped, since nothing can be running it.
+/// Both venv layouts (the CLI installer shares the root), canonicalized; unresolvable entries dropped.
 pub(crate) fn interpreters_of(tree: &Path) -> TreeInterpreters {
     let mut shared: Vec<PathBuf> = Vec::new();
     let mut base_unknown = false;
@@ -129,10 +98,7 @@ pub(crate) fn interpreters_of(tree: &Path) -> TreeInterpreters {
                 }
             }
         }
-        // Unknown covers both "the config would not say" and "it named a base
-        // interpreter that is not there": a uv venv whose base interpreter was
-        // deleted or moved is a damaged install, which is the state a repair
-        // runs in, and its backend is still running out of the old one.
+        // Unknown also covers a base interpreter that was deleted or moved: a damaged install.
         let bases = base_interpreters_of(&venv);
         let mut resolved_a_base = false;
         for base in bases {
@@ -153,7 +119,6 @@ pub(crate) fn interpreters_of(tree: &Path) -> TreeInterpreters {
     }
 }
 
-/// The base interpreters a venv defers to, from its `pyvenv.cfg`.
 fn base_interpreters_of(venv: &Path) -> Vec<PathBuf> {
     let Ok(config) = std::fs::read_to_string(venv.join("pyvenv.cfg")) else {
         return Vec::new();
@@ -165,8 +130,7 @@ fn base_interpreters_of(venv: &Path) -> Vec<PathBuf> {
             continue;
         };
         match key.trim() {
-            // The documented key: the directory holding the interpreter this
-            // venv was built from.
+            // The documented key: the directory holding the interpreter this venv was built from.
             "home" => home = Some(PathBuf::from(value.trim())),
             "version_info" => {
                 let mut parts = value.trim().split('.');
@@ -193,24 +157,15 @@ fn base_interpreters_of(venv: &Path) -> Vec<PathBuf> {
     names.into_iter().map(|name| home.join(name)).collect()
 }
 
-/// Whether `pid` has exited but has not been reaped.
-///
-/// A zombie holds its pid and answers `kill(pid, 0)`, so a liveness check alone
-/// reads a crashed backend as running. It matters here because the desktop app
-/// spawns the backend and does not wait on it, so a crash leaves a zombie for
-/// as long as the app lives, and the record would block every repair until the
-/// app exited. The socket is already released by then.
-///
-/// Windows has no equivalent: an exited process is signalled, which the
-/// liveness check already reads as dead.
+/// A zombie answers `kill(pid, 0)`, and the app never waits on its backend, so a crashed one
+/// would block repairs. Windows has no equivalent.
 pub(crate) fn is_zombie(pid: u32) -> bool {
     is_zombie_impl(pid)
 }
 
 #[cfg(target_os = "linux")]
 fn is_zombie_impl(pid: u32) -> bool {
-    // Field 3 of /proc/{pid}/stat, read from the last ')' so a comm containing
-    // spaces or parentheses cannot shift the offset.
+    // Field 3, read from the last ')' so a comm with spaces or parentheses cannot shift it.
     let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
         return false;
     };
@@ -220,19 +175,14 @@ fn is_zombie_impl(pid: u32) -> bool {
     after_comm.split_whitespace().next() == Some("Z")
 }
 
-/// Offsets into `struct kinfo_proc`, whose `kp_proc` is a `struct extern_proc`
-/// starting at 0: `p_stat` follows the two pointers, the `p_un` union and
-/// `p_flag`, and `p_pid` follows `p_stat`. libc does not declare `kinfo_proc`
-/// for Apple, so the record is read as bytes. Measured on macos-14 (arm64):
-/// `offsetof(kinfo_proc, kp_proc.p_stat) == 36` and the whole record is 648
-/// bytes. `p_pid` is read back as a check that the layout still holds.
+/// Offsets into `struct kinfo_proc` (libc lacks it on Apple), measured on macos-14 arm64:
+/// p_stat at 36, record 648 bytes. `p_pid` is read back to check the layout still holds.
 #[cfg(target_os = "macos")]
 const KINFO_PROC_P_STAT_OFFSET: usize = 36;
 #[cfg(target_os = "macos")]
 const KINFO_PROC_P_PID_OFFSET: usize = 40;
 
-/// The `p_stat` value for a process that has exited and not been reaped,
-/// from sys/proc.h, which libc does not re-export.
+/// SZOMB from sys/proc.h, which libc does not re-export.
 #[cfg(target_os = "macos")]
 const SZOMB: u8 = 5;
 
@@ -241,23 +191,14 @@ fn is_zombie_impl(pid: u32) -> bool {
     if pid > i32::MAX as u32 {
         return false;
     }
-    // sysctl, not proc_pidinfo. Measured on macos-14: for a killed but unreaped
-    // child BOTH proc_pidinfo flavors fail with ESRCH, the short one included,
-    // so neither can ever answer yes. KERN_PROC_PID reported p_stat = SZOMB for
-    // that same pid, SRUN while it was running, and no record at all once it
-    // had been reaped.
+    // sysctl, not proc_pidinfo: both proc_pidinfo flavors fail with ESRCH for a zombie.
     match kern_proc_record(pid) {
         Some(record) => record[KINFO_PROC_P_STAT_OFFSET] == SZOMB,
-        // The kernel answered in a shape this does not recognise. Rather than
-        // report every process alive, which is the bug this replaces, fall back
-        // to the behaviour the same measurement showed: a pid that still exists
-        // but that proc_pidinfo reports as ESRCH is a zombie.
+        // Unrecognised record: a pid that exists but proc_pidinfo reports as ESRCH is a zombie.
         None => pid_exists(pid) && !proc_pidinfo_sees(pid),
     }
 }
 
-/// The KERN_PROC_PID record for `pid`, once it is long enough to read `p_stat`
-/// out of and its own `p_pid` field agrees with the pid asked for.
 #[cfg(target_os = "macos")]
 fn kern_proc_record(pid: u32) -> Option<Vec<u8>> {
     let mut mib: [libc::c_int; 4] = [
@@ -266,8 +207,7 @@ fn kern_proc_record(pid: u32) -> Option<Vec<u8>> {
         libc::KERN_PROC_PID,
         pid as libc::c_int,
     ];
-    // The kernel's own size for the record, so nothing here has to hardcode it.
-    // A short buffer is not filled in part: it fails with ENOMEM.
+    // The kernel's own size for the record. A short buffer fails with ENOMEM rather than filling partly.
     let mut size: libc::size_t = 0;
     let sized = unsafe {
         libc::sysctl(
@@ -306,8 +246,7 @@ fn kern_proc_record(pid: u32) -> Option<Vec<u8>> {
     (recorded_pid == pid).then_some(record)
 }
 
-/// Whether the OS still has this pid, zombie or not. EPERM is somebody else's
-/// live process, which is an answer too.
+/// EPERM is somebody else's live process, which is an answer too.
 #[cfg(target_os = "macos")]
 fn pid_exists(pid: u32) -> bool {
     if unsafe { libc::kill(pid as i32, 0) } == 0 {
@@ -316,9 +255,7 @@ fn pid_exists(pid: u32) -> bool {
     std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
-/// Whether proc_pidinfo will describe this pid. The short flavor is the one
-/// that does not require the same uid, so a no here is about the process being
-/// gone rather than about who owns it.
+/// The short flavor does not require the same uid, so a no means the process is gone.
 #[cfg(target_os = "macos")]
 fn proc_pidinfo_sees(pid: u32) -> bool {
     let mut info: libc::proc_bsdshortinfo = unsafe { std::mem::zeroed() };
@@ -340,21 +277,16 @@ fn is_zombie_impl(_pid: u32) -> bool {
     false
 }
 
-/// Unix epoch seconds at which `pid` started, when the OS will say.
-///
-/// Compared against the start time the server recorded next to its pid, which
-/// is what tells a live backend apart from an unrelated process that inherited
-/// its pid after a crash. `psutil.Process.create_time()` writes the same clock
-/// on the Python side.
+/// Compared with the start time the server recorded (psutil create_time, same clock) to detect
+/// pid reuse after a crash.
 pub(crate) fn process_start_time_secs(pid: u32) -> Option<f64> {
     process_start_time_impl(pid)
 }
 
-/// The Python side uses the same one-second window in `_pid_is_studio_backend`.
+/// Same one-second window as `_pid_is_studio_backend` in Python.
 pub(crate) const PID_START_TIME_TOLERANCE_SECS: f64 = 1.0;
 
-/// Line two of a `studio-{port}-{pid}.pid` record, written by the server as
-/// `psutil` epoch seconds. A blank or absent line means it could not say.
+/// Line two of a `studio-{port}-{pid}.pid` record (psutil epoch seconds); blank means unknown.
 pub(crate) fn recorded_pid_start_time(path: &Path) -> Option<f64> {
     std::fs::read_to_string(path)
         .ok()?
@@ -365,11 +297,7 @@ pub(crate) fn recorded_pid_start_time(path: &Path) -> Option<f64> {
         .ok()
 }
 
-/// Whether the process wearing `pid` is the one the record described.
-///
-/// A recorded start time that disagrees is proof the pid was reused, which no
-/// amount of executable evidence can override. Records outlive crashes, so
-/// without this an unrelated process inheriting the pid reads as ours.
+/// A disagreeing start time proves pid reuse, which no executable evidence can override.
 pub(crate) fn pid_start_time_matches(pid: u32, recorded: Option<f64>) -> bool {
     let (Some(recorded), Some(actual)) = (recorded, process_start_time_secs(pid)) else {
         return true;
@@ -379,9 +307,7 @@ pub(crate) fn pid_start_time_matches(pid: u32, recorded: Option<f64>) -> bool {
 
 #[cfg(target_os = "linux")]
 fn process_start_time_impl(pid: u32) -> Option<f64> {
-    // Field 22 of /proc/{pid}/stat, in clock ticks since boot. Parsed from the
-    // last ')' onwards because field 2 is the comm, which may itself contain
-    // spaces and parentheses.
+    // Field 22, clock ticks since boot. Parsed from the last ')' since comm may contain them.
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     let after_comm = &stat[stat.rfind(')')? + 1..];
     let ticks: f64 = after_comm.split_whitespace().nth(19)?.parse().ok()?;
@@ -464,9 +390,7 @@ fn process_start_time_impl(_pid: u32) -> Option<f64> {
 }
 
 fn path_is_within(path: &Path, tree: &Path) -> bool {
-    // Compared case-insensitively throughout: Windows paths differ in case for
-    // the same file, and a false negative here silently drops a real blocker.
-    // Component-wise, so a sibling tree with a shared name prefix cannot match.
+    // Case-insensitive (Windows) and component-wise, so a sibling with a shared prefix cannot match.
     let mut tree_parts = tree.components();
     let mut path_parts = path.components();
     loop {
@@ -520,9 +444,7 @@ fn executable_path_impl(pid: u32) -> Option<PathBuf> {
     };
 
     unsafe {
-        // The limited right, not PROCESS_QUERY_INFORMATION: it is granted for
-        // processes at a higher integrity level, which an Unsloth started from an
-        // elevated terminal is.
+        // The limited right is granted even for elevated (higher integrity) processes.
         let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
         if handle.is_null() {
             return None;
@@ -584,8 +506,7 @@ mod tests {
             .unwrap()
             .as_secs_f64();
 
-        // Started in the past, and this millennium: a wrong epoch base or a
-        // wrong clock tick divisor would land far outside that.
+        // A wrong epoch base or tick divisor would land far outside this range.
         assert!(started <= now + 1.0, "start {started} is after now {now}");
         assert!(started > 1_000_000_000.0, "start {started} is not an epoch");
     }
@@ -609,9 +530,7 @@ mod tests {
         );
     }
 
-    /// The reported venv case: uv symlinks bin/python at the base interpreter,
-    /// so the image path leaves the tree entirely. Reading that as "not ours"
-    /// would rewrite the venv underneath a live backend.
+    /// uv symlinks bin/python at the base interpreter, so the image path leaves the tree.
     #[test]
     fn a_process_running_a_shared_interpreter_is_not_read_as_elsewhere() {
         let exe = std::env::current_exe().unwrap();
@@ -630,9 +549,6 @@ mod tests {
         );
     }
 
-    /// A damaged install is exactly the state a repair runs in, so an
-    /// unreadable pyvenv.cfg must not read as "definitely not ours" on the
-    /// platforms that have no argv[0] to fall back on.
     #[test]
     fn an_unknown_base_interpreter_is_not_read_as_elsewhere() {
         let unknown = TreeInterpreters {
@@ -657,9 +573,6 @@ mod tests {
         assert!(interpreters_of(tree.path()).base_unknown);
     }
 
-    /// uv's Windows trampoline spawns the base interpreter as a child, so the
-    /// venv path is absent from the running image and pyvenv.cfg is the only
-    /// thing tying the two together.
     #[test]
     fn the_base_interpreter_from_pyvenv_cfg_is_listed() {
         let base = tempfile::tempdir().unwrap();
@@ -675,9 +588,6 @@ mod tests {
         assert_eq!(found.shared, vec![std::fs::canonicalize(&interpreter).unwrap()]);
     }
 
-    /// A uv venv whose base interpreter was deleted or moved: the config still
-    /// names it, so the candidates are built, but none of them resolve. That is
-    /// a damaged install, which is exactly when a repair runs.
     #[test]
     fn a_base_interpreter_that_no_longer_exists_is_flagged_unknown() {
         let missing = tempfile::tempdir().unwrap();
@@ -699,9 +609,6 @@ mod tests {
         assert!(found.shared.is_empty());
     }
 
-    /// A crashed backend the desktop app has not reaped still answers
-    /// kill(pid, 0), and its record would block every repair until the app
-    /// exited. Reproduced with a real unreaped child.
     #[cfg(unix)]
     #[test]
     fn a_zombie_is_not_a_live_process() {
@@ -714,8 +621,7 @@ mod tests {
         assert!(!is_zombie(pid), "a running child is not a zombie");
 
         child.kill().unwrap();
-        // Deliberately not reaped yet: Child::wait is what clears the zombie,
-        // and leaving it is the state under test.
+        // Deliberately not reaped yet: that is the state under test.
         let mut zombie = false;
         for _ in 0..200 {
             if is_zombie(pid) {
@@ -742,8 +648,6 @@ mod tests {
         ));
     }
 
-    /// Windows reports the same file under different casings, and a false
-    /// negative here silently drops a real blocker.
     #[test]
     fn containment_ignores_case() {
         assert!(path_is_within(
@@ -760,9 +664,6 @@ mod tests {
         assert!(!path_is_within(Path::new("/home/u/.unsloth"), tree));
     }
 
-    /// canonicalize hands back an extended-length path on Windows while
-    /// QueryFullProcessImageNameW hands back a plain one, and the same file
-    /// must compare equal across the two forms.
     #[test]
     fn an_extended_length_path_equals_its_plain_form() {
         assert!(is_same_path(

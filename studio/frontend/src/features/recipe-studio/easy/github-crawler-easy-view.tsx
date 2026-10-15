@@ -61,10 +61,8 @@ export function GithubCrawlerEasyView({
   const localModelValue =
     modelValue.trim().toLowerCase() === "local" ? "" : modelValue;
 
-  // Local buffer for the Rows input so the user can hold transient invalid state (empty while
-  // backspacing, partial digits, etc.) without the parent snapping them back to 1 on every
-  // keystroke. The canonical ``rows`` value only advances when the buffer parses to a valid
-  // positive integer; on blur we clamp back to a sane default if the user left it empty.
+  // Local buffer so the field can sit empty or partial while typing; rows only advances on a
+  // valid positive integer, and blur restores a default when left empty.
   const [rowsText, setRowsText] = useState(String(rows));
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- keep the draft input in sync when the parent resets rows.
@@ -159,9 +157,7 @@ export function GithubCrawlerEasyView({
               className="nodrag"
               value={rowsText}
               onChange={(event) => {
-                // Allow empty / partial strings while the user is editing.
-                // type="text" avoids the browser's number spinner and the
-                // related backspace quirks; we still parse + clamp below.
+                // type=text avoids number-spinner backspace quirks; still parsed and clamped.
                 const raw = event.target.value.replace(/[^0-9]/g, "");
                 setRowsText(raw);
                 const next = Number.parseInt(raw, 10);

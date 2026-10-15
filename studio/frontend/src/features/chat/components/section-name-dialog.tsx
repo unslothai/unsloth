@@ -19,8 +19,6 @@ import {
   normalizeSectionName,
 } from "../stores/sidebar-organization-store";
 
-// Names a custom sidebar section: a new one, or an existing one being renamed. The caller owns
-// what the name is for, so this only collects it.
 export function SectionNameDialog({
   open,
   mode,
@@ -34,8 +32,7 @@ export function SectionNameDialog({
   onOpenChange: (open: boolean) => void;
   onSubmit: (name: string) => void;
 }) {
-  // What the open dialog was opened for, kept through the close animation: the caller clears its
-  // state on close, which would otherwise flip a rename to "New section" as it fades out.
+  // Kept through the close animation: the caller clears state on close.
   const [shown, setShown] = useState({ mode, initialName });
   if (open && (shown.mode !== mode || shown.initialName !== initialName)) {
     setShown({ mode, initialName });
@@ -43,7 +40,6 @@ export function SectionNameDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="corner-squircle dialog-soft-surface gap-5 sm:max-w-md">
-        {/* Content unmounts on close, so each open starts from its own name, not the last draft. */}
         <SectionNameForm
           mode={shown.mode}
           initialName={shown.initialName}

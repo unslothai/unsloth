@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-# Every check below parses readelf output, which is translated.
+# readelf output is translated.
 export LC_ALL=C
 
 usage() {
@@ -40,16 +40,8 @@ require_basename() {
   fi
 }
 
-# FIRST, before the launcher-hygiene checks below. Those ask whether a bundle that
-# ships a runtime scopes it correctly; this asks whether it ships one at all, and a
-# bundle that ships none fails them too -- for a reason that reads like an env-var
-# bug. A pre-#9113 thin AppImage, which resolves webkit2gtk from the host, reported
-# "does not clear an inherited LD_LIBRARY_PATH" and sent the reader after the wrong
-# defect; the honest answer is the soname list below.
-#
-# Report every miss rather than exiting on the first: the AppRun host-preflight
-# names all four missing sonames at once, and a verifier that names one per CI run
-# turns one diagnosis into as many red runs as there are absent components.
+# Runs before the launcher-hygiene checks, which a bundle with no runtime also fails misleadingly.
+# Report every missing component, not just the first.
 missing_components=()
 required_components=()
 for component in \
@@ -79,7 +71,7 @@ if grep -aEq '^[[:space:]]*(export[[:space:]]+)?LD_LIBRARY_PATH=' "${launchers[@
   exit 1
 fi
 
-# An inherited LD_LIBRARY_PATH outranks the $ORIGIN RUNPATHs below.
+# An inherited LD_LIBRARY_PATH outranks the $ORIGIN RUNPATHs.
 if ! grep -aEq '^[[:space:]]*unset[[:space:]]+LD_LIBRARY_PATH([[:space:]]|$)' \
   "${launchers[@]}" 2>/dev/null; then
   echo "Complete AppImage does not clear an inherited LD_LIBRARY_PATH" >&2
@@ -117,17 +109,15 @@ grep -Fq 'sed "s|@APPDIR@|$unsloth_fonts_appdir|g" "$unsloth_fonts_template"' "$
   echo "Complete AppImage does not pin fontconfig to its safe emoji policy" >&2
   exit 1
 }
-# A mount path carries the AppImage's own file name, so it reaches the policy encoded.
 grep -Fq "s,&,\\&amp;,g" "${launchers[@]}" || {
   echo "Complete AppImage does not encode its mount path for the fontconfig policy" >&2
   exit 1
 }
 
-# Exercise the policy with the host Fontconfig, including version 2.13.
 if command -v fc-match >/dev/null && command -v fc-query >/dev/null &&
   fc-query "$safe_emoji_font" >/dev/null 2>&1; then
   fc_root="$(mktemp -d "${RUNNER_TEMP:-/tmp}/unsloth-appimage-fc.XXXXXX")"
-  # Encode the AppDir exactly as AppRun does, so this exercises the shipped policy.
+  # Encode the AppDir exactly as AppRun does.
   fc_appdir="$(printf '%s' "$appdir" | sed \
     -e 's,&,\&amp;,g' -e 's,<,\&lt;,g' -e 's,>,\&gt;,g' \
     -e 's,\\,\\\\,g' -e 's,&,\\&,g' -e 's,|,\\|,g')"
@@ -140,7 +130,6 @@ if command -v fc-match >/dev/null && command -v fc-query >/dev/null &&
     rm -rf -- "$fc_root"
     exit 1
   fi
-  # Emoji coverage must not cost the host's text fonts their own requests.
   text_font="$(FONTCONFIG_FILE="$fc_root/fonts.conf" XDG_CACHE_HOME="$fc_root" \
     fc-match -f '%{file}' 'sans-serif:charset=41')"
   if [[ -n "$text_font" && "$text_font" != "$safe_emoji_font" ]]; then
@@ -169,7 +158,6 @@ if ! grep -Rqs 'unset[[:space:]]\+GIO_EXTRA_MODULES' \
   exit 1
 fi
 
-# Require module search paths to stay inside the AppDir.
 for module_path in GTK_PATH GIO_MODULE_DIR; do
   value="$(grep -hs "^export ${module_path}=" "$appdir/apprun-hooks"/* 2>/dev/null |
     tail -1 | sed "s/^export ${module_path}=//; s/^\"//; s/\"$//")"
@@ -203,14 +191,12 @@ machine="$(readelf -h "$binary" | sed -n 's/^[[:space:]]*Machine:[[:space:]]*//p
   exit 1
 }
 
-# Require the media plugins that must match the bundled GStreamer core.
 gst_plugin_count="$(find "$appdir/usr/lib/gstreamer-1.0" -maxdepth 1 -type f -name '*.so' 2>/dev/null | wc -l)"
 if [[ "$gst_plugin_count" -lt 50 ]]; then
   echo "Complete AppImage bundles only $gst_plugin_count GStreamer plugins" >&2
   exit 1
 fi
 
-# Reject libraries that must remain part of the host runtime.
 for forbidden in \
   'ld-linux*.so*' 'libc.so*' 'libpthread.so*' 'libm.so*' 'libdl.so*' 'librt.so*' \
   'libresolv.so*' 'libnss_*.so*' 'libutil.so*' 'libanl.so*' \
@@ -232,7 +218,6 @@ dynamic_count=0
 runpath_failures=0
 while IFS= read -r -d '' object; do
   [[ "$(head -c 4 "$object" 2>/dev/null || true)" == $'\177ELF' ]] || continue
-  # Reject foreign-architecture objects copied from multilib hosts.
   object_machine="$(readelf -h "$object" 2>/dev/null |
     sed -n 's/^[[:space:]]*Machine:[[:space:]]*//p')"
   if [[ "$object_machine" != "Advanced Micro Devices X86-64" ]]; then

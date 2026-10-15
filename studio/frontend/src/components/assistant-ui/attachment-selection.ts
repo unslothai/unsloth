@@ -45,15 +45,7 @@ function isViewableDocument(
   return Boolean(file) || hasOriginal || (sheetDelimiter(name, contentType) !== null && hasText);
 }
 
-/**
- * Picks the parts a preview can show out of the attachment in scope.
- *
- * useAuiState reads through useSyncExternalStore, so this runs on every store
- * notification and on every render, and useShallow gates the re-render rather
- * than the call. It therefore only selects; the audio data URL is derived from
- * `audio` afterwards, because concatenating the base64 payload here and then
- * comparing that string in useShallow costs the whole payload every time.
- */
+/** Selection only: runs on every store notification, so the audio data URL is derived afterwards, not here. */
 export const selectAttachmentSource = ({
   attachment,
 }: {

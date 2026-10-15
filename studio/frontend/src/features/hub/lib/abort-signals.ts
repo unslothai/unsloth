@@ -1,17 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// WebView-compatibility shims. AbortSignal.timeout (WebKitGTK < 2.38) and AbortSignal.any
-// (WebKitGTK < 2.44) are missing on older engines Tauri embeds and throw synchronously if called.
-// These ponyfills delegate to the native impl when present, else fall back to an AbortController.
+// AbortSignal.timeout / .any are missing on older WebKitGTK that Tauri embeds; these ponyfills fall back.
 
 export interface PollSignal {
   signal: AbortSignal;
   dispose: () => void;
 }
 
-// Timeout signal paired with a disposer. On the ponyfill path the setTimeout
-// pins the controller until it fires, so callers settling early MUST dispose.
+// On the ponyfill path the timer pins the controller, so callers settling early MUST dispose.
 export function disposableTimeoutSignal(ms: number): PollSignal {
   if (typeof AbortSignal.timeout === "function") {
     return { signal: AbortSignal.timeout(ms), dispose: () => {} };
@@ -73,8 +70,7 @@ export function abortError(signal: AbortSignal): DOMException {
     : new DOMException("The operation was aborted.", "AbortError");
 }
 
-// Rejects the returned promise on abort but never aborts the wrapped promise,
-// so a request shared across callers keeps running when one caller's signal fires.
+// Never aborts the wrapped promise, so a shared request keeps running for other callers.
 export function withAbort<T>(
   promise: Promise<T>,
   signal?: AbortSignal,

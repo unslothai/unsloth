@@ -108,7 +108,6 @@ export async function requireGuest(): Promise<void> {
     throw redirect({ to: "/chat" });
   }
   if (!(await hasActiveSession())) return;
-  // Reconcile localStorage before routing.
   await fetchAuthStatus();
   throw redirect({ to: getPostAuthRoute() });
 }

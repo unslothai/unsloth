@@ -90,7 +90,6 @@ const newId = () => `${Date.now().toString(36)}-${(nextId++).toString(36)}`;
 interface BrowserHistoryState {
   history: HistoryItem[];
   downloads: DownloadItem[];
-  /** Host to the icon its pages declared, newest last. */
   icons: Record<string, string>;
   recordVisit: (url: string, title: string, temporary?: boolean) => void;
   recordIcon: (host: string, icon: string, temporary?: boolean) => void;

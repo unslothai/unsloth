@@ -1,14 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/**
- * The parsing tests live in bundle-budget-closure.test.ts. These run the script as
- * CI runs it, because the ways a size gate goes wrong are not parsing bugs: it
- * exits 0 having measured nothing, and nobody reads a passing step.
- *
- * Every case here asserts the exit code AND that a pass came with a measurement
- * printed next to it.
- */
+/** Runs the script as CI does: every pass must also print a measurement, not exit 0 silently. */
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -32,11 +25,7 @@ const SCRIPT = join(
   "check-bundle-budget.ts",
 );
 
-/**
- * Whatever this process needed to load TypeScript, the child needs too. Reusing
- * the flags rather than naming one keeps this working across the node versions
- * where `--experimental-strip-types` is required, optional, and gone.
- */
+/** Reuse this process's TS loader flags; `--experimental-strip-types` varies across node versions. */
 const TS_FLAGS = process.execArgv.filter((flag) =>
   /^--(experimental-)?(strip-types|transform-types)/.test(flag),
 );
@@ -49,7 +38,6 @@ const INDEX_HTML = `<!doctype html><html><head>
 <link rel="stylesheet" crossorigin href="/assets/index-ccc.css">
 </head><body><div id="root"></div></body></html>`;
 
-/** A checkout-shaped directory: the script, and a dist/ beside it. */
 function fixture(
   options: { html?: string | null; bigChunk?: boolean } = {},
 ): string {
@@ -66,7 +54,6 @@ function fixture(
     );
     writeFileSync(
       join(root, "dist", "assets", "react-bbb.js"),
-      // Incompressible, so raw and gzip both clear the budget when asked to.
       options.bigChunk ? randomBytes(6 * 1024 * 1024) : "export const a = 1\n",
     );
   }
@@ -90,10 +77,8 @@ test("a passing run prints the measurement it passed on", () => {
 });
 
 test("running through a symlinked checkout still runs the check", () => {
-  // `import.meta.url` is the real path and `process.argv[1]` is the path as typed,
-  // so comparing them literally turned the whole script into a silent exit 0 for
-  // anyone whose checkout is reached through a symlink -- which on macOS includes
-  // anything under /tmp.
+  // import.meta.url is the real path and argv[1] is as typed, so symlinked checkouts (macOS /tmp)
+  // must not be compared literally.
   const root = fixture();
   const link = `${root}-link`;
   try {
@@ -110,8 +95,6 @@ test("running through a symlinked checkout still runs the check", () => {
 });
 
 test("an entry with no modulepreload links is a shape change, not a small app", () => {
-  // What `build.modulePreload: false` emits. Flattened into one list it reads as a
-  // one-chunk app comfortably inside budget, which is the worst available answer.
   const html = INDEX_HTML.replace(/<link rel="modulepreload"[^>]*>\n?/, "");
   const { code, err } = runIn(fixture({ html }));
   assert.equal(code, 2);
@@ -120,9 +103,7 @@ test("an entry with no modulepreload links is a shape change, not a small app", 
 });
 
 test("the inlined-entry layout is measured, not rejected", () => {
-  // When the entry module is nothing but imports, Vite drops the entry chunk and
-  // emits one `<script type="module">` per imported chunk with no preload links.
-  // That is a complete eager set, so it has to pass rather than trip the guard.
+  // An imports-only entry makes Vite emit one module script per chunk with no preloads; that must pass.
   const html = `<!doctype html><html><head>
 <script type="module" crossorigin src="/assets/index-aaa.js"></script>
 <script type="module" crossorigin src="/assets/react-bbb.js"></script>
@@ -133,10 +114,6 @@ test("the inlined-entry layout is measured, not rejected", () => {
 });
 
 test("preload links without a module entry are a shape change, not a measurement", () => {
-  // A modulepreload link announces the entry's static import closure, so links
-  // surviving while the entry does not means the entry was misread. The links are
-  // numerous enough to carry a total-only guard on their own, and the chunk that
-  // goes missing is the largest one on the startup path.
   const html = INDEX_HTML.replace(/<script type="module"[^>]*><\/script>\n?/, "");
   const { code, err } = runIn(fixture({ html }));
   assert.equal(code, 2);
@@ -145,8 +122,6 @@ test("preload links without a module entry are a shape change, not a measurement
 });
 
 test("hrefs that are not site-root asset paths are reported, not silently skipped", () => {
-  // `base: "./"` or `base: "/studio/"` emits every href in a form this does not
-  // read. Measuring the empty remainder as 0 bytes would pass forever.
   const html = INDEX_HTML.replace(/"\/assets\//g, '"./assets/');
   const { code, err } = runIn(fixture({ html }));
   assert.equal(code, 2);

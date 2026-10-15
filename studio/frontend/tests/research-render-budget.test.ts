@@ -1,10 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// #8483: the desktop app froze during a deep research run. Two costs only show under a real
-// stream, so they are pinned at the source: what run-carrying components subscribe to, and what
-// the finished report's markdown commit signs up for. Like drag-costs-no-render.test.ts: assert
-// the cheap path, assert the expensive one is gone.
+// Two stream-only costs are pinned at the source: run subscriptions and markdown plugins.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -14,8 +11,6 @@ import { markdownPluginNeeds, MAX_HIGHLIGHT_CHARS } from "../src/lib/markdown-pl
 import { readSrc } from "./helpers/kit.ts";
 
 test("no research subscriber selects the whole run object", () => {
-  // Each re-rendered its subtree on every streamed delta; thread.tsx's useThreadResearchActive
-  // was already correct and is the shape the others now follow.
   for (const path of [
     "features/chat/chat-page.tsx",
     "components/assistant-ui/thread.tsx",
@@ -50,16 +45,13 @@ test("the report renderer is deferred and its plugins are conditional", () => {
   const preview = readSrc("components/markdown/markdown-preview.tsx");
   assert.match(preview, /markdownPluginNeeds\(markdown\)/);
   assert.match(preview, /scheduleIdleTask\(\(\) => setReadyMarkdown\(markdown\), 200\)/);
-  // The old path: all three plugins, always, in one synchronous commit.
   assert.doesNotMatch(preview, /const MARKDOWN_PLUGINS = \{ code, math, mermaid \}/);
   const message = readSrc("features/chat/components/research-message.tsx");
   assert.match(message, /markdown=\{run\.report\}[\s\S]*?defer=\{true\}/);
 });
 
 test("deferred readiness belongs to a markdown value, not to the component", () => {
-  // Blanking readiness from a passive effect lands one commit late, so the parse is paid twice.
-  // Measured on a 202KB report: a wasted 576ms parse, then a second one, ~1.11s blocked against
-  // ~0.66s once readiness is derived during render.
+  // Blanking readiness in a passive effect lands a commit late and parses twice.
   const preview = readSrc("components/markdown/markdown-preview.tsx");
   assert.match(preview, /const ready = !defer \|\| readyMarkdown === markdown;/);
   assert.match(preview, /scheduleIdleTask\(\(\) => setReadyMarkdown\(markdown\), 200\)/);
@@ -79,10 +71,7 @@ test("plugin needs follow the document", () => {
   assert.equal(markdownPluginNeeds("\\[x\\]").math, true);
   // A lone $ is too common in prose (prices, shell prompts) to pull KaTeX in for.
   assert.equal(markdownPluginNeeds("costs $5 to run").math, false);
-  // Nor a balanced pair: these callers install `@streamdown/math`'s bare export, which pins
-  // singleDollarTextMath to false, so `$x^2$` renders literally with the plugin loaded too.
-  // (`markdown-text.tsx` enables it, but does not use this detector.) If that changes, NEEDS_MATH
-  // must change with it - and "costs $5 and $10" is why a balanced-pair regex is not the answer.
+  // The bare @streamdown/math export disables singleDollarTextMath; keep NEEDS_MATH in sync.
   assert.equal(markdownPluginNeeds("the area is $x^2$ per unit").math, false);
   assert.match(
     readSrc("components/markdown/markdown-preview.tsx"),
@@ -90,14 +79,12 @@ test("plugin needs follow the document", () => {
   );
   assert.equal(markdownPluginNeeds("```mermaid\ngraph TD;\n```").mermaid, true);
   assert.equal(markdownPluginNeeds("```python\npass\n```").mermaid, false);
-  // CommonMark fences with three or more backticks *or* tildes, and allows longer fences. All of
-  // these reach the renderer as lang "mermaid".
+  // CommonMark fences use 3+ backticks or tildes, all reaching the renderer as mermaid.
   assert.equal(markdownPluginNeeds("~~~mermaid\ngraph TD;\n~~~").mermaid, true);
   assert.equal(markdownPluginNeeds("````mermaid\ngraph TD;\n````").mermaid, true);
   assert.equal(markdownPluginNeeds("~~~~mermaid\ngraph TD;\n~~~~").mermaid, true);
   assert.equal(markdownPluginNeeds("~~~ mermaid\ngraph TD;\n~~~").mermaid, true);
   assert.equal(markdownPluginNeeds("~~~python\npass\n~~~").mermaid, false);
-  // Two tildes is strikethrough, not a fence.
   assert.equal(markdownPluginNeeds("~~mermaid~~ is a tool").mermaid, false);
 });
 

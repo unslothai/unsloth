@@ -7,7 +7,6 @@ export interface RememberedImageModel {
   repoId: string;
   kind: "gguf" | "single_file" | "pipeline";
   filename?: string;
-  // An opaque pipeline reloads only under the family it was loaded with.
   familyOverride?: string;
   // Supplied text-encoder / VAE files: status names only basenames, so a recall must carry the paths.
   textEncoderFiles?: string[];

@@ -24,18 +24,14 @@ export const env = {
   BASE_URL: import.meta.env.BASE_URL,
 } as const;
 
-// Platform / device type
-
 export type DeviceType = "mac" | "windows" | "linux" | string;
 
 export type FileManager = "finder" | "explorer" | "files" | null;
 
 interface PlatformState {
   deviceType: DeviceType;
-  // Unified memory: GPU and system draw on one pool, so an over-committed load has
-  // nowhere to spill and takes the machine down rather than failing. Narrower than
-  // deviceType === "mac", which includes Intel Macs with a discrete GPU, where spilling
-  // to system RAM is exactly what happens. Mirrors the backend's is_apple_silicon gate.
+  // Unified memory: an over-committed load takes the machine down. Narrower than deviceType
+  // "mac" (Intel Macs spill to RAM). Mirrors the backend's is_apple_silicon gate.
   appleSilicon: boolean;
   fileManager: FileManager | undefined;
   chatOnly: boolean;
@@ -89,18 +85,13 @@ export const usePlatformStore = create<PlatformState>()((_, get) => ({
   },
 }));
 
-// Once an authoritative (server-reported) platform has been fetched, a non-forced response must not
-// overwrite it. The post-render fetchDeviceType() in main.tsx runs before auth is ready and can
-// resolve after the authed root-route/provider fetches; such a late write would reset deviceType,
-// cloudflareUrl/serverUrl/secure, and fetched, whether it is a browser fallback (unauthenticated)
-// or an earlier authenticated request that landed after a later forced refresh. Forced refreshes
-// are explicit re-reads, so they still write.
+// Never let a non-forced response overwrite an authoritative platform: the early unauthed fetch
+// in main.tsx can resolve late. Forced refreshes still write.
 function shouldKeepAuthoritativePlatform(force?: boolean): boolean {
   return !force && usePlatformStore.getState().fetched;
 }
 
-// How long fetchDeviceType waits out a backend that is still detecting, and how often
-// it re-reads. Sized from the warm's torch import (~1-2s cold), plus headroom.
+// Wait for a still-detecting backend, sized from the warm torch import (~1-2s) plus headroom.
 const HARDWARE_DETECT_WAIT_MS = 5000;
 const HARDWARE_DETECT_POLL_MS = 200;
 // The bounded wait above is spent at most once per page load: see fetchDeviceType.
@@ -114,21 +105,16 @@ export async function fetchDeviceType(options?: {
   if (fetched && !options?.force) return usePlatformStore.getState().deviceType;
 
   try {
-    // /api/health only reports the server's device_type to authed callers.
-    // Read the token from storage directly: importing features/auth here
-    // would be an import cycle (auth/session imports this store).
+    // device_type is only reported to authed callers. Read the token directly: importing
+    // features/auth would cycle.
     const token =
       typeof window === "undefined"
         ? null
         : localStorage.getItem("unsloth_auth_token");
-    // Re-read while the backend is still measuring: chat_only is its pre-detection default
-    // until then, and __root.tsx's beforeLoad acts on what this returns, sending a GPU host
-    // to /chat with Train hidden. The window is only the torch import, so bound the re-read.
+    // Re-read while the backend is still detecting: chat_only is its pre-detection default and
+    // __root.tsx's beforeLoad acts on it.
     const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
-    // Wait only when a measurement can arrive, and only once. /api/health reports
-    // device_type to authed callers only, so an unauthenticated poll stays provisional and
-    // would just hold /login (beforeLoad awaits this) behind the torch import. Claim the
-    // latch after the wait, or a concurrent caller skips a window nobody has finished.
+    // Wait only when authed (else beforeLoad stalls /login), and only once. Claim the latch after.
     const spendWait = Boolean(token) && !hardwareWaitSpent;
     const deadline = spendWait ? Date.now() + HARDWARE_DETECT_WAIT_MS : 0;
     let tokenRejected = false;
@@ -141,9 +127,7 @@ export async function fetchDeviceType(options?: {
       };
       // Deferred is not "in progress": nothing will settle, so do not wait.
       if (!isProvisionalVerdict(peek) || isDetectionDeferred(peek)) break;
-      // A rejected token gets the unauthenticated body, which never carries device_type.
-      // `version` is authed-only, so its absence means this wait can only time out,
-      // holding /login for the full window on a cold boot.
+      // A rejected token gets the unauthed body: no `version`, so the wait could only time out.
       if (peek.version === undefined) {
         tokenRejected = true;
         break;
@@ -151,8 +135,7 @@ export async function fetchDeviceType(options?: {
       await new Promise((resolve) => setTimeout(resolve, HARDWARE_DETECT_POLL_MS));
       res = await fetch(apiUrl("/api/health"), { headers });
     }
-    // Not spent when the backend rejected the token: no window was actually waited
-    // out, and signing in later in this same page load must still get one.
+    // Not spent on a rejected token, so a later sign-in in this page load still gets the wait.
     if (spendWait && !tokenRejected) hardwareWaitSpent = true;
     if (res.ok) {
       const data = (await res.json()) as {
@@ -171,14 +154,8 @@ export async function fetchDeviceType(options?: {
         hub_proxy?: string | null;
         datasets_server_proxy?: string | null;
       };
-      // Once the store holds an authoritative (server-reported) platform, a non-forced response
-      // must not overwrite it. It may be an unauthenticated fallback, or an earlier authenticated
-      // request that resolved after a later forced refresh already picked up device_type and the
-      // tunnel fields; writing either would reset device type or null the tunnel fields. Forced
-      // refreshes are explicit re-reads, so they still write.
-      // Before the authoritative-platform guard below: unauthenticated and
-      // idempotent, and a mirror whose first authoritative reply already landed
-      // would otherwise never route its Hub calls.
+      // Before the authoritative-platform guard: hub_proxy is unauthed and idempotent, and a mirror
+      // whose first authoritative reply already landed would otherwise never route Hub calls.
       const hubProxy = typeof data.hub_proxy === "string" ? data.hub_proxy : null;
       const datasetsProxy =
         typeof data.datasets_server_proxy === "string" ? data.datasets_server_proxy : null;
@@ -196,16 +173,11 @@ export async function fetchDeviceType(options?: {
         return usePlatformStore.getState().deviceType;
       }
       const previous = usePlatformStore.getState();
-      // A provisional reply omits device_type, so a forced refresh during the warm would
-      // fall back to the browser platform and relabel a WSL, SSH or remote host as local,
-      // changing model filtering, paths and install commands. Keep the server's answer.
+      // A provisional reply omits device_type; keep the server's answer rather than relabel a remote host.
       const keepPlatform = data.device_type === undefined && previous.fetched;
       const deviceType =
         data.device_type ?? (keepPlatform ? previous.deviceType : detectLocalPlatform());
-      // Rides with device_type and is kept on the same terms: a provisional or
-      // unauthenticated reply carries neither, and a browser guess cannot tell Apple
-      // Silicon from Intel. Absent means false, the pre-Apple-Silicon wording -- correct
-      // on an Intel Mac, and on a Mac browser pointed at a Linux host.
+      // Kept on the same terms as device_type; absent means false (correct on Intel Macs).
       const appleSilicon =
         data.apple_silicon ?? (keepPlatform ? previous.appleSilicon : false);
       const fileManager =
@@ -219,9 +191,7 @@ export async function fetchDeviceType(options?: {
         data,
         previous,
       );
-      // Cache only a server-reported platform. Unauthenticated responses fall
-      // back to the browser platform, which can differ from the host (WSL,
-      // SSH); keeping fetched=false retries once a token exists.
+      // Cache only a server-reported platform; fetched=false retries once a token exists.
       usePlatformStore.setState({
         deviceType,
         appleSilicon,
@@ -238,9 +208,7 @@ export async function fetchDeviceType(options?: {
       return deviceType;
     }
   } catch {
-    // Backend not ready: use client-side detection so chat-only guard works on initial load
-    // (important for macOS). Keep fetched=false so a later call retries against the backend. But a
-    // late non-forced failure must not wipe an authoritative platform that already resolved.
+    // Backend not ready: use client detection, keep fetched=false, but never wipe an authoritative one.
     if (shouldKeepAuthoritativePlatform(options?.force)) {
       return usePlatformStore.getState().deviceType;
     }

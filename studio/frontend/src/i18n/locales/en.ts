@@ -723,7 +723,6 @@ export const en = {
     shutdown: "Shutdown",
   },
   shell: {
-    // The Help submenu of the account menu, and the desktop app's Help menu.
     helpMenu: {
       documentation: "Documentation",
       keyboardShortcuts: "Keyboard Shortcuts",
@@ -784,24 +783,21 @@ export const en = {
       images: "Images",
       video: "Video",
       audio: "Audio",
-      // Hover text while the row spins, before this machine's capability is measured.
+      // Hover text before this machine's capability is measured.
       trainChecking: "Checking this machine for training support...",
       videoChecking: "Checking this machine for video support...",
       more: "More",
-      // Last entry of the More flyout; opens Settings -> Appearance.
       customizeSidebar: "Customize sidebar",
-      // Rendered uppercase in a pill beside a recently shipped tab.
+      // Rendered uppercase in a pill.
       newBadge: "New",
       export: "Export",
       recents: "Recents",
       noChatsYet: "No chats yet",
-      // Shown under an empty project folder in the sidebar.
       noChats: "No chats",
-      // Shown in the Projects section when every project is pinned, so it has no rows.
+      // Every project is pinned, so the section has no rows.
       allProjectsPinned: "All projects pinned",
-      // Same, when some of them are filed in custom sections instead.
+      // Same, when some are filed in custom sections instead.
       allProjectsFiled: "All projects are pinned or in sections",
-      // Shown in the Projects section when there are no projects yet.
       noProjects: "No projects",
       showMore: "Show more",
       showLess: "Show less",
@@ -866,7 +862,6 @@ export const en = {
       description: "{path} does not exist.",
       backToChat: "Back to chat",
     },
-    // Bulk actions on a multi-row selection.
     selection: {
       pinProjects: "Pin projects",
       unpinProjects: "Unpin projects",
@@ -891,7 +886,6 @@ export const en = {
       deleteChatFilesDescription:
         "This chat's own sandbox folder is removed from disk. Files it wrote inside a project stay in that project's workspace.",
     },
-    // Sidebar list headers: how chats are grouped and ordered.
     organize: {
       sidebarHeading: "Organize sidebar",
       byProject: "By project",
@@ -903,11 +897,9 @@ export const en = {
       organizeChats: "Organize chats",
       organizeProjects: "Organize projects",
       sortPinnedChats: "Sort pinned chats",
-      // Header of the menu's section-visibility toggles.
       show: "Show",
       newSection: "New section",
     },
-    // User-made sidebar sections that group chats and projects.
     sections: {
       createTitle: "New section",
       createDescription: "Group chats and projects however you like",
@@ -918,16 +910,14 @@ export const en = {
       edit: "Edit",
       remove: "Remove section",
       markAllRead: "Mark all as read",
-      // The row menu's one submenu for projects and sections, and its headings.
       moveTo: "Move to",
       section: "Section",
       sectionsHeading: "Sections",
       removeFromProject: "Remove from project",
       newSection: "New section",
       removeFromSection: "Remove from section",
-      // Names the project or section the row leaves; the two above are for when it is not one.
+      // Names the project or section the row leaves.
       removeFrom: "Remove from {name}",
-      // Shown in a section with nothing filed in it yet.
       empty: "Drag chats or projects here",
       sectionOptions: "Section options",
       newChatInSection: "New chat in {name}",
@@ -1490,7 +1480,7 @@ export const en = {
       exportFailed: "Could not download the logs.",
       exportTooOld: "Running Unsloth backend is too old to export logs. Update that backend and restart.",
       exportForbidden: "Downloading all logs needs a signed-in Unsloth session. An API key is not enough.",
-      // Not rendered: extra terms the settings search matches this tab on.
+      // Not rendered: extra settings-search terms.
       keywords: "debug debugging log logs error errors crash traceback stack trace troubleshoot diagnostics failed",
     },
     voice: {
@@ -2393,7 +2383,7 @@ export const en = {
           updateChecksDisabled:
             "Update checks are disabled (UNSLOTH_DISABLE_UPDATE_CHECK=1), so the available backends are not looked up.",
         },
-        // Not rendered: extra terms the settings search matches these rows on.
+        // Not rendered: extra settings-search terms.
         llamaBackendKeywords:
           "llama.cpp backend gguf inference cuda rocm hip vulkan metal cpu gpu accelerator prebuilt switch engine custom path folder directory llama-server executable binary",
       },
@@ -2414,7 +2404,7 @@ export const en = {
         reloadRequired: "Reload the model to apply the new memory flags.",
         loadError: "Failed to load model memory settings",
         saveError: "Failed to save model memory settings",
-        // Not rendered: extra terms the settings search matches these rows on.
+        // Not rendered: extra settings-search terms.
         modelMemoryKeywords:
           "mlock memlock ulimit vram gpu memory ram resident residency pin pinned page lock locked keep loaded unload idle mmap no-mmap load-mode swap paging",
       },
@@ -2427,7 +2417,7 @@ export const en = {
         modelsFolder: "Models folder",
         modelsFolderDescription: "Where downloaded models are stored.",
         modelsFolderHint: "Where downloaded models are stored. Change it to keep models off your system drive. Applies to new downloads only. Models you already have stay where they are.",
-        // Not rendered: extra terms the settings search matches this row on.
+        // Not rendered: extra settings-search terms.
         modelsFolderKeywords:
           "models folder directory path location download downloads cache storage disk drive move relocate hugging face",
         futureDownloads: "New downloads only",
@@ -2449,7 +2439,7 @@ export const en = {
           label: "Cache files",
           description: "{size} in caches, of which {reclaimable} can be cleared now.",
           hint: "Package downloads, compiled kernels and transfer caches that Unsloth rebuilds when it needs them. Downloaded models, projects, chats, settings and your Hugging Face token are never cleared here.",
-          // Not rendered: extra terms the settings search matches this row on.
+          // Not rendered: extra settings-search terms.
           keywords:
             "cache caches purge prune clear clean free space disk uv pip npm bun triton inductor cuda numba matplotlib vllm compiled xet temporary",
           measuring: "Measuring cache sizes...",
@@ -4066,7 +4056,7 @@ export const en = {
       "Weights {model} + context {context} = {total} of {budget} usable VRAM",
     readoutWithSpec:
       "Weights {model} + KV {kv} + MTP draft {spec} = {total} of {budget} usable VRAM",
-    // Measured against llama.cpp: the cache is allocated at context creation, sized to n_ctx.
+    // The cache is allocated at context creation, sized to n_ctx.
     kvRate: "KV reserved, ~{rate}/token",
     oomLikely: "With current settings OOM likely",
     tooLarge: "Larger than VRAM, will offload to CPU. A smaller quantization runs faster",
@@ -4144,7 +4134,6 @@ export const en = {
     resetDescription: "Every skill goes back to how a fresh install has it: your skills and Claude skills on, bundled skills off. Your on and off choices are cleared.",
     reset: "Reset",
   },
-  // The Library page, its file viewer, and the menus and toasts that act on its files.
   library: {
     tabs: {
       ariaLabel: "Library sections",
@@ -4158,7 +4147,6 @@ export const en = {
       all: "All",
       chats: "Chats",
     },
-    // The Chats tab: conversations and projects, kept apart from every file tab.
     chats: {
       sections: {
         chats: "Chats",
@@ -4276,7 +4264,6 @@ export const en = {
         uploadFailed: "Could not upload {name}",
       },
     },
-    // One title and description per tab, shown when it has nothing yet.
     empty: {
       suggestedTitle: "Your library is empty",
       suggestedDescription: "Files you upload or create in chats show up here.",
@@ -4312,11 +4299,10 @@ export const en = {
     searchFolder: "Search folder",
     dropToUpload: "Drop to upload",
     dropToUploadInto: 'Drop to upload to "{folder}"',
-    // Folder cards and list rows. The singular form is used when count is 1.
+    // The singular form is used when count is 1.
     itemCountOne: "{count} item",
     itemCount: "{count} items",
     selectItem: "Select {name}",
-    // The bar that floats over the page while anything is selected.
     selection: {
       startChat: "Start chat",
       move: "Move",
@@ -4338,7 +4324,6 @@ export const en = {
       noFolder: "Library (no folder)",
       deleteFolder: "Delete folder",
     },
-    // Each platform's own name for opening the file manager at a file.
     reveal: {
       finder: "Reveal in Finder",
       explorer: "Show in Explorer",
@@ -4396,7 +4381,7 @@ export const en = {
       modifiedColumn: "Modified",
       justNow: "just now",
     },
-    // File sizes. {value} is already formatted for the locale.
+    // {value} is already formatted for the locale.
     size: {
       bytes: "{value} B",
       kilobytes: "{value} KB",
@@ -4404,7 +4389,6 @@ export const en = {
       gigabytes: "{value} GB",
       terabytes: "{value} TB",
     },
-    // Fine-tuned models, by how they were made.
     modelKind: {
       lora: "LoRA",
       fullFineTune: "Full fine-tune",
@@ -4432,7 +4416,7 @@ export const en = {
       deleteSandbox: "It is also removed from the chat that created it.",
       deleteModel: "This permanently deletes the model from disk.",
       unsavedTitle: "Your changes weren't saved",
-      // {reason} is why the save failed, ending in a full stop.
+      // {reason} ends in a full stop.
       unsavedDescription: "{reason} Try again, or discard your changes to close the file.",
       keepEditing: "Keep editing",
       discardChanges: "Discard changes",
@@ -4463,7 +4447,6 @@ export const en = {
       readOnlyNotUtf8:
         "This file is not UTF-8 text, so it opens read-only here. Some characters may not show correctly.",
     },
-    // The full-window file viewer, shared with the Images, Video and Audio pages.
     viewer: {
       scale: "Scale",
       fit: "Zoom to fit",
@@ -4477,7 +4460,6 @@ export const en = {
       untitledImage: "Untitled image",
       untitledVideo: "Untitled video",
     },
-    // The Project submenu that copies a file into a project.
     project: {
       label: "Project",
       newProject: "New project",
@@ -4541,7 +4523,6 @@ export const en = {
       speechModel: "{name} is a speech model",
       speechModelDescription: "Pick it from the model menu on the Audio page.",
       noMediaLink: "The server returned no link to play this file.",
-      // A Library "View in" link to a gallery entry that is no longer listed.
       imageNotFound: "Could not find this image",
       clipNotFound: "Could not find this clip",
       notFoundDescription: "It may be archived or deleted.",

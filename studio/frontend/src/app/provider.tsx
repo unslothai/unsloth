@@ -118,7 +118,6 @@ const MIN_DESKTOP_LAYOUT_WIDTH = 768;
 const STACK_SHADOW_GUTTER_BOTTOM = 16;
 const STACK_SHADOW_GUTTER_TOP = 16;
 const STACK_SHADOW_GUTTER_LEFT = 28;
-// The cards' own inset from the right edge, not a gutter: the rail is flush there.
 const STACK_CARD_INSET_RIGHT = 16;
 // Rail stays flush with the corner; only its padding grows past the open Run settings panel.
 const STACK_CARD_INSET_RIGHT_PAST_PANEL = `calc(${STACK_CARD_INSET_RIGHT}px + var(${CHAT_SETTINGS_INSET_VAR}, 0px))`;
@@ -181,7 +180,6 @@ async function observeWindowLayout(
 
   return {
     waitForSettled: async () => {
-      // Include restore events that arrived before this wait started.
       let observedRevision = 0;
       let sawNativeChange = revision > 0;
       for (
@@ -283,11 +281,7 @@ function windowPixelRatioSource(): PixelRatioSource | null {
   };
 }
 
-/**
- * Reapplies the floor after a zoom change, which Windows text scaling is. The
- * floor is a CSS-pixel floor scaled into logical pixels, so the ratio it was
- * scaled by at launch goes stale.
- */
+/** Reapplies the CSS-pixel floor after a zoom change (Windows text scaling). */
 async function reapplyWindowSizeConstraints(
   isCurrent: WindowLayoutGuard,
 ): Promise<void> {
@@ -301,8 +295,7 @@ async function reapplyWindowSizeConstraints(
   const { minimum } = measured.bounds;
   await windowMinimumSize(win).apply(minimum);
   if (!isCurrent()) return;
-  // Grows a window now under the floor. No maximum: the work area has not
-  // changed, and capping here would fight a user's own larger size.
+  // No maximum: capping here would fight a user's own larger size.
   await enforceWindowSizeBounds(win, windowModule.LogicalSize, isCurrent, {
     minimum,
   });
@@ -429,7 +422,6 @@ async function applyAppWindowLayout(
       );
       await placeWindow(win, windowModule, measured, requestedSize, isCurrent);
     }
-    // Apply work-area constraints after restore to preserve the saved size.
     const hiddenAtLaunch = await wasLaunchedHidden();
     if (!isCurrent()) return;
     await finalizeAppWindowLayout({
@@ -518,7 +510,6 @@ function TauriUpdateLayer({
   useEffect(() => {
     const wasUpdating = wasUpdatingRef.current;
     wasUpdatingRef.current = isUpdating;
-    // The backend restarted empty under a mounted chat page, whose picker still names the old model.
     return followDesktopUpdateScreen(
       isUpdating,
       wasUpdating,
@@ -547,7 +538,6 @@ function TauriUpdateLayer({
       ref={cornerInsetScope}
       // Scrolls at the cap rather than spilling cards off screen; the gutter keeps the card shadows out of that clip.
       className="pointer-events-none fixed bottom-0 right-0 flex max-h-[calc(100dvh-var(--studio-window-chrome-top,0px))] flex-col items-end gap-2 overflow-y-auto overflow-x-hidden overscroll-contain"
-      // Measured from the outside, per card, by tests/studio/playwright_update_banner_layout.py.
       data-testid="overlay-rail"
       // Its cards stay clickable over a macOS browser page (native-view.ts).
       data-native-rail=""
@@ -610,8 +600,7 @@ const MAC_NATIVE_CHROME_STYLE = {
   "--studio-content-top-inset": "0px",
   "--studio-non-chat-content-top-inset": NATIVE_MAC_TITLEBAR_HEIGHT_VAR,
   "--studio-hidden-route-top-inset": NATIVE_MAC_TITLEBAR_HEIGHT_VAR,
-  // Chat chrome holds text, so it follows the UI font size. The window
-  // geometry above does not: it is the OS window's, not ours.
+  // Chat chrome follows the UI font size; window geometry is the OS window's and does not.
   "--studio-chat-header-height": "calc(44px * var(--ui-space-scale, 1))",
   "--studio-chat-header-padding-top": "calc(9px * var(--ui-space-scale, 1))",
   "--studio-media-header-left-inset": "calc(0.5rem * var(--ui-space-scale, 1))",
@@ -641,7 +630,7 @@ const CUSTOM_CHROME_STYLE = {
   "--studio-window-control-inset": "138px",
 } as CSSProperties;
 
-// Mirror the titlebar heights onto <html>: overlays portalled into document.body read the wrapper styles as empty.
+// Mirrored onto <html>: overlays portalled into document.body cannot read the wrapper styles.
 function DesktopChromeVarsEffect({
   usesCustomTitlebar,
   usesNativeMacTitlebar,
@@ -663,7 +652,6 @@ function DesktopChromeVarsEffect({
     set("--studio-window-control-inset", usesCustomTitlebar ? "138px" : null);
     // The toaster renders outside the wrapper.
     set("--studio-content-top-inset", usesCustomTitlebar ? "34px" : null);
-    // How far body-portaled surfaces must stay clear of the top: either titlebar paints over them.
     set(
       "--studio-window-chrome-top",
       usesCustomTitlebar
@@ -673,7 +661,6 @@ function DesktopChromeVarsEffect({
           : null,
     );
     refreshWindowChromeTop();
-    // The macOS titlebar inset is divided by the zoom.
     const stopZoom = usesNativeMacTitlebar
       ? subscribeAppliedInterfaceZoom(refreshWindowChromeTop)
       : null;
@@ -711,8 +698,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
     startRepair,
   } = useTauriBackend();
 
-  // Settings' manual repair reruns the INSTALLER, not `studio update`, so a CPU-only venv is rebuilt rather than reused.
-  // Through a ref, not a dependency: startRepair is rebuilt on every render.
+  // Manual repair reruns the installer so a CPU-only venv is rebuilt; via ref since startRepair churns.
   const startRepairRef = useRef(startRepair);
   startRepairRef.current = startRepair;
   const repairController = useMemo(
@@ -732,15 +718,13 @@ function TauriWrapper({ children }: { children: ReactNode }) {
   const [appShellReady, setAppShellReady] = useState(false);
   const [updateScreenShown, setUpdateScreenShown] = useState(false);
   const canMountApp = status === "running" && desktopAuthReady;
-  // Same as showApp below: until the shell is ready the app sits hidden behind the startup screen.
   useEffect(() => {
     if (!isTauri) return;
     setDesktopShellReady(canMountApp && appShellReady);
     return () => setDesktopShellReady(false);
   }, [canMountApp, appShellReady]);
 
-  // Readiness is delivered by the mounted AppReadinessBoundary, not the
-  // global reload-snapshot event: an obsolete async load cannot reveal us.
+  // Readiness comes from the mounted boundary, so an obsolete async load cannot reveal us.
 
   useEffect(() => {
     if (!isTauri) return;
@@ -749,8 +733,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
       return;
     }
     if (appShellReady) return;
-    // A failed route/chunk must not strand the user behind the splash. Reveal
-    // its error/recovery UI after a bounded wait; never bypass credential auth.
+    // A failed chunk must not strand the user behind the splash; never bypass credential auth.
     const timeout = window.setTimeout(() => setAppShellReady(true), 15_000);
     return () => window.clearTimeout(timeout);
   }, [canMountApp, appShellReady]);
@@ -781,7 +764,6 @@ function TauriWrapper({ children }: { children: ReactNode }) {
           if (!payload || disposed) return;
           stopListening?.();
           stopListening = undefined;
-          // Native tray reveal focuses the window; re-run the deferred layout now that currentMonitor() resolves.
           launchedHidden = Promise.resolve(false);
           appliedWindowModeRef.current = null;
           setWindowRevealRevision((revision) => revision + 1);
@@ -827,9 +809,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
     });
   }, [status, windowRevealRevision]);
 
-  // Mounted once, deliberately: the layout effect above returns early on a
-  // status change that keeps the window mode, so a listener living there would
-  // be disposed on the first one and never armed again.
+  // Mounted once: the layout effect returns early on mode-preserving changes and would drop it.
   useEffect(() => {
     if (!isTauri) return;
     const ratioSource = windowPixelRatioSource();
@@ -837,10 +817,8 @@ function TauriWrapper({ children }: { children: ReactNode }) {
 
     let disposed = false;
     const refresh = () => {
-      // The setup window has no constraints to keep current.
       if (disposed || appliedWindowModeRef.current !== "app") return;
-      // Read on the change, not on mount: a layout pass that starts after this
-      // one owns the constraints, and this one stands down.
+      // Read on change: a newer layout pass owns the constraints and this one stands down.
       const generation = windowLayoutGenerationRef.current;
       reapplyWindowSizeConstraints(
         () => !disposed && windowLayoutGenerationRef.current === generation,
@@ -920,14 +898,12 @@ function TauriWrapper({ children }: { children: ReactNode }) {
     return (
       <>
         {children}
-        {/* One bottom-right stack so overlays never overlap. */}
         {/* Capped to the viewport: a long download list plus expanded notes would
             push the top of the stack off screen. */}
         <div
           ref={cornerInsetScope}
           // Scrolls at the cap rather than spilling cards off screen; the gutter keeps the card shadows out of that clip.
           className="pointer-events-none fixed bottom-0 right-0 flex max-h-[100dvh] flex-col items-end gap-2 overflow-y-auto overflow-x-hidden overscroll-contain"
-          // Measured from the outside, per card, by tests/studio/playwright_update_banner_layout.py.
           data-testid="overlay-rail"
           // Gutters in px, never a spacing utility: those are rem, and the cards would drift off the corner.
           style={{
@@ -1070,7 +1046,6 @@ function TauriWrapper({ children }: { children: ReactNode }) {
     );
   }
 
-  // Use the startup screen's bare titlebar during updates.
   const showSidebarSurface =
     showApp && !hidesTitlebarSidebar && !updateScreenShown;
 
@@ -1081,7 +1056,6 @@ function TauriWrapper({ children }: { children: ReactNode }) {
     >
       {chromeVars}
       <WindowTitlebar showSidebarSurface={showSidebarSurface} />
-      {/* Sign-in forms can outgrow a small window. */}
       <div
         className={
           hidesTitlebarSidebar

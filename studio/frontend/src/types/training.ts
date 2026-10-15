@@ -15,7 +15,6 @@ export function isAdapterMethod(method: TrainingMethod): boolean {
 }
 export type DatasetSource = "huggingface" | "upload" | "s3";
 
-/** S3 bucket configuration for loading datasets */
 export interface S3Config {
   bucket: string;
   region: string;

@@ -55,11 +55,7 @@ function isDict(value: unknown): value is Dict {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-// The export emits content_json exactly as it was stored, so the importer has to
-// accept every shape storage accepts, not just the one it writes today. A string
-// becomes a text part rather than nothing: the backup is the user's last copy, and
-// dropping the text of a message is not recoverable. Same normalisation
-// oaiContentToParts already does for the OpenAI path in chat-import.ts.
+// Accept every stored content shape; a string becomes a text part rather than being dropped.
 function messageContent(raw: unknown): MessageRecord["content"] {
   if (Array.isArray(raw)) {
     return raw.map((part) =>
@@ -72,11 +68,7 @@ function messageContent(raw: unknown): MessageRecord["content"] {
   return [] as MessageRecord["content"];
 }
 
-// The third carrier of the same vector as systemPrompt and a project's instructions:
-// toOpenAIMessages passes a stored role "system" straight into the next request, so a backup
-// could hand whoever wrote it the system role on the importer's account. The text is the
-// user's and a backup is their last copy, so it comes back as an ordinary turn, visible in the
-// transcript, rather than being dropped or replayed with authority.
+// A stored system role would be replayed with authority, so it is restored as a user turn.
 function restorableRole(role: string): MessageRecord["role"] {
   return (role === "system" ? "user" : role) as MessageRecord["role"];
 }
@@ -128,11 +120,7 @@ export function studioBackupProjects(backup: Dict): ProjectRecord[] {
     projects.push({
       id,
       name,
-      // Dropped for the same reason as systemPrompt above: chat-adapter.ts wraps a
-      // project's instructions in <project_instructions> and unshifts them as a
-      // system message on the next send, so restoring them lets whoever wrote the
-      // backup put text in the system prompt of the importer's chats. The name and
-      // the grouping are what a restore is for; the instructions are not.
+      // Dropped like systemPrompt: project instructions are injected as a system message.
       instructions: "",
       archived: project.archived === true,
       createdAt,
@@ -174,7 +162,6 @@ export function studioBackupToConversations(
 
   const conversations: ParsedConversation[] = [];
   threads.forEach((thread, index) => {
-    // The export dumps every thread row, and a chat whose only turn was deleted has none left.
     const source = messagesByThread.get(thread.id as string) ?? [];
     const threadId = threadIds.get(thread.id as string) as string;
     const ordered = source
@@ -206,7 +193,6 @@ export function studioBackupToConversations(
         record.attachments = raw.attachments as MessageRecord["attachments"];
       }
       if (isDict(raw.metadata)) record.metadata = detachMetadata(raw.metadata);
-      // Ordering adjustments are not exact send times.
       if (num(raw.createdAt) === null || ts !== createdAt) {
         record.metadata = { ...record.metadata, createdAtEstimated: true };
       }
@@ -217,13 +203,11 @@ export function studioBackupToConversations(
     const forkedFromMessageId = messageIds.get(
       str(thread.forkedFromMessageId) ?? "",
     );
-    // Points into this thread's own messages, so it remaps like any other id. Dropping it
-    // would restore the fork without its "Continued from chat" divider.
+    // Remapped like other ids; dropping it loses the "Continued from chat" divider.
     const forkBoundaryMessageId = messageIds.get(
       str(thread.forkBoundaryMessageId) ?? "",
     );
-    // A name, not an id, so it restores as it stands. Without it the restored fork numbers
-    // its own forks from its whole title, giving "Notes (1) (1)".
+    // Without it the restored fork numbers its forks from the full title, e.g. "Notes (1) (1)".
     const forkTitleBase = str(thread.forkTitleBase);
     const projectId = str(thread.projectId);
     const pairId = str(thread.pairId);

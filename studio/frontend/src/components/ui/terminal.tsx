@@ -17,12 +17,7 @@ type TerminalProps = {
   className?: string
   sequence?: boolean
   startOnView?: boolean
-  /**
-   * Render every line in its final state immediately, skipping the typing /
-   * fade-in animations. Used when the terminal re-mounts for a run whose intro
-   * already played (e.g. navigating away from the training page and back), so
-   * the logs don't visually "restart" while the run itself keeps going.
-   */
+  /** Skip typing animations, e.g. on remount for a run whose intro already played. */
   instant?: boolean
 }
 

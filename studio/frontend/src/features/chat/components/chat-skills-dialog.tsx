@@ -80,7 +80,7 @@ const SECTIONS: ReadonlyArray<SkillRecord["source"]> = ["agents", "claude", "bun
 // `*` is the bulk-change sentinel because skill names cannot contain it.
 const ALL_SKILLS = "*";
 
-// A shadowed row shares its name with the one that wins, so skills are keyed by source too.
+// Shadowed rows share a name, so skills are keyed by source too.
 const keyOf = (skill: SkillRecord) => `${skill.source}:${skill.name}`;
 
 function describe(cause: unknown): string | undefined {
@@ -112,7 +112,7 @@ export function ChatSkillsDialog({
     () => new Map(),
   );
   const inflight = useRef(new Set<string>());
-  // Bumped when the catalog changes, so a read started before that change cannot land after it.
+  // Bumped on catalog change so a stale read cannot land after it.
   const manifestGeneration = useRef(0);
   const [pending, setPending] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
@@ -195,10 +195,9 @@ export function ChatSkillsDialog({
       });
   };
 
-  // Keyed by name, so only the readable (winning) row may use it; a shadowed copy shares the name.
+  // Only the winning row may use a name-keyed manifest; a shadowed copy shares the name.
   const manifest = readable ? (manifests.get(selected.name) ?? null) : null;
 
-  // A catalog refresh may mean a changed file: re-read the open one, keep any draft.
   const [seenSkills, setSeenSkills] = useState(skills);
   if (skills !== seenSkills) {
     setSeenSkills(skills);
@@ -807,7 +806,6 @@ function SkillRow({
   const t = useT();
   const usable = skill.valid && !skill.shadowed;
   const descriptionId = useId();
-  // The details button covers the row and the switch sits above it; only those two take pointer events.
   return (
     <div
       className={cn(
@@ -835,7 +833,6 @@ function SkillRow({
         {skill.linked ? <Badge variant="outline">{t("skills.linked")}</Badge> : null}
         {skill.valid ? null : <Badge variant="destructive">{t("skills.invalid")}</Badge>}
       </div>
-      {/* Lowercase text reads lower than its box, so the controls drop to its x-height. */}
       <Switch
         className="pointer-events-auto translate-y-[0.11em] text-ui-14"
         checked={usable && skill.enabled}
@@ -856,8 +853,7 @@ function SkillRow({
   );
 }
 
-// Fill and padding live on the wrapper so the scrollbar clears the rounded corners in every engine.
-// A label, so clicking the padding still focuses the field.
+// Fill and padding live on the wrapper so the scrollbar clears the rounded corners.
 function ScrollField({ htmlFor, children }: { htmlFor: string; children: ReactNode }): ReactElement {
   return (
     <label

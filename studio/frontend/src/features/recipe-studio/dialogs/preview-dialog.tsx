@@ -645,8 +645,7 @@ function RunDialogBody({
       </Collapsible>
 
       {errors.length > 0 && (
-        // Scrolls an inner viewport: the shadow would not survive the clip .scroll-rounded takes in
-        // Firefox. The surface padding keeps the scrollbar clear of the curve. 11rem in all, as before.
+        // Inner viewport scrolls: Firefox's .scroll-rounded clip would cut the shadow.
         <div className="overflow-hidden rounded-2xl border border-destructive/30 bg-destructive/5 py-3 shadow-border">
           <div className="max-h-38 space-y-2 overflow-y-auto px-4 py-1">
             <div className="flex items-center gap-2">

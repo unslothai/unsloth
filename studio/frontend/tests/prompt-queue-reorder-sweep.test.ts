@@ -1,14 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/**
- * An exhaustive sweep of the reorder math, on top of the named cases in
- * `prompt-queue-reorder.test.ts`. Those say what a drag should do; this says
- * what a drag may never do, over every queue length, from/to pair and active
- * slot: nothing lost or duplicated, nothing at or before the dispatching slot
- * moved, the caller's array untouched, and the dispatch-changed flag honest.
- */
-
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -42,10 +34,7 @@ test("every accepted move is a permutation that loses nothing", () => {
 });
 
 test("the range check and the reorder never disagree", () => {
-  // The check guards a move the UI is about to make, so a move the check
-  // allows must produce an array and one it refuses must produce null. If the
-  // two drift apart, a row either refuses a legal drag or slips past the
-  // dispatch boundary.
+  // The check and the move must agree, or rows refuse legal drags or cross the dispatch boundary.
   for (let length = 0; length <= MAX_LEN; length++) {
     const items = queue(length);
     for (let active = 0; active <= length; active++) {
@@ -82,9 +71,7 @@ test("the dragged item lands exactly where the drop said", () => {
 });
 
 test("nothing at or before the dispatching slot ever moves", () => {
-  // The item in the active slot is the one about to be sent, and everything
-  // before it has already gone. A move that reached them would either send a
-  // prompt the user had moved out of the way or re-send a spent one.
+  // The active slot is about to send and earlier items are spent.
   for (let length = 1; length <= MAX_LEN; length++) {
     const items = queue(length);
     for (let active = 0; active < length; active++) {
@@ -172,7 +159,6 @@ test("an empty queue and a single row have nothing to reorder", () => {
 });
 
 test("an active slot past the end refuses everything", () => {
-  // The run has dispatched every item it holds; there is nothing left to move.
   const items = queue(4);
   for (let from = 0; from < 4; from++) {
     for (let to = 0; to < 4; to++) {
@@ -201,8 +187,7 @@ test("the dispatch-changed flag agrees with the slot it reports on", () => {
 });
 
 test("a run that has not dispatched yet reports no dispatch change", () => {
-  // run.index is -1 before the first send, and there is no pending dispatch to
-  // retarget, so the caller must not be told to reschedule one.
+  // run.index is -1 before the first send, so there is nothing to reschedule.
   const items = queue(3);
   const next = reorderPromptQueueItems(items, 0, 2, 0);
   assert.ok(next);
@@ -210,8 +195,7 @@ test("a run that has not dispatched yet reports no dispatch change", () => {
 });
 
 test("the flag compares identity, not contents", () => {
-  // Queue items are objects, so two prompts with the same text are still two
-  // items. Comparing by value would miss a real change between them.
+  // Items are compared by identity; equal text is still two items.
   const a = { prompt: "same" };
   const b = { prompt: "same" };
   assert.equal(promptQueueActiveItemChanged([a, b], [b, a], 0), true);

@@ -11,7 +11,6 @@ import {
 } from "../../utils/stats-format";
 import { StatTile } from "./stat-primitives";
 
-/** The five headline numbers, mirroring the app's top-of-profile summary. */
 export function StatsHighlights({ stats }: { stats: ProfileStats }) {
   const t = useT();
   const locale = useLocale();

@@ -195,7 +195,6 @@ export function Waveform({
   );
 }
 
-/** Seekable bars; keys are left to the caller. */
 export function WaveformBars({
   peaks,
   fraction,

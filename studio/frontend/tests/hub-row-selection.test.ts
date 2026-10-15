@@ -6,10 +6,7 @@ import test from "node:test";
 
 import { readSrc } from "./helpers/kit.ts";
 
-// Selecting a row must not dim it. Dark hover moved onto the --accent token
-// while the selected fills stayed hand-written washes on the page, which put a
-// clicked row below a merely hovered one and widened the gap as the contrast
-// slider came down, since a wash falls further than the token does.
+// Selected fills must sit above hover at every contrast setting, so both build on --accent.
 
 const HUB_CSS = readSrc("features/hub/hub.css");
 const PICKERS = readSrc(
@@ -37,8 +34,6 @@ const hoverFill = (row: string) => {
 for (const row of ["catalog-row", "hub-result-row"]) {
   test(`a selected ${row} is derived from the tone it must outrank`, () => {
     assert.match(hoverFill(row), /background-color: var\(--accent\)/);
-    // Built ON --accent, so the pair keeps its order at every contrast
-    // setting instead of relying on two curves staying in step.
     assert.match(selectedFill(row), /var\(--foreground\) 6%, var\(--accent\)/);
   });
 
@@ -48,9 +43,7 @@ for (const row of ["catalog-row", "hub-result-row"]) {
 }
 
 test("the picker reads one fit per variant, companions included", () => {
-  // tierOf and the rendered badge used the bare checkpoint while the
-  // recommendation already judged the footprint, so a vision quant could sort
-  // and badge as fitting after the star had ruled it OOM.
+  // Fit must judge the full footprint (getVariantFit), not the bare checkpoint size.
   assert.doesNotMatch(PICKERS, /getGgufFit\(v\.size_bytes\)/);
   const at = PICKERS.indexOf("const getVariantFit = useCallback(");
   assert.notEqual(at, -1, "getVariantFit is missing");
@@ -58,6 +51,5 @@ test("the picker reads one fit per variant, companions included", () => {
     PICKERS.slice(at, at + 260),
     /ggufVariantFitSizeBytes\(variant\)/,
   );
-  // Ordering and badge both go through it.
   assert.equal(PICKERS.match(/getVariantFit\(v\)/g)?.length, 2);
 });

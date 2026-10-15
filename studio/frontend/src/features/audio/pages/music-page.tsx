@@ -48,7 +48,6 @@ export function musicPageModels(
   );
 }
 
-/** One line under a prompt: example picks while it is empty, the hint once it has text. */
 function ExamplesOrHint({
   label,
   examples,
@@ -458,7 +457,6 @@ export function MusicRail({
   return (
     <TtsRailFields
       {...props}
-      // Length lives in the page's fields, so Advanced keeps only the model's options.
       musicGeneration={false}
       samplingControls={false}
       inputs={

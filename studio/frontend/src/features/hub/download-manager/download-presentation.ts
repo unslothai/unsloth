@@ -7,7 +7,6 @@ import type {
   ManagedDownload,
 } from "./download-manager-types";
 
-/** Describe a sole missing drafter as the transfer, not as the cached model. */
 export function pendingDrafterPresentation(
   variant: GgufVariantDetail | null | undefined,
 ): DownloadPresentation | undefined {
@@ -75,7 +74,6 @@ export function presentationForExpectedBytesUpdate(
   return stabilizeDownloadPresentation(presentation, planExpectedBytes);
 }
 
-/** Project plan-wide cache counters onto the sole artifact still transferring. */
 export function presentedProgress(
   job: Pick<
     ManagedDownload,

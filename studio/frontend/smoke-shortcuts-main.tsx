@@ -1,10 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Harness for tests/studio/playwright_keyboard_shortcuts.py: a vite entry with no backend, driving
-// the real registry, the real store and the real useShortcut against a real browser's keyboard. The
-// node suite can reach the pure functions but not the listener, so what a chord does to a focused
-// button, to a text field, on auto-repeat, or under AltGr is only answerable here.
+// Harness for tests/studio/playwright_keyboard_shortcuts.py; real registry and listener.
 
 /* eslint-disable no-restricted-imports -- a harness entry point, not app code. */
 import { useChatNavigationStore } from "@/features/chat/stores/chat-navigation-store";
@@ -18,7 +15,6 @@ import * as shortcutStore from "@/features/settings/stores/keyboard-shortcuts-st
 import { useState } from "react";
 import { createRoot } from "react-dom/client";
 
-/** How long a selection chord keeps a repeat press off the open chat. */
 const SELECTION_ACTION_GRACE_MS = 750;
 
 interface Fired {
@@ -28,7 +24,6 @@ interface Fired {
 
 declare global {
   interface Window {
-    // Optional: the app typechecks this entry, only the harness page installs it.
     __shortcutsSmoke?: {
       registry: typeof registry;
       store: typeof shortcutStore;
@@ -47,9 +42,7 @@ const record = (action: string, detail?: string) => fired.push({ action, detail 
 const latchRef = { current: null as { id: string; at: number } | null };
 const activeChat = { current: "chat-A" as string | null };
 
-// The shape app-sidebar registers these three with: a selection chord clears the
-// selection as it runs, so the latch is what keeps the next press off the open
-// chat. Keyed by action, so a different command straight after is not swallowed.
+// Selection chords clear the selection, so a per-action latch keeps repeats off the open chat.
 const stampLatch = (id: string, run: () => void) => {
   latchRef.current = { id, at: Date.now() };
   run();
@@ -67,9 +60,7 @@ const withActiveChat = (run: (item: string) => void) => {
   run(activeChat.current);
 };
 
-/** Actions the blocks in Harness register by hand. The rest come from the registry
- *  below, so every shipped chord has a listener here to reach. This stands in for the
- *  app's own call sites, which the node suite pins by source text. */
+/** Hand-registered actions; the node suite pins the app's own call sites by source text. */
 const NAMED_IDS = new Set<registry.ShortcutId>([
   "archiveChat",
   "togglePinChat",
@@ -89,8 +80,6 @@ const GENERIC_IDS = registry.SHORTCUT_DEFS.map((def) => def.id).filter(
   (id) => !NAMED_IDS.has(id),
 );
 
-/** What a named block records, where that is not the id. Anything absent, generic
- *  rows included, records its own id. */
 const RECORDED_AS: Partial<Record<registry.ShortcutId, string>> = {
   archiveChat: "archiveActive",
   togglePinChat: "pinActive",
@@ -99,7 +88,7 @@ const RECORDED_AS: Partial<Record<registry.ShortcutId, string>> = {
   declineToolRequest: "decline",
 };
 
-/** One hook per action: a loop inside Harness would break the rules of hooks. */
+/** One component per action: a loop would break the rules of hooks. */
 function GenericRow({ id }: { id: registry.ShortcutId }) {
   useShortcut(id, () => record(id));
   return null;
@@ -154,7 +143,6 @@ function Harness() {
     );
   });
 
-  // The bare-key pair, with the options tool-confirmation-controls uses.
   useShortcut("approveToolRequest", () => record("approve"), {
     enabled: toolPending,
     skipInTextFields: true,

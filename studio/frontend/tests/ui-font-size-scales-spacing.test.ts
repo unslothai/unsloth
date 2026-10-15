@@ -9,7 +9,6 @@ import { join } from "node:path";
 
 import { readSrc } from "./helpers/kit.ts";
 
-/** Every source that can carry a length. */
 const SOURCES = (function walk(dir: string): string[] {
   return readdirSync(join(import.meta.dirname, "../src", dir), {
     withFileTypes: true,
@@ -20,9 +19,7 @@ const SOURCES = (function walk(dir: string): string[] {
   });
 })("");
 
-// UI font size has to move what separates the text too: a 20px label in a row
-// padded for 12px reads as cramped. --ui-space-scale is the one multiplier
-// every such length goes through.
+// --ui-space-scale is the one multiplier every font-size-dependent length goes through.
 
 const CSS = readSrc("index.css");
 const SIDEBAR = readSrc("components/app-sidebar.tsx");
@@ -31,8 +28,7 @@ const PROVIDER = readSrc("app/provider.tsx");
 const SCALED = /calc\([\d.]+(?:px|rem)\s*\*\s*var\(--ui-space-scale,\s*1\)\)/;
 
 test("the spacing scale is the font-size preference, normalised at the default", () => {
-  // --ui-font-scale is against a 16px base and the default is 15px, so
-  // dividing by the default leaves the shipped spacing untouched.
+  // --ui-font-scale is against 16px and the default is 15px, so dividing keeps default spacing.
   assert.match(
     CSS,
     /--ui-space-scale:\s*calc\(var\(--ui-font-scale, 1\) \/ 0\.9375\);/,
@@ -44,9 +40,7 @@ test("the spacing scale is the font-size preference, normalised at the default",
 });
 
 test("every tailwind spacing utility goes through it", () => {
-  // p-*, m-*, gap-* and size-* are all calc(var(--spacing) * n), so the step
-  // scales the whole layout at once. The @theme passthrough is commented out,
-  // so it is not a declaration.
+  // The @theme passthrough is commented out, so it is not a declaration.
   const declarations = (CSS.match(/--spacing:[^;]+;/g) ?? []).filter(
     (declaration) => !declaration.includes("var(--spacing)"),
   );
@@ -60,17 +54,14 @@ test("every tailwind spacing utility goes through it", () => {
 });
 
 test("a measured cutoff moves with the box it measures", () => {
-  // min-h-9 scales, so a one-line chip field is 27px at the 12px setting and
-  // 46px at 20px. A fixed 44 calls the tall one wrapped while it is empty.
+  // min-h-9 scales, so a fixed 44px threshold misreads an empty chip field as wrapped.
   const chips = readSrc("features/recipe-studio/components/chip-input.tsx");
   assert.match(chips, /element\.clientHeight > 44 \* uiSpaceScale/);
   assert.match(chips, /\}, \[values\.length, draft, uiSpaceScale\]\);/);
 });
 
 test("em lengths are left alone, they already follow the text", () => {
-  // rem is against the 16px root, which the preference never touches, so it
-  // needs the multiplier. em is against the element's own font size, which
-  // does move, so scaling it applies the preference twice.
+  // rem needs the multiplier; em follows the element font size, so scaling it applies twice.
   const withEm = SOURCES.filter((file) =>
     /[^a-z0-9.]-?[\d.]+em\s*\*\s*var\(--ui-space-scale/.test(readSrc(file)),
   );
@@ -83,7 +74,6 @@ test("em lengths are left alone, they already follow the text", () => {
 });
 
 test("chat chrome that holds text scales, window chrome does not", () => {
-  // The header band and the controls in it grow with their labels.
   for (const name of [
     "--studio-chat-header-height",
     "--studio-chat-control-height",
@@ -98,8 +88,7 @@ test("chat chrome that holds text scales, window chrome does not", () => {
     }
   }
 
-  // The title bar and the traffic lights belong to the OS window; a font size
-  // preference must not move the UI off them.
+  // The title bar and traffic lights belong to the OS window and must not move.
   for (const name of [
     "--studio-desktop-titlebar-height",
     "--studio-content-top-inset",
@@ -112,8 +101,6 @@ test("chat chrome that holds text scales, window chrome does not", () => {
 });
 
 test("the sidebar's hand-set spacing follows the scale", () => {
-  // The rows use one-off px values (gap-[8.5px], pl-[39px]), which is exactly
-  // the spacing that used to stay put while the labels grew.
   const bare = [
     ...SIDEBAR.matchAll(
       /(?<![\w-])-?(?:p|px|py|pt|pb|pl|pr|m|mx|my|mt|mb|ml|mr|gap|gap-x|gap-y)-\[(\d*\.?\d+)px\]/g,
@@ -127,8 +114,7 @@ test("the sidebar's hand-set spacing follows the scale", () => {
 });
 
 test("fixed slots that hold scaled content scale with it", () => {
-  // These heights live in JS, so the CSS variable cannot reach them. A slot
-  // left at its 15px value clips or overlaps the row it holds.
+  // These heights live in JS, so the CSS variable cannot reach them.
   const HOOK = "useUiSpaceScale";
   const rows = readSrc("features/hub/catalog/models-catalog-rows.tsx");
   assert.ok(rows.includes(HOOK), "the virtualizer ignores the UI font size");
@@ -140,14 +126,12 @@ test("fixed slots that hold scaled content scale with it", () => {
   const carousel = readSrc("features/hub/catalog/hub-section-row.tsx");
   assert.ok(carousel.includes(HOOK), "the carousel slot ignores it");
   assert.match(carousel, /itemHeight=\{cardHeight\}/);
-  // The stride and the arrow's centre line are measured in JS against gap-4
-  // and pt-2, which scale, so an unscaled stride stops short of the next card.
+  // The stride is measured in JS against gap-4 and pt-2, which scale.
   const strip = readSrc("features/hub/catalog/card-carousel.tsx");
   assert.ok(strip.includes(HOOK), "the carousel stride ignores it");
   assert.match(strip, /const gapPx = CARD_GAP_PX \* scale;/);
   assert.match(strip, /const topPaddingPx = CAROUSEL_TOP_PADDING_PX \* scale;/);
-  // A new scale changes scrollWidth, which decides the arrows. The resize
-  // observer only watches the scroller's own box, so the sizes are deps.
+  // The resize observer only watches the scroller's box, so the sizes are deps.
   assert.match(
     strip,
     /\}, \[updateArrows, items, itemWidth, itemHeight, gapPx\]\);/,
@@ -155,8 +139,7 @@ test("fixed slots that hold scaled content scale with it", () => {
 
   const lists = readSrc("features/hub/catalog/models-catalog-lists.tsx");
   assert.ok(lists.includes(HOOK), "the pinned grid ignores it");
-  // The pinned block sits directly above the virtualized rows in the same
-  // lanes, so a gutter of its own would step the card widths.
+  // The pinned block shares lanes with the virtualized rows, so no gutter of its own.
   assert.match(
     lists,
     /Math\.round\(CATALOG_COLUMN_GAP_PX \* pinnedScale\)/,
@@ -166,18 +149,11 @@ test("fixed slots that hold scaled content scale with it", () => {
 
 test("the titlebar reserves room for its controls, which stay in the band", () => {
   const titlebar = readSrc("components/tauri/window-titlebar.tsx");
-  // The band is a fixed 34px and clips nothing, so a grown button would hang
-  // over the page and take its clicks.
+  // The band is a fixed 34px and clips nothing, so buttons must not grow.
   assert.match(titlebar, /inline-flex size-\[30px\] shrink-0/);
-  // The spacer stands in for one of those buttons while the navbar renders
-  // its own trigger, so it holds the same fixed width.
   assert.match(titlebar, /aria-hidden="true" className="size-\[30px\] shrink-0"/);
-  // The window controls are Windows caption buttons: the band's full height, 46px wide.
   assert.match(titlebar, /inline-flex h-full w-\[46px\] shrink-0/);
-  // The padding and gaps around them still scale, so the drag region has to
-  // start further out or it covers the last button.
-  // max(), because the buttons are fixed: the slot may grow with the padding
-  // around them but must never fall under their own width.
+  // max(): the slot may grow with scaled padding but never below the fixed buttons' width.
   assert.match(
     titlebar,
     /max\(7rem, calc\(7rem \* var\(--ui-space-scale, 1\)\)\)/,
@@ -185,8 +161,7 @@ test("the titlebar reserves room for its controls, which stay in the band", () =
 });
 
 test("the composer's one-row clamp is one row at any size", () => {
-  // The editor box wins over the input's own min-height, so all three clamps
-  // and the JS floor have to move together or an empty composer clips.
+  // The editor box wins over the input's min-height, so all three clamps and the JS floor move together.
   const clamps = CSS.match(/calc\(40px \* var\(--ui-space-scale, 1\)\)/g) ?? [];
   assert.equal(clamps.length, 3, "a 40px composer clamp is still fixed");
   const thread = readSrc("components/assistant-ui/thread.tsx");
@@ -195,8 +170,7 @@ test("the composer's one-row clamp is one row at any size", () => {
 });
 
 test("overlays that scale cannot outgrow the screen", () => {
-  // w-* follows --spacing too, so a w-72 popover is 384px at the 20px
-  // setting, past a 375px phone. Each floating surface caps itself.
+  // w-* follows --spacing, so floating surfaces must cap themselves for small screens.
   for (const file of [
     "components/ui/popover.tsx",
     "components/ui/dropdown-menu.tsx",
@@ -211,8 +185,7 @@ test("overlays that scale cannot outgrow the screen", () => {
 });
 
 test("the stylesheet's comments stay comments", () => {
-  // A "*/" inside the prose ends the comment early and postcss then reads the
-  // rest of the sentence as a declaration, taking the next one with it.
+  // A "*/" inside a CSS comment ends it early and postcss eats the next declaration.
   const stripped = CSS.replace(/\/\*[\s\S]*?\*\//g, "");
   assert.doesNotMatch(
     stripped,
@@ -226,10 +199,7 @@ test("the stylesheet's comments stay comments", () => {
 });
 
 test("no hand-set length above a hairline skips the scale", () => {
-  // A one-off w-[232px] beside scaled text and padding is the cramped row the
-  // preference exists to fix. Hairlines and 1-3px nudges stay put; so do the
-  // images, which stage content at their own size, the desktop titlebar, which
-  // belongs to the OS window, and the activity grid, whose cells JS measures.
+  // Exempt: hairlines, 1-3px nudges, images, the desktop titlebar, and the JS-measured activity grid.
   const FIXED_BY_DESIGN = new Set([
     "components/tauri/window-titlebar.tsx",
     "components/assistant-ui/image.tsx",
@@ -250,8 +220,6 @@ test("no hand-set length above a hairline skips the scale", () => {
 });
 
 test("icons grow at the rate of the text beside them", () => {
-  // A half-rate curve left a 20px label beside an 18px glyph in a row padded
-  // for 20px, so the icons read shrunken at every size above the default.
   assert.match(CSS, /--ui-icon-size: calc\(1rem \* var\(--ui-font-scale, 1\)\);/);
   assert.match(
     CSS,
@@ -262,8 +230,6 @@ test("icons grow at the rate of the text beside them", () => {
     /min\(calc\([\d.]+(?:px|rem) \* var\(--ui-font-scale/,
     "an icon is still on the half-rate curve",
   );
-  // The scoped icon rules match an arbitrary glyph size in both spellings,
-  // or the scaled class slips past them.
   for (const px of ["15", "18"]) {
     assert.ok(
       CSS.includes(
@@ -275,7 +241,6 @@ test("icons grow at the rate of the text beside them", () => {
 });
 
 test("named widths scale, container breakpoints do not", () => {
-  // max-w-md holds the same scaled text as the rest, so it grows with it.
   for (const [name, rem] of [
     ["xs", "20rem"],
     ["md", "28rem"],
@@ -287,8 +252,7 @@ test("named widths scale, container breakpoints do not", () => {
       `--container-${name} ignores the UI font size`,
     );
   }
-  // Declared outside @theme, so Tailwind still bakes the literal into every
-  // @container query (a query cannot read a custom property).
+  // Declared outside @theme so Tailwind bakes the literal into @container queries.
   const theme = CSS.slice(CSS.indexOf("@theme inline {"));
   assert.doesNotMatch(
     theme.slice(0, theme.indexOf("\n}")),
@@ -315,8 +279,7 @@ test("the plain stylesheets' controls follow the scale", () => {
 });
 
 test("a scaled minimum never outgrows its own cap", () => {
-  // CSS lets min win over max, so an uncapped scaled minimum breaks the cap:
-  // at 200% a 20rem editor minimum is 40rem against a 48dvh maximum.
+  // CSS lets min win over max, so a scaled minimum must be capped too.
   for (const [file, cap] of [
     ["features/chat/chat-settings-sheet.tsx", "48dvh"],
     ["features/model-picker/components/chat-template-editor-dialog.tsx", "50dvh"],
@@ -328,7 +291,6 @@ test("a scaled minimum never outgrows its own cap", () => {
       `${file} lets its minimum pass its cap`,
     );
   }
-  // Popovers and selects stop at 100vw-32px, so their minimums do too.
   for (const [file, width] of [
     ["features/settings/tabs/agents-tab.tsx", "16rem"],
     ["features/hub/catalog/gguf-download-card.tsx", "300px"],
@@ -346,7 +308,6 @@ test("a scaled minimum never outgrows its own cap", () => {
 test("a scaled dialog keeps the viewport cap it replaces", () => {
   // A call-site max-h drops DialogContent's own viewport cap, so it restates it.
   const cap = "calc(100dvh-var(--studio-window-chrome-top,0px)-2rem)";
-  // The recipe dialogs share RecipeDialogContent, which carries the cap.
   assert.ok(
     readSrc("features/recipe-studio/dialogs/shared/recipe-dialog-content.tsx").includes(
       `max-h-[min(calc(650px*var(--ui-space-scale,1)),${cap})]`,
@@ -370,7 +331,6 @@ test("the response details sheet scales its width, not only its cap", () => {
 });
 
 test("a sidebar row's inset scales on both sides", () => {
-  // Only the measured scrollbar rail stays fixed.
   assert.ok(
     SIDEBAR.includes(
       '"ps-[calc(5px*var(--ui-space-scale,1))] pe-[calc(var(--sidebar-rail,0px)+5px*var(--ui-space-scale,1))]"',
@@ -382,9 +342,7 @@ test("a sidebar row's inset scales on both sides", () => {
 });
 
 test("a scaled media rail leaves the preview its minimum", () => {
-  // At 200% a shrink-0 rail passed the 50rem split it sits in, clipping the
-  // preview. The header column shrinks the same way, so the dividers line up.
-  // The width is the draggable --media-rail-width, falling back to the old fixed one.
+  // A shrink-0 rail overflowed its split at 200%; the header column shrinks the same way.
   const rail = "var(--media-rail-width,calc(408px*var(--ui-space-scale,1)))";
   for (const file of [
     "features/images/images-page.tsx",
@@ -429,13 +387,11 @@ test("a menu's height cap keeps Radix's available height", () => {
 });
 
 test("settings stacks its rail where the scaled dialog is too narrow for it", () => {
-  // max-sm ignored the scale: at 200% a 1000px window kept a 480px pane.
   const dialog = readSrc("features/settings/settings-dialog.tsx");
   assert.match(dialog, /const width = 608 \* useUiSpaceScale\(\);/);
   assert.match(dialog, /`\(width < \$\{width \+ 32\}px\)`/);
   assert.match(dialog, /return width > 960 \|\| narrow;/);
   assert.match(dialog, /data-stacked=\{stacked \|\| undefined\}/);
-  // Only the full-screen dialog shell stays on the viewport breakpoint.
   const shell = dialog.match(/max-sm:[^\s"]+/g) ?? [];
   assert.deepEqual(shell.sort(), [
     "max-sm:!max-w-none",
@@ -446,8 +402,7 @@ test("settings stacks its rail where the scaled dialog is too narrow for it", ()
 });
 
 test("composite settings controls shrink inside their row", () => {
-  // A fixed width's min-content blocks the row's max-w-full cap unless each
-  // wrapper can shrink.
+  // A fixed width's min-content blocks the max-w-full cap unless each wrapper can shrink.
   assert.ok(
     readSrc("features/settings/tabs/general-tab.tsx").includes(
       '<div className="flex max-w-full items-center gap-2">\n            <div className="relative w-[calc(260px*var(--ui-space-scale,1))] min-w-0">',
@@ -458,7 +413,6 @@ test("composite settings controls shrink inside their row", () => {
       '"flex max-w-full shrink-0 flex-wrap items-center justify-end gap-1"',
     ),
   );
-  // The GPU meter sits in a plain row, so it caps and wraps under the name.
   const resources = readSrc("features/settings/tabs/resources-tab.tsx");
   assert.ok(resources.includes("flex min-w-0 flex-wrap items-center justify-between"));
   assert.ok(
@@ -469,7 +423,6 @@ test("composite settings controls shrink inside their row", () => {
 });
 
 test("a scaled sheet width stops at the viewport", () => {
-  // Sheets overlay phones too: at 200% an 18rem sheet is 576px on a 375px screen.
   const sheet = /<SheetContent\b([^>]*)>/g;
   for (const file of SOURCES.filter((f) => f.endsWith(".tsx"))) {
     for (const [, props] of readSrc(file).matchAll(sheet)) {
@@ -481,7 +434,6 @@ test("a scaled sheet width stops at the viewport", () => {
 });
 
 test("resizable panels render their layout width at the browser scale", () => {
-  // Their contents scale, so a 280px shell at 200% clipped its own labels.
   const sidebar = readSrc("components/ui/sidebar.tsx");
   assert.equal(sidebar.match(/"--sidebar-width": `\$\{width \* widthScale\}px`/g)?.length, 2);
   assert.ok(
@@ -489,7 +441,6 @@ test("resizable panels render their layout width at the browser scale", () => {
       '"--chat-settings-width": `${settingsWidth * settingsScale}px`',
     ),
   );
-  // The drag paints the same product and walks the pointer back to layout px.
   const handle = readSrc("components/ui/panel-resize-handle.tsx");
   assert.ok(handle.includes("paint(`${pendingRef.current * scaleRef.current}px`)"));
   assert.ok(handle.includes("paint(`${committedRef.current * scaleRef.current}px`)"));

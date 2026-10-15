@@ -1,12 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** A leaf module with no imports, so the recovery rule can be tested without
- * pulling the auth client (and the assets behind it) into the test runner. */
+/** Leaf module with no imports so the recovery rule is testable. */
 
-/** Carries the HTTP status because only one is recoverable: the log endpoint
- * answers every content state 200 with a `status` field, and keeps 404 for
- * "that source id is no longer one I enumerate". */
+/** Carries the status: the endpoint answers every content state 200 and keeps 404 for an
+ * unknown source id. */
 export class DebugLogRequestError extends Error {
   readonly status: number;
 
@@ -17,8 +15,7 @@ export class DebugLogRequestError extends Error {
   }
 }
 
-/** True when the selected log is gone and the picker should rebuild: removed,
- * or pushed out of the per-family window by a run of failed load attempts. */
+/** Removed, or pushed out of the per-family window by failed load attempts. */
 export function isLogSourceGone(error: unknown): boolean {
   return error instanceof DebugLogRequestError && error.status === 404;
 }

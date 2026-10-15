@@ -34,9 +34,7 @@ export type ConfettiRef = Api | null;
 
 const ConfettiContext = createContext<Api>({} as Api);
 
-// Unsloth CSP blocks canvas-confetti's default blob: worker, so force
-// useWorker: false. Module-scoped so the prop default keeps stable
-// identity across renders (`canvasRef` depends on `globalOptions`).
+// Unsloth's CSP blocks canvas-confetti's blob: worker; module-scoped for stable identity.
 const DEFAULT_GLOBAL_OPTIONS: ConfettiGlobalOptions = {
   resize: true,
   useWorker: false,
@@ -59,8 +57,7 @@ const ConfettiComponent = forwardRef<ConfettiRef, Props>((props, ref) => {
         instanceRef.current = confetti.create(node, {
           ...globalOptions,
           resize: true,
-          // Force off after the spread so caller globalOptions can't
-          // re-enable the worker and trip CSP.
+          // Forced after the spread so caller options cannot re-enable the worker.
           useWorker: false,
         });
       } else {

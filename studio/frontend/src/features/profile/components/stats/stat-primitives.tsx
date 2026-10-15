@@ -4,7 +4,6 @@
 import { cn } from "@/lib/utils";
 import type { ReactNode } from "react";
 
-/** Bordered surface every stats block sits on, matching the profile card. */
 export function StatsCard({
   title,
   description,
@@ -44,7 +43,6 @@ export function StatsCard({
   );
 }
 
-/** Big number + caption, used across the highlight and training rows. */
 export function StatTile({
   value,
   label,
@@ -73,7 +71,6 @@ export function StatTile({
   );
 }
 
-/** Label left, value right: the "Activity insights" rows. */
 export function StatRow({
   label,
   value,
@@ -103,7 +100,6 @@ export function StatRow({
   );
 }
 
-/** Thin progress track (level bar, achievement progress, model share). */
 export function StatMeter({
   progress,
   className,

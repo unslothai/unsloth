@@ -17,49 +17,25 @@ import {
 } from "react";
 
 /**
- * Intent-aware autoscroll for a Thread viewport.
- *
- * Why not assistant-ui's built-in: `useThreadViewportAutoScroll` always
- * installs observers that write `isAtBottom` to the shared store on every
- * layout change, even with `scrollToBottomOn*` disabled. On resizes /
- * breakpoint crossings that write races our correction and the
- * scroll-to-bottom button flickers depending on observer ordering.
- *
- * Strategy:
- *   - Own `isAtBottom` as local state (via `useIsThreadAtBottom`); nobody
- *     reads upstream's store.
- *   - Drive the viewport via a single rAF loop with a follow deadline
- *     (`followUntilRef`). Any signal that can invalidate bottom alignment
- *     extends the deadline; the loop pins and reports `isAtBottom=true`
- *     until it expires, then settles on DOM observation.
- *   - Detect user intent (wheel up, swipe up, scroll direction) to detach.
- *     While detached, resize/mutation don't extend the deadline. Re-attach
- *     when the user scrolls down within 24px of the bottom.
+ * Replaces assistant-ui's autoscroll, whose observers write `isAtBottom` on every layout change
+ * and race our correction. A rAF loop pins until a follow deadline; upward intent detaches, and
+ * scrolling back within 24px of the bottom re-attaches.
  */
 
-// 2px, not 1: HiDPI subpixel rounding can leave a fractional gap that a
-// 1px threshold reports as not-at-bottom.
+// 2px, not 1: HiDPI subpixel rounding can leave a fractional gap.
 const AT_BOTTOM_THRESHOLD_PX = 2;
 const RE_ATTACH_THRESHOLD_PX = 24;
 const TOUCH_MOVE_THRESHOLD_PX = 4;
-// Cumulative upward movement counting as a deliberate detach. Summed (not
-// per-event) so slow 1px-per-event sources (middle-click autoscroll,
-// scrollbar drags, some trackpads) accumulate instead of slipping under.
+// Summed, not per event, so 1px-per-event sources still detach.
 const UPWARD_DETACH_THRESHOLD_PX = 2;
 const SCROLL_KEY_WINDOW_MS = 500;
 // Window the viewport stays pinned through layout/content races. Extends on every resize/mutation,
 // so streaming keeps it pinned; settles this long after the last change.
 const FOLLOW_SETTLE_MS = 600;
-// How often a quiet pinned frame re-checks layout for the rest of the follow window. Content can
-// grow with no mutation record and no border-box resize (image decode, font-display: swap, a late
-// KaTeX pass), and the MutationObserver below excludes style, so only a frame that reads layout
-// notices. 100ms not every frame: six times fewer forced layouts, and the view is back on the
-// bottom in ~115ms measured (timer plus the frame it schedules).
+// Content can grow with no mutation or border-box resize (image decode, fonts, KaTeX), so a
+// quiet pinned frame re-checks layout on this timer.
 const SETTLE_CHECK_MS = 100;
-// Max stabilizer compensation. Absorbs sub-frame transients (~5-15px shiki re-renders, ~8px
-// action-bar drift). Larger shrinks are intentional content removals (delete, regenerate clear,
-// reasoning collapse); padding those over leaves empty space, so above this we release and let
-// autoscroll re-pin to the new height.
+// Absorbs sub-frame transients (shiki re-renders); larger shrinks are real removals and re-pin.
 const STABILIZER_MAX_PX = 64;
 
 export type ScrollToBottom = (behavior?: ScrollBehavior) => void;
@@ -68,12 +44,7 @@ type AutoScrollContextValue = {
   scrollToBottom: ScrollToBottom;
   getIsAtBottom: () => boolean;
   subscribe: (listener: () => void) => () => void;
-  /**
-   * Mark the user as detached, as if they scrolled up. Called when the
-   * composer (and bottom spacer) grow: the chat is then above the new
-   * bottom and observer-driven pins must not shove it up. Scrolling back
-   * re-attaches; explicit pins (run start, button) still work.
-   */
+  /** Detach as if scrolled up: composer growth must not let observer pins shove the chat up. */
   detachFromBottom: () => void;
   /**
    * `deltaPx` of content was inserted ABOVE the viewport; shift by it so the
@@ -127,8 +98,7 @@ export function useAdjustForContentInsertedAbove(): (deltaPx: number) => boolean
   return useContext(AutoScrollContext).adjustForContentInsertedAbove;
 }
 
-/** See AutoScrollContextValue.detachFromBottom. Opening a collapsible by hand near the bottom
- *  must grow it downward, not pin the bottom and shove the header up. */
+/** Opening a collapsible near the bottom must grow it downward, not pin and shove the header. */
 export function useDetachThreadFromBottom(): () => void {
   return useContext(AutoScrollContext).detachFromBottom;
 }
@@ -212,7 +182,6 @@ export function useIntentAwareAutoScroll(): {
       let rafId: number | null = null;
       let settleTimer: number | null = null;
       let settleCheckDue = false;
-      // Layout signal since the last frame. True so the first frame after attach follows.
       let layoutChanged = true;
       let lastScrollTop = el.scrollTop;
       let lastClientWidth = el.clientWidth;
@@ -241,10 +210,7 @@ export function useIntentAwareAutoScroll(): {
       // later streaming skips extendFollow and auto-follow stays dead for the session.
       const canScrollUp = (): boolean => el.scrollTop > 0;
 
-      // True when a nested scrollable ancestor of the target (reasoning panel, tool output) has
-      // room above and will consume the upward delta before it reaches the viewport. Walk stops at
-      // the viewport, so only intermediate inner scrollers count. Without this, wheel/ touchmove
-      // bubbling would falsely detach while reading a long reasoning pane mid-stream.
+      // An inner scroller with room above consumes the upward delta, so it must not detach.
       const innerScrollWillConsumeUpward = (
         target: EventTarget | null,
       ): boolean => {
@@ -266,8 +232,7 @@ export function useIntentAwareAutoScroll(): {
         return false;
       };
 
-      // Stabilizer state (see `stabilize`). In this closure so it resets
-      // when the viewport remounts (Compare-pane swap, thread switch).
+      // Stabilizer state lives in this closure so it resets when the viewport remounts.
       let stabilizerPx = 0;
       let maxContentHeight = 0;
 
@@ -332,12 +297,9 @@ export function useIntentAwareAutoScroll(): {
         parked = false;
         userDetachedRef.current = true;
         followUntilRef.current = 0;
-        // Hygiene, not correctness: `following` checks userDetached before `settling`, so a
-        // queued check cannot re-pin anyway; it just should not sit on a timer.
+        // Hygiene: `following` checks userDetached first, so a queued check cannot re-pin anyway.
         clearSettleCheck();
-        // The stabilizer only matters while pinning. Once the user scrolls up, drop residual
-        // padding so the bottom stays flush on return. Safe mid-content: shrinking scrollHeight
-        // can't cap their scrollTop.
+        // Drop residual stabilizer padding once the user scrolls up so the bottom stays flush.
         releaseStabilizer();
         maxContentHeight = el.scrollHeight;
       };
@@ -364,8 +326,7 @@ export function useIntentAwareAutoScroll(): {
       };
       tickRequestRef.current = requestTick;
 
-      // A quiet pinned frame stops chaining and hands the rest of the window to this timer, which
-      // re-arms itself while the window is open. See SETTLE_CHECK_MS.
+      // A quiet pinned frame hands the window to this self-rearming timer. See SETTLE_CHECK_MS.
       const scheduleSettleCheck = (): void => {
         if (settleTimer !== null) {
           return;
@@ -386,10 +347,7 @@ export function useIntentAwareAutoScroll(): {
         );
       };
 
-      // Single rAF loop. Within the follow window and not detached, pin to
-      // bottom and report isAtBottom=true; otherwise settle on the DOM.
-      // Edge-triggered: scroll/resize/mutation call requestTick(). Re-arms only while layout is
-      // still moving; chaining on the window alone read layout every frame of a stream.
+      // Edge-triggered rAF loop: re-arms only while layout is still moving.
       const tick = (): void => {
         rafId = null;
         const settling = settleCheckDue;
@@ -441,8 +399,6 @@ export function useIntentAwareAutoScroll(): {
         requestTick();
       };
 
-      // Programmatic detach (see detachFromBottom). Same as scrolling up;
-      // the tick refresh updates isAtBottom.
       detachImplRef.current = () => {
         detach();
         requestTick();
@@ -468,18 +424,8 @@ export function useIntentAwareAutoScroll(): {
         if (deltaPx !== 0) {
           el.scrollTo({ top: el.scrollTop + deltaPx, behavior: "instant" });
         }
-        // Advance the intent bookkeeping whether or not anything was written.
-        // With a write, this stops the scroll event it provokes from reading as
-        // reader movement: the `delta > 0` branch below would re-attach a user
-        // parked near the bottom and the next widening frame would yank them
-        // down.
-        // WITHOUT a write it matters just as much. When native scroll anchoring
-        // absorbs a widening in full the correction is zero, but the browser
-        // still moved scrollTop by the whole inserted height and still fires a
-        // scroll event for it (measured on Chromium 151, WebKit 26.5, Firefox
-        // 153). Returning early left lastScrollTop a whole insertion behind, so
-        // that event arrived as a large downward scroll nobody made. Layout
-        // effects run before it is dispatched, so resyncing here reads as zero.
+        // Resync lastScrollTop even with no write: native anchoring may have moved scrollTop and its
+        // scroll event would otherwise read as a downward scroll that re-attaches the user.
         lastScrollTop = el.scrollTop;
         lastDistanceFromBottom = distanceFromBottom();
         lastScrollHeight = el.scrollHeight;
@@ -553,13 +499,10 @@ export function useIntentAwareAutoScroll(): {
         const distanceNow = distanceFromBottom();
         const scrollHeight = el.scrollHeight;
 
-        // Viewport resizes can clamp scrollTop and produce spurious
-        // direction signals. Only flip intent on deliberate scrolls.
+        // Resizes can clamp scrollTop and fake direction; only deliberate scrolls flip intent.
         if (sizeChanged) {
           upwardAccumulator = 0;
         } else if (delta > 0) {
-          // Downward: reset the upward accumulator, and re-attach when
-          // the user has scrolled back within range of the bottom.
           upwardAccumulator = 0;
           if (
             userDetachedRef.current &&
@@ -570,11 +513,7 @@ export function useIntentAwareAutoScroll(): {
             extendFollow();
           }
         } else if (delta < 0 && !userDetachedRef.current) {
-          // Upward: sum across events to catch 1px-per-event sources (middle-click autoscroll, some
-          // trackpads) that slip under a per-event threshold. Count distance-from-bottom growth,
-          // not raw scrollTop delta: when content above collapses, browsers scroll-anchor so
-          // scrollTop and scrollHeight drop together and distance is unchanged. Those layout deltas
-          // must not flip intent.
+          // Count distance-from-bottom growth, not scrollTop: anchoring moves scrollTop, distance stays put.
           const distanceDelta = distanceNow - lastDistanceFromBottom;
           const keyed =
             performance.now() - scrollKeyAt < SCROLL_KEY_WINDOW_MS;
@@ -607,18 +546,8 @@ export function useIntentAwareAutoScroll(): {
         requestTick();
       };
 
-      // Scroll stabilizer. Problem: when a trailing code block finalizes (shiki re-renders the
-      // <pre> with highlight spans), its height briefly dips then recovers. The dip shrinks
-      // `scrollHeight`, so the browser synchronously caps `scrollTop` to the new max — a one-frame
-      // upward jump, then a "snap back". Re-scrolling can't help: once scrollHeight drops the cap
-      // has happened and scrollTop can't exceed the new max. Fix: keep `scrollHeight` monotonic
-      // across the follow window. Track max content height (scrollHeight minus our padding) and
-      // write any shortfall into CSS var `--aui-scroll-stabilizer`, read by the viewport's
-      // padding-bottom. A 5px shrink grows padding 5px so the browser sees no scrollHeight change.
-      // Padding shrinks back to zero as content grows past its prior high-water mark.
-      // Self-contained: lives on the viewport element via a CSS variable, touching no other UI.
-      // Returns the post-adjustment scrollHeight so one layout read per observer callback feeds
-      // both stabilization and pinning.
+      // Keeps scrollHeight monotonic during the follow window: a finalizing code block briefly shrinks
+      // and the browser caps scrollTop. The shortfall goes into `--aui-scroll-stabilizer` padding.
       const stabilize = (): number => {
         const sh = el.scrollHeight;
         const currentContent = sh - stabilizerPx;
@@ -626,8 +555,7 @@ export function useIntentAwareAutoScroll(): {
           !userDetachedRef.current &&
           performance.now() < followUntilRef.current;
         if (!followActive) {
-          // Outside the follow window: stop adjusting but keep
-          // maxContentHeight current so the next session isn't stale.
+          // Outside the follow window: stop adjusting but keep maxContentHeight current.
           maxContentHeight = currentContent;
           return sh;
         }
@@ -635,10 +563,7 @@ export function useIntentAwareAutoScroll(): {
           maxContentHeight = currentContent;
         }
         const shrink = maxContentHeight - currentContent;
-        // Large shrinks (over STABILIZER_MAX_PX) are intentional removals (delete, regenerate
-        // clear, reasoning collapse). Compensating would leave an empty gap, so release the
-        // stabilizer and rebase the high-water mark; the pinIfFollowing call below re-anchors to
-        // the new bottom.
+        // Large shrinks are intentional removals; release and re-anchor rather than pad a gap.
         if (shrink > STABILIZER_MAX_PX) {
           maxContentHeight = currentContent;
           if (stabilizerPx !== 0) {
@@ -655,8 +580,7 @@ export function useIntentAwareAutoScroll(): {
         return currentContent + stabilizerPx;
       };
 
-      // Synchronous pin-to-bottom. Observer callbacks run after layout, before paint, so this
-      // scrollTo composites in the same frame as the triggering mutation.
+      // Observer callbacks run after layout and before paint, so this lands in the same frame.
       const pinIfFollowing = (scrollHeight: number): void => {
         if (userDetachedRef.current) {
           return;
@@ -670,9 +594,7 @@ export function useIntentAwareAutoScroll(): {
         el.scrollTo({ top: scrollHeight, behavior: "instant" });
       };
 
-      // All three layout-change signals fan in here. Order matters: extend
-      // first so the stabilizer sees follow as active; stabilize before
-      // pinning so we scroll to the post-adjustment scrollHeight.
+      // Order matters: extend first so the stabilizer sees follow active, then stabilize, then pin.
       const onLayoutChange = (): void => {
         layoutChanged = true;
         if (!parkIfHeld()) {
@@ -699,10 +621,7 @@ export function useIntentAwareAutoScroll(): {
       const mutationObserver = new MutationObserver(onMutation);
       const onViewportResize = onLayoutChange;
 
-      // Fresh attach always starts pinned. Rebinds to the SAME element must not pin or reset detach
-      // state: the Viewport's composed ref identity changes on re-render, so React re-runs the ref
-      // (null, then same element) on unrelated renders (composer resizes); pinning would yank the
-      // chat to bottom each time. Observers are re-installed either way.
+      // Only a fresh attach pins: React re-runs the composed ref on unrelated renders for the same element.
       if (!isRebind) {
         userDetachedRef.current = false;
 
@@ -717,18 +636,13 @@ export function useIntentAwareAutoScroll(): {
       }
       requestTick();
 
-      // Observe the border box, not content box. The stabilizer writes
-      // padding-bottom (shrinks the content box); observing that would echo
-      // every adjustment back as a resize into onLayoutChange. Border-box is
-      // stable through padding changes but still tracks parent resizes.
+      // Border box: the stabilizer's padding writes would otherwise echo back as resizes.
       resizeObserver.observe(el, { box: "border-box" });
       mutationObserver.observe(el, {
         childList: true,
         subtree: true,
         characterData: true,
-        // Layout-affecting attributes only. Excludes `style` (elements may mutate it in response to
-        // viewport state → feedback loop). `class` catches Tailwind show/hide; the rest catch
-        // Radix/native collapsibles that change scrollHeight without a viewport resize.
+        // Excludes `style` to avoid a feedback loop; `class` and the rest catch collapsibles.
         attributes: true,
         attributeFilter: [
           "class",
@@ -835,13 +749,11 @@ export function useIntentAwareAutoScroll(): {
         cleanupRef.current = null;
       }
       if (el) {
-        // Same-element rebind vs a genuinely new element, see attach().
         const isRebind = lastElRef.current === el;
         lastElRef.current = el;
         cleanupRef.current = attach(el, isRebind);
       }
-      // On null, keep lastElRef so a rebind to the same element is
-      // recognized; a real remount binds a different element anyway.
+      // On null, keep lastElRef so a rebind to the same element is recognized.
     },
     [attach],
   );

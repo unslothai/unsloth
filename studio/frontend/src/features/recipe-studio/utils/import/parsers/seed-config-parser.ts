@@ -71,8 +71,7 @@ function parseSeedSettings(seedConfigRaw: unknown): Partial<SeedConfig> {
   let seed_source_type: SeedSourceType = "hf";
   let hf_path = "";
   let hf_token = "";
-  // Blank unless the imported recipe names one, so an endpoint that arrives
-  // later is still picked up when the payload is built.
+  // Blank so an endpoint that arrives later is picked up at build time.
   let hf_endpoint = "";
   let hf_repo_id = "";
   let local_file_name = "";
@@ -230,7 +229,7 @@ export function parseSeedConfig(
   }
   return {
     ...makeDefaultSeedConfig(id),
-    ...parsed, // payload-only fields override ui defaults
+    ...parsed,
     seed_source_type: sourceType,
     ...(options?.drop !== undefined ? { drop: options.drop } : {}),
     ...(options?.seed_columns ? { seed_columns: options.seed_columns } : {}),
