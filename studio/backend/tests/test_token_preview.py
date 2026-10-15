@@ -177,8 +177,10 @@ def test_the_subprocess_tokenizes_and_masks_typed_text(real_worker):
     assert sample["num_tokens"] == sample["num_trained"] > 0
     assert all(isinstance(token[0], int) for token in sample["tokens"])
 
-    if importlib.util.find_spec("torch") is None:
-        pytest.skip("completion masking needs torch, as it does for training")
+    if importlib.util.find_spec("torch") is None or importlib.util.find_spec("unsloth_zoo") is None:
+        pytest.skip(
+            "completion masking imports unsloth, so it needs torch and unsloth_zoo as training does"
+        )
     chat = "<|im_start|>user\nhi<|im_end|>\n<|im_start|>assistant\nhello<|im_end|>\n"
     masked = real_worker(text = chat, train_on_completions = True, max_seq_length = 128)
     assert masked["masking"]["applied"] is True
@@ -211,6 +213,41 @@ def test_a_tokenizer_load_failure_ends_the_worker(monkeypatch):
     with pytest.raises(token_preview.TokenPreviewError, match = "offline"):
         service.preview(("k",), {}, {"text": "hi"})
     assert stopped[-1] is True
+
+
+def test_a_quit_that_races_the_spawn_reaps_the_new_worker(monkeypatch):
+    """The latch is checked before the spawn, but a quit can land between that check and adopt_pid,
+    after the shutdown sweep took its snapshot. The worker must not outlive it."""
+    import multiprocessing as mp_module
+
+    from core.training import account_jobs
+    from utils import process_lifetime
+
+    service = token_preview._TokenPreviewService()
+    latch = {"set": False}
+    started, stopped = [], []
+
+    class _Proc:
+        pid = 4242
+
+        def __init__(self, **kwargs):
+            pass
+
+        def start(self):
+            started.append(True)
+            latch["set"] = True  # the quit arrives while the worker is starting
+
+    monkeypatch.setattr(process_lifetime, "is_process_shutting_down", lambda: latch["set"])
+    monkeypatch.setattr(process_lifetime, "adopt_pid", lambda pid: None)
+    monkeypatch.setattr(account_jobs, "account_process_spec", lambda *args: ((), {}))
+    monkeypatch.setattr(token_preview._CTX, "Process", _Proc)
+    monkeypatch.setattr(token_preview._CTX, "Queue", lambda: mp_module.Queue())
+    monkeypatch.setattr(service, "_stop_locked", lambda: stopped.append(service._proc))
+
+    with pytest.raises(token_preview.TokenPreviewError, match = "shutting down"):
+        service._spawn_locked(("k",), {})
+    assert started == [True]
+    assert stopped and isinstance(stopped[-1], _Proc), "the adopted worker was left running"
 
 
 def test_a_supplied_cache_folder_is_never_the_tokenizer_source(captured):

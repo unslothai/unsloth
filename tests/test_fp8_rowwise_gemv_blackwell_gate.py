@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from real_accelerator import has_real_cuda
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -44,7 +45,7 @@ def test_gate(F, monkeypatch, capability, version, hip, expected):
         F._fp8_gemv_miscompiles.cache_clear()
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a GPU")
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs a GPU")
 @pytest.mark.parametrize("N, K", [(5000, 1536), (40000, 1024), (4096, 4096)])
 def test_chosen_gemv_is_exact(F, N, K):
     if F._fp8_kernel_unsupported(torch.empty(1, device = "cuda", dtype = torch.float8_e4m3fn)):
