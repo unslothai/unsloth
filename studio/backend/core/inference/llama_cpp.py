@@ -31047,6 +31047,9 @@ class LlamaCppBackend:
                     )
                 if _spill_inputs is not None:
                     _spill_inputs["emitted_lazy_mode"] = _emitted_lazy_mode
+                    # The -c just emitted, after the Auto cap and the Metal floor: the context a
+                    # declined plan launches at, which the gate's fitter arm must be priced at.
+                    _spill_inputs["fitter_n_ctx"] = int(max(0, effective_ctx))
 
                 fully_gpu_offloaded = False
                 self._spill_plan_flags = []
@@ -38191,6 +38194,8 @@ class LlamaCppBackend:
             split_weights_per_device = split_weights,
             kv_layer_weights = list(inputs.get("kv_layer_weights") or ()),
             opts = PlanOptions(
+                fitter_n_ctx = int(inputs.get("fitter_n_ctx") or 0),
+                fitter_vram_bytes_per_device = tuple(int(v) for v in vram_per_device),
                 overhead_bytes_per_device = max(0, overhead_per_device),
                 overhead_bytes_at = overhead_bytes_at,
                 cache_quantised = _kv_bytes_per_elem(_planned_cache_type) < 2.0,

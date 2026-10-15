@@ -216,6 +216,12 @@ class PlanOptions:
     moe_long_prompt_ctx: int = 32768
     kv_unified: bool = False
     ctx_step: int = 1024
+    # The -c a declined plan launches with, and the per-device VRAM that launch is budgeted on.
+    # Auto caps -c before the planner is asked and the planner then restores the context, so the
+    # fitter arm is the --fit on launch at THIS context (a fixed -c is never shrunk by
+    # common/fit.cpp), not one at the context the plan buys. 0 = the plan's own context.
+    fitter_n_ctx: int = 0
+    fitter_vram_bytes_per_device: tuple[int, ...] = ()
 
 
 @dataclass(frozen = True)
@@ -631,7 +637,21 @@ def _fit_fallback_placement(
     first: llama.cpp keeps rows ``[i_gpu_start, i_gpu_start + act_gpu_layers)`` with
     ``i_gpu_start = max(n_layer_all + 1 - n_gpu_layers, 0)`` (llama-model.cpp:1467-1492), so
     lm_head is resident in every placement this loop can return.
+
+    ``opts.fitter_n_ctx``, when set and not ``n_ctx``, is the context the declined launch really
+    runs, so the arm is re-priced there with the original projector, draft and reserve on the card.
     """
+    if 0 < opts.fitter_n_ctx != n_ctx:
+        if opts.kv_bytes_at is None or not opts.fitter_vram_bytes_per_device:
+            return None
+        n_ctx = opts.fitter_n_ctx
+        budget = _usable_vram(opts.fitter_vram_bytes_per_device, opts, n_ctx)
+        kv_bytes_floor = _measured_cache_at(layout, opts, n_ctx, max(1, n_seq))
+        if opts.kv_layer_weights_at is not None:
+            kv_layer_weights = opts.kv_layer_weights_at(n_ctx, max(1, n_seq))
+        elif layout.has_swa and kv_layer_weights:
+            # The reserved vector splits the cache at the plan's context, not this one.
+            return None
     blocks = list(layout.blocks)
     if not blocks:
         return None
