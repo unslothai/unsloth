@@ -1101,6 +1101,291 @@ class TestHybridMambaEstimation:
         assert b._estimate_kv_cache_bytes(4096, "f16", n_parallel = 4) == (kv_only + 4 * per_slot)
 
 
+class TestSparseAttentionIndexerCache:
+    """DSA / QSA / MSA indexer key cache beside the attention KV (one key head per
+    indexer layer at the K cache type, same cells as the attention cache)."""
+
+    MIB = 1024 * 1024
+
+    # Qwen3.8-Flash-Next header, as shipped (UD-IQ1_S shard 1).
+    QWEN38 = {
+        "block_count": 48,
+        "context_length": 262144,
+        "embedding_length": 2560,
+        "attention.head_count": 24,
+        "attention.head_count_kv": 2,
+        "attention.key_length": 256,
+        "attention.value_length": 256,
+        "full_attention_interval": 4,
+        "ssm.conv_kernel": 4,
+        "ssm.state_size": 128,
+        "ssm.group_count": 16,
+        "ssm.inner_size": 6144,
+        "attention.indexer.head_count": 4,
+        "attention.indexer.key_length": 128,
+        "attention.indexer.top_k": 2048,
+        "attention.compress_ratios": [4 if (i + 1) % 4 == 0 else 0 for i in range(48)],
+    }
+
+    def _qwen38(self, **overrides):
+        return _backend_from_gguf("qwen4exp", {**self.QWEN38, **overrides})
+
+    def test_parser_reads_indexer_fields(self):
+        b = _backend_from_gguf(
+            "glm-dsa",
+            {
+                "block_count": 4,
+                "attention.indexer.key_length": 128,
+                "attention.indexer.top_k": 2048,
+                "attention.indexer.types": [True, False, False, True],
+                "attention.compress_ratios": [0, 4, 0, 4],
+            },
+        )
+        assert b._indexer_key_length == 128
+        assert b._indexer_top_k == 2048
+        assert b._indexer_types == [True, False, False, True]
+        assert b._compress_ratios == [0, 4, 0, 4]
+        assert _backend_from_gguf("llama", {"block_count": 4})._indexer_key_length is None
+
+    @pytest.mark.parametrize(
+        "n_ctx,cache_type,llama_cpp_attn_mib,llama_cpp_idx_mib",
+        [
+            # llama-completion -ngl 99 --fit off -v on a B200, build b11539:
+            # "llama_kv_cache: size = ..." for the attention and the indexer cache.
+            (8192, None, 192.0, 48.0),
+            (208384, None, 4884.0, 1221.0),
+            (65536, "q8_0", 816.0, 204.0),
+        ],
+    )
+    def test_qwen38_flash_next_matches_llama_cpp(
+        self, n_ctx, cache_type, llama_cpp_attn_mib, llama_cpp_idx_mib
+    ):
+        b = self._qwen38()
+        # 36 recurrent layers, f32: llama_memory_recurrent R 4.22 + S 108.00 MiB.
+        recurrent = 36 * (3 * (6144 + 2 * 16 * 128) + 128 * 6144) * 4
+        assert b._mamba_recurrent_state_bytes() == recurrent
+        expected = int((llama_cpp_attn_mib + llama_cpp_idx_mib) * self.MIB) + recurrent
+        assert b._estimate_kv_cache_bytes(n_ctx, cache_type) == expected
+
+    def test_qwen38_indexer_is_key_and_pooled_key_on_attention_layers(self):
+        rows = self._qwen38()._indexer_kv_layer_bytes(48, 2.0, 2.0)
+        assert [i for i, r in enumerate(rows) if r] == list(range(3, 48, 4))
+        assert set(r for r in rows if r) == {128 * 2 * 2.0}
+        # No QSA compress ratio: the cache holds the raw key alone.
+        b = self._qwen38(**{"attention.compress_ratios": [0] * 48})
+        assert set(r for r in b._indexer_kv_layer_bytes(48, 2.0, 2.0) if r) == {128 * 2.0}
+
+    def test_no_indexer_key_length_keeps_previous_estimate(self):
+        fields = {k: v for k, v in self.QWEN38.items() if "indexer" not in k}
+        b = _backend_from_gguf("qwen4exp", fields)
+        cells = _runtime_kv_cells(8192)
+        recurrent = b._mamba_recurrent_state_bytes()
+        assert b._estimate_kv_cache_bytes(8192, None) == 12 * cells * 2 * 512 * 2 + recurrent
+
+    def test_deepseek32_indexes_every_trunk_layer(self):
+        b = _backend_from_gguf(
+            "deepseek32",
+            {
+                "block_count": 62,
+                "nextn_predict_layers": 1,
+                "attention.head_count": 128,
+                "attention.head_count_kv": 1,
+                "attention.key_length": 576,
+                "attention.value_length": 512,
+                "attention.kv_lora_rank": 512,
+                "attention.key_length_mla": 192,
+                "attention.indexer.key_length": 128,
+                "attention.indexer.top_k": 2048,
+            },
+        )
+        cells = _runtime_kv_cells(4096)
+        # 61 trunk layers: MLA latent (576) + one 128-wide indexer key, both f16.
+        assert b._estimate_kv_cache_bytes(4096, "f16") == 61 * cells * (576 + 128) * 2
+        assert b._estimate_kv_cache_bytes(4096, "q8_0") == int(61 * cells * 576 * 1.0625) + int(
+            61 * cells * 128 * 1.0625
+        )
+
+    @pytest.mark.parametrize(
+        "context_length,types,expected_layers",
+        [
+            (202752, None, 78),  # GLM-5 / 5.1: every layer
+            (1048576, None, 21),  # GLM-5.2 default: 0, 1, 2, 6, 10, ..., 74
+            (1048576, [i % 2 == 0 for i in range(78)], 39),  # explicit types win
+        ],
+    )
+    def test_glm_dsa_indexer_layers(self, context_length, types, expected_layers):
+        fields = {
+            "block_count": 79,
+            "nextn_predict_layers": 1,
+            "context_length": context_length,
+            "attention.head_count_kv": 1,
+            "attention.key_length": 576,
+            "attention.value_length": 512,
+            "attention.kv_lora_rank": 512,
+            "attention.indexer.key_length": 128,
+        }
+        if types is not None:
+            fields["attention.indexer.types"] = types
+        b = _backend_from_gguf("glm-dsa", fields)
+        rows = b._indexer_kv_layer_bytes(78, 2.0, 2.0)
+        assert sum(1 for r in rows if r) == expected_layers
+        cells = _runtime_kv_cells(4096)
+        assert b._estimate_kv_cache_bytes(4096, "f16") == (
+            78 * cells * 576 * 2 + expected_layers * cells * 128 * 2
+        )
+
+    def test_a_scalar_indexer_field_is_broadcast_like_get_key_or_arr(self):
+        # llama.cpp reads both keys with get_key_or_arr: one value covers every layer.
+        glm = {
+            "block_count": 79,
+            "nextn_predict_layers": 1,
+            "context_length": 1048576,
+            "attention.head_count_kv": 1,
+            "attention.key_length": 576,
+            "attention.value_length": 512,
+            "attention.kv_lora_rank": 512,
+            "attention.indexer.key_length": 128,
+        }
+        for value in (0, 1):
+            scalar = _backend_from_gguf("glm-dsa", {**glm, "attention.indexer.types": value})
+            array = _backend_from_gguf(
+                "glm-dsa", {**glm, "attention.indexer.types": [bool(value)] * 78}
+            )
+            assert scalar._estimate_kv_cache_bytes(4096, "f16") == (
+                array._estimate_kv_cache_bytes(4096, "f16")
+            )
+        for value in (0, 4):
+            scalar = self._qwen38(**{"attention.compress_ratios": value})
+            array = self._qwen38(**{"attention.compress_ratios": [value] * 48})
+            assert scalar._estimate_kv_cache_bytes(8192, None) == (
+                array._estimate_kv_cache_bytes(8192, None)
+            )
+            assert scalar._indexer_kv_layer_bytes(48, 2.0, 2.0) == (
+                array._indexer_kv_layer_bytes(48, 2.0, 2.0)
+            )
+
+    def test_glm_5_2_default_layout(self):
+        on = [i for i in range(80) if lc._glm_5_2_default_indexer_full(i)]
+        assert on[:5] == [0, 1, 2, 6, 10] and on[-1] == 74 and len(on) == 21
+
+    def test_hy_v4_needs_top_k_and_types(self):
+        fields = {
+            "block_count": 8,
+            "attention.head_count_kv": 1,
+            "attention.key_length": 576,
+            "attention.value_length": 512,
+            "attention.kv_lora_rank": 512,
+            "attention.indexer.key_length": 128,
+            "attention.indexer.types": [True, False, False, False, True, False, False, False],
+        }
+        dense = _backend_from_gguf("hy_v4", fields)  # top_k absent: full-attention checkpoint
+        assert dense._indexer_kv_layer_bytes(8, 2.0, 2.0) == []
+        sparse = _backend_from_gguf("hy_v4", {**fields, "attention.indexer.top_k": 1024})
+        assert [i for i, r in enumerate(sparse._indexer_kv_layer_bytes(8, 2.0, 2.0)) if r] == [0, 4]
+
+    def test_glm5_next_kpool_row_on_attention_layers(self):
+        heads = [0, 0, 0, 1] * 11 + [1]  # 44 KDA/DSA trunk layers + the NextN block
+        b = _backend_from_gguf(
+            "glm5-next",
+            {
+                "block_count": 45,
+                "nextn_predict_layers": 1,
+                "attention.head_count": 32,
+                "attention.head_count_kv": heads,
+                "attention.key_length": 576,
+                "attention.value_length": 512,
+                "attention.kv_lora_rank": 512,
+                "attention.indexer.key_length": 128,
+                "attention.indexer.types": [i != 7 for i in range(44)],
+                "kda.head_dim": 128,
+                "ssm.conv_kernel": 4,
+            },
+        )
+        rows = b._indexer_kv_layer_bytes(44, 2.0, 2.0)
+        layers = [i for i, r in enumerate(rows) if r]
+        assert layers == [i for i in range(3, 44, 4) if i != 7]
+        assert set(r for r in rows if r) == {3 * 128 * 2.0}  # key | gate | pooled
+        cells = _runtime_kv_cells(4096)
+        attn = 11 * cells * 576 * 2
+        idx = 10 * cells * 3 * 128 * 2
+        assert b._estimate_kv_cache_bytes(4096, "f16") == attn + idx + b._recurrent_state_bytes()
+
+    def test_dots3note_full_cells_on_indexer_layers(self):
+        b = _backend_from_gguf(
+            "dots3note",
+            {
+                "block_count": 4,
+                "attention.head_count_kv": 1,
+                "attention.key_length": 576,
+                "attention.value_length": 512,
+                "attention.kv_lora_rank": 512,
+                "attention.sliding_window": 512,
+                "attention.sliding_window_pattern": [True, True, True, False],
+                "attention.indexer.key_length": 128,
+                "attention.indexer.types": [False, False, False, True],
+            },
+        )
+        cells = _runtime_kv_cells(32768)
+        assert b._estimate_kv_cache_bytes(32768, "f16") == (4 * cells * 576 * 2 + cells * 128 * 2)
+
+    def test_minimax_m3_caches_a_one_head_value_row_past_dense_lead(self):
+        b = _backend_from_gguf(
+            "minimax-m3",
+            {
+                "block_count": 6,
+                "leading_dense_block_count": 2,
+                "attention.head_count": 8,
+                "attention.head_count_kv": 2,
+                "attention.key_length": 128,
+                "attention.value_length": 128,
+                "attention.indexer.key_length": 64,
+            },
+        )
+        cells = _runtime_kv_cells(4096)
+        attn = 6 * cells * 2 * (128 + 128) * 2
+        idx = 4 * cells * (64 + 128) * 2  # K 64 + V 128 (llama_kv_cache_msa is not MLA)
+        assert b._estimate_kv_cache_bytes(4096, "f16") == attn + idx
+        q8 = b._estimate_kv_cache_bytes(4096, "q8_0", flash_attn = False)
+        # FA off floors V at f16 for the indexer as for the attention cache.
+        assert q8 == int(6 * cells * 2 * (128 * 1.0625 + 128 * 2)) + int(
+            4 * cells * (64 * 1.0625 + 128 * 2)
+        )
+
+    def test_deepseek4_and_unknown_arch(self):
+        fields = {
+            "block_count": 4,
+            "attention.head_count_kv": 1,
+            "attention.key_length": 512,
+            "attention.value_length": 512,
+            "attention.indexer.key_length": 128,
+        }
+        assert _backend_from_gguf("deepseek4", fields)._indexer_kv_layer_bytes(4, 2.0, 2.0) == []
+        # An unknown architecture declaring an indexer is charged a key row per layer.
+        rows = _backend_from_gguf("futurearch", fields)._indexer_kv_layer_bytes(4, 2.0, 2.0)
+        assert rows == [128 * 2.0] * 4
+
+    def test_embedded_mtp_head_carries_its_indexer(self):
+        b = self._qwen38(block_count = 49, nextn_predict_layers = 1)
+        cells = _runtime_kv_cells(8192)
+        assert b._mtp_draft_kv_bytes(8192) == cells * (2 * 512 * 2 + 2 * 128 * 2)
+
+    def test_layer_weights_carry_the_indexer(self):
+        b = _backend_from_gguf(
+            "minimax-m3",
+            {
+                "block_count": 4,
+                "attention.head_count_kv": 2,
+                "attention.key_length": 128,
+                "attention.value_length": 128,
+                "attention.sliding_window": 1024,
+                "attention.sliding_window_pattern": [True, True, True, False],
+                "attention.indexer.key_length": 64,
+            },
+        )
+        weights = b._kv_layer_weights(65536)
+        assert sum(weights) == pytest.approx(b._estimate_kv_cache_bytes(65536, None), rel = 1e-6)
+
+
 class TestSsmStateWithoutAttentionInterval:
     """SSM headers with no full_attention_interval, recurrent layers per llama.cpp's is_recr."""
 

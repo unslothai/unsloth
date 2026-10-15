@@ -212,11 +212,17 @@ def test_the_launch_charges_the_pipeline_overhead_per_extra_device():
 
 
 class _DraftStub:
-    """Only the two readers _cpu_resident_draft_bytes consults."""
+    """Only the drafter-footprint readers _cpu_resident_draft_bytes consults."""
 
-    def __init__(self, weights, kv):
+    def __init__(
+        self,
+        weights,
+        kv,
+        tied_output = 0,
+    ):
         self._weights = weights
         self._kv = kv
+        self._tied_output = tied_output
 
     def _get_gguf_size_bytes(self, path):
         if self._weights is None:
@@ -226,7 +232,11 @@ class _DraftStub:
     def _mtp_draft_kv_bytes(self, n_ctx, **kwargs):
         return self._kv
 
+    def _tied_output_bytes(self, path):
+        return self._tied_output
+
     _cpu_resident_draft_bytes = LlamaCppBackend._cpu_resident_draft_bytes
+    _tied_output_cpu_bytes = LlamaCppBackend._tied_output_cpu_bytes
     _MTP_DRAFT_COMPUTE_BYTES = LlamaCppBackend._MTP_DRAFT_COMPUTE_BYTES
 
 
@@ -315,8 +325,11 @@ def test_the_launch_charges_the_cpu_pinned_drafter_to_the_fit():
     assert compact.index("_cpu_draft_path=_mtp_draft_for_budget") < compact.index(
         "if_draft_on_cpu:_mtp_draft_for_budget=None"
     )
-    # CPU-pinned drafter and checkpoint bytes are host-only.
-    assert "host_only_bytes=(_cpu_draft_fit_bytesor0)+_ckpt_host_bytes," in compact
+    # ... and charged as a HOST-ONLY term, abstaining when unpriceable.
+    assert (
+        "+_host_pinned+_fit_extra_host_pinned+_draft_host_pinned+_fit_extra_draft_pinned"
+        "-_fit_lazy_in_host_pinned,)+_ckpt_host_bytes,"
+    ) in compact
     assert "or_cpu_draft_fit_bytesisNone" in compact
 
 
@@ -333,8 +346,7 @@ def test_a_weights_only_drafter_reserve_counts_as_unsized():
 
     compact = "".join(inspect.getsource(B.load_model).split())
     assert (
-        "mtp_unsized=bool(_flat_mtp_engagesor_cpu_draft_fit_bytesisNone"
-        "or_draft_split_across_host)"
+        "mtp_unsized=bool(_flat_mtp_engagesor_cpu_draft_fit_bytesisNoneor_draft_split_across_host)"
     ) in compact
     assert "_flat_mtp_engagesandmtp_overhead_fnisNone" not in compact
 
@@ -1608,8 +1620,8 @@ def test_a_partial_draft_offload_leaves_the_drafter_unsized():
 
     compact = "".join(inspect.getsource(B.load_model).split())
     assert (
-        "_draft_split_across_host=bool(_mtp_draft_for_budgetand_draft_is_split_across_host("
-        in compact
+        "_draft_split_across_host=bool(_mtp_will_engageand_mtp_draft_for_budget"
+        "and_draft_is_split_across_host(" in compact
     )
     # The same effective views the other overrides are classified on.
     assert "_draft_is_split_across_host(_fit_extras,_fit_env," in compact
@@ -1720,7 +1732,8 @@ def test_the_fit_prices_the_effective_checkpoint_count():
     assert "_kv_bytes(effective_ctx,_effective_ctx_checkpoints)-_kv_bytes(effective_ctx,0)," in (
         compact
     )
-    assert "host_only_bytes=(_cpu_draft_fit_bytesor0)+_ckpt_host_bytes," in compact
+    assert "host_only_bytes=max(0,(_cpu_draft_fit_bytesor0)" in compact
+    assert "-_fit_lazy_in_host_pinned,)+_ckpt_host_bytes," in compact
     assert "def_kv_bytes(ctx:int,ctx_checkpoints:int=0)->int:" in compact
 
 
@@ -2418,3 +2431,61 @@ def test_an_integrated_cuda_soc_is_never_counted_twice(platform, monkeypatch):
     assert _mode(platform, "nvidia_discrete", 40 * GIB, 32 * 1024, monkeypatch) == FIT_MODE
     LlamaCppBackend._INTEGRATED_CUDA_IDS[LlamaCppBackend._integrated_cuda_mask_key()] = {0}
     assert _mode(platform, "nvidia_discrete", 40 * GIB, 32 * 1024, monkeypatch) is None
+
+
+def _cpu_fallback_with_unsized_drafter_reserve(replay):
+    from core.inference import llama_cpp as lc
+    from unittest import mock
+
+    backend = LlamaCppBackend.__new__(LlamaCppBackend)
+    backend._memory_dio_flags = []
+    backend._fit_load_mode_flags = []
+    backend._launch_host_shortfall_message = lambda *_a, **_kw: None
+    with (
+        mock.patch.object(lc.LlamaCppBackend, "_is_vulkan_backend", return_value = True),
+        mock.patch.object(lc.LlamaCppBackend, "_cpu_isolated_replay", return_value = list(replay)),
+        mock.patch.object(lc.LlamaCppBackend, "_cpu_isolated_binary", return_value = "cpu-server"),
+        mock.patch.object(
+            lc.LlamaCppBackend,
+            "_llama_server_env_for_binary",
+            return_value = {lc._loader_path_var(): "/staged"},
+        ),
+    ):
+        out, _reason, _note = backend._prepare_cpu_fallback_launch(
+            "llama-server", replay, {}, {}, additional_host_only_bytes = None
+        )
+    return out
+
+
+def test_a_drafterless_cpu_replay_is_not_priced_with_the_removed_drafter():
+    """An unsized drafter reserve forces a pageable replay only when the replay loads it."""
+    plain = ["llama-server", "-m", "model.gguf", "--load-mode", "none"]
+    assert _cpu_fallback_with_unsized_drafter_reserve(plain)[-2:] == ["--load-mode", "none"]
+    drafted = [*plain[:3], "--model-draft", "draft.gguf", *plain[3:]]
+    assert _cpu_fallback_with_unsized_drafter_reserve(drafted)[-2:] != ["--load-mode", "none"]
+
+
+def test_the_cpu_replay_advisory_prices_only_a_drafter_the_child_loads():
+    backend = LlamaCppBackend.__new__(LlamaCppBackend)
+    backend._last_load_warning = None
+    seen = []
+
+    def shortfall(
+        *_a,
+        additional_host_only_bytes = 0,
+        **_kw,
+    ):
+        seen.append(additional_host_only_bytes)
+        return None
+
+    backend._launch_host_shortfall_message = shortfall
+    backend._record_load_warning = lambda _msg: None
+    for cmd in (["cpu-server", "-m", "m.gguf"], ["cpu-server", "-m", "m.gguf", "-md", "d.gguf"]):
+        backend._reprice_after_cpu_only_fallback(
+            host_msg = None,
+            cpu_cmd = cmd,
+            env = {},
+            avail_mib = 16_384,
+            additional_host_only_bytes = 30 * 1024**3,
+        )
+    assert seen == [0, 30 * 1024**3]

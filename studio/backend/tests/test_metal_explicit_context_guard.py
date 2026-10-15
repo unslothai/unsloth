@@ -1307,6 +1307,90 @@ class TestInputEmbeddingsLeftInTheFileMapping:
         assert self._fit_tokens(cmd)[:4] == ["-ngl", "-1", "--fit", "off"]
         assert not fit_is_effectively_on(cmd, {})
 
+    def test_a_tied_output_the_probe_measured_is_not_charged_twice(self, tmp_path, monkeypatch):
+        """llama-fit-params already counts the tied output duplicate in its Metal rows."""
+        embd = 6 * _GIB
+        # 7 GiB on Metal: the 6 GiB of layers plus the 1 GiB tied output duplicate.
+        measured = (7 * 1024, embd // _MIB, 2)
+        untied, _ = self._published(tmp_path, monkeypatch, n_ctx = 0, embd = embd, measured = measured)
+        monkeypatch.setattr(LlamaCppBackend, "_tied_output_bytes", staticmethod(lambda _path: _GIB))
+        tied, _ = self._published(tmp_path, monkeypatch, n_ctx = 0, embd = embd, measured = measured)
+        # Same measured residency, same ceiling: the extra charge is already in the rows.
+        assert tied == untied > _FIT_MIN_CTX
+
+    @pytest.mark.parametrize(
+        "extra_args, shared",
+        [
+            (None, True),
+            # mmap+mlock still builds the Metal buffers from the locked mapping.
+            (["--mlock"], True),
+            (["--load-mode", "mmap+mlock"], True),
+            (["--no-mmap"], False),
+            # "mlock" alone is a locked full host copy, not a mapping.
+            (["--load-mode", "mlock"], False),
+        ],
+    )
+    def test_a_mapped_tied_output_shares_the_files_pages_without_a_measurement(
+        self, tmp_path, monkeypatch, extra_args, shared
+    ):
+        """Mapped, the output's Metal buffer wraps token_embd's pages: no extra bytes.
+        Unmapped (--no-mmap) the duplicate is a real copy and stays charged."""
+        untied, _ = self._published(
+            tmp_path,
+            monkeypatch,
+            n_ctx = 0,
+            measured = None,
+            extra_args = extra_args,
+            budget_bytes = 20 * _GIB,
+        )
+        monkeypatch.setattr(
+            LlamaCppBackend, "_tied_output_bytes", staticmethod(lambda _path: 2 * _GIB)
+        )
+        tied, _ = self._published(
+            tmp_path,
+            monkeypatch,
+            n_ctx = 0,
+            measured = None,
+            extra_args = extra_args,
+            budget_bytes = 20 * _GIB,
+        )
+        assert untied > _FIT_MIN_CTX
+        assert (tied == untied) is shared
+        if not shared:
+            assert tied < untied
+
+    @pytest.mark.parametrize("load_args, shared", [([], True), (["--no-mmap"], False)])
+    def test_a_mapped_tied_drafter_shares_its_files_pages(
+        self, tmp_path, monkeypatch, load_args, shared
+    ):
+        """The separate drafter's tied output is the same mapped page story as the target's."""
+        import utils.hardware as hardware
+
+        monkeypatch.setattr(hardware, "is_apple_silicon", lambda: True)
+        draft = tmp_path / "draft-tied.gguf"
+        draft.write_bytes(b"x")
+        extra_args = ["--spec-type", "draft-simple", "--model-draft", str(draft), *load_args]
+
+        def published(tied_bytes):
+            monkeypatch.setattr(
+                LlamaCppBackend,
+                "_tied_output_bytes",
+                staticmethod(lambda path: tied_bytes if "draft" in str(path) else 0),
+            )
+            return self._published(
+                tmp_path,
+                monkeypatch,
+                n_ctx = 0,
+                measured = None,
+                extra_args = extra_args,
+                budget_bytes = 40 * _GIB,
+            )[0]
+
+        untied = published(0)
+        tied = published(2 * _GIB)
+        assert untied > _FIT_MIN_CTX
+        assert (tied == untied) is shared
+
     def test_a_placement_it_did_not_measure_keeps_the_fitter(self, tmp_path, monkeypatch):
         _, _, cmd = self._launched(
             tmp_path, monkeypatch, n_ctx = 32768, extra_args = ["--load-mode", "none"]

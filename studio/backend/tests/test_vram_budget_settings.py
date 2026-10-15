@@ -585,11 +585,11 @@ class TestFloorReserve:
         assert lc._vram_usable_mib(12_000, None, 1.0, pooled = True) == pytest.approx(12_000)
 
     def test_every_pooled_caller_says_so(self):
-        # Six call sites hand _fit_context_to_vram an absolute pool budget (the sixth is
+        # Seven call sites hand _fit_context_to_vram an absolute pool budget (one is
         # the drafter probe's one-slot fit, #8872); each has to be marked, since the flag
         # is what keeps them from double-paying.
         compact = _shared_setup_1()
-        assert compact.count("budget_frac=1.0,pooled=True,total_mib=None,") == 6
+        assert compact.count("budget_frac=1.0,pooled=True,total_mib=None,") == 7
 
 
 class TestRetriesAndDedup:

@@ -122,7 +122,15 @@ def _backend(
     # resolution has to come back empty or MTP engages behind the scenes.
     backend._resolve_launch_mtp_path = lambda **_kw: str(drafter) if drafter_bytes else None
     backend._apu_ram_shortfall_message = lambda *_a, **_kw: None
-    backend._amd_apu_wants_unified_memory = lambda *_a, **_kw: False
+    shared_ids = {idx for idx, _free, total in memory if total <= 0}
+    known_ids = {idx for idx, _free, total in memory if total > 0}
+    backend._amd_apu_wants_unified_memory = lambda ids = None: (
+        bool(shared_ids) if ids is None else bool(set(ids) & shared_ids)
+    )
+    backend._integrated_cuda_unified_memory = lambda *_a, **_kw: False
+    backend._torch_unified_memory_classification_known = lambda ids = None: (
+        bool(known_ids) if ids is None else bool(ids) and set(ids).issubset(known_ids)
+    )
     backend._find_llama_server_binary = lambda include_denied = False: "/fake/llama-server"
     backend._is_vulkan_backend = lambda _binary = None: False
     backend._wait_for_health = lambda timeout, **_kw: True
@@ -213,6 +221,40 @@ def test_projector_pinned_to_cpu_when_it_does_not_fit(tmp_path):
     # And the trade was paid for: the model alone is fully resident, which is the
     # only thing the slower image encode is bought with.
     assert cmd[cmd.index("--fit") + 1] == "off"
+
+
+def _tied(backend, mib: int):
+    """Charge the load `mib` MiB of duplicated token_embd, as a tied model does."""
+    backend._tied_output_bytes = lambda _path, _bytes = mib * MIB: _bytes
+    return backend
+
+
+def test_the_projector_probe_prices_the_tied_output_duplicate(tmp_path):
+    """The probe must price the 264 MiB tied duplicate exactly as the placement it gates."""
+    backend, gguf = _backend(tmp_path, memory = [(0, 9_300, 16_384)])
+    _tied(backend, 264)
+
+    cmd = _launch(backend, gguf)["cmd"]
+
+    assert "--no-mmproj-offload" in cmd
+    assert cmd[cmd.index("--fit") + 1] == "off"
+
+
+def test_the_cpu_pin_takes_out_the_projector_not_the_tied_duplicate(tmp_path):
+    """After the projector pin, model_size still carries the tied duplicate."""
+    (tmp_path / "plain").mkdir()
+    (tmp_path / "charged").mkdir()
+    plain, plain_gguf = _backend(tmp_path / "plain", memory = [(0, 8_692, 16_384)])
+    plain_cmd = _launch(plain, plain_gguf)["cmd"]
+
+    charged, charged_gguf = _backend(tmp_path / "charged", memory = [(0, 8_692, 16_384)])
+    _tied(charged, 264)
+    charged_cmd = _launch(charged, charged_gguf)["cmd"]
+
+    # Both arms pin, so only the budget can differ.
+    assert "--no-mmproj-offload" in plain_cmd
+    assert "--no-mmproj-offload" in charged_cmd
+    assert int(charged_cmd[charged_cmd.index("-c") + 1]) < int(plain_cmd[plain_cmd.index("-c") + 1])
 
 
 def test_user_owns_the_placement_when_they_name_either_spelling(tmp_path):

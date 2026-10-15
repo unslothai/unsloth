@@ -88,6 +88,16 @@ def _write_gguf(path: Path, architecture: str = "llama") -> Path:
 def _backend(tmp_path: Path, *, vulkan: bool, memory):
     backend = LlamaCppBackend()
     gguf = _write_gguf(tmp_path / "model.gguf")
+    backend._run_vulkan_probe = lambda *_a, **_kw: [
+        {
+            "index": index,
+            "free_mib": free,
+            "total_mib": total,
+            "is_igpu": False,
+            "name": f"Vulkan{index}",
+        }
+        for index, free, total in memory
+    ]
     backend._get_gpu_memory = lambda _binary = None, **_kw: list(memory)
     backend._get_gpu_free_memory = lambda _binary = None, **_kw: [
         (index, free) for index, free, _total in memory
@@ -5887,3 +5897,429 @@ def test_the_header_scan_refuses_what_it_cannot_parse(tmp_path):
     with pytest.raises(ValueError):
         LlamaCppBackend._gguf_scan_tensor_bytes(str(bad))
     assert LlamaCppBackend()._gguf_tensor_scan(str(bad)) is None
+
+
+def _draft_reserve_launch(
+    tmp_path,
+    *,
+    extra_args,
+    discount = True,
+):
+    """(first planned total, argv) for a 1 GiB target on discrete Vulkan0 beside an iGPU,
+    with a 6 GiB separate drafter holding 3 GiB of host-pinned embeddings."""
+    gib = 1024**3
+    backend, gguf = _backend(tmp_path, vulkan = True, memory = [(0, 8_000, 16_000), (1, 30_000, 0)])
+    probe = backend._run_vulkan_probe
+
+    def rows(*_a, **_kw):
+        out = probe()
+        out[1]["is_igpu"] = True
+        return out
+
+    backend._run_vulkan_probe = rows
+    totals = []
+
+    def plan(total, gpus, *args, **kwargs):
+        totals.append(total)
+        return None, True
+
+    backend._select_gpus = plan
+    backend.probe_server_capabilities = lambda _binary = None: {
+        "mtp_token": "draft-mtp",
+        "spec_draft_n_max_flag": "--spec-draft-n-max",
+    }
+    backend._resolve_launch_mtp_path = lambda **_kwargs: "/fake/mtp.gguf"
+    backend._get_gguf_size_bytes = lambda path: 6 * gib if "mtp" in str(path) else gib
+    backend._host_pinned_vram_discount = lambda _path, *_a, draft_model = False, **_kw: (
+        3 * gib if (draft_model and discount) else 0
+    )
+    result = _launch(
+        backend,
+        gguf,
+        mtp_draft_path = "/fake/mtp.gguf",
+        speculative_type = "mtp",
+        gpu_ids = [0],
+        extra_args = extra_args,
+    )
+    return totals[0], result["cmd"]
+
+
+def test_a_drafter_pinned_to_an_igpu_keeps_its_host_pinned_charge(tmp_path):
+    # The target is on a discrete card, but the drafter's own device is shared memory.
+    pinned, _ = _draft_reserve_launch(tmp_path, extra_args = ["--spec-draft-device", "Vulkan1"])
+    full, _ = _draft_reserve_launch(
+        tmp_path, extra_args = ["--spec-draft-device", "Vulkan1"], discount = False
+    )
+    assert pinned == full
+
+
+def test_a_drafter_pinned_to_the_discrete_target_keeps_the_discount(tmp_path):
+    pinned, _ = _draft_reserve_launch(tmp_path, extra_args = ["--spec-draft-device", "Vulkan0"])
+    full, _ = _draft_reserve_launch(
+        tmp_path, extra_args = ["--spec-draft-device", "Vulkan0"], discount = False
+    )
+    unpinned, _ = _draft_reserve_launch(tmp_path, extra_args = None)
+    assert pinned == unpinned == full - 3 * 1024**3
+
+
+def _slot_walk_with_host_pinned(tmp_path, *, unclassified_second_card):
+    """(spec type, slots, slot-walk fit bases) for a 16 GB target with 4 GB host-pinned
+    embeddings on a 24 GB card, optionally beside a tiny card torch cannot classify."""
+    gib = 1024**3
+    backend, gguf = _per_slot_mtp_backend(tmp_path, gb_per_slot = 3.0)
+    memory = [(0, 24_576, 24_576)] + ([(1, 256, 256)] if unclassified_second_card else [])
+    backend._get_gpu_memory = lambda _binary = None, **_kw: list(memory)
+    backend._get_gpu_free_memory = lambda _binary = None, **_kw: [
+        (index, free) for index, free, _total in memory
+    ]
+    backend._torch_unified_memory_classification_known = lambda ids = None: (
+        1 not in list(ids) if ids is not None else not unclassified_second_card
+    )
+    backend._host_pinned_vram_discount = lambda _path, *_a, draft_model = False, **_kw: (
+        0 if draft_model else 4 * gib
+    )
+    fit = backend._fit_context_to_vram
+    walk_bases = set()
+
+    def spy(
+        requested,
+        budget,
+        model_size,
+        *args,
+        n_parallel = 1,
+        pooled = False,
+        **kwargs,
+    ):
+        if pooled and kwargs.get("mtp_overhead_fn") is not None and n_parallel < 4:
+            walk_bases.add(model_size)
+        return fit(
+            requested, budget, model_size, *args, n_parallel = n_parallel, pooled = pooled, **kwargs
+        )
+
+    backend._fit_context_to_vram = spy
+    result = _launch_default_slots(backend, gguf)
+    return _launched(result, "--spec-type"), _launched(result, "--parallel"), walk_bases
+
+
+def test_the_slot_walk_keeps_the_candidate_cards_host_pinned_discount(tmp_path):
+    # A card that cannot be proved discrete withholds the up-front discount; the walk
+    # must still price the discrete subset it probes with that subset's discount.
+    alone = _slot_walk_with_host_pinned(tmp_path, unclassified_second_card = False)
+    beside = _slot_walk_with_host_pinned(tmp_path, unclassified_second_card = True)
+    assert alone[:2] == ("draft-mtp", "3")
+    assert beside[:2] == alone[:2]
+    assert min(beside[2]) == min(alone[2])
+
+
+def _picker_owned_launch(
+    tmp_path,
+    *,
+    extra_args,
+    drafter = False,
+):
+    """Fit token and device for a 12 GiB target holding 6 GiB of host-pinned embeddings
+    on a 15 GB discrete Vulkan0 beside a small iGPU, both picked in the GPU picker."""
+    gib = 1024**3
+    backend, gguf = _backend(tmp_path, vulkan = True, memory = [(0, 15_000, 24_000), (1, 1_000, 0)])
+    probe = backend._run_vulkan_probe
+
+    def rows(*_a, **_kw):
+        out = probe()
+        out[1]["is_igpu"] = True
+        return out
+
+    backend._run_vulkan_probe = rows
+    backend._get_gguf_size_bytes = lambda path: (6 * gib if drafter else 12 * gib)
+    backend._host_pinned_vram_discount = lambda _path, *_a, draft_model = False, **_kw: (
+        3 * gib if drafter else (0 if draft_model else 6 * gib)
+    )
+    kwargs = {}
+    if drafter:
+        backend.probe_server_capabilities = lambda _binary = None: {
+            "mtp_token": "draft-mtp",
+            "spec_draft_n_max_flag": "--spec-draft-n-max",
+        }
+        backend._resolve_launch_mtp_path = lambda **_kwargs: "/fake/mtp.gguf"
+        kwargs = {"mtp_draft_path": "/fake/mtp.gguf", "speculative_type": "mtp"}
+    result = _launch(backend, gguf, gpu_ids = [0, 1], extra_args = extra_args, **kwargs)
+    cmd = result["cmd"]
+    return cmd[cmd.index("--fit") + 1], cmd[cmd.index("--device") + 1]
+
+
+@pytest.mark.parametrize("stale", [["--device", "none"], ["--device", "Vulkan1"]])
+def test_a_stripped_device_flag_does_not_decide_the_target_discount(tmp_path, stale):
+    # gpu_ids owns placement and strips these before launch, so they cannot cost a budget.
+    clean = _picker_owned_launch(tmp_path, extra_args = None)
+    assert clean == ("off", "Vulkan0")
+    assert _picker_owned_launch(tmp_path, extra_args = stale) == clean
+
+
+def test_a_stripped_device_flag_does_not_decide_the_initial_drafter_discount(tmp_path):
+    # The picker emits the drafter onto the target's own cards, not the stripped Vulkan1.
+    stale, _ = _draft_reserve_launch(tmp_path, extra_args = ["--device", "Vulkan1"])
+    clean, _ = _draft_reserve_launch(tmp_path, extra_args = None)
+    assert stale == clean
+
+
+def test_a_stripped_device_flag_does_not_decide_the_candidate_drafter_discount(tmp_path):
+    clean = _picker_owned_launch(tmp_path, extra_args = None, drafter = True)
+    assert clean == ("off", "Vulkan0")
+    stale = _picker_owned_launch(tmp_path, extra_args = ["--device", "Vulkan1"], drafter = True)
+    assert stale == clean
+
+
+@pytest.mark.parametrize("host_pinned_gib", [0, 4])
+def test_the_drafterless_retry_reserves_the_weights_that_land_in_vram(tmp_path, host_pinned_gib):
+    """The restored-slot plan other loads place against prices the same weights as the
+    first launch: the file less its host-pinned embeddings, plus the KV cache."""
+    gib = 1024**3
+    backend, gguf = _per_slot_mtp_backend(tmp_path, gb_per_slot = 3.0)
+    backend._torch_unified_memory_classification_known = lambda ids = None: True
+    backend._host_pinned_vram_discount = lambda _path, *_a, draft_model = False, **_kw: (
+        0 if draft_model else host_pinned_gib * gib
+    )
+    cmds = []
+
+    def fake_popen(cmd, **kwargs):
+        if not cmd or str(cmd[0]) != "/fake/llama-server":
+            return _REAL_POPEN(cmd, **kwargs)
+        cmds.append(list(cmd))
+        return type(
+            "Process",
+            (),
+            {
+                "pid": 123,
+                "stdout": (),
+                "poll": lambda self: None,
+                "terminate": lambda self: None,
+                "wait": lambda self, timeout = None: 0,
+                "kill": lambda self: None,
+            },
+        )()
+
+    def fake_health(timeout = None, **_kw):
+        backend._stdout_lines = []
+        return "draft-mtp" not in cmds[-1]
+
+    backend._wait_for_health = fake_health
+    with patch.object(subprocess, "Popen", side_effect = fake_popen):
+        assert backend.load_model(
+            GgufLoadIntent(
+                gguf_path = str(gguf),
+                model_identifier = "test",
+                n_ctx = 0,
+                n_parallel = 4,
+                n_parallel_from_default = True,
+                speculative_type = "auto",
+            )
+        )
+
+    first, retry = cmds[0], cmds[-1]
+    assert int(first[first.index("--parallel") + 1]) < 4
+    assert "draft-mtp" not in retry and retry[retry.index("--parallel") + 1] == "4"
+    # 16 GiB file and a flat 1 GiB KV estimate, all on the one card.
+    assert backend._planned_vram_mib == {0: (16 - host_pinned_gib + 1) * 1024}
+
+
+def _tied_override_total(
+    tmp_path,
+    monkeypatch,
+    *,
+    extra_args,
+    tied_gib,
+    drafter = False,
+):
+    """First planned total for a tied 4 GiB target (and, with ``drafter``, a tied 4 GiB
+    sidecar) whose 1 GiB token_embd.weight the extras may override onto Vulkan0."""
+    gib = 1024**3
+    backend, gguf = _backend(tmp_path, vulkan = True, memory = [(0, 30_000, 32_000)])
+    monkeypatch.setattr(
+        LlamaCppBackend, "_tied_output_bytes", staticmethod(lambda _path: tied_gib * gib)
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_host_pinned_weight_items",
+        staticmethod(lambda _path: (("token_embd.weight", gib),)),
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_host_pinned_weight_bytes", staticmethod(lambda _path: gib)
+    )
+    backend._get_gguf_size_bytes = lambda _path: 4 * gib
+    totals = []
+
+    def plan(total, gpus, *args, **kwargs):
+        totals.append(total)
+        return None, True
+
+    backend._select_gpus = plan
+    kwargs = {}
+    if drafter:
+        backend.probe_server_capabilities = lambda _binary = None: {
+            "mtp_token": "draft-mtp",
+            "spec_draft_n_max_flag": "--spec-draft-n-max",
+        }
+        backend._resolve_launch_mtp_path = lambda **_kwargs: "/fake/mtp.gguf"
+        kwargs = {"mtp_draft_path": "/fake/mtp.gguf", "speculative_type": "mtp"}
+    _launch(backend, gguf, gpu_ids = [0], extra_args = extra_args, **kwargs)
+    return totals[0]
+
+
+@pytest.mark.parametrize("flag", ["-ot", "--override-tensor"])
+def test_a_gpu_override_of_a_tied_embedding_charges_no_duplicate(tmp_path, monkeypatch, flag):
+    # Both uses resolve to Vulkan0, so llama.cpp hands the output the same tensor.
+    override = [flag, "token_embd.weight=Vulkan0"]
+    tied = _tied_override_total(tmp_path, monkeypatch, extra_args = override, tied_gib = 1)
+    untied = _tied_override_total(tmp_path, monkeypatch, extra_args = override, tied_gib = 0)
+    assert tied == untied
+    # Without the override the duplicate is a second matrix and stays charged.
+    assert _tied_override_total(tmp_path, monkeypatch, extra_args = None, tied_gib = 1) > (
+        _tied_override_total(tmp_path, monkeypatch, extra_args = None, tied_gib = 0)
+    )
+
+
+def test_a_gpu_draft_override_of_a_tied_embedding_charges_no_duplicate(tmp_path, monkeypatch):
+    override = ["-otd", "token_embd.weight=Vulkan0", "-ot", "token_embd.weight=Vulkan0"]
+    tied = _tied_override_total(
+        tmp_path, monkeypatch, extra_args = override, tied_gib = 1, drafter = True
+    )
+    untied = _tied_override_total(
+        tmp_path, monkeypatch, extra_args = override, tied_gib = 0, drafter = True
+    )
+    assert tied == untied
+
+
+@pytest.mark.parametrize("pinned_gib", [0, 10])
+def test_the_resident_share_removes_a_host_pinned_lazy_table_once(
+    tmp_path, _moe_cache_host, monkeypatch, pinned_gib
+):
+    """30 GiB, 15 GiB of experts, a 10 GiB lazily read per-layer table, 20,000 MiB free:
+    ~53% of the experts stay resident, inside the cache band, whether or not the table is
+    also priced as host-pinned. The fit basis already leaves the pinned share out."""
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_torch_unified_memory_classification_known",
+        lambda self, ids = None: True,
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_host_pinned_vram_discount",
+        staticmethod(lambda *_a, draft_model = False, **_kw: 0 if draft_model else pinned_gib * _GIB),
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_host_pinned_weight_items",
+        staticmethod(
+            lambda _path: (("per_layer_token_embd.weight", pinned_gib * _GIB),)
+            if pinned_gib
+            else ()
+        ),
+    )
+    _backend, cmd = _cache_launch(
+        tmp_path,
+        size_gib = 30,
+        memory = [(0, 20_000, 32_000)],
+        expert_gib = 15,
+        lazy = {"per_layer_token_embd.weight": 10 * _GIB},
+        arch = "qwen4exp",
+    )
+    assert _has_moe_cache(cmd), cmd
+
+
+def _adapter_launch_total(tmp_path, monkeypatch, *, extra_args, host_pinned_gib):
+    """First planned total for a 4 GiB target whose 1 GiB token_embd.weight is host-pinned."""
+    gib = 1024**3
+    backend, gguf = _backend(tmp_path, vulkan = True, memory = [(0, 30_000, 32_000)])
+    monkeypatch.setattr(LlamaCppBackend, "_tied_output_bytes", staticmethod(lambda _path: 0))
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_host_pinned_weight_items",
+        staticmethod(lambda _path: (("token_embd.weight", host_pinned_gib * gib),)),
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_host_pinned_weight_bytes",
+        staticmethod(lambda _path: host_pinned_gib * gib),
+    )
+    backend._get_gguf_size_bytes = lambda _path: 4 * gib
+    totals = []
+
+    def plan(total, gpus, *args, **kwargs):
+        totals.append(total)
+        return None, True
+
+    backend._select_gpus = plan
+    fits = []
+    backend._fit_derived_load_mode = lambda **kwargs: fits.append(kwargs) and None
+    _launch(backend, gguf, gpu_ids = [0], extra_args = extra_args)
+    return totals[0], fits
+
+
+@pytest.mark.parametrize("flag", ["--lora", "--control-vector"])
+def test_a_resident_adapter_keeps_the_host_pinned_slack(tmp_path, monkeypatch, flag):
+    # Nothing prices the adapter's resident tensors, so the embedding discount stays off.
+    adapter = tmp_path / "adapter.gguf"
+    adapter.write_bytes(b"GGUF")
+    extras = [flag, str(adapter)]
+    with_adapter, fits = _adapter_launch_total(
+        tmp_path, monkeypatch, extra_args = extras, host_pinned_gib = 1
+    )
+    no_discount, _ = _adapter_launch_total(
+        tmp_path, monkeypatch, extra_args = extras, host_pinned_gib = 0
+    )
+    assert with_adapter == no_discount
+    # The embedding is still in host RAM: the load-mode fit keeps it there.
+    assert fits and fits[-1]["host_only_bytes"] >= 1024**3
+    # Without an adapter the discount still applies.
+    plain, _ = _adapter_launch_total(tmp_path, monkeypatch, extra_args = None, host_pinned_gib = 1)
+    assert plain == no_discount - 1024**3
+
+
+def test_the_discount_itself_carries_the_adapter_guard():
+    from core.inference.llama_cpp import LlamaCppBackend as backend
+    with patch.object(backend, "_host_pinned_weight_bytes", staticmethod(lambda _p: 1024**3)):
+        assert backend._host_pinned_vram_discount("m.gguf", ["--lora", "a.gguf"]) == 0
+        assert backend._host_pinned_vram_discount("m.gguf", []) == 1024**3
+
+
+def _user_spec_draft_totals(
+    tmp_path,
+    *,
+    device,
+    discount = True,
+):
+    """Planned totals for a user-owned draft-simple spec beside discrete Vulkan0 and an
+    iGPU Vulkan1, with ``device`` as a pass-through --device (no GPU picker)."""
+    gib = 1024**3
+    backend, gguf = _backend(tmp_path, vulkan = True, memory = [(0, 8_000, 16_000), (1, 30_000, 0)])
+    probe = backend._run_vulkan_probe
+
+    def rows(*_a, **_kw):
+        out = probe()
+        out[1]["is_igpu"] = True
+        return out
+
+    backend._run_vulkan_probe = rows
+    totals = []
+
+    def plan(total, gpus, *args, **kwargs):
+        totals.append(total)
+        return None, True
+
+    backend._select_gpus = plan
+    draft = tmp_path / "draft.gguf"
+    draft.write_bytes(b"x")
+    backend._get_gguf_size_bytes = lambda path: 6 * gib if "draft" in str(path) else gib
+    backend._host_pinned_vram_discount = lambda _p, *_a, draft_model = False, **_kw: (
+        3 * gib if (draft_model and discount) else 0
+    )
+    extras = ["--spec-type", "draft-simple", "--model-draft", str(draft), "--device", device]
+    _launch(backend, gguf, extra_args = extras)
+    return totals
+
+
+def test_a_user_owned_drafter_following_an_igpu_device_gets_no_discount(tmp_path):
+    # The drafter's devices default to the pass-through --device, here the iGPU.
+    full = _user_spec_draft_totals(tmp_path, device = "Vulkan1", discount = False)
+    assert min(_user_spec_draft_totals(tmp_path, device = "Vulkan1")) == min(full)
+    # Following a proved-discrete device keeps the discount.
+    assert min(_user_spec_draft_totals(tmp_path, device = "Vulkan0")) == min(full) - 3 * 1024**3

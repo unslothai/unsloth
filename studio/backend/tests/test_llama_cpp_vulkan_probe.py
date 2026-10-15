@@ -304,6 +304,27 @@ def test_versioned_only_vulkan_soname_is_probed(tmp_path):
     assert gpus == [(0, 23 * 1024, 24 * 1024)], gpus
 
 
+@pytest.mark.parametrize(
+    "type_known,conservative,expected",
+    [
+        # Proved discrete: no shared pool, whatever the caller asked for.
+        (True, True, False),
+        (True, False, False),
+        # Type unreadable: shared only for the caller that says so.
+        (False, True, True),
+        (False, False, False),
+    ],
+)
+def test_an_unreadable_vulkan_type_is_shared_only_where_it_must_be(
+    type_known, conservative, expected
+):
+    rows = [{"index": 0, "is_igpu": False, "type_known": type_known}]
+    assert (
+        LlamaCppBackend._vulkan_rows_target_igpus(rows, [0], conservative_on_unknown = conservative)
+        is expected
+    )
+
+
 def test_windows_probe_sets_the_error_mode_before_loading_ggml(tmp_path, monkeypatch, capsys):
     """SEM_FAILCRITICALERRORS is OR-ed into the inherited mode before either ggml DLL loads."""
     from core.inference import _vulkan_probe as probe

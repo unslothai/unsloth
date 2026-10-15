@@ -1,0 +1,1226 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Tests for charging the tied-embedding output duplicate to the VRAM budget.
+
+llama.cpp re-creates a missing output.weight from token_embd as TENSOR_DUPLICATED
+on the GPU (gemma-4-E2B: +264.01 MiB measured vs 264.00 MiB token_embd).
+"""
+
+from __future__ import annotations
+
+import os
+import struct
+import sys
+from pathlib import Path
+
+import pytest
+
+_BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
+if _BACKEND_DIR not in sys.path:
+    sys.path.insert(0, _BACKEND_DIR)
+
+
+# A minimal real GGUF, not a mock that could agree with a wrong implementation.
+
+_GGUF_MAGIC = 0x46554747
+_TYPE_F32 = 0
+_TYPE_Q4_K = 12  # 256-element blocks of 144 bytes
+
+
+def _write_gguf(
+    path: Path,
+    tensors: "list[tuple[str, tuple[int, ...]]]",
+    *,
+    architecture: "str | None" = None,
+    ggml_type: int = _TYPE_F32,
+    pad: int = 0,
+) -> Path:
+    """Write a GGUF v3 with `tensors` as (name, shape); ``pad`` appends ignored filler."""
+    block, block_bytes = (1, 4) if ggml_type == _TYPE_F32 else (256, 144)
+    blobs: list[bytes] = []
+    infos = bytearray()
+    offset = 0
+    for name, shape in tensors:
+        raw = name.encode()
+        infos += struct.pack("<Q", len(raw)) + raw
+        infos += struct.pack("<I", len(shape))
+        for dim in shape:
+            infos += struct.pack("<Q", dim)
+        infos += struct.pack("<I", ggml_type)
+        infos += struct.pack("<Q", offset)
+        elements = 1
+        for dim in shape:
+            elements *= dim
+        nbytes = elements // block * block_bytes
+        blobs.append(b"\0" * nbytes)
+        offset += nbytes
+
+    def _string(value: str) -> bytes:
+        data = value.encode()
+        return struct.pack("<Q", len(data)) + data
+
+    kv = _string("general.alignment") + struct.pack("<II", 4, 32)
+    n_kv = 1
+    if architecture is not None:
+        kv += _string("general.architecture") + struct.pack("<I", 8) + _string(architecture)
+        n_kv += 1
+
+    body = struct.pack("<II", _GGUF_MAGIC, 3) + struct.pack("<QQ", len(tensors), n_kv)
+    body += kv + bytes(infos)
+    with open(path, "wb") as fh:
+        fh.write(body)
+        fh.write(b"\0" * ((-len(body)) % 32))
+        for blob in blobs:
+            fh.write(blob)
+        fh.write(b"\0" * pad)
+    return path
+
+
+@pytest.fixture(autouse = True)
+def _no_inherited_gpu_arch_override(monkeypatch):
+    """Drop an inherited HSA_OVERRIDE_GFX_VERSION, which the classifier reads as a spoof."""
+    monkeypatch.delenv("HSA_OVERRIDE_GFX_VERSION", raising = False)
+
+
+@pytest.fixture(scope = "module")
+def backend():
+    pytest.importorskip("gguf")
+    from core.inference.llama_cpp import LlamaCppBackend
+    return LlamaCppBackend
+
+
+@pytest.fixture
+def tied_gguf(tmp_path: Path) -> Path:
+    return _write_gguf(
+        tmp_path / "tied.gguf",
+        [
+            ("token_embd.weight", (8, 64)),  # 2048 bytes at f32
+            ("blk.0.attn_q.weight", (8, 8)),
+            ("blk.0.ffn_down.weight", (8, 8)),
+        ],
+    )
+
+
+@pytest.fixture
+def untied_gguf(tmp_path: Path) -> Path:
+    return _write_gguf(
+        tmp_path / "untied.gguf",
+        [
+            ("token_embd.weight", (8, 64)),
+            ("output.weight", (8, 64)),
+            ("blk.0.attn_q.weight", (8, 8)),
+        ],
+    )
+
+
+def test_a_tied_model_is_charged_one_more_embedding_matrix(backend, tied_gguf):
+    # 8 * 64 * 4 bytes. The duplicate is the WHOLE matrix, not a fraction of it.
+    assert backend._tied_output_bytes(str(tied_gguf)) == 8 * 64 * 4
+
+
+def test_a_model_shipping_its_own_output_is_charged_nothing(backend, untied_gguf):
+    assert backend._tied_output_bytes(str(untied_gguf)) == 0
+
+
+def test_a_separate_tied_drafter_charges_its_duplicated_output(backend, tied_gguf):
+    instance = backend()
+    embedding = 8 * 64 * 4
+    raw_size = instance._get_gguf_size_bytes(str(tied_gguf))
+
+    assert instance._separate_drafter_weight_vram_bytes(str(tied_gguf), embedding) == raw_size
+    assert instance._separate_drafter_weight_vram_bytes(str(tied_gguf), 0) == raw_size + embedding
+
+
+def test_the_charge_is_the_embedding_size_not_a_constant(backend, tmp_path):
+    """Two tied models of different vocabulary sizes must differ (no fixed fudge factor)."""
+    small = _write_gguf(tmp_path / "small.gguf", [("token_embd.weight", (8, 16))])
+    large = _write_gguf(tmp_path / "large.gguf", [("token_embd.weight", (8, 64))])
+    assert backend._tied_output_bytes(str(large)) == 4 * backend._tied_output_bytes(str(small))
+
+
+def test_a_split_gguf_is_read_across_every_shard(backend, tmp_path):
+    """The probe must inspect every shard before inferring a tie or discount."""
+    one = tmp_path / "m-00001-of-00002.gguf"
+    two = tmp_path / "m-00002-of-00002.gguf"
+    _write_gguf(one, [("token_embd.weight", (8, 64))])
+    _write_gguf(two, [("output.weight", (8, 64)), ("blk.0.ffn_up.weight", (8, 8))])
+    assert backend._tied_output_bytes(str(one)) == 0
+
+    three = tmp_path / "n-00001-of-00002.gguf"
+    four = tmp_path / "n-00002-of-00002.gguf"
+    _write_gguf(three, [("token_embd.weight", (8, 64))])
+    _write_gguf(four, [("blk.0.ffn_up.weight", (8, 8))])
+    assert backend._tied_output_bytes(str(three)) == 8 * 64 * 4
+
+    stale = tmp_path / "n-00003-of-00002.gguf"
+    _write_gguf(stale, [("output.weight", (1, 1))])
+    assert [p.name for p in backend._gguf_shard_paths(str(three))] == [three.name, four.name]
+    assert backend._tied_output_bytes(str(three)) == 8 * 64 * 4
+
+    # A partial split cannot answer either correction safely.
+    partial = tmp_path / "q-00001-of-00002.gguf"
+    _write_gguf(partial, [("token_embd.weight", (8, 64))])
+    assert backend._tied_output_bytes(str(partial)) == 0
+    assert backend._host_pinned_weight_bytes(str(partial)) == 0
+
+
+def test_the_per_layer_embedding_is_counted_from_a_later_shard(backend, tmp_path):
+    """The largest host-pinned tensor is not required to be in shard 1."""
+    one = tmp_path / "p-00001-of-00002.gguf"
+    two = tmp_path / "p-00002-of-00002.gguf"
+    _write_gguf(one, [("token_embd.weight", (8, 64))])
+    _write_gguf(two, [("per_layer_token_embd.weight", (16, 64)), ("output.weight", (8, 64))])
+    assert backend._host_pinned_weight_bytes(str(one)) == (8 * 64 * 4) + (16 * 64 * 4)
+
+
+def test_host_pinned_covers_both_embedding_families(backend, tied_gguf, tmp_path):
+    assert backend._host_pinned_weight_bytes(str(tied_gguf)) == 8 * 64 * 4
+
+    ple = tmp_path / "ple.gguf"
+    _write_gguf(
+        ple,
+        [
+            ("token_embd.weight", (8, 64)),
+            ("per_layer_token_embd.weight", (32, 64)),
+            ("blk.0.ffn_up.weight", (8, 8)),
+        ],
+    )
+    assert backend._host_pinned_weight_bytes(str(ple)) == (8 * 64 * 4) + (32 * 64 * 4)
+
+
+def test_host_pinned_is_zero_for_an_unreadable_file(backend, tmp_path):
+    junk = tmp_path / "junk2.gguf"
+    junk.write_bytes(b"nope")
+    assert backend._host_pinned_weight_bytes(str(junk)) == 0
+    assert backend._host_pinned_weight_bytes(str(tmp_path / "gone.gguf")) == 0
+
+
+def test_a_quantised_embedding_is_charged_its_blocks_not_its_elements(backend, tmp_path):
+    """Quantised element count is not byte count (Q4_K: 256 elements in 144 bytes)."""
+    path = _write_gguf(
+        tmp_path / "q4k.gguf",
+        [("token_embd.weight", (256, 64))],
+        ggml_type = _TYPE_Q4_K,
+    )
+    assert backend._tied_output_bytes(str(path)) == 256 * 64 // 256 * 144
+
+
+def test_a_quant_type_the_pinned_gguf_package_predates_is_still_charged(backend, tmp_path):
+    """An enum newer than the pinned `gguf` is sized from the next tensor offset."""
+    path = tmp_path / "future-quant.gguf"
+    _write_gguf(
+        path,
+        [("token_embd.weight", (256, 64)), ("blk.0.attn_q.weight", (256, 8))],
+        ggml_type = _TYPE_Q4_K,
+    )
+    expected = 256 * 64 // 256 * 144
+    assert backend._tied_output_bytes(str(path)) == expected
+
+    from gguf.constants import GGML_QUANT_SIZES
+
+    unknown = max(GGML_QUANT_SIZES) + 1
+    raw = bytearray(path.read_bytes())
+    assert raw.count(struct.pack("<I", _TYPE_Q4_K)) >= 1
+    raw = raw.replace(struct.pack("<I", _TYPE_Q4_K), struct.pack("<I", unknown))
+    (tmp_path / "bumped.gguf").write_bytes(raw)
+
+    charged = backend._tied_output_bytes(str(tmp_path / "bumped.gguf"))
+    assert charged >= expected, "an unknown quant type must not silently cost 0"
+    assert charged < expected + 32, "and it must not over-count by more than the alignment"
+
+    # token_embd last: the data section bounds it.
+    only = tmp_path / "only.gguf"
+    _write_gguf(only, [("token_embd.weight", (256, 64))], ggml_type = _TYPE_Q4_K)
+    raw = bytearray(only.read_bytes())
+    only.write_bytes(bytes(raw).replace(struct.pack("<I", _TYPE_Q4_K), struct.pack("<I", unknown)))
+    last = backend._tied_output_bytes(str(only))
+    assert expected <= last < expected + 32
+
+
+def _write_reordered_gguf(path: Path, ggml_type: int) -> Path:
+    """token_embd described first and stored first, but the descriptor after it is stored
+    LAST: offsets, not descriptor order, say where token_embd's data ends."""
+    sizes = {"token_embd.weight": 256 * 64 // 256 * 144, "blk.0.ffn_down.weight": 4096}
+    sizes["blk.0.attn_q.weight"] = 2048
+    data_order = ["token_embd.weight", "blk.0.ffn_down.weight", "blk.0.attn_q.weight"]
+    offsets, at = {}, 0
+    for name in data_order:
+        offsets[name] = at
+        at += -(-sizes[name] // 32) * 32
+    shapes = {
+        "token_embd.weight": (256, 64),
+        "blk.0.attn_q.weight": (256, 8),
+        "blk.0.ffn_down.weight": (256, 16),
+    }
+    infos = bytearray()
+    for name in ["token_embd.weight", "blk.0.attn_q.weight", "blk.0.ffn_down.weight"]:
+        raw = name.encode()
+        infos += struct.pack("<Q", len(raw)) + raw + struct.pack("<I", 2)
+        infos += struct.pack("<QQ", *shapes[name]) + struct.pack("<I", ggml_type)
+        infos += struct.pack("<Q", offsets[name])
+    key = b"general.alignment"
+    kv = struct.pack("<Q", len(key)) + key + struct.pack("<II", 4, 32)
+    body = struct.pack("<II", _GGUF_MAGIC, 3) + struct.pack("<QQ", 3, 1) + kv + bytes(infos)
+    path.write_bytes(body + b"\0" * ((-len(body)) % 32) + b"\0" * at)
+    return path
+
+
+def test_an_unknown_quant_type_is_bounded_by_file_order_not_descriptor_order(backend, tmp_path):
+    from gguf.constants import GGML_QUANT_SIZES
+
+    expected = 256 * 64 // 256 * 144
+    known = _write_reordered_gguf(tmp_path / "known.gguf", _TYPE_Q4_K)
+    assert backend._tied_output_bytes(str(known)) == expected
+    unknown = _write_reordered_gguf(tmp_path / "unknown.gguf", max(GGML_QUANT_SIZES) + 1)
+    assert backend._tied_output_bytes(str(unknown)) == expected
+    assert dict(backend._gguf_scan_host_pinned_tensors(str(unknown))) == {
+        "token_embd.weight": expected
+    }
+
+
+def test_an_encoder_only_architecture_is_charged_nothing(backend, tmp_path):
+    """BERT ships token_embd and no output.weight, yet nothing is duplicated (bert.cpp)."""
+    path = _write_gguf(
+        tmp_path / "bert.gguf",
+        [("token_embd.weight", (8, 64))],
+        architecture = "bert",
+    )
+    assert backend._tied_output_bytes(str(path)) == 0
+
+
+def test_an_unrecognised_architecture_is_still_charged(backend, tmp_path):
+    """The exemption is a blocklist, and it fails towards charging."""
+    path = _write_gguf(
+        tmp_path / "future.gguf",
+        [("token_embd.weight", (8, 64))],
+        architecture = "some-arch-from-2027",
+    )
+    assert backend._tied_output_bytes(str(path)) == 8 * 64 * 4
+
+
+def test_a_split_model_is_charged_when_no_shard_ships_an_output(backend, tmp_path):
+    """Every shard is scanned: output.weight of a split model lives past shard 1."""
+    _write_gguf(tmp_path / "m-00001-of-00002.gguf", [("token_embd.weight", (8, 64))])
+    _write_gguf(tmp_path / "m-00002-of-00002.gguf", [("blk.1.attn_q.weight", (8, 8))])
+    assert backend._tied_output_bytes(str(tmp_path / "m-00001-of-00002.gguf")) == 8 * 64 * 4
+
+
+def test_a_split_model_finds_its_output_weight_in_a_later_shard(backend, tmp_path):
+    """Reading only the shard it was handed would call this model tied."""
+    _write_gguf(tmp_path / "m-00001-of-00002.gguf", [("token_embd.weight", (8, 64))])
+    _write_gguf(tmp_path / "m-00002-of-00002.gguf", [("output.weight", (8, 64))])
+    assert backend._tied_output_bytes(str(tmp_path / "m-00001-of-00002.gguf")) == 0
+
+
+def test_a_split_model_with_a_shard_missing_costs_the_old_budget(backend, tmp_path):
+    """An unreadable sibling proves nothing, so it must not be read as tied."""
+    _write_gguf(tmp_path / "m-00001-of-00003.gguf", [("token_embd.weight", (8, 64))])
+    assert backend._tied_output_bytes(str(tmp_path / "m-00001-of-00003.gguf")) == 0
+
+
+def test_an_unreadable_file_costs_the_old_budget_rather_than_the_launch(backend, tmp_path):
+    """A truncated or non-GGUF file returns 0 instead of failing the load."""
+    junk = tmp_path / "junk.gguf"
+    junk.write_bytes(b"not a gguf at all")
+    assert backend._tied_output_bytes(str(junk)) == 0
+    assert backend._tied_output_bytes(str(tmp_path / "missing.gguf")) == 0
+
+
+def test_the_probe_reads_the_header_without_building_a_gguf_reader(backend, tied_gguf):
+    """gguf.GGUFReader materialises the vocab (12.1 s vs 30-90 ms) under the backend lock."""
+    import gguf
+
+    def explode(*_args, **_kwargs):
+        raise AssertionError("the tied-output probe must not construct a GGUFReader")
+
+    original = gguf.GGUFReader
+    gguf.GGUFReader = explode
+    try:
+        backend._tied_output_bytes_cached.cache_clear()
+        backend._host_pinned_weight_bytes_cached.cache_clear()
+        backend._host_pinned_weight_items_cached.cache_clear()
+        assert backend._tied_output_bytes(str(tied_gguf)) == 8 * 64 * 4
+        assert backend._host_pinned_weight_bytes(str(tied_gguf)) == 8 * 64 * 4
+        assert backend._host_pinned_weight_items(str(tied_gguf)) == (
+            ("token_embd.weight", 8 * 64 * 4),
+        )
+    finally:
+        gguf.GGUFReader = original
+
+
+def test_the_probe_cache_is_keyed_on_the_inode_not_the_path_size_and_mtime(backend, tmp_path):
+    """An in-place rebuild restoring mtime must not serve the cached answer (inode keyed)."""
+    path = tmp_path / "swapped.gguf"
+    _write_gguf(path, [("token_embd.weight", (8, 64)), ("output.weight", (8, 64))])
+    assert backend._tied_output_bytes(str(path)) == 0
+
+    before = path.stat()
+    replacement = tmp_path / "replacement.gguf"
+    _write_gguf(replacement, [("token_embd.weight", (8, 64))])
+    # Same length and same nanosecond timestamp, different inode.
+    pad = before.st_size - replacement.stat().st_size
+    assert pad >= 0
+    _write_gguf(replacement, [("token_embd.weight", (8, 64))], pad = pad)
+    os.utime(replacement, ns = (before.st_atime_ns, before.st_mtime_ns))
+    os.replace(replacement, path)
+    after = path.stat()
+    assert (after.st_size, after.st_mtime_ns) == (before.st_size, before.st_mtime_ns)
+    assert after.st_ino != before.st_ino
+
+    assert backend._tied_output_bytes(str(path)) == 8 * 64 * 4
+
+
+def test_the_host_pinned_cache_is_keyed_on_file_identity(backend, tmp_path):
+    path = tmp_path / "host-swapped.gguf"
+    _write_gguf(path, [("token_embd.weight", (8, 64))])
+    assert backend._host_pinned_weight_bytes(str(path)) == 8 * 64 * 4
+
+    before = path.stat()
+    replacement = tmp_path / "host-replacement.gguf"
+    _write_gguf(replacement, [("token_embd.weight", (8, 16))])
+    pad = before.st_size - replacement.stat().st_size
+    assert pad >= 0
+    _write_gguf(replacement, [("token_embd.weight", (8, 16))], pad = pad)
+    os.utime(replacement, ns = (before.st_atime_ns, before.st_mtime_ns))
+    os.replace(replacement, path)
+    after = path.stat()
+    assert (after.st_size, after.st_mtime_ns) == (before.st_size, before.st_mtime_ns)
+    assert after.st_ino != before.st_ino
+
+    assert backend._host_pinned_weight_bytes(str(path)) == 8 * 16 * 4
+    assert backend._host_pinned_weight_items(str(path)) == (("token_embd.weight", 8 * 16 * 4),)
+
+
+def test_a_separate_drafter_never_inherits_the_main_cpu_device():
+    """Only a draft-only flag takes the drafter off the GPU.
+
+    llama.cpp replaces the main device list with the draft one for a separate drafter
+    (common_base_params_to_speculative); the main pin reaches it only where Studio copies it.
+    """
+    from core.inference import llama_cpp
+
+    advanced = [
+        "--spec-type",
+        "draft-simple",
+        "--model-draft",
+        "draft.gguf",
+        "--device",
+        "none",
+    ]
+    assert llama_cpp._extra_args_draft_device(advanced) is None
+    assert llama_cpp._extra_args_draft_offloaded_to_cpu(advanced, {}) is False
+    assert llama_cpp._extra_args_effective_draft_device_pin(advanced) is None
+
+    generated = ["--model-draft", "draft.gguf", "--device", "none"]
+    assert llama_cpp._extra_args_draft_offloaded_to_cpu(generated, {}) is False
+    for pin in (
+        ["--spec-draft-device", "none"],
+        ["--spec-draft-device", "cpu"],
+        ["--spec-draft-ngl", "0"],
+    ):
+        assert (
+            llama_cpp._extra_args_draft_offloaded_to_cpu(["--model-draft", "draft.gguf", *pin], {})
+            is True
+        )
+
+
+def test_the_budget_sizes_from_what_lands_in_vram(backend, tied_gguf):
+    """The pure budget seam keeps discrete and shared-memory arithmetic distinct."""
+    import inspect
+
+    expected = 8 * 64 * 4
+    assert (
+        backend._host_pinned_vram_discount(str(tied_gguf), [], env = {}, shared_memory = False)
+        == expected
+    )
+    assert backend._host_pinned_vram_discount(str(tied_gguf), [], env = {}, shared_memory = True) == 0
+    assert (
+        backend._host_pinned_vram_discount(
+            str(tied_gguf),
+            [],
+            env = {"LLAMA_ARG_OVERRIDE_TENSOR": "token_embd.weight=CUDA0"},
+            shared_memory = False,
+        )
+        == 0
+    )
+
+    src = inspect.getsource(backend)
+    assert (
+        "+ LlamaCppBackend._tied_output_vram_bytes(" in src
+    ), "the context budget no longer charges the tied-embedding duplicate"
+    assert "- _host_pinned" in src, "the context budget no longer discounts host-pinned embeddings"
+    assert "_host_pinned_vram_discount(" in src
+    assert "env = os.environ" in src
+    assert "shared_memory = False" in src
+    assert "0 if (_shared_memory or _target_device_is_cpu) else _host_pinned_candidate" in src
+    assert "_candidate_targets_proved_discrete" in src
+    assert "_shared_gpu_ids | _unclassified_gpu_ids" in src
+
+
+def test_a_draft_override_owns_only_the_drafter_discount(backend, tied_gguf):
+    expected = 8 * 64 * 4
+    draft_args = ["-otd", "token_embd.weight=CUDA0"]
+    main_args = ["-ot", "token_embd.weight=CUDA0"]
+
+    assert (
+        backend._host_pinned_vram_discount(
+            str(tied_gguf),
+            draft_args,
+            env = {},
+            shared_memory = False,
+            draft_model = True,
+        )
+        == 0
+    )
+    assert (
+        backend._host_pinned_vram_discount(
+            str(tied_gguf),
+            main_args,
+            env = {},
+            shared_memory = False,
+            draft_model = True,
+        )
+        == expected
+    )
+    assert backend._override_moves_host_pinned(draft_args, env = {}) is False
+
+
+def test_vulkan_igpu_is_shared_memory_and_unknown_is_conservative(backend, monkeypatch):
+    monkeypatch.setattr(
+        backend,
+        "_run_vulkan_probe",
+        staticmethod(
+            lambda _binary = None: [
+                {"index": 0, "is_igpu": True},
+                {"index": 1, "is_igpu": False},
+            ]
+        ),
+    )
+    assert backend._vulkan_targets_are_igpus("server", [0]) is True
+    assert backend._vulkan_targets_are_igpus("server", [1]) is False
+    assert backend._vulkan_targets_are_igpus("server", [2], conservative_on_unknown = True) is True
+    assert backend._vulkan_targets_are_igpus("server", [1, 2]) is False
+    assert backend._vulkan_targets_are_igpus("server", [1, 2], conservative_on_unknown = True) is True
+
+    monkeypatch.setattr(backend, "_run_vulkan_probe", staticmethod(lambda _binary = None: []))
+    assert backend._vulkan_targets_are_igpus("server", conservative_on_unknown = True) is True
+
+
+def test_one_vulkan_snapshot_drives_memory_and_shared_classification(backend, monkeypatch):
+    rows = [
+        {"index": 0, "free_mib": 8192, "total_mib": 16384, "is_igpu": False},
+        {"index": 1, "free_mib": 4096, "total_mib": 8192, "is_igpu": True},
+    ]
+    monkeypatch.setattr(
+        backend,
+        "_run_vulkan_probe",
+        staticmethod(lambda *_a, **_kw: pytest.fail("snapshot was probed twice")),
+    )
+    assert backend._vulkan_rows_target_igpus(rows, [0]) is False
+    assert backend._vulkan_rows_target_igpus(rows, [1]) is True
+    memory = backend._get_gpu_free_memory_vulkan("server", rows = rows)
+    assert memory[0] == (0, 8192, 16384)
+    assert memory[1][0] == 1
+    assert memory[1][2] == 0
+
+
+def test_unreadable_cuda_properties_are_not_proved_discrete(backend, monkeypatch):
+    class _Cuda:
+        @staticmethod
+        def is_available():
+            return True
+
+        @staticmethod
+        def device_count():
+            return 1
+
+        @staticmethod
+        def get_device_properties(_ordinal):
+            raise OSError("property probe failed")
+
+    class _Version:
+        hip = None
+
+    class _Torch:
+        cuda = _Cuda()
+        version = _Version()
+        __version__ = "2.9.0"
+
+    monkeypatch.setitem(sys.modules, "torch", _Torch())
+    monkeypatch.setattr(backend, "_resolve_visible_physical_ids", staticmethod(lambda: None))
+    assert backend._torch_unified_memory_classification_known([0]) is False
+
+
+def test_a_classified_discrete_cuda_device_is_known(backend, monkeypatch):
+    class _Props:
+        is_integrated = False
+
+    class _Cuda:
+        is_available = staticmethod(lambda: True)
+        device_count = staticmethod(lambda: 1)
+        get_device_properties = staticmethod(lambda _ordinal: _Props())
+
+    class _Version:
+        hip = None
+
+    class _Torch:
+        cuda = _Cuda()
+        version = _Version()
+        __version__ = "2.9.0"
+
+    monkeypatch.setitem(sys.modules, "torch", _Torch())
+    monkeypatch.setattr(backend, "_resolve_visible_physical_ids", staticmethod(lambda: None))
+    assert backend._torch_unified_memory_classification_known([0]) is True
+
+
+@pytest.mark.parametrize("arch", ["gfx90c", "gfx1103"])
+def test_an_unclassified_rocm_arch_is_not_proved_discrete(backend, monkeypatch, arch):
+    class _Props:
+        gcnArchName = arch
+        is_integrated = 0
+
+    class _Cuda:
+        is_available = staticmethod(lambda: True)
+        device_count = staticmethod(lambda: 1)
+        get_device_properties = staticmethod(lambda _ordinal: _Props())
+
+    class _Version:
+        hip = "6.2.0"
+
+    class _Torch:
+        cuda = _Cuda()
+        version = _Version()
+        __version__ = "2.9.0+rocm"
+
+    monkeypatch.setitem(sys.modules, "torch", _Torch())
+    monkeypatch.setattr(backend, "_resolve_visible_physical_ids", staticmethod(lambda: None))
+    assert backend._torch_unified_memory_classification_known([0]) is False
+
+
+@pytest.mark.parametrize(
+    "arch",
+    [
+        "gfx803",
+        "gfx900",
+        "gfx906",
+        "gfx908",
+        "gfx90a",
+        "gfx950",
+        "gfx1010",
+        "gfx1011",
+        "gfx1012",
+        "gfx1031",
+        "gfx1100",
+    ],
+)
+def test_a_known_discrete_rocm_arch_is_proved_discrete(backend, monkeypatch, arch):
+    class _Props:
+        gcnArchName = arch
+        is_integrated = 0
+
+    class _Cuda:
+        is_available = staticmethod(lambda: True)
+        device_count = staticmethod(lambda: 1)
+        get_device_properties = staticmethod(lambda _ordinal: _Props())
+
+    class _Version:
+        hip = "6.2.0"
+
+    class _Torch:
+        cuda = _Cuda()
+        version = _Version()
+        __version__ = "2.9.0+rocm"
+
+    monkeypatch.setitem(sys.modules, "torch", _Torch())
+    monkeypatch.setattr(backend, "_resolve_visible_physical_ids", staticmethod(lambda: None))
+    assert backend._torch_unified_memory_classification_known([0]) is True
+
+
+def test_the_classification_seam_survives_a_gguf_only_install(backend, monkeypatch):
+    """A GGUF-only (--no-torch) install must still classify its ROCm devices (AMD CI Windows)."""
+    import builtins
+
+    real_import = builtins.__import__
+
+    def without_training_stack(name, *args, **kwargs):
+        if name == "core.training.worker" or name.startswith("core.training.worker."):
+            raise ImportError("no training stack in a GGUF-only install")
+        return real_import(name, *args, **kwargs)
+
+    class _Props:
+        gcnArchName = "gfx1100"
+        is_integrated = 0
+
+    class _Cuda:
+        is_available = staticmethod(lambda: True)
+        device_count = staticmethod(lambda: 1)
+        get_device_properties = staticmethod(lambda _ordinal: _Props())
+
+    class _Version:
+        hip = "6.2.0"
+
+    class _Torch:
+        cuda = _Cuda()
+        version = _Version()
+        __version__ = "2.9.0+rocm"
+
+    monkeypatch.setitem(sys.modules, "torch", _Torch())
+    monkeypatch.setattr(backend, "_resolve_visible_physical_ids", staticmethod(lambda: None))
+    monkeypatch.setattr(builtins, "__import__", without_training_stack)
+    assert backend._torch_unified_memory_classification_known([0]) is True
+
+
+def test_gfx942_alone_is_not_proof_of_a_private_vram_pool(backend, monkeypatch):
+    """MI300X and the MI300A APU share gfx942; only ``integrated`` may prove unified.
+
+    On ROCm < 6.1.2 the MI300A flag reads 0, so the arch must not imply discrete.
+    """
+
+    class _Props:
+        gcnArchName = "gfx942"
+        is_integrated = 0
+        name = "AMD Instinct MI300A"
+
+    class _Cuda:
+        is_available = staticmethod(lambda: True)
+        device_count = staticmethod(lambda: 1)
+        get_device_properties = staticmethod(lambda _ordinal: _Props())
+
+    class _Version:
+        hip = "6.0.0"
+
+    class _Torch:
+        cuda = _Cuda()
+        version = _Version()
+        __version__ = "2.9.0+rocm"
+
+    monkeypatch.setitem(sys.modules, "torch", _Torch())
+    monkeypatch.setattr(backend, "_resolve_visible_physical_ids", staticmethod(lambda: None))
+    assert backend._torch_unified_memory_classification_known([0]) is False
+    _Props.is_integrated = 1
+    assert backend._torch_unified_memory_classification_known([0]) is True
+
+
+def test_an_hsa_override_cannot_spoof_an_apu_into_a_discrete_discount(backend, monkeypatch):
+    """Under the override the runtime arch is no evidence of memory topology."""
+
+    class _Props:
+        gcnArchName = "gfx1030"
+        is_integrated = 0
+
+    class _Cuda:
+        is_available = staticmethod(lambda: True)
+        device_count = staticmethod(lambda: 1)
+        get_device_properties = staticmethod(lambda _ordinal: _Props())
+
+    class _Version:
+        hip = "6.4"
+
+    class _Torch:
+        cuda = _Cuda()
+        version = _Version()
+        __version__ = "2.9.0"
+
+    monkeypatch.setenv("HSA_OVERRIDE_GFX_VERSION", "10.3.0")
+    monkeypatch.setitem(sys.modules, "torch", _Torch())
+    monkeypatch.setattr(backend, "_resolve_visible_physical_ids", staticmethod(lambda: None))
+
+    assert backend._torch_unified_memory_classification_known([0]) is False
+    # The override voids arch-only discrete proof, not a positive unified signal.
+    _Props.is_integrated = 1
+    assert backend._torch_unified_memory_classification_known([0]) is True
+
+
+def test_an_hsa_override_on_windows_is_not_a_spoof(backend, monkeypatch):
+    """Windows ROCm (PAL) ignores HSA_OVERRIDE_GFX_VERSION (ROCm/TheRock#1719)."""
+
+    class _Props:
+        gcnArchName = "gfx1100"
+        is_integrated = 0
+
+    class _Cuda:
+        is_available = staticmethod(lambda: True)
+        device_count = staticmethod(lambda: 1)
+        get_device_properties = staticmethod(lambda _ordinal: _Props())
+
+    class _Version:
+        hip = "6.4"
+
+    class _Torch:
+        cuda = _Cuda()
+        version = _Version()
+        __version__ = "2.9.0"
+
+    monkeypatch.setenv("HSA_OVERRIDE_GFX_VERSION", "11.0.0")
+    monkeypatch.setitem(sys.modules, "torch", _Torch())
+    monkeypatch.setattr(backend, "_resolve_visible_physical_ids", staticmethod(lambda: None))
+    monkeypatch.setattr(sys, "platform", "win32")
+    assert backend._torch_unified_memory_classification_known([0]) is True
+    # Linux honours it, so there the same reading proves nothing.
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert backend._torch_unified_memory_classification_known([0]) is False
+
+
+def test_a_user_override_to_a_gpu_buffer_cancels_the_discount(backend):
+    """An explicit device override outranks llama.cpp's host fallback."""
+    assert backend._override_moves_host_pinned(["-ot", "token_embd.weight=CUDA0"], env = {}) is True
+    assert (
+        backend._override_moves_host_pinned(
+            ["-ot", r"^per_layer_token_embd\.weight$=CUDA0"], env = {}
+        )
+        is True
+    )
+    assert (
+        backend._override_moves_host_pinned(
+            ["--override_tensor", "token_embd.weight=CUDA0"], env = {}
+        )
+        is True
+    )
+    assert (
+        backend._override_moves_host_pinned(["--override-tensor=token_embd.weight=CUDA0"], env = {})
+        is True
+    )
+    assert backend._override_moves_host_pinned(["-ot=token_embd.weight=CUDA0"], env = {}) is True
+    assert backend._override_moves_host_pinned(["-ot", r".*embd.*=CUDA0"], env = {}) is True
+    assert backend._override_moves_host_pinned(["-ot", "token_embd=CUDA0"], env = {}) is True
+    assert backend._override_moves_host_pinned(["-ot", "embd=CUDA0"], env = {}) is True
+    assert backend._override_moves_host_pinned(["-ot", r"per_.*47$=CUDA0"], env = {}) is True
+    assert backend._override_moves_host_pinned(["-ot", r"^blk\.0=CUDA0"], env = {}) is True
+    assert backend._override_moves_host_pinned(["-ot", r".*=CUDA0"], env = {}) is True
+    assert (
+        backend._override_moves_host_pinned(
+            ["-ot", "token_embd.weight=CUDA0,blk.0.ffn_down.weight=CPU"], env = {}
+        )
+        is True
+    )
+    assert (
+        backend._override_moves_host_pinned(
+            [], env = {"LLAMA_ARG_OVERRIDE_TENSOR": "token_embd.weight=CUDA0"}
+        )
+        is True
+    )
+    assert (
+        backend._override_moves_host_pinned([], env = {"LLAMA_ARG_OVERRIDE_TENSOR": "embd=CUDA0"})
+        is True
+    )
+
+
+def test_cpu_only_or_absent_overrides_keep_the_discount(backend):
+    assert backend._override_moves_host_pinned(["-ot", "token_embd.weight=CPU"], env = {}) is False
+    assert (
+        backend._override_moves_host_pinned(["--override_tensor=token_embd.weight=CPU"], env = {})
+        is False
+    )
+    assert (
+        backend._override_moves_host_pinned(["-ot", r"^blk\.(1|2)\.ffn_down\.weight$=CPU"], env = {})
+        is False
+    )
+    assert (
+        backend._override_moves_host_pinned(
+            ["-ot", "token_embd.weight=CPU,blk.0.ffn_down.weight=CUDA0"], env = {}
+        )
+        is True
+    )
+    assert backend._override_moves_host_pinned([], env = {}) is False
+    assert backend._override_moves_host_pinned(None, env = {}) is False
+    assert backend._override_moves_host_pinned(["-ot"], env = {}) is False
+
+
+def test_every_site_that_prices_the_weights_carries_both_corrections(backend):
+    """No vision-path site re-derives the footprint from the bare file size."""
+    import inspect
+
+    src = inspect.getsource(backend.load_model)
+    assert "_tied_output_charge = self._tied_output_vram_bytes(" in src
+    assert "weights_size = gguf_size + _tied_output_charge" in src
+    assert "_model_weight_vram_bytes = max(0, weights_size - _host_pinned)" in src
+    assert "model_size = _model_weight_vram_bytes + mmproj_size" in src
+    # The projector CPU pin removes only the projector, not either correction.
+    assert "model_size = gguf_size" not in src
+    assert "_mm_base_need = (\n                            _model_weight_vram_bytes" in src
+
+
+@pytest.fixture
+def tied_gguf_with_ple(tmp_path: Path) -> Path:
+    """A tied model that also ships per-layer embeddings, like the gemma family."""
+    return _write_gguf(
+        tmp_path / "tied_ple.gguf",
+        [
+            ("token_embd.weight", (8, 64)),  # 2048 bytes at f32
+            ("per_layer_token_embd.weight", (4, 64)),  # 1024 bytes
+            ("blk.0.attn_q.weight", (8, 8)),
+            ("blk.0.ffn_down.weight", (8, 8)),
+        ],
+    )
+
+
+def test_the_two_corrections_only_cancel_as_a_set(backend, tied_gguf_with_ple):
+    """Charging the tied duplicate and discounting host-pinned embeddings are HALVES.
+
+    Each alone is wrong by one vocabulary matrix in opposite directions: llama.cpp pins
+    the input layer to CPU (``dev_input`` in ``llama_model::load_tensors``) but places the
+    tied duplicate, remapped to LLM_TENSOR_OUTPUT, on the GPU. Do not merge either alone.
+    """
+    path = str(tied_gguf_with_ple)
+    gguf = backend._get_gguf_size_bytes(path)
+    embd = 8 * 64 * 4  # token_embd, the matrix llama.cpp duplicates into VRAM
+    ple = 4 * 64 * 4  # per_layer_token_embd, host-pinned and never duplicated
+
+    assert backend._tied_output_bytes(path) == embd
+    assert backend._host_pinned_weight_bytes(path) == embd + ple
+
+    # VRAM = file - two host-pinned embeddings + one duplicate.
+    truth = gguf - (embd + ple) + embd
+    assert truth == gguf - ple
+
+    # Through the seam, not recomputed arithmetic.
+    shipped = backend._separate_drafter_weight_vram_bytes(
+        backend, path, host_pinned_bytes = backend._host_pinned_weight_bytes(path)
+    )
+    assert shipped == truth
+
+    main_today = gguf
+    tied_charge_alone = gguf + embd
+    host_discount_alone = gguf - (embd + ple)
+
+    assert main_today - truth == ple, "main over-charges by the per-layer embeddings"
+    assert tied_charge_alone - truth == embd + ple, "the tied charge alone over-charges"
+    assert truth - host_discount_alone == embd, (
+        "the host-pinned discount alone UNDER-charges by one vocabulary matrix, "
+        "which is the direction that fails a launch"
+    )
+
+
+@pytest.fixture
+def mib_embd_pair(tmp_path: Path) -> "tuple[Path, Path]":
+    """A tied and an untied model whose embedding matrix is exactly 1 MiB."""
+    rows = (256, 1024)  # 262144 f32 elements
+    return (
+        _write_gguf(
+            tmp_path / "tied_mib.gguf",
+            [("token_embd.weight", rows), ("blk.0.attn_q.weight", (8, 8))],
+        ),
+        _write_gguf(
+            tmp_path / "untied_mib.gguf",
+            [
+                ("token_embd.weight", rows),
+                ("output.weight", rows),
+                ("blk.0.attn_q.weight", (8, 8)),
+            ],
+        ),
+    )
+
+
+def test_the_host_shortfall_stays_a_floor_over_the_file(backend, mib_embd_pair):
+    """The floor check does no placement modelling: tied and untied price identically.
+
+    The duplicate is charged where placement is known (``weights_size``,
+    ``_separate_drafter_weight_vram_bytes``).
+    """
+    from core.inference.llama_cpp import _HOST_RAM_HEADROOM_MIB
+
+    tied, untied = mib_embd_pair
+    assert backend._tied_output_bytes(str(tied)) == 1024 * 1024
+    assert backend._tied_output_bytes(str(untied)) == 0
+
+    instance = object.__new__(backend)
+    instance._get_gguf_size_bytes = lambda _path: 20 * 1024**3
+    argv = lambda path: ["llama-server", "-m", str(path)]
+    avail_mib = 16 * 1024 + _HOST_RAM_HEADROOM_MIB
+
+    for rows, kwargs in (([(0, 4 * 1024)], {}), ([], {"child_has_no_gpu": True})):
+        priced = [
+            instance._launch_host_shortfall_message(argv(path), rows, avail_mib = avail_mib, **kwargs)
+            for path in (tied, untied)
+        ]
+        assert priced[0] == priced[1], (rows, kwargs)
+    assert (
+        instance._launch_host_shortfall_message(argv(tied), [(0, 4 * 1024)], avail_mib = avail_mib)
+        is None
+    )
+
+
+def _spec_flags(monkeypatch, tmp_path: Path, mode: str, sidecar: str) -> "list[str]":
+    """The flag list _build_speculative_flags emits for one sidecar mode."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    caps = {
+        "found": True,
+        "mtp_token": "draft-mtp",
+        "supports_mtp": True,
+        "supports_dspark": True,
+        "supports_dflash": True,
+        "spec_draft_n_max_flag": "--spec-draft-n-max",
+    }
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "probe_server_capabilities",
+        classmethod(lambda cls, binary = None: caps),
+    )
+    backend = LlamaCppBackend()
+    backend._nextn_predict_layers = None
+    path = str(tmp_path / f"{mode}.gguf")
+    return backend._build_speculative_flags(
+        speculative_type = mode,
+        spec_draft_n_max = None,
+        extra_args = ["--device", "none"],
+        model_identifier = "org/model",
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+        **{sidecar: path},
+        draft_device = "none",
+    )
+
+
+def test_the_emitters_do_not_agree_on_pinning_the_drafter(monkeypatch, tmp_path):
+    """DSpark appends no --spec-draft-device; DFlash does, so main --device none proves nothing."""
+    from core.inference import llama_cpp
+
+    assert "--spec-draft-device" not in _spec_flags(
+        monkeypatch, tmp_path, "dspark", "dspark_draft_path"
+    )
+    dflash = _spec_flags(monkeypatch, tmp_path, "dflash", "dflash_draft_path")
+    assert dflash[dflash.index("--spec-draft-device") + 1] == "none"
+
+    # The emitters differ, so the args alone cannot say whether the pin reaches the drafter.
+    assert (
+        llama_cpp._extra_args_draft_offloaded_to_cpu(
+            ["--model-draft", "draft.gguf", "--device", "none"], {}
+        )
+        is False
+    )
+
+
+_TYPE_F16 = 1
+
+
+@pytest.mark.parametrize(
+    "ggml_type, charged",
+    [
+        # CPU_REPACK (and AMX/KleidiAI/IME) take the output's MUL_MAT but not the input's
+        # GET_ROWS, so the tied output gets its own repacked copy in host RAM.
+        (_TYPE_Q4_K, True),
+        # KleidiAI repacks F32 weights too.
+        (_TYPE_F32, True),
+        # No CPU extra buffer accepts F16: input and output share one CPU tensor.
+        (_TYPE_F16, False),
+    ],
+)
+def test_a_cpu_pinned_drafter_is_charged_the_duplicate_a_repack_allocates(
+    backend, tmp_path, ggml_type, charged
+):
+    rows = (256, 1024)
+    paths = []
+    for name, tensors in (
+        ("tied", [("token_embd.weight", rows), ("blk.0.attn_q.weight", (256, 8))]),
+        (
+            "untied",
+            [
+                ("token_embd.weight", rows),
+                ("output.weight", rows),
+                ("blk.0.attn_q.weight", (256, 8)),
+            ],
+        ),
+    ):
+        paths.append(_write_gguf(tmp_path / f"{name}.gguf", tensors, ggml_type = ggml_type))
+    instance = object.__new__(backend)
+    instance._get_gguf_size_bytes = lambda _path: 8 * 1024**3
+    # Synthetic GGUF cannot size draft KV; hold it flat.
+    instance._mtp_draft_kv_bytes = lambda *_a, **_kw: 0
+    tied, untied = (
+        instance._cpu_resident_draft_bytes(4096, drafter_path = str(path)) for path in paths
+    )
+    duplicate = backend._tied_output_bytes(str(paths[0]))
+    assert duplicate > 0
+    assert tied - untied == (duplicate if charged else 0)
+
+
+def test_an_unclassified_vulkan_device_is_shared_for_the_host_pool_too(backend):
+    """An unreadable type is neither discount-eligible nor a separate host-RAM pool."""
+    import inspect
+
+    compact = "".join(inspect.getsource(backend.load_model).split())
+    assert "_shared_gpu_ids|=_unclassified_gpu_ids" in compact
+    vulkan_branch = compact[
+        compact.index("ifis_vulkan_backend:_shared_gpu_ids=") : compact.index(
+            "else:_unclassified_gpu_ids="
+        )
+    ]
+    assert "_shared_gpu_ids|=_unclassified_gpu_ids" in vulkan_branch
+
+
+def test_a_shared_pool_is_not_credited_on_top_of_host_ram(backend, mib_embd_pair):
+    """Dedicated VRAM answers "fits"; the same device treated as shared reports a shortfall."""
+    from core.inference.llama_cpp import _HOST_RAM_HEADROOM_MIB
+
+    tied, _untied = mib_embd_pair
+    instance = object.__new__(backend)
+    instance._get_gguf_size_bytes = lambda _path: 20 * 1024**3
+    instance._cgroup_available_memory_mib = lambda: None
+    argv = ["llama-server", "-m", str(tied)]
+    rows = [(0, 24 * 1024)]
+    avail_mib = 8 * 1024 + _HOST_RAM_HEADROOM_MIB
+
+    assert (
+        instance._launch_host_shortfall_message(argv, rows, avail_mib = avail_mib) is None
+    ), "24 GiB of dedicated VRAM holds all but 8 GiB of it"
+    assert (
+        instance._launch_host_shortfall_message(argv, rows, avail_mib = avail_mib, shared_gpu_ids = [0])
+        is not None
+    ), "the same pool is host RAM, so the whole model has to fit in it"
+
+
+@pytest.mark.parametrize("architecture", ["dflash", "eagle3", "DFlash", "  Eagle3  "])
+def test_a_sidecar_that_inherits_the_target_output_is_charged_nothing(
+    backend, tmp_path: Path, architecture
+):
+    """dflash/eagle3/DSpark drafts without ``output.weight`` inherit the target's (no duplicate).
+
+    See dflash.cpp:775-780, eagle3.cpp:312-315; the arch match is case/whitespace tolerant.
+    """
+    sidecar = _write_gguf(
+        tmp_path / f"{architecture.strip().lower()}.gguf",
+        [
+            ("token_embd.weight", (8, 64)),
+            ("blk.0.attn_q.weight", (8, 8)),
+        ],
+        architecture = architecture,
+    )
+    assert backend._tied_output_bytes(str(sidecar)) == 0
+
+    # Drafter budget is now the file less its host-pinned embedding.
+    gguf = backend._get_gguf_size_bytes(str(sidecar))
+    host_pinned = backend._host_pinned_weight_bytes(str(sidecar))
+    assert host_pinned == 8 * 64 * 4
+    assert (
+        backend._separate_drafter_weight_vram_bytes(
+            backend, str(sidecar), host_pinned_bytes = host_pinned
+        )
+        == gguf - host_pinned
+    )
+
+
+def test_an_unlisted_sidecar_arch_is_still_charged(backend, tmp_path: Path):
+    """An unverified speculative arch keeps the tied charge (blocklist fails towards charging)."""
+    sidecar = _write_gguf(
+        tmp_path / "medusa.gguf",
+        [("token_embd.weight", (8, 64)), ("blk.0.attn_q.weight", (8, 8))],
+        architecture = "medusa",
+    )
+    assert backend._tied_output_bytes(str(sidecar)) == 8 * 64 * 4
+
+
+def test_a_lazily_read_table_leaves_the_host_floor_once(backend, tmp_path: Path):
+    """A --lazy-mode table over 4 GiB stays mmap'd, so the host floor must not charge it."""
+    from core.inference.llama_cpp import _HOST_RAM_HEADROOM_MIB
+
+    gib = 1024**3
+    instance = object.__new__(backend)
+    instance._get_gguf_size_bytes = lambda _path: 40 * gib
+    instance.probe_server_capabilities = lambda _binary: {}
+    instance._lazy_auto_resolves_off = lambda **_kw: False
+    instance._lazy_read_host_bytes = lambda *_a, **_kw: 27 * gib
+    argv = ["llama-server", "-m", str(tmp_path / "model.gguf")]
+    rows = [(0, 64 * 1024)]  # the 13 GiB left after the table fits in VRAM
+    # Floor = token_embd 1 GiB + per_layer_token_embd 27 GiB, as the launch passes it.
+    floor = 28 * gib
+    avail_mib = 1024 + _HOST_RAM_HEADROOM_MIB
+    assert (
+        instance._launch_host_shortfall_message(
+            argv, rows, avail_mib = avail_mib, host_only_bytes = floor
+        )
+        is None
+    )
+    instance._lazy_read_host_bytes = lambda *_a, **_kw: 0
+    assert (
+        instance._launch_host_shortfall_message(
+            argv, rows, avail_mib = avail_mib, host_only_bytes = floor
+        )
+        is not None
+    )
+
+
+def test_lazy_overlap_with_the_host_floor_is_matched_by_tensor_name(backend, tmp_path: Path):
+    """Lazy overlap is by tensor name, not min(lazy, floor), after an exact -ot move."""
+    from core.inference.llama_cpp import _HOST_RAM_HEADROOM_MIB
+
+    gib = 1024**3
+    items = (("token_embd.weight", 1 * gib), ("per_layer_token_embd.weight", 27 * gib))
+    instance = object.__new__(backend)
+    instance._get_gguf_size_bytes = lambda _path: 40 * gib
+    instance.probe_server_capabilities = lambda _binary: {}
+    instance._lazy_auto_resolves_off = lambda **_kw: False
+    instance._lazy_read_host_bytes = lambda *_a, **_kw: 27 * gib
+    instance._host_pinned_weight_items = lambda _path: items
+    instance._gguf_tensor_scan = lambda _path: ("gemma4", dict(items), 0)
+    model = str(tmp_path / "model.gguf")
+    moved = ["-ot", "per_layer_token_embd.weight=CUDA0"]
+    # The floor the launch passes: the moved table is gone, token_embd stays.
+    floor = instance._host_pinned_floor_bytes(model, moved, env = {})
+    assert floor == 1 * gib
+    argv = ["llama-server", "-m", model, *moved]
+    assert (
+        instance._launch_host_shortfall_message(
+            argv,
+            [(0, 64 * 1024)],
+            avail_mib = 512 + _HOST_RAM_HEADROOM_MIB,
+            host_only_bytes = floor,
+            env = {},
+        )
+        is not None
+    )
+
+    assert instance._lazy_read_in_host_floor(model, 27 * gib, moved, {}) == 0
+    assert instance._lazy_read_in_host_floor(model, 27 * gib, [], {}) == 27 * gib
+    cpu = ["-ot", "per_layer_token_embd.weight=CUDA0,exps=CPU"]
+    assert instance._lazy_read_in_host_floor(model, 27 * gib, cpu, {}) == 27 * gib
+
+
+def test_the_load_mode_fit_removes_a_lazy_table_once():
+    """A lazy host-pinned table leaves host_only_bytes only, not the device share too."""
+    import inspect
+
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+    assert (
+        "_fit_lazy_in_host_pinned=min(self._lazy_read_in_host_floor("
+        "model_path,_fit_lazy_bytes,extra_args,os.environ),"
+        "_host_pinned+_fit_extra_host_pinned,)"
+    ) in compact
+    assert "-_fit_lazy_in_host_pinned,)+_ckpt_host_bytes," in compact
+    assert "lazy_read_bytes=_fit_lazy_bytes-_fit_lazy_in_host_pinned," in compact
+
+    # 13 GiB device weights, 1 GiB pinned token_embd, 27 GiB lazy table, 4 GiB free VRAM.
+    gib = 1024**3
+    device, embd, table, vram = 13 * gib, 1 * gib, 27 * gib, 4 * gib
+    host_only = embd + table - min(table, embd + table)
+    footprint = device + embd + table - min(table, embd + table)  # model_size + host_only
+    footprint -= table - min(table, embd + table)  # lazy_read_bytes left for the footprint
+    spill = max(0, footprint - host_only - vram) + host_only
+    assert spill == (device - vram) + embd
+
+
+@pytest.mark.parametrize(
+    "extra_args, env, draft_model",
+    [
+        (["-ot", "=Vulkan0"], {}, False),
+        (["--override-tensor=,=CUDA0"], {}, False),
+        ([], {"LLAMA_ARG_OVERRIDE_TENSOR": "=CUDA0"}, False),
+        (["-otd", "=Vulkan0"], {}, True),
+    ],
+)
+def test_an_empty_override_pattern_matches_every_tensor(
+    backend, tied_gguf, extra_args, env, draft_model
+):
+    """arg.cpp splits at the first '=' and keeps an empty pattern, and std::regex_search
+    with an empty regex matches every tensor, token_embd.weight included."""
+    assert backend._override_moves_host_pinned(extra_args, env, draft_model = draft_model)
+    assert (
+        backend._host_pinned_vram_discount(
+            str(tied_gguf), extra_args, env = env, draft_model = draft_model
+        )
+        == 0
+    )

@@ -129,7 +129,8 @@ SITE_A = _one_anchor("effective_ctx = min(_AUTO_OFFLOAD_CTX, effective_ctx)")
 # The line the re-check awards residency on. Two subset loops assign it; the award
 # is the one after Site A.
 _AWARDS = _anchor_lines("gpu_indices = sorted(idx for idx, _ in subset)")
-assert len(_AWARDS) == 2 and max(_AWARDS) > SITE_A, (_AWARDS, SITE_A)
+# The LAST one (the fallback re-check) is needed; the count is deliberately not pinned.
+assert _AWARDS and max(_AWARDS) > SITE_A, (_AWARDS, SITE_A)
 SITE_A_AWARD = max(_AWARDS)
 # Site B: the file-size-only arm's relabel. Placement was already decided by
 # _select_gpus on the line above, so nothing downstream of this can move a device.
