@@ -15,6 +15,7 @@ from core.training.account_jobs import (
     require_job_owner,
     validate_job_paths,
 )
+from core.training.rl_format import SYSTEM_PROMPT as REASONING_SYSTEM_PROMPT
 import contextlib
 import json
 import os
@@ -135,6 +136,7 @@ from models.training import (
     DiffusionTrainingStartResponse,
     DiffusionTrainingStatusResponse,
     DiffusionTrainingStopRequest,
+    RlSamplesResponse,
     TRAINING_REQUEST_ID_PATTERN,
 )
 from models.responses import TrainingStopResponse, TrainingMetricsResponse
@@ -2085,6 +2087,25 @@ async def start_training(
             if not request.dataset_streaming and _hf_dataset_is_the_source(request):
                 await asyncio.to_thread(_refuse_unauthorized_cached_dataset, request, hf_token)
 
+        reward_specs: list[dict] = []
+        if request.objective != "sft" and _hw.DEVICE == _hw.DeviceType.MLX:
+            raise HTTPException(
+                status_code = 400,
+                detail = f"{request.objective.upper()} is not available on Apple Silicon (MLX) yet.",
+            )
+        if request.objective == "grpo":
+            from core.training.rewards import RewardError, RewardNotFoundError, get_reward
+
+            # Resolved here, under the caller's account, and stored with the run: later edits to a
+            # library reward do not change what this run says it trained with.
+            try:
+                for selection in request.grpo_rewards:
+                    reward_specs.append({**get_reward(selection.name), "weight": selection.weight})
+            except RewardNotFoundError as exc:
+                raise HTTPException(status_code = 404, detail = str(exc)) from exc
+            except RewardError as exc:
+                raise HTTPException(status_code = 400, detail = str(exc)) from exc
+
         device_backend = getattr(_hw.DEVICE, "value", "") or ""
         training_optimizer = normalize_training_optimizer_for_device(
             request.optim,
@@ -2155,7 +2176,24 @@ async def start_training(
             "use_rslora": request.use_rslora,
             "use_loftq": request.use_loftq,
             "use_dora": request.use_dora,
-            "train_on_completions": request.train_on_completions,
+            "train_on_completions": request.train_on_completions and request.objective == "sft",
+            "objective": request.objective,
+            "rl_settings": {
+                "beta": request.rl_beta,
+                "max_prompt_length": request.rl_max_prompt_length,
+                "num_generations": request.grpo_num_generations,
+                "max_completion_length": request.grpo_max_completion_length,
+                "temperature": request.grpo_temperature,
+                "variant": request.grpo_variant,
+                "enable_thinking": request.grpo_enable_thinking,
+                "system_prompt": (request.rl_system_prompt or "").strip()
+                or (REASONING_SYSTEM_PROMPT if request.grpo_reasoning_format else None),
+                "reasoning_format": request.grpo_reasoning_format,
+                "format_warmup_steps": request.grpo_format_warmup_steps,
+                "mask_truncated_completions": request.grpo_mask_truncated_completions,
+                "epsilon_high": request.grpo_epsilon_high,
+            },
+            "reward_specs": reward_specs,
             "finetune_vision_layers": request.finetune_vision_layers,
             "finetune_language_layers": request.finetune_language_layers,
             "finetune_attention_modules": request.finetune_attention_modules,
@@ -2685,6 +2723,7 @@ def _build_training_status(
             "grad_norm_steps": list(getattr(backend, "grad_norm_step_history", [])),
             "eval_loss": list(backend.eval_loss_history),
             "eval_steps": list(backend.eval_step_history),
+            "rl": list(getattr(backend, "rl_metric_history", [])),
         }
 
     return TrainingStatus(
@@ -2803,6 +2842,23 @@ async def get_training_metrics(
         )
 
 
+@router.get("/rl-samples", response_model = RlSamplesResponse)
+async def get_rl_samples(
+    after: int = 0,
+    expected_job_id: Optional[str] = None,
+    current_subject: str = Depends(get_current_subject),
+):
+    """GRPO sample answers newer than ``after`` (a ``seq``), for the Current Run tab."""
+    backend = get_training_backend()
+    if job_is_foreign(backend):
+        return RlSamplesResponse(job_id = "", samples = [])
+    job_id = getattr(backend, "current_job_id", "") or ""
+    if expected_job_id is not None and expected_job_id != job_id:
+        raise HTTPException(status_code = 409, detail = "Training job was superseded")
+    samples = [s for s in list(getattr(backend, "rl_samples", [])) if s["seq"] > after]
+    return RlSamplesResponse(job_id = job_id, samples = samples)
+
+
 # POST too: quick tunnels hold a streamed GET until it closes. The hidden GET keeps old clients.
 @router.post("/progress")
 @router.get("/progress", include_in_schema = False)
@@ -2874,6 +2930,7 @@ async def stream_training_progress(
             eval_loss = eval_loss_override
             if eval_loss is None and progress:
                 eval_loss = getattr(progress, "eval_loss", None)
+            rl_metrics = getattr(progress, "rl_metrics", None) if progress else None
 
             return TrainingProgress(
                 job_id = job_id,
@@ -2889,6 +2946,7 @@ async def stream_training_progress(
                 grad_norm = grad_norm,
                 num_tokens = num_tokens,
                 eval_loss = eval_loss,
+                rl_metrics = rl_metrics,
             )
 
         def format_sse(
