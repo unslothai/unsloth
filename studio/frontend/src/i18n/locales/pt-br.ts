@@ -61,6 +61,8 @@ export const ptBR = {
       never: "Nunca",
       scripts: "Executar scripts",
       scriptsDescription: "Escolha se os modelos podem executar scripts nas páginas. Cada script é mostrado a você antes de ser executado",
+      cursor: "Mostrar cursor",
+      cursorDescription: "Mostra um ponteiro onde os modelos clicam, digitam e arrastam na página",
       askEveryTime: "Perguntar toda vez",
       permissionsTitle: "Permissões do agente",
       permissionsDescription: "Escolha os padrões e adicione exceções para sites específicos. Campos de senha e de pagamento nunca são preenchidos, seja qual for a configuração.",
@@ -83,6 +85,9 @@ export const ptBR = {
     },
     agent: {
       working: "O Unsloth está navegando nesta aba",
+      waiting: "O Unsloth precisa da sua resposta no navegador para {chat}",
+      otherChat: "outro chat",
+      show: "Mostrar",
       stop: "Parar",
       allow: "Permitir",
       deny: "Negar",
@@ -256,7 +261,7 @@ export const ptBR = {
     annotationScreenshotsAlways: "Sempre incluir",
     annotationScreenshotsNever: "Nunca incluir",
     clearDataSetting: "Limpar dados de navegação",
-    clearDataSettingDescription: "Limpa o histórico de navegação, o histórico de downloads e as páginas em cache. As páginas não guardam cookies nem dados de sites.",
+    clearDataSettingDescription: "Limpa o histórico de navegação, o histórico de downloads e as páginas em cache. As páginas guardam cookies e dados de sites só até o Studio ser recarregado.",
     manage: "Gerenciar",
     fullView: {
       enter: "Visualização completa",
@@ -432,7 +437,7 @@ export const ptBR = {
     },
     clearData: {
       title: "Limpar dados de navegação?",
-      description: "Isso limpa seu histórico de navegação, o histórico de downloads e as páginas em cache. Os arquivos baixados continuam no seu computador.",
+      description: "Isso limpa o histórico de navegação, o histórico de downloads, as páginas em cache e os cookies e dados de sites, o que encerra sua sessão nos sites. Os arquivos baixados continuam no seu computador.",
       cancel: "Cancelar",
       confirm: "Limpar dados",
       done: "Dados de navegação limpos",
@@ -448,6 +453,7 @@ export const ptBR = {
       resubmit: "Esta página veio de um formulário. Carregá-la de novo reenvia o formulário, o que pode repetir o que ele fez.",
       upload: "O envio de arquivos não funciona nesta visualização. Abra a página no navegador do sistema para enviá-lo.",
       scriptNavigation: "Esta página tentou ir para outro endereço por script, o que esta visualização não consegue acompanhar. Abra-a no navegador do sistema.",
+      needsBrowser: "Esta página tentou usar um recurso do navegador que esta visualização bloqueia, então partes dela podem não funcionar. Abra-a no navegador do sistema.",
     },
     native: {
       externalPrompt: "{host} quer abrir {url}",
@@ -2606,6 +2612,9 @@ export const ptBR = {
         showMemoryBar: "Mostrar barra de uso de VRAM",
         showMemoryBarDescription:
           "Mostra abaixo da linha de cada modelo baixado o uso estimado de VRAM: pesos, cache KV no comprimento de contexto com que será carregado e qualquer reserva de rascunho especulativo.",
+        fitOnDeviceOnly: "Mostrar apenas modelos que cabem",
+        fitOnDeviceOnlyDescription:
+          "Oculta no seletor de modelos e no Hub os modelos grandes demais para a memória da GPU e a RAM deste dispositivo. Os modelos baixados continuam visíveis.",
       },
       menu: {
         title: "Menu do chat",
