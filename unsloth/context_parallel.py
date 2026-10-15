@@ -139,6 +139,7 @@ _PAD_VALUES = {"labels": -100, "shift_labels": -100, "attention_mask": 0, "input
 
 
 _INSTALLED_MESH = []
+_INSTALLED_PARALLELISM_CONFIG = []
 
 
 def get_cp_manager() -> Optional["ContextParallelManager"]:
@@ -166,16 +167,27 @@ class ContextParallelManager:
     backend = "ring"
     rotate_method = "allgather"
 
-    def __init__(self, size: int, backend: str = "ring", rotate_method: str = "allgather"):
+    def __init__(
+        self,
+        size: int,
+        backend: str = "ring",
+        rotate_method: str = "allgather",
+        fsdp2: bool = False,
+    ):
         self.size = size
         self.backend = backend
         self.rotate_method = rotate_method
+        self.fsdp2 = fsdp2
         world_size = dist.get_world_size()
+        # FSDP2 shards parameters over dp_shard x cp flattened (torchtitan, accelerate's dp_shard_cp):
+        # CP peers hold different tokens, so their gradients must be reduced like data parallel ones.
         self.device_mesh = DeviceMesh(
             DEVICE_TYPE_TORCH,
             torch.arange(world_size).reshape(world_size // size, size),
-            mesh_dim_names = ("dp_replicate", "cp"),
+            mesh_dim_names = ("dp_shard" if fsdp2 else "dp_replicate", "cp"),
         )
+        if fsdp2:
+            self.device_mesh[("dp_shard", "cp")]._flatten("dp_shard_cp")
         self.mesh = self.device_mesh["cp"]
 
     @property
@@ -350,6 +362,56 @@ def _cp_gather_for_metrics(accelerator, size: int):
     return gather
 
 
+def _is_fsdp2(accelerator, distributed_type: str) -> bool:
+    plugin = getattr(getattr(accelerator, "state", None), "fsdp_plugin", None)
+    return distributed_type == "FSDP" and getattr(plugin, "fsdp_version", 1) == 2
+
+
+def _check_fsdp2_parallelism_config(accelerator) -> None:
+    pc = getattr(getattr(accelerator, "state", None), "parallelism_config", None)
+    if pc is None:
+        return
+    others = {
+        name: getattr(pc, f"{name}_size", 1) or 1
+        for name in ("dp_replicate", "tp", "sp")
+    }
+    others = {name: n for name, n in others.items() if n > 1}
+    if others:
+        raise NotImplementedError(
+            "Unsloth: context parallelism with FSDP2 supports a (dp_shard, cp) mesh only, "
+            f"not parallelism_config {others}."
+        )
+
+
+def _install_fsdp2_parallelism_config(state, manager) -> None:
+    # accelerate's fsdp2_prepare_model shards over mesh[parallelism_config.fsdp_dim_names], i.e.
+    # "dp_shard_cp" (accelerate >= 1.10). cp_size stays 1 here: cp_size > 1 would make accelerate attach
+    # its own ring hooks and transformers divide num_items_in_batch by cp, both done by Unsloth already.
+    from accelerate.parallelism_config import ParallelismConfig
+
+    current = getattr(state, "parallelism_config", None)
+    if _INSTALLED_PARALLELISM_CONFIG and current is _INSTALLED_PARALLELISM_CONFIG[1]:
+        previous = _INSTALLED_PARALLELISM_CONFIG[0]
+    else:
+        previous = current
+    pc = ParallelismConfig(
+        dp_replicate_size = 1,
+        dp_shard_size = manager.device_mesh["dp_shard_cp"].size(),
+        tp_size = 1,
+        cp_size = 1,
+    )
+    state.parallelism_config = pc
+    _INSTALLED_PARALLELISM_CONFIG[:] = [previous, pc]
+
+
+def _restore_parallelism_config(state) -> None:
+    if _INSTALLED_PARALLELISM_CONFIG and (
+        getattr(state, "parallelism_config", None) is _INSTALLED_PARALLELISM_CONFIG[1]
+    ):
+        state.parallelism_config = _INSTALLED_PARALLELISM_CONFIG[0]
+        _INSTALLED_PARALLELISM_CONFIG.clear()
+
+
 def patch_sft_trainer() -> None:
     import trl
 
@@ -383,11 +445,16 @@ def patch_sft_trainer() -> None:
         if manager is None:
             if _INSTALLED_MESH and getattr(state, "device_mesh", None) is _INSTALLED_MESH[0]:
                 state.device_mesh = None
+            _restore_parallelism_config(state)
             return
         if accelerator is None:
             return
         accelerator.state.device_mesh = manager.device_mesh
         _INSTALLED_MESH[:] = [manager.device_mesh]
+        if getattr(manager, "fsdp2", False):
+            _install_fsdp2_parallelism_config(accelerator.state, manager)
+        else:
+            _restore_parallelism_config(accelerator.state)
         # PEFT makes the Trainer ask DDP for find_unused_parameters, which breaks reentrant checkpointing.
         if getattr(self.args, "ddp_find_unused_parameters", None) in (None, False):
             self.args.ddp_find_unused_parameters = False
@@ -488,10 +555,14 @@ def patch_sft_trainer() -> None:
             )
         accelerator = getattr(self, "accelerator", None)
         distributed_type = getattr(getattr(accelerator, "distributed_type", None), "name", "NO")
-        if distributed_type != "NO" and not distributed_type.startswith("MULTI_"):
+        fsdp2 = _is_fsdp2(accelerator, distributed_type)
+        if distributed_type != "NO" and not distributed_type.startswith("MULTI_") and not fsdp2:
             raise NotImplementedError(
-                f"Unsloth: context parallelism supports DDP only, not {distributed_type}."
+                f"Unsloth: context parallelism supports DDP and FSDP2 only, not {distributed_type}"
+                + (" version 1." if distributed_type == "FSDP" else ".")
             )
+        if fsdp2:
+            _check_fsdp2_parallelism_config(accelerator)
         if getattr(accelerator, "dispatch_batches", None):
             raise NotImplementedError(
                 "Unsloth: context parallelism does not support dispatch_batches."
@@ -499,7 +570,7 @@ def patch_sft_trainer() -> None:
         _refuse_iterable_datasets(
             getattr(self, "train_dataset", None), getattr(self, "eval_dataset", None)
         )
-        manager = ContextParallelManager(size, backend, rotate_method)
+        manager = ContextParallelManager(size, backend, rotate_method, fsdp2 = fsdp2)
         self._context_parallel_manager = manager
         manager.attach_attention_hooks(self.model)
         _install_accelerator_state(self)
@@ -509,7 +580,12 @@ def patch_sft_trainer() -> None:
         _scope_flash_attention_impl(self.model, self)
         print(
             f"Unsloth: Context parallelism enabled with size = {size} ({backend}"
-            + (f", rotate_method = {rotate_method})." if backend == "ring" else ").")
+            + (f", rotate_method = {rotate_method})" if backend == "ring" else ")")
+            + (
+                f", FSDP2 sharding over dp_shard = {world_size // size} x cp = {size}."
+                if fsdp2
+                else "."
+            )
         )
 
     @functools.wraps(original_prediction_step)
