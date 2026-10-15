@@ -161,12 +161,26 @@ def _worker(rank, port, case, out_dir):
             from accelerate.utils.fsdp_utils import fsdp2_apply_ac
 
             model = fsdp2_apply_ac(accelerator, model)
-        model = accelerator_module.fsdp2_prepare_model(accelerator, model)
+        if case == "causal_unit":
+            # What accelerate <= 1.13 builds for transformer_cls_names_to_wrap = ["LlamaForCausalLM"]
+            # (1.14+ refuses that wrap).
+            from torch.distributed.fsdp import fully_shard
+
+            fully_shard(model.base_model.model, mesh = mesh)
+            fully_shard(model, mesh = mesh)
+            fsdp2.after_fsdp2_wrap(accelerator, model)
+        else:
+            model = accelerator_module.fsdp2_prepare_model(accelerator, model)
         result["fused_kept"] = int(getattr(model, "_unsloth_fsdp2_fused_lora", -1))
         result["blocks"] = int(getattr(model, "_unsloth_fsdp2_blocks", -1))
         result["direct_read_units"] = int(getattr(model, "_unsloth_fsdp2_direct_read_units", -1))
         layers = model.base_model.model.model.layers
         result["spy_left"] = sum("forward" in layer.mlp.__dict__ for layer in layers)
+        if case == "causal_unit":
+            if rank == 0:
+                with open(os.path.join(out_dir, f"{case}.json"), "w") as f:
+                    json.dump(result, f)
+            return
 
         torch.manual_seed(1)
         ids = torch.randint(0, 96, (4, 12))
@@ -246,6 +260,14 @@ def test_a_finer_wrap_declines_the_fused_layers(tmp_path):
     assert r["spy_calls"] == 0
     assert r["loss_diff"] < 1e-5
     assert r["grad_rel_err"] < 1e-4
+
+
+def test_a_unit_above_the_blocks_declines_the_fused_layers(tmp_path):
+    """peft's LoraModel calls the CausalLM's .forward directly, so a CausalLM unit's gather can be skipped."""
+    r = _run("causal_unit", tmp_path)
+    assert r["blocks"] == 0
+    assert r["fused_kept"] == 0
+    assert r["spy_left"] == 0
 
 
 def test_the_fused_lora_opt_out_is_honoured_after_wrapping(tmp_path):

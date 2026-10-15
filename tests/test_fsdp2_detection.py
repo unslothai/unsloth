@@ -116,6 +116,39 @@ def test_reshard_after_forward_switch(monkeypatch, launch, value, expected):
     assert os.environ["FSDP_RESHARD_AFTER_FORWARD"] == expected
 
 
+def _fake_accelerate(monkeypatch, launch, tmp_path, source):
+    (tmp_path / "utils").mkdir()
+    (tmp_path / "utils" / "fsdp_utils.py").write_text(source)
+    spec = importlib.util.spec_from_file_location("accelerate", tmp_path / "__init__.py")
+    spec.submodule_search_locations = [str(tmp_path)]
+    monkeypatch.setattr(launch.importlib.util, "find_spec", lambda name: spec)
+
+
+@pytest.mark.parametrize(
+    "source,ok",
+    [
+        ("def fsdp_prepare_model(): pass\n", False),  # accelerate < 1.6: no FSDP2
+        ("def fsdp2_prepare_model(): pass\n", False),  # 1.6: no FSDP2 state dict options
+        ("def fsdp2_prepare_model(): pass\ndef _prepare_sd_options(): pass\n", True),
+    ],
+)
+def test_unsloth_fsdp2_needs_an_accelerate_with_fsdp2(monkeypatch, launch, tmp_path, source, ok):
+    _fake_accelerate(monkeypatch, launch, tmp_path, source)
+    monkeypatch.setenv("UNSLOTH_FSDP2", "1")
+    monkeypatch.setenv("WORLD_SIZE", "2")
+    if ok:
+        assert launch.apply_unsloth_fsdp2_launch_env() is True
+    else:
+        with pytest.raises(RuntimeError, match = "accelerate >= 1.7"):
+            launch.apply_unsloth_fsdp2_launch_env()
+        assert "FSDP_VERSION" not in os.environ
+
+
+def test_the_installed_accelerate_is_read_without_importing_it(launch):
+    pytest.importorskip("accelerate")
+    assert launch._accelerate_fsdp2_support() is True
+
+
 def test_conflicting_launches_are_refused(monkeypatch, launch):
     monkeypatch.setenv("UNSLOTH_FSDP2", "1")
     monkeypatch.setenv("WORLD_SIZE", "2")

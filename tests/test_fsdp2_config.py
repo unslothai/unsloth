@@ -26,15 +26,19 @@ def _clean_env(monkeypatch):
         monkeypatch.delenv(key, raising = False)
 
 
-def _accelerator(policy, mixed_precision = "fp16", version = 2, auto_wrap_policy = object(), auto = True):
+def _accelerator(
+    policy, mixed_precision = "fp16", version = 2, auto_wrap_policy = object(), auto = True, seen = True
+):
     plugin = types.SimpleNamespace(
         fsdp_version = version,
         mixed_precision_policy = policy,
         auto_wrap_policy = auto_wrap_policy,
         reshard_after_forward = True,
     )
-    if auto:
+    if auto and seen:
         setattr(plugin, fsdp2._AUTO_POLICY, policy)
+    if seen:
+        setattr(plugin, fsdp2._POLICY_SEEN, True)
     return types.SimpleNamespace(
         state = types.SimpleNamespace(fsdp_plugin = plugin), mixed_precision = mixed_precision
     )
@@ -64,6 +68,20 @@ def test_a_policy_the_user_wrote_is_left_alone():
     assert fsdp2.fill_fsdp2_mixed_precision(acc) is user
 
 
+def test_an_accelerator_built_before_unsloth_import_is_not_guessed(monkeypatch):
+    """Without provenance, an fp16 policy shaped like accelerate's automatic one is refused, not rewritten."""
+    shaped = dict(param_dtype = torch.float16, reduce_dtype = torch.float16, output_dtype = torch.float16)
+    with pytest.raises(RuntimeError, match = "before `import unsloth`"):
+        fsdp2.fill_fsdp2_mixed_precision(_accelerator(MixedPrecisionPolicy(**shaped), "fp16", seen = False))
+    bf16 = MixedPrecisionPolicy(param_dtype = torch.bfloat16, reduce_dtype = torch.bfloat16, output_dtype = torch.bfloat16)
+    assert fsdp2.fill_fsdp2_mixed_precision(_accelerator(bf16, "bf16", seen = False)) is bf16
+    other = MixedPrecisionPolicy(param_dtype = None, reduce_dtype = torch.float32)
+    assert fsdp2.fill_fsdp2_mixed_precision(_accelerator(other, "fp16", seen = False)) is other
+    monkeypatch.setenv("UNSLOTH_FSDP2_ACCELERATE_DEFAULTS", "1")
+    kept = MixedPrecisionPolicy(**shaped)
+    assert fsdp2.fill_fsdp2_mixed_precision(_accelerator(kept, "fp16", seen = False)) is kept
+
+
 def test_provenance_tags_only_the_policy_accelerate_builds():
     from accelerate.utils import FullyShardedDataParallelPlugin
     assert fsdp2.install_fsdp2_policy_provenance()
@@ -75,6 +93,7 @@ def test_provenance_tags_only_the_policy_accelerate_builds():
     FullyShardedDataParallelPlugin.set_mixed_precision(plugin, "fp16")
     assert plugin.mixed_precision_policy is user
     assert not hasattr(plugin, fsdp2._AUTO_POLICY)
+    assert getattr(plugin, fsdp2._POLICY_SEEN) is True
 
 
 def test_no_mixed_precision_and_the_opt_out(monkeypatch):
@@ -163,6 +182,19 @@ def test_bf16_full_finetuning_gets_one_trainable_dtype_per_unit():
     assert policy.param_dtype == torch.bfloat16 and policy.reduce_dtype == torch.float32
 
 
+@pytest.mark.parametrize("explicit", [False, True])
+def test_fp16_full_finetuning_gets_one_trainable_dtype_per_unit(explicit):
+    model = torch.nn.Sequential(torch.nn.Linear(4, 4).to(torch.float16), torch.nn.LayerNorm(4))
+    user = MixedPrecisionPolicy(param_dtype = torch.float16, reduce_dtype = torch.float32) if explicit else None
+    acc = _accelerator(user, "no", auto = False)
+    assert fsdp2.unify_trainable_dtypes(acc, model) is True
+    assert {p.dtype for p in model.parameters()} == {torch.float32}
+    policy = acc.state.fsdp_plugin.mixed_precision_policy
+    if explicit:
+        assert policy is user
+    assert policy.param_dtype == torch.float16 and policy.reduce_dtype == torch.float32
+
+
 def test_uniform_or_autocast_runs_are_not_upcast():
     model = torch.nn.Sequential(torch.nn.Linear(4, 4).to(torch.bfloat16))
     assert fsdp2.unify_trainable_dtypes(_accelerator(None, "no"), model) is False
@@ -199,6 +231,12 @@ def test_install_fsdp2_hooks_patches_accelerate_without_a_trainer():
     assert getattr(accelerator_module.fsdp2_prepare_model, fsdp2._PATCHED, False)
     assert getattr(FullyShardedDataParallelPlugin.set_mixed_precision, fsdp2._PATCHED, False)
     assert hasattr(Accelerator, "no_sync")
+    import inspect
+
+    import accelerate.utils.fsdp_utils as fsdp_utils
+
+    get = fsdp_utils._get_model_state_dict
+    assert getattr(get, fsdp2._PATCHED, False) or "full_state_dict" in inspect.getsource(get)
 
 
 def test_an_explicit_policy_still_gets_float32_master_weights():
