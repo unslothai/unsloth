@@ -544,9 +544,18 @@ def run_drafter_phase(
             p.requires_grad_(False)
         data_source = "dataset"
         if cfg.get("data_source") == "regenerate":
+            header = _assistant_header(tokenizer)
+            found = sum(bool(_prompt_end(ex["input_ids"], ex["labels"], header)) for ex in examples)
+            if not found and examples:
+                logger.warning(
+                    "Drafter regenerate found no prompts: header=%s first row ids=%s labels=%s",
+                    header,
+                    examples[0]["input_ids"][:48],
+                    examples[0]["labels"][:48],
+                )
             send_status(
                 event_queue,
-                f"Training drafter ({_LABEL[strategy]}): generating the model's answers",
+                f"Training drafter ({_LABEL[strategy]}): generating the model's answers to {found} prompts",
             )
             regenerated = regenerate_examples(model, tokenizer, examples, should_stop = should_stop)
             if regenerated:
