@@ -115,7 +115,7 @@ def scan_file(path: Path, relative: str) -> list[dict]:
         if path.suffix == ".ipynb":
             # A notebook may not parse as one module (cells mid-edit, magics); skip it.
             return []
-        # An unparseable .py has not been checked; reporting it clean would be a bypass.
+        # An unparsable .py has not been checked; reporting it clean would be a bypass.
         raise SystemExit(f"{relative}: could not be parsed ({error.__class__.__name__})")
     found = []
     for node in ast.walk(tree):
