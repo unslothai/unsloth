@@ -1631,9 +1631,9 @@ def unified_memory_shortfall_message(plan: Any, *, family: Optional[str] = None)
     still loads, degrading to group / whole-module CPU offload and streaming from host RAM. On Apple
     Silicon (and integrated CUDA) the CPU and GPU share one pool, so offload moves bytes within that
     pool and frees nothing: ``plan_diffusion_memory`` correctly returns ``none`` and the load then
-    allocates past physical memory. There is no torch OOM to catch, because ``_mps_or_cpu_target``
-    sets PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.0 to disable the MPS allocator's hard limit, so the
-    failure is the OS killing the process with no Python exception.
+    allocates past physical memory. ``apply_mps_memory_cap`` bounds MPS allocations just below RAM,
+    but that only turns the overrun into a late OOM after minutes of loading (and integrated CUDA has
+    no such cap), so refusing up front is still the better failure.
 
     Weights only (``model_dense_mib`` plus the flat base overhead): the per-call runtime headroom is
     a coarse activation / VAE-decode estimate and the mps path already turns on VAE tiling and
