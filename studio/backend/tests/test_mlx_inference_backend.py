@@ -2520,6 +2520,36 @@ def test_mlx_vlm_completion_prompt_runs_untemplated_from_its_ids(monkeypatch):
     assert seen["grammar_constraint"].built == ("G", backend._tokenizer)
     assert seen["cache"] == (None, None, "")
 
+    # With sampled ids the reply is decoded from them: the runtime's text trims the first
+    # piece's leading space and keeps control tokens, which a raw continuation must not.
+    pieces = {7: " Paris", 8: "<|im_start|>", 9: "!"}
+    backend._tokenizer = SimpleNamespace(
+        decode = lambda ids, skip_special_tokens, clean_up_tokenization_spaces: "".join(
+            pieces[i] for i in ids if not (skip_special_tokens and i == 8)
+        )
+    )
+    responses = [
+        SimpleNamespace(text = text, token = token, generation_tokens = n, prompt_tokens = 2)
+        for n, (token, text) in enumerate([(7, "Paris"), (8, "<|im_start|>"), (9, "!")], 1)
+    ]
+    mlx_vlm.stream_generate = lambda *a, **kw: iter(responses)
+    assert list(backend.generate_completion([5, 6], max_new_tokens = 3))[-1] == " Paris!"
+
+
+def test_a_raw_vision_prompt_decodes_on_its_own_even_when_zoo_could_batch_it(monkeypatch):
+    from core.inference import mlx_inference
+
+    engine = types.ModuleType("unsloth_zoo.mlx.generate")
+    engine.VLM_TOKEN_ID_PROMPTS = True
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.generate", engine)
+    monkeypatch.setattr(sys.modules["unsloth_zoo.mlx"], "generate", engine, raising = False)
+    monkeypatch.setattr(mlx_inference, "_batched_vision_engine_gap", lambda _e: None)
+    monkeypatch.setattr(mlx_inference, "_row_processor_gap", lambda _e, _r: None)
+    backend = mlx_inference.MLXInferenceBackend()
+    backend._model = SimpleNamespace(_is_vlm_model = True)
+    assert backend._vlm_batch_unavailable_reason([{}, {}]) is None
+    assert backend._vlm_batch_unavailable_reason([{"prompt_ids": [1]}, {"prompt_ids": [2]}])
+
 
 def test_mlx_batch_rows_plan_a_raw_completion_prompt_untemplated(monkeypatch):
     from core.inference import mlx_inference

@@ -82,3 +82,32 @@ def test_raw_prompt_grammar_constrains_the_completion(backend):
 def test_raw_prompt_rejects_out_of_vocabulary_ids(backend):
     with pytest.raises(ValueError):
         backend.resolve_completion_prompt([10**9])
+
+
+def test_raw_vision_prompt_matches_the_decoded_sampled_ids():
+    pytest.importorskip("mlx_vlm")
+    pytest.importorskip("unsloth_zoo.mlx.loader")
+    import mlx.core as mx
+    from mlx_vlm import stream_generate
+
+    from core.inference.mlx_inference import MLXInferenceBackend
+    from utils.models.model_config import ModelConfig
+
+    backend = MLXInferenceBackend()
+    assert backend.load_model(
+        ModelConfig.from_identifier("mlx-community/Qwen3.5-0.8B-4bit"), max_seq_length = 512
+    )
+    if not backend._is_vlm:
+        pytest.skip("loaded as a text model")
+    ids = backend.resolve_completion_prompt(_PROMPT)["ids"]
+    tokens = [
+        r.token
+        for r in stream_generate(
+            backend._model, backend._processor, "", None, input_ids = mx.array([ids]), max_tokens = 8
+        )
+    ]
+    # Leading space included: the runtime's own text trims it, a raw continuation keeps it.
+    direct = backend._tokenizer.decode(
+        tokens, skip_special_tokens = True, clean_up_tokenization_spaces = False
+    )
+    assert direct.strip() and _greedy(backend, ids) == direct

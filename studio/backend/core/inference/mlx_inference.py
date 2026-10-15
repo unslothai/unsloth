@@ -6632,11 +6632,38 @@ class MLXInferenceBackend:
                             )
                         )
                     ) as responses:
+                        raw_ids = [] if prompt_ids is not None else None
                         for response in responses:
                             final_response = response
-                            if vlm_streamed_text is not None:
+                            raw_id = (
+                                getattr(response, "token", None) if raw_ids is not None else None
+                            )
+                            filled = getattr(response, "generation_tokens", None)
+                            if raw_id is not None and (
+                                filled is None or int(filled) == len(raw_ids) + 1
+                            ):
+                                # The runtime's streaming detokenizer trims the first piece's leading
+                                # space, which a raw continuation keeps: decode the ids, as _generate_text.
+                                raw_ids.append(int(raw_id))
+                                decoded = self._tokenizer.decode(
+                                    raw_ids,
+                                    skip_special_tokens = True,
+                                    clean_up_tokenization_spaces = False,
+                                ).rstrip("\ufffd")
+                                token_text = (
+                                    decoded[len(sampled) :] if decoded.startswith(sampled) else ""
+                                )
+                            elif (
+                                raw_ids is not None
+                                and filled is not None
+                                and int(filled) <= len(raw_ids)
+                            ):
+                                token_text = ""
+                            elif vlm_streamed_text is not None:
                                 token_text = vlm_streamed_text.feed(response)
                             else:
+                                # A block naming several ids (a denoised step): the runtime's text stands.
+                                raw_ids = None
                                 token_text = (
                                     response.text if hasattr(response, "text") else str(response)
                                 )
@@ -6826,10 +6853,10 @@ class MLXInferenceBackend:
         gap = _row_processor_gap(engine, requests)
         if gap is not None:
             return gap
-        if not getattr(engine, "VLM_TOKEN_ID_PROMPTS", False) and any(
-            request.get("prompt_ids") is not None for request in requests
-        ):
-            return "the installed unsloth-zoo cannot batch a raw prompt on a vision model"
+        if any(request.get("prompt_ids") is not None for request in requests):
+            # The batch's streaming detokenizer keeps control tokens and trims the first piece's
+            # leading space; the single path decodes a raw reply from its ids instead.
+            return "a raw prompt on a vision model decodes on its own"
         if not getattr(self._model, "_is_vlm_model", False):
             return "this model was not loaded as a vision model"
         return None
