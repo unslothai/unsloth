@@ -1359,6 +1359,38 @@ class TestInputEmbeddingsLeftInTheFileMapping:
         if not shared:
             assert tied < untied
 
+    @pytest.mark.parametrize("load_args, shared", [([], True), (["--no-mmap"], False)])
+    def test_a_mapped_tied_drafter_shares_its_files_pages(
+        self, tmp_path, monkeypatch, load_args, shared
+    ):
+        """The separate drafter's tied output is the same mapped page story as the target's."""
+        import utils.hardware as hardware
+
+        monkeypatch.setattr(hardware, "is_apple_silicon", lambda: True)
+        draft = tmp_path / "draft-tied.gguf"
+        draft.write_bytes(b"x")
+        extra_args = ["--spec-type", "draft-simple", "--model-draft", str(draft), *load_args]
+
+        def published(tied_bytes):
+            monkeypatch.setattr(
+                LlamaCppBackend,
+                "_tied_output_bytes",
+                staticmethod(lambda path: tied_bytes if "draft" in str(path) else 0),
+            )
+            return self._published(
+                tmp_path,
+                monkeypatch,
+                n_ctx = 0,
+                measured = None,
+                extra_args = extra_args,
+                budget_bytes = 40 * _GIB,
+            )[0]
+
+        untied = published(0)
+        tied = published(2 * _GIB)
+        assert untied > _FIT_MIN_CTX
+        assert (tied == untied) is shared
+
     def test_a_placement_it_did_not_measure_keeps_the_fitter(self, tmp_path, monkeypatch):
         _, _, cmd = self._launched(
             tmp_path, monkeypatch, n_ctx = 32768, extra_args = ["--load-mode", "none"]

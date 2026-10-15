@@ -27706,6 +27706,24 @@ class LlamaCppBackend:
                                 extra_args = extra_args,
                                 env = os.environ,
                             )
+                            # Mapped Metal: the drafter's tied output shares its file pages too.
+                            if is_apple_silicon() and self._metal_load_is_mapped(
+                                extra_args,
+                                requested_load_mode = load_mode,
+                                supports_load_mode = bool(server_caps.get("supports_load_mode")),
+                                settings = _mem_settings,
+                                allow_mlock = True,
+                            ):
+                                _draft_tied_shared = self._tied_output_vram_bytes(
+                                    _mtp_draft_for_budget,
+                                    extra_args,
+                                    env = os.environ,
+                                    draft_model = True,
+                                )
+                                _mtp_draft_weights = max(0, _mtp_draft_weights - _draft_tied_shared)
+                                _mtp_draft_weights_candidate = max(
+                                    0, _mtp_draft_weights_candidate - _draft_tied_shared
+                                )
                         except Exception:
                             _draft_host_pinned = 0
                             _draft_host_pinned_floor = 0
