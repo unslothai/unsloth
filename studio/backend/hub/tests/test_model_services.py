@@ -4537,6 +4537,26 @@ def test_hf_cache_scan_flags_a_companion_only_pipeline(
         assert all(row.partial for row in rows)
 
 
+def test_unet_index_staged_by_the_config_prefetch_is_not_weight_evidence(tmp_path):
+    """A whole-pipeline single file's config prefetch stages unet/*.index.json beside the configs; only a
+    transformer/ index proves a user-started denoiser download."""
+    snapshot = tmp_path / "snap"
+    (snapshot / "unet").mkdir(parents = True)
+    (snapshot / "unet" / "config.json").write_text("{}", encoding = "utf-8")
+    (snapshot / "unet" / "diffusion_pytorch_model.safetensors.index.json").write_text(
+        "{}", encoding = "utf-8"
+    )
+    assert inventory_scan.snapshot_denoiser_has_weights(snapshot) is False
+    (snapshot / "unet" / "diffusion_pytorch_model-00001-of-00002.safetensors").write_bytes(b"w")
+    assert inventory_scan.snapshot_denoiser_has_weights(snapshot) is True
+    other = tmp_path / "other"
+    (other / "transformer").mkdir(parents = True)
+    (other / "transformer" / "diffusion_pytorch_model.safetensors.index.json").write_text(
+        "{}", encoding = "utf-8"
+    )
+    assert inventory_scan.snapshot_denoiser_has_weights(other) is True
+
+
 def test_hf_cache_scan_uses_gguf_partial_row_for_variant_state(monkeypatch, tmp_path):
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
     cache_dir = tmp_path / "hub"
