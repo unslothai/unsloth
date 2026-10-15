@@ -8,7 +8,8 @@ scale. On sm_89, PyTorch routes that row-wise form to a CUTLASS 2.x stream-K ker
 Measured on an L4 with torch 2.14.1 at the FLUX.2-klein / Z-Image / Qwen-Image-2.1 1024 px linear shapes:
 
 * precise accumulate (``use_fast_accum=False``): row-wise 29-32 TFLOP/s, per-tensor 102-134 TFLOP/s (3.5-4.5x).
-  End to end (compiled, 1024 px): klein-4B 1.074 -> 0.515 s/step, Z-Image-Turbo 1.721 -> 0.853 s/step.
+  End to end (compiled, 1024 px, L4): klein-4B 1.034 -> 0.480 s/step, Z-Image-Turbo 1.708 -> 0.772 s/step, i.e.
+  precise accumulate costs +3-4% over fast accumulate instead of 2.2x.
 * fast accumulate (Studio's default): row-wise 85-108, per-tensor 91-127 TFLOP/s, and end to end no measurable
   difference (klein 0.501 vs 0.499 s/step, Z-Image 0.799 vs 0.795, inside the A/A spread). Fast-accumulate calls are
   therefore left on torchao's kernel and stay bit-identical.
@@ -34,7 +35,9 @@ from typing import Any, Optional
 
 UNIT_SCALE_ENV = "UNSLOTH_DIFFUSION_FP8_UNIT_SCALE"
 MIN_ROWS_ENV = "UNSLOTH_DIFFUSION_FP8_UNIT_SCALE_MIN_ROWS"
-_DEFAULT_MIN_ROWS = 1
+# Precise row-wise loses from M = 256 up at every measured shape (L4: 0.136-0.330 ms vs ~0.16 ms at 256, 2.5-4x
+# from 512); below that it is a few tens of microseconds either way, so short GEMMs keep torchao's kernel.
+_DEFAULT_MIN_ROWS = 256
 _ADA_CAPS = ((8, 9),)
 
 # Calls taken by the unit-scale form (eager: per call; compiled: replayed with the graph) / by the fallback.
