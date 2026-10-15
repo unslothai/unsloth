@@ -21,6 +21,7 @@ from __future__ import annotations
 import functools
 import gc
 import os
+import time
 import weakref
 from typing import Any, Callable, Optional
 
@@ -410,7 +411,10 @@ def install(vae: Any, logger: Any = None, pipe: Any = None) -> bool:
             for name, tiled, offload_vae in steps:
                 _release_cache(z, vae)
                 if name == "freed":
-                    if not session.free_others(_pipe_of(vae)):
+                    t0 = time.perf_counter()
+                    freed = session.free_others(_pipe_of(vae))
+                    stats["free_s"] = round(time.perf_counter() - t0, 3)
+                    if not freed:
                         continue  # nothing was freed: the same decode would fail the same way
                 elif offload_vae and not session.offload_vae():
                     continue
@@ -444,7 +448,9 @@ def install(vae: Any, logger: Any = None, pipe: Any = None) -> bool:
         finally:
             if outer is None:
                 vae.__dict__.pop(_SESSION_ATTR, None)
+                t0 = time.perf_counter()
                 session.restore()
+                stats["restore_s"] = round(time.perf_counter() - t0, 3)
                 _empty_cache(_device_of(z))
 
     _decode._unsloth_vae_oom_retry = True
