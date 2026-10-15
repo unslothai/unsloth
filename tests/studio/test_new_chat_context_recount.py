@@ -39,6 +39,7 @@ BOUND_NAMES = {
     "isLoading",
     "mainThreadId",
     "runActive",
+    "ownRunActive",
     "modelLoading",
     "newThreadSwitchStateRef",
     "nonce",
@@ -423,6 +424,9 @@ export function renderThreadContextUsageRecount(props: any = {}): void {
   const loadedContextLength = state.loadedContextLength;
   const modelLoading = state.modelLoading;
   const runActive = Object.values(state.runningByThreadId ?? {}).some(Boolean);
+  const ownRunActive = Boolean(
+    state.activeThreadId && state.runningByThreadId?.[state.activeThreadId],
+  );
   const messages = aui.thread().getState().messages;
   const tip = messages.at(-1);
   const tipId = tip?.id;
@@ -437,6 +441,7 @@ export function renderThreadContextUsageRecount(props: any = {}): void {
     loadedContextLength,
     modelLoading,
     runActive,
+    ownRunActive,
     tipId,
     tipRunning,
     branchLength,
@@ -3137,7 +3142,21 @@ _SWITCH_WHILE_ANOTHER_CHAT_RUNS = """
     await render();
 """
 
-_DELETE_AFTER_OWN_RUN_WHILE_ANOTHER_CHAT_RUNS = """
+_SWITCH_TO_AN_UNCOUNTED_REPLY_WHILE_ANOTHER_CHAT_RUNS = """
+    show([live[0], msg("a2b", "assistant", 5)]);
+    await render();
+    seed({ runningByThreadId: {} });
+    await render();
+"""
+
+_DELETE_EVERY_REPLY_WHILE_ANOTHER_CHAT_RUNS = """
+    show([live[0]]);
+    await render();
+    seed({ runningByThreadId: {} });
+    await render();
+"""
+
+_OWN_RUN_ENDS_WHILE_ANOTHER_CHAT_RUNS = """
     seed({ runningByThreadId: { "thread-y": true, "thread-a": true } });
     await render();
     const finished = [...live, msg("u5", "user", 6), msg("a6", "assistant", 7, { contextUsage: saved(700, 6) })];
@@ -3145,11 +3164,27 @@ _DELETE_AFTER_OWN_RUN_WHILE_ANOTHER_CHAT_RUNS = """
     useChatRuntimeStore.getState().setContextUsage(saved(700, 6));
     seed({ runningByThreadId: { "thread-y": true } });
     await render();
+"""
+
+_DELETE_AFTER_OWN_RUN_WHILE_ANOTHER_CHAT_RUNS = (
+    _OWN_RUN_ENDS_WHILE_ANOTHER_CHAT_RUNS
+    + """
     show([finished[0], finished[1], finished[4], finished[5]]);
     await render();
     seed({ runningByThreadId: {} });
     await render();
 """
+)
+
+_DELETE_EVERY_REPLY_AFTER_OWN_RUN_WHILE_ANOTHER_CHAT_RUNS = (
+    _OWN_RUN_ENDS_WHILE_ANOTHER_CHAT_RUNS
+    + """
+    show([finished[0]]);
+    await render();
+    seed({ runningByThreadId: {} });
+    await render();
+"""
+)
 
 
 @pytest.mark.parametrize(
@@ -3171,12 +3206,48 @@ _DELETE_AFTER_OWN_RUN_WHILE_ANOTHER_CHAT_RUNS = """
             "external::openai::gpt-x",
             {"counts": 0, "total": 320, "estimated": True},
         ),
+        (
+            _SWITCH_TO_AN_UNCOUNTED_REPLY_WHILE_ANOTHER_CHAT_RUNS,
+            "",
+            {"counts": 1, "total": 62, "estimated": None},
+        ),
+        (
+            _SWITCH_TO_AN_UNCOUNTED_REPLY_WHILE_ANOTHER_CHAT_RUNS,
+            "external::openai::gpt-x",
+            {"counts": 0, "total": 20, "estimated": True},
+        ),
+        (
+            _DELETE_EVERY_REPLY_WHILE_ANOTHER_CHAT_RUNS,
+            "",
+            {"counts": 1, "total": 37, "estimated": None},
+        ),
+        (
+            _DELETE_EVERY_REPLY_WHILE_ANOTHER_CHAT_RUNS,
+            "external::openai::gpt-x",
+            {"counts": 0, "total": 10, "estimated": True},
+        ),
+        (
+            _DELETE_EVERY_REPLY_AFTER_OWN_RUN_WHILE_ANOTHER_CHAT_RUNS,
+            "",
+            {"counts": 1, "total": 37, "estimated": None},
+        ),
+        (
+            _DELETE_EVERY_REPLY_AFTER_OWN_RUN_WHILE_ANOTHER_CHAT_RUNS,
+            "external::openai::gpt-x",
+            {"counts": 0, "total": 10, "estimated": True},
+        ),
     ],
     ids = [
         "local_branch_switch",
         "cloud_branch_switch",
         "local_delete_after_its_own_run",
         "cloud_delete_after_its_own_run",
+        "local_switch_to_an_uncounted_reply",
+        "cloud_switch_to_an_uncounted_reply",
+        "local_delete_every_reply",
+        "cloud_delete_every_reply",
+        "local_delete_every_reply_after_its_own_run",
+        "cloud_delete_every_reply_after_its_own_run",
     ],
 )
 def test_a_change_made_while_another_chat_generates_is_priced_when_it_ends(steps, picked, expected):

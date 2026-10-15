@@ -3856,6 +3856,9 @@ function ThreadContextUsageRecount({
   const runActive = useChatRuntimeStore((s) =>
     Object.values(s.runningByThreadId).some(Boolean),
   );
+  const ownRunActive = useChatRuntimeStore((s) =>
+    Boolean(s.activeThreadId && s.runningByThreadId[s.activeThreadId]),
+  );
   const tipId = useAuiState(({ thread }) => thread.messages.at(-1)?.id);
   const tipRunning = useAuiState(({ thread }) => {
     const last = thread.messages.at(-1);
@@ -3954,10 +3957,10 @@ function ThreadContextUsageRecount({
       ran: false,
     };
     if (priced?.threadId !== activeThreadId || priced.tipId == null) {
-      pricedTipRef.current = { ...current, ran: runActive };
+      pricedTipRef.current = { ...current, ran: ownRunActive };
       return;
     }
-    if (runActive) {
+    if (ownRunActive) {
       if (!priced.ran) pricedTipRef.current = { ...priced, ran: true };
       return;
     }
@@ -3970,9 +3973,6 @@ function ThreadContextUsageRecount({
       return;
     }
     if (tipRunning) return;
-    pricedTipRef.current = current;
-    const shown = store.contextUsage;
-    if (priced.ran && (shown == null || shown.estimated)) return;
     const localWindow =
       checkpoint && !isExternalModelId(checkpoint) ? loadedContextLength : null;
     const branch = threadBranchRecords(messages);
@@ -3982,19 +3982,25 @@ function ThreadContextUsageRecount({
       localWindow,
       store.loadedIsGguf ? localWindow : null,
     );
-    if (usage && !usage.estimated) {
+    const exact = usage != null && !usage.estimated;
+    const recount =
+      !exact &&
+      localWindow != null &&
+      !messagesContainImage(messages) &&
+      !findLatestUserAudioBase64(messages) &&
+      !findLatestUserVideoBase64(messages);
+    if (recount && runActive) return;
+    pricedTipRef.current = current;
+    const shown = store.contextUsage;
+    if (priced.ran && (shown == null || shown.estimated)) return;
+    if (exact) {
       if (!sameContextUsage(shown, usage, checkpoint)) {
         store.setThreadContextUsage(activeThreadId, usage);
         store.setContextUsage(usage);
       }
       return;
     }
-    if (
-      localWindow != null &&
-      !messagesContainImage(messages) &&
-      !findLatestUserAudioBase64(messages) &&
-      !findLatestUserVideoBase64(messages)
-    ) {
+    if (recount) {
       void refreshContextUsage({ threadId: activeThreadId });
       return;
     }
@@ -4016,6 +4022,7 @@ function ThreadContextUsageRecount({
     enabled,
     loadedContextLength,
     modelLoading,
+    ownRunActive,
     runActive,
     tipId,
     tipRunning,
