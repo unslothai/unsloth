@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Issue 6369: on the desktop app, Browse for a model folder opens the OS folder dialog.
-// The web app and managed accounts keep the in-app browser, and so does a desktop
-// whose native dialog fails to open.
+// Issue 6369: Desktop Browse for a model folder opens the OS dialog; the web app, managed
+// accounts and a dialog that fails to open keep the in-app browser.
 
 import assert from "node:assert/strict";
 import { register } from "node:module";

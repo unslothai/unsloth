@@ -47,11 +47,8 @@ export async function pickHuggingFaceCacheDir(): Promise<string | null> {
   return invokeNative<string | null>("pick_hugging_face_cache_dir");
 }
 
-/**
- * The OS folder dialog for a model scan folder, for the desktop owner. `undefined` means
- * use the in-app browser instead: the web app, a managed account (the server confines it
- * to its own workspace), or a native dialog that failed to open.
- */
+/** Desktop owner's OS folder dialog. `undefined` = use the in-app browser (web app,
+ * managed account confined to its workspace, or the dialog failed to open). */
 export async function pickNativeModelFolder(
   isOwner: boolean,
 ): Promise<string | null | undefined> {
