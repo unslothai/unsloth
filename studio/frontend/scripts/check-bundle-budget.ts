@@ -156,6 +156,10 @@ export const BUDGET = {
   // the previous limits there, so they are set to the measured build.
   // The downloads panel's "Starting…" row (#13738) adds 1,404 B raw / 353 B transfer (6,778,788 -> 6,780,192 B raw,
   // 2,038,337 -> 2,038,690 B transfer against 7c235de6f, one machine and build, Node 24, 95 chunks). Raised by that growth.
+  // The Image downloads > Info stamp row in Settings > Library, its search entry and strings (#13444) add 348 B
+  // raw / 83 B transfer to the eager settings and English locale chunks (6,780,553 -> 6,780,901 B raw,
+  // 2,038,848 -> 2,038,931 B transfer against 9f5b133254, one machine and build, Node 24, chunk count unchanged
+  // at 95). Raised by that growth.
   // The paused and queued chat states (admission status, the paused continuation reason) add 2.3 KB
   // raw / 1.0 KB transfer to the eager chat chunk (6,570.6 -> 6,572.9 KB raw, 1,975.5 -> 1,976.5 KB
   // transfer against b8d76e169, one machine and build). They render on the first chat screen, so
@@ -170,8 +174,8 @@ export const BUDGET = {
   // Re-measured on main at f6c34ddbc: +7,214 B raw / +2,653 B transfer (6,781,377 -> 6,788,591 B raw,
   // 2,039,139 -> 2,041,792 B transfer, one machine and build). On main's limits plus that growth, with
   // 0.9 KB raw / 0.4 KB transfer above it for the CI runner, which measured this branch 0.6 KB raw higher.
-  transferBytes: 2_042_262,
-  rawBytes: 6_790_122,
+  transferBytes: 2_042_345,
+  rawBytes: 6_790_470,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

@@ -1112,6 +1112,9 @@ export const sv = {
       resetButton: "Återställ",
       resetDone: "Biblioteksinställningarna har återställts",
       storageSection: "Lagring",
+      downloadsSection: "Bildnedladdningar",
+      imageInfoStamp: "Infostämpel",
+      imageInfoStampDescription: "Visa modell, datum och seed längst ned på bilder du laddar ned från sidan Bilder. Genereringsinställningarna sparas i filen oavsett.",
       storageDescription:
         "Öppna en kategori för att se dess filer med de största först och ta bort det du inte längre behöver.",
       storageUsed: "{size} används av biblioteket",
