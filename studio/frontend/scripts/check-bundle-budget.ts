@@ -130,10 +130,11 @@ export const BUDGET = {
   // Word list numbering through the default style and basedOn (#13755) adds 228 B raw / 39 B transfer to the
   // eager attachment reader (6,770,962 -> 6,771,190 B raw, 2,035,676 -> 2,035,715 B transfer against 7ae1a5386,
   // one machine and build, Node 24, chunk count unchanged at 95). Raised by that growth.
-  // The "Only show models that fit" Settings row adds 289 B raw / 77 B transfer (6,771,372 -> 6,771,661 B raw
-  // against 52a3fbefe, one machine and build, Node 24, 95 chunks), raised by that.
-  transferBytes: 2_035_821,
-  rawBytes: 6_771_550,
+  // The "Only show models that fit" Settings row adds 289 B raw / 77 B transfer (6,771,372 -> 6,771,661 B raw,
+  // 2,035,798 -> 2,035,875 B transfer against 52a3fbefe, 95 chunks, identical under Node 22.22.2 and 24). Main
+  // already measured 111 B raw / 54 B transfer over the previous limits, so they are set to the measured build.
+  transferBytes: 2_035_875,
+  rawBytes: 6_771_661,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
