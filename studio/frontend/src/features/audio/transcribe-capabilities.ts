@@ -9,7 +9,12 @@ export interface SttCapabilities {
   /** on_request: only when asked (Qwen3-ASR with its aligner); always: every run has them. */
   timestamps: "on_request" | "always" | "unsupported";
   speakers: boolean;
-  aligner: { downloaded: boolean; size_bytes: number } | null;
+  aligner: {
+    downloaded: boolean;
+    size_bytes: number;
+    id?: string;
+    variant?: string;
+  } | null;
   cpu_only: boolean;
 }
 
@@ -29,6 +34,28 @@ export interface TranscribeSwitches {
 }
 
 export const SPEAKERS_MODEL_NAME = "MOSS-Transcribe-Diarize";
+
+/** The aligner download a timestamped run needs first, staged like any other quant so it shows in
+ *  the Downloads panel; null when the run can start now. */
+export function alignerDownloadEntry(
+  caps: SttCapabilities | null,
+  timestamps: boolean,
+): {
+  repoId: string;
+  files: string[];
+  bytes: number;
+  ggufVariant: string;
+} | null {
+  const aligner = caps?.aligner;
+  if (!timestamps || !aligner || aligner.downloaded) return null;
+  if (!aligner.id || !aligner.variant) return null;
+  return {
+    repoId: aligner.id,
+    files: [],
+    bytes: aligner.size_bytes,
+    ggufVariant: aligner.variant,
+  };
+}
 
 function formatSize(bytes: number): string {
   if (bytes >= 1e9) return `${(bytes / 1e9).toFixed(1)} GB`;

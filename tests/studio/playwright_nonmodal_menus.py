@@ -22,6 +22,7 @@ import os
 import sys
 from pathlib import Path
 
+from playwright.sync_api import TimeoutError as PlaywrightTimeout
 from playwright.sync_api import sync_playwright
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -79,6 +80,43 @@ def open_control(page) -> None:
     page.wait_for_selector("[role=menu]", state = "visible")
 
 
+def until(
+    page,
+    condition: str,
+    arg = None,
+    timeout: int = 5000,
+) -> None:
+    """Wait until `condition` holds, without failing here: a broken build spends the timeout and
+    then fails on the SAME check below with the same message. Replaces flat sleeps, which asserted
+    the runner's speed along with the behaviour."""
+    try:
+        page.wait_for_function(condition, arg = arg, timeout = timeout)
+    except PlaywrightTimeout:
+        pass
+
+
+MENUS = "document.querySelectorAll('[role=menu]').length"
+
+
+def until_menus(page, expr: str) -> None:
+    """Wait for the open-menu count to satisfy `expr`, e.g. `== 0` or `>= 2`."""
+    until(page, f"() => {MENUS} {expr}")
+
+
+def frames(page) -> None:
+    """Let a scroll or focus change reach its listeners (two animation frames)."""
+    page.evaluate("() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))")
+
+
+def clicks_at_least(page, n: int) -> None:
+    until(page, "n => window.probe.documentClicks() >= n", arg = n)
+    frames(page)
+
+
+def focused_label(page, label: str) -> None:
+    until(page, "l => document.activeElement?.getAttribute('aria-label') === l", arg = label)
+
+
 def raw_click(page, selector: str) -> None:
     """A real pointer press at the element's centre, with no actionability wait.
 
@@ -93,15 +131,16 @@ def raw_click(page, selector: str) -> None:
 
 def close_all(page) -> None:
     for _ in range(6):
-        if menus_open(page) == 0:
+        before = menus_open(page)
+        if before == 0:
             return
         page.keyboard.press("Escape")
-        page.wait_for_timeout(200)
+        until_menus(page, f"< {before}")
 
 
 def reset_list(page) -> None:
     page.evaluate("() => { document.getElementById('list').scrollTop = 0; }")
-    page.wait_for_timeout(250)
+    frames(page)
 
 
 def check_document_is_untouched(page, checks: Checks) -> None:
@@ -137,10 +176,12 @@ def check_scroll_closes(page, checks: Checks) -> None:
     open_row(page, 1)
     page.mouse.move(120, 300)
     page.mouse.wheel(0, 400)
-    page.wait_for_timeout(400)
+    until_menus(page, "== 0")
+    frames(page)
     scrolled = page.evaluate("() => document.getElementById('list').scrollTop")
     checks.record("a wheel behind an open menu closes it", menus_open(page) == 0)
     checks.record("the list keeps the scroll the wheel gave it", scrolled > 0, scrolled)
+    # Observation window: a snap-back would arrive after the close, so give it time to.
     page.wait_for_timeout(300)
     settled = page.evaluate("() => document.getElementById('list').scrollTop")
     checks.record(
@@ -152,19 +193,19 @@ def check_scroll_closes(page, checks: Checks) -> None:
     reset_list(page)
     open_row(page, 2)
     page.evaluate("() => { document.getElementById('list').scrollTop = 500; }")
-    page.wait_for_timeout(400)
+    until_menus(page, "== 0")
     checks.record("a programmatic scroll closes the menu", menus_open(page) == 0)
 
     reset_list(page)
     open_row(page, 3)
     page.evaluate("() => document.getElementById('list').scrollBy({top: 200, behavior: 'smooth'})")
-    page.wait_for_timeout(600)
+    until_menus(page, "== 0")
     checks.record("a smooth scroll closes the menu", menus_open(page) == 0)
 
     reset_list(page)
     open_row(page, 6)
     page.evaluate("() => window.scrollTo(0, 200)")
-    page.wait_for_timeout(400)
+    until_menus(page, "== 0")
     checks.record("a window scroll closes the menu", menus_open(page) == 0)
     page.evaluate("() => window.scrollTo(0, 0)")
 
@@ -177,24 +218,28 @@ def check_scrolls_that_must_not_close(page, checks: Checks) -> None:
         "() => { const v = document.querySelector('[data-slot=dropdown-menu-viewport]');"
         " v.scrollTop = 120; }"
     )
+    # Observation window: the menu must NOT close, so give a close the time it would take.
     page.wait_for_timeout(400)
     checks.record("scrolling the menu's own viewport leaves it open", menus_open(page) >= 1)
     close_all(page)
 
     open_row(page, 4)
     page.evaluate("() => { document.getElementById('other').scrollTop = 300; }")
+    # Observation window: the menu must NOT close.
     page.wait_for_timeout(400)
     checks.record("scrolling an unrelated list leaves the menu open", menus_open(page) >= 1)
     close_all(page)
 
     open_row(page, 5)
     page.get_by_test_id("export-5").click()
-    page.wait_for_timeout(400)
+    until_menus(page, ">= 2")
+    frames(page)
     with_sub = menus_open(page)
     page.evaluate(
         "() => { const vs = document.querySelectorAll('[data-slot=dropdown-menu-viewport]');"
         " vs[vs.length - 1].scrollTop = 100; }"
     )
+    # Observation window: neither menu may close.
     page.wait_for_timeout(400)
     checks.record(
         "scrolling an open submenu leaves both menus open",
@@ -209,7 +254,8 @@ def check_dismiss_guard(page, checks: Checks) -> None:
     open_row(page, 7)
     page.evaluate("() => window.probe.resetClicks()")
     raw_click(page, "#outside-button")
-    page.wait_for_timeout(300)
+    until_menus(page, "== 0")
+    frames(page)
     swallowed = page.evaluate("() => window.probe.documentClicks()")
     checks.record(
         "the click that dismisses a menu does not reach what is under it",
@@ -218,7 +264,7 @@ def check_dismiss_guard(page, checks: Checks) -> None:
     )
     page.evaluate("() => window.probe.resetClicks()")
     raw_click(page, "#outside-button")
-    page.wait_for_timeout(200)
+    clicks_at_least(page, 1)
     delivered = page.evaluate("() => window.probe.documentClicks()")
     checks.record("the click after that one is delivered", delivered == 1, delivered)
 
@@ -229,10 +275,11 @@ def check_dismiss_guard(page, checks: Checks) -> None:
         for delay in EXIT_WINDOW_MS:
             opener()
             page.keyboard.press("Escape")
+            # Deliberate: the click has to land this far into the close's exit window.
             page.wait_for_timeout(delay)
             page.evaluate("() => window.probe.resetClicks()")
             raw_click(page, "#outside-button")
-            page.wait_for_timeout(250)
+            clicks_at_least(page, 1)
             landed = page.evaluate("() => window.probe.documentClicks()")
             checks.record(
                 f"a click {delay}ms after closing {label} is delivered", landed == 1, landed
@@ -248,7 +295,9 @@ def check_dismiss_guard(page, checks: Checks) -> None:
     ):
         opener()
         raw_click(page, "#outside-input")
-        page.wait_for_timeout(700)
+        # Focus is restored (or not) when the closed menu unmounts after its exit animation.
+        until_menus(page, "== 0")
+        frames(page)
         focus_after[label] = page.evaluate(
             "() => document.activeElement?.getAttribute('data-slot')"
             " ?? document.activeElement?.id ?? null"
@@ -267,7 +316,7 @@ def check_focus_return(page, checks: Checks) -> None:
     reset_list(page)
     open_row(page, 10)
     page.keyboard.press("Escape")
-    page.wait_for_timeout(300)
+    focused_label(page, "Row options 10")
     checks.record(
         "Escape returns focus to the trigger that opened the menu",
         page.evaluate(active) == "Row options 10",
@@ -279,11 +328,11 @@ def check_focus_return(page, checks: Checks) -> None:
     reset_list(page)
     open_row(page, 11)
     page.evaluate("() => { document.getElementById('list').scrollTop = 300; }")
-    page.wait_for_timeout(400)
+    until_menus(page, "== 0")
     reset_list(page)
     open_row(page, 12)
     page.keyboard.press("Escape")
-    page.wait_for_timeout(300)
+    focused_label(page, "Row options 12")
     checks.record(
         "a scroll-close does not change how the next Escape restores focus",
         page.evaluate(active) == "Row options 12",
@@ -297,9 +346,12 @@ def check_focus_return(page, checks: Checks) -> None:
     reset_list(page)
     open_row(page, 14)
     page.evaluate("() => { document.getElementById('list').scrollTop = 40; }")
+    # Deliberate: the click has to land while the scroll-closed menu is still animating out.
     page.wait_for_timeout(20)
     raw_click(page, "#outside-input")
-    page.wait_for_timeout(900)
+    # The close-autofocus this guards against runs when the menu unmounts.
+    until_menus(page, "== 0")
+    frames(page)
     landed = page.evaluate(
         "() => document.activeElement?.getAttribute('data-slot')"
         " ?? document.activeElement?.id ?? null"
@@ -313,7 +365,8 @@ def check_focus_return(page, checks: Checks) -> None:
     reset_list(page)
     open_row(page, 13)
     page.evaluate("() => { document.getElementById('list').scrollTop = 600; }")
-    page.wait_for_timeout(500)
+    until_menus(page, "== 0")
+    frames(page)
     checks.record(
         "a scroll-close keeps the scroll it was closed by",
         page.evaluate("() => document.getElementById('list').scrollTop") == 600,
@@ -326,23 +379,26 @@ def check_keyboard(page, checks: Checks) -> None:
     # frame or two later, which races the open rather than testing it.
     reset_list(page)
     page.get_by_label("Row options 2", exact = True).focus()
-    page.wait_for_timeout(250)
+    frames(page)
     page.keyboard.press("Enter")
+    # Kept as a flat wait on purpose: a keyboard-opened menu drops an ArrowDown pressed right
+    # after it opens, even with its first item focused and its open animation finished (measured;
+    # no DOM state marks when it starts taking arrows), so there is no event to wait on here.
     page.wait_for_timeout(300)
     checks.record("Enter opens the menu", menus_open(page) >= 1)
     page.keyboard.press("ArrowDown")
     page.keyboard.press("ArrowRight")
-    page.wait_for_timeout(400)
+    until_menus(page, ">= 2")
     checks.record("ArrowRight opens the submenu", menus_open(page) >= 2, menus_open(page))
     page.keyboard.press("ArrowLeft")
-    page.wait_for_timeout(400)
+    until_menus(page, "== 1")
     checks.record("ArrowLeft closes only the submenu", menus_open(page) == 1, menus_open(page))
     close_all(page)
 
     page.get_by_label("Row options 3", exact = True).focus()
-    page.wait_for_timeout(250)
+    frames(page)
     page.keyboard.press("Space")
-    page.wait_for_timeout(300)
+    until_menus(page, ">= 1")
     checks.record("Space opens the menu", menus_open(page) >= 1)
     close_all(page)
 
@@ -351,14 +407,14 @@ def check_lifetime(page, checks: Checks) -> None:
     reset_list(page)
     open_row(page, 16)
     page.evaluate("() => window.probe.removeRow(16)")
-    page.wait_for_timeout(500)
+    until_menus(page, "== 0")
     checks.record(
         "deleting the row while its menu is open strands no menu",
         menus_open(page) == 0,
         menus_open(page),
     )
     page.evaluate("() => window.probe.reset()")
-    page.wait_for_timeout(300)
+    frames(page)
 
     reopened: dict[str, int] = {}
     reset_list(page)
@@ -368,8 +424,10 @@ def check_lifetime(page, checks: Checks) -> None:
     ):
         opener()
         page.keyboard.press("Escape")
+        # Deliberate: reopen inside the exit animation.
         page.wait_for_timeout(30)
         page.get_by_label(name, exact = True).click()
+        # Observation window: a second menu would show up in this time.
         page.wait_for_timeout(500)
         reopened[label] = menus_open(page)
         close_all(page)
@@ -389,7 +447,8 @@ def check_lifetime(page, checks: Checks) -> None:
         page.keyboard.press("Escape")
         page.wait_for_timeout(60)
     close_all(page)
-    page.wait_for_timeout(400)
+    until_menus(page, "== 0")
+    frames(page)
     after = page.evaluate("() => window.probe.scrollListeners()")
     checks.record(
         "30 open and close cycles leak no scroll listener", after == before, f"{before} -> {after}"
@@ -399,7 +458,7 @@ def check_lifetime(page, checks: Checks) -> None:
         "() => { const l = document.getElementById('list');"
         " l.scrollTop = 8 * 40 - l.clientHeight + 20; }"
     )
-    page.wait_for_timeout(300)
+    frames(page)
     # Press the sliver the scroller leaves visible. Not click_forced: that scrolls the
     # trigger into view first, which is the one thing this case must not do.
     trigger = page.get_by_label("Row options 8", exact = True).bounding_box()
@@ -407,7 +466,9 @@ def check_lifetime(page, checks: Checks) -> None:
     top = max(trigger["y"], clip["y"])
     bottom = min(trigger["y"] + trigger["height"], clip["y"] + clip["height"])
     page.mouse.click(trigger["x"] + trigger["width"] / 2, (top + bottom) / 2)
-    page.wait_for_timeout(500)
+    until_menus(page, ">= 1")
+    # Observation window: the menu must also STAY open (a scroll-into-view would close it).
+    page.wait_for_timeout(300)
     checks.record(
         "a partly visible trigger opens a menu that stays open",
         menus_open(page) >= 1,
@@ -418,6 +479,7 @@ def check_lifetime(page, checks: Checks) -> None:
     reset_list(page)
     open_row(page, 19)
     page.get_by_label("Row options 20", exact = True).click()
+    # Observation window: a second menu would show up in this time.
     page.wait_for_timeout(400)
     checks.record(
         "clicking another row's trigger does not leave two menus open",

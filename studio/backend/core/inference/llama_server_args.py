@@ -1188,6 +1188,25 @@ def fit_target_margin_in(
     return max(values)
 
 
+def fit_target_is_per_device(
+    args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+) -> bool:
+    """Whether the effective ``--fit-target`` (same precedence as ``fit_target_margin_in``)
+    lists different margins for different devices. llama.cpp applies such a list
+    positionally (``fit_params_target[i]``, common/arg.cpp), so which entry a given card
+    gets depends on its device index in the child."""
+    raw_value = _last_flag_value(args, _FIT_TARGET_FLAGS)
+    if raw_value is None and env:
+        raw_value = env.get("LLAMA_ARG_FIT_TARGET")
+    if raw_value is None:
+        return False
+    parts = {p.strip() for p in str(raw_value).replace("/", ",").split(",") if p.strip()}
+    try:
+        return len({float(p) for p in parts}) > 1
+    except ValueError:
+        return False
+
+
 def split_policy_starves_devices(
     args: Optional[Iterable[str]],
     n_credited: int,

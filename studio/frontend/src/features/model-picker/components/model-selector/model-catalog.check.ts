@@ -175,6 +175,37 @@ assert.equal(groupForRepoId("lightricks/ltx-2.3", VIDEO_CATALOG), ltx23);
 assert.equal(groupForRepoId("lightricks/ltx-2.3-fp8", VIDEO_CATALOG), ltx23);
 // ...but the LTX-2.0 base stays its own group (different model).
 assert.notEqual(groupForRepoId("Lightricks/LTX-2", VIDEO_CATALOG), ltx23);
+// LTX-2.5 is its own group (different DiT and encoder); the hosted prequant repo id finds it, never 2.3.
+const ltx25 = groupForRepoId("Lightricks/LTX-2.5-Diffusers", VIDEO_CATALOG);
+assert.ok(ltx25);
+assert.notEqual(ltx25, ltx23);
+assert.equal(groupForRepoId("unsloth/LTX-2.5-FP8", VIDEO_CATALOG), ltx25);
+assert.equal(groupForRepoId("lightricks/ltx-2.5-diffusers", VIDEO_CATALOG), ltx25);
+assert.equal(curatedArtifactTakesDenseQuant("Lightricks/LTX-2.5-Diffusers", VIDEO_CATALOG), true);
+assert.equal(
+  curatedRowLabelFor("Lightricks/LTX-2.5-Diffusers", VIDEO_CATALOG, "dense-quant", ["fp8"])?.name,
+  "LTX 2.5 distilled (Diffusers) (Fast FP8)",
+);
+assert.equal(
+  curatedRowLabelFor("Lightricks/LTX-2.5-Diffusers", VIDEO_CATALOG, "dense-quant", ["int8", "fp8"])?.name,
+  "LTX 2.5 distilled (Diffusers) (Fast FP8)",
+);
+// Only a host that runs the dense quant gets the qualifier; other video rows stay bare there.
+assert.equal(curatedRowLabelFor("Lightricks/LTX-2.5-Diffusers", VIDEO_CATALOG, "accelerated")?.name, "LTX 2.5 distilled (Diffusers)");
+assert.equal(curatedRowLabelFor("Lightricks/LTX-2.5-Diffusers", VIDEO_CATALOG, "gguf-only")?.name, "LTX 2.5 distilled (Diffusers)");
+assert.equal(curatedRowLabelFor("Lightricks/LTX-2", VIDEO_CATALOG, "dense-quant", ["fp8"])?.name, "LTX 2 (base)");
+// The GGUF quants join the same group, never 2.3.
+assert.equal(groupForRepoId("unsloth/LTX-2.5-GGUF", VIDEO_CATALOG), ltx25);
+assert.equal(groupForRepoId("unsloth/ltx-2.5-gguf", VIDEO_CATALOG), ltx25);
+assert.notEqual(groupForRepoId("unsloth/LTX-2.5-GGUF", VIDEO_CATALOG), ltx23);
+assert.deepEqual(
+  ltx25.artifacts.map((a) => [a.repoId, a.loadKind]),
+  [
+    ["Lightricks/LTX-2.5-Diffusers", "pipeline"],
+    ["Lightricks/LTX-2.5", "single_file"],
+    ["unsloth/LTX-2.5-GGUF", "gguf"],
+  ],
+);
 // SDXL Turbo and Base stay separate groups (different checkpoints).
 assert.notEqual(
   groupForRepoId("stabilityai/sdxl-turbo", IMAGE_CATALOG),
@@ -276,6 +307,8 @@ for (const id of [
 const videoOptionIds = new Set(catalogToModelOptions(VIDEO_CATALOG).map((o) => o.id));
 for (const id of [
   "unsloth/LTX-2.3-GGUF",
+  "unsloth/LTX-2.5-GGUF",
+  "Lightricks/LTX-2.5-Diffusers",
   "unsloth/MiniMax-H3-GGUF",
   ...OLD_PIPELINE_MODELS,
 ]) {
@@ -535,14 +568,22 @@ assert.deepEqual(
   catalogToModelOptions(VIDEO_CATALOG, "unknown").map((o) => o.id),
   catalogToModelOptions(VIDEO_CATALOG).map((o) => o.id),
 );
-// Every GGUF row ends in the suffix, whoever published it.
+// Every GGUF row ends in the suffix, whoever published it. The llama.cpp Qwen3-ASR repos share
+// their name with a bundled folder, so only they carry a runtime tag.
+const LLAMA_CPP_TWINS = new Set([
+  "unslothai/Qwen3-ASR-0.6B-GGUF",
+  "unslothai/Qwen3-ASR-1.7B-GGUF",
+]);
 for (const catalog of [IMAGE_CATALOG, VIDEO_CATALOG, AUDIO_CATALOG]) {
   for (const group of catalog) {
     for (const artifact of group.artifacts) {
       if (artifact.format !== "gguf") continue;
       const row = curatedRowLabelFor(artifact.repoId, catalog);
       assert.ok(row?.name.endsWith("-GGUF"), `${artifact.repoId} row reads "${row?.name}"`);
-      assert.deepEqual(row?.tags, []);
+      assert.deepEqual(
+        row?.tags,
+        LLAMA_CPP_TWINS.has(artifact.repoId) ? ["llama.cpp"] : [],
+      );
     }
   }
 }

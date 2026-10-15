@@ -16,13 +16,16 @@ const {
   getExternalMaxOutputTokens,
   getExternalReasoningCapabilities,
   getProviderCapabilities,
+  kimiSearchExcludesThinking,
   providerHostsCodeExecution,
+  providerModelReplaysReasoning,
   providerSupportsBuiltinCodeExecution,
   providerSupportsBuiltinImageGeneration,
 
   providerSupportsBuiltinWebSearch,
   providerSupportsFastMode,
   providerSupportsPreserveThinking,
+  resolveExternalReasoningEffort,
 } = await import("../src/features/chat/provider-capabilities.ts");
 
 const {
@@ -299,7 +302,7 @@ test("the chat-latest aliases advertise no reasoning at all", () => {
   );
 });
 
-test("GPT-6 Sol and Luna subscription models use local Code tools", () => {
+test("GPT-6 Sol and Luna subscription models use local Tools", () => {
   setProviderModelCapabilities("openai_codex", {
     "gpt-6-sol": { vision: true, studio_tools: true },
     "gpt-6-luna": { vision: true, studio_tools: true },
@@ -552,9 +555,46 @@ test("hosted Code is only claimed where the backend registry hosts code_executio
 });
 
 
-test("preserve thinking is available only for explicit llama.cpp connections", () => {
+test("preserve thinking is available only for explicit llama.cpp and vLLM connections", () => {
   assert.equal(providerSupportsPreserveThinking("llama_cpp"), true);
-  for (const provider of [undefined, null, "custom", "vllm", "ollama", "openai", "anthropic", "openrouter"]) {
+  assert.equal(providerSupportsPreserveThinking("vllm"), true);
+  for (const provider of [undefined, null, "custom", "ollama", "openai", "anthropic", "openrouter"]) {
     assert.equal(providerSupportsPreserveThinking(provider), false);
   }
+});
+
+test("Kimi K3 always thinks at a low/high/max effort and leaves k2.x as they were (#8735)", () => {
+  const k3 = getExternalReasoningCapabilities("kimi", "kimi-k3");
+  assert.equal(k3.supportsReasoning, true);
+  assert.equal(k3.reasoningStyle, "reasoning_effort");
+  assert.equal(k3.supportsReasoningOff, false);
+  assert.deepEqual([...k3.reasoningEffortLevels], ["low", "high", "max"]);
+  assert.equal(clampReasoningEffortToLevels("xhigh", k3.reasoningEffortLevels), "max");
+  assert.equal(getExternalMaxOutputTokens("kimi", "kimi-k3"), 1048576);
+  assert.equal(getProviderCapabilities("kimi", undefined, "kimi-k3")?.presencePenalty, false);
+  assert.equal(kimiSearchExcludesThinking("kimi", "kimi-k3"), false);
+  // A fresh chat's medium would clamp down to low; K3's own default is max.
+  assert.equal(
+    resolveExternalReasoningEffort({ caps: k3, providerType: "kimi", current: "medium" }),
+    "max",
+  );
+  assert.equal(providerModelReplaysReasoning("kimi", "kimi-k3"), true);
+
+  const k26 = getExternalReasoningCapabilities("kimi", "kimi-k2.6");
+  assert.equal(k26.reasoningStyle, "enable_thinking");
+  assert.equal(k26.supportsReasoningOff, true);
+  assert.equal(getProviderCapabilities("kimi", undefined, "kimi-k2.6")?.presencePenalty, true);
+  assert.equal(getExternalMaxOutputTokens("kimi", "kimi-k2.6"), 32768);
+  assert.equal(kimiSearchExcludesThinking("kimi", "kimi-k2.6"), true);
+  assert.equal(kimiSearchExcludesThinking("openai", "kimi-k3"), false);
+  assert.equal(providerModelReplaysReasoning("kimi", "kimi-k2.6"), false);
+});
+
+test("a saved Search choice survives selecting or reloading Kimi K3", () => {
+  const page = readFileSync(
+    path.join(path.dirname(fileURLToPath(import.meta.url)), "../src/features/chat/chat-page.tsx"),
+    "utf8",
+  );
+  assert.doesNotMatch(page, /const isKimi = \w+\?\.providerType === "kimi"/);
+  assert.equal(page.match(/const isKimi = kimiSearchExcludesThinking\(/g)?.length, 2);
 });

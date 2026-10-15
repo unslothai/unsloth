@@ -839,10 +839,11 @@ def test_qwen_image_21_gguf_reaches_sd_cpp_with_its_own_vae_and_a_qwen3vl_encode
 def test_the_pinned_prebuilt_is_one_that_can_load_qwen_image_21():
     """The route is only real if the binary the installer pins understands the architecture.
 
-    The tag STRING cannot answer this: every mirror build resolves to the same master-813 base, so
-    the August build and the current one are indistinguishable by name. What is asserted here is the
-    pin itself, against the release verified to render this family (26.9s at 1024 on one B200,
-    Q4_K_M denoiser, bf16 VAE, Q4_K_M Qwen3-VL encoder). Bump both together or not at all.
+    The tag STRING cannot answer this: two mirror builds can share an upstream base, so the name does
+    not say whether a build carries the architecture. What is asserted here is the pin itself,
+    against the release verified to render this family through Studio's native engine (512x512,
+    12 steps, Q4_K_M, one B200: cuda12 and cuda13 bundles, 26s / 36s, identical images). Bump both
+    together or not at all.
     """
     import importlib.util
     from pathlib import Path
@@ -852,7 +853,7 @@ def test_the_pinned_prebuilt_is_one_that_can_load_qwen_image_21():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
 
-    assert module.DEFAULT_TAG == "master-813-bfbef5b-u1d02858", (
+    assert module.DEFAULT_TAG == "master-951-f89d9b1-uafac7a7", (
         "the pinned prebuilt must be one built from a tree carrying Qwen-Image-2.1; "
         f"{module.DEFAULT_TAG} is not"
     )
@@ -967,6 +968,38 @@ def test_a_local_turbo_gguf_resolves_the_turbo_base_by_name(
     monkeypatch.setattr(dmod, "_remember_companion_base", lambda repo_id, base: None)
     fam = detect_family_for_pick(str(tmp_path), name, "qwen-image-2.1")
     assert dmod._resolve_base_repo(str(tmp_path), None, fam, None, name) == expected
+
+
+@pytest.mark.parametrize(
+    "name, expected",
+    [
+        ("flux-2-klein-9b.safetensors", "black-forest-labs/FLUX.2-klein-9B"),
+        ("flux-2-klein-9b-fp8.safetensors", "black-forest-labs/FLUX.2-klein-9B"),
+        ("flux-2-klein-9b-Q4_K_M.gguf", "black-forest-labs/FLUX.2-klein-9B"),
+        ("flux-2-klein-base-9b.safetensors", "black-forest-labs/FLUX.2-klein-base-9B"),
+        ("flux-2-klein-base-4b.safetensors", "black-forest-labs/FLUX.2-klein-base-4B"),
+        ("flux-2-klein-4b.safetensors", "black-forest-labs/FLUX.2-klein-4B"),
+        ("flux-2-klein-4b-Q4_K_M.gguf", "black-forest-labs/FLUX.2-klein-4B"),
+    ],
+)
+def test_a_local_klein_file_resolves_its_variant_base_by_name(
+    monkeypatch, tmp_path, name, expected
+):
+    from core.inference import diffusion as dmod
+    from core.inference.diffusion_compat import flux2_pick_mismatch
+    from core.inference.diffusion_families import detect_family_for_pick
+
+    monkeypatch.setattr(dmod, "_hf_base_model", lambda repo_id, token: None)
+    monkeypatch.setattr(dmod, "_remember_companion_base", lambda repo_id, base: None)
+    fam = detect_family_for_pick(str(tmp_path), name, "flux.2-klein")
+    base = dmod._resolve_base_repo(str(tmp_path), None, fam, None, name)
+    assert base == expected
+    if name.endswith(".gguf"):
+        import core.inference.diffusion_compat as compat
+
+        dim = 4096 if "9b" in name else 3072
+        monkeypatch.setattr(compat, "flux2_inner_dim_for_pick", lambda *a, **k: dim)
+        assert flux2_pick_mismatch(fam, str(tmp_path), name, base) is None
 
 
 @pytest.mark.parametrize(

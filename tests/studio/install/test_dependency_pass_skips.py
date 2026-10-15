@@ -1058,12 +1058,12 @@ def test_the_pip_fallback_never_names_one_project_twice() -> None:
             "--upgrade-package",
             "mlx-vlm",
             "mlx==0.32.3",
-            "mlx-vlm>=0.4.4,<=0.7.4",
+            "mlx-vlm>=0.4.4,<=0.7.8",
         )
     )
     assert "--upgrade" in cmd and "--upgrade-package" not in cmd
     assert cmd.count("mlx") == 0 and cmd.count("mlx-vlm") == 0
-    assert "mlx==0.32.3" in cmd and "mlx-vlm>=0.4.4,<=0.7.4" in cmd
+    assert "mlx==0.32.3" in cmd and "mlx-vlm>=0.4.4,<=0.7.8" in cmd
 
 
 def test_a_package_named_only_by_the_flag_is_still_passed() -> None:
@@ -2231,7 +2231,7 @@ def test_installing_a_flash_attn_wheel_counts_as_an_install_action(monkeypatch) 
     monkeypatch.setattr(stack, "IS_MACOS", False)
     monkeypatch.setattr(stack, "_flash_attn_install_disabled", lambda: False)
     monkeypatch.setattr(stack, "_flash_attn_importable", lambda: False)
-    monkeypatch.setattr(stack, "probe_torch_wheel_env", lambda: {"torch": "2.8.0"})
+    monkeypatch.setattr(stack, "probe_torch_wheel_env", lambda **_k: {"torch": "2.8.0"})
     monkeypatch.setattr(stack, "_build_flash_attn_wheel_url", lambda env: "https://x.invalid/w")
     monkeypatch.setattr(stack, "url_exists", lambda url, **k: True)
     monkeypatch.setattr(

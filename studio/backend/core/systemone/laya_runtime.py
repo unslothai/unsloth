@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from .catalog import CHECKPOINTS, GGUF_COMPANIONS, LOCAL_NAME, MLX_COMPANIONS, Checkpoint
+from .laya_worker import LayaWorker, LayaWorkerError
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +48,13 @@ _unloads = 0
 _last_used = 0.0
 _idle_timer: threading.Timer | None = None
 _fallback_reason: str | None = None
+# A Clef a training run unloaded, reloading once the run ends; an unload cancels it instead of waiting.
+_reloading: Checkpoint | None = None
+# Why the reload's load was stopped ("training" or "gpu"), recorded when it happens: a short run can be over by the join.
+_reload_stopped_by: str | None = None
+# The unload generation the running load started for: an unload during its Hub lookup still stops the worker.
+_load_generation = threading.local()
+TRAINING_POLL_S = 2.0
 # A llama.cpp decision server unloads after this long without a request.
 IDLE_UNLOAD_S = 300.0
 # Binaries (path, mtime) whose server answered without a "decisions" output.
@@ -71,7 +79,6 @@ class Unavailable(Exception):
 def _device() -> str:
     from utils.systemone_settings import get_device as preferred_device
 
-    # CPU unless asked: a CUDA context opened in the backend process is never returned (see core.rag.embeddings._device).
     if preferred_device() != "gpu":
         return "cpu"
     from utils.hardware.hardware import DeviceType, get_device
@@ -153,8 +160,11 @@ def _engine_available() -> bool:
 
 def _mlx_target(checkpoint: Checkpoint) -> Checkpoint | None:
     """What unsloth-zoo's MLX engine serves in process on Apple Silicon: a merged Clef's own folder, or the source repo of a GGUF entry."""
-    if _is_mlx(checkpoint) or not _engine_available():
+    if not _engine_available():
         return None
+    if _is_mlx(checkpoint):
+        # Only a catalog entry is its own MLX form; a target has none further.
+        return checkpoint if CHECKPOINTS.get(checkpoint.name) == checkpoint else None
     if checkpoint.layout == "clef":
         if checkpoint.is_local:
             from utils.models.model_config import clef_folder_kind
@@ -173,18 +183,18 @@ def _mlx_target(checkpoint: Checkpoint) -> Checkpoint | None:
     )
 
 
-def _mlx_reads_images(checkpoint: Checkpoint) -> bool:
-    """Whether the MLX form of an entry reads images: a Clef with its vision tower and processor, on an unsloth-zoo that reads them."""
+def _mlx_reads(checkpoint: Checkpoint, media: str) -> bool:
+    """Whether the MLX form of an entry reads `media` ("images" or "audio"): a Clef with that tower and its processor, on an unsloth-zoo that reads it."""
     if checkpoint.layout != "clef" or _mlx_target(checkpoint) is None:
         return False
     try:
         from unsloth_zoo.mlx.decision import ClefModel
     except Exception:
         return False
-    if not getattr(ClefModel, "takes_images", False):
+    if not getattr(ClefModel, f"takes_{media}", False):
         return False
     if not checkpoint.is_local:
-        return True
+        return media == "images" or checkpoint.audio
     import json
 
     folder = Path(checkpoint.source).expanduser()
@@ -192,14 +202,24 @@ def _mlx_reads_images(checkpoint: Checkpoint) -> bool:
         config = json.loads((folder / "config.json").read_text(encoding = "utf-8"))
     except (OSError, ValueError):
         return False
-    return (
-        isinstance(config, dict)
-        and config.get("vision_config") is not None
-        and any(
-            (folder / name).is_file()
-            for name in ("processor_config.json", "preprocessor_config.json")
-        )
+    if not isinstance(config, dict):
+        return False
+    # Qwen3-Omni keeps its towers under the thinker, Phi-4-multimodal under `embd_layer`; Nemotron Omni hears through a sound tower.
+    parts = (config, config.get("thinker_config"), config.get("embd_layer"))
+    towers = (
+        ("vision_config", "image_embd_layer")
+        if media == "images"
+        else ("audio_config", "sound_config", "audio_embd_layer")
     )
+    return any(
+        isinstance(part, dict) and part.get(tower) is not None for part in parts for tower in towers
+    ) and any(
+        (folder / name).is_file() for name in ("processor_config.json", "preprocessor_config.json")
+    )
+
+
+def _mlx_reads_images(checkpoint: Checkpoint) -> bool:
+    return _mlx_reads(checkpoint, "images")
 
 
 def _mlx_repos(companion) -> tuple:
@@ -416,12 +436,14 @@ def select(
     questions = None,
     preference: str | None = None,
     state_images: bool = False,
+    audio = None,
 ) -> tuple[Checkpoint, str | None]:
     """(what serves this request, why Auto did not pick llama.cpp); raises for what nothing here can serve.
 
     Auto takes llama.cpp when the entry has a GGUF and Studio's llama-server serves decisions, else PyTorch;
     on Apple Silicon it answers through unsloth-zoo's MLX engine first.
-    Images are read by llama.cpp, and by MLX for a Clef. Laya is always served by PyTorch, a GGUF entry otherwise by llama.cpp.
+    Images are read by llama.cpp, and by MLX for a Clef. Audio is heard only by MLX, for a Clef with an audio tower.
+    Laya is always served by PyTorch, a GGUF entry otherwise by llama.cpp.
     """
     from utils.systemone_settings import get_backend
 
@@ -429,6 +451,29 @@ def select(
 
     # Only route-checked images reach MLX: state images would be decoded unvalidated in this process.
     unread = bool(state_images or (images and not _mlx_reads_images(checkpoint)))
+    if audio:
+        # No other runtime hears, so nothing else may answer as if the clips were not sent.
+        if not _mlx_reads(checkpoint, "audio"):
+            raise Unavailable(
+                400,
+                "api_usage_error",
+                f"{checkpoint.name} does not hear audio here; audio needs a Clef with an audio tower, served by MLX on Apple Silicon.",
+            )
+        if (preference or get_backend()) not in ("auto", MLX):
+            raise Unavailable(
+                400,
+                "api_usage_error",
+                "Audio is served only by MLX; set the Decision API runtime to Auto or MLX.",
+            )
+        return _select_mlx(checkpoint, unread), None
+    if _is_mlx(checkpoint):
+        if (preference or get_backend()) not in ("auto", MLX):
+            raise Unavailable(
+                400,
+                "api_usage_error",
+                f"{checkpoint.name} is served only by MLX; set the Decision API runtime to Auto or MLX.",
+            )
+        return _select_mlx(checkpoint, unread), None
     if (preference or get_backend()) == MLX and checkpoint.layout in ("clef", GGUF):
         return _select_mlx(checkpoint, unread), None
     mlx = _mlx_choice(
@@ -494,6 +539,10 @@ def _select_mlx(checkpoint: Checkpoint, unread) -> Checkpoint:
         return target
     else:
         reason = f"{checkpoint.name} has no MLX form."
+    if _is_mlx(checkpoint):
+        raise Unavailable(
+            400, "api_usage_error", f"{checkpoint.name} is served only by MLX. {reason}"
+        )
     raise Unavailable(400, "api_usage_error", f"{reason} Set the Decision API runtime to Auto.")
 
 
@@ -568,9 +617,15 @@ def native_ready(checkpoint) -> bool:
 
 
 def input_modalities(checkpoint) -> list[str]:
-    """What this entry reads here: images too when llama.cpp serves it with a vision projector, or MLX a Clef that has its tower."""
-    if mlx_ready(checkpoint) and _mlx_reads_images(checkpoint):
-        return ["text", "image"]
+    """What this entry reads here: images too when llama.cpp serves it with a vision projector, or MLX a Clef that has its tower; audio when MLX serves a Clef that hears."""
+    if mlx_ready(checkpoint):
+        media = [
+            kind
+            for kind, media in (("image", "images"), ("audio", "audio"))
+            if _mlx_reads(checkpoint, media)
+        ]
+        if media:
+            return ["text", *media]
     if not native_ready(checkpoint):
         return ["text"]
     return ["text", "image"] if _native_reads_images(_native_target(checkpoint)) else ["text"]
@@ -861,6 +916,7 @@ def _evict(external: bool = False) -> None:
         _generation += 1
         _unloads += external
     _close(agent)
+    del agent
     _release_memory()
 
 
@@ -932,6 +988,7 @@ class _EngineAgent:
         state,
         questions: dict[str, dict[str, Any]],
         images = None,
+        audio = None,
     ) -> dict[str, Any]:
         from unsloth_zoo.mlx.decision import DecisionRequestError, DecisionUnsupportedError
 
@@ -969,11 +1026,9 @@ class _EngineAgent:
                         f"The state is longer than the {limit} tokens this model reads beside a question. Shorten it.",
                     )
         try:
-            return (
-                self.model.answer(state, questions, images)
-                if images
-                else self.model.answer(state, questions)
-            )
+            # Only what was sent is passed, so an unsloth-zoo that takes less still answers text.
+            media = (images, audio) if audio else (images,) if images else ()
+            return self.model.answer(state, questions, *media)
         except DecisionUnsupportedError as exc:
             raise Unavailable(501, "not_supported_error", str(exc)) from None
         except DecisionRequestError as exc:
@@ -1023,9 +1078,13 @@ def _load_checkpoint(checkpoint: Checkpoint):
         from .clef_runtime import ClefAgent, ClefWorkerError
 
         _evict()
-        agent = ClefAgent(root, cancelled = _training_active)
+        unloads = getattr(_load_generation, "unloads", _unloads)
+        agent = ClefAgent(
+            root,
+            cancelled = lambda: _clef_preempted() or _unloads != unloads,
+        )
         # Training may have started while this loaded, and Clef has no CPU fallback.
-        if _training_active():
+        if _clef_preempted():
             agent.close()
             raise ClefWorkerError(
                 f"{checkpoint.name} needs the GPU, which a training run took while it loaded."
@@ -1038,6 +1097,28 @@ def _load_checkpoint(checkpoint: Checkpoint):
     # While training holds the GPU, a GPU model loads on CPU, as dictation does; see _misplaced.
     for_training = _training_active() and preferred_device() == "gpu"
     device = "cpu" if for_training else _device()
+    if device in ("cuda", "xpu"):
+        try:
+            agent = LayaWorker(root, checkpoint, device, cancelled = _training_active)
+            return agent, agent.device
+        except LayaWorkerError:
+            if not _training_active():
+                raise
+        device, for_training = "cpu", True
+    agent, placed = _build_laya(root, checkpoint, device, for_training)
+    if placed != "cpu" and _training_active():
+        del agent
+        _release_memory()
+        return _build_laya(root, checkpoint, "cpu", True)
+    return agent, placed
+
+
+def _build_laya(
+    root: Path,
+    checkpoint: Checkpoint,
+    device: str,
+    for_training: bool = False,
+):
     folder = root / checkpoint.subfolder if checkpoint.subfolder else root
     fp16_checkpoint = checkpoint.name in CHECKPOINTS or _stored_fp16(folder)
     if device == "mlx":
@@ -1051,9 +1132,6 @@ def _load_checkpoint(checkpoint: Checkpoint):
     agent = _load_laya(
         str(root), subfolder = checkpoint.subfolder, device = "cpu", embedding_dtype = weights
     )
-    # Training may have started while this built.
-    if device != "cpu" and _training_active():
-        device, for_training = "cpu", True
     _place(agent, torch.device(device), fp16_checkpoint)
     agent.__dict__["_unsloth_for_training"] = for_training
     return agent, str(agent.device.type)
@@ -1332,19 +1410,31 @@ def loading_repo_ids() -> tuple[str, ...]:
     return ()
 
 
-def _load(checkpoint: Checkpoint) -> None:
+def _load(checkpoint: Checkpoint, unloads: int | None = None) -> None:
     global _agent, _loaded, _device_name, _loading, _failure, _generation, _last_used, _gpu_load
     started = time.monotonic()
-    unloads = _unloads
+    if unloads is None:
+        unloads = _unloads
+    if _unloads != unloads:
+        with _state_lock:
+            _loading = None
+        logger.info("System One dropped %s: it was unloaded before it loaded", checkpoint.name)
+        return
+    _load_generation.unloads = unloads
     try:
         agent, device = _load_checkpoint(checkpoint)
     except Exception as exc:
         message = f"Could not load {checkpoint.name}: {type(exc).__name__}: {exc}"
-        logger.warning("System One load failed: %s", message, exc_info = True)
         with _state_lock:
-            _failure = (checkpoint, message, time.monotonic() + FAILURE_BACKOFF_S)
+            stale = _unloads != unloads
+            if not stale:
+                _failure = (checkpoint, message, time.monotonic() + FAILURE_BACKOFF_S)
             _loading = None
             _gpu_load = False
+        if stale:
+            logger.info("System One dropped %s: it was unloaded while it loaded", checkpoint.name)
+        else:
+            logger.warning("System One load failed: %s", message, exc_info = True)
         return
     with _state_lock:
         stale = _unloads != unloads
@@ -1426,11 +1516,16 @@ def evict_for_gpu() -> None:
     _close(agent, release_gpu = False)
 
 
+def _holds_gpu() -> bool:
+    # A worker that fell back to CPU still holds its CUDA or XPU context until it ends.
+    return _device_name not in (None, "cpu") or isinstance(_agent, LayaWorker)
+
+
 def _misplaced() -> bool:
     # The resident model follows the same rule: off the GPU while training holds it, back on it after.
     if getattr(_agent, "_unsloth_for_training", False):
         return not _training_active()
-    return _device_name not in (None, "cpu") and _training_active()
+    return _holds_gpu() and _training_active()
 
 
 def _clef_blocked_by_training(checkpoint: Checkpoint) -> None:
@@ -1456,7 +1551,7 @@ def _clef_blocked_by_training(checkpoint: Checkpoint) -> None:
     )
 
 
-def _ensure_loading(checkpoint: Checkpoint) -> threading.Thread | None:
+def _ensure_loading(checkpoint: Checkpoint, unloads: int | None = None) -> threading.Thread | None:
     global _loader, _loading
     # Asked before _state_lock: the training backend takes its own lock.
     _clef_blocked_by_training(checkpoint)
@@ -1495,17 +1590,19 @@ def _ensure_loading(checkpoint: Checkpoint) -> threading.Thread | None:
         raise Unavailable(503, "model_loading", f"{checkpoint.name} is downloading", retry_after = 5)
     with _state_lock:
         _loader = threading.Thread(
-            target = _load, args = (checkpoint,), name = "systemone-load", daemon = True
+            target = _load, args = (checkpoint, unloads), name = "systemone-load", daemon = True
         )
         _loader.start()
         return _loader
 
 
 def _agent_for(checkpoint: Checkpoint, wait: float):
+    unloads = _unloads
     loader = _ensure_loading(checkpoint)
     if loader is not None:
         loader.join(wait)
-        if loader.is_alive() or _ensure_loading(checkpoint) is not None:
+        # An unload while this waited (a settings change) wins over a load of the old checkpoint.
+        if loader.is_alive() or _unloads != unloads or _ensure_loading(checkpoint) is not None:
             raise Unavailable(
                 503, "model_loading", f"{checkpoint.name} is still loading", retry_after = 5
             )
@@ -2094,16 +2191,23 @@ def decide(
     state,
     questions: dict[str, dict[str, Any]],
     images: list[str] | None = None,
+    audio: list[str] | None = None,
 ) -> dict[str, Any]:
     if not _admission.acquire(blocking = False):
         raise Unavailable(529, "overloaded", "System One is busy; retry shortly", retry_after = 1)
     try:
-        return _route(checkpoint, state, questions, images or None)
+        return _route(checkpoint, state, questions, images or None, audio or None)
     finally:
         _admission.release()
 
 
-def _route(checkpoint: Checkpoint, state, questions, images) -> dict[str, Any]:
+def _route(
+    checkpoint: Checkpoint,
+    state,
+    questions,
+    images,
+    audio = None,
+) -> dict[str, Any]:
     global _fallback_reason
     from utils.systemone_settings import get_backend
 
@@ -2116,11 +2220,11 @@ def _route(checkpoint: Checkpoint, state, questions, images) -> dict[str, Any]:
         # A request, unlike a settings read, waits for device detection, so the first one already knows of MLX.
         hardware.get_device()
     state_images = _state_has_images(state)
-    target, reason = select(checkpoint, images, questions, state_images = state_images)
+    target, reason = select(checkpoint, images, questions, state_images = state_images, audio = audio)
     if checkpoint.layout != "laya":
         _fallback_reason = reason
     try:
-        return _decide(target, state, questions, images)
+        return _decide(target, state, questions, images, audio)
     except NativeContextOverflow as exc:
         # Auto answers on PyTorch only what its longer window can hold; at equal windows it would refuse too.
         from .catalog import clef_unsupported_reason
@@ -2162,8 +2266,9 @@ def _decide(
     state,
     questions: dict[str, dict[str, Any]],
     images: list[str] | None = None,
+    audio: list[str] | None = None,
 ) -> dict[str, Any]:
-    global _last_used
+    global _last_used, _device_name
     agent = _agent_for(checkpoint, LOAD_WAIT_S)
     if not _run_lock.acquire(timeout = RUN_WAIT_S):
         raise Unavailable(529, "overloaded", "System One is busy; retry shortly", retry_after = 1)
@@ -2177,7 +2282,7 @@ def _decide(
             _last_used = time.monotonic()
             return result
         if _is_mlx(checkpoint):
-            result = agent.decide(state, questions, images)
+            result = agent.decide(state, questions, images, audio)
             _last_used = time.monotonic()
             return {
                 "model": checkpoint.name,
@@ -2190,9 +2295,16 @@ def _decide(
             return _decide_clef(checkpoint, agent, state, questions)
         laya_questions = {name: _to_laya(q) for name, q in questions.items()}
         try:
-            result, truncated = _predict(agent, state, laya_questions)
+            if isinstance(agent, LayaWorker):
+                result, truncated = agent.predict(state, laya_questions)
+                _device_name = agent.device
+            else:
+                result, truncated = _predict(agent, state, laya_questions)
         except ValueError as exc:
             raise Unavailable(422, "invalid_request_error", str(exc)) from None
+        except LayaWorkerError as exc:
+            threading.Thread(target = _evict_agent, args = (agent,), daemon = True).start()
+            raise Unavailable(503, "model_unavailable", str(exc), retry_after = 5) from None
     finally:
         _run_lock.release()
     return {
@@ -2263,6 +2375,7 @@ def status() -> dict[str, Any]:
             # Laya never falls back, so a reason left by an earlier Clef is not its status.
             "fallback_reason": _fallback_reason if _loaded and _loaded.layout != "laya" else None,
             "device": _device_name,
+            "holds_gpu": _holds_gpu(),
             "loading_model": _loading.name if _loading else None,
             # Kept for the settings API: laya is vendored, so there is never an install in flight.
             "installing": False,
@@ -2273,27 +2386,114 @@ def status() -> dict[str, Any]:
 
 def ensure_can_unload() -> None:
     with _state_lock:
+        if _reloading is not None and _reloading == _loading:
+            return
         # _loading: a load claimed but not yet started would otherwise land after this unload.
         if _loading is not None or (_loader is not None and _loader.is_alive()):
             raise Unavailable(409, "model_loading", "Wait for the load to finish before unloading")
 
 
-def unload() -> bool:
+def unload(reload_after_training: bool = False) -> bool:
     global _agent, _loaded, _device_name, _failure, _generation, _unloads
     ensure_can_unload()
     with _run_lock:
-        agent, was_loaded = _agent, _agent is not None
+        agent, was_loaded, checkpoint = _agent, _agent is not None, _loaded
         _agent = _loaded = _device_name = None
         _failure = None
         _generation += 1
         _unloads += 1
+        unloads = _unloads
     _close(agent)
+    # Dropped first, so an in-process MLX or MPS Laya is collected before the allocator caches are cleared.
+    del agent
     _release_memory()
+    if (
+        reload_after_training
+        and getattr(checkpoint, "layout", None) == "clef"
+        and not _arbitrated(checkpoint)
+    ):
+        threading.Thread(
+            target = _reload_after_training,
+            args = (checkpoint, unloads),
+            name = "systemone-reload",
+            daemon = True,
+        ).start()
     return was_loaded
 
 
+def _clef_preempted() -> bool:
+    global _reload_stopped_by
+    from core.inference.gpu_arbiter import current_owner
+
+    if _training_active():
+        reason = "training"
+    elif _reloading is not None and current_owner() is not None:
+        # A reload nobody asked for yields to a chat, image or video model that claims the GPU meanwhile.
+        reason = "gpu"
+    else:
+        return False
+    if _reloading is not None:
+        _reload_stopped_by = reason
+    return True
+
+
+def _reload_after_training(checkpoint: Checkpoint, unloads: int) -> None:
+    global _reloading, _reload_stopped_by, _failure
+    from core.inference.gpu_arbiter import current_owner
+
+    while True:
+        while _training_active():
+            time.sleep(TRAINING_POLL_S)
+        with _state_lock:
+            if (
+                _unloads != unloads
+                or _agent is not None
+                or _loading is not None
+                or current_owner() is not None
+            ):
+                return
+            _reloading = checkpoint
+            _reload_stopped_by = None
+        try:
+            loader = _ensure_loading(checkpoint, unloads)
+            if loader is not None:
+                loader.join()
+        except Unavailable:
+            pass
+        finally:
+            with _state_lock:
+                _reloading = None
+        training = _reload_stopped_by == "training" or _training_active()
+        if training or _reload_stopped_by == "gpu" or current_owner() is not None:
+            # Another run, or a chat, image or video model, took the GPU while this loaded: not a failure to report.
+            with _state_lock:
+                if _failure is not None and _failure[0] == checkpoint:
+                    _failure = None
+        if not training:
+            break
+    agent = _agent
+    if agent is not None and _loaded == checkpoint:
+        from .clef_runtime import ClefWorkerError
+
+        # The first decision builds the GPU kernels; done now, a request does not wait for it.
+        try:
+            if current_owner() is None:
+                agent.decide("ready", {"ready": {"type": "noul"}})
+        except ClefWorkerError:
+            logger.info(
+                "Retiring %s: its worker failed the warm-up", checkpoint.name, exc_info = True
+            )
+            _evict_agent(agent)
+            return
+        except Exception:
+            logger.debug("Could not warm up %s", checkpoint.name, exc_info = True)
+        if current_owner() is not None:
+            logger.info("Retiring %s: another model took the GPU as it reloaded", checkpoint.name)
+            _evict_agent(agent)
+
+
 def shutdown() -> None:
-    """Studio shutdown: end a llama.cpp decision server (in-process models go with the process)."""
+    """Studio shutdown: end a llama.cpp decision server or Laya worker (in-process models go with the process)."""
     global _agent, _loaded, _device_name, _generation, _unloads
     with _state_lock:
         timer = _idle_timer
@@ -2301,7 +2501,7 @@ def shutdown() -> None:
         timer.cancel()
     with _run_lock:
         _unloads += 1
-        if not _is_native(_loaded):
+        if not _is_native(_loaded) and not isinstance(_agent, LayaWorker):
             return
         agent, _agent, _loaded, _device_name = _agent, None, None, None
         _generation += 1

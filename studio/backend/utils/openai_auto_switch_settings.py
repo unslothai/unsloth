@@ -446,6 +446,18 @@ def normalize_model_override(
         entry["engine_precision"] = payload["engine_precision"]
     if payload.get("engine") in ("vllm", "sglang"):
         entry["engine"] = payload["engine"]
+    if payload.get("engine_kv_cache_dtype") == "fp8":
+        entry["engine_kv_cache_dtype"] = "fp8"
+    seed = _bounded_int(payload.get("engine_seed"), minimum = 0, maximum = 2**31 - 1)
+    if seed is not None:
+        entry["engine_seed"] = seed
+    utilization = payload.get("engine_gpu_memory_utilization")
+    if (
+        isinstance(utilization, (int, float))
+        and not isinstance(utilization, bool)
+        and 0.05 <= utilization <= 0.99
+    ):
+        entry["engine_gpu_memory_utilization"] = round(float(utilization), 3)
 
     extra_args = payload.get("llama_extra_args")
     if isinstance(extra_args, (list, tuple)) and extra_args:
@@ -637,6 +649,9 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
         kwargs["engine"] = override["engine"]
         kwargs["engine_parallelism"] = override.get("engine_parallelism", "tensor")
         kwargs["engine_precision"] = override.get("engine_precision", "auto")
+        for key in ("engine_kv_cache_dtype", "engine_seed", "engine_gpu_memory_utilization"):
+            if key in override:
+                kwargs[key] = override[key]
         kwargs["load_in_4bit"] = False
         if override.get("gpu_ids") is not None:
             kwargs["gpu_ids"] = override["gpu_ids"]

@@ -1090,7 +1090,6 @@ def test_the_knobs_h3_cannot_honour_are_refused_or_normalised():
     refused = {
         "mixed_precision": ("no", "requires bf16"),
         "train_batch_size": (2, "batch size 1"),
-        "compile_transformer": ("on", "does not compile"),
         "cond_cache_dir": ("/tmp/cond", "conditioning cache"),
         "cfg_dropout": (0.1, "guidance-distilled"),
         "weighting_scheme": ("bell", "timestep-weighted"),
@@ -1128,9 +1127,9 @@ def test_the_h3_preflight_runs_before_the_start_route_evicts_anything():
 
 
 def test_the_augmentation_knobs_record_what_h3_actually_does():
-    """Every frame goes through the same centre cover-crop and nothing is flipped, but the
-    schema defaults say the opposite (center_crop=False, random_flip=True), so an untouched
-    request described augmentation that never happened. Normalised rather than refused: a
+    """Every frame goes through the same centre cover-crop and nothing is flipped, but a request
+    can say otherwise (center_crop defaults to False, random_flip can be turned on), so the run
+    record described augmentation that never happened. Normalised rather than refused: a
     refusal would 422 every default request."""
     from dataclasses import replace as _replace
 
@@ -1171,7 +1170,6 @@ def test_h3_is_advertised_as_trainable_with_the_precisions_it_has():
     # The case the bug was: a host that CAN train the DiT families must be able to train H3.
     if reference["precision_modes"]:
         assert h3["precision_modes"], "an empty list disables Start in the Train panel"
-    # compile is the one DiT lever that must NOT follow: "on" is refused by the trainer.
     assert h3["supports_compile"] is False
     assert infos["sdxl"]["supports_compile"] is True
     if reference["precision_modes"]:
@@ -1317,15 +1315,24 @@ def test_the_persisted_h3_recipe_is_the_one_the_loop_runs():
         # cached-with-one anyway and the record said otherwise.
         "cache_latents": True,
         "cache_variants": 1,
+        # One packed clip canvas: no image buckets, whatever the request said.
+        "bucketing": False,
     }
-    # Config-only, and no other family's loop disagrees with its request.
+    # Config-only: the other flow-matching loops disagree only on min-SNR, and SDXL on nothing.
     other = DiffusionLoraConfig(
         base_model = "black-forest-labs/FLUX.1-dev",
         data_dir = "/tmp/d",
         output_dir = "/tmp/o",
         instance_prompt = "p",
     ).normalized()
-    assert train_recipe_overrides(other) == {}
+    assert train_recipe_overrides(other) == {"snr_gamma": None}
+    sdxl = DiffusionLoraConfig(
+        base_model = "stabilityai/stable-diffusion-xl-base-1.0",
+        data_dir = "/tmp/d",
+        output_dir = "/tmp/o",
+        instance_prompt = "p",
+    ).normalized()
+    assert train_recipe_overrides(sdxl) == {}
 
     # The two appliers: the trainer for what runs, the service for what is recorded.
     from core.training import diffusion_h3_trainer
@@ -1876,3 +1883,127 @@ def test_the_advertised_h3_vram_floor_covers_the_measured_run_peak():
     the chip is what a user sizes a host from."""
     from core.training.diffusion_train_common import _FAMILY_TRAIN_SPECS
     assert _FAMILY_TRAIN_SPECS["minimax-h3"]["qlora_vram_gb"] >= 78
+
+
+def test_h3_accepts_every_compile_mode():
+    """dynamic=True compiles one graph per block across caption lengths, so "on" is no longer refused."""
+    from dataclasses import replace as _replace
+
+    from core.training.diffusion_train_common import h3_train_unsupported_reason
+
+    base = _h3_cfg().normalized()
+    for mode in ("off", "on", "auto"):
+        assert h3_train_unsupported_reason(_replace(base, compile_transformer = mode)) is None, mode
+
+
+@pytest.mark.parametrize("precision, expect_bnb", [("bf16", False), ("nf4", True), ("int8", False)])
+def test_h3_routes_its_transformer_through_the_shared_regional_compile(
+    precision, expect_bnb, monkeypatch, tmp_path
+):
+    """H3 hands its transformer to the DiT compile wrapper after int8 conversion, before the optimizer."""
+    import torch
+
+    import core.training.diffusion_dit_trainer as dit
+    import core.training.diffusion_h3_trainer as diffusion_h3_trainer
+    from core.training.diffusion_h3_trainer import _train_h3
+
+    order: list[str] = []
+
+    class _Tiny(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.proj = torch.nn.Linear(4, 4)
+
+        def add_adapter(self, _config):
+            self.lora = torch.nn.Linear(4, 4)
+
+    class _Pipe:
+        text_encoder = processor = vae = audio_vae = None
+
+    seen = {}
+
+    class _Stop(Exception):
+        pass
+
+    def _compile(transformer, cfg, base_is_bnb, device, on_event, base_precision):
+        order.append("compile")
+        seen.update(base_is_bnb = base_is_bnb, base_precision = base_precision)
+        return False
+
+    def _optimizer(*_a, **_k):
+        order.append("optimizer")
+        raise _Stop
+
+    monkeypatch.setattr(diffusion_h3_trainer, "_load_conditioners", lambda cfg, device: _Pipe())
+    monkeypatch.setattr(
+        diffusion_h3_trainer, "_encode_prompt", lambda pipe, cap, device: torch.zeros(1, 3, 8)
+    )
+    monkeypatch.setattr(diffusion_h3_trainer, "_dataset_canvas", lambda path, short: (64, 64))
+    monkeypatch.setattr(diffusion_h3_trainer, "decode_clip", lambda path, **k: (None, None))
+    lf = h3_video_latent_frames(H3_TRAIN_NUM_FRAMES)
+    na = h3_audio_latent_count(H3_TRAIN_NUM_FRAMES)
+    monkeypatch.setattr(
+        diffusion_h3_trainer,
+        "_encode_video_stats",
+        lambda vae, frames, device: (torch.zeros(1, 24, lf, 4, 4), torch.zeros(1, 24, lf, 4, 4)),
+    )
+    monkeypatch.setattr(
+        diffusion_h3_trainer,
+        "_encode_audio_latents",
+        lambda avae, wav, device: torch.zeros(2, 32, na),
+    )
+    monkeypatch.setattr(
+        diffusion_h3_trainer, "_load_transformer", lambda cfg, device, precision: _Tiny()
+    )
+    monkeypatch.setattr(
+        dit, "_int8_quantize_base", lambda transformer, family: order.append("int8")
+    )
+    monkeypatch.setattr(dit, "_maybe_compile_transformer", _compile)
+    monkeypatch.setattr(dit, "_make_optimizer", _optimizer)
+
+    cfg = _replace_cfg(_h3_cfg(base_precision = precision, gradient_checkpointing = False))
+    # No diffusers in Backend CI: stub the two helpers _train_h3 imports, after the family check.
+    try:
+        import diffusers.optimization  # noqa: F401
+        import diffusers.training_utils  # noqa: F401
+    except ImportError:
+
+        def _cast_training_params(model, dtype):
+            for param in model.parameters():
+                if param.requires_grad:
+                    param.data = param.to(dtype)
+
+        monkeypatch.setitem(sys.modules, "diffusers", types.ModuleType("diffusers"))
+        monkeypatch.setitem(
+            sys.modules,
+            "diffusers.optimization",
+            types.SimpleNamespace(get_scheduler = lambda *_a, **_k: None),
+        )
+        monkeypatch.setitem(
+            sys.modules,
+            "diffusers.training_utils",
+            types.SimpleNamespace(cast_training_params = _cast_training_params),
+        )
+
+    with pytest.raises(_Stop):
+        _train_h3(
+            cfg,
+            [("clip.mp4", "a caption")],
+            random.Random(0),
+            "cpu",
+            torch.float32,
+            lambda *_a, **_k: None,
+            lambda: False,
+            lambda: True,
+        )
+    assert seen == {"base_is_bnb": expect_bnb, "base_precision": precision}
+    assert order == (["int8"] if precision == "int8" else []) + ["compile", "optimizer"]
+
+
+def _replace_cfg(cfg):
+    from dataclasses import replace as _replace
+
+    from core.training.diffusion_train_common import train_recipe_overrides
+
+    cfg = cfg.normalized()
+    return _replace(cfg, **train_recipe_overrides(cfg))
