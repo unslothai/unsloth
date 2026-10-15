@@ -124,8 +124,11 @@ export const BUDGET = {
   // native view, and the off-screen question strings) adds 5,278 B raw / 1,928 B transfer (6,765,003 ->
   // 6,770,281 B raw, 2,033,563 -> 2,035,491 B transfer against a8585676d4, one machine and build, Node 24,
   // chunk count unchanged at 95), raised by that.
-  transferBytes: 2_035_705,
-  rawBytes: 6_770_942,
+  // Main was 31 B raw over at 2a8def3bd (6,770,973 B raw, 2,035,652 B transfer). The browser panel's notice for
+  // pages that hit a sandbox limit (#13761) adds 143 B raw / 13 B transfer (-> 6,771,116 B raw, 2,035,665 B
+  // transfer, one machine and build, Node 24, chunk count unchanged at 95). Raised by both.
+  transferBytes: 2_035_718,
+  rawBytes: 6_771_116,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
