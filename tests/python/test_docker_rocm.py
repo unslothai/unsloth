@@ -1119,8 +1119,7 @@ class TestStudioRocmGgufOnTheGpu:
         ]
         assert "UNSLOTH_LLAMA_CPP_BACKEND=vulkan" in install, install
         assert "UNSLOTH_LLAMA_CPP_BACKEND=cpu" not in body
-        # install.sh falls back to the CPU bundle on a failed Vulkan install; the build
-        # has to refuse that rather than ship CPU-only chat again
+        # install.sh falls back to the CPU bundle on a failed Vulkan install
         assert "assert m.get('backend') == 'vulkan'" in body
 
     def test_the_radv_driver_is_installed_and_pinned(self):

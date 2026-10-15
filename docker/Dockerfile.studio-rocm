@@ -8,12 +8,9 @@
 # also ships JupyterLab, the notebook tooling and the notebooks, so Dockerfile.studio
 # inherits them; the ROCm base ships none of that, so it is all installed here.
 #
-# llama.cpp is installed as the Vulkan bundle, run by Mesa's RADV driver: a ROCm
-# bundle is per-gfx-family, so baking one would pin this image to one arch, while
-# Vulkan serves RDNA cards through /dev/dri (and is what Studio picks on its own
-# for the Strix APUs; the /dev/dri it opens is one ROCm needs anyway). With no RADV
-# device (CDNA, the WSL2 DXG bridge) llama.cpp finds no GPU and GGUF chat runs on the
-# CPU, as it did before.
+# llama.cpp is the Vulkan bundle (Mesa RADV): a ROCm bundle is per-gfx-family and would
+# pin this image to one arch. Without a RADV device (CDNA, the WSL2 DXG bridge) GGUF
+# chat falls back to the CPU.
 #
 # Build (on the published ROCm base, or one built from docker/Dockerfile.rocm):
 #   docker buildx build --build-arg BASE_IMAGE=unsloth/unsloth-rocm:latest \
@@ -99,8 +96,7 @@ ENV UNSLOTH_STUDIO_HOME=/opt/unsloth-studio \
 
 # install.sh needs curl + git; supervisor runs Studio and JupyterLab together;
 # ffmpeg is what the notebooks' audio decode shells out to (docker/Dockerfile bakes
-# it for the same reason), and it is not in the ROCm base. libvulkan1 and
-# mesa-vulkan-drivers (RADV) are what the Vulkan llama.cpp reaches the card with.
+# it for the same reason), and it is not in the ROCm base.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
         curl git ca-certificates supervisor ffmpeg libvulkan1 mesa-vulkan-drivers \
@@ -109,9 +105,7 @@ RUN apt-get update \
  && test -n "$icd" \
  && mkdir -p /usr/local/share/unsloth \
  && ln -sf "$icd" /usr/local/share/unsloth/radeon_icd.json
-# RADV only: mesa-vulkan-drivers also registers lavapipe (a CPU device) and drivers for
-# other vendors' cards, none of which should run GGUF chat. The link absorbs Mesa's
-# rename (radeon_icd.x86_64.json in 24.x, radeon_icd.json in 25.x).
+# RADV only, not lavapipe or other vendors' drivers; the glob covers Mesa 24's radeon_icd.x86_64.json.
 ENV VK_DRIVER_FILES=/usr/local/share/unsloth/radeon_icd.json
 
 # JupyterLab and the notebooks' runtime packages into the base venv, so the kernel
@@ -179,8 +173,7 @@ RUN set -eux \
     # The UI is the point of this image, so a missing frontend build is fatal here
     # rather than a 404 at runtime.
  && test -f "${UNSLOTH_STUDIO_HOME}/src/studio/frontend/dist/index.html" \
-    # install.sh falls back to the CPU bundle when the Vulkan one fails, which would
-    # ship the CPU-only chat again without a word.
+    # install.sh silently falls back to the CPU bundle when the Vulkan one fails.
  && "${UNSLOTH_STUDIO_HOME}/unsloth_studio/bin/python" -c "import json; m = json.load(open('${UNSLOTH_STUDIO_HOME}/llama.cpp/UNSLOTH_PREBUILT_INFO.json')); assert m.get('backend') == 'vulkan', 'llama.cpp installed as ' + repr(m.get('backend')) + ', not vulkan'; print('llama.cpp', m.get('release_tag'), m.get('asset'))" \
  && rm -rf "${UNSLOTH_STUDIO_HOME}/src/.git" \
           "${UNSLOTH_STUDIO_HOME}/src/studio/frontend/node_modules" \
