@@ -2286,6 +2286,7 @@ def measured_image_runtime_mib(
     compute_bytes: int = 2,
     quant: Optional[str] = None,
     phase_seeds: bool = False,
+    static_seed: bool = True,
 ) -> Optional[int]:
     """Measured runtime headroom for ``family`` at this size, or None (unmeasured: use the flat estimate).
     ``dense_transformer_mib`` selects the dense eager table; ``compute_bytes`` scales it (fp32 Qwen-Image: 8480 vs 4248).
@@ -2294,13 +2295,15 @@ def measured_image_runtime_mib(
     quantity per phase) for a quantised family the peak table lacks, only with ``phase_seeds`` (the target is where
     those were measured: NVIDIA with a sub-quadratic attention kernel, ``_calibrated_activation``). ``quant`` (``denoiser_quant_label``) adds the
     peak this machine recorded for (family, quant, speed tier, resolution bucket) at an earlier render
-    (diffusion_measured_peaks): it raises a seed and stands in for a missing one, never lowers a seed."""
+    (diffusion_measured_peaks): it raises a seed and stands in for a missing one, never lowers a seed.
+    ``static_seed=False`` (a denoiser no static table was measured on: bf16 or GGUF / int8 packed dense weights)
+    answers from the learned peak alone."""
     if _env_off(MEASURED_ACTIVATION_ENV):
         return None
     seed: Optional[int] = None
-    if dense_transformer_mib is not None:
-        if _env_off(MEASURED_ACTIVATION_DENSE_ENV):
-            return None
+    if dense_transformer_mib is not None and _env_off(MEASURED_ACTIVATION_DENSE_ENV):
+        return None
+    if static_seed and dense_transformer_mib is not None:
         entry = _MEASURED_DENSE_EAGER_PEAK_MIB.get(str(family or "").lower())
         if entry is not None and str(speed_mode or "") in _MEASURED_DENSE_SPEED_MODES:
             peak, max_dit = entry
@@ -2308,7 +2311,7 @@ def measured_image_runtime_mib(
             peak, max_dit = peak * widen // 2, max_dit * widen // 2
             if 0 < int(dense_transformer_mib) <= max_dit:
                 seed = peak
-    elif str(speed_mode or "") in _MEASURED_PEAK_SPEED_MODES:
+    elif static_seed and str(speed_mode or "") in _MEASURED_PEAK_SPEED_MODES:
         seed = _MEASURED_IMAGE_PEAK_MIB.get(str(family or "").lower())
         if seed is None and phase_seeds:
             phases = _MEASURED_IMAGE_ACTIVATION_MIB.get(str(family or "").lower())
@@ -2740,7 +2743,8 @@ def refine_plan_from_loaded_weights(
 
     Keeps the flat plan's offload hooks and makes whole groups resident (denoiser first, then encoders) within the
     safe budget left after the measured peak x margin and the base overhead. No-op for explicit modes, non-CUDA / unified memory, unmeasured families (dense denoisers: the eager-tier table)
-    or speed tiers, non-torchao denoisers and ``model`` plans."""
+    or speed tiers and ``model`` plans. A bf16 or GGUF / int8 packed dense denoiser (no static table measured it)
+    places only from a learned peak recorded for its exact build."""
     try:
         if getattr(plan, "requested_mode", None) != MEMORY_MODE_AUTO:
             return plan
@@ -2764,9 +2768,12 @@ def refine_plan_from_loaded_weights(
             return plan
         dense_mib = None if _pipe_denoisers_hold_torchao(pipe) else dit
         compute_bytes = _denoiser_compute_bytes(pipe)
-        if dense_mib is not None and (compute_bytes is None or _pipe_denoisers_hold_packed(pipe)):
-            # measured on fp16 / fp32 cards only; bf16 cards can compile later
-            return plan
+        # The dense eager table was measured on fp16 / fp32 unpacked weights only. A bf16 denoiser and a GGUF / int8
+        # packed one (a whole Linear dequantized per forward) place from the peak this machine recorded for the exact
+        # build (learned-only): without one the lookup answers None and the flat plan stands.
+        static_seed = not (
+            dense_mib is not None and (compute_bytes is None or _pipe_denoisers_hold_packed(pipe))
+        )
         quant = learned_peak_label(pipe, attention, model, vae, te, cache, graphs)
         try:
             pipe._unsloth_peak_identity = (family, quant, speed_mode)
@@ -2779,6 +2786,7 @@ def refine_plan_from_loaded_weights(
             compute_bytes = compute_bytes or 2,
             quant = quant,
             phase_seeds = bool(getattr(pipe, "_unsloth_phase_seeds", False)),
+            static_seed = static_seed,
         )
         if headroom is None:
             return plan
@@ -2797,6 +2805,7 @@ def refine_plan_from_loaded_weights(
             measured_learned_peak_quadratic = learned_quadratic,
             measured_dense_transformer_mib = dense_mib,
             measured_compute_bytes = compute_bytes,
+            measured_static_seed = static_seed,
             loaded_transformer_mib = dit,
             loaded_text_encoder_mib = encoders,
             loaded_other_mib = other,
@@ -3452,6 +3461,8 @@ def measured_request_extra_mib(
     # after the load only places the NEXT load, it must not stream resident groups for a request the same size as one
     # that just completed. An unseeded family was placed from its learned peak, which is all there is to check against.
     sized["phase_seeds"] = bool(getattr(pipe, "_unsloth_phase_seeds", False))
+    # a load placed from its learned peak alone (bf16 / packed dense denoiser) never reads the fp16 dense table
+    sized["static_seed"] = bool(reserve[8]) if len(reserve) > 8 and reserve[8] is not None else True
     need = measured_image_runtime_mib(family, speed_mode, **sized)
     learned = reserve[5] if len(reserve) > 5 else None
     if (learned or need is None) and (
