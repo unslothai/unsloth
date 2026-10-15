@@ -825,12 +825,18 @@ async function perform(action: BrowserAction, context: Run): Promise<Result> {
     });
     if (!clicked.ok) return { ok: false, error: clicked.error };
     if (clicked.navigate) {
+      const pressedAt = Date.now();
       // A link: opened in this tab, under the same rules as any other address. Its href is read
       // now, so it may not be one the last snapshot listed.
       const gate = gateNavigation(clicked.navigate, navigationContext(action, context));
       const refused = await pass(gate, context);
       if (refused) return { ok: false, error: refused };
       admit(clicked.navigate, gate, context);
+      // The page goes the moment the tab navigates, taking the cursor with it: let its press show first.
+      if (useBrowserAgentStore.getState().showCursor) {
+        await sleep(Math.max(0, LINK_PRESS_MS - (Date.now() - pressedAt)));
+        if (signal?.aborted) return { ok: false, error: STOPPED };
+      }
       const sent = Date.now();
       useBrowserStore.getState().navigate(ready.id, { url: clicked.navigate, from: here }, { replace: false });
       const loaded = await waitForLoad(ready.id, signal);
@@ -886,6 +892,7 @@ type ShotView = {
   doc?: string;
 };
 const MAX_SHOT_EDGE = 1024;
+const LINK_PRESS_MS = 350;
 
 async function pagePoint(tab: BrowserTab, session: Session, x?: number, y?: number): Promise<{ x: number; y: number } | string | null> {
   if (x === undefined || y === undefined) return null;
