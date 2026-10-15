@@ -185,7 +185,6 @@ def _format_rows(tokenizer, config: dict, rows: list) -> tuple[list, str]:
         raise ValueError("; ".join(info.get("errors") or []) or "Dataset formatting failed")
     final_format = str(info.get("final_format", "")).lower()
     if final_format == PRETOKENIZED_FORMAT:
-        # Rows that are already token IDs keep them; there is no text to render.
         return info["dataset"].to_list(), final_format
     return list(info["dataset"]["text"]), final_format
 
@@ -294,9 +293,8 @@ def _preview(tokenizer, config: dict, request: dict) -> dict:
 
 
 def _skip_fingerprint_hashing() -> None:
-    """datasets dill-hashes every map function, and the tokenizer each one closes over, to name cache
-    files: 8 of 10 s on 100 FineTome rows. The preview maps in-memory rows only, which never touch the
-    cache, so in this process a random id stands in. Idempotent."""
+    """datasets dill-hashes each map function (and the tokenizer it closes over) to name cache files the
+    in-memory preview never writes; a random id serves the same. Idempotent."""
     import datasets.arrow_dataset as arrow_dataset
     import datasets.fingerprint as fingerprint
 

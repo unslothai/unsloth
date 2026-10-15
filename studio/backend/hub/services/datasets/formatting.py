@@ -375,10 +375,8 @@ _VIEWER_MEDIA_TYPES = ("Image", "Audio", "Video", "Pdf")
 
 
 def _viewer_rows(request: CheckFormatRequest, hf_token, preview_size: int) -> Optional[list]:
-    """The first rows from the Hub dataset viewer: one JSON answer of about 100 KB, where streaming reads
-    a whole parquet row group or JSON block (37 MB for FineTome-100k). None whenever it cannot stand in
-    for the stream exactly (offline, ModelScope, a mirror without its own viewer, no answer, cut cells,
-    media columns); the caller then streams as before."""
+    """The first rows from the Hub dataset viewer, a ~100 KB answer where streaming reads a whole parquet
+    row group or JSON block. None whenever it cannot stand in for the stream exactly."""
     import json
     import os
 
