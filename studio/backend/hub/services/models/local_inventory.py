@@ -702,12 +702,14 @@ def _scan_hf_cache(
         )
         # Denoiser-less pipeline (a GGUF's borrowed VAE / encoder): partial so no picker loads it, flagged so the Hub offers no Continue.
         if not snapshot_partial and hf_cache_scan.snapshot_pipeline_missing_denoiser(
-            hf_cache_scan.latest_snapshot_dir(repo_dir)
+            latest_snapshot := hf_cache_scan.latest_snapshot_dir(repo_dir)
         ):
+            # Some denoiser shards on disk is a torn download, not a prefetch: partial, but not flagged.
+            companion_prefetch = not hf_cache_scan.snapshot_denoiser_has_weights(latest_snapshot)
             rows = [
                 row
                 if row.model_format == "gguf"
-                else row.model_copy(update = {"companion_prefetch": True})
+                else row.model_copy(update = {"companion_prefetch": companion_prefetch})
                 for row in _apply_format_aware_partial(
                     rows, snapshot_partial = True, gguf_partial = gguf_partial
                 )

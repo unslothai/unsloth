@@ -1,7 +1,6 @@
 #!/usr/bin/env pwsh
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-# ctypes process-image rung between Get-Process and WMI; the table uses a stubbed runner.
 # Run: pwsh -NoProfile -File tests/studio/test_early_python_process_image.ps1
 
 $ErrorActionPreference = "Stop"
@@ -21,8 +20,7 @@ foreach ($name in @(
     "Invoke-StudioEarlyPythonScript", "Invoke-StudioEarlyPython", "Get-StudioEarlyPython",
     "New-StudioChildScriptDirectory", "Test-StudioChildScriptDirectoryElevated",
     "Get-StudioPythonProcessImageTable", "Get-StudioWmiProcessImageRows", "Get-StudioProcessImagePath",
-    # What Get-StudioEarlyPython reaches on Windows: the elevation gate and its helpers. Off
-    # Windows it never calls them, which is how a missing one once passed here and failed CI.
+    # Off Windows these are never called, so a missing one would only fail on Windows CI.
     "Invoke-StudioSystem32ToolBounded", "Get-StudioSystem32Tool", "Test-StudioPathUnderAdminRoot",
     "Test-StudioSddlRightsAreWrite", "Test-StudioSddlPrincipalIsAdminOnly",
     "Test-StudioSddlWritableByNonAdmin", "Test-StudioDirectoryIsAdminOnly", "Test-StudioInterpreterFileIsAdminOnly",
@@ -56,20 +54,13 @@ function Reset-RungState {
     $script:StudioProcessImageWarned = $true
 }
 
-# ---------------------------------------------------------------- the generic runner, for real
-
-# The kill switch would make discovery decline; its own cases below set it explicitly.
 Remove-Item Env:UNSLOTH_EARLY_PYTHON_PROBE -ErrorAction SilentlyContinue
 $script:StudioEarlyPythonProbed = $false
 $script:StudioEarlyPython = $null
 $exe = Get-StudioEarlyPython
 if (-not $exe) {
-    # "No interpreter" is a real and supported state, so it is a skip. But it is also what a
-    # BROKEN EXTRACTION looks like from here: a helper this file forgot to pull out of
-    # install.ps1 makes Get-StudioEarlyPython fail, the probe finds nothing, and the suite exits 0
-    # having tested nothing. That happened once and CI recorded it as a pass. Tell the two apart.
-    # The documented opt-out first. UNSLOTH_EARLY_PYTHON_PROBE=0 means "do not spawn an interpreter
-    # on this host", so discovery returning nothing is the switch working, not a broken extraction.
+    # "No interpreter" also looks like a broken extraction, so tell the two apart; the
+    # UNSLOTH_EARLY_PYTHON_PROBE=0 opt-out is checked first.
     if ("$($env:UNSLOTH_EARLY_PYTHON_PROBE)".Trim() -eq "0") {
         Write-Host "  SKIP  UNSLOTH_EARLY_PYTHON_PROBE=0, so this rung is switched off by request" -ForegroundColor Yellow
         exit 0
@@ -83,12 +74,10 @@ if (-not $exe) {
             if ($usable) { break }
             if ([string]::IsNullOrWhiteSpace($src)) { continue }
             if ("$src" -match '(?i)[\\/]Microsoft[\\/]WindowsApps[\\/]') { continue }
-            # The installer's own elevated rule: an elevated run refuses an interpreter a standard user
-            # can replace, so such a candidate is not one discovery should have found.
             if ($elevatedHost -and -not (Test-StudioPathUnderAdminRoot -Path $src)) { continue }
             $here = Split-Path -Parent $src
             if ([string]::IsNullOrWhiteSpace($here)) { continue }
-            # In a job with a deadline: a shim that starts and never exits must be a skip, not a hang.
+            # A shim that never exits must be a skip, not a hang.
             $job = Start-Job -ArgumentList $src, $here -ScriptBlock {
                 param($exe, $dir)
                 "$(& $exe -I -S -c "import pathlib,sys`nsys.exit(2) if sys.version_info < (3,8) else None`nsys.stdout.write(str(pathlib.Path(sys.argv[1]).resolve(strict=True)))" $dir 2>$null)"
@@ -136,8 +125,6 @@ Check "non-ASCII output survives the host's console codepage" ($utf8 -eq ([char]
 $missing = Invoke-StudioEarlyPythonScript -Exe (Join-Path $root "no-such-interpreter") -Script "pass"
 Check "an interpreter that does not exist yields null, not a throw" ($null -eq $missing)
 
-# ------------------------------------------------------- the table, through a stubbed runner
-
 $script:RunnerCalls = 0
 $script:RunnerOutput = "10|C:\a\python.exe`n20|C:\b\python.exe"
 function Invoke-StudioEarlyPythonScript {
@@ -166,7 +153,7 @@ try {
     Check "a child that answers nothing yields null, so the WMI rung is still reached" (
         $null -eq (Get-StudioPythonProcessImageTable))
 
-    # A $null table must not re-probe: "not asked" and "asked, got nothing" need the probed flag.
+    # "Not asked" and "asked, got nothing" need the probed flag.
     Reset-RungState
     $script:RunnerCalls = 0
     $script:RunnerOutput = ""
@@ -189,7 +176,6 @@ try {
     Check "control: an unknown pid falls through to the rung below" (
         $null -eq (Get-StudioProcessImagePath -ProcessId 999))
 
-    # Interpreter discovery can throw; the WMI rung below this one must still get its turn.
     Reset-RungState
     $savedTable = ${function:Get-StudioPythonProcessImageTable}
     function Get-StudioPythonProcessImageTable { throw "interpreter discovery failed" }
@@ -202,7 +188,6 @@ try {
     function Get-StudioWmiProcessImageRows { return @() }
     ${function:Get-StudioPythonProcessImageTable} = $savedTable
 
-    # Validating the answer is part of the null-on-error contract: an access error declines.
     $script:RunnerOutput = [System.IO.Path]::GetTempPath()
     function Test-Path { param($LiteralPath, $PathType, $ErrorAction)
         throw [System.UnauthorizedAccessException]::new("Access to the path is denied.") }
@@ -212,7 +197,6 @@ try {
     Check "an access error validating the answer declines instead of throwing" (
         $null -eq $threw -and $null -eq $answer)
 
-    # Without the table only WMI is left, which the shell must say rather than scan silently.
     Reset-RungState
     $script:StudioProcessImageWarned = $false
     $script:RunnerOutput = ""
@@ -239,8 +223,6 @@ try {
     if ($null -eq $savedOs) { Remove-Item Env:OS -ErrorAction SilentlyContinue } else { $env:OS = $savedOs }
 }
 
-# ------------------------------------------------------------------------ the embedded probe
-
 $probeFn = $ast.FindAll({ param($n)
     $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
     $n.Name -eq "Get-StudioPythonProcessImageTable"
@@ -265,7 +247,7 @@ Check "no emitted process-image type remains" ($installWhole -notmatch "UnslothS
 Check "no native process-image helper remains" (
     $installWhole -notmatch "Get-StudioNativeProcessImagePath|Initialize-StudioProcessImageNativeType")
 
-# EnumProcesses filling the buffer exactly may mean truncation; only a smaller count is complete.
+# A full buffer may mean truncation; only a smaller count is complete.
 Check "the probe grows its buffer until the enumeration is provably complete" (
     $probeText -match "b\.value\s*<\s*ctypes\.sizeof\(a\)")
 

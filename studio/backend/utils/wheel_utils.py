@@ -139,8 +139,9 @@ _UNSLOTH_PREBUILT_PLATFORMS: dict[str, tuple[str, frozenset[str] | None]] = {
     "win_arm64": ("TRUE", frozenset({"cp311", "cp312", "cp313"})),
 }
 
-# (platform, torch minor) cells outside _UNSLOTH_PREBUILT_TORCH_MM, with their interpreters. The torch2.10 reuse above has no Windows asset, so win_amd64 torch 2.11 is ours; an existing install keeps its minor (a fresh one takes 2.13 on cp313), hence three interpreters.
+# (platform, torch minor) cells outside _UNSLOTH_PREBUILT_TORCH_MM, with their interpreters. Upstream's torch2.10 wheels (and their 2.11 reuse above) have no Windows asset, so win_amd64 torch 2.10 and 2.11 are ours; an existing install keeps its minor (a fresh one takes 2.13 on cp313), hence three interpreters.
 _UNSLOTH_PREBUILT_EXTRA_CELLS: dict[tuple[str, str], frozenset[str]] = {
+    ("win_amd64", "2.10"): frozenset({"cp311", "cp312", "cp313"}),
     ("win_amd64", "2.11"): frozenset({"cp311", "cp312", "cp313"}),
 }
 

@@ -14,6 +14,7 @@ import {
   useLayoutEffect,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
 import type {
   CachedInventoryRow,
@@ -33,6 +34,19 @@ import {
   RESULT_ROW_HEIGHT_PX,
   RESULT_SPLIT_ROW_HEIGHT_PX,
 } from "./models-table";
+
+// Phones and small tablets (768px and under) show one card per row.
+const SINGLE_COLUMN_QUERY = "(max-width: 768px)";
+
+function getSingleColumnSnapshot(): boolean {
+  return window.matchMedia(SINGLE_COLUMN_QUERY).matches;
+}
+
+function subscribeSingleColumn(callback: () => void): () => void {
+  const mql = window.matchMedia(SINGLE_COLUMN_QUERY);
+  mql.addEventListener("change", callback);
+  return () => mql.removeEventListener("change", callback);
+}
 
 export interface ModelsCatalogState {
   tab: ModelsTab;
@@ -157,6 +171,12 @@ export const ModelsCatalog = memo(function ModelsCatalog({
     downloaded: 0,
   });
   const deviceType = usePlatformStore((s) => s.deviceType);
+  const singleColumn = useSyncExternalStore(
+    subscribeSingleColumn,
+    getSingleColumnSnapshot,
+    () => false,
+  );
+  const columns = discoverView === "two" && !singleColumn ? 2 : 1;
 
   const setDiscoverScrollNode = useCallback((node: HTMLDivElement | null) => {
     discoverScrollRef.current = node;
@@ -352,30 +372,23 @@ export const ModelsCatalog = memo(function ModelsCatalog({
   // Non-split reserves an equal `both-edges` gutter so the centered --hub-measure column stays
   // symmetric; split mode pins a narrow master left, so it reserves only the right gutter.
   const scrollPaneClassName =
-    "absolute inset-0 min-h-0 overflow-x-hidden overflow-y-auto pb-6 pt-0 [overflow-anchor:none] [scrollbar-width:thin] " +
+    "absolute inset-0 min-h-0 overflow-x-hidden overflow-y-auto pb-6 pt-0 [overflow-anchor:none] [scrollbar-width:thin] max-md:[scrollbar-gutter:auto] " +
     (discoverView === "split"
       ? "[scrollbar-gutter:stable]"
       : "[scrollbar-gutter:stable_both-edges]");
-  // Split mode keeps the top bar's left padding to align the list header but tightens the right.
+  // Split mode tightens the right padding only once the detail pane sits beside it (lg).
   const splitView = discoverView === "split";
-  const discoverColumnClassName = splitView
-    ? "mx-auto w-full max-w-[var(--hub-measure)] pl-5 pr-2 sm:pl-8"
-    : "mx-auto w-full max-w-[var(--hub-measure)] px-5 sm:px-8";
-  const downloadedColumnClassName = splitView
-    ? "mx-auto w-full max-w-[var(--hub-measure)] pl-5 pr-2 sm:pl-8"
+  const columnClassName = splitView
+    ? "mx-auto w-full max-w-[var(--hub-measure)] px-5 sm:px-8 lg:pr-2"
     : "mx-auto w-full max-w-[var(--hub-measure)] px-5 sm:px-8";
   const discoverActive = tab === "discover";
   const downloadedActive = tab === "downloaded";
   const discoverInactiveHeight = Math.max(
     savedScrollHeightsRef.current.discover,
-    (discoverView === "two"
-      ? Math.ceil(discoverRows.length / 2)
-      : discoverRows.length) *
-      (discoverView === "grid"
-        ? RESULT_GRID_ROW_HEIGHT_PX
-        : discoverView === "split"
-          ? RESULT_SPLIT_ROW_HEIGHT_PX
-          : RESULT_ROW_HEIGHT_PX) +
+    Math.ceil(discoverRows.length / columns) *
+      (discoverView === "split"
+        ? RESULT_SPLIT_ROW_HEIGHT_PX
+        : RESULT_ROW_HEIGHT_PX) +
       lastHeaderHeightRef.current,
   );
   const downloadedInactiveHeight = Math.max(
@@ -409,7 +422,7 @@ export const ModelsCatalog = memo(function ModelsCatalog({
           )}
         >
           {discoverActive ? (
-            <div className={discoverColumnClassName}>
+            <div className={columnClassName}>
               {header ? <div ref={headerRef}>{header}</div> : null}
               <DiscoverList
                 discoverRows={discoverRows}
@@ -434,6 +447,7 @@ export const ModelsCatalog = memo(function ModelsCatalog({
                 onRetry={onRetry}
                 onSwitchDevice={onSwitchDevice}
                 view={discoverView}
+                columns={columns}
                 selectedId={selectedId}
                 showFormatDots={showFormatDots}
               />
@@ -456,7 +470,7 @@ export const ModelsCatalog = memo(function ModelsCatalog({
           )}
         >
           {downloadedActive ? (
-            <div className={downloadedColumnClassName}>
+            <div className={columnClassName}>
               {downloadedHeader ? (
                 <div className="flex flex-col gap-3 pt-6">
                   {downloadedHeader}
@@ -477,7 +491,7 @@ export const ModelsCatalog = memo(function ModelsCatalog({
                 inventoryTokens={inventoryTokens}
                 deviceType={deviceType}
                 compact={splitView}
-                columns={discoverView === "two" ? 2 : 1}
+                columns={columns}
                 sort={inventorySort}
                 onInventoryChange={onInventoryChange}
                 showFormatDots={showFormatDots}
