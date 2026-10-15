@@ -317,9 +317,9 @@ def test_clearing_the_note_restores_the_host_accelerator(fake_settings):
 
 @pytest.mark.parametrize(
     "accelerator,expected",
-    [("rocm", "vulkan"), ("vulkan", None), ("cuda", None), ("cpu", None), ("auto", None)],
+    [("rocm", "vulkan"), ("vulkan", "cpu"), ("cuda", None), ("cpu", None), ("auto", None)],
 )
-def test_only_rocm_has_a_rung_below_it(accelerator, expected):
+def test_only_rocm_and_vulkan_have_a_rung_below_them(accelerator, expected):
     from core.inference.sd_cpp_backend import fallback_accelerator_for
     assert fallback_accelerator_for(accelerator) == expected
 
@@ -2309,7 +2309,7 @@ def test_the_route_tells_the_selection_which_card_it_picked(fake_settings):
     body = inspect.getsource(router.select_and_activate_engine)
     assert "_selected_card(gpu_ordinal)" in body
     assert (
-        "preferred_accelerator(\n            _install_accelerator_for(backend), selected_card\n        )"
+        "preferred_accelerator(\n            image_install_accelerator(backend), selected_card\n        )"
         in body
     )
 

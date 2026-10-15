@@ -150,6 +150,10 @@ def te_prequant_budget_scale(
 
     Best-effort like the rest of this module: anything unresolvable returns 1.0, i.e. today's
     bf16 budget."""
+    if getattr(fam, "name", None) == "ltx-2.5":
+        from .video_ltx25 import ltx25_te_budget_scale
+        components = getattr(fam, "bf16_components_gb", None) or (0.0, 0.0)
+        return ltx25_te_budget_scale(te_quant_mode, components[1])
     try:
         sources = te_prequant_sources_for_base(
             fam,

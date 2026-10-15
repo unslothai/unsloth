@@ -3029,6 +3029,25 @@ class TestBuildPassthroughPayloadToolChoice:
             {"role": "user", "content": "hi"},
         ]
 
+    @pytest.mark.parametrize(
+        "tool_choice, kept",
+        [("auto", False), ("required", False), ("none", True)],
+    )
+    def test_passthrough_body_sets_response_format_aside_for_callable_tools(
+        self, tool_choice, kept
+    ):
+        payload = ChatCompletionRequest(
+            model = "default",
+            messages = [{"role": "user", "content": "hi"}],
+            tools = self._args()["openai_tools"],
+            tool_choice = tool_choice,
+            response_format = {"type": "json_object"},
+        )
+
+        body = _build_openai_passthrough_body(payload, backend_ctx = 4096)
+
+        assert ("response_format" in body) is kept
+
 
 class TestOpenAIPassthroughSSETerminalState:
     def test_done_sentinel(self):
@@ -3808,7 +3827,7 @@ class TestFriendlyErrorHttpx:
 
     def test_read_timeout_mapped(self):
         exc = httpx.ReadTimeout("timed out", request = self._req())
-        assert "first token within 20 minutes" in _friendly_error(exc)
+        assert "first token within the waiting limit" in _friendly_error(exc)
 
     def test_non_httpx_unchanged(self):
         # Non-httpx exceptions still fall through to the substring heuristics
@@ -9848,11 +9867,11 @@ class TestApiMonitorProviderAndCompletionStreams:
             assert 'data: {"choices":[{"delta":{"content":"hello"}}]}\n\n' in body
             assert '"finish_reason"' not in body.replace(" ", "")
             assert '"type":"api_error"' in body.replace(" ", "")
-            assert "still processing the prompt" in body
+            assert "first token within the waiting limit" in body
             assert body.endswith("data: [DONE]\n\n")
             [entry] = monitor.snapshot()
             assert entry["status"] == "error"
-            assert "still processing the prompt" in entry["error"]
+            assert "first token within the waiting limit" in entry["error"]
             assert entry["reply"] == "hello"
             assert monitor.active_count() == 0
 

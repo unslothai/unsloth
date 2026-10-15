@@ -147,7 +147,9 @@ export function SandboxFiles({
 }) {
   if (!sessionId || files.length === 0) return null;
   return (
-    <div className={cn("mt-2 border-t border-dashed pt-2", className)}>
+    // No divider: the row sits outside the collapsible content, so on a collapsed card a rule
+    // would separate the header from nothing.
+    <div className={cn("mt-2", className)}>
       <SandboxFolderLabel
         sessionId={sessionId}
         label={files.length === 1 ? "file created" : "files created"}

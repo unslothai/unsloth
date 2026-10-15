@@ -90,7 +90,7 @@ from utils.helper_precache_settings import (
     helper_model_disabled_by_env,
     set_helper_precache_enabled,
 )
-from utils import sandbox_memory_limit, systemone_settings, tool_result_limit
+from utils import first_token_timeout, sandbox_memory_limit, systemone_settings, tool_result_limit
 from utils.download_transport_settings import (
     get_download_transport_mode,
     set_download_transport_mode,
@@ -1509,6 +1509,28 @@ def update_upload_limit(
     return _upload_limit_response(limit_mb)
 
 
+class FirstTokenTimeoutPayload(BaseModel):
+    minutes: StrictInt = Field(ge = 0, le = first_token_timeout.MAX_MINUTES)
+
+
+class FirstTokenTimeoutResponse(FirstTokenTimeoutPayload):
+    default_minutes: int = first_token_timeout.DEFAULT_MINUTES
+    max_minutes: int = first_token_timeout.MAX_MINUTES
+
+
+@_shared_settings_router.get("/first-token-timeout", response_model = FirstTokenTimeoutResponse)
+def get_first_token_timeout(current_subject: str = Depends(get_current_subject)):
+    return FirstTokenTimeoutResponse(minutes = first_token_timeout.get_minutes())
+
+
+@_owner_settings_router.put("/first-token-timeout", response_model = FirstTokenTimeoutResponse)
+def update_first_token_timeout(
+    payload: FirstTokenTimeoutPayload, current_subject: str = Depends(get_current_subject)
+):
+    first_token_timeout.set_minutes(payload.minutes)
+    return FirstTokenTimeoutResponse(minutes = payload.minutes)
+
+
 def _tool_result_limit_response() -> ToolResultLimitResponse:
     return ToolResultLimitResponse(
         max_chars = tool_result_limit.effective_max_chars(),
@@ -1587,13 +1609,15 @@ def _decision_description(checkpoint, mlx: bool) -> str:
 def _clef_availability(checkpoint, reason: Optional[str]) -> dict:
     from core.systemone import laya_runtime
 
-    if getattr(checkpoint, "layout", "laya") == laya_runtime.GGUF:
+    only_mlx = getattr(checkpoint, "backend", None) == laya_runtime.MLX
+    if only_mlx or getattr(checkpoint, "layout", "laya") == laya_runtime.GGUF:
+        only = {} if only_mlx else {"llama_cpp_only": True}
         # Selectable under a PyTorch runtime: the runtime row then says to switch it.
         try:
             laya_runtime.select(checkpoint, preference = "auto")
         except laya_runtime.Unavailable as exc:
-            return {"llama_cpp_only": True, "available": False, "unavailable_reason": exc.message}
-        return {"llama_cpp_only": True}
+            return {**only, "available": False, "unavailable_reason": exc.message}
+        return only
     if reason is None or getattr(checkpoint, "layout", "laya") != "clef":
         return {}
     # llama.cpp serves Clef without CUDA or ROCm, and so does the MLX engine on Apple Silicon.
