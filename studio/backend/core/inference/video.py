@@ -8033,12 +8033,6 @@ class VideoBackend:
                         speed_optims += ("vae_wide_tiles",)
                 except Exception as exc:  # noqa: BLE001 - keep the stock tiled decode
                     logger.warning("video.vae_wide_tiles: not installed: %s", exc)
-            # Offload-first retry on a decode OOM. Before untiled-when-fits, which keeps its own untiled -> tiled fallback.
-            try:
-                from .diffusion_vae_oom import install as install_vae_oom_retry
-                install_vae_oom_retry(getattr(pipe, "vae", None), logger, pipe = pipe)
-            except Exception as exc:  # noqa: BLE001 - a decode OOM then fails as before
-                logger.warning("video.vae_oom: not installed: %s", exc)
             # Resident: decode untiled when it fits, tiled as fallback. Not on SPEED_OFF, which must stay bit-identical.
             if (
                 offload_policy == "none"
@@ -8063,6 +8057,14 @@ class VideoBackend:
                 vae_bf16_mode = install_rocm_vae_bf16_decode(pipe, target, logger = logger)
                 if vae_bf16_mode:
                     speed_optims += ("vae_bf16_decode", f"vae_bf16_{vae_bf16_mode}")
+            # Offload-first retry on a decode OOM, installed last: its decode scope is the outermost decode layer
+            # (one recovery session per logical decode) and every inner wrapper that falls back on an OOM (wide
+            # tiles, untiled-when-fits) frees the card through it first (diffusion_vae_oom.free_first).
+            try:
+                from .diffusion_vae_oom import install as install_vae_oom_retry
+                install_vae_oom_retry(getattr(pipe, "vae", None), logger, pipe = pipe)
+            except Exception as exc:  # noqa: BLE001 - a decode OOM then fails as before
+                logger.warning("video.vae_oom: not installed: %s", exc)
 
             resolved = build_resolved_record(
                 {

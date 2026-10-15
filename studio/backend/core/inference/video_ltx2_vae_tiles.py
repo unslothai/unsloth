@@ -14,6 +14,7 @@ import os
 import types
 from typing import Any, Optional
 
+from .diffusion_vae_oom import free_first as oom_free_first
 from .diffusion_vae_tiling import axis_weights as _axis_weights
 
 WIDE_TILES_ENV = "UNSLOTH_VIDEO_VAE_WIDE_TILES"
@@ -248,6 +249,15 @@ def tiled_decode(
         if (th, tw) == floor or not is_oom_error(exc):
             raise
         failed = True
+    if failed and oom_free_first(vae, z):
+        # the OOM retry freed the card (rest of the pipeline off it): the same tiles again before the floor tile
+        failed = False
+        try:
+            dec = _decode_tiles(vae, z, temb, causal, th, tw, budgeted)
+        except Exception as exc:  # noqa: BLE001
+            if not is_oom_error(exc):
+                raise
+            failed = True
     if failed:
         # Retried outside the handler so the failed attempt's tensors (held by the traceback) are gone first.
         import torch

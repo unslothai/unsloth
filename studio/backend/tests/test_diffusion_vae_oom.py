@@ -440,9 +440,16 @@ def test_untiled_gate_keeps_its_own_fallback():
     for outer in (gate, bf16_decode):
         vae.seen.clear()
         vae.decode = outer
-        with pytest.raises(RuntimeError, match = "out of memory"):
-            vae._decode(_z())
-        assert [s[0] for s in vae.seen] == [False]  # the gate retries tiled itself
+        # Item 4283572976: the ladder sees the gate's untiled OOM first: the card is freed and untiled retried
+        vae._decode(_z())
+        assert [s[0] for s in vae.seen] == [False, False]
+        assert vae._unsloth_vae_oom_stats["recovered_by"] == "freed"
+    # nothing to free (or still out of memory): the gate's own tiled fallback gets the original OOM
+    vae, pipe = _setup(cap = 4096 + 600, untiled_need = 10**9, tiled_need = 500, can_free = False)
+    vae.decode = gate
+    with pytest.raises(_FakeOOM):
+        vae._decode(_z())
+    assert [s[0] for s in vae.seen] == [False]
 
 
 def test_kill_switch(monkeypatch):
@@ -633,7 +640,7 @@ def test_dataflow_trace_pairs_only_exclusive_group_norm_silu():
     vae = AutoencoderKLSomethingNew()
     norms = F._plain_group_norms(vae.decoder)
     silus = F._plain_silus(vae.decoder)
-    calls, consumed, _ = F._trace_group_norm_silu(
+    calls, consumed, _, info = F._trace_group_norm_silu(
         norms, silus, lambda: vae._decode(torch.randn(1, 8, 6, 6))
     )
     names = {id(m): n for n, m in vae.decoder.named_modules()}
@@ -641,8 +648,11 @@ def test_dataflow_trace_pairs_only_exclusive_group_norm_silu():
     assert got["block.norm1"] == (1, 1)
     assert got["norm_out"] == (1, 1)
     assert got["attn_norm"] == (1, 0)
-    # norm2's output reaches the SiLU AND the residual: the trace sees the SiLU, the probe check must catch the rest
-    assert got["block.norm2"] == (1, 1)
+    # Item 4283572932: norm2's output reaches the SiLU AND the residual: not exclusively consumed (before: (1, 1),
+    # fused with its SiLU, which changed what the residual read)
+    assert got["block.norm2"] == (1, 0)
+    shared = {names[id(m)]: k for m, k in zip(norms, info["shared"])}
+    assert shared["block.norm2"] >= 1 and shared["block.norm1"] == 0 and shared["norm_out"] == 0
 
 
 def _install_on_cpu(monkeypatch, vae):
@@ -655,7 +665,7 @@ def _install_on_cpu(monkeypatch, vae):
     z = torch.randn(1, 8, 6, 6)
     inner = L.find(vae, "_decode", F._STRUCTURAL_LAYER).inner
     with torch.no_grad():
-        calls, consumed, ref = F._trace_group_norm_silu(
+        calls, consumed, ref, _ = F._trace_group_norm_silu(
             F._plain_group_norms(vae.decoder), F._plain_silus(vae.decoder), lambda: inner(z)[0]
         )
     return state, z, ref
@@ -1135,3 +1145,274 @@ def test_component_whose_move_and_rollback_both_fail_gets_a_deferred_return(monk
     assert session.apply(lambda: O._to_host(m), session._component_change("transformer", m)) is False
     assert session.log == [] and all(p.dtype == torch.float32 for p in m.parameters())
     assert isinstance(m.__dict__.get(O._DEFERRED_ATTR), O.DeferredReturn)
+
+
+# -- PR review round 11 -----------------------------------------------------------------------------------------
+
+
+def test_trace_refuses_activation_fusion_for_hooked_or_inplace_reused_norms():
+    """Item 4283572932, class: exclusivity is proven on the trace. A hook on the norm, or an in-place reuse of its
+    output outside the SiLU, keeps the norm unpaired (GroupNorm-only fusion)."""
+    class Blk(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.norm = torch.nn.GroupNorm(4, 8)
+            self.act = torch.nn.SiLU()
+
+        def forward(self, x):
+            h = self.norm(x)
+            y = self.act(h)
+            h.mul_(2)  # in-place reuse after the SiLU read it
+            return y + h
+
+    blk = Blk()
+    calls, consumed, _, info = F._trace_group_norm_silu([blk.norm], [blk.act], lambda: blk(torch.randn(1, 8, 4, 4)))
+    assert calls == [1] and consumed == [0] and info["shared"][0] >= 1
+    clean = torch.nn.Sequential(torch.nn.GroupNorm(4, 8), torch.nn.SiLU())
+    calls, consumed, _, _ = F._trace_group_norm_silu([clean[0]], [clean[1]], lambda: clean(torch.randn(1, 8, 4, 4)))
+    assert consumed == [1]
+    h = clean[0].register_forward_hook(lambda m, i, o: None)
+    calls, consumed, _, _ = F._trace_group_norm_silu([clean[0]], [clean[1]], lambda: clean(torch.randn(1, 8, 4, 4)))
+    h.remove()
+    assert consumed == [0]
+
+
+def _fake_kernel(monkeypatch, wrong_site = None, kernel_for = None, during = None):
+    """group_norm_act on CPU: the reference, flagged as a kernel run; ``wrong_site`` gets a local error."""
+    def fake(x, norm, act = True, in_bias = None, on_kernel = None, **_):
+        y = F.group_norm_reference(x, norm, act, in_bias)
+        if norm is wrong_site:
+            y = y.clone()
+            y[..., 0, 0] += 0.5  # one corner of one site: invisible in a mean, large at the site
+        if during is not None and kernel_for is not None and norm not in kernel_for:
+            during()  # another thread completes a kernel while this (stock-fallback) call is in flight
+        if kernel_for is None or norm in kernel_for:
+            if on_kernel is not None:
+                on_kernel()
+            legacy = F.__dict__.get("_GN_KERNEL_RUNS")  # the module-global counter older code read
+            if legacy is not None:
+                legacy[0] += 1
+        return y
+
+    monkeypatch.setattr(F, "group_norm_act", fake)
+    monkeypatch.setattr(F, "runtime_ok", lambda: True)
+    monkeypatch.delenv(F.STRUCTURAL_ENV, raising = False)
+    monkeypatch.setattr(torch.Tensor, "is_cuda", property(lambda self: True))
+
+
+def test_structural_calibration_checks_every_fused_site(monkeypatch):
+    """Class ask: the calibration compares each fused site against stock on the input it saw, not only the final crop.
+    A site that is wrong in one corner is rejected even when the crop error stays small."""
+    vae = AutoencoderKLCleanNew()
+    norms = F._plain_group_norms(vae.decoder)
+    _fake_kernel(monkeypatch, wrong_site = norms[0])
+    F.install_structural(vae)
+    with torch.no_grad():
+        vae._decode(torch.randn(1, 8, 6, 6))
+    state = vae._unsloth_vae_structural
+    assert state.status == "rejected" and state.site_max_abs >= 0.4
+    ok = AutoencoderKLCleanNew()
+    _fake_kernel(monkeypatch)
+    F.install_structural(ok)
+    with torch.no_grad():
+        ok._decode(torch.randn(1, 8, 6, 6))
+    assert ok._unsloth_vae_structural.status == "ok" and ok._unsloth_vae_structural.site_max_abs == 0.0
+
+
+def test_structural_kernel_accounting_is_local_to_the_calibration(monkeypatch):
+    """Item 4283572986: another VAE's kernel run (another thread) during this VAE's calibration used to bump the
+    shared counter and make an all-fallback calibration look fused. Now only this calibration's own runs count."""
+    vae = AutoencoderKLCleanNew()
+    other_norm = torch.nn.GroupNorm(4, 8)
+    other = F._fast_gn_maybe_act(other_norm, True, types.SimpleNamespace(kernel_calls = 0, calls = 0))
+    import threading
+
+    def concurrent():
+        t = threading.Thread(target = lambda: other(torch.randn(1, 8, 4, 4)))
+        t.start()
+        t.join()
+
+    # this VAE's norms all take the stock fallback; another decode's kernel completes meanwhile
+    _fake_kernel(monkeypatch, kernel_for = {other_norm}, during = concurrent)
+    F.install_structural(vae)
+    with torch.no_grad():
+        vae._decode(torch.randn(1, 8, 6, 6))
+    assert vae._unsloth_vae_structural.status == "rejected"
+
+
+def test_strict_restore_reports_an_incomplete_repin(monkeypatch):
+    """Item 4283572942: the re-pin swallows its own failures; the VAE path restores strictly and gets an error while
+    any released group is still streamed, so its settle / defer path runs and the restore is kept."""
+    from core.inference import diffusion_memory as M
+
+    class Grp:
+        def __init__(self):
+            self._unsloth_resident = True
+            self._unsloth_resident_bytes = 1 << 20
+
+    groups = [Grp(), Grp()]
+    module = torch.nn.Linear(2, 2)
+    module._unsloth_resident_room = 1
+    module._unsloth_resident_device = "cpu"
+    pipe = types.SimpleNamespace(components = {"transformer": module})
+    monkeypatch.setattr(M, "_offload_groups", lambda m: groups)
+    monkeypatch.setattr(M, "_release_group", lambda g: setattr(g, "_unsloth_resident", False))
+    pinned = [0]
+
+    def keep(m, room, dev, logger, only):  # copies one group, then fails and swallows it (as the real one does)
+        groups[0]._unsloth_resident = True
+        pinned[0] += 1
+
+    monkeypatch.setattr(M, "_keep_groups_resident", keep)
+    restore = M.release_resident_groups(pipe, 1 << 30)
+    restore()  # the lenient form other callers use: unchanged
+    with pytest.raises(RuntimeError, match = "left 1 streamed"):
+        restore(strict = True)
+    got = [restore]
+    session = O.DecodeSession(None, _FakeDevice())
+    released = []
+    monkeypatch.setattr(M, "release_resident_groups", lambda *a, **k: (released.append(1), restore)[1])
+    anchor = module
+    pipe2 = types.SimpleNamespace(components = {"transformer": anchor})
+    assert session._release_groups(pipe2) == 1
+    session.restore()
+    assert session.log == [] and O._DEFERRED_ATTR in anchor.__dict__  # kept for a retry, not dropped
+    del got
+
+
+def test_step_a_streams_a_resident_torchao_transformer(monkeypatch):
+    """Item 4283572958: a hookless resident torchao transformer was skipped by step (a). It now gets Studio's own
+    block offload hooks (hook_resident_denoiser, as an oversized request does) and its groups stream."""
+    from core.inference import diffusion_memory as M
+
+    vae, pipe = _setup(cap = 16384 + 1000, untiled_need = 10000, tiled_need = 500)
+    transformer = pipe.components["transformer"]
+    pipe.transformer = transformer
+    monkeypatch.setattr(O, "_holds_torchao", lambda m: m is transformer)
+    events = []
+
+    def hook(p, device, logger = None):
+        events.append("hook")
+        transformer._unsloth_resident_room = 1  # hooked, every group resident
+        return True
+
+    def release(p, need, logger = None, reason = ""):
+        events.append("release")
+        transformer.to(torch.float32)  # its groups stream
+        return lambda strict = False: (events.append("repin"), transformer.to(_CARD))
+
+    monkeypatch.setattr(M, "hook_resident_denoiser", hook)
+    monkeypatch.setattr(M, "release_resident_groups", release)
+    vae._decode(_z())
+    assert events == ["hook", "release", "repin"]
+    assert vae._unsloth_vae_oom_stats["recovered_by"] == "freed"
+
+
+def test_vae_offload_respects_host_ram(monkeypatch):
+    """Item 4283572966: step (c) creates host copies of the VAE weights; with too little host RAM it is skipped."""
+    applied = []
+    monkeypatch.setattr(O, "_apply_vae_offload", lambda v, d: applied.append(1))
+    monkeypatch.setattr(O, "_host_free_mib", lambda: 1)
+    session = O.DecodeSession(_VaeLike(_Budget(1), [], 1, 1), _FakeDevice())
+    assert session.offload_vae() is False and applied == []
+    monkeypatch.setattr(O, "_host_free_mib", lambda: 1 << 20)
+    assert session.offload_vae() is True and applied == [1]
+
+
+def test_wide_tiles_free_the_card_before_falling_back_to_stock_tiles(monkeypatch):
+    """Item 4283572976: Studio's wide tiles caught their own OOM and fell back to the smaller stock tiles before the
+    OOM retry could offload anything. Now the retry frees the card first and the wide tiles decode."""
+    diffusers = pytest.importorskip("diffusers")
+    from core.inference import diffusion_vae_tiling as vt
+
+    monkeypatch.delenv(vt.WIDE_TILES_ENV, raising = False)
+    monkeypatch.setenv(vt.MAX_TILE_ENV, "1")
+    monkeypatch.setattr(vt, "floor_shortfall", lambda vae, z: None)
+    torch.manual_seed(0)
+    vae = diffusers.AutoencoderKLQwenImage(
+        base_dim = 8, z_dim = 4, dim_mult = [1, 2, 4, 4], num_res_blocks = 1, attn_scales = [],
+        temperal_downsample = [False, True, True], latents_mean = [0.0] * 4, latents_std = [1.0] * 4,
+    ).eval()  # fmt: skip
+    vae.enable_tiling()
+    assert vt.install(vae)
+    z = torch.randn(1, 4, 1, 48, 48, generator = torch.Generator().manual_seed(1))
+    freed, fallbacks = [], []
+    monkeypatch.setattr(vt, "_log_stock_fallback", lambda vae, reason: fallbacks.append(reason))
+    monkeypatch.setattr(O, "_device_of", lambda z: _FakeDevice())
+    monkeypatch.setattr(O.DecodeSession, "free_others", lambda self, pipe: (freed.append(1), setattr(self, "freed", True), 1)[2])
+    real = vae.decoder.forward
+
+    def decoder(x, *a, **k):
+        if not freed:
+            raise _FakeOOM()  # nothing fits until the rest of the pipeline is off the card
+        return real(x, *a, **k)
+
+    monkeypatch.setattr(vae.decoder, "forward", decoder)
+    assert O.install(vae)
+    with torch.no_grad():
+        vae.decode(z)
+    assert freed == [1]
+    assert fallbacks == []  # the wide tiles decoded after the card was freed; no fallback to the stock tiles
+
+
+def test_ltx2_tiles_free_the_card_before_the_floor_tile(monkeypatch):
+    from core.inference import video_ltx2_vae_tiles as lt
+
+    tried = []
+    freed = []
+
+    def tiles(vae, z, temb, causal, th, tw, budgeted):
+        tried.append((th, tw))
+        if (th, tw) != (16, 16) and not freed:
+            raise _FakeOOM()
+        return torch.zeros(1)
+
+    monkeypatch.setattr(lt, "_decode_tiles", tiles)
+    monkeypatch.setattr(lt, "_plan", lambda vae, z: ((32, 32), True))
+    monkeypatch.setattr(lt, "oom_free_first", lambda vae, z: (freed.append(1), True)[1])
+    vae = types.SimpleNamespace()
+    lt.tiled_decode(vae, torch.zeros(1, 4, 2, 64, 64), return_dict = False)
+    assert tried == [(32, 32), (32, 32)] and freed == [1]
+
+
+def test_ladder_is_the_outermost_decode_layer_in_both_pipelines():
+    """Class ask (c): in the load order of diffusion.py and video.py the OOM retry is installed after every decode
+    wrapper that can fall back on an OOM, so its scope is the outermost decode layer; inner fallbacks (wide tiles,
+    LTX-2 tiles, untiled gate) call free_first before going cheaper."""
+    import inspect
+    import re
+
+    from core.inference import diffusion as D
+    from core.inference import video as V
+    from core.inference import diffusion_vae_tiling as vt
+    from core.inference import video_ltx2_vae_tiles as lt
+
+    image = inspect.getsource(D)
+    assert image.index("install_vae_oom_retry(") > image.index("install_wide_vae_tiles(getattr(pipe")
+    video = inspect.getsource(V)
+    oom = video.index("install_vae_oom_retry(")
+    for wrapper in ("install_ltx2_vae_tiles(", "install_untiled_decode(", "install_rocm_vae_bf16_decode(pipe"):
+        assert video.index(wrapper) < oom, wrapper
+    assert re.search(r"oom_free_first\(self, z\)", inspect.getsource(vt))
+    assert "oom_free_first(vae, z)" in inspect.getsource(lt.tiled_decode)
+
+
+def test_scope_stays_outermost_over_the_untiled_gate(monkeypatch):
+    """The untiled gate re-asserts its slot after each call; with the OOM scope installed over it, it must keep the
+    scope (its __wrapped__ chain reaches the gate) instead of dropping it."""
+    from core.inference import video_vae_untiled as U
+
+    vae, pipe = _setup(cap = 1 << 20, untiled_need = 1, tiled_need = 1)
+    O.uninstall(vae)
+    vae.use_tiling = True
+    vae.decode = lambda z, return_dict = True: vae._decode(z, return_dict)
+    monkeypatch.setattr(U, "_enabled", lambda: True)
+    family = next(iter(U._BYTES_PER_LATENT_PIXEL))
+    monkeypatch.setattr(U, "_free_bytes", lambda d: 0)
+    assert U.install_untiled_decode(types.SimpleNamespace(vae = vae), family)
+    gate = vae.__dict__["decode"]
+    assert O.install(vae, pipe = pipe)
+    scope = vae.__dict__["decode"]
+    assert getattr(scope, "_unsloth_vae_oom_scope", False) and scope.__wrapped__ is gate
+    vae.decode(_z())
+    assert vae.__dict__["decode"] is scope  # still outermost after a call

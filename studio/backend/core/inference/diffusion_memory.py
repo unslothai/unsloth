@@ -2746,7 +2746,10 @@ def release_resident_groups(
     released: list = []
     streamed: set = set()
 
-    def restore() -> None:
+    def restore(strict: bool = False) -> None:
+        """Pin the released groups again. ``strict``: raise when any of them is still not resident afterwards (the
+        re-pin catches its own failures and leaves those groups streamed, which callers that must retry need to
+        know)."""
         for module in released:
             _keep_groups_resident(
                 module,
@@ -2755,6 +2758,15 @@ def release_resident_groups(
                 logger,
                 only = streamed,
             )
+        if strict:
+            left = [
+                g
+                for module in released
+                for g in (_offload_groups(module) or [])
+                if id(g) in streamed and not getattr(g, "_unsloth_resident", False)
+            ]
+            if left:
+                raise RuntimeError(f"re-pinning resident offload groups left {len(left)} streamed")
 
     try:
         import torch

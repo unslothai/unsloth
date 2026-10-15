@@ -181,6 +181,27 @@ def _to_host(module: Any) -> None:
     module.to("cpu")
 
 
+def _placement(module: Any, device: Any) -> str:
+    """How a component sits on the card: "plain" (whole there, no hooks), "torchao_resident" (whole there, torchao
+    weights, no hooks), "groups" (resident offload groups), or "managed" (an offload mechanism places it)."""
+    if getattr(module, "_unsloth_resident_room", None):
+        return "groups"
+    if _hooked(module):
+        return "managed"
+    if not _whole_on(module, device):
+        return "managed"
+    return "torchao_resident" if _holds_torchao(module) else "plain"
+
+
+def _call_restore(restore: Callable) -> None:
+    try:
+        restore(strict = True)
+    except TypeError as exc:  # a restore without the strict keyword (older release path)
+        if "strict" not in str(exc):
+            raise
+        restore()
+
+
 _DEFERRED_ATTR = "_unsloth_vae_oom_deferred"
 _RECORD_ATTR = "_unsloth_vae_oom_record"
 
@@ -385,11 +406,36 @@ class DecodeSession:
             if not self.apply(reset, Change("graphs_reset", lambda: None)):
                 return 0
             released += 1
+        # One dispatcher keyed on how each component is placed, each kind through Studio's own release path:
+        #   torchao resident with no hooks -> hook_resident_denoiser (block offload hooks, all resident), then
+        #   resident offload groups      -> release_resident_groups (stream them again), then
+        #   plain modules whole on card  -> to the host;
+        #   anything an offload mechanism already places (accelerate / streamed group offload) is left to it.
+        self._hook_torchao_resident(pipe)
         released += self._release_groups(pipe)
         released += self._move_components(pipe)
         if self.moved:
             self._note("diffusion.vae_oom: moved %s to the host for the decode", ", ".join(self.moved))
         return released
+
+    def _hook_torchao_resident(self, pipe: Any) -> bool:
+        """A hookless resident torchao transformer cannot move whole (Module.to skips or breaks its weights): give it
+        block offload hooks with every group resident (diffusion_memory.hook_resident_denoiser, the path an oversized
+        request takes), so the group release below can stream it. The hooks stay afterwards, every group re-pinned,
+        exactly as after an oversized request."""
+        transformer = getattr(pipe, "transformer", None)
+        if transformer is None or _placement(transformer, self.device) != "torchao_resident":
+            return False
+        from . import diffusion_memory
+
+        hooked: list = []
+
+        def do() -> None:
+            hooked.append(bool(diffusion_memory.hook_resident_denoiser(pipe, self.device, self.logger)))
+
+        if not self.apply(do, Change("torchao_hooks", lambda: None)):
+            return False
+        return bool(hooked and hooked[0])
 
     def _release_groups(self, pipe: Any) -> int:
         """Resident offload groups (text encoders first, then the denoiser's blocks) stream again. A release that
@@ -413,7 +459,9 @@ class DecodeSession:
 
         def undo() -> None:
             while got:
-                got[-1]()
+                # strict: an incomplete re-pin raises (the release path's re-pin otherwise swallows it), so the
+                # settle / defer below runs and the restore is kept until every group is resident again
+                _call_restore(got[-1])
                 got.pop()
 
         def settle() -> None:
@@ -439,7 +487,7 @@ class DecodeSession:
         for name, comp in (getattr(pipe, "components", {}) or {}).items():
             if comp is self.vae or not isinstance(comp, torch.nn.Module):
                 continue
-            if not _whole_on(comp, self.device) or _hooked(comp) or _holds_torchao(comp):
+            if _placement(comp, self.device) != "plain":
                 continue
             candidates.append((_nbytes(comp), name, comp))
         candidates.sort(key = lambda c: -c[0])
@@ -482,6 +530,11 @@ class DecodeSession:
         if self.vae_offloaded or getattr(self.device, "type", None) != "cuda" or _hooked(self.vae):
             return False
         vae, device = self.vae, self.device
+        host, mib = _host_free_mib(), _nbytes(vae) >> 20
+        if host is not None and mib + HOST_MARGIN_MIB > host:
+            # the streamed copy lives in host RAM: never trade a decode OOM for a host OOM
+            self._note("diffusion.vae_oom: %s (%d MiB) stays on the card: host RAM is short", type(vae).__name__, mib)
+            return False
 
         def settle() -> None:
             _park_vae(vae, device)
@@ -554,6 +607,27 @@ def _pipe_of(vae: Any) -> Any:
 
 def _device_of(z: Any) -> Any:
     return getattr(z, "device", None)
+
+
+def free_first(vae: Any, z: Any = None) -> bool:
+    """Step (a) for a Studio decode wrapper about to fall back to a cheaper decode on an OOM (wide tiles -> stock
+    tiles, LTX-2 tiles -> the floor tile, untiled -> tiled): free the card inside the current decode's recovery
+    session. True when something was freed, so the wrapper retries its own attempt first. Outside a decode scope, or
+    with the retry switched off, or once this decode already freed the card: False (fall back as before)."""
+    holder = getattr(vae, "__dict__", {}).get(_SESSION_ATTR)
+    if holder is None or oom_retry_disabled() or _compiling():
+        return False
+    session = holder.get("session")
+    if session is None:
+        session = holder["session"] = DecodeSession(vae, _device_of(z), vae.__dict__.get("_unsloth_vae_oom_logger"))
+    if session.freed:
+        return False
+    _release_cache(z, vae)
+    freed = bool(session.free_others(_pipe_of(vae)))
+    stats = vae.__dict__.get("_unsloth_vae_oom_stats")
+    if isinstance(stats, dict):
+        stats["freed_first"] = stats.get("freed_first", 0) + int(freed)
+    return freed
 
 
 _RETRY_LAYER = "vae_oom_retry"
@@ -653,14 +727,31 @@ def install(vae: Any, logger: Any = None, pipe: Any = None) -> bool:
                     stats["oom"] += 1
                 steps = steps[start + 1:]
             else:
+                gate_owned = False
                 try:
                     return inner(z, *args, **kwargs)
                 except Exception as exc:  # noqa: BLE001
-                    if not is_oom(exc) or (not tiled_now and _outer_gate_owns_untiled(vae)):
+                    if not is_oom(exc):
                         raise
+                    gate_owned = not tiled_now and _outer_gate_owns_untiled(vae)
                     exc.__traceback__ = None
                     holder.setdefault("first_oom", exc)
                     stats["oom"] += 1
+                if gate_owned:
+                    # The untiled-when-fits gate retries tiled itself; the ladder still sees the OOM first: free the
+                    # card (step a) and retry untiled once, then hand back to the gate.
+                    if free_first(vae, z):
+                        stats["freed_retry"] += 1
+                        try:
+                            out = inner(z, *args, **kwargs)
+                            stats["recovered"] += 1
+                            stats["recovered_by"] = "freed"
+                            return out
+                        except Exception as exc:  # noqa: BLE001
+                            if not is_oom(exc):
+                                raise
+                            exc.__traceback__ = None
+                    raise holder["first_oom"]
             # Outside the handler: the failed attempt's tensors are gone. One session per logical decode: a later
             # slice / frame of the same decode reuses what an earlier one freed.
             session = holder.get("session")
@@ -720,6 +811,7 @@ def install(vae: Any, logger: Any = None, pipe: Any = None) -> bool:
 
     decode_layers.wrap(vae, "_decode", _RETRY_LAYER, make_retry)
     vae._unsloth_vae_oom_stats = stats
+    vae.__dict__["_unsloth_vae_oom_logger"] = logger
     _install_scope(vae, logger)
     if logger is not None:
         logger.info(
@@ -839,6 +931,7 @@ def uninstall(vae: Any) -> None:
 __all__ = [
     "DecodeSession",
     "DeferredReturn",
+    "free_first",
     "settle_deferred",
     "OOM_RETRY_ENV",
     "install",

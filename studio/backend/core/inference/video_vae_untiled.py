@@ -84,6 +84,16 @@ def _free_bytes(device: Any) -> Optional[int]:
         return None
 
 
+def _in_chain(fn: Any, target: Any) -> bool:
+    for _ in range(16):
+        if fn is None:
+            return False
+        if fn is target:
+            return True
+        fn = getattr(fn, "__wrapped__", None)
+    return False
+
+
 def install_untiled_decode(
     pipe: Any,
     family: str,
@@ -155,7 +165,8 @@ def install_untiled_decode(
             return gated(*args, **kwargs)
         finally:
             # A failed VAE compile restores its eager decode into this slot; the guarded inner call already runs eager.
-            if vae.__dict__.get("decode") is not untiled_when_fits:
+            # (a layer installed over this one, e.g. the OOM retry's decode scope, keeps it in its __wrapped__ chain)
+            if not _in_chain(vae.__dict__.get("decode"), untiled_when_fits):
                 vae.decode = untiled_when_fits
 
     untiled_when_fits._unsloth_untiled_decode = True

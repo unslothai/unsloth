@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 import types
 from functools import lru_cache
 from typing import Any, Optional
@@ -504,16 +505,15 @@ def _torch():
     return torch
 
 
-_GN_KERNEL_RUNS = [0]
-
-
 def group_norm_act(
     x: Any,
     norm: Any,
     act: bool = True,
     in_bias: Any = None,
+    on_kernel: Any = None,
 ) -> Any:
-    """``silu?(group_norm(x + in_bias))`` for 3/4/5-D ``x``; channels-last output; 5-D stats span T like nn.GroupNorm."""
+    """``silu?(group_norm(x + in_bias))`` for 3/4/5-D ``x``; channels-last output; 5-D stats span T like nn.GroupNorm.
+    ``on_kernel``: called once the Triton kernels completed for this call (not on a stock fallback)."""
     torch = _torch()
     if not _gn_fusable(x, norm):
         return group_norm_reference(x, norm, act, in_bias)
@@ -559,10 +559,8 @@ def group_norm_act(
         CPG = cpg, ACT = bool(act), HAS_IN_BIAS = in_bias is not None, BLOCK_P = block_p2, BLOCK_C = block_c,
         num_warps = 4,
     )  # fmt: skip
-    if not torch.compiler.is_compiling():
-        _GN_KERNEL_RUNS[0] += (
-            1  # read by the structural calibration: only a completed Triton launch counts
-        )
+    if on_kernel is not None and not torch.compiler.is_compiling():
+        on_kernel()  # read by the structural calibration: only a completed Triton launch counts
     out = out.permute(0, 4, 1, 2, 3)  # B, C, T', H', W'
     shape = x.shape
     if ndim == 5:
@@ -2219,46 +2217,131 @@ def _probe_latent(z: Any) -> Any:
     return z[tuple(sl)].contiguous()
 
 
+def _has_user_hooks(module: Any) -> bool:
+    for name in ("_forward_hooks", "_forward_pre_hooks", "_backward_hooks", "_backward_pre_hooks"):
+        if getattr(module, name, None):
+            return True
+    return False
+
+
+def _global_module_hooks() -> bool:
+    try:
+        from torch.nn.modules import module as mm
+    except Exception:  # noqa: BLE001
+        return True
+    return any(
+        getattr(mm, name, None)
+        for name in ("_global_forward_hooks", "_global_forward_pre_hooks", "_global_backward_hooks")
+    )
+
+
 def _trace_group_norm_silu(norms: list, silus: list, run: Any) -> tuple:
-    """(calls per norm, outputs of each norm consumed by an nn.SiLU) over one ``run()``."""
-    calls = [0] * len(norms)
-    consumed = [0] * len(norms)
+    """(calls per norm, outputs of each norm consumed ONLY by an nn.SiLU, run output, info) over one ``run()``.
+
+    A norm's output counts as consumed by the SiLU only when the trace proves the SiLU is its sole reader: every
+    aten op that reads the output tensor (a view, an in-place update, a residual add) is recorded by a dispatch mode,
+    and any such op outside the SiLU call marks it shared. ``info["shared"]``: per norm, outputs read elsewhere;
+    ``info["inputs"]``: per norm, the first input it saw (for the per-site check). Norms or SiLUs carrying hooks of
+    their own, global module hooks, or no dispatch mode available: nothing counts as exclusively consumed."""
+    torch = _torch()
+    n = len(norms)
+    calls, consumed, shared = [0] * n, [0] * n, [0] * n
+    inputs: list = [None] * n
     produced: dict = {}
     keep: list = []
     handles = []
+    in_silu: list = []
+    hooked = _global_module_hooks() or any(_has_user_hooks(m) for m in (*norms, *silus))
+    try:
+        from torch.utils._python_dispatch import TorchDispatchMode
+        from torch.utils._pytree import tree_leaves
+    except Exception:  # noqa: BLE001 - no way to see every reader: fuse GroupNorm alone
+        TorchDispatchMode = None  # noqa: N806
 
     def norm_hook(idx: int):
-        def hook(_m, _inp, out):
+        def hook(_m, inp, out):
             calls[idx] += 1
             produced[id(out)] = idx
             keep.append(out)  # pin the id for the run
+            if inputs[idx] is None and inp:
+                inputs[idx] = inp[0].detach().clone()
 
         return hook
 
-    def silu_hook(_m, inp):
-        idx = produced.pop(id(inp[0]), None) if inp else None
+    def silu_pre(_m, inp):
+        idx = produced.get(id(inp[0])) if inp else None
         if idx is not None:
             consumed[idx] += 1
+        in_silu.append(idx is not None)
 
+    def silu_post(_m, _inp, _out):
+        if in_silu:
+            in_silu.pop()
+
+    mode = None
+    if TorchDispatchMode is not None:
+
+        class _Readers(TorchDispatchMode):
+            def __torch_dispatch__(self, func, types_, args = (), kwargs = None):
+                kwargs = kwargs or {}
+                if not (in_silu and in_silu[-1]):
+                    for leaf in tree_leaves((args, kwargs)):
+                        idx = produced.get(id(leaf)) if isinstance(leaf, torch.Tensor) else None
+                        if idx is not None:
+                            shared[idx] += 1
+                return func(*args, **kwargs)
+
+        mode = _Readers()
     try:
         for i, m in enumerate(norms):
             handles.append(m.register_forward_hook(norm_hook(i)))
         for m in silus:
-            handles.append(m.register_forward_pre_hook(silu_hook))
-        out = run()
+            handles.append(m.register_forward_pre_hook(silu_pre))
+            handles.append(m.register_forward_hook(silu_post))
+        if mode is not None:
+            with mode:
+                out = run()
+        else:
+            out = run()
     finally:
         for h in handles:
             h.remove()
         keep.clear()
-    return calls, consumed, out
+    if hooked or mode is None:
+        consumed = [0] * n
+    else:
+        consumed = [k if sh == 0 else 0 for k, sh in zip(consumed, shared)]
+    return calls, consumed, out, {"shared": shared, "inputs": inputs}
+
+
+def _site_check(norms: list, paired: list, inputs: list, state: Any) -> Optional[tuple]:
+    """Each fused site against stock on the input it saw in the trace: the fused forward (GroupNorm, + SiLU when
+    paired) vs nn.GroupNorm (+ F.silu). Returns the worst (max abs, mean abs), or None when no site was checked."""
+    torch = _torch()
+    worst = None
+    for norm, act, x in zip(norms, paired, inputs):
+        if act is None or x is None:
+            continue
+        fused = norm.forward(x)
+        ref = _stock_forward(norm)(x)
+        if act:
+            ref = torch.nn.functional.silu(ref)
+        err = (fused.float() - ref.float()).abs()
+        site = (float(err.max()), float(err.mean()))
+        worst = site if worst is None else (max(worst[0], site[0]), max(worst[1], site[1]))
+    return worst
 
 
 def _fast_gn_maybe_act(norm: Any, act: bool, state: Any) -> Any:
     def fast(x: Any) -> Any:
-        before = _GN_KERNEL_RUNS[0]
-        y = group_norm_act(x, norm, act = act)
-        if _GN_KERNEL_RUNS[0] > before:
-            state.kernel_calls += 1  # the Triton path completed; any stock fallback inside group_norm_act does not count
+        ran: list = []
+        y = group_norm_act(x, norm, act = act, on_kernel = lambda: ran.append(1))
+        if ran:
+            # the Triton path completed on THIS call; any stock fallback inside group_norm_act does not count
+            state.kernel_calls += 1
+            probe = getattr(getattr(state, "local", None), "kernel_runs", None)
+            if probe is not None:
+                probe.append(1)  # the calibration running on this thread, not another VAE's or thread's
         state.calls += 1
         if act:
             y._unsloth_silu_applied = True
@@ -2346,7 +2429,7 @@ def install_structural(vae: Any, logger: Any = None) -> int:
     silus = _plain_silus(decoder)
     state = types.SimpleNamespace(
         status = "pending", norms = len(norms), gn_silu = 0, gn = 0, calls = 0, kernel_calls = 0,
-        max_abs = None, mean_abs = None,
+        max_abs = None, mean_abs = None, site_max_abs = None, site_mean_abs = None, local = threading.local(),
     )  # fmt: skip
     inner = vae._decode
     torch = _torch()
@@ -2361,22 +2444,29 @@ def install_structural(vae: Any, logger: Any = None) -> int:
     def calibrate(z: Any, args: tuple, kwargs: dict) -> None:
         tiny = _probe_latent(z)
         with torch.no_grad():
-            calls, consumed, ref = _trace_group_norm_silu(
+            calls, consumed, ref, info = _trace_group_norm_silu(
                 norms, silus, lambda: _decoded_tensor(_fresh(inner)(tiny, *args, **kwargs))
             )
+            # fused with its SiLU only when that SiLU is the output's sole reader; otherwise GroupNorm alone
             paired = [None if c == 0 else (c == k) for c, k in zip(calls, consumed)]
             n = _structural_patch(norms, paired, silus, state, logger)
             if n == 0:
                 state.status = "no_match"
                 _structural_unpatch(norms, silus, vae)
                 return
-            kernels_before = state.kernel_calls
-            out = _decoded_tensor(_fresh(inner)(tiny, *args, **kwargs))
+            state.local.kernel_runs = []  # this calibration's kernel runs (thread-local: not another decode's)
+            try:
+                site = _site_check(norms, paired, info["inputs"], state)
+                out = _decoded_tensor(_fresh(inner)(tiny, *args, **kwargs))
+                fused_ran = bool(state.local.kernel_runs)
+            finally:
+                state.local.kernel_runs = None
             err = (out.float() - ref.float()).abs()
             state.max_abs, state.mean_abs = float(err.max()), float(err.mean())
+            state.site_max_abs, state.site_mean_abs = site if site is not None else (None, None)
             # Every matched norm on its stock fallback: nothing fused, so keep the stock path (and layout).
-            fused_ran = state.kernel_calls > kernels_before
-        if fused_ran and state.max_abs <= _PROBE_MAX_ABS and state.mean_abs <= _PROBE_MEAN_ABS:
+        sites_ok = site is not None and site[0] <= _PROBE_MAX_ABS and site[1] <= _PROBE_MEAN_ABS
+        if fused_ran and sites_ok and state.max_abs <= _PROBE_MAX_ABS and state.mean_abs <= _PROBE_MEAN_ABS:
             state.status = "ok"
             state.gn_silu = sum(1 for p in paired if p)
             state.gn = sum(1 for p in paired if p is False)
