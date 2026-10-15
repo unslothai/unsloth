@@ -33,8 +33,8 @@ _REPAIR_TIMEOUT_S = 120
 _INSTALL_MIN_TIMEOUT_S = 30
 # The installer's exit codes for --repair-diffusers-main.
 _INSTALLED, _NOTHING_TO_DO = 0, 1
-# The installer's DIFFUSERS_MAIN_MIN_PYTHON: diffusers main needs 3.10, and 3.9 stays supported.
-_MAIN_MIN_PYTHON = (3, 10)
+# The installer's DIFFUSERS_MAIN_MIN_PYTHON: diffusers main needs 3.11, and 3.9 / 3.10 stay supported.
+_MAIN_MIN_PYTHON = (3, 11)
 
 # Unattended, so secrets and index redirects stay out, as in mlx_repair. The Windows names are what
 # Python, git and uv need to start at all there; UV_OFFLINE is the operator's no-network switch.

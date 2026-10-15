@@ -541,3 +541,15 @@ def test_smoke_probe_feeds_a_broadcast_activation(monkeypatch):
     assert tq._run_smoke_probe("fp8", "cpu") is True
     # Two forwards: the zero-row matrix and a stride-0 broadcast.
     assert seen == [True, False]
+
+
+def test_python_310_gets_a_reason_it_can_act_on(monkeypatch):
+    # Diffusers main (and so the pinned FLUX.3 build) needs Python 3.11; the installer skips it below that, so the
+    # refusal must not send a 3.10 user to reinstall or fetch an archive that cannot install.
+    monkeypatch.setattr(families.sys, "version_info", (3, 10, 14, "final", 0))
+    message = families._too_old_message("Flux3DistilledModularPipeline", "flux.3-klein", "0.41.0")
+    assert "Python 3.11" in message and "3.10" in message
+    assert "archive" not in message
+    monkeypatch.setattr(families.sys, "version_info", (3, 12, 1, "final", 0))
+    message = families._too_old_message("Flux3DistilledModularPipeline", "flux.3-klein", "0.41.0")
+    assert "Python 3.11" not in message and "has not been released yet" in message

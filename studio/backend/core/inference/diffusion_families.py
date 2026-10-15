@@ -2073,6 +2073,8 @@ def local_pipeline_components_are_complete(
 # diffusers-main.txt), so the remedy is to put that back, not to chase a release. Delete an entry
 # here the moment its version ships, which is the same moment diffusers-pin.txt moves to it.
 _UNRELEASED_MIN_DIFFUSERS: frozenset = frozenset({"0.42.0"})
+# The pinned main build's requires-python (the installer's DIFFUSERS_MAIN_MIN_PYTHON).
+_DIFFUSERS_MAIN_MIN_PYTHON = (3, 11)
 
 # Classes whose presence a version number cannot answer: an unreleased model on a diffusers main build that reports
 # the same x.y.0.dev0 as the release without it. The listing checks the file that defines the class, relative to the
@@ -2169,6 +2171,16 @@ def _too_old_message(pipeline_class: str, family_name: str, installed: str) -> s
             f"'{family_name}' needs a newer diffusers ({pipeline_class}); this environment has "
             f"diffusers {installed}. {DIFFUSERS_UPDATE_REMEDY} On a plain pip install: "
             "pip install -U diffusers."
+        )
+    if minimum in _UNRELEASED_MIN_DIFFUSERS and sys.version_info[:2] < _DIFFUSERS_MAIN_MIN_PYTHON:
+        # The installer never tries the main build here (it declares requires-python >= 3.11), so no
+        # reinstall or archive can help: only a newer interpreter, or the release that carries it.
+        return (
+            f"'{family_name}' needs diffusers >= {minimum} ({pipeline_class}), which has not been "
+            f"released yet; this environment has diffusers {installed}. Unsloth installs a pinned "
+            "build of diffusers main for this, and that build needs Python 3.11 or newer; this "
+            f"is Python {sys.version_info[0]}.{sys.version_info[1]}. Reinstall Unsloth on Python "
+            "3.11+, or wait for the diffusers release that includes it."
         )
     if minimum in _UNRELEASED_MIN_DIFFUSERS:
         remedy = _diffusers_main_archive_remedy()

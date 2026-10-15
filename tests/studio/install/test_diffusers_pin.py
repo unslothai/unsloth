@@ -606,14 +606,15 @@ def test_a_damaged_main_build_is_repaired_rather_than_believed(monkeypatch):
     assert attempted and attempted[0].name == "diffusers-main.txt"
 
 
-def test_python_39_does_not_clone_a_build_it_can_never_install(monkeypatch):
-    """diffusers-pin.txt still names 0.36.0 below 3.10, so 3.9 is a supported install, and main
-    declares requires-python >= 3.10. Unmarked, pip clones the repository and only then rejects
+@pytest.mark.parametrize("old_python", [(3, 9, 21), (3, 10, 14)])
+def test_python_below_311_does_not_clone_a_build_it_can_never_install(monkeypatch, old_python):
+    """diffusers-pin.txt covers 3.9 (0.36.0) and 3.10 (0.41.0), and main declares requires-python
+    >= 3.11 (huggingface/diffusers#15030). Unmarked, pip clones the repository and only then rejects
     it, and since the build can never become resident that clone repeats on every update."""
     module = _probe_module("install_python_stack_probe8")
     monkeypatch.delenv("UNSLOTH_DIFFUSERS_MAIN", raising = False)
     monkeypatch.setattr(
-        module, "pip_install_try", lambda *a, **k: pytest.fail("cloned main on python 3.9")
+        module, "pip_install_try", lambda *a, **k: pytest.fail(f"cloned main on python {old_python}")
     )
     monkeypatch.setattr(module, "_has_working_git", lambda: True)
     monkeypatch.setattr(module, "_note", lambda *a, **k: None)
@@ -621,17 +622,17 @@ def test_python_39_does_not_clone_a_build_it_can_never_install(monkeypatch):
     class _V(tuple):
         pass
 
-    monkeypatch.setattr(module.sys, "version_info", _V((3, 9, 21)))
+    monkeypatch.setattr(module.sys, "version_info", _V(old_python))
     progressed: list = []
     monkeypatch.setattr(module, "_progress", lambda label, *a, **k: progressed.append(label))
     module._diffusers_main_step()
-    assert len(progressed) == 1 and "python 3.10" in progressed[0], progressed
+    assert len(progressed) == 1 and "python 3.11" in progressed[0], progressed
 
     monkeypatch.setattr(module, "_direct_reference_is_installed", lambda *a, **k: False)
     assert not (module._diffusers_main_requested() and module._diffusers_main_resident())
 
     attempted: list = []
-    monkeypatch.setattr(module.sys, "version_info", _V((3, 10, 0)))
+    monkeypatch.setattr(module.sys, "version_info", _V((3, 11, 0)))
     monkeypatch.setattr(module, "_payload_recorded_intact", lambda *a, **k: False)
     monkeypatch.setattr(
         module, "pip_install_try", lambda *a, req = None, **k: (attempted.append(req), True)[1]

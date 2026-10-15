@@ -322,7 +322,7 @@ def _manifest(monkeypatch, manifest):
 @pytest.mark.parametrize(
     "min_python, manifest",
     [
-        ((99, 0), {}),  # Python 3.9 against the real (3, 10) floor
+        ((99, 0), {}),  # an interpreter below the floor (3.9 / 3.10 against the real (3, 11))
         ((3, 0), {"diffusers_main_repair": "failed"}),
         ((3, 0), {"step_results": {"diffusers-main.txt": "failed"}}),
     ],
