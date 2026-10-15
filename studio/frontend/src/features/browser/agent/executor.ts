@@ -128,7 +128,6 @@ type Session = {
   // A chat never saw another's screenshots: its x and y are CSS pixels until it takes one.
   pointScale: Map<string, ShotView & { scaleX: number; scaleY: number }>;
   queue: Promise<void>;
-  // Always allow answers, like Always allow on tool cards.
   alwaysAllowed: Set<string>;
 };
 
