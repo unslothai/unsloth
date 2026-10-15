@@ -1350,6 +1350,8 @@ export const zhCN = {
       installRuntimeFailed: "运行时安装失败。",
       installRuntimeError: "无法开始安装运行时。",
       unsupportedArch: "Windows 沙箱 (MXC) 仅支持 x64 版 Windows，因此在此电脑上不可用。",
+      builtinNeedsUpdate:
+        "Windows 内置容器需要版本 {required} 或更高，而这台电脑运行的是 {current}。安装最新的 Windows 更新即可无需管理员步骤使用它，或在下方开启备用沙盒。",
       unsupportedBuild: "Windows 沙箱 (MXC) 需要 Windows 11 24H2（版本 26100）或更高版本，因此在此电脑上不可用。",
       permissionsIntro: "选择工具何时先询问，以及 Python 和终端是否也在操作系统沙盒中运行。",
       permissionLabel: "工具权限",
