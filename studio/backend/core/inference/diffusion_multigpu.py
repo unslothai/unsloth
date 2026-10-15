@@ -1093,6 +1093,9 @@ class PhaseNeeds:
     decode_mib: Optional[int] = None
     encode_ordinals: tuple[int, ...] = ()
     decode_ordinal: Optional[int] = None
+    # CFG-batch's one forward over BOTH branches: the same estimator with the latent batch doubled (the guard's pixel
+    # curve, floor included), not twice ``denoise_mib``; None when the producer did not compute it
+    cfg_batch_denoise_mib: Optional[int] = None
 
     def room_on(self, ordinal: Optional[int]) -> int:
         room = int(self.denoise_mib or 0)
@@ -1127,12 +1130,14 @@ def request_phase_needs(
     encode_mib: Optional[int],
     denoise_mib: Optional[int],
     decode_mib: Optional[int],
+    cfg_batch_denoise_mib: Optional[int] = None,
 ) -> PhaseNeeds:
     """A request's per-phase needs (from the generation guard's own estimator) placed on ``pipe``'s cards."""
     return PhaseNeeds(
         encode_mib = None if encode_mib is None else int(encode_mib),
         denoise_mib = None if denoise_mib is None else int(denoise_mib),
         decode_mib = None if decode_mib is None else int(decode_mib),
+        cfg_batch_denoise_mib = None if cfg_batch_denoise_mib is None else int(cfg_batch_denoise_mib),
         encode_ordinals = text_encoder_ordinals(pipe),
         decode_ordinal = _cuda_ordinal(getattr(pipe, "vae", None)),
     )
@@ -4194,7 +4199,7 @@ class CfgBatchRouter(_ShapeVerdicts):
             self._skip("latent without a batch dim")
             return None
         if not self._memory_ok(latent.device, batch):
-            self._skip("not enough free memory for a second branch's activations")
+            self._skip("not enough free memory for the doubled batch's activations")
             return None
         try:
             merged = _batch_leaves(first, second, batch)
@@ -4380,7 +4385,8 @@ class CfgBatchRouter(_ShapeVerdicts):
         device: Any,
         batch: Optional[int] = None,
     ) -> bool:
-        if self.headroom_mib is None or getattr(device, "type", None) != "cuda":
+        need = self.needed_mib(batch)
+        if need is None or getattr(device, "type", None) != "cuda":
             return True
         torch = _torch()
         try:
@@ -4391,18 +4397,24 @@ class CfgBatchRouter(_ShapeVerdicts):
             return True
         if free is None:
             return True
-        return free >= self.needed_mib(batch)
+        return free >= need
 
-    def needed_mib(self, batch: Optional[int] = None) -> int:
-        """The headroom the batched call needs for the second branch of ``batch`` samples (the latent's leading dim):
-        the request's denoise figure from the generation guard's estimator (canvas, batch, frames and reference tokens
-        included) when the generate path supplied it; else the load-time calibrated figure scaled by the request's
-        canvas over the calibration canvas and by the batch, linearly."""
+    def needed_mib(self, batch: Optional[int] = None) -> Optional[int]:
+        """What the ONE batched forward over both branches needs: the gate reads free memory at the step's first call,
+        before either branch has allocated, so nothing of the plain branch is reserved yet and the whole doubled batch
+        (``2 x batch`` samples) is charged, for every placement. In order: the request's doubled figure from the
+        generation guard's estimator (its pixel curve with the batch doubled, floor included); twice the request's
+        single-call figure when the producer gave no doubled one; the load-time calibrated figure scaled by canvas
+        and by ``2 x batch``, linearly; None when no figure is known (the OOM backstop decides)."""
         needs = self.request_needs
+        if needs is not None and needs.cfg_batch_denoise_mib:
+            return int(needs.cfg_batch_denoise_mib)
         if needs is not None and needs.denoise_mib:
-            return int(needs.denoise_mib)
+            return 2 * int(needs.denoise_mib)
+        if self.headroom_mib is None:
+            return None
         return scaled_headroom_mib(
-            self.headroom_mib, self.headroom_reference_px, self.request_px, batch
+            self.headroom_mib, self.headroom_reference_px, self.request_px, 2 * max(1, int(batch or 1))
         )
 
     def _take(self, args: tuple, kwargs: dict) -> Any:

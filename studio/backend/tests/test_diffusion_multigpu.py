@@ -2663,11 +2663,12 @@ def test_cfg_batch_headroom_scales_with_the_requested_canvas():
     router = mg.CfgBatchRouter(dit, headroom_mib = 892, headroom_reference_px = 1024 * 1024)
     dit.forward = router
     pipe = _RouterPipe(dit)
+    # the one batched forward carries both branches: the doubled batch is charged
     with mg.cfg_request_scope(pipe, 2048, 2048):
-        assert router.needed_mib() == 892 * 4
+        assert router.needed_mib() == 892 * 4 * 2
     with mg.cfg_request_scope(pipe, 512, 512):
-        assert router.needed_mib() == 892 // 4
-    assert router.needed_mib() == 892  # outside a request: the calibrated figure
+        assert router.needed_mib() == 892 // 4 * 2
+    assert router.needed_mib() == 892 * 2  # outside a request: the calibrated figure
 
 
 def test_cfg_batch_catches_a_forward_that_turns_stateful_later():
@@ -2869,12 +2870,10 @@ def test_cfg_batch_headroom_scales_with_the_latent_batch():
     dit.forward = router
     pipe = _RouterPipe(dit)
     with mg.cfg_request_scope(pipe, 1024, 1024):
-        assert router.needed_mib(1) == 892
-        assert (
-            router.needed_mib(4) == 892 * 4
-        )  # four images in the chunk: four second-branch samples
+        assert router.needed_mib(1) == 892 * 2
+        assert router.needed_mib(4) == 892 * 8  # four images in the chunk: eight samples in the batched forward
     with mg.cfg_request_scope(pipe, 2048, 2048):
-        assert router.needed_mib(2) == 892 * 4 * 2
+        assert router.needed_mib(2) == 892 * 4 * 4
 
 
 def test_cfg_parallel_replica_card_must_also_hold_the_denoise_headroom(monkeypatch):
@@ -3492,8 +3491,9 @@ def test_cfg_routers_count_qwen_image_reference_tokens(monkeypatch):
     batch = mg.CfgBatchRouter(dit, headroom_mib = cal.denoise_mib, headroom_reference_px = 1024 * 1024)
     dit.forward = batch
     with mg.cfg_request_scope(pipe, 1024, 1024, 20, needs):
-        # the doubled call's gate charges the reference tokens, not just the output canvas
-        assert batch.needed_mib(1) == int(cal.denoise_mib * 3)
+        # the doubled call's gate charges the reference tokens, not just the output canvas, for both branches
+        assert needs.cfg_batch_denoise_mib == int(cal.denoise_mib * 6)
+        assert batch.needed_mib(1) == int(cal.denoise_mib * 6)
     parallel = mg.CfgParallelRouter(
         _BatchDit(), primary = "cuda:0", secondary = "cuda:1", headroom_mib = cal.denoise_mib,
         headroom_reference_px = 1024 * 1024,
@@ -3508,7 +3508,7 @@ def test_cfg_routers_fall_back_to_scaling_the_load_figure_without_a_request_figu
     batch = mg.CfgBatchRouter(dit, headroom_mib = 1000, headroom_reference_px = 1024 * 1024)
     dit.forward = batch
     with mg.cfg_request_scope(pipe, 2048, 2048):
-        assert batch.needed_mib(2) == 1000 * 4 * 2
+        assert batch.needed_mib(2) == 1000 * 4 * 2 * 2
     parallel = mg.CfgParallelRouter(
         _BatchDit(), primary = "cuda:0", secondary = "cuda:1", headroom_mib = 1000,
         headroom_reference_px = 1024 * 1024, decode_headroom_mib = 3000, vae_ordinal = 1,
@@ -4875,3 +4875,48 @@ def test_any_out_of_memory_in_the_speculative_batch_is_transient(monkeypatch, si
     torch.testing.assert_close(out, reference, rtol = 0, atol = 0)
     assert router.disabled_reason is None, router.disabled_reason
     assert mg._off_kind(router.shape_disabled) == "transient"
+
+
+
+def _gate_router(monkeypatch, free_mib, needs):
+    dit = _BatchDit()
+    router = mg.CfgBatchRouter(dit, headroom_mib = 1000, headroom_reference_px = 1024 * 1024)
+    router.request_needs = needs
+    monkeypatch.setattr(mg, "usable_free_mib", lambda ordinal: (free_mib, 80_000))
+    return router
+
+
+@pytest.mark.parametrize("figure", ["request", "load"])
+def test_cfg_batch_gate_budgets_both_branches(monkeypatch, figure):
+    # The gate reads free memory at the step's first call, before either branch allocates, and the batched forward
+    # carries both: free memory between one and two branch peaks must refuse it.
+    needs = mg.PhaseNeeds(denoise_mib = 1000) if figure == "request" else None
+    one, two = 1000, 2000
+    between = _gate_router(monkeypatch, (one + two) // 2, needs)
+    assert not between._memory_ok(torch.device("cuda", 0), 1)
+    enough = _gate_router(monkeypatch, two, needs)
+    assert enough._memory_ok(torch.device("cuda", 0), 1)
+
+
+def test_cfg_batch_gate_uses_the_guard_curve_for_the_doubled_batch(monkeypatch):
+    # below the guard's pixel floor, doubling the batch does not double the figure: the producer's doubled figure
+    # (the curve with the batch doubled) is what the gate charges, not twice a floor-clamped single figure
+    from core.inference import diffusion as diffusion_mod
+
+    cal = dm.calibrated_image_activation("qwen-image-2.1")
+    state = type("S", (), {"calibrated_placement": True, "variant_hint": "qwen-image-2.1", "te_releaser": None})()
+    fam = type("F", (), {"name": "qwen-image-2.1"})()
+    monkeypatch.setattr(diffusion_mod, "_calibrated_activation", lambda f, t: cal)
+    needs = diffusion_mod._cfg_request_needs(
+        state, fam, _RouterPipe(_BatchDit()), None, width = 256, height = 256, batch_size = 1, condition_pixels = 0
+    )
+    assert needs.cfg_batch_denoise_mib == int(cal.denoise_mib * dm.guard_pixel_scale(256 * 256, 0, 2))
+    router = _gate_router(monkeypatch, 0, needs)
+    assert router.needed_mib(1) == needs.cfg_batch_denoise_mib
+
+
+def test_cfg_video_needs_carry_the_doubled_batch_figure():
+    from core.inference import video as video_mod
+
+    needs = video_mod._cfg_video_request_needs(_RouterPipe(_BatchDit()), {"width": 832, "height": 480, "frames": 33})
+    assert needs.cfg_batch_denoise_mib == 2 * needs.denoise_mib  # video's estimate is linear in the batch

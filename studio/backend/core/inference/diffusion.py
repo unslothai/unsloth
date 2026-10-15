@@ -2084,10 +2084,9 @@ def _cfg_request_needs(
             if getattr(state, "calibrated_placement", False)
             else None
         )
-        encode, denoise, decode = image_request_phase_mib(
+        phase_inputs = dict(
             width = width,
             height = height,
-            batch_size = batch_size,
             family = getattr(state, "variant_hint", None),
             condition_pixels = condition_pixels,
             calibrated = calibrated,
@@ -2095,12 +2094,15 @@ def _cfg_request_needs(
             sliced = sliced,
             prompts = prompts,
         )
+        encode, denoise, decode = image_request_phase_mib(batch_size = batch_size, **phase_inputs)
+        # CFG-batch runs both branches in one forward: the same estimator with the latent batch doubled
+        _enc, doubled, _dec = image_request_phase_mib(batch_size = 2 * max(1, int(batch_size or 1)), **phase_inputs)
         releaser = getattr(state, "te_releaser", None)
         if releaser is not None:
             # released encoder weights come back onto their card for the encode
             encode += int(releaser.held_bytes) // (1 << 20)
         return request_phase_needs(
-            pipe, encode_mib = encode, denoise_mib = denoise, decode_mib = decode
+            pipe, encode_mib = encode, denoise_mib = denoise, decode_mib = decode, cfg_batch_denoise_mib = doubled
         )
     except Exception:  # noqa: BLE001 - an estimate for an optional lever never fails a request
         return None

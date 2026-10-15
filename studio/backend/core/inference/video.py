@@ -298,13 +298,16 @@ def _cfg_video_request_needs(pipe: Any, request_shape: dict) -> Any:
     """The CFG routers' per-phase memory for this clip, from the generation guard's own video estimator (canvas and
     frames: the decode peak grows with the clip); None when it cannot be computed (the routers scale load figures)."""
     try:
-        encode, denoise, decode = video_request_phase_mib(
+        shape = dict(
             width = request_shape.get("width"),
             height = request_shape.get("height"),
             num_frames = request_shape.get("frames"),
         )
+        encode, denoise, decode = video_request_phase_mib(**shape)
+        # CFG-batch runs both branches in one forward: the same estimator with the batch doubled
+        _enc, doubled, _dec = video_request_phase_mib(batch_size = 2, **shape)
         return request_phase_needs(
-            pipe, encode_mib = encode, denoise_mib = denoise, decode_mib = decode
+            pipe, encode_mib = encode, denoise_mib = denoise, decode_mib = decode, cfg_batch_denoise_mib = doubled
         )
     except Exception:  # noqa: BLE001 - an estimate for an optional lever never fails a request
         return None
