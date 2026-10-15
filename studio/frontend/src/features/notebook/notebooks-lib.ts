@@ -41,6 +41,11 @@ export async function fetchNotebookCatalog(
   return (await response.json()) as NotebookCatalogResponse;
 }
 
+/** Studio trains SFT / CPT only; RL and preference recipes stay Colab-only. */
+export function studioSupportsNotebook(notebook: NotebookCatalogEntry): boolean {
+  return notebook.category !== "grpo";
+}
+
 function normalizeNotebookSearch(text: string): string {
   return text.toLowerCase().replace(/[^a-z0-9]+/g, "");
 }
@@ -71,6 +76,7 @@ export function useOpenNotebookInStudio(): {
 
   const openInStudio = useCallback(
     (notebook: NotebookCatalogEntry) => {
+      if (!studioSupportsNotebook(notebook)) return;
       if (notebook.studio_model) {
         setSelectedModel(notebook.studio_model);
       } else {

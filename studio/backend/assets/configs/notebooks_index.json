@@ -29,7 +29,7 @@
       "title": "Qwen3 (4B) GRPO",
       "category": "grpo",
       "featured": true,
-      "studio_model": "unsloth/Qwen3-4B-Instruct-2507"
+      "studio_model": "unsloth/Qwen3-4B-Base"
     },
     "EmbeddingGemma_(300M).ipynb": {
       "featured": true

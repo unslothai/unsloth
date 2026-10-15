@@ -3630,6 +3630,8 @@ export const ja = {
         "トレーニングには Apple Silicon または GPU が必要です。Intel Mac はチャットのみです。",
       noGpu: "トレーニングには NVIDIA または AMD の GPU が必要です。",
       generic: "このデバイスではトレーニングを利用できません。",
+      unsupportedMethod:
+        "Studio は SFT で学習します。強化学習を実行するには、このノートブックを Colab で開いてください。",
     },
     categories: {
       sft: "ファインチューニング",

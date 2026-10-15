@@ -3753,6 +3753,8 @@ export const es = {
         "El entrenamiento necesita Apple Silicon o una GPU. Los Mac Intel solo admiten chat.",
       noGpu: "El entrenamiento necesita una GPU NVIDIA o AMD.",
       generic: "El entrenamiento no está disponible en este dispositivo.",
+      unsupportedMethod:
+        "Studio entrena con SFT. Abre este notebook en Colab para ejecutar aprendizaje por refuerzo.",
     },
     categories: {
       sft: "Fine-tuning",

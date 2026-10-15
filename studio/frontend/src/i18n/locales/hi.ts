@@ -3690,6 +3690,8 @@ export const hi = {
         "ट्रेनिंग के लिए Apple Silicon या GPU चाहिए। Intel Mac पर केवल चैट उपलब्ध है।",
       noGpu: "ट्रेनिंग के लिए NVIDIA या AMD GPU चाहिए।",
       generic: "इस डिवाइस पर ट्रेनिंग उपलब्ध नहीं है।",
+      unsupportedMethod:
+        "Studio SFT से ट्रेनिंग करता है। रीइन्फ़ोर्समेंट लर्निंग चलाने के लिए यह नोटबुक Colab में खोलें।",
     },
     categories: {
       sft: "फाइन-ट्यूनिंग",

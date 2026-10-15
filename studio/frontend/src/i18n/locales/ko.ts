@@ -3673,6 +3673,8 @@ export const ko = {
         "학습에는 Apple Silicon 또는 GPU가 필요합니다. Intel Mac은 채팅만 사용할 수 있습니다.",
       noGpu: "학습에는 NVIDIA 또는 AMD GPU가 필요합니다.",
       generic: "이 기기에서는 학습을 사용할 수 없습니다.",
+      unsupportedMethod:
+        "Studio는 SFT로 학습합니다. 강화 학습을 실행하려면 이 노트북을 Colab에서 여세요.",
     },
     categories: {
       sft: "파인튜닝",

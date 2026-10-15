@@ -3585,6 +3585,8 @@ export const zhCN = {
         "训练需要 Apple Silicon 或 GPU。Intel Mac 仅支持聊天。",
       noGpu: "训练需要 NVIDIA 或 AMD GPU。",
       generic: "此设备无法进行训练。",
+      unsupportedMethod:
+        "Studio 使用 SFT 进行训练。要运行强化学习，请在 Colab 中打开此笔记本。",
     },
     categories: {
       sft: "微调",

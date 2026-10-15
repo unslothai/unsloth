@@ -3742,6 +3742,8 @@ export const en = {
         "Training needs Apple Silicon or a GPU. Intel Macs are chat-only.",
       noGpu: "Training needs an NVIDIA or AMD GPU.",
       generic: "Training is unavailable on this device.",
+      unsupportedMethod:
+        "Studio fine-tunes with SFT. Open this notebook in Colab to run reinforcement learning.",
     },
     categories: {
       sft: "Fine-tuning",

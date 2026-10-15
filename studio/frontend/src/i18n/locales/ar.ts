@@ -3682,6 +3682,8 @@ export const ar = {
         "التدريب يحتاج إلى Apple Silicon أو GPU. أجهزة Intel Mac تقتصر على الدردشة.",
       noGpu: "التدريب يحتاج إلى GPU من NVIDIA أو AMD.",
       generic: "التدريب غير متاح على هذا الجهاز.",
+      unsupportedMethod:
+        "يدرّب Studio باستخدام SFT. افتح هذا الدفتر في Colab لتشغيل التعلم المعزز.",
     },
     categories: {
       sft: "الضبط الدقيق",

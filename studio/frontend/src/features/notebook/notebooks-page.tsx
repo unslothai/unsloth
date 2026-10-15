@@ -23,6 +23,7 @@ import {
 import { Spinner } from "@/components/ui/spinner";
 import { usePlatformStore } from "@/config/env";
 import { useT } from "@/i18n";
+import { openLink } from "@/lib/open-link";
 import { toastError } from "@/shared/toast";
 import {
   AiBrain01Icon,
@@ -39,11 +40,19 @@ import {
   ZapIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { type ReactElement, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type MouseEvent,
+  type ReactElement,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   fetchNotebookCatalog,
   notebookMatchesQuery,
   type NotebookCatalogEntry,
+  studioSupportsNotebook,
   useOpenNotebookInStudio,
 } from "./notebooks-lib";
 
@@ -151,6 +160,14 @@ function categoryStyle(category: string): CategoryStyle {
   return CATEGORY_STYLES[category] ?? DEFAULT_CATEGORY_STYLE;
 }
 
+// target="_blank" has nowhere to go in the Desktop webview; openLink() hands the URL to the
+// system browser there and opens a new tab on the web.
+function handleExternalClick(event: MouseEvent<HTMLAnchorElement>): void {
+  if (openLink(event.currentTarget.href)) {
+    event.preventDefault();
+  }
+}
+
 function NotebookCard({
   notebook,
   onUseInStudio,
@@ -168,6 +185,10 @@ function NotebookCard({
 }): ReactElement {
   const t = useT();
   const style = categoryStyle(notebook.category);
+  const supported = studioSupportsNotebook(notebook);
+  const disabledHint = supported
+    ? studioDisabledHint
+    : t("notebooks.studioDisabled.unsupportedMethod");
 
   return (
     <article
@@ -195,9 +216,11 @@ function NotebookCard({
             {notebook.title}
           </h2>
           <p className="line-clamp-2 text-xs text-muted-foreground">
-            {notebook.studio_model
-              ? t("notebooks.studioModelReady", { model: notebook.studio_model })
-              : t("notebooks.studioManualConfigure")}
+            {!supported
+              ? t("notebooks.studioDisabled.unsupportedMethod")
+              : notebook.studio_model
+                ? t("notebooks.studioModelReady", { model: notebook.studio_model })
+                : t("notebooks.studioManualConfigure")}
           </p>
         </div>
 
@@ -205,12 +228,12 @@ function NotebookCard({
           {/* The wrapper carries the hint: a disabled button has pointer-events-none. */}
           <span
             className="inline-flex"
-            title={studioDisabled ? studioDisabledHint : undefined}
+            title={studioDisabled || !supported ? disabledHint : undefined}
           >
             <Button
               type="button"
               size="sm"
-              disabled={studioDisabled}
+              disabled={studioDisabled || !supported}
               onClick={() => onUseInStudio(notebook)}
             >
               <HugeiconsIcon icon={TestTube01Icon} className="size-4" />
@@ -218,13 +241,23 @@ function NotebookCard({
             </Button>
           </span>
           <Button type="button" size="sm" variant="outline" asChild>
-            <a href={notebook.colab_url} target="_blank" rel="noreferrer">
+            <a
+              href={notebook.colab_url}
+              target="_blank"
+              rel="noreferrer"
+              onClick={handleExternalClick}
+            >
               <HugeiconsIcon icon={Globe02Icon} className="size-4" />
               {t("notebooks.openInColab")}
             </a>
           </Button>
           <Button type="button" size="sm" variant="ghost" asChild>
-            <a href={notebook.github_url} target="_blank" rel="noreferrer">
+            <a
+              href={notebook.github_url}
+              target="_blank"
+              rel="noreferrer"
+              onClick={handleExternalClick}
+            >
               <HugeiconsIcon icon={GithubIcon} className="size-4" />
               {t("notebooks.viewOnGitHub")}
             </a>

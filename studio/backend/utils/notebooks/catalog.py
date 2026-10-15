@@ -40,7 +40,11 @@ _OFFLINE_VALUES = {"1", "true", "yes", "on"}
 _BASED_ON_RE = re.compile(r"#\s*Based on\s+(.+)", re.IGNORECASE)
 _MODEL_RE = re.compile(r"#\s*Model defaults for\s+(\S+)", re.IGNORECASE)
 _CATEGORY_RULES = (
-    ("grpo", ("grpo", "gspo")),
+    # Studio trains SFT / CPT only, so these recipes stay Colab-only.
+    (
+        "grpo",
+        ("grpo", "gspo", "reinforcement_learning", "nemo-gym", "-ppo", "-dpo", "-orpo"),
+    ),
     ("vision", ("vision", "_vl_", "ocr", "pixtral", "deepseek")),
     ("audio", ("tts", "whisper", "orpheus", "llasa", "csm", "spark_tts", "oute")),
     ("embedding", ("embedding", "minilm", "bge", "modernbert")),

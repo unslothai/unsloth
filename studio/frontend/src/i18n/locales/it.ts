@@ -3755,6 +3755,8 @@ export const it = {
         "L'addestramento richiede Apple Silicon o una GPU. I Mac Intel supportano solo la chat.",
       noGpu: "L'addestramento richiede una GPU NVIDIA o AMD.",
       generic: "L'addestramento non è disponibile su questo dispositivo.",
+      unsupportedMethod:
+        "Studio addestra con SFT. Apri questo notebook in Colab per eseguire il reinforcement learning.",
     },
     categories: {
       sft: "Fine-tuning",

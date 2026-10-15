@@ -60,3 +60,24 @@ def test_offline_mode_never_fetches(monkeypatch, fresh_cache):
 
     monkeypatch.setattr(catalog, "_fetch_repo_notebook_files", fail)
     assert catalog.build_notebook_catalog()
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "Qwen3_(4B)-GRPO.ipynb",
+        "gpt_oss_(20B)_Reinforcement_Learning_2048_Game.ipynb",
+        "NeMo-Gym-Sudoku.ipynb",
+        "Zephyr_(7B)-DPO.ipynb",
+        "Llama3_(8B)-ORPO.ipynb",
+        "Llama3.2_(1B)-PPO.ipynb",
+    ],
+)
+def test_rl_and_preference_recipes_are_not_sft(name):
+    # The frontend keys "Use in Studio" off this category: Studio trains SFT / CPT only.
+    assert catalog._category(name) == "grpo"
+
+
+@pytest.mark.parametrize("name", ["Llama3.1_(8B)-Alpaca.ipynb", "Mistral_Nemo_(12B)-Alpaca.ipynb"])
+def test_sft_recipes_stay_sft(name):
+    assert catalog._category(name) == "sft"

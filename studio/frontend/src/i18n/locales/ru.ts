@@ -3709,6 +3709,8 @@ export const ru = {
         "Для обучения нужен Apple Silicon или GPU. На Intel Mac доступен только чат.",
       noGpu: "Для обучения нужна GPU NVIDIA или AMD.",
       generic: "Обучение недоступно на этом устройстве.",
+      unsupportedMethod:
+        "Studio обучает с помощью SFT. Откройте этот ноутбук в Colab, чтобы запустить обучение с подкреплением.",
     },
     categories: {
       sft: "Дообучение",
