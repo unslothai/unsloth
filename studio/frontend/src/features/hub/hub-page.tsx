@@ -67,13 +67,14 @@ import {
   ResultListHeader,
 } from "./catalog/models-table";
 import {
+  HUB_UPLOADERS,
+  type HubUploader,
   hasModelSearchFilters,
   type ModelSearchFilters,
 } from "./lib/model-search-filters";
 import { ModelsToolbar } from "./catalog/models-toolbar";
 import { NpuCatalogList } from "./catalog/npu-catalog-list";
 import { OnDeviceFoldersDialog } from "./catalog/on-device-folders-dialog";
-import { OwnerScopeToggle } from "./catalog/owner-scope-toggle";
 import { useDiscoverSearch } from "./hooks/use-discover-search";
 import { useFeedWriteBack } from "./hooks/use-feed-write-back";
 import { useHiddenEmbeddingModelIds } from "./hooks/use-hidden-embedding-models";
@@ -149,11 +150,11 @@ import type {
 } from "./types";
 
 const NO_SEARCH_FILTERS: ModelSearchFilters = {};
+const UNSLOTH_UPLOADER: readonly HubUploader[] = ["unsloth"];
 
 const MODELS_TAB_STORAGE_KEY = "unsloth.hub.modelsTab";
 const ALL_MODELS_VIEW_STORAGE_KEY = "unsloth.hub.allModelsView";
 const INVENTORY_SORT_STORAGE_KEY = "unsloth.hub.inventorySort";
-const OWNER_SCOPE_STORAGE_KEY = "unsloth.hub.ownerScope";
 const RUN_CONFIG_REFRESH_TIMEOUT_MS = 5_000;
 
 // Under Recommended, iconless models (no provider logo, e.g. Ornith, Inkling) show once they clear this many likes.
@@ -207,33 +208,6 @@ class RunConfigOpenCoordinator {
 
   finish(controller: AbortController): void {
     if (this.active === controller) this.active = null;
-  }
-}
-
-/** Discover browsing scope: the whole Hub (default) or only the unsloth org. */
-export type OwnerScope = "unsloth" | "all";
-
-function readOwnerScopePreference(): OwnerScope {
-  if (typeof window === "undefined") {
-    return "all";
-  }
-  try {
-    const value = window.localStorage.getItem(OWNER_SCOPE_STORAGE_KEY);
-    // Default to the whole Hub; only honor an explicit "unsloth" preference.
-    return value === "unsloth" ? "unsloth" : "all";
-  } catch {
-    return "all";
-  }
-}
-
-function writeOwnerScopePreference(scope: OwnerScope): void {
-  if (typeof window === "undefined") {
-    return;
-  }
-  try {
-    window.localStorage.setItem(OWNER_SCOPE_STORAGE_KEY, scope);
-  } catch {
-    return;
   }
 }
 
@@ -578,13 +552,8 @@ export function ModelsPage() {
     () => findChannel(DEFAULT_DISCOVER_CHANNEL)?.sort ?? "trendingScore",
   );
   const [direction, setDirection] = useState<HfSortDirection>("desc");
-  const [ownerScope, setOwnerScopeState] = useState<OwnerScope>(
-    readOwnerScopePreference,
-  );
-  const setOwnerScope = useCallback((scope: OwnerScope) => {
-    setOwnerScopeState(scope);
-    writeOwnerScopePreference(scope);
-  }, []);
+  // Null until the user picks: then Unsloth's uploads, or every uploader once a search is typed.
+  const [uploaderPick, setUploaderPick] = useState<HubUploader[] | null>(null);
   const urlResourceType: ResourceTypeFilter =
     hubSearch.kind === "datasets" ? "datasets" : "models";
   const [resourceType, setResourceType] =
@@ -644,10 +613,6 @@ export function ModelsPage() {
   const [storedSearchFilters, setSearchFilters] = useState<ModelSearchFilters>(
     {},
   );
-  // The publisher and config.json lookups are Hugging Face endpoints.
-  const searchFilters =
-    hubSource === "modelscope" ? NO_SEARCH_FILTERS : storedSearchFilters;
-  const hasSearchFilters = hasModelSearchFilters(searchFilters);
   // Several capabilities show models with any of them; none shows every model.
   const [capabilityFilters, setCapabilityFilters] = useState<
     HubCapabilityFilter[]
@@ -803,7 +768,7 @@ export function ModelsPage() {
     );
     setSortBrowseActive(true);
     // The media pages run curated Unsloth uploads, so start there.
-    setOwnerScope("unsloth");
+    setUploaderPick([...UNSLOTH_UPLOADER]);
     void navigate({
       to: "/hub",
       // Discover models, whatever tab or kind the link carried.
@@ -818,7 +783,7 @@ export function ModelsPage() {
       }),
       replace: true,
     });
-  }, [urlCapability, urlTaskKey, navigate, setOwnerScope]);
+  }, [urlCapability, urlTaskKey, navigate]);
   // Picking another filter drops the link's tasks, so returning to Audio shows every audio model.
   if (!capabilityFilters.includes("audio") && linkedAudioTask !== null) {
     setLinkedAudioTask(null);
@@ -842,6 +807,21 @@ export function ModelsPage() {
 
   const debouncedQuery = useDebouncedValue(query);
   const deferredDebouncedQuery = useDeferredValue(debouncedQuery);
+  const uploaders =
+    uploaderPick ?? (debouncedQuery.trim() ? HUB_UPLOADERS : UNSLOTH_UPLOADER);
+  const ownerScope =
+    uploaders.length === 1 && uploaders[0] === "unsloth" ? "unsloth" : "all";
+  // The publisher and config.json lookups are Hugging Face endpoints.
+  const searchFilters = useMemo(
+    () =>
+      hubSource === "modelscope"
+        ? NO_SEARCH_FILTERS
+        : ownerScope === "all" && uploaders.length < HUB_UPLOADERS.length
+          ? { ...storedSearchFilters, uploaders: [...uploaders] }
+          : storedSearchFilters,
+    [hubSource, ownerScope, uploaders, storedSearchFilters],
+  );
+  const hasSearchFilters = hasModelSearchFilters(searchFilters);
   const hfToken = useHfTokenStore((s) => s.token);
   const debouncedHfToken = useDebouncedValue(hfToken, 500);
   const apiHfToken = hfApiToken(debouncedHfToken);
@@ -859,7 +839,7 @@ export function ModelsPage() {
       ? "search"
       : urlSection != null
         ? "channel-list"
-        : sortBrowseActive || hasSearchFilters
+        : sortBrowseActive || hasSearchFilters || uploaderPick !== null
           ? "search"
           : "feed"
     : "search";
@@ -1296,6 +1276,7 @@ export function ModelsPage() {
     }
     setCapabilityFilters([]);
     setSearchFilters({});
+    setUploaderPick(null);
   }, [isDiscoverTab, urlSection, navigate]);
   const handleDiscoverFetchIntent = useCallback(() => {
     setDiscoverFetchIntent((value) => value + 1);
@@ -1558,7 +1539,7 @@ export function ModelsPage() {
       setSearchFilters({});
       setSortBrowseActive(false);
       // Base models come from other publishers, so search the whole Hub.
-      setOwnerScope("all");
+      setUploaderPick(null);
       setQuery(trimmed);
       void navigate({
         to: "/hub",
@@ -1571,7 +1552,7 @@ export function ModelsPage() {
         }),
       });
     },
-    [navigate, setModelsTab, setOwnerScope],
+    [navigate, setModelsTab],
   );
   // A new chat opens with the model's run settings, where Load starts it.
   const openRunSettingsInChat = useCallback(
@@ -1864,9 +1845,6 @@ export function ModelsPage() {
         </div>
       );
     }
-    const ownerToggle = isDatasetMode ? undefined : (
-      <OwnerScopeToggle value={ownerScope} onChange={setOwnerScope} />
-    );
     // Compact pill so it stays beside the view-mode tabs even in the narrow split pane.
     return (
       <div className="flex flex-col gap-3 pt-6">
@@ -1879,7 +1857,6 @@ export function ModelsPage() {
             view={allModelsView}
             onViewChange={setAllModelsView}
             onBack={handleBackToFeed}
-            actions={ownerToggle}
           />
         ) : (
           <HubListHeader
@@ -1887,7 +1864,6 @@ export function ModelsPage() {
             view={allModelsView}
             onViewChange={setAllModelsView}
             onBack={isSortBrowseMode ? handleBackToFeed : undefined}
-            actions={ownerToggle}
           />
         )}
         {allModelsView === "grid" && listCount > 0 && (
@@ -1906,8 +1882,6 @@ export function ModelsPage() {
     listCount,
     allModelsView,
     setAllModelsView,
-    ownerScope,
-    setOwnerScope,
     isDatasetMode,
     feedTrendingRows,
     hubFeed.trending.isLoading,
@@ -1989,8 +1963,11 @@ export function ModelsPage() {
           onResourceTypeChange={handleResourceTypeChange}
           formatFilter={formatFilter}
           onFormatFilterChange={setFormatFilter}
-          searchFilters={searchFilters}
+          searchFilters={storedSearchFilters}
           onSearchFiltersChange={setSearchFilters}
+          uploaders={uploaders}
+          uploadersChanged={uploaderPick !== null}
+          onUploadersChange={setUploaderPick}
           capabilityFilters={capabilityFilters}
           onCapabilityFiltersChange={setCapabilityFilters}
           fitOnDeviceOnly={fitOnDeviceOnly}

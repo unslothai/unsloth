@@ -39,7 +39,10 @@ import type {
 } from "../types";
 import type { HubCapabilityFilter } from "../lib/model-capabilities";
 import { type HubOption, HubOptionMenu } from "./hub-option-menu";
-import type { ModelSearchFilters } from "../lib/model-search-filters";
+import type {
+  HubUploader,
+  ModelSearchFilters,
+} from "../lib/model-search-filters";
 import { ModelSearchFiltersControl } from "./model-search-filters";
 import { RecentSearches } from "./recent-searches";
 
@@ -80,9 +83,16 @@ export const ModelsToolbar = memo(function ModelsToolbar({
   npuAvailable = false,
   searchFilters,
   onSearchFiltersChange,
+  uploaders,
+  uploadersChanged,
+  onUploadersChange,
 }: {
   searchFilters: ModelSearchFilters;
   onSearchFiltersChange: (value: ModelSearchFilters) => void;
+  uploaders: readonly HubUploader[];
+  /** False while the default applies (Unsloth's uploads, or every uploader for a search). */
+  uploadersChanged: boolean;
+  onUploadersChange: (value: HubUploader[]) => void;
   tab: ModelsTab;
   onTabChange: (tab: ModelsTab) => void;
   query: string;
@@ -490,6 +500,9 @@ export const ModelsToolbar = memo(function ModelsToolbar({
             onChange={onSearchFiltersChange}
             capabilities={capabilityFilters}
             onCapabilitiesChange={onCapabilityFiltersChange}
+            uploaders={uploaders}
+            uploadersChanged={uploadersChanged}
+            onUploadersChange={onUploadersChange}
             showModelFilters={showModelFilters}
             className={cn(
               triggerBase,

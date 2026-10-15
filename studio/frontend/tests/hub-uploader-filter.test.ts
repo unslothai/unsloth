@@ -1,0 +1,35 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+// The uploader is picked in the Hub's filter popover, Unsloth's uploads until a search is typed.
+
+import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
+import test from "node:test";
+
+import { readSrc } from "./helpers/kit.ts";
+
+const page = readSrc("features/hub/hub-page.tsx");
+const popover = readSrc("features/hub/catalog/model-search-filters.tsx");
+
+test("the results header's Unsloth / All dropdown is gone", () => {
+  assert.doesNotMatch(page, /OwnerScopeToggle|actions=\{ownerToggle\}/);
+  assert.equal(existsSync(new URL("../src/features/hub/catalog/owner-scope-toggle.tsx", import.meta.url)), false);
+});
+
+test("Unsloth's uploads by default, every uploader once a search is typed", () => {
+  assert.match(page, /uploaderPick \?\? \(debouncedQuery\.trim\(\) \? HUB_UPLOADERS : UNSLOTH_UPLOADER\)/);
+  assert.match(page, /uploaders\.length === 1 && uploaders\[0\] === "unsloth" \? "unsloth" : "all"/);
+});
+
+test("the popover lists the three uploaders under its own divider", () => {
+  assert.match(readSrc("features/hub/lib/model-search-filters.ts"), /"unsloth",\s*"organization",\s*"personal",/);
+  assert.match(popover, /organization: "Organizations",\s*personal: "Non-organization",/);
+  assert.doesNotMatch(popover, /Organizations only/);
+});
+
+test("the range notes are hover tooltips beside Parameters and Context length", () => {
+  assert.doesNotMatch(popover, /Ranges include both limits/);
+  assert.match(popover, /aria-label=\{`About \$\{label\.toLowerCase\(\)\}`\}/);
+  assert.match(popover, /icon=\{InformationCircleIcon\}/);
+});
