@@ -440,12 +440,15 @@ def test_a_recovered_capacity_warning_is_not_a_capacity_failure():
     explained as memory."""
     assert not sd_cpp_backend.output_shows_capacity_failure(_RECOVERED_CAPACITY_WARNING)
     build_failure = (
-        "sd-cli exited 1. Last output:\n" + _RECOVERED_CAPACITY_WARNING
+        "sd-cli exited 1. Last output:\n"
+        + _RECOVERED_CAPACITY_WARNING
         + "ggml_cuda_compute_forward: error: invalid device function\n"
     )
     assert sd_cpp_backend.output_shows_accelerator_failure(build_failure)
     assert sd_cpp_backend.output_shows_decisive_accelerator_failure(build_failure)
-    crash = "sd-cli exited -11. Last output:\n" + _RECOVERED_CAPACITY_WARNING + "Segmentation fault\n"
+    crash = (
+        "sd-cli exited -11. Last output:\n" + _RECOVERED_CAPACITY_WARNING + "Segmentation fault\n"
+    )
     assert "renderer stopped unexpectedly" in video_failure_detail(RuntimeError(crash))
 
 
