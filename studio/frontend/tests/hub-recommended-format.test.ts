@@ -69,7 +69,6 @@ test("Recommended browsing lists checkpoints only past 30 likes", async () => {
   assert.equal(hasRecommendedCheckpointLikes(fp8), false);
   assert.equal(hasRecommendedCheckpointLikes({ ...fp8, likes: 30 }), false);
   assert.equal(hasRecommendedCheckpointLikes({ ...fp8, likes: 31 }), true);
-  // Safetensors repo cross-tagged "gguf" for a stray .gguf file (Nemotron-3.5-Bolt-74B-A9B).
   const crossTagged = {
     id: "unsloth/NVIDIA-Nemotron-3.5-Bolt-74B-A9B",
     isGguf: true,

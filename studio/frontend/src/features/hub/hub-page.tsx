@@ -298,7 +298,6 @@ function useModelsTabState(): {
   const navigate = useNavigate();
   const search = useSearch({ from: "/hub" });
   const urlTab: ModelsTab | null = search.tab ?? null;
-  // Opening the Hub without an explicit ?tab= always lands on Discover; the last tab is not remembered.
   const tab = urlTab ?? "discover";
 
   useEffect(() => {
@@ -1083,8 +1082,8 @@ export function ModelsPage() {
       (row) =>
         !isHiddenModelId(row.id) &&
         !isConfiguredHiddenModelId(hiddenEmbeddingModelIds, row.id) &&
-        // Recommended curates browsing to logo'd models plus well-liked iconless ones, and to
-        // well-liked checkpoints; a typed search and every other format show all matches.
+        // Recommended curates browsing to logo'd models plus well-liked iconless ones; a typed
+        // search and every other format show all matches.
         (effectiveDiscoverFormat !== "recommended" ||
           hasQuery ||
           resolveOwnerProviderLogo(row.owner, row.repo) !== null ||

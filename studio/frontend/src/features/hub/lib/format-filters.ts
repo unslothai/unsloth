@@ -99,7 +99,6 @@ export function matchesRecommended(
   return format !== null && checkpointQuantFormats.includes(format);
 }
 
-// Recommended browsing lists every GGUF but only checkpoints with more than this many likes.
 export const MIN_RECOMMENDED_CHECKPOINT_LIKES = 30;
 
 export function hasRecommendedCheckpointLikes(result: {
