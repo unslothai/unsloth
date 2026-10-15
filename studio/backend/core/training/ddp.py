@@ -225,6 +225,33 @@ def _rank_entry(
         )
 
 
+# A stop before the process group exists lets a rank return while a peer waits at the rendezvous.
+_STOPPED_PEER_GRACE_S = 30.0
+
+
+def _join_ranks(context: Any, stop_event: Any) -> None:
+    """Join every rank; once a stop is requested and a rank has exited cleanly, end peers that
+    are still waiting for it after a grace period instead of until the rendezvous times out."""
+    first_exit = None
+    while not context.join(timeout = 1.0):
+        if not stop_event.is_set():
+            continue
+        alive = [process for process in context.processes if process.is_alive()]
+        if not alive or len(alive) == len(context.processes):
+            continue
+        first_exit = first_exit or time.monotonic()
+        if time.monotonic() - first_exit < _STOPPED_PEER_GRACE_S:
+            continue
+        for process in alive:
+            process.terminate()
+        for process in alive:
+            process.join(timeout = 10.0)
+            if process.is_alive():
+                process.kill()
+                process.join(timeout = 5.0)
+        return
+
+
 def run_ddp_training_process(*, event_queue: Any, stop_queue: Any, config: dict[str, Any]) -> None:
     gpu_ids = list(config.get("resolved_gpu_ids") or [])
     if len(gpu_ids) < 2:
@@ -287,7 +314,7 @@ def run_ddp_training_process(*, event_queue: Any, stop_queue: Any, config: dict[
     stop_thread.start()
     try:
         import torch.multiprocessing as torch_mp
-        torch_mp.spawn(
+        context = torch_mp.spawn(
             _rank_entry,
             args = (
                 config,
@@ -298,8 +325,9 @@ def run_ddp_training_process(*, event_queue: Any, stop_queue: Any, config: dict[
                 failures,
             ),
             nprocs = len(gpu_ids),
-            join = True,
+            join = False,
         )
+        _join_ranks(context, stop_event)
     except BaseException as exc:
         held_complete.clear()
         if failures:

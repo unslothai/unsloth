@@ -9,9 +9,8 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
-const { validateS3Source, validateTrainingConfig } = await import(
-  "../src/features/training/lib/validation.ts"
-);
+const { validateS3Source, validateTrainingConfig } =
+  await import("../src/features/training/lib/validation.ts");
 
 const validConfig = {
   selectedModel: "org/model",
@@ -64,7 +63,10 @@ test("launch validation checks live membership and rejects an unresolved probe",
       "studio.training.validation.gpuSelectionUnavailable",
     );
   }
-  assert.equal(validateTrainingConfig(config, undefined, true, [2, 5]).ok, true);
+  assert.equal(
+    validateTrainingConfig(config, undefined, true, [2, 5]).ok,
+    true,
+  );
   assert.equal(
     validateTrainingConfig(
       { ...config, parallelismMode: "auto", selectedGpuIds: null },
@@ -93,6 +95,24 @@ test("training validation rejects empty explicit GPU selections", () => {
     }).errorKey,
     "studio.training.validation.multipleGpusRequired",
   );
+});
+
+test("DDP is rejected for embedding and decision models", () => {
+  for (const model of [
+    { isEmbeddingModel: true },
+    { modelType: "embeddings" as const },
+    { modelType: "decision" as const },
+  ]) {
+    assert.equal(
+      validateTrainingConfig({
+        ...validConfig,
+        ...model,
+        parallelismMode: "ddp",
+        selectedGpuIds: [0, 1],
+      }).errorKey,
+      "studio.training.validation.ddpModelUnsupported",
+    );
+  }
 });
 
 test("single-GPU validation still requires a selection even without a refresh result", () => {
