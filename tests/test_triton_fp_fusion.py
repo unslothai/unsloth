@@ -155,8 +155,8 @@ def exercise(device = "cuda"):
     Xv = rnd(1, 1, kk)
     out["nf4_gemv"] = (nf4_gemv.gemv_nf4(Xv, *args, (n, kk), dt),)
 
-    if torch.cuda.get_device_capability(device) >= (8, 9) or torch.version.hip:
-        Wf = (rnd(512, 1024, dtype = torch.float32) / 4).to(torch.float8_e4m3fn)
+    Wf = (rnd(512, 1024, dtype = torch.float32) / 4).to(torch.float8_e4m3fn)
+    if not fp8._fp8_kernel_unsupported(Wf):
         scale = torch.rand(512, 1, generator = g, device = device) + 0.5
         out["fp8_gemv"] = (fp8.fp8_rowwise_gemv(rnd(1, 1, 1024), Wf, scale),)
     torch.cuda.synchronize()
