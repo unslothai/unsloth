@@ -691,3 +691,38 @@ def test_uninstall_restores_contiguous_layout(monkeypatch):
     F.uninstall(vae)
     assert vae.decoder.proj3d.weight.is_contiguous()
     assert "_unsloth_channels_last_modules" not in vae.__dict__
+
+
+def test_overlap_factor_searches_the_interval_above_the_floor():
+    """With overlap 0.2 the 8-latent floor never tiles exactly; 10 latents does, so the ladder goes 32 -> 15 -> 10."""
+    attrs = {"tile_sample_min_size": 256, "tile_latent_min_size": 32}
+    assert O.halved(attrs, 8, 1, 0.2) == {"tile_sample_min_size": 120, "tile_latent_min_size": 15}
+    assert O.halved(attrs, 8, 2, 0.2) == {"tile_sample_min_size": 80, "tile_latent_min_size": 10}
+    assert O.halved(attrs, 8, 3, 0.2) is None
+
+
+class _TallTileProbeOOM(_UntiledProbeOOMWanLike):
+    """16 px-tall (2-latent) inputs: the 8-latent height tiles never seam, only the width tiles do."""
+
+    def _decode(self, z, return_dict = True):
+        if z.shape[-1] != 64 and not self.use_tiling:
+            self.untiled_probes += 1
+            raise _FakeOOM()
+        if z.shape[-1] == 64:
+            self.seen.append((self.use_tiling, self.tile_sample_min_height, self.tile_sample_min_width))
+            if not self.use_tiling or self.tile_sample_min_width > self.fits:
+                raise _FakeOOM()
+        return (z.repeat_interleave(8, -1).repeat_interleave(8, -2) + 1,)
+
+
+def test_unprobed_floor_ignores_an_axis_the_input_fits_in():
+    vae = _TallTileProbeOOM(fits = 128)
+    vae.tile_sample_min_height = 64  # 8 latents: at the floor already
+    vae.tile_sample_stride_height = 48
+    vae.use_tiling = True
+    O.install(vae)
+    out = vae._decode(torch.zeros(1, 4, 1, 8, 64))
+    assert out[0].shape[-2:] == (64, 512)
+    stats = vae._unsloth_vae_oom_stats
+    assert stats["recovered"] == 1 and stats["quality_refused"] == 0
+    assert vae.seen[-1][2] == 128  # width tiles halved to 16 latents

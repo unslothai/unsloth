@@ -108,16 +108,19 @@ def _overlap_ok(latent: int, sample: int, factor: Optional[float]) -> bool:
 def _axis_latents(
     base_latent: int, ratio: int, level: int, overlap_factor: Optional[float]
 ) -> Optional[int]:
-    """One axis's tile size in latents at ``level``, or None when it is under the floor or no smaller than at
-    ``level - 1``."""
-    scale = 2**level
-    prev = max(MIN_TILE_LATENTS, base_latent // (scale // 2)) if level > 1 else base_latent
-    lat = max(MIN_TILE_LATENTS, base_latent // scale)  # the last halving lands on the floor
-    while lat >= MIN_TILE_LATENTS and not _overlap_ok(lat, lat * ratio, overlap_factor):
-        lat -= 1
-    if lat < MIN_TILE_LATENTS or lat >= prev or lat >= base_latent:
+    """One axis's tile size in latents at ``level``: the largest valid size at or under the halved target, else the
+    smallest valid one above it, always under ``level - 1``'s size and at least MIN_TILE_LATENTS. None when there is
+    none (an overlap factor allows only some sizes to tile exactly)."""
+    if level <= 0:
+        return base_latent
+    prev = _axis_latents(base_latent, ratio, level - 1, overlap_factor)
+    if prev is None:
         return None
-    return lat
+    target = max(MIN_TILE_LATENTS, base_latent // 2**level)  # the last halving lands on the floor
+    for lat in (*range(min(target, prev - 1), MIN_TILE_LATENTS - 1, -1), *range(target + 1, prev)):
+        if _overlap_ok(lat, lat * ratio, overlap_factor):
+            return lat
+    return None
 
 
 def halved(
@@ -293,7 +296,9 @@ def install(vae: Any, logger: Any = None) -> bool:
             return min(found) if found else MIN_TILE_LATENTS
 
         lat_h, lat_w = axis_latents("height"), axis_latents("width")
-        lat = min(lat_h, lat_w)
+        # The unprobed floor only looks at axes this input actually tiles (an axis it fits in has no seam).
+        seamed = [n for n, size in ((lat_h, int(z.shape[-2])), (lat_w, int(z.shape[-1]))) if size > n]
+        lat = min(seamed) if seamed else UNPROBED_MIN_LATENTS
         sl = [slice(None)] * z.dim()
         # two tiles along each axis, so each axis gets a seam
         sl[-1] = slice(0, min(int(z.shape[-1]), 2 * lat_w))
