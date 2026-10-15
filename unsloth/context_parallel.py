@@ -91,8 +91,9 @@ def context_parallel_options(config) -> tuple:
     return size, backend, rotate_method
 
 
-def _unsupported_attention(config) -> Optional[str]:
+def _unsupported_attention(config, backend = "ring") -> Optional[str]:
     # Ring and Llama's forward ignore mask, window and softcap, so both backends refuse them.
+    allowed = {"full_attention", "linear_attention"} if backend == "ulysses" else {"full_attention"}
     configs = [config]
     text_config = getattr(config, "text_config", None)
     if text_config is not None and text_config is not config:
@@ -101,9 +102,10 @@ def _unsupported_attention(config) -> Optional[str]:
         if c is None:
             continue
         layer_types = getattr(c, "layer_types", None)
-        if layer_types and any(t != "full_attention" for t in layer_types):
-            kinds = sorted({t for t in layer_types if t != "full_attention"})
-            return f"{', '.join(kinds)} layers"
+        if layer_types and any(t not in allowed for t in layer_types):
+            kinds = sorted({t for t in layer_types if t not in allowed})
+            hint = " (use context_parallel_backend = 'ulysses')" if kinds == ["linear_attention"] else ""
+            return f"{', '.join(kinds)} layers{hint}"
         # Any positive window, even with use_sliding_window off: Unsloth's masks read it directly.
         sliding_window = getattr(c, "sliding_window", None)
         if (isinstance(sliding_window, int) and sliding_window > 0) or getattr(
@@ -129,6 +131,13 @@ def _unregister_cp_sharding_rules() -> None:
 
 from .device_type import DEVICE_TYPE_TORCH
 from .utils.ulysses import _document_positions, ulysses_head_plan
+from .utils.ulysses_hybrid import (
+    GATED_DELTA_ATTENTION_CLASSES,
+    check_gated_delta_heads,
+    install_hf_attention_wrapper,
+    is_ulysses_gated_delta,
+    wrap_gated_delta_forward,
+)
 
 # A module global, not a ContextVar: CUDA runs backward (and checkpoint recompute) on another thread.
 _ACTIVE_MANAGER: Optional["ContextParallelManager"] = None
@@ -145,15 +154,46 @@ def get_cp_manager() -> Optional["ContextParallelManager"]:
     return _ACTIVE_MANAGER
 
 
-def _supports_context_parallel(model) -> bool:
+def _stateful_mixers(model) -> list:
+    from .utils.packing import _iter_stateful_mixers
+
+    return _iter_stateful_mixers(model) if isinstance(model, torch.nn.Module) else []
+
+
+def _supports_context_parallel(model, backend = "ring") -> bool:
     from .models.llama import LlamaAttention_fast_forward
 
-    forwards = [
-        getattr(type(module).forward, "__func__", type(module).forward)
-        for name, module in model.named_modules()
-        if name.endswith("self_attn")
-    ]
-    return bool(forwards) and all(f is LlamaAttention_fast_forward for f in forwards)
+    modules = [module for name, module in model.named_modules() if name.endswith("self_attn")]
+    forwards = [getattr(type(m).forward, "__func__", type(m).forward) for m in modules]
+    if bool(forwards) and all(f is LlamaAttention_fast_forward for f in forwards):
+        return not _stateful_mixers(model)
+    mixers = _stateful_mixers(model)
+    return (
+        backend == "ulysses"
+        and bool(mixers)
+        and all(is_ulysses_gated_delta(m) for m, _ in mixers)
+        and all(type(m).__name__ in GATED_DELTA_ATTENTION_CLASSES for m in modules)
+    )
+
+
+def _check_stateful_mixers(model, backend, size) -> None:
+    mixers = _stateful_mixers(model)
+    if not mixers:
+        return
+    if backend != "ulysses":
+        kinds = sorted({type(m).__name__ for m, _ in mixers})
+        raise NotImplementedError(
+            f"Unsloth: ring context parallelism cannot split the sequential scans of {kinds}; "
+            "use context_parallel_backend = 'ulysses'."
+        )
+    unsupported = sorted({type(m).__name__ for m, _ in mixers if not is_ulysses_gated_delta(m)})
+    if unsupported:
+        raise NotImplementedError(
+            "Unsloth: Ulysses context parallelism supports Gated DeltaNet linear attention only, "
+            f"not {unsupported}."
+        )
+    for module, _ in mixers:
+        check_gated_delta_heads(module, size)
 
 
 def _self_attn_pre_forward_hook(_module, module_args, module_kwargs):
@@ -183,6 +223,15 @@ class ContextParallelManager:
         return self.mesh.get_group()
 
     def attach_attention_hooks(self, model: torch.nn.Module) -> None:
+        if self.backend == "ulysses":
+            for module, _ in _stateful_mixers(model):
+                if is_ulysses_gated_delta(module):
+                    wrap_gated_delta_forward(module, get_cp_manager)
+            for name, module in model.named_modules():
+                if name.endswith("self_attn") and type(module).__name__ in GATED_DELTA_ATTENTION_CLASSES:
+                    install_hf_attention_wrapper(
+                        module, module.config._attn_implementation, get_cp_manager
+                    )
         for name, module in model.named_modules():
             if name.endswith("self_attn") and not getattr(module, "_unsloth_cp_hooked", False):
                 module.register_forward_pre_hook(
@@ -467,7 +516,7 @@ def patch_sft_trainer() -> None:
         if Version(accelerate.__version__) < Version("1.10.0"):
             raise NotImplementedError("Unsloth: context parallelism needs accelerate >= 1.10.0.")
         model_config = getattr(self.model, "config", None)
-        unsupported = _unsupported_attention(model_config)
+        unsupported = _unsupported_attention(model_config, backend)
         if unsupported is not None:
             raise NotImplementedError(
                 f"Unsloth: {backend} context parallelism does not support {unsupported}."
@@ -481,10 +530,11 @@ def patch_sft_trainer() -> None:
                 or text_config.num_attention_heads,
                 size,
             )
-        if not _supports_context_parallel(self.model):
+        _check_stateful_mixers(self.model, backend, size)
+        if not _supports_context_parallel(self.model, backend):
             raise NotImplementedError(
-                "Unsloth: context parallelism currently supports Llama-style attention only "
-                "(Llama, Qwen2, Gemma)."
+                "Unsloth: context parallelism currently supports Llama-style attention "
+                "(Llama, Qwen2, Gemma), and Qwen3-Next / Qwen3.5 Gated DeltaNet hybrids with Ulysses."
             )
         accelerator = getattr(self, "accelerator", None)
         distributed_type = getattr(getattr(accelerator, "distributed_type", None), "name", "NO")

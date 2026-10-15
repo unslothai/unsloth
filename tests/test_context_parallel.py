@@ -406,7 +406,7 @@ def test_deepspeed_and_fsdp_are_refused(monkeypatch, distributed_type):
     monkeypatch.setattr(cp.dist, "is_initialized", lambda: True)
     monkeypatch.setattr(cp.dist, "get_world_size", lambda: 2)
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
-    monkeypatch.setattr(cp, "_supports_context_parallel", lambda model: True)
+    monkeypatch.setattr(cp, "_supports_context_parallel", lambda model, backend = "ring": True)
     args = types.SimpleNamespace(context_parallel_size = 2, label_smoothing_factor = 0.0)
     accelerator = types.SimpleNamespace(
         distributed_type = types.SimpleNamespace(name = distributed_type)
@@ -421,7 +421,7 @@ def _cp_env(monkeypatch):
     monkeypatch.setattr(cp.dist, "is_initialized", lambda: True)
     monkeypatch.setattr(cp.dist, "get_world_size", lambda: 2)
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
-    monkeypatch.setattr(cp, "_supports_context_parallel", lambda model: True)
+    monkeypatch.setattr(cp, "_supports_context_parallel", lambda model, backend = "ring": True)
 
 
 @pytest.mark.parametrize("case", ["iterable", "dispatch", "eval_dict"])
