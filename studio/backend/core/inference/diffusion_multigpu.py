@@ -706,6 +706,22 @@ def plan_denoise_headroom_mib(plan: Any) -> Optional[int]:
 _CALIBRATION_PX = 1024 * 1024
 
 
+def scaled_headroom_mib(
+    headroom_mib: Optional[int],
+    reference_px: Optional[int],
+    request_px: Optional[int],
+    batch: Optional[int] = None,
+) -> int:
+    """A denoise headroom calibrated at one sample of ``reference_px`` pixels, scaled linearly by the request's canvas
+    (when both are known) and by the latent batch (the calibration batch is 1)."""
+    need = int(headroom_mib or 0)
+    if reference_px and request_px:
+        need = int(need * request_px / reference_px)
+    if batch and batch > 1:
+        need *= int(batch)
+    return need
+
+
 def plan_denoise_reference_px(plan: Any) -> Optional[int]:
     """The canvas (pixels) :func:`plan_denoise_headroom_mib`'s figure holds for when it is the calibrated denoise
     phase, else None (a whole-request figure is not scaled)."""
@@ -1264,7 +1280,9 @@ def _trusted_hook(fn: Any) -> bool:
     return _hook_origin(fn).startswith(_TRUSTED_HOOK_MODULES) and _portable(fn)
 
 
-def _hooks_present(module: Any, *, offload_hooks_ok: bool = False) -> Optional[str]:
+def _hooks_present(
+    module: Any, *, offload_hooks_ok: bool = False, strict_bound: bool = False
+) -> Optional[str]:
     """Name of the first submodule carrying state a replica cannot inherit faithfully, else None: a non-offload hook
     registry (step caches), an accelerate hook, or a forward hook / instance forward override below the root whose
     captured state points at the source (deepcopy treats functions as atoms). Offload machinery (diffusers group
@@ -1286,6 +1304,20 @@ def _hooks_present(module: Any, *, offload_hooks_ok: bool = False) -> Optional[s
                     if not _is_offload_object(hook) and not _trusted_hook(hook):
                         return f"{name}.{attr}"
         override = sub.__dict__.get("forward")
+        if (
+            strict_bound
+            and isinstance(override, types.MethodType)
+            and not (
+                override.__self__ is sub
+                and override.__func__ is getattr(type(sub).forward, "__func__", type(sub).forward)
+            )
+            and not _hook_origin(override).startswith(_TRUSTED_HOOK_MODULES)
+        ):
+            # a foreign bound forward may keep per-call state on its owner: one doubled call is not two
+            return (
+                f"{name or '<root>'}.forward (bound override from {_hook_origin(override) or '?'}; "
+                f"{CFG_BATCH_ENV}=force opts in)"
+            )
         if override is None or isinstance(
             override, (types.MethodType, CfgParallelRouter, CfgBatchRouter)
         ):
@@ -1743,8 +1775,14 @@ class CfgParallelRouter:
         secondary: Any,
         replica_factory: Optional[Callable[[], Any]] = None,
         logger: Any = None,
+        headroom_mib: Optional[int] = None,
+        headroom_reference_px: Optional[int] = None,
     ):
         torch = _torch()
+        # the odd branch's activations on the replica card, priced like CFG-batch's (canvas and batch scaled)
+        self.headroom_mib = headroom_mib
+        self.headroom_reference_px = headroom_reference_px
+        self.request_px: Optional[int] = None
         self.module_ref = weakref.ref(module)
         self.orig_forward = module.forward
         # an instance-level forward (bound override, offload wrapper) the replica must reproduce or drop
@@ -1915,6 +1953,10 @@ class CfgParallelRouter:
         self.branch = 0
         self.singles = 0
         self.b0_s = None
+        try:
+            self.request_px = int(width) * int(height) if width and height else None
+        except (TypeError, ValueError):
+            self.request_px = None
 
     def end_request(self) -> None:
         self.release_inputs()
@@ -2126,7 +2168,16 @@ class CfgParallelRouter:
                 t.numel() * t.element_size() for t in (*module.parameters(), *module.buffers())
             ) // (1 << 20)
             free, _total = _free_total_mib(self.secondary.index)
-            if free is not None and need_mib + 1024 > free:
+            batch = (
+                int(self.prev_latent.shape[0])
+                if getattr(self.prev_latent, "dim", None) is not None and self.prev_latent.dim() >= 1
+                else None
+            )
+            room = max(
+                1024,
+                scaled_headroom_mib(self.headroom_mib, self.headroom_reference_px, self.request_px, batch),
+            )
+            if free is not None and need_mib + room > free:
                 raise RuntimeError(
                     f"replica needs {need_mib} MiB, {free} MiB free on {self.secondary}"
                 )
@@ -2237,7 +2288,13 @@ def install_cfg_parallel(
 ) -> Optional[str]:
     """Arm CFG-parallel when a secondary card can hold a replica, else CFG-batch for an offloaded denoiser.
     Returns the CFG-parallel decline reason or None. ``headroom_mib``: the batched call's extra activation need."""
-    reason = _install_cfg_parallel_only(pipe, offload_policy = offload_policy, logger = logger)
+    reason = _install_cfg_parallel_only(
+        pipe,
+        offload_policy = offload_policy,
+        logger = logger,
+        headroom_mib = headroom_mib,
+        headroom_reference_px = headroom_reference_px,
+    )
     if (
         reason is not None
         and multigpu_mode() != "off"
@@ -2263,6 +2320,8 @@ def _install_cfg_parallel_only(
     *,
     offload_policy: str,
     logger: Any = None,
+    headroom_mib: Optional[int] = None,
+    headroom_reference_px: Optional[int] = None,
 ) -> Optional[str]:
     selection = current_selection()
     reason = cfg_parallel_decline(pipe, offload_policy = offload_policy, selection = selection)
@@ -2284,11 +2343,13 @@ def _install_cfg_parallel_only(
             need_mib = sum(
                 t.numel() * t.element_size() for t in (*denoiser.parameters(), *denoiser.buffers())
             ) // (1 << 20)
-            # only cards that can hold the replica (unknown free memory kept), then the fast-link tier
+            # only cards that hold the replica AND its denoise activations (unknown free memory kept), then the
+            # fast-link tier; the canvas is not known yet, so the calibrated canvas prices it here
+            room = max(1024, int(headroom_mib or 0))
             fits = [
                 o
                 for o in candidates
-                if probes[o].free_mib is None or need_mib + 1024 <= probes[o].free_mib
+                if probes[o].free_mib is None or need_mib + room <= probes[o].free_mib
             ]
             if not fits:
                 most = max(candidates, key = lambda o: probes[o].free_mib or -1)
@@ -2300,7 +2361,12 @@ def _install_cfg_parallel_only(
                     0
                 ]
                 router = CfgParallelRouter(
-                    denoiser, primary = primary, secondary = f"cuda:{best}", logger = logger
+                    denoiser,
+                    primary = primary,
+                    secondary = f"cuda:{best}",
+                    logger = logger,
+                    headroom_mib = headroom_mib,
+                    headroom_reference_px = headroom_reference_px,
                 )
                 try:
                     _CFG_ROUTERS[pipe] = router
@@ -2919,7 +2985,9 @@ class CfgBatchRouter:
             self._skip(f"{outer} under this router")
             return None
         # a step cache, or a foreign hook whose per-call state would see one doubled call: the CFG-parallel screen
-        hooked = _hooks_present(module, offload_hooks_ok = True)
+        hooked = _hooks_present(
+            module, offload_hooks_ok = True, strict_bound = cfg_batch_mode() != "force"
+        )
         if hooked is not None:
             self._skip(f"stateful hook present ({hooked})")
             return None
@@ -2954,7 +3022,7 @@ class CfgBatchRouter:
         if batch < 1:
             self._skip("latent without a batch dim")
             return None
-        if not self._memory_ok(latent.device):
+        if not self._memory_ok(latent.device, batch):
             self._skip("not enough free memory for a second branch's activations")
             return None
         try:
@@ -3068,7 +3136,7 @@ class CfgBatchRouter:
         if batched_s > _BATCH_MEASURED_FRACTION * plain:
             self.disabled_pending = f"measured no gain: one batched call {batched_s:.4f}s vs two plain calls {plain:.4f}s"
 
-    def _memory_ok(self, device: Any) -> bool:
+    def _memory_ok(self, device: Any, batch: Optional[int] = None) -> bool:
         if self.headroom_mib is None or getattr(device, "type", None) != "cuda":
             return True
         torch = _torch()
@@ -3083,15 +3151,12 @@ class CfgBatchRouter:
             return True
         if free is None:
             return True
-        return free + int(reserved_idle) >= self.needed_mib()
+        return free + int(reserved_idle) >= self.needed_mib(batch)
 
-    def needed_mib(self) -> int:
-        """The headroom the batched call needs: the calibrated figure scaled by the request's canvas (token count)
-        over the calibration canvas, linearly; unscaled when either is unknown."""
-        need = int(self.headroom_mib or 0)
-        if self.headroom_reference_px and self.request_px:
-            need = int(need * self.request_px / self.headroom_reference_px)
-        return need
+    def needed_mib(self, batch: Optional[int] = None) -> int:
+        """The headroom the batched call needs for the second branch of ``batch`` samples (the latent's leading dim):
+        the calibrated figure scaled by the request's canvas over the calibration canvas and by the batch, linearly."""
+        return scaled_headroom_mib(self.headroom_mib, self.headroom_reference_px, self.request_px, batch)
 
     def _take(self, args: tuple, kwargs: dict) -> Any:
         kept, self.kept = self.kept, None

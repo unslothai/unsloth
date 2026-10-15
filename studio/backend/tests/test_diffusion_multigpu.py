@@ -2760,3 +2760,73 @@ def test_request_scope_gets_the_effective_canvas_in_both_generate_paths():
     assert scope_args("diffusion.py") == ["guard_width", "guard_height"]
     # video: the resolved request canvas (frames do not count)
     assert scope_args("video.py") == ["request_shape.get('width')", "request_shape.get('height')"]
+
+
+def test_cfg_batch_headroom_scales_with_the_latent_batch():
+    dit = _BatchDit()
+    router = mg.CfgBatchRouter(dit, headroom_mib = 892, headroom_reference_px = 1024 * 1024)
+    dit.forward = router
+    pipe = _RouterPipe(dit)
+    with mg.cfg_request_scope(pipe, 1024, 1024):
+        assert router.needed_mib(1) == 892
+        assert router.needed_mib(4) == 892 * 4  # four images in the chunk: four second-branch samples
+    with mg.cfg_request_scope(pipe, 2048, 2048):
+        assert router.needed_mib(2) == 892 * 4 * 2
+
+
+def test_cfg_parallel_replica_card_must_also_hold_the_denoise_headroom(monkeypatch):
+    class Pipe:
+        transformer = _Dit()
+
+    pipe = Pipe()
+    probes = {
+        0: _probe(0, 20000, {1: 20.0, 2: 2.0}),
+        1: _probe(1, 2000, {0: 20.0}),  # holds the weights + 1 GiB, not the 4 GiB of activations
+        2: _probe(2, 9000, {0: 2.0}),
+    }
+    monkeypatch.setattr(mg, "probe_devices", lambda ordinals, measure = True: probes)
+    monkeypatch.setattr(mg, "cfg_parallel_decline", lambda pipe, **k: None)
+    monkeypatch.setattr(mg, "_module_device", lambda m: torch.device("cuda", 0))
+    monkeypatch.delenv(mg.LINK_ENV, raising = False)
+    with mg.selection_scope(mg.MultiGpuSelection(primary = 0, secondaries = (1, 2))):
+        reason = mg._install_cfg_parallel_only(pipe, offload_policy = "none", headroom_mib = 4096)
+    assert reason is None, reason
+    assert mg._CFG_ROUTERS[pipe].secondary == torch.device("cuda", 2)
+    assert mg._CFG_ROUTERS[pipe].headroom_mib == 4096
+
+
+def test_cfg_batch_declines_a_foreign_bound_forward_override(monkeypatch):
+    import types as _types
+
+    torch.manual_seed(0)
+    dit = _BatchDit()
+
+    def foreign_forward(self, x):  # e.g. a third-party patch keeping state on its owner
+        return torch.nn.functional.linear(x, self.weight, self.bias)
+
+    foreign_forward.__module__ = "thirdparty.patch"
+    dit.proj.forward = _types.MethodType(foreign_forward, dit.proj)
+    cond, uncond = _embeds()
+    router = mg.CfgBatchRouter(dit)
+    dit.forward = router
+    _batch_loop(dit, torch.randn(2, 4), 4, cond, uncond)
+    assert router.stats["batched_steps"] == 0
+    reason = router.describe()["last_unbatched_reason"]
+    assert "proj.forward" in reason and mg.CFG_BATCH_ENV in reason
+    # a Studio-installed bound forward still batches
+    studio = _BatchDit()
+    studio_forward = lambda self, x: torch.nn.functional.linear(x, self.weight, self.bias)  # noqa: E731
+    studio_forward.__module__ = mg.__name__
+    studio.proj.forward = _types.MethodType(studio_forward, studio.proj)
+    router2 = mg.CfgBatchRouter(studio)
+    studio.forward = router2
+    _batch_loop(studio, torch.randn(2, 4), 4, cond, uncond)
+    assert router2.stats["batched_steps"] == 3
+    # and the opt-in batches the foreign one
+    monkeypatch.setenv(mg.CFG_BATCH_ENV, "force")
+    dit3 = _BatchDit()
+    dit3.proj.forward = _types.MethodType(foreign_forward, dit3.proj)
+    router3 = mg.CfgBatchRouter(dit3)
+    dit3.forward = router3
+    _batch_loop(dit3, torch.randn(2, 4), 4, cond, uncond)
+    assert router3.stats["batched_steps"] == 3
