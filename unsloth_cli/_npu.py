@@ -31,6 +31,16 @@ def npu_model_path(model: Optional[str]) -> Optional[str]:
     return NPU_MODEL_PREFIX + text
 
 
+def npu_needs_studio_message(npu_path: str, *, no_server: bool) -> str:
+    """Why `unsloth chat` / `unsloth inference` cannot run `npu_path` without a running Studio."""
+    if no_server:
+        return "NPU models run inside Unsloth Studio; drop --no-server."
+    return (
+        f"{npu_path[len(NPU_MODEL_PREFIX) :]} runs on the AMD NPU inside Unsloth Studio. Start it "
+        f"with `unsloth studio` (or `unsloth run --model {npu_path}`) and run this again."
+    )
+
+
 def _call(request: Callable[..., object], method: str, path: str, timeout: float):
     """Open `path`, turning an HTTP error into the server's own message."""
     import urllib.error

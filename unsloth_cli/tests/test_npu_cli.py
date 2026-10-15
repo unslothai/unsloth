@@ -208,6 +208,25 @@ def test_chat_needs_a_running_studio_for_an_npu_model(monkeypatch):
     assert "runs on the AMD NPU inside Unsloth Studio" in result.output
 
 
+@pytest.mark.parametrize(
+    ("flags", "words"),
+    [([], "runs on the AMD NPU inside Unsloth Studio"), (["--no-server"], "drop --no-server")],
+)
+def test_inference_needs_a_running_studio_for_an_npu_model(monkeypatch, flags, words):
+    # Without a Studio the id fell through to a local load and a Hugging Face lookup.
+    from unsloth_cli import app
+    from unsloth_cli.commands import inference as inference_mod
+
+    def _no_local_load(*_args, **_kwargs):
+        raise AssertionError("an NPU model was loaded in-process")
+
+    monkeypatch.setattr(inference_mod, "connect_studio_server", lambda *_a, **_k: None)
+    monkeypatch.setattr(inference_mod, "load_chat_backend", _no_local_load)
+    result = CliRunner().invoke(app, ["inference", "qwen3-0.6b-FLM", "hi", *flags])
+    assert result.exit_code == 1, result.output
+    assert words in result.output
+
+
 def test_a_gguf_agent_refuses_an_npu_model_before_any_hub_lookup(capsys, monkeypatch):
     from unsloth_cli.commands import start as start_mod
 

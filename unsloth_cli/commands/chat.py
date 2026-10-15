@@ -286,7 +286,7 @@ def chat(
             raise typer.Exit(code = 1)
         model = _pick_model(console)
 
-    from unsloth_cli._npu import npu_model_path
+    from unsloth_cli._npu import npu_model_path, npu_needs_studio_message
 
     # An NPU model runs inside Unsloth Studio, never in this process: no HF config to resolve.
     npu_path = npu_model_path(model)
@@ -303,7 +303,7 @@ def chat(
         if no_server or is_mlx_distributed:
             if should_print:
                 err.print(
-                    "NPU models run inside Unsloth Studio; drop --no-server.",
+                    npu_needs_studio_message(npu_path, no_server = True),
                     style = "red",
                     markup = False,
                 )
@@ -345,9 +345,7 @@ def chat(
     if npu_path and not server_mode:
         if should_print:
             err.print(
-                f"{model_config.display_name} runs on the AMD NPU inside Unsloth Studio. "
-                "Start it with `unsloth studio` (or `unsloth run --model "
-                f"{npu_path}`) and run this again.",
+                npu_needs_studio_message(npu_path, no_server = False),
                 style = "red",
                 markup = False,
             )
