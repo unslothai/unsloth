@@ -124,6 +124,7 @@ from .diffusion_memory import (
     reclaim_host_memory,
     reclaim_offload_host_memory,
     refine_memory_plan_for_components,
+    applied_plan,
     finish_background_pins,
     release_pinned_host_memory,
     request_background_pins,
@@ -2675,19 +2676,16 @@ def _calibration_revision(state: Any) -> Optional[str]:
     cached = getattr(pipe, "_unsloth_calibration_revision", None)
     if cached is not None:
         return cached or None
-    from .diffusion_component_sizes import checkpoint_fingerprint
+    from .diffusion import _peak_model_identity
 
-    revision = checkpoint_fingerprint(
-        getattr(state, "repo_id", None), getattr(state, "gguf_filename", None)
+    # the image peak identity's rule: snapshot commit, or a local folder's manifests plus its weight files' size and
+    # mtime, plus the companion base for a GGUF / single-file load; "unknown" persists nothing
+    revision = _peak_model_identity(
+        getattr(state, "repo_id", None),
+        getattr(state, "gguf_filename", None),
+        getattr(state, "kind", None),
+        getattr(state, "base_repo", None),
     )
-    if getattr(state, "kind", "pipeline") != "pipeline":
-        # a GGUF / single-file load takes its companions from a base repo: its id and exact weights are part of it
-        base = getattr(state, "base_repo", None)
-        revision = (
-            f"{revision or ''}|base={base or ''}@{checkpoint_fingerprint(base) or ''}"
-            if base
-            else revision
-        )
     try:
         pipe._unsloth_calibration_revision = revision or ""
     except Exception:  # noqa: BLE001
@@ -7995,6 +7993,8 @@ class VideoBackend:
                 placement_device = target.torch_device,
                 logger = logger,
             )
+            # a transient OOM during setup may have re-planned to lower residency
+            plan = applied_plan(pipe, plan)
             ltx25_upsampler = getattr(pipe, "_unsloth_ltx25_upsampler", None)
             if ltx25_upsampler is not None and offload_policy == OFFLOAD_NONE:
                 # ~1 GB; resident with the rest, else render() moves it in for the upsample only.
@@ -10836,7 +10836,11 @@ class VideoBackend:
                 _log_failed_generation(request_shape, exc)
                 raise
             finally:
-                i2v_swap.close()
+                try:
+                    from . import video_stream_residency
+                    video_stream_residency.discard_request(getattr(state, "pipe", None))
+                finally:
+                    i2v_swap.close()
                 if bg_token is not None:
                     bg_compile._FORCE_EAGER.reset(bg_token)
                 with self._lock:
