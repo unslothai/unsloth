@@ -146,6 +146,7 @@ def _nvfp4_dequantize_triton(
             # int32 offsets wrap past 2^31 elements; int64 only then (~2% slower).
             INT64_OFFSETS = rows * half * 2 >= 2**31,
             num_warps = 4,
+            enable_fp_fusion = True,
         )
     return out
 

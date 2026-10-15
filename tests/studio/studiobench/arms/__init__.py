@@ -1,20 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Ablation arms: the layer that turns a correlation into a cause.
-
-Four pieces, in the order they constrain each other:
-
-    manifest.py     what every arm must declare (INVARIANCE, POTENCY) and the verdict logic that
-                    turns a run into QUOTED, BOUND, VOIDED, NOT RUN or UNAVAILABLE
-    knobs.py/.js    the seven runtime-injected knobs on the shipped build, as a decision table
-    ladder.py       the telescoping ladder, its adjacent differences, and the interaction term
-                    between two routes to the same floor
-    calibration.py  NULL and SPIKE, non-droppable, which decide whether the batch is quotable
-
-plus `bundle.py` for the arms that need an armed dist, `dose.py` for the dose-response that makes
-a null informative, and `recovery.py` for occupancy versus retention.
-"""
+"""Ablation arms turn a correlation into a cause; calibration decides which batches may be quoted."""
 
 from .batch import (  # noqa: F401
     BatchPlanError,

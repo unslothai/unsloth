@@ -61,6 +61,8 @@ export const fr = {
       never: "Jamais",
       scripts: "Exécuter des scripts",
       scriptsDescription: "Choisissez si les modèles peuvent exécuter des scripts sur les pages. Chaque script vous est montré avant de s’exécuter",
+      cursor: "Afficher le curseur",
+      cursorDescription: "Affiche un pointeur là où les modèles cliquent, saisissent et font glisser sur la page",
       askEveryTime: "Demander à chaque fois",
       permissionsTitle: "Autorisations de l'agent",
       permissionsDescription: "Choisissez les valeurs par défaut et ajoutez des exceptions pour certains sites. Les champs de mot de passe et de paiement ne sont jamais remplis, quels que soient ces réglages.",
@@ -83,6 +85,9 @@ export const fr = {
     },
     agent: {
       working: "Unsloth navigue dans cet onglet",
+      waiting: "Unsloth attend votre réponse dans le navigateur pour {chat}",
+      otherChat: "une autre discussion",
+      show: "Afficher",
       stop: "Arrêter",
       allow: "Autoriser",
       deny: "Refuser",
@@ -256,7 +261,7 @@ export const fr = {
     annotationScreenshotsAlways: "Toujours inclure",
     annotationScreenshotsNever: "Ne jamais inclure",
     clearDataSetting: "Effacer les données de navigation",
-    clearDataSettingDescription: "Efface l’historique de navigation, l’historique des téléchargements et les pages en cache. Les pages ne conservent aucun cookie ni aucune donnée de site.",
+    clearDataSettingDescription: "Efface l’historique de navigation, l’historique des téléchargements et les pages en cache. Les pages ne conservent les cookies et les données de site que jusqu’au rechargement de Studio.",
     manage: "Gérer",
     fullView: {
       enter: "Plein écran",
@@ -432,7 +437,7 @@ export const fr = {
     },
     clearData: {
       title: "Effacer les données de navigation ?",
-      description: "Cette action efface votre historique de navigation, l’historique des téléchargements et les pages en cache. Les fichiers téléchargés restent sur votre ordinateur.",
+      description: "Cela efface l'historique de navigation, l'historique des téléchargements, les pages en cache ainsi que les cookies et données de sites, ce qui vous déconnecte des sites. Les fichiers téléchargés restent sur votre ordinateur.",
       cancel: "Annuler",
       confirm: "Effacer les données",
       done: "Données de navigation effacées",
@@ -448,6 +453,7 @@ export const fr = {
       resubmit: "Cette page provient d'un formulaire. La recharger renvoie le formulaire, ce qui pourrait répéter son action.",
       upload: "L'envoi de fichiers ne fonctionne pas dans cette vue. Ouvrez la page dans le navigateur du système pour l'envoyer.",
       scriptNavigation: "Cette page a tenté d'aller à une autre adresse par script, ce que cette vue ne peut pas suivre. Ouvrez-la plutôt dans le navigateur du système.",
+      needsBrowser: "Cette page a tenté d'utiliser une fonction du navigateur que cette vue bloque, certaines parties peuvent donc ne pas fonctionner. Ouvrez-la plutôt dans le navigateur du système.",
     },
     native: {
       externalPrompt: "{host} veut ouvrir {url}",
@@ -1744,6 +1750,19 @@ export const fr = {
         apiOnlyDescription:
           "Le déchargement en cas d'inactivité laisse en mémoire un modèle que vous avez chargé depuis Unsloth et ne libère que ceux chargés par une requête API.",
       },
+      modelAliases: {
+        sectionTitle: "Alias de modèles (OpenAI API)",
+        description:
+          "Des noms stables pour les clients de l’API, comme fast-chat ou code. Une requête qui nomme un alias est servie par le modèle vers lequel il pointe, donc les apps connectées continuent de fonctionner quand vous changez de modèle. Activez Changer de modèle par requête pour qu’un alias puisse charger son modèle.",
+        namePlaceholder: "fast-chat",
+        nameAriaLabel: "Nom de l’alias",
+        modelAriaLabel: "Modèle vers lequel pointe l’alias",
+        modelPlaceholder: "unsloth/Qwen3-4B-GGUF:Q4_K_M",
+        removeAriaLabel: "Supprimer l’alias",
+        add: "Ajouter un alias",
+        loadError: "Impossible de charger les alias de modèles.",
+        saveError: "Impossible d’enregistrer les alias de modèles.",
+      },
       previewSharing: {
         sectionTitle: "Partage de l'aperçu",
         enableLabel: "Liens d'aperçu publics",
@@ -2625,6 +2644,9 @@ export const fr = {
         showMemoryBar: "Afficher la barre d’utilisation de la VRAM",
         showMemoryBarDescription:
           "Affiche sous la ligne de chaque modèle téléchargé son utilisation estimée de la VRAM : poids, cache KV à la longueur de contexte avec laquelle il sera chargé, et toute réserve de brouillon spéculatif.",
+        fitOnDeviceOnly: "Afficher uniquement les modèles compatibles",
+        fitOnDeviceOnlyDescription:
+          "Masque dans le sélecteur de modèles et le Hub les modèles trop volumineux pour la mémoire GPU et la RAM de cet appareil. Les modèles téléchargés restent visibles.",
       },
       menu: {
         title: "Menu du chat",

@@ -11,15 +11,7 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 # GNU Lesser General Public License for more details.
 
-"""Regression for #4735: a plain ``TrainingArguments`` silently disabling the
-gradient-checkpointing (GC) mode the model was configured with at setup.
-
-Setup records the effective GC mode as ``_unsloth_gradient_checkpointing``; the
-trainer restores *that* value, falling back to ``args.gradient_checkpointing``
-only when nothing was recorded. The restore lines live inside exec'd template
-strings, which ``py_compile`` never sees, so these tests pull the real snippets
-out of the source and execute them against fakes. GPU-free.
-"""
+"""Restores the GC mode recorded at setup, so a plain TrainingArguments cannot silently disable it."""
 
 from __future__ import annotations
 
@@ -68,14 +60,13 @@ class _Self:
 
 
 # (recorded on model, args.gradient_checkpointing, expected restored value)
-# The point of the fix: a recorded mode wins over args, and a recorded ``None`` (a valid setup value) is restored
-# verbatim rather than collapsing to the args fallback the way a ``None`` sentinel would.
+# A recorded mode, including None, wins over args.
 _MATRIX = [
-    ("unsloth", False, "unsloth"),  # the #4735 case: args=False must NOT win
+    ("unsloth", False, "unsloth"),  # args=False must NOT win
     (True, False, True),
-    (False, True, False),  # user turned GC off; args=True must NOT re-enable it
+    (False, True, False),
     (None, True, None),  # explicit None is restored, not treated as "unrecorded"
-    (_MISSING, True, True),  # nothing recorded -> fall back to args
+    (_MISSING, True, True),
     (_MISSING, False, False),
 ]
 
@@ -93,7 +84,6 @@ def _eval_ternary(expr, recorded, args_gc):
 def test_ternary_restore_semantics():
     exprs = [m.group(0) for m in _TERNARY.finditer(_RL)]
     exprs += [m.group(0) for m in _TERNARY.finditer(_RL_REPLACEMENTS)]
-    # Also guards against the lines being deleted/renamed (which reinstates the bug).
     assert len(exprs) >= 3, f"expected the 3 trainer-call restore sites, found {len(exprs)}"
     for expr in exprs:
         for recorded, args_gc, expected in _MATRIX:
@@ -104,32 +94,24 @@ def test_ternary_restore_semantics():
 
 
 def _extract_prepare_restore_block():
-    """Pull the multi-line restore block out of ``prepare_for_training_mode``'s wrapper.
-
-    It lives inside an exec'd template string, so grab it textually: from the
-    ``_model = getattr(self, 'model', None)`` line through the closing
-    ``else:``/``use_gc = ...`` pair.
-    """
+    """The restore block lives in an exec'd template string, so it is cut out textually, not parsed."""
     lines = _RL.splitlines()
     start = next(
         i for i, l in enumerate(lines) if l.strip() == "_model = getattr(self, 'model', None)"
     )
-    # End at the fallback assignment rather than a fixed line count, so inserting
-    # lines into the block can't silently truncate what gets exec'd.
+    # End at the fallback assignment, not a fixed line count, so inserted lines are not truncated.
     end = next(
         i
         for i, l in enumerate(lines)
         if i > start and "use_gc = getattr(self.args, 'gradient_checkpointing', True)" in l
     )
     block = lines[start : end + 1]
-    # dedent to column 0 so it execs as a top-level block
     indent = len(block[0]) - len(block[0].lstrip())
     return "\n".join(l[indent:] for l in block)
 
 
 def test_prepare_for_training_mode_block_semantics():
     block = _extract_prepare_restore_block()
-    # Must be valid Python (it's never seen by py_compile in the outer file).
     ast.parse(block)
 
     for recorded, args_gc, expected in _MATRIX:
@@ -144,8 +126,7 @@ def test_prepare_for_training_mode_block_semantics():
 
 
 def test_prepare_block_tolerates_missing_model():
-    # gemini flagged the unguarded self.model access: the block reads self.model via getattr(self, 'model', None), so a
-    # trainer without a .model attribute must fall back to args rather than raising AttributeError.
+    # A trainer without a .model attribute must fall back to args rather than raise.
     block = _extract_prepare_restore_block()
     args = _Obj(gradient_checkpointing = True)
     self_no_model = _Self(model = None, args = args)  # _Self leaves .model unset when model is None
@@ -156,9 +137,7 @@ def test_prepare_block_tolerates_missing_model():
 
 
 def test_recording_sites_are_real_module_code():
-    # The recording side (unlike the restore side) is real module code, not a template string.
-    # Assert it's present at the choke point (patch_peft_model, so loaded adapters are covered) and at the pre-wrapped
-    # pass-through, both of which bypass the old get_peft_model-only recording.
+    # Recording must happen in patch_peft_model (loaded adapters) and the pre-wrapped pass-through.
     llama = (_ROOT / "llama.py").read_text(encoding = "utf-8")
     tree = ast.parse(llama)
 
@@ -176,7 +155,6 @@ def test_recording_sites_are_real_module_code():
     assert "patch_peft_model" in fns and assigns_marker(
         fns["patch_peft_model"]
     ), "patch_peft_model must record _unsloth_gradient_checkpointing so loaded adapters are covered"
-    # The pass-through branch lives in get_peft_model.
     assert assigns_marker(
         fns["get_peft_model"]
     ), "get_peft_model pass-through must record _unsloth_gradient_checkpointing"

@@ -1,10 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-"""`usable_sync_api` tells the real `playwright.sync_api` from what else answers to that name.
-
-A browser test that skips on `importorskip` alone errors in the CPU job once another test has
-put a stub in `sys.modules`, and whether that has happened depends on collection order.
-"""
+"""Tells the real playwright.sync_api from a stub in sys.modules, which importorskip alone cannot."""
 
 from __future__ import annotations
 
