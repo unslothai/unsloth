@@ -42349,10 +42349,31 @@ async def _anthropic_events_from_openai_sse(
                 for event in feed(parsed):
                     yield event
                 break
-            if any(choice.get("finish_reason") for choice in parsed.get("choices") or []):
+            finishes = [c for c in parsed.get("choices") or [] if c.get("finish_reason")]
+            if finishes:
+                # This chunk's own text goes before the held-back tail, then the finish.
+                text_part = {
+                    **{k: v for k, v in parsed.items() if k != "usage"},
+                    "choices": [{**c, "finish_reason": None} for c in parsed["choices"]],
+                }
+                for event in feed(text_part):
+                    yield event
                 for chunk in _pending_connection_text(think, stop, held):
                     for event in feed(chunk):
                         yield event
+                if stop.hit is not None:
+                    break
+                parsed = {
+                    **parsed,
+                    "choices": [
+                        {
+                            "index": c.get("index", 0),
+                            "delta": {},
+                            "finish_reason": c["finish_reason"],
+                        }
+                        for c in finishes
+                    ],
+                }
             for event in feed(parsed):
                 yield event
     finally:

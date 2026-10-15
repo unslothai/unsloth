@@ -887,3 +887,29 @@ def test_messages_without_a_stop_hit_keep_all_text(v1, monkeypatch):
 
     assert "".join(b.get("text", "") for b in message["content"]) == "before EN after"
     assert message["stop_reason"] == "end_turn"
+
+
+@pytest.mark.parametrize("stream", [True, False])
+def test_messages_keep_text_order_when_the_finish_chunk_carries_text(v1, monkeypatch, stream):
+    # vLLM can put the last text and finish_reason in one chunk; the held-back tail must follow it.
+    import routes.inference as inf
+
+    class TerminalText(FakeExternalClient):
+        def stream_chat_completion(self, **kwargs):
+            async def gen():
+                yield 'data: {"choices": [{"index": 0, "delta": {"content": "hello world"}, "finish_reason": "stop"}]}'
+                yield "data: [DONE]"
+
+            return gen()
+
+    monkeypatch.setattr(inf, "ExternalProviderClient", TerminalText)
+    resp = v1.post("/v1/messages", json = _messages_body(stream = stream, stop_sequences = ["END"]))
+
+    if stream:
+        events = _sse(resp.text)
+        text = "".join(
+            e["delta"].get("text", "") for e in events if e["type"] == "content_block_delta"
+        )
+    else:
+        text = "".join(b.get("text", "") for b in resp.json()["content"])
+    assert text == "hello world"
