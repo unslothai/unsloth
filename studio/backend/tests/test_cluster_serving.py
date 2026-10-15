@@ -1114,6 +1114,8 @@ def test_a_first_hub_load_reserves_its_projector(monkeypatch):
     monkeypatch.setattr(ss, "llama_server_supports", lambda flag, binary = None: True)
     monkeypatch.setattr(ss, "cached_repo_file", lambda path, variant: None)
     monkeypatch.setattr(ss, "remote_gguf_size_bytes", lambda *a, **k: 90 * GIB)
+    # An Auto context is priced at the fitter's floor, from the Hub header.
+    monkeypatch.setattr(cs, "_remote_gguf_header", lambda *a, **k: (_hub_header, {}))
     monkeypatch.setattr(cs, "_remote_projector_bytes", lambda path, token: 10 * GIB)
     run(ss.before_load(_request(model_path = "org/vision-GGUF", max_seq_length = 0), 4))
     assert ss.status()["topology"] == "layer_split"
@@ -1408,6 +1410,8 @@ def test_a_first_hub_load_with_vision_off_still_reserves_its_projector(monkeypat
     monkeypatch.setattr(ss, "llama_server_supports", lambda flag, binary = None: True)
     monkeypatch.setattr(ss, "cached_repo_file", lambda path, variant: None)
     monkeypatch.setattr(ss, "remote_gguf_size_bytes", lambda *a, **k: 90 * GIB)
+    # An Auto context is priced at the fitter's floor, from the Hub header.
+    monkeypatch.setattr(cs, "_remote_gguf_header", lambda *a, **k: (_hub_header, {}))
     monkeypatch.setattr(cs, "_remote_projector_bytes", lambda path, token: 10 * GIB)
     request = _request(model_path = "org/audio-GGUF", max_seq_length = 0, disable_vision = True)
     out = run(ss.before_load(request, 4))
@@ -1419,6 +1423,8 @@ def test_a_guessed_kv_reserve_is_not_counted_as_freed(monkeypatch):
     _cluster_env(monkeypatch, model_bytes = 90 * GIB)
     monkeypatch.setattr(ss, "cached_repo_file", lambda path, variant: None)
     monkeypatch.setattr(ss, "remote_gguf_size_bytes", lambda *a, **k: 90 * GIB)
+    # An Auto context is priced at the fitter's floor, from the Hub header.
+    monkeypatch.setattr(cs, "_remote_gguf_header", lambda *a, **k: (_hub_header, {}))
     monkeypatch.setattr(cs, "_remote_gguf_header", lambda *a, **k: (_llama_header(64), {}))
     out = run(ss.before_load(_request(model_path = "org/big-GGUF", max_seq_length = 8192), 4))
     assert ss.status()["topology"] == "layer_split"  # 90 GiB + an estimated 20 GiB of KV
@@ -1844,6 +1850,8 @@ def test_an_unverified_hub_projector_is_not_counted_as_freed(monkeypatch):
     monkeypatch.setattr(ss, "llama_server_supports", lambda flag, binary = None: True)
     monkeypatch.setattr(ss, "cached_repo_file", lambda path, variant: None)
     monkeypatch.setattr(ss, "remote_gguf_size_bytes", lambda *a, **k: 90 * GIB)
+    # An Auto context is priced at the fitter's floor, from the Hub header.
+    monkeypatch.setattr(cs, "_remote_gguf_header", lambda *a, **k: (_hub_header, {}))
     monkeypatch.setattr(cs, "_remote_projector_bytes", lambda path, token: 10 * GIB)
     request = _request(model_path = "org/vision-GGUF", max_seq_length = 0, disable_vision = True)
     out = run(ss.before_load(request, 4))
@@ -1852,7 +1860,10 @@ def test_an_unverified_hub_projector_is_not_counted_as_freed(monkeypatch):
         is_loaded = True,
     )
     run(ss.after_load(backend, 4))
-    assert sum(cs.state()._resident.values()) == pytest.approx(90 * GIB)
+    plan = cs.state().plan
+    # The weights only (a layer short per device): the uncertain projector is not freed.
+    expected = sum(max(0.0, w * 90 * GIB - plan.layer_bytes) for w in plan.weights)
+    assert sum(cs.state()._resident.values()) == pytest.approx(expected)
 
 
 @pytest.mark.parametrize(
@@ -1972,6 +1983,14 @@ def test_an_uncached_model_whose_kv_cannot_be_read_stays_local(monkeypatch):
     request = _request(model_path = "org/big-GGUF", max_seq_length = 8192)
     assert run(ss.before_load(request, 4)) is request and seen == []
     assert "could not be sized" in ss.status()["reason"]
+
+
+_hub_header = {
+    "general.architecture": "tiny",
+    "tiny.block_count": 90,
+    "tiny.attention.head_count": 1,
+    "tiny.embedding_length": 64,
+}
 
 
 def _llama_header(n_kv):
@@ -2577,3 +2596,67 @@ def test_a_different_model_after_a_config_error_clears_the_split_record(monkeypa
     run(ss.after_load(other, 4))
     assert cs.state().block == [] and cs.state().plan is None
     assert cs.state().topology == "single"
+
+
+def test_an_auto_context_is_priced_at_the_fitters_floor(monkeypatch):
+    _cluster_env(monkeypatch)
+    seen = []
+    monkeypatch.setattr(ss, "estimate_kv_bytes", lambda path, n, *a: seen.append(n) or 0)
+    run(ss.before_load(_request(max_seq_length = 0), 4))
+    assert seen == [4096]
+    header = dict(_llama_header(8), **{"llama.context_length": 2048})
+    monkeypatch.setattr(cs, "_local_gguf_header", lambda *a, **k: (header, {}))
+    run(ss.before_load(_request(max_seq_length = 0), 4))
+    assert cs.state().plan.kv_bytes == cs._kv_from_scalars(header, 2048, None, None, ss)
+
+
+def test_a_projector_raises_the_micro_batch_compute_is_priced_at(monkeypatch, tmp_path):
+    _cluster_env(monkeypatch)
+    mmproj = tmp_path / "mmproj.gguf"
+    mmproj.write_bytes(b"x")
+    from core.inference import llama_cpp
+
+    monkeypatch.setattr(llama_cpp, "_mmproj_required_ubatch", lambda *a, **k: 2048)
+    monkeypatch.setattr(
+        ss, "gguf_size_bytes", lambda path: GIB if str(path) == str(mmproj) else 250 * GIB
+    )
+    seen = []
+    monkeypatch.setattr(cs, "_ctx_compute_bytes", lambda *a, **k: seen.append(a[3]) or 0)
+    run(
+        ss.before_load(_request(max_seq_length = 8192, llama_extra_args = ["--mmproj", str(mmproj)]), 4)
+    )
+    assert seen[0] == 2048
+    seen.clear()
+    run(ss.before_load(_request(max_seq_length = 8192, disable_vision = True), 4))
+    assert seen[0] == 512
+
+
+def test_recurrent_layers_reserve_their_own_share(monkeypatch):
+    _cluster_env(monkeypatch)
+    header = dict(_llama_header(8), **{"llama.attention.head_count_kv.zeros": 10})
+    monkeypatch.setattr(cs, "_local_gguf_header", lambda *a, **k: (header, {0: GIB}))
+    monkeypatch.setattr(
+        cs, "_ctx_compute_bytes", lambda *a, **k: 10 * GIB if a[7:] == ("recurrent",) else 0
+    )
+    run(ss.before_load(_request(max_seq_length = 8192, ctx_checkpoints = 0), 4))
+    plan = cs.state().plan
+    attention = plan.kv_bytes - 10 * GIB
+    assert plan.layer_bytes == pytest.approx(GIB + attention / 80 + GIB)  # 10 GiB over 10 layers
+
+
+def test_skipped_nextn_blocks_are_not_counted_as_freed(monkeypatch):
+    _cluster_env(monkeypatch)
+    header = dict(_llama_header(8), **{"llama.nextn_predict_layers": 1})
+    monkeypatch.setattr(cs, "_local_gguf_header", lambda *a, **k: (header, {78: GIB, 79: 4 * GIB}))
+    run(ss.before_load(_request(), 4))
+    assert cs.state().plan.host_bytes == 4 * GIB  # block 79, the MTP head, is never loaded
+
+
+def test_checkpoints_are_priced_with_the_heavier_cache_axis(monkeypatch):
+    _cluster_env(monkeypatch)
+    seen = []
+    monkeypatch.setattr(cs, "_ctx_compute_bytes", lambda *a, **k: seen.append(a) or 0)
+    extra = ["-ctk", "q4_0", "-ctv", "f16"]
+    run(ss.before_load(_request(max_seq_length = 8192, llama_extra_args = extra), 4))
+    checkpoint = [a for a in seen if a[7:] == ("checkpoint",)]
+    assert checkpoint and checkpoint[0][4] == "f16"

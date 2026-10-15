@@ -166,6 +166,8 @@ _KV_KEY_SUFFIXES = (
     ".embedding_length",
     ".attention.key_length",
     ".attention.value_length",
+    ".nextn_predict_layers",
+    ".context_length",
     ".ssm.conv_kernel",
     ".ssm.inner_size",
     ".ssm.state_size",
@@ -211,9 +213,10 @@ def _read_gguf_header(
             elif wanted and atype in _GGUF_INT_FORMATS:
                 fmt = _GGUF_INT_FORMATS[atype]
                 width = struct.calcsize(fmt)
-                out[key] = max(
-                    (int(struct.unpack(fmt, read(width))[0]) for _ in range(n)), default = 0
-                )
+                values = [int(struct.unpack(fmt, read(width))[0]) for _ in range(n)]
+                out[key] = max(values, default = 0)
+                if key.endswith(".head_count_kv") and 0 in values:
+                    out[f"{key}.zeros"] = values.count(0)  # recurrent layers of a hybrid
             elif atype in _GGUF_FIXED_SIZES:
                 f.seek(_GGUF_FIXED_SIZES[atype] * n, 1)
             else:
@@ -975,6 +978,10 @@ class ClusterServing:
         self._host_embd: float = 0.0
         self._ctx_compute: float = 0.0
         self._checkpoints: float = 0.0
+        self._recurrent: float = 0.0
+        self._recurrent_layer: float = 0.0
+        self._nextn_bytes: float = 0.0
+        self._projector_file: Optional[str] = None
         self._uncertain_extra: float = 0.0
         # Workers this load (re)started: they hold none of the served split's buffers.
         self._started: set = set()
@@ -1261,7 +1268,11 @@ class ClusterServing:
         if self._n_layers and model_bytes:
             # The largest block a tensor split can round onto a device, not the average one.
             layer_weights = self._max_block or model_bytes / self._n_layers
-            layer_bytes = layer_weights + kv_bytes / self._n_layers
+            layer_bytes = (
+                layer_weights
+                + max(0.0, kv_bytes - self._recurrent) / self._n_layers
+                + self._recurrent_layer
+            )
         from core.inference.llama_server_args import fit_target_margin_in
 
         # llama.cpp's fitter keeps an explicit --fit-target free on every device.
@@ -1283,7 +1294,9 @@ class ClusterServing:
         plan.kv_bytes = float(kv_bytes or 0)
         plan.uncertain_extra_bytes = self._uncertain_extra + checkpoints
         plan.layer_bytes = float(layer_bytes or 0.0)
-        plan.host_bytes = self._host_embd
+        plan.host_bytes = self._host_embd + (
+            self._nextn_bytes if plan.topology == "layer_split" else 0.0
+        )
         self.plan = plan
         if plan.topology == "refuse":
             self.topology, self.reason, self.plan, self.block = self._pre_load
@@ -1429,6 +1442,7 @@ class ClusterServing:
             dropped = [p for p in dict.fromkeys(files) if ss._projector_accepts_image(p)]
             self._has_projector = any(p not in dropped and os.path.isfile(p) for p in files)
         auto_bytes = 0
+        auto_projector = None
         if extra_args_disable_mmproj(extras):
             pass
         elif not any(str(a).split("=", 1)[0] in named for a in extras) and not any(
@@ -1437,6 +1451,7 @@ class ClusterServing:
             projector = ss.auto_projector_file(
                 local_file, disable_vision = disable_vision
             ) or _quant_dir_projector(local_file, disable_vision, ss)
+            auto_projector = projector
             if projector:
                 auto_bytes = int(ss.gguf_size_bytes(projector) or 0)
                 sidecars += auto_bytes
@@ -1484,6 +1499,8 @@ class ClusterServing:
         )
         if env_projector:
             projectors.append(os.path.abspath(env_projector))
+        loaded = [p for p in dict.fromkeys(projectors) if p not in dropped]
+        self._projector_file = loaded[0] if loaded else auto_projector if auto_bytes else None
         named_bytes = sum(
             int(ss.gguf_size_bytes(p) or 0) for p in dict.fromkeys(projectors) if p not in dropped
         )
@@ -1522,6 +1539,11 @@ class ClusterServing:
             self._native_ctx = True  # llama.cpp reads a negative floor as the whole context
         if not ctx and floor and floor > 0:
             ctx = floor  # the fitter never goes below --fit-ctx
+        if not ctx and not self._native_ctx:
+            # Auto context: the loader opens the native context and llama.cpp's fitter shrinks it
+            # no further than its default --fit-ctx.
+            native = header.get(f"{header.get('general.architecture')}.context_length") or 0
+            ctx = min(4096, native) if native else 4096
         kv = None
         self._unsized_kv = False
         from core.inference.llama_cpp import (
@@ -1536,12 +1558,27 @@ class ClusterServing:
         unified = _kv_unified_from_args(extras, default = n_parallel > 1)
         _slots, streams, per_stream = _kv_cache_cell_layout(ctx, n_parallel, unified)
         cells = streams * per_stream if ctx else 0
-        batch, ubatch, _nb, _nu = _named_batch_sizes(
-            extras,
-            os.environ,
-            getattr(request, "n_batch", None),
-            getattr(request, "n_ubatch", None),
+        from core.inference.llama_cpp import (
+            _batch_ubatch_for_mmproj,
+            _mmproj_required_ubatch,
+            _unknown_projector_ubatch,
         )
+
+        n_batch, n_ubatch = getattr(request, "n_batch", None), getattr(request, "n_ubatch", None)
+        if self._has_projector and not disable_vision:
+            # The loader raises an unset micro-batch to what the projector's images need.
+            arch = header.get("general.architecture")
+            required = (
+                _mmproj_required_ubatch(
+                    self._projector_file, header.get(f"{arch}.embedding_length"), extras, os.environ
+                )
+                if self._projector_file
+                else _unknown_projector_ubatch(extras, os.environ)
+            )
+            n_batch, n_ubatch = _batch_ubatch_for_mmproj(
+                required, n_batch, n_ubatch, extras, os.environ
+            )
+        batch, ubatch, _nb, _nu = _named_batch_sizes(extras, os.environ, n_batch, n_ubatch)
         header_kv = _REMOTE_HEADER_KV.pop((model_path, str(variant)), None)
         k_type, v_type = cache_type or "f16", cache_type_v or cache_type or "f16"
         # Either quantized axis allocates dequantization scratch: price the lighter one.
@@ -1597,7 +1634,7 @@ class ClusterServing:
                 header_kv,
                 ctx,
                 min(batch, ubatch),
-                cache_type,
+                max((k_type, kv_v or v_type), key = ss.kv_bytes_per_elem),
                 flash_attn,
                 n_parallel,
                 "checkpoint",
@@ -1618,6 +1655,19 @@ class ClusterServing:
             "recurrent",
         )
         recurrent = max(loader_recurrent or 0, _ssm_state_bytes(header, n_parallel))
+        arch = header.get("general.architecture")
+        n_rec = header.get(f"{arch}.attention.head_count_kv.zeros") or header.get(
+            f"{arch}.block_count"
+        )
+        # A whole recurrent layer carries its share of the state, not the model-wide average.
+        self._recurrent_layer = float(recurrent) / n_rec if recurrent and n_rec else 0.0
+        self._recurrent = float(recurrent)
+        nextn = int(header.get(f"{arch}.nextn_predict_layers") or 0)
+        n_blocks = int(header.get(f"{arch}.block_count") or 0)
+        # Trailing NextN / MTP blocks are skipped with speculation off, as a split runs.
+        self._nextn_bytes = float(
+            sum(v for k, v in blocks.items() if nextn and n_blocks and k >= n_blocks - nextn)
+        )
         if kv is None and ctx and size and not recurrent:
             self._unsized_kv = True  # a pure state-space model has no attention KV
         kv = float(kv or 0.0) + recurrent
