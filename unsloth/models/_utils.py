@@ -5515,8 +5515,13 @@ def patch_gradient_accumulation_fix(Trainer):
             except Exception:
                 pass
             if getattr(self, "is_fsdp_enabled", False):
-                from .llama import _decline_fused_lora_for_fsdp
-                _decline_fused_lora_for_fsdp(getattr(self, "model", None))
+                # FSDP2 keeps the fused LoRA kernels when each decoder block is its own unit (checked
+                # again once accelerate has wrapped); FSDP1 and a root-only wrap decline them here.
+                from .fsdp2 import fsdp2_trainer_setup
+                keep_fused, reason = fsdp2_trainer_setup(self)
+                if not keep_fused:
+                    from .llama import _decline_fused_lora_for_fsdp
+                    _decline_fused_lora_for_fsdp(getattr(self, "model", None), reason)
             _replan_auto_offload_safely(self)
             _block_swap_for_trainer_backend(self)
             _enable_ddp_batched_grad_copy(self)
