@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::Duration;
 use tauri::{LogicalPosition, LogicalSize, Runtime, Webview};
-use webkit2gtk::WebView;
+use webkit2gtk::{WebView, WebViewExt};
 
 #[derive(Clone, Copy)]
 struct Bounds {
@@ -85,12 +85,13 @@ pub async fn install<R: Runtime>(main: &Webview<R>) -> Result<(), String> {
 struct AllocationData {
     view: WebView,
     bounds: Rc<Cell<Bounds>>,
+    fullscreen: Rc<Cell<bool>>,
 }
 
 // GTK passes a writable allocation; gtk-rs 0.18 does not generate this signal.
 // connect_raw owns AllocationData and drops it when its handler is disconnected.
 unsafe extern "C" fn position_child(
-    _overlay: *mut gtk::ffi::GtkOverlay,
+    overlay: *mut gtk::ffi::GtkOverlay,
     widget: *mut gtk::ffi::GtkWidget,
     allocation: *mut gdk::ffi::GdkRectangle,
     data: glib::ffi::gpointer,
@@ -98,6 +99,15 @@ unsafe extern "C" fn position_child(
     let data = &*(data as *const AllocationData);
     if widget != data.view.as_ptr() as *mut gtk::ffi::GtkWidget || allocation.is_null() {
         return 0;
+    }
+    if data.fullscreen.get() {
+        *allocation = gdk::ffi::GdkRectangle {
+            x: 0,
+            y: 0,
+            width: gtk::ffi::gtk_widget_get_allocated_width(overlay.cast()).max(1),
+            height: gtk::ffi::gtk_widget_get_allocated_height(overlay.cast()).max(1),
+        };
+        return 1;
     }
     let Bounds { position, size } = data.bounds.get();
     *allocation = gdk::ffi::GdkRectangle {
@@ -129,9 +139,24 @@ pub async fn attach<R: Runtime>(
             view.hide();
             parent.remove(&view);
             let bounds = Rc::new(Cell::new(Bounds { position, size }));
+            let fullscreen = Rc::new(Cell::new(false));
+            let on_fullscreen = |active| {
+                let fullscreen = fullscreen.clone();
+                let overlay = host.overlay.downgrade();
+                move |_: &WebView| {
+                    fullscreen.set(active);
+                    if let Some(overlay) = overlay.upgrade() {
+                        overlay.queue_resize();
+                    }
+                    false // Let WebKit handle the top-level window transition.
+                }
+            };
+            view.connect_enter_fullscreen(on_fullscreen(true));
+            view.connect_leave_fullscreen(on_fullscreen(false));
             let data = Box::new(AllocationData {
                 view: view.clone(),
                 bounds: bounds.clone(),
+                fullscreen,
             });
             let handler = unsafe {
                 connect_raw(
