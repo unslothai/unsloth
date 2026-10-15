@@ -5748,13 +5748,19 @@ class _TrackedCancel:
         run_id = None,
         model = None,
         kind = "chat",
+        track_run = True,
     ):
         self.event = event
         self.keys = tuple(_account_cancel_key(k) for k in keys if k)
         # kind reaches the swap prompt: embeddings and raw completions have no conversation, so
         # naming them chats would offer to stop something the user never started from a thread.
-        self._active = active_generations.ActiveGeneration(
-            event, thread_id = thread_id, run_id = run_id, model = model, kind = kind
+        # track_run=False only adds cancel keys to a run another tracker already records.
+        self._active = (
+            active_generations.ActiveGeneration(
+                event, thread_id = thread_id, run_id = run_id, model = model, kind = kind
+            )
+            if track_run
+            else None
         )
         self._slot = None
 
@@ -5781,11 +5787,12 @@ class _TrackedCancel:
             for k in self.keys:
                 if k and _PENDING_CANCELS.pop(k, None) is not None:
                     should_cancel = True
-        self._active.__enter__()
-        self._slot = routed_slot.get()
-        if self._slot is not None:
-            with model_slots.lock:
-                self._slot.generations.add(self.event)
+        if self._active is not None:
+            self._active.__enter__()
+            self._slot = routed_slot.get()
+            if self._slot is not None:
+                with model_slots.lock:
+                    self._slot.generations.add(self.event)
         if should_cancel:
             self.event.set()
         return self.event
@@ -5799,7 +5806,8 @@ class _TrackedCancel:
                 bucket.discard(self.event)
                 if not bucket:
                     _CANCEL_REGISTRY.pop(k, None)
-        self._active.__exit__(*exc)
+        if self._active is not None:
+            self._active.__exit__(*exc)
         if self._slot is not None:
             with model_slots.lock:
                 self._slot.generations.discard(self.event)
@@ -6733,7 +6741,27 @@ async def _select_request_tools(
         from state.tool_policy import get_tool_policy
         if get_tool_policy() is not False:
             tools = tools + [DEEP_RESEARCH_TOOL]
+    delegated = _delegated_tool_names.get()
+    if delegated is not None:
+        tools = [tool for tool in tools if tool["function"]["name"] in delegated]
     return tools
+
+
+# Set by a compat route that delegates to chat with its own tool selection: chat's additions
+# (an archive's search_conversation, MCP, skills) must not widen what that route selected.
+_delegated_tool_names: contextvars.ContextVar[Optional[frozenset]] = contextvars.ContextVar(
+    "unsloth_delegated_tool_names",
+    default = None,
+)
+
+
+@contextmanager
+def _delegated_tool_selection(names):
+    token = _delegated_tool_names.set(None if names is None else frozenset(names))
+    try:
+        yield
+    finally:
+        _delegated_tool_names.reset(token)
 
 
 def _search_images_enabled() -> bool:
@@ -8029,6 +8057,8 @@ def _monitor_anthropic_response(
             if cancel_event is not None:
                 cancel_event.set()
             api_monitor.finish(monitor_id, "cancelled")
+            # Cancelled at a yield, the wrapped stream is suspended too; its cleanup must not wait for GC.
+            await _close_openai_admitted_stream_iterator(body_iterator, cancelled = True)
             raise
         except Exception as exc:
             api_monitor.fail(monitor_id, _friendly_error(exc))
@@ -13685,6 +13715,24 @@ def _estimate_gguf_required_gb(
                 # guard admit a load that evicts the training run it protects.
                 total_bytes += LlamaCppBackend._get_gguf_size_bytes(str(f))
                 _sized_keys.add(_same_file_key(str(f)))
+        # An EAGLE-3 drafter a Studio export paired with this GGUF (drafter.json): the
+        # launch attaches it under Auto, so it is charged like the sidecars above.
+        if main and not _charge_no_drafter and _spec_mode in ("auto", "eagle3"):
+            try:
+                from core.export.drafter_export import eagle3_sidecar_path
+                _eagle3 = eagle3_sidecar_path(str(main))
+            except Exception:
+                _eagle3 = None
+            # Like DSpark / DFlash: a binary without draft-eagle3 never opens it.
+            if _eagle3:
+                try:
+                    if not LlamaCppBackend.probe_server_capabilities().get("supports_eagle3"):
+                        _eagle3 = None
+                except Exception:
+                    _eagle3 = None
+            if _eagle3 and _same_file_key(_eagle3) not in _sized_keys:
+                total_bytes += LlamaCppBackend._get_gguf_size_bytes(_eagle3)
+                _sized_keys.add(_same_file_key(_eagle3))
 
         # A caller owning speculation through llama_extra_args names the drafter with
         # --model-draft, which load_model hands to llama-server, so it is charged --
@@ -34610,6 +34658,8 @@ async def produce_openai_chat_completions(
                 auto_heal_tool_calls = _sf_auto_heal_tool_calls,
                 deduplicate_tool_calls = payload.deduplicate_tool_calls is not False,
                 nudge_tool_calls = payload.nudge_tool_calls,
+                tool_choice = payload.tool_choice,
+                disable_parallel_tool_use = payload.parallel_tool_calls is False,
                 max_tool_iterations = _sf_tool_budget,
                 tool_call_timeout = payload.tool_call_timeout
                 if payload.tool_call_timeout is not None
@@ -41062,16 +41112,28 @@ class _InProcessChatStream:
         self.cancel_event = cancel_event
 
     @classmethod
-    async def open(cls, chat_req: ChatCompletionRequest, request, current_subject):
+    async def open(
+        cls,
+        chat_req: ChatCompletionRequest,
+        request,
+        current_subject,
+        cancel_event: Optional[threading.Event] = None,
+        tool_names = None,
+    ):
+        """``tool_names``: the caller's server-tool selection, run with chat's tool-loop frames."""
         chat_req.stream = True
         chat_req.stream_options = {"include_usage": True}
-        cancel_event = threading.Event()
-        with _delegated_request_state(
-            request,
-            skip_api_monitor = True,
-            generation_cancel_event = cancel_event,
-            # The Responses translator drops control frames, so an approval prompt would be lost.
-            ui_stream_events = False,
+        cancel_event = cancel_event or threading.Event()
+        with (
+            _delegated_request_state(
+                request,
+                skip_api_monitor = True,
+                generation_cancel_event = cancel_event,
+                # Only a server-tool caller relays chat's control frames; elsewhere an approval
+                # prompt would be lost, so the client's opt-in is hidden.
+                ui_stream_events = tool_names is not None,
+            ),
+            _delegated_tool_selection(tool_names),
         ):
             response = await openai_chat_completions(chat_req, request, current_subject)
         if getattr(response, "body_iterator", None) is None:
@@ -42601,6 +42663,12 @@ async def _mlx_count_chat_tokens(
             system_prompt, request, image = _renders_media, controls = _date_controls
         )
 
+    from core.inference.chat_template_helpers import (
+        forced_tool_name,
+        forced_turn_tools,
+        mapped_chat_template,
+        renderable_tool_catalog,
+    )
     from state.tool_policy import get_tool_policy as _get_tool_policy_mlx
 
     _tools_on = bool(_effective_enable_tools(payload))
@@ -42815,6 +42883,21 @@ async def _mlx_count_chat_tokens(
             else _msg
             for _msg in messages
         ]
+        # The first turn renders only a forced tool, narrowed as the loop narrows the catalog it
+        # authorizes: a forced tool the sanitizer drops narrows nothing. The nudge names them all.
+        _choice = getattr(payload, "tool_choice", None)
+        if forced_tool_name(_choice):
+            # Off the loop: the first call may fetch the native template.
+            _safe_tools = await asyncio.to_thread(
+                lambda: renderable_tool_catalog(
+                    _tools_to_use,
+                    entry.get("tokenizer"),
+                    entry,
+                    active_model_name = active,
+                    template = mapped_chat_template(entry, active),
+                )
+            )
+            _tools_to_use = forced_turn_tools(_choice, _safe_tools)
 
     # Nothing to price: the template would render its generation marker alone and the
     # total would describe a conversation nobody has started (#8882). The GGUF branch
@@ -43196,6 +43279,125 @@ async def chat_count_tokens(
     )
 
 
+def _anthropic_chat_fields(
+    payload: AnthropicMessagesRequest,
+    *,
+    reads_images: bool,
+    server_tools = (),
+) -> dict:
+    """The chat request fields a /v1/messages request becomes on an in-process model.
+
+    Tool intent is stated for chat: a client catalog or tool history already keeps the
+    launcher's tools default out of it, and a request with neither sends tool_choice "none",
+    so chat never opens a tool loop the Messages route did not select. ``server_tools`` is
+    the Messages route's own selection, run by chat's loop with no confirmation to wait on.
+    """
+    messages = _named_anthropic_tool_results(
+        anthropic_messages_to_openai(
+            [m.model_dump() for m in payload.messages],
+            payload.system,
+            # Kept for the template to decide, as for a chat caller replaying reasoning_content.
+            preserve_thinking = payload.preserve_thinking is not False,
+            tool_result_images = reads_images,
+        )
+    )
+    studio_tools = _anthropic_requested_studio_tools(payload.tools)
+    tool_choice = anthropic_tool_choice_to_openai(payload.tool_choice) or "auto"
+    tools = _anthropic_client_tools_for_turn(
+        [
+            tool
+            for tool in anthropic_tools_to_openai(payload.tools or [])
+            if tool.get("function", {}).get("name") not in studio_tools
+        ],
+        tool_choice,
+        messages,
+    )
+    fields = {
+        "messages": messages,
+        "tools": tools or None,
+        "tool_choice": tool_choice if tools else "none",
+        "thread_id": payload.thread_id,
+        **_anthropic_reasoning_args(payload),
+    }
+    if "model" in payload.model_fields_set:
+        fields["model"] = payload.model
+    if payload.auto_heal_tool_calls is not None:
+        fields["auto_heal_tool_calls"] = payload.auto_heal_tool_calls
+    if server_tools:
+        from core.inference.chat_template_helpers import catalog_tool_names
+
+        # What the llama-server loop is handed on this route. Messages refused a confirm
+        # gate before the switch, so the loop is told there is none.
+        fields.update(
+            tools = None,
+            tool_choice = _anthropic_server_tool_choice(tool_choice),
+            enable_tools = True,
+            enabled_tools = sorted(catalog_tool_names(server_tools)),
+            mcp_enabled = False,
+            confirm_tool_calls = False,
+            permission_mode = payload.permission_mode,
+            sandbox_level = payload.sandbox_level,
+            bypass_permissions = bool(payload.bypass_permissions),
+            rag_scope = getattr(payload, "rag_scope", None),
+            max_tool_calls_per_message = 25,
+            tool_call_timeout = 300,
+            auto_heal_tool_calls = True,
+        )
+    return fields
+
+
+def _anthropic_server_tool_choice(openai_tool_choice):
+    """``tool_choice`` for the server-tool loop: a forced Anthropic alias names its Unsloth tool."""
+    if isinstance(openai_tool_choice, dict):
+        forced_function = openai_tool_choice.get("function")
+        forced_name = forced_function.get("name") if isinstance(forced_function, dict) else None
+        canonical_name = _STUDIO_ANTHROPIC_TOOL_ALIASES.get(forced_name)
+        if canonical_name:
+            return {"type": "function", "function": {"name": canonical_name}}
+    return openai_tool_choice
+
+
+def _anthropic_server_tool_refusal(payload, server_tool_choice, tools) -> Optional[str]:
+    """Why the server-tool loop cannot take this request, found once the target is resident."""
+    from core.inference.chat_template_helpers import catalog_tool_names, forced_tool_name
+
+    # Bypass Permissions suppresses confirm, so both flags together is fine.
+    if bool(getattr(payload, "confirm_tool_calls", False)) and not bool(
+        getattr(payload, "bypass_permissions", False)
+    ):
+        return "confirm_tool_calls is not supported for Anthropic Messages server tools."
+    forced_name = forced_tool_name(server_tool_choice)
+    if forced_name and forced_name not in catalog_tool_names(tools):
+        return f"Invalid 'tool_choice': function '{forced_name}' is not enabled."
+    return None
+
+
+async def _anthropic_in_process_count(
+    payload, request, current_subject, *, server_tools: list
+) -> Optional[JSONResponse]:
+    """Count on a resident MLX model through the chat count route, or None if none is serving."""
+    backend = await asyncio.to_thread(get_inference_backend)
+    active = getattr(backend, "active_model_name", None)
+    entry = (getattr(backend, "models", {}) or {}).get(active) or {}
+    if not active or not entry.get("is_mlx"):
+        return None
+    fields = _anthropic_chat_fields(
+        payload, reads_images = bool(entry.get("is_vision")), server_tools = server_tools
+    )
+    return JSONResponse(
+        content = {"input_tokens": await _anthropic_chat_count(fields, request, current_subject)}
+    )
+
+
+async def _anthropic_chat_count(fields: dict, request, current_subject) -> int:
+    """Chat's count of the translated request, priced with the tool selection it would run."""
+    with _delegated_tool_selection(fields["enabled_tools"] if fields.get("enable_tools") else None):
+        counted = await chat_count_tokens(
+            ChatCountTokensRequest(**fields), current_subject, request
+        )
+    return int(json.loads(counted.body)["input_tokens"])
+
+
 def _anthropic_connection_error_event(error: Any) -> str:
     message = error.get("message") if isinstance(error, dict) else None
     try:
@@ -43567,8 +43769,8 @@ async def anthropic_count_tokens(
 
     Translates the Anthropic request to OpenAI form (the same translation the
     /messages handler uses), counts prompt tokens with the loaded GGUF model's
-    tokenizer, and returns ``{"input_tokens": int}`` only. Unlike /messages,
-    max_tokens is NOT required here.
+    tokenizer, or a resident MLX model's through the chat count route, and returns
+    ``{"input_tokens": int}`` only. Unlike /messages, max_tokens is NOT required here.
     """
     if _connection_model_ref(payload.model) is not None:
         raise HTTPException(
@@ -43580,6 +43782,40 @@ async def anthropic_count_tokens(
     _validate_anthropic_client_tools(payload.tools)
     # Counting compiles no output grammar, matching Anthropic's count_tokens behavior.
     _count_response_format = _anthropic_response_format(payload, require_llama_compatibility = False)
+    _count_studio_tools = _anthropic_requested_studio_tools(payload.tools)
+    _count_has_client_tool = any(
+        (t if isinstance(t, dict) else t.model_dump()).get("input_schema") is not None
+        or anthropic_schema_client_tool_kind(t) is not None
+        for t in payload.tools or []
+    )
+    _count_openai_tool_choice = anthropic_tool_choice_to_openai(payload.tool_choice) or "auto"
+    _count_schema_disables_server_tools = (
+        _count_openai_tool_choice == "none" and _count_response_format is not None
+    )
+    _count_selects_server_tools = (
+        _anthropic_selects_server_tools(payload, _count_studio_tools, _count_has_client_tool)
+        and not _count_schema_disables_server_tools
+    )
+    from core.inference.tools import ALL_TOOLS as _ANTHROPIC_COUNT_TOOLS
+    from utils.hardware import DeviceType, get_device
+
+    _count_in_process_server_tools = (
+        _select_anthropic_server_tools(
+            _ANTHROPIC_COUNT_TOOLS, _count_studio_tools, payload.enabled_tools
+        )
+        if _count_selects_server_tools
+        else []
+    )
+    # Only an MLX model counts in process, and only what the chat count route prices, so any
+    # other non-GGUF target is refused before it loads.
+    _in_process_refusal = None
+    # A replayed MCP envelope is an image to a vision target, which the chat count refuses.
+    _count_replay = _anthropic_chat_fields(payload, reads_images = True)["messages"]
+    if _anthropic_request_has_image(payload) or (
+        _messages_mention_mcp_images(_count_replay)
+        and await asyncio.to_thread(_messages_have_promotable_mcp_images, _count_replay)
+    ):
+        _in_process_refusal = "Cannot count tokens for messages containing images."
     # Count with the requested model's tokenizer, like the sibling /messages.
     # Carry the vision guard too: an image count naming a text-only GGUF must not
     # evict a loaded vision model for a swap that can't serve the request.
@@ -43591,11 +43827,22 @@ async def anthropic_count_tokens(
         # count_tokens only tokenizes (no generation), so it must not adopt the resident
         # model; the middleware likewise excludes count_tokens from its claim.
         claim_resident = False,
-        gguf_only = True,
+        gguf_only = (
+            _in_process_refusal is not None or await asyncio.to_thread(get_device) != DeviceType.MLX
+        ),
+        gguf_only_reason = _in_process_refusal,
     )
 
     llama_backend = get_llama_cpp_backend()
     if not llama_backend.is_loaded:
+        _in_process_count = await _anthropic_in_process_count(
+            payload,
+            request,
+            current_subject,
+            server_tools = _count_in_process_server_tools,
+        )
+        if _in_process_count is not None:
+            return _in_process_count
         _status, _detail = await _no_model_loaded_error(
             "No GGUF model loaded. Load a GGUF model first.",
             _switch_model_for_payload(payload),
@@ -43651,25 +43898,13 @@ async def anthropic_count_tokens(
     # Only the client-tool passthrough is forwarded verbatim, so reproduce /messages' own
     # routing rather than "any tools": a Studio server-tool alias, or a template without
     # passthrough support, falls through to plain generation there and does carry the date.
-    _count_studio_tools = _anthropic_requested_studio_tools(payload.tools)
-    _count_has_client_tool = any(
-        (t if isinstance(t, dict) else t.model_dump()).get("input_schema") is not None
-        or anthropic_schema_client_tool_kind(t) is not None
-        for t in payload.tools or []
-    )
-    _count_openai_tool_choice = anthropic_tool_choice_to_openai(payload.tool_choice) or "auto"
-    _count_schema_disables_server_tools = (
-        _count_openai_tool_choice == "none" and _count_response_format is not None
-    )
     _count_server_tools = (
-        _anthropic_selects_server_tools(payload, _count_studio_tools, _count_has_client_tool)
+        _count_selects_server_tools
         and llama_backend.supports_tools
         and not _anthropic_request_has_image(payload, tool_results = llama_backend.is_vision)
-        and not _count_schema_disables_server_tools
     )
     _count_selected_server_tools = []
     if _count_server_tools:
-        from core.inference.tools import ALL_TOOLS as _ANTHROPIC_COUNT_TOOLS
         _count_selected_server_tools = _tools_for_search_images(
             _select_anthropic_server_tools(
                 _ANTHROPIC_COUNT_TOOLS,
@@ -43799,6 +44034,398 @@ def _set_or_prepend_system_message(
     return [system, *others]
 
 
+def _anthropic_chat_sampling(payload) -> dict:
+    """Client-set sampling fields; omitted ones stay omitted so chat applies the model's defaults."""
+    return {
+        name: getattr(payload, name)
+        for name in (
+            "temperature",
+            "top_p",
+            "top_k",
+            "min_p",
+            "repetition_penalty",
+            "presence_penalty",
+            "seed",
+            "nudge_tool_calls",
+        )
+        if getattr(payload, name) is not None
+    }
+
+
+def _anthropic_chat_sampling_refusal(payload, messages) -> Optional[str]:
+    """Why chat would reject this request's sampling fields; Messages bounds some less tightly."""
+    from pydantic import ValidationError
+
+    try:
+        ChatCompletionRequest(
+            messages = messages,
+            max_tokens = payload.max_tokens,
+            **_anthropic_chat_sampling(payload),
+        )
+    except ValidationError as exc:
+        error = exc.errors()[0]
+        field = ".".join(str(part) for part in error.get("loc", ())) or "request"
+        return f"'{field}': {error.get('msg')} on a non-GGUF model."
+    return None
+
+
+def _in_process_model_resident() -> bool:
+    orchestrator = _peek_inference_backend()
+    entry = (getattr(orchestrator, "models", None) or {}).get(
+        getattr(orchestrator, "active_model_name", None)
+    )
+    # Chat answers a TTS model with a finished clip, not a text reply.
+    return isinstance(entry, dict) and not (
+        entry.get("is_audio") and entry.get("audio_type") != "whisper"
+    )
+
+
+async def _anthropic_in_process_input_tokens(fields: dict, request, current_subject) -> int:
+    """``message_start`` input tokens: the count route's total, or 0 where it cannot price one."""
+    try:
+        return await _anthropic_chat_count(fields, request, current_subject)
+    except HTTPException:
+        return 0
+
+
+class _ChatToolLoopEvents:
+    """Chat's tool-loop stream as the events the llama-server tool loop yields.
+
+    Text is cumulative until each tool_end, with reasoning folded in as one leading ``<think>``
+    span recorded in ``provenance`` the way that loop records it. Reasoning from a re-prompted
+    turn that follows visible text has no such place, so it is dropped (thinking is optional).
+    """
+
+    def __init__(self, provenance: dict) -> None:
+        self._prov = provenance
+        self._text = ""
+        self._wrap = None
+        self._finish_reason = None
+        self._usage = {}
+
+    def _content(self) -> dict:
+        return {"type": "content", "text": self._text, _WRAPPED_SO_FAR: self._prov["wrapped"]}
+
+    def feed(self, chunk: dict) -> list:
+        etype = chunk.get("type")
+        if etype in ("tool_start", "tool_end", "tool_output", "tool_args"):
+            events = []
+            if etype == "tool_start" and self._wrap is not None:
+                self._text, self._wrap = self._text + "</think>", None
+                events.append(self._content())
+            if etype == "tool_end":
+                self._text, self._wrap = "", None
+            return events + [chunk]
+        if etype is not None or not chunk.get("choices"):
+            self._usage = chunk.get("usage") or self._usage
+            return []
+        events = []
+        for choice in chunk["choices"]:
+            delta = choice.get("delta") or {}
+            reasoning = delta.get("reasoning_content")
+            if reasoning and (self._wrap is not None or not self._text):
+                if self._wrap is None:
+                    self._prov["wrapped"] += 1
+                    self._wrap = {"len": 0}
+                    self._prov.setdefault("wraps", []).append(self._wrap)
+                    self._text += "<think>"
+                self._text += reasoning
+                self._wrap["len"] += len(reasoning)
+                events.append(self._content())
+            if delta.get("content"):
+                if self._wrap is not None:
+                    self._text, self._wrap = self._text + "</think>", None
+                self._text += delta["content"]
+                events.append(self._content())
+            self._finish_reason = choice.get("finish_reason") or self._finish_reason
+        return events
+
+    def finish(self) -> list:
+        return [{"type": "metadata", "finish_reason": self._finish_reason, "usage": self._usage}]
+
+
+def _anthropic_in_process_sse(
+    source: "_InProcessChatStream",
+    *,
+    request,
+    monitor_id,
+    message_id: str,
+    model_name: str,
+    input_tokens: int,
+    disable_parallel_tool_use: bool,
+    server_tools = (),
+):
+    """Chat's stream as Anthropic SSE, ending the way the matching llama-server stream ends."""
+    from core.inference.llama_keepwarm import mark_response_failed
+
+    if server_tools:
+        provenance: dict = {"wrapped": 0}
+        emitter = AnthropicStreamEmitter(parse_think = True, think_provenance = provenance)
+        rules = _AnthropicToolEventRules(
+            emitter, server_tools, disable_parallel_tool_use, provenance
+        )
+        tool_events = _ChatToolLoopEvents(provenance)
+
+        def feed(chunk):
+            # A stopped server-tool stream ends without message_stop, as on llama-server.
+            if source.cancelled:
+                return [], True
+            # Raised, so the error event is the one a failed llama-server tool loop gets.
+            error_message = _monitor_openai_error_message(chunk)
+            if error_message:
+                raise RuntimeError(error_message)
+            return [line for event in tool_events.feed(chunk) for line in rules.feed(event)], False
+
+        def finish():
+            if source.cancelled:
+                return []
+            return [line for event in tool_events.finish() for line in rules.feed(event)] + (
+                rules.finish()
+            )
+    else:
+        emitter = AnthropicPassthroughEmitter(reasoning_as_thinking = True)
+
+        def feed(chunk):
+            return _anthropic_passthrough_chunk_lines(
+                emitter, chunk, request, disable_parallel_tool_use
+            )
+
+        finish = emitter.finish
+    # The chat handler's tracker holds cancel_id and session_id; the message id is Messages' own.
+    tracker = _TrackedCancel(source.cancel_event, message_id, track_run = False)
+    tracker.__enter__()
+
+    async def _stream():
+        cancelled = False
+        chunks = source.chunks()
+        try:
+            for line in emitter.start(message_id, model_name, input_tokens):
+                yield line
+            while (chunk := await source.next_chunk(chunks)) is not None:
+                if chunk is _LLAMA_STREAM_KEEPALIVE:
+                    yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                    continue
+                lines, failed = feed(chunk)
+                for line in lines:
+                    yield line
+                if failed:
+                    return
+        except asyncio.CancelledError:
+            cancelled = True
+            source.cancel_event.set()
+            raise
+        except Exception as e:
+            if not source.cancelled:
+                logger.error("anthropic_messages in-process stream error: %s", e)
+                mark_response_failed(getattr(request, "scope", None))
+                event = _anthropic_stream_error_event(e, force = True)
+                if event is not None:
+                    yield event
+                return
+        finally:
+            if source.cancelled:
+                mark_response_failed(getattr(request, "scope", None))
+            try:
+                await chunks.aclose()
+                await source.close(cancelled = cancelled)
+            finally:
+                tracker.__exit__(None, None, None)
+
+        for line in finish():
+            yield line
+
+    async def _unstarted_cleanup() -> None:
+        api_monitor.finish(monitor_id, "cancelled")
+        try:
+            await source.close(cancelled = True)
+        finally:
+            tracker.__exit__(None, None, None)
+
+    return _sse_streaming_response(_stream(), unstarted_cleanup = _unstarted_cleanup)
+
+
+async def _anthropic_in_process_tool_message(
+    chat_req,
+    request,
+    current_subject,
+    *,
+    cancel_event,
+    message_id,
+    model_name,
+    server_tools,
+    disable_parallel_tool_use,
+):
+    """A non-streaming server-tool reply: chat's tool-loop stream reduced as llama-server's is.
+
+    Chat's own JSON reply drops the tool calls it ran, so the stream is driven here instead.
+    """
+    provenance: dict = {"wrapped": 0}
+    tool_events = _ChatToolLoopEvents(provenance)
+    events: list = []
+    source = await _InProcessChatStream.open(
+        chat_req,
+        request,
+        current_subject,
+        cancel_event = cancel_event,
+        tool_names = chat_req.enabled_tools,
+    )
+    cancelled = False
+    chunks = source.chunks()
+    try:
+        while (chunk := await source.next_chunk(chunks)) is not None:
+            if chunk is _LLAMA_STREAM_KEEPALIVE:
+                continue
+            error_message = _monitor_openai_error_message(chunk)
+            if error_message:
+                raise _anthropic_map_generation_error(RuntimeError(error_message))
+            events.extend(tool_events.feed(chunk))
+    except asyncio.CancelledError:
+        cancelled = True
+        raise
+    finally:
+        await chunks.aclose()
+        await source.close(cancelled = cancelled)
+    response = _anthropic_tool_response_from_events(
+        events + tool_events.finish(),
+        message_id,
+        model_name,
+        disable_parallel_tool_use = disable_parallel_tool_use,
+        openai_tools = server_tools,
+        parse_think = True,
+        think_provenance = provenance,
+    )
+    # A stopped run answers with what it had, as the llama-server tool path does.
+    _mark_cancelled_json_response_failed(request, cancel_event)
+    return response
+
+
+async def _anthropic_in_process_messages(
+    payload: AnthropicMessagesRequest,
+    request,
+    current_subject,
+    server_tools = (),
+):
+    """Serve /v1/messages from an in-process model (MLX, transformers) through chat."""
+    backend = await asyncio.to_thread(get_inference_backend)
+    entry = (getattr(backend, "models", {}) or {}).get(backend.active_model_name) or {}
+    image_location = not entry.get("is_vision") and _anthropic_top_level_image_location(payload)
+    if image_location:
+        # Named as on llama-server, so a client can drop the image and keep the session going.
+        raise HTTPException(
+            status_code = 400,
+            detail = f"{image_location}: Image provided but current model does not support vision.",
+        )
+    fields = _anthropic_chat_fields(
+        payload, reads_images = bool(entry.get("is_vision")), server_tools = server_tools
+    )
+    refusal = server_tools and _anthropic_server_tool_refusal(
+        payload, fields["tool_choice"], server_tools
+    )
+    if refusal:
+        raise HTTPException(
+            status_code = 400,
+            detail = anthropic_error_body(refusal, status = 400, err_type = "invalid_request_error"),
+        )
+    # Validated against llama.cpp's compiler before the switch; dropped when a tool may run, as there.
+    response_format = _anthropic_response_format(payload, require_llama_compatibility = False)
+    if (server_tools or fields["tools"]) and fields["tool_choice"] != "none":
+        response_format = None
+    model_name = _orchestrator_public_model_id(backend) or payload.model
+    message_id = f"msg_{uuid.uuid4().hex[:24]}"
+    disable_parallel = bool(
+        isinstance(payload.tool_choice, dict)
+        and payload.tool_choice.get("disable_parallel_tool_use")
+    )
+    chat_req = ChatCompletionRequest(
+        **fields,
+        **_anthropic_chat_sampling(payload),
+        max_tokens = payload.max_tokens,
+        stop = payload.stop_sequences or None,
+        parallel_tool_calls = False if disable_parallel else None,
+        cancel_id = payload.cancel_id,
+        session_id = payload.session_id,
+        response_format = response_format,
+    )
+
+    monitor_id = None
+    context_length = _monitor_context_length()
+    if not getattr(getattr(request, "state", None), "skip_api_monitor", False):
+        monitor_id = api_monitor.start(
+            endpoint = getattr(getattr(request, "url", None), "path", "/v1/messages"),
+            method = getattr(request, "method", "POST"),
+            via_api_key = _request_used_api_key(request),
+            model = model_name,
+            prompt = _monitor_prompt_from_messages(fields["messages"]),
+            context_length = context_length,
+            subject = current_subject,
+        )
+    cancel_event = threading.Event()
+    try:
+        if payload.stream:
+            input_tokens = await _anthropic_in_process_input_tokens(
+                fields, request, current_subject
+            )
+            source = await _InProcessChatStream.open(
+                chat_req,
+                request,
+                current_subject,
+                cancel_event = cancel_event,
+                tool_names = chat_req.enabled_tools if server_tools else None,
+            )
+            response = _anthropic_in_process_sse(
+                source,
+                request = request,
+                monitor_id = monitor_id,
+                message_id = message_id,
+                model_name = model_name,
+                input_tokens = input_tokens,
+                disable_parallel_tool_use = disable_parallel,
+                server_tools = server_tools,
+            )
+        elif server_tools:
+            response = await _anthropic_in_process_tool_message(
+                chat_req,
+                request,
+                current_subject,
+                cancel_event = cancel_event,
+                message_id = message_id,
+                model_name = model_name,
+                server_tools = server_tools,
+                disable_parallel_tool_use = disable_parallel,
+            )
+        else:
+            perf: dict = {"monitor_id": monitor_id, "context_length": context_length}
+            sink_token = _monitor_perf_sink.set(perf if monitor_id else None)
+            try:
+                with _delegated_request_state(
+                    request, skip_api_monitor = True, generation_cancel_event = cancel_event
+                ):
+                    result = await openai_chat_completions(chat_req, request, current_subject)
+            finally:
+                _monitor_perf_sink.reset(sink_token)
+            # A stopped run returns what it had; the llama-server path never answers one.
+            if cancel_event.is_set():
+                raise asyncio.CancelledError()
+            response = _anthropic_message_from_openai_completion(
+                json.loads(result.body),
+                message_id,
+                model_name,
+                openai_tools = chat_req.tools,
+                allowed_tools = None,
+                disable_parallel_tool_use = disable_parallel,
+                response_format = response_format,
+                parse_think = True,
+            )
+    except asyncio.CancelledError:
+        cancel_event.set()
+        api_monitor.finish(monitor_id, "cancelled")
+        raise
+    except Exception as exc:
+        api_monitor.fail(monitor_id, _friendly_error(exc))
+        raise
+    return _monitor_anthropic_response(response, monitor_id, context_length, cancel_event)
+
+
 @router.post("/messages")
 @account_access.gpu_busy_route
 async def anthropic_messages(
@@ -43828,7 +44455,11 @@ async def anthropic_messages(
     # an automatic load can run (auto-switch or a standalone idle TTL), fall through
     # so validation runs before the reload hook gets a chance to restore the model.
     # Plain detail, not _no_model_loaded_error: that helper leaves this case unchanged.
-    if not llama_backend.is_loaded and not _automatic_model_load_may_run():
+    if (
+        not llama_backend.is_loaded
+        and not _in_process_model_resident()
+        and not _automatic_model_load_may_run()
+    ):
         raise HTTPException(
             status_code = 503,
             detail = _no_model_loaded_detail("No GGUF model loaded. Load a GGUF model first."),
@@ -43948,6 +44579,23 @@ async def anthropic_messages(
                 ),
             )
 
+    # What an in-process model cannot serve here is refused before a non-GGUF target loads.
+    _chat_req_pre = ChatCompletionRequest(
+        messages = _anthropic_chat_fields(payload, reads_images = True)["messages"]
+    )
+    _chat_parts = _extract_content_parts(_chat_req_pre.messages, keep_tool_images = True)
+    _in_process_refusal = None
+    if not _chat_parts[1]:
+        _in_process_refusal = "At least one non-system message is required."
+    else:
+        _in_process_refusal = _anthropic_chat_sampling_refusal(payload, _chat_req_pre.messages)
+    # Chat's image checks for a non-GGUF target; b64s stays what a GGUF target validates.
+    _anthropic_image_preflight = None
+    if _anthropic_has_image:
+        _anthropic_image_preflight = {
+            **_chat_image_preflight(_chat_req_pre, _chat_parts[2]),
+            "b64s": _anthropic_image_b64s,
+        }
     # require_vision rejects a swap to a text-only target before it runs, so an
     # image request can't evict the resident vision model only to hit the vision
     # guard (_normalize_anthropic_openai_images) below after the load.
@@ -43961,18 +44609,26 @@ async def anthropic_messages(
         # the middleware claims on a 2xx, so a rejected request never strands a preview-owned
         # model.
         claim_resident = False,
-        gguf_only = True,
-        image_preflight = (
-            {
-                "b64": _anthropic_image_b64s[0],
-                "b64s": _anthropic_image_b64s,
-                "multiple": False,
-            }
-            if _anthropic_image_b64s
-            else None
-        ),
+        gguf_only = _in_process_refusal is not None,
+        gguf_only_reason = _in_process_refusal,
+        image_preflight = _anthropic_image_preflight,
     )
     llama_backend = get_llama_cpp_backend()
+    if not llama_backend.is_loaded and _in_process_model_resident():
+        if _in_process_refusal is not None:
+            raise HTTPException(
+                status_code = 400,
+                detail = anthropic_error_body(
+                    _in_process_refusal, status = 400, err_type = "invalid_request_error"
+                ),
+            )
+        # An image anywhere keeps the llama-server route off its server-tool loop too.
+        return await _anthropic_in_process_messages(
+            payload,
+            request,
+            current_subject,
+            server_tools = [] if _anthropic_has_image else selected_server_tools,
+        )
     if not llama_backend.is_loaded:
         _status, _detail = await _no_model_loaded_error(
             "No GGUF model loaded. Load a GGUF model first.",
@@ -44501,22 +45157,6 @@ async def anthropic_messages(
 
         # As the tool loop does, so the opening usage count prices what it sends.
         openai_messages = await asyncio.to_thread(restore_replayed_tool_results, openai_messages)
-        # Bypass Permissions suppresses confirm, so both flags together is fine.
-        if bool(getattr(payload, "confirm_tool_calls", False)) and not bool(
-            getattr(payload, "bypass_permissions", False)
-        ):
-            api_monitor.fail(
-                monitor_id,
-                "confirm_tool_calls is not supported for Anthropic Messages server tools.",
-            )
-            raise HTTPException(
-                status_code = 400,
-                detail = anthropic_error_body(
-                    "confirm_tool_calls is not supported for Anthropic Messages server tools.",
-                    status = 400,
-                    err_type = "invalid_request_error",
-                ),
-            )
         from core.inference.tools import apply_full_access_tool_descriptions
 
         # ask/auto (and an omitted mode selecting a gate-needing terminal/python
@@ -44537,21 +45177,9 @@ async def anthropic_messages(
                 getattr(payload, "sandbox_level", None),
             )
 
-        server_tool_choice = openai_tool_choice
-        if isinstance(server_tool_choice, dict):
-            forced_function = server_tool_choice.get("function")
-            forced_name = forced_function.get("name") if isinstance(forced_function, dict) else None
-            canonical_name = _STUDIO_ANTHROPIC_TOOL_ALIASES.get(forced_name)
-            if canonical_name:
-                server_tool_choice = {
-                    "type": "function",
-                    "function": {"name": canonical_name},
-                }
-        from core.inference.chat_template_helpers import catalog_tool_names, forced_tool_name
-
-        forced_name = forced_tool_name(server_tool_choice)
-        if forced_name and forced_name not in catalog_tool_names(openai_tools):
-            message = f"Invalid 'tool_choice': function '{forced_name}' is not enabled."
+        server_tool_choice = _anthropic_server_tool_choice(openai_tool_choice)
+        message = _anthropic_server_tool_refusal(payload, server_tool_choice, openai_tools)
+        if message:
             api_monitor.fail(monitor_id, message)
             raise HTTPException(
                 status_code = 400,
@@ -44718,6 +45346,81 @@ async def anthropic_messages(
     )
 
 
+class _AnthropicToolEventRules:
+    """What the server-tool stream does with each tool-loop event, whatever produced it."""
+
+    def __init__(self, emitter, openai_tools, disable_parallel_tool_use, think_provenance) -> None:
+        self._emitter = emitter
+        # Gate the display strip on the declared tools: an inactive NAME[ARGS]{...} in a final
+        # answer is prose and must survive in the delivered text.
+        self._display_names = _display_tool_name_gate(openai_tools)
+        self._disable_parallel_tool_use = disable_parallel_tool_use
+        self._finish_reason = None
+        # Response ends on a pending tool_use block rather than final text; a server tool
+        # that keeps generating flips this back to False.
+        self._ends_on_tool_use = False
+        self._tool_blocks_emitted = 0
+        self._drop_until_tool_end = False
+        self._span_guard = _ReasoningSpanGuard(think_provenance)
+        # Last drop-branch keepalive, seeded to stream start so a chatty tool busy past the
+        # stall window still gets one though its events are dropped.
+        self._last_drop_keepalive = time.monotonic()
+
+    def feed(self, event: dict) -> list:
+        etype = event.get("type")
+        if etype == "heartbeat":
+            # Tool-wrapper heartbeat -> SSE keepalive, checked BEFORE the drop skip:
+            # a dropped tool still runs and suppresses the stall keepalive.
+            return [_OPENAI_PASSTHROUGH_SSE_KEEPALIVE]
+        if etype in ("tool_output", "tool_args"):
+            # No Messages equivalent, but they suppress the stall keepalive: send a rate-limited
+            # one instead of going silent past the ~100s proxy cap.
+            _now = time.monotonic()
+            if _now - self._last_drop_keepalive >= _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S:
+                self._last_drop_keepalive = _now
+                return [_OPENAI_PASSTHROUGH_SSE_KEEPALIVE]
+            return []
+        if self._drop_until_tool_end:
+            # Skip through the dropped call's tool_end.
+            if etype == "tool_end":
+                self._drop_until_tool_end = False
+            return []
+        if etype == "metadata":
+            _fr = event.get("finish_reason")
+            if _fr is not None:
+                self._finish_reason = _fr
+        # Strip leaked tool XML first; the protected helper keeps <think> rehearsal and balanced
+        # [TOOL_CALLS] prose, which a raw sub corrupts.
+        if etype == "content":
+            event = dict(event)
+            event["text"] = self._span_guard.strip(
+                event["text"],
+                auto_heal_tool_calls = True,
+                enabled_tool_names = self._display_names,
+            )
+        # Parallel cap by state, not id: ids may be empty.
+        if etype == "tool_start":
+            if self._disable_parallel_tool_use and self._tool_blocks_emitted >= 1:
+                self._drop_until_tool_end = True
+                return []
+            self._ends_on_tool_use = True
+        elif etype == "tool_end":
+            self._tool_blocks_emitted += 1
+            self._span_guard.tool_end()
+            # Unsloth ran the tool server-side, so the response no longer ends on a pending
+            # client action; otherwise stop_reason "tool_use" tells the client to run it again.
+            self._ends_on_tool_use = False
+        elif etype == "content" and event.get("text"):
+            self._ends_on_tool_use = False
+        return self._emitter.feed(event)
+
+    def finish(self) -> list:
+        stop_reason = openai_finish_to_anthropic_stop(
+            self._finish_reason, had_tool_calls = self._ends_on_tool_use
+        )
+        return self._emitter.finish(stop_reason = stop_reason, stop_sequence = None)
+
+
 async def _anthropic_tool_stream(
     request,
     cancel_event,
@@ -44734,10 +45437,6 @@ async def _anthropic_tool_stream(
 ):
     """Streaming response for the tool-calling path."""
     _sentinel = object()
-
-    # Gate the display strip on the declared tools: an inactive NAME[ARGS]{...} in a final
-    # answer is prose and must survive in the delivered text.
-    _display_names = _display_tool_name_gate(openai_tools)
 
     # Prompt-token count for message_start.usage.input_tokens. count_chat_tokens
     # makes blocking HTTP calls to llama-server, so run it off the event loop.
@@ -44769,17 +45468,9 @@ async def _anthropic_tool_stream(
             )
             for line in emitter.start(message_id, model_name, input_tokens = input_tokens):
                 yield line
-
-            captured_finish_reason = None
-            # Response ends on a pending tool_use block rather than final text; a server tool
-            # that keeps generating flips this back to False.
-            ends_on_tool_use = False
-            tool_blocks_emitted = 0
-            drop_until_tool_end = False
-            _span_guard = _ReasoningSpanGuard(think_provenance)
-            # Last drop-branch keepalive, seeded to stream start so a chatty tool busy past the
-            # stall window still gets one though its events are dropped.
-            _last_drop_keepalive = time.monotonic()
+            rules = _AnthropicToolEventRules(
+                emitter, openai_tools, disable_parallel_tool_use, think_provenance
+            )
 
             # See the GGUF tool stream: this loop drives the same tool generator, and its
             # respawn refit records the refusal from inside the worker thread, so the slot
@@ -44816,57 +45507,7 @@ async def _anthropic_tool_stream(
                     _next_task = None
                     if event is _sentinel:
                         break
-                    etype = event.get("type")
-                    if etype == "heartbeat":
-                        # Tool-wrapper heartbeat -> SSE keepalive, checked BEFORE the drop skip:
-                        # a dropped tool still runs and suppresses the stall keepalive.
-                        yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
-                        continue
-                    if etype in ("tool_output", "tool_args"):
-                        # No Anthropic Messages equivalent (the full call/result follow in tool_use /
-                        # tool_result), so drop them. They suppress the stall keepalive, so emit a
-                        # rate-limited one instead of going silent past the ~100s proxy cap.
-                        _now = time.monotonic()
-                        if _now - _last_drop_keepalive >= _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S:
-                            _last_drop_keepalive = _now
-                            yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
-                        continue
-                    if drop_until_tool_end:
-                        # disable_parallel_tool_use: skip every event until (and
-                        # including) this dropped tool call's tool_end.
-                        if etype == "tool_end":
-                            drop_until_tool_end = False
-                        continue
-                    if etype == "metadata":
-                        _fr = event.get("finish_reason")
-                        if _fr is not None:
-                            captured_finish_reason = _fr
-                    # Strip leaked tool-call XML first, so a purely-tool-XML content event doesn't
-                    # count as text. The protected helper keeps <think> rehearsal and balanced
-                    # [TOOL_CALLS] trailing prose, which a raw sub corrupts.
-                    if etype == "content":
-                        event = dict(event)
-                        event["text"] = _span_guard.strip(
-                            event["text"],
-                            auto_heal_tool_calls = True,
-                            enabled_tool_names = _display_names,
-                        )
-                    # disable_parallel_tool_use: keep only the first tool_use block, dropping
-                    # later tool_start/tool_end pairs (by state, not id: ids may be empty).
-                    if etype == "tool_start":
-                        if disable_parallel_tool_use and tool_blocks_emitted >= 1:
-                            drop_until_tool_end = True
-                            continue
-                        ends_on_tool_use = True
-                    elif etype == "tool_end":
-                        tool_blocks_emitted += 1
-                        _span_guard.tool_end()
-                        # Unsloth ran the tool server-side, so the response no longer ends on a pending
-                        # client action; otherwise stop_reason "tool_use" tells the client to run it again.
-                        ends_on_tool_use = False
-                    elif etype == "content" and event.get("text"):
-                        ends_on_tool_use = False
-                    for line in emitter.feed(event):
+                    for line in rules.feed(event):
                         yield line
             except Exception as e:
                 logger.error("anthropic_messages stream error: %s", e)
@@ -44887,10 +45528,7 @@ async def _anthropic_tool_stream(
                     except (RuntimeError, ValueError):
                         pass
 
-            stop_reason = openai_finish_to_anthropic_stop(
-                captured_finish_reason, had_tool_calls = ends_on_tool_use
-            )
-            for line in emitter.finish(stop_reason = stop_reason, stop_sequence = None):
+            for line in rules.finish():
                 yield line
         finally:
             _tracker.__exit__(None, None, None)
@@ -45729,6 +46367,29 @@ async def _passthrough_retry_url(llama_backend, exc):
     return f"{llama_backend.base_url}/v1/chat/completions"
 
 
+def _anthropic_passthrough_chunk_lines(
+    emitter, chunk, request, disable_parallel_tool_use: bool
+) -> tuple[list[str], bool]:
+    """One OpenAI chat chunk -> Anthropic SSE lines; True when an in-band error ended the stream."""
+    if isinstance(chunk, dict):
+        error_message = _monitor_openai_error_message(chunk)
+        if error_message:
+            # A 200 SSE error payload has no choices, so feed_chunk would end cleanly and the
+            # middleware would claim a preview-owned model: flag failed and send an error event.
+            from core.inference.llama_keepwarm import mark_response_failed
+            mark_response_failed(getattr(request, "scope", None))
+            # The formatter recovers n_prompt_tokens/n_ctx from the payload when the message lacks them.
+            return [
+                _anthropic_upstream_stream_error_event(
+                    error_message,
+                    counts_source = _json_dumps_safe(chunk.get("error", chunk)),
+                )
+            ], True
+    if disable_parallel_tool_use:
+        _drop_parallel_tool_call_deltas(chunk)
+    return emitter.feed_chunk(chunk), False
+
+
 async def _anthropic_passthrough_stream(
     request,
     cancel_event,
@@ -45996,29 +46657,13 @@ async def _anthropic_passthrough_stream(
                     chunk = json.loads(data_str)
                 except json.JSONDecodeError:
                     continue
-                if isinstance(chunk, dict):
-                    error_message = _monitor_openai_error_message(chunk)
-                    if error_message:
-                        # Upstream HTTP-200 SSE error payload (data: {"error": ...}):
-                        # emitter.feed_chunk ignores chunks without choices, so the stream
-                        # would finish cleanly and the middleware would claim a preview-owned
-                        # model. Flag failed and surface an Anthropic error event instead of a
-                        # silent message_stop (mirrors the OpenAI passthrough / Responses).
-                        from core.inference.llama_keepwarm import mark_response_failed
-
-                        mark_response_failed(getattr(request, "scope", None))
-                        # The message alone can be count-less while the chunk still
-                        # carries n_prompt_tokens/n_ctx; keep the clean message and let
-                        # the formatter recover the totals from the payload.
-                        yield _anthropic_upstream_stream_error_event(
-                            error_message,
-                            counts_source = _json_dumps_safe(chunk.get("error", chunk)),
-                        )
-                        return
-                if disable_parallel_tool_use:
-                    _drop_parallel_tool_call_deltas(chunk)
-                for line in emitter.feed_chunk(chunk):
+                lines, failed = _anthropic_passthrough_chunk_lines(
+                    emitter, chunk, request, disable_parallel_tool_use
+                )
+                for line in lines:
                     yield line
+                if failed:
+                    return
         except Exception as e:
             if not cancel_event.is_set():
                 logger.error("anthropic_messages passthrough stream error: %s", e)
@@ -46077,6 +46722,104 @@ def _sum_passthrough_attempt_stats(first: dict, retry: dict, selected: dict) -> 
     if "timings" in aggregate:
         result["timings"] = aggregate["timings"]
     return result
+
+
+def _anthropic_message_from_openai_completion(
+    data: dict,
+    message_id,
+    model_name,
+    *,
+    openai_tools,
+    allowed_tools,
+    disable_parallel_tool_use: bool,
+    response_format,
+    parse_think: bool,
+):
+    """A non-streaming OpenAI chat completion -> the Anthropic Messages JSON response."""
+    choice = (data.get("choices") or [{}])[0]
+    message = choice.get("message") or {}
+    finish_reason = choice.get("finish_reason")
+
+    healing_active = bool(allowed_tools)
+    healed_events = (
+        heal_openai_message_events(message, allowed_tools, openai_tools) if healing_active else None
+    )
+
+    content_blocks = []
+    tool_calls = []
+    # Anthropic orders thinking ahead of the answer; reading only `content` drops the trace.
+    reasoning = message.get("reasoning_content") or ""
+    if reasoning.strip():
+        if parse_think:
+            content_blocks.append(AnthropicResponseThinkingBlock(thinking = reasoning))
+        else:
+            # Thinking effectively off: the parser shunted a literal
+            # example into reasoning_content; reconstruct it as text.
+            content_blocks.append(AnthropicResponseTextBlock(text = f"<think>{reasoning}</think>"))
+    if healed_events:
+        emitted_tool_uses = 0
+        for kind, value in healed_events:
+            if kind == "text":
+                text = str(value).strip()
+                if text:
+                    content_blocks.append(AnthropicResponseTextBlock(text = text))
+                continue
+            if disable_parallel_tool_use and emitted_tool_uses >= 1:
+                continue
+            fn = value.get("function") or {}
+            try:
+                args = json.loads(fn.get("arguments", "{}"))
+            except json.JSONDecodeError:
+                args = {}
+            tool_calls.append(value)
+            emitted_tool_uses += 1
+            content_blocks.append(
+                AnthropicResponseToolUseBlock(
+                    id = anthropic_tool_use_id(value.get("id")),
+                    name = fn.get("name", ""),
+                    input = args,
+                )
+            )
+    else:
+        text = message.get("content") or ""
+        if text:
+            # Keep unpromoted bytes when healing is active; legacy stripping is only for opted-out
+            # or no-client-tool requests. The protected helper preserves <think> rehearsal and
+            # balanced [TOOL_CALLS] prose, gated on the declared tools so an inactive
+            # NAME[ARGS]{...} example is kept.
+            if not healing_active and response_format is None:
+                text = _strip_tool_xml_for_display(
+                    text,
+                    auto_heal_tool_calls = True,
+                    enabled_tool_names = _display_tool_name_gate(openai_tools),
+                )
+            text = text.strip()
+            if text:
+                content_blocks.append(AnthropicResponseTextBlock(text = text))
+
+        tool_calls = message.get("tool_calls") or []
+        if disable_parallel_tool_use and len(tool_calls) > 1:
+            tool_calls = tool_calls[:1]
+        for tc in tool_calls:
+            fn = tc.get("function") or {}
+            try:
+                args = json.loads(fn.get("arguments", "{}"))
+            except json.JSONDecodeError:
+                args = {}
+            content_blocks.append(
+                AnthropicResponseToolUseBlock(
+                    id = anthropic_tool_use_id(tc.get("id")),
+                    name = fn.get("name", ""),
+                    input = args,
+                )
+            )
+
+    stop_reason = openai_finish_to_anthropic_stop(finish_reason, had_tool_calls = bool(tool_calls))
+
+    usage = data.get("usage") or {}
+    return _anthropic_message_json_response(
+        message_id, model_name, content_blocks, stop_reason, usage
+    )
 
 
 async def _anthropic_passthrough_non_streaming(
@@ -46235,98 +46978,15 @@ async def _anthropic_passthrough_non_streaming(
             except (httpx.RequestError, ValueError) as exc:
                 logger.warning("tool-call nudge retry failed; keeping original: %s", exc)
 
-        choice = (data.get("choices") or [{}])[0]
-        message = choice.get("message") or {}
-        finish_reason = choice.get("finish_reason")
-
-        healing_active = bool(_allowed_tools)
-        healed_events = (
-            heal_openai_message_events(message, _allowed_tools, openai_tools)
-            if healing_active
-            else None
-        )
-
-        content_blocks = []
-        tool_calls = []
-        # Reasoning first: llama-server splits <think> into reasoning_content on any
-        # turn whose format it can parse, and Anthropic orders thinking ahead of the
-        # answer. Reading only `content` drops the trace and the model looks like it
-        # never thought.
-        reasoning = message.get("reasoning_content") or ""
-        if reasoning.strip():
-            if parse_think:
-                content_blocks.append(AnthropicResponseThinkingBlock(thinking = reasoning))
-            else:
-                # Thinking effectively off: the parser shunted a literal
-                # example into reasoning_content; reconstruct it as text.
-                content_blocks.append(
-                    AnthropicResponseTextBlock(text = f"<think>{reasoning}</think>")
-                )
-        if healed_events:
-            emitted_tool_uses = 0
-            for kind, value in healed_events:
-                if kind == "text":
-                    text = str(value).strip()
-                    if text:
-                        content_blocks.append(AnthropicResponseTextBlock(text = text))
-                    continue
-                if disable_parallel_tool_use and emitted_tool_uses >= 1:
-                    continue
-                fn = value.get("function") or {}
-                try:
-                    args = json.loads(fn.get("arguments", "{}"))
-                except json.JSONDecodeError:
-                    args = {}
-                tool_calls.append(value)
-                emitted_tool_uses += 1
-                content_blocks.append(
-                    AnthropicResponseToolUseBlock(
-                        id = anthropic_tool_use_id(value.get("id")),
-                        name = fn.get("name", ""),
-                        input = args,
-                    )
-                )
-        else:
-            text = message.get("content") or ""
-            if text:
-                # Keep unpromoted bytes when healing is active; legacy stripping is only for opted-out
-                # or no-client-tool requests. The protected helper preserves <think> rehearsal and
-                # balanced [TOOL_CALLS] prose, gated on the declared tools so an inactive
-                # NAME[ARGS]{...} example is kept.
-                if not healing_active and response_format is None:
-                    text = _strip_tool_xml_for_display(
-                        text,
-                        auto_heal_tool_calls = True,
-                        enabled_tool_names = _display_tool_name_gate(openai_tools),
-                    )
-                text = text.strip()
-                if text:
-                    content_blocks.append(AnthropicResponseTextBlock(text = text))
-
-            tool_calls = message.get("tool_calls") or []
-            if disable_parallel_tool_use and len(tool_calls) > 1:
-                tool_calls = tool_calls[:1]
-            for tc in tool_calls:
-                fn = tc.get("function") or {}
-                try:
-                    args = json.loads(fn.get("arguments", "{}"))
-                except json.JSONDecodeError:
-                    args = {}
-                content_blocks.append(
-                    AnthropicResponseToolUseBlock(
-                        id = anthropic_tool_use_id(tc.get("id")),
-                        name = fn.get("name", ""),
-                        input = args,
-                    )
-                )
-
-        stop_reason = openai_finish_to_anthropic_stop(
-            finish_reason, had_tool_calls = bool(tool_calls)
-        )
-
-        usage = data.get("usage") or {}
-        return _anthropic_message_json_response(
-            message_id, model_name, content_blocks, stop_reason, usage
+        return _anthropic_message_from_openai_completion(
+            data,
+            message_id,
+            model_name,
+            openai_tools = openai_tools,
+            allowed_tools = _allowed_tools,
+            disable_parallel_tool_use = disable_parallel_tool_use,
+            response_format = response_format,
+            parse_think = parse_think,
         )
     finally:
         await _stop_local_disconnect_cancel_watcher(_cancel_watcher)

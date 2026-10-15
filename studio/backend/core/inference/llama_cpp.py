@@ -822,6 +822,7 @@ _UNRECOVERABLE_LOCAL_ERRNOS = frozenset(
 _SPEC_KIND_CAPABILITY: dict[str, str] = {
     "dspark": "supports_dspark",
     "dflash": "supports_dflash",
+    "eagle3": "supports_eagle3",
     "mtp": "supports_mtp",
 }
 
@@ -3311,11 +3312,11 @@ def _is_mtp_model_name(model_identifier: Optional[str], gguf_path: Optional[str]
 
 
 # Mirrors hub.utils.gguf._DRAFTER_KINDS / _DRAFTER_DIR_KINDS.
-_DRAFTER_KINDS = ("mtp", "dspark", "dflash", "eagle3")
+_DRAFTER_KINDS = ("mtp", "dspark", "dflash", "eagle3", "lilicorr")
 _DRAFTER_DIR_KINDS = ("mtp", "dspark")
 
 # Human label per resolved spec mode, for launch logging and the UI notice.
-_DRAFTER_DISPLAY_LABELS = {"dspark": "DSpark", "dflash": "DFlash"}
+_DRAFTER_DISPLAY_LABELS = {"dspark": "DSpark", "dflash": "DFlash", "eagle3": "EAGLE-3"}
 
 
 def _drafter_path_kind(path: str) -> Optional[str]:
@@ -3421,7 +3422,7 @@ def _is_root_dflash_drafter_path(path: str) -> bool:
 _BIG_ENDIAN_GGUF_FILENAME_RE = re.compile(r"(^|[-_])be(?:[._-]|$)", re.IGNORECASE)
 _GGUF_KNOWN_QUANT_RE = re.compile(
     r"(UD-)?"
-    r"(MXFP[0-9]+(?:_[A-Z0-9]+)*"
+    r"((?:MX|NV)FP[0-9]+(?:_[A-Z0-9]+)*"
     r"|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?"
     r"|P?TQ[0-9]+_[0-9]+"
     r"|Q[0-9]+_K_[A-Z]+"
@@ -7449,6 +7450,9 @@ _LAZY_READ_TENSORS: dict[str, tuple[str, ...]] = {
     "qwen4exp": ("per_layer_token_embd.weight",),
 }
 _LAZY_READ_AUTO_MIN_BYTES = 4 * 1024**3
+# Embedded NextN/MTP heads llama.cpp skips at load unless --spec-type draft-mtp, measured:
+# Nemotron 3.5 Super loads 2987 MiB less with MTP off (b11642 + ggml-org#30520).
+_NEXTN_SKIPPED_WITHOUT_MTP_ARCHS = frozenset({"nemotron_h_moe"})
 # --tensor-read-lazy predates ggml-org/llama.cpp#27969; a build reads only its own spelling.
 _LAZY_MODE_SPELLINGS: dict[str, tuple[frozenset[str], str]] = {
     "--lazy-mode": (frozenset({"-lzm", "--lazy-mode"}), "LLAMA_ARG_LAZY_MODE"),
@@ -7625,6 +7629,7 @@ _CANONICAL_SPEC_MODES = {
     "auto",
     "mtp",
     "dspark",
+    "eagle3",
     "dflash",
     "ngram",
     "mtp+ngram",
@@ -7636,11 +7641,31 @@ _LEGACY_SPEC_MODE_MAP = {
     "draft-mtp": "mtp",
     "draft-dspark": "dspark",
     "draft-dflash": "dflash",
+    "draft-eagle3": "eagle3",
     "ngram-mod": "ngram",
     "none": "off",
     "disable": "off",
     "disabled": "off",
 }
+
+
+def _trained_drafter_sidecar(model_path):
+    """(eagle3 drafter path, MTP head trained, draft steps) from the drafter.json a Studio export
+    wrote beside the GGUF."""
+    if not model_path:
+        return None, False, None
+    try:
+        from core.export.drafter_export import eagle3_sidecar_path, gguf_drafter_sidecar
+
+        info = gguf_drafter_sidecar(model_path) or {}
+        try:
+            steps = max(1, int(info["draft_steps"])) if info.get("draft_steps") else None
+        except (TypeError, ValueError):
+            steps = None
+        return eagle3_sidecar_path(model_path), bool(info.get("mtp_trained")), steps
+    except Exception as exc:
+        logger.debug("Could not read a drafter manifest beside %s: %s", model_path, exc)
+        return None, False, None
 
 
 def _canonicalize_spec_mode(value):
@@ -8169,11 +8194,27 @@ _INKLING_REASONING_EFFORT = {
 }
 
 
+# Muse Spark's template accepts only low/medium/high/xhigh and raise_exception()s on
+# anything else, so a "none" or "max" request would fail the render. It cannot turn
+# reasoning off: "none" and "minimal" take the smallest budget, "max" the largest.
+_MUSE_SPARK_REASONING_EFFORT = {
+    "none": "low",
+    "minimal": "low",
+    "max": "xhigh",
+}
+
+
 def _coerce_reasoning_effort(architecture, kwargs: dict) -> dict:
     if architecture == "inkling":
         effort = kwargs.get("reasoning_effort")
         if isinstance(effort, str):
             mapped = _INKLING_REASONING_EFFORT.get(effort.strip().lower())
+            if mapped is not None:
+                kwargs["reasoning_effort"] = mapped
+    elif architecture == "muse-spark":
+        effort = kwargs.get("reasoning_effort")
+        if isinstance(effort, str):
+            mapped = _MUSE_SPARK_REASONING_EFFORT.get(effort.strip().lower())
             if mapped is not None:
                 kwargs["reasoning_effort"] = mapped
     return kwargs
@@ -8546,6 +8587,8 @@ class LlamaCppBackend:
         self._expert_feed_forward_length: Optional[int] = None
         self._expert_shared_feed_forward_length: Optional[int] = None
         self._expert_shared_count: Optional[int] = None
+        # Nemotron 3.5: routed experts run in this latent width, not n_embd.
+        self._moe_latent_size: Optional[int] = None
         # Gemma 3n / Gemma 4 per-layer input embedding width.
         self._embedding_length_per_layer_input: Optional[int] = None
         self._vocab_size: Optional[int] = None
@@ -10387,6 +10430,7 @@ class LlamaCppBackend:
                 "supports_mtp": False,
                 "supports_dspark": False,
                 "supports_dflash": False,
+                "supports_eagle3": False,
                 "mtp_probe_inconclusive": True,
                 "ngram_mod_flavor": None,
                 "supports_ngram_mod": False,
@@ -10451,6 +10495,7 @@ class LlamaCppBackend:
         mtp_token: Optional[str] = None
         supports_dspark = False
         supports_dflash = False
+        supports_eagle3 = False
         ngram_mod_flavor: Optional[str] = None
         spec_draft_n_max_flag: Optional[str] = None
         spec_draft_n_max_default: Optional[int] = None
@@ -10627,6 +10672,9 @@ class LlamaCppBackend:
                     r"(?<![a-z0-9_-])draft-dspark(?![a-z0-9_-])",
                     spec_help.lower(),
                 )
+            )
+            supports_eagle3 = bool(
+                re.search(r"(?<![a-z0-9_-])draft-eagle3(?![a-z0-9_-])", spec_help.lower())
             )
             # Same word-boundary match as DSpark: draft-dflash only exists on
             # builds that carry the arch, and emitting a --spec-type the binary
@@ -10810,6 +10858,7 @@ class LlamaCppBackend:
             "supports_mtp": supports_mtp,
             "supports_dspark": bool(supports_dspark and saw_spec_type and probe_ok),
             "supports_dflash": bool(supports_dflash and saw_spec_type and probe_ok),
+            "supports_eagle3": bool(supports_eagle3 and saw_spec_type and probe_ok),
             "mtp_probe_inconclusive": mtp_probe_inconclusive,
             "ngram_mod_flavor": ngram_mod_flavor,
             "supports_ngram_mod": ngram_mod_flavor is not None,
@@ -11025,10 +11074,13 @@ class LlamaCppBackend:
         return total
 
     @staticmethod
-    def _gguf_scan_tensor_bytes(path: str) -> "tuple[Optional[str], dict[str, int], int]":
+    def _gguf_scan_tensor_bytes(
+        path: str, also: Optional[Callable[[str], bool]] = None
+    ) -> "tuple[Optional[str], dict[str, int], int]":
         """(architecture, lazy-read candidate bytes by name, routed expert bytes) from one
         GGUF header. Streamed: ``GGUFReader`` materialises the vocabulary under the load
-        lock. A quant type gguf predates is sized from the next tensor's offset."""
+        lock. A quant type gguf predates is sized from the next tensor's offset. Names
+        ``also`` accepts are kept by name too, routed experts included."""
         from gguf.constants import GGML_QUANT_SIZES
         from core.inference.offload_layout import _BLOCK_RE, _MOE_EXPERT_RE
 
@@ -11064,11 +11116,12 @@ class LlamaCppBackend:
                 ggml_type = struct.unpack("<I", f.read(4))[0]
                 offset = struct.unpack("<Q", f.read(8))[0]
                 offsets.append(offset)
-                block_match = _BLOCK_RE.match(raw_name.decode("utf-8", "replace"))
-                is_expert = bool(block_match and _MOE_EXPERT_RE.match(block_match.group(2)))
-                if not is_expert and raw_name not in wanted:
-                    continue
                 name = raw_name.decode("utf-8", "replace")
+                block_match = _BLOCK_RE.match(name)
+                is_expert = bool(block_match and _MOE_EXPERT_RE.match(block_match.group(2)))
+                kept = also is not None and also(name)
+                if not is_expert and raw_name not in wanted and not kept:
+                    continue
                 block = GGML_QUANT_SIZES.get(ggml_type)
                 if block is None:
                     unsized.append((name, offset))
@@ -11076,7 +11129,7 @@ class LlamaCppBackend:
                 size = math.prod(dims) // block[0] * block[1]
                 if is_expert:
                     experts += size
-                else:
+                if not is_expert or kept:
                     named[name] = size
             if unsized:
                 data_start = -(-f.tell() // alignment) * alignment
@@ -11086,9 +11139,10 @@ class LlamaCppBackend:
                     later = ordered[bisect.bisect_right(ordered, offset) :]
                     size = max(0, (later[0] if later else data_end) - offset)
                     block_match = _BLOCK_RE.match(name)
-                    if block_match and _MOE_EXPERT_RE.match(block_match.group(2)):
+                    is_expert = bool(block_match and _MOE_EXPERT_RE.match(block_match.group(2)))
+                    if is_expert:
                         experts += size
-                    else:
+                    if not is_expert or (also is not None and also(name)):
                         named[name] = size
         return architecture, named, experts
 
@@ -11126,6 +11180,38 @@ class LlamaCppBackend:
             result = None
         self._gguf_tensor_scan_cache = (key, result)
         return result
+
+    def _unloaded_nextn_bytes(self, model_path: Optional[str]) -> int:
+        """Bytes of the embedded NextN/MTP blocks llama.cpp leaves unloaded without
+        ``--spec-type draft-mtp`` (nextn_flags marks them TENSOR_SKIP unless load_mtp).
+        Only for architectures measured to skip them; 0 when unknown or unreadable."""
+        from core.inference.offload_layout import _BLOCK_RE, split_shard_paths
+
+        nextn = int(getattr(self, "_nextn_predict_layers", None) or 0)
+        n_blocks = int(getattr(self, "_n_layers", None) or 0)
+        if (
+            not model_path
+            or nextn <= 0
+            or n_blocks <= nextn
+            or getattr(self, "_architecture", None) not in _NEXTN_SKIPPED_WITHOUT_MTP_ARCHS
+        ):
+            return 0
+        first = n_blocks - nextn
+
+        def in_head(name: str) -> bool:
+            match = _BLOCK_RE.match(name)
+            return bool(match) and int(match.group(1)) >= first
+
+        try:
+            return sum(
+                size
+                for p in (split_shard_paths(model_path) or [model_path])
+                for name, size in self._gguf_scan_tensor_bytes(p, also = in_head)[1].items()
+                if in_head(name)
+            )
+        except Exception as e:  # missing shard or truncated header: discount nothing
+            logger.debug("NextN block scan failed for %s (%s)", model_path, e)
+            return 0
 
     def _lazy_read_host_bytes(
         self,
@@ -18317,13 +18403,16 @@ class LlamaCppBackend:
             return verify_rows
         ub = max(1, int(self._DEFAULT_N_UBATCH if n_ubatch is None else n_ubatch))
         width = self._compute_activation_width()
-        if drafter_path:
-            db = self._draft_backend_for(drafter_path)
+        db = self._draft_backend_for(drafter_path) if drafter_path else None
+        if db is not None:
             draft_width = getattr(db, "_compute_activation_width", lambda: 0)()
             if draft_width > 0:
                 width = draft_width + 2 * (getattr(self, "_embedding_length", None) or 0)
         activations = int(width * ub * 4 * self._COMPUTE_BUFFER_SAFETY)
-        return verify_rows + max(0, ub * 2 * n_ctx + activations - self._MTP_DRAFT_COMPUTE_BYTES)
+        spec = verify_rows + max(0, ub * 2 * n_ctx + activations - self._MTP_DRAFT_COMPUTE_BYTES)
+        if getattr(db, "_architecture", None) == "dflash":
+            spec = max(spec, self._DFLASH_DRAFT_COMPUTE_BYTES)
+        return spec
 
     def _spec_verify_rows_bytes(self, n_parallel: int, spec_draft_n_max: int) -> int:
         """Target output rows for verified draft tokens, wherever the drafter runs."""
@@ -18409,6 +18498,11 @@ class LlamaCppBackend:
     # at which "does it fit" means "does every layer stay on the GPU".
     _MMPROJ_FIT_FLOOR_CTX = 8192
     _MTP_DRAFT_COMPUTE_BYTES = 224 * 1024 * 1024  # MTP draft decode graph beyond its KV
+    # A DFlash/DSpark draft context re-reserves a flat block graph once the drafter initialises,
+    # independent of n_ctx. Measured on llama.cpp b11642, draft graph + target verify graph:
+    # Nemotron 3.5 Bolt DSpark (block 8) 528.5 + 44 MiB, LiLiCorr (block 8, SWA 1024) 307 + 60 MiB.
+    # The _MTP_DRAFT_COMPUTE_BYTES floor is charged beside this, so the floor is the excess over it.
+    _DFLASH_DRAFT_COMPUTE_BYTES = 349 * 1024 * 1024
     # Draft depth to budget when the extras own the spec block and the probe cannot
     # read the build's own default off its --help. Shipped values are 3
     # (common_params_speculative_draft::n_max) and 16; take the deeper, since the
@@ -18469,7 +18563,9 @@ class LlamaCppBackend:
             shared = dim("_expert_shared_feed_forward_length") or (
                 n_ff_exp * dim("_expert_shared_count")
             )
-            widths.append(n_used * (2 * n_embd + 3 * n_ff_exp) + 3 * shared)
+            # Nemotron 3.5 routes experts through a moe_latent_size projection.
+            n_embd_exp = dim("_moe_latent_size") or n_embd
+            widths.append(n_used * (2 * n_embd_exp + 3 * n_ff_exp) + 3 * shared)
         inner = dim("_ssm_inner_size")
         if inner > 0:
             conv_in = inner + 2 * (dim("_ssm_group_count") or 1) * dim("_ssm_state_size")
@@ -19463,6 +19559,7 @@ class LlamaCppBackend:
         self._expert_feed_forward_length = None
         self._expert_shared_feed_forward_length = None
         self._expert_shared_count = None
+        self._moe_latent_size = None
         self._embedding_length_per_layer_input = None
         self._vocab_size = None
         self._kv_key_length = None
@@ -19588,6 +19685,7 @@ class LlamaCppBackend:
                                         f"{arch}.expert_feed_forward_length": "expert_feed_forward_length",
                                         f"{arch}.expert_shared_feed_forward_length": "expert_shared_feed_forward_length",
                                         f"{arch}.expert_shared_count": "expert_shared_count",
+                                        f"{arch}.moe_latent_size": "moe_latent_size",
                                         f"{arch}.embedding_length_per_layer_input": "embedding_length_per_layer_input",
                                         f"{arch}.attention.key_length": "kv_key_length",
                                         f"{arch}.attention.value_length": "kv_value_length",
@@ -19656,6 +19754,12 @@ class LlamaCppBackend:
                                     self._feed_forward_length = max(
                                         self._feed_forward_length_by_layer
                                     )
+                                elif (
+                                    attr in ("expert_used_count", "expert_feed_forward_length")
+                                    and val_a
+                                ):
+                                    # Per-layer on Nemotron 3.5 Bolt; the widest layer sizes the graph.
+                                    setattr(self, f"_{attr}", max(int(x) for x in val_a))
                             else:
                                 self._gguf_skip_value(f, vtype)
                         else:
@@ -26660,6 +26764,12 @@ class LlamaCppBackend:
                         _user_mtp_via_extras
                         or (_auto_studio_mtp and _mtp_effective not in ("dspark", "dflash"))
                     )
+                    # Without draft-mtp the embedded head is never loaded, so its blocks
+                    # leave the weights the fit prices (about 3 GB on Nemotron 3.5 Super).
+                    if not _engaged_is_mtp:
+                        _nextn_unloaded = self._unloaded_nextn_bytes(model_path)
+                        gguf_size -= _nextn_unloaded
+                        model_size -= _nextn_unloaded
                     # The recurrent rollback copies are a WIDER set than that copy
                     # (_TARGET_ROLLBACK_SPEC_TYPES): DSpark and DFlash pay them too,
                     # and draft-simple is the one engaged draft mode that does not,
@@ -33544,6 +33654,8 @@ class LlamaCppBackend:
                 _spec_requested_dflash = any(
                     "draft-dflash" in str(t).lower() for t in spec_flags
                 ) or _extra_args_requests_dflash(extra_args, env = _launch_spec_env)
+                # A paired EAGLE-3 drafter (Studio export) can abort the server the same way.
+                _spec_requested_eagle3 = any("draft-eagle3" in str(t).lower() for t in spec_flags)
                 # Any MTP launch, not only tensor: a respawn would replay a drafter that
                 # aborts every decode (#13253). Cleared if the MTP-drop fallback wins.
                 _mtp_active_for_launched_server = bool(_spec_requested_mtp)
@@ -33625,7 +33737,12 @@ class LlamaCppBackend:
                 _spec_cpu_replay_cmd: Optional[List[str]] = None
                 if (
                     not healthy
-                    and (_spec_requested_mtp or _spec_requested_dspark or _spec_requested_dflash)
+                    and (
+                        _spec_requested_mtp
+                        or _spec_requested_dspark
+                        or _spec_requested_dflash
+                        or _spec_requested_eagle3
+                    )
                     and not _load_cancelled()
                 ):
                     _spec_cpu_replay_cmd = list(_last_spawn_cmd)
@@ -34376,6 +34493,8 @@ class LlamaCppBackend:
         embedded_mtp_partial_offload: bool = False,
         draft_device: Optional[str] = None,
         mtp_drafter_unloadable: bool = False,
+        eagle3_draft_path: Optional[str] = None,
+        mtp_trained: Optional[bool] = None,
     ) -> List[str]:
         """Return the llama-server flag list for the requested spec mode.
 
@@ -34426,6 +34545,12 @@ class LlamaCppBackend:
         self._spec_draft_n_max = None
         self._speculative_type = None
         self._spec_fallback_reason = None
+        # A drafter trained with the fine-tune and exported beside this GGUF (drafter.json).
+        trained_steps = None
+        if eagle3_draft_path is None or mtp_trained is None:
+            sidecar_eagle3, sidecar_trained, trained_steps = _trained_drafter_sidecar(model_path)
+            eagle3_draft_path = eagle3_draft_path or sidecar_eagle3
+            mtp_trained = sidecar_trained if mtp_trained is None else mtp_trained
 
         # Canonical UI-facing requested mode (legacy values mapped via
         # _canonicalize_spec_mode).
@@ -34454,8 +34579,13 @@ class LlamaCppBackend:
         _mtp_size_b = _extract_model_size_b(model_identifier)
         # The sub-3B regression is an embedded-head cost; a separate drafter
         # (Gemma) is a cheap standalone model that wins below 3B, so exempt it.
+        # A head the user trained with this fine-tune is what they asked to draft with, so the
+        # size floor (a stock-head cost measurement) and the MLA default-off below do not apply.
         _mtp_too_small = (
-            _mtp_size_b is not None and _mtp_size_b < _MTP_MIN_SIZE_B and not bool(mtp_draft_path)
+            _mtp_size_b is not None
+            and _mtp_size_b < _MTP_MIN_SIZE_B
+            and not bool(mtp_draft_path)
+            and not mtp_trained
         )
         # Drafterless Gemma (name-only MTP, no embedded head), or any quant whose only
         # drafter was dropped as unopenable: emitting MTP would abort llama-server, so
@@ -34477,6 +34607,7 @@ class LlamaCppBackend:
             and not bool(mtp_draft_path)
             and not _mla_mtp_auto_enabled()
             and not _arch_has_fast_mla_mtp(getattr(self, "_architecture", None))
+            and not mtp_trained
         )
 
         if user_owns_spec_type:
@@ -34500,6 +34631,49 @@ class LlamaCppBackend:
         # and under Auto neither the requested mode nor the resolved
         # _speculative_type ("default" after a fallback) still carries the kind.
         _auto_mode = (canonical_mode or "auto") == "auto"
+        if canonical_mode == "eagle3" or (
+            _auto_mode and eagle3_draft_path and caps.get("supports_eagle3")
+        ):
+            self._spec_drafter_kind = "eagle3"
+            if not caps.get("supports_eagle3"):
+                logger.warning(
+                    "EAGLE-3 requested but llama-server lacks --spec-type draft-eagle3; "
+                    "loading without speculative decoding."
+                )
+                flags.append("--spec-default")
+                self._speculative_type = "default"
+                self._spec_fallback_reason = "binary_no_mtp"
+                return flags
+            if not eagle3_draft_path:
+                logger.warning(
+                    "EAGLE-3 requested but no trained eagle3-*.gguf drafter sits next to this "
+                    "model; loading without speculative decoding."
+                )
+                flags.append("--spec-default")
+                self._speculative_type = "default"
+                self._spec_fallback_reason = "drafter_not_found"
+                return flags
+            draft_n_max = (
+                int(spec_draft_n_max) if spec_draft_n_max is not None else (trained_steps or 3)
+            )
+            if spec_draft_n_max is not None:
+                self._spec_draft_n_max = draft_n_max
+            n_max_flag = caps.get("spec_draft_n_max_flag") or "--spec-draft-n-max"
+            flags.extend(
+                [
+                    "--model-draft",
+                    eagle3_draft_path,
+                    "--spec-type",
+                    "draft-eagle3",
+                    str(n_max_flag),
+                    str(draft_n_max),
+                ]
+            )
+            if draft_device:
+                flags.extend(["--spec-draft-device", draft_device])
+            self._speculative_type = "draft-eagle3"
+            logger.info("Spec decoding: draft-eagle3 using %s", eagle3_draft_path)
+            return flags
         if canonical_mode == "dspark" or (
             _auto_mode and dspark_draft_path and caps.get("supports_dspark")
         ):
@@ -34519,6 +34693,8 @@ class LlamaCppBackend:
                 n = int(spec_draft_n_max)
                 self._spec_draft_n_max = n
                 return n
+            if mtp_trained and trained_steps and self._spec_drafter_kind == "mtp":
+                return trained_steps  # the depth the exported head was trained for
             return 2 if gpus else 3
 
         def _emit_dspark() -> None:

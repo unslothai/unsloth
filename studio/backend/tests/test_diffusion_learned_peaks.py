@@ -1225,7 +1225,7 @@ def test_phase_table_seed_needs_its_measured_configuration(klein_pipe):
 
 def test_oom_inside_the_first_offload_apply_unwinds_its_hooks(monkeypatch):
     torch = pytest.importorskip("torch")
-    import diffusers.hooks as hooks
+    hooks = pytest.importorskip("diffusers.hooks")
 
     def fake_apply(module, **kwargs):
         module._fake_hooked = True  # hooked part of the module, then ran out of memory

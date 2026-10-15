@@ -4841,36 +4841,62 @@ def test_count_tokens_rejects_malformed_tool_before_switch(monkeypatch):
     assert rec.calls == []
 
 
-def test_count_tokens_forwards_vision_guard_to_switch(monkeypatch):
+@pytest.mark.parametrize(
+    "image, server_tools, device, gguf_only, reason",
+    [
+        (True, False, "mlx", True, "Cannot count tokens for messages containing images."),
+        ("mcp", False, "mlx", True, "Cannot count tokens for messages containing images."),
+        (False, True, "mlx", False, None),
+        (False, False, "mlx", False, None),
+        (False, False, "cuda", True, None),
+    ],
+    ids = ["image", "mcp_replay", "server_tools", "mlx_text", "transformers"],
+)
+def test_count_tokens_forwards_vision_guard_to_switch(
+    monkeypatch, image, server_tools, device, gguf_only, reason
+):
     # Codex P2: an image /v1/messages/count_tokens naming a text-only GGUF must
     # carry the same require_vision guard as /messages, so it can't evict a loaded
-    # vision model for a swap that can't serve the request.
+    # vision model for a swap that can't serve the request. A non-GGUF target is
+    # loaded only when the resident-MLX count can price the request.
+    from utils.hardware import DeviceType
+
     captured = {}
 
-    async def _capture(
-        model,
-        request,
-        subject,
-        *,
-        require_vision = False,
-        claim_resident = True,
-        require_audio_input = False,
-        gguf_only = False,
-    ):
-        captured["require_vision"] = require_vision
-        captured["claim_resident"] = claim_resident
-        captured["gguf_only"] = gguf_only
+    async def _capture(model, request, subject, **kwargs):
+        captured.update(kwargs)
         raise _Reached()
 
-    monkeypatch.setattr(inference_route, "_anthropic_request_has_image", lambda p, **_: True)
+    from core.inference import mcp_images
+    from models.inference import AnthropicMessage
+
+    monkeypatch.setattr(
+        inference_route, "_anthropic_request_has_image", lambda p, **_: image is True
+    )
     monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _capture)
+    monkeypatch.setattr("utils.hardware.get_device", lambda: DeviceType(device))
     payload = _anthropic_payload_with_tools(None)  # no tools -> tool validation passes
+    payload.enable_tools = server_tools
+    if image == "mcp":
+        envelope = json.dumps([{"data": "QUJD", "mimeType": "image/png"}])
+        call = {"type": "tool_use", "id": "toolu_0", "name": "mcp__shot__capture", "input": {}}
+        result = {
+            "type": "tool_result",
+            "tool_use_id": "toolu_0",
+            "content": "out\n" + mcp_images.SENTINEL + envelope,
+        }
+        payload.messages += [
+            AnthropicMessage(role = "assistant", content = [call]),
+            AnthropicMessage(role = "user", content = [result]),
+        ]
     with pytest.raises(_Reached):
         asyncio.run(inference_route.anthropic_count_tokens(payload, object(), "tester"))
-    assert captured["require_vision"] is True
+    assert captured["require_vision"] is (image is True)
     assert captured["claim_resident"] is False
-    # llama.cpp serves this endpoint alone, so a non-GGUF swap must not be attempted.
-    assert captured["gguf_only"] is True
+    assert captured["gguf_only"] is gguf_only
+    assert (
+        reason in captured["gguf_only_reason"] if reason else captured["gguf_only_reason"] is None
+    )
 
 
 # ── /chat/count_tokens: what the recount prices ───────────────────
