@@ -114,48 +114,58 @@ def test_compile_failure_falls_back(monkeypatch, fails_in):
     assert "_unsloth_block_mode" not in cls().__dict__
 
 
-def test_band_verdict_reaches_traced_router(monkeypatch):
+def test_gemma4_band_fast_path_in_blocks(monkeypatch):
     M = _load()
-    calls = []
-    fake = types.ModuleType("fake_banded_attention")
+    from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
 
-    def _mask_is_plain_band(mask, S, w):
-        calls.append((S, w))
-        return S <= w  # stand-in verdict
+    scans, routed, plain_calls = [], [], []
+    band = types.ModuleType("fake_banded_attention")
+    band._mask_is_plain_band = lambda mask, S, w: scans.append((S, w)) or True
+    zoo = types.ModuleType("fake_flash_sliding")
 
-    fake._mask_is_plain_band = _mask_is_plain_band
-    monkeypatch.setitem(sys.modules, "fake_banded_attention", fake)
-    monkeypatch.setattr(M, "_BAND_MODULES", ("fake_banded_attention",))
-    M._band_hook()
-    assert fake._mask_is_plain_band is not _mask_is_plain_band
+    def plain(module, q, k, v, mask, **kw):
+        plain_calls.append(mask)
+        return "plain", None
 
-    attn = torch.nn.Module()
-    attn.is_sliding, attn.sliding_window = True, 64
+    def router(module, q, k, v, mask, **kw):
+        routed.append(mask)
+        return "router", None
+
+    router._unsloth_gemma4_flash = True
+    router.__module__ = zoo.__name__
+    zoo._ORIG_SDPA = [plain]
+    monkeypatch.setitem(sys.modules, band.__name__, band)
+    monkeypatch.setitem(sys.modules, zoo.__name__, zoo)
+    monkeypatch.setattr(M, "_BAND_MODULE", band.__name__)
+    monkeypatch.setitem(ALL_ATTENTION_FUNCTIONS, "sdpa", router)
+    M._gemma4_router_hook()
+    wrapped = ALL_ATTENTION_FUNCTIONS["sdpa"]
+    assert wrapped is not router
+
+    class Gemma4TextAttention(torch.nn.Module):
+        is_sliding, sliding_window, is_causal = True, 64, True
+
     layer = torch.nn.Module()
-    layer.self_attn = attn
-    full = torch.nn.Module()
+    layer.self_attn = attn = Gemma4TextAttention()
     short, long = torch.zeros(1, 1, 32, 32), torch.zeros(1, 1, 96, 96)
     M._precheck_band(layer, 32, (), {"attention_mask": short})
     M._precheck_band(layer, 96, (long,), {})
-    other = torch.zeros(1, 1, 8, 8)
-    M._precheck_band(full, 8, (), {"attention_mask": other})  # no window: never scanned
-    assert calls == [(32, 64), (96, 64)]
-    assert (short._unsloth_block_band, long._unsloth_block_band, other._unsloth_block_band) == (
-        True,
-        False,
-        False,
-    )
+    assert scans == [(32, 64)]  # longer than the window: never scanned
+    assert (short._unsloth_block_band, long._unsloth_block_band) == (True, False)
 
-    # Traced inside a block, the router reads the stored verdict instead of scanning.
+    q = torch.randn(1, 2, 32, 16)
+    assert wrapped(attn, q, q, q, short)[0] == "router"  # eager: the stock router
     monkeypatch.setattr(torch.compiler, "is_compiling", lambda: True)
     M._IN_BLOCK[0] = M._FULL
     try:
-        assert fake._mask_is_plain_band(short, 32, 64) is True
-        assert fake._mask_is_plain_band(long, 96, 64) is False
-        assert fake._mask_is_plain_band(None, 96, 64) is True
+        out, _ = wrapped(attn, q, q, q, short, scaling = 0.25)
+        want = torch.nn.functional.scaled_dot_product_attention(q, q, q, is_causal = True, scale = 0.25)
+        torch.testing.assert_close(out, want.transpose(1, 2))
+        ql = torch.randn(1, 2, 96, 16)
+        assert wrapped(attn, ql, ql, ql, long)[0] == "plain"
     finally:
         M._IN_BLOCK[0] = M._OFF
-    assert len(calls) == 2
+    assert routed == [short] and plain_calls == [long]
 
 
 def test_kill_switch(monkeypatch):

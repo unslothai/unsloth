@@ -5,20 +5,20 @@
 
 Each decoder-layer class gets its stock forward compiled whole (attention, MLP or MoE, norms,
 residuals, LoRA and NF4 projections), so a step pays one compiled-region call per layer instead
-of dozens of small regions and eager ops. Works for any architecture whose layer traces; the
-pieces that would not are handled here:
+of dozens of small regions and eager ops. Pieces that would break or slow the graph:
 
-- Unsloth's generated modules mark attention `torch_compiler_disable_unless_decode`: the
-  `UNSLOTH_DECODE_COMPILE` flag is set while the block runs, so it is inlined.
-- fla's `chunk_gated_delta_rule` (Qwen3.5 / Qwen3.6 / Qwen3-Next) is an autograd.Function
-  dynamo cannot trace: inside the block it runs as the opaque op from `_gdn_op`, and the
-  causal conv as shifted multiply-adds (no recompile per sequence length).
-- Some generated forwards carry a globals dict that is not their module's: they are rebuilt on a
-  module object that owns that dict, so dynamo can resolve their globals.
+- Attention marked `torch_compiler_disable_unless_decode` is inlined (UNSLOTH_DECODE_COMPILE set
+  while a block runs); Gemma-4's sliding-window router gets its band verdict precomputed.
+- fla's chunk_gated_delta_rule (Qwen3.5 / Qwen3.6) runs as the opaque op from `_gdn_op`, the
+  causal conv as shifted multiply-adds; bitsandbytes NF4 projections use Unsloth's dequantize.
+- Methods that are themselves torch.compile'd are inlined through their original, and
+  functions whose globals no registered module owns are rebound to one that does.
 
-Every tensor dim equal to the sequence length is marked dynamic before the first compile, so a
-block compiles once per (layer shape variant, grad mode). Calls with a KV cache keep the stock
-forward. UNSLOTH_BLOCK_COMPILE=0 or UNSLOTH_COMPILE_DISABLE turns it off.
+Sequence dims are marked dynamic before the first compile, so a block compiles once per (layer
+variant, grad mode). Each layer's first compile raises instead of falling back silently: a
+failing layer retries with flex_attention outside its graph, then keeps the stock forward.
+Calls with a KV cache keep the stock forward. UNSLOTH_BLOCK_COMPILE=0 or UNSLOTH_COMPILE_DISABLE
+turns it off.
 """
 
 import functools
@@ -328,43 +328,104 @@ def _prepare_gdn(layer, hidden_states):
         _GDN_OP[0] = False
 
 
-# unsloth_zoo's Gemma-4 sliding-window router asks `_mask_is_plain_band` (a data-dependent scan)
-# whether the mask is a plain causal band before taking FlashAttention / is_causal SDPA; while
-# compiling it answers False, so inside a block every sliding layer fell back to masked
-# (mem-efficient) SDPA (Gemma-4 12B on A100: 3.5x the attention backward time). The block runs
-# the scan eagerly first; the traced call reads the verdict stored on the mask.
-_BAND_MODULES = (
-    "unsloth_zoo.temporary_patches.gemma4_banded_attention",
-    "unsloth_zoo.temporary_patches.gemma4_flash_sliding",
-    "unsloth_zoo.temporary_patches.muse_glimmer_banded_attention",
-)
+# unsloth_zoo's Gemma-4 sliding-window router scans the mask (`_mask_is_plain_band`, data
+# dependent) before taking is_causal SDPA (flash); while compiling it declines, so inside a block
+# every sliding layer fell back to masked, mem-efficient SDPA (Gemma-4 12B on A100: 3.5x the
+# attention backward time, the block 10% slower than eager). The block runs the scan eagerly,
+# stores the verdict on the mask, and a router wrapper reads it while tracing.
+_BAND_MODULE = "unsloth_zoo.temporary_patches.gemma4_banded_attention"
 _BAND_CHECK = [None]
 
 
-def _band_hook():
-    for name in _BAND_MODULES:
-        module = sys.modules.get(name)
-        check = getattr(module, "_mask_is_plain_band", None)
-        if not callable(check) or getattr(check, "_unsloth_block_adapter", False):
-            continue
-        if _BAND_CHECK[0] is None:
-            _BAND_CHECK[0] = check
+def _gemma4_router_hook():
+    """Inside a block, a sliding layer whose mask is a plain causal band no longer than the
+    window runs is_causal SDPA, as the stock router does; longer bands run masked SDPA. The
+    router itself is not traced: its engagement counters drive a log-once branch dynamo guards
+    on, and its banded kernel traced in a checkpointed block recomputes different saved tensors
+    than its forward (CheckpointError)."""
+    try:
+        from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
+    except Exception:
+        return
+    router = ALL_ATTENTION_FUNCTIONS.get("sdpa")
+    if not getattr(router, "_unsloth_gemma4_flash", False) or getattr(
+        router, "_unsloth_block_band", False
+    ):
+        return
+    zoo = sys.modules.get(router.__module__)
+    plain = getattr(zoo, "_ORIG_SDPA", [None])[0]
+    check = getattr(sys.modules.get(_BAND_MODULE), "_mask_is_plain_band", None)
+    if plain is None or not callable(check):
+        return
+    _BAND_CHECK[0] = check
 
-        @functools.wraps(check, updated = ())
-        def _mask_is_plain_band(
-            mask,
-            S,
-            w,
-            *args,
-            _check = check,
-            **kwargs,
+    @functools.wraps(router, updated = ())
+    def sdpa_attention_forward(
+        module,
+        query,
+        key,
+        value,
+        attention_mask,
+        dropout = 0.0,
+        scaling = None,
+        is_causal = None,
+        **kwargs,
+    ):
+        if (
+            _IN_BLOCK[0]
+            and torch.compiler.is_compiling()
+            and getattr(module, "is_sliding", False)
+            and type(module).__name__.startswith("Gemma4")
+            and query.dim() == 4
+            and query.shape[-1] <= 256
         ):
-            if _IN_BLOCK[0] and torch.compiler.is_compiling():
-                return mask is None or getattr(mask, "_unsloth_block_band", False) is True
-            return _check(mask, S, w, *args, **kwargs)
+            window = kwargs.get("sliding_window", None) or getattr(module, "sliding_window", None)
+            causal = is_causal if is_causal is not None else getattr(module, "is_causal", True)
+            if (
+                window
+                and query.shape[2] == key.shape[2]
+                and query.shape[2] <= window
+                and (
+                    causal
+                    if attention_mask is None
+                    else getattr(attention_mask, "_unsloth_block_band", False) is True
+                )
+            ):
+                out = torch.nn.functional.scaled_dot_product_attention(
+                    query,
+                    key,
+                    value,
+                    dropout_p = dropout if module.training else 0.0,
+                    is_causal = True,
+                    scale = scaling,
+                    enable_gqa = True,
+                )
+                return out.transpose(1, 2).contiguous(), None
+            return plain(
+                module,
+                query,
+                key,
+                value,
+                attention_mask,
+                dropout = dropout,
+                scaling = scaling,
+                is_causal = is_causal,
+                **kwargs,
+            )
+        return router(
+            module,
+            query,
+            key,
+            value,
+            attention_mask,
+            dropout = dropout,
+            scaling = scaling,
+            is_causal = is_causal,
+            **kwargs,
+        )
 
-        _mask_is_plain_band._unsloth_block_adapter = True
-        setattr(module, "_mask_is_plain_band", _mask_is_plain_band)
+    sdpa_attention_forward._unsloth_block_band = True
+    ALL_ATTENTION_FUNCTIONS["sdpa"] = sdpa_attention_forward
 
 
 def _sliding_window(layer):
@@ -388,7 +449,7 @@ def _precheck_band(layer, seq_len, args, kwargs):
     window = _sliding_window(layer)
     for obj in (*args, *kwargs.values()):
         if isinstance(obj, torch.Tensor) and obj.dim() == 4 and not obj.requires_grad:
-            if window is not None:
+            if window is not None and seq_len <= window:
                 try:
                     obj._unsloth_block_band = bool(check(obj, seq_len, window))
                 except Exception:
@@ -572,7 +633,7 @@ def patch_block_compile(model):
     for cls in inner:
         _rebind_class(cls)
     _flex_split_hook()
-    _band_hook()
+    _gemma4_router_hook()
     if any(type(m).__name__ == "Linear4bit" for m in model.modules()):
         _nf4_in_blocks()
     wrapped = []
