@@ -529,14 +529,17 @@ def _self_check(device, dtype):
         return _SELF_CHECK[key]
     passed = False
     try:
-        with torch.random.fork_rng(devices = [device]):
-            torch.manual_seed(0)
-            q = torch.randn(1, 4, 80, 512, device = device, dtype = dtype, requires_grad = True)
-            k = torch.randn(1, 2, 80, 512, device = device, dtype = dtype, requires_grad = True)
-            v = torch.randn(1, 2, 80, 512, device = device, dtype = dtype, requires_grad = True)
-            g = torch.randn(1, 80, 4, 512, device = device, dtype = dtype)
-        lo, hi = _dense_intervals(1, 80, True, device)
-        with torch.enable_grad():
+        # A local generator: torch.manual_seed would reseed every CUDA device's RNG.
+        gen = torch.Generator(device = device)
+        gen.manual_seed(0)
+        # Inference tensors cannot record autograd, even under enable_grad.
+        with torch.inference_mode(False), torch.enable_grad():
+            q, k, v, g = [
+                torch.randn(shape, device = device, dtype = dtype, generator = gen)
+                for shape in ((1, 4, 80, 512), (1, 2, 80, 512), (1, 2, 80, 512), (1, 80, 4, 512))
+            ]
+            q, k, v = [x.requires_grad_() for x in (q, k, v)]
+            lo, hi = _dense_intervals(1, 80, True, device)
             out = large_head_attention(q, k, v, lo, hi, 512 ** -0.5)
             grads = torch.autograd.grad(out, (q, k, v), g)
             qf, kf, vf = [x.detach().float().requires_grad_() for x in (q, k, v)]
@@ -634,6 +637,16 @@ def patch_large_head_attention(model = None):
         head_dims = (getattr(m, "head_dim", 0) for m in model.modules())
         if not any(isinstance(d, int) and d in _SUPPORTED_HEAD_DIMS for d in head_dims):
             return False
+        # Compiled graphs only read the cached verdict, so check before any tracing.
+        try:
+            targets = {
+                (p.device, p.dtype) for p in model.parameters()
+                if p.is_cuda and p.dtype in (torch.float16, torch.bfloat16)
+            }
+        except Exception:
+            targets = set()
+        for device, dtype in targets:
+            _self_check(device, dtype)
     try:
         from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
         current = ALL_ATTENTION_FUNCTIONS["sdpa"]

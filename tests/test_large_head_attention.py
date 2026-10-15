@@ -187,3 +187,59 @@ def test_router_engages_on_gemma4_global_call():
     assert LH.LARGE_HEAD_ENGAGED["calls"] == before + 1 and not calls
     left_pad = _causal(40).cuda() & (torch.arange(40, device = "cuda")[None, :] >= 3)
     assert router(_Module(), q, kv, kv, left_pad[None, None])[0] == "original"
+
+
+def _cuda_dtype():
+    return torch.bfloat16 if torch.cuda.get_device_capability()[0] >= 8 else torch.float16
+
+
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
+def test_self_check_leaves_global_rng_alone(monkeypatch):
+    device, dtype = torch.device("cuda", torch.cuda.current_device()), _cuda_dtype()
+    LH._SELF_CHECK.pop((str(device), dtype), None)
+    seeded = []
+    monkeypatch.setattr(torch.cuda, "manual_seed_all", lambda seed: seeded.append(seed))
+    state = torch.cuda.get_rng_state(device)
+    assert LH._self_check(device, dtype) is True
+    assert not seeded  # would reseed the model's other GPUs
+    assert torch.equal(torch.cuda.get_rng_state(device), state)
+
+
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
+def test_self_check_under_inference_mode():
+    device, dtype = torch.device("cuda", torch.cuda.current_device()), _cuda_dtype()
+    LH._SELF_CHECK.pop((str(device), dtype), None)
+    with torch.inference_mode():
+        assert LH._self_check(device, dtype) is True
+
+
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
+def test_patch_self_checks_so_compiled_graphs_use_the_kernel(monkeypatch):
+    from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
+
+    device, dtype = torch.device("cuda", torch.cuda.current_device()), _cuda_dtype()
+    LH._SELF_CHECK.pop((str(device), dtype), None)
+    model = torch.nn.Linear(4, 4).to(device = device, dtype = dtype)
+    model.head_dim = 512
+    saved = ALL_ATTENTION_FUNCTIONS["sdpa"]
+    monkeypatch.setattr(LH, "_PATCHED", [False])
+    try:
+        assert LH.patch_large_head_attention(model) is True
+    finally:
+        ALL_ATTENTION_FUNCTIONS["sdpa"] = saved
+
+    graphs = []
+
+    def backend(gm, example_inputs):
+        graphs.append(gm.code)
+        return gm.forward
+
+    calls, original = _sentinel()
+    router = LH._make_router(original)
+    q = torch.randn(1, 4, 24, 512, device = device, dtype = dtype)
+    kv = torch.randn(1, 2, 24, 512, device = device, dtype = dtype)
+    torch._dynamo.reset()
+    out, _ = torch.compile(router, backend = backend)(_Module(), q, kv, kv, None, scaling = 512 ** -0.5)
+    assert not calls and out.shape == (1, 24, 4, 512)
+    assert any("large_head_attention_fwd" in code for code in graphs)
+    assert LH._SELF_CHECK.get((str(device), dtype)) is True
