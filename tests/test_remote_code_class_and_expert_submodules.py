@@ -675,6 +675,15 @@ def test_explicit_leaf_list_reaches_native_per_expert_linears():
     assert found == ["down_proj"]
     assert not any(re.fullmatch(widened, n) for n in names if n.endswith((".gate_proj", ".up_proj")))
 
+    # Expert-only lists: no attention leaf, every layer sparse.
+    for leaves in (["down_proj"], ["gate_proj", "up_proj", "down_proj"]):
+        regex = _explicit_list_regex(model, leaves)
+        widened, _, _ = U.widen_target_regex_to_expert_submodules(
+            model, regex, leaves, auto_regex = True, explicit_leaves = True
+        )
+        matched = {n for n in names if re.fullmatch(widened, n)}
+        assert matched == {n for n in names if n.rpartition(".")[2] in leaves}
+
 
 def test_explicit_leaf_list_widening_respects_the_family_filters():
     U = _utils()
