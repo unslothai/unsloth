@@ -214,7 +214,10 @@ _DIMS = {
         _kv_key_length = 576,
         _kv_value_length = 512,
         _kv_lora_rank = 512,
+        # Both MLA head lengths, as convert_hf_to_gguf writes them (conversion/deepseek.py) and as
+        # llama_hparams::is_mla requires: qk_nope 192 + rope 64, and v_head_dim 256.
         _key_length_mla = 256,
+        _value_length_mla = 256,
     ),
 }
 
