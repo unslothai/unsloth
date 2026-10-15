@@ -3232,6 +3232,32 @@ def _requests_float32(dtype):
     return dtype is torch.float32
 
 
+def _stamp_saved_config_float32(save_directory):
+    # save_pretrained writes the resident model's 16-bit dtype, and dtype = "auto" would then
+    # cast the float32 tensors back down on load.
+    path = os.path.join(save_directory, "config.json")
+    if not os.path.exists(path):
+        return
+    with open(path, "r", encoding = "utf-8") as f:
+        data = json.load(f)
+
+    def _walk(obj):
+        if isinstance(obj, dict):
+            for key in ("torch_dtype", "dtype"):
+                if obj.get(key) in ("bfloat16", "float16"):
+                    obj[key] = "float32"
+            for value in obj.values():
+                _walk(value)
+        elif isinstance(obj, list):
+            for value in obj:
+                _walk(value)
+
+    _walk(data)
+    with open(path, "w", encoding = "utf-8") as f:
+        json.dump(data, f, indent = 2, sort_keys = True)
+        f.write("\n")
+
+
 def _preflight_merge_disk(
     model,
     save_directory,
@@ -5690,6 +5716,8 @@ def unsloth_generic_save(
 
         print(f"Unsloth: Saving full fine-tuned model to '{save_directory}' ...")
         model.save_pretrained(save_directory, **_save_kwargs)
+        if "16bit" in save_method and _requests_float32(dtype):
+            _stamp_saved_config_float32(save_directory)
         # Guarded: an older zoo must not raise once the weights are already on disk.
         try:
             from unsloth_zoo.saving_utils import reconcile_mtp_config

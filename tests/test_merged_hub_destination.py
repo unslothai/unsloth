@@ -550,6 +550,8 @@ def test_default_full_finetune_push_uploads_16bit_safetensors(monkeypatch):
                     operation.path_in_repo: (
                         load_file(operation.path_or_fileobj)
                         if operation.path_in_repo.endswith(".safetensors")
+                        else json.loads(Path(operation.path_or_fileobj).read_text())
+                        if operation.path_in_repo == "config.json"
                         else None
                     )
                     for operation in kwargs["operations"]
@@ -579,12 +581,16 @@ def test_default_full_finetune_push_uploads_16bit_safetensors(monkeypatch):
     assert {tensor.dtype for tensor in commits[0]["model.safetensors"].values()} == {target}
     assert next(model.parameters()).dtype == torch.float32
 
-    # unsloth#5186: `dtype = float32` keeps the full fine-tune at float32 instead of casting.
+    # unsloth#5186: `dtype = float32` writes float32 tensors and config from a 16-bit model.
     commits.clear()
+    model = model.to(torch.bfloat16)
     save.unsloth_generic_push_to_hub_merged(
         model, "owner/model", token = "fixture", dtype = torch.float32
     )
+    assert next(model.parameters()).dtype == torch.bfloat16
     assert {tensor.dtype for tensor in commits[0]["model.safetensors"].values()} == {torch.float32}
+    config = commits[0]["config.json"]
+    assert config.get("dtype", config.get("torch_dtype")) == "float32"
 
 
 def test_the_push_names_the_destination_and_not_the_staging_folder(saving, capsys):
