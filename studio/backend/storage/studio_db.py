@@ -3757,6 +3757,42 @@ def _safe_generation_assistant_update(
     return True
 
 
+def _settled_generation_prompt_edit(
+    conn: sqlite3.Connection, thread_id: str, message: dict
+) -> dict | None:
+    """The row an explicit text edit of a prompt writes, once every run it started has ended,
+    else None. The runs keep the request they were sent, so nothing replays the stored row;
+    its place in the thread and its attachments stay as stored."""
+    message_id = str(message["id"])
+    if str(message.get("role")) != "user" or message_id in _research_message_ids(conn, thread_id):
+        return None
+    statuses = {
+        str(row["status"])
+        for row in conn.execute(
+            "SELECT status FROM chat_generation_runs WHERE thread_id = ? AND user_message_id = ?",
+            (thread_id, message_id),
+        ).fetchall()
+    }
+    if not statuses or not statuses <= _GENERATION_TERMINAL_STATUSES:
+        return None
+    row = conn.execute(
+        "SELECT parent_id, role, attachments_json, created_at FROM chat_messages "
+        "WHERE thread_id = ? AND id = ?",
+        (thread_id, message_id),
+    ).fetchone()
+    if (
+        row is None
+        or str(row["role"]) != "user"
+        or (message.get("parentId") or None) != (row["parent_id"] or None)
+        or int(message.get("createdAt", row["created_at"])) != int(row["created_at"])
+    ):
+        return None
+    edited = {key: value for key, value in message.items() if key != "attachments"}
+    if row["attachments_json"]:
+        edited["attachments"] = json.loads(row["attachments_json"])
+    return edited
+
+
 def _guard_server_managed_messages(
     conn: sqlite3.Connection,
     thread_id: str,
@@ -3764,6 +3800,7 @@ def _guard_server_managed_messages(
     pruned: set = frozenset(),
     *,
     allow_research_update: bool = False,
+    editable_prompt_ids: set = frozenset(),
 ) -> None:
     generation = _generation_message_ids(conn, thread_id)
     if allow_research_update:
@@ -3783,6 +3820,7 @@ def _guard_server_managed_messages(
         message_id = str(message["id"])
         if (
             message_id in generation
+            and message_id not in editable_prompt_ids
             and not _safe_generation_assistant_update(conn, thread_id, message)
         ) or (
             message_id in protected
@@ -4162,13 +4200,19 @@ def upsert_chat_message(
             raise ChatMessageProtectedError(
                 "deleted server-managed generation messages cannot be restored"
             )
+        editable_prompt_ids: set = frozenset()
         if allow_generation_edit:
             _detach_terminal_generation_for_edit(conn, message["threadId"], message)
+            prompt_edit = _settled_generation_prompt_edit(conn, message["threadId"], message)
+            if prompt_edit is not None:
+                message = prompt_edit
+                editable_prompt_ids = {str(message["id"])}
         _guard_server_managed_messages(
             conn,
             message["threadId"],
             [message],
             allow_research_update = allow_research_update,
+            editable_prompt_ids = editable_prompt_ids,
         )
         if allow_research_update:
             message = _settle_handed_off_generation(conn, message)

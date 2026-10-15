@@ -560,6 +560,7 @@ export const hi = {
     queueingHintShared: "कतार बनी रहती है।",
   },
   rewind: {
+    menuItem: "रिवाइंड करें…",
     title: "रिवाइंड करें",
     confirmTitle: "इस संदेश तक रिवाइंड करें?",
     restoreLabel: "पुनर्स्थापित करें",

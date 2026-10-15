@@ -150,8 +150,13 @@ export const BUDGET = {
   // Opening the OS folder dialog for model folders on Desktop (#13843) adds 235 B raw / 336 B transfer
   // (6,777,794 -> 6,778,029 B raw, 2,037,725 -> 2,038,061 B transfer against 199987c63, one machine and build,
   // Node 24, chunk count unchanged at 95). Raised by that growth.
-  transferBytes: 2_037_157,
-  rawBytes: 6_775_132,
+  // Main measured 3,605 B raw / 1,171 B transfer over at 7c235de6f (6,778,737 B raw, 2,038,328 B transfer).
+  // Edit without running in the prompt's More menu, with Fork, Rewind and Delete back in it (#13821), adds
+  // 3,518 B raw / 730 B transfer to the eager chat chunk (-> 6,782,255 B raw, 2,039,058 B transfer, one machine
+  // and build, Node 24, chunk count unchanged at 95). A plain checkout of the same tree builds 51 B raw more
+  // (6,782,306 B), so raw is set to that. Raised by both.
+  transferBytes: 2_039_058,
+  rawBytes: 6_782_306,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

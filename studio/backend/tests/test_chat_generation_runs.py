@@ -919,3 +919,62 @@ def test_an_ordinary_text_thread_is_still_admitted():
     legacy stream and the whole feature would quietly stop working while these tests stayed green."""
     messages = [{"role": "user", "content": [{"type": "text", "text": "hello"}]}]
     assert _sanitize_request(_model(messages = messages))["stream"] is True
+
+
+def _finish(run_id = "run-1"):
+    token = runs_db.get_worker_token(run_id)
+    assert runs_db.mark_running(run_id, token)
+    assert runs_db.finish_run(run_id, worker_token = token, status = "completed", finish_reason = "stop")
+
+
+def test_settled_generation_prompt_can_be_explicitly_edited_in_place(chat_home):
+    """Edit without running: the prompt's text changes, the run and its reply stay as they are."""
+    _create()
+    _finish()
+    reply_before = studio_db.get_chat_message("thread-1", "assistant-1")
+    prompt = studio_db.get_chat_message("thread-1", "user-1")
+    edited = {**prompt, "content": [{"type": "text", "text": "Hello again"}]}
+
+    _assert_protected(edited)
+    saved = studio_db.upsert_chat_message(edited, allow_generation_edit = True)
+    assert saved["content"] == [{"type": "text", "text": "Hello again"}]
+    assert runs_db.get_run("run-1", "alice")["status"] == "completed"
+    assert studio_db.get_chat_message("thread-1", "assistant-1") == reply_before
+    # Idempotent: the same save again is accepted and changes nothing.
+    assert studio_db.upsert_chat_message(edited, allow_generation_edit = True) == saved
+
+
+def test_generation_prompt_stays_protected_while_a_run_is_active(chat_home):
+    _create()
+    prompt = studio_db.get_chat_message("thread-1", "user-1")
+    edited = {**prompt, "content": [{"type": "text", "text": "Hello again"}]}
+    with pytest.raises(studio_db.ChatMessageProtectedError):
+        studio_db.upsert_chat_message(edited, allow_generation_edit = True)
+
+
+def test_generation_prompt_edit_cannot_move_or_retype_the_prompt(chat_home):
+    _create()
+    _finish()
+    prompt = studio_db.get_chat_message("thread-1", "user-1")
+    for change in (
+        {"parentId": "assistant-1"},
+        {"role": "assistant"},
+        {"createdAt": prompt["createdAt"] + 5},
+    ):
+        with pytest.raises(studio_db.ChatMessageProtectedError):
+            studio_db.upsert_chat_message({**prompt, **change}, allow_generation_edit = True)
+    assert studio_db.get_chat_message("thread-1", "user-1") == prompt
+
+
+def test_generation_prompt_edit_keeps_the_stored_attachments(chat_home):
+    _create()
+    _finish()
+    prompt = studio_db.get_chat_message("thread-1", "user-1")
+    edited = {
+        **prompt,
+        "content": [{"type": "text", "text": "Hello again"}],
+        "attachments": [{"id": "a", "type": "file", "name": "x.txt", "content": []}],
+    }
+    saved = studio_db.upsert_chat_message(edited, allow_generation_edit = True)
+    assert saved["content"] == [{"type": "text", "text": "Hello again"}]
+    assert saved.get("attachments") == prompt.get("attachments")

@@ -560,6 +560,7 @@ export const zhCN = {
     queueingHintShared: "队列会保留。",
   },
   rewind: {
+    menuItem: "回退…",
     title: "回退",
     confirmTitle: "回退到这条消息？",
     restoreLabel: "恢复",

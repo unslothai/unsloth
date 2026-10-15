@@ -561,6 +561,7 @@ export const ja = {
     queueingHintShared: "キューは保持されます。",
   },
   rewind: {
+    menuItem: "巻き戻す…",
     title: "巻き戻す",
     confirmTitle: "このメッセージまで巻き戻しますか？",
     restoreLabel: "復元",

@@ -612,6 +612,7 @@ export const en = {
   },
   // /rewind and the prompt More menu's Rewind item.
   rewind: {
+    menuItem: "Rewind…",
     title: "Rewind",
     confirmTitle: "Rewind to this message?",
     restoreLabel: "Restore",

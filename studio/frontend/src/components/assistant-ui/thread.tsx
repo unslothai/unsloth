@@ -9160,12 +9160,19 @@ const UserMessage: FC = () => {
 const UserActionBar: FC = () => {
   const ownsResearchMessage = useOwnsResearchMessage();
   const researchActive = useThreadResearchActive();
+  const messageId = useAuiState(({ message }) => message.id);
+  const setEditWithoutRun = useChatRuntimeStore((s) => s.setEditWithoutRun);
+  const editable = !ownsResearchMessage && !researchActive;
   return (
     <UserMessageActionBar>
       <CopyButton />
-      {!ownsResearchMessage && !researchActive && (
+      {editable && (
         <ActionBarPrimitive.Edit asChild={true}>
-          <TooltipIconButton tooltip="Edit" className="aui-user-action-edit">
+          <TooltipIconButton
+            tooltip="Edit"
+            className="aui-user-action-edit"
+            onClick={() => setEditWithoutRun(messageId, false)}
+          >
             <HugeiconsIcon
               icon={Edit03Icon}
               strokeWidth={1.75}
@@ -9178,7 +9185,120 @@ const UserActionBar: FC = () => {
       <ForkCountBadge />
       <ForkMessageButton />
       <DeleteMessageButton />
+      {editable && <UserMoreMenu />}
     </UserMessageActionBar>
+  );
+};
+
+const UserMoreMenu: FC = () => {
+  const moreMenuTriggerRef = useRef<HTMLButtonElement>(null);
+  const moreMenuCollisionPadding = useWindowChromeCollisionPadding(undefined);
+  return (
+    <ActionBarMorePrimitive.Root modal={false}>
+      <ActionBarMorePrimitive.Trigger asChild={true}>
+        <TooltipIconButton
+          ref={moreMenuTriggerRef}
+          tooltip="More"
+          className="data-[state=open]:bg-accent"
+        >
+          <MoreHorizontalIcon strokeWidth={1.75} className="size-icon" />
+        </TooltipIconButton>
+      </ActionBarMorePrimitive.Trigger>
+      <ActionBarMorePrimitive.Content
+        side="bottom"
+        align="end"
+        collisionPadding={moreMenuCollisionPadding}
+        onCloseAutoFocus={(e) => e.preventDefault()}
+        className={MORE_MENU_CONTENT_CLASS}
+      >
+        <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
+          <MenuDismissGuard triggerRef={moreMenuTriggerRef} />
+          <EditWithoutRunMenuItem />
+          <ForkMessageMenuItem />
+          <RewindMessageMenuItem />
+          <DeleteMessageMenuItem />
+        </div>
+      </ActionBarMorePrimitive.Content>
+    </ActionBarMorePrimitive.Root>
+  );
+};
+
+const MORE_MENU_ITEM_CLASS =
+  "aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50";
+
+// The prompt menu's copies of the bar's Fork, Rewind and Delete, with the same handlers.
+const ForkMessageMenuItem: FC = () => {
+  const { forkMessage, forkDisabled } = useForkMessageAction();
+  return (
+    <ActionBarMorePrimitive.Item
+      disabled={forkDisabled}
+      onSelect={() => void forkMessage()}
+      className={MORE_MENU_ITEM_CLASS}
+    >
+      <HugeiconsIcon icon={ForkIcon} strokeWidth={1.75} className="size-icon" />
+      Fork in new chat
+    </ActionBarMorePrimitive.Item>
+  );
+};
+
+const RewindMessageMenuItem: FC = () => {
+  const aui = useAui();
+  const t = useT();
+  const messageId = useAuiState(({ message }) => message.id);
+  const isRunning = useAuiState(({ thread }) => thread.isRunning);
+  return (
+    <ActionBarMorePrimitive.Item
+      disabled={isRunning}
+      onSelect={() =>
+        useRewindDialogStore.getState().openRewind({
+          threadKey: aui.threadListItem().getState().id,
+          messageId,
+        })
+      }
+      className={MORE_MENU_ITEM_CLASS}
+    >
+      <HugeiconsIcon icon={UndoIcon} strokeWidth={1.75} className="size-icon" />
+      {t("rewind.menuItem")}
+    </ActionBarMorePrimitive.Item>
+  );
+};
+
+// Last and in red.
+const DeleteMessageMenuItem: FC = () => {
+  const { handleDelete, isRunning, hidden } = useDeleteMessage();
+  if (hidden) {
+    return null;
+  }
+  return (
+    <ActionBarMorePrimitive.Item
+      disabled={isRunning}
+      onSelect={() => void handleDelete()}
+      className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm text-destructive outline-none hover:bg-destructive/10 focus:bg-destructive/10 data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
+    >
+      <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
+      Delete
+    </ActionBarMorePrimitive.Item>
+  );
+};
+
+// Opens the prompt's editor with Save in place of Send: the text changes, nothing reruns.
+const EditWithoutRunMenuItem: FC = () => {
+  const aui = useAui();
+  const messageId = useAuiState(({ message }) => message.id);
+  const isRunning = useAuiState(({ thread }) => thread.isRunning);
+  const setEditWithoutRun = useChatRuntimeStore((s) => s.setEditWithoutRun);
+  return (
+    <ActionBarMorePrimitive.Item
+      disabled={isRunning}
+      onSelect={() => {
+        setEditWithoutRun(messageId, true);
+        aui.composer().beginEdit();
+      }}
+      className={MORE_MENU_ITEM_CLASS}
+    >
+      <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
+      Edit without running
+    </ActionBarMorePrimitive.Item>
   );
 };
 
@@ -9191,6 +9311,18 @@ const EditComposer: FC = () => {
   const researchActive = useThreadResearchActive();
   // send() drops an empty composer, e.g. a paste-only message whose chip was removed.
   const editEmpty = useAuiState(({ composer }) => composer.isEmpty);
+  const messageId = useAuiState(({ message }) => message.id);
+  const isRunning = useAuiState(({ thread }) => thread.isRunning);
+  // Read once at mount: StrictMode's dev-only effect replay runs the cleanup below first.
+  const [saveOnly] = useState(() =>
+    useChatRuntimeStore.getState().editWithoutRunMessageIds.includes(messageId),
+  );
+  const incognito = useChatRuntimeStore((s) => s.incognito);
+
+  useEffect(
+    () => () => useChatRuntimeStore.getState().setEditWithoutRun(messageId, false),
+    [messageId],
+  );
 
   useAuiEvent("thread.runEnd", () => {
     if (!resendAfterCancelRef.current) {
@@ -9214,16 +9346,52 @@ const EditComposer: FC = () => {
     aui.composer().send({ startRun: true });
   }, [aui, isComposingRef]);
 
+  const saveEdit = useCallback(async () => {
+    // Enter submits without the button, so its disabled state is checked here too.
+    if (isComposingRef.current || researchActive || aui.thread().getState().isRunning) return;
+    if (aui.composer().getState().isEmpty) return;
+    const newText = aui.composer().getState().text;
+    const remoteId =
+      aui.threadListItem().getState().remoteId ||
+      useChatRuntimeStore.getState().activeThreadId ||
+      undefined;
+    aui.composer().cancel();
+    try {
+      await updateThreadMessage({
+        thread: {
+          export: () => aui.thread().export(),
+          import: (data) => aui.thread().import(data),
+        },
+        messageId,
+        remoteId,
+        newText,
+        isIncognito: incognito,
+        plainText: true,
+      });
+    } catch (error) {
+      console.error("UI: Error during save:", error);
+      toast.error("Failed to save message edits.");
+    }
+  }, [aui, incognito, isComposingRef, messageId, researchActive]);
+
   return (
     <MessagePrimitive.Root className="aui-edit-composer-wrapper mx-auto flex w-full max-w-(--thread-content-max-width) flex-col py-3">
       <ComposerPrimitive.Root
         className="aui-edit-composer-root ml-auto flex w-full max-w-[85%] flex-col rounded-2xl bg-muted"
         onSubmit={(event) => {
           event.preventDefault();
-          submitEdit();
+          if (saveOnly) void saveEdit();
+          else submitEdit();
         }}
       >
-        <ComposerAttachments className="mb-0 px-3 pt-3" />
+        {saveOnly ? (
+          // Save changes only the text, so its attachments show as sent, with no Remove.
+          <div className="px-3 pt-3">
+            <UserMessageAttachments />
+          </div>
+        ) : (
+          <ComposerAttachments className="mb-0 px-3 pt-3" />
+        )}
         <ComposerPrimitive.Input
           submitMode={
             effectiveSendShortcut(sendShortcut, editMultiline ? "\n" : "") === "mod-enter"
@@ -9242,9 +9410,15 @@ const EditComposer: FC = () => {
               Cancel
             </Button>
           </ComposerPrimitive.Cancel>
-          <Button type="submit" size="sm" disabled={researchActive || editEmpty}>
-            Send
-          </Button>
+          {saveOnly ? (
+            <Button type="submit" size="sm" disabled={researchActive || isRunning || editEmpty}>
+              Save
+            </Button>
+          ) : (
+            <Button type="submit" size="sm" disabled={researchActive || editEmpty}>
+              Send
+            </Button>
+          )}
         </div>
       </ComposerPrimitive.Root>
     </MessagePrimitive.Root>

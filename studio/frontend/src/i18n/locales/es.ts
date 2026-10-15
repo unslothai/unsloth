@@ -560,6 +560,7 @@ export const es = {
     queueingHintShared: "La cola se conserva.",
   },
   rewind: {
+    menuItem: "Rebobinar…",
     title: "Rebobinar",
     confirmTitle: "¿Rebobinar hasta este mensaje?",
     restoreLabel: "Restaurar",

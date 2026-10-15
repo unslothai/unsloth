@@ -560,6 +560,7 @@ export const ru = {
     queueingHintShared: "Очередь сохраняется.",
   },
   rewind: {
+    menuItem: "Откатить…",
     title: "Откатить",
     confirmTitle: "Откатить к этому сообщению?",
     restoreLabel: "Восстановить",
