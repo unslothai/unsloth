@@ -1732,24 +1732,6 @@ def _token_preview_rows(request: TokenPreviewRequest, hf_token) -> list[dict]:
     return rows.to_list()
 
 
-def _tokenizer_cached(repo_id: str) -> bool:
-    """The tokenizer config and a vocabulary file are both on disk, so loading fetches nothing."""
-    from huggingface_hub import try_to_load_from_cache
-    from utils.hf_cache_settings import get_hf_cache_paths
-
-    cache_dir = str(get_hf_cache_paths().hub_cache)
-
-    def cached(filename: str) -> bool:
-        try:
-            return isinstance(try_to_load_from_cache(repo_id, filename, cache_dir = cache_dir), str)
-        except Exception:
-            return False
-
-    return cached("tokenizer_config.json") and any(
-        cached(name) for name in ("tokenizer.json", "tokenizer.model", "vocab.json")
-    )
-
-
 @router.post("/token-preview")
 async def token_preview(
     request: TokenPreviewRequest,
@@ -1758,7 +1740,11 @@ async def token_preview(
 ):
     """Tokens and completion mask for a few rows of the selected dataset, or for ``text``, as
     training would produce them. Loads the tokenizer only, in a GPU-free subprocess."""
-    from core.training.token_preview import TokenPreviewError, run_token_preview
+    from core.training.token_preview import (
+        TokenPreviewError,
+        run_token_preview,
+        token_preview_worker_ready,
+    )
     from core.training.training import should_use_mlx_training_backend
     from routes.models import _require_model_access_or_caller_token
     from utils.account_context import current_account_id
@@ -1805,16 +1791,17 @@ async def token_preview(
             "num_samples": request.num_samples,
             "seed": request.seed,
         }
-        # Only a load that can fetch is recorded: marking an anonymously cached repo would withhold it
-        # from tokenless callers.
+        key = (current_account_id(), model_name, source, hf_token)
+        # The tokenizer is loaded only when a worker starts, and which files that load resolves is not
+        # known up front, so every start is recorded; a warm worker fetches nothing.
         fetch = (
             recording_a_request_token_fetch(hf_token, source, "model")
-            if remote and not _tokenizer_cached(source)
+            if remote and not token_preview_worker_ready(key)
             else contextlib.nullcontext()
         )
         with fetch:
             return run_token_preview(
-                (current_account_id(), model_name, source, hf_token),
+                key,
                 {"model_name": model_name, "tokenizer_source": source, "hf_token": hf_token},
                 payload,
             )

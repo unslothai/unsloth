@@ -174,6 +174,11 @@ def run_token_preview(key: tuple, config: dict, request: dict) -> dict:
     return _service.preview(key, config, request)
 
 
+def token_preview_worker_ready(key: tuple) -> bool:
+    """A live worker already holds the tokenizer for ``key``, so a request loads nothing."""
+    return _service._alive() and _service._key == key and _service._served
+
+
 def stop_token_preview_worker() -> None:
     """Free the worker's memory; safe to call when none is running."""
     _service.stop()

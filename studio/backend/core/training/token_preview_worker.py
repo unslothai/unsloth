@@ -50,7 +50,11 @@ def _load_tokenizer(config: dict):
         from utils.models.model_config import get_base_model_from_lora_identifier
 
         base = get_base_model_from_lora_identifier(source, token)
-        if not base:
+        # A Hub id only: the base comes from the adapter's own config, and a local path there would
+        # read outside the account checks the route ran on the adapter.
+        from utils.paths import is_local_path
+
+        if not base or is_local_path(base):
             raise
         return AutoTokenizer.from_pretrained(base, token = token, trust_remote_code = False)
 

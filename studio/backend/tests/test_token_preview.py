@@ -265,3 +265,22 @@ def test_retiring_an_account_stops_its_preview_worker():
     finally:
         account_jobs._retired.discard("alice")
     assert stopped.is_set()
+
+
+def test_an_adapter_naming_a_local_base_is_not_read(monkeypatch, tmp_path):
+    import transformers
+    from utils.models import model_config
+
+    tried = []
+
+    def from_pretrained(source, **kwargs):
+        tried.append(source)
+        raise OSError("no tokenizer files")
+
+    monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained", from_pretrained)
+    monkeypatch.setattr(
+        model_config, "get_base_model_from_lora_identifier", lambda *args: str(tmp_path)
+    )
+    with pytest.raises(OSError):
+        token_preview_worker._load_tokenizer({"model_name": "org/adapter", "hf_token": None})
+    assert str(tmp_path) not in tried
