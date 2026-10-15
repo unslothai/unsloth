@@ -147,6 +147,7 @@ def saving(monkeypatch, tmp_path):
 
     env = dict(
         os = os,
+        sys = sys,
         gc = gc,
         Path = Path,
         HfApi = Api,
@@ -681,3 +682,26 @@ def test_a_pickle_request_this_transformers_cannot_honour_is_reported(saving):
     assert push(HonoursIt(), safe_serialization = False) == []
     assert push(Patched(), safe_serialization = False) == []
     assert push(NoSafeSerialization()) == []
+
+
+def test_merged_dtype_reaches_the_streaming_merger(saving):
+    """unsloth#5186: `dtype` reaches the zoo merge as `output_dtype`; the default stays None."""
+    env, records, _ = saving
+    env["unsloth_generic_push_to_hub_merged"](PeftModel(), "owner/model", token = "fixture")
+    assert records["merges"][-1]["output_dtype"] is None
+
+    sys.modules["unsloth_zoo.saving_utils"]._upcast_shard_to_float32 = lambda *args: None
+    env["unsloth_generic_push_to_hub_merged"](
+        PeftModel(), "owner/model", token = "fixture", dtype = "float32"
+    )
+    assert records["merges"][-1]["output_dtype"] == "float32"
+
+
+def test_merged_dtype_refuses_an_older_zoo(saving):
+    """An older unsloth_zoo ignores `output_dtype` and writes the base dtype, so refuse."""
+    env, records, _ = saving
+    with pytest.raises(RuntimeError, match = "newer unsloth_zoo"):
+        env["unsloth_generic_push_to_hub_merged"](
+            PeftModel(), "owner/model", token = "fixture", dtype = "float32"
+        )
+    assert records["merges"] == []

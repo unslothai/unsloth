@@ -5606,6 +5606,7 @@ def unsloth_generic_save(
     temporary_location: str = "_unsloth_temporary_saved_buffers",
     maximum_memory_usage: float = 0.9,
     datasets: Optional[List[str]] = None,
+    dtype = None,
 ):
     if save_method == "merged_4bit":
         raise RuntimeError(
@@ -5736,6 +5737,15 @@ def unsloth_generic_save(
         _prewarm_base_model_hub_cache(model, save_method = save_method, token = token)
         from unsloth_zoo.saving_utils import merge_and_overwrite_lora
 
+        # An older unsloth_zoo accepts `output_dtype` but still writes the base dtype.
+        if dtype is not None and not hasattr(
+            sys.modules.get("unsloth_zoo.saving_utils"), "_upcast_shard_to_float32"
+        ):
+            raise RuntimeError(
+                "Unsloth: `dtype` needs a newer unsloth_zoo. Update via "
+                "`pip install --upgrade --no-cache-dir unsloth_zoo`."
+            )
+
         # merged_4bit merges into the loaded (already residual) weights, so it needs no conversion.
         in_place = save_method in ("merged_4bit", "forced_merged_4bit")
         with nullcontext() if in_place else lora_relative_to_original_base(model):
@@ -5750,7 +5760,7 @@ def unsloth_generic_save(
                 private = private,
                 token = token,
                 save_method = save_method,
-                output_dtype = None,
+                output_dtype = dtype,
                 low_disk_space_usage = True,
                 use_temp_file = False,
             )
@@ -5790,6 +5800,7 @@ def unsloth_generic_save_pretrained_merged(
     num_calibration_samples: int = 512,
     max_seq_length: int = 2048,
     install_missing_dependencies: bool = True,
+    dtype = None,
 ):
     """
     Same as .push_to_hub(...) except 4bit weights are auto
@@ -5808,6 +5819,10 @@ def unsloth_generic_save_pretrained_merged(
         `save_directory`, then a quantized checkpoint is written to `save_directory + "-<fmt>"`.
         `nvfp4` needs calibration data (defaults to ultrachat; override with `calibration_dataset`).
         Pass ``install_missing_dependencies=False`` to never auto-install llm-compressor.
+
+    `dtype` (merged_16bit only): None keeps the base checkpoint's dtype (bfloat16 / float16).
+    `torch.float32` (or "float32") writes float32 safetensors without rounding the merged
+    LoRA delta back to 16 bits; shards are streamed, so peak RAM stays about one tensor.
 
     `safe_serialization` defaults to safetensors. `None` is stronger than the default `True`: on a host
     with at most two physical CPUs the default downgrades to a pickle, since safetensors is
@@ -5929,6 +5944,7 @@ def unsloth_generic_push_to_hub_merged(
     num_calibration_samples: int = 512,
     max_seq_length: int = 2048,
     install_missing_dependencies: bool = True,
+    dtype = None,
 ):
     """
     Same as .push_to_hub(...) except 4bit weights are auto
@@ -5944,6 +5960,10 @@ def unsloth_generic_push_to_hub_merged(
         methods do. Useful for HF inference.
     4.  FP8 / FP4 compressed export for vLLM: `fp8`, `mxfp4`, `nvfp4`, `mxfp8`.
         Pass ``install_missing_dependencies=False`` to never auto-install llm-compressor.
+
+    `dtype` (merged_16bit only): None keeps the base checkpoint's dtype (bfloat16 / float16).
+    `torch.float32` (or "float32") writes float32 safetensors without rounding the merged
+    LoRA delta back to 16 bits; shards are streamed, so peak RAM stays about one tensor.
 
     `safe_serialization` defaults to safetensors. `None` is stronger than the default `True`: on a host
     with at most two physical CPUs the default downgrades to a pickle, since safetensors is
