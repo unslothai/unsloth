@@ -182,6 +182,7 @@ function SelectedDatasetCard({
   const settings = useTrainingConfigStore(
     useShallow((state) => ({
       canPreviewTokens: canPreviewTokens(state),
+      isCheckingDataset: state.isCheckingDataset,
       dataset: state.dataset,
       datasetSource: state.datasetSource,
       datasetSplit: state.datasetSplit,
@@ -258,6 +259,8 @@ function SelectedDatasetCard({
             variant="ghost"
             size="sm"
             className="shrink-0 text-xs"
+            // The dialog reads the dataset's modality once, so wait until the check has it.
+            disabled={settings.isCheckingDataset}
             onClick={() => setTokenPreviewOpen(true)}
           >
             <TextSelectIcon className="size-3.5" />
