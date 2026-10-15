@@ -361,3 +361,106 @@ def test_add_mfu_callback_moves_an_existing_callback_first(tmp_path):
     assert mfu.add_mfu_callback(trainer) is existing
     assert trainer.callback_handler.callbacks[0] is existing
     assert sum(isinstance(c, mfu.UnslothMFUCallback) for c in trainer.callback_handler.callbacks) == 1
+
+
+def test_l40_is_not_matched_as_l4(monkeypatch):
+    monkeypatch.delenv("UNSLOTH_PEAK_TFLOPS", raising = False)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    for name, peak in (("NVIDIA L40S", 362.05), ("NVIDIA L40", 181.05), ("NVIDIA L4", 121.0)):
+        monkeypatch.setattr(torch.cuda, "get_device_name", lambda device = None, n = name: n)
+        assert mfu.get_peak_tflops(dtype = torch.bfloat16) == peak, name
+
+
+def test_inactive_lora_adapters_are_not_counted():
+    peft = pytest.importorskip("peft")
+    config = peft.LoraConfig(r = 2, target_modules = ["q_proj", "v_proj"], lora_dropout = 0.0)
+    model = peft.get_peft_model(_model(), config)
+    model.add_adapter("other", config)
+    model.set_adapter("default")
+    _, parts = mfu.count_linear_flops_per_token(model)
+    assert parts["forward"] == 2 * (N + LORA)
+    with model.disable_adapter():
+        _, parts = mfu.count_linear_flops_per_token(model)
+    assert parts["forward"] == 2 * N
+
+
+def test_hybrid_layer_types_charge_pairs_only_for_softmax_attention():
+    from types import SimpleNamespace
+
+    config = SimpleNamespace(
+        num_hidden_layers = 4,
+        num_attention_heads = 4,
+        hidden_size = 16,
+        head_dim = 4,
+        layer_types = ["linear_attention", "linear_attention", "linear_attention", "full_attention"],
+    )
+    assert mfu.count_attention_flops_per_pair(config) == 4 * 1 * 4 * 4 * 3
+    config.layer_types = ["sliding_attention", "full_attention", "full_attention", "full_attention"]
+    assert mfu.count_attention_flops_per_pair(config) == 4 * 4 * 4 * 4 * 3
+
+
+def test_unsloth_forward_head_window_matches_both_keep_spellings(monkeypatch):
+    model = _model().train()
+    callback = mfu.UnslothMFUCallback(peak_tflops = 1)
+    monkeypatch.setattr(mfu, "_runs_unsloth_head_window", lambda m: True)
+    callback.on_train_begin(None, _State(), None, model = model)
+    mask = torch.ones(2, 4, dtype = torch.long)
+    callback._count_batch(model, (), {"attention_mask": mask, "num_logits_to_keep": 1})
+    assert int(callback._head_tokens) == 2
+    callback._count_batch(
+        model, (), {"attention_mask": mask, "logits_to_keep": torch.tensor([3]), "num_logits_to_keep": 0}
+    )
+    assert int(callback._head_tokens) == 2 + 8
+    callback.on_train_end(None, None, None)
+
+
+def test_runs_unsloth_head_window_reads_the_base_model_forward():
+    model = _model()
+    assert not mfu._runs_unsloth_head_window(model)
+
+    def forward(self, *args, **kwargs):
+        pass
+
+    forward.__module__ = "unsloth.models.llama"
+    patched = type("Patched", (type(model),), {"forward": forward})
+    model.__class__ = patched
+    assert mfu._runs_unsloth_head_window(model)
+
+
+def test_pause_after_a_step_excludes_only_time_after_the_gpu_finished(monkeypatch):
+    # Step ends at CPU t=1 with 3 s of kernels still queued; eval until t=11.
+    clock = iter([0.0, 1.0, 11.0, 12.0, 12.0])
+    monkeypatch.setattr(mfu.time, "perf_counter", lambda: next(clock))
+    events = []
+
+    class Event:
+        def __init__(self, enable_timing = False):
+            self.t = None
+            events.append(self)
+
+        def record(self, stream = None):
+            # GPU completion times: step end at 4 s, resume probe at 11 s.
+            self.t = 4.0 if len(events) == 1 else 11.0
+
+        def synchronize(self):
+            pass
+
+        def elapsed_time(self, other):
+            return (other.t - self.t) * 1000
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "Event", Event)
+    monkeypatch.setattr(torch.cuda, "current_stream", lambda device = None: None)
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda device = None: None)
+    callback = mfu.UnslothMFUCallback(peak_tflops = 1)
+    callback._devices = [0]
+    callback._linear_per_token = 10**12
+    callback.on_step_begin(None, None, None)
+    callback.on_step_end(None, None, None)
+    callback.on_evaluate(None, None, None)
+    callback.on_step_begin(None, None, None)
+    callback._tokens = 5
+    logs = {"loss": 1.0}
+    callback.on_log(None, _State(), None, logs = logs)
+    # 12 s of wall time minus the 7 s from GPU completion (4 s) to resume (11 s).
+    assert logs["train_tflops_per_gpu"] == pytest.approx(5 / 5)

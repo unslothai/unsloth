@@ -17,12 +17,16 @@ Attention adds 4 * layers * heads * head_dim FLOPs per causal (query, key) pair 
 (QK^T and AV), L * (L + 1) / 2 pairs for a sequence of length L (L * L when every attention
 layer is bidirectional), times 3 for forward plus backward and times 4 with checkpointing. The
 output head is charged only for the last `logits_to_keep` positions when the forward passes it.
-Only the active copy of a PEFT `modules_to_save` wrapper is counted. Experts held as `nn.Linear` in an `experts` ModuleList
-count top_k / num_experts of their weights; experts stored as 3D tensors (transformers 5),
-sliding windows, convolutions, embedding lookups and the vision / audio towers of multimodal
-models (only the text decoder and head are walked) are not counted, so those models report a
-lower bound. Encoder-decoder models are not reported. A model split over several GPUs with
-`device_map` reports the average per participating GPU.
+Only the active copy of a PEFT `modules_to_save` wrapper and the active LoRA adapters are
+counted. Experts held as `nn.Linear` in an `experts` ModuleList count top_k / num_experts of
+their weights; experts stored as 3D tensors (transformers 5), sliding windows, convolutions,
+embedding lookups and the vision / audio towers of multimodal models (only the text decoder and
+head are walked) are not counted, and layers shared across depth (ALBERT) are counted once, so
+those models report a lower bound. Only `layer_types` entries that are softmax attention get the
+pair term. Backward input grads are charged to every linear, so layouts whose lowest trainable
+parameter sits above a frozen block (head-only training, linear probing) are overstated by up to
+2n per frozen linear below it. Encoder-decoder models are not reported. A model split over
+several GPUs with `device_map` reports the average per participating GPU.
 """
 
 __all__ = [
@@ -49,6 +53,8 @@ _PEAK_TFLOPS_16BIT = (
     ("GH200", 989.0),
     ("B200", 2250.0),
     ("A100", 312.0),
+    ("L40S", 362.05),
+    ("L40", 181.05),
     ("L4", 121.0),
     ("T4", 65.0),
     ("MI300A", 980.6),
@@ -124,6 +130,20 @@ def _inactive_leaves(model):
             used = copies[active[0]]
         held = {id(m) for m in original.modules()} | {id(m) for m in copies.modules()}
         skipped |= held - {id(m) for m in used.modules()}
+    for module in model.modules():
+        branches = [getattr(module, k, None) for k in ("lora_A", "lora_B")]
+        if not all(isinstance(b, torch.nn.ModuleDict) for b in branches):
+            continue
+        active = getattr(module, "active_adapters", None) or []
+        if isinstance(active, str):
+            active = [active]
+        # Mirrors LoraLayer.forward: disabled or merged adapters run only the base layer.
+        if getattr(module, "disable_adapters", False) or getattr(module, "merged", False):
+            active = []
+        for branch in branches:
+            for name, adapter in branch.items():
+                if name not in active:
+                    skipped |= {id(m) for m in adapter.modules()}
     return skipped
 
 
@@ -208,6 +228,12 @@ def count_attention_flops_per_pair(config, gradient_checkpointing = False):
     heads = getattr(config, "num_attention_heads", None)
     if not layers or not heads:
         return 0
+    layer_types = getattr(config, "layer_types", None)
+    if isinstance(layer_types, (list, tuple)) and len(layer_types) == layers:
+        # Hybrids (Qwen3-Next, LFM2, ...) run linear attention, convolutions or recurrences elsewhere.
+        layers = sum(
+            1 for t in layer_types if isinstance(t, str) and "attention" in t and "linear" not in t
+        )
     head_dim = getattr(config, "head_dim", None) or (config.hidden_size // heads)
     forward = 4 * layers * heads * head_dim
     return forward * (4 if gradient_checkpointing else 3)
@@ -238,6 +264,13 @@ def get_peak_tflops(device = None, dtype = torch.float16):
                 return None
             return value
     return None
+
+
+def _runs_unsloth_head_window(model):
+    get_base_model = getattr(model, "get_base_model", None)
+    base = get_base_model() if callable(get_base_model) else model
+    forward = getattr(type(base), "forward", None)
+    return getattr(forward, "__module__", "").startswith("unsloth.")
 
 
 def _gradient_checkpointing_on(model, args):
@@ -299,6 +332,7 @@ class UnslothMFUCallback(TrainerCallback):
         self._bidirectional = False
         self._num_devices = 1
         self._devices = []
+        self._unsloth_head_window = False
         self._enabled = True
         self._reset()
 
@@ -309,6 +343,7 @@ class UnslothMFUCallback(TrainerCallback):
         self._window_start = None
         self._excluded = 0.0
         self._last_step_end = None
+        self._step_end_events = None
         self._paused = False
 
     def _count_batch(self, module, args, kwargs):
@@ -322,6 +357,14 @@ class UnslothMFUCallback(TrainerCallback):
         # Kept on device: one host sync per log window, not per micro batch.
         self._tokens = self._tokens + lengths.sum()
         keep = kwargs.get("logits_to_keep")
+        if self._unsloth_head_window:
+            # Unsloth's Llama / Mistral forwards take the larger int spelling and run the full
+            # head when either spelling is a tensor (models/llama.py CausalLM_fast_forward).
+            legacy = kwargs.get("num_logits_to_keep")
+            if torch.is_tensor(keep) or torch.is_tensor(legacy):
+                keep = 0
+            elif isinstance(legacy, int) and not isinstance(legacy, bool):
+                keep = max(keep if isinstance(keep, int) else 0, legacy)
         if torch.is_tensor(keep) and keep.dim() == 1 and keep.numel() > 0:
             keep = keep.numel()
         if isinstance(keep, int) and not isinstance(keep, bool) and keep > 0:
@@ -347,6 +390,7 @@ class UnslothMFUCallback(TrainerCallback):
         total, _, self._head_per_token = _linear_flops(model, checkpointing)
         self._linear_per_token = total - self._head_per_token
         self._bidirectional = _all_attention_bidirectional(model)
+        self._unsloth_head_window = _runs_unsloth_head_window(model)
         self._attention_per_pair = (
             count_attention_flops_per_pair(config, checkpointing) if config is not None else 0
         )
@@ -372,11 +416,30 @@ class UnslothMFUCallback(TrainerCallback):
         if self._window_start is None:
             self._window_start = now
         elif self._paused and self._last_step_end is not None:
-            self._excluded += now - self._last_step_end
+            paused = now - self._last_step_end
+            if self._step_end_events:
+                # The step's kernels may still be queued at on_step_end: exclude only the time
+                # after every GPU finished them.
+                gaps = []
+                for index, start in self._step_end_events:
+                    end = torch.cuda.Event(enable_timing = True)
+                    end.record(torch.cuda.current_stream(index))
+                    end.synchronize()
+                    gaps.append(start.elapsed_time(end) / 1000)
+                paused = min([paused] + gaps)
+            self._excluded += paused
         self._paused = False
 
     def on_step_end(self, args, state, control, **kwargs):
         self._last_step_end = time.perf_counter()
+        self._step_end_events = None
+        if self._devices and torch.cuda.is_available():
+            # Recording is asynchronous; only a later evaluation or save waits on them.
+            self._step_end_events = []
+            for index in self._devices:
+                event = torch.cuda.Event(enable_timing = True)
+                event.record(torch.cuda.current_stream(index))
+                self._step_end_events.append((index, event))
 
     def on_evaluate(self, args, state, control, **kwargs):
         self._paused = True
