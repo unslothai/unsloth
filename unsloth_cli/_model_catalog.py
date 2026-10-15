@@ -137,17 +137,13 @@ def exported_entries() -> List[ModelEntry]:
         if export_type == "gguf" and _gguf_export_task(path, name, base) in NON_CHAT_TASKS:
             continue
         if export_type == "gguf":
-            # No complete quant means every candidate is zero-byte or short a shard, which survives
-            # resolve_model_config() and fails only at load time. Drop it only when positively unloadable: a
-            # falsy result also means "could not tell".
+            # Drop only when positively unloadable: a falsy result also means "could not tell".
             load_id = _preferred_complete_gguf(path)
             if not load_id and not _local_dir_holds_a_payload(Path(path)):
                 continue
         else:
             load_id = None
-            # Positively loadable, not merely "not torn". scan_exported_models types a checkpoint as "lora" on
-            # adapter_config.json alone, so an interrupted export leaves a config and no weights and the
-            # picker offered a directory load_peft_weights raises ValueError on.
+            # scan_exported_models calls a dir "lora" on adapter_config.json alone; require weights.
             if not _local_dir_holds_a_payload(Path(path)):
                 continue
         entries.append(ModelEntry("Fine-tunes", name, export_type, load_id or path))
@@ -188,13 +184,10 @@ def _reachable_snapshots(repo_path: Path, load_id: Optional[str] = None) -> List
         return []
     pinned = _pinned_snapshot(repo_path, load_id)
     if pinned is not None:
-        # Returned as validated, not re-checked against `available`: inventory_scan resolves the snapshot
-        # it pins while cache_path keeps the configured spelling, so under a symlinked cache root the two
-        # name one directory and fail lexical equality, and the membership test would drop a good pin.
+        # Not re-checked against `available`: under a symlinked cache root the two spellings differ.
         return [pinned]
     try:
-        # ValueError too: an undecodable ref raises UnicodeDecodeError, which is not an OSError, and
-        # uncaught it leaves _safe hiding every Downloaded row over one repo.
+        # ValueError too: an undecodable ref raises UnicodeDecodeError, not OSError.
         ref = (repo_path / "refs" / "main").read_text(encoding = "utf-8").strip()
     except (OSError, ValueError):
         ref = ""
@@ -216,8 +209,7 @@ def _complete_quants(snapshot: Path) -> Optional[set]:
         complete = complete_snapshot_variants(str(snapshot))
     except Exception:
         return None
-    # Empty here means the check could not tell, not that nothing loads: a genuinely incomplete repo
-    # arrives partial and never reaches the picker.
+    # Empty means the check could not tell, not that nothing loads.
     return set(complete) or None
 
 
@@ -416,7 +408,7 @@ def _cached_gguf_load_id(row: dict) -> str:
     resolved = _preferred_complete_gguf(load_id)
     if resolved:
         return resolved
-    # The bare repo id is not a path, so resolve through the snapshot the row was built from.
+    # The bare repo id is not a path; resolve through the row's snapshot.
     cache_path = row.get("cache_path")
     if cache_path:
         try:
@@ -480,8 +472,7 @@ def cached_entries() -> List[ModelEntry]:
         # A cached embedding/CLIP repo has task None like any chat repo; can_chat is the gate.
         if row.get("capabilities", {}).get("can_chat") is False:
             continue
-        # A diffusion repo also carries no task, and its pipeline root has no config for can_chat to read,
-        # so neither gate above catches it.
+        # A diffusion repo carries no task and no root config, so neither gate catches it.
         if row.get("diffusers"):
             continue
         entries.append(ModelEntry("Downloaded", row["repo_id"], "", _cached_model_load_id(row)))
@@ -530,7 +521,6 @@ def _local_dir_holds_a_payload(path: Path) -> bool:
     except OSError:
         return True
     if not is_dir:
-        # A scan row can name the .gguf file itself; anything else still fails open.
         return _gguf_file_is_loadable(path) if path.suffix.lower() == ".gguf" else True
     from hub.services.models.common import (
         _is_diffusers_pipeline_dir,
@@ -539,15 +529,12 @@ def _local_dir_holds_a_payload(path: Path) -> bool:
     )
     from utils.paths.path_utils import is_appledouble_metadata
 
-    # A pipeline keeps its weights in component subdirs, so the torn test below reads an empty root
-    # and would call every pipeline unserviceable.
+    # A pipeline keeps its weights in component subdirs; the torn test would reject every one.
     if _is_diffusers_pipeline_dir(path):
         return True
     if _local_payload_is_torn(path):
         return False
-    # iterdir, not glob("*.gguf"): the glob is case-sensitive on Linux and macOS while
-    # _is_main_gguf_filename lowercases first, so a folder holding Model.GGUF was classified as a
-    # GGUF model and then dropped by this gate.
+    # iterdir, not glob("*.gguf"): the glob is case-sensitive on Linux and macOS.
     try:
         children = list(path.iterdir())
     except OSError:
@@ -627,11 +614,9 @@ def local_folder_entries() -> List[ModelEntry]:
         ) or model.partial:
             continue
         is_gguf = model.model_format == "gguf" or model.path.lower().endswith(".gguf")
-        # No format gate: _dir_model_format reports only "gguf" or None, so a safetensors checkpoint
-        # arrives as None and a "safetensors" literal dropped every non-GGUF model.
+        # No format gate: _dir_model_format reports only "gguf" or None.
         if _local_model_task(model) in NON_CHAT_TASKS:
             continue
-        # No format gate, so embedding and CLIP exports get through; only this stops them.
         if _local_model_can_chat(model) is False:
             continue
         if not _local_dir_holds_a_payload(Path(model.path)):
@@ -664,11 +649,10 @@ def _safe(fn) -> List[ModelEntry]:
     try:
         return fn()
     except Exception as error:
-        # Same truthy set the rest of the tree uses (utils.utils, utils.transformers_version).
+        # Same truthy set as utils.utils and utils.transformers_version.
         if os.environ.get("UNSLOTH_DEBUG", "").strip().lower() in ("1", "true", "yes", "on"):
             raise
-        # Not at module scope: this module must pull in nothing beyond the inventory layer
-        # (test_catalog_inventory_works_without_fastapi_or_routes).
+        # Not at module scope (test_catalog_inventory_works_without_fastapi_or_routes).
         import typer
 
         typer.echo(
@@ -680,8 +664,7 @@ def _safe(fn) -> List[ModelEntry]:
 
 
 def _shorten_names(entries: List[ModelEntry]) -> None:
-    # Counted over EVERY visible label, not just the prefixed ones: a fine-tune already named
-    # Qwen3-0.6B is what an unsloth/Qwen3-0.6B row would collide with once shortened.
+    # Count every visible label: an unprefixed fine-tune can collide once prefixes are shortened.
     counts = {}
     for entry in entries:
         short = entry.name.split("/")[-1].lower()

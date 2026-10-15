@@ -98,8 +98,7 @@ def _get_base_load_in_4bit(model_config) -> bool:
 
 
 def _compare_needs_second_model() -> bool:
-    # MLX cannot toggle the adapter off, so compare loads the base separately; probe MLX quietly since
-    # detect_hardware() prints into the chat and imports torch.
+    # MLX cannot toggle the adapter off; probe quietly since detect_hardware() prints and imports torch.
     try:
         from studio.backend.utils.hardware import hardware as hw
 
@@ -311,7 +310,6 @@ def chat(
     if spec_draft_n_max is not None:
         load_opts["spec_draft_n_max"] = spec_draft_n_max
 
-    # Prefer a running Unsloth server: instant starts, model shared with the UI.
     chat_backend = (
         None
         if (no_server or is_mlx_distributed)
@@ -327,7 +325,7 @@ def chat(
         chat_backend = load_chat_backend(model, model_config = model_config, **load_opts)
 
     name = model_config.display_name or model
-    # Name the quant the server kept, not the local pick (a local dir's display name is a file stem).
+    # Name the quant the server kept, not the local pick.
     kept = getattr(chat_backend, "gguf_variant", None) if server_mode else None
     picked = getattr(model_config, "gguf_variant", None)
     if kept and kept != picked:
@@ -340,7 +338,7 @@ def chat(
     compare_mode = compare
     messages = []
 
-    # Compare's base column: server mode and local MLX load the base separately; local CUDA just toggles the adapter.
+    # Server mode and local MLX load the base separately; local CUDA toggles the adapter.
     dual_compare = compare_blocked is None and (server_mode or _compare_needs_second_model())
     base_backend = None
 
@@ -395,7 +393,7 @@ def chat(
         console.print(f"Chatting with {name}", style = "bold green", markup = False)
         console.print(_HELP, style = "bright_black")
 
-    # legacy_windows: pre-VT consoles print raw ANSI as ←[1;36m garbage.
+    # legacy_windows: pre-VT consoles print raw ANSI.
     you_prompt = (
         _you_prompt(console.is_terminal and not console.legacy_windows) if should_print else ""
     )

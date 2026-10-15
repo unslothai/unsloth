@@ -1,6 +1,4 @@
-# ModelMeta.quant_types below is a dataclass field annotated with a PEP 604 union,
-# which evaluates at class creation and is a TypeError on the 3.9 floor pyproject
-# declares.
+# PEP 604 union in a dataclass field annotation is a TypeError on the 3.9 floor without this.
 from __future__ import annotations
 
 import warnings
@@ -171,9 +169,8 @@ def _register_models(model_meta: ModelMeta, include_original_model: bool = False
             else:
                 _quant_types = quant_types
             for quant_type in _quant_types:
-                # NOTE: models registered with org="unsloth" and QUANT_TYPE.NONE are aliases of
-                # QUANT_TYPE.UNSLOTH
-                _org = "unsloth"  # quantized versions of the original model
+                # org="unsloth" with QuantType.NONE is an alias of QuantType.UNSLOTH.
+                _org = "unsloth"
                 register_model(
                     model_info_cls = model_info_cls,
                     org = _org,
@@ -184,7 +181,6 @@ def _register_models(model_meta: ModelMeta, include_original_model: bool = False
                     quant_type = quant_type,
                     is_multimodal = is_multimodal,
                 )
-            # include original model from releasing organization
             if include_original_model:
                 register_model(
                     model_info_cls = model_info_cls,

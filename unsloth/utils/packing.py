@@ -50,18 +50,15 @@ _XFORMERS_MASK_CACHE: OrderedDict[Tuple[torch.device, Tuple[int, ...], int, bool
     OrderedDict()
 )
 
-# Cache per device for get_packed_info_from_kwargs to avoid repeated D2H sync across layers
+# Per-device caches avoid a repeated D2H sync across layers.
 _PACKED_INFO_CACHE: dict = {}
 
-# Cache per device for build_sdpa_packed_attention_mask to avoid repeated D2H sync across layers
 _SDPA_MASK_CACHE: dict = {}
 
 _SEGMENT_LENGTHS_CACHE: dict = {}
 
-# Cache per device for build_xformers_block_causal_mask to avoid repeated D2H sync across layers
 _XFORMERS_BLOCK_MASK_CACHE: dict = {}
 
-# Cache per device for cover_padded_cu_seqlens to avoid repeated D2H sync across layers
 _PADDED_CU_SEQLENS_CACHE: dict = {}
 
 
@@ -89,9 +86,8 @@ def move_xformers_attention_bias(attn_bias: Any, device: torch.device):
         ):
             return attn_bias
 
-        # Move the device-bearing metadata instead of the top-level mask: older xFormers versions demote
-        # causal masks in their inherited `to` method, and copies also keep later model shards from
-        # rewriting masks retained for backward.
+        # Move the metadata, not the mask: older xFormers demote causal masks in `to`, and copies keep
+        # later shards from rewriting masks retained for backward.
         moved_bias = copy.copy(attn_bias)
         moved_seqinfos = {}
         for name, seqinfo in seqinfos:
@@ -107,7 +103,6 @@ def move_xformers_attention_bias(attn_bias: Any, device: torch.device):
             setattr(moved_bias, name, moved_seqinfos[source_id])
         return moved_bias
 
-    # Biases without sequence metadata can safely use their own move protocol.
     moved_bias = copy.copy(attn_bias)
     move = getattr(moved_bias, "to", None)
     if callable(move):
@@ -1320,7 +1315,7 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
         if reason is not None:
             return _hybrid_reject(reason)
 
-    # Transactional: every module validated above, now wrap each and stash originals.
+    # Transactional: everything validated above before any wrap.
     for module in gated_delta_modules:
         if getattr(module, "_unsloth_varlen_wrapped", False):
             continue
@@ -1575,8 +1570,7 @@ def get_packed_info_from_kwargs(
 
 
 def _with_padding_segment(lengths: Tuple[int, ...], total_tokens: Optional[int]) -> Tuple[int, ...]:
-    # TRL pads the flattened padding-free row to pad_to_multiple_of after the lengths are
-    # taken; the tail gets its own block, since a row outside every block softmaxes to NaN.
+    # TRL pads the flattened row after the lengths are taken; the tail gets its own block, else NaN.
     if total_tokens is None:
         return lengths
     padding = total_tokens - sum(lengths)
@@ -1621,7 +1615,6 @@ def build_xformers_block_causal_mask(
         return None
     if seq_info is not None:
         seq_lengths, _, _ = seq_info
-        # Cache the mask to avoid repeated D2H sync across layers
         device = seq_lengths.device
         params = (sliding_window, total_tokens, is_causal)
         entry = _XFORMERS_BLOCK_MASK_CACHE.get(device)

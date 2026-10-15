@@ -61,7 +61,6 @@ from unsloth.models._attn_mask_compat import (
     _prepare_4d_causal_attention_mask_for_sdpa,
 )
 
-# For Pytorch 2.1.1
 try:
     from transformers.models.gemma2.modeling_gemma2 import (
         Gemma2SdpaAttention,
@@ -74,7 +73,7 @@ except:
 if HAS_FLASH_ATTENTION_SOFTCAPPING:
     from flash_attn import flash_attn_func
 
-# softcap, window_size and cache_leftpad all exist from flash-attn 2.6.3, the HAS_FLASH_ATTENTION_SOFTCAPPING floor.
+# softcap, window_size and cache_leftpad all exist from flash-attn 2.6.3, the softcapping floor.
 _FLASH_DECODE = (
     HAS_FLASH_ATTENTION_SOFTCAPPING
     and DEVICE_TYPE == "cuda"
@@ -98,7 +97,7 @@ def _gemma2_flash_decode(Q, K_cache, V_cache, kv_seq_len, leftpad, scale, softca
         cache_leftpad = leftpad,
         softmax_scale = scale,
         softcap = softcap,
-        # Keeps window - 1 earlier keys plus the current one, as HF and the manual path do.
+        # Keeps window - 1 earlier keys plus the current one, as HF does.
         window_size = (window - 1, 0) if window is not None else (-1, -1),
     )
 
@@ -113,7 +112,7 @@ def _flash_decode_usable(config, hidden_states, attention_mask):
         return False
     key = (hidden_states.device, hidden_states.dtype)
     if key not in _FLASH_DECODE_PROBED:
-        # A wheel built without this GPU's arch fails at launch; find out before any layer relies on it.
+        # A wheel built without this GPU's arch fails at launch, so probe first.
         try:
             q = torch.zeros(
                 1, 1, 1, head_dim, device = hidden_states.device, dtype = hidden_states.dtype
@@ -131,7 +130,6 @@ def _flash_decode_usable(config, hidden_states, attention_mask):
     return _FLASH_DECODE_PROBED[key]
 
 
-# Logit softcapping.
 def Gemma2Attention_fast_forward(
     self,
     hidden_states: torch.Tensor,
@@ -178,7 +176,6 @@ def Gemma2Attention_fast_forward(
 
     rope_position_ids = position_ids if position_ids is not None else kwargs.get("position_ids")
     if rope_position_ids is not None:
-        # Useful for LongRoPE.
         cos_var, sin_var = self.rotary_emb.get_cached(kv_seq_len, device_index)
         Q, K = fast_rope_embedding(Q, K, cos_var, sin_var, rope_position_ids)
     else:
@@ -191,7 +188,6 @@ def Gemma2Attention_fast_forward(
     had_cache = past_key_value is not None
     past_key_value = (K, V) if use_cache else None
 
-    # Only enable if the attention_mask is True.
     use_sliding_window = kwargs.get("use_sliding_window")
     has_sliding_window = (
         use_sliding_window
@@ -232,8 +228,7 @@ def Gemma2Attention_fast_forward(
             },
         )
 
-        # PrefixGrouper seg table rides in **kwargs from the GRPO logprob forward; misuse (KV cache /
-        # padding mask) raises. None means the byte-identical default.
+        # PrefixGrouper seg table rides in **kwargs; None means the default path.
         _pg_seg = resolve_prefix_seg_info(kwargs, past_key_value, attention_mask)
         context = AttentionContext(
             bsz = bsz,
@@ -262,7 +257,6 @@ def Gemma2Attention_fast_forward(
     return A, None, past_key_value
 
 
-# Ported from transformers models/llama/modeling_llama.py#L590
 def Gemma2DecoderLayer_fast_forward(
     self,
     hidden_states: torch.Tensor,
@@ -395,7 +389,6 @@ def Gemma2Attention_fast_forward_inference(
         self.temp_QA = torch.empty((2, bsz, 1, attention_size), dtype = dtype, device = device)
         self.temp_KV = torch.empty((2, bsz, 1, n_kv_heads * head_dim), dtype = dtype, device = device)
         self.RH_Q = torch.empty((bsz, n_heads, 1, head_dim), dtype = dtype, device = device)
-        # Only for Gemma2.
         self.temp_O = torch.empty((bsz, 1, hidden_size), dtype = dtype, device = device)
         self.attention = torch.empty(
             (bsz, n_heads, 1, KV_CACHE_INCREMENT + seq_len + (-seq_len) % 8),
@@ -403,10 +396,8 @@ def Gemma2Attention_fast_forward_inference(
             device = device,
         )
 
-        # Gemma 9b should use 256, not hidden_size // num_attention_heads (224); 27b uses the derived value,
-        # so default to the config. See google/gemma_pytorch commit 03e6575.
+        # Gemma 9b uses query_pre_attn_scalar 256, not hidden_size // heads (224).
         self.scalar = 1.0 / math_sqrt(self.config.query_pre_attn_scalar)
-        # self.scalar = 1.0 / math_sqrt(self.config.hidden_size // self.config.num_attention_heads)
         self.half_head_dim = head_dim // 2
         self.t = self.config.attn_logit_softcapping
         self.reciprocal_t = 1.0 / self.config.attn_logit_softcapping
@@ -432,7 +423,7 @@ def Gemma2Attention_fast_forward_inference(
     Vn = Vn.view(bsz, 1, n_kv_heads, head_dim).transpose(1, 2)
 
     cos, sin = self.rotary_emb.get_cached(kv_seq_len, Qn.device.index)
-    # Transformers 5.x: position_ids may be [batch, full_seq_len]; slice to last.
+    # Transformers 5.x may pass full-length position_ids; keep the last.
     if position_ids.dim() >= 2 and position_ids.shape[-1] > 1:
         position_ids = position_ids[:, -1:]
     cos = cos[position_ids].unsqueeze(1)
@@ -473,7 +464,6 @@ def Gemma2Attention_fast_forward_inference(
         A = fast_linear_forward(self.o_proj, A, out = self.temp_O)
         return A, (Kn, Vn)
 
-    # Handle sliding windows
     sliding_window = self.config.sliding_window
     if use_sliding_window and kv_seq_len > sliding_window:
         start = kv_seq_len - sliding_window
@@ -484,21 +474,18 @@ def Gemma2Attention_fast_forward_inference(
 
     _, _, cached_len, _ = Knn.shape
 
-    # Gemma2 uses manual matmul for all batch sizes since SDPA lacks softcapping (tanh logit scaling);
-    # if PyTorch adds a softcap param, consider SDPA for bsz > 1 to match llama/qwen3.
+    # Manual matmul: SDPA has no softcapping.
     Qn *= self.scalar
     # (Q * scalar) @ K beats (Q @ K) * scalar for stopping overflows; see ggerganov/llama.cpp#7805 (comment 2153349963).
     # Grouped query attention: the KV heads are read in place, not repeated per query head.
     A = _gqa_decode_scores(Qn, Knn, self.attention[:, :, :, :cached_len])
 
-    # Softcapping must happen BEFORE the mask is applied; see google-deepmind/gemma _modules.py and
-    # transformers gemma2 eager_attention_forward.
+    # Softcapping must happen BEFORE the mask is applied.
     A *= self.reciprocal_t
     A.tanh_()
     A *= self.t
 
     if attention_mask is not None and isinstance(attention_mask, torch.Tensor):
-        # Slice mask to match K/V when sliding window is active.
         if attention_mask.shape[-1] != A.shape[-1]:
             attention_mask = attention_mask[:, :, :, -A.shape[-1] :]
         A += attention_mask
@@ -511,7 +498,6 @@ def Gemma2Attention_fast_forward_inference(
     return A, (Kn, Vn)
 
 
-# Ported from transformers models/llama/modeling_llama.py#L825
 def Gemma2Model_fast_forward_inference(
     self,
     input_ids,
@@ -528,7 +514,7 @@ def Gemma2Model_fast_forward_inference(
     input_ids = input_ids[:, : self.max_seq_length]
     hidden_states = self.model.embed_tokens(input_ids)
     hidden_states = hidden_states.to(_get_dtype(dtype_from_config(self.config)))
-    # 3072**0.5 is 55.5000 in bfloat16 against 55.4256 in float32, and 2048**0.5 is 45.2500 against 45.2548.
+    # sqrt(hidden) is rounded to the activation dtype like the reference (bf16 55.5 vs fp32 55.4256).
     if not embedding_applies_scale(self.model.embed_tokens):
         hidden_states *= torch.tensor(math_sqrt(self.config.hidden_size), dtype = hidden_states.dtype)
 
@@ -539,13 +525,12 @@ def Gemma2Model_fast_forward_inference(
     masked_keys = False
     if flash_decode and attention_mask is not None:
         leftpad = (attention_mask.cumsum(-1) == 0).sum(-1, dtype = torch.int32)
-        # cache_leftpad only skips leading zeros; any other masked key needs the manual masks.
+        # cache_leftpad only skips leading zeros; other masked keys need the manual masks.
         if not bool(((attention_mask != 0).sum(-1) + leftpad == attention_mask.shape[-1]).all()):
             flash_decode = False
             leftpad = None
             masked_keys = True
     if flash_decode:
-        # The kernel applies the window itself and skips each row's left padding.
         SWA = None
         GA = None
     elif bsz != 1 or masked_keys:
@@ -563,7 +548,7 @@ def Gemma2Model_fast_forward_inference(
             seq_len,
         )
     else:
-        # One row has no padding; the raw 2D mask cannot be sliced to the sliding window.
+        # The raw 2D mask cannot be sliced to the sliding window.
         SWA = None
         GA = None
     next_decoder_cache = []
@@ -571,7 +556,6 @@ def Gemma2Model_fast_forward_inference(
     for idx, decoder_layer in enumerate(self.model.layers):
         if block_swap is not None:
             block_swap.enter(idx)
-        # For pipeline parallelism every tensor must be on the same device; this movement happens once per GPU in PP.
         layer_device, device_index = per_layer_device(decoder_layer)
         hidden_states, position_ids = move_to_device(layer_device, hidden_states, position_ids)
         if SWA is not None:
@@ -655,8 +639,7 @@ class FastGemma2Model(FastLlamaModel):
         PeftModelForCausalLM.forward = PeftModel_fast_forward
         fix_prepare_inputs_for_generation(Gemma2ForCausalLM)
 
-        # Static KV Cache landed in 4.38.0 and made training much slower (#168,
-        # huggingface/transformers#27931), so the old rotary embeddings are retained.
+        # Static KV cache (4.38.0) made training slower, so the old rotary embeddings are kept.
         import transformers.models.gemma2.modeling_gemma2
 
         transformers.models.gemma2.modeling_gemma2.Gemma2RotaryEmbedding = GemmaFixedRotaryEmbedding
@@ -673,10 +656,10 @@ class FastGemma2Model(FastLlamaModel):
             model, tokenizer, downcast_rope = False, correct_dtype = correct_dtype
         )
 
-        # Gemma returns output * (1 + self.weight); see transformers models/gemma/modeling_gemma.py#L89.
+        # Gemma returns output * (1 + self.weight).
         from transformers.models.gemma2.modeling_gemma2 import Gemma2RMSNorm
 
-        # Freeze all parameters except LoRA first, since += 1 does not agree with requires_grad = True.
+        # Freeze non-LoRA params first: += 1 fails on params requiring grad.
         for name, param in model.named_parameters():
             if ".lora_A." in name or ".lora_B." in name:
                 param.requires_grad_(True)
@@ -685,10 +668,9 @@ class FastGemma2Model(FastLlamaModel):
 
         for name, module in model.named_modules():
             if isinstance(module, Gemma2RMSNorm):
-                # Must be in float32 (keras-nlp gemma/rms_normalization.py#L36); the +1 is left to the Triton kernel
-                # itself.
+                # Must be float32; the Triton kernel applies the +1 itself.
                 if not hasattr(module, "variance_epsilon"):
-                    module.variance_epsilon = module.eps  # Gemma doesn't use variance_epsilon
+                    module.variance_epsilon = module.eps
 
         import gc
 

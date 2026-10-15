@@ -42,7 +42,7 @@ try:
     )
 except:
     transformers_version = Version(transformers_version)
-    if not transformers_version >= Version("4.50.3"):  # TODO: Update when transformers is updated
+    if not transformers_version >= Version("4.50.3"):
         raise ImportError(
             f"Unsloth: Your transformers version of {transformers_version} does not support Qwen3 and Qwen3Moe.\n"
             f"The minimum required version is 4.50.3.\n"
@@ -53,7 +53,6 @@ from unsloth.models._attn_mask_compat import (
     _prepare_4d_causal_attention_mask_for_sdpa,
 )
 
-# For Pytorch 2.1.1
 try:
     from transformers.models.qwen3.modeling_qwen3 import (
         Qwen3SdpaAttention,
@@ -101,8 +100,7 @@ def Qwen3Attention_fast_forward(
     V = V.view(bsz, q_len, n_kv_heads, head_dim).transpose(1, 2)
     seq_info = get_packed_info_from_kwargs(kwargs, hidden_states.device)
 
-    # Qwen3 adds QKNorm, the only difference from Qwen2. A compiled norm mismatches Transformers'
-    # numbers, so use fast_rms_layernorm.
+    # A compiled QK norm mismatches Transformers' numbers, so use fast_rms_layernorm.
     Q = fast_rms_layernorm(self.q_norm, Q)
     K = fast_rms_layernorm(self.k_norm, K)
 
@@ -113,7 +111,6 @@ def Qwen3Attention_fast_forward(
     if past_key_value is not None:
         kv_seq_len += past_key_value[0].shape[-2]
 
-    # Extend RoPE dynamically to fit in VRAM; useful for LongRoPE.
     if position_embeddings and kv_seq_len <= position_embeddings[0].shape[0]:
         cos, sin = position_embeddings
     else:
@@ -144,8 +141,7 @@ def Qwen3Attention_fast_forward(
             "softmax_scale": getattr(self, "softmax_scale", None),
         },
     )
-    # PrefixGrouper seg table rides in **kwargs from the GRPO logprob forward; misuse (KV cache /
-    # padding mask) raises. None means the byte-identical default.
+    # PrefixGrouper seg table rides in **kwargs; None means the default path.
     _pg_seg = resolve_prefix_seg_info(kwargs, past_key_value, attention_mask)
     context = AttentionContext(
         bsz = bsz,
@@ -217,7 +213,6 @@ def Qwen3Attention_fast_forward_inference(
         self.temp_KV = torch.empty((2, bsz, 1, n_kv_heads * head_dim), dtype = dtype, device = device)
         self.RH_Q = torch.empty((bsz, n_heads, 1, head_dim), dtype = dtype, device = device)
 
-        # Mistral Nemo 12b has weird dimensions.
         if attention_size != hidden_size:
             self.temp_O = torch.empty((bsz, 1, hidden_size), dtype = dtype, device = device)
         else:
@@ -257,10 +252,10 @@ def Qwen3Attention_fast_forward_inference(
     Qn = Qn.transpose(1, 2)
     Kn = Kn.transpose(1, 2)
 
-    # Must be done 2 steps before hitting full on a short KV cache, or it errors.
+    # Must extend 2 steps before the KV cache is full, or it errors.
     self.rotary_emb.extend_rope_embedding(Vn, seq_len + 2)
     cos, sin = self.rotary_emb.get_cached(kv_seq_len, Qn.device.index)
-    # Transformers 5.x: position_ids may be [batch, full_seq_len]; slice to last.
+    # Transformers 5.x: position_ids may be [batch, full_seq_len].
     if position_ids.dim() >= 2 and position_ids.shape[-1] > 1:
         position_ids = position_ids[:, -1:]
     cos = cos[position_ids].unsqueeze(1)
@@ -286,7 +281,6 @@ def Qwen3Attention_fast_forward_inference(
     Kn = self.paged_attention_K[:kv_seq_len].permute(1, 2, 0, 3)
     Vn = self.paged_attention_V[:kv_seq_len].permute(1, 2, 0, 3)
 
-    # Handle sliding windows
     sliding_window = getattr(self.config, "sliding_window", None)
     if sliding_window is not None and kv_seq_len > sliding_window:
         start = kv_seq_len - sliding_window
@@ -297,7 +291,6 @@ def Qwen3Attention_fast_forward_inference(
     else:
         Knn, Vnn = Kn, Vn
 
-    # When qlen == vlen and attn_mask is None, causal attention is the right choice.
     Q_len = Qn.shape[-2]
     K_len = Knn.shape[-2]
     if attention_mask is not None and attention_mask.dim() == 2:
@@ -382,15 +375,14 @@ class FastQwen3Model(FastLlamaModel):
         PeftModelForCausalLM.forward = PeftModel_fast_forward
         fix_prepare_inputs_for_generation(Qwen3ForCausalLM)
 
-        # Retain the old rotary embeddings: the static KV cache (transformers 4.38.0) slowed training.
-        # See unslothai/unsloth#168 and huggingface/transformers#27931.
+        # Static KV cache (4.38.0) slowed training (#168), so the old rotary embeddings are retained.
         import transformers.models.qwen3.modeling_qwen3
 
         transformers.models.qwen3.modeling_qwen3.Qwen3RotaryEmbedding = LlamaRotaryEmbedding
         return
 
     @staticmethod
-    def from_pretrained(  # TODO: Change after release
+    def from_pretrained(
         model_name = "Qwen/Qwen3-7B",
         max_seq_length = 4096,
         dtype = None,

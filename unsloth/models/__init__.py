@@ -24,7 +24,6 @@ from .diffusion_trainer import *
 try:
     from .falcon_h1 import FastFalconH1Model
 except:
-    # falcon_h1 absent before transformers 4.53.0; skip
     pass
 from .dpo import PatchDPOTrainer, PatchKTOTrainer
 from .speculative import get_mtp_head

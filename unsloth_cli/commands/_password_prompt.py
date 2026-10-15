@@ -18,7 +18,6 @@ import sys
 from typing import Callable, TextIO
 
 # Keep in sync with studio/backend/models/auth.py ChangePasswordRequest and auth/storage.py.
-# The bound is `new_password` min_length.
 MIN_PASSWORD_LENGTH = 8
 
 # Mirror of studio/backend/auth/terminal_prompt.py; keep the name in sync.
@@ -125,19 +124,15 @@ def _read_masked_posix(
     chars: list[str] = []
     try:
         with _RestoreTtyOnSignals(fd, old_attrs):
-            # cbreak + ISIG off (mirrors terminal_prompt.py): with ISIG on, Ctrl-Z suspends mid-read and leaves
-            # the shell no-echo.
+            # ISIG off (mirrors terminal_prompt.py): Ctrl-Z would suspend mid-read and leave no-echo.
             tty.setcbreak(fd)
             new_attrs = termios.tcgetattr(fd)
             new_attrs[3] &= ~termios.ISIG
             termios.tcsetattr(fd, termios.TCSADRAIN, new_attrs)
-            # FIRST keystroke only: a detached pty is a terminal nobody will type
-            # into, and blocking there means the socket never binds.
+            # First keystroke only: a detached pty would block forever and the socket never binds.
             if first_key_timeout is not None and not _wait_for_first_key(first_key_timeout):
                 raise PromptUnattended
-            # os.read + incremental decoder with errors="replace": text-mode read(1) can raise or yield a lone
-            # surrogate that later crashes pbkdf2.
-            # It raises UnicodeDecodeError.
+            # os.read + errors="replace": text-mode read(1) can raise or yield a lone surrogate.
             decoder = codecs.getincrementaldecoder(sys.stdin.encoding or "utf-8")("replace")
             submitted = False
             while not submitted:

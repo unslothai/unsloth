@@ -77,7 +77,7 @@ def check_native_kernels(bnb, device_type):
         # 0.45.5, the floor in pyproject.toml, on a native-load failure.
         raise AttributeError("Unsloth: `bitsandbytes.functional.lib` is None.")
     for symbol in bitsandbytes_symbols(device_type):
-        handle = getattr(lib, symbol)  # AttributeError here is itself a failed check
+        handle = getattr(lib, symbol)
         if not hasattr(handle, "restype"):
             raise AttributeError(
                 f"Unsloth: `bitsandbytes.functional.lib.{symbol}` is not a native "

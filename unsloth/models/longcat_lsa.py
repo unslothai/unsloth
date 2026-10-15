@@ -173,7 +173,7 @@ def _classes():
             if "head_dim" not in kwargs and "qk_rope_head_dim" in kwargs:
                 kwargs["head_dim"] = kwargs["qk_rope_head_dim"]
             super().__init__(**kwargs)
-            # The n-gram hash radix and table sizes; kept apart from vocab_size so a resized vocab reloads.
+            # The n-gram hash radix; kept apart from vocab_size so a resized vocab reloads.
             self.oe_ngram_vocab_size = oe_ngram_vocab_size or self.vocab_size
 
     class _FrozenWeight(nn.Module):
@@ -348,7 +348,6 @@ def _classes():
                 resets = None
                 pos = position_ids
                 if pos is None and attention_mask is not None and attention_mask.dim() == 2:
-                    # Same positions generate() derives from the mask; only the n-gram uses them.
                     mask = attention_mask.long()
                     pos = (mask.cumsum(-1) - 1).masked_fill(mask == 0, 0)[
                         ..., -input_ids.shape[-1] :

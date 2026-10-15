@@ -48,5 +48,4 @@ if __name__ == "__main__":
     import unsloth_cli
 
     unsloth_cli._prepare_entry_point()
-    # A returned value must become the exit status, like the console script's sys.exit(app()).
     sys.exit(unsloth_cli.app(prog_name = "unsloth"))

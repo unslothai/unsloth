@@ -26,7 +26,7 @@ def main(argv):
             file = sys.stderr,
         )
         return 1
-    # The backend imports its siblings as top-level `utils.*`, as the Studio server does.
+    # The backend imports its siblings as top-level `utils.*`.
     sys.path.insert(0, str(backend))
     from utils.kernel_install import main as install_kernels_main
 

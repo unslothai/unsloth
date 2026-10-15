@@ -24,19 +24,19 @@ __all__ = [
     "resolve_responses_only_num_proc",
 ]
 
-# Escape hatch: a positive integer forces that count verbatim (no cap, no start-method veto), "0"/"none" forces in-process tokenization.
+# Positive int forces that count verbatim; "0"/"none" forces in-process tokenization.
 NUM_PROC_ENV_VAR = "UNSLOTH_DATASET_NUM_PROC"
 
-# Upper bound for the AUTO count only; raise it via NUM_PROC_ENV_VAR. The old min(max(cpu_count + 4, 2), 64) forked up to 64 workers, each handed its own dill-pickled tokenizer closure and an Arrow shard over a pipe: measured on 8000 rows, more workers were slower than none at every size (None 6.3s against 64 workers 21.7s).
+# Cap for the AUTO count only; more workers measured slower than none (dill-pickled closures).
 AUTO_NUM_PROC_CAP = 8
 
-# ~680 MB peak RSS per worker, flat across counts; 1 GB for headroom.
+# ~680 MB peak RSS per worker; 1 GB for headroom.
 WORKER_MEMORY_BUDGET_GB = 1.0
 
-# Share of AVAILABLE RAM tokenization may spend; the rest belongs to the run that follows. This is what bounds #2693, where OOM-killed workers surface only as "One of the subprocesses has abruptly died during map operation".
+# Share of available RAM tokenization may use; OOM-killed workers only show "abruptly died".
 MEMORY_BUDGET_FRACTION = 0.5
 
-# Mirrors _MIN_ROWS_FOR_MULTIPROC, a local inside dataset_utils.train_on_responses_only (hence not importable): below it that helper maps a split in-process unless handed an explicit count. resolve_responses_only_num_proc needs the threshold to keep that guard; a canary in tests/test_dataset_num_proc.py catches drift.
+# Mirrors zoo's local _MIN_ROWS_FOR_MULTIPROC; a canary in tests/test_dataset_num_proc.py catches drift.
 ZOO_MIN_ROWS_FOR_MULTIPROC = 5_000
 
 _WARNED: set = set()
@@ -63,7 +63,7 @@ def _unpinned_default_start_method(module) -> Optional[str]:
 
     try:
         name = module.context._default_context._default_context._name
-        # Only if the platform actually offers it: a Windows runner answered 'fork' while get_all_start_methods() was ['spawn'], which would read Windows as forkable (#3211 / #3397).
+        # Only if the platform offers it: Windows can answer 'fork' while only 'spawn' is available.
         if isinstance(name, str) and name and (not methods or name in methods):
             return name
     except Exception:
@@ -109,13 +109,11 @@ def _cgroup_cpu_quota() -> Optional[float]:
         return None
 
 
-# Module constant so tests can point the unaided reader at a fixture tree.
 CGROUP_ROOT = "/sys/fs/cgroup"
 
 
 def _cgroup_first_line(path: str) -> Optional[str]:
     try:
-        # encoding named explicitly: a locale-dependent read of these ASCII kernel files crashes or produces mojibake on a Windows console codepage, and CI polices every read/write for it.
         with open(path, "r", encoding = "utf-8") as f:
             return f.readline().strip()
     except OSError:
@@ -157,7 +155,7 @@ def _proc_self_cgroup() -> list:
         with open("/proc/self/cgroup", "r", encoding = "utf-8") as f:
             return [line.strip() for line in f if line.strip()]
     except OSError:
-        return []  # not Linux, or procfs is hidden
+        return []
 
 
 def _cgroup_free_bytes_unaided() -> Optional[int]:
@@ -183,7 +181,6 @@ def _cgroup_free_bytes_unaided() -> Optional[int]:
     if os.path.isdir(v1_root):
         rel = None
         for line in lines:
-            # "<id>:<controllers>:<path>"; mounts are often combined.
             parts = line.split(":", 2)
             if len(parts) == 3 and "memory" in parts[1].split(","):
                 rel = parts[2]
@@ -216,7 +213,7 @@ def _cgroup_free_bytes() -> Optional[int]:
             _read_first_line,
         )
     except Exception:
-        # An older unsloth_zoo has no such private helpers. Do the same pairing here rather than reading the public limit alone: an 8GB cgroup with 6GB already resident would otherwise report 8GB free, and memory pressure is the one condition this ceiling exists for.
+        # Older zoo lacks these helpers; pair limit with usage, or an 8GB cgroup with 6GB used reports 8GB free.
         return _cgroup_free_bytes_unaided()
 
     def _used(path):
@@ -271,7 +268,7 @@ def _usable_cpus() -> Optional[int]:
     try:
         cpus = min(cpus, len(os.sched_getaffinity(0)))
     except (AttributeError, OSError):
-        pass  # not Linux, or the call is unavailable: the host count stands
+        pass
 
     quota = _cgroup_cpu_quota()
     if quota is not None and quota > 0:
@@ -293,7 +290,6 @@ def _clamp_by_memory(num_proc: int) -> Optional[int]:
     """Bound a worker count by RAM. None means "do not use workers at all". Applies to explicit counts too: the old heuristic capped only the auto path, so a caller passing a number (Unsloth passes ``max(1, cpu_count // 4)``) could ask for dozens of workers on a machine with no room. That is what OOMs."""
     affordable = _affordable_workers()
     if affordable is None:
-        # No memory reading, so honour the request rather than serialising a machine that may be perfectly capable.
         return num_proc
 
     if affordable < 2:
@@ -327,7 +323,6 @@ def _auto_num_proc() -> Optional[int]:
     if cpus is None:
         return None
     if cpus <= 1:
-        # Workers would only contend for the single core they are pinned to.
         return None
 
     return _clamp_by_memory(min(max(cpus // 2, 2), AUTO_NUM_PROC_CAP))
@@ -392,13 +387,12 @@ def get_dataset_num_proc(
         A worker count >= 2, or this layer's in-process sentinel (``None`` at a
         call site, ``1`` at the config layer).
     """
-    # 1. The environment override wins over everything, uncapped and unvetoed, so a user who knows their workload is fork-safe is never downgraded.
+    # 1. The env override wins, uncapped and unvetoed.
     env_set, env_value = _from_environment()
     if env_set:
-        # In-process still has to be encoded for this layer, or UNSLOTH_DATASET_NUM_PROC=0 (the hatch the dead-worker message recommends) would inflate a config instead of removing workers.
+        # Encode in-process too, or UNSLOTH_DATASET_NUM_PROC=0 would not remove workers here.
         return _serial(serial_as_none) if env_value is None else env_value
 
-    # 2. Workers are unusable whatever was requested; see _workers_unusable_reason.
     unusable = _workers_unusable_reason()
     if unusable is not None:
         if isinstance(desired, int) and not isinstance(desired, bool) and desired > 1:
@@ -410,11 +404,11 @@ def get_dataset_num_proc(
             )
         return _serial(serial_as_none)
 
-    # 3. Normalise "no multiprocessing" requests. `1` is the trap: callers pass it meaning "serial" and datasets >= 4.1 hands them a Pool(1).
+    # 3. `1` means serial to callers, but datasets >= 4.1 hands them a Pool(1).
     if isinstance(desired, int) and not isinstance(desired, bool) and desired <= 1:
         return _serial(serial_as_none)
 
-    # 4. Auto-size when no usable request was made, then bound by memory. A non-int, or a bool (an int subclass), is not a request.
+    # 4. Auto-size when no usable int request (bools excluded), then bound by memory.
     if desired is None or not isinstance(desired, int) or isinstance(desired, bool):
         num_proc = _auto_num_proc()
     else:
@@ -425,7 +419,7 @@ def get_dataset_num_proc(
     return num_proc
 
 
-# The message datasets raises when a pool worker dies. It never reads the child's exit status, so an OOM kill, a segfault and a genuine exception all arrive as this one string, which is why #2693 looks untraceable.
+# datasets raises this when a pool worker dies, whatever the cause (OOM kill, segfault, exception).
 _WORKER_DIED = "subprocesses has abruptly died"
 
 
@@ -506,7 +500,7 @@ def _serial_for_the_zoo(value: Optional[int]) -> Optional[int]:
 
 def resolve_responses_only_num_proc(trainer, num_proc):
     """Bound the worker count ``train_on_responses_only`` hands to ``map()``. ``dataset_utils.train_on_responses_only`` still auto-sizes with the uncapped ``min(max(cpu_count + 4, 2), 64)`` heuristic this module replaces everywhere else, the shape behind issue #2693. Until that copy is wired onto this module the bound is applied from outside, and two properties of its API constrain what can be expressed. Serial is the config-layer sentinel, not the call-site one: that helper reads ``None`` as "size it for me", so on ``fork`` handing it ``None`` would *inflate* the count rather than remove it, and ``1`` is the closest expressible request, in-process on any release that reads it as such, while under spawn the trade flips, since each ``Pool(1)`` child re-imports the user's ``__main__`` (#3211 / #3397) and ``None`` is safe because its auto path vetoes non-fork itself. That is exactly what ``serial_as_none = False`` encodes, so defer to it, then re-check with ``_serial_for_the_zoo``, since that veto reads the other module. An explicit count also disables its per-split small-split guard, so a small eval split alongside a large train split picks up workers it would not have had: worth it only when a split is big enough to have been parallelized at all, which is what the row check below establishes."""
-    # Mirror that helper's own test, so "explicit" means the same on both sides (it treats bools as auto, since type(True) is not int).
+    # Mirror the zoo helper: bools count as auto.
     was_auto = num_proc is None or type(num_proc) is not int
     rows = _largest_split_rows(trainer)
     small = rows is None or rows < ZOO_MIN_ROWS_FOR_MULTIPROC
@@ -514,16 +508,14 @@ def resolve_responses_only_num_proc(trainer, num_proc):
     if not was_auto:
         resolved = get_dataset_num_proc(num_proc, serial_as_none = False)
         if resolved == 1 and small:
-            # Serial with every split under the threshold, so the helper's own guard runs each in-process.
             return None
         return _serial_for_the_zoo(resolved)
 
     if small:
-        # The escape hatch must win here too.
         env_set, env_value = _from_environment()
         if env_set and env_value is not None:
             return env_value
-        # Otherwise it would have gone in-process anyway, and its guard yields None, which is more in-process than the 1 expressible here. Safe whatever the start method.
+        # It would have gone in-process anyway; safe whatever the start method.
         return num_proc
 
     return _serial_for_the_zoo(get_dataset_num_proc(None, serial_as_none = False))

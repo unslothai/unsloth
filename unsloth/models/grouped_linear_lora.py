@@ -99,7 +99,7 @@ def _refuse_fp8_grouped_merge(modules):
 
 
 def _preflight_peft_merges():
-    # PEFT merges layer by layer: refusing only in the grouped layer leaves earlier layers merged.
+    # PEFT merges layer by layer: refusing only here leaves earlier layers merged.
     try:
         from peft.tuners.tuners_utils import BaseTuner
     except Exception:

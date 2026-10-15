@@ -130,7 +130,6 @@ def _sentence_forward(model, input, **kwargs):
     if (
         torch.compiler.is_compiling()
         or not model.training
-        # A routed keyword mask overrides the one in features.
         or "attention_mask" in kwargs
         or not _mean_pooling_pipeline(model)
     ):
@@ -235,7 +234,6 @@ def enable_sentence_transformer_unpadding(model, auto = False):
     # Without a registered mask builder the padded fallback would silently lose its padding mask.
     AttentionMaskInterface.register(_ATTENTION, sdpa_mask)
     config._attn_implementation = _ATTENTION
-    # None means ST forwards every feature key unfiltered.
     if transformer.model_forward_params is not None:
         transformer.model_forward_params = set(transformer.model_forward_params) | {_MASK}
     encoder = base.encoder

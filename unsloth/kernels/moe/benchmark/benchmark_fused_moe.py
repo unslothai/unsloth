@@ -53,7 +53,7 @@ def run_benchmark_forward(
     kernel_config_fwd: KernelConfigForward = None,
     bs: int = 1,
 ):
-    torch.manual_seed(SEED)  # Redundant under pytest (autouse fixture in conftest.py)
+    torch.manual_seed(SEED)
     device = "cuda"
     hidden_size = config.hidden_size
 
@@ -90,7 +90,7 @@ def run_benchmark_backward(
     dtype: torch.dtype,
     bs = 1,
 ):
-    torch.manual_seed(SEED)  # Redundant under pytest (autouse fixture in conftest.py)
+    torch.manual_seed(SEED)
     device = "cuda"
     hidden_size = config.hidden_size
 
@@ -99,7 +99,6 @@ def run_benchmark_backward(
 
     output, _ = ref_model(X)
 
-    # Prevent autotuning the forward pass.
     from grouped_gemm.kernels.forward import _autotuned_grouped_gemm_forward_kernel
 
     _autotuned_grouped_gemm_forward_kernel.configs = _autotuned_grouped_gemm_forward_kernel.configs[
@@ -138,7 +137,6 @@ def setup_model(
     if isinstance(config, Qwen3MoeConfig):
         ref_model = Qwen3MoeSparseMoeBlock(config).to(device, dtype)
 
-        # Triton kernel grouped gemm version of the MoE block, the thing under test.
         tt_model = Qwen3MoeFusedGroupedGEMMBlock.from_hf(
             ref_model,
             permute_x = permute_x,
@@ -275,15 +273,9 @@ if __name__ == "__main__":
         type = int,
         default = [DEFAULT_NUM_STAGES[0], DEFAULT_NUM_STAGES[-1]],
     )
-    parser.add_argument(
-        "--use_tma_load_w", action = "store_true"
-    )  # Auto-parametrized per kernel config; no need to specify
-    parser.add_argument(
-        "--use_tma_load_x", action = "store_true"
-    )  # Auto-parametrized per kernel config; no need to specify
-    parser.add_argument(
-        "--use_tma_load_dy", action = "store_true"
-    )  # Auto-parametrized per kernel config; no need to specify
+    parser.add_argument("--use_tma_load_w", action = "store_true")
+    parser.add_argument("--use_tma_load_x", action = "store_true")
+    parser.add_argument("--use_tma_load_dy", action = "store_true")
     parser.add_argument(
         "--mode",
         type = str,
@@ -318,8 +310,7 @@ if __name__ == "__main__":
         end_time = time.time()
         print(f"Total time: {end_time - start_time:.4f} seconds")
 
-    # Prefer the autotuner: the MoE block needs 2 forward configs (gate_up_proj, down_proj) and 4
-    # backward (dW + dX each), and this benchmark supports only 1 config at a time.
+    # The MoE block needs 6 kernel configs but this benchmark supports one, so prefer autotune.
     else:
         assert False, "Use autotune for now"
         kernel_configs = create_kernel_configs(args, args.permute_x, args.permute_y)

@@ -38,7 +38,7 @@ from unsloth_cli.commands.start import (
 _MAX_RESULT_CHARACTERS = 100_000
 _CANCEL_POLL_SECONDS = 0.1
 _CANCEL_GRACE_SECONDS = 2.0
-# A server that accepts and never answers would block the child and the parent forever; 0 restores the unbounded wait.
+# A server that never answers would block both processes; 0 restores the unbounded wait.
 _DEFAULT_TIMEOUT_SECONDS = 1800.0
 
 
@@ -370,8 +370,7 @@ def serve(
             cancel_event.set()
 
     def handle_shutdown(_signum: int, _frame: Any) -> None:
-        # Claude Code may send SIGINT repeatedly; only the first unwinds stdin, later ones must not
-        # interrupt process-tree cleanup.
+        # Only the first SIGINT unwinds stdin; later ones must not interrupt process-tree cleanup.
         first_signal = not shutdown_started.is_set()
         shutdown_started.set()
         cancel_active()

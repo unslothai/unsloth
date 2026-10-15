@@ -49,8 +49,6 @@ def convert_args_to_list(args):
 def _triton_supports_tma():
     """Check if current Triton version supports TMA API."""
     import triton.language as tl
-
-    # Both the old experimental and the new stable API names.
     return hasattr(tl, "make_tensor_descriptor") or hasattr(
         tl, "_experimental_make_tensor_descriptor"
     )
@@ -71,7 +69,6 @@ def get_forward_configs(
     num_stages = DEFAULT_NUM_STAGES,
     num_ctas = DEFAULT_NUM_CTAS,
 ):
-    # Auto-detect TMA support
     if TMA_LOAD_X is None:
         TMA_LOAD_X = _TRITON_HAS_TMA
     if TMA_LOAD_W is None:
@@ -367,13 +364,11 @@ def prune_kernel_configs_fwd(configs: list[triton.Config], args, **kwargs):
 
     pruned_configs = []
     for config in configs:
-        # disable TMA if gpu does not support it
         maybe_disable_tma(config)
 
         if common_prune_criteria(config, kwargs, dtype):
             continue
         if config.kwargs["USE_TMA_LOAD_X"] and kwargs["PERMUTE_X"]:
-            # Dynamically disable TMA_LOAD_X for permuted X, and TMA_LOAD_dY for permuted Y.
             config.kwargs["USE_TMA_LOAD_X"] = False
         if config.kwargs["USE_TMA_STORE"] and kwargs["PERMUTE_Y"]:
             continue
@@ -394,7 +389,6 @@ def prune_dX_configs(configs: List[triton.Config], args, **kwargs):
         if common_prune_criteria(config, kwargs, dtype):
             continue
         if config.kwargs["USE_TMA_LOAD_dY"] and kwargs["PERMUTE_Y"]:
-            # dynamically disable TMA_LOAD_dY for permuted Y
             config.kwargs["USE_TMA_LOAD_dY"] = False
         if config.kwargs["USE_TMA_STORE"] and kwargs["PERMUTE_X"]:
             continue

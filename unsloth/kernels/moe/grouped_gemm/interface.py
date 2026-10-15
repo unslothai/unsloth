@@ -51,7 +51,6 @@ def _check_tma_support():
 
 _SUPPORTS_TMA = _check_tma_support()
 
-# triton.set_allocator is Triton 3.0+.
 _HAS_SET_ALLOCATOR = hasattr(triton, "set_allocator")
 
 
@@ -110,7 +109,6 @@ def _grouped_gemm_forward_impl(
     permute_y: bool = False,
     fuse_mul_post: bool = False,
     autotune: bool = False,
-    # Kernel tuning params: must be tuned, else poor performance.
     BLOCK_SIZE_M: int = 32,
     BLOCK_SIZE_N: int = 32,
     BLOCK_SIZE_K: int = 32,
@@ -119,8 +117,7 @@ def _grouped_gemm_forward_impl(
     use_tma_load_w: bool = False,
     use_tma_load_x: bool = False,
     use_tma_store: bool = False,
-    # Software pipelining; no effect until the loop is re-written.
-    flatten: bool = True,
+    flatten: bool = True,  # Software pipelining; no effect until the loop is re-written.
     debug: bool = False,
 ) -> torch.Tensor:
     """Grouped GEMM forward pass for MoE MLPs.
@@ -346,7 +343,6 @@ def _grouped_gemm_dX_impl(
     assert M_total % topk == 0, f"M_total ({M_total}) must be divisible by topk ({topk})"
     num_tokens = M_total // topk
 
-    # The kernel only reads gather_indices under permute_x / permute_y, so it stays optional otherwise.
     if permute_x or permute_y:
         assert (
             gather_indices is not None

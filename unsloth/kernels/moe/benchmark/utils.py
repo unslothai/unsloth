@@ -32,7 +32,6 @@ def create_merged_results(
     test_config_cols = list(test_config_dict.keys())
     for col in test_config_cols:
         df[col] = test_config_dict[col]
-    # Reorder columns so the test config columns come first.
     df = df[test_config_cols + kernel_result_cols]
     return df
 

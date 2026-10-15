@@ -23,7 +23,6 @@ import torch
 __all__ = ["restore_remote_code_non_persistent_buffers"]
 
 _SCALAR_TYPES = (bool, int, float, str, type(None))
-# Arguments that only choose where buffers are built, not their values.
 _PLACEMENT_ARGUMENTS = ("device",)
 
 
@@ -50,10 +49,8 @@ def _constructor_kwargs(module):
     kwargs = {}
     for name, parameter in list(signature.parameters.items())[1:]:
         if parameter.kind in (parameter.VAR_POSITIONAL, parameter.VAR_KEYWORD):
-            # Whatever went through *args / **kwargs cannot be recovered from the instance.
             return None
         if name == "config":
-            # A composite child may have been built with a sub-config: trust only a kept one.
             value = module.__dict__.get("config", None)
             if value is None:
                 return None
@@ -63,12 +60,10 @@ def _constructor_kwargs(module):
         elif name in module.__dict__:
             value = module.__dict__[name]
         else:
-            # Guessing the default for an unkept argument could build plausible but wrong buffers.
             return None
         if value is inspect.Parameter.empty:
             return None
         if isinstance(value, (torch.Tensor, torch.nn.Module)):
-            # The buffers may be derived from it and it cannot be reproduced safely.
             return None
         kwargs[name] = value
     return kwargs
@@ -167,7 +162,6 @@ def _fresh_non_persistent_buffers(
         for name in buffers:
             if value is fresh._buffers.get(name, None):
                 aliases[attribute] = name
-    # After the aliases are read: the probe below replaces fresh's buffers.
     written = _written_by_init_weights(fresh, buffers, init_weights)
     return buffers, aliases, written
 

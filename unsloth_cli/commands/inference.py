@@ -124,7 +124,7 @@ def inference(
             )
         raise typer.Exit(code = 1)
 
-    # Under mlx.launch every rank must enter the local MLX path, not just rank 0 talking to a warm server.
+    # Under mlx.launch every rank must enter the local MLX path.
     load_opts = dict(
         hf_token = hf_token,
         max_seq_length = max_seq_length,

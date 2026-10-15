@@ -55,7 +55,7 @@ Qwen_2_5_Meta = ModelMeta(
 Qwen_2_5_VLMeta = ModelMeta(
     org = "Qwen",
     base_name = "Qwen",
-    instruct_tags = ["Instruct"],  # No base, only instruction tuned
+    instruct_tags = ["Instruct"],
     model_version = "2.5",
     model_sizes = ["3", "7", "32", "72"],
     model_info_cls = QwenVLModelInfo,
@@ -74,8 +74,7 @@ QwenQwQMeta = ModelMeta(
     quant_types = [QuantType.NONE, QuantType.BNB, QuantType.UNSLOTH, QuantType.GGUF],
 )
 
-# No QuantType.NONE: the unquantized mirror unsloth/QVQ-72B-Preview was removed from the Hub,
-# leaving only the bnb-4bit build; upstream Qwen/QVQ-72B-Preview is still registered.
+# No QuantType.NONE: the unquantized unsloth/QVQ-72B-Preview mirror was removed from the Hub.
 QwenQVQPreviewMeta = ModelMeta(
     org = "Qwen",
     base_name = "QVQ",

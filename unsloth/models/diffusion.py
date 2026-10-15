@@ -47,11 +47,9 @@ __all__ = [
     "is_diffusion_model_type",
 ]
 
-# transformers model_type strings routed to this slow path.
 DIFFUSION_MODEL_TYPES = ("diffusion_gemma", "diffusion_gemma4")
 
-# Default LoRA targets are the standard nn.Linear modules in the shared Gemma-4 backbone: the 128
-# MoE experts are fused 3D Parameters, not nn.Linear, so PEFT LoRA cannot target them.
+# The fused 3D MoE experts are not nn.Linear, so PEFT LoRA cannot target them.
 DIFFUSION_LORA_TARGETS = [
     "q_proj",
     "k_proj",
@@ -62,7 +60,7 @@ DIFFUSION_LORA_TARGETS = [
     "down_proj",
 ]
 
-# The vision tower uses a custom Linear with the same suffix names; exclude it so only the text path is wrapped.
+# The vision tower's custom Linear shares suffix names.
 DIFFUSION_LORA_EXCLUDE = r".*(vision_tower|embed_vision).*"
 
 
@@ -143,7 +141,6 @@ def _resolve_diffusion_model_class(config):
         cls = getattr(transformers, arch, None)
         if cls is not None:
             return cls
-    # Fallbacks across naming revisions.
     for name in (
         "DiffusionGemmaForBlockDiffusion",
         "DiffusionGemma4ModelForBlockDiffusion",
@@ -203,8 +200,7 @@ def _load_diffusion_config(
         from transformers import DiffusionGemma4Config
 
         aliased = DiffusionGemma4Config.from_dict(cd)
-        # Only this object knows the rewrite happened: the checkpoint on disk still says diffusion_gemma,
-        # so anything rebuilding the config from model_name hits the AutoConfig failure just caught.
+        # The checkpoint still says diffusion_gemma, so a rebuild from model_name would fail.
         aliased._unsloth_legacy_alias = True
         return aliased
 
@@ -215,7 +211,7 @@ class FastDiffusionModel:
     @staticmethod
     def from_pretrained(
         model_name = "google/diffusiongemma-26B-A4B-it",
-        max_seq_length = None,  # API-compat; diffusion uses canvas_length
+        max_seq_length = None,
         dtype = None,
         load_in_4bit = False,
         load_in_8bit = False,
@@ -223,7 +219,6 @@ class FastDiffusionModel:
         full_finetuning = False,
         token = None,
         device_map = "auto",
-        # Planner hints for device_map = "unsloth"; see resolve_unsloth_device_map.
         device_map_planner_kwargs = None,
         trust_remote_code = False,
         attn_implementation = None,  # family default: eager for DiffusionGemma (reference golden logits)
@@ -239,7 +234,6 @@ class FastDiffusionModel:
             dtype = torch.float16
         assert dtype in (torch.float16, torch.bfloat16, torch.float32)
 
-        # Honor an explicit local_files_only; else fall back to the offline env vars.
         local_files_only = kwargs.pop("local_files_only", None)
         if local_files_only is None:
             local_files_only = (
@@ -307,8 +301,7 @@ class FastDiffusionModel:
         else:
             model_cls = _resolve_diffusion_model_class(config)
 
-        # Prefetch the whole repo root so the weight load is a cache hit. No subfolder: the pipeline loads
-        # every component subfolder, so narrowing would leave unet/vae/text_encoder to Xet.
+        # No subfolder: the pipeline loads every component subfolder.
         maybe_prefetch_hf_snapshot(
             model_name,
             token = token,
@@ -318,7 +311,6 @@ class FastDiffusionModel:
             fast_inference = False,
             force_download = kwargs.get("force_download", False),
             use_safetensors = kwargs.get("use_safetensors"),
-            # Forward the variant (e.g. "fp16") so the warm keeps variant weights.
             variant = kwargs.get("variant"),
         )
 
@@ -345,8 +337,7 @@ class FastDiffusionModel:
             else:
                 qcfg = BitsAndBytesConfig(load_in_8bit = True)
 
-        # Same leaf-level resolution as llama.py and vision.py: an unresolved "unsloth" becomes
-        # torch.device("unsloth") in transformers and raises instead of loading.
+        # An unresolved "unsloth" becomes torch.device("unsloth") in transformers and raises.
         device_map = resolve_unsloth_device_map(
             requested_device_map(device_map),
             model_name,
@@ -361,8 +352,6 @@ class FastDiffusionModel:
                 device_map_planner_kwargs,
                 kwargs,
             ),
-            # This leaf popped local_files_only off kwargs above, so the helper gets the resolved value rather
-            # than the caller's raw mapping.
             **planner_hub_kwargs(
                 {
                     "cache_dir": cache_dir,
@@ -374,7 +363,6 @@ class FastDiffusionModel:
             token = token,
             trust_remote_code = trust_remote_code,
             revision = revision,
-            # The dtype the load below uses, which overrides the checkpoint's own.
             **add_dtype_kwargs(dtype),
             **planner_quantization_kwargs(
                 load_in_4bit = load_in_4bit,
@@ -393,14 +381,11 @@ class FastDiffusionModel:
             local_files_only = local_files_only,
             cache_dir = cache_dir,
         )
-        # Match the load's weight format to the warm (None/auto already matches).
         if kwargs.get("use_safetensors") is not None:
             load_kwargs["use_safetensors"] = kwargs["use_safetensors"]
-        # Forward the variant to the real load so it reads the warmed variant weights.
         if kwargs.get("variant") is not None:
             load_kwargs["variant"] = kwargs["variant"]
 
-        # The same config the plan above was sized against.
         if qcfg is not None:
             load_kwargs["quantization_config"] = qcfg
 
@@ -592,7 +577,7 @@ class FastDiffusionModel:
                 else LoraConfig(**lora_kwargs)
             )
         except TypeError:
-            # Older PEFT without exclude_modules: scope the target to the text decoder by regex.
+            # Older PEFT lacks exclude_modules: scope the target by regex.
             lora_kwargs["target_modules"] = (
                 r".*model\.decoder\.layers\.\d+\.(self_attn\.[qkvo]_proj|mlp\.(gate|up|down)_proj)"
             )

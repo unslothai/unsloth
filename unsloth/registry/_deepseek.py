@@ -162,7 +162,6 @@ def _list_deepseek_r1_distill_models():
     for model in models:
         model_id = model.id
         model_name = model_id.split("/")[-1]
-        # Parse out only the version.
         version = model_name.removeprefix("DeepSeek-R1-Distill-")
         distill_models.append(version)
 
