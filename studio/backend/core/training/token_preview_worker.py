@@ -186,7 +186,7 @@ def _preview(tokenizer, config: dict, request: dict) -> dict:
 
     model_name = config["model_name"]
     if request.get("text") is not None:
-        texts, final_format = [request["text"]], ""
+        texts, final_format = [request["text"]], str(request.get("final_format") or "").lower()
     else:
         # Formatting may set a template on the tokenizer it is given; training formats with a throwaway
         # tokenizer too, and masks with the one the model load returns.
@@ -277,11 +277,13 @@ def run_token_preview_process(*, cmd_queue: Any, resp_queue: Any, config: dict) 
             return
         reply: dict[str, Any] = {"id": request.get("id")}
         if load_error is not None:
-            reply.update(ok = False, error = load_error)
-        else:
-            try:
-                reply.update(ok = True, result = _preview(tokenizer, config, request))
-            except Exception as exc:  # noqa: BLE001 - one bad request must not end the worker
-                traceback.print_exc()
-                reply.update(ok = False, error = str(exc) or type(exc).__name__)
+            # Fatal: the parent starts a fresh worker for the next request, so a retry can succeed.
+            reply.update(ok = False, error = load_error, fatal = True)
+            resp_queue.put(reply)
+            return
+        try:
+            reply.update(ok = True, result = _preview(tokenizer, config, request))
+        except Exception as exc:  # noqa: BLE001 - one bad request must not end the worker
+            traceback.print_exc()
+            reply.update(ok = False, error = str(exc) or type(exc).__name__)
         resp_queue.put(reply)

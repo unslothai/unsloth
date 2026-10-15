@@ -1737,6 +1737,19 @@ def _token_preview_rows(request: TokenPreviewRequest, hf_token) -> list[dict]:
     return rows
 
 
+def _tokenizer_cached(repo_id: str) -> bool:
+    from huggingface_hub import try_to_load_from_cache
+    from utils.hf_cache_settings import get_hf_cache_paths
+
+    try:
+        hit = try_to_load_from_cache(
+            repo_id, "tokenizer_config.json", cache_dir = str(get_hf_cache_paths().hub_cache)
+        )
+    except Exception:
+        return False
+    return isinstance(hit, str)
+
+
 @router.post("/token-preview")
 async def token_preview(
     request: TokenPreviewRequest,
@@ -1748,29 +1761,32 @@ async def token_preview(
     from core.training.token_preview import TokenPreviewError, run_token_preview
     from routes.models import _require_model_access_or_caller_token
     from utils.account_context import current_account_id
+    from hub.utils.hf_tokens import recording_a_request_token_fetch
     from utils.models.unsloth_mirror import unsloth_public_mirror
+    from utils.paths import is_local_path
+    from utils.utils import anonymous_and_offline
 
     if request.text is None and not request.dataset_name:
         raise HTTPException(status_code = 400, detail = "Pick a dataset or type a text to preview.")
     hf_token = account_hf_token(hf_token)
     model_name = request.model_name.strip()
-    local_path = request.model_local_path if request.model_known_cached else None
     account_path(model_name, reference = True)
     if request.dataset_name:
         account_path(request.dataset_name, reference = True)
-    await _require_model_access_or_caller_token(
-        model_name,
-        hf_token,
-        local_path = local_path,
-        prefer_local_cache = bool(local_path),
-    )
+    await _require_model_access_or_caller_token(model_name, hf_token)
+    # By repo id, not the picked cache folder: a cached repo still resolves from disk, and a folder
+    # path would skip the account checks above.
+    source = unsloth_public_mirror(model_name, request.load_in_4bit) or model_name
+    remote = not is_local_path(source)
+    if remote and anonymous_and_offline(hf_token, repo_id = source):
+        raise HTTPException(status_code = 404, detail = "This model is not available offline.")
 
     def _run() -> dict:
         rows = None if request.text is not None else _token_preview_rows(request, hf_token)
-        source = local_path or unsloth_public_mirror(model_name, request.load_in_4bit) or model_name
         payload = {
             "rows": rows,
             "text": request.text,
+            "final_format": request.final_format,
             "dataset_name": request.dataset_name,
             "format_type": request.format_type,
             "custom_format_mapping": request.custom_format_mapping,
@@ -1779,11 +1795,18 @@ async def token_preview(
             "train_on_completions": request.train_on_completions and not request.is_cpt,
             "max_seq_length": request.max_seq_length,
         }
-        return run_token_preview(
-            (current_account_id(), model_name, source, hf_token),
-            {"model_name": model_name, "tokenizer_source": source, "hf_token": hf_token},
-            payload,
+        # Recorded only when the tokenizer is not on disk yet, the one case where this call fetches it.
+        fetch = (
+            recording_a_request_token_fetch(hf_token, source, "model")
+            if remote and not _tokenizer_cached(source)
+            else contextlib.nullcontext()
         )
+        with fetch:
+            return run_token_preview(
+                (current_account_id(), model_name, source, hf_token),
+                {"model_name": model_name, "tokenizer_source": source, "hf_token": hf_token},
+                payload,
+            )
 
     try:
         return await asyncio.to_thread(_run)

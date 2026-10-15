@@ -36,6 +36,8 @@ type TokenPreviewArgs = {
   config: TrainingConfigState;
   hfToken: string | null;
   text?: string;
+  /** The dataset's format from an earlier preview, so typed text is masked the way the run is. */
+  finalFormat?: string | null;
   seed?: number;
   numSamples?: number;
   signal?: AbortSignal;
@@ -47,6 +49,7 @@ export async function fetchTokenPreview({
   config,
   hfToken,
   text,
+  finalFormat,
   seed = 0,
   numSamples = 3,
   signal,
@@ -65,8 +68,6 @@ export async function fetchTokenPreview({
     },
     body: JSON.stringify({
       model_name: start.model_name,
-      model_local_path: start.model_local_path,
-      model_known_cached: start.model_known_cached,
       load_in_4bit: start.load_in_4bit,
       dataset_name: datasetName || null,
       subset: start.subset,
@@ -81,6 +82,7 @@ export async function fetchTokenPreview({
       num_samples: numSamples,
       seed,
       text: text ?? null,
+      final_format: finalFormat ?? null,
     }),
   });
   if (!res.ok) {

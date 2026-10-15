@@ -179,3 +179,42 @@ def test_the_subprocess_tokenizes_and_masks_typed_text(real_worker):
         piece for _, piece, is_trained in masked["samples"][0]["tokens"] if is_trained
     )
     assert trained.startswith("hello") and "user" not in trained
+
+
+def test_typed_text_carries_the_dataset_format(captured):
+    _call_route(
+        TokenPreviewRequest(model_name = "unsloth/Qwen3-0.6B", text = "hi", final_format = "alpaca")
+    )
+    assert captured[-1][2]["final_format"] == "alpaca"
+
+
+def test_a_tokenizer_load_failure_ends_the_worker(monkeypatch):
+    service = token_preview._TokenPreviewService()
+    stopped = []
+    replies = [{"id": 1, "ok": False, "error": "offline", "fatal": True}]
+
+    def fake_start(key, config):
+        service._proc = types.SimpleNamespace(is_alive = lambda: True)
+        service._cmd_queue = types.SimpleNamespace(put = lambda item: None)
+        service._resp_queue = types.SimpleNamespace(get = lambda timeout: replies.pop(0))
+        service._key, service._served = key, False
+
+    monkeypatch.setattr(service, "_start_locked", fake_start)
+    monkeypatch.setattr(service, "_stop_locked", lambda: stopped.append(True))
+    with pytest.raises(token_preview.TokenPreviewError, match = "offline"):
+        service.preview(("k",), {}, {"text": "hi"})
+    assert stopped[-1] is True
+
+
+def test_a_supplied_cache_folder_is_never_the_tokenizer_source(captured):
+    _call_route(
+        TokenPreviewRequest.model_validate(
+            {
+                "model_name": "unsloth/Qwen3-0.6B",
+                "text": "hi",
+                "model_known_cached": True,
+                "model_local_path": "/somewhere/else",
+            }
+        )
+    )
+    assert "/somewhere" not in captured[-1][1]["tokenizer_source"]

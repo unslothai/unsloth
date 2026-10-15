@@ -230,6 +230,7 @@ type PreviewQuery = {
   config: TrainingConfigState;
   hfToken: string | null;
   text?: string;
+  finalFormat?: string | null;
   seed?: number;
 };
 
@@ -384,11 +385,12 @@ function TokenPreviewContent() {
     () => (multimodal ? null : { config, hfToken, seed }),
     [config, hfToken, seed, multimodal],
   );
-  const textQuery = useMemo(
-    () => (tab === "text" ? { config, hfToken, text } : null),
-    [config, hfToken, text, tab],
-  );
   const datasetState = useTokenPreview(datasetQuery);
+  const finalFormat = datasetState.data?.final_format ?? null;
+  const textQuery = useMemo(
+    () => (tab === "text" ? { config, hfToken, text, finalFormat } : null),
+    [config, hfToken, text, tab, finalFormat],
+  );
   const textState = useTokenPreview(textQuery, TEXT_DEBOUNCE_MS);
   const summary = datasetState.data ?? textState.data;
 

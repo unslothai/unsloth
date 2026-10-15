@@ -754,8 +754,6 @@ class TokenPreviewRequest(BaseModel):
     the model's tokenizer is read, never its weights."""
 
     model_name: str = Field(..., min_length = 1)
-    model_local_path: Optional[str] = None
-    model_known_cached: bool = False
     load_in_4bit: bool = True
     dataset_name: Optional[str] = None
     subset: Optional[str] = None
@@ -770,6 +768,8 @@ class TokenPreviewRequest(BaseModel):
     num_samples: int = Field(3, ge = 1, le = 8)
     seed: int = 0
     text: Optional[str] = Field(None, max_length = 200_000)
+    # The dataset's format from an earlier preview, so typed text gets the template and markers it would.
+    final_format: Optional[str] = None
 
 
 class TrainingStartRequestStatus(BaseModel):

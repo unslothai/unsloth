@@ -140,6 +140,8 @@ class _TokenPreviewService:
                 if reply.get("id") == request_id:
                     break
             self._served = True
+            if reply.get("fatal"):
+                self._stop_locked()
         if not reply.get("ok"):
             raise TokenPreviewError(reply.get("error") or "Token preview failed.")
         return reply["result"]
