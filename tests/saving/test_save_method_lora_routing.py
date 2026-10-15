@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import ast
 import contextlib
+import json
 import os
 import sys
 import types
@@ -192,6 +193,8 @@ _GENERIC_SAVE_REAL_HELPERS = (
     "_is_adapter_save_method",
     "_honours_safe_serialization",
     "_refuse_unsaveable_text_core",
+    "_requests_float32",
+    "_stamp_saved_config_float32",
 )
 _GENERIC_SAVE_STUBBED_HELPERS = frozenset(
     {
@@ -221,6 +224,7 @@ def _routing_environment(monkeypatch, model):
         *_GENERIC_SAVE_REAL_HELPERS,
         "unsloth_generic_save",
         os = os,
+        json = json,
         PeftModel = _PeftModel,
         PreTrainedTokenizerBase = type("Tokenizer", (), {}),
         ProcessorMixin = type("Processor", (), {}),
@@ -241,6 +245,7 @@ def _routing_environment(monkeypatch, model):
         torch = types.SimpleNamespace(
             bfloat16 = "bfloat16",
             float16 = "float16",
+            float32 = "float32",
             save = lambda *args, **kwargs: None,
             cuda = types.SimpleNamespace(is_bf16_supported = lambda: False),
         ),
