@@ -18295,6 +18295,12 @@ async def load_model_gated(
                             if exc.capped:
                                 request = request.model_copy(update = {"force_alongside": True})
                                 continue
+                            if request.voice:
+                                # Voice mode speaks for the chat model, so it never replaces it.
+                                raise HTTPException(
+                                    status_code = 409,
+                                    detail = "Not enough memory to keep the voice loaded next to the chat model.",
+                                )
                             # Fits nowhere beside the others: replace the active model, as before,
                             # unless its chats refuse that, checked before anything else changes.
                             routed_slot.set(None)
@@ -18423,8 +18429,9 @@ async def _select_load_slot(request: LoadRequest) -> Optional[_ExtraSlot]:
     if not await asyncio.to_thread(get_multi_model_enabled):
         if model_slots.slots:
             await asyncio.to_thread(model_slots.unload_idle)
-        return None
-    if not request.alongside:
+        if not request.voice:
+            return None
+    if not (request.alongside or request.voice):
         return None
     orchestrator = _peek_inference_backend()
     if getattr(orchestrator, "_managed_engine", None) is not None:
@@ -18436,6 +18443,7 @@ async def _select_load_slot(request: LoadRequest) -> Optional[_ExtraSlot]:
         await asyncio.to_thread(LlamaCppBackend),
         await asyncio.to_thread(InferenceOrchestrator),
         current_account_id(),
+        voice = request.voice,
     )
     slot.llama._owns_pidfile = False
     register_serving_backend(slot.llama)

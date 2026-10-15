@@ -110,6 +110,10 @@ class LoadRequest(BaseModel):
         False,
         description = "Load alongside even when it only partly fits the free GPU memory",
     )
+    voice: bool = Field(
+        False,
+        description = "Voice mode's speaking model: kept next to the chat model even with multi-model off",
+    )
     native_path_lease: Optional[str] = Field(
         None, description = "Frontend-visible signed native path grant"
     )
