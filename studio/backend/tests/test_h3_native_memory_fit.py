@@ -179,6 +179,12 @@ def test_an_explicit_mode_on_a_uma_card_keeps_its_placement_and_gets_the_reserve
     assert [f for f in fit.flags if f != fit.max_vram] == [f for f in LOW_VRAM if f != "-1"]
 
 
+def test_a_uma_card_without_a_gtt_reading_keeps_max_vram_minus_one():
+    """Windows has no amdgpu sysfs, so no GTT reading: the reserve stays off and the committed -1 is kept."""
+    fit = _fit(AUTO, "auto", gtt = None, host = 100 * GIB, uma = True)
+    assert fit.refusal is None and fit.max_vram is None and fit.flags == AUTO
+
+
 def test_a_discrete_card_keeps_max_vram_minus_one():
     fit = _fit(AUTO, "auto")
     assert fit.max_vram is None and fit.flags[:4] == AUTO

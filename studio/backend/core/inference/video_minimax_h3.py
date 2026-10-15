@@ -1607,7 +1607,8 @@ def h3_native_memory_fit(
         te_on_cpu: bool,
         note: Optional[str] = None,
     ) -> H3NativeFit:
-        if not (reserve_pinned and "--max-vram" in fitted):
+        # Only where GTT was read: without sysfs (Windows) nothing measured the pool the reserve is taken from.
+        if not (reserve_pinned and vulkan_gtt and "--max-vram" in fitted):
             return H3NativeFit(fitted, note = note)
         # A negative --max-vram reserves that much of the free memory sd.cpp reads at startup.
         reserve = pinned(te_on_cpu) - spill + H3_NATIVE_PINNED_MARGIN_BYTES
