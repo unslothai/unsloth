@@ -56,3 +56,10 @@ export function voiceIdServes(serving: string, id: string): boolean {
   const folder = b.split("/").pop() ?? b;
   return a.endsWith(`/${folder}`) || a.endsWith(`\\${folder}`);
 }
+
+// The GPU fit estimate counts what is already loaded (the chat model), so a small
+// card refuses the voice there; audio.cpp's TTS voices still run on the CPU.
+export function voiceLoadNeedsCpu(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return /enough (free )?memory|out of memory/i.test(message);
+}

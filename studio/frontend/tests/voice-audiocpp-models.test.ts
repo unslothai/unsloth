@@ -13,6 +13,7 @@ import {
   VOICE_TTS_MODELS,
   migrateVoiceTtsModel,
   voiceIdServes,
+  voiceLoadNeedsCpu,
   voiceTtsCanClone,
 } from "../src/features/chat/voice/voice-models.ts";
 import { AUDIO_CPP_STT_MODELS } from "../src/features/settings/stores/stt-model-catalog.ts";
@@ -56,4 +57,15 @@ test("the serving list matches the voice by load path or repo id", () => {
   );
   assert.ok(!voiceIdServes("unsloth/Qwen3-1.7B-GGUF", VOICE_DEFAULT_TTS_MODEL));
   assert.ok(!voiceIdServes("", VOICE_DEFAULT_TTS_MODEL));
+});
+
+test("a voice the GPU has no room for is loaded on the CPU instead", () => {
+  assert.ok(
+    voiceLoadNeedsCpu(
+      new Error("No single GPU has enough free memory for this native audio model."),
+    ),
+  );
+  assert.ok(voiceLoadNeedsCpu(new Error("Not enough memory to keep the voice loaded")));
+  assert.ok(!voiceLoadNeedsCpu(new Error("Repository not found")));
+  assert.ok(!voiceLoadNeedsCpu(undefined));
 });
