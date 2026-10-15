@@ -2303,7 +2303,6 @@ export function useChatModelRuntime() {
               stateBeforeUnload.ctxCheckpoints,
             cacheRam: pendingLoadConfig?.cacheRam ?? stateBeforeUnload.cacheRam,
           };
-          // Default engine only; vLLM / SGLang take their precision from engine_precision.
           const loadIn4bitChoice = stateBeforeUnload.params.loadIn4bit !== false;
           let loadEngineFields = {
             engine: stateBeforeUnload.params.engine ?? "auto",

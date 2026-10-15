@@ -613,7 +613,6 @@ export function residentRuntimeMatchesConfig(
     return true;
   }
   if ((status.engine ?? "auto") !== (config.engine ?? "auto")) return false;
-  // Null for GGUF; otherwise the precision the default engine was asked for.
   if (
     (status.engine ?? "auto") === "auto" &&
     typeof status.load_in_4bit === "boolean" &&
