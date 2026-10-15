@@ -3261,14 +3261,14 @@ def test_a_connection_call_leaves_the_media_tracker(client, monkeypatch):
 def test_stop_after_the_connection_answered_is_not_acknowledged(client, monkeypatch):
     import asyncio
 
-    import hub.services.models.account_access as account_access
+    from utils.account_context import current_account_id
 
     async def run():
         done = asyncio.get_running_loop().create_future()
         done.set_result(None)
         task = asyncio.ensure_future(done)
         await task
-        inference_routes._external_image_runs[account_access.account_scope()] = {task}
+        inference_routes._external_image_runs[current_account_id()] = {task}
         try:
             return inference_routes._stop_external_image_runs()
         finally:
