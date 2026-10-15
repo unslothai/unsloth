@@ -190,9 +190,11 @@ skills="${UNSLOTH_STUDIO_SKILLS_HOME:-}"
 if [ -n "$skills" ]; then
     (umask 077 && mkdir -p -- "$skills") || log "WARNING: cannot create $skills"
     agents="${HOME:-/root}/.agents/skills"
-    if [ -L "$agents" ] || [ ! -e "$agents" ]; then
-        [ "$(readlink -- "$agents")" = "$skills" ] \
-            || { (umask 077 && mkdir -p -- "${agents%/*}") && ln -sfnT -- "$skills" "$agents"; } \
+    current="$(readlink -- "$agents" || true)"
+    if [ "$current" = "$skills" ]; then
+        :
+    elif { [ ! -e "$agents" ] && [ ! -L "$agents" ]; } || [ "$current" = "$HOME_DIR/skills" ]; then
+        { (umask 077 && mkdir -p -- "${agents%/*}") && ln -sfnT -- "$skills" "$agents"; } \
             || log "WARNING: cannot link $agents to $skills"
     else
         log "WARNING: Unsloth Studio lists and saves skills in $skills, not in $agents"

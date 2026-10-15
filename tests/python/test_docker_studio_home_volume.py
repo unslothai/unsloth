@@ -600,6 +600,18 @@ def test_a_skills_home_set_at_run_time_retargets_the_baked_link(tmp_path):
     assert (tmp_path / "mine").is_dir()
 
 
+def test_a_users_own_agents_skills_link_is_left_alone(tmp_path):
+    app, home, root = _app(tmp_path), tmp_path / "home", tmp_path / "root"
+    (root / ".agents").mkdir(parents = True)
+    (root / ".agents" / "skills").symlink_to(tmp_path / "dotfiles")
+    res = _link(
+        app, home, env = {"UNSLOTH_STUDIO_SKILLS_HOME": str(home / "skills"), "HOME": str(root)}
+    )
+    assert res.returncode == 0, res.stderr
+    assert os.readlink(root / ".agents" / "skills") == str(tmp_path / "dotfiles")
+    assert str(home / "skills") in res.stderr
+
+
 def test_a_mounted_agents_skills_folder_is_left_alone_and_named(tmp_path):
     app, home, root = _app(tmp_path), tmp_path / "home", tmp_path / "root"
     (root / ".agents" / "skills" / "mine").mkdir(parents = True)
