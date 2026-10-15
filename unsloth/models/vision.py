@@ -1163,20 +1163,22 @@ def _zoo_supports_idefics3_fast_inference():
 
 
 def _zoo_supports_new_vlm_fast_inference(model_types):
-    # Older unsloth_zoo releases rebuild these with wrong / missing weights from vLLM.
+    """Only Gemma-4 Unified / Muse Glimmer loads probe the zoo; every other model passes."""
+    unified = any(t in ("gemma4_unified", "gemma4_unified_text") for t in model_types)
+    muse = any(t in ("muse_glimmer", "muse_glimmer_text") for t in model_types)
+    if not (unified or muse):
+        return True
     try:
         from types import SimpleNamespace
         from unsloth_zoo.empty_model import _is_gemma4_config, get_model_layer_config
 
-        if "gemma4_unified" in model_types or "gemma4_unified_text" in model_types:
-            if not _is_gemma4_config(SimpleNamespace(model_type = "gemma4_unified")):
-                return False
-        if "muse_glimmer" in model_types or "muse_glimmer_text" in model_types:
-            if (
-                "model.vision_tower.layers.{kk}.attn.proj"
-                not in get_model_layer_config()["vision_layers"]
-            ):
-                return False
+        if unified and not _is_gemma4_config(SimpleNamespace(model_type = "gemma4_unified")):
+            return False
+        if muse and (
+            "model.vision_tower.layers.{kk}.attn.proj"
+            not in get_model_layer_config()["vision_layers"]
+        ):
+            return False
         return True
     except Exception:
         return False
@@ -3202,12 +3204,12 @@ class FastBaseModel:
                     "Unsloth: Idefics3 fast_inference needs a newer unsloth_zoo. "
                     "Please run `pip install --upgrade unsloth_zoo`."
                 )
-            if not _zoo_supports_new_vlm_fast_inference(model_types):
-                raise RuntimeError(
-                    f"Unsloth: {model_type_arch} fast_inference needs a newer unsloth_zoo. "
-                    "Please run `pip install --upgrade unsloth_zoo`."
-                )
         # Outside the VLM block: text_only = True has is_vlm_config False.
+        if fast_inference and not _zoo_supports_new_vlm_fast_inference(model_types):
+            raise RuntimeError(
+                f"Unsloth: {model_type_arch} fast_inference needs a newer unsloth_zoo. "
+                "Please run `pip install --upgrade unsloth_zoo`."
+            )
         if (
             fast_inference
             and any(arch in VLLM_DENSE_NEEDS_ZOO_VLM for arch in model_types)

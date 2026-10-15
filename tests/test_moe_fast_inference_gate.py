@@ -241,3 +241,40 @@ def test_dense_gemma4_zoo_probe_reads_the_clamp_bound_templates(monkeypatch):
     assert probe() is False
     install(None)
     assert probe() is False
+
+
+def _new_vlm_probe():
+    for node in TREE.body:
+        if (
+            isinstance(node, ast.FunctionDef)
+            and node.name == "_zoo_supports_new_vlm_fast_inference"
+        ):
+            namespace = {}
+            exec(
+                compile(ast.Module(body = [node], type_ignores = []), str(VISION_PATH), "exec"),
+                namespace,
+            )
+            return namespace["_zoo_supports_new_vlm_fast_inference"]
+    raise AssertionError("_zoo_supports_new_vlm_fast_inference not found")
+
+
+def test_new_vlm_zoo_gate_only_probes_unified_and_muse(monkeypatch):
+    import sys
+    import types
+
+    probe = _new_vlm_probe()
+    old_zoo = types.ModuleType("unsloth_zoo.empty_model")  # neither probed helper exists
+    package = sys.modules.get("unsloth_zoo") or types.ModuleType("unsloth_zoo")
+    monkeypatch.setitem(sys.modules, "unsloth_zoo", package)
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.empty_model", old_zoo)
+    monkeypatch.setattr(package, "empty_model", old_zoo, raising = False)
+    # An older zoo must not refuse models it already rebuilds.
+    for model_types in (["qwen2_5_vl"], ["gemma4"], ["qwen3_5_moe"], ["llama"]):
+        assert probe(model_types) is True, model_types
+    for model_types in (["gemma4_unified"], ["gemma4_unified_text"], ["muse_glimmer_text"]):
+        assert probe(model_types) is False, model_types
+
+
+def test_new_vlm_zoo_gate_covers_text_only_loads():
+    gate, parents = _gate("needs a newer unsloth_zoo", "_zoo_supports_new_vlm_fast_inference")
+    assert not any("is_vlm_config" in test for test in parents)
