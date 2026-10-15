@@ -673,7 +673,9 @@ def test_explicit_leaf_list_reaches_native_per_expert_linears():
         model, regex, ["q_proj", "down_proj"], auto_regex = True, explicit_leaves = True
     )
     assert found == ["down_proj"]
-    assert not any(re.fullmatch(widened, n) for n in names if n.endswith((".gate_proj", ".up_proj")))
+    assert not any(
+        re.fullmatch(widened, n) for n in names if n.endswith((".gate_proj", ".up_proj"))
+    )
 
     # Expert-only lists: no attention leaf, every layer sparse.
     for leaves in (["down_proj"], ["gate_proj", "up_proj", "down_proj"]):
@@ -694,9 +696,7 @@ def test_explicit_leaf_list_widening_respects_the_family_filters():
         model, regex, ["q_proj", "o_proj"], auto_regex = True, explicit_leaves = True
     )
     assert kept == regex and found == []
-    kept, _, found = U.widen_target_regex_to_expert_submodules(
-        model, regex, regex, auto_regex = True
-    )
+    kept, _, found = U.widen_target_regex_to_expert_submodules(model, regex, regex, auto_regex = True)
     assert kept == regex and found == []
     # Native experts outside language layers stay out.
     model = _native_qwen3_moe_4x_model(with_visual = True)

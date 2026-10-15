@@ -9223,7 +9223,11 @@ def _native_expert_parents(model, target_modules):
 
 
 def widen_target_regex_to_expert_submodules(
-    model, target_modules, detect_targets, auto_regex: bool, explicit_leaves: bool = False
+    model,
+    target_modules,
+    detect_targets,
+    auto_regex: bool,
+    explicit_leaves: bool = False,
 ):
     """Widen a generated regex to ``experts.<i>.<leaf>``; a user-written regex is never widened.
     explicit_leaves: the caller's list went through get_peft_regex, which skips native experts
