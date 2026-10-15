@@ -140,8 +140,11 @@ export const BUDGET = {
   // module the eager browser store imports for tab close and duplicate (6,771,852 -> 6,773,496 B raw, 2,035,948 ->
   // 2,036,414 B transfer against 82f16ca55, one machine and build, Node 24, chunk count unchanged at 95). Raised by
   // that growth.
-  transferBytes: 2_036_414,
-  rawBytes: 6_773_496,
+  // Hub Run refusing audio models neither Audio nor chat can run (#13812) adds 77 B raw / 65 B transfer
+  // (6,773,445 -> 6,773,522 B raw, 2,036,392 -> 2,036,457 B transfer against 59ab069b5, one machine and build,
+  // Node 24, chunk count unchanged at 95). Raised by that growth.
+  transferBytes: 2_036_479,
+  rawBytes: 6_773_573,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
