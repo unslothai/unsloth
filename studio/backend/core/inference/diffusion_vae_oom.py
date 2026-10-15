@@ -262,6 +262,7 @@ def install(vae: Any, logger: Any = None) -> bool:
         prev_tiling = bool(getattr(vae, "use_tiling", False))
         current = tile_attrs(vae)
         vae._unsloth_vae_oom_halvings = level
+        vae._unsloth_vae_oom_active = True  # every retry, the stock-tile one (level 0) included
         try:
             vae.use_tiling = True
             if level:
@@ -271,6 +272,7 @@ def install(vae: Any, logger: Any = None) -> bool:
             vae.use_tiling = prev_tiling
             _set_attrs(vae, current)
             vae._unsloth_vae_oom_halvings = 0
+            vae._unsloth_vae_oom_active = False
 
     def _level_quality_ok(level: int, z: Any, args: tuple, kwargs: dict) -> Optional[bool]:
         """Halved tiles decode a corner crop (2 tiles a side, so one seam each way; 2 frames) within MIN_PSNR_DB of the
@@ -307,6 +309,22 @@ def install(vae: Any, logger: Any = None) -> bool:
         if z.dim() == 5:
             sl[2] = slice(0, min(int(z.shape[2]), 2))
         crop = z[tuple(sl)]
+        batch = int(z.shape[0])
+
+        def one_sample(a: Any) -> Any:
+            # batch-sized companions of ``z`` (LTX-2's ``temb``) follow it to one sample; everything else as given
+            shape = getattr(a, "shape", None)
+            if (
+                shape is not None
+                and len(shape) >= 1
+                and int(shape[0]) == batch
+                and callable(getattr(a, "__getitem__", None))
+            ):
+                return a[:1]
+            return a
+
+        args = tuple(one_sample(a) for a in args)
+        kwargs = {k: one_sample(v) for k, v in kwargs.items()}
         prev_tiling = bool(getattr(vae, "use_tiling", False))
         try:
             import torch
@@ -478,7 +496,7 @@ def uninstall(vae: Any) -> None:
 
 def oom_halving_active(vae: Any) -> bool:
     """True while a halved retry runs; wide-tile overrides then defer to the stock (halved) tiled decode."""
-    return bool(getattr(vae, "__dict__", {}).get("_unsloth_vae_oom_halvings", 0))
+    return bool(getattr(vae, "__dict__", {}).get("_unsloth_vae_oom_active", False))
 
 
 __all__ = [

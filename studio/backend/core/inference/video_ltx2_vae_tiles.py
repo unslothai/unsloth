@@ -14,6 +14,7 @@ import os
 import types
 from typing import Any, Optional
 
+from .diffusion_vae_oom import oom_halving_active
 from .diffusion_vae_tiling import axis_weights as _axis_weights
 
 WIDE_TILES_ENV = "UNSLOTH_VIDEO_VAE_WIDE_TILES"
@@ -288,7 +289,7 @@ def install(vae: Any, logger: Any = None) -> bool:
         causal: Any = None,
         return_dict: bool = True,
     ) -> Any:
-        if wide_tiles_disabled() or self.__dict__.get("_unsloth_vae_oom_halvings"):
+        if wide_tiles_disabled() or oom_halving_active(self):
             # diffusion_vae_oom halving the stock tiles after an OOM: the stock decode reads the halved sizes
             return stock(z, temb, causal = causal, return_dict = return_dict)
         return tiled_decode(self, z, temb, causal = causal, return_dict = return_dict)

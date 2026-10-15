@@ -2260,6 +2260,8 @@ def _trace_group_norm_silu(norms: list, silus: list, run: Any) -> tuple:
 
 def _fast_gn_maybe_act(norm: Any, act: bool, state: Any) -> Any:
     def fast(x: Any) -> Any:
+        if _gn_fusable(x, norm):
+            state.kernel_calls += 1  # the Triton kernel runs; otherwise group_norm_act takes the stock reference
         y = group_norm_act(x, norm, act = act)
         state.calls += 1
         if act:
@@ -2337,8 +2339,8 @@ def install_structural(vae: Any, logger: Any = None) -> int:
     norms = _plain_group_norms(decoder)
     silus = _plain_silus(decoder)
     state = types.SimpleNamespace(
-        status = "pending", norms = len(norms), gn_silu = 0, gn = 0, calls = 0, max_abs = None,
-        mean_abs = None,
+        status = "pending", norms = len(norms), gn_silu = 0, gn = 0, calls = 0, kernel_calls = 0,
+        max_abs = None, mean_abs = None,
     )  # fmt: skip
     inner = vae._decode
     torch = _torch()
@@ -2355,11 +2357,12 @@ def install_structural(vae: Any, logger: Any = None) -> int:
                 state.status = "no_match"
                 _structural_unpatch(norms, silus, vae)
                 return
-            calls_before = state.calls
+            kernels_before = state.kernel_calls
             out = _decoded_tensor(inner(tiny, *args, **kwargs))
             err = (out.float() - ref.float()).abs()
             state.max_abs, state.mean_abs = float(err.max()), float(err.mean())
-            fused_ran = state.calls > calls_before
+            # Every matched norm on its stock fallback: nothing fused, so keep the stock path (and layout).
+            fused_ran = state.kernel_calls > kernels_before
         if fused_ran and state.max_abs <= _PROBE_MAX_ABS and state.mean_abs <= _PROBE_MEAN_ABS:
             state.status = "ok"
             state.gn_silu = sum(1 for p in paired if p)

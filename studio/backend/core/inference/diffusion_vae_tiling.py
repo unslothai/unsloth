@@ -19,6 +19,7 @@ import types
 from typing import Any, Optional
 
 from .diffusion_device import float64_device
+from .diffusion_vae_oom import oom_halving_active
 
 WIDE_TILES_ENV = "UNSLOTH_DIFFUSION_VAE_WIDE_TILES"
 
@@ -579,7 +580,7 @@ def install(vae: Any, logger: Any = None) -> bool:
     ) -> Any:
         if (
             wide_tiles_disabled()
-            or self.__dict__.get("_unsloth_vae_oom_halvings")
+            or oom_halving_active(self)
             or stock_layout_ok(geometry, z.shape[-2], z.shape[-1])
         ):
             # diffusion_vae_oom halving the stock tiles after an OOM: the stock decode reads the halved sizes

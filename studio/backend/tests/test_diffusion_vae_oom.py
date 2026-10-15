@@ -746,3 +746,91 @@ def test_probe_crop_takes_one_batch_element():
     out = vae._decode(torch.zeros(4, 4, 1, 64, 64))
     assert out[0].shape[0] == 4 and out[0].shape[-2:] == (512, 512)
     assert vae.probe_batches and set(vae.probe_batches) == {1}
+
+
+# -- PR review round 5 regressions ------------------------------------------------------------------------------
+
+
+class _TembWanLike(_WanLike):
+    """LTX-2-shaped ``_decode(z, temb, ...)``: ``temb`` must match ``z``'s batch."""
+
+    def _decode(self, z, temb = None, return_dict = True):
+        if temb is not None and temb.shape[0] != z.shape[0]:
+            raise ValueError(f"temb batch {temb.shape[0]} != latent batch {z.shape[0]}")
+        return super()._decode(z, return_dict)
+
+
+def test_probe_slices_batch_sized_args_with_the_latent():
+    """Round 5 item 1: the probe crop is one sample, so a batch-sized positional ``temb`` must follow it."""
+    vae = _TembWanLike(fits = 128)
+    vae.use_tiling = True
+    O.install(vae)
+    z = torch.zeros(2, 4, 1, 64, 64)
+    out = vae._decode(z, torch.zeros(2, 3), return_dict = False)
+    assert out[0].shape[0] == 2 and out[0].shape[-2:] == (512, 512)
+    assert vae._unsloth_vae_oom_stats["probe_psnr"][1] == 99.0
+
+
+class _ActiveLog(_WanLike):
+    def __init__(self, fits):
+        super().__init__(fits)
+        self.active = []
+
+    def _decode(self, z, return_dict = True):
+        self.active.append((self.use_tiling, O.oom_halving_active(self)))
+        return super()._decode(z, return_dict)
+
+
+def test_stock_tile_retry_marks_the_retry_active():
+    """Round 5 item 2: the level-0 (stock tile) retry must read as an active retry, so the wide-tile wrappers hand
+    over to stock tiling instead of rerunning the wide planner that failed."""
+    vae = _ActiveLog(fits = 256)
+    O.install(vae)
+    vae._decode(torch.zeros(1, 4, 1, 64, 64))
+    assert vae.active == [(False, False), (True, True)]
+    assert O.oom_halving_active(vae) is False
+
+
+def test_wide_tile_wrappers_read_the_active_marker():
+    import inspect
+
+    from core.inference import diffusion_vae_tiling as vt
+    from core.inference import video_ltx2_vae_tiles as lt
+
+    for mod in (vt, lt):
+        src = inspect.getsource(mod.install)
+        assert "oom_halving_active(self)" in src and "_unsloth_vae_oom_halvings" not in src
+
+
+class _CleanDec(torch.nn.Module):
+    def __init__(self, c):
+        super().__init__()
+        self.norm_out = torch.nn.GroupNorm(4, c)
+        self.act = torch.nn.SiLU()
+
+    def forward(self, x):
+        return self.act(self.norm_out(x))
+
+
+class AutoencoderKLCleanNew(torch.nn.Module):
+    def __init__(self, c = 8):
+        super().__init__()
+        self.decoder = _CleanDec(c)
+
+    def _decode(self, z, return_dict = True):
+        return (self.decoder(z),)
+
+
+def test_structural_rejected_when_every_norm_falls_back(monkeypatch):
+    """Round 5 item 3: a correct pairing whose norms all take group_norm_act's stock fallback fused nothing, so the
+    calibration must reject it (before: counted as fused and accepted)."""
+    monkeypatch.setattr(F, "runtime_ok", lambda: True)
+    vae = AutoencoderKLCleanNew()
+    F.install_structural(vae)
+    monkeypatch.setattr(torch.Tensor, "is_cuda", property(lambda self: True))
+    monkeypatch.setattr(F, "_gn_fusable", lambda x, norm: False)
+    with torch.no_grad():
+        vae._decode(torch.randn(1, 8, 6, 6))
+    state = vae._unsloth_vae_structural
+    assert state.status == "rejected" and state.kernel_calls == 0
+    assert not any("forward" in m.__dict__ for m in vae.decoder.modules())
