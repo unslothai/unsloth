@@ -29,6 +29,7 @@ import {
   setConflict,
 } from "./download-manager-state";
 import { downloadDirForRequest } from "./download-location";
+import { publishPendingStart, retirePendingStart } from "./pending-starts";
 import { startJob } from "./poll-loop";
 import {
   currentRoute,
@@ -137,6 +138,7 @@ async function runWithPendingStartGuard(
     return "started";
   }
   runtimeRegistry.pendingStartRepoKeys.add(startKey);
+  const start = publishPendingStart(startKey, req);
   try {
     return await action();
   } catch (error) {
@@ -144,6 +146,7 @@ async function runWithPendingStartGuard(
     return "error";
   } finally {
     runtimeRegistry.pendingStartRepoKeys.delete(startKey);
+    retirePendingStart(start);
   }
 }
 

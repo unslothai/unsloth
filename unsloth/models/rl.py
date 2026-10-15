@@ -27,6 +27,7 @@ import inspect
 import os
 import re
 import sys
+import textwrap
 import warnings
 import weakref
 from contextlib import contextmanager
@@ -4688,6 +4689,46 @@ def _check_async_grpo_adapter_servable(model):
         model.load_lora(os.path.join(directory, "adapter"), load_tensors = True)
 
 
+_ASYNC_GRPO_PPO_LOSS = "per_token_loss = -torch.min(per_token_loss1, per_token_loss2)"
+# Direct double-sided IS (SAO, arXiv 2607.07508 Eq. 3): a token whose pi_theta / pi_rollout ratio leaves
+# (1 - epsilon, 1 + epsilon_high) gets no gradient at all, whatever the sign of its advantage.
+_ASYNC_GRPO_MASKED_LOSS = (
+    "per_token_loss = torch.where("
+    "(coef_1 > 1 - self.epsilon_low) & (coef_1 < 1 + self.epsilon_high), -per_token_loss1, 0.0)"
+)
+_ASYNC_GRPO_MASK_METRICS = (
+    (
+        "is_low_clipped = (coef_1 < 1 - self.epsilon_low) & (advantages < 0)",
+        "is_low_clipped = coef_1 <= 1 - self.epsilon_low",
+    ),
+    (
+        "is_high_clipped = (coef_1 > 1 + self.epsilon_high) & (advantages > 0)",
+        "is_high_clipped = coef_1 >= 1 + self.epsilon_high",
+    ),
+)
+
+
+@functools.lru_cache(maxsize = None)
+def _async_grpo_masked_compute_loss(compute_loss):
+    source = textwrap.dedent(inspect.getsource(compute_loss))
+    if source.count(_ASYNC_GRPO_PPO_LOSS) != 1:
+        raise ValueError(
+            "Unsloth: importance_sampling_mask = True could not find the PPO loss in "
+            f"{compute_loss.__qualname__}, so it cannot be masked. Drop importance_sampling_mask for this trainer."
+        )
+    source = source.replace(_ASYNC_GRPO_PPO_LOSS, _ASYNC_GRPO_MASKED_LOSS)
+    # The clip_ratio metrics then count masked tokens (either advantage sign) instead of PPO-clipped ones.
+    for old, new in _ASYNC_GRPO_MASK_METRICS:
+        source = source.replace(old, new)
+    namespace = {}
+    exec(
+        compile(source, f"<unsloth masked {compute_loss.__qualname__}>", "exec"),
+        compute_loss.__globals__,
+        namespace,
+    )
+    return functools.wraps(compute_loss)(namespace[compute_loss.__name__])
+
+
 def patch_trl_async_grpo():
     # Let TRL's AsyncGRPOTrainer take a loaded Unsloth model; keep packed rows from attending across sequences.
     if importlib.util.find_spec("trl.experimental") is None:
@@ -4730,7 +4771,18 @@ def patch_trl_async_grpo():
     original_train = getattr(trainer_class, "train", None)
 
     @functools.wraps(original_init)
-    def __init__(self, model, *args, **kwargs):
+    def __init__(
+        self,
+        model,
+        *args,
+        importance_sampling_mask = False,
+        **kwargs,
+    ):
+        masked_loss = (
+            _async_grpo_masked_compute_loss(type(self).compute_loss)
+            if importance_sampling_mask
+            else None
+        )
         config = args[1] if len(args) >= 2 else kwargs.get("args")
         if not isinstance(model, str) and config is None:
             name = getattr(getattr(model, "config", None), "_name_or_path", "") or "model"
@@ -4793,6 +4845,8 @@ def patch_trl_async_grpo():
         if server is not None:
             self._unsloth_vllm_server = server
             weakref.finalize(self, server.stop)
+        if masked_loss is not None:
+            self.compute_loss = types.MethodType(masked_loss, self)
 
     trainer_class.__init__ = __init__
     if original_train is not None:

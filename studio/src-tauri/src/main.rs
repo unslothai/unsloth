@@ -25,6 +25,7 @@ mod install;
 mod install_watchdog;
 #[cfg(target_os = "linux")]
 mod linux_webkit;
+mod long_paths;
 mod loopback_http;
 #[cfg(target_os = "macos")]
 mod macos_event_guard;
@@ -2167,6 +2168,8 @@ fn main() {
             commands::native_path_leases_usable,
             commands::cancel_pending_elevation,
             commands::install_system_packages,
+            long_paths::windows_long_paths_status,
+            long_paths::enable_windows_long_paths,
             desktop_auth::desktop_auth,
             desktop_update_policy::check_desktop_manual_update,
             desktop_update_policy::desktop_update_policy,
@@ -2196,6 +2199,7 @@ fn main() {
             native_intents::read_native_attachment_file,
             native_intents::pick_native_model,
             native_intents::pick_hugging_face_cache_dir,
+            native_intents::pick_native_model_folder,
             native_intents::pick_native_document_folder,
             native_intents::consume_native_path_token,
             native_intents::register_artifact_path,

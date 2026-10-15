@@ -39,6 +39,7 @@ import {
   sttRepoIdForSidecarKey,
   sttSidecarKeyFor,
 } from "../src/features/audio/stt-artifacts.ts";
+import { transcribeLanguagesFor } from "../src/features/audio/transcribe-languages.ts";
 import {
   audioPickIsRoutable,
   audioPipelineTagFor,
@@ -705,7 +706,6 @@ test("English-only and partial-language ASR models are gated by language", () =>
     "audiocpp-moonshine-tiny",
     "audiocpp-moonshine-small",
     "audiocpp-moonshine-medium",
-    "audiocpp-nemotron-3.5-asr-0.6b",
     `${AUDIO_CPP_REPO}/Citrinet-ASR-GGUF`,
     `${AUDIO_CPP_REPO}/Granite-Speech-5.0-470M-TurboCTC-GGUF`,
     `${AUDIO_CPP_REPO}/Higgs-Audio-v3-STT-GGUF`,
@@ -724,6 +724,20 @@ test("English-only and partial-language ASR models are gated by language", () =>
     assert.equal(isSttModelLanguageCompatible(canary, language), true, language);
   }
   assert.equal(isSttModelLanguageCompatible(canary, "ja-JP"), false);
+  // Nemotron lists its spec's 40 locales; the backend sends the one its prompt dictionary keys.
+  const nemotron = "audiocpp-nemotron-3.5-asr-0.6b";
+  assert.ok(!ENGLISH_ONLY_STT_MODELS.has(nemotron));
+  for (const language of ["en-US", "ja-JP", "zh-CN", "nb-NO", "pt-BR", "auto"]) {
+    assert.equal(isSttModelLanguageCompatible(nemotron, language), true, language);
+  }
+  assert.equal(isSttModelLanguageCompatible(nemotron, "id-ID"), false);
+  assert.deepEqual(
+    transcribeLanguagesFor(
+      audioCppModelFor(`${AUDIO_CPP_REPO}/Nemotron-3.5-ASR-Streaming-0.6B-GGUF`)?.languages,
+    ).map((language) => language.code),
+    ["", "en", "zh", "es", "fr", "de", "it", "pt", "ru", "ja", "ko", "ar", "hi", "nl", "pl",
+      "tr", "uk", "vi", "th", "sv", "da", "fi", "no", "cs", "el", "he", "hu", "ro"],
+  );
   const hviske = `${AUDIO_CPP_REPO}/Hviske-v5.3-GGUF`;
   assert.equal(isSttModelLanguageCompatible(hviske, "da-DK"), true);
   assert.equal(isSttModelLanguageCompatible(hviske, "auto"), true);

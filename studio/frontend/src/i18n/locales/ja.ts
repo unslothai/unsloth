@@ -1716,6 +1716,19 @@ export const ja = {
         apiOnlyDescription:
           "アイドル時の自動アンロードでは、Unsloth から自分で読み込んだモデルはメモリに残し、API リクエストが読み込んだモデルだけを解放します。",
       },
+      modelAliases: {
+        sectionTitle: "モデルエイリアス (OpenAI API)",
+        description:
+          "fast-chat や code のような、API クライアント向けの固定名です。エイリアスを指定したリクエストは、そのエイリアスが指すモデルで処理されるため、モデルを入れ替えても接続中のアプリはそのまま動きます。エイリアスがモデルを読み込めるよう、リクエストごとにモデルを切り替えをオンにしてください。",
+        namePlaceholder: "fast-chat",
+        nameAriaLabel: "エイリアス名",
+        modelAriaLabel: "エイリアスが指すモデル",
+        modelPlaceholder: "unsloth/Qwen3-4B-GGUF:Q4_K_M",
+        removeAriaLabel: "エイリアスを削除",
+        add: "エイリアスを追加",
+        loadError: "モデルエイリアスを読み込めませんでした。",
+        saveError: "モデルエイリアスを保存できませんでした。",
+      },
       previewSharing: {
         sectionTitle: "プレビュー共有",
         enableLabel: "公開プレビューリンク",

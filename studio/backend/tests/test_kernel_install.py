@@ -464,24 +464,17 @@ def test_causal_conv1d_still_installs_below_sm80(uv):
 
 
 @pytest.mark.parametrize(
-    "without_gpu, capability, installs",
-    [(False, "None", False), (True, "None", True), (True, "7 0", False), (True, "9 0", True)],
+    "capability, installs",
+    [("None", False), ("7 0", False), ("9 0", True)],
 )
-def test_setup_installs_mamba_ssm_before_a_gpu_is_visible(
-    uv, monkeypatch, without_gpu, capability, installs
-):
-    # An image build sees no GPU; a visible pre-Ampere one still skips. Linux, so Windows'
-    # triton-windows gate (its own test) does not answer first.
+def test_mamba_ssm_needs_a_visible_sm80_gpu(uv, monkeypatch, capability, installs):
+    # No visible GPU or a pre-Ampere one skips. Linux, so Windows' triton-windows gate (its own
+    # test) does not answer first.
     uv(False)
     monkeypatch.setattr(kernel_install.sys, "platform", "linux")
     monkeypatch.setattr(kernel_install, "_triton_version", lambda run: (3, 3))
     run = _Runner([False, True], capability = capability)
-    assert (
-        kernel_install.install_kernel(
-            "mamba_ssm", _COLAB, run = run, exists = lambda url: True, install_without_gpu = without_gpu
-        )
-        == 0
-    )
+    assert kernel_install.install_kernel("mamba_ssm", _COLAB, run = run, exists = lambda url: True) == 0
     assert bool(run.installer_calls) is installs
 
 

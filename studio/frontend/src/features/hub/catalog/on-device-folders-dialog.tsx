@@ -17,6 +17,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { useIsAccountOwner } from "@/features/auth";
 import {
   type ScanFolderInfo,
   addScanFolder,
@@ -29,6 +30,7 @@ import { FolderBrowser } from "@/features/model-picker";
 import {
   openModelsDir,
   pickHuggingFaceCacheDir,
+  pickNativeModelFolder,
 } from "@/features/native-intents";
 import {
   type HuggingFaceCacheSettings,
@@ -216,6 +218,15 @@ export function OnDeviceFoldersDialog({
     [handleInventoryChanged, pending, recursive],
   );
 
+  const isOwner = useIsAccountOwner();
+  const browseLocations = useCallback(async () => {
+    const picked = await pickNativeModelFolder(isOwner);
+    if (picked === undefined) setBrowserOpen(true);
+    else if (picked) await handleAdd(picked);
+  }, [handleAdd, isOwner]);
+
+  // Scan folders are arbitrary paths that may be moved or deleted after they
+  // were registered, so surface the command's failure as a toast.
   const handleOpen = useCallback(async (folder: ScanFolderInfo) => {
     try {
       await openModelsDir(folder.path);
@@ -374,7 +385,7 @@ export function OnDeviceFoldersDialog({
                         type="button"
                         variant="outline"
                         size="icon-sm"
-                        onClick={() => setBrowserOpen(true)}
+                        onClick={() => void browseLocations()}
                         aria-label="Browse locations"
                         className="size-9 rounded-full"
                       >

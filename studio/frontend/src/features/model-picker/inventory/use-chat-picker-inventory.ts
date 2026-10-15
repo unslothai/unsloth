@@ -142,6 +142,9 @@ export function useChatPickerInventory(
             isListableCachedRow(row) &&
             // An sd.cpp companion mirror has no denoiser and no task, so it would look like an unclassified chat repo.
             !row.companion &&
+            // Same for a base repo a GGUF image load borrowed its VAE / text encoder from: a click
+            // reads it as a torn download and fetches the full denoiser. The Hub still lists it.
+            !row.companionPrefetch &&
             (!isHiddenModelId(row.repoId) ||
               allowedHiddenModelIdMatches(
                 options.allowedHiddenModelIds,
