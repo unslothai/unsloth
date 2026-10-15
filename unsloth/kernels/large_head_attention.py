@@ -395,6 +395,7 @@ def _fwd_impl(q, k, v, lo, hi, scale):
             H // HKV,
             S,
             HEAD_DIM = D,
+            enable_fp_fusion = True,
         )
     return o, lse
 
@@ -431,6 +432,7 @@ def _bwd_impl(do, q, k, v, o, lse, lo, hi, scale):
             HEAD_DIM = D,
             BLOCK_M = 16,
             num_warps = 4,
+            enable_fp_fusion = True,
         )
         _lh_bwd_dkdv[lambda meta: (triton.cdiv(S, meta["BLOCK_N"]), B * HKV)](
             q,
@@ -469,6 +471,7 @@ def _bwd_impl(do, q, k, v, o, lse, lo, hi, scale):
             G,
             S,
             HEAD_DIM = D,
+            enable_fp_fusion = True,
         )
         _lh_bwd_dq[lambda meta: (triton.cdiv(S, meta["BLOCK_M"]), B * H)](
             q,
@@ -501,6 +504,7 @@ def _bwd_impl(do, q, k, v, o, lse, lo, hi, scale):
             G,
             S,
             HEAD_DIM = D,
+            enable_fp_fusion = True,
         )
     return dq, dk, dv
 
