@@ -455,6 +455,7 @@ _PRICE_PARALLEL_FRACTION = 0.9
 
 
 _ROOM_REASON = "replica card lacks room for this shape"
+_SHORT_RENDER_REASON = "short render"
 
 
 def _is_oom(exc: BaseException) -> bool:
@@ -1956,6 +1957,13 @@ class CfgParallelRouter:
         self.shapes = _ShapeBook({"pricing": None, "shape_disabled": None})
         # the replica card's room for this request's activations was checked (per request and per shape change)
         self.capacity_checked = False
+        # this request's denoise steps (counted at each new step) and its step count when Studio / the scheduler
+        # knows it: the first replica build is amortised over what is left
+        self.request_id = 0
+        self.request_step = 0
+        self.request_total_steps: Any = None
+        self.steps_fn: Optional[Callable[[], Any]] = None
+        self.priced_at: Optional[tuple[int, int]] = None
 
     # -- status
     def describe(self) -> dict[str, Any]:
@@ -2016,6 +2024,7 @@ class CfgParallelRouter:
             self._drop_pending()
             self.b0_leaves = dict(_leaves((args, kwargs)))
             self.b0_s = None
+            self.request_step += 1
             if self.shapes.switch(self, _request_shape(self.request_px, args, kwargs)):
                 self.template = (
                     None  # the previous shape's odd-branch prediction does not carry over
@@ -2069,12 +2078,19 @@ class CfgParallelRouter:
                 if self.pricing is None and self._should_price():
                     out, branch_s = self._timed_primary(args, kwargs)
                     self.pricing = self._price(args, kwargs, out, branch_s)
-                    if not self._shape_verdict():
-                        return out
-                    self._build_replica()
+                    self._shape_verdict()
+                    # the replica is built on a LATER guided step of this request, if the rest of it repays the build
+                    self.priced_at = (self.request_id, self.request_step)
                     if self.branch == 1:
                         self._record_template(args, kwargs, latent)
                     return out
+                if self.pricing is not None and self.stats["replica_build_s"] is None:
+                    # first build of a priced router: never on the step it was priced on, and only when the build pays
+                    if self.priced_at == (self.request_id, self.request_step) or not self._build_pays_off():
+                        if self.branch == 1:
+                            self._record_template(args, kwargs, latent)
+                        self.stats["primary_calls"] += 1
+                        return self.orig_forward(*args, **kwargs)
                 self._build_replica()
                 if self.branch == 1:
                     self._record_template(args, kwargs, latent)
@@ -2183,6 +2199,38 @@ class CfgParallelRouter:
                 "diffusion.multigpu: CFG-parallel off for this request shape (%s)", reason
             )
 
+    def _remaining_steps(self) -> Optional[int]:
+        """Denoise steps left in this request, this one included: Studio's step count, else the scheduler's."""
+        total = self.request_total_steps
+        if total is None and self.steps_fn is not None:
+            with contextlib.suppress(Exception):
+                total = self.steps_fn()
+        try:
+            total = int(total) if total else None
+        except (TypeError, ValueError):
+            total = None
+        if total is None:
+            return None
+        return max(0, total - self.request_step + 1)
+
+    def _build_pays_off(self) -> bool:
+        """Amortise the first replica build over the request's remaining guided steps (this step runs on the primary
+        while the replica is built, so it gains nothing). Unknown step count: build (this is already the second guided
+        step). Declines this shape for this request only."""
+        remaining = self._remaining_steps()
+        if remaining is None:
+            return True
+        gain_s = float(self.pricing["single_step_s"]) - float(self.pricing["cfg_parallel_step_s"])
+        build_s = self.pricing.get("replica_build_s_est") or 0.0
+        parallel_steps = remaining - 1
+        if parallel_steps > 0 and gain_s * parallel_steps > build_s:
+            return True
+        self._shape_off(
+            f"{_SHORT_RENDER_REASON}: building the replica (~{build_s:.2f}s) does not repay over "
+            f"{max(0, parallel_steps)} remaining steps at {gain_s:.4f}s saved each"
+        )
+        return False
+
     def _shape_verdict(self) -> bool:
         """Apply the current shape's price: True when CFG-parallel runs for it."""
         if self.pricing["strategy"] == "cfg_parallel":
@@ -2209,12 +2257,24 @@ class CfgParallelRouter:
         self,
         width: Any = None,
         height: Any = None,
+        steps: Any = None,
+        steps_fn: Optional[Callable[[], Any]] = None,
     ) -> None:
         self.release_inputs()
         self.branch = 0
         self.singles = 0
         self.b0_s = None
         self.capacity_checked = False
+        self.request_id += 1
+        self.request_step = 0
+        self.request_total_steps = steps
+        self.steps_fn = steps_fn
+        # a short-render verdict holds for that request only: a longer one may repay the build
+        for state in self.shapes.saved.values():
+            if str(state.get("shape_disabled") or "").startswith(_SHORT_RENDER_REASON):
+                state["shape_disabled"] = None
+        if str(self.shape_disabled or "").startswith(_SHORT_RENDER_REASON):
+            self.shape_disabled = None
         if self.replica is None:
             self._reselect_secondary()
         # an unmeasured link is retried on every request
@@ -2755,12 +2815,23 @@ def cfg_request_scope(
     pipe: Any,
     width: Any = None,
     height: Any = None,
+    steps: Any = None,
 ) -> Iterator[None]:
     """One Studio generate request around ``pipe()``: the routers forget every per-request field on entry and drop
-    every retained tensor on exit. Outside this scope the routers infer request boundaries from the call pattern."""
+    every retained tensor on exit. Outside this scope the routers infer request boundaries from the call pattern.
+    ``steps``: the request's denoise steps when Studio knows them; else the scheduler's timesteps, read when the
+    first replica build is decided (the pipeline has set them by then)."""
     routers = _routers_of(pipe)
+    scheduler = getattr(pipe, "scheduler", None)
+    steps_fn = None
+    if scheduler is not None:
+
+        def steps_fn() -> Optional[int]:
+            timesteps = getattr(scheduler, "timesteps", None)
+            return len(timesteps) if timesteps is not None else None
+
     for router in routers:
-        router.begin_request(width, height)
+        router.begin_request(width, height, steps, steps_fn)
     try:
         yield
     finally:
@@ -3129,6 +3200,8 @@ class CfgBatchRouter:
         self,
         width: Any = None,
         height: Any = None,
+        steps: Any = None,
+        steps_fn: Optional[Callable[[], Any]] = None,
     ) -> None:
         self.release_inputs()
         self.branch = 0

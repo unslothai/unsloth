@@ -11306,7 +11306,12 @@ class DiffusionBackend:
                                 denoise_phase(pipe, _enter_denoise_phase),
                                 decode_phase(pipe, _enter_decode_phase),
                                 # the canvas the forward runs at (img2img / inpaint take it from the input image)
-                                cfg_request_scope(pipe, guard_width, guard_height),
+                                cfg_request_scope(
+                                    pipe,
+                                    guard_width,
+                                    guard_height,
+                                    chunk_kwargs.get("num_inference_steps"),
+                                ),
                                 _completed_step_poller(_pump),
                             ):
                                 out = render_thread.run(

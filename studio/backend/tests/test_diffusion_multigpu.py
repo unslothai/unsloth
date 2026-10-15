@@ -2832,9 +2832,18 @@ def test_request_scope_gets_the_effective_canvas_in_both_generate_paths():
         return [ast.unparse(a) for a in calls[0].args[1:]]
 
     # image: the size the forward runs at (img2img / inpaint take it from the input image), not the call kwargs
-    assert scope_args("diffusion.py") == ["guard_width", "guard_height"]
+    # plus the request's denoise steps (the first replica build is amortised over them)
+    assert scope_args("diffusion.py") == [
+        "guard_width",
+        "guard_height",
+        "chunk_kwargs.get('num_inference_steps')",
+    ]
     # video: the resolved request canvas (frames do not count)
-    assert scope_args("video.py") == ["request_shape.get('width')", "request_shape.get('height')"]
+    assert scope_args("video.py") == [
+        "request_shape.get('width')",
+        "request_shape.get('height')",
+        "request_shape.get('steps')",
+    ]
 
 
 def test_cfg_batch_headroom_scales_with_the_latent_batch():
@@ -3284,3 +3293,93 @@ def test_cfg_parallel_replica_card_hosting_the_vae_keeps_decode_room(monkeypatch
     plan = type("P", (), {"estimates": {"calibrated_denoise_mib": 3000, "calibrated_decode_mib": 7000}})()
     assert mg.plan_decode_headroom_mib(plan) == 7000
     assert mg.plan_decode_headroom_mib(type("P", (), {"estimates": {"runtime_headroom_mib": 9000}})()) is None
+
+
+def _priced_router(dit, monkeypatch, branch_s = 1.0, link = 1.0):
+    """A CPU router priced like a CUDA one: both branches timed at ``branch_s``, ``link`` GiB/s each way."""
+    router, replicas = _router(dit)
+    monkeypatch.setattr(router, "_should_price", lambda: True)
+    monkeypatch.setattr(
+        router, "_timed_primary", lambda a, k: (router.orig_forward(*a, **k), branch_s)
+    )
+    monkeypatch.setattr(mg, "link_gib_s", lambda src, dst, probes = None: link)
+    router.primary = router.secondary = torch.device("cpu")
+    return router, replicas
+
+
+class _Sched:
+    def __init__(self, n):
+        self.timesteps = torch.zeros(n)
+
+
+def test_cfg_parallel_one_step_render_never_builds_a_replica(monkeypatch):
+    dit = _BatchDit()
+    pipe = _RouterPipe(dit)
+    router, replicas = _priced_router(dit, monkeypatch)
+    with mg.cfg_request_scope(pipe, 512, 512):  # step count unknown: the build waits for a second guided step
+        _guided(dit, 2, steps = 1)
+    assert router.pricing["strategy"] == "cfg_parallel"
+    assert replicas == [] and router.stats["replica_calls"] == 0
+
+
+def test_cfg_parallel_short_render_declines_when_the_build_outweighs_the_saving(monkeypatch):
+    dit = _BatchDit()
+    pipe = _RouterPipe(dit)
+    # each guided step saves ~1 s; a 40 GiB replica over a 1 GiB/s link costs ~40 s to build
+    router, replicas = _priced_router(dit, monkeypatch)
+    monkeypatch.setattr(
+        router,
+        "_price",
+        lambda a, k, out, b: mg.price_cfg_parallel(
+            branch_s = 1.0,
+            in_bytes = 1 << 20,
+            out_bytes = 1 << 20,
+            link_in_gib_s = 1.0,
+            link_out_gib_s = 1.0,
+            replica_bytes = 40 << 30,
+        ),
+    )
+    plain = _BatchDit()
+    plain.load_state_dict(dit.state_dict())
+    reference = _guided(plain, 2, steps = 4)
+    pipe.scheduler = _Sched(4)  # the step count from the pipeline's scheduler
+    with mg.cfg_request_scope(pipe, 512, 512):
+        out = _guided(dit, 2, steps = 4)
+    torch.testing.assert_close(out, reference, rtol = 1e-5, atol = 1e-6)
+    assert replicas == [] and "short render" in router.describe()["disabled_reason"]
+    assert router.disabled_reason is None
+    # a long render of the same shape (step count from the scheduler) repays it: built on its second step
+    pipe.scheduler = _Sched(60)
+    with mg.cfg_request_scope(pipe, 512, 512):
+        _guided(dit, 2, steps = 3)
+    assert len(replicas) == 1 and router.stats["replica_calls"] > 0
+
+
+def test_cfg_parallel_long_render_builds_on_step_two_and_engages(monkeypatch):
+    dit = _BatchDit()
+    pipe = _RouterPipe(dit)
+    router, replicas = _priced_router(dit, monkeypatch)
+    built_at = []
+    real_build = router._build_replica
+    monkeypatch.setattr(
+        router, "_build_replica", lambda: built_at.append(dit.calls) or real_build()
+    )
+    plain = _BatchDit()
+    plain.load_state_dict(dit.state_dict())
+    reference = _guided(plain, 2, steps = 30)
+    pipe.scheduler = _Sched(30)
+    with mg.cfg_request_scope(pipe, 512, 512):
+        out = _guided(dit, 2, steps = 30)
+    torch.testing.assert_close(out, reference, rtol = 1e-5, atol = 1e-6)
+    # denoiser calls before the build: step 1's two branches and step 2's even one -> built on step 2
+    assert built_at == [3] and len(replicas) == 1
+    assert router.stats["steps_parallel"] >= 27
+    # a later request (even a 1-step one) reuses that replica: no second build
+    calls = router.stats["replica_calls"]
+    with mg.cfg_request_scope(pipe, 512, 512, steps = 1):
+        _guided(dit, 2, steps = 1)
+    assert len(replicas) == 1 and router.stats["replica_calls"] > calls
+    # Studio's own step count wins over the scheduler's
+    with mg.cfg_request_scope(pipe, 512, 512, steps = 8):
+        router.request_step = 3
+        assert router._remaining_steps() == 6

@@ -10815,7 +10815,10 @@ class VideoBackend:
                         stack.enter_context(_decode_phase(pipe, _on_decode))
                         stack.enter_context(
                             cfg_request_scope(
-                                pipe, request_shape.get("width"), request_shape.get("height")
+                                pipe,
+                                request_shape.get("width"),
+                                request_shape.get("height"),
+                                request_shape.get("steps"),
                             )
                         )
                         # The decoded clip becomes uint8 on the GPU, bit-identical to the np / pil export (video_frames).
