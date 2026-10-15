@@ -554,6 +554,7 @@ export const ar = {
     queueingHintShared: "يبقى الطابور كما هو.",
   },
   rewind: {
+    menuItem: "إرجاع…",
     title: "إرجاع",
     confirmTitle: "الإرجاع إلى هذه الرسالة؟",
     restoreLabel: "استعادة",

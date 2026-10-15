@@ -66,7 +66,19 @@ test("a prompt's bar is Copy, Edit, Rewind, Fork and Delete, then a More menu", 
     bar,
     /<RewindMessageButton \/>\s*<ForkCountBadge \/>\s*<ForkMessageButton \/>\s*<DeleteMessageButton \/>\s*\{editable && <UserMoreMenu \/>\}\s*<\/UserMessageActionBar>/,
   );
-  assert.ok(!component("UserMoreMenu").includes("Delete"));
+});
+
+test("a prompt's More menu is Edit without running, Fork, Rewind, then Delete", () => {
+  assert.match(
+    component("UserMoreMenu"),
+    /<EditWithoutRunMenuItem \/>\s*<ForkMessageMenuItem \/>\s*<RewindMessageMenuItem \/>\s*<DeleteMessageMenuItem \/>\s*<\/div>/,
+  );
+  // The items reuse the bar buttons' handlers, so both paths do the same thing.
+  assert.match(component("ForkMessageMenuItem"), /useForkMessageAction\(\)/);
+  assert.match(component("RewindMessageMenuItem"), /useRewindDialogStore\.getState\(\)\.openRewind\(/);
+  assert.match(component("RewindMessageMenuItem"), /t\("rewind\.menuItem"\)/);
+  assert.match(component("DeleteMessageMenuItem"), /useDeleteMessage\(\)/);
+  assert.match(component("DeleteMessageMenuItem"), /text-destructive/);
 });
 
 test("the reply footer and bar wrap, so the wider bar never scrolls a narrow thread", () => {

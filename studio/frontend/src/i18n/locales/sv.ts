@@ -656,6 +656,7 @@ export const sv = {
     queueingHintShared: "Kön behålls.",
   },
   rewind: {
+    menuItem: "Spola tillbaka…",
     title: "Spola tillbaka",
     confirmTitle: "Spola tillbaka till det här meddelandet?",
     restoreLabel: "Återställ",

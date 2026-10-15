@@ -554,6 +554,7 @@ export const ko = {
     queueingHintShared: "대기열은 유지됩니다.",
   },
   rewind: {
+    menuItem: "되감기…",
     title: "되감기",
     confirmTitle: "이 메시지로 되감을까요?",
     restoreLabel: "복원",

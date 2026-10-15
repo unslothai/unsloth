@@ -554,6 +554,7 @@ export const de = {
     queueingHintShared: "Die Warteschlange bleibt erhalten.",
   },
   rewind: {
+    menuItem: "Zurückspulen…",
     title: "Zurückspulen",
     confirmTitle: "Zu dieser Nachricht zurückspulen?",
     restoreLabel: "Wiederherstellen",

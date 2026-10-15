@@ -640,6 +640,7 @@ export const he = {
     queueingHintShared: "התור נשמר.",
   },
   rewind: {
+    menuItem: "החזרה לאחור…",
     title: "החזרה לאחור",
     confirmTitle: "לחזור להודעה הזו?",
     restoreLabel: "שחזור",

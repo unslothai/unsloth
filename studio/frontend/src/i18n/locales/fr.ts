@@ -554,6 +554,7 @@ export const fr = {
     queueingHintShared: "La file d’attente est conservée.",
   },
   rewind: {
+    menuItem: "Revenir en arrière…",
     title: "Revenir en arrière",
     confirmTitle: "Revenir à ce message ?",
     restoreLabel: "Restaurer",

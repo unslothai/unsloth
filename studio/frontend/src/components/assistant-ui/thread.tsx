@@ -9214,9 +9214,70 @@ const UserMoreMenu: FC = () => {
         <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
           <MenuDismissGuard triggerRef={moreMenuTriggerRef} />
           <EditWithoutRunMenuItem />
+          <ForkMessageMenuItem />
+          <RewindMessageMenuItem />
+          <DeleteMessageMenuItem />
         </div>
       </ActionBarMorePrimitive.Content>
     </ActionBarMorePrimitive.Root>
+  );
+};
+
+const MORE_MENU_ITEM_CLASS =
+  "aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50";
+
+// The prompt menu's copies of the bar's Fork, Rewind and Delete, with the same handlers.
+const ForkMessageMenuItem: FC = () => {
+  const { forkMessage, forkDisabled } = useForkMessageAction();
+  return (
+    <ActionBarMorePrimitive.Item
+      disabled={forkDisabled}
+      onSelect={() => void forkMessage()}
+      className={MORE_MENU_ITEM_CLASS}
+    >
+      <HugeiconsIcon icon={ForkIcon} strokeWidth={1.75} className="size-icon" />
+      Fork in new chat
+    </ActionBarMorePrimitive.Item>
+  );
+};
+
+const RewindMessageMenuItem: FC = () => {
+  const aui = useAui();
+  const t = useT();
+  const messageId = useAuiState(({ message }) => message.id);
+  const isRunning = useAuiState(({ thread }) => thread.isRunning);
+  return (
+    <ActionBarMorePrimitive.Item
+      disabled={isRunning}
+      onSelect={() =>
+        useRewindDialogStore.getState().openRewind({
+          threadKey: aui.threadListItem().getState().id,
+          messageId,
+        })
+      }
+      className={MORE_MENU_ITEM_CLASS}
+    >
+      <HugeiconsIcon icon={UndoIcon} strokeWidth={1.75} className="size-icon" />
+      {t("rewind.menuItem")}
+    </ActionBarMorePrimitive.Item>
+  );
+};
+
+// Last and in red.
+const DeleteMessageMenuItem: FC = () => {
+  const { handleDelete, isRunning, hidden } = useDeleteMessage();
+  if (hidden) {
+    return null;
+  }
+  return (
+    <ActionBarMorePrimitive.Item
+      disabled={isRunning}
+      onSelect={() => void handleDelete()}
+      className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm text-destructive outline-none hover:bg-destructive/10 focus:bg-destructive/10 data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
+    >
+      <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
+      Delete
+    </ActionBarMorePrimitive.Item>
   );
 };
 
@@ -9233,7 +9294,7 @@ const EditWithoutRunMenuItem: FC = () => {
         setEditWithoutRun(messageId, true);
         aui.composer().beginEdit();
       }}
-      className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
+      className={MORE_MENU_ITEM_CLASS}
     >
       <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
       Edit without running

@@ -3166,6 +3166,7 @@ export const it = {
     },
   },
   rewind: {
+    menuItem: "Riavvolgi…",
     title: "Riavvolgi",
     confirmTitle: "Riavvolgere fino a questo messaggio?",
     restoreLabel: "Ripristina",
