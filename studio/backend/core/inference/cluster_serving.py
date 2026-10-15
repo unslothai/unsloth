@@ -265,7 +265,6 @@ def _read_gguf_header(
 
 
 _OUTPUT_KEYS = {"output": -1, "token_embd": -2}
-# The KV section of the last uncached header read, for the loader's own metadata reader.
 _REMOTE_HEADER_KV: Dict[Tuple[str, str], bytes] = {}
 
 
@@ -756,7 +755,6 @@ class ClusterPlan:
     extra_bytes: float = 0.0
     # Charged but possibly never loaded (a Hub projector the vision switch may drop): not freed.
     uncertain_extra_bytes: float = 0.0
-    # Where the projector / drafter was charged; kept even when it gets no layers.
     sidecar_device: Optional[Device] = None
     # Never counted as freed by a replacement: the KV estimate is not the cache's real layout.
     kv_bytes: float = 0.0
@@ -767,7 +765,6 @@ class ClusterPlan:
     def resident(self) -> Dict[Tuple[str, str], float]:
         """What this plan puts on each device, so a replacement load can count it as freed."""
         held = max(0.0, float(self.need_bytes or 0) - self.kv_bytes - self.host_bytes)
-        # Whole-layer rounding can leave a device a layer short of its share.
         out = {
             d.key: max(0.0, w * held - self.layer_bytes) for d, w in zip(self.devices, self.weights)
         }
@@ -896,8 +893,7 @@ def load_nodes() -> List[Node]:
 
 
 def _one_managed_worker_per_host(nodes: List[Node]) -> List[Node]:
-    # A managed rpc-server exposes every accelerator on its host, so a second one would count the
-    # same memory twice.
+    # A managed rpc-server exposes every accelerator on its host: a second one double counts.
     hosts = [n.host for n in nodes]
     for host in {n.host for n in nodes if n.managed}:
         if hosts.count(host) > 1:
@@ -1004,7 +1000,6 @@ def plan_cluster(
             need_bytes = need,
         )
     if forced != "layer_split" and local and need + local_extra_bytes <= local_usable:
-        # The model's share per GPU, after the sidecar takes its room on the first.
         model_budgets = [local_budgets[0] - local_extra_bytes] + local_budgets[1:]
         return ClusterPlan(
             "single",
@@ -1021,15 +1016,13 @@ def plan_cluster(
     if not remote:
         return ClusterPlan("single", "no remote device answered; serving on this machine")
     # Remote first, this machine last: llama.cpp puts the output layer on the last device, so the
-    # logits stay local and the wire carries only the hidden state. Sidecars load on the first
-    # local device.
+    # logits stay local and the wire carries only the hidden state.
     ordered = remote + local
     budgets = [usable_bytes(d, margin_bytes, scratch_bytes) for d in remote] + local_budgets
     if local:
         budgets[len(remote)] -= local_extra_bytes
     if layer_bytes:
-        # Layers land whole, so any device can end up with one more than its share: keep that much
-        # free on every device, not 5% of the total.
+        # Layers land whole: keep a layer's worth free on every device, not 5% of the total.
         budgets = [max(0.0, b - layer_bytes) for b in budgets]
         margin = 0.0
     else:
@@ -1154,7 +1147,6 @@ class ClusterServing:
         self._nextn_bytes: float = 0.0
         self._projector_file: Optional[str] = None
         self._uncertain_extra: float = 0.0
-        # Workers this load (re)started: they hold none of the served split's buffers.
         self._started: set = set()
 
     def _cancelled(self) -> bool:
@@ -1289,7 +1281,6 @@ class ClusterServing:
             getattr(request, "gguf_variant", None),
         )
         self._pre_load = (self.topology, self.reason, self.plan, list(self.block))
-        # Every return below that does not plan leaves no plan behind for after_load to record.
         self.plan, self.block = None, []
         self._down = set()  # _started stays until a load commits: a refusal keeps those workers
         if not self.refresh_nodes() or self.config_error:
@@ -1406,8 +1397,6 @@ class ClusterServing:
             self.topology, self.reason = "single", f"forced by {ENV_TOPOLOGY}=single"
             return request
         if model_bytes is None:
-            # Not a GGUF this can size (safetensors, diffusion, an unknown repo): nothing to split,
-            # so no worker is started for it.
             self.topology, self.reason = "single", "model size unknown; serving on this machine"
             return request
         failed = await self._ensure_workers()
@@ -1494,7 +1483,6 @@ class ClusterServing:
                 self.last_error += "; " + "; ".join(failed.values())
             logger.warning("cluster serving: %s", self.last_error)
         layer_bytes = None
-        # An unread tensor table leaves only the average block: plan_cluster's margin covers it.
         if self._n_layers and model_bytes and self._max_block:
             # The largest block a tensor split can round onto a device, not the average one.
             layer_weights = self._max_block
@@ -1629,7 +1617,6 @@ class ClusterServing:
         else:
             header, blocks = {}, {}
         arch = header.get("general.architecture")
-        # The loader's routing to the diffusion runner (LlamaCppBackend._is_diffusion).
         self._diffusion = str(arch or "").lower().startswith("diffusion") or (
             "diffusion.canvas_length" in header
         )
@@ -1760,7 +1747,6 @@ class ClusterServing:
                     file_size = 0
             sidecars += int(file_size)
         if extra_args_disable_mmproj(extras):
-            # --no-mmproj suppresses a projector the args name.
             named_mm = ss.sidecar_files(_flag_args(extras, frozenset({"--mmproj", "-mm"})))
             dropped += [p for p in named_mm if p not in dropped]
         for path in dropped:
@@ -1953,7 +1939,6 @@ class ClusterServing:
             )
         # A recurrent checkpoint is one slot's state; the loader's probe misses gated-delta layers.
         per_checkpoint = max(per_checkpoint or 0, _ssm_state_bytes(header, 1))
-        # The count the loader will launch with: capability, arguments, and its host budget.
         count = await asyncio.to_thread(
             _effective_checkpoints,
             binary,
@@ -2051,7 +2036,6 @@ class ClusterServing:
                 if self.block:
                     _remember_block(self.block)  # failed replacements may have pushed it out
         else:
-            # The failed load got as far as tearing the old one down.
             self.forget_served()
 
     def _serving_split(self) -> bool:
