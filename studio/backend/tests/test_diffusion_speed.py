@@ -3031,7 +3031,9 @@ def test_rocm_load_local_oom_wins_over_a_concurrent_global_success(monkeypatch):
     torch = pytest.importorskip("torch")
     monkeypatch.setattr(torch.version, "hip", "6.4", raising = False)
     monkeypatch.setattr(rc, "_index", lambda device: 0)
-    monkeypatch.setattr(rc, "_probe", lambda torch, index: (False, "OutOfMemoryError: HIP out of memory"))
+    monkeypatch.setattr(
+        rc, "_probe", lambda torch, index: (False, "OutOfMemoryError: HIP out of memory")
+    )
     rc._reset_for_tests()
     with rc.load_scope():
         assert rc.rocm_block_compile_probe()[0] is False
