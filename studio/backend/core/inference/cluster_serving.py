@@ -368,6 +368,15 @@ def _shares_host_memory(device: Device) -> bool:
     return not host or device.total_bytes >= host / 2
 
 
+def _kv_unified_supported(binary: Optional[str]) -> bool:
+    """The loader's probe for --kv-unified; a failed probe reads as absent there too."""
+    try:
+        from core.inference.llama_cpp import LlamaCppBackend
+        return bool(LlamaCppBackend.probe_server_capabilities(binary).get("supports_kv_unified"))
+    except Exception:
+        return False
+
+
 def _effective_checkpoints(
     binary: Optional[str],
     extras: Sequence[str],
@@ -1101,6 +1110,7 @@ class ClusterServing:
         self._unsized_kv: bool = False
         self._max_block: Optional[float] = None
         self._host_embd: float = 0.0
+        self._untied = False
         self._ctx_compute: float = 0.0
         self._checkpoints: float = 0.0
         self._recurrent: float = 0.0
@@ -1240,6 +1250,9 @@ class ClusterServing:
         if self._passthrough:
             return request
         self.settle_internal_load()
+        if n_parallel > 1 and not _kv_unified_supported(ss.llama_server_binary()):
+            # The loader launches one slot then: --parallel N would split -c N ways.
+            n_parallel = 1
         self._requested_model = (
             str(getattr(request, "model_path", "") or ""),
             getattr(request, "gguf_variant", None),
@@ -1471,17 +1484,21 @@ class ClusterServing:
                 scratch_bytes = self._ctx_compute,
             )
 
-        plan = plan_for(model_bytes)
+        # An untied input embedding stays in host RAM, which only a unified device draws on.
+        off_device = self._host_embd if self._untied and not unified else 0.0
+        plan = plan_for(model_bytes - off_device)
         skipped = self._nextn_bytes  # in the plan's weights, never loaded on a split
         if plan.topology == "refuse" and self._nextn_bytes:
             # A split runs without speculation, so trailing NextN / MTP blocks never load.
-            trimmed = plan_for(model_bytes - self._nextn_bytes)
+            trimmed = plan_for(model_bytes - off_device - self._nextn_bytes)
             if trimmed.topology == "layer_split":
                 plan, skipped = trimmed, 0.0
         plan.kv_bytes = float(kv_bytes or 0)
         plan.uncertain_extra_bytes = self._uncertain_extra + checkpoints
         plan.layer_bytes = float(layer_bytes or 0.0)
-        plan.host_bytes = self._host_embd + (skipped if plan.topology == "layer_split" else 0.0)
+        plan.host_bytes = (self._host_embd - off_device) + (
+            skipped if plan.topology == "layer_split" else 0.0
+        )
         self.plan = plan
         if plan.topology == "refuse":
             self.topology, self.reason, self.plan, self.block = self._pre_load
@@ -1563,6 +1580,7 @@ class ClusterServing:
         # The input embedding stays on the host; the output matrix (or a tied model's copy of the
         # embedding) is one more lump on the last device.
         self._host_embd = float(blocks.get(-2, 0))
+        self._untied = -1 in blocks
         output = blocks.get(-1, blocks.get(-2, 0))
         unread_adapters = 0
         if layers:

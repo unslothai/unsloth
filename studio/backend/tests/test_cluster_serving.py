@@ -247,6 +247,7 @@ def _cluster_env(
     monkeypatch.setattr(cs, "_remote_projector_bytes", lambda path, token: 0)
     # The fake coordinator is a DGX Spark: its GPU memory is the host RAM pool.
     monkeypatch.setattr(cs, "_shares_host_memory", lambda device: True)
+    monkeypatch.setattr(cs, "_kv_unified_supported", lambda binary: True)
     seen = []
 
     def fake_list(binary, endpoints):
@@ -2983,3 +2984,40 @@ def test_recurrent_state_skips_the_periodic_attention_layers():
     per_layer = 3 * (4096 + 2 * 16 * 128) + 128 * 4096
     assert cs._ssm_state_bytes(vals, 2) == per_layer * 4 * 36 * 2
     assert cs._recurrent_layers(dict(vals, **{"qwen3next.nextn_predict_layers": 4})) == 33
+
+
+@pytest.mark.parametrize("unified, untied", [(False, True), (True, True), (False, False)])
+def test_a_host_only_embedding_is_not_accelerator_demand(monkeypatch, unified, untied):
+    _cluster_env(monkeypatch)
+    monkeypatch.setattr(cs, "_shares_host_memory", lambda device: unified)
+    blocks = {0: GIB, -2: 2 * GIB, **({-1: 2 * GIB} if untied else {})}
+    monkeypatch.setattr(cs, "_local_gguf_header", lambda *a, **k: (_llama_header(8), blocks))
+    run(ss.before_load(_request(), 4))
+    plan = cs.state().plan
+    off = 2 * GIB if untied and not unified else 0
+    assert plan.need_bytes - plan.kv_bytes == pytest.approx(250 * GIB - off)
+    assert plan.host_bytes == 2 * GIB - off
+
+
+def test_a_build_without_kv_unified_is_planned_at_one_slot(monkeypatch):
+    _cluster_env(monkeypatch)
+    monkeypatch.setattr(cs, "_kv_unified_supported", lambda binary: False)
+    seen = []
+    monkeypatch.setattr(cs, "_ctx_compute_bytes", lambda *a, **k: seen.append(a[6]) or 0)
+    run(ss.before_load(_request(max_seq_length = 8192), 8))
+    assert seen and set(seen) == {1}
+
+
+def test_a_cancelled_cluster_plan_keeps_the_two_spark_split(monkeypatch):
+    import asyncio as _asyncio
+
+    _cluster_env(monkeypatch)
+    peer = object()
+    monkeypatch.setattr(ss, "_STATE", SimpleNamespace(peer_process = peer, router = None))
+    detached = []
+    ss._STATE.detach = lambda: detached.append(1)
+    cancel = _asyncio.Event()
+    cancel.set()
+    out = run(ss.before_load(_request(), 4, cancel_event = cancel))
+    assert detached == [] and not getattr(out, "force_reload", False)
+    assert ss._STATE.peer_process is peer

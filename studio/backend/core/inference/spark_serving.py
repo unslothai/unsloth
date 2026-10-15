@@ -3471,9 +3471,9 @@ async def before_load(
             _STATE.peer_process is not None or _STATE.router is not None
         )
         _DETACH_LEGACY_ON_COMMIT = legacy and not alongside and not replacing
-        if replacing and legacy:
+        if replacing and legacy and not cluster_serving.state()._cancelled():
             # A two-Spark split or replica set from before the cluster was configured; only once
-            # the cluster has a plan, so a refused one leaves it serving.
+            # the cluster has a plan, so a refused or cancelled one leaves it serving.
             try:
                 if confirm_teardown is not None:
                     confirm_teardown()
