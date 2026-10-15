@@ -6,13 +6,13 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { AiSpeechIcon } from "@/lib/hugeicons-derived";
 import { cn } from "@/lib/utils";
 import {
   BrainIcon,
   Chat01Icon,
   CodeIcon,
   GlobeIcon,
-  HeadphonesIcon,
   ImageIcon,
   LockIcon,
   LockKeyIcon,
@@ -26,7 +26,8 @@ import type { Capability, CapabilityKey } from "../lib/model-capabilities";
 
 const CAPABILITY_ICON: Record<CapabilityKey, IconSvgElement> = {
   vision: ViewIcon,
-  audio: HeadphonesIcon,
+  // The sidebar's Audio icon.
+  audio: AiSpeechIcon,
   tools: Wrench01Icon,
   reasoning: BrainIcon,
   code: CodeIcon,

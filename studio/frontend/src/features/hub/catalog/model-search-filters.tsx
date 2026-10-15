@@ -13,12 +13,12 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { AiSpeechIcon } from "@/lib/hugeicons-derived";
 import { cn } from "@/lib/utils";
 import {
   BrainIcon,
   FilterMailIcon,
   FlimSlateIcon,
-  HeadphonesIcon,
   ImageIcon,
   InformationCircleIcon,
   SparklesIcon,
@@ -43,7 +43,7 @@ const CAPABILITY_ICONS: Record<HubCapabilityFilter, IconSvgElement> = {
   text: TextFontIcon,
   reasoning: BrainIcon,
   vision: ViewIcon,
-  audio: HeadphonesIcon,
+  audio: AiSpeechIcon,
   embedding: SparklesIcon,
   "image-gen": ImageIcon,
   "video-gen": FlimSlateIcon,

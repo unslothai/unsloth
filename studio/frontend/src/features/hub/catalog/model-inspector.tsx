@@ -40,6 +40,7 @@ import {
   RamMemoryIcon,
   Share05Icon,
 } from "@hugeicons/core-free-icons";
+import { TextToSpeechIcon } from "@/lib/hugeicons-derived";
 import type { IconSvgElement } from "@hugeicons/react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { memo, useDeferredValue, useMemo } from "react";
@@ -669,7 +670,13 @@ export const ModelInspector = memo(function ModelInspector({
           {!isDataset && (
             <span className="inline-flex h-6 items-center gap-1.5 rounded-full bg-muted px-2.5 text-ui-11p5 font-medium text-foreground dark:bg-[rgb(255_255_255_/_calc(0.04*var(--contrast-wash-gain,1)))]">
               <HugeiconsIcon
-                icon={CubeIcon}
+                // Speech models take the sidebar's Text to Speech icon.
+                icon={
+                  model.pipelineTag === "text-to-speech" ||
+                  model.pipelineTag === "text-to-audio"
+                    ? TextToSpeechIcon
+                    : CubeIcon
+                }
                 strokeWidth={1.75}
                 className="size-3 text-muted-foreground"
               />
