@@ -173,8 +173,8 @@ def Gemma2Attention_fast_forward(
         kv_seq_len += past_key_value[0].shape[-2]
 
     device_index = Q.device.index
-    cos = self.rotary_emb.multi_gpu_cos_cached[device_index]
-    sin = self.rotary_emb.multi_gpu_sin_cached[device_index]
+    # get_cached builds this device's cache on first use.
+    cos, sin = self.rotary_emb.get_cached(kv_seq_len, device_index)
 
     rope_position_ids = position_ids if position_ids is not None else kwargs.get("position_ids")
     if rope_position_ids is not None:
