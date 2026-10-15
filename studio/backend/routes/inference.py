@@ -5749,6 +5749,7 @@ class _TrackedCancel:
         model = None,
         kind = "chat",
         track_run = True,
+        external = False,
     ):
         self.event = event
         self.keys = tuple(_account_cancel_key(k) for k in keys if k)
@@ -5757,7 +5758,12 @@ class _TrackedCancel:
         # track_run=False only adds cancel keys to a run another tracker already records.
         self._active = (
             active_generations.ActiveGeneration(
-                event, thread_id = thread_id, run_id = run_id, model = model, kind = kind
+                event,
+                thread_id = thread_id,
+                run_id = run_id,
+                model = model,
+                kind = kind,
+                external = external,
             )
             if track_run
             else None
@@ -5765,7 +5771,13 @@ class _TrackedCancel:
         self._slot = None
 
     @classmethod
-    def for_payload(cls, event: threading.Event, payload, *keys):
+    def for_payload(
+        cls,
+        event: threading.Event,
+        payload,
+        *keys,
+        external = False,
+    ):
         """Track the run against the conversation its request names."""
         return cls(
             event,
@@ -5773,6 +5785,7 @@ class _TrackedCancel:
             thread_id = getattr(payload, "thread_id", None),
             run_id = getattr(payload, "generation_run_id", None),
             model = getattr(payload, "model", None),
+            external = external,
         )
 
     def __enter__(self):
@@ -9349,7 +9362,9 @@ async def _wait_for_model_switch_idle(
         elsewhere = model_slots.all_generations()
         active_others -= min(active_others, len(elsewhere))
         if cancel_pending:
-            cancellable = active_generations.count(account_id, elsewhere)
+            cancellable = active_generations.count(
+                account_id, elsewhere | active_generations.external_events()
+            )
             active_others -= min(active_others, cancellable)
         if active_others <= queued_switches:
             return
@@ -17412,7 +17427,7 @@ def _raise_or_cancel_active_generations(
         # first would end the caller's chats for nothing. Keyed on account_scope(), whose count
         # drops while a deactivated account's generation still holds the GPU.
         require_no_foreign_generations(scope)
-    elsewhere = model_slots.all_generations()
+    elsewhere = model_slots.all_generations() | active_generations.external_events()
     if not active_generations.count(scope, elsewhere):
         return 0
     if not force:
@@ -17464,7 +17479,9 @@ async def _cancel_and_drain_for_sidecar_swap(timeout_s: Optional[float] = None) 
                 current_request_counted = False, include_pending = False
             )
             if discount_registered:
-                counted -= min(counted, active_generations.count())
+                counted -= min(
+                    counted, active_generations.count(None, active_generations.external_events())
+                )
             if counted <= 0:
                 return True
             if time.monotonic() >= deadline:
@@ -17679,7 +17696,7 @@ async def get_active_generations(
     """
     scope = account_access.account_scope()
     # ``model``: only the chats an unload of that model stops, the same split its scoped 409 uses.
-    exclude, only, llama = (), None, None
+    exclude, only, llama = active_generations.external_events(), None, None
     if model and model_slots.slots:
         slot = await asyncio.to_thread(
             model_slots.serving_slot, model, model_slots.visible(), _loaded_satisfies
@@ -17687,7 +17704,7 @@ async def get_active_generations(
         if slot is not None:
             only, llama = set(slot.generations), slot.llama
         elif await asyncio.to_thread(model_slots.in_slot, None, lambda: _loaded_satisfies(model)):
-            exclude = model_slots.all_generations()
+            exclude |= model_slots.all_generations()
         else:
             only = set()  # no loaded model by that name: its unload stops nothing
     entries = active_generations.snapshot(scope, exclude, only)
@@ -29881,7 +29898,9 @@ async def _proxy_to_external_provider(
 
         async def _wrapped():
             inner = _stream()
-            with _TrackedCancel.for_payload(cancel_event, payload, *cancel_keys):
+            with _TrackedCancel.for_payload(
+                cancel_event, payload, *cancel_keys, external = managed is None
+            ):
                 try:
                     async for chunk in inner:
                         yield chunk
