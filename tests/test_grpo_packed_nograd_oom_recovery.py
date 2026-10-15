@@ -32,6 +32,22 @@ class _OOMOnceModel(harness._Model):
         )
 
 
+class _OOMInVerifyModel(harness._Model):
+    """The packed forward succeeds; the first per-row verifier forward runs out of memory."""
+
+    def __init__(self):
+        super().__init__(hidden_states = False)
+        self.armed = True
+
+    def forward(self, input_ids = None, packed_seq_lengths = None, **kwargs):
+        if packed_seq_lengths is None and self.armed:
+            self.armed = False
+            raise torch.cuda.OutOfMemoryError("CUDA out of memory")
+        return super().forward(
+            input_ids = input_ids, packed_seq_lengths = packed_seq_lengths, **kwargs
+        )
+
+
 def _shorter_batch():
     pad = harness.PAD_ID
     return torch.tensor(
@@ -77,3 +93,27 @@ def test_non_oom_failure_still_disables_packing():
     ns, *_ = harness._run_packed_block(model = model)
     assert ns["_pk_use"] is False
     assert model._unsloth_seq_packing_nograd_ok is False
+
+
+def test_oom_in_the_per_row_verifier_disables_packing(monkeypatch):
+    # The packed forward completed, so the OOM says nothing about the packed length.
+    model = _OOMInVerifyModel()
+    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: None)
+    ns, *_ = harness._run_packed_block(model = model)
+    assert any(call.packed for call in model.calls)
+    assert ns["_pk_use"] is False
+    assert model._unsloth_seq_packing_nograd_ok is False
+    assert getattr(model, "_unsloth_seq_packing_nograd_unsafe_T", None) is None
+
+
+def test_oom_log_reports_the_cap_not_disabled(monkeypatch, capsys):
+    model = _OOMOnceModel(torch.cuda.OutOfMemoryError("CUDA out of memory"))
+    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: None)
+    ns, *_ = harness._run_packed_block(model = model, UNSLOTH_ENABLE_LOGGING = True)
+    out = capsys.readouterr().out
+    assert f"capped below T={ns['_pk_T']}" in out
+    assert "disabled" not in out
+
+    model = _OOMOnceModel(RuntimeError("kernel rejected the packed layout"))
+    harness._run_packed_block(model = model, UNSLOTH_ENABLE_LOGGING = True)
+    assert "disabled (fell back to padded)" in capsys.readouterr().out
