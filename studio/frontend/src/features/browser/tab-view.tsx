@@ -261,12 +261,15 @@ function WebPage({
   const blocked = state.status === "error" && state.resubmit === true;
   const pageOrigin = state.status === "ready" ? new URL(state.page.url).origin : null;
   const onFrameMessage = useFrameMessages(tab.id, pageOrigin);
-  useEffect(() => {
-    const id = frameNotice("needsBrowser", tab.id).id;
-    return () => {
-      toast.dismiss(id);
-    };
-  }, [tab.id]);
+  // A notice's action opens the tab's current address, so it goes with the page it is about.
+  useEffect(
+    () => () => {
+      for (const type of ["upload", "scriptNavigation", "needsBrowser"] as const) {
+        toast.dismiss(frameNotice(type, tab.id).id);
+      }
+    },
+    [tab.id],
+  );
   const updateTab = useBrowserStore((store) => store.updateTab);
   const reload = useBrowserStore((store) => store.reload);
 
