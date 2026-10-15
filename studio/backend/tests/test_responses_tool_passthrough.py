@@ -4183,6 +4183,19 @@ class TestResponsesInProcessStream:
         assert "response.created" in events and "response.completed" not in events
         assert ("cancelled",) in seen["finish"]
 
+    def test_without_task_cancelling_a_stop_raised_by_the_source_still_propagates(
+        self, monkeypatch
+    ):
+        # Python < 3.11 has no Task.cancelling, so the old behaviour stays.
+        import routes.inference as inf_mod
+
+        real = inf_mod.asyncio.current_task
+        monkeypatch.setattr(
+            inf_mod.asyncio, "current_task", lambda: SimpleNamespace(wrapped = real())
+        )
+        with pytest.raises(asyncio.CancelledError):
+            self._run(monkeypatch, self._CHUNKS, stop_at = 2, raise_on_stop = True)
+
     def test_delegated_chat_never_offers_a_control_channel_it_cannot_relay(self, monkeypatch):
         # An approval_id in a dropped tool_start frame would leave the tool loop waiting.
         seen = self._run(monkeypatch, self._CHUNKS, headers = [(b"x-unsloth-events", b"1")])
