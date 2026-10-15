@@ -1006,6 +1006,9 @@ export const hi = {
       resetButton: "रीसेट",
       resetDone: "लाइब्रेरी सेटिंग्स रीसेट हो गईं",
       storageSection: "स्टोरेज",
+      downloadsSection: "इमेज डाउनलोड",
+      imageInfoStamp: "जानकारी स्टैम्प",
+      imageInfoStampDescription: "Images पेज से डाउनलोड की गई इमेज के नीचे मॉडल, तारीख और सीड दिखाएँ। जनरेशन सेटिंग्स हर हाल में फ़ाइल के अंदर सहेजी जाती हैं।",
       storageDescription: "किसी श्रेणी को खोलकर उसकी फ़ाइलें सबसे बड़ी से देखें, और जो ज़रूरी नहीं है उसे हटाएं।",
       storageUsed: "लाइब्रेरी {size} इस्तेमाल कर रही है",
       storageDisk: "इस डिस्क पर {total} में से {free} खाली",
@@ -1737,6 +1740,19 @@ export const hi = {
         apiOnly: "केवल API द्वारा लोड किए गए मॉडल अनलोड करें",
         apiOnlyDescription:
           "निष्क्रियता पर अनलोड करते समय Unsloth से आपके द्वारा लोड किया गया मॉडल मेमोरी में बना रहता है, और केवल वही मॉडल हटाए जाते हैं जिन्हें किसी API अनुरोध ने लोड किया था।",
+      },
+      modelAliases: {
+        sectionTitle: "मॉडल उपनाम (OpenAI API)",
+        description:
+          "API क्लाइंट के लिए स्थिर नाम, जैसे fast-chat या code. किसी उपनाम वाले अनुरोध को वही मॉडल जवाब देता है जिसकी ओर वह इशारा करता है, इसलिए मॉडल बदलने पर भी जुड़े ऐप चलते रहते हैं. उपनाम अपना मॉडल लोड कर सके, इसके लिए अनुरोध के अनुसार मॉडल बदलें चालू करें.",
+        namePlaceholder: "fast-chat",
+        nameAriaLabel: "उपनाम का नाम",
+        modelAriaLabel: "वह मॉडल जिसकी ओर उपनाम इशारा करता है",
+        modelPlaceholder: "unsloth/Qwen3-4B-GGUF:Q4_K_M",
+        removeAriaLabel: "उपनाम हटाएं",
+        add: "उपनाम जोड़ें",
+        loadError: "मॉडल उपनाम लोड नहीं हो सके.",
+        saveError: "मॉडल उपनाम सहेजे नहीं जा सके.",
       },
       previewSharing: {
         sectionTitle: "पूर्वावलोकन साझाकरण",

@@ -140,8 +140,28 @@ export const BUDGET = {
   // module the eager browser store imports for tab close and duplicate (6,771,852 -> 6,773,496 B raw, 2,035,948 ->
   // 2,036,414 B transfer against 82f16ca55, one machine and build, Node 24, chunk count unchanged at 95). Raised by
   // that growth.
-  transferBytes: 2_036_414,
-  rawBytes: 6_773_496,
+  // Hub Run refusing audio models neither Audio nor chat can run (#13812) adds 77 B raw / 65 B transfer
+  // (6,773,445 -> 6,773,522 B raw, 2,036,392 -> 2,036,457 B transfer against 59ab069b5, one machine and build,
+  // Node 24, chunk count unchanged at 95). Raised by that growth.
+  // The Windows Desktop install location row on the first-run screen (#13446) adds 1,324 B raw / 342 B
+  // transfer (6,773,496 -> 6,774,820 B raw, 2,036,386 -> 2,036,728 B transfer against 59ab069b5, one machine
+  // and build, Node 24, chunk count unchanged at 95). Lazy-loading it cost more transfer and a 96th startup
+  // chunk (Rollup split react-dom out), so it is imported statically and the budget raised by that growth.
+  // Opening the OS folder dialog for model folders on Desktop (#13843) adds 235 B raw / 336 B transfer
+  // (6,777,794 -> 6,778,029 B raw, 2,037,725 -> 2,038,061 B transfer against 199987c63, one machine and build,
+  // Node 24, chunk count unchanged at 95). Raised by that growth.
+  // The Windows Long Paths explainer on the first-run startup screen (#13523) adds 1,816 B raw / 519 B
+  // transfer (6,778,788 -> 6,780,604 B raw, 2,038,337 -> 2,038,856 B transfer against 62e063618, one machine
+  // and build, Node 24, chunk count unchanged at 95). Main already measured 3,656 B raw / 1,180 B transfer over
+  // the previous limits there, so they are set to the measured build.
+  // The downloads panel's "Starting…" row (#13738) adds 1,404 B raw / 353 B transfer (6,778,788 -> 6,780,192 B raw,
+  // 2,038,337 -> 2,038,690 B transfer against 7c235de6f, one machine and build, Node 24, 95 chunks). Raised by that growth.
+  // The Image downloads > Info stamp row in Settings > Library, its search entry and strings (#13444) add 348 B
+  // raw / 83 B transfer to the eager settings and English locale chunks (6,780,553 -> 6,780,901 B raw,
+  // 2,038,848 -> 2,038,931 B transfer against 9f5b133254, one machine and build, Node 24, chunk count unchanged
+  // at 95). Raised by that growth.
+  transferBytes: 2_039_292,
+  rawBytes: 6_782_356,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

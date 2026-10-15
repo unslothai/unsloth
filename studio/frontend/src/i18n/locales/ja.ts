@@ -1004,6 +1004,9 @@ export const ja = {
       resetButton: "リセット",
       resetDone: "ライブラリ設定をリセットしました",
       storageSection: "ストレージ",
+      downloadsSection: "画像のダウンロード",
+      imageInfoStamp: "情報スタンプ",
+      imageInfoStampDescription: "画像ページからダウンロードした画像の下部にモデル、日時、シードを表示します。生成設定はどちらの場合もファイル内に保存されます。",
       storageDescription: "カテゴリを開くとファイルがサイズの大きい順に表示されます。不要なものを削除できます。",
       storageUsed: "ライブラリの使用量 {size}",
       storageDisk: "このディスクの空き容量 {free} / {total}",
@@ -1725,6 +1728,19 @@ export const ja = {
         apiOnly: "API が読み込んだモデルのみアンロード",
         apiOnlyDescription:
           "アイドル時の自動アンロードでは、Unsloth から自分で読み込んだモデルはメモリに残し、API リクエストが読み込んだモデルだけを解放します。",
+      },
+      modelAliases: {
+        sectionTitle: "モデルエイリアス (OpenAI API)",
+        description:
+          "fast-chat や code のような、API クライアント向けの固定名です。エイリアスを指定したリクエストは、そのエイリアスが指すモデルで処理されるため、モデルを入れ替えても接続中のアプリはそのまま動きます。エイリアスがモデルを読み込めるよう、リクエストごとにモデルを切り替えをオンにしてください。",
+        namePlaceholder: "fast-chat",
+        nameAriaLabel: "エイリアス名",
+        modelAriaLabel: "エイリアスが指すモデル",
+        modelPlaceholder: "unsloth/Qwen3-4B-GGUF:Q4_K_M",
+        removeAriaLabel: "エイリアスを削除",
+        add: "エイリアスを追加",
+        loadError: "モデルエイリアスを読み込めませんでした。",
+        saveError: "モデルエイリアスを保存できませんでした。",
       },
       previewSharing: {
         sectionTitle: "プレビュー共有",

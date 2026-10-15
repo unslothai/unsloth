@@ -1086,6 +1086,9 @@ export const he = {
       resetButton: "איפוס",
       resetDone: "הגדרות הספרייה אופסו",
       storageSection: "אחסון",
+      downloadsSection: "הורדות תמונות",
+      imageInfoStamp: "חותמת מידע",
+      imageInfoStampDescription: "הצגת המודל, התאריך וה-seed בתחתית התמונות שמורידים מדף התמונות. הגדרות היצירה נשמרות בתוך הקובץ בכל מקרה.",
       storageDescription:
         "פתח קטגוריה כדי לראות את הקבצים שלה מהגדול לקטן, ומחק את מה שאינך צריך עוד.",
       storageUsed: "{size} בשימוש הספרייה",
@@ -1827,6 +1830,19 @@ export const he = {
         apiOnly: "פרוק רק מודלים שנטענו על ידי ה-API",
         apiOnlyDescription:
           "פריקה בחוסר פעילות תשאיר מודל שטענת מ-Unsloth בזיכרון, ותשחרר רק מודלים שנטענו בעקבות בקשת API.",
+      },
+      modelAliases: {
+        sectionTitle: "כינויים למודלים (OpenAI API)",
+        description:
+          "שמות קבועים ללקוחות API, כמו fast-chat או code. בקשה שמציינת כינוי מוגשת על ידי המודל שאליו הוא מצביע, כך שאפליקציות מחוברות ממשיכות לעבוד כשמחליפים מודל. הפעילו את החלף מודל לפי בקשה כדי שכינוי יוכל לטעון את המודל שלו.",
+        namePlaceholder: "fast-chat",
+        nameAriaLabel: "שם הכינוי",
+        modelAriaLabel: "המודל שאליו הכינוי מצביע",
+        modelPlaceholder: "unsloth/Qwen3-4B-GGUF:Q4_K_M",
+        removeAriaLabel: "הסרת כינוי",
+        add: "הוספת כינוי",
+        loadError: "טעינת הכינויים למודלים נכשלה.",
+        saveError: "שמירת הכינויים למודלים נכשלה.",
       },
       previewSharing: {
         sectionTitle: "שיתוף תצוגה מקדימה",

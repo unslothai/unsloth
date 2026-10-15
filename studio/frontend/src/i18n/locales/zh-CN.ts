@@ -1000,6 +1000,9 @@ export const zhCN = {
       resetButton: "重置",
       resetDone: "资料库设置已重置",
       storageSection: "存储空间",
+      downloadsSection: "图片下载",
+      imageInfoStamp: "信息水印",
+      imageInfoStampDescription: "在从图片页面下载的图片底部显示模型、日期和种子。无论是否开启，生成设置都会保存在文件中。",
       storageDescription: "打开一个类别即可按大小从大到小查看文件，并删除不再需要的内容。",
       storageUsed: "资料库已使用 {size}",
       storageDisk: "此磁盘可用 {free}，共 {total}",
@@ -1713,6 +1716,19 @@ export const zhCN = {
         apiOnly: "仅卸载由 API 加载的模型",
         apiOnlyDescription:
           "空闲卸载会将你在 Unsloth 中加载的模型保留在内存中，只释放由 API 请求加载的模型。",
+      },
+      modelAliases: {
+        sectionTitle: "模型别名 (OpenAI API)",
+        description:
+          "为 API 客户端提供固定名称，例如 fast-chat 或 code。指定别名的请求由该别名指向的模型处理，因此更换模型后已连接的应用仍可正常使用。请开启按请求切换模型，以便别名可以加载其模型。",
+        namePlaceholder: "fast-chat",
+        nameAriaLabel: "别名名称",
+        modelAriaLabel: "别名指向的模型",
+        modelPlaceholder: "unsloth/Qwen3-4B-GGUF:Q4_K_M",
+        removeAriaLabel: "删除别名",
+        add: "添加别名",
+        loadError: "无法加载模型别名。",
+        saveError: "无法保存模型别名。",
       },
       previewSharing: {
         sectionTitle: "预览分享",

@@ -910,6 +910,9 @@ export const it = {
       resetButton: "Reimposta",
       resetDone: "Impostazioni della Libreria reimpostate",
       storageSection: "Spazio",
+      downloadsSection: "Download delle immagini",
+      imageInfoStamp: "Timbro informativo",
+      imageInfoStampDescription: "Mostra modello, data e seed in fondo alle immagini scaricate dalla pagina Immagini. Le impostazioni di generazione vengono salvate nel file in ogni caso.",
       storageDescription: "Apri una categoria per vedere i file dal più grande e elimina ciò che non ti serve più.",
       storageUsed: "{size} usati dalla Libreria",
       storageDisk: "{free} liberi su {total} in questo disco",
@@ -1655,6 +1658,19 @@ export const it = {
         apiOnly: "Scarica solo i modelli caricati dall'API",
         apiOnlyDescription:
           "Lo scaricamento per inattività lascia in memoria un modello caricato da te in Unsloth e libera solo quelli caricati da una richiesta API.",
+      },
+      modelAliases: {
+        sectionTitle: "Alias dei modelli (OpenAI API)",
+        description:
+          "Nomi stabili per i client API, come fast-chat o code. Una richiesta che nomina un alias viene servita dal modello a cui punta, così le app collegate continuano a funzionare quando cambi modello. Attiva Cambia modello in base alla richiesta perché un alias possa caricare il modello a cui punta.",
+        namePlaceholder: "fast-chat",
+        nameAriaLabel: "Nome dell'alias",
+        modelAriaLabel: "Modello a cui punta l'alias",
+        modelPlaceholder: "unsloth/Qwen3-4B-GGUF:Q4_K_M",
+        removeAriaLabel: "Rimuovi alias",
+        add: "Aggiungi alias",
+        loadError: "Impossibile caricare gli alias dei modelli.",
+        saveError: "Impossibile salvare gli alias dei modelli.",
       },
       previewSharing: {
         sectionTitle: "Condivisione delle anteprime",

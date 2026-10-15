@@ -1002,6 +1002,9 @@ export const ar = {
       resetButton: "إعادة ضبط",
       resetDone: "تمت إعادة ضبط إعدادات المكتبة",
       storageSection: "التخزين",
+      downloadsSection: "تنزيلات الصور",
+      imageInfoStamp: "ختم المعلومات",
+      imageInfoStampDescription: "عرض النموذج والتاريخ والبذرة أسفل الصور التي تنزّلها من صفحة الصور. تُحفظ إعدادات التوليد داخل الملف في كلتا الحالتين.",
       storageDescription: "افتح فئة لرؤية ملفاتها من الأكبر حجمًا، واحذف ما لم تعد تحتاجه.",
       storageUsed: "تستخدم المكتبة {size}",
       storageDisk: "{free} متاحة من {total} على هذا القرص",
@@ -1733,6 +1736,19 @@ export const ar = {
         apiOnly: "تفريغ النماذج التي حمّلتها واجهة API فقط",
         apiOnlyDescription:
           "يُبقي التفريغ التلقائي عند الخمول النموذج الذي حمّلته من Unsloth في الذاكرة، ولا يفرّغ سوى النماذج التي حمّلها طلب عبر واجهة API.",
+      },
+      modelAliases: {
+        sectionTitle: "أسماء النماذج المستعارة (OpenAI API)",
+        description:
+          "أسماء ثابتة لعملاء الواجهة البرمجية مثل fast-chat أو code. يُخدَم الطلب الذي يذكر اسمًا مستعارًا بالنموذج الذي يشير إليه، فتستمر التطبيقات المتصلة في العمل عند تبديل النماذج. فعّل تبديل النموذج حسب الطلب ليتمكن الاسم المستعار من تحميل نموذجه.",
+        namePlaceholder: "fast-chat",
+        nameAriaLabel: "الاسم المستعار",
+        modelAriaLabel: "النموذج الذي يشير إليه الاسم المستعار",
+        modelPlaceholder: "unsloth/Qwen3-4B-GGUF:Q4_K_M",
+        removeAriaLabel: "إزالة الاسم المستعار",
+        add: "إضافة اسم مستعار",
+        loadError: "تعذر تحميل أسماء النماذج المستعارة.",
+        saveError: "تعذر حفظ أسماء النماذج المستعارة.",
       },
       previewSharing: {
         sectionTitle: "مشاركة المعاينة",

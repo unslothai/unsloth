@@ -1060,6 +1060,9 @@ export const en = {
       resetButton: "Reset",
       resetDone: "Library settings reset",
       storageSection: "Storage",
+      downloadsSection: "Image downloads",
+      imageInfoStamp: "Info stamp",
+      imageInfoStampDescription: "Show the model, date and seed along the bottom of images you download from the Images page. The generation settings are saved inside the file either way.",
       storageDescription: "Open a category to see its files largest first, and delete what you no longer need.",
       storageUsed: "{size} used by the Library",
       storageDisk: "{free} free of {total} on this disk",
@@ -1784,6 +1787,19 @@ export const en = {
         apiOnly: "Only unload models loaded by the API",
         apiOnlyDescription:
           "Idle unload leaves a model you loaded from Unsloth in memory, and frees only the ones an API request loaded.",
+      },
+      modelAliases: {
+        sectionTitle: "Model aliases (OpenAI API)",
+        description:
+          "Stable names for API clients, such as fast-chat or code. A request naming an alias is served by the model it points to, so connected apps keep working when you swap models. Turn on Switch model by request so an alias can load its model.",
+        namePlaceholder: "fast-chat",
+        nameAriaLabel: "Alias name",
+        modelAriaLabel: "Model the alias points to",
+        modelPlaceholder: "unsloth/Qwen3-4B-GGUF:Q4_K_M",
+        removeAriaLabel: "Remove alias",
+        add: "Add alias",
+        loadError: "Failed to load model aliases.",
+        saveError: "Failed to save model aliases.",
       },
       previewSharing: {
         sectionTitle: "Preview sharing",
