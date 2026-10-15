@@ -83,6 +83,9 @@ export const es = {
     },
     agent: {
       working: "Unsloth está navegando en esta pestaña",
+      waiting: "Unsloth necesita tu respuesta en el navegador para {chat}",
+      otherChat: "otro chat",
+      show: "Mostrar",
       stop: "Detener",
       allow: "Permitir",
       deny: "Denegar",
