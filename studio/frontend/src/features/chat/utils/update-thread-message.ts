@@ -167,9 +167,13 @@ export async function updateThreadMessage(args: {
   remoteId: string | undefined;
   newText: string;
   isIncognito: boolean; // <--- ADD THIS
+  // A prompt is the user's own words: markers in it are prose, never reply parts.
+  plainText?: boolean;
 }) {
-  const { thread, messageId, remoteId, newText, isIncognito } = args;
-  const parsedEditableContent = parseTaggedTextToContent(newText);
+  const { thread, messageId, remoteId, newText, isIncognito, plainText } = args;
+  const parsedEditableContent: ContentPart[] = plainText
+    ? newText ? [{ type: "text", text: newText }] : []
+    : parseTaggedTextToContent(newText);
   const currentExport = thread.export();
 
   const targetMessageEntry = currentExport.messages.find(m => m.message.id === messageId);

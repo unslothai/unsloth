@@ -60,13 +60,13 @@ test("a reply's bar ends in Delete then More; its More menu has no Delete", () =
   assert.ok(!bar.slice(menuAt).includes("Delete"));
 });
 
-test("a prompt's bar is Copy, Edit, Rewind, Fork and Delete, with no More menu", () => {
+test("a prompt's bar is Copy, Edit, Rewind, Fork and Delete, then a More menu", () => {
   const bar = component("UserActionBar");
   assert.match(
     bar,
-    /<RewindMessageButton \/>\s*<ForkCountBadge \/>\s*<ForkMessageButton \/>\s*<DeleteMessageButton \/>\s*<\/UserMessageActionBar>/,
+    /<RewindMessageButton \/>\s*<ForkCountBadge \/>\s*<ForkMessageButton \/>\s*<DeleteMessageButton \/>\s*\{editable && <UserMoreMenu \/>\}\s*<\/UserMessageActionBar>/,
   );
-  assert.ok(!THREAD.includes("UserMoreMenu"));
+  assert.ok(!component("UserMoreMenu").includes("Delete"));
 });
 
 test("the reply footer and bar wrap, so the wider bar never scrolls a narrow thread", () => {

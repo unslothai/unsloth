@@ -2661,6 +2661,8 @@ type ChatRuntimeStore = {
   incognito: boolean;
   settingsPanelOpen: boolean;
   editingMessageId: string | null;
+  /** The prompt whose open editor saves in place instead of sending. */
+  editWithoutRunMessageId: string | null;
   pendingAudioBase64: string | null;
   pendingAudioName: string | null;
   pendingImageEditReference: PendingImageEditReference | null;
@@ -2747,6 +2749,7 @@ type ChatRuntimeStore = {
   setIncognito: (incognito: boolean) => void;
   setSettingsPanelOpen: (open: boolean) => void;
   setEditingMessageId: (id: string | null) => void;
+  setEditWithoutRunMessageId: (id: string | null) => void;
   clearCheckpoint: () => void;
   setReasoningEnabled: (
     enabled: boolean,
@@ -4466,6 +4469,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   incognito: false,
   settingsPanelOpen: false,
   editingMessageId: null,
+  editWithoutRunMessageId: null,
   pendingAudioBase64: null,
   pendingAudioName: null,
   pendingImageEditReference: null,
@@ -5316,6 +5320,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   },
   setSettingsPanelOpen: (settingsPanelOpen) => set({ settingsPanelOpen }),
   setEditingMessageId: (id) => set({ editingMessageId: id }),
+  setEditWithoutRunMessageId: (id) => set({ editWithoutRunMessageId: id }),
   clearCheckpoint: () => {
     // Mirror setCheckpoint's persistence: dropping the checkpoint must also clear any stored external selection.
     saveLastExternalCheckpoint(null);

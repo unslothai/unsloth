@@ -9160,12 +9160,18 @@ const UserMessage: FC = () => {
 const UserActionBar: FC = () => {
   const ownsResearchMessage = useOwnsResearchMessage();
   const researchActive = useThreadResearchActive();
+  const setEditWithoutRunId = useChatRuntimeStore((s) => s.setEditWithoutRunMessageId);
+  const editable = !ownsResearchMessage && !researchActive;
   return (
     <UserMessageActionBar>
       <CopyButton />
-      {!ownsResearchMessage && !researchActive && (
+      {editable && (
         <ActionBarPrimitive.Edit asChild={true}>
-          <TooltipIconButton tooltip="Edit" className="aui-user-action-edit">
+          <TooltipIconButton
+            tooltip="Edit"
+            className="aui-user-action-edit"
+            onClick={() => setEditWithoutRunId(null)}
+          >
             <HugeiconsIcon
               icon={Edit03Icon}
               strokeWidth={1.75}
@@ -9178,7 +9184,59 @@ const UserActionBar: FC = () => {
       <ForkCountBadge />
       <ForkMessageButton />
       <DeleteMessageButton />
+      {editable && <UserMoreMenu />}
     </UserMessageActionBar>
+  );
+};
+
+const UserMoreMenu: FC = () => {
+  const moreMenuTriggerRef = useRef<HTMLButtonElement>(null);
+  const moreMenuCollisionPadding = useWindowChromeCollisionPadding(undefined);
+  return (
+    <ActionBarMorePrimitive.Root modal={false}>
+      <ActionBarMorePrimitive.Trigger asChild={true}>
+        <TooltipIconButton
+          ref={moreMenuTriggerRef}
+          tooltip="More"
+          className="data-[state=open]:bg-accent"
+        >
+          <MoreHorizontalIcon strokeWidth={1.75} className="size-icon" />
+        </TooltipIconButton>
+      </ActionBarMorePrimitive.Trigger>
+      <ActionBarMorePrimitive.Content
+        side="bottom"
+        align="end"
+        collisionPadding={moreMenuCollisionPadding}
+        onCloseAutoFocus={(e) => e.preventDefault()}
+        className={MORE_MENU_CONTENT_CLASS}
+      >
+        <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
+          <MenuDismissGuard triggerRef={moreMenuTriggerRef} />
+          <EditWithoutRunMenuItem />
+        </div>
+      </ActionBarMorePrimitive.Content>
+    </ActionBarMorePrimitive.Root>
+  );
+};
+
+// Opens the prompt's editor with Save in place of Send: the text changes, nothing reruns.
+const EditWithoutRunMenuItem: FC = () => {
+  const aui = useAui();
+  const messageId = useAuiState(({ message }) => message.id);
+  const isRunning = useAuiState(({ thread }) => thread.isRunning);
+  const setEditWithoutRunId = useChatRuntimeStore((s) => s.setEditWithoutRunMessageId);
+  return (
+    <ActionBarMorePrimitive.Item
+      disabled={isRunning}
+      onSelect={() => {
+        setEditWithoutRunId(messageId);
+        aui.composer().beginEdit();
+      }}
+      className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
+    >
+      <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
+      Edit without running
+    </ActionBarMorePrimitive.Item>
   );
 };
 
@@ -9191,6 +9249,18 @@ const EditComposer: FC = () => {
   const researchActive = useThreadResearchActive();
   // send() drops an empty composer, e.g. a paste-only message whose chip was removed.
   const editEmpty = useAuiState(({ composer }) => composer.isEmpty);
+  const messageId = useAuiState(({ message }) => message.id);
+  const isRunning = useAuiState(({ thread }) => thread.isRunning);
+  const saveOnly = useChatRuntimeStore((s) => s.editWithoutRunMessageId === messageId);
+  const incognito = useChatRuntimeStore((s) => s.incognito);
+
+  useEffect(
+    () => () => {
+      const store = useChatRuntimeStore.getState();
+      if (store.editWithoutRunMessageId === messageId) store.setEditWithoutRunMessageId(null);
+    },
+    [messageId],
+  );
 
   useAuiEvent("thread.runEnd", () => {
     if (!resendAfterCancelRef.current) {
@@ -9214,13 +9284,40 @@ const EditComposer: FC = () => {
     aui.composer().send({ startRun: true });
   }, [aui, isComposingRef]);
 
+  const saveEdit = useCallback(async () => {
+    if (isComposingRef.current || aui.thread().getState().isRunning) return;
+    const newText = aui.composer().getState().text;
+    const remoteId =
+      aui.threadListItem().getState().remoteId ||
+      useChatRuntimeStore.getState().activeThreadId ||
+      undefined;
+    aui.composer().cancel();
+    try {
+      await updateThreadMessage({
+        thread: {
+          export: () => aui.thread().export(),
+          import: (data) => aui.thread().import(data),
+        },
+        messageId,
+        remoteId,
+        newText,
+        isIncognito: incognito,
+        plainText: true,
+      });
+    } catch (error) {
+      console.error("UI: Error during save:", error);
+      toast.error("Failed to save message edits.");
+    }
+  }, [aui, incognito, isComposingRef, messageId]);
+
   return (
     <MessagePrimitive.Root className="aui-edit-composer-wrapper mx-auto flex w-full max-w-(--thread-content-max-width) flex-col py-3">
       <ComposerPrimitive.Root
         className="aui-edit-composer-root ml-auto flex w-full max-w-[85%] flex-col rounded-2xl bg-muted"
         onSubmit={(event) => {
           event.preventDefault();
-          submitEdit();
+          if (saveOnly) void saveEdit();
+          else submitEdit();
         }}
       >
         <ComposerAttachments className="mb-0 px-3 pt-3" />
@@ -9242,9 +9339,15 @@ const EditComposer: FC = () => {
               Cancel
             </Button>
           </ComposerPrimitive.Cancel>
-          <Button type="submit" size="sm" disabled={researchActive || editEmpty}>
-            Send
-          </Button>
+          {saveOnly ? (
+            <Button type="submit" size="sm" disabled={isRunning || editEmpty}>
+              Save
+            </Button>
+          ) : (
+            <Button type="submit" size="sm" disabled={researchActive || editEmpty}>
+              Send
+            </Button>
+          )}
         </div>
       </ComposerPrimitive.Root>
     </MessagePrimitive.Root>
