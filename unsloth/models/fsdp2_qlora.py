@@ -150,6 +150,9 @@ def params4bit_to_uint8_storage(model):
         for name, param in list(module._parameters.items()):
             if param is None or not is_params4bit(param) or not param.is_floating_point():
                 continue
+            if not getattr(param, "bnb_quantized", False) or getattr(param, "quant_state", None) is None:
+                # Still dense values bitsandbytes quantizes on the next device move, not packed bytes.
+                continue
             if not param.is_contiguous() or param.device.type == "meta":
                 left += 1
                 continue
