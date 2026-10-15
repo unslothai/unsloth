@@ -773,6 +773,20 @@ class ClusterServing:
         if self._remote_drafter:
             self.topology, self.reason = "single", "a drafter fetched from the Hub cannot be sized"
             return request
+        mode = str(getattr(request, "speculative_type", None) or "").strip().lower()
+        if mode in ("dspark", "dflash"):
+            # Their sidecar GGUF is found or fetched after planning, so it is not in the budget.
+            self.topology, self.reason = "single", f"the {mode} drafter is resolved after planning"
+            return request
+        if self._has_projector and (
+            any(str(a).split("=", 1)[0] in _MMPROJ_DEVICE_FLAGS for a in flags)
+            or os.environ.get("MTMD_BACKEND_DEVICE")
+        ):
+            self.topology, self.reason = (
+                "single",
+                "the caller pins the projector; placement is theirs",
+            )
+            return request
         if self._projector_url:
             self.topology, self.reason = "single", "a projector fetched from a URL cannot be sized"
             return request
@@ -955,10 +969,15 @@ class ClusterServing:
         env_projector = (os.environ.get("LLAMA_ARG_MMPROJ") or "").strip()
         if _flag_args(extras, frozenset({"--mmproj", "-mm"})):
             env_projector = ""
-        self._remote_drafter = bool(
-            _flag_args(extras, _HF_DRAFT_FLAGS)
-            or any(os.environ.get(k, "").strip() for k in _HF_DRAFT_ENV)
-        )
+        # Drafter sources are last-wins and argv beats the environment: only the winner counts.
+        sources = [t.split("=", 1)[0] for t in (str(a) for a in extras)]
+        sources = [n for n in sources if n in _HF_DRAFT_FLAGS or n in _DRAFTER_FLAGS]
+        if sources:
+            self._remote_drafter = sources[-1] in _HF_DRAFT_FLAGS
+        else:
+            self._remote_drafter = any(
+                os.environ.get(k, "").strip() for k in _HF_DRAFT_ENV
+            ) and not any(os.environ.get(k, "").strip() for k in _DRAFTER_ENV)
         self._projector_url = bool(
             self._has_projector
             and not host_projector

@@ -1877,3 +1877,58 @@ def test_a_moe_gpu_cache_is_caller_placement(monkeypatch, extra, env):
     monkeypatch.setenv("LLAMA_ARG_MOE_CACHE_MIB", "0")
     run(ss.before_load(_request(llama_extra_args = ["--moe-cache-mib", "0"]), 4))
     assert ss.status()["topology"] == "layer_split"
+
+
+def test_a_caller_pinned_projector_is_caller_placement(monkeypatch):
+    seen = _cluster_env(monkeypatch)
+    monkeypatch.setattr(ss, "llama_server_supports", lambda flag, binary = None: True)
+    monkeypatch.setattr(ss, "auto_projector_file", lambda *a, **k: "/models/auto-mmproj.gguf")
+    request = _request(llama_extra_args = ["--mmproj-device", "CUDA1"])
+    assert run(ss.before_load(request, 4)) is request and seen == []
+    assert "pins the projector" in ss.status()["reason"]
+
+
+@pytest.mark.parametrize(
+    "extra, env, remote",
+    [
+        (["-md", "/models/d.gguf"], "org/draft-GGUF", False),
+        (["-hfd", "org/draft-GGUF", "-md", "/models/d.gguf"], None, False),
+        (["-md", "/models/d.gguf", "-hfd", "org/draft-GGUF"], None, True),
+    ],
+)
+def test_only_the_winning_drafter_source_decides(monkeypatch, extra, env, remote):
+    _cluster_env(monkeypatch)
+    monkeypatch.setattr(ss, "llama_server_supports", lambda flag, binary = None: True)
+    monkeypatch.setattr(
+        ss, "gguf_size_bytes", lambda path: 1 * GIB if str(path).endswith("d.gguf") else 250 * GIB
+    )
+    if env:
+        monkeypatch.setenv("LLAMA_ARG_SPEC_DRAFT_HF_REPO", env)
+    run(ss.before_load(_request(llama_extra_args = extra), 4))
+    assert ("Hub" in ss.status()["reason"]) is remote
+
+
+@pytest.mark.parametrize("mode", ["dspark", "dflash"])
+def test_a_sidecar_speculation_mode_keeps_the_load_local(monkeypatch, mode):
+    seen = _cluster_env(monkeypatch)
+    request = _request(speculative_type = mode)
+    assert run(ss.before_load(request, 4)) is request and seen == []
+    assert mode in ss.status()["reason"]
+
+
+def test_a_failed_cluster_replacement_unloads_the_two_spark_primary_it_orphaned(monkeypatch):
+    _cluster_env(monkeypatch)
+    unloaded = []
+    legacy = ss.state()
+    primary = SimpleNamespace(is_loaded = True, unload_model = lambda: unloaded.append(1))
+    primary._process = object()
+    legacy.attached_backend = primary
+    legacy.peer_process = SimpleNamespace(name = "ggml-rpc-server", alive = True)
+
+    async def fake_detach():
+        legacy.peer_process = legacy.attached_backend = None
+
+    monkeypatch.setattr(legacy, "detach", fake_detach)
+    run(ss.before_load(_request(), 4))
+    run(ss.load_failed())  # the route rejected the replacement after the split was torn down
+    assert unloaded == [1], "its remote layers are gone, so it cannot answer"

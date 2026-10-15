@@ -3469,6 +3469,8 @@ async def before_load(
             except BaseException:
                 await cluster_serving._STATE.load_failed()  # no load follows a refused teardown
                 raise
+            if _STATE.peer_process is not None:
+                _STATE._note_retired_split(_STATE.peer_process)  # load_failed unloads the orphan
             await _STATE.detach()
         return out
     if cluster_serving._STATE is not None and (
@@ -3535,6 +3537,8 @@ async def after_load(
         if _DETACH_LEGACY_ON_COMMIT and _STATE is not None:
             await _STATE.detach()
         _DETACH_LEGACY_ON_COMMIT = False
+        if _STATE is not None:
+            _STATE._retired_split = None
         return False
     if cluster_serving._STATE is not None and cluster_serving._STATE.retire_on_commit:
         await cluster_serving._STATE.shutdown()
@@ -3562,6 +3566,8 @@ async def load_failed() -> None:
         legacy = _STATE.attached_backend if _STATE is not None else None
         if legacy is not None and not getattr(legacy, "is_loaded", False):
             await _STATE.detach()  # an engine load unloaded the two-Spark primary, then failed
+        if _STATE is not None and _STATE._retired_split is not None:
+            await _STATE.load_failed()  # unloads the two-Spark primary whose split went
         return
     if cluster_serving._STATE is not None and cluster_serving._STATE.retire_on_commit:
         cluster_serving._STATE.failed_while_retiring()
