@@ -73,6 +73,7 @@ _PLACEMENT_FLAGS = frozenset(
         "-ncmoe",
         "--n-cpu-ffn",
         "-ncffn",
+        "--moe-cache-mib",  # an expert cache on the GPUs, beside the planned weights
     }
 )
 _PLACEMENT_ENV = (
@@ -85,6 +86,7 @@ _PLACEMENT_ENV = (
     "LLAMA_ARG_CPU_MOE",
     "LLAMA_ARG_N_CPU_MOE",
     "LLAMA_ARG_N_CPU_FFN",
+    "LLAMA_ARG_MOE_CACHE_MIB",
 )
 
 
@@ -120,6 +122,8 @@ def _remote_projector_bytes(model_path: str, hf_token: Optional[str]) -> int:
 
 _DRAFTER_FLAGS = frozenset({"--model-draft", "-md", "--spec-draft-model"})
 _DRAFTER_ENV = ("LLAMA_ARG_SPEC_DRAFT_MODEL", "LLAMA_ARG_MODEL_DRAFT")  # new, pre-b8955
+_HF_DRAFT_FLAGS = frozenset({"--spec-draft-hf", "-hfd", "-hfrd", "--hf-repo-draft"})
+_HF_DRAFT_ENV = ("LLAMA_ARG_SPEC_DRAFT_HF_REPO", "LLAMA_ARG_HFD_REPO")
 
 
 def _names_drafter(args: Sequence[str]) -> bool:
@@ -159,6 +163,8 @@ def _caller_placement(args: Sequence[str]) -> Optional[str]:
         value = inline if sep else (tokens[i + 1] if i + 1 < len(tokens) else "")
         if name in _GPU_LAYER_FLAGS and value.strip().lower() in ("auto", "-1"):
             continue  # llama.cpp's own default, which leaves the fitter to place layers
+        if name == "--moe-cache-mib" and value.strip() in ("", "0"):
+            continue
         return name
     from core.inference.llama_cpp import _LLAMA_ARG_TRUE_VALUES, _is_positive_int
 
@@ -169,6 +175,8 @@ def _caller_placement(args: Sequence[str]) -> Optional[str]:
         if key == "LLAMA_ARG_CPU_MOE" and value not in _LLAMA_ARG_TRUE_VALUES:
             continue
         if key in ("LLAMA_ARG_N_CPU_MOE", "LLAMA_ARG_N_CPU_FFN") and not _is_positive_int(value):
+            continue
+        if key == "LLAMA_ARG_MOE_CACHE_MIB" and value == "0":
             continue
         return key
     return None
@@ -614,6 +622,7 @@ class ClusterServing:
         self._down: set = set()
         self._native_ctx: bool = False
         self._projector_url: bool = False
+        self._remote_drafter: bool = False
         # Workers this load (re)started: they hold none of the served split's buffers.
         self._started: set = set()
 
@@ -760,6 +769,9 @@ class ClusterServing:
                 "single",
                 "a context size of 0 opens the model's whole context",
             )
+            return request
+        if self._remote_drafter:
+            self.topology, self.reason = "single", "a drafter fetched from the Hub cannot be sized"
             return request
         if self._projector_url:
             self.topology, self.reason = "single", "a projector fetched from a URL cannot be sized"
@@ -943,6 +955,10 @@ class ClusterServing:
         env_projector = (os.environ.get("LLAMA_ARG_MMPROJ") or "").strip()
         if _flag_args(extras, frozenset({"--mmproj", "-mm"})):
             env_projector = ""
+        self._remote_drafter = bool(
+            _flag_args(extras, _HF_DRAFT_FLAGS)
+            or any(os.environ.get(k, "").strip() for k in _HF_DRAFT_ENV)
+        )
         self._projector_url = bool(
             self._has_projector
             and not host_projector
@@ -995,9 +1011,16 @@ class ClusterServing:
         if legacy_drafter and os.path.isfile(legacy_drafter):
             env_files.append(os.path.abspath(legacy_drafter))
         replaced = (os.environ.get("LLAMA_ARG_MMPROJ") or "").strip()
-        replaced = os.path.abspath(replaced) if replaced and not env_projector else None
+        replaced = {os.path.abspath(replaced)} if replaced and not env_projector else set()
+        argv_drafter = bool(_flag_args(extras, _DRAFTER_FLAGS))
+        env_drafters = [
+            os.path.abspath(v) for v in (os.environ.get(k, "").strip() for k in _DRAFTER_ENV) if v
+        ]
+        if argv_drafter:
+            replaced |= set(env_drafters)  # an argv drafter replaces the environment one
+            env_drafters = []
         for path in dict.fromkeys(env_files):
-            if path in named_files or path == replaced:
+            if path in named_files or path in replaced:
                 continue
             file_size = ss.gguf_size_bytes(path)
             if file_size is None:
@@ -1010,12 +1033,7 @@ class ClusterServing:
 
         if _extra_args_draft_offloaded_to_cpu(extras, os.environ):
             # --spec-draft-ngl 0 / --spec-draft-device cpu: the drafter's weights stay in host RAM.
-            drafts = ss.sidecar_files(_flag_args(extras, _DRAFTER_FLAGS))
-            drafts += [
-                os.path.abspath(v)
-                for v in (os.environ.get(k, "").strip() for k in _DRAFTER_ENV)
-                if v
-            ]
+            drafts = ss.sidecar_files(_flag_args(extras, _DRAFTER_FLAGS)) + env_drafters
             dropped += [p for p in dict.fromkeys(drafts) if p not in dropped]
         if extra_args_disable_mmproj(extras):
             # --no-mmproj suppresses a projector the args name.

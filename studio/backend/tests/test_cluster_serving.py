@@ -1835,3 +1835,45 @@ def test_the_device_probe_runs_with_the_llama_server_environment(monkeypatch):
     monkeypatch.setattr(cs.subprocess, "run", fake_run)
     devices, error = cs.list_devices("/b/llama-server", ["10.0.0.2:50052"])
     assert seen["env"] == {"MARK": "/b/llama-server"} and devices and not error
+
+
+@pytest.mark.parametrize("env", [False, True])
+def test_a_hub_drafter_keeps_the_load_local(monkeypatch, env):
+    seen = _cluster_env(monkeypatch)
+    if env:
+        monkeypatch.setenv("LLAMA_ARG_SPEC_DRAFT_HF_REPO", "org/draft-GGUF")
+    extra = [] if env else ["-hfd", "org/draft-GGUF"]
+    request = _request(llama_extra_args = extra)
+    assert run(ss.before_load(request, 4)) is request and seen == []
+    assert "Hub" in ss.status()["reason"]
+
+
+def test_an_argv_drafter_replaces_the_environment_one(monkeypatch, tmp_path):
+    _cluster_env(monkeypatch, model_bytes = 85 * GIB)
+    monkeypatch.setattr(ss, "llama_server_supports", lambda flag, binary = None: True)
+    env_d, argv_d = tmp_path / "env-draft.gguf", tmp_path / "argv-draft.gguf"
+    env_d.write_bytes(b"x")
+    argv_d.write_bytes(b"x")
+    sizes = {str(env_d): 15 * GIB, str(argv_d): 1 * GIB}
+    monkeypatch.setattr(ss, "gguf_size_bytes", lambda path: sizes.get(str(path), 85 * GIB))
+    monkeypatch.setenv("LLAMA_ARG_SPEC_DRAFT_MODEL", str(env_d))
+    run(ss.before_load(_request(), 4))
+    assert ss.status()["topology"] == "layer_split"  # the 15 GiB environment drafter loads
+    request = _request(llama_extra_args = ["-md", str(argv_d)])
+    assert run(ss.before_load(request, 4)) is request
+    assert ss.status()["topology"] == "single"  # only the 1 GiB argv one does
+
+
+@pytest.mark.parametrize(
+    "extra, env",
+    [(["--moe-cache-mib", "4096"], None), ([], "4096"), (["--moe-cache-mib", "auto"], None)],
+)
+def test_a_moe_gpu_cache_is_caller_placement(monkeypatch, extra, env):
+    seen = _cluster_env(monkeypatch)
+    if env:
+        monkeypatch.setenv("LLAMA_ARG_MOE_CACHE_MIB", env)
+    request = _request(llama_extra_args = extra)
+    assert run(ss.before_load(request, 4)) is request and seen == []
+    monkeypatch.setenv("LLAMA_ARG_MOE_CACHE_MIB", "0")
+    run(ss.before_load(_request(llama_extra_args = ["--moe-cache-mib", "0"]), 4))
+    assert ss.status()["topology"] == "layer_split"
