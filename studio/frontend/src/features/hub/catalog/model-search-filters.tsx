@@ -13,10 +13,10 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { BulbIcon } from "@/lib/bulb-icon";
 import { AiSpeechIcon } from "@/lib/hugeicons-derived";
 import { cn } from "@/lib/utils";
 import {
-  BrainIcon,
   FilterMailIcon,
   FlimSlateIcon,
   ImageIcon,
@@ -27,7 +27,7 @@ import {
   ViewIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
-import { useId, useState } from "react";
+import { type ReactNode, useId, useState } from "react";
 import {
   HUB_UPLOADERS,
   type HubUploader,
@@ -39,9 +39,10 @@ import { CAPABILITY_FILTER_OPTIONS } from "../lib/view-models";
 
 // The Hub rows' capability icons (catalog/shared.tsx), with Image gen on diffusion's and Video gen
 // on the Video page's.
-const CAPABILITY_ICONS: Record<HubCapabilityFilter, IconSvgElement> = {
+const CAPABILITY_ICONS: Record<HubCapabilityFilter, IconSvgElement | null> = {
   text: TextFontIcon,
-  reasoning: BrainIcon,
+  // The composer's thinking bulb, which isn't a Hugeicons glyph.
+  reasoning: null,
   vision: ViewIcon,
   audio: AiSpeechIcon,
   embedding: SparklesIcon,
@@ -57,8 +58,9 @@ const UPLOADER_LABELS: Record<HubUploader, string> = {
 
 // The composer menu's label and separator.
 const SECTION_LABEL =
-  "flex w-full items-center justify-between px-3 pt-1.5 pb-1 text-ui-12 text-muted-foreground";
-const SEPARATOR = "mx-1 my-1 h-px bg-border/50";
+  "flex w-full items-center justify-between px-3 pt-2 pb-1.5 text-ui-12 text-muted-foreground";
+// my-2 keeps text 18px from each line: rows bring 2px margin and 8px of hover pill, the labels pt-2.
+const SEPARATOR = "mx-1 my-2 h-px bg-border/50";
 
 /** A composer-menu row that ticks: a check on the right when on. */
 function MenuTick({
@@ -68,7 +70,7 @@ function MenuTick({
   locked,
   onToggle,
 }: {
-  icon?: IconSvgElement;
+  icon?: ReactNode;
   label: string;
   checked: boolean;
   /** The last tick of a group, which stays. */
@@ -88,13 +90,7 @@ function MenuTick({
         "hub-menu-row relative flex w-full cursor-pointer select-none items-center gap-3 py-2 pr-9 pl-3 text-left text-sm aria-disabled:cursor-default",
       )}
     >
-      {icon && (
-        <HugeiconsIcon
-          icon={icon}
-          strokeWidth={2}
-          className="size-4 shrink-0"
-        />
-      )}
+      {icon}
       <span className="truncate">{label}</span>
       {checked && (
         <HugeiconsIcon
@@ -234,6 +230,7 @@ export function ModelSearchFiltersControl({
               const ticked = (key: HubCapabilityFilter) =>
                 capabilities.length === 0 || capabilities.includes(key);
               const checked = ticked(option.value);
+              const glyph = CAPABILITY_ICONS[option.value];
               // Kept in the list's order, so it doesn't depend on click order.
               const next = CAPABILITY_FILTER_OPTIONS.map((o) => o.value).filter(
                 (key) => (key === option.value ? !checked : ticked(key)),
@@ -241,7 +238,17 @@ export function ModelSearchFiltersControl({
               return (
                 <MenuTick
                   key={option.value}
-                  icon={CAPABILITY_ICONS[option.value]}
+                  icon={
+                    glyph ? (
+                      <HugeiconsIcon
+                        icon={glyph}
+                        strokeWidth={2}
+                        className="size-4 shrink-0"
+                      />
+                    ) : (
+                      <BulbIcon className="size-4 shrink-0" />
+                    )
+                  }
                   label={option.label}
                   checked={checked}
                   // The last tick stays: none would list nothing.
@@ -263,7 +270,7 @@ export function ModelSearchFiltersControl({
             <div aria-hidden={true} className={SEPARATOR} />
             <form
               id={formId}
-              className="flex flex-col gap-2"
+              className="flex flex-col gap-2.5 pb-0.5"
               onSubmit={(event) => {
                 event.preventDefault();
                 if (invalid) {
@@ -337,7 +344,7 @@ export function ModelSearchFiltersControl({
                 </p>
               )}
             </form>
-            <div aria-hidden={true} className={cn(SEPARATOR, "mt-2")} />
+            <div aria-hidden={true} className={SEPARATOR} />
             <fieldset>
               <legend className={SECTION_LABEL}>Uploader</legend>
               {HUB_UPLOADERS.map((uploader) => {
@@ -357,7 +364,7 @@ export function ModelSearchFiltersControl({
               })}
             </fieldset>
             <div aria-hidden={true} className={SEPARATOR} />
-            <div className="flex justify-end gap-1.5 px-3 pt-1">
+            <div className="flex justify-end gap-1.5 px-3 pt-0.5">
               <Button
                 type="button"
                 variant="ghost"
