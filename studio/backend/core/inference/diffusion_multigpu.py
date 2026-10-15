@@ -490,10 +490,18 @@ def replica_failure_kind(exc: BaseException) -> type:
     anything else as structural (an unknown failure is never retried per shape)."""
     if isinstance(exc, ReplicaError):
         return type(exc) if type(exc) is not ReplicaError else ReplicaStructural
-    oom = getattr(_torch(), "OutOfMemoryError", None)
-    if oom is not None and isinstance(exc, oom):
+    if is_out_of_memory(exc):
         return ReplicaTransient
     return ReplicaStructural
+
+
+def is_out_of_memory(exc: BaseException) -> bool:
+    """Studio's one out-of-memory predicate (diffusion_batched.is_oom_error): class names across torch versions and
+    backends (``OutOfMemoryError_``), backend messages, and the ``__cause__`` / ``__context__`` chain a torch.compile
+    or accelerate wrapper hides an allocation failure behind."""
+    from .diffusion_batched import is_oom_error
+
+    return is_oom_error(exc)
 
 
 # Pricing and verification are per request shape: (canvas, every input tensor's shape: latent batch, tokens,
@@ -504,6 +512,41 @@ _SHAPE_BOOK_SIZE = 4
 
 def _request_shape(request_px: Optional[int], args: tuple, kwargs: dict) -> tuple:
     return (request_px, tuple(tuple(t.shape) for t in _iter_tensors((args, kwargs))))
+
+
+_MISS_LIMIT = 3
+
+
+class _PredictionPolicy:
+    """Per request shape: does the speculative doubled call pay? A hit (the odd branch matched what was batched)
+    resets the run of misses; a miss (the odd branch changed, or never came) extends it. After ``_MISS_LIMIT``
+    consecutive misses batching stops for that shape (each miss costs a doubled call plus a plain rerun: three
+    branches of compute for two). Reset rules: a new request shape starts with a fresh policy; a shape seen before
+    resumes its own (from the shape book); ``reprice()`` (the denoiser changed) clears every shape's."""
+
+    def __init__(self) -> None:
+        self.hits = 0
+        self.misses = 0
+        self.consecutive = 0
+
+    def hit(self) -> None:
+        self.hits += 1
+        self.consecutive = 0
+
+    def miss(self) -> bool:
+        """Record a miss; True when batching should stop for the shape."""
+        self.misses += 1
+        self.consecutive += 1
+        return self.consecutive >= _MISS_LIMIT
+
+
+def _fresh(default: Any) -> Any:
+    """A shape-book default for a new shape: a copy of a list, a new instance of a class, else the value."""
+    if isinstance(default, list):
+        return list(default)
+    if isinstance(default, type):
+        return default()
+    return default
 
 
 class _ShapeBook:
@@ -530,7 +573,7 @@ class _ShapeBook:
             while len(self.saved) > _SHAPE_BOOK_SIZE:
                 self.saved.popitem(last = False)
         for name, default in self.defaults.items():
-            value = state[name] if state is not None else default
+            value = state[name] if state is not None else _fresh(default)
             setattr(router, name, list(value) if isinstance(value, list) else value)
         self.key = key
         return True
@@ -539,7 +582,7 @@ class _ShapeBook:
         self.saved.clear()
         self.key = None
         for name, default in self.defaults.items():
-            setattr(router, name, list(default) if isinstance(default, list) else default)
+            setattr(router, name, _fresh(default))
 
     def forget(self, router: Any, predicate: Callable[[dict], bool]) -> None:
         """Drop saved shapes (and reset the current one) whose state matches ``predicate``."""
@@ -548,7 +591,7 @@ class _ShapeBook:
         current = {name: getattr(router, name) for name in self.defaults}
         if predicate(current):
             for name, default in self.defaults.items():
-                setattr(router, name, list(default) if isinstance(default, list) else default)
+                setattr(router, name, _fresh(default))
 
 
 # --------------------------------------------------------------------------------------------------------------------
@@ -3629,8 +3672,10 @@ class CfgBatchRouter:
                 "verify_batched": _BATCH_VERIFY_CALLS,
                 "disabled_pending": None,
                 "shape_disabled": None,
+                "prediction": _PredictionPolicy,
             }
         )
+        self.prediction = _PredictionPolicy()
         self.stats = {
             "batched_steps": 0,
             "batched_hits": 0,
@@ -3720,7 +3765,7 @@ class CfgBatchRouter:
             self.prev_latent = latent
             if self.kept is not None:  # the previous step never asked for its odd branch
                 self.kept = None
-                self.stats["batched_misses"] += 1
+                self._record_miss("the odd branch never came")
             self._apply_pending()
             self.b0_leaves = dict(_leaves((args, kwargs)))
             if self.shapes.switch(self, _request_shape(self.request_px, args, kwargs)):
@@ -3937,17 +3982,16 @@ class CfgBatchRouter:
         except _NotBatchable as exc:
             self._skip(str(exc))
             return None
-        except torch.OutOfMemoryError:
-            # the concatenation of a larger canvas or batch ran out: this shape only, the branch runs plain
+        except Exception as exc:  # noqa: BLE001 - out of memory: this shape; anything else: structural
             merged = b_args = b_kwargs = snapshots = None
             with contextlib.suppress(Exception):
                 torch.cuda.empty_cache()
-            self._disable_shape("out of memory merging the branches; one branch per call for this shape")
-            return None
-        except Exception as exc:  # noqa: BLE001 - a structural merge failure: the branch runs plain
-            merged = b_args = b_kwargs = snapshots = None
-            with contextlib.suppress(Exception):
-                torch.cuda.empty_cache()
+            if is_out_of_memory(exc):
+                # the concatenation of a larger canvas or batch ran out: this shape only, the branch runs plain
+                self._disable_shape(
+                    "out of memory merging the branches; one branch per call for this shape"
+                )
+                return None
             self.disable(
                 f"merging the branches failed ({type(exc).__name__}: {exc}); one branch per call from here"
             )
@@ -3996,17 +4040,18 @@ class CfgBatchRouter:
             if verify:
                 torch.cuda.synchronize()
                 self._check_batched(time.perf_counter() - t0)
-        except torch.OutOfMemoryError:
-            del b_args, b_kwargs, merged
+        except Exception as exc:  # noqa: BLE001 - the doubled batch was refused: the branch reruns plain
             # a call that raised may have advanced watched state first: undo it before the plain rerun
             self._undo_attempt(state_snapshot)
-            with contextlib.suppress(Exception):
-                torch.cuda.empty_cache()
-            # a larger canvas or batch can run out where smaller ones fit: this shape only
-            self._disable_shape("out of memory on the batched call; one branch per call for this shape")
-            return None
-        except Exception as exc:  # noqa: BLE001 - the doubled batch was refused: the branch reruns plain
-            self._undo_attempt(state_snapshot)
+            if is_out_of_memory(exc):
+                del b_args, b_kwargs, merged
+                with contextlib.suppress(Exception):
+                    torch.cuda.empty_cache()
+                # a larger canvas or batch can run out where smaller ones fit: this shape only
+                self._disable_shape(
+                    "out of memory on the batched call; one branch per call for this shape"
+                )
+                return None
             self.disable(
                 f"the batched call failed ({type(exc).__name__}: {exc}); one branch per call from here"
             )
@@ -4108,12 +4153,21 @@ class CfgBatchRouter:
         if ok and module is not None:
             ok = _hook_state([(m, m) for m in module.modules()]) == kept["state"]
         if not ok:
-            self.stats["batched_misses"] += 1
+            self._record_miss("the odd branch differed from the batched prediction")
             self._apply_pending()
             return None
         self.stats["batched_hits"] += 1
+        self.prediction.hit()
         self._apply_pending()
         return kept["out"]
+
+    def _record_miss(self, why: str) -> None:
+        self.stats["batched_misses"] += 1
+        if self.prediction.miss():
+            self._disable_shape(
+                f"the speculative doubled call missed {self.prediction.consecutive} consecutive steps ({why}); one "
+                "branch per call for this shape"
+            )
 
     def _apply_pending(self) -> None:
         if self.disabled_pending is not None:

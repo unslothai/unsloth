@@ -4139,3 +4139,91 @@ def test_replica_paths_raise_only_typed_failures():
             ):
                 bad.append(f"{scope.name}:{n.lineno} disables directly (route it through _replica_failure)")
     assert bad == []
+
+
+class OutOfMemoryError_(RuntimeError):  # a backend subclass named like torch's
+    pass
+
+
+def _wrapped_oom():
+    try:
+        try:
+            raise torch.OutOfMemoryError("CUDA out of memory. Tried to allocate 2.00 GiB")
+        except Exception as inner:
+            raise RuntimeError("compile failed while autotuning") from inner
+    except RuntimeError as outer:
+        return outer
+
+
+@pytest.mark.parametrize(
+    "make",
+    [
+        _wrapped_oom,  # torch.compile hides the allocation failure behind a compiler error
+        lambda: OutOfMemoryError_("allocation failed"),
+        lambda: RuntimeError("HIP out of memory. Tried to allocate 1.00 GiB"),
+        lambda: torch.OutOfMemoryError("CUDA out of memory"),
+    ],
+)
+def test_wrapped_and_backend_oom_decline_only_the_shape(make):
+    assert mg.replica_failure_kind(make()) is mg.ReplicaTransient
+    dit = _BatchDit()
+    router, _ = _router(dit)
+    router._replica_failure("call", make())
+    assert router.disabled_reason is None and "out of memory" in router.describe()["disabled_reason"]
+
+
+def test_cfg_batch_wrapped_oom_on_the_batched_call_declines_only_the_shape():
+    torch.manual_seed(0)
+    dit = _BatchDit()
+    plain = _BatchDit()
+    plain.load_state_dict(dit.state_dict())
+    reference = _guided(plain, 2, steps = 3)
+    router = mg.CfgBatchRouter(dit)
+    inner = router.orig_forward
+
+    def doubled_ooms(*a, **k):
+        if k["hidden_states"].shape[0] > 2:
+            raise _wrapped_oom()
+        return inner(*a, **k)
+
+    doubled_ooms.__module__ = mg.__name__
+    router.orig_forward = doubled_ooms
+    dit.forward = router
+    out = _guided(dit, 2, steps = 3)
+    torch.testing.assert_close(out, reference, rtol = 1e-6, atol = 1e-6)
+    assert router.disabled_reason is None and router.describe()["disabled_for_shape_only"]
+
+
+def test_prediction_policy_reset_rules():
+    policy = mg._PredictionPolicy()
+    assert not policy.miss() and not policy.miss()
+    policy.hit()  # a hit resets the run
+    assert policy.consecutive == 0
+    assert not policy.miss() and not policy.miss()
+    assert policy.miss()  # the third consecutive miss stops batching
+    assert (policy.hits, policy.misses) == (1, 5)
+
+
+def test_cfg_batch_stops_after_consecutive_prediction_misses_for_that_shape_only():
+    torch.manual_seed(0)
+    dit = _BatchDit()
+    plain = _BatchDit()
+    plain.load_state_dict(dit.state_dict())
+    cond, uncond = _embeds()
+
+    def drift(i, u):
+        u.add_(0.01)  # the odd branch's input changes every step: never predictable
+
+    latents = torch.randn(2, 4)
+    reference = _batch_loop(plain, latents.clone(), 8, cond.clone(), uncond.clone(), edit = drift)
+    router = mg.CfgBatchRouter(dit)
+    dit.forward = router
+    out = _batch_loop(dit, latents.clone(), 8, cond.clone(), uncond.clone(), edit = drift)
+    torch.testing.assert_close(out, reference, rtol = 1e-5, atol = 1e-6)
+    assert router.stats["batched_misses"] == mg._MISS_LIMIT
+    assert router.stats["batched_steps"] == mg._MISS_LIMIT  # no doubled call after the limit
+    assert "consecutive" in router.describe()["disabled_reason"] and router.disabled_reason is None
+    # a new request shape starts with a fresh policy and batches again
+    before = router.stats["batched_steps"]
+    _guided(dit, 3, steps = 3)
+    assert router.stats["batched_steps"] > before
