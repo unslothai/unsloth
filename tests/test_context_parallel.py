@@ -535,7 +535,7 @@ def test_find_unused_parameters_is_off_under_cp_unless_the_user_set_it(monkeypat
     monkeypatch.setattr(
         cp,
         "ContextParallelManager",
-        lambda size: types.SimpleNamespace(
+        lambda size, *rest: types.SimpleNamespace(
             size = size, device_mesh = object(), attach_attention_hooks = lambda model: None
         ),
     )
@@ -723,3 +723,291 @@ def test_cp_dtensor_dispatcher_is_torn_down_when_the_step_raises(monkeypatch):
         with manager.apply({"input_ids": torch.ones(1, 4, dtype = torch.long)}):
             raise RuntimeError("OOM")
     assert dispatcher._custom_op_handlers is original and unregistered == [1]
+
+
+# --- options, gates and per-step torch state -------------------------------------------
+
+
+def _gated_trainer(monkeypatch, model = None, **args_overrides):
+    """A trainer that clears every CP gate, with the manager stubbed (no process group)."""
+    import types
+
+    _cp_env(monkeypatch)
+    built = []
+
+    def manager(size, backend = "ring", rotate_method = "allgather"):
+        built.append((size, backend, rotate_method))
+        return types.SimpleNamespace(
+            size = size, device_mesh = object(), attach_attention_hooks = lambda model: None
+        )
+
+    monkeypatch.setattr(cp, "ContextParallelManager", manager)
+    args = types.SimpleNamespace(context_parallel_size = 2, label_smoothing_factor = 0.0)
+    for key, value in args_overrides.items():
+        setattr(args, key, value)
+    accelerator = types.SimpleNamespace(
+        distributed_type = types.SimpleNamespace(name = "MULTI_GPU"),
+        state = types.SimpleNamespace(device_mesh = None),
+    )
+    init = {"args": args, "accelerator": accelerator, "model": model, "train_dataset": [1]}
+    return _patched_trainer(monkeypatch, **init), args, built
+
+
+@pytest.mark.parametrize(
+    "overrides, error",
+    [
+        ({"context_parallel_size": True}, ValueError),
+        ({"context_parallel_size": 0}, ValueError),
+        ({"context_parallel_size": -2}, ValueError),
+        ({"context_parallel_size": 2.0}, ValueError),
+        ({"context_parallel_size": "2"}, ValueError),
+        ({"context_parallel_backend": "tree"}, ValueError),
+        ({"context_parallel_rotate_method": "ring"}, ValueError),
+        ({"context_parallel_backend": "ulysses"}, NotImplementedError),
+    ],
+)
+def test_bad_cp_options_fail_before_the_trainer_builds(monkeypatch, overrides, error):
+    import types, trl
+
+    seen = []
+
+    class Trainer:
+        def __init__(self, *a, **k):
+            seen.append(1)
+
+        training_step = prediction_step = train = evaluate = evaluation_loop = None
+
+    monkeypatch.setattr(trl, "SFTTrainer", Trainer)
+    cp.patch_sft_trainer()
+    args = types.SimpleNamespace(**{"context_parallel_size": 2, **overrides})
+    with pytest.raises(error):
+        Trainer(None, args)
+    with pytest.raises(error):
+        Trainer(None, args = args)
+    assert seen == []
+
+
+def test_cp_option_defaults_and_size_one():
+    import types
+
+    assert cp.context_parallel_options(None) == (1, "ring", "allgather")
+    config = types.SimpleNamespace(
+        context_parallel_size = 1, context_parallel_backend = "ulysses"
+    )
+    assert cp.context_parallel_options(config) == (1, "ulysses", "allgather")
+    config = types.SimpleNamespace(
+        context_parallel_size = 4, context_parallel_rotate_method = "alltoall"
+    )
+    assert cp.context_parallel_options(config) == (4, "ring", "alltoall")
+
+
+def test_manager_gets_the_backend_and_rotate_method(monkeypatch):
+    Trainer, _, built = _gated_trainer(monkeypatch, context_parallel_rotate_method = "alltoall")
+    Trainer()
+    assert built == [(2, "ring", "alltoall")]
+
+
+@pytest.mark.parametrize("version", ["2.6.0", "2.6.0+cu124", "2.5.1"])
+def test_torch_older_than_2_7_is_refused(monkeypatch, version):
+    Trainer, _, _ = _gated_trainer(monkeypatch)
+    monkeypatch.setattr(cp.torch, "__version__", version)
+    with pytest.raises(RuntimeError, match = "PyTorch >= 2.7"):
+        Trainer()
+
+
+def test_torch_2_7_dev_builds_pass_the_gate(monkeypatch):
+    monkeypatch.setattr(cp.torch, "__version__", "2.7.0a0+git1234")
+    assert cp._torch_supports_context_parallel()
+
+
+@pytest.mark.parametrize(
+    "config, reason",
+    [
+        ({"layer_types": ["full_attention", "sliding_attention"]}, "sliding_attention"),
+        ({"layer_types": ["chunked_attention", "full_attention"]}, "chunked_attention"),
+        ({"attn_logit_softcapping": 50.0}, "softcapping"),
+        ({"attention_chunk_size": 8192}, "chunked attention"),
+        ({"use_sliding_window": True}, "sliding window"),
+        ({"text_config": {"layer_types": ["sliding_attention"]}}, "sliding_attention"),
+    ],
+)
+def test_windowed_or_softcapped_attention_is_refused_for_ring(monkeypatch, config, reason):
+    import types
+
+    if "text_config" in config:
+        config = {"text_config": types.SimpleNamespace(**config["text_config"])}
+    model = types.SimpleNamespace(config = types.SimpleNamespace(**config))
+    Trainer, _, _ = _gated_trainer(monkeypatch, model = model)
+    with pytest.raises(NotImplementedError, match = reason):
+        Trainer()
+
+
+def test_full_attention_layer_types_pass(monkeypatch):
+    import types
+
+    config = types.SimpleNamespace(
+        layer_types = ["full_attention"] * 2, sliding_window = None, use_sliding_window = False
+    )
+    Trainer, _, built = _gated_trainer(monkeypatch, model = types.SimpleNamespace(config = config))
+    Trainer()
+    assert built
+
+
+def test_model_without_loss_kwargs_is_refused(monkeypatch):
+    Trainer, _, _ = _gated_trainer(monkeypatch)
+    monkeypatch.setattr(Trainer, "model_accepts_loss_kwargs", False, raising = False)
+    with pytest.raises(NotImplementedError, match = "loss kwargs"):
+        Trainer()
+
+
+def test_flash_attention_impl_is_scoped_to_train_without_packing(monkeypatch):
+    from unsloth.utils import packing
+
+    scoped = []
+    monkeypatch.setattr(
+        packing, "_scope_flash_attention_impl", lambda model, trainer: scoped.append(trainer)
+    )
+    Trainer, _, _ = _gated_trainer(monkeypatch)
+    trainer = Trainer()
+    assert scoped == [trainer]
+
+
+def test_training_step_refuses_a_missing_token_count_with_labels(monkeypatch):
+    monkeypatch.setattr(cp, "context_parallel", _fake_context_parallel([]))
+    Trainer = _patched_trainer(monkeypatch)
+    trainer = object.__new__(Trainer)
+    manager = _manager()
+    manager.mesh = None
+    trainer._context_parallel_manager = manager
+    batch = {"input_ids": torch.ones(1, 4, dtype = torch.long), "labels": torch.ones(1, 4)}
+    with pytest.raises(RuntimeError, match = "num_items_in_batch"):
+        trainer.training_step(None, dict(batch))
+    with pytest.raises(RuntimeError, match = "num_items_in_batch"):
+        trainer.training_step(None, dict(batch), None)
+    assert cp.get_cp_manager() is None
+    # No labels (a custom loss path never gets this far) and a real count both run.
+    trainer.training_step(None, {"input_ids": torch.ones(1, 4, dtype = torch.long)})
+    trainer.training_step(None, dict(batch), torch.tensor(4.0))
+
+
+@pytest.mark.parametrize("raises", [False, True])
+def test_rotate_method_is_set_for_the_step_and_restored(monkeypatch, raises):
+    if cp._cp_options is None:
+        pytest.skip("this torch has no ring rotate option")
+    monkeypatch.setattr(cp, "context_parallel", _fake_context_parallel([]))
+    manager = _manager()
+    manager.mesh = None
+    manager.rotate_method = "alltoall"
+    before = cp._cp_options.rotate_method
+    seen = []
+    with contextlib.suppress(RuntimeError):
+        with manager.apply({"input_ids": torch.ones(1, 4, dtype = torch.long)}):
+            seen.append(cp._cp_options.rotate_method.name)
+            if raises:
+                raise RuntimeError("boom")
+    assert seen == ["ALL_TO_ALL"]
+    assert cp._cp_options.rotate_method == before
+
+
+@pytest.mark.parametrize("raises", [False, True])
+def test_ring_pins_sdpa_to_kernels_the_dispatcher_rings(monkeypatch, raises):
+    if cp.sdpa_kernel is None:
+        pytest.skip("no torch.nn.attention.sdpa_kernel")
+    monkeypatch.setattr(cp, "context_parallel", _fake_context_parallel([]))
+    manager = _manager()
+    manager.mesh = None
+    cuda = torch.backends.cuda
+    before = (cuda.flash_sdp_enabled(), cuda.mem_efficient_sdp_enabled(), cuda.math_sdp_enabled())
+    seen = []
+    with contextlib.suppress(RuntimeError):
+        with manager.apply({"input_ids": torch.ones(1, 4, dtype = torch.long)}):
+            seen.append(
+                (cuda.flash_sdp_enabled(), cuda.mem_efficient_sdp_enabled(), cuda.math_sdp_enabled())
+            )
+            if raises:
+                raise RuntimeError("boom")
+    # The math kernel is not ring-dispatched: it would attend over the local shard only.
+    assert seen == [(True, True, False)]
+    assert (
+        cuda.flash_sdp_enabled(),
+        cuda.mem_efficient_sdp_enabled(),
+        cuda.math_sdp_enabled(),
+    ) == before
+
+
+def test_cudnn_is_pinned_only_where_the_ring_handles_it():
+    backends = cp._ring_sdpa_backends()
+    if backends is None:
+        pytest.skip("no SDPBackend")
+    from torch.nn.attention import SDPBackend
+
+    assert backends[:2] == [SDPBackend.FLASH_ATTENTION, SDPBackend.EFFICIENT_ATTENTION]
+    from packaging.version import Version
+
+    if Version(Version(torch.__version__).base_version) >= Version("2.13"):
+        assert SDPBackend.CUDNN_ATTENTION in backends
+
+
+def test_unsloth_training_arguments_keep_the_cp_options():
+    from unsloth.trainer import UnslothTrainingArguments
+
+    args = UnslothTrainingArguments(
+        output_dir = "unused",
+        context_parallel_size = 2,
+        context_parallel_rotate_method = "alltoall",
+        report_to = "none",
+    )
+    assert cp.context_parallel_options(args) == (2, "ring", "alltoall")
+
+
+def test_cli_forwards_the_cp_options():
+    import importlib.util, pathlib, types
+
+    path = pathlib.Path(__file__).resolve().parents[1] / "unsloth-cli.py"
+    spec = importlib.util.spec_from_file_location("unsloth_cli_for_test", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    args = types.SimpleNamespace(
+        per_device_train_batch_size = 1,
+        gradient_accumulation_steps = 1,
+        warmup_steps = 0,
+        max_steps = 1,
+        learning_rate = 1e-4,
+        logging_steps = 1,
+        optim = "adamw_torch",
+        weight_decay = 0.0,
+        lr_scheduler_type = "linear",
+        seed = 0,
+        output_dir = "unused",
+        report_to = "none",
+        max_seq_length = 64,
+        packing = False,
+        per_device_eval_batch_size = 4,
+        context_parallel_size = 2,
+        context_parallel_backend = "ring",
+        context_parallel_rotate_method = "alltoall",
+    )
+    config = module._build_sft_config(lambda **kwargs: kwargs, args, False, True)
+    assert config["context_parallel_size"] == 2
+    assert config["context_parallel_backend"] == "ring"
+    assert config["context_parallel_rotate_method"] == "alltoall"
+    assert config["average_tokens_across_devices"] is True
+
+
+def test_generated_sft_config_carries_the_cp_options(tmp_path):
+    import dataclasses
+    import trl.trainer.sft_config as config_module
+
+    names = {f.name for f in dataclasses.fields(config_module.SFTConfig)}
+    if "context_parallel_size" not in names:
+        pytest.skip("SFTConfig is not the Unsloth-generated class in this process")
+    assert {"context_parallel_backend", "context_parallel_rotate_method"} <= names
+    config = config_module.SFTConfig(
+        output_dir = str(tmp_path),
+        context_parallel_size = 2,
+        context_parallel_rotate_method = "alltoall",
+        report_to = "none",
+    )
+    assert cp.context_parallel_options(config) == (2, "ring", "alltoall")
+    default = config_module.SFTConfig(output_dir = str(tmp_path), report_to = "none")
+    assert cp.context_parallel_options(default) == (1, "ring", "allgather")
