@@ -18455,9 +18455,10 @@ class LlamaCppBackend:
     _MMPROJ_FIT_FLOOR_CTX = 8192
     _MTP_DRAFT_COMPUTE_BYTES = 224 * 1024 * 1024  # MTP draft decode graph beyond its KV
     # A DFlash/DSpark draft context re-reserves a flat block graph once the drafter initialises,
-    # independent of n_ctx: 528.5 MiB on Nemotron 3.5 Bolt's DSpark (block 8) plus 44 MiB of
-    # target verification graph, measured on llama.cpp b11642.
-    _DFLASH_DRAFT_COMPUTE_BYTES = 572 * 1024 * 1024
+    # independent of n_ctx. Measured on llama.cpp b11642, draft graph + target verify graph:
+    # Nemotron 3.5 Bolt DSpark (block 8) 528.5 + 44 MiB, LiLiCorr (block 8, SWA 1024) 307 + 60 MiB.
+    # The _MTP_DRAFT_COMPUTE_BYTES floor is charged beside this, so the floor is the excess over it.
+    _DFLASH_DRAFT_COMPUTE_BYTES = 349 * 1024 * 1024
     # Draft depth to budget when the extras own the spec block and the probe cannot
     # read the build's own default off its --help. Shipped values are 3
     # (common_params_speculative_draft::n_max) and 16; take the deeper, since the

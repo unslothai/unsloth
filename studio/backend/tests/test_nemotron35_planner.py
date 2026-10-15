@@ -267,6 +267,25 @@ def test_dflash_draft_compute_is_floored(architecture, floored):
     unfloored = b._mtp_draft_compute_bytes(32768, drafter_path = "dspark.gguf", spec_draft_n_max = 3)
     if floored:
         assert got == max(unfloored, b._DFLASH_DRAFT_COMPUTE_BYTES)
-        assert got >= 572 * MIB
     else:
         assert got == unfloored
+
+
+# Draft graph + target verify graph a DFlash drafter adds, measured on llama.cpp b11642 (MiB).
+_DFLASH_MEASURED_COMPUTE_MIB = {
+    "Bolt DSpark, block 8": 528.5 + 44.0,
+    "Bolt LiLiCorr, block 8, SWA 1024": 307.0 + 60.1,
+}
+
+
+@pytest.mark.parametrize("drafter", sorted(_DFLASH_MEASURED_COMPUTE_MIB))
+def test_dflash_compute_reserve_covers_the_measurement_without_double_counting(drafter):
+    """The separate _MTP_DRAFT_COMPUTE_BYTES floor rides beside the DFlash floor, so the two
+    together must cover the measurement, but charging the full measurement again on top of it
+    (572 MiB) priced Bolt + LiLiCorr 224 MiB over what llama.cpp allocates."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    reserve = (LlamaCppBackend._MTP_DRAFT_COMPUTE_BYTES + LlamaCppBackend._DFLASH_DRAFT_COMPUTE_BYTES) / MIB
+    measured = _DFLASH_MEASURED_COMPUTE_MIB[drafter]
+    assert reserve >= measured
+    assert reserve - max(_DFLASH_MEASURED_COMPUTE_MIB.values()) < 8
