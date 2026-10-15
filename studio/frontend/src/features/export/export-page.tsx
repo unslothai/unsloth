@@ -160,7 +160,9 @@ function siblingGgufDirectory(sourcePath: string): string | null {
   // A cache-layout copy sits inside `models--*/snapshots/<sha>`; a sibling `_gguf` folder
   // there would not be a destination but a fake revision: every cache scan picks snapshots
   // by mtime, so the export would become the repo's "newest snapshot" and the original
-  // revision stops loading by repo id. Refuse it so the default falls back elsewhere.
+  // revision stops loading by repo id. A path ending at the `models--*` repo dir itself is
+  // refused too: the sibling would sit beside the repo as `models--*_gguf`, which the cache
+  // scan reads back as another repo. Refuse both so the default falls back elsewhere.
   const parts = trimmed.split(/[\\/]+/).filter(Boolean);
   const insideCacheSnapshots = parts.some(
     (part, index) =>
@@ -168,7 +170,8 @@ function siblingGgufDirectory(sourcePath: string): string | null {
       index > 0 &&
       parts[index - 1].toLowerCase().startsWith("models--"),
   );
-  if (insideCacheSnapshots) return null;
+  const atCacheRepoDir = (parts[parts.length - 1] ?? "").toLowerCase().startsWith("models--");
+  if (insideCacheSnapshots || atCacheRepoDir) return null;
   const slash = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
   // Lowercase `_gguf` matches the backend's intermediate dir; `_GGUF` would relocate+delete it.
   if (slash < 0) return `${trimmed}_gguf`;

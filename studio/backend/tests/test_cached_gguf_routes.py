@@ -393,16 +393,122 @@ def test_collect_local_models_still_shadows_a_parked_copy_behind_a_complete_cach
     ]
 
 
-def test_collect_local_models_keeps_the_repo_id_with_a_parked_copy_when_the_cache_row_is_partial(
+def _catalog_objects_for_rows(monkeypatch, tmp_path, rows):
+    """The /v1/models objects for *rows*, hermetically: no real caches, no backend, a fresh
+    resolver index. Mirrors the setup the v1 listing test pins."""
+    import asyncio
+    import time as time_mod
+    from types import SimpleNamespace
+
+    import routes.inference as inf
+    import core.inference.local_model_resolver as resolver
+    from core.inference.local_model_resolver import local_servable_model
+
+    servable_rows = []
+    for row in rows:
+        result = local_servable_model(row)
+        if result:
+            servable_rows.append((row, result[0], result[1], False))
+
+    async def _catalog():
+        return rows
+
+    monkeypatch.setattr(inf, "_openai_model_objects", lambda: [])
+    monkeypatch.setattr(inf, "_peek_inference_backend", lambda: None)
+    monkeypatch.setattr(inf, "_cached_local_catalog", lambda: _catalog())
+    monkeypatch.setattr(inf, "_account_catalog_cache", lambda: {"at": time_mod.monotonic()})
+    monkeypatch.setattr(inf, "_servable_catalog_rows", lambda catalog, at: servable_rows)
+    monkeypatch.setattr(inf.account_access, "resident_hidden", lambda *a, **kw: False)
+    monkeypatch.setattr(inf.account_access, "managed_account", lambda: False)
+    monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: SimpleNamespace(hf_variant = None))
+    # The bare-id resolution in the callers builds the resolver index: hermetic like the
+    # roots fixture in test_load_scan_folder_resolution.py, and clear of any cached scan.
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.chdir(tmp_path)
+    resolver.invalidate_index()
+    return asyncio.run(inf._openai_catalog_objects(quant_pins = True))
+
+
+def test_collect_local_models_keeps_the_repo_id_on_a_partial_cache_row_that_still_serves(
     monkeypatch, tmp_path
 ):
-    # The strict variant of the weightless case: an interrupted download leaves a row that lists
-    # but cannot serve (partial=True), and such a row must not claim the repo id either. The
-    # flag comes from the scan's partial detection; it is pinned directly here so the claim
-    # logic is tested without rebuilding the physical cancel/incomplete markers.
+    # An interrupted re-download leaves the newest snapshot unfinished, but the loader still
+    # serves the older complete revision -- so the cache row answers the repo id even though
+    # the scan flags it partial, the parked copy gives it up, and listing and load agree.
+    # ``partial`` alone decides nothing: only holding no loadable weights does.
     active = tmp_path / "active"
     active.mkdir()
-    _complete_gguf_repo(active, "Org/Model-GGUF")
+    complete = _complete_gguf_repo(active, "Org/Model-GGUF")
+    (complete / "Model-Q4_K_M.gguf").rename(complete / "Model-Q8_0.gguf")
+    aborted = complete.parent / ("1" * 40)
+    (aborted / "Q4_K_M").mkdir(parents = True)
+    (aborted / "Q4_K_M" / "Model-Q4_K_M-00001-of-00002.gguf").write_bytes(
+        b"GGUF" + bytes((3, 0, 0, 0)) + bytes(64)
+    )
+    os.utime(complete, (1_000_000_000, 1_000_000_000))
+    os.utime(aborted, (2_000_000_000, 2_000_000_000))
+    parked = tmp_path / "parked"
+    parked_snapshot = _complete_gguf_repo(parked, "Org/Model-GGUF")
+    (parked_snapshot / "Model-Q4_K_M.gguf").rename(parked_snapshot / "Model-UD-Q4_K_XL.gguf")
+    # The parked copy lists first (newest updated_at); its row then runs the claim below.
+    for target in (parked_snapshot.parent.parent, parked_snapshot):
+        os.utime(target, (3_000_000_000, 3_000_000_000))
+
+    _pin_single_cache(monkeypatch, tmp_path, active)
+    monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: [{"path": str(parked)}])
+    # Only the active cache row is partial; the parked copy scans clean.
+    monkeypatch.setattr(
+        "hub.utils.inventory_scan.is_snapshot_partial",
+        lambda repo_type, repo_id, repo_cache_dir = None, **kw: (
+            repo_cache_dir is not None
+            and active.resolve() in Path(repo_cache_dir).resolve().parents
+        ),
+    )
+    monkeypatch.setattr(
+        "hub.utils.inventory_scan.is_gguf_repo_partial",
+        lambda repo_id, repo_cache_dir = None, **kw: (
+            repo_cache_dir is not None
+            and active.resolve() in Path(repo_cache_dir).resolve().parents
+        ),
+    )
+
+    rows = models_route.collect_local_models(tmp_path / "models")
+
+    # The cache row keeps the id (its older complete revision serves); the parked copy gives it
+    # up and stays listed as the user's custom row.
+    assert [(row.source, row.model_id) for row in rows] == [
+        ("custom", None),
+        ("hf_cache", "Org/Model-GGUF"),
+    ]
+
+    # Listing and load agree: the row that owns the id is the row a bare id loads.
+    from core.inference.local_model_resolver import resolve_local_gguf
+
+    objects = _catalog_objects_for_rows(monkeypatch, tmp_path, rows)
+    entry = next(o for o in objects if o["id"] == "Org/Model-GGUF")
+    bare_variant = resolve_local_gguf("Org/Model-GGUF")[1]
+    assert bare_variant == "Q8_0"
+    assert entry["quant"] == bare_variant
+    # Both quants stay pinnable, the parked copy's included.
+    pin_ids = {o["id"] for o in objects if o["id"].startswith("Org/Model-GGUF:")}
+    assert {"Org/Model-GGUF:Q8_0", "Org/Model-GGUF:UD-Q4_K_XL"} <= pin_ids
+
+
+def test_collect_local_models_keeps_the_repo_id_when_a_partial_cache_row_holds_no_whole_quant(
+    monkeypatch, tmp_path
+):
+    # The strict variant: an interrupted download with only an unfinished quant left has
+    # nothing to load, partial or not, so the parked copy keeps the repo id.
+    active = tmp_path / "active"
+    active.mkdir()
+    repo = active / "models--Org--Model-GGUF"
+    snapshot = repo / "snapshots" / ("1" * 40)
+    (snapshot / "Q4_K_M").mkdir(parents = True)
+    (snapshot / "Q4_K_M" / "Model-Q4_K_M-00001-of-00002.gguf").write_bytes(
+        b"GGUF" + bytes((3, 0, 0, 0)) + bytes(64)
+    )
+    (repo / "refs").mkdir(parents = True)
+    (repo / "refs" / "main").write_text("1" * 40)
     parked = tmp_path / "parked"
     _complete_gguf_repo(parked, "Org/Model-GGUF")
 
@@ -432,18 +538,40 @@ def test_collect_local_models_keeps_the_repo_id_with_a_parked_copy_when_the_cach
     ]
 
 
+def test_collect_local_models_keeps_the_repo_id_when_the_cache_snapshot_holds_only_companions(
+    monkeypatch, tmp_path
+):
+    # A snapshot holding only an mmproj adapter can serve nothing: companions are not quants,
+    # so the row must not claim the repo id away from the loadable parked copy (see
+    # _holds_loadable_weights).
+    active = tmp_path / "active"
+    active.mkdir()
+    repo = active / "models--Org--Model-GGUF"
+    snapshot = repo / "snapshots" / ("0" * 40)
+    snapshot.mkdir(parents = True)
+    (snapshot / "mmproj-F16.gguf").write_bytes(b"GGUF" + bytes((3, 0, 0, 0)) + bytes(64))
+    (repo / "refs").mkdir(parents = True)
+    (repo / "refs" / "main").write_text("0" * 40)
+    parked = tmp_path / "parked"
+    _complete_gguf_repo(parked, "Org/Model-GGUF")
+
+    _pin_single_cache(monkeypatch, tmp_path, active)
+    monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: [{"path": str(parked)}])
+
+    rows = models_route.collect_local_models(tmp_path / "models")
+
+    assert sorted((row.source, row.model_id) for row in rows) == [
+        ("custom", "Org/Model-GGUF"),
+        ("hf_cache", "Org/Model-GGUF"),
+    ]
+
+
 def test_v1_models_advertises_the_quant_a_bare_repo_id_loads(monkeypatch, tmp_path):
     # The quant race, listing side: the newer parked row used to win the public id
     # first-wins and advertise a quant the bare id does not serve. The row that owns the
     # repo id (the resolver's cache row) takes the id instead, and the pin rows list every
     # local quant of every row of the repo, so advertised and loadable agree.
-    import asyncio
-    import time as time_mod
-    from types import SimpleNamespace
-
-    import routes.inference as inf
-    import core.inference.local_model_resolver as resolver
-    from core.inference.local_model_resolver import local_servable_model, resolve_local_gguf
+    from core.inference.local_model_resolver import resolve_local_gguf
 
     def _two_quant_repo(root, quants, when):
         repo = root / "models--Org--Model-GGUF"
@@ -474,30 +602,7 @@ def test_v1_models_advertises_the_quant_a_bare_repo_id_loads(monkeypatch, tmp_pa
     # that order is what the takeover rule runs against: without it, first-wins would
     # leave the parked row's quant on the id.
     assert [row.source for row in rows] == ["custom", "hf_cache"]
-    servable_rows = []
-    for row in rows:
-        result = local_servable_model(row)
-        if result:
-            servable_rows.append((row, result[0], result[1], False))
-
-    async def _catalog():
-        return rows
-
-    monkeypatch.setattr(inf, "_openai_model_objects", lambda: [])
-    monkeypatch.setattr(inf, "_peek_inference_backend", lambda: None)
-    monkeypatch.setattr(inf, "_cached_local_catalog", lambda: _catalog())
-    monkeypatch.setattr(inf, "_account_catalog_cache", lambda: {"at": time_mod.monotonic()})
-    monkeypatch.setattr(inf, "_servable_catalog_rows", lambda catalog, at: servable_rows)
-    monkeypatch.setattr(inf.account_access, "resident_hidden", lambda *a, **kw: False)
-    monkeypatch.setattr(inf.account_access, "managed_account", lambda: False)
-    monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: SimpleNamespace(hf_variant = None))
-    # The bare-id resolution below builds the resolver index: hermetic like the roots
-    # fixture in test_load_scan_folder_resolution.py, and clear of any cached scan.
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-    monkeypatch.chdir(tmp_path)
-    resolver.invalidate_index()
-
-    objects = asyncio.run(inf._openai_catalog_objects(quant_pins = True))
+    objects = _catalog_objects_for_rows(monkeypatch, tmp_path, rows)
     entry = next(o for o in objects if o["id"] == "Org/Model-GGUF")
     # Whatever quant a bare id loads (the preferred one of the cache row, never the
     # parked copy's) is exactly what the listing advertises.

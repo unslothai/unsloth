@@ -255,7 +255,7 @@ def _loadable_directory(load_dir: Path) -> bool:
 
 def _build_index(task: str) -> dict[str, MediaModelPick]:
     """Map every name a downloaded *task* model answers to onto its load spec."""
-    from routes.models import _local_model_task, collect_local_models
+    from routes.models import _local_model_task, _partial_row_serves, collect_local_models
 
     index: dict[str, MediaModelPick] = {}
     try:
@@ -265,8 +265,11 @@ def _build_index(task: str) -> dict[str, MediaModelPick]:
         return index
     for info in candidates:
         try:
-            # a cancelled or incomplete pull still lists, and loading it fails predictably
-            if getattr(info, "partial", False):
+            # a cancelled or incomplete pull still lists, and loading it fails predictably --
+            # unless the row still serves. Only a cache-layout copy can (an aborted
+            # re-download beside a complete revision loads from that one, and its repo id
+            # must stay addressable here); a partial pull of anything else never does.
+            if getattr(info, "partial", False) and not _partial_row_serves(info):
                 continue
             if _local_model_task(info) != task:
                 continue
@@ -276,6 +279,16 @@ def _build_index(task: str) -> dict[str, MediaModelPick]:
             # an hf cache repo keeps its weights, and its model_index.json, under snapshots/<sha>
             on_disk = Path(info.path).expanduser()
             load_dir = _resolve_load_dir(on_disk)
+            if getattr(info, "partial", False) and load_dir != on_disk:
+                # An aborted re-download leaves the newest snapshot unfinished while an older
+                # revision still holds the weights; the loaders serve the newest COMPLETE
+                # snapshot, and the picks must name that directory or the names resolve to
+                # nothing.
+                from hub.utils.gguf import select_gguf_cache_snapshot_for_repo_dir
+
+                serving = select_gguf_cache_snapshot_for_repo_dir(on_disk)
+                if serving is not None:
+                    load_dir = serving[3]
             if _add_gguf_picks(index, info, keys, on_disk, load_dir):
                 continue
             if load_dir.is_file():

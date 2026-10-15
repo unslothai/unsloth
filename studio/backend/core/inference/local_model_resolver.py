@@ -1500,11 +1500,17 @@ def describe_local_miss(requested: str) -> tuple[str, tuple[str, ...]]:
         return MISS_MODEL_NOT_FOUND, ()
     if entry is None or not entry.variants:
         return MISS_MODEL_NOT_FOUND, ()
-    # Every locally held quant of the repo, alternates included: the message must not hide
-    # the parked copy's quants, which a pin on them does resolve.
+    # Every label a pin on this repo resolves, alternates included: the message must not hide
+    # the parked copy's quants -- nor the legacy spellings the resolver still accepts
+    # (see _legacy_variant_aliases), which a pin on them does resolve.
     labels = tuple(
         dict.fromkeys(
-            (*entry.variants, *(v for alternate in entry.alternates for v in alternate.variants))
+            label
+            for candidate in (entry, *entry.alternates)
+            for label in (
+                *candidate.variants,
+                *(legacy for legacy, _current in candidate.aliases),
+            )
         )
     )
     return MISS_VARIANT_NOT_FOUND, labels

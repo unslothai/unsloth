@@ -948,54 +948,106 @@ def _with_comfy_compat_rows(
     return existing + found
 
 
+def _holds_weights(directory: Path) -> bool:
+    """Any non-dotfile content: dotfiles alone (``.gitattributes`` from an aborted download)
+    are not weights."""
+    return any(entry.name[:1] != "." for entry in directory.iterdir())
+
+
+def _holds_loadable_weights(directory: Path) -> bool:
+    """Whether *directory* holds weights a loader can open: a whole GGUF quant, or non-GGUF
+    weights as before.
+
+    A GGUF folder carrying only companions (an mmproj adapter, a drafter, an imatrix) or an
+    unfinished quant is not weights: the completeness walk drops the companions and keeps only
+    quant files that are all on disk. A folder with no GGUF at all stays permissive -- a
+    checkpoint or pipeline keeps answering the way the scanners classify it. A folder holding
+    non-GGUF weights beside an unfinished GGUF is read strictly (the GGUF side decides):
+    mixed layouts are rare, and not vouching for a torn GGUF errs toward the loadable parked
+    copy.
+    """
+    from hub.utils.gguf import iter_gguf_files
+    from hub.utils.inventory_scan import complete_snapshot_variants
+
+    if not any(iter_gguf_files(directory, recursive = True)):
+        return _holds_weights(directory)
+    # A whole quant is a label the completeness walk judges complete: it excludes the
+    # companions (mmproj, drafters, imatrix) and counts shard sets. Deliberately not
+    # list_local_gguf_variants here: that resolves the registered custom roots through the
+    # database, and a scan must not reload the scan folders it was handed.
+    return bool(complete_snapshot_variants(str(directory)))
+
+
+def _cache_layout_claim_dir(m) -> Optional[Path]:
+    """The snapshot dir the cache-layout claim judges -- the newest snapshot of a
+    ``models--*`` repo dir, or the snapshot dir a scan-folder row names -- or None for any
+    other row (a file, a plain directory, a manifest store).
+
+    The row names the newest snapshot, but the loaders resolve the newest COMPLETE one, so
+    an aborted re-download beside a complete revision still serves; a repo dir without any
+    snapshot is bookkeeping only.
+    """
+    p = Path(m.path)
+    if not p.is_dir():
+        return None
+    if p.name.startswith("models--"):
+        snapshot = _resolve_hf_cache_realpath(p)
+        if snapshot is None:
+            return None
+        named = Path(snapshot)
+        return None if named.resolve() == p.resolve() else named
+    if p.parent.name == "snapshots" and p.parent.parent.name.startswith("models--"):
+        return p
+    return None
+
+
 def _row_answers_repo_id(m: LocalModelInfo) -> bool:
     """Whether *m* can serve its repo id, so it may claim it against a parked copy.
 
-    A weightless skeleton (an aborted download left ``refs`` and an empty snapshot) or a
-    partial row scans as a cache entry but has nothing to load: letting it claim the repo
-    id would take the id away from the loadable parked copy instead (see
-    ``_merge_scan_folder_row``). Any other row -- a complete cache copy, a file row, a
-    manifest store -- answers as before.
+    A row answers when it holds loadable weights (see ``_holds_loadable_weights``): a
+    weightless skeleton, a partial pull with only leftovers, or a GGUF folder carrying just
+    companions has nothing to load, and letting it claim the repo id would take the id away
+    from the loadable parked copy instead (see ``_merge_scan_folder_row``). ``partial`` alone
+    decides nothing here: a partial row beside a complete revision still serves, because the
+    loaders resolve the newest COMPLETE snapshot, and it must keep the id for the listing and
+    the media index to agree with the load. Any other row -- a file row, a manifest store --
+    answers as before.
     """
-    if m.partial:
-        return False
     try:
         p = Path(m.path)
         if p.is_file():
             return True
         if not p.is_dir():
             return False
-
-        def _holds_weights(directory: Path) -> bool:
-            # Dotfiles alone (.gitattributes from an aborted download) are not weights.
-            return any(entry.name[:1] != "." for entry in directory.iterdir())
-
-        if p.name.startswith("models--"):
-            # An HF cache row carries the repo dir; only its snapshots hold weights. The row
-            # names the newest snapshot, but the loaders resolve the newest COMPLETE one, so
-            # an aborted re-download beside a complete revision still serves. A repo dir
-            # without any snapshot (bookkeeping only) serves nothing.
-            snapshot = _resolve_hf_cache_realpath(p)
-            if snapshot is None:
-                return False
-            named = Path(snapshot)
-            if named.resolve() == p.resolve():
-                return False
-        elif p.parent.name == "snapshots" and p.parent.parent.name.startswith("models--"):
-            # A scan-folder row names its snapshot dir directly: same newest-complete rule.
-            named = p
-        else:
-            return _holds_weights(p)
-        if _holds_weights(named):
+        named = _cache_layout_claim_dir(m)
+        if named is None:
+            # A cache repo without any snapshot is bookkeeping only and serves nothing;
+            # any other non-cache row counts its non-dotfile content, as the scan classifies it.
+            return False if p.name.startswith("models--") else _holds_weights(p)
+        if _holds_loadable_weights(named):
             return True
         return any(
-            sibling.is_dir() and _holds_weights(sibling)
+            sibling.is_dir() and _holds_loadable_weights(sibling)
             for sibling in named.parent.iterdir()
             if sibling != named
         )
     except OSError:
         # An unreadable row keeps today's claiming behavior rather than dropping ids.
         return True
+
+
+def _partial_row_serves(m) -> bool:
+    """Whether a partial row still serves, so the media index may keep its names.
+
+    Only a cache-layout row can: the loaders resolve its newest COMPLETE snapshot, so an
+    aborted re-download beside a complete revision still loads. Any other partial row -- a
+    pipeline pull whose payload never finished -- does not, and advertising it would only
+    cost a failed load; the caller keeps skipping it.
+    """
+    try:
+        return _cache_layout_claim_dir(m) is not None and _row_answers_repo_id(m)
+    except OSError:
+        return False
 
 
 def _merge_scan_folder_row(
