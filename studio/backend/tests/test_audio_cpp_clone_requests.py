@@ -167,6 +167,54 @@ def test_voxcpm2_speak_body_is_unchanged_by_clone_support():
     assert server.calls == [(SPEECH, {**body, "seed": "7"})]
 
 
+class _StrictRecorder(_Recorder):
+    """Refuses an option the model's contract does not declare, as the runtime does."""
+
+    def post_json(self, path, payload, **kwargs):
+        keys = self.model.request_keys
+        undeclared = sorted(set(payload.get("options") or {}) - set(keys or ()))
+        if keys is not None and undeclared:
+            self.calls.append((path, json.loads(json.dumps(payload))))
+            raise srv.AudioCppRequestError(500, f"unknown request option: {undeclared[0]}")
+        return super().post_json(path, payload, **kwargs)
+
+
+# Request option names each published GGUF's embedded (strict) spec declares.
+STRICT_KEYS = {
+    "Breeze-TTS-2-GGUF": ("breeze_tts", {"instruction", "reference_text", "guidance_scale", "seed"}),
+    "Irodori-TTS-v4-Small-GGUF": ("irodori_tts", {"instruction", "language", "no_ref", "seed"}),
+    "DramaBox-GGUF": ("dramabox", {"negative_prompt", "target_voice", "guidance_scale", "seed"}),
+    "DotTTS-MF-GGUF": ("dots_tts", {"language", "reference_text", "template_name", "seed"}),
+    "DotTTS-Edit-GGUF": ("dots_tts", {"instruct", "instruction", "language", "template_name"}),
+    "Maya1-GGUF": ("maya1", {"instruct", "max_tokens", "temperature", "seed"}),
+}
+
+
+# fmt: off
+@pytest.mark.parametrize("display, language, options", [
+    ("Breeze-TTS-2-GGUF", None, {"instruction": "warm"}),
+    ("Breeze-TTS-2-GGUF", "en", {"instruction": "warm"}),
+    ("Irodori-TTS-v4-Small-GGUF", None, {"instruction": "warm"}),
+    ("Irodori-TTS-v4-Small-GGUF", "ja", {"instruction": "warm", "language": "ja"}),
+    ("DramaBox-GGUF", "en", ABSENT),
+    ("DotTTS-MF-GGUF", "en", {"language": "en"}),
+    ("DotTTS-Edit-GGUF", None, {"instruct": "warm"}),
+    ("Maya1-GGUF", "en", {"instruct": "warm"}),
+])
+# fmt: on
+def test_speak_sends_the_description_under_the_name_the_contract_declares(display, language, options):
+    family, keys = STRICT_KEYS[display]
+    model = replace(_model(family, display), request_keys = frozenset(keys))
+    backend = acb.AudioCppBackend()
+    server = _StrictRecorder(model)
+    backend._server, backend._model = server, model
+    backend.models, backend.active_model_name = {model.id: {"is_audio": True}}, model.id
+    backend.generate_audio_response(TEXT, language = language, instructions = "warm")
+    # One request: nothing the contract lacks is sent, so there is no refusal to retry after.
+    ((path, body),) = server.calls
+    assert path == SPEECH and body.get("options", ABSENT) == options
+
+
 # fmt: off
 @pytest.mark.parametrize("key, text, sent", [
     ("vibevoice", "Hello there.", "Speaker 1: Hello there."),
