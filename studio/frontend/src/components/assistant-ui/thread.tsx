@@ -9384,7 +9384,14 @@ const EditComposer: FC = () => {
           else submitEdit();
         }}
       >
-        <ComposerAttachments className="mb-0 px-3 pt-3" />
+        {saveOnly ? (
+          // Save changes only the text, so its attachments show as sent, with no Remove.
+          <div className="px-3 pt-3">
+            <UserMessageAttachments />
+          </div>
+        ) : (
+          <ComposerAttachments className="mb-0 px-3 pt-3" />
+        )}
         <ComposerPrimitive.Input
           submitMode={
             effectiveSendShortcut(sendShortcut, editMultiline ? "\n" : "") === "mod-enter"

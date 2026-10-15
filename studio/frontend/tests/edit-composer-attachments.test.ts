@@ -21,7 +21,15 @@ const editComposer = block(thread, "const EditComposer: FC = () => {");
 test("the edit composer shows the attachments it will resend", () => {
   assert.match(
     editComposer,
-    /<ComposerAttachments\b[^>]*\/>\s*<ComposerPrimitive\.Input\b/,
+    /<ComposerAttachments\b[^>]*\/>\s*\)\}\s*<ComposerPrimitive\.Input\b/,
+  );
+});
+
+test("Edit without running shows the prompt's attachments read-only", () => {
+  // Save keeps the stored attachments, so a Remove there would be undone.
+  assert.match(
+    editComposer,
+    /\{saveOnly \? \([\s\S]*?<UserMessageAttachments \/>[\s\S]*?\) : \(\s*<ComposerAttachments\b/,
   );
 });
 
