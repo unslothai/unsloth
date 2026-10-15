@@ -5768,6 +5768,55 @@ def unsloth_generic_save(
     return
 
 
+def _fsdp2_collective_save(trainable_only):
+    """Under FSDP2 every rank calls the save: the shards are gathered, rank 0 writes, the others
+    return None. `trainable_only(self, args, kwargs)` says whether the adapter alone is enough.
+    A model FSDP2 does not shard, or a call that brings its own `state_dict`, is passed through."""
+
+    def decorate(fn):
+        @functools.wraps(fn)
+        def wrapper(self, *args, **kwargs):
+            from .models.fsdp2_save import fsdp2_units, fsdp2_gathered, fsdp2_gather_active
+
+            if (
+                kwargs.get("state_dict") is not None
+                or fsdp2_gather_active()
+                or not fsdp2_units(self)
+            ):
+                return fn(self, *args, **kwargs)
+            only = trainable_only(self, args, kwargs)
+            if _fsdp2_rank() == 0:
+                print(
+                    "Unsloth: FSDP2 save: gathering the "
+                    + ("trainable" if only else "sharded")
+                    + " weights to rank 0, which writes. Every rank must make this call."
+                )
+            with fsdp2_gathered(self, trainable_only = only) as writer:
+                if writer is False:
+                    return None
+                return fn(self, *args, **kwargs)
+
+        return wrapper
+
+    return decorate
+
+
+def _fsdp2_rank():
+    import torch.distributed as dist
+    return dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
+
+
+def _merged_save_method(args, kwargs):
+    if "save_method" in kwargs:
+        return kwargs["save_method"]
+    # (save_directory, tokenizer, save_method, ...)
+    return args[2] if len(args) > 2 else "merged_16bit"
+
+
+@_fsdp2_collective_save(
+    lambda self, args, kwargs: isinstance(self, PeftModel)
+    and _is_adapter_save_method(_merged_save_method(args, kwargs))
+)
 def unsloth_generic_save_pretrained_merged(
     self,
     save_directory: Union[str, os.PathLike],
@@ -7543,6 +7592,7 @@ def patch_saving_functions(model, vision = False):
     '''
     exec(push_to_hub_text, globals())
 
+    @_fsdp2_collective_save(lambda self, args, kwargs: isinstance(self, PeftModel))
     def unsloth_model_save_pretrained(self, *args, **kwargs):
         """`safe_serialization = None` means the safetensors default, not a pickle.
 
