@@ -702,3 +702,66 @@ test("the import names a sampler or schedule the loaded model does not offer", (
   // A loaded model with no sampler choice still names a recorded sampler.
   assert.match(block, /status\?\.loaded && samplerOptions\.length === 0/);
 });
+
+test("imported numbers land inside the generation request's bounds", () => {
+  const defaults = { width: 1024, height: 1024, steps: 8, guidance: 3.5 };
+  const s = recipeSettings(
+    {
+      prompt: "p",
+      seed: -5,
+      batch_seed: -1,
+      batch_size: 500,
+      strength: 0,
+      upscale: 9,
+      reference_resolution: 100000,
+    },
+    defaults,
+  );
+  assert.equal(s.seed, null);
+  assert.equal(s.batch_seed, null);
+  assert.equal(s.batch_size, 32);
+  assert.equal(s.strength, undefined);
+  assert.equal(s.upscale, 4);
+  assert.equal(s.reference_resolution, 2048);
+  const low = recipeSettings({ prompt: "p", upscale: 0.5, reference_resolution: 8, strength: 0.3 }, defaults);
+  assert.equal(low.upscale, 1);
+  assert.equal(low.reference_resolution, 256);
+  assert.equal(low.strength, 0.3);
+});
+
+test("UNICODE UserComment byte order is read from the whole text, not its first character", () => {
+  const text = "一只猫, sitting on a mat\nSteps: 7, CFG scale: 4, Seed: 99, Size: 8x8";
+  // UTF-16LE inside a big-endian TIFF (first character U+4E00 looks big-endian on its own).
+  const le = bytes("/9j/4AAQSkZJRgABAQAAAQABAAD/4QC+RXhpZgAATU0AKgAAAAgAAYdpAAQAAAABAAAAGgAAAAAAAZKGAAEAAACKAAAALAAAAABVTklDT0RFAABO6lMrcywAIABzAGkAdAB0AGkAbgBnACAAbwBuACAAYQAgAG0AYQB0AAoAUwB0AGUAcABzADoAIAA3ACwAIABDAEYARwAgAHMAYwBhAGwAZQA6ACAANAAsACAAUwBlAGUAZAA6ACAAOQA5ACwAIABTAGkAegBlADoAIAA4AHgAOAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCAAIAAgDASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwDwGiiimI//2Q==");
+  assert.equal(readEmbeddedRecipe(le).parameters, text);
+  assert.equal(importedRecipe(readEmbeddedRecipe(le))?.seed, 99);
+  // Our own big-endian writer with the same first character.
+  const be = withJpegExif(bytes(JPEG_B64), { parameters: text });
+  assert.equal(readEmbeddedRecipe(be).parameters, text);
+});
+
+test("ComfyUI's SDXL, SD3 and Flux text encoders import their prompt", () => {
+  const graph = (encoder: Record<string, unknown>) =>
+    JSON.stringify({
+      "1": encoder,
+      "2": { class_type: "CLIPTextEncodeSDXL", inputs: { text_g: "lowres", text_l: "lowres" } },
+      "3": {
+        class_type: "KSampler",
+        inputs: { positive: ["1", 0], negative: ["2", 0], seed: 5, steps: 20, cfg: 6, sampler_name: "euler", scheduler: "normal" },
+      },
+    });
+  const sdxl = parseComfyPrompt(
+    graph({ class_type: "CLIPTextEncodeSDXL", inputs: { text_g: "a castle on a hill", text_l: "castle", width: 1024 } }),
+  );
+  assert.equal(sdxl?.prompt, "a castle on a hill");
+  assert.equal(sdxl?.negative_prompt, "lowres");
+  const sd3 = parseComfyPrompt(
+    graph({ class_type: "CLIPTextEncodeSD3", inputs: { clip_l: "c", clip_g: "c", t5xxl: "a detailed castle" } }),
+  );
+  assert.equal(sd3?.prompt, "a detailed castle");
+  const flux = parseComfyPrompt(
+    graph({ class_type: "CLIPTextEncodeFlux", inputs: { clip_l: "castle", t5xxl: "a castle at dawn", guidance: 4 } }),
+  );
+  assert.equal(flux?.prompt, "a castle at dawn");
+  assert.equal(flux?.guidance, 4);
+});

@@ -53,6 +53,8 @@ export interface StampContext {
 }
 
 export interface StampLayout {
+  /** The text as drawn: shortened from the model name, then the date, so the seed is never clipped. */
+  text: string;
   fontPx: number;
   barHeight: number;
   padX: number;
@@ -78,7 +80,28 @@ export function layoutInfoStamp(
   if (textWidth > room) {
     fontPx = Math.max(6, Math.floor((fontPx * room) / textWidth));
   }
-  return { fontPx, barHeight: Math.round(fontPx * 1.9), padX, showBrand };
+  let fitted = text;
+  if (widthAt(fitted, fontPx) > room) {
+    const parts = text.split(" | ");
+    const seed = parts.pop() ?? "";
+    while (parts.length > 0 && widthAt(fitted, fontPx) > room) {
+      const first = parts[0];
+      if (parts.length > 1 && first.length > 1) {
+        parts[0] = `${first.replace(/\u2026$/, "").slice(0, -1)}\u2026`;
+        if (parts[0] === "\u2026") parts.shift();
+      } else {
+        parts.shift();
+      }
+      fitted = [...parts, seed].join(" | ");
+    }
+  }
+  return {
+    text: fitted,
+    fontPx,
+    barHeight: Math.round(fontPx * 1.9),
+    padX,
+    showBrand,
+  };
 }
 
 export function drawInfoStamp(
@@ -96,7 +119,7 @@ export function drawInfoStamp(
   ctx.textBaseline = "middle";
   ctx.fillStyle = "rgba(255, 255, 255, 0.92)";
   ctx.textAlign = "left";
-  ctx.fillText(text, layout.padX, mid);
+  ctx.fillText(layout.text, layout.padX, mid);
   if (layout.showBrand) {
     ctx.fillStyle = "rgba(255, 255, 255, 0.7)";
     ctx.textAlign = "right";

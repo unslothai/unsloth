@@ -403,16 +403,28 @@ function readTiff(tiff: Uint8Array): EmbeddedRecipe {
     const body = comment.subarray(8);
     if (prefix === "UNICODE\0") {
       const cv = new DataView(body.buffer, body.byteOffset, body.byteLength);
-      // piexif (AUTOMATIC1111) always writes UTF-16BE; other writers follow the TIFF byte order.
-      // A leading Latin character has one zero byte, which tells the two apart.
-      const be =
-        body[0] === 0 && body[1] !== 0
-          ? true
-          : body[1] === 0 && body[0] !== 0
-            ? false
-            : !little;
+      // piexif (AUTOMATIC1111) always writes UTF-16BE; other writers follow the TIFF byte order. A BOM
+      // decides; else the side holding the zero bytes of ASCII (spaces, commas, Latin letters) does,
+      // counted over the whole text so a first character like U+4E00 cannot flip it; else TIFF order.
+      let start = 0;
+      let be: boolean;
+      if (body[0] === 0xfe && body[1] === 0xff) {
+        be = true;
+        start = 2;
+      } else if (body[0] === 0xff && body[1] === 0xfe) {
+        be = false;
+        start = 2;
+      } else {
+        let evenZeros = 0;
+        let oddZeros = 0;
+        for (let i = 0; i + 1 < body.length; i += 2) {
+          if (body[i] === 0 && body[i + 1] !== 0) evenZeros++;
+          else if (body[i + 1] === 0 && body[i] !== 0) oddZeros++;
+        }
+        be = evenZeros === oddZeros ? !little : evenZeros > oddZeros;
+      }
       let s = "";
-      for (let i = 0; i + 1 < body.length; i += 2)
+      for (let i = start; i + 1 < body.length; i += 2)
         s += String.fromCharCode(cv.getUint16(i, !be));
       out.parameters = s.replace(/\0+$/, "");
     } else {
@@ -683,6 +695,13 @@ const int = (v: unknown): number | undefined => {
   const n = num(v);
   return n !== undefined && Number.isSafeInteger(n) ? n : undefined;
 };
+const positive = (n: number | undefined): number | undefined =>
+  n !== undefined && n > 0 ? n : undefined;
+// The request takes seeds in [0, 2^53 - 1]; anything else leaves the seed random.
+const seedOf = (v: unknown): number | null => {
+  const n = int(v);
+  return n !== undefined && n >= 0 ? n : null;
+};
 const str = (v: unknown): string | undefined =>
   typeof v === "string" ? v : undefined;
 
@@ -700,19 +719,20 @@ export function recipeSettings(
     // Clamped to the request's bounds: other tools allow more (AUTOMATIC1111 goes to 150 steps).
     steps: clamp(int(r.steps), 1, 100) ?? d.steps,
     guidance: clamp(num(r.guidance), 0, 20) ?? d.guidance,
-    seed: int(r.seed) ?? null,
-    batch_seed: int(r.batch_seed) ?? null,
-    batch_size: Math.max(1, int(r.batch_size) ?? 1),
+    seed: seedOf(r.seed),
+    batch_seed: seedOf(r.batch_seed),
+    batch_size: clamp(int(r.batch_size), 1, 32) ?? 1,
     model: str(r.model) ?? null,
     workflow: str(r.workflow),
     loras: Array.isArray(r.loras)
       ? r.loras.filter((x): x is string => typeof x === "string")
       : [],
-    strength: clamp(num(r.strength), 0, 1),
-    upscale: num(r.upscale),
+    // The request takes strength in (0, 1]: 0 leaves no denoising steps, so it is not restored.
+    strength: positive(clamp(num(r.strength), 0, 1)),
+    upscale: clamp(num(r.upscale), 1, 4),
     // The request caps reference images at 9; restore builds an array of this length.
     reference_image_count: clamp(int(r.reference_image_count), 0, 9),
-    reference_resolution: int(r.reference_resolution),
+    reference_resolution: clamp(int(r.reference_resolution), 256, 2048),
     localized_edit: str(r.localized_edit) ?? null,
     // Ids only; the page checks them against the loaded model's samplers.
     sampler: str(r.sampler),
@@ -731,6 +751,18 @@ const COMFY_SAMPLERS = new Set([
   "SamplerCustomAdvanced",
 ]);
 const COMFY_MODEL_INPUTS = ["ckpt_name", "unet_name", "model_name"];
+// Prompt inputs of ComfyUI's core text encoders (nodes.py, comfy_extras/nodes_clip_sdxl.py, nodes_sd3.py,
+// nodes_flux.py, nodes_hunyuan.py), richest first.
+const COMFY_TEXT_INPUTS = [
+  "text",
+  "text_g",
+  "t5xxl",
+  "clip_g",
+  "clip_l",
+  "text_l",
+  "mt5xl",
+  "bert",
+];
 // ComfyUI sampler / scheduler names (comfy/samplers.py) that have a Studio equivalent.
 const COMFY_SAMPLER_IDS: Record<string, string> = {
   euler: "euler",
@@ -789,6 +821,15 @@ export function parseComfyPrompt(text: string): ImportedRecipe | null {
     for (let hop = 0; n?.class_type === "FluxGuidance" && hop < 4; hop++) {
       fluxGuidance ??= value(n.inputs?.guidance, ["guidance", "value"]);
       n = node(n.inputs?.conditioning);
+    }
+    // CLIPTextEncodeFlux carries its own guidance.
+    if (n?.class_type === "CLIPTextEncodeFlux") {
+      fluxGuidance ??= value(n.inputs?.guidance, ["guidance", "value"]);
+    }
+    // CLIPTextEncode `text`; the SDXL / SD3 / Flux / HunyuanDiT encoders split it across their own inputs.
+    for (const key of COMFY_TEXT_INPUTS) {
+      const v = value(n?.inputs?.[key], [key, "text", "value", "string"]);
+      if (typeof v === "string" && v.trim()) return v;
     }
     const v = value(n?.inputs?.text, ["text", "value", "string"]);
     return typeof v === "string" ? v : undefined;

@@ -83,3 +83,21 @@ test("a narrow image drops the brand and shrinks the line to fit", () => {
   ctx.font = `${layout.fontPx}px monospace`;
   assert.ok(ctx.measureText(text).width <= 256 - layout.padX * 2);
 });
+
+test("a stamp too long for a narrow image shortens the model, then the date, never the seed", () => {
+  const { ctx, calls } = fakeContext();
+  const text = "Qwen-Image-Edit-2511-a-very-long-community-merge-name | 2026-10-15 03:15:47 | Seed: 156680208700286";
+  const layout = drawInfoStamp(ctx, 256, 256, text);
+  assert.equal(layout.fontPx, 6);
+  const room = 256 - layout.padX * 2;
+  assert.ok(layout.text.length * 6 * 0.6 <= room, layout.text);
+  assert.ok(layout.text.endsWith("Seed: 156680208700286"), layout.text);
+  assert.ok(layout.text.includes("…") || !layout.text.includes("Qwen"), layout.text);
+  const drawn = calls.find((c) => c.op === "fillText");
+  assert.equal(drawn?.args[0], layout.text);
+  // Narrower still: the date goes too, the seed stays.
+  const tiny = layoutInfoStamp(ctx, 120, 120, text);
+  assert.ok(tiny.text.endsWith("Seed: 156680208700286"), tiny.text);
+  // A stamp that fits is drawn unchanged.
+  assert.equal(layoutInfoStamp(ctx, 1024, 1024, "m | 2026-10-15 03:15:47 | Seed: 1").text, "m | 2026-10-15 03:15:47 | Seed: 1");
+});
