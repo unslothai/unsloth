@@ -611,7 +611,7 @@ export function ModelSearchFiltersControl({
   const unslothOnly = uploaders.length === 1 && uploaders[0] === "unsloth";
   const filtered =
     modalities.length > 0 ||
-    capabilities.length > 0 ||
+    (modelSections && capabilities.length > 0) ||
     uploadersChanged ||
     ((showModelFilters || datasetSections) && hasModelSearchFilters(value));
   return (

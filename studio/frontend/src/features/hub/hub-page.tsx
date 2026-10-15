@@ -593,10 +593,18 @@ export function ModelsPage() {
   const [resourceType, setResourceType] =
     useState<ResourceTypeFilter>(urlResourceType);
   // Resync on URL kind change (back/forward); it is only seeded on mount.
+  const syncedUrlKind = useRef(urlResourceType);
   useEffect(() => {
+    if (syncedUrlKind.current === urlResourceType) {
+      return;
+    }
+    syncedUrlKind.current = urlResourceType;
     setResourceType((current) =>
       current === urlResourceType ? current : urlResourceType,
     );
+    // Back/forward skips handleResourceTypeChange, so the other kind's hidden bounds go here too.
+    setSearchFilters({});
+    setDatasetModalities([]);
   }, [urlResourceType]);
   const [discoverFormat, setDiscoverFormat] = useState<ModelFormatFilter>(
     () => findChannel(DEFAULT_DISCOVER_CHANNEL)?.format ?? "recommended",

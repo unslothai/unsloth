@@ -184,3 +184,20 @@ test("3D Diffusers pipelines are neither image nor video gen, and Text only neve
 test("changing tabs clears dataset modalities along with the other hidden filters", () => {
   assert.match(readSrc("features/hub/hub-page.tsx"), /setSearchFilters\(\{\}\);\s*setDatasetModalities\(\[\]\);\s*setUploaderPick\(null\);\s*setFirstPickArmed\(true\);\s*setModelsTab\(next\);/);
 });
+
+test("Wan is matched as a family name, not anywhere in the repo name", () => {
+  assert.equal(generationKinds(["diffusers"], undefined, "Wan-AI/Wan2.2-T2V-A14B").video, true);
+  assert.equal(generationKinds([], undefined, "someone/swan2-7b").video, false);
+  assert.equal(detectCapabilities([], undefined, "someone/swan2-7b").some((c) => c.key === "diffusion"), false);
+});
+
+test("back/forward between models and datasets drops the other kind's hidden bounds", () => {
+  assert.match(
+    readSrc("features/hub/hub-page.tsx"),
+    /syncedUrlKind\.current = urlResourceType;[\s\S]{0,300}setSearchFilters\(\{\}\);\s*setDatasetModalities\(\[\]\);/,
+  );
+});
+
+test("capabilities light the filter dot only where they apply", () => {
+  assert.match(readSrc("features/hub/catalog/model-search-filters.tsx"), /\(modelSections && capabilities\.length > 0\)/);
+});

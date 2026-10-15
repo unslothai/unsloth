@@ -79,6 +79,10 @@ export function matchesDatasetFilters(
     bucket === DATASET_ROW_STOPS.length
       ? Number.POSITIVE_INFINITY
       : DATASET_ROW_STOPS[bucket];
+  // Both thumbs on one stop: the buckets either side of it.
+  if (minRows !== undefined && minRows === maxRows) {
+    return low <= minRows && high >= minRows;
+  }
   return (
     (minRows === undefined || high > minRows) &&
     (maxRows === undefined || low < maxRows)

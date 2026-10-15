@@ -46,7 +46,7 @@ const VIDEO_GEN_TAGS = new Set([
   "image-text-to-video",
 ]);
 const VIDEO_GEN_ID_RE =
-  /wan2|hunyuan[-_]?video|\bltx(?:[-_]?video|v|[-_]?\d)|minimax[-_]?h\d|cogvideo|mochi|skyreels|[-_]t2v\b|[-_]i2v\b/;
+  /(?:^|[-_.])wan2|hunyuan[-_]?video|\bltx(?:[-_]?video|v|[-_]?\d)|minimax[-_]?h\d|cogvideo|mochi|skyreels|[-_]t2v\b|[-_]i2v\b/;
 
 const NEITHER_GEN_TASKS = new Set([
   "video-to-video",
@@ -302,7 +302,7 @@ export function detectCapabilities(
     out.push({ key: "embedding", label: "Embeddings" });
   }
   const imageGenName =
-    /stable[-_]?diffusion|\bsdxl\b|\bflux\b|qwen[-_]?image|hunyuan[-_]?(?:video|image)|wan2|latent[-_]?consistency|[-_]lcm\b|dreamshaper/.test(
+    /stable[-_]?diffusion|\bsdxl\b|\bflux\b|qwen[-_]?image|hunyuan[-_]?(?:video|image)|(?:^|[-_/.])wan2|latent[-_]?consistency|[-_]lcm\b|dreamshaper/.test(
       lowerId,
     );
   const textDiffusionLm =

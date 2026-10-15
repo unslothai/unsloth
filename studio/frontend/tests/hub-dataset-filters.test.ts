@@ -49,3 +49,10 @@ test("a row range alone lights the filter dot and Reset all", async () => {
   const popover = readFileSync(new URL("../src/features/hub/catalog/model-search-filters.tsx", import.meta.url), "utf8");
   assert.match(popover, /\(showModelFilters \|\| datasetSections\) && hasModelSearchFilters\(value\)/);
 });
+
+test("both thumbs on one stop keep the buckets either side of it", () => {
+  // The dataset sits in 10K<n<100K, so a point at 10K or 100K keeps it and 1M does not.
+  assert.equal(matchesDatasetFilters(dataset, [], 1e4, 1e4), true);
+  assert.equal(matchesDatasetFilters(dataset, [], 1e5, 1e5), true);
+  assert.equal(matchesDatasetFilters(dataset, [], 1e6, 1e6), false);
+});
