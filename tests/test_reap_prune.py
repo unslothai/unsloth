@@ -274,6 +274,10 @@ def test_rejects_bad_requests():
     with pytest.raises(ValueError, match = "causal"):
         reap.reap_prune(model, None, sparsity = 0.25, dataset = samples, device = "cpu")
     model.config.use_bidirectional_attention = None
+    model.model.layers[1].self_attn.is_causal = False
+    with pytest.raises(ValueError, match = "causal"):
+        reap.reap_prune(model, None, sparsity = 0.25, dataset = samples, device = "cpu")
+    model.model.layers[1].self_attn.is_causal = True
     model.peft_config = {}
     with pytest.raises(RuntimeError, match = "get_peft_model"):
         reap.reap_prune(model, None, sparsity = 0.25, dataset = samples, device = "cpu")
@@ -314,8 +318,10 @@ def test_save_directory_becomes_the_merge_base(tmp_path):
 @pytest.mark.parametrize(
     "build",
     [
-        # Router weight in a child module (`gate.wg`).
-        lambda T, base: T.HunYuanMoEV1Config(**base, num_experts = 8, moe_topk = 2),
+        # Router weight in a child module (`gate.wg`); top_k per layer, as in Hunyuan-A13B.
+        lambda T, base: T.HunYuanMoEV1Config(
+            **{**base, "num_experts_per_tok": [2] * base["num_hidden_layers"]}, num_experts = 8
+        ),
         # [1, E] score bias in `gate.moe_statics`.
         lambda T, base: T.Ernie4_5_MoeConfig(
             **base, moe_num_experts = 8, moe_layer_start_index = 0, moe_k = 2

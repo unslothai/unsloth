@@ -50,12 +50,28 @@ def _configs(model):
     return [c for c in (config, text_config) if c is not None]
 
 
-def _first_attr(configs, keys):
+def _is_int(value):
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _first_attr(
+    configs,
+    keys,
+    per_layer = False,
+):
     for config in reversed(configs):  # text_config first
         for key in keys:
             value = getattr(config, key, None)
-            if isinstance(value, int) and not isinstance(value, bool):
+            if _is_int(value):
                 return value
+            # HunYuan stores `moe_topk` per layer (`[8] * 32`); the largest bounds every layer.
+            if (
+                per_layer
+                and isinstance(value, (list, tuple))
+                and value
+                and all(map(_is_int, value))
+            ):
+                return max(value)
     return None
 
 
@@ -502,7 +518,7 @@ def reap_prune(
             raise ValueError("Unsloth: REAP needs a tokenizer unless the dataset has `input_ids`.")
     configs = _configs(model)
     num_experts = _first_attr(configs, _NUM_EXPERTS_KEYS)
-    top_k = _first_attr(configs, _TOP_K_KEYS)
+    top_k = _first_attr(configs, _TOP_K_KEYS, per_layer = True)
     if num_experts is None or top_k is None:
         raise ValueError(
             "Unsloth: REAP needs an MoE model with an expert count and top_k in its config."
@@ -531,6 +547,11 @@ def reap_prune(
         raise RuntimeError(
             "Unsloth: REAP found no MoE layers with fused experts. It needs transformers 5.x MoE "
             "modules (an `experts` module with 3D expert weights next to a `gate` / `router`)."
+        )
+    # Non-causal text attention (openai/privacy-filter) carries no config flag.
+    if any(getattr(m, "is_causal", None) is False for layer in layers for m in layer.modules()):
+        raise ValueError(
+            "Unsloth: REAP supports causal language models, not bidirectional or diffusion ones."
         )
 
     layer_names = {id(m): n for n, m in model.named_modules()}
