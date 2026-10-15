@@ -64,6 +64,7 @@ test("a connected pick retires a staged local pick and skips the hidden seed", a
   const page = readSrc("features/images/images-page.tsx");
   const branch = page.slice(page.indexOf('if (meta.source === "external") {'));
   const body = branch.slice(0, branch.indexOf("setExternalModelId(id);"));
+  assert.doesNotMatch(body, /downloadOnlyPick/);
   assert.match(body, /pickGuard\.cancel\(\);/);
   assert.match(body, /beginPick\(\);/);
   assert.match(page, /if \(seed\.trim\(\) && !external\) \{/);

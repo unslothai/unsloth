@@ -3737,15 +3737,14 @@ export function ImagesPage({
       // stays interactive during a generation: refusing it there was a silent dead click.
       if (busy !== null && !downloadOnlyPick) return;
       if (meta.source === "external") {
-        if (!downloadOnlyPick) {
-          if (quantRevert.current && quantRevert.current === stagedQuantRevert.current) {
-            revertPick(quantRevert.current);
-            quantRevert.current = null;
-          }
-          pickGuard.cancel();
-          pickToast.dismissAll();
-          beginPick();
+        if (busy !== null) return;
+        if (quantRevert.current && quantRevert.current === stagedQuantRevert.current) {
+          revertPick(quantRevert.current);
+          quantRevert.current = null;
         }
+        pickGuard.cancel();
+        pickToast.dismissAll();
+        beginPick();
         setExternalModelId(id);
         return;
       }
