@@ -61,7 +61,9 @@ def _worker(rank, port, unify, out):
         model = torch.nn.Sequential(_Block(), _Block())
         policy = fsdp.MixedPrecisionPolicy(param_dtype = torch.bfloat16, reduce_dtype = torch.float32)
         plugin = types.SimpleNamespace(mixed_precision_policy = policy)
-        acc = types.SimpleNamespace(state = types.SimpleNamespace(fsdp_plugin = plugin), mixed_precision = "bf16")
+        acc = types.SimpleNamespace(
+            state = types.SimpleNamespace(fsdp_plugin = plugin), mixed_precision = "bf16"
+        )
         upcast = fsdp2.unify_frozen_dtypes(acc, model) if unify else False
         for block in model:
             fsdp.fully_shard(block, mp_policy = policy)
