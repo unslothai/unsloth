@@ -46,8 +46,7 @@ from .import_fixes import (
 # transformers / vllm (disable_broken_vllm probes `import vllm`, check_fbgemm_gpu_version imports
 # transformers, fix_huggingface_hub imports huggingface_hub), any of which would freeze Hub's
 # cache constants with the un-redirected paths. hf_cache.py is stdlib-only, so it loads straight
-# from its file without triggering the full unsloth_zoo init this early. Newer zoo ships it in the
-# init-free unsloth_zoo_downloads package; older zoo only has the file.
+# from unsloth_zoo_downloads (or, on older zoo, its file) without the full unsloth_zoo init.
 try:
     try:
         from unsloth_zoo_downloads.hf_cache import redirect_hf_cache_if_readonly as _redirect

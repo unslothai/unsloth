@@ -85,12 +85,9 @@ def _gate_torch_stack(reason: str) -> None:
 
 
 def _import_light(module_name: str) -> Any:
-    """``unsloth_zoo.<name>`` without running ``unsloth_zoo/__init__``, or ``None`` on a zoo too old for that.
+    """``unsloth_zoo.<name>`` from the init-free ``unsloth_zoo_downloads`` (unsloth-zoo#1752), else ``None``.
 
-    A module already in ``sys.modules`` under the zoo name wins, so an earlier full import and test
-    doubles keep their identity. Otherwise the stdlib-only ``unsloth_zoo_downloads`` sibling
-    (unslothai/unsloth-zoo#1752) is imported: no torch, no transformers, so neither the torch gate
-    nor the GPU-init retry applies.
+    An already-loaded ``unsloth_zoo.<name>`` wins, keeping its identity (and test doubles).
     """
     import sys as _sys
 

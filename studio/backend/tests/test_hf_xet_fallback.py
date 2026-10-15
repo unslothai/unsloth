@@ -1460,7 +1460,7 @@ def _fail_on_kill(pid, sig):
 
 @pytest.fixture
 def fake_light_package(tmp_path, monkeypatch):
-    """A stand-in ``unsloth_zoo_downloads`` on sys.path, so these tests pin the routing whatever zoo is installed."""
+    """A stand-in ``unsloth_zoo_downloads``, independent of the installed zoo."""
     pkg = tmp_path / "light" / "unsloth_zoo_downloads"
     pkg.mkdir(parents = True)
     (pkg / "__init__.py").write_text("")
@@ -1510,7 +1510,6 @@ def test_shared_backend_comes_from_the_light_package_without_zoo_init(
     try:
         assert shim._load_shared() is True
         assert shim._shared.MARKER == "light hf_xet_fallback"
-        # Neither the package init nor the torch gate nor the GPU-init retry ran.
         assert finder.attempts == [] and gated == []
         assert "unsloth_zoo" not in sys.modules
         assert os.environ.get("UNSLOTH_ZOO_DISABLE_GPU_INIT") is None
