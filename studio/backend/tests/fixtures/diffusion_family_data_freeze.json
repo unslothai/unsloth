@@ -1181,7 +1181,13 @@
      []
     ],
     "convrot_variant_repos": [],
-    "exclude": [],
+    "exclude": [
+     "modulation",
+     "timestep_embed",
+     "norm_out",
+     "txt_mode_blocks",
+     "context_embedder"
+    ],
     "pad": [],
     "zero_row": []
    },
@@ -1194,7 +1200,13 @@
      []
     ],
     "convrot_variant_repos": [],
-    "exclude": [],
+    "exclude": [
+     "modulation",
+     "timestep_embed",
+     "norm_out",
+     "txt_mode_blocks",
+     "context_embedder"
+    ],
     "pad": [],
     "zero_row": []
    },
@@ -1207,7 +1219,13 @@
      []
     ],
     "convrot_variant_repos": [],
-    "exclude": [],
+    "exclude": [
+     "modulation",
+     "timestep_embed",
+     "norm_out",
+     "txt_mode_blocks",
+     "context_embedder"
+    ],
     "pad": [],
     "zero_row": []
    },
@@ -1227,7 +1245,12 @@
      "guidance_embed",
      "time_text_embed",
      "pooled",
-     "time_embed"
+     "time_embed",
+     "modulation",
+     "timestep_embed",
+     "norm_out",
+     "txt_mode_blocks",
+     "context_embedder"
     ],
     "pad": [],
     "zero_row": []
@@ -1240,7 +1263,13 @@
      []
     ],
     "convrot_variant_repos": [],
-    "exclude": [],
+    "exclude": [
+     "modulation",
+     "timestep_embed",
+     "norm_out",
+     "txt_mode_blocks",
+     "context_embedder"
+    ],
     "pad": [],
     "zero_row": []
    },
@@ -1252,7 +1281,13 @@
      []
     ],
     "convrot_variant_repos": [],
-    "exclude": [],
+    "exclude": [
+     "modulation",
+     "timestep_embed",
+     "norm_out",
+     "txt_mode_blocks",
+     "context_embedder"
+    ],
     "pad": [],
     "zero_row": []
    },
@@ -1269,7 +1304,13 @@
      []
     ],
     "convrot_variant_repos": [],
-    "exclude": [],
+    "exclude": [
+     "modulation",
+     "timestep_embed",
+     "norm_out",
+     "txt_mode_blocks",
+     "context_embedder"
+    ],
     "pad": [],
     "zero_row": []
    },
@@ -1282,7 +1323,13 @@
      []
     ],
     "convrot_variant_repos": [],
-    "exclude": [],
+    "exclude": [
+     "modulation",
+     "timestep_embed",
+     "norm_out",
+     "txt_mode_blocks",
+     "context_embedder"
+    ],
     "pad": [],
     "zero_row": []
    },
@@ -1295,7 +1342,13 @@
      []
     ],
     "convrot_variant_repos": [],
-    "exclude": [],
+    "exclude": [
+     "modulation",
+     "timestep_embed",
+     "norm_out",
+     "txt_mode_blocks",
+     "context_embedder"
+    ],
     "pad": [],
     "zero_row": []
    },
@@ -1315,7 +1368,12 @@
      "guidance_embed",
      "time_text_embed",
      "pooled",
-     "time_embed"
+     "time_embed",
+     "modulation",
+     "timestep_embed",
+     "norm_out",
+     "txt_mode_blocks",
+     "context_embedder"
     ],
     "pad": [],
     "zero_row": []
@@ -1328,7 +1386,13 @@
      []
     ],
     "convrot_variant_repos": [],
-    "exclude": [],
+    "exclude": [
+     "modulation",
+     "timestep_embed",
+     "norm_out",
+     "txt_mode_blocks",
+     "context_embedder"
+    ],
     "pad": [],
     "zero_row": []
    },
@@ -1340,7 +1404,13 @@
      []
     ],
     "convrot_variant_repos": [],
-    "exclude": [],
+    "exclude": [
+     "modulation",
+     "timestep_embed",
+     "norm_out",
+     "txt_mode_blocks",
+     "context_embedder"
+    ],
     "pad": [],
     "zero_row": []
    },

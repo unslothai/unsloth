@@ -269,6 +269,8 @@ _QWENIMAGE_INT8_EXCLUDES = (
 # pre-floor plain fp8 at LPIPS 0.712 with SSIM 0.016 and mean luma 0. Keeping the deny cost real speed: it pinned qwen
 # to int8 at 1.10x bf16 when compiled fp8 measures 1.21x.
 _QWENIMAGE_SCHEME_DENY = frozenset({"mxfp8", "nvfp4"})
+# FLUX.3 Klein transformer-quant keep-list, every scheme (FamilyProfile.quant_exclude_tokens).
+_FLUX3_QUANT_KEEP = ("modulation", "timestep_embed", "norm_out", "txt_mode_blocks", "context_embedder")
 # Schemes denied for TRAINING on top of the inference deny. Training holds a stricter bar because the evidence above is
 # rendering evidence: it says a frozen fp8 forward reconstructs the bf16 image, not that a LoRA converges when its
 # frozen linears are fp8. Nobody has run that, so qwen fp8 stays out of the Train UI until someone does. Delete the
@@ -427,6 +429,14 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
     DiffusionFamily(
         name = "flux.3-klein-base",
         label = "FLUX.3 Klein Base",
+        profile = FamilyProfile(
+            # Left dense for EVERY transformer-quant scheme: per-token modulations, timestep embedders, norm_out, the
+            # text-stream per-mode blocks and the 20480-wide text projection. Measured on B200 against bf16 (11-case
+            # recipe set, LPIPS mean): int8 0.097 -> 0.027, fp8 0.063 -> 0.033, mxfp8 0.024 with it; without it mxfp8
+            # and nvfp4 crash at the first step (the modulation inputs are a stride-0 ``temb.expand``). Spelled out
+            # in full because the generic int8 "_mod" token only matches txt_mode_blocks by accident.
+            quant_exclude_tokens = _FLUX3_QUANT_KEEP,
+        ),
         pipeline_class = "Flux3ModularPipeline",
         transformer_class = "Flux3Transformer2DModel",
         base_repo = "black-forest-labs/flux-3-image-klein-base",
@@ -435,13 +445,21 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         max_condition_images = 10,
         # Two DiT patch grids (VAE /8, patch 2): sizes snap to 16 like FLUX.2.
         dimension_multiple = 16,
-        pipeline_only = True,
-        # Modular blocks: regional compile, CUDA graphs and the prequant paths are unmeasured here.
-        supports_torch_compile = False,
+        # Each reference (resized to 1 MP) adds 0.65-0.71 GiB of denoise activations, measured on B200: ~0.09 of the
+        # estimator's 8 GiB per output megapixel; 0.1 keeps a margin.
+        condition_pixel_weight = 0.1,
     ),
     DiffusionFamily(
         name = "flux.3-klein",
         label = "FLUX.3 Klein",
+        profile = FamilyProfile(
+            # Left dense for EVERY transformer-quant scheme: per-token modulations, timestep embedders, norm_out, the
+            # text-stream per-mode blocks and the 20480-wide text projection. Measured on B200 against bf16 (11-case
+            # recipe set, LPIPS mean): int8 0.097 -> 0.027, fp8 0.063 -> 0.033, mxfp8 0.024 with it; without it mxfp8
+            # and nvfp4 crash at the first step (the modulation inputs are a stride-0 ``temb.expand``). Spelled out
+            # in full because the generic int8 "_mod" token only matches txt_mode_blocks by accident.
+            quant_exclude_tokens = _FLUX3_QUANT_KEEP,
+        ),
         pipeline_class = "Flux3DistilledModularPipeline",
         uses_negative_prompt = False,
         transformer_class = "Flux3Transformer2DModel",
@@ -450,8 +468,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         reference = True,
         max_condition_images = 10,
         dimension_multiple = 16,
-        pipeline_only = True,
-        supports_torch_compile = False,
+        condition_pixel_weight = 0.1,
     ),
     # FLUX.2-dev: full (non-distilled) FLUX.2 on the Mistral Flux2Pipeline, so its own entry. Gated base,
     # text-to-image only; sd-cli takes the Mistral encoder from unsloth/FLUX.2-dev-ComfyUI and the VAE from
@@ -2738,6 +2755,67 @@ def assert_flux2_gguf_matches_base(fam, base_repo: str, gguf_path) -> None:
         return
     reason = flux2_mismatch_reason(
         Path(str(gguf_path)).name, base_repo, gguf_flux2_inner_dim(gguf_path), want
+    )
+    if reason is not None:
+        raise ValueError(reason)
+
+
+_FLUX3_FLOW_MAP_KEYS = ("ref_time_in.", "target_timestep_embedder.")
+
+
+def _checkpoint_tensor_names(path) -> Optional[list[str]]:
+    """Tensor names of a GGUF or safetensors file without loading any tensor; None when unreadable."""
+    try:
+        name = str(path)
+        if name.lower().endswith(".gguf"):
+            from gguf import GGUFReader
+
+            return [t.name for t in GGUFReader(name, "r").tensors]
+        from safetensors import safe_open
+
+        with safe_open(name, "pt") as handle:
+            return list(handle.keys())
+    except Exception:  # noqa: BLE001 -- fail open: the loader reports its own error
+        return None
+
+
+def flux3_variant_mismatch_reason(family_name: str, filename: str, names: Optional[list[str]]) -> Optional[str]:
+    """Why a FLUX.3 single file / GGUF cannot run under ``family_name``, or None. The distilled checkpoint is a flow
+    map (it carries the target-time embedder ``ref_time_in``) and runs the 16-step distilled graph; the base has none
+    and runs CFG. Same shapes otherwise, so a mix-up would load and render garbage instead of failing."""
+    if not names or family_name not in ("flux.3-klein", "flux.3-klein-base"):
+        return None
+    stripped = [n.split("model.diffusion_model.", 1)[-1] for n in names]
+    bfl_native = any(n.startswith(("emb_in.", "txt_in.")) for n in stripped)
+    if bfl_native and any(n.endswith((".weight_scale", ".weight_scale_2", ".input_scale")) for n in stripped):
+        # BFL's variants/fp8r and variants/nvfp4: row-major scales in BFL's own layout. The NVFP4 one has the same
+        # tensor sizes as a ComfyUI NVFP4 file whose scales are 128x4 tiles, so the ComfyUI loader would decode it
+        # silently wrong; refuse instead.
+        return (
+            f"'{filename}' is one of BFL's quantized FLUX.3 packages (variants/fp8r or variants/nvfp4), whose scale "
+            "layout Unsloth does not load. Load the bf16 checkpoint and pick a transformer precision instead."
+        )
+    flow_map = any(n.startswith(_FLUX3_FLOW_MAP_KEYS) for n in stripped)
+    if flow_map and family_name == "flux.3-klein-base":
+        return (
+            f"'{filename}' is the distilled FLUX.3 Klein checkpoint (it has the flow-map target-time embedder), "
+            "but it was loaded as flux.3-klein-base. Load it with family flux.3-klein."
+        )
+    if not flow_map and family_name == "flux.3-klein":
+        return (
+            f"'{filename}' is the FLUX.3 Klein base checkpoint (no flow-map target-time embedder), but it was "
+            "loaded as the distilled flux.3-klein. Load it with family flux.3-klein-base."
+        )
+    return None
+
+
+def assert_flux3_checkpoint_matches_family(fam, checkpoint_path) -> None:
+    """Refuse a FLUX.3 single file / GGUF of the other variant before any pipeline is built. Fail-open."""
+    name = str(getattr(fam, "name", ""))
+    if checkpoint_path is None or not name.startswith("flux.3"):
+        return
+    reason = flux3_variant_mismatch_reason(
+        name, Path(str(checkpoint_path)).name, _checkpoint_tensor_names(checkpoint_path)
     )
     if reason is not None:
         raise ValueError(reason)

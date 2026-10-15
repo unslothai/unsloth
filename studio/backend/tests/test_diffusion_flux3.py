@@ -87,8 +87,10 @@ def test_family_records():
         assert fam.reference and fam.max_condition_images == 10
         assert not fam.edit and not fam.unified_edit
         assert fam.dimension_multiple == 16
-        # Modular-only: no transformer-only single file / GGUF path yet.
-        assert fam.pipeline_only
+        # A single file / GGUF denoiser assembles around the base's modular companions.
+        assert not fam.pipeline_only
+        assert fam.supports_torch_compile
+        assert fam.condition_pixel_weight == 0.1
         assert fam.img2img_pipeline_class is None and fam.inpaint_pipeline_class is None
     # The flow-map checkpoint samples without CFG; the base runs CFG with a negative prompt.
     assert distilled.uses_negative_prompt is False
@@ -374,3 +376,104 @@ def test_a_seeded_sized_call_gets_reference_noise_and_resized_references():
     assert "latents" not in face.mp.calls[-1]
     face(prompt = "a", height = 64, width = 32, generator = gen, num_images_per_prompt = 2, num_inference_steps = 1)
     assert "latents" not in face.mp.calls[-1]
+
+
+# ── quantisation keep-list, memory rows, single file / GGUF checks ───────────
+_KEEP = ("modulation", "timestep_embed", "norm_out", "txt_mode_blocks", "context_embedder")
+
+
+@pytest.mark.parametrize("scheme", ["int8", "fp8", "mxfp8", "nvfp4"])
+@pytest.mark.parametrize("family", [FLUX3_KLEIN_FAMILY_NAME, FLUX3_KLEIN_BASE_FAMILY_NAME])
+def test_keep_list_applies_to_every_scheme(scheme, family):
+    from core.inference.diffusion_transformer_quant import exclude_tokens_for_scheme
+
+    tokens = exclude_tokens_for_scheme(scheme, family)
+    assert set(_KEEP) <= set(tokens)
+
+
+def test_other_families_scheme_exclusions_unchanged():
+    from core.inference.diffusion_transformer_quant import exclude_tokens_for_scheme
+
+    for family in ("flux.1", "flux.2-klein", "qwen-image", "z-image", None):
+        for scheme in ("fp8", "mxfp8", "nvfp4"):
+            assert exclude_tokens_for_scheme(scheme, family) == ()
+
+
+def test_keep_list_hits_the_measured_layers_only():
+    from core.inference.diffusion_transformer_quant import exclude_tokens_for_scheme
+
+    tokens = exclude_tokens_for_scheme("fp8", FLUX3_KLEIN_FAMILY_NAME)
+    kept = [
+        "early_stream_modulations.image.linear",
+        "single_stream_modulations.txt.linear",
+        "timestep_embedder.linear_1",
+        "target_timestep_embedder.linear_2",
+        "norm_out.linear",
+        "txt_mode_blocks.3.attn.to_q",
+        "context_embedder",
+    ]
+    quantised = [
+        "mode_blocks.image.0.attn.to_q",
+        "mode_blocks.image_cond.4.ff.linear_in",
+        "single_transformer_blocks.27.attn.to_out.0",
+        "single_transformer_blocks.0.ff.linear_out",
+    ]
+    assert all(any(t in name for t in tokens) for name in kept)
+    assert not any(any(t in name for t in tokens) for name in quantised)
+
+
+def test_measured_memory_rows():
+    from core.inference import diffusion_memory as mem
+
+    assert mem._MEASURED_IMAGE_ACTIVATION_MIB["flux.3-klein"] == (
+        (301, 901, 2_437, 2_437, 3_359),
+        (301, 901, 2_437, 2_437, 3_359),
+    )
+    assert mem._MEASURED_DENSE_EAGER_PEAK_MIB["flux.3-klein"] == (2437, 10600)
+    # The base runs CFG and is unmeasured: flat estimate.
+    assert "flux.3-klein-base" not in mem._MEASURED_IMAGE_ACTIVATION_MIB
+
+
+def test_variant_mismatch_and_bfl_quant_packages_are_refused():
+    from core.inference.diffusion_families import flux3_variant_mismatch_reason as why
+
+    distilled = ["emb_in.image.weight", "ref_time_in.in_layer.weight", "single_blocks.0.q_proj.weight"]
+    base = ["emb_in.image.weight", "time_in.in_layer.weight", "single_blocks.0.q_proj.weight"]
+    assert why("flux.3-klein", "d.gguf", distilled) is None
+    assert why("flux.3-klein-base", "b.gguf", base) is None
+    assert "flux.3-klein-base" in why("flux.3-klein", "b.gguf", base)
+    assert "flux.3-klein" in why("flux.3-klein-base", "d.gguf", distilled)
+    # diffusers key names and a ComfyUI prefix are read the same way.
+    assert why("flux.3-klein", "x.safetensors", ["target_timestep_embedder.linear_1.weight"]) is None
+    assert why("flux.3-klein", "x.safetensors", ["model.diffusion_model.ref_time_in.in_layer.weight"]) is None
+    bfl_nvfp4 = distilled + ["single_blocks.0.q_proj.weight_scale", "single_blocks.0.q_proj.weight_scale_2"]
+    assert "variants/fp8r or variants/nvfp4" in why("flux.3-klein", "model.safetensors", bfl_nvfp4)
+    # Unreadable file or another family: fail open.
+    assert why("flux.3-klein", "x.gguf", None) is None
+    assert why("flux.2-klein", "x.gguf", base) is None
+
+
+def test_gguf_denoiser_reports_its_compute_dtype():
+    torch = pytest.importorskip("torch")
+    from core.inference.diffusion_flux3 import _pin_compute_dtype
+
+    class _Packed(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.w = torch.nn.Parameter(torch.zeros(4, dtype = torch.uint8), requires_grad = False)
+
+        @property
+        def dtype(self):  # diffusers' get_parameter_dtype: first float param, else first float buffer, else last
+            for p in self.parameters():
+                if p.is_floating_point():
+                    return p.dtype
+            for b in self.buffers():
+                if b.is_floating_point():
+                    return b.dtype
+            return torch.uint8
+
+    m = _Packed()
+    assert m.dtype == torch.uint8
+    _pin_compute_dtype(m, torch.bfloat16)
+    assert m.dtype == torch.bfloat16
+    assert "_unsloth_compute_dtype" not in m.state_dict()

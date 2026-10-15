@@ -91,6 +91,13 @@ _INT8_FAMILY_EXCLUDE_NAME_TOKENS: dict[str, tuple[str, ...]] = _profile_table(
 _QWENIMAGE_INT8_EXCLUDES = _INT8_FAMILY_EXCLUDE_NAME_TOKENS["qwen-image"]
 
 
+# ALL-scheme PER-FAMILY exclusions (``FamilyProfile.quant_exclude_tokens``): unlike the int8 table above, these also
+# apply to fp8 / mxfp8 / nvfp4, whose scaled_mm paths otherwise quantise every eligible Linear.
+_FAMILY_QUANT_EXCLUDE_NAME_TOKENS: dict[str, tuple[str, ...]] = _profile_table(
+    "quant_exclude_tokens", quant = True
+)
+
+
 # Int8 PER-FAMILY row PADDING (``FamilyProfile.int8_pad_tokens``), the alternative to excluding a small-M Linear.
 # ``_int_mm``'s floor is a GEMM shape constraint, not a numerical one: padding the activation up to 32 rows, running
 # the matmul and slicing the result back returns the caller's rows BITWISE unchanged (torchao's int8 dynamic path
@@ -321,12 +328,17 @@ def exclude_tokens_for_scheme(scheme: str, family: Optional[str] = None) -> tupl
     (_INT8_FAMILY_EXCLUDE_NAME_TOKENS); other schemes (scaled_mm) exclude nothing.
     ``family=None`` preserves the historical behaviour. Shared by the runtime path and the
     offline prequant builder so they never drift (else an int8 checkpoint bakes the small-M
-    projections and crashes at the first denoise on Flux / Qwen)."""
+    projections and crashes at the first denoise on Flux / Qwen). ``FamilyProfile.quant_exclude_tokens`` applies
+    to every scheme."""
+    key = str(family or "").strip().lower()
+    every_scheme = _FAMILY_QUANT_EXCLUDE_NAME_TOKENS.get(key, ())
     if scheme == TQ_INT8:
-        return _INT8_EXCLUDE_NAME_TOKENS + _INT8_FAMILY_EXCLUDE_NAME_TOKENS.get(
-            str(family or "").strip().lower(), ()
+        return (
+            _INT8_EXCLUDE_NAME_TOKENS
+            + _INT8_FAMILY_EXCLUDE_NAME_TOKENS.get(key, ())
+            + every_scheme
         )
-    return ()
+    return every_scheme
 
 
 _SCHEME_DIVISIBLE: dict[str, int] = {TQ_FP8: 16, TQ_NVFP4: 16, TQ_MXFP8: 32}

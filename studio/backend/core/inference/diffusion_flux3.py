@@ -89,12 +89,21 @@ def _read_index(repo_id: str, hf_token: Optional[str], local_files_only: bool) -
 
 
 def flux3_blocks_class(index: dict, transformer: Any = None) -> str:
-    """The block graph a checkpoint runs: the index names it; else the denoiser's ``flow_map``."""
+    """The block graph a checkpoint runs. The loaded denoiser decides first: a flow-map DiT (it has the target-time
+    embedder) runs the distilled graph, a CFG DiT the base graph, whatever repo supplied the companions (a single
+    file or GGUF of one variant may sit on the other variant's base). Else the index names it."""
+    flow_map = None
+    if transformer is not None:
+        if hasattr(transformer, "target_timestep_embedder"):
+            flow_map = getattr(transformer, "target_timestep_embedder") is not None
+        else:
+            flow_map = getattr(getattr(transformer, "config", None), "flow_map", None)
+    if flow_map is not None:
+        return FLUX3_DISTILLED_BLOCKS if flow_map else FLUX3_BASE_BLOCKS
     named = index.get("_blocks_class_name") if isinstance(index, dict) else None
     if named in (FLUX3_DISTILLED_BLOCKS, FLUX3_BASE_BLOCKS):
         return named
-    flow_map = getattr(getattr(transformer, "config", None), "flow_map", None)
-    return FLUX3_DISTILLED_BLOCKS if flow_map in (None, True) else FLUX3_BASE_BLOCKS
+    return FLUX3_DISTILLED_BLOCKS
 
 
 @dataclass
@@ -384,6 +393,26 @@ class _Flux3KleinPipelineMixin:
         return _hooks()
 
 
+def _pin_compute_dtype(transformer: Any, dtype: Any) -> None:
+    """Make ``transformer.dtype`` answer the compute dtype for a GGUF denoiser.
+
+    The FLUX.3 denoise block casts the latents to ``components.transformer.dtype``. diffusers reads that as the first
+    floating parameter outside ``_keep_in_fp32_modules``; in a GGUF FLUX.3 every 2-D weight is packed uint8 and the
+    only float tensors are the fp32-kept QK norms, so it falls through to uint8 and the first Linear refuses a uint8
+    input. A float buffer is what it reads next, so one empty non-persistent buffer at ``dtype`` fixes the answer
+    without touching any weight."""
+    try:
+        import torch
+
+        if getattr(transformer, "dtype", None) in (None, dtype) or not isinstance(transformer, torch.nn.Module):
+            return
+        if getattr(transformer, "dtype").is_floating_point:
+            return
+        transformer.register_buffer("_unsloth_compute_dtype", torch.empty(0, dtype = dtype), persistent = False)
+    except Exception as exc:  # noqa: BLE001 -- the denoise raises its own clear error if this did not take
+        logger.warning("diffusion.flux3: could not pin the GGUF compute dtype (%s)", exc)
+
+
 def load_flux3_pipeline(
     repo_id: str,
     dtype,
@@ -430,6 +459,7 @@ def load_flux3_pipeline(
         repo_id, subfolder = "vae", torch_dtype = dtype, **common
     )
     check_cancelled()
+    _pin_compute_dtype(transformer, dtype)
     blocks = flux3_blocks_class(index, transformer)
     # The scheduler is the block graph's own (shift 6.93, the reference timestep shift); the repos ship none.
     scheduler = getattr(diffusers, blocks)().init_pipeline().scheduler

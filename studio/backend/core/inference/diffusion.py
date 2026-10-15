@@ -66,6 +66,7 @@ from .diffusion_families import (
     local_pipeline_components_are_complete,
     _family_override_resolved,
     assert_flux2_gguf_matches_base,
+    assert_flux3_checkpoint_matches_family,
     assert_pipeline_class_available,
     _is_local_path,
     canonical_base,
@@ -118,7 +119,13 @@ from .diffusion_hidream import (
     hidream_te4_kwargs,
 )
 from .diffusion_krea2 import KREA2_FAMILY_NAME, load_krea2_pipeline
-from .diffusion_flux3 import FLUX3_COMPONENTS, FLUX3_INDEX, is_flux3_family, load_flux3_pipeline
+from .diffusion_flux3 import (
+    FLUX3_COMPONENTS,
+    FLUX3_INDEX,
+    is_flux3_family,
+    load_flux3_pipeline,
+)
+from .diffusion_flux3 import REFERENCE_AREA as FLUX3_REFERENCE_AREA
 from .diffusion_small_host import (
     INT8_DENOISER_NAMES,
     decide_small_host,
@@ -6477,6 +6484,7 @@ class DiffusionBackend:
                     # Admitted per file: prove it is a safetensors container before any probe or loader opens it.
                     assert_safetensors_file(single_file_path)
                 assert_flux2_gguf_matches_base(fam, base, single_file_path)
+                assert_flux3_checkpoint_matches_family(fam, single_file_path)
                 # A ComfyUI-quantized file loads through its own path below; a format it cannot run is refused here,
                 # from the header, before planning or reading a weight, rather than loaded with its scales dropped.
                 comfy_scan = refuse_comfy_quant(single_file_path) if kind == "single_file" else None
@@ -7795,7 +7803,19 @@ class DiffusionBackend:
                                     _dequantize_gguf_outside_linears(transformer, dtype, logger)
                             self._raise_if_load_cancelled(_load_token)
 
-                            if fam.name == KREA2_FAMILY_NAME:
+                            if is_flux3_family(fam):
+                                # The single file / GGUF is the denoiser; the modular companions come from the base.
+                                pipe = load_flux3_pipeline(
+                                    fetch_base,
+                                    dtype,
+                                    hf_token = hf_token,
+                                    check_cancelled = lambda: self._raise_if_load_cancelled(
+                                        _load_token
+                                    ),
+                                    transformer = transformer,
+                                    local_files_only = local_files_only,
+                                )
+                            elif fam.name == KREA2_FAMILY_NAME:
                                 pipe = load_krea2_pipeline(
                                     fetch_base,
                                     dtype,
@@ -11349,7 +11369,16 @@ class DiffusionBackend:
                             * getattr(fam, "condition_pixel_weight", 1.0)
                         )
                         if ref_resolution is not None
-                        else 0
+                        else (
+                            # FLUX.3 resizes every condition image to 1 MP itself (diffusion_flux3.resize_reference).
+                            int(
+                                (1 + len(ref_extra))
+                                * FLUX3_REFERENCE_AREA
+                                * getattr(fam, "condition_pixel_weight", 1.0)
+                            )
+                            if is_flux3_family(fam) and init_pil is not None
+                            else 0
+                        )
                     )
                     if layer_count:
                         # layers + 1 extra canvas-sized frames beside the output-sized one.
