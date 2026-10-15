@@ -122,12 +122,19 @@ def _find_layers(model, num_experts):
     return best[1], best[2]
 
 
-def _layer_moe(layer, num_experts):
+def _layer_moes(layer, num_experts):
+    found, seen = [], set()
     for name, module in layer.named_modules():
         parts = _moe_parts(module, num_experts)
-        if parts is not None:
-            return name, module, parts[0], parts[1]
-    return None
+        if parts is not None and id(parts[0]) not in seen:
+            seen.add(id(parts[0]))
+            found.append((name, module, parts[0], parts[1]))
+    return found
+
+
+def _layer_moe(layer, num_experts):
+    found = _layer_moes(layer, num_experts)
+    return found[0] if found else None
 
 
 def _check_weights(experts, router, layer_name):
@@ -394,9 +401,17 @@ def _prune_block(block, experts, router, retained, num_experts):
 class _ExpertsTap:
     """Wraps an experts module's forward to record per (token, slot) expert output norms."""
 
-    def __init__(self, experts, saliency):
+    def __init__(
+        self,
+        experts,
+        saliency,
+        post = None,
+    ):
         self.experts = experts
         self.saliency = saliency
+        # Nemotron-H latent MoE maps the summed expert output back to the hidden size after the
+        # experts, so ||f_j|| is measured after that shared Linear (without its bias, added once).
+        self.post = post
         self.valid = None
         self.stop = False
         self.original = experts.__dict__.get("forward")
@@ -419,8 +434,9 @@ class _ExpertsTap:
             *args,
             **kwargs,
         )
+        scored = rows if self.post is None else nn.functional.linear(rows, self.post.weight)
         norms = torch.linalg.vector_norm(
-            rows, dim = -1, dtype = torch.float64 if rows.dtype == torch.float64 else torch.float32
+            scored, dim = -1, dtype = torch.float64 if rows.dtype == torch.float64 else torch.float32
         )
         expert_ids = top_k_index.reshape(-1).long()
         weights = top_k_weights.reshape(-1)
@@ -556,8 +572,14 @@ def reap_prune(
 
     layer_names = {id(m): n for n, m in model.named_modules()}
     for layer in layers:
-        moe = _layer_moe(layer, num_experts)
+        moes = _layer_moes(layer, num_experts)
         # Every refusal happens here, before any layer is sliced.
+        if len(moes) > 1:
+            raise ValueError(
+                "Unsloth: REAP supports one MoE block per decoder layer; "
+                f"{layer_names[id(layer)]} has {len(moes)} (e.g. separate text and vision experts)."
+            )
+        moe = moes[0] if moes else None
         if moe is not None:
             _check_weights(moe[2], moe[3], layer_names[id(moe[1])])
         if moe is not None and any(hasattr(m, "tid2eid") for m in moe[3].modules()):
@@ -620,7 +642,7 @@ def reap_prune(
     n_tokens = sum(len(x) for x in ids)
 
     report, saliencies = {}, {}
-    was_training = model.training
+    modes = [(m, m.training) for m in model.modules()]
     model.eval()
     start = time.time()
     try:
@@ -698,7 +720,10 @@ def reap_prune(
                             hook.remove()
 
                     saliency = _Saliency(num_experts)
-                    tap = _ExpertsTap(experts, saliency)
+                    post = getattr(block, "fc2_latent_proj", None)
+                    tap = _ExpertsTap(
+                        experts, saliency, post if isinstance(post, nn.Linear) else None
+                    )
                     # Pass 2 recomputes the layer output, so pass 1 stops right after the experts
                     # (not under accelerate hooks, whose post-forward offload must run).
                     tap.stop = not any(hasattr(m, "_hf_hook") for m in layer.modules())
@@ -757,8 +782,8 @@ def reap_prune(
             )
         raise
     finally:
-        if was_training:
-            model.train()
+        for module, training in modes:
+            module.training = training
 
     if not report:
         raise RuntimeError("Unsloth: REAP found no MoE layers to prune.")

@@ -403,3 +403,83 @@ def test_pretokenized_padding_is_dropped_via_attention_mask():
     reap.reap_prune(a, None, sparsity = 0.25, dataset = samples, device = "cpu")
     reap.reap_prune(b, None, sparsity = 0.25, dataset = padded, device = "cpu")
     assert a._unsloth_reap_saliency == b._unsloth_reap_saliency
+
+
+def test_latent_moe_scores_expert_outputs_in_hidden_space():
+    # Nemotron-H with moe_latent_size: experts run in a latent space and fc2_latent_proj maps
+    # their summed output back, so ||f_j|| is taken after that projection.
+    from transformers import NemotronHConfig, NemotronHForCausalLM
+
+    config = NemotronHConfig(
+        vocab_size = 96,
+        hidden_size = 32,
+        layers_block_type = ["moe", "attention", "moe"],
+        num_attention_heads = 4,
+        num_key_value_heads = 2,
+        head_dim = 8,
+        intermediate_size = 48,
+        n_routed_experts = 8,
+        n_shared_experts = 1,
+        moe_intermediate_size = 16,
+        moe_shared_expert_intermediate_size = 16,
+        moe_latent_size = 12,
+        num_experts_per_tok = 2,
+        n_group = 1,
+        topk_group = 1,
+        mamba_num_heads = 4,
+        mamba_head_dim = 8,
+        n_groups = 1,
+    )
+    torch.manual_seed(0)
+    model = NemotronHForCausalLM._from_config(
+        config, dtype = torch.float64, experts_implementation = "eager"
+    ).eval()
+    samples = _samples()
+    block = model.model.layers[0].mixer
+    inputs = []
+    hook = block.register_forward_pre_hook(lambda module, args: inputs.append(args[0][0]))
+    with torch.no_grad():
+        for x in samples:
+            model(torch.tensor([x]))
+    hook.remove()
+    total = torch.zeros(8, dtype = torch.float64)
+    count = torch.zeros(8, dtype = torch.float64)
+    with torch.no_grad():
+        for x in inputs:
+            _, weights, index = block.gate(x)
+            latent = block.fc1_latent_proj(x)
+            for t in range(x.shape[0]):
+                for s in range(index.shape[1]):
+                    e = int(index[t, s])
+                    f = block.experts(
+                        latent[t : t + 1], index[t : t + 1, s : s + 1], torch.ones(1, 1)
+                    )
+                    total[e] += weights[t, s] * (f @ block.fc2_latent_proj.weight.T).norm()
+                    count[e] += 1
+    expected = total / count.clamp(min = 1)
+
+    reap.reap_prune(model, None, sparsity = 0.5, dataset = samples, device = "cpu")
+    torch.testing.assert_close(
+        torch.tensor(model._unsloth_reap_saliency["model.layers.0.mixer"], dtype = torch.float64),
+        expected,
+        rtol = 1e-9,
+        atol = 1e-12,
+    )
+    assert model.model.layers[0].mixer.experts.up_proj.shape[0] == 4
+
+
+def test_refuses_layers_with_several_moe_blocks_and_keeps_training_modes():
+    model = _qwen3_moe()
+    samples = _samples()
+    layer = model.model.layers[1]
+    layer.vision_mlp = copy.deepcopy(layer.mlp)  # e.g. Ernie 4.5 VL's text_moe + vision_moe
+    with pytest.raises(ValueError, match = "one MoE block per decoder layer"):
+        reap.reap_prune(model, None, sparsity = 0.25, dataset = samples, device = "cpu")
+    assert layer.mlp.experts.gate_up_proj.shape[0] == 16
+    del layer.vision_mlp
+
+    model.train()
+    model.model.layers[0].eval()  # e.g. a frozen tower kept in eval mode
+    reap.reap_prune(model, None, sparsity = 0.25, dataset = samples, device = "cpu")
+    assert model.training and model.model.layers[1].training
+    assert not model.model.layers[0].training
