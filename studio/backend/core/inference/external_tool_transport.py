@@ -72,8 +72,7 @@ class OAICompatTransport:
         self.tool_result_only_continuation = client.provider_type == "anthropic"
         self._initial_message_count: int | None = None
         self._last_tools: list[dict[str, Any]] | None = None
-        # Always for a self-hosted server, as the local GGUF loop does: preserve_thinking only hides earlier turns, and Qwen
-        # templates still render this turn's tool rounds inside <think>, as empty blocks if the thinking is dropped.
+        # Always, as the local GGUF loop does: preserve_thinking hides earlier turns, never this turn's tool rounds.
         self.preserves_reasoning = client.provider_type in ("llama_cpp", "vllm") or _is_kimi_k3(
             client.provider_type, model
         )
