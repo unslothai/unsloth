@@ -1153,6 +1153,8 @@ export function ModelsPage() {
             !isConfiguredHiddenModelId(hiddenEmbeddingModelIds, row.id),
         )
         .filter((row) => matchesFormat(row.result.isGguf, "gguf"))
+        // Catches low-like safetensors repos cross-tagged "gguf" for a stray .gguf export.
+        .filter((row) => hasRecommendedCheckpointLikes(row.result))
         // Same fit filter as the main Discover list, so the feed carousel honors the toggle too.
         .filter(
           (row) =>

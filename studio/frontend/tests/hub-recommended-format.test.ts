@@ -92,6 +92,10 @@ test("Recommended browsing lists checkpoints only past 30 likes", async () => {
     page,
     /effectiveDiscoverFormat !== "recommended" \|\|\s*hasQuery \|\|\s*hasRecommendedCheckpointLikes\(row\.result\)/,
   );
+  assert.match(
+    page,
+    /matchesFormat\(row\.result\.isGguf, "gguf"\)\)[\s\S]{0,200}\.filter\(\(row\) => hasRecommendedCheckpointLikes\(row\.result\)\)/,
+  );
 });
 
 test("the GGUF filter stays a plain format match", () => {
