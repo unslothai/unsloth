@@ -593,6 +593,16 @@ def _wrap(cls, compile_options):
             _precheck_band(self, hidden_states.shape[1], args, kwargs)
         bit = 2 if torch.is_grad_enabled() else 1
         checked = self.__dict__.get("_unsloth_block_checked", 0)
+        if bit == 1 and not checked & 2:
+            # Settle the grad-mode graph first: a checkpoint recompute must not demote below the
+            # mode this no-grad forward ran in. fork_rng: the trial leaves dropout draws alone.
+            devices = [hidden_states.device.index] if hidden_states.is_cuda else []
+            with torch.random.fork_rng(devices = devices), torch.enable_grad():
+                forward(self, hidden_states.detach().requires_grad_(), *args, **kwargs)
+            mode = self.__dict__["_unsloth_block_mode"]
+            if mode == _OFF:
+                return original(self, hidden_states, *args, **kwargs)
+            checked = self.__dict__.get("_unsloth_block_checked", 0)
         if checked & bit:
             return run(self, hidden_states, args, kwargs, mode)
         while True:
@@ -700,12 +710,17 @@ def _experts_outside(layer):
 
 def patch_block_compile(model):
     """Compile every decoder-layer class of `model` as one region. Returns the classes wrapped."""
-    forced = model.__dict__.get("_unsloth_forced_float32")
-    if forced is None:
-        forced = os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1"
+    # getattr: PeftModel delegates to the model it wraps. Without a flag, the env describes this
+    # load only for unstamped layers; a re-patch (get_peft_model) keeps the stamp.
+    forced = getattr(model, "_unsloth_forced_float32", None)
+    env = os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1"
     for layer_list in _layer_lists(model):
         for layer in layer_list:
-            layer.__dict__["_unsloth_forced_float32"] = bool(forced)
+            if forced is None:
+                layer.__dict__.setdefault("_unsloth_forced_float32", env)
+            else:
+                layer.__dict__["_unsloth_forced_float32"] = bool(forced)
+    forced = env if forced is None else forced
     if forced or not _enabled() or not torch.cuda.is_available() or not _torch_supported():
         return []
     classes = _decoder_layer_classes(model)

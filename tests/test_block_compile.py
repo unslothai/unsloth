@@ -107,7 +107,8 @@ def test_compile_failure_falls_back(monkeypatch, fails_in):
         layer(x)
     if fails_in == ("full",):
         assert layer._unsloth_block_mode == M._SPLIT
-        assert calls == ["full", "split", "split"]
+        # Grad-mode trial (full fails, split), then the no-grad call twice.
+        assert calls == ["full", "split", "split", "split"]
     else:
         assert layer._unsloth_block_mode == M._OFF
         assert calls == ["full", "split"]  # then the stock forward, never compiled again
@@ -115,7 +116,7 @@ def test_compile_failure_falls_back(monkeypatch, fails_in):
     calls.clear()
     with torch.no_grad():
         cls()(x)
-    assert calls == (["split"] if fails_in == ("full",) else [])
+    assert calls == (["split", "split"] if fails_in == ("full",) else [])
     # Eval keeps the stock forward (logits equal transformers bit for bit).
     calls.clear()
     sibling = cls().eval()
@@ -234,12 +235,68 @@ def test_forced_float32_is_decided_per_model(monkeypatch):
     assert calls == []
     with torch.no_grad():
         plain.layers[0](x)
-    assert calls == [1]
+    assert len(calls) == 2  # grad-mode trial + the call
     # Env says forced, but this model was stamped otherwise: still compiled.
     monkeypatch.setenv("UNSLOTH_FORCE_FLOAT32", "1")
     with torch.no_grad():
         plain.layers[1](x)
-    assert calls == [1, 1]
+    assert len(calls) == 4
+    # get_peft_model re-patches a wrapper after another load reset the env: the stamp holds.
+    monkeypatch.setenv("UNSLOTH_FORCE_FLOAT32", "0")
+
+    class Delegating(torch.nn.Module):
+        def __init__(self, inner):
+            super().__init__()
+            self.inner = inner
+
+        def __getattr__(self, name):
+            try:
+                return super().__getattr__(name)
+            except AttributeError:
+                return getattr(self.inner, name)
+
+    forced._unsloth_forced_float32 = True
+    wrapper = torch.nn.Module()
+    wrapper.base = forced
+    M.patch_block_compile(wrapper)
+    M.patch_block_compile(Delegating(forced))
+    calls.clear()
+    with torch.no_grad():
+        forced.layers[0](x)
+    assert calls == []
+
+
+def test_checkpoint_recompute_keeps_the_no_grad_mode(monkeypatch):
+    M = _load()
+    calls = []
+
+    def fake_compile(fn, **kwargs):
+        def compiled(*args, **kw):
+            mode = {M._FULL: "full", M._SPLIT: "split"}[M._IN_BLOCK[0]]
+            grad = torch.is_grad_enabled()
+            calls.append((mode, grad))
+            if grad:
+                torch.rand(3)
+                if mode == "full":
+                    raise _Boom("grad-mode lowering failed")
+            return fn(*args, **kw)
+
+        return compiled
+
+    monkeypatch.setattr(torch, "compile", fake_compile)
+    cls = _toy_class()
+    M._wrap(cls, {})
+    layer = cls()
+    x = torch.randn(2, 4, 8)
+    rng = torch.get_rng_state()
+    with torch.no_grad():
+        layer(x)
+    # The grad-mode trial demoted first, so the no-grad half already ran in SPLIT.
+    assert calls == [("full", True), ("split", True), ("split", False)]
+    assert torch.equal(torch.get_rng_state(), rng)
+    calls.clear()
+    layer(x.requires_grad_())
+    assert calls == [("split", True)]
 
 
 def test_gdn_self_check_leaves_default_rng_alone():
