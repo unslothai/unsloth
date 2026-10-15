@@ -48278,7 +48278,10 @@ async def _selected_gpu_ordinal(gpu_ids, *, allow_ranking: bool = True) -> Optio
         if pinned:
             return ordinal
         # Automatic ranks the visible cards too (#8235); the current device is PCI slot 0.
-        return await asyncio.to_thread(diffusion_device.resolve_auto_cuda_ordinal)
+        # Pinned for this request, so begin_load's own fallback reuses it (None included).
+        ordinal = await asyncio.to_thread(diffusion_device.resolve_auto_cuda_ordinal)
+        diffusion_device._PLANNED_ORDINAL.set(ordinal)
+        return ordinal
     # The keyword only when it is not the default, so the ordinary path calls the resolver with
     # the same one-argument shape it always had (a monkeypatched seam still fits it).
     if allow_ranking:

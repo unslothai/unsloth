@@ -6892,6 +6892,14 @@ def _rocr_relative_visibility(value: str) -> Optional[str]:
     return ",".join(str(agents.index(gpu_id)) for gpu_id in wanted)
 
 
+def _unmasked_ids_are_smi_rows() -> bool:
+    """Whether unmasked GPU ids came from nvidia-smi rows (PCI order) rather than the torch fallback, which lists ordinals in CUDA's own order. Out of process, no CUDA context; False on any failure."""
+    try:
+        return _smi_visible_utilization({"numeric_ids": None, "raw": None}) is not None
+    except Exception:
+        return False
+
+
 def apply_gpu_ids(gpu_ids, backend: Optional[str] = None) -> None:
     if gpu_ids is None:
         return
@@ -6969,7 +6977,13 @@ def apply_gpu_ids(gpu_ids, backend: Optional[str] = None) -> None:
     # No inherited mask: the ids are nvidia-smi rows (PCI order), so pin the order the
     # way every other Studio child is pinned; an explicit FASTEST_FIRST would hand the
     # worker another card. An inherited mask keeps its order, the ids being its entries.
-    if not _rocm_build and os.environ.get("CUDA_VISIBLE_DEVICES") is None:
+    # Without nvidia-smi the picker listed torch ordinals in the explicit order: keep it.
+    if (
+        not _rocm_build
+        and os.environ.get("CUDA_VISIBLE_DEVICES") is None
+        and os.environ.get("CUDA_DEVICE_ORDER", "PCI_BUS_ID") != "PCI_BUS_ID"
+        and _unmasked_ids_are_smi_rows()
+    ):
         os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
     os.environ["CUDA_VISIBLE_DEVICES"] = value
     # Wider than the build check: writing HIP on NVIDIA is inert, a missed mirror is not.

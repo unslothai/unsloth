@@ -409,8 +409,9 @@ def resolve_auto_cuda_ordinal() -> Optional[int]:
     None on one visible card (unchanged), a UUID/MIG mask (no physical ids), ROCm (an APU's free reading is the
     shared host pool, which would outrank a discrete card), a CUDA order other than nvidia-smi's (its rows are
     then not torch's ordinals), an integrated GPU (its rows are a carve-out or N/A, and its real budget is the
-    shared host pool), missing nvidia-smi telemetry and any failure. Never raises. An auto-switch's pinned plan
-    is returned as is.
+    shared host pool), missing nvidia-smi telemetry and any failure. Never raises. Only cards at least as
+    capable as the current one compete. A pinned plan (auto-switch, or the route's own ranking) is returned
+    as is.
     """
     planned = _PLANNED_ORDINAL.get()
     if planned is not _UNPLANNED:
@@ -427,12 +428,25 @@ def resolve_auto_cuda_ordinal() -> Optional[int]:
             return None
         result = hw._smi_visible_utilization(hw._get_parent_visible_gpu_spec())
         devices = (result or {}).get("devices", [])
+        from utils.hardware import nvidia
+
+        caps = nvidia.get_compute_capabilities()
     except Exception:  # noqa: BLE001 -- automatic placement falls back to the current device
+        return None
+    # CUDA stops a mask at an entry naming no card ("0,99,1" is just 0), so later ids are not ordinals.
+    if not {d.get("index") for d in devices} >= set(visible):
+        return None
+    # Only cards at least as capable as the current one (ordinal 0): a freer older card can lack the
+    # installed torch's kernels or a precision the request needs, where the current card works today.
+    floor = caps.get(visible[0])
+    if floor is None:
         return None
     free_by_ordinal: dict[int, float] = {}
     for device in devices:
         index, total, used = device.get("index"), device.get("vram_total_gb"), device.get("vram_used_gb")
         if index not in visible or total is None or used is None:
+            continue
+        if caps.get(index, (0, 0)) < floor:
             continue
         free_by_ordinal[visible.index(index)] = max(float(total) - float(used), 0.0) * 1024**3
     if not free_by_ordinal:

@@ -112,6 +112,12 @@ def test_the_launch_gate_receives_the_pinned_ids():
     import core.inference.llama_cpp as mod
 
     src = Path(mod.__file__).read_text(encoding = "utf-8")
+    # Only ids in nvidia-smi's index space are checked against its caps (torch-fallback
+    # ordinals are not), and a companion-widened mask is checked again.
+    assert re.search(r"_sm_gate_ids_are_pci = not is_vulkan_backend and _p2p_ids_are_pci", src)
     assert re.search(
-        r"self\._cuda_sm_gate_error\(\s*binary,\s*None if is_vulkan_backend else gpu_indices", src
+        r"self\._cuda_sm_gate_error\(\s*binary, gpu_indices if _sm_gate_ids_are_pci else None", src
     )
+    widen = src[src.index("_pin_ids, _companion_widen = _widen_pin_ids_for_companion_devices(") :]
+    widen = widen[: widen.index("self._emit_child_gpu_visibility(")]
+    assert "self._cuda_sm_gate_error(binary, _pin_ids)" in widen

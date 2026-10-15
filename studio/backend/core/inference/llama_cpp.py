@@ -31746,10 +31746,13 @@ class LlamaCppBackend:
                 # read as GPU-bearing there, only the resolved argv knows. Still
                 # before every spawn below and outside the fit's try/except, so the
                 # refusal cannot be swallowed into the --fit on fallback.
+                # Pinned ids are checked against nvidia-smi's caps only in its index space
+                # (torch-fallback ordinals are not); otherwise "any visible", as before.
+                _sm_gate_ids_are_pci = not is_vulkan_backend and _p2p_ids_are_pci
                 if not (_cpu_only_zero_offload or _arch_gate_forced_cpu):
                     # Pinned launches check the pinned cards, not "any visible".
                     _sm_gate = self._cuda_sm_gate_error(
-                        binary, None if is_vulkan_backend else gpu_indices
+                        binary, gpu_indices if _sm_gate_ids_are_pci else None
                     )
                     if _sm_gate:
                         raise RuntimeError(_sm_gate)
@@ -31872,6 +31875,11 @@ class LlamaCppBackend:
                             "numbering; fitted the pinned mask to them: %s",
                             _companion_widen,
                         )
+                        # The widened mask can add a card the gate above never saw.
+                        if _sm_gate_ids_are_pci:
+                            _sm_gate = self._cuda_sm_gate_error(binary, _pin_ids)
+                            if _sm_gate:
+                                raise RuntimeError(_sm_gate)
                     self._emit_child_gpu_visibility(
                         env,
                         LlamaCppBackend._child_visibility_for(_pin_ids),

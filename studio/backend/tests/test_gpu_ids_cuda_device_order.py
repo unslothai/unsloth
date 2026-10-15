@@ -24,6 +24,17 @@ from utils.hardware.hardware import DeviceType
 def _nvidia_host(monkeypatch):
     monkeypatch.setattr(hw, "IS_ROCM", False)
     monkeypatch.setitem(sys.modules, "torch", None)
+    monkeypatch.setattr(hw, "_unmasked_ids_are_smi_rows", lambda: True)
+
+
+def test_torch_fallback_ids_keep_the_explicit_order(monkeypatch):
+    # No nvidia-smi: the picker listed torch ordinals in FASTEST_FIRST order, so pinning PCI
+    # order would hand the worker a different card.
+    monkeypatch.setattr(hw, "_unmasked_ids_are_smi_rows", lambda: False)
+    with patch.dict(os.environ, {"CUDA_DEVICE_ORDER": "FASTEST_FIRST"}, clear = True):
+        hw.apply_gpu_ids([1], backend = DeviceType.CUDA.value)
+        assert os.environ["CUDA_VISIBLE_DEVICES"] == "1"
+        assert os.environ["CUDA_DEVICE_ORDER"] == "FASTEST_FIRST"
 
 
 def test_unmasked_worker_pins_pci_order_under_fastest_first():

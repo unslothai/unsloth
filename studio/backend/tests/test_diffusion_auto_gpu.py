@@ -22,7 +22,12 @@ def _dev(index, total, used):
     return {"index": index, "vram_total_gb": total, "vram_used_gb": used}
 
 
-def _host(monkeypatch, visible, devices, rocm = False, order_matches = True):
+def _host(monkeypatch, visible, devices, rocm = False, order_matches = True, caps = None):
+    from utils.hardware import nvidia
+
+    if caps is None:
+        caps = {d["index"]: (8, 6) for d in devices}
+    monkeypatch.setattr(nvidia, "get_compute_capabilities", lambda: dict(caps))
     monkeypatch.setattr(hw, "IS_ROCM", rocm)
     monkeypatch.setattr(hw, "get_parent_visible_gpu_ids", lambda: list(visible))
     monkeypatch.setattr(hw, "_cuda_order_matches_smi", lambda: order_matches)
@@ -174,3 +179,43 @@ def test_direct_backend_loads_rank_automatic_too(rel):
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
     }
     assert "resolve_auto_cuda_ordinal" in calls
+
+
+def test_auto_skips_a_freer_card_older_than_the_current_one(monkeypatch):
+    # The current sm_86 card works today; a freer Pascal may lack the wheel's kernels or bf16.
+    _host(monkeypatch, [0, 1], [_dev(0, 24.0, 20.0), _dev(1, 8.0, 0.0)], caps = {0: (8, 6), 1: (6, 1)})
+    assert dd.resolve_auto_cuda_ordinal() == 0
+
+
+def test_auto_a_newer_card_still_competes(monkeypatch):
+    _host(monkeypatch, [0, 1], [_dev(0, 24.0, 20.0), _dev(1, 24.0, 0.0)], caps = {0: (8, 6), 1: (8, 9)})
+    assert dd.resolve_auto_cuda_ordinal() == 1
+
+
+def test_auto_keeps_the_current_device_without_capabilities(monkeypatch):
+    _host(monkeypatch, [0, 1], [_dev(0, 8.0, 1.0), _dev(1, 24.0, 0.5)], caps = {})
+    assert dd.resolve_auto_cuda_ordinal() is None
+
+
+def test_auto_keeps_the_current_device_when_a_mask_entry_names_no_card(monkeypatch):
+    # CUDA_VISIBLE_DEVICES=0,99,1 is just card 0 to CUDA, so physical 1 is no ordinal at all.
+    _host(monkeypatch, [0, 99, 1], [_dev(0, 8.0, 1.0), _dev(1, 24.0, 0.5)])
+    assert dd.resolve_auto_cuda_ordinal() is None
+
+
+def test_route_pins_its_automatic_decision_for_the_backend(monkeypatch):
+    # begin_load's own fallback must reuse the route's answer (None included), not re-rank.
+    from routes import inference as routes
+
+    monkeypatch.setattr(
+        dd, "resolve_diffusion_device_target", lambda: types.SimpleNamespace(device = "cuda")
+    )
+    answers = iter([None, 1])
+    monkeypatch.setattr(dd, "resolve_auto_cuda_ordinal", lambda: next(answers))
+    real = dd.__dict__["_PLANNED_ORDINAL"]
+
+    async def load():
+        ordinal = await routes._selected_gpu_ordinal(None)
+        return ordinal, real.get()
+
+    assert asyncio.run(load()) == (None, None)
