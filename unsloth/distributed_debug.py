@@ -14,8 +14,7 @@ import sys
 
 __all__ = ["apply_debug_distributed_env"]
 
-# Read by ProcessGroupNCCL when a process group is created, and by NCCL at communicator
-# init, so these only need to land before init_process_group.
+# Read at process group / communicator creation, so they only need to precede init_process_group.
 _DEBUG_DISTRIBUTED_ENV = (
     ("TORCH_NCCL_DESYNC_DEBUG", "1"),
     ("TORCH_NCCL_DUMP_ON_TIMEOUT", "1"),
