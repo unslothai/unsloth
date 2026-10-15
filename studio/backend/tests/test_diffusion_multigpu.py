@@ -3730,3 +3730,152 @@ def test_studio_root_hooks_capturing_modules_do_not_block_cfg_parallel():
     sub = _BatchDit()
     sub.proj.register_forward_pre_hook(begin)
     assert mg._hooks_present(sub) == "proj._forward_pre_hooks"
+
+
+def test_text_encoder_only_split_prices_the_calibrated_encode():
+    sizes = {
+        "transformer": (9000, "dit"),
+        "text_encoder": (11000, "text_encoder"),
+        "vae": (1400, "other"),
+    }
+    kw = dict(headroom_mib = 4000, overhead_mib = 1000, primary_limit_mib = 16000, secondary_limit_mib = 13500)
+    # uncalibrated: the static encoder allowance (11000 + 1024 + 1000 fits 13500)
+    assert mg.choose_component_assignment(sizes, **kw) == ("text_encoder",)
+    # calibrated encode of 2200 MiB: the encoder card could not run its own encode
+    assert mg.choose_component_assignment(sizes, encode_headroom_mib = 2200, **kw) is None
+
+
+def test_refine_passes_the_plans_calibrated_encode(monkeypatch):
+    import dataclasses as _dc
+
+    plan = _plan()
+    plan = _dc.replace(
+        plan, estimates = {**plan.estimates, "calibrated_denoise_mib": 900, "calibrated_encode_mib": 2200}
+    )
+    seen = []
+    monkeypatch.setattr(dm, "_loaded_component_mib", lambda pipe: {"transformer": (9000, "dit"), "text_encoder": (8000, "text_encoder")})
+    monkeypatch.setattr(mg, "secondary_resident_limit_mib", lambda o, mode: 12000)
+    monkeypatch.setattr(mg, "best_secondary", lambda selection, probes = None: 1)
+    monkeypatch.setattr(mg, "choose_component_assignment", lambda sizes, **k: seen.append(k) or None)
+    with mg.selection_scope(mg.MultiGpuSelection(primary = 0, secondaries = (1,))):
+        mg.refine_plan_for_multigpu(object(), plan)
+    assert seen and seen[0]["encode_headroom_mib"] == 2200
+
+
+def test_cfg_parallel_rebuild_after_eviction_rechecks_amortisation(monkeypatch):
+    dit = _BatchDit()
+    pipe = _RouterPipe(dit)
+    router, replicas = _priced_router(dit, monkeypatch)
+    with mg.cfg_request_scope(pipe, 512, 512, 20):
+        _guided(dit, 2, steps = 20)
+    assert len(replicas) == 1
+    router.drop_replica()  # evicted at a phase boundary (or dropped for stale weights)
+    with mg.cfg_request_scope(pipe, 512, 512, 1):
+        _guided(dit, 2, steps = 1)  # a one-step request cannot repay a rebuild
+    assert len(replicas) == 1 and router.replica is None
+    with mg.cfg_request_scope(pipe, 512, 512):  # unknown length: not on the request's first guided step
+        _guided(dit, 2, steps = 1)
+    assert len(replicas) == 1
+    with mg.cfg_request_scope(pipe, 512, 512, 20):
+        _guided(dit, 2, steps = 4)
+    assert len(replicas) == 2 and router.stats["replica_calls"] > 0
+
+
+class _CountingDit(_BatchDit):
+    """A forward that advances a small buffer counter beside a large static table."""
+
+    def __init__(self, fail = None):
+        super().__init__()
+        self.register_buffer("table", torch.zeros(64))
+        self.register_buffer("counter", torch.zeros(1))
+        self.fail = fail
+
+    def forward(self, hidden_states, timestep, encoder_hidden_states, return_dict = False):
+        self.counter += 1
+        if hidden_states.shape[0] > 2 and self.fail == "oom":
+            raise torch.OutOfMemoryError("CUDA out of memory. Tried to allocate 2.00 GiB")
+        if hidden_states.shape[0] > 2 and self.fail == "error":
+            raise RuntimeError("refused the doubled batch")
+        return super().forward(hidden_states, timestep, encoder_hidden_states, return_dict)
+
+
+@pytest.mark.parametrize("fail", [None, "oom", "error"])
+def test_cfg_batch_every_exit_restores_the_buffers_it_changed(fail):
+    torch.manual_seed(0)
+    plain = _CountingDit()
+    dit = _CountingDit(fail)
+    dit.load_state_dict(plain.state_dict())
+    reference = _guided(plain, 2, steps = 3)
+    router = mg.CfgBatchRouter(dit)
+    dit.forward = router
+    out = _guided(dit, 2, steps = 3)
+    torch.testing.assert_close(out, reference, rtol = 1e-6, atol = 1e-6)
+    # every attempted doubled call was undone: the counter advanced once per real branch call, as one card does
+    assert float(dit.counter) == float(plain.counter) == 6.0
+    assert router.stats["batched_steps"] == 0
+
+
+class _QuantStyleDit(_BatchDit):
+    """Native-quant style: a large weight held as a buffer, read (never written) by the forward."""
+
+    def __init__(self, write_table = False, late_write = False):
+        super().__init__()
+        self.register_buffer("weight_q", torch.ones(64))
+        self.register_buffer("table", torch.zeros(64))
+        self.write_table = write_table
+        self.late_write = late_write
+
+    def forward(self, hidden_states, timestep, encoder_hidden_states, return_dict = False):
+        if self.write_table or (self.late_write and float(timestep) < 0.5):
+            self.table.add_(1.0)
+        out = super().forward(hidden_states, timestep, encoder_hidden_states, return_dict)[0]
+        return (out * self.weight_q[0] + self.table[0] * 1e-3,)
+
+
+def _quant_run(monkeypatch, **kw):
+    # a 16-byte budget: each 256-byte buffer stands in for a GB-sized quant weight
+    monkeypatch.setattr(mg, "_STATE_BUFFER_COPY_BYTES", 16)
+    torch.manual_seed(0)
+    plain = _QuantStyleDit(**kw)
+    dit = _QuantStyleDit(**kw)
+    dit.load_state_dict(plain.state_dict())
+    reference = _guided(plain, 2, steps = 4)
+    router = mg.CfgBatchRouter(dit)
+    dit.forward = router
+    out = _guided(dit, 2, steps = 4)
+    return plain, dit, router, reference, out
+
+
+def test_cfg_batch_still_batches_beside_large_read_only_weight_buffers(monkeypatch):
+    plain, dit, router, reference, out = _quant_run(monkeypatch)
+    torch.testing.assert_close(out, reference, rtol = 1e-6, atol = 1e-6)
+    assert router.stats["batched_steps"] == 3 and router.describe()["disabled_reason"] is None
+    # observed read-only: nothing to snapshot around the doubled call
+    assert router.state_watch.written == set() and router.state_watch.unrestorable == []
+
+
+def test_cfg_batch_refuses_a_large_buffer_the_forward_writes(monkeypatch):
+    plain, dit, router, reference, out = _quant_run(monkeypatch, write_table = True)
+    torch.testing.assert_close(out, reference, rtol = 1e-6, atol = 1e-6)
+    assert float(dit.table[0]) == float(plain.table[0]) == 8.0
+    assert router.stats["batched_steps"] == 0
+    assert "table" in router.describe()["disabled_reason"] and router.describe()["disabled_for_shape_only"]
+
+
+def test_cfg_batch_unseen_write_during_a_batched_call_disables_the_shape(monkeypatch):
+    plain, dit, router, reference, out = _quant_run(monkeypatch, late_write = True)
+    reason = router.describe()["disabled_reason"]
+    assert reason is not None and "not seen written" in reason and router.describe()["disabled_for_shape_only"]
+    assert "table" in router.state_watch.written
+    batched = router.stats["batched_steps"]
+    _guided(dit, 2, steps = 2)  # same shape: no further doubled call
+    assert router.stats["batched_steps"] == batched
+
+
+def test_state_watch_treats_versionless_studio_quant_buffers_as_read_only(monkeypatch):
+    dit = _QuantStyleDit()
+    monkeypatch.setattr(mg, "_tensor_version", lambda t: None)
+    foreign = mg._StateWatch(dit)
+    assert {"weight_q", "table"} <= foreign.written  # unknown owner, no counter: possibly written
+    monkeypatch.setattr(_QuantStyleDit, "__module__", "core.inference.diffusion_native_quant")
+    assert mg._StateWatch(dit).written == set()

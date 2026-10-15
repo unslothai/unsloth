@@ -626,10 +626,12 @@ def choose_component_assignment(
     overhead_mib: int,
     primary_limit_mib: int,
     secondary_limit_mib: int,
+    encode_headroom_mib: Optional[int] = None,
 ) -> Optional[tuple[str, ...]]:
     """Names to place on the secondary so each card holds its share resident, or None. ``sizes`` maps component name
     -> (MiB, role) with role 'dit' / 'text_encoder' / 'other'. A card running a denoiser or the VAE (any 'other'
-    component) is priced with the runtime headroom; a card holding only text encoders with an encoder forward's room.
+    component) is priced with the runtime headroom; a card holding only text encoders with an encoder forward's room:
+    ``encode_headroom_mib`` (the plan's calibrated encode phase) when known, else the static allowance.
     Tried in order: every companion; the text encoders alone; the second denoiser; the second denoiser plus the
     companions. The first denoiser always stays on the primary."""
     dits = [n for n, (_m, r) in sizes.items() if r == "dit"]
@@ -653,10 +655,12 @@ def choose_component_assignment(
         if companions:
             candidates.append(tuple(seconds + companions))
 
+    encode_room = int(encode_headroom_mib) if encode_headroom_mib else TEXT_ENCODER_HEADROOM_MIB
+
     def need(names: list) -> int:
         weights = sum(sizes[n][0] for n in names)
         busy = any(sizes[n][1] != "text_encoder" for n in names)
-        return weights + (headroom_mib if busy else TEXT_ENCODER_HEADROOM_MIB) + overhead_mib
+        return weights + (headroom_mib if busy else encode_room) + overhead_mib
 
     for moved in candidates:
         on_primary = [n for n in sizes if n not in moved]
@@ -736,6 +740,8 @@ def refine_plan_for_multigpu(
             overhead_mib = overhead,
             primary_limit_mib = int(primary_limit),
             secondary_limit_mib = int(sec_limit),
+            # the same per-phase source as the pre-load split (plan_companion_split's phase_headroom_mib)
+            encode_headroom_mib = plan_encode_headroom_mib(plan),
         )
         if moved is not None:
             secondary = ordinal
@@ -2175,13 +2181,11 @@ class CfgParallelRouter:
                     if self.branch == 1:
                         self._record_template(args, kwargs, latent)
                     return out
-                if self.pricing is not None and self.stats["replica_build_s"] is None:
-                    # first build of a priced router: never on the step it was priced on, and only when the build pays
-                    if self.priced_at == (self.request_id, self.request_step) or not self._build_pays_off():
-                        if self.branch == 1:
-                            self._record_template(args, kwargs, latent)
-                        self.stats["primary_calls"] += 1
-                        return self.orig_forward(*args, **kwargs)
+                if not self._should_build():
+                    if self.branch == 1:
+                        self._record_template(args, kwargs, latent)
+                    self.stats["primary_calls"] += 1
+                    return self.orig_forward(*args, **kwargs)
                 self._build_replica()
                 if self.branch == 1:
                     self._record_template(args, kwargs, latent)
@@ -2359,6 +2363,19 @@ class CfgParallelRouter:
         if total is None:
             return None
         return max(0, total - self.request_step + 1)
+
+    def _should_build(self) -> bool:
+        """The one decision for every replica build (the first one and each rebuild after an eviction, a stale-weights
+        drop or an invalidation): an unpriced router (force, non-CUDA) builds at once; a priced one never on the step it
+        was priced on, never on the first guided step of a request whose length is unknown, and otherwise only when the
+        rest of the request repays the build."""
+        if self.pricing is None:
+            return True
+        if self.priced_at == (self.request_id, self.request_step):
+            return False
+        if self._remaining_steps() is None:
+            return self.request_step >= 2
+        return self._build_pays_off()
 
     def _build_pays_off(self) -> bool:
         """Amortise the first replica build over the request's remaining guided steps (this step runs on the primary
@@ -3113,61 +3130,127 @@ _STATE_SCALARS = (bool, int, float, str)
 # Buffers up to this many bytes are copied before every batched call so a change can be undone (FLUX.2 klein-base:
 # no buffers at all); larger ones are only version-checked.
 _STATE_BUFFER_COPY_BYTES = 64 << 20
+# Plain guided calls whose writes are observed before CFG-batch may speculate (both branches of the first step).
+_OBSERVE_CALLS = 2
 
 
 class _StateWatch:
-    """What a stateful forward could advance, read around EVERY batched call: each parameter / buffer version and the
-    plain scalar attributes of the submodules (Studio's ``_unsloth_*`` hook state excluded: root hooks write it per
-    call, outside the forward). The tensor list and the scalar slots are collected once per load; a snapshot then
-    reads ints only (FLUX.2 klein-base: 169 tensors, 1082 scalar slots, 0.07 ms on CPU). A scalar attribute created
-    after the first batched call is not watched."""
+    """What a stateful forward could advance, decided by observing writes rather than guessing from sizes.
+
+    Every parameter / buffer version counter (bumped by every in-place op: ``copy_``, ``index_put_``, ``add_``) is
+    read around the first plain guided calls (``_OBSERVE_CALLS``), before any speculation: a buffer whose version
+    never moves is read-only and needs no snapshot (Studio's native int8 / fp8 / NVFP4 / ComfyUI quant weights are
+    buffers of GBs). Only buffers seen to change are snapshotted (within ``_STATE_BUFFER_COPY_BYTES``); speculation
+    is refused when one seen to change does not fit. A tensor without a version counter (an inference tensor) counts
+    as read-only when a Studio-defined module owns it (its quant weight buffers), else as written. Around each batched
+    call every version is compared again: a move outside the snapshot set is a write this watch did not see.
+    Plain scalar attributes of the submodules are watched too (Studio's ``_unsloth_*`` hook state excluded)."""
 
     def __init__(self, module: Any):
-        torch = _torch()
         self.tensors: list = []
-        buffer_bytes = 0
         for name, t in module.named_parameters():
             self.tensors.append((name, t, False))
+        owners = {}
+        for sub_name, sub in module.named_modules():
+            for leaf in sub._buffers:
+                owners[f"{sub_name}.{leaf}" if sub_name else leaf] = sub
         for name, t in module.named_buffers():
             self.tensors.append((name, t, True))
-            buffer_bytes += t.numel() * t.element_size()
-        self.copy_buffers = buffer_bytes <= _STATE_BUFFER_COPY_BYTES
+        self.owners = owners
+        self.observed_calls = 0
+        self.written: set = set()
+        self.copied: set = set()
+        self.unrestorable: list = []
         self.slots = [
             (sub, key)
             for sub in module.modules()
             for key, value in sub.__dict__.items()
             if isinstance(value, _STATE_SCALARS) and not key.startswith(_STATE_PREFIX)
         ]
-        del torch
+        for name, t, is_buffer in self.tensors:
+            if is_buffer and _tensor_version(t) is None and not self._studio_owned(name):
+                # no version counter and not a known Studio quant weight: possibly written
+                self.written.add(name)
+        self._settle()
+
+    def _studio_owned(self, name: str) -> bool:
+        owner = self.owners.get(name)
+        return str(getattr(type(owner), "__module__", "") or "").startswith(_TRUSTED_HOOK_MODULES)
+
+    def _settle(self) -> None:
+        """Snapshot set: the buffers seen (or presumed) written first, smallest first within the budget; what budget is
+        left covers the smallest of the others too, so a write the observation missed in a small buffer (a counter
+        that starts moving late) is still undone. Large read-only buffers (quant weights) are never copied."""
+        sizes = {
+            name: t.numel() * t.element_size() for name, t, is_buffer in self.tensors if is_buffer
+        }
+        self.copied = set()
+        spent = 0
+        for name in sorted(self.written, key = lambda n: sizes.get(n, 0)):
+            if name not in sizes or spent + sizes[name] > _STATE_BUFFER_COPY_BYTES:
+                continue
+            self.copied.add(name)
+            spent += sizes[name]
+        for name in sorted((n for n in sizes if n not in self.written), key = lambda n: sizes[n]):
+            if spent + sizes[name] > _STATE_BUFFER_COPY_BYTES:
+                break
+            self.copied.add(name)
+            spent += sizes[name]
+        self.unrestorable = sorted(n for n in self.written if n in sizes and n not in self.copied)
+
+    @property
+    def ready(self) -> bool:
+        return self.observed_calls >= _OBSERVE_CALLS
+
+    def versions(self) -> list:
+        return [_tensor_version(t) for _name, t, _buf in self.tensors]
+
+    def observe(self, before: list) -> None:
+        """After a plain call: record every buffer whose version moved."""
+        for (name, t, is_buffer), version in zip(self.tensors, before):
+            if not is_buffer:
+                continue
+            now = _tensor_version(t)
+            if version is not None and now is not None and now != version:
+                self.written.add(name)
+        self.observed_calls += 1
+        self._settle()
 
     def snapshot(self) -> dict:
-        versions = [_tensor_version(t) for _name, t, _buf in self.tensors]
+        versions = self.versions()
         copies = [
-            t.detach().clone() if is_buffer and (self.copy_buffers or version is None) else None
-            for (_name, t, is_buffer), version in zip(self.tensors, versions)
+            t.detach().clone() if is_buffer and name in self.copied else None
+            for name, t, is_buffer in self.tensors
         ]
         values = [sub.__dict__.get(key, _DROP) for sub, key in self.slots]
         return {"versions": versions, "copies": copies, "values": values}
 
     def restore_changed(self, snap: dict) -> Optional[str]:
-        """Name of the first state the call changed (buffers and scalars restored), else None. A parameter written
-        in place, or a buffer too large to copy, is reported but not restored."""
+        """Name of the first state the call changed (snapshotted buffers and scalars restored), else None."""
+        changed, _unseen = self.restore(snap)
+        return changed
+
+    def restore(self, snap: dict) -> tuple[Optional[str], Optional[str]]:
+        """(first state changed, first write outside the snapshot set): snapshotted buffers and scalars restored; a
+        parameter or an unsnapshotted buffer written in place is reported (and remembered as written) but cannot be."""
         torch = _torch()
-        changed = None
-        for (name, t, _is_buffer), version, copy in zip(
+        changed = unseen = None
+        for (name, t, is_buffer), version, copy in zip(
             self.tensors, snap["versions"], snap["copies"]
         ):
             now = _tensor_version(t)
             moved = version is not None and now is not None and now != version
             if copy is not None and version is None:
-                moved = not _bitwise_equal(
-                    t.detach(), copy
-                )  # an inference tensor: compare the value
+                moved = not _bitwise_equal(t.detach(), copy)  # an inference tensor: compare the value
             if moved:
                 changed = changed or name
                 if copy is not None:
                     with torch.no_grad():
                         t.copy_(copy)
+                else:
+                    unseen = unseen or name
+                    if is_buffer:
+                        self.written.add(name)
         for (sub, key), value in zip(self.slots, snap["values"]):
             now = sub.__dict__.get(key, _DROP)
             if now is not value and now != value:
@@ -3176,7 +3259,9 @@ class _StateWatch:
                     sub.__dict__.pop(key, None)
                 else:
                     sub.__dict__[key] = value
-        return changed
+        if unseen is not None:
+            self._settle()
+        return changed, unseen
 
 
 def _tensor_version(tensor: Any) -> Optional[int]:
@@ -3525,7 +3610,22 @@ class CfgBatchRouter:
 
     def _plain(self, args: tuple, kwargs: dict) -> Any:
         self.stats["plain_calls"] += 1
-        return self.orig_forward(*args, **kwargs)
+        watch = self._watch()
+        if watch is None or watch.ready:
+            return self.orig_forward(*args, **kwargs)
+        # before any speculation: which buffers does a plain call write?
+        before = watch.versions()
+        out = self.orig_forward(*args, **kwargs)
+        watch.observe(before)
+        return out
+
+    def _watch(self) -> Optional["_StateWatch"]:
+        if self.state_watch is None:
+            module = self.module_ref()
+            if module is None:
+                return None
+            self.state_watch = _StateWatch(module)
+        return self.state_watch
 
     def _record_template(self, args: tuple, kwargs: dict, latent: Any) -> None:
         torch = _torch()
@@ -3655,16 +3755,32 @@ class CfgBatchRouter:
         verify = (
             self.verify_batched > 0 and len(self.plain_times) == 2 and latent.device.type == "cuda"
         )
-        if self.state_watch is None:
-            self.state_watch = _StateWatch(module)
-        state_snapshot = self.state_watch.snapshot()
+        watch = self._watch()
+        if not watch.ready:
+            self._skip("observing which buffers a plain call writes")
+            return None
+        if watch.unrestorable and cfg_batch_mode() != "force":
+            # a buffer the forward writes, too large to snapshot: a speculative call could not be undone
+            self._disable_shape(
+                f"buffer {watch.unrestorable[0]} is written by the forward and too large to snapshot around a "
+                "speculative call; one branch per call for this shape"
+            )
+            return None
+        state_snapshot = watch.snapshot()
         try:
             if verify:
                 torch.cuda.synchronize()
                 t0 = time.perf_counter()
             out = self.orig_forward(*b_args, **b_kwargs)
             if state_snapshot is not None:
-                changed = self.state_watch.restore_changed(state_snapshot)
+                changed, unseen = self._undo_attempt(state_snapshot, report_unseen = True)
+                if unseen is not None:
+                    # a write the observation did not see: plain path for this call, this shape off
+                    self._disable_shape(
+                        f"the batched call wrote {unseen}, a buffer not seen written by a plain call; one branch "
+                        "per call for this shape"
+                    )
+                    return None
                 if changed is not None:
                     # its forward advances state once per call: one doubled call is not two (state restored)
                     self.disable(
@@ -3677,28 +3793,28 @@ class CfgBatchRouter:
         except torch.OutOfMemoryError:
             del b_args, b_kwargs, merged
             # a call that raised may have advanced watched state first: undo it before the plain rerun
-            with contextlib.suppress(Exception):
-                self.state_watch.restore_changed(state_snapshot)
+            self._undo_attempt(state_snapshot)
             with contextlib.suppress(Exception):
                 torch.cuda.empty_cache()
             # a larger canvas or batch can run out where smaller ones fit: this shape only
             self._disable_shape("out of memory on the batched call; one branch per call for this shape")
             return None
         except Exception as exc:  # noqa: BLE001 - the doubled batch was refused: the branch reruns plain
-            with contextlib.suppress(Exception):
-                self.state_watch.restore_changed(state_snapshot)
+            self._undo_attempt(state_snapshot)
             self.disable(
                 f"the batched call failed ({type(exc).__name__}: {exc}); one branch per call from here"
             )
             return None
         if not _inputs_untouched(fresh_inputs, fresh_versions):
             # the model writes its inputs in place: one doubled call is not two calls (the caller's are untouched)
+            self._undo_attempt(state_snapshot)
             self.disable(
                 "the batched call wrote into an input tensor in place; one branch per call from here"
             )
             return None
         if any(stand_ins):
             # the model writes into that dict: one doubled call is not two calls (the caller's dict is untouched)
+            self._undo_attempt(state_snapshot)
             self.disable(
                 "the batched call wrote into an argument dict; one branch per call from here"
             )
@@ -3706,11 +3822,25 @@ class CfgBatchRouter:
         try:
             mine, other = _split_output(out, batch)
         except Exception as exc:  # noqa: BLE001 - incl. a container that cannot be rebuilt: the branch reruns plain
+            self._undo_attempt(state_snapshot)
             self.disable(f"output cannot be split per branch ({type(exc).__name__}: {exc})")
             return None
         self.kept = {"out": other, "snapshots": snapshots, "state": state}
         self.stats["batched_steps"] += 1
         return mine
+
+    def _undo_attempt(self, snapshot: Optional[dict], report_unseen: bool = False) -> Any:
+        """The one restore every exit out of a batched call goes through (state change, OOM, exception, an input or
+        dict written, an unsplittable output): snapshotted buffers and scalar slots back to the snapshot, before the
+        branch reruns plain. Returns what had changed (and, with ``report_unseen``, the first write outside the
+        snapshot set), else None."""
+        if snapshot is None or self.state_watch is None:
+            return (None, None) if report_unseen else None
+        try:
+            changed, unseen = self.state_watch.restore(snapshot)
+        except Exception:  # noqa: BLE001 - restoring is best effort on an already failing path
+            changed = unseen = None
+        return (changed, unseen) if report_unseen else changed
 
     def _check_batched(self, batched_s: float) -> None:
         """No gain from the fastest early batched call vs two plain calls -> stop batching after this step."""
