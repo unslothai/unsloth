@@ -86,3 +86,9 @@ def test_hipinfo_under_a_mask_picks_the_first_listed_device(monkeypatch, env):
     # amd-smi lists every physical device, so the mask index still applies there.
     unfiltered = detect(monkeypatch, "amd-smi", amd_smi_listing(PHYSICAL), env)
     assert unfiltered.rocm_gfx_target == "gfx1201"
+
+
+def test_hipinfo_keeps_indexing_a_rocr_mask(monkeypatch):
+    # Windows HIP ignores ROCR_VISIBLE_DEVICES, so hipinfo lists every card and the index applies.
+    host = detect(monkeypatch, "hipinfo", hipinfo_listing(PHYSICAL), {"ROCR_VISIBLE_DEVICES": "1"})
+    assert host.rocm_gfx_target == "gfx1201"
