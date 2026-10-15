@@ -250,6 +250,24 @@ test("Run refuses an audio model neither Audio nor chat can run", () => {
     ),
     false,
   );
+  // An Orpheus fine-tune GGUF named for no family loads in llama.cpp, and chat speaks it.
+  assert.equal(
+    refused(
+      audio({
+        id: "freddyaboulton/3b-fr-ft-research_release-Q4_K_M-GGUF",
+        hubRepoId: "freddyaboulton/3b-fr-ft-research_release-Q4_K_M-GGUF",
+        isGguf: true,
+        modelFormat: "gguf",
+        pipelineTag: "text-to-speech",
+        task: "text-generation",
+        libraryName: "transformers",
+        baseModel: "canopylabs/3b-fr-ft-research_release",
+        tags: ["transformers", "gguf", "text-to-speech"],
+      }),
+    ),
+    false,
+  );
+  assert.equal(refused({ ...magpie, libraryName: undefined }), false);
   // Chat models, transcription and filesystem rows keep their chat Run.
   assert.equal(
     refused(

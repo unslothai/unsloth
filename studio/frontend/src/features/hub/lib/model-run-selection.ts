@@ -199,12 +199,20 @@ export function hubModelRunsOnAudioPage(
   });
 }
 
-// Speech, music and separation checkpoints never load in chat. ASR is left out: chat keeps
-// its Run for transcription models (MLX Whisper on Mac reaches Audio only from the picker).
+// Speech, music and separation tasks. ASR is left out: chat keeps its Run for transcription
+// models (MLX Whisper on Mac reaches Audio only from the picker).
 const CHAT_UNLOADABLE_AUDIO_TASKS: ReadonlySet<string> = new Set([
   "text-to-speech",
   "text-to-audio",
   "audio-to-audio",
+]);
+
+// A GGUF from these stacks loads in llama.cpp, and chat reads an Orpheus-style codec vocabulary at
+// load, so a fine-tune named for no family still speaks there. Other libraries (nemo) do not load.
+const LLAMA_CPP_GGUF_LIBRARIES: ReadonlySet<string> = new Set([
+  "transformers",
+  "gguf",
+  "llama.cpp",
 ]);
 
 /** Whether Run must refuse an audio model the Audio page cannot run, instead of handing it to
@@ -218,6 +226,9 @@ export function hubAudioRunRefused(
   if (!id || !routableToMediaPage(model.kind, model.localSource)) return false;
   const audioTask = hubAudioTask(model, task);
   if (!audioTask || !CHAT_UNLOADABLE_AUDIO_TASKS.has(audioTask)) return false;
+  const library = model.libraryName?.toLowerCase();
+  if (model.isGguf && (!library || LLAMA_CPP_GGUF_LIBRARIES.has(library)))
+    return false;
   return !hubModelRunsOnAudioPage(model, task);
 }
 
