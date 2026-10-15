@@ -563,7 +563,7 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
         if (!isCurrent()) return;
         set({ quantIndex: get().quantTotal });
       } else if (params.exportMethod === "lora") {
-        const { outputPath } = await runRecoverableOp(() =>
+        const { outputPath, details: loraDetails } = await runRecoverableOp(() =>
           exportLoRA({
             save_directory: params.saveDirectory,
             push_to_hub: pushToHub,
@@ -583,6 +583,7 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
             path: outputPath,
           });
         }
+        drafter = exportDrafterFrom(loraDetails);
       }
       if (!isCurrent()) return;
 

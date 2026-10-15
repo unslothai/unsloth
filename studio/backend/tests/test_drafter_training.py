@@ -942,3 +942,44 @@ def test_mtp_retraining_defaults_to_a_gentle_learning_rate():
     """The native head is pretrained: the default must not overwrite it (1e-4 made drafts worse than stock)."""
     from core.training.drafter import DEFAULT_LR
     assert DEFAULT_LR["mtp"] <= 2e-5 < DEFAULT_LR["eagle3"]
+
+
+def test_wsl_guest_paths_are_read_from_the_host(tmp_path, monkeypatch):
+    """Windows vLLM runs in WSL on /mnt/<drive>/...: the manifest is read from the Windows path,
+    the drafter path handed to vLLM stays the guest's."""
+    import json
+
+    from core.inference import engine_adapters
+
+    assert (
+        engine_adapters._wsl_guest_to_host("/mnt/c/Users/me/out", nt = True) == "C:\\Users\\me\\out"
+    )
+    assert (
+        engine_adapters._wsl_guest_to_host("/mnt/c/Users/me/out", nt = False) == "/mnt/c/Users/me/out"
+    )
+    (tmp_path / "eagle3").mkdir()
+    (tmp_path / "eagle3" / "config.json").write_text("{}")
+    (tmp_path / "drafter.json").write_text(json.dumps({"strategy": "eagle3", "draft_steps": 3}))
+    monkeypatch.setattr(engine_adapters, "_wsl_guest_to_host", lambda p, nt = None: str(tmp_path))
+    args = engine_adapters.vllm_speculative_args("/mnt/c/out")
+    assert json.loads(args[1])["model"] == "/mnt/c/out/eagle3"
+
+
+def test_probe_child_gets_exactly_the_callers_token(monkeypatch):
+    import subprocess
+
+    from core.training import drafter
+
+    seen = {}
+
+    def run(argv, env, **kwargs):
+        seen.update(env)
+        raise subprocess.TimeoutExpired(argv, 1)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setenv("HF_TOKEN", "hf_owner")
+    drafter._probe_capability("org/m", "hf_caller", ("org/m", "k"))
+    assert seen.get("HF_TOKEN") == "hf_caller"
+    seen.clear()
+    drafter._probe_capability("org/m", False, ("org/m", False))
+    assert "HF_TOKEN" not in seen

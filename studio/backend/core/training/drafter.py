@@ -201,8 +201,12 @@ def _probe_capability(model_name: str, hf_token, key) -> dict:
     import subprocess
     import sys
 
+    from hub.utils.hf_tokens import apply_token_to_child_env
+
     env = dict(os.environ)
     env[_TOKEN_ENV] = "0" if hf_token is False else (hf_token or "")
+    # Every Hub read in the child (config, tensor index) then runs as exactly this caller.
+    apply_token_to_child_env(env, hf_token)
     result = None
     try:
         proc = subprocess.run(
