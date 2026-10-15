@@ -511,15 +511,29 @@ def _fp8_kernel_unsupported(tensor, kernel_dtype = None):
 
 @triton.jit
 def _fp8_rowwise_gemv_kernel(
-    x_ptr, w_ptr, s_ptr, y_ptr, N, K, stride_wn, BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr
+    x_ptr,
+    w_ptr,
+    s_ptr,
+    y_ptr,
+    N,
+    K,
+    stride_wn,
+    BLOCK_N: tl.constexpr,
+    BLOCK_K: tl.constexpr,
+    LONG_INDEXING: tl.constexpr = False,
 ):
     offs_n = tl.program_id(0) * BLOCK_N + tl.arange(0, BLOCK_N)
+    # Widen before the multiply: row * stride_wn passes 2^31 once the weight holds 2^31 elements.
+    if LONG_INDEXING:
+        w_rows = offs_n.to(tl.int64)
+    else:
+        w_rows = offs_n
     acc = tl.zeros((BLOCK_N, BLOCK_K), dtype = tl.float32)
     for k0 in range(0, K, BLOCK_K):
         offs_k = k0 + tl.arange(0, BLOCK_K)
         x = tl.load(x_ptr + offs_k, mask = offs_k < K, other = 0.0).to(tl.float32)
         w = tl.load(
-            w_ptr + offs_n[:, None] * stride_wn + offs_k[None, :],
+            w_ptr + w_rows[:, None] * stride_wn + offs_k[None, :],
             mask = (offs_n[:, None] < N) & (offs_k[None, :] < K),
             other = 0.0,
         ).to(tl.float32)
@@ -557,7 +571,17 @@ def fp8_rowwise_gemv(X, weight, weight_scale):
     block_n = 1 if N <= 4096 else (4 if N <= 32768 else 8)
     with _fp8_triton_device_context(X, static_device_count = True):
         _fp8_rowwise_gemv_kernel[(triton.cdiv(N, block_n),)](
-            X, weight, scale, out, N, K, weight.stride(0), BLOCK_N = block_n, BLOCK_K = 512, num_warps = 2
+            X,
+            weight,
+            scale,
+            out,
+            N,
+            K,
+            weight.stride(0),
+            BLOCK_N = block_n,
+            BLOCK_K = 512,
+            LONG_INDEXING = long_indexing(weight),
+            num_warps = 2,
         )
     return out
 
