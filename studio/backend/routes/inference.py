@@ -18671,6 +18671,7 @@ async def _load_npu_model(
         or (unsloth_backend is not None and unsloth_backend.active_model_name)
         or resident is not None
     )
+    _raise_if_sidecar_swap_in_progress()
     if serving:
         # Drain active inference before unloading, as for GGUF: an auto-switch has no
         # on_reload_confirmed, so this drain alone keeps it from cutting a reply short.
@@ -18680,7 +18681,12 @@ async def _load_npu_model(
             current_request_counted = current_request_counted,
             cancel_pending = on_reload_confirmed is not None and bool(request.force_cancel_active),
         )
-    if load_cancel_event is not None and load_cancel_event.is_set():
+    # The rechecks the GGUF and standard paths make before their point of no return: an
+    # auto-switch has no scoped attempt for the shutdown sweep to cancel.
+    _raise_if_sidecar_swap_in_progress()
+    with _scoped_load_attempts_lock:
+        shutting_down = _loads_shutting_down
+    if shutting_down or (load_cancel_event is not None and load_cancel_event.is_set()):
         raise HTTPException(status_code = 409, detail = "Model load cancelled")
     if on_reload_confirmed is not None:
         on_reload_confirmed(cancel = True)

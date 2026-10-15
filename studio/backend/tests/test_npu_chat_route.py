@@ -901,6 +901,57 @@ def test_an_npu_load_drains_active_inference_before_unloading(monkeypatch):
     assert order == ["drain", "unload", "load"]
 
 
+@pytest.mark.parametrize("blocker", ["sidecar_swap", "shutdown"])
+def test_an_npu_load_refuses_before_unloading_during_a_swap_or_shutdown(monkeypatch, blocker):
+    # The NPU branch skipped the rechecks the other load paths make, so it unloaded the resident
+    # model under a transformers install or after shutdown had torn everything down.
+    import routes.inference as routes
+    from core.inference import npu_backend as nb
+    from models.inference import LoadRequest
+    from utils import transformers_version
+
+    order: list[str] = []
+    model = SimpleNamespace(id = "qwen3-0.6b-FLM", model_path = "lemonade:qwen3-0.6b-FLM")
+
+    class _Npu:
+        def resident(self):
+            return None
+
+        def loadable_model(self, model_id):
+            return model
+
+        def load(self, model_id, ctx):
+            order.append("load")
+
+    async def _drain(**kwargs):
+        order.append("drain")
+
+    async def _unload_gpu(_backend):
+        order.append("unload")
+
+    monkeypatch.setattr(nb, "get_npu_backend", lambda: _Npu())
+    monkeypatch.setattr(routes, "get_llama_cpp_backend", lambda: SimpleNamespace(is_active = True))
+    monkeypatch.setattr(routes, "_peek_inference_backend", lambda: None)
+    monkeypatch.setattr(routes, "_wait_for_model_switch_idle", _drain)
+    monkeypatch.setattr(routes, "_unload_llama_before_standard_load", _unload_gpu)
+    monkeypatch.setattr(routes, "release_chat_gpu_claim", lambda: True)
+    if blocker == "sidecar_swap":
+        monkeypatch.setattr(transformers_version, "sidecar_swap_in_progress", lambda: True)
+    else:
+        monkeypatch.setattr(routes, "_loads_shutting_down", True)
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(
+            routes._load_npu_model(
+                LoadRequest(model_path = model.model_path),
+                current_request_counted = True,
+                on_reload_confirmed = None,
+                load_cancel_event = None,
+            )
+        )
+    assert excinfo.value.status_code == 409
+    assert "unload" not in order and "load" not in order
+
+
 def test_a_stop_during_an_npu_load_cancels_it(monkeypatch):
     # The cancel event was read only before and after the blocking load, so a Stop waited it out.
     import routes.inference as routes
