@@ -328,12 +328,23 @@ def patch_sft_trainer() -> None:
     if trainer_cls.__dict__.get("__unsloth_context_parallel__"):
         return
 
+    def _original(name):
+        # Inherited methods are looked up per call: Trainer.train etc. may be patched after import.
+        if name in trainer_cls.__dict__:
+            return trainer_cls.__dict__[name]
+
+        @functools.wraps(getattr(trainer_cls, name))
+        def inherited(self, *args, **kwargs):
+            return getattr(super(trainer_cls, self), name)(*args, **kwargs)
+
+        return inherited
+
     original_init = trainer_cls.__init__
-    original_prediction_step = trainer_cls.prediction_step
-    original_training_step = trainer_cls.training_step
-    original_train = trainer_cls.train
-    original_evaluate = trainer_cls.evaluate
-    original_evaluation_loop = trainer_cls.evaluation_loop
+    original_prediction_step = _original("prediction_step")
+    original_training_step = _original("training_step")
+    original_train = _original("train")
+    original_evaluate = _original("evaluate")
+    original_evaluation_loop = _original("evaluation_loop")
 
     def _install_accelerator_state(self):
         manager = getattr(self, "_context_parallel_manager", None)
@@ -486,16 +497,14 @@ def patch_sft_trainer() -> None:
                 return original_prediction_step(self, model, inputs, *args, **kwargs)
         # Our own count: whether the trainer passes one to eval, and how it rescales the loss, differs
         # across transformers / TRL versions (none = per-shard means, NaN on an empty shard). Counted
-        # before sharding; CP peers hold the same batch, so the world sum counts every token size times.
-        total = shift_labels.ne(-100).sum()
-        dist.all_reduce(total)
-        inputs["num_items_in_batch"] = (total // manager.size).clamp_min(1)
+        # before sharding, when every CP peer holds this replica's whole batch.
+        inputs["num_items_in_batch"] = shift_labels.ne(-100).sum().clamp_min(1)
         with manager.apply(inputs), torch.no_grad(), self.compute_loss_context_manager():
             loss = self.compute_loss(model, inputs).detach()
-        # Sum of the shards = this replica's tokens over all tokens; x replicas so the eval loop's
-        # mean over ranks is the token mean over the whole batch.
+        # Sum of the shards = this replica's token mean, as a non-CP device returns for its batch,
+        # so the eval loop's remainder truncation and mean over replicas match non-CP.
         dist.all_reduce(loss, group = manager.mesh.get_group())
-        return loss * (dist.get_world_size() // manager.size), None, None
+        return loss, None, None
 
     @functools.wraps(original_train)
     def patched_train(self, *args, **kwargs):
@@ -546,10 +555,11 @@ def patch_sft_trainer() -> None:
             # target count C. Dividing by N once gives C; HF then scales the loss by W and DDP
             # averages over W, so the update is sum over ranks of (shard loss sum) / C.
             # HF divides the same way only for its own parallelism_config CP, refused above.
+            # Exact: CP peers hold the same batch, so the sum is a multiple of N.
             if args and args[0] is not None:
-                args = (args[0] / manager.size, *args[1:])
+                args = (args[0] // manager.size, *args[1:])
             elif kwargs.get("num_items_in_batch") is not None:
-                kwargs["num_items_in_batch"] = kwargs["num_items_in_batch"] / manager.size
+                kwargs["num_items_in_batch"] = kwargs["num_items_in_batch"] // manager.size
         # Forward and backward both inside, so gradient checkpointing recomputes with ring attention.
         with manager.apply(inputs) if manager else contextlib.nullcontext():
             return original_training_step(self, model, inputs, *args, **kwargs)
