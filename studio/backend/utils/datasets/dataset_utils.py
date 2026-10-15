@@ -374,6 +374,38 @@ def _apply_user_mapping_alpaca(
 def format_dataset(
     dataset,
     format_type = "auto",
+    *args,
+    custom_format_mapping = None,
+    **kwargs,
+):
+    """``_format_dataset``, except a dataset no format matched that holds token ids routes as pre-tokenized. Any
+    format_type but raw: a format the dropdown kept from an earlier run must not strand a dataset the check calls
+    ready."""
+    info = _format_dataset(
+        dataset, format_type, *args, custom_format_mapping = custom_format_mapping, **kwargs
+    )
+    if (
+        info["final_format"] == "unknown"
+        and format_type != "raw"
+        and not custom_format_mapping
+        and is_pretokenized_dataset(dataset)
+    ):
+        info = {
+            **info,
+            "dataset": dataset,
+            "detected_format": PRETOKENIZED_FORMAT,
+            "final_format": PRETOKENIZED_FORMAT,
+            "chat_column": None,
+            "is_standardized": True,
+            "requires_manual_mapping": False,
+            "warnings": [],
+        }
+    return info
+
+
+def _format_dataset(
+    dataset,
+    format_type = "auto",
     tokenizer = None,
     aliases_for_system = [
         "system",
@@ -616,19 +648,6 @@ def format_dataset(
                     }
                 except Exception as e:
                     warnings.append(f"Could not standardize: {e}. Passing dataset as-is.")
-
-            if is_pretokenized_dataset(dataset):
-                return {
-                    "dataset": dataset,
-                    "detected_format": PRETOKENIZED_FORMAT,
-                    "final_format": PRETOKENIZED_FORMAT,
-                    "chat_column": None,
-                    "is_standardized": True,
-                    "requires_manual_mapping": False,
-                    "is_image": multimodal_info["is_image"],
-                    "multimodal_info": multimodal_info,
-                    "warnings": [],
-                }
 
             return {
                 "dataset": dataset,

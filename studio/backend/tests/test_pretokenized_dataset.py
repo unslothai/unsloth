@@ -145,3 +145,10 @@ def test_only_user_labels_turn_off_response_masking():
     assert has_custom_labels(_pretokenized(with_labels = True))
     assert not has_custom_labels(_pretokenized(with_labels = False))
     assert not has_custom_labels(_pretokenized(with_labels = False).to_iterable_dataset())
+
+
+@pytest.mark.parametrize("format_type", ["auto", "alpaca", "chatml", "sharegpt"])
+def test_any_format_but_raw_routes_token_ids(format_type):
+    info = format_dataset(_pretokenized(), format_type = format_type)
+    assert info["final_format"] == "pretokenized"
+    assert info["requires_manual_mapping"] is False
