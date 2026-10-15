@@ -14,23 +14,7 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-"""The settings smoke must drive every tab the dialog actually has.
-
-`playwright_settings_tabs.py` keeps its own list of tab ids. A settings page
-added to `settings-dialog.tsx` without touching that list ships untested, and
-nothing says so: the smoke keeps passing, because it still drives the twelve it
-knows about.
-
-That is not hypothetical. The keyboard-shortcuts page took the dialog to
-thirteen tabs while the smoke's list stayed at twelve, so the new page had no
-browser coverage at all. The same drift also broke the smoke's `nav != 12`
-assertion, which then failed as "blocking the data panel took the dialog down"
-while reporting `dialog: True` -- a stale constant reading like an
-error-handling regression.
-
-Both halves are pinned here: the lists agree, and the smoke no longer hardcodes
-a nav size that any new page invalidates.
-"""
+"""The smoke's hardcoded tab list must match the dialog's, or a new settings page ships untested."""
 
 from __future__ import annotations
 
@@ -54,9 +38,7 @@ def _smoke_tabs() -> list[str]:
 def _dialog_tabs() -> list[str]:
     """The tab ids the dialog renders, in declaration order."""
     text = DIALOG.read_text(encoding = "utf-8")
-    # Scope to the tab array first: `id:` appears on other objects in this file, and a bare scan would
-    # invent tabs. One-line and multi-line entries both live in here, so the id match does not anchor
-    # to the start of a line.
+    # Scope to the tab array first: `id:` appears on other objects in this file.
     block = re.search(r"SETTINGS_TABS[^=]*=\s*\[(.*?)^\]", text, re.S | re.M)
     region = block.group(1) if block else text
     return re.findall(r'\bid:\s*"([a-z0-9-]+)"', region)
@@ -82,13 +64,7 @@ def test_the_smoke_does_not_drive_a_tab_that_no_longer_exists() -> None:
 
 
 def test_the_chunk_fail_tab_is_one_the_dialog_has() -> None:
-    """The blocked-panel run names its tab in the workflow, not in the smoke.
-
-    `CHUNK_FAIL` defaults to the empty string, so the tab comes from
-    `PW_CHUNK_FAIL` in studio-frontend-ci.yml. Renaming that tab would leave the
-    run blocking nothing at all, and the smoke would still report PASS on a
-    panel it never broke.
-    """
+    """PW_CHUNK_FAIL in the workflow names the blocked tab; a tab rename would leave nothing blocked."""
     workflow = (ROOT / ".github" / "workflows" / "studio-frontend-ci.yml").read_text(
         encoding = "utf-8"
     )

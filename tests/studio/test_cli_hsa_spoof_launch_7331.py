@@ -1,24 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Regression tests for the launch half of issue #7331.
-
-Routing the wheels is only half the fix. libhsakmt (topology.c) writes
-HSA_OVERRIDE_GFX_VERSION's major.minor.stepping straight into the KFD node's EngineId
-and ROCr names the agent from that, so the variable decides the ISA every later
-process reports. AMD's per-gfx index ships single-arch wheels (the distribution beside
-torch is named rocm_sdk_libraries_gfx1151), so an override naming a different arch
-leaves the runtime asking for kernels the install does not contain.
-
-install.sh clears the variable for the one launch it performs itself, but that unset
-dies with the installer: `unsloth studio update` runs install_python_stack.py as a
-child (studio/setup.sh:1444), so the repair path, the generated launch-studio.sh and a
-hand-typed `unsloth studio` (issue #7331's own repro) all still start with the spoof
-in place. The CLI is the chokepoint all of them pass through.
-
-There is no AMD hardware and no ROCm CI in this repo; the venv layouts below are
-fixtures and nothing here was validated on real silicon.
-"""
+"""Clear HSA_OVERRIDE_GFX_VERSION in the CLI: install.sh's own unset dies with the installer."""
 
 from __future__ import annotations
 
@@ -38,22 +21,7 @@ def _make_venv(
     orphans: "tuple[str, ...]" = (),
     torch_needs_rocm: bool = True,
 ) -> Path:
-    """A venv tree shaped like a real AMD per-gfx install.
-
-    ``dist`` is the ACTIVE runtime, so it gets both its own distribution and the
-    ``rocm`` meta-package whose Requires-Dist names it -- the real layout, verified
-    against repo.amd.com/rocm/whl/gfx1151, where rocm 7.13.0 carries
-    ``Requires-Dist: rocm-sdk-libraries-gfx1151==7.13.0; extra == "libraries"``.
-    ``None`` is a generic multi-arch index, which installs neither.
-
-    ``orphans`` are superseded runtimes left behind by a family switch: pip has no
-    autoremove and the old distribution keeps its own name, so they accumulate.
-
-    ``torch_needs_rocm`` is the dependency edge that makes the meta-package
-    authoritative. AMD's per-gfx torch resolves through ``rocm``; the generic
-    pytorch.org ROCm wheels vendor their runtime and require nothing, so False with a
-    ``dist`` present is the "switched to generic, meta-package orphaned" shape.
-    """
+    """torch_needs_rocm marks the rocm meta-package as authoritative; generic wheels vendor their own."""
     venv = tmp_path / "unsloth_studio"
     sp = (
         venv / "lib" / "python3.12" / "site-packages"
@@ -99,9 +67,9 @@ class TestOverrideParsing:
     @pytest.mark.parametrize(
         "value,expected",
         [
-            ("11.0.0", "gfx1100"),  # the circulated Strix workaround
-            ("11.5.1", "gfx1151"),  # Strix Halo, naming its own arch
-            ("10.3.0", "gfx1030"),  # the documented RX 6800 override
+            ("11.0.0", "gfx1100"),
+            ("11.5.1", "gfx1151"),
+            ("10.3.0", "gfx1030"),
             ("9.0.10", "gfx90a"),  # stepping 10 renders as 'a', not "gfx9010"
             ("  11.0.0  ", "gfx1100"),
             ("", None),
@@ -109,7 +77,7 @@ class TestOverrideParsing:
             ("11.0", None),
             ("11.0.0.0", None),
             ("-1.0.0", None),
-            ("11.0.16", None),  # stepping wider than one hex nibble
+            ("11.0.16", None),
             ("11.10.0", None),
         ],
     )
@@ -210,8 +178,7 @@ class TestTheLaunchPathActuallyCallsIt:
     def test_called_before_every_launch_path(self):
         source = Path(studio_cli.__file__).resolve().read_text(encoding = "utf-8")
         call = source.find("_clear_hsa_override_contradicting_install(")
-        # The definition comes first;
-        # find the CALL, which follows it.
+        # The definition comes first; find the call that follows it.
         call = source.find("_clear_hsa_override_contradicting_install(", call + 1)
         assert call != -1, "the CLI must clear a contradicting override before launching"
         for marker in (
@@ -244,11 +211,7 @@ def test_the_installer_and_the_cli_agree_on_the_spoofable_arches():
 
 
 class TestOrphanedRuntimesFromAFamilySwitch:
-    """pip never uninstalls the superseded arch-specific runtime across a family switch:
-    `rocm` is upgraded in place, but rocm-sdk-libraries-<old> keeps its own name and
-    stays on disk, so globbing for that directory reads whichever the filesystem hands
-    back and clearing on a stale reading breaks a working machine. Same hazard as
-    install_python_stack.py's _installed_rocm_wheel_family."""
+    """pip leaves superseded runtimes on disk after a family switch, so a glob may read a stale one."""
 
     def test_the_active_family_wins_over_an_orphan(self, tmp_path):
         venv = _make_venv(tmp_path, "rocm_sdk_libraries_gfx1151", orphans = ("gfx1100",))
@@ -326,14 +289,7 @@ class TestEveryLaunchEntryPointClearsIt:
 
 
 def test_a_rocm_metapackage_orphaned_by_a_switch_to_generic_wheels_arbitrates_nothing(tmp_path):
-    """A `rocm` meta-package orphaned by a switch to generic wheels must decide nothing.
-
-    The generic pytorch.org ROCm wheels vendor their own runtime and depend on no
-    meta-package, and pip has no autoremove, so `rocm` survives the switch describing the
-    family the OLD torch resolved. Trusting it would clear an override the generic wheels
-    may be the only reason the GPU works at all. Torch's own requirements are the
-    discriminator, so the identical tree with an AMD torch still arbitrates.
-    """
+    """An orphaned rocm meta-package describes the old torch's family, so it must not decide the arch."""
     from unsloth_cli.commands.studio import _installed_rocm_single_arch
 
     live = _make_venv(tmp_path / "live", "rocm_sdk_libraries_gfx1151")
@@ -346,10 +302,7 @@ def test_a_rocm_metapackage_orphaned_by_a_switch_to_generic_wheels_arbitrates_no
 
 
 class TestPublishingTheArbiterForTheDesktopShellImport:
-    """#11125 imports absent ROCm names back out of the login shell on a desktop
-    launch. There the GUI environment never carried the override, so the clear is a
-    no-op and its verdict says nothing: the backend needs the installed arch itself,
-    published whether or not anything was cleared here."""
+    """The backend needs the installed arch even with no override, since a desktop clear does nothing."""
 
     def test_the_installed_arch_is_published_even_with_no_override_set(self, tmp_path, monkeypatch):
         monkeypatch.delenv("HSA_OVERRIDE_GFX_VERSION", raising = False)

@@ -34,6 +34,13 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, BinaryIO, Iterable, Optional, Sequence
 
+from core.inference.audio_cpp_option_table import (
+    ACE_STEP_BASE_NAME,
+    ENUM_PRESETS,
+    STUDIO_OPTION_LISTS,
+    OptionRule,
+    rules_for,
+)
 from loggers import get_logger
 
 logger = get_logger(__name__)
@@ -718,7 +725,13 @@ _FAMILY_LIST: tuple[AudioCppFamily, ...] = (
     AudioCppFamily(
         "pocket_tts", "tts", request_defaults = {"voice": "alba"}, clone = CloneSpec("unused")
     ),
-    AudioCppFamily("supertonic", "tts", request_defaults = {"voice": "F1"}),
+    # Supertonic's presets (include/engine/models/supertonic/session.h:22 defaults to M1).
+    AudioCppFamily(
+        "supertonic",
+        "tts",
+        request_defaults = {"voice": "M1"},
+        voices = ("M1", "M2", "M3", "M4", "M5", "F1", "F2", "F3", "F4", "F5"),
+    ),
     AudioCppFamily("qwen3_tts", "tts"),
     *_CLONE_FAMILIES,
     *_CONVERT_FAMILIES,
@@ -1227,6 +1240,7 @@ class AudioCppHeader:
     spec: Optional[dict] = field(default = None, hash = False, compare = False)
     # False when the read stopped before the header's end (a remote prefix): absent keys may lie beyond it.
     complete: bool = True
+    source: Optional[str] = field(default = None, compare = False)
 
     @property
     def is_audio_cpp(self) -> bool:
@@ -1900,6 +1914,10 @@ def _clean_option(raw: Any) -> Optional[dict]:
     if kind == "enum":
         values = raw.get("values")
         if not isinstance(values, list) or not values:
+            # A shared domain the spec names instead of listing (text_chunk_mode_full).
+            values = list(ENUM_PRESETS.get(str(raw.get("preset") or ""), ()))
+        # One choice is no choice.
+        if len(values) < 2:
             return None
         option["values"] = [str(v) for v in values]
     for bound in ("min", "max"):
@@ -1933,6 +1951,11 @@ def option_schema(
         source = spec
         if source is None or not ((source.get("options") or {}).get("request")):
             source = embedded
+        if not ((source or {}).get("options") or {}).get("request"):
+            # A legacy spec declares none, though the loader reads some.
+            listed = STUDIO_OPTION_LISTS.get(policy.family)
+            if listed:
+                source = {"options": {"request": list(listed)}, "ui": (source or {}).get("ui")}
     raw = ((source or {}).get("options") or {}).get("request") or []
     driven = _MUSIC_DRIVEN_OPTIONS if policy.task == "music" else frozenset()
     if policy.convert is not None:
@@ -1948,9 +1971,10 @@ def option_schema(
         names.add(option["name"])
         out.append(option)
     if policy.task == "tts" and policy.default_server_task != "vdes":
-        ui = (source or {}).get("ui") or (embedded or {}).get("ui") or {}
+        ui = (source or {}).get("ui") or (spec or {}).get("ui") or (embedded or {}).get("ui") or {}
         voices = (ui.get("builtin_voices") if isinstance(ui, dict) else None) or list(policy.voices)
-        if isinstance(voices, list) and voices and all(isinstance(v, str) for v in voices):
+        # One voice is no choice: the request's own default speaks it.
+        if isinstance(voices, list) and len(voices) > 1 and all(isinstance(v, str) for v in voices):
             default = policy.request_defaults.get("voice") or ui.get("default_voice")
             out.insert(
                 0,
@@ -2030,6 +2054,10 @@ class AudioCppModel:
     request_defaults: dict = field(default_factory = dict, hash = False, compare = False)
     model_options: dict = field(default_factory = dict, hash = False, compare = False)
     options: tuple[dict, ...] = field(default = (), hash = False, compare = False)
+    # ``options`` before the family's OPTION_RULES, so a variant change re-applies them from scratch.
+    spec_options: tuple[dict, ...] = field(default = (), hash = False, compare = False)
+    # Option names each workflow ("*" = all) leaves out, from the rules.
+    option_hidden: dict = field(default_factory = dict, hash = False, compare = False)
     unsupported: Optional[str] = None
     local_path: Optional[str] = None
     tags: tuple[str, ...] = ()
@@ -2044,6 +2072,10 @@ class AudioCppModel:
     # A strict spec (``schema_version``) makes the runtime refuse any undeclared option.
     request_keys: Optional[frozenset[str]] = field(default = None, hash = False, compare = False)
     from_hub: bool = field(default = False, hash = False, compare = False)
+
+    def __post_init__(self) -> None:
+        if not self.spec_options and self.options:
+            object.__setattr__(self, "spec_options", tuple(self.options))
 
     @property
     def is_package(self) -> bool:
@@ -2115,17 +2147,120 @@ class AudioCppModel:
                 **variant.session_options,
             }
         changes = _ace_step_variant(self, variant) if self.family == "ace_step" else {}
-        return replace(self, variant = variant, model_options = model_options, **changes)
+        model = replace(self, variant = variant, model_options = model_options, **changes)
+        options, hidden = apply_option_rules(
+            model.family, _rule_text(model), model.spec_options, Path(variant.primary).name
+        )
+        return replace(model, options = options, option_hidden = hidden)
+
+
+def _rule_text(model: "AudioCppModel") -> str:
+    """What an OptionRule ``match`` is searched in: repo id, folder, variant key and file names."""
+    return " ".join((model.id, model.folder, model.variant.key, *model.files)).lower()
+
+
+def apply_option_rules(
+    family: str,
+    text: str,
+    options: Sequence[dict],
+    served: str = "",
+) -> tuple[tuple[dict, ...], dict[str, frozenset[str]]]:
+    """``options`` with the family's matching rules applied, and the names each workflow hides."""
+    rules = rules_for(family, text, served)
+    out = [dict(o) for o in options]
+    hidden: dict[str, frozenset[str]] = {}
+    for rule in rules:
+        names = {o["name"] for o in out}
+        for raw in rule.extra:
+            option = _clean_option(raw)
+            if option is not None and option["name"] not in names:
+                names.add(option["name"])
+                out.append(option)
+        for option in out:
+            _apply_rule(rule, option)
+        for workflow, names_hidden in rule.hidden.items():
+            hidden[workflow] = hidden.get(workflow, frozenset()) | frozenset(names_hidden)
+    for option in out:
+        # A default outside the (possibly narrowed) domain is no default.
+        if option.get("default") is not None and not validate_options(
+            (option,), {option["name"]: option["default"]}
+        ):
+            option["default"] = None
+    return tuple(out), hidden
+
+
+def _apply_rule(rule: OptionRule, option: dict) -> None:
+    name = option["name"]
+    if name in rule.bounds:
+        low, high = rule.bounds[name]
+        if low is not None:
+            option["min"] = low
+        if high is not None:
+            option["max"] = high
+    if name in rule.values and option["type"] == "enum":
+        option["values"] = [v for v in rule.values[name] if v in (option.get("values") or [])]
+    if name in rule.defaults:
+        option["default"] = rule.defaults[name]
+    if option["type"] in ("int", "float") and option.get("default") is not None:
+        number = float(option["default"])
+        if option.get("min") is not None:
+            number = max(float(option["min"]), number)
+        if option.get("max") is not None:
+            number = min(float(option["max"]), number)
+        option["default"] = int(round(number)) if option["type"] == "int" else number
+
+
+def filled_options(model: "AudioCppModel", workflow: str, values: Optional[dict]) -> dict:
+    """``values`` over the model's recommended defaults; tool panels send their own options."""
+    return request_options(
+        workflow_options(model, workflow),
+        values,
+        model.request_keys,
+        fill = (o["name"] for o in model.options),
+    )
+
+
+def workflow_options(model: "AudioCppModel", workflow: str) -> tuple[dict, ...]:
+    """The options ``workflow`` shows and accepts; only Speak offers a built-in voice."""
+    if workflow == "convert":
+        options = model.convert_options
+    elif workflow == "clone":
+        options = model.clone_options
+    elif workflow == "edit":
+        claims = set(model.edit.claims) if model.edit is not None else set()
+        options = tuple(o for o in model.options if o["name"] not in claims)
+    else:
+        options = model.options
+    hidden = set(model.option_hidden.get("*", ())) | set(model.option_hidden.get(workflow, ()))
+    if workflow in ("clone", "edit", "convert"):
+        hidden.add("voice")
+    return tuple(o for o in options if o["name"] not in hidden)
+
+
+def request_options(
+    schema: Sequence[dict],
+    values: Optional[dict],
+    request_keys: Optional[frozenset[str]] = None,
+    fill: Optional[Iterable[str]] = None,
+) -> dict:
+    """Recommended defaults (names in ``fill``, never ``voice``; only ``request_keys`` when strict)
+    under the user's own values."""
+    fill = None if fill is None else frozenset(fill)
+    defaults = {
+        o["name"]: o["default"]
+        for o in schema
+        if o.get("default") is not None
+        and o["name"] != "voice"
+        and (fill is None or o["name"] in fill)
+        and (request_keys is None or o["name"] in request_keys)
+    }
+    return {**validate_options(schema, defaults), **validate_options(schema, values)}
 
 
 def _ace_step_variant(model: "AudioCppModel", variant: AudioCppVariant) -> dict[str, Any]:
-    """Base takes 1-200 steps (32-64 recommended) and the "complete" task; turbo 1-20 and no
-    "complete" (ACE-Step-1.5 acestep/constants.py TASK_TYPES_TURBO vs TASK_TYPES_BASE)."""
-    base = bool(re.search(r"(^|/)base(/|$)", f"{variant.key} {variant.primary}".lower()))
-    steps = {"max": 200, "default": 32} if base else {"max": 20, "default": 8}
-    options = tuple(
-        {**o, **steps} if o.get("name") == "num_inference_steps" else o for o in model.options
-    )
+    """Base takes the "complete" task and turbo does not (ACE-Step-1.5 acestep/constants.py
+    TASK_TYPES_TURBO vs TASK_TYPES_BASE)."""
+    base = bool(re.search(ACE_STEP_BASE_NAME, Path(variant.primary).name, re.IGNORECASE))
     music = model.music
     if music is not None:
         modes = []
@@ -2135,7 +2270,7 @@ def _ace_step_variant(model: "AudioCppModel", variant: AudioCppVariant) -> dict[
                 m = replace(m, actions = (*actions, "continue") if base else actions)
             modes.append(m)
         music = replace(music, modes = tuple(modes))
-    return {"options": options, "music": music}
+    return {"music": music}
 
 
 class AudioCppModelError(ValueError):
@@ -2211,6 +2346,7 @@ def _probe_header(
             header = read_remote_header(ref.repo_id, f.path, hf_token, size = f.size or None)
         if header is None:
             continue
+        header = replace(header, source = f.path)
         if not header.is_audio_cpp:
             return header
         if header.family:
@@ -2411,6 +2547,12 @@ def _resolve_uncached(
             + ", ".join(v.key for v in variants)
         )
         chosen = default
+    if header is not None and header.source and chosen.primary and chosen.primary != header.source:
+        # Quantizations of one model can embed different specs (MagpieTTS's orig names an option
+        # ``speaker`` that its Q8_0 calls ``voice_id``): options must come from the file served.
+        own = _probe_header(ref, [RepoFile(chosen.primary)], hf_token, network)
+        if own is not None and own.is_audio_cpp and own.family == family and own.spec:
+            embedded = own.spec
     model = AudioCppModel(
         id = ref.id,
         repo_id = ref.repo_id,
@@ -2425,7 +2567,7 @@ def _resolve_uncached(
         needs_espeak = policy.needs_espeak,
         request_defaults = dict(policy.request_defaults),
         model_options = dict(policy.model_options),
-        options = option_schema(policy, spec, embedded),
+        spec_options = option_schema(policy, spec, embedded),
         unsupported = unsupported,
         local_path = ref.local_path,
         tags = tuple(tags),
