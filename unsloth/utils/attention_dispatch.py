@@ -627,7 +627,6 @@ def run_attention(
 def _run_attention(
     *, config: AttentionConfig, context: AttentionContext, Q: Tensor, K: Tensor, V: Tensor
 ) -> Tensor:
-
     # PrefixGrouper shared-prefix attention (GRPO dedup): Q/K/V here are [bsz, H, T, D] while the kernel
     # takes and returns [1, T, H, D], matching the other backends.
     if context.prefix_seg_info is not None:
