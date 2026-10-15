@@ -11,6 +11,10 @@ const { answerQuestion, stopBrowserAgent, useBrowserAgentStore } = await import(
 const { useBrowserStore } = await import("../src/features/browser/store.ts");
 
 const globals = globalThis as Record<string, unknown>;
+// The stub page loads at once, as tab-view marks a real tab loaded; else each action waits out LOAD_TIMEOUT_MS.
+useBrowserStore.subscribe(({ tabs }) => {
+  for (const tab of tabs) if (tab.loading) queueMicrotask(() => useBrowserStore.getState().updateTab(tab.id, { loading: false }));
+});
 const policy = { allowedDomains: [], blockedDomains: [] };
 const buy = { role: "button", name: "Buy now", tag: "button", href: "", formMethod: "", formAction: "", formHasPassword: false, submits: false };
 
