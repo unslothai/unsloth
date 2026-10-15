@@ -713,8 +713,7 @@
     background-color: color-mix(in srgb, var(--accent) 60%, var(--popover)) !important;
   }
 
-  /* The Hub's dropdowns in the composer + menu's shape: 12px rows on a 9px side gutter, so the
-     21px corners run concentric, the same surface and the same hover washes. */
+  /* The composer + menu's shape: 12px rows on a 9px gutter keep the 21px corners concentric. */
   .hub-composer-menu[data-slot] {
     border-radius: 21px !important;
     padding: calc(0.5rem * var(--ui-space-scale, 1)) calc(9px * var(--ui-space-scale, 1)) !important;
@@ -830,8 +829,7 @@
     background-color: var(--accent);
   }
 
-  /* The model picker's panel is --sidebar, a step from --accent, so its selected tab, Search Hub and
-     dropdowns sat close to the list. Lifted toward white there so the controls stand off the panel. */
+  /* The picker's panel is --sidebar, a step from --accent: its controls lift toward white to stand off it. */
   html.dark .unsloth-model-selector-menu {
     --picker-control-lit: color-mix(in srgb, var(--accent), white 7.5%);
   }
@@ -855,8 +853,7 @@
   html.dark .unsloth-model-selector-menu .field-soft:is([data-state="open"], [aria-expanded="true"]):not(:hover) {
     background-color: color-mix(in srgb, var(--accent), white 3.5%) !important;
   }
-  /* Their menus open on body, outside the picker, so they carry their own class to keep the
-     trigger's resting tone (.hub-menu-instant above) at the picker's lift. */
+  /* These menus portal to body, so their own class keeps them at the picker's lift. */
   html.dark .hub-menu-instant.picker-option-menu {
     background-color: color-mix(in srgb, var(--accent), white 3.5%) !important;
   }

@@ -30,7 +30,6 @@ const CAPABILITY_ICON: Record<
   IconSvgElement
 > = {
   vision: ViewIcon,
-  // The sidebar's Audio icon.
   audio: AiSpeechIcon,
   tools: Wrench01Icon,
   code: CodeIcon,

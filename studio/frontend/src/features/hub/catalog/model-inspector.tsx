@@ -670,7 +670,6 @@ export const ModelInspector = memo(function ModelInspector({
           {!isDataset && (
             <span className="inline-flex h-6 items-center gap-1.5 rounded-full bg-muted px-2.5 text-ui-11p5 font-medium text-foreground dark:bg-[rgb(255_255_255_/_calc(0.04*var(--contrast-wash-gain,1)))]">
               <HugeiconsIcon
-                // Speech models take the sidebar's Text to Speech icon.
                 icon={
                   model.pipelineTag === "text-to-speech" ||
                   model.pipelineTag === "text-to-audio"

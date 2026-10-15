@@ -49,8 +49,6 @@ import {
 } from "../lib/dataset-filters";
 import { CAPABILITY_FILTER_OPTIONS } from "../lib/view-models";
 
-// The Hub rows' capability icons (catalog/shared.tsx), with Image gen on diffusion's and Video gen
-// on the Video page's.
 const CAPABILITY_ICONS: Record<HubCapabilityFilter, IconSvgElement | null> = {
   text: TextFontIcon,
   // The composer's thinking bulb, which isn't a Hugeicons glyph.
@@ -62,18 +60,13 @@ const CAPABILITY_ICONS: Record<HubCapabilityFilter, IconSvgElement | null> = {
   "video-gen": FlimSlateIcon,
 };
 
-// The composer menu's label and separator.
 const SECTION_LABEL =
   "flex w-full items-center justify-between px-3 pt-2 pb-1.5 text-ui-12 text-muted-foreground";
-// Each section's content sits 17px from the lines on both sides; the instances trim or pad my-2 to it.
 const SEPARATOR = "mx-1 my-2 h-px bg-border";
-// A picked capability: a flat grey a few steps down in light, a lift toward white in dark.
 const PICKED_FILL =
   "bg-[color-mix(in_oklab,var(--foreground)_calc(9%*var(--contrast-wash-gain,1)),var(--popover))] dark:bg-[color-mix(in_srgb,var(--accent),white_8%)]";
-// An unpicked capability: a faint wash in light, so a picked one stands off it; field-soft's tones in dark.
 const UNPICKED_FILL =
   "bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),var(--popover))] hover:bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),var(--popover))] dark:bg-[color-mix(in_srgb,var(--accent)_60%,transparent)] dark:hover:bg-(--accent)";
-// The sections' spacing without the line: only Reset all sits under one.
 const SECTION_GAP = "mx-1 my-2 h-px";
 
 type LimitKey =
@@ -129,7 +122,6 @@ const RANGES: readonly RangeSpec[] = [
       "In tokens. The model's published limit, not what your device can fit. Both limits are included; models that don't publish one are left out.",
     min: "minContext",
     max: "maxContext",
-    // Like Parameters, one step between each labelled pair.
     stops: [16, 24, 32, 48, 64, 96, 128, 192, 256, 512, 1024].map((n) => n * K),
     labels: [
       "<16K",
@@ -193,7 +185,6 @@ const MODALITY_ICONS: Record<DatasetModality, IconSvgElement> = {
 };
 
 const THUMB = 12;
-// The range, thumbs and value pills: a dark grey in light, a soft white in dark.
 const SLIDER_FG =
   "[--hub-slider-fg:color-mix(in_oklab,var(--foreground)_68%,var(--background))] dark:[--hub-slider-fg:color-mix(in_oklab,var(--foreground)_86%,var(--background))]";
 const RANGE_FILL = "bg-(--hub-slider-fg)";
@@ -241,7 +232,6 @@ function RangeStops({
   const [lo, hi] = dragging ?? committed;
   const set = lo !== 0 || hi !== last;
   // Thumbs stay inside the track, so stop i sits half a thumb in from each end.
-  // A chip stands in for the label under it.
   const covered = (i: number) => i === lo || i === hi;
   // The end labels and chips hug the track's ends instead of hanging past them.
   const edge = (i: number) =>
@@ -317,7 +307,6 @@ function RangeStops({
           }}
           className="group/range relative flex h-4 w-full touch-none select-none items-center"
         >
-          {/* The run settings track: a faint wash rather than a bar. */}
           <SliderPrimitive.Track className="relative h-[3px] w-full grow rounded-full bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)]">
             {spec.stops.map((_, i) =>
               // Under the range, which covers them where it runs, so its fill stays unbroken.
@@ -341,7 +330,6 @@ function RangeStops({
               aria-label={`${thumb === 0 ? "Minimum" : "Maximum"} ${spec.label.toLowerCase()}`}
               aria-valuetext={chip(index)}
               style={{ width: THUMB, height: THUMB }}
-              // The run settings thumb's halo on hover, keyboard focus and press.
               className={cn(
                 "relative block cursor-grab rounded-full outline-none transition-shadow duration-150 hover:shadow-[0_0_0_8px_color-mix(in_srgb,var(--hub-slider-fg)_18%,transparent)] focus-visible:shadow-[0_0_0_8px_color-mix(in_srgb,var(--hub-slider-fg)_18%,transparent)] active:cursor-grabbing active:shadow-[0_0_0_10px_color-mix(in_srgb,var(--hub-slider-fg)_22%,transparent)]",
                 RANGE_FILL,
@@ -442,7 +430,6 @@ function SegmentedRow<T extends string>({
   onChange: (value: T) => void;
 }) {
   return (
-    // One row, the title on the control's top edge rather than its middle.
     <div className="flex items-start justify-between gap-3 px-3">
       <span className="pt-0.5 text-ui-12 text-muted-foreground">
         <HoverInfo label={label}>{about}</HoverInfo>
@@ -499,7 +486,6 @@ function HoverInfo({ label, children }: { label: string; children: string }) {
           <button
             type="button"
             aria-label={`About ${label.toLowerCase()}`}
-            // Shown only while the title is hovered.
             className="inline-flex cursor-help items-center opacity-0 transition-opacity focus-visible:opacity-100 group-hover/title:opacity-100"
           >
             <HugeiconsIcon
@@ -522,7 +508,7 @@ function HoverInfo({ label, children }: { label: string; children: string }) {
 }
 
 /** The Hub's filter popover: capabilities, then (where the Hub search takes them) size and
- *  context limits and the uploader. Ticks apply at once; the limits on Apply. */
+ *  context limits and the uploader. Ticks apply at once; the limits on release. */
 export function ModelSearchFiltersControl({
   value,
   onChange,
@@ -556,7 +542,6 @@ export function ModelSearchFiltersControl({
   /** Back to no filters: every capability, the default uploaders, no limits. */
   onReset: () => void;
   showModelFilters: boolean;
-  /** The list shows datasets. */
   datasets: boolean;
   /** Capabilities, ranges and uploader apply (Discover models). */
   modelSections: boolean;
@@ -654,7 +639,6 @@ export function ModelSearchFiltersControl({
                         }
                         label={option.label}
                         checked={checked}
-                        // The last tick stays: none would list nothing.
                         locked={next.length === 0}
                         onToggle={() =>
                           onCapabilitiesChange(

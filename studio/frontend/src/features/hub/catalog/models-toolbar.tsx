@@ -387,7 +387,6 @@ export const ModelsToolbar = memo(function ModelsToolbar({
       </div>
 
       <div className="flex min-w-0 flex-wrap items-center gap-2 lg:flex-[0_0_auto] lg:flex-nowrap lg:justify-end">
-        {/* Beside the search, on every tab: its Datasets only switch replaces the old Models / Datasets toggle. */}
         <ModelSearchFiltersControl
           value={searchFilters}
           onChange={onSearchFiltersChange}

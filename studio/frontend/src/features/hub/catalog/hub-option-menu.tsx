@@ -270,15 +270,12 @@ export function HubOptionMenu<T extends string>({
         </div>
         {footer &&
           (composer ? (
-            // The line is the composer menu's separator.
             <div>
               <div aria-hidden={true} className="mx-1 my-1 h-px bg-border/50" />
               {footer}
             </div>
           ) : (
-            // -mt-3 cancels the surface's 16px flex gap down to 4px. No side
-            // padding: the footer label carries the same padding as the options
-            // so its checkbox lines up with the option text.
+            // -mt-3 trims the 16px flex gap to 4px; no side padding, so the checkbox lines up with the options.
             <div className="-mt-3 border-t border-border/60 pt-1">{footer}</div>
           ))}
       </PopoverContent>
