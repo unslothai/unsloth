@@ -896,12 +896,18 @@ _FAMILY_LIST: tuple[AudioCppFamily, ...] = (
         ),
     ),
     # Speech to text.
-    # Parakeet encodes a whole upload with full attention by default, which fails on a long clip; auto
-    # switches to bounded windows above 30 s (audio.cpp docs/community_models/parakeet_tdt.md).
+    # Parakeet encodes a whole upload with full attention by default, which fails past its 5000-frame
+    # encoder ceiling (~400 s); auto switches to bounded windows above the threshold. The windows drop
+    # about a third of the words, so they take over only where full context cannot run.
     AudioCppFamily(
         "parakeet_tdt",
         "asr",
-        model_options = {"session_options": {"parakeet_tdt.offline_mode": "auto"}},
+        model_options = {
+            "session_options": {
+                "parakeet_tdt.offline_mode": "auto",
+                "parakeet_tdt.audio_chunk_threshold_sec": "390",
+            }
+        },
     ),
     *(
         AudioCppFamily(name, "asr")

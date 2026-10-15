@@ -256,7 +256,11 @@ def test_other_families_keep_the_bare_code(fake, side, source):
 def test_parakeet_switches_to_bounded_windows_on_long_audio(fake, side, source):
     side.transcribe_path(source, PARAKEET, None)
     (start,) = fake.starts
-    assert start["entry"]["session_options"] == {"parakeet_tdt.offline_mode": "auto"}
+    # Full context below the encoder ceiling: the windows lose words on clips it can encode whole.
+    assert start["entry"]["session_options"] == {
+        "parakeet_tdt.offline_mode": "auto",
+        "parakeet_tdt.audio_chunk_threshold_sec": "390",
+    }
     side.unload()
     side.transcribe_path(source, NEMOTRON, None)
     assert "session_options" not in fake.starts[-1]["entry"]
