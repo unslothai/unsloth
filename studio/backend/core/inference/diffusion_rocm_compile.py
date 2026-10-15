@@ -119,6 +119,12 @@ def rocm_block_compile_probe(device: Any = None) -> tuple[bool, str]:
         return True, "not ROCm"
     index = _index(device)
     memo = _load_oom.get()
+    # Lock-free when this card already has an answer: only a load that must probe waits behind a running probe.
+    if memo is not None and index in memo:
+        return memo[index]
+    hit = _result.get(index)
+    if hit is not None:
+        return hit
     with _lock:
         # The load's own OOM first: a concurrent load's later success must not send this load into a compile.
         if memo is not None and index in memo:

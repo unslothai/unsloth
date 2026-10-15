@@ -3078,3 +3078,22 @@ def test_rocm_probe_still_runs_for_a_compilable_model(monkeypatch):
     )
     assert p.compile_declined_by_model is False
     assert len(calls) == 1
+
+
+def test_rocm_probe_answer_is_read_without_waiting_for_another_probe(monkeypatch):
+    import threading
+
+    from core.inference import diffusion_rocm_compile as rc
+
+    monkeypatch.delenv(rc.ENV, raising = False)
+    monkeypatch.setattr(rc, "_index", lambda device: 1)
+    monkeypatch.setattr("core.inference.rocm_bf16.is_rocm_torch", lambda torch: True)
+    rc._reset_for_tests()
+    rc._result[1] = (True, "cached")
+    out = []
+    with rc._lock:  # a probe on another card holds this for seconds
+        t = threading.Thread(target = lambda: out.append(rc.rocm_block_compile_probe()), daemon = True)
+        t.start()
+        t.join(2)
+        assert not t.is_alive() and out == [(True, "cached")]
+    rc._reset_for_tests()
