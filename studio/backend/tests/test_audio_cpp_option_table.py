@@ -163,6 +163,21 @@ def test_user_values_win_over_recommended_ones(catalog_hub, model_id):
         )
 
 
+@pytest.mark.parametrize(
+    "model_id, name",
+    [
+        ("audio-cpp/audio.cpp-gguf/VoxCPM2-GGUF", "retry_badcase_max_times"),
+        ("audio-cpp/audio.cpp-gguf/VoxCPM2-GGUF", "retry_badcase_ratio_threshold"),
+        ("audio-cpp/audio.cpp-gguf/Fish-Audio-S2-Pro-GGUF", "top_p"),
+    ],
+)
+def test_a_zero_the_runtime_refuses_is_never_sent(catalog_hub, model_id, name):
+    # audio.cpp throws on these at 0 (voxcpm2/session.cpp:670-676, fish_audio/session.cpp:136).
+    model = _resolved(model_id)[0]
+    sent = acm.filled_options(model, "speak", {name: 0})
+    assert sent[name] > 0
+
+
 def test_status_lists_each_workflow_where_it_differs(catalog_hub):
     for model_id in _models():
         model = _resolved(model_id)[0]

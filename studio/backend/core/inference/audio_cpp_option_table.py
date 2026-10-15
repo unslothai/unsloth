@@ -141,12 +141,13 @@ STUDIO_OPTION_LISTS: Mapping[str, tuple[dict, ...]] = MappingProxyType(
             _opt("min_tokens", "int", "Fewest audio patches to generate.", min = 0),
             _opt("max_tokens", "int", "Most audio patches to generate (0 = model limit).", min = 0),
             _opt("retry_badcase", "bool", "Retry a take that runs far too long."),
-            _opt("retry_badcase_max_times", "int", "Most retries of a bad take.", min = 0),
+            _opt("retry_badcase_max_times", "int", "Most retries of a bad take.", min = 1),
             _opt(
                 "retry_badcase_ratio_threshold",
                 "float",
                 "Audio-to-text length ratio that counts as a bad take.",
-                min = 0.0,
+                # session.cpp:670-676 rejects a non-positive count or ratio.
+                min = 0.1,
             ),
             _opt(
                 "text_chunk_mode", "enum", "How the text is split into chunks.", values = _CHUNK_MODES
@@ -250,7 +251,8 @@ STUDIO_OPTION_LISTS: Mapping[str, tuple[dict, ...]] = MappingProxyType(
                 "How the text is split into chunks.",
                 preset = "text_chunk_mode_full",
             ),
-            _opt("top_p", "float", "Nucleus sampling.", min = 0.0, max = 1.0),
+            # session.cpp:136 takes (0, 1] only.
+            _opt("top_p", "float", "Nucleus sampling.", min = 0.01, max = 1.0),
             _opt("top_k", "int", "Top-k sampling limit.", min = 1),
             # session.cpp:142 takes (0, 2) only.
             _opt(
@@ -289,10 +291,10 @@ OPTION_RULES: Mapping[str, tuple[OptionRule, ...]] = MappingProxyType(
                     "lm_top_k": 0,
                 },
                 sources = {
-                    "lm_temperature": "audio.cpp src/models/ace_step/types.h:31-42",
-                    "lm_cfg_scale": "audio.cpp src/models/ace_step/types.h:31-42",
-                    "lm_top_p": "audio.cpp src/models/ace_step/types.h:31-42",
-                    "lm_top_k": "audio.cpp src/models/ace_step/types.h:31-42",
+                    "lm_temperature": "audio.cpp include/engine/models/ace_step/types.h:31-42",
+                    "lm_cfg_scale": "audio.cpp include/engine/models/ace_step/types.h:31-42",
+                    "lm_top_p": "audio.cpp include/engine/models/ace_step/types.h:31-42",
+                    "lm_top_k": "audio.cpp include/engine/models/ace_step/types.h:31-42",
                 },
             ),
             # Turbo (anything but base): the runtime caps steps at 8 and skips guidance.
@@ -314,7 +316,7 @@ OPTION_RULES: Mapping[str, tuple[OptionRule, ...]] = MappingProxyType(
                 sources = {
                     "num_inference_steps": "https://github.com/ace-step/ACE-Step-1.5 docs/en/INFERENCE.md",
                     "guidance_scale": "https://github.com/ace-step/ACE-Step-1.5 docs/en/INFERENCE.md",
-                    "shift": "audio.cpp src/models/ace_step/types.h",
+                    "shift": "audio.cpp include/engine/models/ace_step/types.h",
                 },
             ),
         ),
