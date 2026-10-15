@@ -3970,6 +3970,7 @@ export const sv = {
       chooseDataset: "Välj en datauppsättning",
       chooseModelAndDataset: "Välj modell och datauppsättning",
       validation: {
+        ddpModelUnsupported: "DDP stöder inte inbäddnings- eller beslutsmodeller. Välj en annan GPU-placering.",
         multipleGpusRequired: "Välj minst två GPU:er för det här läget.",
         singleGpuRequired: "Välj exakt en GPU för enkel-GPU-träning.",
         gpuSelectionUnavailable:

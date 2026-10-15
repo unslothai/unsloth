@@ -3749,6 +3749,7 @@ export const ko = {
       setupChanged:
         "확인하는 동안 학습 설정이 변경되었습니다. 설정을 검토한 후 학습을 다시 시작하세요.",
       validation: {
+        ddpModelUnsupported: "DDP는 임베딩 모델이나 결정 모델을 지원하지 않습니다. 다른 GPU 배치를 선택하세요.",
         multipleGpusRequired: "이 모드에서는 GPU를 두 개 이상 선택하세요.",
         singleGpuRequired: "단일 GPU 학습에는 정확히 하나의 GPU를 선택하세요.",
         gpuSelectionUnavailable: "선택한 GPU를 사용할 수 없습니다. 하드웨어 선택을 새로 고친 후 다시 시도하세요.",

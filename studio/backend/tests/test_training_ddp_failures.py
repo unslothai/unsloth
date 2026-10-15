@@ -236,7 +236,13 @@ def _run_launcher(
     monkeypatch.setattr(ddp, "_common_cuda_dtype", lambda _gpu_ids: "fp16")
     torch_module = ModuleType("torch")
     torch_mp = ModuleType("torch.multiprocessing")
-    torch_mp.spawn = spawn
+
+    def _spawn(fn, *, args, nprocs, join):
+        assert join is False
+        spawn(fn, args = args, nprocs = nprocs, join = True)
+        return SimpleNamespace(join = lambda timeout = None: True, processes = [])
+
+    torch_mp.spawn = _spawn
     torch_module.multiprocessing = torch_mp
     monkeypatch.setitem(sys.modules, "torch", torch_module)
     monkeypatch.setitem(sys.modules, "torch.multiprocessing", torch_mp)
@@ -294,6 +300,45 @@ def test_launcher_pins_one_output_dir_for_every_rank(monkeypatch):
         {"resolved_gpu_ids": [0, 1], "model_name": "org/model", "project_name": "p"},
     )
     assert len(seen) == 1 and seen[0].startswith("org_model__project-p_")
+
+
+class _Process:
+    def __init__(self, alive):
+        self.alive = alive
+        self.terminated = False
+
+    def is_alive(self):
+        return self.alive
+
+    def terminate(self):
+        self.terminated = True
+        self.alive = False
+
+    def join(self, timeout = None):
+        pass
+
+    def kill(self):
+        self.alive = False
+
+
+def test_a_stop_before_rendezvous_ends_the_peer_left_waiting(monkeypatch):
+    monkeypatch.setattr(ddp, "_STOPPED_PEER_GRACE_S", 0.0)
+    returned, waiting = _Process(False), _Process(True)
+    context = SimpleNamespace(processes = [returned, waiting], join = lambda timeout = None: False)
+    stop_event = threading.Event()
+    stop_event.set()
+    ddp._join_ranks(context, stop_event)
+    assert waiting.terminated and not returned.terminated
+
+
+def test_without_a_stop_a_finished_rank_waits_for_its_peers():
+    joins = iter([False, False, True])
+    waiting = _Process(True)
+    context = SimpleNamespace(
+        processes = [_Process(False), waiting], join = lambda timeout = None: next(joins)
+    )
+    ddp._join_ranks(context, threading.Event())
+    assert not waiting.terminated
 
 
 def test_nonzero_rank_forwards_download_stalls_for_xet_recovery():

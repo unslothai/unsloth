@@ -3711,6 +3711,7 @@ export const ja = {
       setupChanged:
         "確認中にトレーニング設定が変更されました。設定を確認してから、トレーニングをもう一度開始してください。",
       validation: {
+        ddpModelUnsupported: "DDP は埋め込みモデルや決定モデルに対応していません。別の GPU 配置を選択してください。",
         multipleGpusRequired: "このモードでは 2 つ以上の GPU を選択してください。",
         singleGpuRequired: "単一 GPU の学習では GPU を 1 つだけ選択してください。",
         gpuSelectionUnavailable: "選択した GPU は利用できません。ハードウェアの選択を更新して再試行してください。",

@@ -3751,6 +3751,7 @@ export const ar = {
       setupChanged:
         "تغيّر إعداد التدريب أثناء التحقق منه. راجعه ثم ابدأ التدريب مجددًا.",
       validation: {
+        ddpModelUnsupported: "لا يدعم DDP نماذج التضمين أو نماذج القرار. اختر طريقة توزيع GPU أخرى.",
         multipleGpusRequired: "حدد وحدتي GPU على الأقل لهذا الوضع.",
         singleGpuRequired: "حدد GPU واحدًا فقط للتدريب على وحدة GPU واحدة.",
         gpuSelectionUnavailable: "وحدات GPU المحددة غير متاحة. حدّث اختيار الأجهزة وحاول مرة أخرى.",

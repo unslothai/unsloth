@@ -3812,6 +3812,7 @@ export const de = {
       setupChanged:
         "Die Trainingseinstellungen haben sich während der Überprüfung geändert. Prüfen Sie sie und starten Sie das Training erneut.",
       validation: {
+        ddpModelUnsupported: "DDP unterstützt keine Embedding- oder Entscheidungsmodelle. Wählen Sie eine andere GPU-Platzierung.",
         multipleGpusRequired: "Für diesen Modus mindestens zwei GPUs auswählen.",
         singleGpuRequired: "Für das Training auf einer einzelnen GPU genau eine GPU auswählen.",
         gpuSelectionUnavailable: "Die ausgewählten GPUs sind nicht verfügbar. Aktualisieren Sie die Hardwareauswahl und versuchen Sie es erneut.",

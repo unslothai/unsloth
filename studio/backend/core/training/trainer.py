@@ -4444,7 +4444,10 @@ class UnslothTrainer:
             if training_args.get("enable_wandb", False) and training_args.get("wandb_token"):
                 os.environ["WANDB_API_KEY"] = training_args["wandb_token"]
                 import wandb
-                wandb.init(project = training_args.get("wandb_project", "unsloth-training"))
+
+                # One run per job: DDP ranks other than 0 must not open their own (LOCAL_RANK is 0 on every rank).
+                if os.environ.get("RANK", "0") == "0":
+                    wandb.init(project = training_args.get("wandb_project", "unsloth-training"))
 
             output_dir = str(resolve_output_dir(training_args.get("output_dir")))
             ensure_dir(Path(output_dir))

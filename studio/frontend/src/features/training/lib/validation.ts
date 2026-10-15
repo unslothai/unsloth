@@ -19,8 +19,7 @@ import {
 } from "./training-methods";
 
 export type StartValidationResult =
-  | { ok: true; errorKey: null }
-  | { ok: false; errorKey: TranslationKey };
+  { ok: true; errorKey: null } | { ok: false; errorKey: TranslationKey };
 
 function isTrainingConfigSupportedOnDevice(
   config: TrainingConfigState,
@@ -226,6 +225,17 @@ export function validateTrainingConfig(
   }
   if (
     config.parallelismMode === "ddp" &&
+    (config.isEmbeddingModel ||
+      config.modelType === "embeddings" ||
+      config.modelType === "decision")
+  ) {
+    return {
+      ok: false,
+      errorKey: "studio.training.validation.ddpModelUnsupported",
+    };
+  }
+  if (
+    config.parallelismMode === "ddp" &&
     (config.selectedGpuIds?.length ?? 0) < 2
   ) {
     return {
@@ -247,9 +257,7 @@ export function validateTrainingConfig(
     config.parallelismMode !== "auto" &&
     availableGpuIds !== undefined &&
     (availableGpuIds === null ||
-      (config.selectedGpuIds ?? []).some(
-        (id) => !availableGpuIds.includes(id),
-      ))
+      (config.selectedGpuIds ?? []).some((id) => !availableGpuIds.includes(id)))
   ) {
     return {
       ok: false,
