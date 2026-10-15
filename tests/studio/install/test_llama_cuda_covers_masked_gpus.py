@@ -25,7 +25,13 @@ else:
     SPEC.loader.exec_module(m)
 
 
-def host(system, caps, physical, visible = "1", driver = (12, 8)):
+def host(
+    system,
+    caps,
+    physical,
+    visible = "1",
+    driver = (12, 8),
+):
     return m.HostInfo(
         system = system,
         machine = "AMD64" if system == "Windows" else "x86_64",
@@ -44,7 +50,15 @@ def host(system, caps, physical, visible = "1", driver = (12, 8)):
     )
 
 
-def artifact(name, kind, line, profile, sms, coverage = "targeted", rank = 100):
+def artifact(
+    name,
+    kind,
+    line,
+    profile,
+    sms,
+    coverage = "targeted",
+    rank = 100,
+):
     caps = [str(s) for s in sms]
     return m.PublishedLlamaArtifact(
         asset_name = name,
@@ -109,7 +123,9 @@ MASKED_WINDOWS = host("Windows", ["89"], ["61", "89"])
 
 class TestLinux:
     def test_the_bundle_covers_the_card_the_mask_hides(self):
-        selection = m.linux_cuda_choice_from_release(MASKED_LINUX, release([LINUX_NEWER, LINUX_WIDE]))
+        selection = m.linux_cuda_choice_from_release(
+            MASKED_LINUX, release([LINUX_NEWER, LINUX_WIDE])
+        )
         assert selection is not None
         assert [a.bundle_profile for a in selection.attempts] == ["cuda12-wide"]
         assert any("physical_sms=61,89" in line for line in selection.selection_log)
