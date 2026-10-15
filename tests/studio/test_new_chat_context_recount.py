@@ -43,6 +43,10 @@ BOUND_NAMES = {
     "newThreadSwitchStateRef",
     "nonce",
     "paused",
+    "tipId",
+    "tipRunning",
+    "branchLength",
+    "branchRevision",
 }
 
 
@@ -135,7 +139,7 @@ def _history_usage_restore() -> str:
     """The history loader's saved-usage restore and its recount call, verbatim."""
     return slice_between(
         read(PROVIDER),
-        "        const localLimit = store.loadedIsGguf ? store.loadedContextLength : null;",
+        "        const checkpoint = store.params.checkpoint;",
         "        const hasParentIds = msgs.some((m) => m.parentId != null);",
     )
 
@@ -408,6 +412,7 @@ function replayEffects(effects: any[], scope: any, memo: any[]): void {
 }
 
 const recountDeps: any[] = [];
+const pricedTipRef: any = { current: null };
 
 export function renderThreadContextUsageRecount(props: any = {}): void {
   const enabled = props.enabled ?? true;
@@ -418,6 +423,12 @@ export function renderThreadContextUsageRecount(props: any = {}): void {
   const loadedContextLength = state.loadedContextLength;
   const modelLoading = state.modelLoading;
   const runActive = Object.values(state.runningByThreadId ?? {}).some(Boolean);
+  const messages = aui.thread().getState().messages;
+  const tip = messages.at(-1);
+  const tipId = tip?.id;
+  const tipRunning = tip?.role === "assistant" && tip.status?.type === "running";
+  const branchLength = messages.length;
+  const branchRevision = revisionTotal(messages);
   const scope: any = {
     activeThreadId,
     aui,
@@ -426,6 +437,10 @@ export function renderThreadContextUsageRecount(props: any = {}): void {
     loadedContextLength,
     modelLoading,
     runActive,
+    tipId,
+    tipRunning,
+    branchLength,
+    branchRevision,
   };
   const effects: any[] = [
 __RECOUNT_EFFECTS__
@@ -586,14 +601,24 @@ HARNESS_HISTORY = """
 // the repository, so the live branch is empty and only the stored path can answer.
 export async function hydrateThreadUsage(props: any): Promise<void> {
   const remoteId: string = props.remoteId;
-  const savedUsage = props.savedUsage;
   // The loader is created per pane; a compare pane carries a pairId and never owns the bar.
   const modelType: string = props.modelType ?? "base";
   const pairId = props.pairId ?? undefined;
   // The thread's stored messages, which the loader reads into `msgs` and sorts above the sliced
   // block (createdAt, then role, then id), so `msgs.at(-1)` below is the newest stored row.
   const roleOrder: Record<string, number> = { system: 0, user: 1, assistant: 2 };
-  const msgs: any[] = [...(props.messages ?? [])].sort((a: any, b: any) => {
+  const stored: any[] = props.messages ?? [];
+  const savedReply = props.savedUsage
+    ? [{
+        id: "a-saved",
+        parentId: stored.at(-1)?.id ?? null,
+        role: "assistant",
+        createdAt: (stored.at(-1)?.createdAt ?? 0) + 1,
+        content: [{ type: "text", text: "" }],
+        metadata: { contextUsage: props.savedUsage },
+      }]
+    : [];
+  const msgs: any[] = [...stored, ...savedReply].sort((a: any, b: any) => {
     if (a.createdAt !== b.createdAt) return a.createdAt - b.createdAt;
     const aOrder = roleOrder[a.role] ?? 99;
     const bOrder = roleOrder[b.role] ?? 99;
@@ -1520,7 +1545,7 @@ def test_the_harness_binds_every_loader_local_the_history_restore_reads() -> Non
     above = provider[loader:start]
     declared_above = _declared_names(above)
     assert (
-        {"msgs", "savedUsage", "store"} <= declared_above
+        {"msgs", "branch", "store"} <= declared_above
     ), "could not read the loader's locals above the restore; this guard would check nothing"
     # Code only: the block's comments name words that are locals elsewhere.
     code = re.sub(r"//[^\n]*", "", restore)
@@ -2238,7 +2263,7 @@ def test_a_media_chat_keeps_a_value_after_a_local_model_switch(parts, saved, ggu
             "unsloth/other-gguf",
             ', { id: "m3", role: "user", createdAt: 3, content: [{ type: "image", image: "data:image/png;base64,iVBORw0KGgo=" }], metadata: {} }',
             '{ promptTokens: 700, completionTokens: 9, totalTokens: 709, cachedTokens: 0, modelId: "unsloth/other-gguf" }',
-            {"total": 9, "estimated": True},
+            {"total": 709, "estimated": True},
         ),
     ],
     ids = ["cloud_count_past_a_resident_gguf_window", "unanswered_media_turn_after_the_count"],
@@ -2496,3 +2521,653 @@ def test_the_count_is_retried_once_the_run_finishes():
         "runActive must be a DEPENDENCY, not just a guard: nothing else in this array "
         "changes when a run ends, so without it a skipped count would never be retried"
     )
+
+
+_U1_ROW = (
+    '{ id: "u1", parentId: null, role: "user", createdAt: 1, '
+    'content: [{ type: "text", text: "hello there" }], metadata: {} }'
+)
+
+_TOOL_CALL_PARTS = {
+    "local": (
+        '{ type: "tool-call", toolCallId: "c1", toolName: "web_search", args: {}, '
+        'argsText: "{}", result: "found", provenance: { source: "local", round_id: 1 } }, '
+    ),
+    "hosted": (
+        '{ type: "tool-call", toolCallId: "c1", toolName: "web_search", args: {}, '
+        'argsText: "{}", result: "found" }, '
+    ),
+}
+
+_CLOUD_SUM = (
+    "{ promptTokens: 322000, completionTokens: 760, totalTokens: 322760, cachedTokens: 0, "
+    'modelId: "external::openai::gpt-x" }'
+)
+
+_CLOUD_SUM_WITH_CONTEXT = (
+    "{ promptTokens: 322000, completionTokens: 760, totalTokens: 322760, contextTokens: 52000, "
+    'cachedTokens: 0, modelId: "external::openai::gpt-x" }'
+)
+
+_SAVED_300_LOCAL = (
+    "{ promptTokens: 250, completionTokens: 50, totalTokens: 300, cachedTokens: 0, "
+    'modelId: "unsloth/gguf-model" }'
+)
+
+_SAVED_300_CLOUD = (
+    "{ promptTokens: 250, completionTokens: 50, totalTokens: 300, cachedTokens: 0, "
+    'modelId: "external::openai::gpt-x" }'
+)
+
+
+def _assistant_row(
+    id_,
+    created_at,
+    text,
+    saved,
+    parent = "u1",
+    tool_call = None,
+):
+    parts = _TOOL_CALL_PARTS[tool_call] if tool_call else ""
+    return (
+        f'{{ id: "{id_}", parentId: "{parent}", role: "assistant", createdAt: {created_at}, '
+        f'content: [{parts}{{ type: "text", text: "{text}" }}], '
+        f"metadata: {{ contextUsage: {saved} }} }}"
+    )
+
+
+def _script(template: str, **rows: str) -> str:
+    script = textwrap.dedent(template).replace("__LOADED_MODEL__", LOADED_MODEL)
+    for name, row in rows.items():
+        script = script.replace(f"__{name}__", row)
+    return script
+
+
+_BRANCH_SWITCH = """
+    // @ts-nocheck
+    import { renderThreadContextUsageRecount, seed, snapshot, useChatRuntimeStore, world } from "./harness.ts";
+    __LOADED_MODEL__
+    seed({ loadedIsGguf: true });
+    __PICK__
+    const u1 = __U1__;
+    world.storedMessages["thread-a"] = [u1, __A2__];
+    seed({ activeThreadId: "thread-a" });
+    useChatRuntimeStore.getState().setContextUsage(__FIRST__);
+    renderThreadContextUsageRecount();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const before = snapshot().contextUsage;
+    const countsBefore = world.countedMessages.length;
+    world.storedMessages["thread-a"] = [u1, __A3__];
+    renderThreadContextUsageRecount();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    console.log(JSON.stringify({
+      before,
+      after: snapshot().contextUsage,
+      counts: world.countedMessages.length - countsBefore,
+    }));
+"""
+
+
+@pytest.mark.parametrize(
+    ("picked", "first_saved", "switched_saved", "expected"),
+    [
+        (
+            "",
+            _SAVED_300_LOCAL,
+            "{ promptTokens: 400, completionTokens: 100, totalTokens: 500, cachedTokens: 0, "
+            'modelId: "unsloth/gguf-model" }',
+            {"counts": 0, "total": 500},
+        ),
+        ("", _SAVED_300_LOCAL, "undefined", {"counts": 1, "total": 62}),
+        (
+            "external::openai::gpt-x",
+            _SAVED_300_CLOUD,
+            "{ promptTokens: 400, completionTokens: 100, totalTokens: 500, cachedTokens: 0, "
+            'modelId: "external::openai::gpt-x" }',
+            {"counts": 0, "total": 500},
+        ),
+        ("external::openai::gpt-x", _SAVED_300_CLOUD, "undefined", {"counts": 0, "total": 300}),
+    ],
+    ids = [
+        "local_tip_with_its_own_count",
+        "local_tip_is_recounted",
+        "cloud_tip_with_its_own_count",
+        "cloud_tip_keeps_the_count_rather_than_a_guess",
+    ],
+)
+def test_a_branch_switch_reprices_the_meter_from_the_new_tip(
+    picked, first_saved, switched_saved, expected
+):
+    pick = f"useChatRuntimeStore.getState().setCheckpoint({json.dumps(picked)});" if picked else ""
+    out = _run(
+        _script(
+            _BRANCH_SWITCH,
+            PICK = pick,
+            FIRST = first_saved,
+            U1 = _U1_ROW,
+            A2 = _assistant_row("a2", 2, "general kenobi", first_saved),
+            A3 = _assistant_row("a3", 3, "hello to you", switched_saved),
+        )
+    )
+    assert (out["before"] or {}).get("totalTokens") == 300
+    after = out["after"] or {}
+    assert out["counts"] == expected["counts"]
+    assert after.get("totalTokens") == expected["total"]
+    assert after.get("estimated") is None
+
+
+_SEND_WINDOW = """
+    // @ts-nocheck
+    import { renderThreadContextUsageRecount, seed, snapshot, useChatRuntimeStore, world } from "./harness.ts";
+    __LOADED_MODEL__
+    seed({ loadedIsGguf: true });
+    __PICK__
+    const msg = (id, role, text, extra = {}) => ({
+      id, role, createdAt: new Date(), content: [{ type: "text", text }],
+      metadata: { custom: extra.usage ? { contextUsage: extra.usage } : {} },
+      ...(role === "assistant" ? { status: { type: extra.status ?? "complete" } } : {}),
+    });
+    const saved = { promptTokens: 250, completionTokens: 50, totalTokens: 300, cachedTokens: 0, modelId: useChatRuntimeStore.getState().params.checkpoint };
+    const live = [msg("u1", "user", "hello there"), msg("a2", "assistant", "general kenobi", { usage: saved })];
+    world.liveMessages = { "thread-a": live };
+    world.storedMessages["thread-a"] = live;
+    seed({ activeThreadId: "thread-a" });
+    useChatRuntimeStore.getState().setContextUsage(saved);
+    renderThreadContextUsageRecount();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const countsBefore = world.countedMessages.length;
+    const steps = [];
+    const step = async (name) => {
+      renderThreadContextUsageRecount();
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      const usage = snapshot().contextUsage;
+      steps.push({ name, counts: world.countedMessages.length - countsBefore, total: usage?.totalTokens ?? null, estimated: usage?.estimated ?? null });
+    };
+    live.push(msg("u3", "user", "and the moon"), msg("a4", "assistant", "", { status: "running" }));
+    await step("running_placeholder");
+    seed({ runningByThreadId: { "thread-a": true } });
+    await step("running");
+    __END__
+    console.log(JSON.stringify({ steps }));
+"""
+
+_RUN_COMPLETES = """
+    const published = { promptTokens: 700, completionTokens: 9, totalTokens: 709, cachedTokens: 0 };
+    useChatRuntimeStore.getState().setContextUsage(published);
+    seed({ runningByThreadId: {} });
+    await step("run_flag_cleared");
+    live[3] = msg("a4", "assistant", "is far away", { usage: { ...published, modelId: useChatRuntimeStore.getState().params.checkpoint } });
+    await step("tip_settled");
+"""
+
+_RUN_CANCELLED = """
+    seed({ runningByThreadId: {} });
+    await step("run_flag_cleared");
+    live[3] = { ...live[3], status: { type: "incomplete", reason: "cancelled" } };
+    await step("tip_settled");
+"""
+
+
+@pytest.mark.parametrize(
+    "picked", ["", "external::openai::gpt-x"], ids = ["local_model", "cloud_model"]
+)
+def test_sending_a_message_costs_no_count_and_never_flickers(picked):
+    pick = f"useChatRuntimeStore.getState().setCheckpoint({json.dumps(picked)});" if picked else ""
+    out = _run(_script(_SEND_WINDOW, PICK = pick, END = textwrap.dedent(_RUN_COMPLETES)))
+    steps = {step["name"]: step for step in out["steps"]}
+    for name, step in steps.items():
+        assert step["counts"] == 0, name
+        assert step["estimated"] is None, name
+    for name in ("running_placeholder", "running"):
+        assert steps[name]["total"] == 300, name
+    assert steps["run_flag_cleared"]["total"] == 709
+    assert steps["tip_settled"]["total"] == 709
+
+
+@pytest.mark.parametrize(
+    ("picked", "expected"),
+    [
+        ("", {"counts": 1, "total": None, "estimated": None}),
+        ("external::openai::gpt-x", {"counts": 0, "total": 303, "estimated": True}),
+    ],
+    ids = ["local_model_recounts", "cloud_model_builds_on_the_last_count"],
+)
+def test_a_run_cancelled_before_any_output_reprices_only_what_it_can_count(picked, expected):
+    pick = f"useChatRuntimeStore.getState().setCheckpoint({json.dumps(picked)});" if picked else ""
+    out = _run(_script(_SEND_WINDOW, PICK = pick, END = textwrap.dedent(_RUN_CANCELLED)))
+    steps = {step["name"]: step for step in out["steps"]}
+    for name in ("running_placeholder", "running"):
+        assert steps[name]["counts"] == 0, name
+        assert steps[name]["total"] == 300, name
+    settled = steps["tip_settled"]
+    assert settled["counts"] == expected["counts"]
+    assert settled["estimated"] == expected["estimated"]
+    if expected["total"] is not None:
+        assert settled["total"] == expected["total"]
+    else:
+        assert settled["total"] not in (None, 300)
+
+
+def test_a_runtime_still_showing_another_thread_never_prices_this_one():
+    out = _run(
+        _script(
+            """
+            // @ts-nocheck
+            import { renderThreadContextUsageRecount, seed, snapshot, useChatRuntimeStore, world } from "./harness.ts";
+            __LOADED_MODEL__
+            seed({ loadedIsGguf: true });
+            const u1 = __U1__;
+            world.storedMessages["thread-a"] = [u1, __A2__];
+            seed({ activeThreadId: "thread-a" });
+            useChatRuntimeStore.getState().setContextUsage(__FIRST__);
+            renderThreadContextUsageRecount();
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            const before = snapshot().contextUsage;
+            const countsBefore = world.countedMessages.length;
+            world.mainThreadId = "thread-b";
+            world.storedMessages["thread-a"] = [u1, __A3__];
+            renderThreadContextUsageRecount();
+            world.storedMessages["thread-a"] = [];
+            renderThreadContextUsageRecount();
+            world.mainThreadId = undefined;
+            renderThreadContextUsageRecount();
+            world.storedMessages["thread-a"] = [u1, __A2__];
+            renderThreadContextUsageRecount();
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            console.log(JSON.stringify({
+              before,
+              after: snapshot().contextUsage,
+              counts: world.countedMessages.length - countsBefore,
+            }));
+            """,
+            FIRST = _SAVED_300_LOCAL,
+            U1 = _U1_ROW,
+            A2 = _assistant_row("a2", 2, "general kenobi", _SAVED_300_LOCAL),
+            A3 = _assistant_row("a3", 3, "another chat", "undefined"),
+        )
+    )
+    assert (out["before"] or {}).get("totalTokens") == 300
+    assert out["counts"] == 0
+    assert (out["after"] or {}).get("totalTokens") == 300
+
+
+@pytest.mark.parametrize(
+    ("saved", "tool_call", "expected"),
+    [
+        (_CLOUD_SUM, "local", {"estimated": True, "total": 7, "context": None}),
+        (_CLOUD_SUM_WITH_CONTEXT, "local", {"estimated": None, "total": 322760, "context": 52000}),
+        (_CLOUD_SUM, "hosted", {"estimated": None, "total": 322760, "context": None}),
+    ],
+    ids = ["loop_sum_without_context", "loop_turn_with_context", "provider_hosted_tool_turn"],
+)
+def test_a_cloud_tool_loop_sum_on_the_tip_is_estimated(saved, tool_call, expected):
+    out = _run(
+        _script(
+            """
+            // @ts-nocheck
+            import { renderThreadContextUsageRecount, seed, snapshot, useChatRuntimeStore, world } from "./harness.ts";
+            __LOADED_MODEL__
+            world.storedMessages["thread-a"] = [__U1__, __A2__];
+            seed({ activeThreadId: "thread-a" });
+            useChatRuntimeStore.getState().setCheckpoint("external::openai::gpt-x");
+            renderThreadContextUsageRecount();
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            console.log(JSON.stringify({ usage: snapshot().contextUsage }));
+            """,
+            U1 = _U1_ROW,
+            A2 = _assistant_row("a2", 2, "found it", saved, tool_call = tool_call),
+        )
+    )
+    usage = out["usage"] or {}
+    assert usage.get("estimated") == expected["estimated"]
+    assert usage.get("totalTokens") == expected["total"]
+    assert usage.get("contextTokens") == expected["context"]
+
+
+@pytest.mark.parametrize(
+    ("saved", "tool_call", "expected"),
+    [
+        (_CLOUD_SUM, "local", {"estimated": True, "total": 104}),
+        (_CLOUD_SUM_WITH_CONTEXT, "local", {"estimated": None, "total": 322760}),
+        (_CLOUD_SUM, "hosted", {"estimated": None, "total": 322760}),
+    ],
+    ids = ["loop_sum_without_context", "loop_turn_with_context", "provider_hosted_tool_turn"],
+)
+def test_history_hydration_estimates_a_cloud_tool_loop_sum(saved, tool_call, expected):
+    out = _run(
+        _script(
+            """
+            // @ts-nocheck
+            import { hydrateThreadUsage, seed, snapshot, world } from "./harness.ts";
+            seed({
+              params: { checkpoint: "external::openai::gpt-x", systemPrompt: "", systemVariables: "" },
+              loadedContextLength: null,
+              loadedIsGguf: false,
+              modelLoading: false,
+              activeThreadId: "thread-a",
+              contextUsage: null,
+              contextUsageByThreadId: {},
+            });
+            const messages = [
+              { id: "u1", parentId: null, role: "user", createdAt: 1, content: [{ type: "text", text: "x".repeat(400) }], metadata: {} },
+              __A2__,
+            ];
+            await hydrateThreadUsage({ remoteId: "thread-a", messages });
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            console.log(JSON.stringify({
+              counts: world.countedMessages.length,
+              contextUsage: snapshot().contextUsage,
+            }));
+            """,
+            A2 = _assistant_row("a2", 2, "found it", saved, tool_call = tool_call),
+        )
+    )
+    assert out["counts"] == 0
+    usage = out["contextUsage"] or {}
+    assert usage.get("estimated") == expected["estimated"]
+    assert usage.get("totalTokens") == expected["total"]
+
+
+def test_switching_to_a_thread_priced_under_another_model_blanks_the_bar():
+    out = _run(
+        _script(
+            """
+            // @ts-nocheck
+            import { seed, useChatRuntimeStore } from "./harness.ts";
+            __LOADED_MODEL__
+            const store = useChatRuntimeStore.getState();
+            store.setThreadContextUsage("thread-a", { promptTokens: 1, completionTokens: 1, totalTokens: 2, cachedTokens: 0, modelId: "unsloth/other-gguf" });
+            store.setThreadContextUsage("thread-b", { promptTokens: 2, completionTokens: 2, totalTokens: 4, cachedTokens: 0 });
+            store.setActiveThreadId("thread-a");
+            const a = useChatRuntimeStore.getState().contextUsage;
+            store.setActiveThreadId("thread-b");
+            const b = useChatRuntimeStore.getState().contextUsage;
+            console.log(JSON.stringify({
+              a,
+              b,
+              stamped: useChatRuntimeStore.getState().contextUsageByThreadId["thread-b"].modelId,
+            }));
+            """
+        )
+    )
+    assert out["a"] is None
+    assert (out["b"] or {}).get("totalTokens") == 4
+    assert out["stamped"] == "unsloth/gguf-model"
+
+
+_LIVE_CHANGE = """
+    // @ts-nocheck
+    import { renderThreadContextUsageRecount, seed, snapshot, useChatRuntimeStore, world } from "./harness.ts";
+    __LOADED_MODEL__
+    seed({ loadedIsGguf: true });
+    __PICK__
+    const model = useChatRuntimeStore.getState().params.checkpoint;
+    const text = (role, size) => (role === "user" ? "x" : "y").repeat(size);
+    const msg = (id, role, at, custom = {}, size = 40) => ({
+      id, role, createdAt: new Date(at), content: [{ type: "text", text: text(role, size) }],
+      metadata: { custom },
+      ...(role === "assistant" ? { status: { type: "complete" } } : {}),
+    });
+    const saved = (total, messageCount) => ({ promptTokens: total - 10, completionTokens: 10, totalTokens: total, cachedTokens: 0, modelId: model, messageCount });
+    const live = [
+      msg("u1", "user", 1), msg("a2", "assistant", 2, { contextUsage: saved(300, 2) }),
+      msg("u3", "user", 3), msg("a4", "assistant", 4, { contextUsage: saved(500, 4) }),
+      msg("u5", "user", 5), msg("a6", "assistant", 6, { contextUsage: saved(700, 6) }),
+    ];
+    world.liveMessages = { "thread-a": live };
+    world.storedMessages["thread-a"] = [];
+    seed({ activeThreadId: "thread-a" });
+    useChatRuntimeStore.getState().setContextUsage(saved(700, 6));
+    renderThreadContextUsageRecount();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const countsBefore = world.countedMessages.length;
+    const after = (__AFTER__)(live);
+    world.liveMessages["thread-a"] = after;
+    world.storedMessages["thread-a"] = after.map((m) => ({ ...m, createdAt: m.createdAt.getTime() }));
+    renderThreadContextUsageRecount();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const usage = snapshot().contextUsage;
+    console.log(JSON.stringify({
+      counts: world.countedMessages.length - countsBefore,
+      total: usage?.totalTokens ?? null,
+      estimated: usage?.estimated ?? null,
+    }));
+"""
+
+_LIVE_CHANGES = {
+    "in_place_edit_of_the_tip": (
+        "(live) => [...live.slice(0, 5), msg('a6', 'assistant', 6, "
+        "{ contextUsage: saved(700, 6), revision: 1 }, 400)]"
+    ),
+    "metadata_only_change": (
+        "(live) => [...live.slice(0, 5), { ...live[5], metadata: { custom: "
+        "{ ...live[5].metadata.custom, feedback: 'up' } } }]"
+    ),
+    "delete_the_last_reply": "(live) => live.slice(0, 5)",
+    "delete_the_last_turn": "(live) => live.slice(0, 4)",
+    "delete_a_middle_turn": "(live) => [live[0], live[1], live[4], live[5]]",
+    "delete_everything": "(live) => []",
+}
+
+
+@pytest.mark.parametrize(
+    ("change", "picked", "expected"),
+    [
+        ("in_place_edit_of_the_tip", "", {"counts": 1, "total": 162, "estimated": None}),
+        (
+            "in_place_edit_of_the_tip",
+            "external::openai::gpt-x",
+            {"counts": 0, "total": 610, "estimated": True},
+        ),
+        ("metadata_only_change", "", {"counts": 0, "total": 700, "estimated": None}),
+        (
+            "metadata_only_change",
+            "external::openai::gpt-x",
+            {"counts": 0, "total": 700, "estimated": None},
+        ),
+        ("delete_the_last_reply", "", {"counts": 1, "total": 137, "estimated": None}),
+        (
+            "delete_the_last_reply",
+            "external::openai::gpt-x",
+            {"counts": 0, "total": 510, "estimated": True},
+        ),
+        ("delete_the_last_turn", "", {"counts": 0, "total": 500, "estimated": None}),
+        (
+            "delete_the_last_turn",
+            "external::openai::gpt-x",
+            {"counts": 0, "total": 500, "estimated": None},
+        ),
+        ("delete_a_middle_turn", "", {"counts": 1, "total": 112, "estimated": None}),
+        (
+            "delete_a_middle_turn",
+            "external::openai::gpt-x",
+            {"counts": 0, "total": 320, "estimated": True},
+        ),
+        ("delete_everything", "", {"counts": 1, "total": 12, "estimated": None}),
+        (
+            "delete_everything",
+            "external::openai::gpt-x",
+            {"counts": 0, "total": None, "estimated": None},
+        ),
+    ],
+    ids = lambda value: value if isinstance(value, str) and not value.startswith("{") else None,
+)
+def test_a_change_to_the_shown_branch_reprices_the_meter(change, picked, expected):
+    pick = f"useChatRuntimeStore.getState().setCheckpoint({json.dumps(picked)});" if picked else ""
+    out = _run(_script(_LIVE_CHANGE, PICK = pick, AFTER = _LIVE_CHANGES[change]))
+    assert out == expected
+
+
+_HYDRATE_REVISED = """
+    // @ts-nocheck
+    import { hydrateThreadUsage, seed, snapshot, useChatRuntimeStore, world } from "./harness.ts";
+    __LOADED_MODEL__
+    seed({ loadedIsGguf: true, activeThreadId: "thread-a", contextUsage: null, contextUsageByThreadId: {} });
+    __PICK__
+    const model = useChatRuntimeStore.getState().params.checkpoint;
+    const saved = (total, messageCount, revision) => ({ promptTokens: total - 10, completionTokens: 10, totalTokens: total, cachedTokens: 0, modelId: model, messageCount, ...(revision ? { revision } : {}) });
+    const row = (id, parentId, role, createdAt, metadata = {}) => ({
+      id, parentId, role, createdAt, content: [{ type: "text", text: (role === "user" ? "x" : "y").repeat(40) }], metadata,
+    });
+    const messages = __MESSAGES__;
+    let release;
+    world.countGate = new Promise((resolve) => { release = resolve; });
+    await hydrateThreadUsage({ remoteId: "thread-a", messages });
+    const shown = snapshot().contextUsage;
+    release();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    console.log(JSON.stringify({
+      counts: world.countedMessages.length,
+      shown: { total: shown?.totalTokens ?? null, estimated: shown?.estimated ?? null },
+    }));
+"""
+
+_FIRST_TURN = 'row("u1", null, "user", 1), row("a2", "u1", "assistant", 2, __A2__)'
+
+
+@pytest.mark.parametrize(
+    ("a2", "tail", "picked", "expected"),
+    [
+        (
+            "{ contextUsage: saved(300, 2) }",
+            ', row("u3", "a2", "user", 3), '
+            'row("a4", "u3", "assistant", 4, { contextUsage: saved(500, 4), revision: 1 })',
+            "",
+            {"counts": 1, "shown": {"total": 320, "estimated": True}},
+        ),
+        (
+            "{ contextUsage: saved(300, 2) }",
+            ', row("u3", "a2", "user", 3), '
+            'row("a4", "u3", "assistant", 4, { contextUsage: saved(500, 4), revision: 1 })',
+            "external::openai::gpt-x",
+            {"counts": 0, "shown": {"total": 320, "estimated": True}},
+        ),
+        (
+            "{ contextUsage: saved(300, 2), revision: 1 }",
+            ', row("u3", "a2", "user", 3), '
+            'row("a4", "u3", "assistant", 10, { contextUsage: saved(500, 4, 1) })',
+            "",
+            {"counts": 0, "shown": {"total": 500, "estimated": None}},
+        ),
+        (
+            "{ contextUsage: saved(300, 2) }",
+            ', row("u5", "a2", "user", 5), row("a6", "u5", "assistant", 6, { contextUsage: saved(700, 6) })',
+            "",
+            {"counts": 1, "shown": {"total": 320, "estimated": True}},
+        ),
+        (
+            "{ contextUsage: saved(300, 2) }",
+            ', row("u3", "a2", "user", 3)',
+            "",
+            {"counts": 1, "shown": {"total": 310, "estimated": True}},
+        ),
+    ],
+    ids = [
+        "local_reply_edited_after_its_count",
+        "cloud_reply_edited_after_its_count",
+        "reply_written_after_an_earlier_edit",
+        "turn_deleted_above_the_reply",
+        "unanswered_last_prompt",
+    ],
+)
+def test_history_hydration_trusts_only_a_count_that_still_describes_its_branch(
+    a2, tail, picked, expected
+):
+    pick = f"useChatRuntimeStore.getState().setCheckpoint({json.dumps(picked)});" if picked else ""
+    messages = "[" + _FIRST_TURN.replace("__A2__", a2) + tail + "]"
+    out = _run(_script(_HYDRATE_REVISED, PICK = pick, MESSAGES = messages))
+    assert out == expected
+
+
+_OVERLAPPING_RUNS = """
+    // @ts-nocheck
+    import { renderThreadContextUsageRecount, seed, snapshot, useChatRuntimeStore, world } from "./harness.ts";
+    __LOADED_MODEL__
+    seed({ loadedIsGguf: true });
+    __PICK__
+    const model = useChatRuntimeStore.getState().params.checkpoint;
+    const msg = (id, role, at, custom = {}) => ({
+      id, role, createdAt: new Date(at), content: [{ type: "text", text: (role === "user" ? "x" : "y").repeat(40) }],
+      metadata: { custom },
+      ...(role === "assistant" ? { status: { type: "complete" } } : {}),
+    });
+    const saved = (total, messageCount) => ({ promptTokens: total - 10, completionTokens: 10, totalTokens: total, cachedTokens: 0, modelId: model, messageCount });
+    const live = [
+      msg("u1", "user", 1), msg("a2", "assistant", 2, { contextUsage: saved(300, 2) }),
+      msg("u3", "user", 3), msg("a4", "assistant", 4, { contextUsage: saved(500, 4) }),
+    ];
+    const show = (messages) => {
+      world.liveMessages = { "thread-a": messages };
+      world.storedMessages["thread-a"] = messages.map((m) => ({ ...m, createdAt: m.createdAt.getTime() }));
+    };
+    const render = async () => {
+      renderThreadContextUsageRecount();
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    };
+    show(live);
+    seed({ activeThreadId: "thread-a", runningByThreadId: { "thread-y": true } });
+    useChatRuntimeStore.getState().setContextUsage(saved(500, 4));
+    await render();
+    const countsBefore = world.countedMessages.length;
+    __STEPS__
+    const usage = snapshot().contextUsage;
+    console.log(JSON.stringify({
+      counts: world.countedMessages.length - countsBefore,
+      total: usage?.totalTokens ?? null,
+      estimated: usage?.estimated ?? null,
+    }));
+"""
+
+_SWITCH_WHILE_ANOTHER_CHAT_RUNS = """
+    show([...live.slice(0, 3), msg("a4b", "assistant", 5, { contextUsage: saved(800, 4) })]);
+    await render();
+    seed({ runningByThreadId: {} });
+    await render();
+"""
+
+_DELETE_AFTER_OWN_RUN_WHILE_ANOTHER_CHAT_RUNS = """
+    seed({ runningByThreadId: { "thread-y": true, "thread-a": true } });
+    await render();
+    const finished = [...live, msg("u5", "user", 6), msg("a6", "assistant", 7, { contextUsage: saved(700, 6) })];
+    show(finished);
+    useChatRuntimeStore.getState().setContextUsage(saved(700, 6));
+    seed({ runningByThreadId: { "thread-y": true } });
+    await render();
+    show([finished[0], finished[1], finished[4], finished[5]]);
+    await render();
+    seed({ runningByThreadId: {} });
+    await render();
+"""
+
+
+@pytest.mark.parametrize(
+    ("steps", "picked", "expected"),
+    [
+        (_SWITCH_WHILE_ANOTHER_CHAT_RUNS, "", {"counts": 0, "total": 800, "estimated": None}),
+        (
+            _SWITCH_WHILE_ANOTHER_CHAT_RUNS,
+            "external::openai::gpt-x",
+            {"counts": 0, "total": 800, "estimated": None},
+        ),
+        (
+            _DELETE_AFTER_OWN_RUN_WHILE_ANOTHER_CHAT_RUNS,
+            "",
+            {"counts": 1, "total": 112, "estimated": None},
+        ),
+        (
+            _DELETE_AFTER_OWN_RUN_WHILE_ANOTHER_CHAT_RUNS,
+            "external::openai::gpt-x",
+            {"counts": 0, "total": 320, "estimated": True},
+        ),
+    ],
+    ids = [
+        "local_branch_switch",
+        "cloud_branch_switch",
+        "local_delete_after_its_own_run",
+        "cloud_delete_after_its_own_run",
+    ],
+)
+def test_a_change_made_while_another_chat_generates_is_priced_when_it_ends(steps, picked, expected):
+    pick = f"useChatRuntimeStore.getState().setCheckpoint({json.dumps(picked)});" if picked else ""
+    out = _run(_script(_OVERLAPPING_RUNS, PICK = pick, STEPS = textwrap.dedent(steps)))
+    assert out == expected

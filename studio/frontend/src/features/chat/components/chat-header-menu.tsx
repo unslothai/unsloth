@@ -183,6 +183,7 @@ function ChatMenuItems({ menu }: { menu: ActiveChatMenu }) {
       state.activeThreadId === menu.item.id
         ? state.contextUsage
         : state.contextUsageByThreadId[menu.item.id];
+    if (usage?.modelId && usage.modelId !== state.params.checkpoint) return null;
     return deriveContextUsageBar({
       used: usage?.contextTokens ?? usage?.totalTokens ?? null,
       total: state.loadedContextLength,

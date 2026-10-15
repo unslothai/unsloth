@@ -4,6 +4,7 @@
 // its own plain module so the node suite can drive it: the component is JSX the runner cannot import
 
 export const formatTokenCount = (n: number): string => {
+  if (n >= 999_950) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
   return String(n);
 };
@@ -33,6 +34,46 @@ export type ContextUsageBarInput = {
   contextBudget?: number | null;
   estimated?: boolean;
 };
+
+export type ContextUsageRows = Pick<
+  ContextUsageBarInput,
+  "promptTokens" | "completionTokens" | "cached" | "cacheWrites"
+>;
+
+export function contextUsageRows(
+  usage:
+    | {
+        promptTokens: number;
+        completionTokens: number;
+        contextTokens?: number;
+        cachedTokens?: number;
+        cacheWriteTokens?: number;
+      }
+    | null
+    | undefined,
+  external: boolean,
+): ContextUsageRows {
+  if (!usage) return {};
+  const context = usage.contextTokens;
+  if (context === undefined) {
+    return {
+      promptTokens: usage.promptTokens,
+      completionTokens: usage.completionTokens,
+      cached: usage.cachedTokens,
+      cacheWrites: usage.cacheWriteTokens,
+    };
+  }
+  const describesContext = external
+    ? context === usage.promptTokens + usage.completionTokens
+    : context >= usage.promptTokens;
+  if (!describesContext) return {};
+  return {
+    promptTokens: usage.promptTokens,
+    completionTokens: context - usage.promptTokens,
+    cached: usage.cachedTokens,
+    cacheWrites: usage.cacheWriteTokens,
+  };
+}
 
 /**
  * Which limit warning the tooltip carries, if any.
@@ -109,7 +150,7 @@ export function deriveContextUsageBar({
 }: ContextUsageBarInput): ContextUsageBarState | null {
   const limit = typeof total === "number" && total > 0 ? total : null;
   const usedTokens =
-    typeof used === "number" && Number.isFinite(used) ? used : null;
+    typeof used === "number" && Number.isFinite(used) && used >= 0 ? used : null;
 
   // no per-turn rows and no limit advice: neither is known from a guess
   if (estimated && usedTokens !== null && usedTokens > 0) {

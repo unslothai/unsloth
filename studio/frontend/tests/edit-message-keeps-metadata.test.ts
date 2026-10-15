@@ -121,10 +121,29 @@ async function save(
   return h.saved[0];
 }
 
+function withoutRevision(metadata: unknown): Record<string, unknown> {
+  const { revision, ...kept } = metadata as Record<string, unknown>;
+  assert.equal(revision, 1);
+  return kept;
+}
+
 test("an edited reply keeps the metadata the turn was stored with", async () => {
   const record = await save("an edited reply");
 
-  assert.deepEqual(record.metadata, CUSTOM);
+  assert.deepEqual(withoutRevision(record.metadata), CUSTOM);
+});
+
+test("saving a reply unchanged does not mark it revised", async () => {
+  const h = harness();
+  const exported = thread([{ type: "text", text: "the original reply" }]);
+  await h.module.updateThreadMessage({
+    thread: { export: () => exported, import: () => {} },
+    messageId: "a0",
+    remoteId: "remote-1",
+    newText: h.module.extractTaggedText(exported.messages[1].message.content),
+    isIncognito: false,
+  });
+  assert.equal("revision" in ((h.saved[0].metadata ?? {}) as Record<string, unknown>), false);
 });
 
 test("editing clears stale Gemini continuation replay and keeps other metadata", async () => {
@@ -137,7 +156,7 @@ test("editing clears stale Gemini continuation replay and keeps other metadata",
     },
   });
 
-  assert.deepEqual(record.metadata, CUSTOM);
+  assert.deepEqual(withoutRevision(record.metadata), CUSTOM);
   assert.equal(
     "geminiContinuationReplay" in (record.metadata as Record<string, unknown>),
     false,
@@ -155,7 +174,7 @@ test("the edit still rewrites the content and its identity", async () => {
   assert.deepEqual(record.content, [{ type: "text", text: "an edited reply" }]);
 });
 
-test("a reply with no metadata of its own writes none", async () => {
+test("a reply with no metadata of its own writes only its revision", async () => {
   const h = harness();
   const exported = thread([{ type: "text", text: "hi" }]);
   const target = exported.messages[1].message;
@@ -169,7 +188,7 @@ test("a reply with no metadata of its own writes none", async () => {
     isIncognito: false,
   });
 
-  assert.equal("metadata" in h.saved[0], false);
+  assert.deepEqual(withoutRevision(h.saved[0].metadata), {});
 });
 
 test("an incognito edit is never written at all", async () => {
@@ -234,7 +253,7 @@ async function saveOwnedReply(custom: Record<string, unknown>) {
 test("editing a generated reply drops the run's claim on the turn", async () => {
   const record = await saveOwnedReply({ ...CUSTOM, ...GENERATION_OWNERSHIP });
 
-  assert.deepEqual(record.metadata, CUSTOM);
+  assert.deepEqual(withoutRevision(record.metadata), CUSTOM);
   assert.deepEqual(
     Object.keys(GENERATION_OWNERSHIP).filter(
       (key) => key in (record.metadata as Record<string, unknown>),
@@ -255,11 +274,11 @@ test("the strip covers the backend's whole server-managed key set", async () => 
     researchRun: { id: "research-1" },
   });
 
-  assert.deepEqual(record.metadata, CUSTOM);
+  assert.deepEqual(withoutRevision(record.metadata), CUSTOM);
 });
 
-test("a reply whose only metadata was the run's claim writes none", async () => {
+test("a reply whose only metadata was the run's claim writes only its revision", async () => {
   const record = await saveOwnedReply({ ...GENERATION_OWNERSHIP });
 
-  assert.equal("metadata" in record, false);
+  assert.deepEqual(withoutRevision(record.metadata), {});
 });

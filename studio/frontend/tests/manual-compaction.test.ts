@@ -532,6 +532,16 @@ test("the compact menu ring follows the selected chat's current context usage", 
   state.contextUsageByThreadId = { "ring-chat": { totalTokens: 200 } };
   state.loadedContextLength = null;
   assert.equal(select(state), null);
+  state.loadedContextLength = 1000;
+  const priced = { ...state, params: { checkpoint: "unsloth/gguf-model" } };
+  priced.contextUsageByThreadId = {
+    "ring-chat": { totalTokens: 200, modelId: "unsloth/gguf-model" },
+  } as typeof state.contextUsageByThreadId;
+  assert.equal(select(priced), 20);
+  priced.contextUsageByThreadId = {
+    "ring-chat": { totalTokens: 200, modelId: "unsloth/other-gguf" },
+  } as typeof state.contextUsageByThreadId;
+  assert.equal(select(priced), null);
 });
 
 test("the compact menu item binds its action, live ring and busy state", () => {

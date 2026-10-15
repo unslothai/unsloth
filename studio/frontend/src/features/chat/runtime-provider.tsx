@@ -212,7 +212,13 @@ import {
   orderParentsFirst,
   resolveSavedBranchHead,
 } from "./utils/message-order";
-import { estimateContextUsage } from "./utils/estimate-chat-tokens";
+import {
+  branchContextUsage,
+  estimateBranch,
+  revisionTotal,
+  sameContextUsage,
+  threadBranchRecords,
+} from "./utils/saved-context-usage";
 import {
   awaitStoredChatThreadWrites,
   deleteStoredChatThreads,
@@ -2877,36 +2883,13 @@ function useStudioRuntimeAdapters(
         );
         const branch = orderBySelectedBranch(msgs, headId);
 
-        // restore usage from the selected branch's last assistant message when the model matches
-        const lastAssistant = [...branch]
-          .reverse()
-          .find((m) => m.role === "assistant");
-        const savedUsage = (lastAssistant?.metadata as Record<string, unknown>)
-          ?.contextUsage as
-          | {
-              promptTokens: number;
-              completionTokens: number;
-              totalTokens: number;
-              contextTokens?: number;
-              cachedTokens: number;
-              cacheWriteTokens?: number;
-              modelId?: string;
-            }
-          | undefined;
         const store = useChatRuntimeStore.getState();
-        // reject usage beyond a local GGUF window; MLX and external providers have no local bound
-        const localLimit = store.loadedIsGguf ? store.loadedContextLength : null;
-        const withinLocalLimit =
-          !localLimit || (savedUsage?.contextTokens ?? savedUsage?.totalTokens ?? 0) <= localLimit;
-        // trust legacy usage only when a known local window prevents cross-provider attribution
-        const modelMatches = savedUsage?.modelId
-          ? savedUsage.modelId === store.params.checkpoint
-          : typeof store.loadedContextLength === "number" &&
-            store.loadedContextLength > 0;
-        // retain the usage object so TypeScript preserves narrowing for later writes
-        const restoredUsage =
-          savedUsage && withinLocalLimit && modelMatches ? savedUsage : null;
-        const shownUsage = restoredUsage ?? estimateContextUsage(branch);
+        const checkpoint = store.params.checkpoint;
+        const localWindow =
+          checkpoint && !isExternalModelId(checkpoint) ? store.loadedContextLength : null;
+        const shownUsage =
+          branchContextUsage(branch, checkpoint, localWindow, store.loadedIsGguf ? localWindow : null) ??
+          estimateBranch(branch);
         if (shownUsage) {
           // key usage by the loaded thread because the active thread may change during awaits
           store.setThreadContextUsage(remoteId, shownUsage);
@@ -2915,7 +2898,7 @@ function useStudioRuntimeAdapters(
           }
         }
         // recount only without exact usage; model switches qualify, and compare panes never own the bar (#7450)
-        if (!restoredUsage && modelType === "base" && !pairId) {
+        if ((!shownUsage || shownUsage.estimated) && modelType === "base" && !pairId) {
           void refreshContextUsage({ threadId: remoteId });
         }
 
@@ -3864,6 +3847,20 @@ function ThreadContextUsageRecount({
   const runActive = useChatRuntimeStore((s) =>
     Object.values(s.runningByThreadId).some(Boolean),
   );
+  const tipId = useAuiState(({ thread }) => thread.messages.at(-1)?.id);
+  const tipRunning = useAuiState(({ thread }) => {
+    const last = thread.messages.at(-1);
+    return last?.role === "assistant" && last.status?.type === "running";
+  });
+  const branchLength = useAuiState(({ thread }) => thread.messages.length);
+  const branchRevision = useAuiState(({ thread }) => revisionTotal(thread.messages));
+  const pricedTipRef = useRef<{
+    threadId: string;
+    tipId: string | undefined;
+    length: number;
+    revision: number;
+    ran: boolean;
+  } | null>(null);
 
   useEffect(() => {
     if (
@@ -3916,30 +3913,104 @@ function ThreadContextUsageRecount({
       return;
     }
     // Only the tip's count describes the branch: a later turn whose run never answered is unpriced.
-    const tip = messages.at(-1);
-    const saved = (tip?.role === "assistant" ? tip.metadata?.custom?.contextUsage : undefined) as
-      | (NonNullable<typeof shown> & { modelId?: string })
-      | undefined;
     // The history loader's rules, keyed on the SELECTED model (a resident GGUF stays loaded under a
     // cloud pick): llama.cpp stops at its window (MLX runs past it), and legacy usage without a
     // modelId is trusted only under a local window.
     const store = useChatRuntimeStore.getState();
-    const ggufWindow = store.loadedIsGguf ? localWindow : null;
-    const withinWindow =
-      !ggufWindow || (saved?.contextTokens ?? saved?.totalTokens ?? 0) <= ggufWindow;
-    const modelMatches = saved?.modelId
-      ? saved.modelId === checkpoint
-      : localWindow != null && localWindow > 0;
+    const branch = threadBranchRecords(messages);
     const usage =
-      saved && withinWindow && modelMatches
-        ? saved
-        : estimateContextUsage(
-            messages.map((m, index) => ({ ...m, createdAt: index })) as unknown as MessageRecord[],
-          );
+      branchContextUsage(branch, checkpoint, localWindow, store.loadedIsGguf ? localWindow : null) ??
+      estimateBranch(branch);
     if (!usage) return;
     store.setThreadContextUsage(activeThreadId, usage);
     store.setContextUsage(usage);
   }, [activeThreadId, aui, checkpoint, enabled, loadedContextLength, modelLoading, runActive]);
+
+  useEffect(() => {
+    if (!enabled || !activeThreadId || modelLoading) return;
+    let messages: readonly ThreadMessage[];
+    try {
+      if (aui.threads().getState().mainThreadId !== activeThreadId) return;
+      messages = aui.thread().getState().messages;
+    } catch {
+      return;
+    }
+    const store = useChatRuntimeStore.getState();
+    const tip = messages.at(-1);
+    const priced = pricedTipRef.current;
+    const current = {
+      threadId: activeThreadId,
+      tipId: tip?.id,
+      length: messages.length,
+      revision: branchRevision,
+      ran: false,
+    };
+    if (priced?.threadId !== activeThreadId || priced.tipId == null) {
+      pricedTipRef.current = { ...current, ran: runActive };
+      return;
+    }
+    if (runActive) {
+      if (!priced.ran) pricedTipRef.current = { ...priced, ran: true };
+      return;
+    }
+    if (
+      priced.tipId === tip?.id &&
+      priced.length === messages.length &&
+      priced.revision === branchRevision
+    ) {
+      if (priced.ran) pricedTipRef.current = current;
+      return;
+    }
+    if (tipRunning) return;
+    pricedTipRef.current = current;
+    const shown = store.contextUsage;
+    if (priced.ran && (shown == null || shown.estimated)) return;
+    const localWindow =
+      checkpoint && !isExternalModelId(checkpoint) ? loadedContextLength : null;
+    const branch = threadBranchRecords(messages);
+    const usage = branchContextUsage(
+      branch,
+      checkpoint,
+      localWindow,
+      store.loadedIsGguf ? localWindow : null,
+    );
+    if (usage && !usage.estimated) {
+      if (!sameContextUsage(shown, usage, checkpoint)) {
+        store.setThreadContextUsage(activeThreadId, usage);
+        store.setContextUsage(usage);
+      }
+      return;
+    }
+    if (
+      localWindow != null &&
+      !messagesContainImage(messages) &&
+      !findLatestUserAudioBase64(messages) &&
+      !findLatestUserVideoBase64(messages)
+    ) {
+      void refreshContextUsage({ threadId: activeThreadId });
+      return;
+    }
+    if (!tip) {
+      store.setContextUsage(null);
+      return;
+    }
+    const next = usage ?? (shown != null && !shown.estimated ? null : estimateBranch(branch));
+    if (!next) return;
+    store.setThreadContextUsage(activeThreadId, next);
+    store.setContextUsage(next);
+  }, [
+    activeThreadId,
+    aui,
+    branchLength,
+    branchRevision,
+    checkpoint,
+    enabled,
+    loadedContextLength,
+    modelLoading,
+    runActive,
+    tipId,
+    tipRunning,
+  ]);
 
   return null;
 }

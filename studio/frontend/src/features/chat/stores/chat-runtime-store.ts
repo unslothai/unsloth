@@ -2354,6 +2354,7 @@ type ContextUsageSnapshot = {
   cachedTokens: number;
   // Anthropic-only; optional so pre-cache-stats persisted entries load.
   cacheWriteTokens?: number;
+  modelId?: string;
   // a text-length guess from storage, replaced by any count
   estimated?: boolean;
 };
@@ -5097,13 +5098,17 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   // Re-apply the incoming thread's own usage rather than blanking the bar: a run that finished in the
   // background never wrote the visible value, and a still-mounted runtime skips the history loader.
   setActiveThreadId: (activeThreadId) =>
-    set((state) => ({
-      activeThreadId,
-      activeThreadEpoch: state.activeThreadEpoch + 1,
-      contextUsage: activeThreadId
+    set((state) => {
+      const own = activeThreadId
         ? (state.contextUsageByThreadId[activeThreadId] ?? null)
-        : null,
-    })),
+        : null;
+      return {
+        activeThreadId,
+        activeThreadEpoch: state.activeThreadEpoch + 1,
+        contextUsage:
+          own && own.modelId && own.modelId !== state.params.checkpoint ? null : own,
+      };
+    }),
   applyThreadScopedSettings: (threadId, settings) =>
     set((state) => {
       settings = normalizeSavedThreadScopedSettings(settings);
@@ -6155,20 +6160,27 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   // survives a switch: that loader runs once per mount and setActiveThreadId reads the map.
   setContextUsage: (contextUsage) =>
     set((state) => {
-      if (!state.activeThreadId) return { contextUsage };
+      const stamped =
+        contextUsage && !contextUsage.modelId && state.params.checkpoint
+          ? { ...contextUsage, modelId: state.params.checkpoint }
+          : contextUsage;
+      if (!state.activeThreadId) return { contextUsage: stamped };
       const next = { ...state.contextUsageByThreadId };
-      if (contextUsage) {
-        next[state.activeThreadId] = contextUsage;
+      if (stamped) {
+        next[state.activeThreadId] = stamped;
       } else {
         delete next[state.activeThreadId];
       }
-      return { contextUsage, contextUsageByThreadId: next };
+      return { contextUsage: stamped, contextUsageByThreadId: next };
     }),
   setThreadContextUsage: (threadId, usage) =>
     set((state) => ({
       contextUsageByThreadId: {
         ...state.contextUsageByThreadId,
-        [threadId]: usage,
+        [threadId]:
+          usage.modelId || !state.params.checkpoint
+            ? usage
+            : { ...usage, modelId: state.params.checkpoint },
       },
     })),
 }));
