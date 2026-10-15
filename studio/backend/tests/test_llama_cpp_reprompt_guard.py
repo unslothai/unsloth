@@ -459,8 +459,7 @@ def test_numbered_list_is_not_an_answer_artifact():
 
 
 def test_step_labelled_results_are_not_a_plan():
-    """A finished answer that labels its results by step is not a plan, so the tool loop must not
-    re-prompt it and re-run every tool. "Step N" still reads as a plan when an action follows it."""
+    """Step-labelled results are not a plan; "Step N" before an action still is."""
     from core.inference.tool_call_parser import is_short_intent_without_action
 
     answers = [

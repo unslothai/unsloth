@@ -200,10 +200,8 @@ INTENT_SIGNAL = re.compile(
     r"|(?:^|[.!?]\s+)\s*first\s*[,:–—-]?\s+(?:i|we|let['’]?s|let us)\b"
     r"|(?:^|[.!?]\s+)\s*first\s*[,:–—-]?\s+" + _ACTION_VERB + r"\b"
     r"|"
-    # "Step N" needs an action verb or "let's" after it, or a "Step N:" heading that ends its line. A bare match fired
-    # on finished answers that report per-step results ("**Step 1 line for 400:** 400 160000"), re-running every tool
-    # after the reply. No bare pronoun: "Step 1: I found 391" is a result, and "I'll"/"I will" match above anyway.
-    # The action may open the next non-blank line or its list item, under a "**Step 1**", "### Step 1" or "Step 1." heading.
+    # "Step N" counts only before an action (same line, next non-blank line or its list item) or as a "Step N:" heading:
+    # a bare match re-prompted finished answers like "Step 1 result: 391", re-running every tool.
     r"\bstep \d+[ \t*_]*(?::[ \t*_\r]*$|(?:[:,.)\u2013\u2014-][ \t*_]*)?(?:\r?\n(?:[ \t]*\r?\n)?[ \t*_#>-]*(?:\d+[.)][ \t*_]*)?)?(?:(?:let['’]?s|let us)\b|"
     + _ACTION_VERB
     + r"\b))"
