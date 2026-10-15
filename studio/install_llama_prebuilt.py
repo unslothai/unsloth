@@ -2000,13 +2000,53 @@ def _warn_uncovered_cuda_host(
     log(message)
 
 
+def _mask_widened_sms(host: HostInfo) -> list[str] | None:
+    """Every physical SM when CUDA_VISIBLE_DEVICES hides a card with an SM the visible ones lack.
+
+    The mask is per process, the install tree is not: a bundle cut to the visible cards dies
+    with "no kernel image" on the hidden one once the mask is gone, and torch / setup.sh
+    already target every physical GPU. Coverage only widens; the mask still picks the card
+    at runtime. None when nothing is hidden or the physical caps are unknown.
+    """
+    visible = normalize_compute_caps(host.compute_caps)
+    physical = normalize_compute_caps(host.physical_compute_caps)
+    if not physical or set(physical) <= set(visible):
+        return None
+    return normalize_compute_caps(physical + visible)
+
+
 def linux_cuda_choice_from_release(
     host: HostInfo,
     release: PublishedReleaseBundle,
     preferred_runtime_line: str | None = None,
     selection_preamble: Iterable[str] = (),
+    host_sms: list[str] | None = None,
 ) -> LinuxCudaSelection | None:
-    host_sms = normalize_compute_caps(host.compute_caps)
+    selection_preamble = list(selection_preamble)
+    # An explicit host_sms is the widened try, whose miss falls back rather than warns.
+    warn_uncovered = host_sms is None
+    if host_sms is None:
+        widened_sms = _mask_widened_sms(host)
+        if widened_sms is not None:
+            widened = linux_cuda_choice_from_release(
+                host,
+                release,
+                preferred_runtime_line,
+                selection_preamble
+                + [
+                    "linux_cuda_selection: covering the GPUs CUDA_VISIBLE_DEVICES hides, "
+                    f"physical_sms={','.join(widened_sms)}"
+                ],
+                host_sms = widened_sms,
+            )
+            if widened is not None:
+                return widened
+            # No bundle covers every physical card: keep the visible-only choice.
+            selection_preamble.append(
+                "linux_cuda_selection: no bundle covers physical_sms="
+                f"{','.join(widened_sms)}; selecting for the visible GPUs"
+            )
+        host_sms = normalize_compute_caps(host.compute_caps)
     detected_runtime_lines, runtime_dirs = detected_linux_runtime_lines()
     driver_runtime_lines = compatible_linux_runtime_lines(host)
     runtime_lines = [
@@ -2060,6 +2100,8 @@ def linux_cuda_choice_from_release(
         selection_log.append(
             "linux_cuda_selection: no Linux CUDA runtime line satisfied both runtime libraries and driver compatibility"
         )
+        if not warn_uncovered:
+            return None
         if driver_below_cuda_prebuilt_floor(host):
             floor_message = cuda_driver_floor_message(host)
             selection_log.append(f"linux_cuda_selection: {floor_message}")
@@ -2219,13 +2261,14 @@ def linux_cuda_choice_from_release(
             add_attempt(artifact, url, "portable fallback for runtime line")
 
     if not attempts:
-        _warn_uncovered_cuda_host(
-            host_sms,
-            detected_runtime_lines,
-            driver_runtime_lines,
-            published_artifacts,
-            host.is_arm64,
-        )
+        if warn_uncovered:
+            _warn_uncovered_cuda_host(
+                host_sms,
+                detected_runtime_lines,
+                driver_runtime_lines,
+                published_artifacts,
+                host.is_arm64,
+            )
         return None
 
     selection_log.append(
@@ -3613,7 +3656,34 @@ def published_windows_cuda_attempts(
     preferred_runtime_line: str | None,
     selection_preamble: Iterable[str] = (),
     arch: str | None = None,
+    host_sms: list[str] | None = None,
 ) -> list[AssetChoice]:
+    selection_preamble = list(selection_preamble)
+    # The widened try logs nothing a visible-only retry would repeat.
+    log_floor = host_sms is None
+    if host_sms is None:
+        # As linux_cuda_choice_from_release: cover the cards the mask hides when a bundle can.
+        widened_sms = _mask_widened_sms(host)
+        if widened_sms is not None:
+            widened = published_windows_cuda_attempts(
+                host,
+                release,
+                preferred_runtime_line,
+                selection_preamble
+                + [
+                    "windows_cuda_selection: covering the GPUs CUDA_VISIBLE_DEVICES hides, "
+                    f"physical_sms={','.join(widened_sms)}"
+                ],
+                arch = arch,
+                host_sms = widened_sms,
+            )
+            if widened:
+                return widened
+            selection_preamble.append(
+                "windows_cuda_selection: no bundle covers physical_sms="
+                f"{','.join(widened_sms)}; selecting for the visible GPUs"
+            )
+        host_sms = normalize_compute_caps(host.compute_caps)
     if arch is None:
         arch = windows_cuda_arch_for_host(host)
     install_kind = windows_cuda_install_kind_for_arch(arch)
@@ -3675,9 +3745,9 @@ def published_windows_cuda_attempts(
         if driver_below_cuda_prebuilt_floor(host):
             floor_message = cuda_driver_floor_message(host)
             selection_log.append(f"windows_cuda_selection: {floor_message}")
-            log(floor_message)
+            if log_floor:
+                log(floor_message)
 
-    host_sms = normalize_compute_caps(host.compute_caps)
     attempts: list[AssetChoice] = []
     for runtime_line in ordered_lines:
         if not runtime_line:
