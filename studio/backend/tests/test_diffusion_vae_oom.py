@@ -726,3 +726,23 @@ def test_unprobed_floor_ignores_an_axis_the_input_fits_in():
     stats = vae._unsloth_vae_oom_stats
     assert stats["recovered"] == 1 and stats["quality_refused"] == 0
     assert vae.seen[-1][2] == 128  # width tiles halved to 16 latents
+
+
+class _BatchProbeWanLike(_WanLike):
+    def __init__(self, fits):
+        super().__init__(fits)
+        self.probe_batches = []
+
+    def _decode(self, z, return_dict = True):
+        if z.shape[-1] != 64:
+            self.probe_batches.append(int(z.shape[0]))
+        return super()._decode(z, return_dict)
+
+
+def test_probe_crop_takes_one_batch_element():
+    vae = _BatchProbeWanLike(fits = 64)
+    vae.use_tiling = True
+    O.install(vae)
+    out = vae._decode(torch.zeros(4, 4, 1, 64, 64))
+    assert out[0].shape[0] == 4 and out[0].shape[-2:] == (512, 512)
+    assert vae.probe_batches and set(vae.probe_batches) == {1}
