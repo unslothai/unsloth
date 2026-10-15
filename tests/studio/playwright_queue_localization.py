@@ -207,17 +207,22 @@ def check_stuck_composition_recovers(page, base):
     print("PASS: a stuck composition recovers on timeout and on blur", flush = True)
 
 
-# Reads the glyph's painted box back into viewBox units, so the check does not
-# depend on the rendered icon size.
+# Reads the glyph's centre in the icon's own viewBox units: getBBox() is the
+# path's geometry, and its transform attribute is what moves it. Painted client
+# rects are not used: WebKit on hosted runners has measured them 0.1 to 0.3 units
+# off in both axes, a different amount on each attempt, while the same build
+# measures centred locally and on every other engine.
 GLYPH_GEOMETRY = """() => {
     const item = [...document.querySelectorAll('[role="menuitem"]')]
         .find((element) => element.textContent.trim() === 'Resume queue');
     const svg = item.querySelector('svg'), path = svg.querySelector('path');
-    const box = svg.getBoundingClientRect(), glyph = path.getBoundingClientRect();
-    const units = 24 / box.width;
+    const view = svg.viewBox.baseVal, bbox = path.getBBox();
+    const shift = path.transform.baseVal.consolidate();
+    const centre = new DOMPoint(bbox.x + bbox.width / 2, bbox.y + bbox.height / 2)
+        .matrixTransform(shift ? shift.matrix : new DOMMatrix());
     return {
-        dx: ((glyph.x + glyph.width / 2) - (box.x + box.width / 2)) * units,
-        dy: ((glyph.y + glyph.height / 2) - (box.y + box.height / 2)) * units,
+        dx: centre.x - (view.x + view.width / 2),
+        dy: centre.y - (view.y + view.height / 2),
     };
 }"""
 
