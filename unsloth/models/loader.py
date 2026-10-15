@@ -2415,7 +2415,23 @@ class FastModel(FastBaseModel):
             )
             fast_inference = False
             _drop_vllm_engine_kwargs(kwargs)
-            base_revision = _revision_before_vllm
+            if _revision_before_vllm is not None and base_revision is None:
+                base_revision = _revision_before_vllm
+                # The config above was probed at the default branch; the weights now load at the pin.
+                if user_config is None and peft_config is None:
+                    model_config = AutoConfig.from_pretrained(
+                        model_name,
+                        token = token,
+                        revision = base_revision,
+                        trust_remote_code = trust_remote_code,
+                        local_files_only = local_files_only,
+                    )
+                    _model_type_config = model_config
+                    model_types = get_transformers_model_type(
+                        model_config,
+                        trust_remote_code = trust_remote_code,
+                    )
+                    model_types_all = ",".join(model_types) + ","
 
         # Text-diffusion models (DiffusionGemma) take a transformers-only slow path: a custom block-diffusion generate over a novel backbone, so Unsloth's autoregressive kernel/compile patching is skipped and the unmodified HF model is loaded, keeping 4bit/8bit and PEFT LoRA.
         # Remote-code checkpoints can report their backbone's type (Nemotron-Labs-Diffusion says "nemotron"), so also match the raw config.
