@@ -590,6 +590,7 @@ def _rms_forward(
                 # int32 rows measured slower only for the Gemma multi-row forward: keep main's int64.
                 LONG_INDEXING = long or gemma,
                 num_warps = num_warps,
+                enable_fp_fusion = True,
             )
             return Y, r
         except Exception as error:
@@ -612,6 +613,7 @@ def _rms_forward(
         LONG_INDEXING = long,
         BLOCK_SIZE = BLOCK_SIZE,
         num_warps = num_warps,
+        enable_fp_fusion = True,
     )
     return Y, r
 
@@ -706,6 +708,7 @@ def _rms_backward(
                 LONG_INDEXING = long,
                 TRAIN_W = train_w,
                 num_warps = num_warps,
+                enable_fp_fusion = True,
             )
         except Exception as error:
             if _multirow_must_raise(error, wrap):
@@ -742,6 +745,7 @@ def _rms_backward(
         TRAIN_W = train_w,
         num_warps = num_warps,
         **launch,
+        enable_fp_fusion = True,
     )
     return _rms_sum_partials(partials, W, wrap)
 
@@ -752,7 +756,13 @@ def _rms_sum_partials(partials, W, wrap):
     programs, n_cols = partials.shape
     dW = torch.empty(n_cols, dtype = W.dtype, device = partials.device)
     wrap(_rms_sum_dw_partials)[(triton.cdiv(n_cols, 64),)](
-        partials, dW, programs, n_cols, BLOCK_ROWS = 64, BLOCK_COLS = 64
+        partials,
+        dW,
+        programs,
+        n_cols,
+        BLOCK_ROWS = 64,
+        BLOCK_COLS = 64,
+        enable_fp_fusion = True,
     )
     return dW
 

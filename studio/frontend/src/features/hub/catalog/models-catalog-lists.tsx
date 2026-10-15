@@ -40,6 +40,7 @@ import {
   NetworkErrorState,
   SkeletonList,
 } from "./catalog-states";
+import { useIsMobile } from "@/hooks/use-mobile";
 import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import {
   CATALOG_COLUMN_GAP_PX,
@@ -50,13 +51,14 @@ import {
   type AllModelsView,
   type InventorySort,
   RESULT_CARD_HEIGHT_PX,
+  RESULT_CARD_MOBILE_HEIGHT_PX,
   RESULT_GRID_HEIGHT_PX,
   RESULT_GRID_ROW_HEIGHT_PX,
   RESULT_ROW_HEIGHT_PX,
+  RESULT_ROW_MOBILE_HEIGHT_PX,
   RESULT_SPLIT_HEIGHT_PX,
   RESULT_SPLIT_ROW_HEIGHT_PX,
   ResultCard,
-  ResultGridRow,
   ResultSplitRow,
 } from "./models-table";
 
@@ -109,6 +111,7 @@ export function DiscoverList({
   onRetry,
   onSwitchDevice,
   view,
+  columns,
   selectedId,
   showFormatDots = true,
 }: {
@@ -135,22 +138,21 @@ export function DiscoverList({
   onRetry: () => void;
   onSwitchDevice?: () => void;
   view: AllModelsView;
+  columns: number;
   showFormatDots?: boolean;
 }) {
-  // "two" = two cards per row; "grid" = compact table rows; "split" = one card per row.
   const isSplit = view === "split";
-  const isCardLike = view === "two" || view === "split";
+  const isMobile = useIsMobile();
   const rowHeight = isSplit
     ? RESULT_SPLIT_ROW_HEIGHT_PX
-    : isCardLike
-      ? RESULT_ROW_HEIGHT_PX
-      : RESULT_GRID_ROW_HEIGHT_PX;
+    : isMobile
+      ? RESULT_ROW_MOBILE_HEIGHT_PX
+      : RESULT_ROW_HEIGHT_PX;
   const cellHeight = isSplit
     ? RESULT_SPLIT_HEIGHT_PX
-    : isCardLike
-      ? RESULT_CARD_HEIGHT_PX
-      : RESULT_GRID_HEIGHT_PX;
-  const columns = view === "two" ? 2 : 1;
+    : isMobile
+      ? RESULT_CARD_MOBILE_HEIGHT_PX
+      : RESULT_CARD_HEIGHT_PX;
 
   return (
     <>
@@ -167,7 +169,7 @@ export function DiscoverList({
               cellHeight={cellHeight}
               getKey={(row) => row.id}
               renderRow={(row) =>
-                view === "split" ? (
+                isSplit ? (
                   <ResultSplitRow
                     row={row}
                     deviceType={deviceType}
@@ -176,16 +178,8 @@ export function DiscoverList({
                     showFormatDot={showFormatDots}
                     onSelect={onSelect}
                   />
-                ) : isCardLike ? (
-                  <ResultCard
-                    row={row}
-                    deviceType={deviceType}
-                    isDataset={isDataset}
-                    showFormatDot={showFormatDots}
-                    onSelect={onSelect}
-                  />
                 ) : (
-                  <ResultGridRow
+                  <ResultCard
                     row={row}
                     deviceType={deviceType}
                     isDataset={isDataset}
