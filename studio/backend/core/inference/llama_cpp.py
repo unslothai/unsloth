@@ -3312,7 +3312,7 @@ def _is_mtp_model_name(model_identifier: Optional[str], gguf_path: Optional[str]
 
 
 # Mirrors hub.utils.gguf._DRAFTER_KINDS / _DRAFTER_DIR_KINDS.
-_DRAFTER_KINDS = ("mtp", "dspark", "dflash", "eagle3")
+_DRAFTER_KINDS = ("mtp", "dspark", "dflash", "eagle3", "lilicorr")
 _DRAFTER_DIR_KINDS = ("mtp", "dspark")
 
 # Human label per resolved spec mode, for launch logging and the UI notice.
@@ -3422,7 +3422,7 @@ def _is_root_dflash_drafter_path(path: str) -> bool:
 _BIG_ENDIAN_GGUF_FILENAME_RE = re.compile(r"(^|[-_])be(?:[._-]|$)", re.IGNORECASE)
 _GGUF_KNOWN_QUANT_RE = re.compile(
     r"(UD-)?"
-    r"(MXFP[0-9]+(?:_[A-Z0-9]+)*"
+    r"((?:MX|NV)FP[0-9]+(?:_[A-Z0-9]+)*"
     r"|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?"
     r"|P?TQ[0-9]+_[0-9]+"
     r"|Q[0-9]+_K_[A-Z]+"
@@ -7450,6 +7450,9 @@ _LAZY_READ_TENSORS: dict[str, tuple[str, ...]] = {
     "qwen4exp": ("per_layer_token_embd.weight",),
 }
 _LAZY_READ_AUTO_MIN_BYTES = 4 * 1024**3
+# Embedded NextN/MTP heads llama.cpp skips at load unless --spec-type draft-mtp, measured:
+# Nemotron 3.5 Super loads 2987 MiB less with MTP off (b11642 + ggml-org#30520).
+_NEXTN_SKIPPED_WITHOUT_MTP_ARCHS = frozenset({"nemotron_h_moe"})
 # --tensor-read-lazy predates ggml-org/llama.cpp#27969; a build reads only its own spelling.
 _LAZY_MODE_SPELLINGS: dict[str, tuple[frozenset[str], str]] = {
     "--lazy-mode": (frozenset({"-lzm", "--lazy-mode"}), "LLAMA_ARG_LAZY_MODE"),
@@ -8568,6 +8571,8 @@ class LlamaCppBackend:
         self._expert_feed_forward_length: Optional[int] = None
         self._expert_shared_feed_forward_length: Optional[int] = None
         self._expert_shared_count: Optional[int] = None
+        # Nemotron 3.5: routed experts run in this latent width, not n_embd.
+        self._moe_latent_size: Optional[int] = None
         # Gemma 3n / Gemma 4 per-layer input embedding width.
         self._embedding_length_per_layer_input: Optional[int] = None
         self._vocab_size: Optional[int] = None
@@ -11053,10 +11058,13 @@ class LlamaCppBackend:
         return total
 
     @staticmethod
-    def _gguf_scan_tensor_bytes(path: str) -> "tuple[Optional[str], dict[str, int], int]":
+    def _gguf_scan_tensor_bytes(
+        path: str, also: Optional[Callable[[str], bool]] = None
+    ) -> "tuple[Optional[str], dict[str, int], int]":
         """(architecture, lazy-read candidate bytes by name, routed expert bytes) from one
         GGUF header. Streamed: ``GGUFReader`` materialises the vocabulary under the load
-        lock. A quant type gguf predates is sized from the next tensor's offset."""
+        lock. A quant type gguf predates is sized from the next tensor's offset. Names
+        ``also`` accepts are kept by name too, routed experts included."""
         from gguf.constants import GGML_QUANT_SIZES
         from core.inference.offload_layout import _BLOCK_RE, _MOE_EXPERT_RE
 
@@ -11092,11 +11100,12 @@ class LlamaCppBackend:
                 ggml_type = struct.unpack("<I", f.read(4))[0]
                 offset = struct.unpack("<Q", f.read(8))[0]
                 offsets.append(offset)
-                block_match = _BLOCK_RE.match(raw_name.decode("utf-8", "replace"))
-                is_expert = bool(block_match and _MOE_EXPERT_RE.match(block_match.group(2)))
-                if not is_expert and raw_name not in wanted:
-                    continue
                 name = raw_name.decode("utf-8", "replace")
+                block_match = _BLOCK_RE.match(name)
+                is_expert = bool(block_match and _MOE_EXPERT_RE.match(block_match.group(2)))
+                kept = also is not None and also(name)
+                if not is_expert and raw_name not in wanted and not kept:
+                    continue
                 block = GGML_QUANT_SIZES.get(ggml_type)
                 if block is None:
                     unsized.append((name, offset))
@@ -11104,7 +11113,7 @@ class LlamaCppBackend:
                 size = math.prod(dims) // block[0] * block[1]
                 if is_expert:
                     experts += size
-                else:
+                if not is_expert or kept:
                     named[name] = size
             if unsized:
                 data_start = -(-f.tell() // alignment) * alignment
@@ -11114,9 +11123,10 @@ class LlamaCppBackend:
                     later = ordered[bisect.bisect_right(ordered, offset) :]
                     size = max(0, (later[0] if later else data_end) - offset)
                     block_match = _BLOCK_RE.match(name)
-                    if block_match and _MOE_EXPERT_RE.match(block_match.group(2)):
+                    is_expert = bool(block_match and _MOE_EXPERT_RE.match(block_match.group(2)))
+                    if is_expert:
                         experts += size
-                    else:
+                    if not is_expert or (also is not None and also(name)):
                         named[name] = size
         return architecture, named, experts
 
@@ -11154,6 +11164,38 @@ class LlamaCppBackend:
             result = None
         self._gguf_tensor_scan_cache = (key, result)
         return result
+
+    def _unloaded_nextn_bytes(self, model_path: Optional[str]) -> int:
+        """Bytes of the embedded NextN/MTP blocks llama.cpp leaves unloaded without
+        ``--spec-type draft-mtp`` (nextn_flags marks them TENSOR_SKIP unless load_mtp).
+        Only for architectures measured to skip them; 0 when unknown or unreadable."""
+        from core.inference.offload_layout import _BLOCK_RE, split_shard_paths
+
+        nextn = int(getattr(self, "_nextn_predict_layers", None) or 0)
+        n_blocks = int(getattr(self, "_n_layers", None) or 0)
+        if (
+            not model_path
+            or nextn <= 0
+            or n_blocks <= nextn
+            or getattr(self, "_architecture", None) not in _NEXTN_SKIPPED_WITHOUT_MTP_ARCHS
+        ):
+            return 0
+        first = n_blocks - nextn
+
+        def in_head(name: str) -> bool:
+            match = _BLOCK_RE.match(name)
+            return bool(match) and int(match.group(1)) >= first
+
+        try:
+            return sum(
+                size
+                for p in (split_shard_paths(model_path) or [model_path])
+                for name, size in self._gguf_scan_tensor_bytes(p, also = in_head)[1].items()
+                if in_head(name)
+            )
+        except Exception as e:  # missing shard or truncated header: discount nothing
+            logger.debug("NextN block scan failed for %s (%s)", model_path, e)
+            return 0
 
     def _lazy_read_host_bytes(
         self,
@@ -18345,13 +18387,16 @@ class LlamaCppBackend:
             return verify_rows
         ub = max(1, int(self._DEFAULT_N_UBATCH if n_ubatch is None else n_ubatch))
         width = self._compute_activation_width()
-        if drafter_path:
-            db = self._draft_backend_for(drafter_path)
+        db = self._draft_backend_for(drafter_path) if drafter_path else None
+        if db is not None:
             draft_width = getattr(db, "_compute_activation_width", lambda: 0)()
             if draft_width > 0:
                 width = draft_width + 2 * (getattr(self, "_embedding_length", None) or 0)
         activations = int(width * ub * 4 * self._COMPUTE_BUFFER_SAFETY)
-        return verify_rows + max(0, ub * 2 * n_ctx + activations - self._MTP_DRAFT_COMPUTE_BYTES)
+        spec = verify_rows + max(0, ub * 2 * n_ctx + activations - self._MTP_DRAFT_COMPUTE_BYTES)
+        if getattr(db, "_architecture", None) == "dflash":
+            spec = max(spec, self._DFLASH_DRAFT_COMPUTE_BYTES)
+        return spec
 
     def _spec_verify_rows_bytes(self, n_parallel: int, spec_draft_n_max: int) -> int:
         """Target output rows for verified draft tokens, wherever the drafter runs."""
@@ -18437,6 +18482,11 @@ class LlamaCppBackend:
     # at which "does it fit" means "does every layer stay on the GPU".
     _MMPROJ_FIT_FLOOR_CTX = 8192
     _MTP_DRAFT_COMPUTE_BYTES = 224 * 1024 * 1024  # MTP draft decode graph beyond its KV
+    # A DFlash/DSpark draft context re-reserves a flat block graph once the drafter initialises,
+    # independent of n_ctx. Measured on llama.cpp b11642, draft graph + target verify graph:
+    # Nemotron 3.5 Bolt DSpark (block 8) 528.5 + 44 MiB, LiLiCorr (block 8, SWA 1024) 307 + 60 MiB.
+    # The _MTP_DRAFT_COMPUTE_BYTES floor is charged beside this, so the floor is the excess over it.
+    _DFLASH_DRAFT_COMPUTE_BYTES = 349 * 1024 * 1024
     # Draft depth to budget when the extras own the spec block and the probe cannot
     # read the build's own default off its --help. Shipped values are 3
     # (common_params_speculative_draft::n_max) and 16; take the deeper, since the
@@ -18497,7 +18547,9 @@ class LlamaCppBackend:
             shared = dim("_expert_shared_feed_forward_length") or (
                 n_ff_exp * dim("_expert_shared_count")
             )
-            widths.append(n_used * (2 * n_embd + 3 * n_ff_exp) + 3 * shared)
+            # Nemotron 3.5 routes experts through a moe_latent_size projection.
+            n_embd_exp = dim("_moe_latent_size") or n_embd
+            widths.append(n_used * (2 * n_embd_exp + 3 * n_ff_exp) + 3 * shared)
         inner = dim("_ssm_inner_size")
         if inner > 0:
             conv_in = inner + 2 * (dim("_ssm_group_count") or 1) * dim("_ssm_state_size")
@@ -19491,6 +19543,7 @@ class LlamaCppBackend:
         self._expert_feed_forward_length = None
         self._expert_shared_feed_forward_length = None
         self._expert_shared_count = None
+        self._moe_latent_size = None
         self._embedding_length_per_layer_input = None
         self._vocab_size = None
         self._kv_key_length = None
@@ -19616,6 +19669,7 @@ class LlamaCppBackend:
                                         f"{arch}.expert_feed_forward_length": "expert_feed_forward_length",
                                         f"{arch}.expert_shared_feed_forward_length": "expert_shared_feed_forward_length",
                                         f"{arch}.expert_shared_count": "expert_shared_count",
+                                        f"{arch}.moe_latent_size": "moe_latent_size",
                                         f"{arch}.embedding_length_per_layer_input": "embedding_length_per_layer_input",
                                         f"{arch}.attention.key_length": "kv_key_length",
                                         f"{arch}.attention.value_length": "kv_value_length",
@@ -19684,6 +19738,9 @@ class LlamaCppBackend:
                                     self._feed_forward_length = max(
                                         self._feed_forward_length_by_layer
                                     )
+                                elif attr in ("expert_used_count", "expert_feed_forward_length") and val_a:
+                                    # Per-layer on Nemotron 3.5 Bolt; the widest layer sizes the graph.
+                                    setattr(self, f"_{attr}", max(int(x) for x in val_a))
                             else:
                                 self._gguf_skip_value(f, vtype)
                         else:
@@ -26688,6 +26745,12 @@ class LlamaCppBackend:
                         _user_mtp_via_extras
                         or (_auto_studio_mtp and _mtp_effective not in ("dspark", "dflash"))
                     )
+                    # Without draft-mtp the embedded head is never loaded, so its blocks
+                    # leave the weights the fit prices (about 3 GB on Nemotron 3.5 Super).
+                    if not _engaged_is_mtp:
+                        _nextn_unloaded = self._unloaded_nextn_bytes(model_path)
+                        gguf_size -= _nextn_unloaded
+                        model_size -= _nextn_unloaded
                     # The recurrent rollback copies are a WIDER set than that copy
                     # (_TARGET_ROLLBACK_SPEC_TYPES): DSpark and DFlash pay them too,
                     # and draft-simple is the one engaged draft mode that does not,
