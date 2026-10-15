@@ -772,6 +772,8 @@ class TokenPreviewRequest(BaseModel):
     # The dataset's format from an earlier preview, so typed text gets the template and markers it would.
     final_format: Optional[str] = None
 
+    _resolve_the_handles = field_validator("model_name", "dataset_name")(_resolve_inventory_handle)
+
 
 class TrainingStartRequestStatus(BaseModel):
     start_request_id: str

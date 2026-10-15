@@ -267,7 +267,7 @@ def test_retiring_an_account_stops_its_preview_worker():
     assert stopped.is_set()
 
 
-def test_an_adapter_naming_a_local_base_is_not_read(monkeypatch, tmp_path):
+def test_an_adapter_base_is_never_fetched(monkeypatch):
     import transformers
     from utils.models import model_config
 
@@ -279,8 +279,18 @@ def test_an_adapter_naming_a_local_base_is_not_read(monkeypatch, tmp_path):
 
     monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained", from_pretrained)
     monkeypatch.setattr(
-        model_config, "get_base_model_from_lora_identifier", lambda *args: str(tmp_path)
+        model_config, "get_base_model_from_lora_identifier", lambda *args: "org/private-base"
     )
     with pytest.raises(OSError):
         token_preview_worker._load_tokenizer({"model_name": "org/adapter", "hf_token": None})
-    assert str(tmp_path) not in tried
+    assert set(tried) == {"org/adapter"}
+
+
+def test_inventory_handles_are_resolved(monkeypatch):
+    import models.inference as inference
+
+    monkeypatch.setattr(
+        inference, "resolve_inventory_handle", lambda v: v.replace("ref:", "/real/")
+    )
+    request = TokenPreviewRequest(model_name = "ref:abc", dataset_name = "ref:def", text = "hi")
+    assert (request.model_name, request.dataset_name) == ("/real/abc", "/real/def")

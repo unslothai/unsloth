@@ -38,25 +38,15 @@ def _load_tokenizer(config: dict):
     token = config.get("hf_token")
     try:
         return AutoTokenizer.from_pretrained(source, token = token, trust_remote_code = False)
-    except Exception:
-        pass
-    try:
-        # Spark-TTS keeps its tokenizer under LLM/, as _spark_tts_tokenizer_kwargs reads it for training.
-        return AutoTokenizer.from_pretrained(
-            source, token = token, trust_remote_code = False, subfolder = "LLM"
-        )
-    except Exception:
-        # A LoRA adapter saved without tokenizer files: read the base it names, as training does.
-        from utils.models.model_config import get_base_model_from_lora_identifier
-
-        base = get_base_model_from_lora_identifier(source, token)
-        # A Hub id only: the base comes from the adapter's own config, and a local path there would
-        # read outside the account checks the route ran on the adapter.
-        from utils.paths import is_local_path
-
-        if not base or is_local_path(base):
-            raise
-        return AutoTokenizer.from_pretrained(base, token = token, trust_remote_code = False)
+    except Exception as root_error:
+        # Spark-TTS keeps its tokenizer under LLM/, as _spark_tts_tokenizer_kwargs reads it for training. No
+        # adapter base fallback: that repo comes from the adapter's own config, which the route never authorized.
+        try:
+            return AutoTokenizer.from_pretrained(
+                source, token = token, trust_remote_code = False, subfolder = "LLM"
+            )
+        except Exception:
+            raise root_error from None
 
 
 def _byte_level_decoder() -> dict:
