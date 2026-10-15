@@ -79,3 +79,18 @@ test("every capability starts ticked, and the last tick can't be removed", () =>
   assert.match(popover, /locked=\{next\.length === 0\}/);
   assert.match(popover, /icon=\{FilterMailIcon\}/);
 });
+
+test("the first pick from the default keeps just that capability", () => {
+  const popover = readSrc("features/hub/catalog/model-search-filters.tsx");
+  assert.match(popover, /capabilities\.length === 0\s*\? \[option\.value\]/);
+  assert.doesNotMatch(popover, />\s*Only\s*</);
+});
+
+test("size and context are stepped ranges whose ends mean no limit", () => {
+  const popover = readSrc("features/hub/catalog/model-search-filters.tsx");
+  assert.match(popover, /labels: \["<1B", null, "6B", "12B", "32B", null, "128B", ">500B"\]/);
+  assert.match(popover, /"1M\+"\]/);
+  assert.match(popover, /\[spec\.min\]: next\[0\] === 0 \? undefined : spec\.stops\[next\[0\]\]/);
+  assert.match(popover, /\[spec\.max\]: next\[1\] === last \? undefined : spec\.stops\[next\[1\]\]/);
+  assert.doesNotMatch(popover, /Apply (filters|limits)/);
+});

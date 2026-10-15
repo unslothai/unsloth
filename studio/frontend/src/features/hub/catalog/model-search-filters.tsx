@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import {
   Popover,
   PopoverContent,
@@ -16,7 +15,7 @@ import {
 import { BulbIcon } from "@/lib/bulb-icon";
 import { AiSpeechIcon } from "@/lib/hugeicons-derived";
 import { Tick02Icon } from "@/lib/tick-icon";
-import { cn } from "@/lib/utils";
+import { Slider as SliderPrimitive } from "radix-ui";
 import {
   FilterMailIcon,
   FlimSlateIcon,
@@ -27,7 +26,7 @@ import {
   ViewIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
-import { type ReactNode, useId, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import type { HubCapabilityFilter } from "../lib/model-capabilities";
 import {
   HUB_UPLOADERS,
@@ -62,22 +61,200 @@ const SECTION_LABEL =
 // my-2 keeps text 18px from each line: rows bring 2px margin and 8px of hover pill, the labels pt-2.
 const SEPARATOR = "mx-1 my-2 h-px bg-border/50";
 
-const LIMIT_KEYS = [
-  "minParams",
-  "maxParams",
-  "minContext",
-  "maxContext",
-] as const;
+type LimitKey = "minParams" | "maxParams" | "minContext" | "maxContext";
 
-/** A composer-menu row that ticks: a check on the right when on, and on hover an "Only" that
- *  keeps just this row ticked. */
+interface RangeSpec {
+  label: string;
+  about: string;
+  min: LimitKey;
+  max: LimitKey;
+  /** The first stop as a minimum and the last as a maximum mean no limit. */
+  stops: readonly number[];
+  /** Index -> label; unlabelled stops show only a tick. */
+  labels: readonly (string | null)[];
+}
+
+const B = 1e9;
+const K = 1024;
+const RANGES: readonly RangeSpec[] = [
+  {
+    label: "Parameters",
+    about:
+      "Both limits are included. Models that don't publish a parameter count are left out.",
+    min: "minParams",
+    max: "maxParams",
+    stops: [1 * B, 3 * B, 6 * B, 12 * B, 32 * B, 70 * B, 128 * B, 500 * B],
+    labels: ["<1B", null, "6B", "12B", "32B", null, "128B", ">500B"],
+  },
+  {
+    label: "Context length",
+    about:
+      "In tokens. The model's published limit, not what your device can fit. Both limits are included; models that don't publish one are left out.",
+    min: "minContext",
+    max: "maxContext",
+    stops: [
+      4 * K,
+      8 * K,
+      16 * K,
+      32 * K,
+      64 * K,
+      128 * K,
+      256 * K,
+      512 * K,
+      K * K,
+    ],
+    labels: ["<4K", null, "16K", null, "64K", null, "256K", null, "1M+"],
+  },
+];
+
+const THUMB = 14;
+
+function stopIndex(
+  stops: readonly number[],
+  value: number | undefined,
+  end: number,
+) {
+  if (value === undefined) {
+    return end;
+  }
+  let best = 0;
+  for (let i = 1; i < stops.length; i++) {
+    if (Math.abs(stops[i] - value) < Math.abs(stops[best] - value)) {
+      best = i;
+    }
+  }
+  return best;
+}
+
+/** A two-thumb range over fixed stops. The value chips ride the thumbs and stand in for the
+ *  tick labels under them; the limits apply on release. */
+function RangeStops({
+  spec,
+  value,
+  onChange,
+}: {
+  spec: RangeSpec;
+  value: ModelSearchFilters;
+  onChange: (value: ModelSearchFilters) => void;
+}) {
+  const last = spec.stops.length - 1;
+  const committed: [number, number] = [
+    stopIndex(spec.stops, value[spec.min], 0),
+    stopIndex(spec.stops, value[spec.max], last),
+  ];
+  // Only while dragging. Radix can report a keyboard step after its commit, so a new committed
+  // value (or a reset elsewhere) clears it too.
+  const [dragging, setDragging] = useState<[number, number] | null>(null);
+  const minValue = value[spec.min];
+  const maxValue = value[spec.max];
+  // biome-ignore lint/correctness/useExhaustiveDependencies: clears on a committed change
+  useEffect(() => setDragging(null), [minValue, maxValue]);
+  const [lo, hi] = dragging ?? committed;
+  const set = lo !== 0 || hi !== last;
+  // Thumbs stay inside the track, so stop i sits half a thumb in from each end.
+  const at = (i: number) =>
+    `calc(${THUMB / 2}px + (100% - ${THUMB}px) * ${i / last})`;
+  const chip = (i: number) =>
+    spec.labels[i] ??
+    (spec.stops[i] >= B ? `${spec.stops[i] / B}B` : `${spec.stops[i] / K}K`);
+  return (
+    <fieldset>
+      <legend className={SECTION_LABEL}>
+        <span className="flex items-center gap-1">
+          {spec.label}
+          <HoverInfo label={spec.label}>{spec.about}</HoverInfo>
+        </span>
+        {set && (
+          <button
+            type="button"
+            onClick={() =>
+              onChange({
+                ...value,
+                [spec.min]: undefined,
+                [spec.max]: undefined,
+              })
+            }
+            className="cursor-pointer transition-colors hover:text-foreground"
+          >
+            Reset
+          </button>
+        )}
+      </legend>
+      <div className="relative mx-3 pt-7 pb-1">
+        <div aria-hidden={true} className="absolute inset-x-0 top-0 h-5">
+          {spec.labels.map((label, i) =>
+            label === null || i === lo || i === hi ? null : (
+              <span
+                // biome-ignore lint/suspicious/noArrayIndexKey: fixed stops
+                key={i}
+                style={{ left: at(i) }}
+                className="absolute top-0.5 -translate-x-1/2 whitespace-nowrap text-ui-12 text-muted-foreground tabular-nums"
+              >
+                {label}
+              </span>
+            ),
+          )}
+        </div>
+        <SliderPrimitive.Root
+          min={0}
+          max={last}
+          step={1}
+          minStepsBetweenThumbs={1}
+          value={[lo, hi]}
+          onValueChange={(next) => setDragging([next[0], next[1]])}
+          onValueCommit={(next) => {
+            setDragging(null);
+            onChange({
+              ...value,
+              [spec.min]: next[0] === 0 ? undefined : spec.stops[next[0]],
+              [spec.max]: next[1] === last ? undefined : spec.stops[next[1]],
+            });
+          }}
+          className="relative flex h-4 w-full touch-none select-none items-center"
+        >
+          <SliderPrimitive.Track className="relative h-1 w-full grow rounded-full bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)]">
+            {spec.stops.map((_, i) =>
+              i === 0 || i === last ? null : (
+                <span
+                  // biome-ignore lint/suspicious/noArrayIndexKey: fixed stops
+                  key={i}
+                  aria-hidden={true}
+                  style={{ left: at(i) }}
+                  className="absolute top-1/2 h-2 w-px -translate-x-1/2 -translate-y-1/2 bg-[color-mix(in_oklab,var(--foreground)_calc(20%*var(--contrast-wash-gain,1)),transparent)]"
+                />
+              ),
+            )}
+            <SliderPrimitive.Range className="absolute h-full rounded-full bg-foreground" />
+          </SliderPrimitive.Track>
+          {([lo, hi] as const).map((index, thumb) => (
+            <SliderPrimitive.Thumb
+              key={thumb === 0 ? "min" : "max"}
+              aria-label={`${thumb === 0 ? "Minimum" : "Maximum"} ${spec.label.toLowerCase()}`}
+              aria-valuetext={chip(index)}
+              style={{ width: THUMB, height: THUMB }}
+              className="relative block cursor-grab rounded-full bg-foreground shadow-sm outline-none ring-background ring-2 focus-visible:ring-4 focus-visible:ring-ring/50 active:cursor-grabbing"
+            >
+              <span
+                aria-hidden={true}
+                className="pointer-events-none absolute bottom-full left-1/2 mb-2 -translate-x-1/2 whitespace-nowrap rounded-md bg-foreground px-1.5 py-0.5 text-ui-12 font-medium text-background tabular-nums"
+              >
+                {chip(index)}
+              </span>
+            </SliderPrimitive.Thumb>
+          ))}
+        </SliderPrimitive.Root>
+      </div>
+    </fieldset>
+  );
+}
+
+/** A composer-menu row that ticks: a check on the right when on. */
 function MenuTick({
   icon,
   label,
   checked,
   locked,
   onToggle,
-  onOnly,
 }: {
   icon?: ReactNode;
   label: string;
@@ -85,47 +262,28 @@ function MenuTick({
   /** The last tick of a group, which stays. */
   locked: boolean;
   onToggle: () => void;
-  /** Absent while this row is already the only one ticked. */
-  onOnly?: () => void;
 }) {
   return (
-    <div className="hub-menu-row group/tick relative">
-      <button
-        type="button"
-        role="checkbox"
-        aria-checked={checked}
-        aria-disabled={locked || undefined}
-        onClick={() => {
-          if (!locked) onToggle();
-        }}
-        className="flex w-full cursor-pointer select-none items-center gap-3 rounded-[inherit] py-2 pr-9 pl-3 text-left text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/40 aria-disabled:cursor-default"
-      >
-        {icon}
-        <span className="truncate">{label}</span>
-        {checked && (
-          <HugeiconsIcon
-            icon={Tick02Icon}
-            strokeWidth={2}
-            className={cn(
-              "pointer-events-none absolute right-3 size-4",
-              onOnly &&
-                "group-hover/tick:opacity-0 group-has-[[data-only]:focus-visible]/tick:opacity-0",
-            )}
-          />
-        )}
-      </button>
-      {onOnly && (
-        <button
-          type="button"
-          data-only=""
-          aria-label={`Show only ${label}`}
-          onClick={onOnly}
-          className="absolute top-1/2 right-1.5 -translate-y-1/2 cursor-pointer rounded-full px-1.5 py-0.5 text-ui-12 text-muted-foreground opacity-0 outline-none transition-colors hover:text-foreground focus-visible:opacity-100 group-hover/tick:opacity-100"
-        >
-          Only
-        </button>
+    <button
+      type="button"
+      role="checkbox"
+      aria-checked={checked}
+      aria-disabled={locked || undefined}
+      onClick={() => {
+        if (!locked) onToggle();
+      }}
+      className="hub-menu-row relative flex w-full cursor-pointer select-none items-center gap-3 py-2 pr-9 pl-3 text-left text-sm aria-disabled:cursor-default"
+    >
+      {icon}
+      <span className="truncate">{label}</span>
+      {checked && (
+        <HugeiconsIcon
+          icon={Tick02Icon}
+          strokeWidth={2}
+          className="pointer-events-none absolute right-3 size-4"
+        />
       )}
-    </div>
+    </button>
   );
 }
 
@@ -189,30 +347,11 @@ export function ModelSearchFiltersControl({
   className?: string;
 }) {
   const [open, setOpen] = useState(false);
-  const [draft, setDraft] = useState(value);
-  const id = useId();
-  const formId = `${id}-limits`;
-  const invalid =
-    (draft.minParams !== undefined &&
-      draft.maxParams !== undefined &&
-      draft.minParams > draft.maxParams) ||
-    (draft.minContext !== undefined &&
-      draft.maxContext !== undefined &&
-      draft.minContext > draft.maxContext);
-  const dirty = LIMIT_KEYS.some((key) => draft[key] !== value[key]);
   const filtered =
     capabilities.length > 0 ||
     (showModelFilters && (hasModelSearchFilters(value) || uploadersChanged));
   return (
-    <Popover
-      open={open}
-      onOpenChange={(next) => {
-        if (next) {
-          setDraft(value);
-        }
-        setOpen(next);
-      }}
-    >
+    <Popover open={open} onOpenChange={setOpen}>
       {/* Icon-sized so the Discover toolbar keeps its existing single-row layout. */}
       <Tooltip>
         <TooltipTrigger asChild={true}>
@@ -286,15 +425,13 @@ export function ModelSearchFiltersControl({
                   locked={next.length === 0}
                   onToggle={() =>
                     onCapabilitiesChange(
-                      next.length === CAPABILITY_FILTER_OPTIONS.length
-                        ? []
-                        : next,
+                      // The first pick from the default (all ticked) keeps just that one.
+                      capabilities.length === 0
+                        ? [option.value]
+                        : next.length === CAPABILITY_FILTER_OPTIONS.length
+                          ? []
+                          : next,
                     )
-                  }
-                  onOnly={
-                    capabilities.length === 1 && checked
-                      ? undefined
-                      : () => onCapabilitiesChange([option.value])
                   }
                 />
               );
@@ -304,79 +441,16 @@ export function ModelSearchFiltersControl({
         {showModelFilters && (
           <>
             <div aria-hidden={true} className={SEPARATOR} />
-            <form
-              id={formId}
-              className="flex flex-col gap-2.5 pb-0.5"
-              onSubmit={(event) => {
-                event.preventDefault();
-                if (invalid) {
-                  return;
-                }
-                onChange(draft);
-                setOpen(false);
-              }}
-            >
-              {(
-                [
-                  [
-                    "Parameters",
-                    "minParams",
-                    "maxParams",
-                    1e9,
-                    "Both limits are included. Models that don't publish a parameter count are left out.",
-                  ],
-                  [
-                    "Context length",
-                    "minContext",
-                    "maxContext",
-                    1,
-                    "In tokens. The model's published limit, not what your device can fit. Both limits are included; models that don't publish one are left out.",
-                  ],
-                ] as const
-              ).map(([label, min, max, scale, about]) => (
-                <fieldset key={min}>
-                  <legend className={SECTION_LABEL}>
-                    <span className="flex items-center gap-1">
-                      {label}
-                      <HoverInfo label={label}>{about}</HoverInfo>
-                    </span>
-                  </legend>
-                  <div className="grid grid-cols-2 gap-1.5 px-3">
-                    {([min, max] as const).map((key, index) => (
-                      <Input
-                        key={key}
-                        id={`${id}-${key}`}
-                        aria-label={`${index === 0 ? "Minimum" : "Maximum"} ${label.toLowerCase()}`}
-                        type="number"
-                        min={0}
-                        step={scale === 1 ? 1 : "any"}
-                        placeholder={index === 0 ? "Min" : "Max"}
-                        className="h-8 pl-3 text-sm md:text-sm"
-                        value={
-                          draft[key] === undefined ? "" : draft[key] / scale
-                        }
-                        onChange={(event) =>
-                          setDraft({
-                            ...draft,
-                            [key]:
-                              event.target.value === ""
-                                ? undefined
-                                : Math.round(
-                                    event.target.valueAsNumber * scale,
-                                  ),
-                          })
-                        }
-                      />
-                    ))}
-                  </div>
-                </fieldset>
+            <div className="flex flex-col gap-2.5 pb-0.5">
+              {RANGES.map((spec) => (
+                <RangeStops
+                  key={spec.label}
+                  spec={spec}
+                  value={value}
+                  onChange={onChange}
+                />
               ))}
-              {invalid && (
-                <p role="alert" className="px-3 text-ui-12 text-destructive">
-                  Minimum must not exceed maximum.
-                </p>
-              )}
-            </form>
+            </div>
             <div aria-hidden={true} className={SEPARATOR} />
             <fieldset>
               <legend className={SECTION_LABEL}>Uploader</legend>
@@ -392,11 +466,6 @@ export function ModelSearchFiltersControl({
                     checked={checked}
                     locked={next.length === 0}
                     onToggle={() => onUploadersChange(next)}
-                    onOnly={
-                      uploaders.length === 1 && checked
-                        ? undefined
-                        : () => onUploadersChange([uploader])
-                    }
                   />
                 );
               })}
@@ -404,29 +473,16 @@ export function ModelSearchFiltersControl({
           </>
         )}
         <div aria-hidden={true} className={SEPARATOR} />
-        <div className="flex items-center justify-between gap-1.5 px-3 pt-0.5">
+        <div className="flex items-center justify-end px-3 pt-0.5">
           <Button
             type="button"
             variant="ghost"
             size="sm"
-            disabled={!(filtered || dirty)}
-            onClick={() => {
-              setDraft({});
-              onReset();
-            }}
+            disabled={!filtered}
+            onClick={onReset}
           >
             Reset all
           </Button>
-          {showModelFilters && (
-            <Button
-              type="submit"
-              form={formId}
-              size="sm"
-              disabled={invalid || !dirty}
-            >
-              Apply limits
-            </Button>
-          )}
         </div>
       </PopoverContent>
     </Popover>
