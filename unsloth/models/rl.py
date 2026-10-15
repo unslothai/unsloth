@@ -536,6 +536,7 @@ class Unsloth{RLConfig_name}({RLConfig_name}):
     """
     {__RLConfig_doc__}
     """
+    _unsloth_accepts_adamw_flash = True
     vllm_sampling_params: Optional[Any] = field(
         default = None,
         metadata = {{'help': 'vLLM SamplingParams'}},
@@ -3415,9 +3416,11 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
 
     if "optim" in call_args:
         RLConfig_post += (
-            "        from unsloth.optimizers.flash_adamw import is_flash_adamw_marked, mark_flash_adamw\n"
+            "        from unsloth.optimizers.flash_adamw import is_flash_adamw_marked, mark_flash_adamw, unmark_flash_adamw\n"
             "        if _unsloth_flash_adamw or is_flash_adamw_marked(self):\n"
             "            mark_flash_adamw(self)\n"
+            "        else:\n"
+            "            unmark_flash_adamw(self)\n"
         )
 
     RLTrainer_extras = patch_functions(

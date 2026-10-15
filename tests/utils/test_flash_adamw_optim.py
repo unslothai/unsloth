@@ -205,7 +205,7 @@ def test_adamw_flash_rejects_fsdp1(stub_flashoptim, monkeypatch, fsdp_config, en
     import unsloth.optimizers.flash_adamw as flash_adamw
 
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
-    for key in ("ACCELERATE_USE_FSDP", "FSDP_VERSION"):
+    for key in ("ACCELERATE_USE_FSDP", "FSDP_VERSION", "FSDP_OFFLOAD_PARAMS"):
         monkeypatch.delenv(key, raising = False)
     for key, value in env.items():
         monkeypatch.setenv(key, value)
@@ -228,3 +228,68 @@ def test_adamw_flash_rejects_unsupported_platform(stub_flashoptim, monkeypatch, 
     monkeypatch.setattr(sys, "platform", platform)
     with pytest.raises(NotImplementedError, match = "NVIDIA CUDA"):
         flash_adamw.get_flash_adamw_cls_and_kwargs(_flash_kwargs_args())
+
+
+@pytest.mark.parametrize("make_args", [_sft_config, _unsloth_args])
+def test_adamw_flash_later_optim_change_wins(stub_flashoptim, make_args, monkeypatch):
+    import dataclasses
+    from transformers import Trainer
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    args = make_args(optim = "adamw_flash", optim_args = "quantize=True")
+    replaced = dataclasses.replace(args, optim = "rmsprop")
+    assert "unsloth_adamw_flash" not in str(replaced.optim_args)
+    optimizer_cls, _ = Trainer.get_optimizer_cls_and_kwargs(replaced)
+    assert optimizer_cls is torch.optim.RMSprop
+    args.optim = "sgd"
+    args.optim_args = None
+    optimizer_cls, _ = Trainer.get_optimizer_cls_and_kwargs(args)
+    assert optimizer_cls is torch.optim.SGD
+
+
+def test_adamw_flash_keeps_one_shot_param_iterables(stub_flashoptim, monkeypatch):
+    import unsloth.optimizers.flash_adamw as flash_adamw
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    model = torch.nn.Linear(4, 4)
+    optimizer_cls, optimizer_kwargs = flash_adamw.get_flash_adamw_cls_and_kwargs(_flash_kwargs_args())
+    optimizer = optimizer_cls([{"params": model.parameters(), "lr": 1e-4}], **optimizer_kwargs)
+    assert len(optimizer.param_groups[0]["params"]) == 2
+    optimizer = optimizer_cls(model.parameters(), **optimizer_kwargs)
+    assert len(optimizer.param_groups[0]["params"]) == 2
+
+
+@pytest.mark.parametrize(
+    "fsdp, fsdp_config, env",
+    [
+        (["full_shard"], {"version": 2, "cpu_offload": True}, {}),
+        ("full_shard offload", {"version": 2}, {}),
+        ([], None, {"ACCELERATE_USE_FSDP": "true", "FSDP_VERSION": "2", "FSDP_OFFLOAD_PARAMS": "true"}),
+    ],
+)
+def test_adamw_flash_rejects_fsdp2_cpu_offload(stub_flashoptim, monkeypatch, fsdp, fsdp_config, env):
+    import unsloth.optimizers.flash_adamw as flash_adamw
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    for key in ("ACCELERATE_USE_FSDP", "FSDP_VERSION", "FSDP_OFFLOAD_PARAMS"):
+        monkeypatch.delenv(key, raising = False)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    args = _flash_kwargs_args(fsdp = fsdp, fsdp_config = fsdp_config or {})
+    with pytest.raises(ValueError, match = "CPU offloaded"):
+        flash_adamw.get_flash_adamw_cls_and_kwargs(args)
+
+
+@pytest.mark.parametrize("make_args", [_sft_config, _unsloth_args])
+def test_adamw_flash_accepted_by_hf_argument_parser(make_args):
+    from transformers import HfArgumentParser
+
+    cls = type(make_args(optim = "adamw_torch"))
+    (args,) = HfArgumentParser(cls).parse_args_into_dataclasses(
+        ["--output_dir", OUT, "--report_to", "none", "--optim", "adamw_flash"]
+    )
+    assert getattr(args, "_unsloth_flash_adamw", False)
+    with pytest.raises(SystemExit):
+        HfArgumentParser(cls).parse_args_into_dataclasses(
+            ["--output_dir", OUT, "--report_to", "none", "--optim", "not_an_optim"]
+        )

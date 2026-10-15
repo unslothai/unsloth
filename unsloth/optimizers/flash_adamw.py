@@ -23,6 +23,7 @@ __all__ = [
     "FLASH_ADAMW_NAME",
     "is_flash_adamw",
     "mark_flash_adamw",
+    "unmark_flash_adamw",
     "get_flash_adamw_cls_and_kwargs",
 ]
 
@@ -77,7 +78,12 @@ def _get_flash_adamw_class():
 
     class UnslothFlashAdamW(FlashAdamW):
         def __init__(self, params, *args, master_weight_bits = 32, **kwargs):
-            params = list(params)
+            params = [
+                {**group, "params": _materialize_params(group["params"])}
+                if isinstance(group, dict) and "params" in group
+                else group
+                for group in params
+            ]
             # flashoptim seeds every group's initial_lr with the constructor lr, and the LR
             # scheduler then uses it as the group's base lr (setdefault keeps it), which would
             # drop embedding_learning_rate and loraplus_lr_ratio, and skew decouple_lr decay.
@@ -114,13 +120,52 @@ def _get_flash_adamw_class():
     return _FLASH_ADAMW_CLASS
 
 
-def _is_marked_in_optim_args(args):
+def _materialize_params(params):
+    # A one-shot iterable (model.parameters()) would be exhausted by the dtype scan below.
+    return [params] if isinstance(params, torch.Tensor) else list(params)
+
+
+def _has_marker_token(args):
     optim_args = str(getattr(args, "optim_args", None) or "").replace(" ", "")
     return any(item.partition("=")[0] == _FLASH_ADAMW_MARKER for item in optim_args.split(","))
 
 
+def _has_placeholder_optim(args):
+    optim = getattr(args, "optim", None)
+    return str(getattr(optim, "value", optim)).strip().lower() == _FLASH_ADAMW_PLACEHOLDER
+
+
+def _is_marked_in_optim_args(args):
+    # The mark only counts while optim is still the placeholder, so a later optim change wins.
+    return _has_placeholder_optim(args) and _has_marker_token(args)
+
+
 def _is_marked(args):
-    return getattr(args, "_unsloth_flash_adamw", False) or _is_marked_in_optim_args(args)
+    return _has_placeholder_optim(args) and (
+        getattr(args, "_unsloth_flash_adamw", False) or _has_marker_token(args)
+    )
+
+
+def _strip_marker(optim_args):
+    items = str(optim_args or "").split(",")
+    kept = [i for i in items if i.strip() and i.replace(" ", "").partition("=")[0] != _FLASH_ADAMW_MARKER]
+    return ",".join(kept) or None
+
+
+def _is_truthy(value):
+    return str(value).strip().lower() in ("1", "true", "yes")
+
+
+def _fsdp_cpu_offload(args):
+    fsdp = getattr(args, "fsdp", None)
+    items = fsdp.split() if isinstance(fsdp, str) else (fsdp if isinstance(fsdp, (list, tuple)) else [])
+    if any(str(getattr(item, "value", item)).lower() == "offload" for item in items):
+        return True
+    config = getattr(args, "fsdp_config", None)
+    config = config if isinstance(config, dict) else {}
+    if any(_is_truthy(config.get(key, False)) for key in ("cpu_offload", "offload_params", "fsdp_offload_params")):
+        return True
+    return _is_truthy(os.environ.get("FSDP_OFFLOAD_PARAMS", ""))
 
 
 def _fsdp_version(args):
@@ -156,6 +201,11 @@ def get_flash_adamw_cls_and_kwargs(args):
             "Unsloth: optim = 'adamw_flash' does not support FSDP1 (flashoptim supports DDP and FSDP2). "
             "Set fsdp_config = {'version': 2} or use another optim."
         )
+    if _fsdp_version(args) is not None and _fsdp_cpu_offload(args):
+        raise ValueError(
+            "Unsloth: optim = 'adamw_flash' cannot step FSDP2 CPU offloaded parameters, since "
+            "flashoptim's Triton kernels need CUDA tensors. Turn off cpu_offload or use another optim."
+        )
     optimizer_kwargs = {
         "lr": args.learning_rate,
         "betas": (args.adam_beta1, args.adam_beta2),
@@ -178,6 +228,11 @@ def _patch_trainer_get_optimizer_cls_and_kwargs():
     def get_optimizer_cls_and_kwargs(args, *other, **kwargs):
         if _is_marked(args):
             return get_flash_adamw_cls_and_kwargs(args)
+        if _has_marker_token(args):
+            import copy
+
+            args = copy.copy(args)
+            args.optim_args = _strip_marker(args.optim_args)
         return original(args, *other, **kwargs)
 
     get_optimizer_cls_and_kwargs._unsloth_flash_adamw = True
@@ -189,6 +244,48 @@ def _patch_trainer_get_optimizer_cls_and_kwargs():
 def is_flash_adamw_marked(training_args):
     """A config rebuilt from to_dict / to_json_file carries only the optim_args marker."""
     return _is_marked_in_optim_args(training_args)
+
+
+def unmark_flash_adamw(training_args):
+    """A config that selected adamw_flash and was then rebuilt with another optim."""
+    if getattr(training_args, "_unsloth_flash_adamw", False):
+        training_args._unsloth_flash_adamw = False
+    if _has_marker_token(training_args):
+        training_args.optim_args = _strip_marker(training_args.optim_args)
+    return training_args
+
+
+def _patch_hf_argument_parser():
+    # HfArgumentParser turns `optim: OptimizerNames | str` into an OptimizerNames choice list,
+    # so `--optim adamw_flash` is rejected before an Unsloth config can translate it.
+    try:
+        from transformers import HfArgumentParser
+    except ImportError:
+        return
+    original = getattr(HfArgumentParser, "_add_dataclass_arguments", None)
+    if original is None or getattr(original, "_unsloth_flash_adamw", False):
+        return
+
+    def _add_dataclass_arguments(self, dtype, *args, **kwargs):
+        result = original(self, dtype, *args, **kwargs)
+        if not getattr(dtype, "_unsloth_accepts_adamw_flash", False):
+            return result
+        for action in self._actions:
+            if action.dest != "optim" or not action.choices or FLASH_ADAMW_NAME in action.choices:
+                continue
+            action.choices = list(action.choices) + [FLASH_ADAMW_NAME]
+            convert = action.type
+            if callable(convert):
+                action.type = lambda value, convert = convert: (
+                    FLASH_ADAMW_NAME if is_flash_adamw(value) else convert(value)
+                )
+        return result
+
+    _add_dataclass_arguments._unsloth_flash_adamw = True
+    HfArgumentParser._add_dataclass_arguments = _add_dataclass_arguments
+
+
+_patch_hf_argument_parser()
 
 
 def mark_flash_adamw(training_args):
