@@ -3068,3 +3068,27 @@ def test_samsone_is_refused_for_transcription(hub):
     with pytest.raises(SttModelIdError, match = "describes audio"):
         s.resolve_audio_cpp_stt_model(f"{AUDIO_CPP_REPO}/Samsone-GGUF")
     assert f"{AUDIO_CPP_REPO}/Samsone-GGUF" not in s.downloaded_model_ids()
+
+
+@pytest.mark.parametrize(
+    "family,filename",
+    [("breeze_tts", "breeze-tts-2-q8_0.gguf"), ("dots_tts", "dots-tts-soar-q8_0.gguf")],
+)
+def test_audio_page_local_filename_pick_uses_audio_cpp(hub, tmp_path, family, filename):
+    from hub.services.models.gguf_variants import get_gguf_variants_response
+    from utils.models.model_config import ModelConfig
+
+    folder = tmp_path / "portable-audio-models" / family
+    folder.mkdir(parents = True)
+    weights = folder / filename
+    weights.write_bytes(_gguf_bytes(family = family))
+    listing = asyncio.run(get_gguf_variants_response(str(folder)))
+    # Audio sends the advertised filename, including .gguf, as gguf_variant.
+    selected = next(v for v in listing.variants if v.filename == filename)
+    config = ModelConfig.from_identifier(str(folder), gguf_variant = selected.filename)
+
+    assert config.audio_type == "audiocpp_tts"
+    assert config.audio_cpp is not None
+    assert config.audio_cpp.family == family
+    assert config.path == str(weights)
+    assert config.is_gguf is False  # audio.cpp, never llama-server

@@ -3338,7 +3338,7 @@ def _direct_gguf_for_variant(
         f"{m.group(1) or ''}{m.group(2)}"
         for m in _GGUF_KNOWN_QUANT_RE.finditer(fallback_variant.rsplit("/", 1)[-1])
     ]
-    if not _variant_matches(variant, quant, fallback_variant, stripped, *stem_tokens):
+    if not _variant_matches(variant, f.name, quant, fallback_variant, stripped, *stem_tokens):
         return None
     return detect_gguf_model(str(f), model_root)
 
@@ -3348,7 +3348,7 @@ def _find_local_gguf_by_variant(
     variant: str,
     model_root: Optional[str] = None,
 ) -> Optional[str]:
-    """Find the GGUF file in *directory* matching a quantization *variant*.
+    """Find the GGUF matching a quant label, stem or exact relative filename.
 
     For sharded GGUFs (multiple files sharing a quant label), returns the
     first shard (sorted by name), which is what ``llama-server -m`` expects.
@@ -3366,6 +3366,9 @@ def _find_local_gguf_by_variant(
 
     # Recurse so variants under a quant-named subdir (``BF16/foo-BF16-00001-of-00002.gguf``)
     # are found. Match the relative path so the quant label can come from the dir name.
+    # The Audio picker sends the advertised filename as gguf_variant. Keep its
+    # relative path so equal basenames in different subdirectories cannot cross-match.
+    selector = str(variant).replace("\\", "/")
     matches = []
     owned = []
     for f in _iter_gguf_files(p, recursive = True):
@@ -3383,14 +3386,14 @@ def _find_local_gguf_by_variant(
             f"{m.group(1) or ''}{m.group(2)}" for m in _GGUF_KNOWN_QUANT_RE.finditer(basename_stem)
         ]
         if not _variant_matches(
-            variant, quant, fallback_variant, stripped, *stem_tokens
+            selector, rel, quant, fallback_variant, stripped, *stem_tokens
         ) or _is_big_endian_gguf_path(rel, quant):
             continue
         matches.append(f)
         # A repo holding several checkpoints at one quant offers a row per checkpoint,
         # and only one of them is this variant's. Name order alone would hand a request
         # for the repo-root ``Q6_K`` the alphabetically earlier ``distilled/`` copy.
-        if _variant_matches(variant, _gguf_variant_key(rel)):
+        if _variant_matches(selector, rel, _gguf_variant_key(rel)):
             owned.append(f)
     matches.sort()
     owned.sort()
