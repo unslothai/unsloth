@@ -240,7 +240,9 @@ def _gguf_dit():
 
 
 @pytest.mark.parametrize("build", ["bf16", "gguf"])
-def test_unseeded_dense_denoiser_places_from_its_learned_peak(klein_pipe, learned_store, monkeypatch, build):
+def test_unseeded_dense_denoiser_places_from_its_learned_peak(
+    klein_pipe, learned_store, monkeypatch, build
+):
     import torch
 
     label = "dense:bfloat16" if build == "bf16" else "gguf"
@@ -270,10 +272,17 @@ def test_unseeded_dense_denoiser_places_from_its_learned_peak(klein_pipe, learne
         monkeypatch.delenv(env)
 
 
-def test_fp16_dense_keeps_its_static_seed_over_a_lower_learned_peak(klein_pipe, learned_store, monkeypatch):
+def test_fp16_dense_keeps_its_static_seed_over_a_lower_learned_peak(
+    klein_pipe, learned_store, monkeypatch
+):
     monkeypatch.setattr(dm, "denoiser_quant_label", lambda pipe: "dense:float16")
     learned_store.record(
-        family = "flux.2-klein", quant = "dense:float16", speed_mode = "off", width = 1024, height = 1024, peak_mib = 1000
+        family = "flux.2-klein",
+        quant = "dense:float16",
+        speed_mode = "off",
+        width = 1024,
+        height = 1024,
+        peak_mib = 1000,
     )
     new = _refine(klein_pipe, _flat_plan(12758))
     # learned only raises a seed: the fp16 table's 3072 stands
@@ -285,7 +294,17 @@ def test_request_guard_of_a_learned_only_load_never_reads_the_fp16_table(learned
     # a bf16 klein load placed from a 1000 MiB learned peak (1000 x 1.15 -> 1280 reserved)
     pipe = types.SimpleNamespace(
         _unsloth_peak_identity = ("flux.2-klein", "dense:bfloat16", "off"),
-        _unsloth_measured_reserve = (1280, "flux.2-klein", "off", 7393, None, 1000, 1024 * 1024, False, False),
+        _unsloth_measured_reserve = (
+            1280,
+            "flux.2-klein",
+            "off",
+            7393,
+            None,
+            1000,
+            1024 * 1024,
+            False,
+            False,
+        ),
     )
     assert dm.measured_request_extra_mib(pipe, width = 1024, height = 1024) == 0
     # 4 MP: the learned peak scales linearly (4 x 1000 x 1.15 = 4600 -> 4608)
@@ -299,5 +318,7 @@ def test_request_guard_of_a_learned_only_load_never_reads_the_fp16_table(learned
 
 
 def test_load_stores_the_static_seed_flag_in_the_reserve():
-    src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(encoding = "utf-8")
+    src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(
+        encoding = "utf-8"
+    )
     assert 'plan.estimates.get("measured_static_seed", True),' in src
