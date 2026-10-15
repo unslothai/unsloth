@@ -42,7 +42,11 @@ def _host(monkeypatch):
     monkeypatch.setenv("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
 
 
-def _smi(monkeypatch, caps = _CAPS, free = {0: 20000, 1: 5800}):
+def _smi(
+    monkeypatch,
+    caps = _CAPS,
+    free = {0: 20000, 1: 5800},
+):
     def _run(cmd, **_kwargs):
         query = " ".join(cmd)
         if "compute_cap" in query:
@@ -91,17 +95,26 @@ class TestAutoPool:
         assert [g[0] for g in LlamaCppBackend._get_gpu_memory(binary)] == [0, 1]
         # Every card too old: the pool stays, and the gate refuses with its message.
         _smi(monkeypatch, caps = {0: 61, 1: 61}, free = {0: 5800, 1: 5800})
-        assert [g[0] for g in LlamaCppBackend._get_gpu_memory(binary, for_llama_server = True)] == [0, 1]
+        assert [g[0] for g in LlamaCppBackend._get_gpu_memory(binary, for_llama_server = True)] == [
+            0,
+            1,
+        ]
 
     def test_homogeneous_and_ptx_forward_hosts_are_unchanged(self, tmp_path, monkeypatch):
         _smi(monkeypatch, caps = {0: 89, 1: 86}, free = {0: 20000, 1: 20000})
         binary = _binary(tmp_path)
-        assert [g[0] for g in LlamaCppBackend._get_gpu_memory(binary, for_llama_server = True)] == [0, 1]
+        assert [g[0] for g in LlamaCppBackend._get_gpu_memory(binary, for_llama_server = True)] == [
+            0,
+            1,
+        ]
         # A legacy sm_50-61 bundle JITs forward onto both: nothing is dropped.
         (tmp_path / "legacy").mkdir()
         legacy = _binary(tmp_path / "legacy", sms = ("50", "61"))
         _smi(monkeypatch)
-        assert [g[0] for g in LlamaCppBackend._get_gpu_memory(legacy, for_llama_server = True)] == [0, 1]
+        assert [g[0] for g in LlamaCppBackend._get_gpu_memory(legacy, for_llama_server = True)] == [
+            0,
+            1,
+        ]
         assert LlamaCppBackend._cuda_sm_gate_error(legacy, [0, 1]) is None
 
 

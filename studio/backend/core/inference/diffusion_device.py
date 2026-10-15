@@ -443,7 +443,11 @@ def resolve_auto_cuda_ordinal() -> Optional[int]:
         return None
     free_by_ordinal: dict[int, float] = {}
     for device in devices:
-        index, total, used = device.get("index"), device.get("vram_total_gb"), device.get("vram_used_gb")
+        index, total, used = (
+            device.get("index"),
+            device.get("vram_total_gb"),
+            device.get("vram_used_gb"),
+        )
         if index not in visible or total is None or used is None:
             continue
         if caps.get(index, (0, 0)) < floor:

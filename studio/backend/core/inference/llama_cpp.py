@@ -13663,7 +13663,9 @@ class LlamaCppBackend:
 
     @classmethod
     def _cuda_sm_gate_error(
-        cls, binary: Optional[str] = None, gpu_indices: Optional[Iterable[int]] = None
+        cls,
+        binary: Optional[str] = None,
+        gpu_indices: Optional[Iterable[int]] = None,
     ) -> Optional[str]:
         """Error message when every visible GPU is OLDER than the oldest arch the
         installed CUDA bundle was built for, or None to proceed. Fails open on

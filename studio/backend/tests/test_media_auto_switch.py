@@ -798,7 +798,12 @@ def test_the_load_runs_on_the_card_the_locality_check_planned(
     }
     loaded: list = []
 
-    async def _start(owner, pick, current_subject, hf_token = None):
+    async def _start(
+        owner,
+        pick,
+        current_subject,
+        hf_token = None,
+    ):
         loaded.append(await routes._selected_gpu_ordinal(None))
         backend.repo_id, backend.model_kind = pick.model_path, pick.model_kind
         backend.gguf_variant = index.published_token(pick) or None

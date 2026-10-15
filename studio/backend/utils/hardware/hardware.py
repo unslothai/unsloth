@@ -6100,7 +6100,11 @@ def auto_select_gpu_ids(
         # The display keeps the CLI rows; ranking needs the cards the worker will get.
         utilization = {
             "devices": [
-                {"index": td["index"], "vram_total_gb": td["total_gb"], "vram_used_gb": td["used_gb"]}
+                {
+                    "index": td["index"],
+                    "vram_total_gb": td["total_gb"],
+                    "vram_used_gb": td["used_gb"],
+                }
                 for td in _torch_get_per_device_info(get_parent_visible_gpu_ids())
             ]
         }

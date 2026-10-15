@@ -18,11 +18,19 @@ import pytest
 from core.inference import diffusion_device as dd
 from utils.hardware import hardware as hw
 
+
 def _dev(index, total, used):
     return {"index": index, "vram_total_gb": total, "vram_used_gb": used}
 
 
-def _host(monkeypatch, visible, devices, rocm = False, order_matches = True, caps = None):
+def _host(
+    monkeypatch,
+    visible,
+    devices,
+    rocm = False,
+    order_matches = True,
+    caps = None,
+):
     from utils.hardware import nvidia
 
     if caps is None:
@@ -168,7 +176,8 @@ def test_plan_sizes_the_card_the_load_will_rank(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "rel", ["core/inference/diffusion.py", "core/inference/video.py", "core/inference/sd_cpp_backend.py"]
+    "rel",
+    ["core/inference/diffusion.py", "core/inference/video.py", "core/inference/sd_cpp_backend.py"],
 )
 def test_direct_backend_loads_rank_automatic_too(rel):
     # A direct caller (MCP, plugin) passes neither gpu_ids nor an ordinal.
@@ -183,12 +192,16 @@ def test_direct_backend_loads_rank_automatic_too(rel):
 
 def test_auto_skips_a_freer_card_older_than_the_current_one(monkeypatch):
     # The current sm_86 card works today; a freer Pascal may lack the wheel's kernels or bf16.
-    _host(monkeypatch, [0, 1], [_dev(0, 24.0, 20.0), _dev(1, 8.0, 0.0)], caps = {0: (8, 6), 1: (6, 1)})
+    _host(
+        monkeypatch, [0, 1], [_dev(0, 24.0, 20.0), _dev(1, 8.0, 0.0)], caps = {0: (8, 6), 1: (6, 1)}
+    )
     assert dd.resolve_auto_cuda_ordinal() == 0
 
 
 def test_auto_a_newer_card_still_competes(monkeypatch):
-    _host(monkeypatch, [0, 1], [_dev(0, 24.0, 20.0), _dev(1, 24.0, 0.0)], caps = {0: (8, 6), 1: (8, 9)})
+    _host(
+        monkeypatch, [0, 1], [_dev(0, 24.0, 20.0), _dev(1, 24.0, 0.0)], caps = {0: (8, 6), 1: (8, 9)}
+    )
     assert dd.resolve_auto_cuda_ordinal() == 1
 
 
