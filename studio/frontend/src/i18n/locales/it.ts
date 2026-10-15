@@ -60,6 +60,8 @@ export const it = {
       never: "Mai",
       scripts: "Esegui script",
       scriptsDescription: "Scegli se i modelli possono eseguire script nelle pagine. Ogni script ti viene mostrato prima dell’esecuzione",
+      cursor: "Mostra cursore",
+      cursorDescription: "Mostra un puntatore dove i modelli fanno clic, scrivono e trascinano nella pagina",
       askEveryTime: "Chiedi ogni volta",
       permissionsTitle: "Autorizzazioni dell'agente",
       permissionsDescription: "Scegli i valori predefiniti e aggiungi eccezioni per siti specifici. I campi di password e pagamento non vengono mai compilati, qualunque cosa indichino queste impostazioni.",
@@ -2537,6 +2539,9 @@ export const it = {
         showMemoryBar: "Mostra la barra di utilizzo della VRAM",
         showMemoryBarDescription:
           "Mostra sotto la riga di ogni modello scaricato il consumo stimato di VRAM: pesi, cache KV alla lunghezza di contesto con cui verrà caricato ed eventuale riserva per il draft speculativo.",
+        fitOnDeviceOnly: "Mostra solo i modelli compatibili",
+        fitOnDeviceOnlyDescription:
+          "Nasconde nel selettore dei modelli e nell'Hub i modelli troppo grandi per la memoria GPU e la RAM di questo dispositivo. I modelli scaricati restano visibili.",
       },
       menu: {
         title: "Menu della chat",

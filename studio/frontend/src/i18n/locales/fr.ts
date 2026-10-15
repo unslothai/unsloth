@@ -61,6 +61,8 @@ export const fr = {
       never: "Jamais",
       scripts: "Exécuter des scripts",
       scriptsDescription: "Choisissez si les modèles peuvent exécuter des scripts sur les pages. Chaque script vous est montré avant de s’exécuter",
+      cursor: "Afficher le curseur",
+      cursorDescription: "Affiche un pointeur là où les modèles cliquent, saisissent et font glisser sur la page",
       askEveryTime: "Demander à chaque fois",
       permissionsTitle: "Autorisations de l'agent",
       permissionsDescription: "Choisissez les valeurs par défaut et ajoutez des exceptions pour certains sites. Les champs de mot de passe et de paiement ne sont jamais remplis, quels que soient ces réglages.",
@@ -2629,6 +2631,9 @@ export const fr = {
         showMemoryBar: "Afficher la barre d’utilisation de la VRAM",
         showMemoryBarDescription:
           "Affiche sous la ligne de chaque modèle téléchargé son utilisation estimée de la VRAM : poids, cache KV à la longueur de contexte avec laquelle il sera chargé, et toute réserve de brouillon spéculatif.",
+        fitOnDeviceOnly: "Afficher uniquement les modèles compatibles",
+        fitOnDeviceOnlyDescription:
+          "Masque dans le sélecteur de modèles et le Hub les modèles trop volumineux pour la mémoire GPU et la RAM de cet appareil. Les modèles téléchargés restent visibles.",
       },
       menu: {
         title: "Menu du chat",
