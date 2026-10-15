@@ -147,10 +147,13 @@ export const BUDGET = {
   // transfer (6,773,496 -> 6,774,820 B raw, 2,036,386 -> 2,036,728 B transfer against 59ab069b5, one machine
   // and build, Node 24, chunk count unchanged at 95). Lazy-loading it cost more transfer and a 96th startup
   // chunk (Rollup split react-dom out), so it is imported statically and the budget raised by that growth.
-  // Main measured 2,897 B raw / 904 B transfer over at 50b9deacb; the downloads panel's "Starting…" row (#13738) adds
-  // 1,404 B raw / 336 B transfer (6,777,794 -> 6,779,198 B raw, 2,037,725 -> 2,038,061 B transfer, Node 24, 95 chunks).
-  transferBytes: 2_038_061,
-  rawBytes: 6_779_198,
+  // Opening the OS folder dialog for model folders on Desktop (#13843) adds 235 B raw / 336 B transfer
+  // (6,777,794 -> 6,778,029 B raw, 2,037,725 -> 2,038,061 B transfer against 199987c63, one machine and build,
+  // Node 24, chunk count unchanged at 95). Raised by that growth.
+  // Main measured 3,656 B raw / 1,180 B transfer over at 7c235de6f; the downloads panel's "Starting…" row (#13738) adds
+  // 1,404 B raw / 353 B transfer (6,778,788 -> 6,780,192 B raw, 2,038,337 -> 2,038,690 B transfer, Node 24, 95 chunks).
+  transferBytes: 2_038_690,
+  rawBytes: 6_780_192,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

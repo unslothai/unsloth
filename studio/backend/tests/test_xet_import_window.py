@@ -50,6 +50,8 @@ def shim(monkeypatch):
     from utils import hf_xet_fallback
 
     monkeypatch.setattr(hf_xet_fallback, "_gpu_present", lambda: True)
+    # The full-init path is the one that needs the window; the init-free route (#13849) imports no torch.
+    monkeypatch.setattr(hf_xet_fallback, "_import_light", lambda name: None)
     hf_xet_fallback._reset_optional_module_cache()
     yield hf_xet_fallback
     hf_xet_fallback._reset_optional_module_cache()
@@ -368,6 +370,8 @@ def test_the_dynamo_gate_runs_before_the_window_and_the_window_wraps_the_load_lo
             for node in ast.walk(fn)
             if isinstance(node, ast.With)
             and any(getattr(item.context_expr, "id", None) == "_load_lock" for item in node.items)
+            # The init-free route (#13849) takes the lock before the gate and imports no torch.
+            and node.lineno > gate
         ]
         assert locks, fn.name
         for lock in locks:
