@@ -12,9 +12,11 @@ from __future__ import annotations
 
 import base64
 import errno
+import functools
 import json
 import os
 import re
+import sys
 import uuid
 from collections.abc import Callable
 from pathlib import Path
@@ -41,6 +43,9 @@ def gallery_dir() -> Path:
     return ensure_account_dir(account_path("images"))
 
 
+_IMG2IMG_WORKFLOWS = ("img2img", "inpaint", "outpaint", "edit", "upscale")
+
+
 def _params_text(meta: dict[str, Any]) -> str:
     """Automatic1111-style ``parameters`` string for cross-tool interop."""
     lines = [str(meta.get("prompt", ""))]
@@ -56,7 +61,7 @@ def _params_text(meta: dict[str, Any]) -> str:
         return "\n".join(lines)
     sampler = sampler_label(meta.get("sampler"))
     schedule = schedule_label(meta.get("schedule_type"))
-    lines.append(
+    fields = (
         f"Steps: {meta.get('steps')}, "
         + (f"Sampler: {sampler}, " if sampler else "")
         + (f"Schedule type: {schedule}, " if schedule else "")
@@ -64,6 +69,11 @@ def _params_text(meta: dict[str, Any]) -> str:
         f"Seed: {meta.get('seed')}, Size: {meta.get('width')}x{meta.get('height')}, "
         f"Model: {meta.get('model', '')}"
     )
+    if meta.get("workflow") in _IMG2IMG_WORKFLOWS and meta.get("strength") is not None:
+        fields += f", Denoising strength: {meta['strength']}"
+    if meta.get("generator"):
+        fields += f", Version: {meta['generator']}"
+    lines.append(fields)
     return "\n".join(lines)
 
 
@@ -94,11 +104,37 @@ def _png_bytes(image: Any, meta: dict[str, Any]) -> bytes:
     return buf.getvalue()
 
 
+@functools.lru_cache(maxsize = 1)
+def _generator() -> str:
+    try:
+        from utils.studio_version import get_studio_version
+        return f"Unsloth {get_studio_version()}"
+    except Exception:
+        return "Unsloth"
+
+
+def _engine() -> Optional[str]:
+    # Read only when a generation already loaded the router: diffusers and the native engine draw
+    # different pixels from the same seed, so a replay needs to know which one ran.
+    router = sys.modules.get("core.inference.diffusion_engine_router")
+    try:
+        return router.active_engine_name() if router is not None else None
+    except Exception:
+        return None
+
+
 def save(image: Any, meta: dict[str, Any]) -> dict[str, Any]:
     """Persist a PIL image with its recipe embedded; return the gallery record."""
     image_id = uuid.uuid4().hex
-    meta = {**meta, "schema_version": RECIPE_SCHEMA_VERSION}
-    # Encode before resolving the folder, so a concurrent Settings move cannot be overtaken.
+    meta = {
+        # A Connection run never touched the local engine.
+        "engine": None if meta.get("model_kind") == "connection" else _engine(),
+        "generator": _generator(),
+        **meta,
+        "schema_version": RECIPE_SCHEMA_VERSION,
+    }
+    # Encoded before the folder is looked up: a Settings move during the encode would otherwise
+    # finish first, and the image land in the folder it left.
     data = _png_bytes(image, meta)
     directory = gallery_dir()
     final_path = directory / f"{image_id}.png"
