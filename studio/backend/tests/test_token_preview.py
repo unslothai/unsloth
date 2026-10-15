@@ -2,6 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import asyncio
+import importlib.util
 import os
 import sys
 import threading
@@ -169,6 +170,8 @@ def test_the_subprocess_tokenizes_and_masks_typed_text(real_worker):
     assert sample["num_tokens"] == sample["num_trained"] > 0
     assert all(isinstance(token[0], int) for token in sample["tokens"])
 
+    if importlib.util.find_spec("torch") is None:
+        pytest.skip("completion masking needs torch, as it does for training")
     chat = "<|im_start|>user\nhi<|im_end|>\n<|im_start|>assistant\nhello<|im_end|>\n"
     masked = real_worker(text = chat, train_on_completions = True, max_seq_length = 128)
     assert masked["masking"]["applied"] is True
