@@ -47375,19 +47375,18 @@ def _generate_failure_detail(message: str) -> str:
     return _GENERATE_FAILURE_FALLBACK
 
 
-_external_image_runs: dict[Optional[str], set] = {}
+# Keyed by account id, not account_scope(): the scope moves when the first managed account appears.
+_external_image_runs: dict[str, set] = {}
 _stopped_external_image_runs: set = set()
 
 
 def _external_image_run_active() -> bool:
-    return bool(_external_image_runs.get(account_access.account_scope()))
+    return bool(_external_image_runs.get(current_account_id()))
 
 
 def _stop_external_image_runs() -> bool:
     runs = [
-        task
-        for task in _external_image_runs.get(account_access.account_scope()) or ()
-        if not task.done()
+        task for task in _external_image_runs.get(current_account_id()) or () if not task.done()
     ]
     for task in runs:
         _stopped_external_image_runs.add(task)
@@ -47484,7 +47483,7 @@ async def _external_image_generation(
         api_key = api_key,
         timeout = 600.0,
     )
-    owner = account_access.account_scope()
+    owner = current_account_id()
     task = asyncio.create_task(
         client.create_images(
             prompt = body.prompt,

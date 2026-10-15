@@ -3140,6 +3140,44 @@ def test_stop_cancels_a_connection_run_and_progress_shows_it(client, monkeypatch
     assert client.get("/api/inference/images/gallery").json()["images"] == []
 
 
+def test_stop_reaches_a_connection_run_after_the_account_scope_moves(client, monkeypatch):
+    import asyncio
+
+    import httpx
+    import hub.services.models.account_access as account_access
+
+    started = asyncio.Event()
+
+    async def handler(req):
+        started.set()
+        await asyncio.sleep(30)
+        return httpx.Response(500)
+
+    _external_image_connection(monkeypatch, handler)
+
+    async def run():
+        transport = httpx.ASGITransport(app = client.app)
+        async with httpx.AsyncClient(transport = transport, base_url = "http://t") as ac:
+            gen = asyncio.create_task(
+                ac.post(
+                    "/api/inference/images/generate",
+                    json = {"prompt": "a sloth", "provider_id": "conn-1", "model": "qwen-image"},
+                )
+            )
+            await asyncio.wait_for(started.wait(), 5)
+            # The first managed account appears mid-run: the owner's scope goes from None to its id.
+            monkeypatch.setattr(account_access, "account_scope", lambda: "owner-scope")
+            progress = (await ac.get("/api/inference/images/generate-progress")).json()
+            stop = (await ac.post("/api/inference/images/generate/cancel?target=connection")).json()
+            resp = await asyncio.wait_for(gen, 5)
+            return progress, stop, resp
+
+    progress, stop, resp = asyncio.run(run())
+    assert progress["active"] is True
+    assert stop == {"cancelled": True}
+    assert resp.status_code == 409
+
+
 def test_external_connection_refuses_options_it_cannot_forward(client, monkeypatch):
     import httpx
 
@@ -3179,9 +3217,9 @@ def test_a_connection_run_reports_active_even_when_local_progress_is_hidden(clie
     monkeypatch.setattr(account_access, "managed_account", lambda: True)
     monkeypatch.setattr(account_access, "generation_is_foreign", lambda kind: True)
     assert client.get("/api/inference/images/generate-progress").json()["active"] is False
-    monkeypatch.setitem(
-        inference_routes._external_image_runs, account_access.account_scope(), {object()}
-    )
+    from utils.account_context import current_account_id
+
+    monkeypatch.setitem(inference_routes._external_image_runs, current_account_id(), {object()})
     progress = client.get("/api/inference/images/generate-progress").json()
     assert progress["active"] is True
     assert progress["target"] == "connection"

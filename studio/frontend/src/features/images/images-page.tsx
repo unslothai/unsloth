@@ -1705,7 +1705,8 @@ export function ImagesPage({
   const genVisibilityListener = useRef<(() => void) | null>(null);
   const [status, setStatus] = useState<DiffusionStatus | null>(null);
   const { familyOverride, setFamilyOverride, familySelect, opaqueKind, selectorModelId } = useFamilyOverride(status, status?.supported_families);
-  const conditioning = status?.loaded ? (status.conditioning ?? null) : null;
+  // A connection is not bound by the resident model's size grid or presets.
+  const conditioning = !external && status?.loaded ? (status.conditioning ?? null) : null;
   const sizeLimits = useMemo(() => sizeLimitsFrom(conditioning), [conditioning]);
   const unifiedEdit = Boolean(conditioning?.unified_edit);
   const referenceResolutions = conditioning?.reference_resolutions ?? [];
