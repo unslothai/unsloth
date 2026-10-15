@@ -714,7 +714,11 @@ def _fit_fallback_placement(
         # A saturated window is read in full, but the full-context layers are RESERVED at n_ctx
         # and only their live prefix is read.
         swa_part = min(swa_floor, kv_total)
-        kv_live_total = swa_part + int((kv_total - swa_part) * live_tokens / max(1, n_ctx))
+        # Without --kv-unified each slot owns a stream (llama-kv-cache.cpp: n_stream = unified ? 1
+        # : n_seq_max, every layer one [n_embd, kv_size, n_stream] tensor) and the request reads
+        # only its own, so it is charged one stream's window; the reservation above keeps them all.
+        swa_live = swa_part if opts.kv_unified else swa_part // max(1, n_seq)
+        kv_live_total = swa_live + int((kv_total - swa_part) * live_tokens / max(1, n_ctx))
     elif layout.has_swa and kv_bytes_floor > 0:
         # No split supplied, and the layout cannot say which half is which.
         kv_live_total = kv_total
@@ -2367,6 +2371,8 @@ def _finish(
     # token_embd is host-resident on every launch, so it is host RAM this plan must pay for even
     # when nothing is spilled; the -nkvo cache is in there too, and a lazily-read PLE is not.
     host_bytes = host_side
+    # The same cache admission priced: the product over-reads a q4_0 cache, so without the exact
+    # size the reported footprint is the product's excess above what was admitted.
     vram_bytes = (
         all_resident_bytes(
             layout,
@@ -2375,6 +2381,7 @@ def _finish(
             kv_bytes_floor = kv_bytes_floor,
             kv_on_host = kv_on_host,
             n_seq = knobs.n_parallel if knobs is not None else 1,
+            trust_floor = opts.kv_bytes_at is not None,
         )
         - spilled_bytes
     )

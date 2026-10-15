@@ -2971,7 +2971,11 @@ def _resolve_swa_pattern(
     *,
     allow_network: Optional[bool] = None,
 ) -> Optional[list]:
-    if not arch or not n_layers:
+    from core.inference.offload_layout import LLAMA_MAX_LAYERS
+
+    # Every arm below builds an n_layers-long list, so a count llama.cpp refuses
+    # (LLAMA_MAX_LAYERS) is answered before it is allocated.
+    if not arch or not n_layers or not 0 < n_layers <= LLAMA_MAX_LAYERS:
         return None
     if allow_network is None:
         allow_network = os.environ.get("UNSLOTH_STUDIO_OFFLINE", "0") not in (
@@ -19172,9 +19176,13 @@ class LlamaCppBackend:
         kv_lora_rank = getattr(self, "_kv_lora_rank", None)
         key_len = getattr(self, "_kv_key_length", None)
         val_len = getattr(self, "_kv_value_length", None)
-        if kv_lora_rank is not None:
+        # The cache llama.cpp allocates decides the copy (_uses_mla_cache): a file with the LoRA
+        # rank but no MLA head lengths runs as MHA over a full per-head K+V cache.
+        if self._uses_mla_cache():
             rope_dim = getattr(self, "_key_length_mla", None) or 64
-            return (getattr(self, "_n_kv_heads", None) or 1) * (key_len or kv_lora_rank + rope_dim)
+            return (getattr(self, "_n_kv_heads", None) or 1) * (
+                key_len or (kv_lora_rank or 0) + rope_dim
+            )
         if key_len is None or val_len is None:
             if not (n_heads and n_kv):
                 return getattr(self, "_embedding_length", None) or 0
@@ -19254,7 +19262,7 @@ class LlamaCppBackend:
         if not flash_attn:
             n_head = getattr(self, "_n_heads", None) or max(1, n_embd // 64)
             per_tok += ub * n_head * 4
-            if getattr(self, "_kv_lora_rank", None) is not None:
+            if self._uses_mla_cache():
                 # MLA decompresses a float32 copy of the latent cache to attend over it:
                 # GLM-4.7-Flash grows 44 KiB per cell at ubatch 512, 2 KiB past the scores.
                 per_tok += self._attention_dequant_width() * 4
@@ -20329,11 +20337,15 @@ class LlamaCppBackend:
                     "will serve via the diffusion runner"
                 )
 
-            # Expand a scalar period straight from the GGUF first.
+            # Expand a scalar period straight from the GGUF first. Not past llama.cpp's layer cap:
+            # the child refuses that file, and the list would be sized off a declared count.
+            from core.inference.offload_layout import LLAMA_MAX_LAYERS
+
             if (
                 self._sliding_window_pattern is None
                 and sliding_window_pattern_period
                 and self._n_layers
+                and 0 < self._n_layers <= LLAMA_MAX_LAYERS
             ):
                 self._sliding_window_pattern = [
                     (i + 1) % sliding_window_pattern_period != 0 for i in range(self._n_layers)
@@ -30201,6 +30213,20 @@ class LlamaCppBackend:
                         + int(_mmproj_pinned_bytes or 0)
                         + (int(_fit_env_mmproj_bytes or 0) if _fit_env_mmproj_on_host else 0)
                     )
+                    # A lazily read table stays mmap'd under every load mode: not pinned RAM, so
+                    # neither the prompt-cache clamp nor the load-mode rule below charges it.
+                    _fit_lazy_bytes = self._lazy_read_host_bytes(
+                        model_path,
+                        caps = server_caps,
+                        extra_args = _fit_extras,
+                        env = _fit_env,
+                        auto_resolves_off = self._lazy_auto_resolves_off(
+                            gpu_indices = gpu_indices,
+                            detected_gpus = _detected_gpus,
+                            shared_gpu_ids = _shared_gpu_ids,
+                            is_vulkan_backend = is_vulkan_backend,
+                        ),
+                    )
                     if (
                         _planner_owns_fit
                         and _cache_ram_in_force is None
@@ -30210,11 +30236,13 @@ class LlamaCppBackend:
                             self._available_system_memory_mib(),
                             max(
                                 0.0,
-                                (
+                                max(
+                                    0,
                                     model_size_fit
+                                    - _fit_lazy_bytes
                                     + kv_cache_bytes
                                     + _mtp_reserve_bytes
-                                    + _cc_bytes(effective_ctx, _spill_n_gpus)
+                                    + _cc_bytes(effective_ctx, _spill_n_gpus),
                                 )
                                 / (1024 * 1024)
                                 - sum(
@@ -30246,19 +30274,6 @@ class LlamaCppBackend:
                         # plan's host side alike, and clip.cpp holds it in a CPU backend buffer.
                         + int(_mmproj_pinned_bytes or 0)
                         + (int(_fit_env_mmproj_bytes or 0) if _fit_env_mmproj_on_host else 0),
-                    )
-                    # A lazily read table stays mmap'd under every load mode: not pinned RAM.
-                    _fit_lazy_bytes = self._lazy_read_host_bytes(
-                        model_path,
-                        caps = server_caps,
-                        extra_args = _fit_extras,
-                        env = _fit_env,
-                        auto_resolves_off = self._lazy_auto_resolves_off(
-                            gpu_indices = gpu_indices,
-                            detected_gpus = _detected_gpus,
-                            shared_gpu_ids = _shared_gpu_ids,
-                            is_vulkan_backend = is_vulkan_backend,
-                        ),
                     )
                     _fit_load_mode_kwargs = dict(
                         model_size = _fit_model_size,
@@ -30978,18 +30993,31 @@ class LlamaCppBackend:
                     # modelled in, and a parent mask that reorders the same cards is honoured below
                     # (_inherited_child_gpu_order), which hands them to the other device; the
                     # repointed --tensor-split then also escapes the retry's revocation. Left to
-                    # --fit on, as before the plan split across devices.
+                    # --fit on, as before the plan split across devices. The picker's own order
+                    # (gpu_ids, applied to gpu_indices above) reaches the child mask and the
+                    # Vulkan --device list alike, so a launch order other than the one the plan
+                    # was budgeted in is declined the same way.
+                    _planned_order = [
+                        int(_idx)
+                        for _idx, _free in ((_spill_inputs or {}).get("gpus") or ())
+                        if gpu_indices is not None and int(_idx) in {int(i) for i in gpu_indices}
+                    ]
                     if (
                         _spill is not None
                         and len(getattr(_spill, "device_layer_counts", ()) or ()) > 1
                         and gpu_indices is not None
-                        and not is_vulkan_backend
-                        and not gpu_ids
-                        and self._inherited_child_gpu_order(list(gpu_indices)) is not None
+                        and (
+                            [int(i) for i in gpu_indices] != _planned_order
+                            or (
+                                not is_vulkan_backend
+                                and not gpu_ids
+                                and self._inherited_child_gpu_order(list(gpu_indices)) is not None
+                            )
+                        )
                     ):
                         logger.info(
-                            "Tensor spill: declined, the inherited GPU mask reorders the "
-                            "devices the plan split its layers across"
+                            "Tensor spill: declined, the launch orders the devices the plan "
+                            "split its layers across differently from the plan"
                         )
                         _spill = None
                     # NOT `if _spill:` -- Plan is a dataclass, so every instance is truthy,
