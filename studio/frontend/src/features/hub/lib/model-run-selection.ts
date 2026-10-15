@@ -208,8 +208,8 @@ const CHAT_UNLOADABLE_AUDIO_TASKS: ReadonlySet<string> = new Set([
   "audio-to-audio",
 ]);
 
-// A GGUF from these stacks loads in llama.cpp, and chat reads an Orpheus-style codec vocabulary at
-// load, so a fine-tune named for no family still speaks there. Other libraries (nemo) do not load.
+// A speech GGUF from these stacks loads in llama.cpp, and chat reads an Orpheus-style codec
+// vocabulary at load, so a fine-tune named for no family still speaks there. Other libraries (nemo) do not load.
 const LLAMA_CPP_GGUF_LIBRARIES: ReadonlySet<string> = new Set([
   "transformers",
   "gguf",
@@ -229,6 +229,7 @@ export function hubAudioRunRefused(
   if (!audioTask || !CHAT_UNLOADABLE_AUDIO_TASKS.has(audioTask)) return false;
   const library = model.libraryName?.toLowerCase();
   if (
+    audioTask === "text-to-speech" &&
     model.isGguf &&
     (!library || LLAMA_CPP_GGUF_LIBRARIES.has(library)) &&
     !speechGgufIsUndecodable({

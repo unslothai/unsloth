@@ -268,6 +268,21 @@ test("Run refuses an audio model neither Audio nor chat can run", () => {
     false,
   );
   assert.equal(refused({ ...magpie, libraryName: undefined }), false);
+  // The codec vocabulary is a speech exemption: a music GGUF Audio cannot run is refused.
+  assert.equal(
+    refused(
+      audio({
+        id: "calcuis/ace-gguf",
+        hubRepoId: "calcuis/ace-gguf",
+        isGguf: true,
+        modelFormat: "gguf",
+        pipelineTag: "text-to-audio",
+        task: "text-generation",
+        tags: ["gguf", "text-to-audio"],
+      }),
+    ),
+    true,
+  );
   // llama.cpp has no CSM decoder, whatever library the card names.
   assert.equal(
     refused(
