@@ -82,6 +82,12 @@ def _held_tensors(value):
     return [t for _, t in _tensor_attrs(value)]
 
 
+def _source_device(local, param, key, device_of):
+    if local.device.type != "cpu":
+        return local.device
+    return device_of(param, key, local) if device_of is not None else None
+
+
 def _synchronize(device):
     module = getattr(torch, device.type, None)
     sync = getattr(module, "synchronize", None)
@@ -123,35 +129,44 @@ class _StateOffloader:
         state = self.optimizer.state
         return [(p, state[p]) for p in params if p in state]
 
-    def offload(self, params = None):
+    def offload(self, params = None, device_of = None):
+        # device_of(param, key, tensor) names the device of state that is already on the host
+        # (a checkpoint just loaded there), None to leave it host-only.
         devices = set()
         for param, state in self._states(params):
             for key, value in list(state.items()):
                 if isinstance(value, (list, tuple)):
                     items = list(value)
                     for i, local in enumerate(items):
-                        if isinstance(local, torch.Tensor) and local.device.type != "cpu":
+                        if not isinstance(local, torch.Tensor):
+                            continue
+                        device = _source_device(local, param, (key, i), device_of)
+                        if device is not None:
                             devices.add(local.device)
                             items[i] = self._host_buffer(param, (key, i), local)
-                            self.offloaded[(param, (key, i))] = local.device
+                            self.offloaded[(param, (key, i))] = device
                     if isinstance(value, list):
                         value[:] = items
                     else:
                         state[key] = type(value)(items)
                     continue
                 for name, local in _tensor_attrs(value):
-                    if local.device.type == "cpu":
+                    device = _source_device(local, param, (key, name), device_of)
+                    if device is None:
                         continue
                     devices.add(local.device)
                     setattr(value, name, self._host_buffer(param, (key, name), local))
-                    self.offloaded[(param, (key, name))] = local.device
+                    self.offloaded[(param, (key, name))] = device
                 is_dtensor = DTensor is not None and isinstance(value, DTensor)
                 local = value._local_tensor if is_dtensor else value
-                if not isinstance(local, torch.Tensor) or local.device.type == "cpu":
+                if not isinstance(local, torch.Tensor):
+                    continue
+                device = _source_device(local, param, key, device_of)
+                if device is None:
                     continue
                 devices.add(local.device)
                 host = self._host_buffer(param, key, local)
-                self.offloaded[(param, key)] = local.device
+                self.offloaded[(param, key)] = device
                 if is_dtensor:
                     value = copy.copy(value)
                     value._local_tensor = host
@@ -229,17 +244,31 @@ class _StateOffloader:
         if self.inside:
             return
         # torch passes the step's own args to hooks, self included.
-        if args and args[0] is optimizer:
-            args = args[1:]
-        params = [
-            p for group in optimizer.param_groups for p in group["params"] if p.grad is not None
-        ]
-        chunks = self._chunks(params)
-        closure = args[0] if args else kwargs.get("closure")
+        has_self = bool(args) and args[0] is optimizer
+        rest = args[1:] if has_self else args
+        closure = rest[0] if rest else kwargs.get("closure")
         # A closure recomputes the loss on every call, so it must run once over all parameters.
         if closure is not None or not _chunk_safe(optimizer):
             self.restore()
             return
+        # Chunk-safe steps call a closure first, before any update, so the chunked updates run
+        # after every step pre hook (registered later ones too), as a plain step would.
+        def _chunked_updates():
+            self._step_chunks(optimizer, rest[1:], dict(kwargs))
+            return None
+
+        if rest:
+            rest = (_chunked_updates,) + tuple(rest[1:])
+        else:
+            kwargs = dict(kwargs, closure = _chunked_updates)
+        return ((optimizer,) + tuple(rest) if has_self else tuple(rest)), kwargs
+
+    def _step_chunks(self, optimizer, args, kwargs):
+        kwargs.pop("closure", None)
+        params = [
+            p for group in optimizer.param_groups for p in group["params"] if p.grad is not None
+        ]
+        chunks = self._chunks(params)
         # Chunk-safe steps never touch parameters without a gradient, so their state stays on host.
         if len(chunks) <= 1:
             self.restore(params)
@@ -321,8 +350,48 @@ def offload_optimizer_state(optimizer, pin_memory = True, chunk_bytes = None):
     load_state_dict = optimizer.load_state_dict
 
     def _load_state_dict_and_offload(state_dict, *args, **kwargs):
-        result = load_state_dict(state_dict, *args, **kwargs)
-        offloader.finish(offloader.offload())
+        moved = {}
+        original = vars(torch.optim.Optimizer).get("_process_value_according_to_param_policy")
+        if isinstance(original, staticmethod):
+            policy = original.__func__
+
+            # torch casts every loaded state tensor onto its parameter's device; keep it on the
+            # host instead so a resume never holds the whole state on device at once.
+            def _host_policy(param, value, *policy_args, **policy_kwargs):
+                if param.device.type in ("cpu", "meta"):
+                    return policy(param, value, *policy_args, **policy_kwargs)
+                stand_in = torch.empty(0, dtype = param.dtype, device = "meta")
+                out = policy(stand_in, value, *policy_args, **policy_kwargs)
+                if out.device.type != "meta":
+                    return out
+                out = value.to(dtype = out.dtype)
+                moved[id(out)] = param.device
+                return out
+
+            torch.optim.Optimizer._process_value_according_to_param_policy = staticmethod(_host_policy)
+        try:
+            result = load_state_dict(state_dict, *args, **kwargs)
+        finally:
+            if isinstance(original, staticmethod):
+                torch.optim.Optimizer._process_value_according_to_param_policy = original
+        if moved:
+            device_of = lambda param, key, local: moved.get(id(local))
+        elif callable(getattr(optimizer, "to_gpu", None)) and hasattr(optimizer, "initialized"):
+            # bitsandbytes loads state on the host and its first step moves all of it to the device
+            # (to_gpu), defeating the chunks: do its first-step setup here, minus that move.
+            if not optimizer.initialized:
+                if callable(getattr(optimizer, "check_overrides", None)):
+                    optimizer.check_overrides()
+                optimizer.initialized = True
+            device_of = lambda param, key, local: (
+                param.device
+                if not isinstance(key, tuple) and param.device.type != "cpu"
+                and not getattr(local, "is_paged", False)
+                else None
+            )
+        else:
+            device_of = None
+        offloader.finish(offloader.offload(device_of = device_of))
         return result
 
     optimizer.load_state_dict = _load_state_dict_and_offload

@@ -382,3 +382,125 @@ def test_lbfgs_history_is_offloaded():
     head, state = run(True)
     assert torch.allclose(base, head)
     assert state["old_dirs"] and all(t.device.type == "cpu" for t in state["old_dirs"] + state["ro"])
+
+
+def test_chunked_step_runs_after_later_pre_hooks():
+    module = _module()
+    params = [torch.nn.Parameter(torch.randn(16)) for _ in range(3)]
+    reference = [torch.nn.Parameter(p.detach().clone()) for p in params]
+
+    def halve_and_fill(optimizer, args, kwargs):
+        # Clips existing gradients and creates the missing one, as a later library hook might.
+        for group in optimizer.param_groups:
+            group["lr"] = 0.05
+            for p in group["params"]:
+                p.grad = torch.full_like(p, 0.5) if p.grad is None else p.grad * 0.5
+
+    optimizer = torch.optim.AdamW(params, lr = 0.1)
+    offloader = _hooked(module, optimizer, chunk_bytes = 1)
+    optimizer.register_step_pre_hook(halve_and_fill)
+    plain = torch.optim.AdamW(reference, lr = 0.1)
+    plain.register_step_pre_hook(halve_and_fill)
+    for p, q in zip(params[:2], reference[:2]):
+        p.grad = torch.ones_like(p)
+        q.grad = torch.ones_like(q)
+    optimizer.step()
+    plain.step()
+    for p, q in zip(params, reference):
+        assert torch.equal(p, q)
+        assert torch.equal(optimizer.state[p]["exp_avg"], plain.state[q]["exp_avg"])
+    assert offloader.hidden is None and offloader.steps == 1
+
+
+def test_positional_none_closure_still_chunks():
+    # accelerate calls optimizer.step(closure) with closure = None.
+    module = _module()
+    params = [torch.nn.Parameter(torch.randn(16)) for _ in range(3)]
+    reference = torch.optim.AdamW([torch.nn.Parameter(p.detach().clone()) for p in params], lr = 0.1)
+    optimizer = torch.optim.AdamW(params, lr = 0.1)
+    chunked = []
+    offloader = _hooked(module, optimizer, chunk_bytes = 1)
+    restore = offloader.restore
+    offloader.restore = lambda params = None: (chunked.append(params), restore(params))
+    for p, q in zip(params, reference.param_groups[0]["params"]):
+        p.grad = torch.ones_like(p)
+        q.grad = torch.ones_like(q)
+    assert optimizer.step(None) is None
+    reference.step()
+    assert chunked == [[p] for p in params]
+    for p, q in zip(params, reference.param_groups[0]["params"]):
+        assert torch.equal(p, q)
+
+
+def _big_params(n = 4, numel = 1 << 20):
+    return [torch.nn.Parameter(torch.randn(numel, device = "cuda")) for _ in range(n)]
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
+@pytest.mark.parametrize("fused", [False, True])
+def test_load_state_dict_keeps_state_on_host(fused):
+    module = _module()
+    params = _big_params()
+    source = torch.optim.AdamW(params, lr = 1e-3, fused = fused)
+    for p in params:
+        p.grad = torch.ones_like(p)
+    source.step()
+    saved = {
+        "state": {k: {n: t.cpu().clone() for n, t in v.items()} for k, v in source.state_dict()["state"].items()},
+        "param_groups": source.state_dict()["param_groups"],
+    }
+    clones = [torch.nn.Parameter(p.detach().clone()) for p in params]
+    optimizer = torch.optim.AdamW(clones, lr = 1e-3, fused = fused)
+    offloader = module.offload_optimizer_state(optimizer, chunk_bytes = 9 << 20)
+    torch.cuda.synchronize()
+    base = torch.cuda.memory_allocated()
+    torch.cuda.reset_peak_memory_stats()
+    optimizer.load_state_dict(saved)
+    torch.cuda.synchronize()
+    # All four parameters' moments would be 32 MiB on device.
+    assert torch.cuda.max_memory_allocated() - base < 1 << 20
+    assert _state_devices(optimizer) == {"cpu"}
+    # Fused steps keep "step" on the parameter's device, the others on the host.
+    step_device = offloader.offloaded.get((clones[0], "step"))
+    assert (step_device.type if step_device is not None else "cpu") == ("cuda" if fused else "cpu")
+    for p, q in zip(params, clones):
+        p.grad = torch.ones_like(p)
+        q.grad = torch.ones_like(q)
+    source.step()
+    optimizer.step()
+    for p, q in zip(params, clones):
+        assert torch.equal(p, q)
+    assert _state_devices(optimizer) == {"cpu"}
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
+def test_resumed_bitsandbytes_first_step_stays_chunked():
+    bnb = pytest.importorskip("bitsandbytes")
+    module = _module()
+    params = _big_params()
+    source = bnb.optim.AdamW8bit(params, lr = 1e-3)
+    for p in params:
+        p.grad = torch.ones_like(p)
+    source.step()
+    buffer = io.BytesIO()
+    torch.save(source.state_dict(), buffer)
+    buffer.seek(0)
+    saved = torch.load(buffer, map_location = "cpu", weights_only = False)
+    clones = [torch.nn.Parameter(p.detach().clone()) for p in params]
+    optimizer = bnb.optim.AdamW8bit(clones, lr = 1e-3)
+    module.offload_optimizer_state(optimizer, chunk_bytes = 3 << 20)
+    optimizer.load_state_dict(saved)
+    for p, q in zip(params, clones):
+        p.grad = torch.ones_like(p)
+        q.grad = torch.ones_like(q)
+    torch.cuda.synchronize()
+    base = torch.cuda.memory_allocated()
+    torch.cuda.reset_peak_memory_stats()
+    optimizer.step()
+    peak = torch.cuda.max_memory_allocated() - base
+    source.step()
+    # One parameter's 8-bit moments (about 2 MiB) at a time, not all four (about 8 MiB).
+    assert peak < 5 << 20
+    for p, q in zip(params, clones):
+        assert torch.equal(p, q)
+    assert _state_devices(optimizer) == {"cpu"}
