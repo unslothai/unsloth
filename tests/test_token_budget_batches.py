@@ -525,9 +525,15 @@ def test_split_reads_boundary_labels_in_one_transfer():
 def test_lomo_steps_aside_for_split_and_balance(monkeypatch, capsys):
     monkeypatch.setenv("UNSLOTH_TOKEN_BUDGET", "16")
     monkeypatch.delenv("UNSLOTH_TOKEN_BALANCE", raising = False)
-    for optim in ("lomo", "adalomo"):
+    for optim, neftune in (
+        ("lomo", None),
+        ("adalomo", None),
+        ("galore_adamw_layerwise", None),
+        ("adamw_torch", 5.0),
+    ):
         trainer, seen = _fake_trainer()
         trainer.args.optim = optim
+        trainer.args.neftune_noise_alpha = neftune
         tb.install_token_budget(trainer)
         batch = _padding_free_batch([5, 9, 3, 12, 7, 4])
         trainer.training_step(None, batch, 100)
@@ -560,3 +566,19 @@ def test_balance_steps_aside_for_multi_process_dispatched_dataloaders(monkeypatc
     assert trainer._unsloth_token_balance_active is False
     assert not isinstance(loader.batch_sampler.sampler, tb.TokenBalancedSampler)
     assert "UNSLOTH_TOKEN_BALANCE ignored" in capsys.readouterr().out
+
+
+def test_split_checks_boundary_labels_even_with_shift_labels():
+    # Unsloth's fast causal LM path builds its loss from labels, not shift_labels.
+    batch = _padding_free_batch([5, 9, 3, 12, 7, 4], mask_boundaries = False)
+    batch["shift_labels"] = torch.roll(batch["labels"], -1, dims = 1)
+    assert len(tb.split_batch_by_token_budget(batch, 16)) == 1
+
+
+def test_dataset_lengths_are_read_in_batches():
+    datasets = pytest.importorskip("datasets")
+    dataset = datasets.Dataset.from_dict(
+        {"input_ids": [[1] * (1 + i % 7) for i in range(10_000)], "x": [0] * 10_000}
+    )
+    dataset = dataset.shuffle(seed = 0)
+    assert tb._dataset_lengths(dataset) == [len(ids) for ids in dataset["input_ids"]]

@@ -217,7 +217,8 @@ def _split_padding_free(batch, budget):
     stops = list(itertools.accumulate(sum(group) for group in groups))
     labels = batch.get("labels")
     # The last token of a chunk loses its next-token target, exact only when that target is masked.
-    if isinstance(labels, torch.Tensor) and "shift_labels" not in batch:
+    # Checked even with shift_labels: Unsloth's fast causal LM path builds its loss from labels.
+    if isinstance(labels, torch.Tensor):
         cuts = torch.tensor(stops[:-1], device = labels.device)
         if bool((labels[0, cuts] != -100).any()):
             return None
@@ -314,6 +315,12 @@ def _dataset_lengths(dataset):
     column_names = getattr(dataset, "column_names", None)
     if column_names is None or "input_ids" not in column_names:
         return None
+    # Batched, so the whole token column is never materialised as Python lists at once.
+    if hasattr(dataset, "select_columns") and hasattr(dataset, "iter"):
+        lengths = []
+        for rows in dataset.select_columns(["input_ids"]).iter(batch_size = 4096):
+            lengths.extend(len(ids) for ids in rows["input_ids"])
+        return lengths
     return [len(ids) for ids in dataset["input_ids"]]
 
 
@@ -356,9 +363,14 @@ def _router_aux_loss_active(trainer):
 
 
 def _exactness_blocker(trainer):
-    # LOMO / AdaLomo update the weights inside every backward, so each chunk or slot is its own step.
-    if "lomo" in str(getattr(getattr(trainer, "args", None), "optim", "")).lower():
-        return "LOMO optimizers update the weights on every backward"
+    args = getattr(trainer, "args", None)
+    optim = str(getattr(args, "optim", "")).lower()
+    # LOMO / AdaLomo and the *_layerwise optimizers update weights inside every backward.
+    if "lomo" in optim or "layerwise" in optim:
+        return "this optimizer updates the weights on every backward"
+    # NEFTune scales its noise by the forward's sequence length, which a split shortens.
+    if getattr(args, "neftune_noise_alpha", None):
+        return "NEFTune noise depends on the sequence length of each forward"
     if not _loss_uses_step_count(trainer):
         return (
             "the loss is a per-micro-batch mean (no shared num_items_in_batch, or label smoothing)"
