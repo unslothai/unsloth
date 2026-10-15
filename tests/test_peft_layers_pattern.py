@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""FastLlamaModel.get_peft_model must hand layers_pattern to PEFT's LoraConfig.
-
-Without it PEFT takes the layer index from any `<name>.<int>.` in the module path, so
-layers_to_transform also selects every other numbered stack that holds a target module.
-"""
+"""Without layers_pattern PEFT takes the first `<name>.<int>.` as the layer index, so other numbered stacks match too."""
 
 import pytest
 import torch
