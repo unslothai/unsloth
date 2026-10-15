@@ -1,26 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Drive every registered surface once and take a parity digest of each.
-
-THE ONE RULE. A surface that was not reached records a REASON. Never a bare zero, never a missing
-row, and never a digest of whatever happened to be on screen instead. The failure this whole tool
-is built against is a check that cannot tell "did not run" from "passed", and a sweep is unusually
-good at producing exactly that: navigate to /hub, fail to render, digest the chat page that is
-still mounted underneath, and report a pass. So every row carries `reached`, `reason`, the settle
-observation that decided it, and the root the digest was actually taken from.
-
-WHY THE SWEEP RUNS AGAINST AN EMPTY CHAT. The known state is a fresh `/chat`. Several surface
-roots -- the shell, the sidebar, the active route container's siblings -- contain the keep-alive
-chat page, so a sweep run against a loaded thread would carry that thread into the digest of every
-other surface and any thread difference would flip all of them at once. An empty chat makes the
-surface digests about the surfaces.
-
-WHAT THE DIGEST IS. `window.__sb.parity.capture()`, the same function and the same normalisation
-the film uses at the close of every action window, pointed at the surface's own root by
-surfaces.js. Same function on purpose: a surface digest and an action digest that were produced by
-two implementations could not be compared, and comparing them is the point.
-"""
+"""An unreached surface records a reason, never a bare zero or a digest of the page beneath it."""
 
 from __future__ import annotations
 
@@ -29,14 +10,11 @@ from typing import Any, Callable, Optional
 
 from . import surfaces as registry
 
-#: How long a settle condition is given before the surface is recorded as unreached. Generous: the
-#: settings panels are lazily imported chunks and the hub's first paint waits on a network round
-#: trip, and a sweep that calls those failures is a sweep nobody believes.
+#: Generous: settings panels are lazy chunks and the hub waits on a network round trip.
 SETTLE_TIMEOUT_MS = 8000
 SETTLE_POLL_MS = 150
 
-#: A per-surface ceiling covering reach, settle and capture together, so a reach that navigates
-#: into a redirect loop cannot hold the sweep open indefinitely.
+#: Caps reach + settle + capture so a redirect loop cannot hang the sweep.
 SURFACE_BUDGET_MS = 25_000
 
 
@@ -71,9 +49,7 @@ class _Driver:
         if verb == "goto":
             page.goto(f"{self.base_url}{args[0]}", wait_until = "domcontentloaded", timeout = 60_000)
         elif verb == "click":
-            # A REAL mouse click through the driver, not element.click(): Radix menus open on pointerdown and
-            # a synthetic click never opens them, which reads downstream as a menu that opened in zero
-            # milliseconds. The same trap dom.js documents for the film's actions.
+            # Real mouse click: Radix menus open on pointerdown, which element.click() never fires.
             page.click(args[0], timeout = 6000)
         elif verb == "click_if":
             el = page.query_selector(args[0])
@@ -128,11 +104,7 @@ class _Driver:
 
 
 def _row(surface: registry.Surface, cell_id: Optional[str]) -> dict:
-    """A surface row with every mandatory field already present and honest.
-
-    Built up front rather than assembled on the success path, so an exception anywhere below
-    leaves a row that says it did not run instead of a row that is missing.
-    """
+    """Built before the success path runs, so an exception leaves a row that says it did not run."""
     return {
         "row_type": "surface",
         "cell_id": cell_id,
@@ -143,8 +115,7 @@ def _row(surface: registry.Surface, cell_id: Optional[str]) -> dict:
         "reason": "the sweep did not get to this surface",
         "conditional": surface.conditional,
         "also_in_film": surface.also_in_film,
-        # Carried on the ROW, not only in the registry, so a reader of a payload can tell a digest that is
-        # a parity signal from one that moves on its own without this source tree in front of them.
+        # On the row so a payload reader can tell volatile digests apart without the registry.
         "volatile": surface.volatile,
         "parity": {"parity_attempted": False, "reason": "not captured"},
         "settle": None,
@@ -165,15 +136,7 @@ def sweep(
     settle_timeout_ms: Optional[int] = None,
     surface_budget_ms: Optional[int] = None,
 ) -> tuple[list[dict], dict]:
-    """Drive every registered surface once. Returns `(rows, manifest)`.
-
-    `recorder`, when given, receives each row as it is produced, so a sweep that dies halfway
-    still leaves the surfaces it did reach in the payload.
-
-    The two timeouts are arguments rather than constants only so the unit tests can drive the
-    unreached path without paying eight real seconds per surface for a page that was never going
-    to settle. Every caller in the tool uses the defaults.
-    """
+    """Rows go to recorder as produced, so a sweep that dies halfway keeps the surfaces it reached."""
     settle_ms = SETTLE_TIMEOUT_MS if settle_timeout_ms is None else settle_timeout_ms
     budget_ms = SURFACE_BUDGET_MS if surface_budget_ms is None else surface_budget_ms
     registry.validate_registry()
@@ -186,9 +149,7 @@ def sweep(
             raise registry.RegistryError(f"no such surface(s): {missing}")
         entries = [s for s in entries if s.id in wanted]
 
-    # Does parity.capture() honour a moved root? If not, every surface digest is the same page-wide
-    # reading and the sweep's forty passes mean nothing. Asked ONCE, up front, and the answer is
-    # carried on every row.
+    # If parity.capture() ignores the moved root every surface digest is the same page-wide reading.
     home = driver.run(registry.HOME)
     scoping = {
         "scoped": False,
@@ -214,9 +175,7 @@ def sweep(
         started = time.monotonic()
         deadline = started + budget_ms / 1000
 
-        # From the KNOWN STATE, never from wherever the previous surface left the app: a reach that works
-        # only because the last surface left a menu open breaks the first time the order changes, and
-        # silently.
+        # Always reach from the known state so surfaces do not depend on the previous one's leftovers.
         reset = driver.run(registry.HOME)
         if reset is not None:
             row["reason"] = f"the known state could not be restored before this surface: {reset}"
@@ -228,8 +187,6 @@ def sweep(
         failed = driver.run(surface.reach)
         if failed is not None:
             row["reason"] = f"the reach failed: {failed}"
-            # The facts are still recorded. Where the app ACTUALLY ended up is the first thing a reader of a
-            # failed reach needs, and it is gone by the time anyone looks.
             row["facts"] = driver.facts(surface.root)
             row["reach_ms"] = round((time.monotonic() - started) * 1000, 1)
             rows.append(row)
@@ -238,7 +195,6 @@ def sweep(
             _recover(driver, log)
             continue
 
-        # Whichever runs out first: the settle window or what is left of the surface's budget.
         settled = driver.settle(surface.settle, min(deadline, time.monotonic() + settle_ms / 1000))
         row["settle"] = settled
         row["facts"] = driver.facts(surface.root)
@@ -256,9 +212,7 @@ def sweep(
         parity = driver.capture(surface.root)
         row["parity"] = parity
         if not parity.get("parity_attempted"):
-            # Reached, but no digest. Recorded as unreached FOR PARITY PURPOSES, because a surface with no
-            # digest contributes nothing to the parity claim and counting it as covered is the inflation this
-            # file avoids.
+            # A surface with no digest adds nothing to parity, so it counts as unreached.
             row["reason"] = f"the surface rendered but no digest was taken: {parity.get('reason')}"
             rows.append(row)
             _emit(recorder, row)
@@ -283,9 +237,6 @@ def sweep(
             row["restore_reason"] = restored
             _recover(driver, log)
         elif (clean.get("open_dialogs") or 0) or (clean.get("open_menus") or 0):
-            # The declared restore ran and the app is still dirty. Said out loud: the next surface would
-            # otherwise be reached from a state nobody declared and its digest would include a leftover
-            # overlay.
             row["restore_reason"] = (
                 f"the restore ran but left {clean.get('open_dialogs')} dialog(s) and "
                 f"{clean.get('open_menus')} menu(s) open"
@@ -304,8 +255,7 @@ def _emit(recorder: Any, row: dict) -> None:
     try:
         recorder.emit(dict(row))
     except Exception:  # noqa: BLE001
-        # A recorder that rejects a row must not cost the sweep the rest of its surfaces. The row is still
-        # in the returned list and in the manifest.
+        # A recorder rejecting a row must not abort the remaining surfaces.
         pass
 
 
@@ -321,9 +271,7 @@ def build_manifest(rows: list, entries: list, scoping: dict) -> dict:
     """The coverage manifest: what was swept, what was not, and what is out of reach by design."""
     reached = [r for r in rows if r.get("reached")]
     failed = [r for r in rows if not r.get("reached")]
-    # A conditional surface that did not render is not a hole in the registry but a property of this
-    # installation. Kept separate so the coverage figure is not quietly deflated by a host with no
-    # GPU, nor inflated by counting it as covered.
+    # Conditional misses are a property of this host, kept apart from the coverage figure.
     conditional_misses = [r for r in failed if r.get("conditional")]
     hard_misses = [r for r in failed if not r.get("conditional")]
     registered = len(entries)
@@ -335,8 +283,6 @@ def build_manifest(rows: list, entries: list, scoping: dict) -> dict:
         "not_reached": len(failed),
         "not_reached_conditional": len(conditional_misses),
         "not_reached_hard": len(hard_misses),
-        # Against the surfaces that COULD have rendered on this host. Reported next to the raw count,
-        # never instead of it.
         "coverage_pct": (
             round(100.0 * len(reached) / (registered - len(conditional_misses)), 1)
             if registered - len(conditional_misses) > 0
@@ -361,9 +307,6 @@ def build_manifest(rows: list, entries: list, scoping: dict) -> dict:
             for r in rows
             if r.get("restored") is False
         ],
-        # Reached, digested, and NOT a parity signal. Counted separately because what matters to somebody
-        # comparing two arms is how many surfaces can carry a verdict, which is `comparable`, not
-        # `reached`.
         "volatile": len([r for r in reached if r.get("volatile")]),
         "comparable": len([r for r in reached if not r.get("volatile")]),
         "volatile_surfaces": [

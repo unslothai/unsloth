@@ -1,14 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 <#
-    `unsloth studio update` treats an unreachable PyPI as a reason to update anyway,
-    which is right for a blip. It is wrong when the caller SET UV_OFFLINE: uv then
-    refuses to reach a network at all, so the pass that follows can only fail, and an
-    install that was already complete ends the update broken-looking and non-zero.
-
-    Test-UvOfflineRequested is what tells those two apart, so it has to read the same
-    boolish spellings the POSIX half does -- a user who wrote UV_OFFLINE=true on one
-    platform means the same thing on the other.
+    With UV_OFFLINE set, an unreachable PyPI must not trigger an update that can only fail.
+    Test-UvOfflineRequested must accept the same boolish spellings as the POSIX half.
 #>
 
 BeforeAll {
@@ -21,9 +15,7 @@ BeforeAll {
     $script:SetupPs1 = $candidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
     if (-not $script:SetupPs1) { throw "Could not locate studio/setup.ps1 (set SETUP_PS1_PATH)." }
 
-    # Test-UvEnvFlag is where the boolish set lives and Test-UvOfflineRequested is one of
-    # its callers, so both come across. PowerShell does not hoist: a callee left behind is
-    # a command-not-found inside the body, not a wrong answer.
+    # PowerShell does not hoist, so the callee Test-UvEnvFlag must come across too.
     foreach ($name in @('Test-UvEnvFlag', 'Test-UvOfflineRequested')) {
         $src = Get-FunctionSource -Path $script:SetupPs1 -Name $name
         if (-not $src) { throw "$name is gone from setup.ps1." }
@@ -73,8 +65,7 @@ Describe 'the offline skip' {
     }
 
     It 'still updates to be safe when any condition fails' {
-        # The else branch is the whole default behaviour; losing it turns every
-        # unreachable-PyPI update into a silent skip.
+        # Losing the else branch turns every unreachable-PyPI update into a silent skip.
         $script:SetupText | Should -Match 'could not reach PyPI, updating to be safe'
     }
 
@@ -85,17 +76,8 @@ Describe 'the offline skip' {
 }
 
 <#
-    Keeping a verified install is only half the rule. A tree can verify and still be
-    below the backend version the desktop app requires, hold the anyio/tokenizers damage,
-    or sit on a CPU wheel next to an Intel or AMD GPU -- and only the dependency pass
-    repairs any of that. The up-to-date branch has always escaped on those; the offline
-    branch used to skip past every one of them, so an offline `unsloth studio update` of a
-    below-floor install reported success and repaired nothing.
-
-    Both branches now reach them through Invoke-FastPathEscapes. This runs the real
-    offline branch and the real helper, sliced out of setup.ps1 into a standalone driver
-    script -- a script, not a dot-sourced scriptblock, because the helper writes
-    $script:SkipPythonDeps and the scope it means has to be a real script scope.
+    The offline branch must take the same repair escapes as the up-to-date branch.
+    Run as a standalone script, since the helper writes $script:SkipPythonDeps.
 #>
 Describe 'the offline skip takes the shared escapes' {
     BeforeAll {
@@ -106,8 +88,7 @@ Describe 'the offline skip takes the shared escapes' {
         }
         $offlineSrc = Get-FunctionSource -Path $script:SetupPs1 -Name 'Test-UvOfflineRequested'
 
-        # The offline arm itself, sliced rather than restated: a branch that stopped calling the
-        # helper has to fail this file.
+        # Sliced, not restated: a branch that stopped calling the helper has to fail.
         $lines = $script:SetupText -split "`r?`n"
         $start = -1
         for ($i = 0; $i -lt $lines.Count; $i++) {
@@ -201,7 +182,6 @@ function python {
             $text = ($out | Out-String)
             $skip = if ($text -match '(?m)^SKIP=(\S+)\s*$') { $Matches[1] } else { "<no SKIP line>" }
             $steps = if ($text -match '(?m)^SUBSTEPS=(.*)$') { $Matches[1] } else { "" }
-            # Both outcomes announce themselves; neither means the slice never ran.
             if ($steps -notmatch 'keeping the verified install' -and $steps -notmatch 'could not reach PyPI') {
                 throw "the offline arm did not run (substeps: '$steps', output: '$text')"
             }
@@ -210,8 +190,7 @@ function python {
     }
 
     AfterAll {
-        # Guarded: a failed slice check names no driver directory, and an unguarded Remove-Item
-        # would bury that message.
+        # An unguarded Remove-Item would bury a failed slice check's message.
         if ($script:DriverDir) {
             Remove-Item -Recurse -Force -LiteralPath $script:DriverDir -ErrorAction SilentlyContinue
         }
@@ -229,8 +208,6 @@ function python {
     }
 
     It 'forces the dependency pass for an install BELOW the desktop backend floor' {
-        # The regression this exists for: verified, offline, and still too old for the
-        # desktop app that launched it. Only the dependency pass raises it.
         Invoke-OfflineBranch -InstalledVer '2026.8.4' -UvOffline '1' -DesktopVer '2026.8.15' |
             Should -Be 'False'
     }
@@ -256,23 +233,13 @@ function python {
 }
 
 <#
-    UNSLOTH_STUDIO_FULL_DEPS is the documented way out of every dependency-pass skip:
-    install_python_stack.py's _full_deps_requested is written around "a skip nobody can
-    turn off is a bug nobody can work around". But install_python_stack.py is only ever
-    REACHED when $SkipPythonDeps is false, and the version compare above sets it true the
-    moment the installed version equals the PyPI latest -- so on exactly the install the
-    hatch exists for, one that reports "up to date" and still does not work, setting the
-    variable did nothing at all.
-
-    Invoke-FastPathEscapes is where it belongs: the up-to-date branch and the UV_OFFLINE
-    branch both run it, so neither can honour the hatch while the other ignores it. The
-    driver below is the real helper, sliced out of setup.ps1 the same way as above.
+    UNSLOTH_STUDIO_FULL_DEPS must escape the fast path too: install_python_stack.py never runs
+    once $SkipPythonDeps is set, so the hatch did nothing on an "up to date" install.
 #>
 Describe 'UNSLOTH_STUDIO_FULL_DEPS reaches the fast path' {
     BeforeAll {
         $fullDepsEscapeSrc = Get-FunctionSource -Path $script:SetupPs1 -Name 'Invoke-FastPathEscapes'
         if (-not $fullDepsEscapeSrc) { throw "Invoke-FastPathEscapes is gone from setup.ps1." }
-        # An unset hatch and an ignored hatch both preserve the skip: this tells them apart.
         if ($fullDepsEscapeSrc -notmatch 'UNSLOTH_STUDIO_FULL_DEPS') {
             throw ("Invoke-FastPathEscapes no longer reads UNSLOTH_STUDIO_FULL_DEPS -- the " +
                    "escape hatch is honoured only inside install_python_stack.py, which a " +
@@ -283,8 +250,7 @@ Describe 'UNSLOTH_STUDIO_FULL_DEPS reaches the fast path' {
         New-Item -ItemType Directory -Path $script:FullDepsDir -Force | Out-Null
         $script:FullDepsDriver = Join-Path $script:FullDepsDir 'driver.ps1'
 
-        # Every other probe answers "no repair owed", so only the variable under test can clear the
-        # skip.
+        # Every other probe answers "no repair owed", so only the variable under test can clear the skip.
         $fullDepsPrelude = @'
 param(
     [AllowEmptyString()][string]$FullDeps,
@@ -366,7 +332,6 @@ Invoke-FastPathEscapes
     }
 
     It 'leaves the skip alone when the variable is unset' {
-        # The default. The hatch must cost nothing to the overwhelming majority of updates.
         Invoke-FullDepsEscape -FullDeps '' -SetFullDeps $false | Should -Be 'True'
     }
 
@@ -374,8 +339,6 @@ Invoke-FastPathEscapes
         @{ value = '1' }, @{ value = 'true' }, @{ value = 'TRUE' }, @{ value = 'True' },
         @{ value = 'yes' }, @{ value = 'on' }, @{ value = ' 1 ' }, @{ value = '  true  ' }
     ) {
-        # The spellings Test-UvOfflineRequested and _full_deps_requested accept, the same
-        # everywhere.
         Invoke-FullDepsEscape -FullDeps $value | Should -Be 'False'
     }
 
@@ -383,12 +346,11 @@ Invoke-FastPathEscapes
         @{ value = '0' }, @{ value = '' }, @{ value = '   ' }, @{ value = 'maybe' },
         @{ value = 'false' }, @{ value = 'off' }, @{ value = 'no' }
     ) {
-        # Not "set means true": a stale FULL_DEPS=0 in a profile must not force every update.
+        # A stale FULL_DEPS=0 in a profile must not force every update.
         Invoke-FullDepsEscape -FullDeps $value | Should -Be 'True'
     }
 
     It 'says why it is running the pass' {
-        # A user who set the variable has to see from the log that it took effect.
         Get-FullDepsSubsteps -FullDeps '1' | Should -Match 'UNSLOTH_STUDIO_FULL_DEPS'
     }
 
@@ -398,7 +360,6 @@ Invoke-FastPathEscapes
     }
 
     It 'does not turn a forced pass back into a skip' {
-        # The helper only ever clears the flag: a compare that decided to update stays updating.
         Invoke-FullDepsEscape -FullDeps '1' -StartSkipping $false | Should -Be 'False'
         Invoke-FullDepsEscape -FullDeps '0' -StartSkipping $false | Should -Be 'False'
     }
@@ -406,8 +367,7 @@ Invoke-FastPathEscapes
 
 Describe "Test-StudioInstallVerified returns a Boolean, not a collection" {
     It "stays falsey when the verifier prints to stdout and then fails" {
-        # Stray stdout made `return $false` come back as @("...", $false), which is truthy,
-        # so a failed verify read as verified.
+        # Stray stdout made `return $false` an array, which is truthy, so a failed verify passed.
         $body = (Get-Content -Raw (Join-Path $PSScriptRoot "../../studio/setup.ps1"))
         $match = [regex]::Match($body, '(?ms)^function Test-StudioInstallVerified \{.*?^\}')
         $match.Success | Should -BeTrue
@@ -428,8 +388,7 @@ Describe "Test-StudioInstallVerified returns a Boolean, not a collection" {
 
 Describe "The desktop backend floor check fails closed" {
     It "forces the pass when the version check cannot run, as setup.sh does" {
-        # setup.sh uses `if ! python ...`, so a check that cannot execute forces the pass.
-        # PowerShell's empty catch left the flag false, keeping an under-floor install.
+        # setup.sh forces the pass when the check cannot run; PowerShell's empty catch did not.
         $ps1 = Get-Content -Raw (Join-Path $PSScriptRoot "../../studio/setup.ps1")
         $ps1 | Should -Match '\$_desktopVerBad = \$true'
         $ps1 | Should -Match 'if \(\$LASTEXITCODE -eq 0\) \{ \$_desktopVerBad = \$false \}'

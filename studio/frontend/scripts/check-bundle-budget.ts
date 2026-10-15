@@ -140,12 +140,19 @@ export const BUDGET = {
   // module the eager browser store imports for tab close and duplicate (6,771,852 -> 6,773,496 B raw, 2,035,948 ->
   // 2,036,414 B transfer against 82f16ca55, one machine and build, Node 24, chunk count unchanged at 95). Raised by
   // that growth.
+  // Hub Run refusing audio models neither Audio nor chat can run (#13812) adds 77 B raw / 65 B transfer
+  // (6,773,445 -> 6,773,522 B raw, 2,036,392 -> 2,036,457 B transfer against 59ab069b5, one machine and build,
+  // Node 24, chunk count unchanged at 95). Raised by that growth.
+  // The Windows Desktop install location row on the first-run screen (#13446) adds 1,324 B raw / 342 B
+  // transfer (6,773,496 -> 6,774,820 B raw, 2,036,386 -> 2,036,728 B transfer against 59ab069b5, one machine
+  // and build, Node 24, chunk count unchanged at 95). Lazy-loading it cost more transfer and a 96th startup
+  // chunk (Rollup split react-dom out), so it is imported statically and the budget raised by that growth.
   // Retiring whisper.cpp (#13753: the voice settings v2 migration and settling a saved whisper.cpp pick for the
-  // host) adds 1,468 B raw / 633 B transfer to the eager settings and chat chunks (6,773,496 -> 6,774,964 B raw,
-  // 2,036,386 -> 2,037,019 B transfer against 345217f185, one machine and build, Node 24, chunk count unchanged at
-  // 95). Raised by that growth so main's margin stays where it was.
-  transferBytes: 2_037_047,
-  rawBytes: 6_774_964,
+  // host) adds 1,475 B raw / 279 B transfer to the eager settings and chat chunks (6,777,794 -> 6,779,269 B raw,
+  // 2,037,725 -> 2,038,004 B transfer against 50b9deacb0, one machine and build, Node 24, chunk count unchanged at
+  // 95). Raised by that growth on top of the limits above so main's margin stays where it was.
+  transferBytes: 2_037_100,
+  rawBytes: 6_776_372,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
