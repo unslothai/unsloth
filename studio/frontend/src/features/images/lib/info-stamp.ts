@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** Info stamp for a downloaded image: `Model | date time | Seed: N` on a shaded bar along the
- *  bottom edge. Drawn only on the exported copy, from the stored original, so the gallery file and
- *  any later edit input stay clean and re-exporting never stacks. */
+/** `Model | date time | Seed: N` bar on the exported copy only, so the stored file stays clean and
+ *  re-exporting never stacks. */
 
 export interface StampSource {
   model: string | null;
@@ -41,7 +40,6 @@ export function infoStampText(image: StampSource): string {
   return parts.filter(Boolean).join(" | ");
 }
 
-/** The subset of CanvasRenderingContext2D the stamp uses, so the layout is testable without a DOM. */
 export interface StampContext {
   font: string;
   fillStyle: string | CanvasGradient | CanvasPattern;
@@ -53,7 +51,7 @@ export interface StampContext {
 }
 
 export interface StampLayout {
-  /** The text as drawn: shortened from the model name, then the date, so the seed is never clipped. */
+  /** Shortened from the model, then the date, so the seed is never clipped. */
   text: string;
   fontPx: number;
   barHeight: number;

@@ -2,10 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 import { SAMPLER_LABELS, SCHEDULE_LABELS } from "./sampler-choice.ts";
 
-/** Generation settings embedded in exported images, and read back from dropped ones.
- *  PNG: `unsloth` (recipe JSON) and `parameters` (AUTOMATIC1111 text) text chunks, as the backend
- *  writes them. JPEG / WebP: EXIF with `parameters` in UserComment (what AUTOMATIC1111, Forge and
- *  Civitai read) and the recipe JSON in MakerNote. Pure byte work, so it runs in tests without a DOM. */
+/** Generation settings in exported images, read back from dropped ones. PNG: `unsloth` + `parameters` text chunks;
+ *  JPEG / WebP: EXIF UserComment (`parameters`, read by AUTOMATIC1111 / Forge / Civitai) + MakerNote (recipe). */
 
 export interface EmbeddedRecipe {
   recipe?: string;
@@ -182,7 +180,6 @@ function writeIfd(out: Uint8Array, at: number, entries: IfdEntry[]): void {
   view.setUint32(at + 2 + entries.length * 12, 0);
 }
 
-/** TIFF bytes (no `Exif\0\0` prefix) carrying the recipe, or null when there is nothing to carry. */
 export function buildExif(meta: EmbeddedRecipe): Bytes | null {
   const exifEntries: IfdEntry[] = [];
   if (meta.parameters) {
@@ -304,7 +301,6 @@ function riffChunk(type: string, payload: Uint8Array): Uint8Array {
   return out;
 }
 
-/** `webp` as an extended (VP8X) file with an EXIF chunk. Unparsable input comes back unchanged. */
 export function withWebpExif(
   webp: Bytes,
   meta: EmbeddedRecipe,
@@ -403,9 +399,8 @@ function readTiff(tiff: Uint8Array): EmbeddedRecipe {
     const body = comment.subarray(8);
     if (prefix === "UNICODE\0") {
       const cv = new DataView(body.buffer, body.byteOffset, body.byteLength);
-      // piexif (AUTOMATIC1111) always writes UTF-16BE; other writers follow the TIFF byte order. A BOM
-      // decides; else the side holding the zero bytes of ASCII (spaces, commas, Latin letters) does,
-      // counted over the whole text so a first character like U+4E00 cannot flip it; else TIFF order.
+      // piexif writes UTF-16BE, others the TIFF order: BOM, else where ASCII's zero bytes sit over the
+      // whole text (one leading U+4E00 must not decide), else TIFF order.
       let start = 0;
       let be: boolean;
       if (body[0] === 0xfe && body[1] === 0xff) {
@@ -580,8 +575,7 @@ export interface RecipeDefaults {
   guidance: number;
 }
 
-/** The fields the Images form restores, type-checked: a dropped file is untrusted input. A missing
- *  seed stays null so the caller keeps the seed random rather than inventing one. */
+/** Type-checked form fields (a dropped file is untrusted); a missing seed stays null, i.e. random. */
 export interface RestorableRecipe {
   prompt: string;
   negative_prompt: string | null;
@@ -604,7 +598,6 @@ export interface RestorableRecipe {
   schedule_type?: string;
 }
 
-/** Recipe keys the import puts back on the form. */
 export const APPLIED_RECIPE_KEYS = [
   "prompt",
   "negative_prompt",
@@ -626,8 +619,7 @@ export const APPLIED_RECIPE_KEYS = [
   "schedule_type",
 ] as const;
 
-/** Recipe keys that describe the build or the record. Loading a model, and supplying the control
- *  image a ControlNet needs, stay the user's call, so these are known but not applied. */
+/** Known but not applied: loading a model or a ControlNet image stays the user's call. */
 export const INFO_RECIPE_KEYS = [
   "model",
   "model_kind",
@@ -658,8 +650,7 @@ const KNOWN_RECIPE_KEYS = new Set<string>([
   ...INFO_RECIPE_KEYS,
 ]);
 
-/** Settings a file carries that this build does not know (a newer Unsloth, or another tool), so the
- *  import can say they were not applied instead of dropping them silently. Empty values are skipped. */
+/** Non-empty keys this build does not know (newer Unsloth, other tools), named instead of dropped. */
 export function unknownRecipeKeys(r: ImportedRecipe): string[] {
   return Object.keys(r).filter((key) => {
     if (KNOWN_RECIPE_KEYS.has(key)) {
@@ -675,7 +666,6 @@ export function unknownRecipeKeys(r: ImportedRecipe): string[] {
   });
 }
 
-/** True when the recipe was written by a newer recipe schema than this build reads. */
 export function newerRecipeSchema(r: ImportedRecipe): boolean {
   return (
     typeof r.schema_version === "number" &&
@@ -734,7 +724,6 @@ export function recipeSettings(
     reference_image_count: clamp(int(r.reference_image_count), 0, 9),
     reference_resolution: clamp(int(r.reference_resolution), 256, 2048),
     localized_edit: str(r.localized_edit) ?? null,
-    // Ids only; the page checks them against the loaded model's samplers.
     sampler: str(r.sampler),
     schedule_type: str(r.schedule_type),
   };
@@ -751,8 +740,7 @@ const COMFY_SAMPLERS = new Set([
   "SamplerCustomAdvanced",
 ]);
 const COMFY_MODEL_INPUTS = ["ckpt_name", "unet_name", "model_name"];
-// Prompt inputs of ComfyUI's core text encoders (nodes.py, comfy_extras/nodes_clip_sdxl.py, nodes_sd3.py,
-// nodes_flux.py, nodes_hunyuan.py), richest first.
+// ComfyUI core text-encoder prompt inputs (nodes_clip_sdxl.py, nodes_sd3.py, nodes_flux.py, ...), richest first.
 const COMFY_TEXT_INPUTS = [
   "text",
   "text_g",
@@ -776,9 +764,7 @@ const COMFY_SCHEDULE_IDS: Record<string, string> = {
   exponential: "exponential",
 };
 
-/** Prompt, seed, steps, CFG, sampler, size and model from a ComfyUI graph with a KSampler or
- *  SamplerCustomAdvanced. Inputs wired to another node (`[id, slot]`) are followed a few hops to
- *  the value; anything else is skipped. */
+/** Settings from a ComfyUI API graph; wired inputs (`[id, slot]`) are followed a few hops. */
 export function parseComfyPrompt(text: string): ImportedRecipe | null {
   let graph: ComfyGraph;
   try {
@@ -822,11 +808,9 @@ export function parseComfyPrompt(text: string): ImportedRecipe | null {
       fluxGuidance ??= value(n.inputs?.guidance, ["guidance", "value"]);
       n = node(n.inputs?.conditioning);
     }
-    // CLIPTextEncodeFlux carries its own guidance.
     if (n?.class_type === "CLIPTextEncodeFlux") {
       fluxGuidance ??= value(n.inputs?.guidance, ["guidance", "value"]);
     }
-    // CLIPTextEncode `text`; the SDXL / SD3 / Flux / HunyuanDiT encoders split it across their own inputs.
     for (const key of COMFY_TEXT_INPUTS) {
       const v = value(n?.inputs?.[key], [key, "text", "value", "string"]);
       if (typeof v === "string" && v.trim()) return v;
@@ -843,7 +827,6 @@ export function parseComfyPrompt(text: string): ImportedRecipe | null {
   }
   let inputs = sampler.inputs;
   if (sampler.class_type === "SamplerCustomAdvanced") {
-    // Its settings live on the RandomNoise, guider, KSamplerSelect and BasicScheduler nodes.
     const guider = node(inputs.guider)?.inputs ?? {};
     const sigmas = node(inputs.sigmas)?.inputs ?? {};
     inputs = {
@@ -874,8 +857,7 @@ export function parseComfyPrompt(text: string): ImportedRecipe | null {
   else if (typeof cfg === "number") out.guidance = cfg;
   const samplerName = value(inputs.sampler_name, ["sampler_name", "value"]);
   const scheduler = value(inputs.scheduler, ["scheduler", "value"]);
-  // An unmapped sampler stays as written so the import names it; ComfyUI's default schedulers
-  // (normal, simple) have no exact Studio match and leave the schedule automatic.
+  // Unmapped samplers stay named; normal / simple have no exact Studio schedule, so stay automatic.
   if (typeof samplerName === "string" && samplerName)
     out.sampler = Object.hasOwn(COMFY_SAMPLER_IDS, samplerName)
       ? COMFY_SAMPLER_IDS[samplerName]
@@ -892,7 +874,6 @@ export function parseComfyPrompt(text: string): ImportedRecipe | null {
     out.width = width;
     out.height = height;
   }
-  // The loader feeding this sampler, through LoRA loaders and the like.
   let link: unknown = inputs.model;
   for (let hop = 0; hop < 8; hop++) {
     const n = node(link);

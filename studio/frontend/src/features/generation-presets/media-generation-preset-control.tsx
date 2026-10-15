@@ -22,7 +22,6 @@ interface MediaGenerationPresetControlProps {
   onSelect: (name: string) => void;
   onSave: (name: string) => Promise<string | null>;
   onDelete: () => Promise<boolean>;
-  // Images only: restore the settings embedded in an image file.
   onImportFromImage?: () => void;
 }
 

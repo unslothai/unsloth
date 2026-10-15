@@ -622,7 +622,6 @@ async function downloadImage(
           stamp,
         );
       } catch {
-        // Conversion failed, so preserve the original PNG instead.
         outputFormat = "png";
         output = original;
       }
@@ -2602,8 +2601,7 @@ export function ImagesPage({
     }
   }, [changeSamplerChoice, samplerOptions.length, setPromptFor, setWorkflow, sizeLimits]);
 
-  // Like dropping an image on ComfyUI: restore the settings a file carries. Unsloth's own recipe
-  // comes first; an AUTOMATIC1111-style parameters block is the fallback.
+  // Like dropping an image on ComfyUI: Unsloth's recipe first, else AUTOMATIC1111 / ComfyUI metadata.
   const importFileRef = useRef<HTMLInputElement>(null);
   const importSettingsFromFile = useCallback(
     async (file: File | Uint8Array) => {
@@ -2644,10 +2642,8 @@ export function ImagesPage({
           description: "Load that quant to reproduce this image exactly.",
         });
       }
-      // A newer Unsloth or another tool can record settings this build cannot apply: name them.
       const notApplied = unknownRecipeKeys(recipe);
       if (status?.loaded && samplerOptions.length === 0) {
-        // This model has no sampler choice: name a recorded one rather than drop it silently.
         if (settings.schedule_type && settings.schedule_type !== AUTOMATIC_SCHEDULE) {
           notApplied.unshift(`schedule ${settings.schedule_type}`);
         }
