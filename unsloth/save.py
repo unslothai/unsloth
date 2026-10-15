@@ -5589,7 +5589,12 @@ def _cast_state_dict_16bit(model, state_dict, target_dtype):
         names.update(getattr(module, "_keep_in_fp32_modules_strict", None) or ())
         if target_dtype == torch.float16:
             names.update(getattr(module, "_keep_in_fp32_modules", None) or ())
-    keep = re.compile("|".join(re.escape(name) for name in sorted(names))) if names else None
+    # Whole dotted path components, as transformers matches them: "wo" is not "word_embeddings".
+    keep = (
+        re.compile("|".join(rf"(^|\.){re.escape(name)}($|\.)" for name in sorted(names)))
+        if names
+        else None
+    )
     return {
         k: v.to(dtype = target_dtype)
         if v.is_floating_point()

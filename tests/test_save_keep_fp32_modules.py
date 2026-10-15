@@ -105,12 +105,15 @@ def test_non_strict_list_only_for_fp16(helpers):
             super().__init__()
             self.wo = torch.nn.Linear(2, 2)
             self.wi = torch.nn.Linear(2, 2)
+            self.word_embeddings = torch.nn.Embedding(3, 2)
 
     model = Model()
     bf16 = helpers["_cast_state_dict_16bit"](model, model.state_dict(), torch.bfloat16)
     fp16 = helpers["_cast_state_dict_16bit"](model, model.state_dict(), torch.float16)
     assert bf16["wo.weight"].dtype == torch.bfloat16
     assert fp16["wo.weight"].dtype == torch.float32 and fp16["wi.weight"].dtype == torch.float16
+    # A name is a whole path component: "wo" does not keep "word_embeddings" in fp32.
+    assert fp16["word_embeddings.weight"].dtype == torch.float16
 
 
 def test_generic_save_casts_through_the_helper():
