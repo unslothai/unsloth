@@ -786,8 +786,7 @@ _SAVE_OUTPUT = os.environ.get("UNSLOTH_RMSNORM_SAVE_OUTPUT", "0") == "1"
 
 
 def _save_output_ok(W, gemma, dtype):
-    # Y / W needs every |W| (|1 + W| for Gemma) clear of 0, and fp16 Y must not go subnormal for
-    # ordinary normed values. One sync per frozen weight: cached on the tensor until it changes.
+    # Y / W needs |W| (|1 + W| for Gemma) clear of 0 and fp16 Y not subnormal. Cached per weight version.
     key = (W._version, W.data_ptr(), gemma, dtype)
     cached = getattr(W, "_unsloth_save_output", None)
     if cached is not None and cached[0] == key:
@@ -830,7 +829,6 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
             and not ctx.needs_input_grad[1]
             and _save_output_ok(W, gemma, Y.dtype)
         )
-        # Saving the returned Y shares its storage with the next layer's saved input.
         ctx.save_for_backward(Y if ctx.FROM_Y else X, W, r)
         if ctx.FROM_Y:
             # LoRA_QKV / LoRA_MLP then do not overwrite Y with their dX.

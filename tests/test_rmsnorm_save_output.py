@@ -17,7 +17,6 @@ def test_guard_rejects_weights_y_cannot_be_divided_by():
     w2 = w.clone()
     w2[3] = 0
     assert not ok(w2, False, torch.bfloat16)
-    # Gemma divides by 1 + W.
     w3 = torch.zeros(8)
     w3[1] = -1
     assert not ok(w3, True, torch.bfloat16)
@@ -96,7 +95,6 @@ def test_save_output_off_or_unsafe_is_bitwise_old_path(gemma, monkeypatch):
     x = torch.randn(2, 33, 256, device = "cuda", generator = gen).to(torch.bfloat16)
     w = (torch.randn(256, device = "cuda", generator = gen) * 0.1 + (0 if gemma else 1)).to(torch.bfloat16)
     y0, dx0, _ = _run(x, w, gemma, False, monkeypatch)
-    # Env off: save_output = True is ignored.
     y1, dx1, saved = _run(x, w, gemma, True, monkeypatch, enabled = False)
     assert torch.equal(dx0, dx1) and saved[0].data_ptr() != y1.data_ptr()
     # A weight Y cannot be divided by falls back to saving X.
@@ -105,7 +103,6 @@ def test_save_output_off_or_unsafe_is_bitwise_old_path(gemma, monkeypatch):
     y2, dx2, _ = _run(x, w_bad, gemma, False, monkeypatch)
     y3, dx3, saved = _run(x, w_bad, gemma, True, monkeypatch)
     assert torch.equal(dx2, dx3) and saved[0].data_ptr() != y3.data_ptr()
-    # A trainable W keeps the X path.
     w_train = w.clone().requires_grad_(True)
     y4, _, saved = _run(x, w_train, gemma, True, monkeypatch)
     assert saved[0].data_ptr() != y4.data_ptr()
