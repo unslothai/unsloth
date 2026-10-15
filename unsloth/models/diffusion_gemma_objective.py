@@ -72,9 +72,7 @@ class _DiffusionGemmaPrefixCache(DynamicCache):
         self.prefix_indices = prefix_indices
 
     def update(self, key_states, value_states, layer_idx, *args, **kwargs):
-        # The encoder must attend to its unmodified full sequence. Only the stored
-        # decoder context changes, gathered from the full tensors returned by update
-        # rather than the already-trimmed sliding cache.
+        # The encoder attends to the full returned K/V; only the stored decoder context is regathered.
         keys, values = super().update(key_states, value_states, layer_idx, *args, **kwargs)
         layer = self.layers[layer_idx]
         cache_length = layer.keys.shape[-2]
@@ -158,9 +156,7 @@ class DiffusionGemmaProfile(DiffusionProfile):
         random_tokens = torch.randint(vocab_size, (batch_size, block_size), device = device)
         canvas_ids = torch.where(corrupt, random_tokens, canvas_target)
 
-        # Right-align each prefix in the cache's seq_len slots. Sliding layers then
-        # retain the window ending at that row's sampled block, not at the end of
-        # the full clean sequence. RoPE positions stay at the original encoder_len.
+        # Right-align each prefix so sliding layers keep the window ending at the sampled block, as inference does.
         prefix_positions = positions + encoder_len[:, None] - seq_len
         prefix_indices = prefix_positions.clamp(min = 0)
         cache_mask = (prefix_positions >= 0) & attention_mask.bool().gather(1, prefix_indices)
