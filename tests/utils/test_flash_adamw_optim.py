@@ -20,10 +20,19 @@ def stub_flashoptim(monkeypatch):
     calls = []
 
     class FlashAdamW(torch.optim.Optimizer):
-        def __init__(self, params, lr = 1e-3, betas = (0.9, 0.999), eps = 1e-8,
-                     weight_decay = 1e-2, master_weight_bits = 24, **kwargs):
-            calls.append(dict(lr = lr, betas = betas, eps = eps,
-                              master_weight_bits = master_weight_bits, **kwargs))
+        def __init__(
+            self,
+            params,
+            lr = 1e-3,
+            betas = (0.9, 0.999),
+            eps = 1e-8,
+            weight_decay = 1e-2,
+            master_weight_bits = 24,
+            **kwargs,
+        ):
+            calls.append(
+                dict(lr = lr, betas = betas, eps = eps, master_weight_bits = master_weight_bits, **kwargs)
+            )
             # flashoptim's own defaults carry initial_lr = the constructor lr.
             super().__init__(params, dict(lr = lr, initial_lr = lr, weight_decay = weight_decay))
 
@@ -38,13 +47,11 @@ def stub_flashoptim(monkeypatch):
 
 def _sft_config(**kwargs):
     from trl import SFTConfig
-
     return SFTConfig(output_dir = OUT, report_to = [], **kwargs)
 
 
 def _unsloth_args(**kwargs):
     from unsloth.trainer import UnslothTrainingArguments
-
     return UnslothTrainingArguments(output_dir = OUT, report_to = [], **kwargs)
 
 
@@ -127,8 +134,13 @@ def test_adamw_flash_marker_parses_in_transformers(make_args):
 
 def _flash_kwargs_args(**kwargs):
     defaults = dict(
-        learning_rate = 1e-4, adam_beta1 = 0.9, adam_beta2 = 0.999, adam_epsilon = 1e-8,
-        optim_args = None, fsdp = [], fsdp_config = {},
+        learning_rate = 1e-4,
+        adam_beta1 = 0.9,
+        adam_beta2 = 0.999,
+        adam_epsilon = 1e-8,
+        optim_args = None,
+        fsdp = [],
+        fsdp_config = {},
     )
     defaults.update(kwargs)
     return types.SimpleNamespace(**defaults)
@@ -149,7 +161,9 @@ def test_adamw_flash_restored_from_to_dict(stub_flashoptim, make_args, monkeypat
     monkeypatch.setattr(Trainer, "get_optimizer_cls_and_kwargs", staticmethod(original))
     cls = type(make_args(optim = "adamw_torch"))
     init_fields = {f.name for f in dataclasses.fields(cls) if f.init}
-    rebuilt = cls(**{k: v for k, v in saved.items() if k in init_fields and not k.endswith("_token")})
+    rebuilt = cls(
+        **{k: v for k, v in saved.items() if k in init_fields and not k.endswith("_token")}
+    )
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     optimizer_cls, _ = Trainer.get_optimizer_cls_and_kwargs(rebuilt)
     assert issubclass(optimizer_cls, FlashAdamW)
@@ -254,7 +268,9 @@ def test_adamw_flash_keeps_one_shot_param_iterables(stub_flashoptim, monkeypatch
 
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     model = torch.nn.Linear(4, 4)
-    optimizer_cls, optimizer_kwargs = flash_adamw.get_flash_adamw_cls_and_kwargs(_flash_kwargs_args())
+    optimizer_cls, optimizer_kwargs = flash_adamw.get_flash_adamw_cls_and_kwargs(
+        _flash_kwargs_args()
+    )
     optimizer = optimizer_cls([{"params": model.parameters(), "lr": 1e-4}], **optimizer_kwargs)
     assert len(optimizer.param_groups[0]["params"]) == 2
     optimizer = optimizer_cls(model.parameters(), **optimizer_kwargs)
@@ -266,10 +282,16 @@ def test_adamw_flash_keeps_one_shot_param_iterables(stub_flashoptim, monkeypatch
     [
         (["full_shard"], {"version": 2, "cpu_offload": True}, {}),
         ("full_shard offload", {"version": 2}, {}),
-        ([], None, {"ACCELERATE_USE_FSDP": "true", "FSDP_VERSION": "2", "FSDP_OFFLOAD_PARAMS": "true"}),
+        (
+            [],
+            None,
+            {"ACCELERATE_USE_FSDP": "true", "FSDP_VERSION": "2", "FSDP_OFFLOAD_PARAMS": "true"},
+        ),
     ],
 )
-def test_adamw_flash_rejects_fsdp2_cpu_offload(stub_flashoptim, monkeypatch, fsdp, fsdp_config, env):
+def test_adamw_flash_rejects_fsdp2_cpu_offload(
+    stub_flashoptim, monkeypatch, fsdp, fsdp_config, env
+):
     import unsloth.optimizers.flash_adamw as flash_adamw
 
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
@@ -324,10 +346,18 @@ def test_adamw_flash_platform_checked_before_import(monkeypatch):
     [
         ({"zero_optimization": {"stage": 2, "offload_optimizer": {"device": "cpu"}}}, {}),
         ({"zero_optimization": {"stage": 3, "offload_optimizer": {"device": "nvme"}}}, {}),
-        (None, {"ACCELERATE_USE_DEEPSPEED": "true", "ACCELERATE_DEEPSPEED_OFFLOAD_OPTIMIZER_DEVICE": "cpu"}),
+        (
+            None,
+            {
+                "ACCELERATE_USE_DEEPSPEED": "true",
+                "ACCELERATE_DEEPSPEED_OFFLOAD_OPTIMIZER_DEVICE": "cpu",
+            },
+        ),
     ],
 )
-def test_adamw_flash_rejects_deepspeed_optimizer_offload(stub_flashoptim, monkeypatch, deepspeed, env):
+def test_adamw_flash_rejects_deepspeed_optimizer_offload(
+    stub_flashoptim, monkeypatch, deepspeed, env
+):
     import unsloth.optimizers.flash_adamw as flash_adamw
 
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
@@ -342,14 +372,16 @@ def test_adamw_flash_rejects_deepspeed_optimizer_offload(stub_flashoptim, monkey
     flash_adamw.get_flash_adamw_cls_and_kwargs(_flash_kwargs_args(deepspeed = no_offload))
 
 
-@pytest.mark.parametrize("optim_args", ["quantize=ture", "compress_state_dict=tru", "check_numerics=2"])
+@pytest.mark.parametrize(
+    "optim_args", ["quantize=ture", "compress_state_dict=tru", "check_numerics=2"]
+)
 def test_adamw_flash_rejects_invalid_booleans(optim_args):
     import unsloth.optimizers.flash_adamw as flash_adamw
-
     with pytest.raises(ValueError, match = "not a boolean"):
         flash_adamw._parse_optim_args(optim_args)
     assert flash_adamw._parse_optim_args("quantize=False,decouple_lr=no") == {
-        "quantize": False, "decouple_lr": False,
+        "quantize": False,
+        "decouple_lr": False,
     }
 
 

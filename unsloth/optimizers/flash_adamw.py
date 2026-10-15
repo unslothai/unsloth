@@ -92,7 +92,6 @@ def _get_flash_adamw_class():
     version = getattr(flashoptim, "__version__", None)
     if version is None:
         import importlib.metadata
-
         version = importlib.metadata.version("flashoptim")
     # 0.1.4 made compress_state_dict default to True, which the resume guard below relies on.
     if Version(version) < Version(_FLASH_ADAMW_MIN_VERSION):
@@ -102,7 +101,13 @@ def _get_flash_adamw_class():
         )
 
     class UnslothFlashAdamW(FlashAdamW):
-        def __init__(self, params, *args, master_weight_bits = 32, **kwargs):
+        def __init__(
+            self,
+            params,
+            *args,
+            master_weight_bits = 32,
+            **kwargs,
+        ):
             params = [
                 {**group, "params": _materialize_params(group["params"])}
                 if isinstance(group, dict) and "params" in group
@@ -173,7 +178,11 @@ def _is_marked(args):
 
 def _strip_marker(optim_args):
     items = str(optim_args or "").split(",")
-    kept = [i for i in items if i.strip() and i.replace(" ", "").partition("=")[0] != _FLASH_ADAMW_MARKER]
+    kept = [
+        i
+        for i in items
+        if i.strip() and i.replace(" ", "").partition("=")[0] != _FLASH_ADAMW_MARKER
+    ]
     return ",".join(kept) or None
 
 
@@ -183,12 +192,17 @@ def _is_truthy(value):
 
 def _fsdp_cpu_offload(args):
     fsdp = getattr(args, "fsdp", None)
-    items = fsdp.split() if isinstance(fsdp, str) else (fsdp if isinstance(fsdp, (list, tuple)) else [])
+    items = (
+        fsdp.split() if isinstance(fsdp, str) else (fsdp if isinstance(fsdp, (list, tuple)) else [])
+    )
     if any(str(getattr(item, "value", item)).lower() == "offload" for item in items):
         return True
     config = getattr(args, "fsdp_config", None)
     config = config if isinstance(config, dict) else {}
-    if any(_is_truthy(config.get(key, False)) for key in ("cpu_offload", "offload_params", "fsdp_offload_params")):
+    if any(
+        _is_truthy(config.get(key, False))
+        for key in ("cpu_offload", "offload_params", "fsdp_offload_params")
+    ):
         return True
     return _is_truthy(os.environ.get("FSDP_OFFLOAD_PARAMS", ""))
 
@@ -201,7 +215,6 @@ def _fsdp_version(args):
         if version is None:
             import transformers
             from packaging.version import Version
-
             version = 2 if Version(transformers.__version__) >= Version("5.10.0") else 1
         return int(version)
     if os.environ.get("ACCELERATE_USE_FSDP", "").strip().lower() in ("1", "true", "yes"):
@@ -219,7 +232,6 @@ def _deepspeed_offloads_optimizer(args):
         config = getattr(args, "deepspeed", None)
         if isinstance(config, str) and config:
             import json
-
             with open(config, "r", encoding = "utf-8") as f:
                 config = json.load(f)
     if not isinstance(config, dict):
@@ -286,7 +298,6 @@ def _patch_trainer_get_optimizer_cls_and_kwargs():
             return get_flash_adamw_cls_and_kwargs(args)
         if _has_marker_token(args):
             import copy
-
             args = copy.copy(args)
             args.optim_args = _strip_marker(args.optim_args)
         return original(args, *other, **kwargs)
