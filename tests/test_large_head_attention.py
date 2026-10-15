@@ -201,6 +201,22 @@ def test_router_engages_on_gemma4_global_call():
     assert router(_Module(), q, kv, kv, left_pad[None, None])[0] == "original"
 
 
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
+def test_router_defers_trainable_additive_mask():
+    calls, original = _sentinel()
+    router = LH._make_router(original)
+    dtype = _cuda_dtype()
+    q = torch.randn(1, 4, 24, 512, device = "cuda", dtype = dtype)
+    kv = torch.randn(1, 2, 24, 512, device = "cuda", dtype = dtype)
+    additive = torch.zeros(1, 1, 24, 24, device = "cuda", dtype = dtype)
+    additive[~_causal(24).cuda()[None, None]] = torch.finfo(dtype).min
+    before = LH.LARGE_HEAD_ENGAGED["calls"]
+    assert router(_Module(), q, kv, kv, additive)[0] != "original"
+    assert LH.LARGE_HEAD_ENGAGED["calls"] == before + 1
+    assert router(_Module(), q, kv, kv, additive.requires_grad_())[0] == "original"
+    assert LH.LARGE_HEAD_ENGAGED["calls"] == before + 1 and len(calls) == 1
+
+
 def _cuda_dtype():
     return torch.bfloat16 if torch.cuda.get_device_capability()[0] >= 8 else torch.float16
 

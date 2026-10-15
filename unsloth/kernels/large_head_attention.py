@@ -586,6 +586,8 @@ def _make_router(original):
             and torch.is_tensor(query) and query.dim() == 4
             and query.shape[-1] > 256
             and not dropout
+            # The kernel only reads the mask's structure, so a trainable mask would get no grad.
+            and not (torch.is_tensor(attention_mask) and attention_mask.requires_grad)
             and kwargs.get("position_bias", None) is None
             and kwargs.get("softcap", None) is None
             and not kwargs.get("output_attentions", False)
