@@ -183,6 +183,34 @@ def layernorm_backward_dw(
         tl.store(dB + pid * n_cols + col_offsets, dB_acc, mask = mask)
 
 
+@triton.jit
+def _layernorm_sum_partials(
+    partials,
+    out0,
+    out1,
+    n_programs,
+    n_cols,
+    BLOCK_ROWS: tl.constexpr,
+    BLOCK_COLS: tl.constexpr,
+):
+    # Fixed tile order, so eager and torch.compile give the same bytes (a torch sum here is
+    # re-lowered by Inductor in another order). Axis 1 picks the partial set: out0, then out1.
+    which = tl.program_id(1)
+    cols = tl.program_id(0) * BLOCK_COLS + tl.arange(0, BLOCK_COLS)
+    col_mask = cols < n_cols
+    partials += which * n_programs * n_cols
+    acc = tl.zeros((BLOCK_ROWS, BLOCK_COLS), dtype = tl.float32)
+    for start in tl.range(0, n_programs, BLOCK_ROWS, num_stages = 3):
+        rows = start + tl.arange(0, BLOCK_ROWS)
+        mask = (rows < n_programs)[:, None] & col_mask[None, :]
+        acc += tl.load(partials + rows[:, None] * n_cols + cols[None, :], mask = mask, other = 0)
+    total = tl.sum(acc, axis = 0)
+    if which == 0:
+        tl.store(out0 + cols, total.to(out0.dtype.element_ty), mask = col_mask)
+    else:
+        tl.store(out1 + cols, total.to(out1.dtype.element_ty), mask = col_mask)
+
+
 # fla runs one program per SM, which at 4 to 8 warps leaves an A100 SM mostly idle; filling half of
 # each SM's warps measured best on both A100 (1.1x to 1.2x at 1024 / 2048 columns) and T4.
 @functools.lru_cache(maxsize = None)
@@ -292,9 +320,19 @@ class Fast_Layernorm(torch.autograd.Function):
                     TRAIN_B = train_b,
                     num_warps = ctx.num_warps,
                 )
-        sums = partials.sum(1).to(W.dtype)
-        dW = sums[0] if train_w else None
-        dB = sums[-1].to(b.dtype) if train_b else None
+        dW = torch.empty(n_cols, dtype = W.dtype, device = dY.device) if train_w else None
+        dB = torch.empty(n_cols, dtype = b.dtype, device = dY.device) if train_b else None
+        outs = [t for t in (dW, dB) if t is not None]
+        with torch_gpu_device(dY.device):
+            _layernorm_sum_partials[(triton.cdiv(n_cols, 64), len(outs))](
+                partials,
+                outs[0],
+                outs[-1],
+                programs,
+                n_cols,
+                BLOCK_ROWS = 64,
+                BLOCK_COLS = 64,
+            )
         return dY.view(*shape), dW, dB, None
 
 

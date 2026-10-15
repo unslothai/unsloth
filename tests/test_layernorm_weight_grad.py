@@ -98,6 +98,34 @@ def test_layernorm_only_bias_trainable():
     _close(db, grad.double().sum(0), torch.bfloat16)
 
 
+def test_layernorm_only_weight_trainable():
+    torch.manual_seed(5)
+    layer = _layer(512, torch.bfloat16)
+    layer.bias.requires_grad_(False)
+    inputs = torch.randn(700, 512, device = "cuda", dtype = torch.bfloat16)
+    grad = torch.randn(700, 512, device = "cuda", dtype = torch.bfloat16)
+    _, _, dw, db = _fast(layer, inputs, grad)
+    assert db is None
+    _close(dw, _exact(layer, inputs, grad)[2], torch.bfloat16)
+
+
+def test_layernorm_compiled_matches_eager_bytes():
+    from unsloth.kernels.layernorm import fast_layernorm
+
+    torch.manual_seed(6)
+    inputs = torch.randn(3000, 1000, device = "cuda", dtype = torch.bfloat16)
+    grad = torch.randn(3000, 1000, device = "cuda", dtype = torch.bfloat16)
+    layer = _layer(1000, torch.bfloat16)
+    eager = _fast(layer, inputs, grad)
+    layer.zero_grad(set_to_none = True)
+    compiled = torch.compile(lambda x: fast_layernorm(layer, x), fullgraph = True)
+    x = inputs.clone().requires_grad_()
+    y = compiled(x)
+    y.backward(grad.clone())
+    for a, b in zip(eager, (y.detach(), x.grad, layer.weight.grad, layer.bias.grad)):
+        assert torch.equal(a, b)
+
+
 def test_layernorm_dw_is_deterministic():
     torch.manual_seed(2)
     inputs = torch.randn(33000, 1024, device = "cuda", dtype = torch.bfloat16)
