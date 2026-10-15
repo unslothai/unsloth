@@ -1615,7 +1615,12 @@ def _segment_path_operands(segment) -> "list[tuple[str, bool]]":
     if not (read_cmd or write_cmd or dest_last or flag_only):
         if command in _classified_terminal_commands():
             return launched
-        values = (arg.partition("=")[2] if arg.startswith("-") else arg for arg in args)
+        values = (
+            arg.partition("=")[2] or ("" if arg.startswith("--") else arg[2:])
+            if arg.startswith("-")
+            else arg
+            for arg in args
+        )
         return launched + [
             (value, False)
             for value in values
@@ -3034,7 +3039,7 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
             # once the scan has classified the child command, `subprocess.run(["echo", "/home/x"])`
             # is the same nothing `echo /home/x` is at a terminal, and prompting on one and not the
             # other was a difference with no reason behind it.
-            if not from_command and not any(
+            if not any(
                 _token_command_base(word) in _classified_terminal_commands() for word in words
             ):
                 operands.extend((word, False) for word in words if _looks_absolute(word))

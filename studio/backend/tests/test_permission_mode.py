@@ -3787,9 +3787,11 @@ _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
     f"pandoc notes.md --output={_OUTSIDE_DIR}/report.docx",
     f"magick in.png {_OUTSIDE_DIR}/photo.png",
     r"ffmpeg -y -i in.wav C:\Users\alice\Documents\interview.wav",
+    f"pandoc notes.md -o{_OUTSIDE_DIR}/report.docx",
 )
 
 _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
+    "import subprocess\nsubprocess.run(['ffmpeg', '-i', '/dev/zero', '/report.wav'])",
     # The filesystem root is silent for a LISTING, not for a walk that descends the whole host.
     "import os\nfor r, d, f in os.walk('/'):\n    print(f)",
     # `tempfile` creators write into `dir` when it is given.
