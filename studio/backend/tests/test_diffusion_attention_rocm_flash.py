@@ -1739,6 +1739,28 @@ def test_context_width_is_part_of_the_geometry(monkeypatch):
     assert rec["geometry"]["context"] == 48 and att._rocm_flash_record_ok(rec)
 
 
+# MiniMax-H3's resident INT8 load fuses to_q / to_k / to_v into to_qkv before the backend is applied.
+
+
+def test_fused_qkv_geometry_is_collected():
+    torch = pytest.importorskip("torch")
+
+    class Fused(torch.nn.Module):
+        def __init__(self, out):
+            super().__init__()
+            self.heads = 2
+            self.to_qkv = torch.nn.Linear(32, out, bias = False)
+
+    dit = torch.nn.Module()
+    dit.fused, dit.odd = Fused(96), Fused(95)
+    original = att._attention_dits
+    try:
+        att._attention_dits = lambda p: [dit]
+        assert att._dit_attention_geometries(types.SimpleNamespace()) == ((32, 2, 16),)
+    finally:
+        att._attention_dits = original
+
+
 # The key carries the ROCm runtime / kernel driver the process runs on, not only the wheel's build.
 
 

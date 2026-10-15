@@ -578,6 +578,16 @@ def _dit_attention_geometries(pipe: Any) -> tuple[tuple[int, ...], ...]:
                 to_q = getattr(module, "to_q", None)
                 fin = getattr(to_q, "in_features", None)
                 fout = getattr(to_q, "out_features", None)
+                if to_q is None:
+                    # Fused self-attention (MiniMax-H3 resident INT8 deletes to_q / to_k / to_v): Q is a third of to_qkv.
+                    to_qkv = getattr(module, "to_qkv", None)
+                    fin = getattr(to_qkv, "in_features", None)
+                    qkv_out = getattr(to_qkv, "out_features", None)
+                    fout = (
+                        qkv_out // 3
+                        if isinstance(qkv_out, int) and qkv_out > 0 and qkv_out % 3 == 0
+                        else None
+                    )
                 if not all(
                     isinstance(v, int) and not isinstance(v, bool) and v > 0
                     for v in (heads, fin, fout)
