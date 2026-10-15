@@ -1015,7 +1015,8 @@ def test_mispredicted_branch_is_recomputed_exactly():
     router, _replicas = _router(dit)
     out = loop(5)
     assert torch.equal(out, reference)
-    assert router.stats["predicted_hits"] == 0 and router.stats["predicted_misses"] == 4
+    # three consecutive misses stop speculation for the shape; the last step runs unpredicted
+    assert router.stats["predicted_hits"] == 0 and router.stats["predicted_misses"] == mg._MISS_LIMIT
     assert router.stats["replica_calls"] == 4  # still on the replica, just not overlapped
 
 
@@ -1190,7 +1191,8 @@ def test_in_place_edit_after_launch_rejects_the_prediction():
         router, _replicas = _router(dit)
         out = loop(5)
     assert torch.equal(out, reference)
-    assert router.stats["predicted_hits"] == 0 and router.stats["predicted_misses"] == 4
+    # three consecutive misses stop speculation for the shape; the last step runs unpredicted
+    assert router.stats["predicted_hits"] == 0 and router.stats["predicted_misses"] == mg._MISS_LIMIT
 
 
 def test_deferred_speed_profile_invalidates_the_replica(monkeypatch):
@@ -4454,3 +4456,159 @@ def test_cfg_parallel_step_prefetch_ships_only_the_odd_branch_inputs(monkeypatch
     # the positive embeds (even branch only) never travel; the negative ones (odd branch) do
     assert all(id(cond) not in ids for ids in shipped)
     assert any(id(uncond) in ids for ids in shipped)
+
+
+def test_consistent_parallel_misses_stop_the_speculative_replica_forward():
+    # a fresh negative tensor every step never matches the prediction: without a stop, every step pays two replica
+    # forwards (the speculative one and the real one) for the life of the load
+    torch.manual_seed(0)
+    dit = _Dit()
+    latents = torch.randn(2, 4)
+    uncond = torch.randn(3, 4)
+    steps = 10
+
+    def loop():
+        x = latents.clone()
+        cond = torch.randn(3, 4, generator = torch.Generator().manual_seed(1))
+        for i in range(steps):
+            t = torch.tensor(1.0 - i / steps)
+            a = dit(hidden_states = x, timestep = t, encoder_hidden_states = cond)[0]
+            b = dit(hidden_states = x, timestep = t, encoder_hidden_states = uncond.clone())[0]
+            x = x - 0.1 * (b + 4.0 * (a - b))
+        return x
+
+    reference = loop()
+    router, replicas = _router(dit)
+    out = loop()
+    assert torch.equal(out, reference)
+    assert router.stats["predicted_misses"] == mg._MISS_LIMIT
+    # a second request of the same shape does not start speculating again: one replica forward per step
+    before = sum(r.calls for r in replicas)
+    assert torch.equal(loop(), reference)
+    assert sum(r.calls for r in replicas) - before == steps
+    assert router.stats["predicted_misses"] == mg._MISS_LIMIT and router.prediction.stopped
+
+
+def test_parallel_prediction_policy_is_the_batch_class_and_lives_in_the_shape_book():
+    dit = _BatchDit()
+    router, _ = _router(dit)
+    assert type(router.prediction) is mg._PredictionPolicy
+    assert router.shapes.defaults["prediction"] is mg._PredictionPolicy
+    for _ in range(mg._MISS_LIMIT):
+        router.prediction.miss()
+    assert router.prediction.stopped
+    router.shapes.switch(router, "a")
+    router.shapes.switch(router, "b")  # a new request shape speculates afresh
+    assert not router.prediction.stopped
+    router.shapes.switch(router, "a")  # the stopped shape stays stopped
+    assert router.prediction.stopped
+
+
+class _FakeStream:
+    def __init__(self, name, log):
+        self.name, self.log = name, log
+
+    def wait_event(self, event):
+        self.log.append(("wait", self.name, event.stream))
+
+
+class _FakeEvent:
+    def __init__(self, log):
+        self.log, self.stream = log, None
+
+    def record(self, stream):
+        self.stream = stream.name
+        self.log.append(("record", stream.name))
+
+
+def _fake_cuda(monkeypatch, log):
+    import types
+    current = {"stream": "main"}
+    side, main = _FakeStream("side", log), _FakeStream("main", log)
+
+    @contextlib.contextmanager
+    def stream(s):
+        prev, current["stream"] = current["stream"], s.name
+        try:
+            yield
+        finally:
+            current["stream"] = prev
+
+    cuda = types.SimpleNamespace(
+        stream = stream,
+        Event = lambda: _FakeEvent(log),
+        Stream = lambda device = None: side,
+        current_stream = lambda device = None: main,
+    )
+    fake = types.SimpleNamespace(cuda = cuda, Tensor = torch.Tensor)
+    monkeypatch.setattr(mg, "_torch", lambda: fake)
+    monkeypatch.setattr(
+        mg, "move_to_device", lambda out, device: log.append(("copy", current["stream"])) or out
+    )
+    return side
+
+
+@pytest.mark.parametrize("overlaps", [True, False])
+def test_return_copy_stream_and_price_come_from_one_flag(monkeypatch, overlaps):
+    # The price says the copy back overlaps the primary branch only if the copy is issued on the primary card's side
+    # stream (a cross-card copy waits for the destination's CURRENT stream: on the main stream that is the queued
+    # primary branch), and the main stream waits for it only where the result is consumed.
+    monkeypatch.setattr(mg, "_RETURN_COPY_OVERLAPS", overlaps)
+    log = []
+    _fake_cuda(monkeypatch, log)
+    router = types_router = mg.CfgParallelRouter.__new__(mg.CfgParallelRouter)
+    types_router.primary = torch.device("cuda", 0)
+    types_router.return_stream = None
+    out = torch.ones(2)
+    result = router._return_copy(out)
+    assert mg._consume_return(result, router.primary) is out
+    price = mg.price_cfg_parallel(
+        branch_s = 1.0, primary_s = 2.0, in_bytes = 0, out_bytes = int(1.5 * (1 << 30)), link_in_gib_s = 1.0, link_out_gib_s = 1.0
+    )
+    if overlaps:
+        assert log == [("copy", "side"), ("record", "side"), ("wait", "main", "side")]
+        assert price["cfg_parallel_step_s"] == 2.5  # max(primary 2.0, replica 1.0 + copy 1.5)
+    else:
+        assert log == [("copy", "main")]
+        assert price["cfg_parallel_step_s"] == 3.5  # max(2.0, 1.0) + 1.5: the copy queues behind the primary branch
+
+
+def test_router_paths_issue_the_return_copy_through_one_helper():
+    # the unpredicted call and the speculative job both copy back via _return_copy, and both results are consumed via
+    # _consume_return; no other move_to_device(..., self.primary) on a replica output
+    import inspect
+    src = inspect.getsource(mg.CfgParallelRouter)
+    assert src.count("self._return_copy(replica(") == 2
+    assert src.count("_consume_return(out, self.primary)") == 2
+    assert "move_to_device(out, self.primary)" not in src
+
+
+def test_interpreter_exit_waits_for_a_running_replica_job():
+    # A replica job still inside a torch kernel when the interpreter finalizes used to abort the process ("terminate
+    # called without an active exception"): exit must let the worker finish its queued jobs first.
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    backend = Path(mg.__file__).resolve().parents[2]
+    script = (
+        "import sys, threading, torch\n"
+        f"sys.path.insert(0, {str(backend)!r})\n"
+        "from core.inference import diffusion_multigpu as mg\n"
+        "w = mg._ReplicaWorker(torch.device('cpu'))\n"
+        "a = torch.randn(256, 256)\n"
+        "started = threading.Event()\n"
+        "def job():\n"
+        "    started.set()\n"
+        "    x = a\n"
+        "    for _ in range(3000):\n"
+        "        x = torch.tanh(x @ a)\n"
+        "    return x\n"
+        "w.submit(job)\n"
+        "started.wait()\n"
+    )
+    env = dict(os.environ, CUDA_VISIBLE_DEVICES = "", OMP_NUM_THREADS = "2")
+    for _ in range(3):
+        done = subprocess.run([sys.executable, "-c", script], env = env, capture_output = True, timeout = 120)
+        assert done.returncode == 0, done.stderr.decode()[-500:]

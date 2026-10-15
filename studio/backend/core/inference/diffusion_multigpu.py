@@ -25,6 +25,7 @@ everything (for proving bit-identity). With one selected card nothing here engag
 
 from __future__ import annotations
 
+import atexit
 import contextlib
 import contextvars
 import copy
@@ -454,6 +455,42 @@ def best_secondary(
     return ranked[0] if ranked else None
 
 
+# The replica's output is copied back on a side stream of the primary card, issued as soon as the replica's forward is
+# queued, and the primary's main stream waits for it only where the result is consumed: the copy overlaps the primary
+# branch. price_cfg_parallel reads this same flag, so the price follows the stream the copy is issued on.
+_RETURN_COPY_OVERLAPS = True
+
+
+def _copy_back(out: Any, primary: Any, side_stream: Any) -> tuple:
+    """(``out`` on ``primary``, event or None). A cross-card copy runs on the source card's stream after waiting for
+    the destination card's CURRENT stream: with the main stream current that is every primary kernel already queued
+    (the primary branch). With ``side_stream`` (idle) current on the primary instead, the copy follows only the
+    replica's forward, and the event marks its completion."""
+    torch = _torch()
+    if side_stream is None or getattr(primary, "type", None) != "cuda":
+        return move_to_device(out, primary), None
+    with torch.cuda.stream(side_stream):
+        moved = move_to_device(out, primary)
+        done = torch.cuda.Event()
+        done.record(side_stream)
+    return moved, done
+
+
+def _consume_return(result: tuple, primary: Any) -> Any:
+    """The copied-back output, made safe on the primary's main stream: it waits for the copy's event (no host sync),
+    and each tensor is marked used there so the allocator does not hand its block back to the side stream early."""
+    moved, done = result
+    if done is None:
+        return moved
+    torch = _torch()
+    main = torch.cuda.current_stream(primary)
+    main.wait_event(done)
+    for tensor in _iter_tensors(_as_walkable(moved)):
+        with contextlib.suppress(Exception):
+            tensor.record_stream(main)
+    return moved
+
+
 def price_cfg_parallel(
     *,
     branch_s: float,
@@ -481,7 +518,12 @@ def price_cfg_parallel(
     copy_s = in_copy_s + out_copy_s
     primary = branch_s if primary_s is None else primary_s
     single = primary + branch_s
-    parallel = in_copy_s + max(primary, branch_s + out_copy_s)
+    # the copy back overlaps the primary branch only when it is issued on the side stream (_copy_back)
+    parallel = (
+        in_copy_s + max(primary, branch_s + out_copy_s)
+        if _RETURN_COPY_OVERLAPS
+        else in_copy_s + max(primary, branch_s) + out_copy_s
+    )
     # an unmeasured link is unknown, not free: one card until a probe measures it (retried on the next request)
     chosen = (
         "cfg_parallel" if measured and parallel <= _PRICE_PARALLEL_FRACTION * single else "single"
@@ -570,7 +612,7 @@ _MISS_LIMIT = 3
 
 
 class _PredictionPolicy:
-    """Per request shape: does the speculative doubled call pay? A hit (the odd branch matched what was batched)
+    """Per request shape: does speculation pay (CFG-batch's doubled call, CFG-parallel's predicted replica forward)? A hit (the odd branch matched what was batched)
     resets the run of misses; a miss (the odd branch changed, or never came) extends it. After ``_MISS_LIMIT``
     consecutive misses batching stops for that shape (each miss costs a doubled call plus a plain rerun: three
     branches of compute for two). Reset rules: a new request shape starts with a fresh policy; a shape seen before
@@ -585,8 +627,14 @@ class _PredictionPolicy:
         self.hits += 1
         self.consecutive = 0
 
+    @property
+    def stopped(self) -> bool:
+        """Speculation is off for this shape: no attempt runs after the miss limit, so nothing resets it (a fresh
+        policy comes with a new request shape or a cleared book)."""
+        return self.consecutive >= _MISS_LIMIT
+
     def miss(self) -> bool:
-        """Record a miss; True when batching should stop for the shape."""
+        """Record a miss; True when speculation should stop for the shape."""
         self.misses += 1
         self.consecutive += 1
         return self.consecutive >= _MISS_LIMIT
@@ -2023,6 +2071,7 @@ class _ReplicaWorker:
             target = self._loop, name = f"unsloth-cfg-replica-{device}", daemon = True
         )
         self._thread.start()
+        _LIVE_WORKERS.add(self)
 
     def _loop(self) -> None:
         torch = _torch()
@@ -2086,6 +2135,23 @@ class _ReplicaWorker:
 
     def close(self) -> None:
         self._jobs.put(None)
+
+    def drain(self, timeout_s: float) -> None:
+        """Stop after the queued jobs and wait for the thread (bounded)."""
+        self.close()
+        self._thread.join(timeout_s)
+
+
+# Workers still alive at interpreter exit. A daemon thread inside a torch kernel when the interpreter finalizes is
+# unwound mid-C++ (CPython ends it with pthread_exit) and aborts the process, so exit lets every queued job finish first.
+_LIVE_WORKERS: "weakref.WeakSet[_ReplicaWorker]" = weakref.WeakSet()
+
+
+@atexit.register
+def _drain_workers_at_exit() -> None:
+    for worker in list(_LIVE_WORKERS):
+        with contextlib.suppress(Exception):
+            worker.drain(timeout_s = 30.0)
 
 
 def _leaves(
@@ -2290,6 +2356,8 @@ class CfgParallelRouter:
         self.cfg_seen = False
         self.singles = 0
         self.prefetched: dict[int, tuple[Any, Any]] = {}
+        # a side stream on the primary card the replica's output is copied back on (_copy_back)
+        self.return_stream: Any = None
         # Tensors the odd branches of the previous step read (negative embeds, masks): copied again before the next
         # step's primary branch is queued, so they are always fresh and never wait behind it.
         self.carry: list[Any] = []
@@ -2317,7 +2385,11 @@ class CfgParallelRouter:
         self.b0_s: Optional[float] = None
         # why the CURRENT request shape keeps one card (priced out, link unmeasured); per shape, not per load
         self.shape_disabled: Optional[str] = None
-        self.shapes = _ShapeBook({"pricing": None, "shape_disabled": None})
+        self.shapes = _ShapeBook(
+            {"pricing": None, "shape_disabled": None, "prediction": _PredictionPolicy}
+        )
+        # per shape: consecutive prediction misses stop the speculative replica forward (the same policy as CFG-batch)
+        self.prediction = _PredictionPolicy()
         # the replica card's room for this request's activations was checked (per request and per shape change)
         self.capacity_checked = False
         # this request's denoise steps (counted at each new step) and its step count when Studio / the scheduler
@@ -2415,10 +2487,11 @@ class CfgParallelRouter:
                 # it would wait for it on the source stream and serialise the two branches.
                 try:
                     # exactly the predicted odd call's inputs (the ones the price counts), none without a prediction
-                    predicted = self._predict(latent)
-                    if predicted is not None:
-                        self._prefetch(*predicted)
-                    self._launch_prediction(latent)
+                    if not self.prediction.stopped:
+                        predicted = self._predict(latent)
+                        if predicted is not None:
+                            self._prefetch(*predicted)
+                        self._launch_prediction(latent)
                 except Exception as exc:  # noqa: BLE001 - dispatched on its type by the one handler
                     self._replica_failure("prefetch", exc)
         if (
@@ -2893,7 +2966,7 @@ class CfgParallelRouter:
             "leaves": _leaves((p_args, p_kwargs)),
             "by_value": {path for path, kind in kinds.items() if kind[0] == "b0eq"},
             "snapshots": snapshots,
-            "job": self.worker.submit(lambda: replica(*r_args, **r_kwargs)),
+            "job": self.worker.submit(lambda: self._return_copy(replica(*r_args, **r_kwargs))),
         }
 
     def _take_prediction(self, args: tuple, kwargs: dict) -> Any:
@@ -2918,9 +2991,16 @@ class CfgParallelRouter:
             out = None
         if not ok:
             self.stats["predicted_misses"] += 1
+            if self.prediction.miss() and self.logger is not None:
+                self.logger.info(
+                    "diffusion.multigpu: CFG-parallel prediction missed %d consecutive steps; no speculative replica "
+                    "forward for this request shape",
+                    self.prediction.consecutive,
+                )
             return None
         self.stats["predicted_hits"] += 1
-        return move_to_device(out, self.primary)
+        self.prediction.hit()
+        return _consume_return(out, self.primary)
 
     def _drop_pending(self) -> None:
         pending, self.pending = self.pending, None
@@ -2929,6 +3009,7 @@ class CfgParallelRouter:
             with contextlib.suppress(Exception):
                 _ReplicaWorker.wait(pending["job"])
             self.stats["predicted_misses"] += 1
+            self.prediction.miss()  # a forward spent for nothing, same as a rejected prediction
 
     def _drop_if_stale(self) -> None:
         module = self.module_ref()
@@ -3060,8 +3141,15 @@ class CfgParallelRouter:
         r_args = self._to_replica(args)
         r_kwargs = self._to_replica(kwargs)
         replica = self.replica
-        out = self.worker.call(lambda: replica(*r_args, **r_kwargs))
-        return move_to_device(out, self.primary)
+        out = self.worker.call(lambda: self._return_copy(replica(*r_args, **r_kwargs)))
+        return _consume_return(out, self.primary)
+
+    def _return_copy(self, out: Any) -> tuple:
+        """On the replica's worker thread, right after its forward is queued: the copy back to the primary card,
+        issued so it overlaps the primary branch (:func:`_copy_back`)."""
+        if self.return_stream is None and _RETURN_COPY_OVERLAPS and self.primary.type == "cuda":
+            self.return_stream = _torch().cuda.Stream(device = self.primary)
+        return _copy_back(out, self.primary, self.return_stream if _RETURN_COPY_OVERLAPS else None)
 
 
 _CFG_ROUTERS: "weakref.WeakKeyDictionary[Any, CfgParallelRouter]" = weakref.WeakKeyDictionary()
