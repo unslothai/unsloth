@@ -24,9 +24,8 @@ Attention is bandwidth-bound, so a better kernel is a real win orthogonal to wei
   sage   - SageAttention 2 (INT8 QK); quantized, small quality cost. A pip SageAttention 2 when installed, else the
            kernels-community build from the Hugging Face kernels hub (``sage_hub``, Ampere / Ada / Hopper).
   xformers / aiter - memory-efficient (NVIDIA) / AITER (AMD ROCm).
-  flash on ROCm - only when the DAO-AILab ROCm build imports and passes an on-card check. ``auto`` picks it only when a
-          whole-block timing probe at the model's attention geometry finds it faster than native SDPA and the block
-          output matches (``UNSLOTH_DIFFUSION_ROCM_FLASH``: auto | 0 | 1).
+  flash on ROCm - only when the DAO-AILab ROCm build passes an on-card check; ``auto`` also needs a block timing win
+          (``UNSLOTH_DIFFUSION_ROCM_FLASH``: auto | 0 | 1).
 
 Best-effort: an unavailable backend falls back to the diffusers default. torch/diffusers lazy.
 """
@@ -447,9 +446,8 @@ def select_attention_backend(
 
     An explicit alias is honored (apply falls back if its kernel is unavailable). ``auto``
     upgrades to cuDNN on NVIDIA CUDA only when a speed profile is active (so ``off`` stays
-    bit-identical), and on ROCm with a verified flash_attn to ``ROCM_FLASH_CANDIDATE`` unless speed is explicitly
-    ``off``: ``apply_attention_backend`` then admits flash only if the whole-block timing probe says it is faster;
-    elsewhere returns None (native)."""
+    bit-identical), and on ROCm with verified flash_attn to ``ROCM_FLASH_CANDIDATE`` (resolved by timing in
+    ``apply_attention_backend``) unless speed is explicitly ``off``; elsewhere returns None (native)."""
     alias = normalize_attention_backend(requested)
     if alias != ATTN_AUTO:
         backend = _ALIASES[alias]
@@ -495,16 +493,13 @@ def _is_cuda_rocm(target: Any) -> bool:
     return getattr(target, "device", None) == "cuda" and not _is_cuda_nvidia(target)
 
 
-# ``auto`` on ROCm with a verified flash_attn: a candidate that ``apply_attention_backend`` resolves to "flash" or native
-# by timing one synthetic DiT block at the model's attention geometry. Replaces the earlier family / arch table
-# (flux.2-klein on gfx11): the measured answer depends on the flash_attn build (CK or Triton), the card and the shape.
+# Timed per geometry, not a family/arch table: the win depends on the flash_attn build (CK or Triton), card and shape.
 ROCM_FLASH_CANDIDATE = "_rocm_flash_candidate"
 ROCM_FLASH_ENV = "UNSLOTH_DIFFUSION_ROCM_FLASH"  # auto (timed) | 0 (auto never picks flash) | 1 (verified is enough)
-# Admit only a clear win: flash block time <= (1 - gain) x native, and block outputs within tolerance.
 ROCM_FLASH_MIN_GAIN = 0.03
-ROCM_FLASH_BLOCK_TOL = 2e-2  # mean |flash - native| / mean |native| over the block output (bf16 rounding ~1e-3)
-ROCM_FLASH_PROBE_TOKENS = 4096  # a 1024^2 image DiT's sequence; video is longer (attention share only grows)
-# (device, dtype, hidden, heads, head_dim) -> admission record; engagement proof for tests and benches.
+ROCM_FLASH_BLOCK_TOL = 2e-2  # block output rel L1 (bf16 rounding ~1e-3)
+ROCM_FLASH_PROBE_TOKENS = 4096  # 1024^2 image DiT sequence
+# (device, dtype, hidden, heads, head_dim) -> admission record.
 ROCM_FLASH_ADMISSIONS: dict[tuple, dict] = {}
 
 
@@ -547,14 +542,13 @@ def _flash_attn_installed() -> bool:
 
 
 def _rocm_auto_flash(target: Any, family: Any = None) -> bool:
-    """``auto`` may consider flash: ROCm, kill switch not 0, flash_attn installed (checked silently) and verified."""
     if not _is_cuda_rocm(target) or _rocm_flash_mode() == "0":
         return False
     return _flash_attn_installed() and _rocm_flash_attn_runs(target)
 
 
 def _dit_attention_geometry(pipe: Any) -> Optional[tuple[int, int, int]]:
-    """(hidden, heads, head_dim) of the denoiser's most common attention module, read off ``to_q`` + ``heads``."""
+    """(hidden, heads, head_dim) of the denoiser's most common attention module."""
     counts: dict[tuple[int, int, int], int] = {}
     for dit in _attention_dits(pipe):
         modules = getattr(dit, "modules", None)
@@ -582,8 +576,7 @@ def _dit_attention_geometry(pipe: Any) -> Optional[tuple[int, int, int]]:
 def _time_rocm_flash_block(
     device: str, dtype: Any, hidden: int, heads: int, head_dim: int, tokens: int = ROCM_FLASH_PROBE_TOKENS
 ) -> dict:
-    """One synthetic DiT block (LayerNorm, QKV, attention, out proj, LayerNorm, 4x GELU MLP, residuals) with native
-    SDPA vs flash_attn, interleaved, median ms of each, and the relative L1 of the two block outputs."""
+    """Median ms of one synthetic DiT block with native SDPA vs flash_attn, plus rel L1 of the outputs."""
     import time
 
     import torch
@@ -636,8 +629,7 @@ def _time_rocm_flash_block(
 
 
 def _rocm_flash_block_admitted(pipe: Any, target: Any, logger: Any = None) -> bool:
-    """Resolve ``ROCM_FLASH_CANDIDATE``: flash only when it runs, and (mode auto) a whole-block timing at this model's
-    attention geometry shows it faster than native SDPA with matching output. Cached per (device, dtype, geometry)."""
+    """Resolve ``ROCM_FLASH_CANDIDATE``: flash only if it runs and (mode auto) wins the block timing with matching output."""
     if target is None or not _rocm_auto_flash(target):
         return False
     mode = _rocm_flash_mode()
@@ -656,7 +648,7 @@ def _rocm_flash_block_admitted(pipe: Any, target: Any, logger: Any = None) -> bo
         return bool(cached.get("admitted"))
     try:
         rec = _time_rocm_flash_block(device, dtype, *geometry)
-    except Exception as exc:  # noqa: BLE001 - OOM / device trouble: no answer, native this time, retried next load
+    except Exception as exc:  # noqa: BLE001 - not cached: retried next load
         _module_logger().info("diffusion.attention: ROCm flash timing probe could not run (%s); native SDPA", exc)
         return False
     finally:

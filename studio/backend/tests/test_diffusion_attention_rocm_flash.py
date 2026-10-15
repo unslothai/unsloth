@@ -99,7 +99,6 @@ def test_rocm_unaskable_check_is_native_and_not_cached(monkeypatch):
 def test_rocm_auto_is_a_timed_candidate_not_flash(monkeypatch):
     calls = _rocm(monkeypatch)
     assert select_attention_backend(_target(), "auto", speed_active = True) == att.ROCM_FLASH_CANDIDATE
-    # an explicit `off` stays native without asking anything (the bit-identical reference path)
     assert select_attention_backend(_target(), "auto", speed_active = False) is None
     assert calls == [("cuda:0", "torch.bfloat16")]
 
@@ -243,8 +242,7 @@ def test_cudnn_head_dim_probe_still_answers_fp32_at_bf16(monkeypatch):
     assert seen == [torch.bfloat16]
 
 
-# ``auto`` on ROCm: a candidate resolved by a whole-block timing probe at the model's attention geometry, for every
-# family and arch alike (no model or arch table); kill switch UNSLOTH_DIFFUSION_ROCM_FLASH.
+# ``auto`` on ROCm: a timed candidate for every family and arch.
 
 
 def _klein():
@@ -290,7 +288,6 @@ def test_rocm_kill_switch_zero_keeps_auto_native(monkeypatch):
     monkeypatch.setenv(att.ROCM_FLASH_ENV, "0")
     assert select_attention_backend(_target(), "auto", speed_active = True, family = _klein()) is None
     assert calls == []
-    # an explicit request is still honored
     assert select_attention_backend(_target(), "flash", speed_active = True) == "flash"
 
 
@@ -345,7 +342,6 @@ def test_apply_resolves_candidate_by_block_timing(monkeypatch, flash_ms, rel, en
     assert att.apply_attention_backend(pipe, att.ROCM_FLASH_CANDIDATE, target = _target()) == engaged
     assert timed == [("cuda:0", 3072, 24, 128)]
     assert set_to == (["flash"] if engaged else [])
-    # cached per (device, dtype, geometry): a second load does not time again
     pipe2, _ = _pipe_with_attention()
     att.apply_attention_backend(pipe2, att.ROCM_FLASH_CANDIDATE, target = _target())
     assert len(timed) == 1
