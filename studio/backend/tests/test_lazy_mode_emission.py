@@ -66,6 +66,17 @@ class _Backend:
     def _amd_apu_wants_unified_memory(self, gpu_indices = None):
         return self.amd_apu
 
+    def _integrated_cuda_selection_is_all_shared(self, gpu_indices = None):
+        return self.integrated_cuda
+
+    def _vulkan_selection_types_known(
+        self,
+        binary,
+        gpu_indices = None,
+    ):
+        # A probe that answered with every device type known.
+        return True
+
     _selected_devices_can_mmap = LlamaCppBackend._selected_devices_can_mmap
     _studio_lazy_mode = LlamaCppBackend._studio_lazy_mode
 

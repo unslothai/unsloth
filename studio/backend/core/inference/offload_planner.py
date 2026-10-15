@@ -710,6 +710,12 @@ def _fit_fallback_placement(
     floor_scale = (kv_total / reserved_product) if reserved_product > 0 else 1.0
     if kv_on_host:
         kv_live_total = 0
+    elif layout.has_swa and opts.kv_bytes_at is not None:
+        # What one request has POPULATED: the estimator at its live prefix and one slot. A window
+        # bounds the read at the window, and --swa-full's full-size window reservation
+        # (llama-kv-cache-iswa.cpp: size_swa = size_base) holds only the live prefix too, so the
+        # reserved half is not decode traffic.
+        kv_live_total = min(kv_total, _measured_cache_at(layout, opts, live_tokens, 1))
     elif layout.has_swa and kv_bytes_floor > 0 and swa_floor > 0:
         # A saturated window is read in full, but the full-context layers are RESERVED at n_ctx
         # and only their live prefix is read.

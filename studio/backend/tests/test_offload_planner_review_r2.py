@@ -138,10 +138,11 @@ def test_a_default_vulkan_selection_is_left_to_auto(monkeypatch):
 
 def test_an_unread_vulkan_device_type_is_not_taken_as_mmap_capable(monkeypatch):
     """The probe reports is_igpu False when the type query fails, so "not integrated" and "not
-    read" share a value; "on" against what is really an iGPU is a mode the child refuses."""
+    read" share a value; "on" against what is really an iGPU is a mode the child refuses. Nor is
+    it "off": the planner priced auto's answer, so an unread type is left to auto."""
     rows = [{"index": 0, "is_igpu": False, "type_known": False}]
     b = _lazy_backend(monkeypatch, rows)
-    assert _mode(b, [0]) == "off"
+    assert _mode(b, [0]) is None
 
 
 # ------------------------------------------------ findings 6 / 7: a reordered mask under a split

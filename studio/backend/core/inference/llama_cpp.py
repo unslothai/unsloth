@@ -11417,6 +11417,19 @@ class LlamaCppBackend:
             return False
         return not any(r["is_igpu"] for r in selected)
 
+    @staticmethod
+    def _vulkan_selection_types_known(binary: Optional[str], gpu_indices) -> bool:
+        """True when the Vulkan probe answered and classified every selected ordinal."""
+        try:
+            rows = LlamaCppBackend._run_vulkan_probe(binary)
+        except Exception:
+            return False
+        wanted = set(gpu_indices or ())
+        selected = [r for r in (rows or ()) if r["index"] in wanted]
+        if not wanted or wanted - {r["index"] for r in selected}:
+            return False
+        return all(r.get("type_known") for r in selected)
+
     @classmethod
     def _gpu_offload_confirmed(
         cls,
@@ -12148,19 +12161,37 @@ class LlamaCppBackend:
             or str((env or {}).get("LLAMA_ARG_DEVICE", "")).strip()
         ):
             return None
-        # Vulkan with no selection: the child's default list drops iGPUs whenever a discrete GPU is
-        # present, which the visible rows cannot say, so auto resolves against what it really gets.
-        if is_vulkan_backend and gpu_indices is None:
+        # No selection: the child's default list drops iGPUs whenever a discrete GPU is present
+        # (src/llama.cpp:llama_model_load_from_file_impl adds integrated devices only when no
+        # discrete one was found), which the visible rows cannot say, so auto resolves against
+        # what it really gets. Every backend, not Vulkan alone.
+        if gpu_indices is None:
             return None
-        return (
-            "on"
-            if self._selected_devices_can_mmap(
-                binary = binary,
-                gpu_indices = gpu_indices,
-                is_vulkan_backend = is_vulkan_backend,
+        if is_vulkan_backend:
+            # Vulkan is pinned with an explicit --device list, so ANY iGPU in it turns the load
+            # off. A probe that did not classify every selected device says nothing either way:
+            # "off" there is the 8 GiB resident table _lazy_auto_resolves_off priced as paged.
+            if not self._vulkan_selection_types_known(binary, gpu_indices):
+                return None
+            return (
+                "on"
+                if self._selected_devices_can_mmap(
+                    binary = binary,
+                    gpu_indices = gpu_indices,
+                    is_vulkan_backend = True,
+                )
+                else "off"
             )
-            else "off"
+        # CUDA/HIP pin by the visibility mask, and the child's default list over that mask drops an
+        # integrated device beside a discrete one, so only an all-integrated selection is off: the
+        # rule _lazy_auto_resolves_off prices.
+        indices = list(gpu_indices)
+        if not indices:
+            return None
+        all_shared = self._integrated_cuda_selection_is_all_shared(indices) or all(
+            self._amd_apu_wants_unified_memory([idx]) for idx in indices
         )
+        return "off" if all_shared else "on"
 
     def _weights_in_host_memory(
         self,
@@ -13974,6 +14005,10 @@ class LlamaCppBackend:
         this errs towards staying silent.
         """
         if sys.platform != "win32" or is_vulkan_backend or not fully_gpu_offloaded:
+            return None
+        # A ROCm launch's ids are HIP ones: on a mixed host nvidia-smi answers for the OTHER
+        # vendor's card at that index, as the planner's link probe already declines.
+        if self._host_torch_is_rocm():
             return None
         if int(model_bytes or 0) <= 0:
             return None
@@ -17983,7 +18018,10 @@ class LlamaCppBackend:
 
     def _can_estimate_kv(self) -> bool:
         """True if we have enough GGUF metadata to estimate KV cache size."""
-        if self._n_layers is None:
+        from core.inference.offload_layout import LLAMA_MAX_LAYERS
+
+        # Every path below walks or allocates per layer; the layout reader refuses the same count.
+        if self._n_layers is None or not 0 < self._n_layers <= LLAMA_MAX_LAYERS:
             return False
         # MLA: the K-only latent width comes from kv_lora_rank plus the MLA rope dim.
         if self._uses_mla_cache():
@@ -18550,18 +18588,35 @@ class LlamaCppBackend:
             n_attn = hybrid_split[0]
             recurrent = self._mamba_recurrent_state_bytes(n_parallel)
             indexer = self._indexer_cache_bytes(n_attn, total_cells, bpe_k, bpe_v)
+            # A per-layer head vector whose zeros ARE the recurrent rows names each attention row's
+            # own head count (Jamba-style files); charging every row the widest one over-reserves.
+            head_total = n_attn * n_kv
+            by_layer = self._n_kv_heads_by_layer
+            if by_layer:
+                rows = [self._kv_heads_for_layer(i, n_kv) for i in range(n_layers)]
+                if sum(1 for h in rows if h > 0) == n_attn:
+                    head_total = sum(h for h in rows if h > 0)
             if key_len is not None and val_len is not None:
-                v_width = n_kv * val_len if flash_attn else self._max_kv_value_width(val_len)
+                v_width = (
+                    head_total * val_len
+                    if flash_attn
+                    else n_attn * self._max_kv_value_width(val_len)
+                )
                 return (
-                    int(n_attn * total_cells * (n_kv * key_len * bpe_k + v_width * bpe_v))
+                    int(total_cells * (head_total * key_len * bpe_k + v_width * bpe_v))
                     + recurrent
                     + indexer,
                     0,
                     recurrent_checkpoints,
                 )
+            # Legacy dimensions: V at its own element size (an f16 V beside a quantized K without
+            # flash attention) and, as on path 5, padded to the widest layer without it.
             head_dim = self._legacy_head_dim()
+            v_heads = head_total if flash_attn else n_attn * n_kv
             return (
-                int(n_attn * total_cells * n_kv * 2 * head_dim * bpe_k) + recurrent + indexer,
+                int(total_cells * head_dim * (head_total * bpe_k + v_heads * bpe_v))
+                + recurrent
+                + indexer,
                 0,
                 recurrent_checkpoints,
             )
@@ -20271,6 +20326,17 @@ class LlamaCppBackend:
                                 if attr:
                                     if attr == "sliding_window_pattern":
                                         sliding_window_pattern_period = val_i
+                                    elif attr == "n_layers":
+                                        from core.inference.offload_layout import (
+                                            LLAMA_MAX_LAYERS,
+                                        )
+
+                                        # One bound for every per-layer reader downstream: a count
+                                        # llama.cpp refuses (LLAMA_MAX_LAYERS) is metadata the
+                                        # estimators and the SWA expansion treat as absent.
+                                        self._n_layers = (
+                                            val_i if 0 < val_i <= LLAMA_MAX_LAYERS else None
+                                        )
                                     else:
                                         setattr(self, f"_{attr}", val_i)
                             elif vtype == 9:  # ARRAY
