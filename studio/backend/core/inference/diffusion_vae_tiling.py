@@ -267,8 +267,11 @@ def _free_mib(
 
 
 def _fused(vae: Any) -> bool:
-    return bool(getattr(vae, "_unsloth_vae_fused_installed", 0)) and not getattr(
-        vae, "_unsloth_vae_fused_failed", False
+    # A structurally matched class keeps its unfused memory figure: the fused one was measured per class.
+    return (
+        bool(getattr(vae, "_unsloth_vae_fused_installed", 0))
+        and not getattr(vae, "_unsloth_vae_fused_failed", False)
+        and not getattr(vae, "_unsloth_vae_fused_structural", False)
     )
 
 
