@@ -576,3 +576,16 @@ def test_kto_scores_the_common_length_when_the_model_truncates():
     )
     torch.testing.assert_close(clamped, full)
     assert stand_in.shape[:2] == (2, 5)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a second device for the head")
+def test_kto_returns_on_the_hidden_state_device():
+    # A dispatched model hands hidden states back on its input device while the head sits elsewhere.
+    ns = _helpers()
+    head = torch.nn.Linear(8, 20, bias = False).cuda()
+    hidden = torch.randn(2, 5, 8)
+    labels = torch.randint(0, 20, (2, 5))
+    logps, stand_in = ns["_unsloth_kto_hidden_logps"](
+        None, (None, head, (0.0, 0.0, 0.0)), hidden, labels, -100
+    )
+    assert logps.device == hidden.device and stand_in.device == hidden.device

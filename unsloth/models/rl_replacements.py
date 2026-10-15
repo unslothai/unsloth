@@ -5215,6 +5215,7 @@ def _unsloth_kto_hidden_logps(self, chunked, hidden_states, labels, label_pad_to
     _, head, (multiply, divide, softcap) = chunked
     # The model may truncate input_ids (see kto_trainer_get_batch_logps): score the common length.
     n = min(hidden_states.shape[1], labels.shape[1])
+    out_device = hidden_states.device
     hidden_states = hidden_states[:, :n]
     labels = labels[:, :n].to(head.weight.device)
     shifted = labels[:, 1:]
@@ -5238,7 +5239,7 @@ def _unsloth_kto_hidden_logps(self, chunked, hidden_states, labels, label_pad_to
         pass
     completion_logps = (per_token_logps[:, :-1] * mask).sum(-1)
     logits_sum = (mean_logits * head.weight.shape[0]).unsqueeze(-1)
-    return completion_logps.to(labels.device), logits_sum.to(labels.device)
+    return completion_logps.to(out_device), logits_sum.to(out_device)
 
 
 _KTO_FORWARD = re.compile(
