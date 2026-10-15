@@ -83,6 +83,9 @@ export const ru = {
     },
     agent: {
       working: "Unsloth работает в этой вкладке",
+      waiting: "Unsloth ждёт вашего ответа в браузере для {chat}",
+      otherChat: "другого чата",
+      show: "Показать",
       stop: "Остановить",
       allow: "Разрешить",
       deny: "Запретить",

@@ -84,6 +84,9 @@ export const ja = {
     },
     agent: {
       working: "Unsloth がこのタブで操作しています",
+      waiting: "{chat} のブラウザで Unsloth があなたの回答を待っています",
+      otherChat: "別のチャット",
+      show: "表示",
       stop: "停止",
       allow: "許可",
       deny: "拒否",

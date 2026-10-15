@@ -83,6 +83,9 @@ export const ko = {
     },
     agent: {
       working: "Unsloth가 이 탭에서 탐색 중입니다",
+      waiting: "{chat}의 브라우저에서 Unsloth가 응답을 기다리고 있습니다",
+      otherChat: "다른 채팅",
+      show: "보기",
       stop: "중지",
       allow: "허용",
       deny: "거부",

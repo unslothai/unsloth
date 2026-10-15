@@ -120,13 +120,12 @@ export const BUDGET = {
   // Naming the Windows update that adds MXC's built-in container (#13798) adds 358 B raw / 93 B transfer, its
   // string in the eager English locale (6,765,003 -> 6,765,361 B raw against 3c0061e16, one machine and build,
   // Node 24, chunk count unchanged at 95), which put main 55 B raw over. Raised by that growth.
-  // The Recents header "Delete all chats" item (#13779) adds 1,299 B raw / 316 B transfer to the eager startup
-  // set (6,764,964 -> 6,766,263 B raw, 2,033,544 -> 2,033,860 B transfer from 6c3bd16 to the feature commit,
-  // one machine and build, chunk count unchanged at 95). Its confirmation reuses the already-eager shared
-  // Dialog, so the growth is the menu item and its strings in every eager locale rather than a lazy-loadable
-  // import; raised by that growth so main's margin stays where it was.
-  transferBytes: 2_034_093,
-  rawBytes: 6_766_963,
+  // Each chat keeping its own browser tabs (#13800: the store's per-chat state, background pages in the
+  // native view, and the off-screen question strings) adds 5,278 B raw / 1,928 B transfer (6,765,003 ->
+  // 6,770,281 B raw, 2,033,563 -> 2,035,491 B transfer against a8585676d4, one machine and build, Node 24,
+  // chunk count unchanged at 95), raised by that.
+  transferBytes: 2_035_705,
+  rawBytes: 6_770_942,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
