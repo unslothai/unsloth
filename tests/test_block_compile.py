@@ -514,6 +514,67 @@ def test_gdn_adapter_routes_only_the_self_checked_call(monkeypatch):
     assert seen == ["op"] + ["fla"] * 6
 
 
+@pytest.mark.parametrize("linear_env", ["auto", "0"])
+def test_nf4_block_route_matches_both_checkpoint_halves(monkeypatch, linear_env):
+    # Package context so `from ..kernels import bnb_override` resolves to the fakes below.
+    pkg = types.ModuleType("_ufake")
+    pkg.__path__ = []
+    models = types.ModuleType("_ufake.models")
+    models.__path__ = []
+    kernels = types.ModuleType("_ufake.kernels")
+    kernels.__path__ = []
+    O = types.ModuleType("_ufake.kernels.bnb_override")
+    O._TRACE, O._TRACE_BF16, O._LINEAR = True, True, linear_env
+    O._eligible = lambda self, x, weight, quant_state: True
+    O._linear = lambda x, weight, quant_state, bias: torch.full_like(x, 7.0)
+    kernels.bnb_override = O
+
+    class Linear4bit(torch.nn.Module):
+        def __init__(self, dtype, bias):
+            super().__init__()
+            self.weight = types.SimpleNamespace(quant_state = types.SimpleNamespace(dtype = dtype))
+            self.bias = torch.nn.Parameter(torch.zeros(8)) if bias else None
+
+        def forward(self, x):
+            return torch.zeros_like(x)
+
+    bnb = types.ModuleType("bitsandbytes")
+    bnb.nn = types.SimpleNamespace(Linear4bit = Linear4bit)
+    for name, mod in (
+        ("_ufake", pkg),
+        ("_ufake.models", models),
+        ("_ufake.kernels", kernels),
+        ("_ufake.kernels.bnb_override", O),
+        ("bitsandbytes", bnb),
+    ):
+        monkeypatch.setitem(sys.modules, name, mod)
+    spec = importlib.util.spec_from_file_location(
+        "_ufake.models._block_compile", os.path.join(_DIR, "_block_compile.py")
+    )
+    M = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, spec.name, M)
+    spec.loader.exec_module(M)
+    M._nf4_in_blocks()
+    if linear_env == "0":
+        assert not getattr(Linear4bit.forward, "_unsloth_block_nf4", False)
+        return
+    monkeypatch.setattr(torch.compiler, "is_compiling", lambda: True)
+    monkeypatch.setattr(M, "_IN_BLOCK", [M._FULL])
+
+    def routed(
+        dtype,
+        rows,
+        bias = False,
+    ):
+        return bool(Linear4bit(dtype, bias)(torch.ones(rows, 8, dtype = dtype)).eq(7).all())
+
+    assert routed(torch.bfloat16, 16)
+    assert routed(torch.float32, 8)
+    assert not routed(torch.bfloat16, 1)  # one row: fast_gemv only without grad
+    assert not routed(torch.float32, 4)  # bitsandbytes' fp32 small-row kernel
+    assert not routed(torch.bfloat16, 16, bias = True)  # trainable bias
+
+
 def test_causal_depthwise_conv_matches_conv1d():
     M = _load("_gdn_op")
     torch.manual_seed(0)

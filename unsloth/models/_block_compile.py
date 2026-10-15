@@ -508,8 +508,8 @@ def _nf4_in_blocks():
         from ..kernels import bnb_override as O
     except Exception:
         return
-    if not O._TRACE:
-        return  # torch < 2.11 miscompiles the traced backward
+    if not O._TRACE or O._LINEAR == "0":
+        return  # torch < 2.11 miscompiles the traced backward; "0" = the user's opt-out
     Linear4bit = bnb.nn.Linear4bit
     current = Linear4bit.forward
     if getattr(current, "_unsloth_block_nf4", False):
@@ -517,19 +517,25 @@ def _nf4_in_blocks():
 
     @functools.wraps(current)
     def forward(self, x, *args, **kwargs):
-        # A trainable bias fails _eligible only under grad: decide it here for both checkpoint halves.
+        # Both checkpoint halves must take one kernel: a trainable bias fails _eligible only under
+        # grad, and one row picks fast_gemv only without grad (O._linear).
         bias = self.bias
+        rows = x.numel() // max(x.shape[-1], 1)
         if (
             _IN_BLOCK[0]
             and torch.compiler.is_compiling()
             and not args
             and not kwargs
             and (bias is None or not bias.requires_grad)
+            and rows > 1
         ):
             weight = self.weight
             quant_state = getattr(weight, "quant_state", None)
-            if O._eligible(self, x, weight, quant_state) and (
-                quant_state.dtype is not torch.bfloat16 or O._TRACE_BF16
+            if (
+                O._eligible(self, x, weight, quant_state)
+                and (quant_state.dtype is not torch.bfloat16 or O._TRACE_BF16)
+                # bitsandbytes' fp32 small-row kernel is more accurate (O._forward keeps it too).
+                and not (quant_state.dtype is torch.float32 and rows < 8)
             ):
                 dtype = quant_state.dtype
                 bias = None if self.bias is None else self.bias.to(dtype)
