@@ -477,8 +477,17 @@ def test_a_relative_pin_is_refused(monkeypatch):
         ("      1000       1000          1\n", 1000, _OVERFLOW),
         ("         0       1000          1\n", 0, _OVERFLOW),
         ("", _OVERFLOW, None),
+        ("         0       1000          1\n         1     100000      65536\n", 0, None),
+        ("         0          0     100000\n", 1000, None),
     ],
-    ids = ["initial-namespace", "current-user-mapped", "mapped-to-root", "unmapped-itself"],
+    ids = [
+        "initial-namespace",
+        "current-user-mapped",
+        "mapped-to-root",
+        "unmapped-itself",
+        "rootless-subuid-range-maps-it",
+        "partial-identity-map-covers-it",
+    ],
 )
 def test_the_overflow_uid_counts_only_inside_a_namespace(monkeypatch, uid_map, euid, expected):
     files = {"/proc/self/uid_map": uid_map, "/proc/sys/kernel/overflowuid": f"{_OVERFLOW}\n"}

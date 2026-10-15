@@ -104,11 +104,15 @@ def _unmapped_uid() -> int | None:
     """The overflow uid when a user namespace hides host owners (root shows as it), else None."""
     try:
         with open("/proc/self/uid_map", encoding = "utf-8") as f:
-            if f.read().split() == ["0", "0", "4294967295"]:
-                return None
+            ranges = [
+                tuple(map(int, line.split())) for line in f.read().splitlines() if line.strip()
+            ]
         with open("/proc/sys/kernel/overflowuid", encoding = "utf-8") as f:
             overflow = int(f.read())
     except (OSError, ValueError):
+        return None
+    # A mapped overflow uid is a real user (rootless containers map 65534), not hidden root.
+    if any(len(r) != 3 or r[0] <= overflow < r[0] + r[2] for r in ranges):
         return None
     # Unmapped itself, Studio's own files would show as this uid too.
     return None if os.geteuid() == overflow else overflow
