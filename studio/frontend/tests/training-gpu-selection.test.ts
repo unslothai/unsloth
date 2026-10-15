@@ -13,10 +13,13 @@ const server = await createServer({
   logLevel: "silent",
   server: { middlewareMode: true },
 });
-const { reconcileTrainingGpuSelection, validateRefreshedTrainingGpuSelection } =
-  await server.ssrLoadModule(
-    "/src/features/training/lib/training-gpu-selection.ts",
-  );
+const {
+  reconcileTrainingGpuSelection,
+  showsTrainingHardwareTab,
+  validateRefreshedTrainingGpuSelection,
+} = await server.ssrLoadModule(
+  "/src/features/training/lib/training-gpu-selection.ts",
+);
 const { validateTrainingConfig } = await server.ssrLoadModule(
   "/src/features/training/lib/validation.ts",
 );
@@ -195,4 +198,26 @@ test("an unresolved refresh keeps automatic placement valid but rejects explicit
     kind: "invalid",
     errorKey: "studio.training.validation.gpuSelectionUnavailable",
   });
+});
+
+test("the hardware tab stays hidden unless there is a placement to choose", () => {
+  const gpu = (index: number) => ({ index, indexKind: "physical" });
+  assert.equal(showsTrainingHardwareTab("auto", []), false);
+  assert.equal(showsTrainingHardwareTab("auto", [gpu(0)]), false);
+  assert.equal(showsTrainingHardwareTab("auto", [gpu(0), gpu(1)]), true);
+  // A saved explicit choice must stay reachable after a card disappears.
+  assert.equal(showsTrainingHardwareTab("ddp", [gpu(0)]), true);
+});
+
+test("automatic placement validates without refreshing the inventory", async () => {
+  const result = await validateRefreshedTrainingGpuSelection({
+    refresh: null,
+    abortIfInputsChanged: () => false,
+    getConfig: () => ({ parallelismMode: "auto" }),
+    validate: (_config: unknown, availableGpuIds: unknown) => {
+      assert.equal(availableGpuIds, undefined);
+      return { ok: true };
+    },
+  });
+  assert.equal(result.kind, "valid");
 });

@@ -636,7 +636,11 @@ class TrainingStartRequest(BaseModel):
     _resolve_the_resume_handle = field_validator("resume_from_checkpoint")(
         _resolve_inventory_handle
     )
-    parallelism_mode: Literal["auto", "single", "model_parallel", "ddp"] = "auto"
+    parallelism_mode: Literal["auto", "single", "model_parallel", "ddp"] = Field(
+        "auto",
+        description = "GPU placement: automatic, one GPU, a model sharded across gpu_ids, "
+        "or DDP (one replica per gpu_id; NVIDIA CUDA on Linux)",
+    )
 
     gpu_ids: Optional[List[int]] = Field(
         None,
@@ -714,6 +718,13 @@ class TrainingStartRequest(BaseModel):
             raise ValueError("parallelism_mode='model_parallel' requires at least two gpu_ids.")
         if self.parallelism_mode == "ddp" and len(ids) < 2:
             raise ValueError("parallelism_mode='ddp' requires at least two gpu_ids.")
+        # Neither path is rank-aware: decision models train on one GPU, embedding saves on every rank.
+        if self.parallelism_mode == "ddp" and (
+            getattr(self, "is_embedding", False) or getattr(self, "is_decision", False)
+        ):
+            raise ValueError(
+                "parallelism_mode='ddp' does not support embedding or decision models."
+            )
         return self
 
     @model_validator(mode = "after")

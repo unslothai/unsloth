@@ -273,23 +273,26 @@ export async function startFreshTrainingRun(): Promise<boolean> {
   }
 
   try {
-    const gpuCheck = await validateRefreshedTrainingGpuSelection({
-      refresh: refreshTrainingGpuIndices,
-      abortIfInputsChanged: () => attempt.abortIfInputsChanged(),
-      getConfig: () => attempt.config,
-      validate: (config, availableGpuIds) =>
-        validateTrainingConfig(
-          config,
-          usePlatformStore.getState().deviceType,
-          isAccountOwner(),
-          availableGpuIds,
-        ),
-    });
-    if (gpuCheck.kind === "inputs-changed") {
-      return false;
-    }
-    if (gpuCheck.kind === "invalid") {
-      return attempt.cancel(translate(gpuCheck.errorKey));
+    // Automatic placement has no device ids to re-check before the token prompt.
+    if (attempt.config.parallelismMode !== "auto") {
+      const gpuCheck = await validateRefreshedTrainingGpuSelection({
+        refresh: refreshTrainingGpuIndices,
+        abortIfInputsChanged: () => attempt.abortIfInputsChanged(),
+        getConfig: () => attempt.config,
+        validate: (config, availableGpuIds) =>
+          validateTrainingConfig(
+            config,
+            usePlatformStore.getState().deviceType,
+            isAccountOwner(),
+            availableGpuIds,
+          ),
+      });
+      if (gpuCheck.kind === "inputs-changed") {
+        return false;
+      }
+      if (gpuCheck.kind === "invalid") {
+        return attempt.cancel(translate(gpuCheck.errorKey));
+      }
     }
     const tokenResult = await prepareAttemptHfToken(attempt);
     if (!tokenResult.ready) {
@@ -357,8 +360,7 @@ export async function startFreshTrainingRun(): Promise<boolean> {
 }
 
 type AttemptHfTokenResult =
-  | { ready: false }
-  | { ready: true; token: string | null };
+  { ready: false } | { ready: true; token: string | null };
 
 async function prepareAttemptHfToken(
   attempt: FreshTrainingStartAttempt,
@@ -561,7 +563,10 @@ async function submitFreshTrainingRun(
   hfToken: string | null,
 ): Promise<boolean> {
   const gpuCheck = await validateRefreshedTrainingGpuSelection({
-    refresh: refreshTrainingGpuIndices,
+    refresh:
+      attempt.config.parallelismMode === "auto"
+        ? null
+        : refreshTrainingGpuIndices,
     abortIfInputsChanged: () => attempt.abortIfInputsChanged(),
     getConfig: () => attempt.config,
     validate: (config, availableGpuIds) =>

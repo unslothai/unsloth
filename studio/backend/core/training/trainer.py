@@ -903,6 +903,8 @@ class UnslothTrainer:
                 )
 
             def on_step_end(self, args, state, control, **kwargs):
+                if world_size_from_env() > 1:
+                    trainer_ref._agree_on_ddp_stop(args.device)
                 if trainer_ref.should_stop:
                     logger.info(f"Stop detected at step {state.global_step}\n")
                     control.should_training_stop = True
@@ -4602,18 +4604,28 @@ class UnslothTrainer:
             if online_decision.enabled:
                 eval_dataset = self._online_eval_dataset
 
-            # PEFT wrappers are not PreTrainedModel instances: Transformers otherwise
-            # enables unused-parameter discovery, which marks checkpointed LoRA
-            # parameters ready before their reentrant backward hooks fire.
-            # Limit this to dense Llama text training; conditional model families
-            # may genuinely have unused trainable parameters.
+            # PEFT wrappers are not PreTrainedModel instances, so Transformers turns on
+            # unused-parameter discovery, which marks reentrant-checkpointed LoRA weights ready
+            # twice. Every dense text family shares Unsloth's reentrant checkpointing; MoE
+            # experts can genuinely sit out a step, so those keep discovery on.
             if (
                 world_size_from_env() > 1
                 and config_args.get("gradient_checkpointing")
                 and not self.is_audio
                 and not self.is_vlm
                 and not self.is_audio_vlm
-                and getattr(self.model.config, "model_type", None) == "llama"
+                and not any(
+                    isinstance(
+                        experts := getattr(
+                            getattr(self.model.config, "text_config", None) or self.model.config,
+                            key,
+                            None,
+                        ),
+                        int,
+                    )
+                    and experts > 1
+                    for key in ("num_experts", "num_local_experts", "n_routed_experts")
+                )
             ):
                 config_args["ddp_find_unused_parameters"] = False
 
@@ -4922,6 +4934,24 @@ class UnslothTrainer:
 
         except Exception as e:
             logger.warning(f"Failed to patch adapter_config.json: {e}")
+
+    def _agree_on_ddp_stop(self, device) -> None:
+        """Each DDP rank polls the shared stop on its own thread, so ranks can see it a step
+        apart, and a rank running one more step waits forever on its gradient all-reduce.
+        Agree once per step so every rank leaves on the same step and takes the same save path."""
+        import torch.distributed as dist
+
+        if not (dist.is_available() and dist.is_initialized()):
+            return
+        flags = torch.tensor(
+            [float(self.should_stop), float(self.should_stop and not self.save_on_stop)],
+            device = device,
+        )
+        dist.all_reduce(flags, op = dist.ReduceOp.MAX)
+        if flags[0].item():
+            self.should_stop = True
+        if flags[1].item():
+            self.save_on_stop = False
 
     def stop_training(self, save: bool = True):
         logger.info(f"\nStopping training (save={save})...")

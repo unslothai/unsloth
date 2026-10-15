@@ -35,7 +35,7 @@ class _Events:
 def test_shared_stop_queue_waits_after_delivering_stop():
     stop_event = threading.Event()
     stop_event.set()
-    stop_queue = _SharedStopQueue(stop_event, SimpleNamespace(value = True))
+    stop_queue = _SharedStopQueue(stop_event, threading.Event())
 
     assert stop_queue.get(timeout = 0.01) == {"type": "stop", "save": True}
     started = time.monotonic()
@@ -48,7 +48,7 @@ def test_shared_stop_queue_waits_after_delivering_stop():
 def test_shared_stop_queue_matches_queue_timeout_edges(timeout):
     if timeout is None:
         stop_event = threading.Event()
-        stop_queue = _SharedStopQueue(stop_event, SimpleNamespace(value = True))
+        stop_queue = _SharedStopQueue(stop_event, threading.Event())
         result = []
         waiter = threading.Thread(target = lambda: result.append(stop_queue.get()))
         waiter.start()
@@ -59,7 +59,7 @@ def test_shared_stop_queue_matches_queue_timeout_edges(timeout):
         assert result == [{"type": "stop", "save": True}]
         return
 
-    stop_queue = _SharedStopQueue(threading.Event(), SimpleNamespace(value = True))
+    stop_queue = _SharedStopQueue(threading.Event(), threading.Event())
     with pytest.raises(queue.Empty):
         stop_queue.get(timeout = timeout)
 
@@ -68,17 +68,38 @@ def test_shared_stop_queue_matches_queue_timeout_edges(timeout):
 def test_shared_stop_queue_rejects_negative_timeout(delivered):
     stop_event = threading.Event()
     stop_event.set()
-    stop_queue = _SharedStopQueue(stop_event, SimpleNamespace(value = True))
+    stop_queue = _SharedStopQueue(stop_event, threading.Event())
     if delivered:
         stop_queue.get(timeout = 0)
     with pytest.raises(ValueError, match = "non-negative"):
         stop_queue.get(timeout = -1)
 
 
+def test_shared_stop_queue_delivers_a_cancel_after_a_save_stop():
+    stop_event, cancel_event = threading.Event(), threading.Event()
+    stop_queue = _SharedStopQueue(stop_event, cancel_event)
+    stop_event.set()
+    assert stop_queue.get(timeout = 0) == {"type": "stop", "save": True}
+    with pytest.raises(queue.Empty):
+        stop_queue.get(timeout = 0)
+    cancel_event.set()
+    assert stop_queue.get(timeout = 0) == {"type": "stop", "save": False}
+
+
+def test_shared_stop_queue_reports_a_direct_cancel_once():
+    stop_event, cancel_event = threading.Event(), threading.Event()
+    cancel_event.set()
+    stop_event.set()
+    stop_queue = _SharedStopQueue(stop_event, cancel_event)
+    assert stop_queue.get(timeout = 0) == {"type": "stop", "save": False}
+    with pytest.raises(queue.Empty):
+        stop_queue.get(timeout = 0)
+
+
 def test_shared_stop_queue_waits_on_an_unset_event_after_delivery(monkeypatch):
     stop_event = threading.Event()
     stop_event.set()
-    stop_queue = _SharedStopQueue(stop_event, SimpleNamespace(value = True))
+    stop_queue = _SharedStopQueue(stop_event, threading.Event())
     stop_queue.get(timeout = 0)
 
     class WaitReached(Exception):
@@ -97,6 +118,8 @@ def test_shared_stop_queue_waits_on_an_unset_event_after_delivery(monkeypatch):
     "world_size, checkpointing, family, audio, expected",
     [
         (2, True, "llama", False, False),
+        (2, True, "qwen2", False, False),
+        (2, True, "qwen3", False, False),
         (1, True, "llama", False, None),
         (2, False, "llama", False, None),
         (2, True, "qwen3_moe", False, None),
@@ -107,7 +130,7 @@ def test_shared_stop_queue_waits_on_an_unset_event_after_delivery(monkeypatch):
         ("auto", True, "llama", False, False),
     ],
 )
-def test_dense_llama_ddp_checkpointing_disables_unused_parameter_discovery(
+def test_dense_ddp_checkpointing_disables_unused_parameter_discovery(
     monkeypatch, world_size, checkpointing, family, audio, expected
 ):
     # Execute the real configuration block without importing GPU dependencies.
@@ -144,7 +167,11 @@ def test_dense_llama_ddp_checkpointing_disables_unused_parameter_discovery(
         is_audio = audio,
         is_vlm = False,
         is_audio_vlm = False,
-        model = SimpleNamespace(config = SimpleNamespace(model_type = family)),
+        model = SimpleNamespace(
+            config = SimpleNamespace(
+                model_type = family, num_experts = 8 if family.endswith("_moe") else None
+            )
+        ),
     )
     exec(
         compile(ast.Module(body = blocks, type_ignores = []), str(source), "exec"),
@@ -182,33 +209,51 @@ def test_nonzero_rank_oom_is_captured_and_signals_failure_without_duplicate_even
     assert events.items == []
 
 
-def test_launcher_relays_one_terminal_error_with_original_rank_and_cause(monkeypatch):
-    class _Manager:
-        def __init__(self):
-            self.rank_queue = queue.Queue()
-            self.failures = {}
+class _Manager:
+    def __init__(self):
+        self.rank_queue = queue.Queue()
+        self.failures = {}
 
-        def Queue(self):
-            return self.rank_queue
+    def Queue(self):
+        return self.rank_queue
 
-        def Event(self):
-            return threading.Event()
+    def Event(self):
+        return threading.Event()
 
-        def Value(self, _kind, value):
-            return SimpleNamespace(value = value)
+    def dict(self):
+        return self.failures
 
-        def dict(self):
-            return self.failures
+    def shutdown(self):
+        pass
 
-        def shutdown(self):
-            pass
 
+def _run_launcher(
+    monkeypatch,
+    spawn,
+    config = None,
+):
     manager = _Manager()
-    monkeypatch.setattr(ddp.mp, "Manager", lambda: manager)
+    monkeypatch.setattr(ddp, "_start_manager", lambda: manager)
     monkeypatch.setattr(ddp, "_common_cuda_dtype", lambda _gpu_ids: "fp16")
+    torch_module = ModuleType("torch")
+    torch_mp = ModuleType("torch.multiprocessing")
+    torch_mp.spawn = spawn
+    torch_module.multiprocessing = torch_mp
+    monkeypatch.setitem(sys.modules, "torch", torch_module)
+    monkeypatch.setitem(sys.modules, "torch.multiprocessing", torch_mp)
+    events = _Events()
+    ddp.run_ddp_training_process(
+        event_queue = events,
+        stop_queue = queue.Queue(),
+        config = config or {"resolved_gpu_ids": [0, 1, 2], "output_dir": "/tmp/run"},
+    )
+    return events.items
 
+
+def test_launcher_relays_one_terminal_error_with_original_rank_and_cause(monkeypatch):
     def _failed_spawn(_fn, *, args, nprocs, join):
         assert nprocs == 3 and join is True
+        args[1].put({"type": "complete", "output_dir": "/tmp/run"})  # rank zero finished first
         failures = args[-1]
         failures[2] = {
             "type": "error",
@@ -218,21 +263,7 @@ def test_launcher_relays_one_terminal_error_with_original_rank_and_cause(monkeyp
         }
         raise RuntimeError("spawn observed failed rank")
 
-    torch_module = ModuleType("torch")
-    torch_mp = ModuleType("torch.multiprocessing")
-    torch_mp.spawn = _failed_spawn
-    torch_module.multiprocessing = torch_mp
-    monkeypatch.setitem(sys.modules, "torch", torch_module)
-    monkeypatch.setitem(sys.modules, "torch.multiprocessing", torch_mp)
-    events = _Events()
-
-    ddp.run_ddp_training_process(
-        event_queue = events,
-        stop_queue = queue.Queue(),
-        config = {"resolved_gpu_ids": [0, 1, 2]},
-    )
-
-    assert events.items == [
+    assert _run_launcher(monkeypatch, _failed_spawn) == [
         {
             "type": "error",
             "error": "DDP rank 2 failed: CUDA out of memory",
@@ -240,6 +271,38 @@ def test_launcher_relays_one_terminal_error_with_original_rank_and_cause(monkeyp
             "ts": 123.0,
         }
     ]
+
+
+def test_launcher_publishes_completion_only_after_every_rank_exits(monkeypatch):
+    complete = {"type": "complete", "output_dir": "/tmp/run"}
+
+    def _spawn(_fn, *, args, nprocs, join):
+        args[1].put({"type": "progress", "step": 1})
+        args[1].put(complete)
+
+    assert _run_launcher(monkeypatch, _spawn) == [{"type": "progress", "step": 1}, complete]
+
+
+def test_launcher_pins_one_output_dir_for_every_rank(monkeypatch):
+    seen = []
+
+    def _spawn(_fn, *, args, nprocs, join):
+        seen.append(args[0]["output_dir"])
+
+    _run_launcher(
+        monkeypatch,
+        _spawn,
+        {"resolved_gpu_ids": [0, 1], "model_name": "org/model", "project_name": "p"},
+    )
+    assert len(seen) == 1 and seen[0].startswith("org_model__project-p_")
+
+
+def test_nonzero_rank_forwards_download_stalls_for_xet_recovery():
+    events = _Events()
+    rank_events = _RankEvents(1, events, {})
+    rank_events.put({"type": "status", "message": "loading"})
+    rank_events.put({"type": "stall", "message": "Download stalled"})
+    assert events.items == [{"type": "stall", "message": "Download stalled"}]
 
 
 def test_rank_zero_error_is_captured_for_launcher(monkeypatch):
@@ -292,6 +355,7 @@ def test_rank_config_carries_full_ddp_world_size(monkeypatch):
     # _rank_entry intentionally rewrites the child environment. Isolate that
     # mutation so later CPU tests do not inherit a fictitious distributed run.
     monkeypatch.setattr(ddp.os, "environ", os.environ.copy())
+    monkeypatch.setattr(ddp, "_bind_to_parent_lifetime", lambda: None)
     captured = []
     worker_module = ModuleType("core.training.worker")
     worker_module.run_training_process = lambda **kwargs: captured.append(kwargs["config"])
@@ -302,7 +366,7 @@ def test_rank_config_carries_full_ddp_world_size(monkeypatch):
         {"resolved_gpu_ids": [2, 4, 7], "_ddp_common_dtype": "bf16"},
         _Events(),
         threading.Event(),
-        SimpleNamespace(value = True),
+        threading.Event(),
         12345,
         {},
     )
