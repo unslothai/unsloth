@@ -20,7 +20,6 @@ from ..utils.packing import (
     build_xformers_block_causal_mask,
     get_packed_info_from_kwargs,
 )
-import math
 
 try:
     from transformers.models.gemma.modeling_gemma import (
