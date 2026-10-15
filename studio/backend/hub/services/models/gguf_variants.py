@@ -1078,6 +1078,19 @@ def _default_variant_candidates(variants, repo_id: Optional[str] = None) -> list
     return [v.filename for v in default_gguf_scope(variants, repo_id, key = lambda v: v.quant)]
 
 
+def _default_variant_key(variants, repo_id: Optional[str] = None) -> Optional[str]:
+    """The key of the row the automatic default picks, as listed rather than re-derived from its file.
+
+    A custom folder keys a second build at one quant by its stem (#13926), so ``gguf_variant_key`` of
+    that build's file names the first build instead.
+    """
+    best = pick_best_gguf(_default_variant_candidates(variants, repo_id))
+    if not best:
+        return None
+    listed = next((v.quant for v in variants if v.filename == best and v.quant), None)
+    return listed or gguf_variant_key(best)
+
+
 async def _audio_cpp_variants_answer(
     repo_id: str, hf_token: Optional[str], offline: bool
 ) -> Optional[VariantsAnswer]:
@@ -1436,8 +1449,7 @@ async def get_gguf_variants_answer(
 
             # The default comes from the ready rows; with none ready every row is the fallback.
             ready = [v for v in variants if _downloaded(v)]
-            best = pick_best_gguf(_default_variant_candidates(ready or variants, repo_id))
-            default_variant = gguf_variant_key(best) if best else None
+            default_variant = _default_variant_key(ready or variants, repo_id)
 
             return GgufVariantsResponse(
                 repo_id = response_repo_id,
@@ -1468,8 +1480,7 @@ async def get_gguf_variants_answer(
         def _partial_local_response(
             response_repo_id: str, variants, has_vision: bool
         ) -> GgufVariantsResponse:
-            best = pick_best_gguf(_default_variant_candidates(variants, repo_id))
-            default_variant = gguf_variant_key(best) if best else None
+            default_variant = _default_variant_key(variants, repo_id)
             return GgufVariantsResponse(
                 repo_id = response_repo_id,
                 variants = [
@@ -1627,8 +1638,7 @@ async def get_gguf_variants_answer(
                 return response
             variants.extend(extra)
             ready = [v for v in variants if v.downloaded and not v.partial]
-            best = pick_best_gguf(_default_variant_candidates(ready or variants, repo_id))
-            default_variant = gguf_variant_key(best) if best else None
+            default_variant = _default_variant_key(ready or variants, repo_id)
             return response.model_copy(
                 update = {
                     "variants": variants,
@@ -1900,8 +1910,7 @@ async def get_gguf_variants_answer(
             if fallback is not None:
                 return fallback
 
-        best = pick_best_gguf(_default_variant_candidates(variants, repo_id))
-        default_variant = gguf_variant_key(best) if best else None
+        default_variant = _default_variant_key(variants, repo_id)
 
         # Per-snapshot accounting: split GGUFs need every shard together, sizes are max across snapshots
         # so shared blobs are not double-counted, and keys are lowercased since cache casing can differ.
@@ -2455,10 +2464,7 @@ async def get_gguf_variants_answer(
             # Merging changes the scope, so re-pick the default; prefer ready rows over partial ones.
             if sources or not response.default_variant:
                 ready = [v for v in response.variants if v.downloaded and not v.partial]
-                best = pick_best_gguf(
-                    _default_variant_candidates(ready or response.variants, repo_id)
-                )
-                response.default_variant = gguf_variant_key(best) if best else None
+                response.default_variant = _default_variant_key(ready or response.variants, repo_id)
         if response.dependencies_resolved and locally_proven[0] is not None:
             rows = frozenset(
                 (v.quant.lower(), v.filename)

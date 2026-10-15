@@ -1154,8 +1154,11 @@ def test_every_branch_derives_the_default_from_the_root_rows():
     # No branch may call pick_best_gguf on the raw filenames any more.
     source = inspect.getsource(service)
     # Whitespace-insensitive: the formatter may wrap a call across lines.
-    assert len(re.findall(r"pick_best_gguf\(\s*_default_variant_candidates\(", source)) == 5
+    assert len(re.findall(r"pick_best_gguf\(\s*_default_variant_candidates\(", source)) == 1
+    assert len(re.findall(r"default_variant = _default_variant_key\(", source)) == 5
     assert "pick_best_gguf(filenames)" not in source
+    # The default is the chosen row's own key; a custom folder's stem key is not its file's (#13926).
+    assert "gguf_variant_key(best) if best" not in source
 
 
 def test_the_kv_cache_estimate_sizes_one_shard_family():

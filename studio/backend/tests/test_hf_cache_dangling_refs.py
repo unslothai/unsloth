@@ -3847,18 +3847,34 @@ def test_a_whole_sibling_family_does_not_vouch_for_the_torn_one_that_loads(tmp_p
 
 def test_a_custom_folder_judges_each_build_at_one_quant_on_its_own_files(tmp_path):
     """Outside the HF cache both builds are listed (#13926), so each row is ready only when its own
-    files are."""
-    for files, offer in (
+    files are, and the default is the ready row's own key: the stem-keyed build's filename alone
+    re-derives the bare quant, which names the torn build."""
+    import asyncio
+
+    from hub.services.models import gguf_variants
+    from utils.models.model_config import _find_local_gguf_by_variant
+
+    for files, offer, default, default_file in (
         (
             {"a-Q4_K_M.gguf": 64, "z-Q4_K_M-00001-of-00002.gguf": 16},
             [("Q4_K_M", True), ("z-Q4_K_M", False)],
+            "Q4_K_M",
+            "a-Q4_K_M.gguf",
         ),
         (
             {"a-Q4_K_M-00001-of-00002.gguf": 16, "z-Q4_K_M.gguf": 64},
             [("Q4_K_M", False), ("z-Q4_K_M", True)],
+            "z-Q4_K_M",
+            "z-Q4_K_M.gguf",
         ),
     ):
-        assert _local_offer(_snapshot_with(tmp_path, files, f"folder-{offer[0][1]}")) == offer
+        folder = _snapshot_with(tmp_path, files, f"folder-{default}")
+        assert _local_offer(folder) == offer
+        response = asyncio.run(
+            gguf_variants.get_gguf_variants_response(str(folder), prefer_local_cache = True)
+        )
+        assert response.default_variant == default
+        assert Path(_find_local_gguf_by_variant(str(folder), default)).name == default_file
 
 
 def test_the_selected_family_is_judged_on_its_own_shards(tmp_path):
