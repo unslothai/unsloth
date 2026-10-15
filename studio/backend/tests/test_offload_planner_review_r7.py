@@ -176,6 +176,8 @@ def test_the_cpu_recovery_hands_studios_lazy_mode_back_to_auto(
         tmp_path, monkeypatch, gguf_gb = 2.0, free_mib = 24 * 1024, avail_mib = 64 * 1024
     )
     backend._studio_lazy_mode = lambda **_kw: emitted
+    # Emitted only on a launch the planner may own (the seam itself still declines).
+    backend._planner_may_run = lambda *a, **k: True
     kwargs = {"extra_args": tuple(extras)} if extras else {}
     captured = _launch_with_vulkan_cpu_replay(backend, gguf, **kwargs)
     first, replay = captured["cmds"][0], captured["cmds"][-1]

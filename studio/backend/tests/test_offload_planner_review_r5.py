@@ -134,6 +134,9 @@ def test_a_device_changing_retry_hands_the_lazy_mode_back_to_auto(tmp_path, monk
     card = 24 * 1024
     backend, gguf = _backend(tmp_path, vulkan = False, memory = [(0, card, card), (1, card, card)])
     backend._studio_lazy_mode = lambda **_kw: "on"
+    # Studio emits its mode only on a launch the planner may own; the seam still declines (it
+    # asks the class), so this exercises the strip on a launch that carries the emission.
+    backend._planner_may_run = lambda *a, **k: True
     backend._select_gpus = lambda *a, **k: ([0], False)
     backend._select_gpus_split_aware = lambda *a, **k: ([0], False)
     backend._arch_crash_retry_gpu_ids = lambda crashed, enumerated: [1]

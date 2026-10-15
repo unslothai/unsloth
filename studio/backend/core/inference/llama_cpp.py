@@ -30976,14 +30976,21 @@ class LlamaCppBackend:
                 # already has (table size, and whether every selected device can mmap), so an arch
                 # with a lazy per-layer embedding table gets the mode spelled out. Once, before
                 # the placement branches, so every one carries it; user extras are appended after.
-                _emitted_lazy_mode = self._studio_lazy_mode(
-                    model_path = model_path,
-                    server_caps = server_caps,
-                    gpu_indices = gpu_indices,
-                    binary = binary,
-                    is_vulkan_backend = is_vulkan_backend,
-                    extra_args = extra_args,
-                    env = os.environ,
+                # Only on a launch the planner may own: the plan is the one price that has to
+                # agree with the child, while the fitter path already prices auto through
+                # _lazy_auto_resolves_off, so a launch the planner does not own keeps main's argv.
+                _emitted_lazy_mode = (
+                    self._studio_lazy_mode(
+                        model_path = model_path,
+                        server_caps = server_caps,
+                        gpu_indices = gpu_indices,
+                        binary = binary,
+                        is_vulkan_backend = is_vulkan_backend,
+                        extra_args = extra_args,
+                        env = os.environ,
+                    )
+                    if _planner_owns_fit
+                    else None
                 )
                 if _emitted_lazy_mode is not None:
                     cmd.extend(["-lzm", _emitted_lazy_mode])

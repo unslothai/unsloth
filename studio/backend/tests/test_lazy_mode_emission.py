@@ -215,3 +215,27 @@ def test_a_pass_through_device_selection_leaves_the_mode_to_auto(extra_args, env
     they name is a mode the child refuses; auto resolves against the devices it gets."""
     assert _mode(extra_args = extra_args, env = env) is None
     assert _mode() == "on", "the same launch without the selection still says the mode"
+
+
+@pytest.mark.parametrize("owned", [False, True])
+def test_a_launch_the_planner_does_not_own_carries_no_studio_lazy_mode(
+    tmp_path, monkeypatch, owned
+):
+    """UNSLOTH_SMART_OFFLOAD unset: the argv is main's. The fitter path prices llama.cpp's auto
+    through _lazy_auto_resolves_off, so the explicit mode only has to agree with a PLAN's price,
+    and a launch with no plan to agree with emits nothing. The owned arm is the control."""
+    from pathlib import Path
+
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parent))
+    from test_llama_cpp_placement import _backend, _launch
+
+    monkeypatch.delenv("UNSLOTH_SMART_OFFLOAD", raising = False)
+    backend, gguf = _backend(tmp_path, vulkan = False, memory = [(0, 24 * 1024, 24 * 1024)])
+    backend._studio_lazy_mode = lambda **_kw: "on"
+    if owned:
+        backend._planner_may_run = lambda *a, **k: True
+    cmd = _launch(backend, gguf, speculative_type = "off")["cmd"]
+    if owned:
+        assert cmd[cmd.index("-lzm") + 1] == "on", cmd
+    else:
+        assert "-lzm" not in cmd and "--lazy-mode" not in cmd, cmd
