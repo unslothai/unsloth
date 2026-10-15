@@ -59,6 +59,7 @@ def test_finalization_only_writing_rank_mutates_auxiliary_files(
         tokenizer = MagicMock(),
         _patch_adapter_config = MagicMock(),
         _update_progress = MagicMock(),
+        _early_stopping_summary = lambda: "",
         should_stop = should_stop,
         save_on_stop = save_on_stop,
     )
