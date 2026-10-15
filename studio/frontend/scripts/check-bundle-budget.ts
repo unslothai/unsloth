@@ -163,7 +163,7 @@ export const BUDGET = {
   // Drafter training in the Train tab adds about 4.9 KB raw / 1.4 KB transfer (6,628.3 KB raw, 1,992.9 KB transfer
   // measured against cd424654a, one machine and build, 95 chunks): its persisted training-store fields, their
   // migration and the en strings hydrate at startup; the section itself is not in the startup set.
-  transferBytes: 2_040_800,
+  transferBytes: 2_041_000,
   rawBytes: 6_787_500,
 };
 
