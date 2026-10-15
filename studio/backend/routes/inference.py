@@ -42164,6 +42164,58 @@ def _anthropic_connection_error_event(error: Any) -> str:
     )
 
 
+class _StopSequenceFilter:
+    """Cut visible text at the first stop sequence, holding back a tail that could start one: the
+    provider proxy forwards no stop sequences, so the relay enforces them like llama-server does."""
+
+    def __init__(self, stops: Any) -> None:
+        self.stops = [stop for stop in stops or [] if isinstance(stop, str) and stop]
+        self.held = ""
+        self.hit: Optional[str] = None
+
+    def feed(self, text: str) -> str:
+        if not self.stops or self.hit is not None:
+            return "" if self.hit is not None else text
+        self.held += text
+        found = [(self.held.find(stop), stop) for stop in self.stops if stop in self.held]
+        if found:
+            index, self.hit = min(found)
+            out, self.held = self.held[:index], ""
+            return out
+        keep = max(len(stop) for stop in self.stops) - 1
+        cut = max(len(self.held) - keep, 0)
+        out, self.held = self.held[:cut], self.held[cut:]
+        return out
+
+    def flush(self) -> str:
+        out, self.held = self.held, ""
+        return out
+
+
+def _split_connection_text(chunk: dict, think: Optional[Any], stop: _StopSequenceFilter) -> dict:
+    """Native thinking arrives as <think> markup in content (the Studio chat's form): hand it to the
+    emitter as reasoning_content, and apply the stop sequences to what remains visible."""
+    choices = chunk.get("choices") or []
+    if not any(
+        isinstance(choice.get("delta"), dict)
+        and (choice["delta"].get("content") or choice["delta"].get("reasoning_content"))
+        for choice in choices
+    ):
+        return chunk
+    chunk = {**chunk, "choices": []}
+    for choice in choices:
+        delta = dict(choice.get("delta") or {})
+        text = delta.get("content") if isinstance(delta.get("content"), str) else ""
+        if think is not None:
+            reasoning, text = think.feed(text, delta.get("reasoning_content"))
+            delta["reasoning_content"] = reasoning or None
+        delta["content"] = stop.feed(text) or None
+        chunk["choices"].append(
+            {**choice, "delta": {k: v for k, v in delta.items() if v is not None}}
+        )
+    return chunk
+
+
 # The emitter closes a tool_use block as soon as another call's fragment arrives, so interleaved
 # parallel calls would close with partial arguments: hold calls whole until the reply finishes.
 def _hold_tool_calls(chunk: dict, held: dict) -> dict:
@@ -42204,6 +42256,19 @@ def _released_tool_calls(held: dict):
     held.clear()
 
 
+def _pending_connection_text(think: Optional[Any], stop: _StopSequenceFilter, held: dict):
+    """What is still held back once the reply ends: unterminated markup, a possible stop prefix,
+    then the buffered tool calls."""
+    reasoning, text = think.finish() if think is not None else ("", "")
+    text = stop.feed(text) + stop.flush() if stop.hit is None else ""
+    delta = {
+        key: value for key, value in (("reasoning_content", reasoning), ("content", text)) if value
+    }
+    if delta:
+        yield {"choices": [{"index": 0, "delta": delta}]}
+    yield from _released_tool_calls(held)
+
+
 async def _anthropic_events_from_openai_sse(
     lines,
     message_id: str,
@@ -42211,14 +42276,22 @@ async def _anthropic_events_from_openai_sse(
     subject: Optional[str] = None,
     *,
     single_tool_use: bool = False,
+    parse_thinking: bool = False,
+    stop_sequences: Any = None,
 ):
     emitter = AnthropicPassthroughEmitter()
+    think = _ResponsesReasoningExtractor(parse_think_markers = True) if parse_thinking else None
+    stop = _StopSequenceFilter(stop_sequences)
     recorder = _ConnectionExtrasRecorder(subject)
     dropped: set[int] = set()
     tool_blocks = 0
 
     def relay(event: str, extras: list) -> Optional[str]:
         nonlocal tool_blocks
+        if stop.hit is not None and event.startswith("event: message_delta"):
+            data = json.loads(event.partition("\ndata: ")[2])
+            data["delta"].update(stop_reason = "stop_sequence", stop_sequence = stop.hit)
+            return build_anthropic_sse_event(data["type"], data)
         if not (extras or single_tool_use) or not event.startswith("event: content_block"):
             return event
         data = json.loads(event.partition("\ndata: ")[2])
@@ -42271,17 +42344,24 @@ async def _anthropic_events_from_openai_sse(
                 yield _anthropic_connection_error_event(parsed["error"])
                 return
             recorder.chunk(parsed, calls = False)
-            parsed = _hold_tool_calls(parsed, held)
+            parsed = _split_connection_text(_hold_tool_calls(parsed, held), think, stop)
+            if stop.hit is not None:
+                for event in feed(parsed):
+                    yield event
+                break
             if any(choice.get("finish_reason") for choice in parsed.get("choices") or []):
-                for chunk in _released_tool_calls(held):
+                for chunk in _pending_connection_text(think, stop, held):
                     for event in feed(chunk):
                         yield event
             for event in feed(parsed):
                 yield event
     finally:
         await items.aclose()
-    for chunk in _released_tool_calls(held):
+    for chunk in _pending_connection_text(think, stop, held):
         for event in feed(chunk):
+            yield event
+    if stop.hit is not None:
+        for event in feed({"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}):
             yield event
     for event in emitter.finish():
         event = relay(event, [])
@@ -42399,6 +42479,8 @@ async def _anthropic_messages_via_connection(
         current_subject,
         single_tool_use = isinstance(payload.tool_choice, dict)
         and bool(payload.tool_choice.get("disable_parallel_tool_use")),
+        parse_thinking = _responses_should_parse_think_markers(chat_payload, None),
+        stop_sequences = payload.stop_sequences,
     )
     if payload.stream:
         return _sse_streaming_response(events)

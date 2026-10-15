@@ -808,3 +808,82 @@ def test_messages_keep_earlier_thinking_for_a_deepseek_connection(v1, monkeypatc
         m for m in FakeExternalClient.calls[-1]["stream"]["messages"] if m["role"] == "assistant"
     )
     assert assistant["reasoning_content"] == "earlier thought"
+
+
+def _content_stream(*pieces):
+    class Content(FakeExternalClient):
+        def stream_chat_completion(self, **kwargs):
+            FakeExternalClient.calls[-1]["stream"] = kwargs
+
+            async def gen():
+                for piece in pieces:
+                    yield f"data: {json.dumps({'choices': [{'index': 0, 'delta': {'content': piece}}]})}"
+                yield 'data: {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}'
+                yield "data: [DONE]"
+
+            return gen()
+
+    return Content
+
+
+@pytest.mark.parametrize("stream", [True, False])
+def test_messages_turn_native_thinking_markup_into_a_thinking_block(v1, monkeypatch, stream):
+    # The native Anthropic translator streams thinking as <think> markup, the Studio chat's form.
+    import routes.inference as inf
+
+    monkeypatch.setattr(
+        inf, "ExternalProviderClient", _content_stream("<think>plan", "ning</think>ans", "wer")
+    )
+    body = _messages_body(stream = stream, thinking = {"type": "enabled", "budget_tokens": 1024})
+    resp = v1.post("/v1/messages", json = body)
+
+    assert resp.status_code == 200, resp.text
+    if stream:
+        events = _sse(resp.text)
+        kinds = [e["content_block"]["type"] for e in events if e["type"] == "content_block_start"]
+        text = "".join(
+            e["delta"].get("text", "") for e in events if e["type"] == "content_block_delta"
+        )
+        thinking = "".join(
+            e["delta"].get("thinking", "") for e in events if e["type"] == "content_block_delta"
+        )
+        assert kinds == ["thinking", "text"]
+        assert (thinking, text) == ("planning", "answer")
+    else:
+        blocks = resp.json()["content"]
+        assert [b["type"] for b in blocks] == ["thinking", "text"]
+        assert blocks[0]["thinking"] == "planning"
+        assert blocks[1]["text"] == "answer"
+
+
+@pytest.mark.parametrize("stream", [True, False])
+def test_messages_stop_at_a_requested_stop_sequence(v1, monkeypatch, stream):
+    import routes.inference as inf
+
+    monkeypatch.setattr(inf, "ExternalProviderClient", _content_stream("before E", "ND after"))
+    body = _messages_body(stream = stream, stop_sequences = ["END"])
+    resp = v1.post("/v1/messages", json = body)
+
+    assert resp.status_code == 200, resp.text
+    if stream:
+        events = _sse(resp.text)
+        text = "".join(
+            e["delta"].get("text", "") for e in events if e["type"] == "content_block_delta"
+        )
+        delta = next(e for e in events if e["type"] == "message_delta")["delta"]
+    else:
+        message = resp.json()
+        text = "".join(b.get("text", "") for b in message["content"])
+        delta = message
+    assert text == "before "
+    assert (delta["stop_reason"], delta["stop_sequence"]) == ("stop_sequence", "END")
+
+
+def test_messages_without_a_stop_hit_keep_all_text(v1, monkeypatch):
+    import routes.inference as inf
+
+    monkeypatch.setattr(inf, "ExternalProviderClient", _content_stream("before E", "N after"))
+    message = v1.post("/v1/messages", json = _messages_body(stop_sequences = ["END"])).json()
+
+    assert "".join(b.get("text", "") for b in message["content"]) == "before EN after"
+    assert message["stop_reason"] == "end_turn"
