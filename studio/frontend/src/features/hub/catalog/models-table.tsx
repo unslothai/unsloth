@@ -499,12 +499,16 @@ export const ResultCard = memo(function ResultCard({
           <VerifiedOwner owner={row.owner} />
         </span>
         <div className="flex min-w-0 items-center gap-2 overflow-hidden text-ui-11p5 leading-ui-16 tabular-nums text-muted-foreground/65">
-          {/* A phone-width card drops the task label and likes so the rest still fits. */}
+          {/* Phone-width cards drop the task label, then the date, so downloads and likes still fit. */}
           {textParts.map((part, index) => (
             <span
               key={part.key}
               className={
-                part.key === "task" ? "hidden @[26rem]:contents" : "contents"
+                part.key === "task"
+                  ? "hidden @[26rem]:contents"
+                  : part.key === "updated"
+                    ? "hidden @[19rem]:contents"
+                    : "contents"
               }
             >
               {index > 0 && (
@@ -531,15 +535,13 @@ export const ResultCard = memo(function ResultCard({
             />
             {formatCompact(row.result.downloads)}
           </span>
-          <span className="hidden @[22rem]:contents">
-            <span className="hub-meta-tag">
-              <HugeiconsIcon
-                icon={FavouriteIcon}
-                strokeWidth={1.75}
-                className="size-3 shrink-0"
-              />
-              {formatCompact(row.result.likes)}
-            </span>
+          <span className="hub-meta-tag">
+            <HugeiconsIcon
+              icon={FavouriteIcon}
+              strokeWidth={1.75}
+              className="size-3 shrink-0"
+            />
+            {formatCompact(row.result.likes)}
           </span>
         </div>
       </div>
