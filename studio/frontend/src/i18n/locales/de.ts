@@ -2628,6 +2628,9 @@ export const de = {
         showMemoryBar: "VRAM-Auslastungsbalken anzeigen",
         showMemoryBarDescription:
           "Zeigt unter jeder Zeile eines heruntergeladenen Modells den geschätzten VRAM-Bedarf: Gewichte, KV-Cache bei der Kontextlänge, mit der das Modell geladen wird, und eine eventuelle Reserve für spekulatives Decoding.",
+        fitOnDeviceOnly: "Nur passende Modelle anzeigen",
+        fitOnDeviceOnlyDescription:
+          "Blendet in der Modellauswahl und im Hub Modelle aus, die für den GPU-Speicher und RAM dieses Geräts zu groß sind. Heruntergeladene Modelle bleiben sichtbar.",
       },
       menu: {
         title: "Chatmenü",

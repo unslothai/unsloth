@@ -2637,6 +2637,9 @@ export const en = {
         showMemoryBar: "VRAM usage bar",
         showMemoryBarDescription:
           "Show estimated VRAM for model weights, context, and speculative decoding.",
+        fitOnDeviceOnly: "Only show models that fit",
+        fitOnDeviceOnlyDescription:
+          "Hide models too large for this device's GPU memory and RAM in the model picker and Hub. Downloaded models stay visible.",
       },
       menu: {
         title: "Chat menu",
