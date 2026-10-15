@@ -84,8 +84,7 @@ test("a model is hidden only when it exceeds GPU memory plus RAM", () => {
 });
 
 test("a safetensors row on a discrete GPU is kept only when its badge would not say exceeds", () => {
-  // 24 GB card with 64 GB of RAM. The GGUF rule sized a 32B or 70B safetensors repo at the
-  // smallest GGUF quant and counted RAM offload, which the transformers loader refuses.
+  // 24 GB card with 64 GB of RAM, which a transformers load cannot offload into.
   const gpu = { memoryTotalGb: 24, systemRamAvailableGb: 64, budgetKnown: true };
   const row = (id: string, totalParams: number) => ({ id, totalParams, isGguf: false });
   // 14B: 14 * 0.9 + 1.4 = 14 GB, under the card.
