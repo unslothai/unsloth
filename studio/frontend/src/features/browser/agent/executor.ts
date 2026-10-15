@@ -389,7 +389,48 @@ const REF_SPAN = 100_000;
 const LAST_BASE = 9_000 * REF_SPAN;
 
 /** One command in the tab's page, installing the agent there first if this page lacks it. */
-async function pageCall(tab: BrowserTab, command: Record<string, unknown>): Promise<AgentAnswer> {
+let accentRaw = "";
+let accentColor = "";
+
+/** The theme's accent (toggles, badges; a custom Accent included) as rgb(), for the cursor's glow. */
+function cursorAccent(): string {
+  if (typeof document === "undefined") return "";
+  const raw = getComputedStyle(document.documentElement).getPropertyValue("--control-accent").trim();
+  if (raw !== accentRaw) {
+    accentRaw = raw;
+    accentColor = "";
+    // Painted, not read back from fillStyle, which keeps oklch() and color() as written.
+    const canvas = document.createElement("canvas");
+    canvas.width = 1;
+    canvas.height = 1;
+    const context = canvas.getContext("2d", { willReadFrequently: true });
+    if (context && raw) {
+      context.fillStyle = raw;
+      context.fillRect(0, 0, 1, 1);
+      const [r, g, b, a] = context.getImageData(0, 0, 1, 1).data;
+      if (a > 0) accentColor = `rgb(${r}, ${g}, ${b})`;
+    }
+  }
+  return accentColor;
+}
+
+/** Settings > Appearance > Reduce motion as `prefersReducedMotion` resolves it, read off the classes
+ *  it sets on <html>: importing the settings store here would cycle through features/settings. */
+function reducedMotion(): boolean {
+  if (typeof document === "undefined") return false;
+  const html = document.documentElement.classList;
+  if (html.contains("force-reduced-motion")) return true;
+  if (html.contains("force-motion")) return false;
+  return window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
+}
+
+async function pageCall(tab: BrowserTab, request: Record<string, unknown>): Promise<AgentAnswer> {
+  const cursor = useBrowserAgentStore.getState().showCursor;
+  const command = {
+    ...request,
+    cursor,
+    ...(cursor ? { cursorColor: cursorAccent(), cursorStill: reducedMotion() } : {}),
+  };
   const native = useNativeBrowser.getState().enabled;
   const started = Date.now();
   const fresh = () => {
@@ -797,12 +838,18 @@ async function perform(action: BrowserAction, context: Run): Promise<Result> {
     });
     if (!clicked.ok) return { ok: false, error: clicked.error };
     if (clicked.navigate) {
+      const pressedAt = Date.now();
       // A link: opened in this tab, under the same rules as any other address. Its href is read
       // now, so it may not be one the last snapshot listed.
       const gate = gateNavigation(clicked.navigate, navigationContext(action, context));
       const refused = await pass(gate, context);
       if (refused) return { ok: false, error: refused };
       admit(clicked.navigate, gate, context);
+      // The page goes the moment the tab navigates, taking the cursor with it: let its press show first.
+      if (useBrowserAgentStore.getState().showCursor) {
+        await sleep(Math.max(0, LINK_PRESS_MS - (Date.now() - pressedAt)));
+        if (signal?.aborted) return { ok: false, error: STOPPED };
+      }
       const sent = Date.now();
       useBrowserStore.getState().navigate(ready.id, { url: clicked.navigate, from: here }, { replace: false });
       const loaded = await waitForLoad(ready.id, signal);
@@ -858,6 +905,7 @@ type ShotView = {
   doc?: string;
 };
 const MAX_SHOT_EDGE = 1024;
+const LINK_PRESS_MS = 350;
 
 async function pagePoint(tab: BrowserTab, session: Session, x?: number, y?: number): Promise<{ x: number; y: number } | string | null> {
   if (x === undefined || y === undefined) return null;
