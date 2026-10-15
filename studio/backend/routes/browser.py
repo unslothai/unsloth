@@ -184,7 +184,7 @@ _FRAME_CSP = (
 _PAGE_STORAGE_JS = r"""
         // Past the panel's quota (page-storage.ts) a value stays in this page only.
         const sync = (area, key, value) => post({
-          type: "storage", area, key,
+          type: "storage", area, key, url: pageUrl,
           value: key !== null && value !== null && key.length + value.length <= 131072 ? value : null,
         });
         const pageStores = {};
@@ -221,12 +221,15 @@ _PAGE_STORAGE_JS = r"""
             const store = pageStores[data.area];
             if (!store) return;
             const oldValue = data.key === null ? null : (store.data.get(data.key) ?? null);
+            // Like a browser, a write that changes nothing fires no event (two pages could echo it forever).
+            if (data.key === null ? !store.data.size : oldValue === data.value) return;
             if (data.key === null) store.data.clear();
             else if (data.value === null) store.data.delete(data.key);
             else store.data.set(data.key, data.value);
             if (data.area === "local") {
               try {
-                const change = new StorageEvent("storage", { key: data.key, oldValue, newValue: data.value, url: pageUrl });
+                const url = typeof data.url === "string" ? data.url : "";
+                const change = new StorageEvent("storage", { key: data.key, oldValue, newValue: data.value, url });
                 // The init dictionary only takes a real Storage, so sites' `storageArea === localStorage` checks need this.
                 Object.defineProperty(change, "storageArea", { value: storages.local });
                 window.dispatchEvent(change);

@@ -39,6 +39,7 @@ export type PageStorageWrite = {
   key: string | null;
   value: string | null;
   from?: unknown;
+  url?: string | null;
 };
 
 const writeListeners = new Set<(write: PageStorageWrite) => void>();
@@ -57,10 +58,19 @@ export function writePageStorage(
   key: string | null,
   value: string | null,
   from?: unknown,
+  url?: string | null,
 ): void {
   save(origin, tabId, area, key, value);
   const kept = key === null ? null : (stores.get(storeKey(origin, tabId, area))?.items.get(key) ?? null);
-  for (const listener of writeListeners) listener({ origin, tabId, area, key, value: kept, from });
+  for (const listener of writeListeners) listener({ origin, tabId, area, key, value: kept, from, url });
+}
+
+function evict(): void {
+  for (const [other, { chars: otherChars }] of stores) {
+    if (totalChars <= MAX_TOTAL_CHARS) break;
+    stores.delete(other);
+    totalChars -= otherChars;
+  }
 }
 
 function save(origin: string, tabId: string, area: PageStorageArea, key: string | null, value: string | null): void {
@@ -80,11 +90,7 @@ function save(origin: string, tabId: string, area: PageStorageArea, key: string 
   if (store.items.size === 0) return;
   stores.set(id, store);
   totalChars += store.chars;
-  for (const [other, { chars: otherChars }] of stores) {
-    if (totalChars <= MAX_TOTAL_CHARS) break;
-    stores.delete(other);
-    totalChars -= otherChars;
-  }
+  evict();
 }
 
 /** A closed tab's sessionStorage can't be reached again. */
@@ -95,6 +101,17 @@ export function dropTabPageStorage(tabId: string): void {
     stores.delete(id);
     totalChars -= store.chars;
   }
+}
+
+/** A duplicated tab starts with a copy of the original's sessionStorage, as in a browser. */
+export function copyTabPageStorage(fromTabId: string, toTabId: string): void {
+  const prefix = `session ${fromTabId} `;
+  for (const [id, store] of Array.from(stores)) {
+    if (!id.startsWith(prefix)) continue;
+    stores.set(`session ${toTabId} ${id.slice(prefix.length)}`, { items: new Map(store.items), chars: store.chars });
+    totalChars += store.chars;
+  }
+  evict();
 }
 
 const clearListeners = new Set<() => void>();

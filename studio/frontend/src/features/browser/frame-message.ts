@@ -34,7 +34,7 @@ export type FrameMessage =
    *  `request` is null for one the panel won't make (malformed, too large), which then fails. */
   | { type: "request"; id: string; request: PageRequest | null }
   | { type: "requestAbort"; id: string }
-  | { type: "storage"; area: PageStorageArea; key: string | null; value: string | null };
+  | { type: "storage"; area: PageStorageArea; key: string | null; value: string | null; url: string | null };
 
 export type RedirectMode = "follow" | "error" | "manual";
 
@@ -240,12 +240,13 @@ export function parseFrameMessage(data: unknown): FrameMessage | null {
     case "storage": {
       const { area, key, value } = message;
       if (!STORAGE_AREAS.has(area)) return null;
-      if (key === null) return { type: "storage", area: area as PageStorageArea, key: null, value: null };
+      const url = text(message.url, MAX_URL_CHARS);
+      if (key === null) return { type: "storage", area: area as PageStorageArea, key: null, value: null, url };
       const name = text(key, MAX_STORAGE_CHARS);
       const stored = value === null ? null : text(value, MAX_STORAGE_CHARS);
       return name === null || (value !== null && stored === null)
         ? null
-        : { type: "storage", area: area as PageStorageArea, key: name, value: stored };
+        : { type: "storage", area: area as PageStorageArea, key: name, value: stored, url };
     }
     default:
       return null;

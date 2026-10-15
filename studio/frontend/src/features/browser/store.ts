@@ -6,7 +6,7 @@ import { create } from "zustand";
 import { unwrapRedirect } from "./address";
 import type { BrowserPage } from "./api";
 import { PageCache, cacheLimits, reportedDeviceMemory } from "./page-cache";
-import { dropTabPageStorage } from "./page-storage";
+import { copyTabPageStorage, dropTabPageStorage } from "./page-storage";
 import { defaultZoom } from "./prefs-store";
 import { REACT_PREVIEW_KEY_PREFIX, REACT_PREVIEW_TYPE } from "./react-preview-type";
 
@@ -479,7 +479,9 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
     duplicateTab: (tabId) => {
       const tab = get().tabs.find((candidate) => candidate.id === tabId);
       if (!tab) return;
-      openTab(copyTab(tab), false, tabId);
+      const copy = copyTab(tab);
+      copyTabPageStorage(tab.id, copy.id);
+      openTab(copy, false, tabId);
     },
     openPinned: (pinnedId, url, title) => {
       const shown = get().tabs.find((tab) => tab.pinnedId === pinnedId);

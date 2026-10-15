@@ -8,6 +8,7 @@ import { runInNewContext } from "node:vm";
 import { parseFrameMessage } from "../src/features/browser/frame-message.ts";
 import {
   clearPageStorage,
+  copyTabPageStorage,
   dropTabPageStorage,
   onPageStorageClear,
   onPageStorageWrite,
@@ -42,14 +43,15 @@ function openPage(url: string, tabId = "tab-1") {
   const parent = {};
   const self = {};
   const listeners: Array<(event: { source: unknown; data: unknown }) => void> = [];
-  const events: Array<{ key: string | null; newValue: string | null; storageArea: unknown }> = [];
+  const events: Array<{ key: string | null; newValue: string | null; storageArea: unknown; url: string }> = [];
   const window = {
     addEventListener: (type: string, listener: (event: { source: unknown; data: unknown }) => void) => {
       if (type === "message") {
         listeners.push(listener);
       }
     },
-    dispatchEvent: (event: { key: string | null; newValue: string | null; storageArea: unknown }) => events.push(event),
+    dispatchEvent: (event: { key: string | null; newValue: string | null; storageArea: unknown; url: string }) =>
+      events.push(event),
   };
   for (const name of ["localStorage", "sessionStorage"]) {
     Object.defineProperty(window, name, {
@@ -62,7 +64,9 @@ function openPage(url: string, tabId = "tab-1") {
   const document = {};
   const post = (message: Record<string, unknown>) => {
     const parsed = parseFrameMessage({ source: "unsloth-browser", ...message });
-    if (parsed?.type === "storage" && origin) writePageStorage(origin, tabId, parsed.area, parsed.key, parsed.value, self);
+    if (parsed?.type === "storage" && origin) {
+      writePageStorage(origin, tabId, parsed.area, parsed.key, parsed.value, self, parsed.url);
+    }
   };
   const cfg = { storage: origin ? readPageStorage(origin, tabId) : null };
   runInNewContext(source, { window, document, cfg, post, parent, Date: pageDate, StorageEvent, URL, pageUrl: url });
@@ -73,9 +77,9 @@ function openPage(url: string, tabId = "tab-1") {
   };
   // As page-frame.tsx does for every open page.
   stopPages.push(
-    onPageStorageWrite(({ origin: site, area, key, value, from }) => {
+    onPageStorageWrite(({ origin: site, area, key, value, from, url: writer }) => {
       if (from !== self && site === origin && area !== "session") {
-        message({ type: "unsloth:browser-command", command: "storageSync", area, key, value });
+        message({ type: "unsloth:browser-command", command: "storageSync", area, key, value, url: writer ?? null });
       }
     }),
   );
@@ -160,8 +164,20 @@ test("malformed storage messages are dropped", () => {
   assert.equal(from({ area: "local", key: 1, value: "b" }), null);
   assert.equal(from({ area: "local", key: "a", value: {} }), null);
   assert.equal(from({ area: "local", key: "a", value: "x".repeat(128 * 1024 + 1) }), null);
-  assert.deepEqual(from({ area: "cookie", key: null, value: "ignored" }), { type: "storage", area: "cookie", key: null, value: null });
-  assert.deepEqual(from({ area: "local", key: "a", value: null }), { type: "storage", area: "local", key: "a", value: null });
+  assert.deepEqual(from({ area: "cookie", key: null, value: "ignored" }), {
+    type: "storage",
+    area: "cookie",
+    key: null,
+    value: null,
+    url: null,
+  });
+  assert.deepEqual(from({ area: "local", key: "a", value: null, url: "https://example.com/" }), {
+    type: "storage",
+    area: "local",
+    key: "a",
+    value: null,
+    url: "https://example.com/",
+  });
 });
 
 test("keys read and write as properties too, as on a real Storage", () => {
@@ -228,7 +244,7 @@ test("a cookie's Max-Age or Expires still ends it on later pages", () => {
 test("a write shows up at once in the site's other open pages", () => {
   reset();
   const first = openPage("https://example.com/", "tab-1");
-  const second = openPage("https://example.com/", "tab-2");
+  const second = openPage("https://example.com/reader", "tab-2");
   const other = openPage("https://other.example/", "tab-3");
   first.window.localStorage.setItem("state", '{"theme":"dark"}');
   first.document.cookie = "sid=1";
@@ -242,6 +258,10 @@ test("a write shows up at once in the site's other open pages", () => {
     [["state", '{"theme":"dark"}']],
   );
   assert.equal(second.events[0]?.storageArea, second.window.localStorage);
+  assert.equal(second.events[0]?.url, "https://example.com/");
+  first.window.localStorage.setItem("state", '{"theme":"dark"}');
+  first.window.localStorage.removeItem("missing");
+  assert.equal(second.events.length, 1);
   first.window.localStorage.removeItem("state");
   assert.equal(second.window.localStorage.getItem("state"), null);
 });
@@ -269,4 +289,15 @@ test("a cookie keeps its path, as in a browser", () => {
   assert.equal(openPage("https://example.com/accounts").document.cookie, "theme=dark; mode=root");
   login.document.cookie = "mode=; max-age=0";
   assert.equal(openPage("https://example.com/account/settings").document.cookie, "theme=dark; mode=root");
+});
+
+test("a duplicated tab starts with the original's sessionStorage", () => {
+  reset();
+  const page = openPage("https://example.com/", "tab-1");
+  page.window.sessionStorage.setItem("step", "2");
+  copyTabPageStorage("tab-1", "tab-2");
+  const copy = openPage("https://example.com/", "tab-2");
+  assert.equal(copy.window.sessionStorage.getItem("step"), "2");
+  copy.window.sessionStorage.setItem("step", "3");
+  assert.equal(openPage("https://example.com/", "tab-1").window.sessionStorage.getItem("step"), "2");
 });

@@ -27,7 +27,7 @@ export type FrameCommand =
   | { command: "zoom"; value: number }
   | { command: "mute"; on: boolean }
   | { command: "clearStorage" }
-  | { command: "storageSync"; area: PageStorageArea; key: string | null; value: string | null }
+  | { command: "storageSync"; area: PageStorageArea; key: string | null; value: string | null; url: string | null }
   | { command: "annotateInstall"; code: string }
   | { command: "annotate"; on: boolean; color?: string }
   | { command: "annotateForget"; id: number }
@@ -193,7 +193,7 @@ export function PageFrame({
         return;
       }
       if (message.type === "storage") {
-        if (origin) writePageStorage(origin, tabIdRef.current, message.area, message.key, message.value, frame);
+        if (origin) writePageStorage(origin, tabIdRef.current, message.area, message.key, message.value, frame, message.url);
         return;
       }
       if (isUserAction(message)) {
@@ -217,10 +217,10 @@ export function PageFrame({
     window.addEventListener("message", listener);
     const stopClearing = onPageStorageClear(() => sendFrameCommand(tabIdRef.current, { command: "clearStorage" }));
     // sessionStorage belongs to one tab, which shows one page.
-    const stopSyncing = onPageStorageWrite(({ origin: site, area, key, value, from }) => {
+    const stopSyncing = onPageStorageWrite(({ origin: site, area, key, value, from, url }) => {
       const target = frameRef.current;
       if (!target || from === target || site !== origin || area === "session") return;
-      const command: FrameCommand = { command: "storageSync", area, key, value };
+      const command: FrameCommand = { command: "storageSync", area, key, value, url: url ?? null };
       target.contentWindow?.postMessage({ type: "unsloth:browser-command", ...command }, "*");
     });
     return () => {
