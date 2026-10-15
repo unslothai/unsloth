@@ -2699,3 +2699,41 @@ def test_the_loaders_architecture_aware_kv_estimate_wins(monkeypatch):
     monkeypatch.setattr(cs, "_ctx_compute_bytes", lambda *a, **k: 0)
     run(ss.before_load(_request(max_seq_length = 8192, ctx_checkpoints = 0), 4))
     assert cs.state().plan.kv_bytes == cs._kv_from_scalars(_llama_header(8), 8192, None, None, ss)
+
+
+def test_recurrent_state_in_the_loaders_kv_is_not_charged_twice(monkeypatch):
+    _cluster_env(monkeypatch)
+    answers = {("kv",): 5 * GIB, ("recurrent",): 2 * GIB}
+    monkeypatch.setattr(cs, "_ctx_compute_bytes", lambda *a, **k: answers.get(a[7:], 0))
+    monkeypatch.setattr(cs, "_local_gguf_header", lambda *a, **k: (_llama_header(8), {}))
+    run(ss.before_load(_request(max_seq_length = 8192, ctx_checkpoints = 0), 4))
+    assert cs.state().plan.kv_bytes == 5 * GIB  # the loader's 5 GiB already holds the 2
+
+
+def test_the_largest_layers_kv_share_is_reserved(monkeypatch):
+    _cluster_env(monkeypatch)
+    answers = {("kv",): 10 * GIB, ("kv_peak_ppm",): 250_000}
+    monkeypatch.setattr(cs, "_ctx_compute_bytes", lambda *a, **k: answers.get(a[7:], 0))
+    monkeypatch.setattr(cs, "_local_gguf_header", lambda *a, **k: (_llama_header(8), {0: GIB}))
+    monkeypatch.setattr(cs, "_gguf_block_count", lambda path, ss: 80)
+    run(ss.before_load(_request(max_seq_length = 8192, ctx_checkpoints = 0), 4))
+    # A quarter of the KV sits in one full-context layer, not 1/80 of it.
+    assert cs.state().plan.layer_bytes == pytest.approx(GIB + 2.5 * GIB)
+
+
+def test_a_malformed_cluster_config_keeps_a_serving_two_spark_split(monkeypatch):
+    _cluster_env(monkeypatch)
+    monkeypatch.setenv(cs.ENV_NODES, "bad host!")
+    legacy = ss.state()
+    legacy.peer_process = SimpleNamespace(name = "ggml-rpc-server", alive = True)
+    detached = []
+
+    async def fake_detach():
+        detached.append(1)
+
+    async def legacy_before_load(self, request, n_parallel, **kw):
+        return "legacy"
+
+    monkeypatch.setattr(legacy, "detach", fake_detach)
+    monkeypatch.setattr(ss.SparkServing, "before_load", legacy_before_load)
+    assert run(ss.before_load(_request(), 4)) == "legacy" and detached == []

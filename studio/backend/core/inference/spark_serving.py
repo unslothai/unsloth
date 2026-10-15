@@ -3449,7 +3449,16 @@ async def before_load(
         getattr(request, "alongside", False) or getattr(request, "force_alongside", False)
     )
     replacing = not alongside and str(getattr(request, "engine", "auto") or "auto") == "auto"
-    if _cluster_active():
+    legacy_serving = _STATE is not None and (
+        _STATE.peer_process is not None or _STATE.router is not None
+    )
+    cluster_broken = False
+    if _cluster_active() and legacy_serving:
+        cluster_serving.state().refresh_nodes()
+        cluster_broken = bool(cluster_serving.state().config_error)
+    # A malformed cluster config never tears down a two-Spark split that still serves: the
+    # two-Spark path keeps planning until the config parses.
+    if _cluster_active() and not cluster_broken:
         out = await cluster_serving.state().before_load(
             request,
             n_parallel,

@@ -303,6 +303,19 @@ def _ctx_compute_bytes(
             return int(est._ctx_checkpoint_bytes(cache_type, flash_attn = flash_attn))
         if what == "recurrent":
             return int(est._rollback_state_bytes(n_parallel))
+        if what == "kv_peak_ppm":
+            # The largest layer's share of the KV, in millionths; 0 when the layers are uniform.
+            weights = est._kv_layer_weights(
+                ctx,
+                swa_full = swa_full,
+                n_parallel = n_parallel,
+                kv_unified = kv_unified,
+                n_ubatch = ubatch,
+                flash_attn = flash_attn,
+                cache_type_kv = cache_type,
+            )
+            total = sum(weights)
+            return int(1_000_000 * max(weights) / total) if total else 0
         if what == "kv":
             # Architecture-aware: compact sliding-window layers, one MLA latent, attention-only
             # hybrids. 0 when the metadata does not allow it.
@@ -996,6 +1009,7 @@ class ClusterServing:
         self._checkpoints: float = 0.0
         self._recurrent: float = 0.0
         self._recurrent_layer: float = 0.0
+        self._kv_layer_frac: float = 0.0
         self._nextn_bytes: float = 0.0
         self._projector_file: Optional[str] = None
         self._uncertain_extra: float = 0.0
@@ -1307,11 +1321,10 @@ class ClusterServing:
         if self._n_layers and model_bytes:
             # The largest block a tensor split can round onto a device, not the average one.
             layer_weights = self._max_block or model_bytes / self._n_layers
-            layer_bytes = (
-                layer_weights
-                + max(0.0, kv_bytes - self._recurrent) / self._n_layers
-                + self._recurrent_layer
-            )
+            attention = max(0.0, kv_bytes - self._recurrent)
+            layer_kv = attention * self._kv_layer_frac or attention / self._n_layers
+            layer_bytes = layer_weights + max(layer_kv, attention / self._n_layers)
+            layer_bytes += self._recurrent_layer
         from core.inference.llama_server_args import fit_target_margin_in
 
         # llama.cpp's fitter keeps an explicit --fit-target free on every device.
@@ -1633,6 +1646,11 @@ class ClusterServing:
         kv_v = cache_type_v
         if not flash_attn and ss.kv_bytes_per_elem(v_type) < 2.0:
             kv_v = "f16"  # without flash attention a quantized V cache starts as f16 (loader retry)
+        loader_kv = 0
+        self._kv_layer_frac = 0.0
+        swa_full = any(str(a).split("=", 1)[0] == "--swa-full" for a in extras) or bool(
+            (os.environ.get("LLAMA_ARG_SWA_FULL") or "").strip()
+        )
         if cells and size:
             # The loader's own estimator first; one cache type, so the heavier axis.
             loader_kv = await asyncio.to_thread(
@@ -1646,10 +1664,26 @@ class ClusterServing:
                 n_parallel,
                 "kv",
                 kv_unified = unified,
-                swa_full = any(str(a).split("=", 1)[0] == "--swa-full" for a in extras)
-                or bool((os.environ.get("LLAMA_ARG_SWA_FULL") or "").strip()),
+                swa_full = swa_full,
             )
             kv = loader_kv or _kv_from_scalars(header, cells, cache_type, kv_v, ss)
+            if loader_kv:
+                # Whole layers land on a device: a full-context layer among sliding-window ones
+                # carries far more than the average.
+                peak = await asyncio.to_thread(
+                    _ctx_compute_bytes,
+                    local_file,
+                    header_kv,
+                    ctx,
+                    min(batch, ubatch),
+                    max((k_type, kv_v or v_type), key = ss.kv_bytes_per_elem),
+                    flash_attn,
+                    n_parallel,
+                    "kv_peak_ppm",
+                    kv_unified = unified,
+                    swa_full = swa_full,
+                )
+                self._kv_layer_frac = (peak or 0) / 1_000_000
         if kv is None and local_file and cells:
             kv = await asyncio.to_thread(ss.estimate_kv_bytes, local_file, cells, cache_type, kv_v)
         compute = await asyncio.to_thread(
@@ -1720,7 +1754,9 @@ class ClusterServing:
         )
         if kv is None and ctx and size and not recurrent:
             self._unsized_kv = True  # a pure state-space model has no attention KV
-        kv = float(kv or 0.0) + recurrent
+        # The loader's KV already holds the recurrent state it can see; add only what it missed.
+        missed = max(0, recurrent - (loader_recurrent or 0)) if loader_kv else recurrent
+        kv = float(kv or 0.0) + missed
         return (None if size is None else float(size) + adapters), kv, float(sidecars)
 
     async def after_load(self, llama_backend: Any) -> None:
