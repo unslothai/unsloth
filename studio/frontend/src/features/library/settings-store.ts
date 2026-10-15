@@ -25,6 +25,7 @@ export interface LibrarySettings {
   showGeneratedMedia: boolean;
   showFineTunes: boolean;
   confirmDelete: boolean;
+  imageInfoStamp: boolean;
 }
 
 export const DEFAULT_LIBRARY_SETTINGS: LibrarySettings = {
@@ -51,6 +52,7 @@ export const DEFAULT_LIBRARY_SETTINGS: LibrarySettings = {
   showGeneratedMedia: true,
   showFineTunes: true,
   confirmDelete: true,
+  imageInfoStamp: true,
 };
 
 export const SUGGESTED_LIMITS = [20, 40, 80] as const;

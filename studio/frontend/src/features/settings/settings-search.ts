@@ -183,6 +183,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.library.cardSize",
     "settings.library.imageLayout",
     "settings.library.showCardDates",
+    "settings.library.imageInfoStamp",
     "settings.library.startTab",
     "settings.library.sort",
     "settings.library.suggestedLimit",
