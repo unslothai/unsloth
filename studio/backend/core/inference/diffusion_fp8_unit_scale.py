@@ -43,6 +43,16 @@ def _min_rows() -> int:
         return _DEFAULT_MIN_ROWS
 
 
+def _compiling() -> bool:
+    # Counters are eager-only: a module-global mutated inside a traced region makes Dynamo guard on it and recompile.
+    try:
+        import torch
+
+        return bool(torch.compiler.is_compiling())
+    except Exception:  # noqa: BLE001 - no torch.compiler: nothing is being traced
+        return False
+
+
 def stats() -> dict:
     return {**_COUNTS, "installed": bool(_STATE["installed"])}
 
@@ -112,7 +122,8 @@ def install(logger: Any = None) -> bool:
             and a_data.shape[0] >= min_rows
             and (force or not use_fast_accum)
         ):
-            _COUNTS["unit_scale"] += 1
+            if not _compiling():
+                _COUNTS["unit_scale"] += 1
             one = torch.ones((), device = a_data.device, dtype = torch.float32)
             acc = torch._scaled_mm(
                 a_data,
@@ -122,11 +133,14 @@ def install(logger: Any = None) -> bool:
                 out_dtype = torch.bfloat16,
                 use_fast_accum = use_fast_accum,
             )
+            if isinstance(acc, tuple):  # torch < 2.5 returns (out, amax)
+                acc = acc[0]
             out = acc.float() * a_scale.float() * b_scale.float()
             if bias is not None:
                 out = out + bias.float()
             return out.to(output_dtype)
-        _COUNTS["rowwise"] += 1
+        if not _compiling():
+            _COUNTS["rowwise"] += 1
         return orig(
             a_data,
             a_scale,

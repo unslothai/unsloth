@@ -183,3 +183,48 @@ def test_every_prequant_container_installs_the_dispatch(monkeypatch, container):
     monkeypatch.setattr(dp, "_torch_load_prequant", lambda path, **kwargs: {"format": "fp8"})
     assert dp._load_prequant_checkpoint("model.bin", map_location = "cpu") == {"format": "fp8"}
     assert calls == [container]
+
+
+def _install_emulated(monkeypatch, scaled_mm = _emulated_scaled_mm):
+    _caps(monkeypatch, {0: (8, 9)})
+    monkeypatch.setattr(f8t, "addmm_float8_unwrapped_inference", lambda *a, **k: "orig")
+    monkeypatch.setattr(torch, "_scaled_mm", scaled_mm)
+    monkeypatch.setattr(
+        torch, "ones", lambda *a, device = None, dtype = None: torch.tensor(1.0, dtype = dtype)
+    )
+    assert us.install() is True
+    return f8t.addmm_float8_unwrapped_inference
+
+
+def test_counters_stay_untouched_while_compiling(monkeypatch):
+    # A module-global mutated inside a traced region would make Dynamo guard on it and recompile every call.
+    fn = _install_emulated(monkeypatch)
+    monkeypatch.setattr(torch.compiler, "is_compiling", lambda: True)
+    a, sa, b, sb = _operands(2048)
+    fn(_Dev(a), sa, b, sb, torch.bfloat16)
+    fn(_Dev(a), sa, b, sb, torch.bfloat16, use_fast_accum = True)
+    assert us.stats()["unit_scale"] == 0 and us.stats()["rowwise"] == 0
+    monkeypatch.setattr(torch.compiler, "is_compiling", lambda: False)
+    fn(_Dev(a), sa, b, sb, torch.bfloat16)
+    assert us.stats()["unit_scale"] == 1
+
+
+def test_legacy_scaled_mm_tuple_is_unwrapped(monkeypatch):
+    def legacy(*args, **kwargs):
+        return _emulated_scaled_mm(*args, **kwargs), torch.tensor(0.0)
+
+    fn = _install_emulated(monkeypatch, legacy)
+    a, sa, b, sb = _operands(2048)
+    out = fn(_Dev(a), sa, b, sb, torch.bfloat16)
+    assert isinstance(out, torch.Tensor) and out.shape == (2048, 48)
+
+
+def test_unit_scale_switches_key_the_compile_cache(monkeypatch):
+    from core.inference import diffusion_compile_cache as cc
+
+    assert cc.graph_switches() == {}
+    monkeypatch.setenv(us.UNIT_SCALE_ENV, "0")
+    monkeypatch.setenv(us.MIN_ROWS_ENV, "1024")
+    assert cc.graph_switches() == {us.UNIT_SCALE_ENV: "off", us.MIN_ROWS_ENV: "1024"}
+    monkeypatch.setenv(us.MIN_ROWS_ENV, "256")
+    assert us.MIN_ROWS_ENV not in cc.graph_switches()
