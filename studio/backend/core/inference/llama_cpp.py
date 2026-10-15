@@ -11307,6 +11307,59 @@ class LlamaCppBackend:
             return 0
         return self._tied_output_bytes(model_path)
 
+    # GGML types some CPU extra buffer accepts for MUL_MAT but not GET_ROWS, so a tied
+    # output on the CPU gets its own (repacked) copy while token_embd stays plain CPU.
+    # Union over b5178 / b10472 / b11541 / master: ggml-cpu repack.cpp (aarch64 at
+    # b5178), kleidiai repack(), amx qtype_has_amx_kernels, spacemit ime.
+    _CPU_REPACK_GGML_TYPES = frozenset({0, 2, 3, 6, 7, 8, 10, 11, 12, 13, 14, 20, 23, 39, 41})
+
+    @staticmethod
+    def _gguf_tensor_type(path: str, tensor_name: bytes) -> Optional[int]:
+        """GGML type of ``tensor_name`` in one GGUF header, None when absent."""
+        with open(path, "rb") as f:
+            if struct.unpack("<I", f.read(4))[0] != 0x46554747:
+                return None
+            f.seek(4, 1)
+            n_tensors, n_kv = struct.unpack("<QQ", f.read(16))
+            for _ in range(n_kv):
+                f.read(struct.unpack("<Q", f.read(8))[0])
+                LlamaCppBackend._gguf_skip_value(f, struct.unpack("<I", f.read(4))[0])
+            for _ in range(n_tensors):
+                name = f.read(struct.unpack("<Q", f.read(8))[0])
+                n_dims = struct.unpack("<I", f.read(4))[0]
+                f.seek(8 * n_dims, 1)
+                ggml_type = struct.unpack("<I", f.read(4))[0]
+                f.seek(8, 1)
+                if name == tensor_name:
+                    return ggml_type
+        return None
+
+    def _tied_output_cpu_bytes(self, model_path: str) -> int:
+        """Host bytes of the tied output duplicate for a CPU-resident model.
+
+        CPU input and output share one buffer list, so llama.cpp reuses token_embd unless
+        a repacking buffer takes the output; charged unless the type can never repack.
+        """
+        tied = self._tied_output_bytes(model_path)
+        if not tied:
+            return 0
+        from gguf.constants import GGML_QUANT_SIZES
+
+        try:
+            identity = LlamaCppBackend._gguf_load_source_identity(model_path) or ()
+            for entry in identity:
+                ggml_type = LlamaCppBackend._gguf_tensor_type(entry[0], b"token_embd.weight")
+                if ggml_type is not None:
+                    if (
+                        ggml_type in LlamaCppBackend._CPU_REPACK_GGML_TYPES
+                        or ggml_type not in GGML_QUANT_SIZES
+                    ):
+                        return tied
+                    return 0
+        except Exception as exc:  # noqa: BLE001 - budget must not fail a launch
+            logger.debug("tied-output type probe failed for %s (%s)", model_path, exc)
+        return tied
+
     def _separate_drafter_weight_vram_bytes(
         self,
         model_path: str,
@@ -18827,8 +18880,9 @@ class LlamaCppBackend:
         if not drafter_path:
             return 0
         try:
-            # No tied-output charge: CPU-pinned, so llama.cpp reuses token_embd (llama-model-loader.cpp:1437).
-            weights = self._get_gguf_size_bytes(drafter_path)
+            weights = self._get_gguf_size_bytes(drafter_path) + self._tied_output_cpu_bytes(
+                drafter_path
+            )
         except Exception:
             weights = 0
         if weights <= 0:

@@ -993,18 +993,48 @@ def test_the_emitters_do_not_agree_on_pinning_the_drafter(monkeypatch, tmp_path)
     )
 
 
-def test_a_cpu_pinned_drafter_is_not_charged_the_tied_duplicate(backend, mib_embd_pair):
-    """-ngld 0 reuses token_embd for the tied output: tied and untied drafters cost the same."""
-    tied, untied = mib_embd_pair
+_TYPE_F16 = 1
+
+
+@pytest.mark.parametrize(
+    "ggml_type, charged",
+    [
+        # CPU_REPACK (and AMX/KleidiAI/IME) take the output's MUL_MAT but not the input's
+        # GET_ROWS, so the tied output gets its own repacked copy in host RAM.
+        (_TYPE_Q4_K, True),
+        # KleidiAI repacks F32 weights too.
+        (_TYPE_F32, True),
+        # No CPU extra buffer accepts F16: input and output share one CPU tensor.
+        (_TYPE_F16, False),
+    ],
+)
+def test_a_cpu_pinned_drafter_is_charged_the_duplicate_a_repack_allocates(
+    backend, tmp_path, ggml_type, charged
+):
+    rows = (256, 1024)
+    paths = []
+    for name, tensors in (
+        ("tied", [("token_embd.weight", rows), ("blk.0.attn_q.weight", (256, 8))]),
+        (
+            "untied",
+            [
+                ("token_embd.weight", rows),
+                ("output.weight", rows),
+                ("blk.0.attn_q.weight", (256, 8)),
+            ],
+        ),
+    ):
+        paths.append(_write_gguf(tmp_path / f"{name}.gguf", tensors, ggml_type = ggml_type))
     instance = object.__new__(backend)
     instance._get_gguf_size_bytes = lambda _path: 8 * 1024**3
     # Synthetic GGUF cannot size draft KV; hold it flat.
     instance._mtp_draft_kv_bytes = lambda *_a, **_kw: 0
-    priced = [
-        instance._cpu_resident_draft_bytes(4096, drafter_path = str(path)) for path in (tied, untied)
-    ]
-    assert None not in priced
-    assert priced[0] == priced[1], "the tied drafter is charged a duplicate it never allocates"
+    tied, untied = (
+        instance._cpu_resident_draft_bytes(4096, drafter_path = str(path)) for path in paths
+    )
+    duplicate = backend._tied_output_bytes(str(paths[0]))
+    assert duplicate > 0
+    assert tied - untied == (duplicate if charged else 0)
 
 
 def test_an_unclassified_vulkan_device_is_shared_for_the_host_pool_too(backend):

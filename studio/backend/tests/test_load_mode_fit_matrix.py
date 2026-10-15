@@ -236,6 +236,7 @@ class _DraftStub:
         return self._tied_output
 
     _cpu_resident_draft_bytes = LlamaCppBackend._cpu_resident_draft_bytes
+    _tied_output_cpu_bytes = LlamaCppBackend._tied_output_cpu_bytes
     _MTP_DRAFT_COMPUTE_BYTES = LlamaCppBackend._MTP_DRAFT_COMPUTE_BYTES
 
 
