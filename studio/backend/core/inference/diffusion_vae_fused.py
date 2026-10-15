@@ -1105,13 +1105,32 @@ def install_group_norm_vae(vae: Any, logger: Any = None) -> int:
     return n
 
 
-def uninstall(vae: Any) -> None:
+def _restore_structural_decode(vae: Any) -> None:
+    """Put back the ``_decode`` the structural calibrator wrapped. The OOM retry (diffusion_vae_oom) may sit on top of
+    it: that wrapper is removed, the structural layer restored, and the retry reinstalled over the restored inner."""
     inner = vae.__dict__.pop("_unsloth_vae_structural_inner", None)
-    if inner is not None and getattr(vae.__dict__.get("_decode"), "_unsloth_vae_fused", False):
+    if inner is None:
+        return
+    current = vae.__dict__.get("_decode")
+    oom_on_top = bool(getattr(current, "_unsloth_vae_oom_retry", False)) and getattr(
+        getattr(current, "__wrapped__", None), "_unsloth_vae_fused", False
+    )
+    if oom_on_top:
+        from . import diffusion_vae_oom  # noqa: PLC0415
+
+        diffusion_vae_oom.uninstall(vae)
+        current = vae.__dict__.get("_decode")
+    if getattr(current, "_unsloth_vae_fused", False):
         if getattr(inner, "__self__", None) is vae:
             vae.__dict__.pop("_decode", None)
         else:
             vae._decode = inner
+    if oom_on_top:
+        diffusion_vae_oom.install(vae)
+
+
+def uninstall(vae: Any) -> None:
+    _restore_structural_decode(vae)
     vae.__dict__.pop("_unsloth_vae_structural", None)
     vae.__dict__.pop("_unsloth_vae_fused_structural", None)
     vae.__dict__.pop("_unsloth_vae_fused_installed", None)
@@ -2280,10 +2299,25 @@ def _structural_patch(norms: list, paired: list, silus: list, state: Any, logger
     return n
 
 
-def _structural_unpatch(norms: list, silus: list) -> None:
+def _structural_unpatch(norms: list, silus: list, vae: Any = None) -> None:
     for m in (*norms, *silus):
         m.__dict__.pop("forward", None)
         m.__dict__.pop("_unsloth_vae_fused_failed", None)
+    if vae is not None:
+        _restore_contiguous_layout(vae)
+
+
+def _restore_contiguous_layout(vae: Any) -> int:
+    """Undo the channels_last(_3d) relayout the speed layer applied because fusion was planned: without the fused
+    passes that layout decodes slower. Only the conv weights it recorded are touched."""
+    modules = vae.__dict__.pop("_unsloth_channels_last_modules", None) or ()
+    n = 0
+    for module in modules:
+        weight = getattr(module, "weight", None)
+        if weight is not None and not weight.is_contiguous():
+            weight.data = weight.data.contiguous()
+            n += 1
+    return n
 
 
 def install_structural(vae: Any, logger: Any = None) -> int:
@@ -2316,7 +2350,7 @@ def install_structural(vae: Any, logger: Any = None) -> int:
             n = _structural_patch(norms, paired, silus, state, logger)
             if n == 0:
                 state.status = "no_match"
-                _structural_unpatch(norms, silus)
+                _structural_unpatch(norms, silus, vae)
                 return
             calls_before = state.calls
             out = _decoded_tensor(inner(tiny, *args, **kwargs))
@@ -2340,7 +2374,7 @@ def install_structural(vae: Any, logger: Any = None) -> int:
                 )  # fmt: skip
         else:
             state.status = "rejected"
-            _structural_unpatch(norms, silus)
+            _structural_unpatch(norms, silus, vae)
             if logger is not None:
                 logger.warning(
                     "diffusion.vae_fused: %s structural fusion rejected (probe max |d| %s, mean |d| %s)",
@@ -2353,7 +2387,7 @@ def install_structural(vae: Any, logger: Any = None) -> int:
                 calibrate(z, args, kwargs)
             except Exception as exc:  # noqa: BLE001 - never fail a decode over the probe
                 state.status = "rejected"
-                _structural_unpatch(norms, silus)
+                _structural_unpatch(norms, silus, vae)
                 if logger is not None:
                     logger.warning("diffusion.vae_fused: structural probe failed: %s", exc)
         return inner(z, *args, **kwargs)

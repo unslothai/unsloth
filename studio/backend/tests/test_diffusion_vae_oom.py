@@ -444,3 +444,65 @@ def test_untiled_gate_found_through_wrapped_chain():
     with pytest.raises(RuntimeError, match = "out of memory"):
         vae._decode(torch.zeros(1, 4, 1, 64, 64))
     assert vae.seen == [(False, 256, 192)]  # no tiled retry of its own: the gate owns it
+
+
+class AutoencoderKLTileableNew(AutoencoderKLSomethingNew):
+    spatial_compression_ratio = 8
+
+    def __init__(self, c = 8):
+        super().__init__(c)
+        self.use_tiling = False
+        self.tile_sample_min_height = 256
+        self.tile_sample_min_width = 256
+        self.tile_sample_stride_height = 192
+        self.tile_sample_stride_width = 192
+        self.decoder.proj3d = torch.nn.Conv3d(c, c, 3)  # a 3-D conv the channels_last_3d relayout touches
+
+    def enable_tiling(self):
+        self.use_tiling = True
+
+
+def _layers(vae):
+    fn, out = vae.__dict__.get("_decode"), []
+    while fn is not None and len(out) < 8:
+        out.append(fn)
+        fn = getattr(fn, "__wrapped__", None)
+    return out
+
+
+def test_uninstall_unwraps_structural_layer_under_the_oom_wrapper(monkeypatch):
+    """Item 4: with the OOM retry on top, uninstall must still remove the structural calibrator underneath (and keep
+    the retry). Before the fix the calibrator stayed and its saved state was dropped."""
+    monkeypatch.setattr(F, "runtime_ok", lambda: True)
+    vae = AutoencoderKLTileableNew()
+    assert F.install_structural(vae) > 0
+    assert O.install(vae)
+    assert any(getattr(f, "_unsloth_vae_fused", False) for f in _layers(vae))
+    F.uninstall(vae)
+    layers = _layers(vae)
+    assert not any(getattr(f, "_unsloth_vae_fused", False) for f in layers), layers
+    assert getattr(vae.__dict__.get("_decode"), "_unsloth_vae_oom_retry", False)
+    assert "_unsloth_vae_structural_inner" not in vae.__dict__
+    with torch.no_grad():
+        out = vae._decode(torch.randn(1, 8, 6, 6))
+    assert out[0].shape == (1, 8, 6, 6)
+
+
+def test_rejected_structural_fusion_restores_contiguous_layout(monkeypatch):
+    """Item 5: the speed layer relays 3-D decode convs to channels_last_3d because fusion is planned; a rejected
+    calibration must put them back. Before the fix the weights stayed channels_last_3d."""
+    from core.inference import diffusion_speed as S
+
+    monkeypatch.delenv(S.VAE_CHANNELS_LAST_3D_ENV, raising = False)
+    monkeypatch.setattr(F, "runtime_ok", lambda: True)
+    vae = AutoencoderKLTileableNew()
+    w = vae.decoder.proj3d.weight
+    assert S._vae_channels_last_3d(vae, None, fused = True)
+    assert w.is_contiguous(memory_format = torch.channels_last_3d) and not w.is_contiguous()
+    F.install_structural(vae)
+    monkeypatch.setattr(torch.Tensor, "is_cuda", property(lambda self: True))
+    monkeypatch.setattr(F, "_gn_fusable", lambda x, norm: False)
+    with torch.no_grad():
+        vae._decode(torch.randn(1, 8, 6, 6) * 3)
+    assert vae._unsloth_vae_structural.status == "rejected"
+    assert vae.decoder.proj3d.weight.is_contiguous()

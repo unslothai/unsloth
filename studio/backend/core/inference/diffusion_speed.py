@@ -844,6 +844,7 @@ def _vae_channels_last_3d(vae: Any, logger: Any, *, fused: bool) -> bool:
             logger.info("diffusion.speed: channels_last skipped for %s: %s", name, reason)
         return False
     relaid = 0
+    touched: list = []
     for part in (getattr(vae, "post_quant_conv", None), getattr(vae, "decoder", None)):
         if part is None or not callable(getattr(part, "modules", None)):
             continue
@@ -856,7 +857,12 @@ def _vae_channels_last_3d(vae: Any, logger: Any, *, fused: bool) -> bool:
             fmt = torch.channels_last if weight.dim() == 4 else torch.channels_last_3d
             if not weight.is_contiguous(memory_format = fmt):
                 weight.data = weight.data.contiguous(memory_format = fmt)
+                touched.append(module)
             relaid += 1
+    if touched:
+        # Relaid because fusion is planned; fusion matched by structure may still be rejected at its first decode,
+        # which restores these weights' layout (diffusion_vae_fused._restore_contiguous_layout).
+        vae.__dict__.setdefault("_unsloth_channels_last_modules", []).extend(touched)
     if logger is not None:
         logger.info(
             "diffusion.speed: channels_last(_3d) decode weights on %s (%d convs)", name, relaid
