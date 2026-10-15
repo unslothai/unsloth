@@ -1177,3 +1177,29 @@ def test_export_reattaches_a_full_fine_tunes_stitched_head(tmp_path, monkeypatch
     (tmp_path / "drafter.json").write_text(json.dumps({"strategy": "eagle3"}))
     backend._attach_full_checkpoint_mtp_head(str(tmp_path))
     assert len(calls) == 1
+
+
+def test_in_place_eagle3_export_keeps_the_only_drafter_copy(tmp_path):
+    """An export into the training folder itself must not delete eagle3/ before copying it."""
+    from core.export.drafter_export import package_merged
+
+    run = _training_dir(tmp_path, "eagle3")
+    info = package_merged(str(run), str(run))
+    assert info["strategy"] == "eagle3"
+    assert (run / "eagle3" / "model.safetensors").read_bytes() == b"w"
+
+
+def test_an_inconclusive_probe_is_marked_for_a_retry(monkeypatch):
+    import subprocess
+
+    from core.training import drafter
+
+    monkeypatch.setattr(drafter, "_CAPABILITY_CACHE", {})
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *a, **k: (_ for _ in ()).throw(subprocess.TimeoutExpired("probe", 300)),
+    )
+    result = drafter.drafter_capability("org/flaky-model")
+    assert result["supported"] is False and result["inconclusive"] is True
+    assert not drafter._CAPABILITY_CACHE

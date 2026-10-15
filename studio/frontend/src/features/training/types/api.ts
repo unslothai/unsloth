@@ -108,6 +108,8 @@ export interface DrafterCapability {
   reason: string | null;
   vllm: boolean;
   llama_cpp: boolean;
+  /** The probe could not run (timeout, crash): retried, never a refusal. */
+  inconclusive?: boolean;
 }
 
 export interface TrainingStartResponse {

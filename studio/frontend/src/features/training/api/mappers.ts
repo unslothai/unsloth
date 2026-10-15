@@ -337,7 +337,8 @@ export function sendsDrafter(
   const refused =
     capability !== null &&
     capability.model_name === config.selectedModel &&
-    !capability.supported;
+    !capability.supported &&
+    !capability.inconclusive;
   return (
     config.drafterEnabled &&
     drafterEligible(config) &&

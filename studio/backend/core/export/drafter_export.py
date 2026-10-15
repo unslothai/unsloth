@@ -164,8 +164,11 @@ def package_merged(
         files: list[str] = []
     else:
         dest = os.path.join(final_dir, EAGLE3_DIRNAME)
-        shutil.rmtree(dest, ignore_errors = True)
-        shutil.copytree(os.path.join(checkpoint_dir, EAGLE3_DIRNAME), dest)
+        source = os.path.join(checkpoint_dir, EAGLE3_DIRNAME)
+        # An export into the training folder itself must not delete the only copy.
+        if not (os.path.isdir(dest) and os.path.samefile(source, dest)):
+            shutil.rmtree(dest, ignore_errors = True)
+            shutil.copytree(source, dest)
         _set_verifier(dest, verifier)
         spec = {
             "method": "eagle3",

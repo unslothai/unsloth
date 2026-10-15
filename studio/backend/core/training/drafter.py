@@ -243,6 +243,8 @@ def _probe_capability(model_name: str, hf_token, key) -> dict:
             "reason": "Could not check this model for drafter support.",
             "vllm": False,
             "llama_cpp": False,
+            # Not an answer about the model: the Train tab asks again.
+            "inconclusive": True,
         }
     _CAPABILITY_CACHE[key] = (time.time(), result)
     return dict(result)

@@ -73,6 +73,11 @@ test("a capability check still pending or for another model does not drop a tick
   for (const patch of [
     { ...ON },
     { ...ON, drafterCapability: capability({ model_name: "other/model" }) },
+    // The probe could not run: the backend re-checks before the drafter phase.
+    {
+      ...ON,
+      drafterCapability: capability({ supported: false, inconclusive: true }),
+    },
   ]) {
     const payload = buildTrainingStartPayload(config(patch), null);
     assert.equal(Object.hasOwn(payload, "drafter"), true);

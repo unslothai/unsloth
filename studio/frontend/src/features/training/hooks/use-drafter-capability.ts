@@ -54,7 +54,11 @@ export function useDrafterCapability(active: boolean): void {
     getDrafterCapability(selectedModel, controller.signal, token)
       .then((capability) => {
         if (controller.signal.aborted) return;
-        lastProbe = { key, failed: false, done: true };
+        lastProbe = {
+          key,
+          failed: Boolean(capability.inconclusive),
+          done: true,
+        };
         // The backend may echo a resolved path; key the answer on what was asked.
         setDrafterCapability({ ...capability, model_name: selectedModel });
       })
