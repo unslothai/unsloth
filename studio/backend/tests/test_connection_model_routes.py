@@ -913,3 +913,19 @@ def test_messages_keep_text_order_when_the_finish_chunk_carries_text(v1, monkeyp
     else:
         text = "".join(b.get("text", "") for b in resp.json()["content"])
     assert text == "hello world"
+
+
+def test_messages_keep_default_thinking_out_of_the_stop_filter(v1, monkeypatch):
+    # No thinking controls sent, yet the provider thinks by default: a stop word in the thought
+    # must neither cut the answer nor leak the markup.
+    import routes.inference as inf
+
+    monkeypatch.setattr(
+        inf, "ExternalProviderClient", _content_stream("<think>private plan", "</think>answer")
+    )
+    message = v1.post("/v1/messages", json = _messages_body(stop_sequences = ["plan"])).json()
+
+    blocks = message["content"]
+    assert [b["type"] for b in blocks] == ["thinking", "text"]
+    assert blocks[1]["text"] == "answer"
+    assert message["stop_reason"] == "end_turn"

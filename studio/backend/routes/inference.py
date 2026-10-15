@@ -42204,7 +42204,7 @@ class _StopSequenceFilter:
         return out
 
 
-def _split_connection_text(chunk: dict, think: Optional[Any], stop: _StopSequenceFilter) -> dict:
+def _split_connection_text(chunk: dict, think: Any, stop: _StopSequenceFilter) -> dict:
     """Native thinking arrives as <think> markup in content (the Studio chat's form): hand it to the
     emitter as reasoning_content, and apply the stop sequences to what remains visible."""
     choices = chunk.get("choices") or []
@@ -42288,11 +42288,11 @@ async def _anthropic_events_from_openai_sse(
     subject: Optional[str] = None,
     *,
     single_tool_use: bool = False,
-    parse_thinking: bool = False,
     stop_sequences: Any = None,
 ):
     emitter = AnthropicPassthroughEmitter()
-    think = _ResponsesReasoningExtractor(parse_think_markers = True) if parse_thinking else None
+    # Always, like the Studio chat: a provider can think by default with no thinking controls sent.
+    think = _ResponsesReasoningExtractor(parse_think_markers = True)
     stop = _StopSequenceFilter(stop_sequences)
     recorder = _ConnectionExtrasRecorder(subject)
     dropped: set[int] = set()
@@ -42512,7 +42512,6 @@ async def _anthropic_messages_via_connection(
         current_subject,
         single_tool_use = isinstance(payload.tool_choice, dict)
         and bool(payload.tool_choice.get("disable_parallel_tool_use")),
-        parse_thinking = _responses_should_parse_think_markers(chat_payload, None),
         stop_sequences = payload.stop_sequences,
     )
     if payload.stream:
