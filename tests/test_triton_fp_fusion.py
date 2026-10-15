@@ -1,12 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""Every Unsloth Triton launch asks for FMA contraction (enable_fp_fusion=True) explicitly.
-
-Triton main (3.9) flips the enable_fp_fusion default to False, which would silently change the
-numerics and speed of every kernel that relied on it. The NF4 dequant kernel's eager path keeps
-its deliberate False. The GPU check runs a fresh process with TRITON_DEFAULT_FP_FUSION=0 (the
-Triton 3.9 default, on any Triton >= 3.2) and reads each compiled kernel's options."""
+"""Every Triton launch passes enable_fp_fusion=True: Triton 3.9 defaults it to False.
+The GPU check emulates that via TRITON_DEFAULT_FP_FUSION=0 in a fresh process."""
 
 import ast
 import json
@@ -19,8 +15,7 @@ import pytest
 
 KERNELS = pathlib.Path(__file__).resolve().parents[1] / "unsloth" / "kernels"
 
-# Subscript calls in unsloth/kernels that are not Triton launches, or that forward an options
-# dict which always carries enable_fp_fusion (nf4.py's options, triton_launch.launch's **options).
+# Subscript calls that are not launches, or forward options already carrying enable_fp_fusion.
 _NOT_LAUNCHES = {
     "bnb_override.py": {"_FALLBACK"},
     "int4_packed.py": {"compiled", "call"},  # a CompiledKernel built by warmup(enable_fp_fusion=True)
@@ -66,10 +61,6 @@ def test_nf4_options_and_warmup_carry_fp_fusion():
     assert "kernel.warmup(*args, grid = grid, **constexprs, enable_fp_fusion = True)" in int4
 
 
-# ---------------------------------------------------------------------------------------------
-# GPU: compiled kernels carry enable_fp_fusion=True under the Triton 3.9 default.
-
-
 def _compiled_options(kernel):
     """enable_fp_fusion of every compiled entry of a Triton JITFunction (3.0 - 3.9 layouts)."""
     from triton.runtime.jit import JITFunction
@@ -111,11 +102,9 @@ def exercise(device = "cuda"):
 
     out = {}
     g = torch.Generator(device = device).manual_seed(0)
-    # T4 (sm75) has no bf16.
     dt = torch.bfloat16 if torch.cuda.get_device_capability(device) >= (8, 0) else torch.float16
     rnd = lambda *s, dtype = dt: torch.randn(*s, generator = g, device = device, dtype = torch.float32).to(dtype)
 
-    # RMSNorm forward + backward.
     norm = torch.nn.Module()
     norm.weight = torch.nn.Parameter(rnd(256))
     norm.variance_epsilon = 1e-6
@@ -124,7 +113,6 @@ def exercise(device = "cuda"):
     Y.backward(rnd(64, 256))
     out["rmsnorm"] = (Y.detach(), X.grad, norm.weight.grad)
 
-    # RoPE forward + backward (Q / K separately and the fused QK kernel).
     Q = rnd(2, 4, 16, 64).requires_grad_()
     K = rnd(2, 2, 16, 64).requires_grad_()
     cos, sin = rnd(16, 64), rnd(16, 64)
@@ -135,7 +123,7 @@ def exercise(device = "cuda"):
     q2, k2 = rope_embedding.fast_rope_embedding(Q.detach(), K.detach(), cos, sin, idx)
     out["rope_qk"] = (q2, k2)
 
-    # Cross entropy forward + backward, plain and chunked (vocab > 65536).
+    # Chunked path needs vocab > 65536.
     for name, vocab in (("ce", 1000), ("ce_chunked", 70000)):
         logits = rnd(2, 8, vocab).requires_grad_()
         labels = torch.randint(0, vocab, (2, 8), generator = g, device = device)
@@ -143,7 +131,6 @@ def exercise(device = "cuda"):
         loss.backward()
         out[name] = (loss.detach(), logits.grad)
 
-    # SwiGLU / GeGLU forward + backward kernels.
     e, gg, dw = rnd(32, 512), rnd(32, 512), rnd(32, 512)
     e3, g3 = e.view(2, 16, 512), gg.view(2, 16, 512)
     out["swiglu_fwd"] = (swiglu.swiglu_fg_kernel(e3, g3),)
@@ -153,8 +140,7 @@ def exercise(device = "cuda"):
     out["geglu_approx_fwd"] = (geglu.geglu_approx_forward_kernel(e3, g3),)
     out["geglu_approx_bwd"] = tuple(t.clone() for t in geglu.geglu_approx_backward_kernel(dw.clone(), e.clone(), gg.clone()))
 
-    # NF4: eager dequant (deliberate fp_fusion False), the traced op (True where mul.rn exists),
-    # and the batch-1 GEMV. Hand-built NF4 state so bitsandbytes is not needed.
+    # Hand-built NF4 state so bitsandbytes is not needed.
     n, kk, bs, bs2 = 256, 512, 64, 256
     W_u8 = torch.randint(0, 256, (n * kk // 2, 1), generator = g, device = device, dtype = torch.int32).to(torch.uint8)
     n_blocks = n * kk // bs
@@ -169,7 +155,6 @@ def exercise(device = "cuda"):
     Xv = rnd(1, 1, kk)
     out["nf4_gemv"] = (nf4_gemv.gemv_nf4(Xv, *args, (n, kk), dt),)
 
-    # FP8 row-wise GEMV.
     if torch.cuda.get_device_capability(device) >= (8, 9) or torch.version.hip:
         Wf = (rnd(512, 1024, dtype = torch.float32) / 4).to(torch.float8_e4m3fn)
         scale = torch.rand(512, 1, generator = g, device = device) + 0.5
@@ -256,12 +241,12 @@ def test_compiled_kernels_keep_fp_fusion(tmp_path, default):
     assert any(name.startswith("nf4_gemv.") for name in meta), sorted(meta)
 
     nf4_values = {value for value, _ in meta.pop("nf4._nf4_dequant_kernel")}
-    # The eager dequant path stays deliberately unfused; the traced op fuses where mul.rn exists.
+    # Eager dequant stays deliberately unfused; the traced op fuses where mul.rn exists.
     assert False in nf4_values
     assert (True in nf4_values) == result["mul_rn"], nf4_values
     bad = {name: opts for name, opts in meta.items() if any(value is not True for value, _ in opts)}
     assert not bad, f"compiled without enable_fp_fusion=True: {bad}"
     if not result["hip"]:
-        # Contraction really happened: the CUDA kernels doing a*b+c in fp32 emit fma.rn.
+        # Contraction really happened: fma.rn in PTX.
         for name in ("rope_embedding._rope_embedding", "geglu._exact_forward_kernel", "swiglu._DWf_DW_dfg_kernel"):
             assert all(fma for _, fma in meta[name]), (name, meta[name])
