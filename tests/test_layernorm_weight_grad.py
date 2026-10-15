@@ -15,7 +15,12 @@ pytestmark = [
 TOL = {torch.float32: 1e-4, torch.float16: 2e-3, torch.bfloat16: 1.6e-2}
 
 
-def _layer(cols, dtype, bias = True, trainable = True):
+def _layer(
+    cols,
+    dtype,
+    bias = True,
+    trainable = True,
+):
     layer = torch.nn.LayerNorm(cols, bias = bias, device = "cuda", dtype = dtype)
     with torch.no_grad():
         layer.weight.uniform_(0.5, 1.5)

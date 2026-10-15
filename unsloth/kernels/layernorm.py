@@ -67,17 +67,7 @@ def layernorm_forward(
 
 
 @triton.jit
-def _layernorm_backward_row(
-    dY,
-    X,
-    W_row,
-    r,
-    mu,
-    row_idx,
-    col_offsets,
-    mask,
-    n_cols: tl.constexpr,
-):
+def _layernorm_backward_row(dY, X, W_row, r, mu, row_idx, col_offsets, mask, n_cols: tl.constexpr):
     # Approximately follows karpathy/llm.c doc/layernorm/layernorm.md
     # Per torchtune's Fp32LayerNorm, all modules are in float32.
     dY_row = tl.load(dY + col_offsets, mask = mask, other = 0).to(tl.float32)
@@ -185,13 +175,7 @@ def layernorm_backward_dw(
 
 @triton.jit
 def _layernorm_sum_partials(
-    partials,
-    out0,
-    out1,
-    n_programs,
-    n_cols,
-    BLOCK_ROWS: tl.constexpr,
-    BLOCK_COLS: tl.constexpr,
+    partials, out0, out1, n_programs, n_cols, BLOCK_ROWS: tl.constexpr, BLOCK_COLS: tl.constexpr
 ):
     # Fixed tile order, so eager and torch.compile give the same bytes (a torch sum here is
     # re-lowered by Inductor in another order). Axis 1 picks the partial set: out0, then out1.
@@ -217,7 +201,9 @@ def _layernorm_sum_partials(
 def _dw_slots(device):
     try:
         props = torch.cuda.get_device_properties(device)
-        return int(props.multi_processor_count), max(1, int(props.max_threads_per_multi_processor) // 64)
+        return int(props.multi_processor_count), max(
+            1, int(props.max_threads_per_multi_processor) // 64
+        )
     except Exception:
         return 128, 32
 
@@ -298,7 +284,9 @@ class Fast_Layernorm(torch.autograd.Function):
         # One buffer for both partials: every program stores its rows, so empty is enough (zeros only
         # when nothing launches). At small shapes the backward is host bound, so fewer ops matter.
         alloc = torch.empty if n_rows > 0 else torch.zeros
-        partials = alloc((train_w + train_b, programs, n_cols), dtype = torch.float32, device = dY.device)
+        partials = alloc(
+            (train_w + train_b, programs, n_cols), dtype = torch.float32, device = dY.device
+        )
         if n_rows > 0:
             with torch_gpu_device(dY.device):
                 layernorm_backward_dw[(programs,)](
