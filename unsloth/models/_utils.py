@@ -9253,24 +9253,31 @@ def native_expert_only_regex(model, target_modules):
     def generic(path):
         return r"\.".join(r"\d+" if part.isdigit() else re.escape(part) for part in path.split("."))
 
-    parents, leaves, others = set(), set(), set()
-    for name, module in model.named_modules():
-        if prefix and not name.startswith(prefix + "."):
-            continue
-        if not (
+    linears = [
+        name
+        for name, module in model.named_modules()
+        if (not prefix or name.startswith(prefix + "."))
+        and (
             isinstance(module, torch.nn.Linear)
             or isinstance(getattr(module, "base_layer", None), torch.nn.Linear)
-        ):
-            continue
+        )
+    ]
+    blocks, leaves = set(), set()
+    for name in linears:
         matched = _EXPERT_SUBMODULE_PATTERN.search(name)
-        if matched is not None and name[matched.start() :].lstrip(".").startswith("experts."):
-            if matched.group(1) in requested:
-                parents.add(generic(name[: matched.start()]))
+        if matched is not None and matched.group(1) in requested:
+            if name[matched.start() :].lstrip(".").startswith("experts."):
+                blocks.add(name[: matched.start()])
                 leaves.add(matched.group(1))
-        elif name.rpartition(".")[2] in requested:
-            others.add(generic(name))  # e.g. the router: plain PEFT matches it by suffix too
     if not leaves:
         return None
+    parents = {generic(block) for block in blocks}
+    # Requested siblings of the experts (the router) too, as PEFT's suffix match would; never other families.
+    others = {
+        generic(name)
+        for name in linears
+        if name.rpartition(".")[0] in blocks and name.rpartition(".")[2] in requested
+    }
     regex = moe_expert_submodule_regex(sorted(leaves), parents)
     return f"(?:{regex})|(?:{'|'.join(sorted(others))})" if others else regex
 
