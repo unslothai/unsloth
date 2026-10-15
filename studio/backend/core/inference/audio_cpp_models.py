@@ -194,8 +194,8 @@ class MusicSpec:
     # The runtime's default seed is fixed, so repeat runs would be identical.
     fixed_seed: bool = True
     rtf: float = 4.0
-    # Token budget as a multiple of the asked length, for a model that ends the song itself.
-    overrun: float = 1.0
+    # A model that ends the song itself gets no length budget; the runtime caps it at this many s.
+    self_ending_s: Optional[float] = None
 
     def mode(self, mode_id: Optional[str]) -> Optional[MusicMode]:
         return next((m for m in self.modes if m.id == mode_id), None)
@@ -265,8 +265,8 @@ MUSIC_SPECS: dict[str, MusicSpec] = {
         # Empty lyrics still sing; only this tag stays wordless.
         instrumental_lyrics = "[Instrumental]",
         rtf = 6.0,
-        # 1.0x cut long lyrics mid-song (#13337); 240 s x 1.5 = the runtime's 9000-token default.
-        overrun = 1.5,
+        # Any length budget cut songs mid-verse (#13337); upstream's own cap is 9000 frames = 360 s.
+        self_ending_s = 360.0,
     ),
 }
 
@@ -1840,12 +1840,12 @@ def runtime_spec(family: str) -> Optional[dict]:
 
 
 def runtime_knows_family(family: str) -> Optional[bool]:
-    """Whether the installed runtime loads ``family``; None when Studio cannot tell.
+    """Whether the installed runtime loads ``family``; None when Unsloth Studio cannot tell.
 
     A runtime that ships ``model_specs/`` answers from it. The prebuilt bundles do not ship that
-    folder, so for the pinned prebuilt the families its source tree specs are listed in
-    ``audio_cpp_spec_families``. Any other runtime (no install, a custom build, another tag) is
-    unknown, and the spec's own tasks decide as before.
+    folder, so for the prebuilt releases in ``AUDIO_CPP_SPEC_FAMILIES_TAGS`` the families their
+    source tree specs are listed in ``audio_cpp_spec_families``. Any other runtime (no install, a
+    custom build, an unlisted tag) is unknown, and the spec's own tasks decide as before.
     """
     if not family or not re.fullmatch(r"[a-z0-9_]+", family):
         return None
@@ -1870,10 +1870,10 @@ def runtime_knows_family(family: str) -> Optional[bool]:
         return None
     from core.inference.audio_cpp_spec_families import (
         AUDIO_CPP_SPEC_FAMILIES,
-        AUDIO_CPP_SPEC_FAMILIES_TAG,
+        AUDIO_CPP_SPEC_FAMILIES_TAGS,
     )
 
-    if tag != AUDIO_CPP_SPEC_FAMILIES_TAG:
+    if tag not in AUDIO_CPP_SPEC_FAMILIES_TAGS:
         return None
     return family in AUDIO_CPP_SPEC_FAMILIES
 

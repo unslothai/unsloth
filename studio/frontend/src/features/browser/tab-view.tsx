@@ -148,14 +148,21 @@ function useFrameMessages(tabId: string, origin: string | null) {
           });
           break;
         }
-        case "shortcut":
-          if (message.key === "l") store.focusAddress();
-          else if (message.key === "f") requestFind(BROWSER_FIND_TARGET);
-          else if (message.key === "t") store.newTab();
-          else if (message.key === "w") store.closeTab(tabId);
-          else if (message.key === "r") store.reload(tabId);
-          else if (message.key === "d") store.bookmarkPage();
+        case "shortcut": {
+          const { key } = message;
+          const run = () => {
+            if (key === "l") store.focusAddress();
+            else if (key === "f") requestFind(BROWSER_FIND_TARGET);
+            else if (key === "t") store.newTab();
+            else if (key === "w") store.closeTab(tabId);
+            else if (key === "r") store.reload(tabId);
+            else if (key === "d") store.bookmarkPage();
+          };
+          // A full screen page covers the panel; leave it first so the shortcut's result shows.
+          if (document.fullscreenElement) void document.exitFullscreen().catch(() => undefined).then(run);
+          else run();
           break;
+        }
         case "zoom":
           // A key goes through the scope, so the View menu repeating it doesn't zoom twice.
           if (message.wheel) zoomTab(tabId, message.direction);
@@ -353,6 +360,7 @@ function WebPage({
       url={page.url}
       base={page.base}
       ownBase={page.ownBase === true}
+      anyOrigin={page.anyOrigin === true}
       refresh={page.refresh}
       title={tab.title || hostOf(page.url)}
       tabId={tab.id}

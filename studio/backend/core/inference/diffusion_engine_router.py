@@ -32,6 +32,7 @@ from __future__ import annotations
 import functools
 import importlib.util
 import os
+import re
 import platform
 import sys
 import threading
@@ -58,6 +59,7 @@ from core.inference.sd_cpp_backend import (
     off_torch_build_mismatch,
     preferred_accelerator,
     sd_cpp_binary_runs_family,
+    sd_cpp_vulkan_fallback_enabled,
     usable_or_recorded_failure,
 )
 from core.inference.sd_cpp_engine import (
@@ -162,11 +164,189 @@ def off_torch_sd_cpp_device(backend: Optional[str] = None) -> Optional[OffTorchD
     return OffTorchDevice(vendor = vendor, index = index, accelerator = accelerator)
 
 
+# Hosts the pinned release ships a Vulkan sd.cpp bundle for.
+_VULKAN_SD_CPP_PLATFORMS = frozenset({("linux", "x86_64"), ("win32", "amd64")})
+
+
+@functools.lru_cache(maxsize = 1)
+def _vulkan_loader_loads() -> bool:
+    """Whether the Vulkan loader library opens here. The Vulkan build links it, so without it
+    neither sd-cli nor sd-server would start."""
+    import ctypes
+    try:
+        if sys.platform == "win32":
+            ctypes.WinDLL("vulkan-1.dll")
+        else:
+            ctypes.CDLL("libvulkan.so.1")
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _masked_vendors() -> set:
+    """Vendors a set runtime mask applies to (HIP honours CUDA_VISIBLE_DEVICES too). Vulkan reads
+    none of them, so a card hidden by one stays hidden. Unreadable counts as every vendor."""
+    try:
+        from utils.hardware.hardware import _VISIBILITY_MASK_VENDORS, _ze_affinity_mask
+
+        masked = set()
+        for var, vendors in _VISIBILITY_MASK_VENDORS.items():
+            value = _ze_affinity_mask() if var == "ZE_AFFINITY_MASK" else os.environ.get(var)
+            if value is not None:
+                masked |= vendors
+        return masked
+    except Exception:  # noqa: BLE001
+        return {"amd", "intel", "nvidia"}
+
+
+# PCI vendors of the cards this route renders on.
+_RENDER_NODE_VENDORS = {"0x1002": "amd", "0x8086": "intel"}
+
+
+def _accessible_render_vendors(vendors) -> set:
+    """Which of ``vendors`` have a readable and writable /dev/dri render node. A container can list
+    a card in sysfs without mounting its node, and Vulkan then sees no device. Empty when another
+    vendor's GPU (virtio, VMware) also has an openable node, since unpinned sd.cpp could take it first."""
+    import glob
+
+    found = set()
+    for node in glob.glob("/dev/dri/renderD*"):
+        accessible = os.access(node, os.R_OK | os.W_OK)
+        try:
+            with open(
+                f"/sys/class/drm/{os.path.basename(node)}/device/vendor", encoding = "utf-8"
+            ) as f:
+                pci_vendor = f.read().strip().lower()
+        except OSError:
+            # An openable node of unknown vendor could be the device sd.cpp picks first.
+            if accessible:
+                return set()
+            continue
+        vendor = _RENDER_NODE_VENDORS.get(pci_vendor)
+        if vendor is None:
+            if accessible:
+                return set()
+            continue
+        if vendor in vendors and accessible:
+            found.add(vendor)
+    return found
+
+
+def _vulkan_gpu_for_cpu_torch() -> bool:
+    """True when torch is CPU-only but the host has a GPU the Vulkan sd.cpp build can render on:
+    an AMD card (Vega, RDNA1 and Polaris get no ROCm wheel) or an Intel Arc. Never beside NVIDIA,
+    which Vulkan could enumerate first, nor under a mask Vulkan does not read (#13666)."""
+    if not sd_cpp_vulkan_fallback_enabled():
+        return False
+    if (sys.platform, platform.machine().lower()) not in _VULKAN_SD_CPP_PLATFORMS:
+        return False
+    # ggml reads this one itself; anything but a list of ordinals selects nothing or throws. Its
+    # ordinals index the raw Vulkan list, so it never vouches for which card a mixed host gets.
+    vk_mask = os.environ.get("GGML_VK_VISIBLE_DEVICES")
+    if vk_mask is not None and not re.fullmatch(r"\s*\d+\s*(,\s*\d+\s*)*", vk_mask):
+        return False
+    inventory = _physical_inventory()
+    if inventory.get("unknown") or "nvidia" in (inventory.get("unanswered") or ()):
+        return False
+    devices = [d for d in inventory.get("devices") or () if isinstance(d, dict)]
+    if any(d.get("vendor") == "nvidia" for d in devices) or _nvidia_adapter_present():
+        return False
+
+    def _renders(device: dict) -> bool:
+        if device.get("vendor") == "amd":
+            return True
+        if device.get("vendor") != "intel":
+            return False
+        # Arc only: a UHD iGPU renders slower than the CPU build. Linux carries the PCI class,
+        # the Windows registry only the name.
+        if "xpu_class" in device:
+            return device.get("xpu_class") is True
+        return "arc" in str(device.get("name") or "").lower().replace("(tm)", " ").split()
+
+    gpus = [d for d in devices if d.get("vendor") in ("amd", "intel")]
+    if sys.platform != "win32":
+        # Vulkan only sees cards whose render node this process can open (a container may mount
+        # one vendor's), and the node and the driver must belong to the same vendor.
+        reachable = _accessible_render_vendors({d.get("vendor") for d in gpus})
+        gpus = [d for d in gpus if d.get("vendor") in reachable]
+    masked = _masked_vendors()
+    # Unpinned sd.cpp takes the first Vulkan device, which may be a UHD iGPU beside the card.
+    if not gpus or any(d.get("vendor") in masked for d in gpus):
+        return False
+    if not all(_renders(d) for d in gpus):
+        return False
+    return _hardware_vulkan_driver({d.get("vendor") for d in gpus}) and _vulkan_loader_loads()
+
+
+# The ICD manifests that drive each vendor's cards (RADV as radeon_icd or radv_icd, AMDVLK /
+# Adrenalin, ANV); a software rasteriser or another vendor's driver lists none of them.
+_VENDOR_ICD_NEEDLES = {"amd": ("radeon", "radv", "amd"), "intel": ("intel",)}
+
+
+def _hardware_vulkan_driver(vendors) -> bool:
+    """Whether the loader, under its active filters, would load a driver for one of ``vendors``.
+    Windows registers drivers in ways the manifest walk may not read, so an empty walk there is no
+    evidence."""
+    try:
+        from utils.hardware.amd import _loadable_icd_manifests, _vulkan_icd_manifest_paths
+
+        if not _vulkan_icd_manifest_paths():
+            # A driver filter the walk cannot apply may leave the loader with none.
+            filtered = os.environ.get("VK_LOADER_DRIVERS_SELECT") or os.environ.get(
+                "VK_LOADER_DRIVERS_DISABLE"
+            )
+            return sys.platform == "win32" and not filtered
+        needles = [n for vendor in vendors for n in _VENDOR_ICD_NEEDLES.get(vendor, ())]
+        return any(
+            any(needle in os.path.basename(str(path)).lower() for needle in needles)
+            for path in _loadable_icd_manifests()
+        )
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _nvidia_adapter_present() -> bool:
+    """An NVIDIA card nvidia-smi cannot see (Nouveau, no proprietary driver, no nvidia-smi) is still
+    a Vulkan device. Unanswerable counts as present."""
+    if sys.platform == "win32":
+        try:
+            from utils.hardware.hardware import (
+                _windows_amd_adapter_records_by_luid,
+                _windows_live_adapter_names,
+            )
+
+            records = _windows_amd_adapter_records_by_luid(0x10DE, distinguish_failure = True)
+            if records is None:
+                return True
+            if not records:
+                return False
+            # The registry outlives the hardware, so a record only counts if the live scan agrees.
+            live = _windows_live_adapter_names()
+            return live is None or any("nvidia" in name.lower() for name in live)
+        except Exception:  # noqa: BLE001
+            return True
+    import glob
+
+    for vendor_file in glob.glob("/sys/class/drm/card*/device/vendor"):
+        try:
+            with open(vendor_file, encoding = "utf-8") as f:
+                if f.read().strip().lower() == "0x10de":
+                    return True
+        except OSError:
+            continue
+    return False
+
+
 def image_install_accelerator(backend: str) -> str:
-    """The sd.cpp build the IMAGE engine wants: the off-torch card's when one is set, else torch's.
-    Video keeps ``_install_accelerator_for``, since torch places its loads."""
+    """The sd.cpp build the IMAGE engine wants: the off-torch card's when one is set, else torch's,
+    else Vulkan for a CPU torch beside an AMD or Arc GPU. Video keeps ``_install_accelerator_for``,
+    since torch places its loads."""
     off_torch = off_torch_sd_cpp_device(backend)
-    return off_torch.accelerator if off_torch is not None else _install_accelerator_for(backend)
+    if off_torch is not None:
+        return off_torch.accelerator
+    if backend == "cpu" and _vulkan_gpu_for_cpu_torch():
+        return "vulkan"
+    return _install_accelerator_for(backend)
 
 
 # The engine the current load committed to, and why a non-native choice was made. Mutated only under _lock.
@@ -475,7 +655,7 @@ def select_and_activate_engine(
         # Once, so server and CLI cannot disagree.
         selected_card = _selected_card(gpu_ordinal)
         install_accelerator = preferred_accelerator(
-            _install_accelerator_for(backend), selected_card
+            image_install_accelerator(backend), selected_card
         )
         if off_torch is not None:
             install_accelerator = preferred_accelerator(off_torch.accelerator, selected_card)

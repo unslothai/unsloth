@@ -1609,13 +1609,15 @@ def _decision_description(checkpoint, mlx: bool) -> str:
 def _clef_availability(checkpoint, reason: Optional[str]) -> dict:
     from core.systemone import laya_runtime
 
-    if getattr(checkpoint, "layout", "laya") == laya_runtime.GGUF:
+    only_mlx = getattr(checkpoint, "backend", None) == laya_runtime.MLX
+    if only_mlx or getattr(checkpoint, "layout", "laya") == laya_runtime.GGUF:
+        only = {} if only_mlx else {"llama_cpp_only": True}
         # Selectable under a PyTorch runtime: the runtime row then says to switch it.
         try:
             laya_runtime.select(checkpoint, preference = "auto")
         except laya_runtime.Unavailable as exc:
-            return {"llama_cpp_only": True, "available": False, "unavailable_reason": exc.message}
-        return {"llama_cpp_only": True}
+            return {**only, "available": False, "unavailable_reason": exc.message}
+        return only
     if reason is None or getattr(checkpoint, "layout", "laya") != "clef":
         return {}
     # llama.cpp serves Clef without CUDA or ROCm, and so does the MLX engine on Apple Silicon.
@@ -5016,6 +5018,9 @@ class SandboxWindowsStatus(BaseModel):
     prepare_repeats_after_restart: bool = True
     # True: MXC runs in Windows' built-in container (BaseContainer); False: this Windows has none; None: unknown.
     builtin_container: Optional[bool] = None
+    # Set only when a Windows update adds the built-in container: this PC's build and the first one with it.
+    windows_build: Optional[str] = None
+    builtin_container_build: Optional[str] = None
 
 
 class SandboxSetupStatus(BaseModel):
@@ -5151,6 +5156,7 @@ def _sandbox_windows_status() -> SandboxWindowsStatus:
     if installed:
         steps = mxc_runtime.probe_host_prep_steps(env = mxc_adapter._control_environment())
         missing = None if steps is None else list(steps)
+    update = sandbox_setup_plan.windows_builtin_container_update()
     return SandboxWindowsStatus(
         runtime_installed = installed,
         runtime_unsupported = sandbox_setup_plan.windows_runtime_unsupported(),
@@ -5163,6 +5169,8 @@ def _sandbox_windows_status() -> SandboxWindowsStatus:
             mxc_read_grants.PERSISTENT_GRANTS_ENV
         ),
         host_prep_missing = missing,
+        windows_build = update[0] if update else None,
+        builtin_container_build = update[1] if update else None,
     )
 
 

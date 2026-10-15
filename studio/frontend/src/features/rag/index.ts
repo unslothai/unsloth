@@ -13,6 +13,11 @@ export {
   listKnowledgeBases,
 } from "./api/rag-api";
 export { saveMarkdownAsProjectSource } from "./api/save-markdown-source";
+export {
+  staleDescription,
+  toastEmbeddingModelSaved,
+  useReembedStore,
+} from "./components/reembed-store";
 export { useRagAvailabilityStore } from "./api/rag-availability";
 export { isLinkedFolderManaged } from "./types/rag";
 export type { KnowledgeBase, RagDocument, UploadedDocument } from "./types/rag";

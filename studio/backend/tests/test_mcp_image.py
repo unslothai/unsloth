@@ -58,7 +58,6 @@ def mapped_server(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setattr(mcp_servers_db, "_schema_ready", set())
     monkeypatch.setattr(mcp_client, "_tool_cache", {})
-    monkeypatch.setattr(tools_mod, "_MCP_COMPACTED_WINDOWS", {})
     mcp_servers_db.create_server(
         id = "srv1",
         display_name = "Trace",

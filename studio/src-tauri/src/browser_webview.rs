@@ -15,11 +15,9 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tauri::webview::{DownloadEvent, NewWindowResponse, PageLoadEvent};
 use tauri::{
-    AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Runtime, State, Url, Webview,
+    AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Rect, Runtime, State, Url, Webview,
     WebviewBuilder, WebviewUrl,
 };
-#[cfg(not(target_os = "linux"))]
-use tauri::Rect;
 use tokio::sync::watch;
 
 const LABEL_PREFIX: &str = "unsloth-browser-";
@@ -162,6 +160,10 @@ struct ViewsState {
     muted: HashSet<String>,
     /// Tabs whose view committed a page of its own since it opened or was last sent somewhere; until then a download's site is the address asked for (or the opener).
     committed: HashSet<String>,
+    /// Hidden tabs shown just off the window for a screenshot (`show_for_capture`); a switch leaves them be.
+    capturing: HashSet<String>,
+    /// Where `browser_view_show` last put each tab, for a capture that a switch overtook (`end_capture`).
+    placed: HashMap<String, Rect>,
 }
 
 pub fn new_browser_views() -> BrowserViews {
@@ -1244,6 +1246,18 @@ async fn create_view<R: Runtime>(
     if let Some(url) = deferred {
         load_when_protected(&webview, url);
     }
+    app.state::<BrowserViews>()
+        .inner
+        .lock()
+        .unwrap()
+        .placed
+        .insert(
+            tab,
+            Rect {
+                position: position.into(),
+                size: size.into(),
+            },
+        );
     start_url_poll(&app);
     Ok(webview)
 }
@@ -1437,14 +1451,17 @@ pub async fn browser_view_show<R: Runtime>(
                 if parked {
                     position.x = -size.width - PARK_GAP;
                 }
-                #[cfg(target_os = "linux")]
-                crate::browser_linux::set_bounds(&view, position, size).await?;
-                #[cfg(not(target_os = "linux"))]
-                view.set_bounds(Rect {
+                let rect = Rect {
                     position: position.into(),
                     size: size.into(),
-                })
-                .map_err(|error| error.to_string())?;
+                };
+                state
+                    .inner
+                    .lock()
+                    .unwrap()
+                    .placed
+                    .insert(tab_id.clone(), rect);
+                set_view_bounds(&view, rect).await?;
                 view
             }
             None if parked => return Err("no page to park".into()),
@@ -1467,13 +1484,126 @@ pub async fn browser_view_show<R: Runtime>(
     if let Some(view) = &target {
         view.show().map_err(|error| error.to_string())?;
     }
+    let capturing: HashSet<String> = state
+        .inner
+        .lock()
+        .unwrap()
+        .capturing
+        .iter()
+        .filter_map(|tab_id| label_for(tab_id).ok())
+        .collect();
     for view in browser_views(&app) {
-        if Some(view.label()) != target.as_ref().map(|view| view.label()) {
+        if Some(view.label()) != target.as_ref().map(|view| view.label())
+            && !capturing.contains(view.label())
+        {
             let _ = view.hide();
         }
     }
     set_shown(&state, &mut state.inner.lock().unwrap(), shown);
     Ok(())
+}
+
+async fn set_view_bounds<R: Runtime>(page: &Webview<R>, rect: Rect) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        let scale = page
+            .window()
+            .scale_factor()
+            .map_err(|error| error.to_string())?;
+        crate::browser_linux::set_bounds(
+            page,
+            rect.position.to_logical(scale),
+            rect.size.to_logical(scale),
+        )
+        .await
+    }
+    #[cfg(not(target_os = "linux"))]
+    page.set_bounds(rect).map_err(|error| error.to_string())
+}
+
+/// Opens a tab's page without showing it: the agent at work in a chat that isn't on screen. Made
+/// just off the window and hidden, so nothing flashes and the page on screen stays.
+#[tauri::command]
+pub async fn browser_view_open_background<R: Runtime>(
+    webview: Webview<R>,
+    tab_id: String,
+    url: String,
+    bounds: ViewBounds,
+) -> Result<(), String> {
+    require_main(&webview)?;
+    let label = label_for(&tab_id)?;
+    if webview.app_handle().get_webview(&label).is_some() {
+        return Ok(());
+    }
+    let url = parse_page_url(&url)?;
+    #[cfg(target_os = "macos")]
+    crate::browser_layer::install(&webview);
+    #[cfg(target_os = "linux")]
+    crate::browser_linux::install(&webview).await?;
+    let off_window = ViewBounds {
+        x: -bounds.width - PARK_GAP,
+        ..bounds
+    };
+    let page = create_view(&webview, &tab_id, url, &off_window).await?;
+    if let Err(error) = page.hide() {
+        // The frontend never records a view that failed to open, so it would never close this one.
+        let _ = close_view(&page);
+        return Err(error.to_string());
+    }
+    Ok(())
+}
+
+/// A hidden page paints nothing to capture (WebView2 doesn't render it; WebKit's snapshot waits
+/// on a paint that never comes), so it shows just off the window for the shot. True if it did.
+pub(crate) async fn show_for_capture<R: Runtime>(
+    views: &BrowserViews,
+    page: &Webview<R>,
+    tab_id: &str,
+) -> bool {
+    let placed = {
+        let mut inner = views.inner.lock().unwrap();
+        if inner.shown.as_deref() == Some(tab_id) || !inner.capturing.insert(tab_id.to_string()) {
+            return false;
+        }
+        inner.placed.get(tab_id).copied()
+    };
+    // A GTK view opened hidden has not received its requested allocation yet.
+    let size = placed
+        .or_else(|| page.bounds().ok())
+        .zip(page.window().scale_factor().ok())
+        .map(|(rect, factor)| rect.size.to_logical::<f64>(factor))
+        .unwrap_or(LogicalSize::new(1024.0, 768.0));
+    let position = LogicalPosition::new(-size.width - PARK_GAP, 0.0);
+    let _ = set_view_bounds(
+        page,
+        Rect {
+            position: position.into(),
+            size: size.into(),
+        },
+    )
+    .await;
+    if page.show().is_err() {
+        views.inner.lock().unwrap().capturing.remove(tab_id);
+        return false;
+    }
+    true
+}
+
+/// Hides a page `show_for_capture` showed. One that became the shown page meanwhile goes back
+/// where the switch put it, not off the window.
+pub(crate) async fn end_capture<R: Runtime>(views: &BrowserViews, page: &Webview<R>, tab_id: &str) {
+    let rect = {
+        let mut inner = views.inner.lock().unwrap();
+        inner.capturing.remove(tab_id);
+        if inner.shown.as_deref() != Some(tab_id) {
+            let _ = page.hide();
+            return;
+        }
+        inner.placed.get(tab_id).copied()
+    };
+    if let Some(rect) = rect {
+        let _ = set_view_bounds(page, rect).await;
+    }
 }
 
 #[tauri::command]
@@ -1891,6 +2021,7 @@ pub fn browser_view_close<R: Runtime>(
         inner.urls.remove(&tab_id);
         inner.committed.remove(&tab_id);
         inner.download_starts.remove(&tab_id);
+        inner.placed.remove(&tab_id);
         // `muted` stays: a pruned view reopens muted; unmuting is what forgets it.
         if inner.shown.as_deref() == Some(tab_id.as_str()) {
             set_shown(&state, &mut inner, None);
@@ -1951,13 +2082,6 @@ pub async fn browser_view_clear_data<R: Runtime>(
                 )
                 .map_err(|error| error.to_string())?;
             let _ = page.hide();
-            #[cfg(target_os = "linux")]
-            if let Err(error) = crate::browser_linux::attach(
-                &page, LogicalPosition::new(0.0, 0.0), LogicalSize::new(1.0, 1.0),
-            ).await {
-                let _ = page.close();
-                return Err(error);
-            }
             page
         }
     };
