@@ -15,6 +15,7 @@ import triton
 import triton.language as tl
 import torch
 from .utils import calculate_settings, long_indexing, torch_gpu_device
+from .triton_launch import launch
 from unsloth_zoo.patching_utils import (
     patch_layernorm,
 )
@@ -23,13 +24,13 @@ from unsloth_zoo.patching_utils import (
 @triton.jit
 def layernorm_forward(
     Y,
-    Y_row_stride: tl.constexpr,  # n_cols
     X,
-    X_row_stride: tl.constexpr,  # n_cols
     W,
     b,
     r,
     mu,
+    Y_row_stride: tl.constexpr,  # n_cols
+    X_row_stride: tl.constexpr,  # n_cols
     n_cols: tl.constexpr,
     eps: tl.constexpr,
     LONG_INDEXING: tl.constexpr,
@@ -86,13 +87,13 @@ def _layernorm_backward_row(dY, X, W_row, r, mu, row_idx, col_offsets, mask, n_c
 @triton.jit
 def layernorm_backward(
     dY,
-    dY_row_stride: tl.constexpr,  # n_cols
     X,
-    X_row_stride: tl.constexpr,  # n_cols
     W,
     b,
     r,
     mu,
+    dY_row_stride: tl.constexpr,  # n_cols
+    X_row_stride: tl.constexpr,  # n_cols
     n_cols: tl.constexpr,
     eps: tl.constexpr,
     LONG_INDEXING: tl.constexpr,
@@ -122,9 +123,7 @@ def layernorm_backward(
 @triton.jit
 def layernorm_backward_dw(
     dY,
-    dY_row_stride: tl.constexpr,
     X,
-    X_row_stride: tl.constexpr,
     W,
     r,
     mu,
@@ -132,6 +131,8 @@ def layernorm_backward_dw(
     dB,
     n_rows,
     rows_per_program,
+    dY_row_stride: tl.constexpr,
+    X_row_stride: tl.constexpr,
     n_cols: tl.constexpr,
     LONG_INDEXING: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
@@ -203,6 +204,24 @@ def _dw_slots(device):
         return 128, 32
 
 
+_cached_settings = functools.lru_cache(maxsize = None)(calculate_settings)
+
+
+def _settings(n_cols):
+    # Cached per width for eager calls (host bound at small shapes); tracing calls it directly.
+    if torch.compiler.is_compiling():
+        return calculate_settings(n_cols)
+    return _cached_settings(n_cols)
+
+
+def _launch(kernel, grid, args, n_tensors, constexprs, device, **options):
+    # Eager CUDA skips Triton's arg binding (triton_launch.py); compiling calls keep kernel[grid].
+    if device.type == "cuda" and not torch.compiler.is_compiling():
+        launch(kernel, grid, args, n_tensors, constexprs, device.index, **options)
+    else:
+        kernel[grid](*args, **constexprs, **options)
+
+
 class Fast_Layernorm(torch.autograd.Function):
     @staticmethod
     def forward(ctx, X, W, b, eps):
@@ -214,28 +233,30 @@ class Fast_Layernorm(torch.autograd.Function):
         has_bias = b is not None
         b = b.contiguous() if has_bias else W
         n_rows, n_cols = X.shape
-        BLOCK_SIZE, num_warps = calculate_settings(n_cols)
+        BLOCK_SIZE, num_warps = _settings(n_cols)
         device = X.device
         Y = torch.empty((n_rows, n_cols), dtype = X.dtype, device = device)
         r = torch.empty(n_rows, dtype = torch.float32, device = device)
         mu = torch.empty(n_rows, dtype = torch.float32, device = device)
 
         with torch_gpu_device(device):
-            layernorm_forward[(n_rows,)](
-                Y,
-                Y.stride(0),
-                X,
-                X.stride(0),
-                W,
-                b,
-                r,
-                mu,
-                n_cols,
-                eps,
-                LONG_INDEXING = long_indexing(X, Y, block = BLOCK_SIZE),
-                BLOCK_SIZE = BLOCK_SIZE,
-                HAS_BIAS = has_bias,
+            _launch(
+                layernorm_forward,
+                (n_rows,),
+                (Y, X, W, b, r, mu),
+                6,
+                dict(
+                    Y_row_stride = Y.stride(0),
+                    X_row_stride = X.stride(0),
+                    n_cols = n_cols,
+                    eps = eps,
+                    LONG_INDEXING = long_indexing(X, Y, block = BLOCK_SIZE),
+                    BLOCK_SIZE = BLOCK_SIZE,
+                    HAS_BIAS = has_bias,
+                ),
+                device,
                 num_warps = num_warps,
+                enable_fp_fusion = True,
             )
         ctx.eps = eps
         ctx.BLOCK_SIZE = BLOCK_SIZE
@@ -250,72 +271,75 @@ class Fast_Layernorm(torch.autograd.Function):
         dY = dY.reshape(-1, dim).contiguous()
         X, W, b, r, mu = ctx.saved_tensors
         n_rows, n_cols = dY.shape
+        device = dY.device
         train_w, train_b = ctx.needs_input_grad[1], ctx.needs_input_grad[2]
         LONG_INDEXING = long_indexing(dY, X, block = ctx.BLOCK_SIZE)
 
         if not (train_w or train_b):
-            with torch_gpu_device(dY.device):
-                layernorm_backward[(n_rows,)](
-                    dY,
-                    dY.stride(0),
-                    X,
-                    X.stride(0),
-                    W,
-                    b,
-                    r,
-                    mu,
-                    n_cols,
-                    ctx.eps,
-                    LONG_INDEXING = LONG_INDEXING,
-                    BLOCK_SIZE = ctx.BLOCK_SIZE,
+            with torch_gpu_device(device):
+                _launch(
+                    layernorm_backward,
+                    (n_rows,),
+                    (dY, X, W, b, r, mu),
+                    6,
+                    dict(
+                        dY_row_stride = dY.stride(0),
+                        X_row_stride = X.stride(0),
+                        n_cols = n_cols,
+                        eps = ctx.eps,
+                        LONG_INDEXING = LONG_INDEXING,
+                        BLOCK_SIZE = ctx.BLOCK_SIZE,
+                    ),
+                    device,
                     num_warps = ctx.num_warps,
+                    enable_fp_fusion = True,
                 )
             return dY.view(*shape), None, None, None
 
-        sms, warps_per_sm = _dw_slots(dY.device)
-        programs = max(1, min(n_rows, sms * max(1, warps_per_sm // ctx.num_warps)))
-        rows_per_program = max(1, triton.cdiv(n_rows, programs))
-        programs = max(1, triton.cdiv(n_rows, rows_per_program))
+        programs, rows_per_program = _dw_programs(device, n_rows, ctx.num_warps)
         # Every program stores its partial row, so empty suffices unless nothing launches.
         alloc = torch.empty if n_rows > 0 else torch.zeros
-        partials = alloc(
-            (train_w + train_b, programs, n_cols), dtype = torch.float32, device = dY.device
-        )
-        if n_rows > 0:
-            with torch_gpu_device(dY.device):
-                layernorm_backward_dw[(programs,)](
-                    dY,
-                    dY.stride(0),
-                    X,
-                    X.stride(0),
-                    W,
-                    r,
-                    mu,
-                    partials[0],
-                    partials[-1],
-                    n_rows,
-                    rows_per_program,
-                    n_cols,
-                    LONG_INDEXING = LONG_INDEXING,
-                    BLOCK_SIZE = ctx.BLOCK_SIZE,
-                    TRAIN_W = train_w,
-                    TRAIN_B = train_b,
-                    num_warps = ctx.num_warps,
-                )
-        dW = torch.empty(n_cols, dtype = W.dtype, device = dY.device) if train_w else None
-        dB = torch.empty(n_cols, dtype = b.dtype, device = dY.device) if train_b else None
+        partials = alloc((train_w + train_b, programs, n_cols), dtype = torch.float32, device = device)
+        dW = torch.empty(n_cols, dtype = W.dtype, device = device) if train_w else None
+        dB = torch.empty(n_cols, dtype = b.dtype, device = device) if train_b else None
         outs = [t for t in (dW, dB) if t is not None]
-        with torch_gpu_device(dY.device):
-            _layernorm_sum_partials[(triton.cdiv(n_cols, 64), len(outs))](
-                partials,
-                outs[0],
-                outs[-1],
-                programs,
-                n_cols,
-                BLOCK_ROWS = 64,
-                BLOCK_COLS = 64,
+        with torch_gpu_device(device):
+            if n_rows > 0:
+                _launch(
+                    layernorm_backward_dw,
+                    (programs,),
+                    (dY, X, W, r, mu, partials[0], partials[-1], n_rows, rows_per_program),
+                    7,
+                    dict(
+                        dY_row_stride = dY.stride(0),
+                        X_row_stride = X.stride(0),
+                        n_cols = n_cols,
+                        LONG_INDEXING = LONG_INDEXING,
+                        BLOCK_SIZE = ctx.BLOCK_SIZE,
+                        TRAIN_W = train_w,
+                        TRAIN_B = train_b,
+                    ),
+                    device,
+                    num_warps = ctx.num_warps,
+                    enable_fp_fusion = True,
+                )
+            _launch(
+                _layernorm_sum_partials,
+                ((n_cols + 63) // 64, len(outs)),
+                (partials, outs[0], outs[-1], programs, n_cols),
+                3,
+                dict(BLOCK_ROWS = 64, BLOCK_COLS = 64),
+                device,
+                enable_fp_fusion = True,
             )
         return dY.view(*shape), dW, dB, None
+
+
+def _dw_programs(device, n_rows, num_warps):
+    sms, warps_per_sm = _dw_slots(device)
+    programs = max(1, min(n_rows, sms * max(1, warps_per_sm // num_warps)))
+    rows_per_program = max(1, (n_rows + programs - 1) // programs)
+    return max(1, (n_rows + rows_per_program - 1) // rows_per_program), rows_per_program
 
 
 def fast_layernorm(layernorm, X):

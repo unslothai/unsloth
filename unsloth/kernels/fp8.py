@@ -165,7 +165,7 @@ def weight_dequant_block(
         triton.cdiv(N, meta["BLOCK_SIZE"]),
     )
     with _fp8_triton_device_context(x):
-        weight_dequant_kernel[grid](x, s, y, M, N, BLOCK_SIZE = block_size)
+        weight_dequant_kernel[grid](x, s, y, M, N, BLOCK_SIZE = block_size, enable_fp_fusion = True)
     return y
 
 
@@ -257,7 +257,9 @@ def act_quant(x: torch.Tensor, block_size: int = 128) -> tuple[torch.Tensor, tor
         return (triton.cdiv(x.numel(), meta["BLOCK_SIZE"]),)
 
     with _fp8_triton_device_context(x):
-        act_quant_kernel[grid](x, y, s, BLOCK_SIZE = block_size, LONG_INDEXING = long_indexing(x))
+        act_quant_kernel[grid](
+            x, y, s, BLOCK_SIZE = block_size, LONG_INDEXING = long_indexing(x), enable_fp_fusion = True
+        )
     return y, s
 
 
@@ -420,6 +422,7 @@ def w8a8_block_fp8_matmul_triton(
             LONG_INDEXING = long_indexing(A, B, C),
             # Default 4 warps starve 128x128 tiles (8 is 1.3-2.1x faster from M >= 128); smaller decode tiles gain nothing.
             num_warps = 8 if BLOCK_SIZE_M == 128 else 4,
+            enable_fp_fusion = True,
         )
     return C
 
@@ -483,6 +486,19 @@ def _rocm_fp8e4nv_kernel_supported(device):
 
 
 @functools.lru_cache(maxsize = None)
+def _fp8_gemv_miscompiles(device):
+    # Triton 3.3 miscompiles this GEMV on Blackwell (garbage rows at BLOCK_N 4/8); 3.4 is exact.
+    if torch.version.hip is not None:
+        return False
+    try:
+        return torch.cuda.get_device_capability(device) >= (10, 0) and Version(
+            triton.__version__
+        ).release[:2] < (3, 4)
+    except Exception:
+        return True
+
+
+@functools.lru_cache(maxsize = None)
 def _fp8_device_lacks_kernel(device):
     # A device's capability cannot change, so look it up once. Tests that simulate another
     # card must call _fp8_device_lacks_kernel.cache_clear().
@@ -511,9 +527,22 @@ def _fp8_kernel_unsupported(tensor, kernel_dtype = None):
 
 @triton.jit
 def _fp8_rowwise_gemv_kernel(
-    x_ptr, w_ptr, s_ptr, y_ptr, N, K, stride_wn, BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr
+    x_ptr,
+    w_ptr,
+    s_ptr,
+    y_ptr,
+    N,
+    K,
+    stride_wn,
+    BLOCK_N: tl.constexpr,
+    BLOCK_K: tl.constexpr,
+    LONG_INDEXING: tl.constexpr = False,
 ):
-    offs_n = tl.program_id(0) * BLOCK_N + tl.arange(0, BLOCK_N)
+    pid = tl.program_id(0)
+    # Widen before the multiply: row * stride_wn overflows int32 past 2^31 weight elements.
+    if LONG_INDEXING:
+        pid = pid.to(tl.int64)
+    offs_n = pid * BLOCK_N + tl.arange(0, BLOCK_N)
     acc = tl.zeros((BLOCK_N, BLOCK_K), dtype = tl.float32)
     for k0 in range(0, K, BLOCK_K):
         offs_k = k0 + tl.arange(0, BLOCK_K)
@@ -544,7 +573,7 @@ def can_use_fp8_rowwise_gemv(X, weight, weight_scale):
         return False
     if torch.is_grad_enabled() and (X.requires_grad or weight.requires_grad):
         return False
-    return not _fp8_kernel_unsupported(weight)
+    return not _fp8_kernel_unsupported(weight) and not _fp8_gemv_miscompiles(weight.device)
 
 
 def fp8_rowwise_gemv(X, weight, weight_scale):
@@ -557,7 +586,18 @@ def fp8_rowwise_gemv(X, weight, weight_scale):
     block_n = 1 if N <= 4096 else (4 if N <= 32768 else 8)
     with _fp8_triton_device_context(X, static_device_count = True):
         _fp8_rowwise_gemv_kernel[(triton.cdiv(N, block_n),)](
-            X, weight, scale, out, N, K, weight.stride(0), BLOCK_N = block_n, BLOCK_K = 512, num_warps = 2
+            X,
+            weight,
+            scale,
+            out,
+            N,
+            K,
+            weight.stride(0),
+            BLOCK_N = block_n,
+            BLOCK_K = 512,
+            LONG_INDEXING = long_indexing(weight),
+            num_warps = 2,
+            enable_fp_fusion = True,
         )
     return out
 
