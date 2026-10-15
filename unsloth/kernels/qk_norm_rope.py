@@ -54,7 +54,7 @@ def _norm_rope_fwd_block(
     eps,
     HEAD_DIM: tl.constexpr,
 ):
-    HALF: tl.constexpr = HEAD_DIM // 2
+    HALF = HEAD_DIM // 2
     hmask = heads < n_heads
     mask = hmask[:, None]
     x_ptr = X + row * X_row_stride + heads[:, None].to(tl.int64) * X_head_stride + cols[None, :]
@@ -148,7 +148,7 @@ def _norm_rope_bwd_block(
     cols,
     HEAD_DIM: tl.constexpr,
 ):
-    HALF: tl.constexpr = HEAD_DIM // 2
+    HALF = HEAD_DIM // 2
     hmask = heads < n_heads
     mask = hmask[:, None]
     hoff = heads[:, None].to(tl.int64)
