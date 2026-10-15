@@ -146,6 +146,127 @@ def test_load_checkpoint_omits_device_map_on_single_gpu(monkeypatch, tmp_path):
     assert "device_map" not in kwargs
 
 
+def _offload_backend(
+    monkeypatch,
+    loader,
+    device_map_kwargs = None,
+):
+    mod = _export_mod(monkeypatch)
+    monkeypatch.setattr(mod, "FastLanguageModel", loader)
+    monkeypatch.setattr(mod, "detect_audio_type", lambda *a, **k: None)
+    monkeypatch.setattr(mod, "is_vision_model", lambda *a, **k: False)
+    monkeypatch.setattr(mod, "_hf_offline", lambda *a, **k: False)
+    monkeypatch.setattr(mod, "_offline_window_if", lambda flag: contextlib.nullcontext())
+    monkeypatch.setattr(mod, "_multi_gpu_device_map_kwargs", lambda: device_map_kwargs or {})
+    backend = mod.ExportBackend.__new__(mod.ExportBackend)
+    backend.cleanup_memory = lambda: None
+    return mod, backend
+
+
+def _unsloth_spill_error():
+    try:
+        raise ValueError(
+            "Some modules are dispatched on the CPU or the disk. Make sure you have enough GPU RAM."
+        )
+    except ValueError as original:
+        try:
+            raise ValueError(
+                "Unsloth: unsloth/gemma-4-E2B-it-unsloth-bnb-4bit does not fit in GPU memory "
+                "(cuda:0 has 6.84 GB free), so transformers placed part of it on the CPU, "
+                "which bitsandbytes cannot quantize."
+            ) from original
+        except ValueError as rewritten:
+            return rewritten
+
+
+class _SpillUnlessOffloaded:
+    calls: list[dict] = []
+
+    @classmethod
+    def from_pretrained(cls, **kwargs):
+        cls.calls.append(kwargs)
+        if "offload_layers" not in kwargs:
+            raise _unsloth_spill_error()
+        return types.SimpleNamespace(), types.SimpleNamespace()
+
+
+def test_load_that_fits_passes_no_offload_layers(monkeypatch, tmp_path):
+    kwargs = _load_text_checkpoint(monkeypatch, tmp_path, {})
+    assert "offload_layers" not in kwargs
+    assert "device_map_planner_kwargs" not in kwargs
+
+
+def test_is_cpu_spill_rejection_sees_through_unsloths_rewrite(monkeypatch):
+    mod = _export_mod(monkeypatch)
+    assert mod._is_cpu_spill_rejection(_unsloth_spill_error())
+    assert not mod._is_cpu_spill_rejection(ValueError("does not fit"))
+
+
+def test_single_gpu_spill_retries_with_auto_offload(monkeypatch, tmp_path):
+    """#13696: the 4-bit export load spills to the CPU on an 8 GB card; retry streaming layers from host RAM."""
+    _SpillUnlessOffloaded.calls = []
+    mod, backend = _offload_backend(monkeypatch, _SpillUnlessOffloaded)
+    checkpoint = tmp_path / "checkpoint-100"
+    checkpoint.mkdir()
+    ok, message = backend.load_checkpoint(str(checkpoint))
+    assert ok, message
+    calls = _SpillUnlessOffloaded.calls
+    assert len(calls) == 2
+    assert "offload_layers" not in calls[0]
+    assert calls[1]["offload_layers"] == "auto"
+    assert "device_map" not in calls[1]
+    assert calls[1]["device_map_planner_kwargs"]["reserve_bytes"] == 1 << 30
+
+
+def test_offload_retry_runs_once(monkeypatch, tmp_path):
+    class _AlwaysSpills:
+        calls: list[dict] = []
+
+        @classmethod
+        def from_pretrained(cls, **kwargs):
+            cls.calls.append(kwargs)
+            raise _unsloth_spill_error()
+
+    mod, backend = _offload_backend(monkeypatch, _AlwaysSpills)
+    checkpoint = tmp_path / "checkpoint-100"
+    checkpoint.mkdir()
+    ok, message = backend.load_checkpoint(str(checkpoint))
+    assert not ok
+    assert "does not fit in GPU memory" in message
+    assert len(_AlwaysSpills.calls) == 2
+
+
+def test_offload_layers_zero_disables_the_retry(monkeypatch, tmp_path):
+    _SpillUnlessOffloaded.calls = []
+    mod, backend = _offload_backend(monkeypatch, _SpillUnlessOffloaded)
+    checkpoint = tmp_path / "checkpoint-100"
+    checkpoint.mkdir()
+    ok, message = backend.load_checkpoint(str(checkpoint), offload_layers = 0)
+    assert not ok
+    assert len(_SpillUnlessOffloaded.calls) == 1
+
+
+def test_load_checkpoint_forwards_explicit_offload_layers(monkeypatch, tmp_path):
+    _RecordingLoader.calls = []
+    mod, backend = _offload_backend(monkeypatch, _RecordingLoader)
+    checkpoint = tmp_path / "checkpoint-100"
+    checkpoint.mkdir()
+    ok, message = backend.load_checkpoint(str(checkpoint), offload_layers = 8)
+    assert ok, message
+    assert _RecordingLoader.calls[0]["offload_layers"] == 8
+
+
+def test_load_checkpoint_omits_fixed_offload_on_balanced_map(monkeypatch, tmp_path):
+    _RecordingLoader.calls = []
+    mod, backend = _offload_backend(monkeypatch, _RecordingLoader, {"device_map": "balanced"})
+    checkpoint = tmp_path / "checkpoint-100"
+    checkpoint.mkdir()
+    ok, message = backend.load_checkpoint(str(checkpoint), offload_layers = 8)
+    assert ok, message
+    assert "offload_layers" not in _RecordingLoader.calls[0]
+    assert _RecordingLoader.calls[0]["device_map"] == "balanced"
+
+
 def test_whisper_checkpoint_loads_with_its_processor_like_training(monkeypatch, tmp_path):
     mod = _export_mod(monkeypatch)
     _RecordingLoader.calls = []

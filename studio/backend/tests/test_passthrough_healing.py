@@ -890,11 +890,15 @@ class TestNudgeRetryOpenai:
                     cancel_event = cancel_event,
                 )
             )
-            await asyncio.wait_for(hanging.started.wait(), 0.2)
+            # Both waits only bound a hang, so they are generous: reaching the retry is a whole
+            # upstream round trip plus the nudge decision, 30-60 ms idle but past 1 s on a
+            # saturated CI runner, which a 0.2 s cap turned into a TimeoutError. An absorbed
+            # cancel still fails: the task then waits on the hanging client and never raises.
+            await asyncio.wait_for(hanging.started.wait(), 10)
             cancel_event.set()
 
             with pytest.raises(inf_mod._NonStreamingRequestCancelled):
-                await asyncio.wait_for(task, 0.5)
+                await asyncio.wait_for(task, 10)
 
             assert hanging.closed.is_set()
 

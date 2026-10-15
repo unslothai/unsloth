@@ -1686,6 +1686,7 @@ class UnslothTrainer:
         use_rslora,
         use_loftq,
         use_dora,
+        random_state = 3407,
     ) -> bool:
         """LoRA for a text-diffusion model through its profile. Studio's default target list names
         autoregressive projections (LLaDA has none of o/gate/down_proj, and the MoE families must keep their
@@ -1734,7 +1735,7 @@ class UnslothTrainer:
             lora_dropout = lora_dropout,
             bias = "none",
             use_gradient_checkpointing = bool(use_gradient_checkpointing),
-            random_state = 3407,
+            random_state = random_state,
         )
         if modules_to_save:
             peft_kwargs["modules_to_save"] = modules_to_save
@@ -1764,6 +1765,7 @@ class UnslothTrainer:
         use_loftq: bool = False,
         use_dora: bool = False,
         modules_to_save: list = None,
+        random_state: int = 3407,
     ) -> bool:
         try:
             if self.model is None:
@@ -1831,6 +1833,7 @@ class UnslothTrainer:
                     use_rslora = use_rslora,
                     use_loftq = use_loftq,
                     use_dora = use_dora,
+                    random_state = random_state,
                 )
 
             # LoRA/QLoRA. "all-linear" is a PEFT keyword targeting every linear layer.
@@ -1891,7 +1894,7 @@ class UnslothTrainer:
                     lora_dropout = lora_dropout,
                     bias = "none",
                     use_gradient_checkpointing = use_gradient_checkpointing,
-                    random_state = 3407,
+                    random_state = random_state,
                     use_rslora = use_rslora,
                     use_dora = use_dora,
                     **_loftq_peft_kwargs(use_loftq),
@@ -1922,7 +1925,7 @@ class UnslothTrainer:
                     lora_dropout = lora_dropout,
                     bias = "none",
                     use_gradient_checkpointing = use_gradient_checkpointing,
-                    random_state = 3407,
+                    random_state = random_state,
                     use_rslora = use_rslora,
                     use_dora = use_dora,
                     **_loftq_peft_kwargs(use_loftq),
@@ -1942,7 +1945,7 @@ class UnslothTrainer:
                     lora_dropout = lora_dropout,
                     bias = "none",
                     use_gradient_checkpointing = use_gradient_checkpointing,
-                    random_state = 3407,
+                    random_state = random_state,
                     use_rslora = use_rslora,
                     use_dora = use_dora,
                     **_loftq_peft_kwargs(use_loftq),
@@ -1967,7 +1970,7 @@ class UnslothTrainer:
                     lora_dropout = lora_dropout,
                     bias = "none",
                     use_gradient_checkpointing = use_gradient_checkpointing,
-                    random_state = 3407,
+                    random_state = random_state,
                     use_rslora = use_rslora,
                     use_dora = use_dora,
                     **_loftq_peft_kwargs(use_loftq),
@@ -1988,7 +1991,7 @@ class UnslothTrainer:
                     lora_dropout = lora_dropout,
                     bias = "none",
                     use_gradient_checkpointing = use_gradient_checkpointing,
-                    random_state = 3407,
+                    random_state = random_state,
                     use_rslora = use_rslora,
                     use_dora = use_dora,
                     **_loftq_peft_kwargs(use_loftq),

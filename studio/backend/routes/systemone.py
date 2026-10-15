@@ -40,6 +40,9 @@ MAX_QUESTION_CHARS = 20_000
 MAX_IMAGES = 4
 MAX_IMAGE_BYTES = 4 * 1024 * 1024
 MAX_IMAGES_BYTES = 8 * 1024 * 1024
+# As many clips as unsloth-zoo's MLX engine takes; 40 MiB holds the 20 minutes it hears as 16 kHz mono WAV.
+MAX_AUDIO = 8
+MAX_AUDIO_BYTES = 40 * 1024 * 1024
 # What llama.cpp's mtmd decodes in-process (stb_image); WebP needs an ffmpeg it may not have.
 _IMAGE_TYPES = {"image/png": "PNG", "image/jpeg": "JPEG"}
 _TYPES = ("noul", "choice", "score")
@@ -69,6 +72,7 @@ class SystemOneRequest(BaseModel):
     questions: dict[str, QuestionIn] = Field(min_length = 1)
     # OpenJev's image extension: base64 data URLs, served by a Clef model through llama.cpp.
     images: Optional[list[str]] = None
+    audio: Optional[list[str]] = None
 
 
 def _error(
@@ -160,7 +164,9 @@ async def system_one(
         )
     if checkpoint is None:
         raise _error(400, "api_usage_error", f"Unknown model: {payload.model}")
-    result = await _decide(checkpoint, payload.state, payload.questions, payload.images)
+    result = await _decide(
+        checkpoint, payload.state, payload.questions, payload.images, payload.audio
+    )
     headers = {"x-typesafe-request-id": str(uuid4())}
     if isinstance(checkpoint, catalog.Checkpoint):
         headers["x-unsloth-decision-backend"] = result.pop("_backend", "pytorch")
@@ -212,6 +218,35 @@ def _validate_images(images: list[str]) -> None:
             )
 
 
+def _validate_audio(audio: list[str]) -> None:
+    # Shape and size only: the engine that hears the clips decodes them, and refuses what it cannot.
+    if len(audio) > MAX_AUDIO:
+        raise _error(422, "invalid_request_error", f"At most {MAX_AUDIO} audio clips per request")
+    total = 0
+    for index, url in enumerate(audio):
+        header, comma, data = url.partition(",")
+        kind = header.removeprefix("data:audio/").removesuffix(";base64")
+        if not comma or not kind or header != f"data:audio/{kind};base64":
+            raise _error(
+                422,
+                "invalid_request_error",
+                f"audio[{index}] must be a base64 audio data URL; remote URLs are not fetched",
+            )
+        total += 3 * len(data) // 4
+        if not data or total > MAX_AUDIO_BYTES:
+            raise _error(
+                422,
+                "invalid_request_error",
+                f"All audio clips together must be at most {MAX_AUDIO_BYTES // 1024**2} MiB",
+            )
+        try:
+            base64.b64decode(data, validate = True)
+        except (binascii.Error, ValueError):
+            raise _error(
+                422, "invalid_request_error", f"audio[{index}] is not valid base64"
+            ) from None
+
+
 MAX_IMAGE_PIXELS = 4096 * 4096
 
 
@@ -239,6 +274,7 @@ async def _decide(
     state: JSONContent,
     questions: dict[str, QuestionIn],
     images: list[str] | None = None,
+    audio: list[str] | None = None,
 ) -> dict:
     if not questions:
         raise _error(422, "invalid_request_error", "At least one question is required")
@@ -259,6 +295,12 @@ async def _decide(
             raise _error(
                 400, "api_usage_error", "Images are not forwarded to Decision API connections"
             )
+    if audio:
+        _validate_audio(audio)
+        if isinstance(checkpoint, catalog.Connection):
+            raise _error(
+                400, "api_usage_error", "Audio is not forwarded to Decision API connections"
+            )
 
     if isinstance(checkpoint, catalog.Connection):
         return await _connection_decide(
@@ -273,6 +315,7 @@ async def _decide(
             state,
             {name: q.model_dump() for name, q in questions.items()},
             images or None,
+            audio or None,
         )
     except laya_runtime.Unavailable as exc:
         raise _error(exc.status, exc.error_type, exc.message, exc.retry_after) from None

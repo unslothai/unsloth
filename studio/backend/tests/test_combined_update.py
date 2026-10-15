@@ -169,7 +169,7 @@ def _clean_state(monkeypatch, tmp_path):
     monkeypatch.setattr(
         aupd,
         "chained_phase_plan",
-        lambda: {
+        lambda **_kw: {
             "status": None,
             "update_available": False,
             "skip_reason": "not_installed",
@@ -257,8 +257,8 @@ def _setup_audio(
     """An offered audio.cpp phase whose runs are recorded instead of installing."""
     plans = []
 
-    def _plan():
-        plans.append("audio")
+    def _plan(**kw):
+        plans.append(("audio", kw))
         return {
             "status": dict(_AUDIO_STATUS),
             "update_available": True,
@@ -1014,6 +1014,15 @@ def test_status_union_audio_only_surfaces_update(monkeypatch, tmp_path):
     assert st["installed_tag"] == "b9518"
 
 
+@pytest.mark.parametrize("force_refresh", [True, False])
+def test_status_force_refresh_reaches_audio(monkeypatch, tmp_path, force_refresh):
+    _setup_llama(monkeypatch, tmp_path, installed = "b9518", latest = "b9518")
+    _setup_whisper(monkeypatch, tmp_path, installed = "v1.9.2-unsloth.1", latest = "v1.9.2-unsloth.1")
+    plans = _setup_audio(monkeypatch, [])
+    upd.get_update_status(force_refresh = force_refresh)
+    assert plans == [("audio", {"force_refresh": force_refresh})]
+
+
 def test_status_llama_keeps_the_card_name_over_audio(monkeypatch, tmp_path):
     _setup_llama(monkeypatch, tmp_path)
     _setup_audio(monkeypatch, [])
@@ -1032,7 +1041,7 @@ def test_status_whisper_keeps_the_card_name_over_audio(monkeypatch, tmp_path):
 def test_status_survives_audio_probe_failure(monkeypatch, tmp_path):
     _setup_llama(monkeypatch, tmp_path)
 
-    def _boom():
+    def _boom(**_kw):
         raise RuntimeError("probe exploded")
 
     monkeypatch.setattr(aupd, "chained_phase_plan", _boom)

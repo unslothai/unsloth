@@ -2789,28 +2789,29 @@ def list_gguf_variants(
             )
         )
 
-    # Largest first; pinning and OOM demotion happen client-side where VRAM info exists.
+    # largest first; pinning and OOM demotion happen client-side with VRAM data.
     variants.sort(key = lambda v: -v.size_bytes)
 
     return variants, has_vision
 
 
 def _group_gguf_variant_files(entries: list[tuple[str, str, int]]) -> dict[str, tuple[str, int]]:
-    """MIRROR of ``hub.utils.gguf.group_gguf_variant_files`` over ``(name, quant, size)`` triples; ``routes/inference.py`` bills this size to the VRAM guard."""
-    families: dict[str, dict[tuple[str, int], list[tuple[str, int]]]] = {}
+    """mirror ``hub.utils.gguf.group_gguf_variant_files`` for consistent VRAM accounting."""
+    families: dict[str, dict[tuple[str, int], list[tuple[str, str, int]]]] = {}
     for name, quant, size in entries:
-        families.setdefault(quant, {}).setdefault(_gguf_shard_set(name), []).append(
-            (name, int(size or 0))
+        families.setdefault(quant.casefold(), {}).setdefault(_gguf_shard_set(name), []).append(
+            (name, quant, int(size or 0))
         )
     grouped: dict[str, tuple[str, int]] = {}
-    for quant, by_family in families.items():
-        chosen = min(by_family.values(), key = lambda members: min(n for n, _ in members))
-        grouped[quant] = (min(n for n, _ in chosen), sum(s for _, s in chosen))
+    for by_family in families.values():
+        chosen = min(by_family.values(), key = lambda members: min(n for n, _q, _s in members))
+        first_name, first_quant, _ = min(chosen, key = lambda member: member[0])
+        grouped[first_quant] = (first_name, sum(size for _name, _quant, size in chosen))
     return grouped
 
 
 def _resolve_gguf_dir(p: Path) -> Optional[Path]:
-    """Loose .gguf with no config beside it gives None, to avoid cross-wiring unrelated models."""
+    """resolve a GGUF directory; reject loose files without metadata to avoid mixing models."""
     if p.is_dir():
         return p
     if p.is_file() and p.suffix.lower() == ".gguf":

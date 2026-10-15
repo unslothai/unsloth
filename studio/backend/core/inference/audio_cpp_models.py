@@ -1754,7 +1754,13 @@ def runtime_spec(family: str) -> Optional[dict]:
 
 
 def runtime_knows_family(family: str) -> Optional[bool]:
-    """Prebuilt bundles lack model_specs/, so the pinned build uses audio_cpp_spec_families; else None."""
+    """Whether the installed runtime loads ``family``; None when Unsloth Studio cannot tell.
+
+    A runtime that ships ``model_specs/`` answers from it. The prebuilt bundles do not ship that
+    folder, so for the prebuilt releases in ``AUDIO_CPP_SPEC_FAMILIES_TAGS`` the families their
+    source tree specs are listed in ``audio_cpp_spec_families``. Any other runtime (no install, a
+    custom build, an unlisted tag) is unknown, and the spec's own tasks decide as before.
+    """
     if not family or not re.fullmatch(r"[a-z0-9_]+", family):
         return None
     try:
@@ -1778,10 +1784,10 @@ def runtime_knows_family(family: str) -> Optional[bool]:
         return None
     from core.inference.audio_cpp_spec_families import (
         AUDIO_CPP_SPEC_FAMILIES,
-        AUDIO_CPP_SPEC_FAMILIES_TAG,
+        AUDIO_CPP_SPEC_FAMILIES_TAGS,
     )
 
-    if tag != AUDIO_CPP_SPEC_FAMILIES_TAG:
+    if tag not in AUDIO_CPP_SPEC_FAMILIES_TAGS:
         return None
     return family in AUDIO_CPP_SPEC_FAMILIES
 

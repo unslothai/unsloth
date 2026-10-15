@@ -2075,3 +2075,28 @@ def test_the_diagnosis_does_not_report_a_model_this_account_cannot_see(monkeypat
         monkeypatch = monkeypatch,
     )
     assert "is downloaded, but this server cannot serve it here" in granted
+
+
+def test_vision_refusal_names_the_image_block_on_messages(hub, monkeypatch):
+    async def _no_mmproj(model, **kwargs):
+        return auto_dl.AutoDownloadRefusal(
+            status = 400, code = "invalid_value", message = "'x' ships no mmproj companion."
+        )
+
+    import utils.openai_auto_switch_settings as s
+
+    monkeypatch.setattr(auto_dl, "maybe_auto_download", _no_mmproj)
+    monkeypatch.setattr(s, "get_openai_auto_download_enabled", lambda: True)
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(
+            inference_route._maybe_auto_download_model(
+                "unsloth/text-GGUF",
+                _Req(path = "/v1/messages"),
+                require_vision = True,
+                rejection_prefix = "messages.0.content.1.image: ",
+            )
+        )
+    assert excinfo.value.status_code == 400
+    assert excinfo.value.detail["error"]["message"] == (
+        "messages.0.content.1.image: 'x' ships no mmproj companion."
+    )

@@ -2269,7 +2269,7 @@ async def get_gguf_variants_response(
     hf_token: Optional[str] = None,
     include_cache_locations: bool = False,
 ) -> GgufVariantsResponse:
-    """The listing alone, for callers that do not read metadata off the same copy."""
+    """return the listing without same-copy metadata."""
     answer = await get_gguf_variants_answer(
         repo_id,
         prefer_local_cache = prefer_local_cache,
@@ -2279,3 +2279,17 @@ async def get_gguf_variants_response(
         include_cache_locations = include_cache_locations,
     )
     return answer.response
+
+
+async def cached_gguf_variant_source_path(
+    repo_id: str,
+    variant: str,
+    hf_token: Optional[str] = None,
+) -> Optional[str]:
+    """return the exact cached file selected after online readiness checks."""
+    answer = await get_gguf_variants_answer(
+        repo_id,
+        hf_token = hf_token,
+        include_cache_locations = True,
+    )
+    return (answer.variant_context_sources or {}).get((variant or "").strip().lower())

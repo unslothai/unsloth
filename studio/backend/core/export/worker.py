@@ -334,6 +334,7 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
             checkpoint_path = checkpoint_path,
             max_seq_length = max_seq_length,
             load_in_4bit = load_in_4bit,
+            offload_layers = cmd.get("offload_layers", "auto"),
             trust_remote_code = trust_remote_code,
             hf_token = hf_token,
             base_model = base_model,

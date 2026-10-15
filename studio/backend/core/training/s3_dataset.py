@@ -259,13 +259,21 @@ def _rewrite_row(row, resolve) -> None:
     if not isinstance(row, dict):
         return
     for column, value in row.items():
-        replacement = resolve(value)
+        row[column] = _rewritten(value, resolve)
+
+
+def _rewritten(value, resolve):
+    replacement = resolve(value)
+    if replacement is not None:
+        return replacement
+    if isinstance(value, dict):
+        # HF undecoded audio: {"path": ..., "bytes": ...}
+        replacement = resolve(value.get("path"))
         if replacement is not None:
-            row[column] = replacement
-        elif isinstance(value, dict):
-            replacement = resolve(value.get("path"))
-            if replacement is not None:
-                value["path"] = replacement
+            value["path"] = replacement
+    elif isinstance(value, list):
+        return [_rewritten(item, resolve) for item in value]
+    return value
 
 
 def _rewrite_json_manifest(manifest_path: str, resolve) -> None:

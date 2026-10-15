@@ -354,19 +354,19 @@ def _merge_whisper_status(status: dict, *, force_refresh: bool = False) -> dict:
     return status
 
 
-def _audio_chain_status() -> Optional[dict]:
+def _audio_chain_status(*, force_refresh: bool = False) -> Optional[dict]:
     """audio.cpp's plan for the combined update item. None disables it: fail-open like the whisper probe."""
     try:
         from utils import audio_cpp_update
-        return audio_cpp_update.chained_phase_plan()
+        return audio_cpp_update.chained_phase_plan(force_refresh = force_refresh)
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("llama update: audio.cpp probe failed", error = str(exc))
         return None
 
 
-def _merge_audio_status(status: dict) -> dict:
+def _merge_audio_status(status: dict, *, force_refresh: bool = False) -> dict:
     """Fold the audio.cpp sub-status in after whisper's: it joins the update_available union and names the component only when neither llama.cpp nor whisper.cpp is pending."""
-    plan = _audio_chain_status()
+    plan = _audio_chain_status(force_refresh = force_refresh)
     if plan is None:
         status["audio"] = None
         return status
@@ -390,7 +390,7 @@ def get_update_status(*, force_refresh: bool = False) -> dict:
     """Report whether an update is available plus the job state. This is the single main update item: llama.cpp drives it and the whisper and audio.cpp phases are folded in (_merge_whisper_status, _merge_audio_status). force_refresh bypasses the 24h release cache for an explicit "check now"."""
     status = _llama_only_status(force_refresh = force_refresh)
     status = _merge_whisper_status(status, force_refresh = force_refresh)
-    return _merge_audio_status(status)
+    return _merge_audio_status(status, force_refresh = force_refresh)
 
 
 def get_update_changelog(

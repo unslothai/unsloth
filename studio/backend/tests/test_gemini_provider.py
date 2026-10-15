@@ -1132,6 +1132,46 @@ def test_vision_data_url_translates_to_inline_data(monkeypatch):
     assert inline_parts[0]["inlineData"] == {"mimeType": "image/jpeg", "data": fake}
 
 
+def _image_turns(images: list[bytes]) -> list[dict]:
+    messages: list[dict] = []
+    for idx, image in enumerate(images):
+        data_url = f"data:image/jpeg;base64,{base64.b64encode(image).decode()}"
+        messages.append(
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": f"photo {idx + 1}"},
+                    {"type": "image_url", "image_url": {"url": data_url}},
+                ],
+            }
+        )
+        messages.append({"role": "assistant", "content": f"reply {idx + 1}"})
+    return messages[:-1]
+
+
+def _turns_with_image(captured) -> list[bool]:
+    return [
+        any("inlineData" in p for p in c["parts"])
+        for c in captured["body"]["contents"]
+        if c["role"] == "user"
+    ]
+
+
+def test_newest_image_survives_the_per_request_image_count_cap(monkeypatch):
+    messages = _image_turns([f"JPG{idx}".encode() for idx in range(10)])
+    captured = _capture_body(monkeypatch, messages = messages)
+    assert _turns_with_image(captured) == [False, False] + [True] * 8
+
+
+def test_newest_image_survives_the_per_request_image_byte_cap(monkeypatch):
+    messages = _image_turns([bytes([idx]) * (5 * 1024 * 1024) for idx in range(3)])
+    captured = _capture_body(monkeypatch, messages = messages)
+    assert _turns_with_image(captured) == [False, True, True]
+
+
+# ── finish reason mapping ────────────────────────────────────────────
+
+
 @pytest.mark.parametrize(
     "gemini_reason, openai_reason",
     [

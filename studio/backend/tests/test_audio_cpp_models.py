@@ -354,19 +354,14 @@ def _fake_runtime(
     return binary
 
 
-def test_the_spec_family_list_matches_the_pinned_runtime():
-    import importlib.util
-
+def test_the_spec_family_list_covers_the_published_runtimes():
     from core.inference.audio_cpp_spec_families import (
         AUDIO_CPP_SPEC_FAMILIES,
-        AUDIO_CPP_SPEC_FAMILIES_TAG,
+        AUDIO_CPP_SPEC_FAMILIES_TAGS,
     )
 
-    installer = Path(__file__).resolve().parents[2] / "install_audio_cpp_prebuilt.py"
-    spec = importlib.util.spec_from_file_location("_audio_cpp_installer", installer)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    assert AUDIO_CPP_SPEC_FAMILIES_TAG == module.DEFAULT_TAG
+    # Both releases ship the same model_specs/ stems, so a v0.9.0 install keeps the up-front refusal.
+    assert {"v0.9.0-unsloth.1", "v0.9.1-unsloth.1"} <= AUDIO_CPP_SPEC_FAMILIES_TAGS
     for family in ("crisperwhisper", "index_echo", "audio_flamingo", "kugelaudio", "smart_turn"):
         assert family not in AUDIO_CPP_SPEC_FAMILIES
     for family in ("samsone", "gigaam_asr", "maya1"):
@@ -374,31 +369,30 @@ def test_the_spec_family_list_matches_the_pinned_runtime():
     assert set(acm.FAMILIES) - AUDIO_CPP_SPEC_FAMILIES == {"marblenet_vad", "silero_vad"}
 
 
-def test_runtime_knows_a_family_from_its_specs_or_the_pinned_list(monkeypatch, tmp_path):
+def test_runtime_knows_a_family_from_its_specs_or_the_listed_tags(monkeypatch, tmp_path):
     from core.inference import audio_cpp_server
-    from core.inference.audio_cpp_spec_families import AUDIO_CPP_SPEC_FAMILIES_TAG
 
     monkeypatch.setattr(audio_cpp_server, "find_audio_cpp_server_binary", lambda: None)
     assert acm.runtime_knows_family("samsone") is None
-    _fake_runtime(monkeypatch, tmp_path / "pinned", tag = AUDIO_CPP_SPEC_FAMILIES_TAG)
-    assert acm.runtime_knows_family("samsone") is True
-    assert acm.runtime_knows_family("crisperwhisper") is False
+    for tag in ("v0.9.0-unsloth.1", "v0.9.1-unsloth.1"):
+        _fake_runtime(monkeypatch, tmp_path / tag, tag = tag)
+        assert acm.runtime_knows_family("samsone") is True
+        assert acm.runtime_knows_family("crisperwhisper") is False
     _fake_runtime(monkeypatch, tmp_path / "newer", tag = "v9.9.9-unsloth.1")
     assert acm.runtime_knows_family("crisperwhisper") is None
     _fake_runtime(monkeypatch, tmp_path / "custom")
     assert acm.runtime_knows_family("crisperwhisper") is None
     _fake_runtime(
-        monkeypatch, tmp_path / "specs", tag = AUDIO_CPP_SPEC_FAMILIES_TAG, specs = ("crisperwhisper",)
+        monkeypatch, tmp_path / "specs", tag = "v0.9.1-unsloth.1", specs = ("crisperwhisper",)
     )
     assert acm.runtime_knows_family("crisperwhisper") is True
     assert acm.runtime_knows_family("samsone") is False
 
 
 def test_a_spec_fallback_family_the_runtime_lacks_is_refused(hub, monkeypatch, tmp_path):
-    from core.inference.audio_cpp_spec_families import AUDIO_CPP_SPEC_FAMILIES_TAG
-
+    # The hub fixture leaves the runtime out of reach; this test installs one.
     monkeypatch.setattr(acm, "runtime_knows_family", _REAL_RUNTIME_KNOWS_FAMILY)
-    _fake_runtime(monkeypatch, tmp_path, tag = AUDIO_CPP_SPEC_FAMILIES_TAG)
+    _fake_runtime(monkeypatch, tmp_path, tag = "v0.9.1-unsloth.1")
     for family, folder, tasks in (
         ("gigaam_asr", "GigaAM-v3-GGUF", ["asr"]),
         ("crisperwhisper", "CrisperWhisper2.0-GGUF", ["asr"]),

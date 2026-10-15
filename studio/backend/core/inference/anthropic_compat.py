@@ -569,15 +569,33 @@ def build_anthropic_sse_event(event_type: str, data: dict) -> str:
     return f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
 
 
+def cached_prompt_tokens(usage: Optional[dict]) -> Optional[int]:
+    """Prompt tokens the server reused from its cache (llama-server ``prompt_tokens_details``), or None."""
+    details = (usage or {}).get("prompt_tokens_details")
+    cached = details.get("cached_tokens") if isinstance(details, dict) else None
+    if isinstance(cached, bool) or not isinstance(cached, (int, float)):
+        return None
+    return max(0, int(cached))
+
+
+def anthropic_input_split(usage: Optional[dict]) -> tuple[int, int]:
+    """(input_tokens, cache_read_input_tokens): Anthropic counts cache reads apart from input, so the two
+    still sum to the prompt. Nothing is ever reported as cache creation."""
+    usage = usage or {}
+    prompt = int(usage.get("prompt_tokens") or 0)
+    cached = min(prompt, cached_prompt_tokens(usage) or 0)
+    return prompt - cached, cached
+
+
 def _message_delta_usage(usage: Optional[dict]) -> dict:
-    """Usage block for a message_delta event (cumulative token counts). Cache
-    fields are always 0 — no prompt caching backend. ``usage`` may be None when a
+    """Usage block for a message_delta event (cumulative token counts). ``usage`` may be None when a
     metadata event carried usage=None (e.g. only finish_reason set)."""
     usage = usage or {}
+    input_tokens, cache_read = anthropic_input_split(usage)
     return {
-        "input_tokens": usage.get("prompt_tokens", 0),
+        "input_tokens": input_tokens,
         "cache_creation_input_tokens": 0,
-        "cache_read_input_tokens": 0,
+        "cache_read_input_tokens": cache_read,
         "output_tokens": usage.get("completion_tokens", 0),
     }
 

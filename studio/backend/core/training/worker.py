@@ -4624,6 +4624,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 use_rslora = config.get("use_rslora", False),
                 use_loftq = _lora_uses_loftq(config),
                 use_dora = config.get("use_dora", False),
+                random_state = config.get("random_seed", 3407),
             )
         elif use_lora:
             _send_status(event_queue, "Configuring LoRA adapters...")
@@ -4641,6 +4642,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 use_rslora = config.get("use_rslora", False),
                 use_loftq = _lora_uses_loftq(config),
                 use_dora = config.get("use_dora", False),
+                random_state = config.get("random_seed", 3407),
             )
         else:
             _send_status(event_queue, "Preparing model for full finetuning...")

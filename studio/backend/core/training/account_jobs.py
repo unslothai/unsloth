@@ -413,7 +413,7 @@ def retire_account_jobs(account: AccountContext) -> None:
     from hub.services.models.downloads import (
         retire_account_downloads as retire_account_model_downloads,
     )
-    from core.rag import folder_sync, ingestion
+    from core.rag import folder_sync, ingestion, reembed
     from core.research_runs import retire_account_research
     from routes.inference import retire_stt_downloads
 
@@ -422,6 +422,7 @@ def retire_account_jobs(account: AccountContext) -> None:
         retire_account_model_downloads,
         retire_stt_downloads,
         ingestion.retire_account_ingestions,
+        reembed.retire_account_reembed,
         folder_sync.retire_account_sync,
         lambda: retire_account_research(account),
     ):

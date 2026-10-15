@@ -129,6 +129,7 @@ def cached_gguf_sources(repo_id: str, *, scoped_ready = None) -> dict[str, Cache
                     sources[key] = CachedGgufSource(variant, snapshot, has_vision)
                 partials.pop(key, None)
                 continue
+            # keep interrupted split quants as partial resume sources
             partials.setdefault(
                 key, CachedGgufSource(variant, snapshot, has_vision, incomplete = True)
             )
@@ -141,9 +142,30 @@ def cached_gguf_action_path(
     repo_id: str,
     variant: str | None,
     cache_path: str | None = None,
+    preferred_path: str | None = None,
 ) -> str | None:
-    """An explicit folder wins; logical quant actions use the same source as the listing."""
+    """use an explicit folder first; otherwise use the source selected by the listing."""
     if cache_path or not variant:
         return cache_path
+    if preferred_path:
+        expected = f"models--{repo_id.replace('/', '--')}".lower()
+        try:
+            selected = Path(preferred_path).expanduser()
+        except (OSError, RuntimeError, ValueError):
+            selected = None
+        repo_dir = (
+            next(
+                (
+                    candidate
+                    for candidate in (selected, *selected.parents)
+                    if candidate.name.lower() == expected
+                ),
+                None,
+            )
+            if selected is not None
+            else None
+        )
+        if repo_dir is not None:
+            return str(repo_dir)
     source = cached_gguf_sources(repo_id).get(variant.lower())
     return source.cache_path if source else None

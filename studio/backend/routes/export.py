@@ -139,6 +139,7 @@ async def load_checkpoint(
             base_model = base_model,
             max_seq_length = request.max_seq_length,
             load_in_4bit = load_in_4bit,
+            offload_layers = request.offload_layers,
             trust_remote_code = request.trust_remote_code,
             approved_remote_code_fingerprint = request.approved_remote_code_fingerprint,
             hf_token = export_hf_token,

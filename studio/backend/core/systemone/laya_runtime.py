@@ -159,8 +159,11 @@ def _engine_available() -> bool:
 
 def _mlx_target(checkpoint: Checkpoint) -> Checkpoint | None:
     """What unsloth-zoo's MLX engine serves in process on Apple Silicon: a merged Clef's own folder, or the source repo of a GGUF entry."""
-    if _is_mlx(checkpoint) or not _engine_available():
+    if not _engine_available():
         return None
+    if _is_mlx(checkpoint):
+        # Only a catalog entry is its own MLX form; a target has none further.
+        return checkpoint if CHECKPOINTS.get(checkpoint.name) == checkpoint else None
     if checkpoint.layout == "clef":
         if checkpoint.is_local:
             from utils.models.model_config import clef_folder_kind
@@ -179,18 +182,18 @@ def _mlx_target(checkpoint: Checkpoint) -> Checkpoint | None:
     )
 
 
-def _mlx_reads_images(checkpoint: Checkpoint) -> bool:
-    """Whether the MLX form of an entry reads images: a Clef with its vision tower and processor, on an unsloth-zoo that reads them."""
+def _mlx_reads(checkpoint: Checkpoint, media: str) -> bool:
+    """Whether the MLX form of an entry reads `media` ("images" or "audio"): a Clef with that tower and its processor, on an unsloth-zoo that reads it."""
     if checkpoint.layout != "clef" or _mlx_target(checkpoint) is None:
         return False
     try:
         from unsloth_zoo.mlx.decision import ClefModel
     except Exception:
         return False
-    if not getattr(ClefModel, "takes_images", False):
+    if not getattr(ClefModel, f"takes_{media}", False):
         return False
     if not checkpoint.is_local:
-        return True
+        return media == "images" or checkpoint.audio
     import json
 
     folder = Path(checkpoint.source).expanduser()
@@ -198,14 +201,24 @@ def _mlx_reads_images(checkpoint: Checkpoint) -> bool:
         config = json.loads((folder / "config.json").read_text(encoding = "utf-8"))
     except (OSError, ValueError):
         return False
-    return (
-        isinstance(config, dict)
-        and config.get("vision_config") is not None
-        and any(
-            (folder / name).is_file()
-            for name in ("processor_config.json", "preprocessor_config.json")
-        )
+    if not isinstance(config, dict):
+        return False
+    # Qwen3-Omni keeps its towers under the thinker, Phi-4-multimodal under `embd_layer`; Nemotron Omni hears through a sound tower.
+    parts = (config, config.get("thinker_config"), config.get("embd_layer"))
+    towers = (
+        ("vision_config", "image_embd_layer")
+        if media == "images"
+        else ("audio_config", "sound_config", "audio_embd_layer")
     )
+    return any(
+        isinstance(part, dict) and part.get(tower) is not None for part in parts for tower in towers
+    ) and any(
+        (folder / name).is_file() for name in ("processor_config.json", "preprocessor_config.json")
+    )
+
+
+def _mlx_reads_images(checkpoint: Checkpoint) -> bool:
+    return _mlx_reads(checkpoint, "images")
 
 
 def _mlx_repos(companion) -> tuple:
@@ -422,14 +435,44 @@ def select(
     questions = None,
     preference: str | None = None,
     state_images: bool = False,
+    audio = None,
 ) -> tuple[Checkpoint, str | None]:
-    """Laya always runs on PyTorch; Auto otherwise picks llama.cpp for a GGUF entry, else PyTorch."""
+    """(what serves this request, why Auto did not pick llama.cpp); raises for what nothing here can serve.
+
+    Auto takes llama.cpp when the entry has a GGUF and Studio's llama-server serves decisions, else PyTorch;
+    on Apple Silicon it answers through unsloth-zoo's MLX engine first.
+    Images are read by llama.cpp, and by MLX for a Clef. Audio is heard only by MLX, for a Clef with an audio tower.
+    Laya is always served by PyTorch, a GGUF entry otherwise by llama.cpp.
+    """
     from utils.systemone_settings import get_backend
 
     from .native_worker import request_gap
 
     # Only route-checked images reach MLX: state images would be decoded unvalidated in this process.
     unread = bool(state_images or (images and not _mlx_reads_images(checkpoint)))
+    if audio:
+        # No other runtime hears, so nothing else may answer as if the clips were not sent.
+        if not _mlx_reads(checkpoint, "audio"):
+            raise Unavailable(
+                400,
+                "api_usage_error",
+                f"{checkpoint.name} does not hear audio here; audio needs a Clef with an audio tower, served by MLX on Apple Silicon.",
+            )
+        if (preference or get_backend()) not in ("auto", MLX):
+            raise Unavailable(
+                400,
+                "api_usage_error",
+                "Audio is served only by MLX; set the Decision API runtime to Auto or MLX.",
+            )
+        return _select_mlx(checkpoint, unread), None
+    if _is_mlx(checkpoint):
+        if (preference or get_backend()) not in ("auto", MLX):
+            raise Unavailable(
+                400,
+                "api_usage_error",
+                f"{checkpoint.name} is served only by MLX; set the Decision API runtime to Auto or MLX.",
+            )
+        return _select_mlx(checkpoint, unread), None
     if (preference or get_backend()) == MLX and checkpoint.layout in ("clef", GGUF):
         return _select_mlx(checkpoint, unread), None
     mlx = _mlx_choice(
@@ -495,6 +538,10 @@ def _select_mlx(checkpoint: Checkpoint, unread) -> Checkpoint:
         return target
     else:
         reason = f"{checkpoint.name} has no MLX form."
+    if _is_mlx(checkpoint):
+        raise Unavailable(
+            400, "api_usage_error", f"{checkpoint.name} is served only by MLX. {reason}"
+        )
     raise Unavailable(400, "api_usage_error", f"{reason} Set the Decision API runtime to Auto.")
 
 
@@ -569,9 +616,15 @@ def native_ready(checkpoint) -> bool:
 
 
 def input_modalities(checkpoint) -> list[str]:
-    """What this entry reads here: images too when llama.cpp serves it with a vision projector, or MLX a Clef that has its tower."""
-    if mlx_ready(checkpoint) and _mlx_reads_images(checkpoint):
-        return ["text", "image"]
+    """What this entry reads here: images too when llama.cpp serves it with a vision projector, or MLX a Clef that has its tower; audio when MLX serves a Clef that hears."""
+    if mlx_ready(checkpoint):
+        media = [
+            kind
+            for kind, media in (("image", "images"), ("audio", "audio"))
+            if _mlx_reads(checkpoint, media)
+        ]
+        if media:
+            return ["text", *media]
     if not native_ready(checkpoint):
         return ["text"]
     return ["text", "image"] if _native_reads_images(_native_target(checkpoint)) else ["text"]
@@ -921,6 +974,7 @@ class _EngineAgent:
         state,
         questions: dict[str, dict[str, Any]],
         images = None,
+        audio = None,
     ) -> dict[str, Any]:
         from unsloth_zoo.mlx.decision import DecisionRequestError, DecisionUnsupportedError
 
@@ -958,11 +1012,9 @@ class _EngineAgent:
                         f"The state is longer than the {limit} tokens this model reads beside a question. Shorten it.",
                     )
         try:
-            return (
-                self.model.answer(state, questions, images)
-                if images
-                else self.model.answer(state, questions)
-            )
+            # Only what was sent is passed, so an unsloth-zoo that takes less still answers text.
+            media = (images, audio) if audio else (images,) if images else ()
+            return self.model.answer(state, questions, *media)
         except DecisionUnsupportedError as exc:
             raise Unavailable(501, "not_supported_error", str(exc)) from None
         except DecisionRequestError as exc:
@@ -2083,16 +2135,23 @@ def decide(
     state,
     questions: dict[str, dict[str, Any]],
     images: list[str] | None = None,
+    audio: list[str] | None = None,
 ) -> dict[str, Any]:
     if not _admission.acquire(blocking = False):
         raise Unavailable(529, "overloaded", "System One is busy; retry shortly", retry_after = 1)
     try:
-        return _route(checkpoint, state, questions, images or None)
+        return _route(checkpoint, state, questions, images or None, audio or None)
     finally:
         _admission.release()
 
 
-def _route(checkpoint: Checkpoint, state, questions, images) -> dict[str, Any]:
+def _route(
+    checkpoint: Checkpoint,
+    state,
+    questions,
+    images,
+    audio = None,
+) -> dict[str, Any]:
     global _fallback_reason
     from utils.systemone_settings import get_backend
 
@@ -2105,11 +2164,11 @@ def _route(checkpoint: Checkpoint, state, questions, images) -> dict[str, Any]:
         # A request, unlike a settings read, waits for device detection, so the first one already knows of MLX.
         hardware.get_device()
     state_images = _state_has_images(state)
-    target, reason = select(checkpoint, images, questions, state_images = state_images)
+    target, reason = select(checkpoint, images, questions, state_images = state_images, audio = audio)
     if checkpoint.layout != "laya":
         _fallback_reason = reason
     try:
-        return _decide(target, state, questions, images)
+        return _decide(target, state, questions, images, audio)
     except NativeContextOverflow as exc:
         # Auto answers on PyTorch only what its longer window can hold; at equal windows it would refuse too.
         from .catalog import clef_unsupported_reason
@@ -2151,6 +2210,7 @@ def _decide(
     state,
     questions: dict[str, dict[str, Any]],
     images: list[str] | None = None,
+    audio: list[str] | None = None,
 ) -> dict[str, Any]:
     global _last_used, _device_name
     agent = _agent_for(checkpoint, LOAD_WAIT_S)
@@ -2166,7 +2226,7 @@ def _decide(
             _last_used = time.monotonic()
             return result
         if _is_mlx(checkpoint):
-            result = agent.decide(state, questions, images)
+            result = agent.decide(state, questions, images, audio)
             _last_used = time.monotonic()
             return {
                 "model": checkpoint.name,

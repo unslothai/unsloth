@@ -144,6 +144,7 @@ def test_jsonl_audio_references_are_rewritten_to_local_paths(monkeypatch, tmp_pa
             json.dumps({"audio": "s3://my-bucket/datasets/audio/b.mp3", "text": "two"}),
             json.dumps({"audio": {"path": "audio/a.wav"}, "text": "three"}),
             json.dumps({"audio": "https://example.com/c.wav", "text": "four"}),
+            json.dumps({"audio": [{"path": "audio/a.wav"}, "audio/b.mp3"], "text": "five"}),
         ]
     )
     _install(
@@ -161,6 +162,7 @@ def test_jsonl_audio_references_are_rewritten_to_local_paths(monkeypatch, tmp_pa
     assert rows[1]["audio"] == local_b
     assert rows[2]["audio"]["path"] == local_a
     assert rows[3]["audio"] == "https://example.com/c.wav"
+    assert rows[4]["audio"] == [{"path": local_a}, local_b]
     assert all(os.path.isabs(p) for p in (rows[0]["audio"], rows[1]["audio"]))
     assert rows[0]["text"] == "one"
 

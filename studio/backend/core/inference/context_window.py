@@ -859,3 +859,151 @@ def fit_rolling_context(
         "context_length": context_length,
         "fits": True,
     }
+
+
+# withSandboxAttachmentPaths' note (sandbox-attachments.ts): only these attachments have a copy to point at.
+_SANDBOX_ATTACHMENT_NOTE_RE = re.compile(
+    r"\[(?P<name>[^\n]*?): its text is below, so answer from it\. For calculations, the python tool has the "
+    r'file at path = (?P<path>"(?:[^"\\\n]|\\.)*")(?:;[^\n]*)?\]\n'
+)
+# The frontend's wrapper tag (attachment, pasted_text, document_annotations); the cut goes inside it.
+_ATTACHMENT_OPEN_RE = re.compile(r"<(?P<tag>[A-Za-z_][\w-]*)(?:\s[^\n]*)?>\n")
+# Room left for the fit's own additions (carried block, recall), so a cut turn is not refused one step later.
+_ATTACHMENT_FIT_MARGIN = 0.125
+# No tokenizer packs more characters than this into one token, so a longer body cannot fit and is never counted.
+_MAX_CHARS_PER_TOKEN = 16
+
+
+def _attachment_spans(text: str):
+    """(note, open tag, inner text, close tag, trailing text) per sandbox-backed attachment."""
+    notes = list(_SANDBOX_ATTACHMENT_NOTE_RE.finditer(text))
+    for index, note in enumerate(notes):
+        end = notes[index + 1].start() if index + 1 < len(notes) else len(text)
+        body = text[note.end() : end]
+        opened = _ATTACHMENT_OPEN_RE.match(body)
+        closing = f"\n</{opened.group('tag')}>" if opened else ""
+        close = body.rfind(closing) if opened else -1
+        if opened and close >= opened.end():
+            yield (
+                note,
+                opened.group(0),
+                body[opened.end() : close],
+                closing,
+                body[close + len(closing) :],
+            )
+        else:
+            yield note, "", body, "", ""
+
+
+def _cut_attachment_bodies(text: str, keep_chars: int, *, excerpt: bool) -> str:
+    """Attachments longer than ``keep_chars`` keep their first whole lines (``excerpt``) or only their path."""
+    first = _SANDBOX_ATTACHMENT_NOTE_RE.search(text)
+    if not first:
+        return text
+    out = [text[: first.start()]]
+    for note, opened, inner, close, tail in _attachment_spans(text):
+        name, path = note.group("name"), note.group("path")
+        if len(inner) <= keep_chars:
+            out.append(note.group(0) + opened + inner + close + tail)
+            continue
+        total = inner.count("\n") + (0 if inner.endswith("\n") else 1)
+        kept = inner[:keep_chars] if excerpt else ""
+        kept = kept[: kept.rindex("\n") + 1] if "\n" in kept else ""
+        where = (
+            f"The whole file is at path = {path} in the python tool's working directory, so read the part you "
+            "need with python"
+        )
+        if kept:
+            out.append(
+                f"{note.group(0)}{opened}{kept[:-1]}{close}\n[{name} is too long for the context window: "
+                f"only its first {kept.count(chr(10))} of {total} lines are above. {where} instead of answering "
+                f"from this excerpt.]{tail}"
+            )
+        else:
+            out.append(
+                f"[{name} ({total} lines) is too long for the context window to show. {where}.]{tail}"
+            )
+    return "".join(out)
+
+
+def _cut_content(content: Any, keep_chars: int, *, excerpt: bool) -> Any:
+    if isinstance(content, str):
+        return _cut_attachment_bodies(content, keep_chars, excerpt = excerpt)
+    if isinstance(content, list):
+        return [
+            {**part, "text": _cut_attachment_bodies(part["text"], keep_chars, excerpt = excerpt)}
+            if isinstance(part, dict)
+            and part.get("type") == "text"
+            and isinstance(part.get("text"), str)
+            else part
+            for part in content
+        ]
+    return content
+
+
+def _attachment_body_chars(message: dict) -> int:
+    content = message.get("content")
+    if isinstance(content, str):
+        texts = [content]
+    elif isinstance(content, list):
+        texts = [
+            part["text"]
+            for part in content
+            if isinstance(part, dict) and isinstance(part.get("text"), str)
+        ]
+    else:
+        return 0
+    return max((len(span[2]) for text in texts for span in _attachment_spans(text)), default = 0)
+
+
+def fit_oversized_attachments(
+    messages: list[dict],
+    *,
+    context_length: int,
+    max_tokens: Optional[int],
+    count_tokens: Callable[[list[dict]], int],
+) -> list[dict]:
+    """Cut sandbox-backed attachments too big for the window: the newest turn keeps the start, older turns the path.
+
+    Decided per message, so a turn renders the same on every later request. Rewrites ``content`` in place:
+    eviction matches messages by identity, and a copy of the newest turn was archived as evicted.
+    """
+    if not context_length or context_length <= 1:
+        return messages
+    attached = [
+        index
+        for index, message in enumerate(messages)
+        if message.get("role") == "user" and _attachment_body_chars(message)
+    ]
+    if not attached:
+        return messages
+    budget = prompt_budget(context_length, max_tokens)
+    # The margin sizes a cut; it never decides one, or a file that fits would lose its end.
+    target = int(budget * (1 - _ATTACHMENT_FIT_MARGIN))
+    if count_tokens(messages) <= budget:
+        return messages
+    latest = max(index for index, message in enumerate(messages) if message.get("role") == "user")
+    base = [message for message in messages if message.get("role") == "system"]
+    for index in attached:
+        message = messages[index]
+        excerpt = index == latest
+        longest = _attachment_body_chars(message)
+
+        def fits(keep_chars: int, limit: int = target) -> bool:
+            content = _cut_content(message["content"], keep_chars, excerpt = excerpt)
+            return count_tokens([*base, {**message, "content": content}]) <= limit
+
+        cap = target * _MAX_CHARS_PER_TOKEN
+        if (longest <= budget * _MAX_CHARS_PER_TOKEN and fits(longest, budget)) or (
+            excerpt and not fits(0, budget)
+        ):
+            continue
+        low, high = 0, min(longest, cap) if fits(0) else 0
+        while high - low > 64:
+            middle = (low + high) // 2
+            if fits(middle):
+                low = middle
+            else:
+                high = middle
+        message["content"] = _cut_content(message["content"], low, excerpt = excerpt)
+    return messages

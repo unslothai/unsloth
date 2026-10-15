@@ -86,6 +86,22 @@ def _load_in_4bit_kwargs(load_in_4bit: bool) -> dict:
     return {} if load_in_4bit else {"load_in_4bit": False}
 
 
+# Export merges one module at a time and trains nothing, so the auto plan keeps 1 GiB for that, not a training step.
+_EXPORT_AUTO_OFFLOAD_KWARGS = {
+    "offload_layers": "auto",
+    "device_map_planner_kwargs": {"reserve_bytes": 1 << 30},
+}
+
+
+def _offload_layers_kwargs(offload_layers, device_map_kw: Optional[dict] = None) -> dict:
+    if not offload_layers or offload_layers == "auto":
+        return {}
+    # A fixed count loads onto one card; core raises on a multi-GPU map.
+    if (device_map_kw or {}).get("device_map") in ("unsloth_balanced", "balanced"):
+        return {}
+    return {"offload_layers": offload_layers}
+
+
 def _export_runtime_available() -> bool:
     """True if export can run: MLX active, or Unsloth imported (only succeeds on a GPU host)."""
     return bool(_IS_MLX) or (FastLanguageModel is not None)
@@ -217,8 +233,18 @@ def _is_oom_error(exc: BaseException) -> bool:
 
 
 def _is_cpu_spill_rejection(exc: BaseException) -> bool:
-    """bitsandbytes spills raise a plain ValueError that never mentions memory, so match its text."""
-    return "dispatched on the cpu or the disk" in str(exc).lower()
+    """bitsandbytes refuses a map that spills to CPU/disk with a plain ``ValueError``.
+
+    Busy secondary GPUs can make ``balanced`` spill to CPU even where the old sequential
+    load fit on GPU0, and that message says nothing about memory, so the retry has to
+    match it explicitly. See transformers ``quantizers/quantizer_bnb_4bit.py``. Unsloth
+    re-raises it as "does not fit in GPU memory" with the original as ``__cause__``.
+    """
+    while exc is not None:
+        if "dispatched on the cpu or the disk" in str(exc).lower():
+            return True
+        exc = exc.__cause__
+    return False
 
 
 def _is_device_map_infeasible(exc: BaseException) -> bool:
@@ -677,9 +703,23 @@ class ExportBackend:
         hf_token: HfTokenArg = None,
         _device_map_override: Optional[dict] = None,
         base_model: Optional[str] = None,
+        offload_layers = "auto",
+        _offload_retry: bool = False,
     ) -> Tuple[bool, str]:
-        """A False hf_token must reach the loader; None makes get_token() read the operator's stored
-        login."""
+        """Load a checkpoint for export.
+
+        ``base_model`` is the caller's authorized adapter base; it wins over adapter_config.json.
+
+        ``hf_token`` authenticates the actual weight load for gated/private checkpoints, matching
+        the token the worker used for the security preflight (otherwise a gated repo passes scanning
+        then 401s at from_pretrained).
+
+        ``offload_layers = "auto"`` only retries a single-GPU 4-bit load that spilled to the CPU (#13696).
+
+        ``False`` (denied the ambient token) must travel all the way down: ``None`` reads as "go and
+        find a credential" (``if token is None: get_token()`` in ``save.py`` and ``hf_login``), and
+        ``get_token()`` reads the operator's stored login off disk.
+        """
         token = normalize_token(hf_token)
         # Probe cache guards refuse anonymous reads, misreading a cached VLM offline.
         probe_token = token or None
@@ -721,6 +761,11 @@ class ExportBackend:
                 if _device_map_override is None
                 else _device_map_override
             )
+            _offload_kw = (
+                _EXPORT_AUTO_OFFLOAD_KWARGS
+                if _offload_retry
+                else _offload_layers_kwargs(offload_layers, _device_map_kw)
+            )
 
             # Probes run inside the forced-offline window, else a gated base 404s.
             with _offline_window_if(local_files_only):
@@ -758,6 +803,7 @@ class ExportBackend:
                     token = token,
                     local_files_only = local_files_only,
                     **_device_map_kw,
+                    **_offload_kw,
                 )
 
             elif self._audio_type == "whisper":
@@ -776,6 +822,7 @@ class ExportBackend:
                     token = token,
                     local_files_only = local_files_only,
                     **_device_map_kw,
+                    **_offload_kw,
                 )
 
             elif self._audio_type == "snac":
@@ -789,6 +836,7 @@ class ExportBackend:
                     token = token,
                     local_files_only = local_files_only,
                     **_device_map_kw,
+                    **_offload_kw,
                 )
 
             elif self._audio_type == "bicodec":
@@ -808,6 +856,7 @@ class ExportBackend:
                         token = token,
                         local_files_only = local_files_only,
                         **_device_map_kw,
+                        **_offload_kw,
                     )
 
             elif self._audio_type == "dac":
@@ -821,11 +870,13 @@ class ExportBackend:
                     token = token,
                     local_files_only = local_files_only,
                     **_device_map_kw,
+                    **_offload_kw,
                 )
 
             elif self.diffusion_lm_profile:
                 from unsloth import FastModel
                 logger.info(f"Loading as text-diffusion model ({self.diffusion_lm_profile})...")
+                # Text-diffusion has no block swapping; skip offload like Training does.
                 model, tokenizer = FastModel.from_pretrained(
                     model_name = checkpoint_path,
                     max_seq_length = max_seq_length,
@@ -848,6 +899,7 @@ class ExportBackend:
                     token = token,
                     local_files_only = local_files_only,
                     **_device_map_kw,
+                    **_offload_kw,
                 )
                 tokenizer = processor
 
@@ -862,6 +914,7 @@ class ExportBackend:
                     token = token,
                     local_files_only = local_files_only,
                     **_device_map_kw,
+                    **_offload_kw,
                 )
                 if _IS_MLX and adapter_config.exists():
                     tokenizer = load_mlx_adapter_tokenizer(tokenizer, checkpoint_path)
@@ -922,6 +975,19 @@ class ExportBackend:
             ):
                 # Retry outside: the live traceback pins the half-built model's frames.
                 retry_reason = str(e)
+                # Name the map: an omitted one is unsloth's DEFAULT_DEVICE_MAP, which requested_device_map
+                # upgrades back to the planner, re-running the placement that just failed.
+                retry_kw = {"_device_map_override": {"device_map": "sequential"}}
+            elif (
+                offload_layers == "auto"
+                and not _offload_retry
+                and _device_map_override is None
+                and not self.diffusion_lm_profile
+                and _is_cpu_spill_rejection(e)
+                and not _multi_gpu_device_map_kwargs()
+            ):
+                retry_reason = str(e)
+                retry_kw = {"_offload_retry": True}
             else:
                 logger.error(f"Error loading checkpoint: {e}")
                 import traceback
@@ -929,19 +995,26 @@ class ExportBackend:
                 logger.error(traceback.format_exc())
                 return False, f"Failed to load checkpoint: {str(e)}"
 
-        logger.warning(
-            f"Multi-GPU export load unusable ({retry_reason}); retrying on "
-            f"the sequential loader default."
-        )
+        if "_offload_retry" in retry_kw:
+            logger.warning(
+                f"Export load does not fit in GPU memory ({retry_reason}); retrying with "
+                f"offload_layers='auto' to keep the layers the GPU cannot hold in host RAM."
+            )
+        else:
+            logger.warning(
+                f"Multi-GPU export load unusable ({retry_reason}); retrying on "
+                f"the sequential loader default."
+            )
         self.cleanup_memory()
         return self.load_checkpoint(
             checkpoint_path,
             max_seq_length = max_seq_length,
             load_in_4bit = load_in_4bit,
+            offload_layers = offload_layers,
             trust_remote_code = trust_remote_code,
             hf_token = hf_token,
-            # Name the map: omitted means DEFAULT_DEVICE_MAP, which re-runs the failed planner.
-            _device_map_override = {"device_map": "sequential"},
+            base_model = base_model,
+            **retry_kw,
         )
 
     def _load_decision_checkpoint(

@@ -26,6 +26,8 @@ from core.inference.mcp_images import is_image_tool, split_images as split_mcp_i
 
 # Provenance the envelope is trusted on; stamped by mcp_client.
 MCP_TOOL_PREFIX = "mcp__"
+# tools.MCP_TOOL_SEARCH_NAME; tools imports this module.
+MCP_TOOL_SEARCH_NAME = "mcp_tool_search"
 from core.inference.tool_call_parser import TOOL_ERROR_NUDGE, TOOL_ERROR_PREFIXES
 
 
@@ -594,20 +596,33 @@ def _declared_properties(tool_name: str, tool_schemas) -> Any:
         function = tool.get("function") if isinstance(tool, Mapping) else None
         if not isinstance(function, Mapping) or function.get("name") != tool_name:
             continue
-        parameters = _mcp_full_parameters(tool_name) or function.get("parameters")
+        parameters = function.get("parameters")
         return parameters.get("properties") if isinstance(parameters, Mapping) else None
     return None
 
 
-def _mcp_full_parameters(tool_name: str) -> Any:
-    # A large MCP tool is listed with only its top-level parameters; type its arguments by the full schema.
-    if not tool_name.startswith("mcp__"):
-        return None
+def _mcp_tool_spec(tool_name: str) -> Any:
     try:
-        from core.inference.tools import mcp_tool_input_schema  # noqa: PLC0415 -- cycle at import time
-        return mcp_tool_input_schema(tool_name)
-    except Exception:  # noqa: BLE001 -- typing must never break a chat
+        from core.inference.tools import mcp_tool_spec  # noqa: PLC0415 -- cycle at import time
+        return mcp_tool_spec(tool_name)
+    except Exception:  # noqa: BLE001 -- an unknown tool stays disabled
         return None
+
+
+def _mcp_fit_loaded(specs: list) -> list:
+    try:
+        from core.inference.tools import mcp_fit_loaded  # noqa: PLC0415 -- cycle at import time
+        return mcp_fit_loaded(specs)
+    except Exception:  # noqa: BLE001 -- unsized, the newest load still goes through
+        return specs[:1]
+
+
+def _mcp_tool_search_specs(arguments: Any) -> list:
+    try:
+        from core.inference.tools import mcp_tool_search_specs  # noqa: PLC0415 -- cycle at import time
+        return mcp_tool_search_specs(arguments)
+    except Exception:  # noqa: BLE001 -- a failed load leaves the listing as it was
+        return []
 
 
 def coerce_tool_arguments(
@@ -1064,6 +1079,9 @@ class ToolLoopController:
         self._allowed_tool_names = {
             name for name in (_tool_name_from_schema(tool) for tool in self._tools) if name
         }
+        self._mcp_search = MCP_TOOL_SEARCH_NAME in self._allowed_tool_names
+        self._listed_count = len(self._tools)
+        self._mcp_loaded: list[dict[str, Any]] = []
         self._auto_heal_tool_calls = auto_heal_tool_calls
         self._deduplicate_tool_calls = deduplicate_tool_calls
         self._one_shot_tools = one_shot_tools
@@ -1110,6 +1128,12 @@ class ToolLoopController:
         function = tool_call.get("function")
         function = function if isinstance(function, Mapping) else {}
         tool_name = str(function.get("name") or "").strip()
+        if (
+            self._mcp_search
+            and tool_name.startswith(MCP_TOOL_PREFIX)
+            and tool_name not in self._allowed_tool_names
+        ):
+            self._load_mcp_tools([_mcp_tool_spec(tool_name)])
         coerced = coerce_tool_arguments(
             function.get("arguments", {}),
             heal = self._auto_heal_tool_calls,
@@ -1144,9 +1168,11 @@ class ToolLoopController:
             self._deduplicate_tool_calls
             and key in self._successful_keys
             and tool_name not in BROWSER_TOOL_NAMES
+            and tool_name != MCP_TOOL_SEARCH_NAME
         ):
             # Not the browser tools: each acts on or reads the page as it is now, so a second
             # scroll down or a snapshot after a click is new work, and two such no-ops ended the turn.
+            # Nor mcp_tool_search: a repeat restores tools a later load evicted.
             action = "duplicate"
             noop = _noop_result("duplicate", tool_name)
 
@@ -1220,6 +1246,11 @@ class ToolLoopController:
             self._workspace_novel_at[decision.key] = self._workspace_novel
         if not failed:
             self._successful_keys.add(decision.key)
+            if self._mcp_search and decision.tool_name == MCP_TOOL_SEARCH_NAME:
+                self._load_mcp_tools(_mcp_tool_search_specs(decision.arguments))
+            elif decision.tool_name.startswith(MCP_TOOL_PREFIX):
+                # Also while the catalog is listed in full, for a later turn that defers it.
+                self._remember_mcp_tools([decision.tool_name])
             if decision.tool_name in self._one_shot_tools:
                 self._completed_one_shot_tools.add(decision.tool_name)
         return ToolCallCompletion(
@@ -1228,6 +1259,42 @@ class ToolLoopController:
             is_error = failed,
             executed = True,
         )
+
+    def _load_mcp_tools(self, specs) -> None:
+        from core.inference.chat_template_helpers import neutralize_tool_descriptions  # noqa: PLC0415
+
+        # Remote text, swept as the loops sweep the catalog this controller was built from (#7066); with no model's
+        # profile at hand, against every family's markup.
+        specs = (
+            neutralize_tool_descriptions([dict(s) for s in specs if isinstance(s, Mapping)]) or []
+        )
+        listed = self._tools[: self._listed_count]
+        listed_names = {_tool_name_from_schema(tool) for tool in listed}
+        fresh = [s for s in specs if _tool_name_from_schema(s) not in listed_names]
+        fresh_names = {_tool_name_from_schema(s) for s in fresh}
+        # Newest first into the turn's load share, so a later search can retire an older load but never overflow.
+        kept = _mcp_fit_loaded(
+            fresh
+            + [
+                s
+                for s in reversed(self._mcp_loaded)
+                if _tool_name_from_schema(s) not in fresh_names
+            ]
+        )
+        self._mcp_loaded = [copy.deepcopy(s) for s in reversed(kept)]
+        self._tools = listed + self._mcp_loaded
+        self._allowed_tool_names = {
+            name for name in (_tool_name_from_schema(tool) for tool in self._tools) if name
+        }
+
+    def _remember_mcp_tools(self, names) -> None:
+        if not names:
+            return
+        try:
+            from core.inference.tools import mcp_record_loaded_tools  # noqa: PLC0415 -- import cycle
+            mcp_record_loaded_tools(self._thread_id, names)
+        except Exception:  # noqa: BLE001 -- remembering for later turns must never break this one
+            pass
 
     def _cap_result(self, text: str, tool_name: str | None) -> str:
         """The card and the model get the same capped body; the frontend envelope stays whole."""

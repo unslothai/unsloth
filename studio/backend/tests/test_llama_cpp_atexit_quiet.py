@@ -238,3 +238,24 @@ def test_a_raising_logger_still_closes_the_attempt_log_and_names_a_crash(monkeyp
 
     assert backend._llama_log_fh is None
     assert path.read_text(encoding = "utf-8").endswith("reason=exited exit_code=3\n")
+
+
+class _SlowToReapProcess(_StubbornProcess):
+    """Exits after SIGKILL, but only once the driver has released its memory."""
+
+    def wait(self, timeout = None):
+        if not self.killed or (timeout or 0) < 10:
+            raise subprocess.TimeoutExpired("llama-server", timeout)
+
+
+def test_a_killed_server_gets_time_to_release_its_memory(monkeypatch):
+    """A reload on a busy GPU failed with "timed out after 5 seconds" while the killed
+    server was still releasing a large model."""
+    monkeypatch.setattr(mod, "logger", _RecordingLogger())
+    backend = _stub()
+    proc = _SlowToReapProcess()
+    backend._process = proc
+
+    backend._kill_process()
+
+    assert proc.killed

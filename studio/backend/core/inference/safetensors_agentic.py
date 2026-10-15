@@ -638,10 +638,19 @@ def run_safetensors_tool_loop(
     rag_autoinjected = bool(_auto)
 
     unrestricted_tools = not tools
-    _enabled_names_gate = None if unrestricted_tools else set(_active_tool_names(tools))
-    # Must match the strip gate's names, else a spent one-shot repeat ends the turn blank.
-    _detect_tools = [] if unrestricted_tools else list(tools or [])
-    # Dropped-for-unsafe-markup tools must leave the controller too (#7066).
+    # Gate telling a genuine NAME[ARGS] rehearsal from inactive-name prose; built from the
+    # ORIGINAL tools list so a spent one-shot still reads as a tool name. None = unrestricted.
+    from core.inference.tools import mcp_loadable_specs
+
+    # Plus the MCP tools a search can load mid-turn (#10997).
+    _loadable_mcp = [] if unrestricted_tools else mcp_loadable_specs(tools)
+    _detect_tools = [] if unrestricted_tools else list(tools or []) + _loadable_mcp
+    _enabled_names_gate = None if unrestricted_tools else set(_active_tool_names(_detect_tools))
+    # Detection must see the same names as the strip gate (ORIGINAL list, incl. a spent
+    # one-shot), else its repeat is stripped but never drained and the turn ends blank.
+    # Sanitized at construction: prepare_call authorizes against the controller, so a tool
+    # dropped from the prompt for unsafe markup must leave the controller too. The gates above
+    # keep the ORIGINAL names: those decide what LOOKS like a call, not what may run (#7066).
     from core.inference.chat_template_helpers import neutralize_tool_descriptions
 
     # Use the renderer's markup profile and the all-templates-safe catalog (#7066).
@@ -710,7 +719,12 @@ def run_safetensors_tool_loop(
         tool_protocol_active = not final_attempt_done and (unrestricted_tools or bool(active_tools))
         tool_xml_signals = TOOL_XML_SIGNALS if tool_protocol_active else ()
         # Gate the markerless bare-JSON form on enabled names so an ordinary JSON answer isn't misread as a call.
-        _enabled_tool_names = None if unrestricted_tools else set(_active_tool_names(active_tools))
+        _enabled_tool_names = (
+            None
+            if unrestricted_tools
+            else set(_active_tool_names(active_tools))
+            | (set(_active_tool_names(_loadable_mcp)) if active_tools else set())
+        )
 
         if context_fitter is not None:
             fit_result = context_fitter(
@@ -1537,7 +1551,9 @@ def run_safetensors_tool_loop(
             completion = tool_controller.record_result(decision, result)
             if provisional_match:
                 provisional_resolved = True
-            _turn_executed_real_tool = True
+            # Loading MCP tools is not a tool round, or a budget of one could never call what it found.
+            if decision.tool_name != "mcp_tool_search":
+                _turn_executed_real_tool = True
             yield completion.tool_end_event()
             conversation.append(completion.tool_message())
             _completion_images = completion.mcp_images() if images_sink is not None else []
