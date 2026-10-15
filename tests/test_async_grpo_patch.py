@@ -750,7 +750,7 @@ def test_importance_sampling_mask_rewrites_the_installed_trl_loss():
             warnings.simplefilter("ignore")
             from trl.experimental.async_grpo.async_grpo_trainer import AsyncGRPOTrainer
     except Exception as e:
-        pytest.skip(f"TRL without AsyncGRPOTrainer: {e}")
+        pytest.skip(reason = f"needs TRL >= 1.13, which ships trl.experimental.async_grpo: {e}")
     ns = _load()
     masked = ns["_async_grpo_masked_compute_loss"](AsyncGRPOTrainer.compute_loss)
     code = masked.__code__
