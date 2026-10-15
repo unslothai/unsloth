@@ -54,6 +54,7 @@ from .diffusion_attention import (
     install_hunyuan_attention_trim,
     sdpa_math_only,
     select_attention_backend,
+    sync_attention_state,
 )
 from .diffusion_flow_shift import apply_comfy_flow_shift
 from .diffusion_comfy_quant import (
@@ -10009,6 +10010,8 @@ class VideoBackend:
                 if _resolved_inputs is not None and _resolved_inputs.state is not state:
                     raise RuntimeError(VIDEO_CANCELLED_MSG)
                 self._active_generate_cancel = cancel
+                # ROCm flash: report and key calibration on what the last runs executed, not the load-time pick.
+                sync_attention_state(state, logger)
             # Bound below, once the request is resolved. None means the failure beat the resolution, and there is
             # nothing truthful to report.
             request_shape: Optional[dict[str, Any]] = None
@@ -11676,6 +11679,7 @@ class VideoBackend:
                 "defaults": None,
                 "resolved": None,
             }
+        sync_attention_state(state, logger)
         from hub.utils.gguf import extract_quant_token
 
         from . import diffusion_cuda_graph

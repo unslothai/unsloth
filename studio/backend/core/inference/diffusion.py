@@ -212,6 +212,7 @@ from .diffusion_attention import (
     sdpa_math_only,
     sdpa_subquadratic_confirmed,
     select_attention_backend,
+    sync_attention_state,
     _ensure_attention_backend_installed,
 )
 from . import diffusion_compile_cache as compile_cache
@@ -11287,6 +11288,8 @@ class DiffusionBackend:
                         compile_cache.save_async(state.compile_cache_ctx, logger = logger)
                     except Exception:  # noqa: BLE001 - cache persistence is best-effort
                         pass
+                # ROCm flash: the recipe below and status report what this run executed, not the load-time pick.
+                sync_attention_state(state, logger)
                 # Last word on cancellation, AFTER the post-denoise work: the event stays registered through the
                 # compile-cache bookkeeping and the page still shows Stop for as long as progress reads active, so a Stop
                 # landing there was answered cancelled = true and then contradicted by the image the route persisted.
@@ -11609,6 +11612,7 @@ class DiffusionBackend:
                 "resolved": None,
                 "generation_defaults": None,
             }
+        sync_attention_state(state, logger)
         from core.inference import diffusion_controlnet, diffusion_lora
         from hub.utils.gguf import extract_quant_token
 
