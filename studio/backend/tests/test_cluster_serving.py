@@ -250,6 +250,12 @@ def _cluster_env(
         # llama.cpp lists only the endpoints it was given.
         seen.append((binary, list(endpoints)))
         devices = cs.parse_device_list(listing, endpoints)
+        st = cs._STATE
+        if listing is LISTING and st is not None and getattr(st._backend, "is_loaded", False):
+            # A live worker reports the served layers it holds as used.
+            for d in devices:
+                if d.remote and d.endpoint not in st._started:  # a restarted one holds nothing
+                    d.free_bytes = max(0, d.free_bytes - int(st._resident.get(d.key, 0)))
         return [d for d in devices if not d.remote or d.endpoint in endpoints], ""
 
     monkeypatch.setattr(cs, "list_devices", fake_list)
@@ -1285,7 +1291,7 @@ def test_a_failed_replacement_keeps_the_served_block_recognised(monkeypatch):
     run(ss.after_load(backend, 4))
     for i in range(8):
         cs._remember_block(["--rpc", f"10.9.9.{i}:1"])
-    _cluster_env(monkeypatch, model_bytes = 280 * GIB)
+    _cluster_env(monkeypatch, model_bytes = 270 * GIB)
     run(ss.before_load(_request(), 4))
     assert cs.state().block != block
     run(ss.load_failed())
@@ -1490,7 +1496,8 @@ def test_a_worker_restarted_by_this_load_gets_no_residency_credit(monkeypatch):
     free = dict(credited)
     listed = {d.endpoint: d.free_bytes for d in cs.parse_device_list(LISTING, list(free))}
     assert free["10.0.0.3:50052"] == listed["10.0.0.3:50052"]  # its buffers died with it
-    assert free["10.0.0.2:50052"] > listed["10.0.0.2:50052"]
+    # The others report their held layers as used and get them credited back.
+    assert free["10.0.0.2:50052"] == listed["10.0.0.2:50052"]
 
 
 def test_a_failed_engine_load_detaches_the_two_spark_primary_it_unloaded(monkeypatch):
@@ -2645,7 +2652,8 @@ def test_recurrent_layers_reserve_their_own_share(monkeypatch):
     run(ss.before_load(_request(max_seq_length = 8192, ctx_checkpoints = 0), 4))
     plan = cs.state().plan
     attention = plan.kv_bytes - 10 * GIB
-    assert plan.layer_bytes == pytest.approx(GIB + attention / 80 + GIB)  # 10 GiB over 10 layers
+    # Attention KV over the 70 attention layers, 10 GiB of state over the 10 recurrent ones.
+    assert plan.layer_bytes == pytest.approx(GIB + attention / 70 + GIB)
 
 
 def test_skipped_nextn_blocks_are_not_counted_as_freed(monkeypatch):
@@ -2737,3 +2745,50 @@ def test_a_malformed_cluster_config_keeps_a_serving_two_spark_split(monkeypatch)
     monkeypatch.setattr(legacy, "detach", fake_detach)
     monkeypatch.setattr(ss.SparkServing, "before_load", legacy_before_load)
     assert run(ss.before_load(_request(), 4)) == "legacy" and detached == []
+
+
+def test_a_worker_whose_memory_came_back_forces_a_relaunch(monkeypatch):
+    _cluster_env(monkeypatch)
+    out = run(ss.before_load(_request(), 4))
+    backend = SimpleNamespace(
+        _process = SimpleNamespace(args = ["/b/llama-server"] + out.llama_extra_args),
+        is_loaded = True,
+    )
+    run(ss.after_load(backend, 4))
+    out = run(ss.before_load(_request(), 4))
+    assert not getattr(out, "force_reload", False)  # every worker still holds its layers
+    backend._process.args = ["/b/llama-server"] + out.llama_extra_args
+    run(ss.after_load(backend, 4))
+    # An operator restarted 10.0.0.2 by hand: the probe shows its memory free again.
+    _cluster_env(monkeypatch, listing = LISTING + "\n")  # every worker reports no layers held
+    out = run(ss.before_load(_request(), 4))
+    assert out.force_reload is True
+
+
+@pytest.mark.parametrize("requested, want", [(None, 7), (3, 3)])
+def test_the_checkpoint_count_is_the_one_the_loader_resolves(monkeypatch, requested, want):
+    _cluster_env(monkeypatch)
+    seen = []
+
+    def resolve(binary, extras, asked, per, n_parallel):
+        seen.append(asked)
+        return asked if asked is not None else 7
+
+    monkeypatch.setattr(cs, "_effective_checkpoints", resolve)
+    monkeypatch.setattr(
+        cs, "_ctx_compute_bytes", lambda *a, **k: MIB if a[7:] == ("checkpoint",) else 0
+    )
+    run(ss.before_load(_request(max_seq_length = 8192, ctx_checkpoints = requested), 4))
+    assert seen == [requested]
+    assert cs.state().plan.extra_bytes == pytest.approx(want * 4 * MIB)
+
+
+def test_hybrid_attention_kv_is_spread_over_its_attention_layers(monkeypatch):
+    _cluster_env(monkeypatch)
+    header = dict(_llama_header(8), **{"llama.full_attention_interval": 4})
+    monkeypatch.setattr(cs, "_local_gguf_header", lambda *a, **k: (header, {0: GIB}))
+    monkeypatch.setattr(
+        cs, "_ctx_compute_bytes", lambda *a, **k: 8 * GIB if a[7:] == ("kv",) else 0
+    )
+    run(ss.before_load(_request(max_seq_length = 8192, ctx_checkpoints = 0), 4))
+    assert cs.state().plan.layer_bytes == pytest.approx(GIB + 8 * GIB / 20)  # 80 blocks / 4

@@ -168,6 +168,7 @@ _KV_KEY_SUFFIXES = (
     ".attention.value_length",
     ".nextn_predict_layers",
     ".context_length",
+    ".full_attention_interval",
     ".ssm.conv_kernel",
     ".ssm.inner_size",
     ".ssm.state_size",
@@ -348,6 +349,48 @@ def _ctx_compute_bytes(
                 os.unlink(scratch.name)
             except OSError:
                 pass
+
+
+def _effective_checkpoints(
+    binary: Optional[str],
+    extras: Sequence[str],
+    requested: Optional[int],
+    per_checkpoint: int,
+    n_parallel: int,
+) -> int:
+    """effective_ctx_checkpoints_for_caps, as the loader resolves it; llama.cpp's default of 32
+    per slot when that cannot be asked."""
+    try:
+        from core.inference.llama_cpp import LlamaCppBackend, effective_ctx_checkpoints_for_caps
+
+        caps = LlamaCppBackend.probe_server_capabilities(binary)
+        host = (LlamaCppBackend._host_memory_capacity_mib() or 0) * 1024 * 1024
+        return max(
+            0,
+            int(
+                effective_ctx_checkpoints_for_caps(
+                    caps,
+                    extras,
+                    requested,
+                    per_checkpoint_bytes = per_checkpoint,
+                    n_parallel = n_parallel,
+                    total_host_bytes = host or None,
+                    env = os.environ,
+                )
+            ),
+        )
+    except Exception:
+        from core.inference.llama_cpp import _env_ctx_checkpoints_override
+        from core.inference.llama_server_args import parse_ctx_checkpoints_override
+
+        for count in (
+            parse_ctx_checkpoints_override(extras),
+            requested,
+            _env_ctx_checkpoints_override(os.environ),
+        ):
+            if count is not None:
+                return max(0, int(count))
+        return 32
 
 
 def _ssm_state_bytes(vals: Dict[str, Any], n_parallel: int) -> int:
@@ -1010,6 +1053,7 @@ class ClusterServing:
         self._recurrent: float = 0.0
         self._recurrent_layer: float = 0.0
         self._kv_layer_frac: float = 0.0
+        self._attention_layers: int = 0
         self._nextn_bytes: float = 0.0
         self._projector_file: Optional[str] = None
         self._uncertain_extra: float = 0.0
@@ -1296,6 +1340,12 @@ class ClusterServing:
             self.topology, self.reason = "single", "the load was cancelled"
             return request
         if self._backend is not None and getattr(self._backend, "is_loaded", False):
+            for d in devices:
+                held = self._resident.get(d.key, 0.0)
+                if d.remote and held > 512 * 2**20 and d.free_bytes > d.total_bytes - held / 2:
+                    # Its memory is free again: the worker restarted (or was replaced by hand)
+                    # and lost the served layers, so equal arguments must relaunch.
+                    self._started.add(d.endpoint)
             # This load tears the current one down first, so what it holds counts as free.
             for d in devices:
                 if d.endpoint in self._started:
@@ -1322,8 +1372,10 @@ class ClusterServing:
             # The largest block a tensor split can round onto a device, not the average one.
             layer_weights = self._max_block or model_bytes / self._n_layers
             attention = max(0.0, kv_bytes - self._recurrent)
-            layer_kv = attention * self._kv_layer_frac or attention / self._n_layers
-            layer_bytes = layer_weights + max(layer_kv, attention / self._n_layers)
+            # Spread over the attention layers only: a hybrid's recurrent blocks hold none.
+            per_attention = attention / max(1, min(self._n_layers, self._attention_layers or 10**9))
+            layer_kv = attention * self._kv_layer_frac or per_attention
+            layer_bytes = layer_weights + max(layer_kv, per_attention)
             layer_bytes += self._recurrent_layer
         from core.inference.llama_server_args import fit_target_margin_in
 
@@ -1701,17 +1753,8 @@ class ClusterServing:
         self._ctx_compute = float(compute or 0)
         # Context checkpoints are host RAM, the same pool on unified memory: charged to this
         # machine, never counted as freed.
-        from core.inference.llama_cpp import _env_ctx_checkpoints_override
-        from core.inference.llama_server_args import parse_ctx_checkpoints_override
-
-        count = parse_ctx_checkpoints_override(extras)
-        if count is None:
-            count = getattr(request, "ctx_checkpoints", None)
-        if count is None:
-            count = _env_ctx_checkpoints_override(os.environ)
-        count = 32 if count is None else max(0, int(count))  # llama.cpp's default per slot
         per_checkpoint = 0
-        if count and ctx:
+        if ctx:
             per_checkpoint = await asyncio.to_thread(
                 _ctx_compute_bytes,
                 local_file,
@@ -1724,7 +1767,16 @@ class ClusterServing:
                 "checkpoint",
             )
         # A recurrent checkpoint is one slot's state; the loader's probe misses gated-delta layers.
-        per_checkpoint = max(per_checkpoint or 0, _ssm_state_bytes(header, 1) if count else 0)
+        per_checkpoint = max(per_checkpoint or 0, _ssm_state_bytes(header, 1))
+        # The count the loader will launch with: capability, arguments, and its host budget.
+        count = await asyncio.to_thread(
+            _effective_checkpoints,
+            binary,
+            extras,
+            getattr(request, "ctx_checkpoints", None),
+            int(per_checkpoint),
+            n_parallel,
+        )
         self._checkpoints = float(per_checkpoint * count * max(1, n_parallel))
         # The loader's probe covers Mamba and KDA layouts; the header formula, gated-delta ones.
         loader_recurrent = await asyncio.to_thread(
@@ -1746,6 +1798,14 @@ class ClusterServing:
         # A whole recurrent layer carries its share of the state, not the model-wide average.
         self._recurrent_layer = float(recurrent) / n_rec if recurrent and n_rec else 0.0
         self._recurrent = float(recurrent)
+        zeros = header.get(f"{arch}.attention.head_count_kv.zeros") or 0
+        interval = int(header.get(f"{arch}.full_attention_interval") or 0)
+        if zeros and n_rec:
+            self._attention_layers = max(1, int(header.get(f"{arch}.block_count") or 0) - zeros)
+        elif interval > 1:
+            self._attention_layers = max(1, int(header.get(f"{arch}.block_count") or 0) // interval)
+        else:
+            self._attention_layers = 0
         nextn = int(header.get(f"{arch}.nextn_predict_layers") or 0)
         n_blocks = int(header.get(f"{arch}.block_count") or 0)
         # Trailing NextN / MTP blocks are skipped with speculation off, as a split runs.
