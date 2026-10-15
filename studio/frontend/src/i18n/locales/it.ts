@@ -452,6 +452,7 @@ export const it = {
       resubmit: "Questa pagina deriva da un modulo. Ricaricarla invia di nuovo il modulo e potrebbe ripeterne l'azione.",
       upload: "Il caricamento di file non funziona in questa vista. Apri la pagina nel browser di sistema per inviarlo.",
       scriptNavigation: "Questa pagina ha provato ad andare a un altro indirizzo tramite script, cosa che questa vista non può seguire. Aprila nel browser di sistema.",
+      needsBrowser: "Questa pagina ha provato a usare una funzione del browser che questa vista blocca, quindi alcune parti potrebbero non funzionare. Aprila nel browser di sistema.",
     },
     native: {
       externalPrompt: "{host} vuole aprire {url}",
