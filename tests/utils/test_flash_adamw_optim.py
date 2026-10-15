@@ -109,3 +109,14 @@ def test_adamw_flash_survives_dataclasses_replace(stub_flashoptim, make_args, mo
     # Default: full 32 bit master semantics and unquantized moments.
     assert optimizer_kwargs["master_weight_bits"] == 32
     assert optimizer_kwargs["quantize"] is False
+
+
+@pytest.mark.parametrize("make_args", [_sft_config, _unsloth_args])
+def test_adamw_flash_marker_parses_in_transformers(make_args):
+    trainer_module = __import__("transformers.trainer", fromlist = ["_parse_optim_args"])
+    parse = getattr(trainer_module, "_parse_optim_args", None)
+    if parse is None:
+        pytest.skip("transformers has no _parse_optim_args")
+    args = make_args(optim = "adamw_flash", optim_args = "quantize=True")
+    parsed = parse(args.optim_args)
+    assert parsed["quantize"] == "True"

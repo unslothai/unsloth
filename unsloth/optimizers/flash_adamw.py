@@ -92,7 +92,7 @@ def _get_flash_adamw_class():
 
 def _is_marked_in_optim_args(args):
     optim_args = str(getattr(args, "optim_args", None) or "").replace(" ", "")
-    return _FLASH_ADAMW_MARKER in optim_args.split(",")
+    return any(item.partition("=")[0] == _FLASH_ADAMW_MARKER for item in optim_args.split(","))
 
 
 def _is_marked(args):
@@ -140,8 +140,8 @@ def mark_flash_adamw(training_args):
     training_args._unsloth_flash_adamw = True
     if not _is_marked_in_optim_args(training_args):
         optim_args = getattr(training_args, "optim_args", None)
-        training_args.optim_args = (
-            f"{_FLASH_ADAMW_MARKER},{optim_args}" if optim_args else _FLASH_ADAMW_MARKER
-        )
+        # key=value form: transformers' own optim_args parser splits every item on "=".
+        marker = f"{_FLASH_ADAMW_MARKER}=1"
+        training_args.optim_args = f"{marker},{optim_args}" if optim_args else marker
     _patch_trainer_get_optimizer_cls_and_kwargs()
     return training_args
