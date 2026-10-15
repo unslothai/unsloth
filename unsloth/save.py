@@ -5104,6 +5104,7 @@ def _unsloth_save_lora_gguf(
 
         print(f"Unsloth: Uploading LoRA GGUF to '{save_directory}' ...")
         from huggingface_hub import HfApi
+        from huggingface_hub.errors import HfHubHTTPError
 
         api = HfApi(token = token)
         api.create_repo(
@@ -5112,6 +5113,14 @@ def _unsloth_save_lora_gguf(
             private = private,
             exist_ok = True,
         )
+        if revision is not None and not revision.startswith("refs/pr/"):
+            try:
+                api.create_branch(
+                    repo_id = save_directory, repo_type = "model", branch = revision, exist_ok = True
+                )
+            except HfHubHTTPError as error:
+                if not create_pr or error.response.status_code != 403:
+                    raise
         api.upload_folder(
             folder_path = lora_dir,
             repo_id = save_directory,
