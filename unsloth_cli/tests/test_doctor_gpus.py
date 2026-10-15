@@ -172,7 +172,7 @@ def _fake_torch(count):
     )
 
 
-def _run_doctor(monkeypatch, torch, smoke_results):
+def _run_doctor(monkeypatch, torch, smoke_results, p2p_disable = None):
     monkeypatch.setitem(sys.modules, "torch", torch)
     monkeypatch.setattr(doctor_mod, "_load_pynvml", lambda: None)
     monkeypatch.setattr(doctor_mod, "driver_version", lambda pynvml = None: "550.1")
@@ -187,6 +187,8 @@ def _run_doctor(monkeypatch, torch, smoke_results):
 
     monkeypatch.setattr(doctor_mod, "allreduce_smoke", fake_smoke)
     monkeypatch.delenv("NCCL_P2P_DISABLE", raising = False)
+    if p2p_disable is not None:
+        monkeypatch.setenv("NCCL_P2P_DISABLE", p2p_disable)
     cli = typer.Typer()
     cli.command()(doctor_mod.doctor)
     return CliRunner().invoke(cli, ["--gpus"]), calls
@@ -354,3 +356,48 @@ def test_doctor_reports_a_torch_that_fails_to_load(monkeypatch):
     assert result.exit_code == 1
     assert result.exception is None or isinstance(result.exception, SystemExit)
     assert "libcudnn" in result.output and "PROBLEMS FOUND" in result.output
+
+
+@pytest.mark.parametrize("value, retried", [("0", True), ("", True), ("1", False)])
+def test_doctor_retry_honours_the_inherited_nccl_p2p_disable_value(monkeypatch, value, retried):
+    result, calls = _run_doctor(
+        monkeypatch, _fake_torch(2), [_smoke(False), _smoke(True)], p2p_disable = value
+    )
+    assert result.exit_code == 1, result.output
+    assert len(calls) == (2 if retried else 1)
+
+
+def test_nvml_topology_requires_p2p_read_in_both_directions():
+    class OneWay(_FakeNvml):
+        def nvmlDeviceGetP2PStatus(self, a, b, idx):
+            if idx == self.NVML_P2P_CAPS_INDEX_READ:
+                return 0 if (a, b) == ("bus-a", "bus-c") else 1
+            return 1
+
+    gpus = [_gpu(0, pci = "bus-a"), _gpu(1, pci = "bus-c")]
+    topo, err = doctor_mod.nvml_topology(OneWay(), gpus)
+    assert err is None
+    assert topo[(0, 1)]["p2p_read"] is False
+
+
+def test_allreduce_smoke_reaps_ranks_when_the_wait_is_interrupted(monkeypatch):
+    real_popen = doctor_mod.subprocess.Popen
+    started = []
+
+    def popen(*args, **kwargs):
+        started.append(real_popen(*args, **kwargs))
+        return started[-1]
+
+    def interrupted_wait(self, timeout = None):
+        if timeout is not None:
+            raise KeyboardInterrupt
+        return real_wait(self)
+
+    real_wait = doctor_mod.subprocess.Popen.wait
+    monkeypatch.setattr(doctor_mod, "_SMOKE_WORKER", "import time; time.sleep(60)")
+    monkeypatch.setattr(doctor_mod.subprocess, "Popen", popen)
+    monkeypatch.setattr(real_popen, "wait", interrupted_wait)
+    with pytest.raises(KeyboardInterrupt):
+        doctor_mod.allreduce_smoke(2, "gloo", timeout = 60, numel = 1024)
+    assert len(started) == 2
+    assert all(p.poll() is not None for p in started)

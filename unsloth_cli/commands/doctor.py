@@ -186,7 +186,11 @@ def nvml_topology(pynvml, gpus: List[dict]):
                 out[(a, b)] = {
                     "level": "?" if level is None else _TOPOLOGY_LABELS.get(int(level), str(level)),
                     "nvlink": query(pynvml.nvmlDeviceGetP2PStatus, ha, hb, nvlink_idx) == status_ok,
-                    "p2p_read": query(pynvml.nvmlDeviceGetP2PStatus, ha, hb, read_idx) == status_ok,
+                    # Directional: a virtualised or IOMMU-restricted host can grant one way only.
+                    "p2p_read": all(
+                        query(pynvml.nvmlDeviceGetP2PStatus, x, y, read_idx) == status_ok
+                        for x, y in ((ha, hb), (hb, ha))
+                    ),
                 }
         return out, None
     except Exception as e:
@@ -229,6 +233,17 @@ def p2p_copy_probe(torch, count: int, mib: int = 16) -> dict:
                 out[(src, dst)] = f"error: {e}"
     torch.cuda.empty_cache()
     return out
+
+
+def _nccl_p2p_disabled() -> bool:
+    """True when the inherited NCCL_P2P_DISABLE already turns P2P off.
+
+    NCCL's ncclGetLevel (src/graph/paths.cc) parses it with strtol and disables only on 1.
+    """
+    try:
+        return int(os.environ.get("NCCL_P2P_DISABLE", "").strip() or "0", 0) == 1
+    except ValueError:
+        return False
 
 
 def allreduce_smoke(
@@ -286,19 +301,27 @@ def allreduce_smoke(
     # Startup (torch import, communicator init) is not covered by the collective timeout.
     deadline = time.monotonic() + timeout + 60
     hung = False
-    for p in procs:
-        try:
-            p.wait(timeout = max(1.0, deadline - time.monotonic()))
-        except subprocess.TimeoutExpired:
-            hung = True
-            for q in procs:
-                q.kill()
-            p.wait()
     outputs = []
-    for f in logs:
-        f.seek(0)
-        outputs.append(f.read())
-        f.close()
+    try:
+        for p in procs:
+            try:
+                p.wait(timeout = max(1.0, deadline - time.monotonic()))
+            except subprocess.TimeoutExpired:
+                hung = True
+                for q in procs:
+                    q.kill()
+                p.wait()
+        for f in logs:
+            f.seek(0)
+            outputs.append(f.read())
+    finally:
+        # Ctrl-C on a hung run must not leave ranks holding GPU contexts behind.
+        for q in procs:
+            if q.poll() is None:
+                q.kill()
+                q.wait()
+        for f in logs:
+            f.close()
     result = {"ok": False, "hung": hung, "busbw_gbps": None, "log": ""}
     for line in outputs[0].splitlines():
         if line.startswith("UNSLOTH_DOCTOR_RESULT"):
@@ -479,7 +502,7 @@ def doctor(
                 typer.echo(f"  ok  busbw {smoke['busbw_gbps']:.2f} GB/s (64 MiB fp32)")
             else:
                 typer.echo(f"  {'HUNG' if smoke['hung'] else 'FAILED'}\n{smoke['log']}")
-                if os.environ.get("NCCL_P2P_DISABLE") is None:
+                if not _nccl_p2p_disabled():
                     smoke_no_p2p = allreduce_smoke(
                         count, "nccl", timeout, extra_env = {"NCCL_P2P_DISABLE": "1"}
                     )
