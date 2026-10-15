@@ -728,16 +728,22 @@ def test_cp_dtensor_dispatcher_is_torn_down_when_the_step_raises(monkeypatch):
     assert dispatcher._custom_op_handlers is original and unregistered == [1]
 
 
-
-
-def _gated_trainer(monkeypatch, model = None, **args_overrides):
+def _gated_trainer(
+    monkeypatch,
+    model = None,
+    **args_overrides,
+):
     """A trainer that clears every CP gate, with the manager stubbed (no process group)."""
     import types
 
     _cp_env(monkeypatch)
     built = []
 
-    def manager(size, backend = "ring", rotate_method = "allgather"):
+    def manager(
+        size,
+        backend = "ring",
+        rotate_method = "allgather",
+    ):
         built.append((size, backend, rotate_method))
         return types.SimpleNamespace(
             size = size, device_mesh = object(), attach_attention_hooks = lambda model: None
@@ -793,9 +799,7 @@ def test_cp_option_defaults_and_size_one():
     import types
 
     assert cp.context_parallel_options(None) == (1, "ring", "allgather")
-    config = types.SimpleNamespace(
-        context_parallel_size = 1, context_parallel_backend = "ulysses"
-    )
+    config = types.SimpleNamespace(context_parallel_size = 1, context_parallel_backend = "ulysses")
     assert cp.context_parallel_options(config) == (1, "ulysses", "allgather")
     config = types.SimpleNamespace(
         context_parallel_size = 4, context_parallel_rotate_method = "alltoall"
@@ -933,7 +937,11 @@ def test_ring_pins_sdpa_to_kernels_the_dispatcher_rings(monkeypatch, raises):
     with contextlib.suppress(RuntimeError):
         with manager.apply({"input_ids": torch.ones(1, 4, dtype = torch.long)}):
             seen.append(
-                (cuda.flash_sdp_enabled(), cuda.mem_efficient_sdp_enabled(), cuda.math_sdp_enabled())
+                (
+                    cuda.flash_sdp_enabled(),
+                    cuda.mem_efficient_sdp_enabled(),
+                    cuda.math_sdp_enabled(),
+                )
             )
             if raises:
                 raise RuntimeError("boom")
@@ -960,7 +968,6 @@ def test_cudnn_is_pinned_only_where_the_ring_handles_it():
 
 def test_unsloth_training_arguments_keep_the_cp_options():
     from unsloth.trainer import UnslothTrainingArguments
-
     args = UnslothTrainingArguments(
         output_dir = "unused",
         context_parallel_size = 2,
@@ -1043,4 +1050,3 @@ def test_inherited_trainer_methods_are_resolved_per_call(monkeypatch):
     cp.patch_sft_trainer()
     monkeypatch.setattr(Base, "train", lambda self: "patched later")
     assert Trainer().train() == "patched later"
-

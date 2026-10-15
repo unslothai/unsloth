@@ -39,7 +39,6 @@ _ROTATE_METHODS = ("allgather", "alltoall")
 
 def _torch_supports_context_parallel() -> bool:
     from packaging.version import Version
-
     return context_parallel is not None and Version(
         Version(torch.__version__).base_version
     ) >= Version("2.7.0")
@@ -54,7 +53,6 @@ def _ring_sdpa_backends():
     op = getattr(torch.ops.aten, "_scaled_dot_product_cudnn_attention", None)
     if cudnn is not None and op is not None:
         import importlib
-
         for name in (
             "torch.distributed.tensor.experimental._context_parallel._attention",
             "torch.distributed.tensor.experimental._attention",
@@ -149,7 +147,6 @@ def get_cp_manager() -> Optional["ContextParallelManager"]:
 
 def _supports_context_parallel(model) -> bool:
     from .models.llama import LlamaAttention_fast_forward
-
     forwards = [
         getattr(type(module).forward, "__func__", type(module).forward)
         for name, module in model.named_modules()
@@ -166,7 +163,12 @@ def _self_attn_pre_forward_hook(_module, module_args, module_kwargs):
 
 
 class ContextParallelManager:
-    def __init__(self, size: int, backend: str = "ring", rotate_method: str = "allgather"):
+    def __init__(
+        self,
+        size: int,
+        backend: str = "ring",
+        rotate_method: str = "allgather",
+    ):
         self.size = size
         self.backend = backend
         self.rotate_method = rotate_method
@@ -254,14 +256,18 @@ class ContextParallelManager:
         raised = False
         try:
             with (
-                sdpa_kernel(ring_backends)
-                if ring_backends is not None
-                else contextlib.nullcontext()
-            ), self._rotate_method_scope(), context_parallel(
-                self.mesh,
-                buffers = buffers,
-                buffer_seq_dims = [1] * len(buffers),
-                no_restore_buffers = set(buffers),
+                (
+                    sdpa_kernel(ring_backends)
+                    if ring_backends is not None
+                    else contextlib.nullcontext()
+                ),
+                self._rotate_method_scope(),
+                context_parallel(
+                    self.mesh,
+                    buffers = buffers,
+                    buffer_seq_dims = [1] * len(buffers),
+                    no_restore_buffers = set(buffers),
+                ),
             ):
                 yield
         except BaseException:
