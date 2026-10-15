@@ -2,14 +2,8 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 """Unsloth's rotary caches must be built only on the device that reads them.
 
-They were built for every visible GPU in __init__ and again on each growth, and the model forward
-grew them to max_position_embeddings, so every torchrun rank allocated up to max_position_embeddings
-rows of cos/sin (and a context) on each of its peers. A device is now built on first use, with the
-rows callers need; current_rope_size and the cache dtype still move as before.
-
 llama.py needs an accelerator to import, so the classes are `ast`-extracted and run against a
-CPU-pinned prelude in which device index i is cpu:i (the shape of
-tests/test_longrope_short_long_boundary.py).
+CPU-pinned prelude in which device index i is cpu:i.
 """
 
 from __future__ import annotations
@@ -105,7 +99,6 @@ def _x(device_index, dtype = torch.float32):
 
 
 def _reference(rows, dtype = torch.float32):
-    # The eager cache this replaced, built in full.
     inv_freq = 1.0 / (BASE ** (torch.arange(0, DIM, 2, dtype = torch.int64).float() / DIM))
     t = torch.arange(rows, dtype = torch.int64).float()
     emb = torch.cat((torch.outer(t, inv_freq),) * 2, dim = -1)

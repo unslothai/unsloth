@@ -2110,14 +2110,13 @@ def _compute_config_rope_inv_freq(config, rope_scaling):
 
 
 def _round_rope_size(seq_len):
-    # The cache grows in increments of 8192.
     return ((seq_len // 8192) + ((seq_len % 8192) != 0)) * 8192
 
 
 class _PerDeviceRopeCache:
-    """cos/sin built lazily per device with only the rows asked for; eager builds on every GPU made
-    each torchrun rank allocate on its peers. current_rope_size and dtype change as before, and a row
-    depends only on its position, so a shorter cache matches the full one row for row."""
+    """cos/sin built lazily per device with only the rows asked for, so torchrun ranks do not
+    allocate on their peers. A row depends only on its position, so a shorter cache matches the
+    full one row for row."""
 
     def _init_rope_cache_state(self, dtype):
         self._rope_cache_dtype = dtype
@@ -2158,7 +2157,6 @@ class _PerDeviceRopeCache:
         return device_index
 
     def _grow_rope_cache(self, seq_len, dtype):
-        # The state the eager rebuild of every device left behind.
         self.current_rope_size = seq_len
         self._rope_cache_dtype = dtype
         self._rope_cache_version += 1
