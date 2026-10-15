@@ -158,3 +158,5 @@ def test_gate_skips_without_optimizer_or_under_deepspeed():
     assert enabled(types.SimpleNamespace(optimizer = None)) is False
     assert enabled(types.SimpleNamespace(optimizer = object(), is_deepspeed_enabled = True)) is False
     assert enabled(types.SimpleNamespace(optimizer = object())) is True
+    multi = types.SimpleNamespace(world_size = 2)
+    assert enabled(types.SimpleNamespace(optimizer = object(), args = multi)) is False
