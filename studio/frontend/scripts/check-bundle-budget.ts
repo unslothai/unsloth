@@ -147,11 +147,18 @@ export const BUDGET = {
   // transfer (6,773,496 -> 6,774,820 B raw, 2,036,386 -> 2,036,728 B transfer against 59ab069b5, one machine
   // and build, Node 24, chunk count unchanged at 95). Lazy-loading it cost more transfer and a 96th startup
   // chunk (Rollup split react-dom out), so it is imported statically and the budget raised by that growth.
+  // Opening the OS folder dialog for model folders on Desktop (#13843) adds 235 B raw / 336 B transfer
+  // (6,777,794 -> 6,778,029 B raw, 2,037,725 -> 2,038,061 B transfer against 199987c63, one machine and build,
+  // Node 24, chunk count unchanged at 95). Raised by that growth.
+  // The Windows Long Paths explainer on the first-run startup screen (#13523) adds 1,816 B raw / 519 B
+  // transfer (6,778,788 -> 6,780,604 B raw, 2,038,337 -> 2,038,856 B transfer against 62e063618, one machine
+  // and build, Node 24, chunk count unchanged at 95). Main already measured 3,656 B raw / 1,180 B transfer over
+  // the previous limits there, so they are set to the measured build.
   // The Notebooks page (#6650: its sidebar row, route and English strings; the page itself is lazy) adds
   // 3,316 B raw / 995 B transfer against 6a08610278 (one machine and build, Node 24, chunk count 95 -> 96: the
   // shared open-link helper splits into its own eager chunk), raised by that.
-  transferBytes: 2_037_816,
-  rawBytes: 6_778_213,
+  transferBytes: 2_039_851,
+  rawBytes: 6_783_920,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

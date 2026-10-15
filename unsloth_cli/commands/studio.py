@@ -1695,6 +1695,18 @@ def _enforce_password_change_before_exposure(
         conn.close()
 
 
+def _parse_gpu_ids(value: Optional[str]) -> Optional[List[int]]:
+    if value is None or not value.strip():
+        return None
+    try:
+        ids = [int(part) for part in value.split(",") if part.strip()]
+    except ValueError:
+        raise ValueError(f"--gpus takes comma-separated GPU indices such as 0,1, not {value!r}.")
+    if any(i < 0 for i in ids) or len(set(ids)) != len(ids):
+        raise ValueError(f"--gpus needs distinct, non-negative GPU indices, not {value!r}.")
+    return ids or None
+
+
 def _load_model_via_http(
     port: int,
     api_key: str,
@@ -1711,6 +1723,8 @@ def _load_model_via_http(
     request_host: str = "127.0.0.1",
     engine: str = "auto",
     engine_precision: str = "auto",
+    engine_parallelism: str = "tensor",
+    gpu_ids: Optional[List[int]] = None,
 ) -> dict:
     import json
     import urllib.request
@@ -1739,6 +1753,10 @@ def _load_model_via_http(
     if engine != "auto":
         payload["engine"] = engine
         payload["engine_precision"] = engine_precision
+        if engine_parallelism != "tensor":
+            payload["engine_parallelism"] = engine_parallelism
+    if gpu_ids:
+        payload["gpu_ids"] = list(gpu_ids)
 
     data = json.dumps(payload).encode()
     url = f"http://{_url_host(request_host)}:{port}/api/inference/load"
@@ -2608,6 +2626,25 @@ def run(
         "`--password -` to read one line from stdin. A literal value is visible in the "
         "process list and shell history. Rotate later with `unsloth studio reset-password`.",
     ),
+    engine_parallelism: Literal["tensor", "pipeline", "data"] = typer.Option(
+        "tensor",
+        "--engine-parallelism",
+        rich_help_panel = _RUN_PANEL_MODEL,
+        help = (
+            "How --engine vllm/sglang uses several GPUs: tensor splits each layer, pipeline "
+            "splits the layers, data runs one replica per GPU and spreads requests across "
+            "them. pipeline and data use every visible GPU unless --gpus narrows it."
+        ),
+    ),
+    gpus: Optional[str] = typer.Option(
+        None,
+        "--gpus",
+        rich_help_panel = _RUN_PANEL_MODEL,
+        help = (
+            "Comma-separated GPU indices to load the model on, for example 0,1 (the "
+            "Studio GPU picker). Default: automatic selection."
+        ),
+    ),
 ):
     """Start Unsloth, load a model, print an API key -- one-liner server.
 
@@ -2625,6 +2662,7 @@ def run(
         unsloth studio run --model unsloth/Qwen3-1.7B-GGUF --temperature 0.7 --seed 42 --parallel 8
         unsloth studio run --model some-model --chat-template-file /path/to/tpl.jinja
         unsloth studio run --model unsloth/Qwen3-27B-GGUF --gguf-variant Q8_0 --tensor-parallel
+        unsloth studio run --model unsloth/Qwen3-8B --engine vllm --engine-parallelism data
     """
     # Passed via env, so an older re-exec target ignores it instead of treating it as a llama-server arg.
     inherited_start_api_key_marker = _consume_start_api_key_marker_env()
@@ -2715,6 +2753,17 @@ def run(
             "llama-server flags apply only to the default backend.",
             err = True,
         )
+        raise typer.Exit(2)
+    if engine == "auto" and engine_parallelism != "tensor":
+        typer.echo(
+            "Error: --engine-parallelism applies only to --engine vllm or --engine sglang.",
+            err = True,
+        )
+        raise typer.Exit(2)
+    try:
+        gpu_ids = _parse_gpu_ids(gpus)
+    except ValueError as exc:
+        typer.echo(f"Error: {exc}", err = True)
         raise typer.Exit(2)
 
     _require_bind_host(host)
@@ -2866,6 +2915,11 @@ def run(
         args.append("--tensor-parallel" if tensor_parallel else "--no-tensor-parallel")
         if engine != "auto":
             args.extend(["--engine", engine, "--engine-precision", engine_precision])
+        # Only when set: an older studio-venv CLI would hand unknown flags to llama-server.
+        if engine_parallelism != "tensor":
+            args.extend(["--engine-parallelism", engine_parallelism])
+        if gpu_ids:
+            args.extend(["--gpus", ",".join(str(i) for i in gpu_ids)])
         if verbose:
             args.append("--verbose")
         if extra_llama_args:
@@ -2943,6 +2997,10 @@ def run(
             except RuntimeError as exc:
                 typer.echo(f"Error: {exc}", err = True)
                 raise typer.Exit(1)
+        if engine_parallelism != "tensor" and not gpu_ids:
+            # The engine otherwise gets one GPU, which makes pipeline / data a no-op.
+            from utils.hardware.hardware import resolve_requested_gpu_ids
+            gpu_ids = resolve_requested_gpu_ids(None)
         if not silent:
             typer.echo(f"Loading model: {model}...")
         try:
@@ -2961,6 +3019,8 @@ def run(
                 request_host = request_host,
                 engine = engine,
                 engine_precision = engine_precision,
+                engine_parallelism = engine_parallelism,
+                gpu_ids = gpu_ids,
             )
         except RuntimeError as exc:
             typer.echo(f"Error: {exc}", err = True)
