@@ -1800,3 +1800,38 @@ def test_a_projector_url_keeps_the_load_local(monkeypatch, env):
     # With the vision switch off the URL projector is dropped, so the split goes ahead.
     run(ss.before_load(_request(llama_extra_args = extra, disable_vision = True), 4))
     assert ss.status()["topology"] == "layer_split"
+
+
+def test_an_argv_projector_replaces_the_environment_one(monkeypatch, tmp_path):
+    _cluster_env(monkeypatch, model_bytes = 85 * GIB)
+    monkeypatch.setattr(ss, "llama_server_supports", lambda flag, binary = None: True)
+    env_mm, argv_mm = tmp_path / "env-mmproj.gguf", tmp_path / "argv-mmproj.gguf"
+    env_mm.write_bytes(b"x")
+    argv_mm.write_bytes(b"x")
+    sizes = {str(env_mm): 15 * GIB, str(argv_mm): 1 * GIB}
+    monkeypatch.setattr(ss, "gguf_size_bytes", lambda path: sizes.get(str(path), 85 * GIB))
+    monkeypatch.setenv("LLAMA_ARG_MMPROJ", str(env_mm))
+    run(ss.before_load(_request(), 4))
+    assert ss.status()["topology"] == "layer_split"  # the 15 GiB environment projector loads
+    request = _request(llama_extra_args = ["--mmproj", str(argv_mm)])
+    assert run(ss.before_load(request, 4)) is request
+    assert ss.status()["topology"] == "single"  # only the 1 GiB argv one does
+
+
+def test_the_device_probe_runs_with_the_llama_server_environment(monkeypatch):
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_llama_server_env_for_binary",
+        staticmethod(lambda binary, **kw: {"MARK": binary}),
+    )
+    seen = {}
+
+    def fake_run(argv, **kw):
+        seen.update(kw)
+        return SimpleNamespace(stdout = LISTING, stderr = "", returncode = 0)
+
+    monkeypatch.setattr(cs.subprocess, "run", fake_run)
+    devices, error = cs.list_devices("/b/llama-server", ["10.0.0.2:50052"])
+    assert seen["env"] == {"MARK": "/b/llama-server"} and devices and not error

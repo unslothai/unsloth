@@ -420,11 +420,18 @@ def _endpoint_in(desc: str, endpoints: Sequence[str]) -> str:
 def list_devices(binary: str, endpoints: Sequence[str]) -> Tuple[List[Device], str]:
     """The devices the coordinator would see with these RPC servers, and any error text."""
     try:
+        # The child's own environment: the managed CUDA / ROCm runtime and the bundle's libraries.
+        from core.inference.llama_cpp import LlamaCppBackend
+        env = LlamaCppBackend._llama_server_env_for_binary(binary)
+    except Exception:
+        env = None
+    try:
         proc = subprocess.run(
             [binary, "--rpc", ",".join(endpoints), "--list-devices"],
             capture_output = True,
             text = True,
             timeout = LIST_DEVICES_TIMEOUT_S,
+            env = env,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         return [], f"{type(exc).__name__}: {exc}"
@@ -932,6 +939,10 @@ class ClusterServing:
         from core.inference.llama_cpp import _resolved_mmproj_offload
 
         host_projector = _resolved_mmproj_offload(extras, os.environ) is False
+        # llama.cpp applies LLAMA_ARG_MMPROJ before argv, so an argv --mmproj replaces it.
+        env_projector = (os.environ.get("LLAMA_ARG_MMPROJ") or "").strip()
+        if _flag_args(extras, frozenset({"--mmproj", "-mm"})):
+            env_projector = ""
         self._projector_url = bool(
             self._has_projector
             and not host_projector
@@ -945,7 +956,7 @@ class ClusterServing:
         if self._has_projector and host_projector:
             # --no-mmproj-offload: its bytes are host RAM, still loaded, so it stays a projector.
             dropped = ss.sidecar_files(_flag_args(extras, frozenset({"--mmproj", "-mm"})))
-            env_file = (os.environ.get("LLAMA_ARG_MMPROJ") or "").strip()
+            env_file = env_projector
             if env_file:
                 dropped.append(os.path.abspath(env_file))
             dropped = list(dict.fromkeys(dropped))
@@ -953,7 +964,7 @@ class ClusterServing:
             # The vision switch drops a named image projector (and an unread URL); an audio-only
             # one stays, as the backend does.
             files = ss.sidecar_files(_flag_args(extras, frozenset({"--mmproj", "-mm"})))
-            env_file = (os.environ.get("LLAMA_ARG_MMPROJ") or "").strip()
+            env_file = env_projector
             if env_file:
                 files.append(os.path.abspath(env_file))
             dropped = [p for p in dict.fromkeys(files) if ss._projector_accepts_image(p)]
@@ -983,8 +994,10 @@ class ClusterServing:
         legacy_drafter = (os.environ.get("LLAMA_ARG_MODEL_DRAFT") or "").strip()
         if legacy_drafter and os.path.isfile(legacy_drafter):
             env_files.append(os.path.abspath(legacy_drafter))
+        replaced = (os.environ.get("LLAMA_ARG_MMPROJ") or "").strip()
+        replaced = os.path.abspath(replaced) if replaced and not env_projector else None
         for path in dict.fromkeys(env_files):
-            if path in named_files:
+            if path in named_files or path == replaced:
                 continue
             file_size = ss.gguf_size_bytes(path)
             if file_size is None:
