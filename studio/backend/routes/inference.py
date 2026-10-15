@@ -30735,15 +30735,26 @@ async def _relay_recording_tool_extras(chunks, subject: Optional[str]):
         await chunks.aclose()
 
 
-async def _relay_split_thinking(chunks):
-    """Native thinking arrives as <think> markup in content (the Studio chat's form); OpenAI clients
-    read it from reasoning_content."""
-    think = _ResponsesReasoningExtractor(parse_think_markers = True)
+async def _relay_split_thinking(chunks, stops: Any = None):
+    """Native thinking arrives as a leading <think> block in content (the Studio chat's form); OpenAI
+    clients read it from reasoning_content. The proxy forwards no stop sequences, so cut here."""
+    think = _ResponsesReasoningExtractor(parse_think_markers = True, single_block = True)
+    stop = _StopSequenceFilter([stops] if isinstance(stops, str) else stops)
     lines = _sse_data_lines(chunks)
     try:
         async for line in lines:
             data = line[len("data:") :].strip() if line.startswith("data:") else ""
-            if data and data != "[DONE]" and '"choices"' in data:
+            if data == "[DONE]":
+                reasoning, text = think.finish()
+                text = stop.feed(text) + stop.flush()
+                if reasoning or text:
+                    delta = {
+                        k: v for k, v in (("reasoning_content", reasoning), ("content", text)) if v
+                    }
+                    yield (
+                        "data: " + json.dumps({"choices": [{"index": 0, "delta": delta}]}) + "\n\n"
+                    )
+            elif data and '"choices"' in data:
                 try:
                     chunk = json.loads(data)
                 except ValueError:
@@ -30760,6 +30771,11 @@ async def _relay_split_thinking(chunks):
                         if choice.get("finish_reason"):
                             tail_reasoning, tail_text = think.finish()
                             reasoning, text = reasoning + tail_reasoning, text + tail_text
+                        text = stop.feed(text)
+                        if choice.get("finish_reason") and stop.hit is None:
+                            text += stop.flush()
+                        if stop.hit is not None:
+                            choice["finish_reason"] = "stop"
                         delta.pop("reasoning_content", None)
                         delta.pop("content", None)
                         if text:
@@ -30768,6 +30784,9 @@ async def _relay_split_thinking(chunks):
                             delta["reasoning_content"] = reasoning
                     line = "data: " + json.dumps(chunk)
             yield line + "\n"
+            if stop.hit is not None:
+                yield "\ndata: [DONE]\n\n"
+                return
     finally:
         await lines.aclose()
 
@@ -30877,7 +30896,7 @@ async def openai_chat_completions(
     if connection is None or not isinstance(response, StreamingResponse):
         return response
     response.body_iterator = _relay_split_thinking(
-        _relay_recording_tool_extras(response.body_iterator, current_subject)
+        _relay_recording_tool_extras(response.body_iterator, current_subject), payload.stop
     )
     if collect:
         return await _chat_completion_from_connection_stream(response, payload.model)
@@ -42331,7 +42350,9 @@ async def _anthropic_events_from_openai_sse(
 ):
     emitter = AnthropicPassthroughEmitter()
     # Always, like the Studio chat: a provider can think by default with no thinking controls sent.
-    think = _ResponsesReasoningExtractor(parse_think_markers = True)
+    # Native thinking leads the reply, so only a leading block is read: a literal tag later in the
+    # answer (or inside JSON) stays text.
+    think = _ResponsesReasoningExtractor(parse_think_markers = True, single_block = True)
     stop = _StopSequenceFilter(stop_sequences)
     recorder = _ConnectionExtrasRecorder(subject)
     dropped: set[int] = set()

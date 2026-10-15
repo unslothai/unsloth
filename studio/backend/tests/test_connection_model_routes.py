@@ -965,3 +965,50 @@ def test_responses_move_default_thinking_out_of_the_answer(v1, monkeypatch):
     message = next(item for item in body["output"] if item["type"] == "message")
     assert message["content"][0]["text"] == "answer"
     assert any(item["type"] == "reasoning" for item in body["output"])
+
+
+def _chat_text(resp, stream):
+    if stream:
+        chunks = _sse(resp.text.replace("data: [DONE]", ""))
+        return "".join(
+            (c["choices"][0]["delta"].get("content") or "") for c in chunks if c.get("choices")
+        )
+    return resp.json()["choices"][0]["message"]["content"]
+
+
+@pytest.mark.parametrize("stream", [True, False])
+def test_chat_completions_stop_at_a_requested_stop_sequence(v1, monkeypatch, stream):
+    import routes.inference as inf
+
+    monkeypatch.setattr(inf, "ExternalProviderClient", _content_stream("before E", "ND after"))
+    body = {
+        "model": CONNECTION_MODEL,
+        "messages": [{"role": "user", "content": "hi"}],
+        "stop": ["END"],
+        "stream": stream,
+    }
+    resp = v1.post("/v1/chat/completions", json = body)
+
+    assert resp.status_code == 200, resp.text
+    assert _chat_text(resp, stream) == "before "
+    if not stream:
+        assert resp.json()["choices"][0]["finish_reason"] == "stop"
+
+
+@pytest.mark.parametrize("stream", [True, False])
+def test_chat_completions_keep_a_literal_think_tag_inside_the_answer(v1, monkeypatch, stream):
+    # Only a leading block is thinking; JSON that mentions the tag must come back intact.
+    import routes.inference as inf
+
+    answer = '{"template": "<think>example</think>"}'
+    monkeypatch.setattr(inf, "ExternalProviderClient", _content_stream(answer[:12], answer[12:]))
+    body = {
+        "model": CONNECTION_MODEL,
+        "messages": [{"role": "user", "content": "hi"}],
+        "response_format": {"type": "json_object"},
+        "stream": stream,
+    }
+    resp = v1.post("/v1/chat/completions", json = body)
+
+    assert resp.status_code == 200, resp.text
+    assert _chat_text(resp, stream) == answer
