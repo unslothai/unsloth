@@ -48,6 +48,9 @@ enum RenderingWorkaround {
     /// lets selection reach FORCE_SHM. Unpatched libraries ignore the variable.
     ForceSharedMemoryOnNvidia,
     DisableCompositingOnNvidiaX11,
+    /// Compositing off on top of the NVIDIA Wayland transport, not instead of it: since
+    /// WebKitGTK 2.53 non-composited mode still renders over DMA-BUF (#13875).
+    DisableCompositingOnNvidiaWayland,
     DisableDmabuf,
     /// Not a transport at all. The others choose how buffers reach the compositor; this
     /// stops WebKit compositing on the GPU at all.
@@ -62,6 +65,7 @@ impl RenderingWorkaround {
             Self::DisableCompositingOnNvidiaX11 => {
                 &[FORCE_SHARED_MEMORY, FORCE_DMABUF, DISABLE_COMPOSITING]
             }
+            Self::DisableCompositingOnNvidiaWayland => &[DISABLE_DMABUF, DISABLE_COMPOSITING],
             Self::DisableDmabuf => &[DISABLE_DMABUF],
             Self::DisableCompositing => &[DISABLE_COMPOSITING],
         }
@@ -187,6 +191,8 @@ fn rendering_plan(
     if requested(true) {
         let workaround = if nvidia_x11 {
             RenderingWorkaround::DisableCompositingOnNvidiaX11
+        } else if nvidia_driver_loaded && !force_dmabuf && wayland_session {
+            RenderingWorkaround::DisableCompositingOnNvidiaWayland
         } else {
             RenderingWorkaround::DisableCompositing
         };
@@ -657,6 +663,13 @@ mod tests {
             (&[(GDK_BACKEND, "x11")][..], true),
             (&[][..], false),
             (&[(WAYLAND_DISPLAY, "wayland-0")][..], false),
+            (
+                &[
+                    (WAYLAND_DISPLAY, "wayland-0"),
+                    (DISABLE_COMPOSITING_SETTING, "1"),
+                ][..],
+                true,
+            ),
         ];
         for (session, nvidia) in hosts {
             let first = plan_on_host(session, MODERN_WEBKIT, true, nvidia);
@@ -1148,8 +1161,9 @@ mod tests {
     const WAYLAND: &[(&str, &str)] = &[(WAYLAND_DISPLAY, "wayland-0")];
 
     #[test]
-    fn wayland_nvidia_mixed_open_hosts_get_the_dmabuf_workaround() {
-        // #13875: Arrow Lake iGPU + RTX 5080, open module. Compositing off crashed with Error 71.
+    fn wayland_nvidia_hosts_get_the_dmabuf_workaround_whatever_the_gpu_mix() {
+        // #13875 (Arrow Lake iGPU + RTX 5080, open module) crashed with Error 71 under
+        // compositing off alone, and the planner no longer sees vendors or modules.
         assert_eq!(
             plan_on_graphics(WAYLAND, true),
             RenderingPlan::Apply(RenderingWorkaround::DisableDmabuf, NVIDIA_WAYLAND_REASON)
@@ -1157,12 +1171,36 @@ mod tests {
     }
 
     #[test]
-    fn the_healthy_nvidia_wayland_host_keeps_the_dmabuf_workaround() {
-        // Linux Mint 22, Cinnamon on Wayland, two discrete NVIDIA cards on the proprietary
-        // module: same transport choice as the mixed-open host above.
+    fn forcing_compositing_off_on_nvidia_wayland_keeps_dmabuf_off() {
+        // On WebKitGTK 2.54 compositing off alone still renders over DMA-BUF and hits the
+        // same explicit-sync Error 71 as #13875.
+        let forced: &[(&str, &str)] = &[
+            (WAYLAND_DISPLAY, "wayland-0"),
+            (DISABLE_COMPOSITING_SETTING, "1"),
+        ];
         assert_eq!(
-            plan_on_graphics(WAYLAND, true),
-            RenderingPlan::Apply(RenderingWorkaround::DisableDmabuf, NVIDIA_WAYLAND_REASON)
+            plan_on_graphics(forced, true),
+            RenderingPlan::Apply(
+                RenderingWorkaround::DisableCompositingOnNvidiaWayland,
+                COMPOSITING_FORCED_REASON
+            )
+        );
+        assert_eq!(
+            RenderingWorkaround::DisableCompositingOnNvidiaWayland.variables(),
+            &[DISABLE_DMABUF, DISABLE_COMPOSITING]
+        );
+        // FORCE_DMABUF stands the NVIDIA branch down here too.
+        let standing_down: &[(&str, &str)] = &[
+            (WAYLAND_DISPLAY, "wayland-0"),
+            (DISABLE_COMPOSITING_SETTING, "1"),
+            (FORCE_DMABUF, "1"),
+        ];
+        assert_eq!(
+            plan_on_graphics(standing_down, true),
+            RenderingPlan::Apply(
+                RenderingWorkaround::DisableCompositing,
+                COMPOSITING_FORCED_REASON
+            )
         );
     }
 
@@ -1283,82 +1321,5 @@ mod tests {
             plan_on_graphics(theirs, true),
             RenderingPlan::PreserveEnvironment
         );
-    }
-
-    /// Is more than one GPU vendor present, e.g. an Intel iGPU beside an NVIDIA dGPU?
-    fn mixed_gpu_vendors_in(dir: &str) -> bool {
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            return false;
-        };
-        let mut seen: Vec<String> = Vec::new();
-        for entry in entries.flatten() {
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
-            // cardN only. `cardN-CONNECTOR` entries are outputs of a card already counted, and
-            // renderDN is the same device under a second node.
-            if !name.starts_with("card") || name.contains('-') {
-                continue;
-            }
-            // A card with no readable vendor is a virtual framebuffer (simpledrm and friends).
-            let Ok(vendor) = std::fs::read_to_string(entry.path().join("device/vendor")) else {
-                continue;
-            };
-            let vendor = vendor.trim().to_owned();
-            if !vendor.is_empty() && !seen.iter().any(|known| *known == vendor) {
-                seen.push(vendor);
-            }
-        }
-        seen.len() > 1
-    }
-
-    fn open_kernel_module_at(path: &str) -> bool {
-        std::fs::read_to_string(path)
-            .is_ok_and(|text| text.contains("Open Kernel Module"))
-    }
-
-    #[test]
-    fn a_virtual_framebuffer_does_not_make_a_host_look_hybrid() {
-        // A card with no readable vendor is a virtual framebuffer, and hosts pair one with
-        // real GPUs. Counting a missing vendor as its own would make them all match.
-        let dir = std::env::temp_dir().join(format!("unsloth-drm-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let card = |name: &str| dir.join(name).join("device");
-        std::fs::create_dir_all(card("card0")).unwrap();
-        std::fs::create_dir_all(card("card1")).unwrap();
-        std::fs::write(card("card1").join("vendor"), "0x10de\n").unwrap();
-        let path = dir.to_string_lossy().into_owned();
-        assert!(!mixed_gpu_vendors_in(&path), "one real vendor is not mixed");
-
-        // A connector entry is an output of a card already counted, not a second device.
-        std::fs::create_dir_all(card("card1-DP-1")).unwrap();
-        std::fs::write(card("card1-DP-1").join("vendor"), "0x8086\n").unwrap();
-        assert!(!mixed_gpu_vendors_in(&path), "connectors are not devices");
-
-        std::fs::create_dir_all(card("card2")).unwrap();
-        std::fs::write(card("card2").join("vendor"), "0x8086\n").unwrap();
-        assert!(mixed_gpu_vendors_in(&path), "Intel beside NVIDIA is mixed");
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn the_open_module_is_read_from_the_file_the_probe_already_opens() {
-        let dir = std::env::temp_dir().join(format!("unsloth-nvrm-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let open = dir.join("open");
-        let proprietary = dir.join("proprietary");
-        std::fs::write(
-            &open,
-            "NVRM version: NVIDIA UNIX Open Kernel Module for x86_64  580.173.02\n",
-        )
-        .unwrap();
-        std::fs::write(
-            &proprietary,
-            "NVRM version: NVIDIA UNIX x86_64 Kernel Module  580.173.02\n",
-        )
-        .unwrap();
-        assert!(open_kernel_module_at(&open.to_string_lossy()));
-        assert!(!open_kernel_module_at(&proprietary.to_string_lossy()));
-        assert!(!open_kernel_module_at("/nonexistent/nvidia/version"));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }
