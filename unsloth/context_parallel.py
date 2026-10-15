@@ -39,7 +39,6 @@ _ROTATE_METHODS = ("allgather", "alltoall")
 
 def _torch_supports_context_parallel() -> bool:
     from packaging.version import Version
-
     return context_parallel is not None and Version(
         Version(torch.__version__).base_version
     ) >= Version("2.7.0")
@@ -54,7 +53,6 @@ def _ring_sdpa_backends():
     op = getattr(torch.ops.aten, "_scaled_dot_product_cudnn_attention", None)
     if cudnn is not None and op is not None:
         import importlib
-
         for name in (
             "torch.distributed.tensor.experimental._context_parallel._attention",
             "torch.distributed.tensor.experimental._attention",
@@ -104,7 +102,11 @@ def _unsupported_attention(config, backend = "ring") -> Optional[str]:
         layer_types = getattr(c, "layer_types", None)
         if layer_types and any(t not in allowed for t in layer_types):
             kinds = sorted({t for t in layer_types if t not in allowed})
-            hint = " (use context_parallel_backend = 'ulysses')" if kinds == ["linear_attention"] else ""
+            hint = (
+                " (use context_parallel_backend = 'ulysses')"
+                if kinds == ["linear_attention"]
+                else ""
+            )
             return f"{', '.join(kinds)} layers{hint}"
         # Any positive window, even with use_sliding_window off: Unsloth's masks read it directly.
         sliding_window = getattr(c, "sliding_window", None)
@@ -156,7 +158,6 @@ def get_cp_manager() -> Optional["ContextParallelManager"]:
 
 def _stateful_mixers(model) -> list:
     from .utils.packing import _iter_stateful_mixers
-
     return _iter_stateful_mixers(model) if isinstance(model, torch.nn.Module) else []
 
 
@@ -206,7 +207,12 @@ class ContextParallelManager:
     backend = "ring"
     rotate_method = "allgather"
 
-    def __init__(self, size: int, backend: str = "ring", rotate_method: str = "allgather"):
+    def __init__(
+        self,
+        size: int,
+        backend: str = "ring",
+        rotate_method: str = "allgather",
+    ):
         self.size = size
         self.backend = backend
         self.rotate_method = rotate_method
@@ -228,7 +234,10 @@ class ContextParallelManager:
                 if is_ulysses_gated_delta(module):
                     wrap_gated_delta_forward(module, get_cp_manager)
             for name, module in model.named_modules():
-                if name.endswith("self_attn") and type(module).__name__ in GATED_DELTA_ATTENTION_CLASSES:
+                if (
+                    name.endswith("self_attn")
+                    and type(module).__name__ in GATED_DELTA_ATTENTION_CLASSES
+                ):
                     install_hf_attention_wrapper(
                         module, module.config._attn_implementation, get_cp_manager
                     )
@@ -291,7 +300,6 @@ class ContextParallelManager:
         if inputs.get("shift_labels") is None and labels is not None:
             # Shard-local labels cannot see document starts on another shard: mask them here.
             from .utils.packing import mask_packed_boundary_labels
-
             labels = mask_packed_boundary_labels(labels, packed_seq_lengths)
             inputs["shift_labels"] = F.pad(labels, (0, 1), value = -100)[:, 1:].contiguous()
         pad = (-seq_len) % (self.size if ulysses else 2 * self.size)
@@ -362,14 +370,18 @@ class ContextParallelManager:
         raised = False
         try:
             with (
-                sdpa_kernel(ring_backends)
-                if ring_backends is not None
-                else contextlib.nullcontext()
-            ), self._rotate_method_scope(), context_parallel(
-                self.mesh,
-                buffers = buffers,
-                buffer_seq_dims = [1] * len(buffers),
-                no_restore_buffers = set(buffers),
+                (
+                    sdpa_kernel(ring_backends)
+                    if ring_backends is not None
+                    else contextlib.nullcontext()
+                ),
+                self._rotate_method_scope(),
+                context_parallel(
+                    self.mesh,
+                    buffers = buffers,
+                    buffer_seq_dims = [1] * len(buffers),
+                    no_restore_buffers = set(buffers),
+                ),
             ):
                 yield
         except BaseException:

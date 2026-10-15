@@ -70,7 +70,6 @@ def _force_torch_kernels(model):
     import inspect
 
     from unsloth.utils.packing import _hub_closure
-
     for module in model.modules():
         if not type(module).__name__.endswith("GatedDeltaNet"):
             continue
@@ -94,9 +93,12 @@ def _manager(size, rank):
 
 
 def _loss(logits, shift_labels, count):
-    return F.cross_entropy(
-        logits.float().flatten(0, 1), shift_labels.flatten(), ignore_index = -100, reduction = "sum"
-    ) / count
+    return (
+        F.cross_entropy(
+            logits.float().flatten(0, 1), shift_labels.flatten(), ignore_index = -100, reduction = "sum"
+        )
+        / count
+    )
 
 
 def _parity_worker(rank, world, kind, control):
@@ -120,7 +122,9 @@ def _parity_worker(rank, world, kind, control):
     inputs = {"input_ids": ids.clone(), "labels": ids.clone()}
     manager._prepare_inputs(inputs)
     with manager.apply(inputs):
-        out = model(input_ids = inputs["input_ids"], position_ids = inputs["position_ids"], use_cache = False)
+        out = model(
+            input_ids = inputs["input_ids"], position_ids = inputs["position_ids"], use_cache = False
+        )
         _loss(out.logits, inputs["shift_labels"], count).backward()
     for name, param in model.named_parameters():
         grad = torch.zeros_like(param) if param.grad is None else param.grad

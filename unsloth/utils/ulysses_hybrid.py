@@ -244,7 +244,9 @@ def _ulysses_hf_attention(module, query, key, value, attention_mask, *, group, *
             "Unsloth: Ulysses context parallelism needs the default attention scale 1/sqrt(head_dim)."
         )
     if module.training and kwargs.get("dropout"):
-        raise NotImplementedError("Unsloth: Ulysses context parallelism does not support attention dropout.")
+        raise NotImplementedError(
+            "Unsloth: Ulysses context parallelism does not support attention dropout."
+        )
     seq_info = get_packed_info_from_kwargs(kwargs, query.device)
     n_kv_heads = key.shape[1]
     config = AttentionConfig(
