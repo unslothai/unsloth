@@ -9,29 +9,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""What Unsloth adds to accelerate's FSDP2 wrap.
-
-accelerate (`fsdp2_prepare_model`) already shards one unit per `_no_split_modules` block, keeps
-the [final norm, lm_head] tail gathered from forward to backward, groups tied embeddings, and
-(>= 1.11) turns `no_sync` into `set_requires_gradient_sync(False)`. Unsloth fills in around it:
-
-1. Mixed precision: accelerate's automatic policy gathers weights in the compute dtype, reduces
-   gradients in it and casts the model outputs (the loss included) to it. Unsloth reduces in float32
-   and leaves outputs alone; bfloat16 keeps bfloat16 gathers, float16 gathers the stored dtype and
-   leaves the casting to autocast (as the single GPU run does) so the loss scaler sees the same
-   gradients.
-2. The last decoder block keeps its weights gathered after forward (backward starts with it).
-3. Unsloth's forwards read `lm_head.weight` and the final norm's weight directly (fused CE loss,
-   fast RMSNorm) instead of calling those modules, so FSDP's pre-forward hook would never gather
-   their unit: the unit is gathered at the start of the model's forward instead.
-4. The fused LoRA kernels read `.weight` of q/k/v/o/gate/up/down directly. They run inside the
-   decoder block's forward, after FSDP gathered that block, so they stay on when each block is its
-   own unit and no submodule of a fused layer is a unit of its own. Otherwise they are declined.
-5. `no_sync` on accelerate < 1.11 ignores FSDP2; it is mapped to `set_requires_gradient_sync`.
-6. Unsloth's bfloat16 full finetuning trains without autocast and keeps norms in float32; FSDP2
-   needs one trainable dtype per unit, so float32 masters are kept and gathered in bfloat16.
-
-`UNSLOTH_FSDP2_ACCELERATE_DEFAULTS=1` skips 1 and 2.
+"""What Unsloth adds around accelerate's `fsdp2_prepare_model` (which already wraps per block,
+keeps the [norm, lm_head] tail gathered, groups tied embeddings). `UNSLOTH_FSDP2_ACCELERATE_DEFAULTS=1`
+skips the mixed precision fill and the last-block setting.
 """
 
 import contextlib
@@ -92,10 +72,8 @@ def _compute_dtype(accelerator):
 
 
 def fill_fsdp2_mixed_precision(accelerator):
-    """Reduce gradients in float32, stop casting the model outputs, and for float16 gather the stored
-    dtype; only when the policy is the one accelerate derived from `mixed_precision` (every dtype
-    equal to the compute dtype).
-    A policy the user wrote is left alone. Returns the policy in force."""
+    """Only rewrites accelerate's automatic policy (every dtype = compute dtype): it casts the loss
+    to float16, where the 65536 loss scale overflows and the scaler skips the first steps."""
     plugin = getattr(getattr(accelerator, "state", None), "fsdp_plugin", None)
     policy = getattr(plugin, "mixed_precision_policy", None)
     if policy is None or _keep_accelerate_defaults():
@@ -115,10 +93,8 @@ def fill_fsdp2_mixed_precision(accelerator):
         return policy
     changes = {"reduce_dtype": torch.float32}
     if compute == torch.float16:
-        # float16 trains with a loss scaler and float32 master weights under autocast. Gathering
-        # float16 copies instead moves the embedding / norm / lm_head backward into float16, where
-        # the scaled gradients overflow and the scaler skips steps the unsharded run takes. Gather
-        # the stored dtype and let autocast cast, exactly like the single GPU run.
+        # float16 gathers move the embedding / norm / lm_head backward into float16, where scaled
+        # gradients overflow; gather the float32 masters and let autocast cast like one GPU does.
         changes["param_dtype"] = None
     if hasattr(policy, "output_dtype"):
         changes["output_dtype"] = None
@@ -127,11 +103,8 @@ def fill_fsdp2_mixed_precision(accelerator):
 
 
 def unify_trainable_dtypes(accelerator, model):
-    """FSDP2 needs one dtype among the trainable parameters of each unit. Unsloth's bfloat16 full
-    finetuning trains without autocast (mixed_precision "no") and keeps the norms in float32, so
-    accelerate upcasts nothing and the first forward fails ("FSDP expects uniform original
-    parameter dtype"). Store float32 master weights and gather them in bfloat16 for compute, the
-    recipe accelerate itself applies under mixed_precision = "bf16". Returns True when applied."""
+    """bfloat16 full finetuning runs without autocast with float32 norms, which accelerate does not
+    upcast and FSDP2 refuses ("FSDP expects uniform original parameter dtype")."""
     if str(getattr(accelerator, "mixed_precision", "no")) != "no":
         return False
     trainable = [p for p in model.parameters() if p.requires_grad and p.is_floating_point()]
@@ -200,8 +173,7 @@ def _all_ranks_agree(value, device):
 
 
 def _fused_lora_wrap_problem(model, fused, parents, FSDPModule):
-    """None when every fused LoRA layer runs inside the forward of a per-block FSDP unit that
-    gathers all the weights it reads, else why not."""
+    """None when every fused layer's weights are gathered by a per-block unit, else why not."""
     for module in fused:
         owner = _fsdp_owner(module, parents, FSDPModule)
         if owner is None or owner is model:
@@ -234,7 +206,8 @@ def _gate_fused_lora(accelerator, model, parents, FSDPModule):
 
 
 def _gather_units_read_directly(model, blocks, parents, FSDPModule):
-    """Gather the FSDP units holding lm_head / the final norm before the model's forward."""
+    """Unsloth reads lm_head / final norm weights directly (fused CE, fast RMSNorm), so FSDP's
+    pre-forward never gathers their unit (accelerate >= 1.14 splits it off)."""
     if not hasattr(FSDPModule, "unshard"):
         return 0
     targets = []
@@ -259,8 +232,7 @@ def _gather_units_read_directly(model, blocks, parents, FSDPModule):
             units.append(owner)
     if not units:
         return 0
-    # On the root, which the Trainer always calls through __call__ (peft's LoraModel calls the
-    # CausalLM's .forward directly, skipping its hooks). Runs after FSDP's own root pre-forward.
+    # On the root: peft's LoraModel calls the CausalLM's .forward directly, skipping its hooks.
     def _unsloth_gather_direct_reads(module, args):
         for unit in units:
             unit.unshard()
@@ -270,7 +242,6 @@ def _gather_units_read_directly(model, blocks, parents, FSDPModule):
 
 
 def after_fsdp2_wrap(accelerator, model):
-    """Runs once on the model accelerate just sharded."""
     FSDPModule = _fsdp_module_class()
     if FSDPModule is None or not isinstance(model, FSDPModule):
         return
@@ -321,8 +292,7 @@ def install_fsdp2_prepare_hook():
 
 
 def install_fsdp2_no_sync():
-    """accelerate < 1.11 looks for `model.no_sync`, which FSDP2 modules do not have, so every
-    gradient accumulation micro-step reduce-scattered. Map it to `set_requires_gradient_sync`."""
+    """accelerate < 1.11 looks for `model.no_sync`, which FSDP2 modules lack."""
     try:
         from accelerate import Accelerator
     except Exception:
@@ -356,11 +326,7 @@ def install_fsdp2_no_sync():
 
 
 def fsdp2_trainer_setup(trainer):
-    """Called from Trainer.__init__ once the Accelerator exists.
-
-    Returns (keep_fused_lora, reason). keep_fused_lora is False for FSDP1 and for an FSDP2 wrap
-    that will not give each decoder block its own unit; the caller declines the kernels then.
-    """
+    """Returns (keep_fused_lora, reason); False for FSDP1 and for a root-only FSDP2 wrap."""
     accelerator = getattr(trainer, "accelerator", None)
     plugin = getattr(getattr(accelerator, "state", None), "fsdp_plugin", None)
     if plugin is None or getattr(plugin, "fsdp_version", 1) != 2:
@@ -370,6 +336,5 @@ def fsdp2_trainer_setup(trainer):
     if os.environ.get("UNSLOTH_FSDP2_FUSED_LORA", "1").strip().lower() in _FALSY:
         return False, "UNSLOTH_FSDP2_FUSED_LORA=0"
     if getattr(plugin, "auto_wrap_policy", None) is None:
-        # accelerate's NO_WRAP: one unit for the whole model.
         return False, "FSDP2 wraps only the root module (auto_wrap_policy NO_WRAP)"
     return True, None

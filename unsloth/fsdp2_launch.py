@@ -9,13 +9,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""FSDP launch detection from the launcher environment alone (no torch, no accelerate).
-
-Every rank of one job inherits the same launcher env, so every answer here is the same on
-every rank. `unsloth/__init__.py` calls `apply_unsloth_fsdp2_launch_env` before transformers or
-accelerate are imported, so `UNSLOTH_FSDP2=1` under plain `torchrun` looks exactly like
-`accelerate launch` with an FSDP2 config to everything downstream.
-"""
+"""FSDP launch detection from the launcher env only (no torch): identical on every rank."""
 
 import os
 
@@ -41,17 +35,12 @@ def _env_world_size():
 
 
 def unsloth_fsdp2_requested():
-    """`UNSLOTH_FSDP2=1`: train with FSDP2 under a launcher that exports no FSDP config (plain torchrun)."""
     return _env_flag("UNSLOTH_FSDP2")
 
 
 def fsdp_version_from_env():
-    """The FSDP version the launcher env asks for: 0 for none, else 1 or 2.
-
-    `accelerate launch` exports ACCELERATE_USE_FSDP=true and FSDP_VERSION for an FSDP config and
-    neither for DDP; torchrun users may export FSDP_VERSION by hand. accelerate builds FSDP1 when
-    ACCELERATE_USE_FSDP names no version, and "0" is how a config says "not FSDP".
-    """
+    """0 for no FSDP, else 1 or 2. accelerate builds FSDP1 when ACCELERATE_USE_FSDP names no
+    version; FSDP_VERSION="0" means "not FSDP"."""
     if unsloth_fsdp2_requested() and _env_world_size() > 1:
         return 2
     version = str(os.environ.get("FSDP_VERSION", "")).strip()
@@ -65,14 +54,8 @@ def fsdp_version_from_env():
 
 
 def apply_unsloth_fsdp2_launch_env():
-    """Export what `accelerate launch` exports for an FSDP2 config when `UNSLOTH_FSDP2=1`.
-
-    Only on a multi-process launch (WORLD_SIZE > 1); a single process is left alone. Explicit
-    FSDP_* settings win over the defaults filled here. `UNSLOTH_FSDP2_RESHARD_AFTER_FORWARD=0`
-    keeps each block's parameters gathered from forward to backward (ZeRO-2 like: one all-gather
-    per block per step instead of two, more memory; usually faster over PCIe).
-    Returns True when the env was applied.
-    """
+    """UNSLOTH_FSDP2=1 with WORLD_SIZE > 1: export what `accelerate launch` exports for an FSDP2
+    config (explicit FSDP_* values win). Must run before transformers / accelerate read the env."""
     if not unsloth_fsdp2_requested() or _env_world_size() <= 1:
         return False
     if _env_flag("ACCELERATE_USE_DEEPSPEED"):
@@ -86,7 +69,7 @@ def apply_unsloth_fsdp2_launch_env():
         )
     os.environ["ACCELERATE_USE_FSDP"] = "true"
     os.environ["FSDP_VERSION"] = "2"
-    # One FSDP unit per decoder block (`_no_split_modules`); accelerate's own default is the root only.
+    # accelerate's default is the root only.
     os.environ.setdefault("FSDP_AUTO_WRAP_POLICY", "TRANSFORMER_BASED_WRAP")
     reshard = os.environ.get("UNSLOTH_FSDP2_RESHARD_AFTER_FORWARD", None)
     if reshard is not None and reshard.strip() != "":
@@ -94,6 +77,5 @@ def apply_unsloth_fsdp2_launch_env():
             "FSDP_RESHARD_AFTER_FORWARD",
             "false" if reshard.strip().lower() in _FALSY else "true",
         )
-    # What TrainingArguments(fsdp = ...) picks, so trainer.save_model() writes ordinary files.
     os.environ.setdefault("FSDP_STATE_DICT_TYPE", "FULL_STATE_DICT")
     return True
