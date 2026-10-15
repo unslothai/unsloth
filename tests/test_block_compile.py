@@ -15,6 +15,7 @@ import sys
 import types
 
 import pytest
+from real_accelerator import has_real_cuda
 
 torch = pytest.importorskip("torch")
 
@@ -253,7 +254,7 @@ def _check_block(layers, run, x, cls):
             torch.testing.assert_close(gg[k], gw[k], rtol = 1e-3, atol = 1e-5)
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "compiled block needs CUDA")
+@pytest.mark.skipif(not has_real_cuda(), reason = "compiled block needs CUDA")
 def test_qwen3_block_matches_stock():
     pytest.importorskip("unsloth")
     from transformers.models.qwen3 import modeling_qwen3 as modeling
@@ -282,7 +283,7 @@ def test_qwen3_block_matches_stock():
     _check_block(layers, run, x, modeling.Qwen3DecoderLayer)
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "fla kernels need CUDA")
+@pytest.mark.skipif(not has_real_cuda(), reason = "fla kernels need CUDA")
 def test_qwen3_5_gdn_block_has_no_break():
     pytest.importorskip("unsloth")
     pytest.importorskip("fla.ops.gated_delta_rule")
@@ -345,7 +346,7 @@ def test_qwen3_5_gdn_block_has_no_break():
             )
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "fla kernels need a GPU")
+@pytest.mark.skipif(not has_real_cuda(), reason = "fla kernels need a GPU")
 def test_opaque_fla_op_matches_fla_function():
     pytest.importorskip("fla.ops.gated_delta_rule.chunk")
     M = _load("_gdn_op")

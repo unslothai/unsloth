@@ -108,7 +108,7 @@ try:
         return tuple(t.contiguous() for t in (o.to(q.dtype), qn, q_rstd, kn, k_rstd, g_cum, A))
 
     @_gdn_chunk.register_fake
-    def _(q, k, v, g, beta, scale):
+    def _gdn_chunk_fake(q, k, v, g, beta, scale):
         o = v.new_empty(v.shape, dtype = q.dtype)
         return (o,) + tuple(
             q.new_empty(shape, dtype = dtype) for shape, dtype in _chunk_meta(q, k, v, g)
@@ -154,7 +154,7 @@ try:
         return tuple(t.contiguous() for t in out)
 
     @_gdn_chunk_bwd.register_fake
-    def _(qn, q_rstd, kn, k_rstd, v, g_cum, beta, A, do, scale):
+    def _gdn_chunk_bwd_fake(qn, q_rstd, kn, k_rstd, v, g_cum, beta, A, do, scale):
         return tuple(qn.new_empty(t.shape, dtype = t.dtype) for t in (qn, kn, v, g_cum, beta))
 
     def _gdn_chunk_setup(ctx, inputs, output):
