@@ -255,3 +255,20 @@ def test_every_rank_reads_the_same_fsdp2_launch(tmp_path):
     mp.spawn(_rank_worker, args = (_free_port(), str(tmp_path)), nprocs = 2, join = True)
     ranks = json.loads((tmp_path / "ranks.json").read_text())
     assert ranks[0] == ranks[1] == [2, "true", "TRANSFORMER_BASED_WRAP"]
+
+
+def test_unsloth_init_installs_the_fsdp2_hooks_without_a_launcher_env():
+    """`Accelerator(fsdp_plugin = FullyShardedDataParallelPlugin(fsdp_version = 2))` in a raw loop
+    sets no env before unsloth is imported, so the install must not be gated on it."""
+    import ast
+
+    source = (_ROOT / "unsloth" / "__init__.py").read_text(encoding = "utf-8")
+    gated = [
+        node
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.If)
+        and "fsdp_version_from_env" in ast.unparse(node.test)
+        and "_install_fsdp2_hooks" in ast.unparse(node)
+    ]
+    assert not gated, "install_fsdp2_hooks is gated on the launcher env"
+    assert "_install_fsdp2_hooks()" in source
