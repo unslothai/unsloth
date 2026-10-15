@@ -130,8 +130,11 @@ export const BUDGET = {
   // Word list numbering through the default style and basedOn (#13755) adds 228 B raw / 39 B transfer to the
   // eager attachment reader (6,770,962 -> 6,771,190 B raw, 2,035,676 -> 2,035,715 B transfer against 7ae1a5386,
   // one machine and build, Node 24, chunk count unchanged at 95). Raised by that growth.
-  transferBytes: 2_035_744,
-  rawBytes: 6_771_261,
+  // The Notebooks page (#6650: its sidebar row, route and English strings; the page itself is lazy) adds
+  // 3,355 B raw / 972 B transfer against 2a8def3bde (one machine and build, Node 24, chunk count 95 -> 96),
+  // raised by that.
+  transferBytes: 2_036_716,
+  rawBytes: 6_774_616,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
