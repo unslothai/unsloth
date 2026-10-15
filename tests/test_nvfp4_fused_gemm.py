@@ -180,7 +180,6 @@ def test_forward_and_dx_match_dense_and_oracle(N, fused, monkeypatch, dtype, M, 
 @pytest.mark.parametrize("dtype", _dtypes())
 @pytest.mark.parametrize("M, N_out, K", [(4, 128, 4096), (70, 96, 3000), (3, 4096, 200)])
 def test_split_reduction_matches_unsplit(N, fused, monkeypatch, dtype, M, N_out, K):
-    # Split reduction into fp32 partials, uneven last split.
     packed, scale, gs = _random_nvfp4(N_out, K, seed = 7)
     X = torch.randn(M, K, device = "cuda", dtype = dtype)
     G = torch.randn(M, N_out, device = "cuda", dtype = dtype)

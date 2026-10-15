@@ -451,8 +451,7 @@ def _fused_ok(A, packed, scale, global_scale, inner):
     )
 
 
-# Max activation rows where fused beats dense, per capability (measured on N, K multiples of 64: padded tiles lose
-# to dense); unmeasured GPUs stay dense.
+# Max rows where fused beats dense (measured at N, K multiples of 64); unmeasured GPUs stay dense.
 _FUSED_MAX_ROWS = {(8, 0): 64, (8, 9): 256, (12, 0): 128}
 
 
