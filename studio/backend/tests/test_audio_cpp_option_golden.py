@@ -107,7 +107,7 @@ def test_options_match_the_golden(catalog_hub, model_id, case):
                 )
         for name in case["exclude"]:
             if name in by_name:
-                problems.append(f"{name}: offered but must not be ({case['exclude'][name]})")
+                problems.append(f"{name}: offered but must not be")
         if workflow in ("clone", "edit", "convert") and "voice" in sent:
             problems.append("voice: sent on a workflow that speaks in a given voice")
         assert not problems, where + "\n  " + "\n  ".join(problems)

@@ -56,7 +56,7 @@ def catalog_hub(tmp_path, monkeypatch):
         repo = acm.AUDIO_CPP_REPO if folder else model_id
         snap = snaps.get(repo) or snaps.setdefault(repo, _snapshot(root, repo))
         header = _gguf_bytes(family = entry["family"], spec = entry["spec"])
-        for rel, _size in entry["files"]:
+        for rel in entry["files"]:
             path = f"{folder}/{rel}" if folder else rel
             _put(snap, path, header if rel.endswith(".gguf") else b"{}")
     yield root
