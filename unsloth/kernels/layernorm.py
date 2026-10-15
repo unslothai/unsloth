@@ -183,17 +183,15 @@ def layernorm_backward_dw(
         tl.store(dB + pid * n_cols + col_offsets, dB_acc, mask = mask)
 
 
-# fla runs one program per SM; at 4 to 8 warps per program that leaves most of an SM idle, so fill
-# about 32 warps per SM instead (A100: 1.1x to 1.2x faster at 1024 / 2048 columns).
-_DW_WARPS_PER_SM = 32
-
-
+# fla runs one program per SM, which at 4 to 8 warps leaves an A100 SM mostly idle; filling half of
+# each SM's warps measured best on both A100 (1.1x to 1.2x at 1024 / 2048 columns) and T4.
 @functools.lru_cache(maxsize = None)
-def _sm_count(device):
+def _dw_slots(device):
     try:
-        return int(torch.cuda.get_device_properties(device).multi_processor_count)
+        props = torch.cuda.get_device_properties(device)
+        return int(props.multi_processor_count), max(1, int(props.max_threads_per_multi_processor) // 64)
     except Exception:
-        return 128
+        return 128, 32
 
 
 class Fast_Layernorm(torch.autograd.Function):
@@ -265,8 +263,8 @@ class Fast_Layernorm(torch.autograd.Function):
                 )
             return dY.view(*shape), None, None, None
 
-        per_sm = max(1, _DW_WARPS_PER_SM // ctx.num_warps)
-        programs = max(1, min(n_rows, _sm_count(dY.device) * per_sm))
+        sms, warps_per_sm = _dw_slots(dY.device)
+        programs = max(1, min(n_rows, sms * max(1, warps_per_sm // ctx.num_warps)))
         rows_per_program = max(1, triton.cdiv(n_rows, programs))
         programs = max(1, triton.cdiv(n_rows, rows_per_program))
         # One buffer for both partials: every program stores its rows, so empty is enough (zeros only
