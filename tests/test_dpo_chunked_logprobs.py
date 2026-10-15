@@ -36,6 +36,8 @@ HELPERS = (
     "_unsloth_grpo_returns_hidden_states",
     "_unsloth_grpo_hidden_states_signal",
     "_unsloth_gkd_dense_head",
+    "_unsloth_gkd_logit_transforms",
+    "_unsloth_pref_logit_transforms",
     "_unsloth_dpo_chunked_head",
     "_unsloth_dpo_model_forward",
     "_unsloth_dpo_returns_hidden_states",

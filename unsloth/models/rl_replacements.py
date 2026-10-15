@@ -4729,17 +4729,9 @@ def _unsloth_pref_chunked_head(self, model):
 
 
 def _unsloth_pref_logit_transforms(model):
-    """``(multiply, divide, softcap)`` exactly as the model's own forward applies them to its logits."""
-    model_config = _unsloth_get_model_config(model)
-    if detect_logit_transforms is not None:
-        _transforms = detect_logit_transforms(model_config)
-        return (
-            _transforms["logit_scale_multiply"] or 0.0,
-            _transforms["logit_scale_divide"] or 0.0,
-            _transforms["logit_softcapping"] or 0.0,
-        )
-    multiply, divide = _unsloth_resolve_logit_scales(model_config)
-    return multiply or 0.0, divide or 0.0, _unsloth_get_final_logit_softcapping(model) or 0.0
+    """``(multiply, divide, softcap)`` for the chunked kernel, from the GKD resolver (one scale, 0.0 = off)."""
+    scale, softcap = _unsloth_gkd_logit_transforms(model)
+    return (0.0 if scale == 1.0 else scale), 0.0, softcap
 
 
 def _unsloth_pref_chunked_forward(self, model, head, concatenated_batch, len_chosen, states, kind):
@@ -4925,6 +4917,7 @@ for _pref_trainer in ("orpo_trainer", "cpo_trainer"):
         _unsloth_grpo_hidden_states_signal,
         _unsloth_gkd_dense_head,
         _unsloth_pref_chunked_head,
+        _unsloth_gkd_logit_transforms,
         _unsloth_pref_logit_transforms,
         _unsloth_pref_chunked_forward,
     ):
@@ -4997,18 +4990,7 @@ def _unsloth_dpo_chunked_head(self, model, concatenated_batch):
         except Exception:
             pass
         return None
-    model_config = _unsloth_get_model_config(unwrapped)
-    if detect_logit_transforms is not None:
-        _transforms = detect_logit_transforms(model_config)
-        transforms = (
-            _transforms["logit_scale_multiply"],
-            _transforms["logit_scale_divide"],
-            _transforms["logit_softcapping"],
-        )
-    else:
-        multiply, divide = _unsloth_resolve_logit_scales(model_config)
-        transforms = (multiply, divide, _unsloth_get_final_logit_softcapping(unwrapped))
-    return unwrapped, head, transforms
+    return unwrapped, head, _unsloth_pref_logit_transforms(unwrapped)
 
 
 def _unsloth_dpo_model_forward(model, input_ids, model_kwargs, want_hidden_states):
@@ -5150,6 +5132,8 @@ for _dpo_item in (
     _unsloth_grpo_returns_hidden_states,
     _unsloth_grpo_hidden_states_signal,
     _unsloth_gkd_dense_head,
+    _unsloth_gkd_logit_transforms,
+    _unsloth_pref_logit_transforms,
     _unsloth_dpo_chunked_head,
     _unsloth_dpo_model_forward,
     _unsloth_dpo_returns_hidden_states,
@@ -5287,6 +5271,8 @@ for _kto_item in (
     _unsloth_grpo_returns_hidden_states,
     _unsloth_grpo_hidden_states_signal,
     _unsloth_gkd_dense_head,
+    _unsloth_gkd_logit_transforms,
+    _unsloth_pref_logit_transforms,
     _unsloth_dpo_chunked_head,
     _unsloth_dpo_model_forward,
     _unsloth_dpo_returns_hidden_states,
