@@ -293,7 +293,13 @@ def _in_decoder_block(module, block_ids, parents):
     return False
 
 
-def _fused_lora_wrap_problem(model, fused, parents, FSDPModule, blocks = ()):
+def _fused_lora_wrap_problem(
+    model,
+    fused,
+    parents,
+    FSDPModule,
+    blocks = (),
+):
     """None when every fused layer's weights are gathered by a per-block unit, else why not."""
     block_ids = {id(b) for b in blocks}
     for module in fused:
@@ -310,7 +316,13 @@ def _fused_lora_wrap_problem(model, fused, parents, FSDPModule, blocks = ()):
     return None
 
 
-def _gate_fused_lora(accelerator, model, parents, FSDPModule, blocks = None):
+def _gate_fused_lora(
+    accelerator,
+    model,
+    parents,
+    FSDPModule,
+    blocks = None,
+):
     from .llama import _decline_fused_lora_for_fsdp, _fused_lora_modules
 
     fused = _fused_lora_modules(model)
@@ -504,19 +516,26 @@ def install_fsdp2_peft_full_state_dict():
         )
 
     @functools.wraps(original_get)
-    def _get_model_state_dict(model, adapter_only = False, sd_options = None):
+    def _get_model_state_dict(
+        model,
+        adapter_only = False,
+        sd_options = None,
+    ):
         if _full_peft(model, adapter_only, sd_options):
             from torch.distributed.checkpoint.state_dict import get_model_state_dict
-
             options = dataclasses.replace(sd_options, ignore_frozen_params = True)
             return get_model_state_dict(model, options = options)
         return original_get(model, adapter_only = adapter_only, sd_options = sd_options)
 
     @functools.wraps(original_set)
-    def _set_model_state_dict(model, state_dict, adapter_only = False, sd_options = None):
+    def _set_model_state_dict(
+        model,
+        state_dict,
+        adapter_only = False,
+        sd_options = None,
+    ):
         if _full_peft(model, adapter_only, sd_options):
             from torch.distributed.checkpoint.state_dict import set_model_state_dict
-
             options = dataclasses.replace(sd_options, strict = False)
             return set_model_state_dict(model, state_dict, options = options)
         return original_set(model, state_dict, adapter_only = adapter_only, sd_options = sd_options)
