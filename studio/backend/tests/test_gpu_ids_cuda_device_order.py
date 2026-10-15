@@ -59,19 +59,21 @@ def test_only_unmasked_cuda_workers_are_repinned(monkeypatch):
 
 
 def _torch_rows(indices):
+    # Mask entry i is torch ordinal i: under FASTEST_FIRST entry 0 is the 4090.
+    cards = [(24.0, 0.5), (12.0, 1.0)]
     return [
-        {"index": idx, "visible_ordinal": o, "total_gb": 24.0, "used_gb": 1.0 + o}
+        {"index": idx, "visible_ordinal": o, "total_gb": cards[o][0], "used_gb": cards[o][1]}
         for o, idx in enumerate(indices)
     ]
 
 
-def _smi_rows(*_a, **_k):
-    # nvidia-smi rows filtered by PCI index: the WRONG cards under FASTEST_FIRST.
+def _smi_utilization():
+    # nvidia-smi rows by PCI index: 0 is the 3060, 1 the 4090.
     return {
-        "available": True,
-        "devices": [{"index": 1, "visible_ordinal": 0, "vram_total_gb": 12.0, "vram_used_gb": 11.0}],
-        "index_kind": "physical",
-        "parent_visible_gpu_ids": [1, 0],
+        "devices": [
+            {"index": 0, "vram_total_gb": 12.0, "vram_used_gb": 1.0},
+            {"index": 1, "vram_total_gb": 24.0, "vram_used_gb": 0.5},
+        ]
     }
 
 
@@ -79,37 +81,36 @@ def _host(monkeypatch, physical = 2):
     monkeypatch.setattr(hw, "get_device", lambda: DeviceType.CUDA)
     monkeypatch.setattr(hw, "get_physical_gpu_count", lambda: physical)
     monkeypatch.setattr(hw, "_physical_gpu_count_from_smi", True)
-    monkeypatch.setattr(hw, "_smi_visible_utilization", _smi_rows)
+    monkeypatch.setattr(hw, "rocm_gpu_ids_without_torch_kernels", lambda: set())
+    monkeypatch.setattr(hw, "get_visible_gpu_utilization", _smi_utilization)
     monkeypatch.setattr(hw, "_torch_get_per_device_info", _torch_rows)
 
 
-_MISMATCHED = {"CUDA_DEVICE_ORDER": "FASTEST_FIRST", "CUDA_VISIBLE_DEVICES": "1,0"}
+def _auto(env):
+    with patch.dict(os.environ, env, clear = True):
+        ids, meta = hw.auto_select_gpu_ids("m", required_override_gb = 16.0)
+    return ids
 
 
-@pytest.mark.parametrize("reader", ["get_visible_gpu_utilization", "get_gpu_utilization"])
-def test_numeric_mask_under_fastest_first_reads_torch_not_smi(monkeypatch, reader):
+_MISMATCHED = {"CUDA_DEVICE_ORDER": "FASTEST_FIRST", "CUDA_VISIBLE_DEVICES": "0,1"}
+
+
+def test_numeric_mask_under_fastest_first_ranks_the_cards_the_ids_select(monkeypatch):
+    # The 16 GB load fits only the 4090, mask entry 0 under FASTEST_FIRST. Ranking the
+    # SMI rows picked entry 1, which the worker resolves to the 3060.
     _host(monkeypatch)
-    with patch.dict(os.environ, _MISMATCHED, clear = True):
-        result = getattr(hw, reader)()
-    assert [d["index"] for d in result["devices"]] == [1, 0]
-    assert [d["vram_total_gb"] for d in result["devices"]] == [24.0, 24.0]
+    assert _auto(_MISMATCHED) == [0]
 
 
 @pytest.mark.parametrize(
-    "env, physical",
+    "env",
     [
-        ({"CUDA_DEVICE_ORDER": "PCI_BUS_ID", "CUDA_VISIBLE_DEVICES": "1,0"}, 2),
-        ({"CUDA_DEVICE_ORDER": "FASTEST_FIRST"}, 2),  # no mask: the worker pins PCI order
-        ({"CUDA_DEVICE_ORDER": "FASTEST_FIRST", "CUDA_VISIBLE_DEVICES": "GPU-a,GPU-b"}, 2),
-        ({"CUDA_DEVICE_ORDER": "FASTEST_FIRST", "CUDA_VISIBLE_DEVICES": "0"}, 1),
+        {"CUDA_DEVICE_ORDER": "PCI_BUS_ID", "CUDA_VISIBLE_DEVICES": "0,1"},
+        {"CUDA_DEVICE_ORDER": "FASTEST_FIRST"},  # no mask: the worker pins PCI order
     ],
 )
-def test_smi_stays_where_its_ids_are_valid(monkeypatch, env, physical):
-    _host(monkeypatch, physical = physical)
-    with patch.dict(os.environ, env, clear = True):
-        result = hw.get_visible_gpu_utilization()
-    assert result["devices"][0]["vram_total_gb"] == 12.0
-    # The mismatched shape on the same host reads torch.
+def test_smi_ranking_stays_where_its_ids_are_valid(monkeypatch, env):
     _host(monkeypatch)
-    with patch.dict(os.environ, _MISMATCHED, clear = True):
-        assert hw.get_visible_gpu_utilization()["devices"][0]["vram_total_gb"] == 24.0
+    assert _auto(env) == [1]
+    # The mismatched shape on the same host ranks through torch.
+    assert _auto(_MISMATCHED) == [0]

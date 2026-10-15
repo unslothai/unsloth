@@ -2024,7 +2024,7 @@ def _cuda_order_matches_smi() -> bool:
 
 
 def _mask_names_cuda_ordinals(parent_visible_spec: Dict[str, Any]) -> bool:
-    """Whether a numeric CUDA_VISIBLE_DEVICES under an explicit non-PCI CUDA_DEVICE_ORDER names CUDA ordinals rather than nvidia-smi rows, so the SMI rows it filters are other cards; the torch fallback reads the ones the ids select. Unmasked ids stay SMI rows: apply_gpu_ids pins PCI_BUS_ID for them."""
+    """Whether a numeric CUDA_VISIBLE_DEVICES under an explicit non-PCI CUDA_DEVICE_ORDER names CUDA ordinals rather than nvidia-smi rows, so the SMI rows it filters are other cards and only torch can rank the ones the ids select. Unmasked ids stay SMI rows: apply_gpu_ids pins PCI_BUS_ID for them."""
     if IS_ROCM or not parent_visible_spec.get("numeric_ids"):
         return False
     if parent_visible_spec.get("raw") is None or "CUDA_DEVICE_ORDER" not in os.environ:
@@ -4079,11 +4079,7 @@ def get_gpu_utilization() -> Dict[str, Any]:
 
     if device == DeviceType.CUDA:
         parent_visible_spec = _get_parent_visible_gpu_spec()
-        result = (
-            None
-            if _mask_names_cuda_ordinals(parent_visible_spec)
-            else _smi_visible_utilization(parent_visible_spec)
-        )
+        result = _smi_visible_utilization(parent_visible_spec)
         if result is not None and "devices" in result:
             devices = result["devices"]
             numeric_ids = parent_visible_spec.get("numeric_ids")
@@ -4696,11 +4692,7 @@ def get_visible_gpu_utilization() -> Dict[str, Any]:
 
     if device == DeviceType.CUDA:
         parent_visible_spec = _get_parent_visible_gpu_spec()
-        result = (
-            None
-            if _mask_names_cuda_ordinals(parent_visible_spec)
-            else _smi_visible_utilization(parent_visible_spec)
-        )
+        result = _smi_visible_utilization(parent_visible_spec)
         if result is not None:
             result["backend"] = _backend_label(device)
             numeric_ids = parent_visible_spec.get("numeric_ids")
@@ -6104,7 +6096,16 @@ def auto_select_gpu_ids(
         metadata["selected_gpu_ids"] = parent_ids
         return parent_ids, metadata
 
-    utilization = get_visible_gpu_utilization()
+    if _mask_names_cuda_ordinals(parent_visible_spec):
+        # The display keeps the CLI rows; ranking needs the cards the worker will get.
+        utilization = {
+            "devices": [
+                {"index": td["index"], "vram_total_gb": td["total_gb"], "vram_used_gb": td["used_gb"]}
+                for td in _torch_get_per_device_info(get_parent_visible_gpu_ids())
+            ]
+        }
+    else:
+        utilization = get_visible_gpu_utilization()
     devices = [d for d in utilization.get("devices", []) if d.get("index") not in _uncovered]
     parent_ids = _covered(get_parent_visible_gpu_ids())
 
