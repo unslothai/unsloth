@@ -34,6 +34,7 @@ export type FrameCommand =
       value: string | null;
       url: string | null;
       own: boolean;
+      seq: number | null;
     }
   | { command: "annotateInstall"; code: string }
   | { command: "annotate"; on: boolean; color?: string }
@@ -200,7 +201,16 @@ export function PageFrame({
         return;
       }
       if (message.type === "storage") {
-        if (origin) writePageStorage(origin, tabIdRef.current, message.area, message.key, message.value, frame, message.url);
+        if (origin) writePageStorage(
+            origin,
+            tabIdRef.current,
+            message.area,
+            message.key,
+            message.value,
+            frame,
+            message.url,
+            message.seq,
+          );
         return;
       }
       if (isUserAction(message)) {
@@ -224,14 +234,22 @@ export function PageFrame({
     window.addEventListener("message", listener);
     const stopClearing = onPageStorageClear(() => sendFrameCommand(tabIdRef.current, { command: "clearStorage" }));
     // sessionStorage belongs to one tab, which shows one page.
-    const stopSyncing = onPageStorageWrite(({ origin: site, area, key, value, requested, from, url }) => {
+    const stopSyncing = onPageStorageWrite(({ origin: site, area, key, value, requested, from, url, seq }) => {
       const target = frameRef.current;
       if (!target || site !== origin || area === "session") return;
       const own = from === target;
       // The writer hears back too, in order, so racing writes from two pages settle on the store's value.
       // A value the store refused (over quota) stays in the writer's page.
       if (own && value !== requested) return;
-      const command: FrameCommand = { command: "storageSync", area, key, value, url: url ?? null, own };
+      const command: FrameCommand = {
+        command: "storageSync",
+        area,
+        key,
+        value,
+        url: url ?? null,
+        own,
+        seq: own ? (seq ?? null) : null,
+      };
       target.contentWindow?.postMessage({ type: "unsloth:browser-command", ...command }, "*");
     });
     return () => {

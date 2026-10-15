@@ -34,7 +34,14 @@ export type FrameMessage =
    *  `request` is null for one the panel won't make (malformed, too large), which then fails. */
   | { type: "request"; id: string; request: PageRequest | null }
   | { type: "requestAbort"; id: string }
-  | { type: "storage"; area: PageStorageArea; key: string | null; value: string | null; url: string | null };
+  | {
+      type: "storage";
+      area: PageStorageArea;
+      key: string | null;
+      value: string | null;
+      url: string | null;
+      seq: number | null;
+    };
 
 export type RedirectMode = "follow" | "error" | "manual";
 
@@ -241,12 +248,13 @@ export function parseFrameMessage(data: unknown): FrameMessage | null {
       const { area, key, value } = message;
       if (!STORAGE_AREAS.has(area)) return null;
       const url = text(message.url, MAX_URL_CHARS);
-      if (key === null) return { type: "storage", area: area as PageStorageArea, key: null, value: null, url };
+      const seq = Number.isSafeInteger(message.seq) && (message.seq as number) > 0 ? (message.seq as number) : null;
+      if (key === null) return { type: "storage", area: area as PageStorageArea, key: null, value: null, url, seq };
       const name = text(key, MAX_STORAGE_CHARS);
       const stored = value === null ? null : text(value, MAX_STORAGE_CHARS);
       return name === null || (value !== null && stored === null)
         ? null
-        : { type: "storage", area: area as PageStorageArea, key: name, value: stored, url };
+        : { type: "storage", area: area as PageStorageArea, key: name, value: stored, url, seq };
     }
     default:
       return null;

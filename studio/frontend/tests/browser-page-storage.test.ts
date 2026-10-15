@@ -76,7 +76,9 @@ function openPage(url: string, tabId = "tab-1") {
   const post = (message: Record<string, unknown>) => {
     const parsed = parseFrameMessage({ source: "unsloth-browser", ...message });
     if (parsed?.type === "storage" && origin) {
-      deliver(() => writePageStorage(origin, tabId, parsed.area, parsed.key, parsed.value, self, parsed.url));
+      deliver(() =>
+        writePageStorage(origin, tabId, parsed.area, parsed.key, parsed.value, self, parsed.url, parsed.seq),
+      );
     }
   };
   const cfg = { storage: origin ? readPageStorage(origin, tabId) : null };
@@ -88,10 +90,10 @@ function openPage(url: string, tabId = "tab-1") {
   };
   // As page-frame.tsx does for every open page.
   stopPages.push(
-    onPageStorageWrite(({ origin: site, area, key, value, requested, from, url: writer }) => {
+    onPageStorageWrite(({ origin: site, area, key, value, requested, from, url: writer, seq }) => {
       const own = from === self;
       if (site === origin && area !== "session" && !(own && value !== requested)) {
-        const command = { command: "storageSync", area, key, value, url: writer ?? null, own };
+        const command = { command: "storageSync", area, key, value, url: writer ?? null, own, seq: own ? seq : null };
         deliver(() => message({ type: "unsloth:browser-command", ...command }));
       }
     }),
@@ -183,6 +185,7 @@ test("malformed storage messages are dropped", () => {
     key: null,
     value: null,
     url: null,
+    seq: null,
   });
   assert.deepEqual(from({ area: "local", key: "a", value: null, url: "https://example.com/" }), {
     type: "storage",
@@ -190,6 +193,7 @@ test("malformed storage messages are dropped", () => {
     key: "a",
     value: null,
     url: "https://example.com/",
+    seq: null,
   });
 });
 
@@ -350,4 +354,47 @@ test("a cookie for a domain the page isn't on is refused", () => {
   page.document.cookie = "b=2; Domain=.example.com";
   page.document.cookie = "c=3; Domain=www.example.com";
   assert.equal(page.document.cookie, "b=2; c=3");
+});
+
+test("an earlier write's echo doesn't undo a newer write in the same page", () => {
+  reset();
+  const page = openPage("https://example.com/");
+  deferred = [];
+  page.window.localStorage.setItem("k", "a");
+  page.window.localStorage.setItem("k", "b");
+  // The panel takes the first write and echoes it before the second arrives.
+  deferred.shift()?.();
+  deferred.pop()?.();
+  assert.equal(page.window.localStorage.getItem("k"), "b");
+  flush();
+  assert.equal(page.window.localStorage.getItem("k"), "b");
+  assert.deepEqual(readPageStorage("https://example.com", "tab-1").local, [["k", "b"]]);
+});
+
+test("a value too large for the panel stays in the page after a smaller one", () => {
+  reset();
+  const page = openPage("https://example.com/");
+  const large = "x".repeat(140_000);
+  deferred = [];
+  page.window.localStorage.setItem("k", "small");
+  page.window.localStorage.setItem("k", large);
+  flush();
+  assert.equal(page.window.localStorage.getItem("k"), large);
+  assert.deepEqual(readPageStorage("https://example.com", "tab-1").local, []);
+});
+
+test("a clear's echo doesn't drop a key the page wrote after it", () => {
+  reset();
+  const page = openPage("https://example.com/");
+  page.window.localStorage.setItem("old", "1");
+  deferred = [];
+  page.window.localStorage.clear();
+  page.window.localStorage.setItem("k", "v");
+  deferred.shift()?.();
+  deferred.pop()?.();
+  assert.equal(page.window.localStorage.getItem("k"), "v");
+  flush();
+  assert.equal(page.window.localStorage.getItem("k"), "v");
+  assert.equal(page.window.localStorage.getItem("old"), null);
+  assert.deepEqual(readPageStorage("https://example.com", "tab-1").local, [["k", "v"]]);
 });

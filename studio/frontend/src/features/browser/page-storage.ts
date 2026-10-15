@@ -42,6 +42,8 @@ export type PageStorageWrite = {
   requested: string | null;
   from?: unknown;
   url?: string | null;
+  /** The writing page's number for this write, echoed back to it. */
+  seq?: number | null;
 };
 
 const writeListeners = new Set<(write: PageStorageWrite) => void>();
@@ -61,10 +63,11 @@ export function writePageStorage(
   value: string | null,
   from?: unknown,
   url?: string | null,
+  seq?: number | null,
 ): void {
   save(origin, tabId, area, key, value);
   const kept = key === null ? null : (stores.get(storeKey(origin, tabId, area))?.items.get(key) ?? null);
-  for (const listener of writeListeners) listener({ origin, tabId, area, key, value: kept, requested: value, from, url });
+  for (const listener of writeListeners) listener({ origin, tabId, area, key, value: kept, requested: value, from, url, seq });
 }
 
 function evict(): void {

@@ -184,15 +184,27 @@ _FRAME_CSP = (
 _PAGE_STORAGE_JS = r"""
         // Past the panel's quota (page-storage.ts) a value stays in this page only.
         const kept = (key, value) => key.length + value.length <= 131072;
-        const sync = (area, key, value) => post({
-          type: "storage", area, key, url: pageUrl,
-          value: key !== null && value !== null && kept(key, value) ? value : null,
-        });
+        // Numbered so the panel's echo of an older write can't undo a newer one still on its way.
+        let writes = 0;
+        const sync = (area, key, value) => {
+          const seq = ++writes;
+          const store = pageStores[area];
+          if (key === null) {
+            store.clearedAt = seq;
+            store.latest.clear();
+          } else store.latest.set(key, seq);
+          post({
+            type: "storage", area, key, url: pageUrl, seq,
+            value: key !== null && value !== null && kept(key, value) ? value : null,
+          });
+        };
         const pageStores = {};
         const pageStore = (area) => {
           const data = new Map(cfg.storage?.[area] || []);
           const store = {
             data,
+            latest: new Map(),
+            clearedAt: 0,
             set: (key, value) => {
               data.set(key, value);
               sync(area, key, value);
@@ -228,7 +240,16 @@ _PAGE_STORAGE_JS = r"""
             const store = pageStores[data.area];
             if (!store) return;
             const oldValue = data.key === null ? null : (store.data.get(data.key) ?? null);
-            if (data.own === true && data.value === null && oldValue !== null && !kept(data.key, oldValue)) return;
+            if (data.own === true) {
+              const seq = Number(data.seq) || 0;
+              if (store.clearedAt > seq || (data.key !== null && (store.latest.get(data.key) ?? 0) > seq)) return;
+              if (data.key === null) {
+                // Keys written after the clear stay.
+                for (const key of Array.from(store.data.keys())) if ((store.latest.get(key) ?? 0) <= seq) store.data.delete(key);
+                return;
+              }
+              if (data.value === null && oldValue !== null && !kept(data.key, oldValue)) return;
+            }
             // Like a browser, a write that changes nothing fires no event (two pages could echo it forever).
             if (data.key === null ? !store.data.size : oldValue === data.value) return;
             if (data.key === null) store.data.clear();
