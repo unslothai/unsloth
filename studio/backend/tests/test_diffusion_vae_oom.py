@@ -193,6 +193,26 @@ def test_step_c_offloads_the_vae_at_stock_tiles(monkeypatch):
     assert _devices(pipe)["text_encoder"] == _CARD
 
 
+def test_streamed_decode_that_breaks_fails_on_the_oom(monkeypatch):
+    """A non-OOM error inside the streamed (step c) decode, e.g. an offload hook the environment cannot run, must not
+    replace the out-of-memory the render already had; the VAE still comes back."""
+    monkeypatch.setattr(O.DecodeSession, "offload_vae", lambda self: setattr(self, "vae_offloaded", True) or True)
+    monkeypatch.setattr(O.DecodeSession, "_undo_vae_offload", lambda self: None)
+    vae, pipe = _setup(cap = 1, untiled_need = 10**9, tiled_need = 10**9, tiled = True)
+    real = vae._unsloth_vae_oom_inner
+
+    def inner(z, *a, **k):
+        if vae.__dict__.get(O._SESSION_ATTR) is not None and vae.__dict__[O._SESSION_ATTR].vae_offloaded:
+            raise NameError("send_to_device")
+        return real(z, *a, **k)
+
+    O.uninstall(vae)
+    vae._decode = inner
+    O.install(vae)
+    with pytest.raises(RuntimeError, match = "even with the rest of the pipeline"):
+        vae._decode(_z())
+
+
 def test_every_step_fails_raises_and_restores(monkeypatch):
     monkeypatch.setattr(O.DecodeSession, "offload_vae", lambda self: False)
     vae, pipe = _setup(cap = 1, untiled_need = 10**9, tiled_need = 10**9)

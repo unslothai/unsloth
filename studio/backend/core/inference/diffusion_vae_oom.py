@@ -430,8 +430,12 @@ def install(vae: Any, logger: Any = None, pipe: Any = None) -> bool:
                 try:
                     out = _attempt(z, args, kwargs, tiled)
                 except Exception as exc:  # noqa: BLE001
-                    if not is_oom(exc):
+                    if not is_oom(exc) and not offload_vae:
                         raise
+                    if not is_oom(exc) and logger is not None:
+                        # the streamed decode itself broke (an offload hook the VAE does not support): the render
+                        # fails on the out-of-memory it already had, not on the fallback
+                        logger.warning("diffusion.vae_oom: streamed %s decode failed (%s)", type(vae).__name__, exc)
                     exc.__traceback__ = None
                     failed = True
                 if not failed:
