@@ -1352,8 +1352,11 @@ export function ModelsPage() {
     return () => runConfigOpenCoordinator.cancel();
   }, [runConfigOpenCoordinator, selectedId]);
 
+  // The split view's auto-picked first row; an explicit selection clears it.
+  const autoPreviewIdRef = useRef<string | null>(null);
   const handleSelect = useCallback(
     (id: string) => {
+      autoPreviewIdRef.current = null;
       runConfigOpenCoordinator.cancel();
       setRunConfigOpening(null);
       void navigate({
@@ -1459,7 +1462,6 @@ export function ModelsPage() {
   }, [allModelsView]);
 
   // Narrowing below lg drops the auto-picked preview so the rows show; a model the user opened stays.
-  const autoPreviewIdRef = useRef<string | null>(null);
   useEffect(() => {
     if (!isCompactViewport || allModelsView !== "split") return;
     if (!urlModel || urlModel !== autoPreviewIdRef.current) return;
