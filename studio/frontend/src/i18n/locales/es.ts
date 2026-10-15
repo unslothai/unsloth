@@ -2624,6 +2624,9 @@ export const es = {
         showMemoryBar: "Mostrar barra de uso de VRAM",
         showMemoryBarDescription:
           "Muestra debajo de la fila de cada modelo descargado su uso estimado de VRAM: pesos, caché KV con la longitud de contexto con la que se cargará y cualquier reserva de borrador especulativo.",
+        fitOnDeviceOnly: "Mostrar solo modelos que caben",
+        fitOnDeviceOnlyDescription:
+          "Oculta en el selector de modelos y en el Hub los modelos demasiado grandes para la memoria de GPU y la RAM de este dispositivo. Los modelos descargados siguen visibles.",
       },
       menu: {
         title: "Menú del chat",

@@ -2630,6 +2630,9 @@ export const fr = {
         showMemoryBar: "Afficher la barre d’utilisation de la VRAM",
         showMemoryBarDescription:
           "Affiche sous la ligne de chaque modèle téléchargé son utilisation estimée de la VRAM : poids, cache KV à la longueur de contexte avec laquelle il sera chargé, et toute réserve de brouillon spéculatif.",
+        fitOnDeviceOnly: "Afficher uniquement les modèles compatibles",
+        fitOnDeviceOnlyDescription:
+          "Masque dans le sélecteur de modèles et le Hub les modèles trop volumineux pour la mémoire GPU et la RAM de cet appareil. Les modèles téléchargés restent visibles.",
       },
       menu: {
         title: "Menu du chat",

@@ -2552,6 +2552,9 @@ export const zhCN = {
         showMemoryBar: "显示显存占用条",
         showMemoryBarDescription:
           "在每个已下载模型的行下方显示预计显存占用：权重、按实际加载的上下文长度计算的 KV 缓存，以及推测解码草稿所需的预留。",
+        fitOnDeviceOnly: "仅显示可运行的模型",
+        fitOnDeviceOnlyDescription:
+          "在模型选择器和 Hub 中隐藏超出本设备显存和内存容量的模型。已下载的模型仍会显示。",
       },
       menu: {
         title: "聊天菜单",
