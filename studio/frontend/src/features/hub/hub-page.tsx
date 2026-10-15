@@ -659,6 +659,7 @@ export function ModelsPage() {
       setSortBrowseActive(false);
       // The filters control is Discover-only, so a hidden filter must not reapply on return.
       setSearchFilters({});
+      setUploaderPick(null);
       setModelsTab(next);
     },
     [setModelsTab],
@@ -671,6 +672,7 @@ export function ModelsPage() {
       setDownloadedFormat("all");
       setCapabilityFilters([]);
       setSearchFilters({});
+      setUploaderPick(null);
       setSortBrowseActive(false);
       if (next === "models") {
         const preset = findChannel(DEFAULT_DISCOVER_CHANNEL);
@@ -703,6 +705,7 @@ export function ModelsPage() {
       }
       setCapabilityFilters([]);
       setSearchFilters({});
+      setUploaderPick(null);
       setSortBrowseActive(false);
       // Clear search: an active query outranks the section in `mode`, hiding the curated list.
       setQuery("");
@@ -720,6 +723,7 @@ export function ModelsPage() {
     setDirection("desc");
     setCapabilityFilters([]);
     setSearchFilters({});
+    setUploaderPick(null);
     setSortBrowseActive(false);
     void navigate({
       to: "/hub",
@@ -733,6 +737,7 @@ export function ModelsPage() {
     setQuery("");
     setCapabilityFilters([]);
     setSearchFilters({});
+    setUploaderPick(null);
     setDownloadedFormat("all");
     setDiscoverFormat(preset?.format ?? "recommended");
     setSortBy(preset?.sort ?? "trendingScore");
@@ -1278,6 +1283,11 @@ export function ModelsPage() {
     setSearchFilters({});
     setUploaderPick(null);
   }, [isDiscoverTab, urlSection, navigate]);
+  const handleResetPopoverFilters = useCallback(() => {
+    setCapabilityFilters([]);
+    setSearchFilters({});
+    setUploaderPick(null);
+  }, []);
   const handleDiscoverFetchIntent = useCallback(() => {
     setDiscoverFetchIntent((value) => value + 1);
   }, []);
@@ -1363,6 +1373,7 @@ export function ModelsPage() {
       setDirection("desc");
       setCapabilityFilters([]);
       setSearchFilters({});
+      setUploaderPick(null);
       setSortBrowseActive(false);
       setQuery("");
       void navigate({
@@ -1382,6 +1393,7 @@ export function ModelsPage() {
         const preset = findChannel(DEFAULT_DISCOVER_CHANNEL);
         setCapabilityFilters([]);
         setSearchFilters({});
+        setUploaderPick(null);
         setSortBrowseActive(false);
         if (preset) {
           setDiscoverFormat(preset.format);
@@ -1477,6 +1489,7 @@ export function ModelsPage() {
     setDirection("desc");
     setCapabilityFilters([]);
     setSearchFilters({});
+    setUploaderPick(null);
   }, [isModelDiscover, sectionChannelId, urlCapability]);
   const handleManageLocalFolders = useCallback(
     () => setFoldersDialogOpen(true),
@@ -1968,6 +1981,7 @@ export function ModelsPage() {
           uploaders={uploaders}
           uploadersChanged={uploaderPick !== null}
           onUploadersChange={setUploaderPick}
+          onResetFilters={handleResetPopoverFilters}
           capabilityFilters={capabilityFilters}
           onCapabilityFiltersChange={setCapabilityFilters}
           fitOnDeviceOnly={fitOnDeviceOnly}

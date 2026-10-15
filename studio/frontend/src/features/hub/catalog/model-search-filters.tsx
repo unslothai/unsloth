@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/tooltip";
 import { BulbIcon } from "@/lib/bulb-icon";
 import { AiSpeechIcon } from "@/lib/hugeicons-derived";
+import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
 import {
   FilterMailIcon,
@@ -23,18 +24,17 @@ import {
   InformationCircleIcon,
   SparklesIcon,
   TextFontIcon,
-  Tick02Icon,
   ViewIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { type ReactNode, useId, useState } from "react";
+import type { HubCapabilityFilter } from "../lib/model-capabilities";
 import {
   HUB_UPLOADERS,
   type HubUploader,
   type ModelSearchFilters,
   hasModelSearchFilters,
 } from "../lib/model-search-filters";
-import type { HubCapabilityFilter } from "../lib/model-capabilities";
 import { CAPABILITY_FILTER_OPTIONS } from "../lib/view-models";
 
 // The Hub rows' capability icons (catalog/shared.tsx), with Image gen on diffusion's and Video gen
@@ -62,13 +62,22 @@ const SECTION_LABEL =
 // my-2 keeps text 18px from each line: rows bring 2px margin and 8px of hover pill, the labels pt-2.
 const SEPARATOR = "mx-1 my-2 h-px bg-border/50";
 
-/** A composer-menu row that ticks: a check on the right when on. */
+const LIMIT_KEYS = [
+  "minParams",
+  "maxParams",
+  "minContext",
+  "maxContext",
+] as const;
+
+/** A composer-menu row that ticks: a check on the right when on, and on hover an "Only" that
+ *  keeps just this row ticked. */
 function MenuTick({
   icon,
   label,
   checked,
   locked,
   onToggle,
+  onOnly,
 }: {
   icon?: ReactNode;
   label: string;
@@ -76,30 +85,47 @@ function MenuTick({
   /** The last tick of a group, which stays. */
   locked: boolean;
   onToggle: () => void;
+  /** Absent while this row is already the only one ticked. */
+  onOnly?: () => void;
 }) {
   return (
-    <button
-      type="button"
-      role="checkbox"
-      aria-checked={checked}
-      aria-disabled={locked || undefined}
-      onClick={() => {
-        if (!locked) onToggle();
-      }}
-      className={cn(
-        "hub-menu-row relative flex w-full cursor-pointer select-none items-center gap-3 py-2 pr-9 pl-3 text-left text-sm aria-disabled:cursor-default",
+    <div className="hub-menu-row group/tick relative">
+      <button
+        type="button"
+        role="checkbox"
+        aria-checked={checked}
+        aria-disabled={locked || undefined}
+        onClick={() => {
+          if (!locked) onToggle();
+        }}
+        className="flex w-full cursor-pointer select-none items-center gap-3 rounded-[inherit] py-2 pr-9 pl-3 text-left text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/40 aria-disabled:cursor-default"
+      >
+        {icon}
+        <span className="truncate">{label}</span>
+        {checked && (
+          <HugeiconsIcon
+            icon={Tick02Icon}
+            strokeWidth={2}
+            className={cn(
+              "pointer-events-none absolute right-3 size-4",
+              onOnly &&
+                "group-hover/tick:opacity-0 group-has-[[data-only]:focus-visible]/tick:opacity-0",
+            )}
+          />
+        )}
+      </button>
+      {onOnly && (
+        <button
+          type="button"
+          data-only=""
+          aria-label={`Show only ${label}`}
+          onClick={onOnly}
+          className="absolute top-1/2 right-1.5 -translate-y-1/2 cursor-pointer rounded-full px-1.5 py-0.5 text-ui-12 text-muted-foreground opacity-0 outline-none transition-colors hover:text-foreground focus-visible:opacity-100 group-hover/tick:opacity-100"
+        >
+          Only
+        </button>
       )}
-    >
-      {icon}
-      <span className="truncate">{label}</span>
-      {checked && (
-        <HugeiconsIcon
-          icon={Tick02Icon}
-          strokeWidth={2}
-          className="pointer-events-none absolute right-3 size-4"
-        />
-      )}
-    </button>
+    </div>
   );
 }
 
@@ -144,6 +170,7 @@ export function ModelSearchFiltersControl({
   uploaders,
   uploadersChanged,
   onUploadersChange,
+  onReset,
   showModelFilters,
   className,
 }: {
@@ -156,6 +183,8 @@ export function ModelSearchFiltersControl({
   /** False while the default applies, which leaves the icon without its dot. */
   uploadersChanged: boolean;
   onUploadersChange: (value: HubUploader[]) => void;
+  /** Back to no filters: every capability, the default uploaders, no limits. */
+  onReset: () => void;
   showModelFilters: boolean;
   className?: string;
 }) {
@@ -170,6 +199,10 @@ export function ModelSearchFiltersControl({
     (draft.minContext !== undefined &&
       draft.maxContext !== undefined &&
       draft.minContext > draft.maxContext);
+  const dirty = LIMIT_KEYS.some((key) => draft[key] !== value[key]);
+  const filtered =
+    capabilities.length > 0 ||
+    (showModelFilters && (hasModelSearchFilters(value) || uploadersChanged));
   return (
     <Popover
       open={open}
@@ -190,9 +223,7 @@ export function ModelSearchFiltersControl({
                 strokeWidth={1.75}
                 className="size-5"
               />
-              {((showModelFilters &&
-                (hasModelSearchFilters(value) || uploadersChanged)) ||
-                capabilities.length > 0) && (
+              {filtered && (
                 <span
                   aria-hidden="true"
                   className="absolute right-1.5 top-1.5 size-1.5 rounded-full bg-primary"
@@ -259,6 +290,11 @@ export function ModelSearchFiltersControl({
                         ? []
                         : next,
                     )
+                  }
+                  onOnly={
+                    capabilities.length === 1 && checked
+                      ? undefined
+                      : () => onCapabilitiesChange([option.value])
                   }
                 />
               );
@@ -359,30 +395,42 @@ export function ModelSearchFiltersControl({
                     checked={checked}
                     locked={next.length === 0}
                     onToggle={() => onUploadersChange(next)}
+                    onOnly={
+                      uploaders.length === 1 && checked
+                        ? undefined
+                        : () => onUploadersChange([uploader])
+                    }
                   />
                 );
               })}
             </fieldset>
-            <div aria-hidden={true} className={SEPARATOR} />
-            <div className="flex justify-end gap-1.5 px-3 pt-0.5">
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                onClick={() => {
-                  setDraft({});
-                  onChange({});
-                  setOpen(false);
-                }}
-              >
-                Clear
-              </Button>
-              <Button type="submit" form={formId} size="sm" disabled={invalid}>
-                Apply filters
-              </Button>
-            </div>
           </>
         )}
+        <div aria-hidden={true} className={SEPARATOR} />
+        <div className="flex items-center justify-between gap-1.5 px-3 pt-0.5">
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            disabled={!(filtered || dirty)}
+            onClick={() => {
+              setDraft({});
+              onReset();
+            }}
+          >
+            Reset all
+          </Button>
+          {showModelFilters && (
+            <Button
+              type="submit"
+              form={formId}
+              size="sm"
+              disabled={invalid || !dirty}
+            >
+              Apply limits
+            </Button>
+          )}
+        </div>
       </PopoverContent>
     </Popover>
   );

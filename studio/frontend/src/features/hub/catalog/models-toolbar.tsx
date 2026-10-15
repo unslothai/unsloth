@@ -10,6 +10,7 @@ import {
 } from "@/components/ui/tooltip";
 import type { HfSortKey } from "@/features/hub/hooks/use-hub-model-search";
 import { useHubSource } from "@/lib/hf-endpoint";
+import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
 import {
   AiChipIcon,
@@ -21,10 +22,14 @@ import {
   Search01Icon,
   SlidersHorizontalIcon,
   SparklesIcon,
-  Tick02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { memo, useLayoutEffect, useMemo, useRef, useState } from "react";
+import type { HubCapabilityFilter } from "../lib/model-capabilities";
+import type {
+  HubUploader,
+  ModelSearchFilters,
+} from "../lib/model-search-filters";
 import {
   clearRecentSearches,
   recordRecentSearch,
@@ -37,12 +42,7 @@ import type {
   ModelsTab,
   ResourceTypeFilter,
 } from "../types";
-import type { HubCapabilityFilter } from "../lib/model-capabilities";
 import { type HubOption, HubOptionMenu } from "./hub-option-menu";
-import type {
-  HubUploader,
-  ModelSearchFilters,
-} from "../lib/model-search-filters";
 import { ModelSearchFiltersControl } from "./model-search-filters";
 import { RecentSearches } from "./recent-searches";
 
@@ -86,6 +86,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
   uploaders,
   uploadersChanged,
   onUploadersChange,
+  onResetFilters,
 }: {
   searchFilters: ModelSearchFilters;
   onSearchFiltersChange: (value: ModelSearchFilters) => void;
@@ -93,6 +94,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
   /** False while the default applies (Unsloth's uploads, or every uploader for a search). */
   uploadersChanged: boolean;
   onUploadersChange: (value: HubUploader[]) => void;
+  onResetFilters: () => void;
   tab: ModelsTab;
   onTabChange: (tab: ModelsTab) => void;
   query: string;
@@ -512,6 +514,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
             uploaders={uploaders}
             uploadersChanged={uploadersChanged}
             onUploadersChange={onUploadersChange}
+            onReset={onResetFilters}
             showModelFilters={showModelFilters}
             className={cn(
               triggerBase,
