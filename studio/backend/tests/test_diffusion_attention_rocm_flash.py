@@ -577,6 +577,10 @@ def test_auto_flash_engages_only_with_the_mask_guard(monkeypatch):
     pipe2, set_to2 = _pipe_with_attention()
     assert att.apply_attention_backend(pipe2, att.ROCM_FLASH_CANDIDATE, target = _target()) is None
     assert set_to2 == []
+    # an explicit request is refused the same way, not engaged without the mask fallback
+    pipe3, set_to3 = _pipe_with_attention()
+    assert att.apply_attention_backend(pipe3, "flash", target = _target()) is None
+    assert set_to3 == []
 
 
 def test_rocm_flash_guard_routes_masked_calls_to_native(monkeypatch):
@@ -1258,11 +1262,39 @@ def test_a_moved_sdpa_baseline_drops_the_in_memory_verdicts(monkeypatch):
 def test_probe_bound_adds_math_sdpa_scores_when_fused_sdpa_is_off(monkeypatch):
     torch = pytest.importorskip("torch")
     g = (3072, 24, 128)
-    monkeypatch.setattr(att, "_native_sdpa_fused_enabled", lambda: True)
+    monkeypatch.setattr(att, "_native_sdpa_fused_serves", lambda *a: True)
     fused = att._rocm_flash_probe_bytes(g, 16384, 16384, 1, torch.bfloat16)
-    monkeypatch.setattr(att, "_native_sdpa_fused_enabled", lambda: False)
+    monkeypatch.setattr(att, "_native_sdpa_fused_serves", lambda *a: False)
     math = att._rocm_flash_probe_bytes(g, 16384, 16384, 1, torch.bfloat16)
     assert math - fused == 2 * 24 * 16384 * 16384 * 4  # 48 GiB of fp32 scores + softmax at 16k x 16k
+
+
+def test_fused_sdpa_eligibility_is_asked_for_the_probe_shape(monkeypatch):
+    torch = pytest.importorskip("torch")
+    seen = []
+
+    def can_flash(params, debug):
+        seen.append((tuple(params.query.shape), tuple(params.key.shape)))
+        return params.query.shape[2] < 32768  # a fused kernel that does not serve the longest bucket
+
+    monkeypatch.setattr(torch.backends.cuda, "can_use_flash_attention", can_flash)
+    monkeypatch.setattr(torch.backends.cuda, "can_use_efficient_attention", lambda p, d: False)
+    monkeypatch.setattr(torch.backends.cuda, "flash_sdp_enabled", lambda: True)
+    g = (3072, 24, 128)
+    short = att._rocm_flash_probe_bytes(g, 16384, 16384, 1, torch.bfloat16, "cpu")
+    long = att._rocm_flash_probe_bytes(g, 32768, 512, 2, torch.bfloat16, "cpu")
+    assert seen == [((1, 24, 16384, 128), (1, 24, 16384, 128)), ((2, 24, 32768, 128), (2, 24, 512, 128))]
+    assert short < 4 * 2**30  # fused: no score matrix
+    assert long > 2 * 2 * 24 * 32768 * 512 * 4  # not served at 32k queries: math scores budgeted
+    monkeypatch.setattr(torch.backends.cuda, "flash_sdp_enabled", lambda: False)  # enabled flag off: math
+    assert att._rocm_flash_probe_bytes(g, 16384, 16384, 1, torch.bfloat16, "cpu") - short == 2 * 24 * 16384**2 * 4
+
+
+def test_probe_tensors_are_drawn_on_the_device():
+    import inspect
+
+    src = inspect.getsource(att._time_rocm_flash_block)
+    assert ".to(device, dtype)" not in src and "torch.Generator(device = device)" in src
 
 
 def test_native_sdpa_baseline_keys_the_verdicts(monkeypatch, tmp_path):
@@ -1286,7 +1318,7 @@ def test_native_sdpa_baseline_keys_the_verdicts(monkeypatch, tmp_path):
 
 def test_probe_byte_bound_covers_the_measured_peak(monkeypatch):
     torch = pytest.importorskip("torch")
-    monkeypatch.setattr(att, "_native_sdpa_fused_enabled", lambda: True)  # Studio's default, as measured
+    monkeypatch.setattr(att, "_native_sdpa_fused_serves", lambda *a: True)  # Studio's default, as measured
     # gfx1151, Wan2.2-5B layer (3072 hidden, 24 x 128), batch 1: measured probe peaks 0.31 GiB at 1024, 5.46 at 65536.
     for tokens, peak in ((1024, 0.31), (65536, 5.46)):
         need = att._rocm_flash_probe_bytes((3072, 24, 128), tokens, tokens, 1, torch.bfloat16) / 2**30

@@ -645,10 +645,14 @@ def _time_rocm_flash_block(
     if dtype not in (torch.float16, torch.bfloat16):
         dtype = torch.bfloat16
     inner = heads * head_dim
-    gen = torch.Generator().manual_seed(0)
+    # Drawn on the device in the run dtype: a long bucket staged in host float32 would need GiBs of unbudgeted RAM.
+    gen = torch.Generator(device = device).manual_seed(0)
+
+    def rand(*shape):
+        return torch.randn(shape, generator = gen, device = device, dtype = dtype)
 
     def w(rows: int, cols: int):
-        return (torch.randn((rows, cols), generator = gen) * cols**-0.5).to(device, dtype)
+        return rand(rows, cols) * cols**-0.5
 
     kv = tokens if kv_tokens is None else int(kv_tokens)
     width = hidden if ctx_dim is None else int(ctx_dim)
@@ -659,9 +663,9 @@ def _time_rocm_flash_block(
         w(4 * hidden, hidden),
         w(hidden, 4 * hidden),
     )
-    x = torch.randn((b, tokens, hidden), generator = gen).to(device, dtype)
+    x = rand(b, tokens, hidden)
     cross = kv != tokens or width != hidden
-    ctx = torch.randn((b, kv, width), generator = gen).to(device, dtype) if cross else None
+    ctx = rand(b, kv, width) if cross else None
     w_kv = w(2 * inner, width) if cross else None
 
     def project():
@@ -891,22 +895,43 @@ def _rocm_flash_length_reason(query: Any, key: Any) -> Optional[str]:
     return None if verdict else "slower or inexact at this size"
 
 
-def _native_sdpa_fused_enabled() -> bool:
-    """Whether native SDPA may take a fused (flash / memory-efficient) kernel; otherwise it runs the math backend."""
+def _native_sdpa_fused_serves(
+    device: Any, dtype: Any, heads: int, head_dim: int, tokens: int, kv_tokens: int, batch: int
+) -> bool:
+    """Whether native SDPA takes an enabled fused (flash / memory-efficient) kernel at exactly this shape, asked of
+    torch's own dispatcher with zero-size-storage views; otherwise (or when it cannot say) it runs the math backend."""
     try:
         import torch
-        return bool(torch.backends.cuda.flash_sdp_enabled() or torch.backends.cuda.mem_efficient_sdp_enabled())
+        from torch.backends.cuda import SDPAParams, can_use_efficient_attention, can_use_flash_attention
+
+        cuda = torch.backends.cuda
+
+        def view(n):
+            return torch.empty((1, 1, 1, head_dim), device = device, dtype = dtype).expand(
+                batch, heads, n, head_dim
+            )
+
+        q, k = view(tokens), view(kv_tokens)
+        try:
+            params = SDPAParams(q, k, k, None, 0.0, False, False)
+        except TypeError:  # torch before enable_gqa
+            params = SDPAParams(q, k, k, None, 0.0, False)
+        return bool(
+            (cuda.flash_sdp_enabled() and can_use_flash_attention(params, False))
+            or (cuda.mem_efficient_sdp_enabled() and can_use_efficient_attention(params, False))
+        )
     except Exception:  # noqa: BLE001
         return False
 
 
 def _rocm_flash_probe_bytes(
-    geometry: tuple, tokens: int, kv_tokens: int, batch: int, dtype: Any
+    geometry: tuple, tokens: int, kv_tokens: int, batch: int, dtype: Any, device: Any = "cuda"
 ) -> int:
     """Upper bound on what ``_time_rocm_flash_block`` allocates: its weights, the block's widest activations and the
-    fp32 accuracy outputs (measured on gfx1151: 5.46 GiB at Wan's 64k tokens, this gives 8.1 GiB). With the fused SDPA
-    kernels off (``guard_rocm_fused_sdpa``) the native arm runs math SDPA, which also holds fp32 scores and their
-    softmax, batch x heads x queries x keys each."""
+    fp32 accuracy outputs (measured on gfx1151: 5.46 GiB at Wan's 64k tokens, this gives 8.1 GiB). Unless a fused SDPA
+    kernel is confirmed for this exact shape (``guard_rocm_fused_sdpa`` may have turned them off, or one may not serve
+    this length / head size), the native arm runs math SDPA, which also holds fp32 scores and their softmax, batch x
+    heads x queries x keys each."""
     hidden, heads, head_dim = (int(v) for v in geometry[:3])
     width = int(geometry[3]) if len(geometry) > 3 else hidden
     inner = heads * head_dim
@@ -914,7 +939,8 @@ def _rocm_flash_probe_bytes(
     weights = (4 * inner * hidden + 8 * hidden * hidden + 2 * inner * width) * elem
     per_query = (11 * hidden + 3 * inner) * elem + 2 * inner * 4
     per_key = (width + 2 * inner) * elem
-    scores = 0 if _native_sdpa_fused_enabled() else 2 * batch * heads * tokens * kv_tokens * 4
+    fused = _native_sdpa_fused_serves(device, dtype, heads, head_dim, tokens, kv_tokens, batch)
+    scores = 0 if fused else 2 * batch * heads * tokens * kv_tokens * 4
     return weights + batch * (tokens * per_query + kv_tokens * per_key) + scores
 
 
@@ -967,7 +993,7 @@ def _rocm_flash_geometry_admitted(
         _log_rocm_flash_verdict(logger, device, geometry, rec, "cached")
         return rec["admitted"]
     if live:
-        need = _rocm_flash_probe_bytes(geometry, tokens, kv, batch, dtype)
+        need = _rocm_flash_probe_bytes(geometry, tokens, kv, batch, dtype, device)
         if not _rocm_flash_probe_fits(device, need):
             _module_logger().info(
                 "diffusion.attention: ROCm flash timing at %s tokens deferred, no room beside this forward "
@@ -3020,9 +3046,19 @@ def apply_attention_backend(
             and not _rocm_flash_attn_runs(target)
         ):
             backend = None
-        if backend == "flash" and target is not None and _is_cuda_rocm(target):
-            # An explicit request too: a masked call runs native instead of raising mid-generation.
-            _install_rocm_flash_dispatch_guard()
+        if (
+            backend == "flash"
+            and target is not None
+            and _is_cuda_rocm(target)
+            and not _install_rocm_flash_dispatch_guard()
+        ):
+            # An explicit request too: without the guard a masked call would raise mid-generation, not run native.
+            if logger is not None:
+                logger.warning(
+                    "diffusion.attention: this diffusers build does not expose the flash backend the way Unsloth "
+                    "expects, so masked attention calls could not be routed around it; using the default backend"
+                )
+            backend = None
         if (
             backend == "_native_cudnn"
             and target is not None
