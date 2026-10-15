@@ -134,9 +134,18 @@ def _launch(F, X, W, S, long_indexing):
     return out
 
 
+def _skip_without_kernel(F):
+    W = torch.empty(1, device = "cuda", dtype = torch.float8_e4m3fn)
+    if F._fp8_kernel_unsupported(W):
+        pytest.skip("no fp8e4nv Triton kernel on this device")
+    if F._fp8_gemv_miscompiles(W.device):
+        pytest.skip("Triton < 3.4 miscompiles this GEMV on Blackwell; production skips it")
+
+
 @pytest.mark.skipif(not CUDA, reason = "needs a CUDA device")
 @pytest.mark.parametrize("N, K", [(4096, 4096), (5000, 3000), (40000, 1536)])
 def test_long_path_matches_int32_path_on_ordinary_shapes(F, N, K):
+    _skip_without_kernel(F)
     X, W, S = _operands(N, K)
     short = _launch(F, X, W, S, False)
     wide = _launch(F, X, W, S, True)
@@ -149,6 +158,7 @@ def test_long_path_matches_int32_path_on_ordinary_shapes(F, N, K):
 @pytest.mark.skipif(not CUDA, reason = "needs a CUDA device")
 def test_weight_past_2_31_elements(F):
     """A real (N, K) FP8 weight one block past 2^31 elements (2 GiB): the tail rows must match."""
+    _skip_without_kernel(F)
     K = 4096
     N = 2**31 // K + 256
     if torch.cuda.mem_get_info()[0] < 4 * 1024**3:

@@ -483,6 +483,20 @@ def _rocm_fp8e4nv_kernel_supported(device):
 
 
 @functools.lru_cache(maxsize = None)
+def _fp8_gemv_miscompiles(device):
+    # Triton 3.3 (torch 2.7) builds a wrong rowwise GEMV on Blackwell: most rows are garbage at
+    # BLOCK_N 4 / 8 (N > 4096) on a B200, while Triton 3.4 is exact. Those cards take the dequant path.
+    if torch.version.hip is not None:
+        return False
+    try:
+        return torch.cuda.get_device_capability(device) >= (10, 0) and Version(
+            triton.__version__
+        ).release[:2] < (3, 4)
+    except Exception:
+        return True
+
+
+@functools.lru_cache(maxsize = None)
 def _fp8_device_lacks_kernel(device):
     # A device's capability cannot change, so look it up once. Tests that simulate another
     # card must call _fp8_device_lacks_kernel.cache_clear().
@@ -558,7 +572,7 @@ def can_use_fp8_rowwise_gemv(X, weight, weight_scale):
         return False
     if torch.is_grad_enabled() and (X.requires_grad or weight.requires_grad):
         return False
-    return not _fp8_kernel_unsupported(weight)
+    return not _fp8_kernel_unsupported(weight) and not _fp8_gemv_miscompiles(weight.device)
 
 
 def fp8_rowwise_gemv(X, weight, weight_scale):
