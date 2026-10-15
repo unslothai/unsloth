@@ -4,7 +4,9 @@
 """Qwen-Image-2.1 ConvRot int8: one rotation + one act quant per shared input (QKV, SwiGLU gate/value) in the compile.
 
 Rotation is on the shared input axis and int8 scales are per row, so fused outputs equal the separate rotated ones bit
-for bit. Only where ``diffusion_int8_gemm`` leaves rotated Linears on the stock path (e.g. sm90, sm100), resident only.
+for bit. Only where ``diffusion_int8_gemm`` leaves rotated Linears on the stock path, resident only: archs with neither
+its fused GEMM nor ``rotq_i8`` (e.g. sm90, sm100), and attention / SwiGLU groups whose every shape its latency gate
+routes to cuBLAS (it then yields them here: A100 + Triton 3.8, Qwen-Image-2.1 1024 px, 0.2557 -> 0.2504 s/step).
 Kill switch: ``UNSLOTH_DIFFUSION_Q21_CONVROT_FUSED=0``.
 """
 
@@ -35,8 +37,10 @@ def q21_convrot_fused_disabled() -> bool:
     )
 
 
-def arch_ok(device: Any = None) -> bool:
-    """True where ``diffusion_int8_gemm`` has neither its fused GEMM nor ``rotq_i8`` for this arch."""
+def arch_ok(device: Any = None, linears: Any = ()) -> bool:
+    """True where ``diffusion_int8_gemm`` leaves ``linears`` on the stock path: neither its fused GEMM nor ``rotq_i8``
+    on this arch, or (``linears`` given) its latency gate routes every shape of them to cuBLAS, so the swap yields
+    them here (``stock_claims``). Eager only: the gate may time missing shapes."""
     try:
         import torch
 
@@ -52,9 +56,59 @@ def arch_ok(device: Any = None) -> bool:
         if int8_gemm_mode() == "off":
             return True
         gemm, rotq = _gates(torch.cuda.get_device_capability(index))
-        return not (gemm or rotq)
+        if not (gemm or rotq):
+            return True
+        if gemm and linears:
+            from .diffusion_int8_gemm import gate_routes_to_cublas
+            return gate_routes_to_cublas(index, _shapes(linears))
+        return False
     except Exception:  # noqa: BLE001
         return False
+
+
+def _shapes(linears: Any) -> set:
+    return {(int(lin.out_features), int(lin.in_features)) for lin in linears}
+
+
+def _attn_group(attn: Any) -> Optional[list]:
+    """to_q, to_k, to_v (+ to_out[0] when it rotates) of a rotated QwenImage21Attention, else None."""
+    try:
+        if type(attn).__name__ != "QwenImage21Attention":
+            return None
+        parts = [getattr(attn, n, None) for n in ("to_q", "to_k", "to_v")]
+        if any(p is None for p in parts) or not _rotated_group(parts):
+            return None
+        out = attn.to_out[0]
+        return parts + [out] if _rotated_group([out]) else parts
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _ff_group(module: Any) -> Optional[list]:
+    """gate_layer, proj, out of a QwenImage21SwiGLUFeedForward that all rotate, else None."""
+    try:
+        if type(module).__name__ != "QwenImage21SwiGLUFeedForward":
+            return None
+        parts = [module.gate_layer, module.proj]
+        if not _rotated_group(parts) or not _rotated_group([module.out]):
+            return None
+        return parts + [module.out]
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def stock_claims(root: Any) -> list:
+    """The rotated Linear groups this module (QKV / to_out) and ``diffusion_int8_fused`` (SwiGLU) take when
+    ``arch_ok(device, group)`` holds; ``diffusion_int8_gemm`` leaves exactly these unswapped where its gate is all
+    cuBLAS. Empty for another model or under the kill switch."""
+    if q21_convrot_fused_disabled() or type(root).__name__ != "QwenImage21Transformer2DModel":
+        return []
+    groups = []
+    for module in root.modules():
+        group = _attn_group(module) or _ff_group(module)
+        if group:
+            groups.append(group)
+    return groups
 
 
 def _rotated_group(linears: list) -> int:
@@ -73,13 +127,13 @@ def _plain(lin: Any) -> bool:
 
 def rotated_ff(module: Any) -> bool:
     """A Qwen-Image-2.1 SwiGLU with rotated gate/value and down projections, on a covered arch."""
-    if type(module).__name__ != "QwenImage21SwiGLUFeedForward" or q21_convrot_fused_disabled():
+    if q21_convrot_fused_disabled():
+        return False
+    group = _ff_group(module)
+    if group is None:
         return False
     try:
-        parts = [module.gate_layer, module.proj]
-        if not _rotated_group(parts) or not _rotated_group([module.out]):
-            return False
-        return arch_ok(module.gate_layer.weight.device)
+        return arch_ok(module.gate_layer.weight.device, group)
     except Exception:  # noqa: BLE001
         return False
 
@@ -204,18 +258,16 @@ def install_modules(root: Any, logger: Any = None) -> dict:
     from .diffusion_int8_fused import resident_cuda_device
 
     dev = resident_cuda_device(root)
-    if dev is None or not arch_ok(dev):
+    if dev is None:
         return result
     from .diffusion_zimage_fused import _fuse_linears, _share_storage
 
     todo = []
     for _name, module in root.named_modules():
-        if type(module).__name__ != "QwenImage21Attention":
+        group = _attn_group(module)
+        if group is None or not arch_ok(dev, group):
             continue
-        parts = [getattr(module, n, None) for n in ("to_q", "to_k", "to_v")]
-        if any(p is None for p in parts) or not _rotated_group(parts):
-            continue
-        todo.append((module, parts))
+        todo.append((module, group[:3]))
     if not todo or not _patch_prepare(logger):
         return result
     with _LOCK:

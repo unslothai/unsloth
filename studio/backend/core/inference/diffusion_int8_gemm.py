@@ -28,7 +28,10 @@ LATENCY GATE: static tiles go stale with the toolchain (A100 Triton 3.8: 128x128
 At install each swapped (N, K) is timed per M bucket (probed, per-shape and arch tiles vs cuBLAS ``_int_mm`` + one
 int32 -> bf16 pass); a winner must beat the status quo by ``_CUBLAS_MARGIN`` and alt tiles must pass the bit-exact
 probe. Results persist per toolchain under the Studio cache (``UNSLOTH_DIFFUSION_INT8_GEMM_TUNE_DIR``);
-``UNSLOTH_DIFFUSION_INT8_GEMM_AUTOTUNE=0`` keeps the static table.
+``UNSLOTH_DIFFUSION_INT8_GEMM_AUTOTUNE=0`` keeps the static table. A cuBLAS slot still runs this module's forward
+(``rotq_i8`` + ``stock_gemm``), so where a model has its own stock-path fusion for rotated Linears (Qwen-Image-2.1:
+one rotation + act quant per shared QKV / SwiGLU input, ``diffusion_qwenimage21_fused.stock_claims``) a group whose
+every shape the gate sends to cuBLAS is left unswapped for it: the path the kill switch runs, measured faster.
 
 ConvRot Linears (MiniMax-H3, Qwen-Image-2.1 ConvRot) run ``ConvRotLinear.forward``'s own rotation first, so eager
 output stays bit-identical; kill switch ``UNSLOTH_DIFFUSION_INT8_GEMM_CONVROT=0``.
@@ -886,7 +889,19 @@ def _swap(
             )
     else:
         _DEVICE_PLAN.pop(index, None)  # a plan from an earlier load must not outlive AUTOTUNE=0
+    yielded = _yielded(transformer, index) if gemm and device is None else set()
+    if yielded:
+        recs = [(m, r) for m, r in recs if id(m) not in yielded]
+        if logger is not None:
+            logger.info(
+                "diffusion.int8_gemm: %d ConvRot Linear(s) left to the model's stock-path fusion (latency gate: "
+                "cuBLAS for every shape)",
+                len(yielded),
+            )
+        if not recs:
+            return 0
     count = 0
+    n_fused = 0
     with _LOCK:
         if gemm:
             _OP_HANDLE = _op()
@@ -907,12 +922,28 @@ def _swap(
             module.__dict__[_MARK] = module.__dict__.get("forward", _NO_PREV)
             module.forward = types.MethodType(_linear_forward, module)
             count += 1
+    if gemm:
+        plan = _DEVICE_PLAN.get(index) or {}
+        for module, _rec in recs:
+            n, k = int(module.out_features), int(module.in_features)
+            if any(plan.get((n, k, b)) != _CUBLAS for b in range(len(_M_BUCKETS))):
+                n_fused += 1
     if logger is not None and count:
+        cap = torch.cuda.get_device_capability(index)
+        if gemm:
+            what = "run the fused-dequant GEMM (bf16 out)"
+            if n_fused < count:
+                what = (
+                    f"swapped: {n_fused} run the fused-dequant GEMM (bf16 out) in at least one M bucket, "
+                    f"{count - n_fused} cuBLAS + torchao's epilogue (latency gate)"
+                )
+        else:
+            what = "keep cuBLAS"
         logger.info(
             "diffusion.int8_gemm: %d int8 Linear(s) %s on sm_%d%d%s",
             count,
-            "run the fused-dequant GEMM (bf16 out)" if gemm else "keep cuBLAS",
-            *torch.cuda.get_device_capability(index),
+            what,
+            *cap,
             ", ConvRot rotation fused into the act quant" if rotq else "",
         )
     return count
@@ -1097,6 +1128,40 @@ def _merge_and_write(path: str, key: str, plan: dict, timings: dict) -> None:
     with open(tmp, "w", encoding = "utf-8") as f:
         json.dump(data, f, indent = 1, sort_keys = True)
     os.replace(tmp, path)
+
+
+def gate_routes_to_cublas(index: Any, shapes: Any) -> bool:
+    """True when the latency gate sends every M bucket of every ``(n, k)`` in ``shapes`` to cuBLAS on device ``index``,
+    so the fused GEMM never runs for them. Times missing slots: eager only, never under trace."""
+    try:
+        if index is None or int8_gemm_mode() == "off" or not autotune_enabled():
+            return False
+        shapes = {(int(n), int(k)) for n, k in shapes}
+        if not shapes or any(k % _K_ALIGN or n % _N_ALIGN for n, k in shapes):
+            return False
+        if device_config(index) is None:
+            return False
+        slots = [(n, k, b) for n, k in shapes for b in range(len(_M_BUCKETS))]
+        plan = _DEVICE_PLAN.get(index) or {}
+        if any(slot not in plan for slot in slots):
+            plan = tune(index, shapes)
+        return all(plan.get(slot) == _CUBLAS for slot in slots)
+    except Exception:  # noqa: BLE001 - unknown: keep the swap
+        return False
+
+
+def _yielded(transformer: Any, index: Any) -> set:
+    """ids of the rotated Linears a model's own stock-path fusion takes because the gate left them all on cuBLAS."""
+    try:
+        from .diffusion_qwenimage21_fused import stock_claims
+        groups = stock_claims(transformer)
+    except Exception:  # noqa: BLE001
+        return set()
+    out: set = set()
+    for group in groups:
+        if gate_routes_to_cublas(index, {(int(m.out_features), int(m.in_features)) for m in group}):
+            out.update(id(m) for m in group)
+    return out
 
 
 def _time_ms(

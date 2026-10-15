@@ -1432,3 +1432,103 @@ def test_decide_keeps_the_status_quo_unless_beaten_clearly(static_ms, new_ms, cu
     static, new = (128, 128, 128, 8, 4, 3), (64, 128, 128, 8, 4, 4)
     got = g8.decide(static, {static: static_ms, new: new_ms}, cublas_ms)
     assert got == {"cublas": g8._CUBLAS, "static": static, "new": new}[want]
+
+
+def _q21_model(dim = 512, ff = 1024):
+    """A Qwen-Image-2.1-shaped tree (one attention, one SwiGLU, one plain rotated Linear) of ConvRot Linears."""
+    from core.inference.diffusion_convrot import _install_rotation
+
+    def rot(i, o):
+        lin = torch.nn.Linear(i, o, bias = False)
+        _install_rotation(lin, 256)
+        return lin
+
+    attn = type("QwenImage21Attention", (torch.nn.Module,), {})()
+    attn.to_q, attn.to_k, attn.to_v = rot(dim, dim), rot(dim, dim), rot(dim, dim)
+    attn.to_out = torch.nn.ModuleList([rot(dim, dim)])
+    mlp = type("QwenImage21SwiGLUFeedForward", (torch.nn.Module,), {})()
+    mlp.gate_layer, mlp.proj, mlp.out = rot(dim, ff), rot(dim, ff), rot(ff, dim)
+    model = type("QwenImage21Transformer2DModel", (torch.nn.Module,), {})()
+    model.attn, model.mlp, model.mod = attn, mlp, rot(dim, 2 * dim)
+    return model
+
+
+def _all_cublas_gate(monkeypatch, tmp_path, cublas_wins):
+    """A100 + Triton 3.8 shaped gate on a fake device 0: cuBLAS wins every bucket (or the fused tile does)."""
+    from core.inference import diffusion_int8_fused as i8f
+
+    monkeypatch.setenv(g8.INT8_GEMM_AUTOTUNE_ENV, "1")
+    default = g8._ARCH_CONFIG[(8, 0)]
+    fast, slow = (1.0, 7.8) if cublas_wins else (7.8, 1.0)
+    _fake_tune_env(monkeypatch, tmp_path, lambda tiles: {g8._CUBLAS: fast, **{t: slow for t in tiles}})
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    monkeypatch.setattr(i8f, "resident_cuda_device", lambda t: torch.device("cuda", 0))
+    monkeypatch.setattr(cq, "rotquant_device_config", lambda index: (128, 32, 8, 3))
+    monkeypatch.setattr(g8, "_op", lambda: object())
+    monkeypatch.setattr(g8, "_eligible", lambda m: ("v2", 256, None, m.weight) if hasattr(m, "convrot_groupsize") else None)
+    return default
+
+
+@pytest.mark.parametrize("cublas_wins", [True, False])
+def test_all_cublas_gate_yields_qwen_image_21_groups_to_their_stock_fusion(monkeypatch, tmp_path, cublas_wins):
+    """A100 Qwen-Image-2.1: with every bucket on cuBLAS the swapped forward is rotq_i8 + cuBLAS per Linear, which
+    also locks out the QKV / SwiGLU shared-rotation fusions the kill switch runs (0.2557 vs 0.2504 s/step). The groups
+    those fusions take must stay unswapped; other Linears and a fused plan keep the swap."""
+    from core.inference import diffusion_qwenimage21_fused as qf
+
+    _all_cublas_gate(monkeypatch, tmp_path, cublas_wins)
+    model = _q21_model()
+    attn_group = qf._attn_group(model.attn)
+    ff_group = qf._ff_group(model.mlp)
+    assert len(attn_group) == 4 and len(ff_group) == 3
+    # the order the loader runs: int8_fused asks first (SwiGLU), then the int8 GEMM swap, then the QKV fusion
+    assert qf.rotated_ff(model.mlp) is cublas_wins
+    count = g8._swap(model)
+    swapped = {id(m) for m in model.modules() if g8.is_installed(m)}
+    assert id(model.mod) in swapped
+    for lin in attn_group + ff_group:
+        assert (id(lin) in swapped) is not cublas_wins
+    assert count == (1 if cublas_wins else 8)
+    assert qf.arch_ok(torch.device("cuda", 0), attn_group) is cublas_wins
+    g8.uninstall(model)
+
+
+def test_all_cublas_yield_respects_the_q21_kill_switch_and_other_models(monkeypatch, tmp_path):
+    from core.inference import diffusion_qwenimage21_fused as qf
+
+    _all_cublas_gate(monkeypatch, tmp_path, True)
+    monkeypatch.setenv(qf.Q21_CONVROT_FUSED_ENV, "0")
+    model = _q21_model()
+    assert g8._swap(model) == 8 and not qf.rotated_ff(model.mlp)
+    g8.uninstall(model)
+    monkeypatch.delenv(qf.Q21_CONVROT_FUSED_ENV)
+    other = torch.nn.Sequential(*_q21_model().children())  # same Linears, not a Qwen-Image-2.1 root
+    assert g8._swap(other) == 8
+    g8.uninstall(other)
+
+
+def test_gate_routes_to_cublas_needs_every_bucket(monkeypatch, tmp_path):
+    _all_cublas_gate(monkeypatch, tmp_path, True)
+    assert g8.gate_routes_to_cublas(0, {(512, 512)})
+    g8._DEVICE_PLAN[0][(512, 512, 1)] = g8._ARCH_CONFIG[(8, 0)]
+    assert not g8.gate_routes_to_cublas(0, {(512, 512)})
+    assert not g8.gate_routes_to_cublas(0, {(512, 500)})  # off-grid: never swapped, never timed
+    monkeypatch.setenv(g8.INT8_GEMM_AUTOTUNE_ENV, "0")
+    assert not g8.gate_routes_to_cublas(0, {(512, 512)})
+
+
+def test_swap_log_says_what_runs(monkeypatch, tmp_path):
+    """'N run the fused-dequant GEMM' must not follow a gate that sent every bucket to cuBLAS."""
+    _all_cublas_gate(monkeypatch, tmp_path, True)
+    msgs = []
+
+    class Log:
+        def info(self, fmt, *args):
+            msgs.append(fmt % args)
+
+    other = torch.nn.Sequential(*_q21_model().children())
+    g8._swap(other, Log())
+    swap_msg = [m for m in msgs if "int8 Linear(s)" in m][-1]
+    assert "0 run the fused-dequant GEMM" in swap_msg and "8 cuBLAS" in swap_msg
+    g8.uninstall(other)
