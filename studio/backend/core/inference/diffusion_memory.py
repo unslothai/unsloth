@@ -1055,29 +1055,40 @@ def image_request_phase_mib(
     condition_pixels: int = 0,
     calibrated: Optional["CalibratedImageActivation"] = None,
     tiled: bool = False,
+    sliced: bool = False,
+    prompts: Optional[int] = None,
 ) -> tuple[int, int, int]:
-    """(encode, denoise, decode) MiB above the weights for one image request, on the generation guard's own curve:
-    target plus (already weighted) condition pixels, times the batch, over 1024x1024. Calibrated families scale each
-    measured phase by it (the decode by the output canvas alone; a tiled decode is canvas-independent); the rest
-    charge every phase the guard's whole-request estimate."""
+    """(encode, denoise, decode) MiB above the weights for one pipeline call, each phase scaled by the batch it really
+    runs with. ``batch_size`` = images (latents) of the call, ``prompts`` = distinct prompts it encodes (a shared prompt
+    fanned out by ``num_images_per_prompt`` encodes once; None = one per image).
+
+    Calibrated families (each phase measured at 1024x1024, one image):
+      encode  = text_encoder_mib x prompts
+      denoise = denoise_mib x (target + weighted condition pixels) / 1024^2 x images (the guard's own curve)
+      decode  = per image: tiled_decode_mib when the VAE tiles (canvas-independent), else decode_mib x canvas / 1024^2;
+                x images unless the VAE is sliced (one image at a time)
+    Others: every phase is the guard's whole-request estimate for this call's images (it already includes the decode)."""
     w = max(64, int(width or DEFAULT_IMAGE_WIDTH))
     h = max(64, int(height or DEFAULT_IMAGE_HEIGHT))
-    batch = max(1, int(batch_size or 1))
+    images = max(1, int(batch_size or 1))
+    encoded = images if prompts is None else max(1, int(prompts))
     cond = max(0, int(condition_pixels or 0))
     if calibrated is None:
         whole = estimate_image_runtime_mib(
             width = width,
             height = height,
-            batch_size = batch_size,
+            batch_size = images,
             family = family,
             condition_pixels = condition_pixels,
         )
         return whole, whole, whole
     reference = float(DEFAULT_IMAGE_WIDTH * DEFAULT_IMAGE_HEIGHT)
-    tokens = (w * h + cond) * batch / reference
-    canvas = w * h * batch / reference
-    decode = calibrated.tiled_decode_mib if tiled else calibrated.decode_mib * canvas
-    return int(calibrated.text_encoder_mib), int(calibrated.denoise_mib * tokens), int(decode)
+    per_image_decode = calibrated.tiled_decode_mib if tiled else calibrated.decode_mib * (w * h / reference)
+    return (
+        int(calibrated.text_encoder_mib * encoded),
+        int(calibrated.denoise_mib * (w * h + cond) / reference * images),
+        int(per_image_decode * (1 if sliced else images)),
+    )
 
 
 def video_request_phase_mib(
@@ -1088,7 +1099,8 @@ def video_request_phase_mib(
     batch_size: int = 1,
 ) -> tuple[int, int, int]:
     """(encode, denoise, decode) MiB for one video request: the generation guard's whole-request estimate (its decode
-    peak scales with the frames) times the batch, charged to every phase (video has no per-phase calibration)."""
+    peak scales with the frames) times the batch, charged to every phase (video has no per-phase calibration). Studio's
+    video path renders one clip per call (it never passes num_videos_per_prompt), so the batch is 1 there."""
     whole = estimate_video_runtime_mib(width = width, height = height, num_frames = num_frames)
     whole *= max(1, int(batch_size or 1))
     return whole, whole, whole

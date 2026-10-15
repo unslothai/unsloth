@@ -1434,7 +1434,12 @@ def _hook_origin(fn: Any) -> str:
 
 
 def _trusted_hook(fn: Any) -> bool:
-    return _hook_origin(fn).startswith(_TRUSTED_HOOK_MODULES) and _portable(fn)
+    """The one hook predicate both CFG routers screen with (submodule and root hooks alike): a Studio hook that captures
+    nothing a copy or a second branch could diverge on, or a Studio hook marked ``_unsloth_shared_ok`` (it touches only
+    process-global state or its call's own arguments, never module state the forward reads)."""
+    return _hook_origin(fn).startswith(_TRUSTED_HOOK_MODULES) and (
+        _portable(fn) or getattr(fn, "_unsloth_shared_ok", False) is True
+    )
 
 
 def _studio_outer_layers(forward: Any) -> tuple[list[Any], Any]:
@@ -1466,22 +1471,32 @@ def _hooks_present(
     registry (step caches), an accelerate hook, or a forward hook / instance forward override below the root whose
     captured state points at the source (deepcopy treats functions as atoms). Offload machinery (diffusers group
     offloading, Studio's prefetchers) is dropped by :func:`build_replica`, which holds every weight resident. The
-    ROOT's torch forward hooks are fine: the source module's ``__call__`` runs them around the router for every
-    branch, and the copy does not carry them. ``offload_hooks_ok``: accelerate's offload hooks pass too (CFG-batch
-    runs the source module itself, so they keep working)."""
+    ROOT's hooks are screened too: for CFG-parallel only their origin matters (the copy never carries them; a foreign
+    one writing module state would update the source only), for CFG-batch the full :func:`_trusted_hook` check. ``offload_hooks_ok``: accelerate's offload hooks pass too
+    (CFG-batch runs the source module itself, so they keep working)."""
     for name, sub in module.named_modules():
         kind = _registry_kind(sub)
         if kind == "other":
             return f"{name or '<root>'}._diffusers_hook ({', '.join(sorted(sub._diffusers_hook.hooks))})"
         if getattr(sub, "_hf_hook", None) is not None and not offload_hooks_ok:
             return f"{name or '<root>'}._hf_hook"
-        # CFG-batch (offload_hooks_ok) computes the odd branch inside the first branch's root hook run, so the ROOT's
-        # hooks are screened too; CFG-parallel's source module runs them around every branch.
-        if name or offload_hooks_ok:
-            for attr in ("_forward_hooks", "_forward_pre_hooks"):
-                for hook in (getattr(sub, attr, None) or {}).values():
-                    if not _is_offload_object(hook) and not _trusted_hook(hook):
-                        return f"{name}.{attr}"
+        # Root hooks are screened for both routers. CFG-batch computes the odd branch inside the first branch's root
+        # hook run, so they pass the full trusted-hook check there. A CFG-parallel replica is built WITHOUT the root
+        # hooks (the source runs them around every branch): a foreign root hook writing module state the forward reads
+        # would update the source only, so it blocks; Studio's own root hooks and offload hooks pass.
+        for attr in ("_forward_hooks", "_forward_pre_hooks"):
+            for hook in (getattr(sub, attr, None) or {}).values():
+                if _is_offload_object(hook):
+                    continue
+                if not name and not offload_hooks_ok:
+                    # CFG-parallel root: the copy never carries it (the source runs it around every branch), so
+                    # portability is moot; Studio's root hooks pass (their per-call module state is mirrored), a foreign
+                    # one blocks (it may write module state only the source would see)
+                    if not _hook_origin(hook).startswith(_TRUSTED_HOOK_MODULES):
+                        return f"<root>.{attr}"
+                    continue
+                if not _trusted_hook(hook):
+                    return f"{name or '<root>'}.{attr}"
         override = sub.__dict__.get("forward")
         if not name and not offload_hooks_ok:
             # CFG-parallel: Studio's outer layers above the router run on the source around every branch and are
@@ -2223,6 +2238,51 @@ class CfgParallelRouter:
                 f"{_ROOM_REASON}: needs {int(room)} MiB, {free} MiB free on {self.secondary}"
             )
 
+    def _phase_need_mib(self, phase: str) -> Optional[int]:
+        """What ``phase`` (encode / decode) allocates on the replica card, None when that card does not run it: the
+        request's own figure, else the load-time one (decode scaled by canvas)."""
+        index = self.secondary.index
+        needs = self.request_needs
+        if phase == "encode":
+            if needs is not None and needs.denoise_mib:
+                return int(needs.encode_mib or 0) if index in needs.encode_ordinals else None
+            return int(self.encode_headroom_mib or 0) if index in self.te_ordinals else None
+        if phase == "decode":
+            if needs is not None and needs.denoise_mib:
+                return int(needs.decode_mib or 0) if index == needs.decode_ordinal else None
+            if self.vae_ordinal is None or index != self.vae_ordinal:
+                return None
+            return scaled_headroom_mib(
+                self.decode_headroom_mib, self.headroom_reference_px, self.request_px, None
+            )
+        return None
+
+    def ensure_phase_room(self, phase: str) -> bool:
+        """At a phase boundary that allocates on the replica card (encode at request entry, decode at decoder entry):
+        evict the retained replica when the phase would not fit beside it, so a wrong estimate can never cause an OOM
+        the one-card path would not have had. True when the replica stays (or there is none)."""
+        if self.replica is None:
+            return True
+        need = self._phase_need_mib(phase)
+        if not need:
+            return True
+        free = self._secondary_free_mib()
+        if free is None or need <= free:
+            return True
+        if self.logger is not None:
+            self.logger.info(
+                "diffusion.multigpu: evicting the CFG-parallel replica from %s before %s (%d MiB needed, %d free)",
+                self.secondary,
+                phase,
+                need,
+                free,
+            )
+        self.drop_replica()
+        self.stats["replica_evictions"] = self.stats.get("replica_evictions", 0) + 1
+        with contextlib.suppress(Exception):
+            _torch().cuda.empty_cache()
+        return False
+
     def _secondary_free_mib(self) -> Optional[int]:
         """Free MiB on the replica card: the driver's figure plus this process's idle cached allocator blocks there
         (the replica's last activations, reusable without a driver allocation), read on the secondary itself."""
@@ -2352,6 +2412,8 @@ class CfgParallelRouter:
         self.request_needs = needs
         self.branch = 0
         self.singles = 0
+        # before the encode: it allocates on the replica card when that card hosts a text encoder
+        self.ensure_phase_room("encode")
         self.b0_s = None
         self.capacity_checked = False
         self.request_id += 1
@@ -2945,9 +3007,13 @@ def cfg_request_scope(
 
 
 def release_cfg_inputs(pipe: Any) -> None:
-    """The denoise is over (the decoder was entered): drop the tensors the routers keep between branches."""
+    """The denoise is over (the decoder was entered): drop the tensors the routers keep between branches, and evict a
+    retained replica whose card runs the decode when the decode would not fit beside it."""
     for router in _routers_of(pipe):
         router.release_inputs()
+        ensure = getattr(router, "ensure_phase_room", None)
+        if ensure is not None:
+            ensure("decode")
 
 
 def uninstall_cfg_parallel(pipe: Any) -> None:

@@ -695,6 +695,13 @@ def test_replica_declined_when_a_submodule_hook_captures_the_source():
     assert "proj._forward_hooks" in router.describe()["blocked_by"]
 
 
+_ROOT_CALLS: list = []
+
+
+def _root_count_hook(module, args):
+    _ROOT_CALLS.append(1)
+
+
 def test_portable_hooks_and_root_hooks_are_accepted():
     torch.manual_seed(0)
     dit = _Dit()
@@ -702,10 +709,11 @@ def test_portable_hooks_and_root_hooks_are_accepted():
     hook = lambda m, i, o: o * scale  # noqa: E731 - captures only a float: shared safely
     hook.__module__ = mg.__name__  # one of Studio's own hooks
     dit.proj.register_forward_hook(hook)
-    calls = []
-    dit.register_forward_pre_hook(
-        lambda m, a: calls.append(1)
-    )  # root: runs on the source around every branch
+    calls = _ROOT_CALLS
+    calls.clear()
+    # one of Studio's root hooks (captures nothing mutable): runs on the source around every branch
+    _root_count_hook.__module__ = mg.__name__
+    dit.register_forward_pre_hook(_root_count_hook)
     assert mg._hooks_present(dit) is None
     latents = torch.randn(2, 4)
     reference = _cfg_loop(dit, latents.clone(), steps = 4)
@@ -1241,7 +1249,10 @@ def _flag_post_hook(module, args, output):
     module.proj.__dict__.pop("_unsloth_flip", None)
 
 
-def test_root_hook_state_on_submodules_reaches_the_replica():
+def test_root_hook_state_on_submodules_reaches_the_replica(monkeypatch):
+    # Studio's own root hooks (the HunyuanVideo trim hook): their _unsloth_* state is mirrored onto the replica
+    monkeypatch.setattr(_flag_pre_hook, "__module__", mg.__name__)
+    monkeypatch.setattr(_flag_post_hook, "__module__", mg.__name__)
     torch.manual_seed(0)
     dit = _FlagDit()
     dit.register_forward_pre_hook(_flag_pre_hook, with_kwargs = True)
@@ -3564,3 +3575,158 @@ def test_cfg_request_needs_keep_released_encoder_bytes(monkeypatch):
         state, fam, pipe, None, width = 1024, height = 1024, batch_size = 1, condition_pixels = 0
     )
     assert needs.encode_mib == int(cal.text_encoder_mib) + 3072
+
+
+_CAL = dm.CalibratedImageActivation(
+    text_encoder_mib = 1000, denoise_mib = 2000, decode_mib = 4000, tiled_decode_mib = 500, max_canvas_mib = 9000
+)
+
+
+@pytest.mark.parametrize(
+    "images, prompts, tiled, sliced, expected",
+    [
+        # (encode, denoise, decode) at 1024x1024, no condition pixels
+        (1, 1, False, False, (1000, 2000, 4000)),
+        (4, 1, False, False, (1000, 8000, 16000)),  # shared prompt: one encode, four latents, four decodes
+        (4, 4, False, False, (4000, 8000, 16000)),  # distinct prompts: the encoder sees all four
+        (4, 4, False, True, (4000, 8000, 4000)),  # sliced VAE: one image at a time
+        (4, 4, True, False, (4000, 8000, 2000)),  # tiled, not sliced: every tile carries the whole batch
+        (4, 4, True, True, (4000, 8000, 500)),  # tiled and sliced
+        (2, None, False, False, (2000, 4000, 8000)),  # unknown prompt count: one per image
+    ],
+)
+def test_image_request_phase_mib_scales_each_phase_by_its_own_batch(images, prompts, tiled, sliced, expected):
+    got = dm.image_request_phase_mib(
+        width = 1024,
+        height = 1024,
+        batch_size = images,
+        prompts = prompts,
+        calibrated = _CAL,
+        tiled = tiled,
+        sliced = sliced,
+    )
+    assert got == expected
+
+
+@pytest.mark.parametrize("images", [1, 3])
+def test_image_request_phase_mib_uncalibrated_charges_the_guard_estimate(images):
+    whole = dm.estimate_image_runtime_mib(width = 1024, height = 1024, batch_size = images, family = "flux.1")
+    got = dm.image_request_phase_mib(
+        width = 1024, height = 1024, batch_size = images, prompts = 1, family = "flux.1", sliced = True
+    )
+    assert got == (whole, whole, whole)
+
+
+def test_cfg_chunk_needs_encode_distinct_prompts_as_a_batch(monkeypatch):
+    diffusion_mod, cal, state, fam, pipe = _cfg_needs_fixture(monkeypatch)
+    inputs = {"target": None, "width": 1024, "height": 1024, "condition_pixels": 0, "controlnet": False}
+    shared = diffusion_mod._chunk_cfg_needs(state, fam, pipe, inputs, [("cat", s) for s in range(4)])
+    mixed = diffusion_mod._chunk_cfg_needs(state, fam, pipe, inputs, [(f"p{s}", s) for s in range(4)])
+    assert shared.encode_mib == int(cal.text_encoder_mib)
+    assert mixed.encode_mib == int(cal.text_encoder_mib * 4)
+    pipe.vae.use_slicing = True
+    assert diffusion_mod._chunk_cfg_needs(state, fam, pipe, inputs, [("cat", 0)] * 4).decode_mib == int(
+        cal.decode_mib
+    )
+
+
+def _built_replica_router(monkeypatch, free_mib):
+    dit = _BatchDit()
+    pipe = _RouterPipe(dit)
+    router, replicas = _router(dit)
+    _guided(dit, 2, steps = 2)
+    assert router.replica is not None
+    router.secondary = torch.device("cuda", 1)  # the card the phases are priced on
+    monkeypatch.setattr(mg, "_free_total_mib", lambda ordinal: (free_mib, 80000))
+    return dit, pipe, router
+
+
+def test_retained_replica_is_evicted_before_an_encode_that_would_not_fit(monkeypatch):
+    dit, pipe, router = _built_replica_router(monkeypatch, 2000)
+    fits = mg.PhaseNeeds(encode_mib = 1500, denoise_mib = 500, decode_mib = 500, encode_ordinals = (1,))
+    with mg.cfg_request_scope(pipe, 512, 512, 4, fits):
+        pass
+    assert router.replica is not None
+    big = mg.PhaseNeeds(encode_mib = 3000, denoise_mib = 500, decode_mib = 500, encode_ordinals = (1,))
+    with mg.cfg_request_scope(pipe, 512, 512, 4, big):
+        # evicted at request entry, before the pipeline encodes its prompts on that card
+        assert router.replica is None
+    assert router.stats["replica_evictions"] == 1 and router.disabled_reason is None
+
+
+def test_retained_replica_is_evicted_before_a_decode_that_would_not_fit(monkeypatch):
+    dit, pipe, router = _built_replica_router(monkeypatch, 2000)
+    needs = mg.PhaseNeeds(encode_mib = 100, denoise_mib = 500, decode_mib = 1500, decode_ordinal = 1)
+    with mg.cfg_request_scope(pipe, 512, 512, 4, needs):
+        mg.release_cfg_inputs(pipe)  # decoder entry
+        assert router.replica is not None
+    needs = mg.PhaseNeeds(encode_mib = 100, denoise_mib = 500, decode_mib = 5000, decode_ordinal = 1)
+    with mg.cfg_request_scope(pipe, 512, 512, 4, needs):
+        mg.release_cfg_inputs(pipe)
+        assert router.replica is None
+    # a card that does not run the decode keeps its replica whatever the figure
+    dit2, pipe2, router2 = _built_replica_router(monkeypatch, 10)
+    with mg.cfg_request_scope(pipe2, 512, 512, 4, mg.PhaseNeeds(denoise_mib = 1, decode_mib = 9000, decode_ordinal = 0)):
+        mg.release_cfg_inputs(pipe2)
+    assert router2.replica is not None
+
+
+def test_foreign_root_pre_hook_writing_module_state_blocks_the_replica():
+    torch.manual_seed(0)
+
+    class ScaledDit(_BatchDit):
+        def forward(self, hidden_states, timestep, encoder_hidden_states, return_dict = False):
+            out = super().forward(hidden_states, timestep, encoder_hidden_states, return_dict)
+            return (out[0] * self.gain,)
+
+    def gain_hook(module, args, kwargs):
+        # foreign: per-call module state the forward reads (the copy would keep a stale value)
+        module.gain = 2.0 if float(kwargs["encoder_hidden_states"].sum()) > 0 else 0.5
+
+    def make():
+        torch.manual_seed(0)
+        d = ScaledDit()
+        d.gain = 1.0
+        d.register_forward_pre_hook(gain_hook, with_kwargs = True)
+        return d
+
+    plain = make()
+    reference = _guided(plain, 2, steps = 4)
+    dit = make()
+    assert mg._hooks_present(dit) == "<root>._forward_pre_hooks"
+    router, replicas = _router(dit)
+    out = _guided(dit, 2, steps = 4)
+    torch.testing.assert_close(out, reference, rtol = 0, atol = 0)
+    assert replicas == [] and "hooks" in (router.blocked_by or "")
+
+
+def test_studio_root_hooks_capturing_modules_do_not_block_cfg_parallel():
+    from core.inference.diffusion_bg_compile import BackgroundCompile
+
+    torch.manual_seed(0)
+    dit = _BatchDit()
+    plain = _BatchDit()
+    plain.load_state_dict(dit.state_dict())
+    reference = _guided(plain, 2, steps = 4)
+    seen = []
+
+    def begin(module, args):
+        # a Studio root hook holding the module (like the offload prefetch begin / end hooks): never portable
+        seen.append(module)
+
+    begin.__module__ = "core.inference.diffusion_attention"
+    dit.register_forward_pre_hook(begin)
+    # the background-compile recorder: a bound method of an object holding the module
+    recorder = BackgroundCompile(dit)
+    assert mg._hooks_present(dit) is None
+    dit.register_forward_pre_hook(recorder._record, with_kwargs = True)
+    assert mg._hooks_present(dit) is None
+    dit._forward_pre_hooks.popitem()  # keep the run itself free of the recorder's own bookkeeping
+    router, replicas = _router(dit)
+    out = _guided(dit, 2, steps = 4)
+    torch.testing.assert_close(out, reference, rtol = 0, atol = 0)
+    assert len(replicas) == 1 and router.stats["replica_calls"] > 0 and router.blocked_by is None
+    # the same module-capturing hook below the root is still refused (a copy would carry it)
+    sub = _BatchDit()
+    sub.proj.register_forward_pre_hook(begin)
+    assert mg._hooks_present(sub) == "proj._forward_pre_hooks"

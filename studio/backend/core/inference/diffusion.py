@@ -2059,6 +2059,7 @@ def _cfg_request_needs(
     batch_size: int,
     condition_pixels: int,
     controlnet: bool = False,
+    prompts: Optional[int] = None,
 ) -> Any:
     """The CFG routers' per-phase memory for ONE pipeline call (a chunk), from the exact inputs that call runs with: the
     forward canvas, the chunk's real image count (the guard itself budgets one image off Windows, the OOM backoff being
@@ -2068,7 +2069,9 @@ def _cfg_request_needs(
     scale the load figures)."""
     try:
         vae = getattr(pipe, "vae", None)
+        # the live VAE state (what the decode will do), not what a verdict asked for
         tiled = bool(getattr(vae, "use_tiling", False)) if vae is not None else False
+        sliced = bool(getattr(vae, "use_slicing", False)) if vae is not None else False
         condition_pixels = _guard_condition_pixels(
             width = width,
             height = height,
@@ -2089,6 +2092,8 @@ def _cfg_request_needs(
             condition_pixels = condition_pixels,
             calibrated = calibrated,
             tiled = tiled,
+            sliced = sliced,
+            prompts = prompts,
         )
         releaser = getattr(state, "te_releaser", None)
         if releaser is not None:
@@ -2117,6 +2122,8 @@ def _chunk_cfg_needs(
         batch_size = max(1, len(chunk)),
         condition_pixels = guard_inputs["condition_pixels"],
         controlnet = bool(guard_inputs.get("controlnet")),
+        # a shared prompt is encoded once and fanned out (num_images_per_prompt); distinct prompts encode as a list
+        prompts = 1 if uniform_prompt(list(chunk)) is not None else max(1, len(chunk)),
     )
 
 
