@@ -93,7 +93,9 @@ test("the first pick from the default keeps just that capability", () => {
 test("size and context are stepped ranges whose ends mean no limit", () => {
   const popover = readSrc("features/hub/catalog/model-search-filters.tsx");
   assert.match(popover, /\[1, 3, 6, 9, 12, 24, 32, 64, 128, 256, 500\]/);
-  assert.match(popover, /labels: \["<16K", "32K", "64K", "128K", "256K", ">1M"\]/);
+  assert.match(popover, /\[16, 24, 32, 48, 64, 96, 128, 192, 256, 512, 1024\]/);
+  // Ticks stop inside the picked range so its fill runs unbroken.
+  assert.match(popover, /i === 0 \|\| i === last \|\| \(i >= lo && i <= hi\)/);
   assert.match(popover, /\[spec\.min\]: next\[0\] === 0 \? undefined : spec\.stops\[next\[0\]\]/);
   assert.match(popover, /\[spec\.max\]: next\[1\] === last \? undefined : spec\.stops\[next\[1\]\]/);
   assert.doesNotMatch(popover, /Apply (filters|limits)/);

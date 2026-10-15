@@ -69,8 +69,6 @@ interface RangeSpec {
   stops: readonly number[];
   /** Index -> label; unlabelled stops show only a tick. */
   labels: readonly (string | null)[];
-  /** Draws a tick halfway between stops too. */
-  midTicks?: boolean;
 }
 
 const B = 1e9;
@@ -104,10 +102,21 @@ const RANGES: readonly RangeSpec[] = [
       "In tokens. The model's published limit, not what your device can fit. Both limits are included; models that don't publish one are left out.",
     min: "minContext",
     max: "maxContext",
-    stops: [16 * K, 32 * K, 64 * K, 128 * K, 256 * K, K * K],
-    labels: ["<16K", "32K", "64K", "128K", "256K", ">1M"],
-    // Every stop is labelled, so a tick between each pair gives the track Parameters' rhythm.
-    midTicks: true,
+    // Like Parameters, one step between each labelled pair.
+    stops: [16, 24, 32, 48, 64, 96, 128, 192, 256, 512, 1024].map((n) => n * K),
+    labels: [
+      "<16K",
+      null,
+      "32K",
+      null,
+      "64K",
+      null,
+      "128K",
+      null,
+      "256K",
+      null,
+      ">1M",
+    ],
   },
 ];
 
@@ -161,6 +170,10 @@ function RangeStops({
   // Thumbs stay inside the track, so stop i sits half a thumb in from each end.
   // A chip stands in for the label under it.
   const covered = (i: number) => i === lo || i === hi;
+  // A pill on an unlabelled stop sits between two labels, which give way to it.
+  const crowded = (i: number) =>
+    !covered(i) &&
+    [lo, hi].some((t) => spec.labels[t] === null && Math.abs(i - t) === 1);
   // The end labels and chips hug the track's ends instead of hanging past them.
   const edge = (i: number) =>
     i === 0 ? { left: 0 } : i === last ? { right: 0 } : undefined;
@@ -170,7 +183,7 @@ function RangeStops({
     spec.labels[i] ??
     (spec.stops[i] >= B ? `${spec.stops[i] / B}B` : `${spec.stops[i] / K}K`);
   return (
-    <fieldset>
+    <fieldset className="group/section">
       <legend className={SECTION_LABEL}>
         <HoverInfo label={spec.label}>{spec.about}</HoverInfo>
         {set && (
@@ -198,7 +211,7 @@ function RangeStops({
       <div className="relative mx-4.5 pt-7 pb-1">
         <div aria-hidden={true} className="absolute inset-x-0 top-0 h-5">
           {spec.labels.map((label, i) =>
-            label === null && !covered(i) ? null : (
+            (label === null && !covered(i)) || crowded(i) ? null : (
               <span
                 // biome-ignore lint/suspicious/noArrayIndexKey: fixed stops
                 key={i}
@@ -209,7 +222,7 @@ function RangeStops({
                   !edge(i) && "-translate-x-1/2",
                   covered(i)
                     ? cn(
-                        "-mx-1.5 -my-0.5 rounded-md px-1.5 py-0.5 text-background",
+                        "-mx-1.5 -my-0.5 rounded-md px-1.5 py-0.5 font-semibold text-background",
                         RANGE_FILL,
                       )
                     : "text-muted-foreground",
@@ -238,11 +251,9 @@ function RangeStops({
           className="relative flex h-4 w-full touch-none select-none items-center"
         >
           <SliderPrimitive.Track className="relative h-1 w-full grow rounded-full bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)]">
-            {Array.from(
-              { length: spec.midTicks ? last * 2 + 1 : last + 1 },
-              (_, n) => (spec.midTicks ? n / 2 : n),
-            ).map((i) =>
-              i === 0 || i === last ? null : (
+            {spec.stops.map((_, i) =>
+              // Inside the picked range the fill runs unbroken.
+              i === 0 || i === last || (i >= lo && i <= hi) ? null : (
                 <span
                   // biome-ignore lint/suspicious/noArrayIndexKey: fixed stops
                   key={i}
@@ -331,7 +342,8 @@ function SegmentedRow<T extends string>({
       <div
         role="radiogroup"
         aria-label={label}
-        className="hub-tab-toggle inline-flex h-8 items-center rounded-full"
+        // The settings pane's track: the popover's surface otherwise sinks it a step darker.
+        className="hub-tab-toggle inline-flex h-8 items-center rounded-full [--hub-tab-track:color-mix(in_srgb,var(--foreground)_calc(6.5%*var(--contrast-wash-gain,1)),transparent)]"
       >
         {options.map(([key, text]) => {
           const active = value === key;
@@ -378,12 +390,13 @@ function HoverInfo({ label, children }: { label: string; children: string }) {
           <button
             type="button"
             aria-label={`About ${label.toLowerCase()}`}
-            className="inline-flex cursor-help items-center"
+            // Shown only while its section is hovered or in use.
+            className="inline-flex cursor-help items-center opacity-0 transition-opacity focus-visible:opacity-100 group-focus-within/section:opacity-100 group-hover/section:opacity-100"
           >
             <HugeiconsIcon
               icon={InformationCircleIcon}
               strokeWidth={1.75}
-              className="size-3.5"
+              className="size-3"
             />
           </button>
         </span>
@@ -598,7 +611,7 @@ export function ModelSearchFiltersControl({
           </div>
         </div>
         <div aria-hidden={true} className={cn(SEPARATOR, "mb-1.5 shrink-0")} />
-        <div className="flex shrink-0 items-center justify-end px-3">
+        <div className="flex shrink-0 items-center justify-end px-3 pb-0.5">
           <Button
             type="button"
             variant="ghost"
