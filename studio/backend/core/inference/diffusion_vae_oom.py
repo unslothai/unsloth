@@ -29,6 +29,8 @@ MAX_HALVINGS = 6
 # Halved tiles must decode a corner crop this close to the untiled crop (FLUX.1 16-latent tiles measured 36.8 dB on a
 # 2048 px image, LTX-2.5 8-latent tiles 33.5, HunyuanImage-2.1 8-latent tiles 26.7 at LPIPS 0.19).
 MIN_PSNR_DB = 30.0
+# Tiles this large were never seen to seam measurably; smaller ones need the probe to have run.
+UNPROBED_MIN_LATENTS = 16
 
 _AXES = ("size", "height", "width")
 
@@ -227,8 +229,9 @@ def install(vae: Any, logger: Any = None) -> bool:
             vae._unsloth_vae_oom_halvings = 0
 
     def _level_quality_ok(level: int, z: Any, args: tuple, kwargs: dict) -> bool:
-        """Halved tiles decode a small corner crop (3 tiles a side, 2 frames) within MIN_PSNR_DB of the untiled crop.
-        Measured once per level; an untiled crop that itself runs out of memory leaves the level allowed."""
+        """Halved tiles decode a corner crop (2 tiles a side, so one seam each way; 2 frames) within MIN_PSNR_DB of the
+        untiled crop. Measured once per level. When the untiled crop itself runs out of memory, only tiles of at least
+        UNPROBED_MIN_LATENTS are allowed."""
         if level in quality:
             return quality[level]
         values = halved(stock_attrs, ratio, level, factor) or {}
@@ -238,8 +241,8 @@ def install(vae: Any, logger: Any = None) -> bool:
             or [MIN_TILE_LATENTS]
         )
         sl = [slice(None)] * z.dim()
-        sl[-1] = slice(0, min(int(z.shape[-1]), 3 * lat))
-        sl[-2] = slice(0, min(int(z.shape[-2]), 3 * lat))
+        sl[-1] = slice(0, min(int(z.shape[-1]), 2 * lat))
+        sl[-2] = slice(0, min(int(z.shape[-2]), 2 * lat))
         if z.dim() == 5:
             sl[2] = slice(0, min(int(z.shape[2]), 2))
         crop = z[tuple(sl)]
@@ -260,7 +263,8 @@ def install(vae: Any, logger: Any = None) -> bool:
             if not is_oom(exc):
                 raise
             _release_cache(z, vae)
-            return True
+            stats["probe_psnr"][level] = None
+            return lat >= UNPROBED_MIN_LATENTS
         psnr = 99.0 if mse == 0 else 10.0 * math.log10(4.0 / mse)
         quality[level] = psnr >= MIN_PSNR_DB
         stats["probe_psnr"][level] = round(psnr, 1)
