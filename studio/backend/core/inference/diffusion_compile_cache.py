@@ -57,6 +57,7 @@ version is deliberately NOT bumped, since bumping it is what would invalidate th
 from __future__ import annotations
 
 import dataclasses
+import enum
 import hashlib
 import json
 import math
@@ -305,7 +306,43 @@ _GRAPH_SWITCHES = {
     "UNSLOTH_NVFP4_BACKEND": "raw:auto",
     # Unset is off; "auto" protects the head + last step, so "auto" is NOT the default here.
     "UNSLOTH_NVFP4_PROTECT_STEPS": "raw",
+    # The fused Wan block forward (class-level swap, which graph_variant cannot see) and its rotary half.
+    "UNSLOTH_DIFFUSION_WAN_FUSED_ADALN": "on",
+    "UNSLOTH_DIFFUSION_WAN_FUSED_ROPE": "on",
 }
+# Beyond the named switches above, EVERY set variable in the diffusion / video namespaces keys the bundle: those knobs
+# swap forwards, processors, kernels and hook placement (patch kill switches, MiniMax-H3's strided attention / fused
+# q-k RoPE / compile-below-hooks, ...), which neither the module tree nor the weights show. Listing them one by one
+# is what kept missing new ones. Over-keying only costs a cold compile; under-keying makes two settings overwrite
+# one bundle. Unset variables add nothing, so a default process keeps every existing key.
+_PATCH_SWITCH_PREFIX = "UNSLOTH_DIFFUSION_PATCH_"
+_KEYED_ENV_PREFIXES = ("UNSLOTH_DIFFUSION_", "UNSLOTH_H3_", "UNSLOTH_VIDEO_", "UNSLOTH_NVFP4_")
+# Runtime-only knobs in those namespaces: where caches live, budgets, logging / progress, memory admission, threads.
+# They never change a traced graph, and keying them would split bundles across machines for nothing.
+_UNKEYED_ENV_PARTS = (
+    "COMPILE_CACHE",
+    "PREQUANT_CACHE",
+    "_DIR",
+    "_PATH",
+    "_MAX_GB",
+    "_MB",
+    "MIRROR",
+    "PREVIEW",
+    "PROGRESS",
+    "LOG",
+    "_ALLOW_",
+    "HOST_RAM_CHECK",
+    "HOST_GUARD",
+    "RENDER_THREAD",
+    "PROBE_CACHE",
+    "PROMPT_CACHE",
+    "LATENT_CACHE",
+    "DIRECT_LOAD",
+    "PREFETCH",
+    "SEED_ON_HOST",
+    "SMALL_HOST",
+    "INSTALL",
+)
 _OFF_WORDS = ("0", "off", "false", "no", "none")
 _ON_WORDS = ("1", "on", "true", "yes", "force")
 _ADDRESS_RE = re.compile(r" at 0x[0-9a-fA-F]+")
@@ -329,6 +366,20 @@ def graph_switches() -> dict[str, str]:
         value = _switch_value(name, default)
         if value is not None:
             out[name] = value
+    for name in sorted(os.environ):
+        if name in out or name in _GRAPH_SWITCHES or not name.startswith(_KEYED_ENV_PREFIXES):
+            continue
+        if any(part in name for part in _UNKEYED_ENV_PARTS):
+            continue
+        if name.startswith(_PATCH_SWITCH_PREFIX):
+            # Registered patches are on by default (diffusion_autoopt.patches): only an "off" changes the graph.
+            value = _switch_value(name, "on")
+            if value is not None:
+                out[name] = value
+            continue
+        raw = (os.environ.get(name) or "").strip().lower()
+        if raw:
+            out[name] = "off" if raw in _OFF_WORDS else "on" if raw in _ON_WORDS else raw
     return out
 
 
@@ -364,6 +415,12 @@ def _tensor_signature(tensor: Any, depth: int = 0) -> str:
                     inner.append(f"block_size={rel}")
                     continue
                 inner.append(f"{name}={_ADDRESS_RE.sub('', repr(getattr(tensor, name, None)))}")
+    elif cls.__name__ not in ("Tensor", "Parameter") and not hasattr(tensor, "__tensor_flatten__"):
+        # A Parameter subclass that carries its layout as plain attributes (diffusers' GGUFParameter: quant_type,
+        # which picks the dequantize branch the regional graph traces). Scalars only: per-tensor shapes are not layout.
+        for name, value in sorted((getattr(tensor, "__dict__", None) or {}).items()):
+            if isinstance(value, (bool, int, str, enum.Enum)):
+                inner.append(f"{name}={value!r}")
     elif cls.__name__ not in ("Tensor", "Parameter") and hasattr(tensor, "__tensor_flatten__"):
         # Older wrappers (AffineQuantizedTensor): inner tensors only, the flatten context carries the shape.
         try:
@@ -649,6 +706,14 @@ def begin(
     except Exception as exc:  # noqa: BLE001
         _warn(logger, f"could not set TORCHINDUCTOR_CACHE_DIR: {exc}")
 
+    return _open(ctx, logger)
+
+
+def _open(ctx: CacheContext, logger: Any) -> CacheContext:
+    """Shared tail of ``begin`` / ``begin_stages``: find the published bundle, load it, schedule eviction."""
+    mode = ctx.mode
+    key = ctx.key
+    cdir = ctx.dir
     # The MANIFEST decides which bundle is live: it is published last and only ever names a bundle that was
     # completely written, so an interrupted save leaves the previous pair addressed and loadable.
     published = _read_manifest(ctx.manifest_path)
@@ -689,6 +754,203 @@ def begin(
     if _save_enabled(mode):
         _evict_soon(logger)
     return ctx
+
+
+def _driver_version() -> Optional[str]:
+    """The NVIDIA driver build, best-effort. Not part of the image key (that one predates it); a stage key carries it so
+    a driver update that changes ptxas / cubin compatibility starts a fresh bundle rather than loading one that may
+    only fail at the first launch."""
+    try:
+        text = Path("/proc/driver/nvidia/version").read_text(encoding = "utf-8", errors = "replace")
+        match = re.search(r"Kernel Module\s+([0-9][0-9.]*)", text) or re.search(
+            r"\s([0-9]{3,}\.[0-9.]+)\s", text
+        )
+        if match:
+            return match.group(1)
+    except OSError:
+        pass
+    try:
+        import torch  # noqa: PLC0415
+        get = getattr(torch._C, "_cuda_getDriverVersion", None)
+        if get is not None and torch.cuda.is_available():
+            return f"cuda_api_{int(get())}"
+    except Exception:  # noqa: BLE001 - best-effort
+        pass
+    return None
+
+
+def _config_digest(transformer: Any) -> Optional[str]:
+    """Hash of the denoiser's architecture config (dims, heads, layer counts): two checkpoints of one class with
+    different sizes trace different constants, and two families sharing a class and config share a graph."""
+    config = getattr(transformer, "config", None)
+    if config is None:
+        return None
+    try:
+        items = dict(config)
+    except Exception:  # noqa: BLE001
+        return None
+    items = {k: v for k, v in items.items() if not str(k).startswith("_")}
+    payload = json.dumps(items, sort_keys = True, default = str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def _compile_knobs() -> dict[str, Any]:
+    """Inductor / dynamo settings the regional compile pins and the compiled code depends on."""
+    out: dict[str, Any] = {}
+    try:
+        from . import diffusion_compile_config as cc  # noqa: PLC0415
+        for module, names in (
+            ("torch._inductor.config", ("emulate_precision_casts", "dynamic_scale_rblock")),
+        ):
+            for name in names:
+                try:
+                    value = cc.get_knob(module, name)
+                except Exception:  # noqa: BLE001
+                    value = None
+                if value is not None:
+                    out[f"{module.rsplit('.', 1)[0]}.{name}"] = value
+    except Exception:  # noqa: BLE001 - best-effort
+        pass
+    return out
+
+
+def stage_fingerprint(
+    transformer: Any, *, dtype: Any, quant: Any, attention_backend: Any
+) -> dict[str, Any]:
+    """One compiled denoiser stage keyed by what decides its graph, never by the family NAME: class, repeated blocks,
+    architecture config, dtype, quant layout, attention backend and the compile kwargs the regional compile REALLY
+    used (``_unsloth_regional_compile_kwargs``, recorded by ``_compile_repeated_blocks``)."""
+    kwargs = getattr(transformer, "_unsloth_regional_compile_kwargs", None)
+    compile_kwargs = dict(kwargs) if isinstance(kwargs, dict) else {}
+    fp = model_fingerprint(
+        family = None,
+        transformer = transformer,
+        dtype = dtype,
+        quant = quant,
+        attention_backend = attention_backend,
+        compile_kwargs = compile_kwargs,
+    )
+    fp.pop("family", None)
+    # model_fingerprint keys only quantized trees by layout; a stage key always carries it, so a dense stage and a
+    # quantized stage that happen to share every other field cannot collide.
+    if "variant" not in fp and str(quant) != "gguf":
+        fp["variant"] = graph_variant(transformer)
+    fp["config"] = _config_digest(transformer)
+    return fp
+
+
+_STAGE_ATTRS = ("transformer", "transformer_2", "unet")
+
+
+def compiled_stages(*roots: Any) -> list:
+    """Every regionally compiled denoiser reachable from ``roots`` (a pipe, its expert views, a bare module), in a
+    stable order and without duplicates. A stage counts only once ``_compile_repeated_blocks`` armed it, which records
+    ``_unsloth_regional_compile_kwargs`` on the module; the key reads those kwargs."""
+    found: list = []
+
+    def consider(obj: Any) -> None:
+        if obj is None or any(obj is seen for seen in found):
+            return
+        if isinstance(getattr(obj, "_unsloth_regional_compile_kwargs", None), dict):
+            found.append(obj)
+
+    for root in roots:
+        if root is None:
+            continue
+        consider(root)
+        for attr in _STAGE_ATTRS:
+            try:
+                consider(getattr(root, attr, None))
+            except Exception:  # noqa: BLE001 - a view whose property raises is not a stage
+                continue
+        components = getattr(root, "components", None)
+        if isinstance(components, dict):
+            for name in sorted(components):
+                consider(components[name])
+    return found
+
+
+def begin_stages(
+    stages: Any,
+    *,
+    dtype: Any,
+    quant: Any,
+    attention_backend: Any,
+    logger: Any = None,
+) -> Optional[CacheContext]:
+    """``begin`` for a load with one or more compiled denoiser stages (video: dual-expert MoE, two-stage pipelines).
+
+    Differences from ``begin``, each deliberate:
+
+    - Keyed by ``stage_fingerprint`` of every compiled stage plus the toolchain (torch, Triton, CUDA, diffusers, GPU,
+      driver) and the pinned Inductor knobs. No family name.
+    - Called AFTER the regional compile is armed (it is lazy: nothing compiles before the first forward), so the key
+      reads the kwargs the compile really uses rather than predicting them.
+    - Does NOT repoint the process-wide ``TORCHINDUCTOR_CACHE_DIR``: an image backend in the same server may be
+      compiling under its own per-key dir, and moving the variable under it was why video declined this cache. The
+      bundle loads into, and is saved from, whatever inductor dir is current; ``load_cache_artifacts`` writes the
+      artifacts there before the first compiled forward reads them.
+
+    One bundle per load: ``save_cache_artifacts`` serialises every graph this process compiled, so both experts of a
+    dual-DiT pipeline and every stage of a multi-stage one land in it. Returns None when disabled or unsupported, or
+    when no stage is compiled. Never raises.
+    """
+    mode = cache_mode()
+    if mode == "off":
+        return None
+    compiled = [s for s in (stages or ()) if s is not None]
+    if not compiled:
+        return None
+    try:
+        import torch  # noqa: PLC0415
+        if not (
+            hasattr(torch.compiler, "save_cache_artifacts")
+            and hasattr(torch.compiler, "load_cache_artifacts")
+        ):
+            _warn(logger, "Mega-cache API unavailable (need torch >= 2.7); skipping")
+            return None
+    except Exception as exc:  # noqa: BLE001
+        _warn(logger, f"torch import failed: {exc}")
+        return None
+    try:
+        env_fp = environment_fingerprint()
+        env_fp["driver"] = _driver_version()
+        model_fp = {
+            "kind": "stages",
+            "stages": [
+                stage_fingerprint(s, dtype = dtype, quant = quant, attention_backend = attention_backend)
+                for s in compiled
+            ],
+            "knobs": _compile_knobs(),
+        }
+        # Round-trip through JSON so the in-memory fingerprint compares equal to the one a manifest stores.
+        model_fp = json.loads(json.dumps(model_fp, sort_keys = True, default = str))
+        env_fp = json.loads(json.dumps(env_fp, sort_keys = True, default = str))
+    except Exception as exc:  # noqa: BLE001 - an unkeyable load compiles locally
+        _warn(logger, f"compile-cache: could not fingerprint the stages: {exc}")
+        return None
+    key = cache_key(env_fp, model_fp)
+    cdir = cache_root() / key
+    ctx = CacheContext(
+        key = key,
+        dir = cdir,
+        bundle = cdir / _BUNDLE_NAME,
+        manifest_path = cdir / _MANIFEST_NAME,
+        env_fp = env_fp,
+        model_fp = model_fp,
+        mode = mode,
+    )
+    if not wait_for_saves():
+        _warn(
+            logger,
+            f"compile-cache: background save still running after {_SAVE_JOIN_TIMEOUT:.0f}s; continuing",
+        )
+    try:
+        cdir.mkdir(parents = True, exist_ok = True)
+    except OSError as exc:
+        _warn(logger, f"compile-cache: cannot create {cdir}: {exc}")
+        return None
+    return _open(ctx, logger)
 
 
 def _load_from_legacy(ctx: CacheContext, logger: Any) -> bool:

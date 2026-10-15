@@ -19,12 +19,11 @@ from typing import Any, Callable, Optional
 from . import patches, plan as plan_mod, targets
 
 DISCOVER_ENV = plan_mod.DISCOVER_ENV
-# Video loads do not take the image backend's persistent compile cache yet: it repoints the process-wide
-# TORCHINDUCTOR_CACHE_DIR, which an image backend loaded in the same server may be compiling under, and its save /
-# restore lifecycle is not wired into the video state. Recorded so the status says so.
-VIDEO_COMPILE_CACHE_DECLINE = (
-    "not wired for video loads yet (process-wide inductor cache dir shared with the image backend)"
-)
+# Kept for importers: video loads now take the stage-keyed bundle (diffusion_compile_cache.begin_stages), which leaves
+# the process-wide TORCHINDUCTOR_CACHE_DIR alone; the video loaders record their own decline reason when it does not
+# engage.
+VIDEO_COMPILE_CACHE_DECLINE = "not engaged on this video load"
+
 
 _CURRENT_AUDIT: contextvars.ContextVar = contextvars.ContextVar(
     "unsloth_autoopt_audit", default = None
