@@ -3570,7 +3570,7 @@ async def load_failed() -> None:
             await _STATE.load_failed()  # unloads the two-Spark primary whose split went
         return
     if cluster_serving._STATE is not None and cluster_serving._STATE.retire_on_commit:
-        cluster_serving._STATE.failed_while_retiring()
+        await cluster_serving._STATE.failed_while_retiring()
     if _STATE is None or not enabled():
         return
     if _STATE._passthrough:

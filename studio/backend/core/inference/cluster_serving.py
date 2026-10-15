@@ -23,6 +23,7 @@ import json
 import logging
 import os
 import re
+import struct
 import subprocess
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -47,6 +48,7 @@ WORKER_START_TIMEOUT_S = 60.0
 REACH_TIMEOUT_S = 3.0
 # KV share of the weights reserved for a Hub GGUF whose header is not downloaded yet.
 KV_UNKNOWN_FRACTION = 0.2
+_MMPROJ_VRAM_SAFETY = 1.4  # LlamaCppBackend._MMPROJ_VRAM_SAFETY
 
 _MMPROJ_DEVICE_FLAGS = frozenset({"--mmproj-device", "-mmdev"})
 _ADAPTER_FLAGS = frozenset(
@@ -122,6 +124,140 @@ def _remote_projector_bytes(model_path: str, hf_token: Optional[str]) -> int:
         return max(sizes, default = 0)
     except Exception:
         return 0
+
+
+def _quant_dir_projector(model_file: Optional[str], disable_vision: bool, ss: Any) -> Optional[str]:
+    """The projector one level up from a weight in a quant subdirectory (snapshot/UD-Q4_K_XL/),
+    which the loader finds and the adjacent-file scan does not."""
+    if not model_file:
+        return None
+    try:
+        from utils.models.model_config import (
+            _local_gguf_companion_search_root,
+            detect_mmproj_file,
+        )
+
+        root = _local_gguf_companion_search_root(model_file, model_file)
+        if os.path.abspath(root) == os.path.dirname(os.path.abspath(model_file)):
+            return None
+        found = detect_mmproj_file(model_file, root)
+    except Exception:
+        return None
+    if not found or (disable_vision and ss._projector_accepts_image(str(found))):
+        return None
+    return str(found)
+
+
+_GGUF_INT_FORMATS = {
+    0: "<B",
+    1: "<b",
+    2: "<H",
+    3: "<h",
+    4: "<I",
+    5: "<i",
+    7: "<?",
+    10: "<Q",
+    11: "<q",
+}
+_GGUF_FIXED_SIZES = {0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1, 10: 8, 11: 8, 12: 8}
+_KV_KEY_SUFFIXES = (
+    ".block_count",
+    ".attention.head_count",
+    ".attention.head_count_kv",
+    ".embedding_length",
+    ".attention.key_length",
+)
+
+
+def _gguf_kv_scalars(f: Any) -> Dict[str, Any]:
+    """general.architecture and the integer keys estimate_kv_bytes reads, from a GGUF header
+    stream; a per-layer array keeps its largest value."""
+
+    def read(n: int) -> bytes:
+        data = f.read(n)
+        if len(data) < n:
+            raise EOFError
+        return data
+
+    magic, _version, _tensors, count = struct.unpack("<IIQQ", read(24))
+    if magic != 0x46554747:
+        return {}
+    out: Dict[str, Any] = {}
+    for _ in range(count):
+        key = read(struct.unpack("<Q", read(8))[0]).decode("utf-8", "replace")
+        vtype = struct.unpack("<I", read(4))[0]
+        if key.startswith("tokenizer.") and "general.architecture" in out:
+            break  # the model keys precede the vocabulary
+        wanted = key.endswith(_KV_KEY_SUFFIXES)
+        if vtype == 8:
+            text = read(struct.unpack("<Q", read(8))[0])
+            if key == "general.architecture":
+                out[key] = text.decode("utf-8", "replace")
+        elif vtype == 9:
+            atype, n = struct.unpack("<IQ", read(12))
+            if atype == 8:
+                for _ in range(n):
+                    f.seek(struct.unpack("<Q", read(8))[0], 1)
+            elif wanted and atype in _GGUF_INT_FORMATS:
+                fmt = _GGUF_INT_FORMATS[atype]
+                width = struct.calcsize(fmt)
+                out[key] = max(
+                    (int(struct.unpack(fmt, read(width))[0]) for _ in range(n)), default = 0
+                )
+            elif atype in _GGUF_FIXED_SIZES:
+                f.seek(_GGUF_FIXED_SIZES[atype] * n, 1)
+            else:
+                break
+        elif wanted and vtype in _GGUF_INT_FORMATS:
+            fmt = _GGUF_INT_FORMATS[vtype]
+            out[key] = int(struct.unpack(fmt, read(struct.calcsize(fmt)))[0])
+        elif vtype in _GGUF_FIXED_SIZES:
+            f.seek(_GGUF_FIXED_SIZES[vtype], 1)
+        else:
+            break
+    return out
+
+
+def _remote_kv_bytes(
+    model_path: str,
+    variant: Optional[str],
+    hf_token: Optional[str],
+    ctx: int,
+    cache_type: Optional[str],
+    cache_type_v: Optional[str],
+    ss: Any,
+) -> Optional[int]:
+    """estimate_kv_bytes for a Hub GGUF not downloaded yet, from its first shard's header read
+    over HTTP ranges; None when it cannot be read."""
+    try:
+        from huggingface_hub import HfFileSystem
+        from utils.models.model_config import list_gguf_variants
+
+        variants, _vision = list_gguf_variants(model_path, hf_token)
+        chosen = ss._pick_variant(variants, str(variant).strip().casefold() if variant else "")
+        if chosen is None:
+            return None
+        fs = HfFileSystem(token = hf_token)
+        with fs.open(f"{model_path}/{chosen.filename}", "rb", block_size = 1 << 20) as f:
+            vals = _gguf_kv_scalars(f)
+    except Exception:
+        return None
+    arch = vals.get("general.architecture")
+    if not arch:
+        return None
+    n_layer = vals.get(f"{arch}.block_count")
+    n_head = vals.get(f"{arch}.attention.head_count")
+    n_kv = vals.get(f"{arch}.attention.head_count_kv") or n_head
+    n_embd = vals.get(f"{arch}.embedding_length")
+    head_dim = vals.get(f"{arch}.attention.key_length")
+    if head_dim is None and n_head and n_embd:
+        head_dim = n_embd // n_head
+    if not (n_layer and n_kv and head_dim):
+        return None
+    per_elem = ss.kv_bytes_per_elem(cache_type) + ss.kv_bytes_per_elem(
+        cache_type if cache_type_v is None else cache_type_v
+    )
+    return int(n_layer * int(ctx) * n_kv * head_dim * per_elem)
 
 
 _DRAFTER_FLAGS = frozenset({"--model-draft", "-md", "--spec-draft-model"})
@@ -641,6 +777,7 @@ class ClusterServing:
         self._down: set = set()
         self._native_ctx: bool = False
         self._projector_url: bool = False
+        self._unsized_kv: bool = False
         self._uncertain_extra: float = 0.0
         # Workers this load (re)started: they hold none of the served split's buffers.
         self._started: set = set()
@@ -789,7 +926,35 @@ class ClusterServing:
                 f"the caller's speculative decoding ({drafter}) is placed by them",
             )
             return request
+        from core.inference.llama_cpp import _kv_offload_from_args, _named_batch_sizes
+
+        if not _kv_offload_from_args(flags):
+            # Host KV shares the pool with the weights on unified-memory machines.
+            self.topology, self.reason = (
+                "single",
+                "the caller keeps the KV cache in host memory; placement is theirs",
+            )
+            return request
+        batch, ubatch, _named, _named_u = _named_batch_sizes(
+            flags,
+            os.environ,
+            getattr(request, "n_batch", None),
+            getattr(request, "n_ubatch", None),
+        )
+        if min(batch, ubatch) > 512:
+            # Every device's compute buffer grows with it; the plan prices llama.cpp's default.
+            self.topology, self.reason = (
+                "single",
+                f"a micro-batch of {min(batch, ubatch)} is placed by the caller",
+            )
+            return request
         model_bytes, kv_bytes, local_extra = await self._size(request, n_parallel, flags, ss)
+        if self._unsized_kv:
+            self.topology, self.reason = (
+                "single",
+                "the KV cache of a model not downloaded yet could not be sized",
+            )
+            return request
         if self._native_ctx:
             self.topology, self.reason = (
                 "single",
@@ -1005,16 +1170,18 @@ class ClusterServing:
                 files.append(os.path.abspath(env_file))
             dropped = [p for p in dict.fromkeys(files) if ss._projector_accepts_image(p)]
             self._has_projector = any(p not in dropped and os.path.isfile(p) for p in files)
+        auto_bytes = 0
         if extra_args_disable_mmproj(extras):
             pass
         elif not any(str(a).split("=", 1)[0] in named for a in extras) and not any(
             os.environ.get(k) for k in ("LLAMA_ARG_MMPROJ", "LLAMA_ARG_MMPROJ_URL")
         ):
             projector = ss.auto_projector_file(
-                local_file, disable_vision = bool(getattr(request, "disable_vision", False))
-            )
+                local_file, disable_vision = disable_vision
+            ) or _quant_dir_projector(local_file, disable_vision, ss)
             if projector and not host_projector:
-                sidecars += int(ss.gguf_size_bytes(projector) or 0)
+                auto_bytes = int(ss.gguf_size_bytes(projector) or 0)
+                sidecars += auto_bytes
             self._has_projector = bool(projector)
             if not local_file:
                 # A first load of a Hub repo fetches its projector during the load; with vision off
@@ -1022,9 +1189,11 @@ class ClusterServing:
                 remote = await asyncio.to_thread(
                     _remote_projector_bytes, model_path, getattr(request, "hf_token", None)
                 )
-                sidecars += 0 if host_projector else remote
-                if disable_vision and not host_projector:
-                    self._uncertain_extra = float(remote)
+                remote = 0 if host_projector else remote
+                sidecars += remote
+                auto_bytes += remote
+                if disable_vision:
+                    self._uncertain_extra = float(remote) * _MMPROJ_VRAM_SAFETY
                 self._has_projector = self._has_projector or remote > 0
         # Files named through the environment (LLAMA_ARG_MMPROJ) load all the same; a drafter there
         # either kept the load local or is scrubbed by the launch.
@@ -1050,6 +1219,18 @@ class ClusterServing:
             dropped += [p for p in named_mm if p not in dropped]
         for path in dropped:
             sidecars -= int(ss.gguf_size_bytes(path) or 0)
+        # A GPU projector's encoder allocates about 1.3x its file at runtime.
+        projectors = (
+            []
+            if extra_args_disable_mmproj(extras)
+            else ss.sidecar_files(_flag_args(extras, frozenset({"--mmproj", "-mm"})))
+        )
+        if env_projector:
+            projectors.append(os.path.abspath(env_projector))
+        named_bytes = sum(
+            int(ss.gguf_size_bytes(p) or 0) for p in dict.fromkeys(projectors) if p not in dropped
+        )
+        sidecars += (_MMPROJ_VRAM_SAFETY - 1) * (named_bytes + auto_bytes)
         if size is None:
             size = await asyncio.to_thread(
                 ss.remote_gguf_size_bytes, model_path, variant, getattr(request, "hf_token", None)
@@ -1082,17 +1263,26 @@ class ClusterServing:
         if not ctx and floor and floor > 0:
             ctx = floor  # the fitter never goes below --fit-ctx
         kv = None
+        self._unsized_kv = False
         if local_file and ctx:
             kv = await asyncio.to_thread(
                 ss.estimate_kv_bytes, local_file, ctx, cache_type, cache_type_v
             )
+        elif ctx and size:
+            kv = await asyncio.to_thread(
+                _remote_kv_bytes,
+                model_path,
+                variant,
+                getattr(request, "hf_token", None),
+                ctx,
+                cache_type,
+                cache_type_v,
+                ss,
+            )
+            self._unsized_kv = kv is None
         if kv is None:
             kv = KV_UNKNOWN_FRACTION * float(size) if ctx and size else 0.0
         kv = float(kv)
-        from core.inference.llama_cpp import _kv_offload_from_args
-
-        if not _kv_offload_from_args(extras):
-            kv = 0.0  # --no-kv-offload keeps the cache in host RAM
         return (None if size is None else float(size) + adapters), kv, float(sidecars)
 
     async def after_load(self, llama_backend: Any) -> None:
@@ -1163,11 +1353,12 @@ class ClusterServing:
             self._backend is not None and bool(getattr(self._backend, "is_loaded", False))
         )
 
-    def failed_while_retiring(self) -> None:
-        """A replacement after the cluster was turned off failed; forget the split if it was
-        already unloaded, keep it (and its workers) if it still serves."""
+    async def failed_while_retiring(self) -> None:
+        """A replacement after the cluster was turned off failed; stop the workers if the split
+        was already unloaded, keep it (and them) if it still serves."""
         if not (self._backend is not None and getattr(self._backend, "is_loaded", False)):
             self.forget_served()
+            await self.shutdown()
 
     def forget_served(self) -> None:
         """A load that bypassed planning replaced the served split; its workers can stay."""

@@ -68,8 +68,9 @@ uses every GPU on its host, so a managed host is listed only once.
 4. A load no set of devices can hold is refused with the numbers, instead of failing mid-load.
 
 A load that sets its own placement (`--device`, `--split-mode`, `--tensor-split`, `-ot`, `--rpc`,
-a GPU selection, manual memory mode, the tensor-parallel toggle or `--fit off`) is served here
-as asked.
+a GPU selection, manual memory mode, the tensor-parallel toggle, `--fit off`, `--no-kv-offload`
+or a micro-batch above 512) is served here as asked. A model not downloaded yet has its KV cache
+sized from its header on the Hub; when that cannot be read, it is served here.
 
 A worker that does not answer, or a managed one that cannot be started, is left out and named
 in the status; the load is planned over the rest.
