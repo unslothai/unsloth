@@ -45,28 +45,33 @@ def test_a_request_without_a_dataset_or_text_is_refused(captured):
     assert captured == []
 
 
-def test_rows_are_sampled_by_seed_and_carry_the_run_settings(captured):
-    def rows_for(seed):
-        _call_route(
-            TokenPreviewRequest(
-                model_name = "unsloth/Qwen3-0.6B",
-                dataset_name = "org/data",
-                num_samples = 3,
-                seed = seed,
-                train_on_completions = True,
-                max_seq_length = 512,
-            )
+def test_the_pool_and_the_run_settings_reach_the_worker(captured):
+    _call_route(
+        TokenPreviewRequest(
+            model_name = "unsloth/Qwen3-0.6B",
+            dataset_name = "org/data",
+            num_samples = 3,
+            seed = 1,
+            train_on_completions = True,
+            max_seq_length = 512,
         )
-        return captured[-1][2]
-
-    first = rows_for(1)
-    assert len(first["rows"]) == 3
-    assert rows_for(1)["rows"] == first["rows"]
-    assert rows_for(2)["rows"] != first["rows"]
-    assert first["train_on_completions"] is True
-    assert first["raw_text"] is False
-    assert first["max_seq_length"] == 512
+    )
+    payload = captured[-1][2]
+    assert len(payload["rows"]) == 64
+    assert (payload["num_samples"], payload["seed"]) == (3, 1)
+    assert payload["train_on_completions"] is True
+    assert payload["raw_text"] is False
+    assert payload["max_seq_length"] == 512
     assert captured[-1][1]["model_name"] == "unsloth/Qwen3-0.6B"
+
+
+def test_samples_are_drawn_by_seed():
+    texts = [f"row {i}" for i in range(64)]
+    first = token_preview_worker._sample(texts, 3, 1)
+    assert len(first) == 3
+    assert token_preview_worker._sample(texts, 3, 1) == first
+    assert token_preview_worker._sample(texts, 3, 2) != first
+    assert token_preview_worker._sample(texts[:2], 3, 1) == texts[:2]
 
 
 def test_continued_pretraining_trains_every_token(captured):

@@ -39,6 +39,13 @@ def _load_tokenizer(config: dict):
     try:
         return AutoTokenizer.from_pretrained(source, token = token, trust_remote_code = False)
     except Exception:
+        pass
+    try:
+        # Spark-TTS keeps its tokenizer under LLM/, as _spark_tts_tokenizer_kwargs reads it for training.
+        return AutoTokenizer.from_pretrained(
+            source, token = token, trust_remote_code = False, subfolder = "LLM"
+        )
+    except Exception:
         # A LoRA adapter saved without tokenizer files: read the base it names, as training does.
         from utils.models.model_config import get_base_model_from_lora_identifier
 
@@ -184,25 +191,39 @@ def _format_rows(tokenizer, config: dict, rows: list) -> tuple[list, str]:
     return list(info["dataset"]["text"]), str(info.get("final_format", "")).lower()
 
 
+def _sample(texts: list, count: int, seed: int) -> list:
+    import random
+    if len(texts) <= count:
+        return texts
+    return random.Random(seed).sample(texts, count)
+
+
 def _preview(tokenizer, config: dict, request: dict) -> dict:
     from utils.datasets.chat_templates import get_training_chat_template
     from utils.datasets.online_tokenization import resolve_add_special_tokens
 
     model_name = config["model_name"]
-    if request.get("text") is not None:
+    if request.get("text") and request.get("raw_text"):
+        texts, final_format = _format_rows(tokenizer, request, [{"text": request["text"]}])
+        first_text = texts[0]
+    elif request.get("text") is not None:
         texts, final_format = [request["text"]], str(request.get("final_format") or "").lower()
+        first_text = texts[0]
     else:
         # Formatting may set a template on the tokenizer it is given; training formats with a throwaway
-        # tokenizer too, and masks with the one the model load returns.
+        # tokenizer too, and masks with the one the model load returns. The whole pool is formatted so a
+        # raw-text column and the BOS rule are chosen from the dataset's head, as training does.
         texts, final_format = _format_rows(
             copy.deepcopy(tokenizer), {**config, **request}, request["rows"]
         )
+        first_text = texts[0] if texts else None
+        texts = _sample(texts, int(request.get("num_samples") or 3), request.get("seed") or 0)
     if not getattr(tokenizer, "chat_template", None):
         tokenizer = copy.deepcopy(tokenizer)
     tokenizer = get_training_chat_template(tokenizer, model_name, final_format)
 
     max_length = int(request.get("max_seq_length") or 2048)
-    add_special_tokens = resolve_add_special_tokens(tokenizer, texts[0] if texts else None)
+    add_special_tokens = resolve_add_special_tokens(tokenizer, first_text)
     encoded = tokenizer(
         texts, truncation = True, max_length = max_length, add_special_tokens = add_special_tokens
     )

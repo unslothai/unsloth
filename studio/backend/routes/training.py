@@ -1695,13 +1695,11 @@ async def get_visible_hardware_utilization(current_subject: str = Depends(get_cu
         return await asyncio.to_thread(get_visible_gpu_utilization)
 
 
-# Rows read from the head of the dataset; the preview samples a few of them at random.
+# Rows read from the head of the dataset; the worker formats them all and shows a few at random.
 _TOKEN_PREVIEW_POOL_ROWS = 64
 
 
 def _token_preview_rows(request: TokenPreviewRequest, hf_token) -> list[dict]:
-    import random
-
     from hub.schemas.datasets import CheckFormatRequest as HubCheckFormatRequest
     from hub.services.datasets.formatting import load_preview_slice
 
@@ -1731,10 +1729,7 @@ def _token_preview_rows(request: TokenPreviewRequest, hf_token) -> list[dict]:
             status_code = hf_error_status(exc) or 400,
             detail = download_registry.scrub_secrets(str(exc), hf_token = hf_token),
         ) from exc
-    rows = rows.to_list()
-    if len(rows) > request.num_samples:
-        rows = random.Random(request.seed).sample(rows, request.num_samples)
-    return rows
+    return rows.to_list()
 
 
 @router.post("/token-preview")
@@ -1785,6 +1780,8 @@ async def token_preview(
             "is_cpt": request.is_cpt,
             "train_on_completions": request.train_on_completions and not request.is_cpt,
             "max_seq_length": request.max_seq_length,
+            "num_samples": request.num_samples,
+            "seed": request.seed,
         }
         fetch = (
             recording_a_request_token_fetch(hf_token, source, "model")
