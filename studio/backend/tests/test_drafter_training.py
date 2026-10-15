@@ -1154,3 +1154,26 @@ def test_pinned_quantized_snapshot_keeps_the_original_repo_fallback(monkeypatch)
     assert tried == [snapshot, "org/Model-bnb-4bit", "org/Model"]
     tried.clear()
     assert drafter._find_mtp_source(snapshot, None) is None and tried == [snapshot]
+
+
+def test_export_reattaches_a_full_fine_tunes_stitched_head(tmp_path, monkeypatch):
+    """transformers drops the stitched mtp.* tensors on load; the export backend attaches them back."""
+    from core.export import export as export_module
+
+    calls = []
+    unsloth = types.ModuleType("unsloth")
+    unsloth.FastModel = types.SimpleNamespace(
+        get_mtp_head = lambda model, source = None: calls.append((model, source))
+    )
+    monkeypatch.setitem(sys.modules, "unsloth", unsloth)
+    backend = object.__new__(export_module.ExportBackend)
+    backend.current_model = "model"
+    (tmp_path / "drafter.json").write_text(json.dumps({"strategy": "mtp"}))
+    backend._attach_full_checkpoint_mtp_head(str(tmp_path))
+    assert calls == [("model", str(tmp_path))]
+    (tmp_path / "adapter_config.json").write_text("{}")
+    backend._attach_full_checkpoint_mtp_head(str(tmp_path))
+    (tmp_path / "adapter_config.json").unlink()
+    (tmp_path / "drafter.json").write_text(json.dumps({"strategy": "eagle3"}))
+    backend._attach_full_checkpoint_mtp_head(str(tmp_path))
+    assert len(calls) == 1

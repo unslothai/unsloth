@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useHfTokenStore } from "@/features/hub";
 import { getDrafterCapability } from "../api/train-api";
@@ -11,8 +11,9 @@ import { useTrainingConfigStore } from "../stores/training-config-store";
  * Mounted with the params section in both modes: the start payload only carries `drafter`
  * once the capability for this exact model says it can train one. */
 // The last probe, shared by every mounted copy of the hook: one request per (model, token), and a
-// failure is retried when the section is reopened or the token changes, never cached as final.
+// failure is retried while the hook stays active, never cached as final.
 let lastProbe: { key: string; failed: boolean; done: boolean } | null = null;
+const RETRY_MS = 15_000;
 
 export function useDrafterCapability(active: boolean): void {
   const { selectedModel, capabilityFor, setDrafterCapability } =
@@ -24,6 +25,18 @@ export function useDrafterCapability(active: boolean): void {
       })),
     );
   const token = useHfTokenStore((state) => state.token);
+  const [retry, setRetry] = useState(0);
+
+  useEffect(() => {
+    if (!active) return;
+    const id = setInterval(() => {
+      if (lastProbe?.failed) {
+        lastProbe = null;
+        setRetry((n) => n + 1);
+      }
+    }, RETRY_MS);
+    return () => clearInterval(id);
+  }, [active]);
 
   useEffect(() => {
     const key = `${selectedModel}\u0000${token}`;
@@ -31,7 +44,11 @@ export function useDrafterCapability(active: boolean): void {
       if (lastProbe?.failed) lastProbe = null;
       return;
     }
-    if (!selectedModel || (capabilityFor === selectedModel && lastProbe?.key === key)) return;
+    if (
+      !selectedModel ||
+      (capabilityFor === selectedModel && lastProbe?.key === key)
+    )
+      return;
     lastProbe = { key, failed: false, done: false };
     const controller = new AbortController();
     getDrafterCapability(selectedModel, controller.signal, token)
@@ -59,5 +76,12 @@ export function useDrafterCapability(active: boolean): void {
       // An answer still in flight was dropped: let the next run ask again.
       if (lastProbe?.key === key && !lastProbe.done) lastProbe = null;
     };
-  }, [active, selectedModel, capabilityFor, token, setDrafterCapability]);
+  }, [
+    active,
+    selectedModel,
+    capabilityFor,
+    token,
+    setDrafterCapability,
+    retry,
+  ]);
 }

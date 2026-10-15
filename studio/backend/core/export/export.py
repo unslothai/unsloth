@@ -1046,6 +1046,8 @@ class ExportBackend:
             self.current_tokenizer = tokenizer
             self.current_checkpoint = checkpoint_path
             self._checkpoint_token = token
+            if not self.is_peft and not _IS_MLX:
+                self._attach_full_checkpoint_mtp_head(checkpoint_path)
 
             if self._audio_type:
                 model_type = f"Audio ({self._audio_type})"
@@ -2006,6 +2008,26 @@ class ExportBackend:
                     output_path,
                 )
             return False, f"GGUF export failed: {str(e)}", None
+
+    def _attach_full_checkpoint_mtp_head(self, checkpoint_path: str) -> None:
+        """A full fine-tune keeps its trained MTP head only inside its shards, which transformers
+        drops on load: attach it so every export writes it back."""
+        try:
+            from core.export.drafter_export import training_manifest
+
+            if not os.path.isdir(checkpoint_path) or os.path.isfile(
+                os.path.join(checkpoint_path, "adapter_config.json")
+            ):
+                return
+            manifest = training_manifest(checkpoint_path)
+            if not manifest or manifest.get("strategy") != "mtp":
+                return
+            from unsloth import FastModel
+
+            FastModel.get_mtp_head(self.current_model, source = checkpoint_path)
+            logger.info(f"Attached the trained MTP head from {checkpoint_path}")
+        except Exception as exception:
+            logger.warning(f"Could not attach the trained MTP head: {exception}")
 
     def _package_drafter_merged(
         self,
