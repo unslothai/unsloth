@@ -827,6 +827,11 @@ function OsSandboxSections() {
                       </Badge>
                     </SettingsRow>
                   ) : null}
+                  {view.builtinUpdate ? (
+                    <p className="py-2 text-xs text-muted-foreground leading-relaxed">
+                      {t("settings.sandbox.builtinNeedsUpdate", view.builtinUpdate)}
+                    </p>
+                  ) : null}
                   <SettingsRow
                     label={t("settings.sandbox.optInLabel")}
                     description={
@@ -851,11 +856,6 @@ function OsSandboxSections() {
                       ) : null}
                     </div>
                   </SettingsRow>
-                  {view.builtinUpdate ? (
-                    <p className="pb-2 text-xs text-muted-foreground leading-relaxed">
-                      {t("settings.sandbox.builtinNeedsUpdate", view.builtinUpdate)}
-                    </p>
-                  ) : null}
                   <p className="pb-2 text-xs text-muted-foreground leading-relaxed">
                     {t("settings.sandbox.disclosure")}
                   </p>
