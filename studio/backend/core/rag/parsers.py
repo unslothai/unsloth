@@ -948,16 +948,17 @@ def _docx_number_lists(document) -> None:
     abstracts = {a.get(_W + "abstractNumId"): a for a in numbering.iterchildren(_W + "abstractNum")}
     nums = {n.get(_W + "numId"): n for n in numbering.iterchildren(_W + "num")}
 
-    def style_num_pr(style_id, depth = 0):
+    # numId and ilvl inherit through basedOn independently, like any other paragraph property.
+    def style_num(style_id, name, depth = 0):
         style = style_by_id.get(style_id)
         if style is None or depth > 20:
             return None
-        num_pr = style.find(f"{_W}pPr/{_W}numPr")
-        return style_num_pr(val(style, "basedOn"), depth + 1) if num_pr is None else num_pr
+        value = val(style.find(f"{_W}pPr/{_W}numPr"), name)
+        return style_num(val(style, "basedOn"), name, depth + 1) if value is None else value
 
     def linked(abstract_id, depth = 0):
-        num_pr = style_num_pr(val(abstracts.get(abstract_id), "numStyleLink"))
-        target = val(nums.get(val(num_pr, "numId")), "abstractNumId")
+        num_id = style_num(val(abstracts.get(abstract_id), "numStyleLink"), "numId")
+        target = val(nums.get(num_id), "abstractNumId")
         if target in (None, abstract_id) or depth > 5:
             return abstract_id
         return linked(target, depth + 1)
@@ -1015,9 +1016,8 @@ def _docx_number_lists(document) -> None:
         ):
             return None
         direct = None if p_pr is None else p_pr.find(_W + "numPr")
-        style = val(p_pr, "pStyle") or default_style
-        styled = style_num_pr(style)
-        num_id = val(direct, "numId") or val(styled, "numId")
+        style = style_id = val(p_pr, "pStyle") or default_style
+        num_id = val(direct, "numId") or style_num(style, "numId")
         found = None if num_id is None else instance(num_id)
         if found is None:
             return None
@@ -1029,7 +1029,8 @@ def _docx_number_lists(document) -> None:
                 break
             linked_level = by_style.get(style)
             style = val(style_by_id.get(style), "basedOn")
-        ilvl = min(8, max(0, _docx_int(val(direct, "ilvl") or val(styled, "ilvl") or linked_level)))
+        ilvl = val(direct, "ilvl") or style_num(style_id, "ilvl") or linked_level
+        ilvl = min(8, max(0, _docx_int(ilvl)))
         lvl, _, fmt, _, legal, text = levels[ilvl]
         if lvl is None:
             return None

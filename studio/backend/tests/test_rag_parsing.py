@@ -990,6 +990,50 @@ def test_docx_numbers_paragraphs_through_the_default_style(tmp_path):
     assert text == "1. Rent\n2. Pets"
 
 
+def test_docx_style_inherits_its_list_from_the_base_style(tmp_path):
+    document, docx, parsers = _shared_setup_1()
+    from docx.oxml import parse_xml
+
+    numbering = document.part.numbering_part.element
+    numbering.append(
+        parse_xml(
+            f'<w:abstractNum {_DOCX_XMLNS} w:abstractNumId="93">'
+            '<w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="decimal"/>'
+            '<w:lvlText w:val="%1."/></w:lvl>'
+            '<w:lvl w:ilvl="1"><w:start w:val="1"/><w:numFmt w:val="decimal"/>'
+            '<w:lvlText w:val="%1.%2"/></w:lvl>'
+            "</w:abstractNum>"
+        )
+    )
+    numbering.append(
+        parse_xml(f'<w:num {_DOCX_XMLNS} w:numId="93"><w:abstractNumId w:val="93"/></w:num>')
+    )
+    styles = document.styles.element
+    for style_id, based_on, num_pr in (
+        ("Clause1", "Normal", '<w:numId w:val="93"/>'),
+        ("Clause2", "Clause1", '<w:ilvl w:val="1"/>'),
+    ):
+        styles.append(
+            parse_xml(
+                f'<w:style {_DOCX_XMLNS} w:type="paragraph" w:styleId="{style_id}">'
+                f'<w:name w:val="{style_id}"/><w:basedOn w:val="{based_on}"/>'
+                f"<w:pPr><w:numPr>{num_pr}</w:numPr></w:pPr></w:style>"
+            )
+        )
+    for style, text in (
+        ("Clause1", "Rent"),
+        ("Clause2", "Amount"),
+        ("Clause2", "Due date"),
+        ("Clause1", "Pets"),
+    ):
+        document.add_paragraph(text, style = document.styles[style])
+    path = tmp_path / "inherited.docx"
+    document.save(str(path))
+
+    text = "\n".join(pg.text for pg in parsers.parse(str(path)))
+    assert text == "1. Rent\n1.1 Amount\n1.2 Due date\n2. Pets"
+
+
 def test_docx_with_unreadable_numbering_still_parses(tmp_path):
     import zipfile
 
