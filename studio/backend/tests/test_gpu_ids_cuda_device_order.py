@@ -31,24 +31,23 @@ def test_unmasked_worker_pins_pci_order_under_fastest_first():
         hw.apply_gpu_ids([1], backend = DeviceType.CUDA.value)
         assert os.environ["CUDA_VISIBLE_DEVICES"] == "1"
         assert os.environ["CUDA_DEVICE_ORDER"] == "PCI_BUS_ID"
-
-
-def test_an_inherited_mask_keeps_the_users_order():
-    env = {"CUDA_DEVICE_ORDER": "FASTEST_FIRST", "CUDA_VISIBLE_DEVICES": "0,1"}
-    with patch.dict(os.environ, env, clear = True):
-        hw.apply_gpu_ids([1], backend = DeviceType.CUDA.value)
-        assert os.environ["CUDA_VISIBLE_DEVICES"] == "1"
-        assert os.environ["CUDA_DEVICE_ORDER"] == "FASTEST_FIRST"
-
-
-def test_default_pci_order_is_unchanged():
+    # The default order is unchanged.
     with patch.dict(os.environ, {"CUDA_DEVICE_ORDER": "PCI_BUS_ID"}, clear = True):
         hw.apply_gpu_ids([0], backend = DeviceType.CUDA.value)
         assert os.environ["CUDA_DEVICE_ORDER"] == "PCI_BUS_ID"
         assert os.environ["CUDA_VISIBLE_DEVICES"] == "0"
 
 
-def test_xpu_and_rocm_targets_do_not_touch_cuda_order(monkeypatch):
+def test_only_unmasked_cuda_workers_are_repinned(monkeypatch):
+    with patch.dict(os.environ, {"CUDA_DEVICE_ORDER": "FASTEST_FIRST"}, clear = True):
+        hw.apply_gpu_ids([0], backend = DeviceType.CUDA.value)
+        assert os.environ["CUDA_DEVICE_ORDER"] == "PCI_BUS_ID"
+    # An inherited mask keeps the user's order: the ids are its entries.
+    env = {"CUDA_DEVICE_ORDER": "FASTEST_FIRST", "CUDA_VISIBLE_DEVICES": "0,1"}
+    with patch.dict(os.environ, env, clear = True):
+        hw.apply_gpu_ids([1], backend = DeviceType.CUDA.value)
+        assert os.environ["CUDA_VISIBLE_DEVICES"] == "1"
+        assert os.environ["CUDA_DEVICE_ORDER"] == "FASTEST_FIRST"
     with patch.dict(os.environ, {"CUDA_DEVICE_ORDER": "FASTEST_FIRST"}, clear = True):
         hw.apply_gpu_ids([1], backend = DeviceType.XPU.value)
         assert os.environ["CUDA_DEVICE_ORDER"] == "FASTEST_FIRST"
@@ -84,33 +83,33 @@ def _host(monkeypatch, physical = 2):
     monkeypatch.setattr(hw, "_torch_get_per_device_info", _torch_rows)
 
 
-def test_numeric_mask_under_fastest_first_reads_torch_not_smi(monkeypatch):
+_MISMATCHED = {"CUDA_DEVICE_ORDER": "FASTEST_FIRST", "CUDA_VISIBLE_DEVICES": "1,0"}
+
+
+@pytest.mark.parametrize("reader", ["get_visible_gpu_utilization", "get_gpu_utilization"])
+def test_numeric_mask_under_fastest_first_reads_torch_not_smi(monkeypatch, reader):
     _host(monkeypatch)
-    env = {"CUDA_DEVICE_ORDER": "FASTEST_FIRST", "CUDA_VISIBLE_DEVICES": "1,0"}
-    with patch.dict(os.environ, env, clear = True):
-        result = hw.get_visible_gpu_utilization()
+    with patch.dict(os.environ, _MISMATCHED, clear = True):
+        result = getattr(hw, reader)()
     assert [d["index"] for d in result["devices"]] == [1, 0]
     assert [d["vram_total_gb"] for d in result["devices"]] == [24.0, 24.0]
 
 
 @pytest.mark.parametrize(
-    "env",
+    "env, physical",
     [
-        {"CUDA_DEVICE_ORDER": "PCI_BUS_ID", "CUDA_VISIBLE_DEVICES": "1,0"},
-        {"CUDA_DEVICE_ORDER": "FASTEST_FIRST"},  # no mask: the worker pins PCI order
-        {"CUDA_DEVICE_ORDER": "FASTEST_FIRST", "CUDA_VISIBLE_DEVICES": "GPU-a,GPU-b"},
+        ({"CUDA_DEVICE_ORDER": "PCI_BUS_ID", "CUDA_VISIBLE_DEVICES": "1,0"}, 2),
+        ({"CUDA_DEVICE_ORDER": "FASTEST_FIRST"}, 2),  # no mask: the worker pins PCI order
+        ({"CUDA_DEVICE_ORDER": "FASTEST_FIRST", "CUDA_VISIBLE_DEVICES": "GPU-a,GPU-b"}, 2),
+        ({"CUDA_DEVICE_ORDER": "FASTEST_FIRST", "CUDA_VISIBLE_DEVICES": "0"}, 1),
     ],
 )
-def test_smi_stays_where_its_ids_are_valid(monkeypatch, env):
+def test_smi_stays_where_its_ids_are_valid(monkeypatch, env, physical):
+    _host(monkeypatch, physical = physical)
+    with patch.dict(os.environ, env, clear = True):
+        result = hw.get_visible_gpu_utilization()
+    assert result["devices"][0]["vram_total_gb"] == 12.0
+    # The mismatched shape on the same host reads torch.
     _host(monkeypatch)
-    with patch.dict(os.environ, env, clear = True):
-        result = hw.get_visible_gpu_utilization()
-    assert result["devices"][0]["vram_total_gb"] == 12.0
-
-
-def test_single_gpu_mask_is_unchanged(monkeypatch):
-    _host(monkeypatch, physical = 1)
-    env = {"CUDA_DEVICE_ORDER": "FASTEST_FIRST", "CUDA_VISIBLE_DEVICES": "0"}
-    with patch.dict(os.environ, env, clear = True):
-        result = hw.get_visible_gpu_utilization()
-    assert result["devices"][0]["vram_total_gb"] == 12.0
+    with patch.dict(os.environ, _MISMATCHED, clear = True):
+        assert hw.get_visible_gpu_utilization()["devices"][0]["vram_total_gb"] == 24.0

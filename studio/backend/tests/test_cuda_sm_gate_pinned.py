@@ -63,16 +63,17 @@ class TestPinnedGate:
         assert "GPU 0" not in error
         assert LlamaCppBackend._cuda_sm_gate_error(binary, [1]) is not None
 
-    def test_a_pin_on_the_new_card_proceeds(self, tmp_path, monkeypatch):
+    def test_a_pin_on_the_new_card_proceeds_and_unpinned_keeps_any_visible(
+        self, tmp_path, monkeypatch
+    ):
         _smi(monkeypatch)
-        assert LlamaCppBackend._cuda_sm_gate_error(_binary(tmp_path), [0]) is None
-
-    def test_unpinned_keeps_the_any_visible_rule(self, tmp_path, monkeypatch):
-        # --fit on owns placement there; refusing it would over-refuse a working 4090.
-        _smi(monkeypatch)
-        assert LlamaCppBackend._cuda_sm_gate_error(_binary(tmp_path)) is None
+        binary = _binary(tmp_path)
+        assert LlamaCppBackend._cuda_sm_gate_error(binary, [0]) is None
+        # Unpinned, --fit on owns placement; refusing would over-refuse a working 4090.
+        assert LlamaCppBackend._cuda_sm_gate_error(binary) is None
         _smi(monkeypatch, caps = {0: 61}, free = {0: 5800})
-        assert LlamaCppBackend._cuda_sm_gate_error(_binary(tmp_path)) is not None
+        assert LlamaCppBackend._cuda_sm_gate_error(binary) is not None
+        assert LlamaCppBackend._cuda_sm_gate_error(binary, [0]) is not None
 
     def test_unknown_coverage_or_caps_fail_open(self, tmp_path, monkeypatch):
         _smi(monkeypatch)
@@ -88,10 +89,8 @@ class TestAutoPool:
         assert [g[0] for g in LlamaCppBackend._get_gpu_memory(binary, for_llama_server = True)] == [0]
         # Off the llama-server path (embeddings via torch) every card stays.
         assert [g[0] for g in LlamaCppBackend._get_gpu_memory(binary)] == [0, 1]
-
-    def test_every_card_too_old_keeps_the_pool_for_the_gate(self, tmp_path, monkeypatch):
+        # Every card too old: the pool stays, and the gate refuses with its message.
         _smi(monkeypatch, caps = {0: 61, 1: 61}, free = {0: 5800, 1: 5800})
-        binary = _binary(tmp_path)
         assert [g[0] for g in LlamaCppBackend._get_gpu_memory(binary, for_llama_server = True)] == [0, 1]
 
     def test_homogeneous_and_ptx_forward_hosts_are_unchanged(self, tmp_path, monkeypatch):

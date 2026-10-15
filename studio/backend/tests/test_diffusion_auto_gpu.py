@@ -18,9 +18,6 @@ import pytest
 from core.inference import diffusion_device as dd
 from utils.hardware import hardware as hw
 
-_GB = 1.0
-
-
 def _dev(index, total, used):
     return {"index": index, "vram_total_gb": total, "vram_used_gb": used}
 
