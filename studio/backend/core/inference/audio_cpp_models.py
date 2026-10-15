@@ -1240,7 +1240,6 @@ class AudioCppHeader:
     spec: Optional[dict] = field(default = None, hash = False, compare = False)
     # False when the read stopped before the header's end (a remote prefix): absent keys may lie beyond it.
     complete: bool = True
-    # The repo file it was read from, when known.
     source: Optional[str] = field(default = None, compare = False)
 
     @property
@@ -2075,7 +2074,6 @@ class AudioCppModel:
     from_hub: bool = field(default = False, hash = False, compare = False)
 
     def __post_init__(self) -> None:
-        # A model built from a ready option list keeps it as the list the rules start from.
         if not self.spec_options and self.options:
             object.__setattr__(self, "spec_options", tuple(self.options))
 
@@ -2213,10 +2211,7 @@ def _apply_rule(rule: OptionRule, option: dict) -> None:
 
 
 def filled_options(model: "AudioCppModel", workflow: str, values: Optional[dict]) -> dict:
-    """``values`` for ``workflow`` over the model's recommended defaults, as a request sends them.
-
-    Clone and convert tool options (the panels' own) are left for the panel to send.
-    """
+    """``values`` over the model's recommended defaults; tool panels send their own options."""
     return request_options(
         workflow_options(model, workflow),
         values,
@@ -2283,7 +2278,6 @@ def _ace_step_variant(model: "AudioCppModel", variant: AudioCppVariant) -> dict[
                 m = replace(m, actions = (*actions, "continue") if base else actions)
             modes.append(m)
         music = replace(music, modes = tuple(modes))
-    # Step ranges and defaults per variant are OPTION_RULES["ace_step"].
     return {"music": music}
 
 

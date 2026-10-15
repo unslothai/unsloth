@@ -45,10 +45,9 @@ _EMPTY: Mapping[str, Any] = MappingProxyType({})
 class OptionRule:
     """How Unsloth Studio adjusts one family's options, for every model or only matching ones."""
 
-    # Searched (case-insensitively) in the model's repo id, folder, variant key and file names; None
-    # applies to the whole family. Every matching rule applies, in order.
+    # Regex over repo id, folder, variant key and file names; None = whole family. All matches apply.
     match: Optional[str] = None
-    # Searched (case-insensitively) in the served GGUF's file name alone; None matches any.
+    # Regex over the served GGUF's file name only.
     served: Optional[str] = None
     # Options the family reads but its list lacks, in the spec's request-option shape.
     extra: tuple[dict, ...] = ()
@@ -58,7 +57,6 @@ class OptionRule:
     bounds: Mapping[str, tuple[Optional[float], Optional[float]]] = field(
         default_factory = lambda: _EMPTY
     )
-    # Narrowed enum choices per option name.
     values: Mapping[str, tuple[str, ...]] = field(default_factory = lambda: _EMPTY)
     # Option names a workflow never shows or sends, keyed by workflow id or "*" for every workflow.
     hidden: Mapping[str, frozenset[str]] = field(default_factory = lambda: _EMPTY)
@@ -94,7 +92,6 @@ _QWEN3_TTS_OPTIONS = (
     _opt("text_chunk_size", "int", "Most characters per generated text chunk.", min = 1),
 )
 
-# MOSS-TTS-Nano and MOSS-TTS-Local read the same sampling names.
 _MOSS_SAMPLING = (
     _opt("do_sample", "bool", "Sample audio tokens; off decodes greedily."),
     _opt("temperature", "float", "Audio token sampling temperature.", min = 0.01, max = 2.5),
@@ -273,7 +270,6 @@ STUDIO_OPTION_LISTS: Mapping[str, tuple[dict, ...]] = MappingProxyType(
     }
 )
 
-# Adjustments per family, applied to whichever option list the model has.
 OPTION_RULES: Mapping[str, tuple[OptionRule, ...]] = MappingProxyType(
     {
         "ace_step": (
