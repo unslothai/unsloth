@@ -107,6 +107,22 @@ test("settings the request cannot carry leave the payload exactly as without the
     { device_backend: "mlx" } as never,
   );
   assert.equal(Object.hasOwn(mlx, "drafter"), false);
+  // Image / audio fine-tunes have no drafter phase; the same models on a text dataset do.
+  for (const patch of [
+    { isVisionModel: true, isDatasetImage: true },
+    { isAudioModel: true, isDatasetAudio: true },
+  ]) {
+    const media = buildTrainingStartPayload(
+      config({ ...ON, drafterCapability: capability(), ...patch }),
+      null,
+    );
+    assert.equal(Object.hasOwn(media, "drafter"), false);
+  }
+  const text = buildTrainingStartPayload(
+    config({ ...ON, drafterCapability: capability(), isVisionModel: true, isDatasetImage: false }),
+    null,
+  );
+  assert.equal(Object.hasOwn(text, "drafter"), true);
 });
 
 test("an enabled drafter on a supported model adds only the drafter block", () => {

@@ -83,7 +83,7 @@ def _adapter_base(model_name: str, hf_token = None) -> Optional[str]:
     """The base a LoRA adapter (local folder or Hub repo) was trained on; None for a plain model."""
     try:
         from utils.models.model_config import get_base_model_from_lora_identifier
-        return get_base_model_from_lora_identifier(model_name, hf_token = hf_token or None)
+        return get_base_model_from_lora_identifier(model_name, hf_token = hf_token)
     except Exception as exc:
         logger.debug("Adapter base lookup failed for %s: %s", model_name, exc)
     adapter_config = os.path.join(model_name or "", "adapter_config.json")
@@ -405,8 +405,10 @@ def regenerate_examples(
     max_new_tokens: int = 512,
     batch_size: int = 8,
     should_stop: Callable[[], bool] = lambda: False,
+    max_seq_length: Optional[int] = None,
 ) -> list[dict]:
-    """The fine-tuned model's own greedy answers to each example's prompt (the drafter imitates the model)."""
+    """The fine-tuned model's own greedy answers to each example's prompt (the drafter imitates the model);
+    prompt + answer stays within `max_seq_length`."""
     import torch
 
     text_tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
@@ -418,7 +420,9 @@ def regenerate_examples(
     prompts = []
     for ex in examples:
         end = _prompt_end(ex["input_ids"], ex["labels"], markers)
-        if end:  # needs a prompt to answer
+        if end and (
+            max_seq_length is None or end < max_seq_length
+        ):  # needs a prompt and room to answer
             prompts.append(ex["input_ids"][:end])
     out = []
     device = next(model.parameters()).device
@@ -427,13 +431,18 @@ def regenerate_examples(
             break
         batch = prompts[b : b + batch_size]
         width = max(map(len, batch))
+        new_tokens = (
+            max_new_tokens
+            if max_seq_length is None
+            else min(max_new_tokens, max_seq_length - width)
+        )
         ids = torch.tensor([[pad_id] * (width - len(p)) + p for p in batch], device = device)
         mask = torch.tensor([[0] * (width - len(p)) + [1] * len(p) for p in batch], device = device)
         with torch.no_grad():
             gen = model.generate(
                 input_ids = ids,
                 attention_mask = mask,
-                max_new_tokens = max_new_tokens,
+                max_new_tokens = new_tokens,
                 do_sample = False,
                 pad_token_id = pad_id,
             )
@@ -622,7 +631,9 @@ def run_drafter_phase(
                 event_queue,
                 f"Training drafter ({_LABEL[strategy]}): generating the model's answers to {found} prompts",
             )
-            regenerated = regenerate_examples(model, tokenizer, examples, should_stop = should_stop)
+            regenerated = regenerate_examples(
+                model, tokenizer, examples, should_stop = should_stop, max_seq_length = max_len
+            )
             if regenerated:
                 examples = regenerated
                 data_source = "regenerate"

@@ -5090,6 +5090,8 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
 
         progress = trainer.get_training_progress()
         drafter_note = ""
+        # A Stop during the drafter phase drops only the drafter; the fine-tune is already saved.
+        stopped_in_training = trainer.should_stop
         if config.get("drafter") and not progress.error and not trainer.should_stop:
             from core.training.drafter import run_drafter_phase
 
@@ -5109,7 +5111,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             )
         else:
             saved_output_dir = (
-                None if trainer.should_stop and not trainer.save_on_stop else output_dir
+                None if stopped_in_training and not trainer.save_on_stop else output_dir
             )
             event_queue.put(
                 {

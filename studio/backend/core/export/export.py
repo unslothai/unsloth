@@ -1956,12 +1956,34 @@ class ExportBackend:
         except Exception as exception:
             logger.warning(f"Could not package the trained drafter: {exception}")
 
-    def _package_drafter_lora(self, adapter_dir: str) -> None:
+    def _package_drafter_lora(
+        self,
+        adapter_dir: str,
+        head_saved: Optional[bool] = None,
+    ) -> bool:
         try:
             from core.export.drafter_export import package_lora
-            package_lora(self.current_checkpoint, adapter_dir)
+            return package_lora(self.current_checkpoint, adapter_dir, head_saved) is not None
         except Exception as exception:
             logger.warning(f"Could not carry the drafter manifest with the adapter: {exception}")
+            return False
+
+    def _push_drafter_lora_manifest(self, hf_api, repo_id: str) -> None:
+        """push_to_hub uploads the head beside the adapter but not Studio's manifest."""
+        try:
+            from unsloth.save import _attached_mtp_head
+            from core.export.drafter_export import DRAFTER_MANIFEST
+            with tempfile.TemporaryDirectory() as tmp:
+                head = _attached_mtp_head(self.current_model) is not None
+                if self._package_drafter_lora(tmp, head_saved = head):
+                    hf_api.upload_file(
+                        path_or_fileobj = os.path.join(tmp, DRAFTER_MANIFEST),
+                        path_in_repo = DRAFTER_MANIFEST,
+                        repo_id = repo_id,
+                        repo_type = "model",
+                    )
+        except Exception as exception:
+            logger.warning(f"Could not upload the drafter manifest with the adapter: {exception}")
 
     def _package_drafter_gguf(self, merged_dir: str, gguf_dir: str, ggufs: List[str]) -> List[str]:
         try:
@@ -2409,6 +2431,7 @@ class ExportBackend:
                     _publish_unsloth_model_card(hf_api, repo_id, self.current_model, hf_token)
                     self.current_model.push_to_hub(repo_id, token = hf_token, private = private)
                     self.current_tokenizer.push_to_hub(repo_id, token = hf_token, private = private)
+                    self._push_drafter_lora_manifest(hf_api, repo_id)
                 logger.info(f"Adapter pushed successfully to {repo_id}")
 
             return True, "LoRA adapter exported successfully", output_path

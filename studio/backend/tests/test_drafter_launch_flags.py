@@ -147,3 +147,32 @@ def test_no_manifest_keeps_routing(monkeypatch, tmp_path):
         a = _flags(_backend(monkeypatch), mode, _SUB_3B, None)
         b = _flags(_backend(monkeypatch), mode, _SUB_3B, path)
         assert a == b, mode
+
+
+def test_exported_draft_steps_set_the_default_depth(monkeypatch, tmp_path):
+    (tmp_path / "eagle3-model-F16.gguf").write_bytes(b"GGUF")
+    path = _export(
+        tmp_path,
+        {"strategy": "eagle3", "files": ["eagle3-model-F16.gguf"], "draft_steps": 5},
+    )
+    assert (
+        _flags_dict(_flags(_backend(monkeypatch), "auto", _PLAIN, path))["--spec-draft-n-max"]
+        == "5"
+    )
+    override = _backend(monkeypatch)._build_speculative_flags(
+        speculative_type = "auto",
+        spec_draft_n_max = 2,
+        extra_args = None,
+        model_identifier = _PLAIN,
+        model_path = path,
+        gpus = True,
+        binary = "/fake/llama-server",
+    )
+    assert _flags_dict(override)["--spec-draft-n-max"] == "2"
+    mtp = tmp_path / "mtp"
+    mtp.mkdir()
+    path = _export(mtp, {"strategy": "mtp", "mtp_trained": True, "files": [], "draft_steps": 4})
+    assert (
+        _flags_dict(_flags(_backend(monkeypatch), "auto", _SUB_3B, path))["--spec-draft-n-max"]
+        == "4"
+    )

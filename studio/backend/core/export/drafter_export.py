@@ -227,15 +227,18 @@ def package_gguf(
     return info, extra
 
 
-def package_lora(checkpoint_dir: Optional[str], adapter_dir: str) -> Optional[dict]:
+def package_lora(
+    checkpoint_dir: Optional[str],
+    adapter_dir: str,
+    head_saved: Optional[bool] = None,
+) -> Optional[dict]:
     """Carry the training manifest with a LoRA export that kept the trained MTP head beside it, so a
-    later merge / GGUF of that adapter still marks the head as trained (Studio's MTP launch policy)."""
+    later merge / GGUF of that adapter still marks the head as trained (Studio's MTP launch policy).
+    `head_saved` overrides the sidecar check (a Hub push saves the adapter elsewhere)."""
     manifest = training_manifest(checkpoint_dir)
-    if (
-        manifest is None
-        or manifest["strategy"] != "mtp"
-        or not os.path.isfile(os.path.join(adapter_dir, "mtp_head.safetensors"))
-    ):
+    if head_saved is None:
+        head_saved = os.path.isfile(os.path.join(adapter_dir, "mtp_head.safetensors"))
+    if manifest is None or manifest["strategy"] != "mtp" or not head_saved:
         clear_stale(adapter_dir)
         return None
     keep = (

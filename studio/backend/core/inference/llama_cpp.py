@@ -7596,16 +7596,22 @@ _LEGACY_SPEC_MODE_MAP = {
 
 
 def _trained_drafter_sidecar(model_path):
-    """(eagle3 drafter path, MTP head trained) from the drafter.json a Studio export wrote beside the GGUF."""
+    """(eagle3 drafter path, MTP head trained, draft steps) from the drafter.json a Studio export
+    wrote beside the GGUF."""
     if not model_path:
-        return None, False
+        return None, False, None
     try:
         from core.export.drafter_export import eagle3_sidecar_path, gguf_drafter_sidecar
-        info = gguf_drafter_sidecar(model_path)
-        return eagle3_sidecar_path(model_path), bool(info and info.get("mtp_trained"))
+
+        info = gguf_drafter_sidecar(model_path) or {}
+        try:
+            steps = max(1, int(info["draft_steps"])) if info.get("draft_steps") else None
+        except (TypeError, ValueError):
+            steps = None
+        return eagle3_sidecar_path(model_path), bool(info.get("mtp_trained")), steps
     except Exception as exc:
         logger.debug("Could not read a drafter manifest beside %s: %s", model_path, exc)
-        return None, False
+        return None, False, None
 
 
 def _canonicalize_spec_mode(value):
@@ -34391,8 +34397,9 @@ class LlamaCppBackend:
         self._speculative_type = None
         self._spec_fallback_reason = None
         # A drafter trained with the fine-tune and exported beside this GGUF (drafter.json).
+        trained_steps = None
         if eagle3_draft_path is None or mtp_trained is None:
-            sidecar_eagle3, sidecar_trained = _trained_drafter_sidecar(model_path)
+            sidecar_eagle3, sidecar_trained, trained_steps = _trained_drafter_sidecar(model_path)
             eagle3_draft_path = eagle3_draft_path or sidecar_eagle3
             mtp_trained = sidecar_trained if mtp_trained is None else mtp_trained
 
@@ -34497,7 +34504,9 @@ class LlamaCppBackend:
                 self._speculative_type = "default"
                 self._spec_fallback_reason = "drafter_not_found"
                 return flags
-            draft_n_max = int(spec_draft_n_max) if spec_draft_n_max is not None else 3
+            draft_n_max = (
+                int(spec_draft_n_max) if spec_draft_n_max is not None else (trained_steps or 3)
+            )
             if spec_draft_n_max is not None:
                 self._spec_draft_n_max = draft_n_max
             n_max_flag = caps.get("spec_draft_n_max_flag") or "--spec-draft-n-max"
@@ -34535,6 +34544,8 @@ class LlamaCppBackend:
                 n = int(spec_draft_n_max)
                 self._spec_draft_n_max = n
                 return n
+            if mtp_trained and trained_steps and self._spec_drafter_kind == "mtp":
+                return trained_steps  # the depth the exported head was trained for
             return 2 if gpus else 3
 
         def _emit_dspark() -> None:

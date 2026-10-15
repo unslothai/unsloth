@@ -112,6 +112,9 @@ def test_worker_runs_the_phase_before_complete():
     assert phase < src.index('"type": "complete"', phase)
     # Only after a clean SFT finish.
     assert "not progress.error and not trainer.should_stop" in src[phase - 300 : phase]
+    # A Stop during the drafter phase keeps the saved fine-tune in the completion event.
+    assert src.index("stopped_in_training = trainer.should_stop") < phase
+    assert "None if stopped_in_training and not trainer.save_on_stop else output_dir" in src[phase:]
 
 
 # ---------------------------------------------------------------- examples
@@ -699,6 +702,30 @@ def test_capability_child_process_runs_for_real(tmp_path):
     assert cap["strategy"] == "eagle3" and cap["supported"], cap
 
 
+def test_regenerated_rows_stay_within_max_seq_length():
+    import torch
+    from core.training.drafter import regenerate_examples
+
+    asked = []
+
+    class _Model(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.w = torch.nn.Parameter(torch.zeros(1))
+
+        def generate(self, input_ids, attention_mask, max_new_tokens, **_):
+            asked.append(max_new_tokens)
+            return torch.cat([input_ids, torch.full((input_ids.shape[0], max_new_tokens), 7)], 1)
+
+    tok = _CharTokenizer()
+    short = [ord(c) for c in "<u>hi</u><a>ok"]
+    long = [ord(c) for c in "<u>" + "x" * 40 + "</u><a>ok"]
+    rows = [{"input_ids": r, "labels": list(r)} for r in (short, long)]
+    out = regenerate_examples(_Model(), tok, rows, batch_size = 1, max_seq_length = 32)
+    assert len(out) == 1 and len(out[0]["input_ids"]) == 32  # the long prompt has no room left
+    assert asked == [32 - len("<u>hi</u><a>")]
+
+
 def test_regenerate_finds_prompts_in_dataset_template_rows():
     """Rows rendered with a dataset template (Alpaca) carry "### Response:", not the chat header."""
     from core.training.drafter import _prompt_end, _response_markers
@@ -863,3 +890,36 @@ def test_managed_accounts_probe_only_their_paths_and_never_with_the_owner_token(
     assert refused["supported"] is False and "outside" in refused["reason"] and seen == []
     asyncio.run(route.get_drafter_capability("org/model", "u", False))
     assert seen == [("org/model", False)]
+
+
+def test_adapter_base_keeps_the_anonymous_token(monkeypatch):
+    """False (managed accounts, API keys) must not become None (= the host's ambient token)."""
+    import utils.models.model_config as model_config
+    from core.training.drafter import _adapter_base
+
+    seen = []
+    monkeypatch.setattr(
+        model_config,
+        "get_base_model_from_lora_identifier",
+        lambda name, hf_token = None: seen.append(hf_token),
+    )
+    _adapter_base("org/adapter", False)
+    assert seen == [False]
+
+
+def test_lora_manifest_for_a_hub_push(tmp_path):
+    """A Hub push saves the adapter elsewhere: the caller says whether the head went with it."""
+    from core.export.drafter_export import package_lora
+
+    run = _training_dir(tmp_path, "mtp")
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    assert package_lora(str(run), str(staging), head_saved = False) is None
+    assert not (staging / "drafter.json").exists()
+    info = package_lora(str(run), str(staging), head_saved = True)
+    assert info["strategy"] == "mtp" and (staging / "drafter.json").exists()
+    src = _source("core/export/export.py")
+    push = src.index(
+        "self.current_tokenizer.push_to_hub(repo_id, token = hf_token, private = private)\n"
+    )
+    assert "self._push_drafter_lora_manifest(hf_api, repo_id)" in src[push : push + 200]

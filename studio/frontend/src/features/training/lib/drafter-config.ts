@@ -112,17 +112,26 @@ export function drafterRequestFrom(
   };
 }
 
-/** Runs the backend's drafter phase cannot take: embeddings, decision models and CPT. */
+/** Runs the backend's drafter phase cannot take: embeddings, decision models, CPT, and image / audio fine-tunes. */
 export function drafterEligible(
   config: Pick<
     TrainingConfigState,
-    "modelType" | "isEmbeddingModel" | "trainingMethod"
+    | "modelType"
+    | "isEmbeddingModel"
+    | "trainingMethod"
+    | "isVisionModel"
+    | "isDatasetImage"
+    | "isAudioModel"
+    | "isDatasetAudio"
   >,
 ): boolean {
   return (
     config.modelType !== "decision" &&
     config.modelType !== "embeddings" &&
     !config.isEmbeddingModel &&
-    config.trainingMethod !== "cpt"
+    config.trainingMethod !== "cpt" &&
+    // A vision / audio model on a text dataset trains the text path, which the drafter supports.
+    !(config.isVisionModel && config.isDatasetImage === true) &&
+    !(config.isAudioModel && config.isDatasetAudio)
   );
 }
