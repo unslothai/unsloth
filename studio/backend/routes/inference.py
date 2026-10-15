@@ -17580,6 +17580,47 @@ def _ollama_ref_for_link(model_path: str) -> Optional[str]:
         return None
 
 
+def _names_the_resident_gguf(llama_backend, model_path: str) -> bool:
+    """Whether a client's ``model_path`` names the GGUF ``llama_backend`` runs.
+
+    A scan-folder load runs as its directory while /v1/models, status and the monitor publish its
+    repo id (the monitor as ``repo:QUANT``), and chat is served under that id, so /unload must
+    accept it too or it answers success and leaves the model loaded (#13766).
+    """
+    identifier = llama_backend.model_identifier
+    if (
+        identifier == model_path
+        or is_registered_native_path_label(identifier, model_path)
+        or _names_the_resident_model(identifier, model_path)
+    ):
+        return True
+    # A load in flight can still carry the previous model's advertised id.
+    if not getattr(llama_backend, "is_loaded", False):
+        return False
+    from core.inference.openai_auto_download import split_model_ref
+
+    published = [
+        getattr(llama_backend, "_openai_advertised_id", None),
+        _llama_public_model_id(llama_backend),
+    ]
+    if _matches_any(model_path, published):
+        return True
+    base, variant = split_model_ref(model_path)
+    resident_variant = getattr(llama_backend, "hf_variant", None) or ""
+    return (
+        bool(variant)
+        and variant.lower() == resident_variant.lower()
+        and _matches_any(base, published)
+    )
+
+
+def _names_the_resident_standard_model(backend, active: str, model_path: str) -> bool:
+    """``_names_the_resident_model`` plus the repo id auto-switch advertises for ``active``."""
+    return _names_the_resident_model(active, model_path) or _matches_any(
+        model_path, [getattr(backend, "_openai_advertised_id", None)]
+    )
+
+
 def _names_the_loading_model(loading: str, model_path: str) -> bool:
     """Whether a client's ``model_path`` names the load already in flight.
 
@@ -17600,7 +17641,7 @@ def _resident_standard_model_name(backend, model_path: str) -> str:
     name it was registered with rather than the id the client shows.
     """
     active = getattr(backend, "active_model_name", None)
-    if isinstance(active, str) and _names_the_resident_model(active, model_path):
+    if isinstance(active, str) and _names_the_resident_standard_model(backend, active, model_path):
         return active
     loaded = getattr(backend, "models", None)
     if isinstance(loaded, dict):
@@ -17628,7 +17669,11 @@ def _unload_evicts_standard_backend(backend, model_path: str) -> bool:
         return True
     if isinstance(active, str) and active and active.lower() == (model_path or "").lower():
         return True
-    if isinstance(active, str) and _names_the_resident_model(active, model_path):
+    if (
+        isinstance(active, str)
+        and active
+        and _names_the_resident_standard_model(backend, active, model_path)
+    ):
         return True
     if not isinstance(loaded, dict):
         return False
@@ -17663,9 +17708,7 @@ def _unload_may_evict(model_path: str) -> bool:
         return True
     llama_backend = get_llama_cpp_backend()
     if llama_backend.is_active and (
-        llama_backend.model_identifier == model_path
-        or is_registered_native_path_label(llama_backend.model_identifier, model_path)
-        or _names_the_resident_model(llama_backend.model_identifier, model_path)
+        _names_the_resident_gguf(llama_backend, model_path)
         # Up but not serving is mid-load, evicted whatever model was named.
         or not llama_backend.is_loaded
     ):
@@ -21941,11 +21984,7 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
             # Check if the GGUF backend has this model loaded or is loading it.
             llama_backend = get_llama_cpp_backend()
             if llama_backend.is_active and (
-                llama_backend.model_identifier == request.model_path
-                or is_registered_native_path_label(
-                    llama_backend.model_identifier, request.model_path
-                )
-                or _names_the_resident_model(llama_backend.model_identifier, request.model_path)
+                _names_the_resident_gguf(llama_backend, request.model_path)
                 or not llama_backend.is_loaded
             ):
                 # Read the identity before teardown clears it, so the row reads repo:QUANT.
@@ -21982,7 +22021,8 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
             # a slow SSE stream paused between tokens still holds, so a sync call would block
             # the loop that drives the stream's next token and the lock release.
             backend = await asyncio.to_thread(get_inference_backend)
-            if _unload_evicts_standard_backend(backend, request.model_path):
+            evicts = _unload_evicts_standard_backend(backend, request.model_path)
+            if evicts:
                 # Point of no return for the standard path, same rule as above.
                 _raise_or_cancel_active_generations(
                     force = request.force_cancel_active, action = "Unloading the model"
@@ -22000,12 +22040,14 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
             note_model_unloaded()
             account_access.clear_resident("chat")
             await asyncio.to_thread(release_chat_gpu_claim)
-            api_monitor.record_lifecycle(
-                event = "unload",
-                model = _lifecycle_model_label(request.model_path),
-                reason = "manual",
-            )
-            logger.info(f"Unloaded model: {request.model_path}")
+            # The no-op stays a 200 for stale tabs, but logging it read as an unload of whatever is resident.
+            if evicts:
+                api_monitor.record_lifecycle(
+                    event = "unload",
+                    model = _lifecycle_model_label(request.model_path),
+                    reason = "manual",
+                )
+                logger.info(f"Unloaded model: {request.model_path}")
             return UnloadResponse(status = "unloaded", model = request.model_path)
 
     except HTTPException:

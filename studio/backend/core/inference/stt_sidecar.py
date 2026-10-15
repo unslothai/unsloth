@@ -1198,21 +1198,26 @@ def _decode_audio_bounded(audio: bytes, cancel_event = None):
         with _av_open(av, io.BytesIO(audio)) as container:
             if not container.streams.audio:
                 raise SttAudioDecodeError("Could not decode the audio.")
-            frames = iter(container.decode(audio = 0))
-            while True:
-                try:
-                    frame = next(frames)
-                except StopIteration:
-                    break
-                except InvalidDataError:
-                    continue
-                if cancel_event is not None and cancel_event.is_set():
-                    raise SttTranscriptionCancelledError("Transcription cancelled.")
-                frame.pts = None
-                fifo.write(frame)
-                if fifo.samples >= 500000:
-                    for resampled in resampler.resample(fifo.read()):
-                        write_frame(resampled)
+            try:
+                for packet in container.demux(audio = 0):
+                    if cancel_event is not None and cancel_event.is_set():
+                        raise SttTranscriptionCancelledError("Transcription cancelled.")
+                    try:
+                        frames = packet.decode()
+                    except InvalidDataError:
+                        continue
+                    for frame in frames:
+                        frame.pts = None
+                        fifo.write(frame)
+                        if fifo.samples >= 500000:
+                            for resampled in resampler.resample(fifo.read()):
+                                write_frame(resampled)
+            except (SttAudioTooLongError, SttTranscriptionCancelledError):
+                raise
+            except (FFmpegError, ValueError, RuntimeError) as exc:
+                if not (sample_count or fifo.samples):
+                    raise
+                logger.info("STT decode stopped early: %s", exc)
             if fifo.samples > 0:
                 for resampled in resampler.resample(fifo.read()):
                     write_frame(resampled)
