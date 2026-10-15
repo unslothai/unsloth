@@ -2163,7 +2163,7 @@ _PROBE_FRAMES = 2
 # Calibration verdicts are kept on disk per (class, config, decoder layout, torch, triton, device capability), so a
 # later process skips the trace and the checks. Off: UNSLOTH_VAE_FUSED_STRUCTURAL_CACHE=0.
 STRUCTURAL_CACHE_ENV = "UNSLOTH_VAE_FUSED_STRUCTURAL_CACHE"
-_STRUCTURAL_CACHE_VERSION = 1
+_STRUCTURAL_CACHE_VERSION = 2
 # Output space is [-1, 1]; the measured classes' fused-vs-stock bf16 decode differences sit well under these.
 _PROBE_MAX_ABS = 0.125
 _PROBE_MEAN_ABS = 0.01
@@ -2292,6 +2292,12 @@ def _load_pairing(key: Optional[str], n_norms: int) -> Optional[dict]:
         return None
     if not isinstance(paired, list) or len(paired) != n_norms or any(p not in (None, True, False) for p in paired):
         return None
+    consumers = data.get("consumers")
+    if data["status"] == "ok" and (
+        not isinstance(consumers, list) or len(consumers) != n_norms
+        or any(not isinstance(c, list) or any(not isinstance(j, int) for j in c) for c in consumers)
+    ):  # fmt: skip
+        return None
     return data
 
 
@@ -2395,10 +2401,14 @@ def _trace_group_norm_silu(norms: list, silus: list, run: Any) -> tuple:
 
         return hook
 
-    def silu_pre(_m, inp):
+    silu_index = {id(m): j for j, m in enumerate(silus)}
+    readers: list = [set() for _ in range(n)]
+
+    def silu_pre(m, inp):
         idx = produced.get(id(inp[0])) if inp else None
         if idx is not None:
             consumed[idx] += 1
+            readers[idx].add(silu_index.get(id(m), -1))
         in_silu.append(idx)
 
     def silu_post(_m, _inp, _out):
@@ -2431,7 +2441,7 @@ def _trace_group_norm_silu(norms: list, silus: list, run: Any) -> tuple:
         consumed = [k if sh == 0 else 0 for k, sh in zip(consumed, shared)]
     if out is not None and tracked is not None and isinstance(out, tracked):
         out = out.as_subclass(_torch().Tensor)
-    return calls, consumed, out, {"shared": shared}
+    return calls, consumed, out, {"shared": shared, "consumers": [sorted(r) for r in readers]}
 
 
 def _site_hooks(norms: list, paired: list) -> tuple:
@@ -2457,7 +2467,12 @@ def _site_hooks(norms: list, paired: list) -> tuple:
     return handles, worst
 
 
-def _fast_gn_maybe_act(norm: Any, act: bool, state: Any) -> Any:
+def _fast_gn_maybe_act(norm: Any, act: bool, state: Any, silus: Any = None) -> Any:
+    """The fused GroupNorm(+SiLU) forward. A fused activation marks its output for exactly the SiLU module(s) the
+    trace saw consume it (``silus``; None: any one SiLU), and the first of those to read it consumes the mark, so
+    a following SiLU, or the same module applied again, runs its activation as stock."""
+    token = "any" if silus is None else frozenset(id(m) for m in silus)
+
     def fast(x: Any) -> Any:
         ran: list = []
         y = group_norm_act(x, norm, act = act, on_kernel = lambda: ran.append(1))
@@ -2469,7 +2484,7 @@ def _fast_gn_maybe_act(norm: Any, act: bool, state: Any) -> Any:
                 probe.append(1)  # the calibration running on this thread, not another VAE's or thread's
         state.calls += 1
         if act:
-            y._unsloth_silu_applied = True
+            y._unsloth_silu_for = token
         return y
 
     return fast
@@ -2479,7 +2494,9 @@ def _silu_passthrough(silu: Any) -> Any:
     torch = _torch()
 
     def forward(x: Any) -> Any:
-        if getattr(x, "_unsloth_silu_applied", False):
+        token = getattr(x, "_unsloth_silu_for", None)
+        if token is not None and (token == "any" or id(silu) in token):
+            del x._unsloth_silu_for  # consumed here: any later SiLU on this tensor applies normally
             return x
         return torch.nn.functional.silu(x, inplace = bool(getattr(silu, "inplace", False)))
 
@@ -2487,22 +2504,32 @@ def _silu_passthrough(silu: Any) -> Any:
     return forward
 
 
-def _structural_patch(norms: list, paired: list, silus: list, state: Any, logger: Any) -> int:
+def _structural_patch(
+    norms: list, paired: list, silus: list, state: Any, logger: Any, consumers: Optional[list] = None
+) -> int:
+    """``consumers``: per norm, the indices into ``silus`` of the SiLU module(s) the trace saw read its output; only
+    those SiLUs consume its fused-activation mark (None: any SiLU, once)."""
     n = 0
-    for norm, act in zip(norms, paired):
+    patched_silus: list = []
+    for i, (norm, act) in enumerate(zip(norms, paired)):
         if act is None:
             continue
+        mine = None
+        if act and consumers is not None:
+            mine = [silus[j] for j in consumers[i] if 0 <= j < len(silus)]
+            patched_silus += mine
         # The stock fallback is the plain norm: its output carries no flag, so the paired SiLU still runs.
         _guard(
             norm,
-            _fast_gn_maybe_act(norm, act, state),
+            _fast_gn_maybe_act(norm, act, state, mine),
             _stock_forward(norm),
             "GroupNorm+SiLU" if act else "GroupNorm",
             logger,
         )
         n += 1
     if any(paired):
-        for silu in silus:
+        targets = silus if consumers is None else patched_silus
+        for silu in {id(m): m for m in targets}.values():
             silu.forward = _silu_passthrough(silu)
     return n
 
@@ -2555,7 +2582,7 @@ def install_structural(vae: Any, logger: Any = None) -> int:
     state = types.SimpleNamespace(
         status = "pending", norms = len(norms), gn_silu = 0, gn = 0, calls = 0, kernel_calls = 0,
         max_abs = None, mean_abs = None, site_max_abs = None, site_mean_abs = None, local = threading.local(),
-        paired = None, cached = False,
+        paired = None, consumers = None, cached = False,
     )  # fmt: skip
     inner = vae._decode
     torch = _torch()
@@ -2578,7 +2605,7 @@ def install_structural(vae: Any, logger: Any = None) -> int:
                 _structural_unpatch(norms, silus, vae)
                 return
             paired = cached["paired"]
-            _structural_patch(norms, paired, silus, state, logger)
+            _structural_patch(norms, paired, silus, state, logger, cached["consumers"])
             state.status = "ok"
             state.gn_silu = sum(1 for p in paired if p)
             state.gn = sum(1 for p in paired if p is False)
@@ -2589,7 +2616,8 @@ def install_structural(vae: Any, logger: Any = None) -> int:
         _calibrate(z, args, kwargs)
         if state.status in ("ok", "rejected", "no_match"):
             _save_pairing(key, {
-                "status": state.status, "paired": state.paired, "max_abs": state.max_abs, "mean_abs": state.mean_abs,
+                "status": state.status, "paired": state.paired, "consumers": state.consumers,
+                "max_abs": state.max_abs, "mean_abs": state.mean_abs,
                 "site_max_abs": state.site_max_abs, "site_mean_abs": state.site_mean_abs,
             })  # fmt: skip
 
@@ -2601,8 +2629,8 @@ def install_structural(vae: Any, logger: Any = None) -> int:
             )
             # fused with its SiLU only when that SiLU is the output's sole reader; otherwise GroupNorm alone
             paired = [None if c == 0 else (c == k) for c, k in zip(calls, consumed)]
-            state.paired = paired
-            n = _structural_patch(norms, paired, silus, state, logger)
+            state.paired, state.consumers = paired, info["consumers"]
+            n = _structural_patch(norms, paired, silus, state, logger, info["consumers"])
             if n == 0:
                 state.status = "no_match"
                 _structural_unpatch(norms, silus, vae)

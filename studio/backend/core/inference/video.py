@@ -9244,6 +9244,12 @@ class VideoBackend:
             speed_optims = speed_optims + tuple(f"h3_vae_{name}" for name in vae_levers)
         except Exception as exc:  # noqa: BLE001 -- optimisation only, never fail a load
             logger.warning("video.h3_vae_fast failed, keeping the stock VAE: %s", exc)
+        # the H3 VAE speedups rewrap vae.decode: the OOM retry's scope (when installed) goes back on top
+        try:
+            from .diffusion_vae_oom import ensure_outermost
+            ensure_outermost(getattr(pipe, "vae", None), logger)
+        except Exception as exc:  # noqa: BLE001 - a decode OOM then fails as before
+            logger.warning("video.vae_oom: scope not restored after the H3 VAE speedups: %s", exc)
         if "cudnn_benchmark" in speed_optims:
             try:
                 from .video_minimax_h3_vae import install_audio_vae_without_cudnn_benchmark

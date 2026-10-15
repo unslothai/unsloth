@@ -703,6 +703,9 @@ def install(vae: Any, logger: Any = None, pipe: Any = None) -> bool:
                 depth[0] -= 1
                 if owns:
                     _close_scope(vae, holder, z)
+                    # reached without the scope: a later rewrap (a compile fallback restoring its eager decode, a
+                    # speed layer run after load) dropped or covered it; put it back on top for the next decode
+                    ensure_outermost(vae, logger)
 
         def _retrying(z: Any, args: tuple, kwargs: dict, holder: dict) -> Any:
             stats["calls"] += 1
@@ -832,6 +835,46 @@ def _compiled_decode_owner(vae: Any) -> Any:
     return None
 
 
+# Decode wrappers that must sit BELOW the scope: a compiled decode guard (the graph would trace the scope as a
+# pass-through and its guard re-raises the OOM) and the untiled-when-fits gate (it retries tiled itself).
+_BELOW_SCOPE_MARKERS = ("_unsloth_compiled_decode", "_unsloth_untiled_decode")
+
+
+def _scope_intact(vae: Any) -> bool:
+    """The scope layer is active, reachable from the current public decode through the ``__wrapped__`` chain, and
+    no compiled guard or untiled gate sits above it."""
+    layer = vae.__dict__.get(_RECORD_ATTR, {}).get("scope")
+    if layer is None or not layer.active:
+        return False
+    fn = vae.__dict__.get("decode")
+    slot_owner = getattr(fn, "_unsloth_decode_slot", None)
+    for _ in range(32):
+        if fn is None:
+            break
+        if fn is layer.fn:
+            return True
+        if any(getattr(fn, m, False) for m in _BELOW_SCOPE_MARKERS) and not getattr(fn, "_unsloth_vae_oom_scope", False):
+            return False
+        nxt = getattr(fn, "__wrapped__", None)
+        if nxt is None and slot_owner is not None:
+            nxt, slot_owner = slot_owner.__dict__.get("decode"), None
+        fn = nxt
+    return False
+
+
+def ensure_outermost(vae: Any, logger: Any = None) -> bool:
+    """(Re)assert the OOM scope as the outermost decode layer after anything rewrapped ``vae.decode`` (a deferred
+    speed profile, a VAE compile, a compile fallback). Called after every rewrap site; idempotent and cheap. True
+    when the retry is installed and its scope is in place."""
+    if vae is None or decode_layers.find(vae, "_decode", _RETRY_LAYER) is None or oom_retry_disabled():
+        return False
+    if _scope_intact(vae):
+        return True
+    record = vae.__dict__.setdefault(_RECORD_ATTR, {})
+    decode_layers.unwrap(record.pop("scope", None))  # buried under the rewrap: now a pass-through
+    return _install_scope(vae, logger)
+
+
 def _install_scope(vae: Any, logger: Any = None) -> bool:
     """Wrap the public ``decode`` (or, for a decode compiled whole, the slot holding it): the outermost call opens
     the recovery scope every inner ``_decode`` (batch slices, frames, tiles) shares, and closes it, restoring what
@@ -931,6 +974,7 @@ def uninstall(vae: Any) -> None:
 __all__ = [
     "DecodeSession",
     "DeferredReturn",
+    "ensure_outermost",
     "free_first",
     "settle_deferred",
     "OOM_RETRY_ENV",

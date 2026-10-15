@@ -1499,3 +1499,187 @@ def test_structural_cache_kill_switch(monkeypatch, tmp_path):
     with torch.no_grad():
         vae._decode(torch.randn(1, 8, 6, 6))
     assert traces == [1]
+
+
+# -- PR review round 12 -----------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("reuse", [False, True])
+def test_fused_activation_mark_is_consumed_by_the_matched_silu(reuse):
+    """Item 4285009704: the mark on a fused GroupNorm+SiLU output used to survive the SiLU that skipped, so a
+    following SiLU (or the same module applied again) skipped too. It is consumed by the matched SiLU now."""
+    norm = torch.nn.GroupNorm(4, 8)
+    first, second = torch.nn.SiLU(), torch.nn.SiLU()
+    if reuse:
+        second = first
+    state = types.SimpleNamespace(kernel_calls = 0, calls = 0)
+    fast = F._fast_gn_maybe_act(norm, True, state)
+    p1, p2 = F._silu_passthrough(first), F._silu_passthrough(second)
+    x = torch.randn(1, 8, 4, 4)
+    with torch.no_grad():
+        ref = torch.nn.functional.silu(torch.nn.functional.silu(norm(x)))
+        got = p2(p1(fast(x)))
+    assert torch.allclose(got, ref, atol = 1e-6)
+
+
+def test_fused_activation_mark_only_for_the_traced_silu():
+    """The mark names the SiLU module(s) the trace saw read the norm; another SiLU never consumes it."""
+    norm = torch.nn.GroupNorm(4, 8)
+    matched, other = torch.nn.SiLU(), torch.nn.SiLU()
+    state = types.SimpleNamespace(kernel_calls = 0, calls = 0)
+    fast = F._fast_gn_maybe_act(norm, True, state, [matched])
+    x = torch.randn(1, 8, 4, 4)
+    with torch.no_grad():
+        y = fast(x)
+        assert torch.allclose(F._silu_passthrough(other)(y), torch.nn.functional.silu(y))
+        y = fast(x)
+        assert F._silu_passthrough(matched)(y) is y
+
+
+class _DoubleSiluDec(torch.nn.Module):
+    def __init__(self, reuse):
+        super().__init__()
+        self.norm = torch.nn.GroupNorm(4, 8)
+        self.act = torch.nn.SiLU()
+        self.act2 = self.act if reuse else torch.nn.SiLU()
+        self.conv = torch.nn.Conv2d(8, 8, 1)
+
+    def forward(self, x):
+        return self.conv(self.act2(self.act(self.norm(x))))
+
+
+class AutoencoderKLDoubleSilu(torch.nn.Module):
+    def __init__(self, reuse):
+        super().__init__()
+        self.decoder = _DoubleSiluDec(reuse)
+
+    def _decode(self, z, return_dict = True):
+        return (self.decoder(z),)
+
+
+@pytest.mark.parametrize("reuse", [False, True])
+def test_structural_double_silu_matches_stock(monkeypatch, reuse):
+    vae = AutoencoderKLDoubleSilu(reuse)
+    z = torch.randn(1, 8, 6, 6)
+    with torch.no_grad():
+        ref = vae._decode(z)[0]
+    _fake_kernel(monkeypatch)
+    assert F.install_structural(vae) == 1
+    with torch.no_grad():
+        vae._decode(z)
+        out = vae._decode(z)[0]
+    assert vae._unsloth_vae_structural.status == "ok" and vae._unsloth_vae_structural.gn_silu == 1
+    assert torch.allclose(out, ref, atol = 1e-6)
+
+
+def test_every_decode_rewrap_site_restores_the_oom_scope():
+    """Item 4285009695, class: every function in the image / video backends that (directly or through any helper)
+    reassigns a VAE's ``decode`` must re-assert the OOM scope afterwards (install it, or ensure_outermost). The
+    rewrap helpers are found by AST: any function assigning ``.decode`` or calling such a function, to a fixpoint."""
+    import ast
+    import pathlib
+
+    root = pathlib.Path(O.__file__).parent
+    skip = {"diffusion_vae_oom.py", "decode_layers.py", "media_decode_phase.py"}  # the scope itself; restores
+    ensure = {"install_vae_oom_retry", "ensure_outermost"}
+    funcs = {}
+    for f in root.glob("*.py"):
+        if f.name in skip:
+            continue
+        tree = ast.parse(f.read_text())
+        for node in tree.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                funcs[(f.name, node.name)] = node
+            if isinstance(node, ast.ClassDef):
+                for b in node.body:
+                    if isinstance(b, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        funcs[(f.name, f"{node.name}.{b.name}")] = b
+
+    def called(c):
+        fn = c.func
+        return fn.id if isinstance(fn, ast.Name) else fn.attr if isinstance(fn, ast.Attribute) else None
+
+    dirty = set()
+    for k, node in funcs.items():
+        for n in ast.walk(node):
+            if isinstance(n, ast.Assign) and any(isinstance(t, ast.Attribute) and t.attr == "decode" for t in n.targets):
+                dirty.add(k)
+    assert ("diffusion_speed.py", "_compile_vae_decode") in dirty or any(
+        k[0] == "diffusion_speed.py" for k in dirty
+    )
+    changed = True
+    while changed:
+        changed = False
+        names = {k[1].split(".")[-1] for k in dirty}
+        for k, node in funcs.items():
+            if k in dirty:
+                continue
+            last = ens = 0
+            for n in ast.walk(node):
+                if isinstance(n, ast.Call):
+                    c = called(n)
+                    if c in names and c != k[1].split(".")[-1]:
+                        last = max(last, n.lineno)
+                    if c in ensure:
+                        ens = max(ens, n.lineno)
+            if last and ens <= last:
+                dirty.add(k)
+                changed = True
+    leaks = sorted(k for k in dirty if k[0] in ("diffusion.py", "video.py"))
+    assert leaks == [], leaks
+
+
+class _PublicVae(_VaeLike):
+    def decode(self, z, return_dict = True):
+        return self._decode(z, return_dict)
+
+
+def _setup_public(cap, untiled_need, tiled_need):
+    budget = _Budget(cap)
+    transformer, text_encoder = _on_card(8192), _on_card(4096)
+    vae = _PublicVae(budget, [transformer, text_encoder], untiled_need, tiled_need)
+    vae.to(_CARD)
+    pipe = _Pipe(transformer = transformer, text_encoder = text_encoder, vae = vae)
+    assert O.install(vae, pipe = pipe)
+    assert getattr(vae.__dict__.get("decode"), "_unsloth_vae_oom_scope", False)
+    return vae, pipe
+
+
+def test_ensure_outermost_puts_the_scope_over_a_later_compiled_guard():
+    """Item 4285009695: a deferred speed profile compiles vae.decode after load; its guard wraps the scope (which the
+    graph traces as a pass-through) and re-raises OOMs. ensure_outermost puts a fresh scope back on top, which runs
+    the ladder on a compiled OOM."""
+    vae, pipe = _setup_public(cap = 16384 + 1000, untiled_need = 10000, tiled_need = 500)
+    scoped = vae.decode
+    calls = []
+
+    def compiled(z, return_dict = True):
+        calls.append("compiled")
+        if vae.budget.resident([*vae.pipe_modules, vae]) + vae.untiled_need > vae.budget.cap:
+            raise _FakeOOM()
+        return ("ok",)
+
+    def guard(*a, **k):  # the speed layer's guard: re-raises OOMs
+        return compiled(*a, **k)
+
+    guard._unsloth_compiled_decode = True
+    guard._unsloth_eager_decode = scoped
+    vae.decode = guard
+    with pytest.raises(_FakeOOM):
+        vae.decode(_z())  # before: the compiled OOM escapes the ladder
+    assert O.ensure_outermost(vae)
+    top = vae.__dict__["decode"]
+    assert getattr(top, "_unsloth_vae_oom_scope", False) and top.__wrapped__ is guard
+    calls.clear()
+    assert vae.decode(_z()) == ("ok",)
+    assert calls == ["compiled", "compiled"]  # freed the card, retried compiled
+    assert O.ensure_outermost(vae) and vae.__dict__["decode"] is top  # idempotent
+
+
+def test_scope_heals_itself_after_a_rewrap_drops_it():
+    """A compile fallback restoring its eager decode (or any rewrap) can drop the scope at run time; the next
+    _decode reached without it reinstalls it on top."""
+    vae, pipe = _setup_public(cap = 1 << 20, untiled_need = 1, tiled_need = 1)
+    del vae.decode  # the slot back to the class method: scope gone
+    vae.decode(_z())
+    assert getattr(vae.__dict__.get("decode"), "_unsloth_vae_oom_scope", False)
