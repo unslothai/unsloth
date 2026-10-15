@@ -30,7 +30,7 @@ import {
 import {
   filterModelListing,
   hasModelSearchFilters,
-  parameterRange,
+  hubSearchParams,
   type ModelSearchFilters,
 } from "../lib/model-search-filters";
 import { pullBatch, useHubPaginatedSearch } from "./use-hub-paginated-search";
@@ -149,8 +149,9 @@ function makeSortFetch(
           ? input.toString()
           : input.url;
     const url = new URL(rawUrl);
-    if (parameterFilter)
-      url.searchParams.set("num_parameters", parameterFilter);
+    for (const [key, value] of new URLSearchParams(parameterFilter)) {
+      url.searchParams.set(key, value);
+    }
 
     if (sortBy && !url.searchParams.has("sort")) {
       url.searchParams.set("sort", sortBy);
@@ -699,7 +700,8 @@ export function useHubModelSearch(
 
   const hfEndpoint = useHfEndpoint();
   const hasFilters = !!filters && hasModelSearchFilters(filters);
-  const filterRange = filters ? parameterRange(filters) : "";
+  // num_parameters and base_model_relation, as a query string every listing fetch applies.
+  const filterRange = filters ? hubSearchParams(filters) : "";
   const createListing = useCallback(
     (signal: AbortSignal, filterPriority?: ModelListingTransform) => {
       // Channel scoping bypasses the unsloth-merge iterator: a hard owner/tag filter shows that slice.

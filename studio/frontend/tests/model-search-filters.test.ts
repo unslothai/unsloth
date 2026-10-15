@@ -8,6 +8,8 @@ import ts from "typescript";
 import {
   filterModelListing,
   hasModelSearchFilters,
+  hubSearchParams,
+  isBaseModel,
   matchesRange,
   modelContextLength,
   parameterRange,
@@ -387,4 +389,16 @@ test("uploaders split Unsloth, other organizations and personal accounts", async
   assert.deepEqual(await names(["organization", "personal"]), ["Qwen/b", "someone/c"]);
   assert.deepEqual(await names(["unsloth"]), ["unsloth/a"]);
   assert.deepEqual(requests, []);
+});
+
+test("Base only asks the Hub for base_model_relation=base, as its own toggle does", () => {
+  assert.equal(hubSearchParams({}), "");
+  const params = new URLSearchParams(hubSearchParams({ maxParams: 8e9, baseOnly: true }));
+  assert.equal(params.get("num_parameters"), "max:8000000000");
+  assert.equal(params.get("base_model_relation"), "base");
+  assert.equal(hasModelSearchFilters({ baseOnly: true }), true);
+  // Rows a listing returns anyway are held to the same rule: no declared base model.
+  assert.equal(isBaseModel(["text-generation"]), true);
+  assert.equal(isBaseModel(["gguf", "base_model:quantized:Qwen/Qwen3-8B"]), false);
+  assert.equal(isBaseModel(["base_model:Qwen/Qwen3-8B", "base_model:finetune:Qwen/Qwen3-8B"]), false);
 });

@@ -118,19 +118,9 @@ test("the range thumbs can share a stop, so <1B and >500B are reachable as limit
   assert.match(readSrc("features/hub/catalog/model-search-filters.tsx"), /minStepsBetweenThumbs=\{0\}/);
 });
 
-test("Model type splits base models from fine-tunes by the Hub's model-tree tags", async () => {
-  const { isFineTunedModel } = await import("../src/features/hub/lib/model-capabilities.ts");
-  // A lab's own instruct release is a finetune of its base on the model tree, but reads as base.
-  assert.equal(isFineTunedModel("Qwen/Qwen3-8B", ["base_model:finetune:Qwen/Qwen3-8B-Base"]), false);
-  assert.equal(isFineTunedModel("mlabonne/Qwen3-8B-abliterated", ["base_model:finetune:Qwen/Qwen3-8B"]), true);
-  assert.equal(isFineTunedModel("someone/lora", ["base_model:adapter:meta-llama/Llama-3.1-8B"]), true);
-  // Quantizations follow what they quantize; unsloth re-uploads are the model they copy.
-  assert.equal(isFineTunedModel("unsloth/Qwen3-8B-GGUF", ["gguf", "base_model:quantized:Qwen/Qwen3-8B"]), false);
-  assert.equal(isFineTunedModel("bartowski/x-GGUF", ["base_model:quantized:huihui-ai/Huihui-Qwen3-8B-abliterated"]), true);
-  assert.equal(isFineTunedModel("unsloth/Qwen3-8B", ["base_model:finetune:Qwen/Qwen3-8B"]), false);
-  assert.equal(isFineTunedModel("someone/Qwen3-8b-Text2SQL", undefined), true);
-  assert.equal(isFineTunedModel("Qwen/Qwen3-8B-Base", undefined), false);
+test("Model type is All models or the Hub's Base only", () => {
   const popover = readSrc("features/hub/catalog/model-search-filters.tsx");
-  assert.match(popover, /label="Model type"/);
-  assert.match(popover, /\["finetuned", "Fine-tuned"\]/);
+  assert.match(popover, /\["all", "All models"\],\s*\["base", "Base only"\]/);
+  assert.match(popover, /baseOnly: next === "base" \|\| undefined/);
+  assert.match(readSrc("features/hub/hooks/use-hub-model-search.ts"), /for \(const \[key, value\] of new URLSearchParams\(parameterFilter\)\)/);
 });

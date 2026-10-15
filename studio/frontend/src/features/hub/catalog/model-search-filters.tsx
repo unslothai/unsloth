@@ -24,6 +24,7 @@ import {
   InformationCircleIcon,
   LayoutTable02Icon,
   TextFontIcon,
+  UndoIcon,
   ViewIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
@@ -35,10 +36,7 @@ import {
   type ModelSearchFilters,
   hasModelSearchFilters,
 } from "../lib/model-search-filters";
-import {
-  CAPABILITY_FILTER_OPTIONS,
-  type HubModelKind,
-} from "../lib/view-models";
+import { CAPABILITY_FILTER_OPTIONS } from "../lib/view-models";
 
 // The Hub rows' capability icons (catalog/shared.tsx), with Image gen on diffusion's and Video gen
 // on the Video page's.
@@ -109,6 +107,9 @@ const RANGES: readonly RangeSpec[] = [
 ];
 
 const THUMB = 14;
+// The range, thumbs and value pills: a step off black in light, white in dark.
+const RANGE_FILL =
+  "bg-[color-mix(in_oklab,var(--foreground)_78%,var(--background))] dark:bg-foreground";
 
 function stopIndex(
   stops: readonly number[],
@@ -177,8 +178,13 @@ function RangeStops({
                 [spec.max]: undefined,
               })
             }
-            className="cursor-pointer transition-colors hover:text-foreground"
+            className="flex cursor-pointer items-center gap-1 transition-colors hover:text-foreground"
           >
+            <HugeiconsIcon
+              icon={UndoIcon}
+              strokeWidth={1.75}
+              className="size-3"
+            />
             Reset
           </button>
         )}
@@ -186,17 +192,24 @@ function RangeStops({
       <div className="relative mx-3 pt-7 pb-1">
         <div aria-hidden={true} className="absolute inset-x-0 top-0 h-5">
           {spec.labels.map((label, i) =>
-            label === null || covered(i) ? null : (
+            label === null && !covered(i) ? null : (
               <span
                 // biome-ignore lint/suspicious/noArrayIndexKey: fixed stops
                 key={i}
                 style={edge(i) ?? { left: at(i) }}
                 className={cn(
-                  "absolute top-0.5 whitespace-nowrap text-ui-11 text-muted-foreground tabular-nums",
+                  // A thumb's stop wears a pill; the padding sits outside the text so it stays put.
+                  "absolute top-0.5 whitespace-nowrap text-ui-11 tabular-nums",
                   !edge(i) && "-translate-x-1/2",
+                  covered(i)
+                    ? cn(
+                        "-mx-1.5 -my-0.5 rounded-md px-1.5 py-0.5 text-background",
+                        RANGE_FILL,
+                      )
+                    : "text-muted-foreground",
                 )}
               >
-                {label}
+                {chip(i)}
               </span>
             ),
           )}
@@ -230,7 +243,9 @@ function RangeStops({
                 />
               ),
             )}
-            <SliderPrimitive.Range className="absolute h-full rounded-full bg-foreground" />
+            <SliderPrimitive.Range
+              className={cn("absolute h-full rounded-full", RANGE_FILL)}
+            />
           </SliderPrimitive.Track>
           {([lo, hi] as const).map((index, thumb) => (
             <SliderPrimitive.Thumb
@@ -238,22 +253,11 @@ function RangeStops({
               aria-label={`${thumb === 0 ? "Minimum" : "Maximum"} ${spec.label.toLowerCase()}`}
               aria-valuetext={chip(index)}
               style={{ width: THUMB, height: THUMB }}
-              className="relative block cursor-grab rounded-full bg-foreground shadow-sm outline-none ring-background ring-2 focus-visible:ring-4 focus-visible:ring-ring/50 active:cursor-grabbing"
-            >
-              <span
-                aria-hidden={true}
-                className={cn(
-                  "pointer-events-none absolute bottom-full mb-2 whitespace-nowrap rounded-md bg-foreground px-1.5 py-0.5 text-ui-11 font-medium text-background tabular-nums",
-                  index === 0
-                    ? "left-0"
-                    : index === last
-                      ? "right-0"
-                      : "left-1/2 -translate-x-1/2",
-                )}
-              >
-                {chip(index)}
-              </span>
-            </SliderPrimitive.Thumb>
+              className={cn(
+                "relative block cursor-grab rounded-full shadow-sm outline-none ring-background ring-2 focus-visible:ring-4 focus-visible:ring-ring/50 active:cursor-grabbing",
+                RANGE_FILL,
+              )}
+            />
           ))}
         </SliderPrimitive.Root>
       </div>
@@ -394,8 +398,6 @@ export function ModelSearchFiltersControl({
   capabilities,
   onCapabilitiesChange,
   isolateFirstCapability,
-  modelKind,
-  onModelKindChange,
   uploaders,
   uploadersChanged,
   onUploadersChange,
@@ -410,8 +412,6 @@ export function ModelSearchFiltersControl({
   onCapabilitiesChange: (value: HubCapabilityFilter[]) => void;
   /** True until the first change from the defaults: that capability pick keeps just that one. */
   isolateFirstCapability: boolean;
-  modelKind: HubModelKind;
-  onModelKindChange: (value: HubModelKind) => void;
   uploaders: readonly HubUploader[];
   /** False while the default applies, which leaves the icon without its dot. */
   uploadersChanged: boolean;
@@ -425,7 +425,6 @@ export function ModelSearchFiltersControl({
   const unslothOnly = uploaders.length === 1 && uploaders[0] === "unsloth";
   const filtered =
     capabilities.length > 0 ||
-    modelKind !== "all" ||
     uploadersChanged ||
     (showModelFilters && hasModelSearchFilters(value));
   return (
@@ -565,24 +564,29 @@ export function ModelSearchFiltersControl({
                 )
               }
             />
-            <SegmentedRow
-              label="Model type"
-              value={modelKind}
-              options={[
-                ["all", "All"],
-                ["base", "Base"],
-                ["finetuned", "Fine-tuned"],
-              ]}
-              onChange={onModelKindChange}
-            />
+            {/* A Hub listing parameter (base_model_relation=base), so only where the Hub search runs. */}
+            {showModelFilters && (
+              <SegmentedRow
+                label="Model type"
+                value={value.baseOnly ? "base" : "all"}
+                options={[
+                  ["all", "All models"],
+                  ["base", "Base only"],
+                ]}
+                onChange={(next) =>
+                  onChange({ ...value, baseOnly: next === "base" || undefined })
+                }
+              />
+            )}
           </div>
         </div>
         <div aria-hidden={true} className={cn(SEPARATOR, "shrink-0")} />
-        <div className="flex shrink-0 items-center justify-end px-3 pt-0.5">
+        {/* The line's my-2 above and the popover's padding below keep it centred. */}
+        <div className="flex shrink-0 items-center justify-end px-3">
           <Button
             type="button"
             variant="ghost"
-            size="sm"
+            size="xs"
             disabled={!filtered}
             onClick={onReset}
           >

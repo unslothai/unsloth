@@ -70,6 +70,7 @@ import {
   HUB_UPLOADERS,
   type HubUploader,
   hasModelSearchFilters,
+  isBaseModel,
   type ModelSearchFilters,
 } from "./lib/model-search-filters";
 import { ModelsToolbar } from "./catalog/models-toolbar";
@@ -128,9 +129,7 @@ import {
   buildDiscoverRows,
   detectResultFormat,
   discoveryInventorySignature,
-  isFineTunedModel,
   isUnslothFinetunable,
-  type HubModelKind,
   matchesHubCapability,
   matchesFormat,
   matchesRecommended,
@@ -558,11 +557,6 @@ export function ModelsPage() {
   const [uploaderPick, setUploaderPick] = useState<HubUploader[] | null>(null);
   // Until the popover's first change from the defaults, a capability pick keeps just that one.
   const [firstPickArmed, setFirstPickArmed] = useState(true);
-  const [modelKind, setModelKind] = useState<HubModelKind>("all");
-  const handlePopoverModelKindChange = useCallback((next: HubModelKind) => {
-    setFirstPickArmed(false);
-    setModelKind(next);
-  }, []);
   const handlePopoverCapabilitiesChange = useCallback(
     (next: HubCapabilityFilter[]) => {
       setFirstPickArmed(false);
@@ -688,7 +682,6 @@ export function ModelsPage() {
       setSearchFilters({});
       setUploaderPick(null);
       setFirstPickArmed(true);
-      setModelKind("all");
       setModelsTab(next);
     },
     [setModelsTab],
@@ -703,7 +696,6 @@ export function ModelsPage() {
       setSearchFilters({});
       setUploaderPick(null);
       setFirstPickArmed(true);
-      setModelKind("all");
       setSortBrowseActive(false);
       if (next === "models") {
         const preset = findChannel(DEFAULT_DISCOVER_CHANNEL);
@@ -738,7 +730,6 @@ export function ModelsPage() {
       setSearchFilters({});
       setUploaderPick(null);
       setFirstPickArmed(true);
-      setModelKind("all");
       setSortBrowseActive(false);
       // Clear search: an active query outranks the section in `mode`, hiding the curated list.
       setQuery("");
@@ -758,7 +749,6 @@ export function ModelsPage() {
     setSearchFilters({});
     setUploaderPick(null);
     setFirstPickArmed(true);
-    setModelKind("all");
     setSortBrowseActive(false);
     void navigate({
       to: "/hub",
@@ -774,7 +764,6 @@ export function ModelsPage() {
     setSearchFilters({});
     setUploaderPick(null);
     setFirstPickArmed(true);
-    setModelKind("all");
     setDownloadedFormat("all");
     setDiscoverFormat(preset?.format ?? "recommended");
     setSortBy(preset?.sort ?? "trendingScore");
@@ -865,6 +854,7 @@ export function ModelsPage() {
     [hubSource, ownerScope, uploaders, storedSearchFilters],
   );
   const hasSearchFilters = hasModelSearchFilters(searchFilters);
+  const baseOnly = searchFilters.baseOnly === true;
   const hfToken = useHfTokenStore((s) => s.token);
   const debouncedHfToken = useDebouncedValue(hfToken, 500);
   const apiHfToken = hfApiToken(debouncedHfToken);
@@ -875,7 +865,6 @@ export function ModelsPage() {
   );
   const deferredFormatFilter = useDeferredValue(formatFilter);
   const deferredCapabilityFilters = useDeferredValue(capabilityFilters);
-  const deferredModelKind = useDeferredValue(modelKind);
 
   const hasQuery = deferredDebouncedQuery.trim() !== "";
   const mode: DiscoverMode = isModelDiscover
@@ -1099,9 +1088,8 @@ export function ModelsPage() {
               (key !== "audio" ||
                 matchesHubAudioTask(row.result.pipelineTag, linkedAudioTask)),
           )) &&
-        (deferredModelKind === "all" ||
-          isFineTunedModel(row.result.id, row.result.tags) ===
-            (deferredModelKind === "finetuned")) &&
+        // The Hub filters Base only server-side; this covers listings that skip that parameter.
+        (!baseOnly || isBaseModel(row.result.tags)) &&
         (!activeChannel?.finetunableOnly || isUnslothFinetunable(row.result)) &&
         // Models already on disk stay visible regardless of device fit, matching the chat selector.
         (!fitOnDeviceOnly ||
@@ -1118,7 +1106,7 @@ export function ModelsPage() {
     checkpointQuantFormats,
     diffusionQuantFormats,
     deferredCapabilityFilters,
-    deferredModelKind,
+    baseOnly,
     linkedAudioTask,
     activeChannel,
     fitOnDeviceOnly,
@@ -1288,7 +1276,6 @@ export function ModelsPage() {
         resourceType,
         deferredFormatFilter,
         deferredCapabilityFilters,
-        deferredModelKind,
         searchFilters,
         inventoryTypeFilter,
         effectiveSort,
@@ -1301,7 +1288,6 @@ export function ModelsPage() {
       resourceType,
       deferredFormatFilter,
       deferredCapabilityFilters,
-      deferredModelKind,
       searchFilters,
       inventoryTypeFilter,
       effectiveSort,
@@ -1328,14 +1314,12 @@ export function ModelsPage() {
     setSearchFilters({});
     setUploaderPick(null);
     setFirstPickArmed(true);
-    setModelKind("all");
   }, [isDiscoverTab, urlSection, navigate]);
   const handleResetPopoverFilters = useCallback(() => {
     setCapabilityFilters([]);
     setSearchFilters({});
     setUploaderPick(null);
     setFirstPickArmed(true);
-    setModelKind("all");
   }, []);
   const handleDiscoverFetchIntent = useCallback(() => {
     setDiscoverFetchIntent((value) => value + 1);
@@ -1424,7 +1408,6 @@ export function ModelsPage() {
       setSearchFilters({});
       setUploaderPick(null);
       setFirstPickArmed(true);
-      setModelKind("all");
       setSortBrowseActive(false);
       setQuery("");
       void navigate({
@@ -1446,7 +1429,6 @@ export function ModelsPage() {
         setSearchFilters({});
         setUploaderPick(null);
         setFirstPickArmed(true);
-        setModelKind("all");
         setSortBrowseActive(false);
         if (preset) {
           setDiscoverFormat(preset.format);
@@ -1544,7 +1526,6 @@ export function ModelsPage() {
     setSearchFilters({});
     setUploaderPick(null);
     setFirstPickArmed(true);
-    setModelKind("all");
   }, [isModelDiscover, sectionChannelId, urlCapability]);
   const handleManageLocalFolders = useCallback(
     () => setFoldersDialogOpen(true),
@@ -1609,7 +1590,6 @@ export function ModelsPage() {
       // Base models come from other publishers, so search the whole Hub.
       setUploaderPick(null);
       setFirstPickArmed(true);
-      setModelKind("all");
       setQuery(trimmed);
       void navigate({
         to: "/hub",
@@ -1803,7 +1783,6 @@ export function ModelsPage() {
           ((isModelDiscover && hasSearchFilters) ||
             deferredFormatFilter !== "all" ||
             deferredCapabilityFilters.length > 0 ||
-            deferredModelKind !== "all" ||
             (tab === "downloaded" && typeFilterActive)),
         typeFilterActive,
         // A single format filter makes every row's format dot the same; Recommended mixes GGUF and checkpoints.
@@ -1836,7 +1815,6 @@ export function ModelsPage() {
       discoverManualFetchAvailable,
       deferredFormatFilter,
       deferredCapabilityFilters,
-      deferredModelKind,
       hasSearchFilters,
       inventoryTypeFilter,
     ],
@@ -2044,8 +2022,6 @@ export function ModelsPage() {
           capabilityFilters={capabilityFilters}
           onCapabilityFiltersChange={handlePopoverCapabilitiesChange}
           isolateFirstCapability={firstPickArmed}
-          modelKind={modelKind}
-          onModelKindChange={handlePopoverModelKindChange}
           fitOnDeviceOnly={fitOnDeviceOnly}
           onFitOnDeviceOnlyChange={setFitOnDeviceOnly}
           onManageLocalFolders={handleManageLocalFolders}

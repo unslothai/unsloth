@@ -17,12 +17,32 @@ export interface ModelSearchFilters {
   maxContext?: number;
   /** Absent lists every uploader. */
   uploaders?: HubUploader[];
+  /** The Hub's own "Base only": no quantizations, finetunes, adapters or merges. */
+  baseOnly?: boolean;
 }
 
 export function hasModelSearchFilters(filters: ModelSearchFilters): boolean {
   return Object.values(filters).some(
     (value) => value !== undefined && value !== false,
   );
+}
+
+/** The query parameters these filters add to a Hub listing request. */
+export function hubSearchParams(filters: ModelSearchFilters): string {
+  const params = new URLSearchParams();
+  const range = parameterRange(filters);
+  if (range) {
+    params.set("num_parameters", range);
+  }
+  if (filters.baseOnly) {
+    params.set("base_model_relation", "base");
+  }
+  return params.toString();
+}
+
+/** A listing row the Hub's Base only keeps: one with no declared base model. */
+export function isBaseModel(tags: readonly string[] | undefined): boolean {
+  return !(tags ?? []).some((tag) => tag.startsWith("base_model:"));
 }
 
 export function parameterRange(filters: ModelSearchFilters): string {
