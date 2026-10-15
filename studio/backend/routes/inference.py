@@ -42353,8 +42353,10 @@ async def _anthropic_messages_via_connection(
             status_code = 400,
             detail = "Unsloth server tools are not available with a Connection model.",
         )
+    # Keep every turn's thinking: _build_external_messages drops it for providers that must not get it,
+    # and DeepSeek answers 400 when tools ride on a history without it.
     messages = anthropic_messages_to_openai(
-        [m.model_dump() for m in payload.messages], payload.system
+        [m.model_dump() for m in payload.messages], payload.system, preserve_thinking = True
     )
     _restore_connection_tool_extras(current_subject, messages)
     fields = {

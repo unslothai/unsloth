@@ -772,3 +772,39 @@ def test_messages_complete_interleaved_parallel_tool_calls(v1, monkeypatch, stre
     else:
         inputs = [b["input"] for b in resp.json()["content"] if b["type"] == "tool_use"]
     assert inputs == [{"file_path": "a.txt"}, {"file_path": "b.txt"}]
+
+
+def test_messages_keep_earlier_thinking_for_a_deepseek_connection(v1, monkeypatch):
+    # DeepSeek answers 400 when tools ride on a history whose reasoning_content was dropped.
+    import routes.inference as inf
+
+    monkeypatch.setattr(
+        inf.providers_db,
+        "get_provider",
+        lambda pid: {
+            "id": pid,
+            "provider_type": "deepseek",
+            "base_url": "https://api.deepseek.com/v1",
+            "api_type": "chat_completions",
+            "display_name": "DeepSeek",
+            "is_enabled": True,
+            "reasoning_config": None,
+        },
+    )
+    history = [
+        {"role": "user", "content": "first"},
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "thinking", "thinking": "earlier thought", "signature": ""},
+                {"type": "text", "text": "done"},
+            ],
+        },
+        {"role": "user", "content": "second"},
+    ]
+    v1.post("/v1/messages", json = _messages_body(messages = history))
+
+    assistant = next(
+        m for m in FakeExternalClient.calls[-1]["stream"]["messages"] if m["role"] == "assistant"
+    )
+    assert assistant["reasoning_content"] == "earlier thought"
