@@ -5580,6 +5580,30 @@ def _refuse_unsaveable_text_core(model, save_method):
             )
 
 
+def _keep_in_fp32_pattern(model, target_dtype):
+    """Names transformers keeps in fp32 when loading at `target_dtype` (MoE router biases, ...);
+    a 16-bit save must not downcast them. Collected from every submodule, as transformers does."""
+    names = set()
+    for module in model.modules() if hasattr(model, "modules") else ():
+        names.update(getattr(module, "_keep_in_fp32_modules_strict", None) or ())
+        if target_dtype == torch.float16:
+            names.update(getattr(module, "_keep_in_fp32_modules", None) or ())
+    if not names:
+        return None
+    return re.compile("|".join(re.escape(name) for name in sorted(names)))
+
+
+def _cast_state_dict_16bit(model, state_dict, target_dtype):
+    keep = _keep_in_fp32_pattern(model, target_dtype)
+    return {
+        k: v.to(dtype = target_dtype)
+        if v.is_floating_point()
+        and not (keep is not None and v.dtype == torch.float32 and keep.search(k))
+        else v
+        for k, v in state_dict.items()
+    }
+
+
 @_normalize_tied_weights_keys_for_save
 @torch.inference_mode
 def unsloth_generic_save(
@@ -5659,10 +5683,7 @@ def unsloth_generic_save(
             state_dict = model.state_dict()
         if "16bit" in save_method:
             _target_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
-            state_dict = {
-                k: v.to(dtype = _target_dtype) if v.is_floating_point() else v
-                for k, v in state_dict.items()
-            }
+            state_dict = _cast_state_dict_16bit(model, state_dict, _target_dtype)
         if is_qwen3_5_vlm:
             state_dict = _qwen3_5_vlm_state_dict_for_save(state_dict)
         if state_dict is not None:
