@@ -93,7 +93,7 @@ test("the first pick from the default keeps just that capability", () => {
 test("size and context are stepped ranges whose ends mean no limit", () => {
   const popover = readSrc("features/hub/catalog/model-search-filters.tsx");
   assert.match(popover, /\[1, 3, 6, 9, 12, 24, 32, 64, 128, 256, 500\]/);
-  assert.match(popover, /labels: \["<16K", "32K", "64K", "128K", "256K", "512K", ">1M"\]/);
+  assert.match(popover, /labels: \["<16K", "32K", "64K", "128K", "256K", ">1M"\]/);
   assert.match(popover, /\[spec\.min\]: next\[0\] === 0 \? undefined : spec\.stops\[next\[0\]\]/);
   assert.match(popover, /\[spec\.max\]: next\[1\] === last \? undefined : spec\.stops\[next\[1\]\]/);
   assert.doesNotMatch(popover, /Apply (filters|limits)/);
@@ -123,4 +123,11 @@ test("Model type is All models or the Hub's Base only", () => {
   assert.match(popover, /\["all", "All models"\],\s*\["base", "Base only"\]/);
   assert.match(popover, /baseOnly: next === "base" \|\| undefined/);
   assert.match(readSrc("features/hub/hooks/use-hub-model-search.ts"), /for \(const \[key, value\] of new URLSearchParams\(parameterFilter\)\)/);
+});
+
+test("LTX versions are video, and video-to-video is not offered as runnable video gen", () => {
+  assert.equal(generationKinds(["diffusers"], undefined, "unsloth/LTX-2.3-GGUF").video, true);
+  assert.equal(generationKinds(["diffusers"], undefined, "Lightricks/LTX-Video").video, true);
+  // The Video page takes a prompt and reference images, never a source video.
+  assert.equal(generationKinds(["diffusers"], "video-to-video", "someone/restyle").video, false);
 });

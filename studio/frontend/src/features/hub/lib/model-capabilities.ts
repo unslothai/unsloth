@@ -44,10 +44,9 @@ const VIDEO_GEN_TAGS = new Set([
   "text-to-video",
   "image-to-video",
   "image-text-to-video",
-  "video-to-video",
 ]);
 const VIDEO_GEN_ID_RE =
-  /wan2|hunyuan[-_]?video|ltx[-_]?video|\bltxv\b|cogvideo|mochi|skyreels|[-_]t2v\b|[-_]i2v\b/;
+  /wan2|hunyuan[-_]?video|\bltx(?:[-_]?video|v|[-_]?\d)|cogvideo|mochi|skyreels|[-_]t2v\b|[-_]i2v\b/;
 
 /** Which generation an image/video model does, from its tags and name. A video signal wins: several
  *  video repos carry an image tag for their first-frame path, and the picker reads them the same

@@ -68,6 +68,8 @@ interface RangeSpec {
   stops: readonly number[];
   /** Index -> label; unlabelled stops show only a tick. */
   labels: readonly (string | null)[];
+  /** Draws a tick halfway between stops too. */
+  midTicks?: boolean;
 }
 
 const B = 1e9;
@@ -101,8 +103,10 @@ const RANGES: readonly RangeSpec[] = [
       "In tokens. The model's published limit, not what your device can fit. Both limits are included; models that don't publish one are left out.",
     min: "minContext",
     max: "maxContext",
-    stops: [16 * K, 32 * K, 64 * K, 128 * K, 256 * K, 512 * K, K * K],
-    labels: ["<16K", "32K", "64K", "128K", "256K", "512K", ">1M"],
+    stops: [16 * K, 32 * K, 64 * K, 128 * K, 256 * K, K * K],
+    labels: ["<16K", "32K", "64K", "128K", "256K", ">1M"],
+    // Every stop is labelled, so a tick between each pair gives the track Parameters' rhythm.
+    midTicks: true,
   },
 ];
 
@@ -232,7 +236,10 @@ function RangeStops({
           className="relative flex h-4 w-full touch-none select-none items-center"
         >
           <SliderPrimitive.Track className="relative h-1 w-full grow rounded-full bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)]">
-            {spec.stops.map((_, i) =>
+            {Array.from(
+              { length: spec.midTicks ? last * 2 + 1 : last + 1 },
+              (_, n) => (spec.midTicks ? n / 2 : n),
+            ).map((i) =>
               i === 0 || i === last ? null : (
                 <span
                   // biome-ignore lint/suspicious/noArrayIndexKey: fixed stops
