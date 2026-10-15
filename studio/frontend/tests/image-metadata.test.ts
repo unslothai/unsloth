@@ -787,3 +787,29 @@ test("pre-1.9 AUTOMATIC1111 sampler names carry their schedule; denoising streng
   assert.equal(hires?.workflow, undefined);
   assert.equal(hires?.strength, undefined);
 });
+
+test("ComfyUI denoise below 1 imports as img2img at that strength", () => {
+  const graph = (denoise: number) =>
+    JSON.stringify({
+      "1": { class_type: "CLIPTextEncode", inputs: { text: "a fox" } },
+      "2": { class_type: "KSampler", inputs: { positive: ["1", 0], seed: 3, steps: 9, cfg: 4, denoise } },
+    });
+  assert.equal(parseComfyPrompt(graph(0.6))?.strength, 0.6);
+  assert.equal(parseComfyPrompt(graph(0.6))?.workflow, "img2img");
+  assert.equal(parseComfyPrompt(graph(1))?.workflow, undefined);
+  assert.equal(parseComfyPrompt(graph(1))?.strength, undefined);
+  const sca = JSON.stringify({
+    "1": { class_type: "CLIPTextEncode", inputs: { text: "a fox" } },
+    "2": { class_type: "BasicGuider", inputs: { conditioning: ["1", 0] } },
+    "3": { class_type: "BasicScheduler", inputs: { steps: 20, scheduler: "simple", denoise: 0.5 } },
+    "4": { class_type: "SamplerCustomAdvanced", inputs: { guider: ["2", 0], sigmas: ["3", 0] } },
+  });
+  assert.equal(parseComfyPrompt(sca)?.strength, 0.5);
+  assert.equal(parseComfyPrompt(sca)?.workflow, "img2img");
+});
+
+test("the import warns when the loaded model runs at another precision than the recipe", () => {
+  const page = readSrc("features/images/images-page.tsx");
+  assert.match(page, /\(\["transformer_quant", "text_encoder_quant"\] as const\)\.filter/);
+  assert.match(page, /\(recipe\[key\] \?\? null\) !== \(status\[key\] \?\? null\)/);
+});

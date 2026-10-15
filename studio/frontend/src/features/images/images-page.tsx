@@ -2646,6 +2646,20 @@ export function ImagesPage({
         toast(`Made with ${quant}`, {
           description: "Load that quant to reproduce this image exactly.",
         });
+      } else if (settings.model && status?.loaded) {
+        // Same model, another precision: null on both sides means dense.
+        const differs = (["transformer_quant", "text_encoder_quant"] as const).filter(
+          (key) =>
+            Object.hasOwn(recipe, key) &&
+            status[key] !== undefined &&
+            (recipe[key] ?? null) !== (status[key] ?? null),
+        );
+        if (differs.length > 0) {
+          toast(
+            `Made with ${differs.map((key) => `${key.replace(/_/g, " ")} ${String(recipe[key] ?? "off")}`).join(", ")}`,
+            { description: "Reload the model with that precision to reproduce this image exactly." },
+          );
+        }
       }
       const notApplied = unknownRecipeKeys(recipe);
       if (status?.loaded && samplerOptions.length === 0) {

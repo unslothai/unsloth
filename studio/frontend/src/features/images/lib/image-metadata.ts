@@ -858,6 +858,7 @@ export function parseComfyPrompt(text: string): ImportedRecipe | null {
       noise_seed: node(inputs.noise)?.inputs?.noise_seed,
       steps: sigmas.steps,
       scheduler: sigmas.scheduler,
+      denoise: sigmas.denoise,
       sampler_name: node(inputs.sampler)?.inputs?.sampler_name,
       latent_image: inputs.latent_image,
     };
@@ -876,6 +877,12 @@ export function parseComfyPrompt(text: string): ImportedRecipe | null {
   const cfg = value(inputs.cfg, ["cfg", "value"]);
   if (typeof fluxGuidance === "number") out.guidance = fluxGuidance;
   else if (typeof cfg === "number") out.guidance = cfg;
+  // denoise < 1 re-noises an encoded source: img2img at that strength.
+  const denoise = value(inputs.denoise, ["denoise", "value"]);
+  if (typeof denoise === "number" && denoise > 0 && denoise < 1) {
+    out.strength = denoise;
+    out.workflow = "img2img";
+  }
   const samplerName = value(inputs.sampler_name, ["sampler_name", "value"]);
   const scheduler = value(inputs.scheduler, ["scheduler", "value"]);
   // Unmapped samplers stay named; normal / simple have no exact Studio schedule, so stay automatic.
