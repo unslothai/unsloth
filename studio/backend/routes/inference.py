@@ -13673,6 +13673,13 @@ def _estimate_gguf_required_gb(
                 _eagle3 = eagle3_sidecar_path(str(main))
             except Exception:
                 _eagle3 = None
+            # Like DSpark / DFlash: a binary without draft-eagle3 never opens it.
+            if _eagle3:
+                try:
+                    if not LlamaCppBackend.probe_server_capabilities().get("supports_eagle3"):
+                        _eagle3 = None
+                except Exception:
+                    _eagle3 = None
             if _eagle3 and _same_file_key(_eagle3) not in _sized_keys:
                 total_bytes += LlamaCppBackend._get_gguf_size_bytes(_eagle3)
                 _sized_keys.add(_same_file_key(_eagle3))

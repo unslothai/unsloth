@@ -490,6 +490,10 @@ class _MambaSeqLimit(RuntimeError):
         self.blocks = blocks
 
 
+class _EngineExited(RuntimeError):
+    """The engine process exited during startup (not a stop, cancel or timeout)."""
+
+
 def _token_file_token(env) -> str | None:
     """The `hf auth login` token a local engine would read from its inherited HF_HOME; the WSL
     guest gets its own HF_HOME, so the token has to cross over. Anonymous loads keep none."""
@@ -551,17 +555,12 @@ class ManagedEngine:
             return self._start_seq_limited(
                 model, context, gpu_ids, env, cancel_event, options, trust_remote_code, model_path
             )
-        except Exception as exc:
-            if (
-                self.engine != "vllm"
-                or options.get("no_speculative_config")
-                or (cancel_event is not None and cancel_event.is_set())
-            ):
+        except _EngineExited as exc:
+            if not self._drafter_retry(model, model_path, options):
                 raise
-            from core.inference.engine_adapters import vllm_speculative_args
-
-            if not vllm_speculative_args(model_path or model):
-                raise
+            if cancel_event is not None and cancel_event.is_set():
+                self.stop()
+                raise RuntimeError("Model load cancelled") from exc
             # A drafter trained with the fine-tune must not keep the model itself from loading.
             from loggers import get_logger
 
@@ -569,6 +568,7 @@ class ManagedEngine:
                 "vLLM did not start with the trained drafter (%s); retrying without it.", exc
             )
             self._tail.clear()
+            self._mamba_blocks = None
             self.phase = "starting"
             return self._start_seq_limited(
                 model,
@@ -580,6 +580,14 @@ class ManagedEngine:
                 trust_remote_code,
                 model_path,
             )
+
+    def _drafter_retry(self, model, model_path, options) -> bool:
+        """A failed vLLM start that passed a drafter's --speculative-config is retried without it."""
+        if self.engine != "vllm" or (options or {}).get("no_speculative_config"):
+            return False
+        from core.inference.engine_adapters import vllm_speculative_args
+
+        return bool(vllm_speculative_args(model_path or model))
 
     def _start_seq_limited(
         self, model, context, gpu_ids, env, cancel_event, options, trust_remote_code, model_path
@@ -773,7 +781,7 @@ class ManagedEngine:
                         message = "Engine failed to start. " + "\n".join(self._tail)
                         if self._mamba_blocks:
                             raise _MambaSeqLimit(message, self._mamba_blocks)
-                        raise RuntimeError(message)
+                        raise _EngineExited(message)
                     try:
                         response = client.get(self.base_url + "/health", headers = self.headers)
                         if response.status_code == 200:
@@ -789,6 +797,12 @@ class ManagedEngine:
         except _MambaSeqLimit:
             # Not a stop request: an external stop() meanwhile must still cancel the relaunch.
             self._teardown()
+            raise
+        except _EngineExited:
+            if self._drafter_retry(model, model_path, options):
+                self._teardown()
+            else:
+                self.stop()
             raise
         except Exception:
             self.stop()

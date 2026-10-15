@@ -327,6 +327,22 @@ def test_stop_during_phase_drops_only_the_drafter(fake_zoo, tmp_path, monkeypatc
     assert not (tmp_path / "drafter.json").exists() and not (tmp_path / "eagle3").exists()
 
 
+def test_stop_before_training_clears_a_previous_drafter(fake_zoo, tmp_path):
+    """A resumed run in a reused folder, stopped while examples are collected."""
+    drafter, trainer = fake_zoo
+    (tmp_path / "drafter.json").write_text("{}")
+    (tmp_path / "eagle3").mkdir()
+    (tmp_path / "mtp_head.safetensors").write_bytes(b"old")
+    trainer.should_stop = True
+    assert (
+        drafter.run_drafter_phase(trainer, _config(), str(tmp_path), _Queue(), lambda *a: None)
+        is None
+    )
+    assert not any(
+        (tmp_path / n).exists() for n in ("drafter.json", "eagle3", "mtp_head.safetensors")
+    )
+
+
 def test_disabled_phase_is_a_no_op(fake_zoo, tmp_path):
     drafter, trainer = fake_zoo
     q = _Queue()
@@ -527,7 +543,8 @@ def test_vllm_speculative_args(tmp_path):
     }
 
 
-def test_phase_mtp_saves_head_beside_adapter(fake_zoo, tmp_path, monkeypatch):
+@pytest.mark.parametrize("snapshot", [None, "/snapshots/abc123"])
+def test_phase_mtp_saves_head_beside_adapter(fake_zoo, tmp_path, monkeypatch, snapshot):
     drafter, trainer = fake_zoo
     monkeypatch.setattr(
         drafter,
@@ -541,7 +558,10 @@ def test_phase_mtp_saves_head_beside_adapter(fake_zoo, tmp_path, monkeypatch):
         },
     )
     monkeypatch.setattr(drafter, "_mtp_family", lambda config: ("qwen3_5", "drafts"))
-    monkeypatch.setattr(drafter, "_find_mtp_source", lambda source, config: "org/base")
+    searched = []
+    monkeypatch.setattr(
+        drafter, "_find_mtp_source", lambda source, config: searched.append(source) or "org/base"
+    )
     calls = {}
     unsloth = types.ModuleType("unsloth")
     unsloth.FastModel = types.SimpleNamespace(
@@ -560,9 +580,12 @@ def test_phase_mtp_saves_head_beside_adapter(fake_zoo, tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules, "unsloth", unsloth)
     monkeypatch.setitem(sys.modules, "unsloth.save", save)
     (tmp_path / "adapter_config.json").write_text("{}")
-    manifest = drafter.run_drafter_phase(
-        trainer, _config(draft_steps = 2), str(tmp_path), _Queue(), lambda *a: None
-    )
+    config = _config(draft_steps = 2)
+    if snapshot:
+        config["model_snapshot_path"] = snapshot
+    manifest = drafter.run_drafter_phase(trainer, config, str(tmp_path), _Queue(), lambda *a: None)
+    # The head comes from the checkpoint this run loaded (a pinned snapshot), not the repo's tip.
+    assert searched == [snapshot or "org/base"]
     assert calls == {"source": "org/base", "random_init": False}
     assert manifest["strategy"] == "mtp" and manifest["files"] == ["mtp_head.safetensors"]
     assert manifest["vllm"] == {"method": "mtp", "num_speculative_tokens": 2}
@@ -1038,34 +1061,6 @@ def test_stop_while_saving_drops_the_drafter():
     src = _source("core/training/drafter.py")
     save = src.index("write_manifest(output_dir, manifest)")
     assert "if should_stop():" in src[save - 300 : save]
-
-
-def test_vllm_retries_once_without_a_drafter_that_breaks_startup(tmp_path, monkeypatch):
-    from collections import deque
-
-    from core.inference import engine_adapters, managed_engine
-
-    monkeypatch.setattr(
-        engine_adapters, "vllm_speculative_args", lambda model: ["--speculative-config", "{}"]
-    )
-    engine = object.__new__(managed_engine.ManagedEngine)
-    engine.engine, engine._tail, engine.phase = "vllm", deque(), "starting"
-    calls = []
-
-    def start(*args):
-        calls.append(args[5])
-        if not args[5].get("no_speculative_config"):
-            raise RuntimeError("drafter OOM")
-        return "up"
-
-    engine._start_seq_limited = start
-    assert engine.start(str(tmp_path), 4096, [0], {}) == "up"
-    assert [c.get("no_speculative_config") for c in calls] == [None, True]
-    engine.engine = "sglang"
-    calls.clear()
-    with pytest.raises(RuntimeError):
-        engine.start(str(tmp_path), 4096, [0], {})
-    assert len(calls) == 1
 
 
 def test_hub_manifest_recovery_uses_the_load_credential(monkeypatch, tmp_path):

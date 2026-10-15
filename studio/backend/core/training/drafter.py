@@ -656,6 +656,8 @@ def run_drafter_phase(
         if not examples:
             raise RuntimeError("no usable training examples")
         if should_stop():
+            # A reused folder may still hold a previous run's drafter.
+            _discard(output_dir, strategy, model = model)
             return None
         from datasets import Dataset
 
@@ -667,7 +669,8 @@ def run_drafter_phase(
         if strategy == "mtp":
             from unsloth import FastModel, MTPTrainingArguments, UnslothMTPTrainer
 
-            source = _find_mtp_source(capability_source(model_name, config), text_config)
+            # The pinned snapshot this run loaded, not the repo's default branch.
+            source = _find_mtp_source(capability_source(probe_target, config), text_config)
             head = FastModel.get_mtp_head(model, source = source, random_init = source is None)
             args = _training_args(
                 MTPTrainingArguments, ckpt_dir, cfg, strategy, seed, {"mtp_num_steps": steps}

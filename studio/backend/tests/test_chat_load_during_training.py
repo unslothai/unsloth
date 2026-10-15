@@ -1545,6 +1545,15 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             classmethod(lambda cls, binary = None: {"supports_dspark": supported}),
         )
 
+    @staticmethod
+    def _eagle3_capable(supported):
+        from core.inference.llama_cpp import LlamaCppBackend
+        return patch.object(
+            LlamaCppBackend,
+            "probe_server_capabilities",
+            classmethod(lambda cls, binary = None: {"supports_eagle3": supported}),
+        )
+
     def test_local_dspark_sidecar_is_only_counted_when_requested(self):
         import tempfile
 
@@ -1604,17 +1613,23 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             with (
                 patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0),
                 patch.object(self.route, "_remote_gguf_compute_reserve_gb", return_value = 0.0),
-                self._dspark_capable(),
             ):
-                bare = self.route._estimate_gguf_required_gb(cfg, speculative_type = "auto")
-                (p / "drafter.json").write_text(
-                    json.dumps({"strategy": "eagle3", "files": ["eagle3-model-F16.gguf"]})
-                )
-                auto = self.route._estimate_gguf_required_gb(cfg, speculative_type = "auto")
-                off = self.route._estimate_gguf_required_gb(cfg, speculative_type = "off")
+                with self._eagle3_capable(True):
+                    bare = self.route._estimate_gguf_required_gb(cfg, speculative_type = "auto")
+                    (p / "drafter.json").write_text(
+                        json.dumps({"strategy": "eagle3", "files": ["eagle3-model-F16.gguf"]})
+                    )
+                    auto = self.route._estimate_gguf_required_gb(cfg, speculative_type = "auto")
+                    off = self.route._estimate_gguf_required_gb(cfg, speculative_type = "off")
+                # A binary without draft-eagle3 never opens the sidecar.
+                with self._eagle3_capable(False):
+                    incapable = self.route._estimate_gguf_required_gb(
+                        cfg, speculative_type = "eagle3"
+                    )
         self.assertAlmostEqual(bare, 2000 / (1024**3), places = 9)
         self.assertAlmostEqual(auto, 5000 / (1024**3), places = 9)
         self.assertAlmostEqual(off, 2000 / (1024**3), places = 9)
+        self.assertAlmostEqual(incapable, 2000 / (1024**3), places = 9)
 
     def test_forced_dspark_on_an_incapable_binary_charges_no_drafter_at_all(self):
         """The loader's DSpark branch falls back to --spec-default, which loads no
