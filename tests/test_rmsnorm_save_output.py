@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
 """UNSLOTH_RMSNORM_SAVE_OUTPUT: Fast_RMS_Layernorm saves its output Y instead of X and rebuilds
 normed = Y / W in backward, so the norm and the LoRA layer after it share one saved activation."""
 
