@@ -430,6 +430,7 @@ def test_optional_loader_returns_none_when_truly_absent(monkeypatch):
         raise ModuleNotFoundError(name)
 
     monkeypatch.setattr(importlib, "import_module", _always_fail)
+    monkeypatch.setattr(shim, "_import_light", lambda name: None)
     for name in ("unsloth_zoo.hf_xet_tuning", "unsloth_zoo.hf_xet_health"):
         monkeypatch.delitem(sys.modules, name, raising = False)
     assert shim._load_optional("unsloth_zoo.hf_xet_tuning") is None

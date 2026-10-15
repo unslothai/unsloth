@@ -92,7 +92,6 @@ def _import_light(module_name: str) -> Any:
     (unslothai/unsloth-zoo#1752) is imported: no torch, no transformers, so neither the torch gate
     nor the GPU-init retry applies.
     """
-    import importlib
     import sys as _sys
 
     module = _sys.modules.get(module_name)
@@ -101,9 +100,14 @@ def _import_light(module_name: str) -> Any:
     ):
         return module
     try:
-        return importlib.import_module("unsloth_zoo_downloads." + module_name.rpartition(".")[2])
+        from unsloth_zoo_downloads import hf_xet_fallback, hf_xet_health, hf_xet_tuning
     except Exception:  # noqa: BLE001 - absent on older zoo releases: take the full-init path
         return None
+    return {
+        "unsloth_zoo.hf_xet_fallback": hf_xet_fallback,
+        "unsloth_zoo.hf_xet_health": hf_xet_health,
+        "unsloth_zoo.hf_xet_tuning": hf_xet_tuning,
+    }.get(module_name)
 
 
 def _load_shared() -> bool:
