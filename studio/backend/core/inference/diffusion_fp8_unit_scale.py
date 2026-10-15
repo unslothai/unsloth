@@ -1,31 +1,15 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Ada (sm_89) fp8 GEMM with PRECISE accumulate: unit-scale ``torch._scaled_mm`` plus a row x column scale epilogue.
+"""sm_89 precise-accumulate fp8 GEMM: unit-scale ``torch._scaled_mm`` + fp32 row x column scale epilogue.
 
-torchao's per-row ``Float8Tensor`` linear calls ``torch._scaled_mm`` with an [M, 1] activation scale and a [1, N] weight
-scale. On sm_89, PyTorch routes that row-wise form to a CUTLASS 2.x stream-K kernel, the per-tensor form to cuBLASLt.
-Measured on an L4 with torch 2.14.1 at the FLUX.2-klein / Z-Image / Qwen-Image-2.1 1024 px linear shapes:
+On sm_89 torchao's row-wise ``_scaled_mm`` hits a slow CUTLASS stream-K kernel. L4, torch 2.14.1, 1024 px linears:
+* precise accumulate: row-wise 29-32 TFLOP/s, per-tensor 102-134 TFLOP/s; end to end klein-4B 1.034 -> 0.480 s/step,
+  Z-Image-Turbo 1.708 -> 0.772 s/step.
+* fast accumulate: row-wise 85-108, per-tensor 91-127 TFLOP/s, no end-to-end gain, so left on torchao (bit-identical).
+Only difference vs row-wise: one bf16 rounding of the unscaled accumulator (relative error <= 2^-9).
 
-* precise accumulate (``use_fast_accum=False``): row-wise 29-32 TFLOP/s, per-tensor 102-134 TFLOP/s (3.5-4.5x).
-  End to end (compiled, 1024 px, L4): klein-4B 1.034 -> 0.480 s/step, Z-Image-Turbo 1.708 -> 0.772 s/step, i.e.
-  precise accumulate costs +3-4% over fast accumulate instead of 2.2x.
-* fast accumulate (Studio's default): row-wise 85-108, per-tensor 91-127 TFLOP/s, and end to end no measurable
-  difference (klein 0.501 vs 0.499 s/step, Z-Image 0.799 vs 0.795, inside the A/A spread). Fast-accumulate calls are
-  therefore left on torchao's kernel and stay bit-identical.
-
-So on sm_89 a precise-accumulate GEMM runs with unit scales into bf16 and the SAME per-row / per-column scales (and
-bias) are applied in fp32 afterwards; under ``torch.compile`` Inductor fuses that multiply into the consumer. The math
-is the row-wise kernel's (fp32 acc * s_a * s_b + bias, rounded to bf16); the only difference is one bf16 rounding of
-the unscaled accumulator before the scale multiply (relative error <= 2^-9).
-
-Engages only on a CUDA device of compute capability 8.9, ``use_fast_accum=False``, bf16 output, row-wise scales, no
-output scale, and at least ``_MIN_ROWS`` activation rows. Every other call, and every other GPU, takes torchao's own
-function unchanged.
-
-``UNSLOTH_DIFFUSION_FP8_UNIT_SCALE``: ``0`` = never (kill switch), ``1`` = every CUDA arch and both accumulate modes
-(testing only), unset / anything else = auto (sm_89, precise accumulate). ``UNSLOTH_DIFFUSION_FP8_UNIT_SCALE_MIN_ROWS``
-overrides the row floor.
+``UNSLOTH_DIFFUSION_FP8_UNIT_SCALE``: ``0`` off, ``1`` every arch + both accumulate modes (testing), else auto.
 """
 
 from __future__ import annotations
@@ -35,12 +19,10 @@ from typing import Any, Optional
 
 UNIT_SCALE_ENV = "UNSLOTH_DIFFUSION_FP8_UNIT_SCALE"
 MIN_ROWS_ENV = "UNSLOTH_DIFFUSION_FP8_UNIT_SCALE_MIN_ROWS"
-# Precise row-wise loses from M = 256 up at every measured shape (L4: 0.136-0.330 ms vs ~0.16 ms at 256, 2.5-4x
-# from 512); below that it is a few tens of microseconds either way, so short GEMMs keep torchao's kernel.
+# Unit-scale wins from M = 256 up (L4: row-wise 2.5-4x slower from 512); below, tens of microseconds either way.
 _DEFAULT_MIN_ROWS = 256
 _ADA_CAPS = ((8, 9),)
 
-# Calls taken by the unit-scale form (eager: per call; compiled: replayed with the graph) / by the fallback.
 _COUNTS = {"unit_scale": 0, "rowwise": 0}
 _STATE: dict = {"installed": False, "orig": None, "caps": {}}
 
@@ -62,7 +44,6 @@ def _min_rows() -> int:
 
 
 def stats() -> dict:
-    """Engagement counters plus whether the dispatch is installed."""
     return {**_COUNTS, "installed": bool(_STATE["installed"])}
 
 
@@ -80,9 +61,7 @@ def _device_caps() -> dict:
 
 
 def install(logger: Any = None) -> bool:
-    """Swap torchao's ``addmm_float8_unwrapped_inference`` (as bound in the Float8Tensor module) for the dispatching
-    wrapper. Idempotent; a no-op (False) when switched off, when no visible GPU qualifies, or when this torchao lays
-    the function out differently."""
+    """Patch torchao's fp8 addmm with the dispatcher; idempotent, False when off / no qualifying GPU / layout moved."""
     if _STATE["installed"]:
         return True
     mode = _mode()
@@ -177,7 +156,6 @@ def install(logger: Any = None) -> bool:
 
 
 def uninstall() -> None:
-    """Restore torchao's function (tests)."""
     if not _STATE["installed"]:
         return
     try:

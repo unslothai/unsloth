@@ -88,7 +88,6 @@ class _FakeDevice:
 
 
 class _Dev:
-    """A CPU tensor that reports a CUDA device, so the dispatch predicate can be exercised without a GPU."""
 
     def __init__(self, t):
         self.t = t
@@ -132,8 +131,6 @@ def test_epilogue_matches_rowwise_math(monkeypatch, bias):
     assert err <= 2 ** -7 * want.float().abs().max()
     assert torch.isfinite(got).all()
 
-    # Fast accumulate (Studio's default; no end-to-end gain measured), below the row floor, fp32 output and an
-    # output scale all keep torchao's row-wise kernel.
     small = _operands(256)
     fn(_Dev(a), sa, b, sb, torch.bfloat16, use_fast_accum = True)
     fn(_Dev(small[0]), small[1], small[2], small[3], torch.bfloat16)
