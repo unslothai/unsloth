@@ -1623,7 +1623,8 @@ def test_a_partial_draft_offload_leaves_the_drafter_unsized():
     compact = "".join(inspect.getsource(B.load_model).split())
     assert (
         "_draft_split_across_host=bool(_mtp_draft_for_budgetand("
-        "_draft_tensors_placed_off_card(_fit_extras,_fit_env)or_draft_is_split_across_host("
+        "_extra_args_draft_device_pin(_fit_extras)"
+        "or_draft_tensors_placed_off_card(_fit_extras,_fit_env)or_draft_is_split_across_host("
         in compact
     )
     # The same effective views the other overrides are classified on.
@@ -2549,6 +2550,54 @@ def test_an_ordinary_gpu_drafter_still_takes_none(tmp_path, monkeypatch, extra_a
     )
 
 
+@pytest.mark.parametrize(
+    "extra_args",
+    [
+        ["--spec-draft-device", "Vulkan0"],
+        ["-devd=CUDA1"],
+        ["--device-draft", "CUDA0,Vulkan0"],
+    ],
+    ids = ["vulkan0", "cuda1", "split_list"],
+)
+@pytest.mark.parametrize("ram_gib", [12, 64])
+def test_a_drafter_pinned_to_a_gpu_device_keeps_the_default_loader(
+    tmp_path, monkeypatch, extra_args, ram_gib
+):
+    """A separate drafter on a named GPU may be a companion card or an integrated GPU
+    drawing on host RAM (16 GiB of drafter over 12 GiB here), while mtp_bytes prices it
+    on these cards. The resident share abstains on that pin, and so does the load mode."""
+    assert (
+        _placed_launch(
+            tmp_path, monkeypatch, extra_args = extra_args, **{**_DRAFTER, "ram_gib": ram_gib}
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    "extra_args",
+    [
+        ["--spec-draft-device", "cpu"],
+        ["-devd", "none"],
+        ["-devd", "CUDA1", "-ngld", "0"],
+        ["-devd", "Vulkan0", "-ngld", "0"],
+    ],
+    ids = ["cpu", "none", "cuda1_ngld0", "vulkan0_ngld0"],
+)
+@pytest.mark.parametrize("ram_gib, expected", [(12, None), (64, FIT_MODE)])
+def test_a_cpu_or_zero_layer_drafter_pin_is_priced_on_the_host(
+    tmp_path, monkeypatch, extra_args, ram_gib, expected
+):
+    """Controls: a CPU / none pin and -ngld 0 put the whole drafter in host RAM, which the
+    fit already prices, so the pick follows the RAM: none with room, the default without."""
+    assert (
+        _placed_launch(
+            tmp_path, monkeypatch, extra_args = extra_args, **{**_DRAFTER, "ram_gib": ram_gib}
+        )
+        == expected
+    )
+
+
 # 20 GiB target and an 8 GiB projector on a 40,000 MiB card with 4 GiB of RAM.
 _PROJECTOR = dict(target_gib = 20, mmproj_gib = 8, free_mib = 40_000, ram_gib = 4)
 
@@ -2623,4 +2672,51 @@ def test_no_moe_cache_still_takes_none(tmp_path, monkeypatch, extra_args, env):
     """Negative control: with the cache off every expert is on the card, which fits."""
     assert (
         _placed_launch(tmp_path, monkeypatch, extra_args = extra_args, env = env, **_CACHED) == FIT_MODE
+    )
+
+
+@pytest.mark.parametrize(
+    "extra_args, env",
+    [
+        (["--no-mmproj-offload"], {}),
+        (["--mmproj-device", "none"], {}),
+        (["-mmdev=none"], {}),
+        ([], {"MTMD_BACKEND_DEVICE": "none"}),
+    ],
+    ids = ["no_offload", "argv_none", "short_equals", "env_none"],
+)
+@pytest.mark.parametrize(
+    "ram_gib, expected", [(8, None), (9, None), (10, FIT_MODE), (64, FIT_MODE)]
+)
+def test_a_cpu_projector_takes_none_only_when_ram_holds_it(
+    tmp_path, monkeypatch, extra_args, env, ram_gib, expected
+):
+    """--mmproj-device none is the --no-mmproj-offload placement (common/arg.cpp), so the
+    8 GiB projector is charged to host RAM: the default loader below the line, none above."""
+    assert (
+        _placed_launch(
+            tmp_path,
+            monkeypatch,
+            extra_args = extra_args,
+            env = env,
+            **{**_PROJECTOR, "ram_gib": ram_gib},
+        )
+        == expected
+    )
+
+
+@pytest.mark.parametrize(
+    "extra_args",
+    [["--mmproj-device", "none", "--mmproj-offload"], ["-mmdev", "CPU"], ["-mmdev", "NONE"]],
+    ids = ["offload_after", "cpu_name", "not_exactly_none"],
+)
+def test_an_unresolved_projector_device_keeps_the_default_loader_with_room(
+    tmp_path, monkeypatch, extra_args
+):
+    """Controls: placements the resolver cannot read as host RAM still abstain."""
+    assert (
+        _placed_launch(
+            tmp_path, monkeypatch, extra_args = extra_args, **{**_PROJECTOR, "ram_gib": 64}
+        )
+        is None
     )

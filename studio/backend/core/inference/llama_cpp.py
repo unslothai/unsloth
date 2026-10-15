@@ -6056,11 +6056,24 @@ def _resolved_mmproj_offload(
     """Where the projector actually ends up, over extras and environment together.
 
     Same precedence the child applies: environment first, then argv on top, so a
-    pass-through flag wins over an inherited variable and only silence in both falls
-    through to None.
+    pass-through flag wins over an inherited variable.
+
+    With both offload spellings silent, a projector device of exactly ``none``
+    (--mmproj-device / -mmdev, else MTMD_BACKEND_DEVICE) is host RAM too: common/arg.cpp
+    clears mmproj_use_gpu for that value. Only the silent case reads it, so an explicit
+    offload keeps the answer it had (an --mmproj-offload beside it stays on the GPU
+    side, which over- rather than under-charges VRAM). Any other device name leaves
+    None.
     """
     from_args = _extra_args_mmproj_offload_value(extra_args)
-    return from_args if from_args is not None else _env_mmproj_offload_value(env)
+    offload = from_args if from_args is not None else _env_mmproj_offload_value(env)
+    if offload is not None:
+        return offload
+    source = os.environ if env is None else env
+    device = _extra_args_device(extra_args, {"--mmproj-device", "-mmdev"})
+    if device is None:
+        device = source.get("MTMD_BACKEND_DEVICE")
+    return False if device == "none" else None
 
 
 _OVERRIDE_TENSOR_FLAGS: frozenset = frozenset(
@@ -29282,10 +29295,16 @@ class LlamaCppBackend:
                     # is the "engaged but unsized" case the fit abstains on.
                     # Draft tensor overrides and draft CPU-MoE controls move drafter
                     # weights to the host whatever -ngld says: the same unknown slice.
+                    # A separate drafter pinned to a GPU name by --spec-draft-device is
+                    # the same unknown: it may be a companion card or an integrated GPU
+                    # drawing on host RAM, while mtp_bytes prices it on these cards (the
+                    # resident share abstains on it too). CPU / none pins and -ngld 0
+                    # already nulled _mtp_draft_for_budget.
                     _draft_split_across_host = bool(
                         _mtp_draft_for_budget
                         and (
-                            _draft_tensors_placed_off_card(_fit_extras, _fit_env)
+                            _extra_args_draft_device_pin(_fit_extras)
+                            or _draft_tensors_placed_off_card(_fit_extras, _fit_env)
                             or _draft_is_split_across_host(
                                 _fit_extras,
                                 _fit_env,
@@ -29368,8 +29387,19 @@ class LlamaCppBackend:
                     _fit_cache_mib = _extra_args_device(_fit_extras, {"--moe-cache-mib"})
                     if _fit_cache_mib is None:
                         _fit_cache_mib = _fit_env.get("LLAMA_ARG_MOE_CACHE_MIB")
+                    # Except a device of exactly "none" the resolver already reads as
+                    # host RAM: the projector then left model_size for
+                    # mmproj_pinned_bytes, which this fit charges to host RAM, so there
+                    # is nothing to split. Both resolutions must agree, the budget's
+                    # (model_size) and this view's (inherited projector).
+                    _fit_mmproj_known_host = bool(
+                        _fit_mmproj_device == "none"
+                        and _fit_env_mmproj_on_host
+                        and (not launch_mmproj_path or _user_mmproj_offload is False)
+                    )
                     if (
                         _fit_mmproj_device is not None
+                        and not _fit_mmproj_known_host
                         and (launch_mmproj_path or _fit_env_mmproj or _fit_env_mmproj_url)
                     ) or (
                         _fit_cache_mib is not None and str(_fit_cache_mib).strip() not in ("", "0")
