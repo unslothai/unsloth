@@ -20,6 +20,7 @@ __all__ = [
     "install_fsdp2_policy_provenance",
     "install_fsdp2_prepare_hook",
     "install_fsdp2_no_sync",
+    "install_fsdp2_peft_full_state_dict",
 ]
 
 _PATCHED = "_unsloth_fsdp2_patched"
@@ -66,6 +67,7 @@ def _compute_dtype(accelerator):
 
 
 _AUTO_POLICY = "_unsloth_auto_mixed_precision_policy"
+_POLICY_SEEN = "_unsloth_mixed_precision_policy_seen"
 
 
 def install_fsdp2_policy_provenance():
@@ -87,6 +89,7 @@ def install_fsdp2_policy_provenance():
         result = original(self, mixed_precision, *args, **kwargs)
         override = kwargs.get("override", args[1] if len(args) > 1 else False)
         after = getattr(self, "mixed_precision_policy", None)
+        setattr(self, _POLICY_SEEN, True)
         if before is None and not override and after is not None:
             setattr(self, _AUTO_POLICY, after)
         return result
@@ -103,7 +106,8 @@ def fill_fsdp2_mixed_precision(accelerator):
     policy = getattr(plugin, "mixed_precision_policy", None)
     if policy is None or _keep_accelerate_defaults():
         return policy
-    if getattr(plugin, _AUTO_POLICY, None) is not policy:
+    automatic = getattr(plugin, _AUTO_POLICY, None) is policy
+    if not automatic and getattr(plugin, _POLICY_SEEN, False):
         return policy
     try:
         from torch.distributed.fsdp import MixedPrecisionPolicy
@@ -118,6 +122,18 @@ def fill_fsdp2_mixed_precision(accelerator):
         or getattr(policy, "output_dtype", None) not in (None, compute)
     ):
         return policy
+    if not automatic:
+        # The Accelerator was built before Unsloth was imported, so whether accelerate or the caller
+        # wrote this policy is unknown. Only float16 overflows with it.
+        if compute != torch.float16:
+            return policy
+        raise RuntimeError(
+            "Unsloth: this FSDP2 Accelerator was created before `import unsloth`, so Unsloth cannot "
+            "tell whether its float16 mixed precision policy (float16 gathers, reductions and "
+            "outputs, which overflow at the GradScaler's initial loss scale) was chosen by "
+            "accelerate or by you. Import unsloth before creating the Accelerator, or set "
+            "UNSLOTH_FSDP2_ACCELERATE_DEFAULTS=1 to keep the policy as it is."
+        )
     changes = {"reduce_dtype": torch.float32}
     if compute == torch.float16:
         # float16 gathers move the embedding / norm / lm_head backward into float16, where scaled
@@ -130,7 +146,7 @@ def fill_fsdp2_mixed_precision(accelerator):
 
 
 def unify_trainable_dtypes(accelerator, model):
-    """bfloat16 full finetuning runs without autocast with float32 norms, which accelerate does not
+    """16-bit full finetuning runs without autocast with float32 norms, which accelerate does not
     upcast and FSDP2 refuses ("FSDP expects uniform original parameter dtype"). A policy the caller
     set is kept; only the master weights are upcast."""
     trainable = [p for p in model.parameters() if p.requires_grad and p.is_floating_point()]
@@ -143,7 +159,8 @@ def unify_trainable_dtypes(accelerator, model):
             if p.dtype != torch.float32:
                 p.data = p.data.to(torch.float32)
         return True
-    if len(dtypes) <= 1 or torch.bfloat16 not in dtypes:
+    half = torch.bfloat16 if torch.bfloat16 in dtypes else torch.float16
+    if len(dtypes) <= 1 or half not in dtypes:
         return False
     try:
         from torch.distributed.fsdp import MixedPrecisionPolicy
@@ -157,14 +174,14 @@ def unify_trainable_dtypes(accelerator, model):
             p.data = p.data.to(torch.float32)
     if getattr(plugin, "mixed_precision_policy", None) is None:
         plugin.mixed_precision_policy = MixedPrecisionPolicy(
-            param_dtype = torch.bfloat16, reduce_dtype = torch.float32
+            param_dtype = half, reduce_dtype = torch.float32
         )
-        how = "gathering them in bfloat16 for compute"
+        how = f"gathering them in {str(half).replace('torch.', '')} for compute"
     else:
         how = "gathering them as the given mixed_precision_policy says"
     _print_rank0(
-        "Unsloth: FSDP2 needs one dtype per unit, and the trainable weights mix bfloat16 and "
-        f"float32. Keeping float32 master weights and {how}."
+        "Unsloth: FSDP2 needs one dtype per unit, and the trainable weights mix "
+        f"{sorted(str(d).replace('torch.', '') for d in dtypes)}. Keeping float32 master weights and {how}."
     )
     return True
 
@@ -263,19 +280,33 @@ def _all_ranks_agree(value, device):
         return value
 
 
-def _fused_lora_wrap_problem(model, fused, parents, FSDPModule):
+def _in_decoder_block(module, block_ids, parents):
+    while module is not None:
+        parent = parents.get(id(module))
+        if id(module) in block_ids or isinstance(parent, torch.nn.ModuleList):
+            return True
+        module = parent
+    return False
+
+
+def _fused_lora_wrap_problem(model, fused, parents, FSDPModule, blocks = ()):
     """None when every fused layer's weights are gathered by a per-block unit, else why not."""
+    block_ids = {id(b) for b in blocks}
     for module in fused:
         owner = _fsdp_owner(module, parents, FSDPModule)
         if owner is None or owner is model:
             return "FSDP2 wraps only the root module, not each decoder block"
+        if not _in_decoder_block(owner, block_ids, parents):
+            # Blocks are always entered through __call__; a unit above them need not be (peft's
+            # LoraModel calls the CausalLM's .forward), so its pre-forward gather can be skipped.
+            return "FSDP2 wraps a module above the decoder blocks, not each block"
         for sub in module.modules():
             if sub is not module and isinstance(sub, FSDPModule):
                 return "FSDP2 made a submodule of a fused LoRA layer its own unit"
     return None
 
 
-def _gate_fused_lora(accelerator, model, parents, FSDPModule):
+def _gate_fused_lora(accelerator, model, parents, FSDPModule, blocks = None):
     from .llama import _decline_fused_lora_for_fsdp, _fused_lora_modules
 
     fused = _fused_lora_modules(model)
@@ -286,7 +317,9 @@ def _gate_fused_lora(accelerator, model, parents, FSDPModule):
         # A raw loop patches the model before any FSDP plugin exists, so load time could not see it.
         problem = "UNSLOTH_FSDP2_FUSED_LORA=0"
     else:
-        problem = _fused_lora_wrap_problem(model, fused, parents, FSDPModule)
+        if blocks is None:
+            blocks = _decoder_blocks(model)
+        problem = _fused_lora_wrap_problem(model, fused, parents, FSDPModule, blocks)
     device = getattr(accelerator, "device", None) or torch.device("cpu")
     if not _all_ranks_agree(problem is None, device):
         _decline_fused_lora_for_fsdp(model, problem or "another rank's FSDP2 wrap")
@@ -358,7 +391,7 @@ def after_fsdp2_wrap(accelerator, model):
     model._unsloth_fsdp2_direct_read_units = _gather_units_read_directly(
         model, blocks, parents, FSDPModule
     )
-    _gate_fused_lora(accelerator, model, parents, FSDPModule)
+    _gate_fused_lora(accelerator, model, parents, FSDPModule, blocks)
 
 
 def install_fsdp2_prepare_hook():
@@ -421,11 +454,68 @@ def install_fsdp2_no_sync():
     return True
 
 
+def install_fsdp2_peft_full_state_dict():
+    """accelerate < 1.15 builds an FSDP2 PEFT model's FULL_STATE_DICT checkpoint (what Trainer writes for
+    resuming) from `get_peft_model_state_dict`, i.e. each rank's DTensor shard, and rank 0 saves only
+    its own. Backport of the 1.15 fix: gather the trainable weights with `get_model_state_dict`."""
+    try:
+        import accelerate.utils.fsdp_utils as fsdp_utils
+    except Exception:
+        return False
+    original_get = getattr(fsdp_utils, "_get_model_state_dict", None)
+    original_set = getattr(fsdp_utils, "_set_model_state_dict", None)
+    is_peft_model = getattr(fsdp_utils, "is_peft_model", None)
+    if original_get is None or original_set is None or is_peft_model is None:
+        return False
+    if getattr(original_get, _PATCHED, False):
+        return True
+    try:
+        source = inspect.getsource(original_get)
+        parameters = inspect.signature(original_get).parameters
+    except (OSError, TypeError, ValueError):
+        return False
+    if "full_state_dict" in source or "sd_options" not in parameters:
+        return True
+
+    def _full_peft(model, adapter_only, sd_options):
+        return (
+            adapter_only
+            and sd_options is not None
+            and getattr(sd_options, "full_state_dict", False)
+            and is_peft_model(model)
+        )
+
+    @functools.wraps(original_get)
+    def _get_model_state_dict(model, adapter_only = False, sd_options = None):
+        if _full_peft(model, adapter_only, sd_options):
+            from torch.distributed.checkpoint.state_dict import get_model_state_dict
+
+            options = dataclasses.replace(sd_options, ignore_frozen_params = True)
+            return get_model_state_dict(model, options = options)
+        return original_get(model, adapter_only = adapter_only, sd_options = sd_options)
+
+    @functools.wraps(original_set)
+    def _set_model_state_dict(model, state_dict, adapter_only = False, sd_options = None):
+        if _full_peft(model, adapter_only, sd_options):
+            from torch.distributed.checkpoint.state_dict import set_model_state_dict
+
+            options = dataclasses.replace(sd_options, strict = False)
+            return set_model_state_dict(model, state_dict, options = options)
+        return original_set(model, state_dict, adapter_only = adapter_only, sd_options = sd_options)
+
+    setattr(_get_model_state_dict, _PATCHED, True)
+    setattr(_set_model_state_dict, _PATCHED, True)
+    fsdp_utils._get_model_state_dict = _get_model_state_dict
+    fsdp_utils._set_model_state_dict = _set_model_state_dict
+    return True
+
+
 def install_fsdp2_hooks():
     """Everything FSDP2 needs before an Accelerator exists; also for raw `Accelerator.prepare()` loops."""
     install_fsdp2_policy_provenance()
     install_fsdp2_prepare_hook()
     install_fsdp2_no_sync()
+    install_fsdp2_peft_full_state_dict()
 
 
 def fsdp2_trainer_setup(trainer):
@@ -436,6 +526,7 @@ def fsdp2_trainer_setup(trainer):
         return False, None
     install_fsdp2_prepare_hook()
     install_fsdp2_no_sync()
+    install_fsdp2_peft_full_state_dict()
     if os.environ.get("UNSLOTH_FSDP2_FUSED_LORA", "1").strip().lower() in _FALSY:
         return False, "UNSLOTH_FSDP2_FUSED_LORA=0"
     if getattr(plugin, "auto_wrap_policy", None) is None:
