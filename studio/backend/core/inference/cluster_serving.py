@@ -74,6 +74,9 @@ _PLACEMENT_FLAGS = frozenset(
         "--n-cpu-ffn",
         "-ncffn",
         "--moe-cache-mib",  # an expert cache on the GPUs, beside the planned weights
+        "-otd",
+        "--override-tensor-draft",
+        "--spec-draft-override-tensor",
     }
 )
 _PLACEMENT_ENV = (
@@ -87,6 +90,7 @@ _PLACEMENT_ENV = (
     "LLAMA_ARG_N_CPU_MOE",
     "LLAMA_ARG_N_CPU_FFN",
     "LLAMA_ARG_MOE_CACHE_MIB",
+    "LLAMA_ARG_OVERRIDE_TENSOR_DRAFT",
 )
 
 
@@ -952,12 +956,12 @@ class ClusterServing:
         logger.info("cluster serving: layer split %s", " ".join(self.block))
         updates: Dict[str, Any] = {"llama_extra_args": effective + self.block}
         mode = str(getattr(request, "speculative_type", None) or "").strip().lower()
-        if (
-            mode in ("", "auto", "default")
-            and getattr(request, "spec_draft_n_max", None) is None
-            and not ss.extra_args_own_speculation(flags)
-            and not _names_drafter(flags)
-        ):
+        # Only a chosen mode or a named drafter keeps speculation: tuning alone (depth, draft
+        # layers, draft cache types) still lets Auto pick a sidecar after this plan.
+        mode_owned = any(
+            str(a).split("=", 1)[0] in ("--spec-type", "--spec-default") for a in flags
+        ) or bool((os.environ.get("LLAMA_ARG_SPEC_TYPE") or "").strip())
+        if mode in ("", "auto", "default") and not mode_owned and not _names_drafter(flags):
             # An automatically picked drafter is chosen after this plan and is not in its budget.
             updates["speculative_type"] = "off"
             self.reason += "; automatic speculative decoding off for the split"
@@ -1126,11 +1130,15 @@ class ClusterServing:
         if not _kv_offload_from_args(extras):
             kv = 0.0  # --no-kv-offload keeps the cache in host RAM
         elif ctx and not _extra_args_draft_offloaded_to_cpu(extras, os.environ):
+            from core.inference.llama_cpp import _extra_args_draft_cache_types
+
+            # The drafter's own cache types, f16 unless set: not the main model's.
+            draft_k, draft_v = _extra_args_draft_cache_types(extras, os.environ)
             # A separate drafter opens its own context, KV included, beside it on the coordinator.
             for path in ss.sidecar_files(_flag_args(extras, _DRAFTER_FLAGS)) + env_drafters:
                 if os.path.isfile(path):
                     draft_kv = await asyncio.to_thread(
-                        ss.estimate_kv_bytes, path, ctx, cache_type, cache_type_v
+                        ss.estimate_kv_bytes, path, ctx, draft_k or "f16", draft_v or "f16"
                     )
                     sidecars += float(draft_kv or 0)
         return (None if size is None else float(size) + adapters), kv, float(sidecars)

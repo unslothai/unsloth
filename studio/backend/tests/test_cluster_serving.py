@@ -2016,3 +2016,45 @@ def test_a_caller_pinned_drafter_is_caller_placement(monkeypatch, tmp_path, devi
         )
     )
     assert ("pins the drafter" in ss.status()["reason"]) is local
+
+
+@pytest.mark.parametrize(
+    "flag", ["-otd", "--override-tensor-draft", "--spec-draft-override-tensor"]
+)
+def test_draft_tensor_overrides_are_caller_placement(monkeypatch, flag):
+    seen = _cluster_env(monkeypatch)
+    request = _request(llama_extra_args = [flag, "blk.*=CUDA1"])
+    assert run(ss.before_load(request, 4)) is request and seen == []
+
+
+def test_the_drafters_kv_uses_its_own_cache_types(monkeypatch, tmp_path):
+    _cluster_env(monkeypatch, model_bytes = 80 * GIB)
+    monkeypatch.setattr(ss, "llama_server_supports", lambda flag, binary = None: True)
+    drafter = tmp_path / "draft.gguf"
+    drafter.write_bytes(b"x")
+    monkeypatch.setattr(
+        ss, "gguf_size_bytes", lambda path: 1 * GIB if str(path) == str(drafter) else 80 * GIB
+    )
+    seen = []
+    monkeypatch.setattr(
+        ss,
+        "estimate_kv_bytes",
+        lambda path, ctx, k, v: seen.append((str(path) == str(drafter), k, v)) or 0,
+    )
+    extra = ["-md", str(drafter), "-ctk", "q4_0", "-ctv", "q4_0"]
+    run(ss.before_load(_request(llama_extra_args = extra, max_seq_length = 8192), 4))
+    run(
+        ss.before_load(_request(llama_extra_args = extra + ["-ctkd", "q8_0"], max_seq_length = 8192), 4)
+    )
+    drafts = [(k, v) for is_draft, k, v in seen if is_draft]
+    assert drafts == [("f16", "f16"), ("q8_0", "f16")]
+
+
+@pytest.mark.parametrize(
+    "kw, extra",
+    [({"spec_draft_n_max": 8}, []), ({}, ["--spec-draft-n-max", "8"]), ({}, ["--draft-max", "8"])],
+)
+def test_draft_tuning_alone_does_not_keep_auto_speculation(monkeypatch, kw, extra):
+    _cluster_env(monkeypatch)
+    out = run(ss.before_load(_request(speculative_type = None, llama_extra_args = extra, **kw), 4))
+    assert out.speculative_type == "off"
