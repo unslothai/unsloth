@@ -85,7 +85,7 @@ jobs:
       gpu_count: ${{ steps.plan.outputs.gpu_count }}
     steps:
       - name: Harden runner (egress block)
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
+        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25  # v2.22.1
         with:
           egress-policy: block
           disable-sudo: true
@@ -147,7 +147,7 @@ jobs:
       - name: Harden runner (audit)
         # Audit egress because package downloads use changing endpoints. Its agent is Linux-only.
         if: runner.os == 'Linux'
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
+        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25  # v2.22.1
         with:
           egress-policy: audit
 
@@ -491,7 +491,7 @@ jobs:
 
       - name: Hand the slice to the build job
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: ccache-${{ matrix.platform }}-${{ matrix.dist }}-torch${{ matrix.torch_mm }}-${{ matrix.python_tag }}-shard${{ matrix.shard }}
           path: ccache
@@ -540,7 +540,7 @@ jobs:
       - name: Harden runner (audit)
         # Audit egress because package downloads use changing endpoints. Its agent is Linux-only.
         if: runner.os == 'Linux'
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
+        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25  # v2.22.1
         with:
           egress-policy: audit
 
@@ -828,7 +828,7 @@ jobs:
 
       - name: Download the warm slices
         if: matrix.shards > 0
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
           pattern: ccache-${{ matrix.platform }}-${{ matrix.dist }}-torch${{ matrix.torch_mm }}-${{ matrix.python_tag }}-shard*
           path: ccache-slices
@@ -1003,7 +1003,7 @@ jobs:
           done
           "$py" -m pip list | grep -Ei 'torch|flash|mamba|causal|triton'
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: wheel-${{ matrix.platform }}-${{ matrix.dist }}-torch${{ matrix.torch_mm }}-${{ matrix.python_tag }}
           path: src/dist/${{ matrix.wheel_name }}
@@ -1037,7 +1037,7 @@ jobs:
             .github/scripts
           sparse-checkout-cone-mode: false
 
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
           name: wheel-${{ matrix.platform }}-${{ matrix.dist }}-torch${{ matrix.torch_mm }}-${{ matrix.python_tag }}
           path: dist
@@ -1078,7 +1078,7 @@ jobs:
       contents: read
     steps:
       - name: Harden runner (audit)
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
+        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25  # v2.22.1
         with:
           egress-policy: audit
 
@@ -1090,7 +1090,7 @@ jobs:
         with:
           python-version: '3.12'
 
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
           pattern: wheel-*
           merge-multiple: true
@@ -1160,7 +1160,7 @@ jobs:
           done
           [ "$missing" -eq 0 ]
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: prebuilt-cuda-wheels-signed
           path: |
@@ -1182,7 +1182,7 @@ jobs:
       contents: write
     steps:
       - name: Harden runner (audit)
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
+        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25  # v2.22.1
         with:
           egress-policy: audit
 
@@ -1194,7 +1194,7 @@ jobs:
         with:
           python-version: '3.12'
 
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
           name: prebuilt-cuda-wheels-signed
           path: wheels
