@@ -458,6 +458,14 @@ _ROOM_REASON = "replica card lacks room for this shape"
 _SHORT_RENDER_REASON = "short render"
 
 
+def _bg_eager_forced() -> bool:
+    try:
+        from .diffusion_bg_compile import eager_forced
+    except Exception:  # noqa: BLE001
+        return False
+    return eager_forced()
+
+
 def _is_oom(exc: BaseException) -> bool:
     return type(exc).__name__ == "OutOfMemoryError" or "out of memory" in str(exc).lower()
 
@@ -1641,18 +1649,92 @@ def build_replica(module: Any, device: Any) -> Any:
             ):
                 dst.__dict__[key] = value.to(device)
         if getattr(src, "_compiled_call_impl", None) is not None:
-            recorded = src.__dict__.get("_unsloth_compile_args")
-            dst._compiled_call_impl = None
-            if recorded is None:
-                raise RuntimeError(f"compiled submodule '{name}' has no recorded compile arguments")
-            args, kwargs = recorded
-            dst.compile(*args, **kwargs)
+            compile_like_source(src, dst, owner = replica, name = name)
             compiled_subs += 1
         elif "_compiled_call_impl" in dst.__dict__:
             dst._compiled_call_impl = None
     replica._unsloth_replica_compiled = compiled_subs
     replica.eval()
     return replica
+
+
+# Studio wrappers a source block's ``_compiled_call_impl`` can carry, by marker. Each is rebuilt on the replica's copy
+# by compile_like_source (the guard and the background-compile gate keep the copy eager while the source is; the
+# restride keeps one compiled graph). CUDA-graph wrappers (GraphedForward, BlockGraph) hold graphs captured on the
+# source card: the copy runs the compiled call without them (same math, no replay).
+_WRAPPER_INNER_ATTRS = ("_unsloth_bg_inner", "compiled", "compute", "inner")
+_GRAPH_WRAPPERS = ("GraphedForward", "BlockGraph")
+
+
+def _source_wrapper_markers(outer: Any, name: str) -> dict:
+    """Walk ``outer`` (a source block's ``_compiled_call_impl``) down to torch's compiled call: the Studio wrappers on
+    it ({marker: value}). Raises on a layer it does not know (its semantics cannot be reproduced on a copy)."""
+    found: dict = {}
+    fn = outer
+    for _ in range(8):
+        if fn is None:
+            break
+        guard = getattr(fn, "_unsloth_compile_guard", None)
+        if guard is not None:
+            found.setdefault("guard", guard)
+        known = False
+        for marker in ("_unsloth_bg_gate", "_unsloth_block_restride", "_unsloth_compile_guard"):
+            if getattr(fn, marker, None) not in (None, False):
+                found[marker] = True
+                known = True
+        if getattr(fn, "_unsloth_stg_adapter", False):
+            raise RuntimeError(f"compiled submodule '{name}' carries the LTX-2 STG adapter (not rebuilt on a copy)")
+        if type(fn).__name__ in _GRAPH_WRAPPERS and _hook_origin(fn).startswith(_TRUSTED_HOOK_MODULES):
+            known = True
+        if not known:
+            if _hook_origin(fn).startswith(("torch", "functools")) or getattr(fn, "__module__", "").startswith("torch"):
+                break  # torch's own compiled call: the bottom
+            raise RuntimeError(
+                f"compiled submodule '{name}' carries an unknown wrapper {type(fn).__name__} (not rebuilt on a copy)"
+            )
+        below = None
+        for attr in _WRAPPER_INNER_ATTRS:
+            candidate = getattr(fn, attr, None)
+            if callable(candidate) and candidate is not fn:
+                below = candidate
+                break
+        if below is None:
+            break  # a closure wrapper (guard, restride): its markers are recorded, the bottom is torch's compile
+        fn = below
+    return found
+
+
+def compile_like_source(src: Any, dst: Any, *, owner: Any = None, name: str = "") -> None:
+    """Compile a replica block ``dst`` exactly the way its source ``src`` was: the recorded ``Module.compile``
+    arguments, then the same Studio wrappers rebuilt around the copy's own compiled call (canonical order: restride,
+    the shared compile guard, the background-compile gate). The one builder every replica block goes through."""
+    recorded = src.__dict__.get("_unsloth_compile_args")
+    if recorded is None:
+        raise RuntimeError(f"compiled submodule '{name}' has no recorded compile arguments")
+    markers = _source_wrapper_markers(src._compiled_call_impl, name)
+    args, kwargs = recorded
+    dst._compiled_call_impl = None
+    dst.compile(*args, **kwargs)
+    call = dst._compiled_call_impl
+    eager = dst._call_impl
+    if markers.get("_unsloth_block_restride"):
+        from .diffusion_block_restride import wrap as _restride
+
+        call = _restride(call)
+    guard = markers.get("guard")
+    if guard is not None:
+        # the source's guard object: one compile failure drops the source and the copy to eager together
+        call = guard.wrap(call, eager, owner if owner is not None else dst)
+
+        def restore(m: Any = dst) -> None:
+            m._compiled_call_impl = None
+
+        guard.restores.append(restore)
+    if markers.get("_unsloth_bg_gate"):
+        from .diffusion_bg_compile import eager_gate
+
+        call = eager_gate(call, eager)
+    dst._compiled_call_impl = call
 
 
 _ADAPTER_ATTRS = (
@@ -2140,6 +2222,7 @@ class CfgParallelRouter:
                 and self.disabled_reason is None
                 and self.shape_disabled is None
                 and (self.pricing is not None or not self._should_price())
+                and not _bg_eager_forced()
             ):
                 # Copy this step's inputs to the replica card BEFORE the primary branch is queued: a copy queued after
                 # it would wait for it on the source stream and serialise the two branches.
@@ -2159,7 +2242,14 @@ class CfgParallelRouter:
             self._drop_pending()
             self.template = None
             self.stats["opaque_primary_calls"] += 1
-        elif self.branch % 2 == 1 and self.disabled_reason is None and self.shape_disabled is None:
+        elif (
+            self.branch % 2 == 1
+            and self.disabled_reason is None
+            and self.shape_disabled is None
+            # the source's compile in flight in the background: no replica build or call this render (it would
+            # compile the copy inline on the secondary); the branch runs on the primary, eager like the source
+            and not _bg_eager_forced()
+        ):
             self.singles = 0
             if self.pricing is None and self.replica is not None and self._should_price():
                 # a new request shape on a load that already has a replica: price this shape too
@@ -2366,9 +2456,13 @@ class CfgParallelRouter:
 
     def _should_build(self) -> bool:
         """The one decision for every replica build (the first one and each rebuild after an eviction, a stale-weights
-        drop or an invalidation): an unpriced router (force, non-CUDA) builds at once; a priced one never on the step it
-        was priced on, never on the first guided step of a request whose length is unknown, and otherwise only when the
-        rest of the request repays the build."""
+        drop or an invalidation): never inside the background-compile window; an unpriced router (force, non-CUDA)
+        builds at once; a priced one never on the step it was priced on, never on the first guided step of a request
+        whose length is unknown, and otherwise only when the rest of the request repays the build."""
+        if _bg_eager_forced():
+            # the source's compile is still in flight in the background (this render runs eager): building, and then
+            # first-calling, a compiled copy now would compile it inline on the secondary
+            return False
         if self.pricing is None:
             return True
         if self.priced_at == (self.request_id, self.request_step):

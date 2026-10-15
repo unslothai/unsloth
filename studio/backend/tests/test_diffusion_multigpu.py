@@ -3880,3 +3880,77 @@ def test_state_watch_treats_versionless_studio_quant_buffers_as_read_only(monkey
     assert {"weight_q", "table"} <= foreign.written  # unknown owner, no counter: possibly written
     monkeypatch.setattr(_QuantStyleDit, "__module__", "core.inference.diffusion_native_quant")
     assert mg._StateWatch(dit).written == set()
+
+
+class _Block(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.lin = torch.nn.Linear(4, 4)
+
+    def forward(self, x):
+        return self.lin(x) * 2
+
+
+def _counting_backend(log):
+    def backend(gm, example_inputs):
+        log.append(1)
+        return gm.forward
+
+    return backend
+
+
+def test_replica_blocks_keep_the_compile_guard_and_background_gate():
+    from core.inference import diffusion_bg_compile as bg
+    from core.inference.diffusion_speed import guard_compiled_blocks
+
+    mg.install_compile_recorder()
+    compiles = []
+    dit = _BatchDit()
+    dit.proj = _Block()  # a user-defined block: dynamo traces it (it skips bare torch.nn layers)
+    dit.proj.compile(backend = _counting_backend(compiles))
+    assert guard_compiled_blocks(dit) == 1
+    # the background compile's gate on the source block (render 1 runs eager while it compiles)
+    dit.proj._compiled_call_impl = bg.eager_gate(dit.proj._compiled_call_impl, dit.proj._call_impl)
+    replica = mg.build_replica(dit, torch.device("cpu"))
+    call = replica.proj._compiled_call_impl
+    assert getattr(call, "_unsloth_bg_gate", False)
+    # one shared guard: a compile failure drops the source and the copy to eager together
+    assert call._unsloth_bg_inner._unsloth_compile_guard is dit._unsloth_compile_guard
+    x = torch.randn(2, 4)
+    with bg.force_eager():
+        torch.testing.assert_close(replica.proj(x), dit.proj.forward(x))
+    assert compiles == []  # never compiled inside the window
+    replica.proj(x)
+    assert len(compiles) == 1  # compiled once the window is over
+
+
+def test_replica_is_not_built_or_called_inside_the_background_compile_window(monkeypatch):
+    from core.inference import diffusion_bg_compile as bg
+
+    dit = _BatchDit()
+    pipe = _RouterPipe(dit)
+    router, replicas = _priced_router(dit, monkeypatch)
+    with bg.force_eager(), mg.cfg_request_scope(pipe, 512, 512, 20):
+        _guided(dit, 2, steps = 6)
+    assert replicas == [] and router.stats["replica_calls"] == 0
+    with mg.cfg_request_scope(pipe, 512, 512, 20):
+        _guided(dit, 2, steps = 6)
+    assert len(replicas) == 1 and router.stats["replica_calls"] > 0
+    calls = router.stats["replica_calls"]
+    with bg.force_eager(), mg.cfg_request_scope(pipe, 512, 512, 20):
+        _guided(dit, 2, steps = 3)
+    assert router.stats["replica_calls"] == calls  # an existing replica is not called in the window either
+
+
+def test_replica_refuses_an_unknown_compiled_wrapper():
+    mg.install_compile_recorder()
+    dit = _BatchDit()
+    dit.proj.compile(backend = _counting_backend([]))
+    inner = dit.proj._compiled_call_impl
+
+    def foreign(*a, **k):  # a wrapper whose semantics the copy cannot reproduce
+        return inner(*a, **k)
+
+    dit.proj._compiled_call_impl = foreign
+    with pytest.raises(RuntimeError, match = "unknown wrapper"):
+        mg.build_replica(dit, torch.device("cpu"))
