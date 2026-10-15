@@ -57,11 +57,13 @@ CUDA_TOOLKIT = "13.0"
 # that pattern-matches upstream names has to find it here too.
 CXX11_ABI = "TRUE"
 
-# Device code is most of every wheel, and nvcc only compresses PTX by default: cubins go into the
-# fatbin as is. Upstream flash-attn 2.8.1 compressed everything; the commit we build from dropped
-# those flags, which is how its extension grew from 139 MB to 1.49 GB. Measured on one flash-attn
+# Device code is most of every wheel. Upstream flash-attn 2.8.1 compressed all of it; the commit
+# we build from dropped those flags, and in default mode its cubins went in uncompressed (the zip
+# still gets 3.5x out of the 1.49 GB extension; upstream's is 139 MB). Measured on one flash-attn
 # TU (nvcc 13.1, sm_80/90/100/120 + compute_120 PTX): 18.8 MB as is, 3.5 MB with these flags, and
-# the module loads no slower. causal-conv1d and selective-scan TUs shrink 14x and 8x the same way.
+# the module loads no slower. causal-conv1d's and mamba-ssm's large cubins are already compressed
+# in default mode; repacking the released ones in size mode takes causal_conv1d_cuda from 248 to
+# 103 MB and selective_scan_cuda to about two thirds.
 # The workflow appends this to NVCC_APPEND_FLAGS (Windows already puts _USE_MATH_DEFINES there),
 # which nvcc reads itself, so it reaches every nvcc call each setup.py makes without patching
 # them; it is not in SPECS' env because that is word-split. --compress-mode=size needs a
@@ -213,8 +215,8 @@ SPECS = {
         },
         "build_timeout": "120m",
         "import_names": ["causal_conv1d", "causal_conv1d_cuda"],
-        # ~20 compressed, 263 without.
-        "max_extension_mb": 80,
+        # ~105 with these flags, 263 in default mode.
+        "max_extension_mb": 160,
     },
     "mamba-ssm": {
         "dist": "mamba_ssm",
@@ -236,8 +238,9 @@ SPECS = {
         "patch": "cxx20",
         "build_timeout": "180m",
         "import_names": ["mamba_ssm", "selective_scan_cuda"],
-        # ~50 compressed, 359 without.
-        "max_extension_mb": 150,
+        # ~230 with these flags, 358 in default mode: the gate only catches flags that never
+        # reached nvcc.
+        "max_extension_mb": 300,
     },
 }
 

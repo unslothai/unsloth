@@ -808,8 +808,12 @@ class TestFatbinCompression:
 
     def test_no_ccache_from_before_the_flags_is_restored(self, workflow):
         """ccache does not hash NVCC_APPEND_FLAGS, so the cache key has to carry them."""
-        steps = workflow["jobs"]["warm"]["steps"]
-        keyed = [s for s in steps if "actions/cache" in s.get("uses", "")]
+        keyed = [
+            step
+            for job in workflow["jobs"].values()
+            for step in job.get("steps", [])
+            if "actions/cache" in step.get("uses", "")
+        ]
         assert len(keyed) == 2
         for step in keyed:
             keys = [step["with"]["key"], *step["with"].get("restore-keys", "").splitlines()]
@@ -824,7 +828,8 @@ class TestFatbinCompression:
         assert names.index("Name the wheel the way upstream names it") < gate
         assert gate < names.index("Smoke test the wheel in a fresh venv")
         run = workflow["jobs"]["build"]["steps"][gate]["run"]
-        assert "size-gate" in run and '--package "$PACKAGE"' in run
+        assert run.startswith("python ../unsloth/.github/scripts/prebuilt_wheels.py size-gate ")
+        assert '--package "$PACKAGE"' in run
 
     @pytest.mark.parametrize("megabytes, status", [(0.001, 0), (0.0001, 1)])
     def test_size_gate(self, tmp_path, monkeypatch, megabytes, status):
