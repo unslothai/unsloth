@@ -2362,6 +2362,38 @@ def learned_peak_label(
     return label
 
 
+# A CFG-capable family's render without guidance records under ``<label>|cfg:off`` (no doubled denoiser batch). A load
+# reads it only when the label has no CFG peak; ``UNSLOTH_DIFFUSION_LEARNED_PEAKS_CFG_OFF=0`` neither records nor
+# reads it (such renders record nothing, as before).
+CFG_OFF_PART = "cfg:off"
+LEARNED_PEAKS_CFG_OFF_ENV = "UNSLOTH_DIFFUSION_LEARNED_PEAKS_CFG_OFF"
+
+
+def cfg_off_peaks_enabled() -> bool:
+    return not _env_off(LEARNED_PEAKS_CFG_OFF_ENV)
+
+
+def without_cfg_off(label: str) -> str:
+    return "|".join(part for part in str(label).split("|") if part != CFG_OFF_PART)
+
+
+def _learned_read_label(pipe: Any, family: Optional[str], quant: str, speed_mode: Optional[str]) -> tuple[str, bool]:
+    """The label a load reads its learned peak under: ``quant``, or its ``cfg:off`` key for a CFG-capable family that
+    has only renders without guidance recorded (then True: requests running CFG are sized from the flat estimate)."""
+    from .diffusion_measured_peaks import lookup_bucket
+
+    if (
+        not getattr(pipe, "_unsloth_peak_expects_cfg", False)
+        or not cfg_off_peaks_enabled()
+        or lookup_bucket(family = family, quant = quant, speed_mode = speed_mode) is not None
+    ):
+        return quant, False
+    off = f"{quant}|{CFG_OFF_PART}"
+    if lookup_bucket(family = family, quant = off, speed_mode = speed_mode) is None:
+        return quant, False
+    return off, True
+
+
 def with_label_part(label: str, name: str, value: str) -> str:
     """``label`` with its ``name:`` part replaced by ``value`` (unchanged when it has no such part)."""
     return "|".join(
@@ -2779,12 +2811,13 @@ def refine_plan_from_loaded_weights(
             pipe._unsloth_peak_identity = (family, quant, speed_mode)
         except Exception:  # noqa: BLE001 - a pipe refusing attributes only skips recording
             pass
+        read_quant, cfg_off_only = _learned_read_label(pipe, family, quant, speed_mode)
         headroom = measured_image_runtime_mib(
             family,
             speed_mode,
             dense_transformer_mib = dense_mib,
             compute_bytes = compute_bytes or 2,
-            quant = quant,
+            quant = read_quant,
             phase_seeds = bool(getattr(pipe, "_unsloth_phase_seeds", False)),
             static_seed = static_seed,
         )
@@ -2793,7 +2826,7 @@ def refine_plan_from_loaded_weights(
         from .diffusion_measured_peaks import lookup_bucket
 
         learned, learned_pixels, learned_quadratic = lookup_bucket(
-            family = family, quant = quant, speed_mode = speed_mode
+            family = family, quant = read_quant, speed_mode = speed_mode
         ) or (None, None, False)
         overhead = int(plan.estimates.get("base_overhead_mib") or DEFAULT_BASE_OVERHEAD_MIB)
         floor = headroom + overhead + other
@@ -2806,6 +2839,7 @@ def refine_plan_from_loaded_weights(
             measured_dense_transformer_mib = dense_mib,
             measured_compute_bytes = compute_bytes,
             measured_static_seed = static_seed,
+            measured_learned_cfg_off = bool(cfg_off_only and learned),
             loaded_transformer_mib = dit,
             loaded_text_encoder_mib = encoders,
             loaded_other_mib = other,
@@ -3441,8 +3475,10 @@ def measured_request_extra_mib(
     height: Optional[int],
     batch_size: int = 1,
     condition_pixels: int = 0,
+    cfg: Optional[bool] = None,
 ) -> int:
-    """MiB a request needs beyond what the measured placement reserved (0 when it fits or none was made)."""
+    """MiB a request needs beyond what the measured placement reserved (0 when it fits or none was made). ``cfg``:
+    whether the request runs classifier-free guidance (None: unknown, treated as running it)."""
     reserve = getattr(pipe, "_unsloth_measured_reserve", None)
     if not reserve:
         return 0
@@ -3465,8 +3501,12 @@ def measured_request_extra_mib(
     sized["static_seed"] = bool(reserve[8]) if len(reserve) > 8 and reserve[8] is not None else True
     need = measured_image_runtime_mib(family, speed_mode, **sized)
     learned = reserve[5] if len(reserve) > 5 else None
+    # placed from a peak recorded without CFG: a request that runs it doubles the denoiser batch no measurement covers
+    cfg_unmeasured = bool(len(reserve) > 9 and reserve[9]) and cfg is not False
     if (learned or need is None) and (
-        getattr(pipe, "_unsloth_peak_static", False) or getattr(pipe, "_unsloth_loras", None)
+        getattr(pipe, "_unsloth_peak_static", False)
+        or getattr(pipe, "_unsloth_loras", None)
+        or cfg_unmeasured
     ):
         # the learned peak no longer describes this pipeline (runtime LoRA adapters, a planned VAE saver that did not
         # engage): requests size from the flat estimate
