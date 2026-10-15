@@ -2562,6 +2562,51 @@
       "evidence": "Obfusc: L338:             exec(compile(cached_bytes, cache_file, \"exec\"), module.__dict__)\nExec: L338:             exec(compile(cached_bytes, cache_file, \"exec\"), module.__dict__)",
       "evidence_hash": "ef22a4fe0d8ec7e2b0e4afc6e6a3d997cd94c981bf59790562217d4f9dd70732",
       "file_sha256": "24bcbf0d36a0850fde3f5cddf303c31e24d93394ff0f6d71494370d41533e50e"
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "unsloth_zoo/vllm_utils.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L4472:             lora_types.append(getattr(__import__(module_path, fromlist = [class_name]), class_name))\nExec: L1357:             cross_attn_layer = eval(f'vllm_internals.{name}') | L1402:                 layernorm = eval(vllm_name).state_dict()[\"weight\"] | L1924:                 parent = eval(f\"new_model.{parent_path}\") if parent_path else new_model | L1930:                     exec(f\"new_model.{layer_name_br} = layer\") | L2001:                 exec(f\"new_model.{layer_name_br}.weight = None\") | L2002:                 exec(f\"new_model.{layer_name_br}.weight = weight_param\") | L2004:                     exec(f\"new_model.{layer_name_br}.bias = None\") | L2005:                     exec(f\"new_model.{layer_name_br}.bias = bias\") | L2011:             exec(f\"new_model.{layer_name} = layer\") | L2043:     new_model.eval() | L4279:                 exec(f\"module.to({dtype})\") | L4302:                 exec(f\"module.to({dtype})\") | L5961:     model.eval() | L6001:     new_model.eval()",
+      "evidence_hash": "4928e730b84a3fa71dcc50cfe185c77c2028be09ad908706710ab864786b4659",
+      "file_sha256": "88134b230d81ec499927d5355b90a32315cf94cb282021f462251ee44578fcd3"
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "unsloth_zoo/mlx/decision.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L382:             with av.open(io.BytesIO(base64.b64decode(url.partition(\",\")[2], validate = True))) as container: sha256:946796d261fb90a0f7ad5f482b39026735f161d8d6877aa38112583f98acf957\nExec: L248:         mx.eval(out) | L283:     model.eval() | L284:     mx.eval(model.parameters()) | L799:     model.eval() | L800:     mx.eval(model.parameters()) | L831:     mx.eval(decoder.parameters()) | L1023:         self.model.eval() | L1032:             mx.eval(self.model.parameters()) | L1090:         mx.eval(head, [entry.state for entry in cache]) | L1489:     head.eval() | L1490:     mx.eval(head.parameters()) | L1589:         mx.eval(self.head.parameters()) | L1590:         self.head.eval() | L2230:             mx.eval(x) | L2242:         mx.eval(loss, grads, cotangent) | L2250:             mx.eval(stage_grads, cotangent) | L2340:     mx.eval(model.parameters()) | L2381:         mx.eval(self.parameters()) | L2407:             mx.eval(logits) | L2547:             mx.eval(total, grads) | L2574:     network.eval() | L2651:     model.eval()",
+      "evidence_hash": "e247443dfea5b48389857add89110a17e97c5226b7b8cd3c6bce68309d6e2c9d",
+      "file_sha256": "d83445bf7066c573bc8fa568a9fbafee4d5bf8a0aa3eaf6cac6bfdeeb40f95df"
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "unsloth_zoo/mlx/loader.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L5297:             _mod = __import__(module_name, fromlist=[\"_\"])\nExec: L163:     mx.eval(model.parameters()) | L197:     mx.eval([v for k, v in tree_flatten(casted) if is_mlx_norm_parameter_path(k)]) | L1491:                 mx.eval(model.parameters()) | L1492:                 mx.eval(mx.distributed.all_sum(mx.array(1.0), stream=mx.cpu)) | L1559:             mx.eval(model.parameters()) | L1562:                 mx.eval(mx.distributed.all_sum(mx.array(1.0), stream=mx.cpu)) | L2991:         mx.eval(altup.correct(predictions, activated)) | L3463:         model.eval() | L3540:             mx.eval(baseline, perturbed) | L4945:         model.eval() | L5702:         mx.eval(model.parameters()) | L5818:         mx.eval(module.weight) | L8423:         mx.eval(model.parameters()) | L8440:             mx.eval(target.parameters()) | L9440:                     lambda: mx.eval(model.parameters()), | L9504:                     lambda: mx.eval(model.parameters()), | L9667:                 mx.eval(model.parameters())",
+      "evidence_hash": "d1c32d6d0a0f4625af70ef11ce765a893c07f48e54c21fb8ff5ef43381daf18e",
+      "file_sha256": "171e445ef608e624f86b538b0fac15628d9f35338c8424f79988b24354009aec"
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "unsloth_zoo/mlx/speculative.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L835:         module = __import__(f\"mlx_vlm.models.{family}.language\", fromlist = [\"LanguageModel\"])\nExec: L1044:                     mx.eval(drafts) | L1068:             mx.eval([array for pair in drawn for array in pair if array is not None] + ([] if drafts is None else [drafts])) | L1343:             mx.eval(parts[-1]) | L1345:         mx.eval(self._scan) | L1838:         mx.eval(model.parameters())",
+      "evidence_hash": "64b95579c569b39eddc493ac6b808258094d9b1d62154c55ae9c224c80577e45",
+      "file_sha256": "29edc582762bcde4f88e36af0f04a0c652c6e0c1c0e3a06f3d354d211d7ae51c"
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "unsloth_zoo/temporary_patches/moe_utils.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L338:             exec(compile(cached_bytes, cache_file, \"exec\"), module.__dict__)\nExec: L338:             exec(compile(cached_bytes, cache_file, \"exec\"), module.__dict__)",
+      "evidence_hash": "ef22a4fe0d8ec7e2b0e4afc6e6a3d997cd94c981bf59790562217d4f9dd70732",
+      "file_sha256": "86f4fe7b9a8e5973951eaa5ce70e2c0b4823c1e6bf9e54487f8be41c6fa2ee2d"
     }
   ]
 }

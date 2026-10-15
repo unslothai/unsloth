@@ -45,6 +45,11 @@ _REEXPORT_RE = re.compile(
 # Initialisers a `const` may carry and still be safe to lift: literals and callables.
 # Anything else (a store built by `create(...)`, a client instantiated at import time) is
 # module setup rather than a helper, so it is refused instead of executed in the harness.
+# A `const` bound to a function expression runs nothing until it is called, like a `function`.
+_FUNCTION_DECL_RE = re.compile(
+    r"^(?:export\s+)?(?:const|let|var)\s+[A-Za-z_$][\w$]*\s*=\s*"
+    r"(?:async\s+function\b|function\b|(?:async\s*)?(?:\([^()]*\)|[A-Za-z_$][\w$]*)\s*=>)"
+)
 _SAFE_INIT_RE = re.compile(
     r"^(?:/|[\"'`]|\d|\[|\{|!|new\s+(?:Set|Map|RegExp|Date)\b"
     r"|async\s+function\b|function\b|async\s*\(|\(|[A-Za-z_$][\w$]*\s*(?:=>|;))"
@@ -516,8 +521,11 @@ def resolve_dependencies(
                 # A name this module really does resolve, so failing to follow it matters.
                 wanted.add(reference)
             pull(reference, origin)
+        kind = home.kind(name) or "const"
+        if _FUNCTION_DECL_RE.match(text.lstrip()):
+            kind = "function"
         pulled[name] = (
-            home.kind(name) or "const",
+            kind,
             f"// sliced from {home.path.name}\n" + re.sub(r"^export\s+", "", text, count = 1),
             wanted,
         )
@@ -531,7 +539,8 @@ def resolve_dependencies(
     # A declaration evaluated at import time cannot be left half-resolved: `const A = [B]` with `B` refused crashes the
     # whole harness on load, which is worse than the lazy ReferenceError it replaced. Drop those to a fixed point
     # instead. Functions and types are lazy or erased, so an unfollowed reference in one costs nothing until it is
-    # called. A fixture the harness defines does not rescue one either: the fixtures sit BELOW this block, so reading
+    # called, and so is a `const` bound to an arrow or function expression. A fixture the harness defines does not
+    # rescue one either: the fixtures sit BELOW this block, so reading
     # one from here is a TDZ error rather than a resolution.
     eager = {"const", "let", "var", "class"}
     while True:
