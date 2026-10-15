@@ -517,6 +517,15 @@ export function providerCompactionContinuationFields(
   return providerCompactionFields(custom);
 }
 
+/** Whether a run is a Continue of an earlier turn, even one carrying nothing to continue: an
+ *  empty paused answer retries its turn, and must not take what the composer staged since. */
+export function resumesEarlierTurn(runConfig: unknown): boolean {
+  const custom = (runConfig as { custom?: Record<string, unknown> } | undefined)
+    ?.custom;
+  const request = custom?.[CONTINUATION_RUN_CONFIG_KEY];
+  return typeof request === "object" && request !== null;
+}
+
 /** Read a continuation request out of a run's `runConfig`, if it is one. */
 export function readContinuationRequest(
   runConfig: unknown,

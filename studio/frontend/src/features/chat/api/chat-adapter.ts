@@ -387,6 +387,7 @@ import {
   readIncompleteInfo,
   resolveIncompleteReason,
   readContinuationRequest,
+  resumesEarlierTurn,
   rejectsAssistantPrefill,
   resumesExactly,
   withRecomputedModel,
@@ -4993,6 +4994,8 @@ export function createOpenAIStreamAdapter(
       };
       const deepResearchHandoff = newDeepResearchHandoff();
       const continuation = readContinuationRequest(runConfig);
+      // Null for an empty paused answer, whose Continue retries the turn: still not a fresh send.
+      const resumesTurn = continuation !== null || resumesEarlierTurn(runConfig);
       let deepResearchArmed =
         runtime.deepResearchEnabled &&
         !options.pairId &&
@@ -5573,7 +5576,7 @@ export function createOpenAIStreamAdapter(
       // the uncontinuable audio path.
       const audioBase64 = findLatestUserAudioBase64(
         survivingMessages,
-        !queuedRunSettings && !continuation,
+        !queuedRunSettings && !resumesTurn,
       );
       const videoBase64 = findLatestUserVideoBase64(survivingMessages);
 
@@ -5724,7 +5727,7 @@ export function createOpenAIStreamAdapter(
         // A tool-only image needs the live stream to ask before it is sent.
         mcpImage ||
           findLatestUserImageBase64(currentTurnMessages) ||
-          findLatestUserAudioBase64(currentTurnMessages, !queuedRunSettings && !continuation) ||
+          findLatestUserAudioBase64(currentTurnMessages, !queuedRunSettings && !resumesTurn) ||
           findLatestUserVideoBase64(currentTurnMessages),
       );
       const generationCandidate = isDurableRunCandidate({
@@ -7066,7 +7069,7 @@ export function createOpenAIStreamAdapter(
             image_base64: findLatestUserImageBase64(currentTurnMessages),
             audio_base64: findLatestUserAudioBase64(
               currentTurnMessages,
-              !queuedRunSettings && !continuation,
+              !queuedRunSettings && !resumesTurn,
             ),
             extra_audio_base64:
               findLatestUserExtraAudioBase64(currentTurnMessages),

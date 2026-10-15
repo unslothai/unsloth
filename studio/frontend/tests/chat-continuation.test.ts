@@ -36,6 +36,7 @@ const {
   providerCompactionContinuationFields,
   readContinuationRequest,
   readIncompleteInfo,
+  resumesEarlierTurn,
   readTextThoughtSignature,
   resolveIncompleteReason,
   restoredAssistantStatus,
@@ -488,6 +489,37 @@ test("a continuation request is read only when it carries text", () => {
   );
   assert.equal(readContinuationRequest({}), null);
   assert.equal(readContinuationRequest(undefined), null);
+});
+
+test("Continue on an empty paused answer retries the turn without taking staged audio", () => {
+  // Preemption gave up before the first token: nothing to prefill, so the turn is regenerated,
+  // but it is still the Continue of that turn and not a send of the composer's draft.
+  const empty = { custom: { unslothContinuation: { partial: "" } } };
+  assert.equal(readContinuationRequest(empty), null);
+  assert.equal(resumesEarlierTurn(empty), true);
+  assert.equal(
+    resumesEarlierTurn({ custom: { unslothContinuation: { partial: "half an answer" } } }),
+    true,
+  );
+  assert.equal(resumesEarlierTurn({}), false);
+  assert.equal(resumesEarlierTurn(undefined), false);
+  assert.equal(resumesEarlierTurn({ custom: { unslothContinuation: null } }), false);
+
+  // Every read that may take the pending clip is gated on the intent, not the parsed request.
+  const gates = [
+    ...CHAT_ADAPTER.matchAll(/findLatestUserAudioBase64\(\s*\w+,\s*([^)]*?),?\s*\)/g),
+  ].map((match) => match[1]);
+  assert.ok(gates.length >= 3, `found ${gates.length} pending-audio reads`);
+  for (const gate of gates) {
+    assert.ok(
+      gate === "false" || gate === "!queuedRunSettings && !resumesTurn",
+      `a pending-audio read is gated on ${gate}`,
+    );
+  }
+  assert.match(
+    CHAT_ADAPTER,
+    /const resumesTurn = continuation !== null \|\| resumesEarlierTurn\(runConfig\);/,
+  );
 });
 
 test("a continuation carries a complete provider compaction tuple", () => {
