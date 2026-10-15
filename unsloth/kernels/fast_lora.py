@@ -19,6 +19,7 @@ from .utils import (
     addmm_,
     fast_dequantize,
     QUANT_STATE,
+    _base_quant_state,
     get_lora_parameters,
     get_lora_parameters_bias,
     matmul_lora,
@@ -734,7 +735,9 @@ def fast_lora_forward(self, x: torch.Tensor, *args, **kwargs) -> torch.Tensor:
                 lora_B = self.lora_B[active_adapter].weight
                 scaling = self.scaling[active_adapter]
                 W = self.base_layer.weight
-                return _apply(LoRA_W, x, W, QUANT_STATE(W), lora_A, lora_B, scaling)
+                return _apply(
+                    LoRA_W, x, W, _base_quant_state(self.base_layer, W), lora_A, lora_B, scaling
+                )
             pass
         pass
 

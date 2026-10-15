@@ -2,7 +2,7 @@ import ast
 from pathlib import Path
 
 
-_HELPERS = ("_packed_base", "_is_packed_state")
+_HELPERS = ("_packed_base", "_is_packed_state", "_base_quant_state")
 
 
 def _load_function(name):

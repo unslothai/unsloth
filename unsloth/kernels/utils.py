@@ -327,6 +327,24 @@ def QUANT_STATE(W):
     return getattr(W, "quant_state", None)
 
 
+def _base_quant_state(base_layer, W):
+    """W's quant state, else its bitsandbytes Linear4bit's own copy of it. FSDP2 all-gathers the packed
+    bytes into a plain Parameter that drops `quant_state`; read without it, the packed (N, 1) buffer
+    would be taken for a dense weight."""
+    W_quant = getattr(W, "quant_state", None)
+    if W_quant is not None:
+        return W_quant
+    W_quant = getattr(base_layer, "quant_state", None)
+    if (
+        W_quant is None
+        or getattr(W, "ndim", 0) != 2
+        or W.shape[1] != 1
+        or not any(cls.__name__ == "Linear4bit" for cls in type(base_layer).__mro__)
+    ):
+        return None
+    return W_quant
+
+
 # fp8 weight dtypes: a weight_scale / weight_scale_inv is only a quant state while the weight
 # itself is still fp8. compressed-tensors layers expose an already-dequantized bf16 weight at
 # forward time while keeping a weight_scale, and reading that as a quant state routes it into
@@ -434,7 +452,7 @@ def get_lora_parameters(proj):
 
     # Only fall back to a weight_scale(_inv) when the weight is still fp8; a bf16 weight (a decompressed
     # compressed-tensors layer) must not carry a scale as its quant state or fast_gemv crashes.
-    W_quant = getattr(W, "quant_state", None)
+    W_quant = _base_quant_state(base_layer, W)
     if W_quant is None and W.dtype in _FP8_WEIGHT_DTYPES:
         W_quant = getattr(base_layer, "weight_scale_inv", None)
         if W_quant is None:
@@ -492,7 +510,7 @@ def get_lora_parameters_bias(proj):
 
     # Only fall back to a weight_scale(_inv) when the weight is still fp8; a bf16 weight (a decompressed
     # compressed-tensors layer) must not carry a scale as its quant state or fast_gemv crashes.
-    W_quant = getattr(W, "quant_state", None)
+    W_quant = _base_quant_state(base_layer, W)
     if W_quant is None and W.dtype in _FP8_WEIGHT_DTYPES:
         W_quant = getattr(base_layer, "weight_scale_inv", None)
         if W_quant is None:
