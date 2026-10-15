@@ -586,19 +586,40 @@ def test_causal_conv1d_fast_path_preserves_wheel_first_install_args(monkeypatch)
 
 
 @not_on_windows
-def test_causal_conv1d_fast_path_includes_qwen3_6_variants(monkeypatch):
+def test_causal_conv1d_fast_path_skips_qwen3_6_variants_on_zoo_triton_conv(monkeypatch):
+    # unsloth-zoo runs Qwen3.5 / 3.6 / Qwen3-Next on its own Triton causal conv (on a CUDA torch
+    # with Triton, pinned here so a CPU-only CI host answers the same).
+    from utils import ssm_runtime
+
     install_mock = mock.Mock(return_value = True)
     monkeypatch.setattr(worker, "_install_package_wheel_first", install_mock)
+    monkeypatch.setattr(ssm_runtime, "_zoo_triton_platform_usable", lambda: True)
+    monkeypatch.delenv("UNSLOTH_DISABLE_TRITON_CAUSAL_CONV1D", raising = False)
 
-    worker._ensure_causal_conv1d_fast_path(
-        event_queue = [],
-        model_name = "unsloth/Qwen3.6-4B",
-    )
-    worker._ensure_causal_conv1d_fast_path(
-        event_queue = [],
-        model_name = "unsloth/Qwen3_6-4B",
-    )
+    for model_name in ("unsloth/Qwen3.6-4B", "unsloth/Qwen3_6-4B"):
+        worker._ensure_causal_conv1d_fast_path(event_queue = [], model_name = model_name)
+    assert install_mock.call_count == 0
 
+    # zoo's kill switch puts them back on the prebuilt causal-conv1d.
+    monkeypatch.setenv("UNSLOTH_DISABLE_TRITON_CAUSAL_CONV1D", "1")
+    for model_name in ("unsloth/Qwen3.6-4B", "unsloth/Qwen3_6-4B"):
+        worker._ensure_causal_conv1d_fast_path(event_queue = [], model_name = model_name)
+    assert install_mock.call_count == 2
+
+
+def test_mamba_ssm_follows_the_resolved_answer_not_the_name(monkeypatch):
+    install_mock = mock.Mock(return_value = True)
+    monkeypatch.setattr(worker, "_install_package_wheel_first", install_mock)
+    # A real hybrid whose id lacks the substrings (resolved from its config) still installs.
+    worker._ensure_mamba_ssm(
+        event_queue = [], model_name = "nvidia/NVIDIA-Nemotron-Nano-9B-v2", required = True
+    )
+    assert install_mock.call_count == 1
+    # A config that says otherwise wins over an SSM-looking name.
+    worker._ensure_mamba_ssm(event_queue = [], model_name = "tiiuae/Falcon-H1-0.5B", required = False)
+    assert install_mock.call_count == 1
+    # The Mamba-1 family is detected by name now as well.
+    worker._ensure_mamba_ssm(event_queue = [], model_name = "ai21labs/Jamba-v0.1")
     assert install_mock.call_count == 2
 
 
@@ -1455,7 +1476,7 @@ def test_windows_causal_conv1d_fast_path_installs(monkeypatch):
     _as_windows(monkeypatch)
     install_mock = mock.Mock(return_value = True)
     monkeypatch.setattr(worker, "_install_package_wheel_first", install_mock)
-    worker._ensure_causal_conv1d_fast_path(event_queue = [], model_name = "unsloth/Qwen3.6-4B")
+    worker._ensure_causal_conv1d_fast_path(event_queue = [], model_name = "LiquidAI/LFM2-1.2B")
     install_mock.assert_called_once()
 
 

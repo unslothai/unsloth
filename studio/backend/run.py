@@ -1382,6 +1382,11 @@ def _install_windows_console_handler(shutdown) -> bool:
         return False
 
 
+def _note_quit_signal():
+    from utils.process_lifetime import mark_quit_signal_received
+    mark_quit_signal_received()
+
+
 def _graceful_shutdown(server = None):
     """Shut down all subprocess backends and the uvicorn server. Called from signal handlers to clean up
     children before exit; critical on Windows where atexit handlers are unreliable after Ctrl+C."""
@@ -2953,6 +2958,7 @@ if __name__ == "__main__":
         signal.signal(signal.SIGTERM, signal.SIG_DFL)
         if hasattr(signal, "SIGBREAK"):
             signal.signal(signal.SIGBREAK, signal.SIG_DFL)
+        _note_quit_signal()
         _graceful_shutdown(_server)
         _shutdown_event.set()
 

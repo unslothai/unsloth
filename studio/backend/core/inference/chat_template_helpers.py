@@ -430,6 +430,40 @@ def build_dac_tts_prompt(text: str) -> str:
     return f"<|im_start|>\n<|text_start|>{text}<|text_end|>\n<|audio_start|>\n"
 
 
+# canopylabs/orpheus-3b-0.1-ft speakers, in the README's order. The prompt reads "{voice}: {text}".
+ORPHEUS_VOICES = ("tara", "leah", "jess", "leo", "dan", "mia", "zac", "zoe")
+
+
+def tts_voice_options(audio_type) -> Optional[list]:
+    """The voice picker a codec TTS model offers, in the audio.cpp ``audio_options`` shape, or None.
+    No default, so an unset voice keeps the unprefixed prompt fine-tunes were trained on."""
+    if audio_type != "snac":
+        return None
+    return [
+        {
+            "name": "voice",
+            "type": "enum",
+            "values": list(ORPHEUS_VOICES),
+            "default": None,
+            "description": "Orpheus speaker. Leave unset for your own fine-tunes.",
+        }
+    ]
+
+
+def tts_prompt_with_voice(text: str, audio_type, audio_options: Optional[dict]) -> str:
+    """*text* with the chosen speaker prefix, when the codec takes one and a voice was picked."""
+    voice = (audio_options or {}).get("voice")
+    if audio_type != "snac" or not voice:
+        return text
+    if voice not in ORPHEUS_VOICES:
+        from core.inference.audio_errors import AudioRuntimeError
+        raise AudioRuntimeError(
+            f"Unknown Orpheus voice. Choose one of: {', '.join(ORPHEUS_VOICES)}.",
+            status = 400,
+        )
+    return f"{voice}: {text}"
+
+
 def _neutralize_leaves(
     value,
     rewrite,

@@ -386,3 +386,52 @@ def test_code_execution_error_renders_error_code(monkeypatch):
     end = events[1]
     assert end["type"] == "tool_end"
     assert end["result"] == "Error: container_expired"
+
+
+def _captured_body(monkeypatch, **kwargs) -> dict:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            content = _anthropic_sse([{"type": "message_stop"}]),
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http_client(monkeypatch, handler)
+
+    async def run():
+        client = _make_client()
+        async for _ in client.stream_chat_completion(
+            messages = [{"role": "user", "content": "extract"}],
+            model = "claude-sonnet-4-6",
+            max_tokens = 1024,
+            **kwargs,
+        ):
+            pass
+        await client.close()
+
+    _drive(run())
+    return captured["body"]
+
+
+def test_a_json_schema_response_format_reaches_output_config(monkeypatch):
+    # platform.claude.com/docs/en/build-with-claude/structured-outputs: output_config.format, GA.
+    schema = {
+        "type": "object",
+        "properties": {"a": {"type": "string"}},
+        "additionalProperties": False,
+    }
+    body = _captured_body(
+        monkeypatch,
+        response_format = {"type": "json_schema", "json_schema": {"name": "r", "schema": schema}},
+        reasoning_effort = "low",
+    )
+    assert body["output_config"]["format"] == {"type": "json_schema", "schema": schema}
+    assert body["output_config"]["effort"] == "low"
+
+
+def test_no_response_format_leaves_output_config_alone(monkeypatch):
+    body = _captured_body(monkeypatch)
+    assert "format" not in (body.get("output_config") or {})

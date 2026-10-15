@@ -1542,6 +1542,11 @@ class MaxBodyMiddleware:
         await self.app(scope, replay_receive, send)
 
 
+# Added before MaxBodyMiddleware so it runs inside it: the body it reads is already capped.
+from utils.model_aliases import ModelAliasMiddleware  # noqa: E402
+
+app.add_middleware(ModelAliasMiddleware)
+
 app.add_middleware(
     MaxBodyMiddleware,
     max_bytes_getter = default_request_body_limit_bytes,
@@ -1630,6 +1635,11 @@ app.add_middleware(KeylessToolPolicyMiddleware)
 from utils.remote_access_settings import RemoteAccessStopResponseMiddleware  # noqa: E402
 
 app.add_middleware(RemoteAccessStopResponseMiddleware)
+
+from auth.x_api_key import XApiKeyMiddleware  # noqa: E402
+
+# Added last so it is outermost: every Authorization reader below sees the rewritten header.
+app.add_middleware(XApiKeyMiddleware)
 
 app.include_router(auth_router, prefix = "/api/auth", tags = ["auth"])
 app.include_router(

@@ -3699,6 +3699,37 @@ def load_mlx_adapter_tokenizer(
     return adapter_tokenizer if adapter_tokenizer.chat_template else tokenizer
 
 
+def load_mlx_adapter_processor(
+    processor,
+    lora_path: str,
+    hf_token: HfTokenArg = None,
+):
+    """The processor counterpart of load_mlx_adapter_tokenizer, for multimodal bases such as Qwen3.5 Base."""
+    own = getattr(processor, "tokenizer", None)
+    if (
+        own is None
+        or getattr(processor, "chat_template", None)
+        or getattr(own, "chat_template", None)
+    ):
+        return processor
+    adapter = load_mlx_adapter_tokenizer(own, lora_path, hf_token)
+    trained = (
+        getattr(adapter, "_tokenizer", adapter)
+        if type(adapter).__name__ == "TokenizerWrapper"
+        else adapter
+    )
+    template = getattr(trained, "chat_template", None)
+    if adapter is own or not template:
+        return processor
+    # mlx-vlm (stopping_criteria) and the MLX loader (_unsloth_* tags) hang state off the processor's tokenizer.
+    for name, value in vars(own).items():
+        if not hasattr(trained, name):
+            setattr(trained, name, value)
+    processor.tokenizer = trained
+    processor.chat_template = template
+    return processor
+
+
 def get_base_model_from_lora_identifier(
     identifier: str, hf_token: Optional[str] = None
 ) -> Optional[str]:

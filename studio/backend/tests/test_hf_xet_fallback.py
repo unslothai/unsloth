@@ -176,12 +176,20 @@ def test_degrades_gracefully_without_shared_helper(monkeypatch):
             path = None,
             target = None,
         ):
-            if name == "unsloth_zoo.hf_xet_fallback":
+            if (
+                name == "unsloth_zoo.hf_xet_fallback"
+                or name.split(".")[0] == "unsloth_zoo_downloads"
+            ):
                 raise ModuleNotFoundError(f"No module named '{name}'", name = name)
             return None
 
     finder = _BlockShared()
     saved_shared = sys.modules.pop("unsloth_zoo.hf_xet_fallback", None)
+    saved_light = {
+        k: sys.modules.pop(k)
+        for k in list(sys.modules)
+        if k.split(".")[0] == "unsloth_zoo_downloads"
+    }
     saved_shim = sys.modules.pop("utils.hf_xet_fallback", None)
     sys.meta_path.insert(0, finder)
     try:
@@ -233,6 +241,7 @@ def test_degrades_gracefully_without_shared_helper(monkeypatch):
         sys.modules.pop("utils.hf_xet_fallback", None)
         if saved_shared is not None:
             sys.modules["unsloth_zoo.hf_xet_fallback"] = saved_shared
+        sys.modules.update(saved_light)
         if saved_shim is not None:
             sys.modules["utils.hf_xet_fallback"] = saved_shim
 
@@ -249,15 +258,17 @@ def test_degrades_when_unsloth_zoo_entirely_absent():
             path = None,
             target = None,
         ):
-            if name == "unsloth_zoo" or name.startswith("unsloth_zoo."):
-                raise ModuleNotFoundError("No module named 'unsloth_zoo'", name = "unsloth_zoo")
+            # Whole package absent, so ModuleNotFoundError.name is the top-level 'unsloth_zoo'.
+            if name.split(".")[0] in ("unsloth_zoo", "unsloth_zoo_downloads"):
+                top = name.split(".")[0]
+                raise ModuleNotFoundError(f"No module named '{top}'", name = top)
             return None
 
     finder = _BlockZoo()
     saved = {
         k: v
         for k, v in list(sys.modules.items())
-        if k == "unsloth_zoo" or k.startswith("unsloth_zoo.")
+        if k.split(".")[0] in ("unsloth_zoo", "unsloth_zoo_downloads")
     }
     for k in saved:
         del sys.modules[k]
@@ -290,9 +301,17 @@ def test_degrades_when_shared_helper_import_raises_importerror():
         ):
             if name == "unsloth_zoo.hf_xet_fallback":
                 raise ImportError("Unsloth: Pytorch is not installed.")
+            if name == "unsloth_zoo_downloads":
+                # A zoo predating the init-free package.
+                raise ModuleNotFoundError(f"No module named '{name}'", name = name)
             return None
 
     finder = _BlockWithImportError()
+    saved_light = {
+        k: sys.modules.pop(k)
+        for k in list(sys.modules)
+        if k.split(".")[0] == "unsloth_zoo_downloads"
+    }
     saved_shared = sys.modules.pop("unsloth_zoo.hf_xet_fallback", None)
     saved_zoo = sys.modules.pop("unsloth_zoo", None)
     saved_shim = sys.modules.pop("utils.hf_xet_fallback", None)
@@ -310,6 +329,7 @@ def test_degrades_when_shared_helper_import_raises_importerror():
             sys.modules["unsloth_zoo.hf_xet_fallback"] = saved_shared
         if saved_zoo is not None:
             sys.modules["unsloth_zoo"] = saved_zoo
+        sys.modules.update(saved_light)
         if saved_shim is not None:
             sys.modules["utils.hf_xet_fallback"] = saved_shim
 
@@ -344,6 +364,7 @@ def test_no_light_gpu_init_retry_on_an_accelerator_host(monkeypatch):
     try:
         shim = importlib.import_module("utils.hf_xet_fallback")
         monkeypatch.setattr(shim, "_gpu_present", lambda: True)
+        monkeypatch.setattr(shim, "_import_light", lambda name: None)
         assert shim._load_shared() is False
         assert attempts == [None], attempts
         assert os.environ.get("UNSLOTH_ZOO_DISABLE_GPU_INIT") is None
@@ -374,6 +395,7 @@ def test_optional_loader_does_not_retry_under_light_gpu_init_on_an_accelerator_h
     monkeypatch.setitem(sys.modules, "triton", real_triton)
     monkeypatch.setattr(shim, "_gpu_present", lambda: True)
     monkeypatch.delitem(sys.modules, "unsloth_zoo.hf_xet_health", raising = False)
+    monkeypatch.setattr(shim, "_import_light", lambda name: None)
     shim._reset_optional_module_cache()
     attempts = []
 
@@ -401,6 +423,7 @@ def test_optional_loader_keeps_a_submodule_a_late_zoo_init_failure_left_loaded(m
     monkeypatch.setattr(shim, "_gpu_present", lambda: True)
     monkeypatch.delitem(sys.modules, "unsloth_zoo.hf_xet_health", raising = False)
     survivor = _types.ModuleType("unsloth_zoo.hf_xet_tuning")
+    monkeypatch.setattr(shim, "_import_light", lambda name: None)
     shim._reset_optional_module_cache()
     attempts = []
 
@@ -511,6 +534,8 @@ def test_retries_under_light_gpu_init_when_import_fails(monkeypatch):
         degraded = importlib.import_module("utils.hf_xet_fallback")
         # The retry only applies with no accelerator; pin that.
         monkeypatch.setattr(degraded, "_gpu_present", lambda: False)
+        monkeypatch.setattr(degraded, "_import_light", lambda name: None)
+        # Import is light (lazy backend); unsloth_zoo not loaded yet.
         assert seen_env == [], seen_env
         stall_error = degraded.DownloadStallError
         assert seen_env == [None, "1"], seen_env
@@ -558,7 +583,8 @@ def test_a_worker_spawned_during_the_gpu_init_retry_does_not_inherit_the_overrid
     try:
         shim = importlib.import_module("utils.hf_xet_fallback")
         monkeypatch.setattr(shim, "_gpu_present", lambda: False)
-        shim.DownloadStallError
+        monkeypatch.setattr(shim, "_import_light", lambda name: None)
+        shim.DownloadStallError  # drives the load: plain attempt, then the retry
         assert len(child_envs) == 2, child_envs
         assert os.environ.get("UNSLOTH_ZOO_DISABLE_GPU_INIT") is None
         for env in child_envs:
@@ -1314,3 +1340,89 @@ class _FakeFn:
 
 def _fail_on_kill(pid, sig):
     raise AssertionError("os.kill must never be reached on Windows")
+
+
+@pytest.fixture
+def fake_light_package(tmp_path, monkeypatch):
+    """A stand-in ``unsloth_zoo_downloads``, independent of the installed zoo."""
+    pkg = tmp_path / "light" / "unsloth_zoo_downloads"
+    pkg.mkdir(parents = True)
+    (pkg / "__init__.py").write_text("")
+    for name in ("hf_xet_fallback", "hf_xet_health", "hf_xet_tuning"):
+        (pkg / f"{name}.py").write_text(f"MARKER = 'light {name}'\n")
+    _is_light = lambda k: k.split(".")[0] == "unsloth_zoo_downloads"
+    saved = {k: v for k, v in sys.modules.items() if _is_light(k)}
+    for k in saved:
+        del sys.modules[k]
+    monkeypatch.syspath_prepend(str(pkg.parent))
+    yield
+    for k in [k for k in sys.modules if _is_light(k)]:
+        del sys.modules[k]
+    sys.modules.update(saved)
+
+
+class _ZooInitExplodes:
+    """``import unsloth_zoo`` raising, as on a GPU-less host; records every attempt."""
+
+    def __init__(self):
+        self.attempts = []
+
+    def find_spec(
+        self,
+        name,
+        path = None,
+        target = None,
+    ):
+        if name == "unsloth_zoo":
+            self.attempts.append(os.environ.get("UNSLOTH_ZOO_DISABLE_GPU_INIT"))
+            raise NotImplementedError("Unsloth cannot find any torch accelerator")
+        return None
+
+
+def test_shared_backend_comes_from_the_light_package_without_zoo_init(
+    monkeypatch, fake_light_package
+):
+    for k in [k for k in sys.modules if k == "unsloth_zoo" or k.startswith("unsloth_zoo.")]:
+        monkeypatch.delitem(sys.modules, k)
+    monkeypatch.delenv("UNSLOTH_ZOO_DISABLE_GPU_INIT", raising = False)
+    monkeypatch.setattr(shim, "_shared", None)
+    monkeypatch.setattr(shim, "_shared_available", None)
+    gated = []
+    monkeypatch.setattr(shim, "_gate_torch_stack", gated.append)
+    finder = _ZooInitExplodes()
+    sys.meta_path.insert(0, finder)
+    try:
+        assert shim._load_shared() is True
+        assert shim._shared.MARKER == "light hf_xet_fallback"
+        assert finder.attempts == [] and gated == []
+        assert "unsloth_zoo" not in sys.modules
+        assert os.environ.get("UNSLOTH_ZOO_DISABLE_GPU_INIT") is None
+    finally:
+        sys.meta_path.remove(finder)
+
+
+def test_optional_module_comes_from_the_light_package_without_zoo_init(
+    monkeypatch, fake_light_package
+):
+    monkeypatch.delitem(sys.modules, "unsloth_zoo.hf_xet_health", raising = False)
+    monkeypatch.setattr(shim, "_optional_modules", {})
+    gated = []
+    monkeypatch.setattr(shim, "_gate_torch_stack", gated.append)
+    finder = _ZooInitExplodes()
+    sys.meta_path.insert(0, finder)
+    try:
+        module = shim._load_optional("unsloth_zoo.hf_xet_health")
+        assert module.MARKER == "light hf_xet_health"
+        assert finder.attempts == [] and gated == []
+        # Memoised under the name callers use, so cached_xet_health sees it.
+        assert shim._optional_modules["unsloth_zoo.hf_xet_health"] is module
+    finally:
+        sys.meta_path.remove(finder)
+
+
+def test_an_already_loaded_zoo_module_wins_over_the_light_package(monkeypatch, fake_light_package):
+    """Keeps the object identity of an earlier full import (and of test doubles)."""
+    loaded = _types.ModuleType("unsloth_zoo.hf_xet_health")
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.hf_xet_health", loaded)
+    monkeypatch.setattr(shim, "_optional_modules", {})
+    assert shim._load_optional("unsloth_zoo.hf_xet_health") is loaded

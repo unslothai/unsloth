@@ -729,10 +729,23 @@ class AudioCppBackend:
             body["voice"] = voice
         default_options.update(chosen)
         requested: dict[str, Any] = {}
+        # A strict contract refuses undeclared options; the retry would then drop the description too.
+        keys = model.request_keys
         if instructions and str(instructions).strip():
-            requested["instruct"] = str(instructions).strip()
+            # Breeze and Irodori v4 call it instruction, DramaBox has neither.
+            name = next((n for n in ("instruct", "instruction") if keys is None or n in keys), None)
+            if name:
+                requested[name] = str(instructions).strip()
+            else:
+                logger.info(
+                    "audio.cpp: %s declares no instruction option; not sending the description",
+                    model.family,
+                )
         if language and str(language).strip():
-            requested["language"] = str(language).strip()
+            if keys is None or "language" in keys:
+                requested["language"] = str(language).strip()
+            else:
+                logger.info("audio.cpp: %s does not declare language; not sending it", model.family)
         merged = {**default_options, **requested}
         if merged:
             body["options"] = merged

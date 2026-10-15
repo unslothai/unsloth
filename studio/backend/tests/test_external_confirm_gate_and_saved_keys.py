@@ -341,6 +341,39 @@ def test_a_third_party_key_never_unlocks_a_saved_connection(monkeypatch):
     assert seen == [False]
 
 
+@pytest.mark.parametrize(
+    "record, allowed",
+    [
+        ({"role": "owner", "key_name": "Coding agents (unsloth start)"}, True),
+        ({"role": "owner", "key_name": "my script"}, False),
+        ({"role": "member", "key_name": "Coding agents (unsloth start)"}, False),
+    ],
+)
+def test_only_the_owners_unsloth_start_key_unlocks_a_saved_connection(monkeypatch, record, allowed):
+    from auth.authentication import API_KEY_PREFIX
+    from routes import inference as inf
+
+    seen: list[bool] = []
+    inf = _install(monkeypatch, "openai", record_keys = seen)
+    monkeypatch.setattr(inf.auth_storage, "is_internal_api_key", lambda raw: False)
+    monkeypatch.setattr(
+        inf.auth_storage, "validate_api_key_account", lambda raw, touch = True: (record, "s")
+    )
+    _run(inf, _payload(), request = _request(f"Bearer {API_KEY_PREFIX}deadbeefdeadbeef"))
+    assert seen == [allowed]
+
+
+def test_a_keyless_caller_never_unlocks_a_saved_connection(monkeypatch):
+    from auth import authentication
+    from routes import inference as inf
+
+    seen: list[bool] = []
+    inf = _install(monkeypatch, "openai", record_keys = seen)
+    monkeypatch.setattr(authentication, "admitted_without_session", lambda request: True)
+    _run(inf, _payload(), request = _request())
+    assert seen == [False]
+
+
 def test_an_interactive_session_still_uses_its_saved_connection(monkeypatch):
     """Unsloth's own chat sends a session JWT and no API key at all."""
     from routes import inference as inf

@@ -1592,6 +1592,7 @@ class ExternalProviderClient:
                 tool_choice,
                 fast_mode = fast_mode,
                 tools = tools,
+                response_format = response_format,
             ):
                 yield line
             return
@@ -2358,6 +2359,7 @@ class ExternalProviderClient:
         *,
         fast_mode: Optional[bool] = None,
         tools: Optional[list[dict[str, Any]]] = None,
+        response_format: Optional[dict[str, Any]] = None,
     ) -> AsyncGenerator[str, None]:
         """call Anthropic Messages and translate its SSE into OpenAI stream events."""
         import json as _json
@@ -2747,6 +2749,21 @@ class ExternalProviderClient:
                 if body.get("max_tokens", 0) <= budget_tokens:
                     body["max_tokens"] = budget_tokens + 1024
 
+        # Structured output lives beside effort under output_config (GA, no beta header):
+        # platform.claude.com/docs/en/build-with-claude/structured-outputs.
+        _rf_schema = (
+            (response_format.get("json_schema") or {}).get("schema")
+            if isinstance(response_format, dict) and response_format.get("type") == "json_schema"
+            else None
+        )
+        if isinstance(_rf_schema, dict):
+            body.setdefault("output_config", {})["format"] = {
+                "type": "json_schema",
+                "schema": _rf_schema,
+            }
+
+        # tool_choice="none" or pinned-function suppresses hosted tools so a stale UI toggle cannot fire server-side
+        # search/code-exec.
         _anthropic_tool_choice_disabled = (
             isinstance(tool_choice, str) and tool_choice.strip().lower() == "none"
         )

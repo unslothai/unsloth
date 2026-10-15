@@ -141,3 +141,48 @@ def test_pump_finalizes_when_read_keeps_raising_on_dead_worker(monkeypatch):
     assert not pump.is_alive(), "pump must finalize a dead worker even when reads keep raising"
     assert m._job.status == "error"
     assert retired and retired[0] is m._job
+
+
+def test_finished_pump_leaves_the_next_run_alone(monkeypatch):
+    # Run 1's worker exits and run 2 starts before run 1's pump notices: run 1's pump must
+    # finalize run 1 only, not fail run 2 and revoke the key run 2's worker is about to use.
+    m = _manager_with_active_job()
+    first = m._job
+    first.status = "completed"
+    first.internal_api_key_id = 1
+    m._proc._alive = False
+    emitted: list = []
+    monkeypatch.setattr(m, "_emit", lambda e: emitted.append(e))
+    revoked: list = []
+
+    class _Storage:
+        @staticmethod
+        def revoke_internal_api_key(key_id):
+            revoked.append(key_id)
+
+    import auth
+
+    monkeypatch.setattr(auth, "storage", _Storage, raising = False)
+    second = Job(job_id = "job-next")
+    second.status = "pending"
+    second.internal_api_key_id = 2
+    second_q = _ScriptedQueue([])
+
+    class _NextRunStartsDuringRead:
+        def get(self, timeout = None):
+            with m._lock:  # what start() does for run 2
+                m._job, m._proc, m._mp_q = second, _FakeProc(alive = True), second_q
+            raise queue.Empty
+
+        def get_nowait(self):
+            raise queue.Empty
+
+    m._mp_q = _NextRunStartsDuringRead()
+    pump = threading.Thread(target = m._pump_loop, daemon = True)
+    pump.start()
+    pump.join(timeout = 5)
+
+    assert not pump.is_alive(), "run 1's pump must stop instead of serving run 2's queue"
+    assert second.status == "pending" and second.error is None
+    assert second.internal_api_key_id == 2 and 2 not in revoked
+    assert emitted == []

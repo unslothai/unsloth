@@ -1565,6 +1565,9 @@ API_KEY_PREFIX = "sk-unsloth-"
 
 # Name sets authority: Deep Research keys reach the saved connection, data-recipe keys only local /v1.
 DEEP_RESEARCH_WORKFLOW_KEY_NAME = "deep-research workflow"
+# What `unsloth start` mints for its coding agents (unsloth_cli/commands/start.py). Only a desktop
+# session can create a key with this name, and only the owner's may spend saved Connections.
+UNSLOTH_START_API_KEY_NAME = "Coding agents (unsloth start)"
 
 
 def create_api_key(
@@ -1781,7 +1784,7 @@ def validate_api_key_account(raw_key: str, *, touch: bool = True) -> Optional[Tu
             conn.execute("BEGIN IMMEDIATE")
         cur = conn.execute(
             f"""
-            SELECT k.id, k.username, k.is_active, k.expires_at,
+            SELECT k.id, k.username, k.name, k.is_active, k.expires_at,
                    u.account_id, u.role, u.is_active AS account_active,
                    COALESCE(u.account_jwt_secret, u.jwt_secret) AS jwt_secret
             FROM api_keys k JOIN auth_user u ON u.username = k.username
@@ -1824,6 +1827,7 @@ def validate_api_key_account(raw_key: str, *, touch: bool = True) -> Optional[Tu
             "role": row["role"],
             "is_active": int(row["account_active"]),
             "expires_at": row["expires_at"],
+            "key_name": row["name"],
         }
         return record, secret
     finally:
