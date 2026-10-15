@@ -4763,8 +4763,10 @@ _amd_prefer_discrete_gfx() {
     _apdg_others=$(printf '%s\n' "$_apdg_devs" | awk 'NF' | while IFS= read -r _apdg_g; do
         _amd_gfx_is_shadowing_integrated "$_apdg_g" && continue
         [ "$_apdg_g" = gfx906 ] && continue
-        if [ -n "$_apdg_strix" ]; then
-            case "$_apdg_g" in gfx1150|gfx1151|gfx1152) continue ;; esac
+        # No `case` here: bash 3.2 (macOS /bin/sh) misparses its `)` inside `$(...)`.
+        if [ -n "$_apdg_strix" ] && { [ "$_apdg_g" = gfx1150 ] || [ "$_apdg_g" = gfx1151 ] || \
+           [ "$_apdg_g" = gfx1152 ]; }; then
+            continue
         fi
         printf '%s\n' "$_apdg_g"
     done)
@@ -5336,6 +5338,8 @@ _infer_linux_amd_gfx_arch() {
     fi
     # On WSL /proc/cpuinfo and lspci still report the host APU, but without the ROCDXG bridge (librocdxg over /dev/dxg) the AMD wheels cannot reach the GPU; keep the CPU fallback there unless that runtime is present. The explicit override above still wins. Mirrors install_python_stack.py.
     _gpu_evidence=""
+    # Krackan Point 2 names overlap the gfx1152 patterns below, so both scans test them first (mirrors install_python_stack.py).
+    _krackan2_ere='820M|Krackan ?(Point ?)?2|AI 5 (PRO )?330'
     if [ -e /dev/dxg ] || grep -qi microsoft /proc/version 2>/dev/null; then
         for _d in /opt/rocm/lib /opt/rocm/lib64 /opt/rocm-*/lib /opt/rocm-*/lib64; do
             { [ -e "$_d/librocdxg.so" ] || [ -e "$_d/librocdxg.so.1" ]; } && _rocdxg=1 && break
@@ -5355,6 +5359,10 @@ _infer_linux_amd_gfx_arch() {
         echo gfx1150
         return 0
     fi
+    if [ -n "$_gpu_evidence" ] && grep -qiE "$_krackan2_ere" /proc/cpuinfo 2>/dev/null; then
+        echo gfx1153
+        return 0
+    fi
     if [ -n "$_gpu_evidence" ] && grep -qiE '860M|840M|Krackan|AI 7 35[05]|AI 5 34[05]|AI 7 PRO 35|AI 5 33' /proc/cpuinfo 2>/dev/null; then
         echo gfx1152
         return 0
@@ -5364,6 +5372,10 @@ _infer_linux_amd_gfx_arch() {
         _amd_disp=$(lspci -nn 2>/dev/null | grep -E 'VGA compatible controller|3D controller|Display controller' | grep -E 'AMD|ATI' || true)
         while IFS= read -r _ln; do
             [ -n "$_ln" ] || continue
+            if printf '%s\n' "$_ln" | grep -Eqi "$_krackan2_ere"; then
+                echo gfx1153
+                return 0
+            fi
             if _gfx=$(_infer_amd_gfx_arch_from_gpu_name "$_ln"); then
                 echo "$_gfx"
                 return 0
@@ -5891,7 +5903,9 @@ get_torch_index_url() {
                 echo "$_base/cpu"; return
             fi
             # Repairing rocminfo cannot help here: the arch would read fine and still have no wheels (#8529). Advice only, same CPU index either way.
-            if _amd_unsup_gfx=$(_infer_linux_unsupported_amd_gfx_arch 2>/dev/null); then
+            # gfx1153 is inferred above (no index family), so it gets this warning without a name match.
+            if { [ "${_amd_inferred_gfx:-}" = gfx1153 ] && _amd_unsup_gfx=gfx1153; } || \
+               _amd_unsup_gfx=$(_infer_linux_unsupported_amd_gfx_arch 2>/dev/null); then
                 # Scoped to the card named, never to the host: a second AMD GPU here may well have wheels, and nothing has looked at it yet.
                 echo "[WARN] AMD GPU detected ($_amd_unsup_gfx) -- Unsloth has no ROCm PyTorch wheels for that arch, installing CPU PyTorch." >&2
                 echo "[WARN] This is expected on this GPU; repairing rocminfo/amd-smi or setting UNSLOTH_ROCM_GFX_ARCH will not give it ROCm PyTorch." >&2

@@ -201,9 +201,85 @@ def test_install_sh_names_the_multiarch_device_extra_for_gfx1153():
         _INSTALL_SH.read_text(encoding = "utf-8"), "_therock_device_extra_for_gfx"
     )
     out = subprocess.run(
-        ["bash", "-c", body + '\n_therock_device_extra_for_gfx gfx1153 || echo none'],
+        ["bash", "-c", body + "\n_therock_device_extra_for_gfx gfx1153 || echo none"],
         capture_output = True,
         text = True,
         timeout = 30,
     )
     assert out.stdout.strip() == "device-gfx1153", out
+
+
+# ── gfx1153 inferred without a runtime ──────────────────────────────────────
+
+# Krackan Point 2 names the broader Krackan patterns also match; gfx1152 hosts stay gfx1152.
+_KRACKAN2_TEXT = [
+    "model name : AMD Ryzen AI 5 330 w/ Radeon 820M\n",
+    "Advanced Micro Devices, Inc. [AMD/ATI] Krackan Point 2 [Radeon Graphics]\n",
+]
+_KRACKAN_TEXT = "model name : AMD Ryzen AI 7 350 w/ Radeon 860M\n"
+
+
+@pytest.mark.parametrize("text", _KRACKAN2_TEXT)
+def test_python_cpuinfo_names_gfx1153_before_gfx1152(text, monkeypatch):
+    monkeypatch.setattr(Path, "read_text", lambda *a, **k: text)
+    assert stack_mod._linux_amd_gfx_from_cpuinfo() == "gfx1153"
+    monkeypatch.setattr(Path, "read_text", lambda *a, **k: _KRACKAN_TEXT)
+    assert stack_mod._linux_amd_gfx_from_cpuinfo() == "gfx1152"
+
+
+def test_python_lspci_names_gfx1153_before_gfx1152(monkeypatch):
+    line = "c4:00.0 VGA compatible controller [0300]: " + _KRACKAN2_TEXT[1]
+    monkeypatch.setattr(stack_mod.shutil, "which", lambda _n: "/usr/bin/lspci")
+    monkeypatch.setattr(
+        stack_mod.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 0, line, "")
+    )
+    assert stack_mod._linux_amd_gfx_from_lspci() == "gfx1153"
+
+
+def _sh_infer(
+    tmp_path,
+    cpuinfo,
+    lspci = "",
+):
+    """install.sh _infer_linux_amd_gfx_arch on a stub cpuinfo, PCI evidence and lspci."""
+    source = _INSTALL_SH.read_text(encoding = "utf-8")
+    body = rocm_support._extract_sh_function_body(source, "_infer_linux_amd_gfx_arch")
+    (tmp_path / "cpuinfo").write_text(cpuinfo, encoding = "utf-8")
+    body = body.replace("/proc/cpuinfo", str(tmp_path / "cpuinfo"))
+    body = body.replace("/proc/version", "/dev/null")
+    script = (
+        "_amd_gpu_present_via_pci() { return 0; }\n"
+        + rocm_support._extract_sh_function_body(source, "_infer_amd_gfx_arch_from_gpu_name")
+        + "\n"
+        + f"lspci() {{ printf '%s\\n' '{lspci}'; }}\n"
+        + "unset UNSLOTH_ROCM_GFX_ARCH\n"
+        + body
+        + "\n_infer_linux_amd_gfx_arch || echo none\n"
+    )
+    out = subprocess.run(["bash", "-c", script], capture_output = True, text = True, timeout = 30)
+    return out.stdout.strip().splitlines()[-1], out.stderr
+
+
+@_POSIX
+def test_install_sh_cpuinfo_names_gfx1153_before_gfx1152(tmp_path):
+    assert _sh_infer(tmp_path, _KRACKAN2_TEXT[0])[0] == "gfx1153"
+    assert _sh_infer(tmp_path, _KRACKAN_TEXT)[0] == "gfx1152"
+
+
+@_POSIX
+def test_install_sh_lspci_names_gfx1153_before_gfx1152(tmp_path):
+    line = "c4:00.0 VGA compatible controller [0300]: " + _KRACKAN2_TEXT[1].strip()
+    assert _sh_infer(tmp_path, "model name : AMD\n", lspci = line)[0] == "gfx1153"
+
+
+@_POSIX
+def test_install_sh_inferred_gfx1153_warns_and_takes_cpu(monkeypatch):
+    # No rocminfo/amd-smi reading: the arch comes only from _infer_linux_amd_gfx_arch.
+    stubs = guards._INDEX_URL_STUBS
+    probe = next(ln for ln in stubs.splitlines() if ln.startswith("_probe_amd_gfx_arch()"))
+    monkeypatch.setattr(
+        guards, "_INDEX_URL_STUBS", stubs.replace(probe, "_probe_amd_gfx_arch() { :; }")
+    )
+    url, err = guards._run_sh_get_torch_index_url("gfx1153")
+    assert url.endswith("/cpu"), (url, err)
+    assert "AMD GPU detected (gfx1153) -- Unsloth has no ROCm PyTorch wheels" in err, err

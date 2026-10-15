@@ -2432,6 +2432,11 @@ def _unsupported_gfx_arch_from_gpu_name(name: str) -> "str | None":
     return None
 
 
+# Krackan Point 2 names overlap the Krackan patterns of the shared name table (gfx1152);
+# the Linux runtime-less paths test them first so the uncovered-arch fallback sees gfx1153.
+_LINUX_KRACKAN2_NAME_RE = r"820M|Krackan ?(?:Point ?)?2|AI 5 (?:PRO )?330"
+
+
 def _linux_amd_gfx_from_cpuinfo() -> "str | None":
     """Infer gfx arch from /proc/cpuinfo on integrated AMD APUs (Strix Halo/Point)."""
     try:
@@ -2442,6 +2447,8 @@ def _linux_amd_gfx_from_cpuinfo() -> "str | None":
         return "gfx1151"
     if re.search(r"890M|880M|Strix Point|HX 37[05]|AI 9 HX|AI 9 36[05]", text, re.IGNORECASE):
         return "gfx1150"
+    if re.search(_LINUX_KRACKAN2_NAME_RE, text, re.IGNORECASE):
+        return "gfx1153"
     if re.search(
         r"860M|840M|Krackan|AI 7 35[05]|AI 5 34[05]|AI 7 PRO 35|AI 5 33", text, re.IGNORECASE
     ):
@@ -2477,6 +2484,8 @@ def _linux_amd_gfx_from_lspci() -> "str | None":
             continue
         if not re.search(r"AMD|ATI", line):
             continue
+        if re.search(_LINUX_KRACKAN2_NAME_RE, line, re.IGNORECASE):
+            return "gfx1153"
         arch = _gfx_arch_from_gpu_name(line)
         if arch:
             return arch
