@@ -85,7 +85,7 @@ def _run_one_call(
     events = list(
         backend.generate_chat_completion_with_tools(
             messages = messages or [{"role": "user", "content": "Run the script"}],
-            tools = [_WEB_SEARCH_TOOL, _tool(_MCP_TOOL)],
+            tools = [_WEB_SEARCH_TOOL, _tool(tool_name)],
             max_tool_iterations = 4,
             max_tokens = max_tokens,
             context_overflow = context_overflow,
@@ -143,13 +143,14 @@ def test_compaction_off_keeps_the_reserve_without_an_exact_count(monkeypatch):
     assert off == on
 
 
-def test_compaction_off_reserves_the_images_an_mcp_result_can_add(monkeypatch):
+@pytest.mark.parametrize("tool_name", [_MCP_TOOL, "view_image", "browser_screenshot"])
+def test_compaction_off_reserves_the_images_a_result_can_add(monkeypatch, tool_name):
     from core.inference.llama_cpp import _FALLBACK_IMAGE_TOKENS
     from core.inference.mcp_images import MAX_MODEL_IMAGES
 
     reserve = _reply_floor(_CTX) + MAX_MODEL_IMAGES * _FALLBACK_IMAGE_TOKENS
-    vision, _ = _run_one_call(monkeypatch, context_overflow = None, tool_name = _MCP_TOOL, vision = True)
-    text_only, _ = _run_one_call(monkeypatch, context_overflow = None, tool_name = _MCP_TOOL)
+    vision, _ = _run_one_call(monkeypatch, context_overflow = None, tool_name = tool_name, vision = True)
+    text_only, _ = _run_one_call(monkeypatch, context_overflow = None, tool_name = tool_name)
 
     assert vision == int((_CTX - reserve) * 0.99) - _SPENT
     assert text_only == int((_CTX - _reply_floor(_CTX)) * 0.99) - _SPENT

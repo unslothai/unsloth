@@ -515,8 +515,9 @@ from core.inference.mcp_images import (
     DETACHED_IMAGE_TURN_TEXT as MCP_DETACHED_IMAGE_TURN_TEXT,
     IMAGE_TURN_TEXT as MCP_IMAGE_TURN_TEXT,
     MAX_MODEL_IMAGES as MCP_MAX_MODEL_IMAGES,
-    MCP_TOOL_PREFIX,
+    MAX_TOTAL_MODEL_IMAGES as MCP_MAX_TOTAL_MODEL_IMAGES,
     append_image_turn as append_mcp_image_turn,
+    is_image_tool as mcp_is_image_tool,
     mentions_images as mcp_images_mentioned_in,
 )
 from core.inference.tool_loop_controller import (
@@ -41725,15 +41726,18 @@ class LlamaCppBackend:
                                             else _ctx
                                         )
                                         _reserve = min(_requested, _reply_floor(_ctx))
-                                        # Images an MCP result returns join the thread after
-                                        # this fit, unpriced.
+                                        # Images a result returns join the thread after this
+                                        # fit, unpriced, as do the batch's earlier ones.
                                         if (
-                                            decision.tool_name.startswith(MCP_TOOL_PREFIX)
+                                            mcp_is_image_tool(decision.tool_name)
+                                            and image_share is None
                                             and self.is_vision
                                         ):
-                                            _reserve += MCP_MAX_MODEL_IMAGES * _mcp_image_tokens(
-                                                self
-                                            )
+                                            _batch_images = sum(map(len, batch_mcp_images))
+                                            _reserve += min(
+                                                MCP_MAX_TOTAL_MODEL_IMAGES,
+                                                _batch_images + MCP_MAX_MODEL_IMAGES,
+                                            ) * _mcp_image_tokens(self)
                                         _result_max_tokens = min(
                                             _reserve, _requested, max(1, _ctx // 4)
                                         )
