@@ -190,8 +190,8 @@ import {
   referenceImageDataUrls,
   stageReferenceImage,
   type StagedReferenceImage,
-} from "./reference-image-crop";
-import { ReferenceImageEditor } from "./reference-image-editor";
+} from "@/lib/image-crop";
+import { ReferenceImageEditor } from "@/components/image-crop-editor";
 import { type ReferenceMedia, ReferenceMediaPicker } from "./reference-picker";
 import {
   defaultReferenceVideoTrim,
@@ -272,11 +272,41 @@ const MODEL_DEFAULTS: Array<{ match: string; steps: number; guidance: number }> 
   { match: "hunyuanvideo", steps: 20, guidance: 6 },
 ];
 
-function defaultsFor(repoId: string): { steps: number; guidance: number } {
+function defaultsFor(repoId: string, family?: string): { steps: number; guidance: number } {
   const fold = (text: string) => `${text.toLowerCase().replace(/[-_.\s]+/g, "-")}-`;
   const id = fold(repoId);
   // The Wan and FusionX rows count only in the model / file name, as on the backend.
   const name = fold(repoId.replace(/[\\/]+$/, "").split(/[\\/]/).pop() ?? "");
+  // LTX-2.5 (diffusers' pre-release "2.4" too) is decided on the two names the backend gets: the selected file and
+  // the repo, read by their last segment. A local file's repo is the folder it sits in (the picker loads it from that
+  // directory), a Hub file's is the repo segment after the owner. The version is ltx_name_version's ("ltx-2.5",
+  // "LTX25", "ltx2.5", "LTX-Video-2.5"), or the explicit ltx-2.5 family. The variant is ltx25_is_dev's: the first
+  // name naming one decides, "distill" before a dev / full / sft token (or transformer_full); a dev pick runs 30
+  // steps at guidance 3, anything else the distilled 8 at guidance 1.
+  const segments = repoId.replace(/[\\/]+$/, "").split(/[\\/]/);
+  const local = /^([\\/~.]|[a-z]:)/i.test(repoId);
+  const fileLeaf = segments[segments.length - 1] ?? "";
+  const repoLeaf = local ? segments[segments.length - 2] : segments.length >= 3 ? segments[1] : undefined;
+  const names = [fileLeaf, ...(repoLeaf ? [repoLeaf] : [])].map((n) => n.toLowerCase());
+  const ltxMinor = (text: string) => {
+    for (const found of text.matchAll(
+      /(?<![a-z0-9])ltx(?:v|[-_ ]?video)?[-_ ]?2(?:[._]([0-9]+)(?![0-9])|([0-9])(?![0-9a-z])|(?![0-9a-z]|[._][0-9]))/g,
+    )) {
+      if (found[2] === undefined || Number(found[2]) >= 4) return Number(found[1] ?? found[2] ?? 0);
+    }
+    return undefined;
+  };
+  // The family itself comes from the weights, so a name-less pair falls back to the nearest folder naming a release.
+  const minor = [...names, ...segments.slice(0, -1).reverse().map((n) => n.toLowerCase())]
+    .map(ltxMinor)
+    .find((m) => m !== undefined);
+  if (family?.toLowerCase() === "ltx-2.5" || minor === 4 || minor === 5) {
+    for (const n of names) {
+      if (/(?<![a-z0-9])distill/.test(n)) break;
+      if (/(?<![a-z0-9])(?:dev|full|sft)(?![a-z0-9])|transformer_full/.test(n)) return { steps: 30, guidance: 3 };
+    }
+    return { steps: 8, guidance: 1 };
+  }
   return (
     MODEL_DEFAULTS.find((d) =>
       (d.match.startsWith("wan") || d.match === "fusionx" ? name : id).includes(d.match),
@@ -285,6 +315,8 @@ function defaultsFor(repoId: string): { steps: number; guidance: number } {
 }
 
 function defaultsKeyFor(repoId: string, familyOverride: string): string {
+  // An explicit LTX-2.5 family keeps the id: its file and repo names still pick dev or distilled.
+  if (explicitFamily(familyOverride)?.toLowerCase() === "ltx-2.5") return repoId;
   return defaultsFor(repoId) !== DEFAULT_GEN ? repoId : (explicitFamily(familyOverride) ?? repoId);
 }
 
@@ -1488,7 +1520,10 @@ function VideoGenerator({
       // whether the user takes the form after THIS pick.
       const claimedAt = videoFormClaimId();
       pickRecipeSuperseded.current = () => videoFormClaimId() !== claimedAt;
-      const recommended = defaultsFor(defaultsKeyFor(repoId, effectiveFamilyOverride));
+      const recommended = defaultsFor(
+        defaultsKeyFor(repoId, effectiveFamilyOverride),
+        explicitFamily(effectiveFamilyOverride),
+      );
       setPendingModelDefaults(recommended);
       setSteps(recommended.steps);
       setGuidance(recommended.guidance);
@@ -4010,6 +4045,8 @@ function VideoGenerator({
                       }
                       label="Add"
                       className="h-24"
+                      // MiniMax-H3 references take up to 8192px and have their own crop and fit.
+                      maxSide={null}
                     />
                   </div>
                 )}

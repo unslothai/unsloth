@@ -443,6 +443,34 @@ def test_patch_hybrid_varlen_active_and_idempotent(monkeypatch):
     assert scan_orig.calls[-1] is None
 
 
+def test_patch_hybrid_varlen_survives_accelerate_unwrap(monkeypatch):
+    # TRL runs accelerate's extract_model_from_parallel(keep_fp32_wrapper = False) every step
+    # after a mixed-precision prepare_model; it rebinds the forward it finds with
+    # MethodType(forward, model). A plain-function wrapper then got the model positionally:
+    # "PeftModelForCausalLM.forward() got multiple values for argument 'input_ids'".
+    from types import MethodType
+    from accelerate.utils import extract_model_from_parallel
+    from accelerate.utils.operations import convert_outputs_to_fp32
+
+    monkeypatch.setenv("UNSLOTH_EXPERIMENTAL_HYBRID_PACKING", "1")
+    model = _ShimHybridModel()
+    assert patch_hybrid_linear_attention_varlen(model) is True
+    assert list(inspect.signature(model.forward).parameters)[:3] == [
+        "input_ids",
+        "position_ids",
+        "packed_seq_lengths",
+    ]
+    # Accelerator.prepare_model with native AMP (accelerate/accelerator.py).
+    model._original_forward = model.forward
+    if hasattr(model.forward, "__func__"):
+        model.forward = MethodType(convert_outputs_to_fp32(model.forward.__func__), model)
+    else:
+        model.forward = convert_outputs_to_fp32(model.forward)
+    model = extract_model_from_parallel(model, keep_fp32_wrapper = False)
+    out = model(input_ids = torch.zeros(1, 6, dtype = torch.long), use_cache = False)
+    assert out.shape == (1, 6)
+
+
 def test_patch_hybrid_varlen_torch_fallback_fail_closed(monkeypatch):
     monkeypatch.setenv("UNSLOTH_EXPERIMENTAL_HYBRID_PACKING", "1")
     model = _ShimHybridModel()
@@ -1846,7 +1874,7 @@ def test_enable_padding_free_metadata():
 # has_real_accelerator(), not has_real_cuda(): the body below picks xpu when cuda is absent
 # and _build_packed_training_setup has an xpu dtype arm, so this is real XPU coverage.
 @pytest.mark.skipif(not has_real_accelerator(), reason = "builds a real 4bit model on an accelerator")
-def test_packing_sdpa(tmp_path):
+def test_packing_sdpa(tmp_path, monkeypatch):
     if torch.cuda.is_available():
         device = torch.device("cuda")
     elif torch.xpu.is_available():
@@ -1886,9 +1914,12 @@ def test_packing_sdpa(tmp_path):
         segment_calls.append(lengths)
         return lengths
 
-    def _capture_loss(*, logits, labels, **loss_kwargs):
+    def _capture_loss(*, hidden_states, labels, **loss_kwargs):
         captured_loss_labels["labels"] = labels.detach().to("cpu")
-        return torch.zeros((), device = logits.device, dtype = logits.dtype)
+        return torch.zeros((), device = hidden_states.device, dtype = hidden_states.dtype)
+
+    # Unmasked labels, so only the model's own boundary guard can mask the document starts.
+    inputs["labels"] = inputs["input_ids"].clone()
 
     with ExitStack() as stack:
         stack.enter_context(patch.object(attention_dispatch_utils, "HAS_FLASH_ATTENTION", False))
@@ -1903,10 +1934,12 @@ def test_packing_sdpa(tmp_path):
         stack.enter_context(
             patch.object(
                 llama_mod,
-                "fast_cross_entropy_loss",
+                "unsloth_fused_ce_loss",
                 side_effect = _capture_loss,
             )
         )
+        # Packed training's loss path: the fused CE on raw labels (UNSLOTH_RETURN_LOGITS=1 blocks packing).
+        monkeypatch.setenv("UNSLOTH_RETURN_LOGITS", "0")
         with torch.no_grad():
             outputs = model(**inputs)
 
@@ -1916,10 +1949,12 @@ def test_packing_sdpa(tmp_path):
     assert outputs.loss is not None
     assert "labels" in captured_loss_labels
     flat_loss_labels = captured_loss_labels["labels"].reshape(-1)
-    boundaries = (
-        torch.cumsum(batch["packed_seq_lengths"].to(device = "cpu", dtype = torch.long), dim = 0) - 1
-    )
-    for idx in boundaries.tolist():
+    # Raw labels (the kernel shifts): each later document's first token must not be a target.
+    starts = torch.cumsum(batch["packed_seq_lengths"].to(device = "cpu", dtype = torch.long), dim = 0)[
+        :-1
+    ]
+    assert starts.numel() > 0
+    for idx in starts.tolist():
         assert flat_loss_labels[idx].item() == -100
     assert torch.any(flat_loss_labels != -100)
 

@@ -28,6 +28,7 @@ __all__ = [
     "_checkpoint_folder",
     "_lm_subfolder",
     "_parsed",
+    "_row_images",
     "_internal",
     "_option_keys",
     "_label",
@@ -230,6 +231,34 @@ def _parsed(value):
         except ValueError:
             return value
     return value
+
+
+def _row_images(row: dict) -> list:
+    # A row's "images": PIL images, data URLs, or the {"bytes": ..., "path": ...} an undecoded image column holds.
+    images = _parsed(row.get("images"))
+    if images is None:
+        return []
+    found = []
+    for image in images if isinstance(images, (list, tuple)) else [images]:
+        if isinstance(image, dict) and set(image) <= {"bytes", "path"}:
+            import io
+
+            from PIL import Image
+
+            data = image.get("bytes")
+            # A nullable image column holds an empty struct where a row has no image.
+            try:
+                image = (
+                    Image.open(io.BytesIO(data) if data is not None else image["path"])
+                    if data is not None or image.get("path")
+                    else None
+                )
+            except Image.DecompressionBombError as exc:
+                # Not an OSError: without this one oversized image aborts the whole dataset.
+                raise ValueError(str(exc)) from None
+        if image is not None:
+            found.append(image)
+    return found
 
 
 def _internal(question) -> dict:

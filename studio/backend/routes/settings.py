@@ -90,7 +90,7 @@ from utils.helper_precache_settings import (
     helper_model_disabled_by_env,
     set_helper_precache_enabled,
 )
-from utils import sandbox_memory_limit, systemone_settings, tool_result_limit
+from utils import first_token_timeout, sandbox_memory_limit, systemone_settings, tool_result_limit
 from utils.download_transport_settings import (
     get_download_transport_mode,
     set_download_transport_mode,
@@ -164,6 +164,7 @@ from utils.keyless_api_access import (
     get_keyless_api_access_settings,
     set_keyless_api_access,
 )
+from utils.mcp_access import forced_by_env, is_mcp_enabled, set_mcp_enabled
 from utils.preview_sharing_settings import (
     DEFAULT_PREVIEW_SHARING_ENABLED,
     get_preview_sharing_enabled,
@@ -995,6 +996,9 @@ class ModelOverridePayload(BaseModel):
     engine_parallelism: Optional[Literal["tensor", "pipeline", "data"]] = None
     engine_precision: Optional[Literal["auto", "bf16", "fp16", "int4", "int8", "fp8"]] = None
     engine: Optional[Literal["auto", "vllm", "sglang"]] = None
+    engine_kv_cache_dtype: Optional[Literal["auto", "fp8"]] = None
+    engine_seed: Optional[int] = Field(default = None, ge = 0, le = 2**31 - 1)
+    engine_gpu_memory_utilization: Optional[float] = Field(default = None, ge = 0.05, le = 0.99)
     # None leaves the stored value alone (the UI has no control for flags); [] clears them.
     llama_extra_args: Optional[list[str]] = None
     # ge=1: the setter drops a falsy value, so reject 0 here instead of discarding it silently.
@@ -1505,6 +1509,28 @@ def update_upload_limit(
     return _upload_limit_response(limit_mb)
 
 
+class FirstTokenTimeoutPayload(BaseModel):
+    minutes: StrictInt = Field(ge = 0, le = first_token_timeout.MAX_MINUTES)
+
+
+class FirstTokenTimeoutResponse(FirstTokenTimeoutPayload):
+    default_minutes: int = first_token_timeout.DEFAULT_MINUTES
+    max_minutes: int = first_token_timeout.MAX_MINUTES
+
+
+@_shared_settings_router.get("/first-token-timeout", response_model = FirstTokenTimeoutResponse)
+def get_first_token_timeout(current_subject: str = Depends(get_current_subject)):
+    return FirstTokenTimeoutResponse(minutes = first_token_timeout.get_minutes())
+
+
+@_owner_settings_router.put("/first-token-timeout", response_model = FirstTokenTimeoutResponse)
+def update_first_token_timeout(
+    payload: FirstTokenTimeoutPayload, current_subject: str = Depends(get_current_subject)
+):
+    first_token_timeout.set_minutes(payload.minutes)
+    return FirstTokenTimeoutResponse(minutes = payload.minutes)
+
+
 def _tool_result_limit_response() -> ToolResultLimitResponse:
     return ToolResultLimitResponse(
         max_chars = tool_result_limit.effective_max_chars(),
@@ -1583,13 +1609,15 @@ def _decision_description(checkpoint, mlx: bool) -> str:
 def _clef_availability(checkpoint, reason: Optional[str]) -> dict:
     from core.systemone import laya_runtime
 
-    if getattr(checkpoint, "layout", "laya") == laya_runtime.GGUF:
+    only_mlx = getattr(checkpoint, "backend", None) == laya_runtime.MLX
+    if only_mlx or getattr(checkpoint, "layout", "laya") == laya_runtime.GGUF:
+        only = {} if only_mlx else {"llama_cpp_only": True}
         # Selectable under a PyTorch runtime: the runtime row then says to switch it.
         try:
             laya_runtime.select(checkpoint, preference = "auto")
         except laya_runtime.Unavailable as exc:
-            return {"llama_cpp_only": True, "available": False, "unavailable_reason": exc.message}
-        return {"llama_cpp_only": True}
+            return {**only, "available": False, "unavailable_reason": exc.message}
+        return only
     if reason is None or getattr(checkpoint, "layout", "laya") != "clef":
         return {}
     # llama.cpp serves Clef without CUDA or ROCm, and so does the MLX engine on Apple Silicon.
@@ -2767,6 +2795,16 @@ def update_openai_auto_switch_override(
                 engine = payload.engine
                 if payload.engine is not None or is_removal
                 else get_model_override(target_id).get("engine"),
+                **{
+                    field: getattr(payload, field)
+                    if field in fields_set or is_removal
+                    else get_model_override(target_id).get(field)
+                    for field in (
+                        "engine_kv_cache_dtype",
+                        "engine_seed",
+                        "engine_gpu_memory_utilization",
+                    )
+                },
                 max_seq_length = max_seq_length,
                 custom_context_length = custom_context_length,
                 kv_cache_dtype = payload.kv_cache_dtype,
@@ -3894,6 +3932,17 @@ class KeylessApiAccessResponse(BaseModel):
     exposure: Optional[Literal["colab", "public_url", "private_lan", "network"]] = None
 
 
+class McpAccessPayload(BaseModel):
+    enabled: StrictBool
+
+
+class McpAccessResponse(BaseModel):
+    enabled: bool
+    forced_by_env: bool
+    # Display only: where an agent should point. Agents connect to whatever address reaches this server.
+    url: str
+
+
 class PreviewSharingPayload(BaseModel):
     enabled: bool
 
@@ -4308,6 +4357,46 @@ def update_keyless_api_access(
         access_exposure(request.app.state),
     )
     return _keyless_api_access_response(request)
+
+
+def _require_ui_session_for_mcp(via_api_key: bool = Depends(authenticated_via_api_key)) -> None:
+    """MCP admits API keys, so a key (or a keyless caller) must not be the thing that opens it."""
+    if via_api_key:
+        raise HTTPException(
+            status_code = 403, detail = "Agent access (MCP) can only be changed from the Unsloth UI."
+        )
+
+
+def _mcp_access_response(request: Request) -> McpAccessResponse:
+    return McpAccessResponse(
+        enabled = is_mcp_enabled(),
+        forced_by_env = forced_by_env(),
+        url = str(request.base_url).rstrip("/") + "/mcp/",
+    )
+
+
+@_owner_settings_router.get("/mcp-access", response_model = McpAccessResponse)
+def get_mcp_access(
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session_for_mcp),
+) -> McpAccessResponse:
+    return _mcp_access_response(request)
+
+
+@_owner_settings_router.put("/mcp-access", response_model = McpAccessResponse)
+def update_mcp_access(
+    request: Request,
+    payload: McpAccessPayload,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session_for_mcp),
+) -> McpAccessResponse:
+    """Turn agent access over MCP on or off for the whole installation."""
+    if forced_by_env():
+        raise HTTPException(status_code = 409, detail = "Set by UNSLOTH_STUDIO_ENABLE_MCP.")
+    enabled = set_mcp_enabled(payload.enabled)
+    logger.info("settings.mcp_access_updated subject=%s enabled=%s", current_subject, enabled)
+    return _mcp_access_response(request)
 
 
 def _is_bundled_avatar_url(value: str) -> bool:
@@ -4929,6 +5018,9 @@ class SandboxWindowsStatus(BaseModel):
     prepare_repeats_after_restart: bool = True
     # True: MXC runs in Windows' built-in container (BaseContainer); False: this Windows has none; None: unknown.
     builtin_container: Optional[bool] = None
+    # Set only when a Windows update adds the built-in container: this PC's build and the first one with it.
+    windows_build: Optional[str] = None
+    builtin_container_build: Optional[str] = None
 
 
 class SandboxSetupStatus(BaseModel):
@@ -5064,6 +5156,7 @@ def _sandbox_windows_status() -> SandboxWindowsStatus:
     if installed:
         steps = mxc_runtime.probe_host_prep_steps(env = mxc_adapter._control_environment())
         missing = None if steps is None else list(steps)
+    update = sandbox_setup_plan.windows_builtin_container_update()
     return SandboxWindowsStatus(
         runtime_installed = installed,
         runtime_unsupported = sandbox_setup_plan.windows_runtime_unsupported(),
@@ -5076,6 +5169,8 @@ def _sandbox_windows_status() -> SandboxWindowsStatus:
             mxc_read_grants.PERSISTENT_GRANTS_ENV
         ),
         host_prep_missing = missing,
+        windows_build = update[0] if update else None,
+        builtin_container_build = update[1] if update else None,
     )
 
 

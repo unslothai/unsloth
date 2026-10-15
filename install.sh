@@ -5938,6 +5938,29 @@ get_torch_index_url() {
         fi
         # end of the miscomputing-arch gate -- tests/sh/test_rocm_bad_arch_gate.sh lifts
         # the block between the header comment above and this line, so keep both exact.
+        # RDNA 1 / Polaris read fine and still have no wheels: no pytorch.org tag and no AMD
+        # per-arch index carries their kernels, so the generic tag below installed a multi-GB
+        # torch that faults on its first GPU op (#8529). Only when EVERY probed arch is one, so
+        # a covered peer keeps its wheels. A readable HSA_OVERRIDE_GFX_VERSION is the arch the
+        # runtime runs, whatever amd-smi reads, so it alone is judged unless an arch is declared.
+        _amd_unsup_src="$_amd_gfx_probe"
+        _amd_hsa_gfx=$(_hsa_override_gfx_arch "${HSA_OVERRIDE_GFX_VERSION:-}" 2>/dev/null) || _amd_hsa_gfx=""
+        [ -n "$_amd_hsa_gfx" ] && [ -z "${UNSLOTH_ROCM_GFX_ARCH:-}" ] && _amd_unsup_src="$_amd_hsa_gfx"
+        _amd_unsup_all=$(printf '%s\n' "$_amd_unsup_src" | sed 's/:.*$//' | tr '[:upper:]' '[:lower:]' \
+            | awk 'NF { if ($1 !~ /^gfx(1010|1011|1012|803)$/) bad = 1; else if (!seen[$1]++) l = l (l ? ", " : "") $1 }
+                   END { if (!bad && l != "") print l }')
+        if [ -n "$_amd_unsup_all" ]; then
+            echo "[WARN] AMD GPU detected ($_amd_unsup_all) -- Unsloth has no ROCm PyTorch wheels for that arch, installing CPU PyTorch." >&2
+            echo "[WARN] The ROCm PyTorch wheels carry no kernels for it: they would install, then fail on the first GPU operation." >&2
+            echo "[INFO] GGUF chat can still use this GPU through Vulkan: export UNSLOTH_LLAMA_CPP_BACKEND=vulkan and re-run this installer (it selects the llama.cpp bundle at install time)." >&2
+            echo "[INFO] If you run this GPU with HSA_OVERRIDE_GFX_VERSION, export it and re-run this installer to keep ROCm PyTorch." >&2
+            if _amd_therock_extra=$(_therock_device_extra_for_gfx "${_amd_unsup_all%%,*}" 2>/dev/null); then
+                echo "[INFO] Untested: AMD's TheRock publishes nightly ${_amd_unsup_all%%,*} wheels. To try them, export both and re-run:" >&2
+                echo "[INFO]   export UNSLOTH_TORCH_INDEX_URL='$THEROCK_MIRROR'" >&2
+                echo "[INFO]   export UNSLOTH_TORCH_EXTRA=$_amd_therock_extra" >&2
+            fi
+            echo "$_base/cpu"; return
+        fi
         _rocm_tag=""
         _rocm_tag=$(_detect_rocm_version_tag) || _rocm_tag=""
         # The `||` guard is belt and braces on the set -e contract the helpers hold, so a fresh AMD host with no version source at all still reaches the actionable no-version WARN below. stderr is deliberately not redirected: each source already silences its own noise, leaving only the sources-disagree breadcrumb, which belongs in the install log. The shape gate on "rocmX.Y" with major >= 1 is kept, though _highest_rocm_tag enforces it too, so a future source cannot leak garbage into the cases below.
@@ -7496,9 +7519,22 @@ elif [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
     # Apple Silicon: PyTorch gets Metal (MPS) acceleration over unified memory, so not CPU-only.
     step "gpu" "Apple Silicon (Metal, unified memory)"
 elif _has_amd_rocm_gpu; then
+    # The arch read fine and get_torch_index_url sent it to CPU for having no wheels (#8529),
+    # so "no usable ROCm" would blame a working install. Same filter as that function.
+    _amd_unsup_read=""
+    if [ "$_torch_index_pinned" != true ]; then
+        _amd_unsup_read=$(_probe_amd_gfx_arch 2>/dev/null) || _amd_unsup_read=""
+        _amd_hsa_gfx=$(_hsa_override_gfx_arch "${HSA_OVERRIDE_GFX_VERSION:-}" 2>/dev/null) || _amd_hsa_gfx=""
+        [ -n "$_amd_hsa_gfx" ] && [ -z "${UNSLOTH_ROCM_GFX_ARCH:-}" ] && _amd_unsup_read="$_amd_hsa_gfx"
+        _amd_unsup_read=$(printf '%s\n' "$_amd_unsup_read" | sed 's/:.*$//' | tr '[:upper:]' '[:lower:]' \
+            | awk 'NF { if ($1 !~ /^gfx(1010|1011|1012|803)$/) bad = 1; else if (!seen[$1]++) l = l (l ? ", " : "") $1 }
+                   END { if (!bad && l != "") print l }') || _amd_unsup_read=""
+    fi
     if [ "$_torch_index_pinned" = true ]; then
         # An explicit UNSLOTH_TORCH_INDEX_URL/_FAMILY pin skipped all probing; do not claim ROCm is unusable when a CPU or other index was requested.
         step "gpu" "AMD GPU (torch index pinned: $_torch_index_leaf)" "$C_WARN"
+    elif [ -n "$_amd_unsup_read" ]; then
+        step "gpu" "AMD GPU ($_amd_unsup_read, no ROCm PyTorch wheels -- CPU fallback)" "$C_WARN"
     else
         # AMD GPU visible to the kernel but the torch index stayed CPU: no usable ROCm userspace to pick a wheel. "none" would repeat the false diagnosis this installer used to give.
         step "gpu" "AMD GPU (no usable ROCm -- CPU fallback)" "$C_WARN"
@@ -7528,6 +7564,7 @@ case "$TORCH_INDEX_URL" in
                 else
                     _unsup_disp_gfx=$(_infer_linux_unsupported_amd_gfx_arch 2>/dev/null) || _unsup_disp_gfx=""
                 fi
+                [ -n "$_unsup_disp_gfx" ] || _unsup_disp_gfx="${_amd_unsup_read:-}"
                 if [ -n "$_unsup_disp_gfx" ]; then
                     # Scoped to the card, as above: the SDK may still help another one.
                     substep "AMD GPU detected ($_unsup_disp_gfx) -- Unsloth has no ROCm PyTorch wheels for that arch, installing CPU PyTorch." "$C_WARN"
@@ -8083,7 +8120,7 @@ _unsloth_desktop_install_spec=""
 if [ -n "${UNSLOTH_DESKTOP_BACKEND_VERSION:-}" ]; then
     _unsloth_desktop_install_spec="unsloth>=${UNSLOTH_DESKTOP_BACKEND_VERSION}"
 fi
-_unsloth_release_install_spec="${_unsloth_desktop_install_spec:-unsloth>=2026.10.4}"
+_unsloth_release_install_spec="${_unsloth_desktop_install_spec:-unsloth>=2026.10.5}"
 
 if [ "$_MIGRATED" = true ]; then
     # Migrated env: force-reinstall unsloth+unsloth-zoo, keeping torch unless the ROCm repair fires.
@@ -8096,7 +8133,7 @@ if [ "$_MIGRATED" = true ]; then
         # (tests/test_installer_zoo_floor_parity.py enforces that).
         run_install_cmd_retry "install unsloth (migrated no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "$_unsloth_release_install_spec" "unsloth-zoo>=2026.10.4"
+            "$_unsloth_release_install_spec" "unsloth-zoo>=2026.10.5"
         # Resolve pydantic WITH deps so pip pins pydantic-core to the
         # matching version (no-torch-runtime.txt below is --no-deps).
         # All transitive deps are torch-free.
@@ -8111,7 +8148,7 @@ if [ "$_MIGRATED" = true ]; then
         run_install_cmd_retry "install unsloth (migrated)" uv pip install --python "$_VENV_PY" \
             ${_UNSLOTH_TORCH_OVERRIDES:+--overrides "$_UNSLOTH_TORCH_OVERRIDES"} \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "$_unsloth_release_install_spec" "unsloth-zoo>=2026.10.4"
+            "$_unsloth_release_install_spec" "unsloth-zoo>=2026.10.5"
         [ -n "$_UNSLOTH_TORCH_OVERRIDES" ] && rm -f "$_UNSLOTH_TORCH_OVERRIDES"
         _UNSLOTH_TORCH_OVERRIDES=""
     fi
@@ -8340,7 +8377,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         # --no-deps: this spec IS the zoo floor here. Kept equal to pyproject.toml's.
         run_install_cmd_retry "install unsloth (no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --upgrade-package unsloth --upgrade-package unsloth-zoo \
-            "$_unsloth_release_install_spec" "unsloth-zoo>=2026.10.4"
+            "$_unsloth_release_install_spec" "unsloth-zoo>=2026.10.5"
         # Same pydantic-with-deps trick as the migrated branch.
         run_install_cmd_retry "install pydantic (with deps for compatible core)" \
             uv pip install --python "$_VENV_PY" pydantic
@@ -8359,7 +8396,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
     elif [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         run_install_cmd_retry "install unsloth (local)" uv pip install --python "$_VENV_PY" \
             ${_UNSLOTH_TORCH_OVERRIDES:+--overrides "$_UNSLOTH_TORCH_OVERRIDES"} \
-            --upgrade-package unsloth "$_unsloth_release_install_spec" "unsloth-zoo>=2026.10.4"
+            --upgrade-package unsloth "$_unsloth_release_install_spec" "unsloth-zoo>=2026.10.5"
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         substep "overlaying unsloth-zoo from git ${_ZOO_REF}..."
@@ -8390,7 +8427,7 @@ else
     tauri_log "STEP" "Installing Unsloth"
     substep "installing unsloth (this may take a few minutes)..."
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-        run_install_cmd_retry "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" "unsloth-zoo>=2026.10.4" "$_unsloth_release_install_spec" --torch-backend=auto
+        run_install_cmd_retry "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" "unsloth-zoo>=2026.10.5" "$_unsloth_release_install_spec" --torch-backend=auto
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         substep "overlaying unsloth-zoo from git ${_ZOO_REF}..."

@@ -27,6 +27,7 @@ import {
   GLASS_SURFACE,
   OVERLAY_CONTROL,
   RAISED_SURFACE,
+  SELECTED_TINT,
 } from "../surface";
 import { CardSelectionContext } from "./card-selection";
 import { LibraryActionsMenu } from "./library-actions";
@@ -151,9 +152,10 @@ function CardFrame({
           select && selecting ? (event) => select.toggle(selectKey, event.shiftKey) : onOpen
         }
         className={cn(
-          "block w-full overflow-hidden rounded-xl text-left outline-none transition focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+          "block w-full overflow-hidden rounded-[calc(var(--radius-xl)-2px)] text-left outline-none transition focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
           selected && "ring-2 ring-foreground",
           className,
+          selected && SELECTED_TINT,
         )}
       >
         {children}
@@ -171,6 +173,8 @@ function CardFrame({
             OVERLAY_CONTROL,
             "absolute bottom-4 right-4 size-5 rounded-full border-0 opacity-0 transition-opacity group-hover/library-card:opacity-100 focus-visible:opacity-100 data-checked:bg-white data-checked:text-foreground dark:data-checked:bg-neutral-200 dark:data-checked:text-neutral-900 [&_svg]:size-3.5",
             glass && GLASS_CONTROL,
+            // The hover outline is lost on a dimmed selected card, so a checked one draws it darker.
+            glass && "data-checked:ring-neutral-300",
             selected && "opacity-100",
           )}
         />

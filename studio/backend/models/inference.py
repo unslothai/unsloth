@@ -61,6 +61,20 @@ class LoadRequest(BaseModel):
 
     engine_parallelism: Literal["tensor", "pipeline", "data"] = "tensor"
     engine_precision: Literal["auto", "bf16", "fp16", "int4", "int8", "fp8"] = "auto"
+    engine_kv_cache_dtype: Literal["auto", "fp8"] = Field(
+        "auto",
+        description = "Managed engine KV cache dtype; 'fp8' halves KV cache memory (vLLM --kv-cache-dtype).",
+    )
+    engine_seed: Optional[int] = Field(
+        None, ge = 0, le = 2**31 - 1, description = "Managed engine seed (vLLM --seed)."
+    )
+    engine_gpu_memory_utilization: Optional[float] = Field(
+        None,
+        ge = 0.05,
+        le = 0.99,
+        description = "Upper bound on the share of each selected GPU the managed engine may claim "
+        "(vLLM --gpu-memory-utilization). Unset lets Studio size it from free memory.",
+    )
     engine: Literal["auto", "vllm", "sglang"] = Field(
         "auto",
         description = "Inference engine to use. 'auto' selects Studio's default backend; "
@@ -599,6 +613,20 @@ class ValidateModelRequest(BaseModel):
 
     engine_parallelism: Literal["tensor", "pipeline", "data"] = "tensor"
     engine_precision: Literal["auto", "bf16", "fp16", "int4", "int8", "fp8"] = "auto"
+    engine_kv_cache_dtype: Literal["auto", "fp8"] = Field(
+        "auto",
+        description = "Managed engine KV cache dtype; 'fp8' halves KV cache memory (vLLM --kv-cache-dtype).",
+    )
+    engine_seed: Optional[int] = Field(
+        None, ge = 0, le = 2**31 - 1, description = "Managed engine seed (vLLM --seed)."
+    )
+    engine_gpu_memory_utilization: Optional[float] = Field(
+        None,
+        ge = 0.05,
+        le = 0.99,
+        description = "Upper bound on the share of each selected GPU the managed engine may claim "
+        "(vLLM --gpu-memory-utilization). Unset lets Studio size it from free memory.",
+    )
     engine: Literal["auto", "vllm", "sglang"] = "auto"
     model_path: str = Field(..., description = "Model identifier or local path")
     # The same inventory handle the picker was shown; see `resolve_inventory_handle`.
@@ -1440,6 +1468,9 @@ class _InferenceRuntimeFields(BaseModel):
 
     engine_parallelism: Literal["tensor", "pipeline", "data"] = "tensor"
     engine_precision: Literal["auto", "bf16", "fp16", "int4", "int8", "fp8"] = "auto"
+    engine_kv_cache_dtype: Literal["auto", "fp8"] = "auto"
+    engine_seed: Optional[int] = None
+    engine_gpu_memory_utilization: Optional[float] = None
     engine: Literal["auto", "vllm", "sglang"] = Field(
         "auto",
         description = "Active inference engine. 'auto' denotes Studio's default backend; "
@@ -2902,6 +2933,16 @@ class ChatCompletionRequest(BaseModel):
             "for checkpoint compaction. Unset keeps the process default."
         ),
     )
+    compact_context: Optional[bool] = Field(
+        None,
+        description = (
+            "[x-unsloth] Compact now (Studio's /compact). A local GGUF or MLX chat starts "
+            "a checkpoint on this request even when it still fits: older turns are "
+            "archived and searchable, and the model keeps the newest turn plus standing "
+            "instructions until the chat outgrows the window again. Needs "
+            "context_overflow=truncate_oldest and a saved thread; otherwise ignored."
+        ),
+    )
     studio_tool_history: Optional[bool] = Field(
         None,
         description = (
@@ -2946,6 +2987,14 @@ class ChatCompletionRequest(BaseModel):
     thread_id: Optional[str] = Field(
         None,
         description = "[x-unsloth] Conversation ID for scoping stateful tool sessions (e.g. stdio MCP); stays per-thread where session_id may be shared project-wide.",
+    )
+    user_message_id: Optional[str] = Field(
+        None,
+        max_length = 256,
+        description = (
+            "[x-unsloth] The user message this turn answers. With thread_id it keys the chat's file "
+            "history, so /rewind can put back what this turn's tool calls changed."
+        ),
     )
     rag_scope: Optional[dict] = Field(
         None,
@@ -3666,6 +3715,7 @@ class ResponsesFunctionCallInputItem(BaseModel):
         description = "Correlation id matching a function_call_output on the next turn.",
     )
     name: str
+    namespace: Optional[str] = None
     arguments: str = Field(..., description = "JSON string of the arguments the model produced.")
     status: Optional[Literal["in_progress", "completed", "incomplete"]] = None
 
@@ -3867,8 +3917,16 @@ class ResponsesOutputFunctionCall(BaseModel):
     id: str = Field(default_factory = lambda: f"fc_{uuid.uuid4().hex[:12]}")
     call_id: str
     name: str
+    namespace: Optional[str] = None
     arguments: str = Field(..., description = "JSON string of the arguments the model produced.")
     status: Literal["completed", "in_progress", "incomplete"] = "completed"
+
+    @model_serializer(mode = "wrap")
+    def _omit_unset_namespace(self, handler):
+        data = handler(self)
+        if isinstance(data, dict) and data.get("namespace") is None:
+            data.pop("namespace", None)
+        return data
 
 
 class ResponsesOutputCustomToolCall(BaseModel):
@@ -3896,6 +3954,8 @@ class ResponsesUsage(BaseModel):
     input_tokens: int = 0
     output_tokens: int = 0
     total_tokens: int = 0
+    # {"cached_tokens": n}: prompt tokens the server reused from its cache, when it said.
+    input_tokens_details: Optional[dict[str, int]] = None
 
 
 class ResponsesResponse(BaseModel):
@@ -4048,6 +4108,41 @@ def _merge_anthropic_system(system: Any, additions: list[str]) -> Any:
     if isinstance(system, list):
         return [*system, *addition_blocks]
     return system
+
+
+def _block_type(block: Any) -> Any:
+    return block.get("type") if isinstance(block, dict) else getattr(block, "type", None)
+
+
+def _system_note(text: str) -> str:
+    if text.lstrip().startswith("<system-reminder>"):
+        return text
+    return f"<system-reminder>\n{text}\n</system-reminder>"
+
+
+def _as_blocks(content: Any) -> Optional[list]:
+    if isinstance(content, str):
+        return [{"type": "text", "text": content}] if content else []
+    return list(content) if isinstance(content, list) else None
+
+
+def _with_user_note(message: dict, note: str, *, first: bool) -> Optional[dict]:
+    """Copy of a user turn with a text block added; None for malformed content, left for validation to reject."""
+    blocks = _as_blocks(message.get("content"))
+    if blocks is None:
+        return None
+    block = {"type": "text", "text": note}
+    if blocks and all(_block_type(b) == "tool_result" for b in blocks):
+        # As a text block it would start a new user query (templates drop the reasoning before it); MCP image envelopes stay last.
+        index = 0 if first else len(blocks) - 1
+        result = blocks[index] if isinstance(blocks[index], dict) else blocks[index].model_dump()
+        inner = result.get("content")
+        inner = [] if inner is None else _as_blocks(inner)
+        if inner is None:
+            return None
+        blocks[index] = {**result, "content": [block, *inner]}
+        return {**message, "content": blocks}
+    return {**message, "content": [block, *blocks] if first else [*blocks, block]}
 
 
 _CLAUDE_STYLE_REMINDER_SUFFIX = (
@@ -4215,6 +4310,7 @@ class AnthropicMessagesRequest(BaseModel):
         description = "[x-unsloth] Opt-in tool-call recovery; mirrors the Chat Completions nudge_tool_calls field and defaults off.",
     )
     model_config = {"extra": "allow"}
+    _message_ordinals: Optional[list[int]] = PrivateAttr(default = None)
 
     @model_validator(mode = "after")
     def _effort_from_output_config(self) -> "AnthropicMessagesRequest":
@@ -4251,25 +4347,63 @@ class AnthropicMessagesRequest(BaseModel):
         normalized_messages: list[Any] = []
         system_additions: list[str] = []
         retained_system = [_anthropic_content_to_system_text(data.get("system"))]
+        pending: list[str] = []
         changed = False
 
         for message in messages:
             if isinstance(message, dict) and message.get("role") == "system":
                 text = _anthropic_content_to_system_text(message.get("content", ""))
-                if not _is_repeated_claude_style_reminder(text, retained_system):
-                    system_additions.append(text)
-                    retained_system.append(text)
                 changed = True
+                if _is_repeated_claude_style_reminder(text, retained_system):
+                    continue
+                retained_system.append(text)
+                previous = normalized_messages[-1] if normalized_messages else None
+                if previous is None or not text.strip():
+                    system_additions.append(text)
+                elif isinstance(previous, dict) and previous.get("role") == "user":
+                    # Hoisted, it renders above the tools: claude's per-session env message broke every new session's cache.
+                    folded = _with_user_note(previous, _system_note(text), first = False)
+                    if folded is None:
+                        system_additions.append(text)
+                    else:
+                        normalized_messages[-1] = folded
+                else:
+                    pending.append(text)
                 continue
+            if pending and isinstance(message, dict) and message.get("role") == "user":
+                note = "\n".join(_system_note(text) for text in pending)
+                folded = _with_user_note(message, note, first = True)
+                if folded is None:
+                    system_additions.extend(pending)
+                else:
+                    message = folded
+                pending = []
             normalized_messages.append(message)
 
         if not changed:
             return data
 
+        # A trailing assistant turn is a prefill; a user turn after it would replace it.
+        system_additions.extend(pending)
+
         normalized = dict(data)
         normalized["messages"] = normalized_messages
         normalized["system"] = _merge_anthropic_system(normalized.get("system"), system_additions)
         return normalized
+
+    @model_validator(mode = "wrap")
+    @classmethod
+    def _record_message_ordinals(cls, data: Any, handler):
+        # Error paths name the client's own message index, not the one left after system folding.
+        model = handler(data)
+        messages = data.get("messages") if isinstance(data, dict) else None
+        if isinstance(messages, list):
+            model._message_ordinals = [
+                i
+                for i, m in enumerate(messages)
+                if not (isinstance(m, dict) and m.get("role") == "system")
+            ]
+        return model
 
     @field_validator("sandbox_level", mode = "before")
     @classmethod
@@ -4824,6 +4958,16 @@ class DiffusionGenerateRequest(BaseModel):
         "Omitted applies none and behaves exactly as before. Rejected with a clear message when "
         "the loaded model or its quantisation can't apply ControlNet.",
     )
+    sampler: Optional[Literal["default", "euler", "euler_a", "dpmpp_2m", "dpmpp_2m_sde"]] = Field(
+        None,
+        description = "Sampler for this generation, one of the loaded model's status `samplers` ids. "
+        "Omitted or 'default' keeps the model's shipped scheduler.",
+    )
+    schedule_type: Optional[Literal["automatic", "uniform", "karras", "exponential"]] = Field(
+        None,
+        description = "Noise schedule for the sampler. Omitted or 'automatic' uses the sampler's "
+        "usual schedule (Karras for DPM++ 2M, Exponential for DPM++ 2M SDE, else the model's).",
+    )
 
     @field_validator("loras")
     @classmethod
@@ -4992,6 +5136,12 @@ class GalleryImage(BaseModel):
     localized_edit: Optional[str] = Field(
         None, description = "Localized edit convention used: annotate, paint or mask"
     )
+    sampler: Optional[str] = Field(
+        None, description = "Sampler id the image ran with; null = the model's shipped scheduler"
+    )
+    schedule_type: Optional[str] = Field(
+        None, description = "Schedule type the sampler ran with (resolved); null = the config's"
+    )
     created_at: float = Field(..., description = "Creation time (epoch seconds)")
     # Library state, not recipe: stored beside the PNG, so older files simply read as unset.
     pinned: bool = Field(False, description = "Pinned to the front of the gallery")
@@ -5116,6 +5266,12 @@ class DiffusionResolvedControl(BaseModel):
         None,
         description = 'The picked checkpoint that did NOT run, as "gguf:<file>", when a GGUF pick whose memory plan '
         "offloads loaded the hosted pre-quantized checkpoint (``artifact``) instead. Null otherwise.",
+    )
+    steps: Optional[List[Dict[str, Any]]] = Field(
+        None,
+        description = "speed_mode only: the auto-optimizer's per-step audit for this load, in order, each "
+        '{"step", "status": "engaged" | "declined" | "failed", "reason"} (why a step did not engage, or the '
+        "error it failed with). Null on every other control.",
     )
 
 
@@ -5287,6 +5443,12 @@ class DiffusionStatusResponse(BaseModel):
         description = "Whether the loaded model applies a negative prompt on this engine "
         "(drives the Negative prompt field). False for FLUX and Ideogram 4 on diffusers, and "
         "for FLUX.1 / Kontext / FLUX.2-dev on the native engine.",
+    )
+    samplers: list[Dict[str, Any]] = Field(
+        default_factory = list,
+        description = "Samplers the loaded model can run, each {id, label, schedule_types}; the "
+        "first is 'default' (the shipped scheduler). Empty when there is no choice: flow-matching "
+        "models, the native and MLX engines, or nothing loaded.",
     )
     # declare provenance explicitly because Pydantic extra="ignore" would otherwise discard it.
     resolved: Optional[Dict[str, DiffusionResolvedControl]] = Field(
