@@ -5514,11 +5514,8 @@ class MLXInferenceBackend:
         return len(getattr(self._tokenizer, "_tokenizer", self._tokenizer))
 
     def resolve_completion_prompt(self, prompt) -> dict:
-        """Token ids and echo text for one llama-server completion prompt: a string, token ids,
-        strings mixed with ids, or ``{"prompt_string": ...}``. Tokenized as llama-server's
-        ``tokenize_mixed`` does: special tokens are parsed, and only a leading string gets the
-        tokenizer's special tokens. Echo text is each string as given and each run of ids
-        decoded."""
+        """Token ids and echo text for one llama-server completion prompt, tokenized as its
+        ``tokenize_mixed`` does: specials parsed, only a leading string gets BOS."""
         if self._model is None:
             raise RuntimeError("No model loaded")
         if isinstance(prompt, dict):
@@ -5569,9 +5566,8 @@ class MLXInferenceBackend:
         penalty_window = None,
         grammar = None,
     ) -> Generator[str, None, None]:
-        """Cumulative text sampled after ``prompt_ids`` with no chat template, from
-        :meth:`resolve_completion_prompt`. ``penalty_window`` is llama-server's
-        ``repeat_last_n``; ``grammar`` an llguidance grammar the text must match."""
+        """Cumulative text sampled after ``prompt_ids`` with no chat template.
+        ``penalty_window`` is llama-server's ``repeat_last_n``."""
         if self._model is None:
             raise RuntimeError("No model loaded")
         self.last_generation_stats = None

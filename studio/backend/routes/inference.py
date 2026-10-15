@@ -37551,7 +37551,6 @@ async def _mlx_completions(request, current_subject, backend, body: dict, refusa
         )
 
     def choice_end(prompt_ids, stats):
-        """A choice's finish reason and usage from its stats."""
         if budget == 0:
             reason = "length"
         elif cancel_event.is_set():
@@ -37668,7 +37667,6 @@ async def _mlx_completions(request, current_subject, backend, body: dict, refusa
     ]
 
     def drain_rows(chunk):
-        """Each row's text and stats; several rows decode as one batch."""
         texts, batch_stats = [""] * len(chunk), {}
         if len(rows) == 1:
             events = (
@@ -37697,7 +37695,7 @@ async def _mlx_completions(request, current_subject, backend, body: dict, refusa
         ]
 
     def drain():
-        """Every choice, at most chat's n cap per batch, so many prompts cannot exhaust memory."""
+        """At most chat's n cap per batch, so many prompts cannot exhaust memory."""
         produced, width = [], _LLAMA_HARD_LIMITS["n_cmpl"][1]
         for start in range(0, len(rows), width):
             chunk = rows[start : start + width]

@@ -2990,9 +2990,7 @@ class InferenceOrchestrator:
         prompt,
         timeout: float = 30.0,
     ) -> dict:
-        """Token ids (``ids``) and echo text (``text``) for one raw completion prompt, from the
-        loaded model's tokenizer. Waits behind a running generation, as a generation would.
-        Raises ValueError for a prompt the model cannot take."""
+        """``ids`` and echo ``text`` for one raw completion prompt; ValueError if invalid."""
         with self._gen_lock:
             if self._unload_pending or not self.active_model_name:
                 raise RuntimeError("No active model")
@@ -3029,9 +3027,7 @@ class InferenceOrchestrator:
         stats_holder: Optional[dict] = None,
         **sampling,
     ) -> Generator[str, None, None]:
-        """Cumulative text sampled after ``prompt_ids`` (from :meth:`resolve_completion_prompt`)
-        with no chat template, streamed like :meth:`generate_chat_response`. ``sampling`` takes
-        its knobs plus ``penalty_window`` (llama-server's ``repeat_last_n``)."""
+        """Cumulative text sampled after ``prompt_ids`` with no chat template."""
         yield from self._generate_inner(
             prompt_ids = prompt_ids,
             cancel_event = cancel_event,
@@ -3046,8 +3042,7 @@ class InferenceOrchestrator:
         stats_holder: Optional[dict] = None,
         **sampling,
     ) -> Generator[Any, None, None]:
-        """Several raw-prompt completions in one command, each row giving its ``prompt_ids``,
-        reported as :meth:`generate_chat_batch` reports its rows."""
+        """Several raw-prompt rows in one command, reported as :meth:`generate_chat_batch`."""
         yield from self._generate_inner(
             messages = [],
             rows = rows,
