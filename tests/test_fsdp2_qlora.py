@@ -322,14 +322,60 @@ def _worker(rank, world_size, port, case, queue):
         queue.put((rank, {"error": f"{type(error).__name__}: {error}\n{traceback.format_exc()}"}))
 
 
-def _run(case, world_size = 2):
+def _old_torch_worker(rank, world_size, port, case, queue):
+    """torch < 2.8 (forced): uint8 weights must stay out of every FSDP2 unit, whose trainable float
+    adapter would otherwise share it with them (`FSDP expects uniform original parameter dtype`)."""
+    try:
+        os.environ.update(
+            MASTER_ADDR = "127.0.0.1", MASTER_PORT = str(port), RANK = str(rank), WORLD_SIZE = str(world_size)
+        )
+        import torch.distributed as dist
+        from torch.distributed.device_mesh import init_device_mesh
+        from torch.distributed.fsdp import fully_shard
+        from torch.distributed.tensor import DTensor
+
+        dist.init_process_group("gloo", rank = rank, world_size = world_size)
+        m = _load_module()
+        m._fsdp2_checks_frozen_dtypes = lambda: True
+        model, reference = _Model(torch.uint8), _Model(torch.uint8)
+        torch.manual_seed(1234)
+        x = torch.randn(4, 128, dtype = torch.bfloat16)
+        expected = reference(x).detach()
+        mesh = init_device_mesh("cpu", (world_size,))
+        with m.fsdp2_qlora_wrap(model, _prepare_that_keeps_dtypes) as info:
+            for layer in model.layers:
+                fully_shard(layer, mesh = mesh)
+            fully_shard(model, mesh = mesh)
+        unit_dtypes = []
+        for module in model.modules():
+            state = getattr(module, "_get_fsdp_state", None)
+            group = state()._fsdp_param_group if state is not None else None
+            if group is not None:
+                unit_dtypes.append(sorted({str(fp.sharded_param.dtype) for fp in group.fsdp_params}))
+        out = model(x)
+        out.float().sum().backward()
+        queue.put((rank, dict(
+            storage = info["storage"],
+            unit_dtypes = unit_dtypes,
+            uint8_sharded = sum(isinstance(p, DTensor) for p in model.parameters() if not p.is_floating_point()),
+            max_diff = (out.float() - expected.float()).abs().max().item(),
+            grad_ok = all(p.grad is not None for n, p in model.named_parameters() if "adapter" in n),
+        )))
+        dist.destroy_process_group()
+    except BaseException as error:
+        import traceback
+
+        queue.put((rank, {"error": f"{type(error).__name__}: {error}\n{traceback.format_exc()}"}))
+
+
+def _run(case, world_size = 2, target = None):
     import torch.multiprocessing as mp
 
     ctx = mp.get_context("spawn")
     queue = ctx.Queue()
     port = _free_port()
     procs = [
-        ctx.Process(target = _worker, args = (r, world_size, port, case, queue))
+        ctx.Process(target = target or _worker, args = (r, world_size, port, case, queue))
         for r in range(world_size)
     ]
     for p in procs:
@@ -408,3 +454,67 @@ def test_no_float_storage_when_fsdp2_checks_frozen_dtypes():
 
     cfg = BitsAndBytesConfig(load_in_4bit = True)
     assert not m.set_fsdp2_quant_storage(cfg, torch.float16)
+
+
+@_RUN_DIST
+def test_old_torch_leaves_uint8_weights_out_of_the_units():
+    results = _run("uint8_old_torch", target = _old_torch_worker)
+    for rank, r in results.items():
+        assert "error" not in r, r.get("error")
+        assert r["storage"] == ["uint8"], r
+        assert r["unit_dtypes"] and all(d == ["torch.float32"] for d in r["unit_dtypes"]), r
+        assert r["uint8_sharded"] == 0, r
+        assert r["max_diff"] == 0.0, r
+        assert r["grad_ok"], r
+
+
+@pytest.mark.parametrize("why", ["upcasting_wrap", "old_torch", "unpatched"])
+def test_caller_float_storage_falls_back_to_uint8_when_it_cannot_survive(monkeypatch, why):
+    m = _load_module()
+    lin = _linear4bit(128, 64, torch.bfloat16, 0)
+    weight = lin.weight
+    before = bnb.functional.dequantize_4bit(weight.data, weight.quant_state)
+    raw = weight.data.view(torch.uint8).clone()
+    prepare = _prepare_that_keeps_dtypes
+    if why == "upcasting_wrap":
+        prepare = _prepare_that_upcasts
+    elif why == "old_torch":
+        monkeypatch.setattr(m, "_fsdp2_checks_frozen_dtypes", lambda: True)
+    else:
+        monkeypatch.setattr(m, "patch_fsdp2_params4bit", lambda: (False, "no anchors"))
+        monkeypatch.setattr(m, "_missing_fsdp2_anchors", lambda: ["x"])
+    model = torch.nn.Sequential(lin)
+    with m.fsdp2_qlora_wrap(model, prepare) as info:
+        assert info["reverted"] == 1 and info["storage"] == ["uint8"], info
+        model.to(torch.float32)
+    assert lin.weight is weight and weight.dtype == torch.uint8 and lin.quant_storage == torch.uint8
+    assert torch.equal(weight.data.reshape(-1), raw.reshape(-1))
+    assert torch.equal(bnb.functional.dequantize_4bit(weight.data, weight.quant_state), before)
+
+
+def test_float_storage_is_kept_when_it_survives():
+    m = _load_module()
+    lin = _linear4bit(128, 64, torch.bfloat16, 0)
+    with m.fsdp2_qlora_wrap(torch.nn.Sequential(lin), _prepare_that_keeps_dtypes) as info:
+        assert info["reverted"] == 0 and info["storage"] == ["bfloat16"], info
+
+
+@pytest.mark.parametrize("storage", [torch.bfloat16, torch.float32])
+def test_size_based_wrap_counts_packed_weights_as_uint8(storage):
+    m = _load_module()
+    from accelerate.utils import fsdp_utils
+    from torch.distributed.fsdp.wrap import size_based_auto_wrap_policy
+
+    assert m.patch_size_based_wrap_policy()
+    uint8_block = _Block(torch.uint8, 0)
+    packed_block = _Block(torch.uint8, 0)
+    assert m.params4bit_to_float_storage(packed_block, storage) == 2
+    uint8_numel = sum(p.numel() for p in uint8_block.parameters())
+    plugin = type("Plugin", (), {})()
+    plugin.auto_wrap_policy = size_based_auto_wrap_policy
+    plugin.min_num_params = uint8_numel - 1
+    plugin.transformer_cls_names_to_wrap = None
+    policy = fsdp_utils.fsdp2_prepare_auto_wrap_policy(plugin, packed_block)
+    assert policy(uint8_block) and policy(packed_block)
+    original = fsdp_utils.fsdp2_prepare_auto_wrap_policy._unsloth_original
+    assert not original(plugin, packed_block)(packed_block)

@@ -417,6 +417,8 @@ def install_fsdp2_prepare_hook():
             model = original(accelerator, model, *args, **kwargs)
         if qlora is not None:
             note = "" if qlora["patched"] else f" FSDPParam was not patched: {qlora['reason']}."
+            if qlora.get("reverted"):
+                note += f" {qlora['reverted']} float-packed weights kept as uint8, which this wrap preserves."
             _print_rank0(
                 f"Unsloth: FSDP2 QLoRA: {qlora['params4bit']} 4-bit weights packed as "
                 f"{'/'.join(qlora['storage'])} ({qlora['converted']} repacked from uint8).{note}"
