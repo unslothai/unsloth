@@ -75,18 +75,28 @@ def test_new_revision_is_created_before_the_upload(push):
     assert upload["revision"] == "v2"
 
 
-@pytest.mark.parametrize("kwargs", [{}, {"create_pr": True}, {"revision": "refs/pr/3"}])
+@pytest.mark.parametrize(
+    "kwargs", [{}, {"create_pr": True}, {"revision": "refs/pr/3"}, {"revision": "v2", "create_pr": True}]
+)
 def test_no_branch_is_created_without_a_new_revision(push, kwargs):
     names = push(**kwargs)
     assert "create_branch" not in names and "upload_folder" in names
-
-
-def test_pr_to_a_branch_without_write_access_still_uploads(push):
-    _RecordingApi.branch_status = 403
-    assert "upload_folder" in push(revision = "v2", create_pr = True)
 
 
 def test_branch_creation_errors_are_not_swallowed(push):
     _RecordingApi.branch_status = 403
     with pytest.raises(HfHubHTTPError):
         push(revision = "v2")
+
+
+@pytest.mark.parametrize(
+    "kwargs, url",
+    [
+        ({}, "https://huggingface.co/u/my-lora\n"),
+        ({"revision": "v2"}, "https://huggingface.co/u/my-lora/tree/v2\n"),
+        ({"revision": "refs/pr/3"}, "https://huggingface.co/u/my-lora/discussions/3\n"),
+    ],
+)
+def test_done_message_points_at_the_revision(push, capsys, kwargs, url):
+    push(**kwargs)
+    assert capsys.readouterr().out.endswith(f"Unsloth: Done. Uploaded to {url}")

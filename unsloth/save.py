@@ -5104,7 +5104,6 @@ def _unsloth_save_lora_gguf(
 
         print(f"Unsloth: Uploading LoRA GGUF to '{save_directory}' ...")
         from huggingface_hub import HfApi
-        from huggingface_hub.errors import HfHubHTTPError
 
         api = HfApi(token = token)
         api.create_repo(
@@ -5113,15 +5112,12 @@ def _unsloth_save_lora_gguf(
             private = private,
             exist_ok = True,
         )
-        if revision is not None and not revision.startswith("refs/pr/"):
-            try:
-                api.create_branch(
-                    repo_id = save_directory, repo_type = "model", branch = revision, exist_ok = True
-                )
-            except HfHubHTTPError as error:
-                if not create_pr or error.response.status_code != 403:
-                    raise
-        api.upload_folder(
+        # huggingface_hub>=1.20 refuses create_pr with a revision in upload_folder, so a branch made first would be left behind.
+        if revision is not None and not create_pr and not revision.startswith("refs/pr/"):
+            api.create_branch(
+                repo_id = save_directory, repo_type = "model", branch = revision, exist_ok = True
+            )
+        commit = api.upload_folder(
             folder_path = lora_dir,
             repo_id = save_directory,
             repo_type = "model",
@@ -5131,7 +5127,17 @@ def _unsloth_save_lora_gguf(
             create_pr = create_pr,
             revision = revision,
         )
-        print(f"Unsloth: Done. Uploaded to https://huggingface.co/{save_directory.lstrip('/')}")
+        destination = getattr(commit, "pr_url", None)
+        if destination is None:
+            from urllib.parse import quote
+            destination = f"https://huggingface.co/{save_directory.lstrip('/')}"
+            if revision is not None:
+                destination += (
+                    f"/discussions/{revision.rsplit('/', 1)[-1]}"
+                    if revision.startswith("refs/pr/")
+                    else f"/tree/{quote(revision, safe = '')}"
+                )
+        print(f"Unsloth: Done. Uploaded to {destination}")
         return save_directory
     finally:
         if push_to_hub:
