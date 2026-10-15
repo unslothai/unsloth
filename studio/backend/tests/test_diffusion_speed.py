@@ -2866,8 +2866,7 @@ def test_rocm_gguf_default_compile_cache_gate_uses_the_dequant_predicate():
     # max: a refused regional compile falls back to the dequant, which keeps the cache context open.
     assert isinstance(ifexp.orelse, ast.BoolOp) and isinstance(ifexp.orelse.op, ast.Or)
     regional, fallback = ifexp.orelse.values
-    assert getattr(regional.func, "id", None) == "compile_eligible"
-    assert all(k.arg != "probe" for k in regional.keywords)
+    assert getattr(regional.func, "id", None) == "_compile_cache_wanted"
     assert "'rocm'" in ast.unparse(fallback) and gated[1][0] in list(ast.walk(fallback))
 
 
@@ -3097,3 +3096,38 @@ def test_rocm_probe_answer_is_read_without_waiting_for_another_probe(monkeypatch
         t.join(2)
         assert not t.is_alive() and out == [(True, "cached")]
     rc._reset_for_tests()
+
+
+def test_rocm_probe_never_rewinds_the_shared_rng(monkeypatch):
+    # A concurrent consumer of the default CPU generator must not see its draws undone by a probe snapshot/restore.
+    from core.inference import diffusion_rocm_compile as rc
+
+    torch = pytest.importorskip("torch")
+
+    def _no_fork(*args, **kwargs):
+        raise AssertionError("fork_rng snapshots and restores the shared generator")
+
+    monkeypatch.setattr(torch.random, "fork_rng", _no_fork)
+    monkeypatch.setattr(torch, "compile", lambda module, **kwargs: module)
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda *args, **kwargs: None)
+    torch.manual_seed(1234)
+    before = torch.random.get_rng_state().clone()
+    ok, why = rc._probe(torch, 0, device = torch.device("cpu"))
+    assert ok, why
+    assert torch.equal(torch.random.get_rng_state(), before)
+
+
+def test_compile_cache_gate_skips_the_rocm_probe_for_a_model_with_nothing_to_compile(monkeypatch):
+    from core.inference import diffusion as dmod
+
+    _rc, calls = _probe_must_not_run(monkeypatch)
+    fam = types.SimpleNamespace(name = "z-image", supports_torch_compile = True)
+    pipe = types.SimpleNamespace(transformer = None)
+    wanted = dmod._compile_cache_wanted(
+        pipe, _rocm_bf16(), fam, is_gguf = False, speed_mode = "default", offload_active = False
+    )
+    assert wanted is False and calls == []
+    cuda = types.SimpleNamespace(**{**vars(_rocm_bf16()), "backend": "cuda"})
+    assert dmod._compile_cache_wanted(
+        pipe, cuda, fam, is_gguf = False, speed_mode = "default", offload_active = False
+    ) is ds_mod.compile_eligible(cuda, is_gguf = False, family = fam)

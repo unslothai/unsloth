@@ -144,7 +144,7 @@ def rocm_block_compile_probe(device: Any = None) -> tuple[bool, str]:
         return ok, why
 
 
-def _probe(torch: Any, index: int) -> tuple[bool, str]:
+def _probe(torch: Any, index: int, device: Any = None) -> tuple[bool, str]:
     start = time.perf_counter()
     try:
         import torch.nn.functional as F
@@ -176,13 +176,25 @@ def _probe(torch: Any, index: int) -> tuple[bool, str]:
                 x = x + self.out(a)
                 return x + self.mlp(self.norm2(x))
 
-        dev = torch.device("cuda", index)
+        dev = torch.device("cuda", index) if device is None else device
         dtype = torch.bfloat16
         gen = torch.Generator(device = "cpu").manual_seed(0)
-        # Forked: the parameter init must not advance the process CPU RNG a caller may have seeded.
-        with torch.random.fork_rng(devices = []):
+        # Built on meta and filled from the private generator: the shared CPU RNG is never read or rewound, so a
+        # concurrent load or generation drawing from it is untouched.
+        with torch.device("meta"):
             block = _Block()
-        block = block.to(device = dev, dtype = dtype).eval()
+        block = block.to_empty(device = dev)
+        with torch.no_grad():
+            for name, param in block.named_parameters():
+                if param.dim() == 2:
+                    bound = param.shape[1] ** -0.5
+                    value = (torch.rand(param.shape, generator = gen) * 2 - 1) * bound
+                elif name.endswith("norm2.weight"):
+                    value = torch.ones(param.shape)
+                else:
+                    value = (torch.rand(param.shape, generator = gen) * 2 - 1) * 0.02
+                param.copy_(value)
+        block = block.to(dtype = dtype).eval()
         inductor_cfg = torch._inductor.config
         patches = {"memory_planning": False} if hasattr(inductor_cfg, "memory_planning") else {}
         compiled = torch.compile(block, dynamic = True, fullgraph = True)

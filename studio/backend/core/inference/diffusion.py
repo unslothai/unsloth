@@ -2086,6 +2086,37 @@ def _pipeline_quant_uncompilable_reason(
     return None
 
 
+def _compile_cache_wanted(
+    pipe: Any,
+    target: Any,
+    fam: Any,
+    *,
+    is_gguf: bool,
+    speed_mode: str,
+    offload_active: bool,
+) -> bool:
+    """``compile_eligible`` for the compile-cache gate; on a dense ROCm load the allocating probe runs only once the
+    plan finds something in the model to compile."""
+    if is_gguf or getattr(target, "backend", None) != "rocm":
+        return compile_eligible(target, is_gguf = is_gguf, family = fam)
+    if not compile_eligible(target, is_gguf = False, family = fam, probe = False):
+        return False
+    try:
+        from .diffusion_autoopt import plan as plan_mod
+
+        step = plan_mod.build_plan(
+            pipe,
+            target,
+            family = fam,
+            backend = "image",
+            speed_mode = speed_mode,
+            offload_active = offload_active,
+        ).step("compiled")
+    except Exception:  # noqa: BLE001 - no plan: the probing predicate decides as before
+        return compile_eligible(target, is_gguf = False, family = fam)
+    return bool(step is not None and step.attempt)
+
+
 def _plan_proves_resident(plan: Any) -> bool:
     """Resident AND fits; the planner also stays resident when it cannot read the card."""
     estimates = getattr(plan, "estimates", None) or {}
@@ -8001,7 +8032,14 @@ class DiffusionBackend:
                             if gguf_transformer
                             and effective_speed == SPEED_DEFAULT
                             and getattr(target, "backend", None) == "rocm"
-                            else compile_eligible(target, is_gguf = gguf_transformer, family = fam)
+                            else _compile_cache_wanted(
+                                pipe,
+                                target,
+                                fam,
+                                is_gguf = gguf_transformer,
+                                speed_mode = effective_speed,
+                                offload_active = plan.offload_policy != OFFLOAD_NONE,
+                            )
                             or (
                                 gguf_transformer
                                 and getattr(target, "backend", None) == "rocm"
@@ -10327,7 +10365,14 @@ class DiffusionBackend:
             entry["value"] = attention_engaged or "native"
             object.__setattr__(state, "resolved", {**state.resolved, "attention_backend": entry})
         gguf_transformer = state.kind == "gguf" and state.transformer_quant is None
-        if compile_eligible(target, is_gguf = gguf_transformer, family = state.family):
+        if _compile_cache_wanted(
+            state.pipe,
+            target,
+            state.family,
+            is_gguf = gguf_transformer,
+            speed_mode = SPEED_DEFAULT,
+            offload_active = state.offload_policy != OFFLOAD_NONE,
+        ):
             compile_ctx = compile_cache.begin(
                 family = state.family.name,
                 # U-Net families (SDXL) carry the denoiser as pipe.unet.
