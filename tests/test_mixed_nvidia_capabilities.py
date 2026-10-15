@@ -241,9 +241,17 @@ def test_gfx906_switch_reads_every_visible_card(monkeypatch, capsys, archs, appl
     fake = _fake_torch([SM90] * len(archs), archs = archs)
     environ = {}
     dynamo_config = types.SimpleNamespace(disable = False)
-    body = _block(DEVICE_TYPE_PY, "# gfx906 (MI50", '\n\nif DEVICE_TYPE == "cuda" and torch.cuda.is_available():')
+    body = _block(
+        DEVICE_TYPE_PY,
+        "# gfx906 (MI50",
+        '\n\nif DEVICE_TYPE == "cuda" and torch.cuda.is_available():',
+    )
     namespace = _module_namespace(
-        dt, fake, monkeypatch, DEVICE_TYPE = "hip", os = types.SimpleNamespace(environ = environ),
+        dt,
+        fake,
+        monkeypatch,
+        DEVICE_TYPE = "hip",
+        os = types.SimpleNamespace(environ = environ),
         apply_pre_volta_compile_workaround = lambda major: dt.apply_pre_volta_compile_workaround(
             major, environ = environ, dynamo_config = dynamo_config
         ),
