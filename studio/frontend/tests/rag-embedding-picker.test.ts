@@ -1,0 +1,314 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import test from "node:test";
+import { fileURLToPath } from "node:url";
+
+import { embeddingMenuModels } from "../src/features/rag/lib/embedding-menu-models.ts";
+import { loadWithStubs } from "./helpers/module-stubs.ts";
+
+function read(path: string): string {
+  return readFileSync(fileURLToPath(new URL(path, import.meta.url)), "utf-8");
+}
+
+const MENU_PICKER = read("../src/features/rag/components/embedding-model-menu-picker.tsx");
+const KB_BUTTON = read("../src/features/rag/components/knowledge-base-composer-button.tsx");
+const SECTION = read("../src/features/settings/components/documents-rag-section.tsx");
+const PICKER = read("../src/features/settings/components/embedding-model-picker.tsx");
+
+type Plan = {
+  embeddingModel: string;
+  backend: "llama" | "sentence-transformers";
+  downloadRepo: string | null;
+  cached: boolean;
+  error: string | null;
+};
+
+function switcher(options: { plan?: Plan | Error; current?: boolean; saveError?: Error }) {
+  const saves: Array<{ model: string; ggufRepo: unknown; backend: unknown }> = [];
+  const store = {
+    beginSave: () => 1,
+    isSaveCurrent: () => options.current ?? true,
+    save: async (request: () => Promise<unknown>) => {
+      await request();
+      return true;
+    },
+  };
+  const mod = loadWithStubs<{
+    switchEmbeddingModel: (model: string, token?: string) => Promise<unknown>;
+    embeddingModelName: (model: string) => string;
+    embeddingModelOwner: (model: string) => string;
+  }>(new URL("../src/features/settings/lib/switch-embedding-model.ts", import.meta.url), {
+    "../api/embedding-model": {
+      resolveEmbeddingModel: async () => {
+        if (options.plan instanceof Error) throw options.plan;
+        return options.plan;
+      },
+      updateEmbeddingModelSettings: async (
+        model: string,
+        opts: { ggufRepo: unknown; backend: unknown },
+      ) => {
+        if (options.saveError) throw options.saveError;
+        saves.push({ model, ggufRepo: opts.ggufRepo, backend: opts.backend });
+        return {};
+      },
+    },
+    "../stores/embedding-model-store": {
+      useEmbeddingModelStore: { getState: () => store },
+    },
+  });
+  return { ...mod, saves };
+}
+
+const PLAN: Plan = {
+  embeddingModel: "unsloth/embeddinggemma-2",
+  backend: "llama",
+  downloadRepo: "unsloth/embeddinggemma-2-GGUF",
+  cached: true,
+  error: null,
+};
+
+test("switching saves the GGUF repo the resolve picked", async () => {
+  const app = switcher({ plan: PLAN });
+  assert.deepEqual(await app.switchEmbeddingModel(PLAN.embeddingModel), {
+    status: "saved",
+    needsDownload: false,
+  });
+  assert.deepEqual(app.saves, [
+    { model: PLAN.embeddingModel, ggufRepo: "unsloth/embeddinggemma-2-GGUF", backend: "llama" },
+  ]);
+});
+
+test("a model not on disk saves and says it needs a download", async () => {
+  const app = switcher({ plan: { ...PLAN, cached: false } });
+  assert.deepEqual(await app.switchEmbeddingModel(PLAN.embeddingModel), {
+    status: "saved",
+    needsDownload: true,
+  });
+});
+
+test("a resolve error is reported and nothing is saved", async () => {
+  const app = switcher({ plan: { ...PLAN, error: "Not an embedding model" } });
+  assert.deepEqual(await app.switchEmbeddingModel(PLAN.embeddingModel), {
+    status: "failed",
+    message: "Not an embedding model",
+  });
+  assert.equal(app.saves.length, 0);
+});
+
+test("a newer pick from another surface wins", async () => {
+  const app = switcher({ plan: PLAN, current: false });
+  assert.deepEqual(await app.switchEmbeddingModel(PLAN.embeddingModel), { status: "superseded" });
+  assert.equal(app.saves.length, 0);
+});
+
+test("a failed resolve still saves, and a failed save is reported", async () => {
+  const resolveDown = switcher({ plan: new Error("offline") });
+  // Unknown, not ready: the menu points to Settings instead of claiming success.
+  assert.deepEqual(await resolveDown.switchEmbeddingModel("acme/embed"), {
+    status: "saved",
+    needsDownload: null,
+  });
+  assert.deepEqual(resolveDown.saves, [{ model: "acme/embed", ggufRepo: null, backend: null }]);
+  const saveDown = switcher({ plan: PLAN, saveError: new Error("Could not verify") });
+  assert.deepEqual(await saveDown.switchEmbeddingModel(PLAN.embeddingModel), {
+    status: "failed",
+    message: "Could not verify",
+  });
+});
+
+test("model names and owners read from repo ids and local paths", () => {
+  const { embeddingModelName, embeddingModelOwner } = switcher({});
+  assert.equal(embeddingModelName("unsloth/bge-small-en-v1.5"), "bge-small-en-v1.5");
+  assert.equal(embeddingModelName("/models/my-embedder/"), "my-embedder");
+  assert.equal(embeddingModelName("bge-small"), "bge-small");
+  assert.equal(embeddingModelOwner("unsloth/bge-small-en-v1.5"), "unsloth");
+  assert.equal(embeddingModelOwner("/models/my-embedder"), "");
+  assert.equal(embeddingModelOwner("./my-embedder"), "");
+  assert.equal(embeddingModelOwner("~/models/e"), "");
+  assert.equal(embeddingModelOwner("C:\\models\\e"), "");
+  // Slashless names load from sentence-transformers/, not from disk.
+  assert.equal(embeddingModelOwner("all-MiniLM-L6-v2"), "sentence-transformers");
+});
+
+test("the menu lists current, default, then pinned models, each once", () => {
+  assert.deepEqual(
+    embeddingMenuModels("acme/a", "unsloth/b", ["acme/a", "acme/c", "unsloth/b", " "]),
+    ["acme/a", "unsloth/b", "acme/c"],
+  );
+});
+
+test("the chip shows for the owner only and swaps the menu to the model list", () => {
+  assert.match(KB_BUTTON, /\{isOwner \? <EmbeddingModelMenuChip onOpen=\{\(\) => setView\("embedding"\)\} \/> : null\}/);
+  assert.match(KB_BUTTON, /isOwner && view === "embedding" \? \(\s*<EmbeddingModelMenuList onBack=\{\(\) => setView\("source"\)\} \/>/);
+  // Closing resets it, so the menu reopens on the source list.
+  assert.match(KB_BUTTON, /else setView\("source"\);/);
+  // No side submenu any more.
+  assert.doesNotMatch(MENU_PICKER, /DropdownMenuPrimitive\.Sub\b|SubContent/);
+});
+
+test("More models and the download toasts open the embedding row in Settings", () => {
+  const opens = MENU_PICKER.match(
+    /openSettings\("general", \{ scrollTarget: "general-rag-embedding" \}\)/g,
+  );
+  assert.equal(opens?.length, 4);
+  assert.match(SECTION, /if \(scrollTarget !== "general-rag-embedding"\) return;/);
+  assert.match(SECTION, /<SettingsSection ref=\{sectionRef\}/);
+});
+
+test("Settings rows pin and unpin, and pinned models stay listed", () => {
+  assert.match(PICKER, /onClick=\{\(\) => onTogglePin\(item\.id\)\}/);
+  assert.match(PICKER, /for \(const pin of pinnedModels \?\? \[\]\)/);
+  assert.match(SECTION, /pinnedModels=\{pinnedModels\}\s*onTogglePin=\{togglePin\}/);
+});
+
+test("pins are grey with the Recents unpin glyph, and tooltips are the app's own", () => {
+  for (const source of [MENU_PICKER, PICKER]) {
+    assert.match(source, /icon=\{(isPinned|pinned) \? PinOffIcon : PinIcon\}/);
+    assert.doesNotMatch(source, /text-primary hover:text-primary|\? "text-primary"/);
+    assert.doesNotMatch(source, /title=\{/);
+    assert.match(source, /<TooltipContent side="top">/);
+  }
+});
+
+test("in the composer list the pin shows on row hover only, pinned or not", () => {
+  assert.match(MENU_PICKER, /text-muted-foreground opacity-0 outline-hidden transition-colors group-hover\/row:opacity-100/);
+  assert.doesNotMatch(MENU_PICKER, /!isPinned &&/);
+});
+
+test("Settings keeps the long text in the info hint and the status on the row", () => {
+  assert.match(SECTION, /hint=\{`\$\{t\("settings\.general\.rag\.embeddingModelDescription"/);
+  assert.match(SECTION, /settings\.general\.rag\.embeddingModelShort[\s\S]*?\{statusText \? \(/);
+  // The row's `below` slot carries errors only.
+  assert.match(SECTION, /below=\{\s*embeddingModelError \?/);
+});
+
+test("Eject sits on the picker and in the RAG menu, only while a model is resident", () => {
+  assert.match(SECTION, /onEject=\{embeddingModel\?\.backendLoaded \?/);
+  assert.match(PICKER, /\{onEject \? \([\s\S]*?onEject\(\);[\s\S]*?group-hover\/trigger:block/);
+  assert.match(MENU_PICKER, /\{settings\.backendLoaded \? \([\s\S]*?void eject\(/);
+  assert.match(MENU_PICKER, /settings\.general\.rag\.ejectModel/);
+});
+
+test("On device explains itself and says when the model is not loaded", () => {
+  assert.match(SECTION, /settings\.general\.rag\.onDeviceHint/);
+  assert.match(SECTION, /const notLoaded = onDevice && !embeddingModel\?\.loaded && !downloading;/);
+  // In the picker's column, a filled dot, with its own hint.
+  assert.match(SECTION, /<EmbeddingModelPicker[\s\S]*?\{notLoaded \? \([\s\S]*?rounded-full bg-muted-foreground[\s\S]*?settings\.general\.rag\.notLoadedHint/);
+});
+
+test("ejecting frees the model through the shared residency path", async () => {
+  const calls: unknown[] = [];
+  const unload = async () => ({ loaded: false });
+  const mod = loadWithStubs<{ ejectEmbeddingModel: () => Promise<void> }>(
+    new URL("../src/features/settings/lib/switch-embedding-model.ts", import.meta.url),
+    {
+      "../api/embedding-model": {
+        resolveEmbeddingModel: async () => null,
+        unloadEmbeddingModel: unload,
+        updateEmbeddingModelSettings: async () => null,
+      },
+      "../stores/embedding-model-store": {
+        useEmbeddingModelStore: {
+          getState: () => ({ applyResidency: async (request: unknown) => calls.push(request) }),
+        },
+      },
+    },
+  );
+  await mod.ejectEmbeddingModel();
+  assert.deepEqual(calls, [unload]);
+});
+
+test("an unchecked switch points to Settings rather than reading as ready", () => {
+  assert.match(
+    MENU_PICKER,
+    /result\.needsDownload === null\)[\s\S]*?switchedUncheckedDescription[\s\S]*?scrollTarget: "general-rag-embedding"/,
+  );
+});
+
+test("Settings keeps a focusable Eject in the picker list", () => {
+  assert.match(PICKER, /\{onEject \? \(\s*<div className="border-t[\s\S]*?<button\s+type="button"[\s\S]*?onEject\(\);[\s\S]*?settings\.general\.rag\.ejectModel/);
+});
+
+test("embedding pins are account data, like chat model pins, so Reset all leaves them", () => {
+  const general = read("../src/features/settings/tabs/general-tab.tsx");
+  const keys = general.slice(general.indexOf("const PREFS_KEYS"), general.indexOf("];", general.indexOf("const PREFS_KEYS")));
+  assert.doesNotMatch(keys, /EMBEDDING_PINS_STORAGE_KEY|unsloth_embedding_pins|unsloth_pinned_models/);
+});
+
+test("composer pins are their own menu items, so the keyboard reaches them", () => {
+  assert.match(
+    MENU_PICKER,
+    /<DropdownMenuPrimitive\.CheckboxItem\s+checked=\{isPinned\}[\s\S]*?data-row-action=\{true\}[\s\S]*?togglePin\(model\);/,
+  );
+  assert.doesNotMatch(MENU_PICKER, /tabIndex=\{-1\}/);
+  assert.match(read("../src/index.css"), /\.menu-row-with-action:has\(\[data-row-action\]:is\(:hover, \[data-highlighted\]\)\)/);
+});
+
+test("pins show without hover on touch screens", () => {
+  assert.match(PICKER, /"opacity-0 group-hover\/row:opacity-100 \[@media\(hover:none\)\]:opacity-100"/);
+  assert.match(MENU_PICKER, /group-has-\[\[data-highlighted\]\]\/row:opacity-100 \[@media\(hover:none\)\]:opacity-100/);
+});
+
+test("the embedding controls wrap and fit narrow settings panels", () => {
+  assert.match(SECTION, /flex max-w-full flex-wrap items-start justify-end gap-2/);
+  assert.match(SECTION, /w-\[calc\(260px\*var\(--ui-space-scale,1\)\)\] max-w-full/);
+});
+
+test("swapping menu views moves focus into the new view", () => {
+  assert.match(
+    KB_BUTTON,
+    /useLayoutEffect\(\(\) => \{\s*if \(shownViewRef\.current === view\) return;[\s\S]*?querySelector<HTMLElement>\('\[role\^="menuitem"\]:not\(\[data-disabled\]\)'\)\s*\?\.focus\(\);\s*\}, \[view\]\);/,
+  );
+  assert.match(KB_BUTTON, /<DropdownMenuContent\s+ref=\{contentRef\}/);
+});
+
+test("unpinning a row that leaves the list hands focus to a neighbour row", () => {
+  assert.match(MENU_PICKER, /const leaving =\s*isPinned && model !== current && model !== settings\.defaultEmbeddingModel;/);
+  assert.match(MENU_PICKER, /togglePin\(model\);\s*if \(neighbour\) requestAnimationFrame\(\(\) => neighbour\.focus\(\)\);/);
+  assert.match(MENU_PICKER, /function neighbourRowItem\(el: HTMLElement\)/);
+});
+
+test("a switch that lands after the list unmounted does not change the menu view", () => {
+  assert.match(MENU_PICKER, /if \(mountedRef\.current\) onBack\(\);/);
+  assert.match(MENU_PICKER, /return \(\) => \{\s*mountedRef\.current = false;\s*\};/);
+});
+
+test("only the model rows scroll; the header and Eject stay put", () => {
+  assert.match(MENU_PICKER, /<div className="flex shrink-0 items-start[\s\S]*?ref=\{listRef\}\s*className="min-h-0 flex-1 overflow-y-auto/);
+  assert.match(MENU_PICKER, /<\/div>\s*\{settings\.backendLoaded \? \(\s*<div className="shrink-0">/);
+});
+
+test("the list header is a page header: its own back button, then a titled page", () => {
+  // Back is a separate round button labelled with where it goes, not an arrow on the title.
+  // Wash on hover or focus only, no resting circle.
+  assert.match(MENU_PICKER, /aria-label=\{t\("settings\.general\.rag\.back"\)\}[\s\S]*?rounded-full text-muted-foreground[^"]*hover:bg-\[/);
+  // Title matches the More models link size.
+  assert.match(MENU_PICKER, /truncate text-ui-12 font-medium leading-tight text-foreground/);
+  assert.match(
+    MENU_PICKER,
+    /t\("settings\.general\.rag\.embeddingModel"\)[\s\S]*?t\("settings\.general\.rag\.menuSubtitle"\)/,
+  );
+  assert.doesNotMatch(MENU_PICKER, /menuTitle|DropdownMenuLabel/);
+});
+
+test("ejecting from the menu moves focus to a model row", () => {
+  assert.match(MENU_PICKER, /void eject\(\(event\.currentTarget as HTMLElement\)\.closest\('\[role="menu"\]'\)\)/);
+  assert.match(MENU_PICKER, /menu\?\.querySelector<HTMLElement>\('\.menu-row-with-action \[role\^="menuitem"\]'\)\?\.focus\(\)/);
+});
+
+test("embedding pins mirror to the account like the chat model pins", () => {
+  const store = read("../src/features/settings/stores/embedding-pins-store.ts");
+  assert.match(store, /mirrorPins\("embedding", pinned\)/);
+  assert.match(store, /onPinsRestored\("embedding"/);
+  assert.match(read("../src/lib/pins-mirror.ts"), /embedding: "unsloth_embedding_pins"/);
+});
+
+test("with nothing pinned, a Pin more models link opens the Settings embedding row", () => {
+  assert.match(
+    MENU_PICKER,
+    /\{pinned\.length === 0 \? \(\s*<DropdownMenuPrimitive\.Item[\s\S]*?scrollTarget: "general-rag-embedding"[\s\S]*?settings\.general\.rag\.pinMoreModels/,
+  );
+});

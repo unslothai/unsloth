@@ -258,7 +258,35 @@ def test_thumb_cache_key_distinguishes_same_stem_extensions(client, ds_root):
     client.get("/api/train/diffusion/dataset/d/image/sample.png?thumb=32")
     client.get("/api/train/diffusion/dataset/d/image/sample.jpg?thumb=32")
     thumbs = sorted(p.name for p in (folder / ".thumbs").glob("*.jpg"))
-    assert thumbs == ["sample.jpg_32.jpg", "sample.png_32.jpg"]
+    assert thumbs == ["sample.jpg_32_w.jpg", "sample.png_32_w.jpg"]
+
+
+def test_thumbnail_of_transparent_image_shows_white_background(client, ds_root):
+    folder = ds_root / "d"
+    folder.mkdir()
+    sticker = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+    sticker.paste((255, 220, 0, 255), (16, 16, 48, 48))
+    sticker.save(folder / "sticker.png", format = "PNG")
+
+    r = client.get("/api/train/diffusion/dataset/d/image/sticker.png?thumb=64")
+
+    assert r.status_code == 200
+    thumb = Image.open(io.BytesIO(r.content)).convert("RGB")
+    assert min(thumb.getpixel((2, 2))) > 245
+
+
+def test_thumbnail_cached_before_white_flattening_is_not_served(client, ds_root):
+    folder = ds_root / "d"
+    (folder / ".thumbs").mkdir(parents = True)
+    Image.new("RGBA", (64, 64), (0, 0, 0, 0)).save(folder / "sticker.png", format = "PNG")
+    Image.new("RGB", (64, 64), (0, 0, 0)).save(
+        folder / ".thumbs" / "sticker.png_64.jpg", format = "JPEG"
+    )
+
+    r = client.get("/api/train/diffusion/dataset/d/image/sticker.png?thumb=64")
+
+    assert r.status_code == 200
+    assert min(Image.open(io.BytesIO(r.content)).convert("RGB").getpixel((2, 2))) > 245
 
 
 # ── traversal / validation ───────────────────────────────────────────────────
@@ -633,7 +661,7 @@ def test_upload_rejects_extension_case_variant_sidecar_collision(client, ds_root
 
 
 def test_upload_allows_exact_name_overwrite_and_caption_sidecar(client, ds_root):
-    # Re-uploading the EXACT same name is an allowed overwrite, and a .txt caption for the same stem is the kohya flow.
+    # exact-name overwrites are allowed, and same-stem .txt files are Kohya captions
     assert (
         _upload(client, "styleset", [("sample.png", _png_bytes((10, 20, 30)))]).status_code == 200
     )
@@ -646,13 +674,62 @@ def test_upload_allows_exact_name_overwrite_and_caption_sidecar(client, ds_root)
     assert (folder / "sample.txt").read_text(encoding = "utf-8") == "a caption"
 
 
+def test_create_only_upload_refuses_every_occupied_spelling(client, ds_root):
+    folder = ds_root / "StyleSet"
+    folder.mkdir()
+    original = _png_bytes((10, 20, 30))
+    (folder / "sample.png").write_bytes(original)
+
+    for name in ("StyleSet", "styleset"):
+        r = client.post(
+            "/api/train/diffusion/dataset",
+            data = {"name": name, "create_only": "true"},
+            files = [("files", ("sample.png", _png_bytes((90, 90, 90)), "image/png"))],
+        )
+        assert r.status_code == 409, r.text
+        assert "already exists" in r.json()["detail"]
+
+    assert (folder / "sample.png").read_bytes() == original
+    created = client.post(
+        "/api/train/diffusion/dataset",
+        data = {"name": "fresh", "create_only": "true"},
+        files = [("files", ("new.png", _png_bytes(), "image/png"))],
+    )
+    assert created.status_code == 200, created.text
+    assert (ds_root / "fresh" / "new.png").is_file()
+
+
+def test_upload_refuses_internal_dataset_folders(client, ds_root):
+    for name in ("uploads", "RECIPES", "seed-uploads", "unstructured-uploads"):
+        r = _upload(client, name, [("sample.png", _png_bytes())])
+        assert r.status_code == 400, r.text
+        assert "internal dataset storage" in r.json()["detail"]
+
+
+def test_create_only_upload_removes_a_new_folder_after_validation_failure(client, ds_root):
+    rejected = client.post(
+        "/api/train/diffusion/dataset",
+        data = {"name": "retryable", "create_only": "true"},
+        files = [("files", ("bad.exe", b"not a dataset file", "application/octet-stream"))],
+    )
+    assert rejected.status_code == 400, rejected.text
+    assert not (ds_root / "retryable").exists()
+
+    retried = client.post(
+        "/api/train/diffusion/dataset",
+        data = {"name": "retryable", "create_only": "true"},
+        files = [("files", ("sample.png", _png_bytes(), "image/png"))],
+    )
+    assert retried.status_code == 200, retried.text
+    assert (ds_root / "retryable" / "sample.png").is_file()
+
+
 # ── import: promotion is all-or-nothing ──────────────────────────────────────
 def test_import_promotion_leaves_no_partial_dataset_on_failure(ds_root, monkeypatch):
-    # The staging dir is promoted in one atomic rename. If it fails, the folder must be left with NO images rather than a
-    # half-filled dataset the image_count>0 idempotency check would accept. Simulate the failure and assert a clean retry.
+    # atomic promotion prevents a failed import from satisfying the image_count idempotency check
     import os
 
-    # A client that returns the 500 (as production does) instead of re-raising.
+    # match production by returning 500 responses instead of reraising server exceptions
     app = FastAPI()
     app.include_router(training_router, prefix = "/api/train")
     app.dependency_overrides[get_current_subject] = lambda: "test-user"

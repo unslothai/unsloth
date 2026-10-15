@@ -84,12 +84,20 @@ function hasExactDatasetMatch(
   return resolveExactDatasetDeviceItem(query, deviceItems).kind !== "none";
 }
 
+const DECISION_DATASET_IDS = [
+  "LocalLLaMA/typed-decisions",
+  "tasksource/procedural-typed-decisions",
+  "n4ze3m/typed-decisions-synth",
+  "tasksource/synthetic-typed-decisions",
+];
+
 export function DatasetSelector() {
   const t = useT();
   const navigate = useNavigate();
   const dataset = useTrainingConfigStore((s) => s.dataset);
   const uploadedFile = useTrainingConfigStore((s) => s.uploadedFile);
   const datasetSource = useTrainingConfigStore((s) => s.datasetSource);
+  const isDecision = useTrainingConfigStore((s) => s.modelType === "decision");
   const modelType = useTrainingConfigStore((s) =>
     s.modelType === "decision" ? null : s.modelType,
   );
@@ -204,6 +212,7 @@ export function DatasetSelector() {
     hasMore: hasMoreHf,
   } = useHubDatasetSearch(picker.debouncedHubQuery, {
     modelType,
+    pinnedIds: isDecision ? DECISION_DATASET_IDS : undefined,
     enabled: online && picker.open && tab === PICKER_TAB.hub,
     accessToken: hfApiToken(picker.debouncedHfToken),
   });

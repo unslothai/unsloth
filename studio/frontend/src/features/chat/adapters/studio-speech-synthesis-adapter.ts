@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { TTS_MAX_TOKENS } from "@/features/audio/audio-workspace-constants";
 import { authFetch } from "@/features/auth";
 import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
 import { toast } from "@/lib/toast";
@@ -9,6 +10,7 @@ import { encryptProviderApiKey } from "../api/providers-api";
 import { getExternalProviderApiKey } from "../external-providers";
 import { stripSearchImageTokens } from "../search-images/search-images";
 import { useExternalProvidersStore } from "../stores/external-providers-store";
+import { markdownToSpeechText } from "../utils/speech-text";
 
 /** Voice for a stored voiceURI. "default" resolves to the voice the platform marks as its
  *  default, so the "System default" choice means what it says instead of falling back to a
@@ -231,6 +233,7 @@ export async function generateStudioTtsAudio(
       stream: false,
       // Read aloud is not a Speak run, so it stays out of Speak's history.
       persist: false,
+      max_tokens: TTS_MAX_TOKENS,
       ...(ttsStudioVoiceId ? { voice_id: ttsStudioVoiceId } : {}),
     }),
     signal,
@@ -260,9 +263,17 @@ export async function generateStudioTtsAudio(
     }
     throw new Error(detail);
   }
-  const data = (await response.json()) as { audio?: { data?: string } };
+  const data = (await response.json()) as {
+    audio?: { data?: string };
+    choices?: { finish_reason?: string }[];
+  };
   if (!data.audio?.data) {
     throw new Error("The TTS model returned no audio.");
+  }
+  if (data.choices?.[0]?.finish_reason === "length") {
+    toast.warning(
+      "Read aloud stopped at the speech model's length limit before the end of the reply.",
+    );
   }
   return `data:audio/wav;base64,${data.audio.data}`;
 }
@@ -465,8 +476,7 @@ export class StudioSpeechSynthesisAdapter implements SpeechSynthesisAdapter {
   }
 
   speak(spokenText: string): SpeechSynthesisAdapter.Utterance {
-    // Renderer markup: without this the reader says the token id out loud.
-    const text = stripSearchImageTokens(spokenText);
+    const text = markdownToSpeechText(stripSearchImageTokens(spokenText));
     const subscribers = new Set<() => void>();
 
     const handleEnd = (

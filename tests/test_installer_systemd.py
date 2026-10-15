@@ -74,7 +74,7 @@ def test_unit_lan_bind_is_opt_in(tmp_path, args, env):
 
 
 def test_unit_has_no_execstop_that_stops_other_studios(tmp_path):
-    # `unsloth studio stop` stops every server on the home, including ones the user started by hand.
+    # `unsloth studio stop` would also stop servers the user started by hand.
     assert "ExecStop" not in _write_unit(tmp_path)
 
 
@@ -105,7 +105,6 @@ def test_enable_start_drives_systemctl(tmp_path):
 
 
 def test_enable_writes_where_the_user_manager_looks(tmp_path):
-    # HOME redirected for the installer: the manager still reads its own HOME's config.
     mgr_home = tmp_path / "passwd_home"
     _fake_bin(
         tmp_path,
@@ -205,7 +204,7 @@ def test_opt_in_installs_with_studio_home_for_env_redirect(tmp_path):
 
 
 def test_opt_in_runs_on_wsl(tmp_path):
-    # WSL2 distros can run systemd; the helper itself refuses when the user bus is missing.
+    # WSL2 can run systemd; the helper itself refuses when the user bus is missing.
     out = _run_installer_tail(tmp_path, _INSTALL_SYSTEMD = "true", OS = "wsl")
     assert "STARTED=true" in out
     assert "--unsloth-exe" in out

@@ -1,13 +1,13 @@
 #!/usr/bin/env pwsh
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-# An update whose XPU runtime probe times out keeps the XPU route even when the NVIDIA presence promotion fires.
+# A timed-out XPU runtime probe keeps the XPU route even when the NVIDIA presence promotion fires.
 param([string]$RepoRoot = (Join-Path $PSScriptRoot "../.."))
 $ErrorActionPreference='Stop'
 $repo=(Resolve-Path $RepoRoot).Path
 $path=Join-Path $repo 'studio/setup.ps1'
 $text=[IO.File]::ReadAllText($path)
-# Parse the text that is sliced below: Windows PowerShell 5.1 reads a BOM-less file as ANSI, which shifts offsets.
+# Windows PowerShell 5.1 reads a BOM-less file as ANSI, which shifts offsets.
 $ast=[System.Management.Automation.Language.Parser]::ParseInput($text,$path,[ref]$null,[ref]$null)
 $functions=@($ast.FindAll({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst]},$true))
 foreach($f in $functions){. ([scriptblock]::Create($f.Extent.Text))}
@@ -65,7 +65,7 @@ foreach($mode in @('live','timeout','unavailable')){
  . ([scriptblock]::Create($gate.Extent.Text))
  $cudaForce=@()
  if(-not $XpuIndexUrl){. ([scriptblock]::Create($cudaForceBlock))}
- # A definitive False may intentionally convert the stale XPU wheel. Uncertainty must keep XPU's dependency route.
+ # A definitive False may convert the stale XPU wheel; uncertainty keeps XPU.
  $expected=if($mode -eq 'unavailable' -and $promo){'cu126'}else{'xpu'}
  $ok=($CuTag -eq $expected) -and -not $script:SkipPythonDeps
  if($mode -eq 'timeout'){$ok=$ok -and [bool]$XpuIndexUrl -and $cudaForce.Count -eq 0}

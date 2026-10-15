@@ -178,6 +178,8 @@ OWNER_ONLY_PATH_FLAGS: frozenset[str] = frozenset(
         "--log-prompts-dir",
         # llama-server runs <dir>/ffmpeg to decode a video.
         "--video-ffmpeg-dir",
+        # Not a path: llama-server sends the model's tensors to these hosts.
+        "--rpc",
     }
 )
 

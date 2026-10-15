@@ -58,6 +58,10 @@ const NAMED_CASES: Array<[string, string]> = [
   ["escaped-dollar", "A literal \\$5 stays literal.\n\n"],
   ["escaped-backslash", "A path C:\\\\temp and \\\\(not math\\\\) here.\n\n"],
   ["currency-suffix", "Around $5K then $5Ki then $3.5M.\n\n"],
+  [
+    "shell-variables",
+    "Add $PATH, then check $HOME/.bashrc\nand run `echo $CUDA_HOME` with $x$.\n\n",
+  ],
   ["cjk", "\u4fa1\u683c\u306f $5 \u3067\u3059\u3002\u6570\u5f0f \\(x^2\\) \u3082\u3042\u308a\u307e\u3059\u3002\n\n"],
   ["rtl-arabic", "\u0627\u0644\u0633\u0639\u0631 $5 \u0648\u0627\u0644\u0645\u0639\u0627\u062f\u0644\u0629 \\(x^2\\) \u0647\u0646\u0627.\n\n"],
   ["rtl-hebrew", "\u05d4\u05de\u05d7\u05d9\u05e8 $10 \u05d5\u05d4\u05e0\u05d5\u05e1\u05d7\u05d4 \\(y\\).\n\n"],

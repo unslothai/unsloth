@@ -9,6 +9,9 @@
 # five hours of nvcc for flash-attn, on a machine that has to have the CUDA toolkit installed.
 # So every torch minor from 2.13 on needs its own wheel set, and this is where they come from.
 #
+# win_amd64 too: upstream has never published a Windows wheel of any of the three. OS-specific
+# steps are gated on runner.os; the rest is the same bash on both.
+#
 # Dispatch only, once per torch minor, and `publish: false` is the default: a run then builds,
 # smoke tests and signs, and leaves everything as artifacts to inspect. Nothing here is reachable
 # from a pull request, because the publish job writes a release under our name.
@@ -26,7 +29,7 @@ on:
   workflow_dispatch:
     inputs:
       torch_versions:
-        description: 'torch versions to build for, comma separated (2.13.0, 2.14.0)'
+        description: 'torch versions to build for, comma separated (2.13.0, 2.14.0; 2.10.0, 2.11.0 and 2.12.0 build on win_amd64 only)'
         type: string
         default: '2.13.0,2.14.0'
       python_versions:
@@ -37,6 +40,10 @@ on:
         description: 'packages, comma separated (flash-attn, causal-conv1d, mamba-ssm)'
         type: string
         default: 'flash-attn,causal-conv1d,mamba-ssm'
+      platforms:
+        description: 'platforms, comma separated (linux_x86_64, win_amd64, linux_aarch64, win_arm64)'
+        type: string
+        default: 'linux_x86_64,win_amd64'
       release_tag:
         description: 'release tag to publish under'
         type: string
@@ -74,6 +81,8 @@ jobs:
       count: ${{ steps.plan.outputs.count }}
       warm_matrix: ${{ steps.plan.outputs.warm_matrix }}
       warm_count: ${{ steps.plan.outputs.warm_count }}
+      gpu_matrix: ${{ steps.plan.outputs.gpu_matrix }}
+      gpu_count: ${{ steps.plan.outputs.gpu_count }}
     steps:
       - name: Harden runner (egress block)
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
@@ -102,6 +111,7 @@ jobs:
           UW_PACKAGES: ${{ inputs.packages }}
           UW_TORCH_VERSIONS: ${{ inputs.torch_versions }}
           UW_PYTHON_VERSIONS: ${{ inputs.python_versions }}
+          UW_PLATFORMS: ${{ inputs.platforms }}
         run: |
           set -euo pipefail
           # --github writes matrix= and count= into $GITHUB_OUTPUT itself. The JSON is full of
@@ -112,12 +122,15 @@ jobs:
     name: warm ${{ matrix.label }}
     needs: plan
     if: needs.plan.outputs.warm_count != '0'
-    runs-on: ubuntu-22.04
+    runs-on: ${{ matrix.runner }}
     # Best effort: the build job compiles whatever a warm job did not.
     continue-on-error: true
     timeout-minutes: 340
     permissions:
       contents: read
+    defaults:
+      run:
+        shell: bash
     strategy:
       fail-fast: false
       max-parallel: 16
@@ -128,14 +141,29 @@ jobs:
       CCACHE_BASEDIR: ${{ github.workspace }}
       CCACHE_NOHASHDIR: 'true'
       CCACHE_MAXSIZE: 20G
-      # torch reads this for the nvcc in build.ninja.
-      PYTORCH_NVCC: ccache /usr/local/cuda-13.0/bin/nvcc
+      # torch writes this into build.ninja unquoted, so the Windows value has no spaces.
+      PYTORCH_NVCC: ${{ matrix.pytorch_nvcc }}
+      # Compress every fatbin image; see NVCC_APPEND_FLAGS in prebuilt_wheels.py. The compile
+      # steps append it to NVCC_APPEND_FLAGS, which Windows already sets for _USE_MATH_DEFINES.
+      # Warm and build must agree or the merged ccache would mix both.
+      FATBIN_FLAGS: ${{ matrix.nvcc_append_flags }}
     steps:
       - name: Harden runner (audit)
-        # Audit egress because package downloads use changing endpoints.
+        # Audit egress because package downloads use changing endpoints. Its agent is Linux-only.
+        if: runner.os == 'Linux'
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
         with:
           egress-policy: audit
+
+      # Before checkout: flash-attn's cutlass submodule has paths past MAX_PATH.
+      - name: Enable long paths (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          git config --system core.longpaths true
+          New-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' `
+            -Name LongPathsEnabled -Value 1 -PropertyType DWORD -Force | Out-Null
 
       - name: Checkout Unsloth (build scripts only)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -159,6 +187,7 @@ jobs:
       # ~25 GB free on a fresh runner. These three directories are ~13 GB of preinstalled
       # toolchains this job never touches.
       - name: Free up disk space
+        if: runner.os == 'Linux'
         run: |
           set -euo pipefail
           df -h /
@@ -175,16 +204,19 @@ jobs:
       # repository uses, because an unbounded apt step does not fail, it spends the job's whole
       # budget and is reported as "cancelled" with every later step skipped.
       - name: Install the CUDA ${{ matrix.cuda_tag }} toolkit
+        if: runner.os == 'Linux'
         timeout-minutes: 25
         env:
           RETRY_ATTEMPTS: '2'
           RETRY_ATTEMPT_TIMEOUT: '600'
+          # NVIDIA's repository for server-class aarch64 (Grace, GB10) is sbsa, not the Jetson one.
+          CUDA_REPO_ARCH: ${{ matrix.platform == 'linux_aarch64' && 'sbsa' || 'x86_64' }}
         run: |
           set -euo pipefail
           keyring=cuda-keyring_1.1-1_all.deb
           curl --fail --silent --show-error --location --retry 5 --retry-delay 5 \
             -o "$keyring" \
-            "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/$keyring"
+            "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/$CUDA_REPO_ARCH/$keyring"
           sudo dpkg -i "$keyring"
           bash unsloth/.github/scripts/retry-with-apt-lock.sh sudo sh -c \
             'apt-get update && apt-get install -y --no-install-recommends cuda-toolkit-13-0'
@@ -193,6 +225,7 @@ jobs:
 
       # Cache hits require matching compiler commands and checkout paths in both jobs.
       - name: Install ccache
+        if: runner.os == 'Linux'
         timeout-minutes: 13
         env:
           RETRY_ATTEMPTS: '2'
@@ -204,10 +237,166 @@ jobs:
           ccache --version | head -1
           mkdir -p "$CCACHE_DIR"
 
+      # NVIDIA's own installer, Authenticode-checked, not a setup action: this compiler's output is
+      # what we sign. 13.0.2 = nvcc 13.0.88, the same as the Linux apt package. C:\cuda is a
+      # junction so build.ninja never sees a space.
+      - name: Install the CUDA ${{ matrix.cuda_tag }} toolkit (Windows)
+        if: matrix.platform == 'win_amd64'
+        timeout-minutes: 25
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = '13.0.2'
+          $url = "https://developer.download.nvidia.com/compute/cuda/$version/network_installers/cuda_${version}_windows_network.exe"
+          $installer = Join-Path $env:RUNNER_TEMP 'cuda_network.exe'
+          for ($attempt = 1; $attempt -le 3; $attempt++) {
+            try { Invoke-WebRequest -Uri $url -OutFile $installer -TimeoutSec 300; break }
+            catch { if ($attempt -eq 3) { throw }; Start-Sleep -Seconds 10 }
+          }
+          $signature = Get-AuthenticodeSignature -FilePath $installer
+          if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'O=NVIDIA Corporation') {
+            throw "CUDA installer signature: $($signature.Status) $($signature.SignerCertificate.Subject)"
+          }
+          Write-Host "signed by $($signature.SignerCertificate.Subject)"
+          # Names from the subpackage table in NVIDIA's CUDA 13.0 Windows installation guide.
+          $packages = @(
+            'nvcc', 'nvvm', 'crt', 'cudart', 'thrust', 'nvtx', 'cuda_profiler_api',
+            'cublas', 'cublas_dev', 'cusparse', 'cusparse_dev', 'cusolver', 'cusolver_dev',
+            'curand', 'curand_dev', 'cufft', 'cufft_dev', 'nvrtc', 'nvrtc_dev', 'nvjitlink',
+            'cuobjdump', 'nvdisasm', 'nvprune'
+          ) | ForEach-Object { "${_}_13.0" }
+          # -s: silent, only the subpackages named; -n: never reboot.
+          $process = Start-Process -FilePath $installer -ArgumentList (@('-s') + $packages + @('-n')) -Wait -PassThru -NoNewWindow
+          if ($process.ExitCode -ne 0) { throw "CUDA installer exited $($process.ExitCode)" }
+          $root = 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.0'
+          if (-not (Test-Path (Join-Path $root 'bin\nvcc.exe'))) { throw "no nvcc.exe under $root" }
+          New-Item -ItemType Junction -Path 'C:\cuda' -Target $root | Out-Null
+          'C:\cuda\bin' | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          'CUDA_HOME=C:\cuda', 'CUDA_PATH=C:\cuda' | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          & 'C:\cuda\bin\nvcc.exe' --version
+
+      # CUDA 13.4 is the first toolkit with a Windows ARM64 nvcc and what NVIDIA's torch 2.14+cu134
+      # is built with. From the redist archives: the manifest is pinned by sha256 and lists one for
+      # every archive, so nothing unhashed is unpacked. Installed straight into C:\cuda.
+      - name: Install the CUDA 13.4 toolkit (Windows ARM64)
+        if: matrix.platform == 'win_arm64'
+        timeout-minutes: 25
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python unsloth/.github/scripts/prebuilt_wheels_cuda_redist.py `
+            'https://developer.download.nvidia.com/compute/cuda/redist/redistrib_13.4.1.json' `
+            '291178934b2139727407c76f697bb0dfbac4014753a8094d7c290b0f4124a302' `
+            'windows-arm64' 'C:\cuda' `
+            cuda_nvcc libnvvm cuda_crt cuda_cudart cccl cuda_nvtx cuda_profiler_api `
+            libcublas libcusparse libcusolver libcurand libcufft cuda_nvrtc libnvjitlink `
+            cuda_cuobjdump cuda_nvdisasm cuda_nvprune
+          if ($LASTEXITCODE -ne 0) { throw "CUDA redist install exited $LASTEXITCODE" }
+          # The ARM64 archives put cudart.lib and friends in lib\arm64; torch's cpp_extension links
+          # from CUDA_HOME\lib\x64 on every Windows (measured: LNK1181 cannot open 'cudart.lib').
+          New-Item -ItemType Junction -Path 'C:\cuda\lib\x64' -Target 'C:\cuda\lib\arm64' | Out-Null
+          if (-not (Test-Path 'C:\cuda\lib\x64\cudart.lib')) { throw 'no cudart.lib under C:\cuda\lib\x64' }
+          'C:\cuda\bin' | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          'CUDA_HOME=C:\cuda', 'CUDA_PATH=C:\cuda' | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          & 'C:\cuda\bin\nvcc.exe' --version
+
+      # vcvars64 exported to later steps (no setup action). DISTUTILS_USE_SDK=1 makes setuptools use
+      # it as-is and turns on flash-attn's MSVC flags.
+      - name: Activate the MSVC ${{ matrix.platform == 'win_arm64' && 'arm64' || 'x64' }} environment (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          MSVC_COMPONENT: ${{ matrix.platform == 'win_arm64' && 'Microsoft.VisualStudio.Component.VC.Tools.ARM64' || 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64' }}
+          VCVARS: ${{ matrix.platform == 'win_arm64' && 'vcvarsarm64.bat' || 'vcvars64.bat' }}
+          NVCC_APPEND_ARM64: ${{ matrix.platform == 'win_arm64' && ' -Xcompiler=/Zc:preprocessor' || '' }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $vs = & $vswhere -latest -products * -requires $env:MSVC_COMPONENT -property installationPath
+          if (-not $vs) { throw "no Visual Studio with $env:MSVC_COMPONENT" }
+          $bat = Join-Path $vs "VC\Auxiliary\Build\$env:VCVARS"
+          $lines = cmd /c "`"$bat`" >nul 2>&1 && set"
+          if ($LASTEXITCODE -ne 0) { throw "$env:VCVARS exited $LASTEXITCODE" }
+          $before = @{}
+          Get-ChildItem env: | ForEach-Object { $before[$_.Name] = $_.Value }
+          $oldPath = $env:Path -split ';'
+          foreach ($line in $lines) {
+            if ($line -notmatch '^([^=]+)=(.*)$') { continue }
+            $name = $Matches[1]; $value = $Matches[2]
+            if ($name -ieq 'Path') {
+              # Only the entries vcvars added, through GITHUB_PATH, so C:\cuda\bin stays put.
+              foreach ($entry in ($value -split ';')) {
+                if ($entry -and $oldPath -notcontains $entry) {
+                  $entry | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+                }
+              }
+            } elseif ($before[$name] -ne $value) {
+              "$name=$value" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+            }
+          }
+          'DISTUTILS_USE_SDK=1' | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          # flash-attn's softmax.h and mamba's selective-scan kernels use M_LOG2E, which MSVC's
+          # <cmath> only defines under _USE_MATH_DEFINES (measured: `identifier "M_LOG2E" is
+          # undefined` in both). nvcc appends this to every invocation, host preprocessing included.
+          'NVCC_APPEND_FLAGS=-D_USE_MATH_DEFINES' + $env:NVCC_APPEND_ARM64 | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          # CUDA 13.4's CCCL stops with C1189 under MSVC's traditional preprocessor (measured on
+          # windows-11-arm); CL reaches the cl.exe torch's cpp_extension runs on the .cpp sources.
+          if ($env:NVCC_APPEND_ARM64) { 'CL=/Zc:preprocessor' | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8 }
+          Write-Host "Visual Studio at $vs"
+
+      # compiler_check=content: the default keys on nvcc.exe's mtime, which can differ per runner and
+      # would make every warm slice a miss in the build job.
+      - name: Install ccache (Windows)
+        if: runner.os == 'Windows'
+        timeout-minutes: 10
+        shell: pwsh
+        env:
+          WHEEL_PLATFORM: ${{ matrix.platform }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $pinned = @{
+            'ccache-4.14.1-windows-x86_64'  = '6219f3865ca59aec41ee4b678df171d5d35855ecb2b6dbbbd20690b3a68af7b4'
+            'ccache-4.14.1-windows-aarch64' = '28121851c8c2c8b76214cfc5e119d769fbc39e93d27862e4e3a556905ebd23b2'
+          }
+          $name = if ($env:WHEEL_PLATFORM -eq 'win_arm64') { 'ccache-4.14.1-windows-aarch64' } else { 'ccache-4.14.1-windows-x86_64' }
+          $zip = Join-Path $env:RUNNER_TEMP "$name.zip"
+          Invoke-WebRequest -Uri "https://github.com/ccache/ccache/releases/download/v4.14.1/$name.zip" -OutFile $zip -TimeoutSec 300
+          $hash = (Get-FileHash -Path $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($hash -ne $pinned[$name]) { throw "ccache sha256 $hash" }
+          Expand-Archive -Path $zip -DestinationPath $env:RUNNER_TEMP -Force
+          New-Item -ItemType Directory -Force -Path 'C:\ccache' | Out-Null
+          Copy-Item -Path (Join-Path $env:RUNNER_TEMP "$name\ccache.exe") -Destination 'C:\ccache\ccache.exe'
+          'C:\ccache' | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          'CCACHE_COMPILERCHECK=content' | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          New-Item -ItemType Directory -Force -Path $env:CCACHE_DIR | Out-Null
+          & 'C:\ccache\ccache.exe' --version | Select-Object -First 1
+
+      # The Linux swap file's counterpart: windows-2022 has a fixed 2.9 GB page file (18.9 GB commit
+      # limit on 16 GB RAM). NtCreatePagingFile, so no reboot.
+      - name: Add a page file (Windows)
+        if: runner.os == 'Windows'
+        uses: al-cheb/configure-pagefile-action@9b6da52fb72a3c6147c1aad2df22d8d905681adc  # v1.5
+        with:
+          minimum-size: 16GB
+          maximum-size: 32GB
+          # windows-11-arm has no D: drive.
+          disk-root: ${{ matrix.platform == 'win_arm64' && 'C:' || 'D:' }}
+
+      - name: Report memory, page file and disk (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $os = Get-CimInstance Win32_OperatingSystem
+          $cs = Get-CimInstance Win32_ComputerSystem
+          '{0:N1} GB RAM, {1:N1} GB commit limit, system-managed page file: {2}' -f ($os.TotalVisibleMemorySize / 1MB), ($os.TotalVirtualMemorySize / 1MB), $cs.AutomaticManagedPagefile
+          Get-CimInstance Win32_PageFileUsage | Format-Table Name, AllocatedBaseSize, CurrentUsage -AutoSize
+          Get-PSDrive -PSProvider FileSystem | Format-Table Name, @{n = 'FreeGB'; e = { [math]::Round($_.Free / 1GB, 1) } }, @{n = 'UsedGB'; e = { [math]::Round($_.Used / 1GB, 1) } } -AutoSize
+
       # 10 GB of swap. nvcc's peak RSS on the sm_100 flash-attn kernels is the reason MAX_JOBS is
       # 1; swap is what keeps a single job that briefly exceeds the runner's 16 GB from being
       # OOM-killed four hours in.
       - name: Set up swap space
+        if: runner.os == 'Linux'
         run: |
           set -euo pipefail
           sudo fallocate -l 10G /mnt/swapfile
@@ -216,13 +405,14 @@ jobs:
           sudo swapon /mnt/swapfile
           free -h
 
-      - name: Install torch ${{ matrix.torch }}+cu130
+      - name: Install ${{ matrix.torch_spec }}
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
           python -m pip install 'setuptools>=77' wheel ninja packaging
-          python -m pip install --no-cache-dir "torch==${{ matrix.torch }}" \
-            --index-url https://download.pytorch.org/whl/cu130
+          # TORCH_INDEX_ARGS is an allowlisted constant from prebuilt_wheels.py; word splitting intended.
+          # shellcheck disable=SC2086
+          python -m pip install --no-cache-dir "$TORCH_SPEC" $TORCH_INDEX_ARGS
           nvcc --version
           python -c "import torch; print('torch', torch.__version__, 'cuda', torch.version.cuda, 'cxx11abi', torch._C._GLIBCXX_USE_CXX11_ABI)"
           python - <<'PY'
@@ -230,14 +420,26 @@ jobs:
           want_torch = os.environ["MATRIX_TORCH"]
           if torch.__version__.split("+")[0] != want_torch:
               sys.exit(f"installed torch {torch.__version__}, wanted {want_torch}")
+          if "+" in os.environ["TORCH_SPEC"] and torch.__version__ != os.environ["TORCH_SPEC"].split("==", 1)[1]:
+              sys.exit(f"installed torch {torch.__version__}, wanted {os.environ['TORCH_SPEC']}")
+          # An emulated x64 interpreter on an ARM runner would build an x64 extension.
+          import sysconfig
+          if sysconfig.get_platform() != os.environ["PY_PLATFORM"]:
+              sys.exit(f"interpreter platform {sysconfig.get_platform()}, wanted {os.environ['PY_PLATFORM']}")
           if not torch.version.cuda.startswith("13."):
               sys.exit(f"torch reports CUDA {torch.version.cuda}, wanted 13.x")
-          # Verify the ABI matches the wheel's cxx11abiTRUE tag.
-          if not torch._C._GLIBCXX_USE_CXX11_ABI:
-              sys.exit("torch was built with _GLIBCXX_USE_CXX11_ABI=0; the cxx11abiTRUE tag would be wrong")
+          # Verify the ABI matches the wheel's cxx11abi tag, which every upstream setup.py copies
+          # from this attribute. It is True on the Windows cu130 wheels too, not just on Linux.
+          want = os.environ["MATRIX_ABI"]
+          if bool(torch._C._GLIBCXX_USE_CXX11_ABI) != (want == "TRUE"):
+              sys.exit(f"torch reports _GLIBCXX_USE_CXX11_ABI={torch._C._GLIBCXX_USE_CXX11_ABI}; the cxx11abi{want} tag would be wrong")
           PY
         env:
           MATRIX_TORCH: ${{ matrix.torch }}
+          MATRIX_ABI: ${{ matrix.abi }}
+          TORCH_SPEC: ${{ matrix.torch_spec }}
+          TORCH_INDEX_ARGS: ${{ matrix.torch_index_args }}
+          PY_PLATFORM: ${{ matrix.py_platform }}
 
       # The one source edit in this workflow, and only for mamba-ssm. Its setup.py compiles the
       # Mamba-1 selective-scan kernels at -std=c++17; torch 2.13's headers require C++20, and
@@ -247,15 +449,20 @@ jobs:
       # this step loudly rather than silently building something else.
       - name: Patch mamba-ssm for the torch 2.13 C++20 requirement
         if: matrix.patch == 'cxx20'
-        run: python3 unsloth/.github/scripts/patch_mamba_cxx20.py src/setup.py
+        run: python unsloth/.github/scripts/patch_mamba_cxx20.py src/setup.py
+
+      - name: Patch mamba-ssm for the MSVC host compiler (Windows)
+        if: runner.os == 'Windows' && matrix.package == 'mamba-ssm'
+        run: python unsloth/.github/scripts/patch_mamba_msvc.py src
 
       - name: Restore this slice's ccache from earlier runs
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: ccache
-          key: prebuilt-ccache-${{ matrix.dist }}-${{ matrix.ref }}-torch${{ matrix.torch }}-${{ matrix.python_tag }}-shard${{ matrix.shard }}of${{ matrix.shards }}-${{ github.run_id }}
+          # ccache_tag names the nvcc flags ccache cannot see, so an older cache is never restored.
+          key: prebuilt-ccache-${{ matrix.platform }}-${{ matrix.ccache_tag }}-${{ matrix.dist }}-${{ matrix.ref }}-torch${{ matrix.torch }}-${{ matrix.python_tag }}-shard${{ matrix.shard }}of${{ matrix.shards }}-${{ github.run_id }}
           restore-keys: |
-            prebuilt-ccache-${{ matrix.dist }}-${{ matrix.ref }}-torch${{ matrix.torch }}-${{ matrix.python_tag }}-shard${{ matrix.shard }}of${{ matrix.shards }}-
+            prebuilt-ccache-${{ matrix.platform }}-${{ matrix.ccache_tag }}-${{ matrix.dist }}-${{ matrix.ref }}-torch${{ matrix.torch }}-${{ matrix.python_tag }}-shard${{ matrix.shard }}of${{ matrix.shards }}-
 
       - name: Compile slice ${{ matrix.shard }} of ${{ matrix.shards }}
         working-directory: src
@@ -272,19 +479,29 @@ jobs:
             export "${pair?}"
             echo "export $pair"
           done
+          export NVCC_APPEND_FLAGS="${NVCC_APPEND_FLAGS:+$NVCC_APPEND_FLAGS }$FATBIN_FLAGS"
+          echo "NVCC_APPEND_FLAGS=$NVCC_APPEND_FLAGS"
+          if [ -z "$FATBIN_FLAGS" ]; then echo "::error::FATBIN_FLAGS is empty"; exit 1; fi
           ccache -z
-          timeout --signal=INT --kill-after=120 "$BUILD_TIMEOUT" \
-            python ../unsloth/.github/scripts/prebuilt_wheels_shard.py "$SHARD" "$SHARDS"
+          # Windows ends the whole process tree at the deadline; see prebuilt_wheels_timeout.py.
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            python ../unsloth/.github/scripts/prebuilt_wheels_timeout.py "$BUILD_TIMEOUT" -- \
+              python ../unsloth/.github/scripts/prebuilt_wheels_shard.py "$SHARD" "$SHARDS"
+          else
+            timeout --signal=INT --kill-after=120 "$BUILD_TIMEOUT" \
+              python ../unsloth/.github/scripts/prebuilt_wheels_shard.py "$SHARD" "$SHARDS"
+          fi
 
       - name: ccache stats
         if: always()
-        run: ccache -s
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then ccache -sv; else ccache -s; fi
 
       - name: Hand the slice to the build job
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
-          name: ccache-${{ matrix.dist }}-torch${{ matrix.torch_mm }}-${{ matrix.python_tag }}-shard${{ matrix.shard }}
+          name: ccache-${{ matrix.platform }}-${{ matrix.dist }}-torch${{ matrix.torch_mm }}-${{ matrix.python_tag }}-shard${{ matrix.shard }}
           path: ccache
           if-no-files-found: warn
           # ccache compresses its own entries.
@@ -299,19 +516,22 @@ jobs:
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: ccache
-          key: prebuilt-ccache-${{ matrix.dist }}-${{ matrix.ref }}-torch${{ matrix.torch }}-${{ matrix.python_tag }}-shard${{ matrix.shard }}of${{ matrix.shards }}-${{ github.run_id }}-${{ github.run_attempt }}
+          key: prebuilt-ccache-${{ matrix.platform }}-${{ matrix.ccache_tag }}-${{ matrix.dist }}-${{ matrix.ref }}-torch${{ matrix.torch }}-${{ matrix.python_tag }}-shard${{ matrix.shard }}of${{ matrix.shards }}-${{ github.run_id }}-${{ github.run_attempt }}
 
   build:
     name: ${{ matrix.label }}
     needs: [plan, warm]
     # Run even if warm was skipped or failed; compile any cache misses here.
     if: ${{ !cancelled() && needs.plan.outputs.count != '0' }}
-    # Keep the glibc floor at 2.35; pip does not check it for linux_x86_64 wheels.
-    runs-on: ubuntu-22.04
+    # Keep the Linux glibc floor at 2.35; pip does not check it for linux_x86_64 wheels.
+    runs-on: ${{ matrix.runner }}
     # Allow cleanup after the build step's timeout, below GitHub's 6-hour limit.
     timeout-minutes: 340
     permissions:
       contents: read
+    defaults:
+      run:
+        shell: bash
     strategy:
       fail-fast: false
       max-parallel: 5
@@ -321,14 +541,30 @@ jobs:
       CCACHE_BASEDIR: ${{ github.workspace }}
       CCACHE_NOHASHDIR: 'true'
       CCACHE_MAXSIZE: 20G
-      PYTORCH_NVCC: ccache /usr/local/cuda-13.0/bin/nvcc
+      # torch writes this into build.ninja unquoted, so the Windows value has no spaces.
+      PYTORCH_NVCC: ${{ matrix.pytorch_nvcc }}
+      # Compress every fatbin image; see NVCC_APPEND_FLAGS in prebuilt_wheels.py. The compile
+      # steps append it to NVCC_APPEND_FLAGS, which Windows already sets for _USE_MATH_DEFINES.
+      # Warm and build must agree or the merged ccache would mix both.
+      FATBIN_FLAGS: ${{ matrix.nvcc_append_flags }}
     steps:
       # Keep setup through the mamba patch in sync with warm.
       - name: Harden runner (audit)
-        # Audit egress because package downloads use changing endpoints.
+        # Audit egress because package downloads use changing endpoints. Its agent is Linux-only.
+        if: runner.os == 'Linux'
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
         with:
           egress-policy: audit
+
+      # Before checkout: flash-attn's cutlass submodule has paths past MAX_PATH.
+      - name: Enable long paths (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          git config --system core.longpaths true
+          New-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' `
+            -Name LongPathsEnabled -Value 1 -PropertyType DWORD -Force | Out-Null
 
       - name: Checkout Unsloth (build scripts only)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -349,6 +585,7 @@ jobs:
           persist-credentials: false
 
       - name: Free up disk space
+        if: runner.os == 'Linux'
         run: |
           set -euo pipefail
           df -h /
@@ -360,16 +597,19 @@ jobs:
           python-version: ${{ matrix.python }}
 
       - name: Install the CUDA ${{ matrix.cuda_tag }} toolkit
+        if: runner.os == 'Linux'
         timeout-minutes: 25
         env:
           RETRY_ATTEMPTS: '2'
           RETRY_ATTEMPT_TIMEOUT: '600'
+          # NVIDIA's repository for server-class aarch64 (Grace, GB10) is sbsa, not the Jetson one.
+          CUDA_REPO_ARCH: ${{ matrix.platform == 'linux_aarch64' && 'sbsa' || 'x86_64' }}
         run: |
           set -euo pipefail
           keyring=cuda-keyring_1.1-1_all.deb
           curl --fail --silent --show-error --location --retry 5 --retry-delay 5 \
             -o "$keyring" \
-            "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/$keyring"
+            "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/$CUDA_REPO_ARCH/$keyring"
           sudo dpkg -i "$keyring"
           bash unsloth/.github/scripts/retry-with-apt-lock.sh sudo sh -c \
             'apt-get update && apt-get install -y --no-install-recommends cuda-toolkit-13-0'
@@ -377,6 +617,7 @@ jobs:
           echo "CUDA_HOME=/usr/local/cuda-13.0" >> "$GITHUB_ENV"
 
       - name: Install ccache
+        if: runner.os == 'Linux'
         timeout-minutes: 13
         env:
           RETRY_ATTEMPTS: '2'
@@ -388,7 +629,163 @@ jobs:
           ccache --version | head -1
           mkdir -p "$CCACHE_DIR"
 
+      # NVIDIA's own installer, Authenticode-checked, not a setup action: this compiler's output is
+      # what we sign. 13.0.2 = nvcc 13.0.88, the same as the Linux apt package. C:\cuda is a
+      # junction so build.ninja never sees a space.
+      - name: Install the CUDA ${{ matrix.cuda_tag }} toolkit (Windows)
+        if: matrix.platform == 'win_amd64'
+        timeout-minutes: 25
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = '13.0.2'
+          $url = "https://developer.download.nvidia.com/compute/cuda/$version/network_installers/cuda_${version}_windows_network.exe"
+          $installer = Join-Path $env:RUNNER_TEMP 'cuda_network.exe'
+          for ($attempt = 1; $attempt -le 3; $attempt++) {
+            try { Invoke-WebRequest -Uri $url -OutFile $installer -TimeoutSec 300; break }
+            catch { if ($attempt -eq 3) { throw }; Start-Sleep -Seconds 10 }
+          }
+          $signature = Get-AuthenticodeSignature -FilePath $installer
+          if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'O=NVIDIA Corporation') {
+            throw "CUDA installer signature: $($signature.Status) $($signature.SignerCertificate.Subject)"
+          }
+          Write-Host "signed by $($signature.SignerCertificate.Subject)"
+          # Names from the subpackage table in NVIDIA's CUDA 13.0 Windows installation guide.
+          $packages = @(
+            'nvcc', 'nvvm', 'crt', 'cudart', 'thrust', 'nvtx', 'cuda_profiler_api',
+            'cublas', 'cublas_dev', 'cusparse', 'cusparse_dev', 'cusolver', 'cusolver_dev',
+            'curand', 'curand_dev', 'cufft', 'cufft_dev', 'nvrtc', 'nvrtc_dev', 'nvjitlink',
+            'cuobjdump', 'nvdisasm', 'nvprune'
+          ) | ForEach-Object { "${_}_13.0" }
+          # -s: silent, only the subpackages named; -n: never reboot.
+          $process = Start-Process -FilePath $installer -ArgumentList (@('-s') + $packages + @('-n')) -Wait -PassThru -NoNewWindow
+          if ($process.ExitCode -ne 0) { throw "CUDA installer exited $($process.ExitCode)" }
+          $root = 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.0'
+          if (-not (Test-Path (Join-Path $root 'bin\nvcc.exe'))) { throw "no nvcc.exe under $root" }
+          New-Item -ItemType Junction -Path 'C:\cuda' -Target $root | Out-Null
+          'C:\cuda\bin' | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          'CUDA_HOME=C:\cuda', 'CUDA_PATH=C:\cuda' | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          & 'C:\cuda\bin\nvcc.exe' --version
+
+      # CUDA 13.4 is the first toolkit with a Windows ARM64 nvcc and what NVIDIA's torch 2.14+cu134
+      # is built with. From the redist archives: the manifest is pinned by sha256 and lists one for
+      # every archive, so nothing unhashed is unpacked. Installed straight into C:\cuda.
+      - name: Install the CUDA 13.4 toolkit (Windows ARM64)
+        if: matrix.platform == 'win_arm64'
+        timeout-minutes: 25
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python unsloth/.github/scripts/prebuilt_wheels_cuda_redist.py `
+            'https://developer.download.nvidia.com/compute/cuda/redist/redistrib_13.4.1.json' `
+            '291178934b2139727407c76f697bb0dfbac4014753a8094d7c290b0f4124a302' `
+            'windows-arm64' 'C:\cuda' `
+            cuda_nvcc libnvvm cuda_crt cuda_cudart cccl cuda_nvtx cuda_profiler_api `
+            libcublas libcusparse libcusolver libcurand libcufft cuda_nvrtc libnvjitlink `
+            cuda_cuobjdump cuda_nvdisasm cuda_nvprune
+          if ($LASTEXITCODE -ne 0) { throw "CUDA redist install exited $LASTEXITCODE" }
+          # The ARM64 archives put cudart.lib and friends in lib\arm64; torch's cpp_extension links
+          # from CUDA_HOME\lib\x64 on every Windows (measured: LNK1181 cannot open 'cudart.lib').
+          New-Item -ItemType Junction -Path 'C:\cuda\lib\x64' -Target 'C:\cuda\lib\arm64' | Out-Null
+          if (-not (Test-Path 'C:\cuda\lib\x64\cudart.lib')) { throw 'no cudart.lib under C:\cuda\lib\x64' }
+          'C:\cuda\bin' | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          'CUDA_HOME=C:\cuda', 'CUDA_PATH=C:\cuda' | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          & 'C:\cuda\bin\nvcc.exe' --version
+
+      # vcvars64 exported to later steps (no setup action). DISTUTILS_USE_SDK=1 makes setuptools use
+      # it as-is and turns on flash-attn's MSVC flags.
+      - name: Activate the MSVC ${{ matrix.platform == 'win_arm64' && 'arm64' || 'x64' }} environment (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          MSVC_COMPONENT: ${{ matrix.platform == 'win_arm64' && 'Microsoft.VisualStudio.Component.VC.Tools.ARM64' || 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64' }}
+          VCVARS: ${{ matrix.platform == 'win_arm64' && 'vcvarsarm64.bat' || 'vcvars64.bat' }}
+          NVCC_APPEND_ARM64: ${{ matrix.platform == 'win_arm64' && ' -Xcompiler=/Zc:preprocessor' || '' }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $vs = & $vswhere -latest -products * -requires $env:MSVC_COMPONENT -property installationPath
+          if (-not $vs) { throw "no Visual Studio with $env:MSVC_COMPONENT" }
+          $bat = Join-Path $vs "VC\Auxiliary\Build\$env:VCVARS"
+          $lines = cmd /c "`"$bat`" >nul 2>&1 && set"
+          if ($LASTEXITCODE -ne 0) { throw "$env:VCVARS exited $LASTEXITCODE" }
+          $before = @{}
+          Get-ChildItem env: | ForEach-Object { $before[$_.Name] = $_.Value }
+          $oldPath = $env:Path -split ';'
+          foreach ($line in $lines) {
+            if ($line -notmatch '^([^=]+)=(.*)$') { continue }
+            $name = $Matches[1]; $value = $Matches[2]
+            if ($name -ieq 'Path') {
+              # Only the entries vcvars added, through GITHUB_PATH, so C:\cuda\bin stays put.
+              foreach ($entry in ($value -split ';')) {
+                if ($entry -and $oldPath -notcontains $entry) {
+                  $entry | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+                }
+              }
+            } elseif ($before[$name] -ne $value) {
+              "$name=$value" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+            }
+          }
+          'DISTUTILS_USE_SDK=1' | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          # flash-attn's softmax.h and mamba's selective-scan kernels use M_LOG2E, which MSVC's
+          # <cmath> only defines under _USE_MATH_DEFINES (measured: `identifier "M_LOG2E" is
+          # undefined` in both). nvcc appends this to every invocation, host preprocessing included.
+          'NVCC_APPEND_FLAGS=-D_USE_MATH_DEFINES' + $env:NVCC_APPEND_ARM64 | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          # CUDA 13.4's CCCL stops with C1189 under MSVC's traditional preprocessor (measured on
+          # windows-11-arm); CL reaches the cl.exe torch's cpp_extension runs on the .cpp sources.
+          if ($env:NVCC_APPEND_ARM64) { 'CL=/Zc:preprocessor' | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8 }
+          Write-Host "Visual Studio at $vs"
+
+      # compiler_check=content: the default keys on nvcc.exe's mtime, which can differ per runner and
+      # would make every warm slice a miss in the build job.
+      - name: Install ccache (Windows)
+        if: runner.os == 'Windows'
+        timeout-minutes: 10
+        shell: pwsh
+        env:
+          WHEEL_PLATFORM: ${{ matrix.platform }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $pinned = @{
+            'ccache-4.14.1-windows-x86_64'  = '6219f3865ca59aec41ee4b678df171d5d35855ecb2b6dbbbd20690b3a68af7b4'
+            'ccache-4.14.1-windows-aarch64' = '28121851c8c2c8b76214cfc5e119d769fbc39e93d27862e4e3a556905ebd23b2'
+          }
+          $name = if ($env:WHEEL_PLATFORM -eq 'win_arm64') { 'ccache-4.14.1-windows-aarch64' } else { 'ccache-4.14.1-windows-x86_64' }
+          $zip = Join-Path $env:RUNNER_TEMP "$name.zip"
+          Invoke-WebRequest -Uri "https://github.com/ccache/ccache/releases/download/v4.14.1/$name.zip" -OutFile $zip -TimeoutSec 300
+          $hash = (Get-FileHash -Path $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($hash -ne $pinned[$name]) { throw "ccache sha256 $hash" }
+          Expand-Archive -Path $zip -DestinationPath $env:RUNNER_TEMP -Force
+          New-Item -ItemType Directory -Force -Path 'C:\ccache' | Out-Null
+          Copy-Item -Path (Join-Path $env:RUNNER_TEMP "$name\ccache.exe") -Destination 'C:\ccache\ccache.exe'
+          'C:\ccache' | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          'CCACHE_COMPILERCHECK=content' | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          New-Item -ItemType Directory -Force -Path $env:CCACHE_DIR | Out-Null
+          & 'C:\ccache\ccache.exe' --version | Select-Object -First 1
+
+      # The Linux swap file's counterpart: windows-2022 has a fixed 2.9 GB page file (18.9 GB commit
+      # limit on 16 GB RAM). NtCreatePagingFile, so no reboot.
+      - name: Add a page file (Windows)
+        if: runner.os == 'Windows'
+        uses: al-cheb/configure-pagefile-action@9b6da52fb72a3c6147c1aad2df22d8d905681adc  # v1.5
+        with:
+          minimum-size: 16GB
+          maximum-size: 32GB
+          # windows-11-arm has no D: drive.
+          disk-root: ${{ matrix.platform == 'win_arm64' && 'C:' || 'D:' }}
+
+      - name: Report memory, page file and disk (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $os = Get-CimInstance Win32_OperatingSystem
+          $cs = Get-CimInstance Win32_ComputerSystem
+          '{0:N1} GB RAM, {1:N1} GB commit limit, system-managed page file: {2}' -f ($os.TotalVisibleMemorySize / 1MB), ($os.TotalVirtualMemorySize / 1MB), $cs.AutomaticManagedPagefile
+          Get-CimInstance Win32_PageFileUsage | Format-Table Name, AllocatedBaseSize, CurrentUsage -AutoSize
+          Get-PSDrive -PSProvider FileSystem | Format-Table Name, @{n = 'FreeGB'; e = { [math]::Round($_.Free / 1GB, 1) } }, @{n = 'UsedGB'; e = { [math]::Round($_.Used / 1GB, 1) } } -AutoSize
+
       - name: Set up swap space
+        if: runner.os == 'Linux'
         run: |
           set -euo pipefail
           sudo fallocate -l 10G /mnt/swapfile
@@ -397,13 +794,14 @@ jobs:
           sudo swapon /mnt/swapfile
           free -h
 
-      - name: Install torch ${{ matrix.torch }}+cu130
+      - name: Install ${{ matrix.torch_spec }}
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
           python -m pip install 'setuptools>=77' wheel ninja packaging
-          python -m pip install --no-cache-dir "torch==${{ matrix.torch }}" \
-            --index-url https://download.pytorch.org/whl/cu130
+          # TORCH_INDEX_ARGS is an allowlisted constant from prebuilt_wheels.py; word splitting intended.
+          # shellcheck disable=SC2086
+          python -m pip install --no-cache-dir "$TORCH_SPEC" $TORCH_INDEX_ARGS
           nvcc --version
           python -c "import torch; print('torch', torch.__version__, 'cuda', torch.version.cuda, 'cxx11abi', torch._C._GLIBCXX_USE_CXX11_ABI)"
           python - <<'PY'
@@ -411,24 +809,40 @@ jobs:
           want_torch = os.environ["MATRIX_TORCH"]
           if torch.__version__.split("+")[0] != want_torch:
               sys.exit(f"installed torch {torch.__version__}, wanted {want_torch}")
+          if "+" in os.environ["TORCH_SPEC"] and torch.__version__ != os.environ["TORCH_SPEC"].split("==", 1)[1]:
+              sys.exit(f"installed torch {torch.__version__}, wanted {os.environ['TORCH_SPEC']}")
+          # An emulated x64 interpreter on an ARM runner would build an x64 extension.
+          import sysconfig
+          if sysconfig.get_platform() != os.environ["PY_PLATFORM"]:
+              sys.exit(f"interpreter platform {sysconfig.get_platform()}, wanted {os.environ['PY_PLATFORM']}")
           if not torch.version.cuda.startswith("13."):
               sys.exit(f"torch reports CUDA {torch.version.cuda}, wanted 13.x")
-          # Verify the ABI matches the wheel's cxx11abiTRUE tag.
-          if not torch._C._GLIBCXX_USE_CXX11_ABI:
-              sys.exit("torch was built with _GLIBCXX_USE_CXX11_ABI=0; the cxx11abiTRUE tag would be wrong")
+          # Verify the ABI matches the wheel's cxx11abi tag, which every upstream setup.py copies
+          # from this attribute. It is True on the Windows cu130 wheels too, not just on Linux.
+          want = os.environ["MATRIX_ABI"]
+          if bool(torch._C._GLIBCXX_USE_CXX11_ABI) != (want == "TRUE"):
+              sys.exit(f"torch reports _GLIBCXX_USE_CXX11_ABI={torch._C._GLIBCXX_USE_CXX11_ABI}; the cxx11abi{want} tag would be wrong")
           PY
         env:
           MATRIX_TORCH: ${{ matrix.torch }}
+          MATRIX_ABI: ${{ matrix.abi }}
+          TORCH_SPEC: ${{ matrix.torch_spec }}
+          TORCH_INDEX_ARGS: ${{ matrix.torch_index_args }}
+          PY_PLATFORM: ${{ matrix.py_platform }}
 
       - name: Patch mamba-ssm for the torch 2.13 C++20 requirement
         if: matrix.patch == 'cxx20'
-        run: python3 unsloth/.github/scripts/patch_mamba_cxx20.py src/setup.py
+        run: python unsloth/.github/scripts/patch_mamba_cxx20.py src/setup.py
+
+      - name: Patch mamba-ssm for the MSVC host compiler (Windows)
+        if: runner.os == 'Windows' && matrix.package == 'mamba-ssm'
+        run: python unsloth/.github/scripts/patch_mamba_msvc.py src
 
       - name: Download the warm slices
         if: matrix.shards > 0
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
-          pattern: ccache-${{ matrix.dist }}-torch${{ matrix.torch_mm }}-${{ matrix.python_tag }}-shard*
+          pattern: ccache-${{ matrix.platform }}-${{ matrix.dist }}-torch${{ matrix.torch_mm }}-${{ matrix.python_tag }}-shard*
           path: ccache-slices
 
       # The slices are disjoint, so copying them over one another loses nothing.
@@ -436,10 +850,13 @@ jobs:
         if: matrix.shards > 0
         run: |
           set -euo pipefail
+          # Git Bash wants a POSIX path; CCACHE_DIR is a Windows one there.
+          dest="$CCACHE_DIR"
+          if [ "$RUNNER_OS" = "Windows" ]; then dest="$(cygpath -u "$CCACHE_DIR")"; fi
           for slice in ccache-slices/*/; do
             [ -d "$slice" ] || continue
             echo "merging $slice ($(find "$slice" -type f | wc -l) files, $(du -sh "$slice" | cut -f1))"
-            cp -a "$slice." "$CCACHE_DIR/"
+            cp -a "$slice." "$dest/"
           done
           rm -rf ccache-slices
           ccache -z
@@ -452,6 +869,7 @@ jobs:
           NVCC_THREADS: ${{ matrix.nvcc_threads }}
           BUILD_ENV: ${{ matrix.build_env }}
           BUILD_TIMEOUT: ${{ matrix.build_timeout }}
+          WHEEL_PLATFORM: ${{ matrix.platform }}
         run: |
           set -euo pipefail
           # Each entry is NAME=VALUE from the allowlisted table in prebuilt_wheels.py, so this is
@@ -461,12 +879,31 @@ jobs:
             echo "export $pair"
           done
           echo "MAX_JOBS=$MAX_JOBS NVCC_THREADS=$NVCC_THREADS timeout=$BUILD_TIMEOUT"
-          timeout --signal=INT --kill-after=120 "$BUILD_TIMEOUT" \
-            python setup.py bdist_wheel --dist-dir=dist
+          export NVCC_APPEND_FLAGS="${NVCC_APPEND_FLAGS:+$NVCC_APPEND_FLAGS }$FATBIN_FLAGS"
+          echo "NVCC_APPEND_FLAGS=$NVCC_APPEND_FLAGS"
+          if [ -z "$FATBIN_FLAGS" ]; then echo "::error::FATBIN_FLAGS is empty"; exit 1; fi
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            # Git Bash puts /usr/bin first, and its coreutils `link.exe` (hard links) shadows MSVC's
+            # linker: setuptools found it on PATH and every object compiled, then the final link
+            # failed. MSVC's own bin goes back in front for this step.
+            host="Hostx64\\x64"
+            if [ "$WHEEL_PLATFORM" = "win_arm64" ]; then host="Hostarm64\\arm64"; fi
+            PATH="$(cygpath -u "${VCToolsInstallDir}bin\\${host}"):$PATH"
+            export PATH
+            link_exe="$(command -v link.exe)"
+            echo "linker: $link_exe"
+            case "$link_exe" in */usr/bin/*) echo "::error::GNU link.exe still first on PATH"; exit 1 ;; esac
+            python ../unsloth/.github/scripts/prebuilt_wheels_timeout.py "$BUILD_TIMEOUT" -- \
+              python setup.py bdist_wheel --dist-dir=dist
+          else
+            timeout --signal=INT --kill-after=120 "$BUILD_TIMEOUT" \
+              python setup.py bdist_wheel --dist-dir=dist
+          fi
 
       - name: ccache stats
         if: always()
-        run: ccache -s
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then ccache -sv; else ccache -s; fi
 
       # Upstream's own naming, reproduced rather than approximated: the local version segment is
       # what stops pip installing a torch 2.13 wheel into a torch 2.14 environment. Asserting the
@@ -478,17 +915,28 @@ jobs:
           DIST: ${{ matrix.dist }}
           VERSION: ${{ matrix.version }}
           PYTHON_TAG: ${{ matrix.python_tag }}
+          # Not PLATFORM: vcvars exports Platform=x64 and Windows env names are case-insensitive.
+          WHEEL_PLATFORM: ${{ matrix.platform }}
           WHEEL_NAME: ${{ matrix.wheel_name }}
         run: |
           set -euo pipefail
           built="$(ls dist/*.whl)"
-          expected_raw="dist/${DIST}-${VERSION}-${PYTHON_TAG}-${PYTHON_TAG}-linux_x86_64.whl"
+          expected_raw="dist/${DIST}-${VERSION}-${PYTHON_TAG}-${PYTHON_TAG}-${WHEEL_PLATFORM}.whl"
           if [ "$built" != "$expected_raw" ]; then
             echo "::error::built $built, expected $expected_raw before renaming"
             exit 1
           fi
           mv "$built" "dist/${WHEEL_NAME}"
           ls -l dist/
+
+      # An uncompressed fatbin still imports, so only its size gives it away (1.49 GB for
+      # flash-attn instead of ~280 MB). Gate it before anything is signed or published.
+      - name: Check the extension size
+        working-directory: src
+        env:
+          PACKAGE: ${{ matrix.package }}
+          WHEEL_NAME: ${{ matrix.wheel_name }}
+        run: python ../unsloth/.github/scripts/prebuilt_wheels.py size-gate --package "$PACKAGE" "dist/${WHEEL_NAME}"
 
       # The whole reason this release exists, so it is a gate and not a report. A fresh venv with
       # the matching torch, the wheel installed from the file, and the compiled extension
@@ -504,12 +952,29 @@ jobs:
           WHEEL_NAME: ${{ matrix.wheel_name }}
           IMPORT_NAMES: ${{ matrix.import_names }}
           MATRIX_TORCH: ${{ matrix.torch }}
+          SMOKE_EXCLUDE: ${{ matrix.smoke_exclude }}
+          SMOKE_EXTRA: ${{ matrix.smoke_extra }}
+          TORCH_SPEC: ${{ matrix.torch_spec }}
+          TORCH_INDEX_ARGS: ${{ matrix.torch_index_args }}
+          WHEEL_PLATFORM: ${{ matrix.platform }}
         run: |
           set -euo pipefail
-          python -m venv "$RUNNER_TEMP/smoke"
-          "$RUNNER_TEMP/smoke/bin/python" -m pip install --quiet --upgrade pip
-          "$RUNNER_TEMP/smoke/bin/python" -m pip install --quiet --no-cache-dir \
-            "torch==${MATRIX_TORCH}" --index-url https://download.pytorch.org/whl/cu130
+          smoke="$RUNNER_TEMP/smoke"
+          py="$smoke/bin/python"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            smoke="$(cygpath -u "$RUNNER_TEMP")/smoke"
+            py="$smoke/Scripts/python.exe"
+            # A user's machine has no toolkit, so neither does this check: the extension has to
+            # resolve every DLL from torch's own bundled CUDA runtime, not from C:\cuda\bin.
+            PATH="$(printf '%s' "$PATH" | tr ':' '\n' | grep -v -i -E '^/c/cuda(/|$)' | paste -sd: -)"
+            export PATH
+            unset CUDA_HOME CUDA_PATH
+          fi
+          python unsloth/.github/scripts/prebuilt_wheels_check_binaries.py "src/dist/${WHEEL_NAME}" "$WHEEL_PLATFORM"
+          python -m venv "$smoke"
+          "$py" -m pip install --quiet --upgrade pip
+          # shellcheck disable=SC2086
+          "$py" -m pip install --quiet --no-cache-dir "$TORCH_SPEC" $TORCH_INDEX_ARGS
           # The wheel is installed with --no-deps so nothing can drag a second torch into the
           # venv; every other runtime dependency the package declares is installed first, read
           # from the wheel's own metadata rather than from a hand-kept list. The hand-kept list
@@ -519,18 +984,24 @@ jobs:
           # to compile from source because no matching wheel exists on PyPI. The constraints
           # file pins torch and triton to what is already in the venv, so a dependency that
           # wants a different one fails the step loudly instead of swapping torch under us.
-          "$RUNNER_TEMP/smoke/bin/python" -m pip freeze | grep -E '^(torch|triton)==' \
+          #
+          # On Windows the cell also names what to leave out and what to add instead
+          # (SMOKE_EXCLUDE / SMOKE_EXTRA): mamba-ssm's triton, tilelang, tvm-ffi and quack have
+          # no Windows wheels at those versions, and triton-windows, pinned to the release this
+          # torch pairs with, is what provides `import triton` there.
+          "$py" -m pip freeze | grep -E '^(torch|triton)==' \
             > "$RUNNER_TEMP/smoke-constraints.txt"
           # tvm-ffi 0.1.12 with tilelang 0.1.8 breaks mamba_ssm imports (import test only).
           echo 'apache-tvm-ffi==0.1.11' >> "$RUNNER_TEMP/smoke-constraints.txt"
           cat "$RUNNER_TEMP/smoke-constraints.txt"
-          "$RUNNER_TEMP/smoke/bin/python" - "src/dist/${WHEEL_NAME}" "$RUNNER_TEMP/smoke-constraints.txt" <<'PY'
-          import email.parser, pathlib, re, subprocess, sys, zipfile
+          "$py" - "src/dist/${WHEEL_NAME}" "$RUNNER_TEMP/smoke-constraints.txt" <<'PY'
+          import email.parser, os, pathlib, re, subprocess, sys, zipfile
           wheel = pathlib.Path(sys.argv[1])
           with zipfile.ZipFile(wheel) as zf:
               meta = next(n for n in zf.namelist() if n.endswith(".dist-info/METADATA"))
               headers = email.parser.Parser().parsestr(zf.read(meta).decode())
           excluded = {"torch", "flash-attn", "flash_attn", "causal-conv1d", "causal_conv1d", "mamba-ssm", "mamba_ssm"}
+          excluded |= set(os.environ.get("SMOKE_EXCLUDE", "").lower().split())
           deps = []
           for req in headers.get_all("Requires-Dist") or []:
               if ";" in req:  # extras and environment markers: not runtime requirements
@@ -540,24 +1011,25 @@ jobs:
                   continue
               deps.append(req.strip())
           deps += ["numpy"]  # torch wants numpy for its tensor conversions and only warns without it
+          deps += os.environ.get("SMOKE_EXTRA", "").split()
           print("runtime dependencies from METADATA:", deps)
           subprocess.check_call([sys.executable, "-m", "pip", "install", "--quiet", "--constraint", sys.argv[2], *deps])
           PY
-          "$RUNNER_TEMP/smoke/bin/python" -m pip install --quiet --no-deps \
+          "$py" -m pip install --quiet --no-deps \
             "src/dist/${WHEEL_NAME}"
           for name in $IMPORT_NAMES; do
             echo "importing $name"
-            "$RUNNER_TEMP/smoke/bin/python" -c "
+            "$py" -c "
           import importlib, sys, torch
           module = importlib.import_module('$name')
           print('  ok:', '$name', getattr(module, '__version__', ''), getattr(module, '__file__', ''))
           "
           done
-          "$RUNNER_TEMP/smoke/bin/python" -m pip list | grep -Ei 'torch|flash|mamba|causal'
+          "$py" -m pip list | grep -Ei 'torch|flash|mamba|causal|triton'
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
-          name: wheel-${{ matrix.dist }}-torch${{ matrix.torch_mm }}-${{ matrix.python_tag }}
+          name: wheel-${{ matrix.platform }}-${{ matrix.dist }}-torch${{ matrix.torch_mm }}-${{ matrix.python_tag }}
           path: src/dist/${{ matrix.wheel_name }}
           if-no-files-found: error
           # Already a compressed zip. Recompressing 500 MB of it buys nothing and costs minutes.
@@ -571,8 +1043,8 @@ jobs:
   gpu-smoke:
     name: GPU forward pass
     needs: [plan, build]
-    # A skipped warm (no flash-attn) would otherwise skip every job downstream of build.
-    if: ${{ !cancelled() && inputs.gpu_smoke && needs.build.result == 'success' }}
+    # Linux cells only (gpu_matrix); an empty matrix is an error, so skip when none were built.
+    if: ${{ !cancelled() && inputs.gpu_smoke && needs.build.result == 'success' && needs.plan.outputs.gpu_count != '0' }}
     runs-on: [self-hosted, gpu]
     timeout-minutes: 90
     permissions:
@@ -580,7 +1052,7 @@ jobs:
     strategy:
       fail-fast: false
       max-parallel: 1
-      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+      matrix: ${{ fromJSON(needs.plan.outputs.gpu_matrix) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -591,7 +1063,7 @@ jobs:
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
-          name: wheel-${{ matrix.dist }}-torch${{ matrix.torch_mm }}-${{ matrix.python_tag }}
+          name: wheel-${{ matrix.platform }}-${{ matrix.dist }}-torch${{ matrix.torch_mm }}-${{ matrix.python_tag }}
           path: dist
 
       - name: Forward pass on the real card
@@ -751,9 +1223,8 @@ jobs:
           name: prebuilt-cuda-wheels-signed
           path: wheels
 
-      # Created once and then added to. A run for torch 2.14 must not disturb the torch 2.13
-      # wheels already on the tag, so: create if absent, upload with --clobber, and regenerate
-      # the notes from what the release holds AFTERWARDS rather than from what this run built.
+      # Created once, then added to: a run for one torch minor or platform must not disturb the
+      # rest. This run's SHA256SUMS is the attestation subject only; the release's is rebuilt below.
       #
       # --latest=false on both paths. This tag is a wheelhouse, not a product release, and the
       # repository's latest release is what the installers and the README resolve to.
@@ -780,13 +1251,11 @@ jobs:
             gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --title "$TITLE" --latest=false --draft="$DRAFT"
           fi
           gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber \
-            wheels/*.whl wheels/*.sigstore.json wheels/SHA256SUMS
+            wheels/*.whl wheels/*.sigstore.json
 
-      # Regenerated from the release's OWN assets, using the digest GitHub reports per asset
-      # rather than the SHA256SUMS this run uploaded. Those agree when nothing went wrong, and
-      # when they disagree the table should describe what a user will actually download. It also
-      # makes the notes correct after a second run that only added half the matrix.
-      - name: Regenerate the release notes from the published assets
+      # From the release's own assets (GitHub's per-asset digest, else download and hash), so a
+      # one-platform publish cannot drop the other platform's lines.
+      - name: Regenerate SHA256SUMS and the release notes from the published assets
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.release_tag }}
@@ -795,10 +1264,22 @@ jobs:
           set -euo pipefail
           # Listed rather than looked up by tag: a draft release has no tag object yet.
           gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
-            --jq '.[] | select(.tag_name == env.TAG) | .assets[] | select(.name | endswith(".whl")) | "\(.digest // "sha256:unknown" | sub("^sha256:"; ""))  \(.name)"' \
-            > published.txt
+            --jq '.[] | select(.tag_name == env.TAG) | .assets[] | select(.name | endswith(".whl")) | "\(.digest // "-" | sub("^sha256:"; "")) \(.id) \(.name)"' \
+            > assets.txt
+          : > published.txt
+          while read -r digest id name; do
+            if [ "$digest" = "-" ]; then
+              gh api -H "Accept: application/octet-stream" \
+                "repos/$GITHUB_REPOSITORY/releases/assets/$id" > asset.bin
+              digest="$(sha256sum asset.bin | cut -d' ' -f1)"
+              rm -f asset.bin
+            fi
+            printf '%s  %s\n' "$digest" "$name" >> published.txt
+          done < assets.txt
           sort -k2 -o published.txt published.txt
           cat published.txt
+          python3 .github/scripts/prebuilt_wheels.py sums < published.txt > SHA256SUMS
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber SHA256SUMS
           python3 .github/scripts/prebuilt_wheels.py notes \
             --tag "$TAG" --repo "$GITHUB_REPOSITORY" < published.txt > notes.md
           gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file notes.md --latest=false --draft="$DRAFT"

@@ -3,28 +3,35 @@
 
 import { authFetch } from "@/features/auth";
 import { apiUrl } from "@/lib/api-base";
+import type { PageRequest } from "./frame-message";
 
 export type BrowserPage =
   | {
       kind: "html";
       url: string;
       base: string;
+      /** The page declared its <base>, so it stays put when the page's router moves. */
+      ownBase?: boolean;
+      /** Its site sent Access-Control-Allow-Origin * or null, so the sandbox reads its requests itself. */
+      anyOrigin?: boolean;
       html: string;
       refresh: { delay: number; url: string } | null;
     }
-  | { kind: "raw"; url: string; blob: Blob; contentType: string; /** The server's download name. */ fileName?: string };
+  | { kind: "raw"; url: string; blob: Blob; contentType: string; /** the server's download name. */ fileName?: string };
 
 export type BrowserRequest = {
   url: string;
   method?: "GET" | "POST";
   body?: string;
-  /** Refuse bodies past this size (favicons); the backend's own cap otherwise. */
+  /** refuse bodies past this size (favicons); otherwise use the backend cap. */
   maxBytes?: number;
+  /** show the site's HTTP error page; tab loads only. */
+  errorPage?: boolean;
 };
 
 let annotateCode: Promise<string> | null = null;
 
-/** The page's annotate code (`_ANNOTATE_JS`), fetched on first use and kept; a failure tries again next time. */
+/** the page annotate code (`_ANNOTATE_JS`), cached after success so failed fetches can retry. */
 export function annotateScript(): Promise<string> {
   annotateCode ??= authFetch("/api/browser/annotate.js")
     .then((response) => {
@@ -47,7 +54,7 @@ export class BrowserFetchError extends Error {
   }
 }
 
-/** Fetch a page via the backend, which can load sites that refuse framing. */
+/** fetch through the backend for sites that refuse framing. */
 export async function fetchBrowserPage(request: BrowserRequest, signal: AbortSignal): Promise<BrowserPage> {
   const response = await authFetch("/api/browser/fetch", {
     method: "POST",
@@ -57,6 +64,7 @@ export async function fetchBrowserPage(request: BrowserRequest, signal: AbortSig
       method: request.method ?? "GET",
       body: request.body ?? null,
       max_bytes: request.maxBytes ?? null,
+      error_page: request.errorPage ?? false,
     }),
     signal,
   });
@@ -87,6 +95,53 @@ export async function fetchBrowserPage(request: BrowserRequest, signal: AbortSig
     contentType: response.headers.get("Content-Type") ?? blob.type,
     fileName,
   };
+}
+
+export type PageResponse = {
+  status: number;
+  statusText: string;
+  url: string;
+  headers: Array<[string, string]>;
+  body: ArrayBuffer;
+  /** A redirect the request said to stop at ("manual"): the page gets an opaque redirect. */
+  opaqueRedirect?: boolean;
+  redirected?: boolean;
+  /** The chain went through another site, so it reads as a CORS response. */
+  cors?: boolean;
+};
+
+function toBase64(bytes: Uint8Array): string {
+  let binary = "";
+  for (let at = 0; at < bytes.length; at += 0x8000) binary += String.fromCharCode(...bytes.subarray(at, at + 0x8000));
+  return btoa(binary);
+}
+
+function fromBase64(text: string): ArrayBuffer {
+  const binary = atob(text);
+  const bytes = new Uint8Array(binary.length);
+  for (let at = 0; at < binary.length; at++) bytes[at] = binary.charCodeAt(at);
+  return bytes.buffer;
+}
+
+/** A page's request to its own site, made by the backend for the page at `page`; throws when it fails. */
+export async function requestForPage(page: string, request: PageRequest, signal: AbortSignal): Promise<PageResponse> {
+  const response = await authFetch("/api/browser/request", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      page,
+      url: request.url,
+      method: request.method,
+      headers: request.headers,
+      redirect: request.redirect,
+      integrity: request.integrity,
+      body: request.body ? toBase64(new Uint8Array(request.body)) : null,
+    }),
+    signal,
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  const answer = (await response.json()) as Omit<PageResponse, "body"> & { body: string };
+  return { ...answer, body: fromBase64(answer.body) };
 }
 
 export function browserFrameUrl(loadId: string): string {

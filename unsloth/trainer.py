@@ -33,7 +33,7 @@ from unsloth.utils import (
     enable_padding_free_metadata,
     enable_sample_packing,
 )
-from unsloth.utils.packing import patch_hybrid_linear_attention_varlen
+from unsloth.utils.packing import _stateful_mixer_kind, patch_hybrid_linear_attention_varlen
 from unsloth_zoo.training_utils import (
     unsloth_train as _unsloth_train,
 )
@@ -66,13 +66,51 @@ class UnslothVisionDataCollator(_UnslothVisionDataCollatorBase):
     of silently training on empty video tensors (issue #5085).
     """
 
-    __slots__ = ("_checked_video_paths",)
+    __slots__ = ("_checked_video_paths", "_padding_free", "_deferring_check")
 
-    def __init__(self, *args, **kwargs):
+    def __init__(
+        self,
+        *args,
+        padding_free = False,
+        **kwargs,
+    ):
         super().__init__(*args, **kwargs)
         self._checked_video_paths = set()
+        self._padding_free = bool(padding_free)
+        if self._padding_free:
+            from unsloth.utils.mm_packing import prepare_packed_multimodal_model
+            prepare_packed_multimodal_model(args[0] if args else kwargs.get("model"))
+
+    @property
+    def padding_free(self):
+        return getattr(self, "_padding_free", False)
 
     def __call__(self, examples):
+        if getattr(self, "_padding_free", False):
+            from unsloth.utils.mm_packing import pack_multimodal_documents
+
+            # Collate one document at a time, but judge supervision over the whole batch as the base does.
+            self._deferring_check = True
+            try:
+                docs = [self._collate_unpacked([example]) for example in examples]
+            finally:
+                self._deferring_check = False
+            if self.train_on_responses_only and hasattr(
+                _UnslothVisionDataCollatorBase, "_check_supervised"
+            ):
+                self._check_supervised(*_stack_rows(docs))
+            return pack_multimodal_documents(docs, ignore_index = self.ignore_index)
+        return self._collate_unpacked(examples)
+
+    def _check_supervised(
+        self,
+        labels,
+        attention_mask = None,
+    ):
+        if not getattr(self, "_deferring_check", False):
+            return super()._check_supervised(labels, attention_mask)
+
+    def _collate_unpacked(self, examples):
         formatting_func = self.formatting_func
         if formatting_func is not None:
             examples = [formatting_func(example) for example in examples]
@@ -90,6 +128,58 @@ class UnslothVisionDataCollator(_UnslothVisionDataCollatorBase):
         view = copy.copy(self)
         view.formatting_func = None
         return super(UnslothVisionDataCollator, view).__call__(examples)
+
+
+def _stack_rows(docs):
+    """Per-document labels / attention masks as one right-padded batch."""
+    import torch
+
+    width = max(doc["labels"].shape[-1] for doc in docs)
+    labels = torch.full((len(docs), width), -100, dtype = docs[0]["labels"].dtype)
+    attention_mask = torch.zeros((len(docs), width), dtype = torch.long)
+    for row, doc in enumerate(docs):
+        n = doc["labels"].shape[-1]
+        labels[row, :n] = doc["labels"][0].cpu()
+        mask = doc.get("attention_mask")
+        attention_mask[row, :n] = mask[0].cpu() if torch.is_tensor(mask) else 1
+    return labels, attention_mask
+
+
+def _collator_packing_conflict(
+    trainer,
+    wants_eval_logits,
+    forward_rejects_packing = False,
+):
+    """Why a packing collator must fall back to padded rows, else None (the args-level gates miss it)."""
+    if forward_rejects_packing:
+        return "the model's forward() does not accept packed_seq_lengths"
+    if wants_eval_logits:
+        return "evaluation needs one prediction row per example"
+    parallelism_config = getattr(getattr(trainer, "accelerator", None), "parallelism_config", None)
+    if getattr(parallelism_config, "cp_enabled", False):
+        return "context parallelism drops the per-document attention mask"
+    return None
+
+
+def _unpacked_for_evaluation(trainer, collator):
+    """Pack training batches only: evaluation counts examples (and weights eval_loss) by input_ids.shape[0].
+    A DataLoader captures its collate_fn when built, so build eval / test ones from an unpacked copy."""
+    unpacked = copy.copy(collator)
+    unpacked._padding_free = False
+
+    def unpack(original):
+        @wraps(original)
+        def get_dataloader(*args, **kwargs):
+            packed, trainer.data_collator = trainer.data_collator, unpacked
+            try:
+                return original(*args, **kwargs)
+            finally:
+                trainer.data_collator = packed
+
+        return get_dataloader
+
+    trainer.get_eval_dataloader = unpack(trainer.get_eval_dataloader)
+    trainer.get_test_dataloader = unpack(trainer.get_test_dataloader)
 
 
 _AUTO_PADDING_FREE_ENV_DISABLED = os.environ.get(
@@ -162,6 +252,18 @@ def _bound_splits(original_init, args, kwargs):
     except Exception:
         return kwargs.get("train_dataset"), kwargs.get("eval_dataset")
     return bound.arguments.get("train_dataset"), bound.arguments.get("eval_dataset")
+
+
+def _wants_eval_logits(original_init, args, kwargs) -> bool:
+    """compute_metrics / preprocess_logits_for_metrics set UNSLOTH_RETURN_LOGITS, but only inside the
+    wrapped __init__, after the padding-free decision: read them here so they block it as the flag does."""
+    try:
+        bound = inspect.signature(original_init).bind_partial(None, *args, **kwargs).arguments
+    except Exception:
+        bound = kwargs
+    return any(
+        bound.get(name) is not None for name in ("compute_metrics", "preprocess_logits_for_metrics")
+    )
 
 
 def _cap_is_enforceable_without_padding_free(config, train, evals) -> bool:
@@ -278,6 +380,157 @@ def _is_vision_eval_dataset(dataset, *, unknown_is_vision = False) -> bool:
     return _is_vision_dataset(dataset, unknown_is_vision = unknown_is_vision)
 
 
+_MULTIMODAL_DATASET_KEYS = _VISION_DATASET_KEYS | frozenset(
+    {
+        "audio",
+        "audios",
+        "audio_values",
+        "input_features",
+        "input_features_mask",
+        "pixel_values_images",
+    }
+)
+_MULTIMODAL_FEATURE_TYPES = ("Image", "Audio", "Video", "Pdf")
+# Media-named keys (image_path, audio_url, ...) may be loaded by the processor even as strings.
+_MEDIA_NAME_PARTS = ("image", "audio", "video", "pixel", "input_values", "input_features")
+
+
+def _is_media_name(name) -> bool:
+    if not isinstance(name, str):
+        return False
+    lowered = name.lower()
+    return lowered in _MULTIMODAL_DATASET_KEYS or any(part in lowered for part in _MEDIA_NAME_PARTS)
+
+
+def _features_have_media(features) -> bool:
+    stack = [(features, False)]
+    seen = 0
+    while stack:
+        node, nested = stack.pop()
+        seen += 1
+        if seen > 10_000:
+            return True  # pathological schema: assume media rather than guess
+        if type(node).__name__ in _MULTIMODAL_FEATURE_TYPES:
+            return True
+        if isinstance(node, dict):
+            if any(_is_media_name(key) for key in node):
+                return True
+            # Only {"type", "text"} content parts are provably text.
+            if nested and "type" in node and set(node) - {"type", "text"}:
+                return True
+            stack.extend((value, True) for value in node.values())
+        elif isinstance(node, (list, tuple)):
+            stack.extend((value, True) for value in node)
+        else:
+            inner = getattr(node, "feature", None)  # Sequence / List / LargeList
+            if inner is not None:
+                stack.append((inner, True))
+    return False
+
+
+def _is_text_only_dataset(dataset) -> bool:
+    """Positively text-only: unknown schemas (lists, feature-less streams) count as media."""
+    if dataset is None:
+        return False
+    column_names = getattr(dataset, "column_names", None)
+    if column_names is None:
+        return False
+    if any(_is_media_name(name) for name in column_names):
+        return False
+    # with_transform / set_transform rows can carry images the stored columns do not show.
+    if (getattr(dataset, "format", None) or {}).get("type") == "custom":
+        return False
+    features = getattr(dataset, "features", None)
+    if features is None:
+        # Streaming datasets lack types, so embedded images cannot be ruled out.
+        return False
+    return not _features_have_media(features)
+
+
+def _is_text_only_eval_dataset(dataset) -> bool:
+    if dataset is None:
+        return True
+    if isinstance(dataset, dict):
+        return all(_is_text_only_dataset(split) for split in dataset.values())
+    return _is_text_only_dataset(dataset)
+
+
+def _uses_multimodal_rope(model_config) -> bool:
+    """mRoPE models build a packed mask only from 4-row position_ids; 2D ids leak across docs."""
+    if model_config is None:
+        return True  # unknown: assume the worst
+    try:
+        stack = [model_config.to_dict()]
+    except Exception:
+        return True
+    seen = 0
+    while stack:
+        node = stack.pop()
+        seen += 1
+        if seen > 10_000:
+            return True
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key in ("mrope_section", "mrope_interleaved"):
+                    return True
+                if key in ("rope_type", "type") and value == "mrope":
+                    return True
+                if isinstance(value, (dict, list, tuple)):
+                    stack.append(value)
+        elif isinstance(node, (list, tuple)):
+            stack.extend(x for x in node if isinstance(x, (dict, list, tuple)))
+    return False
+
+
+# mRoPE families whose text model expands 2D position_ids into the text row (transformers 5.2+),
+# so packed text rows get the per-document mask, exactly as with processing_class=processor.tokenizer.
+_PROCESSOR_TEXT_PACKING_MROPE_MODELS = frozenset({"qwen3_5", "qwen3_5_moe"})
+
+_PROCESSOR_TEXT_PACKING_MODELS = (
+    frozenset(
+        {"gemma3", "gemma3_text", "gemma4", "gemma4_text", "gemma4_unified", "gemma4_unified_text"}
+    )
+    | _PROCESSOR_TEXT_PACKING_MROPE_MODELS
+)
+
+
+def _processor_text_only(
+    processing_class, data_collator, train_dataset, eval_dataset, model_config
+) -> bool:
+    """A processor on text-only rows tokenizes like its tokenizer, so packing is safe."""
+    if os.environ.get("UNSLOTH_PROCESSOR_TEXT_PACKING", "1").lower() in ("0", "false", "no", "off"):
+        return False
+    # Only families whose packed text rows are verified to equal each document alone.
+    if getattr(model_config, "model_type", None) not in _PROCESSOR_TEXT_PACKING_MODELS:
+        return False
+    # TRL < 1.10 refuses packing / padding-free for any processor; skip a doomed __init__.
+    if Version(trl.__version__) < Version("1.10.0"):
+        return False
+    if data_collator is not None:
+        return False
+    if getattr(
+        model_config, "model_type", None
+    ) not in _PROCESSOR_TEXT_PACKING_MROPE_MODELS and _uses_multimodal_rope(model_config):
+        return False
+    if getattr(processing_class, "tokenizer", None) is None:
+        return False
+    return _is_text_only_dataset(train_dataset) and _is_text_only_eval_dataset(eval_dataset)
+
+
+# TRL < 1.10 raises the first two for any processor; 1.10+ the last two when a sample holds images.
+_TRL_VLM_PACKING_REJECTIONS = (
+    "packing is not supported for vision-language models",
+    "padding-free training is yet not supported for vision-language models",
+    "packing is not supported for vision datasets",
+    "padding-free training is yet not supported for vision datasets",
+)
+
+
+def _is_trl_vlm_packing_rejection(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return any(msg in message for msg in _TRL_VLM_PACKING_REJECTIONS)
+
+
 _HYBRID_CONFIG_MARKERS = (
     "linear_conv_kernel_dim",
     "linear_key_head_dim",
@@ -335,7 +588,7 @@ def _attribute_path(obj, path):
     return obj
 
 
-def _forward_accepts_packing_kwargs(model) -> bool:
+def _forward_accepts_packing_kwargs(model, name = "packed_seq_lengths") -> bool:
     """Can this model's forward be handed the packing metadata at all?
 
     Padding-free passes `packed_seq_lengths` down, and a forward naming neither it
@@ -394,10 +647,10 @@ def _forward_accepts_packing_kwargs(model) -> bool:
             break
         target = unwrapped
 
-    return _forward_signature_accepts_packing(getattr(target, "forward", None))
+    return _forward_signature_accepts_packing(getattr(target, "forward", None), name)
 
 
-def _forward_signature_accepts_packing(forward) -> bool:
+def _forward_signature_accepts_packing(forward, name = "packed_seq_lengths") -> bool:
     """The signature question alone, so a class can be asked it as well as an instance.
 
     Shared, not duplicated: a disagreement would turn padding-free on for one
@@ -411,7 +664,7 @@ def _forward_signature_accepts_packing(forward) -> bool:
         return True
     if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values()):
         return True
-    return "packed_seq_lengths" in parameters
+    return name in parameters
 
 
 def _resolve_string_model_class(model_name, model_config, config_arg):
@@ -465,11 +718,8 @@ def _resolve_string_model_class(model_name, model_config, config_arg):
     # explicit `model_init_kwargs["trust_remote_code"] = None` keeps its falsy meaning.
     # Disagreeing with that function would execute a module under a grant the config
     # load itself did not accept.
+    trust_remote_code = _string_model_trust_remote_code(config_arg)
     init_kwargs = getattr(config_arg, "model_init_kwargs", None) or {}
-    if "trust_remote_code" in init_kwargs:
-        trust_remote_code = init_kwargs["trust_remote_code"]
-    else:
-        trust_remote_code = getattr(config_arg, "trust_remote_code", None)
 
     auto_map = getattr(model_config, "auto_map", None) or {}
     if not trust_remote_code or not isinstance(auto_map, dict):
@@ -508,6 +758,13 @@ def _resolve_string_model_class(model_name, model_config, config_arg):
     return None
 
 
+def _string_model_trust_remote_code(config_arg):
+    init_kwargs = getattr(config_arg, "model_init_kwargs", None) or {}
+    if "trust_remote_code" in init_kwargs:
+        return init_kwargs["trust_remote_code"]
+    return getattr(config_arg, "trust_remote_code", None)
+
+
 def _is_hybrid_linear_attention_model(model) -> bool:
     """Detect models mixing linear-attention / state-space mixers (gated-delta,
     Mamba-style) with a causal conv1d, e.g. Qwen3.5 / Qwen3-Next. Packing and
@@ -532,27 +789,34 @@ def _is_hybrid_linear_attention_model(model) -> bool:
         if any(hasattr(config, marker) for marker in _HYBRID_CONFIG_MARKERS):
             return True
 
-    # Module-level: a mixer carrying a recurrent gated-delta op plus a conv1d.
-    named_modules = getattr(model, "named_modules", None)
-    if named_modules is None:
-        return False
-    seen = set()
-    for _, module in named_modules():
-        if id(module) in seen:
-            continue
-        seen.add(id(module))
-        cls = type(module).__name__
-        if not (
-            cls.endswith("GatedDeltaNet") or "LinearAttention" in cls or cls.endswith("Mamba2Mixer")
-        ):
-            continue
-        has_recurrent = any(
-            hasattr(module, attr)
-            for attr in ("chunk_gated_delta_rule", "recurrent_gated_delta_rule", "A_log")
+    # Module-level: any recurrent / causal-conv mixer, whether or not the varlen shim can serve it.
+    modules = getattr(model, "modules", None)
+    if modules is None:
+        return _config_has_stateful_mixer(
+            getattr(model, "config", None),
+            trust_remote_code = bool(getattr(model, "trust_remote_code", False)),
         )
-        if has_recurrent and hasattr(module, "conv1d"):
-            return True
-    return False
+    return any(_stateful_mixer_kind(module) is not None for module in modules())
+
+
+def _config_has_stateful_mixer(config, trust_remote_code = False) -> bool:
+    # A string model= only has its config here: build it on the meta device and classify its modules.
+    if config is None or not hasattr(config, "model_type"):
+        return False
+    try:
+        import torch
+        from transformers import AutoModel, AutoModelForCausalLM
+        with torch.device("meta"):
+            try:
+                model = AutoModelForCausalLM.from_config(
+                    config, trust_remote_code = trust_remote_code
+                )
+            except Exception:
+                model = AutoModel.from_config(config, trust_remote_code = trust_remote_code)
+    except Exception:
+        # Unclassifiable remote code may hide a recurrent mixer: fail closed.
+        return bool(trust_remote_code and getattr(config, "auto_map", None))
+    return any(_stateful_mixer_kind(module) is not None for module in model.modules())
 
 
 def _resolve_string_model_config(model_name, config_arg):
@@ -665,12 +929,20 @@ class UnslothTrainingArguments(TrainingArguments):
         embedding_learning_rate: float = None,
         q_galore_config: Optional[QGaloreConfig] = None,
         *args,
+        loraplus_lr_ratio: Optional[float] = None,
         **kwargs,
     ):
+        # LoRA+ (arXiv 2402.12354): lora_B trains at learning_rate * loraplus_lr_ratio; 16 is the paper's pick.
+        if loraplus_lr_ratio is not None and not loraplus_lr_ratio > 0:
+            raise ValueError(
+                f"Unsloth: loraplus_lr_ratio must be a positive number, got {loraplus_lr_ratio!r}."
+            )
         self.q_galore_config = q_galore_config
         self.embedding_learning_rate = embedding_learning_rate
+        self.loraplus_lr_ratio = loraplus_lr_ratio
         super().__init__(*args, **kwargs)
         self.embedding_learning_rate = embedding_learning_rate
+        self.loraplus_lr_ratio = loraplus_lr_ratio
         if self.eval_steps is not None and self.eval_strategy != "steps":
             warnings.warn(
                 f"Unsloth: `eval_steps = {self.eval_steps}` is ignored because `eval_strategy` is "
@@ -678,6 +950,25 @@ class UnslothTrainingArguments(TrainingArguments):
                 'Set `eval_strategy = "steps"` to evaluate every `eval_steps` steps.',
                 stacklevel = 2,
             )
+
+
+def _embedding_weight_ids(model):
+    """Full finetuning has no modules_to_save copy, so the trainable embedding and lm_head
+    are found by identity; matching on the PEFT name alone trained them at the base lr."""
+    embedding_ids = set()
+    for owner in (model, getattr(model, "module", None)):
+        for getter in ("get_input_embeddings", "get_output_embeddings"):
+            try:
+                weight = getattr(getattr(owner, getter)(), "weight", None)
+            except Exception:
+                continue
+            if weight is not None:
+                embedding_ids.add(id(weight))
+        # transformers 4.x's default get_output_embeddings returns None even with an lm_head.
+        weight = getattr(getattr(owner, "lm_head", None), "weight", None)
+        if weight is not None:
+            embedding_ids.add(id(weight))
+    return embedding_ids
 
 
 def _create_unsloth_optimizer(
@@ -688,8 +979,11 @@ def _create_unsloth_optimizer(
     require_embedding_match = False,
     weight_decay = 0.0,
     decay_parameter_names = None,
+    loraplus_lr_ratio = None,
 ):
     lr = optimizer_kwargs["lr"]
+    if embedding_lr is None:
+        embedding_lr = lr
     # transformers puts weight_decay in optimizer_kwargs only for schedule-free and stable_adamw,
     # so reading it from there alone meant the 0.0 default always won (Trainer.create_optimizer).
     weight_decay = optimizer_kwargs.get("weight_decay", weight_decay)
@@ -703,18 +997,43 @@ def _create_unsloth_optimizer(
         "embeddings": {},
     }
 
+    # A subset of non_embeddings, not its own dict: legacy resume replays the old two-group order.
+    lora_plus_names = set()
+
+    embedding_ids = _embedding_weight_ids(model)
+
+    # Name-only classification of releases before the identity match, kept to resume their checkpoints.
+    previous_groups = {"non_embeddings": {}, "embeddings": {}}
     for name, param in model.named_parameters():
         if not param.requires_grad:
             continue
-        if name.endswith("modules_to_save.default.weight"):
-            partial_name = name[: -len(".modules_to_save.default.weight")]
+        by_name = name.endswith("modules_to_save.default.weight")
+        previous_groups["embeddings" if by_name else "non_embeddings"][name] = param
+        if by_name or id(param) in embedding_ids:
+            partial_name = name.removesuffix(".modules_to_save.default.weight")
+            partial_name = partial_name.removesuffix(".weight")
             partial_name = partial_name[partial_name.rfind(".") + 1 :]
-            print(
-                f"Unsloth: Setting lr = {embedding_lr:.2e} instead of {lr:.2e} for {partial_name}."
-            )
+            if embedding_lr != lr:
+                print(
+                    f"Unsloth: Setting lr = {embedding_lr:.2e} instead of {lr:.2e} for {partial_name}."
+                )
             param_groups["embeddings"][name] = param
         else:
             param_groups["non_embeddings"][name] = param
+            if loraplus_lr_ratio is not None and ".lora_B." in name:
+                lora_plus_names.add(name)
+
+    if loraplus_lr_ratio is not None:
+        if not lora_plus_names:
+            raise ValueError(
+                "Unsloth: loraplus_lr_ratio was set but no trainable LoRA B parameter was found, "
+                "so LoRA+ would do nothing. Add LoRA adapters with get_peft_model, train "
+                "without FSDP1, or drop loraplus_lr_ratio."
+            )
+        print(
+            f"Unsloth: LoRA+ enabled, lora_B lr = {lr * loraplus_lr_ratio:.2e} "
+            f"({loraplus_lr_ratio:g} x {lr:.2e}) for {len(lora_plus_names)} tensors."
+        )
 
     if require_embedding_match and not param_groups["embeddings"]:
         # Only checked on the delayed path, where the model has been through
@@ -732,25 +1051,44 @@ def _create_unsloth_optimizer(
     # Empty groups are dropped (a LoRA run trains no bias and no norm, so both no-decay ones are
     # empty): AdafactorSchedule.get_lr reads group["params"][0] unguarded, and load_state_dict
     # rejects a checkpoint whose group count differs, which would break resume.
-    optimizer_grouped_parameters = []
-    group_roles = []
-    for group, group_lr in (("non_embeddings", lr), ("embeddings", embedding_lr)):
-        for decays in (True, False):
-            params = [
-                param
-                for name, param in param_groups[group].items()
-                if (name in decay_parameter_names) is decays
-            ]
-            if not params:
-                continue
-            optimizer_grouped_parameters.append(
-                {
-                    "params": params,
-                    "weight_decay": weight_decay if decays else 0.0,
-                    "lr": group_lr,
-                }
-            )
-            group_roles.append(group)
+    def _layout(groups):
+        grouped_parameters, roles = [], []
+        for group, source, group_lr in (
+            ("non_embeddings", "non_embeddings", lr),
+            ("lora_plus", "non_embeddings", lr * (loraplus_lr_ratio or 1.0)),
+            ("embeddings", "embeddings", embedding_lr),
+        ):
+            for decays in (True, False):
+                params = [
+                    param
+                    for name, param in groups[source].items()
+                    if (name in decay_parameter_names) is decays
+                    and (group == "lora_plus") is (name in lora_plus_names)
+                ]
+                if not params:
+                    continue
+                grouped_parameters.append(
+                    {
+                        "params": params,
+                        "weight_decay": weight_decay if decays else 0.0,
+                        "lr": group_lr,
+                    }
+                )
+                roles.append(group)
+        return grouped_parameters, roles
+
+    optimizer_grouped_parameters, group_roles = _layout(param_groups)
+    previous_layout = None
+    if len(previous_groups["embeddings"]) != len(param_groups["embeddings"]):
+        previous_grouped, _ = _layout(previous_groups)
+        previous_layout = (
+            [param for group in previous_grouped for param in group["params"]],
+            [len(group["params"]) for group in previous_grouped],
+            [group["lr"] for group in previous_grouped],
+        )
+        # Sizes alone cannot tell the layouts apart when only embeddings train: mark this one.
+        for group in optimizer_grouped_parameters:
+            group[_EMBEDDING_SPLIT_MARKER] = True
     optimizer = optimizer_cls(optimizer_grouped_parameters, **optimizer_kwargs)
     # Same as Trainer.create_optimizer: keep embedding optimizer state in 32 bits under 8-bit bnb.
     if "bitsandbytes" in str(optimizer_cls) and optimizer_kwargs.get("optim_bits", None) == 8:
@@ -763,10 +1101,11 @@ def _create_unsloth_optimizer(
                 manager.register_module_override(module, "weight", {"optim_bits": 32})
     _install_legacy_resume(
         optimizer,
-        legacy_params = list(param_groups["non_embeddings"].values())
-        + list(param_groups["embeddings"].values()),
-        legacy_sizes = (len(param_groups["non_embeddings"]), len(param_groups["embeddings"])),
+        legacy_params = list(previous_groups["non_embeddings"].values())
+        + list(previous_groups["embeddings"].values()),
+        legacy_sizes = (len(previous_groups["non_embeddings"]), len(previous_groups["embeddings"])),
         group_roles = group_roles,
+        previous_layout = previous_layout,
     )
     return optimizer
 
@@ -787,6 +1126,9 @@ def _migrate_legacy_optimizer_state(
     """
     saved_groups = state_dict.get("param_groups") or []
     if len(saved_groups) != len(_LEGACY_ROLE_ORDER):
+        return None
+    # A LoRA+ group has no legacy counterpart to take hyperparameters from.
+    if any(role not in _LEGACY_ROLE_ORDER for role in group_roles):
         return None
     if tuple(len(g["params"]) for g in saved_groups) != tuple(legacy_sizes):
         return None
@@ -826,6 +1168,59 @@ def _migrate_legacy_optimizer_state(
     return {"state": remapped_state, "param_groups": migrated_groups}
 
 
+_EMBEDDING_SPLIT_MARKER = "unsloth_embedding_split"
+
+
+def _migrate_previous_layout_state(
+    state_dict, optimizer, previous_params, previous_sizes, previous_lrs
+):
+    """A checkpoint from before full finetuning embeddings got their own groups, or None.
+
+    Progress is read against the old group's built lr, not initial_lr, which ReduceLROnPlateau never sets.
+    """
+    saved_groups = state_dict.get("param_groups") or []
+    if any(g.get(_EMBEDDING_SPLIT_MARKER) for g in saved_groups):
+        return None
+    if [len(g["params"]) for g in saved_groups] != list(previous_sizes):
+        return None
+    saved_ids = [i for g in saved_groups for i in g["params"]]
+    new_index_of_param = {
+        id(param): index
+        for index, param in enumerate(p for g in optimizer.param_groups for p in g["params"])
+    }
+    if not (len(set(saved_ids)) == len(new_index_of_param) == len(previous_params)):
+        return None
+    param_of_saved_id = dict(zip(saved_ids, previous_params))
+    saved_index_of_param = {
+        id(param_of_saved_id[i]): index
+        for index, group in enumerate(saved_groups)
+        for i in group["params"]
+    }
+    try:
+        remapped_state = {
+            new_index_of_param[id(param_of_saved_id[saved_id])]: value
+            for saved_id, value in state_dict["state"].items()
+        }
+    except KeyError:
+        return None
+
+    cursor, migrated_groups = 0, []
+    for group in optimizer.param_groups:
+        index = saved_index_of_param[id(group["params"][0])]
+        saved = saved_groups[index]
+        base_lr = group.get("initial_lr", group["lr"])
+        progress = saved["lr"] / previous_lrs[index] if previous_lrs[index] else 1.0
+        migrated = {key: value for key, value in saved.items() if key != "params"}
+        migrated.update(lr = base_lr * progress, weight_decay = group["weight_decay"])
+        if "initial_lr" in migrated:
+            migrated["initial_lr"] = base_lr
+        migrated[_EMBEDDING_SPLIT_MARKER] = True
+        migrated["params"] = list(range(cursor, cursor + len(group["params"])))
+        migrated_groups.append(migrated)
+        cursor += len(group["params"])
+    return {"state": remapped_state, "param_groups": migrated_groups}
+
+
 def _unsloth_base_optimizer(optimizer):
     """The optimizer we built, through any wrapper, or None.
 
@@ -860,6 +1255,13 @@ def _install_legacy_scheduler_resume(scheduler, optimizer):
     # torch.save cannot pickle it, failing the first save even with no resume.
     def load_state_dict(self, state_dict):
         state_dict = dict(state_dict)
+        if getattr(built, "_unsloth_loaded_previous", False):
+            # Per-group lists of the old layout: keep the ones built from this optimizer.
+            for key in ("base_lrs", "_last_lr", "min_lrs", "max_lrs", "_init_lrs"):
+                state_dict.pop(key, None)
+            base.load_state_dict(self, state_dict)
+            self._last_lr = [group["lr"] for group in self.optimizer.param_groups]
+            return
         # Gated on the optimizer having just migrated: length alone cannot tell a legacy
         # [ordinary, embedding] pair from two current non-embedding groups, and remapping
         # the latter collapses distinct per-group min_lr floors onto the first.
@@ -880,7 +1282,13 @@ def _install_legacy_scheduler_resume(scheduler, optimizer):
     return scheduler
 
 
-def _install_legacy_resume(optimizer, legacy_params, legacy_sizes, group_roles):
+def _install_legacy_resume(
+    optimizer,
+    legacy_params,
+    legacy_sizes,
+    group_roles,
+    previous_layout = None,
+):
     """Let `load_state_dict` accept a checkpoint written before the decay split."""
     optimizer._unsloth_group_roles = list(group_roles)
     original = optimizer.load_state_dict
@@ -888,6 +1296,17 @@ def _install_legacy_resume(optimizer, legacy_params, legacy_sizes, group_roles):
     @wraps(original)
     def load_state_dict(state_dict):
         saved = state_dict.get("param_groups") or []
+        previous = None
+        if previous_layout is not None:
+            previous = _migrate_previous_layout_state(state_dict, optimizer, *previous_layout)
+        optimizer._unsloth_loaded_previous = previous is not None
+        if previous is not None:
+            print(
+                "Unsloth: moving the embeddings of a checkpoint saved before full finetuning "
+                "used embedding_learning_rate into their own optimizer group."
+            )
+            optimizer._unsloth_loaded_legacy = False
+            return original(previous)
         # Every recognisably legacy checkpoint, not only reshaped ones: torch takes group
         # hyperparameters from the saved dict, so a LoRA resume, where the layouts coincide,
         # would otherwise reload the 0.0 this change exists to correct.
@@ -941,21 +1360,29 @@ class UnslothTrainer(SFTTrainer):
             )
 
         embedding_learning_rate = getattr(self.args, "embedding_learning_rate", None)
-        if embedding_learning_rate is None:
+        loraplus_lr_ratio = getattr(self.args, "loraplus_lr_ratio", None)
+        if embedding_learning_rate is None and loraplus_lr_ratio is None:
             if model is not None and _super_create_optimizer_takes_model():
                 return super().create_optimizer(model)
             return super().create_optimizer()
 
         if self.optimizer is None:
-            optimizer_cls, optimizer_kwargs = SFTTrainer.get_optimizer_cls_and_kwargs(self.args)
+            # Trainer.create_optimizer prefers a user optimizer_cls_and_kwargs over args.optim.
+            custom = getattr(self, "optimizer_cls_and_kwargs", None)
+            if custom is not None:
+                optimizer_cls, optimizer_kwargs = custom[0], dict(custom[1])
+                optimizer_kwargs.setdefault("lr", self.args.learning_rate)
+            else:
+                optimizer_cls, optimizer_kwargs = SFTTrainer.get_optimizer_cls_and_kwargs(self.args)
             self.optimizer = _create_unsloth_optimizer(
                 target_model,
                 optimizer_cls,
                 optimizer_kwargs,
                 embedding_learning_rate,
-                require_embedding_match = model is not None,
+                require_embedding_match = model is not None and embedding_learning_rate is not None,
                 weight_decay = self.args.weight_decay,
                 decay_parameter_names = self.get_decay_parameter_names(target_model),
+                loraplus_lr_ratio = loraplus_lr_ratio,
             )
         return self.optimizer
 
@@ -1005,7 +1432,7 @@ class UnslothTrainer(SFTTrainer):
         )
 
         if not any("rank" in group for group in param_groups):
-            # make_q_galore_param_groups selects on param.dim() >= 2, and FSDP1 hands us 1-D
+            # make_q_galore_param_groups selects on param.dim() == 2, and FSDP1 hands us 1-D
             # views: FlatParameter with use_orig_params=False, and a 1-D sharded view even
             # with use_orig_params=True. Nothing matches, so a requested Q-GaLore run would
             # quietly become ordinary 8-bit AdamW. Say so instead.
@@ -1019,6 +1446,7 @@ class UnslothTrainer(SFTTrainer):
         if embedding_lr is not None:
             # Fast param -> name lookup, O(N) instead of O(N*M).
             param_to_name = {id(p): name for name, p in model.named_parameters()}
+            embedding_ids = _embedding_weight_ids(model)
 
             new_groups = []
             for group in param_groups:
@@ -1031,8 +1459,11 @@ class UnslothTrainer(SFTTrainer):
                 other_params = []
                 for p in group["params"]:
                     name = param_to_name.get(id(p))
-                    if name and name.endswith("modules_to_save.default.weight"):
-                        partial_name = name[: -len(".modules_to_save.default.weight")]
+                    if name and (
+                        name.endswith("modules_to_save.default.weight") or id(p) in embedding_ids
+                    ):
+                        partial_name = name.removesuffix(".modules_to_save.default.weight")
+                        partial_name = partial_name.removesuffix(".weight")
                         partial_name = partial_name[partial_name.rfind(".") + 1 :]
                         print(
                             f"Unsloth: Setting lr = {embedding_lr:.2e} instead of {lr:.2e} for {partial_name}."
@@ -1361,13 +1792,15 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 is_vlm = _is_vlm_config(model_config, model_types)
                 is_encoder_decoder = bool(getattr(model_config, "is_encoder_decoder", False))
             hybrid_target = (
-                SimpleNamespace(config = model_config)
+                SimpleNamespace(
+                    config = model_config,
+                    trust_remote_code = _string_model_trust_remote_code(config_arg),
+                )
                 if isinstance(model, str) and model_config is not None
                 else model
             )
             is_hybrid = _is_hybrid_linear_attention_model(hybrid_target)
-            # Hybrid models corrupt packed batches unless the gated-delta conv and scan reset at sequence
-            # boundaries, so enable the experimental varlen shim (flag plus kernels) or keep them blocked.
+            # Hybrid models pack only when the varlen shim's kernel checks and exactness probe pass.
             if (
                 is_hybrid
                 and not isinstance(model, str)
@@ -1385,6 +1818,9 @@ def _patch_sft_trainer_auto_packing(trl_module):
         train_dataset = args[3] if len(args) >= 4 else kwargs.get("train_dataset")
         eval_dataset = args[4] if len(args) >= 5 else kwargs.get("eval_dataset")
         is_processor = isinstance(processing_class, ProcessorMixin)
+        processor_text_only = is_processor and _processor_text_only(
+            processing_class, data_collator, train_dataset, eval_dataset, model_config
+        )
         is_auto_processor_vlm = is_vlm and processing_class is None
         is_vision_dataset = (
             data_collator is None
@@ -1415,15 +1851,19 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 # several classes, so a "yes" from the resolved one is not proof about the
                 # instance. A correct "no" has already turned both flags off, which is the
                 # condition the post-init check skips on, so leaving it armed is free.
+        # Read before __init__: the compiled trainer ends it with model.for_inference(), which sets the flag.
+        eval_logits_wanted = os.environ.get(
+            "UNSLOTH_RETURN_LOGITS", "0"
+        ) == "1" or _wants_eval_logits(original_init, args, kwargs)
         blocked = (
             (data_collator is not None)
-            or is_processor
+            or (is_processor and not processor_text_only)
             or is_auto_processor_vlm
             or is_vision_dataset
             or is_unsupported_model
             or is_encoder_decoder
             or (is_hybrid and not hybrid_varlen_active)
-            or (os.environ.get("UNSLOTH_RETURN_LOGITS", "0") == "1")
+            or eval_logits_wanted
             or forward_rejects_packing
         )
         requested_pack = bool(getattr(config_arg, "packing", False))
@@ -1483,7 +1923,23 @@ def _patch_sft_trainer_auto_packing(trl_module):
         try:
             original_init(self, *args, **kwargs)
         except ValueError as exc:
-            if packing_active and _should_skip_auto_packing_error(exc):
+            if processor_text_only and not blocked and _is_trl_vlm_packing_rejection(exc):
+                if requested_pack:
+                    logger.warning(
+                        "Unsloth: packing=True ignored (this TRL version refuses it for processors)."
+                    )
+                else:
+                    logger.info("Unsloth: padding-free disabled for the processor (%s).", exc)
+                for _attr in ("packing", "padding_free"):
+                    if hasattr(config_arg, _attr):
+                        setattr(config_arg, _attr, False)
+                packing_active = False
+                auto_padding_free_active = False
+                blocked = True
+                # Release the failed attempt's frames (may hold a loaded model) before retrying.
+                exc.__traceback__ = None
+                original_init(self, *args, **kwargs)
+            elif packing_active and _should_skip_auto_packing_error(exc):
                 logger.info(
                     "Unsloth: Auto sample packing failed because trainer reported an incompatible setup (%s).",
                     exc,
@@ -1534,6 +1990,18 @@ def _patch_sft_trainer_auto_packing(trl_module):
             # Mirror the block on the trainer args to avoid re-enabling later
             setattr(trainer_args, "packing", False)
             setattr(trainer_args, "padding_free", False)
+
+        collator = getattr(self, "data_collator", None)
+        # TRL's text collator also has `padding_free`; it must keep its wrapped, per-document eval batches.
+        if isinstance(collator, UnslothVisionDataCollator) and collator.padding_free:
+            reason = _collator_packing_conflict(self, eval_logits_wanted, forward_rejects_packing)
+            if reason is not None:
+                collator._padding_free = False
+                logger.warning(
+                    f"Unsloth: UnslothVisionDataCollator(padding_free=True) ignored ({reason})."
+                )
+            else:
+                _unpacked_for_evaluation(self, collator)
 
         if not blocked and trainer_packing and (packing_active or _should_pack(trainer_args)):
             enable_sample_packing(self.model, self)

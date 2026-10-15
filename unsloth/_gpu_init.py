@@ -24,6 +24,7 @@ from .import_fixes import (
     fix_message_factory_issue,
     patch_torch_missing_attribute_error,
     check_triton_py_ssize_t_clean,
+    fix_triton_module_cache_python_key,
     check_transformers_prequantized_vlm_quant_state,
     fix_torch_check_is_size,
     fix_torchao_torch_symbol_skew,
@@ -45,24 +46,31 @@ from .import_fixes import (
 # transformers / vllm (disable_broken_vllm probes `import vllm`, check_fbgemm_gpu_version imports
 # transformers, fix_huggingface_hub imports huggingface_hub), any of which would freeze Hub's
 # cache constants with the un-redirected paths. hf_cache.py is stdlib-only, so it loads straight
-# from its file without triggering the full unsloth_zoo init this early.
+# from unsloth_zoo_downloads (or, on older zoo, its file) without the full unsloth_zoo init.
 try:
-    import importlib.util as _importlib_util
-    from pathlib import Path as _Path
+    try:
+        from unsloth_zoo_downloads.hf_cache import redirect_hf_cache_if_readonly as _redirect
+    except ImportError:
+        import importlib.util as _importlib_util
+        from pathlib import Path as _Path
 
-    _zoo_spec = _importlib_util.find_spec("unsloth_zoo")
-    if _zoo_spec is not None and _zoo_spec.origin:
-        _hf_cache_file = _Path(_zoo_spec.origin).with_name("hf_cache.py")
-        if _hf_cache_file.is_file():
-            _hf_cache_spec = _importlib_util.spec_from_file_location(
-                "unsloth_zoo._early_hf_cache", _hf_cache_file
-            )
-            _hf_cache = _importlib_util.module_from_spec(_hf_cache_spec)
-            _hf_cache_spec.loader.exec_module(_hf_cache)
-            _hf_cache.redirect_hf_cache_if_readonly()
-            del _hf_cache, _hf_cache_spec
-        del _hf_cache_file
-    del _zoo_spec, _importlib_util, _Path
+        _redirect = None
+        _zoo_spec = _importlib_util.find_spec("unsloth_zoo")
+        if _zoo_spec is not None and _zoo_spec.origin:
+            _hf_cache_file = _Path(_zoo_spec.origin).with_name("hf_cache.py")
+            if _hf_cache_file.is_file():
+                _hf_cache_spec = _importlib_util.spec_from_file_location(
+                    "unsloth_zoo._early_hf_cache", _hf_cache_file
+                )
+                _hf_cache = _importlib_util.module_from_spec(_hf_cache_spec)
+                _hf_cache_spec.loader.exec_module(_hf_cache)
+                _redirect = _hf_cache.redirect_hf_cache_if_readonly
+                del _hf_cache, _hf_cache_spec
+            del _hf_cache_file
+        del _zoo_spec, _importlib_util, _Path
+    if _redirect is not None:
+        _redirect()
+    del _redirect
 except Exception:
     pass
 
@@ -100,6 +108,8 @@ propagate_torchao_fix_to_subprocesses()
 check_transformers_dependency_versions()
 # Same reason: nothing has failed yet, and a run that launches no Triton kernel never will.
 check_triton_py_ssize_t_clean()
+# Before triton's driver first compiles and caches cuda_utils (#2760).
+fix_triton_module_cache_python_key()
 check_fbgemm_gpu_version()
 torchvision_compatibility_check()
 # Ahead of `import unsloth_zoo` below, deliberately not down with the other import fixes: unsloth_zoo's
@@ -122,6 +132,7 @@ del propagate_torchao_fix_to_subprocesses
 del check_fbgemm_gpu_version
 del check_transformers_dependency_versions
 del check_triton_py_ssize_t_clean
+del fix_triton_module_cache_python_key
 del torchvision_compatibility_check
 del fix_diffusers_warnings
 del fix_huggingface_hub
@@ -242,6 +253,13 @@ except ModuleNotFoundError:
 except:
     raise
 
+try:
+    from .import_fixes import fix_torch_compiler_disable_unless_decode
+    fix_torch_compiler_disable_unless_decode()
+    del fix_torch_compiler_disable_unless_decode
+except Exception:
+    pass
+
 # Re-assert after unsloth_zoo's patch_torch_compile, which historically popped
 # TORCHINDUCTOR_COMPILE_THREADS.
 if os.environ.get("UNSLOTH_FORCE_SINGLE_COMPILE_WORKER", "0") == "1":
@@ -308,7 +326,9 @@ from .import_fixes import (
     fix_transformers5_legacy_config_types,
     fix_transformers5_image_processing_reexports,
     fix_transformers_composite_prefix_renaming,
+    fix_transformers_bnb_prequantized_save,
     fix_transformers_fully_masked_rows,
+    fix_transformers_flash_attention_mrope_packed_sequence,
     fix_transformers_untrusted_config_fields,
     fix_transformers_chat_template_path_traversal,
     fix_transformers_chunked_mask_block_sequence_ids,
@@ -371,6 +391,7 @@ fix_transformers5_bare_annotation_configs()
 # nothing. Ordered here, before anything imports a model, so a plain transformers.generate in the
 # same process is covered too (#9708).
 fix_transformers_fully_masked_rows()
+fix_transformers_flash_attention_mrope_packed_sequence()
 fix_transformers_chunked_mask_block_sequence_ids()
 fix_transformers_flex_mask_graph_breaks()
 # CVE-2026-4372 / 5241 / 9856, no-ops once transformers carries the fix; before any config loads.
@@ -380,6 +401,7 @@ fix_transformers_chat_template_path_traversal()
 # composite model's conversion mapping. Ordered here, before anything loads a checkpoint, so a
 # plain transformers.from_pretrained in the same process keeps its bitsandbytes quant_state too.
 fix_transformers_composite_prefix_renaming()
+fix_transformers_bnb_prequantized_save()
 # After the repair above, never before it, and this is the ONLY call: on exactly the releases
 # the repair covers, warning first tells users to downgrade away from a version that now works,
 # and a second call cannot retract a warning already logged. The check reads the live attribute,
@@ -469,6 +491,7 @@ del fix_transformers5_legacy_config_types
 del fix_transformers_untrusted_config_fields
 del fix_transformers_chat_template_path_traversal
 del fix_transformers_rope_scaling_drops_theta
+del fix_transformers_bnb_prequantized_save
 del fix_transformers_fp8_modulelist_experts
 del fix_transformers_fp8_unscaled_checkpoint_linears
 del fix_transformers_validate_rope_ignore_keys
@@ -711,7 +734,20 @@ elif DEVICE_TYPE == "xpu":
         )
         bnb = None
 
-    pass
+    from .import_fixes import patch_bitsandbytes_triton_quantize_fallback
+
+    patch_bitsandbytes_triton_quantize_fallback("xpu")
+    del patch_bitsandbytes_triton_quantize_fallback
+
+# After the bitsandbytes import above, never before: it only patches an already-imported bitsandbytes.
+from .import_fixes import patch_bitsandbytes_paged_optimizer_resume
+
+patch_bitsandbytes_paged_optimizer_resume()
+del patch_bitsandbytes_paged_optimizer_resume
+from .import_fixes import patch_bitsandbytes_optimizer_step_sync
+
+patch_bitsandbytes_optimizer_step_sync()
+del patch_bitsandbytes_optimizer_step_sync
 
 from .models import *
 from .models import __version__

@@ -4,15 +4,15 @@
 // Free of app imports so the node test runner and the sidebar can load it directly.
 
 import {
-  AiVoiceIcon,
-  MusicNote03Icon,
-  QuillWrite01Icon,
-  SpeechToTextIcon,
+  ArrowReloadHorizontalIcon,
+  ClosedCaptionIcon,
+  Copy02Icon,
+  Edit03Icon,
+  MusicThreeIcon,
   SplitIcon,
-  UserSwitchIcon,
-  VoiceIdIcon,
 } from "@hugeicons/core-free-icons";
 import type { IconSvgElement } from "@hugeicons/react";
+import { TextToSpeechIcon } from "../../lib/hugeicons-derived.ts";
 import { AUDIO_CPP_MUSIC_AUDIO_TYPE } from "./audio-cpp-catalog.ts";
 
 export type AudioWorkflowId =
@@ -37,9 +37,9 @@ export const AUDIO_WORKFLOWS: ReadonlyArray<{
 }> = [
   {
     id: "speak",
-    label: "Speak",
+    label: "Text to Speech",
     heading: "Text to speech",
-    icon: AiVoiceIcon,
+    icon: TextToSpeechIcon,
     hint: "Turn text into speech with a built-in or designed voice",
     slot: "speak",
     createTrain: true,
@@ -48,7 +48,7 @@ export const AUDIO_WORKFLOWS: ReadonlyArray<{
     id: "clone",
     label: "Clone",
     heading: "Clone a voice",
-    icon: VoiceIdIcon,
+    icon: Copy02Icon,
     hint: "Speak in the voice from a short recording",
     slot: "speak",
     createTrain: true,
@@ -57,7 +57,7 @@ export const AUDIO_WORKFLOWS: ReadonlyArray<{
     id: "edit",
     label: "Edit",
     heading: "Edit speech",
-    icon: QuillWrite01Icon,
+    icon: Edit03Icon,
     hint: "Change words in a recording, same voice",
     slot: "speak",
     createTrain: false,
@@ -66,7 +66,7 @@ export const AUDIO_WORKFLOWS: ReadonlyArray<{
     id: "convert",
     label: "Convert",
     heading: "Convert voice",
-    icon: UserSwitchIcon,
+    icon: ArrowReloadHorizontalIcon,
     hint: "Make a recording sound like another voice",
     slot: "speak",
     createTrain: false,
@@ -75,7 +75,7 @@ export const AUDIO_WORKFLOWS: ReadonlyArray<{
     id: "music",
     label: "Music",
     heading: "Create music",
-    icon: MusicNote03Icon,
+    icon: MusicThreeIcon,
     hint: "Songs, instrumentals and sound effects",
     slot: "speak",
     createTrain: false,
@@ -93,7 +93,7 @@ export const AUDIO_WORKFLOWS: ReadonlyArray<{
     id: "transcribe",
     label: "Transcribe",
     heading: "Transcribe",
-    icon: SpeechToTextIcon,
+    icon: ClosedCaptionIcon,
     hint: "Turn speech into text",
     slot: "transcribe",
     createTrain: true,

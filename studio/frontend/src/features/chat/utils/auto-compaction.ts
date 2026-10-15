@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** Local GGUF and MLX auto-compaction. On or off; how it compacts is the server's call.
+/** Local GGUF, MLX and managed vLLM auto-compaction. On or off; how it compacts is the server's call.
  *
  *  Studio used to offer the policy as a setting, but the choice needed the reader to know what a
  *  checkpoint epoch and a rolling window were before it meant anything, and both sides of it were
@@ -13,11 +13,18 @@ export const DEFAULT_AUTO_COMPACT_ENABLED = true;
 export function ggufCompactionRequestFields(options: {
   isGguf: boolean;
   isMlx?: boolean;
+  isManagedEngine?: boolean;
   autoCompactEnabled: boolean;
+  // /compact: asked for by the user, so it applies with auto-compaction off too
+  compactNow?: boolean;
 }): {
   context_overflow?: "error" | "truncate_oldest";
+  compact_context?: true;
 } {
-  if (!options.isGguf && !options.isMlx) return {};
+  if (!options.isGguf && !options.isMlx && !options.isManagedEngine) return {};
+  if (options.compactNow) {
+    return { context_overflow: "truncate_oldest", compact_context: true };
+  }
   if (!options.autoCompactEnabled) {
     // explicit error avoids the UNSLOTH_CONTEXT_OVERFLOW fallback, which may compact
     return { context_overflow: "error" };
@@ -26,7 +33,7 @@ export function ggufCompactionRequestFields(options: {
   return { context_overflow: "truncate_oldest" };
 }
 
-// Share of the window left free when compaction starts.
+// leaves 25% of the window free, matching _EXTERNAL_COMPACTION_HEADROOM for self-hosted servers
 const API_COMPACTION_HEADROOM = 0.25;
 // request schema ceiling for compaction_threshold
 const API_COMPACTION_THRESHOLD_MAX = 2_000_000;
@@ -40,7 +47,9 @@ export function apiCompactionRequestFields(options: {
   context_window?: number;
 } {
   const { autoCompactEnabled, contextLength } = options;
-  if (!autoCompactEnabled || !contextLength || contextLength <= 0) return {};
+  if (!autoCompactEnabled) return {};
+  // without a catalogued window, the backend reads the self-hosted server's reported window
+  if (!contextLength || contextLength <= 0) return { context_overflow: "truncate_oldest" };
   return {
     context_overflow: "truncate_oldest",
     compaction_threshold: Math.min(

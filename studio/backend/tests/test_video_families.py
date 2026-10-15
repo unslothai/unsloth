@@ -180,9 +180,12 @@ def test_generation_defaults_distilled_vs_dev():
 def test_supported_names():
     assert supported_video_family_names() == (
         "minimax-h3",
+        "ltx-2.5",
         "ltx-2",
         "wan2.2-ti2v-5b",
         "wan2.2-t2v-a14b",
+        "wan2.1-t2v-1.3b",
+        "wan2.1-t2v-14b",
         "hunyuanvideo-1.5",
         "hunyuanvideo-1.5-720p",
     )
@@ -525,7 +528,7 @@ def test_the_a14b_row_prices_both_experts_not_one():
 
     fam = detect_video_family("Wan-AI/Wan2.2-T2V-A14B-Diffusers")
     assert fam.is_moe
-    names = {entry[-1] for entry in fam.prequant_filenames}
+    names = {entry[-1] for entry in fam.prequant_filenames if entry[0] == "nvfp4"}
     assert len(names) == 2
     measured = video_family_prequant_resident_gb(fam, "nvfp4")
     assert measured == pytest.approx(16.2)

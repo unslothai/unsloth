@@ -117,6 +117,9 @@ def _install_lightweight_backend_stubs(monkeypatch):
     monkeypatch.setitem(sys.modules, "core.export", core_export)
     monkeypatch.setitem(sys.modules, "core.inference", core_inference)
     core_export.q4nx = _load_module("core.export.q4nx", "core/export/q4nx.py", monkeypatch)
+    core_export.decision = _load_module(
+        "core.export.decision", "core/export/decision.py", monkeypatch
+    )
     _load_module(
         "core.inference.model_ids",
         "core/inference/model_ids.py",
@@ -173,6 +176,7 @@ def _install_lightweight_backend_stubs(monkeypatch):
     utils_models.is_embedding_model = lambda *args, **kwargs: False
     utils_models.ModelConfig = object
     monkeypatch.setitem(sys.modules, "utils.models", utils_models)
+    _load_module("utils.models.diffusion_lm", "utils/models/diffusion_lm.py", monkeypatch)
     _load_module(
         "utils.models.model_identity",
         "utils/models/model_identity.py",
@@ -205,14 +209,17 @@ def _install_lightweight_backend_stubs(monkeypatch):
         "LoRAInfo",
         "ModelListResponse",
         "LoadCheckpointRequest",
+        "ExportCancelRequest",
         "ExportStatusResponse",
         "ExportOperationResponse",
         "ExportMergedModelRequest",
         "ExportBaseModelRequest",
         "ExportGGUFRequest",
         "ConvertQ4NXRequest",
+        "ExportDiffusionLoRARequest",
         "ExportLoRAAdapterRequest",
         "LlmCompressorExportProbeResponse",
+        "ExportDecisionInfoResponse",
     ):
         setattr(models_pkg, name, object)
     models_pkg.LocalModelInfo = _LocalModelInfo
@@ -294,6 +301,7 @@ def _install_export_backend_stubs(monkeypatch):
     utils_model_config = sys.modules["utils.models.model_config"]
     utils_model_config.detect_audio_type = lambda *args, **kwargs: None
     utils_model_config.load_mlx_adapter_tokenizer = lambda tokenizer, *args, **kwargs: tokenizer
+    utils_model_config.load_mlx_adapter_processor = lambda processor, *args, **kwargs: processor
 
     utils_paths = sys.modules["utils.paths"]
     utils_paths.ensure_dir = lambda path: Path(path).mkdir(parents = True, exist_ok = True)

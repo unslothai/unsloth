@@ -55,6 +55,7 @@ export type WindowsView = {
   unsupported: RuntimeUnsupported | null;
   runtimeMissing: boolean;
   showInstallRuntime: boolean;
+  builtinInUse: boolean;
   optInChecked: boolean;
   optInDisabled: boolean;
   optInLocked: boolean;
@@ -65,6 +66,8 @@ export type WindowsView = {
   prep: HostPrepStatus;
   showPrepareButton: boolean;
   prepareDisabled: boolean;
+  /** A Windows update adds the built-in container, which needs no administrator step. */
+  builtinUpdate: { current: string; required: string } | null;
 };
 
 export function hostPrepStatus(windows: WindowsSandboxStatus): HostPrepStatus {
@@ -92,6 +95,9 @@ export function windowsView(
     unsupported,
     runtimeMissing,
     showInstallRuntime: runtimeMissing && unsupported === null,
+    builtinInUse:
+      windows.builtinContainer === true &&
+      !(runtimeMissing || windows.allowDaclFallback),
     optInChecked: windows.allowDaclFallback,
     optInDisabled:
       runtimeMissing || windows.daclLockedByEnvironment || saving || running,
@@ -108,6 +114,15 @@ export function windowsView(
       prep === "needsPreparingAgain" ||
       prep === "unknown",
     prepareDisabled: running || saving,
+    builtinUpdate:
+      windows.builtinContainer !== true &&
+      windows.windowsBuild &&
+      windows.builtinContainerBuild
+        ? {
+            current: windows.windowsBuild,
+            required: windows.builtinContainerBuild,
+          }
+        : null,
   };
 }
 

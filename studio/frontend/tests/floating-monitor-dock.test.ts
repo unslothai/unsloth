@@ -140,8 +140,10 @@ test("the monitor reads the panel's painted width and keeps its floating layer",
 });
 
 test("responsive changes reattach geometry observers and recalculate capacity", () => {
-  assert.match(source, /\}, \[isChatRoute, settingsPanelOpen, isMobile\]\);/);
-  assert.match(source, /\}, \[isMobile\]\);/);
+  assert.match(source, /\}, \[isOpen, isChatRoute, settingsPanelOpen, isMobile\]\);/);
+  assert.match(source, /\}, \[isOpen, isMobile\]\);/);
+  assert.match(source, /if \(!\(isOpen && isChatRoute && settingsPanelOpen\)\) \{/, "a closed monitor does not re-render on every frame of a Run settings drag");
+  assert.match(source, /const sidebar = isOpen \? document\.querySelector\('\[data-slot="sidebar"\]'\) : null;/, "nor of a sidebar drag");
   assert.match(source, /paintedSidebarWidth > 0 \? paintedSidebarWidth : committedSidebarWidth/);
   assert.match(source, /const sidebarWidth = pinned \? pinnedSidebarWidth : unpinnedSidebarWidth/);
   assert.match(source, /const viewportWidth = useSyncExternalStore\(/);

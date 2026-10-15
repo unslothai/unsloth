@@ -92,8 +92,9 @@ class ModelDetails(BaseModel):
         False, description = "Whether model is an embedding/sentence-transformer model"
     )
     is_decision: bool = Field(False, description = "Whether model is a decision model")
-    decision_layout: Optional[Literal["laya", "clef"]] = Field(
-        None, description = "Checkpoint layout of a decision model: Laya or Cloudflare Clef"
+    decision_layout: Optional[Literal["laya", "clef", "llm"]] = Field(
+        None,
+        description = "Decision model layout: Laya, Cloudflare Clef, or llm for an LLM trained with a new Clef head",
     )
     decision_checkpoints: Optional[List[Dict[str, Any]]] = Field(
         None, description = "Checkpoints a decision model repo offers for training"
@@ -255,6 +256,13 @@ class GgufVariantsResponse(BaseModel):
     loadable: Optional[bool] = Field(
         None,
         description = "Whether a variantless load resolves GGUF weights; None when unanswered",
+    )
+    variant_format: Optional[str] = Field(
+        None,
+        description = (
+            "'mlx' when the variants are precision folders of an MLX repo rather than GGUF "
+            "quants; None for GGUF"
+        ),
     )
 
 

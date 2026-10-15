@@ -3,7 +3,7 @@
 
 """Dataset utilities for format detection, conversion, and template application. Entry points: check_dataset_format (lightweight check whether manual mapping is needed, for the frontend), format_dataset (detects and normalizes dataset formats) and format_and_template_dataset (end-to-end processing with chat template). Internal utilities live in format_detection, format_conversion, chat_templates, vlm_processing, data_collators and model_mappings."""
 
-import json
+import inspect
 
 from .format_detection import (
     detect_dataset_format,
@@ -26,8 +26,9 @@ from .chat_templates import (
     get_tokenizer_chat_template,
     DEFAULT_ALPACA_TEMPLATE,
 )
-from .cells import cell_text
+from .cells import cell_text, cell_turns, message_list_columns
 from .raw_text import prepare_raw_text_dataset
+from .pretokenized import PRETOKENIZED_FORMAT, is_pretokenized_dataset
 from .vlm_processing import generate_smart_vlm_instruction
 from .data_collators import DeepSeekOCRDataCollator, VLMDataCollator
 from .model_mappings import TEMPLATE_TO_MODEL_MAPPER
@@ -37,7 +38,7 @@ logger = get_logger(__name__)
 
 
 def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
-    """Lightweight format check without processing, for frontend validation: quickly determines whether the user must manually map columns before the full format_and_template_dataset(). Returns requires_manual_mapping, detected_format, columns (for the mapping UI), suggested_mapping, and detected_image_column / detected_text_column for VLM datasets."""
+    """check whether frontend column mapping is required without processing the dataset."""
     columns = (
         list(dataset.column_names)
         if hasattr(dataset, "column_names")
@@ -117,6 +118,18 @@ def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
                 "multimodal_columns": multimodal_info.get("multimodal_columns"),
                 **audio_fields,
             }
+        elif is_pretokenized_dataset(dataset):
+            return {
+                "requires_manual_mapping": False,
+                "detected_format": PRETOKENIZED_FORMAT,
+                "columns": columns,
+                "suggested_mapping": None,
+                "detected_image_column": None,
+                "detected_text_column": None,
+                "is_image": multimodal_info["is_image"],
+                "multimodal_columns": multimodal_info.get("multimodal_columns"),
+                **audio_fields,
+            }
         else:
             return {
                 "requires_manual_mapping": True,
@@ -164,6 +177,14 @@ _CHATML_TO_ALPACA = {"user": "instruction", "system": "input", "assistant": "out
 _KNOWN_CHAT_COLUMNS = {"messages", "conversations", "texts"}
 
 
+def _mapped_message_columns(dataset, columns):
+    messages = message_list_columns(dataset)
+    prompt_completion = {"prompt", "completion"}
+    if prompt_completion <= set(columns) and messages & prompt_completion:
+        messages.update(prompt_completion)
+    return messages
+
+
 def _chatml_final_format(chat_column: str | None) -> str:
     return "chatml_messages" if chat_column == "messages" else "chatml_conversations"
 
@@ -179,20 +200,19 @@ def _apply_user_mapping(
     mapping: dict,
     batch_size: int = 1000,
 ):
-    """Apply user-provided column mapping to convert dataset to conversations format. Accepts chatml (user/assistant/system), sharegpt (human/gpt/system) and alpaca (instruction/input/output) role names, all normalised to chatml. If the mapping has ``__``-prefixed metadata keys (from the conversion advisor), routes to template-based conversion instead of simple role mapping. Returns a dataset with a single 'conversations' column."""
+    """normalize chatml, ShareGPT, or Alpaca roles; ``__`` metadata selects template conversion."""
     meta = {k: v for k, v in mapping.items() if k.startswith("__")}
     column_roles = {k: v for k, v in mapping.items() if not k.startswith("__")}
 
     if meta:
         return _apply_template_mapping(dataset, column_roles, meta, batch_size)
 
-    # ── Simple mode (original logic) ──
-    # Pre-compute: group columns by canonical chatml role
     role_groups: dict[str, list[str]] = {r: [] for r in _CHATML_ROLE_ORDER}
     for col_name, role in column_roles.items():
         canonical = _TO_CHATML.get(role)
         if canonical:
             role_groups[canonical].append(col_name)
+    message_columns = _mapped_message_columns(dataset, column_roles)
 
     def _convert(examples):
         num = len(next(iter(examples.values())))
@@ -202,15 +222,18 @@ def _apply_user_mapping(
             for chatml_role in _CHATML_ROLE_ORDER:
                 for col in role_groups[chatml_role]:
                     if col in examples:
-                        content = examples[col][i]
-                        convo.append(
-                            {
-                                "role": chatml_role,
-                                "content": cell_text(content),
-                            }
+                        convo.extend(
+                            cell_turns(
+                                examples[col][i],
+                                chatml_role,
+                                empty_is_messages = col in message_columns,
+                            )
                         )
             conversations.append(convo)
-        return {"conversations": conversations}
+        mapped = {"conversations": conversations}
+        if "tools" in examples:
+            mapped["tools"] = examples["tools"]
+        return mapped
 
     return dataset.map(
         _convert,
@@ -221,12 +244,13 @@ def _apply_user_mapping(
 
 
 def _extract_column_value(val, col: str, label_mapping: dict) -> str:
-    """Extract a string value from a column, handling complex types and label mapping."""
     if isinstance(val, dict):
         if "text" not in val:
-            return json.dumps(val, ensure_ascii = False)
+            return cell_text(val)
         inner = val["text"]
         val = inner[0] if isinstance(inner, list) and inner else inner
+    if isinstance(val, list) and any(isinstance(item, (dict, list)) for item in val):
+        return cell_text(val)
 
     names = label_mapping.get(col)
     if not isinstance(names, dict):
@@ -283,7 +307,10 @@ def _apply_template_mapping(
                 convo.append({"role": "assistant", "content": "\n".join(asst_parts)})
 
             conversations.append(convo)
-        return {"conversations": conversations}
+        mapped = {"conversations": conversations}
+        if "tools" in examples:
+            mapped["tools"] = examples["tools"]
+        return mapped
 
     return dataset.map(
         _convert,
@@ -298,7 +325,11 @@ def _apply_user_mapping_alpaca(
     mapping: dict,
     batch_size: int = 1000,
 ):
-    """Apply user-provided column mapping to convert dataset to Alpaca format. Accepts any format's role names, normalises via _TO_CHATML, then maps user -> instruction, system -> input, assistant -> output. Advisor ``__label_mapping`` names label values; ``__system_prompt`` is prepended to instruction, since system-role columns already fill input. Returns a dataset with instruction/input/output columns."""
+    """convert user mappings to Alpaca instruction, input, and output columns.
+
+    role names are normalized through ``_TO_CHATML`` and ``__label_mapping`` names label values.
+    ``__system_prompt`` prepends instruction because mapped system columns already fill input.
+    """
     meta = {k: v for k, v in mapping.items() if k.startswith("__")}
     column_roles = {k: v for k, v in mapping.items() if not k.startswith("__")}
     system_prompt = meta.get("__system_prompt", "")
@@ -342,7 +373,31 @@ def _apply_user_mapping_alpaca(
     )
 
 
-def format_dataset(
+def format_dataset(dataset, *args, **kwargs):
+    """``_format_dataset``, but token-id rows no format matched route as pre-tokenized under any format except raw."""
+    bound = _FORMAT_DATASET_SIGNATURE.bind(dataset, *args, **kwargs)
+    bound.apply_defaults()
+    info = _format_dataset(*bound.args, **bound.kwargs)
+    if (
+        info["final_format"] == "unknown"
+        and bound.arguments["format_type"] != "raw"
+        and not bound.arguments["custom_format_mapping"]
+        and is_pretokenized_dataset(dataset)
+    ):
+        info = {
+            **info,
+            "dataset": dataset,
+            "detected_format": PRETOKENIZED_FORMAT,
+            "final_format": PRETOKENIZED_FORMAT,
+            "chat_column": None,
+            "is_standardized": True,
+            "requires_manual_mapping": False,
+            "warnings": [],
+        }
+    return info
+
+
+def _format_dataset(
     dataset,
     format_type = "auto",
     tokenizer = None,
@@ -511,6 +566,7 @@ def format_dataset(
                 custom_mapping = detect_custom_format_heuristic(dataset)
                 if custom_mapping:
                     warnings.append(f"Auto-detected column mapping: {custom_mapping}")
+                    message_columns = _mapped_message_columns(dataset, custom_mapping)
 
                     def _apply_auto_mapping(examples):
                         conversations = []
@@ -519,7 +575,9 @@ def format_dataset(
                         all_columns = set(examples.keys())
                         mapped_columns = set(custom_mapping.keys())
                         preserved_columns = {
-                            col: examples[col] for col in all_columns - mapped_columns
+                            col: examples[col]
+                            for col in all_columns - mapped_columns
+                            if col != "conversations"
                         }
 
                         for i in range(num_examples):
@@ -527,12 +585,18 @@ def format_dataset(
                             for target_role in ["system", "user", "assistant"]:
                                 for col_name, role in custom_mapping.items():
                                     if role == target_role and col_name in examples:
-                                        text = cell_text(examples[col_name][i])
-                                        if text.strip():
-                                            convo.append({"role": role, "content": text})
+                                        convo.extend(
+                                            turn
+                                            for turn in cell_turns(
+                                                examples[col_name][i],
+                                                role,
+                                                empty_is_messages = col_name in message_columns,
+                                            )
+                                            if turn.get("tool_calls") or turn["content"].strip()
+                                        )
                             conversations.append(convo)
 
-                        return {"conversations": conversations, **preserved_columns}
+                        return {**preserved_columns, "conversations": conversations}
 
                     try:
                         dataset = dataset.map(
@@ -771,6 +835,9 @@ def format_dataset(
 
     else:
         raise ValueError(f"Unknown format_type: {format_type}")
+
+
+_FORMAT_DATASET_SIGNATURE = inspect.signature(_format_dataset)
 
 
 def format_and_template_dataset(
@@ -1052,7 +1119,7 @@ def format_and_template_dataset(
             raw_text_column = raw_text_column,
         )
 
-        if dataset_info["final_format"] == "raw_text":
+        if dataset_info["final_format"] in ("raw_text", PRETOKENIZED_FORMAT):
             summary = get_dataset_info_summary(dataset_info)
             return {
                 "dataset": dataset_info["dataset"],

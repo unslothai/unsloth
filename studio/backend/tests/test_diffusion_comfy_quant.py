@@ -83,9 +83,7 @@ def test_per_layer_int8_convrot_is_detected(tmp_path):
     assert cq.comfy_quant_error(scan) is None
 
 
-@pytest.mark.parametrize(
-    "fmt", ["nvfp4", "mxfp8", "convrot_w4a4", "asym_w4a8_int8", "w6a8_int8", "brand_new"]
-)
+@pytest.mark.parametrize("fmt", ["convrot_w4a4", "asym_w4a8_int8", "w6a8_int8", "brand_new"])
 def test_unsupported_formats_are_refused_by_name(tmp_path, fmt):
     path = _save(
         tmp_path / "m.safetensors",
@@ -100,8 +98,8 @@ def test_unsupported_formats_are_refused_by_name(tmp_path, fmt):
 
 
 def test_header_quantization_metadata_is_read_and_refused(tmp_path):
-    """The Comfy-Org nvfp4 files declare formats only in the header, with no per-layer tensors."""
-    meta = {cq.QUANT_METADATA_KEY: json.dumps({"layers": {"a": {"format": "nvfp4"}}})}
+    """Comfy-Org files declare formats only in the header, with no per-layer tensors."""
+    meta = {cq.QUANT_METADATA_KEY: json.dumps({"layers": {"a": {"format": "convrot_w4a4"}}})}
     path = _save(
         tmp_path / "m.safetensors",
         {
@@ -114,7 +112,7 @@ def test_header_quantization_metadata_is_read_and_refused(tmp_path):
     )
     scan = cq.scan_comfy_quant(path)
     assert scan is not None and not scan.layers
-    with pytest.raises(ValueError, match = "'nvfp4'"):
+    with pytest.raises(ValueError, match = "'convrot_w4a4'"):
         cq.refuse_comfy_quant(path)
 
 

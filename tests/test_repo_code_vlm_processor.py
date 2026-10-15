@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Processor selection for repo-code VLMs registering only AutoModel / AutoModelForCausalLM.
-
-Runs the selection code of vision.py with stub processor classes (no network, weights or GPU).
-"""
+"""Processor selection for VLMs registering only AutoModel/AutoModelForCausalLM, using stub classes."""
 
 import ast
 import importlib.util
@@ -95,6 +92,7 @@ def _select(
             transformers, "AutoModelForVision2Seq", transformers.AutoModelForImageTextToText
         ),
         "AutoModelForImageTextToText": transformers.AutoModelForImageTextToText,
+        "AutoModelForSpeechSeq2Seq": transformers.AutoModelForSpeechSeq2Seq,
         "_multimodal_auto_classes": lambda: (),
         "AutoProcessor": fake_processor,
         "AutoTokenizer": fake_tokenizer,

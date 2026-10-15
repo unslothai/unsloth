@@ -22,18 +22,39 @@ class ManagedToolTransport:
     heals_text_tool_calls = True
     sanitizes_provider_frames = False
 
-    def __init__(self, client, engine, body):
+    def __init__(
+        self,
+        client,
+        engine,
+        body,
+        *,
+        preserve_thinking = None,
+        message_fitter = None,
+    ):
         self.client, self.engine, self.body = client, engine, body
+        self._preserve_thinking = preserve_thinking
+        self._message_fitter = message_fitter
+        # The tool loop keeps a turn's reasoning_content on the assistant message only when asked.
+        self.preserves_reasoning = bool(engine.reasoning_parser and preserve_thinking)
 
     async def stream(self, *, messages, tools, tool_choice, cancel_event):
         from routes import inference as api
 
+        truncation_line = max_tokens = None
+        if self._message_fitter is not None:
+            messages, max_tokens, truncation_line = await self._message_fitter(messages)
         body = {
             **self.body,
-            "messages": engine_messages(messages),
+            "messages": self.engine.replay_reasoning(
+                engine_messages(messages), self._preserve_thinking
+            ),
             "stream": True,
             "stream_options": {"include_usage": True},
         }
+        if max_tokens:
+            body["max_tokens"] = max_tokens
+        if truncation_line:
+            yield truncation_line
         if tools:
             body["tools"] = tools
             body["tool_choice"] = tool_choice if tool_choice is not None else "auto"
@@ -57,9 +78,62 @@ class ManagedToolTransport:
                     if cancel_event.is_set():
                         return
                     if line.startswith("data:"):
-                        yield line
+                        yield _with_reasoning_content(line)
             finally:
                 await lines.aclose()
+
+
+def _with_reasoning_content(line: str) -> str:
+    """vLLM 0.11+ streams thinking as ``reasoning``; Studio's readers take ``reasoning_content``."""
+    if '"reasoning"' not in line:
+        return line
+    try:
+        event = json.loads(line[5:])
+    except ValueError:
+        return line
+    changed = False
+    for choice in event.get("choices") or () if isinstance(event, dict) else ():
+        delta = choice.get("delta") if isinstance(choice, dict) else None
+        if isinstance(delta, dict) and "reasoning" in delta:
+            reasoning = delta.pop("reasoning")
+            if reasoning and not delta.get("reasoning_content"):
+                delta["reasoning_content"] = reasoning
+            changed = True
+    return "data: " + json.dumps(event) if changed else line
+
+
+def _message_fitter(payload, engine, public, tools):
+    """Auto-compact to the vLLM engine's window; the exact count refuses tools, so this estimates."""
+    from routes import inference as api
+
+    if (
+        getattr(engine, "engine", None) != "vllm"
+        or api._rolling_context_policy(payload) is None
+        or not engine.context
+    ):
+        return None
+    fit_payload = payload.model_copy(
+        update = {
+            "context_window": engine.context,
+            "compaction_threshold": min(
+                api._EXTERNAL_COMPACTION_THRESHOLD_MAX,
+                int(engine.context * (1 - api._EXTERNAL_COMPACTION_HEADROOM)),
+            ),
+        }
+    )
+
+    async def fit(messages):
+        fitted, truncation, max_tokens = await asyncio.to_thread(
+            api._fit_external_context, messages, fit_payload, tools = tools
+        )
+        line = None
+        if truncation and truncation.get("dropped_messages"):
+            line = api._context_truncated_sse_chunk(
+                "chatcmpl-" + uuid.uuid4().hex[:12], public, truncation
+            ).rstrip("\n")
+        return fitted, max_tokens, line
+
+    return fit
 
 
 def _with_model(line: str, public: str) -> str:
@@ -123,6 +197,7 @@ async def managed_tool_chat(
             tools_on = tools_on,
             mcp_allowed = mcp_on,
             supports_vision = bool(info.get("is_vision")),
+            ui_events = ui_events,
         )
         if tools_on or mcp_on
         else []
@@ -157,10 +232,13 @@ async def managed_tool_chat(
     # The engine serves config.identifier (a local path for directory loads); clients get the
     # same public id as every other chat path.
     public = api._orchestrator_public_model_id(backend) or engine.model
+    messages = engine.replay_reasoning(messages, payload.preserve_thinking)
     body = {
         "model": engine.model,
         "messages": messages,
-        "chat_template_kwargs": {"enable_thinking": False},
+        **engine.reasoning_fields(
+            payload.enable_thinking, payload.reasoning_effort, payload.preserve_thinking
+        ),
     }
     for key in (
         "temperature",
@@ -203,7 +281,13 @@ async def managed_tool_chat(
                 cancel_event = cancel, request = request, client = client
             )
         )
-        transport = ManagedToolTransport(client, engine, body)
+        transport = ManagedToolTransport(
+            client,
+            engine,
+            body,
+            preserve_thinking = payload.preserve_thinking,
+            message_fitter = _message_fitter(payload, engine, public, tools or payload.tools),
+        )
         stripper = api.ServerToolCallStripper()
         stream = None
         failed = False
@@ -234,22 +318,40 @@ async def managed_tool_chat(
                         rag_scope = payload.rag_scope,
                         auto_heal = payload.auto_heal_tool_calls,
                         nudge_tool_calls = payload.nudge_tool_calls,
+                        deduplicate_tool_calls = payload.deduplicate_tool_calls,
                         on_withheld_tool_call = None if ui_events else stripper.arm,
                         on_provider_turn_end = None if ui_events else stripper.end_turn,
                     ),
                     cancel_event = cancel,
                 )
             elif not payload.stream:
+                request_body = {**body, "stream": False}
+                truncation_line = None
+                if transport._message_fitter is not None:
+                    fitted, max_tokens, truncation_line = await transport._message_fitter(messages)
+                    request_body["messages"] = engine.replay_reasoning(
+                        engine_messages(fitted), payload.preserve_thinking
+                    )
+                    if max_tokens:
+                        request_body["max_tokens"] = max_tokens
                 response = await client.post(
                     engine.base_url + "/v1/chat/completions",
                     headers = engine.headers,
-                    json = {**body, "stream": False},
+                    json = request_body,
                 )
                 if response.status_code != 200:
                     raise api._openai_passthrough_error(response.status_code, response.text)
                 data = response.json()
                 if isinstance(data, dict) and "model" in data:
                     data["model"] = public
+                for choice in data.get("choices") or () if isinstance(data, dict) else ():
+                    message = choice.get("message") if isinstance(choice, dict) else None
+                    if isinstance(message, dict) and "reasoning" in message:
+                        reasoning = message.pop("reasoning")
+                        if reasoning and not message.get("reasoning_content"):
+                            message["reasoning_content"] = reasoning
+                if truncation_line and isinstance(data, dict):
+                    data["context_truncated"] = json.loads(truncation_line[5:])["context_truncated"]
                 api._monitor_openai_chunk(monitor_id, data, streaming = False)
                 yield data
                 return
@@ -361,10 +463,16 @@ async def managed_tool_chat(
                 raise HTTPException(status_code = 502, detail = event)
             if event.get("usage"):
                 result["usage"] = event["usage"]
+            if event.get("context_truncated"):
+                result["context_truncated"] = event["context_truncated"]
+            message = result["choices"][0]["message"]
             for choice in event.get("choices", []):
-                result["choices"][0]["message"]["content"] += (
-                    choice.get("delta", {}).get("content") or ""
-                )
+                delta = choice.get("delta") or {}
+                message["content"] += delta.get("content") or ""
+                if delta.get("reasoning_content"):
+                    message["reasoning_content"] = (
+                        message.get("reasoning_content", "") + delta["reasoning_content"]
+                    )
                 if choice.get("finish_reason"):
                     result["choices"][0]["finish_reason"] = choice["finish_reason"]
     return JSONResponse(result)

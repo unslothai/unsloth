@@ -1785,7 +1785,7 @@ def test_a_cancel_landing_at_the_spawn_never_leaves_a_child_running():
 
     source = inspect.getsource(LlamaCppBackend.load_model)
     helper = source[source.index("def _spawn_and_wait(") :]
-    popen = helper.index("_spawned = subprocess.Popen(")
+    popen = helper.index("_spawned = _spawn_on_lifetime_thread(")
     lock = helper.rindex("with self._spawn_lock:", 0, popen)
     assert "if _load_cancelled():" in helper[lock:popen]
     after = helper[popen : popen + 2500]

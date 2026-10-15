@@ -1,20 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The chat UI driver's Recents step must wait for the thread, and must be able to fail.
-
-The step used to click the first Recents row, sleep 500 ms and read the turns once. Opening a
-chat runs a history loader that awaits four requests in a row before anything renders, and on
-the Windows lane (two Studios and two browsers on one runner) that took longer than 500 ms in
-about one run in four, so the read found `turns_text=''`. That never failed a job, because the
-soft_fail sat inside the `try` whose `except Exception` was meant for click errors: in STRICT
-mode the AssertionError was caught, logged as "recent-thread click 0 failed", and the step
-passed. The claim was being logged, not checked.
-
-The browser tests run the driver's helper, extracted by `ast` so nothing else in the driver
-executes, against a page whose thread renders late. They skip when Chromium is unavailable;
-the source checks below always run.
-"""
+"""The soft_fail check must sit outside the try, or STRICT mode's AssertionError is swallowed."""
 
 from __future__ import annotations
 
@@ -90,8 +77,6 @@ def test_no_soft_fail_in_the_helper_is_swallowed_by_a_broad_except() -> None:
             )
 
 
-# --- behaviour, in a real browser ------------------------------------------------------------
-
 ORIGIN = "http://recents.test"
 
 PAGE = """<!doctype html><html><body>
@@ -143,7 +128,7 @@ def _load_helper(timeout_ms: int | None = None):
     assert len(keep) == 2, "the helper or its timeout constant moved"
     infos: list[str] = []
 
-    def soft_fail(message: str) -> None:  # STRICT, as in CI
+    def soft_fail(message: str) -> None:
         raise AssertionError(f"[ui] FAIL: {message}")
 
     scope = {
@@ -161,8 +146,7 @@ def _load_helper(timeout_ms: int | None = None):
 @pytest.fixture(scope = "module")
 def browser():
     sync_api = pytest.importorskip("playwright.sync_api")
-    # Without Playwright, test_heavy_thread_measurement_integrity.py leaves a stand-in
-    # playwright.sync_api in sys.modules whose every name raises RuntimeError. Same answer.
+    # Without Playwright, a stand-in playwright.sync_api raises RuntimeError on every name.
     try:
         manager = sync_api.sync_playwright()
     except RuntimeError as exc:
@@ -170,7 +154,7 @@ def browser():
     with manager as p:
         try:
             b = p.chromium.launch()
-        except Exception as exc:  # no browser build installed here
+        except Exception as exc:
             pytest.skip(f"chromium unavailable: {exc}")
         yield b
         b.close()
@@ -311,7 +295,6 @@ def test_our_turns_left_on_screen_do_not_pass_a_different_chat(browser) -> None:
         browser, [other, {**OURS, "title": "Rapid replies", "loadMs": 50}], keep_stale = True
     )
     try:
-        # Our thread is already on screen before the step runs.
         page.locator('[data-thread-id="t-ours"]').click()
         page.wait_for_selector('[data-role="user"]')
         helper(page, SENT, lambda name: None)

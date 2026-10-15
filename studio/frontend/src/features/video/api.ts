@@ -41,6 +41,8 @@ export interface VideoGenerationDefaults {
   // Backend-owned keyframe canvas rule, or null when unsupported.
   canvas_short_edge?: number | null;
   canvas_max_pixels?: number | null;
+  // Image-to-video families without that rule take the preset nearest the first frame's aspect.
+  canvas_from_presets?: boolean;
   // Released schedule shifts, or null when unsupported.
   flow_shift?: number | null;
   audio_flow_shift?: number | null;
@@ -91,6 +93,10 @@ export interface VideoStatus {
   supports_cfg: boolean;
   // Conditioning supported by the loaded checkpoint.
   supports_keyframes?: boolean;
+  // Per keyframe: every image-to-video family takes a first frame; only MiniMax-H3 a last one.
+  // Absent on older backends, which read supports_keyframes for both.
+  supports_first_frame?: boolean;
+  supports_last_frame?: boolean;
   supports_references?: boolean;
   // Resident MiniMax-H3 denoiser partition, if any.
   h3_task?: string | null;
@@ -136,8 +142,8 @@ export interface VideoLoadRequest {
   // from_pretrained.
   gguf_filename?: string;
   // How to load the model (omit to auto-detect from gguf_filename): "gguf", "single_file"
-  // (safetensors transformer) or "pipeline". Non-GGUF kinds are restricted to unsloth/* or
-  // family bases.
+  // (safetensors transformer) or "pipeline". A single_file .safetensors loads from any repo;
+  // pipeline loads are restricted to unsloth/* or family bases.
   model_kind?: "gguf" | "single_file" | "pipeline";
   base_repo?: string;
   family_override?: string;
