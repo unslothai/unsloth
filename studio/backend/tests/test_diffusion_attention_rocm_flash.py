@@ -546,7 +546,7 @@ def test_status_reason_is_derived_from_the_engaged_backend():
     assert "cuDNN fused attention on NVIDIA" not in video
 
 
-# Review: masked attention (HunyuanVideo 1.5 mixed padding) must never reach diffusers' flash backend, which raises on
+# Masked attention (HunyuanVideo 1.5 mixed padding) must never reach diffusers' flash backend, which raises on
 # attn_mask; and every attention geometry that receives the backend must pass the timing, not only the most common one.
 
 
@@ -1207,7 +1207,7 @@ def test_bucket_probe_error_stays_native_without_retrying_every_call(monkeypatch
     assert timed == [4096, 32768, 32768] and ran == ["native", "native", "flash"]
 
 
-# Review: an in-forward probe sits on top of the live request's tensors; no room for it defers, never rejects.
+# An in-forward probe sits on top of the live request's tensors; no room for it defers, never rejects.
 
 
 def test_bucket_probe_without_room_beside_the_forward_is_deferred_not_rejected(monkeypatch):
