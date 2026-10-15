@@ -42,8 +42,9 @@ def _lora_config(monkeypatch, **kwargs):
         raise _Captured(lora_config)
 
     monkeypatch.setattr(llama_module, "_get_peft_model", capture)
-    # An earlier FastModel.from_pretrained in this process sets it to 1, routing to FastBaseModel.
+    # An earlier FastModel.from_pretrained in this process can leave either at 1, skipping LoraConfig.
     monkeypatch.setenv("UNSLOTH_USE_NEW_MODEL", "0")
+    monkeypatch.setenv("UNSLOTH_ENABLE_FULL_FINETUNING", "0")
     with pytest.raises(_Captured) as info:
         FastLlamaModel.get_peft_model(
             _tiny_llama_with_aux_stack(),
