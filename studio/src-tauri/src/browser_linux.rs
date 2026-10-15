@@ -64,10 +64,14 @@ pub async fn install<R: Runtime>(main: &Webview<R>) -> Result<(), String> {
             let overlay = gtk::Overlay::new();
             overlay.set_hexpand(true);
             overlay.set_vexpand(true);
+            let focused = main.has_focus();
             parent.remove(&main);
             overlay.add(&main);
             parent.pack_start(&overlay, true, true, 0);
             overlay.show_all();
+            if focused {
+                main.grab_focus();
+            }
             *host = Some(Host {
                 overlay,
                 pages: HashMap::new(),
