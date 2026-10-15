@@ -55,13 +55,29 @@ def _bwd_configs():
 @triton.autotune(configs = _fwd_configs(), key = ["HEAD_DIM", "G"])
 @triton.jit
 def _lh_fwd(
-    Q, K, V, O, LSE, LO, HI,
+    Q,
+    K,
+    V,
+    O,
+    LSE,
+    LO,
+    HI,
     qk_scale,
-    sqb, sqh, sqm,
-    skb, skh, skn,
-    svb, svh, svn,
-    sob, soh, som,
-    H, G, S,
+    sqb,
+    sqh,
+    sqm,
+    skb,
+    skh,
+    skn,
+    svb,
+    svh,
+    svn,
+    sob,
+    soh,
+    som,
+    H,
+    G,
+    S,
     HEAD_DIM: tl.constexpr,
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
@@ -120,10 +136,17 @@ def _lh_fwd(
 
 @triton.jit
 def _lh_bwd_pre(
-    O, DO, DELTA,
-    sob, soh, som,
-    sdob, sdoh, sdom,
-    H, S,
+    O,
+    DO,
+    DELTA,
+    sob,
+    soh,
+    som,
+    sdob,
+    sdoh,
+    sdom,
+    H,
+    S,
     HEAD_DIM: tl.constexpr,
     BLOCK_M: tl.constexpr,
 ):
@@ -136,11 +159,13 @@ def _lh_bwd_pre(
     row_ok = offs_m < S
     o = tl.load(
         O + off_b * sob + off_h * soh + offs_m[:, None] * som + offs_d[None, :],
-        mask = row_ok[:, None], other = 0.0,
+        mask = row_ok[:, None],
+        other = 0.0,
     )
     do = tl.load(
         DO + off_b * sdob + off_h * sdoh + offs_m[:, None] * sdom + offs_d[None, :],
-        mask = row_ok[:, None], other = 0.0,
+        mask = row_ok[:, None],
+        other = 0.0,
     )
     delta = tl.sum(o.to(tl.float32) * do.to(tl.float32), 1)
     tl.store(DELTA + off_bh.to(tl.int64) * S + offs_m, delta, mask = row_ok)
@@ -149,14 +174,35 @@ def _lh_bwd_pre(
 @triton.autotune(configs = _bwd_configs(), key = ["HEAD_DIM", "G"])
 @triton.jit
 def _lh_bwd_dq(
-    Q, K, V, DO, DQ, LSE, DELTA, LO, HI,
-    qk_scale, sm_scale,
-    sqb, sqh, sqm,
-    skb, skh, skn,
-    svb, svh, svn,
-    sdob, sdoh, sdom,
-    sdqb, sdqh, sdqm,
-    H, G, S,
+    Q,
+    K,
+    V,
+    DO,
+    DQ,
+    LSE,
+    DELTA,
+    LO,
+    HI,
+    qk_scale,
+    sm_scale,
+    sqb,
+    sqh,
+    sqm,
+    skb,
+    skh,
+    skn,
+    svb,
+    svh,
+    svn,
+    sdob,
+    sdoh,
+    sdom,
+    sdqb,
+    sdqh,
+    sdqm,
+    H,
+    G,
+    S,
     HEAD_DIM: tl.constexpr,
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
@@ -210,15 +256,41 @@ def _lh_bwd_dq(
 @triton.autotune(configs = _bwd_configs(), key = ["HEAD_DIM", "G"])
 @triton.jit
 def _lh_bwd_dkdv(
-    Q, K, V, DO, DK, DV, LSE, DELTA, LO, HI, QLO, QHI,
-    qk_scale, sm_scale,
-    sqb, sqh, sqm,
-    skb, skh, skn,
-    svb, svh, svn,
-    sdob, sdoh, sdom,
-    sdkb, sdkh, sdkn,
-    sdvb, sdvh, sdvn,
-    HKV, G, S,
+    Q,
+    K,
+    V,
+    DO,
+    DK,
+    DV,
+    LSE,
+    DELTA,
+    LO,
+    HI,
+    QLO,
+    QHI,
+    qk_scale,
+    sm_scale,
+    sqb,
+    sqh,
+    sqm,
+    skb,
+    skh,
+    skn,
+    svb,
+    svh,
+    svn,
+    sdob,
+    sdoh,
+    sdom,
+    sdkb,
+    sdkh,
+    sdkn,
+    sdvb,
+    sdvh,
+    sdvn,
+    HKV,
+    G,
+    S,
     HEAD_DIM: tl.constexpr,
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
@@ -258,8 +330,12 @@ def _lh_bwd_dkdv(
         for start_m in range(m_start, m_end, BLOCK_M):
             cur_m = start_m + offs_m
             row_ok = cur_m < S
-            q = tl.load(Qh + cur_m[:, None] * sqm + offs_d[None, :], mask = row_ok[:, None], other = 0.0)
-            do = tl.load(DOh + cur_m[:, None] * sdom + offs_d[None, :], mask = row_ok[:, None], other = 0.0)
+            q = tl.load(
+                Qh + cur_m[:, None] * sqm + offs_d[None, :], mask = row_ok[:, None], other = 0.0
+            )
+            do = tl.load(
+                DOh + cur_m[:, None] * sdom + offs_d[None, :], mask = row_ok[:, None], other = 0.0
+            )
             lse = tl.load(LSE + row_base + cur_m, mask = row_ok, other = 0.0)
             delta = tl.load(DELTA + row_base + cur_m, mask = row_ok, other = 0.0)
             lo = tl.load(LO + cur_m, mask = row_ok, other = S)
@@ -295,13 +371,29 @@ def _fwd_impl(q, k, v, lo, hi, scale):
     lse = torch.empty((B, H, S), device = q.device, dtype = torch.float32)
     with torch.cuda.device(q.device):
         _lh_fwd[lambda meta: (triton.cdiv(S, meta["BLOCK_M"]), B * H)](
-            q, k, v, o, lse, lo, hi,
+            q,
+            k,
+            v,
+            o,
+            lse,
+            lo,
+            hi,
             scale * _LOG2E,
-            q.stride(0), q.stride(1), q.stride(2),
-            k.stride(0), k.stride(1), k.stride(2),
-            v.stride(0), v.stride(1), v.stride(2),
-            o.stride(0), o.stride(1), o.stride(2),
-            H, H // HKV, S,
+            q.stride(0),
+            q.stride(1),
+            q.stride(2),
+            k.stride(0),
+            k.stride(1),
+            k.stride(2),
+            v.stride(0),
+            v.stride(1),
+            v.stride(2),
+            o.stride(0),
+            o.stride(1),
+            o.stride(2),
+            H,
+            H // HKV,
+            S,
             HEAD_DIM = D,
         )
     return o, lse
@@ -317,39 +409,97 @@ def _bwd_impl(do, q, k, v, o, lse, lo, hi, scale):
     dk = torch.empty_like(k)
     dv = torch.empty_like(v)
     delta = torch.empty((B, H, S), device = q.device, dtype = torch.float32)
-    positions = torch.arange(S, device = q.device, dtype = torch.int32).expand(lo.shape[0], S).contiguous()
+    positions = (
+        torch.arange(S, device = q.device, dtype = torch.int32).expand(lo.shape[0], S).contiguous()
+    )
     # First query row whose interval ends at or after key j, last row starting at or before j.
     qlo = torch.searchsorted(hi, positions, out_int32 = True)
     qhi = torch.searchsorted(lo, positions, right = True, out_int32 = True) - 1
     with torch.cuda.device(q.device):
         _lh_bwd_pre[(triton.cdiv(S, 16), B * H)](
-            o, do, delta,
-            o.stride(0), o.stride(1), o.stride(2),
-            do.stride(0), do.stride(1), do.stride(2),
-            H, S,
-            HEAD_DIM = D, BLOCK_M = 16, num_warps = 4,
+            o,
+            do,
+            delta,
+            o.stride(0),
+            o.stride(1),
+            o.stride(2),
+            do.stride(0),
+            do.stride(1),
+            do.stride(2),
+            H,
+            S,
+            HEAD_DIM = D,
+            BLOCK_M = 16,
+            num_warps = 4,
         )
         _lh_bwd_dkdv[lambda meta: (triton.cdiv(S, meta["BLOCK_N"]), B * HKV)](
-            q, k, v, do, dk, dv, lse, delta, lo, hi, qlo, qhi,
-            scale * _LOG2E, scale,
-            q.stride(0), q.stride(1), q.stride(2),
-            k.stride(0), k.stride(1), k.stride(2),
-            v.stride(0), v.stride(1), v.stride(2),
-            do.stride(0), do.stride(1), do.stride(2),
-            dk.stride(0), dk.stride(1), dk.stride(2),
-            dv.stride(0), dv.stride(1), dv.stride(2),
-            HKV, G, S,
+            q,
+            k,
+            v,
+            do,
+            dk,
+            dv,
+            lse,
+            delta,
+            lo,
+            hi,
+            qlo,
+            qhi,
+            scale * _LOG2E,
+            scale,
+            q.stride(0),
+            q.stride(1),
+            q.stride(2),
+            k.stride(0),
+            k.stride(1),
+            k.stride(2),
+            v.stride(0),
+            v.stride(1),
+            v.stride(2),
+            do.stride(0),
+            do.stride(1),
+            do.stride(2),
+            dk.stride(0),
+            dk.stride(1),
+            dk.stride(2),
+            dv.stride(0),
+            dv.stride(1),
+            dv.stride(2),
+            HKV,
+            G,
+            S,
             HEAD_DIM = D,
         )
         _lh_bwd_dq[lambda meta: (triton.cdiv(S, meta["BLOCK_M"]), B * H)](
-            q, k, v, do, dq, lse, delta, lo, hi,
-            scale * _LOG2E, scale,
-            q.stride(0), q.stride(1), q.stride(2),
-            k.stride(0), k.stride(1), k.stride(2),
-            v.stride(0), v.stride(1), v.stride(2),
-            do.stride(0), do.stride(1), do.stride(2),
-            dq.stride(0), dq.stride(1), dq.stride(2),
-            H, G, S,
+            q,
+            k,
+            v,
+            do,
+            dq,
+            lse,
+            delta,
+            lo,
+            hi,
+            scale * _LOG2E,
+            scale,
+            q.stride(0),
+            q.stride(1),
+            q.stride(2),
+            k.stride(0),
+            k.stride(1),
+            k.stride(2),
+            v.stride(0),
+            v.stride(1),
+            v.stride(2),
+            do.stride(0),
+            do.stride(1),
+            do.stride(2),
+            dq.stride(0),
+            dq.stride(1),
+            dq.stride(2),
+            H,
+            G,
+            S,
             HEAD_DIM = D,
         )
     return dq, dk, dv
@@ -358,15 +508,22 @@ def _bwd_impl(do, q, k, v, o, lse, lo, hi, scale):
 # Opaque custom ops keep torch.compile from tracing into Triton (no graph break, no
 # re-emission with fp fusion). The plain autograd.Function is the fallback for torch
 # builds without torch.library.custom_op.
-_HAS_CUSTOM_OP = hasattr(torch, "library") and hasattr(torch.library, "custom_op") \
+_HAS_CUSTOM_OP = (
+    hasattr(torch, "library")
+    and hasattr(torch.library, "custom_op")
     and hasattr(torch.library, "register_autograd")
+)
 
 if _HAS_CUSTOM_OP:
 
     @torch.library.custom_op("unsloth::large_head_attention_fwd", mutates_args = ())
     def _fwd_op(
-        q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
-        lo: torch.Tensor, hi: torch.Tensor, scale: float,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        lo: torch.Tensor,
+        hi: torch.Tensor,
+        scale: float,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         return _fwd_impl(q, k, v, lo, hi, scale)
 
@@ -378,8 +535,15 @@ if _HAS_CUSTOM_OP:
 
     @torch.library.custom_op("unsloth::large_head_attention_bwd", mutates_args = ())
     def _bwd_op(
-        do: torch.Tensor, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
-        o: torch.Tensor, lse: torch.Tensor, lo: torch.Tensor, hi: torch.Tensor, scale: float,
+        do: torch.Tensor,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        o: torch.Tensor,
+        lse: torch.Tensor,
+        lo: torch.Tensor,
+        hi: torch.Tensor,
+        scale: float,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         return _bwd_impl(do, q, k, v, o, lse, lo, hi, scale)
 
@@ -399,7 +563,9 @@ if _HAS_CUSTOM_OP:
         return dq, dk, dv, None, None, None
 
     torch.library.register_autograd(
-        "unsloth::large_head_attention_fwd", _backward, setup_context = _setup_context,
+        "unsloth::large_head_attention_fwd",
+        _backward,
+        setup_context = _setup_context,
     )
 
     def _attention(q, k, v, lo, hi, scale):
@@ -426,13 +592,21 @@ else:
 
 
 def _dense_intervals(B, S, causal, device):
-    hi = torch.arange(S, device = device, dtype = torch.int32) if causal else \
-        torch.full((S,), S - 1, device = device, dtype = torch.int32)
+    hi = (
+        torch.arange(S, device = device, dtype = torch.int32)
+        if causal
+        else torch.full((S,), S - 1, device = device, dtype = torch.int32)
+    )
     lo = torch.zeros((B, S), device = device, dtype = torch.int32)
     return lo, hi.expand(B, S).contiguous()
 
 
-def intervals_from_mask(mask, B, S, _rows = 1024):
+def intervals_from_mask(
+    mask,
+    B,
+    S,
+    _rows = 1024,
+):
     """(lo, hi) int32 [B, S] such that query i attends exactly keys lo[i]..hi[i], or None.
 
     None unless every row of `mask` (bool, or additive float with 0 = keep) allows one
@@ -483,13 +657,22 @@ def intervals_from_mask(mask, B, S, _rows = 1024):
     return result
 
 
-def large_head_attention(q, k, v, lo, hi, scale = None):
+def large_head_attention(
+    q,
+    k,
+    v,
+    lo,
+    hi,
+    scale = None,
+):
     """Attention over q [B, Hq, S, D], k / v [B, Hkv, S, D] where query i attends keys
     lo[i]..hi[i] (int32 [B, S]). Returns [B, S, Hq, D] contiguous."""
     if scale is None:
         scale = q.shape[-1] ** -0.5
     q, k, v = [x if x.stride(-1) == 1 else x.contiguous() for x in (q, k, v)]
-    out = _attention(q, k, v, lo.to(torch.int32).contiguous(), hi.to(torch.int32).contiguous(), float(scale))
+    out = _attention(
+        q, k, v, lo.to(torch.int32).contiguous(), hi.to(torch.int32).contiguous(), float(scale)
+    )
     return out.transpose(1, 2)
 
 
@@ -539,22 +722,27 @@ def _self_check(device, dtype):
             ]
             q, k, v = [x.requires_grad_() for x in (q, k, v)]
             lo, hi = _dense_intervals(1, 80, True, device)
-            out = large_head_attention(q, k, v, lo, hi, 512 ** -0.5)
+            out = large_head_attention(q, k, v, lo, hi, 512**-0.5)
             grads = torch.autograd.grad(out, (q, k, v), g)
             qf, kf, vf = [x.detach().float().requires_grad_() for x in (q, k, v)]
             ref = torch.nn.functional.scaled_dot_product_attention(
-                qf, kf.repeat_interleave(2, 1), vf.repeat_interleave(2, 1), is_causal = True,
+                qf,
+                kf.repeat_interleave(2, 1),
+                vf.repeat_interleave(2, 1),
+                is_causal = True,
             ).transpose(1, 2)
             ref_grads = torch.autograd.grad(ref, (qf, kf, vf), g.float())
         passed = all(
-            torch.isfinite(a).all().item() and
-            ((a.float() - b).abs().max() <= 0.05 * b.abs().max() + 0.02).item()
+            torch.isfinite(a).all().item()
+            and ((a.float() - b).abs().max() <= 0.05 * b.abs().max() + 0.02).item()
             for a, b in zip((out, *grads), (ref, *ref_grads))
         )
     except torch.cuda.OutOfMemoryError:
         raise
     except Exception as exc:
-        _warn_once(f"Unsloth: head_dim 512 attention kernel failed its self check ({exc}); using SDPA.")
+        _warn_once(
+            f"Unsloth: head_dim 512 attention kernel failed its self check ({exc}); using SDPA."
+        )
         passed = False
     _SELF_CHECK[key] = passed
     return passed
@@ -592,6 +780,7 @@ def _math_sdpa_requested():
         return True
     order = list(getattr(torch._C, "_get_sdp_priority_order", list)())
     from torch.nn.attention import SDPBackend
+
     math, efficient = int(SDPBackend.MATH), int(SDPBackend.EFFICIENT_ATTENTION)
     return math in order and efficient in order and order.index(math) < order.index(efficient)
 
@@ -601,11 +790,21 @@ if hasattr(torch.compiler, "assume_constant_result"):
 
 
 def _make_router(original):
-    def _sdpa_large_head(module, query, key, value, attention_mask, dropout = 0.0,
-                         scaling = None, is_causal = None, **kwargs):
+    def _sdpa_large_head(
+        module,
+        query,
+        key,
+        value,
+        attention_mask,
+        dropout = 0.0,
+        scaling = None,
+        is_causal = None,
+        **kwargs,
+    ):
         if (
             _enabled()
-            and torch.is_tensor(query) and query.dim() == 4
+            and torch.is_tensor(query)
+            and query.dim() == 4
             and query.shape[-1] > 256
             and not dropout
             # The kernel only reads the mask's structure, so a trainable mask would get no grad.
@@ -634,7 +833,9 @@ def _make_router(original):
             if intervals is not None and checked:
                 scale = scaling if scaling is not None else query.shape[-1] ** -0.5
                 if compiling:
-                    return large_head_attention(query, key, value, *intervals, scale).contiguous(), None
+                    return large_head_attention(
+                        query, key, value, *intervals, scale
+                    ).contiguous(), None
                 try:
                     out = large_head_attention(query, key, value, *intervals, scale).contiguous()
                     LARGE_HEAD_ENGAGED["calls"] += 1
@@ -644,9 +845,20 @@ def _make_router(original):
                 except Exception as exc:
                     LARGE_HEAD_ENGAGED["fallback"] += 1
                     _SELF_CHECK[(str(query.device), query.dtype)] = False
-                    _warn_once(f"Unsloth: head_dim 512 attention kernel failed ({exc}); using SDPA.")
-        return original(module, query, key, value, attention_mask, dropout = dropout,
-                        scaling = scaling, is_causal = is_causal, **kwargs)
+                    _warn_once(
+                        f"Unsloth: head_dim 512 attention kernel failed ({exc}); using SDPA."
+                    )
+        return original(
+            module,
+            query,
+            key,
+            value,
+            attention_mask,
+            dropout = dropout,
+            scaling = scaling,
+            is_causal = is_causal,
+            **kwargs,
+        )
 
     # Keep the wrapped router's sentinels (unsloth_zoo's gemma-4 sliding router checks its own), so a
     # second model load does not wrap this router again and recurse between the two.
@@ -674,7 +886,8 @@ def patch_large_head_attention(model = None):
         # Compiled graphs only read the cached verdict, so check before any tracing.
         try:
             targets = {
-                (p.device, p.dtype) for p in model.parameters()
+                (p.device, p.dtype)
+                for p in model.parameters()
                 if p.is_cuda and p.dtype in (torch.float16, torch.bfloat16)
             }
         except Exception:

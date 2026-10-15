@@ -104,8 +104,17 @@ def test_inference_mask_is_rescanned_after_in_place_update():
 def _sentinel():
     calls = []
 
-    def original(module, query, key, value, attention_mask, dropout = 0.0,
-                 scaling = None, is_causal = None, **kwargs):
+    def original(
+        module,
+        query,
+        key,
+        value,
+        attention_mask,
+        dropout = 0.0,
+        scaling = None,
+        is_causal = None,
+        **kwargs,
+    ):
         calls.append(dict(dropout = dropout, scaling = scaling, is_causal = is_causal, **kwargs))
         return "original", None
 
@@ -161,11 +170,15 @@ def test_kernel_matches_reference(S, heads, kind):
     dtype = torch.bfloat16 if torch.cuda.get_device_capability()[0] >= 8 else torch.float16
     torch.manual_seed(S + H)
     B, D = 2, 512
-    allowed = {
-        "causal": _causal(S),
-        "packed": _packed(S, [1, S // 3, S // 3 + 2]),
-        "right_pad": _causal(S) & (torch.arange(S)[None, :] < S - 5),
-    }[kind].cuda()[None, None].expand(B, 1, S, S)
+    allowed = (
+        {
+            "causal": _causal(S),
+            "packed": _packed(S, [1, S // 3, S // 3 + 2]),
+            "right_pad": _causal(S) & (torch.arange(S)[None, :] < S - 5),
+        }[kind]
+        .cuda()[None, None]
+        .expand(B, 1, S, S)
+    )
     q = torch.randn(B, S, H, D, device = "cuda", dtype = dtype).transpose(1, 2)
     k = torch.randn(B, S, HKV, D, device = "cuda", dtype = dtype).transpose(1, 2)
     v = torch.randn(B, S, HKV, D, device = "cuda", dtype = dtype).transpose(1, 2)
@@ -267,7 +280,7 @@ def test_patch_self_checks_so_compiled_graphs_use_the_kernel(monkeypatch):
     q = torch.randn(1, 4, 24, 512, device = device, dtype = dtype)
     kv = torch.randn(1, 2, 24, 512, device = device, dtype = dtype)
     torch._dynamo.reset()
-    out, _ = torch.compile(router, backend = backend)(_Module(), q, kv, kv, None, scaling = 512 ** -0.5)
+    out, _ = torch.compile(router, backend = backend)(_Module(), q, kv, kv, None, scaling = 512**-0.5)
     assert not calls and out.shape == (1, 24, 4, 512)
     assert any("large_head_attention_fwd" in code for code in graphs)
     assert LH._SELF_CHECK.get((str(device), dtype)) is True
@@ -331,6 +344,10 @@ def test_router_keeps_wrapped_router_sentinels():
     router = LH._make_router(mapping["sdpa"])
     mapping["sdpa"] = router
     patch_sliding()  # second model load
-    assert mapping["sdpa"] is router and router._unsloth_large_head and router._unsloth_original is sliding
+    assert (
+        mapping["sdpa"] is router
+        and router._unsloth_large_head
+        and router._unsloth_original is sliding
+    )
     q = torch.randn(1, 2, 4, 64)
     assert mapping["sdpa"](None, q, q, q, None)[0] == "sdpa"
