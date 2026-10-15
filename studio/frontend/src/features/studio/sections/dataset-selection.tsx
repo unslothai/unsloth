@@ -20,10 +20,12 @@ import {
 import { useT } from "@/i18n";
 import { FileAttachmentIcon, ViewIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useEffect, useMemo } from "react";
+import { TextSelectIcon } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { formatUpdatedDate } from "./dataset-panel-helpers";
 import { EvaluationDatasetUpload } from "./dataset-upload";
+import { TokenPreviewDialog } from "./token-preview-dialog";
 import type { DatasetUploads } from "./use-dataset-uploads";
 
 function DatasetSubsetConfiguration({
@@ -153,6 +155,20 @@ function DatasetConfiguration({
   return <LocalDatasetMetadata dataset={selectedLocalDataset} />;
 }
 
+/** Text SFT runs only: embedding and decision models train no tokens a chat mask would pick. */
+function canPreviewTokens(state: {
+  selectedModel: string | null;
+  modelType: string | null;
+  isEmbeddingModel: boolean;
+}): boolean {
+  return (
+    !!state.selectedModel &&
+    !state.isEmbeddingModel &&
+    state.modelType !== "embeddings" &&
+    state.modelType !== "decision"
+  );
+}
+
 function SelectedDatasetCard({
   selectedLocalDataset,
 }: {
@@ -162,8 +178,10 @@ function SelectedDatasetCard({
   const openPreview = useDatasetPreviewDialogStore(
     (state) => state.openPreview,
   );
+  const [tokenPreviewOpen, setTokenPreviewOpen] = useState(false);
   const settings = useTrainingConfigStore(
     useShallow((state) => ({
+      canPreviewTokens: canPreviewTokens(state),
       dataset: state.dataset,
       datasetSource: state.datasetSource,
       datasetSplit: state.datasetSplit,
@@ -235,6 +253,17 @@ function SelectedDatasetCard({
           <HugeiconsIcon icon={ViewIcon} className="size-3.5" />
           {t("studio.dataset.viewDataset")}
         </Button>
+        {settings.canPreviewTokens ? (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="shrink-0 text-xs"
+            onClick={() => setTokenPreviewOpen(true)}
+          >
+            <TextSelectIcon className="size-3.5" />
+            {t("studio.dataset.previewTokens")}
+          </Button>
+        ) : null}
         <Button
           variant="ghost"
           size="sm"
@@ -244,6 +273,10 @@ function SelectedDatasetCard({
           {t("studio.dataset.clear")}
         </Button>
       </div>
+      <TokenPreviewDialog
+        open={tokenPreviewOpen}
+        onOpenChange={setTokenPreviewOpen}
+      />
     </div>
   );
 }

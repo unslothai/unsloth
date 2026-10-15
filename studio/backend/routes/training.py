@@ -97,6 +97,7 @@ except ImportError:
 
 from auth.authentication import authenticated_via_api_key, get_current_subject
 from hub.utils.host_paths import redact_host_paths
+from hub.dependencies import get_request_hf_token
 from hub.utils.hf_tokens import HfTokenArg, cached_read_refused, hf_token_arg
 
 from utils.utils import (
@@ -136,6 +137,7 @@ from models.training import (
     DiffusionTrainingStatusResponse,
     DiffusionTrainingStopRequest,
     TRAINING_REQUEST_ID_PATTERN,
+    TokenPreviewRequest,
 )
 from models.responses import TrainingStopResponse, TrainingMetricsResponse
 from pydantic import (
@@ -1693,6 +1695,104 @@ async def get_visible_hardware_utilization(current_subject: str = Depends(get_cu
         return await asyncio.to_thread(get_visible_gpu_utilization)
 
 
+# Rows read from the head of the dataset; the preview samples a few of them at random.
+_TOKEN_PREVIEW_POOL_ROWS = 64
+
+
+def _token_preview_rows(request: TokenPreviewRequest, hf_token) -> list[dict]:
+    import random
+
+    from hub.schemas.datasets import CheckFormatRequest as HubCheckFormatRequest
+    from hub.services.datasets.formatting import load_preview_slice
+
+    from core.training.account_jobs import visible_cached_path
+
+    from hub.utils import download_registry
+    from hub.utils.hf_errors import hf_error_status
+
+    visible_cached_path(request.dataset_local_path, "dataset")
+    try:
+        rows, _ = load_preview_slice(
+            HubCheckFormatRequest(
+                dataset_name = request.dataset_name,
+                subset = request.subset,
+                train_split = request.train_split or "train",
+                prefer_local_cache = request.dataset_known_cached
+                and bool(request.dataset_local_path),
+                local_path = request.dataset_local_path,
+            ),
+            hf_token,
+            _TOKEN_PREVIEW_POOL_ROWS,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code = hf_error_status(exc) or 400,
+            detail = download_registry.scrub_secrets(str(exc), hf_token = hf_token),
+        ) from exc
+    rows = rows.to_list()
+    if len(rows) > request.num_samples:
+        rows = random.Random(request.seed).sample(rows, request.num_samples)
+    return rows
+
+
+@router.post("/token-preview")
+async def token_preview(
+    request: TokenPreviewRequest,
+    hf_token: HfTokenArg = Depends(get_request_hf_token),
+    current_subject: str = Depends(get_current_subject),
+):
+    """Tokens and completion mask for a few rows of the selected dataset, or for ``text``, as
+    training would produce them. Loads the tokenizer only, in a GPU-free subprocess."""
+    from core.training.token_preview import TokenPreviewError, run_token_preview
+    from routes.models import _require_model_access_or_caller_token
+    from utils.account_context import current_account_id
+    from utils.models.unsloth_mirror import unsloth_public_mirror
+
+    if request.text is None and not request.dataset_name:
+        raise HTTPException(status_code = 400, detail = "Pick a dataset or type a text to preview.")
+    hf_token = account_hf_token(hf_token)
+    model_name = request.model_name.strip()
+    local_path = request.model_local_path if request.model_known_cached else None
+    account_path(model_name, reference = True)
+    if request.dataset_name:
+        account_path(request.dataset_name, reference = True)
+    await _require_model_access_or_caller_token(
+        model_name,
+        hf_token,
+        local_path = local_path,
+        prefer_local_cache = bool(local_path),
+    )
+
+    def _run() -> dict:
+        rows = None if request.text is not None else _token_preview_rows(request, hf_token)
+        source = local_path or unsloth_public_mirror(model_name, request.load_in_4bit) or model_name
+        payload = {
+            "rows": rows,
+            "text": request.text,
+            "dataset_name": request.dataset_name,
+            "format_type": request.format_type,
+            "custom_format_mapping": request.custom_format_mapping,
+            "raw_text": request.is_cpt or request.format_type == "raw",
+            "is_cpt": request.is_cpt,
+            "train_on_completions": request.train_on_completions and not request.is_cpt,
+            "max_seq_length": request.max_seq_length,
+        }
+        return run_token_preview(
+            (current_account_id(), model_name, source, hf_token),
+            {"model_name": model_name, "tokenizer_source": source, "hf_token": hf_token},
+            payload,
+        )
+
+    try:
+        return await asyncio.to_thread(_run)
+    except TokenPreviewError as exc:
+        from hub.utils import download_registry
+        detail = download_registry.scrub_secrets(str(exc), hf_token = hf_token)
+        raise HTTPException(status_code = 422, detail = detail) from exc
+
+
 @router.get("/start-requests/{start_request_id}", response_model = TrainingStartRequestStatus)
 async def get_training_start_request(
     start_request_id: str = ApiPath(
@@ -1795,6 +1895,10 @@ async def start_training(
     to check progress.
     """
     await asyncio.to_thread(_validate_decision_request, request, via_api_key)
+    from core.training.token_preview import stop_token_preview_worker
+
+    # The run needs the host RAM more than the preview needs to stay warm; reaped off the request path.
+    threading.Thread(target = stop_token_preview_worker, daemon = True).start()
     if managed_account():
         from utils.paths import tensorboard_root
 
