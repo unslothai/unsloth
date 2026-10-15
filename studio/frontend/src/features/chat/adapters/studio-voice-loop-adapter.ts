@@ -2,10 +2,12 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
+  isVoicePlaybackActive,
   requestVoiceBargeIn,
   requestVoiceResume,
   requestVoiceSubmit,
 } from "@/features/chat/voice/voice-loop-bridge";
+import { createBargeGate, stepBargeGate } from "@/features/chat/voice/barge-gate";
 // The store directly, not the feature barrel: the barrel pulls in the runtime
 // provider, which reaches back here through the dictation dispatcher.
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
@@ -20,12 +22,12 @@ import {
 import type { DictationAdapter } from "@assistant-ui/react";
 import { toast } from "@/lib/toast";
 
-// Backend Whisper STT dictation: capture the mic, detect end-of-utterance with a
-// simple energy VAD, then POST the recorded audio to /api/audio/transcribe and
+// Voice mode's listener: capture the mic, detect end-of-utterance with a
+// simple energy VAD, then transcribe the recording with the picked STT model and
 // emit the transcript. Unlike the Web Speech adapter this needs no browser cloud
 // speech service, so it works in Edge/Brave and the Tauri desktop webview.
 //
-// Whisper is batch, not streaming, so there are no interim results: one final
+// STT is batch, not streaming, so there are no interim results: one final
 // transcript per utterance, mirroring how the Web Speech adapter ends a session
 // on silence and lets the voice loop re-arm.
 
@@ -34,7 +36,7 @@ const SILENCE_RMS = 0.012;       // RMS below this counts as silence (ends the u
 // heardSpeech) at or above this, comfortably over the ambient-noise floor. Frames
 // between SILENCE_RMS and SPEECH_RMS keep the utterance alive but don't count, so
 // room noise or a mic click can't quietly accumulate the 350ms of "speech" that
-// would get fed to Whisper (which then hallucinates "Thank you." etc. from noise).
+// would get fed to STT (which then hallucinates "Thank you." etc. from noise).
 // Lower it if genuinely soft speech is being dropped.
 const SPEECH_RMS = 0.02;
 const SILENCE_HANG_MS = 1000;    // silence after speech ends the utterance
@@ -42,27 +44,16 @@ const MAX_UTTERANCE_MS = 30000;  // hard cap so a stuck mic can't record forever
 const NO_SPEECH_TIMEOUT_MS = 8000;  // give up quietly if no speech is heard
 // Minimum total voiced audio required to treat a window as real speech and
 // transcribe it. Coughs, clicks, a blip of the model's own voice, or ambient
-// noise fall under this and are dropped -- this is what stops Whisper being fed
+// noise fall under this and are dropped -- this is what stops STT being fed
 // junk (and hallucinating repeated tokens) during barge-in / idle listening.
 const MIN_SPEECH_MS = 350;
-// Real-time barge-in (cut the TTS while the model speaks). We cut at two points,
-// whichever comes first:
-//   1. Commit: the moment this utterance has accumulated MIN_SPEECH_MS of real
-//      voiced speech -- i.e. the instant we KNOW it will be transcribed and sent.
-//      Tying the cut to the transcribe gate means you never end up talking over a
-//      reply that's already committed to being replaced, and a sub-threshold blip
-//      that WON'T be transcribed never cuts the model.
-//   2. Fast: a clearly LOUD burst (>= BARGE_IN_RMS) sustained continuously for
-//      BARGE_IN_FAST_MS cuts even sooner, so an emphatic "stop" interrupts snappily.
-// The higher BARGE_IN_RMS gate on the fast path keeps quiet speaker-bleed from
-// self-interrupting before the commit point; the commit path leans on the same
-// SPEECH_RMS floor that already guards transcription itself against bleed.
-const BARGE_IN_FAST_MS = 220;
-const BARGE_IN_RMS = 0.045;
-// Silence trimmed around the voiced span before sending to Whisper (Whisper
+// Audio kept from just before a barge-in fires, so the first word of what cut in
+// still reaches STT.
+const BARGE_PREROLL_MS = 300;
+// Silence trimmed around the voiced span before sending to STT (STT
 // hallucinates on long leading/trailing silence). Keep a little context.
 const SILENCE_PAD_MS = 200;
-// Faked streaming reveal: Whisper is batch (one transcript per utterance), but
+// Faked streaming reveal: STT is batch (one transcript per utterance), but
 // once it lands we replay it as growing interim results so the composer types it
 // out char-by-char like the streaming Web Speech engine, instead of the whole
 // line appearing at once. REVEAL_MAX_MS caps the total so long transcripts don't
@@ -110,7 +101,7 @@ function encodeWav(samples: Float32Array, sampleRate: number): Blob {
   return new Blob([view], { type: "audio/wav" });
 }
 
-// Whisper hallucinates a repeated word/phrase on non-speech audio (noise,
+// STT hallucinates a repeated word/phrase on non-speech audio (noise,
 // breath, silence) -- e.g. "Ha, ha, ha..." or "Thank you. Thank you...". Reject
 // a transcript dominated by one repeated token (very low unique-word ratio) so
 // it isn't sent as a prompt. Short utterances (< 6 words) are always allowed.
@@ -124,7 +115,7 @@ function isHallucinatedTranscript(text: string): boolean {
   return new Set(words).size / words.length < 0.3;
 }
 
-export class StudioWhisperDictationAdapter implements DictationAdapter {
+export class StudioVoiceLoopAdapter implements DictationAdapter {
   static isSupported(): boolean {
     return (
       typeof window !== "undefined" &&
@@ -136,7 +127,7 @@ export class StudioWhisperDictationAdapter implements DictationAdapter {
   listen(): DictationAdapter.Session {
     const AudioCtx = getAudioContextCtor();
     if (!AudioCtx || !navigator.mediaDevices?.getUserMedia) {
-      throw new Error("Whisper dictation is not supported in this browser.");
+      throw new Error("Voice mode can't use the microphone in this browser.");
     }
 
     const speechStartCallbacks = new Set<() => void>();
@@ -152,9 +143,8 @@ export class StudioWhisperDictationAdapter implements DictationAdapter {
     // measure voiced duration and to trim silence before transcription.
     const chunkVoiced: boolean[] = [];
     let voicedMs = 0;
-    // Run of continuous LOUD frames (>= BARGE_IN_RMS) for the fast barge path;
-    // resets on any quiet frame.
-    let bargeLoudMs = 0;
+    const bargeGate = createBargeGate();
+    const preroll: Float32Array[] = [];
     let bargedIn = false;
     let sampleRate = 16000;
     let heardSpeech = false;
@@ -228,13 +218,13 @@ export class StudioWhisperDictationAdapter implements DictationAdapter {
         // Nothing said this window (or only a sub-threshold blip: cough, click,
         // a bit of the model's own voice, ambient noise). End quietly and re-arm,
         // mirroring the Web Speech "no-speech" path so the loop keeps listening
-        // without feeding Whisper junk to hallucinate on.
+        // without feeding STT junk to hallucinate on.
         finish("stopped");
         setTimeout(() => requestVoiceResume(), 0);
         return;
       }
 
-      // Trim to the voiced span (+ a little padding) so Whisper isn't handed long
+      // Trim to the voiced span (+ a little padding) so STT isn't handed long
       // leading/trailing silence, which it tends to hallucinate words from.
       const frameMs = chunks[0] ? (chunks[0].length / sampleRate) * 1000 : 0;
       const padFrames = frameMs > 0 ? Math.ceil(SILENCE_PAD_MS / frameMs) : 0;
@@ -263,7 +253,7 @@ export class StudioWhisperDictationAdapter implements DictationAdapter {
         const modelId =
           useChatRuntimeStore.getState().selectedSttModelId ?? undefined;
         // Flag transcribing so the orb shows a processing state (not idle green)
-        // while Whisper runs -- the first call can take many seconds on ROCm.
+        // while STT runs -- the first call can take many seconds on ROCm.
         const store = useChatRuntimeStore.getState();
         store.setVoiceTranscribing(true);
         let transcript = "";
@@ -286,7 +276,7 @@ export class StudioWhisperDictationAdapter implements DictationAdapter {
           store.setVoiceTranscribing(false);
         }
         if (transcript && isHallucinatedTranscript(transcript)) {
-          // Whisper invents a repeated token ("Ha, ha, ha...", "Thank you.
+          // STT invents a repeated token ("Ha, ha, ha...", "Thank you.
           // Thank you...") from noise/breath/silence. Drop it and keep listening
           // rather than sending garbage as a prompt.
           transcript = "";
@@ -321,8 +311,8 @@ export class StudioWhisperDictationAdapter implements DictationAdapter {
         }
       } catch (error) {
         if (ended) return;
-        console.error("Whisper dictation error:", error);
-        toast.error("Whisper transcription failed.");
+        console.error("Voice transcription error:", error);
+        toast.error("Transcription failed.");
         finish("error");
         // Keep the voice loop alive: a transcribe failure (transient backend
         // hiccup, etc.) shouldn't leave the mic dead so it never hears you again.
@@ -373,7 +363,7 @@ export class StudioWhisperDictationAdapter implements DictationAdapter {
         lastVoiceAt = startedAt;
         session.status = { type: "running" };
 
-        // Warm the STT model while the user is still drawing breath. Whisper's
+        // Warm the STT model while the user is still drawing breath. The STT model's
         // first load is slow enough (tens of seconds on ROCm) that paying it
         // after the first utterance reads as the loop having missed what was
         // said. Fire-and-forget: transcription awaits the same load, so a
@@ -386,7 +376,6 @@ export class StudioWhisperDictationAdapter implements DictationAdapter {
         processor.onaudioprocess = (event) => {
           if (ended || finalizing) return;
           const input = event.inputBuffer.getChannelData(0);
-          chunks.push(new Float32Array(input));
 
           let sumSquares = 0;
           for (let i = 0; i < input.length; i++) sumSquares += input[i] * input[i];
@@ -394,9 +383,31 @@ export class StudioWhisperDictationAdapter implements DictationAdapter {
           const now = performance.now();
 
           const frameMs = (input.length / sampleRate) * 1000;
+          // The reply is playing: listen only for the user cutting in. Nothing is
+          // recorded and the no-speech clock waits, so when playback ends this
+          // session simply becomes the next turn's listener.
+          if (!bargedIn && isVoicePlaybackActive()) {
+            preroll.push(new Float32Array(input));
+            while (preroll.length * frameMs > BARGE_PREROLL_MS) preroll.shift();
+            startedAt = now;
+            lastVoiceAt = now;
+            if (!stepBargeGate(bargeGate, rms, frameMs)) return;
+            bargedIn = true;
+            requestVoiceBargeIn();
+            for (const frame of preroll.splice(0)) {
+              chunks.push(frame);
+              chunkVoiced.push(true);
+            }
+            voicedMs = bargeGate.loudMs;
+            heardSpeech = true;
+            useChatRuntimeStore.getState().setVoiceHearing(true);
+            for (const cb of speechStartCallbacks) cb();
+            return;
+          }
+          chunks.push(new Float32Array(input));
           // notSilent keeps the utterance alive (resets the silence-hang timer);
           // speech is the stricter bar that actually counts toward transcription,
-          // so noise/clicks between the two thresholds never reach Whisper.
+          // so noise/clicks between the two thresholds never reach STT.
           const notSilent = rms >= SILENCE_RMS;
           const speech = rms >= SPEECH_RMS;
           chunkVoiced.push(speech);
@@ -411,23 +422,6 @@ export class StudioWhisperDictationAdapter implements DictationAdapter {
               for (const cb of speechStartCallbacks) cb();
             }
           }
-          // Real-time barge-in: cut the currently-playing TTS the instant this
-          // utterance commits to being transcribed (voicedMs past the transcribe
-          // gate), so you never talk over a reply that's already going to be
-          // replaced. A clearly LOUD continuous burst cuts even sooner. Firing only
-          // at/after the commit point means blips that WON'T be transcribed never
-          // self-interrupt. The VoiceEngine handler no-ops unless the model is
-          // actually speaking, so stray calls are harmless.
-          if (rms >= BARGE_IN_RMS) bargeLoudMs += frameMs;
-          else bargeLoudMs = 0;
-          if (
-            !bargedIn &&
-            (voicedMs >= MIN_SPEECH_MS || bargeLoudMs >= BARGE_IN_FAST_MS)
-          ) {
-            bargedIn = true;
-            requestVoiceBargeIn();
-          }
-
           const sinceVoice = now - lastVoiceAt;
           const elapsed = now - startedAt;
           if (
@@ -443,7 +437,7 @@ export class StudioWhisperDictationAdapter implements DictationAdapter {
         processor.connect(audioCtx.destination); // required for onaudioprocess to fire
       } catch (error) {
         teardown();
-        console.error("Whisper dictation mic error:", error);
+        console.error("Voice mic error:", error);
         toast.error("Could not access the microphone for dictation.");
         finish("error");
       }

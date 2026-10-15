@@ -18,14 +18,14 @@
 import { resetPromptQueuesForThread } from "@/components/assistant-ui/thread";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { ORB_IDLE_GRADIENT, orbConfig } from "@/components/assistant-ui/voice-orb";
-import { subscribeDictationLevel } from "@/features/chat/adapters/dictation-level";
-import { StudioWhisperDictationAdapter } from "@/features/chat/adapters/studio-whisper-dictation-adapter";
+import { StudioVoiceLoopAdapter } from "@/features/chat/adapters/studio-voice-loop-adapter";
 import { useTtsPlayer } from "@/features/chat/hooks/use-tts-player";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { deriveOrbState } from "@/features/chat/voice/orb-state";
 import {
   getVoiceMode,
   registerVoiceBargeIn,
+  registerVoicePlayback,
   registerVoiceResume,
   registerVoiceSubmit,
   registerVoiceThreadReset,
@@ -33,7 +33,7 @@ import {
   setVoiceMode as setLoopVoiceMode,
 } from "@/features/chat/voice/voice-loop-bridge";
 import { cn } from "@/lib/utils";
-import { useAui, useAuiState } from "@assistant-ui/react";
+import { useAui } from "@assistant-ui/react";
 import { MessageSquareIcon } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type FC } from "react";
 
@@ -42,15 +42,6 @@ import { useCallback, useEffect, useRef, useState, type FC } from "react";
 // loop's mode itself lives in the bridge, which is what the rest of the app reads.
 let _prevRunning = false;
 
-// Silence debounce: how long the transcript must stop growing before we treat
-// the user as done and send. Reset on every transcript update so a mid-sentence
-// pause never clips speech; only a real pause this long auto-sends.
-const VOICE_SILENCE_DEBOUNCE_MS = 1500;
-// Barge-in debounce: when speech is heard while TTS is playing, wait this long
-// and only interrupt if the transcript kept growing across the window. A cough
-// or stray blip produces one fragment that doesn't sustain, so it's ignored;
-// real "wait, stop" speech keeps adding words and cuts the model off.
-const VOICE_BARGE_IN_DEBOUNCE_MS = 300;
 // Voice coalescing window: after a finished utterance is appended as a user
 // bubble, wait this long for another utterance before generating. Utterances that
 // arrive within the window fold into the SAME prompt (several bubbles, one reply)
@@ -69,54 +60,10 @@ const VOICE_COALESCE_MAX_RETRIES = 15;
 // past this (synthesis genuinely behind playback) shows lilac.
 const SYNTH_GAP_MS = 350;
 
-// --- Batch transcription -------------------------------------------------
-// The local ("model") and custom engines return one transcript when the session
-// ends, so the loop cannot watch it grow the way it does on Web Speech. It takes
-// end-of-utterance itself instead, from the microphone meter both adapters
-// already publish (subscribeDictationLevel).
-//
-// How long the mic must stay quiet, after the user has actually said something,
-// before the turn is finished. Comfortably above the model adapter's own 280ms
-// segment-cut pause so an ordinary mid-sentence breath cuts a segment at most,
-// and below the streaming engine's 1.5s so the batch path does not feel slower
-// than it already is.
-const VOICE_BATCH_SILENCE_MS = 900;
-// Turn-taking gates, as multiples of the measured room floor rather than fixed
-// levels. Mic gain varies by an order of magnitude across machines, so any single
-// number is right on the box it was tuned on and wrong elsewhere: too low and room
-// noise reads as speech and resets the silence timer forever, too high and the
-// user is never heard at all. Two lines, not one -- a frame between them holds the
-// turn open without counting as either.
-const VOICE_SPEECH_OVER_FLOOR = 3.0;
-const VOICE_SILENCE_OVER_FLOOR = 1.8;
-// Absolute minimums so a mic reporting a near-zero floor (or digital silence)
-// still needs real signal rather than gating on nothing.
-const VOICE_LEVEL_SPEECH_MIN = 0.03;
-const VOICE_LEVEL_SILENCE_MIN = 0.018;
-// A run of speech shorter than this is a click or a cough, not a turn.
-const VOICE_MIN_SPEECH_MS = 350;
-// Backstop: end the turn regardless once the mic has been open this long, so a
-// noisy room or a stuck level meter cannot record forever.
-const VOICE_MAX_UTTERANCE_MS = 30_000;
-// Same, for a mic that never crossed the speech gate at all. Cut and let Whisper
-// decide: a misjudging gate must degrade to "sends a bit late", never to "never
-// sends". An empty transcript just re-arms.
-const VOICE_NO_SPEECH_CUT_MS = 12_000;
-// Ceiling on the wait for a batch transcript once the mic is closed. A local
-// Whisper on CPU is slow but not unbounded; past this the turn is sent with what
-// arrived (usually nothing, which just re-arms the mic) rather than stranding the
-// orb on "Transcribing" forever.
-const VOICE_TRANSCRIBE_TIMEOUT_MS = 60_000;
-
 /**
  * Whether the plus menu may offer Voice at all. Listening is the gate: the loop's
- * Whisper adapter needs getUserMedia (secure contexts only) and Web Audio. Without
- * them, Voice could be switched on and never produce a word.
- *
- * Speaking is deliberately not gated. The voice picker always offers a local GGUF
- * voice for the slot (VOICE_MODEL_DEFAULTS in chat-page.tsx) and ChatPage seeds
- * one on open, and the voice inventory is only fetched after voice mode opens --
- * so a speaking gate here could never be satisfied before the menu was needed.
+ * adapter needs getUserMedia (secure contexts only) and Web Audio. Speaking is not
+ * gated: voice mode always has an audio.cpp voice picked (Kokoro by default).
  */
 export function useVoiceAvailable(): boolean {
   // Model transcription only. The loop used to follow the Dictate button's
@@ -124,21 +71,16 @@ export function useVoiceAvailable(): boolean {
   // said "browser" -- which meant voice mode silently depended on an online
   // Google endpoint, and did not exist at all in the desktop WebView. It now
   // always runs a local transcription model, so this is the only thing to check.
-  return StudioWhisperDictationAdapter.isSupported();
+  return StudioVoiceLoopAdapter.isSupported();
 }
 
 export const VoiceEngine: FC = () => {
   const aui = useAui();
   const [voiceMode, setVoiceModeState] = useState(getVoiceMode());
-  const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // Barge-in debounce: timer that confirms sustained speech, and the latest
-  // transcript so the timer can check whether it grew across the window.
-  const bargeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Coalesce debounce: after appending a spoken utterance as a user bubble, this
   // fires the single run once the user pauses; reset each time another utterance
   // folds into the same prompt.
   const voiceCoalesceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const latestTranscriptRef = useRef("");
   // voiceModeRef is only written in toggle/activate — never in the render body.
   const voiceModeRef = useRef(getVoiceMode());
   const isSpeakingRef = useRef(false);
@@ -159,16 +101,6 @@ export const VoiceEngine: FC = () => {
   const isThreadRunning = useChatRuntimeStore((s) =>
     s.activeThreadId ? Boolean(s.runningByThreadId[s.activeThreadId]) : false,
   );
-  const dictationStatusType = useAuiState(
-    ({ composer }) => composer.dictation?.status.type,
-  );
-  const dictationTranscript = useAuiState(
-    ({ composer }) => composer.dictation?.transcript ?? "",
-  );
-  const activeAudioType = useChatRuntimeStore((s) => {
-    const m = s.models.find((m) => m.id === s.params.checkpoint);
-    return m?.audioType ?? null;
-  });
   // Voice can be opened before a chat model is picked -- the orb is reachable from
   // the + menu at any time. Without one there is nothing to answer a spoken turn,
   // so the mic stays shut and the orb says so, rather than capturing into a dead
@@ -176,26 +108,9 @@ export const VoiceEngine: FC = () => {
   const hasChatModel = useChatRuntimeStore((s) => Boolean(s.params.checkpoint));
   const hasChatModelRef = useRef(hasChatModel);
   hasChatModelRef.current = hasChatModel;
-  // Which listening engine is configured. "browser" streams a transcript that
-  // grows during the utterance; "model" and "custom" return one transcript when
-  // the session ends. Two different turn-taking paths, below.
-  // The loop is always on a batch engine now: it records an utterance and hands
-  // back one transcript at the end, rather than a transcript that grows while you
-  // speak. Kept as a named constant instead of being inlined -- every half-duplex
-  // decision below reads it, and they are all true *because* of that property,
-  // not because of which engine happens to be configured.
-  const batchDictation = true;
-  const batchDictationRef = useRef(batchDictation);
-  batchDictationRef.current = batchDictation;
   // Supersedes an in-flight re-arm poll, so a later resumeListen can't leave two
   // of them racing to open the mic.
   const rearmSeqRef = useRef(0);
-  // The store field, synced from /voice/status -- not "a voice is selected", which
-  // is true from the moment the picker changes and stays true while the slot is
-  // still loading. The player keys both isTtsModel and streamMode off this, so the
-  // selection alone would POST the first synth into an empty slot.
-  const voiceSlotLoaded = useChatRuntimeStore((s) => s.voiceSlotLoaded);
-
   // Called after speaking ends (or immediately if there's nothing to speak).
   const resumeListen = useCallback(() => {
     // every re-arm (a turn ending, a chat model arriving) waits for a voice still loading;
@@ -239,19 +154,11 @@ export const VoiceEngine: FC = () => {
       // effect below.
       if (!hasChatModelRef.current) return;
       if (rearmSeqRef.current !== seq) return; // superseded by a newer re-arm
-      // Half-duplex, and the reason this guard lives here rather than at the call
-      // sites: a batch engine transcribes the whole session at the end, so a mic
-      // open while the model is talking records the model. Its own voice then
-      // trips the adapter's barge-in (220ms of level over threshold) and cuts the
-      // reply a word in, and the empty transcript it hands back lands in the
-      // composer. Wait it out rather than dropping the re-arm, so the loop can
-      // still not dead-end; voiceMode going inactive is what ends the wait.
-      if (
-        batchDictationRef.current &&
-        (isSpeakingRef.current ||
-          isPlayingRef.current ||
-          auiRef.current.thread().getState().isRunning)
-      ) {
+      // A run with no voice session (voice switched on mid-run) has nothing to
+      // barge in on, and a mic open now would fold the next turn into this one.
+      // Wait it out rather than dropping the re-arm, so the loop cannot dead-end.
+      // With a session up, the mic opens in the adapter's barge-in mode.
+      if (auiRef.current.thread().getState().isRunning && !isSpeakingRef.current) {
         setTimeout(() => attempt(n), RETRY_MS);
         return;
       }
@@ -274,9 +181,13 @@ export const VoiceEngine: FC = () => {
   }, []);
 
   const { isSpeaking, isPlaying, speak, beginStream, feedText, endStream, stop, primeAudio } =
-    useTtsPlayer(activeAudioType, resumeListen, voiceSlotLoaded);
+    useTtsPlayer(resumeListen);
   isSpeakingRef.current = isSpeaking;
   isPlayingRef.current = isPlaying;
+  useEffect(() => {
+    registerVoicePlayback(() => isSpeakingRef.current || isPlayingRef.current);
+    return () => registerVoicePlayback(null);
+  }, []);
   // Streaming TTS handles (refs so the run-lifecycle effect never goes stale).
   const beginStreamRef = useRef(beginStream);
   beginStreamRef.current = beginStream;
@@ -309,11 +220,9 @@ export const VoiceEngine: FC = () => {
     return "";
   }, []);
 
-  // Submit a batch-transcription transcript. The adapter has already committed
-  // the final transcript into the composer via its onSpeech(isFinal) callback,
-  // so here we just end dictation and send it — the run-lifecycle effect then
-  // speaks the reply and re-arms the mic, same as the streaming path. Mirrors
-  // the silence-timer send block (clear-on-turn-1 race guard included).
+  // Submit a transcript. The adapter has already committed it into the composer
+  // via its onSpeech(isFinal) callback, so here we just end dictation and send it;
+  // the run-lifecycle effect then speaks the reply and re-arms the mic.
   const submitTranscript = useCallback(() => {
     if (voiceModeRef.current !== "active") return;
     const composer = auiRef.current.composer();
@@ -556,10 +465,6 @@ export const VoiceEngine: FC = () => {
     if (isThreadRunning) {
       _prevRunning = true;
       if (voiceModeRef.current === "active") {
-        if (silenceTimerRef.current) {
-          clearTimeout(silenceTimerRef.current);
-          silenceTimerRef.current = null;
-        }
         const composer = auiRef.current.composer();
         if (composer.getState().dictation) composer.stopDictation();
         // Begin streaming TTS and feed the reply as it generates so audio starts
@@ -570,10 +475,7 @@ export const VoiceEngine: FC = () => {
         streamPollRef.current = setInterval(() => {
           feedTextRef.current(latestAssistantText());
         }, 150);
-        // The mic is not re-armed during generation, on either engine: the
-        // streaming engine's silence timer would send a second, concurrent run
-        // mid-generation, and a batch engine would be recording a turn the run
-        // has already consumed.
+        // The session starting is what reopens the mic, in barge-in mode (below).
       }
       return;
     }
@@ -602,274 +504,38 @@ export const VoiceEngine: FC = () => {
       endStreamRef.current(text);
     } else {
       // Voice mode was switched on while this run was already generating, so the
-      // run-start branch never opened a session: endStream would be a no-op, and
-      // on a batch engine armDuringTts below is skipped too, which left voice mode
-      // active with no dictation session until it was toggled off and on. Speak the
-      // finished reply whole, as endStream's browser branch does; every speak()
-      // path ends the turn through onPlaybackEnd -> resumeListen on either engine.
+      // run-start branch never opened a session. Speak the finished reply whole;
+      // speak() ends the turn through onPlaybackEnd -> resumeListen like a stream.
       speakRef.current(text);
     }
-    // Arm the mic DURING TTS so barge-in works -- the streaming engine needs a
-    // live session for its transcript to grow. The just-ended turn's dictation can
-    // read as "set" for a few frames, and a single check would skip arming
-    // (leaving no mic to barge with), so retry until it clears, then click
-    // Dictate.
-    //
-    // Not for a batch engine, deliberately. Its session records everything it
-    // hears and transcribes the whole recording on stop, so a mic open during
-    // playback would post the model's own words back as the user's next message,
-    // and there is no post-hoc echo check possible on a transcript that only
-    // arrives at the end. Barge-in for those engines needs acoustic echo
-    // cancellation on the capture stream and is deliberately absent here; the
-    // batch loop is listen, transcribe, generate, speak, then listen again.
-    const armDuringTts = (n: number) => {
-      if (voiceModeRef.current !== "active") return;
-      if (batchDictation) return;
-      if (auiRef.current.composer().getState().dictation) {
-        if (n < 6) setTimeout(() => armDuringTts(n + 1), 60);
-        return;
-      }
-      auiRef.current.composer().startDictation();
-    };
-    armDuringTts(0);
-  }, [batchDictation, isThreadRunning, resumeListen, latestAssistantText]);
+  }, [isThreadRunning, resumeListen, latestAssistantText]);
 
-  // Silence timer: only fires in "active" state. This watches the transcript
-  // grow, so it needs the streaming (Web Speech) engine; VoiceControlButton
-  // refuses to enter voice mode on any other, because a batch engine holds its
-  // transcript until end-of-utterance and this would stop the mic after 1.5s and
-  // find an empty composer every time.
+  // Barge-in: while the reply is being spoken the mic stays open. The adapter sees
+  // playback (registerVoicePlayback) and only listens for the user cutting in over
+  // the echo-cancelled leak; when playback ends it simply carries on as the next
+  // turn's listener. Retried because the session the run start closed can read as
+  // live for a few frames.
   useEffect(() => {
-    if (dictationStatusType !== "running") return;
-    if (voiceModeRef.current !== "active") return;
-    // A batch engine has no growing transcript to debounce against; the effect
-    // below owns its turn-taking, off the microphone meter.
-    if (batchDictation) return;
-
-    // Barge-in (debounced): speech while TTS is playing only interrupts if it's
-    // sustained. On the first fragment, open a window and snapshot the transcript
-    // length; when it elapses, barge only if the transcript grew (the user kept
-    // talking). A cough/blip doesn't grow, so it's ignored.
-    latestTranscriptRef.current = dictationTranscript;
-    if (isSpeakingRef.current && dictationTranscript.trim()) {
-      if (bargeTimerRef.current === null) {
-        const baseline = dictationTranscript.trim().length;
-        bargeTimerRef.current = setTimeout(() => {
-          bargeTimerRef.current = null;
-          if (!isSpeakingRef.current) return;
-          if (latestTranscriptRef.current.trim().length > baseline) stop();
-        }, VOICE_BARGE_IN_DEBOUNCE_MS);
-      }
-    } else if (bargeTimerRef.current !== null) {
-      clearTimeout(bargeTimerRef.current);
-      bargeTimerRef.current = null;
-    }
-
-    if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
-    silenceTimerRef.current = setTimeout(() => {
-      silenceTimerRef.current = null;
-      if (voiceModeRef.current !== "active") return;
+    if (!isSpeaking) return;
+    let cancelled = false;
+    const arm = (n: number) => {
+      if (cancelled || voiceModeRef.current !== "active") return;
       const composer = auiRef.current.composer();
-      composer.stopDictation();
-      // Still audible? Then whatever the mic picked up is the model's own voice
-      // coming back through the speakers. Real speech over the top gets through a
-      // different door: it grows the transcript, which cuts the TTS above, and by
-      // the time this window expires nothing is playing. Sending here instead
-      // would post a fragment of the model's own sentence as the user's next
-      // message. Drop it and keep listening.
-      if (isSpeakingRef.current || isPlayingRef.current) {
-        composer.setText("");
-        setTimeout(() => resumeListen(), 0);
+      if (composer.getState().dictation) {
+        if (n < 8) setTimeout(() => arm(n + 1), 60);
         return;
       }
-      if (composer.getState().isEditing && composer.getState().text.trim()) {
-        composer.send();
-        // On the first turn the send-reset can race with the new-thread bind /
-        // composer remount, leaving the utterance as a prefix on the next
-        // message. Clear explicitly to guard against that.
-        composer.setText("");
-        // The synchronous clear above lands on the pre-remount composer instance,
-        // which the FIRST send unmounts a few ms later (ComposerActionWrapper
-        // remount) — so on turn 1 it has no effect. Re-clear against a FRESH
-        // composer handle (auiRef.current.composer(), never the captured `composer`)
-        // across a few frames until it takes, or voice turns off.
-        const DEFERRED_CLEAR_MAX = 5;
-        const DEFERRED_CLEAR_MS = 50;
-        const deferredClear = (n: number) => {
-          if (voiceModeRef.current !== "active") return;
-          const fresh = auiRef.current.composer();
-          if (!fresh.getState().text) {
-            return;
-          }
-          fresh.setText("");
-          if (n < DEFERRED_CLEAR_MAX) setTimeout(() => deferredClear(n + 1), DEFERRED_CLEAR_MS);
-        };
-        setTimeout(() => deferredClear(1), DEFERRED_CLEAR_MS);
-      } else {
-        // No speech this window: stopDictation ends the session but nothing
-        // re-arms it, so the loop would die while voiceMode stays "active"
-        // (orb stuck, mic dead). Re-arm so we keep listening indefinitely.
-        // Deferred so assistant-ui clears the ended session before resumeListen
-        // re-checks it.
-        setTimeout(() => resumeListen(), 0);
-      }
-    }, VOICE_SILENCE_DEBOUNCE_MS);
-
+      composer.startDictation();
+    };
+    arm(0);
     return () => {
-      if (silenceTimerRef.current) {
-        clearTimeout(silenceTimerRef.current);
-        silenceTimerRef.current = null;
-      }
+      cancelled = true;
     };
-  }, [batchDictation, dictationTranscript, dictationStatusType, stop, resumeListen]);
+  }, [isSpeaking]);
 
-  // Microphone meter. Both adapters publish it through startDictationLevelMeter,
-  // so this drives the orb's "hearing" state for either engine -- that state
-  // claims the mic is picking you up, and here it actually is the mic.
-  //
-  // It also carries turn-taking for the batch engines, which the effect above
-  // cannot serve: their transcript arrives once, at the end, so nothing grows for
-  // a debounce to watch and the 1.5s timer would close the mic and find an empty
-  // composer every time. Here the loop ends the turn itself, once the user has
-  // stopped talking, and sends the transcript down the same path.
-  //
-  // This is the only writer of voiceHearing and voiceTranscribing; the orb
-  // already renders both.
-  useEffect(() => {
-    if (voiceMode !== "active") return;
-    if (dictationStatusType !== "running") return;
-    // The Whisper adapter runs its own energy VAD on the raw PCM it captures, and
-    // ends the turn itself. Driving a second one from the published meter fights
-    // it: two gates, two silence timers, and the meter's perceptual scaling is a
-    // worse signal than the RMS the adapter already has. Batch turn-taking lives
-    // in the adapter; this effect stays only for the streaming engine's orb state.
-    if (batchDictation) return;
-    const store = useChatRuntimeStore.getState();
-
-    let lastAt = 0;
-    let silenceMs = 0;
-    let voicedMs = 0;
-    let openMs = 0;
-    let armedMs = 0;
-    let voiced = false;
-    let hearing = false;
-    let finishing = false;
-    // Running estimate of the room, in published meter units. Drops fast toward a
-    // new quiet level and climbs very slowly, so a long utterance cannot drag the
-    // floor up to meet its own voice and gate the speaker out mid-sentence.
-    let noiseFloor = -1;
-
-    const setHearing = (next: boolean) => {
-      if (hearing === next) return;
-      hearing = next;
-      store.setVoiceHearing(next);
-    };
-
-    // Close the mic, wait for the adapter to hand its transcript to the composer,
-    // then send it the same way the streaming engine's silence timer does.
-    const endUtterance = () => {
-      finishing = true;
-      setHearing(false);
-      store.setVoiceTranscribing(true);
-      auiRef.current.composer().stopDictation();
-      const deadline = performance.now() + VOICE_TRANSCRIBE_TIMEOUT_MS;
-      const settle = () => {
-        if (voiceModeRef.current !== "active") {
-          store.setVoiceTranscribing(false);
-          return;
-        }
-        // The adapter commits the transcript through its onSpeech(isFinal)
-        // callback and only then ends the session, so a cleared dictation field
-        // means the composer already holds the text -- or the user said nothing,
-        // and submitTranscript just re-arms.
-        if (
-          auiRef.current.composer().getState().dictation &&
-          performance.now() < deadline
-        ) {
-          setTimeout(settle, 100);
-          return;
-        }
-        store.setVoiceTranscribing(false);
-        submitTranscript();
-      };
-      setTimeout(settle, 0);
-    };
-
-    const unsubscribe = subscribeDictationLevel((level) => {
-      const now = performance.now();
-      const dt = lastAt ? now - lastAt : 0;
-      lastAt = now;
-      if (finishing) return;
-      if (noiseFloor < 0) noiseFloor = level;
-      else noiseFloor += (level - noiseFloor) * (level < noiseFloor ? 0.25 : 0.0005);
-      const speechGate = Math.max(
-        VOICE_LEVEL_SPEECH_MIN,
-        noiseFloor * VOICE_SPEECH_OVER_FLOOR,
-      );
-      const silenceGate = Math.max(
-        VOICE_LEVEL_SILENCE_MIN,
-        noiseFloor * VOICE_SILENCE_OVER_FLOOR,
-      );
-      const speech = level >= speechGate;
-      setHearing(speech);
-      if (!batchDictation) return;
-      // A batch mic is never open during playback (see armDuringTts), so anything
-      // heard here is the user. Belt and braces: if one ever is, do not let the
-      // model's own voice through the speakers end the turn.
-      if (isSpeakingRef.current || isPlayingRef.current) {
-        voiced = false;
-        voicedMs = 0;
-        silenceMs = 0;
-        openMs = 0;
-        armedMs = 0;
-        return;
-      }
-      openMs += dt;
-      armedMs += dt;
-      if (speech) {
-        voicedMs += dt;
-        if (voicedMs >= VOICE_MIN_SPEECH_MS) voiced = true;
-        silenceMs = 0;
-        return;
-      }
-      // Silence before the user has said anything is just the room, so an idle
-      // mic listens indefinitely. Only a pause that follows speech ends the turn.
-      if (!voiced) {
-        // The cap is on the utterance, not on the mic: an idle mic waiting for
-        // someone to speak must not bank toward it and cut the first sentence off.
-        openMs = 0;
-        // Not speech and not yet a turn: a lone blip decays rather than banking
-        // toward VOICE_MIN_SPEECH_MS across unrelated noise minutes apart.
-        if (level < silenceGate) voicedMs = 0;
-        // The gate can still be wrong for this mic. Rather than listen forever,
-        // hand what was captured to Whisper and let it decide there was nothing.
-        if (armedMs >= VOICE_NO_SPEECH_CUT_MS) endUtterance();
-        return;
-      }
-      if (openMs >= VOICE_MAX_UTTERANCE_MS) {
-        endUtterance();
-        return;
-      }
-      // Between the two lines is neither speech nor silence: hold the turn open
-      // without banking silence, so room noise cannot end it early OR, by
-      // resetting the timer every frame, stop it ending at all.
-      if (level >= silenceGate) return;
-      silenceMs += dt;
-      if (silenceMs >= VOICE_BATCH_SILENCE_MS) endUtterance();
-    });
-
-    return () => {
-      unsubscribe();
-      store.setVoiceHearing(false);
-    };
-  }, [batchDictation, voiceMode, dictationStatusType, submitTranscript]);
-
-  // No session-end watcher here on purpose. The Whisper adapter raises
-  // requestVoiceSubmit itself once it has a transcript, on its own end-of-turn
-  // AND on a manual stop, so submission is already covered. Driving it from the
-  // session ending instead would also fire on the half-duplex close: the loop
-  // shuts the mic when the model starts speaking, which would read as a finished
-  // turn and let submitTranscript's barge-in branch cut the reply a word in.
+  // No session-end watcher here on purpose. The adapter raises requestVoiceSubmit
+  // itself once it has a transcript, on its own end-of-turn AND on a manual stop,
+  // so submission is already covered; the session ending is not a turn ending.
 
   const toggle = useCallback(() => {
     // OFF → CONFIGURING (show dropdown, don't start mic)
@@ -892,14 +558,6 @@ export const VoiceEngine: FC = () => {
     }
 
     if (next === "off") {
-      if (silenceTimerRef.current) {
-        clearTimeout(silenceTimerRef.current);
-        silenceTimerRef.current = null;
-      }
-      if (bargeTimerRef.current) {
-        clearTimeout(bargeTimerRef.current);
-        bargeTimerRef.current = null;
-      }
       if (voiceCoalesceTimerRef.current) {
         clearTimeout(voiceCoalesceTimerRef.current);
         voiceCoalesceTimerRef.current = null;
@@ -917,14 +575,6 @@ export const VoiceEngine: FC = () => {
   // chat model does.
   const threadReset = useCallback(() => {
     if (voiceModeRef.current === "off") return;
-    if (silenceTimerRef.current) {
-      clearTimeout(silenceTimerRef.current);
-      silenceTimerRef.current = null;
-    }
-    if (bargeTimerRef.current) {
-      clearTimeout(bargeTimerRef.current);
-      bargeTimerRef.current = null;
-    }
     if (voiceCoalesceTimerRef.current) {
       clearTimeout(voiceCoalesceTimerRef.current);
       voiceCoalesceTimerRef.current = null;
@@ -934,7 +584,6 @@ export const VoiceEngine: FC = () => {
       streamPollRef.current = null;
     }
     streamBegunRef.current = false;
-    latestTranscriptRef.current = "";
     stop();
     const composer = auiRef.current.composer();
     if (composer.getState().dictation) composer.stopDictation();
@@ -970,8 +619,6 @@ export const VoiceEngine: FC = () => {
 
   useEffect(() => {
     return () => {
-      if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
-      if (bargeTimerRef.current) clearTimeout(bargeTimerRef.current);
       if (voiceCoalesceTimerRef.current) clearTimeout(voiceCoalesceTimerRef.current);
       if (streamPollRef.current) clearInterval(streamPollRef.current);
     };
@@ -995,21 +642,23 @@ export const VoiceEngine: FC = () => {
     };
   }, [resumeListen]);
 
-  // The Whisper adapter owns end-of-utterance, so it also raises the two events
-  // that turn one into a conversation turn: cut the reply we are talking over,
-  // and send what it just committed to the composer.
+  // The adapter owns end-of-utterance, so it also raises the two events that turn
+  // one into a conversation turn: cut the reply we are talking over, and send what
+  // it just committed to the composer.
   useEffect(() => {
     registerVoiceBargeIn(() => {
       if (voiceModeRef.current !== "active") return;
-      // The adapter raises this off raw mic energy, which on a batch engine
-      // cannot tell the user apart from the model coming back through the
-      // speakers -- and that is the only thing a mic can hear here, since the
-      // loop keeps it shut while the reply plays. Interrupting a batch turn goes
-      // through submitTranscript with actual words instead.
-      if (batchDictationRef.current) return;
-      // No-op unless something is actually audible, so an utterance that starts
-      // in silence does not cancel a run that was never speaking.
-      if (isSpeakingRef.current || isPlayingRef.current) stop();
+      if (!isSpeakingRef.current && !isPlayingRef.current) return;
+      stop();
+      // The rest of the reply is not wanted either; the next turn needs the model.
+      const thread = auiRef.current.thread();
+      if (thread.getState().isRunning) {
+        try {
+          thread.cancelRun();
+        } catch {
+          // ended between the check and here
+        }
+      }
     });
     return () => {
       registerVoiceBargeIn(null);

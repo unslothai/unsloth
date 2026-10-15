@@ -16,6 +16,7 @@ type Adapter = {
   generateStudioTtsAudio: (
     text: string,
     signal?: AbortSignal,
+    options?: { model: string; voiceId: string },
   ) => Promise<string>;
 };
 
@@ -123,6 +124,32 @@ test("read aloud sends the saved voice chosen in Settings", async () => {
   await adapter.generateStudioTtsAudio("hello");
   assert.equal(posted[0].voice_id, "8f2c");
   assert.equal(posted[0].persist, false);
+});
+
+test("voice mode names its own voice model and saved voice, not read aloud's", async () => {
+  const { adapter, posted } = load("8f2c");
+  await adapter.generateStudioTtsAudio("hi", undefined, {
+    model: "audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF",
+    voiceId: "",
+  });
+  assert.equal(posted[0].model, "audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF");
+  assert.equal("voice_id" in posted[0], false);
+  await adapter.generateStudioTtsAudio("hi", undefined, {
+    model: "audio-cpp/audio.cpp-gguf/PocketTTS-GGUF",
+    voiceId: "77aa",
+  });
+  assert.equal(posted[1].voice_id, "77aa");
+});
+
+test("voice mode leaves read aloud's saved voice alone when its own is gone", async () => {
+  const { adapter, setVoiceIds } = load("8f2c", {
+    status: 404,
+    body: { detail: "That saved voice no longer exists." },
+  });
+  await assert.rejects(
+    adapter.generateStudioTtsAudio("hello", undefined, { model: "m", voiceId: "77aa" }),
+  );
+  assert.deepEqual(setVoiceIds, []);
 });
 
 test("a deleted saved voice goes back to the model's own voice", async () => {

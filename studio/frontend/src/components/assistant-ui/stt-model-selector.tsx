@@ -11,10 +11,7 @@ import { ArrowDown01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { MicVocalIcon } from "lucide-react";
 import { useState, type FC } from "react";
-import {
-  sttModelName,
-  useVoiceSettingsStore,
-} from "@/features/settings/stores/voice-settings-store";
+import { sttModelName } from "@/features/settings/stores/voice-settings-store";
 import { DotTag } from "@/features/hub/catalog/dot-tag";
 import { formatBytes } from "@/features/hub/lib/format";
 import type { LoraModelOption } from "@/features/model-picker/components/model-selector/types";
@@ -22,27 +19,23 @@ import type { LoraModelOption } from "@/features/model-picker/components/model-s
 interface SttModelSelectorProps {
   /** On-device transcription models available to pick. */
   models: LoraModelOption[];
-  /** Selected transcription model id, or null to fall back to the one set in
-   *  Settings > Voice. */
-  value: string | null;
-  onValueChange: (id: string | null) => void;
+  /** The transcription model the loop listens with. */
+  value: string;
+  onValueChange: (id: string) => void;
   /** When true (no main chat model loaded), grey out and block the selector:
    *  listening is pointless with no brain to generate replies. */
   disabled?: boolean;
   /** True when the STT model is loaded and ready (after warmup), so the listen
    *  icon goes green instead of grey. */
   ready?: boolean;
-  /** True while Whisper is warming up, so the listen icon shows amber (loading)
+  /** True while the STT model warms up, so the listen icon shows amber (loading)
    *  rather than grey (idle). Takes precedence over `ready`. */
   loading?: boolean;
   className?: string;
 }
 
-// Speech-to-text picker, split out from the TTS ("Speak with") picker so each
-// can grey out independently -- listening stays available even when the
-// loaded chat model is a speech-LLM that owns its own output voice. Lists
-// on-device Whisper models the same way the TTS picker lists voices;
-// downloading new ones happens in the main model dropdown's Hub search, not here.
+// Voice mode's "Listen with" picker. Its own pick, not Settings > Voice's: that one
+// belongs to the Dictate button. A model not on disk downloads on first use.
 export const SttModelSelector: FC<SttModelSelectorProps> = ({
   models,
   value,
@@ -53,17 +46,7 @@ export const SttModelSelector: FC<SttModelSelectorProps> = ({
   className,
 }) => {
   const [open, setOpen] = useState(false);
-  // Voice mode picks its own transcription model and deliberately does NOT write
-  // dictationEngine: that setting belongs to the Dictate button, which may well
-  // be on the browser engine while the loop runs a local model. Nothing is
-  // selected here until the user picks, and the adapter falls back to the model
-  // set in Settings > Voice.
-  const sttFallback = useVoiceSettingsStore((s) => s.sttModel);
-  const selectedModel = value ? models.find((m) => m.id === value) : null;
-  const displayName =
-    selectedModel?.name ??
-    models.find((m) => m.id === sttFallback)?.name ??
-    sttModelName(sttFallback);
+  const displayName = models.find((m) => m.id === value)?.name ?? sttModelName(value);
 
   const handleSelect = (id: string) => {
     setOpen(false);

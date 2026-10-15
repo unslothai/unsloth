@@ -24,7 +24,7 @@ import {
   type StudioDictationSession,
   StudioWebSpeechDictationAdapter,
 } from "./studio-web-speech-dictation-adapter";
-import { StudioWhisperDictationAdapter } from "./studio-whisper-dictation-adapter";
+import { StudioVoiceLoopAdapter } from "./studio-voice-loop-adapter";
 import { getVoiceMode } from "../voice/voice-loop-bridge";
 
 // one live session lets Escape cancel because assistant-ui only exposes stop, which transcribes.
@@ -108,8 +108,8 @@ export class StudioDictationAdapter implements DictationAdapter {
     // browser engine of its own -- it picks a transcription model in its own
     // header picker -- so it always lands here.
     if (getVoiceMode() === "active") {
-      if (StudioWhisperDictationAdapter.isSupported()) {
-        return new StudioWhisperDictationAdapter().listen();
+      if (StudioVoiceLoopAdapter.isSupported()) {
+        return new StudioVoiceLoopAdapter().listen();
       }
     }
     if (usesRecordedAudio(dictationEngine)) {

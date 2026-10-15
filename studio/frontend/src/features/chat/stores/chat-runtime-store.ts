@@ -3,6 +3,10 @@
 
 import { authFetch } from "@/features/auth";
 import type { VoiceOrbState } from "@/features/chat/voice/orb-state";
+import {
+  VOICE_DEFAULT_STT_MODEL,
+  migrateVoiceTtsModel,
+} from "@/features/chat/voice/voice-models";
 import { forgetThreadReads } from "../api/thread-read-cache.ts";
 import type { ImageDisclosure } from "../api/mcp-image";
 import {
@@ -177,11 +181,8 @@ export type SandboxLevel = "high" | "low";
 export const CHAT_WEB_FETCH_TOOLS_ENABLED_KEY =
   "unsloth_chat_web_fetch_tools_enabled";
 const CHAT_VOICE_MODEL_ID_KEY = "unsloth_chat_voice_model_id";
+const CHAT_VOICE_SAVED_ID_KEY = "unsloth_chat_voice_saved_id";
 const CHAT_STT_MODEL_ID_KEY = "unsloth_chat_stt_model_id";
-const CHAT_MIC_DEVICE_ID_KEY = "unsloth_chat_mic_device_id";
-const CHAT_VOICE_PARALLEL_KEY = "unsloth_chat_voice_parallel";
-const CHAT_VOICE_VARIANT_KEY = "unsloth_chat_voice_variant";
-const CHAT_VOICE_NAME_KEY = "unsloth_chat_voice_name";
 export const CHAT_RAG_SOURCE_KEY = "unsloth_chat_rag_source";
 export const CHAT_RAG_MODE_KEY = "unsloth_chat_rag_mode";
 export const CHAT_RAG_TOP_K_KEY = "unsloth_chat_rag_top_k";
@@ -2028,6 +2029,7 @@ function saveString(key: string, value: string): void {
   persistSetting(key, value);
 }
 
+
 // Canonicalises any backend value onto the Speculative Decoding modes; legacy backend-only
 // aliases map to their closest UI mode.
 export function normalizeSpeculativeType(
@@ -2692,21 +2694,12 @@ type ChatRuntimeStore = {
    * Not persisted — resets to "off" on page load.
    */
   voiceMode: "off" | "configuring" | "active";
-  /** The LoRA/GGUF model ID chosen for the voice slot. Persisted. */
-  selectedVoiceModelId: string | null;
-  /** Whisper checkpoint the loop transcribes with (null = backend default).
-   *  Persisted. */
-  selectedSttModelId: string | null;
-  /** Named speaker for Orpheus (snac) TTS -- tara/leo/jess/etc. Orpheus randomizes
-   *  the voice unless a speaker is pinned, so this is sent with every synth call.
-   *  Persisted so the choice sticks across reloads. */
-  selectedVoiceName: string;
-  /** llama-server --parallel slots for a GGUF voice slot: how many sentence
-   *  chunks synthesize concurrently. 1-4. Persisted. */
-  voiceParallelN: number;
-  /** GGUF quant variant for the selected GGUF voice (null = repo default).
-   *  Applied on next voice-slot load. Persisted. */
-  selectedVoiceVariant: string | null;
+  /** The audio.cpp voice the loop speaks with. Persisted. */
+  selectedVoiceModelId: string;
+  /** A saved Audio voice for a voice that can clone; "" is the model's own. Persisted. */
+  selectedVoiceId: string;
+  /** The transcription model the loop listens with. Persisted. */
+  selectedSttModelId: string;
   /** True while the voice slot (TTS) is loading, so the orb can show a loading
    *  state instead of appearing ready to listen. Not persisted. */
   voiceSlotLoading: boolean;
@@ -2743,11 +2736,9 @@ type ChatRuntimeStore = {
   setLoadingModelPick: (pick: LoadingModelPick | null) => void;
   clearLoadingModelPick: (expected: LoadingModelPick) => void;
   setVoiceMode: (mode: "off" | "configuring" | "active") => void;
-  setSelectedVoiceModelId: (id: string | null) => void;
-  setSelectedVoiceName: (name: string) => void;
-  setVoiceParallelN: (n: number) => void;
-  setSelectedSttModelId: (id: string | null) => void;
-  setSelectedVoiceVariant: (variant: string | null) => void;
+  setSelectedVoiceModelId: (id: string) => void;
+  setSelectedVoiceId: (id: string) => void;
+  setSelectedSttModelId: (id: string) => void;
   setVoiceSlotLoading: (loading: boolean) => void;
   setVoiceSlotLoaded: (loaded: boolean) => void;
   setVoiceTranscribing: (transcribing: boolean) => void;
@@ -4549,11 +4540,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   activeNativePathToken: null,
   activeNativePathExpiresAtMs: null,
   voiceMode: "off" as const,
-  selectedVoiceModelId: loadString(CHAT_VOICE_MODEL_ID_KEY, "") || null,
-  selectedSttModelId: loadString(CHAT_STT_MODEL_ID_KEY, "") || null,
-  selectedVoiceName: loadString(CHAT_VOICE_NAME_KEY, "tara") || "tara",
-  voiceParallelN: Math.min(4, Math.max(1, Number(loadString(CHAT_VOICE_PARALLEL_KEY, "1")) || 1)),
-  selectedVoiceVariant: loadString(CHAT_VOICE_VARIANT_KEY, "") || null,
+  // An Orpheus pick from the llama-server voice slot falls back to the default voice.
+  selectedVoiceModelId: migrateVoiceTtsModel(loadString(CHAT_VOICE_MODEL_ID_KEY, "")),
+  selectedVoiceId: loadString(CHAT_VOICE_SAVED_ID_KEY, ""),
+  selectedSttModelId: loadString(CHAT_STT_MODEL_ID_KEY, "") || VOICE_DEFAULT_STT_MODEL,
   voiceSlotLoading: false,
   voiceSlotLoaded: false,
   voiceTranscribing: false,
@@ -4787,31 +4777,20 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setVoiceOrbState: (voiceOrbState) => set({ voiceOrbState }),
   setVoiceOrbCollapsed: (voiceOrbCollapsed) => set({ voiceOrbCollapsed }),
   setEnsureVoiceSlotLoaded: (ensureVoiceSlotLoaded) => set({ ensureVoiceSlotLoaded }),
-  setSelectedVoiceName: (selectedVoiceName) =>
-    set(() => {
-      saveString(CHAT_VOICE_NAME_KEY, selectedVoiceName);
-      return { selectedVoiceName };
-    }),
   setSelectedVoiceModelId: (selectedVoiceModelId) =>
     set(() => {
-      saveString(CHAT_VOICE_MODEL_ID_KEY, selectedVoiceModelId ?? "");
+      saveString(CHAT_VOICE_MODEL_ID_KEY, selectedVoiceModelId);
       return { selectedVoiceModelId };
+    }),
+  setSelectedVoiceId: (selectedVoiceId) =>
+    set(() => {
+      saveString(CHAT_VOICE_SAVED_ID_KEY, selectedVoiceId);
+      return { selectedVoiceId };
     }),
   setSelectedSttModelId: (selectedSttModelId) =>
     set(() => {
-      saveString(CHAT_STT_MODEL_ID_KEY, selectedSttModelId ?? "");
+      saveString(CHAT_STT_MODEL_ID_KEY, selectedSttModelId);
       return { selectedSttModelId };
-    }),
-  setVoiceParallelN: (n) =>
-    set(() => {
-      const voiceParallelN = Math.min(4, Math.max(1, Math.round(n) || 1));
-      saveString(CHAT_VOICE_PARALLEL_KEY, String(voiceParallelN));
-      return { voiceParallelN };
-    }),
-  setSelectedVoiceVariant: (selectedVoiceVariant) =>
-    set(() => {
-      saveString(CHAT_VOICE_VARIANT_KEY, selectedVoiceVariant ?? "");
-      return { selectedVoiceVariant };
     }),
   setVoiceSlotLoading: (voiceSlotLoading) => set({ voiceSlotLoading }),
   setVoiceSlotLoaded: (voiceSlotLoaded) => set({ voiceSlotLoaded }),

@@ -29,6 +29,7 @@ let voiceThreadReset: (() => void) | null = null;
 let voiceResume: (() => void) | null = null;
 let voiceBargeIn: (() => void) | null = null;
 let voiceSubmit: (() => void) | null = null;
+let voicePlayback: (() => boolean) | null = null;
 
 /** The loop's current mode. Safe to call from anywhere, including render. */
 export function getVoiceMode(): VoiceMode {
@@ -93,10 +94,9 @@ export function registerVoiceBargeIn(fn: (() => void) | null): void {
 }
 
 /**
- * Cut the currently-playing reply because the user has started talking over it.
- * The adapter raises this the instant an utterance commits to being transcribed,
- * so the model is not still speaking into a turn it is about to lose. The handler
- * no-ops unless something is actually audible, so stray calls are harmless.
+ * Cut the reply because the user has started talking over it: the adapter raises
+ * this once a burst over its barge gate holds during playback. The handler no-ops
+ * unless something is actually audible, so stray calls are harmless.
  */
 export function requestVoiceBargeIn(): void {
   voiceBargeIn?.();
@@ -115,4 +115,14 @@ export function registerVoiceSubmit(fn: (() => void) | null): void {
  */
 export function requestVoiceSubmit(): void {
   voiceSubmit?.();
+}
+
+/** Called by the mounted voice loop. Pass null on teardown. */
+export function registerVoicePlayback(fn: (() => boolean) | null): void {
+  voicePlayback = fn;
+}
+
+/** Whether a reply is being spoken; the adapter listens only for barge-in then. */
+export function isVoicePlaybackActive(): boolean {
+  return voicePlayback?.() ?? false;
 }

@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Turning assistant text into what the codec actually speaks, and into the chunks
-// it speaks one at a time. Dependency-free for the same reason tts-audio-types is:
-// these are the only part of the voice path testable without a mic or a GPU, and
-// the player hook they used to live in drags in React, auth and asset imports.
+// Turning assistant text into what the voice actually speaks, and into the chunks
+// it speaks one at a time. Dependency-free: these are the only part of the voice
+// path testable without a mic or a GPU.
 
 const SPEECH_STRIP_RE =
   /[\p{Extended_Pictographic}\u{1F1E6}-\u{1F1FF}\u{20E3}\u{FE00}-\u{FE0F}\u{200D}]/gu;
