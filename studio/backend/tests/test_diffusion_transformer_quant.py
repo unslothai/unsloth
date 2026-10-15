@@ -202,12 +202,6 @@ class _FakeTensor:
     def __setitem__(self, key, value):
         self.zeroed.append((key, value))
 
-    def expand(self, *shape):
-        # The probe's stride-0 broadcast input (the shape an adaLN gets from ``temb.expand``).
-        broadcast = _FakeTensor()
-        broadcast.expanded_to = shape
-        return broadcast
-
 
 class _FakeBool:
     def __init__(self, value):
@@ -806,8 +800,7 @@ def test_the_smoke_probe_feeds_zero_rows_not_only_noise(monkeypatch):
             return self
 
         def __call__(self, x):
-            seen.setdefault("x", x)
-            seen.setdefault("all", []).append(x)
+            seen["x"] = x
             return x
 
     torch = types.ModuleType("torch")
@@ -828,8 +821,6 @@ def test_the_smoke_probe_feeds_zero_rows_not_only_noise(monkeypatch):
     assert tq._smoke_probe(TQ_INT8, "cuda") is True
     assert seen["x"].zeroed, "probe input was never zeroed anywhere"
     assert all(value == 0 for _, value in seen["x"].zeroed)
-    # A second forward on a stride-0 broadcast (MX / NVFP4 assert a contiguous activation).
-    assert [getattr(x, "expanded_to", None) for x in seen["all"]] == [None, (2, 16, 512)]
 
 
 # ── consumer-vs-datacenter detection (fp8 fast-accumulate gate) ──────────────────

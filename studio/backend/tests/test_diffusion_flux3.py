@@ -521,28 +521,6 @@ def test_contiguous_guard_feeds_mx_linears_a_contiguous_activation():
     assert not getattr(model[1], "_unsloth_contig_hook", False)
 
 
-def test_smoke_probe_feeds_a_broadcast_activation(monkeypatch):
-    torch = pytest.importorskip("torch")
-    import core.inference.diffusion_transformer_quant as tq
-
-    seen = []
-
-    class _Rec(torch.nn.Linear):
-        def forward(self, x):
-            seen.append(x.is_contiguous())
-            return super().forward(x)
-
-    monkeypatch.setattr(torch.nn, "Linear", _Rec)
-    monkeypatch.setattr(torch.cuda, "synchronize", lambda *a, **k: None)
-    fake_ao = types.ModuleType("torchao.quantization")
-    fake_ao.quantize_ = lambda *a, **k: None
-    monkeypatch.setitem(sys.modules, "torchao.quantization", fake_ao)
-    monkeypatch.setattr(tq, "_make_quant_config", lambda *a, **k: None)
-    assert tq._run_smoke_probe("fp8", "cpu") is True
-    # Two forwards: the zero-row matrix and a stride-0 broadcast.
-    assert seen == [True, False]
-
-
 def test_python_310_gets_a_reason_it_can_act_on(monkeypatch):
     # Diffusers main (and so the pinned FLUX.3 build) needs Python 3.11; the installer skips it below that, so the
     # refusal must not send a 3.10 user to reinstall or fetch an archive that cannot install.

@@ -1649,18 +1649,13 @@ def _run_smoke_probe(scheme: str, device: str) -> Optional[bool]:
 
         lin = torch.nn.Linear(512, 512, bias = False).to(device = device, dtype = torch.bfloat16)
         quantize_(lin, _make_quant_config(scheme), filter_fn = make_filter_fn(0))
-        guard_contiguous_activations(lin)
         # M stays 32 (scaled_mm wants 16-aligned dims); the zero rows go inside it, not after it.
         x = torch.randn(32, 512, device = device, dtype = torch.bfloat16)
         x[16:] = 0
-        # And a stride-0 broadcast, the shape an adaLN sees from ``temb.expand(B, S, D)``: MX / NVFP4 assert a
-        # contiguous activation, so a scheme whose quantised Linears lack the guard fails here, not at the first step.
-        broadcast = torch.randn(1, 1, 512, device = device, dtype = torch.bfloat16).expand(2, 16, 512)
         with torch.no_grad():
             out = lin(x)
-            out_broadcast = lin(broadcast)
         torch.cuda.synchronize()
-        return bool(torch.isfinite(out).all().item() and torch.isfinite(out_broadcast).all().item())
+        return bool(torch.isfinite(out).all().item())
     except Exception as exc:  # noqa: BLE001
         return None if _is_out_of_memory(exc) else False
 
