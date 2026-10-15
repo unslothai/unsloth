@@ -120,8 +120,11 @@ export const BUDGET = {
   // Naming the Windows update that adds MXC's built-in container (#13798) adds 358 B raw / 93 B transfer, its
   // string in the eager English locale (6,765,003 -> 6,765,361 B raw against 3c0061e16, one machine and build,
   // Node 24, chunk count unchanged at 95), which put main 55 B raw over. Raised by that growth.
-  transferBytes: 2_033_777,
-  rawBytes: 6_765_664,
+  // The Windows Long Paths explainer on the first-run startup screen (#13523) adds 2,361 B raw / 748 B
+  // transfer (6,765,431 -> 6,767,792 B raw, 2,033,619 -> 2,034,367 B transfer against 9396996c9, one machine
+  // and build, Node 24, chunk count unchanged at 95). It renders on that first screen, so raised by that growth.
+  transferBytes: 2_034_525,
+  rawBytes: 6_768_025,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
