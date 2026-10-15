@@ -124,12 +124,12 @@ export const BUDGET = {
   // native view, and the off-screen question strings) adds 5,278 B raw / 1,928 B transfer (6,765,003 ->
   // 6,770,281 B raw, 2,033,563 -> 2,035,491 B transfer against a8585676d4, one machine and build, Node 24,
   // chunk count unchanged at 95), raised by that.
-  // The Windows Long Paths explainer on the first-run startup screen (#13523) adds 2,360 B raw / 743 B
-  // transfer (6,770,973 -> 6,773,333 B raw, 2,035,652 -> 2,036,395 B transfer against cd947468f, one machine
+  // The Windows Long Paths explainer on the first-run startup screen (#13523) adds 1,848 B raw / 512 B
+  // transfer (6,770,973 -> 6,772,821 B raw, 2,035,652 -> 2,036,164 B transfer against cd947468f, one machine
   // and build, Node 24, chunk count unchanged at 95). It renders on that first screen, so raised by that
   // growth, plus the 31 B raw main was already over at cd947468f.
-  transferBytes: 2_036_448,
-  rawBytes: 6_773_333,
+  transferBytes: 2_036_217,
+  rawBytes: 6_772_821,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

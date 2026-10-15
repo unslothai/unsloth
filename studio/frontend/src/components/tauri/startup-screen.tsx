@@ -180,21 +180,11 @@ function LongPathsExplainer({
           Windows will ask for permission
         </p>
         <p className="text-xs text-muted-foreground">
-          Unsloth needs Windows long file paths turned on. Compiled PyTorch
-          kernels (torch.compile and Triton) and some dependencies use paths
-          longer than the 260 character limit Windows has by default.
-        </p>
-        <p className="text-xs text-muted-foreground">
-          After you click Continue, Windows shows a prompt for{" "}
+          Approve{" "}
           <span className="font-medium text-foreground">
             Registry Console Tool
           </span>{" "}
-          from Microsoft Windows. Approve it (Yes, or an administrator&apos;s
-          password). This is a one-time, system-wide setting.
-        </p>
-        <p className="text-xs text-muted-foreground">
-          If you skip, Unsloth still installs, but some compiled kernels may
-          fail.
+          once to turn on long file paths for compiled kernels.
         </p>
         {waiting ? (
           <div className="mt-4 flex items-center gap-2">
