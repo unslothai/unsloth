@@ -22,7 +22,7 @@ import {
   FlimSlateIcon,
   ImageIcon,
   InformationCircleIcon,
-  SparklesIcon,
+  LayoutTable02Icon,
   TextFontIcon,
   ViewIcon,
 } from "@hugeicons/core-free-icons";
@@ -45,7 +45,7 @@ const CAPABILITY_ICONS: Record<HubCapabilityFilter, IconSvgElement | null> = {
   reasoning: null,
   vision: ViewIcon,
   audio: AiSpeechIcon,
-  embedding: SparklesIcon,
+  embedding: LayoutTable02Icon,
   "image-gen": ImageIcon,
   "video-gen": FlimSlateIcon,
 };
@@ -320,7 +320,6 @@ export function ModelSearchFiltersControl({
                 [
                   [
                     "Parameters",
-                    "billions",
                     "minParams",
                     "maxParams",
                     1e9,
@@ -328,21 +327,19 @@ export function ModelSearchFiltersControl({
                   ],
                   [
                     "Context length",
-                    "tokens",
                     "minContext",
                     "maxContext",
                     1,
-                    "The model's published limit, not what your device can fit. Both limits are included; models that don't publish one are left out.",
+                    "In tokens. The model's published limit, not what your device can fit. Both limits are included; models that don't publish one are left out.",
                   ],
                 ] as const
-              ).map(([label, unit, min, max, scale, about]) => (
+              ).map(([label, min, max, scale, about]) => (
                 <fieldset key={min}>
                   <legend className={SECTION_LABEL}>
                     <span className="flex items-center gap-1">
                       {label}
                       <HoverInfo label={label}>{about}</HoverInfo>
                     </span>
-                    {unit}
                   </legend>
                   <div className="grid grid-cols-2 gap-1.5 px-3">
                     {([min, max] as const).map((key, index) => (

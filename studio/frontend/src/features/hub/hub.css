@@ -830,6 +830,28 @@
     background-color: var(--accent);
   }
 
+  /* The model picker's panel is --sidebar, a step from --accent, so its selected tab, Search Hub and
+     dropdowns sat close to the list. Lifted toward white there so the controls stand off the panel. */
+  html.dark .unsloth-model-selector-menu {
+    --picker-control-lit: color-mix(in srgb, var(--accent), white 9%);
+  }
+  html.dark .unsloth-model-selector-menu .hub-tab-toggle-pill,
+  html.dark .unsloth-model-selector-menu .hub-tab-toggle-pill:hover,
+  html.dark .unsloth-model-selector-menu .hub-tab-toggle-pill.hub-pill-action:active {
+    background-color: var(--picker-control-lit);
+    color: #fff;
+  }
+  html.dark .unsloth-model-selector-menu .hub-tab-toggle-pill.hub-pill-action:hover {
+    background-color: color-mix(in srgb, var(--accent), white 14%);
+  }
+  html.dark .unsloth-model-selector-menu .field-soft {
+    background-color: color-mix(in srgb, var(--accent), white 5%) !important;
+    color: #fff;
+  }
+  html.dark .unsloth-model-selector-menu .field-soft:is(:hover, :active, :focus-visible, [data-state="open"], [aria-expanded="true"]) {
+    background-color: var(--picker-control-lit) !important;
+  }
+
   html:not(.dark) .hub-page .catalog-row {
     background-color: transparent;
     border-color: transparent;
