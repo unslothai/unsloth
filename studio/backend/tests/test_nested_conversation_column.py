@@ -6,7 +6,7 @@ import json
 import pytest
 from datasets import Dataset, IterableDataset, load_dataset
 
-from hub.utils.dataset_format import check_dataset_format
+from hub.utils.dataset_format import check_dataset_format, format_dataset_preview
 from utils.datasets import format_dataset
 
 _CONVERSATION = [
@@ -85,3 +85,22 @@ def test_empty_wrapped_conversation_does_not_break_the_dataset(tmp_path, batch_s
 
     assert result["chat_column"] == "output_format"
     assert result["dataset"]["output_format"] == [None, _CONVERSATION]
+
+
+@_WRAPPERS
+def test_preview_shows_the_wrapped_conversation_as_its_turns(wrapped):
+    preview = format_dataset_preview(_recipe_output(wrapped))
+
+    assert preview[0]["output_format"] == _CONVERSATION
+
+
+def test_mapped_empty_wrapped_conversation_adds_no_turns():
+    rows = [
+        {"output_format": {"conversation": _CONVERSATION}},
+        {"output_format": {"conversation": []}},
+    ]
+    result = format_dataset(
+        Dataset.from_list(rows), custom_format_mapping = {"output_format": "assistant"}
+    )
+
+    assert result["dataset"]["conversations"] == [_CONVERSATION, []]

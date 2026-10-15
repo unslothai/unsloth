@@ -105,6 +105,8 @@ def message_list_columns(dataset):
     features = getattr(dataset, "features", None) or {}
     columns = set()
     for column, feature in features.items():
+        if isinstance(feature, dict) and len(feature) == 1:
+            (feature,) = feature.values()
         item = getattr(feature, "feature", None)
         if item is None and isinstance(feature, list) and len(feature) == 1:
             item = feature[0]
