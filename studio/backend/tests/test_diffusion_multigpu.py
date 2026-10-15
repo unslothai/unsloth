@@ -4047,3 +4047,95 @@ def test_every_replica_drop_path_releases_it(monkeypatch, path):
     gc.collect()
     assert gone() is None  # nothing on the source side keeps the dropped copy alive
     assert ledger == []
+
+
+def test_replica_build_capacity_failure_declines_only_that_shape(monkeypatch):
+    dit = _BatchDit()
+    pipe = _RouterPipe(dit)
+    router, replicas = _router(dit, headroom_mib = 1000)
+    monkeypatch.setattr(router, "_secondary_free_mib", lambda: 1500)
+    with mg.cfg_request_scope(pipe, 512, 512):
+        _guided(dit, 2, steps = 3)  # two latents: 2000 MiB of room beside the replica, 1500 free
+    assert replicas == [] and router.disabled_reason is None
+    assert "lacks room" in router.describe()["disabled_reason"]
+    with mg.cfg_request_scope(pipe, 512, 512):
+        _guided(dit, 1, steps = 3)  # a smaller request retries the build: 1024 MiB fits
+    assert len(replicas) == 1 and router.stats["replica_calls"] > 0
+
+
+def _router_outcome(router):
+    if router.disabled_reason is not None:
+        return "load"
+    return "shape" if router.shape_disabled is not None else "none"
+
+
+@pytest.mark.parametrize(
+    "exc, outcome, reason",
+    [
+        (lambda: mg.ReplicaCapacity("replica needs 9000 MiB"), "shape", "lacks room"),
+        (lambda: mg.ReplicaTransient("copy ran out"), "shape", "out of memory"),
+        (lambda: torch.OutOfMemoryError("CUDA out of memory"), "shape", "out of memory"),
+        (lambda: mg.ReplicaStructural("unknown wrapper"), "load", "unknown wrapper"),
+        (lambda: RuntimeError("replica kernel failed"), "load", "replica kernel failed"),
+        (lambda: ValueError("bad"), "load", "bad"),
+    ],
+)
+def test_replica_failures_dispatch_on_type_only(exc, outcome, reason):
+    dit = _BatchDit()
+    router, _ = _router(dit)
+    router._replica_failure("call", exc())
+    assert _router_outcome(router) == outcome
+    assert reason in router.describe()["disabled_reason"]
+
+
+@pytest.mark.parametrize(
+    "site",
+    ["root_override", "unknown_wrapper", "no_inner_link", "stg_adapter", "no_compile_record", "fingerprint"],
+)
+def test_every_structural_replica_raise_site_disables_the_load(monkeypatch, site):
+    dit = _BatchDit()
+    router, _ = _router(dit)
+    if site == "fingerprint":
+        monkeypatch.setattr(mg, "weights_fingerprint", lambda m: (_ for _ in ()).throw(RuntimeError("no view")))
+    else:
+        router.replica_factory = lambda: (_ for _ in ()).throw(mg.ReplicaStructural(site))
+    router._build_replica()
+    assert _router_outcome(router) == "load" and router.replica is None
+
+
+def test_replica_paths_raise_only_typed_failures():
+    import ast
+    from pathlib import Path
+
+    tree = ast.parse(Path(mg.__file__).read_text())
+    replica_functions = {
+        "_rebind_root_forward",
+        "_source_wrapper_markers",
+        "compile_like_source",
+        "build_replica",
+        "_compile_replica_blocks",
+    }
+    typed = {"ReplicaCapacity", "ReplicaTransient", "ReplicaStructural"}
+    scopes = []
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name in replica_functions:
+            scopes.append(node)
+        if isinstance(node, ast.ClassDef) and node.name == "CfgParallelRouter":
+            scopes.extend(f for f in node.body if isinstance(f, ast.FunctionDef))
+    bad = []
+    for scope in scopes:
+        for n in ast.walk(scope):
+            if isinstance(n, ast.Raise) and n.exc is not None:
+                target = n.exc.func if isinstance(n.exc, ast.Call) else n.exc
+                name = getattr(target, "id", None) or getattr(target, "attr", None)
+                if name not in typed:
+                    bad.append(f"{scope.name}:{n.lineno} raises {name}")
+            if isinstance(n, ast.ExceptHandler) and n.type is None:
+                bad.append(f"{scope.name}:{n.lineno} bare except")
+            if (
+                isinstance(n, ast.Call)
+                and getattr(n.func, "attr", None) == "disable"
+                and scope.name not in ("_replica_failure", "disable")
+            ):
+                bad.append(f"{scope.name}:{n.lineno} disables directly (route it through _replica_failure)")
+    assert bad == []

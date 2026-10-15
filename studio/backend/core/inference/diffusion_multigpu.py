@@ -466,8 +466,34 @@ def _bg_eager_forced() -> bool:
     return eager_forced()
 
 
-def _is_oom(exc: BaseException) -> bool:
-    return type(exc).__name__ == "OutOfMemoryError" or "out of memory" in str(exc).lower()
+class ReplicaError(RuntimeError):
+    """A CFG-parallel replica failure, typed by what it means; the router's one handler dispatches on the type."""
+
+
+class ReplicaCapacity(ReplicaError):
+    """The replica card lacks room for this request shape: declined for the shape only, re-read every request (other
+    shapes, and this one once memory frees, try again)."""
+
+
+class ReplicaTransient(ReplicaError):
+    """Out of memory while copying or running the replica for this shape: declined for the shape, its in-flight
+    copies torn down; the replica stays for the shapes that fit."""
+
+
+class ReplicaStructural(ReplicaError):
+    """The denoiser cannot be reproduced on a copy (wrapper, root override, compile record, unverifiable weights, a
+    replica call that fails for any other reason): CFG-parallel off for the load."""
+
+
+def replica_failure_kind(exc: BaseException) -> type:
+    """The outcome class of a failure in a replica path: its own type when typed, out of memory as transient, and
+    anything else as structural (an unknown failure is never retried per shape)."""
+    if isinstance(exc, ReplicaError):
+        return type(exc) if type(exc) is not ReplicaError else ReplicaStructural
+    oom = getattr(_torch(), "OutOfMemoryError", None)
+    if oom is not None and isinstance(exc, oom):
+        return ReplicaTransient
+    return ReplicaStructural
 
 
 # Pricing and verification are per request shape: (canvas, every input tensor's shape: latent batch, tokens,
@@ -1575,7 +1601,7 @@ def _rebind_root_forward(original: Any, source: Any, replica: Any) -> None:
             return  # the class forward: the copy already has it
         replica.__dict__["forward"] = types.MethodType(original.__func__, replica)
         return
-    raise RuntimeError(
+    raise ReplicaStructural(
         f"the denoiser's root forward override ({original!r}) cannot be reproduced on a replica"
     )
 
@@ -1713,15 +1739,15 @@ def _source_wrapper_markers(outer: Any, name: str) -> dict:
     fn = outer
     for _ in range(16):
         if fn is None:
-            raise RuntimeError(f"compiled submodule '{name}': the wrapper chain ends without torch's compiled call")
+            raise ReplicaStructural(f"compiled submodule '{name}': the wrapper chain ends without torch's compiled call")
         if _is_torch_compiled(fn) and not any(getattr(fn, m, None) for m in _LAYER_MARKERS):
             return found
         if getattr(fn, "_unsloth_stg_adapter", False):
-            raise RuntimeError(f"compiled submodule '{name}' carries the LTX-2 STG adapter (not rebuilt on a copy)")
+            raise ReplicaStructural(f"compiled submodule '{name}' carries the LTX-2 STG adapter (not rebuilt on a copy)")
         markers = [m for m in _LAYER_MARKERS if getattr(fn, m, None) not in (None, False)]
         graph = type(fn).__name__ in _GRAPH_WRAPPERS and _hook_origin(fn).startswith(_TRUSTED_HOOK_MODULES)
         if not markers and not graph and not isinstance(fn, types.MethodType):
-            raise RuntimeError(
+            raise ReplicaStructural(
                 f"compiled submodule '{name}' carries an unknown wrapper {type(fn).__name__} (not rebuilt on a copy)"
             )
         guard = getattr(fn, "_unsloth_compile_guard", None)
@@ -1731,11 +1757,11 @@ def _source_wrapper_markers(outer: Any, name: str) -> dict:
             found[marker] = True
         below = _wrapper_inner(fn)
         if below is None:
-            raise RuntimeError(
+            raise ReplicaStructural(
                 f"compiled submodule '{name}': cannot see below wrapper {type(fn).__name__} (no inner link)"
             )
         fn = below
-    raise RuntimeError(f"compiled submodule '{name}': wrapper chain too deep to inspect")
+    raise ReplicaStructural(f"compiled submodule '{name}': wrapper chain too deep to inspect")
 
 
 def compile_like_source(
@@ -1746,7 +1772,7 @@ def compile_like_source(
     the shared compile guard, the background-compile gate). The one builder every replica block goes through."""
     recorded = src.__dict__.get("_unsloth_compile_args")
     if recorded is None:
-        raise RuntimeError(f"compiled submodule '{name}' has no recorded compile arguments")
+        raise ReplicaStructural(f"compiled submodule '{name}' has no recorded compile arguments")
     markers = _source_wrapper_markers(src._compiled_call_impl, name)
     args, kwargs = recorded
     dst._compiled_call_impl = None
@@ -2295,10 +2321,8 @@ class CfgParallelRouter:
                 try:
                     self._prefetch(args, kwargs)
                     self._launch_prediction(latent)
-                except Exception as exc:  # noqa: BLE001 - this shape runs on one card
-                    if not _is_oom(exc):
-                        raise
-                    self._shape_oom("prefetch", exc)
+                except Exception as exc:  # noqa: BLE001 - dispatched on its type by the one handler
+                    self._replica_failure("prefetch", exc)
         if (
             self.branch % 2 == 1
             and self.disabled_reason is None
@@ -2356,12 +2380,8 @@ class CfgParallelRouter:
                     if self.branch == 1:
                         self.stats["steps_parallel"] += 1
                     return out
-                except Exception as exc:  # noqa: BLE001 - this branch is recomputed on the primary below
-                    if _is_oom(exc):
-                        # this canvas / batch does not fit beside the replica; other shapes keep it
-                        self._shape_oom("replica forward", exc)
-                    else:
-                        self.disable(f"replica call failed: {type(exc).__name__}: {exc}")
+                except Exception as exc:  # noqa: BLE001 - recomputed on the primary below; typed by the handler
+                    self._replica_failure("call", exc)
             self.cfg_seen = True
         if (
             self.branch == 0
@@ -2490,6 +2510,19 @@ class CfgParallelRouter:
             )
         return room
 
+    def _replica_failure(self, where: str, exc: BaseException) -> None:
+        """The one handler for every failure in a replica path (build, prefetch, call, staleness check): dispatched on
+        :func:`replica_failure_kind` only. Capacity and transient failures decline this request shape (a capacity
+        verdict is re-read every request; a transient one tears the in-flight copies down); a structural one turns
+        CFG-parallel off for the load."""
+        kind = replica_failure_kind(exc)
+        if kind is ReplicaCapacity:
+            self._shape_off(f"{_ROOM_REASON} ({where}): {exc}")
+        elif kind is ReplicaTransient:
+            self._shape_oom(where, exc)
+        else:
+            self.disable(f"replica {where} failed: {type(exc).__name__}: {exc}")
+
     def _shape_oom(self, where: str, exc: BaseException) -> None:
         self._drop_pending()
         self.prefetched.clear()
@@ -2597,11 +2630,12 @@ class CfgParallelRouter:
         self.request_step = 0
         self.request_total_steps = steps
         self.steps_fn = steps_fn
-        # a short-render verdict holds for that request only: a longer one may repay the build
+        # short-render and room verdicts hold for one request: a longer one may repay the build, and free memory moves
+        per_request = (_SHORT_RENDER_REASON, _ROOM_REASON)
         for state in self.shapes.saved.values():
-            if str(state.get("shape_disabled") or "").startswith(_SHORT_RENDER_REASON):
+            if str(state.get("shape_disabled") or "").startswith(per_request):
                 state["shape_disabled"] = None
-        if str(self.shape_disabled or "").startswith(_SHORT_RENDER_REASON):
+        if str(self.shape_disabled or "").startswith(per_request):
             self.shape_disabled = None
         if self.replica is None:
             self._reselect_secondary()
@@ -2815,7 +2849,9 @@ class CfgParallelRouter:
         try:
             current = weights_fingerprint(module)
         except Exception as exc:  # noqa: BLE001 - unverifiable weights: never risk a stale replica
-            self.disable(f"cannot fingerprint the denoiser: {exc}")
+            self._replica_failure(
+                "staleness check", ReplicaStructural(f"cannot fingerprint the denoiser: {exc}")
+            )
             return
         if current != self.fingerprint:
             if self.logger is not None:
@@ -2829,7 +2865,10 @@ class CfgParallelRouter:
         # was built: the copy would then run uncached while the source's cache saw only the even branches.
         hooked = _hooks_present(module)
         if hooked is not None:
-            self.disable(f"denoiser gained hooks after the replica was built ({hooked})")
+            self._replica_failure(
+                "staleness check",
+                ReplicaStructural(f"denoiser gained hooks after the replica was built ({hooked})"),
+            )
 
     def _build_replica(self) -> None:
         module = self.module_ref()
@@ -2857,10 +2896,13 @@ class CfgParallelRouter:
             )
             room = max(1024, self._room_mib(batch))
             if free is not None and need_mib + room > free:
-                raise RuntimeError(
-                    f"replica needs {need_mib} MiB, {free} MiB free on {self.secondary}"
+                raise ReplicaCapacity(
+                    f"replica needs {need_mib} MiB + {room} MiB room, {free} MiB free on {self.secondary}"
                 )
-            self.fingerprint = weights_fingerprint(module)
+            try:
+                self.fingerprint = weights_fingerprint(module)
+            except Exception as exc:  # noqa: BLE001 - typed below
+                raise ReplicaStructural(f"cannot fingerprint the denoiser: {exc}") from exc
             with _device_context(self.secondary):
                 self.replica = self.replica_factory()
             self.pairs = list(zip(module.modules(), self.replica.modules()))
@@ -2874,11 +2916,10 @@ class CfgParallelRouter:
                     self.secondary,
                     time.perf_counter() - t0,
                 )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 - dispatched on its type by the one handler
+            release_replica(self.replica)
             self.replica = None
-            with contextlib.suppress(Exception):
-                _torch().cuda.empty_cache()
-            self.disable(f"replica unavailable: {exc}")
+            self._replica_failure("build", exc)
 
     def _prefetch(self, args: tuple, kwargs: dict) -> None:
         for tensor in (*_iter_tensors((args, kwargs)), *self.carry):
