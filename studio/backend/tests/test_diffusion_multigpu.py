@@ -689,7 +689,9 @@ def test_replica_declined_when_a_submodule_hook_captures_the_source():
     router, replicas = _router(dit)
     _cfg_loop(dit, torch.randn(2, 4), steps = 3)
     assert replicas == []
-    assert "proj._forward_hooks" in router.describe()["disabled_reason"]
+    # refused for hooks is retryable: the odd branch stays on the primary until the hook is gone
+    assert router.describe()["disabled_reason"] is None
+    assert "proj._forward_hooks" in router.describe()["blocked_by"]
 
 
 def test_portable_hooks_and_root_hooks_are_accepted():
@@ -1094,7 +1096,7 @@ def test_hook_with_a_mutable_closure_counter_is_declined():
     assert "proj._forward_pre_hooks" in mg._hooks_present(dit)
     router, replicas = _router(dit)
     _cfg_loop(dit, torch.randn(2, 4), steps = 3)
-    assert replicas == [] and "hooks" in router.describe()["disabled_reason"]
+    assert replicas == [] and "hooks" in router.describe()["blocked_by"]
 
 
 def test_replica_is_dropped_when_the_source_gains_a_cache_hook():
@@ -2559,3 +2561,80 @@ def test_cfg_batch_headroom_scales_with_the_requested_canvas():
     with mg.cfg_request_scope(pipe, 512, 512):
         assert router.needed_mib() == 892 // 4
     assert router.needed_mib() == 892  # outside a request: the calibrated figure
+
+
+def test_cfg_batch_catches_a_forward_that_turns_stateful_later():
+    torch.manual_seed(0)
+
+    class LateCounter(_BatchDit):
+        def __init__(self):
+            super().__init__()
+            self.register_buffer("seen", torch.zeros(()))
+
+        def forward(self, hidden_states, timestep, encoder_hidden_states, return_dict = False):
+            self.calls += 1
+            if float(timestep) < 0.5:  # stateless for the early steps, then advances a buffer every call
+                self.seen.add_(1.0)
+            return (self.proj(hidden_states) * timestep * (1 + self.seen) + encoder_hidden_states.tanh(),)
+
+    cond, uncond = _embeds()
+    latents = torch.randn(2, 4)
+    ref = LateCounter()
+    reference = _batch_loop(ref, latents.clone(), 6, cond, uncond)
+    dit = LateCounter()
+    dit.load_state_dict(ref.state_dict())
+    dit.seen.zero_()
+    router = mg.CfgBatchRouter(dit)
+    dit.forward = router
+    out = _batch_loop(dit, latents.clone(), 6, cond, uncond)
+    torch.testing.assert_close(out, reference, rtol = 0, atol = 0)
+    assert float(dit.seen) == float(ref.seen)
+    assert "state" in router.describe()["disabled_reason"]
+
+
+def test_replica_refused_for_hooks_is_retried_once_they_are_gone():
+    torch.manual_seed(0)
+    dit = _Dit()
+    router, replicas = _router(dit)
+    source = dit.proj
+    handle = dit.proj.register_forward_pre_hook(lambda m, a: source and None)  # a recording hook, e.g. bg compile
+    _cfg_loop(dit, torch.randn(2, 4), steps = 2)
+    assert replicas == [] and router.describe()["disabled_reason"] is None
+    assert router.describe()["blocked_by"] is not None
+    handle.remove()
+    _cfg_loop(dit, torch.randn(2, 4), steps = 3)
+    assert len(replicas) == 1 and router.stats["replica_calls"] > 0
+
+
+def test_request_scope_finds_a_router_under_a_later_outer_layer():
+    torch.manual_seed(0)
+    dit = _BatchDit()
+    pipe = _RouterPipe(dit)
+
+    class Pipe:
+        transformer = dit
+
+    import os as _os
+
+    _os.environ[mg.CFG_BATCH_ENV] = "force"
+    try:
+        assert mg.install_cfg_batch(pipe, offload_policy = "none") is None
+    finally:
+        _os.environ.pop(mg.CFG_BATCH_ENV, None)
+    router = dit.__dict__["forward"]
+
+    class Skip:  # the deferred static step skip takes the forward slot, keeping the router in .inner
+        _unsloth_outer_forward = True
+
+        def __init__(self, inner):
+            self.inner = inner
+
+        def __call__(self, *a, **k):
+            return self.inner(*a, **k)
+
+    dit.forward = Skip(router)
+    router.template = ("x", {})
+    mg.release_cfg_inputs(pipe)
+    assert router.template is None
+    with mg.cfg_request_scope(pipe, 2048, 2048):
+        assert router.request_px == 2048 * 2048

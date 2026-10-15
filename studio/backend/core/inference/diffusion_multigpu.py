@@ -1774,7 +1774,10 @@ class CfgParallelRouter:
             "predicted_hits": 0,
             "predicted_misses": 0,
             "opaque_primary_calls": 0,
+            "replica_blocked": 0,
         }
+        # why the replica could not be built on the last attempt, when that is retryable (hooks present)
+        self.blocked_by: Optional[str] = None
         # the previous step's odd call, classified against its primary call; the launched prediction
         self.template: Optional[tuple[Any, Any, dict]] = None
         self.pending: Optional[dict] = None
@@ -1793,6 +1796,7 @@ class CfgParallelRouter:
             "replica_built": self.replica is not None,
             "replica_compiled_submodules": getattr(self.replica, "_unsloth_replica_compiled", None),
             "disabled_reason": self.disabled_reason,
+            "blocked_by": self.blocked_by,
             **self.stats,
         }
 
@@ -2108,7 +2112,12 @@ class CfgParallelRouter:
         try:
             hooked = _hooks_present(module)
             if hooked is not None:
-                raise RuntimeError(f"denoiser carries hooks ({hooked})")
+                # Transient (a recording pre-hook of the background compile, a step cache toggled per request): the
+                # odd branch runs on the primary and the next guided step tries again.
+                self.blocked_by = f"denoiser carries hooks ({hooked})"
+                self.stats["replica_blocked"] += 1
+                return
+            self.blocked_by = None
             need_mib = sum(
                 t.numel() * t.element_size() for t in (*module.parameters(), *module.buffers())
             ) // (1 << 20)
@@ -2342,10 +2351,24 @@ def invalidate_cfg_replica(
 
 
 def _routers_of(pipe: Any) -> list:
-    """The CFG routers installed as ``pipe.transformer``'s forward (a from_pipe workflow pipe shares the denoiser)."""
+    """The CFG routers of ``pipe.transformer``, from the registry kept on the denoiser at install time, so a layer
+    installed above the router later (the deferred static step skip) does not hide it (a from_pipe workflow pipe
+    shares the denoiser)."""
     denoiser = getattr(pipe, "transformer", None)
-    forward = getattr(denoiser, "__dict__", {}).get("forward") if denoiser is not None else None
-    return [forward] if isinstance(forward, (CfgParallelRouter, CfgBatchRouter)) else []
+    if denoiser is None:
+        return []
+    router = getattr(denoiser, "__dict__", {}).get("_unsloth_cfg_router")
+    if isinstance(router, (CfgParallelRouter, CfgBatchRouter)):
+        return [router]
+    # not installed by install_cfg_*: walk the forward slot through known outer layers
+    fn = getattr(denoiser, "__dict__", {}).get("forward")
+    for _ in range(8):
+        if isinstance(fn, (CfgParallelRouter, CfgBatchRouter)):
+            return [fn]
+        fn = getattr(fn, "inner", None) or getattr(fn, "__wrapped__", None)
+        if fn is None:
+            break
+    return []
 
 
 @contextlib.contextmanager
@@ -2458,43 +2481,69 @@ def _mutable_container(args: tuple, kwargs: dict) -> tuple[Optional[str], list]:
 _STATE_SCALARS = (bool, int, float, str)
 
 
-def _denoiser_state(module: Any) -> dict:
-    """What a stateful forward could advance: every parameter / buffer version (buffers also cloned, so a change
-    can be undone) and the plain scalar attributes of every submodule. Taken once per load, before the first batched
-    call. Studio's ``_unsloth_*`` hook state is excluded (root hooks write it per call, outside the forward)."""
-    torch = _torch()
-    tensors = []
-    for name, t in (*module.named_parameters(), *module.named_buffers()):
-        is_buffer = not isinstance(t, torch.nn.Parameter)
-        tensors.append((name, t, _tensor_version(t), t.detach().clone() if is_buffer else None))
-    scalars = []
-    for name, sub in module.named_modules():
-        for key, value in sub.__dict__.items():
-            if isinstance(value, _STATE_SCALARS) and not key.startswith(_STATE_PREFIX):
-                scalars.append((sub, key, value))
-    return {"tensors": tensors, "scalars": scalars}
+# Buffers up to this many bytes are copied before every batched call so a change can be undone (FLUX.2 klein-base:
+# no buffers at all); larger ones are only version-checked.
+_STATE_BUFFER_COPY_BYTES = 64 << 20
 
 
-def _restore_changed_state(module: Any, snapshot: dict) -> Optional[str]:
-    """Name of the first state the call changed (after restoring buffers and scalars), else None. A parameter
-    written in place is reported but cannot be restored (no copy is taken of the weights)."""
-    torch = _torch()
-    changed = None
-    for name, t, version, copy in snapshot["tensors"]:
-        now = _tensor_version(t)
-        moved = version is not None and now is not None and now != version
-        if copy is not None and not moved and version is None:
-            moved = not _bitwise_equal(t.detach(), copy)  # an inference tensor: compare the value
-        if moved:
-            changed = changed or name
-            if copy is not None:
-                with torch.no_grad():
-                    t.copy_(copy)
-    for sub, key, value in snapshot["scalars"]:
-        if sub.__dict__.get(key, _DROP) is not value and sub.__dict__.get(key, _DROP) != value:
-            changed = changed or key
-            sub.__dict__[key] = value
-    return changed
+class _StateWatch:
+    """What a stateful forward could advance, read around EVERY batched call: each parameter / buffer version and the
+    plain scalar attributes of the submodules (Studio's ``_unsloth_*`` hook state excluded: root hooks write it per
+    call, outside the forward). The tensor list and the scalar slots are collected once per load; a snapshot then
+    reads ints only (FLUX.2 klein-base: 169 tensors, 1082 scalar slots, 0.07 ms on CPU). A scalar attribute created
+    after the first batched call is not watched."""
+
+    def __init__(self, module: Any):
+        torch = _torch()
+        self.tensors: list = []
+        buffer_bytes = 0
+        for name, t in module.named_parameters():
+            self.tensors.append((name, t, False))
+        for name, t in module.named_buffers():
+            self.tensors.append((name, t, True))
+            buffer_bytes += t.numel() * t.element_size()
+        self.copy_buffers = buffer_bytes <= _STATE_BUFFER_COPY_BYTES
+        self.slots = [
+            (sub, key)
+            for sub in module.modules()
+            for key, value in sub.__dict__.items()
+            if isinstance(value, _STATE_SCALARS) and not key.startswith(_STATE_PREFIX)
+        ]
+        del torch
+
+    def snapshot(self) -> dict:
+        versions = [_tensor_version(t) for _name, t, _buf in self.tensors]
+        copies = [
+            t.detach().clone() if is_buffer and (self.copy_buffers or version is None) else None
+            for (_name, t, is_buffer), version in zip(self.tensors, versions)
+        ]
+        values = [sub.__dict__.get(key, _DROP) for sub, key in self.slots]
+        return {"versions": versions, "copies": copies, "values": values}
+
+    def restore_changed(self, snap: dict) -> Optional[str]:
+        """Name of the first state the call changed (buffers and scalars restored), else None. A parameter written
+        in place, or a buffer too large to copy, is reported but not restored."""
+        torch = _torch()
+        changed = None
+        for (name, t, _is_buffer), version, copy in zip(self.tensors, snap["versions"], snap["copies"]):
+            now = _tensor_version(t)
+            moved = version is not None and now is not None and now != version
+            if copy is not None and version is None:
+                moved = not _bitwise_equal(t.detach(), copy)  # an inference tensor: compare the value
+            if moved:
+                changed = changed or name
+                if copy is not None:
+                    with torch.no_grad():
+                        t.copy_(copy)
+        for (sub, key), value in zip(self.slots, snap["values"]):
+            now = sub.__dict__.get(key, _DROP)
+            if now is not value and now != value:
+                changed = changed or key
+                if value is _DROP:
+                    sub.__dict__.pop(key, None)
+                else:
+                    sub.__dict__[key] = value
+        return changed
 
 
 def _tensor_version(tensor: Any) -> Optional[int]:
@@ -2630,8 +2679,8 @@ class CfgBatchRouter:
         # the canvas (pixels) ``headroom_mib`` was calibrated at; scaled linearly to the request's canvas
         self.headroom_reference_px = headroom_reference_px
         self.request_px: Optional[int] = None
-        # the first batched call of a load checks the denoiser for state its forward advances
-        self.state_checked = False
+        # every batched call checks the denoiser for state its forward advances (slots collected once per load)
+        self.state_watch: Optional[_StateWatch] = None
         self.reason = reason
         self.logger = logger
         self.disabled_reason: Optional[str] = None
@@ -2697,7 +2746,7 @@ class CfgBatchRouter:
         self.verify_batched = _BATCH_VERIFY_CALLS
         self.disabled_pending = None
         self.timing_off = False
-        self.state_checked = False
+        self.state_watch = None
         if self.disabled_reason is not None and self.disabled_reason.startswith(("priced out", "measured no gain")):
             self.disabled_reason = None
 
@@ -2935,11 +2984,12 @@ class CfgBatchRouter:
             if verify:
                 torch.cuda.synchronize()
                 t0 = time.perf_counter()
-            state_snapshot = None if self.state_checked else _denoiser_state(module)
+            if self.state_watch is None:
+                self.state_watch = _StateWatch(module)
+            state_snapshot = self.state_watch.snapshot()
             out = self.orig_forward(*b_args, **b_kwargs)
             if state_snapshot is not None:
-                self.state_checked = True
-                changed = _restore_changed_state(module, state_snapshot)
+                changed = self.state_watch.restore_changed(state_snapshot)
                 if changed is not None:
                     # its forward advances state once per call: one doubled call is not two (state restored)
                     self.disable(f"the denoiser's forward changes its own state ({changed}); one branch per call")
@@ -3156,6 +3206,7 @@ def install_cfg_batch(
     except TypeError:
         return "pipeline cannot be tracked (not weak-referenceable)"
     denoiser.forward = router
+    denoiser.__dict__["_unsloth_cfg_router"] = router
     if logger is not None:
         logger.info("diffusion.multigpu: CFG-batch armed (%s)", router.reason)
     return None
@@ -3169,5 +3220,7 @@ def uninstall_cfg_batch(pipe: Any) -> None:
     if router is None:
         return
     module = router.module_ref()
+    if module is not None and module.__dict__.get("_unsloth_cfg_router") is router:
+        del module.__dict__["_unsloth_cfg_router"]
     if module is not None and module.__dict__.get("forward") is router:
         del module.__dict__["forward"]
