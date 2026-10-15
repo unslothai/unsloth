@@ -1476,7 +1476,12 @@ def _all_cublas_gate(monkeypatch, tmp_path, cublas_wins):
     return default
 
 
-def _fake_stock_fusions(monkeypatch, model, qkv = True, swiglu = True):
+def _fake_stock_fusions(
+    monkeypatch,
+    model,
+    qkv = True,
+    swiglu = True,
+):
     """What the stock-path installers leave when they engage: int8_fused's SwiGLU mark (it runs before the swap) and
     the QKV fusion's record + to_out mark (``install_modules``, called from the swap). Either may decline."""
     from core.inference import diffusion_int8_fused as i8f
@@ -1499,7 +1504,9 @@ def _fake_stock_fusions(monkeypatch, model, qkv = True, swiglu = True):
 
 
 @pytest.mark.parametrize("cublas_wins", [True, False])
-def test_all_cublas_gate_yields_qwen_image_21_groups_to_their_stock_fusion(monkeypatch, tmp_path, cublas_wins):
+def test_all_cublas_gate_yields_qwen_image_21_groups_to_their_stock_fusion(
+    monkeypatch, tmp_path, cublas_wins
+):
     """A100 Qwen-Image-2.1: with every bucket on cuBLAS the swapped forward is rotq_i8 + cuBLAS per Linear, which
     also locks out the QKV / SwiGLU shared-rotation fusions the kill switch runs (0.2557 vs 0.2504 s/step). The groups
     those fusions take must stay unswapped; other Linears and a fused plan keep the swap."""
@@ -1525,7 +1532,9 @@ def test_all_cublas_gate_yields_qwen_image_21_groups_to_their_stock_fusion(monke
 
 
 @pytest.mark.parametrize("qkv, swiglu", [(False, False), (False, True), (True, False)])
-def test_all_cublas_gate_keeps_the_swap_where_the_stock_fusion_declined(monkeypatch, tmp_path, qkv, swiglu):
+def test_all_cublas_gate_keeps_the_swap_where_the_stock_fusion_declined(
+    monkeypatch, tmp_path, qkv, swiglu
+):
     """A declined installer (newer diffusers QKV helper fingerprint, int8_fused probe refusal) leaves its group
     stock; that group must keep the int8 swap rather than drop to the per-Linear stock forward."""
     from core.inference import diffusion_qwenimage21_fused as qf

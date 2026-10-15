@@ -1156,10 +1156,13 @@ def _yielded(transformer: Any, index: Any) -> set:
     yielded: a declined install (helper fingerprint, kernel probe) keeps the swap."""
     try:
         from .diffusion_qwenimage21_fused import claimed, install_modules, stock_claims
+
         groups = stock_claims(transformer)
         want: set = set()
         for group in groups:
-            if gate_routes_to_cublas(index, {(int(m.out_features), int(m.in_features)) for m in group}):
+            if gate_routes_to_cublas(
+                index, {(int(m.out_features), int(m.in_features)) for m in group}
+            ):
                 want.update(id(m) for m in group)
         if not want:
             return set()
