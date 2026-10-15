@@ -229,6 +229,19 @@ function BatchPreviewValue({
   if (gradientAccumulation <= 1 && gpuCount <= 1) {
     return <span className="font-mono">{batchSize}</span>;
   }
+  if (gpuCount <= 1) {
+    return (
+      <>
+        <span className="font-mono">{batchSize}</span>
+        <span className="text-muted-foreground/70"> × </span>
+        <span className="font-mono">{gradientAccumulation}</span>
+        <span className="text-muted-foreground/70">
+          {" "}
+          = {batchSize * gradientAccumulation}
+        </span>
+      </>
+    );
+  }
   const accumulatedBatch = batchSize * gradientAccumulation;
   const globalBatch = accumulatedBatch * gpuCount;
   return (
@@ -557,22 +570,39 @@ export function RunPreviewCard({
       </section>
 
       <section className="flex flex-col gap-3">
-        <TrainingGpuPreview
-          mode={parallelismMode}
-          devices={displayedGpuDevices}
-          gpuAvailable={gpu.available}
-          totalMemoryGb={displayedGpuMemoryGb}
-          labels={{
-            hardware: t("studio.preview.hardware"),
-            vram: t("studio.preview.vram"),
-            automatic: t("studio.preview.automaticGpu"),
-            unavailable: t("studio.preview.noGpu"),
-            noSelection: t("studio.preview.noGpuSelected"),
-            device: (index, name) =>
-              t("studio.preview.gpuDevice", { index, name }),
-            total: (total) => t("studio.preview.totalVram", { total }),
-          }}
-        />
+        {parallelismMode === "auto" ? (
+          <>
+            <MetaRow
+              label={t("studio.preview.hardware")}
+              wrap
+              value={gpu.available ? gpu.name : t("studio.preview.noGpu")}
+            />
+            {gpu.available && (
+              <MetaRow
+                label={t("studio.preview.vram")}
+                title={`${gpu.memoryTotalGb} GiB`}
+                value={`${Math.round(gpu.memoryTotalGb)} GiB`}
+              />
+            )}
+          </>
+        ) : (
+          <TrainingGpuPreview
+            mode={parallelismMode}
+            devices={displayedGpuDevices}
+            gpuAvailable={gpu.available}
+            totalMemoryGb={displayedGpuMemoryGb}
+            labels={{
+              hardware: t("studio.preview.hardware"),
+              vram: t("studio.preview.vram"),
+              automatic: t("studio.preview.automaticGpu"),
+              unavailable: t("studio.preview.noGpu"),
+              noSelection: t("studio.preview.noGpuSelected"),
+              device: (index, name) =>
+                t("studio.preview.gpuDevice", { index, name }),
+              total: (total) => t("studio.preview.totalVram", { total }),
+            }}
+          />
+        )}
         <MetaRow
           label={t("studio.preview.hfToken")}
           value={
