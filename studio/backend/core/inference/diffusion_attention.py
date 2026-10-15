@@ -785,9 +785,10 @@ _ROCM_FLASH_LOCAL = threading.local()
 # (device, dtype, *geometry, query bucket, key bucket, batch bucket) -> flash serves it, filled on an eager call's
 # first use (the probe or a stored verdict). In memory: a bucket the probe rejected stays native.
 _ROCM_FLASH_BUCKETS: dict[tuple, bool] = {}
-# Bucket keys whose probe could not run (no room beside the live forward, or it raised): native until the next
-# generation retries them. Never a verdict, so a transient shortfall cannot disable a working kernel.
-_ROCM_FLASH_DEFERRED: set[tuple] = set()
+# On each hooked DiT: bucket keys whose probe could not run (no room beside the live forward, or it raised), native
+# until that DiT's next generation retries them. Never a verdict, so a transient shortfall cannot disable a working
+# kernel; per DiT, so another pipeline's generation boundary does not clear it.
+ROCM_FLASH_DEFERRED_ATTR = "_unsloth_rocm_flash_deferred"
 _ROCM_FLASH_GATE_LOCK = threading.Lock()
 
 
@@ -848,7 +849,10 @@ def _rocm_flash_length_reason(query: Any, key: Any) -> Optional[str]:
         return None
     if any(_ROCM_FLASH_BUCKETS.get(k) is False for k in keys):
         return "slower or inexact at this size"
-    if any(k in _ROCM_FLASH_DEFERRED for k in keys):
+    deferred = getattr(_ROCM_FLASH_LOCAL, "deferred", None)
+    if not isinstance(deferred, set):
+        deferred = set()  # no owning DiT: nothing to remember the deferral on
+    if any(k in deferred for k in keys):
         return "timing deferred"
     with _ROCM_FLASH_GATE_LOCK:
         verdict = True
@@ -865,18 +869,29 @@ def _rocm_flash_length_reason(query: Any, key: Any) -> Optional[str]:
                     **({} if kv_bucket == q_bucket else {"kv_tokens": kv_bucket}),
                 )
                 if ok is None:
-                    _ROCM_FLASH_DEFERRED.add(k)
+                    deferred.add(k)
                     return "timing deferred"
                 _ROCM_FLASH_BUCKETS[k] = ok
             verdict = verdict and ok
     return None if verdict else "slower or inexact at this size"
 
 
+def _native_sdpa_fused_enabled() -> bool:
+    """Whether native SDPA may take a fused (flash / memory-efficient) kernel; otherwise it runs the math backend."""
+    try:
+        import torch
+        return bool(torch.backends.cuda.flash_sdp_enabled() or torch.backends.cuda.mem_efficient_sdp_enabled())
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _rocm_flash_probe_bytes(
     geometry: tuple, tokens: int, kv_tokens: int, batch: int, dtype: Any
 ) -> int:
     """Upper bound on what ``_time_rocm_flash_block`` allocates: its weights, the block's widest activations and the
-    fp32 accuracy outputs (measured on gfx1151: 5.46 GiB at Wan's 64k tokens, this gives 8.1 GiB)."""
+    fp32 accuracy outputs (measured on gfx1151: 5.46 GiB at Wan's 64k tokens, this gives 8.1 GiB). With the fused SDPA
+    kernels off (``guard_rocm_fused_sdpa``) the native arm runs math SDPA, which also holds fp32 scores and their
+    softmax, batch x heads x queries x keys each."""
     hidden, heads, head_dim = (int(v) for v in geometry[:3])
     width = int(geometry[3]) if len(geometry) > 3 else hidden
     inner = heads * head_dim
@@ -884,7 +899,8 @@ def _rocm_flash_probe_bytes(
     weights = (4 * inner * hidden + 8 * hidden * hidden + 2 * inner * width) * elem
     per_query = (11 * hidden + 3 * inner) * elem + 2 * inner * 4
     per_key = (width + 2 * inner) * elem
-    return weights + batch * (tokens * per_query + kv_tokens * per_key)
+    scores = 0 if _native_sdpa_fused_enabled() else 2 * batch * heads * tokens * kv_tokens * 4
+    return weights + batch * (tokens * per_query + kv_tokens * per_key) + scores
 
 
 def _rocm_flash_probe_fits(device: str, need: int) -> bool:
@@ -1218,6 +1234,7 @@ def _rocm_flash_toolchain_key(device: str) -> Optional[str]:
                 f"torch{torch.__version__}",
                 f"hip{getattr(torch.version, 'hip', None)}",
                 _rocm_driver_version(),
+                _native_sdpa_baseline(),
                 f"flash_attn{fa_version}",
                 os.path.dirname(os.path.realpath(fa.__file__)),
                 backend,
@@ -1228,6 +1245,24 @@ def _rocm_flash_toolchain_key(device: str) -> Optional[str]:
         )
     except Exception:  # noqa: BLE001 - unidentifiable toolchain: never persisted
         return None
+
+
+def _native_sdpa_baseline() -> str:
+    """The native arm a verdict was timed against: which SDPA backends are on (``guard_rocm_fused_sdpa``, the user, or
+    ``UNSLOTH_ALLOW_ROCM_FUSED_SDPA`` move them) and the AOTriton experimental switch that decides whether they run."""
+    import torch
+
+    cuda = torch.backends.cuda
+    flags = "".join(
+        name if enabled() else "-"
+        for name, enabled in (
+            ("f", cuda.flash_sdp_enabled),
+            ("e", cuda.mem_efficient_sdp_enabled),
+            ("m", cuda.math_sdp_enabled),
+        )
+    )
+    experimental = os.environ.get("TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL", "").strip() or "unset"
+    return f"sdpa{flags},aotriton-exp{experimental}"
 
 
 def _rocm_flash_cache_path(toolchain: Optional[str]) -> Optional[str]:
@@ -1814,16 +1849,23 @@ def _track_rocm_flash_calls(pipe: Any) -> None:
             if outer is None:
                 outer = _ROCM_FLASH_LOCAL.stack = []
             outer.append(
-                (getattr(_ROCM_FLASH_LOCAL, "gate", None), getattr(_ROCM_FLASH_LOCAL, "tally", None))
+                (
+                    getattr(_ROCM_FLASH_LOCAL, "gate", None),
+                    getattr(_ROCM_FLASH_LOCAL, "tally", None),
+                    getattr(_ROCM_FLASH_LOCAL, "deferred", None),
+                )
             )
             _ROCM_FLASH_LOCAL.gate = getattr(dit, ROCM_FLASH_GATE_ATTR, None) or None
             tally = getattr(dit, ROCM_FLASH_TALLY_ATTR, None)
             _ROCM_FLASH_LOCAL.tally = tally if isinstance(tally, dict) else None
+            deferred = getattr(dit, ROCM_FLASH_DEFERRED_ATTR, None)
+            _ROCM_FLASH_LOCAL.deferred = deferred if isinstance(deferred, set) else None
 
         def post(_module, _args, _output) -> None:
             stack = getattr(_ROCM_FLASH_LOCAL, "stack", None)
-            gate, tally = stack.pop() if stack else (None, None)
+            gate, tally, deferred = stack.pop() if stack else (None, None, None)
             _ROCM_FLASH_LOCAL.gate, _ROCM_FLASH_LOCAL.tally = gate, tally
+            _ROCM_FLASH_LOCAL.deferred = deferred
 
         try:
             try:  # also after a forward that raised, so a failed run never leaves its gate active
@@ -1833,6 +1875,7 @@ def _track_rocm_flash_calls(pipe: Any) -> None:
             handles = [register_pre(pre), post_handle]
             setattr(dit, _ROCM_FLASH_HOOKS_ATTR, handles)
             setattr(dit, ROCM_FLASH_TALLY_ATTR, {})
+            setattr(dit, ROCM_FLASH_DEFERRED_ATTR, set())
         except Exception:  # noqa: BLE001
             pass
 
@@ -1877,12 +1920,12 @@ def rocm_flash_ran(pipe: Any) -> Optional[tuple[str, str]]:
 
 def begin_attention_run(state: Any) -> None:
     """A generation boundary: the per-DiT route tallies restart, so the report after it describes this run alone, and
-    buckets whose probe could not run are retried."""
-    _ROCM_FLASH_DEFERRED.clear()
+    this run's DiTs retry buckets whose probe could not run."""
     for dit in _rocm_flash_dits(getattr(state, "pipe", None)):
         if isinstance(getattr(dit, ROCM_FLASH_TALLY_ATTR, None), dict):
             try:
                 setattr(dit, ROCM_FLASH_TALLY_ATTR, {})
+                setattr(dit, ROCM_FLASH_DEFERRED_ATTR, set())
             except Exception:  # noqa: BLE001
                 pass
 

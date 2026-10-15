@@ -38,7 +38,6 @@ def _clean(monkeypatch, tmp_path):
     monkeypatch.setattr(att, "_INSTALL_ATTEMPTED", set())
     monkeypatch.setattr(att, "_ROCM_FLASH_LOCAL", __import__("threading").local(), raising = False)
     monkeypatch.setattr(att, "_ROCM_FLASH_BUCKETS", {}, raising = False)
-    monkeypatch.setattr(att, "_ROCM_FLASH_DEFERRED", set(), raising = False)
     monkeypatch.setattr(att, "_rocm_flash_probe_fits", lambda device, need: True, raising = False)
     monkeypatch.setattr(att, "_ROCM_FLASH_ROUTED", {})
 
@@ -1195,9 +1194,10 @@ def test_bucket_probe_error_stays_native_without_retrying_every_call(monkeypatch
     dit.run(guarded, [(40000, None), (40000, None)])
     assert timed == [4096, 32768] and ran == ["native", "native"]
     # A probe that raised is no verdict: the next generation retries it.
-    assert not att._ROCM_FLASH_BUCKETS.get(next(iter(att._ROCM_FLASH_DEFERRED)), False)
+    deferred = getattr(dit, att.ROCM_FLASH_DEFERRED_ATTR)
+    assert len(deferred) == 1 and next(iter(deferred)) not in att._ROCM_FLASH_BUCKETS
     verdicts[32768] = 60.0
-    att.begin_attention_run(types.SimpleNamespace(pipe = None))
+    att.begin_attention_run(types.SimpleNamespace(pipe = types.SimpleNamespace(transformer = dit)))
     dit.run(guarded, [(40000, None)])
     assert timed == [4096, 32768, 32768] and ran == ["native", "native", "flash"]
 
@@ -1211,18 +1211,66 @@ def test_bucket_probe_without_room_beside_the_forward_is_deferred_not_rejected(m
     monkeypatch.setattr(att, "_rocm_flash_probe_fits", lambda device, need: needs.append(need) or False)
     dit.run(guarded, [(40000, None), (40000, None)])
     assert timed == [4096] and ran == ["native", "native"] and len(needs) == 1
-    assert att._ROCM_FLASH_BUCKETS == {} and len(att._ROCM_FLASH_DEFERRED) == 1
+    assert att._ROCM_FLASH_BUCKETS == {} and len(getattr(dit, att.ROCM_FLASH_DEFERRED_ATTR)) == 1
     assert att._ROCM_FLASH_ROUTED == {"timing deferred": 2}
     assert not any(k[-1] == 32768 or 32768 in k for k in att.ROCM_FLASH_ADMISSIONS)
     # Room again at the next generation: timed and admitted.
     monkeypatch.setattr(att, "_rocm_flash_probe_fits", lambda device, need: True)
-    att.begin_attention_run(types.SimpleNamespace(pipe = None))
+    att.begin_attention_run(types.SimpleNamespace(pipe = types.SimpleNamespace(transformer = dit)))
     dit.run(guarded, [(40000, None)])
     assert timed == [4096, 32768] and ran[-1] == "flash"
 
 
-def test_probe_byte_bound_covers_the_measured_peak():
+def test_deferral_belongs_to_its_dit_not_to_other_generations(monkeypatch):
+    dit, guarded, ran, timed = _length_env(monkeypatch, {4096: 70.0, 32768: 60.0})
+    monkeypatch.setattr(att, "_rocm_flash_probe_fits", lambda device, need: False)
+    dit.run(guarded, [(40000, None)])
+    monkeypatch.setattr(att, "_rocm_flash_probe_fits", lambda device, need: True)
+    # Another pipeline's generation starting does not clear this DiT's deferral.
+    other = _Dit()
+    att.apply_attention_backend(
+        types.SimpleNamespace(transformer = other), att.ROCM_FLASH_CANDIDATE, target = _target()
+    )
+    att.begin_attention_run(types.SimpleNamespace(pipe = types.SimpleNamespace(transformer = other)))
+    dit.run(guarded, [(40000, None)])
+    assert timed == [4096] and ran == ["native", "native"]
+    att.begin_attention_run(types.SimpleNamespace(pipe = types.SimpleNamespace(transformer = dit)))
+    dit.run(guarded, [(40000, None)])
+    assert timed == [4096, 32768] and ran[-1] == "flash"
+
+
+def test_probe_bound_adds_math_sdpa_scores_when_fused_sdpa_is_off(monkeypatch):
     torch = pytest.importorskip("torch")
+    g = (3072, 24, 128)
+    monkeypatch.setattr(att, "_native_sdpa_fused_enabled", lambda: True)
+    fused = att._rocm_flash_probe_bytes(g, 16384, 16384, 1, torch.bfloat16)
+    monkeypatch.setattr(att, "_native_sdpa_fused_enabled", lambda: False)
+    math = att._rocm_flash_probe_bytes(g, 16384, 16384, 1, torch.bfloat16)
+    assert math - fused == 2 * 24 * 16384 * 16384 * 4  # 48 GiB of fp32 scores + softmax at 16k x 16k
+
+
+def test_native_sdpa_baseline_keys_the_verdicts(monkeypatch, tmp_path):
+    torch = pytest.importorskip("torch")
+    _fake_build(monkeypatch, tmp_path)
+    monkeypatch.setattr(att, "_rocm_flash_toolchain_key", _REAL_TOOLCHAIN_KEY)
+    flags = {"flash": True, "mem": True}
+    monkeypatch.setattr(torch.backends.cuda, "flash_sdp_enabled", lambda: flags["flash"])
+    monkeypatch.setattr(torch.backends.cuda, "mem_efficient_sdp_enabled", lambda: flags["mem"])
+    monkeypatch.setattr(torch.backends.cuda, "math_sdp_enabled", lambda: True)
+    monkeypatch.setenv("TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL", "1")
+    fused = _REAL_TOOLCHAIN_KEY("cuda:0")
+    assert fused is not None and "|sdpafem,aotriton-exp1|" in fused
+    flags.update(flash = False, mem = False)  # guard_rocm_fused_sdpa turned the fused kernels off
+    math_only = _REAL_TOOLCHAIN_KEY("cuda:0")
+    assert math_only != fused and "|sdpa--m,aotriton-exp1|" in math_only
+    flags.update(flash = True, mem = True)
+    monkeypatch.delenv("TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL")
+    assert _REAL_TOOLCHAIN_KEY("cuda:0") not in (fused, math_only)
+
+
+def test_probe_byte_bound_covers_the_measured_peak(monkeypatch):
+    torch = pytest.importorskip("torch")
+    monkeypatch.setattr(att, "_native_sdpa_fused_enabled", lambda: True)  # Studio's default, as measured
     # gfx1151, Wan2.2-5B layer (3072 hidden, 24 x 128), batch 1: measured probe peaks 0.31 GiB at 1024, 5.46 at 65536.
     for tokens, peak in ((1024, 0.31), (65536, 5.46)):
         need = att._rocm_flash_probe_bytes((3072, 24, 128), tokens, tokens, 1, torch.bfloat16) / 2**30
