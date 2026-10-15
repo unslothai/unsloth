@@ -111,6 +111,40 @@ const TRANSFORMERS_TWIN_BY_GGUF_REPO = new Map<string, string>(
   ]),
 );
 
+/** Whether a saved Transcribe pick was a whisper.cpp one: its GGML repo or its engine. */
+export function isRetiredWhisperChoice(repo: string, engine: string): boolean {
+  return (
+    engine === "gguf" ||
+    TRANSFORMERS_TWIN_BY_GGUF_REPO.has(repo.trim().toLowerCase())
+  );
+}
+
+type SttHostAvailability = {
+  transformers?: { available: boolean };
+  mtmd?: { available: boolean };
+  audiocpp?: { available: boolean };
+};
+
+/** Where a retired whisper.cpp pick goes on this host: null keeps its Transformers twin (PyTorch
+ *  is here), otherwise llama.cpp Qwen3-ASR 0.6B, else audio.cpp's, as the backend serves the
+ *  retired engine. undefined while the host cannot tell yet or has neither. */
+export function retiredWhisperFallback(
+  host: SttHostAvailability,
+): { repo: string; engine: AudioSttEngine } | null | undefined {
+  if (host.transformers?.available === true) return null;
+  if (host.transformers?.available !== false) return undefined;
+  if (host.mtmd?.available) {
+    return { repo: MTMD_REPO_BY_KEY["qwen3-asr-0.6b"], engine: "mtmd" };
+  }
+  if (host.audiocpp?.available) {
+    return {
+      repo: AUDIOCPP_REPO_BY_KEY["audiocpp-qwen3-asr-0.6b"],
+      engine: "audiocpp",
+    };
+  }
+  return undefined;
+}
+
 /** A saved Transcribe pick in its current form: a retired whisper.cpp repo or engine becomes
  *  its Transformers twin. Other picks pass through unchanged. */
 export function canonicalSttChoice(

@@ -25088,15 +25088,11 @@ def _note_retired_alias_engine(
 
 
 def _retired_alias_engines(kind: str = "load") -> tuple[str, ...]:
-    """Every engine a retired whisper.cpp alias request's model (or download) may be on.
-
-    The one it resolves to now, plus each one whose model or download an alias request
-    started and nothing has released or taken over since: what can serve it (PyTorch,
-    llama.cpp, audio.cpp) can change mid-session, while a model loaded directly on another
-    engine is not the alias's to free.
-    """
-    engines = {_resolve_serving_stt_engine("gguf"), *_RETIRED_ALIAS_SERVED[kind]}
-    return tuple(name for name in ("transformers", "mtmd", "audiocpp") if name in engines)
+    """The engines holding a model (or download) a retired whisper.cpp alias request started
+    that nothing has released or taken over since. Only those are the alias's to free:
+    where an alias request would run now says nothing about who owns what is there."""
+    owned = _RETIRED_ALIAS_SERVED[kind]
+    return tuple(name for name in ("transformers", "mtmd", "audiocpp") if name in owned)
 
 
 def _prepare_runtime_fallback_checkpoint(
@@ -25611,12 +25607,13 @@ async def stt_download_cancel(
     """
     requested = payload.engine if payload else None
     engine = _resolve_serving_stt_engine(requested)
-    engines = [engine]
-    if _resolve_stt_engine(requested) == "gguf":
-        # A retired alias download may have started on another engine than the
-        # one it resolves to now (llama.cpp repaired mid-download), so reach
-        # each, scoped to its mapped model and the download id.
-        engines += [name for name in _retired_alias_engines("download") if name != engine]
+    # A retired alias stops only the downloads alias requests started, on whichever
+    # engine they run, each scoped to its mapped model and the download id.
+    engines = (
+        list(_retired_alias_engines("download"))
+        if _resolve_stt_engine(requested) == "gguf"
+        else [engine]
+    )
     status = None
     for name in engines:
         result = await asyncio.to_thread(
@@ -25631,6 +25628,8 @@ async def stt_download_cancel(
             status = result
         if result.get("cancelled"):
             _RETIRED_ALIAS_SERVED["download"].discard(name)
+    if status is None:
+        status = {**_stt_download_module(engine).download_status(), "cancelled": False}
     return JSONResponse(content = status)
 
 
@@ -25745,8 +25744,8 @@ async def stt_unload(
     if engine is None:
         unload_requests: list[tuple[Optional[list[str]], Optional[str]]] = [(None, model)]
     elif _resolve_stt_engine(engine) == "gguf":
-        # Free each engine a retired "gguf" pick may have loaded on, scoped to the
-        # model it was mapped to there, so a default ASR loaded directly stays.
+        # Free only the engines a retired "gguf" request loaded on, scoped to the
+        # model it was mapped to there, so a model loaded directly stays.
         unload_requests = [
             ([serving], _serving_stt_model(engine, serving, model))
             for serving in _retired_alias_engines()

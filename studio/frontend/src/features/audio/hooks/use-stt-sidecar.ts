@@ -32,7 +32,12 @@ import {
   sttRepoIdForSidecarKey,
   sttSidecarKeyFor,
 } from "../catalog";
-import { canonicalSttChoice, isAudioSttEngine } from "../stt-artifacts";
+import {
+  canonicalSttChoice,
+  isAudioSttEngine,
+  isRetiredWhisperChoice,
+  retiredWhisperFallback,
+} from "../stt-artifacts";
 import type { AudioHostState } from "./audio-host-state";
 
 export function useSttSidecar({
@@ -46,6 +51,11 @@ export function useSttSidecar({
   const { repo: lastSttRepo, engine: lastSttEngine } = canonicalSttChoice(
     savedSttRepo,
     savedSttEngine,
+  );
+  // Without PyTorch that twin cannot run, so the first status read that can tell moves the
+  // pick to the Qwen3-ASR the backend serves the retired engine with.
+  const retiredWhisperPick = useRef(
+    isRetiredWhisperChoice(savedSttRepo, savedSttEngine),
   );
   const [selectedSttRepo, setSelectedSttRepo] = useState<string | null>(null);
   const [sttLoadedModel, setSttLoadedModel] = useState<string | null>(null);
@@ -111,6 +121,16 @@ export function useSttSidecar({
       );
       if (generation !== sttStatusRefreshGeneration.current) return;
       audioCppRuntime.current = stt.audio_cpp_runtime ?? null;
+      if (retiredWhisperPick.current) {
+        const fallback = retiredWhisperFallback(stt);
+        if (fallback !== undefined) retiredWhisperPick.current = false;
+        if (fallback) {
+          sttEngines.current.set(fallback.repo.toLowerCase(), fallback.engine);
+          setLastSttRepoChoice(fallback.repo);
+          setLastSttVariant("");
+          setLastSttEngine(fallback.engine);
+        }
+      }
       const nextDownloadedArtifacts = sttDownloadedArtifacts(
         stt,
         sttRepoIdForSidecarKey,
@@ -166,7 +186,7 @@ export function useSttSidecar({
       setSttLoadedModel(null);
       setSttLoadedEngine(null);
     }
-  }, [sttEngineFor]);
+  }, [sttEngineFor, setLastSttRepoChoice, setLastSttVariant, setLastSttEngine]);
 
   const sttSelected = selectedSttRepo !== null;
   const sttReady = sttSelectionReady(

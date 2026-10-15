@@ -155,14 +155,39 @@ def test_an_alias_downloads_through_transformers(host, alias):
 
 
 def test_an_alias_cancels_the_transformers_download(host):
+    asyncio.run(
+        ri.stt_download(
+            SttLoadRequest(model = "small", engine = "gguf"), current_subject = "tester", hf_token = None
+        )
+    )
     asyncio.run(ri.stt_download_cancel(SttLoadRequest(model = "small", engine = "gguf"), "tester"))
     assert host.cancels == [("stt_sidecar", "transformers", "small")]
 
 
+def test_an_alias_cancel_never_stops_a_download_it_did_not_start(host):
+    asyncio.run(
+        ri.stt_download(
+            SttLoadRequest(model = "small", engine = "transformers"),
+            current_subject = "tester",
+            hf_token = None,
+        )
+    )
+    asyncio.run(ri.stt_download_cancel(SttLoadRequest(model = "small", engine = "gguf"), "tester"))
+    assert host.cancels == []
+
+
 def test_an_alias_unloads_the_transformers_model(host):
+    _load("small", "gguf")
     asyncio.run(ri.stt_unload(engine = "gguf", model = "small", current_subject = "tester"))
-    # A default ASR loaded directly on audio.cpp or llama.cpp is not the alias's to free.
     assert host.unloads == [(["transformers"], "small")]
+
+
+def test_an_alias_unload_never_frees_a_model_it_did_not_load(host):
+    host.pin(torch = False, audiocpp = True, mtmd = True)
+    # Qwen3-ASR loaded directly on llama.cpp, where an alias request would also run now.
+    _load(DEFAULT_MTMD_STT_MODEL, "mtmd")
+    asyncio.run(ri.stt_unload(engine = "gguf", model = "small", current_subject = "tester"))
+    assert host.unloads == []
 
 
 def test_an_alias_unload_still_frees_audio_cpp_after_llama_cpp_comes_back(host):
@@ -181,7 +206,7 @@ def test_an_alias_unload_still_frees_llama_cpp_after_pytorch_is_installed(host):
     # PyTorch installed while the server runs: a fresh resolve would now pick Transformers.
     host.pin(torch = True, audiocpp = True, mtmd = True)
     asyncio.run(ri.stt_unload(engine = "gguf", model = "small", current_subject = "tester"))
-    assert host.unloads == [(["transformers"], "small"), (["mtmd"], DEFAULT_MTMD_STT_MODEL)]
+    assert host.unloads == [(["mtmd"], DEFAULT_MTMD_STT_MODEL)]
 
 
 def test_a_direct_load_takes_the_engine_back_from_the_alias(host):
@@ -193,7 +218,7 @@ def test_a_direct_load_takes_the_engine_back_from_the_alias(host):
     _load(DEFAULT_MTMD_STT_MODEL, "mtmd")
     host.unloads.clear()
     asyncio.run(ri.stt_unload(engine = "gguf", model = "small", current_subject = "tester"))
-    assert host.unloads == [(["transformers"], "small")]
+    assert host.unloads == []
 
 
 def test_a_direct_load_alone_also_takes_the_engine_back(host):
@@ -202,7 +227,7 @@ def test_a_direct_load_alone_also_takes_the_engine_back(host):
     host.pin(torch = True, audiocpp = True, mtmd = True)
     _load(DEFAULT_MTMD_STT_MODEL, "mtmd")
     asyncio.run(ri.stt_unload(engine = "gguf", model = "small", current_subject = "tester"))
-    assert host.unloads == [(["transformers"], "small")]
+    assert host.unloads == []
 
 
 def test_a_failed_alias_load_does_not_mark_its_engine(host, monkeypatch):
@@ -220,7 +245,7 @@ def test_a_failed_alias_load_does_not_mark_its_engine(host, monkeypatch):
     host.pin(torch = True, audiocpp = True, mtmd = True)
     asyncio.run(ri.stt_unload(engine = "gguf", model = "small", current_subject = "tester"))
     # Nothing ran on llama.cpp, so a Qwen3-ASR loaded there directly is not the alias's to free.
-    assert host.unloads == [(["transformers"], "small")]
+    assert host.unloads == []
 
 
 def test_an_alias_cancel_still_stops_an_audio_cpp_download_after_llama_cpp_comes_back(host):

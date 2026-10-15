@@ -8,6 +8,8 @@ import test from "node:test";
 import { sttDownloadedArtifacts } from "../src/features/audio/audio-page-policy.ts";
 import {
   canonicalSttChoice,
+  isRetiredWhisperChoice,
+  retiredWhisperFallback,
   sttEngineForRepoId,
   sttRepoIdForSidecarKey,
 } from "../src/features/audio/stt-artifacts.ts";
@@ -135,4 +137,29 @@ test("the whisper.cpp notification setting is gone; its stored keys still reset"
     assert.match(source, /showAudioCppUpdates/, name);
   }
   assert.ok(NOTIFICATION_PREF_KEYS.includes("unsloth_whisper_notification_frequency"));
+});
+
+test("a saved Transcribe whisper.cpp pick moves to Qwen3-ASR only without PyTorch", () => {
+  assert.equal(isRetiredWhisperChoice("unslothai/whisper-small-GGUF", ""), true);
+  assert.equal(isRetiredWhisperChoice("unsloth/whisper-small", "gguf"), true);
+  assert.equal(isRetiredWhisperChoice("unsloth/whisper-small", "transformers"), false);
+  const host = (transformers?: boolean, mtmd?: boolean, audiocpp?: boolean) => ({
+    transformers: transformers === undefined ? undefined : { available: transformers },
+    mtmd: { available: Boolean(mtmd) },
+    audiocpp: { available: Boolean(audiocpp) },
+  });
+  assert.equal(retiredWhisperFallback(host(true, true, true)), null);
+  assert.deepEqual(retiredWhisperFallback(host(false, true, true)), {
+    repo: "unslothai/Qwen3-ASR-0.6B-GGUF",
+    engine: "mtmd",
+  });
+  assert.equal(retiredWhisperFallback(host(false, false, true))?.engine, "audiocpp");
+  // nothing to run it on yet, or an older server: decide on a later read.
+  assert.equal(retiredWhisperFallback(host(false, false, false)), undefined);
+  assert.equal(retiredWhisperFallback(host(undefined, true, true)), undefined);
+  const sidecar = readSrc("features/audio/hooks/use-stt-sidecar.ts");
+  assert.match(
+    sidecar,
+    /if \(retiredWhisperPick\.current\) \{\s*const fallback = retiredWhisperFallback\(stt\);[\s\S]*?setLastSttRepoChoice\(fallback\.repo\);/,
+  );
 });
