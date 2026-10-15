@@ -5141,6 +5141,11 @@ class DiffusionGenerateProgressResponse(BaseModel):
         None, description = "Live latent preview of the image being denoised, as a JPEG data URL"
     )
     preview_seq: int = Field(0, description = "Moves each time a new preview is published")
+    target: Optional[Literal["connection"]] = Field(
+        None,
+        description = "'connection' when the run is on a saved image connection, so a page that "
+        "resumed it sends Stop to POST /images/generate/cancel?target=connection",
+    )
 
 
 class DiffusionLoadProgressResponse(BaseModel):

@@ -2848,6 +2848,7 @@ export function ImagesPage({
       pollInFlight = true;
       try {
         const p = await getGenerateProgress();
+        if (p.active) runTarget.current = p.target ?? undefined;
         if (!p.active) {
           if (genPollTimer.current) clearInterval(genPollTimer.current);
           genPollTimer.current = null;
@@ -2900,6 +2901,7 @@ export function ImagesPage({
       try {
         const g = await getGenerateProgress();
         if (g.active) {
+          runTarget.current = g.target ?? undefined;
           setBusy("generating");
           setGenStep(g);
           resumeGeneratePoll();

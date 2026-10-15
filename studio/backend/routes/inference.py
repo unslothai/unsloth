@@ -48552,7 +48552,7 @@ async def diffusion_generate_progress(current_subject: str = Depends(get_current
 
     def _hidden():
         if external:
-            return DiffusionGenerateProgressResponse(active = True)
+            return DiffusionGenerateProgressResponse(active = True, target = "connection")
         return account_access.hidden_generate_progress_response(DiffusionGenerateProgressResponse)
 
     if account_access.managed_account() and account_access.generation_is_foreign("diffusion"):
@@ -48574,7 +48574,7 @@ async def diffusion_generate_progress(current_subject: str = Depends(get_current
     progress = get_active_diffusion_engine().generate_progress()
     log_media_generation_progress("image", progress)
     if external and not progress["active"]:
-        progress = {**progress, "active": True}
+        progress = {**progress, "active": True, "target": "connection"}
     # A finished generation still persisting its gallery record counts as active, so a reload probe keeps polling.
     if _diffusion_persist_active > 0 and not progress["active"]:
         progress = {**progress, "active": True}

@@ -3129,10 +3129,13 @@ def test_stop_cancels_a_connection_run_and_progress_shows_it(client, monkeypatch
 
     progress, local, stop, resp, after = asyncio.run(run())
     assert progress["active"] is True
+    # A page that resumed this run reads its Stop target from progress.
+    assert progress["target"] == "connection"
     assert local == {"cancelled": False}
     assert stop == {"cancelled": True}
     assert resp.status_code == 409
     assert after["active"] is False
+    assert after["target"] is None
     assert len(calls) == 1
     assert client.get("/api/inference/images/gallery").json()["images"] == []
 
@@ -3179,7 +3182,9 @@ def test_a_connection_run_reports_active_even_when_local_progress_is_hidden(clie
     monkeypatch.setitem(
         inference_routes._external_image_runs, account_access.account_scope(), {object()}
     )
-    assert client.get("/api/inference/images/generate-progress").json()["active"] is True
+    progress = client.get("/api/inference/images/generate-progress").json()
+    assert progress["active"] is True
+    assert progress["target"] == "connection"
 
 
 def test_a_connection_call_leaves_the_media_tracker(client, monkeypatch):

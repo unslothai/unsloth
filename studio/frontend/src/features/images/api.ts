@@ -116,6 +116,8 @@ export interface DiffusionGenerateProgress {
   // Live latent preview of the image being denoised (small JPEG data URL), and a counter that moves with each one.
   preview?: string | null;
   preview_seq?: number;
+  // "connection" while the run is on a saved image connection: the Stop target for a resumed run.
+  target?: "connection" | null;
 }
 
 export interface DiffusionLoadProgress {
