@@ -123,6 +123,8 @@ def cell_turns(
     empty_is_messages = False,
 ):
     turns = wrapped_messages(value)
+    if turns is None and value is not None and empty_is_messages:
+        turns = []
     messages = [_message(turn) for turn in turns] if isinstance(turns, list) else [None]
     if (messages or empty_is_messages) and all(message is not None for message in messages):
         return [

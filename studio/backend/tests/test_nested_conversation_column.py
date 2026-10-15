@@ -94,10 +94,11 @@ def test_preview_shows_the_wrapped_conversation_as_its_turns(wrapped):
     assert preview[0]["output_format"] == _CONVERSATION
 
 
-def test_mapped_empty_wrapped_conversation_adds_no_turns():
+@pytest.mark.parametrize("empty", [[], None])
+def test_mapped_empty_wrapped_conversation_adds_no_turns(empty):
     rows = [
         {"output_format": {"conversation": _CONVERSATION}},
-        {"output_format": {"conversation": []}},
+        {"output_format": {"conversation": empty}},
     ]
     result = format_dataset(
         Dataset.from_list(rows), custom_format_mapping = {"output_format": "assistant"}
