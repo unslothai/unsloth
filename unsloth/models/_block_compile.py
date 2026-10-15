@@ -40,6 +40,12 @@ _COMPILE_OPTIONS = {
 }
 
 
+# gpt-oss: unsloth_zoo builds its flex block mask inside attention (graph breaks on
+# torch.is_inference_mode_enabled) and the block recompiled per sequence length (4 lengths: 27
+# breaks, 53 graphs, 210 s of extra compiles); its per-module compile stays.
+_SKIP = {"GptOssDecoderLayer"}
+
+
 def _enabled():
     return os.environ.get("UNSLOTH_BLOCK_COMPILE", "1") != "0" and os.environ.get(
         "UNSLOTH_COMPILE_DISABLE", "0"
@@ -638,7 +644,7 @@ def patch_block_compile(model):
         _nf4_in_blocks()
     wrapped = []
     for cls in classes:
-        if getattr(cls.forward, _MARK, False):
+        if getattr(cls.forward, _MARK, False) or cls.__name__ in _SKIP:
             continue
         _wrap(cls, _COMPILE_OPTIONS)
         wrapped.append(cls.__name__)
