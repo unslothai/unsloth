@@ -13,7 +13,10 @@ import pytest
 torch = pytest.importorskip("torch")
 transformers = pytest.importorskip("transformers")
 if int(transformers.__version__.split(".")[0]) < 5:
-    pytest.skip("REAP needs transformers 5 fused MoE experts", allow_module_level = True)
+    pytest.skip(
+        reason = "REAP prunes transformers 5 fused MoE experts (3D expert weights); 4.x keeps a ModuleList",
+        allow_module_level = True,
+    )
 
 _MODULE = Path(__file__).resolve().parents[1] / "unsloth" / "models" / "reap.py"
 _spec = importlib.util.spec_from_file_location("_unsloth_reap", _MODULE)
