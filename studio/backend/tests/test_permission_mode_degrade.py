@@ -4,6 +4,7 @@
 """ "off" (Run automatically) asks before a risky python/terminal call without OS isolation."""
 
 import itertools
+import os
 import sys
 import threading
 import time
@@ -609,6 +610,67 @@ def test_the_loop_launches_an_unasked_risky_call_strictly(mode, code, expected):
     starts = [e for e in events if e["type"] == "tool_start"]
     assert starts and starts[0]["awaiting_confirmation"] is False
     assert exec_fn.modes == [expected]
+
+
+def _first_python_call(session_id):
+    from core.inference.safetensors_agentic import run_safetensors_tool_loop
+
+    turns = iter(
+        [
+            '<tool_call>{"name": "python", "arguments": {"code": "import shutil; shutil.rmtree(\\"dist\\")"}}</tool_call>',
+            "done",
+        ]
+    )
+
+    def single_turn(_messages):
+        try:
+            yield next(turns)
+        except StopIteration:
+            return
+
+    exec_fn = _ModeRecordingExecuteTool()
+    loop = run_safetensors_tool_loop(
+        single_turn = single_turn,
+        messages = [{"role": "user", "content": "clean dist"}],
+        tools = [{"type": "function", "function": {"name": "python"}}],
+        execute_tool = exec_fn,
+        session_id = session_id,
+        confirm_tool_calls = True,
+        permission_mode = "off",
+    )
+    start = next(e for e in loop if e["type"] == "tool_start")
+    if start["awaiting_confirmation"]:
+        loop.close()
+    else:
+        list(loop)
+    return start["awaiting_confirmation"], exec_fn.modes
+
+
+def test_run_automatically_asks_once_the_chat_folder_is_too_large_to_check(monkeypatch, tmp_path):
+    import uuid
+
+    from core.inference import tools
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path))
+    monkeypatch.setattr(os_sandbox, "WORKDIR_SCAN_ENTRIES", 3)
+    os_sandbox.note_tool_isolation("python", True, backend = "bubblewrap")
+    big, small = f"big-{uuid.uuid4().hex}", f"small-{uuid.uuid4().hex}"
+    workdir = tools._get_workdir(big)
+    tools._get_workdir(small)
+    for i in range(8):
+        with open(os.path.join(workdir, f"f{i}"), "w"):
+            pass
+
+    assert os_sandbox.scan_workdir_for_host_channels(workdir) == (
+        os_sandbox.WORKDIR_SCAN_INCOMPLETE,
+    )
+    assert _first_python_call(big) == (True, [])
+    assert _first_python_call(small) == (False, ["required"])
+
+    for i in range(8):
+        os.remove(os.path.join(workdir, f"f{i}"))
+    assert os_sandbox.scan_workdir_for_host_channels(workdir) == ()
+    assert _first_python_call(big) == (False, ["required"])
 
 
 def test_a_strict_launch_is_refused_when_the_sandbox_stopped_working(monkeypatch):

@@ -1959,6 +1959,7 @@ async def stream_with_studio_tools(
                 is_high_risk = is_high_risk_tool_call,
                 never_needs = never_needs_approval,
                 sandbox_level = sandbox_level,
+                session_id = session_id,
             )
             # Sending the user's image always asks, whatever the permission mode.
             needs_confirmation = needs_confirmation or image_share is not None

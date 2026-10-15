@@ -10513,6 +10513,11 @@ def _workdir_key(session_id: "str | None") -> tuple[str, str]:
     return current_account_id(), session_id or _ANON_KEY
 
 
+def workdir_scan_overran(session_id: "str | None") -> bool:
+    workdir = _workdirs.get(_workdir_key(session_id))
+    return workdir is not None and os_sandbox.workdir_scan_overran(workdir)
+
+
 def _session_key(session_id: "str | None") -> tuple[str, str]:
     """Lifecycle key for a session id.
 
