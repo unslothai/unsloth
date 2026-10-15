@@ -174,6 +174,8 @@ _KV_KEY_SUFFIXES = (
     ".ssm.inner_size",
     ".ssm.state_size",
     ".ssm.group_count",
+    ".feed_forward_length",
+    ".canvas_length",
 )
 
 
@@ -217,8 +219,10 @@ def _read_gguf_header(
                 width = struct.calcsize(fmt)
                 values = [int(struct.unpack(fmt, read(width))[0]) for _ in range(n)]
                 out[key] = max(values, default = 0)
+                if key.endswith((".head_count_kv", ".feed_forward_length")):
+                    out[f"{key}.values"] = values  # per layer: which blocks are which kind
                 if key.endswith(".head_count_kv") and 0 in values:
-                    out[f"{key}.zeros"] = values.count(0)  # recurrent layers of a hybrid
+                    out[f"{key}.zeros"] = values.count(0)
             elif atype in _GGUF_FIXED_SIZES:
                 f.seek(_GGUF_FIXED_SIZES[atype] * n, 1)
             else:
@@ -433,21 +437,38 @@ def _ssm_state_bytes(vals: Dict[str, Any], n_parallel: int) -> int:
     return int(per_layer * 4 * _recurrent_layers(vals) * max(1, int(n_parallel)))
 
 
-def _recurrent_layers(vals: Dict[str, Any]) -> int:
-    """Recurrent blocks as _mamba_recurrent_state_bytes counts them: all but every interval-th
-    (attention) one, else the zero-KV-head ones, else every block; embedded NextN ones excluded."""
+def _layer_kinds(vals: Dict[str, Any]) -> Tuple[int, int]:
+    """(attention, recurrent) target blocks as the loader counts them (embedded NextN blocks
+    excluded): every interval-th block attends, else the per-layer KV heads decide, where a
+    Nemotron-H zero-head block with an FFN is neither. 0 attention: not a hybrid layout."""
+    from core.inference.llama_cpp import _SSM_EVERY_LAYER_ARCHS, _SSM_FFN_FREE_LAYER_ARCHS
+
     arch = vals.get("general.architecture")
-    n_layers = max(
+    n = max(
         0,
         int(vals.get(f"{arch}.block_count") or 0)
         - int(vals.get(f"{arch}.nextn_predict_layers") or 0),
     )
     interval = vals.get(f"{arch}.full_attention_interval")
-    zeros = vals.get(f"{arch}.attention.head_count_kv.zeros")
     if interval is not None:
         interval = int(interval or 0)
-        return n_layers - (-(-n_layers // interval) if interval > 0 else n_layers)
-    return min(n_layers, int(zeros)) if zeros else n_layers
+        attention = -(-n // interval) if interval > 0 else n
+        return attention, n - attention
+    heads = (vals.get(f"{arch}.attention.head_count_kv.values") or [])[:n]
+    zeros = int(vals.get(f"{arch}.attention.head_count_kv.zeros") or 0)
+    if arch in _SSM_EVERY_LAYER_ARCHS or not zeros:
+        return 0, n
+    if not heads:
+        return max(0, n - zeros), min(n, zeros)
+    ffn = vals.get(f"{arch}.feed_forward_length.values") or []
+    if arch not in _SSM_FFN_FREE_LAYER_ARCHS:
+        ffn = []
+    recurrent = sum(1 for i, h in enumerate(heads) if h == 0 and not (i < len(ffn) and ffn[i] > 0))
+    return sum(1 for h in heads if h > 0), recurrent
+
+
+def _recurrent_layers(vals: Dict[str, Any]) -> int:
+    return _layer_kinds(vals)[1]
 
 
 def _gguf_kv_scalars(f: Any) -> Dict[str, Any]:
@@ -1111,6 +1132,7 @@ class ClusterServing:
         self._max_block: Optional[float] = None
         self._host_embd: float = 0.0
         self._untied = False
+        self._diffusion = False
         self._ctx_compute: float = 0.0
         self._checkpoints: float = 0.0
         self._recurrent: float = 0.0
@@ -1339,6 +1361,10 @@ class ClusterServing:
             )
             return request
         model_bytes, kv_bytes, local_extra = await self._size(request, n_parallel, flags, ss)
+        if self._diffusion:
+            # The diffusion runner takes none of llama-server's arguments, so no split reaches it.
+            self.topology, self.reason = "single", "a diffusion GGUF runs on this machine"
+            return request
         if self._unsized_kv:
             self.topology, self.reason = (
                 "single",
@@ -1448,9 +1474,10 @@ class ClusterServing:
                 self.last_error += "; " + "; ".join(failed.values())
             logger.warning("cluster serving: %s", self.last_error)
         layer_bytes = None
-        if self._n_layers and model_bytes:
+        # An unread tensor table leaves only the average block: plan_cluster's margin covers it.
+        if self._n_layers and model_bytes and self._max_block:
             # The largest block a tensor split can round onto a device, not the average one.
-            layer_weights = self._max_block or model_bytes / self._n_layers
+            layer_weights = self._max_block
             attention = max(0.0, kv_bytes - self._recurrent)
             # Spread over the attention layers only: a hybrid's recurrent blocks hold none.
             per_attention = attention / max(1, min(self._n_layers, self._attention_layers or 10**9))
@@ -1570,6 +1597,10 @@ class ClusterServing:
         else:
             header, blocks = {}, {}
         arch = header.get("general.architecture")
+        # The loader's routing to the diffusion runner (LlamaCppBackend._is_diffusion).
+        self._diffusion = str(arch or "").lower().startswith("diffusion") or (
+            "diffusion.canvas_length" in header
+        )
         nextn = int(header.get(f"{arch}.nextn_predict_layers") or 0)
         n_blocks = int(header.get(f"{arch}.block_count") or 0)
         trailing = {k for k in blocks if nextn and n_blocks and k >= n_blocks - nextn}
@@ -1917,14 +1948,8 @@ class ClusterServing:
         # A whole recurrent layer carries its share of the state, not the model-wide average.
         self._recurrent_layer = float(recurrent) / n_rec if recurrent and n_rec else 0.0
         self._recurrent = float(recurrent)
-        zeros = header.get(f"{arch}.attention.head_count_kv.zeros") or 0
-        interval = int(header.get(f"{arch}.full_attention_interval") or 0)
-        if zeros and n_rec:
-            self._attention_layers = max(1, int(header.get(f"{arch}.block_count") or 0) - zeros)
-        elif interval > 1:
-            self._attention_layers = max(1, int(header.get(f"{arch}.block_count") or 0) // interval)
-        else:
-            self._attention_layers = 0
+        attention_layers, _ = _layer_kinds(header)
+        self._attention_layers = attention_layers if n_rec else 0
 
         if kv is None and ctx and size and not recurrent:
             self._unsized_kv = True  # a pure state-space model has no attention KV

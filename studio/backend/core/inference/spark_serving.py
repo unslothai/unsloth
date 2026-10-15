@@ -3421,11 +3421,27 @@ def _cluster_active() -> bool:
     return (os.environ.get(ENV_TOGGLE) or "").strip() != "0" and cluster_serving.configured()
 
 
+def _legacy_kept() -> bool:
+    """A two-Spark split still serves because the cluster config does not parse (before_load
+    keeps it in charge then)."""
+    from core.inference import cluster_serving
+
+    if _STATE is None or (_STATE.peer_process is None and _STATE.router is None):
+        return False
+    if not _cluster_active():
+        return False
+    cluster = cluster_serving.state()
+    cluster.refresh_nodes()
+    return bool(cluster.config_error)
+
+
 def current_topology() -> Optional[str]:
     from core.inference import cluster_serving
 
-    if cluster_serving._STATE is not None and (
-        _cluster_active() or cluster_serving._STATE.serving()
+    if (
+        cluster_serving._STATE is not None
+        and not _legacy_kept()
+        and (_cluster_active() or cluster_serving._STATE.serving())
     ):
         return cluster_serving._STATE.topology
     st = state()
@@ -3627,6 +3643,8 @@ async def shutdown() -> None:
 def status() -> Dict[str, Any]:
     from core.inference import cluster_serving
 
+    if _legacy_kept():
+        return dict(state().status(), cluster_config_error = cluster_serving.state().config_error)
     if _cluster_active():
         return cluster_serving.state().status()
     if cluster_serving._STATE is not None and cluster_serving._STATE.serving():

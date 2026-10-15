@@ -1115,8 +1115,13 @@ def test_a_split_reads_its_layer_count_from_the_gguf(monkeypatch):
 
     monkeypatch.setattr(cs, "plan_cluster", spy)
     monkeypatch.setattr(cs, "_gguf_block_count", lambda path, ss: 50)
+    monkeypatch.setattr(cs, "_local_gguf_header", lambda *a, **k: ({}, {0: 5 * GIB}))
     run(ss.before_load(_request(), 4))
-    assert seen["layer_bytes"] == pytest.approx(250 * GIB / 50)
+    assert seen["layer_bytes"] == pytest.approx(5 * GIB)
+    # An unread tensor table: the average block is no bound, so the percentage margin applies.
+    monkeypatch.setattr(cs, "_local_gguf_header", lambda *a, **k: ({}, {}))
+    run(ss.before_load(_request(), 4))
+    assert seen["layer_bytes"] is None
 
 
 def test_a_first_hub_load_reserves_its_projector(monkeypatch):
@@ -1435,7 +1440,7 @@ def test_a_guessed_kv_reserve_is_not_counted_as_freed(monkeypatch):
     monkeypatch.setattr(ss, "remote_gguf_size_bytes", lambda *a, **k: 90 * GIB)
     # An Auto context is priced at the fitter's floor, from the Hub header.
     monkeypatch.setattr(cs, "_remote_gguf_header", lambda *a, **k: (_hub_header, {}))
-    monkeypatch.setattr(cs, "_remote_gguf_header", lambda *a, **k: (_llama_header(64), {}))
+    monkeypatch.setattr(cs, "_remote_gguf_header", lambda *a, **k: (_llama_header(64), {0: GIB}))
     out = run(ss.before_load(_request(model_path = "org/big-GGUF", max_seq_length = 8192), 4))
     assert ss.status()["topology"] == "layer_split"  # 90 GiB + an estimated 20 GiB of KV
     backend = SimpleNamespace(
@@ -2066,6 +2071,7 @@ def test_the_header_reader_matches_the_local_kv_estimate(monkeypatch, tmp_path):
         "llama.block_count": 80,
         "llama.attention.head_count": 64,
         "llama.attention.head_count_kv": 8,
+        "llama.attention.head_count_kv.values": [8, 2, 8],
         "llama.embedding_length": 8192,
     }
     # Tied embeddings: llama.cpp copies the embedding to the output device, one more lump.
@@ -2112,12 +2118,10 @@ def test_the_header_reader_matches_the_local_kv_estimate(monkeypatch, tmp_path):
 def test_the_rounding_reserve_is_the_largest_block(monkeypatch):
     _cluster_env(monkeypatch)
     monkeypatch.setattr(cs, "_gguf_block_count", lambda path, ss: 100)
-    run(ss.before_load(_request(), 4))
-    average = cs.state().plan.reason
     monkeypatch.setattr(cs, "_local_gguf_header", lambda *a, **k: ({}, {0: 1 * GIB, 1: 5 * GIB}))
     run(ss.before_load(_request(), 4))
-    # One layer is kept free per device: 4 x 2.5 GiB on average, 4 x 5 GiB for the largest.
-    assert "267.5 GiB usable" in average and "257.5 GiB usable" in cs.state().plan.reason
+    # One layer is kept free per device: 4 x 5 GiB for the largest, not the 2.5 GiB average.
+    assert "257.5 GiB usable" in cs.state().plan.reason
 
 
 def test_a_cached_model_whose_kv_cannot_be_read_stays_local(monkeypatch):
@@ -3021,3 +3025,54 @@ def test_a_cancelled_cluster_plan_keeps_the_two_spark_split(monkeypatch):
     out = run(ss.before_load(_request(), 4, cancel_event = cancel))
     assert detached == [] and not getattr(out, "force_reload", False)
     assert ss._STATE.peer_process is peer
+
+
+def test_hybrid_layer_counts_leave_out_nextn_blocks():
+    vals = {
+        "general.architecture": "qwen3next",
+        "qwen3next.block_count": 48,
+        "qwen3next.nextn_predict_layers": 4,
+        "qwen3next.full_attention_interval": 4,
+    }
+    assert cs._layer_kinds(vals) == (11, 33)  # 44 target blocks, every 4th attends
+
+
+def test_nemotron_mlp_blocks_carry_no_recurrent_state():
+    import io
+
+    heads = [0, 0, 8, 0, 0, 8]  # SSM, MLP, attention, SSM, MLP, attention
+    ffn = [0, 4096, 0, 0, 4096, 0]
+    kvs = {
+        "general.architecture": (8, "nemotron_h"),
+        "nemotron_h.block_count": (4, 6),
+        "nemotron_h.attention.head_count_kv": (9, (4, heads)),
+        "nemotron_h.feed_forward_length": (9, (4, ffn)),
+        "nemotron_h.ssm.conv_kernel": (4, 4),
+        "nemotron_h.ssm.inner_size": (4, 1024),
+        "nemotron_h.ssm.state_size": (4, 128),
+        "nemotron_h.ssm.group_count": (4, 8),
+    }
+    vals, _ = cs._read_gguf_header(io.BytesIO(_gguf_header(kvs)))
+    assert cs._layer_kinds(vals) == (2, 2)
+    per_layer = 3 * (1024 + 2 * 8 * 128) + 128 * 1024
+    assert cs._ssm_state_bytes(vals, 1) == per_layer * 4 * 2
+
+
+def test_a_diffusion_gguf_stays_on_this_machine(monkeypatch):
+    seen = _cluster_env(monkeypatch)
+    header = dict(_llama_header(8), **{"general.architecture": "diffusiongemma"})
+    monkeypatch.setattr(cs, "_local_gguf_header", lambda *a, **k: (header, {0: GIB}))
+    request = _request()
+    assert run(ss.before_load(request, 4)) is request and seen == []
+    assert "diffusion" in ss.status()["reason"]
+
+
+def test_status_names_the_two_spark_split_a_malformed_config_keeps(monkeypatch):
+    _cluster_env(monkeypatch)
+    legacy = ss.state()
+    legacy.peer_process = SimpleNamespace(name = "ggml-rpc-server", alive = True)
+    legacy.topology = "layer_split"
+    monkeypatch.setattr(ss.SparkServing, "status", lambda self: {"topology": self.topology})
+    monkeypatch.setenv(cs.ENV_NODES, "bad host!")
+    assert ss.current_topology() == "layer_split"
+    assert ss.status()["topology"] == "layer_split" and ss.status()["cluster_config_error"]
