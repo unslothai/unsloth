@@ -1477,6 +1477,23 @@ def test_a_reply_that_fills_the_context_says_so(flm):
     assert body["choices"][0]["finish_reason"] == "length"
 
 
+@pytest.mark.parametrize(
+    ("usage", "full"),
+    [
+        (_FULL_USAGE, True),
+        # Thinking off: FastFlowLM decodes an empty think block, four tokens counted as one.
+        ({**_FULL_USAGE, "completion_tokens": 8144, "total_tokens": 8189}, True),
+        ({"total_tokens": 8192, "max_kv_token_capacity": 8192}, True),
+        (_FLM_USAGE, False),
+        ({"total_tokens": 8192}, False),
+        (None, False),
+    ],
+)
+def test_a_full_kv_cache_reads_the_kv_position(usage, full):
+    import routes.inference as ri
+    assert ri._npu_kv_cache_full(usage) is full
+
+
 def test_a_reply_with_room_left_keeps_its_stop(flm):
     flm()
     status, lines = _call(stream = True, messages = [{"role": "user", "content": "TIMED"}])

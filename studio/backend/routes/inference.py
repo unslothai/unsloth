@@ -29987,7 +29987,11 @@ def _npu_kv_cache_full(usage: Any) -> bool:
     """Whether FastFlowLM's usage says the reply used the whole loaded context."""
     if not isinstance(usage, dict):
         return False
-    total = usage.get("total_tokens")
+    # active_kv_tokens is the KV position; total_tokens undercounts by the empty think block's
+    # three uncounted tokens when thinking is off.
+    total = usage.get("active_kv_tokens")
+    if not isinstance(total, int):
+        total = usage.get("total_tokens")
     capacity = usage.get("max_kv_token_capacity")
     return (
         isinstance(total, int) and isinstance(capacity, int) and capacity > 0 and total >= capacity
