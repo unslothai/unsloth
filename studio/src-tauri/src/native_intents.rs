@@ -517,7 +517,7 @@ pub async fn pick_native_document_folder(
     let (tx, rx) = tokio::sync::oneshot::channel();
     app.dialog()
         .file()
-        .set_title("Link a document folder")
+        .set_title("Choose a local folder")
         .pick_folder(move |path| {
             let _ = tx.send(path);
         });

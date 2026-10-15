@@ -81,6 +81,7 @@ from storage.studio_db import (
     list_chat_threads,
     remap_chat_thread_document_ids,
     set_chat_project_working_folder,
+    ProjectWorkingFolderConflictError,
     sync_chat_messages,
     update_chat_project,
     update_chat_thread,
@@ -342,6 +343,10 @@ class ChatProject(BaseModel):
 class ChatProjectWorkingFolder(BaseModel):
     model_config = ConfigDict(extra = "forbid", populate_by_name = True)
     native_path_lease: str = Field(alias = "nativePathLease", min_length = 1)
+
+
+class ChatProjectCreate(ChatProject):
+    nativePathLease: Optional[str] = Field(default = None, min_length = 1)
 
 
 class ChatAgentsMd(BaseModel):
@@ -1282,9 +1287,20 @@ def list_projects(
 
 
 @router.post("/projects", response_model = ChatProject)
-def save_project(payload: ChatProject, current_subject: str = Depends(get_current_subject)):
+def save_project(payload: ChatProjectCreate, current_subject: str = Depends(get_current_subject)):
+    lease = getattr(payload, "nativePathLease", None)
+    working_folder = None
+    if lease is not None:
+        if not is_owner_context():
+            raise HTTPException(status_code = 403, detail = "Only the owner can use a local folder.")
+        working_folder = _resolve_project_working_folder(lease)
     try:
-        return ChatProject(**upsert_chat_project(payload.model_dump()))
+        project = payload.model_dump(exclude = {"nativePathLease"})
+        if working_folder is None:
+            return ChatProject(**upsert_chat_project(project))
+        return ChatProject(**upsert_chat_project(project, working_folder = working_folder))
+    except ProjectWorkingFolderConflictError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
     except ProjectWorkspaceError as exc:
         # A project is the only thing Unsloth writes to Documents, so only this error and only its own path: the same
         # upsert also opens the database, which lives elsewhere.
