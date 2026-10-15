@@ -107,6 +107,9 @@ from .diffusion_device import (
 from .diffusion_multigpu import (
     install_cfg_parallel,
     plan_denoise_headroom_mib,
+    plan_denoise_reference_px,
+    cfg_request_scope,
+    release_cfg_inputs,
     is_split as multigpu_is_split,
     placement_status as multigpu_placement_status,
     refine_plan_for_multigpu,
@@ -8304,6 +8307,7 @@ class VideoBackend:
                 offload_policy = offload_policy,
                 logger = logger,
                 headroom_mib = plan_denoise_headroom_mib(plan),
+                headroom_reference_px = plan_denoise_reference_px(plan),
             )
             # Opt-in (UNSLOTH_DIFFUSION_BG_COMPILE=1): off by default so the same seed twice repeats.
             from . import diffusion_bg_compile as bg_compile
@@ -10735,6 +10739,8 @@ class VideoBackend:
                     draining, which is the exact lie this boundary exists to remove. The retries are
                     short and only run when contended. A capture that outlasts them really does leave
                     nothing to wait on, and the host position is then the only answer there is."""
+                    # the denoise is over: the CFG routers' retained inputs must not live through the decode
+                    release_cfg_inputs(pipe)
                     marked = False
                     for _ in range(_BOUNDARY_MARK_ATTEMPTS):
                         with _hold_off_cuda_graph_capture() as clear:
@@ -10805,6 +10811,9 @@ class VideoBackend:
                         # Family-agnostic: no video family has a callback between its denoise loop and its decode, so
                         # every one of them gets its decode phase from the decoder itself.
                         stack.enter_context(_decode_phase(pipe, _on_decode))
+                        stack.enter_context(
+                            cfg_request_scope(pipe, kwargs.get("width"), kwargs.get("height"))
+                        )
                         # The decoded clip becomes uint8 on the GPU, bit-identical to the np / pil export (video_frames).
                         stack.enter_context(uint8_video_frames(pipe))
                         stack.enter_context(_completed_step_poller(_pump))

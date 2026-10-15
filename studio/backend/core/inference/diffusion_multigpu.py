@@ -702,6 +702,17 @@ def plan_denoise_headroom_mib(plan: Any) -> Optional[int]:
     return int(value) if value else None
 
 
+# The canvas the per-family activation calibration was measured at (CalibratedImageActivation: 1024x1024).
+_CALIBRATION_PX = 1024 * 1024
+
+
+def plan_denoise_reference_px(plan: Any) -> Optional[int]:
+    """The canvas (pixels) :func:`plan_denoise_headroom_mib`'s figure holds for when it is the calibrated denoise
+    phase, else None (a whole-request figure is not scaled)."""
+    estimates = getattr(plan, "estimates", None) or {}
+    return _CALIBRATION_PX if estimates.get("calibrated_denoise_mib") else None
+
+
 def secondary_device_memory(ordinal: int) -> Any:
     """A ``DeviceMemory`` reading for a secondary card, or None when unreadable."""
     from .diffusion_memory import DeviceMemory
@@ -1890,6 +1901,33 @@ class CfgParallelRouter:
         self.stats["primary_calls"] += 1
         return self.orig_forward(*args, **kwargs)
 
+    # -- request lifecycle (Studio's generate path; without it the call pattern decides)
+    def begin_request(self, width: Any = None, height: Any = None) -> None:
+        self.release_inputs()
+        self.branch = 0
+        self.singles = 0
+        self.b0_s = None
+
+    def end_request(self) -> None:
+        self.release_inputs()
+
+    def release_inputs(self) -> None:
+        """Drop every tensor kept between calls (the replica and per-load pricing stay)."""
+        self._drop_pending()
+        self.prefetched.clear()
+        self.carry = []
+        self.next_carry = []
+        self.prev_latent = None
+        self.template = None
+        self.b0_leaves = {}
+
+    def reprice(self) -> None:
+        """Forget the per-load price; a priced-out router is armed again and prices the next guided step."""
+        self.pricing = None
+        self.b0_s = None
+        if self.disabled_reason is not None and self.disabled_reason.startswith("priced out"):
+            self.disabled_reason = None
+
     # -- pricing (once per router, on the first guided step)
     def _should_price(self) -> bool:
         return (
@@ -2182,6 +2220,7 @@ def install_cfg_parallel(
     offload_policy: str,
     logger: Any = None,
     headroom_mib: Optional[int] = None,
+    headroom_reference_px: Optional[int] = None,
 ) -> Optional[str]:
     """Arm CFG-parallel when a secondary card can hold a replica, else CFG-batch for an offloaded denoiser.
     Returns the CFG-parallel decline reason or None. ``headroom_mib``: the batched call's extra activation need."""
@@ -2193,7 +2232,11 @@ def install_cfg_parallel(
     ):
         try:
             batch_reason = install_cfg_batch(
-                pipe, offload_policy = offload_policy, headroom_mib = headroom_mib, logger = logger
+                pipe,
+                offload_policy = offload_policy,
+                headroom_mib = headroom_mib,
+                headroom_reference_px = headroom_reference_px,
+                logger = logger,
             )
         except Exception as exc:  # noqa: BLE001 - an optional lever never fails a load
             batch_reason = f"{type(exc).__name__}: {exc}"
@@ -2271,23 +2314,58 @@ def invalidate_cfg_replica(
     reason: str,
     logger: Any = None,
 ) -> bool:
-    """Drop the CFG-parallel replica of ``pipe`` after its denoiser was mutated in ways the per-step staleness check
-    does not see (attention backend, eager patches, compile); the next guided step rebuilds it from the source. True
-    when a replica was dropped."""
+    """The denoiser of ``pipe`` was mutated in ways the per-step checks do not see (attention backend, eager patches,
+    compile): drop the CFG-parallel replica (rebuilt on the next guided step) and forget every per-load price and
+    priced or measured verdict of both CFG routers, so the changed denoiser is priced again. True when a router was
+    reset."""
     try:
         router = _CFG_ROUTERS.get(pipe) if pipe is not None else None
+        batch = _CFG_BATCH.get(pipe) if pipe is not None else None
     except TypeError:
         return False
-    if router is None or router.replica is None:
-        return False
+    reset = False
+    if batch is not None:
+        batch.reprice()
+        reset = True
+    if router is None:
+        return reset
     if logger is not None:
         logger.info(
-            "diffusion.multigpu: CFG-parallel replica dropped (%s); rebuilt on the next guided step",
+            "diffusion.multigpu: CFG-parallel replica dropped and repriced (%s); rebuilt on the next guided step",
             reason,
         )
-    router.stats["replica_rebuilds"] += 1
+    if router.replica is not None:
+        router.stats["replica_rebuilds"] += 1
     router.drop_replica()
+    router.reprice()
     return True
+
+
+def _routers_of(pipe: Any) -> list:
+    """The CFG routers installed as ``pipe.transformer``'s forward (a from_pipe workflow pipe shares the denoiser)."""
+    denoiser = getattr(pipe, "transformer", None)
+    forward = getattr(denoiser, "__dict__", {}).get("forward") if denoiser is not None else None
+    return [forward] if isinstance(forward, (CfgParallelRouter, CfgBatchRouter)) else []
+
+
+@contextlib.contextmanager
+def cfg_request_scope(pipe: Any, width: Any = None, height: Any = None) -> Iterator[None]:
+    """One Studio generate request around ``pipe()``: the routers forget every per-request field on entry and drop
+    every retained tensor on exit. Outside this scope the routers infer request boundaries from the call pattern."""
+    routers = _routers_of(pipe)
+    for router in routers:
+        router.begin_request(width, height)
+    try:
+        yield
+    finally:
+        for router in routers:
+            router.end_request()
+
+
+def release_cfg_inputs(pipe: Any) -> None:
+    """The denoise is over (the decoder was entered): drop the tensors the routers keep between branches."""
+    for router in _routers_of(pipe):
+        router.release_inputs()
 
 
 def uninstall_cfg_parallel(pipe: Any) -> None:
@@ -2375,6 +2453,48 @@ def _mutable_container(args: tuple, kwargs: dict) -> tuple[Optional[str], list]:
         if found is not None:
             return found, empties
     return None, empties
+
+
+_STATE_SCALARS = (bool, int, float, str)
+
+
+def _denoiser_state(module: Any) -> dict:
+    """What a stateful forward could advance: every parameter / buffer version (buffers also cloned, so a change
+    can be undone) and the plain scalar attributes of every submodule. Taken once per load, before the first batched
+    call. Studio's ``_unsloth_*`` hook state is excluded (root hooks write it per call, outside the forward)."""
+    torch = _torch()
+    tensors = []
+    for name, t in (*module.named_parameters(), *module.named_buffers()):
+        is_buffer = not isinstance(t, torch.nn.Parameter)
+        tensors.append((name, t, _tensor_version(t), t.detach().clone() if is_buffer else None))
+    scalars = []
+    for name, sub in module.named_modules():
+        for key, value in sub.__dict__.items():
+            if isinstance(value, _STATE_SCALARS) and not key.startswith(_STATE_PREFIX):
+                scalars.append((sub, key, value))
+    return {"tensors": tensors, "scalars": scalars}
+
+
+def _restore_changed_state(module: Any, snapshot: dict) -> Optional[str]:
+    """Name of the first state the call changed (after restoring buffers and scalars), else None. A parameter
+    written in place is reported but cannot be restored (no copy is taken of the weights)."""
+    torch = _torch()
+    changed = None
+    for name, t, version, copy in snapshot["tensors"]:
+        now = _tensor_version(t)
+        moved = version is not None and now is not None and now != version
+        if copy is not None and not moved and version is None:
+            moved = not _bitwise_equal(t.detach(), copy)  # an inference tensor: compare the value
+        if moved:
+            changed = changed or name
+            if copy is not None:
+                with torch.no_grad():
+                    t.copy_(copy)
+    for sub, key, value in snapshot["scalars"]:
+        if sub.__dict__.get(key, _DROP) is not value and sub.__dict__.get(key, _DROP) != value:
+            changed = changed or key
+            sub.__dict__[key] = value
+    return changed
 
 
 def _tensor_version(tensor: Any) -> Optional[int]:
@@ -2500,12 +2620,18 @@ class CfgBatchRouter:
         module: Any,
         *,
         headroom_mib: Optional[int] = None,
+        headroom_reference_px: Optional[int] = None,
         reason: str = "offloaded denoiser",
         logger: Any = None,
     ):
         self.module_ref = weakref.ref(module)
         self.orig_forward = module.forward
         self.headroom_mib = headroom_mib
+        # the canvas (pixels) ``headroom_mib`` was calibrated at; scaled linearly to the request's canvas
+        self.headroom_reference_px = headroom_reference_px
+        self.request_px: Optional[int] = None
+        # the first batched call of a load checks the denoiser for state its forward advances
+        self.state_checked = False
         self.reason = reason
         self.logger = logger
         self.disabled_reason: Optional[str] = None
@@ -2538,6 +2664,42 @@ class CfgBatchRouter:
             "last_unbatched_reason": self.last_skip,
             **self.stats,
         }
+
+    # -- request lifecycle (Studio's generate path; without it the call pattern decides)
+    def begin_request(self, width: Any = None, height: Any = None) -> None:
+        self.release_inputs()
+        self.branch = 0
+        self.timing_off = False
+        if self.pricing is None:
+            self.plain_times = []
+        try:
+            self.request_px = int(width) * int(height) if width and height else None
+        except (TypeError, ValueError):
+            self.request_px = None
+
+    def end_request(self) -> None:
+        self.release_inputs()
+        self.request_px = None
+
+    def release_inputs(self) -> None:
+        """Drop every tensor kept between calls; a pending verdict is applied first."""
+        self._apply_pending()
+        self.kept = None
+        self.template = None
+        self.b0_leaves = {}
+        self.prev_latent = None
+
+    def reprice(self) -> None:
+        """The denoiser changed: forget the price and the measured / priced verdicts, so it is priced again."""
+        self.pricing = None
+        self.plain_times = []
+        self.batched_times = []
+        self.verify_batched = _BATCH_VERIFY_CALLS
+        self.disabled_pending = None
+        self.timing_off = False
+        self.state_checked = False
+        if self.disabled_reason is not None and self.disabled_reason.startswith(("priced out", "measured no gain")):
+            self.disabled_reason = None
 
     def disable(self, reason: str) -> None:
         if self.disabled_reason is None:
@@ -2773,7 +2935,15 @@ class CfgBatchRouter:
             if verify:
                 torch.cuda.synchronize()
                 t0 = time.perf_counter()
+            state_snapshot = None if self.state_checked else _denoiser_state(module)
             out = self.orig_forward(*b_args, **b_kwargs)
+            if state_snapshot is not None:
+                self.state_checked = True
+                changed = _restore_changed_state(module, state_snapshot)
+                if changed is not None:
+                    # its forward advances state once per call: one doubled call is not two (state restored)
+                    self.disable(f"the denoiser's forward changes its own state ({changed}); one branch per call")
+                    return None
             if verify:
                 torch.cuda.synchronize()
                 self._check_batched(time.perf_counter() - t0)
@@ -2838,7 +3008,15 @@ class CfgBatchRouter:
             return True
         if free is None:
             return True
-        return free + int(reserved_idle) >= int(self.headroom_mib)
+        return free + int(reserved_idle) >= self.needed_mib()
+
+    def needed_mib(self) -> int:
+        """The headroom the batched call needs: the calibrated figure scaled by the request's canvas (token count)
+        over the calibration canvas, linearly; unscaled when either is unknown."""
+        need = int(self.headroom_mib or 0)
+        if self.headroom_reference_px and self.request_px:
+            need = int(need * self.request_px / self.headroom_reference_px)
+        return need
 
     def _take(self, args: tuple, kwargs: dict) -> Any:
         kept, self.kept = self.kept, None
@@ -2956,6 +3134,7 @@ def install_cfg_batch(
     *,
     offload_policy: str,
     headroom_mib: Optional[int] = None,
+    headroom_reference_px: Optional[int] = None,
     logger: Any = None,
 ) -> Optional[str]:
     """Arm :class:`CfgBatchRouter` on ``pipe.transformer``; returns the decline reason or None when armed."""
@@ -2966,6 +3145,7 @@ def install_cfg_batch(
     router = CfgBatchRouter(
         denoiser,
         headroom_mib = headroom_mib,
+        headroom_reference_px = headroom_reference_px,
         reason = "forced"
         if cfg_batch_mode() == "force"
         else f"offloaded denoiser ({offload_policy})",

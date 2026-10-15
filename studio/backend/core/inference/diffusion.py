@@ -105,6 +105,9 @@ from .diffusion_device import (
 from .diffusion_multigpu import (
     install_cfg_parallel,
     plan_denoise_headroom_mib,
+    plan_denoise_reference_px,
+    cfg_request_scope,
+    release_cfg_inputs,
     invalidate_cfg_replica,
     placement_status as multigpu_placement_status,
     refine_plan_for_multigpu,
@@ -8502,6 +8505,7 @@ class DiffusionBackend:
                         offload_policy = effective_policy,
                         logger = logger,
                         headroom_mib = plan_denoise_headroom_mib(plan),
+                        headroom_reference_px = plan_denoise_reference_px(plan),
                     )
                     te_releaser = te_release.maybe_install(pipe, plan, logger = logger)
                     state = _LoadState(
@@ -11276,6 +11280,8 @@ class DiffusionBackend:
                             """The decoder was entered: a HOST position, possibly far ahead of the GPU. Mark the
                             boundary in the stream and let the poller flip once the GPU reaches it; with no event
                             to wait on (CPU, MPS) there is no queue to be ahead of, so flip now."""
+                            # the denoise is over: the CFG routers' retained inputs must not live through the decode
+                            release_cfg_inputs(pipe)
                             marked = False
                             for _ in range(_BOUNDARY_MARK_ATTEMPTS):
                                 with _hold_off_cuda_graph_capture() as clear:
@@ -11297,6 +11303,9 @@ class DiffusionBackend:
                                 protect_ctx,
                                 denoise_phase(pipe, _enter_denoise_phase),
                                 decode_phase(pipe, _enter_decode_phase),
+                                cfg_request_scope(
+                                    pipe, chunk_kwargs.get("width"), chunk_kwargs.get("height")
+                                ),
                                 _completed_step_poller(_pump),
                             ):
                                 out = render_thread.run(

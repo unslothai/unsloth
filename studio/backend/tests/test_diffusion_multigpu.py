@@ -1552,8 +1552,16 @@ class _BatchDit(torch.nn.Module):
     def __init__(self):
         super().__init__()
         self.proj = torch.nn.Linear(4, 4)
-        self.calls = 0
+        self._log = [0]  # the call counter is test bookkeeping, not model state the stateful-forward check should see
         self.rows = []
+
+    @property
+    def calls(self):
+        return self._log[0]
+
+    @calls.setter
+    def calls(self, value):
+        self._log[0] = value
 
     def forward(
         self,
@@ -2428,3 +2436,126 @@ def test_cfg_parallel_router_times_both_branches_of_the_first_guided_step(monkey
     _cfg_loop(dit, torch.randn(2, 4), steps = 3)
     assert router.pricing["primary_branch_s"] == 0.1 and router.pricing["branch_s"] == 1.0
     assert router.pricing["strategy"] == "single" and replicas == []
+
+
+class _RouterPipe:
+    def __init__(self, dit):
+        self.transformer = dit
+
+
+def _distilled(dit, steps = 3):
+    latents = torch.randn(2, 4)
+    cond, _ = _embeds()
+    for _ in range(steps):
+        latents = latents - dit(hidden_states = latents, timestep = torch.tensor(0.5), encoder_hidden_states = cond)[0]
+
+
+def test_request_scope_retimes_the_even_branch_after_a_distilled_request(monkeypatch):
+    dit = _Dit()
+    router, replicas = _router(dit)
+    pipe = _RouterPipe(dit)
+    times = []
+    monkeypatch.setattr(router, "_should_price", lambda: True)
+    monkeypatch.setattr(
+        router, "_timed_primary", lambda a, k: (router.orig_forward(*a, **k), times.append(1) or 0.5)
+    )
+    monkeypatch.setattr(mg, "link_gib_s", lambda src, dst, probes = None: 9.0)
+    router.primary = router.secondary = torch.device("cpu")
+    with mg.cfg_request_scope(pipe, 1024, 1024):
+        _distilled(dit)
+    times.clear()
+    with mg.cfg_request_scope(pipe, 1024, 1024):
+        _cfg_loop(dit, torch.randn(2, 4), steps = 2)
+    assert router.pricing is not None and router.pricing["primary_branch_s"] == 0.5
+    assert len(times) == 2  # even and odd branch of the first guided step
+
+
+def test_invalidation_reprices_a_priced_out_router(monkeypatch):
+    dit = _Dit()
+    router, replicas = _router(dit)
+    pipe = _RouterPipe(dit)
+    mg._CFG_ROUTERS[pipe] = router
+    router.pricing = {"strategy": "single"}
+    router.disabled_reason = "priced out: one card takes 1s"
+    mg.invalidate_cfg_replica(pipe, "compiled")
+    assert router.pricing is None and router.disabled_reason is None
+    batch_dit = _BatchDit()
+    batch = mg.CfgBatchRouter(batch_dit)
+    batch_pipe = _RouterPipe(batch_dit)
+    mg._CFG_BATCH[batch_pipe] = batch
+    batch.pricing = {"strategy": "single"}
+    batch.disabled_reason = "priced out: a call takes 1s"
+    mg.invalidate_cfg_replica(batch_pipe, "compiled")
+    assert batch.pricing is None and batch.disabled_reason is None
+
+
+def test_cfg_batch_refuses_a_stateful_forward_and_restores_its_state():
+    torch.manual_seed(0)
+
+    class CountingDit(_BatchDit):
+        def __init__(self):
+            super().__init__()
+            self.register_buffer("seen", torch.zeros(()))
+            self.ticks = 0
+
+        def forward(self, hidden_states, timestep, encoder_hidden_states, return_dict = False):
+            self.calls += 1
+            self.seen.add_(1.0)
+            self.ticks += 1
+            return (self.proj(hidden_states) * timestep * self.seen + encoder_hidden_states.tanh(),)
+
+    cond, uncond = _embeds()
+    latents = torch.randn(2, 4)
+    ref = CountingDit()
+    reference = _batch_loop(ref, latents.clone(), 4, cond, uncond)
+    dit = CountingDit()
+    dit.load_state_dict(ref.state_dict())
+    dit.seen.zero_()
+    router = mg.CfgBatchRouter(dit)
+    dit.forward = router
+    out = _batch_loop(dit, latents.clone(), 4, cond, uncond)
+    torch.testing.assert_close(out, reference, rtol = 0, atol = 0)
+    assert float(dit.seen) == 8.0 and dit.ticks == 8  # once per branch, as two plain calls
+    assert "state" in router.describe()["disabled_reason"]
+
+
+def test_request_scope_stops_speculation_at_a_single_branch_request():
+    torch.manual_seed(0)
+    dit = _BatchDit()
+    cond, uncond = _embeds()
+    router = mg.CfgBatchRouter(dit)
+    dit.forward = router
+    pipe = _RouterPipe(dit)
+    with mg.cfg_request_scope(pipe, 64, 64):
+        _batch_loop(dit, torch.randn(2, 4), 3, cond, uncond)
+    before = router.stats["batched_steps"]
+    with mg.cfg_request_scope(pipe, 64, 64):
+        _distilled(dit, steps = 4)
+    assert router.stats["batched_steps"] == before  # not even the first step is speculated
+
+
+def test_retained_cfg_inputs_are_released_at_decode():
+    torch.manual_seed(0)
+    dit = _BatchDit()
+    cond, uncond = _embeds()
+    router = mg.CfgBatchRouter(dit)
+    dit.forward = router
+    pipe = _RouterPipe(dit)
+    with mg.cfg_request_scope(pipe, 64, 64):
+        _batch_loop(dit, torch.randn(2, 4), 3, cond, uncond)
+        assert router.template is not None
+        mg.release_cfg_inputs(pipe)  # the decoder was entered
+        assert router.template is None and router.b0_leaves == {} and router.kept is None
+        assert router.prev_latent is None
+
+
+def test_cfg_batch_headroom_scales_with_the_requested_canvas():
+    dit = _BatchDit()
+    router = mg.CfgBatchRouter(dit, headroom_mib = 892, headroom_reference_px = 1024 * 1024)
+    dit.forward = router
+    pipe = _RouterPipe(dit)
+    with mg.cfg_request_scope(pipe, 2048, 2048):
+        assert router.needed_mib() == 892 * 4
+    with mg.cfg_request_scope(pipe, 512, 512):
+        assert router.needed_mib() == 892 // 4
+    assert router.needed_mib() == 892  # outside a request: the calibrated figure
