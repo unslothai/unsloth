@@ -8293,6 +8293,7 @@ def _local_ssl_context() -> ssl.SSLContext:
 
 # Freeing a large model's GPU memory on a busy driver took over 5 s after SIGKILL; this only bounds a stuck process.
 _SIGKILL_REAP_TIMEOUT_S = 30
+_QUIT_SIGNAL_EXIT_GRACE_S = 2
 
 
 class LlamaCppBackend:
@@ -35350,6 +35351,32 @@ class LlamaCppBackend:
         return pgid if pgid == pid else None
 
     @staticmethod
+    def _quit_signal_grace_left(pid) -> Optional[float]:
+        if not _is_signalable_pid(pid) or not hasattr(os, "getpgid"):
+            return None
+        from utils.process_lifetime import seconds_since_quit_signal
+
+        elapsed = seconds_since_quit_signal()
+        try:
+            if elapsed is None or os.getpgid(pid) != os.getpgrp():
+                return None
+        except OSError:
+            return None
+        return max(0.0, _QUIT_SIGNAL_EXIT_GRACE_S - elapsed)
+
+    def _still_listening(self) -> bool:
+        port = getattr(self, "_port", None)
+        if not port:
+            return True
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout = 0.5):
+                return True
+        except ConnectionRefusedError:
+            return False
+        except OSError:
+            return True
+
+    @staticmethod
     def _kill_process_group(pgid):
         """Take down what the leader left behind, if anything is still there."""
         if not _is_signalable_pid(pgid):
@@ -35640,6 +35667,16 @@ class LlamaCppBackend:
             self._torn_down_process = self._process
         try:
             if terminable:
+                _grace = self._quit_signal_grace_left(_pid)
+                if _grace is not None:
+                    # The quit signal already reached it; a second one aborts llama-server on Metal.
+                    try:
+                        self._process.wait(timeout = _grace)
+                    except subprocess.TimeoutExpired:
+                        # Still listening: our signal never reached it (a stop sent to Studio alone).
+                        if not self._still_listening():
+                            self._process.kill()
+                            self._process.wait(timeout = _SIGKILL_REAP_TIMEOUT_S)
                 self._process.terminate()
                 self._process.wait(timeout = 5)
         except subprocess.TimeoutExpired:

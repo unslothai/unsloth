@@ -1889,6 +1889,19 @@ export const sv = {
         apiOnlyDescription:
           "Avlastning efter inaktivitet lämnar en modell som du läst in från Unsloth i minnet och frigör endast de som lästs in av en API-begäran.",
       },
+      modelAliases: {
+        sectionTitle: "Modellalias (OpenAI API)",
+        description:
+          "Fasta namn för API-klienter, till exempel fast-chat eller code. En begäran som anger ett alias besvaras av modellen det pekar på, så anslutna appar fortsätter fungera när du byter modell. Slå på Byt modell enligt begäran så att ett alias kan läsa in sin modell.",
+        namePlaceholder: "fast-chat",
+        nameAriaLabel: "Aliasnamn",
+        modelAriaLabel: "Modell som aliaset pekar på",
+        modelPlaceholder: "unsloth/Qwen3-4B-GGUF:Q4_K_M",
+        removeAriaLabel: "Ta bort alias",
+        add: "Lägg till alias",
+        loadError: "Det gick inte att läsa in modellalias.",
+        saveError: "Det gick inte att spara modellalias.",
+      },
       previewSharing: {
         sectionTitle: "Delning av förhandsvisning",
         enableLabel: "Offentliga förhandsvisningslänkar",

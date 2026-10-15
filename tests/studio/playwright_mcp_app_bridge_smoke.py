@@ -27,7 +27,7 @@ def shipped() -> dict:
     return json.loads(subprocess.run(cmd, check = True, capture_output = True, text = True).stdout)
 
 
-# The host keeps Studio's rule: only the token-carrying handshake is read off the window.
+# Only the token-carrying handshake is read off the window, as in Studio.
 HOST = """<!doctype html><body><iframe id="f" sandbox="allow-scripts"></iframe><script>
   window.got = []; window.leaked = []; window.seen = []; let port = null;
   const f = document.getElementById("f");

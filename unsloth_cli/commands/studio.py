@@ -2250,6 +2250,7 @@ def studio_default(
             while True:
                 time.sleep(1)
     except KeyboardInterrupt:
+        getattr(run_mod, "_note_quit_signal", lambda: None)()
         run_mod._graceful_shutdown(run_mod._server)
         typer.echo("\nShutting down...")
     finally:
@@ -3064,6 +3065,7 @@ def run(
             while True:
                 time.sleep(1)
     except KeyboardInterrupt:
+        getattr(run_mod, "_note_quit_signal", lambda: None)()
         run_mod._graceful_shutdown(run_mod._server)
         typer.echo("\nShutting down...")
     finally:

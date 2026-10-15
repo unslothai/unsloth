@@ -1741,6 +1741,19 @@ export const ptBR = {
         apiOnlyDescription:
           "O descarregamento por inatividade mantém na memória o modelo que você carregou pelo Unsloth e libera apenas os que uma requisição da API carregou.",
       },
+      modelAliases: {
+        sectionTitle: "Aliases de modelos (OpenAI API)",
+        description:
+          "Nomes fixos para clientes da API, como fast-chat ou code. Uma solicitação que cita um alias é atendida pelo modelo para o qual ele aponta, então os apps conectados continuam funcionando quando você troca de modelo. Ative Trocar de modelo por requisição para que um alias possa carregar o modelo para o qual aponta.",
+        namePlaceholder: "fast-chat",
+        nameAriaLabel: "Nome do alias",
+        modelAriaLabel: "Modelo para o qual o alias aponta",
+        modelPlaceholder: "unsloth/Qwen3-4B-GGUF:Q4_K_M",
+        removeAriaLabel: "Remover alias",
+        add: "Adicionar alias",
+        loadError: "Não foi possível carregar os aliases de modelos.",
+        saveError: "Não foi possível salvar os aliases de modelos.",
+      },
       previewSharing: {
         sectionTitle: "Compartilhamento de pré-visualização",
         enableLabel: "Links públicos de pré-visualização",

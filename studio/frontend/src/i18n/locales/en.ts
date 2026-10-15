@@ -1786,6 +1786,19 @@ export const en = {
         apiOnlyDescription:
           "Idle unload leaves a model you loaded from Unsloth in memory, and frees only the ones an API request loaded.",
       },
+      modelAliases: {
+        sectionTitle: "Model aliases (OpenAI API)",
+        description:
+          "Stable names for API clients, such as fast-chat or code. A request naming an alias is served by the model it points to, so connected apps keep working when you swap models. Turn on Switch model by request so an alias can load its model.",
+        namePlaceholder: "fast-chat",
+        nameAriaLabel: "Alias name",
+        modelAriaLabel: "Model the alias points to",
+        modelPlaceholder: "unsloth/Qwen3-4B-GGUF:Q4_K_M",
+        removeAriaLabel: "Remove alias",
+        add: "Add alias",
+        loadError: "Failed to load model aliases.",
+        saveError: "Failed to save model aliases.",
+      },
       previewSharing: {
         sectionTitle: "Preview sharing",
         enableLabel: "Public preview links",
