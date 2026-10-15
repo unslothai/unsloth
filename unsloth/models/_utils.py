@@ -9248,6 +9248,8 @@ def native_expert_only_regex(model, target_modules):
     if prefix is None:
         return None
     requested = {t for t in target_modules if isinstance(t, str) and "." not in t}
+    if "gate_up_proj" in requested:  # the shorthand reaches split gate / up experts too
+        requested |= {"gate_proj", "up_proj"}
     parents, leaves = set(), set()
     for name, module in model.named_modules():
         matched = _EXPERT_SUBMODULE_PATTERN.search(name)
