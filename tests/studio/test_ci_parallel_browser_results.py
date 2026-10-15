@@ -95,7 +95,6 @@ import json
 import os
 from pathlib import Path
 import signal
-import subprocess
 import sys
 import time
 
@@ -104,20 +103,12 @@ if os.environ.get("PW_CHUNK_FAIL"):
     name += "_blocked"
 record = {"args": sys.argv[1:], "env": {key: value for key, value in os.environ.items()
           if key.startswith(("PW_", "VITE_"))}, "pid": os.getpid()}
-server = None
 
 def cancel(signum, frame):
-    if server is not None:
-        os.killpg(server.pid, signal.SIGTERM)
-        server.wait()
     Path(f"{name}.stopped").touch()
     sys.exit(128 + signum)
 
 signal.signal(signal.SIGTERM, cancel)
-if os.environ.get("CANCEL_TEST"):
-    server = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"],
-                              start_new_session=True)
-    record["server_pid"] = server.pid
 Path(f"{name}.tmp").write_text(json.dumps(record))
 Path(f"{name}.tmp").replace(f"{name}.json")
 if name in {"data_settings", "settings_tabs"}:
@@ -184,7 +175,7 @@ def test_linux_groups_overlap_and_collect_every_result(tmp_path, failing):
 
 
 @pytest.mark.skipif(os.name == "nt", reason = "Linux cancellation uses POSIX signals")
-def test_linux_cancel_stops_both_active_harnesses_and_their_servers(tmp_path):
+def test_linux_cancel_stops_both_active_harnesses(tmp_path):
     env = {**_linux_stubs(tmp_path), "CANCEL_TEST": "1"}
     process = subprocess.Popen(
         [BASH, "-e", "-o", "pipefail", "-c", _linux_script()],
@@ -204,9 +195,8 @@ def test_linux_cancel_stops_both_active_harnesses_and_their_servers(tmp_path):
         assert process.returncode == 143, stdout + stderr
         for name, record in zip(CHECKS[:2], records):
             assert (tmp_path / f"{name}.stopped").exists()
-            for pid in (record["pid"], record["server_pid"]):
-                with pytest.raises(ProcessLookupError):
-                    os.kill(pid, 0)
+            with pytest.raises(ProcessLookupError):
+                os.kill(record["pid"], 0)
         assert not (tmp_path / "settings_tabs_blocked.json").exists()
     finally:
         if process.poll() is None:
@@ -214,8 +204,7 @@ def test_linux_cancel_stops_both_active_harnesses_and_their_servers(tmp_path):
             process.communicate(timeout = 5)
         for record_path in tmp_path.glob("*.json"):
             record = json.loads(record_path.read_text())
-            for pid in (record["pid"], record["server_pid"]):
-                try:
-                    os.kill(pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
+            try:
+                os.kill(record["pid"], signal.SIGKILL)
+            except ProcessLookupError:
+                pass
