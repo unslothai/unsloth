@@ -549,7 +549,7 @@ def _rocm_auto_flash(target: Any, family: Any = None) -> bool:
 
 def _dit_attention_geometries(pipe: Any) -> tuple[tuple[int, int, int], ...]:
     """Every distinct (hidden, heads, head_dim) among the attention modules of every denoiser DiT, read off ``to_q``
-    + ``heads``; flash is set on all of them, so all of them are timed."""
+    + ``heads`` (or ``num_heads``); flash is set on all of them, so all of them are timed."""
     found: set[tuple[int, int, int]] = set()
     for dit in _attention_dits(pipe):
         modules = getattr(dit, "modules", None)
@@ -558,6 +558,9 @@ def _dit_attention_geometries(pipe: Any) -> tuple[tuple[int, int, int], ...]:
         try:
             for module in modules():
                 heads = getattr(module, "heads", None)
+                if not isinstance(heads, int) or isinstance(heads, bool):
+                    # Krea 2 (and other newer diffusers attention classes) name it num_heads.
+                    heads = getattr(module, "num_heads", None)
                 to_q = getattr(module, "to_q", None)
                 fin = getattr(to_q, "in_features", None)
                 fout = getattr(to_q, "out_features", None)

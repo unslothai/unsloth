@@ -609,3 +609,26 @@ def test_every_attention_geometry_is_timed(monkeypatch, minority_wins, engaged):
             att.apply_attention_backend(pipe2, att.ROCM_FLASH_CANDIDATE, target = _target()) is None
         )
         assert len(timed) == n
+
+
+def test_num_heads_attention_modules_are_measured():
+    # Krea 2's attention exposes num_heads, not heads: without the fallback auto could never time it.
+    import types
+
+    from torch import nn
+
+    class Krea2LikeAttention(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.num_heads = 24
+            self.to_q = nn.Linear(3072, 3072, bias = False)
+
+    dit = nn.Module()
+    dit.attn = Krea2LikeAttention()
+    pipe = types.SimpleNamespace()
+    original = att._attention_dits
+    try:
+        att._attention_dits = lambda p: [dit]
+        assert att._dit_attention_geometries(pipe) == ((3072, 24, 128),)
+    finally:
+        att._attention_dits = original
