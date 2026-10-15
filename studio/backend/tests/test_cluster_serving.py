@@ -8,6 +8,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import re
+import shlex
+import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -460,6 +465,9 @@ def test_managed_workers_are_started_over_ssh_and_kept_across_reloads(monkeypatc
     run(ss.before_load(_request(), 4))
     assert [p for p, _ in started] == ["me@10.0.0.2", "10.0.0.3", "10.0.0.4"]
     assert started[0][1] == [
+        "sh",
+        "-c",
+        cs._CUDA_RUNTIME,
         "$HOME/.unsloth/llama.cpp/build/bin/ggml-rpc-server",
         "-H",
         "10.0.0.2",
@@ -1678,3 +1686,34 @@ def test_a_host_ram_projector_is_not_charged_to_a_gpu(monkeypatch, tmp_path):
     request = _request(llama_extra_args = extra)
     assert run(ss.before_load(request, 4)) is request
     assert ss.status()["topology"] == "single"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason = "the worker command runs under sh on the peer")
+@pytest.mark.parametrize("venv", ["studio/unsloth_studio", "unsloth_studio"])
+def test_a_managed_worker_finds_the_studio_venvs_cuda_runtime(tmp_path, venv):
+    root = tmp_path / "home" / ".unsloth"
+    bindir = root / "llama.cpp" / "build" / "bin"
+    bindir.mkdir(parents = True)
+    nv = root / venv / "lib" / "python3.12" / "site-packages"
+    for sub in ("nvidia/cuda_runtime/lib", "nvidia/cublas/lib", "torch/lib"):
+        (nv / sub).mkdir(parents = True)
+    fake = bindir / "ggml-rpc-server"
+    fake.write_text(
+        '#!/bin/sh\necho "pid=$$ args=$*"\necho "LD=$LD_LIBRARY_PATH"\n', encoding = "utf-8"
+    )
+    fake.chmod(0o755)
+    argv = cs._with_cuda_runtime([str(fake), "-H", "10.0.0.2", "-p", "50052"])
+    out = subprocess.run(
+        ["sh", "-c", " ".join(shlex.quote(a) for a in argv) + " & echo started=$!; wait"],
+        capture_output = True,
+        text = True,
+        env = {"PATH": os.environ["PATH"], "LD_LIBRARY_PATH": "/keep"},
+    ).stdout
+    started = re.search(r"started=(\d+)", out).group(1)
+    assert (
+        f"pid={started} args=-H 10.0.0.2 -p 50052" in out
+    )  # exec keeps the pid the reaper watches
+    ld = re.search(r"LD=(.*)", out).group(1).split(":")
+    assert ld[0] == str(bindir) and ld[-1] == "/keep"
+    for sub in ("nvidia/cuda_runtime/lib", "nvidia/cublas/lib", "torch/lib"):
+        assert any(os.path.realpath(d) == str(nv / sub) for d in ld), sub

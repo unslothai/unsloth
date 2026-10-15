@@ -177,6 +177,24 @@ def _caller_placement(args: Sequence[str]) -> Optional[str]:
 _GPU_LAYER_FLAGS = frozenset({"--gpu-layers", "--n-gpu-layers", "-ngl"})
 
 
+# The Linux CUDA bundles link libcudart / libcublas from the Studio venv's nvidia wheels, which the
+# backend adds for its own llama-server; a worker started over ssh gets the same dirs, found from
+# the binary's place in a Studio install (<root>/llama.cpp/build/bin), else it serves CPU only.
+_CUDA_RUNTIME = (
+    'd=$(dirname "$0"); r="$d/../../.."; p="$d"; '
+    'for x in "$r"/studio/unsloth_studio/lib/python3*/site-packages/nvidia/*/lib '
+    '"$r"/unsloth_studio/lib/python3*/site-packages/nvidia/*/lib '
+    '"$r"/studio/unsloth_studio/lib/python3*/site-packages/torch/lib '
+    '"$r"/unsloth_studio/lib/python3*/site-packages/torch/lib /usr/local/cuda/lib64; do '
+    '[ -d "$x" ] && p="$p:$x"; done; '
+    'export LD_LIBRARY_PATH="$p${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"; exec "$0" "$@"'
+)
+
+
+def _with_cuda_runtime(argv: List[str]) -> List[str]:
+    return ["sh", "-c", _CUDA_RUNTIME] + list(argv)
+
+
 _DRAFT_DEVICE_FLAGS = frozenset({"--device-draft", "-devd", "--spec-draft-device"})
 _DEVICE_LINE = re.compile(r"^\s+(\S+): (.*) \((\d+) MiB, (\d+) MiB free\)\s*$")
 _HOST_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.\-]*$")
@@ -638,7 +656,9 @@ class ClusterServing:
             if rc != 0 or binary == "MISSING":
                 failed[node.endpoint] = f"{node.host} has no ggml-rpc-server at the bundle path"
                 continue
-            argv = ss.rpc_server_argv(binary, bind = node.host, port = node.rpc_port, cache = False)
+            argv = _with_cuda_runtime(
+                ss.rpc_server_argv(binary, bind = node.host, port = node.rpc_port, cache = False)
+            )
             log_dir = ss._log_dir()
             process = ss.PeerProcess(
                 "ggml-rpc-server",

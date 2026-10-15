@@ -21,6 +21,14 @@ The binary ships in the Studio llama.cpp bundle (`~/.unsloth/llama.cpp/build/bin
 every accelerator on that machine (CUDA, ROCm, Metal, Vulkan). Use the same llama.cpp build on
 every machine: llama.cpp refuses a worker whose RPC protocol differs, and Studio names it.
 
+On Linux with NVIDIA, the CUDA bundle loads `libcudart` and `libcublas` from Studio's Python
+environment, not from the bundle; without them the worker quietly offers only its CPU. A managed
+worker gets them automatically. When you start one yourself, put them on the library path first:
+
+```bash
+export LD_LIBRARY_PATH="$(ls -d ~/.unsloth/studio/unsloth_studio/lib/python3*/site-packages/nvidia/*/lib | paste -sd:):$LD_LIBRARY_PATH"
+```
+
 `ggml-rpc-server` has no authentication. Bind it to a private network you trust, never to a
 public address.
 
