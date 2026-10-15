@@ -180,6 +180,200 @@ _FRAME_CSP = (
     "treat-as-public-address"
 )
 
+# Opaque origins throw on storage and cookies: these keep a site's data in the panel (page-storage.ts) for the session.
+_PAGE_STORAGE_JS = r"""
+        // Past the panel's quota (page-storage.ts) a value stays in this page only.
+        const kept = (key, value) => key.length + value.length <= 131072;
+        // Numbered so the panel's echo of an older write can't undo a newer one still on its way.
+        let writes = 0;
+        const sync = (area, key, value) => {
+          const seq = ++writes;
+          const store = pageStores[area];
+          if (key === null) {
+            store.clearedAt = seq;
+            store.latest.clear();
+          } else store.latest.set(key, seq);
+          post({
+            type: "storage", area, key, url: pageUrl, seq,
+            value: key !== null && value !== null && kept(key, value) ? value : null,
+          });
+        };
+        const pageStores = {};
+        const pageStore = (area) => {
+          const data = new Map(cfg.storage?.[area] || []);
+          const store = {
+            data,
+            latest: new Map(),
+            acked: new Map(),
+            clearedAt: 0,
+            clearAcked: 0,
+            set: (key, value) => {
+              data.set(key, value);
+              sync(area, key, value);
+            },
+            // Always sent: another tab may have written the key since this page loaded.
+            remove: (key) => {
+              data.delete(key);
+              sync(area, key, null);
+            },
+            clear: () => {
+              data.clear();
+              sync(area, null, null);
+            },
+          };
+          pageStores[area] = store;
+          return store;
+        };
+        const text = (value) => value === null || typeof value === "string";
+        const storages = {};
+        window.addEventListener("message", (event) => {
+          const data = event.data;
+          if (event.source !== parent || !data || data.type !== "unsloth:browser-command") return;
+          // Clearing browsing data empties the open page's copy too. The clear is sent back after any write
+          // still on its way to the panel, so that write can't refill the cleared store.
+          if (data.command === "clearStorage") {
+            for (const [area, store] of Object.entries(pageStores)) {
+              store.data.clear();
+              sync(area, null, null);
+            }
+          }
+          // Another open page of this site changed its data, as other tabs do in a browser.
+          else if (data.command === "storageSync" && (data.area === "local" || data.area === "cookie") && text(data.key) && text(data.value)) {
+            const store = pageStores[data.area];
+            if (!store) return;
+            // This page's write or clear of the key is still on its way: its own echo settles the key.
+            const pending = (key) =>
+              store.clearedAt > store.clearAcked || (key !== null && (store.latest.get(key) ?? 0) > (store.acked.get(key) ?? 0));
+            const oldValue = data.key === null ? null : (store.data.get(data.key) ?? null);
+            if (data.own === true) {
+              const seq = Number(data.seq) || 0;
+              if (data.key === null) store.clearAcked = Math.max(store.clearAcked, seq);
+              else store.acked.set(data.key, Math.max(store.acked.get(data.key) ?? 0, seq));
+              // Refused by the panel's quota: the value stays in this page only.
+              if (data.refused === true) return;
+              if (store.clearedAt > seq || (data.key !== null && (store.latest.get(data.key) ?? 0) > seq)) return;
+              if (data.key === null) {
+                // Keys written after the clear stay.
+                for (const key of Array.from(store.data.keys())) if ((store.latest.get(key) ?? 0) <= seq) store.data.delete(key);
+                return;
+              }
+              if (data.value === null && oldValue !== null && !kept(data.key, oldValue)) return;
+            } else if (data.key === null ? Array.from(store.data.keys()).some(pending) : pending(data.key)) {
+              if (data.key !== null) return;
+              for (const key of Array.from(store.data.keys())) if (!pending(key)) store.data.delete(key);
+              return;
+            }
+            // Like a browser, a write that changes nothing fires no event (two pages could echo it forever).
+            if (data.key === null ? !store.data.size : oldValue === data.value) return;
+            if (data.key === null) store.data.clear();
+            else if (data.value === null) store.data.delete(data.key);
+            else store.data.set(data.key, data.value);
+            // This page's own write, coming back in order to settle a race with another page: no event.
+            if (data.area === "local" && data.own !== true) {
+              try {
+                const url = typeof data.url === "string" ? data.url : "";
+                const change = new StorageEvent("storage", { key: data.key, oldValue, newValue: data.value, url });
+                // The init dictionary only takes a real Storage, so sites' `storageArea === localStorage` checks need this.
+                Object.defineProperty(change, "storageArea", { value: storages.local });
+                window.dispatchEvent(change);
+              } catch {}
+            }
+          }
+        });
+        for (const [name, area] of [["localStorage", "local"], ["sessionStorage", "session"]]) {
+          try { void window[name]; } catch {
+            const store = pageStore(area);
+            const methods = {
+              get length() { return store.data.size; },
+              key: (i) => Array.from(store.data.keys())[i] ?? null,
+              getItem: (k) => store.data.get(String(k)) ?? null,
+              setItem: (k, v) => store.set(String(k), String(v)),
+              removeItem: (k) => store.remove(String(k)),
+              clear: store.clear,
+              [Symbol.toStringTag]: "Storage",
+            };
+            // Keys are properties too, as on Storage: sites read and write localStorage.theme.
+            const named = (key) => typeof key === "string" && !(key in methods) && store.data.has(key);
+            const storage = new Proxy(Object.create(methods), {
+              get: (_, key) => (named(key) ? store.data.get(key) : Reflect.get(methods, key)),
+              set: (_, key, value) => {
+                if (typeof key === "string") store.set(key, String(value));
+                return true;
+              },
+              has: (_, key) => named(key) || key in methods,
+              deleteProperty: (_, key) => {
+                if (named(key)) store.remove(key);
+                return true;
+              },
+              ownKeys: () => Array.from(store.data.keys()),
+              getOwnPropertyDescriptor: (_, key) =>
+                named(key) ? { value: store.data.get(key), writable: true, enumerable: true, configurable: true } : undefined,
+            });
+            storages[area] = storage;
+            try { Object.defineProperty(window, name, { value: storage, configurable: true }); } catch {}
+          }
+        }
+        // Keyed "<name>=<path>" (a name has no "="), valued "<deadline>|<value>": a cookie keeps its
+        // path and its Max-Age or Expires across pages.
+        const cookies = pageStore("cookie");
+        const pagePath = () => {
+          try { return new URL(pageUrl).pathname; } catch { return "/"; }
+        };
+        const defaultPath = (path) => (path.startsWith("/") && path.lastIndexOf("/") > 0 ? path.slice(0, path.lastIndexOf("/")) : "/");
+        const pathMatch = (scope, path) =>
+          path === scope || (path.startsWith(scope) && (scope.endsWith("/") || path[scope.length] === "/"));
+        const setCookie = (raw) => {
+          const [pair, ...attributes] = String(raw).split(";");
+          const at = pair.indexOf("=");
+          const name = at < 0 ? "" : pair.slice(0, at).trim();
+          const value = (at < 0 ? pair : pair.slice(at + 1)).trim();
+          if ((!name && !value) || name.length + value.length > 4096) return;
+          let maxAge = null, expires = null, path = null, domain = "";
+          for (const attribute of attributes) {
+            const eq = attribute.indexOf("=");
+            const key = (eq < 0 ? attribute : attribute.slice(0, eq)).trim().toLowerCase();
+            const setting = eq < 0 ? "" : attribute.slice(eq + 1).trim();
+            if (key === "max-age" && /^-?\d+$/.test(setting)) maxAge = Number(setting);
+            else if (key === "expires") expires = Date.parse(setting);
+            else if (key === "path" && setting.startsWith("/")) path = setting;
+            else if (key === "domain") domain = setting.replace(/^\./, "").toLowerCase();
+          }
+          if (domain) {
+            let host = "";
+            try { host = new URL(pageUrl).hostname; } catch {}
+            // A browser refuses a Domain the page isn't on; one it is on still stays with this site only.
+            if (host !== domain && !host.endsWith("." + domain)) return;
+          }
+          const id = name + "=" + (path ?? defaultPath(pagePath()));
+          const deadline = maxAge !== null ? Date.now() + maxAge * 1000 : expires !== null && !Number.isNaN(expires) ? expires : null;
+          if (deadline !== null && deadline <= Date.now()) cookies.remove(id);
+          else cookies.set(id, (deadline ?? "") + "|" + value);
+        };
+        const liveCookies = () => {
+          const path = pagePath();
+          const live = [];
+          for (const [id, stored] of cookies.data) {
+            const at = stored.indexOf("|");
+            if (at > 0 && Number(stored.slice(0, at)) <= Date.now()) {
+              cookies.remove(id);
+              continue;
+            }
+            const eq = id.indexOf("=");
+            const scope = id.slice(eq + 1);
+            if (pathMatch(scope, path)) live.push([scope.length, eq ? id.slice(0, eq) + "=" + stored.slice(at + 1) : stored.slice(at + 1)]);
+          }
+          // Longer paths first, as browsers order them.
+          return live.sort((a, b) => b[0] - a[0]).map(([, cookie]) => cookie).join("; ");
+        };
+        try {
+          Object.defineProperty(document, "cookie", {
+            get: liveCookies,
+            set: setCookie,
+            configurable: true,
+          });
+        } catch {}
+"""
+
 # Page shell: injects <base> and a script turning navigations into panel messages. The page is a
 # srcdoc child; the shell then sets frame-src 'none' on itself so the child can't be navigated
 # (it keeps its own policy copy, so embeds still load), independent of the embedder's policy.
@@ -253,27 +447,7 @@ _FRAME_HTML = r"""<!doctype html>
           if (!cfg.url && new URL(url).origin === shellOrigin) return;
           post({ type: "navigate", url, newTab: Boolean(newTab), background: Boolean(background) });
         };
-        const fallbackStorage = () => {
-          const data = new Map();
-          return {
-            get length() { return data.size; },
-            key: (i) => Array.from(data.keys())[i] ?? null,
-            getItem: (k) => data.has(String(k)) ? data.get(String(k)) : null,
-            setItem: (k, v) => void data.set(String(k), String(v)),
-            removeItem: (k) => void data.delete(String(k)),
-            clear: () => data.clear(),
-          };
-        };
-        // Opaque origins throw on storage and cookies; stub them so pages don't crash.
-        for (const name of ["localStorage", "sessionStorage"]) {
-          try { void window[name]; } catch {
-            try { Object.defineProperty(window, name, { value: fallbackStorage(), configurable: true }); } catch {}
-          }
-        }
-        try {
-          let jar = "";
-          Object.defineProperty(document, "cookie", { get: () => jar, set: () => {}, configurable: true });
-        } catch {}
+        /* PAGE_STORAGE_JS */
         let refused = false;
         const tellRefused = () => {
           if (refused) return;
@@ -778,7 +952,7 @@ _FRAME_HTML = r"""<!doctype html>
         }
         // Only the parent may drive the shell, once.
         if (!data || data.type !== "unsloth:browser-html" || typeof data.html !== "string") return;
-        const cfg = { url: data.url || null, ownBase: data.ownBase === true, anyOrigin: data.anyOrigin === true, refresh: data.refresh || null, zoom: Number(data.zoom) || 1, muted: data.muted === true };
+        const cfg = { url: data.url || null, ownBase: data.ownBase === true, anyOrigin: data.anyOrigin === true, refresh: data.refresh || null, zoom: Number(data.zoom) || 1, muted: data.muted === true, storage: data.storage || null };
         const base = data.base ? `<base href="${escapeAttr(data.base)}">` : "";
         const script = `<script>(${boot.toString()})(${JSON.stringify(cfg).replace(/</g, "\\u003c")});<\/script>`;
         page = document.createElement("iframe");
@@ -804,6 +978,7 @@ _FRAME_HTML = r"""<!doctype html>
 </html>"""
 
 _FRAME_HTML = _FRAME_HTML.replace("/* BROWSER_NETWORK_JS */", BROWSER_NETWORK_JS.strip(), 1)
+_FRAME_HTML = _FRAME_HTML.replace("/* PAGE_STORAGE_JS */", _PAGE_STORAGE_JS.strip(), 1)
 
 # Annotate, the body of a function of `post` that the page shell's `install` runs on the panel's
 # request: while it is on, pointer input is the panel's, and the page only reports the block under
