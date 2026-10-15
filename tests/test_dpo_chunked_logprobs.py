@@ -122,6 +122,28 @@ def _helpers():
     return ns
 
 
+_STOCK = {}
+
+
+def _stock_module(mod):
+    """A fresh copy of TRL's module: importing unsloth (conftest does, for its import fixes) replaces the trainer
+    classes in TRL's modules with Unsloth's generated ones, so re-execute TRL's own file under a sibling name."""
+    if mod.__name__ not in _STOCK:
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(mod.__name__ + "_stock", mod.__file__)
+        fresh = importlib.util.module_from_spec(spec)
+        # Registered, so datasets' dill pickles its map functions by reference, not by value with every global.
+        sys.modules[spec.name] = fresh
+        spec.loader.exec_module(fresh)
+        _STOCK[mod.__name__] = fresh
+    return _STOCK[mod.__name__]
+
+
+def _stock(mod, name):
+    return getattr(_stock_module(mod), name)
+
+
 @pytest.fixture(scope = "module")
 def env():
     import trl.import_utils as iu
@@ -129,14 +151,14 @@ def env():
     iu._mergekit_available = False  # a broken mergekit dist-info here would fail the trainer import
     import trl.trainer.dpo_trainer as dpo_mod
 
-    if not hasattr(dpo_mod.DPOTrainer, "concatenated_forward"):
+    if not hasattr(_stock(dpo_mod, "DPOTrainer"), "concatenated_forward"):
         pytest.skip("TRL >= 0.29 has no concatenated_forward")
     ns = _helpers()
-    source = inspect.getsource(dpo_mod.DPOTrainer.concatenated_forward)
+    source = inspect.getsource(_stock(dpo_mod, "DPOTrainer").concatenated_forward)
     # Class-indented, as unsloth/models/rl.py hands it to RL_FUNCTIONS.
     patched = ns["dpo_trainer_chunked_logprobs"]("concatenated_forward", source)
     assert patched != source, "rewrite did not apply to the installed TRL"
-    g = dict(vars(dpo_mod))
+    g = dict(vars(_stock_module(dpo_mod)))
     g.update({k: v for k, v in ns.items() if not k.startswith("__")})
     exec(compile(textwrap.dedent(patched), "<patched concatenated_forward>", "exec"), g)
     return dpo_mod, g["concatenated_forward"]
@@ -188,6 +210,8 @@ def _run(
 
     torch.manual_seed(0)
     model = AutoModelForCausalLM.from_pretrained(TINY, torch_dtype = torch.float32)
+    if not hasattr(model, "warnings_issued"):
+        model.warnings_issued = {}  # transformers 5 dropped it; stock TRL < 0.26 still writes to it
     tok = AutoTokenizer.from_pretrained(TINY)
     ref_model = copy.deepcopy(model) if ref == "model" else None
     with torch.no_grad():  # a ref that differs from the policy, so the margins are not all zero
@@ -197,9 +221,11 @@ def _run(
         _honour_hidden_states(model)
         if ref_model is not None:
             _honour_hidden_states(ref_model)
-    cls = dpo_mod.DPOTrainer
+    cls = _stock(dpo_mod, "DPOTrainer")
     if chunked:
-        cls = type("PatchedDPOTrainer", (dpo_mod.DPOTrainer,), {"concatenated_forward": forward})
+        cls = type(
+            "PatchedDPOTrainer", (_stock(dpo_mod, "DPOTrainer"),), {"concatenated_forward": forward}
+        )
     cfg = dpo_mod.DPOConfig(
         output_dir = str(REPO / ".pytest_dpo_chunked"),
         per_device_train_batch_size = 4,
@@ -209,6 +235,9 @@ def _run(
         dataset_num_proc = None,
         **cfg_kwargs,
     )
+    # In process: an imported unsloth patches the config to auto-size workers, and a worker pool has to pickle
+    # the map function, whose globals here hold torch's config module.
+    cfg.dataset_num_proc = None
     trainer = cls(
         model = model, ref_model = ref_model, args = cfg, train_dataset = _dataset(), processing_class = tok
     )
@@ -395,15 +424,23 @@ def _kto_run(
     except ImportError:
         import trl.trainer.kto_trainer as kto_mod
     ns = _helpers()
-    source = inspect.getsource(kto_mod.KTOTrainer.forward)
+    stock_forward = getattr(_stock(kto_mod, "KTOTrainer"), "forward", None)
+    if stock_forward is None:
+        pytest.skip("installed KTOTrainer has no forward (TRL >= 1.10)")
+    source = inspect.getsource(stock_forward)
     patched = ns["kto_trainer_chunked_logprobs"]("forward", source)
-    assert patched != source
-    g = dict(vars(kto_mod))
+    if patched == source:
+        pytest.skip(
+            "installed KTOTrainer.forward has no rewritable get_batch_logps call (TRL >= 1.10)"
+        )
+    g = dict(vars(_stock_module(kto_mod)))
     g.update({k: v for k, v in ns.items() if not k.startswith("__")})
     exec(compile(textwrap.dedent(patched), "<patched kto forward>", "exec"), g)
 
     torch.manual_seed(0)
     model = AutoModelForCausalLM.from_pretrained(TINY, torch_dtype = torch.float32)
+    if not hasattr(model, "warnings_issued"):
+        model.warnings_issued = {}  # transformers 5 dropped it; stock TRL < 0.26 still writes to it
     tok = AutoTokenizer.from_pretrained(TINY)
     ref_model = copy.deepcopy(model)
     with torch.no_grad():
@@ -412,9 +449,9 @@ def _kto_run(
     if honour:
         _honour_hidden_states(model)
         _honour_hidden_states(ref_model)
-    cls = kto_mod.KTOTrainer
+    cls = _stock(kto_mod, "KTOTrainer")
     if chunked:
-        cls = type("PatchedKTOTrainer", (kto_mod.KTOTrainer,), {"forward": g["forward"]})
+        cls = type("PatchedKTOTrainer", (_stock(kto_mod, "KTOTrainer"),), {"forward": g["forward"]})
     rows = _dataset()
     ds = Dataset.from_list(
         [
@@ -436,6 +473,9 @@ def _kto_run(
         dataset_num_proc = None,
         **cfg_kwargs,
     )
+    # In process: an imported unsloth patches the config to auto-size workers, and a worker pool has to pickle
+    # the map function, whose globals here hold torch's config module.
+    cfg.dataset_num_proc = None
     trainer = cls(
         model = model, ref_model = ref_model, args = cfg, train_dataset = ds, processing_class = tok
     )
