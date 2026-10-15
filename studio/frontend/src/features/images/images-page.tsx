@@ -2643,13 +2643,9 @@ export function ImagesPage({
           // Loading a model applies its own default steps and guidance.
           description: "Load that model, then load settings from this image again to reproduce it.",
         });
-      } else if (quant && status?.gguf_filename && quant !== status.gguf_filename) {
-        toast(`Made with ${quant}`, {
-          description: "Load that quant to reproduce this image exactly.",
-        });
       } else if (settings.model && status?.loaded) {
-        // Same model, another precision: null on both sides means dense.
-        const differs = (["transformer_quant", "text_encoder_quant"] as const).filter(
+        // Same model, another build: null on either side means dense / no quant.
+        const differs = (["gguf_filename", "transformer_quant", "text_encoder_quant"] as const).filter(
           (key) =>
             Object.hasOwn(recipe, key) &&
             status[key] !== undefined &&
@@ -2657,12 +2653,17 @@ export function ImagesPage({
         );
         if (differs.length > 0) {
           toast(
-            `Made with ${differs.map((key) => `${key.replace(/_/g, " ")} ${String(recipe[key] ?? "off")}`).join(", ")}`,
-            { description: "Reload the model with that precision to reproduce this image exactly." },
+            `Made with ${differs.map((key) => (key === "gguf_filename" ? String(recipe[key] ?? "the dense model") : `${key.replace(/_/g, " ")} ${String(recipe[key] ?? "off")}`)).join(", ")}`,
+            { description: "Reload the model with that build to reproduce this image exactly." },
           );
         }
       }
       const notApplied = unknownRecipeKeys(recipe);
+      // Baked adapters are part of the load, not the request.
+      const baked = Array.isArray(recipe.baked_loras)
+        ? recipe.baked_loras.filter((x): x is string => typeof x === "string")
+        : [];
+      if (baked.length > 0) notApplied.unshift(`baked LoRAs ${baked.join(", ")} (load-time)`);
       if (status?.loaded && status.supports_lora === false && settings.loras.length > 0) {
         notApplied.unshift("LoRAs");
       }

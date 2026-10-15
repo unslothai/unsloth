@@ -795,7 +795,6 @@ const COMFY_SAMPLER_IDS: Record<string, string> = {
   euler_ancestral: "euler_a",
   dpmpp_2m: "dpmpp_2m",
   dpmpp_2m_sde: "dpmpp_2m_sde",
-  dpmpp_2m_sde_gpu: "dpmpp_2m_sde",
 };
 const COMFY_SCHEDULE_IDS: Record<string, string> = {
   karras: "karras",
