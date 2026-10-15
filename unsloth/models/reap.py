@@ -315,8 +315,16 @@ def _prune_block(block, experts, router, retained, num_experts):
     for module, only in targets:
         tensors = list(module.named_parameters(recurse = False))
         tensors += list(module.named_buffers(recurse = False))
+        # Inkling's router weight carries the shared experts' rows after the routed ones.
+        shared = getattr(module, "n_shared_experts", 0) if module is not experts else 0
+        shared = shared if isinstance(shared, int) else 0
         for name, tensor in tensors:
             if only is not None and name not in only or not tensor.dim():
+                continue
+            if shared and tensor.shape[0] == num_experts + shared:
+                kept = torch.cat([index, torch.arange(num_experts, num_experts + shared)])
+                new = tensor.data.index_select(0, kept.to(tensor.device)).contiguous()
+                setattr(module, name, nn.Parameter(new, requires_grad = tensor.requires_grad))
                 continue
             if tensor.shape[0] == num_experts:
                 dim = 0
@@ -330,8 +338,11 @@ def _prune_block(block, experts, router, retained, num_experts):
             else:
                 module._buffers[name] = new
         for key in _NUM_EXPERTS_MODULE_KEYS:
-            if getattr(module, key, None) == num_experts:
+            value = getattr(module, key, None)
+            if isinstance(value, int) and value == num_experts:
                 setattr(module, key, len(retained))
+        if shared and getattr(module, "n_total_experts", None) == num_experts + shared:
+            module.n_total_experts = len(retained) + shared
         if module is not experts and getattr(module, "out_features", None) == num_experts:
             module.out_features = len(retained)
     # Kernel configs Unsloth's MoE backend cached for the old expert count.
@@ -506,6 +517,12 @@ def reap_prune(
                 f"{n_drop_per_group * n_group} in total instead of {n_drop}."
             )
         n_drop = n_drop_per_group * n_group
+        if num_experts // n_group - n_drop_per_group < 2:
+            # DeepSeek style routers score each group by the sum of its top 2 experts.
+            raise ValueError(
+                f"Unsloth: REAP sparsity={sparsity} leaves fewer than 2 experts in each of the "
+                f"{n_group} router groups; lower the sparsity."
+            )
         available = topk_group * (num_experts // n_group - n_drop_per_group)
     else:
         available = num_experts - n_drop
@@ -667,6 +684,12 @@ def reap_prune(
         for key in _NUM_EXPERTS_KEYS:
             if getattr(config, key, None) == num_experts:
                 setattr(config, key, kept_count)
+    # Wrappers cache the count too (Mixtral / Jamba pass model.num_experts to the router aux loss).
+    for module in model.modules():
+        for key in _NUM_EXPERTS_MODULE_KEYS:
+            value = getattr(module, key, None)
+            if isinstance(value, int) and value == num_experts:
+                setattr(module, key, kept_count)
     model._unsloth_reap_report = report
     model._unsloth_reap_saliency = saliencies
     if save_directory is not None:
