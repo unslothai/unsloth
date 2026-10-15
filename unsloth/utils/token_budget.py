@@ -265,6 +265,7 @@ _MEDIA_KEY_PARTS = (
     "audio",
     "vision",
     "input_features",
+    "input_values",
     "grid_thw",
     "aspect_ratio",
     "cross_attention",
@@ -377,7 +378,21 @@ def _exactness_blocker(trainer):
         )
     if _router_aux_loss_active(trainer):
         return "the MoE router auxiliary loss is active"
+    if _uses_longrope(trainer):
+        return "LongRoPE picks short or long frequencies from each forward's length"
     return None
+
+
+def _uses_longrope(trainer):
+    config = getattr(getattr(trainer, "model", None), "config", None)
+    config = getattr(config, "text_config", None) or config
+    for name in ("rope_scaling", "rope_parameters"):
+        scaling = getattr(config, name, None)
+        if isinstance(scaling, Mapping):
+            kind = scaling.get("rope_type", scaling.get("type", ""))
+            if str(kind).lower() == "longrope":
+                return True
+    return False
 
 
 def _note_once(trainer, message):

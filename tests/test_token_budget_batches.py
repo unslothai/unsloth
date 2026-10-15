@@ -398,6 +398,7 @@ def test_split_refuses_media_keys_and_per_sample_metadata():
     for extra in (
         {"pixel_values": torch.ones(4, 3)},
         {"image_grid_thw": torch.ones(4, 3, dtype = torch.long)},
+        {"input_values": torch.ones(4, 16000)},
         {"num_images": [0, 2, 1, 1]},
     ):
         batch = {**rows, **extra}
@@ -667,3 +668,16 @@ def test_ddp_ranks_split_only_when_every_rank_needs_the_same_count(tmp_path, oth
                 _, rank, n = line.split()
                 calls[int(rank)] = int(n)
     assert (calls.get(0), calls.get(1)) == expected, outputs
+
+
+@pytest.mark.parametrize("key", ["rope_scaling", "rope_parameters"])
+def test_longrope_steps_aside_for_split_and_balance(key):
+    trainer, _ = _fake_trainer()
+    assert tb._exactness_blocker(trainer) is None
+    config = SimpleNamespace(
+        **{key: {"rope_type": "longrope", "original_max_position_embeddings": 4096}}
+    )
+    trainer.model = SimpleNamespace(config = config)
+    assert "LongRoPE" in tb._exactness_blocker(trainer)
+    trainer.model = SimpleNamespace(config = SimpleNamespace(**{key: {"rope_type": "llama3"}}))
+    assert tb._exactness_blocker(trainer) is None
