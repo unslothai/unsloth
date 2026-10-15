@@ -329,3 +329,20 @@ def test_unsupported_weights_refuse_before_any_layer_is_pruned():
     with pytest.raises(RuntimeError, match = "16-bit or 32-bit"):
         reap.reap_prune(model, None, sparsity = 0.25, dataset = _samples(), device = "cpu")
     assert model.model.layers[1].mlp.experts.gate_up_proj.shape[0] == 16
+
+
+def test_offloaded_activations_give_the_same_result():
+    samples = _samples(n = 6, seed = 7)
+    a, b = _qwen3_moe(seed = 3), _qwen3_moe(seed = 3)
+    reap.reap_prune(a, None, sparsity = 0.25, dataset = samples, max_batch_tokens = 30, device = "cpu")
+    reap.reap_prune(
+        b,
+        None,
+        sparsity = 0.25,
+        dataset = samples,
+        max_batch_tokens = 30,
+        device = "cpu",
+        offload_hidden_states = True,
+    )
+    assert a._unsloth_reap_report == b._unsloth_reap_report
+    assert a._unsloth_reap_saliency == b._unsloth_reap_saliency

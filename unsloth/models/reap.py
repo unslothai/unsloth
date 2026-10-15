@@ -207,15 +207,24 @@ def _batches(ids, max_batch_tokens, pad_id):
     return out
 
 
-def _to(obj, device):
+def _to(
+    obj,
+    device,
+    memo = None,
+):
+    """Moves nested tensors; ``memo`` keeps tensors shared across layers (rotary tables) shared."""
     if torch.is_tensor(obj):
-        return obj.to(device, non_blocking = True)
+        if memo is None:
+            return obj.to(device, non_blocking = True)
+        if id(obj) not in memo:
+            memo[id(obj)] = obj.to(device)
+        return memo[id(obj)]
     if isinstance(obj, tuple):
-        return tuple(_to(o, device) for o in obj)
+        return tuple(_to(o, device, memo) for o in obj)
     if isinstance(obj, list):
-        return [_to(o, device) for o in obj]
+        return [_to(o, device, memo) for o in obj]
     if isinstance(obj, dict):
-        return {k: _to(v, device) for k, v in obj.items()}
+        return {k: _to(v, device, memo) for k, v in obj.items()}
     return obj
 
 
@@ -584,6 +593,8 @@ def reap_prune(
                 store = torch.device("cpu") if offload_hidden_states else None
             if store is not None:
                 h = h.to(store).pin_memory() if torch.cuda.is_available() else h.to(store)
+                # Rotary tables and any materialized masks go too, or they pile up per batch.
+                kwargs = _to(kwargs, store, {})
             hidden.append(h)
             kwargs_per_batch.append(kwargs)
             valid_per_batch.append(valid.reshape(-1))
@@ -606,86 +617,91 @@ def reap_prune(
                 moved = True
                 layer_device = device
 
-            def run(b, h):
-                args, kwargs = kwargs_per_batch[b][index]
-                return _hidden(layer(h, *_to(args, layer_device), **_to(kwargs, layer_device)))
+            try:
 
-            moe = _layer_moe(layer, num_experts)
-            norm = None
-            if moe is not None:
-                _, block, experts, router = moe
-                block_name = layer_names[id(block)]
-                norm = _residual_split(layer, block)
-                residuals = []
-                if norm is not None:
-                    hook = norm.register_forward_pre_hook(
-                        lambda module, args: residuals.append(args[0])
-                    )
+                def run(b, h):
+                    args, kwargs = kwargs_per_batch[b][index]
+                    return _hidden(layer(h, *_to(args, layer_device), **_to(kwargs, layer_device)))
+
+                moe = _layer_moe(layer, num_experts)
+                norm = None
+                if moe is not None:
+                    _, block, experts, router = moe
+                    block_name = layer_names[id(block)]
+                    norm = _residual_split(layer, block)
+                    residuals = []
+                    if norm is not None:
+                        hook = norm.register_forward_pre_hook(
+                            lambda module, args: residuals.append(args[0])
+                        )
+                        try:
+                            h0 = hidden[0].to(layer_device, non_blocking = True)
+                            reference = run(0, h0)
+                            try:
+                                same = len(residuals) == 1 and torch.equal(
+                                    reference,
+                                    residuals[0]
+                                    + _hidden(block(norm(residuals[0]))).reshape(
+                                        residuals[0].shape
+                                    ),
+                                )
+                            except Exception:  # block needs more than hidden states (DeepSeek-V4)
+                                same = False
+                            if not same:
+                                norm = None
+                        finally:
+                            residuals.clear()
+                            hook.remove()
+
+                    saliency = _Saliency(num_experts)
+                    tap = _ExpertsTap(experts, saliency)
+                    # Pass 2 recomputes the layer output, so pass 1 stops right after the experts
+                    # (not under accelerate hooks, whose post-forward offload must run).
+                    tap.stop = not any(hasattr(m, "_hf_hook") for m in layer.modules())
+                    hook = None
+                    if norm is not None:
+                        hook = norm.register_forward_pre_hook(
+                            lambda module, args: residuals.append(args[0])
+                        )
                     try:
-                        h0 = hidden[0].to(layer_device, non_blocking = True)
-                        reference = run(0, h0)
-                        try:
-                            same = len(residuals) == 1 and torch.equal(
-                                reference,
-                                residuals[0]
-                                + _hidden(block(norm(residuals[0]))).reshape(residuals[0].shape),
-                            )
-                        except Exception:  # block needs more than hidden states (DeepSeek-V4)
-                            same = False
-                        if not same:
-                            norm = None
+                        for b in range(len(batches)):
+                            tap.valid = valid_per_batch[b]
+                            try:
+                                run(b, hidden[b].to(layer_device, non_blocking = True))
+                            except _StopForward:
+                                pass
+                            if norm is not None:
+                                # The residual is all a verified layer needs later, so it replaces the input.
+                                r = residuals.pop()
+                                hidden[b] = r if store is None else r.to(store, non_blocking = True)
                     finally:
-                        residuals.clear()
-                        hook.remove()
+                        tap.remove()
+                        if hook is not None:
+                            hook.remove()
 
-                saliency = _Saliency(num_experts)
-                tap = _ExpertsTap(experts, saliency)
-                # Pass 2 recomputes the layer output, so pass 1 stops right after the experts
-                # (not under accelerate hooks, whose post-forward offload must run).
-                tap.stop = not any(hasattr(m, "_hf_hook") for m in layer.modules())
-                hook = None
-                if norm is not None:
-                    hook = norm.register_forward_pre_hook(
-                        lambda module, args: residuals.append(args[0])
-                    )
-                try:
-                    for b in range(len(batches)):
-                        tap.valid = valid_per_batch[b]
-                        try:
-                            run(b, hidden[b].to(layer_device, non_blocking = True))
-                        except _StopForward:
-                            pass
-                        if norm is not None:
-                            # The residual is all a verified layer needs later, so it replaces the input.
-                            r = residuals.pop()
-                            hidden[b] = r if store is None else r.to(store, non_blocking = True)
-                finally:
-                    tap.remove()
-                    if hook is not None:
-                        hook.remove()
+                    if saliency.total is None or not saliency.count.sum().item():
+                        raise RuntimeError(
+                            f"Unsloth: REAP saw no tokens reach {block_name}'s experts module; its MoE "
+                            "forward computes the experts itself, so REAP cannot score them."
+                        )
+                    scores = saliency.mean()
+                    saliencies[block_name] = scores.tolist()
+                    retained = _retained(scores, n_drop, n_drop_per_group, n_group)
+                    rebuilt_layers += norm is not None
+                    assert len(retained) == kept_count
+                    _prune_block(block, experts, router, retained, num_experts)
+                    report[block_name] = retained
 
-                if saliency.total is None or not saliency.count.sum().item():
-                    raise RuntimeError(
-                        f"Unsloth: REAP saw no tokens reach {block_name}'s experts module; its MoE "
-                        "forward computes the experts itself, so REAP cannot score them."
-                    )
-                scores = saliency.mean()
-                saliencies[block_name] = scores.tolist()
-                retained = _retained(scores, n_drop, n_drop_per_group, n_group)
-                rebuilt_layers += norm is not None
-                assert len(retained) == kept_count
-                _prune_block(block, experts, router, retained, num_experts)
-                report[block_name] = retained
-
-            for b in range(len(batches)):
-                h = hidden[b].to(layer_device, non_blocking = True)
-                if norm is not None:
-                    out = h + _hidden(block(norm(h))).reshape(h.shape)
-                else:
-                    out = run(b, h)
-                hidden[b] = out if store is None else out.to(store, non_blocking = True)
-            if moved:
-                layer.to("cpu")
+                for b in range(len(batches)):
+                    h = hidden[b].to(layer_device, non_blocking = True)
+                    if norm is not None:
+                        out = h + _hidden(block(norm(h))).reshape(h.shape)
+                    else:
+                        out = run(b, h)
+                    hidden[b] = out if store is None else out.to(store, non_blocking = True)
+            finally:
+                if moved:
+                    layer.to("cpu")
             print(
                 f"Unsloth: REAP layer {index + 1}/{len(layers)} done ({time.time() - start:.1f}s)."
             )
