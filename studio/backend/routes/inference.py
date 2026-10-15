@@ -3281,6 +3281,10 @@ async def _openai_llama_count_raw_holder_async(*, gen_id: str, **kwargs) -> None
         _plan_for_unpausable_holder(controller, gen_id, refresh = False)
     except Exception:
         logger.debug("could not count the raw holder", exc_info = True)
+    except BaseException:
+        # Cancelled mid-plan: its request never goes upstream, so nothing else drops the count.
+        controller.unregister(gen_id)
+        raise
 
 
 def _plan_for_unpausable_holder(
@@ -3496,8 +3500,13 @@ async def _openai_llama_preemption_arm_async(
     controller = _openai_llama_preemption_enrol(gen_id = gen_id, signal = signal, **kwargs)
     if controller is None:
         return None
-    await _refresh_residency_before_planning_async(controller)
-    return _openai_llama_preemption_plan(controller, gen_id = gen_id, signal = signal, loop = loop)
+    try:
+        await _refresh_residency_before_planning_async(controller)
+        return _openai_llama_preemption_plan(controller, gen_id = gen_id, signal = signal, loop = loop)
+    except BaseException:
+        # Cancelled mid-arm, the stream never starts, so no disarm would drop the enrolment.
+        controller.unregister(gen_id)
+        raise
 
 
 def _openai_llama_preemption_enrol(
@@ -33976,6 +33985,7 @@ async def produce_openai_chat_completions(
                 )
 
             _tool_admission_mode = "chat_tool_stream" if payload.stream else "chat_tool_nonstream"
+            reservation = None
             try:
                 reservation, admission_config = await _reserve_counted_gguf_chat(
                     messages = gguf_messages,
@@ -34028,6 +34038,13 @@ async def produce_openai_chat_completions(
                 )
                 api_monitor.fail(monitor_id, str(exc))
                 raise _openai_admission_http_exception(exc, status_code = 429)
+            except BaseException as exc:
+                # Cancelled while arming: no stream or drain exists yet to give the slot back.
+                if reservation is not None:
+                    reservation.cancel()
+                    if isinstance(exc, asyncio.CancelledError):
+                        api_monitor.finish(monitor_id, "cancelled")
+                raise
 
             _tool_sentinel = object()
             # True only once the sync generator returned on its own; see _gguf_decode_finished.
@@ -35494,6 +35511,26 @@ async def produce_openai_chat_completions(
                 )
 
             try:
+                # Before the arm: a cancel while it awaits reaches the handler that calls this.
+                drain_task = None
+
+                async def _drain_cancelled_gguf_task():
+                    if drain_task is None:
+                        return
+                    while not drain_task.done():
+                        try:
+                            await asyncio.shield(drain_task)
+                        except asyncio.CancelledError:
+                            cancel_event.set()
+                            continue
+                        except Exception:
+                            break
+                    if drain_task.done():
+                        try:
+                            drain_task.exception()
+                        except (asyncio.CancelledError, Exception):
+                            pass
+
                 # Probe BEFORE arming, as the streaming path does. Idempotent.
                 try:
                     get_preemption_controller(_preempt_key(llama_backend)).set_residency_probe(
@@ -35518,27 +35555,9 @@ async def produce_openai_chat_completions(
                         conversation = gguf_messages,
                     )
                 )
+
                 # ``n`` requests several independent completions; the single
                 # decode slot yields one at a time, so loop sequentially.
-                drain_task = None
-
-                async def _drain_cancelled_gguf_task():
-                    if drain_task is None:
-                        return
-                    while not drain_task.done():
-                        try:
-                            await asyncio.shield(drain_task)
-                        except asyncio.CancelledError:
-                            cancel_event.set()
-                            continue
-                        except Exception:
-                            break
-                    if drain_task.done():
-                        try:
-                            drain_task.exception()
-                        except (asyncio.CancelledError, Exception):
-                            pass
-
                 def _drain_gguf_choices():
                     _n = payload.n or 1
                     _choices = []
