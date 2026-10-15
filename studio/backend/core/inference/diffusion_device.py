@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -386,6 +387,12 @@ def resolve_selected_cuda_ordinal(
     return max(ordinals, key = lambda ordinal: (_free_vram(ordinal), -ordinal))
 
 
+_UNPLANNED = object()
+# Set by an auto-switch for its locality check and the load it starts (both copy this context), so free VRAM
+# moving in between cannot rank the load onto a card whose precision picks an artifact the check never saw.
+# A pinned None is a decision too (keep the current device), so the backend fallbacks honour it.
+_PLANNED_ORDINAL: ContextVar[Any] = ContextVar("media_planned_gpu_ordinal", default = _UNPLANNED)
+
 # Free-VRAM readings this close are noise, so the lower ordinal keeps an idle uniform host on card 0.
 _AUTO_FREE_TIE_BYTES = 256 * 1024**2
 
@@ -401,8 +408,13 @@ def resolve_auto_cuda_ordinal() -> Optional[int]:
 
     None on one visible card (unchanged), a UUID/MIG mask (no physical ids), ROCm (an APU's free reading is the
     shared host pool, which would outrank a discrete card), a CUDA order other than nvidia-smi's (its rows are
-    then not torch's ordinals), missing nvidia-smi telemetry and any failure. Never raises.
+    then not torch's ordinals), an integrated GPU (its rows are a carve-out or N/A, and its real budget is the
+    shared host pool), missing nvidia-smi telemetry and any failure. Never raises. An auto-switch's pinned plan
+    is returned as is.
     """
+    planned = _PLANNED_ORDINAL.get()
+    if planned is not _UNPLANNED:
+        return planned
     try:
         from utils.hardware import hardware as hw
 
@@ -410,6 +422,8 @@ def resolve_auto_cuda_ordinal() -> Optional[int]:
             return None
         visible = hw.get_parent_visible_gpu_ids()
         if len(visible) < 2 or not hw._cuda_order_matches_smi():
+            return None
+        if hw._integrated_cuda_rows(visible)[0]:
             return None
         result = hw._smi_visible_utilization(hw._get_parent_visible_gpu_spec())
         devices = (result or {}).get("devices", [])

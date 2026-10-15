@@ -17,11 +17,12 @@ anything short of proof.
 
 from __future__ import annotations
 
-from contextvars import ContextVar
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Optional
 
+# The auto-switch pin lives in diffusion_device, so every resolve_auto_cuda_ordinal caller sees it.
+from core.inference.diffusion_device import _PLANNED_ORDINAL, _UNPLANNED
 from core.inference.gpu_arbiter import DIFFUSION, VIDEO
 from core.inference.media_model_index import MediaModelPick
 from core.inference.media_switch_backends import backend_for
@@ -252,12 +253,6 @@ def planners_for(owner: str, pick: MediaModelPick) -> list:
     if predicted == ENGINE_SD_CPP and not native_binary_installed():
         names.append(ENGINE_DIFFUSERS)
     return [engine_for(name) for name in names]
-
-
-_UNPLANNED = object()
-# Set by an auto-switch for its locality check and the load it starts (both copy this context), so free VRAM
-# moving in between cannot rank the load onto a card whose precision picks an artifact the check never saw.
-_PLANNED_ORDINAL: ContextVar[Any] = ContextVar("media_planned_gpu_ordinal", default = _UNPLANNED)
 
 
 def pin_planned_gpu_ordinal(ordinal: Optional[int]) -> Any:

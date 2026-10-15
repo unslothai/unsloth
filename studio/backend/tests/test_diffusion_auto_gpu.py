@@ -26,6 +26,7 @@ def _host(monkeypatch, visible, devices, rocm = False, order_matches = True):
     monkeypatch.setattr(hw, "IS_ROCM", rocm)
     monkeypatch.setattr(hw, "get_parent_visible_gpu_ids", lambda: list(visible))
     monkeypatch.setattr(hw, "_cuda_order_matches_smi", lambda: order_matches)
+    monkeypatch.setattr(hw, "_integrated_cuda_rows", lambda ids: ({}, "index"))
     monkeypatch.setattr(hw, "_get_parent_visible_gpu_spec", lambda: {"numeric_ids": list(visible)})
     smi = {"available": True, "devices": devices}
     monkeypatch.setattr(hw, "_smi_visible_utilization", lambda spec: smi)
@@ -113,6 +114,28 @@ def test_route_auto_stays_off_cuda_and_while_ranking_is_barred(monkeypatch):
     assert asyncio.run(resolve(None)) is None
     resolve = _route(monkeypatch)
     assert asyncio.run(resolve(None, allow_ranking = False)) is None
+
+
+def test_auto_keeps_the_current_device_beside_an_integrated_gpu(monkeypatch):
+    # DGX Spark-class row: nvidia-smi says N/A (or a carve-out) for a part whose budget is host RAM.
+    _host(monkeypatch, [0, 1], [_dev(0, None, None), _dev(1, 24.0, 0.5)])
+    monkeypatch.setattr(
+        hw, "_integrated_cuda_rows", lambda ids: ({0: {"total_gb": 121.0}}, "index")
+    )
+    assert dd.resolve_auto_cuda_ordinal() is None
+
+
+def test_backend_fallback_honours_a_pinned_none(monkeypatch):
+    # The auto-switch planned "current device"; begin_load's own fallback must not re-rank.
+    from core.inference import media_locality
+
+    _host(monkeypatch, [0, 1], [_dev(0, 8.0, 1.0), _dev(1, 24.0, 0.5)])
+    token = media_locality.pin_planned_gpu_ordinal(None)
+    try:
+        assert dd.resolve_auto_cuda_ordinal() is None
+    finally:
+        media_locality._PLANNED_ORDINAL.reset(token)
+    assert dd.resolve_auto_cuda_ordinal() == 1
 
 
 def test_route_uses_the_ordinal_an_auto_switch_planned(monkeypatch):
