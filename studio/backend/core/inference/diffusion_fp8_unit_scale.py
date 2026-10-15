@@ -47,7 +47,6 @@ def _compiling() -> bool:
     # Counters are eager-only: a module-global mutated inside a traced region makes Dynamo guard on it and recompile.
     try:
         import torch
-
         return bool(torch.compiler.is_compiling())
     except Exception:  # noqa: BLE001 - no torch.compiler: nothing is being traced
         return False
