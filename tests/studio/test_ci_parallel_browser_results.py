@@ -4,6 +4,7 @@
 import json
 import os
 from pathlib import Path
+import shlex
 import shutil
 import signal
 import subprocess
@@ -89,6 +90,31 @@ CHECKS = [
 ]
 
 
+def _run_tree(
+    script,
+    cwd,
+    env,
+    timeout = 15,
+):
+    """subprocess.run for the step script, but a timeout kills every group and harness it started."""
+    process = subprocess.Popen(
+        [BASH, "-e", "-o", "pipefail", "-c", script],
+        cwd = cwd,
+        env = env,
+        stdout = subprocess.PIPE,
+        stderr = subprocess.PIPE,
+        text = True,
+        start_new_session = True,
+    )
+    try:
+        stdout, stderr = process.communicate(timeout = timeout)
+    except subprocess.TimeoutExpired:
+        os.killpg(process.pid, signal.SIGKILL)
+        process.communicate(timeout = 5)
+        raise
+    return subprocess.CompletedProcess(process.args, process.returncode, stdout, stderr)
+
+
 def _linux_stubs(tmp_path):
     stub = r"""
 import json
@@ -105,6 +131,7 @@ record = {"args": sys.argv[1:], "env": {key: value for key, value in os.environ.
           if key.startswith(("PW_", "VITE_"))}, "pid": os.getpid()}
 
 def cancel(signum, frame):
+    time.sleep(float(os.environ.get("TEARDOWN_S", "0")))     # a harness stopping its Vite server
     Path(f"{name}.stopped").touch()
     sys.exit(128 + signum)
 
@@ -124,8 +151,13 @@ with open("order.log", "a") as out:
 print(name)
 sys.exit(7 if name == os.environ.get("FAIL_CHECK") else 0)
 """
+    (tmp_path / "stub_python.py").write_text(stub, encoding = "utf-8")
     python = tmp_path / "python3"
-    python.write_text(f"#!{sys.executable}\n" + stub, encoding = "utf-8")
+    # a wrapper, not a `#!{sys.executable}` line: a shebang cannot carry an interpreter path with spaces
+    python.write_text(
+        f'#!/bin/bash\nexec {shlex.quote(sys.executable)} {shlex.quote(str(tmp_path / "stub_python.py"))} "$@"\n',
+        encoding = "utf-8",
+    )
     python.chmod(0o755)
     timeout = tmp_path / "timeout"
     timeout.write_text(
@@ -133,8 +165,15 @@ sys.exit(7 if name == os.environ.get("FAIL_CHECK") else 0)
         encoding = "utf-8",
     )
     timeout.chmod(0o755)
+    # smoke controls the workflow sets per check must not leak in from the calling shell
+    inherited = {
+        k: v
+        for k, v in os.environ.items()
+        if not k.startswith(("PW_", "VITE_"))
+        and k not in ("FAIL_CHECK", "CANCEL_TEST", "TEARDOWN_S")
+    }
     return {
-        **os.environ,
+        **inherited,
         "PATH": f"{tmp_path}{os.pathsep}{os.environ['PATH']}",
         "RUNNER_TEMP": str(tmp_path),
     }
@@ -149,14 +188,7 @@ def test_linux_groups_overlap_and_collect_every_result(tmp_path, failing):
         for record in tmp_path.glob("*.json"):
             record.unlink()
         (tmp_path / "order.log").unlink(missing_ok = True)
-        result = subprocess.run(
-            [BASH, "-e", "-o", "pipefail", "-c", _linux_script()],
-            cwd = tmp_path,
-            env = env,
-            text = True,
-            capture_output = True,
-            timeout = 15,
-        )
+        result = _run_tree(_linux_script(), tmp_path, env)
         assert result.returncode == bool(failing), result.stdout + result.stderr
         # a failing check is named in an annotation, not only inside its group's log
         label = failing.removesuffix("_smoke")
@@ -182,7 +214,7 @@ def test_linux_groups_overlap_and_collect_every_result(tmp_path, failing):
         assert records["strip_ansi_smoke"]["env"]["PW_BROWSER"] == "chromium"
         assert records["composer_icons"]["args"][-1] == "chromium"
         assert (tmp_path / "timeout.args").read_text().strip() == (
-            "--kill-after=10s 180s python3 tests/studio/playwright_composer_icons.py chromium"
+            "--kill-after=30s 180s python3 tests/studio/playwright_composer_icons.py chromium"
         )
         assert (tmp_path / "logs/playwright-frontend-data.log").is_file()
         assert (tmp_path / "logs/playwright-frontend-controls.log").is_file()
@@ -232,13 +264,58 @@ def test_linux_cancel_stops_both_active_harnesses(tmp_path):
                 pass
 
 
-def test_linux_groups_step_times_out_before_the_job():
-    """A job timeout is a cancellation, which skips the failure-only artifact upload; the step's
-    own bound fires first, so a hung check fails the step and its logs are uploaded."""
+def test_linux_groups_step_bound_leaves_the_job_room_for_setup():
+    """A job timeout is a cancellation, which skips the failure-only artifact upload. The step's
+    own bound is the smaller one, with at least 20 minutes of the job left for the steps before it,
+    so a hung check fails the step (and its logs are uploaded) unless setup alone ran that long."""
     job = yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))["jobs"]["build"]
     step = next(
         s
         for s in job["steps"]
         if s.get("name") == "Browser smoke groups for data settings and frontend controls"
     )
-    assert 0 < step["timeout-minutes"] < job["timeout-minutes"]
+    assert 0 < step["timeout-minutes"] and step["timeout-minutes"] + 20 <= job["timeout-minutes"]
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "Linux cancellation uses POSIX signals")
+def test_linux_cancel_keeps_the_logs_through_a_second_signal(tmp_path):
+    """The runner cancels with SIGINT, then SIGTERM about 7.5 s later. A harness still stopping its
+    server when the TERM lands must not cost the replay of both groups' logs, nor be orphaned."""
+    env = {**_linux_stubs(tmp_path), "CANCEL_TEST": "1", "TEARDOWN_S": "2"}
+    process = subprocess.Popen(
+        [BASH, "-e", "-o", "pipefail", "-c", _linux_script()],
+        cwd = tmp_path,
+        env = env,
+        stdout = subprocess.PIPE,
+        stderr = subprocess.PIPE,
+        text = True,
+        start_new_session = True,
+    )
+    records = []
+    try:
+        deadline = time.monotonic() + 10
+        while not all((tmp_path / f"{name}.json").exists() for name in CHECKS[:2]):
+            assert process.poll() is None
+            assert time.monotonic() < deadline
+            time.sleep(0.02)
+        records = [json.loads((tmp_path / f"{name}.json").read_text()) for name in CHECKS[:2]]
+        process.send_signal(signal.SIGINT)
+        time.sleep(0.5)
+        process.send_signal(signal.SIGTERM)
+        stdout, stderr = process.communicate(timeout = 15)
+        assert "::group::data_settings" in stdout and "::group::settings_tabs" in stdout, (
+            stdout + stderr
+        )
+        for name, record in zip(CHECKS[:2], records):
+            assert (tmp_path / f"{name}.stopped").exists(), name  # teardown finished, not cut off
+            with pytest.raises(ProcessLookupError):
+                os.kill(record["pid"], 0)
+    finally:
+        if process.poll() is None:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.communicate(timeout = 5)
+        for record in records:
+            try:
+                os.kill(record["pid"], signal.SIGKILL)
+            except ProcessLookupError:
+                pass

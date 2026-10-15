@@ -248,6 +248,15 @@ def __getattr__(name):
         _zoo_speculative()
         from unsloth_zoo.speculative import trainer
         return getattr(trainer, name)
+    if name in ("UnslothEagle3Trainer", "Eagle3TrainingArguments"):
+        speculative = _zoo_speculative()
+        try:
+            return getattr(speculative, name)
+        except AttributeError as error:
+            raise ImportError(
+                "Unsloth: EAGLE-3 drafter training needs a newer unsloth_zoo. "
+                "Update via `pip install --upgrade --no-cache-dir unsloth_zoo`."
+            ) from error
     if name in ("UnslothDSparkTrainer", "DSparkTrainingArguments", "Qwen3DSparkDrafter"):
         _zoo_speculative()
         from unsloth_zoo.speculative import dspark
