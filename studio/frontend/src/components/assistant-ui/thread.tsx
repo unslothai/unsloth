@@ -6597,6 +6597,7 @@ const ComposerToolsMenu: FC<{
   const mcpDisabled = modelLoaded && !supportsTools;
   const researchDisabled =
     !researchAvailable ||
+    (modelLoaded && !externalSelection && !supportsTools) ||
     (Boolean(externalSelection) &&
       providerModelSupportsStudioTools(
         selectedExternalProvider?.providerType,

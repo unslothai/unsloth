@@ -610,6 +610,7 @@ function NavItem({
   onIntent,
   badge,
   overlay,
+  flyout,
   testId,
 }: {
   icon: typeof ZapIcon;
@@ -628,40 +629,45 @@ function NavItem({
   alwaysTooltip?: boolean;
   badge?: string;
   overlay?: ReactNode;
+  // Wraps the row in a hover flyout that names it, so the label tooltip is dropped.
+  flyout?: (row: ReactNode) => ReactNode;
 }) {
+  const row = (
+    <div className="relative">
+      <SidebarMenuButton
+        tooltip={flyout ? undefined : (tooltip ?? label)}
+        alwaysTooltip={alwaysTooltip && Boolean(tooltip)}
+        disabled={disabled}
+        onClick={onClick}
+        onPointerEnter={disabled ? undefined : onIntent}
+        onFocus={disabled ? undefined : onIntent}
+        isActive={active}
+        data-tour={dataTour}
+        data-testid={testId}
+        data-spinner={spinner ? "true" : undefined}
+        className="sidebar-nav-btn h-[calc(33px*var(--ui-space-scale,1))] rounded-full gap-[calc(8.5px*var(--ui-space-scale,1))] pl-3 pr-2.5 font-medium group-data-[collapsible=icon]:!p-0 group-data-[collapsible=icon]:!size-[calc(28px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:my-[calc(2.5px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:mx-auto"
+      >
+        <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-icon! shrink-0 translate-x-0.5 group-data-[collapsible=icon]:translate-x-0 group-hover/menu-button:animate-icon-pop" />
+        <span className="text-ui-14p5 leading-ui-19 tracking-nav">{label}</span>
+        {badge && (
+          <Badge variant="secondary" className="group-data-[collapsible=icon]:hidden">
+            {badge}
+          </Badge>
+        )}
+        {spinner && (
+          // mr-1.5 plus the row's pr-2.5 makes 16px, matching the chat row spinner column.
+          <Spinner className="ml-auto mr-1.5 size-3.5 shrink-0 text-muted-foreground group-data-[collapsible=icon]:hidden" />
+        )}
+      </SidebarMenuButton>
+      {spinner && (
+        <Spinner className="pointer-events-none absolute right-1 top-1 hidden size-2.5 text-muted-foreground group-data-[collapsible=icon]:block" />
+      )}
+      {overlay}
+    </div>
+  );
   return (
     <SidebarMenuItem className={className}>
-      <div className="relative">
-        <SidebarMenuButton
-          tooltip={tooltip ?? label}
-          alwaysTooltip={alwaysTooltip && Boolean(tooltip)}
-          disabled={disabled}
-          onClick={onClick}
-          onPointerEnter={disabled ? undefined : onIntent}
-          onFocus={disabled ? undefined : onIntent}
-          isActive={active}
-          data-tour={dataTour}
-          data-testid={testId}
-          data-spinner={spinner ? "true" : undefined}
-          className="sidebar-nav-btn h-[calc(33px*var(--ui-space-scale,1))] rounded-full gap-[calc(8.5px*var(--ui-space-scale,1))] pl-3 pr-2.5 font-medium group-data-[collapsible=icon]:!p-0 group-data-[collapsible=icon]:!size-[calc(28px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:my-[calc(2.5px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:mx-auto"
-        >
-          <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-icon! shrink-0 translate-x-0.5 group-data-[collapsible=icon]:translate-x-0 group-hover/menu-button:animate-icon-pop" />
-          <span className="text-ui-14p5 leading-ui-19 tracking-nav">{label}</span>
-          {badge && (
-            <Badge variant="secondary" className="group-data-[collapsible=icon]:hidden">
-              {badge}
-            </Badge>
-          )}
-          {spinner && (
-            // mr-1.5 plus the row's pr-2.5 makes 16px, matching the chat row spinner column.
-            <Spinner className="ml-auto mr-1.5 size-3.5 shrink-0 text-muted-foreground group-data-[collapsible=icon]:hidden" />
-          )}
-        </SidebarMenuButton>
-        {spinner && (
-          <Spinner className="pointer-events-none absolute right-1 top-1 hidden size-2.5 text-muted-foreground group-data-[collapsible=icon]:block" />
-        )}
-        {overlay}
-      </div>
+      {flyout ? flyout(row) : row}
       {children}
     </SidebarMenuItem>
   );
@@ -1019,6 +1025,155 @@ function AudioMoreSubmenu(props: MediaMoreSubmenuProps<AudioWorkflowId>) {
   const current = props.active ? (requested ?? workflow) : null;
   return (
     <MediaMoreSubmenu
+      {...props}
+      tabs={AUDIO_WORKFLOWS}
+      current={current}
+      enabled={audioWorkflowAlwaysEnabled}
+    />
+  );
+}
+
+/** The collapsed rail hides the Images / Audio workflow rows, so the icon opens them as a flyout. */
+function MediaRailFlyout<Id extends string>({
+  label,
+  tabs,
+  current,
+  enabled,
+  onPick,
+  children,
+}: {
+  label: string;
+  tabs: ReadonlyArray<{ id: Id; icon: IconSvgElement; label: string }>;
+  current: Id | null;
+  enabled: (id: Id) => boolean;
+  onPick: (id: Id) => void;
+  children: ReactNode;
+}) {
+  const rowRef = useRef<HTMLDivElement | null>(null);
+  const contentRef = useRef<HTMLDivElement | null>(null);
+  const hover = useHoverFlyout(NAV_FLYOUT_INTENT, contentRef);
+  const { dismiss } = hover;
+  const [keyboardOpen, setKeyboardOpen] = useState(false);
+  const open = hover.open || keyboardOpen;
+  // Read on close, after the state above has already been cleared.
+  const returnFocus = useRef(false);
+  const setOpen = useCallback(
+    (next: boolean) => {
+      dismiss();
+      if (!next) setKeyboardOpen(false);
+    },
+    [dismiss],
+  );
+  const insideRow = (target: EventTarget | null) =>
+    target instanceof Node && Boolean(rowRef.current?.contains(target));
+  // Radix forwards onOpenAutoFocus at runtime but omits it from DropdownMenuContent's types.
+  const focusProps = {
+    onOpenAutoFocus: (event: Event) => {
+      // A hover preview must not pull focus off whatever the user is typing in.
+      if (!keyboardOpen) event.preventDefault();
+    },
+  } as Record<string, unknown>;
+  return (
+    <DropdownMenu open={open} onOpenChange={setOpen} modal={false}>
+      <div
+        ref={rowRef}
+        className="relative"
+        {...hover.trigger}
+        onKeyDown={(event) => {
+          if (event.key !== "ArrowRight") return;
+          event.preventDefault();
+          returnFocus.current = true;
+          setKeyboardOpen(true);
+          // An open hover preview never mounts again, so its open autofocus will not run.
+          if (hover.open) {
+            contentRef.current
+              ?.querySelector<HTMLElement>('[role="menuitem"]:not([data-disabled])')
+              ?.focus({ preventScroll: true });
+          }
+        }}
+      >
+        {children}
+        {/* Positions the menu over the icon; the icon's button keeps every press. */}
+        <DropdownMenuTrigger asChild>
+          <span
+            aria-hidden
+            tabIndex={-1}
+            className="pointer-events-none absolute inset-0"
+          />
+        </DropdownMenuTrigger>
+      </div>
+      <DropdownMenuContent
+        ref={contentRef}
+        side="right"
+        align="start"
+        sideOffset={6}
+        className="sidebar-more-menu w-44 p-1"
+        {...hover.content}
+        {...focusProps}
+        // A press elsewhere keeps its own focus; one on the icon keeps the menu open.
+        onPointerDownOutside={(event) => {
+          if (insideRow(event.target)) event.preventDefault();
+          else returnFocus.current = false;
+        }}
+        onFocusOutside={(event) => {
+          if (insideRow(event.target)) event.preventDefault();
+          else returnFocus.current = false;
+        }}
+        onCloseAutoFocus={(event) => {
+          event.preventDefault();
+          if (!returnFocus.current) return;
+          returnFocus.current = false;
+          rowRef.current
+            ?.querySelector<HTMLElement>('[data-sidebar="menu-button"]')
+            ?.focus({ preventScroll: true });
+        }}
+      >
+        <DropdownMenuLabel className="px-2 py-1.5">{label}</DropdownMenuLabel>
+        {tabs.map((tab) => (
+          <DropdownMenuItem
+            key={tab.id}
+            disabled={!enabled(tab.id)}
+            title={enabled(tab.id) ? undefined : WORKFLOW_UNAVAILABLE}
+            onSelect={() => onPick(tab.id)}
+            className={cn(current === tab.id && "bg-accent/60")}
+          >
+            <HugeiconsIcon icon={tab.icon} strokeWidth={1.75} />
+            <span className="min-w-0 flex-1 truncate">{tab.label}</span>
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+type RailFlyoutProps<Id extends string> = {
+  label: string;
+  active: boolean;
+  onPick: (id: Id) => void;
+  children: ReactNode;
+};
+
+function ImagesRailFlyout(props: RailFlyoutProps<WorkflowId>) {
+  const workflow = useImageWorkflowStore((s) => s.workflow);
+  const supported = useImageWorkflowStore((s) => s.supported);
+  const pageMode = useImageWorkflowStore((s) => s.pageMode);
+  const current = props.active && pageMode === "create" ? workflow : null;
+  return (
+    <MediaRailFlyout
+      {...props}
+      tabs={WORKFLOW_TABS}
+      current={current}
+      enabled={(id) => isWorkflowEnabled(id, supported)}
+    />
+  );
+}
+
+function AudioRailFlyout(props: RailFlyoutProps<AudioWorkflowId>) {
+  const workflow = useAudioWorkspaceStore((s) => s.workflow);
+  const requested = useAudioWorkspaceStore((s) => s.requestedWorkflow);
+  const current = props.active ? (requested ?? workflow) : null;
+  return (
+    <MediaRailFlyout
       {...props}
       tabs={AUDIO_WORKFLOWS}
       current={current}
@@ -5666,6 +5821,34 @@ export function AppSidebar() {
                       id === "images" && "group/images-item",
                       id === "audio" && "group/audio-item",
                     )}
+                    flyout={
+                      sidebarRowsLabelled ||
+                      rowState.disabled ||
+                      rowState.pending
+                        ? undefined
+                        : id === "images"
+                          ? (navRow) => (
+                              <ImagesRailFlyout
+                                label={row.label}
+                                active={row.active}
+                                onPick={pickImagesWorkflow}
+                              >
+                                {navRow}
+                              </ImagesRailFlyout>
+                            )
+                          : id === "audio"
+                            ? (navRow) => (
+                                <AudioRailFlyout
+                                  label={row.label}
+                                  active={row.active}
+                                  onPick={pickAudioWorkflow}
+                                >
+                                  {navRow}
+                                </AudioRailFlyout>
+                              )
+                            : undefined
+                    }
+                    // Off the Images page the list is folded, so the row offers a way to open it.
                     overlay={
                       id === "images" &&
                       !row.active &&

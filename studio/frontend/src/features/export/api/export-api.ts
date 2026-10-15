@@ -154,6 +154,9 @@ export async function loadCheckpoint(params: {
   checkpoint_path: string;
   max_seq_length?: number;
   load_in_4bit?: boolean;
+  /** Decoder layers in host RAM for low-VRAM export; "auto" (default) or a fixed count. */
+  offload_layers?: number | "auto";
+  /** Allow loading models with custom code. Only enable for checkpoints you trust. */
   trust_remote_code?: boolean;
   approved_remote_code_fingerprint?: string | null;
   hf_token?: string | null;

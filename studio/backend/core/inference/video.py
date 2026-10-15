@@ -4010,7 +4010,8 @@ class VideoBackend:
             listed_accelerator = accelerator_verdict_keeps_gpu(accelerator_verdict)
             if not accelerator_verdict:
                 fallback = fallback_accelerator_for(accelerator)
-                if fallback:
+                # The CPU rung is the branch below, which also releases the GPU placement.
+                if fallback and fallback != "cpu":
                     # Before the fallback ensure replaces the tree and its bundle tag.
                     failed_fingerprint = _accelerator_fingerprint(binary)
                     fallback_binary = usable_or_recorded_failure(

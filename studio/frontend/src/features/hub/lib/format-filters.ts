@@ -96,23 +96,6 @@ export function matchesRecommended(
   return format !== null && checkpointQuantFormats.includes(format);
 }
 
-/** Hub tags for a listing whose format filter only shows GGUF rows, else undefined. */
-export function listingTagsForFormat(
-  formatFilter: FormatFilterValue,
-  checkpointQuantFormats: readonly string[],
-): readonly string[] | undefined {
-  return formatFilter === "gguf" ||
-    (formatFilter === "recommended" && checkpointQuantFormats.length === 0)
-    ? GGUF_LISTING_TAGS
-    : undefined;
-}
-const GGUF_LISTING_TAGS: readonly string[] = ["gguf"];
-
-/** Recommended's likes floor needs a popularity sort: under Newest no fresh upload has likes yet. */
-export function recommendedNeedsLikes(sort: string): boolean {
-  return sort !== "createdAt" && sort !== "lastModified";
-}
-
 // Inference-only quant formats Unsloth cannot fine-tune. Matched on the repo
 // name since the search listing often omits the quant config.
 const NON_FINETUNABLE_NAME =

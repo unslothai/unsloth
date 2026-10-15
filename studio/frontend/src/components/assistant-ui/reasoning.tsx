@@ -32,6 +32,7 @@ import {
   clearReasoningRound,
   foldIsActive,
   reasoningTailCapped,
+  reasoningTailFlexBox,
   resolveReasoningGroupDuration,
   resolveReasoningOpen,
   setReasoningRoundOpen,
@@ -502,6 +503,15 @@ function ReasoningBody({
   );
 }
 
+function useTailFlexBox(capped: boolean, streaming: boolean): boolean {
+  const [flexBox, setFlexBox] = useState(capped);
+  const next = reasoningTailFlexBox({ capped, streaming, previous: flexBox });
+  if (next !== flexBox) {
+    setFlexBox(next);
+  }
+  return next;
+}
+
 // A fixed box (#11703): the newest lines while streaming, the start once finished. Clipped, not an inner
 // scroller, which split the reading anchor across two containers (#11704).
 function ReasoningTail({
@@ -537,6 +547,7 @@ function ReasoningTail({
     return () => observer.disconnect();
   }, [cappable, capped]);
   const clipped = capped && overflowing;
+  const flexBox = useTailFlexBox(capped, streaming);
   return (
     <>
       <div
@@ -555,9 +566,12 @@ function ReasoningTail({
             onExpandedChange(true);
         }}
         className={cn(
+          // The child rule stays on too: it is inert outside a flex box and toggling it restyles every row.
+          cappable && "[&>*]:shrink-0",
+          cappable && flexBox && "flex flex-col",
           // A mask paints only inside its box: bleed into the side padding so list markers survive.
           capped &&
-            "-mx-[calc(1.25rem*var(--ui-space-scale,1))] flex min-w-0 max-h-[min(18rem,40vh)] flex-col overflow-hidden px-[calc(1.25rem*var(--ui-space-scale,1))] supports-[overflow:clip]:overflow-x-visible supports-[overflow:clip]:overflow-y-clip [&>*]:shrink-0",
+            "-mx-[calc(1.25rem*var(--ui-space-scale,1))] min-w-0 max-h-[min(18rem,40vh)] overflow-hidden px-[calc(1.25rem*var(--ui-space-scale,1))] supports-[overflow:clip]:overflow-x-visible supports-[overflow:clip]:overflow-y-clip",
           capped && (streaming ? "justify-end" : "justify-start"),
           clipped &&
             (streaming

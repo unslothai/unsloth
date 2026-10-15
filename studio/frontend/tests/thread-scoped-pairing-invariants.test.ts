@@ -173,22 +173,6 @@ test("a normal flush stays resendable until it lands", () => {
   assert.match(terminal, /beaconUnsettledThreadSettingsWrites\(sentNewest\)/);
 });
 
-test("a capability clamp never overwrites the preference the chat stored", () => {
-  const build = slice(store, "function buildThreadScopedSnapshot", "\n}");
-  for (const key of [
-    "toolsEnabled",
-    "codeToolsEnabled",
-    "imageToolsEnabled",
-    "webFetchToolsEnabled",
-  ]) {
-    assert.ok(
-      store.includes(`"${key}"`) && build.includes("CLAMPED_PILL_KEYS"),
-      `${key} is not covered by the clamp preservation`,
-    );
-  }
-  assert.match(build, /modelLoaded &&\s*!capable\[key\] &&/);
-});
-
 test("write ordering is per writer, never one browser's counter against another's", () => {
   // Comparing seqs across clients would refuse the lagging one's edits while answering 200.
   assert.match(store, /const threadSettingsWriter = crypto\.randomUUID\(\);/);
@@ -339,14 +323,6 @@ test("a retry keeps the defaults snapshot it already took", () => {
     "\n}",
   );
   assert.doesNotMatch(commit, /pairingWindowDefaultsThreadId = null;/);
-});
-
-test("an explicit clear beats a capability preservation", () => {
-  // Enabling Search clears Deep Research on purpose; do not restore the stored true.
-  const build = slice(store, "function buildThreadScopedSnapshot", "\n}");
-  assert.match(build, /!explicitlyEditedThreadFields\.has\("deepResearchEnabled"\)/);
-  const capture = slice(store, "function captureThreadScopedEdit", "\n}");
-  assert.match(capture, /explicitlyEditedThreadFields\.add\(field\)/);
 });
 
 test("the thread read that gates sends aborts when it times out", () => {

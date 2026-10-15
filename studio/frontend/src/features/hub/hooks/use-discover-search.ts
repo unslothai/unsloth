@@ -103,7 +103,6 @@ export function useDiscoverSearch({
   direction,
   channel,
   ownerScope,
-  listingTags,
   filters,
   task,
 }: {
@@ -115,7 +114,6 @@ export function useDiscoverSearch({
   direction: HfSortDirection;
   channel: HfModelSearchChannel | null;
   ownerScope: "unsloth" | "all";
-  listingTags?: readonly string[];
   filters?: ModelSearchFilters;
   task?: HfTaskFilter;
 }): DiscoverSearch {
@@ -135,8 +133,6 @@ export function useDiscoverSearch({
     ownerScope,
     enabled: canProbe && isDiscoverTab && !isDatasetMode,
     keepUnsupportedTags: true,
-    unslothFirstBrowse: true,
-    listingTags,
     channel,
     filters,
     task,

@@ -4,9 +4,9 @@
 import { useEffect, useState } from "react";
 import { formatBytes } from "@/features/hub/lib/format";
 import { fetchDeleteImpact, type DeleteImpact } from "../inventory";
+import { useHfTokenStore } from "../stores/hf-token-store";
 
-/** Image GGUFs share a large companion base repo, so show what a delete actually frees.
- *  Null until loaded or on failure, so the dialog opens either way. */
+/** preview reclaimed and shared companion bytes; return `null` so confirmation stays available. */
 export function useDeleteImpact(
   open: boolean,
   repoId: string,
@@ -14,19 +14,25 @@ export function useDeleteImpact(
   cachePath?: string | null,
 ): DeleteImpact | null {
   const [impact, setImpact] = useState<DeleteImpact | null>(null);
+  const hfToken = useHfTokenStore((state) => state.token);
   useEffect(() => {
     if (!open) {
       setImpact(null);
       return;
     }
     let cancelled = false;
-    void fetchDeleteImpact(repoId, variant ?? undefined, cachePath ?? undefined).then((result) => {
+    void fetchDeleteImpact(
+      repoId,
+      variant ?? undefined,
+      cachePath ?? undefined,
+      hfToken || undefined,
+    ).then((result) => {
       if (!cancelled) setImpact(result);
     });
     return () => {
       cancelled = true;
     };
-  }, [open, repoId, variant, cachePath]);
+  }, [open, repoId, variant, cachePath, hfToken]);
   return impact;
 }
 
@@ -35,7 +41,7 @@ function joinNames(names: string[]): string {
   return `${names.slice(0, 2).join(", ")} and ${names.length - 2} more`;
 }
 
-/** States the retained size even when large; says nothing if the preview failed. */
+/** report reclaimed and retained bytes, but render nothing when the preview is unavailable. */
 export function DeleteImpactSummary({ impact }: { impact: DeleteImpact | null }) {
   if (!impact) return null;
   if (impact.blocked_by.length > 0) {

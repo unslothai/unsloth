@@ -30,6 +30,9 @@ export interface SettingsPanelPrefsState {
   setApiExampleLang: (lang: string) => void;
   setApiExampleOs: (os: ExampleOs) => void;
   setApiExampleAgent: (agent: string | null) => void;
+  // the Audio API card's tab (speak, clone, transcribe, workflows).
+  apiAudioExample: string | null;
+  setApiAudioExample: (tab: string) => void;
 
   // null mcpOs follows the detected device type.
   mcpAgent: string | null;
@@ -91,6 +94,7 @@ function sanitize(
         ? (raw.apiExampleOs as ExampleOs)
         : null,
     apiExampleAgent: text(raw.apiExampleAgent),
+    apiAudioExample: text(raw.apiAudioExample),
     mcpAgent: text(raw.mcpAgent),
     mcpOs: EXAMPLE_OS_VALUES.find((os) => os === raw.mcpOs) ?? null,
     resourcesLiveUpdates:
@@ -123,6 +127,8 @@ export const useSettingsPanelPrefsStore = create<SettingsPanelPrefsState>()(
       setApiExampleLang: (apiExampleLang) => set({ apiExampleLang }),
       setApiExampleOs: (apiExampleOs) => set({ apiExampleOs }),
       setApiExampleAgent: (apiExampleAgent) => set({ apiExampleAgent }),
+      apiAudioExample: null,
+      setApiAudioExample: (apiAudioExample) => set({ apiAudioExample }),
 
       mcpAgent: null,
       mcpOs: null,

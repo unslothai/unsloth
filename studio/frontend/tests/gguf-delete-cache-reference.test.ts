@@ -74,14 +74,21 @@ test("the delete preview accepts the copy so it measures that one", () => {
   );
   const body = fn.slice(0, fn.indexOf("\n}"));
   assert.match(body, /cachePath\?: string \| null,/, "the preview must accept a copy");
+  assert.match(body, /hfToken\?: string \| null,/, "the preview must accept the request token");
   assert.ok(
     body.includes("cachePath ? { cache_path: cachePath } : {}"),
     "the preview must send the copy it was given",
   );
   assert.ok(
+    body.includes("...hubTokenHeader(hfToken)"),
+    "the preview must authenticate the same private or gated request as deletion",
+  );
+  assert.ok(
     impact.text.includes("cachePath?: string | null,") &&
-      impact.text.includes("fetchDeleteImpact(repoId, variant ?? undefined, cachePath ?? undefined)"),
-    "the hook must forward the copy and refetch when it changes",
+      impact.text.includes("useHfTokenStore((state) => state.token)") &&
+      impact.text.includes("hfToken || undefined,") &&
+      impact.text.includes("[open, repoId, variant, cachePath, hfToken]"),
+    "the hook must forward the copy and token and refetch when either changes",
   );
   const menu = readSource("../src/features/model-picker/components/model-selector/model-row-menu.tsx");
   assert.match(

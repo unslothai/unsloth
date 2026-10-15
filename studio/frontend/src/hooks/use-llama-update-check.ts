@@ -3,6 +3,7 @@
 
 import { authFetch, getAuthToken } from "@/features/auth";
 import { refreshHardwareInfo } from "@/hooks/use-hardware-info";
+import { notifyModelLifecycle } from "@/lib/model-lifecycle-events";
 import {
   signalRunningLlamaJob,
   subscribeToLlamaJobStarted,
@@ -51,7 +52,7 @@ export interface LlamaUpdateStatus {
   // and the card lists every one the notification settings allow.
   llama: ComponentOffer;
   whisper: ComponentOffer | null;
-  // The release this Studio pins, when the managed audio.cpp runtime is another one.
+  // The newest audio.cpp release, when the managed runtime is behind it.
   audio: ComponentOffer | null;
   installed_tag: string | null;
   latest_tag: string | null;
@@ -452,6 +453,23 @@ export function useLlamaUpdateCheck({
     [],
   );
 
+  // The update stops a loaded dictation sidecar and may swap the audio.cpp runtime without asking for a
+  // reload, so the Audio page re-reads STT and runtime status once per finished job, whichever path saw it.
+  const settledNotifiedForRef = useRef<string | null>(null);
+  const notifySettledOnce = useCallback(
+    (job: Pick<LlamaUpdateJob, "state" | "finished_at">) => {
+      if (
+        (job.state === "success" || job.state === "error") &&
+        job.finished_at !== settledNotifiedForRef.current
+      ) {
+        settledNotifiedForRef.current = job.finished_at;
+        notifyModelLifecycle({ runtime: "stt", loading: false, model: null });
+      }
+    },
+    [],
+  );
+
+  // Used by apply() and another-tab job tracking.
   const startJobPoll = useCallback(
     (onDone?: (result: LlamaApplyResult) => void) => {
       clearPollTimer();
@@ -463,6 +481,7 @@ export function useLlamaUpdateCheck({
         const presentation = commitStatus(s);
         if (presentation.running) return;
         clearPollTimer();
+        notifySettledOnce(s.job);
         if (s.job.state === "success") {
           void refreshHardwareInfo();
           // Fires here, not only in apply's onDone, so cross-tab updates are covered.
@@ -483,7 +502,13 @@ export function useLlamaUpdateCheck({
       }, JOB_POLL_INTERVAL_MS);
       pollTimer.current = timer;
     },
-    [clearPollTimer, readStatus, commitStatus, notifyReloadIfNeeded],
+    [
+      clearPollTimer,
+      readStatus,
+      commitStatus,
+      notifyReloadIfNeeded,
+      notifySettledOnce,
+    ],
   );
 
   const surfaceIfAvailable = useCallback(
@@ -496,8 +521,9 @@ export function useLlamaUpdateCheck({
       }
       // A tab that missed the running window still needs to resync.
       notifyReloadIfNeeded(next.job);
+      notifySettledOnce(next.job);
     },
-    [commitStatus, startJobPoll, notifyReloadIfNeeded],
+    [commitStatus, startJobPoll, notifyReloadIfNeeded, notifySettledOnce],
   );
   useEffect(() => {
     surfaceRef.current = surfaceIfAvailable;

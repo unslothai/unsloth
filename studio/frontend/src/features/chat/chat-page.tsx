@@ -260,6 +260,7 @@ import {
   takeEffortDisplacedByPin,
   threadScopedOverride,
   resolvePreserveThinkingOnLoad,
+  resolveToolsEnabledOnLoad,
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
 import { wantsDownloadManagerStaging } from "./utils/model-download-staging";
@@ -3131,6 +3132,8 @@ export function ChatPage({
         supports_preserve_thinking: providerSupportsPreserveThinking(provider?.providerType),
       }),
       supportsTools: supportsStudioToolsHere,
+      deepResearchEnabled: resolveToolsEnabledOnLoad(supportsStudioToolsHere)
+        .deepResearchEnabled,
       supportsBuiltinWebSearch,
       supportsBuiltinCodeExecution,
       supportsBuiltinImageGeneration,

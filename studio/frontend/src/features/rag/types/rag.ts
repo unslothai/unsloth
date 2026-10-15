@@ -152,6 +152,23 @@ export interface FolderSyncJob {
   error?: string | null;
 }
 
+export interface ReembedJob {
+  id: string;
+  status: Exclude<JobStatus, "pending">;
+  done: number;
+  failed: number;
+  remaining: number;
+  clippedChunks: number;
+  progress: number;
+  error: string | null;
+}
+
+export interface ReembedStatus {
+  staleDocuments: number;
+  staleArchived: number;
+  job: ReembedJob | null;
+}
+
 /** Missing counts (older backends) count as a change. */
 export function jobChangedSources(job: FolderSyncJob): boolean {
   if (

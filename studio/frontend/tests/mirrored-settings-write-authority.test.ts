@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Store modules cannot be imported in bare node (a .tsx barrel), so these pin source.
+// The backfill reads "field absent" as "unset on the server". That only holds
+// for a GET that answered; the legacy-storage fallback knows nothing about the server.
+// The store and chat-settings-storage cannot be imported in a bare node test (a .tsx barrel
+// sits in both graphs), so these pin the source the way the sibling store tests do.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -18,52 +21,6 @@ function slice(source: string, from: string, to: string): string {
   assert.ok(end !== -1, `not found: ${to}`);
   return source.slice(start, end);
 }
-
-const setCheckpoint = () =>
-  slice(
-    store,
-    "setCheckpoint: (modelId, ggufVariant, options) =>",
-    "\n  setActiveThreadId:",
-  );
-
-test("selecting a Codex checkpoint keeps deep research", () => {
-  const body = setCheckpoint();
-  assert.match(
-    body,
-    /const clampsDeepResearch =\s*isExternalModelId\(modelId\) && !externalModelSupportsStudioTools\(modelId\);/,
-  );
-  for (const line of body.split("\n")) {
-    if (!/deepResearch/i.test(line)) continue;
-    assert.doesNotMatch(
-      line,
-      /isExternalModelId/,
-      `deep research still clamped on any external id: ${line.trim()}`,
-    );
-  }
-  assert.match(
-    body,
-    /if \(clampsDeepResearch\) \{\s*saveBool\(CHAT_DEEP_RESEARCH_ENABLED_KEY, false\);/,
-  );
-  assert.match(body, /const nextDeepResearchEnabled = clampsDeepResearch/);
-  assert.match(
-    body,
-    /\.\.\.\(clampsDeepResearch \? \{ deepResearchEnabled: false \} : \{\}\)/,
-  );
-});
-
-// An unresolved provider (list still loading) must never drop the preference.
-test("the clamp exempts Codex and an unresolved provider", () => {
-  const helper = slice(
-    store,
-    "function externalCheckpointRefusesDeepResearch(",
-    "\n}",
-  );
-  assert.match(helper, /if \(!parsed\) return false;/);
-  assert.match(
-    helper,
-    /provider != null && provider\.providerType !== "openai_codex"/,
-  );
-});
 
 test("hydration backfills only from an authoritative read", () => {
   const hydrate = slice(

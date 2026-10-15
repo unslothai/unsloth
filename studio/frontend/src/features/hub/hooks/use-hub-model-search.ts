@@ -291,7 +291,6 @@ async function* mergedModelIterator(
   signal?: AbortSignal,
   parameterFilter = "",
   filterPriority?: ModelListingTransform,
-  tags?: string[],
 ): AsyncGenerator<unknown> {
   const tasks = normalizeTaskFilter(task);
   const common = {
@@ -304,12 +303,7 @@ async function* mergedModelIterator(
     (task, taskSignal) =>
       listModels({
         hubUrl: getHfEndpoint(),
-        search: {
-          query,
-          owner: "unsloth",
-          ...(task ? { task } : {}),
-          ...(tags ? { tags } : {}),
-        },
+        search: { query, owner: "unsloth", ...(task ? { task } : {}) },
         fetch: makeSortFetch(sortBy, direction, taskSignal, parameterFilter),
         ...common,
       }) as AsyncGenerator<unknown>,
@@ -320,11 +314,7 @@ async function* mergedModelIterator(
     (task, taskSignal) =>
       listModels({
         hubUrl: getHfEndpoint(),
-        search: {
-          query,
-          ...(task ? { task } : {}),
-          ...(tags ? { tags } : {}),
-        },
+        search: { query, ...(task ? { task } : {}) },
         fetch: makeSortFetch(sortBy, direction, taskSignal, parameterFilter),
         ...common,
       }) as AsyncGenerator<unknown>,
@@ -646,10 +636,6 @@ export function useHubModelSearch(
     enabled?: boolean;
     keepUnsupportedTags?: boolean;
     channel?: HfModelSearchChannel | null;
-    /** Hub tags for the no-query listing, e.g. ["gguf"] when the view shows only GGUF rows. */
-    listingTags?: readonly string[];
-    /** Float unsloth repos above the rest of a no-query browse under any sort, as a search does. */
-    unslothFirstBrowse?: boolean;
     filters?: ModelSearchFilters;
   },
 ) {
@@ -665,8 +651,6 @@ export function useHubModelSearch(
     enabled = true,
     keepUnsupportedTags = false,
     channel = null,
-    listingTags,
-    unslothFirstBrowse = false,
     filters,
   } = options ?? {};
   const unslothOnly = ownerScope === "unsloth";
@@ -675,11 +659,6 @@ export function useHubModelSearch(
   const channelTagsKey = channel?.tags ? channel.tags.join("|") : "";
   const channelQuery = channel?.query ?? "";
   const channelIdSuffix = channel?.idSuffix ?? "";
-  const listingTagsKey = listingTags?.join("|") ?? "";
-  const browseTags = useMemo(
-    () => (listingTagsKey ? listingTagsKey.split("|") : undefined),
-    [listingTagsKey],
-  );
   const priorityIdsKey = priorityIds?.join("|") ?? "";
   const stablePriorityIds = useMemo(
     () => (priorityIdsKey ? priorityIdsKey.split("|") : undefined),
@@ -767,11 +746,7 @@ export function useHubModelSearch(
             filterRange,
           ) as AsyncGenerator<unknown>;
         }
-        if (
-          (hasFilters || unslothFirstBrowse) &&
-          pinUnslothFirst &&
-          !unslothOnly
-        ) {
+        if (hasFilters && pinUnslothFirst && !unslothOnly) {
           return mergedModelIterator(
             "",
             task,
@@ -782,20 +757,18 @@ export function useHubModelSearch(
             signal,
             filterRange,
             filterPriority,
-            browseTags,
           );
         }
-        // Unsloth-only scope restricts the plain sort browse to the org.
-        const browseSearch = {
-          ...(unslothOnly ? { owner: "unsloth" } : {}),
-          ...(browseTags ? { tags: browseTags } : {}),
-        };
         return mergeTaskIterators(
           normalizeTaskFilter(task),
           (task, taskSignal) =>
             listModels({
               hubUrl: getHfEndpoint(),
-              search: { ...browseSearch, ...(task ? { task } : {}) },
+              // Unsloth-only scope restricts the plain sort browse to the org.
+              search: {
+                ...(unslothOnly ? { owner: "unsloth" } : {}),
+                ...(task ? { task } : {}),
+              },
               additionalFields: ALL_FIELDS,
               fetch: makeSortFetch(
                 sortBy,
@@ -849,8 +822,6 @@ export function useHubModelSearch(
       unslothOnly,
       hasFilters,
       filterRange,
-      browseTags,
-      unslothFirstBrowse,
     ],
   );
 

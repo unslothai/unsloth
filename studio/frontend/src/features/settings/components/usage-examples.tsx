@@ -32,7 +32,14 @@ import {
   InformationCircleIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { Streamdown } from "streamdown";
 import { loadCodingAgents } from "../api/coding-agents";
 import type {
@@ -58,6 +65,7 @@ import {
 import { keylessBaseEligible } from "./keyless-example-eligibility";
 import {
   readUseTunnelPref,
+  subscribeUseTunnelPref,
   writeUseTunnelPref,
 } from "./tunnel-preference";
 
@@ -389,6 +397,16 @@ const CATALOG_RETRY_MS = 15000;
 // keep polling after a model appears because idle unloads do not update the store.
 const CATALOG_IDLE_MS = 60000;
 
+/** The Secure HTTPS switch, shared by every example card on the tab. */
+export function useApiTunnelPref(): [boolean, (next: boolean) => void] {
+  const useTunnel = useSyncExternalStore(
+    subscribeUseTunnelPref,
+    readUseTunnelPref,
+    () => true,
+  );
+  return [useTunnel, writeUseTunnelPref];
+}
+
 // match the backend path heuristic because /v1 never advertises on-disk checkpoints.
 function looksLikePath(id: string): boolean {
   return (
@@ -503,7 +521,7 @@ const SHIKI_THEMES = [unslothLightTheme, unslothDarkTheme] as [
 ];
 const codePlugin = createCodePlugin({ themes: SHIKI_THEMES });
 
-function HighlightedCode({
+export function HighlightedCode({
   code,
   language,
   redactFromReload,
@@ -535,11 +553,16 @@ function HighlightedCode({
 
 export function UsageExamples({
   apiKey,
+  useTunnel,
+  onUseTunnelChange,
   keylessScope = "off",
   keylessTools = false,
   keylessExposure = null,
 }: {
   apiKey?: string | null;
+  useTunnel: boolean;
+  onUseTunnelChange: (next: boolean) => void;
+  /** which routes keyless api access serves, so a placeholder is only used where it works */
   keylessScope?: KeylessApiAccessScope;
   keylessTools?: boolean;
   /** public tunnels and Colab never accept the dummy bearer */
@@ -586,7 +609,6 @@ export function UsageExamples({
   const agentPickedByUserRef = useRef(storedPrefs.apiExampleAgent != null);
   // A manual pick is kept only until the model's GGUF-ness changes under it.
   const clickedUnderGgufRef = useRef<boolean | null>(null);
-  const [useTunnel, setUseTunnel] = useState<boolean>(readUseTunnelPref);
   const origin = typeof window !== "undefined" ? window.location.origin : "";
   const base =
     useTunnel && cloudflareUrl ? cloudflareUrl : (serverUrl ?? origin);
@@ -804,11 +826,6 @@ export function UsageExamples({
     }
   };
 
-  const handleToggleTunnel = (next: boolean) => {
-    setUseTunnel(next);
-    writeUseTunnelPref(next);
-  };
-
   const handleCopyUrl = async () => {
     if (cloudflareUrl && (await copyToClipboard(cloudflareUrl))) {
       setCopiedUrl(true);
@@ -836,7 +853,7 @@ export function UsageExamples({
               <Switch
                 size="sm"
                 checked={useTunnel}
-                onCheckedChange={handleToggleTunnel}
+                onCheckedChange={onUseTunnelChange}
                 aria-label={t("settings.apiKeys.secureHttps")}
               />
               <span className="text-ui-11 font-medium text-foreground">

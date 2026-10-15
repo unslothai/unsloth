@@ -351,16 +351,17 @@ export interface DeleteImpact {
   blocked_by: string[];
 }
 
-/** Never throws: the confirm dialog must still open with plain wording. */
+/** return the delete preview or `null` so confirmation still opens when unavailable. */
 export async function fetchDeleteImpact(
   repoId: string,
   variant?: string | null,
   cachePath?: string | null,
+  hfToken?: string | null,
 ): Promise<DeleteImpact | null> {
   try {
     const response = await authFetch("/api/hub/delete-impact", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...hubTokenHeader(hfToken) },
       body: JSON.stringify(
         variant
           ? { repo_id: repoId, variant, ...(cachePath ? { cache_path: cachePath } : {}) }
