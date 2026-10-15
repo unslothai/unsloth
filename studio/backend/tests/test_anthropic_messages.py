@@ -7036,6 +7036,14 @@ class TestInProcessMessages:
         assert (sw["image_preflight"] or {}).get("multiple") is multiple
 
     @pytest.mark.parametrize("stream", [0, 1])
+    def test_a_sampling_value_chat_rejects_is_a_400_before_a_load(self, monkeypatch, stream):
+        # Messages bounds top_k less tightly than chat; a GGUF target still takes it.
+        with pytest.raises(HTTPException) as err:
+            self._serve(monkeypatch, stream, top_k = 200)
+        assert err.value.status_code == 400 and "top_k" in json.dumps(err.value.detail)
+        assert self.seen["switch"]["gguf_only"] is True and "req" not in self.seen
+
+    @pytest.mark.parametrize("stream", [0, 1])
     def test_a_resident_speech_model_is_not_served_through_chat(self, monkeypatch, stream):
         # Chat answers a TTS model with a finished clip, never a text reply.
         with pytest.raises(HTTPException) as err:

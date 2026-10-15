@@ -42496,6 +42496,41 @@ def _set_or_prepend_system_message(
     return [system, *others]
 
 
+def _anthropic_chat_sampling(payload) -> dict:
+    """Client-set sampling fields; omitted ones stay omitted so chat applies the model's defaults."""
+    return {
+        name: getattr(payload, name)
+        for name in (
+            "temperature",
+            "top_p",
+            "top_k",
+            "min_p",
+            "repetition_penalty",
+            "presence_penalty",
+            "seed",
+            "nudge_tool_calls",
+        )
+        if getattr(payload, name) is not None
+    }
+
+
+def _anthropic_chat_sampling_refusal(payload, messages) -> Optional[str]:
+    """Why chat would reject this request's sampling fields; Messages bounds some less tightly."""
+    from pydantic import ValidationError
+
+    try:
+        ChatCompletionRequest(
+            messages = messages,
+            max_tokens = payload.max_tokens,
+            **_anthropic_chat_sampling(payload),
+        )
+    except ValidationError as exc:
+        error = exc.errors()[0]
+        field = ".".join(str(part) for part in error.get("loc", ())) or "request"
+        return f"'{field}': {error.get('msg')} on a non-GGUF model."
+    return None
+
+
 def _in_process_model_resident() -> bool:
     orchestrator = _peek_inference_backend()
     entry = (getattr(orchestrator, "models", None) or {}).get(
@@ -42759,24 +42794,9 @@ async def _anthropic_in_process_messages(
         isinstance(payload.tool_choice, dict)
         and payload.tool_choice.get("disable_parallel_tool_use")
     )
-    # Omitted sampling fields stay omitted, so chat applies the model's recommended values.
-    sampling = {
-        name: getattr(payload, name)
-        for name in (
-            "temperature",
-            "top_p",
-            "top_k",
-            "min_p",
-            "repetition_penalty",
-            "presence_penalty",
-            "seed",
-            "nudge_tool_calls",
-        )
-        if getattr(payload, name) is not None
-    }
     chat_req = ChatCompletionRequest(
         **fields,
-        **sampling,
+        **_anthropic_chat_sampling(payload),
         max_tokens = payload.max_tokens,
         stop = payload.stop_sequences or None,
         parallel_tool_calls = False if disable_parallel else None,
@@ -43020,6 +43040,8 @@ async def anthropic_messages(
     _in_process_refusal = None
     if not _chat_parts[1]:
         _in_process_refusal = "At least one non-system message is required."
+    else:
+        _in_process_refusal = _anthropic_chat_sampling_refusal(payload, _chat_req_pre.messages)
     # Chat's image checks for a non-GGUF target; b64s stays what a GGUF target validates.
     _anthropic_image_preflight = None
     if _anthropic_has_image:
