@@ -12,6 +12,8 @@ term) gets
 which reads as a failed patch even though training is fine. _fused_lora_skip_reason supplies
 the missing clause. It is a separate function so the wording can be tested without loading
 a checkpoint, and the gate parity test below is what stops the two from drifting apart.
+The fused kernels now run lora_dropout > 0 themselves, so the dropout clause only appears under
+the UNSLOTH_FUSED_LORA_DROPOUT=0 kill switch, which these tests set.
 """
 
 from __future__ import annotations
@@ -25,8 +27,15 @@ import pytest
 import unsloth  # noqa: F401
 
 from real_accelerator import has_real_accelerator
+from unsloth.kernels import fast_lora
 from unsloth.models import llama as llama_module
 from unsloth.models.llama import _fused_lora_skip_reason
+
+
+@pytest.fixture(autouse = True)
+def _fused_dropout_off(monkeypatch):
+    # lora_dropout > 0 only closes the fused gate under the UNSLOTH_FUSED_LORA_DROPOUT=0 kill switch.
+    monkeypatch.setattr(fast_lora, "FUSED_LORA_DROPOUT", False)
 
 
 def test_no_reason_when_the_fused_kernels_were_installed():
@@ -37,7 +46,7 @@ def test_no_reason_when_the_fused_kernels_were_installed():
 def test_lora_dropout_is_named_with_its_value():
     reason = _fused_lora_skip_reason(0.1, "none")
     assert "lora_dropout = 0.1" in reason
-    assert "bias" not in reason
+    assert "bias =" not in reason
     assert "Training is unaffected." in reason
 
 
@@ -80,6 +89,12 @@ def test_reason_is_non_empty_exactly_when_the_fused_gate_is_closed(
     assert bool(reason) is not fused_installed
 
 
+@pytest.mark.parametrize("lora_dropout", [0, 0.1, 0.5])
+def test_lora_dropout_keeps_the_fused_gate_open_by_default(monkeypatch, lora_dropout):
+    monkeypatch.setattr(fast_lora, "FUSED_LORA_DROPOUT", True)
+    assert _fused_lora_skip_reason(lora_dropout, "none") == ""
+
+
 def _gate_tests(source: str) -> list[str]:
     """Every `if` test in patch_peft_model that reads both lora_dropout and bias."""
     tree = ast.parse(textwrap.dedent(source))
@@ -97,7 +112,7 @@ def test_patch_peft_model_still_gates_the_fused_kernels_on_the_same_values():
     """Every gate condition needs a matching _fused_lora_skip_reason clause."""
     source = inspect.getsource(llama_module.FastLlamaModel.patch_peft_model)
     assert _gate_tests(source) == [
-        "lora_dropout == 0 and bias == 'none' and (not float32_base) and (not fused_lora_declined_for_fsdp)"
+        "(lora_dropout == 0 or _fast_lora.FUSED_LORA_DROPOUT) and bias == 'none' and (not float32_base) and (not fused_lora_declined_for_fsdp)"
     ]
 
 
