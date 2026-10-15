@@ -732,7 +732,6 @@ def run_attention(
 
     # DoRA promotes q/k/v_proj outputs to fp32, which FlashAttention rejects (as does the xformers
     # flash-2 op on sm_100+), so downcast any fp32 Q/K/V to a supported dtype (#1013).
-    # Ring attention (context parallelism) likewise needs a flash-eligible dtype.
     cp_out_dtype = Q.dtype if backend == SDPA and get_cp_manager() is not None else None
     if (
         backend in (FLASH_DENSE, FLASH_VARLEN)
@@ -971,8 +970,7 @@ def run_attention(
         kwargs.setdefault("is_causal", is_causal_local)
 
         use_sdpa_gqa = SDPA_HAS_GQA and config.n_groups != 1
-        # CP refuses < sm80 and downcasts fp32 Q/K/V above, so flash takes GQA natively and the ring
-        # gathers and accumulates n_kv_heads, not n_heads (about half the peak). UNSLOTH_CP_GQA=0 expands.
+        # Flash takes GQA natively, halving the ring's K/V peak; UNSLOTH_CP_GQA=0 expands.
         if (
             use_sdpa_gqa
             and get_cp_manager() is not None
@@ -1015,7 +1013,6 @@ def run_attention(
             **kwargs,
         )
         out = out.transpose(1, 2).contiguous()
-        # o_proj expects the pre-downcast dtype (an fp32 model would otherwise hit a dtype mismatch).
         return out if cp_out_dtype is None else out.to(cp_out_dtype)
 
 

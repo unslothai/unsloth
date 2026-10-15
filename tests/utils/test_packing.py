@@ -2184,7 +2184,6 @@ def test_packing_skip_warning_keeps_custom_collator_reason(monkeypatch, caplog):
 
 
 def test_context_parallel_disables_eval_packing(monkeypatch):
-    # TRL packs eval splits from eval_packing independently of packing; ring attention has no varlen path.
     monkeypatch.delenv("UNSLOTH_RETURN_LOGITS", raising = False)
     fake_trainer = _patch_fake_sft_trainer()
     config = SimpleNamespace(
