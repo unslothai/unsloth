@@ -262,7 +262,7 @@ export const ja = {
     annotationScreenshotsAlways: "常に含める",
     annotationScreenshotsNever: "含めない",
     clearDataSetting: "閲覧データを消去",
-    clearDataSettingDescription: "閲覧履歴、ダウンロード履歴、キャッシュされたページを消去します。ページには Cookie やサイトデータは保存されません。",
+    clearDataSettingDescription: "閲覧履歴、ダウンロード履歴、キャッシュされたページを消去します。ページの Cookie やサイトデータは Studio を再読み込みするまでのみ保持されます。",
     manage: "管理",
     fullView: {
       enter: "全画面表示",
@@ -438,7 +438,7 @@ export const ja = {
     },
     clearData: {
       title: "閲覧データを消去しますか？",
-      description: "閲覧履歴、ダウンロード履歴、キャッシュされたページを消去します。ダウンロードしたファイルはコンピュータに残ります。",
+      description: "閲覧履歴、ダウンロード履歴、キャッシュされたページ、サイトの Cookie とデータを消去し、サイトからログアウトします。ダウンロードしたファイルはコンピューターに残ります。",
       cancel: "キャンセル",
       confirm: "データを消去",
       done: "閲覧データを消去しました",

@@ -260,7 +260,7 @@ export const it = {
     annotationScreenshotsAlways: "Includi sempre",
     annotationScreenshotsNever: "Non includere mai",
     clearDataSetting: "Cancella dati di navigazione",
-    clearDataSettingDescription: "Cancella la cronologia di navigazione, la cronologia download e le pagine nella cache. Le pagine non conservano cookie né dati dei siti.",
+    clearDataSettingDescription: "Cancella la cronologia di navigazione, la cronologia download e le pagine nella cache. Le pagine conservano cookie e dati dei siti solo fino al ricaricamento di Studio.",
     manage: "Gestisci",
     fullView: {
       enter: "Vista completa",
@@ -436,7 +436,7 @@ export const it = {
     },
     clearData: {
       title: "Cancellare i dati di navigazione?",
-      description: "Verranno cancellate la cronologia di navigazione, la cronologia download e le pagine nella cache. I file scaricati restano sul tuo computer.",
+      description: "Questo cancella cronologia di navigazione, cronologia dei download, pagine in cache e cookie e dati dei siti, disconnettendoti dai siti. I file scaricati restano sul computer.",
       cancel: "Annulla",
       confirm: "Cancella dati",
       done: "Dati di navigazione cancellati",

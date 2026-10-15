@@ -136,8 +136,12 @@ export const BUDGET = {
   // Main was 48 B raw / 29 B transfer over at ffa8fc3b9 (6,771,709 B raw, 2,035,904 B transfer). The browser
   // panel's notice for pages that hit a sandbox limit (#13761) adds 143 B raw / 44 B transfer (-> 6,771,852 B raw,
   // 2,035,948 B transfer, one machine and build, Node 24, chunk count unchanged at 95). Raised by both.
-  transferBytes: 2_035_948,
-  rawBytes: 6_771_852,
+  // Keeping site storage across browser panel pages (#13762) adds 1,644 B raw / 466 B transfer, the page-storage
+  // module the eager browser store imports for tab close and duplicate (6,771,852 -> 6,773,496 B raw, 2,035,948 ->
+  // 2,036,414 B transfer against 82f16ca55, one machine and build, Node 24, chunk count unchanged at 95). Raised by
+  // that growth.
+  transferBytes: 2_036_414,
+  rawBytes: 6_773_496,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
