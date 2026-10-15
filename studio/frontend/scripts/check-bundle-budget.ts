@@ -120,8 +120,12 @@ export const BUDGET = {
   // Naming the Windows update that adds MXC's built-in container (#13798) adds 358 B raw / 93 B transfer, its
   // string in the eager English locale (6,765,003 -> 6,765,361 B raw against 3c0061e16, one machine and build,
   // Node 24, chunk count unchanged at 95), which put main 55 B raw over. Raised by that growth.
-  transferBytes: 2_033_777,
-  rawBytes: 6_765_664,
+  // Keeping site storage across browser panel pages (#13762) adds 1,652 B raw / 590 B transfer, the page-storage
+  // module the eager browser store imports for tab close and duplicate (6,765,431 -> 6,767,083 B raw, 2,033,619 ->
+  // 2,034,209 B transfer against 82c608b31, one machine and build, Node 24, chunk count unchanged at 95). Raised by
+  // that growth.
+  transferBytes: 2_034_367,
+  rawBytes: 6_767_316,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
