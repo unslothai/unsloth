@@ -26,6 +26,7 @@ from .chat_templates import (
 )
 from .cells import cell_text, cell_turns, message_list_columns
 from .raw_text import prepare_raw_text_dataset
+from .pretokenized import PRETOKENIZED_FORMAT, is_pretokenized_dataset
 from .vlm_processing import generate_smart_vlm_instruction
 from .data_collators import DeepSeekOCRDataCollator, VLMDataCollator
 from .model_mappings import TEMPLATE_TO_MODEL_MAPPER
@@ -109,6 +110,18 @@ def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
                 "detected_format": "custom_heuristic",
                 "columns": columns,
                 "suggested_mapping": heuristic_mapping,
+                "detected_image_column": None,
+                "detected_text_column": None,
+                "is_image": multimodal_info["is_image"],
+                "multimodal_columns": multimodal_info.get("multimodal_columns"),
+                **audio_fields,
+            }
+        elif is_pretokenized_dataset(dataset):
+            return {
+                "requires_manual_mapping": False,
+                "detected_format": PRETOKENIZED_FORMAT,
+                "columns": columns,
+                "suggested_mapping": None,
                 "detected_image_column": None,
                 "detected_text_column": None,
                 "is_image": multimodal_info["is_image"],
@@ -604,6 +617,19 @@ def format_dataset(
                 except Exception as e:
                     warnings.append(f"Could not standardize: {e}. Passing dataset as-is.")
 
+            if is_pretokenized_dataset(dataset):
+                return {
+                    "dataset": dataset,
+                    "detected_format": PRETOKENIZED_FORMAT,
+                    "final_format": PRETOKENIZED_FORMAT,
+                    "chat_column": None,
+                    "is_standardized": True,
+                    "requires_manual_mapping": False,
+                    "is_image": multimodal_info["is_image"],
+                    "multimodal_info": multimodal_info,
+                    "warnings": [],
+                }
+
             return {
                 "dataset": dataset,
                 "detected_format": "unknown",
@@ -1077,7 +1103,7 @@ def format_and_template_dataset(
             raw_text_column = raw_text_column,
         )
 
-        if dataset_info["final_format"] == "raw_text":
+        if dataset_info["final_format"] in ("raw_text", PRETOKENIZED_FORMAT):
             summary = get_dataset_info_summary(dataset_info)
             return {
                 "dataset": dataset_info["dataset"],

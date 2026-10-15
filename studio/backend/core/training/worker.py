@@ -3455,7 +3455,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
     if (
         config.get("train_on_completions", False)
         and not raw_text_mode
-        and dataset_final_format != "raw_text"
+        and dataset_final_format not in ("raw_text", "pretokenized")
     ):
         _send("status", status_message = "Configuring response-only training...")
         # No catch: the helper handles detection failures and double misses, so an exception here is a real masking
