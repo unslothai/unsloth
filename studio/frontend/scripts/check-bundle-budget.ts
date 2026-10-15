@@ -117,12 +117,15 @@ export const BUDGET = {
   // (6,764,579 -> 6,764,964 B raw, 2,033,464 -> 2,033,544 B transfer from 91f8457ab3 to 7b6b2a8e48, one machine
   // and build, Node 24, chunk count unchanged at 95), which put main 43 B raw over. Raised by that growth so
   // main's margin stays where it was.
+  // Naming the Windows update that adds MXC's built-in container (#13798) adds 358 B raw / 93 B transfer, its
+  // string in the eager English locale (6,765,003 -> 6,765,361 B raw against 3c0061e16, one machine and build,
+  // Node 24, chunk count unchanged at 95), which put main 55 B raw over. Raised by that growth.
   // Retiring whisper.cpp (#13753: the voice settings v2 migration and settling a saved whisper.cpp pick for the
   // host) adds 1,467 B raw / 479 B transfer to the eager settings and chat chunks (6,764,964 -> 6,766,431 B raw,
   // 2,033,544 -> 2,034,023 B transfer from 6c3bd16256, one machine and build, Node 24, chunk count unchanged at
   // 95). Raised by that growth so main's margin stays where it was.
-  transferBytes: 2_034_163,
-  rawBytes: 6_766_773,
+  transferBytes: 2_034_256,
+  rawBytes: 6_767_131,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
