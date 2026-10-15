@@ -1,25 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Guard the ordering that keeps bitsandbytes usable under the GPU-free harness.
-
-tests/conftest.py patches `torch.cuda.is_available` to return True so
-`device_type.py`'s @cache captures "cuda" on a GPU-less runner. bitsandbytes reads
-that same flag at import time to decide whether to import its CUDA backend, and that
-backend touches `torch._C._cuda_getCurrentRawStream`, absent from CPU-only torch
-builds. A bitsandbytes import landing inside the spoof window therefore raises, and
-the failure is not recoverable within the process: Python drops `bitsandbytes` from
-sys.modules while leaving its submodules cached, so every later import returns a
-module with no `.functional`, and `unsloth/kernels/utils.py` dies at module scope.
-
-Clearing sys.modules is not a way out either -- re-executing `bitsandbytes._ops`
-raises "Tried to register an operator ... multiple times". The import simply must not
-fail, which is what `_preimport_bitsandbytes()` guarantees by running first.
-
-Source-level rather than behavioural on purpose: the failure needs a CPU-only torch
-build to reproduce, so a runtime assertion would pass vacuously wherever CUDA torch
-is installed, which is most developer machines.
-"""
+"""bitsandbytes must be imported before the conftest cuda spoof; a failed import cannot be recovered."""
 
 from __future__ import annotations
 

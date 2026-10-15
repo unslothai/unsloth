@@ -274,7 +274,6 @@ def test_decode_gemv_refuses_what_it_cannot_compute():
     W, s = model.lin.weight, model.lin.weight_scale
     X = torch.randn(1, 16384, device = dev, dtype = torch.bfloat16)
     with torch.no_grad():
-        # 128x128 block grid here has 2048 == N elements.
         assert not can_use_fp8_rowwise_gemv(X, W, torch.ones(16, 128, device = dev))
         assert not can_use_fp8_rowwise_gemv(
             torch.randn(2, 16384, device = dev, dtype = torch.bfloat16), W, s
@@ -299,7 +298,7 @@ def test_fp8_weights_off_the_gpu_keep_the_compressed_tensors_path():
 
 
 def test_compiled_block_fp8_linear_passes_the_input_gradient():
-    # torch 2.11 compiled this backward to zeros once Dynamo could trace the whole autograd.Function.
+    # torch 2.11 compiled this backward to zeros once Dynamo traced the whole autograd.Function.
     from unsloth.kernels.fp8 import fp8_linear
 
     torch._dynamo.reset()

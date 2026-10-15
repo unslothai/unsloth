@@ -17,7 +17,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from core.inference import audio_cpp_backend, audio_cpp_files
+from core.inference import audio_cpp_backend, audio_cpp_files, audio_cpp_music
 from core.inference import audio_cpp_models as acm
 from core.inference.audio_cpp_models import (
     AUDIO_CPP_REPO,
@@ -1542,7 +1542,11 @@ def test_audio_options_reach_the_request_validated():
         "hi", audio_options = {"voice": "am_adam", "speed": 1.5, "bogus": 1, "mode": "zzz"}
     )
     body = srv.calls[0][1]
-    assert body["voice"] == "am_adam" and body["options"] == {"speed": 1.5}
+    assert body["voice"] == "am_adam" and body["options"] == {
+        "speed": 1.5,
+        "mode": "a",
+        "text_chunk_size": 240,
+    }
 
 
 def test_speech_retry_keeps_package_defaults_and_user_options_and_covers_500():
@@ -1607,7 +1611,13 @@ def test_minimax_takes_the_caption_as_input_and_lyrics_and_duration_as_options()
     request = srv.calls[0][1]["request"]
     assert request["text"] == "lofi" and request["seed"] == "3"
     # The runtime rejects duration_sec beside duration_seconds ("conflicting option values").
-    assert request["options"] == {"top_k": 9, "lyrics": "[verse] hi"}
+    assert request["options"] == {
+        "top_k": 9,
+        "lyrics": "[verse] hi",
+        "ar_guidance_scale": 1.5,
+        "guidance_scale": 1.7,
+        "num_inference_steps": 30,
+    }
     assert request["duration_seconds"] == 20.0
     with pytest.raises(RuntimeError, match = "needs lyrics"):
         b.generate_audio_response("", instructions = "lofi")
@@ -1618,12 +1628,7 @@ def test_yue2_takes_the_description_as_its_required_style():
     b.generate_audio_response("[chorus] oh", instructions = "rock, male vocal")
     request = srv.calls[0][1]["request"]
     assert request["text"] == "[chorus] oh"
-    assert request["options"] == {
-        "style": "rock, male vocal",
-        "lyrics": "[chorus] oh",
-        "semantic_max_tokens": 3072,
-        "semantic_min_tokens": 200,
-    }
+    assert request["options"] == {"style": "rock, male vocal", "lyrics": "[chorus] oh"}
     with pytest.raises(RuntimeError, match = "style"):
         b.generate_audio_response("[chorus] oh")
 
@@ -2624,17 +2629,21 @@ def test_stt_takes_the_variant_keys_gguf_variants_lists_even_from_a_partial_cach
     assert stem.variant.key == "Q8_0" and stem.unsupported is None
 
 
-def test_yue2_length_follows_the_requested_duration():
+def test_yue2_runs_to_its_own_ending_whatever_the_token_budget():
     b, srv = _backend_with(_speech_model("yue2"), MUSIC_REPLY)
-    b.generate_audio_response("[chorus] oh", instructions = "rock", max_new_tokens = 125)
-    options = srv.calls[0][1]["request"]["options"]
-    # 5 s at 25 frames per second, with the 200-frame default lowered to fit; the cap is 1.5x.
-    assert options["semantic_max_tokens"] == 188 and options["semantic_min_tokens"] == 125
-    b.generate_audio_response("[chorus] oh", instructions = "rock", max_new_tokens = 1500)
-    options = srv.calls[1][1]["request"]["options"]
-    assert options["semantic_max_tokens"] == 2250 and options["semantic_min_tokens"] == 200
-    b.generate_audio_response("[chorus] oh", instructions = "rock", max_new_tokens = 6000)
-    assert srv.calls[2][1]["request"]["options"]["semantic_max_tokens"] == 9000
+    srv.backend = "cpu"
+    waits = []
+    post = srv.post_json
+    srv.post_json = lambda path, payload, **kw: waits.append(kw["timeout"]) or post(path, payload)
+    for budget in (125, 1500, 6000):
+        b.generate_audio_response("[chorus] oh", instructions = "rock", max_new_tokens = budget)
+    for _path, body in srv.calls:
+        options = body["request"]["options"]
+        assert "semantic_max_tokens" not in options and "semantic_min_tokens" not in options
+    assert waits == [audio_cpp_music.self_ending_timeout("yue2", "cpu")] * 3 == [4 * 3600.0] * 3
+    srv.backend = "cuda"
+    b.generate_audio_response("[chorus] oh", instructions = "rock", max_new_tokens = 2048)
+    assert waits[-1] == audio_cpp_music.timeout_seconds("yue2", 240, 1, "cuda") == 2460.0
 
 
 def test_music_requests_missing_a_required_field_are_a_400_message():

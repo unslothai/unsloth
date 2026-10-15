@@ -12,24 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""The disk preflight in front of a GGUF export, and its wiring.
-
-Three notebooks -- Gemma4 (26B A4B) Vision, Gemma4 (31B) Vision and Qwen3 32B
--- trained, ran inference and wrote a complete `merged_16bit`, then died
-partway through a GGUF shard with the VM out of space. The size estimate in
-front of them counted the model twice. The real peak is four artefacts on one
-filesystem: the pre-warmed base in the Hugging Face cache, the 16-bit merge,
-the intermediate GGUF and the quants.
-
-The arithmetic itself is unsloth_zoo's, and is tested in
-`unsloth_zoo/tests/test_disk_utils_kaggle.py`. What is tested here is
-unsloth's use of it: which of the three outcomes it picks (proceed / drop the
-pre-warm / refuse), that it never blocks on an unmeasurable number, and that
-nothing it computes leaks into the kwargs of a save.
-
-The sizing functions are stubbed rather than exercised, so this runs on CPU,
-in milliseconds, against any installed unsloth_zoo.
-"""
+"""GGUF export preflight: the peak is four artefacts on one filesystem, not the model counted twice."""
 
 import contextlib
 import math
@@ -43,26 +26,12 @@ GB = 1024**3
 
 
 def _with_merge_headroom(n_bytes):
-    """What `merge_and_overwrite_lora` needs free to write `n_bytes` of merge.
-
-    unsloth_zoo's merge guard compares against `int(free * 0.95)`, so the
-    preflight has to ask for the same effective figure. The 0.95 is written
-    out rather than read from `S`, so dropping the headroom fails here.
-    """
+    """Asks for ceil(n_bytes / 0.95), matching the zoo merge guard's int(free * 0.95) check."""
     return math.ceil(n_bytes / 0.95)
 
 
 def _merge_preflight_ask(total_bytes, merge_bytes):
-    """What the merge preflight asks for, given what lands where.
-
-    The reserve belongs on the merge alone, because that is the only artefact
-    `merge_and_overwrite_lora` writes and the only one its guard measures. A
-    quantized sibling beside it, a torchao sibling with the merge staged in a
-    temp directory, and a full-model `"lora"` save written straight through
-    `save_pretrained` are all charged at face value. Reserving around the whole
-    estimate instead moves an export that fits, and on Kaggle "moves" means
-    into a /tmp the kernel does not keep as notebook output.
-    """
+    """The 5% reserve covers only the merge; the sibling and other artefacts are charged at face value."""
     return max(math.ceil(total_bytes), _with_merge_headroom(merge_bytes))
 
 
@@ -71,11 +40,7 @@ class _FakeModel:
 
 
 class _ModelWithLayers:
-    """The `.model.layers` layout `unsloth_save_model` rebuilds a dict for.
-
-    Anything else takes its generic fallback, which hands the caller's
-    dictionary to `save_pretrained` untouched.
-    """
+    """Only .model.layers layouts get a rebuilt dict; anything else passes the caller's dict through."""
 
     class _Inner:
         layers = ()
@@ -85,11 +50,7 @@ class _ModelWithLayers:
 
 
 class _FakeAdapterModel:
-    """Stands in for a PeftModel: monkeypatch `S.PeftModel` onto this class.
-
-    Building a real one needs a base model and an adapter config, and the
-    preflight only ever asks `isinstance`.
-    """
+    """Stands in for PeftModel: the preflight only uses isinstance, and a real one needs a base model."""
 
 
 class _ModelWithEmbeddings:
@@ -129,11 +90,7 @@ class _ModelWithEmbeddings:
 
 @pytest.fixture
 def stub_sizing(monkeypatch):
-    """Replace the size and free-space calls with numbers a test dictates.
-
-    Returns a setter. `need` is the export without the cached base, and
-    `need_with_cache` the export with it.
-    """
+    """Stubs sizing and free-space calls; need excludes the cached base, need_with_cache includes it."""
     state = {"need": 0, "need_with_cache": 0, "free": None, "redirect": (None, None)}
 
     def fake_estimate(**kwargs):
@@ -208,19 +165,12 @@ class TestPreflightOutcomes:
             S._preflight_gguf_disk(_FakeModel(), "model", "q4_k_m", first_conversion = "f16")
         message = str(excinfo.value)
         assert "40.0GB" in message and "19.0GB" in message
-        # Actionable, not merely correct.
         assert "push_to_hub_gguf" in message
         assert "UNSLOTH_DISK_PREFLIGHT=0" in message
         assert "q4_k_m" in message
 
     def test_unmeasurable_model_never_blocks(self, stub_sizing, monkeypatch):
-        """A guard that blocks on a guess is worse than no guard.
-
-        With no size to work from there is also nothing to justify moving the
-        files, so the Kaggle redirect must not even be consulted -- otherwise
-        an unmeasurable model on Kaggle gets relocated on the strength of
-        `need_bytes = 0`.
-        """
+        """An unmeasurable model blocks nothing and never reaches the Kaggle redirect."""
         redirect_calls = []
         monkeypatch.setattr(
             S,
@@ -269,7 +219,6 @@ class TestPreflightOutcomes:
         stub_sizing(free = 10 * GB)
         S._preflight_gguf_disk(_FakeModel(), "model", "q4_k_m", needs_merge = False)
         assert seen["needs_merge"] is False
-        # No merge means no pre-warm, so no cache copy is ever priced in.
         assert seen.get("base_cache_copy") in (None, False)
 
 
@@ -301,8 +250,7 @@ class TestKaggleRedirectWiring:
         )
         monkeypatch.setattr(S, "free_bytes", fake_free)
         S._preflight_gguf_disk(_FakeModel(), "model", "q4_k_m")
-        # The `_gguf` sibling is measured as well, and so is the working directory the intermediate conversion is
-        # written to. What must never be measured is the directory the redirect moved away from.
+        # The directory the redirect moved away from must never be measured.
         assert probed[0] == "/tmp/unsloth_saves/model"
         assert "model" not in probed
         assert set(probed) <= {
@@ -382,14 +330,8 @@ class TestPrewarmContextManager:
 
 class TestNoLeakIntoSaveKwargs:
     def test_preflight_locals_never_reach_unsloth_generic_save(self):
-        """`arguments = dict(locals())` snapshots every local in scope.
-
-        The preflight adds one, and `unsloth_generic_save` takes named
-        keyword arguments, so forgetting the matching `del` turns every GGUF
-        export into `TypeError: unexpected keyword argument`. Read the
-        function rather than run it: reaching this line for real needs a
-        loaded 4-bit model and a llama.cpp build.
-        """
+        """arguments = dict(locals()) forwards every local; a new one without a del breaks the GGUF
+        export."""
         import inspect
 
         source = inspect.getsource(S.unsloth_save_pretrained_gguf)
@@ -402,8 +344,7 @@ class TestNoLeakIntoSaveKwargs:
             line = line.strip()
             if line.startswith('del arguments["'):
                 deleted.add(line.split('"')[1])
-        # Every local that exists at the snapshot point and is not a parameter of unsloth_generic_save has to be deleted
-        # before the call.
+        # Locals at the snapshot point that are not unsloth_generic_save params must be deleted first.
         introduced = {
             "self",
             "base_model_name",
@@ -420,10 +361,8 @@ class TestNoLeakIntoSaveKwargs:
             assert name in deleted, f"{name} would be passed to unsloth_generic_save"
 
 
-# The unsloth_zoo.disk_utils signatures, transcribed. The fixtures above accept `**kwargs`, which is convenient and
-# hides the one failure that matters: an argument the real function does not take raises TypeError, and every caller
-# here swallows exceptions, so the guard silently turns itself off.
-# `test_reference_signatures_match_the_installed_zoo` keeps these honest.
+# unsloth_zoo.disk_utils signatures, transcribed: a wrong argument raises TypeError, which callers
+# swallow, silently disabling the guard. test_reference_signatures_match_the_installed_zoo checks them.
 def _zoo_estimate_gguf_export_bytes(
     model = None,
     quantization_methods = (),
@@ -460,13 +399,7 @@ def zoo_api(monkeypatch):
 
 
 class TestCallsBindToTheZooApi:
-    """A guard that cannot call its own sizing function is not a guard.
-
-    `_preflight_merge_disk` passed `keep_intermediate_gguf`, which
-    `unsloth_zoo.disk_utils.estimate_gguf_export_bytes` does not accept, so
-    every call raised TypeError into the surrounding `except Exception` and
-    no `save_pretrained_merged` was ever redirected on Kaggle.
-    """
+    """A bad kwarg to the zoo estimator raised TypeError into a broad except, so no redirect ever fired."""
 
     def test_merge_preflight_reaches_the_redirect(self, zoo_api):
         assert (
@@ -509,9 +442,13 @@ class TestMergeSizing:
 
     def test_a_plain_merge_is_two_bytes_per_parameter(self, sized):
         S._preflight_merge_disk(_FakeModel(), "model", "merged_16bit")
-        # Not the GGUF estimate, which would add an intermediate conversion this export never writes. No headroom
-        # either: `_FakeModel` has no adapter, so nothing here reaches `merge_and_overwrite_lora`.
+        # Not the GGUF estimate, and no headroom: `_FakeModel` has no adapter, so no merge_and_overwrite_lora.
         assert sized == [_merge_preflight_ask(10 * GB, 0)]
+
+    def test_a_float32_merge_is_four_bytes_per_parameter(self, sized):
+        """unsloth#5186: `dtype = float32` doubles the checkpoint, so Kaggle must budget for it."""
+        S._preflight_merge_disk(_FakeModel(), "model", "merged_16bit", widen_to_float32 = True)
+        assert sized == [_merge_preflight_ask(20 * GB, 0)]
 
     @pytest.mark.parametrize("save_method", ["merged 16bit", "MERGED_16BIT", " merged-16bit "])
     def test_supported_spellings_are_measured_too(self, sized, save_method):
@@ -544,23 +481,14 @@ class TestMergeSizing:
         "save_method", ["torchao_fp8", "torchao_int8", "portable_fp8", "portable-int8"]
     )
     def test_a_torchao_export_is_sized_by_its_sibling_alone(self, sized, save_method):
-        """The torchao path merges into a temp dir, not into `save_directory`.
-
-        So `save_directory` holds the 8-bit sibling only, and pricing the
-        16-bit merge there as well would move an export that fits. No merge
-        guard runs against this filesystem either, so no reserve is charged.
-        """
+        """Torchao merges into a temp dir, so save_directory holds only the sibling; no reserve applies."""
         S._preflight_merge_disk(_FakeModel(), "model", save_method)
         assert sized == [_merge_preflight_ask(5 * GB, 0)]
 
     def test_the_embeddings_are_not_priced_as_quantized(self, sized):
-        """Weight-only schemes quantize `Linear` only.
-
-        The input embeddings and an untied lm_head stay 16-bit in the sibling,
-        so a model that is a quarter embeddings costs more than half the merge.
-        """
+        """Weight-only schemes quantize Linear alone, so embeddings and untied lm_head stay 16-bit."""
         model = _ModelWithEmbeddings(input_numel = 1024**3, output_numel = 1024**3 // 2)
-        # 10GB merge, 3GB of it embeddings -> 7GB at 8 bits + 3GB copied.
+        # 10GB merge, 3GB embeddings -> 7GB at 8 bits + 3GB copied.
         S._preflight_merge_disk(model, "model", "fp8")
         assert sized == [_merge_preflight_ask(10 * GB + 3 * GB + int(3.5 * GB), 10 * GB)]
 
@@ -595,12 +523,7 @@ class _FakeParameter:
 
 
 class _FakeModule:
-    """A module tree answering the two calls the sizing makes.
-
-    `parameters()` recurses, exactly as `torch.nn.Module.parameters()` does,
-    so a parent that matches an ignore pattern reports its children's weights
-    too and the deduplication has something to do.
-    """
+    """parameters() recurses like torch's, so an ignored parent also reports its children's weights."""
 
     def __init__(
         self,
@@ -665,15 +588,7 @@ def _sibling_bytes(merge_bytes, unquantized_bytes, weight_bits):
 
 
 class TestTheRecipesIgnoredModulesStay16Bit:
-    """Everything `_compressed_quantize`'s recipe refuses to quantize is copied at 16 bits.
-
-    The recipe ignores `lm_head`, every module under a `linear_attn` or a
-    `visual`, anything named `*mtp*`, and on an MoE the router gates. Only the
-    embeddings were priced at 16 bits here, so a VLM's vision tower or a
-    hybrid's linear attention was charged 4 or 8 bits for bytes the export
-    writes at 16 - an under-count, which is the direction that loses the
-    Kaggle redirect an export needed.
-    """
+    """Modules the recipe ignores are copied at 16 bits, so pricing them quantized under-counts."""
 
     @pytest.fixture
     def sized(self, monkeypatch):
@@ -717,8 +632,6 @@ class TestTheRecipesIgnoredModulesStay16Bit:
         # 2GB embeddings + 1GB vision tower stay 16-bit; the other 7GB go to 8.
         expected = 10 * GB + _sibling_bytes(10 * GB, 3 * GB, 8)
         assert sized == [_merge_preflight_ask(expected, 10 * GB)]
-        # And strictly more than the embeddings-only figure this replaces, which is the whole point: the old estimate
-        # was short.
         assert sized[0] > _merge_preflight_ask(
             10 * GB + _sibling_bytes(10 * GB, 2 * GB, 8), 10 * GB
         )
@@ -775,7 +688,7 @@ class TestTheRecipesIgnoredModulesStay16Bit:
         )
         patterns = S._compressed_ignore_patterns(model)
         assert "re:.*\\.gate$" in patterns
-        # 2GB embeddings + 1GB router gate. `gate_proj` is 2GB and quantizes.
+        # 2GB embeddings + 1GB router gate; `gate_proj` (2GB) quantizes.
         assert S._unquantized_parameter_bytes(model, patterns) == 3 * GB
 
     def test_a_dense_model_gets_no_gate_patterns(self):
@@ -807,12 +720,9 @@ class TestTheRecipesIgnoredModulesStay16Bit:
         """`re:` is `re.match` (start-anchored, not full); plain is an exact name."""
         module = _FakeModule()
         assert S._matches_ignore_pattern("visual.blocks.0", module, ["re:visual.*"])
-        # Start-anchored: a mid-string match is not one.
         assert not S._matches_ignore_pattern("model.visual.blocks", module, ["re:visual.*"])
         assert S._matches_ignore_pattern("model.visual.blocks", module, ["re:.*\\.visual\\..*"])
-        # Not required to reach the end of the name.
         assert S._matches_ignore_pattern("model.mtp.layers.0", module, ["re:.*mtp.*"])
-        # Plain entries are exact, never substrings.
         assert S._matches_ignore_pattern("lm_head", module, ["lm_head"])
         assert not S._matches_ignore_pattern("model.lm_head", module, ["lm_head"])
         # Plain entries also match a parent class name, as `_match_class` does.
@@ -832,18 +742,8 @@ class TestTheRecipesIgnoredModulesStay16Bit:
 
 
 class TestTorchaoStagingSharesTheRedirectDestination:
-    """The torchao staging merge is on /tmp, and so is the redirect target.
-
-    `_unsloth_save_torchao` merges into `tempfile.mkdtemp()` and deletes it
-    only after quantization, so on a Kaggle kernel both artefacts are on /tmp
-    at once. Sending the sibling to a /tmp that cannot hold the staging merge
-    as well turns an export that fit in /kaggle/working into a disk-full
-    failure, so a destination that is too small for both is not used.
-
-    The staging bytes are deliberately NOT added to `need_bytes`: nothing
-    stages in the working directory, and charging it there would relocate
-    exports that fit into /tmp, which is not kept as notebook output.
-    """
+    """Torchao staging and the redirect target share /tmp, so a destination too small for both is
+    refused."""
 
     @pytest.fixture
     def redirected(self, monkeypatch, tmp_path):
@@ -860,8 +760,7 @@ class TestTorchaoStagingSharesTheRedirectDestination:
         monkeypatch.setattr(S, "_same_filesystem", lambda left, right: True)
         return target, free
 
-    # 10GB merge -> a 5GB sibling. No headroom: the merge is staged in a temp directory, so no merge guard ever
-    # measures this filesystem.
+    # No headroom: the merge is staged in a temp dir, so no merge guard measures this filesystem.
     _SIBLING = 5 * GB
 
     def test_room_for_the_sibling_alone_is_not_enough(self, redirected):
@@ -908,15 +807,7 @@ class TestTorchaoStagingSharesTheRedirectDestination:
         assert asked == [self._SIBLING]
 
     def test_a_cancelled_redirect_says_the_filesystem_is_short(self, monkeypatch, capsys):
-        """The one outcome nothing downstream measures.
-
-        The redirect fired because /kaggle/working could not hold the 5GB
-        sibling, and it was cancelled because /tmp cannot hold that sibling
-        and the 10GB staging merge together. The export is handed back a
-        filesystem with 4GB free, the torchao merge guard only ever measures
-        the staging disk, and the sibling is written at the end of a long
-        quantization, so this has to be said up front.
-        """
+        """A cancelled redirect leaves a short disk that no later guard measures, so warn up front."""
         import tempfile
 
         working, scratch = 4 * GB, 12 * GB
@@ -968,17 +859,10 @@ class TestTorchaoStagingSharesTheRedirectDestination:
         assert capsys.readouterr().out == ""
 
     def test_a_real_stat_of_the_destination_cancels_the_redirect(self, monkeypatch):
-        """The same cancellation, with `_same_filesystem` left unstubbed.
-
-        Cancelling is the one outcome the helper cannot reach by accident:
-        every failure inside it, `os.stat` included, returns True and takes
-        the redirect. So a real destination that is really rejected is proof
-        that both stats resolved and compared equal.
-        """
+        """Only a real cancellation proves both stats resolved; every failure inside takes the redirect."""
         import shutil
         import tempfile
 
-        # Under the tempfile default, so it shares that mount by construction.
         destination = tempfile.mkdtemp(prefix = "unsloth-staging-test-")
         monkeypatch.setattr(S, "model_16bit_bytes", lambda model: 10 * GB)
         monkeypatch.setattr(
@@ -993,12 +877,7 @@ class TestTorchaoStagingSharesTheRedirectDestination:
             shutil.rmtree(destination, ignore_errors = True)
 
     def test_the_redirect_creates_its_target_before_returning_it(self, monkeypatch, tmp_path):
-        """Which is why stat-ing the destination is safe on a first export.
-
-        `kaggle_tmp_redirect` returns a message only after `os.makedirs`
-        succeeded, and the `unsloth.disk_utils` fallback never returns one, so
-        the helper is unreachable with a destination that does not exist.
-        """
+        """Stat-ing the destination is safe: the redirect creates it before returning a message."""
         from unsloth.disk_utils import HAS_ZOO_DISK_UTILS
 
         if not HAS_ZOO_DISK_UTILS:
@@ -1015,7 +894,6 @@ class TestTorchaoStagingSharesTheRedirectDestination:
         monkeypatch.setattr(zoo, "KAGGLE_TMP", str(scratch))
         monkeypatch.setenv("UNSLOTH_IS_KAGGLE", "1")
         monkeypatch.delenv("UNSLOTH_KAGGLE_USE_TMP", raising = False)
-        # The working directory is full and the scratch overlay is not, which is the only shape that moves anything.
         monkeypatch.setattr(
             zoo,
             "free_bytes",
@@ -1053,8 +931,7 @@ class TestASeparateStagingFilesystemIsStillMeasured:
 
         staging = tmp_path / "tmp"
         staging.mkdir()
-        # `tempfile.gettempdir()` caches its answer on first use, so setting the variable alone would leave the
-        # process's real temp directory.
+        # `tempfile.gettempdir()` caches its answer, so setting the env var alone is not enough.
         monkeypatch.setattr(tempfile, "tempdir", str(staging))
         free = {"staging": 0, "other": 1000 * GB}
         monkeypatch.setattr(S, "model_16bit_bytes", lambda model: self._STAGING)
@@ -1082,16 +959,8 @@ class TestASeparateStagingFilesystemIsStillMeasured:
         assert capsys.readouterr().out == ""
 
     def test_the_warning_carries_the_merge_guards_own_reserve(self, separate, capsys):
-        """Exactly the merge's size on TMPDIR is not enough to write it there.
-
-        `merge_and_overwrite_lora` compares the staging save against
-        `int(free * 0.95)` and raises "Failed saving - no disk space left"
-        when it is short, and on a separate TMPDIR its own /tmp fallback is
-        that same filesystem, so there is no recovery. Between `staging_bytes`
-        and `staging_bytes / 0.95` the merge therefore dies and only this
-        warning could have named the disk, so it has to use the same figure
-        `_preflight_merge_disk` asks the redirect for.
-        """
+        """Between staging_bytes and staging_bytes / 0.95 the merge dies, so the TMPDIR warning uses
+        that."""
         separate["staging"] = self._STAGING
         S._preflight_merge_disk(_FakeModel(), "model", "torchao_fp8")
         assert "TMPDIR" in capsys.readouterr().out
@@ -1159,7 +1028,6 @@ class TestTheStagingWarningSurvivesAFreshDestination:
         staging = tmp_path / "tmp"
         staging.mkdir()
         monkeypatch.chdir(tmp_path)
-        # `tempfile.gettempdir()` caches its answer, so the attribute and the variable both have to move.
         monkeypatch.setattr(tempfile, "tempdir", str(staging))
         monkeypatch.setenv("TMPDIR", str(staging))
 
@@ -1205,15 +1073,7 @@ class TestTheStagingWarningSurvivesAFreshDestination:
 
 
 class TestMergeHeadroomMatchesTheZooGuard:
-    """A working directory that is "just big enough" is not big enough.
-
-    `merge_and_overwrite_lora` compares the save against `int(free * 0.95)`,
-    so a 30GB merge with 31GB free was left in /kaggle/working by the redirect
-    and then refused outright by the merge itself.
-
-    An adapter merged by `unsloth_generic_save`, because that is the only
-    writer here that calls the guarded function at all.
-    """
+    """A working dir that is just big enough is not: the zoo merge refuses anything above free * 0.95."""
 
     @pytest.fixture(autouse = True)
     def adapter(self, monkeypatch):
@@ -1262,8 +1122,7 @@ class TestMergeHeadroomMatchesTheZooGuard:
             forwards_state_dict = True,
             writer_runs_merge_guard = True,
         )
-        # Free space that satisfies this preflight also satisfies the 5% the merge reserves;
-        # 31GB satisfies neither.
+        # Free space satisfying this preflight also satisfies the merge's 5% reserve.
         assert int(asked[0] * 0.95) >= 30 * GB
         assert int(31 * GB * 0.95) < 30 * GB
 
@@ -1291,12 +1150,7 @@ class TestSixteenBitCheckpointDetection:
 
 
 class TestFallbackCheckpointDtype:
-    """The non-PEFT fallback `save_pretrained`s the model at its own dtype.
-
-    The estimator budgets two bytes per parameter for that checkpoint, so an
-    fp32 model (`dtype = torch.float32` is a supported load) writes twice what
-    was measured and can fill a disk this called big enough.
-    """
+    """Non-PEFT fallback writes the model at its own dtype, so fp32 costs twice the 2-byte estimate."""
 
     @pytest.fixture
     def sized_from_parameters(self, monkeypatch):
@@ -1357,19 +1211,12 @@ class TestFallbackCheckpointDtype:
 
 
 class TestFullModelSavedAsLora:
-    """`lora` on a model with no adapter writes the WHOLE model.
-
-    `unsloth_generic_save` and `unsloth_save_model` both fall back to
-    `save_pretrained` there, so the checkpoint is the size of the model and
-    fills /kaggle/working exactly like a merge. Skipping the preflight on the
-    method name alone let that through.
-    """
+    """A "lora" save on a model with no adapter writes the whole model, so it is sized like a merge."""
 
     @pytest.fixture
     def sized(self, monkeypatch):
         asked = []
-        # Deliberately not the size of the checkpoint: a full-model save is written with no cast, so believing this
-        # figure is the bug.
+        # Deliberately not the checkpoint size: a full-model save is written with no cast.
         monkeypatch.setattr(S, "model_16bit_bytes", lambda model: 10 * GB)
         monkeypatch.setattr(
             S,
@@ -1451,13 +1298,8 @@ class TestFullModelSavedAsLora:
         assert "model.save_pretrained(save_directory, **_save_kwargs)" in source
 
     def test_a_caller_state_dict_is_what_gets_measured(self, sized):
-        """`save_pretrained` writes the dict it was handed, not the model.
-
-        Only `"16bit" in save_method` casts that dict, so a `"lora"` save can
-        forward an fp32 one over fp16 resident parameters and the export is
-        twice what sizing the model says. Undercounting is not a crash, it is
-        a missed redirect, which is how a 20GB Kaggle working directory fills.
-        """
+        """Only 16bit saves cast the dict, so a lora save can write fp32 weights that double the
+        estimate."""
         import torch
 
         model = torch.nn.Linear(8, 8, dtype = torch.float16)
@@ -1476,14 +1318,8 @@ class TestFullModelSavedAsLora:
         assert sized == [_merge_preflight_ask(n_parameters * 4, 0)]
 
     def test_an_explicitly_empty_state_dict_is_not_no_state_dict(self, sized):
-        """`{}` is a caller's answer, and the answer is "write nothing".
-
-        `unsloth_generic_save` forwards the dict on `state_dict is not None`,
-        so an empty one reaches `save_pretrained` and no model tensors are
-        written at all. This selected on truthiness and priced the resident
-        model instead, which on Kaggle moves a save that writes nothing off
-        persistent storage and into a /tmp the kernel does not keep.
-        """
+        """An empty state_dict means write nothing, so it must not fall back to sizing the resident
+        model."""
         model = self._float32_model()
         assert S._full_model_checkpoint_bytes(model, {}) == 0
         assert S._preflight_merge_disk(model, "model", "lora", state_dict = {}) == "model"
@@ -1500,13 +1336,8 @@ class TestFullModelSavedAsLora:
         )
 
     def test_both_call_sites_forward_the_dict(self, monkeypatch):
-        """A parameter nothing passes measures nothing.
-
-        Both of these accept a `state_dict` and both document `"lora"`, so
-        both have to hand it on. Driven rather than read, because the string
-        `state_dict = state_dict` also appears where they forward it to
-        `save_pretrained`, which would pass on a body that never wires it in.
-        """
+        """Both call sites must forward state_dict; driven, not grepped, since the text appears
+        elsewhere too."""
         import torch
 
         seen = []
@@ -1532,25 +1363,11 @@ class TestFullModelSavedAsLora:
 
 
 class TestASuppliedDictIsWhatASixteenBitSaveWrites:
-    """`unsloth_generic_save` writes the dictionary it was handed, cast.
-
-    It only reaches for `model.state_dict()` when it was given none, so a
-    caller-supplied one decides the size of the checkpoint: `{}` or a subset
-    writes less than the resident model, and a dictionary carrying more writes
-    more. Sizing the model either moves a nearly empty save off persistent
-    Kaggle storage for nothing, or leaves a bigger one to fill the 20GB
-    working directory it should have been redirected out of.
-
-    `unsloth_save_model` is the other writer and rebuilds the dictionary from
-    the merged layers, dropping whatever it was passed, so only the generic
-    call site says the dict is followed.
-    """
+    """unsloth_generic_save writes the caller's dict, not the model, so the dict sets the size."""
 
     @pytest.fixture
     def sized(self, monkeypatch):
         asked = []
-        # Deliberately not the size of the dict below: believing this figure for a save driven by the caller's
-        # dictionary is the bug.
         monkeypatch.setattr(S, "model_16bit_bytes", lambda model: 10 * GB)
         monkeypatch.setattr(
             S,
@@ -1591,8 +1408,7 @@ class TestASuppliedDictIsWhatASixteenBitSaveWrites:
             forwards_state_dict = True,
         )
         assert expected == 8 * GB
-        # No adapter, so `unsloth_generic_save` casts this dictionary and writes it with a bare `save_pretrained`.
-        # There is no `merge_and_overwrite_lora` behind that and so nothing to reserve.
+        # No adapter: the dict is written with bare `save_pretrained`, so nothing to reserve.
         assert sized == [_merge_preflight_ask(expected, 0)]
 
     def test_an_empty_dict_writes_nothing(self, sized):
@@ -1618,7 +1434,6 @@ class TestASuppliedDictIsWhatASixteenBitSaveWrites:
             state_dict = None,
             forwards_state_dict = True,
         )
-        # Still a bare `save_pretrained`, so still no reserve.
         assert sized == [_merge_preflight_ask(10 * GB, 0)]
 
     def test_an_adapter_merge_ignores_the_dict(self, sized, monkeypatch):
@@ -1632,7 +1447,6 @@ class TestASuppliedDictIsWhatASixteenBitSaveWrites:
             forwards_state_dict = True,
             writer_runs_merge_guard = True,
         )
-        # And that is the one writer whose guard is real, so this keeps its 5%.
         assert sized == [_merge_preflight_ask(10 * GB, 10 * GB)]
 
     def test_the_other_writer_rebuilds_the_dict(self, sized):
@@ -1643,16 +1457,11 @@ class TestASuppliedDictIsWhatASixteenBitSaveWrites:
             "merged_16bit",
             state_dict = self._dict(),
         )
-        # It writes the merged shards itself and runs no zoo guard, so the model is sized at two bytes a parameter and
-        # reserved against nothing.
+        # It writes the shards itself with no zoo guard: sized at 2 bytes/param, no reserve.
         assert sized == [_merge_preflight_ask(10 * GB, 0)]
 
     def test_each_call_site_says_what_its_writer_does_with_the_dict(self, monkeypatch):
-        """Driven rather than read, so a body that never wires it in fails.
-
-        `unsloth_save_model` rebuilds the dictionary only on the path that
-        walks `.model.layers`, so that is the model this asks about.
-        """
+        """Checks the .model.layers path, the only one where unsloth_save_model rebuilds the dict."""
         import torch
 
         seen = []
@@ -1682,8 +1491,7 @@ class TestASuppliedDictIsWhatASixteenBitSaveWrites:
                     save_method = "merged_16bit",
                     state_dict = {"weight": torch.zeros(4)},
                 )
-        # The third flag is the merge guard: only `unsloth_generic_save` runs `merge_and_overwrite_lora`, and only for
-        # an adapter.
+        # Third flag is the merge guard: only `unsloth_generic_save` with an adapter runs it.
         assert seen == [(False, False, False), (True, False, True)]
 
     def test_the_writers_really_differ(self):
@@ -1698,16 +1506,7 @@ class TestASuppliedDictIsWhatASixteenBitSaveWrites:
 
 
 class TestTheGgufSiblingIsMeasuredToo:
-    """The GGUF files land in `save_directory + "_gguf"`, a SIBLING.
-
-    So they are on the PARENT's filesystem, which is the same disk as
-    `save_directory` unless that path is itself a mount point or a symlink
-    onto another one. Measuring only `save_directory` then passes an export
-    whose quants fill a filesystem nobody looked at.
-
-    Only genuinely separate filesystems change anything, so a single
-    filesystem behaves exactly as before.
-    """
+    """The GGUF sibling sits on the parent's filesystem, so measure it too, not only save_directory."""
 
     @pytest.fixture
     def split(self, monkeypatch):
@@ -1720,16 +1519,13 @@ class TestTheGgufSiblingIsMeasuredToo:
         def fake_estimate(**kwargs):
             if kwargs.get("base_cache_copy"):
                 return 48 * GB
-            # Without the checkpoint: the intermediate conversion + quants.
             return 34 * GB if kwargs.get("needs_merge", True) else 18 * GB
 
         monkeypatch.setattr(S, "free_bytes", fake_free)
         monkeypatch.setattr(S, "estimate_gguf_export_bytes", fake_estimate)
         monkeypatch.setattr(S, "kaggle_tmp_redirect", lambda *a, **k: ("model", None))
-        # Only the save-directory / sibling pair is split. Every other pair the preflight asks about -- notably the
-        # working directory the intermediate conversion is written to -- is one filesystem, which is the ordinary
-        # machine these tests describe. The conversion travels with the sibling there, so the save directory's
-        # filesystem holds the checkpoint alone.
+        # Only the save-dir / sibling pair is split; the conversion travels with the sibling, so the
+        # save directory's filesystem holds the checkpoint alone.
         monkeypatch.setattr(
             S,
             "_on_separate_filesystems",
@@ -1763,7 +1559,6 @@ class TestTheGgufSiblingIsMeasuredToo:
         split.update(free = 5 * GB, sibling_free = 1000 * GB, separate = True)
         with pytest.raises(RuntimeError) as error:
             S._preflight_gguf_disk(_FakeModel(), "model", "q4_k_m")
-        # The ordinary refusal, about the checkpoint's own filesystem.
         assert "model_gguf" not in str(error.value)
 
     def test_the_sibling_is_sized_without_the_checkpoint(self, split):
@@ -1820,17 +1615,7 @@ class TestTheGgufSiblingIsMeasuredToo:
 
 
 class TestEachFilesystemIsChargedForWhatItHolds:
-    """Two filesystems, and each one is charged only for what lands on it.
-
-    The other half of the sibling problem. Measuring the sibling caught the
-    case where it is too tight; the aggregate estimate was still charged in
-    full to the filesystem holding `save_directory`, which refuses a split
-    export whose checkpoint fits on one disk and whose quants fit on the
-    other. A guard that blocks an export that works is worse than no guard.
-
-    Numbers throughout: the export is 34GB (16GB checkpoint + 18GB of
-    conversion and quants), 48GB with a pre-warmed base cache.
-    """
+    """Two filesystems: each is charged only for what lands on it, not the aggregate on one disk."""
 
     CHECKPOINT = 16 * GB
     SIBLING = 18 * GB
@@ -1855,10 +1640,7 @@ class TestEachFilesystemIsChargedForWhatItHolds:
         )
         monkeypatch.setattr(S, "estimate_gguf_export_bytes", fake_estimate)
         monkeypatch.setattr(S, "kaggle_tmp_redirect", lambda *a, **k: ("model", None))
-        # Only the save-directory / sibling pair is split. Every other pair the preflight asks about -- notably the
-        # working directory the intermediate conversion is written to -- is one filesystem, which is the ordinary
-        # machine these tests describe. The conversion travels with the sibling there, so the save directory's
-        # filesystem holds the checkpoint alone.
+        # Same split as above: only the save-dir / sibling pair differs.
         monkeypatch.setattr(
             S,
             "_on_separate_filesystems",
@@ -1869,8 +1651,7 @@ class TestEachFilesystemIsChargedForWhatItHolds:
         monkeypatch.setattr(S, "_shares_filesystem", lambda left, right: False)
         monkeypatch.setattr(S, "IS_KAGGLE_ENVIRONMENT", False)
         monkeypatch.setattr(S, "IS_COLAB_ENVIRONMENT", False)
-        # The reserve below belongs to `merge_and_overwrite_lora`, which only a PEFT model reaches, so the tests that
-        # exercise it need a model the preflight recognises as one.
+        # The reserve belongs to `merge_and_overwrite_lora`, which only a PEFT model reaches.
         monkeypatch.setattr(S, "PeftModel", _FakeAdapterModel)
         monkeypatch.delenv("UNSLOTH_DISK_PREFLIGHT", raising = False)
         monkeypatch.delenv("UNSLOTH_PREWARM_HUB_CACHE", raising = False)
@@ -1883,13 +1664,7 @@ class TestEachFilesystemIsChargedForWhatItHolds:
 
     @pytest.mark.parametrize("free_gb,fits", [(17, True), (16, False)])
     def test_the_checkpoint_portion_is_the_boundary(self, split, free_gb, fits):
-        """`need - need_sibling`, not the aggregate, decides.
-
-        The boundary is the 16GB checkpoint over the 0.95 reserve
-        `merge_and_overwrite_lora` applies, so 16.85GB rather than 16GB.
-        Exactly 16GB free is the case that motivates it: the checkpoint
-        nominally fits, and the merge refuses it anyway a moment later.
-        """
+        """The checkpoint share is charged the 0.95 reserve, so the boundary is 16.85GB, not 16GB."""
         split.update(free = free_gb * GB, sibling_free = 1000 * GB)
         if fits:
             assert S._preflight_gguf_disk(_FakeAdapterModel(), "model", "q4_k_m") == (
@@ -1902,40 +1677,22 @@ class TestEachFilesystemIsChargedForWhatItHolds:
             assert "about 16.8GB" in str(error.value)
 
     def test_the_cache_copy_is_charged_here_too(self, split):
-        """The pre-warm goes to the HF cache, not the sibling, so it stays here.
-
-        48GB with the cache minus the 18GB sibling half is 30GB: at 30GB the
-        cache is affordable, at 29GB it is dropped rather than refused.
-        """
+        """The pre-warm copy counts here: 30GB free keeps it, 29GB drops it rather than refusing."""
         split.update(free = 30 * GB, sibling_free = 1000 * GB)
         assert S._preflight_gguf_disk(_FakeModel(), "model", "q4_k_m") == ("model", True)
         split.update(free = 29 * GB)
         assert S._preflight_gguf_disk(_FakeModel(), "model", "q4_k_m") == ("model", False)
 
     def test_the_split_carries_the_merge_guards_own_reserve(self, split):
-        """16GB of checkpoint on 16GB of disk is what the merge itself refuses.
-
-        `merge_and_overwrite_lora` will not write a merge unless `free * 0.95`
-        covers it, and the aggregate branch never had to think about that
-        because it charges the quants too. Charging the checkpoint alone
-        removes that cover, so the reserve has to come back with it or this
-        passes an export the merge kills seconds later.
-        """
+        """The split keeps the merge's 0.95 reserve on the checkpoint, or it passes what the merge
+        rejects."""
         split.update(free = 16 * GB, sibling_free = 1000 * GB)
         with pytest.raises(RuntimeError):
             S._preflight_gguf_disk(_FakeAdapterModel(), "model", "q4_k_m")
         assert S.free_bytes("model") * S._MERGE_FREE_SPACE_RESERVE < self.CHECKPOINT
 
     def test_only_a_lora_merge_is_charged_the_reserve(self, split):
-        """A non-PEFT checkpoint is written by `save_pretrained`, which reserves nothing.
-
-        `needs_merge` is true for a non-PEFT model with no reusable local
-        `_name_or_path` as well, because the GGUF path still has to write a
-        checkpoint - but it writes it with a bare `self.save_pretrained`,
-        which never consults `merge_and_overwrite_lora` and never applies its
-        `free * 0.95`. Charging the reserve there refuses 16GB of checkpoint
-        on 16GB of disk that the writer would have accepted.
-        """
+        """Only a LoRA merge is charged the reserve; a non-PEFT checkpoint uses bare save_pretrained."""
         split.update(free = 16 * GB, sibling_free = 1000 * GB)
         assert S._preflight_gguf_disk(_FakeModel(), "model", "q4_k_m") == ("model", False)
 
@@ -1949,11 +1706,7 @@ class TestEachFilesystemIsChargedForWhatItHolds:
         assert "merge_and_overwrite_lora" not in fallback
 
     def test_an_export_writing_no_merge_is_not_charged_the_reserve(self, split):
-        """`needs_merge = False` reaches no merge guard, so it pays for none.
-
-        Nothing else is on this filesystem then, so the checkpoint portion is
-        zero, the whole export is the sibling's, and 1GB is enough here.
-        """
+        """needs_merge = False reaches no merge guard, so it pays no reserve."""
         split.update(free = 1 * GB, sibling_free = 1000 * GB)
         assert S._preflight_gguf_disk(_FakeModel(), "model", "q4_k_m", needs_merge = False) == (
             "model",
@@ -1961,13 +1714,7 @@ class TestEachFilesystemIsChargedForWhatItHolds:
         )
 
     def test_the_reserve_never_exceeds_the_aggregate(self, split, monkeypatch):
-        """A sibling small next to the checkpoint must not add a refusal.
-
-        1GB of sibling leaves 33GB of checkpoint, and 33 / 0.95 is 34.7GB:
-        more than the 34GB aggregate the single-filesystem branch charges. The
-        split may cancel a redirect, never cause a refusal the aggregate would
-        have allowed, so the reserved figure is clamped at `need`.
-        """
+        """A small sibling must not add a refusal: the split reserve is clamped to the aggregate need."""
         monkeypatch.setattr(
             S,
             "estimate_gguf_export_bytes",
@@ -1983,13 +1730,7 @@ class TestEachFilesystemIsChargedForWhatItHolds:
         assert S._preflight_gguf_disk(_FakeAdapterModel(), "model", "q4_k_m") == ("model", False)
 
     def test_a_short_sibling_roomier_than_the_checkpoint_disk_still_refuses(self, split):
-        """The hole the split would leave if the refusal still needed a TIGHTER sibling.
-
-        10GB on the sibling holds neither the 18GB of quants nor anything
-        else, and it is more than the 5GB here, so "tighter than `free`"
-        would miss it, and the aggregate comparison that used to catch it is
-        gone once the checkpoint is charged only its own portion.
-        """
+        """A short sibling must still refuse, since the aggregate comparison no longer catches it."""
         split.update(free = 5 * GB, sibling_free = 10 * GB)
         with pytest.raises(RuntimeError) as error:
             S._preflight_gguf_disk(_FakeModel(), "model", "q4_k_m")
@@ -2008,12 +1749,7 @@ class TestEachFilesystemIsChargedForWhatItHolds:
         ],
     )
     def test_one_filesystem_is_unchanged_across_the_range(self, split, free_gb, expected):
-        """Every outcome is the aggregate one, at every level of free space.
-
-        This is the whole of the previous behaviour: refuse below 34GB, drop
-        the pre-warm between 34GB and 48GB, proceed at 48GB. Nothing about
-        the split may move any of it.
-        """
+        """A single filesystem keeps the old outcomes: refuse under 34GB, drop the pre-warm under 48GB."""
         split.update(free = free_gb * GB, sibling_free = free_gb * GB, separate = False)
         if expected == "raises":
             with pytest.raises(RuntimeError) as error:
@@ -2024,13 +1760,8 @@ class TestEachFilesystemIsChargedForWhatItHolds:
             assert S._preflight_gguf_disk(_FakeModel(), "model", "q4_k_m") == expected
 
     def test_one_filesystem_that_moved_between_the_probes_is_still_one(self, split):
-        """Two `disk_usage` calls on ONE filesystem can disagree.
-
-        Something else writing a single block between them is not a second
-        filesystem, and reading it as one would charge this export the larger
-        half, 16GB, instead of the 34GB sum. The predicate is the device id,
-        so the difference in free space cannot decide it.
-        """
+        """Two disk_usage reads on one filesystem can differ, so the device id, not free space,
+        decides it."""
         split.update(free = 20 * GB, sibling_free = 20 * GB - 4096, separate = False)
         with pytest.raises(RuntimeError) as error:
             S._preflight_gguf_disk(_FakeModel(), "model", "q4_k_m")
@@ -2074,11 +1805,7 @@ class TestEachFilesystemIsChargedForWhatItHolds:
         return "raises"
 
     def test_the_split_never_refuses_where_the_aggregate_allowed(self, split):
-        """A guard may cancel a redirect, never cause one, and may not add refusals.
-
-        Over a grid of both filesystems: every refusal the split produces was
-        already a refusal before it, so no working export is newly blocked.
-        """
+        """The split may cancel a redirect but must never add a refusal the aggregate would have allowed."""
         for free_gb in (1, 5, 16, 17, 20, 34, 48, 100):
             for sibling_gb in (1, 5, 17, 18, 19, 50, 1000):
                 split.update(free = free_gb * GB, sibling_free = sibling_gb * GB)
@@ -2091,11 +1818,8 @@ class TestEachFilesystemIsChargedForWhatItHolds:
                     assert before == "raises", (free_gb, sibling_gb)
 
     def test_the_probe_matches_free_bytes_on_one_filesystem(self, tmp_path):
-        """The real helper, real paths, no monkeypatching.
-
-        A directory and its not-yet-created sibling under one tmp dir are one
-        filesystem, so the split is inert on every ordinary setup.
-        """
+        """A directory and its unmade sibling share one filesystem, so the split is inert on
+        ordinary setups."""
         directory = tmp_path / "model"
         directory.mkdir()
         assert S._on_separate_filesystems(str(directory), f"{directory}_gguf") is False
@@ -2159,11 +1883,7 @@ class TestDisabledImatrixIsNotSizedAsAnImatrix:
 
 
 class TestKaggleNeverPricesACacheCopy:
-    """`_prewarm_base_model_hub_cache` returns before it runs on Kaggle and Colab.
-
-    Pricing a cache that cannot exist sends an export that fits in
-    /kaggle/working to /tmp, which is not kept as notebook output.
-    """
+    """Pre-warm never runs on Kaggle or Colab, so pricing a cache copy there would move exports to /tmp."""
 
     @pytest.fixture
     def asked(self, monkeypatch):
@@ -2202,12 +1922,7 @@ class TestKaggleNeverPricesACacheCopy:
 
 
 class _Packed4bitParameter:
-    """A `Params4bit`: uint8 storage, with the real shape on `quant_state`.
-
-    `numel()` is the packed count, which bitsandbytes fits two 4-bit
-    parameters into. `logical_numel` is what a helper that reads
-    `quant_state.shape` returns for it, and what the merge is sized with.
-    """
+    """A Params4bit's numel() counts packed storage, so sizing uses logical_numel from quant_state.shape."""
 
     class _QuantState:
         def __init__(self, shape):
@@ -2232,23 +1947,12 @@ class _NamedModule(_FakeModule):
 
 
 class TestIgnoredModulesAreSizedFromLogicalShapes:
-    """An ignored module on a 4-bit model is priced at its LOGICAL size.
-
-    `model_16bit_bytes` sizes the merge through unsloth_zoo's `logical_numel`,
-    which reads `quant_state.shape`. Sizing the ignored subtree that is
-    subtracted from it with `numel()` instead prices packed uint8 storage --
-    about half -- so the two disagree and the quantized sibling comes out
-    small. On a tight Kaggle filesystem that is a redirect that never happens.
-    """
+    """Ignored subtrees must use logical_numel, not numel(), or the quantized sibling is undersized."""
 
     @pytest.fixture
     def logical(self, monkeypatch):
-        """Route `logical_numel` at the fake parameters' declared logical size.
-
-        Deliberately not a copy of the zoo's implementation: what is under
-        test is that save.py ASKS, and passes the name along, not that it can
-        re-derive an answer the zoo already owns.
-        """
+        """Stubs logical_numel; the test checks save.py asks for each parameter and passes its name
+        along."""
         seen = []
 
         def fake_logical_numel(parameter, name = ""):
@@ -2340,13 +2044,7 @@ class TestIgnoredModulesAreSizedFromLogicalShapes:
 
 
 class TestADisposableMergeIsNotChargedForAllThreeAtOnce:
-    """`_free_merge_if_disk_is_tight` deletes the merge before the quants run.
-
-    Nemotron-3-Nano-30B-A3B on a 132GB disk: a 63GB merge, a 60GB BF16
-    intermediate and an 18GB Q4_K_M. The two phases peak at 123GB and 78GB,
-    and the export runs. Summing all three gives 141GB and refuses it -- the
-    same export the reclamation in this PR was written to make work.
-    """
+    """A disposable merge is freed before the quants run, so it is not charged with the other two phases."""
 
     AGGREGATE = 141 * GB
     AGGREGATE_WITH_CACHE = 204 * GB
@@ -2371,8 +2069,7 @@ class TestADisposableMergeIsNotChargedForAllThreeAtOnce:
             lambda path: 1000 * GB if str(path).endswith("_gguf") else state["free"],
         )
         monkeypatch.setattr(S, "kaggle_tmp_redirect", lambda *a, **k: (a[0], None))
-        # Only the save-directory / sibling pair can be split. The working directory the conversion writes to is one
-        # filesystem with the sibling here, so it is never charged to the save directory's disk.
+        # Only the save-dir / sibling pair is split; the conversion is never charged to the save dir's disk.
         monkeypatch.setattr(
             S,
             "_on_separate_filesystems",
@@ -2381,7 +2078,6 @@ class TestADisposableMergeIsNotChargedForAllThreeAtOnce:
         monkeypatch.setattr(S, "_shares_filesystem", lambda left, right: False)
         monkeypatch.setattr(S, "IS_KAGGLE_ENVIRONMENT", False)
         monkeypatch.setattr(S, "IS_COLAB_ENVIRONMENT", False)
-        # A disposable merge is a LoRA merge, so the model is a PEFT one and the split branch's reserve applies to it.
         monkeypatch.setattr(S, "PeftModel", _FakeAdapterModel)
         monkeypatch.delenv("UNSLOTH_DISK_PREFLIGHT", raising = False)
         monkeypatch.delenv("UNSLOTH_PREWARM_HUB_CACHE", raising = False)
@@ -2481,8 +2177,7 @@ class TestADisposableMergeIsNotChargedForAllThreeAtOnce:
     def test_split_storage_charges_each_side_instead(self, phases):
         """The reclamation declines across filesystems, so the relief must too."""
         phases.update(separate = True, free = 62 * GB)
-        # 141 aggregate - 78 sibling = 63GB of checkpoint, 66.3GB once the merge's own 0.95 reserve is on it, and 62GB
-        # holds neither.
+        # 141 - 78 = 63GB checkpoint, 66.3GB with the merge's 0.95 reserve; 62GB holds neither.
         with pytest.raises(RuntimeError) as error:
             self._preflight(phases)
         assert "66.3GB" in str(error.value)
@@ -2515,11 +2210,7 @@ class TestADisposableMergeIsNotChargedForAllThreeAtOnce:
         assert "141.0GB" in str(error.value)
 
     def _redirect_ask(self, phases, monkeypatch, **kwargs):
-        """What `kaggle_tmp_redirect` is asked for, with the move declined.
-
-        On Kaggle, which is the only environment the redirect fires in, and
-        where nothing is ever charged for a cache copy.
-        """
+        """On Kaggle, the only environment the redirect fires in, where a cache copy is never charged."""
         asked = []
         monkeypatch.setattr(S, "IS_KAGGLE_ENVIRONMENT", True)
         monkeypatch.setattr(
@@ -2532,18 +2223,12 @@ class TestADisposableMergeIsNotChargedForAllThreeAtOnce:
         try:
             self._preflight(phases, **kwargs)
         except RuntimeError:
-            # The ask is recorded before the refusal, and it is the ask this is about: a declined move followed by
-            # a refusal is exactly what a too-small aggregate produces.
+            # The ask is recorded before the refusal: a declined move then a refusal is what a small aggregate does.
             pass
         return asked
 
     def test_the_redirect_is_asked_for_the_peak_and_not_the_aggregate(self, phases, monkeypatch):
-        """Or Kaggle relocates an export that fits to a /tmp it does not keep.
-
-        The refusal below reads the 123GB peak, so the redirect above it has
-        to as well: asked for the 141GB aggregate, a 132GB /kaggle/working
-        looks too small and the export is moved off notebook storage.
-        """
+        """Ask the redirect for the 123GB peak, not the 141GB aggregate, or a fitting export gets moved."""
         assert self._redirect_ask(phases, monkeypatch) == [self.MERGE_PHASE]
 
     def test_a_merge_that_is_not_disposable_still_asks_the_aggregate(self, phases, monkeypatch):
@@ -2565,13 +2250,7 @@ class TestADisposableMergeIsNotChargedForAllThreeAtOnce:
         return directory
 
     def test_a_reused_output_directory_asks_the_aggregate_first(self, phases, monkeypatch):
-        """Then asks the peak, because the move writes into a fresh directory.
-
-        The reclamation this directory cannot offer is available at the
-        redirect target, so a declined move is worth a second ask: 132GB free
-        here is already less than the 141GB aggregate, and the export really
-        does peak at 123GB once it is relocated.
-        """
+        """After a declined move, ask the peak too: the relocated export really peaks at 123GB."""
         self._reuse(phases)
         assert self._redirect_ask(phases, monkeypatch) == [self.AGGREGATE, self.MERGE_PHASE]
 
@@ -2582,11 +2261,8 @@ class TestADisposableMergeIsNotChargedForAllThreeAtOnce:
         assert self._redirect_ask(phases, monkeypatch) == [self.AGGREGATE]
 
     def _zoo_redirect(self, phases, monkeypatch, tmp_path, working_free, tmp_free):
-        """Run the preflight against `kaggle_tmp_redirect`'s own move rule.
-
-        Returns `(asks, directory)`, with `directory` the one the export ends
-        up writing to.
-        """
+        """Runs the preflight against kaggle_tmp_redirect's own move rule; returns where the export
+        lands."""
         target = str(tmp_path / "overlay" / "unsloth_saves" / "model")
         asked = []
 
@@ -2616,11 +2292,7 @@ class TestADisposableMergeIsNotChargedForAllThreeAtOnce:
     def test_a_reused_directory_is_relocated_instead_of_refused(
         self, phases, monkeypatch, tmp_path, capsys
     ):
-        """100GB here, 130GB on the overlay: the 123GB peak fits after the move.
-
-        Asked only the 141GB aggregate, the overlay declines it too and the
-        export is refused on a filesystem it never had to use.
-        """
+        """A reused directory is relocated rather than refused when the 123GB peak fits on the overlay."""
         self._reuse(phases)
         phases.update(free = 100 * GB)
         asked, directory = self._zoo_redirect(
@@ -2633,12 +2305,7 @@ class TestADisposableMergeIsNotChargedForAllThreeAtOnce:
     def test_a_move_the_aggregate_would_have_made_is_not_cancelled(
         self, phases, monkeypatch, tmp_path
     ):
-        """130GB here holds the peak but not the aggregate, and no merge is
-
-        reclaimable here, so the refusal would read 141GB. Asking the peak
-        outright keeps the export on a filesystem that cannot run it; the
-        second ask only ever follows a move this directory could not avoid.
-        """
+        """The peak is asked outright, since no merge is reclaimable here and the aggregate would refuse."""
         self._reuse(phases)
         phases.update(free = 130 * GB)
         asked, directory = self._zoo_redirect(
@@ -2659,14 +2326,7 @@ class TestADisposableMergeIsNotChargedForAllThreeAtOnce:
 
 
 class TestTheConversionWorkingDirectoryIsMeasured:
-    """The intermediate GGUF is written to the process CWD, then moved.
-
-    `unsloth_zoo.llama_cpp.convert_to_gguf` passes a bare `--outfile`, which
-    llama.cpp resolves against the CWD; only an unwritable CWD falls back to
-    the input folder. So a Kaggle export redirected to /tmp still writes its
-    largest staging artefact into the 20GB /kaggle/working, and that was the
-    one filesystem this preflight never measured.
-    """
+    """A bare --outfile resolves against the CWD, so the intermediate GGUF lands on the CWD's disk."""
 
     TMP = "/tmp/unsloth_saves/model"
     WORKING = "/kaggle/working"
@@ -2770,19 +2430,8 @@ class TestWhereTheConversionWrites:
 
 
 class TestAColocatedConversionIsChargedWithTheCheckpoint:
-    """Split storage, and the conversion lands on the checkpoint's disk.
-
-    `save_directory` is a mount, so the `_gguf` sibling is on another
-    filesystem and the split branch charges this one for the checkpoint alone.
-    The intermediate conversion goes to the working directory and is only
-    moved to the sibling afterwards, so when that working directory is on the
-    same filesystem as `save_directory` the two sit there together - and the
-    conversion check charged this disk for the conversion alone. A 60GB
-    checkpoint and a 60GB conversion each passed on 100GB, and then it filled.
-
-    Numbers: 120GB aggregate, 60GB of it the sibling's, so a 60GB checkpoint
-    and a 60GB conversion.
-    """
+    """Colocated split: the conversion sits beside the checkpoint until moved, so charge both on one
+    disk."""
 
     CHECKPOINT = 60 * GB
     SIBLING = 60 * GB
@@ -2790,8 +2439,7 @@ class TestAColocatedConversionIsChargedWithTheCheckpoint:
 
     @pytest.fixture
     def colocated(self, monkeypatch):
-        # One device map rather than a stub per pair, so the three paths cannot describe a machine that does not
-        # exist -- and so this fixture drives the code as it stands rather than a helper added to fix it.
+        # One device map, not a stub per pair, so the three paths always describe a real machine.
         state = {"free": 100 * GB, "devices": {"model": 1, "model_gguf": 2, "work": 1}}
 
         def fake_estimate(**kwargs):
@@ -2807,8 +2455,6 @@ class TestAColocatedConversionIsChargedWithTheCheckpoint:
         )
         monkeypatch.setattr(S, "kaggle_tmp_redirect", lambda *a, **k: ("model", None))
         monkeypatch.setattr(S, "_gguf_conversion_directory", lambda directory: "work")
-        # `model` is the mount and `model_gguf` is not, so the export is split; the working directory is on the mount
-        # with `model`.
         monkeypatch.setattr(S, "_filesystem_id", lambda path: state["devices"].get(str(path)))
         monkeypatch.setattr(S, "IS_KAGGLE_ENVIRONMENT", False)
         monkeypatch.setattr(S, "IS_COLAB_ENVIRONMENT", False)
@@ -2846,18 +2492,7 @@ class TestAColocatedConversionIsChargedWithTheCheckpoint:
 
 
 class TestTheMergeGuardAndTheConversionAreTwoPhases:
-    """The same colocated split, with a LoRA merge in front of it.
-
-    `merge_and_overwrite_lora` runs first and wants the checkpoint covered by
-    `free * 0.95`, with nothing else on the disk yet. The conversion is
-    written afterwards, next to the finished checkpoint and against no guard
-    at all. Adding the conversion to the reserved figure charges both at once
-    and asks for a peak that never exists.
-
-    Numbers: a 60GB checkpoint and a 60GB conversion. The merge phase wants
-    63.2GB and the conversion phase 120GB, so 122GB of disk clears both, and
-    the sum asks 123.2GB and refuses it.
-    """
+    """The merge and conversion are separate phases; their peaks are taken separately, never summed."""
 
     CHECKPOINT = 60 * GB
     SIBLING = 60 * GB
@@ -2880,14 +2515,11 @@ class TestTheMergeGuardAndTheConversionAreTwoPhases:
         )
         monkeypatch.setattr(S, "kaggle_tmp_redirect", lambda *a, **k: ("model", None))
         monkeypatch.setattr(S, "_gguf_conversion_directory", lambda directory: "work")
-        # `model` and the working directory are one mount, the `_gguf` sibling another, so the export is split and the
-        # conversion lands here.
         monkeypatch.setattr(
             S,
             "_filesystem_id",
             lambda path: 2 if str(path) == "model_gguf" else 1,
         )
-        # Only a PeftModel reaches the merge guard whose reserve this is about.
         monkeypatch.setattr(S, "PeftModel", _FakeAdapterModel)
         monkeypatch.setattr(S, "IS_KAGGLE_ENVIRONMENT", False)
         monkeypatch.setattr(S, "IS_COLAB_ENVIRONMENT", False)
@@ -2911,12 +2543,7 @@ class TestTheMergeGuardAndTheConversionAreTwoPhases:
         assert "120.0GB" in str(error.value)
 
     def test_the_merge_reserve_survives_a_small_conversion(self, colocated_merge):
-        """A 1GB conversion leaves the merge phase the taller of the two.
-
-        61GB holds the checkpoint and the conversion together and is still
-        less than the 63.2GB `merge_and_overwrite_lora` insists on, so this
-        has to refuse: taking the maximum must not drop the reserve.
-        """
+        """Taking the max of merge and conversion must keep the 63.2GB merge reserve, so 61GB refuses."""
         colocated_merge.update(conversion = 1 * GB, free = 62 * GB)
         with pytest.raises(RuntimeError) as error:
             self._preflight()
@@ -2940,15 +2567,7 @@ class TestTheMergeGuardAndTheConversionAreTwoPhases:
 
 
 class TestTheFallbackFollowsTheReusedCheckpoint:
-    """An unwritable CWD sends the conversion to the folder the converter READS.
-
-    `convert_to_gguf` redirects a bare `--outfile` into `input_folder`, and for
-    a non-PEFT model with a local `_name_or_path` that folder is the reused
-    checkpoint, not the requested output: `unsloth_save_pretrained_gguf`
-    reassigns `save_directory` to it before the conversion runs. Probing the
-    requested output there measures a filesystem nothing is written to, while
-    the intermediate fills the checkpoint's.
-    """
+    """An unwritable CWD falls back to the reused checkpoint folder, which is where the conversion lands."""
 
     class _NonPeftFromDisk:
         def __init__(self, directory):
@@ -3039,15 +2658,7 @@ class TestWhetherTheMergeCanBeReclaimed:
 
 
 class TestTheGenericFallbackCopiesWhatItHolds:
-    """`unsloth_save_model` rebuilds a dictionary for ONE architecture layout.
-
-    Everything else -- GPT-2 style, custom heads, anything without
-    `.model.layers` -- falls to the generic branch, which calls
-    `save_pretrained(**save_pretrained_settings)` with the caller's dictionary
-    still in it and with no cast at all. So the checkpoint is that
-    dictionary's own bytes at its own dtypes, and a supplied fp32 dictionary
-    is twice what a 16-bit merge would have been.
-    """
+    """Only the .model.layers layout gets a rebuilt dict; the fallback writes the caller's dict uncast."""
 
     @pytest.fixture
     def sized(self, monkeypatch):
@@ -3127,9 +2738,7 @@ class TestTheGenericFallbackCopiesWhatItHolds:
             forwards_state_dict = True,
             writes_model_verbatim = True,
         )
-        # Sized from the model rather than the dictionary, and unreserved: the writer these two flags describe is
-        # `unsloth_save_model`, which merges and writes the shards itself with no `merge_and_overwrite_lora` anywhere
-        # behind it.
+        # `unsloth_save_model` merges and writes shards itself, so it is sized from the model, unreserved.
         assert sized == [_merge_preflight_ask(10 * GB, 0)]
         assert S._merge_writer_disposition(_FakeAdapterModel(), "merged_16bit") == (False, False)
 
@@ -3146,13 +2755,7 @@ class TestTheGenericFallbackCopiesWhatItHolds:
 
 
 class TestASpecialExportStagesFromTheSuppliedDict:
-    """compressed-tensors and torchao merge through `unsloth_generic_save` too.
-
-    Both hand it `save_method = "merged_16bit"` and the caller's dictionary, so
-    that dictionary is what the kept (compressed) or staged (torchao) merge
-    costs. Sizing the resident model there prices a checkpoint that is not the
-    one being written.
-    """
+    """Compressed and torchao merges are sized from the supplied dict, not the resident model."""
 
     @pytest.fixture
     def sized(self, monkeypatch):
@@ -3186,9 +2789,7 @@ class TestASpecialExportStagesFromTheSuppliedDict:
             state_dict = self._dict(8),
             forwards_state_dict = True,
         )
-        # Unreserved: with no adapter, `unsloth_generic_save` casts the dict
-        # and writes it, and the sibling is a quarter of the merge at worst,
-        # so the 5% band never showed up in this figure anyway.
+        # Unreserved: with no adapter `unsloth_generic_save` casts the dict and writes it.
         assert sized == [_merge_preflight_ask(8 * GB + 4 * GB, 0)]
 
     def test_a_torchao_export_measures_the_dict(self, sized):
@@ -3224,18 +2825,7 @@ class TestASpecialExportStagesFromTheSuppliedDict:
 
 
 class TestOnlyTheGuardedWriterIsCharged:
-    """The 5% reserve belongs to `merge_and_overwrite_lora` and to nothing else.
-
-    One function in this module calls it: `unsloth_generic_save`, and only on
-    its adapter branch. Every other writer that lands a 16-bit checkpoint at
-    `save_directory` is a bare `save_pretrained` that reserves nothing, so
-    charging it `1 / 0.95` moves an export off persistent Kaggle storage that
-    its writer would have accepted.
-
-    The reserve is decided apart from the sizing on purpose: a compressed
-    export IS cast to two bytes by that writer and keeps that sizing, adapter
-    or not.
-    """
+    """The 5% reserve applies only to the adapter merge in unsloth_generic_save, not to save_pretrained."""
 
     MERGE = 10 * GB
 
@@ -3259,10 +2849,7 @@ class TestOnlyTheGuardedWriterIsCharged:
         return _FakeAdapterModel()
 
     def test_a_generic_sixteen_bit_save_with_no_adapter_reserves_nothing(self, sized):
-        """`unsloth_generic_save` casts the dict and writes it, with no merge.
-
-        The reserve here redirected a checkpoint that fits in the 5% band.
-        """
+        """With no adapter there is no merge, so a generic 16-bit save must not reserve the 5% headroom."""
         S._preflight_merge_disk(
             _FakeModel(),
             "model",
@@ -3275,11 +2862,7 @@ class TestOnlyTheGuardedWriterIsCharged:
 
     @pytest.mark.parametrize("save_method", ["torchao_fp8", "torchao_int8"])
     def test_a_torchao_export_reserves_nothing_here(self, sized, adapter, save_method):
-        """It merges into a temp dir, so no guard runs against THIS filesystem.
-
-        True with an adapter as well, which is the case that has a guard at
-        all; it just runs somewhere else.
-        """
+        """A torchao export reserves nothing here: its merge goes to a temp dir, where no guard runs."""
         S._preflight_merge_disk(
             adapter,
             "model",
@@ -3306,21 +2889,13 @@ class TestOnlyTheGuardedWriterIsCharged:
         assert sized == [_with_merge_headroom(self.MERGE)]
 
     def test_a_compressed_export_of_an_adapter_keeps_its_reserve(self, sized, adapter):
-        """Both entrypoints route a compressed export through the same writer.
-
-        So the method alone settles it and the flag is not needed.
-        """
+        """Compressed adapter exports keep the reserve, since both entrypoints share one writer."""
         S._preflight_merge_disk(adapter, "model", "fp8", forwards_state_dict = True)
-        # The sibling is half the merge, well past the 5%, so the aggregate is the binding figure. What matters is
-        # that the reserve is still there.
+        # The sibling exceeds the 5%, so the aggregate binds; what matters is the reserve is still there.
         assert sized == [max(self.MERGE + self.MERGE // 2, _with_merge_headroom(self.MERGE))]
 
     def test_the_plain_entrypoint_runs_no_guard_at_all(self, sized, adapter):
-        """`unsloth_save_pretrained_merged` merges in `unsloth_save_model`.
-
-        Which writes the merged shards itself and never calls the guarded
-        function, adapter or not.
-        """
+        """The plain merged save runs no guard: unsloth_save_model writes shards itself, adapter or not."""
         S._preflight_merge_disk(adapter, "model", "merged_16bit")
         assert sized == [self.MERGE]
 
@@ -3332,20 +2907,13 @@ class TestOnlyTheGuardedWriterIsCharged:
         assert source.count("merge_and_overwrite_lora(\n") == 1
         generic = inspect.getsource(S.unsloth_generic_save)
         before, _, after = generic.partition("merge_and_overwrite_lora(")
-        # The call sits on the adapter branch, and the no-adapter branch above it writes with `save_pretrained`.
         assert "if not _is_peft:" in before
         assert "model.save_pretrained(save_directory, **_save_kwargs)" in before
         assert after.strip(), "the call takes arguments"
 
 
 class TestTheGgufPreflightIsToldTheModelDtype:
-    """`estimate_gguf_export_bytes` drops a requested output that EQUALS the
-    initial conversion, so naming the wrong dtype hides a whole checkpoint.
-
-    A bf16 model asked for `["f16", "q4_k_m"]` writes a bf16 intermediate AND
-    a separate f16 file. Told "f16", the estimate charges one 16-bit file
-    where the export writes two.
-    """
+    """The estimate drops an output equal to the initial conversion, so a wrong dtype hides a file."""
 
     class _Config:
         def __init__(self, dtype):
@@ -3428,8 +2996,7 @@ class TestTheGgufPreflightIsToldTheModelDtype:
             S.unsloth_save_pretrained_gguf(
                 self._Model(self._Config(torch.bfloat16)),
                 "model",
-                # Any object gets past the "GGUF needs a tokenizer" check and dies well after the preflight, which is
-                # the point.
+                # Any object passes the "GGUF needs a tokenizer" check and fails well after the preflight.
                 tokenizer = object(),
                 quantization_method = ["f16", "q4_k_m"],
             )
@@ -3437,15 +3004,7 @@ class TestTheGgufPreflightIsToldTheModelDtype:
 
 
 class TestThePrewarmedCacheIsChargedToItsOwnFilesystem:
-    """`save_directory` is a mount; `~/.cache` and the `_gguf` sibling are not.
-
-    Then the cached base model is written to the sibling's filesystem, and
-    charging it to the checkpoint's both drops a pre-warm that had room and
-    lets the sibling check accept `need_sibling` alone on a disk the base is
-    about to land on.
-
-    Numbers: a 60GB checkpoint, a 40GB sibling, a 60GB cache copy.
-    """
+    """The cached base is charged to the _gguf sibling filesystem, not to the checkpoint filesystem."""
 
     CHECKPOINT = 60 * GB
     SIBLING = 40 * GB
@@ -3453,9 +3012,8 @@ class TestThePrewarmedCacheIsChargedToItsOwnFilesystem:
 
     @pytest.fixture
     def split(self, monkeypatch):
-        # The cache is looked up through `_hub_cache_directory`, whose answer is a real path on this machine, so it is
-        # the DEFAULT of the device map rather than an entry in it. Patching the resolver instead would let a build
-        # that never calls it pass.
+        # `_hub_cache_directory` returns a real path, so the cache is the device map's DEFAULT; patching
+        # the resolver instead would let a build that never calls it pass.
         state = {"here": 1000 * GB, "there": 1000 * GB, "cache_device": 2}
         devices = {"model": 1, "model_gguf": 2, "work": 2}
 
@@ -3524,18 +3082,7 @@ class TestThePrewarmedCacheIsChargedToItsOwnFilesystem:
 
 
 class TestAnUnsupportedBF16IsNormalizedBeforeEstimating:
-    """`save_to_gguf` drops a bf16 initial conversion to f16 on a T4.
-
-    It does so AFTER resolving one, so the preflight has to do the same after
-    both of its branches. `_gguf_source_dtype` covers only the dtype the
-    preflight is TOLD; it cannot cover a `first_conversion` the caller passed,
-    nor the single direct-convert method `_choose_first_conversion` hands back
-    unchanged.
-
-    The cost is a whole checkpoint, because the estimate omits an output that
-    EQUALS the initial conversion: `["bf16"]` at "bf16" is priced as one
-    16-bit file, and the export writes an f16 intermediate AND a bf16 output.
-    """
+    """On a T4 save_to_gguf turns bf16 into f16 first, so the preflight must price the same dtype."""
 
     N = 8_190_735_360  # Qwen3-8B logical parameters
     BITS = {"f32": 32.0, "f16": 16.0, "bf16": 16.0, "q4_k_m": 4.9}
@@ -3564,8 +3111,7 @@ class TestAnUnsupportedBF16IsNormalizedBeforeEstimating:
 
         def estimate(**kwargs):
             if kwargs.get("quantization_methods") and kwargs.get("needs_merge"):
-                # Once for `need` and once for `need_with_cache`;
-                # deduped so the assertions below are about the NAME and not the count.
+                # Asked once for `need` and once for `need_with_cache`; dedupe so asserts check the NAME.
                 if kwargs["first_conversion"] not in asked:
                     asked.append(kwargs["first_conversion"])
             return self._estimate(**kwargs)
@@ -3625,33 +3171,17 @@ class TestAnUnsupportedBF16IsNormalizedBeforeEstimating:
 
 
 class TestTheCacheIsChargedOnTheConversionFilesystem:
-    """A third filesystem: the output on an external drive, the CWD and the
-    Hugging Face cache together on the machine's own disk.
-
-    The pre-warm downloads the base there and leaves it there for the rest of
-    the export, so the cached base and the intermediate conversion are on that
-    disk together. `cache_here` and `cache_sibling` only ever place the cache
-    on the checkpoint's filesystem or the `_gguf` sibling's, and this is
-    neither, so nothing charged it.
-
-    The pre-warmer's own gate does not cover it: it asks for two base copies
-    free, and an `f32` conversion is two base copies on its own. Qwen3-8B, a
-    15.3GB base and a 30.5GB conversion, on 38.1GB free: 38.1 clears the
-    pre-warm's 30.5 threshold and the conversion-only 30.5 check, then the
-    conversion writes 30.5 into the 22.8 the cached base left. 7.6GB short.
-    """
+    """A third disk: HF cache and the f32 conversion share the CWD's disk, which nothing else charges."""
 
     N = 8_190_735_360
     BASE = 2 * N  # the 16-bit base the pre-warm downloads: 15.3GB
-    CONVERSION = 4 * N  # an f32 intermediate: 30.5GB, two base copies
+    CONVERSION = 4 * N  # f32 intermediate, 30.5GB
     WORK = "/work"
     CACHE = "/home/u/.cache/huggingface"
 
     @pytest.fixture
     def state(self, monkeypatch):
-        # The output and its `_gguf` sibling on device 1; the CWD on device 2.
-        # `cache_device` is a knob so the same scenario can put the cache on the conversion's disk, on the output's, or
-        # nowhere resolvable.
+        # Output and `_gguf` sibling on device 1, CWD on device 2; `cache_device` moves the cache.
         state = {"conversion_free": int(2.5 * self.BASE), "cache_device": 2}
         devices = {"model": 1, "model_gguf": 1, self.WORK: 2}
 
@@ -3750,20 +3280,7 @@ class TestTheCacheIsChargedOnTheConversionFilesystem:
 
 
 class TestACacheOnAnotherFilesystemIsNotChargedToTheOutputDisk:
-    """One filesystem for the export, another for the Hugging Face cache.
-
-    `HF_HOME` on a data volume is the ordinary layout on a machine with more
-    than one disk, and then the cached base is never written to the disk the
-    export lands on. Charging it there anyway drops the pre-warm on a disk
-    that had room for everything written to it, and the next export downloads
-    the whole base again - the exact re-download the pre-warm exists to stop.
-    The split branch already asks this question; the single-filesystem one
-    did not.
-
-    Numbers: a 60GB checkpoint, 40GB of quants, a 60GB cached base, 120GB
-    free. The export needs 100GB here and fits; only the fictitious cache
-    copy takes it to 160GB.
-    """
+    """A cache on another disk is not charged to the output disk; charging it drops a pre-warm that fits."""
 
     CHECKPOINT = 60 * GB
     QUANTS = 40 * GB
@@ -3843,10 +3360,7 @@ class TestACacheOnAnotherFilesystemIsNotChargedToTheOutputDisk:
         assert "100.0GB" in str(error.value)
 
     def test_a_reclaimed_merge_charges_the_cache_where_it_lands(self, state, monkeypatch):
-        """The peak branch takes the same figure, so it needs the same answer.
-
-        60GB merge phase against 40GB of quants peaks at 60GB, not 100GB.
-        """
+        """The peak estimate must match: a 60GB merge against 40GB of quants peaks at 60GB, not 100GB."""
         monkeypatch.setattr(S, "_merge_reclamation_is_possible", lambda directory: True)
         state.update(free = 80 * GB)
         assert self._preflight(merge_is_disposable = True) == ("model", True)

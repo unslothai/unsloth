@@ -1,17 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""A dispatched module must carry a hook, including after we rebuild it.
-
-`dispatch_model` hooks every map entry; `post_patch` then installs a NEW
-Embedding and Linear over the same weights, so `_hf_hook` dies with the old
-module and a split model raises `index is on cuda:0, different from other
-tensors on cuda:1`. `tie_word_embeddings = False` fails identically, so nothing
-here is conditioned on the tie.
-
-These RUN the real function against stubs: a rule fed a hand-written dict passes
-on a function that repairs nothing.
-"""
+"""post_patch rebuilds modules and drops their _hf_hook, so split models must re-hook them."""
 
 import sys
 import types
@@ -115,7 +105,7 @@ def test_a_module_that_already_has_a_hook_is_left_alone():
 
 
 def test_a_single_device_map_is_left_completely_alone():
-    # Entries that WOULD attach, so dropping the early return changes the count.
+    # Entries that would attach, so dropping the early return changes the count.
     model = _Model({"embed_tokens": FAR, "lm_head": FAR, "layer": FAR})
     assert _repair()(model) == 0
     assert _hooked(model) == set(), "hooks were attached on a single-device load"
@@ -166,8 +156,7 @@ def _evaluate(expression, **names):
     import ast
 
     def _vllm_will_load_weights(fast_inference, num_labels = None):
-        # The real one probes the GPU and the vLLM install, neither of which a CPU runner has. Its
-        # one rule that matters here is asserted against the real function below.
+        # The real one probes the GPU and vLLM; its rule here is asserted against it below.
         return bool(fast_inference) and num_labels is None
 
     scope = dict(names)
@@ -186,8 +175,7 @@ def test_the_llama_loader_stands_aside_under_vllm():
 
     from unsloth.models.llama import FastLlamaModel
 
-    # dedent, not lstrip: this one is a method, so every line is indented and lstrip would leave the body hanging off a
-    # stripped `def`.
+    # dedent, not lstrip: a method's body is indented throughout.
     tree = ast.parse(textwrap.dedent(inspect.getsource(FastLlamaModel.from_pretrained)))
     calls = [
         node
@@ -198,8 +186,7 @@ def test_the_llama_loader_stands_aside_under_vllm():
 
     guarded = _guards_of(tree, "_repair_dispatch_hooks")
     assert guarded, "the repair is no longer behind a condition at all"
-    # Evaluated, not matched by name: the guard is allowed to ask a predicate rather than read the raw
-    # flag, and either spelling has to keep vLLM out.
+    # Evaluated, not matched by name: the guard may call a predicate instead of the flag.
     assert not any(_evaluate(guard, fast_inference = True, num_labels = None) for guard in guarded), (
         "the repair runs on a real vLLM load, so a vLLM load gets accelerate hooks "
         "on a module tree vLLM does not execute"
@@ -207,19 +194,13 @@ def test_the_llama_loader_stands_aside_under_vllm():
 
 
 def test_a_num_labels_load_is_hooked_even_when_fast_inference_was_asked_for():
-    """vLLM has no classification head, so `fast_inference` there is a request it never honours.
-
-    `AutoModelForSequenceClassification` is loaded in-process and can be split across cards, so
-    passing the raw flag on leaves it with no dispatch hooks and no end-of-load repair, and it dies
-    with `index is on cuda:0, different from other tensors on cuda:1`.
-    """
+    """A num_labels load must be hooked even when fast_inference is set, since vLLM cannot serve it."""
     import ast
     import inspect
     import textwrap
 
     from unsloth.models.llama import FastLlamaModel, _vllm_will_load_weights
 
-    # Ties the stub in _evaluate to the real predicate: vLLM never owns a num_labels load.
     assert _vllm_will_load_weights(True, 2) is False
 
     tree = ast.parse(textwrap.dedent(inspect.getsource(FastLlamaModel.from_pretrained)))
@@ -261,13 +242,7 @@ def test_a_num_labels_load_is_hooked_even_when_fast_inference_was_asked_for():
 
 
 def _normalisation_block():
-    """The top-of-`from_pretrained` `if fast_inference:` block, as something runnable.
-
-    That block, not the caller, decides what `fast_inference` holds by the time the end-of-load
-    guard reads it: it clears the flag when vLLM is missing or the card is too old, and turns it back
-    on for hip. Lifting it keeps the tests below honest about which states are reachable instead of
-    asserting over states `from_pretrained` never produces.
-    """
+    """Lifts from_pretrained's fast_inference normalisation so tests only use states it can reach."""
     import ast
     import inspect
     import textwrap
@@ -327,14 +302,7 @@ def _host(monkeypatch, device_type, vllm_installed, capability):
 def test_asking_the_predicate_is_the_raw_flag_on_anything_but_a_classification_load(
     monkeypatch, device_type, vllm_installed, capability, fast_inference
 ):
-    """The end-of-load guard reads a predicate now, and that must change nothing else.
-
-    `from_pretrained` already cleared `fast_inference` for every reason the predicate would clear
-    it, so on a `num_labels = None` load the two spellings have to agree on every machine. If they
-    ever stop agreeing, a load whose weights came in through transformers gets no hook repair (or a
-    vLLM load gets hooks on a tree vLLM does not execute), and neither shows up as a failure until
-    someone splits a model across two cards.
-    """
+    """For num_labels=None, the predicate must equal the raw fast_inference flag on every machine."""
     import unsloth.models.llama as llama
 
     _host(monkeypatch, device_type, vllm_installed, capability)
@@ -359,18 +327,12 @@ def test_a_classification_load_is_never_vllms_on_any_machine(
     _host(monkeypatch, device_type, vllm_installed, capability)
     reached = _normalise(True, num_labels = 2)
     assert llama._vllm_will_load_weights(reached, 2) is False
-    # num_labels = 0 is a real (if odd) classification request; `is not None` is the rule, not truth.
+    # num_labels = 0 is a real classification request; `is not None` is the rule, not truth.
     assert llama._vllm_will_load_weights(reached, 0) is False
 
 
 def test_the_predicate_probes_nothing_when_it_short_circuits(monkeypatch):
-    """The new call sites must not add a probe to loads that previously did none.
-
-    Both edited sites can be reached with `fast_inference` false or `num_labels` set, and neither
-    asked the vLLM install or the driver anything before. `import vllm`'s spec lookup and
-    `get_device_capability` are cheap but neither is free, and the second raises outright on a host
-    that reports DEVICE_TYPE "cuda" with no driver (UNSLOTH_ALLOW_CPU=1).
-    """
+    """Short-circuit before probing vLLM or the driver; get_device_capability raises with no driver."""
     import unsloth.models.llama as llama
 
     def _no(*args, **kwargs):
@@ -418,11 +380,7 @@ class _Classifier(torch.nn.Module):
 
 
 def test_a_split_classification_model_gets_its_rebuilt_embedding_hooked():
-    """The end of the load is the only place that can fix this, which is why the guard matters.
-
-    A classification model answers None for its output embedding, so the input embedding is the
-    whole repair, and `score` sits on the near card with nothing to give back.
-    """
+    """A classifier's output embedding is None, so the rebuilt input embedding is the whole repair."""
     model = _Classifier({"model.embed_tokens": FAR, "model.layer": NEAR, "score": NEAR}).dispatch()
     assert hasattr(model.model.embed_tokens, "_hf_hook"), "fixture never dispatched"
 

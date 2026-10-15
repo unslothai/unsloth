@@ -1,21 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Minting a Studio API key, and the two ways that check proves nothing.
-
-Creating a key proves the endpoint returns a string. Whether that string
-authenticates anything is a separate question, and it is the one that matters:
-a key Studio issues and then rejects fails in a user's integration rather than
-here.
-
-**Vacuity 1: passing on the session token.** If the bearer is not swapped, the
-request succeeds because the session is still logged in and the key is never
-exercised.
-
-**Vacuity 2: a server that ignores the header.** Then any key "works", including
-one that was never issued. The corrupted-key call is what rules that out, and
-without it the positive check is satisfied by a server with no auth at all.
-"""
+"""A minted key only counts if it authenticates alone, and a corrupted key must be refused."""
 
 from __future__ import annotations
 
@@ -49,11 +35,7 @@ def test_the_session_token_is_set_aside_while_the_key_is_driven():
     assert "saved = self.studio.token" in body
     assert "self.studio.token = saved" in body, "the session token must be restored"
 
-    # Structural, not a substring. `self.studio.token = raw_key[:-4] + "0000"`
-    # CONTAINS the string "self.studio.token = raw_key", so a substring check
-    # passes even when the swap line is deleted and only the corrupted-key
-    # assignment remains -- which is exactly the mutation this guard exists to
-    # catch, and it survived the first version of this test.
+    # Structural, not substring: the corrupted-key assignment contains the swap line's text.
     tree = ast.parse(body)
     swaps = [
         node
