@@ -2008,3 +2008,40 @@ def test_cfg_batch_retimes_both_branches_when_guidance_resumes(monkeypatch):
     assert (
         priced and len(priced[0]) == 2 and priced[0][0] == priced[0][1]
     )  # both from one guided step
+
+
+def test_cfg_batch_refuses_a_stateful_root_pre_hook():
+    torch.manual_seed(0)
+    dit = _BatchDit()
+    calls = [0]
+
+    def count(module, args, kwargs):  # per-call state: scales each branch by its call index
+        calls[0] += 1
+        kwargs = dict(kwargs)
+        kwargs["timestep"] = kwargs["timestep"] * (1.0 + 0.01 * calls[0])
+        return args, kwargs
+
+    dit.register_forward_pre_hook(count, with_kwargs = True)
+    cond, uncond = _embeds()
+    latents = torch.randn(2, 4)
+    reference = _batch_loop(dit, latents.clone(), 4, cond, uncond)
+    calls[0] = 0
+    router = mg.CfgBatchRouter(dit)
+    dit.forward = router
+    out = _batch_loop(dit, latents.clone(), 4, cond, uncond)
+    assert torch.equal(out, reference)
+    assert router.stats["batched_steps"] == 0
+    assert "_forward_pre_hooks" in router.describe()["last_unbatched_reason"]
+
+
+def test_cfg_batch_accepts_a_studio_root_hook():
+    torch.manual_seed(0)
+    dit = _BatchDit()
+    hook = lambda m, a: None  # noqa: E731 - stateless, one of Studio's own
+    hook.__module__ = mg.__name__
+    dit.register_forward_pre_hook(hook)
+    cond, uncond = _embeds()
+    router = mg.CfgBatchRouter(dit)
+    dit.forward = router
+    _batch_loop(dit, torch.randn(2, 4), 4, cond, uncond)
+    assert router.stats["batched_steps"] == 3

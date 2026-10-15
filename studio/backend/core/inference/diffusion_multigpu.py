@@ -1258,7 +1258,9 @@ def _hooks_present(module: Any, *, offload_hooks_ok: bool = False) -> Optional[s
             return f"{name or '<root>'}._diffusers_hook ({', '.join(sorted(sub._diffusers_hook.hooks))})"
         if getattr(sub, "_hf_hook", None) is not None and not offload_hooks_ok:
             return f"{name or '<root>'}._hf_hook"
-        if name:
+        # CFG-batch (offload_hooks_ok) computes the odd branch inside the first branch's root hook run, so the ROOT's
+        # hooks are screened too; CFG-parallel's source module runs them around every branch.
+        if name or offload_hooks_ok:
             for attr in ("_forward_hooks", "_forward_pre_hooks"):
                 for hook in (getattr(sub, attr, None) or {}).values():
                     if not _is_offload_object(hook) and not _trusted_hook(hook):
