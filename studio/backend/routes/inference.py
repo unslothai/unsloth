@@ -31138,6 +31138,11 @@ async def produce_openai_chat_completions(
             },
         }
 
+    def _npu_switch_check(model) -> None:
+        # NPU chat runs no MCP tool loop, so it refuses an MCP image after the switch.
+        _refuse_unused_mcp_image(_mcp_image)
+        _refuse_npu_chat_request(payload, supports_vision = model.vision, supports_tools = model.tools)
+
     # Defer the resident claim: chat has several post-switch capability checks that can still
     # reject (Whisper without audio, n>1 on a non-GGUF backend, tool or response_format
     # passthrough), so claiming here could strand a preview-owned model for a request that
@@ -31156,9 +31161,7 @@ async def produce_openai_chat_completions(
         audio_preflight = _audio_preflight,
         image_preflight = _image_preflight,
         tool_images_only = _tool_images_only,
-        npu_request_check = lambda model: _refuse_npu_chat_request(
-            payload, supports_vision = model.vision, supports_tools = model.tools
-        ),
+        npu_request_check = _npu_switch_check,
     )
     if _audio_preflight is not None:
         _predecoded_audio = _audio_preflight.get("decoded")

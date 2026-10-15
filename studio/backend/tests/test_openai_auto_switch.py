@@ -12542,6 +12542,24 @@ def test_a_chat_request_the_npu_model_would_refuse_never_switches(monkeypatch, f
     assert backend.model_identifier == "unsloth/A-GGUF"
 
 
+def test_an_mcp_image_request_never_switches_to_an_npu_model(monkeypatch):
+    # NPU chat runs no MCP tool loop, so it refused the image only after evicting the GGUF.
+    backend, rec = _wired(monkeypatch, _FakeBackend("unsloth/A-GGUF"), None)
+    _npu_catalog_entry(monkeypatch, vision = True, tools = True)
+
+    async def _an_mcp_image(*_args):
+        return object()
+
+    monkeypatch.setattr(inference_route, "_request_mcp_image", _an_mcp_image)
+    payload = _chat_request(model = _NPU_MODEL)
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
+    assert excinfo.value.status_code == 400
+    assert "MCP" in str(excinfo.value.detail)
+    assert rec.calls == []
+    assert backend.model_identifier == "unsloth/A-GGUF"
+
+
 def test_an_image_request_switches_to_a_vision_npu_model(monkeypatch):
     backend, rec = _wired(monkeypatch, _FakeBackend("unsloth/A-GGUF"), None)
     _npu_catalog_entry(monkeypatch, vision = True)
