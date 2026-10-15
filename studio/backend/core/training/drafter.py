@@ -215,6 +215,8 @@ def _probe_capability(model_name: str, hf_token, key) -> dict:
 
     env = dict(os.environ)
     env[_TOKEN_ENV] = "0" if hf_token is False else (hf_token or "")
+    # The parent decodes as UTF-8 below, so the child has to write it on every locale.
+    env["PYTHONIOENCODING"] = "utf-8"
     # Every Hub read in the child (config, tensor index) then runs as exactly this caller.
     apply_token_to_child_env(env, hf_token)
     result = None
@@ -225,6 +227,8 @@ def _probe_capability(model_name: str, hf_token, key) -> dict:
             env = env,
             capture_output = True,
             text = True,
+            encoding = "utf-8",
+            errors = "replace",
             timeout = 300,
         )
         for line in proc.stdout.splitlines():
