@@ -124,8 +124,13 @@ export const BUDGET = {
   // native view, and the off-screen question strings) adds 5,278 B raw / 1,928 B transfer (6,765,003 ->
   // 6,770,281 B raw, 2,033,563 -> 2,035,491 B transfer against a8585676d4, one machine and build, Node 24,
   // chunk count unchanged at 95), raised by that.
-  transferBytes: 2_035_705,
-  rawBytes: 6_770_942,
+  // Hub Run refusing audio models neither Audio nor chat can run (#13812) adds 82 B transfer and no raw
+  // (2,035,640 -> 2,035,722 B transfer, 6,770,922 -> 6,770,921 B raw against 42735fcf2, one machine and build,
+  // Node 24, chunk count unchanged at 95), which put main 17 B transfer over. Raw has no growth but main had
+  // 0 B spare, and the same tree builds 6,770,921 or 6,770,972 B raw in two checkouts (staging CI read
+  // 6,612.3 KB, at most 6,771,046 B), so raw is raised to cover that spread.
+  transferBytes: 2_035_787,
+  rawBytes: 6_771_046,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
