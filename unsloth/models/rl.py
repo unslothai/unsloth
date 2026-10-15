@@ -3177,6 +3177,10 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                 f"    _unsloth_fsdp2 = _unsloth_fsdp2 or str(_unsloth_fsdp_cfg.get('fsdp_version', _unsloth_fsdp_cfg.get('version', {_FSDP_DEFAULT_VERSION}))) == '2'\n"
             )
         extra_args += (
+            "_unsloth_flash_adamw = str(getattr(optim, 'value', optim)).strip().lower() == 'adamw_flash'\n"
+            "if _unsloth_flash_adamw: optim = 'adamw_torch'\n"
+        )
+        extra_args += (
             "if _unsloth_fsdp2 and str(getattr(optim, 'value', optim)) == 'adamw_8bit':\n"
             "    print(\"Unsloth: FSDP2 shards parameters as DTensors, which bitsandbytes' 8-bit optimizers cannot step. Switching optim = 'adamw_8bit' to 'adamw_torch_fused'.\")\n"
             "    optim = 'adamw_torch_fused'\n"
@@ -3408,6 +3412,13 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         "                _gc_kwargs['use_reentrant'] = True\n"
         "                self.gradient_checkpointing_kwargs = _gc_kwargs\n"
     )
+
+    if "optim" in call_args:
+        RLConfig_post += (
+            "        if _unsloth_flash_adamw:\n"
+            "            from unsloth.optimizers.flash_adamw import mark_flash_adamw\n"
+            "            mark_flash_adamw(self)\n"
+        )
 
     RLTrainer_extras = patch_functions(
         RLTrainer, trainer_file, RLTrainer_name, all_imports, imports

@@ -27,6 +27,11 @@ from trl import SFTTrainer
 
 # Bypass the partially-initialised unsloth namespace during the _gpu_init load.
 from .models._utils import is_bfloat16_supported
+from unsloth.optimizers.flash_adamw import (
+    _FLASH_ADAMW_PLACEHOLDER,
+    is_flash_adamw,
+    mark_flash_adamw,
+)
 from unsloth.utils import (
     configure_padding_free,
     configure_sample_packing,
@@ -940,7 +945,12 @@ class UnslothTrainingArguments(TrainingArguments):
         self.q_galore_config = q_galore_config
         self.embedding_learning_rate = embedding_learning_rate
         self.loraplus_lr_ratio = loraplus_lr_ratio
+        flash_adamw = is_flash_adamw(kwargs.get("optim", None))
+        if flash_adamw:
+            kwargs["optim"] = _FLASH_ADAMW_PLACEHOLDER
         super().__init__(*args, **kwargs)
+        if flash_adamw:
+            mark_flash_adamw(self)
         self.embedding_learning_rate = embedding_learning_rate
         self.loraplus_lr_ratio = loraplus_lr_ratio
         if self.eval_steps is not None and self.eval_strategy != "steps":
