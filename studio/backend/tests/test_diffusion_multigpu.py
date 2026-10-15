@@ -1745,7 +1745,9 @@ def test_price_cfg_parallel_declines_a_slow_link():
         link_in_gib_s = None,
         link_out_gib_s = None,
     )
-    assert unknown["strategy"] == "cfg_parallel"
+    # an unmeasured link is unknown, not free: one card, flagged so the probe is retried
+    assert unknown["strategy"] == "single" and unknown["link_unmeasured"] is True
+    assert fast["link_unmeasured"] is False
 
 
 def _probe(o, free, links):
@@ -2832,3 +2834,178 @@ def test_cfg_batch_declines_a_foreign_bound_forward_override(monkeypatch):
     dit3.forward = router3
     _batch_loop(dit3, torch.randn(2, 4), 4, cond, uncond)
     assert router3.stats["batched_steps"] == 3
+
+
+def _guided(dit, rows, steps = 2, length = 4):
+    """A guided loop whose latent batch (and conditioning) has ``rows`` rows."""
+    latents = torch.randn(rows, length, generator = torch.Generator().manual_seed(rows))
+    cond, uncond = _embeds(rows, length)
+    return _batch_loop(dit, latents, steps, cond, uncond)
+
+
+def test_cfg_parallel_prices_each_request_shape_on_its_own(monkeypatch):
+    # a small canvas is priced out; a later larger one must be priced itself, not inherit the small verdict
+    dit = _BatchDit()
+    router, replicas = _router(dit)
+    pipe = _RouterPipe(dit)
+    timed = []
+
+    def timed_primary(a, k):
+        rows = k["hidden_states"].shape[0]
+        timed.append(rows)
+        return router.orig_forward(*a, **k), (1e-3 if rows == 2 else 1.0)
+
+    monkeypatch.setattr(router, "_should_price", lambda: True)
+    monkeypatch.setattr(router, "_timed_primary", timed_primary)
+    # ~0.1 s per step of copies: dwarfs a 1 ms branch, hides behind a 1 s one
+    monkeypatch.setattr(mg, "link_gib_s", lambda src, dst, probes = None: 1e-6)
+    router.primary = router.secondary = torch.device("cpu")
+    with mg.cfg_request_scope(pipe, 256, 256):
+        _guided(dit, 2)
+    assert replicas == [] and "priced out" in router.describe()["disabled_reason"]
+    assert router.disabled_reason is None  # a per-shape verdict, not a load-wide one
+    with mg.cfg_request_scope(pipe, 1024, 1024):
+        _guided(dit, 3, steps = 3)
+    assert len(replicas) == 1 and router.stats["replica_calls"] > 0
+    assert router.describe()["strategy"] == "cfg_parallel"
+    timed.clear()
+    calls = router.stats["replica_calls"]
+    with mg.cfg_request_scope(pipe, 256, 256):
+        _guided(dit, 2)
+    # the small shape reuses its stored verdict: no new timing, one card, replica kept for the large shape
+    assert timed == [] and router.stats["replica_calls"] == calls and len(replicas) == 1
+    assert "priced out" in router.describe()["disabled_reason"]
+    with mg.cfg_request_scope(pipe, 1024, 1024):
+        _guided(dit, 3)
+    assert timed == [] and router.stats["replica_calls"] > calls
+    for rows in range(4, 10):  # the book stays bounded
+        with mg.cfg_request_scope(pipe, 64 * rows, 64):
+            _guided(dit, rows, steps = 1)
+    assert len(router.shapes.saved) <= mg._SHAPE_BOOK_SIZE
+
+
+def test_cfg_batch_prices_each_request_shape_on_its_own(monkeypatch):
+    dit = _BatchDit()
+    router = mg.CfgBatchRouter(dit)
+    dit.forward = router
+    pipe = _RouterPipe(dit)
+    mg._CFG_BATCH[pipe] = router
+    timed = []
+
+    def timed_plain(a, k):
+        rows = k["hidden_states"].shape[0]
+        timed.append(rows)
+        router.plain_times.append(5.0 if rows == 2 else 1.2)  # 1 GiB upload: 2 rows compute-bound, 3 rows not
+        return router._plain(a, k)
+
+    monkeypatch.setattr(router, "_can_time", lambda latent: True)
+    monkeypatch.setattr(router, "_timed_plain", timed_plain)
+    monkeypatch.setattr(router, "_streamed_bytes", lambda: 1 << 30)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    monkeypatch.setattr(
+        mg,
+        "probe_devices",
+        lambda ordinals, measure = True: {0: mg.DeviceProbe(
+            ordinal = 0, name = "card", total_mib = 1, free_mib = 1, h2d_gib_s = 1.0, peers = ()
+        )},
+    )
+    with mg.cfg_request_scope(pipe, 256, 256):
+        _guided(dit, 2)
+    assert router.stats["batched_steps"] == 0 and "priced out" in router.describe()["disabled_reason"]
+    assert router.disabled_reason is None
+    torch.manual_seed(0)
+    plain = _BatchDit()
+    plain.load_state_dict(dit.state_dict())
+    reference = _guided(plain, 3, steps = 4)
+    with mg.cfg_request_scope(pipe, 1024, 1024):
+        out = _guided(dit, 3, steps = 4)
+    torch.testing.assert_close(out, reference, rtol = 1e-5, atol = 1e-6)
+    assert router.stats["batched_steps"] == 3 and router.describe()["strategy"] == "cfg_batch"
+    timed.clear()
+    with mg.cfg_request_scope(pipe, 256, 256):
+        _guided(dit, 2)
+    assert timed == [] and router.stats["batched_steps"] == 3  # the stored verdict, not a reprice
+    with mg.cfg_request_scope(pipe, 1024, 1024):
+        _guided(dit, 3, steps = 3)
+    # the large shape kept its price: batched from its first step (template rebuilt), no new timing
+    assert timed == [] and router.stats["batched_steps"] == 5
+    mg._CFG_BATCH.pop(pipe, None)
+
+
+def test_cfg_parallel_declines_an_unmeasured_link_and_retries_it(monkeypatch):
+    dit = _BatchDit()
+    router, replicas = _router(dit)
+    pipe = _RouterPipe(dit)
+    links = [None]
+    monkeypatch.setattr(router, "_should_price", lambda: True)
+    monkeypatch.setattr(router, "_timed_primary", lambda a, k: (router.orig_forward(*a, **k), 1.0))
+    monkeypatch.setattr(mg, "link_gib_s", lambda src, dst, probes = None: links[0])
+    router.primary = router.secondary = torch.device("cpu")
+    with mg.cfg_request_scope(pipe, 512, 512):
+        _guided(dit, 2, steps = 3)
+    # unknown is not free: no replica built on an unmeasured link
+    assert replicas == [] and router.stats["replica_calls"] == 0
+    assert "link unmeasured" in router.describe()["disabled_reason"]
+    links[0] = 9.0  # the probe succeeds on a later request
+    with mg.cfg_request_scope(pipe, 512, 512):
+        _guided(dit, 2, steps = 3)
+    assert len(replicas) == 1 and router.stats["replica_calls"] > 0
+
+
+def test_probe_does_not_cache_a_failed_link_measurement(monkeypatch):
+    mg._reset_probe_cache_for_tests()
+    real_empty = torch.empty
+    monkeypatch.setattr(
+        torch, "empty", lambda *a, device = None, **k: real_empty(*a, **k)
+    )  # the "card" buffers live on the host
+    monkeypatch.setattr(torch.cuda, "can_device_access_peer", lambda a, b: True)
+    results = iter([RuntimeError("busy"), RuntimeError("busy"), 20.0, 21.0])
+
+    def measure(src, dst):
+        r = next(results)
+        if isinstance(r, Exception):
+            raise r
+        return r
+
+    monkeypatch.setattr(mg, "_measure_copy_gib_s", measure)
+    try:
+        assert mg.link_gib_s(0, 1, mg.probe_devices((0, 1))) is None
+        assert mg.link_gib_s(0, 1, mg.probe_devices((0, 1))) == 20.0
+        assert mg.link_gib_s(1, 0, mg.probe_devices((0, 1))) == 21.0
+    finally:
+        mg._reset_probe_cache_for_tests()
+
+
+@pytest.mark.parametrize("kind", ["batch", "parallel"])
+def test_uninstall_restores_the_instance_forward_override(kind):
+    dit = _BatchDit()
+    pipe = _RouterPipe(dit)
+
+    def offload_wrapper(*a, **k):
+        return type(dit).forward(dit, *a, **k)
+
+    dit.forward = offload_wrapper  # an accelerate-style instance override the router sits on
+    if kind == "batch":
+        router = mg.CfgBatchRouter(dit)
+        mg._CFG_BATCH[pipe] = router
+        dit.__dict__["_unsloth_cfg_router"] = router
+        dit.forward = router
+        mg.uninstall_cfg_batch(pipe)
+    else:
+        router, _ = _router(dit)
+        mg._CFG_ROUTERS[pipe] = router
+        dit.__dict__["_unsloth_cfg_router"] = router
+        mg.uninstall_cfg_parallel(pipe)
+    assert dit.__dict__.get("forward") is offload_wrapper
+    assert "_unsloth_cfg_router" not in dit.__dict__
+    plain = _BatchDit()
+    pipe2 = _RouterPipe(plain)
+    router = mg.CfgBatchRouter(plain) if kind == "batch" else _router(plain)[0]
+    plain.forward = router
+    if kind == "batch":
+        mg._CFG_BATCH[pipe2] = router
+        mg.uninstall_cfg_batch(pipe2)
+    else:
+        mg._CFG_ROUTERS[pipe2] = router
+        mg.uninstall_cfg_parallel(pipe2)
+    assert "forward" not in plain.__dict__  # no override originally: the slot is removed

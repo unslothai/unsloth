@@ -286,7 +286,8 @@ def probe_devices(ordinals: Sequence[int], *, measure: bool = True) -> dict[int,
                 _STATIC_PROBE[o] = static
         for a in ords:
             for b in ords:
-                if a == b or (a, b) in _PAIR_PROBE:
+                # a failed measurement is not cached: the next probe tries again
+                if a == b or ((a, b) in _PAIR_PROBE and (_PAIR_PROBE[(a, b)][1] is not None or not measure)):
                     continue
                 try:
                     access = bool(torch.cuda.can_device_access_peer(a, b))
@@ -414,7 +415,8 @@ def price_cfg_parallel(
     the replica runs ``branch`` after its copies). Chosen when it is at most ``_PRICE_PARALLEL_FRACTION`` of one card.
     ``branch_s`` = the measured odd branch, ``primary_s`` = the measured even branch of the same step (``branch_s``
     when unmeasured). With equal branches this is the old rule: copy <= 0.8 of a branch."""
-    if link_in_gib_s and link_out_gib_s:
+    measured = bool(link_in_gib_s and link_out_gib_s)
+    if measured:
         copy_s = in_bytes / (link_in_gib_s * (1 << 30)) + out_bytes / (link_out_gib_s * (1 << 30))
         build_s: Optional[float] = replica_bytes / (link_in_gib_s * (1 << 30))
     else:
@@ -422,9 +424,11 @@ def price_cfg_parallel(
     primary = branch_s if primary_s is None else primary_s
     single = primary + branch_s
     parallel = max(primary, branch_s + copy_s)
-    chosen = "cfg_parallel" if parallel <= _PRICE_PARALLEL_FRACTION * single else "single"
+    # an unmeasured link is unknown, not free: one card until a probe measures it (retried on the next request)
+    chosen = "cfg_parallel" if measured and parallel <= _PRICE_PARALLEL_FRACTION * single else "single"
     return {
         "strategy": chosen,
+        "link_unmeasured": not measured,
         "primary_branch_s": round(primary, 4),
         "branch_s": round(branch_s, 4),
         "copy_s": round(copy_s, 4),
@@ -437,6 +441,60 @@ def price_cfg_parallel(
 
 
 _PRICE_PARALLEL_FRACTION = 0.9
+
+
+# Pricing and verification are per request shape: (canvas, every input tensor's shape: latent batch, tokens,
+# conditioning length). The few most recent shapes keep their verdicts; a new shape is priced on its own first
+# guided step.
+_SHAPE_BOOK_SIZE = 4
+
+
+def _request_shape(request_px: Optional[int], args: tuple, kwargs: dict) -> tuple:
+    return (request_px, tuple(tuple(t.shape) for t in _iter_tensors((args, kwargs))))
+
+
+class _ShapeBook:
+    """Per-shape copies of a router's pricing fields, most recent last, bounded."""
+
+    def __init__(self, fields: dict):
+        self.defaults = fields
+        self.key: Any = None
+        self.saved: "OrderedDict[Any, dict]" = OrderedDict()
+
+    def switch(self, router: Any, key: Any) -> bool:
+        """Make ``key`` the router's current shape; True when it changed."""
+        if key == self.key:
+            return False
+        if self.key is None and not self.saved:
+            # the first shape owns whatever the router holds already
+            self.key = key
+            return True
+        if self.key is not None:
+            self.saved[self.key] = {name: getattr(router, name) for name in self.defaults}
+            self.saved.move_to_end(self.key)
+            while len(self.saved) > _SHAPE_BOOK_SIZE:
+                self.saved.popitem(last = False)
+        state = self.saved.pop(key, None)
+        for name, default in self.defaults.items():
+            value = state[name] if state is not None else default
+            setattr(router, name, list(value) if isinstance(value, list) else value)
+        self.key = key
+        return True
+
+    def clear(self, router: Any) -> None:
+        self.saved.clear()
+        self.key = None
+        for name, default in self.defaults.items():
+            setattr(router, name, list(default) if isinstance(default, list) else default)
+
+    def forget(self, router: Any, predicate: Callable[[dict], bool]) -> None:
+        """Drop saved shapes (and reset the current one) whose state matches ``predicate``."""
+        for key in [k for k, v in self.saved.items() if predicate(v)]:
+            del self.saved[key]
+        current = {name: getattr(router, name) for name in self.defaults}
+        if predicate(current):
+            for name, default in self.defaults.items():
+                setattr(router, name, list(default) if isinstance(default, list) else default)
 
 
 # --------------------------------------------------------------------------------------------------------------------
@@ -1788,8 +1846,10 @@ class CfgParallelRouter:
         self.request_px: Optional[int] = None
         self.module_ref = weakref.ref(module)
         self.orig_forward = module.forward
-        # an instance-level forward (bound override, offload wrapper) the replica must reproduce or drop
+        # an instance-level forward (bound override, offload wrapper) the replica must reproduce or drop, and that
+        # uninstall puts back
         self.had_override = "forward" in module.__dict__
+        self.prev_override = module.__dict__.get("forward")
         self.primary = torch.device(primary)
         self.secondary = torch.device(secondary)
         self.logger = logger
@@ -1827,16 +1887,22 @@ class CfgParallelRouter:
         self.pairs: list = []
         self.pricing: Optional[dict[str, Any]] = None
         self.b0_s: Optional[float] = None
+        # why the CURRENT request shape keeps one card (priced out, link unmeasured); per shape, not per load
+        self.shape_disabled: Optional[str] = None
+        self.shapes = _ShapeBook({"pricing": None, "shape_disabled": None})
 
     # -- status
     def describe(self) -> dict[str, Any]:
+        off = self.disabled_reason or self.shape_disabled
         return {
-            "strategy": "cfg_parallel" if self.disabled_reason is None else "single",
+            "strategy": "cfg_parallel" if off is None else "single",
             "pricing": self.pricing,
+            "shapes_priced": len(self.shapes.saved) + (self.shapes.key is not None),
             "secondary": str(self.secondary),
             "replica_built": self.replica is not None,
             "replica_compiled_submodules": getattr(self.replica, "_unsloth_replica_compiled", None),
-            "disabled_reason": self.disabled_reason,
+            "disabled_reason": off,
+            "disabled_for_shape_only": self.disabled_reason is None and self.shape_disabled is not None,
             "blocked_by": self.blocked_by,
             **self.stats,
         }
@@ -1883,7 +1949,15 @@ class CfgParallelRouter:
             self._drop_pending()
             self.b0_leaves = dict(_leaves((args, kwargs)))
             self.b0_s = None
-            if self.cfg_seen and self.replica is not None and self.disabled_reason is None:
+            if self.shapes.switch(self, _request_shape(self.request_px, args, kwargs)):
+                self.template = None  # the previous shape's odd-branch prediction does not carry over
+            if (
+                self.cfg_seen
+                and self.replica is not None
+                and self.disabled_reason is None
+                and self.shape_disabled is None
+                and (self.pricing is not None or not self._should_price())
+            ):
                 # Copy this step's inputs to the replica card BEFORE the primary branch is queued: a copy queued after
                 # it would wait for it on the source stream and serialise the two branches.
                 self._prefetch(args, kwargs)
@@ -1897,19 +1971,23 @@ class CfgParallelRouter:
             self._drop_pending()
             self.template = None
             self.stats["opaque_primary_calls"] += 1
-        elif self.branch % 2 == 1 and self.disabled_reason is None:
+        elif self.branch % 2 == 1 and self.disabled_reason is None and self.shape_disabled is None:
             self.singles = 0
+            if self.pricing is None and self.replica is not None and self._should_price():
+                # a new request shape on a load that already has a replica: price this shape too
+                self._drop_pending()
+                out, branch_s = self._timed_primary(args, kwargs)
+                self.pricing = self._price(args, kwargs, out, branch_s)
+                self._shape_verdict()
+                if self.branch == 1:
+                    self._record_template(args, kwargs, latent)
+                return out
             if self.replica is None:
                 self.cfg_seen = True
                 if self.pricing is None and self._should_price():
                     out, branch_s = self._timed_primary(args, kwargs)
                     self.pricing = self._price(args, kwargs, out, branch_s)
-                    if self.pricing["strategy"] != "cfg_parallel":
-                        self.disable(
-                            "priced out: one card takes "
-                            f"{self.pricing['single_step_s']:.4f}s per step, CFG-parallel "
-                            f"{self.pricing['cfg_parallel_step_s']:.4f}s (link copies {self.pricing['copy_s']:.4f}s)"
-                        )
+                    if not self._shape_verdict():
                         return out
                     self._build_replica()
                     if self.branch == 1:
@@ -1934,9 +2012,9 @@ class CfgParallelRouter:
             self.cfg_seen = True
         if (
             self.branch == 0
-            and self.replica is None
             and self.pricing is None
             and self.disabled_reason is None
+            and self.shape_disabled is None
             and self.singles == 0
             and self._should_price()
         ):
@@ -1945,6 +2023,22 @@ class CfgParallelRouter:
             return out
         self.stats["primary_calls"] += 1
         return self.orig_forward(*args, **kwargs)
+
+    def _shape_verdict(self) -> bool:
+        """Apply the current shape's price: True when CFG-parallel runs for it."""
+        if self.pricing["strategy"] == "cfg_parallel":
+            return True
+        if self.pricing.get("link_unmeasured"):
+            self.shape_disabled = "link unmeasured: one card until a probe measures it (retried next request)"
+        else:
+            self.shape_disabled = (
+                "priced out: one card takes "
+                f"{self.pricing['single_step_s']:.4f}s per step, CFG-parallel "
+                f"{self.pricing['cfg_parallel_step_s']:.4f}s (link copies {self.pricing['copy_s']:.4f}s)"
+            )
+        if self.logger is not None:
+            self.logger.info("diffusion.multigpu: CFG-parallel off for this request shape (%s)", self.shape_disabled)
+        return False
 
     # -- request lifecycle (Studio's generate path; without it the call pattern decides)
     def begin_request(
@@ -1956,6 +2050,8 @@ class CfgParallelRouter:
         self.branch = 0
         self.singles = 0
         self.b0_s = None
+        # an unmeasured link is retried on every request
+        self.shapes.forget(self, lambda st: bool((st.get("pricing") or {}).get("link_unmeasured")))
         try:
             self.request_px = int(width) * int(height) if width and height else None
         except (TypeError, ValueError):
@@ -1975,8 +2071,8 @@ class CfgParallelRouter:
         self.b0_leaves = {}
 
     def reprice(self) -> None:
-        """Forget the per-load price; a priced-out router is armed again and prices the next guided step."""
-        self.pricing = None
+        """Forget every shape's price; a priced-out router is armed again and prices the next guided step."""
+        self.shapes.clear(self)
         self.b0_s = None
         if self.disabled_reason is not None and self.disabled_reason.startswith("priced out"):
             self.disabled_reason = None
@@ -2481,7 +2577,11 @@ def uninstall_cfg_parallel(pipe: Any) -> None:
     router.drop_replica()
     module = router.module_ref()
     if module is not None and module.__dict__.get("forward") is router:
-        del module.__dict__["forward"]
+        # back to the forward the router replaced: an offload wrapper / bound override stays in force
+        if router.had_override:
+            module.__dict__["forward"] = router.prev_override
+        else:
+            del module.__dict__["forward"]
         module.__dict__.pop("_unsloth_cfg_router", None)
 
 
@@ -2759,6 +2859,9 @@ class CfgBatchRouter:
     ):
         self.module_ref = weakref.ref(module)
         self.orig_forward = module.forward
+        # the instance forward the router replaced (an offload wrapper), put back on uninstall
+        self.had_override = "forward" in module.__dict__
+        self.prev_override = module.__dict__.get("forward")
         self.headroom_mib = headroom_mib
         # the canvas (pixels) ``headroom_mib`` was calibrated at; scaled linearly to the request's canvas
         self.headroom_reference_px = headroom_reference_px
@@ -2780,6 +2883,18 @@ class CfgBatchRouter:
         self.verify_batched = _BATCH_VERIFY_CALLS
         self.batched_times: list[float] = []
         self.disabled_pending: Optional[str] = None
+        # why the CURRENT request shape runs one branch per call (priced out, measured no gain); per shape
+        self.shape_disabled: Optional[str] = None
+        self.shapes = _ShapeBook(
+            {
+                "pricing": None,
+                "plain_times": [],
+                "batched_times": [],
+                "verify_batched": _BATCH_VERIFY_CALLS,
+                "disabled_pending": None,
+                "shape_disabled": None,
+            }
+        )
         self.stats = {
             "batched_steps": 0,
             "batched_hits": 0,
@@ -2789,11 +2904,14 @@ class CfgBatchRouter:
         }
 
     def describe(self) -> dict[str, Any]:
+        off = self.disabled_reason or self.shape_disabled
         return {
-            "strategy": "cfg_batch" if self.disabled_reason is None else "single",
+            "strategy": "cfg_batch" if off is None else "single",
             "pricing": self.pricing,
+            "shapes_priced": len(self.shapes.saved) + (self.shapes.key is not None),
             "engaged_for": self.reason,
-            "disabled_reason": self.disabled_reason,
+            "disabled_reason": off,
+            "disabled_for_shape_only": self.disabled_reason is None and self.shape_disabled is not None,
             "last_unbatched_reason": self.last_skip,
             **self.stats,
         }
@@ -2827,12 +2945,8 @@ class CfgBatchRouter:
         self.prev_latent = None
 
     def reprice(self) -> None:
-        """The denoiser changed: forget the price and the measured / priced verdicts, so it is priced again."""
-        self.pricing = None
-        self.plain_times = []
-        self.batched_times = []
-        self.verify_batched = _BATCH_VERIFY_CALLS
-        self.disabled_pending = None
+        """The denoiser changed: forget every shape's price and measured verdicts, so each is priced again."""
+        self.shapes.clear(self)
         self.timing_off = False
         self.state_watch = None
         if self.disabled_reason is not None and self.disabled_reason.startswith(
@@ -2867,7 +2981,11 @@ class CfgBatchRouter:
                 self.stats["batched_misses"] += 1
             self._apply_pending()
             self.b0_leaves = dict(_leaves((args, kwargs)))
-        if self.disabled_reason is not None or latent is None:
+            if self.shapes.switch(self, _request_shape(self.request_px, args, kwargs)):
+                self.template = None  # the previous shape's odd-branch prediction does not carry over
+                if self.pricing is None:
+                    self.timing_off = False  # a new shape: its first guided step is timed plain
+        if self.disabled_reason is not None or self.shape_disabled is not None or latent is None:
             return self._plain(args, kwargs)
         if self.branch == 1 and self.timing_off:
             # guidance resumed: retake both branch timings on the next step
@@ -2942,7 +3060,7 @@ class CfgBatchRouter:
         if self.logger is not None:
             self.logger.info("diffusion.multigpu: CFG-batch priced %s", self.pricing)
         if self.pricing["strategy"] != "cfg_batch":
-            self.disable(
+            self._disable_shape(
                 f"priced out: a call takes {call_s:.4f}s, its upload {upload_s:.4f}s (compute-bound; the streamed "
                 "blocks already hide behind compute, so one batched call costs as much as two)"
             )
@@ -3193,7 +3311,16 @@ class CfgBatchRouter:
     def _apply_pending(self) -> None:
         if self.disabled_pending is not None:
             reason, self.disabled_pending = self.disabled_pending, None
-            self.disable(reason)
+            self._disable_shape(reason)
+
+    def _disable_shape(self, reason: str) -> None:
+        """A priced / measured verdict: one branch per call for THIS request shape only."""
+        if self.shape_disabled is None:
+            self.shape_disabled = reason
+            if self.logger is not None:
+                self.logger.info("diffusion.multigpu: CFG-batch off for this request shape (%s)", reason)
+        self.kept = None
+        self.template = None
 
 
 _CFG_BATCH: "weakref.WeakKeyDictionary[Any, CfgBatchRouter]" = weakref.WeakKeyDictionary()
@@ -3377,4 +3504,8 @@ def uninstall_cfg_batch(pipe: Any) -> None:
     if module is not None and module.__dict__.get("_unsloth_cfg_router") is router:
         del module.__dict__["_unsloth_cfg_router"]
     if module is not None and module.__dict__.get("forward") is router:
-        del module.__dict__["forward"]
+        # back to the forward the router replaced: an offload wrapper / bound override stays in force
+        if router.had_override:
+            module.__dict__["forward"] = router.prev_override
+        else:
+            del module.__dict__["forward"]
