@@ -12401,6 +12401,7 @@ def test_completions_switch_admits_an_mlx_target_only_for_what_it_serves(monkeyp
         (hardware.DeviceType.MLX, {"prompt": "p", "echo": True}),
         (hardware.DeviceType.MLX, {"prompt": "p", "typical_p": 0.5}),
         (hardware.DeviceType.CUDA, {"prompt": "p"}),
+        (hardware.DeviceType.CUDA, {"prompt": "p", "typical_p": 0.5}),
     ):
         monkeypatch.setattr(hardware, "get_device", lambda: device)
         with pytest.raises(RuntimeError):
@@ -12409,5 +12410,7 @@ def test_completions_switch_admits_an_mlx_target_only_for_what_it_serves(monkeyp
         (False, None),
         (False, None),
         (True, "'typical_p' is not supported for MLX models."),
+        (True, None),
+        # A GGUF-only host keeps the GGUF refusal: no MLX reason, no grammar compiled.
         (True, None),
     ]

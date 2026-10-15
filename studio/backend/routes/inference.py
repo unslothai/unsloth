@@ -37800,15 +37800,16 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
         _pre = await request.json()
     except (json.JSONDecodeError, ValueError):
         _pre = _UNPARSEABLE_BODY
+    _mlx_device = await asyncio.to_thread(get_device) == DeviceType.MLX
+    # Only an MLX host can serve the body in process; elsewhere the GGUF route reads it as is.
     # Compiling a client grammar can take a while, so it runs off the event loop as chat's does.
     _mlx_refusal = (
         await asyncio.get_running_loop().run_in_executor(
             _SCHEMA_VALIDATION_EXECUTOR, _mlx_completions_refusal, _pre
         )
-        if isinstance(_pre, dict)
+        if _mlx_device and isinstance(_pre, dict)
         else None
     )
-    _mlx_device = await asyncio.to_thread(get_device) == DeviceType.MLX
 
     # Reject a request with no prompt before any automatic load so an invalid request never
     # swaps or reloads the resident model (as chat/embeddings already validate before
