@@ -361,11 +361,18 @@ def test_status_never_offers_whisper_cpp(monkeypatch):
     monkeypatch.setattr(ggml_module, "is_available", lambda: True)
     monkeypatch.setattr(ggml_module, "_cached_model_path", lambda _model: Path("/cache/ggml.bin"))
     monkeypatch.setattr(ri.account_access, "managed_account", lambda: False)
+    # Even a whisper-server model somehow still resident is never advertised, so no client
+    # picks the retired engine as the one to poll.
+    monkeypatch.setattr(GgmlSttSidecar, "loaded_model", property(lambda _self: "small"))
+    monkeypatch.setattr(GgmlSttSidecar, "is_loading", lambda _self: True)
 
     body = json.loads(asyncio.run(ri.stt_status(model = None, current_subject = "owner")).body)
     gguf = body["gguf"]
 
     assert gguf["available"] is False
+    assert gguf["loaded_model"] is None
+    assert gguf["loading"] is False
+    assert gguf["device"] is None
     assert gguf["models"] == []
     assert gguf["downloaded_models"] == []
     assert gguf["default_model"] is None

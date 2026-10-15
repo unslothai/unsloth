@@ -25510,9 +25510,9 @@ async def stt_status(
             # its .bin caches are still on disk. The keys stay so old clients still parse it.
             "gguf": {
                 "available": False,
-                "loaded_model": ggml.loaded_model,
-                "loading": ggml.is_loading(),
-                "device": ggml.device,
+                "loaded_model": None,
+                "loading": False,
+                "device": None,
                 "keep_alive_seconds": ggml.keep_alive_seconds,
                 "default_model": None,
                 "models": [],
