@@ -107,7 +107,12 @@ def discovery_enabled() -> bool:
 ROCM_PROBE_FAILED = "ROCm regional compile probe failed on this install"
 
 
-def compile_ineligible_reason(target: Any, family: Any, *, probe: bool = True) -> Optional[str]:
+def compile_ineligible_reason(
+    target: Any,
+    family: Any,
+    *,
+    probe: bool = True,
+) -> Optional[str]:
     """Why ``compile_eligible`` refuses, mirroring its checks in order; None when eligible.
     ``probe=False`` reads only a recorded ROCm probe result and never runs the allocating probe."""
     from .. import diffusion_speed as ds  # noqa: PLC0415
@@ -219,7 +224,12 @@ def build_plan(
                 step.attempt = False
                 step.reason = f"{GRAPH_BREAK_DECLINE} ({p.class_name}: {suspects})"
     step = plan.step("compiled")
-    if probe_pending and step is not None and step.attempt and not ds.rocm_compile_probe_passes(target):
+    if (
+        probe_pending
+        and step is not None
+        and step.attempt
+        and not ds.rocm_compile_probe_passes(target)
+    ):
         step.attempt = False
         step.reason = ROCM_PROBE_FAILED
     rocm_off = ds.rocm_compile_switched_off(target)
