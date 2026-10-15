@@ -163,7 +163,6 @@ def _trusted_bwrap_path() -> str:
     if candidate is None:
         raise SandboxUnavailableError("bubblewrap (bwrap) is not installed on this host")
     resolved = os.path.realpath(candidate)
-    # A user namespace shows root and every other unmapped owner as the overflow uid.
     overflow = _unmapped_uid()
     vouched = (0,) if overflow is None else (0, overflow)
     if pinned:
