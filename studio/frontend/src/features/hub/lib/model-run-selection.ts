@@ -199,6 +199,28 @@ export function hubModelRunsOnAudioPage(
   });
 }
 
+// Speech, music and separation checkpoints never load in chat. ASR is left out: chat keeps
+// its Run for transcription models (MLX Whisper on Mac reaches Audio only from the picker).
+const CHAT_UNLOADABLE_AUDIO_TASKS: ReadonlySet<string> = new Set([
+  "text-to-speech",
+  "text-to-audio",
+  "audio-to-audio",
+]);
+
+/** Whether Run must refuse an audio model the Audio page cannot run, instead of handing it to
+ *  chat, which cannot load it either and would unload the chat model first. The chat picker
+ *  refuses the same picks. */
+export function hubAudioRunRefused(
+  model: SelectedModelView,
+  task: string | null,
+): boolean {
+  const id = model.hubRepoId;
+  if (!id || !routableToMediaPage(model.kind, model.localSource)) return false;
+  const audioTask = hubAudioTask(model, task);
+  if (!audioTask || !CHAT_UNLOADABLE_AUDIO_TASKS.has(audioTask)) return false;
+  return !hubModelRunsOnAudioPage(model, task);
+}
+
 export function isHubModelRunEligible({
   model,
   isDataset,
