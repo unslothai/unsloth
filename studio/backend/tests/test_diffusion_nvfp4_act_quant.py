@@ -37,6 +37,16 @@ def test_eligibility_is_structural():
     assert not aq._eligible(x, 16, s, True, True)
 
 
+def test_host_scalar_scale_falls_back_to_torchao():
+    # torchao accepts a CPU 0-d per-tensor scale with a CUDA activation; the kernel would read a host pointer.
+    from torch._subclasses.fake_tensor import FakeTensorMode
+
+    with FakeTensorMode(allow_non_fake_inputs = True):
+        x = torch.empty(4, 32, dtype = torch.bfloat16, device = "cuda")
+        assert aq._eligible(x, 16, torch.empty((), device = "cuda"), True, False)
+        assert not aq._eligible(x, 16, torch.empty(()), True, False)
+
+
 def test_install_without_cuda_is_a_noop(monkeypatch):
     if torch.cuda.is_available():
         pytest.skip("CUDA present")

@@ -152,6 +152,7 @@ def _eligible(data_hp: Any, block_size: int, per_tensor_scale: Any, is_swizzled:
         and per_tensor_scale is not None
         and isinstance(per_tensor_scale, torch.Tensor)
         and per_tensor_scale.numel() == 1
+        and per_tensor_scale.device == data_hp.device  # a host scalar would hand the kernel a host pointer
         and data_hp.dim() == 2
         and data_hp.dtype == torch.bfloat16
         and data_hp.is_cuda
