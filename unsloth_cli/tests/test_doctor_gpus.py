@@ -298,3 +298,59 @@ def test_driver_version_initialises_nvml():
     nvml = Nvml()
     assert doctor_mod.driver_version(nvml) == "580.65"
     assert not nvml.ready
+
+
+def test_nvml_topology_falls_back_to_uuid_without_pci_bus_id():
+    class ByUuid(_FakeNvml):
+        def nvmlDeviceGetHandleByPciBusId(self, bus):
+            raise AssertionError("no PCI id to look up")
+
+        def nvmlDeviceGetHandleByUUID(self, uuid):
+            return {b"GPU-u0": "bus-a", b"GPU-u1": "bus-c"}[uuid]
+
+    torch = _fake_torch(2)
+    props = SimpleNamespace(name = "Tesla T4", major = 7, minor = 5, total_memory = 15 * 1024**3)
+    torch.cuda.get_device_properties = lambda i: SimpleNamespace(**vars(props), uuid = f"u{i}")
+    gpus = doctor_mod.collect_gpus(torch)["gpus"]
+    assert [g["pci"] for g in gpus] == [None, None]
+    topo, err = doctor_mod.nvml_topology(ByUuid(), gpus)
+    assert err is None
+    assert topo[(0, 1)]["level"] == "SYS"
+
+
+def test_allreduce_smoke_kills_started_ranks_when_a_spawn_fails(monkeypatch):
+    real_popen = doctor_mod.subprocess.Popen
+    started = []
+
+    def flaky_popen(*args, **kwargs):
+        if started:
+            raise OSError("Resource temporarily unavailable")
+        started.append(real_popen(*args, **kwargs))
+        return started[-1]
+
+    monkeypatch.setattr(doctor_mod, "_SMOKE_WORKER", "import time; time.sleep(60)")
+    monkeypatch.setattr(doctor_mod.subprocess, "Popen", flaky_popen)
+    result = doctor_mod.allreduce_smoke(2, "gloo", timeout = 60, numel = 1024)
+    assert not result["ok"] and not result["hung"]
+    assert "could not start rank 1" in result["log"]
+    assert started[0].returncode is not None
+
+
+def test_doctor_reports_a_torch_that_fails_to_load(monkeypatch):
+    import builtins
+
+    real_import = builtins.__import__
+
+    def broken(name, *args, **kwargs):
+        if name == "torch":
+            raise OSError("libcudnn.so.9: cannot open shared object file")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.delitem(sys.modules, "torch", raising = False)
+    monkeypatch.setattr(builtins, "__import__", broken)
+    cli = typer.Typer()
+    cli.command()(doctor_mod.doctor)
+    result = CliRunner().invoke(cli, ["--gpus"])
+    assert result.exit_code == 1
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+    assert "libcudnn" in result.output and "PROBLEMS FOUND" in result.output

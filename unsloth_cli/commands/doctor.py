@@ -101,6 +101,9 @@ def collect_gpus(torch) -> dict:
                 f"{getattr(p, 'pci_domain_id', 0):08x}:{p.pci_bus_id:02x}:"
                 f"{getattr(p, 'pci_device_id', 0):02x}.0"
             )
+        # torch < 2.8 has no pci_bus_id; the UUID still identifies the card to NVML.
+        uuid = getattr(p, "uuid", None)
+        uuid = str(uuid) if uuid is not None and not hip else None
         info["gpus"].append(
             {
                 "index": i,
@@ -108,6 +111,7 @@ def collect_gpus(torch) -> dict:
                 "capability": f"{p.major}.{p.minor}",
                 "memory_gib": round(p.total_memory / 1024**3, 1),
                 "pci": pci,
+                "uuid": uuid,
             }
         )
     return info
@@ -142,14 +146,14 @@ def driver_version(pynvml = None) -> Optional[str]:
 def nvml_topology(pynvml, gpus: List[dict]):
     """({(a, b): {"level": "PHB", "nvlink": bool, "p2p_read": bool}} keyed by torch index, error).
 
-    Handles are looked up by PCI bus id, since NVML numbers GPUs in PCI order and
-    ignores CUDA_VISIBLE_DEVICES / CUDA_DEVICE_ORDER, which renumber them for torch.
+    Handles are looked up by PCI bus id (else device UUID), since NVML numbers GPUs in
+    PCI order and ignores CUDA_VISIBLE_DEVICES / CUDA_DEVICE_ORDER, which renumber them.
     A query a virtualised GPU refuses degrades that field instead of the whole table.
     """
     if pynvml is None:
         return None, "nvidia-ml-py is not installed"
-    if len(gpus) < 2 or any(g["pci"] is None for g in gpus):
-        return None, "torch does not report PCI bus ids"
+    if len(gpus) < 2 or any(g["pci"] is None and not g.get("uuid") for g in gpus):
+        return None, "torch reports neither PCI bus ids nor device UUIDs"
     read_idx = getattr(pynvml, "NVML_P2P_CAPS_INDEX_READ", 0)
     nvlink_idx = getattr(pynvml, "NVML_P2P_CAPS_INDEX_NVLINK", 2)
     status_ok = getattr(pynvml, "NVML_P2P_STATUS_OK", 0)
@@ -165,7 +169,15 @@ def nvml_topology(pynvml, gpus: List[dict]):
     except Exception as e:
         return None, f"nvmlInit failed: {e}"
     try:
-        handles = [pynvml.nvmlDeviceGetHandleByPciBusId(g["pci"].encode()) for g in gpus]
+        handles = []
+        for g in gpus:
+            if g["pci"] is not None:
+                handles.append(pynvml.nvmlDeviceGetHandleByPciBusId(g["pci"].encode()))
+            else:
+                uuid = g["uuid"]
+                if not uuid.startswith(("GPU-", "MIG-")):
+                    uuid = "GPU-" + uuid
+                handles.append(pynvml.nvmlDeviceGetHandleByUUID(uuid.encode()))
         out = {}
         for a in range(len(gpus)):
             for b in range(a + 1, len(gpus)):
@@ -242,20 +254,35 @@ def allreduce_smoke(
     )
     env.update(extra_env or {})
     procs = []
-    # Files, not pipes: an undrained pipe (e.g. NCCL_DEBUG=INFO on rank 1) blocks that
-    # rank inside the collective and the doctor would report a healthy system as hung.
-    logs = [tempfile.TemporaryFile(mode = "w+") for _ in range(world)]
-    for rank in range(world):
-        rank_env = dict(env, RANK = str(rank), LOCAL_RANK = str(rank))
-        procs.append(
-            subprocess.Popen(
-                [sys.executable, "-c", _SMOKE_WORKER],
-                env = rank_env,
-                stdout = logs[rank],
-                stderr = subprocess.STDOUT,
-                text = True,
+    logs = []
+    try:
+        # Files, not pipes: an undrained pipe (e.g. NCCL_DEBUG=INFO on rank 1) blocks that
+        # rank inside the collective and the doctor would report a healthy system as hung.
+        for rank in range(world):
+            logs.append(tempfile.TemporaryFile(mode = "w+"))
+            rank_env = dict(env, RANK = str(rank), LOCAL_RANK = str(rank))
+            procs.append(
+                subprocess.Popen(
+                    [sys.executable, "-c", _SMOKE_WORKER],
+                    env = rank_env,
+                    stdout = logs[rank],
+                    stderr = subprocess.STDOUT,
+                    text = True,
+                )
             )
-        )
+    except Exception as e:
+        # Started ranks would wait in init_process_group for ranks that never exist.
+        for q in procs:
+            q.kill()
+            q.wait()
+        for f in logs:
+            f.close()
+        return {
+            "ok": False,
+            "hung": False,
+            "busbw_gbps": None,
+            "log": f"could not start rank {len(procs)} of {world}: {type(e).__name__}: {e}",
+        }
     # Startup (torch import, communicator init) is not covered by the collective timeout.
     deadline = time.monotonic() + timeout + 60
     hung = False
@@ -395,6 +422,12 @@ def doctor(
         import torch
     except ImportError:
         typer.echo("torch is not installed; nothing to check.")
+        raise typer.Exit(code = 1)
+    except Exception as e:
+        # A missing or mismatched CUDA / DLL dependency surfaces as OSError, not ImportError.
+        typer.echo(f"torch failed to import: {type(e).__name__}: {e}")
+        typer.echo("\n=== Verdict: PROBLEMS FOUND ===")
+        typer.echo("- Reinstall torch with a build matching this driver and CUDA / ROCm runtime.")
         raise typer.Exit(code = 1)
 
     info = collect_gpus(torch)
