@@ -8,7 +8,7 @@ use crate::native_path_policy::{
     classify_native_document_folder, classify_native_model_path, has_transport_stream_extension,
     is_audio_only_3gp, is_binary_office_template, is_binary_property_list, is_binary_tracker_mod,
     is_binary_vobsub, is_compiled_fortran_mod, is_mpeg_transport_stream, is_text_attachment_name,
-    reveal_target, ClassifiedPath, NativeArtifactKind,
+    office_template_mime_type, reveal_target, ClassifiedPath, NativeArtifactKind,
 };
 use serde::Serialize;
 use std::collections::{HashMap, VecDeque};
@@ -615,7 +615,7 @@ const MAX_NATIVE_ATTACHMENT_BYTES: u64 = 25 * 1024 * 1024;
 // Matches the clipboard reader, so a dropped source file and a pasted one
 // accept the same sizes.
 const MAX_NATIVE_TEXT_BYTES: u64 = 20 * 1024 * 1024;
-// OpenDocument archives use the composer's larger archive limit.
+// Documents use the composer's larger archive and PDF limit.
 const MAX_NATIVE_OPEN_DOCUMENT_BYTES: u64 = 50 * 1024 * 1024;
 // Images stop lower: the composer throws over 20 MB without a toast and the
 // drain swallows it, so a larger read loses them silently.
@@ -640,6 +640,14 @@ fn attachment_mime_type(path: &Path) -> Option<&'static str> {
     }
     let ext = path.extension()?.to_str()?.to_ascii_lowercase();
     match ext.as_str() {
+        "txt" => Some("text/plain"),
+        "md" | "markdown" => Some("text/markdown"),
+        "html" | "htm" => Some("text/html"),
+        "pdf" => Some("application/pdf"),
+        "docx" => Some("application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+        "xlsx" => Some("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+        "xlsm" => Some("application/vnd.ms-excel.sheet.macroEnabled.12"),
+        "pptx" => Some("application/vnd.openxmlformats-officedocument.presentationml.presentation"),
         "jpg" | "jpeg" => Some("image/jpeg"),
         "png" => Some("image/png"),
         "webp" => Some("image/webp"),
@@ -660,6 +668,9 @@ fn attachment_mime_type(path: &Path) -> Option<&'static str> {
         "caf" => Some("audio/x-caf"),
         "wma" => Some("audio/x-ms-wma"),
         "amr" => Some("audio/amr"),
+        "m4b" => Some("audio/mp4"),
+        "weba" => Some("audio/webm"),
+        "mka" => Some("audio/x-matroska"),
         "mp4" => Some("video/mp4"),
         "m4v" => Some("video/x-m4v"),
         "mov" => Some("video/quicktime"),
@@ -670,6 +681,7 @@ fn attachment_mime_type(path: &Path) -> Option<&'static str> {
         "wmv" => Some("video/x-ms-wmv"),
         "flv" => Some("video/x-flv"),
         "3gp" => Some("video/3gpp"),
+        "3g2" => Some("video/3gpp2"),
         "ogv" => Some("video/ogg"),
         "m2ts" => Some("video/mp2t"),
         "ods" => Some("application/vnd.oasis.opendocument.spreadsheet"),
@@ -690,6 +702,9 @@ fn attachment_mime_type(path: &Path) -> Option<&'static str> {
         "eml" => Some("message/rfc822"),
         other if crate::native_path_policy::TEXT_ATTACHMENT_EXTS.contains(&other) => {
             Some("text/plain")
+        }
+        other if crate::native_path_policy::SERVER_DOCUMENT_ATTACHMENT_EXTS.contains(&other) => {
+            Some("application/octet-stream")
         }
         other if crate::native_path_policy::TOOL_ONLY_ATTACHMENT_EXTS.contains(&other) => {
             Some("application/octet-stream")
@@ -770,13 +785,23 @@ fn read_attachment_payload(entry: &NativePathEntry) -> Result<NativeAttachmentFi
     // reapplied below once the bytes say it is TypeScript.
     let max_bytes = if has_transport_stream_extension(path) {
         MAX_NATIVE_VIDEO_BYTES
-    } else if is_text_attachment {
+    } else if crate::native_path_policy::has_office_template_extension(path) {
+        // May be a Word/PowerPoint template; the text cap is reapplied below once the bytes say text.
+        MAX_NATIVE_OPEN_DOCUMENT_BYTES
+    } else if is_text_attachment || mime_type.starts_with("text/") {
         MAX_NATIVE_TEXT_BYTES
     } else if mime_type.starts_with("image/") {
         MAX_NATIVE_IMAGE_BYTES
     } else if mime_type.starts_with("video/") {
         MAX_NATIVE_VIDEO_BYTES
-    } else if mime_type.starts_with("application/vnd.oasis.opendocument.") {
+    } else if crate::native_path_policy::is_server_document_attachment(path)
+        || mime_type.starts_with("application/vnd.oasis.opendocument.")
+        || mime_type.starts_with("application/vnd.openxmlformats-officedocument.")
+        || matches!(
+            mime_type,
+            "application/pdf" | "application/vnd.ms-excel.sheet.macroEnabled.12"
+        )
+    {
         MAX_NATIVE_OPEN_DOCUMENT_BYTES
     } else {
         MAX_NATIVE_ATTACHMENT_BYTES
@@ -823,14 +848,12 @@ fn read_attachment_payload(entry: &NativePathEntry) -> Result<NativeAttachmentFi
             "Compiled Fortran .mod modules are not supported as text attachments.".to_string(),
         );
     }
-    if is_binary_office_template(path, &bytes) {
-        return Err(
-            "Legacy Word and PowerPoint templates are not supported as text attachments."
-                .to_string(),
-        );
-    }
-    let mime_type = attachment_payload_mime_type(path, &bytes)
-        .ok_or_else(|| "Only chat attachments can be read inline.".to_string())?;
+    let mime_type = if is_binary_office_template(path, &bytes) {
+        office_template_mime_type(path)
+    } else {
+        attachment_payload_mime_type(path, &bytes)
+            .ok_or_else(|| "Only chat attachments can be read inline.".to_string())?
+    };
     if mime_type.starts_with("text/") && bytes.len() as u64 > MAX_NATIVE_TEXT_BYTES {
         return Err("Attachment is unavailable or too large.".to_string());
     }
@@ -1099,20 +1122,108 @@ mod tests {
     }
 
     #[test]
-    fn document_token_is_refused_by_the_image_reader() {
-        let path = temp_path("note").with_extension("pdf");
-        fs::write(&path, b"%PDF-1.4").unwrap();
+    fn server_documents_read_inline_under_the_document_cap() {
+        for ext in ["doc", "xls", "ppt", "msg", "mht", "epub"] {
+            let path = temp_path("server-document").with_extension(ext);
+            fs::write(&path, b"document bytes").unwrap();
+            let (_state, entry) = attachment_entry(&path);
+            let payload = read_attachment_payload(&entry).unwrap();
+            assert_eq!(payload.mime_type, "application/octet-stream", "{ext}");
+            let _ = fs::remove_file(path);
+        }
+        let path = temp_path("server-document-cap").with_extension("doc");
+        fs::File::create(&path)
+            .unwrap()
+            .set_len(MAX_NATIVE_ATTACHMENT_BYTES + 1)
+            .unwrap();
         let (_state, entry) = attachment_entry(&path);
-        let Err(err) = read_attachment_payload(&entry) else {
-            panic!("expected the read to be refused");
-        };
-        assert!(err.contains("Only chat attachments can be read inline"));
+        assert!(read_attachment_payload(&entry).is_ok());
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn composer_documents_read_inline_with_adapter_mime_types() {
+        for (ext, mime) in [
+            ("txt", "text/plain"),
+            ("md", "text/markdown"),
+            ("markdown", "text/markdown"),
+            ("html", "text/html"),
+            ("htm", "text/html"),
+            ("pdf", "application/pdf"),
+            (
+                "docx",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            ),
+            (
+                "xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            ),
+            ("xlsm", "application/vnd.ms-excel.sheet.macroEnabled.12"),
+            (
+                "pptx",
+                "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            ),
+        ] {
+            let path = temp_path("composer-document").with_extension(ext);
+            fs::write(&path, b"document bytes").unwrap();
+            let (_state, entry) = attachment_entry(&path);
+            let payload = read_attachment_payload(&entry).unwrap();
+            assert_eq!(payload.mime_type, mime, "{ext}");
+            assert_eq!(BASE64.decode(payload.base64).unwrap(), b"document bytes");
+            let _ = fs::remove_file(path);
+        }
+    }
+
+    #[test]
+    fn binary_office_templates_read_with_an_office_mime_and_graphviz_stays_text() {
+        let ole = [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1, 0, 0];
+        for (ext, mime) in [
+            ("dot", "application/msword"),
+            ("pot", "application/vnd.ms-powerpoint"),
+        ] {
+            let path = temp_path("office-template").with_extension(ext);
+            fs::write(&path, ole).unwrap();
+            let (_state, entry) = attachment_entry(&path);
+            assert_eq!(
+                read_attachment_payload(&entry).unwrap().mime_type,
+                mime,
+                "{ext}"
+            );
+            let _ = fs::remove_file(path);
+        }
+        let path = temp_path("graph").with_extension("dot");
+        fs::write(&path, b"digraph { a -> b }").unwrap();
+        let (_state, entry) = attachment_entry(&path);
+        assert_eq!(
+            read_attachment_payload(&entry).unwrap().mime_type,
+            "text/plain"
+        );
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn a_large_template_uses_the_document_cap_and_large_text_keeps_the_text_cap() {
+        let size = MAX_NATIVE_TEXT_BYTES as usize + 1;
+        let path = temp_path("big-template").with_extension("dot");
+        let mut ole = vec![0u8; size];
+        ole[..8].copy_from_slice(&[0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]);
+        fs::write(&path, &ole).unwrap();
+        let (_state, entry) = attachment_entry(&path);
+        assert_eq!(
+            read_attachment_payload(&entry).unwrap().mime_type,
+            "application/msword"
+        );
+        fs::write(&path, vec![b'a'; size]).unwrap();
+        let (_state, entry) = attachment_entry(&path);
+        assert!(read_attachment_payload(&entry).is_err());
         let _ = fs::remove_file(path);
     }
 
     #[test]
     fn text_attachments_read_inline_with_their_own_cap() {
         for (ext, mime) in [
+            ("txt", "text/plain"),
+            ("md", "text/markdown"),
             ("cs", "text/plain"),
             ("php", "text/plain"),
             ("js", "text/plain"),
@@ -1210,6 +1321,24 @@ mod tests {
             payload.mime_type,
             "application/vnd.oasis.opendocument.spreadsheet"
         );
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn composer_documents_use_the_document_cap() {
+        let path = temp_path("document-cap").with_extension("pdf");
+        fs::write(&path, vec![0u8; MAX_NATIVE_ATTACHMENT_BYTES as usize + 1]).unwrap();
+        let (_state, entry) = attachment_entry(&path);
+        assert!(read_attachment_payload(&entry).is_ok());
+        fs::File::create(&path)
+            .unwrap()
+            .set_len(MAX_NATIVE_OPEN_DOCUMENT_BYTES + 1)
+            .unwrap();
+        let (_state, entry) = attachment_entry(&path);
+        let Err(error) = read_attachment_payload(&entry) else {
+            panic!("expected the document cap to reject the read");
+        };
+        assert!(error.contains("too large"));
         let _ = fs::remove_file(path);
     }
 

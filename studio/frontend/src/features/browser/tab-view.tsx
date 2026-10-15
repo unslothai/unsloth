@@ -12,6 +12,7 @@ import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { memo, useCallback, useEffect, useState } from "react";
 import { fileNameFromUrl, hostOf } from "./address";
+import { agentDownloadRule, stricterDownloadRule } from "./agent/agent-store";
 import { BrowserFetchError, type BrowserPage, fetchBrowserPage } from "./api";
 import { proxiedFavicon } from "./favicon";
 import { saveBrowserDownload } from "./downloads";
@@ -293,6 +294,8 @@ function WebPage({
     }
     const controller = new AbortController();
     updateTab(tab.id, { loading: true });
+    // Now, not when the file arrives: a slow download can outlast the agent's run.
+    const agentRuleAtStart = agentDownloadRule(tab.id, entry.from ?? url, url);
     fetchBrowserPage({ url, method, body, errorPage: true }, controller.signal)
       .then((page) => {
         cachePage(entry, page);
@@ -303,7 +306,7 @@ function WebPage({
           const name = page.fileName ?? fileNameFromUrl(page.url);
           if (!canShowFile(name, page.contentType)) {
             // use the sender or requested address, not the redirect target, so another site's permission cannot apply.
-            void saveBrowserDownload({ blob: page.blob, name, contentType: page.contentType, url: page.url, site: entry.from ?? url, temporary: loadTemporary(tab.id, entry) || undefined });
+            void saveBrowserDownload({ blob: page.blob, name, contentType: page.contentType, url: page.url, site: entry.from ?? url, temporary: loadTemporary(tab.id, entry) || undefined, agentRule: stricterDownloadRule(agentRuleAtStart, agentDownloadRule(tab.id, entry.from ?? url, page.url)) });
             if (entry.kind === "web" && entry.from) useBrowserStore.getState().leaveDownload(tab.id, entry);
           }
         }
@@ -349,6 +352,8 @@ function WebPage({
       html={page.html}
       url={page.url}
       base={page.base}
+      ownBase={page.ownBase === true}
+      anyOrigin={page.anyOrigin === true}
       refresh={page.refresh}
       title={tab.title || hostOf(page.url)}
       tabId={tab.id}

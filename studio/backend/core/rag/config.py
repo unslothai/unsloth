@@ -46,7 +46,7 @@ SOURCE_TEXT_EXTS = frozenset(
     """
     .text .log .mdx .rst .adoc .asciidoc .org .textile .wiki .tex .latex .sty .cls .bib .rmd .qmd
     .srt .vtt .sbv .ass .ssa .sub .lrc
-    .csv .tsv .psv .json .jsonl .ndjson .jsonc .json5 .geojson .har .avsc .xml .yaml .yml .toml .ini
+    .csv .tsv .psv .json .jsonl .ndjson .jsonc .json5 .geojson .kml .gpx .har .avsc .xml .yaml .yml .toml .ini
     .cfg .conf .cnf .env .properties .plist .edn .ron .cue .lock .mod .sum .reg .desktop .service
     .po .pot .strings .resx .xliff .xlf .ics .vcf .eml .mbox .m3u8 .pls
     .css .scss .sass .less .styl .svg .vue .svelte .astro .pug .jade .haml .slim .ejs .erb .hbs
@@ -70,7 +70,7 @@ SOURCE_TEXT_EXTS = frozenset(
 )
 DOCUMENT_UPLOAD_EXTS = frozenset(
     """
-    .doc .docm .dotx .dotm .xls .xlsx .xlsm .xltx .xltm .ppt .pptx .pptm .potx .potm .ppsx .ppsm
+    .doc .docm .dotx .dotm .xls .xlt .xlsx .xlsm .xltx .xltm .ppt .pps .pptx .pptm .potx .potm .ppsx .ppsm
     .odt .ods .odp .ott .ots .otp .msg .eml .mht .mhtml .rtf .epub .xhtml .xht
     """.split()
 )
@@ -88,6 +88,8 @@ MAX_UPLOAD_BYTES = int(os.environ.get("RAG_MAX_UPLOAD_BYTES", str(200 * 1024 * 1
 # Caps prevent an accidentally broad linked folder from becoming an unbounded ingestion queue.
 FOLDER_SYNC_INTERVAL_S = float(os.environ.get("RAG_FOLDER_SYNC_INTERVAL_S", "30"))
 FOLDER_MAX_FILES = int(os.environ.get("RAG_FOLDER_MAX_FILES", "10000"))
+# Linked-folder plain-text files above this are logs/data dumps, not documents; 0 disables.
+FOLDER_MAX_TEXT_BYTES = int(os.environ.get("RAG_FOLDER_MAX_TEXT_BYTES", str(20 * 1024 * 1024)))
 FOLDER_JOB_HISTORY_LIMIT = int(os.environ.get("RAG_FOLDER_JOB_HISTORY_LIMIT", "200"))
 # Linked-folder documents ingested concurrently, clamped to 1..4.
 FOLDER_INGEST_WORKERS = int(os.environ.get("RAG_FOLDER_INGEST_WORKERS", "2"))
@@ -179,14 +181,17 @@ def embedding_identity_matches(stored: str | None, current: str) -> bool:
     return stored == (embedding_identity_model(current) or current)
 
 
-def effective_embedding_model() -> str:
+def effective_embedding_model(fresh: bool = False) -> str:
     """The embedding model actually in use: the persisted Settings override when
     one is stored, else ``EMBEDDING_MODEL`` (env/default). Read at call time so a
-    Settings change applies without a restart."""
+    Settings change applies without a restart; ``fresh`` also skips the short cache and
+    raises rather than fall back."""
     try:
         from utils.embedding_model_settings import get_rag_embedding_model
-        return get_rag_embedding_model()
+        return get_rag_embedding_model(fresh = fresh)
     except Exception:  # noqa: BLE001 - settings store unavailable (tests, early boot)
+        if fresh:
+            raise
         return EMBEDDING_MODEL
 
 
@@ -276,7 +281,7 @@ EMBED_GGUF_VARIANT = os.environ.get("RAG_EMBED_GGUF_VARIANT", "F16")
 EMBED_DEVICE = os.environ.get("RAG_EMBED_DEVICE", "auto")
 
 
-def embed_device_preference() -> str:
+def _env_embed_device() -> str:
     """``EMBED_DEVICE`` normalized to exactly ``gpu``, ``cpu`` or ``auto``.
 
     One reader for both backends, because they used to disagree about the same
@@ -292,6 +297,23 @@ def embed_device_preference() -> str:
     if value == "cpu":
         return "cpu"
     return "auto"
+
+
+def embed_device_locked() -> bool:
+    """Whether ``RAG_EMBED_DEVICE`` names a device, which Settings then cannot override."""
+    return _env_embed_device() != "auto"
+
+
+def embed_device_preference() -> str:
+    """``gpu``, ``cpu`` or ``auto``: ``RAG_EMBED_DEVICE`` when it names a device, else the Settings choice."""
+    env = _env_embed_device()
+    if env != "auto":
+        return env
+    try:
+        from utils.embedding_model_settings import get_stored_embedding_device
+        return get_stored_embedding_device()
+    except Exception:  # noqa: BLE001 - store unavailable: each backend's default
+        return "auto"
 
 
 def embed_device_requires_gpu() -> bool:

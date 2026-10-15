@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -25,19 +26,24 @@ import {
   loadLanAccess,
   startLanAccess,
   stopLanAccess,
+  updateLanAccessAddresses,
   updateLanAccessAutoStart,
   updateLanAccessPort,
 } from "@/features/settings/api/lan-access";
 import {
   LAN_ACCESS_POLL_MS,
   type LanAccessStatus,
+  defaultLanAccessAddressSelection,
   keylessLanAccessDescription,
+  lanAccessAddressChoices,
+  lanAccessAddressesReadOnly,
   lanAccessAutoStartReadOnly,
   lanAccessBlockMessage,
   lanAccessErrorMessage,
   lanAccessPortReadOnly,
   lanAccessStopDisconnectsOrigin,
   lanApiUrls,
+  sameLanAccessAddresses,
   validLanAccessPort,
 } from "@/features/settings/api/lan-access-state";
 import { isTauri } from "@/lib/api-base";
@@ -50,8 +56,9 @@ import { useCallback, useEffect, useId, useRef, useState } from "react";
 import QRCode from "react-qr-code";
 import { SettingsRow } from "./settings-row";
 
-type LanAccessOperation = "start" | "stop" | "auto" | "port";
+type LanAccessOperation = "start" | "stop" | "auto" | "port" | "addresses";
 type PortMode = "automatic" | "custom";
+type AddressMode = "automatic" | "chosen";
 
 const STATE_LABEL: Record<LanAccessStatus["state"], string> = {
   off: "Off",
@@ -234,12 +241,16 @@ function LanUrlPanel({ status }: { status: LanAccessStatus | null }) {
 
 export function LanAccessSection() {
   const portErrorId = useId();
+  const addressErrorId = useId();
   const [status, setStatus] = useState<LanAccessStatus | null>(null);
   const [busy, setBusy] = useState<LanAccessOperation | null>(null);
 
   const [portMode, setPortMode] = useState<PortMode>("automatic");
   const [portDraft, setPortDraft] = useState("8888");
   const [portError, setPortError] = useState<string | null>(null);
+  const [addressMode, setAddressMode] = useState<AddressMode>("automatic");
+  const [addressDraft, setAddressDraft] = useState<string[]>([]);
+  const [addressError, setAddressError] = useState<string | null>(null);
   const [pollRevision, setPollRevision] = useState(0);
   const [pollEnabled, setPollEnabled] = useState(true);
   const mutationEpoch = useRef(0);
@@ -257,6 +268,16 @@ export function LanAccessSection() {
     setPortDraft(String(configured ?? 8888));
     setPortError(null);
   }, [status?.configuredPort]);
+
+  // keyed on the saved value, not the array: every poll returns a fresh one, which would wipe the draft
+  const configuredAddressesKey = status?.configuredAddresses?.join(",") ?? null;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: configuredAddressesKey stands in for status.configuredAddresses
+  useEffect(() => {
+    const configured = status?.configuredAddresses ?? null;
+    setAddressMode(configured === null ? "automatic" : "chosen");
+    setAddressDraft(configured ?? []);
+    setAddressError(null);
+  }, [configuredAddressesKey]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: pollRevision intentionally restarts polling after a mutation
   useEffect(() => {
@@ -325,6 +346,9 @@ export function LanAccessSection() {
       if (operation === "port") {
         setPortError("Could not save the LAN port.");
       }
+      if (operation === "addresses") {
+        setAddressError("Could not save the LAN addresses.");
+      }
       // polling resumes below and reconciles the visible state
     } finally {
       setBusy(null);
@@ -358,14 +382,40 @@ export function LanAccessSection() {
     void perform("port", () => updateLanAccessPort(selectedPort));
   };
 
+  const addressesReadOnly = busy !== null || lanAccessAddressesReadOnly(status);
+  const addressChoices = lanAccessAddressChoices(status, addressDraft);
+  const addressesEmpty = addressMode === "chosen" && addressDraft.length === 0;
+  const addressErrorVisible = addressesEmpty || addressError !== null;
+  const selectedAddresses = addressMode === "chosen" ? addressDraft : null;
+  const addressesDirty =
+    status !== null &&
+    !sameLanAccessAddresses(selectedAddresses, status.configuredAddresses);
+  const toggleAddress = (address: string, checked: boolean) => {
+    setAddressDraft((draft) =>
+      checked
+        ? [...draft.filter((entry) => entry !== address), address]
+        : draft.filter((entry) => entry !== address),
+    );
+    setAddressError(null);
+  };
+  const saveAddresses = () => {
+    if (addressesEmpty || !addressesDirty) return;
+    setAddressError(null);
+    void perform("addresses", () =>
+      updateLanAccessAddresses(selectedAddresses),
+    );
+  };
+
   const blockMessage = lanAccessBlockMessage(status, isTauri);
   const errorMessage = lanAccessErrorMessage(
     status?.error ?? null,
     status?.configuredPort ?? null,
   );
   const stopAction = status?.state === "online";
+  // Start and auto-start bind the saved choice, never an unsaved one
   const actionDisabled =
-    busy !== null || (stopAction ? !status?.canStop : !status?.canStart);
+    busy !== null ||
+    (stopAction ? !status?.canStop : !status?.canStart || addressesDirty);
   const actionLabel =
     busy === "start"
       ? "Starting…"
@@ -495,6 +545,113 @@ export function LanAccessSection() {
             </div>
           </SettingsRow>
         ) : null}
+        {status?.addressConfigurationSupported ? (
+          <>
+            <SettingsRow
+              label="Addresses"
+              description="Automatic uses every address this machine has, public ones included. Choose uses only the addresses you tick, such as a Tailscale address. Stop LAN access before changing it, and save before starting."
+              below={
+                <span
+                  id={addressErrorId}
+                  role="status"
+                  aria-live="polite"
+                  className="text-xs text-destructive"
+                >
+                  {addressErrorVisible
+                    ? addressesEmpty
+                      ? "Tick at least one address, or use Automatic."
+                      : addressError
+                    : null}
+                </span>
+              }
+            >
+              <div className="flex items-center gap-2">
+                <Select
+                  value={addressMode}
+                  disabled={addressesReadOnly}
+                  onValueChange={(value) => {
+                    const mode = value as AddressMode;
+                    setAddressMode(mode);
+                    if (mode === "chosen" && addressDraft.length === 0) {
+                      setAddressDraft(defaultLanAccessAddressSelection(status));
+                    }
+                    setAddressError(null);
+                  }}
+                >
+                  <SelectTrigger
+                    size="sm"
+                    className="w-28"
+                    aria-label="LAN address mode"
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="automatic">Automatic</SelectItem>
+                    <SelectItem value="chosen">Choose</SelectItem>
+                  </SelectContent>
+                </Select>
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={saveAddresses}
+                  disabled={
+                    addressesReadOnly || addressesEmpty || !addressesDirty
+                  }
+                >
+                  Save
+                </Button>
+              </div>
+            </SettingsRow>
+            {addressMode === "chosen" ? (
+              <fieldset
+                className="flex flex-col gap-2 pb-3"
+                aria-describedby={
+                  addressErrorVisible ? addressErrorId : undefined
+                }
+              >
+                <legend className="sr-only">LAN addresses to use</legend>
+                {addressChoices.length === 0 ? (
+                  <span className="text-xs text-muted-foreground">
+                    No network address found on this machine.
+                  </span>
+                ) : null}
+                {addressChoices.map((choice) => (
+                  <div
+                    key={choice.address}
+                    className="flex items-center gap-2.5"
+                  >
+                    <Checkbox
+                      id={`${addressErrorId}-${choice.address}`}
+                      checked={addressDraft.includes(choice.address)}
+                      disabled={addressesReadOnly}
+                      onCheckedChange={(checked) =>
+                        toggleAddress(choice.address, checked === true)
+                      }
+                    />
+                    <label
+                      htmlFor={`${addressErrorId}-${choice.address}`}
+                      className="flex cursor-pointer flex-wrap items-center gap-x-2.5 text-sm"
+                    >
+                      <code className="font-mono text-xs text-foreground">
+                        {choice.address}
+                      </code>
+                      {choice.public ? (
+                        <span className="text-xs text-destructive">
+                          Public internet address
+                        </span>
+                      ) : null}
+                      {choice.detected ? null : (
+                        <span className="text-xs text-muted-foreground">
+                          Not on this machine right now
+                        </span>
+                      )}
+                    </label>
+                  </div>
+                ))}
+              </fieldset>
+            ) : null}
+          </>
+        ) : null}
         <SettingsRow
           label="Keyless API status"
           description={keylessLanAccessDescription(status)}
@@ -513,7 +670,11 @@ export function LanAccessSection() {
         >
           <Switch
             checked={status?.autoStart ?? false}
-            disabled={busy !== null || lanAccessAutoStartReadOnly(status)}
+            disabled={
+              busy !== null ||
+              lanAccessAutoStartReadOnly(status) ||
+              (addressesDirty && !status?.autoStart)
+            }
             onCheckedChange={setAutoStart}
             aria-label="Start automatically"
           />

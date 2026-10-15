@@ -350,9 +350,25 @@ _TRANSFORMERS_510_MODEL_TYPES: set[str] = {
     "gemma4_unified_assistant",
 }
 
+# DeepSeek-OCR remote code subclasses transformers 4.x DeepseekV2 modules (DeepseekV2MoE, removed in 5.x)
+# and its config fails 5.x validation (kv_lora_rank: null), so it only loads on 4.57.x (#8732).
+_TRANSFORMERS_457_ARCHITECTURES: frozenset[str] = frozenset(
+    {"DeepseekOCRForCausalLM", "DeepseekOCR2ForCausalLM"}
+)
+
 # Architecture classes / model_type values requiring transformers 5.5.0 (via config.json).
 _TRANSFORMERS_550_ARCHITECTURES: set[str] = {
     "DiffusionGemmaForBlockDiffusion",
+    # Remote-code text-diffusion LMs: their tokenizers are 5.x-only, and 5.3.0 lacks helpers their code imports
+    # (Nemotron-Labs-Diffusion needs transformers.utils.generic.check_model_inputs). Matched by architecture,
+    # since Nemotron-Labs-Diffusion shares model_type "nemotron" with the autoregressive Nemotron models.
+    "LLaDAModelLM",
+    "LLaDAMoEModel",
+    "LLaDAMoEModelLM",
+    "DreamModel",
+    "NemotronLabsDiffusionModel",
+    "LLaDA2MoeModelLM",
+    "SDARForCausalLM",
     "Gemma4ForConditionalGeneration",
     "KimiK3ForConditionalGeneration",
     "LocateAnythingForConditionalGeneration",
@@ -405,6 +421,7 @@ _config_json_cache: dict[tuple[str, str | None], dict | None] = {}
 _config_needs_510_cache: dict[tuple[str, str | None], bool] = {}
 _config_needs_550_cache: dict[tuple[str, str | None], bool] = {}
 _config_needs_530_cache: dict[tuple[str, str | None], bool] = {}
+_config_needs_457_cache: dict[tuple[str, str | None], bool] = {}
 
 # Process-lifetime probe cache, keyed by model_name + a local config.json signature (see
 # _probe_cache_key) so an overwritten checkpoint re-probes. Not keyed by Hub sha, so the
@@ -414,6 +431,7 @@ _probe_tier_cache: dict[str, str] = {}
 TRANSFORMERS_510_VERSION = "5.10.2"
 TRANSFORMERS_550_VERSION = "5.5.0"
 TRANSFORMERS_530_VERSION = "5.3.0"
+TRANSFORMERS_457_VERSION = "4.57.6"
 TRANSFORMERS_DEFAULT_VERSION = "5.5.0" if sys.version_info >= (3, 10) else "4.57.6"
 # Backwards-compat alias for the highest 5.x tier; prefer TRANSFORMERS_510_VERSION /
 # TRANSFORMERS_550_VERSION / TRANSFORMERS_530_VERSION.
@@ -425,6 +443,8 @@ from utils.paths.storage_roots import studio_root as _studio_root  # noqa: E402
 _VENV_T5_530_DIR = str(_studio_root() / ".venv_t5_530")
 _VENV_T5_550_DIR = str(_studio_root() / ".venv_t5_550")
 _VENV_T5_510_DIR = str(_studio_root() / ".venv_t5_510")
+# Built at runtime on the first DeepSeek-OCR load; not pre-installed by setup.
+_VENV_T4_457_DIR = str(_studio_root() / ".venv_t4_457")
 # Backwards-compat alias
 _VENV_T5_DIR = _VENV_T5_550_DIR
 
@@ -437,7 +457,7 @@ _VENV_T5_LATEST_DIR = str(_studio_root() / ".venv_t5_latest")
 _LATEST_PIN_MARKER = ".unsloth_pinned_transformers"
 
 # Tier precedence: higher rank wins in _higher_tier. "latest" outranks every fixed tier.
-_TIER_RANK = {"default": 0, "530": 1, "550": 2, "510": 3, "latest": 4}
+_TIER_RANK = {"default": 0, "457": 0.5, "530": 1, "550": 2, "510": 3, "latest": 4}
 
 
 def _higher_tier(a: str, b: str) -> str:
@@ -523,6 +543,21 @@ def activate_transformers_for_subprocess(model_name: str, hf_token: str | None =
         )
         _pp = os.environ.get("PYTHONPATH", "")
         os.environ["PYTHONPATH"] = _VENV_T5_550_DIR + (os.pathsep + _pp if _pp else "")
+    elif tier == "457":
+        if not _ensure_venv_t4_457_exists():
+            raise RuntimeError(
+                f"Cannot activate transformers {TRANSFORMERS_457_VERSION}: "
+                f".venv_t4_457 missing at {_VENV_T4_457_DIR}"
+            )
+        if _VENV_T4_457_DIR not in sys.path:
+            sys.path.insert(0, _VENV_T4_457_DIR)
+        logger.info(
+            "Prepended transformers %s venv to sys.path from %s",
+            TRANSFORMERS_457_VERSION,
+            _VENV_T4_457_DIR,
+        )
+        _pp = os.environ.get("PYTHONPATH", "")
+        os.environ["PYTHONPATH"] = _VENV_T4_457_DIR + (os.pathsep + _pp if _pp else "")
     elif tier == "530":
         if not _ensure_venv_t5_530_exists():
             raise RuntimeError(
@@ -1095,6 +1130,13 @@ def _config_needs_510(cfg: dict) -> bool:
     return _nemotron_h_needs_mlp_support(cfg)
 
 
+def _config_needs_457(cfg: dict) -> bool:
+    # macOS runs these through MLX, which needs the 5.x stack.
+    if sys.platform == "darwin":
+        return False
+    return _config_matches_tier(cfg, _TRANSFORMERS_457_ARCHITECTURES, set())
+
+
 def _config_needs_530(cfg: dict) -> bool:
     return _config_matches_tier(
         cfg,
@@ -1148,6 +1190,19 @@ def _check_config_needs_530(model_name: str, hf_token: str | None = None) -> boo
         )
     if _config_json_is_definitive(model_name, hf_token):
         _config_needs_530_cache[cache_key] = result
+    return result
+
+
+def _check_config_needs_457(model_name: str, hf_token: str | None = None) -> bool:
+    """True if ``config.json`` is a DeepSeek-OCR checkpoint (cached like the 5.x checks)."""
+    cache_key = _token_cache_key(model_name, hf_token)
+    if cache_key in _config_needs_457_cache:
+        return _config_needs_457_cache[cache_key]
+
+    cfg = _load_config_json(model_name, hf_token)
+    result = bool(cfg) and _config_needs_457(cfg)
+    if _config_json_is_definitive(model_name, hf_token):
+        _config_needs_457_cache[cache_key] = result
     return result
 
 
@@ -1820,6 +1875,11 @@ def get_transformers_tier(
     if _safe_is_file(local_cfg):
         cfg = _load_config_json(model_name, hf_token)
         if cfg is not None:
+            if _config_needs_457(cfg):
+                logger.info(
+                    "Transformers tier 457 selected for %s (local config.json check)", model_name
+                )
+                return "457"
             if _config_needs_510(cfg):
                 tier = _raise_tier_for_nested(cfg, "510")
                 logger.info(
@@ -1937,6 +1997,9 @@ def get_transformers_tier(
         return tier
 
     # --- Slow config fallbacks (network for HF IDs; authenticated with hf_token) --------
+    if _check_config_needs_457(model_name, hf_token):
+        logger.info("Transformers tier 457 selected for %s (config.json check)", model_name)
+        return "457"
     if _check_config_needs_510(model_name, hf_token):
         tier = _raise_tier_for_nested(_load_config_json(model_name, hf_token), "510")
         logger.info("Transformers tier %s selected for %s (config.json check)", tier, model_name)
@@ -2009,7 +2072,7 @@ def needs_transformers_5(model_name: str) -> bool:
     log-only parent caller never spawns sidecar probes (the worker re-resolves the exact
     tier with ``probe=True`` on the real activation path).
     """
-    return get_transformers_tier(model_name, probe = False) != "default"
+    return get_transformers_tier(model_name, probe = False) not in ("default", "457")
 
 
 # --- Version switching (in-process, used only by export) ---
@@ -2083,6 +2146,12 @@ _VENV_T5_550_PACKAGES = (
 
 # Backwards-compat alias
 _VENV_T5_PACKAGES = _VENV_T5_550_PACKAGES
+
+# transformers 4.57.6 refuses to import next to huggingface_hub 1.x.
+_VENV_T4_457_PACKAGES = (
+    f"transformers=={TRANSFORMERS_457_VERSION}",
+    "huggingface_hub==0.36.2",
+)
 
 # Setup installs tiktoken best-effort, so the runtime must agree or it deletes the sidecar and
 # retries the same impossible install.
@@ -3217,6 +3286,14 @@ def _ensure_venv_t5_510_exists() -> bool:
         _VENV_T5_510_DIR,
         _VENV_T5_510_PACKAGES,
         f"transformers {TRANSFORMERS_510_VERSION}",
+    )
+
+
+def _ensure_venv_t4_457_exists() -> bool:
+    return _ensure_venv_dir(
+        _VENV_T4_457_DIR,
+        _VENV_T4_457_PACKAGES,
+        f"transformers {TRANSFORMERS_457_VERSION}",
     )
 
 
