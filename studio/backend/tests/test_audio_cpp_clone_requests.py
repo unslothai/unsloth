@@ -215,6 +215,40 @@ def test_speak_sends_the_description_under_the_name_the_contract_declares(displa
     assert path == SPEECH and body.get("options", ABSENT) == options
 
 
+def _spec(*names, strict = True):
+    spec = {"family": "dots_tts", "options": {"request": [{"name": n, "type": "string"} for n in names]}}
+    return {**spec, "schema_version": 1} if strict else spec
+
+
+# fmt: off
+@pytest.mark.parametrize("runtime, embedded, keys", [
+    # DotTTS-MF: model_specs/ declares instruct, the GGUF's v1 contract (what the server checks) does not.
+    (_spec("instruct", "instruction", "language"), _spec("language", "seed"), {"language", "seed"}),
+    # A legacy GGUF is checked against model_specs/, so that list still wins.
+    (_spec("instruct", "language"), _spec("language", strict = False), {"instruct", "language"}),
+    # A v1 GGUF that lists no request options leaves the runtime's list in charge, as before.
+    (_spec("instruct", "language"), {**_spec(), "options": {}}, {"instruct", "language"}),
+    (None, _spec("language"), {"language"}),
+    (None, _spec("language", strict = False), None),
+])
+# fmt: on
+def test_request_keys_follow_the_contract_the_server_checks(runtime, embedded, keys):
+    assert acm._request_keys(runtime, embedded) == (frozenset(keys) if keys else None)
+
+
+def test_speak_on_a_runtime_with_model_specs_sends_only_what_the_gguf_declares():
+    runtime = _spec("instruct", "instruction", "language")
+    embedded = _spec("language", "template_name", "seed")
+    model = replace(_model("dots_tts", "DotTTS-MF-GGUF"), request_keys = acm._request_keys(runtime, embedded))
+    backend = acb.AudioCppBackend()
+    server = _StrictRecorder(model)
+    backend._server, backend._model = server, model
+    backend.models, backend.active_model_name = {model.id: {"is_audio": True}}, model.id
+    backend.generate_audio_response(TEXT, language = "en", instructions = "warm")
+    ((path, body),) = server.calls
+    assert path == SPEECH and body["options"] == {"language": "en"}
+
+
 # fmt: off
 @pytest.mark.parametrize("key, text, sent", [
     ("vibevoice", "Hello there.", "Speaker 1: Hello there."),

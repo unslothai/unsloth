@@ -2461,6 +2461,12 @@ def _raw_request_options(spec: Optional[dict], embedded: Optional[dict]) -> list
 
 
 def _request_keys(spec: Optional[dict], embedded: Optional[dict]) -> Optional[frozenset[str]]:
+    # The server checks a request against the GGUF's own contract when it embeds a v1 one, and against
+    # model_specs/ only for a legacy GGUF (audio.cpp src/framework/model_spec/package.cpp). The two can
+    # differ: DotTTS-MF's model_specs entry declares instruct, its GGUF does not.
+    if isinstance(embedded, dict) and embedded.get("schema_version") is not None:
+        if (embedded.get("options") or {}).get("request"):
+            spec = None
     if _request_source(spec, embedded).get("schema_version") is None:
         return None
     names = frozenset(
