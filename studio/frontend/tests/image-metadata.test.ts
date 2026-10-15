@@ -826,3 +826,17 @@ test("imported LoRAs stay within the request's count, id and weight bounds", () 
     ["a:2", "b:0", "org/c:d:0.5"],
   );
 });
+
+test("imported LoRA ids are trimmed and deduplicated like the request does", () => {
+  const defaults = { width: 1024, height: 1024, steps: 8, guidance: 3.5 };
+  assert.deepEqual(
+    recipeSettings({ prompt: "p", loras: ["a:1", " a :0.5", "b:1", "b:2"] }, defaults).loras,
+    ["a:1", "b:1"],
+  );
+});
+
+test("the import names LoRAs and a negative prompt the loaded model cannot apply", () => {
+  const page = readSrc("features/images/images-page.tsx");
+  assert.match(page, /status\.supports_lora === false && settings\.loras\.length > 0/);
+  assert.match(page, /status\?\.supports_negative_prompt === false && settings\.negative_prompt && settings\.guidance > 0/);
+});

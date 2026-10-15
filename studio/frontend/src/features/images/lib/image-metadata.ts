@@ -717,10 +717,18 @@ const seedOf = (v: unknown): number | null => {
 const loraOf = (v: unknown): string[] => {
   if (typeof v !== "string") return [];
   const at = v.lastIndexOf(":");
-  const id = v.slice(0, at);
+  const id = v.slice(0, at).trim();
   const weight = Number(v.slice(at + 1));
   if (at <= 0 || id.length > 512 || !Number.isFinite(weight)) return [];
   return [`${id}:${Math.min(2, Math.max(0, weight))}`];
+};
+// The request rejects a repeated id: the first entry wins.
+const uniqueLoras = (loras: string[]): string[] => {
+  const seen = new Set<string>();
+  return loras.filter((l) => {
+    const id = l.slice(0, l.lastIndexOf(":"));
+    return !seen.has(id) && seen.add(id);
+  });
 };
 const str = (v: unknown): string | undefined =>
   typeof v === "string" ? v : undefined;
@@ -744,7 +752,9 @@ export function recipeSettings(
     batch_size: clamp(int(r.batch_size), 1, 32) ?? 1,
     model: str(r.model) ?? null,
     workflow: str(r.workflow),
-    loras: Array.isArray(r.loras) ? r.loras.flatMap(loraOf).slice(0, 8) : [],
+    loras: Array.isArray(r.loras)
+      ? uniqueLoras(r.loras.flatMap(loraOf)).slice(0, 8)
+      : [],
     // The request takes strength in (0, 1]: 0 leaves no denoising steps, so it is not restored.
     strength: positive(clamp(num(r.strength), 0, 1)),
     upscale: clamp(num(r.upscale), 1, 4),

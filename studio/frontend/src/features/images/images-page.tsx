@@ -2663,6 +2663,12 @@ export function ImagesPage({
         }
       }
       const notApplied = unknownRecipeKeys(recipe);
+      if (status?.loaded && status.supports_lora === false && settings.loras.length > 0) {
+        notApplied.unshift("LoRAs");
+      }
+      if (status?.supports_negative_prompt === false && settings.negative_prompt && settings.guidance > 0) {
+        notApplied.unshift("negative prompt");
+      }
       if (status?.loaded && samplerOptions.length === 0) {
         if (settings.schedule_type && settings.schedule_type !== AUTOMATIC_SCHEDULE) {
           notApplied.unshift(`schedule ${labelOf(SCHEDULE_LABELS, settings.schedule_type)}`);
