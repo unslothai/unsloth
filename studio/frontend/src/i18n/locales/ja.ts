@@ -1367,6 +1367,8 @@ export const ja = {
       installRuntimeFailed: "ランタイムのインストールに失敗しました。",
       installRuntimeError: "ランタイムのインストールを開始できませんでした。",
       unsupportedArch: "Windows サンドボックス (MXC) は x64 版 Windows でのみ動作するため、この PC では使用できません。",
+      builtinNeedsUpdate:
+        "Windows の組み込みコンテナーにはビルド {required} 以降が必要ですが、この PC は {current} です。管理者の手順なしで使うには最新の Windows Update をインストールするか、下のフォールバック サンドボックスをオンにしてください。",
       unsupportedBuild: "Windows サンドボックス (MXC) には Windows 11 24H2 (ビルド 26100) 以降が必要なため、この PC では使用できません。",
       permissionsIntro: "ツールが先に確認するタイミングと、Python とターミナルを OS サンドボックス内でも実行するかを選びます。",
       permissionLabel: "ツールの権限",

@@ -1370,6 +1370,7 @@ export const fr = {
       installRuntimeFailed: "L'installation du runtime a échoué.",
       installRuntimeError: "Impossible de lancer l'installation du runtime.",
       unsupportedArch: "Le bac à sable Windows (MXC) ne fonctionne que sous Windows x64, il n'est donc pas disponible sur ce PC.",
+      builtinNeedsUpdate: "Le conteneur intégré de Windows nécessite la build {required} ou plus récente, et ce PC exécute {current}. Installez la dernière mise à jour de Windows pour l'utiliser sans étape administrateur, ou activez le sandbox de secours ci-dessous.",
       unsupportedBuild: "Le bac à sable Windows (MXC) nécessite Windows 11 24H2 (build 26100) ou plus récent, il n'est donc pas disponible sur ce PC.",
       permissionsIntro: "Choisissez quand les outils demandent d'abord, et si Python et le Terminal s'exécutent aussi dans le bac à sable du système.",
       permissionLabel: "Autorisations des outils",

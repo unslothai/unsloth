@@ -1365,6 +1365,8 @@ export const ar = {
       installRuntimeFailed: "فشل تثبيت بيئة التشغيل.",
       installRuntimeError: "تعذر بدء تثبيت بيئة التشغيل.",
       unsupportedArch: "يعمل وضع حماية Windows (MXC) على Windows x64 فقط، لذا فهو غير متاح على هذا الكمبيوتر.",
+      builtinNeedsUpdate:
+        "تحتاج الحاوية المدمجة في Windows إلى الإصدار {required} أو أحدث، بينما يعمل هذا الكمبيوتر بالإصدار {current}. ثبّت آخر تحديث لـ Windows لاستخدامها دون خطوة مسؤول، أو فعّل وضع الحماية الاحتياطي أدناه.",
       unsupportedBuild: "يتطلب وضع حماية Windows (MXC) إصدار Windows 11 24H2 (البنية 26100) أو أحدث، لذا فهو غير متاح على هذا الكمبيوتر.",
       permissionsIntro: "اختر متى تسأل الأدوات أولاً، وما إذا كان Python والطرفية يعملان أيضاً داخل وضع حماية نظام التشغيل.",
       permissionLabel: "أذونات الأدوات",
