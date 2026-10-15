@@ -3097,6 +3097,7 @@ export const ja = {
       desktopAppVersion: "デスクトップアプリのバージョン",
       desktopAppVersionUnavailable: "利用できません",
       llamaCppVersion: "llama.cpp バージョン",
+      audioCppVersion: "audio.cpp バージョン",
       hardware: "ハードウェア",
       gpu: "GPU",
       cuda: "CUDA",

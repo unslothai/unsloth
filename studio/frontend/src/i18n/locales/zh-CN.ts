@@ -3075,6 +3075,7 @@ export const zhCN = {
       desktopAppVersion: "桌面应用版本",
       desktopAppVersionUnavailable: "不可用",
       llamaCppVersion: "llama.cpp 版本",
+      audioCppVersion: "audio.cpp 版本",
       hardware: "硬件",
       gpu: "GPU",
       cuda: "CUDA",
