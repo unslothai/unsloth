@@ -279,3 +279,22 @@ def test_zero_dropout_no_bias_call_is_unchanged(monkeypatch):
     spy = _Spy(monkeypatch)
     fast_lora.apply_lora_o(block, torch.randn(2, 5, H))
     assert [len(args) for _, args in spy.calls] == [6]
+
+
+@pytest.mark.parametrize("dropout,lora_bias", [(0.0, False), (0.3, False), (0.0, True)])
+def test_active_adapter_absent_from_projection_falls_back(monkeypatch, dropout, lora_bias):
+    # Adapters with different target modules: PEFT runs the base layer where the active one is missing.
+    from peft import LoraConfig
+
+    model, block = _peft_block("cpu", torch.float32, dropout, lora_bias)
+    model.add_adapter(
+        "other",
+        LoraConfig(r = 4, lora_alpha = 8, lora_dropout = dropout, target_modules = ["q_proj"], lora_bias = lora_bias),
+    )
+    model.set_adapter("other")
+    model.train()
+    spy = _Spy(monkeypatch)
+    X = torch.randn(2, 5, H)
+    torch.testing.assert_close(fast_lora.apply_lora_o(block, X), block.o_proj.base_layer(X))
+    fast_lora.apply_lora_qkv(block, X)
+    assert spy.calls == []

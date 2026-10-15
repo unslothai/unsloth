@@ -127,6 +127,13 @@ def _lora_dropout_and_bias(projs, X):
     """(dropout probabilities or None, lora_B biases) for the fused kernels, or None to use PEFT."""
     dropout_p = []
     for proj in projs:
+        # Enabled adapter missing from this projection: PEFT runs the base layer alone.
+        if (
+            not getattr(proj, "disable_adapters", True)
+            and not getattr(proj, "merged", False)
+            and _active_lora_adapter(proj) is None
+        ):
+            return None
         p = _lora_dropout_p(proj, X)
         if p is None:
             return None
