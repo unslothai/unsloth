@@ -551,6 +551,32 @@ _PRICE_PARALLEL_FRACTION = 0.9
 _ROOM_REASON = "replica card lacks room for this shape"
 _SHORT_RENDER_REASON = "short render"
 
+# Kinds of a per-shape CFG-parallel verdict (CfgParallelRouter.shape_disabled), and how long each holds:
+_OFF_ROOM = "room"  # the replica card lacked room: re-read every request and at every capacity check
+_OFF_SHORT = "short"  # the build would not repay this request: re-decided every request
+_OFF_TRANSIENT = "transient"  # an OOM in a replica path: retried next request, until _MISS_LIMIT in a row
+_OFF_STICKY = "sticky"  # priced out / link unmeasured: until reprice, invalidation or reload (pricing resets it)
+_OFF_PER_REQUEST = frozenset({_OFF_ROOM, _OFF_SHORT, _OFF_TRANSIENT})
+
+
+class _ShapeOff(str):
+    """A shape verdict's reason (a plain string everywhere it is shown) carrying its kind: lifetimes are decided on
+    the kind, never on the wording, so a new reason cannot slip past begin_request."""
+
+    kind: str
+
+    def __new__(cls, reason: str, kind: str) -> "_ShapeOff":
+        verdict = super().__new__(cls, reason)
+        verdict.kind = kind
+        return verdict
+
+
+def _off_kind(verdict: Any) -> Optional[str]:
+    """The kind of a shape verdict; None when there is none; an untyped reason counts as sticky."""
+    if verdict is None:
+        return None
+    return getattr(verdict, "kind", _OFF_STICKY)
+
 
 def _bg_eager_forced() -> bool:
     try:
@@ -2386,10 +2412,18 @@ class CfgParallelRouter:
         # why the CURRENT request shape keeps one card (priced out, link unmeasured); per shape, not per load
         self.shape_disabled: Optional[str] = None
         self.shapes = _ShapeBook(
-            {"pricing": None, "shape_disabled": None, "prediction": _PredictionPolicy}
+            {
+                "pricing": None,
+                "shape_disabled": None,
+                "prediction": _PredictionPolicy,
+                "oom_backoff": _PredictionPolicy,
+            }
         )
         # per shape: consecutive prediction misses stop the speculative replica forward (the same policy as CFG-batch)
         self.prediction = _PredictionPolicy()
+        # per shape: a transient replica OOM is retried next request; _MISS_LIMIT requests in a row that OOM before a
+        # parallel step completes make it sticky (a card that is always too tight does not pay an OOM per request)
+        self.oom_backoff = _PredictionPolicy()
         # the replica card's room for this request's activations was checked (per request and per shape change)
         self.capacity_checked = False
         # this request's denoise steps (counted at each new step) and its step count when Studio / the scheduler
@@ -2550,6 +2584,7 @@ class CfgParallelRouter:
                     self.stats["replica_calls"] += 1
                     if self.branch == 1:
                         self.stats["steps_parallel"] += 1
+                        self.oom_backoff.hit()
                     return out
                 except Exception as exc:  # noqa: BLE001 - recomputed on the primary below; typed by the handler
                     self._replica_failure("call", exc)
@@ -2571,7 +2606,7 @@ class CfgParallelRouter:
     def _check_capacity(self, latent: Any) -> None:
         """An existing replica, a new request or shape: decline this shape when the replica card lacks room for its
         (canvas and batch scaled) activations. A room verdict is re-read every request: free memory moves."""
-        if self.shape_disabled is not None and self.shape_disabled.startswith(_ROOM_REASON):
+        if _off_kind(self.shape_disabled) == _OFF_ROOM:
             self.shape_disabled = None
         if self.shape_disabled is not None:
             return
@@ -2586,7 +2621,8 @@ class CfgParallelRouter:
         room = self._room_mib(batch)
         if room is not None and room > free:
             self._shape_off(
-                f"{_ROOM_REASON}: needs {int(room)} MiB, {free} MiB free on {self.secondary}"
+                f"{_ROOM_REASON}: needs {int(room)} MiB, {free} MiB free on {self.secondary}",
+                _OFF_ROOM,
             )
 
     def _phase_need_mib(self, phase: str) -> Optional[int]:
@@ -2669,7 +2705,7 @@ class CfgParallelRouter:
         CFG-parallel off for the load."""
         kind = replica_failure_kind(exc)
         if kind is ReplicaCapacity:
-            self._shape_off(f"{_ROOM_REASON} ({where}): {exc}")
+            self._shape_off(f"{_ROOM_REASON} ({where}): {exc}", _OFF_ROOM)
         elif kind is ReplicaTransient:
             self._shape_oom(where, exc)
         else:
@@ -2682,10 +2718,17 @@ class CfgParallelRouter:
         self.next_carry = []
         with contextlib.suppress(Exception):
             _torch().cuda.empty_cache()
-        self._shape_off(f"out of memory on the replica card ({where}): {type(exc).__name__}")
+        reason = f"out of memory on the replica card ({where}): {type(exc).__name__}"
+        if self.oom_backoff.miss():
+            self._shape_off(
+                f"{reason}; {self.oom_backoff.consecutive} requests in a row ran out of memory, kept off for this shape",
+                _OFF_STICKY,
+            )
+        else:
+            self._shape_off(reason, _OFF_TRANSIENT)
 
-    def _shape_off(self, reason: str) -> None:
-        self.shape_disabled = reason
+    def _shape_off(self, reason: str, kind: str) -> None:
+        self.shape_disabled = _ShapeOff(reason, kind)
         if self.logger is not None:
             self.logger.info(
                 "diffusion.multigpu: CFG-parallel off for this request shape (%s)", reason
@@ -2736,7 +2779,8 @@ class CfgParallelRouter:
             return True
         self._shape_off(
             f"{_SHORT_RENDER_REASON}: building the replica (~{build_s:.2f}s) does not repay over "
-            f"{max(0, parallel_steps)} remaining steps at {gain_s:.4f}s saved each"
+            f"{max(0, parallel_steps)} remaining steps at {gain_s:.4f}s saved each",
+            _OFF_SHORT,
         )
         return False
 
@@ -2745,14 +2789,16 @@ class CfgParallelRouter:
         if self.pricing["strategy"] == "cfg_parallel":
             return True
         if self.pricing.get("link_unmeasured"):
-            self.shape_disabled = (
-                "link unmeasured: one card until a probe measures it (retried next request)"
+            # sticky: the unmeasured price itself is forgotten at the next request, and the verdict with it
+            self.shape_disabled = _ShapeOff(
+                "link unmeasured: one card until a probe measures it (retried next request)", _OFF_STICKY
             )
         else:
-            self.shape_disabled = (
+            self.shape_disabled = _ShapeOff(
                 "priced out: one card takes "
                 f"{self.pricing['single_step_s']:.4f}s per step, CFG-parallel "
-                f"{self.pricing['cfg_parallel_step_s']:.4f}s (link copies {self.pricing['copy_s']:.4f}s)"
+                f"{self.pricing['cfg_parallel_step_s']:.4f}s (link copies {self.pricing['copy_s']:.4f}s)",
+                _OFF_STICKY,
             )
         if self.logger is not None:
             self.logger.info(
@@ -2782,12 +2828,12 @@ class CfgParallelRouter:
         self.request_step = 0
         self.request_total_steps = steps
         self.steps_fn = steps_fn
-        # short-render and room verdicts hold for one request: a longer one may repay the build, and free memory moves
-        per_request = (_SHORT_RENDER_REASON, _ROOM_REASON)
+        # short-render, room and transient-OOM verdicts hold for one request (a longer one may repay the build, free
+        # memory moves); decided on the verdict's kind (_ShapeOff), structural and priced-out ones stay
         for state in self.shapes.saved.values():
-            if str(state.get("shape_disabled") or "").startswith(per_request):
+            if _off_kind(state.get("shape_disabled")) in _OFF_PER_REQUEST:
                 state["shape_disabled"] = None
-        if str(self.shape_disabled or "").startswith(per_request):
+        if _off_kind(self.shape_disabled) in _OFF_PER_REQUEST:
             self.shape_disabled = None
         try:
             self.request_px = int(width) * int(height) if width and height else None

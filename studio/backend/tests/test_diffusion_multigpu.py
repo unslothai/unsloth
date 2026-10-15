@@ -4612,3 +4612,119 @@ def test_interpreter_exit_waits_for_a_running_replica_job():
     for _ in range(3):
         done = subprocess.run([sys.executable, "-c", script], env = env, capture_output = True, timeout = 120)
         assert done.returncode == 0, done.stderr.decode()[-500:]
+
+
+def _oom_router(dit):
+    """A CPU router whose replica raises a CUDA-style OOM while ``state["oom"]`` is set."""
+    state = {"oom": False}
+    replicas = []
+
+    def factory():
+        r = mg.build_replica(dit, torch.device("cpu"))
+        plain = r.forward
+
+        def forward(*a, **k):
+            if state["oom"]:
+                raise torch.OutOfMemoryError("CUDA out of memory. Tried to allocate 2.00 GiB")
+            return plain(*a, **k)
+
+        r.forward = forward
+        replicas.append(r)
+        return r
+
+    router = mg.CfgParallelRouter(dit, primary = "cpu", secondary = "cpu", replica_factory = factory)
+    dit.forward = router
+    return router, state
+
+
+def _oom_request(dit, router, state, oom):
+    torch.manual_seed(0)
+    latents = torch.randn(2, 4)
+    router.begin_request(steps = 4)
+    state["oom"] = oom
+    before = router.stats["steps_parallel"]
+    out = _cfg_loop(dit, latents, 4)
+    router.end_request()
+    return out, router.stats["steps_parallel"] - before
+
+
+def test_transient_replica_oom_is_retried_on_the_next_request():
+    torch.manual_seed(0)
+    dit = _Dit()
+    torch.manual_seed(0)
+    reference = _cfg_loop(dit, torch.randn(2, 4), 4)  # the same latents _oom_request draws
+    router, state = _oom_router(dit)
+    _oom_request(dit, router, state, oom = False)  # builds the replica, runs parallel
+    out, parallel = _oom_request(dit, router, state, oom = True)
+    assert torch.equal(out, reference) and router.shape_disabled is not None
+    assert "out of memory" in router.shape_disabled
+    out, parallel = _oom_request(dit, router, state, oom = False)  # the pressure is gone: CFG-parallel again
+    assert torch.equal(out, reference)
+    assert parallel > 0 and router.shape_disabled is None and router.disabled_reason is None
+
+
+def test_transient_replica_oom_backs_off_after_consecutive_requests():
+    torch.manual_seed(0)
+    dit = _Dit()
+    router, state = _oom_router(dit)
+    _oom_request(dit, router, state, oom = False)
+    # OOM, OOM, a request that runs parallel steps (resets the run), then _MISS_LIMIT in a row: off for the shape
+    for oom in [True, True, False] + [True] * mg._MISS_LIMIT:
+        _, parallel = _oom_request(dit, router, state, oom = oom)
+        assert (parallel > 0) == (not oom)
+    _, parallel = _oom_request(dit, router, state, oom = False)
+    assert parallel == 0 and "in a row" in router.shape_disabled
+    assert router.disabled_reason is None  # the shape only; reprice / invalidation / reload starts it again
+    router.reprice()
+    _, parallel = _oom_request(dit, router, state, oom = False)
+    assert parallel > 0
+
+
+def test_structural_replica_failure_stays_across_requests():
+    torch.manual_seed(0)
+    dit = _Dit()
+    router, state = _oom_router(dit)
+    _oom_request(dit, router, state, oom = False)
+    router._replica_failure("call", mg.ReplicaStructural("unknown wrapper"))
+    _, parallel = _oom_request(dit, router, state, oom = False)
+    assert parallel == 0 and "unknown wrapper" in router.describe()["disabled_reason"]
+
+
+@pytest.mark.parametrize(
+    "kind, cleared",
+    [("room", True), ("short", True), ("transient", True), ("sticky", False)],
+)
+def test_shape_verdict_lifetime_is_decided_by_kind_not_wording(kind, cleared):
+    dit = _BatchDit()
+    router, _ = _router(dit)
+    # the wording deliberately disagrees with the kind: an old per-request prefix on a sticky verdict, and a new
+    # wording no prefix list knows on the per-request ones
+    reason = "short render: worded like a per-request verdict" if kind == "sticky" else "a reason worded anew"
+    router._shape_off(reason, kind)
+    router.shapes.switch(router, "a")
+    router.shapes.switch(router, "b")
+    router._shape_off(reason, kind)
+    router.begin_request()
+    assert (router.shape_disabled is None) == cleared
+    assert (router.shapes.saved["a"]["shape_disabled"] is None) == cleared
+
+
+def test_parallel_router_sets_shape_verdicts_only_with_a_kind():
+    # every verdict CfgParallelRouter stores is a _ShapeOff (or None), and no lifetime check reads the wording
+    import ast
+    import inspect
+    import textwrap
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(mg.CfgParallelRouter)))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and any(
+            isinstance(t, ast.Attribute) and t.attr == "shape_disabled" for t in node.targets
+        ):
+            v = node.value
+            assert (isinstance(v, ast.Constant) and v.value is None) or (
+                isinstance(v, ast.Call) and getattr(v.func, "id", None) == "_ShapeOff"
+            ), ast.unparse(node)
+        if isinstance(node, ast.Call) and getattr(node.func, "attr", None) == "_shape_off":
+            assert len(node.args) + len(node.keywords) == 2, ast.unparse(node)
+        if isinstance(node, ast.Call) and getattr(node.func, "attr", None) == "startswith":
+            assert "shape_disabled" not in ast.unparse(node), ast.unparse(node)
