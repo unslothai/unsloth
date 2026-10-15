@@ -143,6 +143,10 @@ export const BUDGET = {
   // Hub Run refusing audio models neither Audio nor chat can run (#13812) adds 77 B raw / 65 B transfer
   // (6,773,445 -> 6,773,522 B raw, 2,036,392 -> 2,036,457 B transfer against 59ab069b5, one machine and build,
   // Node 24, chunk count unchanged at 95). Raised by that growth.
+  // The Windows Desktop install location row on the first-run screen (#13446) adds 1,324 B raw / 342 B
+  // transfer (6,773,496 -> 6,774,820 B raw, 2,036,386 -> 2,036,728 B transfer against 59ab069b5, one machine
+  // and build, Node 24, chunk count unchanged at 95). Lazy-loading it cost more transfer and a 96th startup
+  // chunk (Rollup split react-dom out), so it is imported statically and the budget raised by that growth.
   // The paused and queued chat states (admission status, the paused continuation reason) add 2.3 KB
   // raw / 1.0 KB transfer to the eager chat chunk (6,570.6 -> 6,572.9 KB raw, 1,975.5 -> 1,976.5 KB
   // transfer against b8d76e169, one machine and build). They render on the first chat screen, so
@@ -154,11 +158,11 @@ export const BUDGET = {
   // raw, 2,026,381 -> 2,029,284 B transfer, one machine and build).
   // Re-measured on main at 5e927b0fa: +7,064 B raw / +2,314 B transfer (6,764,333 -> 6,771,397 B raw,
   // 2,033,495 -> 2,035,809 B transfer, one machine and build).
-  // Re-measured on main at a9c59afd5: +7,172 B raw / +2,346 B transfer (6,772,874 -> 6,780,046 B raw,
-  // 2,036,371 -> 2,038,717 B transfer, one machine and build). On main's limits plus that growth, with
+  // Re-measured on main at cc8e98e16: +7,181 B raw / +2,415 B transfer (6,777,163 -> 6,784,344 B raw,
+  // 2,037,624 -> 2,040,039 B transfer, one machine and build). On main's limits plus that growth, with
   // 0.9 KB raw / 0.4 KB transfer above it for the CI runner, which measured this branch 0.6 KB raw higher.
-  transferBytes: 2_039_225,
-  rawBytes: 6_781_645,
+  transferBytes: 2_039_636,
+  rawBytes: 6_782_978,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

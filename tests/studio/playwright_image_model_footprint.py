@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Rendered regression for the image-model selector's full disk footprint.
-
-The browser runs the real Vite application. Network data is deterministic so
-the test proves the UI contract without downloading a model or depending on
-live Hugging Face metadata.
-"""
+"""Image-model selector full disk footprint, rendered in Vite with deterministic network data."""
 
 import os
 import re
@@ -25,9 +20,7 @@ COMPANION_BYTES = 8_200_000_000
 REQUIRED_BYTES = CHECKPOINT_BYTES + COMPANION_BYTES
 REPO_ID = "unsloth/FLUX.2-klein-4B-GGUF"
 FILENAME = "FLUX.2-klein-4B-Q4_K_M.gguf"
-# The row is labelled by the catalogue's displayName ("FLUX.2 klein 4B"), not by the artifact repo id. Matching the id
-# exactly waited 30 s for text the picker never renders. This test is about the footprint the row reports, not about
-# its wording, so accept either spelling and let a genuinely missing row still fail.
+# The row shows the catalogue displayName, not the repo id.
 KLEIN_ROW = re.compile(r"FLUX\.2[\s\-]klein[\s\-]4B")
 
 
@@ -176,20 +169,11 @@ def _api_payload(path: str, query: dict[str, list[str]], *, full_footprint: bool
                 checkpoint_bytes = CHECKPOINT_BYTES,
             )
         return base
-    # Nonessential background probes are allowed to settle to an empty object; the test fails on browser exceptions or a
-    # missing selector row below.
     return {}
 
 
 def klein_row(page):
-    """The klein row inside the open picker, and nothing else on the page.
-
-    An unscoped search is not specific enough once a download has been started:
-    the hub download panel labels itself "black-forest-labs/FLUX.2-klein-4B ·
-    Required assets", so a page-wide match returns it first and clicking it
-    leaves the picker where it was. The old exact repo-id text never matched
-    that panel, so scoping only became necessary with the pattern.
-    """
+    """Scoped to the open picker menu, since the download panel's label also matches the klein pattern."""
     return page.locator(".unsloth-model-selector-menu").get_by_text(KLEIN_ROW).first
 
 

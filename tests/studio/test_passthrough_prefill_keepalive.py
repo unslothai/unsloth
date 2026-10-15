@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""A passthrough relay must not go silent while llama-server prefills.
-
-llama-server sends nothing until the first token and undici aborts a response
-after 300s with no bytes. Behavioural checks that the pump keepalives across a
-stalled read without restarting it, that the stall guard still fires, and that
-teardown leaves no pending read; structural checks that no fifth passthrough
-surface can be added without translating the sentinel.
-"""
+"""Relay must keep sending bytes during prefill: undici aborts a response after 300s with no bytes."""
 
 from __future__ import annotations
 
@@ -298,7 +291,7 @@ def test_closing_the_pump_first_leaves_the_iterator_closable():
         )
         async for got in stream:
             assert got is keepalive
-            break  # parked at a keepalive yield, read in flight
+            break
 
         errors = []
         if close_pump_first:
@@ -314,7 +307,6 @@ def test_closing_the_pump_first_leaves_the_iterator_closable():
             await stream.aclose()
         return errors
 
-    # Without the ordering, the iterator close lands on a running generator.
     unordered = asyncio.run(_run(close_pump_first = False))
     assert any("already running" in e for e in unordered), (
         "expected the unordered close to hit 'asynchronous generator is already "
@@ -359,10 +351,10 @@ def _load_env_accessors():
 @pytest.mark.parametrize(
     "raw,expected",
     [
-        (None, 5.0),  # unset: pace like the header wait already does
-        ("", 5.0),  # blank: same as unset
-        ("0", None),  # documented off switch
-        ("-1", None),  # non-positive is also off
+        (None, 5.0),
+        ("", 5.0),
+        ("0", None),
+        ("-1", None),
         ("2.5", 2.5),
         ("garbage", 5.0),  # unparseable falls back, never crashes a stream
     ],
@@ -385,9 +377,7 @@ def test_keepalive_interval_env(monkeypatch, raw, expected):
         ("-5", 1200.0),
         ("garbage", 1200.0),
         ("2400", 2400.0),
-        # `inf` is positive, so a `value > 0` parser used to let it through and
-        # the deadline stopped existing. `1e309` is the same value written by a
-        # human who meant "very large".
+        # `inf` is positive, so a `value > 0` parser would let the deadline vanish.
         ("inf", 1200.0),
         ("Infinity", 1200.0),
         ("1e309", 1200.0),
@@ -566,20 +556,7 @@ def test_sdk_sse_readers_ignore_the_keepalive_comment(module_name):
 
 
 def test_the_tick_is_a_whole_comment_frame_not_a_bare_line():
-    """The tick must be a complete SSE comment frame, blank line included.
-
-    A bare `: keep-alive\\n` looks tempting: it puts bytes on the wire without
-    closing a block, which avoids an SDK decoder bug where a data-less block
-    dispatches an empty event once an `id:` has been seen. But a bare line rides
-    at the head of the NEXT frame, and a reader that classifies a frame by its
-    first character -- comment if it starts with ":", data if it starts with
-    "data:" -- then files the whole frame as a comment and DROPS THE CHUNK. Raw
-    curl and Node undici readers both do exactly that, and both lose the token.
-
-    So the frame form is deliberate: it costs an ignorable empty event on two
-    Python decoders, and only when the upstream sends `id:`, which llama-server
-    does not. Losing a token is much worse than emitting an ignorable one.
-    """
+    """Tick is a complete SSE comment frame, blank line included, or readers drop the next chunk."""
     assert '_OPENAI_PASSTHROUGH_SSE_KEEPALIVE = ": keep-alive\\n\\n"' in SRC
     assert (
         "_OPENAI_PASSTHROUGH_SSE_KEEPALIVE_LINE" not in SRC
@@ -587,7 +564,6 @@ def test_the_tick_is_a_whole_comment_frame_not_a_bare_line():
     emitters = SRC.count("yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE")
     assert emitters >= 4, f"expected at least the 4 tick emitters, found {emitters}"
 
-    # A frame-prefix reader, which is what curl and undici consumers do.
     def frame_prefix_reader(stream):
         text = []
         for frame in stream.split("\n\n"):

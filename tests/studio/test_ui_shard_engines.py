@@ -1,39 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-"""
-Each Chat UI shard must install exactly the browser engines its own steps drive.
-
-The shards used to install all three engines each. The chromium-only ones (`extra`,
-which now also carries the former `picker` suites) never open anything but chromium,
-and installing webkit's system libraries for them is an apt transaction of 181
-packages and 102 MB:
-
-    0 upgraded, 181 newly installed, 0 to remove
-    Need to get 102 MB/114 MB of archives
-    Get:2 .../noble/universe amd64 fonts-wqy-zenhei all 0.9.45-8 [7472 kB]
-    -> 4m51s later: attempt 2/2 did not finish within 300s
-
-Fonts, X fonts and a soundfont, fetched so that a shard which never launches webkit
-could time out fetching them. That is what this file exists to stop coming back.
-
-Two shards rather than four since the fold of `banner` into `chat` and `picker` into
-`extra`: the four cells ran 5.3, 8.9, 6.5 and 2.8 minutes and each waited about two
-hours for an ubuntu-latest runner, so two cells of about 12 minutes take half the
-slots for the same wall-clock. The engine sets did not change, which is why the fold
-was possible at all: `banner` already installed the three engines `chat` installs, and
-`picker` was chromium-only like `extra`.
-
-It is enforced in BOTH directions, and the second one is the dangerous one:
-
-  * installing an engine no step drives is waste, and waste on a degraded mirror is
-    an outage;
-  * driving an engine the shard did not install is a broken run. Playwright reports
-    it as a launch failure deep inside a suite, minutes after the install step went
-    green, which reads as a flaky test rather than a missing package.
-
-Derived from the workflow, never from a hardcoded list: the whole point is that
-adding a webkit step to `extra` fails HERE, at the edit, rather than in CI.
-"""
+"""Each Chat UI shard installs exactly the engines its steps drive, checked in both directions."""
 
 from __future__ import annotations
 
@@ -60,22 +27,16 @@ def _shards() -> list[dict]:
 
 
 def _engines_driven_by(shard: str) -> set[str]:
-    """Engines the steps that RUN for ``shard`` actually name.
-
-    The install step itself is excluded: it names engines because it installs them,
-    so counting it would make every shard trivially consistent with itself.
-    """
+    """Excludes the install step, which would make every shard trivially consistent with itself."""
     driven: set[str] = set()
     for step in _doc()["jobs"]["ui-smoke"]["steps"]:
         run = step.get("run") or ""
         name = step.get("name") or ""
-        # Only steps that RUN something can drive a browser.
         if not run:
             continue
         if "playwright install" in run or "probe " in run:
             continue
         cond = str(step.get("if") or "")
-        # A step gated on another shard does not run for this one. Anything ungated runs for every shard.
         others = re.findall(r"matrix\.shard\s*==\s*'([a-z]+)'", cond)
         if others and shard not in others:
             continue
@@ -95,11 +56,7 @@ def test_every_shard_declares_engines_and_a_key() -> None:
 
 
 def test_the_engine_key_distinguishes_the_engine_set() -> None:
-    """
-    The cache holds the downloaded browsers. Two shards installing different engine
-    sets under one key means the smaller set gets saved, the larger one restores it,
-    reports a hit, skips the download, and then cannot launch what it did not get.
-    """
+    """Different engine sets need different cache keys, or a smaller saved set restores as a cache hit."""
     by_key: dict[str, set[str]] = {}
     for cell in _shards():
         by_key.setdefault(cell["engine_key"], set()).add(cell["engines"])
@@ -126,8 +83,7 @@ def test_shard_installs_every_engine_it_drives(cell: dict) -> None:
 def test_shard_installs_nothing_it_never_drives(cell: dict) -> None:
     installed = set(cell["engines"].split())
     driven = _engines_driven_by(cell["shard"])
-    # chromium is the default engine for every suite here, so it is legitimately installed whether or not a step names
-    # it out loud.
+    # chromium is the default engine for every suite, so it is installed whether named or not.
     extra = installed - driven - {"chromium"}
     assert not extra, (
         f"shard {cell['shard']!r} installs {sorted(extra)} but no step drives them. "
