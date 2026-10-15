@@ -25,7 +25,8 @@ _INT8PACK_ALIGN = 32
 # chip's own bf16 GEMM by this much (M1: about 1.3x; M3 parity; M5 4x behind, as its 16-bit GEMM uses matrix units).
 _INT8PACK_MIN_SPEEDUP = 1.10
 _INT8PACK_PROBE_ROWS = 1024
-# dtype -> probe verdict for this process (one chip per process).
+# (dtype, in_features, out_features) of the probed layer -> verdict for this process (one chip per process). Each
+# quantised transformer's layers carry their own verdict, so a later model with other shapes is probed afresh.
 _INT8PACK_PROBED: dict = {}
 # torch._int_mm needs M > 16 and K, N multiples of 8.
 _INT_MM_MIN_ROWS = 17
@@ -57,14 +58,17 @@ def mps_int8pack_forced() -> bool:
     return os.environ.get(NATIVE_MPS_INT8PACK_ENV, "").strip().lower() in ("1", "on", "true", "yes")
 
 
-def mps_int8pack_selected(dtype: Any) -> bool:
-    """Whether ``dtype`` forwards may take the Metal kernel: the env override, else this process's probe verdict
-    (no probe yet = dequantise, which is deterministic)."""
+def mps_int8pack_selected(dtype: Any, layer: Any = None) -> bool:
+    """Whether ``dtype`` forwards of ``layer`` may take the Metal kernel: the env override, else the verdict its
+    transformer's probe stamped on it (no probe yet = dequantise, which is deterministic). Without ``layer``: whether
+    any probe this process chose the kernel for ``dtype``."""
     if mps_int8pack_disabled():
         return False
     if mps_int8pack_forced():
         return True
-    return bool(_INT8PACK_PROBED.get(dtype, False))
+    if layer is not None:
+        return bool(getattr(layer, "_int8pack_verdict", {}).get(dtype, False))
+    return any(v for (d, _, _), v in _INT8PACK_PROBED.items() if d == dtype)
 
 
 def _median_call_s(
@@ -114,14 +118,13 @@ def probe_mps_int8pack(
     device: Any = "mps",
     logger: Any = None,
 ) -> bool:
-    """Time the Metal kernel against a dense ``dtype`` GEMM on ``module``'s largest kernel-eligible layer, once per
-    process and dtype, and record whether forwards take it. The env override skips the probe."""
+    """Time the Metal kernel against a dense ``dtype`` GEMM on ``module``'s largest kernel-eligible layer and stamp
+    the verdict on every eligible layer of ``module``. Verdicts are cached per (dtype, probed shape), so another model
+    with the same largest layer reuses it and one with a different shape is probed. The env override skips the probe."""
     import torch
 
     if mps_int8pack_disabled() or mps_int8pack_forced():
         return mps_int8pack_selected(dtype)
-    if dtype in _INT8PACK_PROBED:
-        return _INT8PACK_PROBED[dtype]
     cls = native_linear_class()
     layers = [
         m
@@ -131,16 +134,26 @@ def probe_mps_int8pack(
     if not layers:
         return False
     layer = max(layers, key = lambda m: m.in_features * m.out_features)
+    key = (dtype, layer.in_features, layer.out_features)
+
+    def stamp(verdict: bool) -> bool:
+        for m in layers:
+            m._int8pack_verdict = {**getattr(m, "_int8pack_verdict", {}), dtype: verdict}
+        return verdict
+
+    if key in _INT8PACK_PROBED:
+        return stamp(_INT8PACK_PROBED[key])
     try:
         kernel_s, dense_s = _bench_int8pack_vs_dense(layer, dtype, torch.device(device))
     except Exception as exc:  # noqa: BLE001 -- a failed probe keeps the dequantise path
         if logger is not None:
             logger.info("diffusion.native_quant: int8pack probe failed, dequantising: %s", exc)
-        _INT8PACK_PROBED[dtype] = False
-        return False
+        _INT8PACK_PROBED[key] = False
+        return stamp(False)
     speedup = dense_s / max(kernel_s, 1e-9)
     verdict = speedup >= _INT8PACK_MIN_SPEEDUP
-    _INT8PACK_PROBED[dtype] = verdict
+    _INT8PACK_PROBED[key] = verdict
+    stamp(verdict)
     if logger is not None:
         logger.info(
             "diffusion.native_quant: int8pack probe %dx%dx%d: kernel %.3f ms, dense %s %.3f ms (%.2fx) -> %s",
@@ -404,7 +417,7 @@ def native_linear_class():
                 and (
                     self._int8pack_scale(dtype, self.weight_q.device) is not None
                     if probe
-                    else mps_int8pack_selected(dtype)
+                    else mps_int8pack_selected(dtype, self)
                 )
             )
 

@@ -323,6 +323,32 @@ def test_probe_takes_the_kernel_only_when_it_beats_bf16(
     assert len(seen) == 1
 
 
+@pytest.mark.skipif(not _HAS_OP, reason = "torch has no _weight_int8pack_mm")
+def test_probe_verdict_is_kept_per_model_shape(_no_probe_state, monkeypatch):
+    # A second model in the same process with a different largest layer is probed again, and each model's layers
+    # follow their own verdict; the same shape reuses the cached verdict.
+    verdicts = {(128, 256): (0.6, 0.8), (256, 512): (4.1, 1.0)}
+    seen = []
+
+    def bench(layer, dtype, device):
+        seen.append((layer.in_features, layer.out_features))
+        return verdicts[(layer.in_features, layer.out_features)]
+
+    monkeypatch.setattr(nq, "_bench_int8pack_vs_dense", bench)
+    first = _toy_native()
+    assert nq.probe_mps_int8pack(first, torch.bfloat16, device = "cpu") is True
+    big = torch.nn.Sequential(torch.nn.Linear(256, 512, bias = False)).to(torch.bfloat16)
+    nq.apply_native_weight_quant(
+        big, "int8", filter_fn = lambda m, n: True, act_int8 = False, scale_dtype = torch.bfloat16
+    )
+    assert nq.probe_mps_int8pack(big, torch.bfloat16, device = "cpu") is False
+    assert seen == [(128, 256), (256, 512)]
+    assert first.ff._int8pack_layer_ok(torch.bfloat16) and not big[0]._int8pack_layer_ok(torch.bfloat16)
+    again = _toy_native()
+    assert nq.probe_mps_int8pack(again, torch.bfloat16, device = "cpu") is True
+    assert len(seen) == 2 and again.ff._int8pack_layer_ok(torch.bfloat16)
+
+
 @pytest.mark.parametrize("env, expect", [("0", False), ("1", True)])
 def test_env_override_skips_the_probe(_no_probe_state, monkeypatch, env, expect):
     monkeypatch.setenv(nq.NATIVE_MPS_INT8PACK_ENV, env)
@@ -392,6 +418,6 @@ def test_video_gate_still_refuses_fp8_on_mps(monkeypatch):
 def test_mps_probe_times_the_real_kernel_and_records_a_verdict():
     toy = _toy_native().to("mps")
     verdict = nq.probe_mps_int8pack(toy, torch.bfloat16)
-    assert nq._INT8PACK_PROBED == {torch.bfloat16: verdict}
+    assert nq._INT8PACK_PROBED == {(torch.bfloat16, 128, 256): verdict}
     assert nq.mps_int8pack_selected(torch.bfloat16) is verdict
     assert toy.ff.int8pack_engaged(torch.bfloat16) is verdict
