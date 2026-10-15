@@ -85,7 +85,15 @@ def _build(seed):
     lora = LoraConfig(
         r = 4,
         lora_alpha = 8,
-        target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+        target_modules = [
+            "q_proj",
+            "k_proj",
+            "v_proj",
+            "o_proj",
+            "gate_proj",
+            "up_proj",
+            "down_proj",
+        ],
         lora_dropout = 0.0,
         init_lora_weights = False,
     )
@@ -159,7 +167,6 @@ def _worker(rank, port, case, out_dir):
         if case == "checkpointed":
             # What Accelerator._prepare_fsdp2 does before sharding when the plugin asks for it.
             from accelerate.utils.fsdp_utils import fsdp2_apply_ac
-
             model = fsdp2_apply_ac(accelerator, model)
         if case == "causal_unit":
             # What accelerate <= 1.13 builds for transformer_cls_names_to_wrap = ["LlamaForCausalLM"]
@@ -243,7 +250,9 @@ def test_per_block_wrap_keeps_fused_layers_on_whole_weights(tmp_path):
 
     if hasattr(fsdp_utils, "_find_final_norm"):
         # accelerate >= 1.14 gives [final norm, lm_head] their own unit, which nothing would gather.
-        assert r["direct_read_units"] >= 1, "lm_head's unit is not gathered before the CausalLM forward"
+        assert (
+            r["direct_read_units"] >= 1
+        ), "lm_head's unit is not gathered before the CausalLM forward"
     else:
         # Older accelerate leaves lm_head in the root unit, which its own pre-forward gathers.
         assert r["direct_read_units"] == 0

@@ -59,7 +59,9 @@ def _fsdp2_unsharded_4bit(base_cls = Linear4bit):
     state.dtype = torch.float16
     base_layer.quant_state = state
     # The all-gathered packed bytes: (32 * 64 / 4, 1) in fp16 storage, a plain Parameter with no quant_state.
-    base_layer.weight = torch.nn.Parameter(torch.zeros(512, 1, dtype = torch.float16), requires_grad = False)
+    base_layer.weight = torch.nn.Parameter(
+        torch.zeros(512, 1, dtype = torch.float16), requires_grad = False
+    )
     base_layer.bias = None
     return _LoRA(base_layer), state
 
