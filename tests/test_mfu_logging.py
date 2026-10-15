@@ -184,7 +184,11 @@ class _Expert(torch.nn.Module):
 
 
 class _MoE(torch.nn.Module):
-    def __init__(self, top_k = None, num_experts_per_tok = None):
+    def __init__(
+        self,
+        top_k = None,
+        num_experts_per_tok = None,
+    ):
         super().__init__()
         self.config = type("Config", (), {"num_experts_per_tok": num_experts_per_tok})()
         self.gate = torch.nn.Linear(8, 4, bias = False)
@@ -246,7 +250,9 @@ def test_model_split_over_gpus_reports_per_gpu_average(monkeypatch):
     callback._tokens = 1000
     logs = {"loss": 1.0}
     callback.on_log(None, _State(), None, logs = logs)
-    assert logs["train_tflops_per_gpu"] == pytest.approx(1000 * callback._linear_per_token / 2 / 1e12)
+    assert logs["train_tflops_per_gpu"] == pytest.approx(
+        1000 * callback._linear_per_token / 2 / 1e12
+    )
     assert logs["train_mfu"] == pytest.approx(logs["train_tflops_per_gpu"])
     callback.on_train_end(None, None, None)
 
@@ -255,9 +261,7 @@ def test_encoder_decoder_models_are_not_reported(monkeypatch):
     from transformers import T5Config, T5ForConditionalGeneration
 
     monkeypatch.setenv("UNSLOTH_PEAK_TFLOPS", "1")
-    config = T5Config(
-        vocab_size = 64, d_model = 16, d_kv = 4, d_ff = 32, num_layers = 1, num_heads = 4
-    )
+    config = T5Config(vocab_size = 64, d_model = 16, d_kv = 4, d_ff = 32, num_layers = 1, num_heads = 4)
     model = T5ForConditionalGeneration(config)
     callback = mfu.UnslothMFUCallback()
     callback.on_train_begin(None, _State(), None, model = model)
@@ -296,12 +300,21 @@ def test_on_log_synchronizes_every_participating_gpu(monkeypatch):
 
 
 def test_vision_tower_is_not_charged_per_text_token():
-    from transformers import CLIPVisionConfig, LlamaConfig, LlavaConfig, LlavaForConditionalGeneration
+    from transformers import (
+        CLIPVisionConfig,
+        LlamaConfig,
+        LlavaConfig,
+        LlavaForConditionalGeneration,
+    )
 
     text = _model().config
     vision = CLIPVisionConfig(
-        hidden_size = 16, intermediate_size = 32, num_hidden_layers = 1, num_attention_heads = 4,
-        image_size = 8, patch_size = 4,
+        hidden_size = 16,
+        intermediate_size = 32,
+        num_hidden_layers = 1,
+        num_attention_heads = 4,
+        image_size = 8,
+        patch_size = 4,
     )
     model = LlavaForConditionalGeneration(LlavaConfig(text_config = text, vision_config = vision))
     total, parts = mfu.count_linear_flops_per_token(model)
@@ -312,7 +325,10 @@ def test_bidirectional_encoder_counts_square_pairs():
     from transformers import BertConfig, BertModel
 
     config = BertConfig(
-        vocab_size = 64, hidden_size = 16, num_hidden_layers = 1, num_attention_heads = 4,
+        vocab_size = 64,
+        hidden_size = 16,
+        num_hidden_layers = 1,
+        num_attention_heads = 4,
         intermediate_size = 32,
     )
     model = BertModel(config).train()
@@ -360,7 +376,9 @@ def test_add_mfu_callback_moves_an_existing_callback_first(tmp_path):
     assert trainer.callback_handler.callbacks[0] is not existing
     assert mfu.add_mfu_callback(trainer) is existing
     assert trainer.callback_handler.callbacks[0] is existing
-    assert sum(isinstance(c, mfu.UnslothMFUCallback) for c in trainer.callback_handler.callbacks) == 1
+    assert (
+        sum(isinstance(c, mfu.UnslothMFUCallback) for c in trainer.callback_handler.callbacks) == 1
+    )
 
 
 def test_l40_is_not_matched_as_l4(monkeypatch):
@@ -408,7 +426,9 @@ def test_unsloth_forward_head_window_matches_both_keep_spellings(monkeypatch):
     callback._count_batch(model, (), {"attention_mask": mask, "num_logits_to_keep": 1})
     assert int(callback._head_tokens) == 2
     callback._count_batch(
-        model, (), {"attention_mask": mask, "logits_to_keep": torch.tensor([3]), "num_logits_to_keep": 0}
+        model,
+        (),
+        {"attention_mask": mask, "logits_to_keep": torch.tensor([3]), "num_logits_to_keep": 0},
     )
     assert int(callback._head_tokens) == 2 + 8
     callback.on_train_end(None, None, None)

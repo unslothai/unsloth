@@ -124,7 +124,11 @@ def _inactive_leaves(model):
         if isinstance(active, str):
             active = [active]
         # Mirrors ModulesToSaveWrapper.forward: any missing or disabled adapter runs the original.
-        if getattr(module, "disable_adapters", False) or not active or any(a not in copies for a in active):
+        if (
+            getattr(module, "disable_adapters", False)
+            or not active
+            or any(a not in copies for a in active)
+        ):
             used = original
         else:
             used = copies[active[0]]
@@ -206,7 +210,9 @@ def count_linear_flops_per_token(model, gradient_checkpointing = False):
 
 
 def _all_attention_bidirectional(model):
-    flags = [m.is_causal for m in model.modules() if isinstance(getattr(m, "is_causal", None), bool)]
+    flags = [
+        m.is_causal for m in model.modules() if isinstance(getattr(m, "is_causal", None), bool)
+    ]
     return bool(flags) and not any(flags)
 
 
@@ -313,16 +319,18 @@ def _sequence_lengths(kwargs, args):
             ends = torch.cat([starts[1:], starts.new_tensor([position_ids.numel()])])
             return ends - starts
     if torch.is_tensor(input_ids) and input_ids.dim() >= 2:
-        return torch.full(
-            (input_ids.shape[0],), input_ids.shape[1], device = input_ids.device
-        )
+        return torch.full((input_ids.shape[0],), input_ids.shape[1], device = input_ids.device)
     return None
 
 
 class UnslothMFUCallback(TrainerCallback):
     """Adds `train_tflops_per_gpu` and `train_mfu` to training logs. Prefer `add_mfu_callback`."""
 
-    def __init__(self, peak_tflops = None, gradient_checkpointing = None):
+    def __init__(
+        self,
+        peak_tflops = None,
+        gradient_checkpointing = None,
+    ):
         self.peak_tflops = peak_tflops
         self.gradient_checkpointing = gradient_checkpointing
         self._handle = None
@@ -376,7 +384,14 @@ class UnslothMFUCallback(TrainerCallback):
         else:
             self._pairs = self._pairs + (lengths * (lengths + 1) // 2).sum()
 
-    def on_train_begin(self, args, state, control, model = None, **kwargs):
+    def on_train_begin(
+        self,
+        args,
+        state,
+        control,
+        model = None,
+        **kwargs,
+    ):
         if model is None:
             return
         config = getattr(model, "config", None)
@@ -447,7 +462,14 @@ class UnslothMFUCallback(TrainerCallback):
     def on_save(self, args, state, control, **kwargs):
         self._paused = True
 
-    def on_log(self, args, state, control, logs = None, **kwargs):
+    def on_log(
+        self,
+        args,
+        state,
+        control,
+        logs = None,
+        **kwargs,
+    ):
         if not self._enabled or logs is None or "loss" not in logs or self._window_start is None:
             return
         tokens = int(self._tokens)
