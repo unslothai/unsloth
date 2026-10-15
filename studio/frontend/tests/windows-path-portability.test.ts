@@ -1,24 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Frontend CI runs on ubuntu only, so a test that is correct on POSIX and wrong on
-// Windows stays green here forever. Thirteen of them accumulated that way, in two
-// shapes, and both are decidable from the source without a Windows runner:
-//
-//   1. A native path used as a dynamic `import()` specifier. `fileURLToPath` gives
-//      "/home/..." on POSIX, which node's ESM loader tolerates, and "D:\..." on
-//      Windows, which it rejects with ERR_UNSUPPORTED_ESM_URL_SCHEME.
-//   2. A `file:` URL's `pathname` used as a filesystem path. It is "/home/..." on
-//      POSIX and "/D:/..." on Windows, which `readFile` reads as drive-relative and
-//      opens as "D:\D:\...".
-//
-// Both APIs take a `URL` directly on every platform, so the fix in each case is to
-// stop converting. This test is why the two shapes cannot come back before a Windows
-// runner sees them: it fails on Linux.
-//
-// It is a rule about data flow, not a ban on the words. `fileURLToPath` reaching
-// `existsSync` is correct and stays allowed; only `fileURLToPath` reaching `import()`
-// is not.
+// Frontend CI is ubuntu-only, so two Windows-only breakages are caught from source:
+// 1. a fileURLToPath result as an import() specifier (ERR_UNSUPPORTED_ESM_URL_SCHEME);
+// 2. a file: URL's pathname as an fs path ("/D:/..." opens as "D:\D:\...").
+// Both APIs accept a URL directly. fileURLToPath into existsSync is fine.
 
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
@@ -28,7 +14,6 @@ import ts from "typescript";
 
 const TESTS_DIR = new URL("./", import.meta.url);
 
-/** Every source file under tests/, as URLs. Never as paths: see the header. */
 function collect(dir: URL, out: URL[] = []): URL[] {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const child = new URL(entry.name + (entry.isDirectory() ? "/" : ""), dir);
@@ -46,12 +31,7 @@ function collect(dir: URL, out: URL[] = []): URL[] {
 
 const FILES = collect(TESTS_DIR);
 
-/**
- * `barrier` stops the descent at a node and everything under it. It is how a
- * sanitizer is modelled: the taint rules below ask "does this expression read
- * anything dangerous", and a converted value no longer does, however it was
- * built. Without it the rule cannot tell a repaired value from a raw one.
- */
+/** `barrier` models a sanitizer: descent stops there, so a converted value is clean. */
 type Barrier = (n: ts.Node) => boolean;
 
 function walk(
@@ -80,11 +60,7 @@ function subtreeHas(
   return found;
 }
 
-/**
- * Identifiers *read* in `node`, so a taint on one reaches the whole expression.
- * Property names are skipped: `x.href` reads `x`, and treating `href` as a name
- * would let an unrelated local called `href` taint every member access in the file.
- */
+/** Property names are skipped: `x.href` reads `x`, not a local called `href`. */
 function identifiersIn(
   node: ts.Node,
   barrier?: Barrier,
@@ -107,10 +83,7 @@ function identifiersIn(
   return out;
 }
 
-// A lexical resolver, so taint is carried by a BINDING and not by a name. Test
-// files reuse `path`, `file` and `files` freely, and a file-wide set of names would
-// let `const path = url.pathname` in one function reject an unrelated
-// `const path = new URL(...); readFile(path)` in another.
+// Lexical resolver: taint is carried by a BINDING, not a name, since tests reuse names freely.
 const isScope = (n: ts.Node): boolean =>
   ts.isSourceFile(n) ||
   ts.isBlock(n) ||
@@ -129,7 +102,6 @@ function enclosingScope(node: ts.Node): ts.Node | null {
   return null;
 }
 
-/** name -> declaration, per scope. Only the forms that can carry a value. */
 function declarationTable(
   source: ts.SourceFile,
 ): Map<ts.Node, Map<string, ts.Node>> {
@@ -142,16 +114,9 @@ function declarationTable(
       inScope = new Map<string, ts.Node>();
       table.set(scope, inScope);
     }
-    // First declaration wins; a redeclaration of the same name in the same scope
-    // is not something this suite does, and picking either is equally arbitrary.
     if (!inScope.has(name.text)) inScope.set(name.text, declaration);
   };
-  /**
-   * `const { pathname } = url` and `const [head] = parts` introduce bindings
-   * exactly as `const x = ...` does. Each binding element is recorded as its own
-   * declaration, so it can be tainted on its own: only `pathname` is dangerous in
-   * `const { pathname, href } = url`, and `href` must stay clean.
-   */
+  /** Each destructured element is its own declaration: only `pathname` is tainted, not `href`. */
   const record = (name: ts.BindingName, declaration: ts.Node): void => {
     if (ts.isIdentifier(name)) {
       put(name, declaration);
@@ -170,11 +135,7 @@ function declarationTable(
   return table;
 }
 
-/**
- * The declaration `use` refers to, by walking out through enclosing scopes.
- * Null when nothing in the file declares it, which is the safe answer: an
- * unresolved name is never treated as tainted, so the rules cannot fire on it.
- */
+/** Null when undeclared in the file; an unresolved name is never tainted. */
 function resolve(
   use: ts.Identifier,
   table: Map<ts.Node, Map<string, ts.Node>>,
@@ -186,7 +147,6 @@ function resolve(
   return null;
 }
 
-/** The module an import binding came from, so a rule can require the right one. */
 function importModuleOf(declaration: ts.Node): string | null {
   for (let n: ts.Node | undefined = declaration; n; n = n.parent) {
     if (ts.isImportDeclaration(n)) {
@@ -198,14 +158,7 @@ function importModuleOf(declaration: ts.Node): string | null {
   return null;
 }
 
-/**
- * What a call names on its module's side, and which module that is.
- *
- * Both halves matter. Without the first, `import { readFile as read }` hides an
- * fs call behind a local spelling. Without the second, an unrelated
- * `router.open(...)` or `dom.link(...)` is classified as one, and a rule that
- * fires on correct code is worse than no rule.
- */
+/** Resolves both import aliases and the source module, so `router.open` is not an fs call. */
 function resolvedCallee(
   call: ts.CallExpression,
   table: Map<ts.Node, Map<string, ts.Node>>,
@@ -240,7 +193,6 @@ const FS_MODULES = new Set([
 ]);
 const URL_MODULES = new Set(["node:url", "url"]);
 
-/** `const { pathname } = url`, which reads the property without a member access. */
 const isPathnameBinding = (n: ts.Node): boolean => {
   if (!ts.isBindingElement(n) || !ts.isObjectBindingPattern(n.parent)) {
     return false;
@@ -260,10 +212,7 @@ const isPathnameRead = (n: ts.Node): boolean =>
 const isDynamicImport = (n: ts.Node): n is ts.CallExpression =>
   ts.isCallExpression(n) && n.expression.kind === ts.SyntaxKind.ImportKeyword;
 
-// fs entry points that take a path or a URL, mapped to how many of their leading
-// arguments are one. Every one of them breaks the same way when handed a Windows
-// `file:` pathname, and a destination breaks exactly as a source does, so
-// copyFile(sourceUrl, destination.pathname) has to be caught as well.
+// Mapped to how many leading arguments are paths; a destination breaks like a source.
 const FS_PATH_APIS = new Map([
   ["access", 1],
   ["accessSync", 1],
@@ -326,7 +275,6 @@ const FS_PATH_APIS = new Map([
   ["writeFileSync", 1],
 ]);
 
-/** How many leading arguments of `call` are a filesystem path, if any are. */
 function fsPathArguments(
   call: ts.CallExpression,
   table: Map<ts.Node, Map<string, ts.Node>>,
@@ -336,7 +284,6 @@ function fsPathArguments(
   return FS_PATH_APIS.get(callee.name);
 }
 
-/** The parameter list of a locally declared function, for the call-site step. */
 function parametersOf(
   declaration: ts.Node | null,
 ): readonly ts.ParameterDeclaration[] | null {
@@ -354,29 +301,9 @@ function parametersOf(
 }
 
 /**
- * Bindings carrying a value derived from `seed`, propagated to a fixpoint.
- *
- * None of the steps is decoration; each is a way the shape has been written or
- * could plausibly be refactored into.
- *
- *   const x = <tainted>            initialization
- *   x = <tainted>                  a value built in steps
- *   const { pathname } = url       destructuring, which reads the property
- *                                  without a member access
- *   arr.push(<tainted>)            into a collection...
- *   for (const v of arr)           ...and back out of it. This pair is the
- *                                  marker-key defect exactly: it pushed
- *                                  url.pathname in one function and read the
- *                                  array with readFile in another.
- *   helper(<tainted>)              across a local helper boundary, onto the
- *                                  parameter the argument lands on
- *
- * The parameter step is an over-approximation: a helper called with a tainted
- * argument at one site and a clean one at another taints every use inside it.
- * That is the right direction here, because the tainted call site is itself a
- * defect, and this analysis exists to find those rather than to prove absence.
- *
- * `barrier` marks a sanitizer, whose result is clean whatever went into it.
+ * Bindings derived from `seed`, propagated to a fixpoint through initialization, reassignment,
+ * destructuring, arr.push/for-of, and local helper parameters. The parameter step
+ * over-approximates on purpose. `barrier` marks a sanitizer.
  */
 function taintedBindings(
   source: ts.SourceFile,
@@ -392,7 +319,6 @@ function taintedBindings(
       return declaration !== null && tainted.has(declaration);
     });
 
-  // `const x = <tainted>`.
   const assigned = (n: ts.Node): ts.Node[] =>
     ts.isVariableDeclaration(n) &&
     ts.isIdentifier(n.name) &&
@@ -401,8 +327,6 @@ function taintedBindings(
       ? [n]
       : [];
 
-  // `x = <tainted>` after the fact. A value built in steps, `let path = "";
-  // path = url.pathname;`, is otherwise invisible to `assigned` above.
   const reassigned = (n: ts.Node): ts.Node[] => {
     if (
       !ts.isBinaryExpression(n) ||
@@ -416,11 +340,6 @@ function taintedBindings(
     return declaration ? [declaration] : [];
   };
 
-  /**
-   * A binding element, tainted either because the property it names is itself
-   * the seed (`const { pathname } = url`) or because the whole right-hand side
-   * was already tainted (`const [first] = taintedList`).
-   */
   const destructured = (n: ts.Node): ts.Node[] => {
     if (!ts.isBindingElement(n)) return [];
     if (seed(n)) return [n];
@@ -433,7 +352,6 @@ function taintedBindings(
       : [];
   };
 
-  // `arr.push(<tainted>)`, which taints whichever `arr` is in scope here.
   const collected = (n: ts.Node): ts.Node[] => {
     if (
       !ts.isCallExpression(n) ||
@@ -449,7 +367,6 @@ function taintedBindings(
     return declaration ? [declaration] : [];
   };
 
-  // `for (const v of <tainted array>)`, which taints the element.
   const iterated = (n: ts.Node): ts.Node[] => {
     if (!ts.isForOfStatement(n) || !ts.isVariableDeclarationList(n.initializer))
       return [];
@@ -463,10 +380,6 @@ function taintedBindings(
     return isTainted(n.expression) ? [declaration] : [];
   };
 
-  // `helper(<tainted>)` where `helper` is declared in this file: the parameter
-  // the argument lands on carries the taint into the body. Without this a
-  // pathname crossing one helper boundary is invisible, however it is used
-  // inside.
   const passed = (n: ts.Node): ts.Node[] => {
     if (!ts.isCallExpression(n) || !ts.isIdentifier(n.expression)) return [];
     const parameters = parametersOf(resolve(n.expression, table));
@@ -518,9 +431,7 @@ function scanSource(source: ts.SourceFile, label: string): Scan {
     pathnameToFs: [],
   };
   const table = declarationTable(source);
-  // Alias-aware and module-aware, like the fs rule: `import { fileURLToPath as
-  // toPath }` must still seed the taint, and a same-named helper from elsewhere
-  // must not.
+  // Alias-aware and module-aware, like the fs rule.
   const isFileURLToPathCall = (n: ts.Node): boolean => {
     if (!ts.isCallExpression(n)) return false;
     const callee = resolvedCallee(n, table);
@@ -531,17 +442,8 @@ function scanSource(source: ts.SourceFile, label: string): Scan {
     );
   };
   /**
-   * `pathToFileURL` is the exact inverse of `fileURLToPath`, so a native path
-   * put back through it is a legal specifier again and the taint must stop
-   * there. That round trip is the standard conversion when a module location
-   * genuinely starts life as a filesystem path, and both resolvers under
-   * tests/helpers do it; a rule that rejected it would be pushing people to
-   * weaken the rule rather than fix the code.
-   *
-   * Only a sanitizer for THIS rule. `pathToFileURL(url.pathname)` is still
-   * wrong: the pathname is "/D:/..." on Windows, which is not a native path,
-   * and converting it yields a URL for a path that does not exist. So the
-   * pathname rule below is deliberately given no barrier.
+   * pathToFileURL inverts fileURLToPath, so it sanitizes the import() rule only. The pathname
+   * rule gets no barrier: on Windows a pathname is "/D:/...", not a native path.
    */
   const isPathToFileURLCall = (n: ts.Node): boolean => {
     if (!ts.isCallExpression(n)) return false;
@@ -594,8 +496,6 @@ function scanSource(source: ts.SourceFile, label: string): Scan {
       const pathArguments = fsPathArguments(n, table);
       if (pathArguments !== undefined) {
         result.fsCalls += 1;
-        // Every path-bearing position, not only the source: a destination
-        // breaks on Windows exactly as a source does.
         for (const target of n.arguments.slice(0, pathArguments)) {
           if (reaches(target, urlPathnames, isPathnameRead)) {
             result.pathnameToFs.push(at(n));
@@ -612,7 +512,6 @@ function scan(file: URL): Scan {
   const text = readFileSync(file, "utf8");
   const label = decodeURIComponent(file.href.slice(TESTS_DIR.href.length));
   const kind = /\.m?ts$/.test(label) ? ts.ScriptKind.TS : ts.ScriptKind.JS;
-  // The file name is a diagnostic label only; nothing resolves against it.
   return scanSource(
     ts.createSourceFile(label, text, ts.ScriptTarget.ESNext, true, kind),
     label,
@@ -621,9 +520,7 @@ function scan(file: URL): Scan {
 
 const SCANS = FILES.map(scan);
 
-// The rules are only worth anything if the analysis reached code. A refactor that
-// moved the suite, renamed the extensions or broke the parse would otherwise turn
-// both of them into green no-ops.
+// Guards against a refactor turning both rules into green no-ops.
 test("the scan reads the whole suite", () => {
   assert.ok(
     FILES.length > 200,
@@ -663,9 +560,7 @@ test("no test reads a file through a URL pathname", () => {
   );
 });
 
-// Both rules above pass on a suite with no violations, which is also what they would
-// do if their detectors were gutted. Exercise the detectors on source known to be
-// wrong, and on the corrected form of the same source.
+// Exercise the detectors on known-bad source too, or gutted detectors would still pass.
 test("the rules fire on the shapes they exist for, and only those", () => {
   const check = (code: string, label: string): Scan =>
     scanSource(
@@ -704,8 +599,6 @@ test("the rules fire on the shapes they exist for, and only those", () => {
       "pathnameToFs",
     ],
     [
-      // A destination is a path too, so a two-path API is scanned in both
-      // positions. Only the second one is wrong here.
       `import { copyFile } from "node:fs/promises";
        const from = new URL("./a.ts", import.meta.url);
        const to = new URL("./b.ts", import.meta.url).pathname;
@@ -713,8 +606,6 @@ test("the rules fire on the shapes they exist for, and only those", () => {
       "pathnameToFs",
     ],
     [
-      // Built in steps, so the taint arrives by assignment and not by an
-      // initializer.
       `import { readFile } from "node:fs/promises";
        let where = "";
        where = new URL("./x.ts", import.meta.url).pathname;
@@ -722,53 +613,45 @@ test("the rules fire on the shapes they exist for, and only those", () => {
       "pathnameToFs",
     ],
     [
-      // Imported under an alias, so the call site does not spell the fs name.
       `import { readFile as read } from "node:fs/promises";
        await read(new URL("./x.ts", import.meta.url).pathname, "utf8");`,
       "pathnameToFs",
     ],
     [
-      // An fs entry point outside the read/write core is no more portable.
       `import { createReadStream } from "node:fs";
        createReadStream(new URL("./x.ts", import.meta.url).pathname);`,
       "pathnameToFs",
     ],
     [
-      // fileURLToPath under an alias is still fileURLToPath.
       `import { fileURLToPath as toPath } from "node:url";
        const M = toPath(new URL("../src/x.ts", import.meta.url));
        await import(M);`,
       "nativePathImports",
     ],
     [
-      // Reached through a namespace import rather than a named one.
       `import * as fs from "node:fs";
        fs.readFileSync(new URL("./x.ts", import.meta.url).pathname, "utf8");`,
       "pathnameToFs",
     ],
     [
-      // Destructured, so the property is read without a member access.
       `import { readFile } from "node:fs/promises";
        const { pathname } = new URL("./x.ts", import.meta.url);
        await readFile(pathname, "utf8");`,
       "pathnameToFs",
     ],
     [
-      // Destructured and renamed.
       `import { readFileSync } from "node:fs";
        const { pathname: where } = new URL("./x.ts", import.meta.url);
        readFileSync(where, "utf8");`,
       "pathnameToFs",
     ],
     [
-      // Across a local helper boundary, which no single-scope rule can see.
       `import { readFile } from "node:fs/promises";
        function load(target) { return readFile(target, "utf8"); }
        await load(new URL("./x.ts", import.meta.url).pathname);`,
       "pathnameToFs",
     ],
     [
-      // The same, for the import rule and through an arrow.
       `import { fileURLToPath } from "node:url";
        const load = (specifier) => import(specifier);
        await load(fileURLToPath(new URL("../src/x.ts", import.meta.url)));`,
@@ -782,7 +665,6 @@ test("the rules fire on the shapes they exist for, and only those", () => {
     );
   }
 
-  // The corrected shapes, which are what the fixed suite and its resolvers do.
   const clean = check(
     `import { existsSync } from "node:fs";
      import { readFile } from "node:fs/promises";
@@ -815,9 +697,7 @@ test("the rules fire on the shapes they exist for, and only those", () => {
   );
 });
 
-// A sanitizer is the one thing that can quietly turn a rule off, since silencing
-// it and repairing it look identical from the outside. So assert both halves: the
-// repaired form stops firing, and the unrepaired forms still do, in the same test.
+// Silencing a sanitizer and repairing it look identical, so assert both halves.
 test("pathToFileURL clears the native-path taint, and only it does", () => {
   const check = (code: string): Scan =>
     scanSource(
@@ -831,7 +711,6 @@ test("pathToFileURL clears the native-path taint, and only it does", () => {
       "sanitizer.ts",
     );
 
-  // The round trip a module location genuinely starting life as a path needs.
   const repaired = check(
     `import { fileURLToPath, pathToFileURL } from "node:url";
      const native = fileURLToPath(new URL("../src/x.ts", import.meta.url));
@@ -846,8 +725,6 @@ test("pathToFileURL clears the native-path taint, and only it does", () => {
       "produces is legal on every platform and the rule must not reject it",
   );
 
-  // Same file, same import of pathToFileURL in scope, but the path reaches
-  // import() without going through it. Nothing about the fix blunts this.
   const stillBroken = check(
     `import { fileURLToPath, pathToFileURL } from "node:url";
      const native = fileURLToPath(new URL("../src/x.ts", import.meta.url));
@@ -861,9 +738,6 @@ test("pathToFileURL clears the native-path taint, and only it does", () => {
       "pathToFileURL appears elsewhere in the file",
   );
 
-  // And it is a sanitizer for the native-path rule only. On Windows a URL
-  // pathname is "/D:/...", which is not a native path, so putting it through
-  // pathToFileURL yields a URL for a file that does not exist.
   const notSanitized = check(
     `import { pathToFileURL } from "node:url";
      import { readFile } from "node:fs/promises";

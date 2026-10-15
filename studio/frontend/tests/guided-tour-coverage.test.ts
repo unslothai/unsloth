@@ -7,12 +7,9 @@ import test from "node:test";
 
 import { readSrc } from "./helpers/kit.ts";
 
-// A tour breaks silently: a renamed anchor leaves the step spotlighting nothing. These read the
-// shipped source so a rename has to update both ends.
-
 const SRC_ROOT = new URL("../src/", import.meta.url);
 
-/** Every .ts/.tsx under src. URLs throughout: a file: URL pathname is "/D:/..." on Windows. */
+/** URLs throughout: a file: URL pathname is "/D:/..." on Windows. */
 function sourceFiles(dir: URL): Array<{ path: string; text: string }> {
   const out: Array<{ path: string; text: string }> = [];
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -37,7 +34,6 @@ function matchAll(text: string, pattern: RegExp): string[] {
   return [...text.matchAll(pattern)].map((match) => match[1] as string);
 }
 
-/** Anchors reach the DOM either as a literal attribute or through a component's dataTour prop. */
 const anchors = new Set<string>();
 for (const file of files) {
   for (const value of matchAll(file.text, /data-tour="([\w-]+)"/g)) {
@@ -69,7 +65,6 @@ test("every tour step points at an anchor that exists", () => {
   }
 });
 
-// The other direction: a dropped step must not leave a stale anchor that reads like a live one.
 test("every anchor is used by a step", () => {
   for (const anchor of anchors) {
     assert.ok(
@@ -79,15 +74,12 @@ test("every anchor is used by a step", () => {
   }
 });
 
-// A prop-carried anchor fails silently if the component stops forwarding it: the source still
-// spells the anchor out, so the test above stays green.
 test("a prop-carried anchor is forwarded to the DOM", () => {
   const all = files.map((file) => file.text).join("\n");
   for (const prop of ["dataTour", "triggerDataTour", "contentDataTour"]) {
     if (!new RegExp(`${prop}="[\\w-]+"`).test(all)) continue;
     assert.match(
       all,
-      // Rendered as the attribute itself, or handed to another prop that is.
       new RegExp(`(?:data-tour|dataTour)=\\{${prop}\\}`),
       `${prop} is used as a tour anchor but nothing forwards it to data-tour`,
     );
@@ -117,7 +109,6 @@ test("every routed tour is mounted by its page", () => {
   }
 });
 
-// Mounted by RootLayout, not by their route, so they outlive a navigation away.
 const PERSISTENT_PAGES = [
   "features/chat/chat-page.tsx",
   "features/images/images-page.tsx",

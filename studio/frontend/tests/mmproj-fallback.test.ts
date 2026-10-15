@@ -121,28 +121,15 @@ test("attachment and send gates forward projector fallback state", () => {
   assert.match(interactiveLoad, /force_reload:\s*forceReload/);
 });
 
-// cpu_offload has three producers: the fit estimate predicting the projector will not
-// fit in VRAM, a GPU allocation failure at startup, and a bare signal crash with no
-// non-projector diagnostic. So the message names the outcome and no cause at all.
+// cpu_offload has three producers, so the message names the outcome, not a cause.
 test("the CPU projector message describes the placement, not one route to it", () => {
   const message = mmprojFallbackMessage("cpu_offload");
   assert.match(message, IMAGE_INPUT_AVAILABLE);
-  // Untrue of the predicted pin, which never attempts a GPU load.
   assert.doesNotMatch(message, /could not start|failed|crash/i);
-  // Untrue of both crash routes, and worse than vague there: it sends someone whose
-  // GPU runtime is broken off to cut context and offload layers.
   assert.doesNotMatch(message, /VRAM|fit|memory pressure|out of memory/i);
 });
 
-// The combination neither load path handled. Both wrote
-// `mmproj ? mmprojMessage : cpu ? cpuMessage : undefined`, so a session that lost GPU
-// acceleration AND vision reported only the vision loss, and the user was never told
-// the model was running on the CPU.
-//
-// Reachable rather than theoretical: on a CPU-fallback replay llama_cpp.py preserves
-// _cpu_fallback_reason and clears _mmproj_fallback_reason, so the projector can fail
-// again inside that same launch. A low-VRAM box whose Vulkan backend crashed is
-// precisely where both happen.
+// A CPU-fallback replay can lose the projector too, so both must be reported.
 
 test("a load that lost both the GPU and the projector reports both", () => {
   const notice = loadFallbackNotice(
@@ -162,8 +149,6 @@ test("a CPU-offloaded projector under a CPU fallback does not claim vision is ac
     "vulkan_startup_crash",
     "cpu_offload",
   );
-  // "on CPU" already covers the projector, so the title does not also say
-  // "with vision on CPU" -- but the description must still explain both.
   assert.equal(notice.title, "PaddleOCR loaded on CPU");
   assert.match(notice.description ?? "", /GPU acceleration is disabled/);
   assert.match(notice.description ?? "", /Image input remains available/);
@@ -178,7 +163,6 @@ test("each fallback alone still reads exactly as it did before", () => {
   const offload = loadFallbackNotice("X loaded", null, "cpu_offload");
   assert.equal(offload.title, "X loaded with vision on CPU");
   assert.equal(offload.description, mmprojFallbackMessage("cpu_offload"));
-  // The title the standalone helper produces, unchanged.
   assert.equal(offload.title, mmprojLoadNotice("X", "cpu_offload").title);
 
   const textOnly = loadFallbackNotice(

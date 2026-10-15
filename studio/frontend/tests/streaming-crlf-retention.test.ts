@@ -48,13 +48,8 @@ function stream(reply: string, step: number) {
 }
 
 test("a CRLF reply retains as much as the same reply in LF", () => {
-  // Providers and platforms disagree about line endings, and the cache compares
-  // byte offsets in the text it is handed against blocks Streamdown returns with
-  // the line endings already normalised. Before this was fixed the two disagreed
-  // one block in: nothing was ever committed, the sticky full-document path took
-  // over, and a CRLF reader paid a repair and a lex of the whole reply on every
-  // frame for a reply that rendered exactly the same. Nothing in the output says
-  // so, which is why it survived.
+  // The cache compares offsets against blocks with normalised line endings; CRLF used to
+  // defeat retention silently, re-lexing the whole reply every frame.
   const lf = buildReply(160);
   const crlf = asCrlf(lf);
   assert.ok(lf.length > 8_000, `fixture too small: ${lf.length}`);
@@ -71,25 +66,17 @@ test("a CRLF reply retains as much as the same reply in LF", () => {
     lfRun.retained,
     `CRLF retained ${crlfRun.retained} characters against LF's ${lfRun.retained}`,
   );
-  // Retention is only worth having if the blocks are the same ones, so pin the
-  // output too: a CRLF reply must render as the identical block list.
   assert.deepEqual(crlfRun.blocks, lfRun.blocks);
 });
 
 test("a CRLF reply matches a whole-document split at every prefix", () => {
-  // The correctness half. The comparison is against a parse of the NORMALISED
-  // text, because that is what a CommonMark parser sees: the spec counts a line
-  // feed, a lone carriage return, and a carriage return followed by a line feed
-  // as the same line ending, and reference parsers normalise before parsing.
+  // Compare against the NORMALISED text: CommonMark treats LF, CR and CRLF as one line ending.
   const sources = [
     "para one\r\n\r\npara two\r\n\r\npara three\r\n\r\npara four\r\n\r\n",
     asCrlf("Cost $1,200 now.\n\nThe value \\(x^2\\) here.\n\n\\[a = b\\]\n\ndone\n\n"),
     asCrlf("```sh\nrun --seed $1\n```\n\nAfter the fence $5.\n\n"),
     asCrlf("| a | b |\n| --- | --- |\n| $5 | \\(x\\) |\n\nAfter the table.\n\n"),
-    // A carriage return can land at the end of a frame with its line feed still
-    // to come, so a lone trailing CR has to read as a line ending too. Treating
-    // only the pair would leave that CR in place and then delete it a frame
-    // later, which is one more rewrite for the cache to absorb.
+    // A lone trailing CR may have its LF still to come, so it must read as a line ending.
     "a\r\n\r\nb\r",
   ];
   for (const source of sources) {
@@ -107,9 +94,6 @@ test("a CRLF reply matches a whole-document split at every prefix", () => {
 });
 
 test("an LF reply is untouched by the line-ending handling", () => {
-  // The guard on the other side: a reply with no carriage return in it must take
-  // exactly the path it took before, so this cannot cost the common case
-  // anything or move its output.
   const reply = buildReply(60);
   assert.ok(!reply.includes("\r"));
   const run = stream(reply, 24);

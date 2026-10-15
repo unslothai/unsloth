@@ -2,14 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * A truncated padded reply is not a successful load.
- *
- * `/api/inference/load` and `/unload` pad their body so a proxy cannot time the request
- * out, which commits the 200 before the work finishes. The tunnel probe measured the
- * failure mode (studio/backend/tests/test_tunnel_safe_long_post.py): one byte at t=90s
- * then silence is killed ~125s later and the client sees a 200 with an EMPTY body.
- * `response.json()` throws on that and `catch(() => null)` makes it a 200 with a null
- * body, read as success unless the padded callers say otherwise.
+ * Padded load/unload commit a 200 early; a killed tunnel yields a 200 with an empty body,
+ * which `catch(() => null)` would read as success.
  */
 
 import assert from "node:assert/strict";
@@ -27,7 +21,7 @@ test("a real payload passes through", () => {
 });
 
 test("a body the proxy truncated is rejected, not accepted as success", () => {
-  // An empty body, a pad-only body ("   ") and a half payload all decode to null.
+  // An empty body, a pad-only body and a half payload all decode to null.
   for (const body of [null, undefined, {}, [], "", "loaded", 0]) {
     assert.throws(
       () => assertCompletedPaddedBody(body, "Model load"),
@@ -60,9 +54,7 @@ test("only the two padded routes require a payload", () => {
 });
 
 test("the Python client agrees", () => {
-  // If only one client rejects a truncated reply, one reads success where the other fails.
   const cli = readText("../../../unsloth_cli/_inference.py");
   assert.ok(cli.includes("def require_completed_padded_body("));
-  // unsloth_cli/tests/test_inference_chat.py asserts it actually raises.
   assert.ok(cli.includes("if isinstance(body, dict) and body:"));
 });

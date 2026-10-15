@@ -1,16 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// What the slider says to a screen reader. Two gaps a sighted reviewer cannot see:
-//
-// 1. Radix puts role="slider" on the Thumb while the wrapper spreads props onto
-//    Root, so an aria-label reached a plain div and the control was unnamed. Radix
-//    only synthesises its own label for multi-thumb ranges.
-// 2. Radix does not synthesise aria-valuetext, so the Auto position announced as
-//    "0" -- the one stop on that track whose number is not a context length.
-//
-// Asserted on source: the failure is a missing attribute on an element node:test
-// cannot render.
+// Radix puts role=slider on the Thumb, not Root, and never synthesises aria-valuetext,
+// so both must be forwarded explicitly. Asserted on source: node:test cannot render.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -28,7 +20,6 @@ const panel = read(
 );
 
 test("the thumb carries the accessible name, not just the root", () => {
-  // Both spellings: a caller may name the slider either way.
   assert.match(
     slider,
     /<SliderPrimitive\.Thumb[^>]*aria-label=\{props\["aria-label"\]\}/,
@@ -65,7 +56,6 @@ test("Auto announces a current value only once one exists", () => {
 });
 
 test("no slider is left announcing a bare number for a named position", () => {
-  // If the wrapper stops forwarding value text, every such caller regresses at once.
   assert.ok(
     slider.includes("aria-valuetext"),
     "the shared Slider must keep forwarding aria-valuetext to the thumb",

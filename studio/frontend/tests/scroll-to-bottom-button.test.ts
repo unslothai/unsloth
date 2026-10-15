@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// thread.tsx is .tsx, which node's type stripping cannot import, so its shape is pinned from source.
+// thread.tsx cannot be imported by node type stripping, so its shape is pinned from source.
 
 import assert from "node:assert/strict";
 import test from "node:test";

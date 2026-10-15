@@ -8,7 +8,7 @@ import ts from "typescript";
 
 import { readSrc } from "./helpers/kit.ts";
 
-// chat-adapter.ts drags in the stores, so lift the source; assistant is a stub.
+// chat-adapter.ts drags in the stores, so lift the source.
 const adapterSource = readSrc("features/chat/api/chat-adapter.ts");
 
 function liftAdapterFunction(opener: string): string {

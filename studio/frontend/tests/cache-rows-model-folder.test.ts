@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The cache rows sit directly under Models Folder in one section, and one of them
-// IS the model cache. So the two things this covers are what the rows say when
-// that folder moves, and what the confirmation promises before the models go.
-
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
@@ -55,8 +51,6 @@ function loadRows(): Rows {
 const SAFETY = "settings.resources.storage.caches.safety";
 
 test("the model cache clear does not promise that models are untouched", () => {
-  // The generic assurance is the contradiction: it names downloaded models,
-  // which is exactly what an hf_hub clear deletes.
   assert.ok(
     en.settings.resources.storage.caches.safety.includes("Downloaded models"),
   );
@@ -65,7 +59,6 @@ test("the model cache clear does not promise that models are untouched", () => {
   assert.deepEqual(singleClearDescriptionKeys("hf_hub"), [
     "settings.resources.storage.caches.hubCost",
   ]);
-  // It still holds for the caches that do spare the models.
   assert.deepEqual(singleClearDescriptionKeys("hf_datasets"), [
     "settings.resources.storage.caches.datasetsCost",
     SAFETY,
@@ -75,22 +68,15 @@ test("the model cache clear does not promise that models are untouched", () => {
 
 test("the bulk clear keeps the assurance, because it excludes the model cache", () => {
   const source = readFileSync(ROWS_URL, "utf8");
-  // bulkPurgeKeys drops every opt-in cache, so "downloaded models are not
-  // touched" is true of the bulk dialog and only of the bulk dialog.
   const bulk = source.slice(source.indexOf("confirmDescription"));
   assert.match(bulk, /caches\.safety/);
 });
 
 test("the cache rows follow the model folder when it moves", () => {
   const source = readFileSync(ROWS_URL, "utf8");
-  // Saving Models Folder bumps the inventory version, and the field sits in the
-  // same section as these rows: without this they keep showing the path and the
-  // size of the folder the user just moved off, next to a Clear button that
-  // acts on the new one.
   assert.match(source, /useInventoryVersion\(\)/);
   assert.match(source, /\}, \[refresh, inventoryVersion\]\);/);
-  // A move has to force the re-measure. The backend memoises a size for a
-  // minute, so an unforced read returns the very figures being replaced.
+  // The backend memoises sizes for a minute, so a move must force a refresh.
   assert.match(source, /refresh\(moved \? \{ refresh: true \} : \{\}\)/);
 
   const api = readFileSync(
@@ -103,7 +89,6 @@ test("the cache rows follow the model folder when it moves", () => {
   assert.match(api, /bumpInventoryVersion\(\)/);
 });
 
-/** Drive the real component with a React the test steps by hand. */
 function driveRows(options: {
   load: (options: { refresh?: boolean }) => Promise<unknown>;
   purge?: (keys: readonly string[]) => Promise<unknown>;
@@ -221,7 +206,6 @@ const inventory = (path: string) => ({
       group: "models",
       optIn: true,
       paths: [path],
-      // Zero bytes with entries in it: a clear is offered on what is there.
       sizeBytes: 0,
       entryCount: 3,
       present: true,
@@ -240,8 +224,6 @@ const settle = async () => {
 };
 
 test("the newest measurement wins, whatever order the walks finish in", async () => {
-  // Without a generation guard the slower FIRST request installs last, so the
-  // rows settle on the folder the user moved off while a clear resolves the new.
   const pending: ((value: unknown) => void)[] = [];
   let version = 0;
   const render = driveRows({
@@ -269,8 +251,6 @@ test("the newest measurement wins, whatever order the walks finish in", async ()
 });
 
 test("a clear waits for the measurement that is replacing the rows", async () => {
-  // While a re-measure runs the rows still show the PREVIOUS inventory, and
-  // purgeCaches resolves its key against the current folder on the backend.
   const pending: ((value: unknown) => void)[] = [];
   let version = 0;
   const render = driveRows({
@@ -291,7 +271,6 @@ test("a clear waits for the measurement that is replacing the rows", async () =>
   render(); // the version change is seen here; the effect runs after the tree
   const reloading = render();
   assert.equal(buttons(reloading, CLEAR_ONE)[0].props?.disabled, true);
-  // ...and so does the confirmation, which is the button that actually deletes.
   const confirm = [...walk(reloading)].filter(
     (element) =>
       element.type === "Button" &&
@@ -303,8 +282,6 @@ test("a clear waits for the measurement that is replacing the rows", async () =>
 });
 
 test("a measurement that failed leaves the clears disabled", async () => {
-  // The same hazard as a walk still running: the rows keep the last inventory
-  // that arrived while purgeCaches resolves each key against the new folder.
   const pending: {
     resolve: (value: unknown) => void;
     reject: (reason: unknown) => void;

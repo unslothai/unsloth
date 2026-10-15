@@ -1,11 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Issue 8416: gated on `isTauri` alone, the picker stayed live when the app
-// attached to a backend it had not spawned, and only a spawned backend holds
-// UNSLOTH_STUDIO_NATIVE_PATH_LEASE_SECRET, so the lease came back 400. The
-// button must be dead without the capability AND `link()` must refuse anyway.
-// No React renderer here, so this asserts on source, like ~50 sibling tests.
+// Only a spawned backend holds UNSLOTH_STUDIO_NATIVE_PATH_LEASE_SECRET, so `isTauri` alone
+// is not enough. No React renderer here, so this asserts on source.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -45,7 +42,6 @@ test("link() refuses without the capability, not just the button", () => {
     /if\s*\([^)]*!nativePathLeasesSupported[^)]*\)\s*return/,
     "link() must bail before pickNativeDocumentFolder when leases are unsupported",
   );
-  // A stale closure would restore the old behaviour once the capability flips.
   assert.ok(
     body.includes("nativePathLeasesSupported") &&
       HOOK.slice(HOOK.indexOf("const link = useCallback("))
@@ -55,7 +51,6 @@ test("link() refuses without the capability, not just the button", () => {
 });
 
 test("the unsupported branch names the managed backend, not the desktop app", () => {
-  // The old copy told a desktop user to use the desktop app they were already in.
   assert.ok(
     !MANAGER.includes("link new folders in the desktop app"),
     "the unsupported copy must not tell a desktop user to use the desktop app",
@@ -79,8 +74,7 @@ test("the capability is read from /api/health and only latches on true", () => {
 });
 
 test("the health bit alone does not enable the picker inside the app", () => {
-  // A survivor adopted from a dead previous app holds a lease key of its own, so
-  // it answers true while every grant this app signs fails on the signature.
+  // An adopted survivor holds its own lease key, so it answers true while every grant fails.
   assert.ok(
     READINESS.includes("native_path_leases_usable"),
     "the hook must also ask the app whether the live backend is one it spawned",
@@ -94,8 +88,7 @@ test("the health bit alone does not enable the picker inside the app", () => {
 });
 
 test("an adopted backend keeps running and only loses lease-backed actions", () => {
-  // owned_stale routes through startRepair(), which runs a network update, so a
-  // key mismatch must not force one: report the capability, leave it running.
+  // owned_stale routes through startRepair(), a network update, so a key mismatch must not force one.
   assert.ok(
     !PREFLIGHT.includes("native_path_lease_secret_not_persisted") &&
       !PREFLIGHT.includes("native_path_lease_secret_not_shared"),

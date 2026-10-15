@@ -16,7 +16,7 @@ const SOURCE_FILE = /\.tsx?$/;
 const toPermission = (method: string) =>
   `core:window:allow-${method.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)}`;
 
-// a denied call rejects at runtime, which once sent setup through its resizable fallback
+// A denied call rejects at runtime and sends setup down its resizable fallback.
 test("every window setter the frontend calls is granted", async () => {
   const granted = JSON.parse(await readFile(CAPABILITIES, "utf8")).permissions;
   const files = await readdir(SRC, { recursive: true });

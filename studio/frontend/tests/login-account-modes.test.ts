@@ -94,7 +94,7 @@ function mountForm(
         route: string,
         commit: () => void,
       ) => {
-        // Transitions key on the immutable account id when the server sent one, since usernames are reusable.
+        // Usernames are reusable, so key on the immutable account id when available.
         const identity =
           typeof account === "string"
             ? { username: account, accountId: null }

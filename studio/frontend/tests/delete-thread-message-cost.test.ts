@@ -1,12 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// #8977: deleting a message deep-cloned the whole thread with JSON.parse(JSON.stringify)
-// on its way to a PUT that serializes it again, and ensured the thread row twice. The
-// records are the same bytes on the wire either way, which is what these tests pin,
-// alongside the delete semantics that must not move: last message, first message, a
-// branch point, and a user prompt's cascaded replies.
-
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -91,7 +85,6 @@ function message(
   };
 }
 
-/** A linear thread `u0 -> a0 -> u1 -> a1 -> ...`. */
 function linear(pairs: number): Exported {
   const messages: Exported["messages"] = [];
   let parentId: string | null = null;
@@ -138,7 +131,6 @@ test("records share the message's parts instead of deep-cloning the thread", asy
   assert.equal(attachments[0], sourceAttachments[0]);
   assert.notEqual(attachments, sourceAttachments);
 
-  // What matters on the wire: the same bytes the deep clone used to produce.
   const deepCloned = h.module.exportedItemToRecord(
     "t",
     null,
@@ -153,8 +145,6 @@ test("records share the message's parts instead of deep-cloning the thread", asy
 test("a delete ensures the thread row once, not twice", async () => {
   const h = harness();
   await deleteFrom(h, linear(3), "u1");
-  // ensureStoredChatThread belongs to syncStoredChatMessages, which does it for every
-  // caller; doing it here as well cost a second GET /threads/{id} on every save.
   assert.deepEqual(h.calls, ["syncStoredChatMessages"]);
   assert.equal(h.synced[0].pruneMissing, true);
 });
@@ -197,7 +187,6 @@ test("deleting the last message keeps the rest and moves the head", async () => 
 test("deleting the first message relinks its children to the root", async () => {
   const h = harness();
   const next = await deleteFrom(h, linear(2), "u0");
-  // The prompt's own assistant reply cascades with it; the rest reparents to the root.
   assert.deepEqual(idsOf(next), ["u1", "a1"]);
   assert.equal(next.messages[0].parentId, null);
   assert.equal(next.headId, "a1");
@@ -214,7 +203,6 @@ test("deleting an assistant message relinks the turn that followed it", async ()
   assert.equal(next.headId, "a2");
 });
 
-/** `u0 -> a0 -> u1 -> {a1 -> u2, a1b}`: a regenerated turn, so u1 has two replies. */
 function branched(): Exported {
   return {
     headId: "u2",
@@ -243,7 +231,6 @@ test("deleting one branch relinks its children and leaves the sibling", async ()
 test("deleting a branch point takes every reply branch with it", async () => {
   const h = harness();
   const next = await deleteFrom(h, branched(), "u1");
-  // A prompt's assistant replies cascade, so both branches go and u2 reparents.
   assert.deepEqual(idsOf(next).sort(), ["a0", "u0", "u2"]);
   assert.equal(
     next.messages.find(({ message }) => message.id === "u2")?.parentId,

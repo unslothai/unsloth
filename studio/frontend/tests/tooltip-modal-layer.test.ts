@@ -6,7 +6,6 @@ import test from "node:test";
 
 import { isBlockedByActiveModal } from "../src/components/ui/tooltip-modal-layer.ts";
 
-/** A trigger plus its ancestors, nearest first, by inline pointer-events. */
 function trigger(own: string, ...ancestors: string[]): HTMLElement {
   let parent: HTMLElement | null = null;
   for (const pointerEvents of [...ancestors].reverse()) {
@@ -20,12 +19,10 @@ function trigger(own: string, ...ancestors: string[]): HTMLElement {
 }
 
 test("a trigger under the modal is blocked by the body", () => {
-  // sidebar button -> ... -> body(none)
   assert.equal(isBlockedByActiveModal(trigger("", "none")), true);
 });
 
 test("a trigger inside the active layer is not blocked", () => {
-  // dialog content(auto) sits between the trigger and body(none)
   assert.equal(isBlockedByActiveModal(trigger("", "auto", "none")), false);
 });
 
@@ -38,8 +35,7 @@ test("no modal anywhere means nothing is blocked", () => {
 });
 
 test("the trigger's own pointer-events is not modal ownership", () => {
-  // The MCP dropdown hint anchor is authored pointer-events-none so the row
-  // stays clickable. It is still inside the dropdown's layer.
+  // The MCP hint anchor is pointer-events-none but still inside the dropdown's layer.
   assert.equal(isBlockedByActiveModal(trigger("none", "auto", "none")), false);
 });
 

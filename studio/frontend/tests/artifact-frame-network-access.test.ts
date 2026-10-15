@@ -10,8 +10,7 @@ import ts from "typescript";
 
 import { openingTag } from "./helpers/tsx-ast.ts";
 
-// No DOM renderer here and the frame pulls in React plus the runtime store, so
-// assert the wiring in the source the way artifact-source-key.test.ts does.
+// No DOM renderer here and the frame pulls in React, so assert the wiring in source.
 const sourceFile = (relative: string): ts.SourceFile => {
   const path = fileURLToPath(new URL(relative, import.meta.url));
   return ts.createSourceFile(
@@ -42,9 +41,7 @@ function readFrameOpeningTags(): string[] {
   return tags;
 }
 
-// The bug: a fenced html block is source "fence", so gating on "tool" left every
-// fenced canvas on the strict CSP and a CDN import (three.js) silently died.
-// Every call site is checked, so a source-gated one cannot hide behind another.
+// Fenced html blocks have source "fence", so gating on "tool" broke CDN imports in canvases.
 test("no canvas preview is gated on the artifact source", () => {
   const tags = readFrameOpeningTags();
   assert.ok(
@@ -60,7 +57,6 @@ test("no canvas preview is gated on the artifact source", () => {
   }
 });
 
-/** Every condition guarding an `allow_network` query flag in the frame. */
 function readAllowNetworkGuards(): string[] {
   const source = sourceFile(FRAME);
   const conditions: string[] = [];
@@ -77,9 +73,7 @@ function readAllowNetworkGuards(): string[] {
   return conditions;
 }
 
-// These two operands are the whole gate: the persistent setting, or a grant the
-// user clicked for this canvas. Asserting the condition exactly is the point,
-// since a third operand is how the gate gets defeated.
+// The gate is exactly these two operands; a third operand is how it gets defeated.
 test("the permissive CSP is gated on the setting or a per-canvas grant", () => {
   const conditions = readAllowNetworkGuards();
   assert.equal(conditions.length, 1, "expected exactly one allow_network guard");
@@ -93,7 +87,6 @@ test("the gate is exactly the setting or the per-canvas grant", () => {
   );
 });
 
-/** Initializer of a `const` declared in the frame, by name. */
 function readConst(name: string): string {
   const source = sourceFile(FRAME);
   let text: string | undefined;
@@ -112,19 +105,13 @@ function readConst(name: string): string {
   return text;
 }
 
-// The banner's only call to action is the grant, so one that survives it prompts
-// for something already on. The blocked list stays in the condition too, or
-// every offline canvas gets a banner.
 test("the blocked banner is hidden once network access is on", () => {
   const condition = readConst("showBlockedBanner");
   assert.match(condition, /!networkAllowed/);
   assert.match(condition, /blockedForCanvas\.uris\.length > 0/);
 });
 
-// The button grants network to the CURRENT code, so a banner left over from a
-// swapped-out canvas is a grant for one that reported nothing. Derived during
-// render: the [src] effect that used to clear it ran a render too late, and
-// that stale render is the one carrying the button.
+// Derive the banner during render: a [src] effect clears it one render too late.
 test("the blocked banner is tied to the canvas that reported it", () => {
   assert.equal(
     readConst("blockedForCanvas"),
@@ -132,9 +119,6 @@ test("the blocked banner is tied to the canvas that reported it", () => {
   );
 });
 
-// The old clear was a wholesale `setBlocked({...})` in the [src] effect, a
-// render too late. Every write goes through an updater that carries the code
-// forward, so no reset can reintroduce the stale-banner window.
 test("no write resets the blocked list wholesale", () => {
   const source = sourceFile(FRAME);
   const args: ts.Node[] = [];
@@ -160,7 +144,6 @@ test("no write resets the blocked list wholesale", () => {
 
 const GRANT_SETTER = /\bsetGranted\w*\(/;
 
-/** Arguments of every `<setter>(...)` call, with the enclosing JSX handler. */
 function readSetterCalls(
   setter: string,
 ): { argument: string; handler: string | null }[] {
@@ -185,9 +168,7 @@ function readSetterCalls(
 
 const readGrantCalls = () => readSetterCalls("setGrantedCode");
 
-// The canvas is what reports being blocked, so the grant must never be reachable
-// from that path or a page could post its way onto the network. Only a JSX click
-// handler may grant, and it stores the code it was clicked for.
+// The canvas reports blocks itself, so only a JSX click handler may grant network access.
 test("only a click can grant the per-canvas exception", () => {
   const calls = readGrantCalls();
   assert.ok(calls.length > 0, "setGrantedCode is never called");
@@ -197,9 +178,7 @@ test("only a click can grant the per-canvas exception", () => {
   }
 });
 
-// A new canvas is new untrusted code, so the grant must not carry over. The tie
-// has to be compared during render: an effect resetting it on [code] runs after
-// React updated the DOM, so canvas B's first render still had A's grant.
+// A grant must be compared during render; an effect reset on [code] runs too late.
 test("the per-canvas grant is tied to the code it was granted for", () => {
   assert.equal(readConst("grantedForCanvas"), "grantedCode === code");
 });
@@ -230,7 +209,6 @@ const URI_CAP = /\buris\.length >= BLOCKED_URIS_TRACKED/;
 const URI_DUPLICATE = /\buris\.includes\(uri\)/;
 const BAILS_OUT = /\bcurrent\b/;
 
-/** Body of a function declared in the frame, by name. */
 function readFunctionBody(name: string): string {
   const source = sourceFile(FRAME);
   let text: string | undefined;
@@ -249,9 +227,7 @@ function readFunctionBody(name: string): string {
   return text;
 }
 
-// event.source survives the swap navigation and the handler closes over the NEW
-// code, so an in-flight report from the outgoing canvas would be stored as the
-// incoming one's. The frame stamps each report with the load it came from.
+// event.source survives navigation, so reports are stamped with the load they came from.
 test("blocked reports from a stale frame load are rejected", () => {
   const source = sourceFile(FRAME);
   let guarded = false;
@@ -269,10 +245,7 @@ test("blocked reports from a stale frame load are rejected", () => {
   assert.ok(guarded, "reports are not matched against the current load");
 });
 
-// The entry cap bounds how many reports are kept, not how big each one is, and
-// the canvas can post these directly rather than going through the CSP. Without
-// this a handful parks megabytes of parent state; it bounds the host too, which
-// is derived from the URI.
+// The canvas can post reports directly, so URI size must be bounded, not just entry count.
 test("oversized blocked URIs are dropped before anything is stored", () => {
   const source = sourceFile(FRAME);
   let bounded = false;
@@ -290,19 +263,13 @@ test("oversized blocked URIs are dropped before anything is stored", () => {
   assert.ok(bounded, "an oversized blockedURI is not rejected");
 });
 
-// A non-HTTP(S) violation reports a bare token, not a URL: eval() reports
-// "eval" and a blob Worker reports "blob" (verified in Chromium). new URL() has
-// no host for either, so they were dropped and a canvas broken only by those
-// stayed blank, even though the permissive CSP widens both.
+// Non-HTTP violations report bare tokens like "eval" or "blob" with no host.
 test("a hostless blocked URI still reaches the banner", () => {
   assert.match(readFunctionBody("blockedHost"), /BLOCKED_KEYWORD\.test\(uri\)/);
   assert.equal(readConst("BLOCKED_KEYWORD"), "/^[a-z-]+$/");
 });
 
-// ...but only where the grant widens that scheme for that directive. The
-// permissive worker-src is `http: https: blob:`, so a data: Worker reports under
-// both policies (verified in Chromium) and the grant is a dead end: it widens
-// the policy for nothing, then hides the banner because networkAllowed is true.
+// The permissive worker-src is `http: https: blob:`, so a data: Worker cannot be fixed by the grant.
 test("the grant is not offered for a scheme it cannot widen", () => {
   assert.equal(
     readConst("GRANT_CANNOT_FIX_SCHEME"),
@@ -324,10 +291,7 @@ test("the grant is not offered for a scheme it cannot widen", () => {
   assert.ok(filtered, "reports are not filtered by blocked scheme");
 });
 
-// These three stay at 'none' in the permissive policy, so the grant cannot fix
-// them and prompting widens the policy for nothing. The backend counterpart
-// asserts they are exactly what the two policies agree on, so the set cannot
-// drift.
+// These stay 'none' in the permissive policy too; a backend test pins that set.
 test("the grant is not offered for directives it cannot fix", () => {
   assert.equal(
     readConst("GRANT_CANNOT_FIX"),
@@ -349,9 +313,7 @@ test("the grant is not offered for directives it cannot fix", () => {
   assert.ok(filtered, "reports are not filtered by effective directive");
 });
 
-// The canvas picks the blocked URIs, so an uncapped list is memory growth and a
-// parent re-render per message, both driven from inside the sandbox. The cap is
-// checked BEFORE the duplicate scan so past it the work is O(1) too.
+// The cap is checked before the duplicate scan so work past it is O(1).
 test("blocked-resource state is capped against the untrusted canvas", () => {
   const updater = readFunctionBody("appendBlocked");
   assert.match(updater, URI_CAP);
@@ -416,7 +378,6 @@ test("the banner deep-links to the network access setting", () => {
   assert.equal(deepLinks[0].handler, "onClick");
 });
 
-/** The opening tag of whichever element carries `ref={<name>}`. */
 function readTagWithRef(name: string): string {
   const source = sourceFile(FRAME);
   let text: string | undefined;
@@ -432,7 +393,6 @@ function readTagWithRef(name: string): string {
   return text;
 }
 
-/** The JSX handler that contains a call to `needle`. */
 function readHandlerCalling(needle: string): string {
   const source = sourceFile(FRAME);
   let text: string | undefined;
@@ -554,7 +514,6 @@ test("the climbing blocked count stays outside the assertive live region", () =>
   assert.doesNotMatch(paragraph, /aria-live/);
 });
 
-/** The opening tag of the `<Button>` whose subtree calls `needle`. */
 function readButtonCalling(needle: string): string {
   const source = sourceFile(FRAME);
   let text: string | undefined;
@@ -573,10 +532,7 @@ function readButtonCalling(needle: string): string {
   return text;
 }
 
-// The grant covers one canvas; the settings link turns network access on for
-// every canvas from here on. Studio's tool controls lead with the narrow grant
-// -- Allow is the primary, Always allow the outline beside it -- so the banner
-// matches, and the emphasis never lands on the action that widens the most.
+// Like Studio's tool controls, the narrow per-canvas grant is the primary action.
 test("the emphasized action is the per-canvas grant, not the global setting", () => {
   const grant = readButtonCalling("setGrantedCode");
   const settings = readButtonCalling("openDialog");

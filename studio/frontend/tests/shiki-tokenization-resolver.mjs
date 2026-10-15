@@ -1,11 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// code-plugin.ts builds its own highlighter from a static `shiki` import, so
-// nothing it exposes can be wrapped from a test: an ES module namespace is
-// read-only. Redirect that one import to a counting re-export instead, and
-// leave every other importer of `shiki` (the tests' own reference highlighter)
-// on the real module.
+// code-plugin.ts imports shiki statically and ES namespaces are read-only, so redirect it.
 const COUNTER = new URL("./shiki-tokenization-counter.mts", import.meta.url)
   .href;
 

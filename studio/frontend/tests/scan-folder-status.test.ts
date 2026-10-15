@@ -39,7 +39,6 @@ test("the permission hint names the screen that fixes it", () => {
     scanFolderStatusCopy("permission_denied", WINDOWS)!.hint,
     /Controlled Folder Access/,
   );
-  // No screen worth naming on Linux, so the hint stays generic.
   assert.match(
     scanFolderStatusCopy("permission_denied", LINUX)!.hint,
     /permissions/i,
@@ -58,7 +57,6 @@ test("a partial folder does not claim the whole folder is blocked", () => {
   assert.ok(copy);
   assert.match(copy.title, /some models/i);
   assert.doesNotMatch(copy.title, /not allowed/i);
-  // Same fix, so the same hint.
   assert.match(copy.hint, /Files and Folders/);
 });
 

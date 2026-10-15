@@ -1,14 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Every model load calls showCarveoutAdvice, including the loads carrying no advice,
-// so this is where one model's numbers could outlive the model they describe, two
-// loads could stack two notices over the composer, or a dismissal could report an
-// allocation the user is no longer running.
-//
-// One resolver redirects both dependencies: the toast stub records the full options
-// bag (id, duration, action -- none of which the store-stubs toast keeps), and the
-// auth stub answers authFetch so no test reaches the network.
+// Every model load calls showCarveoutAdvice, even without advice. The resolver redirects
+// toast (to record id/duration/action) and auth (so no test reaches the network).
 
 import assert from "node:assert/strict";
 import { register } from "node:module";
@@ -50,13 +44,10 @@ test("advice raises one toast carrying the backend's prose", () => {
   assert.equal(calls[0].kind, "info");
   assert.equal(calls[0].title, IGPU_CARVEOUT_NOTICE_TITLE);
   assert.equal(calls[0].options?.description, ADVICE.message);
-  // Never an error or a warning: the load succeeded and the user did nothing wrong.
   assert.notEqual(calls[0].kind, "error");
 });
 
 test("it is not a modal, so it holds an id and a finite duration", () => {
-  // A toast without an id stacks, and one without a duration stays until it is
-  // clicked, which is a dialog with extra steps.
   reset();
   showCarveoutAdvice(ADVICE);
   assert.equal(calls[0].options?.id, IGPU_CARVEOUT_TOAST_ID);
@@ -68,8 +59,7 @@ test("it is not a modal, so it holds an id and a finite duration", () => {
 });
 
 test("the action is styled down from sonner's filled default", () => {
-  // An outline because nothing here is the thing to do, and end-alignment because the
-  // shared toast CSS starts an action at the left and floats it under six lines.
+  // Shared toast CSS starts an action at the left under six lines, hence end-alignment.
   reset();
   showCarveoutAdvice(ADVICE);
   const classes = (calls[0].options?.classNames as { actionButton?: string })
@@ -80,7 +70,6 @@ test("the action is styled down from sonner's filled default", () => {
 });
 
 test("a second load replaces the notice rather than stacking one over it", () => {
-  // Two toasts over the composer, the older one stale, is what the id prevents.
   reset();
   showCarveoutAdvice(ADVICE);
   showCarveoutAdvice({ ...ADVICE, suggested_gb: 96 });
@@ -101,7 +90,6 @@ test("a malformed payload raises nothing", () => {
 });
 
 test("a later load carrying no advice takes the previous notice down", () => {
-  // The moment the old figures stop being true; a toast has no copy, so it dismisses.
   reset();
   showCarveoutAdvice(ADVICE);
   showCarveoutAdvice(undefined);
@@ -132,7 +120,6 @@ test("the action posts the allocation it was dismissed at", async () => {
 });
 
 test("letting the toast expire sends nothing", async () => {
-  // Ignoring a toast is not a decision, so the notice may return on a later load.
   reset();
   let called = false;
   setAuthFetchHandler(() => {
@@ -145,8 +132,6 @@ test("letting the toast expire sends nothing", async () => {
 });
 
 test("a failing dismissal is swallowed rather than rejected", async () => {
-  // Worst case the notice returns on a later load, which beats an unhandled
-  // rejection.
   reset();
   setAuthFetchHandler(() => {
     throw new TypeError("network down");
@@ -158,8 +143,6 @@ test("a failing dismissal is swallowed rather than rejected", async () => {
 });
 
 test("unloading the advised model takes its notice down", () => {
-  // Unload inside the toast's 12 seconds and "this model could run faster" is false,
-  // with no load coming to correct it.
   reset();
   showCarveoutAdvice(ADVICE, "/models/qwen3-30b.gguf");
   dismissCarveoutAdviceForModel("/models/qwen3-30b.gguf");
@@ -169,7 +152,6 @@ test("unloading the advised model takes its notice down", () => {
 });
 
 test("unloading a different model leaves it up", () => {
-  // Several models can be resident at once, and the notice is about one of them.
   reset();
   showCarveoutAdvice(ADVICE, "/models/qwen3-30b.gguf");
   dismissCarveoutAdviceForModel("/models/gemma3-27b.gguf");
@@ -180,7 +162,6 @@ test("unloading a different model leaves it up", () => {
 });
 
 test("every dismissal names this notice and only this notice", () => {
-  // The id also keeps these dismissals off every other toast on screen.
   reset();
   showCarveoutAdvice(ADVICE, "/models/qwen3-30b.gguf");
   dismissCarveoutAdviceForModel("/models/qwen3-30b.gguf");
@@ -192,8 +173,7 @@ test("every dismissal names this notice and only this notice", () => {
 });
 
 test("either identity the load was known by takes the notice down", () => {
-  // A cached Hub candidate is requested by its loadId while the unload uses the
-  // checkpoint. Matching one identity only left the toast up for a gone model.
+  // A cached Hub candidate is requested by loadId while the unload uses the checkpoint.
   reset();
   showCarveoutAdvice(ADVICE, "unsloth/Qwen3-30B-GGUF", "/cache/hub/qwen3-30b.gguf");
   dismissCarveoutAdviceForModel("unsloth/Qwen3-30B-GGUF");
@@ -204,7 +184,6 @@ test("either identity the load was known by takes the notice down", () => {
   dismissCarveoutAdviceForModel("/cache/hub/qwen3-30b.gguf");
   assert.equal(calls.filter((call) => call.kind === "dismiss").length, 1);
 
-  // And a third model is still not this one.
   reset();
   showCarveoutAdvice(ADVICE, "unsloth/Qwen3-30B-GGUF", "/cache/hub/qwen3-30b.gguf");
   dismissCarveoutAdviceForModel("unsloth/gemma-3-27b");

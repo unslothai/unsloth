@@ -1,10 +1,3 @@
-// Simulations that drive the PR's REAL modules, not a model of them: the cross-tab
-// work protocol under tab death, clock skew and a missing BroadcastChannel; the
-// stored attach target on an upgraded or downgraded profile; and the scope
-// precedence behind rag_scope. None of it is visible in a screenshot.
-//
-// Run from studio/frontend: node --experimental-strip-types --test <this file>
-
 import assert from "node:assert/strict";
 import test from "node:test";
 import { installLocalStorageFake, registerStoreStubResolver } from "./helpers/kit.ts";
@@ -17,10 +10,7 @@ Object.assign(globalThis, {
 registerStoreStubResolver();
 
 const rag = await import("../src/features/rag/api/rag-api.ts");
-// The auth stub fails any unexpected network access; a test opts in per call.
 const { setAuthFetchHandler } = await import("./helpers/store-stubs/auth.ts");
-
-// --------------------------------------------------------------- work lease protocol
 
 test("a project with no work in flight does not gate a send", () => {
   assert.equal(rag.projectWorkCount("p-idle"), 0);
@@ -69,13 +59,10 @@ test("the error still reads as the message a toast would show", () => {
   assert.ok(err instanceof Error);
 });
 
-// ------------------------------------------------------- the stored attachment target
-
 const { DEFAULT_PROJECT_ATTACHMENT_TARGET, normalizeProjectAttachmentTarget } =
   await import("../src/features/chat/utils/project-attachment-target.ts");
 
-// The function the store reads a profile's value through, driven directly rather
-// than through the store, which drags the whole app graph in with it.
+// Driven directly; the store drags in the whole app graph.
 async function targetForStoredValue(value: string | null): Promise<string> {
   return normalizeProjectAttachmentTarget(value);
 }
@@ -91,7 +78,6 @@ test("both real values round-trip", async () => {
 });
 
 test("a value from a later build falls to the chat, never to sharing", async () => {
-  // A downgrade must not turn an unknown preference into project-wide indexing.
   assert.equal(await targetForStoredValue("kb"), "thread");
   assert.equal(await targetForStoredValue("everyone"), "thread");
 });
@@ -103,10 +89,7 @@ test("corrupt storage never produces an invalid target", async () => {
   }
 });
 
-// --------------------------------------------------------------- retrieval precedence
-
-// The shape chat-adapter builds for rag_scope, kept as the contract the backend's
-// _resolve_scope is tested against, so the two cannot drift silently.
+// Kept as the contract the backend's _resolve_scope is tested against.
 function ragScope(opts: {
   ragEnabled: boolean;
   kbId?: string | null;
@@ -148,9 +131,6 @@ test("a knowledge base replaces everything, project included", () => {
   );
 });
 
-// ------------------------------------------------------- folder syncs the composer gates on
-
-/** Answer every RAG request from a table, and count what was asked for. */
 function stubFetch(handler: (url: string) => { status: number; body: unknown }) {
   const urls: string[] = [];
   setAuthFetchHandler((input: string) => {
@@ -165,15 +145,12 @@ function stubFetch(handler: (url: string) => { status: number; body: unknown }) 
   return { urls, restore: () => setAuthFetchHandler(null) };
 }
 
-// Unlinking a folder deletes its job rows, and so does the terminal-job prune, so
-// a watcher can outlive the job it polls. Riding that 404 out through the retry
-// budget gates the composer for a minute on work that already ended.
+// A watcher can outlive its deleted job; retrying the 404 gates the composer for a minute.
 test("a folder job that no longer exists releases the gate at once", async () => {
   const fetched = stubFetch(() => ({ status: 404, body: { detail: "Job not found" } }));
   try {
     rag.watchProjectFolderJob("p-folder-404", "job-gone");
     assert.equal(rag.projectWorkCount("p-folder-404"), 1, "the lease is taken up front");
-    // The read is answered, so the loop breaks without ever reaching its sleep.
     for (let tick = 0; tick < 10; tick += 1) await Promise.resolve();
     assert.equal(rag.projectWorkCount("p-folder-404"), 0, "a send must not wait out the retries");
     assert.equal(fetched.urls.length, 1, "and it must not keep polling a deleted job");
@@ -182,9 +159,7 @@ test("a folder job that no longer exists releases the gate at once", async () =>
   }
 });
 
-// The backend enqueues a sync per auto-syncing folder every FOLDER_SYNC_INTERVAL_S
-// with no frontend event, so a project looked at once and remembered forever lets
-// the composer send through a scan that is rewriting its sources.
+// The backend enqueues folder syncs on a timer with no frontend event.
 test("a project can be looked at again for jobs that start later", async () => {
   const fetched = stubFetch(() => ({ status: 200, body: { linkedFolders: [] } }));
   const realNow = Date.now;
@@ -193,10 +168,8 @@ test("a project can be looked at again for jobs that start later", async () => {
   try {
     await rag.reconcileProjectFolderJobs("p-folder-again");
     assert.equal(fetched.urls.length, 1);
-    // A second bar mounting on the same project shares the answer.
     await rag.reconcileProjectFolderJobs("p-folder-again");
     assert.equal(fetched.urls.length, 1, "two bars must not double every open");
-    // A later scan is not shut out by that.
     clock += 60_000;
     await rag.reconcileProjectFolderJobs("p-folder-again");
     assert.equal(fetched.urls.length, 2, "a periodic look has to reach the backend");
@@ -206,7 +179,6 @@ test("a project can be looked at again for jobs that start later", async () => {
   }
 });
 
-// A look that never came back is not an answer, so it must not close the project either.
 test("a failed look leaves the project open to the next one", async () => {
   let fail = true;
   const fetched = stubFetch(() => (fail ? { status: 503, body: null } : { status: 200, body: { linkedFolders: [] } }));
@@ -221,8 +193,7 @@ test("a failed look leaves the project open to the next one", async () => {
   }
 });
 
-// A job that scans before writing any row leaves the composer's list legitimately
-// empty, so the gate is open for as long as the lookup takes.
+// A job may scan before writing rows, so the gate must cover the lookup itself.
 test("every look for folder jobs gates the composer while it runs", async () => {
   let release!: () => void;
   const answered = new Promise<void>((done) => { release = done; });
@@ -241,8 +212,6 @@ test("every look for folder jobs gates the composer while it runs", async () => 
     release();
     await looking;
     assert.equal(rag.projectWorkCount("p-folder-gate"), 0, "and must not wait past it");
-    // A periodic look is gated the same way: the backend's timer starts jobs the
-    // composer's existing list says nothing about.
     clock += 60_000;
     await rag.reconcileProjectFolderJobs("p-folder-gate");
     assert.equal(urls.length, 2);
