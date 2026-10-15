@@ -1205,7 +1205,10 @@ def _zoo_supports_dense_gemma4_fast_inference():
 def _is_sparse_moe_config(config):
     text_config = getattr(config, "text_config", None) or config
     return bool(
-        getattr(text_config, "num_experts", None) or getattr(text_config, "enable_moe_block", False)
+        getattr(text_config, "num_experts", None)
+        or getattr(text_config, "num_local_experts", None)
+        or getattr(text_config, "n_routed_experts", None)
+        or getattr(text_config, "enable_moe_block", False)
     )
 
 
@@ -3970,16 +3973,14 @@ class FastBaseModel:
                 from unsloth_zoo.utils import get_quant_type
 
                 # Mirrors load_vllm's bnb loader test, so prequantized bnb-4bit is refused too.
+                # Every sparse MoE, text ones too: vLLM's MoE LoRA layer rejects the bnb MoE
+                # method ("Old-style modular kernel not supported", vLLM 0.31 lora/layers/fused_moe.py).
                 if (
-                    (
-                        load_in_4bit
-                        or load_in_8bit
-                        or str(model_name).lower().endswith("-bnb-4bit")
-                        or get_quant_type(model_config) == "bitsandbytes"
-                    )
-                    and any(arch in VLLM_ZOO_MOE_VLM for arch in model_types)
-                    and _is_sparse_moe_config(model_config)
-                ):
+                    load_in_4bit
+                    or load_in_8bit
+                    or str(model_name).lower().endswith("-bnb-4bit")
+                    or get_quant_type(model_config) == "bitsandbytes"
+                ) and _is_sparse_moe_config(model_config):
                     raise NotImplementedError(
                         f"Unsloth: fast_inference = True does not support bitsandbytes weights (load_in_4bit / load_in_8bit = True "
                         "or a prequantized bnb-4bit checkpoint) for the sparse MoE "

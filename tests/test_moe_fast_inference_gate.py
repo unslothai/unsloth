@@ -56,6 +56,8 @@ def test_sparse_moe_is_read_off_the_text_config():
 def test_a_config_without_text_config_is_read_directly():
     is_moe = _is_sparse_moe_config()
     assert is_moe(SimpleNamespace(num_experts = 128)) is True
+    assert is_moe(SimpleNamespace(num_local_experts = 8)) is True
+    assert is_moe(SimpleNamespace(n_routed_experts = 64)) is True
     assert is_moe(SimpleNamespace(enable_moe_block = True)) is True
     assert is_moe(SimpleNamespace()) is False
 
@@ -202,6 +204,43 @@ def test_bnb_moe_loads_are_refused_without_load_in_4bit():
     assert not refused(False, "google/gemma-4-26B-A4B-it", None)
     assert not refused(False, "Qwen/Qwen3.6-35B-A3B-FP8", "fp8", QWEN3_5_MOE, ("qwen3_5_moe",))
     assert not refused(False, "unsloth/gemma-4-E2B-it-bnb-4bit", "bitsandbytes", GEMMA4_DENSE)
+
+
+def test_bnb_refusal_covers_text_sparse_moe():
+    """Qwen3-MoE 4-bit crashed in vLLM init ("output with shape [8, 1] ... [8, 768]"); vLLM serves no LoRA on bnb experts."""
+    gate, _ = _gate("does not support bitsandbytes weights")
+
+    def refused(
+        config,
+        model_types,
+        load_in_4bit = True,
+        method = None,
+    ):
+        return bool(
+            _evaluate(
+                gate,
+                load_in_4bit = load_in_4bit,
+                load_in_8bit = False,
+                model_name = "unsloth/Qwen3-30B-A3B-Instruct-2507",
+                get_quant_type = lambda config: method,
+                model_config = config,
+                model_types = list(model_types),
+            )
+        )
+
+    qwen3_moe = SimpleNamespace(num_experts = 128)
+    mixtral = SimpleNamespace(num_local_experts = 8)
+    deepseek = SimpleNamespace(n_routed_experts = 64)
+    for config, types in (
+        (qwen3_moe, ("qwen3_moe",)),
+        (mixtral, ("mixtral",)),
+        (deepseek, ("deepseek_v3",)),
+    ):
+        assert refused(config, types), types
+        assert not refused(config, types, load_in_4bit = False), types
+        assert refused(config, types, load_in_4bit = False, method = "bitsandbytes"), types
+    assert not refused(SimpleNamespace(num_experts = None), ("qwen3",))
+    assert not refused(SimpleNamespace(num_experts = 0), ("qwen3",))
 
 
 def _zoo_probe():
