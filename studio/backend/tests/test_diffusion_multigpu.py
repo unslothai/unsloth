@@ -4690,15 +4690,72 @@ def test_structural_replica_failure_stays_across_requests():
     assert parallel == 0 and "unknown wrapper" in router.describe()["disabled_reason"]
 
 
-@pytest.mark.parametrize(
-    "kind, cleared",
-    [("room", True), ("short", True), ("transient", True), ("sticky", False)],
-)
-def test_shape_verdict_lifetime_is_decided_by_kind_not_wording(kind, cleared):
+def _oom_batch_router(dit):
+    """A CFG-batch router whose doubled call raises a CUDA-style OOM while ``state["oom"]`` is set."""
+    state = {"oom": False}
+    router = mg.CfgBatchRouter(dit)
+    inner = router.orig_forward
+
+    def oom_on_batch(*a, **k):
+        if state["oom"] and k["hidden_states"].shape[0] == 4:
+            raise torch.OutOfMemoryError("CUDA out of memory. Tried to allocate 2.00 GiB")
+        return inner(*a, **k)
+
+    oom_on_batch.__module__ = mg.__name__  # stands in for a Studio forward patch under the router
+    router.orig_forward = oom_on_batch
+    dit.forward = router
+    return router, state
+
+
+def _oom_batch_request(dit, router, state, oom, latents, cond, uncond):
+    router.begin_request(steps = 4)
+    state["oom"] = oom
+    before = router.stats["batched_steps"]
+    out = _batch_loop(dit, latents.clone(), 4, cond, uncond)
+    router.end_request()
+    return out, router.stats["batched_steps"] - before
+
+
+def test_cfg_batch_transient_oom_is_retried_on_the_next_request():
+    torch.manual_seed(0)
     dit = _BatchDit()
-    router, _ = _router(dit)
-    # the wording deliberately disagrees with the kind: an old per-request prefix on a sticky verdict, and a new
-    # wording no prefix list knows on the per-request ones
+    latents = torch.randn(2, 4)
+    cond, uncond = _embeds()
+    reference = _batch_loop(dit, latents.clone(), 4, cond, uncond)
+    router, state = _oom_batch_router(dit)
+    out, batched = _oom_batch_request(dit, router, state, True, latents, cond, uncond)
+    torch.testing.assert_close(out, reference, rtol = 0, atol = 0)  # every branch reran plain
+    assert batched == 0 and "out of memory" in router.shape_disabled
+    out, batched = _oom_batch_request(dit, router, state, False, latents, cond, uncond)  # pressure gone
+    torch.testing.assert_close(out, reference, rtol = 1e-5, atol = 1e-6)
+    assert batched > 0 and router.shape_disabled is None and router.disabled_reason is None
+
+
+def test_cfg_batch_transient_oom_backs_off_after_consecutive_requests():
+    torch.manual_seed(0)
+    dit = _BatchDit()
+    latents = torch.randn(2, 4)
+    cond, uncond = _embeds()
+    reference = _batch_loop(dit, latents.clone(), 4, cond, uncond)
+    router, state = _oom_batch_router(dit)
+    # OOM, OOM, a request that batches (resets the run), then _MISS_LIMIT in a row: off for the shape
+    for oom in [True, True, False] + [True] * mg._MISS_LIMIT:
+        _, batched = _oom_batch_request(dit, router, state, oom, latents, cond, uncond)
+        assert (batched > 0) == (not oom)
+    out, batched = _oom_batch_request(dit, router, state, False, latents, cond, uncond)
+    torch.testing.assert_close(out, reference, rtol = 0, atol = 0)
+    assert batched == 0 and "in a row" in router.shape_disabled and router.disabled_reason is None
+    router.reprice()  # invalidation: the shape is tried again
+    _, batched = _oom_batch_request(dit, router, state, False, latents, cond, uncond)
+    assert batched > 0
+
+
+@pytest.mark.parametrize("router_kind", ["parallel", "batch"])
+@pytest.mark.parametrize("kind, cleared", [("room", True), ("short", True), ("transient", True), ("sticky", False)])
+def test_both_routers_share_one_typed_shape_verdict(router_kind, kind, cleared):
+    dit = _BatchDit()
+    router = _router(dit)[0] if router_kind == "parallel" else mg.CfgBatchRouter(dit)
+    assert isinstance(router, mg._ShapeVerdicts)
     reason = "short render: worded like a per-request verdict" if kind == "sticky" else "a reason worded anew"
     router._shape_off(reason, kind)
     router.shapes.switch(router, "a")
@@ -4709,22 +4766,34 @@ def test_shape_verdict_lifetime_is_decided_by_kind_not_wording(kind, cleared):
     assert (router.shapes.saved["a"]["shape_disabled"] is None) == cleared
 
 
-def test_parallel_router_sets_shape_verdicts_only_with_a_kind():
-    # every verdict CfgParallelRouter stores is a _ShapeOff (or None), and no lifetime check reads the wording
+def test_every_per_shape_disable_in_the_module_goes_through_the_typed_verdict():
+    # Module-wide: a shape verdict is stored only by _ShapeVerdicts._shape_off (typed), every disable call names a
+    # kind, no lifetime check reads the wording, and every router whose shape book keeps a verdict is a _ShapeVerdicts.
     import ast
-    import inspect
-    import textwrap
+    from pathlib import Path
 
-    tree = ast.parse(textwrap.dedent(inspect.getsource(mg.CfgParallelRouter)))
+    tree = ast.parse(Path(mg.__file__).read_text())
+    owners = {}
+    for cls in [n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)]:
+        for fn in [n for n in cls.body if isinstance(n, ast.FunctionDef)]:
+            for node in ast.walk(fn):
+                owners[id(node)] = (cls.name, fn.name)
+    stores = []
     for node in ast.walk(tree):
-        if isinstance(node, ast.Assign) and any(
-            isinstance(t, ast.Attribute) and t.attr == "shape_disabled" for t in node.targets
-        ):
-            v = node.value
-            assert (isinstance(v, ast.Constant) and v.value is None) or (
-                isinstance(v, ast.Call) and getattr(v.func, "id", None) == "_ShapeOff"
-            ), ast.unparse(node)
-        if isinstance(node, ast.Call) and getattr(node.func, "attr", None) == "_shape_off":
+        if isinstance(node, ast.Assign):
+            for t in node.targets:
+                named = (isinstance(t, ast.Attribute) and t.attr == "shape_disabled") or (
+                    isinstance(t, ast.Subscript) and isinstance(t.slice, ast.Constant) and t.slice.value == "shape_disabled"
+                )
+                if named and not (isinstance(node.value, ast.Constant) and node.value.value is None):
+                    stores.append((owners.get(id(node)), ast.unparse(node)))
+        if isinstance(node, ast.Call) and getattr(node.func, "attr", None) in ("_shape_off", "_disable_shape"):
             assert len(node.args) + len(node.keywords) == 2, ast.unparse(node)
         if isinstance(node, ast.Call) and getattr(node.func, "attr", None) == "startswith":
             assert "shape_disabled" not in ast.unparse(node), ast.unparse(node)
+        if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "setattr":
+            assert "shape_disabled" not in ast.unparse(node.args[1]) if len(node.args) > 1 else True
+    assert stores == [(("_ShapeVerdicts", "_shape_off"), "self.shape_disabled = _ShapeOff(reason, kind)")], stores
+    for name in ("CfgParallelRouter", "CfgBatchRouter"):
+        cls = getattr(mg, name)
+        assert issubclass(cls, mg._ShapeVerdicts) and "_shape_off" not in vars(cls)

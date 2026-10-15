@@ -720,6 +720,66 @@ class _ShapeBook:
                 setattr(router, name, _fresh(default))
 
 
+class _ShapeVerdicts:
+    """The one per-request-shape verdict for every router (CfgParallelRouter, CfgBatchRouter): why the CURRENT shape
+    runs without the optimization, typed by kind (:class:`_ShapeOff`), and how long it holds:
+
+    - room / short render / transient OOM: cleared at every request entry (:meth:`_clear_request_verdicts`), for the
+      current shape and every saved one;
+    - a transient OOM (:meth:`_shape_oom_off`) becomes sticky after ``_MISS_LIMIT`` requests in a row run out of
+      memory before the optimization completes once (:meth:`_shape_ok` resets the run), so a card that is always too
+      tight does not pay an OOM per request;
+    - sticky (priced out, measured no gain, structural for the shape): until reprice, invalidation or reload.
+
+    Load-wide (structural) failures are not shape verdicts: they go to the router's ``disable``."""
+
+    _VERDICT_LABEL = "optimization"
+    # a router's shape book carries these per shape
+    VERDICT_FIELDS = {"shape_disabled": None, "oom_backoff": _PredictionPolicy}
+
+    shape_disabled: Optional[str]
+    oom_backoff: "_PredictionPolicy"
+    shapes: _ShapeBook
+    logger: Any
+
+    def _init_verdicts(self) -> None:
+        self.shape_disabled = None
+        self.oom_backoff = _PredictionPolicy()
+
+    def _shape_off(self, reason: str, kind: str) -> None:
+        """Record ``reason`` (of ``kind``) as the current shape's verdict; the first verdict of a request stands."""
+        if self.shape_disabled is not None:
+            return
+        self.shape_disabled = _ShapeOff(reason, kind)
+        if self.logger is not None:
+            self.logger.info(
+                "diffusion.multigpu: %s off for this request shape (%s)", self._VERDICT_LABEL, reason
+            )
+
+    def _shape_oom_off(self, reason: str) -> None:
+        """An out-of-memory in the optimized path: transient (retried next request) until the back-off is spent."""
+        if self.oom_backoff.miss():
+            self._shape_off(
+                f"{reason}; {self.oom_backoff.consecutive} requests in a row ran out of memory, kept off for this "
+                "shape",
+                _OFF_STICKY,
+            )
+        else:
+            self._shape_off(reason, _OFF_TRANSIENT)
+
+    def _shape_ok(self) -> None:
+        """The optimized path completed for this shape: the run of OOM requests is broken."""
+        self.oom_backoff.hit()
+
+    def _clear_request_verdicts(self) -> None:
+        """At request entry: drop every verdict whose kind holds for one request only (decided on the kind)."""
+        for state in self.shapes.saved.values():
+            if _off_kind(state.get("shape_disabled")) in _OFF_PER_REQUEST:
+                state["shape_disabled"] = None
+        if _off_kind(self.shape_disabled) in _OFF_PER_REQUEST:
+            self.shape_disabled = None
+
+
 # --------------------------------------------------------------------------------------------------------------------
 # Planner (pre-load): companions on a secondary card when that keeps the denoiser resident on the primary.
 # --------------------------------------------------------------------------------------------------------------------
@@ -2323,7 +2383,7 @@ def _mirror_hook_state(pairs: list) -> tuple:
     return state
 
 
-class CfgParallelRouter:
+class CfgParallelRouter(_ShapeVerdicts):
     """Installed as the denoiser's ``forward``: routes odd branches of a step to the replica.
 
     Once a step has shown two branches, the next step's first odd branch is predicted from the previous one (same
@@ -2332,6 +2392,8 @@ class CfgParallelRouter:
     the two cards overlap even when the primary forward blocks the host. The real call must then pass exactly the
     predicted tensors (identity) and equal plain values, else the prediction is discarded and the branch runs
     unpredicted."""
+
+    _VERDICT_LABEL = "CFG-parallel"
 
     def __init__(
         self,
@@ -2409,21 +2471,13 @@ class CfgParallelRouter:
         self.pairs: list = []
         self.pricing: Optional[dict[str, Any]] = None
         self.b0_s: Optional[float] = None
-        # why the CURRENT request shape keeps one card (priced out, link unmeasured); per shape, not per load
-        self.shape_disabled: Optional[str] = None
+        # why the CURRENT request shape keeps one card, typed (_ShapeVerdicts); per shape, not per load
+        self._init_verdicts()
         self.shapes = _ShapeBook(
-            {
-                "pricing": None,
-                "shape_disabled": None,
-                "prediction": _PredictionPolicy,
-                "oom_backoff": _PredictionPolicy,
-            }
+            {"pricing": None, "prediction": _PredictionPolicy, **_ShapeVerdicts.VERDICT_FIELDS}
         )
         # per shape: consecutive prediction misses stop the speculative replica forward (the same policy as CFG-batch)
         self.prediction = _PredictionPolicy()
-        # per shape: a transient replica OOM is retried next request; _MISS_LIMIT requests in a row that OOM before a
-        # parallel step completes make it sticky (a card that is always too tight does not pay an OOM per request)
-        self.oom_backoff = _PredictionPolicy()
         # the replica card's room for this request's activations was checked (per request and per shape change)
         self.capacity_checked = False
         # this request's denoise steps (counted at each new step) and its step count when Studio / the scheduler
@@ -2584,7 +2638,7 @@ class CfgParallelRouter:
                     self.stats["replica_calls"] += 1
                     if self.branch == 1:
                         self.stats["steps_parallel"] += 1
-                        self.oom_backoff.hit()
+                        self._shape_ok()
                     return out
                 except Exception as exc:  # noqa: BLE001 - recomputed on the primary below; typed by the handler
                     self._replica_failure("call", exc)
@@ -2718,21 +2772,7 @@ class CfgParallelRouter:
         self.next_carry = []
         with contextlib.suppress(Exception):
             _torch().cuda.empty_cache()
-        reason = f"out of memory on the replica card ({where}): {type(exc).__name__}"
-        if self.oom_backoff.miss():
-            self._shape_off(
-                f"{reason}; {self.oom_backoff.consecutive} requests in a row ran out of memory, kept off for this shape",
-                _OFF_STICKY,
-            )
-        else:
-            self._shape_off(reason, _OFF_TRANSIENT)
-
-    def _shape_off(self, reason: str, kind: str) -> None:
-        self.shape_disabled = _ShapeOff(reason, kind)
-        if self.logger is not None:
-            self.logger.info(
-                "diffusion.multigpu: CFG-parallel off for this request shape (%s)", reason
-            )
+        self._shape_oom_off(f"out of memory on the replica card ({where}): {type(exc).__name__}")
 
     def _remaining_steps(self) -> Optional[int]:
         """Denoise steps left in this request, this one included: Studio's step count, else the scheduler's."""
@@ -2790,20 +2830,15 @@ class CfgParallelRouter:
             return True
         if self.pricing.get("link_unmeasured"):
             # sticky: the unmeasured price itself is forgotten at the next request, and the verdict with it
-            self.shape_disabled = _ShapeOff(
+            self._shape_off(
                 "link unmeasured: one card until a probe measures it (retried next request)", _OFF_STICKY
             )
         else:
-            self.shape_disabled = _ShapeOff(
+            self._shape_off(
                 "priced out: one card takes "
                 f"{self.pricing['single_step_s']:.4f}s per step, CFG-parallel "
                 f"{self.pricing['cfg_parallel_step_s']:.4f}s (link copies {self.pricing['copy_s']:.4f}s)",
                 _OFF_STICKY,
-            )
-        if self.logger is not None:
-            self.logger.info(
-                "diffusion.multigpu: CFG-parallel off for this request shape (%s)",
-                self.shape_disabled,
             )
         return False
 
@@ -2829,12 +2864,8 @@ class CfgParallelRouter:
         self.request_total_steps = steps
         self.steps_fn = steps_fn
         # short-render, room and transient-OOM verdicts hold for one request (a longer one may repay the build, free
-        # memory moves); decided on the verdict's kind (_ShapeOff), structural and priced-out ones stay
-        for state in self.shapes.saved.values():
-            if _off_kind(state.get("shape_disabled")) in _OFF_PER_REQUEST:
-                state["shape_disabled"] = None
-        if _off_kind(self.shape_disabled) in _OFF_PER_REQUEST:
-            self.shape_disabled = None
+        # memory moves); decided on the verdict's kind, structural and priced-out ones stay
+        self._clear_request_verdicts()
         try:
             self.request_px = int(width) * int(height) if width and height else None
         except (TypeError, ValueError):
@@ -3804,13 +3835,15 @@ def _registry_hooks_other(module: Any) -> Optional[str]:
     return None
 
 
-class CfgBatchRouter:
+class CfgBatchRouter(_ShapeVerdicts):
     """Offloaded denoiser ``forward`` running both guidance branches of a step through ONE forward (one upload).
 
     Branches are recognised as in :class:`CfgParallelRouter`; the predicted odd branch is batched with the first and
     its half kept. The real odd call must match the prediction bitwise (snapshots, so in-place edits are seen) with
     unchanged hook state, else it runs plain. Not bit-identical to two calls, so only offloaded denoisers by default.
     Unbatchable steps run as before; OOM on the batched call disables batching and recomputes the branch alone."""
+
+    _VERDICT_LABEL = "CFG-batch"
 
     def __init__(
         self,
@@ -3848,8 +3881,8 @@ class CfgBatchRouter:
         self.verify_batched = _BATCH_VERIFY_CALLS
         self.batched_times: list[float] = []
         self.disabled_pending: Optional[str] = None
-        # why the CURRENT request shape runs one branch per call (priced out, measured no gain); per shape
-        self.shape_disabled: Optional[str] = None
+        # why the CURRENT request shape runs one branch per call, typed (_ShapeVerdicts); per shape
+        self._init_verdicts()
         self.shapes = _ShapeBook(
             {
                 "pricing": None,
@@ -3857,8 +3890,8 @@ class CfgBatchRouter:
                 "batched_times": [],
                 "verify_batched": _BATCH_VERIFY_CALLS,
                 "disabled_pending": None,
-                "shape_disabled": None,
                 "prediction": _PredictionPolicy,
+                **_ShapeVerdicts.VERDICT_FIELDS,
             }
         )
         self.prediction = _PredictionPolicy()
@@ -3897,6 +3930,8 @@ class CfgBatchRouter:
         self.request_needs = needs
         self.branch = 0
         self.timing_off = False
+        # transient OOM verdicts hold for one request (decided on the kind); priced-out / measured ones stay
+        self._clear_request_verdicts()
         if self.pricing is None:
             self.plain_times = []
         try:
@@ -4037,7 +4072,8 @@ class CfgBatchRouter:
         if self.pricing["strategy"] != "cfg_batch":
             self._disable_shape(
                 f"priced out: a call takes {call_s:.4f}s, its upload {upload_s:.4f}s (compute-bound; the streamed "
-                "blocks already hide behind compute, so one batched call costs as much as two)"
+                "blocks already hide behind compute, so one batched call costs as much as two)",
+                _OFF_STICKY,
             )
 
     def _plain(self, args: tuple, kwargs: dict) -> Any:
@@ -4175,7 +4211,7 @@ class CfgBatchRouter:
             if is_out_of_memory(exc):
                 # the concatenation of a larger canvas or batch ran out: this shape only, the branch runs plain
                 self._disable_shape(
-                    "out of memory merging the branches; one branch per call for this shape"
+                    "out of memory merging the branches; one branch per call for this shape", _OFF_TRANSIENT
                 )
                 return None
             self.disable(
@@ -4194,7 +4230,8 @@ class CfgBatchRouter:
             # a buffer the forward writes, too large to snapshot: a speculative call could not be undone
             self._disable_shape(
                 f"buffer {watch.unrestorable[0]} is written by the forward and too large to snapshot around a "
-                "speculative call; one branch per call for this shape"
+                "speculative call; one branch per call for this shape",
+                _OFF_STICKY,
             )
             return None
         state_snapshot = watch.snapshot()
@@ -4235,7 +4272,7 @@ class CfgBatchRouter:
                     torch.cuda.empty_cache()
                 # a larger canvas or batch can run out where smaller ones fit: this shape only
                 self._disable_shape(
-                    "out of memory on the batched call; one branch per call for this shape"
+                    "out of memory on the batched call; one branch per call for this shape", _OFF_TRANSIENT
                 )
                 return None
             self.disable(
@@ -4264,6 +4301,7 @@ class CfgBatchRouter:
             return None
         self.kept = {"out": other, "snapshots": snapshots, "state": state}
         self.stats["batched_steps"] += 1
+        self._shape_ok()
         return mine
 
     def _undo_attempt(self, snapshot: Optional[dict], report_unseen: bool = False) -> Any:
@@ -4349,22 +4387,22 @@ class CfgBatchRouter:
         if self.prediction.miss():
             self._disable_shape(
                 f"the speculative doubled call missed {self.prediction.consecutive} consecutive steps ({why}); one "
-                "branch per call for this shape"
+                "branch per call for this shape",
+                _OFF_STICKY,
             )
 
     def _apply_pending(self) -> None:
         if self.disabled_pending is not None:
             reason, self.disabled_pending = self.disabled_pending, None
-            self._disable_shape(reason)
+            # a measured verdict (no gain over two plain calls): holds until reprice
+            self._disable_shape(reason, _OFF_STICKY)
 
-    def _disable_shape(self, reason: str) -> None:
-        """A priced / measured verdict: one branch per call for THIS request shape only."""
-        if self.shape_disabled is None:
-            self.shape_disabled = reason
-            if self.logger is not None:
-                self.logger.info(
-                    "diffusion.multigpu: CFG-batch off for this request shape (%s)", reason
-                )
+    def _disable_shape(self, reason: str, kind: str) -> None:
+        """One branch per call for THIS request shape (the shared typed verdict); the speculative state goes."""
+        if kind == _OFF_TRANSIENT:
+            self._shape_oom_off(reason)
+        else:
+            self._shape_off(reason, kind)
         self.kept = None
         self.template = None
 
