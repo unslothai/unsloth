@@ -142,12 +142,18 @@ function useFrameMessages(tabId: string, origin: string | null) {
         case "upload":
         case "scriptNavigation":
         case "needsBrowser": {
-          const tab = store.tabs.find((candidate) => candidate.id === tabId);
-          const entry = tab ? currentEntry(tab) : null;
-          const url = tab?.displayUrl ?? (entry?.kind === "web" ? entry.url : null);
+          // Read at click time: the notice can outlive a pushState to another route.
+          const pageUrl = () => {
+            const tab = useBrowserStore.getState().tabs.find((candidate) => candidate.id === tabId);
+            const entry = tab ? currentEntry(tab) : null;
+            return tab?.displayUrl ?? (entry?.kind === "web" ? entry.url : null);
+          };
+          const shown = pageUrl();
           toast(t(`browser.error.${message.type}`), {
             ...frameNotice(message.type, tabId),
-            action: url ? { label: t("browser.openExternal"), onClick: () => openExternalLink(url) } : undefined,
+            action: shown
+              ? { label: t("browser.openExternal"), onClick: () => openExternalLink(pageUrl() ?? shown) }
+              : undefined,
           });
           break;
         }
