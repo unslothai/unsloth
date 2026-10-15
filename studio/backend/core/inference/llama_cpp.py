@@ -9086,6 +9086,7 @@ def _local_ssl_context() -> ssl.SSLContext:
 
 # Freeing a large model's GPU memory on a busy driver took over 5 s after SIGKILL; this only bounds a stuck process.
 _SIGKILL_REAP_TIMEOUT_S = 30
+_QUIT_SIGNAL_EXIT_GRACE_S = 2
 
 
 class LlamaCppBackend:
@@ -37047,6 +37048,32 @@ class LlamaCppBackend:
         return pgid if pgid == pid else None
 
     @staticmethod
+    def _quit_signal_grace_left(pid) -> Optional[float]:
+        if not _is_signalable_pid(pid) or not hasattr(os, "getpgid"):
+            return None
+        from utils.process_lifetime import seconds_since_quit_signal
+
+        elapsed = seconds_since_quit_signal()
+        try:
+            if elapsed is None or os.getpgid(pid) != os.getpgrp():
+                return None
+        except OSError:
+            return None
+        return max(0.0, _QUIT_SIGNAL_EXIT_GRACE_S - elapsed)
+
+    def _still_listening(self) -> bool:
+        port = getattr(self, "_port", None)
+        if not port:
+            return True
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout = 0.5):
+                return True
+        except ConnectionRefusedError:
+            return False
+        except OSError:
+            return True
+
+    @staticmethod
     def _kill_process_group(pgid):
         """Take down what the leader left behind, if anything is still there."""
         if not _is_signalable_pid(pgid):
@@ -37337,6 +37364,16 @@ class LlamaCppBackend:
             self._torn_down_process = self._process
         try:
             if terminable:
+                _grace = self._quit_signal_grace_left(_pid)
+                if _grace is not None:
+                    # The quit signal already reached it; a second one aborts llama-server on Metal.
+                    try:
+                        self._process.wait(timeout = _grace)
+                    except subprocess.TimeoutExpired:
+                        # Still listening: our signal never reached it (a stop sent to Studio alone).
+                        if not self._still_listening():
+                            self._process.kill()
+                            self._process.wait(timeout = _SIGKILL_REAP_TIMEOUT_S)
                 self._process.terminate()
                 self._process.wait(timeout = 5)
         except subprocess.TimeoutExpired:
@@ -46601,6 +46638,7 @@ class LlamaCppBackend:
         repetition_penalty: float = 1.1,
         cancel_event: Optional[threading.Event] = None,
         stats_holder: Optional[dict] = None,
+        audio_options: Optional[dict] = None,
     ) -> tuple:
         """Generate TTS audio via llama-server /completion + codec decode."""
         if audio_type not in self._TTS_PROMPTS:
@@ -46608,10 +46646,16 @@ class LlamaCppBackend:
 
         tpl, stop, need_ids = self._TTS_PROMPTS[audio_type]
         # Raw prompt, not messages: codec delimiters are the only structure to break (#7066).
-        from core.inference.chat_template_helpers import neutralize_tts_prompt_text
+        from core.inference.chat_template_helpers import (
+            neutralize_tts_prompt_text,
+            tts_prompt_with_voice,
+        )
 
+        prompt_text = tts_prompt_with_voice(
+            neutralize_tts_prompt_text(text, audio_type), audio_type, audio_options
+        )
         payload: dict = {
-            "prompt": tpl.format(text = neutralize_tts_prompt_text(text, audio_type)),
+            "prompt": tpl.format(text = prompt_text),
             "stream": False,
             "n_predict": max_new_tokens,
             "temperature": temperature,

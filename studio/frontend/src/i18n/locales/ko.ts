@@ -1731,6 +1731,19 @@ export const ko = {
         apiOnlyDescription:
           "유휴 해제 시 Unsloth에서 직접 불러온 모델은 메모리에 남기고, API 요청이 불러온 모델만 해제합니다.",
       },
+      modelAliases: {
+        sectionTitle: "모델 별칭 (OpenAI API)",
+        description:
+          "fast-chat이나 code처럼 API 클라이언트용 고정 이름입니다. 별칭을 지정한 요청은 그 별칭이 가리키는 모델이 처리하므로, 모델을 바꿔도 연결된 앱이 계속 동작합니다. 별칭이 모델을 불러올 수 있도록 요청에 따라 모델 전환을 켜세요.",
+        namePlaceholder: "fast-chat",
+        nameAriaLabel: "별칭 이름",
+        modelAriaLabel: "별칭이 가리키는 모델",
+        modelPlaceholder: "unsloth/Qwen3-4B-GGUF:Q4_K_M",
+        removeAriaLabel: "별칭 삭제",
+        add: "별칭 추가",
+        loadError: "모델 별칭을 불러오지 못했습니다.",
+        saveError: "모델 별칭을 저장하지 못했습니다.",
+      },
       previewSharing: {
         sectionTitle: "미리보기 공유",
         enableLabel: "공개 미리보기 링크",

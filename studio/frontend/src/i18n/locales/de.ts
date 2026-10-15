@@ -1751,6 +1751,19 @@ export const de = {
         apiOnlyDescription:
           "Das automatische Entladen bei Inaktivität lässt ein von dir in Unsloth geladenes Modell im Speicher und gibt nur solche frei, die eine API-Anfrage geladen hat.",
       },
+      modelAliases: {
+        sectionTitle: "Modell-Aliase (OpenAI API)",
+        description:
+          "Feste Namen für API-Clients, etwa fast-chat oder code. Eine Anfrage mit einem Alias wird vom Modell bedient, auf das er zeigt, sodass verbundene Apps beim Modellwechsel weiter funktionieren. Aktiviere Modell je Anfrage wechseln, damit ein Alias sein Modell laden kann.",
+        namePlaceholder: "fast-chat",
+        nameAriaLabel: "Alias-Name",
+        modelAriaLabel: "Modell, auf das der Alias zeigt",
+        modelPlaceholder: "unsloth/Qwen3-4B-GGUF:Q4_K_M",
+        removeAriaLabel: "Alias entfernen",
+        add: "Alias hinzufügen",
+        loadError: "Modell-Aliase konnten nicht geladen werden.",
+        saveError: "Modell-Aliase konnten nicht gespeichert werden.",
+      },
       previewSharing: {
         sectionTitle: "Vorschau-Freigabe",
         enableLabel: "Öffentliche Vorschaulinks",

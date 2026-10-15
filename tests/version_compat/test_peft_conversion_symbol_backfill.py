@@ -939,6 +939,15 @@ def test_a_fused_moe_model_is_still_refused():
             stand_in.get(model_type)
 
 
+def test_a_fused_class_name_alias_is_refused_in_its_own_case():
+    """Upstream keys some fused entries by class name (UnlimitedOcrTextModel), which says nothing
+    about MoE: lowercasing it before the snapshot lookup let it fall through to a silent None."""
+    stand_in = F._UnavailableConversionPatternMap()
+    assert F._PEFT_MOE_CONVERSION_PATTERNS["UnlimitedOcrTextModel"] == "qwen2_moe"
+    with pytest.raises(RuntimeError, match = "conversion map"):
+        stand_in.get("UnlimitedOcrTextModel")
+
+
 def test_an_unknown_moe_name_is_still_refused():
     """The hint stays for a fused type added after the snapshot: silently
     returning the default there mis-converts the adapter."""

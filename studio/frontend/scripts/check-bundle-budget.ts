@@ -147,6 +147,15 @@ export const BUDGET = {
   // transfer (6,773,496 -> 6,774,820 B raw, 2,036,386 -> 2,036,728 B transfer against 59ab069b5, one machine
   // and build, Node 24, chunk count unchanged at 95). Lazy-loading it cost more transfer and a 96th startup
   // chunk (Rollup split react-dom out), so it is imported statically and the budget raised by that growth.
+  // Opening the OS folder dialog for model folders on Desktop (#13843) adds 235 B raw / 336 B transfer
+  // (6,777,794 -> 6,778,029 B raw, 2,037,725 -> 2,038,061 B transfer against 199987c63, one machine and build,
+  // Node 24, chunk count unchanged at 95). Raised by that growth.
+  // The Windows Long Paths explainer on the first-run startup screen (#13523) adds 1,816 B raw / 519 B
+  // transfer (6,778,788 -> 6,780,604 B raw, 2,038,337 -> 2,038,856 B transfer against 62e063618, one machine
+  // and build, Node 24, chunk count unchanged at 95). Main already measured 3,656 B raw / 1,180 B transfer over
+  // the previous limits there, so they are set to the measured build.
+  // The downloads panel's "Starting…" row (#13738) adds 1,404 B raw / 353 B transfer (6,778,788 -> 6,780,192 B raw,
+  // 2,038,337 -> 2,038,690 B transfer against 7c235de6f, one machine and build, Node 24, 95 chunks). Raised by that growth.
   // The paused and queued chat states (admission status, the paused continuation reason) add 2.3 KB
   // raw / 1.0 KB transfer to the eager chat chunk (6,570.6 -> 6,572.9 KB raw, 1,975.5 -> 1,976.5 KB
   // transfer against b8d76e169, one machine and build). They render on the first chat screen, so
@@ -158,11 +167,11 @@ export const BUDGET = {
   // raw, 2,026,381 -> 2,029,284 B transfer, one machine and build).
   // Re-measured on main at 5e927b0fa: +7,064 B raw / +2,314 B transfer (6,764,333 -> 6,771,397 B raw,
   // 2,033,495 -> 2,035,809 B transfer, one machine and build).
-  // Re-measured on main at cc8e98e16: +7,181 B raw / +2,415 B transfer (6,777,163 -> 6,784,344 B raw,
-  // 2,037,624 -> 2,040,039 B transfer, one machine and build). On main's limits plus that growth, with
+  // Re-measured on main at f6c34ddbc: +7,214 B raw / +2,653 B transfer (6,781,377 -> 6,788,591 B raw,
+  // 2,039,139 -> 2,041,792 B transfer, one machine and build). On main's limits plus that growth, with
   // 0.9 KB raw / 0.4 KB transfer above it for the CI runner, which measured this branch 0.6 KB raw higher.
-  transferBytes: 2_039_636,
-  rawBytes: 6_782_978,
+  transferBytes: 2_042_262,
+  rawBytes: 6_790_122,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
