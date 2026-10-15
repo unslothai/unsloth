@@ -134,10 +134,16 @@ def unify_trainable_dtypes(accelerator, model):
     """bfloat16 full finetuning runs without autocast with float32 norms, which accelerate does not
     upcast and FSDP2 refuses ("FSDP expects uniform original parameter dtype"). A policy the caller
     set is kept; only the master weights are upcast."""
-    if str(getattr(accelerator, "mixed_precision", "no")) != "no":
-        return False
     trainable = [p for p in model.parameters() if p.requires_grad and p.is_floating_point()]
     dtypes = {p.dtype for p in trainable}
+    if str(getattr(accelerator, "mixed_precision", "no")) != "no":
+        # accelerate upcasts these itself, except 1.13 (`param = param.to(float32)` drops the result).
+        if len(dtypes) <= 1:
+            return False
+        for p in trainable:
+            if p.dtype != torch.float32:
+                p.data = p.data.to(torch.float32)
+        return True
     if len(dtypes) <= 1 or torch.bfloat16 not in dtypes:
         return False
     try:
@@ -277,7 +283,11 @@ def _gate_fused_lora(accelerator, model, parents, FSDPModule):
     if not fused or os.environ.get("UNSLOTH_FORCE_FUSED_LORA", "0") == "1":
         model._unsloth_fsdp2_fused_lora = len(fused)
         return len(fused)
-    problem = _fused_lora_wrap_problem(model, fused, parents, FSDPModule)
+    if os.environ.get("UNSLOTH_FSDP2_FUSED_LORA", "1").strip().lower() in _FALSY:
+        # A raw loop patches the model before any FSDP plugin exists, so load time could not see it.
+        problem = "UNSLOTH_FSDP2_FUSED_LORA=0"
+    else:
+        problem = _fused_lora_wrap_problem(model, fused, parents, FSDPModule)
     device = getattr(accelerator, "device", None) or torch.device("cpu")
     if not _all_ranks_agree(problem is None, device):
         _decline_fused_lora_for_fsdp(model, problem or "another rank's FSDP2 wrap")
