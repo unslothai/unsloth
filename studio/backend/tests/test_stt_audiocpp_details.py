@@ -31,7 +31,7 @@ ALIGNER_KEY = "qwen3_asr.forced_aligner_model_path"
 
 FAKE_SERVER = textwrap.dedent(
     r"""
-    import json, os, sys, time
+    import json, os, socketserver, sys, time
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
     here = os.path.dirname(os.path.abspath(__file__))
@@ -81,7 +81,13 @@ FAKE_SERVER = textwrap.dedent(
                 ]
             self.reply(200, payload)
 
-    ThreadingHTTPServer(("127.0.0.1", cfg["port"]), H).serve_forever()
+    class S(ThreadingHTTPServer):
+        # HTTPServer.server_bind reverse-resolves the host via getfqdn, ~35 s per start on macOS runners.
+        def server_bind(self):
+            socketserver.TCPServer.server_bind(self)
+            self.server_name, self.server_port = "127.0.0.1", self.server_address[1]
+
+    S(("127.0.0.1", cfg["port"]), H).serve_forever()
     """
 )
 
