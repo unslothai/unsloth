@@ -1194,12 +1194,17 @@ def _time_ms(
     return best[len(best) // 2]
 
 
+def _timed_rows(n: int, m: int) -> int:
+    """The M a bucket is timed at: its representative, capped so the int32 output stays under ``_TUNE_MAX_BYTES``."""
+    return max(_MIN_ROWS, min(m, _TUNE_MAX_BYTES // (4 * n)))
+
+
 def _measure(index: int, n: int, k: int, m: int, tiles: tuple) -> dict:
     """ms per arm at [m, k] x [n, k]: each candidate tile and ``_CUBLAS`` (``_int_mm`` + one int32 -> bf16 pass)."""
     import torch
 
     dev = torch.device("cuda", index)
-    m = max(_MIN_ROWS, min(m, _TUNE_MAX_BYTES // (4 * n)))
+    m = _timed_rows(n, m)
     with torch.cuda.device(dev):
         g = torch.Generator(device = dev).manual_seed(
             0
@@ -1264,6 +1269,11 @@ def tune(index: int, shapes: Any) -> dict:
         for b, (_, rep_m) in enumerate(_M_BUCKETS):
             slot = (n, k, b)
             choice = stored.get(slot)
+            if choice is None and m_bucket(_timed_rows(n, rep_m)) != b:
+                # very large N: the capped row count falls in a lower bucket, so a timing would not describe this one
+                choice = _CUBLAS
+                stored[slot] = choice
+                dirty = True
             if choice is None:
                 static = tile_for(index, rep_m, n, k) if tiles_enabled() else default
                 tiles = tuple(dict.fromkeys((static, default, *alts)))

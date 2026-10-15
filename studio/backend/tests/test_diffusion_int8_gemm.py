@@ -1590,3 +1590,19 @@ def test_swap_log_says_what_runs(monkeypatch, tmp_path):
     swap_msg = [m for m in msgs if "int8 Linear(s)" in m][-1]
     assert "0 run the fused-dequant GEMM" in swap_msg and "8 cuBLAS" in swap_msg
     g8.uninstall(other)
+
+
+def test_latency_gate_never_times_a_bucket_at_rows_from_another_bucket(monkeypatch, tmp_path):
+    """Very large N caps the timed rows (int32 output under _TUNE_MAX_BYTES); a bucket whose capped M lands in a lower
+    bucket must not take that bucket's timing: it stays on cuBLAS untimed."""
+    default = g8._ARCH_CONFIG[(8, 0)]
+    calls = _fake_tune_env(monkeypatch, tmp_path, lambda tiles: {g8._CUBLAS: 7.8, **{t: 1.0 for t in tiles}})
+    big, huge = 65536, 131072  # cap 1536 rows (bucket 1), 768 rows (bucket 0)
+    plan = g8.tune(0, {(big, 1024), (huge, 1024)})
+    assert plan[(big, 1024, 0)] == default and plan[(big, 1024, 1)] == default
+    assert plan[(big, 1024, 2)] == g8._CUBLAS
+    assert plan[(huge, 1024, 0)] == default
+    assert plan[(huge, 1024, 1)] == g8._CUBLAS and plan[(huge, 1024, 2)] == g8._CUBLAS
+    cap = lambda n, m: max(g8._MIN_ROWS, min(m, g8._TUNE_MAX_BYTES // (4 * n)))
+    assert all(g8.m_bucket(cap(n, m)) == g8.m_bucket(m) for n, _k, m, _t in calls)
+    assert len(calls) == 3
