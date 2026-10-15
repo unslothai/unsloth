@@ -1062,7 +1062,7 @@ export const en = {
       storageSection: "Storage",
       downloadsSection: "Image downloads",
       imageInfoStamp: "Info stamp",
-      imageInfoStampDescription: "Show the model, date and seed along the bottom of images you download. The generation settings are saved inside the file either way.",
+      imageInfoStampDescription: "Show the model, date and seed along the bottom of images you download from the Images page. The generation settings are saved inside the file either way.",
       storageDescription: "Open a category to see its files largest first, and delete what you no longer need.",
       storageUsed: "{size} used by the Library",
       storageDisk: "{free} free of {total} on this disk",

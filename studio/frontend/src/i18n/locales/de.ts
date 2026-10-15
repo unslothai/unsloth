@@ -1009,7 +1009,7 @@ export const de = {
       storageSection: "Speicher",
       downloadsSection: "Bild-Downloads",
       imageInfoStamp: "Info-Stempel",
-      imageInfoStampDescription: "Zeigt Modell, Datum und Seed am unteren Rand heruntergeladener Bilder. Die Generierungseinstellungen werden in jedem Fall in der Datei gespeichert.",
+      imageInfoStampDescription: "Zeigt Modell, Datum und Seed am unteren Rand von Bildern, die Sie auf der Seite Bilder herunterladen. Die Generierungseinstellungen werden in jedem Fall in der Datei gespeichert.",
       storageDescription: "Öffne eine Kategorie, um ihre Dateien nach Größe zu sehen, und lösche, was du nicht mehr brauchst.",
       storageUsed: "{size} von der Bibliothek belegt",
       storageDisk: "{free} frei von {total} auf diesem Laufwerk",

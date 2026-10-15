@@ -1002,7 +1002,7 @@ export const zhCN = {
       storageSection: "存储空间",
       downloadsSection: "图片下载",
       imageInfoStamp: "信息水印",
-      imageInfoStampDescription: "在下载的图片底部显示模型、日期和种子。无论是否开启，生成设置都会保存在文件中。",
+      imageInfoStampDescription: "在从图片页面下载的图片底部显示模型、日期和种子。无论是否开启，生成设置都会保存在文件中。",
       storageDescription: "打开一个类别即可按大小从大到小查看文件，并删除不再需要的内容。",
       storageUsed: "资料库已使用 {size}",
       storageDisk: "此磁盘可用 {free}，共 {total}",

@@ -912,7 +912,7 @@ export const it = {
       storageSection: "Spazio",
       downloadsSection: "Download delle immagini",
       imageInfoStamp: "Timbro informativo",
-      imageInfoStampDescription: "Mostra modello, data e seed in fondo alle immagini scaricate. Le impostazioni di generazione vengono salvate nel file in ogni caso.",
+      imageInfoStampDescription: "Mostra modello, data e seed in fondo alle immagini scaricate dalla pagina Immagini. Le impostazioni di generazione vengono salvate nel file in ogni caso.",
       storageDescription: "Apri una categoria per vedere i file dal più grande e elimina ciò che non ti serve più.",
       storageUsed: "{size} usati dalla Libreria",
       storageDisk: "{free} liberi su {total} in questo disco",

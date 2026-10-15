@@ -1004,7 +1004,7 @@ export const ar = {
       storageSection: "التخزين",
       downloadsSection: "تنزيلات الصور",
       imageInfoStamp: "ختم المعلومات",
-      imageInfoStampDescription: "عرض النموذج والتاريخ والبذرة أسفل الصور التي تنزّلها. تُحفظ إعدادات التوليد داخل الملف في كلتا الحالتين.",
+      imageInfoStampDescription: "عرض النموذج والتاريخ والبذرة أسفل الصور التي تنزّلها من صفحة الصور. تُحفظ إعدادات التوليد داخل الملف في كلتا الحالتين.",
       storageDescription: "افتح فئة لرؤية ملفاتها من الأكبر حجمًا، واحذف ما لم تعد تحتاجه.",
       storageUsed: "تستخدم المكتبة {size}",
       storageDisk: "{free} متاحة من {total} على هذا القرص",

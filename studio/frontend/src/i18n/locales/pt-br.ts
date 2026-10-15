@@ -1007,7 +1007,7 @@ export const ptBR = {
       storageSection: "Armazenamento",
       downloadsSection: "Downloads de imagens",
       imageInfoStamp: "Selo de informações",
-      imageInfoStampDescription: "Mostra o modelo, a data e a seed na parte inferior das imagens baixadas. As configurações de geração são salvas dentro do arquivo de qualquer forma.",
+      imageInfoStampDescription: "Mostra o modelo, a data e a seed na parte inferior das imagens baixadas pela página Imagens. As configurações de geração são salvas dentro do arquivo de qualquer forma.",
       storageDescription: "Abra uma categoria para ver os arquivos do maior para o menor e exclua o que não precisa mais.",
       storageUsed: "{size} usados pela Biblioteca",
       storageDisk: "{free} livres de {total} neste disco",

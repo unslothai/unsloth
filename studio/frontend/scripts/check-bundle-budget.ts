@@ -149,10 +149,10 @@ export const BUDGET = {
   // chunk (Rollup split react-dom out), so it is imported statically and the budget raised by that growth.
   // Main measured 3,453 B raw / 1,055 B transfer over at d218abfc24 (6,778,350 B raw, 2,037,876 B transfer,
   // one machine and build, Node 24, chunk count unchanged at 95). The Image downloads > Info stamp row in
-  // Settings > Library, its search entry and strings (#13444) add 327 B raw / 113 B transfer to the eager
-  // settings and English locale chunks (-> 6,778,677 B raw, 2,037,989 B transfer). Set to the measured build.
-  transferBytes: 2_037_989,
-  rawBytes: 6_778_677,
+  // Settings > Library, its search entry and strings (#13444) add 348 B raw / 135 B transfer to the eager
+  // settings and English locale chunks (-> 6,778,698 B raw, 2,038,011 B transfer). Set to the measured build.
+  transferBytes: 2_038_011,
+  rawBytes: 6_778_698,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

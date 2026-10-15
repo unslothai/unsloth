@@ -1008,7 +1008,7 @@ export const hi = {
       storageSection: "स्टोरेज",
       downloadsSection: "इमेज डाउनलोड",
       imageInfoStamp: "जानकारी स्टैम्प",
-      imageInfoStampDescription: "डाउनलोड की गई इमेज के नीचे मॉडल, तारीख और सीड दिखाएँ। जनरेशन सेटिंग्स हर हाल में फ़ाइल के अंदर सहेजी जाती हैं।",
+      imageInfoStampDescription: "Images पेज से डाउनलोड की गई इमेज के नीचे मॉडल, तारीख और सीड दिखाएँ। जनरेशन सेटिंग्स हर हाल में फ़ाइल के अंदर सहेजी जाती हैं।",
       storageDescription: "किसी श्रेणी को खोलकर उसकी फ़ाइलें सबसे बड़ी से देखें, और जो ज़रूरी नहीं है उसे हटाएं।",
       storageUsed: "लाइब्रेरी {size} इस्तेमाल कर रही है",
       storageDisk: "इस डिस्क पर {total} में से {free} खाली",
