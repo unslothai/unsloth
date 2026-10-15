@@ -111,10 +111,10 @@ def test_official_repos_are_trusted():
 
 
 def test_generation_defaults():
-    # ComfyUI (comfy/supported_models.py Flux3) and the BFL reference: distilled euler 16 steps CFG 1, base 50 at 3.5.
+    # ComfyUI (comfy/supported_models.py Flux3) and the BFL reference: distilled 16 steps CFG 1 (edit template, BFL), base 25 at 3.5 (CFG template).
     assert default_generation_params(DISTILLED) == (16, 1.0)
-    assert default_generation_params(BASE) == (50, 3.5)
-    assert default_generation_params("flux3_klein_base_bf16.safetensors") == (50, 3.5)
+    assert default_generation_params(BASE) == (25, 3.5)
+    assert default_generation_params("flux3_klein_base_bf16.safetensors") == (25, 3.5)
     assert default_generation_params("black-forest-labs/FLUX.2-klein-4B") == (4, 1.0)
 
 
@@ -333,3 +333,44 @@ def test_the_memory_plan_prices_component_folders_only(tmp_path):
         tmp_path, exclude_transformer = False, load_dtype = torch.bfloat16
     )
     assert sizes == {"transformer/diffusion_pytorch_model.safetensors": 200}
+
+
+def test_references_are_resized_to_one_megapixel_like_comfyui():
+    from PIL import Image
+
+    from core.inference.diffusion_flux3 import resize_reference
+
+    # ComfyUI ReferenceMultiLatent ["resize", 1]: round(side * sqrt(2**20 / (w * h))), up or down.
+    assert resize_reference(Image.new("RGB", (4000, 3000))).size == (1182, 887)
+    assert resize_reference(Image.new("RGB", (512, 512))).size == (1024, 1024)
+    same = Image.new("RGB", (1024, 1024))
+    assert resize_reference(same) is same
+
+
+def test_reference_noise_is_the_bfl_layout():
+    torch = pytest.importorskip("torch")
+    from core.inference.diffusion_flux3 import reference_noise
+
+    noise = reference_noise(7, 64, 96)
+    assert noise.shape == (1, 128, 4, 6) and noise.dtype == torch.bfloat16
+    tokens = torch.randn((4 * 6, 128), generator = torch.Generator().manual_seed(7)).to(torch.bfloat16)
+    # Token (row r, col c) is channel vector noise[0, :, r, c].
+    assert torch.equal(noise[0, :, 1, 2], tokens[1 * 6 + 2])
+
+
+def test_a_seeded_sized_call_gets_reference_noise_and_resized_references():
+    torch = pytest.importorskip("torch")
+    from PIL import Image
+
+    face = _Face()
+    gen = torch.Generator().manual_seed(5)
+    face(prompt = "a", height = 64, width = 32, generator = gen, num_inference_steps = 1,
+         image = [Image.new("RGB", (2048, 2048)), Image.new("RGB", (256, 128))])
+    call = face.mp.calls[-1]
+    assert call["latents"].shape == (1, 128, 4, 2)
+    assert [im.size for im in call["image"]] == [(1024, 1024), (1448, 724)]
+    # No size (the blocks pick it) or several images per generator: diffusers draws the noise.
+    face(prompt = "a", generator = gen, num_inference_steps = 1)
+    assert "latents" not in face.mp.calls[-1]
+    face(prompt = "a", height = 64, width = 32, generator = gen, num_images_per_prompt = 2, num_inference_steps = 1)
+    assert "latents" not in face.mp.calls[-1]

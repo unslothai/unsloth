@@ -1584,11 +1584,12 @@ _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("kontext", 20, 2.5),  # editing: before the generic flux.1
     ("flux.1", 20, 3.5),
     ("flux1", 20, 3.5),
-    # FLUX.3 Image Klein (ComfyUI and the BFL reference): the undistilled base runs 50 steps at CFG 3.5, the flow-map
-    # distilled checkpoint 16 steps with no CFG. Base first.
-    ("flux-3-image-klein-base", 50, 3.5),
-    ("flux3-image-klein-base", 50, 3.5),
-    ("flux3-klein-base", 50, 3.5),
+    # FLUX.3 Image Klein, ComfyUI's templates (Comfy-Org/workflow_templates): the base's CFG template is 25 steps at
+    # 3.5 (euler / simple); the distilled flow-map checkpoint 16 steps at CFG 1 (the edit template and the BFL
+    # reference; the t2i template's 15-step er_sde is a sampler this backend does not run). Base first.
+    ("flux-3-image-klein-base", 25, 3.5),
+    ("flux3-image-klein-base", 25, 3.5),
+    ("flux3-klein-base", 25, 3.5),
     ("flux-3-image-klein", 16, 1.0),
     ("flux3-image-klein", 16, 1.0),
     ("flux3-klein", 16, 1.0),

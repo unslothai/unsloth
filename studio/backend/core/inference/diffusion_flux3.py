@@ -108,6 +108,51 @@ class _Flux3Interrupted(Exception):
     """Raised out of the denoise loop when the step callback set ``_interrupt``."""
 
 
+# Each reference is scaled to this area before the VAE, aspect kept, Lanczos: ComfyUI's
+# ``ReferenceMultiLatent`` with the templates' ``["resize", 1]`` (1.0 megapixels), and the BFL
+# reference's multi-reference rule (each <= 1 MiP). Diffusers alone only downsizes above 16 MiP, so
+# a phone photo would otherwise be encoded at full size. The 16-px grid crop stays with the blocks.
+REFERENCE_AREA = 1024 * 1024
+
+
+def resize_reference(image: Any) -> Any:
+    """``image`` at ~1 MiP, aspect kept (ComfyUI: ``round(side * sqrt(area / (w * h)))``, Lanczos)."""
+    import math
+
+    from PIL import Image
+
+    width, height = image.size
+    scale = math.sqrt(REFERENCE_AREA / float(max(1, width * height)))
+    size = (max(1, round(width * scale)), max(1, round(height * scale)))
+    if size == (width, height):
+        return image
+    return image.resize(size, Image.LANCZOS)
+
+
+def reference_noise(seed: int, height: int, width: int):
+    """The BFL reference's initial noise as the blocks' (1, 128, h, w) latent.
+
+    The reference draws ``randn((h * w, 128))`` row-major on a CPU generator and rounds it to bf16;
+    diffusers draws ``(B, 128, h, w)`` on the request's generator. Same seed, different image. This
+    makes a Studio seed render what the BFL CLI renders for that seed (verified against its outputs),
+    on any device."""
+    import torch
+
+    h, w = height // 16, width // 16
+    tokens = torch.randn((h * w, 128), generator = torch.Generator().manual_seed(int(seed)))
+    return tokens.to(torch.bfloat16).reshape(h, w, 128).permute(2, 0, 1)[None].contiguous()
+
+
+def _generator_seed(generator: Any) -> Optional[int]:
+    initial_seed = getattr(generator, "initial_seed", None)
+    if not callable(initial_seed):
+        return None
+    try:
+        return int(initial_seed())
+    except Exception:  # noqa: BLE001 -- a generator without a readable seed keeps diffusers' draw
+        return None
+
+
 _PIPELINE_CLASS: Optional[type] = None
 
 
@@ -242,13 +287,19 @@ class _Flux3KleinPipelineMixin:
                 if one_generator is not None:
                     kwargs["generator"] = one_generator
                 if image is not None:
-                    kwargs["image"] = list(image) if isinstance(image, (list, tuple)) else image
+                    refs = list(image) if isinstance(image, (list, tuple)) else [image]
+                    refs = [resize_reference(ref) for ref in refs]
+                    kwargs["image"] = refs if len(refs) > 1 else refs[0]
                 if height is not None:
                     kwargs["height"] = int(height)
                 if width is not None:
                     kwargs["width"] = int(width)
                 if latents is not None:
                     kwargs["latents"] = latents
+                elif per_prompt == 1 and height is not None and width is not None:
+                    seed = _generator_seed(one_generator)
+                    if seed is not None:
+                        kwargs["latents"] = reference_noise(seed, int(height), int(width))
                 if negative_prompt is not None and not self.is_distilled:
                     kwargs["negative_prompt"] = negative_prompt
                 with self._step_hooks(
