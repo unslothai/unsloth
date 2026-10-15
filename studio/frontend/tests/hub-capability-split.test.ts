@@ -20,6 +20,12 @@ test("video models are video gen, image models image gen", () => {
   assert.deepEqual(generationKinds(["diffusers"], "text-to-image", "black-forest-labs/FLUX.1-dev"), { image: true, video: false });
   // A video family named without a video tag still counts as video.
   assert.equal(generationKinds(["diffusers"], undefined, "tencent/HunyuanVideo").video, true);
+  // MiniMax-H3's pipeline, which the Video page runs.
+  assert.deepEqual(generationKinds(["diffusers"], "image-text-to-video", "MiniMaxAI/MiniMax-H3"), { image: false, video: true });
+  assert.deepEqual(
+    detectCapabilities([], "image-text-to-video", "MiniMaxAI/MiniMax-H3").find((c) => c.key === "diffusion"),
+    { key: "diffusion", label: "Video gen" },
+  );
   // A generator with no signal either way is taken for an image model.
   assert.deepEqual(generationKinds(["diffusers"], undefined, "someone/custom-gen"), { image: true, video: false });
 });

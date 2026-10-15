@@ -43,6 +43,7 @@ export const HUB_CAPABILITY_FILTERS: readonly HubCapabilityFilter[] = [
 const VIDEO_GEN_TAGS = new Set([
   "text-to-video",
   "image-to-video",
+  "image-text-to-video",
   "video-to-video",
 ]);
 const VIDEO_GEN_ID_RE =
@@ -128,6 +129,7 @@ const DIFFUSION_TAGS = new Set([
   "image-to-image",
   "text-to-video",
   "image-to-video",
+  "image-text-to-video",
   "unconditional-image-generation",
 ]);
 
