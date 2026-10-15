@@ -1396,9 +1396,7 @@ def LlamaModel_fast_forward(
             self.config.max_position_embeddings,
             materialize_len = rope_rows,
         )
-        position_embeddings = self.rotary_emb.get_cached(
-            self.config.max_position_embeddings, hidden_states.device.index
-        )
+        position_embeddings = self.rotary_emb.get_cached(rope_rows, hidden_states.device.index)
     else:
         position_embeddings = None
 
@@ -2188,6 +2186,8 @@ class _PerDeviceRopeCache:
         seq_len = None,
         device_index = None,
     ):
+        if seq_len is not None:
+            self._need_rope_rows(seq_len)
         device_index = self._ensure_rope_cache(device_index)
         return self.multi_gpu_cos_cached[device_index], self.multi_gpu_sin_cached[device_index]
 

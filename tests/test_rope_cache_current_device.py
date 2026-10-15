@@ -141,7 +141,7 @@ def test_model_forward_extend_builds_needed_rows_on_one_device():
     # Size and dtype move exactly as the eager extend left them.
     assert rope.current_rope_size == max_position
     assert _built(rope.multi_gpu_cos_cached) == [1]
-    cos, sin = rope.get_cached(max_position, 1)
+    cos, sin = rope.get_cached(40000, 1)
     # 40000 rounded up to the 8192 growth step, not 1M rows.
     assert cos.shape[0] == 40960
     assert cos.dtype == torch.float16
@@ -163,6 +163,18 @@ def test_extend_grows_used_device_and_stale_peers_rebuild_lazily():
     ref_cos, ref_sin = _reference(57344, torch.float16)
     assert torch.equal(cos, ref_cos) and torch.equal(sin, ref_sin)
     assert _built(rope.multi_gpu_cos_cached) == [0, 3]
+
+
+def test_get_cached_materialises_the_length_it_is_asked_for():
+    # Gemma2 / Cohere decode steps read get_cached(kv_seq_len) with no extend first, past the rows
+    # the model forward built for max_seq_length.
+    rope = _llama(1 << 17)
+    rope.extend_rope_embedding(_x(0), 1 << 17, materialize_len = 2048)
+    assert rope.multi_gpu_cos_cached[0].shape[0] == 4 * 8192
+    cos, sin = rope.get_cached(40000, 0)
+    assert cos.shape[0] >= 40000
+    ref_cos, ref_sin = _reference(cos.shape[0])
+    assert torch.equal(cos, ref_cos) and torch.equal(sin, ref_sin)
 
 
 def test_forward_builds_only_input_device():
