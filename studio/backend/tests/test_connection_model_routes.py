@@ -929,3 +929,39 @@ def test_messages_keep_default_thinking_out_of_the_stop_filter(v1, monkeypatch):
     assert [b["type"] for b in blocks] == ["thinking", "text"]
     assert blocks[1]["text"] == "answer"
     assert message["stop_reason"] == "end_turn"
+
+
+@pytest.mark.parametrize("stream", [True, False])
+def test_chat_completions_move_native_thinking_to_reasoning_content(v1, monkeypatch, stream):
+    import routes.inference as inf
+
+    monkeypatch.setattr(
+        inf, "ExternalProviderClient", _content_stream("<think>pl", "an</think>ans", "wer")
+    )
+    body = {"model": CONNECTION_MODEL, "messages": [{"role": "user", "content": "hi"}]}
+    resp = v1.post("/v1/chat/completions", json = {**body, "stream": stream})
+
+    assert resp.status_code == 200, resp.text
+    if stream:
+        chunks = _sse(resp.text.replace("data: [DONE]", ""))
+        deltas = [c["choices"][0]["delta"] for c in chunks if c.get("choices")]
+        reasoning = "".join(d.get("reasoning_content") or "" for d in deltas)
+        content = "".join(d.get("content") or "" for d in deltas)
+    else:
+        message = resp.json()["choices"][0]["message"]
+        reasoning, content = message.get("reasoning_content"), message["content"]
+    assert (reasoning, content) == ("plan", "answer")
+
+
+def test_responses_move_default_thinking_out_of_the_answer(v1, monkeypatch):
+    # No reasoning controls sent, yet the provider thinks by default.
+    import routes.inference as inf
+
+    monkeypatch.setattr(
+        inf, "ExternalProviderClient", _content_stream("<think>plan</think>", "answer")
+    )
+    body = v1.post("/v1/responses", json = {"model": CONNECTION_MODEL, "input": "hi"}).json()
+
+    message = next(item for item in body["output"] if item["type"] == "message")
+    assert message["content"][0]["text"] == "answer"
+    assert any(item["type"] == "reasoning" for item in body["output"])

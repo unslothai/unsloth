@@ -30735,6 +30735,43 @@ async def _relay_recording_tool_extras(chunks, subject: Optional[str]):
         await chunks.aclose()
 
 
+async def _relay_split_thinking(chunks):
+    """Native thinking arrives as <think> markup in content (the Studio chat's form); OpenAI clients
+    read it from reasoning_content."""
+    think = _ResponsesReasoningExtractor(parse_think_markers = True)
+    lines = _sse_data_lines(chunks)
+    try:
+        async for line in lines:
+            data = line[len("data:") :].strip() if line.startswith("data:") else ""
+            if data and data != "[DONE]" and '"choices"' in data:
+                try:
+                    chunk = json.loads(data)
+                except ValueError:
+                    chunk = None
+                if isinstance(chunk, dict):
+                    for choice in chunk.get("choices") or []:
+                        delta = choice.get("delta") if isinstance(choice, dict) else None
+                        if not isinstance(delta, dict):
+                            continue
+                        reasoning, text = think.feed(
+                            delta.get("content") if isinstance(delta.get("content"), str) else "",
+                            delta.get("reasoning_content"),
+                        )
+                        if choice.get("finish_reason"):
+                            tail_reasoning, tail_text = think.finish()
+                            reasoning, text = reasoning + tail_reasoning, text + tail_text
+                        delta.pop("reasoning_content", None)
+                        delta.pop("content", None)
+                        if text:
+                            delta["content"] = text
+                        if reasoning:
+                            delta["reasoning_content"] = reasoning
+                    line = "data: " + json.dumps(chunk)
+            yield line + "\n"
+    finally:
+        await lines.aclose()
+
+
 async def _chat_completion_from_connection_stream(response: StreamingResponse, model: str):
     lines = _sse_data_lines(response.body_iterator)
     try:
@@ -30839,7 +30876,9 @@ async def openai_chat_completions(
     )
     if connection is None or not isinstance(response, StreamingResponse):
         return response
-    response.body_iterator = _relay_recording_tool_extras(response.body_iterator, current_subject)
+    response.body_iterator = _relay_split_thinking(
+        _relay_recording_tool_extras(response.body_iterator, current_subject)
+    )
     if collect:
         return await _chat_completion_from_connection_stream(response, payload.model)
     return response
@@ -39664,9 +39703,9 @@ async def _responses_stream(
         # From the chat chunks; applied once before finish, so chunk order does not matter.
         stream_finish_reason: Optional[str] = None
         extractor = _ResponsesReasoningExtractor(
-            parse_think_markers = _responses_should_parse_think_markers(
-                chat_req, None if upstream is not None else llama_backend
-            ),
+            # A Connection's native thinking arrives as <think> markup even when thinking is on by default.
+            parse_think_markers = upstream is not None
+            or _responses_should_parse_think_markers(chat_req, llama_backend),
             single_block = _response_format_constrains_decoding(chat_req),
         )
         reasoning_state: dict[str, Any] = {"output_index": None, "item_id": None, "opened": False}
