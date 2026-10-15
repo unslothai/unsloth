@@ -82,9 +82,17 @@ def _is_linear_leaf(module):
     return _linear_size(module) is not None
 
 
+def _model_config(model):
+    """The HF config; a SentenceTransformer keeps it on its first module's auto_model."""
+    config = getattr(model, "config", None)
+    if config is None and isinstance(model, torch.nn.Sequential) and len(model) > 0:
+        config = getattr(getattr(model[0], "auto_model", None), "config", None)
+    return config
+
+
 def _expert_fractions(model):
     """id(linear) -> share of tokens routed to it, for experts kept as a ModuleList of linears."""
-    config = _text_config(getattr(model, "config", None))
+    config = _text_config(_model_config(model))
     default_top_k = getattr(config, "num_experts_per_tok", None)
     fractions = {}
     for module in model.modules():
@@ -155,7 +163,7 @@ def _inactive_leaves(model):
 
 def _non_text_leaves(model):
     """ids of modules outside the text decoder and head of a multimodal model."""
-    config = getattr(model, "config", None)
+    config = _model_config(model)
     if config is None or _text_config(config) is config:
         return set()
     try:
@@ -410,7 +418,7 @@ class UnslothMFUCallback(TrainerCallback):
     ):
         if model is None:
             return
-        config = getattr(model, "config", None)
+        config = _model_config(model)
         # One length per sequence cannot describe separate source and target lengths.
         self._enabled = not getattr(config, "is_encoder_decoder", False)
         if not self._enabled:
@@ -433,8 +441,11 @@ class UnslothMFUCallback(TrainerCallback):
         self._devices = [index for index in devices if index is not None]
         if self.peak_tflops is None:
             dtype = _training_dtype(model, args)
+            # A model off the GPU (use_cpu) has no GPU peak; only UNSLOTH_PEAK_TFLOPS describes it.
             peaks = [get_peak_tflops(index, dtype) for index in devices] or [
                 get_peak_tflops(None, dtype)
+                if os.environ.get("UNSLOTH_PEAK_TFLOPS", "").strip()
+                else None
             ]
             if all(peaks):
                 self.peak_tflops = sum(peaks) / len(peaks)

@@ -512,3 +512,32 @@ def test_mla_attention_uses_separate_qk_and_value_dims():
         v_head_dim = 128,
     )
     assert mfu.count_attention_flops_per_pair(config) == 3 * 2 * 2 * 4 * (192 + 128)
+
+
+def test_sentence_transformer_attention_uses_the_inner_config():
+    # SentenceTransformer is an nn.Sequential whose first module holds the HF model as auto_model.
+    inner = _model()
+    wrapper = torch.nn.Sequential(torch.nn.Module())
+    wrapper[0].auto_model = inner
+    plain = mfu.UnslothMFUCallback(peak_tflops = 1)
+    plain.on_train_begin(None, _State(), None, model = inner)
+    wrapped = mfu.UnslothMFUCallback(peak_tflops = 1)
+    wrapped.on_train_begin(None, _State(), None, model = wrapper)
+    assert wrapped._attention_per_pair == plain._attention_per_pair > 0
+    plain.on_train_end(None, None, None)
+    wrapped.on_train_end(None, None, None)
+
+
+def test_model_off_the_gpu_takes_no_gpu_peak(monkeypatch):
+    monkeypatch.delenv("UNSLOTH_PEAK_TFLOPS", raising = False)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "get_device_name", lambda device = None: "NVIDIA H100 80GB HBM3")
+    callback = mfu.UnslothMFUCallback()
+    callback.on_train_begin(None, _State(), None, model = _model())
+    assert callback.peak_tflops is None and callback._devices == []
+    callback.on_train_end(None, None, None)
+    monkeypatch.setenv("UNSLOTH_PEAK_TFLOPS", "100")
+    callback = mfu.UnslothMFUCallback()
+    callback.on_train_begin(None, _State(), None, model = _model())
+    assert callback.peak_tflops == 100
+    callback.on_train_end(None, None, None)
