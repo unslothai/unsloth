@@ -83,7 +83,6 @@ def _sse(delta = None, finish = None) -> bytes:
 @pytest.mark.parametrize("provider", ["llama_cpp", "vllm", "custom"])
 @pytest.mark.parametrize("preserve", [True, False, None])
 def test_tool_round_thinking_reaches_the_next_request(monkeypatch, provider, preserve):
-    # The template renders this turn's earlier tool rounds inside <think> whatever preserve_thinking says.
     call = {
         "index": 0,
         "id": "c1",
