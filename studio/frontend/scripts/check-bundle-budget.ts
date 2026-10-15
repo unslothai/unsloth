@@ -133,12 +133,26 @@ export const BUDGET = {
   // The "Only show models that fit" Settings row adds 289 B raw / 77 B transfer (6,771,372 -> 6,771,661 B raw,
   // 2,035,798 -> 2,035,875 B transfer against 52a3fbefe, 95 chunks, identical under Node 22.22.2 and 24). Main
   // already measured 111 B raw / 54 B transfer over the previous limits, so they are set to the measured build.
-  // The Image downloads > Info stamp row in Settings > Library, its search entry and strings (#13444) add
-  // 327 B raw / 95 B transfer to the eager settings and English locale chunks (6,771,658 -> 6,771,985 B raw,
-  // 2,035,910 -> 2,036,005 B transfer against ffa8fc3b9e, one machine and build, Node 24, chunk count unchanged
-  // at 95). Main measured 35 B transfer over there already, so both are set to the measured merged build.
-  transferBytes: 2_036_005,
-  rawBytes: 6_771_988,
+  // Main was 48 B raw / 29 B transfer over at ffa8fc3b9 (6,771,709 B raw, 2,035,904 B transfer). The browser
+  // panel's notice for pages that hit a sandbox limit (#13761) adds 143 B raw / 44 B transfer (-> 6,771,852 B raw,
+  // 2,035,948 B transfer, one machine and build, Node 24, chunk count unchanged at 95). Raised by both.
+  // Keeping site storage across browser panel pages (#13762) adds 1,644 B raw / 466 B transfer, the page-storage
+  // module the eager browser store imports for tab close and duplicate (6,771,852 -> 6,773,496 B raw, 2,035,948 ->
+  // 2,036,414 B transfer against 82f16ca55, one machine and build, Node 24, chunk count unchanged at 95). Raised by
+  // that growth.
+  // Hub Run refusing audio models neither Audio nor chat can run (#13812) adds 77 B raw / 65 B transfer
+  // (6,773,445 -> 6,773,522 B raw, 2,036,392 -> 2,036,457 B transfer against 59ab069b5, one machine and build,
+  // Node 24, chunk count unchanged at 95). Raised by that growth.
+  // The Windows Desktop install location row on the first-run screen (#13446) adds 1,324 B raw / 342 B
+  // transfer (6,773,496 -> 6,774,820 B raw, 2,036,386 -> 2,036,728 B transfer against 59ab069b5, one machine
+  // and build, Node 24, chunk count unchanged at 95). Lazy-loading it cost more transfer and a 96th startup
+  // chunk (Rollup split react-dom out), so it is imported statically and the budget raised by that growth.
+  // Main measured 3,453 B raw / 1,055 B transfer over at d218abfc24 (6,778,350 B raw, 2,037,876 B transfer,
+  // one machine and build, Node 24, chunk count unchanged at 95). The Image downloads > Info stamp row in
+  // Settings > Library, its search entry and strings (#13444) add 327 B raw / 113 B transfer to the eager
+  // settings and English locale chunks (-> 6,778,677 B raw, 2,037,989 B transfer). Set to the measured build.
+  transferBytes: 2_037_989,
+  rawBytes: 6_778_677,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

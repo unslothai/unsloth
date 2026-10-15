@@ -261,7 +261,7 @@ export const es = {
     annotationScreenshotsAlways: "Incluir siempre",
     annotationScreenshotsNever: "No incluir nunca",
     clearDataSetting: "Borrar datos de navegación",
-    clearDataSettingDescription: "Borra el historial de navegación, el historial de descargas y las páginas en caché. Las páginas no guardan cookies ni datos de sitios.",
+    clearDataSettingDescription: "Borra el historial de navegación, el historial de descargas y las páginas en caché. Las páginas guardan cookies y datos de sitios solo hasta que se recarga Studio.",
     manage: "Administrar",
     fullView: {
       enter: "Vista completa",
@@ -437,7 +437,7 @@ export const es = {
     },
     clearData: {
       title: "¿Borrar datos de navegación?",
-      description: "Se borrarán tu historial de navegación, el historial de descargas y las páginas en caché. Los archivos descargados se quedan en tu equipo.",
+      description: "Esto borra el historial de navegación, el historial de descargas, las páginas en caché y las cookies y datos de sitios, lo que cierra tu sesión en los sitios. Los archivos descargados se quedan en tu equipo.",
       cancel: "Cancelar",
       confirm: "Borrar datos",
       done: "Datos de navegación borrados",
@@ -453,6 +453,7 @@ export const es = {
       resubmit: "Esta página proviene de un formulario. Volver a cargarla envía el formulario de nuevo, lo que podría repetir lo que hizo.",
       upload: "Las subidas de archivos no funcionan en esta vista. Abre la página en el navegador del sistema para enviarla.",
       scriptNavigation: "Esta página intentó ir a otra dirección mediante un script, algo que esta vista no puede seguir. Ábrela en el navegador del sistema.",
+      needsBrowser: "Esta página intentó usar una función del navegador que esta vista bloquea, así que puede que partes de ella no funcionen. Ábrela en el navegador del sistema.",
     },
     native: {
       externalPrompt: "{host} quiere abrir {url}",
@@ -1748,6 +1749,19 @@ export const es = {
         apiOnly: "Liberar solo los modelos cargados por la API",
         apiOnlyDescription:
           "La liberación por inactividad mantiene en memoria el modelo que cargaste desde Unsloth y solo libera los que cargó una solicitud a la API.",
+      },
+      modelAliases: {
+        sectionTitle: "Alias de modelos (OpenAI API)",
+        description:
+          "Nombres estables para clientes de la API, como fast-chat o code. Una solicitud que nombra un alias la atiende el modelo al que apunta, así las apps conectadas siguen funcionando cuando cambias de modelo. Activa Cambiar de modelo según la solicitud para que un alias pueda cargar el modelo al que apunta.",
+        namePlaceholder: "fast-chat",
+        nameAriaLabel: "Nombre del alias",
+        modelAriaLabel: "Modelo al que apunta el alias",
+        modelPlaceholder: "unsloth/Qwen3-4B-GGUF:Q4_K_M",
+        removeAriaLabel: "Quitar alias",
+        add: "Añadir alias",
+        loadError: "No se pudieron cargar los alias de modelos.",
+        saveError: "No se pudieron guardar los alias de modelos.",
       },
       previewSharing: {
         sectionTitle: "Compartir vista previa",

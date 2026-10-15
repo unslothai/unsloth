@@ -488,6 +488,7 @@ def get_dataset_info_summary(dataset_info):
         "sharegpt": "ShareGPT format (needs standardization)",
         "chatml_messages": "ChatML format (messages column) - OpenAI compatible",
         "chatml_conversations": "ChatML format (conversations column) - HuggingFace standard",
+        "pretokenized": "Pre-tokenized (input_ids / labels)",
         "unknown": "Unknown format"
     }
 

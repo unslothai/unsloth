@@ -56,6 +56,11 @@ def _params_text(meta: dict[str, Any]) -> str:
         lines.append(f"Negative prompt: {negative}")
     from core.inference.diffusion_sampler import sampler_label, schedule_label
 
+    if meta.get("model_kind") == "connection":
+        lines.append(
+            f"Size: {meta.get('width')}x{meta.get('height')}, Model: {meta.get('model', '')}"
+        )
+        return "\n".join(lines)
     sampler = sampler_label(meta.get("sampler"))
     schedule = schedule_label(meta.get("schedule_type"))
     fields = (

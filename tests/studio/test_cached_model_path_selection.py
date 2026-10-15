@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Variant-file selection guards for the cached-model-path endpoint.
-
-The Copy path / Reveal endpoint must resolve a quant label to the same file
-the variant menus offer: MTP drafters, mmproj vision adapters, and big-endian
-builds are excluded, and directory layouts (``BF16/model-00001-of-....gguf``)
-resolve their label from the snapshot-relative path, not the basename.
-"""
+"""The Copy/Reveal endpoint resolves a quant label to the same file the variant menus offer."""
 
 from __future__ import annotations
 

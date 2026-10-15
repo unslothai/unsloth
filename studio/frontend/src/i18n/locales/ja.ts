@@ -262,7 +262,7 @@ export const ja = {
     annotationScreenshotsAlways: "常に含める",
     annotationScreenshotsNever: "含めない",
     clearDataSetting: "閲覧データを消去",
-    clearDataSettingDescription: "閲覧履歴、ダウンロード履歴、キャッシュされたページを消去します。ページには Cookie やサイトデータは保存されません。",
+    clearDataSettingDescription: "閲覧履歴、ダウンロード履歴、キャッシュされたページを消去します。ページの Cookie やサイトデータは Studio を再読み込みするまでのみ保持されます。",
     manage: "管理",
     fullView: {
       enter: "全画面表示",
@@ -438,7 +438,7 @@ export const ja = {
     },
     clearData: {
       title: "閲覧データを消去しますか？",
-      description: "閲覧履歴、ダウンロード履歴、キャッシュされたページを消去します。ダウンロードしたファイルはコンピュータに残ります。",
+      description: "閲覧履歴、ダウンロード履歴、キャッシュされたページ、サイトの Cookie とデータを消去し、サイトからログアウトします。ダウンロードしたファイルはコンピューターに残ります。",
       cancel: "キャンセル",
       confirm: "データを消去",
       done: "閲覧データを消去しました",
@@ -454,6 +454,7 @@ export const ja = {
       resubmit: "このページはフォーム送信の結果です。再読み込みするとフォームが再送信され、同じ操作が繰り返される可能性があります。",
       upload: "この表示ではファイルをアップロードできません。送信するにはシステムのブラウザでページを開いてください。",
       scriptNavigation: "このページはスクリプトで別のアドレスに移動しようとしましたが、この表示では追従できません。システムのブラウザで開いてください。",
+      needsBrowser: "このページはこの表示でブロックされるブラウザ機能を使おうとしたため、一部が動作しない可能性があります。システムのブラウザで開いてください。",
     },
     native: {
       externalPrompt: "{host} が {url} を開こうとしています",
@@ -1727,6 +1728,19 @@ export const ja = {
         apiOnly: "API が読み込んだモデルのみアンロード",
         apiOnlyDescription:
           "アイドル時の自動アンロードでは、Unsloth から自分で読み込んだモデルはメモリに残し、API リクエストが読み込んだモデルだけを解放します。",
+      },
+      modelAliases: {
+        sectionTitle: "モデルエイリアス (OpenAI API)",
+        description:
+          "fast-chat や code のような、API クライアント向けの固定名です。エイリアスを指定したリクエストは、そのエイリアスが指すモデルで処理されるため、モデルを入れ替えても接続中のアプリはそのまま動きます。エイリアスがモデルを読み込めるよう、リクエストごとにモデルを切り替えをオンにしてください。",
+        namePlaceholder: "fast-chat",
+        nameAriaLabel: "エイリアス名",
+        modelAriaLabel: "エイリアスが指すモデル",
+        modelPlaceholder: "unsloth/Qwen3-4B-GGUF:Q4_K_M",
+        removeAriaLabel: "エイリアスを削除",
+        add: "エイリアスを追加",
+        loadError: "モデルエイリアスを読み込めませんでした。",
+        saveError: "モデルエイリアスを保存できませんでした。",
       },
       previewSharing: {
         sectionTitle: "プレビュー共有",

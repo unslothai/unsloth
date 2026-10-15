@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-Present the Unsloth team. See /studio/LICENSE.AGPL-3.0
 
-"""The credential probe pushes a throwaway tag and must remove it again. Docker Hub
-rejects an organization access token on the legacy /v2/repositories/... routes
-with 403 whatever its scopes, and only the namespace-scoped routes accept it, so
-the delete step is run here with curl stubbed and its requests inspected.
-"""
+"""Docker Hub rejects org tokens on legacy /v2/repositories routes; delete via namespace routes."""
 
 from __future__ import annotations
 
@@ -34,7 +30,6 @@ def delete_step() -> str:
     return steps[0]
 
 
-# The stand-in for DOCKER_API_KEY, named so an assertion can look for it.
 SECRET = "not-a-secret"
 
 
@@ -51,12 +46,8 @@ def _run(
     (bin_dir / "curl").write_text(
         "#!/usr/bin/env bash\n"
         f"printf '%s\\n' \"$*\" >> {log}\n"
-        # The request body does not always travel in argv. #11511 moved the token
-        # request onto stdin (`--data-binary @-`) so the org secret stops showing up
-        # in the process list, and a stub that logs only "$*" then records a call
-        # whose payload is simply absent: every assertion about what was SENT passes
-        # vacuously or fails for the wrong reason. Read it where it actually is, and
-        # only when the arguments say there is one, since `cat` with no stdin hangs.
+        # The token request body is sent on stdin (--data-binary @-), so log it from there;
+        # only read stdin when that flag is present, since cat would hang.
         f"case \"$*\" in *'--data-binary @-'*) cat >> {log} ;; esac\n"
         'case "$*" in\n'
         f'  *auth/token*) printf \'{{"access_token": "{token}"}}\' ;;\n'
@@ -73,15 +64,7 @@ def _run(
     env.update(
         REGISTRY_USERNAME = "unsloth", IMAGE_NAME = "unsloth/unsloth", PROBE_TAG = "credential-probe"
     )
-    # Whatever the step declares in its own `env:`, bound here too. #11511 moved the
-    # secret out of the run body and into `env: DOCKER_API_KEY`, read with
-    # `os.environ`, so rewriting the body alone hands the script an environment it
-    # cannot run in and the request goes out with an empty payload.
-    # Only the secret this step is supposed to read is expanded. Standing in for any
-    # `secrets.*` would make the harness agree with a workflow that names the wrong
-    # one: `${{ secrets.TYPO }}` would still produce a valid payload here, while
-    # Actions would hand the real step an empty value. Anything else is left for the
-    # assertion below to reject by name.
+    # Bind the step's env: too; expand only the expected secret so a wrong name fails.
     for name, value in (step.get("env") or {}).items():
         env[name] = re.sub(r"\$\{\{\s*secrets\.DOCKER_API_KEY\s*\}\}", SECRET, str(value))
         assert "${{" not in env[name], (
@@ -111,8 +94,6 @@ def test_the_delete_uses_the_namespace_route_the_org_token_is_allowed_on(
     assert (
         "/v2/repositories/" not in log
     ), "the legacy route answers every organization token with 403"
-    # A non-empty body first: an empty request carries no identifier either, so the
-    # check below cannot otherwise tell the wrong identity from no request at all.
     assert (
         f'"secret": "{SECRET}"' in log
     ), "the token request carried no body, so this proves nothing about who it authenticates as"
@@ -133,19 +114,7 @@ def test_no_token_means_no_delete_and_a_failure(delete_step: dict, tmp_path: Pat
 
 
 def test_every_step_that_reads_the_key_is_given_the_key():
-    """Moving a secret out of the body means putting it into `env:`. Both halves.
-
-    Taking `${{ secrets.DOCKER_API_KEY }}` out of three `run:` bodies removed the key
-    from argv, which was the point, and left two of those steps reading
-    `os.environ["DOCKER_API_KEY"]` with nothing supplying it. Neither is exercised by a
-    pull request: the Hub README sync and the handle-tag cleanup run after a publish, so
-    the first sign would have been a released image whose page never updated and a set of
-    per-run tags that never got pruned, both reported as "could not exchange the key for
-    a token" -- a message that reads like an expired credential rather than a workflow
-    that forgot to pass one.
-
-    Derived by scanning, not listed, so a fourth site added later is covered too.
-    """
+    """Every workflow step that reads DOCKER_API_KEY from the environment must also be given it in env:."""
     offenders = []
     for path in sorted(WORKFLOW.parent.glob("docker-*.yml")):
         doc = yaml.safe_load(path.read_text(encoding = "utf-8"))
@@ -153,8 +122,6 @@ def test_every_step_that_reads_the_key_is_given_the_key():
             job_env = set(job.get("env") or {})
             for step in job.get("steps") or []:
                 body = step.get("run") or ""
-                # A read, not a mention. The verdict step names the key in a sentence it
-                # prints for a human, which needs no value.
                 reads = (
                     'os.environ["DOCKER_API_KEY"]' in body
                     or "$DOCKER_API_KEY" in body

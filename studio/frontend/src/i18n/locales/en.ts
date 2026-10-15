@@ -258,7 +258,7 @@ export const en = {
     annotationScreenshotsAlways: "Always include",
     annotationScreenshotsNever: "Never include",
     clearDataSetting: "Clear browsing data",
-    clearDataSettingDescription: "Clear browsing history, download history and cached pages. Pages keep no cookies or site data.",
+    clearDataSettingDescription: "Clear browsing history, download history and cached pages. Pages keep cookies and site data only until Studio is reloaded.",
     manage: "Manage",
     fullView: {
       enter: "Enter full view",
@@ -434,7 +434,7 @@ export const en = {
     },
     clearData: {
       title: "Clear browsing data?",
-      description: "This clears your browsing history, download history and cached pages. Downloaded files stay on your computer.",
+      description: "This clears your browsing history, download history, cached pages, and site cookies and data, which signs you out of sites. Downloaded files stay on your computer.",
       cancel: "Cancel",
       confirm: "Clear data",
       done: "Browsing data cleared",
@@ -450,6 +450,7 @@ export const en = {
       resubmit: "This page came from a form. Loading it again sends the form again, which could repeat what it did.",
       upload: "File uploads don't work in this view. Open the page in your system browser to send it.",
       scriptNavigation: "This page tried to go to another address by script, which this view can't follow. Open it in your system browser instead.",
+      needsBrowser: "This page tried to use a browser feature this view blocks, so parts of it may not work. Open it in your system browser instead.",
     },
     native: {
       externalPrompt: "{host} wants to open {url}",
@@ -1786,6 +1787,19 @@ export const en = {
         apiOnly: "Only unload models loaded by the API",
         apiOnlyDescription:
           "Idle unload leaves a model you loaded from Unsloth in memory, and frees only the ones an API request loaded.",
+      },
+      modelAliases: {
+        sectionTitle: "Model aliases (OpenAI API)",
+        description:
+          "Stable names for API clients, such as fast-chat or code. A request naming an alias is served by the model it points to, so connected apps keep working when you swap models. Turn on Switch model by request so an alias can load its model.",
+        namePlaceholder: "fast-chat",
+        nameAriaLabel: "Alias name",
+        modelAriaLabel: "Model the alias points to",
+        modelPlaceholder: "unsloth/Qwen3-4B-GGUF:Q4_K_M",
+        removeAriaLabel: "Remove alias",
+        add: "Add alias",
+        loadError: "Failed to load model aliases.",
+        saveError: "Failed to save model aliases.",
       },
       previewSharing: {
         sectionTitle: "Preview sharing",

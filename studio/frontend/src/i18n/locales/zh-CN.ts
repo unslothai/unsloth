@@ -261,7 +261,7 @@ export const zhCN = {
     annotationScreenshotsAlways: "始终附带",
     annotationScreenshotsNever: "从不附带",
     clearDataSetting: "清除浏览数据",
-    clearDataSettingDescription: "清除浏览历史记录、下载历史记录和缓存的页面。页面不会保留任何 Cookie 或网站数据。",
+    clearDataSettingDescription: "清除浏览历史记录、下载历史记录和缓存的页面。页面仅在重新加载 Studio 之前保留 Cookie 和网站数据。",
     manage: "管理",
     fullView: {
       enter: "全屏视图",
@@ -437,7 +437,7 @@ export const zhCN = {
     },
     clearData: {
       title: "清除浏览数据？",
-      description: "这将清除你的浏览历史记录、下载历史记录和缓存的页面。已下载的文件会保留在你的电脑上。",
+      description: "这会清除浏览历史、下载历史、缓存的页面以及网站 Cookie 和数据，并让你退出各网站。已下载的文件会保留在你的电脑上。",
       cancel: "取消",
       confirm: "清除数据",
       done: "已清除浏览数据",
@@ -453,6 +453,7 @@ export const zhCN = {
       resubmit: "此页面来自表单提交。重新加载会再次提交表单，可能会重复执行该操作。",
       upload: "此视图不支持上传文件。请在系统浏览器中打开该页面后再提交。",
       scriptNavigation: "此页面尝试通过脚本跳转到其他地址，此视图无法跟随。请在系统浏览器中打开。",
+      needsBrowser: "此页面尝试使用此视图阻止的浏览器功能，部分内容可能无法正常工作。请在系统浏览器中打开。",
     },
     native: {
       externalPrompt: "{host} 想要打开 {url}",
@@ -1715,6 +1716,19 @@ export const zhCN = {
         apiOnly: "仅卸载由 API 加载的模型",
         apiOnlyDescription:
           "空闲卸载会将你在 Unsloth 中加载的模型保留在内存中，只释放由 API 请求加载的模型。",
+      },
+      modelAliases: {
+        sectionTitle: "模型别名 (OpenAI API)",
+        description:
+          "为 API 客户端提供固定名称，例如 fast-chat 或 code。指定别名的请求由该别名指向的模型处理，因此更换模型后已连接的应用仍可正常使用。请开启按请求切换模型，以便别名可以加载其模型。",
+        namePlaceholder: "fast-chat",
+        nameAriaLabel: "别名名称",
+        modelAriaLabel: "别名指向的模型",
+        modelPlaceholder: "unsloth/Qwen3-4B-GGUF:Q4_K_M",
+        removeAriaLabel: "删除别名",
+        add: "添加别名",
+        loadError: "无法加载模型别名。",
+        saveError: "无法保存模型别名。",
       },
       previewSharing: {
         sectionTitle: "预览分享",
