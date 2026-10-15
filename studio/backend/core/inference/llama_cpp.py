@@ -3049,6 +3049,14 @@ _MAX_LENGTH_CONTINUATIONS = 2
 _TOKEN_REPORT_EVERY = 32
 
 
+def _preemption_armed(preempt_policy) -> bool:
+    """Whether preemption was armed for this request: a policy that can pause it, not a placeholder
+    left unbound because arming declined, nor the null policy installed where no pause is raised."""
+    if preempt_policy is None or isinstance(preempt_policy, _preemption.NullPreemptionPolicy):
+        return False
+    return bool(getattr(preempt_policy, "bound", True))
+
+
 def _llama_predicted_n(chunk) -> Optional[int]:
     """llama-server's own count of the tokens this request has decoded, on every frame under
     ``timings_per_token``; None on a frame without it. A structured tool-call frame can carry
@@ -43592,7 +43600,7 @@ class LlamaCppBackend:
                     if str(_nm or "").strip() in _one_shot:
                         _round_one_shot.append(str(_nm or "").strip())
                 _parallel_round = (
-                    _parallel_tool_calls_enabled()
+                    _parallel_tool_calls_enabled(armed = _preemption_armed(preempt_policy))
                     and len(tool_calls or []) > 1
                     and len(tool_calls or []) <= _MAX_PARALLEL_TOOL_CALLS_PER_ROUND
                     and not _approval_gate

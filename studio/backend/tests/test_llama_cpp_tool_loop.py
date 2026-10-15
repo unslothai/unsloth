@@ -4895,7 +4895,9 @@ def test_context_usage_frame_rides_an_overlapped_round_once(monkeypatch):
         ],
     ]
     backend, payloads = _backend_and_payloads(monkeypatch, streams)
-    monkeypatch.setattr("core.inference.studio_tool_loop.parallel_tool_calls_enabled", lambda: True)
+    monkeypatch.setattr(
+        "core.inference.studio_tool_loop.parallel_tool_calls_enabled", lambda **_kwargs: True
+    )
     calls = _record_tool_calls(monkeypatch, "result")
     started: list[str] = []
     real_start = llama_cpp_module._start_tool_call
@@ -6987,7 +6989,9 @@ def test_a_parallel_round_keeps_each_calls_compaction_promise(monkeypatch):
         [first_turn, [_sse({"content": "Done."}), _done()]],
         payloads,
     )
-    monkeypatch.setattr("core.inference.studio_tool_loop.parallel_tool_calls_enabled", lambda: True)
+    monkeypatch.setattr(
+        "core.inference.studio_tool_loop.parallel_tool_calls_enabled", lambda **_kwargs: True
+    )
 
     def fake_count_chat_tokens(messages, *_args, **_kwargs):
         return len(json.dumps(messages, default = str)) // 2

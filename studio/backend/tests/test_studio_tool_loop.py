@@ -140,6 +140,7 @@ def _run(
     supports_vision = False,
     mcp_image = None,
     continue_final_message = False,
+    preempt_signal = None,
     **policy_kwargs,
 ):
     policy_fields = {
@@ -168,6 +169,7 @@ def _run(
             ),
             policy = ToolLoopPolicy(**policy_fields),
             cancel_event = cancel_event,
+            preempt_signal = preempt_signal,
             mcp_image = mcp_image,
         )
         async for line in agen:

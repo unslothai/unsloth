@@ -1380,13 +1380,15 @@ _PARALLEL_TOOL_CALLS_ENV = "UNSLOTH_PARALLEL_TOOL_CALLS"
 _MAX_PARALLEL_TOOL_CALLS_PER_ROUND = 8
 
 
-def parallel_tool_calls_enabled() -> bool:
-    """Whether one turn's tool calls may run at the same time. On unless switched off: independent
-    is the model's claim, and two calls that write the same file interleave differently."""
-    raw = os.environ.get(_PARALLEL_TOOL_CALLS_ENV)
-    if raw is None:
-        return True
-    return raw.strip().lower() not in ("0", "false", "no", "off")
+def parallel_tool_calls_enabled(*, armed: bool = False) -> bool:
+    """Whether one turn's tool calls may run at the same time. Unset, only on a request preemption
+    armed: without it a round runs in the model's order, as before preemption existed, since
+    independent is the model's claim and two calls that write the same file interleave differently.
+    Set, it is on or off for every request."""
+    raw = (os.environ.get(_PARALLEL_TOOL_CALLS_ENV) or "").strip().lower()
+    if not raw:
+        return bool(armed)
+    return raw not in ("0", "false", "no", "off")
 
 
 def round_call_key(name: Any, arguments: Any) -> tuple:
@@ -1963,7 +1965,7 @@ async def stream_with_studio_tools(
         ]
         _round_one_shot = [name for name in _round_names if name in _one_shot]
         parallel_round = (
-            parallel_tool_calls_enabled()
+            parallel_tool_calls_enabled(armed = preempt_signal is not None)
             and policy.parallel_tool_calls is not False
             and len(calls) > 1
             and len(calls) <= _MAX_PARALLEL_TOOL_CALLS_PER_ROUND

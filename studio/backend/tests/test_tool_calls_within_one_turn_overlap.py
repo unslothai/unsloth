@@ -44,6 +44,13 @@ _CAP = loop_mod._MAX_PARALLEL_TOOL_CALLS_PER_ROUND
 _UNLIMITED = 9999
 
 
+@pytest.fixture(autouse = True)
+def parallel_opted_in(monkeypatch):
+    """Overlap is opt-in where preemption is not armed; these cases test the overlap itself. A body
+    setting the variable runs after this, so its value wins."""
+    monkeypatch.setenv("UNSLOTH_PARALLEL_TOOL_CALLS", "1")
+
+
 def _provider_round(calls, tool = "web_search"):
     """A provider turn asking for `calls`, then a plain answer."""
     return FakeTransport(
@@ -162,6 +169,106 @@ def _meeting_tool(parties, timeout = 4):
 
 def _results(events):
     return [end.get("result") or "" for end in events]
+
+
+# ------------------------------------------------- unset, it follows whether preemption armed
+
+
+def _order_tool(seen):
+    """Records each call's start and end. `alpha` waits a while for `beta` to start: in single file
+    it never does, so `beta` starts after `alpha` ended; overlapped it starts meanwhile."""
+    beta_started = threading.Event()
+
+    def _execute(name, arguments, **_kwargs):
+        query = (arguments or {}).get("query")
+        seen.append(("start", query))
+        if query == "beta":
+            beta_started.set()
+        else:
+            beta_started.wait(timeout = 1.0)
+        seen.append(("end", query))
+        return f"RESULT<{query}>"
+
+    return _execute
+
+
+_IN_ORDER = [("start", "alpha"), ("end", "alpha"), ("start", "beta"), ("end", "beta")]
+
+
+class TestUnsetTheRoundRunsAsBeforePreemption:
+    """With preemption off, unsupported or not armed for the request, a round runs in the model's
+    order, as it did before; an armed request overlaps, and the variable set either way wins."""
+
+    def _provider(self, monkeypatch, **kwargs):
+        seen: list = []
+        monkeypatch.setattr(loop_mod, "execute_tool", _order_tool(seen))
+        monkeypatch.setattr(loop_mod, "build_rag_autoinject", lambda *a, **k: None)
+        monkeypatch.setattr(loop_mod, "is_high_risk_tool_call", lambda *a, **k: False)
+        ends = _events(_run(_two_calls(), **kwargs), "tool_end")
+        assert _results(ends) == ["RESULT<alpha>", "RESULT<beta>"]
+        return seen
+
+    def _gguf(self, monkeypatch, **kwargs):
+        seen: list = []
+        events, _payloads = _gguf_events(
+            monkeypatch,
+            [
+                ("call_a", "web_search", {"query": "alpha"}),
+                ("call_b", "web_search", {"query": "beta"}),
+            ],
+            _order_tool(seen),
+            **kwargs,
+        )
+        ends = [e for e in events if isinstance(e, dict) and e.get("type") == "tool_end"]
+        assert _results(ends) == ["RESULT<alpha>", "RESULT<beta>"]
+        return seen
+
+    @pytest.mark.parametrize("switch", [None, "0"], ids = ["unset", "preemption-off"])
+    def test_the_provider_loop_runs_in_order_unarmed(self, monkeypatch, switch):
+        monkeypatch.delenv("UNSLOTH_PARALLEL_TOOL_CALLS", raising = False)
+        if switch is not None:
+            monkeypatch.setenv("UNSLOTH_LLAMA_ADMISSION_PREEMPT", switch)
+        assert self._provider(monkeypatch) == _IN_ORDER
+
+    @pytest.mark.parametrize("switch", [None, "0"], ids = ["unset", "preemption-off"])
+    def test_the_gguf_loop_runs_in_order_unarmed(self, monkeypatch, switch):
+        monkeypatch.delenv("UNSLOTH_PARALLEL_TOOL_CALLS", raising = False)
+        if switch is not None:
+            monkeypatch.setenv("UNSLOTH_LLAMA_ADMISSION_PREEMPT", switch)
+        assert self._gguf(monkeypatch) == _IN_ORDER
+
+    def test_an_unbound_policy_is_not_armed(self, monkeypatch):
+        # Arming declined (an older server, no unified cache): the route binds None.
+        from core.inference.llama_preemption import DeferredPreemptionPolicy
+
+        monkeypatch.delenv("UNSLOTH_PARALLEL_TOOL_CALLS", raising = False)
+        hold = DeferredPreemptionPolicy()
+        hold.bind(None)
+        assert self._gguf(monkeypatch, preempt_policy = hold) == _IN_ORDER
+
+    def test_an_armed_provider_request_overlaps(self, monkeypatch):
+        from core.inference.llama_preemption import PreemptSignal
+
+        monkeypatch.delenv("UNSLOTH_PARALLEL_TOOL_CALLS", raising = False)
+        seen = self._provider(monkeypatch, preempt_signal = PreemptSignal())
+        assert seen.index(("start", "beta")) < seen.index(("end", "alpha")), seen
+
+    def test_an_armed_gguf_request_overlaps(self, monkeypatch):
+        from .preempt_fakes import RecordingPolicy
+
+        monkeypatch.delenv("UNSLOTH_PARALLEL_TOOL_CALLS", raising = False)
+        seen = self._gguf(monkeypatch, preempt_policy = RecordingPolicy())
+        assert seen.index(("start", "beta")) < seen.index(("end", "alpha")), seen
+
+    def test_an_explicit_opt_in_overlaps_unarmed(self, monkeypatch):
+        monkeypatch.setenv("UNSLOTH_PARALLEL_TOOL_CALLS", "1")
+        seen = self._gguf(monkeypatch)
+        assert seen.index(("start", "beta")) < seen.index(("end", "alpha")), seen
+
+    def test_an_explicit_off_keeps_an_armed_request_in_order(self, monkeypatch):
+        from .preempt_fakes import RecordingPolicy
+        monkeypatch.setenv("UNSLOTH_PARALLEL_TOOL_CALLS", "0")
+        assert self._gguf(monkeypatch, preempt_policy = RecordingPolicy()) == _IN_ORDER
 
 
 # ------------------------------------------------------------------- the provider loop
