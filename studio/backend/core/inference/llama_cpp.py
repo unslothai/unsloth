@@ -29547,11 +29547,14 @@ class LlamaCppBackend:
                     def _fitter_vram_shortfall() -> Optional[float]:
                         if not (gpus and effective_ctx > 0 and self._can_estimate_kv()):
                             return None
-                        # Smart offload may still pin experts to CPU against Unsloth's budget.
-                        from core.inference.offload_planner import smart_offload_enabled
-
-                        if smart_offload_enabled(os.environ):
-                            return None
+                        # Not abstained on under UNSLOTH_SMART_OFFLOAD. Both readers (the spill
+                        # micro-batch raise and the MoE cache admission) run before the planner
+                        # does, and a plan it declines launches the --fit on argv the flag-off
+                        # path would. Abstaining here kept the raise and dropped the cache on
+                        # every such launch (Gate B1: decode -22..-25% at 16 GB, -2..-8% at
+                        # 8-12 GB). The cache is never added beside an accepted plan
+                        # (_placed_by_fitter), and that plan is priced at whichever
+                        # micro-batch this settles on.
                         # A drafter priced with a flat cushion has no draft-KV term here.
                         if _flat_mtp_engages:
                             return None
