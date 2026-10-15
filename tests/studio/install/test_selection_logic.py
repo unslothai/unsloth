@@ -3566,6 +3566,106 @@ class TestPublishedRocmGfxSelection:
         assert choice.name == "app-b9457-windows-x64-rocm-gfx120X.zip"
 
 
+class TestWindowsMixedAmdUncoveredActiveCard:
+    """RX 5700 XT (gfx1010) at device 0 beside an RX 6500 XT (gfx1034): no Windows HIP bundle
+    covers the card HIP runs on, so the install takes the Vulkan bundle, which runs on both,
+    instead of failing with "no compatible published prebuilt"."""
+
+    TAG = "b11541-mix-2500203"
+    ROCM = f"app-{TAG}-windows-x64-rocm-gfx103X.zip"
+    VULKAN = f"app-{TAG}-windows-x64-vulkan.zip"
+    CPU = f"app-{TAG}-windows-x64-cpu.zip"
+
+    def _release(self):
+        return make_release(
+            [
+                make_cpu_artifact(
+                    self.ROCM,
+                    install_kind = "windows-rocm",
+                    rank = 1000,
+                    gfx_target = "gfx103X",
+                    mapped_targets = ["gfx1030", "gfx1031", "gfx1032", "gfx1034"],
+                ),
+                make_cpu_artifact(self.VULKAN, install_kind = "windows-vulkan", rank = 1000),
+                make_cpu_artifact(self.CPU, install_kind = "windows-cpu", rank = 1000),
+            ],
+            release_tag = self.TAG,
+            upstream_tag = "b9457",
+        )
+
+    def _host(self, targets):
+        # What detect_host() returned on the reporter's host, device order kept.
+        return make_host(
+            system = "Windows",
+            machine = "AMD64",
+            nvidia_smi = None,
+            driver_cuda_version = None,
+            compute_caps = [],
+            has_physical_nvidia = False,
+            has_usable_nvidia = False,
+            has_rocm = True,
+            rocm_gfx_target = targets[0],
+            rocm_gfx_targets = list(targets),
+        )
+
+    def _resolve(
+        self,
+        targets,
+        backend = None,
+    ):
+        route = INSTALL_LLAMA_PREBUILT.route_backend_request(
+            backend = backend,
+            published_repo = INSTALL_LLAMA_PREBUILT.DEFAULT_PUBLISHED_REPO,
+            published_release_tag = self.TAG,
+            host = self._host(targets),
+        )
+        return route, resolve_release_asset_choice(
+            route.host,
+            self.TAG,
+            self._release(),
+            make_checksums([self.ROCM, self.VULKAN, self.CPU]),
+        )
+
+    @pytest.fixture(autouse = True)
+    def _unpinned(self, monkeypatch):
+        for var in (
+            "HIP_VISIBLE_DEVICES",
+            "ROCR_VISIBLE_DEVICES",
+            "CUDA_VISIBLE_DEVICES",
+            "UNSLOTH_ROCM_GFX_ARCH",
+            "UNSLOTH_LLAMA_CPP_BACKEND",
+            "UNSLOTH_FORCE_VULKAN",
+        ):
+            monkeypatch.delenv(var, raising = False)
+        monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_rocm_torch_preferred", lambda: False)
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "github_release_assets",
+            lambda repo, tag: pytest.fail("listed an upstream release"),
+        )
+
+    def test_installs_the_vulkan_bundle(self):
+        route, result = self._resolve(("gfx1010", "gfx1034"))
+        assert [c.name for c in result] == [self.VULKAN, self.CPU]
+        assert route.persist_llama_backend == "auto"
+        assert route.persist_rocm_gfx == "gfx1010"
+
+    def test_a_covered_active_card_keeps_its_rocm_bundle(self):
+        _route, result = self._resolve(("gfx1034", "gfx1010"))
+        assert [c.name for c in result] == [self.ROCM]
+
+    def test_an_explicit_hip_backend_is_not_rerouted(self):
+        with pytest.raises(PrebuiltFallback, match = "no compatible published prebuilt"):
+            self._resolve(("gfx1010", "gfx1034"), backend = "hip")
+
+    @pytest.mark.parametrize("mask_env", ["HIP_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"])
+    def test_a_mask_on_the_uncovered_card_is_never_rerouted(self, monkeypatch, mask_env):
+        # hipinfo under the mask sees only that card; Vulkan would ignore the mask.
+        monkeypatch.setenv(mask_env, "0")
+        with pytest.raises(PrebuiltFallback, match = "no compatible published prebuilt"):
+            self._resolve(("gfx1010",))
+
+
 class TestPublishedRocmBundleCoverage:
     """Every arch the installer routes torch for needs a llama.cpp bundle or a KNOWN_GAPS entry. The gap is silent:
     the GPU trains fine and inference drops to a HIP source build, which is correct but much slower to install."""

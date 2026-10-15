@@ -6892,7 +6892,7 @@ def opencode(
     as_subagent = as_subagent or auto_route
     _check_app_flags(app, ctx.args, as_subagent)
     command_name, opencode_v2 = _opencode_command()
-    install_hint = _npm_install_hint("@opencode-ai/cli@beta" if opencode_v2 else "opencode-ai")
+    install_hint = _npm_install_hint("@opencode/cli" if opencode_v2 else "opencode-ai")
     _require_agent_for_launch(command_name, install_hint, launch and not app)
     server_options = ServerOptions(
         enable_tools = enable_tools,
@@ -6999,8 +6999,7 @@ def opencode(
             )
         return
     opencode_model = f"{_OPENCODE_PROVIDER}/{entry['id']}"
-    # The inline config pins the model; --model only for an interactive bare launch, since drivers
-    # append a subcommand after a printed command.
+    # The inline OPENCODE_CONFIG_CONTENT pin below selects the model, so no path passes --model: it misparses before a passthrough subcommand, lands before the `run <prompt>` drivers append to a --no-launch recipe, and OpenCode 2 rejects it on the root command, which a V2 build whose --version probe fails would get (#13747).
     native_auto = False
     route_native_auto = yolo and (opencode_v2 or _opencode_supports_native_auto(command_name))
     if ctx.args:
@@ -7012,9 +7011,7 @@ def opencode(
         )
         command = [command_name, *opencode_args]
     elif launch:
-        opencode_args = [] if opencode_v2 else ["--model", opencode_model]
-        if opencode_v2:
-            opencode_args = _opencode_v2_standalone_args(opencode_args)
+        opencode_args = _opencode_v2_standalone_args([]) if opencode_v2 else []
         opencode_args, native_auto = _opencode_native_auto_args(
             opencode_args,
             route_native_auto,

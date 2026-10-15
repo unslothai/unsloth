@@ -113,6 +113,16 @@ def test_the_floor_is_linted_on_every_pull_request():
         f"install line rather than the file, because the first version of this check "
         f"looked for 'vermin' anywhere and was satisfied by a comment mentioning it."
     )
+    # vermin's answer is the gate's verdict, so a release that changes it must not move the gate
+    # on its own: 1.9.0 failed 79 unchanged files on every pull request the morning it shipped.
+    unpinned = [
+        line for line in installs if not re.search(r"\bvermin==\d+(?:\.\d+)*(?=\s|$)", line)
+    ]
+    assert not unpinned, (
+        f"{trigger_lint.name} installs vermin without an exact pin: {unpinned}. A range or a "
+        f"wildcard (vermin==1.*) is not one either. A new vermin "
+        f"release then decides the floor check by itself; pin it and move the pin deliberately."
+    )
 
 
 def test_the_floor_lint_reads_stdlib_availability_not_just_syntax():
