@@ -2487,6 +2487,7 @@ class CfgBatchRouter:
             if self.kept is not None:  # the previous step never asked for its odd branch
                 self.kept = None
                 self.stats["batched_misses"] += 1
+            self._apply_pending()
             self.b0_leaves = dict(_leaves((args, kwargs)))
         if self.disabled_reason is not None or latent is None:
             return self._plain(args, kwargs)
@@ -2499,7 +2500,11 @@ class CfgBatchRouter:
             if (
                 self.template is not None and not timing
             ):  # unpriced: this step times both plain calls first
-                out = self._batched(args, kwargs, latent)
+                try:
+                    out = self._batched(args, kwargs, latent)
+                except Exception as exc:  # noqa: BLE001 - anything in the speculative path: plain from here
+                    self.disable(f"speculative batch failed ({type(exc).__name__}: {exc})")
+                    out = None
                 if out is not None:
                     return out
             if timing:
@@ -2603,6 +2608,10 @@ class CfgBatchRouter:
         if module.__dict__.get("forward") is not self:
             self._skip("an outer forward layer was installed after this router")
             return None
+        outer = _outer_forward_layer(module, self.orig_forward)
+        if outer is not None:
+            self._skip(f"{outer} under this router")
+            return None
         # a step cache, or a foreign hook whose per-call state would see one doubled call: the CFG-parallel screen
         hooked = _hooks_present(module, offload_hooks_ok = True)
         if hooked is not None:
@@ -2678,8 +2687,8 @@ class CfgBatchRouter:
             return None
         try:
             mine, other = _split_output(out, batch)
-        except _NotBatchable as exc:
-            self.disable(f"output cannot be split per branch ({exc})")
+        except Exception as exc:  # noqa: BLE001 - incl. a container that cannot be rebuilt: the branch reruns plain
+            self.disable(f"output cannot be split per branch ({type(exc).__name__}: {exc})")
             return None
         self.kept = {"out": other, "snapshots": snapshots, "state": state}
         self.stats["batched_steps"] += 1
@@ -2730,15 +2739,45 @@ class CfgBatchRouter:
             ok = _hook_state([(m, m) for m in module.modules()]) == kept["state"]
         if not ok:
             self.stats["batched_misses"] += 1
+            self._apply_pending()
             return None
         self.stats["batched_hits"] += 1
+        self._apply_pending()
+        return kept["out"]
+
+    def _apply_pending(self) -> None:
         if self.disabled_pending is not None:
             reason, self.disabled_pending = self.disabled_pending, None
             self.disable(reason)
-        return kept["out"]
 
 
 _CFG_BATCH: "weakref.WeakKeyDictionary[Any, CfgBatchRouter]" = weakref.WeakKeyDictionary()
+
+
+def _outer_forward_layer(module: Any, forward: Any = _DROP) -> Optional[str]:
+    """Default-deny for the forward chain CFG-batch calls: only the class forward bound to ``module``, offload
+    machinery (diffusers group offload, accelerate, Studio's prefetchers) or a Studio forward patch may sit there.
+    Studio's outer layers (``_unsloth_outer_forward``: the static step skip) and anything foreign key state on separate
+    per-branch calls: its name, else None."""
+    if forward is _DROP:
+        forward = module.__dict__.get("forward")
+    if forward is None:
+        return None
+    if isinstance(forward, CfgBatchRouter):
+        forward = forward.orig_forward
+    if (
+        isinstance(forward, types.MethodType)
+        and forward.__self__ is module
+        and forward.__func__ is getattr(type(module).forward, "__func__", type(module).forward)
+    ):
+        return None
+    if _registry_kind(module) == "offload" or _is_offload_object(forward):
+        return None
+    if getattr(forward, "_unsloth_outer_forward", False):
+        return f"outer forward layer {type(forward).__name__}"
+    if _hook_origin(forward).startswith(_TRUSTED_HOOK_MODULES):
+        return None  # Studio's own forward patches below the outer layers
+    return f"outer forward layer {type(forward).__name__}"
 
 
 def cfg_batch_decline(pipe: Any, *, offload_policy: str) -> Optional[str]:
@@ -2756,6 +2795,9 @@ def cfg_batch_decline(pipe: Any, *, offload_policy: str) -> Optional[str]:
         return "denoiser is compiled whole"
     if isinstance(denoiser.__dict__.get("forward"), (CfgParallelRouter, CfgBatchRouter)):
         return "a CFG router is already installed"
+    outer = _outer_forward_layer(denoiser)
+    if outer is not None:
+        return f"{outer} (it would see one doubled call per step)"
     hooked = _registry_hooks_other(denoiser)
     if hooked is not None:
         return f"step cache present ({hooked})"

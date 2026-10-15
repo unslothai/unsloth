@@ -1682,6 +1682,7 @@ def test_cfg_batch_out_of_memory_falls_back(monkeypatch):
             raise torch.OutOfMemoryError("fake")
         return inner(*a, **k)
 
+    oom_on_batch.__module__ = mg.__name__  # stands in for a Studio forward patch under the router
     router.orig_forward = oom_on_batch
     dit.forward = router
     out = _batch_loop(dit, latents.clone(), 4, cond, uncond)
@@ -1794,7 +1795,8 @@ def test_cfg_batch_measured_no_gain_stops_after_the_first_batched_step():
     assert router.verify_batched == 0
     out = _batch_loop(dit, latents.clone(), 5, cond, uncond)
     torch.testing.assert_close(out, reference, rtol = 1e-5, atol = 1e-6)
-    assert router.stats["batched_steps"] == 1
+    # the verdict was reached before this loop: it applies at the first step boundary, before any batched call
+    assert router.stats["batched_steps"] == 0
     assert "measured no gain" in router.describe()["disabled_reason"]
 
 
@@ -1812,6 +1814,7 @@ def test_cfg_batch_falls_back_when_the_batched_call_rejects_its_inputs():
             raise ValueError("this model only runs batch 2")
         return inner(*a, **k)
 
+    fixed_batch.__module__ = mg.__name__  # stands in for a Studio forward patch under the router
     router.orig_forward = fixed_batch
     dit.forward = router
     out = _batch_loop(dit, latents.clone(), 4, cond, uncond)
@@ -2045,3 +2048,63 @@ def test_cfg_batch_accepts_a_studio_root_hook():
     dit.forward = router
     _batch_loop(dit, torch.randn(2, 4), 4, cond, uncond)
     assert router.stats["batched_steps"] == 3
+
+
+def test_cfg_batch_declines_a_pre_existing_outer_forward_layer(monkeypatch):
+    class Outer:
+        _unsloth_outer_forward = True  # e.g. the static step skip: per-branch state keyed on separate calls
+
+        def __init__(self, module):
+            self.inner = type(module).forward.__get__(module)
+            self.calls = 0
+
+        def __call__(self, *a, **k):
+            self.calls += 1
+            return self.inner(*a, **k)
+
+    class Pipe:
+        def __init__(self):
+            self.transformer = _BatchDit()
+
+    monkeypatch.setenv(mg.CFG_BATCH_ENV, "force")
+    pipe = Pipe()
+    pipe.transformer.forward = Outer(pipe.transformer)
+    reason = mg.install_cfg_batch(pipe, offload_policy = "none")
+    assert reason is not None and "outer forward" in reason
+    plain = Pipe()
+    assert mg.install_cfg_batch(plain, offload_policy = "none") is None  # the class forward alone still arms
+
+
+def test_cfg_batch_output_rebuild_failure_runs_the_branch_plain(monkeypatch):
+    torch.manual_seed(0)
+    dit = _BatchDit()
+    latents = torch.randn(2, 4)
+    cond, uncond = _embeds()
+    reference = _batch_loop(dit, latents.clone(), 4, cond, uncond)
+    router = mg.CfgBatchRouter(dit)
+    dit.forward = router
+
+    def bad_split(out, batch, depth = 0):
+        raise TypeError("init=False field")
+
+    monkeypatch.setattr(mg, "_split_output", bad_split)
+    out = _batch_loop(dit, latents.clone(), 4, cond, uncond)
+    torch.testing.assert_close(out, reference, rtol = 0, atol = 0)
+    assert "TypeError" in router.describe()["disabled_reason"]
+
+
+def test_cfg_batch_pending_slowdown_applies_on_a_prediction_miss():
+    torch.manual_seed(0)
+    dit = _BatchDit()
+    cond, uncond = _embeds()
+    router = mg.CfgBatchRouter(dit)
+    dit.forward = router
+
+    def edit(i, u):
+        if i == 1:
+            router.disabled_pending = "measured no gain"  # set by the first batched call's timing
+            u.add_(1.0)  # and this step's odd branch misses its prediction
+
+    _batch_loop(dit, torch.randn(2, 4), 4, cond, uncond.clone(), edit = edit)
+    assert router.describe()["disabled_reason"] == "measured no gain"
+    assert router.stats["batched_steps"] == 1
