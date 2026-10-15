@@ -492,6 +492,7 @@ def price_cfg_parallel(
         "primary_branch_s": round(primary, 4),
         "branch_s": round(branch_s, 4),
         "copy_s": round(copy_s, 4),
+        "in_bytes": int(in_bytes),
         "in_copy_s": round(in_copy_s, 4),
         "out_copy_s": round(out_copy_s, 4),
         "single_step_s": round(single, 4),
@@ -2413,7 +2414,10 @@ class CfgParallelRouter:
                 # Copy this step's inputs to the replica card BEFORE the primary branch is queued: a copy queued after
                 # it would wait for it on the source stream and serialise the two branches.
                 try:
-                    self._prefetch(args, kwargs)
+                    # exactly the predicted odd call's inputs (the ones the price counts), none without a prediction
+                    predicted = self._predict(latent)
+                    if predicted is not None:
+                        self._prefetch(*predicted)
                     self._launch_prediction(latent)
                 except Exception as exc:  # noqa: BLE001 - dispatched on its type by the one handler
                     self._replica_failure("prefetch", exc)
@@ -2795,7 +2799,7 @@ class CfgParallelRouter:
         return out, time.perf_counter() - t0
 
     def _price(self, args: tuple, kwargs: dict, out: Any, branch_s: float) -> dict[str, Any]:
-        in_bytes = sum(t.numel() * t.element_size() for t in _iter_tensors((args, kwargs)))
+        in_bytes = sum(t.numel() * t.element_size() for t in self._replica_inputs(args, kwargs))
         out_bytes = sum(t.numel() * t.element_size() for t in _iter_tensors(_as_walkable(out)))
         module = self.module_ref()
         replica_bytes = (
@@ -3005,11 +3009,23 @@ class CfgParallelRouter:
             self.replica = None
             self._replica_failure("build", exc)
 
-    def _prefetch(self, args: tuple, kwargs: dict) -> None:
-        for tensor in (*_iter_tensors((args, kwargs)), *self.carry):
-            if tensor.device == self.secondary or id(tensor) in self.prefetched:
+    def _replica_inputs(self, args: tuple, kwargs: dict) -> list:
+        """The tensors an odd call with these arguments sends to the replica card (each once, none already there):
+        the one source of both what the prefetch copies and the input bytes the price charges."""
+        seen: set = set()
+        out = []
+        for tensor in _iter_tensors((args, kwargs)):
+            if tensor.device == self.secondary or id(tensor) in seen:
                 continue
-            self.prefetched[id(tensor)] = (tensor, tensor.to(self.secondary))
+            seen.add(id(tensor))
+            out.append(tensor)
+        return out
+
+    def _prefetch(self, args: tuple, kwargs: dict) -> None:
+        """Copy the (predicted) odd call's inputs to the replica card before the primary branch is queued."""
+        for tensor in self._replica_inputs(args, kwargs):
+            if id(tensor) not in self.prefetched:
+                self.prefetched[id(tensor)] = (tensor, tensor.to(self.secondary))
 
     def _to_replica(self, obj: Any) -> Any:
         torch = _torch()

@@ -11070,6 +11070,8 @@ class DiffusionBackend:
                 # the guard's inputs, from which each chunk's CFG memory figure is built (None: the routers scale the
                 # load-time figures)
                 cfg_guard_inputs = None
+                # read after the guard block, which fails open: set before it so a failed shape derivation still renders
+                guard_width = guard_height = None
 
                 try:
                     # The dimensions the forward runs at, not the sliders: img2img / inpaint / upscale / edit take

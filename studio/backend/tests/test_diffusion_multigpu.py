@@ -4365,3 +4365,92 @@ def test_cfg_parallel_price_charges_the_input_copy_outside_the_overlap():
         branch_s = 1.0, primary_s = 2.0, in_bytes = 0, out_bytes = int(0.9 * (1 << 30)), link_in_gib_s = 1.0, link_out_gib_s = 1.0
     )
     assert out_only["cfg_parallel_step_s"] == 2.0  # the output copy back overlaps the primary branch
+
+
+def test_generate_guard_block_fails_open_without_unbound_names():
+    # every name the activation-guard try assigns and the generate path reads after it is also set before it, so a
+    # failed shape derivation (the block fails open) never becomes an UnboundLocalError before pipe() runs
+    import ast
+    from pathlib import Path
+
+    from core.inference import diffusion as diffusion_mod
+
+    tree = ast.parse(Path(diffusion_mod.__file__).read_text())
+    found = []
+    for fn in ast.walk(tree):
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for node in ast.walk(fn):
+            if not isinstance(node, ast.Try):
+                continue
+            # the activation-guard try: its own first statements derive guard_width / guard_height
+            direct = [
+                st
+                for st in node.body
+                if isinstance(st, ast.Assign)
+                and isinstance(st.value, ast.Call)
+                and getattr(st.value.func, "id", None) == "_compile_shape_dims"
+                and "guard_width" in ast.unparse(st.targets[0])
+            ]
+            if not direct:
+                continue
+            assigned = {
+                n.id for b in node.body for n in ast.walk(b) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store)
+            }
+            before = {
+                n.id
+                for n in ast.walk(fn)
+                if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store) and n.lineno < node.lineno
+            }
+            later = {
+                n.id
+                for n in ast.walk(fn)
+                if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load) and n.lineno > node.end_lineno
+            }
+            found.append(sorted((assigned & later) - before))
+    assert found and all(unbound == [] for unbound in found), found
+
+
+def test_cfg_parallel_prefetch_copies_exactly_the_priced_inputs(monkeypatch):
+    torch.manual_seed(0)
+    dit = _BatchDit()
+    router, replicas = _router(dit)
+    cond, uncond = _embeds(2, 4)
+    latents = torch.randn(2, 4)
+    _batch_loop(dit, latents, 2, cond, uncond)  # builds the replica and the odd-branch template
+    assert router.template is not None
+    latent = torch.randn(2, 4)
+    t = torch.tensor(0.5)
+    router.b0_leaves = dict(mg._leaves(((), {"hidden_states": latent, "timestep": t, "encoder_hidden_states": cond})))
+    predicted = router._predict(latent)
+    assert predicted is not None
+    router.secondary = torch.device("meta")  # every host tensor now has to travel
+    router.prefetched.clear()
+    router._prefetch(*predicted)
+    copied = sum(src.numel() * src.element_size() for src, _dst in router.prefetched.values())
+    monkeypatch.setattr(mg, "link_gib_s", lambda src, dst, probes = None: 1.0)
+    router.primary = torch.device("cpu")
+    priced = router._price(predicted[0], predicted[1], torch.zeros(2, 4), 0.1)["in_bytes"]
+    assert copied == priced
+    # the positive embeds only the even branch reads are not shipped to the replica card
+    assert all(src is not cond for src, _dst in router.prefetched.values())
+
+
+def test_cfg_parallel_step_prefetch_ships_only_the_odd_branch_inputs(monkeypatch):
+    torch.manual_seed(0)
+    dit = _BatchDit()
+    router, replicas = _router(dit)
+    shipped = []
+    real = router._prefetch
+
+    def spy(args, kwargs):
+        shipped.append([id(t) for t in mg._iter_tensors((args, kwargs))])
+        return real(args, kwargs)
+
+    monkeypatch.setattr(router, "_prefetch", spy)
+    cond, uncond = _embeds(2, 4)
+    _batch_loop(dit, torch.randn(2, 4), 5, cond, uncond)
+    assert shipped and router.stats["replica_calls"] > 0
+    # the positive embeds (even branch only) never travel; the negative ones (odd branch) do
+    assert all(id(cond) not in ids for ids in shipped)
+    assert any(id(uncond) in ids for ids in shipped)
