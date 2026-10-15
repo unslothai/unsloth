@@ -169,7 +169,7 @@ def test_a_uma_card_reserves_its_pinned_weights_from_the_device_budget():
     assert _fit(AUTO, "auto", gtt = 20 * GIB, spill = spill, host = 100 * GIB, uma = True).refusal
     spill = h3_native_compute_bytes(1344, 768, 124) - (GIB // 2)
     fit = _fit(AUTO, "auto", gtt = int(22.5 * GIB), spill = spill, host = 100 * GIB, uma = True)
-    assert "GTT" in fit.refusal and "activations" in fit.refusal
+    assert "weights and activations into GPU-accessible system memory (GTT)" in fit.refusal
     assert _fit(AUTO, "auto", gtt = 30 * GIB, spill = spill, host = 100 * GIB, uma = True).refusal is None
 
 

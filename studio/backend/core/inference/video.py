@@ -4384,7 +4384,7 @@ class VideoBackend:
                 uma = check_gtt
                 and sd_cpp_vulkan_device_is_uma(binary, native_device_name, probe = False) is True,
             )
-            # The smallest clip: a load is refused only when no render could fit.
+            # The smallest clip's estimate: a load is refused only when even that is not expected to fit.
             fam_presets = [p for p in (fam.resolution_presets or ()) if len(p) == 2]
             small_w, small_h = (
                 min(fam_presets, key = lambda p: p[0] * p[1]) if fam_presets else (864, 480)

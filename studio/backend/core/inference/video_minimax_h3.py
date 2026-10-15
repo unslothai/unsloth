@@ -1580,6 +1580,7 @@ def h3_native_memory_fit(
         if spill
         else ""
     )
+    mapped = "weights and activations" if spill else "weights"
 
     def pinned(te_on_cpu: bool) -> int:
         return spill + dit_bytes + (0 if te_on_cpu else te_bytes) + (0 if vae_on_cpu else vae_bytes)
@@ -1643,7 +1644,7 @@ def h3_native_memory_fit(
             )
             refusal = (
                 f"MiniMax-H3 GGUF cannot run in this memory mode on the Vulkan build: it maps "
-                f"{_gib(pinned(False))} of weights into GPU-accessible system memory (GTT), and {limit} of it is "
+                f"{_gib(pinned(False))} of {mapped} into GPU-accessible system memory (GTT), and {limit} of it is "
                 f"free. Set Memory mode to Auto or Low VRAM, which runs the text encoder on the CPU "
                 f"({_gib(pinned(True))}).{activations}"
             )
@@ -1654,7 +1655,7 @@ def h3_native_memory_fit(
             )
             refusal = (
                 f"MiniMax-H3 GGUF cannot run in this memory mode: it locks {_gib(pinned(False) + overhead)} of "
-                f"weights in system RAM, which cannot be swapped, and {ram} of RAM is available. Set Memory mode "
+                f"{mapped} in system RAM, which cannot be swapped, and {ram} of RAM is available. Set Memory mode "
                 f"to Auto or Low VRAM, which runs the text encoder on the CPU ({_gib(pinned(True) + overhead)} "
                 f"locked)."
             )
@@ -1688,7 +1689,7 @@ def h3_native_memory_fit(
         return H3NativeFit(
             flags,
             refusal = (
-                f"MiniMax-H3 GGUF locks the weights of its GPU-run parts in system RAM, which cannot be swapped: "
+                f"MiniMax-H3 GGUF locks the {mapped} of its GPU-run parts in system RAM, which cannot be swapped: "
                 f"about {_gib(pinned(True) + overhead)} even with the text encoder on the CPU, and {ram} of RAM "
                 f"is available. Close other applications or load a smaller quant.{smaller}{activations}"
             ),
@@ -1702,7 +1703,7 @@ def h3_native_memory_fit(
         flags,
         refusal = (
             f"MiniMax-H3 GGUF does not fit this system on the Vulkan build: even with the text encoder on the CPU it "
-            f"maps {_gib(pinned(True))} of weights into GPU-accessible system memory (GTT), and {limit} of it is free "
+            f"maps {_gib(pinned(True))} of {mapped} into GPU-accessible system memory (GTT), and {limit} of it is free "
             f"(the pool is half of system RAM by default; raise it with the ttm.pages_limit kernel parameter).{smaller}"
             f"{activations}"
         ),
