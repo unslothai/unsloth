@@ -34,6 +34,14 @@ except Exception:
     DTensor = None
 
 
+def _chunk_bytes():
+    try:
+        mb = float(os.environ.get(_ENV + "_CHUNK_MB", "1024"))
+    except ValueError:
+        mb = 1024.0
+    return int(mb * 2**20) if mb > 0 else float("inf")
+
+
 def optimizer_state_offload_enabled():
     return os.environ.get(_ENV, "0").strip().lower() in ("1", "true", "yes", "on")
 
@@ -53,9 +61,10 @@ def _synchronize(device):
 
 
 class _StateOffloader:
-    def __init__(self, optimizer, pin_memory = True):
+    def __init__(self, optimizer, pin_memory = True, chunk_bytes = None):
         self.optimizer = optimizer
         self.pin_memory = pin_memory
+        self.chunk_bytes = chunk_bytes if chunk_bytes is not None else _chunk_bytes()
         self.buffers = {}
         self.offloaded = {}
         self.offloaded_bytes = 0
@@ -76,10 +85,15 @@ class _StateOffloader:
         buffer.copy_(src, non_blocking = self.pin_memory)
         return buffer
 
-    def offload(self):
+    def _states(self, params):
+        if params is None:
+            return list(self.optimizer.state.items())
+        state = self.optimizer.state
+        return [(p, state[p]) for p in params if p in state]
+
+    def offload(self, params = None):
         devices = set()
-        total = 0
-        for param, state in self.optimizer.state.items():
+        for param, state in self._states(params):
             for key, value in state.items():
                 is_dtensor = DTensor is not None and isinstance(value, DTensor)
                 local = value._local_tensor if is_dtensor else value
@@ -87,7 +101,6 @@ class _StateOffloader:
                     continue
                 devices.add(local.device)
                 host = self._host_buffer(param, key, local)
-                total += host.numel() * host.element_size()
                 self.offloaded[(param, key)] = local.device
                 if is_dtensor:
                     value = copy.copy(value)
@@ -95,14 +108,16 @@ class _StateOffloader:
                     state[key] = value
                 else:
                     state[key] = host
+        return devices
+
+    def finish(self, devices):
         # The host copies must be complete before anything reads them (torch.save, the next step).
         for device in devices:
             _synchronize(device)
-        if total:
-            self.offloaded_bytes = total
+        self.offloaded_bytes = sum(b.numel() * b.element_size() for b in self.buffers.values())
 
-    def restore(self):
-        for param, state in self.optimizer.state.items():
+    def restore(self, params = None):
+        for param, state in self._states(params):
             for key, value in state.items():
                 device = self.offloaded.get((param, key))
                 if device is None:
@@ -119,15 +134,57 @@ class _StateOffloader:
                 else:
                     state[key] = local
 
-    def _pre_step(self, optimizer, args, kwargs):
-        self.restore()
+    def _chunks(self, params):
+        # Optimizers update only parameters that have a gradient, so stepping one chunk at a time
+        # (other gradients hidden) bounds the on-device state to chunk_bytes instead of all of it.
+        chunks, chunk, size = [], [], 0
+        state = self.optimizer.state
+        for p in params:
+            held = [v for v in state.get(p, {}).values() if isinstance(v, torch.Tensor)]
+            nbytes = sum(v.numel() * v.element_size() for v in held) if held else 8 * p.numel()
+            if chunk and size + nbytes > self.chunk_bytes:
+                chunks.append(chunk)
+                chunk, size = [], 0
+            chunk.append(p)
+            size += nbytes
+        if chunk:
+            chunks.append(chunk)
+        return chunks
 
-    def _post_step(self, optimizer, args, kwargs):
+    def step(self, step, args, kwargs):
         self.steps += 1
-        self.offload()
+        params = [
+            p for group in self.optimizer.param_groups for p in group["params"] if p.grad is not None
+        ]
+        chunks = self._chunks(params)
+        closure = args[0] if args else kwargs.get("closure")
+        # A closure recomputes the loss on every call, so it must run once over all parameters.
+        if len(chunks) <= 1 or closure is not None:
+            self.restore()
+            try:
+                return step(*args, **kwargs)
+            finally:
+                self.finish(self.offload())
+        grads = [p.grad for p in params]
+        devices = set()
+        try:
+            for chunk in chunks:
+                members = set(chunk)
+                for p, g in zip(params, grads):
+                    p.grad = g if p in members else None
+                self.restore(chunk)
+                result = step(*args, **kwargs)
+                devices |= self.offload(chunk)
+        finally:
+            for p, g in zip(params, grads):
+                p.grad = g
+            # A failed chunk can leave restored state of other params on device.
+            devices |= self.offload()
+            self.finish(devices)
+        return result
 
 
-def offload_optimizer_state(optimizer, pin_memory = True):
+def offload_optimizer_state(optimizer, pin_memory = True, chunk_bytes = None):
     """Keep `optimizer`'s state on the host between steps. Idempotent; returns the offloader or None."""
     optimizer = _innermost(optimizer)
     if not isinstance(optimizer, torch.optim.Optimizer):
@@ -142,12 +199,15 @@ def offload_optimizer_state(optimizer, pin_memory = True):
         p.device.type != "cpu" for group in optimizer.param_groups for p in group["params"]
     ):
         return None
-    if not hasattr(optimizer, "register_step_pre_hook"):
-        return None
 
-    offloader = _StateOffloader(optimizer, pin_memory = pin_memory)
-    optimizer.register_step_pre_hook(offloader._pre_step)
-    optimizer.register_step_post_hook(offloader._post_step)
+    offloader = _StateOffloader(optimizer, pin_memory = pin_memory, chunk_bytes = chunk_bytes)
+    # Instance attribute: accelerate, GradScaler and LR schedulers all call optimizer.step.
+    step = optimizer.step
+
+    def _step_offloaded(*args, **kwargs):
+        return offloader.step(step, args, kwargs)
+
+    optimizer.step = _step_offloaded
 
     # Instance override, not register_load_state_dict_post_hook: bitsandbytes replaces
     # Optimizer.load_state_dict and does not run torch's post hooks. Loading moves every
@@ -156,12 +216,12 @@ def offload_optimizer_state(optimizer, pin_memory = True):
 
     def _load_state_dict_and_offload(state_dict, *args, **kwargs):
         result = load_state_dict(state_dict, *args, **kwargs)
-        offloader.offload()
+        offloader.finish(offloader.offload())
         return result
 
     optimizer.load_state_dict = _load_state_dict_and_offload
     optimizer._unsloth_state_offloader = offloader
-    offloader.offload()
+    offloader.finish(offloader.offload())
     return offloader
 
 

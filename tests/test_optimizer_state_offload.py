@@ -86,7 +86,7 @@ def test_deepspeed_is_skipped(monkeypatch):
     assert trainer.create_scheduler is original
 
 
-def _train(optimizer_factory, offload, steps = 6, seed = 0):
+def _train(optimizer_factory, offload, steps = 6, seed = 0, chunk_bytes = None):
     module = _module()
     torch.manual_seed(seed)
     model = torch.nn.Sequential(
@@ -94,7 +94,7 @@ def _train(optimizer_factory, offload, steps = 6, seed = 0):
     ).cuda()
     optimizer = optimizer_factory(model.parameters())
     if offload:
-        assert module.offload_optimizer_state(optimizer) is not None
+        assert module.offload_optimizer_state(optimizer, chunk_bytes = chunk_bytes) is not None
     x = torch.randn(32, 64, device = "cuda", generator = None)
     losses = []
     for step in range(steps):
@@ -130,10 +130,11 @@ def _bnb_factory():
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
 @pytest.mark.parametrize("name", ["adamw", "adamw_foreach", "adamw_fused", "adamw_8bit"])
-def test_offload_matches_on_device_steps_and_resumes(name):
+@pytest.mark.parametrize("chunk_bytes", [None, 1])
+def test_offload_matches_on_device_steps_and_resumes(name, chunk_bytes):
     factory = _bnb_factory() if name == "adamw_8bit" else _FACTORIES[name]
     base_model, base_opt, base_losses = _train(factory, offload = False)
-    head_model, head_opt, head_losses = _train(factory, offload = True)
+    head_model, head_opt, head_losses = _train(factory, offload = True, chunk_bytes = chunk_bytes)
     assert head_losses == base_losses
     for a, b in zip(base_model.parameters(), head_model.parameters()):
         assert torch.equal(a, b)
@@ -146,7 +147,7 @@ def test_offload_matches_on_device_steps_and_resumes(name):
     torch.save(head_opt.state_dict(), buffer)
     buffer.seek(0)
     saved = torch.load(buffer, map_location = "cpu", weights_only = False)
-    resumed_model, resumed_opt, _ = _train(factory, offload = True, steps = 0)
+    resumed_model, resumed_opt, _ = _train(factory, offload = True, steps = 0, chunk_bytes = chunk_bytes)
     resumed_model.load_state_dict(head_model.state_dict())
     resumed_opt.load_state_dict(saved)
     assert _state_devices(resumed_opt) == {"cpu"}
@@ -159,3 +160,27 @@ def test_offload_matches_on_device_steps_and_resumes(name):
     for a, b in zip(base_model.parameters(), resumed_model.parameters()):
         assert torch.equal(a, b)
     assert _state_devices(resumed_opt) == {"cpu"}
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
+def test_chunked_step_bounds_device_state_and_keeps_grads():
+    module = _module()
+    params = [torch.nn.Parameter(torch.randn(1 << 20, device = "cuda")) for _ in range(4)]
+    optimizer = torch.optim.AdamW(params, lr = 1e-3)
+    offloader = module.offload_optimizer_state(optimizer, chunk_bytes = 9 << 20)
+    for p in params:
+        p.grad = torch.ones_like(p)
+    optimizer.step()
+    for p in params:
+        p.grad = torch.ones_like(p)
+    grads = [p.grad for p in params]
+    torch.cuda.synchronize()
+    base = torch.cuda.memory_allocated()
+    torch.cuda.reset_peak_memory_stats()
+    optimizer.step()
+    peak = torch.cuda.max_memory_allocated() - base
+    assert all(p.grad is g for p, g in zip(params, grads))
+    # One parameter's state (2 x 4 MiB) on device at a time, not all four (32 MiB).
+    assert peak < 16 << 20
+    assert _state_devices(optimizer) == {"cpu"}
+    assert offloader.steps == 2
