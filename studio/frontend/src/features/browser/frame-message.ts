@@ -18,6 +18,8 @@ export type FrameMessage =
   | { type: "reload" }
   | { type: "upload" }
   | { type: "scriptNavigation" }
+  | { type: "needsBrowser" }
+  /** Find in page: how many matches the query has, and which one is shown (-1: none). */
   | { type: "findResult"; count: number; active: number }
   /** The page's current markup, for printing; null when it couldn't be copied or was too large. */
   | { type: "snapshot"; html: string | null }
@@ -192,6 +194,7 @@ export function parseFrameMessage(data: unknown): FrameMessage | null {
       return { type: "reload" };
     case "upload":
     case "scriptNavigation":
+    case "needsBrowser":
       return { type: message.type };
     case "findResult": {
       const { count, active } = message;
@@ -232,3 +235,9 @@ export function parseFrameMessage(data: unknown): FrameMessage | null {
       return null;
   }
 }
+
+// One notice per tab and kind; needsBrowser comes once per page, so it stays until closed or the page goes.
+export const frameNotice = (type: "upload" | "scriptNavigation" | "needsBrowser", tabId: string) => ({
+  id: `browser-${type}-${tabId}`,
+  ...(type === "needsBrowser" && { duration: Number.POSITIVE_INFINITY }),
+});

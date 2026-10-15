@@ -453,6 +453,7 @@ export const ko = {
       resubmit: "이 페이지는 양식 제출 결과입니다. 다시 불러오면 양식이 다시 전송되어 같은 작업이 반복될 수 있습니다.",
       upload: "이 보기에서는 파일 업로드가 작동하지 않습니다. 보내려면 시스템 브라우저에서 페이지를 여세요.",
       scriptNavigation: "이 페이지가 스크립트로 다른 주소로 이동하려 했지만 이 보기에서는 따라갈 수 없습니다. 시스템 브라우저에서 여세요.",
+      needsBrowser: "이 페이지가 이 보기에서 차단하는 브라우저 기능을 사용하려고 해서 일부가 작동하지 않을 수 있습니다. 시스템 브라우저에서 여세요.",
     },
     native: {
       externalPrompt: "{host}에서 {url}을(를) 열려고 합니다",
@@ -2572,6 +2573,9 @@ export const ko = {
         showMemoryBar: "VRAM 사용량 막대 표시",
         showMemoryBarDescription:
           "다운로드한 모델의 행 아래에 예상 VRAM 사용량을 표시합니다. 가중치, 실제로 로드될 컨텍스트 길이 기준 KV 캐시, 그리고 추측 디코딩 초안용 예약 공간으로 나뉩니다.",
+        fitOnDeviceOnly: "맞는 모델만 표시",
+        fitOnDeviceOnlyDescription:
+          "이 기기의 GPU 메모리와 RAM보다 큰 모델을 모델 선택기와 Hub에서 숨깁니다. 다운로드한 모델은 계속 표시됩니다.",
       },
       menu: {
         title: "채팅 메뉴",

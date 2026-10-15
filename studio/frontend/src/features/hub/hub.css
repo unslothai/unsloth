@@ -555,6 +555,12 @@
     border-radius: 16px;
   }
 
+  @media (max-width: 767px) {
+    .hub-page .hub-result-row.hub-result-card {
+      border-radius: 14px;
+    }
+  }
+
   .hub-page .hub-result-row:hover {
     background-color: var(--card);
     box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
