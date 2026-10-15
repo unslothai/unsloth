@@ -30,6 +30,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
   const engineGpuMemoryUtilization = useChatRuntimeStore(
     (s) => s.params.engineGpuMemoryUtilization ?? null,
   );
+  const loadIn4bit = useChatRuntimeStore((s) => s.params.loadIn4bit !== false);
   const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
   const loadedIsGguf = useChatRuntimeStore((s) => s.loadedIsGguf);
   const loadedIsMlx = useChatRuntimeStore((s) => s.loadedIsMlx);
@@ -126,6 +127,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
       tensorParallel: tensorParallel ?? false,
       disableVision: disableVision ?? false,
       chatTemplateOverride: chatTemplateOverride ?? null,
+      ...(isGguf || isMlx ? {} : { loadIn4bit }),
     };
     if (!isGguf) {
       return engine === "vllm" || engine === "sglang"
@@ -163,6 +165,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
     engineKvCacheDtype,
     engineSeed,
     engineGpuMemoryUtilization,
+    loadIn4bit,
     customContextLength,
     kvCacheDtype,
     effectiveMlxKvQuant,

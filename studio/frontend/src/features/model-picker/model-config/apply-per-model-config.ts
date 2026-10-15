@@ -40,6 +40,7 @@ export function applyPerModelConfigToRuntime(
   const engineKvCacheDtype = config.engineKvCacheDtype ?? "auto";
   const engineSeed = config.engineSeed ?? null;
   const engineGpuMemoryUtilization = config.engineGpuMemoryUtilization ?? null;
+  const loadIn4bit = config.loadIn4bit !== false;
   if (
     maxSeqLength !== store.params.maxSeqLength ||
     engine !== (store.params.engine ?? "auto") ||
@@ -48,7 +49,8 @@ export function applyPerModelConfigToRuntime(
     engineKvCacheDtype !== (store.params.engineKvCacheDtype ?? "auto") ||
     engineSeed !== (store.params.engineSeed ?? null) ||
     engineGpuMemoryUtilization !==
-      (store.params.engineGpuMemoryUtilization ?? null)
+      (store.params.engineGpuMemoryUtilization ?? null) ||
+    loadIn4bit !== (store.params.loadIn4bit !== false)
   ) {
     store.setParams({
       ...store.params,
@@ -59,6 +61,7 @@ export function applyPerModelConfigToRuntime(
       engineKvCacheDtype,
       engineSeed,
       engineGpuMemoryUtilization,
+      loadIn4bit,
     });
   }
   const gpuSelection =
@@ -138,6 +141,7 @@ export function currentRuntimePerModelConfig(
     engineKvCacheDtype: s.params.engineKvCacheDtype ?? "auto",
     engineSeed: s.params.engineSeed ?? null,
     engineGpuMemoryUtilization: s.params.engineGpuMemoryUtilization ?? null,
+    loadIn4bit: s.params.loadIn4bit !== false,
     customContextLength: s.customContextLength ?? null,
     maxSeqLength: options.includeMaxSeqLength
       ? normalizeMaxSeqLength(s.params.maxSeqLength)
@@ -194,6 +198,7 @@ export function perModelConfigsEqual(
     (a.engineSeed ?? null) === (b.engineSeed ?? null) &&
     (a.engineGpuMemoryUtilization ?? null) ===
       (b.engineGpuMemoryUtilization ?? null) &&
+    (a.loadIn4bit !== false) === (b.loadIn4bit !== false) &&
     (a.customContextLength ?? null) === (b.customContextLength ?? null) &&
     normalizeMaxSeqLength(a.maxSeqLength) ===
       normalizeMaxSeqLength(b.maxSeqLength) &&

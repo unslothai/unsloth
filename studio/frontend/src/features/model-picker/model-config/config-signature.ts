@@ -49,6 +49,7 @@ export function loadedConfigSignature(
     config.engineKvCacheDtype ?? "auto",
     config.engineSeed ?? "",
     config.engineGpuMemoryUtilization ?? "",
+    config.loadIn4bit === false ? "16" : "4",
     config.customContextLength ?? "",
     config.maxSeqLength ?? "",
     config.kvCacheDtype ?? "",

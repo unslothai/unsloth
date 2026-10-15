@@ -1742,7 +1742,7 @@ export function SharedComposer({
           engine_precision: ownConfig.enginePrecision ?? "auto",
           engine_parallelism: ownConfig.engineParallelism ?? "tensor",
           ...engineLaunchFieldsFromParams(ownConfig),
-          load_in_4bit: paneEngine === "auto",
+          load_in_4bit: paneEngine === "auto" && ownConfig.loadIn4bit !== false,
           ...(paneEngine !== "auto" && ownConfig.selectedGpuIds !== undefined
             ? {
                 gpu_ids:

@@ -3455,6 +3455,25 @@ export function ModelConfigPage({
         {!target.isGguf && !targetIsMlx && !targetIsNpu && !classifiedIsDiffusion && !target.meta.isLora && !target.meta.audioType && (
           <InferenceEnginePicker parallelism={config.engineParallelism ?? "tensor"} onParallelismChange={engineParallelism => update({ engineParallelism })} precision={config.enginePrecision ?? "auto"} onPrecisionChange={enginePrecision => update({ enginePrecision })} kvCacheDtype={config.engineKvCacheDtype ?? "auto"} onKvCacheDtypeChange={engineKvCacheDtype => update({ engineKvCacheDtype })} gpuMemoryUtilization={config.engineGpuMemoryUtilization ?? null} onGpuMemoryUtilizationChange={engineGpuMemoryUtilization => update({ engineGpuMemoryUtilization })} seed={config.engineSeed ?? null} onSeedChange={engineSeed => update({ engineSeed })} value={config.engine ?? "auto"} onChange={engine => update({ engine })} onReadyChange={setEngineReady} onUse={handleRun} gpuIds={config.selectedGpuIds} onGpuChange={ids => update({ selectedGpuIds: ids, selectedGpuIndexKind: "physical" })} />
         )}
+        {/* LoRA adapters keep the precision they were trained in, so they get no switch. */}
+        {!target.isGguf && !targetIsMlx && !targetIsNpu && !classifiedIsDiffusion && !target.meta.isLora && !target.meta.audioType && (config.engine ?? "auto") === "auto" && (
+          <div className={ROW_CLASS}>
+            <div className="flex min-w-0 items-center gap-1.5">
+              <span className={LABEL_CLASS}>Load in 4-bit</span>
+              <InfoHint>
+                Quantizes the model to 4 bits as it loads, using about a quarter
+                of the memory. Turn it off to run the model in 16-bit, the same
+                precision as a 16-bit LoRA or full fine-tune.
+              </InfoHint>
+            </div>
+            <Switch
+              className="panel-switch shrink-0"
+              aria-label="Load in 4-bit"
+              checked={config.loadIn4bit !== false}
+              onCheckedChange={(checked) => update({ loadIn4bit: checked })}
+            />
+          </div>
+        )}
         {audioRuntimeGguf ? (
           <p className="text-ui-12 leading-snug text-muted-foreground">
             This model runs on the audio runtime, so llama.cpp settings do not

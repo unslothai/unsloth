@@ -293,6 +293,8 @@ export interface UnloadModelRequest {
 }
 
 export interface InferenceStatusResponse {
+  /** The 4-bit setting the resident non-GGUF load was requested with; null for GGUF. */
+  load_in_4bit?: boolean | null;
   engine_parallelism?: "tensor" | "pipeline" | "data";
   engine_precision?: "auto" | "bf16" | "fp16" | "int4" | "int8" | "fp8";
   engine_kv_cache_dtype?: "auto" | "fp8";

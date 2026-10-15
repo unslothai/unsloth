@@ -42,6 +42,9 @@ export interface ApiModelOverride {
   mlx_kv_bits?: number;
   // biome-ignore lint/style/useNamingConvention: API schema
   mlx_int8_prefill?: boolean;
+  // Stored only when false: absent is the 4-bit default.
+  // biome-ignore lint/style/useNamingConvention: API schema
+  load_in_4bit?: boolean;
   // biome-ignore lint/style/useNamingConvention: API schema
   speculative_type?: string;
   // biome-ignore lint/style/useNamingConvention: API schema
@@ -337,6 +340,7 @@ export function fromApiOverride(
     tensorParallel: override.tensor_parallel ?? local.tensorParallel,
     disableVision: override.disable_vision ?? local.disableVision,
     mlxInt8Prefill: override.mlx_int8_prefill ?? local.mlxInt8Prefill,
+    loadIn4bit: override.load_in_4bit ?? local.loadIn4bit,
     chatTemplateOverride:
       override.chat_template_override ?? local.chatTemplateOverride,
     llamaExtraArgs: extraArgs,
@@ -430,6 +434,9 @@ export function toApiOverride(config: PerModelConfig | null): ApiModelOverride {
   }
   if (config.mlxInt8Prefill) {
     payload.mlx_int8_prefill = true;
+  }
+  if (config.loadIn4bit === false) {
+    payload.load_in_4bit = false;
   }
   if (config.chatTemplateOverride?.trim()) {
     payload.chat_template_override = config.chatTemplateOverride;

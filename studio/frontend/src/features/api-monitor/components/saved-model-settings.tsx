@@ -48,6 +48,9 @@ function describeOverride(override: ApiModelOverride): string[] {
       `${Math.round(override.engine_gpu_memory_utilization * 100)}% GPU memory`,
     );
   }
+  if (override.load_in_4bit === false && (override.engine ?? "auto") === "auto") {
+    parts.push("16-bit");
+  }
   if (override.custom_context_length) {
     parts.push(`${override.custom_context_length.toLocaleString()} context`);
   }
