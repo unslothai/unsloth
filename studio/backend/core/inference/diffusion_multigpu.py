@@ -145,7 +145,6 @@ def _capability(ordinal: int) -> Optional[tuple[int, int]]:
     """``(major, minor)`` CUDA compute capability of ``ordinal``, None when it cannot be read."""
     try:
         import torch
-
         major, minor = torch.cuda.get_device_capability(int(ordinal))
         return int(major), int(minor)
     except Exception:  # noqa: BLE001
@@ -325,7 +324,9 @@ def _reset_probe_cache_for_tests() -> None:
 
 
 def link_gib_s(
-    src: int, dst: int, probes: Optional[dict[int, DeviceProbe]] = None
+    src: int,
+    dst: int,
+    probes: Optional[dict[int, DeviceProbe]] = None,
 ) -> Optional[float]:
     """Measured ``src`` -> ``dst`` copy rate in GiB/s (peer or via host), None when unmeasured; ``LINK_ENV`` overrides."""
     raw = (os.environ.get(LINK_ENV) or "").strip()
@@ -511,9 +512,7 @@ def plan_companion_split(
         if not fits:
             continue
         best = (
-            rank_secondaries(selection.primary, fits, limits.get)[0]
-            if len(fits) > 1
-            else fits[0]
+            rank_secondaries(selection.primary, fits, limits.get)[0] if len(fits) > 1 else fits[0]
         )
         return CompanionSplit(
             secondary_ordinal = best,
@@ -1673,7 +1672,10 @@ def _mirror_hook_state(pairs: list) -> tuple:
         for key in [
             k
             for k, v in dst.__dict__.items()
-            if k.startswith(_STATE_PREFIX) and isinstance(v, _STATE_TYPES) and k not in mine and k not in _STATE_KEEP
+            if k.startswith(_STATE_PREFIX)
+            and isinstance(v, _STATE_TYPES)
+            and k not in mine
+            and k not in _STATE_KEEP
         ]:
             del dst.__dict__[key]
         for key, value in mine.items():
@@ -2211,7 +2213,11 @@ def _install_cfg_parallel_only(
     return reason
 
 
-def invalidate_cfg_replica(pipe: Any, reason: str, logger: Any = None) -> bool:
+def invalidate_cfg_replica(
+    pipe: Any,
+    reason: str,
+    logger: Any = None,
+) -> bool:
     """Drop the CFG-parallel replica of ``pipe`` after its denoiser was mutated in ways the per-step staleness check
     does not see (attention backend, eager patches, compile); the next guided step rebuilds it from the source. True
     when a replica was dropped."""
@@ -2222,7 +2228,10 @@ def invalidate_cfg_replica(pipe: Any, reason: str, logger: Any = None) -> bool:
     if router is None or router.replica is None:
         return False
     if logger is not None:
-        logger.info("diffusion.multigpu: CFG-parallel replica dropped (%s); rebuilt on the next guided step", reason)
+        logger.info(
+            "diffusion.multigpu: CFG-parallel replica dropped (%s); rebuilt on the next guided step",
+            reason,
+        )
     router.stats["replica_rebuilds"] += 1
     router.drop_replica()
     return True
@@ -2313,7 +2322,11 @@ def _batch_leaves(first: list, second: list, batch: int) -> dict:
     return values
 
 
-def _split_output(out: Any, batch: int, depth: int = 0) -> tuple[Any, Any]:
+def _split_output(
+    out: Any,
+    batch: int,
+    depth: int = 0,
+) -> tuple[Any, Any]:
     """(first, second) branch of a batched output, split on leading dim ``2 * batch``; else :class:`_NotBatchable`."""
     torch = _torch()
     if isinstance(out, torch.Tensor):
@@ -2325,7 +2338,10 @@ def _split_output(out: Any, batch: int, depth: int = 0) -> tuple[Any, Any]:
     if depth > 4:
         raise _NotBatchable("output nests too deep")
     if dataclasses.is_dataclass(out) and not isinstance(out, type):
-        pairs = {f.name: _split_output(getattr(out, f.name), batch, depth + 1) for f in dataclasses.fields(out)}
+        pairs = {
+            f.name: _split_output(getattr(out, f.name), batch, depth + 1)
+            for f in dataclasses.fields(out)
+        }
         return (
             dataclasses.replace(out, **{k: v[0] for k, v in pairs.items()}),
             dataclasses.replace(out, **{k: v[1] for k, v in pairs.items()}),
@@ -2338,7 +2354,9 @@ def _split_output(out: Any, batch: int, depth: int = 0) -> tuple[Any, Any]:
         return [p[0] for p in pairs], [p[1] for p in pairs]
     if isinstance(out, dict):
         pairs = {k: _split_output(v, batch, depth + 1) for k, v in out.items()}
-        return type(out)((k, v[0]) for k, v in pairs.items()), type(out)((k, v[1]) for k, v in pairs.items())
+        return type(out)((k, v[0]) for k, v in pairs.items()), type(out)(
+            (k, v[1]) for k, v in pairs.items()
+        )
     raise _NotBatchable(f"output type {type(out).__name__}")
 
 
@@ -2479,7 +2497,9 @@ class CfgBatchRouter:
         except Exception:  # noqa: BLE001 - unmeasured link: the batched call's own timing decides
             h2d = None
         upload_s = streamed / (h2d * (1 << 30)) if h2d else None
-        self.pricing = price_cfg_batch(call_s = call_s, upload_s = upload_s, streamed_bytes = streamed, h2d_gib_s = h2d)
+        self.pricing = price_cfg_batch(
+            call_s = call_s, upload_s = upload_s, streamed_bytes = streamed, h2d_gib_s = h2d
+        )
         if self.logger is not None:
             self.logger.info("diffusion.multigpu: CFG-batch priced %s", self.pricing)
         if self.pricing["strategy"] != "cfg_batch":
@@ -2565,11 +2585,11 @@ class CfgBatchRouter:
             self._skip("not enough free memory for a second branch's activations")
             return None
         b_args, b_kwargs = _rebuild((args, kwargs), merged)
-        snapshots = [
-            (path, v.clone() if isinstance(v, torch.Tensor) else v) for path, v in second
-        ]
+        snapshots = [(path, v.clone() if isinstance(v, torch.Tensor) else v) for path, v in second]
         state = _hook_state([(m, m) for m in module.modules()])
-        verify = self.verify_batched > 0 and len(self.plain_times) == 2 and latent.device.type == "cuda"
+        verify = (
+            self.verify_batched > 0 and len(self.plain_times) == 2 and latent.device.type == "cuda"
+        )
         try:
             if verify:
                 torch.cuda.synchronize()
@@ -2605,16 +2625,16 @@ class CfgBatchRouter:
             self.pricing["batched_call_s"] = round(batched_s, 4)
             self.pricing["two_plain_calls_s"] = round(plain, 4)
         if batched_s > _BATCH_MEASURED_FRACTION * plain:
-            self.disabled_pending = (
-                f"measured no gain: one batched call {batched_s:.4f}s vs two plain calls {plain:.4f}s"
-            )
+            self.disabled_pending = f"measured no gain: one batched call {batched_s:.4f}s vs two plain calls {plain:.4f}s"
 
     def _memory_ok(self, device: Any) -> bool:
         if self.headroom_mib is None or getattr(device, "type", None) != "cuda":
             return True
         torch = _torch()
         try:
-            free, _total = _free_total_mib(device.index if device.index is not None else torch.cuda.current_device())
+            free, _total = _free_total_mib(
+                device.index if device.index is not None else torch.cuda.current_device()
+            )
             reserved_idle = (
                 torch.cuda.memory_reserved(device) - torch.cuda.memory_allocated(device)
             ) // (1 << 20)
@@ -2630,11 +2650,7 @@ class CfgBatchRouter:
         snaps = kept["snapshots"]
         ok = len(actual) == len(snaps) and all(
             pa == ps
-            and (
-                _bitwise_equal(va, vs)
-                if isinstance(vs, _torch().Tensor)
-                else _same_value(va, vs)
-            )
+            and (_bitwise_equal(va, vs) if isinstance(vs, _torch().Tensor) else _same_value(va, vs))
             for (pa, va), (ps, vs) in zip(actual, snaps)
         )
         module = self.module_ref()
@@ -2677,7 +2693,9 @@ def cfg_batch_decline(pipe: Any, *, offload_policy: str) -> Optional[str]:
         any(_registry_kind(sub) == "offload" for sub in denoiser.modules())
         or any(getattr(sub, "_hf_hook", None) is not None for sub in denoiser.modules())
         or any(
-            _is_offload_object(sub.__dict__.get("forward")) for sub in denoiser.modules() if "forward" in sub.__dict__
+            _is_offload_object(sub.__dict__.get("forward"))
+            for sub in denoiser.modules()
+            if "forward" in sub.__dict__
         )
     )
     if not streamed:
@@ -2700,7 +2718,9 @@ def install_cfg_batch(
     router = CfgBatchRouter(
         denoiser,
         headroom_mib = headroom_mib,
-        reason = "forced" if cfg_batch_mode() == "force" else f"offloaded denoiser ({offload_policy})",
+        reason = "forced"
+        if cfg_batch_mode() == "force"
+        else f"offloaded denoiser ({offload_policy})",
         logger = logger,
     )
     try:

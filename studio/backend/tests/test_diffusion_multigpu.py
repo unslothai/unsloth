@@ -1200,7 +1200,11 @@ def test_deferred_speed_profile_invalidates_the_replica(monkeypatch):
     _cfg_loop(dit, torch.randn(2, 4), steps = 3)
     assert router.replica is not None
     state = _types.SimpleNamespace(
-        pipe = pipe, speed_deferred = True, deferred_static_plan = None, resolved = {}, transformer_cache = None
+        pipe = pipe,
+        speed_deferred = True,
+        deferred_static_plan = None,
+        resolved = {},
+        transformer_cache = None,
     )
     fake_self = _types.SimpleNamespace(_engage_deferred_profile = lambda state: None)
     DiffusionBackend._engage_deferred_speed(fake_self, state)
@@ -1225,7 +1229,9 @@ class _FlagDit(_Dit):
 def _flag_pre_hook(module, args, kwargs):
     # like the HunyuanVideo trim hook: per-call state written onto a SUBMODULE of the source
     # varies per call: by branch (negative embeds) and over the trajectory (late steps)
-    module.proj._unsloth_flip = bool(kwargs["encoder_hidden_states"].sum() < 0) != bool(kwargs["timestep"] < 0.5)
+    module.proj._unsloth_flip = bool(kwargs["encoder_hidden_states"].sum() < 0) != bool(
+        kwargs["timestep"] < 0.5
+    )
 
 
 def _flag_post_hook(module, args, output):
@@ -1305,13 +1311,18 @@ def test_generate_guard_checks_the_vae_card(monkeypatch):
     pipe = _types.SimpleNamespace(vae = Vae())
     target = _types.SimpleNamespace(ordinal = 0)
     monkeypatch.setattr(mg, "_module_device", lambda m: torch.device("cuda", 1))
-    restore, tiled = D._guard_vae_card(pipe, target, {"device_memory": "card0-free", "vae_tile_side": 512}, None, None)
+    restore, tiled = D._guard_vae_card(
+        pipe, target, {"device_memory": "card0-free", "vae_tile_side": 512}, None, None
+    )
     assert ("scope", 1) in seen and ("guard", "card1-free", 512) in seen
     assert (restore, tiled) == ("restore", True)
     # the VAE on the primary (or no split): nothing extra
     monkeypatch.setattr(mg, "_module_device", lambda m: torch.device("cuda", 0))
     seen.clear()
-    assert D._guard_vae_card(pipe, target, {"device_memory": "card0-free"}, None, None) == (None, False)
+    assert D._guard_vae_card(pipe, target, {"device_memory": "card0-free"}, None, None) == (
+        None,
+        False,
+    )
     assert seen == []
 
 
@@ -1335,7 +1346,14 @@ class _Cache:
 
 
 class _CacheDit(_Dit):
-    def forward(self, hidden_states, timestep, encoder_hidden_states, kv_cache = None, return_dict = False):
+    def forward(
+        self,
+        hidden_states,
+        timestep,
+        encoder_hidden_states,
+        kv_cache = None,
+        return_dict = False,
+    ):
         if kv_cache is not None:
             kv_cache.writers.append(threading.current_thread())
             hidden_states = hidden_states + kv_cache.keys[0]
@@ -1394,7 +1412,9 @@ def test_split_video_request_is_guarded_on_every_card():
     big = dict(width = 1280, height = 720, frames = 121)
     clip = vid.estimate_video_runtime_mib(width = 1280, height = 720, num_frames = 121)
     roomy = {0: 1 << 20, 1: 1 << 20}
-    assert vid.video_split_shortfall_message(cards, family = "f", available_mib = roomy.get, **big) is None
+    assert (
+        vid.video_split_shortfall_message(cards, family = "f", available_mib = roomy.get, **big) is None
+    )
     # the decode card is priced for the decoded clip; the denoiser card only for its weights + base headroom
     tight = {0: 4 + dm.DEFAULT_BASE_OVERHEAD_MIB, 1: 3 + dm.DEFAULT_BASE_OVERHEAD_MIB}
     message = vid.video_split_shortfall_message(cards, family = "f", available_mib = tight.get, **big)
@@ -1442,7 +1462,9 @@ def test_secondary_free_memory_reads_the_trusted_probe(monkeypatch):
     seen = []
     monkeypatch.setattr(torch.cuda, "mem_get_info", lambda *a: (80 << 30, 80 << 30))
     monkeypatch.setattr(
-        hw, "trusted_mem_get_info", lambda device = None, module = None: seen.append(device) or (1 << 30, 80 << 30)
+        hw,
+        "trusted_mem_get_info",
+        lambda device = None, module = None: seen.append(device) or (1 << 30, 80 << 30),
     )
     # Windows ROCm over-reports raw free memory; the capped figure is what budgets the secondary
     assert mg._free_total_mib(1) == (1024, 80 * 1024)
@@ -1478,12 +1500,18 @@ def test_foreign_submodule_hook_declines_the_replica():
 
 def test_force_mode_refines_a_resident_plan(monkeypatch):
     plan = dataclasses.replace(_plan(), offload_policy = dm.OFFLOAD_NONE)
-    sizes = {"transformer": (9000, "dit"), "text_encoder": (8000, "text_encoder"), "vae": (300, "other")}
+    sizes = {
+        "transformer": (9000, "dit"),
+        "text_encoder": (8000, "text_encoder"),
+        "vae": (300, "other"),
+    }
     monkeypatch.setattr(dm, "_loaded_component_mib", lambda pipe: sizes)
     monkeypatch.setattr(mg, "secondary_resident_limit_mib", lambda o, mode: 12750)
     monkeypatch.setattr(mg, "best_secondary", lambda selection, probes = None: 1)
     with mg.selection_scope(mg.make_selection(0, [0, 1])):
-        assert mg.refine_plan_for_multigpu(object(), plan) is plan  # auto: a resident plan stays on one card
+        assert (
+            mg.refine_plan_for_multigpu(object(), plan) is plan
+        )  # auto: a resident plan stays on one card
         monkeypatch.setenv(mg.MULTIGPU_ENV, "force")
         refined = mg.refine_plan_for_multigpu(object(), plan)
     assert refined.secondary_ordinal == 1 and refined.offload_policy == dm.OFFLOAD_NONE
@@ -1508,7 +1536,9 @@ def test_ltx25_sidecar_encoder_keeps_the_single_card_plan(monkeypatch):
     assert vid._video_single_card_for_sidecar(ltx25, single) is single
     # and the post-load refinement (whose loaded sizes omit the sidecar) never splits it
     refined = []
-    monkeypatch.setattr(vid, "refine_plan_for_multigpu", lambda pipe, plan, logger = None: refined.append(1) or split)
+    monkeypatch.setattr(
+        vid, "refine_plan_for_multigpu", lambda pipe, plan, logger = None: refined.append(1) or split
+    )
     assert vid._video_refine_for_multigpu(ltx25, object(), single) is single
     assert vid._video_refine_for_multigpu(wan, object(), single) is split and refined == [1]
 
@@ -1525,13 +1555,27 @@ class _BatchDit(torch.nn.Module):
         self.calls = 0
         self.rows = []
 
-    def forward(self, hidden_states, timestep, encoder_hidden_states, return_dict = False):
+    def forward(
+        self,
+        hidden_states,
+        timestep,
+        encoder_hidden_states,
+        return_dict = False,
+    ):
         self.calls += 1
         self.rows.append(hidden_states.shape[0])
         return (self.proj(hidden_states) * timestep + encoder_hidden_states.tanh(),)
 
 
-def _batch_loop(dit, latents, steps, cond, uncond, scale = 4.0, edit = None):
+def _batch_loop(
+    dit,
+    latents,
+    steps,
+    cond,
+    uncond,
+    scale = 4.0,
+    edit = None,
+):
     for i in range(steps):
         t = torch.tensor(1.0 - i / steps)
         c = dit(hidden_states = latents, timestep = t, encoder_hidden_states = cond)[0]
@@ -1585,9 +1629,17 @@ def test_cfg_batch_skips_branches_of_different_shapes():
     torch.manual_seed(0)
 
     class LenDit(_BatchDit):
-        def forward(self, hidden_states, timestep, encoder_hidden_states, return_dict = False):
+        def forward(
+            self,
+            hidden_states,
+            timestep,
+            encoder_hidden_states,
+            return_dict = False,
+        ):
             self.calls += 1
-            return (self.proj(hidden_states) * timestep + encoder_hidden_states.mean(1, keepdim = True),)
+            return (
+                self.proj(hidden_states) * timestep + encoder_hidden_states.mean(1, keepdim = True),
+            )
 
     dit = LenDit()
     latents = torch.randn(2, 4)
@@ -1609,7 +1661,10 @@ def test_cfg_batch_guidance_distilled_never_batches():
     latents = torch.randn(2, 4)
     cond, _ = _embeds()
     for i in range(4):
-        latents = latents - dit(hidden_states = latents, timestep = torch.tensor(0.5), encoder_hidden_states = cond)[0]
+        latents = (
+            latents
+            - dit(hidden_states = latents, timestep = torch.tensor(0.5), encoder_hidden_states = cond)[0]
+        )
     assert router.stats["batched_steps"] == 0 and dit.calls == 4
 
 
@@ -1657,20 +1712,29 @@ def test_price_cfg_parallel_declines_a_slow_link():
     fast = mg.price_cfg_parallel(
         branch_s = 0.5, in_bytes = 64 << 20, out_bytes = 32 << 20, link_in_gib_s = 20.0, link_out_gib_s = 20.0
     )
-    assert fast["strategy"] == "cfg_parallel" and fast["cfg_parallel_step_s"] < fast["single_step_s"]
+    assert (
+        fast["strategy"] == "cfg_parallel" and fast["cfg_parallel_step_s"] < fast["single_step_s"]
+    )
     slow = mg.price_cfg_parallel(
         branch_s = 0.05, in_bytes = 64 << 20, out_bytes = 32 << 20, link_in_gib_s = 1.0, link_out_gib_s = 1.0
     )
     assert slow["strategy"] == "single"
     unknown = mg.price_cfg_parallel(
-        branch_s = 0.05, in_bytes = 64 << 20, out_bytes = 32 << 20, link_in_gib_s = None, link_out_gib_s = None
+        branch_s = 0.05,
+        in_bytes = 64 << 20,
+        out_bytes = 32 << 20,
+        link_in_gib_s = None,
+        link_out_gib_s = None,
     )
     assert unknown["strategy"] == "cfg_parallel"
 
 
 def _probe(o, free, links):
     return mg.DeviceProbe(
-        ordinal = o, name = "card", total_mib = 16000, free_mib = free,
+        ordinal = o,
+        name = "card",
+        total_mib = 16000,
+        free_mib = free,
         peers = tuple((b, True, g) for b, g in links.items()),
     )
 
@@ -1697,9 +1761,7 @@ def test_cfg_parallel_router_priced_out_keeps_one_card(monkeypatch):
     reference = _cfg_loop(dit, latents.clone(), steps = 4)
     router, replicas = _router(dit)
     monkeypatch.setattr(router, "_should_price", lambda: True)
-    monkeypatch.setattr(
-        router, "_timed_primary", lambda a, k: (router.orig_forward(*a, **k), 1e-4)
-    )
+    monkeypatch.setattr(router, "_timed_primary", lambda a, k: (router.orig_forward(*a, **k), 1e-4))
     monkeypatch.setattr(mg, "link_gib_s", lambda src, dst, probes = None: 1e-9)
     router.primary = router.secondary = torch.device("cpu")
     out = _cfg_loop(dit, latents.clone(), steps = 4)

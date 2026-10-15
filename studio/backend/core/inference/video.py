@@ -2618,7 +2618,11 @@ def _video_offload_vram_floor_mib(
 _VIDEO_SIDECAR_ENCODER_FAMILIES = frozenset({"ltx-2.5"})
 
 
-def _video_single_card_for_sidecar(fam: Any, plan: Any, logger: Any = None) -> Any:
+def _video_single_card_for_sidecar(
+    fam: Any,
+    plan: Any,
+    logger: Any = None,
+) -> Any:
     """The single-card plan in place of a companion split for a sidecar-encoder family; any other plan unchanged."""
     if getattr(fam, "name", None) not in _VIDEO_SIDECAR_ENCODER_FAMILIES:
         return plan
@@ -2626,11 +2630,19 @@ def _video_single_card_for_sidecar(fam: Any, plan: Any, logger: Any = None) -> A
     if getattr(plan, "secondary_ordinal", None) is None or fallback is None:
         return plan
     if logger is not None:
-        logger.info("video.multigpu: one card (the %s text encoder runs in a sidecar a split cannot move)", fam.name)
+        logger.info(
+            "video.multigpu: one card (the %s text encoder runs in a sidecar a split cannot move)",
+            fam.name,
+        )
     return fallback
 
 
-def _video_refine_for_multigpu(fam: Any, pipe: Any, plan: Any, logger: Any = None) -> Any:
+def _video_refine_for_multigpu(
+    fam: Any,
+    pipe: Any,
+    plan: Any,
+    logger: Any = None,
+) -> Any:
     """``refine_plan_for_multigpu``, declined for a sidecar-encoder family (its loaded sizes omit the encoder)."""
     if getattr(fam, "name", None) in _VIDEO_SIDECAR_ENCODER_FAMILIES:
         return plan
@@ -2658,7 +2670,11 @@ def _video_split_card_floors(pipe: Any) -> Optional[tuple]:
         for name, where in placement.items():
             device = torch.device(where)
             module = components.get(name)
-            if device.type != "cuda" or device.index is None or not isinstance(module, torch.nn.Module):
+            if (
+                device.type != "cuda"
+                or device.index is None
+                or not isinstance(module, torch.nn.Module)
+            ):
                 continue
             card = cards.setdefault(int(device.index), [0, False])
             for tensor in chain(module.parameters(), module.buffers()):
