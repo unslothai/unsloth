@@ -84,6 +84,28 @@ def _gate_torch_stack(reason: str) -> None:
         pass
 
 
+def _import_light(module_name: str) -> Any:
+    """``unsloth_zoo.<name>`` without running ``unsloth_zoo/__init__``, or ``None`` on a zoo too old for that.
+
+    A module already in ``sys.modules`` under the zoo name wins, so an earlier full import and test
+    doubles keep their identity. Otherwise the stdlib-only ``unsloth_zoo_downloads`` sibling
+    (unslothai/unsloth-zoo#1752) is imported: no torch, no transformers, so neither the torch gate
+    nor the GPU-init retry applies.
+    """
+    import importlib
+    import sys as _sys
+
+    module = _sys.modules.get(module_name)
+    if module is not None and not getattr(
+        getattr(module, "__spec__", None), "_initializing", False
+    ):
+        return module
+    try:
+        return importlib.import_module("unsloth_zoo_downloads." + module_name.rpartition(".")[2])
+    except Exception:  # noqa: BLE001 - absent on older zoo releases: take the full-init path
+        return None
+
+
 def _load_shared() -> bool:
     """Import ``unsloth_zoo.hf_xet_fallback`` on demand; return True if available. Deferred so
     importing this module at worker startup does not pull transformers in before the sidecar is
@@ -91,6 +113,12 @@ def _load_shared() -> bool:
     global _shared, _shared_available, _shared_import_error
     if _shared_available is not None:
         return _shared_available
+    light = _import_light("unsloth_zoo.hf_xet_fallback")
+    if light is not None:
+        with _load_lock:
+            if _shared_available is None:
+                _shared, _shared_available, _shared_import_error = light, True, None
+            return _shared_available
     # Outside _load_lock: a thread waiting on the warm must not hold up the env-var bookkeeping.
     _gate_torch_stack("unsloth_zoo.hf_xet_fallback import")
     with _load_lock:
@@ -187,6 +215,11 @@ def _load_optional(module_name: str) -> Any:
     cached = _optional_modules.get(module_name, _UNTRIED)
     if cached is not _UNTRIED:
         return cached
+
+    light = _import_light(module_name)
+    if light is not None:
+        _optional_modules[module_name] = light
+        return light
 
     _gate_torch_stack(f"{module_name} import")
     try:

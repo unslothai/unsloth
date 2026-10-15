@@ -416,6 +416,7 @@ def test_optional_loader_retries_with_gpu_init_disabled(monkeypatch):
     monkeypatch.setattr(importlib, "import_module", _fake_import)
     monkeypatch.delenv("UNSLOTH_ZOO_DISABLE_GPU_INIT", raising = False)
     monkeypatch.setattr(shim, "_gpu_present", lambda: False)
+    monkeypatch.setattr(shim, "_import_light", lambda name: None)
 
     assert shim._load_optional("unsloth_zoo.hf_xet_tuning") is sentinel
     assert attempts == [None, "1"]
