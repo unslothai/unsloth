@@ -55,10 +55,20 @@ def timeout_seconds(
     family: Optional[str], seconds: float, variations: int, backend: Optional[str]
 ) -> float:
     music = MUSIC_SPECS.get(str(family or ""))
-    rtf = music.rtf * music.overrun if music is not None else 4.0
+    rtf = music.rtf if music is not None else 4.0
     rtf *= _BACKEND_FACTOR.get(str(backend or "").lower(), 1.0)
+    if music is not None and music.self_ending_s:
+        seconds = music.self_ending_s
     work = rtf * max(0.0, float(seconds)) * max(1, int(variations))
     return max(_TIMEOUT_FLOOR, min(_TIMEOUT_CEILING, _TIMEOUT_FLOOR + work))
+
+
+def self_ending_timeout(family: Optional[str], backend: Optional[str]) -> Optional[float]:
+    """The wait for a model that ends the song itself, whatever length or token count was asked."""
+    music = MUSIC_SPECS.get(str(family or ""))
+    if music is None or not music.self_ending_s:
+        return None
+    return timeout_seconds(family, music.self_ending_s, 1, backend)
 
 
 def frames_for(seconds: float, variations: int = 1) -> int:
@@ -194,11 +204,6 @@ def song_request(
         request["text"] = lyrics
         request_options["style"] = description
         request_options["lyrics"] = lyrics
-        # Length caps the semantic tokens (25 fps); the default 200-frame floor outlasts short asks.
-        frames = int(round(seconds * 25))
-        overrun = MUSIC_SPECS["yue2"].overrun
-        request_options["semantic_max_tokens"] = int(round(seconds * overrun * 25))
-        request_options["semantic_min_tokens"] = min(200, frames)
         return _finish(model, request, request_options, seed)
     if instrumental and music is not None and music.instrumental_lyrics is not None:
         lyrics = music.instrumental_lyrics

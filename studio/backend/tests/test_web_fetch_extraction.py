@@ -1064,6 +1064,103 @@ def test_fetch_page_text_falls_back_to_html_when_readme_api_fails(monkeypatch):
     assert "There was an error while loading" not in out
 
 
+def test_fetch_page_text_reads_github_file_link_as_raw_file(monkeypatch):
+    source = "<!doctype html>\n<html>\n  <body><script>run()</script></body>\n</html>\n"
+    calls = []
+
+    def fake_fetch(
+        url,
+        timeout = 30,
+        extra_headers = None,
+        deadline = None,
+        cancel_event = None,
+    ):
+        calls.append(url)
+        if url.startswith("https://raw.githubusercontent.com/"):
+            return None, source, "text/plain"
+        return None, _GITHUB_PAGE, "text/html"
+
+    monkeypatch.setattr("core.inference.tools._fetch_url_raw", fake_fetch)
+    out = _fetch_page_text(
+        "https://github.com/unslothai/unsloth/blob/main/studio/frontend/index.html?plain=1#L3"
+    )
+    assert calls == [
+        "https://raw.githubusercontent.com/unslothai/unsloth/main/studio/frontend/index.html"
+    ]
+    assert out == source.strip()
+
+
+def test_fetch_page_text_falls_back_to_github_file_page_when_raw_fails(monkeypatch):
+    calls = []
+
+    def fake_fetch(
+        url,
+        timeout = 30,
+        extra_headers = None,
+        deadline = None,
+        cancel_event = None,
+    ):
+        calls.append(url)
+        if url.startswith("https://raw.githubusercontent.com/"):
+            return "Failed to fetch URL: HTTP 404 Not Found", "", ""
+        return None, _GITHUB_PAGE, "text/html"
+
+    monkeypatch.setattr("core.inference.tools._fetch_url_raw", fake_fetch)
+    out = _fetch_page_text("https://github.com/owner/repo/blob/v1.2/src/app.py")
+    assert calls == [
+        "https://raw.githubusercontent.com/owner/repo/v1.2/src/app.py",
+        "https://github.com/owner/repo/blob/v1.2/src/app.py",
+    ]
+    assert "Unsloth Studio" in out
+
+
+def test_fetch_page_text_keeps_semicolon_in_github_file_name(monkeypatch):
+    calls = []
+
+    def fake_fetch(
+        url,
+        timeout = 30,
+        extra_headers = None,
+        deadline = None,
+        cancel_event = None,
+    ):
+        calls.append(url)
+        return None, "file body", "text/plain"
+
+    monkeypatch.setattr("core.inference.tools._fetch_url_raw", fake_fetch)
+    _fetch_page_text("https://github.com/owner/repo/blob/main/t/foo;bar.py")
+    assert calls == ["https://raw.githubusercontent.com/owner/repo/main/t/foo;bar.py"]
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://github.com/unslothai/unsloth",
+        "https://github.com/unslothai/unsloth/tree/main/studio",
+        "https://github.com/unslothai/unsloth/blob/main",
+        "https://github.com/unslothai/unsloth/issues/123",
+        "https://example.com/owner/repo/blob/main/app.py",
+    ],
+)
+def test_fetch_page_text_leaves_other_github_urls_on_their_page(monkeypatch, url):
+    calls = []
+
+    def fake_fetch(
+        url,
+        timeout = 30,
+        extra_headers = None,
+        deadline = None,
+        cancel_event = None,
+    ):
+        calls.append(url)
+        return "Failed to fetch URL: HTTP 403", "", ""
+
+    monkeypatch.setattr("core.inference.tools._fetch_url_raw", fake_fetch)
+    _fetch_page_text(url)
+    assert not any("raw.githubusercontent.com" in c for c in calls)
+    assert calls[-1] == url
+
+
 _RAW_TEXT_PAGE = "line one\n    indented code\nline three"
 _HTML_FRAGMENT = "<article><h1>Doc Title</h1><p>Readable fragment body.</p></article>"
 

@@ -407,6 +407,25 @@ def test_audio_generation_timeout_scales_with_requested_tokens(monkeypatch):
     assert orchestrator_module._audio_generation_timeout(10**310) == 40.0
 
 
+def test_legacy_yue2_watchdog_outlasts_its_own_ending():
+    # YuE2 runs to its own end whatever the token count; the 900 s token watchdog cut it (#13337).
+    from core.inference import audio_cpp_music as cm
+
+    timeout = orchestrator_module._music_generation_timeout
+    yue2 = {"audio_family": "yue2", "audio_cpp_backend": "cuda"}
+    assert (
+        timeout(900.0, "audiocpp_music", yue2, None)
+        == cm.timeout_seconds("yue2", 0, 1, "cuda") + 60
+    )
+    cpu = dict(yue2, audio_cpp_backend = "cpu")
+    assert timeout(900.0, "audiocpp_music", cpu, None) == 4 * 3600.0 + 60
+    stable = {"audio_family": "stable_audio", "audio_cpp_backend": "cuda"}
+    assert timeout(900.0, "audiocpp_music", stable, None) == 900.0
+    assert timeout(900.0, "audiocpp_tts", yue2, None) == 900.0
+    assert timeout(900.0, "audiocpp_music", yue2, {"timeout_s": 1234.0}) == 1294.0
+    assert timeout(900.0, "audiocpp_music", yue2, {"timeout_s": "x"}) == 900.0
+
+
 def test_tts_route_bounds_public_token_budget():
     payload = ChatCompletionRequest(
         messages = [{"role": "user", "content": "hello"}],

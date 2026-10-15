@@ -21,6 +21,7 @@ import { offerToDeleteKeptSandboxes } from "../utils/offer-kept-sandbox-files";
 import { stopChatThread } from "../utils/stop-chat-thread";
 import {
   markChatThreadsDeleted,
+  notifyChatThreadsDeleted,
   removeChatThreadTombstones,
 } from "../utils/chat-thread-tombstones";
 import { requestPromptQueueStop } from "../utils/prompt-queue-boundary";
@@ -348,7 +349,8 @@ export async function deleteChatItems(
   // clear composer drafts so deleted threads leave no orphan keys.
   for (const id of threadIds) clearComposerDraft(id);
 
-  markChatThreadsDeleted(threadIds);
+  // Quiet until the delete lands: a failed one restores the chats, browser tabs and all.
+  markChatThreadsDeleted(threadIds, { quiet: true });
   notifyChatHistoryUpdated();
 
   if (activeId !== undefined && items.some((item) => item.id === activeId)) {
@@ -358,6 +360,10 @@ export async function deleteChatItems(
 
   try {
     const kept = await deleteStoredChatThreads(threadIds, args);
+    notifyChatThreadsDeleted(
+      threadIds,
+      items.filter((item) => item.type === "compare").map((item) => item.id),
+    );
     // retain the head until deletion succeeds so a restored chat reopens on the same branch.
     for (const id of threadIds) clearBranchHead(id);
     // offer recovery for sandbox files that outlive a deleted chat and lose their sidebar entry.
