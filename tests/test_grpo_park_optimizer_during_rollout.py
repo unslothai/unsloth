@@ -24,6 +24,7 @@ from _rl_source import load_rl_wrapper  # noqa: E402
 NAMES = (
     "_park_optimizer_enabled",
     "_is_parkable_tensor",
+    "_optimizer_state_is_flat",
     "_park_optimizer_to_host",
     "_restore_optimizer_from_host",
     "_wrap_grpo_generate_and_score",
@@ -37,13 +38,15 @@ def _load():
         calls = [],
         is_available = lambda: True,
     )
-    cuda.synchronize = lambda: cuda.calls.append("synchronize")
+    cuda.synchronize = lambda device = None: cuda.calls.append("synchronize")
     cuda.empty_cache = lambda: cuda.calls.append("empty_cache")
 
-    def empty(*args, pin_memory = False, **kwargs):
-        return torch.empty(*args, **kwargs)
+    def empty_like(tensor, pin_memory = False, **kwargs):
+        return torch.empty_like(tensor, **kwargs)
 
-    namespace["torch"] = types.SimpleNamespace(Tensor = torch.Tensor, empty = empty, cuda = cuda)
+    namespace["torch"] = types.SimpleNamespace(
+        Tensor = torch.Tensor, empty_like = empty_like, cuda = cuda, strided = torch.strided
+    )
     namespace["_is_parkable_tensor"] = lambda value: isinstance(value, torch.Tensor)
     return fns, cuda
 
@@ -172,3 +175,30 @@ def test_no_parked_tensor_is_alive_at_empty_cache():
     cuda.empty_cache = lambda: alive.append(sum(r() is not None for r in refs))
     record = fns["_park_optimizer_to_host"](trainer)
     assert record is not None and alive == [0]
+
+
+def test_restored_state_keeps_the_source_strides():
+    fns, _ = _load()
+    trainer, model, optimizer = _trainer_after_one_step()
+    param = model.weight
+    state = optimizer.state[param]
+    state["exp_avg"] = state["exp_avg"].t().contiguous().t()
+    strides = state["exp_avg"].stride()
+    record = fns["_park_optimizer_to_host"](trainer)
+    assert state["exp_avg"].stride() == strides
+    fns["_restore_optimizer_from_host"](record)
+    assert state["exp_avg"].stride() == strides
+
+
+def test_nested_or_layerwise_optimizer_state_is_declined():
+    fns, cuda = _load()
+    trainer, model, optimizer = _trainer_after_one_step()
+    optimizer.state[model.weight]["projector"] = types.SimpleNamespace(ortho_matrix = torch.ones(2))
+    before = _snapshot(optimizer, model)
+    assert fns["_park_optimizer_to_host"](trainer) is None
+    assert cuda.calls == []
+    after = _snapshot(optimizer, model)
+    assert all(torch.equal(before[0][k], after[0][k]) for k in before[0])
+    layerwise = types.SimpleNamespace(optimizer_dict = {}, param_groups = [], state = {})
+    trainer = types.SimpleNamespace(model = _Model(), optimizer = layerwise)
+    assert fns["_park_optimizer_to_host"](trainer) is None
