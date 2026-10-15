@@ -13,6 +13,7 @@ import re
 import shlex
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -242,6 +243,7 @@ def _cluster_env(
     monkeypatch.setattr(ss, "auto_projector_file", lambda *a, **k: None)
     monkeypatch.setattr(cs, "_remote_gguf_header", lambda *a, **k: ({}, {}))
     monkeypatch.setattr(cs, "_local_gguf_header", lambda *a, **k: ({}, {}))
+    monkeypatch.setattr(cs, "_ctx_compute_bytes", lambda *a, **k: 0)
     seen = []
 
     def fake_list(binary, endpoints):
@@ -1969,7 +1971,7 @@ def test_an_uncached_model_whose_kv_cannot_be_read_stays_local(monkeypatch):
     monkeypatch.setattr(ss, "remote_gguf_size_bytes", lambda *a, **k: 250 * GIB)
     request = _request(model_path = "org/big-GGUF", max_seq_length = 8192)
     assert run(ss.before_load(request, 4)) is request and seen == []
-    assert "not downloaded yet" in ss.status()["reason"]
+    assert "could not be sized" in ss.status()["reason"]
 
 
 def _llama_header(n_kv):
@@ -2040,7 +2042,8 @@ def test_the_header_reader_matches_the_local_kv_estimate(monkeypatch, tmp_path):
     assert blocks == {0: 8192 * 8192 * 4, 1: 64 * 144 + 8192 * 8192 * 2, -2: 8192 * 1000 * 2}
     untied = tensors + [("output.weight", [8192, 1000], 1)]
     _vals, untied_blocks = cs._read_gguf_header(io.BytesIO(_gguf_header(kvs, untied)), tensors = True)
-    assert untied_blocks[-1] == 8192 * 1000 * 2 and -2 not in untied_blocks
+    # Untied: the output matrix is the lump, the embedding (-2) stays in host RAM.
+    assert untied_blocks[-1] == untied_blocks[-2] == 8192 * 1000 * 2
     kv = cs._kv_from_scalars(vals, 8192, None, None, ss)
     assert kv == 80 * 8192 * 8 * (8192 // 64) * 4  # f16 K + V, as estimate_kv_bytes computes
 
@@ -2321,3 +2324,120 @@ def test_load_modes_without_a_locked_copy_still_split(monkeypatch, kw, env):
         monkeypatch.setenv(k, v)
     run(ss.before_load(_request(**kw), 4))
     assert ss.status()["topology"] == "layer_split"
+
+
+def test_the_loader_estimates_context_compute_from_a_file_or_a_hub_header(monkeypatch):
+    import io
+
+    path = os.environ.get("UNSLOTH_TEST_GGUF")
+    if not path or not os.path.isfile(path):
+        pytest.skip("needs UNSLOTH_TEST_GGUF")
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    est = LlamaCppBackend.__new__(LlamaCppBackend)
+    est._model_identifier = None
+    est._read_gguf_metadata(path)
+    want = est._compute_buffer_ctx_bytes(
+        131072, 512, None, layer_split = True, flash_attn = True, n_parallel = 4
+    )
+    assert want > 0
+    assert cs._ctx_compute_bytes(path, None, 131072, 512, None, True, 4) == want
+    end = []
+    with open(path, "rb") as f:
+        cs._read_gguf_header(f, tensors = True, kv_end = end)
+        f.seek(0)
+        header_kv = f.read(end[0])
+    assert cs._ctx_compute_bytes(None, header_kv, 131072, 512, None, True, 4) == want
+    assert cs._ctx_compute_bytes(None, None, 131072, 512, None, True, 4) is None
+
+
+def test_context_compute_is_kept_free_on_every_device(monkeypatch):
+    _cluster_env(monkeypatch)
+    run(ss.before_load(_request(max_seq_length = 8192), 4))
+    plain = cs.state().plan.reason
+    monkeypatch.setattr(cs, "_ctx_compute_bytes", lambda *a, **k: 2 * GIB)
+    run(ss.before_load(_request(max_seq_length = 8192), 4))
+    # 4 devices x 2 GiB less usable.
+    assert "277.5 GiB usable" in plain and "269.5 GiB usable" in cs.state().plan.reason
+    monkeypatch.setattr(cs, "_ctx_compute_bytes", lambda *a, **k: None)
+    request = _request(max_seq_length = 8192)
+    assert run(ss.before_load(request, 4)) is request
+    assert "could not be sized" in ss.status()["reason"]
+
+
+@pytest.mark.parametrize("extra, cells", [([], 8192), (["--no-kv-unified"], 64 * 256)])
+def test_private_kv_streams_are_sized_per_slot(monkeypatch, extra, cells):
+    _cluster_env(monkeypatch)
+    seen = []
+    monkeypatch.setattr(ss, "estimate_kv_bytes", lambda path, n, *a: seen.append(n) or 0)
+    run(ss.before_load(_request(max_seq_length = 8192, llama_extra_args = extra), 64))
+    assert seen == [cells]
+
+
+def test_the_host_embedding_is_not_counted_as_freed(monkeypatch):
+    _cluster_env(monkeypatch)
+    monkeypatch.setattr(cs, "_local_gguf_header", lambda *a, **k: ({}, {0: GIB, -2: 3 * GIB}))
+    out = run(ss.before_load(_request(), 4))
+    backend = SimpleNamespace(
+        _process = SimpleNamespace(args = ["/b/llama-server"] + out.llama_extra_args),
+        is_loaded = True,
+    )
+    run(ss.after_load(backend, 4))
+    plan = cs.state().plan
+    assert plan.host_bytes == 3 * GIB
+    held = 250 * GIB - 3 * GIB
+    expected = sum(max(0.0, w * held - plan.layer_bytes) for w in plan.weights)
+    assert sum(cs.state()._resident.values()) == pytest.approx(expected)
+
+
+def test_adapter_tensors_join_the_layer_they_modify(monkeypatch, tmp_path):
+    lora = tmp_path / "lora.gguf"
+    lora.write_bytes(
+        _gguf_header(
+            {"general.architecture": (8, "llama")}, [("blk.3.attn_q.weight.lora_a", [64, 8192], 0)]
+        )
+    )
+    _cluster_env(monkeypatch)
+    monkeypatch.setattr(
+        ss, "gguf_size_bytes", lambda path: 200 * GIB if path == "/models/big.gguf" else GIB
+    )
+    monkeypatch.setattr(cs, "_gguf_block_count", lambda path, ss: 100)
+    monkeypatch.setattr(cs, "_local_gguf_header", lambda *a, **k: ({}, {3: GIB, 7: 2 * GIB}))
+    run(ss.before_load(_request(), 4))
+    assert cs.state()._max_block == 2 * GIB
+    run(ss.before_load(_request(llama_extra_args = ["--lora", str(lora)]), 4))
+    assert cs.state()._max_block == 2 * GIB  # block 3 grows to 1 GiB + 2 MiB, still not the max
+    big = tmp_path / "big.gguf"
+    big.write_bytes(
+        _gguf_header(
+            {"general.architecture": (8, "llama")},
+            [("blk.3.ffn_up.weight.lora_b", [GIB // 4, 2], 0)],
+        )
+    )
+    run(ss.before_load(_request(llama_extra_args = ["--lora", str(big)]), 4))
+    assert cs.state()._max_block == 3 * GIB
+
+
+def test_an_invalid_config_keeps_a_served_splits_workers(monkeypatch, tmp_path):
+    _cluster_env(monkeypatch)
+    out = run(ss.before_load(_request(), 4))
+    backend = SimpleNamespace(
+        _process = SimpleNamespace(args = ["/b/llama-server"] + out.llama_extra_args),
+        is_loaded = True,
+    )
+    run(ss.after_load(backend, 4))
+    stopped = []
+
+    async def stop():
+        stopped.append(1)
+
+    cs.state().nodes = [replace(n, managed = True) for n in cs.state().nodes]
+    cs.state().workers["10.0.0.2:50052"] = SimpleNamespace(
+        alive = True, snapshot = lambda: {}, stop = stop
+    )
+    monkeypatch.setenv(cs.ENV_NODES, "bad host!")
+    request = _request()
+    assert run(ss.before_load(request, 4)) is request
+    assert "cluster config" in ss.status()["reason"]
+    run(ss.after_load(backend, 4))  # the route reused the loaded primary
+    assert stopped == [] and "10.0.0.2:50052" in cs.state().workers

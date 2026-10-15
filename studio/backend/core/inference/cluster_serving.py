@@ -172,7 +172,12 @@ _KV_KEY_SUFFIXES = (
 )
 
 
-def _read_gguf_header(f: Any, *, tensors: bool = False) -> Tuple[Dict[str, Any], Dict[int, int]]:
+def _read_gguf_header(
+    f: Any,
+    *,
+    tensors: bool = False,
+    kv_end: Optional[List[int]] = None,
+) -> Tuple[Dict[str, Any], Dict[int, int]]:
     """From a GGUF header stream: general.architecture and the integer keys estimate_kv_bytes
     reads (a per-layer array keeps its largest value), and with ``tensors`` the weight bytes of
     each block in this file."""
@@ -219,6 +224,8 @@ def _read_gguf_header(f: Any, *, tensors: bool = False) -> Tuple[Dict[str, Any],
             f.seek(_GGUF_FIXED_SIZES[vtype], 1)
         else:
             return out, {}
+    if kv_end is not None:
+        kv_end.append(f.tell())
     blocks: Dict[int, int] = {}
     if not tensors:
         return out, blocks
@@ -244,12 +251,63 @@ def _read_gguf_header(f: Any, *, tensors: bool = False) -> Tuple[Dict[str, Any],
             return out, {}
         block_size, type_size = GGML_QUANT_SIZES[ttype]
         blocks[index] = blocks.get(index, 0) + elements // block_size * type_size
-    if -1 in blocks and -2 in blocks:
-        del blocks[-2]  # an untied output: the embedding stays on the host
     return out, blocks
 
 
 _OUTPUT_KEYS = {"output.weight": -1, "token_embd.weight": -2}
+# The KV section of the last uncached header read, for the loader's own metadata reader.
+_REMOTE_HEADER_KV: Dict[Tuple[str, str], bytes] = {}
+
+
+def _ctx_compute_bytes(
+    path: Optional[str],
+    header_kv: Optional[bytes],
+    ctx: int,
+    ubatch: int,
+    cache_type: Optional[str],
+    flash_attn: bool,
+    n_parallel: int,
+) -> Optional[int]:
+    """The loader's per-device context-dependent compute scratch on a layer split, from its own
+    estimator over this GGUF's header; None when the header cannot be read."""
+    if ctx <= 0:
+        return 0
+    import tempfile
+
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    scratch = None
+    try:
+        if not path and header_kv:
+            scratch = tempfile.NamedTemporaryFile(suffix = ".gguf", delete = False)
+            scratch.write(header_kv)
+            scratch.close()
+            path = scratch.name
+        if not path:
+            return None
+        est = LlamaCppBackend.__new__(LlamaCppBackend)
+        est._model_identifier = None
+        est._read_gguf_metadata(path)
+        if not getattr(est, "_embedding_length", None):
+            return None
+        return int(
+            est._compute_buffer_ctx_bytes(
+                ctx,
+                ubatch,
+                cache_type,
+                layer_split = True,
+                flash_attn = flash_attn,
+                n_parallel = n_parallel,
+            )
+        )
+    except Exception:
+        return None
+    finally:
+        if scratch is not None:
+            try:
+                os.unlink(scratch.name)
+            except OSError:
+                pass
 
 
 def _ssm_state_bytes(vals: Dict[str, Any], n_parallel: int) -> int:
@@ -335,8 +393,12 @@ def _remote_gguf_header(
         vals: Dict[str, Any] = {}
         blocks: Dict[int, int] = {}
         for index, shard in enumerate(shards):
+            end: List[int] = []
             with fs.open(f"{model_path}/{shard}", "rb", block_size = 1 << 20) as f:
-                shard_vals, shard_blocks = _read_gguf_header(f, tensors = True)
+                shard_vals, shard_blocks = _read_gguf_header(f, tensors = True, kv_end = end)
+                if index == 0 and end:
+                    f.seek(0)
+                    _REMOTE_HEADER_KV[(model_path, str(variant))] = f.read(end[0])
             if index == 0:
                 vals = shard_vals
             if not shard_blocks:
@@ -521,10 +583,12 @@ class ClusterPlan:
     # Never counted as freed by a replacement: the KV estimate is not the cache's real layout.
     kv_bytes: float = 0.0
     layer_bytes: float = 0.0
+    # The input embedding, counted in the model size but kept in host RAM: never freed VRAM.
+    host_bytes: float = 0.0
 
     def resident(self) -> Dict[Tuple[str, str], float]:
         """What this plan puts on each device, so a replacement load can count it as freed."""
-        held = max(0.0, float(self.need_bytes or 0) - self.kv_bytes)
+        held = max(0.0, float(self.need_bytes or 0) - self.kv_bytes - self.host_bytes)
         # Whole-layer rounding can leave a device a layer short of its share.
         out = {
             d.key: max(0.0, w * held - self.layer_bytes) for d, w in zip(self.devices, self.weights)
@@ -719,9 +783,14 @@ def list_devices(binary: str, endpoints: Sequence[str]) -> Tuple[List[Device], s
     return [], (reason or (lines[-1] if lines else "no devices")).split(": ", 1)[-1][:300]
 
 
-def usable_bytes(device: Device, margin_bytes: float = 0.0) -> float:
-    reserve = max(
-        DEVICE_RESERVE_MIN_BYTES, DEVICE_RESERVE_FRACTION * device.total_bytes, margin_bytes
+def usable_bytes(
+    device: Device,
+    margin_bytes: float = 0.0,
+    scratch_bytes: float = 0.0,
+) -> float:
+    reserve = (
+        max(DEVICE_RESERVE_MIN_BYTES, DEVICE_RESERVE_FRACTION * device.total_bytes, margin_bytes)
+        + scratch_bytes
     )
     return max(0.0, float(device.free_bytes) - reserve)
 
@@ -735,6 +804,7 @@ def plan_cluster(
     forced: Optional[str] = None,
     layer_bytes: Optional[float] = None,
     margin_bytes: float = 0.0,
+    scratch_bytes: float = 0.0,
 ) -> ClusterPlan:
     """single when this machine holds the load, else a layer split weighted by usable memory.
 
@@ -745,7 +815,7 @@ def plan_cluster(
     local = [d for d in devices if not d.remote]
     remote = [d for d in devices if d.remote]
     need = float(model_bytes) + float(kv_bytes or 0)
-    local_budgets = [usable_bytes(d, margin_bytes) for d in local]
+    local_budgets = [usable_bytes(d, margin_bytes, scratch_bytes) for d in local]
     local_usable = sum(local_budgets)
     # The projector / drafter is pinned to the first local GPU, so it has to fit there itself.
     if local and local_extra_bytes > local_budgets[0]:
@@ -776,7 +846,7 @@ def plan_cluster(
     # logits stay local and the wire carries only the hidden state. Sidecars load on the first
     # local device.
     ordered = remote + local
-    budgets = [usable_bytes(d, margin_bytes) for d in remote] + local_budgets
+    budgets = [usable_bytes(d, margin_bytes, scratch_bytes) for d in remote] + local_budgets
     if local:
         budgets[len(remote)] -= local_extra_bytes
     if layer_bytes:
@@ -891,6 +961,8 @@ class ClusterServing:
         self._projector_url: bool = False
         self._unsized_kv: bool = False
         self._max_block: Optional[float] = None
+        self._host_embd: float = 0.0
+        self._ctx_compute: float = 0.0
         self._uncertain_extra: float = 0.0
         # Workers this load (re)started: they hold none of the served split's buffers.
         self._started: set = set()
@@ -907,7 +979,8 @@ class ClusterServing:
             self.nodes = load_nodes()
             self.config_error = ""
         except ClusterConfigError as exc:
-            self.nodes, self.config_error = [], str(exc)
+            # The nodes a served split runs on stay known, so a commit does not stop its workers.
+            self.config_error = str(exc)
         return self.nodes
 
     async def _ensure_workers(self) -> Dict[str, str]:
@@ -998,7 +1071,7 @@ class ClusterServing:
         # Every return below that does not plan leaves no plan behind for after_load to record.
         self.plan, self.block = None, []
         self._down = set()  # _started stays until a load commits: a refusal keeps those workers
-        if not self.refresh_nodes():
+        if not self.refresh_nodes() or self.config_error:
             self.topology, self.reason = "single", f"cluster config: {self.config_error}"
             return request
         explicit = getattr(request, "llama_extra_args", None)
@@ -1071,7 +1144,7 @@ class ClusterServing:
         if self._unsized_kv:
             self.topology, self.reason = (
                 "single",
-                "the KV cache of a model not downloaded yet could not be sized",
+                "the KV cache and compute buffers could not be sized from the GGUF header",
             )
             return request
         if self._native_ctx:
@@ -1184,10 +1257,13 @@ class ClusterServing:
             forced = forced,
             layer_bytes = layer_bytes,
             margin_bytes = margin,
+            # Every device of a layer split holds its own context-dependent compute scratch.
+            scratch_bytes = self._ctx_compute,
         )
         plan.kv_bytes = float(kv_bytes or 0)
         plan.uncertain_extra_bytes = self._uncertain_extra
         plan.layer_bytes = float(layer_bytes or 0.0)
+        plan.host_bytes = self._host_embd
         self.plan = plan
         if plan.topology == "refuse":
             self.topology, self.reason, self.plan, self.block = self._pre_load
@@ -1257,7 +1333,28 @@ class ClusterServing:
             )
         else:
             header, blocks = {}, {}
-        self._max_block = float(max(blocks.values())) if blocks else None
+        layers = {k: v for k, v in blocks.items() if k >= 0}
+        # The input embedding stays on the host; the output matrix (or a tied model's copy of the
+        # embedding) is one more lump on the last device.
+        self._host_embd = float(blocks.get(-2, 0))
+        output = blocks.get(-1, blocks.get(-2, 0))
+        unread_adapters = 0
+        if layers:
+            for path in ss.sidecar_files(_flag_args(extras, _ADAPTER_FLAGS)):
+                try:
+                    with open(path, "rb") as f:
+                        _vals, extra_blocks = _read_gguf_header(f, tensors = True)
+                except Exception:
+                    extra_blocks = {}
+                lora = {k: v for k, v in extra_blocks.items() if k >= 0}
+                if lora:
+                    for k, v in lora.items():
+                        layers[k] = layers.get(k, 0) + v  # beside the layer it modifies
+                else:
+                    unread_adapters += int(ss.gguf_size_bytes(path) or 0)
+        self._max_block = (
+            float(max(max(layers.values()), output) + unread_adapters) if layers else None
+        )
         if not self._n_layers:
             arch = header.get("general.architecture")
             self._n_layers = header.get(f"{arch}.block_count") or None
@@ -1402,15 +1499,46 @@ class ClusterServing:
             ctx = floor  # the fitter never goes below --fit-ctx
         kv = None
         self._unsized_kv = False
-        if local_file and ctx:
+        from core.inference.llama_cpp import (
+            _flash_attn_enabled_from_args,
+            _kv_cache_cell_layout,
+            _kv_unified_from_args,
+            _named_batch_sizes,
+        )
+
+        # Studio passes --kv-unified for several slots; --no-kv-unified gives each its own
+        # padded stream.
+        unified = _kv_unified_from_args(extras, default = n_parallel > 1)
+        _slots, streams, per_stream = _kv_cache_cell_layout(ctx, n_parallel, unified)
+        cells = streams * per_stream if ctx else 0
+        if local_file and cells:
             kv = await asyncio.to_thread(
-                ss.estimate_kv_bytes, local_file, ctx, cache_type, cache_type_v
+                ss.estimate_kv_bytes, local_file, cells, cache_type, cache_type_v
             )
-        if kv is None and ctx and size:
-            kv = _kv_from_scalars(header, ctx, cache_type, cache_type_v, ss)
+        if kv is None and cells and size:
+            kv = _kv_from_scalars(header, cells, cache_type, cache_type_v, ss)
+        batch, ubatch, _nb, _nu = _named_batch_sizes(
+            extras,
+            os.environ,
+            getattr(request, "n_batch", None),
+            getattr(request, "n_ubatch", None),
+        )
+        compute = await asyncio.to_thread(
+            _ctx_compute_bytes,
+            local_file,
+            _REMOTE_HEADER_KV.pop((model_path, str(variant)), None),
+            ctx,
+            min(batch, ubatch),
+            cache_type,
+            _flash_attn_enabled_from_args(extras, default = True),
+            n_parallel,
+        )
+        if ctx and size and compute is None:
+            self._unsized_kv = True
+        self._ctx_compute = float(compute or 0)
         recurrent = _ssm_state_bytes(header, n_parallel)
-        if kv is None and ctx and size:
-            self._unsized_kv = not recurrent  # a pure state-space model has no attention KV
+        if kv is None and ctx and size and not recurrent:
+            self._unsized_kv = True  # a pure state-space model has no attention KV
         kv = float(kv or 0.0) + recurrent
         return (None if size is None else float(size) + adapters), kv, float(sidecars)
 
