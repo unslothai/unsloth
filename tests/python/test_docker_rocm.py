@@ -1146,5 +1146,7 @@ class TestStudioRocmGgufOnTheGpu:
             1
         )
         assert "libvulkan1" in apt and "mesa-vulkan-drivers" in apt, apt
-        assert "ENV VK_DRIVER_FILES=/usr/share/vulkan/icd.d/radeon_icd.x86_64.json" in body
-        assert "test -f /usr/share/vulkan/icd.d/radeon_icd.x86_64.json" in body
+        assert "ENV VK_DRIVER_FILES=/usr/local/share/unsloth/radeon_icd.json" in body
+        # Mesa 25 (noble-updates) dropped the .x86_64 suffix that 24.x carried
+        assert "ls /usr/share/vulkan/icd.d/radeon_icd*.json" in body
+        assert 'ln -sf "$icd" /usr/local/share/unsloth/radeon_icd.json' in body

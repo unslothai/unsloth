@@ -104,10 +104,14 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends \
         curl git ca-certificates supervisor ffmpeg libvulkan1 mesa-vulkan-drivers \
  && rm -rf /var/lib/apt/lists/* \
- && test -f /usr/share/vulkan/icd.d/radeon_icd.x86_64.json
-# RADV only: mesa-vulkan-drivers also registers lavapipe (CPU) and Dozen (D3D12, which
-# the WSL2 mounts would wake up), and neither should run GGUF chat.
-ENV VK_DRIVER_FILES=/usr/share/vulkan/icd.d/radeon_icd.x86_64.json
+ && icd="$(ls /usr/share/vulkan/icd.d/radeon_icd*.json | head -n 1)" \
+ && test -n "$icd" \
+ && mkdir -p /usr/local/share/unsloth \
+ && ln -sf "$icd" /usr/local/share/unsloth/radeon_icd.json
+# RADV only: mesa-vulkan-drivers also registers lavapipe (CPU), Dozen (D3D12, which the
+# WSL2 mounts would wake up) and others, none of which should run GGUF chat. The link
+# absorbs Mesa's rename (radeon_icd.x86_64.json in 24.x, radeon_icd.json in 25.x).
+ENV VK_DRIVER_FILES=/usr/local/share/unsloth/radeon_icd.json
 
 # JupyterLab and the notebooks' runtime packages into the base venv, so the kernel
 # is the ROCm torch. The same pins as the CUDA core image (docker/Dockerfile, which
