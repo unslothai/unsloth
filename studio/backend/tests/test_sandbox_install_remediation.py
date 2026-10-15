@@ -79,7 +79,6 @@ def test_installer_and_backend_give_the_same_commands():
 
 
 def test_a_pinned_bwrap_off_path_is_not_reported_missing(monkeypatch):
-    # A packager may pin bubblewrap without putting it on PATH.
     _which_only(monkeypatch, {"apt-get"})
     monkeypatch.setenv(sandbox_linux.BWRAP_PATH_ENV, "/opt/bubblewrap/bin/bwrap")
     monkeypatch.setattr(sandbox_linux, "_trusted_bwrap_path", lambda: "/opt/bubblewrap/bin/bwrap")
