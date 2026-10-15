@@ -903,9 +903,10 @@ def test_kernel_calls_skip_the_temporal_stride_fallback(monkeypatch):
     with torch.no_grad():
         y = fast(x)
     assert state.calls == 1 and state.kernel_calls == 0
-    # the activated values (what the paired SiLU reads); any other reader sees the stock norm output
+    # the activated values (what the paired SiLU reads); any other reader aborts the decode (it is redone unfused)
     assert torch.allclose(F._plain(y), torch.nn.functional.silu(norm(x)), atol = 1e-5)
-    assert torch.allclose(y, norm(x), atol = 1e-5)
+    with pytest.raises(F.FusedActivationRead):
+        y + 0
 
 
 # -- PR review round 7 regressions ------------------------------------------------------------------------------
@@ -1525,15 +1526,16 @@ def test_fused_activation_mark_is_consumed_by_the_matched_silu(reuse):
 
 
 def test_fused_activation_mark_only_for_the_traced_silu():
-    """The mark names the SiLU module(s) the trace saw read the norm; another SiLU never consumes it."""
+    """The mark names the SiLU module(s) the trace saw read the norm; another SiLU never consumes it (its read is a
+    foreign read: the decode is redone without activation fusion)."""
     norm = torch.nn.GroupNorm(4, 8)
     matched, other = torch.nn.SiLU(), torch.nn.SiLU()
     state = types.SimpleNamespace(kernel_calls = 0, calls = 0)
     fast = F._fast_gn_maybe_act(norm, True, state, [matched])
     x = torch.randn(1, 8, 4, 4)
     with torch.no_grad():
-        y = fast(x)
-        assert torch.allclose(F._silu_passthrough(other)(y), torch.nn.functional.silu(y))
+        with pytest.raises(F.FusedActivationRead):
+            F._silu_passthrough(other)(fast(x))
         y = fast(x)
         assert torch.allclose(F._silu_passthrough(matched)(y), torch.nn.functional.silu(norm(x)), atol = 1e-6)
 
@@ -1775,25 +1777,35 @@ def test_fused_activation_is_exact_when_full_shape_dataflow_differs_from_the_cro
     _fake_kernel(monkeypatch)
     F.install_structural(vae)
     with torch.no_grad():
-        vae._decode(z_wide)  # calibrates on the 16-latent crop (width 16: no residual), then decodes full width
-        state = vae._unsloth_vae_structural
-        assert state.status == "ok" and state.gn_silu == 2  # both pairings proven exclusive on the crop
+        first = vae._decode(z_wide)[0]  # calibrates on the 16-latent crop (no residual), then decodes full width:
+        state = vae._unsloth_vae_structural  # the residual read aborts it and it is redone, GroupNorm fused alone
+        assert state.status == "ok" and state.act_off and state.gn_silu == 0 and state.gn == 2
+        assert state.foreign_reads >= 1
         out_wide = vae._decode(z_wide)[0]
         out_small = vae._decode(z_small)[0]
+    assert torch.allclose(first, ref_wide, atol = 1e-6)
     assert torch.allclose(out_wide, ref_wide, atol = 1e-6)
     assert torch.allclose(out_small, ref_small, atol = 1e-6)
+    small_first = AutoencoderKLWideResidual()  # a VAE only ever decoded at the crop's dataflow keeps both fused
+    small_first.load_state_dict(vae.state_dict())
+    F.install_structural(small_first)
+    with torch.no_grad():
+        small_first._decode(z_small)
+    assert small_first._unsloth_vae_structural.gn_silu == 2
 
 
-def test_fused_output_read_by_another_norm_is_read_as_stock():
+def test_fused_output_read_by_another_norm_aborts():
     norm, norm2 = torch.nn.GroupNorm(4, 8), torch.nn.GroupNorm(4, 8)
     state = types.SimpleNamespace(kernel_calls = 0, calls = 0)
     fast, fast2 = F._fast_gn_maybe_act(norm, True, state), F._fast_gn_maybe_act(norm2, False, state)
     x = torch.randn(1, 8, 4, 4)
     with torch.no_grad():
-        assert torch.allclose(fast2(fast(x)), norm2(norm(x)), atol = 1e-6)
+        with pytest.raises(F.FusedActivationRead):
+            fast2(fast(x))
         y = fast(x)
-        assert torch.allclose(torch.cat([y, y]), torch.cat([norm(x), norm(x)]), atol = 1e-6)
-        assert y.shape == norm(x).shape and y.dtype == x.dtype
+        with pytest.raises(F.FusedActivationRead):
+            torch.cat([y, y])
+        assert y.shape == norm(x).shape and y.dtype == x.dtype  # metadata reads are fine
 
 
 def test_inplace_paired_silu_leaves_the_activated_values_for_later_readers():
@@ -2047,11 +2059,11 @@ def _raw_read(t):
     return torch.as_strided(flat, t.shape, t.stride(), t.storage_offset())
 
 
-def test_patched_norms_unwrap_a_fused_input_before_the_kernel(monkeypatch):
+def test_patched_norms_never_hand_a_fused_input_to_the_kernel(monkeypatch):
     """Item 4286353624: a GroupNorm-only site (act False) handed a fused GroupNorm+SiLU output to its kernel as is,
-    and a kernel reads raw memory: it saw the ACTIVATED values (the CPU reference, reading through torch, hid it).
-    The fake kernel reads ``data_ptr()`` like Triton; every patched entry, fused or GroupNorm only, now hands it the
-    stock value."""
+    and a kernel reads raw memory (activated values). Every patched entry checks its input first, and a raw pointer
+    read of a fused output from any other module's kernel is caught too: the decode is redone without activation
+    fusion instead (the structural tests check the redone output against stock)."""
     seen = []
 
     def kernel(x, norm, act = True, in_bias = None, on_kernel = None, **_):
@@ -2068,25 +2080,25 @@ def test_patched_norms_unwrap_a_fused_input_before_the_kernel(monkeypatch):
     fused2 = F._fast_gn_maybe_act(norm3, True, state)
     x = torch.randn(1, 8, 4, 4)
     with torch.no_grad():
-        n = norm(x)
-        assert torch.allclose(gn_only(fused(x)), norm2(n), atol = 1e-5)  # GroupNorm-only site
-        assert torch.allclose(F._plain(fused2(fused(x))), torch.nn.functional.silu(norm3(n)), atol = 1e-5)
-        assert torch.allclose(_raw_read(fused(x)), n, atol = 1e-6)  # any raw-pointer reader elsewhere
+        for reader in (gn_only, fused2, _raw_read):
+            seen.clear()
+            y = fused(x)
+            assert len(seen) == 1 and torch.equal(seen[0], x)
+            with pytest.raises(F.FusedActivationRead):
+                reader(y)
+            assert len(seen) == 1  # the kernel never saw the activated values
 
 
-def test_fused_output_raw_pointer_reads_keep_its_layout():
-    """A raw-pointer reader indexes with the fused tensor's own strides (channels-last here), so the stock value it
-    is redirected to has that exact layout."""
-    norm = torch.nn.GroupNorm(4, 8)
-    state = types.SimpleNamespace(kernel_calls = 0, calls = 0)
-    fast = F._fast_gn_maybe_act(norm, True, state)
-    x = torch.randn(1, 8, 4, 6).contiguous(memory_format = torch.channels_last)
+def test_after_an_inplace_paired_silu_the_tensor_reads_as_stock():
+    """stock silu_ overwrites the norm output: after the paired in-place SiLU the fused tensor's storage is exactly
+    that, so later reads (raw pointers included) are plain reads, not aborts."""
+    norm, act = torch.nn.GroupNorm(4, 8), torch.nn.SiLU(inplace = True)
+    fast = F._fast_gn_maybe_act(norm, True, types.SimpleNamespace(kernel_calls = 0, calls = 0), [act])
+    x = torch.randn(1, 8, 4, 6)
     with torch.no_grad():
         y = fast(x)
-        y_cl = y  # group_norm_act on CPU: the reference; force a channels-last fused tensor to check the layout
-        y_cl = F._plain(y).contiguous(memory_format = torch.channels_last).as_subclass(type(y))
-        y_cl._unsloth_norm, y_cl._unsloth_norm_in, y_cl._unsloth_silu_for = norm, x, "any"
-        assert torch.allclose(_raw_read(y_cl), norm(x), atol = 1e-6)
+        F._silu_passthrough(act)(y)
+        assert torch.allclose(_raw_read(y.contiguous()), torch.nn.functional.silu(norm(x)), atol = 1e-6)
 
 
 class _CausalLtx:
@@ -2214,37 +2226,98 @@ def test_regional_compiled_blocks_take_the_eager_retry():
     assert calls[-1] == "eager" and "compiled" in calls
 
 
-@pytest.mark.parametrize("op", ["add_", "mul_", "setitem", "copy_", "out", "view_add_", "iadd"])
-def test_inplace_writes_before_the_paired_silu_match_stock(op):
-    """Item 4286789097: an in-place write to the fused tensor went to the recomputed stock tensor while the paired
-    SiLU still returned the stale fused activation. Any read other than the paired SiLU now turns the tensor into
-    that plain stock tensor; the SiLU then activates whatever it holds."""
-    norm, act = torch.nn.GroupNorm(4, 8), torch.nn.SiLU()
-    fast = F._fast_gn_maybe_act(norm, True, types.SimpleNamespace(kernel_calls = 0, calls = 0), [act])
-    passthrough = F._silu_passthrough(act)
-    x, b = torch.randn(1, 8, 4, 4), torch.randn(1, 8, 1, 1)
+def _exact_kernel(monkeypatch):
+    """group_norm_act on CPU with exactly stock's ops (F.group_norm, F.silu), flagged as a kernel run: a fused decode
+    then matches stock bit for bit wherever it computes the same values."""
+    def fake(x, norm, act = True, in_bias = None, on_kernel = None, **_):
+        y = torch.nn.functional.group_norm(x if in_bias is None else x + in_bias, norm.num_groups, norm.weight,
+                                           norm.bias, norm.eps)  # fmt: skip
+        if on_kernel is not None:
+            on_kernel()
+        return torch.nn.functional.silu(y) if act else y
 
-    def mutate(t):
-        if op == "add_":
-            t.add_(b)
-        elif op == "mul_":
-            t.mul_(2.0)
-        elif op == "setitem":
-            t[:, 0] = 3.0
-        elif op == "copy_":
-            t.copy_(t * 0.5 + b)
-        elif op == "out":
-            torch.add(t, b, out = t)
-        elif op == "view_add_":
-            t[:, 1:3].add_(1.0)
-        elif op == "iadd":
-            t += b
-        return t
+    monkeypatch.setattr(F, "group_norm_act", fake)
+    monkeypatch.setattr(F, "runtime_ok", lambda: True)
+    monkeypatch.delenv(F.STRUCTURAL_ENV, raising = False)
+    monkeypatch.setattr(torch.Tensor, "is_cuda", property(lambda self: True))
 
-    with torch.no_grad():
-        ref = act(mutate(norm(x)))
-        got = passthrough(mutate(fast(x)))
-    assert torch.equal(got, ref)
+
+def _mutate(t, op, b):
+    if op == "add_":
+        t.add_(b)
+    elif op == "mul_":
+        t.mul_(2.0)
+    elif op == "setitem":
+        t[:, 0] = 3.0
+    elif op == "copy_":
+        t.copy_(t * 0.5 + b)
+    elif op == "out":
+        torch.add(t, b, out = t)
+    elif op == "view_add_":
+        t[:, 1:3].add_(1.0)
+    elif op == "iadd":
+        t += b
+    elif op == "input_add_":
+        pass
+    return t
+
+
+class _MutatingDec(torch.nn.Module):
+    """At full width (beyond the calibration crop) it writes to the norm output, or to the norm's INPUT, before
+    the paired SiLU / a residual read; on the crop it only feeds the SiLU."""
+
+    def __init__(self, op):
+        super().__init__()
+        self.op = op
+        self.norm = torch.nn.GroupNorm(4, 8)
+        self.act = torch.nn.SiLU()
+        self.b = torch.nn.Parameter(torch.randn(1, 8, 1, 1))
+
+    def forward(self, x):
+        x = x * 1.0
+        h = self.norm(x)
+        if x.shape[-1] <= 16:
+            return self.act(h)
+        if self.op == "input_add_":
+            x.add_(1.0)  # the norm's input changes after the norm, before a residual read of its output
+            return self.act(h) + h * 2 + x
+        h = _mutate(h, self.op, self.b)
+        return self.act(h)
+
+
+class AutoencoderKLMutating(torch.nn.Module):
+    def __init__(self, op):
+        super().__init__()
+        self.decoder = _MutatingDec(op)
+
+    def _decode(self, z, return_dict = True):
+        return (self.decoder(z),)
+
+
+@pytest.mark.parametrize("mode", ["no_grad", "inference_mode"])
+@pytest.mark.parametrize("op", ["add_", "mul_", "setitem", "copy_", "out", "view_add_", "iadd", "input_add_"])
+def test_writes_around_a_fused_norm_match_stock_exactly(monkeypatch, op, mode):
+    """Items 4286789097 / 4287220388: a write to the fused output before its paired SiLU (add_, mul_, setitem,
+    copy_, out=, through a view, +=), or a write to the norm's INPUT before a residual read of its output, gave a
+    stale or recomputed-from-changed-input value. Now any such read aborts that decode, which is redone with
+    GroupNorm fused alone: the output matches stock bit for bit, under no_grad and under inference_mode (whose
+    tensors keep no version counter)."""
+    torch.manual_seed(0)
+    vae = AutoencoderKLMutating(op)
+    z = torch.randn(1, 8, 6, 40)
+    ctx = torch.inference_mode if mode == "inference_mode" else torch.no_grad
+    with ctx():
+        ref = vae._decode(z.clone())[0]
+    _exact_kernel(monkeypatch)
+    F.install_structural(vae)
+    with ctx():
+        first = vae._decode(z.clone())[0]
+        again = vae._decode(z.clone())[0]
+    assert torch.equal(first, ref) and torch.equal(again, ref)
+    state = vae._unsloth_vae_structural
+    assert state.status == "ok" and state.gn == 1
+    if op != "iadd":  # += rebinds the name to a new plain tensor: stock semantics without an abort
+        assert state.act_off and state.foreign_reads >= 1
 
 
 def test_kept_oom_drops_the_tracebacks_of_its_whole_chain():

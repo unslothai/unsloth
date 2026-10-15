@@ -506,11 +506,16 @@ def _torch():
 
 
 def _stock_in(t: Any) -> Any:
-    """A kernel input that is a fused GroupNorm+SiLU output (_FusedAct, which holds the activated values) as the
-    stock GroupNorm value any reader but its paired SiLU must see; anything else as it is. Kernels read raw memory,
-    so every entry unwraps first (the subclass also redirects raw-pointer reads; this keeps the kernel off that)."""
+    """A kernel input as the kernel may read it. A fused GroupNorm+SiLU output (_FusedAct, holding the activated
+    values) is not a valid input for any reader but its paired SiLU: FusedActivationRead (the decode is redone without
+    activation fusion). Kernels read raw memory, so every entry checks first; the subclass also catches raw-pointer
+    reads (``data_ptr``) from any other module's kernels."""
     cls = globals().get("_FusedActCls")
-    return t._unsloth_stock() if cls is not None and type(t) is cls else t
+    if cls is None or type(t) is not cls:
+        return t
+    if t.__dict__.get("_unsloth_is_stock", False):
+        return _plain(t)
+    t._unsloth_abort()
 
 
 def group_norm_act(
@@ -1003,6 +1008,8 @@ def _guard(
         try:
             return fast(*args, **kwargs)
         except Exception as exc:  # noqa: BLE001
+            if isinstance(exc, FusedActivationRead):
+                raise  # the structural decode layer redoes the decode; not a failure of this fused pass
             for a, saved in zip(lists, snap):
                 a[:] = saved
             if not _is_oom(exc):
@@ -2535,47 +2542,46 @@ def _is_meta_read(func: Any) -> bool:
     return name in _META_FUNCS and name not in _RAW_READS
 
 
+class FusedActivationRead(RuntimeError):
+    """A fused GroupNorm+SiLU output was read by something other than its paired SiLU. It holds only the activated
+    values: the stock GroupNorm value such a reader needs was never materialised, and recomputing it later from the
+    norm's input is not exact (the decoder may have written to that input in place since, and inference tensors,
+    which Studio renders with, keep no version counter to tell). So that decode stops here; the structural decode
+    layer turns activation fusion off for this VAE (GroupNorm stays fused), records that, and decodes again."""
+
+
 def _fused_act_class() -> Any:
     """The output of a fused GroupNorm+SiLU: it holds the ACTIVATED values, which only the SiLU module(s) the trace
-    paired with it may read (once: the first consumes the mark). Every other read, whatever the shape or dataflow of
-    the decode that does it (a residual reuse of the norm output, another norm, a SiLU after the mark was consumed),
-    reads the stock GroupNorm output instead, recomputed once from the norm's input. So the fused output is correct
-    even where the calibration crop's dataflow is not representative; a mismatch only costs a recompute."""
+    paired with it may read (once: the first consumes the mark). Any other read of the values (a residual, another
+    norm, a view, an in-place write, a raw pointer, a SiLU after the mark was consumed), whatever the shape or
+    dataflow of the decode that does it, raises FusedActivationRead: the decode is redone without activation fusion,
+    so a wrong value is never returned and nothing aliases the norm's (mutable) input. After an in-place paired SiLU
+    the storage IS the stock tensor's (silu_ overwrote it), so reads then see it as a plain tensor."""
     cls = globals().get("_FusedActCls")
     if cls is not None:
         return cls
     torch = _torch()
-    from torch.utils._pytree import tree_map
+    from torch.utils._pytree import tree_leaves
 
     class _FusedAct(torch.Tensor):
         @classmethod
         def __torch_function__(cls, func, types_, args = (), kwargs = None):
             kwargs = kwargs or {}
             if not _is_meta_read(func):
-                args, kwargs = tree_map(lambda t: t._unsloth_stock() if isinstance(t, _FusedAct) else t, (args, kwargs))
+                for leaf in tree_leaves((args, kwargs)):
+                    if isinstance(leaf, _FusedAct) and not leaf.__dict__.get("_unsloth_is_stock", False):
+                        leaf._unsloth_abort(func)
             with torch._C.DisableTorchFunctionSubclass():
                 return func(*args, **kwargs)
 
-        def _unsloth_stock(self) -> Any:
-            """The stock value for a reader other than the paired SiLU. Such a read invalidates the fused value: it
-            may be (or produce an alias for) an in-place write, ``out=`` target, ``setitem`` or ``copy_`` of the
-            stock tensor, so from here on the tensor is that plain stock tensor and the paired SiLU computes its
-            activation on whatever it then holds."""
-            self._unsloth_silu_for = None
-            return self._unsloth_pre()
-
-        def _unsloth_pre(self) -> Any:
-            pre = self.__dict__.get("_unsloth_pre_value")
-            if pre is None:
-                with torch._C.DisableTorchFunctionSubclass():
-                    pre = _stock_forward(self._unsloth_norm)(self._unsloth_norm_in)
-                    if pre.stride() != self.stride() or self.storage_offset() != 0:
-                        # the fused output's exact layout: a raw-pointer reader (any Triton kernel, here or in
-                        # another module) indexes with the fused tensor's own strides
-                        same = torch.empty_strided(self.size(), self.stride(), dtype = pre.dtype, device = pre.device)
-                        pre = same.copy_(pre)
-                self._unsloth_pre_value = pre
-            return pre
+        def _unsloth_abort(self, func: Any = None) -> None:
+            state = self.__dict__.get("_unsloth_state")
+            if state is not None:
+                state.foreign_reads = getattr(state, "foreign_reads", 0) + 1
+            raise FusedActivationRead(
+                f"fused GroupNorm+SiLU output read by {getattr(func, '__name__', 'a kernel')} before / instead of its "
+                "paired SiLU"
+            )
 
     globals()["_FusedActCls"] = _FusedAct
     return _FusedAct
@@ -2624,7 +2630,7 @@ def _fast_gn_maybe_act(norm: Any, act: bool, state: Any, silus: Any = None) -> A
         if fuse:
             with torch._C.DisableTorchFunctionSubclass():
                 y = y.as_subclass(fused_cls)
-            y._unsloth_norm, y._unsloth_norm_in, y._unsloth_silu_for = norm, x, token
+            y._unsloth_state, y._unsloth_silu_for = state, token  # nothing of the (mutable) input is kept
         return y
 
     return fast
@@ -2638,12 +2644,11 @@ def _silu_passthrough(silu: Any) -> Any:
     def forward(x: Any) -> Any:
         token = getattr(x, "_unsloth_silu_for", None) if type(x) is fused_cls else None
         if token is not None and (token == "any" or id(silu) in token):
-            x._unsloth_silu_for = None  # consumed here: any later read (another SiLU included) is a stock read
-            out = _plain(x)
+            x._unsloth_silu_for = None  # consumed here: any later read of the norm output is a foreign read
             if inplace:
-                x._unsloth_pre_value = out  # stock SiLU(inplace) overwrote the norm output: later reads see that
-            return out
-        # anything else (a plain tensor, another SiLU's mark, a consumed mark): stock, on the stock values
+                x._unsloth_is_stock = True  # stock silu_ overwrote the norm output: its storage is now exactly that
+            return _plain(x)
+        # anything else: a plain tensor, or a fused output this SiLU does not own (FusedActivationRead)
         return torch.nn.functional.silu(x, inplace = inplace)
 
     forward._unsloth_vae_fused = True
@@ -2728,7 +2733,7 @@ def install_structural(vae: Any, logger: Any = None) -> int:
     state = types.SimpleNamespace(
         status = "pending", norms = len(norms), gn_silu = 0, gn = 0, calls = 0, kernel_calls = 0,
         max_abs = None, mean_abs = None, site_max_abs = None, site_mean_abs = None, local = threading.local(),
-        paired = None, consumers = None, cached = False,
+        paired = None, consumers = None, cached = False, key = None, act_off = False, foreign_reads = 0,
     )  # fmt: skip
     inner = vae._decode
     torch = _torch()
@@ -2741,7 +2746,7 @@ def install_structural(vae: Any, logger: Any = None) -> int:
         return call
 
     def calibrate(z: Any, args: tuple, kwargs: dict) -> None:
-        key = structural_cache_key(vae, norms, silus, getattr(z, "device", None))
+        key = state.key = structural_cache_key(vae, norms, silus, getattr(z, "device", None))
         cached = _load_pairing(key, len(norms))
         if cached is not None:
             # a verdict for this exact class / config / layout / torch / triton / device: no trace, no checks
@@ -2750,7 +2755,8 @@ def install_structural(vae: Any, logger: Any = None) -> int:
                 state.status = cached["status"]
                 _structural_unpatch(norms, silus, vae)
                 return
-            paired = cached["paired"]
+            paired = state.paired = cached["paired"]
+            state.consumers = cached["consumers"]
             _structural_patch(norms, paired, silus, state, logger, cached["consumers"])
             state.status = "ok"
             state.gn_silu = sum(1 for p in paired if p)
@@ -2828,7 +2834,41 @@ def install_structural(vae: Any, logger: Any = None) -> int:
                         if logger is not None:
                             logger.warning("diffusion.vae_fused: structural probe failed: %s", exc)
                     _clear_decoder_cache(vae)  # the real decode must not see the probe's causal cache
-        return inner(z, *args, **kwargs)
+        aborted = False
+        try:
+            return inner(z, *args, **kwargs)
+        except FusedActivationRead:
+            if state.status != "ok":
+                raise
+            aborted = True
+        if aborted:  # outside the handler: the aborted attempt's tensors are gone first
+            _activation_fusion_off()
+            _clear_decoder_cache(vae)  # a causal decoder's state from the aborted attempt
+            return inner(z, *args, **kwargs)
+
+    def _activation_fusion_off() -> None:
+        """A fused activation was read out of turn at this decode's shape / dataflow: from now on (and in later
+        processes: the cached verdict is downgraded) this VAE fuses GroupNorm only and every SiLU runs stock."""
+        with _TRACE_LOCK:
+            if not any(state.paired or ()):
+                return
+            paired = [False if p else p for p in state.paired]
+            _structural_unpatch(norms, silus)  # no layout restore: GroupNorm stays fused
+            _structural_patch(norms, paired, silus, state, logger)
+            state.paired, state.consumers = paired, [[] for _ in norms]
+            state.gn += state.gn_silu
+            state.gn_silu = 0
+            state.act_off = True
+            if logger is not None:
+                logger.warning(
+                    "diffusion.vae_fused: %s read a fused GroupNorm+SiLU output out of turn; decoding again with "
+                    "GroupNorm fused alone", type(vae).__name__,
+                )  # fmt: skip
+            _save_pairing(getattr(state, "key", None), {
+                "status": "ok", "paired": paired, "consumers": state.consumers,
+                "max_abs": state.max_abs, "mean_abs": state.mean_abs,
+                "site_max_abs": state.site_max_abs, "site_mean_abs": state.site_mean_abs,
+            })  # fmt: skip
 
     _decode._unsloth_vae_fused = True
     vae._unsloth_vae_structural = state
