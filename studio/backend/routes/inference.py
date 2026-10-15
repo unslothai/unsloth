@@ -40507,8 +40507,9 @@ class _InProcessChatStream:
         except asyncio.CancelledError:
             # The managed engine tool path turns its own Stop into CancelledError; that ends
             # the stream like any stopped run, and only the consumer's cancellation propagates.
-            task = asyncio.current_task()
-            if self.cancelled and not (task is not None and task.cancelling()):
+            # Task.cancelling is 3.11+; without it every cancellation is treated as the consumer's.
+            cancelling = getattr(asyncio.current_task(), "cancelling", None)
+            if self.cancelled and cancelling is not None and not cancelling():
                 return None
             raise
 
