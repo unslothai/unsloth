@@ -130,6 +130,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
       tensorParallel: tensorParallel ?? false,
       disableVision: disableVision ?? false,
       chatTemplateOverride: chatTemplateOverride ?? null,
+      ...(isGguf || isMlx ? {} : { loadIn4bit }),
     };
     if (!isGguf) {
       return engine === "vllm" || engine === "sglang"
@@ -141,9 +142,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
             selectedGpuIds,
             selectedGpuIndexKind,
           }
-        : isMlx
-          ? base
-          : { ...base, loadIn4bit };
+        : base;
     }
     return {
       ...base,
