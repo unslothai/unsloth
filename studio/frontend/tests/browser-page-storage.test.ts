@@ -42,14 +42,14 @@ function openPage(url: string, tabId = "tab-1") {
   const parent = {};
   const self = {};
   const listeners: Array<(event: { source: unknown; data: unknown }) => void> = [];
-  const events: Array<{ key: string | null; newValue: string | null }> = [];
+  const events: Array<{ key: string | null; newValue: string | null; storageArea: unknown }> = [];
   const window = {
     addEventListener: (type: string, listener: (event: { source: unknown; data: unknown }) => void) => {
       if (type === "message") {
         listeners.push(listener);
       }
     },
-    dispatchEvent: (event: { key: string | null; newValue: string | null }) => events.push(event),
+    dispatchEvent: (event: { key: string | null; newValue: string | null; storageArea: unknown }) => events.push(event),
   };
   for (const name of ["localStorage", "sessionStorage"]) {
     Object.defineProperty(window, name, {
@@ -65,7 +65,7 @@ function openPage(url: string, tabId = "tab-1") {
     if (parsed?.type === "storage" && origin) writePageStorage(origin, tabId, parsed.area, parsed.key, parsed.value, self);
   };
   const cfg = { storage: origin ? readPageStorage(origin, tabId) : null };
-  runInNewContext(source, { window, document, cfg, post, parent, Date: pageDate, StorageEvent });
+  runInNewContext(source, { window, document, cfg, post, parent, Date: pageDate, StorageEvent, URL, pageUrl: url });
   const message = (data: unknown, source: unknown = parent) => {
     for (const listener of listeners) {
       listener({ source, data });
@@ -91,7 +91,7 @@ test("a cookie set on one page is there on the same site's next page", () => {
   reset();
   const first = openPage("https://en.wikipedia.org/wiki/Cat");
   first.document.cookie = "enwikimwclientpreferences=skin-theme-clientpref-night; path=/; max-age=2592000; secure";
-  first.document.cookie = "consent=yes";
+  first.document.cookie = "consent=yes; path=/";
   assert.equal(first.document.cookie, "enwikimwclientpreferences=skin-theme-clientpref-night; consent=yes");
   const next = openPage("https://en.wikipedia.org/wiki/Dog");
   assert.equal(next.document.cookie, "enwikimwclientpreferences=skin-theme-clientpref-night; consent=yes");
@@ -241,6 +241,7 @@ test("a write shows up at once in the site's other open pages", () => {
     second.events.map((event) => [event.key, event.newValue]),
     [["state", '{"theme":"dark"}']],
   );
+  assert.equal(second.events[0]?.storageArea, second.window.localStorage);
   first.window.localStorage.removeItem("state");
   assert.equal(second.window.localStorage.getItem("state"), null);
 });
@@ -255,4 +256,17 @@ test("a closed tab's sessionStorage is dropped", () => {
   assert.equal(next.window.sessionStorage.getItem("step"), null);
   assert.equal(next.window.localStorage.getItem("banner"), "closed");
   assert.deepEqual(readPageStorage("https://example.com", "tab-1").session, []);
+});
+
+test("a cookie keeps its path, as in a browser", () => {
+  reset();
+  const login = openPage("https://example.com/account/login");
+  login.document.cookie = "mode=account";
+  login.document.cookie = "theme=dark; path=/";
+  login.document.cookie = "mode=root; path=/";
+  assert.equal(openPage("https://example.com/").document.cookie, "theme=dark; mode=root");
+  assert.equal(openPage("https://example.com/account/settings").document.cookie, "mode=account; theme=dark; mode=root");
+  assert.equal(openPage("https://example.com/accounts").document.cookie, "theme=dark; mode=root");
+  login.document.cookie = "mode=; max-age=0";
+  assert.equal(openPage("https://example.com/account/settings").document.cookie, "theme=dark; mode=root");
 });

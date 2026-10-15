@@ -210,6 +210,7 @@ _PAGE_STORAGE_JS = r"""
           return store;
         };
         const text = (value) => value === null || typeof value === "string";
+        const storages = {};
         window.addEventListener("message", (event) => {
           const data = event.data;
           if (event.source !== parent || !data || data.type !== "unsloth:browser-command") return;
@@ -224,7 +225,12 @@ _PAGE_STORAGE_JS = r"""
             else if (data.value === null) store.data.delete(data.key);
             else store.data.set(data.key, data.value);
             if (data.area === "local") {
-              try { window.dispatchEvent(new StorageEvent("storage", { key: data.key, oldValue, newValue: data.value, url: cfg.url || "" })); } catch {}
+              try {
+                const change = new StorageEvent("storage", { key: data.key, oldValue, newValue: data.value, url: pageUrl });
+                // The init dictionary only takes a real Storage, so sites' `storageArea === localStorage` checks need this.
+                Object.defineProperty(change, "storageArea", { value: storages.local });
+                window.dispatchEvent(change);
+              } catch {}
             }
           }
         });
@@ -257,37 +263,54 @@ _PAGE_STORAGE_JS = r"""
               getOwnPropertyDescriptor: (_, key) =>
                 named(key) ? { value: store.data.get(key), writable: true, enumerable: true, configurable: true } : undefined,
             });
+            storages[area] = storage;
             try { Object.defineProperty(window, name, { value: storage, configurable: true }); } catch {}
           }
         }
+        // Keyed "<name>=<path>" (a name has no "="), valued "<deadline>|<value>": a cookie keeps its
+        // path and its Max-Age or Expires across pages.
         const cookies = pageStore("cookie");
+        const pagePath = () => {
+          try { return new URL(pageUrl).pathname; } catch { return "/"; }
+        };
+        const defaultPath = (path) => (path.startsWith("/") && path.lastIndexOf("/") > 0 ? path.slice(0, path.lastIndexOf("/")) : "/");
+        const pathMatch = (scope, path) =>
+          path === scope || (path.startsWith(scope) && (scope.endsWith("/") || path[scope.length] === "/"));
         const setCookie = (raw) => {
           const [pair, ...attributes] = String(raw).split(";");
           const at = pair.indexOf("=");
           const name = at < 0 ? "" : pair.slice(0, at).trim();
           const value = (at < 0 ? pair : pair.slice(at + 1)).trim();
           if ((!name && !value) || name.length + value.length > 4096) return;
-          let maxAge = null, expires = null;
+          let maxAge = null, expires = null, path = null;
           for (const attribute of attributes) {
             const eq = attribute.indexOf("=");
             const key = (eq < 0 ? attribute : attribute.slice(0, eq)).trim().toLowerCase();
             const setting = eq < 0 ? "" : attribute.slice(eq + 1).trim();
             if (key === "max-age" && /^-?\d+$/.test(setting)) maxAge = Number(setting);
             else if (key === "expires") expires = Date.parse(setting);
+            else if (key === "path" && setting.startsWith("/")) path = setting;
           }
+          const id = name + "=" + (path ?? defaultPath(pagePath()));
           const deadline = maxAge !== null ? Date.now() + maxAge * 1000 : expires !== null && !Number.isNaN(expires) ? expires : null;
-          if (deadline !== null && deadline <= Date.now()) cookies.remove(name);
-          // Kept as "<deadline>|<value>", so a Max-Age or Expires still ends the cookie on later pages.
-          else cookies.set(name, (deadline ?? "") + "|" + value);
+          if (deadline !== null && deadline <= Date.now()) cookies.remove(id);
+          else cookies.set(id, (deadline ?? "") + "|" + value);
         };
         const liveCookies = () => {
+          const path = pagePath();
           const live = [];
-          for (const [name, stored] of cookies.data) {
+          for (const [id, stored] of cookies.data) {
             const at = stored.indexOf("|");
-            if (at > 0 && Number(stored.slice(0, at)) <= Date.now()) cookies.remove(name);
-            else live.push(name ? name + "=" + stored.slice(at + 1) : stored.slice(at + 1));
+            if (at > 0 && Number(stored.slice(0, at)) <= Date.now()) {
+              cookies.remove(id);
+              continue;
+            }
+            const eq = id.indexOf("=");
+            const scope = id.slice(eq + 1);
+            if (pathMatch(scope, path)) live.push([scope.length, eq ? id.slice(0, eq) + "=" + stored.slice(at + 1) : stored.slice(at + 1)]);
           }
-          return live.join("; ");
+          // Longer paths first, as browsers order them.
+          return live.sort((a, b) => b[0] - a[0]).map(([, cookie]) => cookie).join("; ");
         };
         try {
           Object.defineProperty(document, "cookie", {

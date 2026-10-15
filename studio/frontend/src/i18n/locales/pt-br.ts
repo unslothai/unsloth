@@ -432,7 +432,7 @@ export const ptBR = {
     },
     clearData: {
       title: "Limpar dados de navegação?",
-      description: "Isso limpa seu histórico de navegação, o histórico de downloads e as páginas em cache. Os arquivos baixados continuam no seu computador.",
+      description: "Isso limpa o histórico de navegação, o histórico de downloads, as páginas em cache e os cookies e dados de sites, o que encerra sua sessão nos sites. Os arquivos baixados continuam no seu computador.",
       cancel: "Cancelar",
       confirm: "Limpar dados",
       done: "Dados de navegação limpos",

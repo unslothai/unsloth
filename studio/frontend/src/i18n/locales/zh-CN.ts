@@ -432,7 +432,7 @@ export const zhCN = {
     },
     clearData: {
       title: "清除浏览数据？",
-      description: "这将清除你的浏览历史记录、下载历史记录和缓存的页面。已下载的文件会保留在你的电脑上。",
+      description: "这会清除浏览历史、下载历史、缓存的页面以及网站 Cookie 和数据，并让你退出各网站。已下载的文件会保留在你的电脑上。",
       cancel: "取消",
       confirm: "清除数据",
       done: "已清除浏览数据",

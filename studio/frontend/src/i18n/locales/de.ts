@@ -432,7 +432,7 @@ export const de = {
     },
     clearData: {
       title: "Browserdaten löschen?",
-      description: "Dadurch werden dein Browserverlauf, Download-Verlauf und zwischengespeicherte Seiten gelöscht. Heruntergeladene Dateien bleiben auf deinem Computer.",
+      description: "Dadurch werden Browserverlauf, Downloadverlauf, zwischengespeicherte Seiten sowie Cookies und Websitedaten gelöscht, und du wirst von Websites abgemeldet. Heruntergeladene Dateien bleiben auf deinem Computer.",
       cancel: "Abbrechen",
       confirm: "Daten löschen",
       done: "Browserdaten gelöscht",

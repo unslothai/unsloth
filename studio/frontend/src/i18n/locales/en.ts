@@ -429,7 +429,7 @@ export const en = {
     },
     clearData: {
       title: "Clear browsing data?",
-      description: "This clears your browsing history, download history and cached pages. Downloaded files stay on your computer.",
+      description: "This clears your browsing history, download history, cached pages, and site cookies and data, which signs you out of sites. Downloaded files stay on your computer.",
       cancel: "Cancel",
       confirm: "Clear data",
       done: "Browsing data cleared",

@@ -432,7 +432,7 @@ export const es = {
     },
     clearData: {
       title: "¿Borrar datos de navegación?",
-      description: "Se borrarán tu historial de navegación, el historial de descargas y las páginas en caché. Los archivos descargados se quedan en tu equipo.",
+      description: "Esto borra el historial de navegación, el historial de descargas, las páginas en caché y las cookies y datos de sitios, lo que cierra tu sesión en los sitios. Los archivos descargados se quedan en tu equipo.",
       cancel: "Cancelar",
       confirm: "Borrar datos",
       done: "Datos de navegación borrados",

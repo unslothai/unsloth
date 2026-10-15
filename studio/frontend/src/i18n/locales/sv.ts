@@ -447,7 +447,7 @@ export const sv = {
     clearData: {
       title: "Rensa webbdata?",
       description:
-        "Detta rensar din webbhistorik, hämtningshistorik och cachade sidor. Hämtade filer finns kvar på datorn.",
+        "Detta rensar din webbhistorik, hämtningshistorik, cachade sidor samt webbplatsers cookies och data, vilket loggar ut dig från webbplatser. Hämtade filer finns kvar på datorn.",
       cancel: "Avbryt",
       confirm: "Rensa data",
       done: "Webbdata rensades",
