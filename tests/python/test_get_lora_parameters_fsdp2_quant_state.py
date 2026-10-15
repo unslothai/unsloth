@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
 """FSDP2 all-gathers a bitsandbytes 4-bit weight into a plain Parameter without `quant_state`. The fused
 LoRA kernels must then read the Linear4bit module's own QuantState, not treat the packed (N, 1) bytes as
 a dense weight."""

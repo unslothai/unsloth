@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
 """FSDP2 + bitsandbytes 4-bit (QLoRA): GPU-free checks of unsloth/models/fsdp2_qlora.py.
 
 The module is loaded from its file (importing unsloth needs a GPU). The distributed tests shard real
