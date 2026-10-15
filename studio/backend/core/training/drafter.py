@@ -243,6 +243,38 @@ def collect_examples(train_dataset, max_examples: int, max_len: int) -> list[dic
     return examples
 
 
+def _assistant_header(tokenizer) -> list[int]:
+    """Token ids the chat template puts between a user turn and the answer ("<|im_start|>assistant\n", ...)."""
+    text_tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
+    turn = [{"role": "user", "content": "x"}]
+    try:
+        with_prompt = tokenizer.apply_chat_template(
+            turn, add_generation_prompt = True, tokenize = False
+        )
+        without = tokenizer.apply_chat_template(turn, add_generation_prompt = False, tokenize = False)
+    except Exception:
+        return []
+    if not with_prompt.startswith(without):
+        return []
+    return text_tokenizer(with_prompt[len(without) :], add_special_tokens = False)["input_ids"]
+
+
+def _prompt_end(ids: list[int], labels: list[int], header: list[int]) -> Optional[int]:
+    """Where the answer starts: the first trained label, or (rows trained on the whole sequence) after
+    the last assistant header. Shorter header prefixes cover templates that add a thinking block."""
+    first = next((i for i, t in enumerate(labels) if t != -100), None)
+    if first:
+        return first
+    for width in range(len(header), 0, -1):
+        part = header[:width]
+        for start in range(len(ids) - width, 0, -1):
+            if ids[start : start + width] == part:
+                return start + width
+        if width <= 2:
+            break
+    return None
+
+
 def regenerate_examples(
     model,
     tokenizer,
@@ -259,11 +291,12 @@ def regenerate_examples(
     if pad_id is None:
         pad_id = text_tokenizer.eos_token_id
     eos_id = text_tokenizer.eos_token_id
+    header = _assistant_header(tokenizer)
     prompts = []
     for ex in examples:
-        first = next((i for i, t in enumerate(ex["labels"]) if t != -100), None)
-        if first:  # needs a prompt to answer
-            prompts.append(ex["input_ids"][:first])
+        end = _prompt_end(ex["input_ids"], ex["labels"], header)
+        if end:  # needs a prompt to answer
+            prompts.append(ex["input_ids"][:end])
     out = []
     device = next(model.parameters()).device
     for b in range(0, len(prompts), batch_size):
@@ -447,13 +480,21 @@ def run_drafter_phase(
         model.eval()
         for p in model.parameters():
             p.requires_grad_(False)
+        data_source = "dataset"
         if cfg.get("data_source") == "regenerate":
             send_status(
                 event_queue,
                 f"Training drafter ({_LABEL[strategy]}): generating the model's answers",
             )
             regenerated = regenerate_examples(model, tokenizer, examples, should_stop = should_stop)
-            examples = regenerated or examples
+            if regenerated:
+                examples = regenerated
+                data_source = "regenerate"
+            else:
+                send_status(
+                    event_queue,
+                    f"Training drafter ({_LABEL[strategy]}): no prompts found to answer, using the dataset's answers",
+                )
         if not examples:
             raise RuntimeError("no usable training examples")
         if should_stop():
@@ -530,7 +571,7 @@ def run_drafter_phase(
             "adapter_dir": output_dir,
             "draft_steps": steps,
             "examples": len(examples),
-            "data_source": cfg.get("data_source", "dataset"),
+            "data_source": data_source,
             "metrics": metrics,
             "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }

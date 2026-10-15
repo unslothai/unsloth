@@ -555,3 +555,63 @@ def test_capability_refuses_without_the_zoo_drafter_trainers(monkeypatch):
     cap = drafter.drafter_capability("unsloth/Qwen3.5-2B")
     assert cap["supported"] is False and cap["strategy"] is None
     assert "unsloth_zoo" in cap["reason"]
+
+
+class _CharTokenizer:
+    """One token per character; a ChatML-style template."""
+
+    eos_token_id = 0
+    pad_token_id = 0
+
+    def apply_chat_template(
+        self,
+        turns,
+        add_generation_prompt = False,
+        tokenize = False,
+    ):
+        text = "".join(f"<u>{t['content']}</u>" for t in turns)
+        return text + ("<a>" if add_generation_prompt else "")
+
+    def __call__(
+        self,
+        text,
+        add_special_tokens = False,
+    ):
+        return {"input_ids": [ord(c) for c in text]}
+
+
+def test_regenerate_finds_prompts_in_rows_trained_on_the_whole_sequence():
+    """Studio trains on full sequences by default (labels unmasked): the prompt still ends at the assistant header."""
+    from core.training.drafter import _assistant_header, _prompt_end
+
+    tok = _CharTokenizer()
+    header = _assistant_header(tok)
+    assert header == [ord(c) for c in "<a>"]
+    row = [ord(c) for c in "<u>hi</u><a>answer"]
+    assert _prompt_end(row, list(row), header) == len("<u>hi</u><a>")
+    masked = [-100] * 5 + row[5:]
+    assert _prompt_end(row, masked, header) == 5
+    assert _prompt_end([ord(c) for c in "no header here"], [1] * 14, header) is None
+
+
+@pytest.mark.parametrize("answers, used", [([], "dataset"), (None, "regenerate")])
+def test_manifest_records_the_data_source_actually_used(
+    fake_zoo, tmp_path, monkeypatch, answers, used
+):
+    """A regenerate request that found nothing to answer trains on the dataset and must say so."""
+    drafter, trainer = fake_zoo
+    regenerated = [{"input_ids": [1, 2, 3, 4], "labels": [-100, -100, 3, 4]}] * 16
+    monkeypatch.setattr(
+        drafter, "regenerate_examples", lambda *a, **k: regenerated if answers is None else answers
+    )
+    q = _Queue()
+    manifest = drafter.run_drafter_phase(
+        trainer,
+        _config(data_source = "regenerate"),
+        str(tmp_path),
+        q,
+        lambda eq, m: eq.put({"type": "status", "message": m}),
+    )
+    assert manifest["data_source"] == used
+    if used == "dataset":
+        assert any("using the dataset's answers" in e.get("message", "") for e in q)
