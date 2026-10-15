@@ -8,193 +8,131 @@ import { test } from "node:test";
 register("./helpers/browser-executor-resolver.mjs", import.meta.url);
 const { runBrowserAction } = await import("../src/features/browser/agent/executor.ts");
 const { answerQuestion, stopBrowserAgent, useBrowserAgentStore } = await import("../src/features/browser/agent/agent-store.ts");
-const { useBrowserStore } = await import("../src/features/browser/store.ts");
+const { chatKeyOfThread, useBrowserStore } = await import("../src/features/browser/store.ts");
 
 const globals = globalThis as Record<string, unknown>;
 // The stub page loads at once, as tab-view marks a real tab loaded; else each action waits out LOAD_TIMEOUT_MS.
 useBrowserStore.subscribe(({ tabs }) => {
   for (const tab of tabs) if (tab.loading) queueMicrotask(() => useBrowserStore.getState().updateTab(tab.id, { loading: false }));
 });
+globals.__authFetch = async () => new Response(null, { status: 200 });
 const policy = { allowedDomains: [], blockedDomains: [] };
 const buy = { role: "button", name: "Buy now", tag: "button", href: "", formMethod: "", formAction: "", formHasPassword: false, submits: false };
-
-async function question() {
-  for (let i = 0; i < 100; i++) {
-    const asked = useBrowserAgentStore.getState().question;
-    if (asked) return asked;
-    await new Promise((resolve) => setTimeout(resolve, 10));
+const sent: string[] = [];
+let info: Record<string, unknown> = buy;
+let onClick: (() => void) | null = null;
+globals.__frameAgent = async (_tabId: string, op: Record<string, unknown>) => {
+  sent.push(String(op.op));
+  if (op.op === "status") return { installed: true, result: { ok: true, quietMs: 1000, doc: "r1" } };
+  if (op.op === "describe") {
+    onClick?.();
+    return { installed: true, result: { ok: true, info, hit: "r5", sig: "s" } };
   }
-  return null;
-}
+  return { installed: true, result: { ok: true, text: "page", links: [] } };
+};
 
-/** What the action asks, answered by `reply`; null when it finishes without asking. */
+type Run = { runKey: string; scope: string; userText: string };
+const chatOf = (scope: string) => chatKeyOfThread(scope);
+const show = (scope: string) => useBrowserStore.getState().showChat(chatKeyOfThread(scope));
+const pending = () => Object.values(useBrowserAgentStore.getState().chats).find((chat) => chat.question)?.question ?? null;
+const navigate = (id: string, run: Run, url = "https://shop.example.com/") =>
+  runBrowserAction({ id, sessionId: "s", op: "navigate", url, direction: "down", policy }, run);
+const click = (id: string, run: Run) => runBrowserAction({ id, sessionId: "s", op: "click", x: 40, y: 20, direction: "down", policy }, run);
+const run = (scope: string): Run => ({ runKey: `run-${scope}`, scope, userText: "open https://shop.example.com/" });
+
+/** What the action asks, answered by `reply`, and whether the bar offered Always allow; null when it doesn't ask. */
 async function askedBy(action: Promise<void>, reply: (id: number) => void) {
   let finished = false;
   const done = action.then(() => {
     finished = true;
   });
-  let asked = useBrowserAgentStore.getState().question;
+  let asked = pending();
   while (!finished && !asked) {
     await new Promise((resolve) => setTimeout(resolve, 10));
-    asked = useBrowserAgentStore.getState().question;
+    asked = pending();
   }
   if (asked) reply(asked.id);
   await done;
-  return asked?.ask ?? null;
+  return asked ? `${asked.ask}${asked.always ? "+always" : ""}` : null;
 }
 
 test("Always allow stops asking about that action on that site, in that chat only", async () => {
-  globals.__authFetch = async () => new Response(null, { status: 200 });
-  const sent: string[] = [];
-  globals.__frameAgent = async (_tabId: string, op: Record<string, unknown>) => {
-    sent.push(String(op.op));
-    if (op.op === "status") return { installed: true, result: { ok: true, quietMs: 1000, doc: "r1" } };
-    if (op.op === "describe") return { installed: true, result: { ok: true, info: buy, hit: "r5", sig: "s" } };
-    return { installed: true, result: { ok: true, text: "page", links: [] } };
-  };
-  const click = (id: string, run: { runKey: string; scope: string; userText: string }) =>
-    runBrowserAction({ id, sessionId: "s", op: "click", x: 40, y: 20, direction: "down", policy }, run);
-  const chat = { runKey: "r", scope: "chat-a", userText: "open https://shop.example.com/" };
-  await runBrowserAction({ id: "n0", sessionId: "s", op: "navigate", url: "https://shop.example.com/", direction: "down", policy }, chat);
+  info = buy;
+  const a = run("chat-a");
+  show("chat-a");
+  await navigate("a0", a);
+  assert.equal(await askedBy(click("a1", a), (id) => answerQuestion(id, true, true)), "click+always");
+  const clicks = sent.filter((op) => op === "click").length;
+  assert.equal(await askedBy(click("a2", a), (id) => answerQuestion(id, false)), null, "asked again after Always allow");
+  assert.equal(sent.filter((op) => op === "click").length, clicks + 1);
 
-  const first = click("c1", chat);
-  const asked = await question();
-  assert.equal(asked?.ask, "click");
-  answerQuestion(asked.id, true, true);
-  await first;
-  assert.equal(sent.filter((op) => op === "click").length, 1);
+  const b = run("chat-b");
+  show("chat-b");
+  await navigate("b0", b);
+  assert.equal(await askedBy(click("b1", b), (id) => answerQuestion(id, false)), "click+always", "another chat inherited Always allow");
 
-  const second = click("c2", chat);
-  const again = await question();
-  if (again) answerQuestion(again.id, false);
-  await second;
-  assert.equal(again, null, "asked again after Always allow");
-  assert.equal(sent.filter((op) => op === "click").length, 2);
-
-  const other = { runKey: "r", scope: "chat-b", userText: "" };
-  const third = click("c3", other);
-  const asks: string[] = [];
-  for (let next = await question(); next; next = await question()) {
-    asks.push(next.ask);
-    answerQuestion(next.id, next.ask !== "click");
-  }
-  await third;
-  assert.ok(asks.includes("click"), `another chat inherited Always allow: ${asks.join(", ")}`);
-
-  assert.equal(await askedBy(click("c4", chat), (id) => answerQuestion(id, false)), null, "Always allow lost on coming back to the chat");
+  show("chat-a");
+  assert.equal(await askedBy(click("a3", a), (id) => answerQuestion(id, false)), null, "Always allow lost on coming back to the chat");
 });
 
 test("Always allow on a click covers only the button it named", async () => {
-  globals.__authFetch = async () => new Response(null, { status: 200 });
-  let info: Record<string, unknown> = buy;
-  globals.__frameAgent = async (_tabId: string, op: Record<string, unknown>) => {
-    if (op.op === "status") return { installed: true, result: { ok: true, quietMs: 1000, doc: "r1" } };
-    if (op.op === "describe") return { installed: true, result: { ok: true, info, hit: "r5", sig: "s" } };
-    return { installed: true, result: { ok: true, text: "page", links: [] } };
-  };
-  const chat = { runKey: "r", scope: "chat-c", userText: "open https://shop.example.com/" };
-  await runBrowserAction({ id: "d0", sessionId: "s", op: "navigate", url: "https://shop.example.com/", direction: "down", policy }, chat);
-  const askedFor = (id: string, next: Record<string, unknown>, always: boolean) => {
-    info = next;
-    const click = runBrowserAction({ id, sessionId: "s", op: "click", x: 40, y: 20, direction: "down", policy }, chat);
-    return askedBy(click, (asked) => answerQuestion(asked, true, always));
-  };
-
-  assert.equal(await askedFor("d1", buy, true), "click");
-  assert.equal(await askedFor("d2", { ...buy, name: "Delete account" }, false), "click");
-  assert.equal(await askedFor("d3", buy, false), null);
+  const c = run("chat-c");
+  show("chat-c");
+  info = buy;
+  await navigate("c0", c);
+  assert.equal(await askedBy(click("c1", c), (id) => answerQuestion(id, true, true)), "click+always");
+  info = { ...buy, name: "Delete account" };
+  assert.equal(await askedBy(click("c2", c), (id) => answerQuestion(id, true)), "click+always");
+  info = buy;
+  assert.equal(await askedBy(click("c3", c), (id) => answerQuestion(id, true)), null);
 });
 
-test("Always allow isn't kept for a new chat's first turn before it has an id", async () => {
-  globals.__authFetch = async () => new Response(null, { status: 200 });
-  globals.__frameAgent = async (_tabId: string, op: Record<string, unknown>) => {
-    if (op.op === "status") return { installed: true, result: { ok: true, quietMs: 1000, doc: "r1" } };
-    if (op.op === "describe") return { installed: true, result: { ok: true, info: buy, hit: "r5", sig: "s" } };
-    return { installed: true, result: { ok: true, text: "page", links: [] } };
-  };
-  const chat = { runKey: "r", scope: "__default", userText: "open https://shop.example.com/" };
-  await runBrowserAction({ id: "e0", sessionId: "s", op: "navigate", url: "https://shop.example.com/", direction: "down", policy }, chat);
-  const click = (id: string) => runBrowserAction({ id, sessionId: "s", op: "click", x: 40, y: 20, direction: "down", policy }, chat);
-  let offered: boolean | undefined;
-  assert.equal(await askedBy(click("e1"), (id) => {
-    offered = useBrowserAgentStore.getState().question?.always;
-    answerQuestion(id, true, true);
-  }), "click");
-  assert.equal(offered, false, "Always allow offered where it can't be kept");
-  assert.equal(await askedBy(click("e2"), (id) => answerQuestion(id, true)), "click");
+test("Always allow isn't offered or kept for a new chat's first turn before it has an id", async () => {
+  info = buy;
+  const first = run("__default");
+  useBrowserStore.getState().showChat("new:e");
+  await navigate("e0", first);
+  assert.equal(await askedBy(click("e1", first), (id) => answerQuestion(id, true, true)), "click");
+  assert.equal(await askedBy(click("e2", first), (id) => answerQuestion(id, true)), "click");
 });
 
-test("Always allow isn't kept for a native Back whose destination is unknown", async () => {
-  globals.__authFetch = async () => new Response(null, { status: 200 });
-  const page = async (_tabId: string, op: Record<string, unknown>) => {
-    if (op.op === "status") return { installed: true, result: { ok: true, quietMs: 1000, doc: "r1" } };
-    return { installed: true, result: { ok: true, text: "page", links: [] } };
-  };
-  globals.__frameAgent = page;
-  const chat = { runKey: "r", scope: "chat-g", userText: "open https://shop.example.com/" };
-  await runBrowserAction({ id: "g0", sessionId: "s", op: "navigate", url: "https://shop.example.com/", direction: "down", policy }, chat);
-  const tabId = useBrowserAgentStore.getState().tabId ?? "";
-  globals.__nativeView = async (_cmd: string, args: { command: { op: Record<string, unknown> } }) => page(tabId, args.command.op);
+test("Always allow isn't offered or kept for a native Back whose destination is unknown", async () => {
+  const g = run("chat-g");
+  show("chat-g");
+  await navigate("g0", g);
+  const tabId = useBrowserAgentStore.getState().chats[chatOf("chat-g")]?.tabId ?? "";
+  globals.__native = true;
+  globals.__callNative = async (command: string, args: { command: { op: Record<string, unknown> } }) =>
+    command === "browser_view_agent" ? (globals.__frameAgent as (t: string, op: Record<string, unknown>) => unknown)(tabId, args.command.op) : null;
   try {
+    // History from before this chat: the view can go back, but not to where.
     const back = (id: string) => {
-      // History from before this chat: the view can go back, but not where to.
       useBrowserStore.getState().updateTab(tabId, { nativeHistory: { back: true, forward: false } });
-      return runBrowserAction({ id, sessionId: "s", op: "back", direction: "down", policy }, chat);
+      return runBrowserAction({ id, sessionId: "s", op: "back", direction: "down", policy }, g);
     };
-    let offered: boolean | undefined;
-    assert.equal(await askedBy(back("g1"), (id) => {
-      offered = useBrowserAgentStore.getState().question?.always;
-      answerQuestion(id, true, true);
-    }), "open");
-    assert.equal(offered, false);
-    // Another chat in between: the trail starts over, so the next Back is unnamed again.
-    await runBrowserAction({ id: "g2", sessionId: "s", op: "navigate", url: "https://shop.example.com/", direction: "down", policy }, { ...chat, scope: "chat-x" });
-    await runBrowserAction({ id: "g3", sessionId: "s", op: "navigate", url: "https://shop.example.com/", direction: "down", policy }, chat);
-    assert.equal(await askedBy(back("g4"), (id) => answerQuestion(id, false)), "open", "an unnamed Back reused Always allow");
+    assert.equal(await askedBy(back("g1"), (id) => answerQuestion(id, true, true)), "open");
+    // The user browsed on in the view, so where Back leads is unknown again.
+    useBrowserStore.getState().updateTab(tabId, { displayUrl: "https://shop.example.com/elsewhere" });
+    assert.equal(await askedBy(back("g2"), (id) => answerQuestion(id, false)), "open", "an unnamed Back reused Always allow");
   } finally {
-    delete globals.__nativeView;
+    globals.__native = false;
+    delete globals.__callNative;
   }
 });
 
-test("Always allow is offered for a click in a chat with an id", async () => {
-  globals.__authFetch = async () => new Response(null, { status: 200 });
-  globals.__frameAgent = async (_tabId: string, op: Record<string, unknown>) => {
-    if (op.op === "status") return { installed: true, result: { ok: true, quietMs: 1000, doc: "r1" } };
-    if (op.op === "describe") return { installed: true, result: { ok: true, info: buy, hit: "r5", sig: "s" } };
-    return { installed: true, result: { ok: true, text: "page", links: [] } };
-  };
-  const chat = { runKey: "r", scope: "chat-h", userText: "open https://shop.example.com/" };
-  await runBrowserAction({ id: "h0", sessionId: "s", op: "navigate", url: "https://shop.example.com/", direction: "down", policy }, chat);
-  let offered: boolean | undefined;
-  const click = runBrowserAction({ id: "h1", sessionId: "s", op: "click", x: 40, y: 20, direction: "down", policy }, chat);
-  assert.equal(await askedBy(click, (id) => {
-    offered = useBrowserAgentStore.getState().question?.always;
-    answerQuestion(id, false);
-  }), "click");
-  assert.equal(offered, true);
-});
-
 test("Always allow doesn't answer for an action that was stopped", async () => {
-  globals.__authFetch = async () => new Response(null, { status: 200 });
-  globals.__frameAgent = async (_tabId: string, op: Record<string, unknown>) => {
-    if (op.op === "status") return { installed: true, result: { ok: true, quietMs: 1000, doc: "r1" } };
-    if (op.op === "describe") return { installed: true, result: { ok: true, info: { ...buy, name: "Next page" }, hit: "r5", sig: "s" } };
-    if (op.op === "click") {
-      // Stop lands while the click is out; the page then says the button opens a link.
-      stopBrowserAgent();
-      return { installed: true, result: { ok: true, navigate: "https://other.example.com/next" } };
-    }
-    return { installed: true, result: { ok: true, text: "page", links: [] } };
-  };
-  const chat = { runKey: "r", scope: "chat-d", userText: "open https://shop.example.com/" };
-  const go = (id: string, url: string, run: typeof chat) =>
-    runBrowserAction({ id, sessionId: "s", op: "navigate", url, direction: "down", policy }, run);
-  await go("f0", "https://shop.example.com/", chat);
-  assert.equal(await askedBy(go("f1", "https://other.example.com/", chat), (id) => answerQuestion(id, true, true)), "open");
-  // Another chat in between, so other.example.com is back to needing the grant.
-  await go("f2", "https://shop.example.com/", { ...chat, scope: "chat-e" });
-  await go("f3", "https://shop.example.com/", chat);
-  const click = runBrowserAction({ id: "f4", sessionId: "s", op: "click", x: 40, y: 20, direction: "down", policy }, chat);
-  assert.equal(await askedBy(click, (id) => answerQuestion(id, true)), null);
-  assert.ok(!JSON.stringify(useBrowserStore.getState().tabs).includes("other.example.com/next"), "a stopped action opened the link");
+  info = buy;
+  const d = run("chat-d");
+  show("chat-d");
+  await navigate("d0", d);
+  assert.equal(await askedBy(click("d1", d), (id) => answerQuestion(id, true, true)), "click+always");
+  const clicks = sent.filter((op) => op === "click").length;
+  // Stop lands while the next click on that button is being read, before it is asked about.
+  onClick = () => stopBrowserAgent(chatOf("chat-d"));
+  try {
+    await click("d2", d);
+  } finally {
+    onClick = null;
+  }
+  assert.equal(sent.filter((op) => op === "click").length, clicks, "a stopped click ran on Always allow");
 });

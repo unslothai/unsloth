@@ -9,12 +9,17 @@ const stub = (source) => ({ url: `data:text/javascript,${encodeURIComponent(sour
 
 const STUBS = {
   "../page-frame": "export const requestFrameAgent = (tabId, op, code) => globalThis.__frameAgent(tabId, op, code);",
-  "../capture": "export const screenshotPage = async () => null;",
-  // Off unless a test sets globalThis.__nativeView, which then answers the view's calls.
-  "../native-view": "export const hasNativeView = () => Boolean(globalThis.__nativeView); export const nativeAction = () => {};",
+  "../capture": "export const screenshotPage = async () => null; export const captureHiddenPage = async () => null;",
+  // Native pages only when a test sets globalThis.__native; it answers their calls via __callNative.
+  "../native-view":
+    "export const hasNativeView = () => globalThis.__native === true; export const nativeAction = () => {};" +
+    " export const keepInBackground = (tabId) => globalThis.__keep?.(tabId);" +
+    " export const releaseBackground = (tabId) => void (globalThis.__released ??= []).push(tabId);" +
+    " export const whenViewOpen = async () => true;",
   "../native-support":
-    "export const useNativeBrowser = { getState: () => ({ enabled: Boolean(globalThis.__nativeView) }) }; export const callNative = async (cmd, args) => globalThis.__nativeView?.(cmd, args) ?? null;",
-  "../panel-availability": "export const browserPanelAvailable = () => true;",
+    "export const useNativeBrowser = { getState: () => ({ enabled: globalThis.__native === true }) };" +
+    " export const callNative = async (command, args) => (globalThis.__callNative ? globalThis.__callNative(command, args) : null);",
+  "../panel-availability": "export const browserPanelAvailable = () => globalThis.__panel !== false;",
   "../history-store": "export const useBrowserHistoryStore = { getState: () => ({ recordVisit() {} }) };",
 };
 

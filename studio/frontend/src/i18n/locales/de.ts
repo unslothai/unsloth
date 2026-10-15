@@ -83,6 +83,9 @@ export const de = {
     },
     agent: {
       working: "Unsloth surft in diesem Tab",
+      waiting: "Unsloth braucht im Browser deine Antwort für {chat}",
+      otherChat: "einen anderen Chat",
+      show: "Anzeigen",
       stop: "Stopp",
       allow: "Erlauben",
       deny: "Ablehnen",
@@ -1367,6 +1370,7 @@ export const de = {
       installRuntimeFailed: "Die Installation der Laufzeit ist fehlgeschlagen.",
       installRuntimeError: "Die Installation der Laufzeit konnte nicht gestartet werden.",
       unsupportedArch: "Die Windows-Sandbox (MXC) läuft nur unter x64-Windows und ist auf diesem PC daher nicht verfügbar.",
+      builtinNeedsUpdate: "Der integrierte Windows-Container benötigt Build {required} oder neuer, auf diesem PC läuft {current}. Installiere das neueste Windows-Update, um ihn ohne Administratorschritt zu nutzen, oder aktiviere unten die Ausweich-Sandbox.",
       unsupportedBuild: "Die Windows-Sandbox (MXC) braucht Windows 11 24H2 (Build 26100) oder neuer und ist auf diesem PC daher nicht verfügbar.",
       permissionsIntro: "Lege fest, wann Tools zuerst fragen und ob Python und Terminal zusätzlich in der OS-Sandbox laufen.",
       permissionLabel: "Tool-Berechtigungen",

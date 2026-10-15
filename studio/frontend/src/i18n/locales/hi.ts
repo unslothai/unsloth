@@ -83,6 +83,9 @@ export const hi = {
     },
     agent: {
       working: "Unsloth इस टैब में ब्राउज़ कर रहा है",
+      waiting: "Unsloth को {chat} के लिए ब्राउज़र में आपका जवाब चाहिए",
+      otherChat: "किसी अन्य चैट",
+      show: "दिखाएँ",
       stop: "रोकें",
       allow: "अनुमति दें",
       deny: "अस्वीकार करें",
@@ -1366,6 +1369,8 @@ export const hi = {
       installRuntimeFailed: "रनटाइम इंस्टॉल नहीं हो सका।",
       installRuntimeError: "रनटाइम इंस्टॉल शुरू नहीं हो सका।",
       unsupportedArch: "Windows सैंडबॉक्स (MXC) केवल x64 Windows पर चलता है, इसलिए यह इस PC पर उपलब्ध नहीं है।",
+      builtinNeedsUpdate:
+        "Windows के बिल्ट-इन कंटेनर को बिल्ड {required} या नया चाहिए, और यह PC {current} चला रहा है। इसे बिना एडमिनिस्ट्रेटर चरण के उपयोग करने के लिए नवीनतम Windows अपडेट इंस्टॉल करें, या नीचे फ़ॉलबैक सैंडबॉक्स चालू करें।",
       unsupportedBuild: "Windows सैंडबॉक्स (MXC) के लिए Windows 11 24H2 (बिल्ड 26100) या नया चाहिए, इसलिए यह इस PC पर उपलब्ध नहीं है।",
       permissionsIntro: "चुनें कि टूल कब पहले पूछें, और क्या Python और टर्मिनल OS सैंडबॉक्स के अंदर भी चलें।",
       permissionLabel: "टूल अनुमतियाँ",

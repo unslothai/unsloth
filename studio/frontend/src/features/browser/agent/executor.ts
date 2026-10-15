@@ -5,15 +5,18 @@
  *  each result back. Every action goes through the gates in gate.ts first. */
 
 import { authFetch } from "@/features/auth";
+import { openChatItemById, useChatNavigationStore, visibleChatItems } from "@/features/chat";
+import { getLocale, translate } from "@/i18n";
+import { toast } from "@/lib/toast";
 import { isTauri } from "@/lib/api-base";
-import { screenshotPage } from "../capture";
+import { captureHiddenPage, screenshotPage } from "../capture";
 import { useBrowserHistoryStore } from "../history-store";
-import { hasNativeView, nativeAction } from "../native-view";
+import { hasNativeView, keepInBackground, nativeAction, releaseBackground, whenViewOpen } from "../native-view";
 import { callNative, useNativeBrowser } from "../native-support";
 import { requestFrameAgent } from "../page-frame";
 import { browserPanelAvailable } from "../panel-availability";
-import { type BrowserTab, currentEntry, useBrowserStore } from "../store";
-import { type Answer, askUser, setActiveAction, useBrowserAgentStore } from "./agent-store";
+import { type BrowserTab, chatKeyOfThread, currentEntry, onChatAdopted, useBrowserStore } from "../store";
+import { type Answer, adoptAgentChat, agentChat, askUser, liveChat, onBrowserAgentRunEnd, patchAgentChat, setActiveAction, useBrowserAgentStore } from "./agent-store";
 import { type Gate, type Question, type SitePolicy, gateElement, gateNavigation, hostOfUrl, navigationBlocks } from "./gate";
 import { type SiteRule, ruleFor } from "./permissions";
 import { type AgentAnswer, type ElementInfo, pageAgentSource } from "./page-agent";
@@ -44,8 +47,18 @@ export type BrowserAction = {
   policy: SitePolicy;
 };
 
-/** `scope`: the chat the run belongs to; sites approved in one chat aren't approved in another. */
-export type ActionContext = { runKey: string; scope?: string; userText: string; fullAccess?: boolean; signal?: AbortSignal };
+/** `scope`: the chat the run belongs to; sites approved in one chat aren't approved in another.
+ *  `chat`: its browser chat when that isn't the thread's own (a compare pane's pair). */
+export type ActionContext = {
+  runKey: string;
+  scope?: string;
+  chat?: string;
+  userText: string;
+  fullAccess?: boolean;
+  signal?: AbortSignal;
+};
+
+type Run = ActionContext & { session: Session };
 
 type Result = { ok: boolean; error?: string; url?: string; title?: string; text?: string; note?: string; image?: string };
 
@@ -99,64 +112,104 @@ export function parseBrowserAction(value: unknown): BrowserAction | null {
   };
 }
 
-// Sites the user approved or named, where the model may open addresses it made up; every site the
-// agent has been on (a page's link reaches its site, but the page chose it, not the user); and the
-// links on the page the agent last read. All per chat.
-const knownHosts = new Set<string>();
-const reachedHosts = new Set<string>();
-const opaqueHosts = new Set<string>();
-let pageLinks = new Set<string>();
-let scope: string | undefined;
-// Where the agent's own moves in this chat landed: a native view's Back or Forward doesn't say where
-// it goes, so this is how it is checked before it loads.
-let trail: string[] = [];
-let at = -1;
-// Always allow answers, by chat: kept when another chat uses the browser, like Always allow on tool cards.
-const alwaysAllowed = new Map<string, Set<string>>();
+type Session = {
+  chat: string;
+  // Sites the user approved or named, where the model may open addresses it made up; every site the
+  // agent has been on (a page's link reaches its site, but the page chose it, not the user); and the
+  // links on the page the agent last read.
+  knownHosts: Set<string>;
+  reachedHosts: Set<string>;
+  opaqueHosts: Set<string>;
+  pageLinks: Set<string>;
+  // Where the agent's own moves landed: a native view's Back or Forward doesn't say where it goes,
+  // so this is how it is checked before it loads.
+  trail: string[];
+  at: number;
+  // A chat never saw another's screenshots: its x and y are CSS pixels until it takes one.
+  pointScale: Map<string, ShotView & { scaleX: number; scaleY: number }>;
+  queue: Promise<void>;
+  // Always allow answers, like Always allow on tool cards.
+  alwaysAllowed: Set<string>;
+};
 
-function enterScope(next: string | undefined): void {
-  if (next === scope) return;
-  knownHosts.clear();
-  reachedHosts.clear();
-  opaqueHosts.clear();
-  pageLinks = new Set();
-  trail = [];
-  at = -1;
-  // Another chat never saw this chat's screenshots: its x and y are CSS pixels until it takes one.
-  pointScale.clear();
-  scope = next;
+const sessions = new Map<string, Session>();
+const MAX_SESSIONS = 32;
+
+function sessionFor(chat: string): Session {
+  let session = sessions.get(chat);
+  if (!session) {
+    session = {
+      chat,
+      knownHosts: new Set(),
+      reachedHosts: new Set(),
+      opaqueHosts: new Set(),
+      pageLinks: new Set(),
+      trail: [],
+      at: -1,
+      pointScale: new Map(),
+      queue: Promise.resolve(),
+      alwaysAllowed: new Set(),
+    };
+    sessions.set(chat, session);
+    for (const old of sessions.keys()) {
+      if (sessions.size <= MAX_SESSIONS) break;
+      if (old !== chat && !agentChat(old).runKey) sessions.delete(old);
+    }
+  }
+  return session;
 }
 
-function record(op: string, url: string): void {
-  if (op === "back" && trail[at - 1] === url) at -= 1;
-  else if (op === "forward" && trail[at + 1] === url) at += 1;
+function chatOf(context: ActionContext): string {
+  if (context.chat) return liveChat(context.chat);
+  const scope = context.scope;
+  return liveChat(scope && scope !== "__default" ? chatKeyOfThread(scope) : useBrowserStore.getState().chat);
+}
+
+onChatAdopted((from, to) => {
+  const session = sessions.get(from);
+  sessions.delete(from);
+  if (session && !sessions.has(to)) sessions.set(to, Object.assign(session, { chat: to }));
+  adoptAgentChat(from, to);
+});
+
+// A chat's page stays open in the background only while its run lasts.
+onBrowserAgentRunEnd((chat) => {
+  const tabId = agentChat(chat).tabId;
+  if (tabId) releaseBackground(tabId);
+});
+
+function record(session: Session, op: string, url: string): void {
+  const { trail, at } = session;
+  if (op === "back" && trail[at - 1] === url) session.at -= 1;
+  else if (op === "forward" && trail[at + 1] === url) session.at += 1;
   else if (op !== "reload" || trail[at] !== url) {
-    trail = [...trail.slice(0, at + 1), url];
-    at = trail.length - 1;
+    session.trail = [...trail.slice(0, at + 1), url];
+    session.at = session.trail.length - 1;
   }
 }
 
-function admit(url: string, gate: Gate, context: ActionContext): void {
+function admit(url: string, gate: Gate, context: Run): void {
   if (context.fullAccess === true) return;
   const host = hostOfUrl(url);
   if (!host) return;
-  reachedHosts.add(host);
-  if (!(gate.kind === "allow" && gate.linked)) knownHosts.add(host);
+  context.session.reachedHosts.add(host);
+  if (!(gate.kind === "allow" && gate.linked)) context.session.knownHosts.add(host);
 }
 
 const TEXT_ROLES = new Set(["textbox", "searchbox", "password", "combobox", "spinbutton"]);
 
-let queue: Promise<void> = Promise.resolve();
 // A replayed stream frame must not click twice.
 const seen = new Set<string>();
 
-/** Runs actions one at a time, in the order the model asked for them. */
-export function runBrowserAction(action: BrowserAction, context: ActionContext): Promise<void> {
-  if (seen.has(action.id)) return queue;
+export function runBrowserAction(action: BrowserAction, actionContext: ActionContext): Promise<void> {
+  const session = sessionFor(chatOf(actionContext));
+  const context: Run = { ...actionContext, session };
+  const { chat } = session;
+  if (seen.has(action.id)) return session.queue;
   seen.add(action.id);
   // The server's wait starts when it sends the action, not when an earlier one lets this one run.
   const expires = action.timeoutS ? Date.now() + (action.timeoutS - 2) * 1000 : null;
-  const next = queue.then(async () => {
+  const next = session.queue.then(async () => {
     // Ends with the chat run, with Stop, or when the server stops waiting: a question still open
     // then must not be answerable, or a late Allow would act for nobody.
     const controller = new AbortController();
@@ -171,7 +224,7 @@ export function runBrowserAction(action: BrowserAction, context: ActionContext):
     };
     if (expires !== null && expires <= Date.now()) expire();
     const deadline = expires !== null ? setTimeout(expire, Math.max(0, expires - Date.now())) : null;
-    setActiveAction(controller);
+    setActiveAction(chat, controller);
     let result: Result;
     try {
       result = await perform(action, { ...context, signal: controller.signal });
@@ -180,14 +233,14 @@ export function runBrowserAction(action: BrowserAction, context: ActionContext):
     } finally {
       if (deadline) clearTimeout(deadline);
       context.signal?.removeEventListener("abort", abort);
-      setActiveAction(null);
-      useBrowserAgentStore.setState({ working: false });
+      setActiveAction(chat, null);
+      patchAgentChat(chat, { working: false });
     }
     if (expired && !result.ok) result = { ok: false, error: EXPIRED };
-    if (useBrowserAgentStore.getState().stoppedRun === context.runKey) result = { ok: false, error: STOPPED };
+    if (agentChat(chat).stoppedRun === context.runKey) result = { ok: false, error: STOPPED };
     await postResult(action, result);
   });
-  queue = next.catch(() => undefined);
+  session.queue = next.catch(() => undefined);
   return next;
 }
 
@@ -215,8 +268,13 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const findTab = (tabId: string) => useBrowserStore.getState().tabs.find((candidate) => candidate.id === tabId);
 
-function agentTab(): BrowserTab | null {
-  return findTab(useBrowserAgentStore.getState().tabId ?? "") ?? null;
+function agentTab(context: Run): BrowserTab | null {
+  return findTab(agentChat(context.session.chat).tabId ?? "") ?? null;
+}
+
+/** The run's chat is on screen with the panel beside it, so the user can watch and answer there. */
+function chatOnScreen(context: Run): boolean {
+  return context.session.chat === useBrowserStore.getState().chat && browserPanelAvailable();
 }
 
 function tabUrl(tab: BrowserTab): string {
@@ -224,11 +282,15 @@ function tabUrl(tab: BrowserTab): string {
   return entry.kind === "web" ? (tab.displayUrl ?? entry.url) : "";
 }
 
-/** The agent's tab in front, so the user sees what it does and its page is mounted. */
-function showTab(tab: BrowserTab): void {
+/** The agent's tab in front when its chat is on screen, so the user sees what it does; else its
+ *  page works on in the background, with the user's own tabs left where they were. */
+function showTab(tab: BrowserTab, context: Run): void {
+  // Kept from the start: the user can switch chats mid-run, and closing the panel then must leave it.
+  if (useNativeBrowser.getState().enabled) keepInBackground(tab.id);
+  // Off screen it shows when the user goes back to that chat; their tabs here stay put. A chat on
+  // screen without room for the panel isn't given one.
   const store = useBrowserStore.getState();
-  if (store.activeTabId !== tab.id) store.activateTab(tab.id);
-  if (!store.open) store.openPanel();
+  if (context.session.chat !== store.chat || browserPanelAvailable()) store.revealIn(context.session.chat, tab.id);
 }
 
 async function waitForLoad(tabId: string, signal?: AbortSignal): Promise<BrowserTab | null> {
@@ -400,11 +462,11 @@ async function untilFilled(tab: BrowserTab, since: number, signal?: AbortSignal)
   return (await waitOnPage(tab.id, (now) => currentEntry(now) !== entry, since, FILL_QUIET_MAX_MS, signal, FILL_IDLE_QUIET_MS)) === "loading";
 }
 
-async function pass(gate: Gate, signal?: AbortSignal, remember = true): Promise<string | null> {
+async function pass(gate: Gate, context: Run, remember = true): Promise<string | null> {
   if (gate.kind === "allow") return null;
   if (gate.kind === "block") return `Not done: ${gate.reason}.`;
   const { ask, host, name, detail } = gate;
-  const allowed = await askInPanel({ ask, host, name, detail }, signal, remember);
+  const allowed = await askInPanel({ ask, host, name, detail }, context, remember);
   // Not gate.prompt: it quotes the page's label, and errors reach the model outside the fence.
   return allowed ? null : `The user declined ${DECLINED[ask]} on ${host || "this page"}. Do something else, or ask them.`;
 }
@@ -419,23 +481,40 @@ const DECLINED: Record<Question["ask"], string> = {
   pointer: "clicking where the page doesn't say what is there",
 };
 
-/** Questions show in the panel's agent bar, so the panel has to be on screen to ask. A script is asked every time. */
-async function askInPanel(question: Question, signal?: AbortSignal, remember = true): Promise<Answer> {
+/** A question waits in a chat that isn't on screen: say so, with a way there. One toast per chat. */
+function notifyOffScreenQuestion(chat: string): void {
+  // A single chat's key is `single:<thread>`, a compare's `compare:<pair>`; the sidebar row has that id.
+  const [type, id] = [chat.slice(0, chat.indexOf(":")), chat.slice(chat.indexOf(":") + 1)];
+  const item =
+    visibleChatItems(useChatNavigationStore.getState()).find((candidate) => candidate.id === id && candidate.type === type) ?? null;
+  toast(translate("browser.agent.waiting", { chat: item?.title || translate("browser.agent.otherChat", undefined, getLocale()) }, getLocale()), {
+    id: `browser-agent-question:${chat}`,
+    action: item ? { label: translate("browser.agent.show", undefined, getLocale()), onClick: () => openChatItemById(item) } : undefined,
+  });
+}
+
+/** Questions show in the chat's agent bar: the panel opens for one in the chat on screen, and one
+ *  from a chat off screen waits there, with a toast to go answer it. A script is asked every time. */
+async function askInPanel(question: Question, context: Run, remember = true): Promise<Answer> {
   // As askUser does: a stopped action isn't answered, even by Always allow.
-  if (signal?.aborted) return false;
+  if (context.signal?.aborted) return false;
   // A click is asked about by its label, so Always allow covers that button, not every risky one.
   const key = [question.ask, question.host, question.ask === "click" ? question.name : ""].join("\n");
-  // "__default" is a new chat's first turn that hasn't got its id yet, which another new chat can share.
-  const chat = !remember || question.ask === "script" || !scope || scope === "__default" ? undefined : scope;
-  if (chat && alwaysAllowed.get(chat)?.has(key)) return "always";
+  // A "__default" first turn resolves to whichever chat is on screen, which may not be its own.
+  const keep = remember && question.ask !== "script" && Boolean(context.chat || (context.scope && context.scope !== "__default"));
+  const granted = context.session.alwaysAllowed;
+  if (keep && granted.has(key)) return "always";
+  const tabId = agentChat(context.session.chat).tabId;
   const store = useBrowserStore.getState();
-  if (!store.open) store.openPanel();
-  const answer = await askUser(question, signal, Boolean(chat));
-  if (answer === "always" && chat) alwaysAllowed.set(chat, (alwaysAllowed.get(chat) ?? new Set()).add(key));
+  if (tabId) store.revealIn(context.session.chat, tabId);
+  else if (chatOnScreen(context) && !store.open) store.openPanel();
+  if (!chatOnScreen(context)) notifyOffScreenQuestion(context.session.chat);
+  const answer = await askUser(context.session.chat, question, context.signal, keep);
+  if (answer === "always" && keep) granted.add(key);
   return answer;
 }
 
-async function observe(tab: BrowserTab, context: ActionContext, note?: string, op: Record<string, unknown> = { op: "snapshot" }): Promise<Result> {
+async function observe(tab: BrowserTab, context: Run, note?: string, op: Record<string, unknown> = { op: "snapshot" }): Promise<Result> {
   const entry = currentEntry(tab);
   if (entry.kind !== "web") return { ok: false, error: "No web page is open. Use browser_navigate first." };
   if (tab.pageError || tab.nativeError) {
@@ -452,7 +531,7 @@ async function observe(tab: BrowserTab, context: ActionContext, note?: string, o
   if (fresh.loading || tabUrl(fresh) !== tabUrl(tab)) {
     return { ok: false, error: "the page changed while it was being read; take a snapshot again." };
   }
-  if (op.op === "snapshot" || op.op === "find") pageLinks = new Set(context.fullAccess === true ? [] : answer.links ?? []);
+  if (op.op === "snapshot" || op.op === "find") context.session.pageLinks = new Set(context.fullAccess === true ? [] : answer.links ?? []);
   return {
     ok: true,
     url: tabUrl(fresh),
@@ -462,24 +541,28 @@ async function observe(tab: BrowserTab, context: ActionContext, note?: string, o
   };
 }
 
-async function open(url: string, signal?: AbortSignal): Promise<BrowserTab | null> {
+async function open(url: string, context: Run): Promise<BrowserTab | null> {
   const store = useBrowserStore.getState();
-  const existing = agentTab();
+  const existing = agentTab(context);
   if (existing) {
     store.navigate(existing.id, { url }, { replace: false });
-    showTab(existing);
-    return waitForLoad(existing.id, signal);
+    showTab(existing, context);
+    return waitForLoad(existing.id, context.signal);
   }
-  store.openUrl(url, { newTab: true });
-  const tabId = useBrowserStore.getState().activeTabId;
+  // In its own chat's tabs: a chat off screen gets a tab there, and the panel on screen stays put.
+  const tabId = store.openTabIn(context.session.chat, url);
   if (!tabId) return null;
-  useBrowserAgentStore.setState({ tabId });
-  trail = [];
-  at = -1;
-  return waitForLoad(tabId, signal);
+  // Off screen the view opens a beat later: loading until it reports in, so the wait below doesn't read the blank view.
+  if (!chatOnScreen(context)) store.updateTab(tabId, { loading: true });
+  patchAgentChat(context.session.chat, { tabId });
+  context.session.trail = [];
+  context.session.at = -1;
+  const tab = findTab(tabId);
+  if (tab) showTab(tab, context);
+  return waitForLoad(tabId, context.signal);
 }
 
-function permissions(context: ActionContext) {
+function permissions(context: Pick<ActionContext, "fullAccess">) {
   const saved = useBrowserAgentStore.getState().permissions;
   if (!context.fullAccess) return saved;
   const allow = (rule: SiteRule): SiteRule => ({
@@ -491,9 +574,10 @@ function permissions(context: ActionContext) {
   return { defaults: allow(saved.defaults), sites: Object.fromEntries(Object.entries(saved.sites).map(([site, rule]) => [site, allow(rule)])) };
 }
 
-function navigationContext(action: BrowserAction, context: ActionContext) {
-  const tab = agentTab();
+function navigationContext(action: BrowserAction, context: Run) {
+  const tab = agentTab(context);
   const currentUrl = tab ? tabUrl(tab) : "";
+  const { reachedHosts, knownHosts, pageLinks } = context.session;
   return {
     policy: action.policy,
     permissions: permissions(context),
@@ -504,28 +588,35 @@ function navigationContext(action: BrowserAction, context: ActionContext) {
   };
 }
 
-async function perform(action: BrowserAction, context: ActionContext): Promise<Result> {
-  const { signal } = context;
-  if (useBrowserAgentStore.getState().stoppedRun === context.runKey) return { ok: false, error: STOPPED };
+async function perform(action: BrowserAction, context: Run): Promise<Result> {
+  const { signal, session } = context;
+  const { chat, reachedHosts } = session;
+  if (agentChat(chat).stoppedRun === context.runKey) return { ok: false, error: STOPPED };
   if (signal?.aborted) return { ok: false, error: "the action expired before it could run." };
-  if (!browserPanelAvailable()) {
-    return { ok: false, error: "the browser panel can't be shown in this window; ask the user to widen it or open the chat." };
+  // Off screen, only a native page can work on: a framed one runs in the panel.
+  if (!chatOnScreen(context) && !useNativeBrowser.getState().enabled) {
+    return {
+      ok: false,
+      error:
+        chat === useBrowserStore.getState().chat
+          ? "the browser panel can't be shown in this window; ask the user to widen it or open the chat."
+          : "this chat's browser only runs while the chat is open here; ask the user to switch back to it.",
+    };
   }
-  const owner = useBrowserAgentStore.getState().runKey;
+  const owner = agentChat(chat).runKey;
   if (owner && owner !== context.runKey) {
-    return { ok: false, error: "Another chat is using the browser right now. Wait for it to finish, or tell the user." };
+    return { ok: false, error: "Another reply in this chat is using the browser right now. Wait for it to finish, or tell the user." };
   }
-  useBrowserAgentStore.setState({ working: true, runKey: context.runKey });
-  enterScope(context.scope);
+  patchAgentChat(chat, { working: true, runKey: context.runKey });
 
   if (action.op === "navigate") {
     const url = action.url ?? "";
     const gate = gateNavigation(url, navigationContext(action, context));
-    const refused = await pass(gate, signal);
+    const refused = await pass(gate, context);
     if (refused) return { ok: false, error: refused };
     admit(url, gate, context);
     const since = Date.now();
-    const tab = await open(url, signal);
+    const tab = await open(url, context);
     if (!tab) return { ok: false, error: "the browser tab closed." };
     return arrive(tab, url, action, context, since);
   }
@@ -535,9 +626,15 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
     return { ok: false, error: SCRIPTS_OFF };
   }
 
-  const tab = agentTab();
-  if (!tab) return { ok: false, error: "No page is open yet. Call browser_navigate first." };
-  showTab(tab);
+  const shown = agentTab(context);
+  if (!shown) return { ok: false, error: "No page is open yet. Call browser_navigate first." };
+  showTab(shown, context);
+  // A kept page the cap closed reopens a beat later; its history flags are only good once it has.
+  if (useNativeBrowser.getState().enabled && currentEntry(shown).kind === "web" && !hasNativeView(shown.id)) {
+    await whenViewOpen(shown.id);
+  }
+  const tab = findTab(shown.id);
+  if (!tab) return { ok: false, error: "the browser tab closed." };
   const before = tabUrl(tab);
 
   if (action.op === "back" || action.op === "forward" || action.op === "reload") {
@@ -550,7 +647,7 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
       action.op === "reload"
         ? before
         : nativeMove
-          ? (trail[at] === before && trail[at + step]) || ""
+          ? (session.trail[session.at] === before && session.trail[session.at + step]) || ""
           : entry?.kind === "web"
             ? entry.url
             : "";
@@ -561,14 +658,14 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
         : hostOfUrl(destination) === hostOfUrl(before) && reachedHosts.has(hostOfUrl(before))
           ? { kind: "allow" }
           : gateNavigation(destination, navigationContext(action, context));
-      const refused = await pass(gate, signal);
+      const refused = await pass(gate, context);
       if (refused) return { ok: false, error: refused };
       admit(destination, gate, context);
     } else if (nativeMove) {
       // History from before this chat, or from the user browsing in the tab: where it leads is unknown.
       const where = action.op === "back" ? "the previous page" : "the next page";
       // Not kept by Always allow: `where` names no site, so it would answer for wherever a later move leads.
-      const refused = await pass({ kind: "ask", ask: "open", host: where, name: "", detail: "", prompt: `Open ${where}?` }, signal, false);
+      const refused = await pass({ kind: "ask", ask: "open", host: where, name: "", detail: "", prompt: `Open ${where}?` }, context, false);
       if (refused) return { ok: false, error: refused };
     }
     const since = Date.now();
@@ -606,7 +703,7 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
       return observe(after, context, moved.note);
     }
     case "screenshot":
-      return screenshot(ready);
+      return screenshot(ready, context);
     case "move":
       return moveTo(ready, action, context, here);
     case "drag":
@@ -617,7 +714,7 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
 
   // Acting on an element: what it is decides whether the user is asked first.
   const ref = action.ref ?? "";
-  const point = action.op === "click" ? await pagePoint(ready, action.x, action.y) : null;
+  const point = action.op === "click" ? await pagePoint(ready, session, action.x, action.y) : null;
   if (typeof point === "string") return { ok: false, error: point };
   const described = await pageCall(ready, {
     op: "describe",
@@ -674,11 +771,11 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
     if (formGate) gates.push(formGate);
   }
   for (const gate of gates) {
-    const refused = await pass(gate, signal);
+    const refused = await pass(gate, context);
     if (refused) return { ok: false, error: refused };
   }
   if (signal?.aborted) return { ok: false, error: STOPPED };
-  if (opaque) opaqueHosts.add(opaque.host);
+  if (opaque) session.opaqueHosts.add(opaque.host);
   // A point's control can be relabelled or rewired around the same leaf while the user decides.
   if (point && gates.some((gate) => gate.kind === "ask")) {
     if (!(await unchanged(ready, point, described.hit ?? "", JSON.stringify(info)))) {
@@ -704,7 +801,7 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
       // A link: opened in this tab, under the same rules as any other address. Its href is read
       // now, so it may not be one the last snapshot listed.
       const gate = gateNavigation(clicked.navigate, navigationContext(action, context));
-      const refused = await pass(gate, signal);
+      const refused = await pass(gate, context);
       if (refused) return { ok: false, error: refused };
       admit(clicked.navigate, gate, context);
       const sent = Date.now();
@@ -740,7 +837,7 @@ async function afterward(
   tab: BrowserTab,
   before: string,
   action: BrowserAction,
-  context: ActionContext,
+  context: Run,
   since: number,
   note?: string,
 ): Promise<Result> {
@@ -761,12 +858,11 @@ type ShotView = {
   scrolls?: number;
   doc?: string;
 };
-const pointScale = new Map<string, ShotView & { scaleX: number; scaleY: number }>();
 const MAX_SHOT_EDGE = 1024;
 
-async function pagePoint(tab: BrowserTab, x?: number, y?: number): Promise<{ x: number; y: number } | string | null> {
+async function pagePoint(tab: BrowserTab, session: Session, x?: number, y?: number): Promise<{ x: number; y: number } | string | null> {
   if (x === undefined || y === undefined) return null;
-  const shot = pointScale.get(tab.id);
+  const shot = session.pointScale.get(tab.id);
   if (!shot) return { x, y };
   if (tabUrl(tab) !== shot.url) return STALE_SHOT;
   const status = await pageCall(tab, { op: "status" });
@@ -779,12 +875,13 @@ const STALE_SHOT = "the page changed since the screenshot those x and y come fro
 
 async function onScreen(
   tab: BrowserTab,
+  session: Session,
   ref: string | undefined,
   x?: number,
   y?: number,
   scroll = true,
 ): Promise<{ x: number; y: number } | string> {
-  const point = await pagePoint(tab, x, y);
+  const point = await pagePoint(tab, session, x, y);
   if (point) return point;
   const found = await pageCall(tab, { op: "locate", ref: ref ?? "", scroll });
   if (!found.ok) return found.error ?? `${ref} could not be found.`;
@@ -792,8 +889,8 @@ async function onScreen(
   return { x: found.x, y: found.y };
 }
 
-async function moveTo(tab: BrowserTab, action: BrowserAction, context: ActionContext, before: string): Promise<Result> {
-  const at = await onScreen(tab, action.ref, action.x, action.y);
+async function moveTo(tab: BrowserTab, action: BrowserAction, context: Run, before: string): Promise<Result> {
+  const at = await onScreen(tab, context.session, action.ref, action.x, action.y);
   if (typeof at === "string") return { ok: false, error: at };
   const since = Date.now();
   const moved = await pageCall(tab, { op: "pointer", phase: "move", ...at });
@@ -805,14 +902,14 @@ const DRAG_STEP_PX = 20;
 const DRAG_FRAME_MS = 16;
 
 /** browser_drag: both ends are asked about as clicks, since a drop can delete, send or buy too. */
-async function dragBetween(tab: BrowserTab, action: BrowserAction, context: ActionContext, before: string): Promise<Result> {
+async function dragBetween(tab: BrowserTab, action: BrowserAction, context: Run, before: string): Promise<Result> {
   const { signal } = context;
   const scroll = Boolean(action.ref && action.toRef);
-  const start = await onScreen(tab, action.ref, action.x, action.y, scroll);
+  const start = await onScreen(tab, context.session, action.ref, action.x, action.y, scroll);
   if (typeof start === "string") return { ok: false, error: start };
-  const end = await onScreen(tab, action.toRef, action.toX, action.toY, scroll);
+  const end = await onScreen(tab, context.session, action.toRef, action.toX, action.toY, scroll);
   if (typeof end === "string") return { ok: false, error: end };
-  const from = scroll ? await onScreen(tab, action.ref, undefined, undefined, false) : start;
+  const from = scroll ? await onScreen(tab, context.session, action.ref, undefined, undefined, false) : start;
   if (typeof from === "string") {
     return { ok: false, error: "the start and end don't fit on screen together; drag by x and y, or in shorter steps." };
   }
@@ -827,9 +924,9 @@ async function dragBetween(tab: BrowserTab, action: BrowserAction, context: Acti
     for (const gate of [gateElement("click", described.info, before, action.policy, permissions(context)), opaqueGate(described.info, before, context)]) {
       if (!gate) continue;
       asked ||= gate.kind === "ask";
-      const refused = await pass(gate, signal);
+      const refused = await pass(gate, context);
       if (refused) return { ok: false, error: refused };
-      if (gate.kind === "ask" && gate.ask === "pointer") opaqueHosts.add(gate.host);
+      if (gate.kind === "ask" && gate.ask === "pointer") context.session.opaqueHosts.add(gate.host);
     }
     hits.push(described.hit ?? "");
     sigs.push(described.sig ?? "");
@@ -882,9 +979,9 @@ async function dragBetween(tab: BrowserTab, action: BrowserAction, context: Acti
   if (target.hit !== hits[1] || JSON.stringify(target.info) !== infos[1]) {
     for (const gate of [gateElement("click", target.info, before, action.policy, permissions(context)), opaqueGate(target.info, before, context)]) {
       if (!gate) continue;
-      const refused = await pass(gate, signal);
+      const refused = await pass(gate, context);
       if (refused) return cancel(refused);
-      if (gate.kind === "ask" && gate.ask === "pointer") opaqueHosts.add(gate.host);
+      if (gate.kind === "ask" && gate.ask === "pointer") context.session.opaqueHosts.add(gate.host);
     }
     const again = await pageCall(tab, { op: "describe", ref: "", ...end }).catch(() => null);
     if (!sameTab() || again?.doc !== doc) return left(again?.doc);
@@ -897,11 +994,11 @@ async function dragBetween(tab: BrowserTab, action: BrowserAction, context: Acti
 }
 
 /** An unlabelled point (a canvas) may be a Buy button nothing can read: ask once per site per chat. */
-function opaqueGate(info: ElementInfo, pageUrl: string, context: ActionContext): (Gate & { kind: "ask" }) | null {
+function opaqueGate(info: ElementInfo, pageUrl: string, context: Run): (Gate & { kind: "ask" }) | null {
   if (info.role !== "element" || info.name.trim() || info.href) return null;
   const host = hostOfUrl(pageUrl);
   const rule = ruleFor(pageUrl, permissions(context)).rule;
-  if (!host || opaqueHosts.has(host) || rule.actions === "allow" || rule.unlabelled === "allow") return null;
+  if (!host || context.session.opaqueHosts.has(host) || rule.actions === "allow" || rule.unlabelled === "allow") return null;
   return { kind: "ask", ask: "pointer", host, name: "", detail: info.tag, prompt: `Click unlabelled parts of ${host}?` };
 }
 
@@ -916,14 +1013,14 @@ const SCRIPT_WAIT_MS = 15_000;
 const SCRIPTS_OFF = "The user doesn't let the agent run scripts on pages.";
 
 /** A script bypasses every rule above, so it is shown verbatim and asked every time, whatever the site permissions. */
-async function runScript(tab: BrowserTab, action: BrowserAction, context: ActionContext, before: string): Promise<Result> {
+async function runScript(tab: BrowserTab, action: BrowserAction, context: Run, before: string): Promise<Result> {
   const { signal } = context;
   const script = action.script ?? "";
   if (!script.trim()) return { ok: false, error: "the script is empty." };
   // The document the user sees as they approve: a reload or a page at the same address is another one.
   const doc = (await pageCall(tab, { op: "status" })).doc;
   if (!doc) return { ok: false, error: "the page is not answering; take a snapshot." };
-  const refused = await pass({ kind: "ask", ask: "script", host: hostOfUrl(before), name: "", detail: script, prompt: "" }, signal);
+  const refused = await pass({ kind: "ask", ask: "script", host: hostOfUrl(before), name: "", detail: script, prompt: "" }, context);
   if (refused) return { ok: false, error: refused };
   if (signal?.aborted) return { ok: false, error: STOPPED };
   // Settings can change while the question is open.
@@ -980,7 +1077,7 @@ async function arrive(
   tab: BrowserTab,
   requested: string,
   action: BrowserAction,
-  context: ActionContext,
+  context: Run,
   since: number,
   note?: string,
 ): Promise<Result> {
@@ -989,35 +1086,35 @@ async function arrive(
   if (url) {
     const blocked = navigationBlocks(url, action.policy, permissions(context));
     if (blocked) return { ok: false, error: `The page went to ${host}, but ${blocked}. Go back.` };
-    if (host && host !== hostOfUrl(requested) && !reachedHosts.has(host)) {
+    if (host && host !== hostOfUrl(requested) && !context.session.reachedHosts.has(host)) {
       const gate = gateNavigation(url, { ...navigationContext(action, context), currentUrl: requested });
-      const refused = await pass(gate, context.signal);
+      const refused = await pass(gate, context);
       if (refused) return { ok: false, error: `The page went to ${host}. ${refused}` };
       admit(url, gate, context);
     }
-    if (host && context.fullAccess !== true) reachedHosts.add(host);
-    record(action.op, url);
+    if (host && context.fullAccess !== true) context.session.reachedHosts.add(host);
+    record(context.session, action.op, url);
   }
   return observeLoaded(tab, context, since, note);
 }
 
 /** The page the tab shows now, before the model reads or acts on it: the page may have moved on
  *  its own, or the user declined where a redirect landed and it is still loaded. */
-async function stillAllowed(tab: BrowserTab, action: BrowserAction, context: ActionContext): Promise<string | null> {
+async function stillAllowed(tab: BrowserTab, action: BrowserAction, context: Run): Promise<string | null> {
   const url = tabUrl(tab);
   const host = hostOfUrl(url);
   if (!host) return null;
   const blocked = navigationBlocks(url, action.policy, permissions(context));
   if (blocked) return `The page is on ${host}, but ${blocked}. Use browser_navigate to go elsewhere.`;
-  if (reachedHosts.has(host)) return null;
+  if (context.session.reachedHosts.has(host)) return null;
   const gate = gateNavigation(url, { ...navigationContext(action, context), currentUrl: "" });
-  const refused = await pass(gate, context.signal);
+  const refused = await pass(gate, context);
   if (refused) return `The page is on ${host}. ${refused}`;
   admit(url, gate, context);
   return null;
 }
 
-async function observeLoaded(tab: BrowserTab, context: ActionContext, since: number, note?: string): Promise<Result> {
+async function observeLoaded(tab: BrowserTab, context: Run, since: number, note?: string): Promise<Result> {
   const entry = currentEntry(tab);
   if (entry.kind === "web" && tab.documentType && !/html/i.test(tab.documentType)) {
     return {
@@ -1035,18 +1132,20 @@ async function observeLoaded(tab: BrowserTab, context: ActionContext, since: num
   return observe(fresh && !fresh.loading && currentEntry(fresh) === entry ? fresh : tab, context, note);
 }
 
-async function screenshot(tab: BrowserTab): Promise<Result> {
+async function screenshot(tab: BrowserTab, context: Run): Promise<Result> {
   if (!isTauri) return { ok: false, error: "screenshots of the browser panel need the desktop app; use browser_snapshot." };
+  // A page at work off screen is captured on its own; one on screen as the panel shows it.
+  const hidden = !chatOnScreen(context) && hasNativeView(tab.id);
   const pages = document.querySelectorAll<HTMLElement>("[data-browser-page]");
   const element = pages[pages.length - 1];
-  if (!element) return { ok: false, error: "the browser panel is not on screen." };
+  if (!hidden && !element) return { ok: false, error: "the browser panel is not on screen." };
   // What the user typed into card, code and password fields stays out of the picture, as out of the text.
   const masked = await pageCall(tab, { op: "mask", on: true }).catch(() => null);
   if (!masked?.ok) return { ok: false, error: "the page could not be prepared for a screenshot; use browser_snapshot." };
   let blob: Blob | null;
   try {
     await sleep(100);
-    blob = await screenshotPage(tab, element);
+    blob = hidden || !element ? await captureHiddenPage(tab) : await screenshotPage(tab, element);
   } finally {
     await pageCall(tab, { op: "mask", on: false }).catch(() => null);
   }
@@ -1056,7 +1155,7 @@ async function screenshot(tab: BrowserTab): Promise<Result> {
   if (!now || now.loading || tabUrl(now) !== tabUrl(tab)) {
     return { ok: false, error: "the page changed while the screenshot was taken; take a snapshot first." };
   }
-  blob = await toPointScale(tab, blob, masked);
+  blob = await toPointScale(tab, context.session, blob, masked);
   const image = await new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(String(reader.result));
@@ -1067,7 +1166,7 @@ async function screenshot(tab: BrowserTab): Promise<Result> {
 }
 
 /** At CSS size within mcp_images.MAX_IMAGE_EDGE, so x and y read off it map back exactly. */
-async function toPointScale(tab: BrowserTab, blob: Blob, size: AgentAnswer): Promise<Blob> {
+async function toPointScale(tab: BrowserTab, session: Session, blob: Blob, size: AgentAnswer): Promise<Blob> {
   let bitmap: ImageBitmap;
   try {
     bitmap = await createImageBitmap(blob);
@@ -1089,7 +1188,7 @@ async function toPointScale(tab: BrowserTab, blob: Blob, size: AgentAnswer): Pro
       scrolls: size.scrolls,
       doc: size.doc,
     };
-    pointScale.set(tab.id, { ...at, scaleX: cssWidth / bitmap.width, scaleY: cssHeight / bitmap.height });
+    session.pointScale.set(tab.id, { ...at, scaleX: cssWidth / bitmap.width, scaleY: cssHeight / bitmap.height });
     if (width === bitmap.width && height === bitmap.height) return blob;
     const canvas = document.createElement("canvas");
     canvas.width = width;
@@ -1097,7 +1196,7 @@ async function toPointScale(tab: BrowserTab, blob: Blob, size: AgentAnswer): Pro
     canvas.getContext("2d")?.drawImage(bitmap, 0, 0, width, height);
     const scaled = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
     // Width and height round apart, so each axis keeps its own scale.
-    if (scaled) pointScale.set(tab.id, { ...at, scaleX: cssWidth / width, scaleY: cssHeight / height });
+    if (scaled) session.pointScale.set(tab.id, { ...at, scaleX: cssWidth / width, scaleY: cssHeight / height });
     return scaled ?? blob;
   } finally {
     bitmap.close();
@@ -1107,13 +1206,13 @@ async function toPointScale(tab: BrowserTab, blob: Blob, size: AgentAnswer): Pro
 const HISTORY_LIMIT = 50;
 
 /** The browser_history tool: the user's visits, by their Settings choice (never, ask, allow). */
-async function readHistory(action: BrowserAction, context: ActionContext): Promise<Result> {
+async function readHistory(action: BrowserAction, context: Run): Promise<Result> {
   const saved = useBrowserAgentStore.getState().historyAccess;
   const access = context.fullAccess && saved === "ask" ? "allow" : saved;
   if (access === "never") return { ok: false, error: "The user doesn't let the agent read their browsing history." };
   if (access === "ask") {
     const query = action.query ?? "";
-    const allowed = await askInPanel({ ask: "history", host: "", name: query, detail: query }, context.signal);
+    const allowed = await askInPanel({ ask: "history", host: "", name: query, detail: query }, context);
     if (!allowed) return { ok: false, error: "The user declined to share their browsing history. Do something else, or ask them." };
   }
   const terms = (action.query ?? "").toLowerCase().split(/\s+/).filter(Boolean);

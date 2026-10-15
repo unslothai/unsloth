@@ -83,6 +83,9 @@ export const ko = {
     },
     agent: {
       working: "Unsloth가 이 탭에서 탐색 중입니다",
+      waiting: "{chat}의 브라우저에서 Unsloth가 응답을 기다리고 있습니다",
+      otherChat: "다른 채팅",
+      show: "보기",
       stop: "중지",
       allow: "허용",
       deny: "거부",
@@ -1362,6 +1365,8 @@ export const ko = {
       installRuntimeFailed: "런타임을 설치하지 못했습니다.",
       installRuntimeError: "런타임 설치를 시작하지 못했습니다.",
       unsupportedArch: "Windows 샌드박스(MXC)는 x64 Windows에서만 실행되므로 이 PC에서는 사용할 수 없습니다.",
+      builtinNeedsUpdate:
+        "Windows 기본 제공 컨테이너에는 빌드 {required} 이상이 필요하지만 이 PC는 {current}입니다. 관리자 단계 없이 사용하려면 최신 Windows 업데이트를 설치하거나 아래의 대체 샌드박스를 켜세요.",
       unsupportedBuild: "Windows 샌드박스(MXC)는 Windows 11 24H2(빌드 26100) 이상이 필요하므로 이 PC에서는 사용할 수 없습니다.",
       permissionsIntro: "도구가 먼저 묻는 시점과 Python 및 터미널을 OS 샌드박스 안에서도 실행할지 선택합니다.",
       permissionLabel: "도구 권한",

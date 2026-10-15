@@ -84,6 +84,9 @@ export const he = {
     },
     agent: {
       working: "Unsloth גולש בכרטיסייה הזו",
+      waiting: "Unsloth צריך את התשובה שלך בדפדפן עבור {chat}",
+      otherChat: "צ׳אט אחר",
+      show: "הצג",
       stop: "עצירה",
       allow: "אישור",
       deny: "דחייה",
@@ -1462,6 +1465,8 @@ export const he = {
       installRuntimeError: "לא ניתן להתחיל את התקנת סביבת זמן הריצה.",
       unsupportedArch:
         "ארגז החול של Windows (MXC) פועל רק ב-Windows x64, ולכן אינו זמין במחשב זה.",
+      builtinNeedsUpdate:
+        "המכל המובנה של Windows דורש גרסת build {required} ומעלה, והמחשב הזה מריץ {current}. התקינו את עדכון Windows האחרון כדי להשתמש בו בלי שלב מנהל, או הפעילו את ארגז החול החלופי שלמטה.",
       unsupportedBuild:
         "ארגז החול של Windows (MXC) דורש Windows 11 24H2 (build 26100) ומעלה, ולכן אינו זמין במחשב זה.",
       permissionsIntro:

@@ -81,6 +81,9 @@ export const sv = {
     },
     agent: {
       working: "Unsloth surfar i den här fliken",
+      waiting: "Unsloth behöver ditt svar i webbläsaren för {chat}",
+      otherChat: "en annan chatt",
+      show: "Visa",
       stop: "Stoppa",
       allow: "Tillåt",
       deny: "Neka",
@@ -1495,6 +1498,8 @@ export const sv = {
         "Det gick inte att starta installationen av körmiljön.",
       unsupportedArch:
         "Windows-sandlådan (MXC) körs bara på x64-Windows, så den är inte tillgänglig på den här datorn.",
+      builtinNeedsUpdate:
+        "Windows inbyggda container kräver version {required} eller senare, och den här datorn kör {current}. Installera den senaste Windows-uppdateringen för att använda den utan administratörssteg, eller slå på reservsandlådan nedan.",
       unsupportedBuild:
         "Windows-sandlådan (MXC) kräver Windows 11 24H2 (version 26100) eller senare, så den är inte tillgänglig på den här datorn.",
       permissionsIntro:
