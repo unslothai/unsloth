@@ -22,6 +22,13 @@ torch = pytest.importorskip("torch")
 _DIR = os.path.join(os.path.dirname(__file__), "..", "unsloth", "models")
 
 
+@pytest.fixture(autouse = True)
+def _block_env(monkeypatch):
+    # Other test modules set these process-wide (e.g. UNSLOTH_COMPILE_DISABLE=1 at import).
+    for key in ("UNSLOTH_BLOCK_COMPILE", "UNSLOTH_COMPILE_DISABLE", "UNSLOTH_FORCE_FLOAT32"):
+        monkeypatch.delenv(key, raising = False)
+
+
 def _load(name = "_block_compile"):
     # By file path: importing the unsloth package needs an accelerator.
     spec = importlib.util.spec_from_file_location(f"_u{name}", os.path.join(_DIR, f"{name}.py"))
