@@ -1,7 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team.
-# NVFP4 W4A16 matmuls decode the weight tile by tile inside the GEMM: same per-element weight rounding as
-# dequantize + torch.matmul, no full 16 bit weight, and UNSLOTH_NVFP4_FUSED=0 restores the dense path.
 import os
 
 import pytest
@@ -79,8 +77,7 @@ def _same(a, b):
 
 @pytest.mark.parametrize("dtype", _dtypes())
 def test_every_e2m1_code_decodes_exactly(N, fused, dtype):
-    # Byte b holds code b & 15 in the even column and b >> 4 in the odd one; identity activations read the decoded
-    # weight back exactly through both kernels (forward gives W^T, dX gives W).
+    # Identity activations read the decoded weight back exactly through both kernels.
     packed = torch.arange(256, dtype = torch.uint8, device = "cuda").reshape(16, 16)
     scale = torch.ones(16, 2, device = "cuda").to(torch.float8_e4m3fn)
     gs = torch.ones(1, device = "cuda")
@@ -97,8 +94,7 @@ def test_every_e2m1_code_decodes_exactly(N, fused, dtype):
 @pytest.mark.parametrize("dtype", _dtypes())
 @pytest.mark.parametrize("global_scale", [1.0, 1e-3, 3.7e4, 0.37])
 def test_scale_extremes_match_the_dense_weight(N, fused, monkeypatch, dtype, global_scale):
-    # Every finite E4M3 block scale (subnormals, -0.0, 448) against tiny and huge global scales: the in-loop weight
-    # must be the dense weight bit for bit. Where fp16 overflows to inf, 0 * inf makes the GEMM NaN on both paths.
+    # Every finite E4M3 scale vs tiny/huge global scales: bit-exact with dense (fp16 inf gives NaN on both).
     codes = torch.tensor([c for c in range(256) if c & 127 != 127], dtype = torch.uint8)
     rows = 32
     scale = codes[torch.arange(rows * 16) % len(codes)].reshape(rows, 16).cuda().view(torch.float8_e4m3fn)
@@ -107,7 +103,6 @@ def test_scale_extremes_match_the_dense_weight(N, fused, monkeypatch, dtype, glo
     gs = torch.tensor([global_scale], device = "cuda")
     W = N.nvfp4_dequantize(packed, scale, gs, dtype)
     finite = bool(W.isfinite().all())
-    # One nonzero activation reads one weight column (forward) or row (dX) back.
     for col in (0, 1, 2, 3, 17, 255):
         X = torch.zeros(1, 256, device = "cuda", dtype = dtype)
         X[0, col] = 1
@@ -139,7 +134,6 @@ def _close_to_dense(a, ref):
 
 
 def _check(a, ref, exact):
-    # Against the fp64 product of the same rounded weight, the fused result is no worse than the dense one.
     err_a, err_ref = _oracle_errors(a, ref, exact)
     assert err_a <= 1.25 * err_ref + 1e-6, (err_a, err_ref)
     _close_to_dense(a, ref)
@@ -158,7 +152,6 @@ def _oracle_errors(Y, ref, exact):
     [(1, 96, 48), (5, 80, 40), (16, 64, 256), (37, 130, 400), (129, 257, 272), (300, 64, 1040)],
 )
 def test_forward_and_dx_match_dense_and_oracle(N, fused, monkeypatch, dtype, M, N_out, K):
-    # Tails everywhere: K not a multiple of the 16 group or of the K tile, odd M and N.
     packed, scale, gs = _random_nvfp4(N_out, K, global_scale = 0.37, seed = M)
     W = N.nvfp4_dequantize(packed, scale, gs, dtype)
     X = torch.randn(M, K, device = "cuda", dtype = dtype)
@@ -166,7 +159,6 @@ def test_forward_and_dx_match_dense_and_oracle(N, fused, monkeypatch, dtype, M, 
 
     Y = _fwd(N, X, packed, scale, gs)
     ref = _dense(N, X, packed, scale, gs, monkeypatch)
-    # fp64 oracle on the rounded weight: both paths differ from it only by accumulation order + output rounding.
     err_fused, err_dense = _oracle_errors(Y, ref, X.double() @ W.double().t())
     assert err_fused <= 1.25 * err_dense + 1e-6, (err_fused, err_dense)
     _close_to_dense(Y, ref)
@@ -182,7 +174,7 @@ def test_forward_and_dx_match_dense_and_oracle(N, fused, monkeypatch, dtype, M, 
 @pytest.mark.parametrize("dtype", _dtypes())
 @pytest.mark.parametrize("M, N_out, K", [(4, 128, 4096), (70, 96, 3000), (3, 4096, 200)])
 def test_split_reduction_matches_unsplit(N, fused, monkeypatch, dtype, M, N_out, K):
-    # Few output tiles split the reduction (forward over K, dX over N) into fp32 partials; uneven last split.
+    # Split reduction into fp32 partials, uneven last split.
     packed, scale, gs = _random_nvfp4(N_out, K, seed = 7)
     X = torch.randn(M, K, device = "cuda", dtype = dtype)
     G = torch.randn(M, N_out, device = "cuda", dtype = dtype)
@@ -195,7 +187,6 @@ def test_split_reduction_matches_unsplit(N, fused, monkeypatch, dtype, M, N_out,
     W = N.nvfp4_dequantize(packed, scale, gs, dtype)
     _close_to_dense(Y, X @ W.t())
     _close_to_dense(dX, G @ W)
-    # Deterministic: the partials are summed in a fixed order.
     monkeypatch.undo()
     monkeypatch.setenv("UNSLOTH_NVFP4_FUSED", "1")
     assert torch.equal(Y, _fwd(N, X, packed, scale, gs)) and torch.equal(dX, _dx(N, G, packed, scale, gs))
@@ -203,7 +194,6 @@ def test_split_reduction_matches_unsplit(N, fused, monkeypatch, dtype, M, N_out,
 
 @pytest.mark.parametrize("dtype", _dtypes())
 def test_strided_operands(N, fused, monkeypatch, dtype):
-    # Packed weight / scales as column slices of wider buffers, a transposed activation and a 3D activation.
     big_packed, big_scale, gs = _random_nvfp4(72, 512, seed = 3)
     packed, scale = big_packed[:, :96], big_scale[:, :12]
     assert not packed.is_contiguous()
@@ -240,7 +230,6 @@ def test_kill_switch_and_fallbacks(N, monkeypatch):
         before = _calls(N)
         N.nvfp4_linear(X, packed, scale, gs)
         assert _calls(N) == before
-    # Default: the per-GPU row gate (4 rows engage wherever a gate is measured; forced here via the override).
     monkeypatch.delenv("UNSLOTH_NVFP4_FUSED")
     monkeypatch.setenv("UNSLOTH_NVFP4_FUSED_MAX_ROWS", "4")
     before = N._FUSED_CALLS["fwd"]
@@ -249,7 +238,6 @@ def test_kill_switch_and_fallbacks(N, monkeypatch):
     before = N._FUSED_CALLS["fwd"]
     N.nvfp4_linear(torch.cat([X, X]), packed, scale, gs)
     assert N._FUSED_CALLS["fwd"] == before  # 8 rows: past the gate, dense
-    # fp32 activations and too few block scales keep the dense path (and its error).
     before = _calls(N)
     N.nvfp4_linear(X.float(), packed, scale, gs)
     assert _calls(N) == before
@@ -297,13 +285,11 @@ def test_no_full_weight_temporary(N, fused, monkeypatch):
     bwd = peak(lambda: N._nvfp4_matmul_bwd(G, packed, scale, gs))
     monkeypatch.setenv("UNSLOTH_NVFP4_FUSED", "0")
     dense = peak(lambda: N._nvfp4_matmul_fwd(X, packed, scale, gs))
-    assert dense >= dense_bytes  # the measurement does see a full 16 bit weight
-    # Output + split fp32 partials only (partials capped at 1/8 of the 16 bit weight).
+    assert dense >= dense_bytes
     assert fwd < dense_bytes // 4 and bwd < dense_bytes // 4, (fwd, bwd, dense)
 
 
 def test_lora_training_steps_match_dense(N, monkeypatch):
-    # A frozen NVFP4 base + LoRA, 4 AdamW steps: fused and dense runs track each other.
     dtype = _dtypes()[0]
     packed, scale, gs = _random_nvfp4(256, 192, global_scale = 37.5, seed = 6)
     data = [torch.randn(4, 24, 192, device = "cuda", dtype = dtype) for _ in range(4)]

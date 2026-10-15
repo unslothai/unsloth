@@ -62,8 +62,7 @@ def _e2m1_to_float(code):
 
 @triton.jit
 def _e4m3_to_float(b):
-    # Triton has no float8e4nv before sm_89 (A100, T4), so the group scale arrives as raw bytes: sign, 4 exponent
-    # bits (bias 7), 3 mantissa bits; exponent 0 is subnormal (m * 2^-9) and 0x7F / 0xFF are NaN, as in torch.
+    # No float8e4nv before sm_89: decode E4M3 bytes by hand (bias 7, exp 0 subnormal, 0x7F/0xFF NaN, as torch).
     exp = (b >> 3) & 15
     man = b & 7
     normal = (((exp + 120) << 23) | (man << 20)).to(tl.float32, bitcast = True)
@@ -105,7 +104,6 @@ def _nvfp4_dequant_kernel(
     )
     scale = _e4m3_to_float(scale.to(tl.int32)) if SCALE_E4M3_BYTES else scale.to(tl.float32)
     group_scale = tl.math.div_rn(scale, tl.load(global_scale_ptr).to(tl.float32))
-    # Low nibble is the even column: join + reshape interleaves (lo, hi) into contiguous output columns.
     values = tl.reshape(
         tl.join(_e2m1_to_float(byte & 15), _e2m1_to_float(byte >> 4)), (BLOCK_R, BLOCK_C // 8, 16)
     )
@@ -145,7 +143,7 @@ def _nvfp4_dequantize_triton(
             BLOCK_R = BLOCK_R,
             BLOCK_C = BLOCK_C,
             SCALE_E4M3_BYTES = e4m3,
-            # int32 offsets wrap once the output passes 2^31 elements; int64 only then, as it costs ~2%.
+            # int32 offsets wrap past 2^31 elements; int64 only then (~2% slower).
             INT64_OFFSETS = rows * half * 2 >= 2**31,
             num_warps = 4,
         )
@@ -175,8 +173,7 @@ def nvfp4_dequantize(
 
 @triton.jit
 def _e2m1_to_float_bits(code):
-    # The 3 magnitude bits placed as fp16 exponent (2) + mantissa (1) bits are the E2M1 value times 2^-14, mag 1 (0.5)
-    # included as an fp16 subnormal; the fp16 -> fp32 upcast and the power-of-two rescale are both exact.
+    # Magnitude bits as fp16 exp (2) + mantissa (1) = E2M1 * 2^-14 (0.5 a subnormal); upcast and rescale are exact.
     bits = ((code & 7) << 9) | ((code & 8) << 12)
     return bits.to(tl.int16).to(tl.float16, bitcast = True).to(tl.float32) * 16384.0
 
@@ -200,8 +197,7 @@ def _nvfp4_weight_tile(
     SCALE_E4M3_BYTES: tl.constexpr,
     OUT_DTYPE: tl.constexpr,
 ):
-    # Weight rows `rows`, columns [k0, k0 + BLOCK_K) in the activation dtype, rounded exactly like the dense path:
-    # E2M1 * (block scale / global scale) in fp32, then one cast. Out-of-range rows / columns decode to 0.
+    # Rounded like dense: E2M1 * (block scale / global scale) in fp32, then one cast; out-of-range decodes to 0.
     c = k0 // 2 + tl.arange(0, BLOCK_K // 2)
     g = k0 // 16 + tl.arange(0, BLOCK_K // 16)
     row_ok = rows[:, None] < n_rows
@@ -253,8 +249,7 @@ def _nvfp4_matmul_fwd_kernel(
     SCALE_E4M3_BYTES: tl.constexpr,
     INT64_OFFSETS: tl.constexpr,
 ):
-    # Y[M, N] = X[M, K] @ W[N, K]^T with W decoded one K tile at a time; fp32 accumulation. Split K (grid axis 1)
-    # writes fp32 partials [split, M, N], summed in a fixed order afterwards, so results stay deterministic.
+    # Split K writes fp32 partials [split, M, N], summed in a fixed order afterwards (deterministic).
     pid = tl.program_id(0)
     split_id = tl.program_id(1)
     if INT64_OFFSETS:
@@ -337,8 +332,6 @@ def _nvfp4_matmul_dx_kernel(
     SCALE_E4M3_BYTES: tl.constexpr,
     INT64_OFFSETS: tl.constexpr,
 ):
-    # dX[M, K] = dY[M, N] @ W[N, K]: each program owns a K tile of the output and walks N (split over grid axis 1
-    # like the forward's K); same tile decoder.
     pid = tl.program_id(0)
     split_id = tl.program_id(1)
     if INT64_OFFSETS:
@@ -393,14 +386,11 @@ def _nvfp4_matmul_dx_kernel(
     )
 
 
-# Engagement counter (tests, benchmarks): how often each fused kernel ran instead of dequantize + torch.matmul.
 _FUSED_CALLS = {"fwd": 0, "bwd": 0}
 
 
 def _fused_mode():
-    # UNSLOTH_NVFP4_FUSED=0 restores dequantize + torch.matmul everywhere, =1 forces the fused kernels on every
-    # eligible call, unset applies the measured per-GPU row gate (UNSLOTH_NVFP4_FUSED_MAX_ROWS overrides it).
-    # Read per call so tests and A/B runs can flip it.
+    # 0 = always dense, 1 = always fused, unset = per-GPU row gate (UNSLOTH_NVFP4_FUSED_MAX_ROWS overrides); read per call.
     return os.environ.get("UNSLOTH_NVFP4_FUSED", "auto").strip().lower()
 
 
@@ -415,8 +405,7 @@ _IS_HIP = torch.version.hip is not None
 
 
 def _fused_ok(A, packed, scale, inner):
-    # A is X (inner = K) for forward or dY (inner = N) for dX; anything unusual keeps the dense path and its errors.
-    # Cheapest checks first: on GPUs without a measured gate this returns after the capability lookup.
+    # Anything unusual keeps the dense path (and its errors).
     mode = _fused_mode()
     if mode in _FUSED_OFF or _IS_HIP or not A.is_cuda:
         return False
@@ -425,7 +414,6 @@ def _fused_ok(A, packed, scale, inner):
     index = A.get_device()
     if mode not in _FUSED_FORCE and A.numel() // inner > _fused_max_rows(index):
         return False
-    # bf16 tensor-core dots need sm_80; T4 (sm_75) trains in fp16.
     if A.dtype == torch.bfloat16 and _device_capability(index) < (8, 0):
         return False
     return (
@@ -439,8 +427,7 @@ def _fused_ok(A, packed, scale, inner):
     )
 
 
-# Activation rows up to which the fused kernels beat dequantize + torch.matmul, per compute capability (measured,
-# A/A-checked timings); past it cuBLAS on the dense weight wins. Unmeasured GPUs keep the dense path.
+# Max activation rows where fused beats dense, per capability (measured); unmeasured GPUs stay dense.
 _FUSED_MAX_ROWS = {(8, 0): 64, (8, 9): 256, (12, 0): 128}
 
 
@@ -465,7 +452,6 @@ def _fused_config(M, n_out, k_red, device, dx = False):
     """(BLOCK_M, BLOCK_OUT, BLOCK_RED, num_warps, num_stages, split) for an [M, k_red] @ [k_red, n_out] product."""
     index = device.index or 0
     stages = 2 if _device_capability(index) < (8, 0) else 3
-    # Per M bucket, from config sweeps on L4, A100 and RTX PRO 6000 (forward reduces over K, dX over N).
     if M <= 16:
         bm, bo, br, warps = (16, 128, 64, 4) if dx else (16, 64, 128, 4)
     elif M <= 64:
@@ -475,8 +461,7 @@ def _fused_config(M, n_out, k_red, device, dx = False):
     else:
         bm, bo, br, warps = 128, 64, 64, 4
     tiles = triton.cdiv(M, bm) * triton.cdiv(n_out, bo)
-    # Split the reduction while the grid is under four waves, keeping >= 4 reduction tiles per split and the fp32
-    # partials (split * M * n_out * 4 bytes) within 1/8 of the 16 bit weight (n_out * k_red * 2 bytes).
+    # Split under four waves; fp32 partials capped at 1/8 of the 16 bit weight.
     split = 1
     while (
         tiles * split < 4 * _sm_count(index)
@@ -490,7 +475,7 @@ def _fused_config(M, n_out, k_red, device, dx = False):
 
 @triton.jit
 def _split_sum_kernel(partial_ptr, out_ptr, numel, SPLIT: tl.constexpr, BLOCK: tl.constexpr):
-    # Sums the fp32 split partials in a fixed order and casts once: one launch instead of sum + cast.
+    # Fixed-order sum of the split partials (determinism), one cast.
     offs = tl.program_id(0).to(tl.int64) * BLOCK + tl.arange(0, BLOCK)
     mask = offs < numel
     acc = tl.load(partial_ptr + offs, mask = mask, other = 0.0)
@@ -553,7 +538,6 @@ def _nvfp4_matmul_dx_fused(grad, packed, scale, global_scale):
     G = grad.reshape(-1, N)
     M = G.shape[0]
     scale, e4m3 = _scale_args(scale)
-    # dX tiles K like forward tiles N, and reduces over N.
     BM, BK, BN, warps, stages, split = _CONFIG_HOOK(M, K, N, grad.device, True)
     dX, buf, stride_s = _split_out(M, K, split, grad.dtype, grad.device)
     int64 = max(G.numel(), buf.numel(), packed.numel(), scale.numel()) >= 2**31
@@ -574,12 +558,10 @@ def _nvfp4_matmul_dx_fused(grad, packed, scale, global_scale):
     return dX.view(*grad.shape[:-1], K)
 
 
-# Benchmarks swap in candidate configs here.
 _CONFIG_HOOK = _fused_config
 
 
-# Opaque to torch.compile as whole matmuls: if the dequantized weight were a graph value, AOTAutograd would save it for
-# backward in every layer (3.6x the NVFP4 storage each), which is exactly the memory W4A16 exists to avoid.
+# Opaque to torch.compile, else AOTAutograd saves every layer's dequantized weight for backward.
 @_opaque_under_compile(
     "nvfp4_matmul_fwd",
     lambda X, packed, scale, global_scale: X.new_empty(X.shape[:-1] + (packed.shape[0],)),
