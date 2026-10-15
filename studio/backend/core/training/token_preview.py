@@ -45,6 +45,7 @@ class _TokenPreviewService:
         self._resp_queue: Optional[Any] = None
         self._key: Optional[tuple] = None
         self._served = False
+        self._stop_pending = False
         self._ids = itertools.count(1)
         from core.training.account_jobs import init_job_owner
 
@@ -55,6 +56,7 @@ class _TokenPreviewService:
         return self._proc is not None and self._proc.is_alive()
 
     def _stop_locked(self) -> None:
+        self._stop_pending = False
         proc, self._proc = self._proc, None
         self._key = None
         if proc is None:
@@ -147,7 +149,7 @@ class _TokenPreviewService:
                 if reply.get("id") == request_id:
                     break
             self._served = True
-            if reply.get("fatal"):
+            if reply.get("fatal") or self._stop_pending:
                 self._stop_locked()
         if not reply.get("ok"):
             raise TokenPreviewError(reply.get("error") or "Token preview failed.")
@@ -162,6 +164,8 @@ class _TokenPreviewService:
             finally:
                 self._lock.release()
             return
+        # The holder may be between workers, with none to terminate yet; it ends whatever it ends up with.
+        self._stop_pending = True
         proc = self._proc
         if proc is not None and proc.is_alive():
             proc.terminate()

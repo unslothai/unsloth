@@ -294,3 +294,28 @@ def test_inventory_handles_are_resolved(monkeypatch):
     )
     request = TokenPreviewRequest(model_name = "ref:abc", dataset_name = "ref:def", text = "hi")
     assert (request.model_name, request.dataset_name) == ("/real/abc", "/real/def")
+
+
+def test_a_stop_during_a_preview_ends_the_worker_it_started(monkeypatch):
+    service = token_preview._TokenPreviewService()
+    stopped = []
+
+    def fake_start(key, config):
+        service._proc = types.SimpleNamespace(
+            is_alive = lambda: False,
+            terminate = lambda: None,
+            join = lambda timeout: None,
+            exitcode = 0,
+            pid = None,
+        )
+        service._cmd_queue = types.SimpleNamespace(put = lambda item: service.stop())
+        service._resp_queue = types.SimpleNamespace(
+            get = lambda timeout: {"id": 1, "ok": True, "result": {}}
+        )
+        service._key, service._served = key, False
+
+    real_stop_locked = service._stop_locked
+    monkeypatch.setattr(service, "_start_locked", fake_start)
+    monkeypatch.setattr(service, "_stop_locked", lambda: (stopped.append(True), real_stop_locked()))
+    service.preview(("k",), {}, {"text": "hi"})
+    assert len(stopped) == 2 and service._proc is None
