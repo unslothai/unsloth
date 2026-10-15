@@ -133,6 +133,7 @@ import {
   buildDiscoverRows,
   detectResultFormat,
   discoveryInventorySignature,
+  hasRecommendedCheckpointLikes,
   isUnslothFinetunable,
   matchesHubCapability,
   matchesFormat,
@@ -1112,12 +1113,15 @@ export function ModelsPage() {
       (row) =>
         !isHiddenModelId(row.id) &&
         !isConfiguredHiddenModelId(hiddenEmbeddingModelIds, row.id) &&
-        // Recommended curates browsing to logo'd models plus well-liked iconless ones; a typed
-        // search and every other format show all matches.
+        // Recommended curates browsing to logo'd models plus well-liked iconless ones, and to
+        // well-liked checkpoints; a typed search and every other format show all matches.
         (effectiveDiscoverFormat !== "recommended" ||
           hasQuery ||
           resolveOwnerProviderLogo(row.owner, row.repo) !== null ||
           (row.result.likes ?? 0) >= MIN_ICONLESS_MODEL_LIKES) &&
+        (effectiveDiscoverFormat !== "recommended" ||
+          hasQuery ||
+          hasRecommendedCheckpointLikes(row.result)) &&
         (effectiveDiscoverFormat === "recommended"
           ? matchesRecommended(
               row.result,

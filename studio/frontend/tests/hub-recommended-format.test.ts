@@ -6,6 +6,7 @@ import test from "node:test";
 
 import {
   checkpointQuantFormat,
+  hasRecommendedCheckpointLikes,
   matchesFormat,
   matchesRecommended,
 } from "../src/features/hub/lib/format-filters.ts";
@@ -61,6 +62,36 @@ test("Recommended lists every GGUF and only the checkpoints this GPU runs native
   assert.equal(matchesRecommended(nvfp4, ["fp8"]), false);
   // Blackwell: both.
   assert.equal(matchesRecommended(nvfp4, ["fp8", "nvfp4"]), true);
+});
+
+test("Recommended browsing lists checkpoints only past 30 likes", async () => {
+  assert.equal(hasRecommendedCheckpointLikes({ ...gguf, likes: 0 }), true);
+  assert.equal(hasRecommendedCheckpointLikes(fp8), false);
+  assert.equal(hasRecommendedCheckpointLikes({ ...fp8, likes: 30 }), false);
+  assert.equal(hasRecommendedCheckpointLikes({ ...fp8, likes: 31 }), true);
+  // Safetensors repo cross-tagged "gguf" for a stray .gguf file (Nemotron-3.5-Bolt-74B-A9B).
+  const crossTagged = {
+    id: "unsloth/NVIDIA-Nemotron-3.5-Bolt-74B-A9B",
+    isGguf: true,
+    tags: ["transformers", "safetensors", "gguf"],
+  };
+  assert.equal(
+    hasRecommendedCheckpointLikes({ ...crossTagged, likes: 2 }),
+    false,
+  );
+  assert.equal(
+    hasRecommendedCheckpointLikes({ ...crossTagged, likes: 31 }),
+    true,
+  );
+  assert.equal(
+    hasRecommendedCheckpointLikes({ ...gguf, tags: ["safetensors", "gguf"] }),
+    true,
+  );
+  const page = await readSrcAsync("features/hub/hub-page.tsx");
+  assert.match(
+    page,
+    /effectiveDiscoverFormat !== "recommended" \|\|\s*hasQuery \|\|\s*hasRecommendedCheckpointLikes\(row\.result\)/,
+  );
 });
 
 test("the GGUF filter stays a plain format match", () => {
