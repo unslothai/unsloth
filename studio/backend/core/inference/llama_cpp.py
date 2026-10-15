@@ -13662,10 +13662,16 @@ class LlamaCppBackend:
             return {}
 
     @classmethod
-    def _cuda_sm_gate_error(cls, binary: Optional[str] = None) -> Optional[str]:
+    def _cuda_sm_gate_error(
+        cls, binary: Optional[str] = None, gpu_indices: Optional[Iterable[int]] = None
+    ) -> Optional[str]:
         """Error message when every visible GPU is OLDER than the oldest arch the
         installed CUDA bundle was built for, or None to proceed. Fails open on
         unknown coverage or caps.
+
+        ``gpu_indices`` (physical ids the child is pinned to) tightens "every
+        visible" to "any pinned": the child places work on each pinned card, so one
+        too-old card aborts the load even beside a supported one.
 
         Only the too-old direction is broken. The bundles compile plain arch
         numbers, so each fatbin carries PTX beside its cubins, and the driver JITs
@@ -13684,7 +13690,12 @@ class LlamaCppBackend:
             return None
         caps = cls._cuda_compute_caps()
         oldest = min(supported)
-        if not caps or any(sm >= oldest for sm in caps.values()):
+        if gpu_indices is not None:
+            pinned = {int(i) for i in gpu_indices}
+            caps = {idx: sm for idx, sm in caps.items() if idx in pinned and sm < oldest}
+        elif any(sm >= oldest for sm in caps.values()):
+            return None
+        if not caps:
             return None
         present = ", ".join(f"GPU {idx} is sm_{sm}" for idx, sm in sorted(caps.items()))
         # The updater cannot replace a pinned LLAMA_SERVER_PATH or a llama-server
@@ -13694,6 +13705,30 @@ class LlamaCppBackend:
             f"newer, but {present} -- it was likely installed on a machine with a "
             f"newer GPU, so {cls._runtime_remedy(binary)}."
         )
+
+    @classmethod
+    def _cuda_sm_gate_keep(
+        cls, binary: Optional[str], gpus: list[tuple[int, int, int]]
+    ) -> list[tuple[int, int, int]]:
+        """``gpus`` minus the CUDA cards older than the installed bundle's oldest
+        arch, so auto placement cannot pin one beside a supported card (RTX 4090 +
+        GTX 1060 under an sm_75+ build). Unchanged on unknown coverage or caps, and
+        when no card survives: the gate then refuses with its own message."""
+        supported = cls._installed_llama_cuda_sms(binary)
+        if supported is None or not gpus:
+            return gpus
+        caps = cls._cuda_compute_caps()
+        oldest = min(supported)
+        kept = [g for g in gpus if caps.get(g[0], oldest) >= oldest]
+        if not kept or len(kept) == len(gpus):
+            return gpus
+        for idx, _free, _total in gpus:
+            if caps.get(idx, oldest) < oldest:
+                logger.warning(
+                    f"Skipping GPU {idx} (sm_{caps[idx]}): installed llama.cpp "
+                    f"build only has GPU code for sm_{oldest} and newer"
+                )
+        return kept
 
     @classmethod
     def _arch_gate_survivors(cls, binary: Optional[str] = None) -> list[int]:
@@ -15049,6 +15084,8 @@ class LlamaCppBackend:
                 gpus.sort(key = lambda g: g[0])
                 if gpus:
                     LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES = True
+                    if for_llama_server:
+                        gpus = LlamaCppBackend._cuda_sm_gate_keep(binary, gpus)
                     # The CLI row is the carve-out, not the pool. Discrete rows unchanged.
                     return LlamaCppBackend._widen_integrated_cuda_rows(gpus)
         except Exception as e:
@@ -15058,6 +15095,8 @@ class LlamaCppBackend:
         nvml_gpus = LlamaCppBackend._get_gpu_memory_nvml()
         if nvml_gpus:
             LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES = True
+            if for_llama_server:
+                nvml_gpus = LlamaCppBackend._cuda_sm_gate_keep(binary, nvml_gpus)
             # nvidia-smi IS NVML: same carve-out, same PCI indexing, same correction.
             return LlamaCppBackend._widen_integrated_cuda_rows(nvml_gpus)
 
@@ -31708,7 +31747,10 @@ class LlamaCppBackend:
                 # before every spawn below and outside the fit's try/except, so the
                 # refusal cannot be swallowed into the --fit on fallback.
                 if not (_cpu_only_zero_offload or _arch_gate_forced_cpu):
-                    _sm_gate = self._cuda_sm_gate_error(binary)
+                    # Pinned launches check the pinned cards, not "any visible".
+                    _sm_gate = self._cuda_sm_gate_error(
+                        binary, None if is_vulkan_backend else gpu_indices
+                    )
                     if _sm_gate:
                         raise RuntimeError(_sm_gate)
                 # The arch gate emptying the pool lands here for the same reason

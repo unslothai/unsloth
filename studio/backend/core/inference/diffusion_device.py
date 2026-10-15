@@ -386,6 +386,45 @@ def resolve_selected_cuda_ordinal(
     return max(ordinals, key = lambda ordinal: (_free_vram(ordinal), -ordinal))
 
 
+# Free-VRAM readings this close are noise, so the lower ordinal keeps an idle uniform host on card 0.
+_AUTO_FREE_TIE_BYTES = 256 * 1024**2
+
+
+def resolve_auto_cuda_ordinal() -> Optional[int]:
+    """The torch ordinal an AUTOMATIC diffusion load should run on, or None to keep the current device.
+
+    Bare "cuda" is the current device, PCI slot 0 under Studio's PCI_BUS_ID order, so on a multi-GPU host
+    the load budgeted against that card alone and offloaded to RAM beside an idle bigger one (#8235). Neither
+    engine shards, so this picks ONE card: most free VRAM, like ``auto_select_gpu_ids`` and Ollama's
+    single-GPU fit, ties to the lowest ordinal. Read from the hardware layer's telemetry (nvidia-smi, no CUDA
+    context per card) and keyed through the parent-visible list, so a mask keeps deciding which cards exist.
+
+    None on one visible card (unchanged), a UUID/MIG mask (no physical ids), ROCm (an APU's free reading is the
+    shared host pool, which would outrank a discrete card) and any failure. Never raises.
+    """
+    try:
+        from utils.hardware import hardware as hw
+
+        if hw.IS_ROCM:
+            return None
+        visible = hw.get_parent_visible_gpu_ids()
+        if len(visible) < 2:
+            return None
+        devices = hw.get_visible_gpu_utilization().get("devices", [])
+    except Exception:  # noqa: BLE001 -- automatic placement falls back to the current device
+        return None
+    free_by_ordinal: dict[int, float] = {}
+    for device in devices:
+        index, total, used = device.get("index"), device.get("vram_total_gb"), device.get("vram_used_gb")
+        if index not in visible or total is None or used is None:
+            continue
+        free_by_ordinal[visible.index(index)] = max(float(total) - float(used), 0.0) * 1024**3
+    if not free_by_ordinal:
+        return None
+    best = max(free_by_ordinal.values())
+    return min(o for o, free in free_by_ordinal.items() if best - free <= _AUTO_FREE_TIE_BYTES)
+
+
 @contextmanager
 def diffusion_device_scope(ordinal: Optional[int]):
     """Make ``ordinal`` the current CUDA device for the block, then restore the previous one.

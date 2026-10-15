@@ -260,13 +260,13 @@ def plan_gpu_ordinal() -> Optional[int]:
     pre-quantized artifact, which a plan plotted against the default device would omit.
     """
     from core.inference.diffusion_device import (
+        resolve_auto_cuda_ordinal,
         resolve_diffusion_device_target,
-        resolve_selected_cuda_ordinal,
     )
 
     if resolve_diffusion_device_target().device != "cuda":
         return None
-    return resolve_selected_cuda_ordinal(None)
+    return resolve_auto_cuda_ordinal()
 
 
 def _pipeline_components_present(root: Path) -> bool:
