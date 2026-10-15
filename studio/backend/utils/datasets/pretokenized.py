@@ -40,6 +40,10 @@ def _column_names(dataset) -> list[str]:
     return list(next(iter(dataset)).keys())
 
 
+def has_custom_labels(dataset) -> bool:
+    return "labels" in _column_names(dataset)
+
+
 def _check_arrow_table(table, max_seq_length, vocab_size) -> bool:
     """Validate ids and label lengths over the backing Arrow table; return whether any row needs truncating."""
     import pyarrow.compute as pc

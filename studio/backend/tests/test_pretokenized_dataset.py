@@ -20,6 +20,7 @@ from utils.datasets.dataset_utils import (  # noqa: E402
     format_dataset,
 )
 from utils.datasets.pretokenized import (  # noqa: E402
+    has_custom_labels,
     is_pretokenized_dataset,
     prepare_pretokenized_dataset,
 )
@@ -138,3 +139,9 @@ def test_prepare_rejects_labels_of_another_length():
     ds = Dataset.from_dict({"input_ids": [[1, 2, 3]], "labels": [[1, 2]]})
     with pytest.raises(ValueError, match = "same length"):
         prepare_pretokenized_dataset(ds, max_seq_length = 2048, vocab_size = 100)
+
+
+def test_only_user_labels_turn_off_response_masking():
+    assert has_custom_labels(_pretokenized(with_labels = True))
+    assert not has_custom_labels(_pretokenized(with_labels = False))
+    assert not has_custom_labels(_pretokenized(with_labels = False).to_iterable_dataset())

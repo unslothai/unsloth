@@ -85,7 +85,11 @@ from utils.datasets.cells import csv_as_text_kwargs
 from utils.datasets.chat_templates import get_training_chat_template
 from utils.datasets.completion_masking import apply_completion_masking
 from utils.datasets.iterable import is_streaming_dataset as detect_streaming_dataset
-from utils.datasets.pretokenized import PRETOKENIZED_FORMAT, prepare_pretokenized_dataset
+from utils.datasets.pretokenized import (
+    PRETOKENIZED_FORMAT,
+    has_custom_labels,
+    prepare_pretokenized_dataset,
+)
 from utils.datasets.raw_text import prepare_raw_text_dataset, resolve_column_names
 from utils.paths import (
     dataset_files_in_dir,
@@ -4593,6 +4597,8 @@ class UnslothTrainer:
             )
             raw_text_mode = dataset_final_format == "raw_text"
             pretokenized_mode = dataset_final_format == PRETOKENIZED_FORMAT
+            # Without a labels column, "Train on responses only" can still mask prompts from input_ids.
+            user_labels = pretokenized_mode and has_custom_labels(dataset["dataset"])
             self.tokenizer = get_training_chat_template(
                 self.tokenizer, self.model_name, dataset_final_format
             )
@@ -5054,7 +5060,7 @@ class UnslothTrainer:
             is_cpt = training_args.get("is_cpt", False)
             train_on_responses_enabled = (
                 False
-                if (is_cpt or raw_text_mode or pretokenized_mode)
+                if (is_cpt or raw_text_mode or user_labels)
                 else training_args.get("train_on_completions", False)
             )
 
@@ -5064,7 +5070,7 @@ class UnslothTrainer:
                 logger.info(
                     "Raw-text mode: skipping train_on_responses_only — training on all tokens\n"
                 )
-            elif pretokenized_mode:
+            elif user_labels:
                 logger.info(
                     "Pre-tokenized dataset: its labels define the loss, no response masking\n"
                 )

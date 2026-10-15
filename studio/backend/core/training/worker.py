@@ -3452,10 +3452,13 @@ def _run_mlx_training(event_queue, stop_queue, config):
 
     # Auto-detect markers from the chat template first, manual table as fallback. Mirror the CUDA skips: raw/CPT text
     # has no chat turns. Check the resolved format too, since format_type="auto" can land on alpaca or raw.
+    from utils.datasets.pretokenized import has_custom_labels
+
     if (
         config.get("train_on_completions", False)
         and not raw_text_mode
-        and dataset_final_format not in ("raw_text", "pretokenized")
+        and dataset_final_format != "raw_text"
+        and not (dataset_final_format == "pretokenized" and has_custom_labels(dataset))
     ):
         _send("status", status_message = "Configuring response-only training...")
         # No catch: the helper handles detection failures and double misses, so an exception here is a real masking
