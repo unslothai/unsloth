@@ -712,3 +712,67 @@ def test_explicit_leaf_list_widening_respects_the_family_filters():
     matched = {n for n, _ in model.named_modules() if re.fullmatch(widened, n)}
     assert any(n.startswith("model.layers.") and ".experts." in n for n in matched)
     assert not any(n.startswith("visual.") for n in matched)
+
+
+def _native_mixtral_4x_model():
+    """Mixtral on transformers 4.x: block_sparse_moe.experts.<i>.w1 / w2 / w3."""
+
+    class _Expert(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.w1 = torch.nn.Linear(8, 16, bias = False)
+            self.w2 = torch.nn.Linear(16, 8, bias = False)
+            self.w3 = torch.nn.Linear(8, 16, bias = False)
+
+    class _Moe(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.gate = torch.nn.Linear(8, 4, bias = False)
+            self.experts = torch.nn.ModuleList([_Expert() for _ in range(4)])
+
+    class _Attn(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.q_proj = torch.nn.Linear(8, 8, bias = False)
+
+    class _Layer(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.self_attn = _Attn()
+            self.block_sparse_moe = _Moe()
+
+    class _Body(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.layers = torch.nn.ModuleList([_Layer() for _ in range(2)])
+
+    class _Mixtral(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.config = SimpleNamespace(num_local_experts = 4, model_type = "mixtral")
+            self.model = _Body()
+
+    return _Mixtral()
+
+
+def test_explicit_leaf_list_keeps_mixtral_names_and_the_gate_up_shorthand():
+    U = _utils()
+    model = _native_mixtral_4x_model()
+    names = [n for n, m in model.named_modules() if isinstance(m, torch.nn.Linear)]
+    leaves = ["q_proj", "w1", "w2", "w3"]
+    regex = _explicit_list_regex(model, leaves)
+    widened, _, found = U.widen_target_regex_to_expert_submodules(
+        model, regex, leaves, auto_regex = True, explicit_leaves = True
+    )
+    assert found == ["w1", "w2", "w3"]
+    assert {n for n in names if re.fullmatch(widened, n)} == {n for n in names if n.rpartition(".")[2] in leaves}
+
+    model = _native_qwen3_moe_4x_model()
+    names = [n for n, m in model.named_modules() if isinstance(m, torch.nn.Linear)]
+    regex = _explicit_list_regex(model, ["q_proj", "gate_up_proj"])
+    widened, _, found = U.widen_target_regex_to_expert_submodules(
+        model, regex, ["q_proj", "gate_up_proj"], auto_regex = True, explicit_leaves = True
+    )
+    assert found == ["gate_proj", "up_proj"]
+    matched = {n for n in names if re.fullmatch(widened, n) and ".experts." in n}
+    assert matched == {n for n in names if ".experts." in n and n.endswith((".gate_proj", ".up_proj"))}

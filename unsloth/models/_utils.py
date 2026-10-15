@@ -9196,24 +9196,45 @@ def _remote_expert_parents(model):
     return parents
 
 
-def _native_expert_parents(model, target_modules):
+def _native_expert_parents(model, target_modules, requested):
+    """(parents, requested leaves) of native ``experts.<i>`` blocks inside the regex's language scope."""
     try:
         pattern = re.compile(target_modules)
     except re.error:
-        return set()
-    parents = set()
-    for name, _ in model.named_modules():
+        return set(), set()
+    modules = list(model.named_modules())
+    reached_layers = {
+        name.rsplit(".", 2)[0]
+        for name, _ in modules
+        if ".experts." not in name and pattern.fullmatch(name)
+    }
+    in_scope, parents, leaves = {}, set(), set()
+    for name, module in modules:
         matched = _EXPERT_SUBMODULE_PATTERN.search(name)
         if matched is None or not name[matched.start() :].lstrip(".").startswith("experts."):
             continue
-        parent = name[: matched.start()]
-        # In scope only if the regex takes this leaf as a dense one in the same block: keeps a vision tower out.
-        if not parent or not pattern.fullmatch(f"{parent}.{matched.group(1)}"):
+        parent, leaf = name[: matched.start()], matched.group(1)
+        if not parent:
+            continue
+        key = (parent, leaf)
+        if key not in in_scope:
+            layer = parent.rpartition(".")[0]
+            # The regex takes a requested leaf as a dense one in this block, or reaches this layer
+            # (Mixtral's block_sparse_moe has no MLP keyword); either keeps a vision tower out.
+            in_scope[key] = any(pattern.fullmatch(f"{parent}.{t}") for t in requested | {leaf}) or bool(
+                layer and any(r == layer or r.startswith(layer + ".") for r in reached_layers)
+            )
+        if not in_scope[key]:
             continue
         parents.add(
             r"\.".join(r"\d+" if part.isdigit() else re.escape(part) for part in parent.split("."))
         )
-    return parents
+        if leaf in requested and (
+            isinstance(module, torch.nn.Linear)
+            or isinstance(getattr(module, "base_layer", None), torch.nn.Linear)
+        ):
+            leaves.add(leaf)
+    return parents, leaves
 
 
 def widen_target_regex_to_expert_submodules(
@@ -9230,11 +9251,17 @@ def widen_target_regex_to_expert_submodules(
         return target_modules, detect_targets, []
     # Remote expert blocks only: widening native ones (Qwen3-MoE on 4.x) LoRAs every routed expert.
     parents = _remote_expert_parents(model)
+    named_leaves = set()
     if explicit_leaves:
-        parents = parents | _native_expert_parents(model, target_modules)
+        requested = set()
+        if isinstance(detect_targets, (list, tuple, set)):
+            requested = {t for t in detect_targets if isinstance(t, str) and "." not in t}
+        native, named_leaves = _native_expert_parents(model, target_modules, requested)
+        parents = parents | native
     if not parents:
         return target_modules, detect_targets, []
-    leaves = get_moe_expert_submodule_leaves(model, detect_targets)
+    # Requested names used as-is too, as plain PEFT does (Mixtral's w1 / w2 / w3).
+    leaves = sorted(set(get_moe_expert_submodule_leaves(model, detect_targets)) | named_leaves)
     if not leaves:
         return target_modules, detect_targets, []
     if any(
