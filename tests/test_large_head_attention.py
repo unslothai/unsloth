@@ -89,6 +89,18 @@ def test_mask_verdict_is_cached_and_invalidated():
     assert LH.intervals_from_mask(mask, 1, S) is None
 
 
+def test_inference_mask_is_rescanned_after_in_place_update():
+    S = 12
+    with torch.inference_mode():
+        mask = _causal(S)[None, None].clone()
+        assert LH.intervals_from_mask(mask, 1, S) is not None
+        mask[0, 0, 7, 2] = False
+        assert LH.intervals_from_mask(mask, 1, S) is None
+        mask.copy_(_packed(S, [5, 7])[None, None])
+        lo, hi = LH.intervals_from_mask(mask, 1, S)
+        assert lo[0, 6].item() == 5 and hi[0, 4].item() == 4
+
+
 def _sentinel():
     calls = []
 

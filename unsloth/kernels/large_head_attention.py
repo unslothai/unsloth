@@ -442,6 +442,7 @@ def intervals_from_mask(mask, B, S, _rows = 1024):
     None unless every row of `mask` (bool, or additive float with 0 = keep) allows one
     non-empty contiguous key range and both ends are non-decreasing down the rows. One
     host sync; the verdict is cached on the mask so every layer sharing it reuses it.
+    Inference tensors have no version counter, so they are rescanned on every call.
     """
     if not torch.is_tensor(mask) or mask.dim() != 4 or mask.shape[1] != 1:
         return None
@@ -449,8 +450,9 @@ def intervals_from_mask(mask, B, S, _rows = 1024):
         return None
     if not (mask.dtype == torch.bool or mask.is_floating_point()):
         return None
-    key = (B, S, None if mask.is_inference() else mask._version)
-    cached = getattr(mask, "_unsloth_large_head_intervals", None)
+    use_cache = not mask.is_inference()
+    key = (B, S, mask._version) if use_cache else None
+    cached = getattr(mask, "_unsloth_large_head_intervals", None) if use_cache else None
     if cached is not None and cached[0] == key:
         return cached[1]
     Bm = mask.shape[0]
@@ -477,10 +479,11 @@ def intervals_from_mask(mask, B, S, _rows = 1024):
     result = None
     if bool(ok.item()):
         result = (lo.expand(B, S).contiguous(), hi.expand(B, S).contiguous())
-    try:
-        mask._unsloth_large_head_intervals = (key, result)
-    except Exception:
-        pass
+    if use_cache:
+        try:
+            mask._unsloth_large_head_intervals = (key, result)
+        except Exception:
+            pass
     return result
 
 
