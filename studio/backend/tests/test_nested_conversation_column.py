@@ -1,8 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import json
+
 import pytest
-from datasets import Dataset, IterableDataset
+from datasets import Dataset, IterableDataset, load_dataset
 
 from hub.utils.dataset_format import check_dataset_format
 from utils.datasets import format_dataset
@@ -67,3 +69,19 @@ def test_single_field_object_without_messages_still_trains_as_json():
     result = format_dataset(Dataset.from_list([row]))
 
     assert result["dataset"][0]["conversations"][-1]["content"] == '{"colors": ["red", "blue"]}'
+
+
+@pytest.mark.parametrize("batch_size", [1000, 1])
+def test_empty_wrapped_conversation_does_not_break_the_dataset(tmp_path, batch_size):
+    rows = [
+        {"user_goal": "Nothing came back.", "output_format": {}},
+        {"user_goal": "Plan a monthly budget.", "output_format": {"conversation": _CONVERSATION}},
+    ]
+    path = tmp_path / "recipe.jsonl"
+    path.write_text("\n".join(json.dumps(row) for row in rows))
+    dataset = load_dataset("json", data_files = str(path), split = "train")
+
+    result = format_dataset(dataset, batch_size = batch_size)
+
+    assert result["chat_column"] == "output_format"
+    assert result["dataset"]["output_format"] == [None, _CONVERSATION]

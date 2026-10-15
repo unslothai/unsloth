@@ -74,7 +74,7 @@ def _message(turn):
 def wrapped_messages(value):
     if isinstance(value, dict) and len(value) == 1:
         (inner,) = value.values()
-        if isinstance(inner, list):
+        if inner is None or isinstance(inner, list):
             return inner
     return value
 
@@ -85,12 +85,19 @@ def unwrap_message_column(
     batch_size = 1000,
 ):
     features = getattr(dataset, "features", None)
-    if column is None or (features and not isinstance(features.get(column), dict)):
+    feature = features.get(column) if features else None
+    if column is None or (features and not (isinstance(feature, dict) and len(feature) == 1)):
         return dataset
+    if features:
+        from datasets import Features
+
+        (inner,) = feature.values()
+        features = Features({**features, column: inner})
     return dataset.map(
         lambda batch: {column: [wrapped_messages(value) for value in batch[column]]},
         batched = True,
         batch_size = batch_size,
+        features = features,
     )
 
 
