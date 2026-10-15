@@ -34,7 +34,7 @@ import {
   ViewIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
-import { type ReactNode, useEffect, useId, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import type { HubCapabilityFilter } from "../lib/model-capabilities";
 import {
   HUB_UPLOADERS,
@@ -67,6 +67,11 @@ const SECTION_LABEL =
   "flex w-full items-center justify-between px-3 pt-2 pb-1.5 text-ui-12 text-muted-foreground";
 // Each section's content sits 17px from the lines on both sides; the instances trim or pad my-2 to it.
 const SEPARATOR = "mx-1 my-2 h-px bg-border";
+// A picked capability: a flat grey a few steps down in light, a lift toward white in dark.
+const PICKED_FILL =
+  "bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),var(--popover))] dark:bg-[color-mix(in_srgb,var(--accent),white_8%)]";
+// The sections' spacing without the line: only Reset all sits under one.
+const SECTION_GAP = "mx-1 my-2 h-px";
 
 type LimitKey =
   | "minParams"
@@ -184,10 +189,11 @@ const MODALITY_ICONS: Record<DatasetModality, IconSvgElement> = {
   video: FlimSlateIcon,
 };
 
-const THUMB = 14;
-// The range, thumbs and value pills: a step off black in light, white in dark.
-const RANGE_FILL =
-  "bg-[color-mix(in_oklab,var(--foreground)_78%,var(--background))] dark:bg-foreground";
+const THUMB = 12;
+// The range, thumbs and value pills: a dark grey in light, a soft white in dark.
+const SLIDER_FG =
+  "[--hub-slider-fg:color-mix(in_oklab,var(--foreground)_68%,var(--background))] dark:[--hub-slider-fg:color-mix(in_oklab,var(--foreground)_86%,var(--background))]";
+const RANGE_FILL = "bg-(--hub-slider-fg)";
 
 function stopIndex(
   stops: readonly number[],
@@ -266,7 +272,7 @@ function RangeStops({
         )}
       </legend>
       {/* Inset by an end pill's overhang, so the pills line up with the labels above. */}
-      <div className="relative mx-4.5 pt-7 pb-1">
+      <div className={cn("relative mx-4.5 pt-7 pb-1", SLIDER_FG)}>
         <div aria-hidden={true} className="absolute inset-x-0 top-0 h-5">
           {spec.labels.map((label, i) =>
             label === null && !covered(i) ? null : (
@@ -306,9 +312,10 @@ function RangeStops({
               [spec.max]: next[1] === last ? undefined : spec.stops[next[1]],
             });
           }}
-          className="relative flex h-4 w-full touch-none select-none items-center"
+          className="group/range relative flex h-4 w-full touch-none select-none items-center"
         >
-          <SliderPrimitive.Track className="relative h-1 w-full grow rounded-full bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)]">
+          {/* The run settings track: a faint wash rather than a bar. */}
+          <SliderPrimitive.Track className="relative h-[3px] w-full grow rounded-full bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)]">
             {spec.stops.map((_, i) =>
               // Under the range, which covers them where it runs, so its fill stays unbroken.
               i === 0 || i === last ? null : (
@@ -331,8 +338,9 @@ function RangeStops({
               aria-label={`${thumb === 0 ? "Minimum" : "Maximum"} ${spec.label.toLowerCase()}`}
               aria-valuetext={chip(index)}
               style={{ width: THUMB, height: THUMB }}
+              // The run settings thumb's halo on hover, keyboard focus and press.
               className={cn(
-                "relative block cursor-grab rounded-full shadow-sm outline-none ring-background ring-2 focus-visible:ring-4 focus-visible:ring-ring/50 active:cursor-grabbing",
+                "relative block cursor-grab rounded-full outline-none transition-shadow duration-150 hover:shadow-[0_0_0_8px_color-mix(in_srgb,var(--hub-slider-fg)_18%,transparent)] focus-visible:shadow-[0_0_0_8px_color-mix(in_srgb,var(--hub-slider-fg)_18%,transparent)] active:cursor-grabbing active:shadow-[0_0_0_10px_color-mix(in_srgb,var(--hub-slider-fg)_22%,transparent)]",
                 RANGE_FILL,
               )}
             />
@@ -340,6 +348,53 @@ function RangeStops({
         </SliderPrimitive.Root>
       </div>
     </fieldset>
+  );
+}
+
+/** A tick option as a pill in the Hub's control look: the picked ones raised like a selected
+ *  segment, with a check on the right. */
+function OptionTile({
+  icon,
+  label,
+  checked,
+  locked,
+  onToggle,
+}: {
+  icon?: ReactNode;
+  label: string;
+  checked: boolean;
+  /** The last tick of a group, which stays. */
+  locked: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="checkbox"
+      aria-checked={checked}
+      aria-disabled={locked || undefined}
+      onClick={() => {
+        if (!locked) {
+          onToggle();
+        }
+      }}
+      className={cn(
+        "relative flex w-full cursor-pointer select-none items-center gap-2.5 rounded-full py-2 pr-8 pl-3.5 text-left text-sm transition-colors aria-disabled:cursor-default",
+        checked
+          ? cn(PICKED_FILL, "text-foreground")
+          : "field-soft text-muted-foreground hover:text-foreground",
+      )}
+    >
+      {icon}
+      <span className="truncate">{label}</span>
+      {checked && (
+        <HugeiconsIcon
+          icon={Tick02Icon}
+          strokeWidth={2}
+          className="pointer-events-none absolute right-2.5 size-4"
+        />
+      )}
+    </button>
   );
 }
 
@@ -395,8 +450,10 @@ function SwitchField({
   onCheckedChange: (checked: boolean) => void;
 }) {
   return (
-    <div className="flex flex-1 items-center justify-between gap-3 text-ui-12 text-muted-foreground">
-      <HoverInfo label={label}>{about}</HoverInfo>
+    <div className="flex items-start justify-between gap-3 px-3">
+      <span className="pt-0.5 text-ui-12 text-muted-foreground">
+        <HoverInfo label={label}>{about}</HoverInfo>
+      </span>
       <Switch
         aria-label={label}
         checked={checked}
@@ -421,14 +478,17 @@ function SegmentedRow<T extends string>({
   onChange: (value: T) => void;
 }) {
   return (
-    <div className="flex items-center justify-between gap-3">
-      <span className="text-ui-12 text-muted-foreground">
+    // One row, the title on the control's top edge rather than its middle.
+    <div className="flex items-start justify-between gap-3 px-3">
+      <span className="pt-0.5 text-ui-12 text-muted-foreground">
         <HoverInfo label={label}>{about}</HoverInfo>
       </span>
       <div
         role="radiogroup"
         aria-label={label}
-        className="hub-tab-toggle inline-flex h-8 items-center rounded-full"
+        // Light keeps the segmented toggle's raised white pick; dark takes the pills' fills, the track
+        // at field-soft's rest.
+        className="hub-tab-toggle inline-flex h-8 items-center rounded-full dark:[--hub-tab-track:color-mix(in_srgb,var(--accent)_60%,transparent)]"
       >
         {options.map(([key, text]) => {
           const active = value === key;
@@ -446,8 +506,7 @@ function SegmentedRow<T extends string>({
               className={cn(
                 "relative flex h-8 cursor-pointer items-center rounded-full px-3 text-xs font-medium transition-colors",
                 active
-                  ? // The model picker's lifted pill on the sunk track, so the pick stands out.
-                    "hub-tab-toggle-pill text-foreground dark:bg-[color-mix(in_srgb,var(--accent),white_7.5%)]"
+                  ? "hub-tab-toggle-pill text-foreground dark:bg-[color-mix(in_srgb,var(--accent),white_8%)]!"
                   : "text-muted-foreground hover:text-foreground",
               )}
             >
@@ -603,7 +662,7 @@ export function ModelSearchFiltersControl({
                     </button>
                   )}
                 </legend>
-                <div className="grid grid-cols-2 gap-x-1">
+                <div className="grid grid-cols-2 gap-1.5 px-3 pb-0.5">
                   {CAPABILITY_FILTER_OPTIONS.map((option) => {
                     const ticked = (key: HubCapabilityFilter) =>
                       capabilities.length === 0 || capabilities.includes(key);
@@ -616,7 +675,7 @@ export function ModelSearchFiltersControl({
                       key === option.value ? !checked : ticked(key),
                     );
                     return (
-                      <MenuTick
+                      <OptionTile
                         key={option.value}
                         icon={
                           glyph ? (
@@ -652,7 +711,7 @@ export function ModelSearchFiltersControl({
                   <div
                     aria-hidden={true}
                     className={cn(
-                      SEPARATOR,
+                      SECTION_GAP,
                       "mt-[calc(5px*var(--ui-space-scale,1))]",
                     )}
                   />
@@ -671,9 +730,9 @@ export function ModelSearchFiltersControl({
               <div
                 aria-hidden={true}
                 className={cn(
-                  SEPARATOR,
+                  SECTION_GAP,
                   showModelFilters
-                    ? "mt-2.5"
+                    ? "mt-0"
                     : "mt-[calc(5px*var(--ui-space-scale,1))]",
                 )}
               />
@@ -733,7 +792,7 @@ export function ModelSearchFiltersControl({
               <div
                 aria-hidden={true}
                 className={cn(
-                  SEPARATOR,
+                  SECTION_GAP,
                   "mt-[calc(5px*var(--ui-space-scale,1))]",
                 )}
               />
@@ -744,10 +803,10 @@ export function ModelSearchFiltersControl({
                   onChange={onChange}
                 />
               </div>
-              <div aria-hidden={true} className={cn(SEPARATOR, "mt-2.5")} />
+              <div aria-hidden={true} className={cn(SECTION_GAP, "mt-0")} />
             </>
           )}
-          <div className="flex flex-col gap-3 px-3 pt-[calc(9px*var(--ui-space-scale,1))] pb-[calc(7px*var(--ui-space-scale,1))]">
+          <div className="flex flex-col gap-3 pt-2 pb-[calc(7px*var(--ui-space-scale,1))]">
             {/* The Hub search's own scope, so it stays on ModelScope too; datasets take none. */}
             {modelSections && (
               <SegmentedRow
@@ -765,7 +824,7 @@ export function ModelSearchFiltersControl({
                 }
               />
             )}
-            <div className="flex h-8 items-center">
+            <div>
               <SwitchField
                 label="Datasets only"
                 about="Lists datasets instead of models."
