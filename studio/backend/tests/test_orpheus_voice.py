@@ -98,13 +98,8 @@ def test_gguf_orpheus_prompt_carries_the_voice(monkeypatch):
 
     monkeypatch.setattr(llama_cpp.httpx, "Client", FakeClient)
     backend = llama_cpp.LlamaCppBackend.__new__(llama_cpp.LlamaCppBackend)
-    backend._hf_variant = backend._gguf_path = None  # read by the low-quant name trim
     monkeypatch.setattr(llama_cpp.LlamaCppBackend, "base_url", "http://127.0.0.1:1", raising = False)
     monkeypatch.setattr(llama_cpp.LlamaCppBackend, "_auth_headers", {}, raising = False)
-    # The voice slot re-ensures its codec before each clip; a resident one skips that load.
-    monkeypatch.setattr(
-        llama_cpp.LlamaCppBackend, "_codec_mgr", SimpleNamespace(has_codec = lambda _t: True)
-    )
     for options in ({"voice": "zoe"}, None):
         with pytest.raises(_Captured):
             backend.generate_audio_response("Hi.", "snac", audio_options = options)
