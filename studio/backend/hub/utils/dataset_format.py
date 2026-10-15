@@ -8,6 +8,7 @@ from typing import Any, Optional
 
 from utils.datasets.cells import text_cell_check
 from utils.datasets.format_detection import detect_dataset_format, has_message_prompt_completion
+from utils.datasets.pretokenized import PRETOKENIZED_FORMAT, is_pretokenized_dataset
 
 
 def _first_row(dataset) -> Optional[dict]:
@@ -789,6 +790,18 @@ def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
                 "detected_format": "custom_heuristic",
                 "columns": columns,
                 "suggested_mapping": heuristic_mapping,
+                "detected_image_column": None,
+                "detected_text_column": None,
+                "is_image": multimodal_info["is_image"],
+                "multimodal_columns": multimodal_info.get("multimodal_columns"),
+                **audio_fields,
+            }
+        if is_pretokenized_dataset(dataset):
+            return {
+                "requires_manual_mapping": False,
+                "detected_format": PRETOKENIZED_FORMAT,
+                "columns": columns,
+                "suggested_mapping": None,
                 "detected_image_column": None,
                 "detected_text_column": None,
                 "is_image": multimodal_info["is_image"],

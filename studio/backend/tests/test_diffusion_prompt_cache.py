@@ -389,3 +389,106 @@ def test_controlnet_pipe_gets_the_prompt_cache(monkeypatch):
     first = pipe.encode_prompt("a sloth", device = "cpu")
     again = pipe.encode_prompt("a sloth", device = "cpu")
     assert calls == ["a sloth"] and torch.equal(first, again)
+
+
+def _image(
+    color,
+    size = (8, 6),
+    mode = "RGB",
+):
+    Image = pytest.importorskip("PIL.Image")
+    return Image.new(mode, size, color)
+
+
+def test_edit_reference_image_is_cached_by_pixel_content():
+    pipe = _EncodePipe()
+    assert prompt_cache.install(pipe)
+    first = pipe.encode_prompt("a cat", image = _image((10, 20, 30)))
+    again = pipe.encode_prompt("a cat", image = _image((10, 20, 30)))
+    as_list = pipe.encode_prompt("a cat", image = [_image((10, 20, 30))])
+    assert pipe.calls == 2
+    assert torch.equal(first[0], again[0])
+    assert torch.equal(first[0], as_list[0])
+    stats = pipe._unsloth_prompt_cache.describe()
+    assert stats["bypassed"] == 0 and stats["hits"] == 1
+
+
+@pytest.mark.parametrize(
+    "other",
+    [
+        lambda: _image((10, 20, 31)),
+        lambda: _image((10, 20, 30), size = (6, 8)),
+        lambda: _image((10, 20, 30, 255), mode = "RGBA"),
+    ],
+)
+def test_a_different_reference_image_misses(other):
+    pipe = _EncodePipe()
+    assert prompt_cache.install(pipe)
+    pipe.encode_prompt("a cat", image = _image((10, 20, 30)))
+    pipe.encode_prompt("a cat", image = other())
+    assert pipe.calls == 2
+    assert pipe._unsloth_prompt_cache.describe()["hits"] == 0
+
+
+def test_an_edited_image_object_misses_after_in_place_change():
+    pipe = _EncodePipe()
+    assert prompt_cache.install(pipe)
+    image = _image((10, 20, 30))
+    pipe.encode_prompt("a cat", image = image)
+    image.putpixel((0, 0), (255, 0, 0))
+    pipe.encode_prompt("a cat", image = image)
+    assert pipe.calls == 2
+
+
+def test_bypassed_encoder_error_is_not_chained_onto_the_key_error():
+    class Boom(_EncodePipe):
+        def encode_prompt(
+            self,
+            prompt,
+            image = None,
+            device = None,
+        ):
+            raise RuntimeError("encoder failed")
+
+    pipe = Boom()
+    assert prompt_cache.install(pipe)
+    with pytest.raises(RuntimeError) as info:
+        pipe.encode_prompt("a cat", image = object())
+    assert info.value.__context__ is None
+    assert pipe._unsloth_prompt_cache.describe()["bypassed"] == 1
+
+
+def test_numpy_like_object_with_tobytes_still_bypasses():
+    class FakeImage:
+        mode = "RGB"
+        size = (1, 1)
+
+        def tobytes(self):
+            return b"\0\0\0"
+
+    pipe = _EncodePipe()
+    assert prompt_cache.install(pipe)
+    pipe.encode_prompt("a cat", image = FakeImage())
+    assert pipe._unsloth_prompt_cache.describe()["bypassed"] == 1
+
+
+def test_failed_lookup_encoder_error_is_not_chained(monkeypatch):
+    class Boom(_EncodePipe):
+        def encode_prompt(
+            self,
+            prompt,
+            image = None,
+            device = None,
+        ):
+            raise RuntimeError("encoder failed")
+
+    pipe = Boom()
+    assert prompt_cache.install(pipe)
+
+    def broken_get(*_args, **_kwargs):
+        raise OSError("lookup failed")
+
+    monkeypatch.setattr(pipe._unsloth_prompt_cache, "get", broken_get)
+    with pytest.raises(RuntimeError) as info:
+        pipe.encode_prompt("a cat")
+    assert info.value.__context__ is None

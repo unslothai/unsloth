@@ -18,6 +18,7 @@ import {
   audioOptionDisplayValue,
   audioOptionFloatStep,
   audioOptionLabel,
+  audioOptionUsesSlider,
   audioVoiceLabel,
   coerceAudioOptionValue,
 } from "./audio-options";
@@ -29,7 +30,7 @@ function OptionHint({ text }: { text?: string | null }) {
 }
 
 /** One control per declared option, drawn from the type alone: a switch, a slider when the
- *  range is bounded (else a number box), a select, or a text box. */
+ *  range is bounded and has a default (else a number box), a select, or a text box. */
 export function AudioOptionFields({
   specs,
   values,
@@ -70,12 +71,7 @@ export function AudioOptionFields({
             </div>
           );
         }
-        if (
-          (spec.type === "int" || spec.type === "float") &&
-          spec.min != null &&
-          spec.max != null &&
-          spec.max > spec.min
-        ) {
+        if (audioOptionUsesSlider(spec) && spec.min != null && spec.max != null) {
           const step = spec.type === "int" ? 1 : audioOptionFloatStep(spec.min, spec.max);
           return (
             <ParamSlider

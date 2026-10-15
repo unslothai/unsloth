@@ -3815,7 +3815,7 @@ function VideoGenerator({
               task={VIDEO_GEN_TASKS}
               catalog={VIDEO_CATALOG}
               opaqueKind={opaqueKind}
-              hubCapability="diffusion"
+              hubCapability="video-gen"
               placeholder="Select video model"
               open={active && selectorOpen}
               onOpenChange={(o) => setSelectorOpen(active && o)}

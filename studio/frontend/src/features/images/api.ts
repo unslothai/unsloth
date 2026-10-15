@@ -116,6 +116,8 @@ export interface DiffusionGenerateProgress {
   // Live latent preview of the image being denoised (small JPEG data URL), and a counter that moves with each one.
   preview?: string | null;
   preview_seq?: number;
+  // "connection" while the run is on a saved image connection: the Stop target for a resumed run.
+  target?: "connection" | null;
 }
 
 export interface DiffusionLoadProgress {
@@ -455,10 +457,7 @@ export async function generateDiffusionImage(
     // A proxy answers with HTML (or nothing); the app answers with JSON. Only the former means the request may still
     // be running: settling an application error would poll for a generation that never started and hide the reason
     // the backend gave.
-    if (
-      response.status === 503 &&
-      (response.headers.get("content-type") || "").toLowerCase().includes("application/json")
-    ) {
+    if ((response.headers.get("content-type") || "").toLowerCase().includes("application/json")) {
       throw new Error(detail);
     }
     throw new GenerateResponseLostError(detail);

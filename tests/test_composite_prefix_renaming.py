@@ -1,26 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""A submodule's prefix renaming must not be applied to the composite model.
-
-transformers 5.4.0 (PR #44300) made `get_model_conversion_mapping` recurse into
-`PreTrainedModel` submodules and merge their conversion mappings into the parent's.
-The standalone Qwen3.5 / Qwen3.5-MoE / Gemma 3n text models register
-`^model.language_model.` -> `^model.`, which is correct for themselves and wrong for
-the composite model whose weights really are named `model.language_model....`. Renamings
-run before the bitsandbytes converter, so a pre-quantized checkpoint loses every
-`absmax` / `quant_map` / `nested_absmax` / `nested_quant_map` /
-`quant_state.bitsandbytes__nf4` sidecar and every `Linear4bit` comes back with
-`quant_state is None`: measured 352 of 352 on `unsloth/qwen3.8-27b-unsloth-bnb-4bit` and
-439 of 439 on `unsloth/gemma-3n-E2B-it-unsloth-bnb-4bit`, at 5.4.0 and at 5.5.4.
-Upstream fixed it in 5.6.0 with PR #45567.
-
-Every test here drives the real functions against a real transformers model built on the
-meta device, so nothing asserts on a hand-written mapping that the code did not produce.
-The pathology tests are conditioned on what the installed transformers actually does, not
-on its version number: on a build that leaks they prove the fix removes the leak, and on a
-build that does not leak they prove the fix leaves it alone.
-"""
+"""transformers 5.4 merges submodule renamings into composite models, dropping bitsandbytes sidecars."""
 
 import os
 import sys
@@ -46,11 +27,7 @@ from unsloth.import_fixes import (  # noqa: E402
 
 
 def _skip_a_stand_in(module):
-    """transformers 4.x has neither module, and importing unsloth fills the gap with inert
-    stand-ins so peft can import (`_make_peft_stub_module` in unsloth/import_fixes.py). Their
-    WeightRenaming stores its patterns and renames nothing, and their mapping function returns
-    nothing, so a test run against them measures the stand-in rather than transformers. A real
-    module is a file on disk; a stand-in's `__file__` is `<unsloth stub: ...>`."""
+    """Skips an unsloth stand-in: a real module is a file on disk, while a stub's __file__ is not."""
     path = getattr(module, "__file__", None)
     if not os.path.isfile(path or ""):
         pytest.skip(
@@ -81,15 +58,7 @@ def _conversion_mapping():
 
 
 def _unpatched_mapping_fn():
-    """The upstream function, underneath every wrapper installed over it.
-
-    `__wrapped__` alone is not enough: unsloth_zoo patches the same function
-    (`temporary_patches/moe_utils_bnb4bit.patch_bnb4bit_model_conversion_mapping`, which
-    prepends per-expert converters for quantized MoE) and keeps its original in a closure
-    cell rather than in `__wrapped__`. A test that stopped at the first wrapper would be
-    measuring this fix through this fix, and would report no pathology on a transformers
-    that really has one.
-    """
+    """Unwraps to the upstream function: zoo keeps its original in a closure, not __wrapped__."""
     fn = _conversion_mapping().get_model_conversion_mapping
     seen = set()
     while id(fn) not in seen:
@@ -113,12 +82,7 @@ def _unpatched_mapping_fn():
 
 
 def _meta_model(model_type, shrink, auto_class):
-    """A real transformers model with no memory behind it.
-
-    Built on `meta` so a composite multimodal model costs milliseconds and no VRAM. Its
-    parameter NAMES are the entire subject of this fix, and those are identical to a
-    materialised model's.
-    """
+    """Real transformers model on meta: its parameter names match a materialised one at no VRAM cost."""
     import transformers
     from transformers.models.auto.configuration_auto import CONFIG_MAPPING
 
@@ -177,11 +141,7 @@ def standalone_text_model():
 
 
 def _destructive_renamings(model, conversions):
-    """Which of `conversions` rewrite this model's own parameter names off the map?
-
-    This is the pathology itself, measured rather than assumed: it is what makes the
-    bitsandbytes sidecars land on keys the model does not have.
-    """
+    """Conversions that rename a model's own parameter names; these strand bitsandbytes sidecars."""
     WeightRenaming = _weight_renaming()
 
     keys = {name for name, _ in model.named_parameters(remove_duplicate = False)}
@@ -196,9 +156,6 @@ def _destructive_renamings(model, conversions):
                 found.append((conversion, key, renamed))
                 break
     return found
-
-
-# --- the pattern helpers -----------------------------------------------------------
 
 
 def test_prefixed_pattern_keeps_a_start_anchor_anchored():
@@ -221,9 +178,6 @@ def test_signature_reads_the_unprocessed_patterns_when_they_are_kept():
     assert _renaming_signature(one) != _renaming_signature(
         WeightRenaming(source_patterns = r"^a.c.", target_patterns = r"^a.(?!c.)")
     )
-
-
-# --- the discriminator -------------------------------------------------------------
 
 
 def test_a_renaming_that_lands_on_a_real_key_is_not_destructive():
@@ -255,9 +209,6 @@ def test_one_landing_on_a_real_key_outvotes_the_rest():
     assert not _renaming_destroys_keys(renaming, ["old.a", "old.b"], {"new.a"})
 
 
-# --- the re-scoping ----------------------------------------------------------------
-
-
 def test_rescoped_renaming_matches_upstreams_doubled_prefix_semantics():
     """What `PrefixChange.with_submodel_prefix` produces, on a transformers without one."""
     WeightRenaming = _weight_renaming()
@@ -284,9 +235,6 @@ def test_rescoping_refuses_a_replacement_that_is_still_destructive():
     assert _rescoped_renaming(renaming, "model.language_model", [key], {key}) is None
 
 
-# --- the composite model, end to end -----------------------------------------------
-
-
 def test_the_probe_agrees_with_what_this_transformers_really_does(composite_model):
     """The install gate must answer for the behaviour, on whatever version is installed."""
     conversions = _unpatched_mapping_fn()(composite_model)
@@ -300,11 +248,7 @@ def test_the_probe_agrees_with_what_this_transformers_really_does(composite_mode
 
 
 def test_rescoping_removes_every_destructive_renaming_from_a_composite(composite_model):
-    """The fix itself: after `_rescope_conversions`, nothing rewrites a real key off the map.
-
-    Fails on an unfixed transformers without the patch -- that is the whole point -- and
-    passes on a fixed one, where the input already had no leak and the output is the input.
-    """
+    """After _rescope_conversions, no conversion may rename a real key; fails on unpatched transformers."""
     conversions = _unpatched_mapping_fn()(composite_model)
     rescoped = _rescope_conversions(composite_model, conversions)
     assert _destructive_renamings(composite_model, rescoped) == []
@@ -324,12 +268,7 @@ def test_rescoping_keeps_every_conversion_that_was_not_destructive(composite_mod
 
 
 def test_the_standalone_text_model_keeps_its_own_renaming(standalone_text_model):
-    """The entry belongs to this model, and the fix must never take it away.
-
-    `^model.language_model.` -> `^model.` is how the standalone text model reads a
-    checkpoint saved from the composite one. Fired against its own weight names it matches
-    nothing, which is exactly why the discriminator leaves it alone.
-    """
+    """The standalone text model's renaming reads composite-saved checkpoints; the fix must keep it."""
     conversions = _unpatched_mapping_fn()(standalone_text_model)
     leaked, _ = _leaked_submodule_prefix_renamings(standalone_text_model)
     assert leaked == {}
@@ -350,25 +289,10 @@ def test_a_non_composite_model_is_untouched():
     assert _rescope_conversions(model, conversions) is conversions
 
 
-# --- installation ------------------------------------------------------------------
-
-
 @pytest.fixture
 def forced_install(monkeypatch):
-    """Open the gate so the tests of what installation DOES are never vacuous.
-
-    Outside the defect window the probe declines, which is the right answer and is what
-    `test_installation_is_gated_on_the_probe` measures. It also meant every test of the
-    installation itself either skipped or, worse, passed on a release where the code it
-    names never ran: the sweep tests below reported green on 5.17.0 without sweeping
-    anything. Forcing the gate open keeps the two questions apart -- whether to install,
-    and whether installing is done correctly -- and lets the second one be answered on any
-    release. Everything the installer rebinds is restored on the way out.
-    """
-    # The module this file already imported from, not a fresh `import unsloth.import_fixes`:
-    # re-entering the package import runs `unsloth/__init__` again, which needs unsloth_zoo
-    # installed. Measured on a torch 2.6.0 floor environment without it, that turned 9 of
-    # these tests into collection errors while the rest of the file ran fine.
+    """Forces the install gate open so install tests are not vacuous on releases the probe declines."""
+    # Reuse the loaded module: re-importing runs `unsloth/__init__`, which needs unsloth_zoo.
     import_fixes = sys.modules[_transformers_rescopes_submodule_prefix_renamings.__module__]
 
     conversion_mapping = _conversion_mapping()
@@ -379,12 +303,8 @@ def forced_install(monkeypatch):
         if isinstance(getattr(module, "__dict__", None), dict)
         and "get_model_conversion_mapping" in module.__dict__
     ]
-    # Start from upstream's own function, not from whatever importing unsloth left live. Inside
-    # the 5.4.0 to 5.5.4 window the import has already installed this repair and unsloth_zoo's
-    # MoE wrapper has gone on top of it, so an install measured from `live` finds the repair in
-    # the chain and declines, and the wrapper on top publishes no `__wrapped__`. Every test
-    # here was written against a bare upstream function; this states that instead of
-    # inheriting it from whichever release the lane happens to pin.
+    # Start from upstream's own function: within 5.4.0-5.5.4 importing unsloth already installed
+    # this repair under zoo's MoE wrapper, which publishes no `__wrapped__`.
     chain = []
     function = live
     while function is not None and len(chain) < 8:
@@ -392,9 +312,7 @@ def forced_install(monkeypatch):
         function = _next_in_wrapper_chain(function)
     upstream = chain[-1]
     assert not getattr(upstream, _COMPOSITE_PREFIX_RENAMING_FLAG, False)
-    # Through monkeypatch, not by assignment: a test that also monkeypatches the function saves
-    # `upstream` as the value to restore, and its undo runs after this fixture's `finally`.
-    # Registered here, this swap's own undo runs last and leaves `live` in place.
+    # Through monkeypatch so this undo runs last and leaves `live` in place.
     monkeypatch.setattr(conversion_mapping, "get_model_conversion_mapping", upstream)
     for module, binding in holders:
         if any(binding is link for link in chain):
@@ -413,9 +331,7 @@ def forced_install(monkeypatch):
 def test_installation_is_gated_on_the_probe():
     _conversion_mapping()
     fix_transformers_composite_prefix_renaming()
-    # The whole chain, by either link and either package's mark: inside the defect window
-    # unsloth_zoo's MoE wrapper sits on top of the repair, so the top object alone reads a
-    # live repair as missing.
+    # Walk the whole chain: zoo's MoE wrapper can sit on top of the repair.
     assert _composite_prefix_renaming_repaired() == (
         not _transformers_rescopes_submodule_prefix_renamings()
     )
@@ -475,9 +391,7 @@ def test_the_wrapper_returns_the_upstream_mapping_when_it_cannot_reason(
         def named_buffers(self, *args, **kwargs):
             raise RuntimeError("no")
 
-    # Upstream has to survive this object for the question to mean anything: from 5.6 on it
-    # walks `named_modules` itself to set `scope_prefix`, so it raises here too and there is
-    # no upstream answer to preserve. That is a fact about the release, not about the fix.
+    # From 5.6 upstream walks `named_modules` itself and raises here too, so there is nothing to keep.
     try:
         upstream = _unpatched_mapping_fn()(Unwalkable())
     except Exception as e:
@@ -489,23 +403,14 @@ def test_the_wrapper_returns_the_upstream_mapping_when_it_cannot_reason(
 
 
 def test_a_module_holding_the_pre_zoo_function_is_still_rebound(monkeypatch, forced_install):
-    """unsloth_zoo patches the same function first, WITHOUT `__wrapped__`.
-
-    `temporary_patches/moe_utils_bnb4bit.py` sets only `_unsloth_moe_patched`, no
-    functools.wraps, so the `getattr(original, "__wrapped__", original)` unwrap cannot see
-    past it and `original` stays zoo's wrapper. A module that imported the name before zoo
-    ran still holds the underlying upstream function and matches neither object, so an
-    identity test leaves it bound to the unscoped mapping and
-    `PeftAdapterMixin.load_adapter()` renames Qwen3.5 and Gemma 3n adapter keys away from
-    their real `model.language_model.*` modules.
-    """
+    """Zoo's patch has no __wrapped__, so a module holding the pre-zoo function still needs rebinding."""
     import types
 
     from transformers import conversion_mapping
 
     import_fixes = forced_install
 
-    # Pin the starting state: importing unsloth may already have installed this patch.
+    # Importing unsloth may already have installed this patch.
     pristine = conversion_mapping.get_model_conversion_mapping
     while getattr(pristine, import_fixes._COMPOSITE_PREFIX_RENAMING_FLAG, False):
         unwrapped = getattr(pristine, "__wrapped__", None)
@@ -513,8 +418,7 @@ def test_a_module_holding_the_pre_zoo_function_is_still_rebound(monkeypatch, for
             break
         pristine = unwrapped
 
-    # Zoo's wrapper, spelled the way zoo really spells it: no functools.wraps, no
-    # __wrapped__, just its own marker attribute.
+    # Zoo's wrapper as zoo spells it: no functools.wraps, no __wrapped__, just its marker.
     def zoo_wrapper(
         model,
         key_mapping = None,
@@ -527,7 +431,6 @@ def test_a_module_holding_the_pre_zoo_function_is_still_rebound(monkeypatch, for
     assert not hasattr(zoo_wrapper, "__wrapped__"), "this test models zoo's real wrapper"
     monkeypatch.setattr(conversion_mapping, "get_model_conversion_mapping", zoo_wrapper)
 
-    # A module that imported the function BEFORE zoo wrapped, so it holds `pristine`.
     early = types.ModuleType("transformers._unsloth_test_early_importer")
     early.get_model_conversion_mapping = pristine
     monkeypatch.setitem(sys.modules, early.__name__, early)
@@ -542,20 +445,11 @@ def test_a_module_holding_the_pre_zoo_function_is_still_rebound(monkeypatch, for
 
 
 def test_a_third_party_wrapper_is_kept_in_the_chain(forced_install):
-    """A library that wrapped this function first must keep running after we install.
-
-    An unconditional `original.__wrapped__` took one level off the chain, and any wrapper
-    that plays by the rules publishes `__wrapped__` through functools.wraps, so the level
-    removed was THEIRS: measured on transformers 5.5.4, the third-party wrapper stopped
-    being called at all, and the alias sweep then spread the replacement to every module
-    holding it. Ours goes on top instead, and the already-installed test reads the chain.
-    """
+    """Install on top of third-party wrappers; unwrapping via __wrapped__ would drop one from the chain."""
     import functools
 
     conversion_mapping = _conversion_mapping()
-    # From the unwrapped function, so an earlier test's wrapper is not what gets wrapped here,
-    # and without the flags functools.wraps copies out of its target's __dict__ -- inheriting
-    # this repair's own mark would make the installer decline and prove nothing.
+    # Unwrapped, and without copying __dict__: inheriting this repair's mark would make it decline.
     live = _unpatched_mapping_fn()
     calls = []
 
@@ -572,7 +466,6 @@ def test_a_third_party_wrapper_is_kept_in_the_chain(forced_install):
     assert getattr(patched, _COMPOSITE_PREFIX_RENAMING_FLAG, False), "the repair declined"
     assert patched.__wrapped__ is third_party, "the third-party wrapper was discarded"
 
-    # And a second install underneath someone else's wrapper must not stack another copy.
     @functools.wraps(patched)
     def someone_else(*args, **kwargs):
         return patched(*args, **kwargs)
@@ -583,22 +476,11 @@ def test_a_third_party_wrapper_is_kept_in_the_chain(forced_install):
 
 
 def test_a_vllm_module_holding_its_own_copy_is_rebound(monkeypatch, forced_install):
-    """vLLM's Transformers backend imports this function by value, at import time.
-
-    `vllm/model_executor/models/transformers/base.py` does `from
-    transformers.conversion_mapping import get_model_conversion_mapping` and builds its
-    `WeightsMapper` from the result, so a process that imported vllm before this repair ran
-    would map a composite model's weights with the unscoped renaming. Measured on
-    transformers 5.5.4 with the real vllm 0.30.0 module: not rebound before `vllm` joined
-    the owning packages, rebound after. Modelled here rather than importing vllm, which
-    costs half a minute and is not installed everywhere this suite runs.
-    """
+    """vLLM imports this function by value at import time, so any copy it holds must be rebound too."""
     import types
 
     conversion_mapping = _conversion_mapping()
-    # The object the installer is about to wrap, not `_unpatched_mapping_fn()`: an earlier
-    # test in this file can leave a stand-in in place, and then the deepest function in the
-    # chain belongs to this test module rather than to transformers.
+    # An earlier test can leave a stand-in in place, so wrap the live object.
     backend = types.ModuleType("vllm.model_executor.models.transformers.base")
     backend.get_model_conversion_mapping = conversion_mapping.get_model_conversion_mapping
     monkeypatch.setitem(sys.modules, backend.__name__, backend)
@@ -626,17 +508,7 @@ def test_a_vllm_module_holding_its_own_copy_is_rebound(monkeypatch, forced_insta
 def test_an_unrelated_module_keeps_its_own_same_named_function(
     monkeypatch, forced_install, module_name
 ):
-    """The sweep must not touch a helper somebody else happens to call the same thing.
-
-    The binding test cannot be an identity test, because unsloth_zoo wraps without
-    `__wrapped__` and the pre-zoo upstream function matches neither object. So the sweep
-    asks whether the binding IS an alias of the function it is replacing: `original`
-    itself, something whose `__module__` is transformers' own `conversion_mapping`, or a
-    wrapper carrying unsloth_zoo's marker. The package restriction alone is not enough --
-    these four packages are large, and something inside their namespace may legitimately
-    define its own helper under this name, which is why the cases below include modules
-    inside them as well as outside.
-    """
+    """The sweep rebinds only true aliases of the upstream function, not unrelated same-named helpers."""
     import types
 
     def mine(*args, **kwargs):
@@ -653,18 +525,9 @@ def test_an_unrelated_module_keeps_its_own_same_named_function(
 
 
 def test_it_defers_to_the_unsloth_zoo_copy_of_the_same_repair(monkeypatch):
-    """Two packages carry this repair; exactly one of them must install it.
-
-    unsloth_zoo owns the bitsandbytes Linear4bit patch that reports the failure and is
-    importable without unsloth, so it carries the same re-scope in
-    `temporary_patches/conversion_mapping_rescope.py`. A second wrapper on top of the first
-    is measurably inert -- the first pass leaves no leaked signature for the second to match
-    -- but it is still a wrapper nobody needs, and one of the two has to yield. This one does.
-    """
+    """Unsloth defers to unsloth_zoo's copy of the repair so only one wrapper is installed."""
     conversion_mapping = pytest.importorskip("transformers.conversion_mapping")
-    # The module this file already imported from: a fresh `import unsloth.import_fixes`
-    # re-runs `unsloth/__init__`, which needs unsloth_zoo installed, and turns this into
-    # a collection error on a minimal floor environment (measured on torch 2.6.0).
+    # Reuse the loaded module: re-importing runs `unsloth/__init__`, which needs unsloth_zoo.
     import_fixes = sys.modules[_transformers_rescopes_submodule_prefix_renamings.__module__]
 
     if import_fixes._transformers_rescopes_submodule_prefix_renamings():
@@ -690,14 +553,9 @@ def test_it_defers_to_the_unsloth_zoo_copy_of_the_same_repair(monkeypatch):
 
 
 def test_it_finds_the_zoo_mark_under_an_unmarked_wrapper(monkeypatch):
-    """unsloth_zoo's moe_utils_bnb4bit wraps the same function without `__wrapped__`.
-
-    The detector therefore walks the whole chain rather than reading only the top object.
-    """
+    """The detector walks the whole wrapper chain, since zoo's MoE wrapper publishes no __wrapped__."""
     conversion_mapping = pytest.importorskip("transformers.conversion_mapping")
-    # The module this file already imported from: a fresh `import unsloth.import_fixes`
-    # re-runs `unsloth/__init__`, which needs unsloth_zoo installed, and turns this into
-    # a collection error on a minimal floor environment (measured on torch 2.6.0).
+    # Reuse the loaded module: re-importing runs `unsloth/__init__`, which needs unsloth_zoo.
     import_fixes = sys.modules[_transformers_rescopes_submodule_prefix_renamings.__module__]
 
     def zoo_repair():
@@ -716,9 +574,7 @@ def test_it_finds_the_zoo_mark_under_an_unmarked_wrapper(monkeypatch):
 
 def test_the_zoo_detector_cannot_spin_on_a_cycle(monkeypatch):
     conversion_mapping = pytest.importorskip("transformers.conversion_mapping")
-    # The module this file already imported from: a fresh `import unsloth.import_fixes`
-    # re-runs `unsloth/__init__`, which needs unsloth_zoo installed, and turns this into
-    # a collection error on a minimal floor environment (measured on torch 2.6.0).
+    # Reuse the loaded module: re-importing runs `unsloth/__init__`, which needs unsloth_zoo.
     import_fixes = sys.modules[_transformers_rescopes_submodule_prefix_renamings.__module__]
 
     def a():
@@ -735,25 +591,12 @@ def test_the_zoo_detector_cannot_spin_on_a_cycle(monkeypatch):
 
 
 def test_both_probes_see_the_repair_under_the_real_moe_wrapper(monkeypatch):
-    """unsloth_zoo's MoE wrapper publishes no `__wrapped__`, on purpose.
-
-    zoo's re-scope unwraps `__wrapped__` to choose what to wrap, so a MoE wrapper carrying one
-    would be REPLACED rather than sat on top of, silently dropping its per-expert converters.
-    It publishes `_unsloth_wrapper_inner` instead. zoo also registers the re-scope before the
-    MoE patch, so the MoE wrapper is on top in the normal case -- meaning a `__wrapped__`-only
-    walk reports no repair for one that is live, which would put the downgrade advice back in
-    the guard's message and stack a second wrapper here.
-
-    Driven through the real patch, not a stand-in: a stand-in that sets `__wrapped__` exercises
-    the one thing the real wrapper does not do, and passes either way.
-    """
+    """A __wrapped__ on zoo's MoE wrapper would make zoo replace it and drop its converters."""
     conversion_mapping = pytest.importorskip("transformers.conversion_mapping")
     moe = pytest.importorskip("unsloth_zoo.temporary_patches.moe_utils_bnb4bit")
     if not hasattr(moe, "patch_bnb4bit_model_conversion_mapping"):
         pytest.skip("this unsloth_zoo has no MoE conversion-mapping patch")
-    # The module this file already imported from: a fresh `import unsloth.import_fixes`
-    # re-runs `unsloth/__init__`, which needs unsloth_zoo installed (measured: 9 collection
-    # errors on a torch 2.6.0 floor environment without it).
+    # Reuse the loaded module: re-importing runs `unsloth/__init__`, which needs unsloth_zoo.
     import_fixes = sys.modules[_transformers_rescopes_submodule_prefix_renamings.__module__]
 
     def zoo_repair(*args, **kwargs):
@@ -771,8 +614,7 @@ def test_both_probes_see_the_repair_under_the_real_moe_wrapper(monkeypatch):
         getattr(live, "__wrapped__", None) is None
     ), "the MoE wrapper must not publish __wrapped__; see the docstring"
     if getattr(live, "_unsloth_wrapper_inner", None) is None:
-        # An unsloth_zoo predating the link attribute. The repair really is invisible from
-        # here, and nothing this side can fix, so this is a skip and not a failure.
+        # An older unsloth_zoo publishes no link, so the repair is invisible; skip, not fail.
         pytest.skip("this unsloth_zoo's MoE wrapper publishes no link to what it wrapped")
 
     assert import_fixes._zoo_composite_prefix_renaming_installed() is True
@@ -781,9 +623,7 @@ def test_both_probes_see_the_repair_under_the_real_moe_wrapper(monkeypatch):
 
 def test_the_chain_walk_is_bounded(monkeypatch):
     conversion_mapping = pytest.importorskip("transformers.conversion_mapping")
-    # The module this file already imported from: a fresh `import unsloth.import_fixes`
-    # re-runs `unsloth/__init__`, which needs unsloth_zoo installed (measured: 9 collection
-    # errors on a torch 2.6.0 floor environment without it).
+    # Reuse the loaded module: re-importing runs `unsloth/__init__`, which needs unsloth_zoo.
     import_fixes = sys.modules[_transformers_rescopes_submodule_prefix_renamings.__module__]
 
     def a():
