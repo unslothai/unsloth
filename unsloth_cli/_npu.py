@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""AMD Ryzen AI NPU models from the CLI.
-
-They run inside Unsloth Studio through Lemonade and FastFlowLM, so the CLI drives a running Studio
-over HTTP: enable the runtime, download the model if needed, then load it like any other model.
-"""
+"""AMD Ryzen AI NPU models from the CLI, which drives a running Studio over HTTP."""
 
 from __future__ import annotations
 
@@ -22,11 +18,7 @@ class NpuCliError(RuntimeError):
 
 
 def npu_model_path(model: Optional[str]) -> Optional[str]:
-    """`lemonade:<id>` for an NPU model, or None.
-
-    Takes the `lemonade:<id>` model path and the bare id the Hub and the picker show
-    (`qwen3-0.6b-FLM`): Lemonade's NPU ids end in `-FLM` and never hold a slash.
-    """
+    """`lemonade:<id>` for an NPU model path or bare id: Lemonade's NPU ids end in `-FLM`, no slash."""
     if not model:
         return None
     text = model.strip()

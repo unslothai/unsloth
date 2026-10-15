@@ -496,8 +496,7 @@ function ListLabel({
       )}
     >
       {onToggle ? (
-        // The label toggles as well: the chevron alone is a 12px target at the far edge. The
-        // chevron stays the keyboard control, so the label is not a second tab stop.
+        // The chevron stays the keyboard control, so the label is not a second tab stop.
         <button
           type="button"
           tabIndex={-1}

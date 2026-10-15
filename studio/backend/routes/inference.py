@@ -11205,9 +11205,7 @@ async def _auto_switch_npu_model(
 ) -> None:
     """Load a downloaded ``lemonade:<id>`` model a request names, when auto-switch is on.
 
-    Same lock, gates, waiter count and cancellation as a GGUF switch; ``_load_npu_model``
-    drains active inference and keeps the owner-only and not-downloaded refusals. Off, the
-    request still gets the not-loaded 404.
+    Same lock, gates, waiter count and cancellation as a GGUF switch.
     """
     from core.inference.gpu_arbiter import require_no_foreign_generations
     from core.inference.llama_keepwarm import inference_lifecycle_gate, model_load_gate
@@ -11464,7 +11462,6 @@ async def _maybe_auto_switch_model(
             ),
             rejection_prefix = rejection_prefix,
         )
-        # The GGUF and checkpoint resolution below can never find an NPU model.
         await _auto_switch_npu_model(named_model, fastapi_request, current_subject)
         if claim_resident:
             _claim_slot_for_non_preview(fastapi_request)
@@ -18645,9 +18642,8 @@ async def _load_npu_model(
         or resident is not None
     )
     if serving:
-        # As for GGUF: refuse a non-forced swap fast, then drain active inference (the caller
-        # holds the lifecycle gate) before anything is unloaded. An auto-switch has no
-        # on_reload_confirmed, so this drain is all that keeps it from cutting a reply short.
+        # Drain active inference before unloading, as for GGUF: an auto-switch has no
+        # on_reload_confirmed, so this drain alone keeps it from cutting a reply short.
         if on_reload_confirmed is not None:
             on_reload_confirmed(cancel = False)
         await _wait_for_model_switch_idle(
@@ -30079,8 +30075,7 @@ class _NpuStreamRelay:
                 self.content += content
             if choice.get("finish_reason") is not None:
                 if choice["finish_reason"] == "stop" and _npu_kv_cache_full(chunk.get("usage")):
-                    # FastFlowLM says "stop" when the reply filled the context; without this the
-                    # chat saved a reasoning-only turn as complete and showed no answer and no reason.
+                    # FastFlowLM says "stop" when the reply filled the context.
                     choice["finish_reason"] = "length"
                     out.append(self._chunk({}, None, {"type": "context_window_exceeded"}))
                 self.finish_reason = choice["finish_reason"]
@@ -42260,7 +42255,6 @@ async def anthropic_messages(
     if not llama_backend.is_loaded and not _automatic_model_load_may_run():
         _npu_model = _resident_npu_model()
         if _npu_model is not None:
-            # "No GGUF model loaded" read as "nothing is loaded" while an NPU model was serving.
             raise HTTPException(
                 status_code = 400,
                 detail = (
