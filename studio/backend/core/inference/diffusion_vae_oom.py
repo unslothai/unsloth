@@ -1,17 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Retry a VAE decode that ran out of memory in smaller tiles instead of failing the render.
+"""Retry an OOM VAE decode in smaller tiles instead of failing the render.
 
-Wraps the instance ``_decode`` every diffusers VAE routes ``decode`` through, so it sits under the decode-level
-wrappers (fp16 non-finite rerun, compiled decode guard, untiled-when-fits) and over the tiled decode. On an OOM:
-an untiled decode is retried tiled (ComfyUI's one retry); a tiled decode is retried with the spatial tile geometry
-the VAE exposes halved (``tile_sample_min_*`` / ``tile_latent_min_*`` / ``tile_sample_stride_*`` /
-``tile_sample_min_overlap_*``, ``tile_overlap_factor`` kept), every size kept a whole number of latents and the
-overlap fraction kept, so the stock blended seams stay; down to an 8-latent floor (a few retries at most). A halved
-decode whose output size differs from the latent's is discarded. The tile
-attributes are restored after the call; the level that worked is remembered per latent shape. Kill switch
-``UNSLOTH_VAE_OOM_RETRY=0``.
+Wraps the instance ``_decode`` (under the decode-level wrappers, over the tiled decode). Untiled OOM -> retry tiled;
+tiled OOM -> halve the exposed spatial tile geometry (whole latents, overlap fraction kept so stock seams blend)
+down to an 8-latent floor. Attributes are restored after the call; the working level is remembered per latent shape.
+Kill switch ``UNSLOTH_VAE_OOM_RETRY=0``.
 """
 
 from __future__ import annotations
@@ -74,7 +69,6 @@ def _spatial_ratio(vae: Any) -> int:
 
 
 def tile_attrs(vae: Any) -> dict:
-    """The spatial tile attributes this VAE exposes, name -> int."""
     out = {}
     for axis in _AXES:
         for kind in ("tile_sample_min", "tile_latent_min", "tile_sample_stride", "tile_sample_min_overlap"):
@@ -97,7 +91,7 @@ def _overlap_ok(latent: int, sample: int, factor: Optional[float]) -> bool:
 
 def halved(attrs: dict, ratio: int, level: int, overlap_factor: Optional[float] = None) -> Optional[dict]:
     """``attrs`` with the tile geometry halved ``level`` times, every size a whole number of latents, or None under the
-    4-latent floor / when nothing can be halved."""
+    floor / when nothing can be halved."""
     if level <= 0:
         return dict(attrs)
     scale = 2**level
@@ -157,7 +151,6 @@ def _release_cache(z: Any, vae: Any = None) -> None:
 
 
 def _free_bytes(z: Any) -> Optional[int]:
-    """Device free bytes plus this process's cached-but-unused bytes, or None off CUDA."""
     try:
         import torch
 
@@ -303,7 +296,6 @@ def install(vae: Any, logger: Any = None) -> bool:
             else:
                 start = level_free[0]
         if start == 0:
-            # The fast path: no wrapper state changes, exactly the stock call.
             try:
                 return inner(z, *args, **kwargs)
             except Exception as exc:  # noqa: BLE001

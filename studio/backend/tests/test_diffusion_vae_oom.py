@@ -69,7 +69,6 @@ def test_halved_overlap_factor_geometry_tiles_exactly():
     kl = {"tile_sample_min_size": 1024, "tile_latent_min_size": 128}
     assert O.halved(kl, 8, 3, 0.25) == {"tile_sample_min_size": 128, "tile_latent_min_size": 16}
     assert O.halved(kl, 8, 4, 0.25)["tile_latent_min_size"] == 8 and O.halved(kl, 8, 5, 0.25) is None
-    # stride-style geometry stays a whole number of latents (LTX-2: 32x)
     ltx = {"tile_sample_min_height": 512, "tile_sample_stride_height": 448}
     assert O.halved(ltx, 32, 1) == {"tile_sample_min_height": 256, "tile_sample_stride_height": 224}
     assert O.halved(ltx, 32, 2) is None
@@ -256,7 +255,6 @@ def test_structural_probe_rejects_a_wrong_pairing(monkeypatch):
     F.install_structural(vae)
     state = vae._unsloth_vae_structural
     z = torch.randn(1, 8, 6, 6) * 3
-    # route the first decode through calibration on CPU
     monkeypatch.setattr(torch.Tensor, "is_cuda", property(lambda self: True))
     monkeypatch.setattr(F, "_gn_fusable", lambda x, norm: False)
     with torch.no_grad():

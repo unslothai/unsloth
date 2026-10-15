@@ -2136,11 +2136,9 @@ def _install(vae: Any, logger: Any = None) -> int:
     return 0
 
 
-# Structural path: any VAE class outside the measured set whose decoder runs nn.GroupNorm (optionally straight into
-# an nn.SiLU module) gets the fused GroupNorm(+SiLU) kernel. The pairing is read off the dataflow of one tiny decode
-# (forward hooks: a GroupNorm is paired when every output it produced was the input of an nn.SiLU call), and the fused
-# tiny decode must match the stock one within tolerance, else the patch is removed. Kill switch
-# ``UNSLOTH_VAE_FUSED_STRUCTURAL=0``.
+# Structural path for unmeasured VAEs: a GroupNorm pairs with SiLU only if every output fed an nn.SiLU (hook trace of
+# one tiny decode); the fused decode must match stock within tolerance or the patch is removed.
+# Kill switch ``UNSLOTH_VAE_FUSED_STRUCTURAL=0``.
 STRUCTURAL_ENV = "UNSLOTH_VAE_FUSED_STRUCTURAL"
 _PROBE_LATENTS = 16
 _PROBE_FRAMES = 2
