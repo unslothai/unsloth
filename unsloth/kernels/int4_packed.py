@@ -315,7 +315,9 @@ def _launch(kernel, launchers, key, grid, args, **constexprs):
     if _FAST_LAUNCH is not False:
         compiled = launchers.get(key)
         if compiled is None:
-            compiled = launchers[key] = kernel.warmup(*args, grid = grid, **constexprs)
+            compiled = launchers[key] = kernel.warmup(
+                *args, grid = grid, **constexprs, enable_fp_fusion = True
+            )
         try:
             compiled[grid](*args)
             _FAST_LAUNCH = True
@@ -324,7 +326,7 @@ def _launch(kernel, launchers, key, grid, args, **constexprs):
             if _FAST_LAUNCH:
                 raise
             _FAST_LAUNCH = False
-    kernel[grid](*args, **constexprs)
+    kernel[grid](*args, **constexprs, enable_fp_fusion = True)
 
 
 def int4_dequantize(
@@ -619,6 +621,7 @@ def _dequant_repacked(
             words, qs.scale, qs.scale if zp is None else zp, out, NT_N, NT_K, qs.scale.stride(0),
             0 if zp is None else zp.stride(0), out.stride(0), MARLIN = qs.layout == "marlin", TN = TN, TK = TK,
             R = R, GROUP = group, HAS_Z = zp is not None, RAW = raw, num_warps = 4,
+            enable_fp_fusion = True,
         )  # fmt: skip
     return out
 

@@ -156,6 +156,33 @@ test("a kept value is laid over the panel's defaults", () => {
   );
 });
 
+test("clone panels start at the option defaults the server fills", () => {
+  const specs = [
+    { name: "emotion_alpha", type: "float" as const, min: 0, max: 1, default: 1 },
+    { name: "exaggeration", type: "float" as const, min: 0, max: 2, default: 0.8 },
+    { name: "guidance_scale", type: "float" as const, min: 0, max: 5, default: 0.3 },
+    { name: "x_vector_only_mode", type: "bool" as const, default: true },
+  ];
+  assert.equal(indexTts2EmotionLogic.initial(specs).alpha, 1);
+  assert.deepEqual(chatterboxExpressivenessLogic.initial(specs), {
+    exaggeration: 0.8,
+    guidance: 0.3,
+  });
+  assert.deepEqual(qwen3TimbreLogic.initial(specs), { timbreOnly: true });
+  // Without a declared default each keeps its old starting point.
+  assert.equal(indexTts2EmotionLogic.initial([]).alpha, 0.7);
+  assert.deepEqual(chatterboxExpressivenessLogic.initial([]), {
+    exaggeration: 0.5,
+    guidance: 0.5,
+  });
+  assert.deepEqual(qwen3TimbreLogic.initial([]), { timbreOnly: false });
+  // A kept strength still wins over the default.
+  assert.equal(
+    panelValue(indexTts2EmotionLogic, { "index-emotion": { alpha: 0.4 } }, specs).alpha,
+    0.4,
+  );
+});
+
 test("the IndexTTS2 mixer sends eight weights and the strength", () => {
   const vector = [0.8, 0, 0, 0, 0, 0, 0.2, 0];
   assert.equal(emotionVectorString(vector), "0.8,0,0,0,0,0,0.2,0");

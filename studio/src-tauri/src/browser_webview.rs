@@ -1082,10 +1082,21 @@ pub(crate) fn download_finished<R: Runtime>(
 fn close_view<R: Runtime>(page: &Webview<R>) -> tauri::Result<()> {
     #[cfg(target_os = "macos")]
     crate::browser_context_downloads::forget(page);
+    #[cfg(target_os = "linux")]
+    crate::browser_linux::detach(page)?;
     page.close()
 }
 
-fn create_view<R: Runtime>(
+#[cfg(target_os = "linux")]
+pub fn close_all<R: Runtime>(app: &AppHandle<R>) {
+    for page in browser_views(app) {
+        if let Err(error) = close_view(&page) {
+            log::warn!("Could not close browser page before exit: {error}");
+        }
+    }
+}
+
+async fn create_view<R: Runtime>(
     caller: &Webview<R>,
     tab_id: &str,
     url: Url,
@@ -1103,9 +1114,9 @@ fn create_view<R: Runtime>(
     let window_tab = tab.clone();
     let download_tab = tab.clone();
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     let (initial, deferred) = (Url::parse("about:blank").unwrap(), Some(url));
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     let (initial, deferred): (Url, Option<Url>) = (url, None);
 
     let builder = WebviewBuilder::new(&label, WebviewUrl::External(initial))
@@ -1219,6 +1230,11 @@ fn create_view<R: Runtime>(
     let webview = window
         .add_child(builder, position, size)
         .map_err(|error| error.to_string())?;
+    #[cfg(target_os = "linux")]
+    if let Err(error) = crate::browser_linux::attach(&webview, position, size).await {
+        let _ = webview.close();
+        return Err(error);
+    }
     #[cfg(target_os = "macos")]
     crate::browser_layer::place(&webview);
     #[cfg(target_os = "macos")]
@@ -1230,6 +1246,18 @@ fn create_view<R: Runtime>(
     if let Some(url) = deferred {
         load_when_protected(&webview, url);
     }
+    app.state::<BrowserViews>()
+        .inner
+        .lock()
+        .unwrap()
+        .placed
+        .insert(
+            tab,
+            Rect {
+                position: position.into(),
+                size: size.into(),
+            },
+        );
     start_url_poll(&app);
     Ok(webview)
 }
@@ -1357,16 +1385,14 @@ fn browser_views<R: Runtime>(app: &AppHandle<R>) -> Vec<Webview<R>> {
         .collect()
 }
 
-/// Whether pages open in native webviews: macOS 14+ (per-webview proxy) and Windows. On Linux
-/// Tauri packs child webviews into the window's GtkBox, which ignores their bounds, so the panel
-/// uses its proxied frame there.
+/// Native pages need per-webview proxy support: macOS 14+, Windows, and Linux.
 #[tauri::command]
 pub fn browser_view_supported() -> bool {
     #[cfg(target_os = "macos")]
     return macos_at_least(14);
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
     return true;
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
     false
 }
 
@@ -1435,7 +1461,7 @@ pub async fn browser_view_show<R: Runtime>(
                     .unwrap()
                     .placed
                     .insert(tab_id.clone(), rect);
-                view.set_bounds(rect).map_err(|error| error.to_string())?;
+                set_view_bounds(&view, rect).await?;
                 view
             }
             None if parked => return Err("no page to park".into()),
@@ -1443,7 +1469,9 @@ pub async fn browser_view_show<R: Runtime>(
                 let url = parse_page_url(url.as_deref().ok_or("no address to open")?)?;
                 #[cfg(target_os = "macos")]
                 crate::browser_layer::install(&webview);
-                create_view(&webview, tab_id, url, bounds)?
+                #[cfg(target_os = "linux")]
+                crate::browser_linux::install(&webview).await?;
+                create_view(&webview, tab_id, url, bounds).await?
             }
         }),
         _ => None,
@@ -1475,6 +1503,24 @@ pub async fn browser_view_show<R: Runtime>(
     Ok(())
 }
 
+async fn set_view_bounds<R: Runtime>(page: &Webview<R>, rect: Rect) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        let scale = page
+            .window()
+            .scale_factor()
+            .map_err(|error| error.to_string())?;
+        crate::browser_linux::set_bounds(
+            page,
+            rect.position.to_logical(scale),
+            rect.size.to_logical(scale),
+        )
+        .await
+    }
+    #[cfg(not(target_os = "linux"))]
+    page.set_bounds(rect).map_err(|error| error.to_string())
+}
+
 /// Opens a tab's page without showing it: the agent at work in a chat that isn't on screen. Made
 /// just off the window and hidden, so nothing flashes and the page on screen stays.
 #[tauri::command]
@@ -1492,11 +1538,13 @@ pub async fn browser_view_open_background<R: Runtime>(
     let url = parse_page_url(&url)?;
     #[cfg(target_os = "macos")]
     crate::browser_layer::install(&webview);
+    #[cfg(target_os = "linux")]
+    crate::browser_linux::install(&webview).await?;
     let off_window = ViewBounds {
         x: -bounds.width - PARK_GAP,
         ..bounds
     };
-    let page = create_view(&webview, &tab_id, url, &off_window)?;
+    let page = create_view(&webview, &tab_id, url, &off_window).await?;
     if let Err(error) = page.hide() {
         // The frontend never records a view that failed to open, so it would never close this one.
         let _ = close_view(&page);
@@ -1507,28 +1555,33 @@ pub async fn browser_view_open_background<R: Runtime>(
 
 /// A hidden page paints nothing to capture (WebView2 doesn't render it; WebKit's snapshot waits
 /// on a paint that never comes), so it shows just off the window for the shot. True if it did.
-pub(crate) fn show_for_capture<R: Runtime>(
+pub(crate) async fn show_for_capture<R: Runtime>(
     views: &BrowserViews,
     page: &Webview<R>,
     tab_id: &str,
 ) -> bool {
-    {
+    let placed = {
         let mut inner = views.inner.lock().unwrap();
         if inner.shown.as_deref() == Some(tab_id) || !inner.capturing.insert(tab_id.to_string()) {
             return false;
         }
-    }
-    let size = page
-        .bounds()
-        .ok()
+        inner.placed.get(tab_id).copied()
+    };
+    // A GTK view opened hidden has not received its requested allocation yet.
+    let size = placed
+        .or_else(|| page.bounds().ok())
         .zip(page.window().scale_factor().ok())
         .map(|(rect, factor)| rect.size.to_logical::<f64>(factor))
         .unwrap_or(LogicalSize::new(1024.0, 768.0));
     let position = LogicalPosition::new(-size.width - PARK_GAP, 0.0);
-    let _ = page.set_bounds(Rect {
-        position: position.into(),
-        size: size.into(),
-    });
+    let _ = set_view_bounds(
+        page,
+        Rect {
+            position: position.into(),
+            size: size.into(),
+        },
+    )
+    .await;
     if page.show().is_err() {
         views.inner.lock().unwrap().capturing.remove(tab_id);
         return false;
@@ -1538,13 +1591,18 @@ pub(crate) fn show_for_capture<R: Runtime>(
 
 /// Hides a page `show_for_capture` showed. One that became the shown page meanwhile goes back
 /// where the switch put it, not off the window.
-pub(crate) fn end_capture<R: Runtime>(views: &BrowserViews, page: &Webview<R>, tab_id: &str) {
-    let mut inner = views.inner.lock().unwrap();
-    inner.capturing.remove(tab_id);
-    if inner.shown.as_deref() != Some(tab_id) {
-        let _ = page.hide();
-    } else if let Some(rect) = inner.placed.get(tab_id) {
-        let _ = page.set_bounds(*rect);
+pub(crate) async fn end_capture<R: Runtime>(views: &BrowserViews, page: &Webview<R>, tab_id: &str) {
+    let rect = {
+        let mut inner = views.inner.lock().unwrap();
+        inner.capturing.remove(tab_id);
+        if inner.shown.as_deref() != Some(tab_id) {
+            let _ = page.hide();
+            return;
+        }
+        inner.placed.get(tab_id).copied()
+    };
+    if let Some(rect) = rect {
+        let _ = set_view_bounds(page, rect).await;
     }
 }
 
@@ -1575,6 +1633,17 @@ pub fn browser_view_action<R: Runtime>(
 ) -> Result<(), String> {
     require_main(&webview)?;
     let page = view(webview.app_handle(), &tab_id)?;
+    #[cfg(target_os = "linux")]
+    if matches!(action.as_str(), "back" | "forward" | "stop") {
+        return page.with_webview(move |platform| {
+            use webkit2gtk::WebViewExt;
+            match action.as_str() {
+                "back" => platform.inner().go_back(),
+                "forward" => platform.inner().go_forward(),
+                _ => platform.inner().stop_loading(),
+            }
+        }).map_err(|error| error.to_string());
+    }
     let result = match action.as_str() {
         "back" => page.eval("history.back()"),
         "forward" => page.eval("history.forward()"),
@@ -1927,7 +1996,15 @@ fn apply_mute<R: Runtime>(page: &Webview<R>, muted: bool) -> Result<(), String> 
     .map_err(|error| error.to_string())
 }
 
-#[cfg(not(any(target_os = "macos", windows)))]
+#[cfg(target_os = "linux")]
+fn apply_mute<R: Runtime>(page: &Webview<R>, muted: bool) -> Result<(), String> {
+    page.with_webview(move |platform| {
+        use webkit2gtk::WebViewExt;
+        platform.inner().set_is_muted(muted);
+    }).map_err(|error| error.to_string())
+}
+
+#[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
 fn apply_mute<R: Runtime>(_page: &Webview<R>, _muted: bool) -> Result<(), String> {
     Ok(())
 }
@@ -1994,6 +2071,8 @@ pub async fn browser_view_clear_data<R: Runtime>(
                 .focused(false),
                 &app,
             )?;
+            #[cfg(target_os = "linux")]
+            crate::browser_linux::install(&webview).await?;
             let page = webview
                 .window()
                 .add_child(
@@ -2018,7 +2097,7 @@ const CLEAR_TIMEOUT: Duration = Duration::from_secs(30);
 /// Clear a page's profile, resolving once the engine reports it done: wry's own call starts the
 /// clear and returns before it finishes.
 async fn clear_profile<R: Runtime>(page: &Webview<R>) -> Result<(), String> {
-    #[cfg(any(target_os = "macos", windows))]
+    #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
     {
         let (done, finished) = tokio::sync::oneshot::channel::<Result<(), String>>();
         let done = Mutex::new(Some(done));
@@ -2034,7 +2113,7 @@ async fn clear_profile<R: Runtime>(page: &Webview<R>) -> Result<(), String> {
             _ => Err("Clearing browsing data didn't finish".into()),
         }
     }
-    #[cfg(not(any(target_os = "macos", windows)))]
+    #[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
     {
         page.clear_all_browsing_data()
             .map_err(|error| error.to_string())?;
@@ -2043,7 +2122,7 @@ async fn clear_profile<R: Runtime>(page: &Webview<R>) -> Result<(), String> {
     }
 }
 
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", windows, target_os = "linux"))]
 type ClearFinish = std::sync::Arc<dyn Fn(Result<(), String>) + Send + Sync>;
 
 #[cfg(target_os = "macos")]
@@ -2061,6 +2140,20 @@ fn platform_clear(platform: tauri::webview::PlatformWebview, finish: ClearFinish
         let handler = block2::RcBlock::new(move || finish(Ok(())));
         store.removeDataOfTypes_modifiedSince_completionHandler(&types, &date, &handler);
     }
+}
+
+#[cfg(target_os = "linux")]
+fn platform_clear(platform: tauri::webview::PlatformWebview, finish: ClearFinish) {
+    use webkit2gtk::{WebViewExt, WebsiteDataManagerExtManual, WebsiteDataTypes};
+    let Some(manager) = platform.inner().website_data_manager() else {
+        return finish(Err("Browser profile is unavailable".into()));
+    };
+    manager.clear(
+        WebsiteDataTypes::all(),
+        glib::TimeSpan::from_seconds(0),
+        None::<&gtk::gio::Cancellable>,
+        move |result| finish(result.map_err(|error| error.to_string())),
+    );
 }
 
 #[cfg(windows)]

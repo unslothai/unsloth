@@ -1,17 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Windows on ARM: a wheelhouse wheel only counts for the interpreter it was built for.
-
-install.ps1 stages every win_arm64 wheel the wheelhouse publishes, cp311 through cp314,
-so a filename alone proves nothing: a cp311 tiktoken is invisible to a cp313 resolver.
-Counting one as available drops its skip and its requirement override, and the resolve
-then falls to an sdist that needs the toolchain this whole path exists to avoid.
-
-Also pins the blocker map's keys to their canonical form. WINDOWS_ARM64_SKIP_UNBLOCKED_BY
-is read with _canonical_dist_name, which maps "-" to "_", so an "openai-whisper" key is
-never found and the entry silently does nothing.
-"""
+"""A wheelhouse wheel counts only for its own cp tag, and blocker keys must be canonical names."""
 
 from __future__ import annotations
 
@@ -29,24 +19,18 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 INSTALL_PS1 = REPO_ROOT / "install.ps1"
 STACK_PY = REPO_ROOT / "studio" / "install_python_stack.py"
 
-# Read once: the source-level tests below want these whole files and none of them mutate
-# what they read.
 INSTALL_SRC = INSTALL_PS1.read_text(encoding = "utf-8")
 STACK_SRC = STACK_PY.read_text(encoding = "utf-8")
 EXTRAS_SRC = (REPO_ROOT / "studio" / "backend" / "requirements" / "extras.txt").read_text(
     encoding = "utf-8"
 )
 
-# Constants of the running interpreter, restated in nearly every test below.
 MAJOR, MINOR = sys.version_info[:2]
 TAG = f"cp{MAJOR}{MINOR}"
 
-#: The two index URLs the tables below distinguish: PyPI itself, and an exclusive mirror.
 PYPI = "https://pypi.org/simple"
 CORP = "https://pypi.corp.test/simple"
 
-#: Every variable either resolver reads for its index configuration, cleared so the box
-#: running the suite cannot decide a row.
 RESOLVER_INDEX_VARS = tuple(
     "UV_OFFLINE UV_NO_INDEX UV_DEFAULT_INDEX UV_INDEX_URL UV_INDEX UV_EXTRA_INDEX_URL "
     "PIP_INDEX_URL PIP_NO_INDEX PIP_EXTRA_INDEX_URL".split()
@@ -63,18 +47,13 @@ def ips():
 
 @pytest.fixture(autouse = True)
 def _fresh_find_links(ips):
-    """Empty the memoized find-links listing around every test in this file.
-
-    `ips` is module scoped, so one test's UV_FIND_LINKS would otherwise be the answer the
-    next test got. Both names share one cache, and a test that changes the wheelhouse
-    mid-test still has to clear it itself.
-    """
+    """Clears the memoised find-links cache around each test, since the module-scoped `ips` would
+    leak it."""
     ips._find_links_wheel_versions.cache_clear()
     yield
     ips._find_links_wheel_versions.cache_clear()
 
 
-#: What `_pip_config_index_policy` reports when pip's files set no index key.
 PIP_FILES_SILENT = {
     "no_index": None,
     "index_url": None,
@@ -85,11 +64,7 @@ PIP_FILES_SILENT = {
 
 @pytest.fixture(autouse = True)
 def _pip_files_silent(ips, monkeypatch):
-    """Keep the host's own pip.conf from deciding rows about the environment.
-
-    The pip path consults `pip config list`. Yields the real reader for the class that
-    tests it.
-    """
+    """Stubs the pip.conf index policy so the host's own pip configuration cannot change expected rows."""
     real = ips._pip_config_index_policy
     monkeypatch.setattr(ips, "_pip_config_index_policy", lambda: dict(PIP_FILES_SILENT))
     yield real
@@ -180,17 +155,13 @@ class TestWheelMatchesInterpreter:
     def test_abi3_is_forward_compatible(self, ips):
         free_threaded = bool(sysconfig.get_config_var("Py_GIL_DISABLED"))
         matched = ips._wheel_matches_interpreter(_wheel("cffi", f"cp{MAJOR}2", "abi3"))
-        # The stable ABI is not implemented on free-threaded builds.
         assert matched is not free_threaded
         assert not ips._wheel_matches_interpreter(_wheel("cffi", f"cp{MAJOR}{MINOR + 1}", "abi3"))
 
     @pytest.mark.parametrize("gil_disabled", [0, 1])
     def test_an_exact_minor_abi3_wheel_follows_the_build(self, ips, monkeypatch, gil_disabled):
-        """The exact-MINOR branch accepted "abi3" outright, so cp313-abi3 was installable on
-        3.13t, which implements no stable ABI (CPython #111506, PEP 703): the skip was dropped
-        and the resolver sent at a wheel it cannot use. Simulated in both directions rather
-        than read off whichever build is running the suite.
-        """
+        """Free-threaded 3.13t has no stable ABI, so exact-minor cp313-abi3 wheels must be rejected
+        there."""
         real = ips.sysconfig.get_config_var
         monkeypatch.setattr(
             ips.sysconfig,
@@ -199,10 +170,8 @@ class TestWheelMatchesInterpreter:
         )
         exact = f"cp{MAJOR}{MINOR}"
         assert ips._wheel_matches_interpreter(_wheel("cffi", exact, "abi3")) is (not gil_disabled)
-        # The TAG a free-threaded build CAN install, and the one a GIL build cannot.
         ft_wheel = _wheel("cffi", exact, f"{exact}t")
         assert ips._wheel_matches_interpreter(ft_wheel) is bool(gil_disabled)
-        # And the forward-compatible spelling stays gated the same way.
         assert ips._wheel_matches_interpreter(_wheel("cffi", f"cp{MAJOR}2", "abi3")) is (
             not gil_disabled
         )
@@ -237,7 +206,6 @@ class TestBlockerMap:
         assert set(ips.WINDOWS_ARM64_SKIP_UNBLOCKED_BY) <= skipped
 
     def test_whisper_needs_tiktoken_as_well_as_the_numba_chain(self, ips):
-        # Whisper's metadata requires tiktoken, so hosting llvmlite alone re-enables the sdist.
         blockers = ips.WINDOWS_ARM64_SKIP_UNBLOCKED_BY[ips._canonical_dist_name("openai-whisper")]
         assert "tiktoken" in blockers
         assert "numba" in blockers
@@ -273,7 +241,6 @@ class TestInstallPs1Mirror:
                 assert "Remove-IndexUrlCredentials" in line, line.strip()
 
 
-#: Tag triples for the wheels staged below: a pure-python wheel, and one built right here.
 PURE = ("py3", "none", "any")
 HERE = (TAG, TAG, _this_platform())
 
@@ -358,15 +325,8 @@ class TestFreeThreadedWheelsAreNotOfferedToTheRegularInterpreter:
 
 
 class TestAHostedOptionalIsActuallyInstalled:
-    """Omitting the removal override only helps a package something still requires.
+    """Omitting the removal override only helps when something still requires the package."""
 
-    install.ps1 reported "keeping X (the wheelhouse provides a win_arm64 wheel)" and then
-    just declined to emit X's AMD64-only override line. hf_transfer and xformers are
-    marker-excluded on win_arm64 by their released metadata and torchcodec's only line was
-    filtered out here, so in all three cases hosting a wheel changed nothing.
-    """
-
-    #: The torch an xformers was built against, and the one now resident beside it.
     OTHER_TORCH = "2.9.0+cu128"
     THIS_TORCH = "2.15.0.dev20260101+cu134"
 
@@ -435,7 +395,7 @@ class TestAHostedOptionalIsActuallyInstalled:
         assert ips._wheelhouse_best_version("xformers", ">=0.0.22.post7") == "0.0.31"
 
     def test_the_newest_clearing_wheel_wins(self, ips, wheelhouse):
-        # Both clear the floor: 0.0.100 is the newer release and the SMALLER of the two as text.
+        # 0.0.100 is the newer release and the smaller one as text.
         for version in ("0.0.23", "0.0.100"):
             _stage(wheelhouse, "xformers", version)
         assert (
@@ -450,8 +410,6 @@ class TestAHostedOptionalIsActuallyInstalled:
             (True, False, THIS_TORCH, False, "a failed refresh keeps a matching resident copy"),
             (True, True, THIS_TORCH, False, "a matching xformers is kept"),
             (True, True, None, False, "no recorded pair is not evidence of a wrong one"),
-            # The check ran only after a hosted attempt, so a wheelhouse that stopped offering
-            # xformers left the copy an earlier run installed losing its ops at import time.
             (False, True, OTHER_TORCH, True, "nothing hosted, and the resident copy is wrong"),
             (False, True, THIS_TORCH, False, "nothing hosted, and the resident copy matches"),
         ],
@@ -562,12 +520,7 @@ class TestAHostedWheelMustAlsoSatisfyThePin:
     def test_a_blocker_with_no_line_of_its_own_is_checked_against_its_floor(
         self, ips, wheelhouse, grpcio, still_skipped
     ):
-        """grpcio arrives transitively, so extras.txt has no grpcio line to satisfy.
-
-        That absence used to mean any hosted version counted. It does not: the floor comes
-        from tensorboard's own metadata, which is what rejects a too-old blocker after the
-        skip has been dropped.
-        """
+        """A transitive blocker like grpcio is checked against the floor in its parent's metadata."""
         _stage(wheelhouse, "grpcio", grpcio)
         req = _req(wheelhouse.parent, "tensorboard==2.21.0\n")
         assert (
@@ -582,10 +535,8 @@ class TestAHostedWheelMustAlsoSatisfyThePin:
         assert "librosa" not in ips._windows_arm64_skip_packages(req)
 
     def test_the_floors_name_the_pins_they_were_read_from(self, ips):
-        """A bump to extras.txt has to be a prompt to re-read the metadata: the floors come
-        from a version only that release states, so recorded provenance turns silent drift
-        into a failure here.
-        """
+        """Floors record the pin they came from, so a bump to extras.txt fails until the metadata is
+        re-read."""
         for blocker, (specifier, package, version) in ips.WINDOWS_ARM64_BLOCKER_FLOORS.items():
             assert re.search(rf"(?m)^{re.escape(package)}=={re.escape(version)}\b", EXTRAS_SRC), (
                 f"{blocker}'s floor {specifier} was read from {package}=={version}, which "
@@ -613,7 +564,6 @@ class TestAHostedWheelMustAlsoSatisfyThePin:
             ("1.0.0", "!=1.0.0", False),
             ("1.0.1", "!=1.0.0", True),
             ("1.0", "", True),
-            # packaging answers these now; None is still the contract without packaging.
             ("1!2.0", "==2.0", False),
             ("1.0", "===1.0", True),
             ("not-a-version", "==1.0", False),
@@ -624,7 +574,6 @@ class TestAHostedWheelMustAlsoSatisfyThePin:
 
     def test_pins_are_read_canonically_and_markers_evaluated(self, ips, tmp_path):
         req = tmp_path / "r.txt"
-        # One marker true on every host and one true on none, so the answer cannot depend on the box.
         req.write_text(
             "# comment\n"
             "-r other.txt\n"
@@ -645,7 +594,6 @@ class TestAHostedWheelMustAlsoSatisfyThePin:
 class TestDuplicateRequirementRowsAreSplitByMarker:
     """extras.txt states MeCab twice, once per marker."""
 
-    # One marker true on every host and one true on none; the real pair is host-dependent.
     ACTIVE = 'python_version >= "3"'
     INACTIVE = 'sys_platform == "nonesuch"'
 
@@ -776,13 +724,7 @@ class TestOnlyTheResolversOwnLocationsCount:
 
 
 class TestAnExplicitPinIsNotOverriddenByThePreservationShortcut:
-    """The ARM64 CUDA-preservation shortcut distrusts the INFERRED expectation, not a pin.
-
-    A native cu134 venv has a family tag download.pytorch.org does not publish, so
-    "repairing" it would resolve a cu130 with no wheel. But a user who names cu129 by URL or
-    family has stated where they want to be, and exempting only a /cpu pin left them on the
-    old build. setup.ps1 exempts every explicit pin; this is the same rule.
-    """
+    """An explicit pin by URL or family is never overridden by the ARM64 CUDA-preservation shortcut."""
 
     class _Reached(Exception):
         """Raised where the shortcut used to return, so "got past it" is observable."""
@@ -861,16 +803,13 @@ class TestThePublicIndexUnblocksWhatItAlreadyPublishes:
         self, ips, monkeypatch, wheelhouse, native_cp314, soxr_published
     ):
         assert "librosa" not in ips._windows_arm64_skip_packages()
-        # And still dropped where the wheels are not published for this build.
         monkeypatch.setattr(ips, "_wheel_matches_interpreter", lambda name: False)
         ips._find_links_wheel_versions.cache_clear()
         assert "librosa" in ips._windows_arm64_skip_packages()
 
     def test_librosa_still_needs_soxr(self, ips, wheelhouse, native_cp314):
-        """librosa 0.11.0 requires soxr>=0.3.2 and soxr has published no win_arm64 wheel in
-        any release, so unblocking on llvmlite and numba alone put librosa back in the extras
-        pass, where soxr is then built from the sdist the skip list exists to avoid.
-        """
+        """librosa stays blocked: soxr has no win_arm64 wheel, so llvmlite and numba alone are not
+        enough."""
         assert "librosa" in ips._windows_arm64_skip_packages()
 
     def test_openai_whisper_still_needs_tiktoken(self, ips, wheelhouse, native_cp314):
@@ -894,7 +833,6 @@ class TestThePublicIndexClaimNeedsTheIndex:
 
     @pytest.fixture(autouse = True)
     def _native(self, ips, monkeypatch, native_cp314):
-        # uv runs the pass; the pip rows below switch it off explicitly.
         monkeypatch.setattr(ips, "USE_UV", True)
         for var in RESOLVER_INDEX_VARS:
             monkeypatch.delenv(var, raising = False)
@@ -967,28 +905,22 @@ class TestThePublicIndexClaimNeedsTheIndex:
 
 
 class TestUvConfigurationFilesDecideWherePyPIIs:
-    """Only environment variables were read, and uv also discovers uv.toml, pyproject [tool.uv],
-    and the user and system files. A no-index or exclusive default-index set there still
-    unblocked librosa and then failed the extras resolve on a numba the configured source
-    does not carry."""
+    """Config files (uv.toml, pyproject) also decide where PyPI is, not only environment variables."""
 
     @pytest.fixture(autouse = True)
     def _clean(self, ips, monkeypatch, tmp_path):
-        # uv's configuration files only matter to uv, the resolver that runs the pass here.
         monkeypatch.setattr(ips, "USE_UV", True)
         extra = ("UV_NO_CONFIG", "UV_CONFIG_FILE", "APPDATA", "PROGRAMDATA")
         for var in RESOLVER_INDEX_VARS + extra:
             monkeypatch.delenv(var, raising = False)
         (tmp_path / "proj").mkdir()
-        # uv reads the user file from %APPDATA% on Windows and $XDG_CONFIG_HOME elsewhere, so both
-        # names point at one directory and the case is real on every platform.
+        # uv reads the user file from %APPDATA% on Windows, $XDG_CONFIG_HOME elsewhere.
         (tmp_path / "user").mkdir()
         monkeypatch.setenv("APPDATA", str(tmp_path / "user"))
         monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "user"))
         monkeypatch.chdir(tmp_path / "proj")
         self.tmp = tmp_path
 
-    #: Where _write puts the "user file" row, spelled the same on every platform.
     user_config = "user/uv/uv.toml"
 
     def _write(self, rel, body):
@@ -999,8 +931,6 @@ class TestUvConfigurationFilesDecideWherePyPIIs:
     def test_nothing_configured_is_pypi(self, ips):
         assert ips._public_pypi_is_reachable() is True
 
-    #: The two files uv discovers in the project directory, and the fragments the rows
-    #: below compose out of, so a case that is one statement is one line.
     UV = "proj/uv.toml"
     PJ = "proj/pyproject.toml"
     NO_IDX = "no-index = true\n"
@@ -1024,7 +954,6 @@ class TestUvConfigurationFilesDecideWherePyPIIs:
     @pytest.mark.parametrize(
         "rel, body, reachable, why",
         [
-            # An exclusive source, however and wherever it is spelled.
             (UV, NO_IDX, False, "no-index"),
             (UV, f'default-index = "{CORP}"\n', False, "an exclusive default-index"),
             (UV, CORP_IDX, False, "the older spelling of the same key"),
@@ -1036,7 +965,6 @@ class TestUvConfigurationFilesDecideWherePyPIIs:
             ("uv.toml", NO_IDX, False, "a parent directory"),
             ("user/uv/uv.toml", NO_IDX, False, "the user file"),
             (UV, "this is = not [ toml\n", False, "an unreadable file is not guessed at"),
-            # Sources that leave PyPI in play, so the reader is not a blanket "not reachable".
             (UV, CORP_ADDED, True, "an [[index]] without default = true is additive"),
             (PJ, '[project]\nname = "x"\n', True, "a pyproject with no [tool.uv] at all"),
             # uv pip's own precedence, verified on uv 0.10.7 with a dry-run resolve.
@@ -1053,7 +981,6 @@ class TestUvConfigurationFilesDecideWherePyPIIs:
                 False,
                 "[tool.uv.pip] outranks [tool.uv], as [pip] does the top level",
             ),
-            # An extra index that is PyPI keeps PyPI in play, wherever it is written.
             (UV, CORP_IDX + PYPI_EXTRA, True, "extra-index-url in the file"),
             (UV, CORP_IDX + "[pip]\n" + PYPI_EXTRA, True, "extra-index-url under [pip]"),
             (UV, CORP_DEFAULT + "\n" + PYPI_ADDED, True, "a second [[index]], not the default"),
@@ -1078,7 +1005,6 @@ class TestUvConfigurationFilesDecideWherePyPIIs:
     def test_project_outranks_user_for_a_scalar(self, ips):
         self._write("proj/uv.toml", "no-index = false\n")
         self._write(self.user_config, "no-index = true\n")
-        # Vacuous unless the user file is somewhere uv would look.
         assert (self.tmp / self.user_config) in [p for p, _ in ips._uv_config_files()]
         assert ips._public_pypi_is_reachable() is True
 
@@ -1198,7 +1124,6 @@ class TestPipConfigurationFilesDecideWherePyPIIs:
         self._listing(":env:.cache-dir='/tmp/pip'\nglobal.timeout='60'\n")
         assert self.ips._public_pypi_is_reachable() is True
 
-    #: Rows as `pip config list` prints them, composed so a case stays one line.
     G_CORP = f"global.index-url='{CORP}'\n"
     G_PYPI = f"global.index-url='{PYPI}'\n"
     G_NO_IDX = "global.no-index='true'\n"
@@ -1314,10 +1239,7 @@ class TestSqliteVecIsAnExplicitOptionalToo:
 
 
 class TestInstallPs1HandsOverWhatPyPIProvides:
-    """install.ps1 discards a wheelhouse wheel once PyPI serves the same version for this
-    interpreter, and records that only in its own session. The managed copy is gone, so the
-    find-links scan here no longer answers for it and tiktoken went back onto the skip list,
-    taking openai-whisper with it, with both resolvable from PyPI."""
+    """Once PyPI serves the version, install.ps1 drops the wheelhouse copy, which the scan then misses."""
 
     @pytest.fixture
     def native_on_pypi(self, ips, monkeypatch, wheelhouse):
@@ -1449,11 +1371,7 @@ class TestAHostedTorchcodecIsInstalledByItsStep:
 
 
 class TestTheSkipGateAuditsTheArm64FilteredFile:
-    """The ARM64 skip list has to be applied by _effective_requirements, the helper pip_install
-    and the two skip-gate audits share. Filtering only inside pip_install would leave the audits
-    reading the raw file: tiktoken, xformers and sqlite-vec would read as missing on every
-    win_arm64 host, so no step could ever be skipped and `known_unmet` would record packages
-    this platform deliberately never installs."""
+    """Filter ARM64 skips in shared `_effective_requirements`, or skip-gate audits read the raw file."""
 
     def test_the_filter_lives_in_the_shared_helper(self, ips):
         helper = STACK_SRC[STACK_SRC.index("def _effective_requirements(") :]
@@ -1471,15 +1389,7 @@ class TestTheSkipGateAuditsTheArm64FilteredFile:
         assert "_windows_arm64_skip_packages(actual)" not in helper
 
     def test_pip_install_and_the_audits_share_it(self, ips):
-        """Five callers: both installs, the closure record, the on-disk skip check, and #11635's
-        Diffusers prefetch, which has to build from the same filtered file the install then reads
-        or its cache entry misses.
-
-        Every path that installs a requirements file, or reasons about one, has to filter it the
-        same way, or a caller decides a pin is satisfied against a file different from the one
-        that was installed. Named by function rather than counted, so a new caller fails with
-        its own name and a caller that stops filtering fails by going missing.
-        """
+        """Every caller that installs or audits the requirements file must apply the same ARM64 filter."""
         callers = {}
         for node in ast.walk(ast.parse(STACK_SRC)):
             if not isinstance(node, ast.FunctionDef):

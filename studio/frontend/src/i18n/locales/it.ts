@@ -60,6 +60,8 @@ export const it = {
       never: "Mai",
       scripts: "Esegui script",
       scriptsDescription: "Scegli se i modelli possono eseguire script nelle pagine. Ogni script ti viene mostrato prima dell’esecuzione",
+      cursor: "Mostra cursore",
+      cursorDescription: "Mostra un puntatore dove i modelli fanno clic, scrivono e trascinano nella pagina",
       askEveryTime: "Chiedi ogni volta",
       permissionsTitle: "Autorizzazioni dell'agente",
       permissionsDescription: "Scegli i valori predefiniti e aggiungi eccezioni per siti specifici. I campi di password e pagamento non vengono mai compilati, qualunque cosa indichino queste impostazioni.",
@@ -258,7 +260,7 @@ export const it = {
     annotationScreenshotsAlways: "Includi sempre",
     annotationScreenshotsNever: "Non includere mai",
     clearDataSetting: "Cancella dati di navigazione",
-    clearDataSettingDescription: "Cancella la cronologia di navigazione, la cronologia download e le pagine nella cache. Le pagine non conservano cookie né dati dei siti.",
+    clearDataSettingDescription: "Cancella la cronologia di navigazione, la cronologia download e le pagine nella cache. Le pagine conservano cookie e dati dei siti solo fino al ricaricamento di Studio.",
     manage: "Gestisci",
     fullView: {
       enter: "Vista completa",
@@ -434,7 +436,7 @@ export const it = {
     },
     clearData: {
       title: "Cancellare i dati di navigazione?",
-      description: "Verranno cancellate la cronologia di navigazione, la cronologia download e le pagine nella cache. I file scaricati restano sul tuo computer.",
+      description: "Questo cancella cronologia di navigazione, cronologia dei download, pagine in cache e cookie e dati dei siti, disconnettendoti dai siti. I file scaricati restano sul computer.",
       cancel: "Annulla",
       confirm: "Cancella dati",
       done: "Dati di navigazione cancellati",
@@ -450,6 +452,7 @@ export const it = {
       resubmit: "Questa pagina deriva da un modulo. Ricaricarla invia di nuovo il modulo e potrebbe ripeterne l'azione.",
       upload: "Il caricamento di file non funziona in questa vista. Apri la pagina nel browser di sistema per inviarlo.",
       scriptNavigation: "Questa pagina ha provato ad andare a un altro indirizzo tramite script, cosa che questa vista non può seguire. Aprila nel browser di sistema.",
+      needsBrowser: "Questa pagina ha provato a usare una funzione del browser che questa vista blocca, quindi alcune parti potrebbero non funzionare. Aprila nel browser di sistema.",
     },
     native: {
       externalPrompt: "{host} vuole aprire {url}",
@@ -1653,6 +1656,19 @@ export const it = {
         apiOnlyDescription:
           "Lo scaricamento per inattività lascia in memoria un modello caricato da te in Unsloth e libera solo quelli caricati da una richiesta API.",
       },
+      modelAliases: {
+        sectionTitle: "Alias dei modelli (OpenAI API)",
+        description:
+          "Nomi stabili per i client API, come fast-chat o code. Una richiesta che nomina un alias viene servita dal modello a cui punta, così le app collegate continuano a funzionare quando cambi modello. Attiva Cambia modello in base alla richiesta perché un alias possa caricare il modello a cui punta.",
+        namePlaceholder: "fast-chat",
+        nameAriaLabel: "Nome dell'alias",
+        modelAriaLabel: "Modello a cui punta l'alias",
+        modelPlaceholder: "unsloth/Qwen3-4B-GGUF:Q4_K_M",
+        removeAriaLabel: "Rimuovi alias",
+        add: "Aggiungi alias",
+        loadError: "Impossibile caricare gli alias dei modelli.",
+        saveError: "Impossibile salvare gli alias dei modelli.",
+      },
       previewSharing: {
         sectionTitle: "Condivisione delle anteprime",
         enableLabel: "Link di anteprima pubblici",
@@ -2536,6 +2552,9 @@ export const it = {
         showMemoryBar: "Mostra la barra di utilizzo della VRAM",
         showMemoryBarDescription:
           "Mostra sotto la riga di ogni modello scaricato il consumo stimato di VRAM: pesi, cache KV alla lunghezza di contesto con cui verrà caricato ed eventuale riserva per il draft speculativo.",
+        fitOnDeviceOnly: "Mostra solo i modelli compatibili",
+        fitOnDeviceOnlyDescription:
+          "Nasconde nel selettore dei modelli e nell'Hub i modelli troppo grandi per la memoria GPU e la RAM di questo dispositivo. I modelli scaricati restano visibili.",
       },
       menu: {
         title: "Menu della chat",

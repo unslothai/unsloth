@@ -1,13 +1,4 @@
-"""Regression test for BAD_MAPPINGS redirecting oversized dynamic quants.
-
-get_model_name previously applied BAD_MAPPINGS only to the resolver's output,
-but several listed names (the `-unsloth-bnb-4bit` dynamic quants, plus any name
-the resolver doesn't map) come back as None, so their BAD_MAPPINGS entries were
-dead and the oversized model loaded. Asserting over every entry catches all of
-them. The mapper table and the resolver have no heavy imports of their own,
-so we exec the import-free mapper module and ast-extract the resolver functions
-rather than importing unsloth (which needs a GPU).
-"""
+"""BAD_MAPPINGS must cover names the resolver maps to None, or oversized dynamic quants still load."""
 
 import ast
 import os
