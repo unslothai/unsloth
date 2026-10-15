@@ -1091,16 +1091,23 @@ function injectDocxListNumbers(archive: Uint8Array): Uint8Array {
   const nums = byId(numbering.root, n, "num", "numId");
   const styles = related("styles");
   const styleById = styles ? byId(styles.root, styles.w, "style", "styleId") : new Map<string, Element>();
-  const styleNumbering = new Map<string, Element | undefined>();
-  const styleNumPr = (id: string | undefined, depth = 0): Element | undefined => {
+  const defaultStyle = [...styleById].find(
+    ([, style]) => style.getAttributeNS(style.namespaceURI ?? "", "type") === "paragraph" &&
+      ["1", "true", "on"].includes(style.getAttributeNS(style.namespaceURI ?? "", "default") ?? ""),
+  )?.[0];
+  // numId and ilvl inherit through basedOn independently, like any other paragraph property.
+  const styleNumbering = new Map<string, string | undefined>();
+  const styleNum = (id: string | undefined, name: "numId" | "ilvl", depth = 0): string | undefined => {
     if (id === undefined) return undefined;
-    if (styleNumbering.has(id)) return styleNumbering.get(id);
+    const key = `${name}:${id}`;
+    if (styleNumbering.has(key)) return styleNumbering.get(key);
     const style = styleById.get(id);
     if (!style || depth > 20) return undefined;
     const pPr = childElements(style, style.namespaceURI ?? "", "pPr")[0];
-    const numPr = (pPr && childElements(pPr, style.namespaceURI ?? "", "numPr")[0]) ?? styleNumPr(wordValue(style, "basedOn"), depth + 1);
-    styleNumbering.set(id, numPr);
-    return numPr;
+    const numPr = pPr && childElements(pPr, style.namespaceURI ?? "", "numPr")[0];
+    const value = wordValue(numPr, name) ?? styleNum(wordValue(style, "basedOn"), name, depth + 1);
+    styleNumbering.set(key, value);
+    return value;
   };
 
   type Level = { lvl?: Element; start: number; format?: string; restart?: string; legal: boolean; text: string };
@@ -1117,9 +1124,9 @@ function injectDocxListNumbers(archive: Uint8Array): Uint8Array {
   const instances = new Map<string, Instance | undefined>();
   // A list defined through a numbering style (numStyleLink) takes its levels from that style's list.
   const linkedAbstract = (id: string, depth = 0): string => {
-    const numPr = styleNumPr(wordValue(abstracts.get(id), "numStyleLink"));
-    if (!numPr || depth > 5) return id;
-    const target = wordValue(nums.get(wordValue(numPr, "numId") ?? ""), "abstractNumId");
+    const numId = styleNum(wordValue(abstracts.get(id), "numStyleLink"), "numId");
+    if (numId === undefined || depth > 5) return id;
+    const target = wordValue(nums.get(numId), "abstractNumId");
     return target === undefined || target === id ? id : linkedAbstract(target, depth + 1);
   };
   const instance = (numId: string): Instance | undefined => {
@@ -1177,18 +1184,18 @@ function injectDocxListNumbers(archive: Uint8Array): Uint8Array {
     const mark = pPr && childElements(pPr, w, "rPr")[0];
     if (mark && (childElements(mark, w, "del").length || childElements(mark, w, "moveFrom").length)) return;
     const direct = pPr && childElements(pPr, w, "numPr")[0];
-    const styled = styleNumPr(wordValue(pPr, "pStyle"));
-    const numId = wordValue(direct, "numId") ?? wordValue(styled, "numId");
+    const styleId = wordValue(pPr, "pStyle") ?? defaultStyle;
+    const numId = wordValue(direct, "numId") ?? styleNum(styleId, "numId");
     const list = numId === undefined ? undefined : instance(numId);
     if (!list) return;
     const { abstractId, levels, restarts, byStyle } = list;
     // A heading style's numPr often names only the list; the level linked to its style supplies ilvl.
     let linked: number | undefined;
-    for (let style = wordValue(pPr, "pStyle"), depth = 0; style !== undefined && linked === undefined && depth <= 20; depth++) {
+    for (let style = styleId, depth = 0; style !== undefined && linked === undefined && depth <= 20; depth++) {
       linked = byStyle.get(style);
       style = wordValue(styleById.get(style), "basedOn");
     }
-    const ilvl = Math.min(8, Math.max(0, Math.trunc(Number(wordValue(direct, "ilvl") ?? wordValue(styled, "ilvl") ?? linked ?? 0) || 0)));
+    const ilvl = Math.min(8, Math.max(0, Math.trunc(Number(wordValue(direct, "ilvl") ?? styleNum(styleId, "ilvl") ?? linked ?? 0) || 0)));
     const { lvl, format, legal, text } = levels[ilvl];
     if (!lvl) return;
     // Word shares counters across instances of one abstract; a startOverride restarts them once.

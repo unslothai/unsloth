@@ -7,20 +7,28 @@ import { useSyncExternalStore } from "react";
 const MOBILE_BREAKPOINT = 768;
 const MEDIA_QUERY = `(max-width: ${MOBILE_BREAKPOINT - 1}px)`;
 
-function getSnapshot(): boolean {
+let lastMobile = false;
+
+// Full screen resizes the viewport; swapping layouts then would unmount the full screen element.
+export function isMobileViewport(): boolean {
   if (typeof window === "undefined") return false;
-  return window.matchMedia(MEDIA_QUERY).matches;
+  if (!document.fullscreenElement) lastMobile = window.matchMedia(MEDIA_QUERY).matches;
+  return lastMobile;
 }
 
 function subscribe(callback: () => void): () => void {
   if (typeof window === "undefined") return () => {};
   const mql = window.matchMedia(MEDIA_QUERY);
   mql.addEventListener("change", callback);
-  return () => mql.removeEventListener("change", callback);
+  document.addEventListener("fullscreenchange", callback);
+  return () => {
+    mql.removeEventListener("change", callback);
+    document.removeEventListener("fullscreenchange", callback);
+  };
 }
 
 export function useIsMobile(): boolean {
-  return useSyncExternalStore(subscribe, getSnapshot, () => false);
+  return useSyncExternalStore(subscribe, isMobileViewport, () => false);
 }
 
 /** Never in the desktop app, where a narrowed window is still a desktop window. */

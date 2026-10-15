@@ -61,6 +61,8 @@ export const ptBR = {
       never: "Nunca",
       scripts: "Executar scripts",
       scriptsDescription: "Escolha se os modelos podem executar scripts nas páginas. Cada script é mostrado a você antes de ser executado",
+      cursor: "Mostrar cursor",
+      cursorDescription: "Mostra um ponteiro onde os modelos clicam, digitam e arrastam na página",
       askEveryTime: "Perguntar toda vez",
       permissionsTitle: "Permissões do agente",
       permissionsDescription: "Escolha os padrões e adicione exceções para sites específicos. Campos de senha e de pagamento nunca são preenchidos, seja qual for a configuração.",
