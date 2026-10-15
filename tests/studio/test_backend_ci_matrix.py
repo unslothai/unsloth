@@ -163,9 +163,12 @@ def test_the_floor_is_linted_on_every_pull_request():
     )
     # vermin's answer is the gate's verdict, so a release that changes it must not move the gate
     # on its own: 1.9.0 failed 79 unchanged files on every pull request the morning it shipped.
-    unpinned = [line for line in installs if not re.search(r"\bvermin==\d", line)]
+    unpinned = [
+        line for line in installs if not re.search(r"\bvermin==\d+(?:\.\d+)*(?=\s|$)", line)
+    ]
     assert not unpinned, (
-        f"{trigger_lint.name} installs vermin without an exact pin: {unpinned}. A new vermin "
+        f"{trigger_lint.name} installs vermin without an exact pin: {unpinned}. A range or a "
+        f"wildcard (vermin==1.*) is not one either. A new vermin "
         f"release then decides the floor check by itself; pin it and move the pin deliberately."
     )
 
