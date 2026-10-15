@@ -446,6 +446,9 @@ def test_hub_adapter_reattaches_its_head(tmp_path, monkeypatch):
 
 
 def test_mtp_push_keeps_the_datasets_metadata(save_module, monkeypatch):
+    """The attribution is staged in the README, so it lands in the same commit / revision / PR."""
+    import os
+
     import huggingface_hub
 
     calls = []
@@ -457,16 +460,22 @@ def test_mtp_push_keeps_the_datasets_metadata(save_module, monkeypatch):
         def create_repo(self, **kwargs):
             pass
 
+        def create_branch(self, **kwargs):
+            pass
+
         def upload_folder(self, **kwargs):
-            calls.append(("upload", kwargs["repo_id"]))
+            readme = os.path.join(kwargs["folder_path"], "README.md")
+            calls.append((kwargs["revision"], kwargs["create_pr"], open(readme).read()))
+
+    def no_card(*args, **kwargs):
+        raise huggingface_hub.errors.EntryNotFoundError("no README")
 
     monkeypatch.setattr(save_module, "HfApi", Api)
     monkeypatch.setattr(save_module, "_determine_username", lambda d, u, t: ("me/m", "me"))
     monkeypatch.setattr(save_module, "unsloth_save_model", lambda **kwargs: None)
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", no_card)
     monkeypatch.setattr(
-        huggingface_hub,
-        "metadata_update",
-        lambda repo, meta, **k: calls.append(("meta", repo, meta)),
+        huggingface_hub, "metadata_update", lambda *a, **k: pytest.fail("edits the default branch")
     )
     save_module._push_with_mtp_head(
         dict(
@@ -474,13 +483,40 @@ def test_mtp_push_keeps_the_datasets_metadata(save_module, monkeypatch):
             save_directory = "m",
             token = "t",
             private = False,
-            revision = None,
-            create_pr = False,
+            revision = "dev",
+            create_pr = True,
             commit_message = None,
             datasets = ["org/data"],
         )
     )
-    assert calls == [("upload", "me/m"), ("meta", "me/m", {"datasets": ["org/data"]})]
+    assert len(calls) == 1 and calls[0][:2] == ("dev", True) and "org/data" in calls[0][2]
+
+
+def test_unsloth_wrapped_save_still_pushes_the_head(save_module, tmp_path, monkeypatch):
+    """Unsloth's loaders wrap save_pretrained as (self, *args, **kwargs), hiding push_to_hub."""
+    from unsloth.models.speculative import _takes_push_to_hub
+
+    class Model:
+        def original_model_save_pretrained(
+            self,
+            save_directory,
+            push_to_hub = False,
+            **kwargs,
+        ):
+            pass
+
+        def unsloth_model_save_pretrained(self, *args, **kwargs):
+            pass
+
+    assert _takes_push_to_hub(Model().unsloth_model_save_pretrained)
+
+
+def test_merged_save_with_a_head_refuses_pickles(tree):
+    fn = ast.get_source_segment(
+        SAVE_PY.read_text(encoding = "utf-8"), _func(tree, "unsloth_save_model")
+    )
+    assert "if _keeps_mtp_head and not safe_serialization:" in fn
+    assert "safe_serialization and (n_cpus <= 2) and not _keeps_mtp_head" in fn
 
 
 def test_get_mtp_head_returns_the_attached_head(save_module):
