@@ -98,7 +98,8 @@ def _synchronize(device):
     module = getattr(torch, device.type, None)
     sync = getattr(module, "synchronize", None)
     if sync is not None:
-        sync(device)
+        # torch.mps.synchronize takes no device argument.
+        sync() if device.type == "mps" else sync(device)
 
 
 class _StateOffloader:
@@ -247,8 +248,11 @@ class _StateOffloader:
                 # Not stepped yet: two moments, a third with amsgrad or centered RMSprop with
                 # momentum (square_avg, momentum_buffer, grad_avg), at least fp32 each.
                 group = groups.get(p, {})
-                third = group.get("amsgrad") or (
-                    group.get("centered") and group.get("momentum", 0) > 0
+                # bitsandbytes AdEMAMix keeps a double-sized state1 next to state2.
+                third = (
+                    group.get("amsgrad")
+                    or (group.get("centered") and group.get("momentum", 0) > 0)
+                    or "ademamix" in type(self.optimizer).__name__.lower()
                 )
                 moments = 3 if third else 2
                 nbytes = moments * max(p.element_size(), 4) * p.numel()

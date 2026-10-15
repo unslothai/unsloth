@@ -521,3 +521,27 @@ def test_resumed_bitsandbytes_first_step_stays_chunked():
     for p, q in zip(params, clones):
         assert torch.equal(p, q)
     assert _state_devices(optimizer) == {"cpu"}
+
+
+def test_unstepped_chunk_size_counts_the_ademamix_double_moment():
+    module = _module()
+    n = 1000
+    params = [torch.nn.Parameter(torch.randn(n)) for _ in range(2)]
+
+    class AdEMAMix(torch.optim.AdamW):
+        pass
+
+    plain = module._StateOffloader(torch.optim.AdamW(params), chunk_bytes = 20 * n)
+    assert len(plain._chunks(params)) == 1
+    ademamix = module._StateOffloader(AdEMAMix(params), chunk_bytes = 20 * n)
+    assert len(ademamix._chunks(params)) == 2
+
+
+def test_mps_synchronize_takes_no_device(monkeypatch):
+    module = _module()
+    calls = []
+    monkeypatch.setattr(
+        torch, "mps", types.SimpleNamespace(synchronize = lambda *a: calls.append(a)), raising = False
+    )
+    module._synchronize(torch.device("mps"))
+    assert calls == [()]
