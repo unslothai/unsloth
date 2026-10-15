@@ -203,8 +203,21 @@ def test_internal_savers_stitch_once(save_module, tmp_path, monkeypatch):
 
     model = Plain()
     object.__setattr__(model, "_unsloth_mtp_head", _head(torch))
-    assert save_module._save_pretrained_unstitched(model) == model.save_pretrained
     _wrap_save_pretrained(model)
+    save_module._save_pretrained_unstitched(model)(str(tmp_path))
+    assert stitched == []
+    model.save_pretrained(str(tmp_path))
+    assert stitched == [str(tmp_path)]
+
+    # An export reload wraps save_pretrained again from outside (patch_saving_functions); the
+    # internal saver must still bypass the inner MTP wrapper.
+    inner = model.save_pretrained
+
+    def outer(save_directory, *args, **kwargs):
+        return inner(save_directory, *args, **kwargs)
+
+    object.__setattr__(model, "save_pretrained", outer)
+    stitched.clear()
     save_module._save_pretrained_unstitched(model)(str(tmp_path))
     assert stitched == []
     model.save_pretrained(str(tmp_path))

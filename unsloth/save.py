@@ -907,11 +907,17 @@ def _stitch_mtp_head(model, save_directory):
 
 
 def _save_pretrained_unstitched(model):
-    """`model.save_pretrained` without the head-saving wrapper, for savers that stitch the head themselves."""
+    """`model.save_pretrained` for savers that stitch the head themselves: the plain-save wrapper skips its
+    own stitch, wherever it sits in the wrapper chain (an export reload wraps it again from outside)."""
     save = model.save_pretrained
-    if getattr(save, "_unsloth_saves_mtp_head", False):
-        return save.__wrapped__
-    return save
+
+    @functools.wraps(save)
+    def call(*args, **kwargs):
+        from .models.speculative import internal_save
+        with internal_save():
+            return save(*args, **kwargs)
+
+    return call
 
 
 def _save_mtp_head_beside_adapter(model, save_directory):

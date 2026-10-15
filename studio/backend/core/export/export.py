@@ -1362,6 +1362,8 @@ class ExportBackend:
                     else save_directory
                 )
                 self._write_export_metadata(final_dir)
+                if not (_IS_MLX or is_compressed or is_torchao):
+                    self._package_drafter_merged(final_dir, repo_id if push_to_hub else None)
                 logger.info(f"Model saved successfully to {final_dir}")
                 output_path = str(Path(final_dir).resolve())
 
@@ -1405,6 +1407,7 @@ class ExportBackend:
                                     save_method = save_method,
                                     **merged_token_kw,
                                 )
+                                self._package_drafter_merged(upload_dir, repo_id)
                             # Whatever was built, only weights are worth a repo; without them the
                             # merging push below runs instead, as it did before this was uploaded.
                             if _holds_checkpoint_weights(upload_dir):
@@ -1649,6 +1652,7 @@ class ExportBackend:
 
         output_path: Optional[str] = None
         exported_ggufs: List[str] = []
+        drafter_gguf_files: List[str] = []
         exported_modelfile = False
         exported_modelfile_bytes: Optional[bytes] = None
         exported_is_vlm = False
@@ -1738,6 +1742,10 @@ class ExportBackend:
                             "GGUF conversion produced only AppleDouble metadata companions "
                             f"and no usable .gguf file for {abs_save_dir}"
                         )
+                    drafter_gguf_files = self._package_drafter_gguf(
+                        reported.get("save_directory") or _model_tmp, abs_save_dir, exported_ggufs
+                    )
+                    exported_ggufs.extend(f for f in drafter_gguf_files if f.endswith(".gguf"))
                     exported_is_vlm = bool(
                         reported.get("is_vlm", getattr(self, "is_vision", False))
                     )
@@ -1859,6 +1867,7 @@ class ExportBackend:
                         allow_patterns = [
                             *(glob.escape(os.path.basename(f)) for f in exported_ggufs),
                             *(["Modelfile"] if exported_modelfile else []),
+                            *(["drafter.json"] if drafter_gguf_files else []),
                         ],
                     )
                     if exported_config is not None:
@@ -1923,6 +1932,30 @@ class ExportBackend:
                     output_path,
                 )
             return False, f"GGUF export failed: {str(e)}", None
+
+    def _package_drafter_merged(self, final_dir: str, repo_id: Optional[str]) -> None:
+        """Ship the drafter trained with this fine-tune next to a merged export (best-effort: the
+        merged model is valid without it)."""
+        from core.export.drafter_export import package_merged
+        try:
+            info = package_merged(self.current_checkpoint, final_dir, verifier = repo_id)
+            if info:
+                logger.info(f"Packaged the trained {info['strategy']} drafter into {final_dir}")
+        except Exception as exception:
+            logger.warning(f"Could not package the trained drafter: {exception}")
+
+    def _package_drafter_gguf(self, merged_dir: str, gguf_dir: str, ggufs: List[str]) -> List[str]:
+        from core.export.drafter_export import package_gguf
+        try:
+            info, files = package_gguf(self.current_checkpoint, merged_dir, gguf_dir, ggufs)
+            if info:
+                logger.info(f"Packaged the trained {info['strategy']} drafter with the GGUF export")
+            return files
+        except Exception as exception:
+            logger.warning(
+                f"Could not package the trained drafter with the GGUF export: {exception}"
+            )
+            return []
 
     def _write_q4nx_companions(self, q4nx_dir: Path, config: Optional[bytes]) -> None:
         """The tokenizer files FastFlowLM loads next to model.q4nx (see q4nx.CONFIG_FILES)."""

@@ -22,8 +22,23 @@ model; every merged / GGUF save then writes the trained head instead of the stoc
 # The trainer names resolve lazily through __getattr__ (they need a recent unsloth_zoo).
 __all__ = ["get_mtp_head", "attach_saved_mtp_head"]
 
+import contextlib
+import contextvars
 import functools
 import os
+
+# Set while an Unsloth saver writes a checkpoint it stitches itself, so the plain `save_pretrained`
+# wrapper does not stitch the same head a second time, however the wrappers are stacked.
+_INTERNAL_SAVE = contextvars.ContextVar("unsloth_internal_mtp_save", default = False)
+
+
+@contextlib.contextmanager
+def internal_save():
+    token = _INTERNAL_SAVE.set(True)
+    try:
+        yield
+    finally:
+        _INTERNAL_SAVE.reset(token)
 
 
 def _zoo_speculative():
@@ -143,7 +158,7 @@ def _wrap_save_pretrained(model):
     @functools.wraps(original)
     def save_pretrained(save_directory, *args, **kwargs):
         result = original(save_directory, *args, **kwargs)
-        if kwargs.get("push_to_hub") or not os.path.isdir(save_directory):
+        if _INTERNAL_SAVE.get() or kwargs.get("push_to_hub") or not os.path.isdir(save_directory):
             return result
         from ..save import _save_mtp_head_beside_adapter, _stitch_mtp_head
 
@@ -171,6 +186,15 @@ def __getattr__(name):
         _zoo_speculative()
         from unsloth_zoo.speculative import trainer
         return getattr(trainer, name)
+    if name in ("UnslothEagle3Trainer", "Eagle3TrainingArguments"):
+        speculative = _zoo_speculative()
+        try:
+            return getattr(speculative, name)
+        except AttributeError as error:
+            raise ImportError(
+                "Unsloth: EAGLE-3 drafter training needs a newer unsloth_zoo. "
+                "Update via `pip install --upgrade --no-cache-dir unsloth_zoo`."
+            ) from error
     if name in ("UnslothDSparkTrainer", "DSparkTrainingArguments", "Qwen3DSparkDrafter"):
         _zoo_speculative()
         from unsloth_zoo.speculative import dspark

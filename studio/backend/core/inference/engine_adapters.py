@@ -260,6 +260,11 @@ class EngineAdapter:
                 else []
             ),
             *(["--trust-remote-code"] if trust_remote_code else []),
+            *(
+                vllm_speculative_args(model)
+                if self.name == "vllm" and not options.get("no_speculative_config")
+                else []
+            ),
             *self.extra_args,
             "--host",
             "127.0.0.1",
@@ -299,6 +304,37 @@ ADAPTERS = {
         ("--attention-backend", "triton", "--sampling-backend", "pytorch"),
     ),
 }
+
+
+def vllm_speculative_args(model) -> list[str]:
+    """`--speculative-config` for a merged Studio export that carries a drafter trained with the
+    fine-tune (drafter.json): its own MTP head, or the EAGLE-3 drafter in `<export>/eagle3`."""
+    import json
+    import os
+
+    if not isinstance(model, str) or not os.path.isdir(model):
+        return []
+    try:
+        with open(os.path.join(model, "drafter.json"), encoding = "utf-8") as f:
+            info = json.load(f)
+    except (OSError, ValueError):
+        return []
+    if not isinstance(info, dict):
+        return []
+    steps = info.get("draft_steps") or 3
+    if info.get("strategy") == "mtp":
+        spec = {"method": "mtp", "num_speculative_tokens": int(steps)}
+    elif info.get("strategy") == "eagle3" and os.path.isfile(
+        os.path.join(model, "eagle3", "config.json")
+    ):
+        spec = {
+            "method": "eagle3",
+            "model": os.path.join(os.path.abspath(model), "eagle3"),
+            "num_speculative_tokens": int(steps),
+        }
+    else:
+        return []
+    return ["--speculative-config", json.dumps(spec, separators = (",", ":"))]
 
 
 def launch_arguments(

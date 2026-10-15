@@ -1683,6 +1683,34 @@ async def get_offload_state(current_subject: str = Depends(get_current_subject))
     return {"active": True, **offload}
 
 
+@router.get("/drafter-capability")
+async def get_drafter_capability(
+    model_name: str,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+):
+    """Which speculative-decoding drafter the Train tab can train for `model_name`: the native MTP head
+    when the checkpoint ships one, else an EAGLE-3 drafter where vLLM or llama.cpp can run it."""
+    from core.training.drafter import drafter_capability
+
+    name = (model_name or "").strip()
+    if not name or len(name) > 512:
+        raise HTTPException(status_code = 400, detail = "model_name is required")
+    if managed_account() and os.path.isabs(name):
+        return {
+            "model_name": name,
+            "has_native_mtp": False,
+            "strategy": None,
+            "supported": False,
+            "reason": "Local paths are not checked for managed accounts.",
+            "vllm": False,
+            "llama_cpp": False,
+        }
+    # No token in a query string: ambient credentials for the owner, anonymous for API keys.
+    token = False if via_api_key is True else None
+    return await asyncio.to_thread(drafter_capability, name, token)
+
+
 @router.get("/hardware/visible")
 async def get_visible_hardware_utilization(current_subject: str = Depends(get_current_subject)):
     from utils.hardware import get_visible_gpu_utilization, gpu_query
@@ -1795,6 +1823,13 @@ async def start_training(
     to check progress.
     """
     await asyncio.to_thread(_validate_decision_request, request, via_api_key)
+    if request.drafter is not None and request.drafter.enabled:
+        from core.training.training import should_use_mlx_training_backend
+        if should_use_mlx_training_backend():
+            raise HTTPException(
+                status_code = 400,
+                detail = "Drafter training is not available on Apple Silicon (MLX) yet.",
+            )
     if managed_account():
         from utils.paths import tensorboard_root
 
@@ -2119,6 +2154,11 @@ async def start_training(
             "eval_split": request.eval_split,
             "eval_steps": request.eval_steps,
             "early_stopping_patience": request.early_stopping_patience,
+            "drafter": (
+                request.drafter.model_dump()
+                if request.drafter is not None and request.drafter.enabled
+                else None
+            ),
             "dataset_slice_start": request.dataset_slice_start,
             "dataset_slice_end": request.dataset_slice_end,
             "custom_format_mapping": request.custom_format_mapping,
@@ -2646,7 +2686,9 @@ def _build_training_status(
         phase = "error"
     elif is_active:
         msg_lower = status_message.lower()
-        if "loading" in msg_lower or "importing" in msg_lower:
+        if msg_lower.startswith("training drafter"):
+            phase = "training_drafter"
+        elif "loading" in msg_lower or "importing" in msg_lower:
             phase = "loading_model"
         elif any(k in msg_lower for k in ["preparing", "initializing", "configuring"]):
             phase = "configuring"
@@ -2670,6 +2712,7 @@ def _build_training_status(
             "loss": getattr(progress, "loss", None),
             "learning_rate": getattr(progress, "learning_rate", None),
             "output_dir": getattr(backend, "_output_dir", None) or None,
+            "drafter": getattr(progress, "drafter", None),
             "model_download_repo_id": (
                 getattr(backend, "_model_download_repo_id", None) if is_active else None
             ),

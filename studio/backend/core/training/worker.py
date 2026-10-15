@@ -5089,6 +5089,15 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         _tqdm_stop.set()
 
         progress = trainer.get_training_progress()
+        drafter_note = ""
+        if config.get("drafter") and not progress.error and not trainer.should_stop:
+            from core.training.drafter import run_drafter_phase
+
+            manifest = run_drafter_phase(trainer, config, output_dir, event_queue, _send_status)
+            if manifest is not None:
+                label = "MTP head" if manifest["strategy"] == "mtp" else "EAGLE-3 drafter"
+                drafter_note = f"\nTrained {label} saved with the model."
+            progress = trainer.get_training_progress()
         if progress.error:
             event_queue.put(
                 {
@@ -5106,7 +5115,8 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 {
                     "type": "complete",
                     "output_dir": saved_output_dir,
-                    "status_message": progress.status_message or "Training completed",
+                    "status_message": (progress.status_message or "Training completed")
+                    + drafter_note,
                     "ts": time.time(),
                 }
             )

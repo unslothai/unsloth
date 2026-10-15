@@ -787,6 +787,7 @@ _UNRECOVERABLE_LOCAL_ERRNOS = frozenset(
 _SPEC_KIND_CAPABILITY: dict[str, str] = {
     "dspark": "supports_dspark",
     "dflash": "supports_dflash",
+    "eagle3": "supports_eagle3",
     "mtp": "supports_mtp",
 }
 
@@ -3264,7 +3265,7 @@ _DRAFTER_KINDS = ("mtp", "dspark", "dflash", "eagle3")
 _DRAFTER_DIR_KINDS = ("mtp", "dspark")
 
 # Human label per resolved spec mode, for launch logging and the UI notice.
-_DRAFTER_DISPLAY_LABELS = {"dspark": "DSpark", "dflash": "DFlash"}
+_DRAFTER_DISPLAY_LABELS = {"dspark": "DSpark", "dflash": "DFlash", "eagle3": "EAGLE-3"}
 
 
 def _drafter_path_kind(path: str) -> Optional[str]:
@@ -7574,6 +7575,7 @@ _CANONICAL_SPEC_MODES = {
     "auto",
     "mtp",
     "dspark",
+    "eagle3",
     "dflash",
     "ngram",
     "mtp+ngram",
@@ -7585,11 +7587,25 @@ _LEGACY_SPEC_MODE_MAP = {
     "draft-mtp": "mtp",
     "draft-dspark": "dspark",
     "draft-dflash": "dflash",
+    "draft-eagle3": "eagle3",
     "ngram-mod": "ngram",
     "none": "off",
     "disable": "off",
     "disabled": "off",
 }
+
+
+def _trained_drafter_sidecar(model_path):
+    """(eagle3 drafter path, MTP head trained) from the drafter.json a Studio export wrote beside the GGUF."""
+    if not model_path:
+        return None, False
+    try:
+        from core.export.drafter_export import eagle3_sidecar_path, gguf_drafter_sidecar
+        info = gguf_drafter_sidecar(model_path)
+        return eagle3_sidecar_path(model_path), bool(info and info.get("mtp_trained"))
+    except Exception as exc:
+        logger.debug("Could not read a drafter manifest beside %s: %s", model_path, exc)
+        return None, False
 
 
 def _canonicalize_spec_mode(value):
@@ -10312,6 +10328,7 @@ class LlamaCppBackend:
                 "supports_mtp": False,
                 "supports_dspark": False,
                 "supports_dflash": False,
+                "supports_eagle3": False,
                 "mtp_probe_inconclusive": True,
                 "ngram_mod_flavor": None,
                 "supports_ngram_mod": False,
@@ -10376,6 +10393,7 @@ class LlamaCppBackend:
         mtp_token: Optional[str] = None
         supports_dspark = False
         supports_dflash = False
+        supports_eagle3 = False
         ngram_mod_flavor: Optional[str] = None
         spec_draft_n_max_flag: Optional[str] = None
         spec_draft_n_max_default: Optional[int] = None
@@ -10552,6 +10570,9 @@ class LlamaCppBackend:
                     r"(?<![a-z0-9_-])draft-dspark(?![a-z0-9_-])",
                     spec_help.lower(),
                 )
+            )
+            supports_eagle3 = bool(
+                re.search(r"(?<![a-z0-9_-])draft-eagle3(?![a-z0-9_-])", spec_help.lower())
             )
             # Same word-boundary match as DSpark: draft-dflash only exists on
             # builds that carry the arch, and emitting a --spec-type the binary
@@ -10735,6 +10756,7 @@ class LlamaCppBackend:
             "supports_mtp": supports_mtp,
             "supports_dspark": bool(supports_dspark and saw_spec_type and probe_ok),
             "supports_dflash": bool(supports_dflash and saw_spec_type and probe_ok),
+            "supports_eagle3": bool(supports_eagle3 and saw_spec_type and probe_ok),
             "mtp_probe_inconclusive": mtp_probe_inconclusive,
             "ngram_mod_flavor": ngram_mod_flavor,
             "supports_ngram_mod": ngram_mod_flavor is not None,
@@ -34316,6 +34338,8 @@ class LlamaCppBackend:
         embedded_mtp_partial_offload: bool = False,
         draft_device: Optional[str] = None,
         mtp_drafter_unloadable: bool = False,
+        eagle3_draft_path: Optional[str] = None,
+        mtp_trained: Optional[bool] = None,
     ) -> List[str]:
         """Return the llama-server flag list for the requested spec mode.
 
@@ -34366,6 +34390,11 @@ class LlamaCppBackend:
         self._spec_draft_n_max = None
         self._speculative_type = None
         self._spec_fallback_reason = None
+        # A drafter trained with the fine-tune and exported beside this GGUF (drafter.json).
+        if eagle3_draft_path is None or mtp_trained is None:
+            sidecar_eagle3, sidecar_trained = _trained_drafter_sidecar(model_path)
+            eagle3_draft_path = eagle3_draft_path or sidecar_eagle3
+            mtp_trained = sidecar_trained if mtp_trained is None else mtp_trained
 
         # Canonical UI-facing requested mode (legacy values mapped via
         # _canonicalize_spec_mode).
@@ -34394,8 +34423,13 @@ class LlamaCppBackend:
         _mtp_size_b = _extract_model_size_b(model_identifier)
         # The sub-3B regression is an embedded-head cost; a separate drafter
         # (Gemma) is a cheap standalone model that wins below 3B, so exempt it.
+        # A head the user trained with this fine-tune is what they asked to draft with, so the
+        # size floor (a stock-head cost measurement) and the MLA default-off below do not apply.
         _mtp_too_small = (
-            _mtp_size_b is not None and _mtp_size_b < _MTP_MIN_SIZE_B and not bool(mtp_draft_path)
+            _mtp_size_b is not None
+            and _mtp_size_b < _MTP_MIN_SIZE_B
+            and not bool(mtp_draft_path)
+            and not mtp_trained
         )
         # Drafterless Gemma (name-only MTP, no embedded head), or any quant whose only
         # drafter was dropped as unopenable: emitting MTP would abort llama-server, so
@@ -34417,6 +34451,7 @@ class LlamaCppBackend:
             and not bool(mtp_draft_path)
             and not _mla_mtp_auto_enabled()
             and not _arch_has_fast_mla_mtp(getattr(self, "_architecture", None))
+            and not mtp_trained
         )
 
         if user_owns_spec_type:
@@ -34440,6 +34475,47 @@ class LlamaCppBackend:
         # and under Auto neither the requested mode nor the resolved
         # _speculative_type ("default" after a fallback) still carries the kind.
         _auto_mode = (canonical_mode or "auto") == "auto"
+        if canonical_mode == "eagle3" or (
+            _auto_mode and eagle3_draft_path and caps.get("supports_eagle3")
+        ):
+            self._spec_drafter_kind = "eagle3"
+            if not caps.get("supports_eagle3"):
+                logger.warning(
+                    "EAGLE-3 requested but llama-server lacks --spec-type draft-eagle3; "
+                    "loading without speculative decoding."
+                )
+                flags.append("--spec-default")
+                self._speculative_type = "default"
+                self._spec_fallback_reason = "binary_no_mtp"
+                return flags
+            if not eagle3_draft_path:
+                logger.warning(
+                    "EAGLE-3 requested but no trained eagle3-*.gguf drafter sits next to this "
+                    "model; loading without speculative decoding."
+                )
+                flags.append("--spec-default")
+                self._speculative_type = "default"
+                self._spec_fallback_reason = "drafter_not_found"
+                return flags
+            draft_n_max = int(spec_draft_n_max) if spec_draft_n_max is not None else 3
+            if spec_draft_n_max is not None:
+                self._spec_draft_n_max = draft_n_max
+            n_max_flag = caps.get("spec_draft_n_max_flag") or "--spec-draft-n-max"
+            flags.extend(
+                [
+                    "--model-draft",
+                    eagle3_draft_path,
+                    "--spec-type",
+                    "draft-eagle3",
+                    str(n_max_flag),
+                    str(draft_n_max),
+                ]
+            )
+            if draft_device:
+                flags.extend(["--spec-draft-device", draft_device])
+            self._speculative_type = "draft-eagle3"
+            logger.info("Spec decoding: draft-eagle3 using %s", eagle3_draft_path)
+            return flags
         if canonical_mode == "dspark" or (
             _auto_mode and dspark_draft_path and caps.get("supports_dspark")
         ):
