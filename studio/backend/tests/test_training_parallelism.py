@@ -46,3 +46,10 @@ def test_model_parallel_requires_two_gpus():
     assert request(parallelism_mode = "model_parallel", gpu_ids = [0, 1]).gpu_ids == [0, 1]
     with pytest.raises(ValidationError, match = "at least two"):
         request(parallelism_mode = "model_parallel", gpu_ids = [0])
+
+
+@pytest.mark.parametrize("flag", ["is_embedding", "is_decision"])
+def test_ddp_rejects_paths_that_are_not_rank_aware(flag):
+    assert request(parallelism_mode = "ddp", gpu_ids = [0, 1]).gpu_ids == [0, 1]
+    with pytest.raises(ValidationError, match = "embedding or decision"):
+        request(parallelism_mode = "ddp", gpu_ids = [0, 1], **{flag: True})

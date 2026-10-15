@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import copy
-import multiprocessing as mp
 import os
 import queue
 import socket
@@ -102,7 +101,8 @@ def _common_cuda_dtype(gpu_ids: list[int]) -> str:
 
 
 class _RankEvents:
-    """Forward rank-zero progress and make errors from any rank fatal to spawn."""
+    """Forward rank-zero events plus any rank's download stall (the backend's Xet recovery needs
+    it from whichever rank stalled); make errors from any rank fatal to spawn."""
 
     def __init__(self, rank: int, event_queue: Any, failures: Any):
         self.rank = rank
@@ -118,26 +118,66 @@ class _RankEvents:
                 return
             self.error = dict(event)
             self.failures[self.rank] = self.error
-        elif self.rank == 0:
+        elif self.rank == 0 or event.get("type") == "stall":
             self.event_queue.put(event)
 
 
 class _SharedStopQueue:
-    def __init__(self, stop_event: Any, save_value: Any):
+    """One rank's view of the coordinator's stop: a save-stop, then possibly a cancel on top."""
+
+    def __init__(self, stop_event: Any, cancel_event: Any):
         self._stop_event = stop_event
-        self._save_value = save_value
-        self._delivered = False
+        self._cancel_event = cancel_event
+        self._stop_delivered = False
+        self._cancel_delivered = False
 
     def get(self, timeout: float | None = None) -> dict[str, Any]:
-        if self._delivered:
-            # Preserve Queue.get semantics: after consuming the one stop event,
-            # later polls still wait for their timeout rather than busy-spinning.
-            _wait_for_stop(threading.Event(), timeout)
-            raise queue.Empty
-        if not _wait_for_stop(self._stop_event, timeout):
-            raise queue.Empty
-        self._delivered = True
-        return {"type": "stop", "save": bool(self._save_value.value)}
+        if not self._stop_delivered:
+            if not _wait_for_stop(self._stop_event, timeout):
+                raise queue.Empty
+            self._stop_delivered = True
+            self._cancel_delivered = bool(self._cancel_event.is_set())
+            return {"type": "stop", "save": not self._cancel_delivered}
+        if not self._cancel_delivered:
+            if not _wait_for_stop(self._cancel_event, timeout):
+                raise queue.Empty
+            self._cancel_delivered = True
+            return {"type": "stop", "save": False}
+        # Queue.get semantics: once both are consumed, later polls still wait out their timeout.
+        _wait_for_stop(threading.Event(), timeout)
+        raise queue.Empty
+
+
+def _bind_to_parent_lifetime() -> None:
+    """SIGTERM on parent death; torch.multiprocessing's own SIGINT cannot interrupt a rank
+    blocked in a collective, which then holds its GPU until the NCCL timeout."""
+    try:
+        from utils.process_lifetime import bind_current_process_to_parent_lifetime
+        bind_current_process_to_parent_lifetime()
+    except Exception:
+        pass
+
+
+def _destroy_process_group(synchronize: bool) -> None:
+    """Leave the process group together; rank 0 hosts the store, and exiting first leaves the
+    other ranks retrying it until their own teardown."""
+    try:
+        import torch.distributed as dist
+        if dist.is_available() and dist.is_initialized():
+            if synchronize:
+                dist.barrier()
+            dist.destroy_process_group()
+    except Exception:
+        pass
+
+
+def _start_manager() -> Any:
+    from multiprocessing.managers import SyncManager
+
+    # A force-terminated coordinator runs no cleanup, so the manager binds itself to it.
+    manager = SyncManager()
+    manager.start(initializer = _bind_to_parent_lifetime)
+    return manager
 
 
 def _free_loopback_port() -> int:
@@ -151,10 +191,11 @@ def _rank_entry(
     config: dict[str, Any],
     event_queue: Any,
     stop_event: Any,
-    save_value: Any,
+    cancel_event: Any,
     master_port: int,
     failures: Any,
 ) -> None:
+    _bind_to_parent_lifetime()
     gpu_ids = list(config.get("resolved_gpu_ids") or [])
     physical_gpu = int(gpu_ids[rank])
     world_size = len(gpu_ids)
@@ -177,14 +218,27 @@ def _rank_entry(
     rank_config["_ddp_rank"] = rank
     rank_config["_ddp_world_size"] = world_size
     rank_config["resolved_gpu_ids"] = [physical_gpu]
-    from .worker import run_training_process
+    account = rank_config.pop("_ddp_account", None)
+    from core.training.account_jobs import run_account_child
+    from utils.account_context import OWNER
 
     rank_events = _RankEvents(rank, event_queue, failures)
-    run_training_process(
-        event_queue = rank_events,
-        stop_queue = _SharedStopQueue(stop_event, save_value),
-        config = rank_config,
-    )
+    finished = False
+    try:
+        # As account_process_spec does for the coordinator: a managed account's ranks must
+        # resolve paths and credentials as that account, not as the owner.
+        run_account_child(
+            account = account or OWNER,
+            job_module = "core.training.worker",
+            job_target = "run_training_process",
+            event_queue = rank_events,
+            stop_queue = _SharedStopQueue(stop_event, cancel_event),
+            config = rank_config,
+        )
+        finished = rank_events.error is None
+    finally:
+        # A failed rank must not wait in a barrier its peers never reach.
+        _destroy_process_group(synchronize = finished)
     if rank_events.error is not None:
         raise RuntimeError(
             f"DDP rank {rank} failed: " f"{rank_events.error.get('error') or 'Training failed'}"
@@ -198,13 +252,25 @@ def run_ddp_training_process(*, event_queue: Any, stop_queue: Any, config: dict[
         raise ValueError("DDP requires at least two resolved GPU ids.")
     config = copy.deepcopy(config)
     config["_ddp_common_dtype"] = _common_cuda_dtype(gpu_ids)
+    from utils.account_context import current_account
 
-    manager = mp.Manager()
+    config["_ddp_account"] = current_account()
+    if not config.get("output_dir") and not config.get("resume_from_checkpoint"):
+        from utils.training_runs import build_default_output_dir_name
+
+        # Ranks reach the worker's default at different times and would stamp different dirs.
+        config["output_dir"] = build_default_output_dir_name(
+            config["model_name"], config.get("project_name")
+        )
+
+    manager = _start_manager()
     rank_events = manager.Queue()
     stop_event = manager.Event()
-    save_value = manager.Value("b", True)
+    cancel_event = manager.Event()
     failures = manager.dict()
     done = threading.Event()
+    # Rank zero finishes before its peers: completion waits for the whole group to succeed.
+    held_complete: list[dict[str, Any]] = []
 
     def relay_events() -> None:
         while not done.is_set() or not rank_events.empty():
@@ -216,6 +282,9 @@ def run_ddp_training_process(*, event_queue: Any, stop_queue: Any, config: dict[
                 continue
             if event is None:
                 return
+            if isinstance(event, dict) and event.get("type") == "complete":
+                held_complete[:] = [event]
+                continue
             event_queue.put(event)
 
     def relay_stop() -> None:
@@ -224,10 +293,14 @@ def run_ddp_training_process(*, event_queue: Any, stop_queue: Any, config: dict[
                 message = stop_queue.get(timeout = 0.2)
             except queue.Empty:
                 continue
-            if isinstance(message, dict) and message.get("type") == "stop":
-                save_value.value = bool(message.get("save", True))
-                stop_event.set()
+            except (EOFError, OSError, ValueError):
                 return
+            if isinstance(message, dict) and message.get("type") == "stop":
+                if not message.get("save", True):
+                    cancel_event.set()
+                stop_event.set()
+                if cancel_event.is_set():
+                    return
 
     event_thread = threading.Thread(target = relay_events, daemon = True)
     stop_thread = threading.Thread(target = relay_stop, daemon = True)
@@ -241,7 +314,7 @@ def run_ddp_training_process(*, event_queue: Any, stop_queue: Any, config: dict[
                 config,
                 rank_events,
                 stop_event,
-                save_value,
+                cancel_event,
                 _free_loopback_port(),
                 failures,
             ),
@@ -249,29 +322,32 @@ def run_ddp_training_process(*, event_queue: Any, stop_queue: Any, config: dict[
             join = True,
         )
     except BaseException as exc:
+        held_complete.clear()
         if failures:
             failed_rank = min(failures)
             error = failures[failed_rank]
-            event_queue.put(
-                {
-                    "type": "error",
-                    "error": f"DDP rank {failed_rank} failed: "
-                    f"{error.get('error') or 'Training failed'}",
-                    "stack": error.get("stack", ""),
-                    "ts": error.get("ts", time.time()),
-                }
-            )
+            terminal = {
+                "type": "error",
+                "error": f"DDP rank {failed_rank} failed: {error.get('error') or 'Training failed'}",
+                "stack": error.get("stack", ""),
+                "ts": error.get("ts", time.time()),
+            }
         else:
-            event_queue.put(
-                {
-                    "type": "error",
-                    "error": f"DDP worker group failed: {exc}",
-                    "stack": traceback.format_exc(limit = 20),
-                    "ts": time.time(),
-                }
-            )
+            terminal = {
+                "type": "error",
+                "error": f"DDP worker group failed: {exc}",
+                "stack": traceback.format_exc(limit = 20),
+                "ts": time.time(),
+            }
+    else:
+        terminal = None
     finally:
         done.set()
-        event_thread.join(timeout = 2.0)
+        # Every rank has exited, so the queue is final: drain it before the terminal event.
+        event_thread.join(timeout = 30.0)
         stop_thread.join(timeout = 1.0)
         manager.shutdown()
+    if terminal is None and held_complete:
+        terminal = held_complete[-1]
+    if terminal is not None:
+        event_queue.put(terminal)

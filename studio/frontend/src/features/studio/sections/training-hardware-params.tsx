@@ -10,6 +10,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { TabsContent } from "@/components/ui/tabs";
+import { usePlatformStore } from "@/config/env";
 import { useTrainingConfigStore } from "@/features/training";
 import { reconcileTrainingGpuSelection } from "@/features/training/lib/training-gpu-selection";
 import type { TrainingParallelismMode } from "@/features/training/types/config";
@@ -27,11 +28,15 @@ export function TrainingHardwareParams(): ReactElement {
   const t = useT();
   const devices = useTrainingGpuDevices();
   const gpu = useGpuInfo();
+  // DDP ranks rendezvous over NCCL, which PyTorch ships for Linux only.
+  const ddpPlatform = usePlatformStore((state) => state.deviceType) === "linux";
   const store = useTrainingConfigStore(
     useShallow((state) => ({
       parallelismMode: state.parallelismMode,
       selectedGpuIds: state.selectedGpuIds,
       setGpuSelection: state.setGpuSelection,
+      // The server rejects DDP for these: neither path is rank-aware.
+      ddpModel: !state.isEmbeddingModel && state.modelType !== "decision",
     })),
   );
   // Training consumes physical torch device IDs; inference's `pinnable` also
@@ -200,7 +205,12 @@ export function TrainingHardwareParams(): ReactElement {
             </SelectItem>
             <SelectItem
               value="ddp"
-              disabled={selectable.length < 2 || gpu.backend !== "cuda"}
+              disabled={
+                selectable.length < 2 ||
+                gpu.backend !== "cuda" ||
+                !ddpPlatform ||
+                !store.ddpModel
+              }
             >
               {t("studio.params.hardwareModeDdpLabel")}
             </SelectItem>

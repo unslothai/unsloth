@@ -21,6 +21,18 @@ export function selectedTrainingPreviewDevices(
   );
 }
 
+/** Single-GPU, Mac and CPU hosts have nothing to place; a saved explicit choice keeps the tab
+ * so it can still be changed. */
+export function showsTrainingHardwareTab(
+  mode: TrainingParallelismMode,
+  devices: readonly SystemGpuDevice[],
+): boolean {
+  return (
+    mode !== "auto" ||
+    devices.filter((device) => device.indexKind === "physical").length >= 2
+  );
+}
+
 /** DDP's global batch scales with its selected workers; other modes use one. */
 export function trainingPreviewGpuCount(
   mode: TrainingParallelismMode,
@@ -32,19 +44,21 @@ export function trainingPreviewGpuCount(
 export type RefreshedGpuValidation<T> =
   | { kind: "inputs-changed" }
   | { kind: "invalid"; errorKey: TranslationKey }
-  | { kind: "valid"; availableGpuIds: number[] | null; config: T };
+  | { kind: "valid"; availableGpuIds: number[] | null | undefined; config: T };
 
-/** Refresh device membership and validate the same config snapshot before launch proceeds. */
+/** Refresh device membership and validate the same config snapshot before launch proceeds.
+ * A `null` refresh (automatic placement) skips the inventory round trip. */
 export async function validateRefreshedTrainingGpuSelection<T>(options: {
-  refresh: () => Promise<number[] | null>;
+  refresh: (() => Promise<number[] | null>) | null;
   abortIfInputsChanged: () => boolean;
   getConfig: () => T;
   validate: (
     config: T,
-    availableGpuIds: number[] | null,
+    availableGpuIds: number[] | null | undefined,
   ) => { ok: true } | { ok: false; errorKey: TranslationKey };
 }): Promise<RefreshedGpuValidation<T>> {
-  const availableGpuIds = await options.refresh();
+  const availableGpuIds =
+    options.refresh === null ? undefined : await options.refresh();
   if (options.abortIfInputsChanged()) {
     return { kind: "inputs-changed" };
   }
@@ -73,7 +87,6 @@ export function reconcileTrainingGpuSelection(
     (id) => Number.isSafeInteger(id) && id >= 0 && availableIds.includes(id),
   );
   // Keep an in-progress manual selection so validation can explain its arity.
-  // Preserve an incomplete manual choice so validation can explain its arity.
   if (mode !== "auto" && ids !== null && kept.length === uniqueIds.length) {
     return { parallelismMode: mode, selectedGpuIds: ids };
   }

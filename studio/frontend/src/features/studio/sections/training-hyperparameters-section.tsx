@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { SegmentedTabsList } from "@/components/segmented-tabs";
+import {
+  type SegmentedTabOption,
+  SegmentedTabsList,
+} from "@/components/segmented-tabs";
 import {
   Collapsible,
   CollapsibleContent,
@@ -23,6 +26,8 @@ import {
   OPTIMIZER_OPTIONS,
 } from "@/config/training";
 import { useTrainingConfigStore } from "@/features/training";
+import { showsTrainingHardwareTab } from "@/features/training/lib/training-gpu-selection";
+import { useTrainingGpuDevices } from "@/hooks/use-gpu-info";
 import { useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -87,6 +92,7 @@ export function TrainingHyperparametersSection({
       epochs: state.epochs,
       isDecision: state.modelType === "decision",
       isEmbedding: state.isEmbeddingModel || state.modelType === "embeddings",
+      parallelismMode: state.parallelismMode,
       optimizerType: state.optimizerType,
       lrSchedulerType: state.lrSchedulerType,
       batchSize: state.batchSize,
@@ -120,12 +126,20 @@ export function TrainingHyperparametersSection({
   );
   const selectedOptimizer =
     isMac && isCudaAliasOptimizer ? "adamw" : store.optimizerType;
-  const tabs = [
+  const showHardware = showsTrainingHardwareTab(
+    store.parallelismMode,
+    useTrainingGpuDevices(),
+  );
+  const activeTab = tab === "hardware" && !showHardware ? "optimization" : tab;
+  type Tab = SegmentedTabOption<HyperparameterTab>;
+  const tabs: [Tab, Tab, ...Tab[]] = [
     { value: "optimization", label: t("studio.params.optimization") },
     { value: "schedule", label: t("studio.params.schedule") },
     { value: "memory", label: t("studio.params.memory") },
-    { value: "hardware", label: t("studio.params.hardware") },
-  ] as const;
+    ...(showHardware
+      ? [{ value: "hardware" as const, label: t("studio.params.hardware") }]
+      : []),
+  ];
 
   return (
     <Collapsible open={open} onOpenChange={setOpen}>
@@ -138,13 +152,13 @@ export function TrainingHyperparametersSection({
       </CollapsibleTrigger>
       <CollapsibleContent className="mt-5 data-[state=open]:overflow-visible">
         <Tabs
-          value={tab}
+          value={activeTab}
           onValueChange={(value) => setTab(value as HyperparameterTab)}
           className="w-full"
         >
           <div className="flex justify-start">
             <SegmentedTabsList
-              value={tab}
+              value={activeTab}
               options={tabs}
               ariaLabel={t("studio.params.trainingHyperparameters")}
               className="w-full max-w-[calc(520px*var(--ui-space-scale,1))] [&>button]:px-6 max-sm:[&>button]:px-2.5"
@@ -418,7 +432,7 @@ export function TrainingHyperparametersSection({
           </TabsContent>
 
           <TrainingMemoryParams />
-          <TrainingHardwareParams />
+          {showHardware && <TrainingHardwareParams />}
         </Tabs>
       </CollapsibleContent>
     </Collapsible>

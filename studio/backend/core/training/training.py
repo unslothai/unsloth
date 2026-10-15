@@ -1808,10 +1808,11 @@ class TrainingBackend:
         # VRAM, so it waits until after the VRAM hook clears GPUs.
         from utils.hardware import hardware as _hw
 
+        # The ranks rendezvous over NCCL, which PyTorch ships for Linux only.
         if config.get("parallelism_mode") == "ddp" and (
-            _hw.DEVICE != _hw.DeviceType.CUDA or _hw.IS_ROCM
+            _hw.DEVICE != _hw.DeviceType.CUDA or _hw.IS_ROCM or platform.system() != "Linux"
         ):
-            raise ValueError("Studio DDP currently requires NVIDIA CUDA GPUs.")
+            raise ValueError("Studio DDP currently requires NVIDIA CUDA GPUs on Linux.")
 
         gpu_ids = kwargs.get("gpu_ids")
         gpu_selection_kwargs = dict(
@@ -1923,9 +1924,7 @@ class TrainingBackend:
                         target = run_without_native_path_secret,
                         args = process_args,
                         kwargs = process_kwargs,
-                        # A DDP coordinator must create one rank per selected GPU;
-                        # Python forbids child processes from a daemon process.
-                        daemon = config.get("parallelism_mode") != "ddp",
+                        daemon = True,
                     )
                     from utils.process_lifetime import adopt_pid, is_process_shutting_down
 
@@ -2662,9 +2661,7 @@ class TrainingBackend:
                             target = run_without_native_path_secret,
                             args = process_args,
                             kwargs = process_kwargs,
-                            # Match the initial coordinator: DDP recovery must be
-                            # able to spawn its rank workers as well.
-                            daemon = config.get("parallelism_mode") != "ddp",
+                            daemon = True,
                         )
                         from utils.process_lifetime import adopt_pid, is_process_shutting_down
 
