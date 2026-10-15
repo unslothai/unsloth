@@ -97,6 +97,7 @@ def test_the_shell_tells_the_panel_when_the_sandbox_refuses_a_feature():
         'for (const name of ["open", "deleteDatabase", "databases"])',
         "IDBFactory.prototype[name] = function (...args) {",
         "refusals.add(error);",
+        'return name === "databases" ? result.catch(',
         "if (event.error ? refusals.has(event.error) : indexedDbThrew) tellRefused();",
         "if (refusals.has(event.reason)) tellRefused();",
         'for (const type of ["fullscreenerror", "webkitfullscreenerror"])',

@@ -266,7 +266,7 @@ _FRAME_HTML = r"""<!doctype html>
           IDBFactory.prototype[name] = function (...args) {
             try {
               const result = original.apply(this, args);
-              return result instanceof Promise ? result.catch((error) => { refusedByIndexedDb(error); throw error; }) : result;
+              return name === "databases" ? result.catch((error) => { refusedByIndexedDb(error); throw error; }) : result;
             } catch (error) {
               if (refusedByIndexedDb(error)) {
                 indexedDbThrew = true;
