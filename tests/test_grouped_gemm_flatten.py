@@ -12,17 +12,23 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-pytest.importorskip("torch")
+torch = pytest.importorskip("torch")
 pytest.importorskip("triton")
 import triton  # noqa: E402
 import triton.language as tl  # noqa: E402
 
-try:
-    from unsloth.kernels.moe.grouped_gemm.kernels import backward as bw
-except Exception as exc:  # pragma: no cover
-    pytest.skip(reason = f"grouped_gemm is unimportable here: {exc}", allow_module_level = True)
-
 KERNELS_DIR = ROOT / "unsloth" / "kernels" / "moe" / "grouped_gemm" / "kernels"
+
+
+@pytest.fixture(scope = "module")
+def bw():
+    try:
+        from unsloth.kernels.moe.grouped_gemm.kernels import backward
+    except Exception as exc:
+        if torch.cuda.is_available():
+            raise  # a real import regression, not an unsupported host
+        pytest.skip(f"grouped_gemm needs a GPU build: {exc}")
+    return backward
 
 
 def test_no_builtin_range_receives_keywords():
@@ -38,16 +44,20 @@ def test_no_builtin_range_receives_keywords():
     assert not offenders, offenders
 
 
-def test_dw_kernel_has_no_dead_flatten_constexpr():
+def test_dw_kernel_has_no_dead_flatten_constexpr(bw):
     assert "FLATTEN" not in bw._grouped_gemm_dW_kernel.arg_names
 
 
 # Triton < 3.4 resolves the constexpr-off tl.make_tensor_descriptor branches while hashing.
 @pytest.mark.skipif(not hasattr(tl, "make_tensor_descriptor"), reason = "needs Triton >= 3.4")
 @pytest.mark.parametrize("flatten", [True, False])
-def test_dx_expert_loop_ir_carries_flatten(flatten):
+def test_dx_expert_loop_ir_carries_flatten(bw, flatten):
+    from triton.backends import backends
     from triton.backends.compiler import GPUTarget
     from triton.compiler import ASTSource
+
+    if torch.version.hip is not None or "nvidia" not in backends:
+        pytest.skip("needs Triton's CUDA backend")
 
     fn = bw._grouped_gemm_dX_kernel
     ptrs = {"dY_ptr": "*bf16", "w_ptr": "*bf16", "dX_ptr": "*bf16"}
