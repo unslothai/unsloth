@@ -15,7 +15,9 @@ bf16 / fp16 parameters keep an 8 bit (master_weight_bits = 24) or 16 bit (32) er
 correction term in the optimizer state, so the effective master weight is near fp32,
 and both Adam moments are stored in 8 bits: about 7 bytes per parameter instead of 16
 for bf16 weights plus fp32 master plus fp32 moments. fp32 parameters (LoRA adapters)
-only get the 8 bit moments.
+only get the 8 bit moments. optim_args = "quantize=False" keeps the moments in the
+parameter dtype instead; 8 bit moments drift from AdamW when gradient magnitudes inside
+a quantization block span several orders of magnitude.
 
 transformers validates `optim` against OptimizerNames, so the config stores
 `adamw_torch` and marks itself with `_unsloth_flash_adamw`; the patched
@@ -50,12 +52,12 @@ def _parse_optim_args(optim_args):
         key, _, value = item.partition("=")
         if key == "master_weight_bits":
             parsed[key] = None if value.lower() in ("none", "0", "") else int(value)
-        elif key in ("compress_state_dict", "check_numerics", "decouple_lr"):
+        elif key in ("quantize", "compress_state_dict", "check_numerics", "decouple_lr"):
             parsed[key] = value.lower() in ("1", "true", "yes")
         else:
             raise ValueError(
                 f"Unsloth: optim = 'adamw_flash' does not understand optim_args key {key!r}. "
-                "Supported: master_weight_bits=24|32|none, compress_state_dict, check_numerics, decouple_lr."
+                "Supported: master_weight_bits=24|32|none, quantize, compress_state_dict, check_numerics, decouple_lr."
             )
     return parsed
 

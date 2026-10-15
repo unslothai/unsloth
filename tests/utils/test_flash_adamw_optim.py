@@ -55,7 +55,7 @@ def test_adamw_flash_selects_flashoptim(stub_flashoptim, make_args, monkeypatch)
         optim = "adamw_flash",
         learning_rate = 3e-4,
         adam_beta2 = 0.95,
-        optim_args = "master_weight_bits=32",
+        optim_args = "master_weight_bits=32, quantize=False",
     )
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     optimizer_cls, optimizer_kwargs = Trainer.get_optimizer_cls_and_kwargs(args)
@@ -63,6 +63,7 @@ def test_adamw_flash_selects_flashoptim(stub_flashoptim, make_args, monkeypatch)
     assert optimizer_kwargs["lr"] == 3e-4
     assert optimizer_kwargs["betas"] == (0.9, 0.95)
     assert optimizer_kwargs["master_weight_bits"] == 32
+    assert optimizer_kwargs["quantize"] is False
 
     bf16 = torch.nn.Parameter(torch.zeros(4, dtype = torch.bfloat16))
     optimizer_cls([{"params": [bf16], "weight_decay": 0.1}], **optimizer_kwargs)
