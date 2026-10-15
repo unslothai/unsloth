@@ -48271,6 +48271,12 @@ async def _selected_gpu_ordinal(gpu_ids, *, allow_ranking: bool = True) -> Optio
     if device != "cuda":
         return None
     if not gpu_ids:
+        # An auto-switch load uses the card its locality check planned against.
+        from core.inference.media_locality import planned_gpu_ordinal
+
+        pinned, ordinal = planned_gpu_ordinal()
+        if pinned:
+            return ordinal
         # Automatic ranks the visible cards too (#8235); the current device is PCI slot 0.
         return await asyncio.to_thread(diffusion_device.resolve_auto_cuda_ordinal)
     # The keyword only when it is not the default, so the ordinary path calls the resolver with

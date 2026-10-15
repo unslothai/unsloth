@@ -22,10 +22,14 @@ def _dev(index, total, used):
     return {"index": index, "vram_total_gb": total, "vram_used_gb": used}
 
 
-def _host(monkeypatch, visible, devices, rocm = False):
+def _host(monkeypatch, visible, devices, rocm = False, order_matches = True):
     monkeypatch.setattr(hw, "IS_ROCM", rocm)
     monkeypatch.setattr(hw, "get_parent_visible_gpu_ids", lambda: list(visible))
-    monkeypatch.setattr(hw, "get_visible_gpu_utilization", lambda: {"devices": devices})
+    monkeypatch.setattr(hw, "_cuda_order_matches_smi", lambda: order_matches)
+    monkeypatch.setattr(hw, "_get_parent_visible_gpu_spec", lambda: {"numeric_ids": list(visible)})
+    smi = {"available": True, "devices": devices}
+    monkeypatch.setattr(hw, "_smi_visible_utilization", lambda spec: smi)
+    monkeypatch.setattr(hw, "get_visible_gpu_utilization", lambda: smi)
 
 
 def test_auto_picks_the_card_with_the_most_free_vram(monkeypatch):
@@ -60,13 +64,25 @@ def test_auto_keeps_the_current_device(monkeypatch, visible, devices, rocm):
 
 
 def test_auto_never_raises(monkeypatch):
-    monkeypatch.setattr(hw, "IS_ROCM", False)
-    monkeypatch.setattr(hw, "get_parent_visible_gpu_ids", lambda: [0, 1])
+    _host(monkeypatch, [0, 1], [])
 
-    def _boom():
+    def _boom(*_a):
         raise RuntimeError("nvidia-smi hung")
 
-    monkeypatch.setattr(hw, "get_visible_gpu_utilization", _boom)
+    monkeypatch.setattr(hw, "_smi_visible_utilization", _boom)
+    assert dd.resolve_auto_cuda_ordinal() is None
+
+
+def test_auto_keeps_the_current_device_when_cuda_order_is_not_smi_order(monkeypatch):
+    # CUDA_DEVICE_ORDER=FASTEST_FIRST: nvidia-smi rows are not torch ordinals, so no ranking.
+    _host(monkeypatch, [0, 1], [_dev(0, 8.0, 1.0), _dev(1, 24.0, 0.5)], order_matches = False)
+    assert dd.resolve_auto_cuda_ordinal() is None
+
+
+def test_auto_never_falls_back_to_torch_telemetry(monkeypatch):
+    # No nvidia-smi: the hardware layer's torch fallback opens a CUDA context per card.
+    _host(monkeypatch, [0, 1], [_dev(0, 8.0, 1.0), _dev(1, 24.0, 0.5)])
+    monkeypatch.setattr(hw, "_smi_visible_utilization", lambda spec: None)
     assert dd.resolve_auto_cuda_ordinal() is None
 
 
@@ -97,6 +113,20 @@ def test_route_auto_stays_off_cuda_and_while_ranking_is_barred(monkeypatch):
     assert asyncio.run(resolve(None)) is None
     resolve = _route(monkeypatch)
     assert asyncio.run(resolve(None, allow_ranking = False)) is None
+
+
+def test_route_uses_the_ordinal_an_auto_switch_planned(monkeypatch):
+    from core.inference import media_locality
+
+    resolve = _route(monkeypatch)
+    token = media_locality.pin_planned_gpu_ordinal(0)
+    try:
+        assert media_locality.plan_gpu_ordinal() == 0
+        assert asyncio.run(resolve(None)) == 0
+        assert asyncio.run(resolve([1])) == 1  # an explicit pick still wins
+    finally:
+        media_locality._PLANNED_ORDINAL.reset(token)
+    assert asyncio.run(resolve(None)) == 1
 
 
 def test_plan_sizes_the_card_the_load_will_rank(monkeypatch):

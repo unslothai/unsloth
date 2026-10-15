@@ -396,11 +396,12 @@ def resolve_auto_cuda_ordinal() -> Optional[int]:
     Bare "cuda" is the current device, PCI slot 0 under Studio's PCI_BUS_ID order, so on a multi-GPU host
     the load budgeted against that card alone and offloaded to RAM beside an idle bigger one (#8235). Neither
     engine shards, so this picks ONE card: most free VRAM, like ``auto_select_gpu_ids`` and Ollama's
-    single-GPU fit, ties to the lowest ordinal. Read from the hardware layer's telemetry (nvidia-smi, no CUDA
-    context per card) and keyed through the parent-visible list, so a mask keeps deciding which cards exist.
+    single-GPU fit, ties to the lowest ordinal. Read from nvidia-smi alone (no CUDA context per card, so no
+    torch fallback) and keyed through the parent-visible list, so a mask keeps deciding which cards exist.
 
     None on one visible card (unchanged), a UUID/MIG mask (no physical ids), ROCm (an APU's free reading is the
-    shared host pool, which would outrank a discrete card) and any failure. Never raises.
+    shared host pool, which would outrank a discrete card), a CUDA order other than nvidia-smi's (its rows are
+    then not torch's ordinals), missing nvidia-smi telemetry and any failure. Never raises.
     """
     try:
         from utils.hardware import hardware as hw
@@ -408,9 +409,10 @@ def resolve_auto_cuda_ordinal() -> Optional[int]:
         if hw.IS_ROCM:
             return None
         visible = hw.get_parent_visible_gpu_ids()
-        if len(visible) < 2:
+        if len(visible) < 2 or not hw._cuda_order_matches_smi():
             return None
-        devices = hw.get_visible_gpu_utilization().get("devices", [])
+        result = hw._smi_visible_utilization(hw._get_parent_visible_gpu_spec())
+        devices = (result or {}).get("devices", [])
     except Exception:  # noqa: BLE001 -- automatic placement falls back to the current device
         return None
     free_by_ordinal: dict[int, float] = {}
