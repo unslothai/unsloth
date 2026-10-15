@@ -791,6 +791,10 @@ def test_expert_only_mixtral_list_falls_back_to_the_decoders_experts():
     regex = U.native_expert_only_regex(model, ["w1", "w2", "w3"])
     assert {n for n in names if re.fullmatch(regex, n)} == {n for n in names if n.endswith((".w1", ".w2", ".w3"))}
     assert U.native_expert_only_regex(model, ["q_proj"]) is None
+    regex = U.native_expert_only_regex(model, ["w1", "w2", "w3", "gate"])
+    want = {n for n in names if n.endswith((".w1", ".w2", ".w3", ".gate"))}
+    assert any(n.endswith(".block_sparse_moe.gate") for n in want)
+    assert {n for n in names if re.fullmatch(regex, n)} == want
     model = _native_qwen3_moe_4x_model()
     model.get_decoder = lambda: model.model
     names = [n for n, m in model.named_modules() if isinstance(m, torch.nn.Linear)]

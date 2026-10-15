@@ -9250,13 +9250,11 @@ def native_expert_only_regex(model, target_modules):
     requested = {t for t in target_modules if isinstance(t, str) and "." not in t}
     if "gate_up_proj" in requested:  # the shorthand reaches split gate / up experts too
         requested |= {"gate_proj", "up_proj"}
-    parents, leaves = set(), set()
+    def generic(path):
+        return r"\.".join(r"\d+" if part.isdigit() else re.escape(part) for part in path.split("."))
+
+    parents, leaves, others = set(), set(), set()
     for name, module in model.named_modules():
-        matched = _EXPERT_SUBMODULE_PATTERN.search(name)
-        if matched is None or matched.group(1) not in requested:
-            continue
-        if not name[matched.start() :].lstrip(".").startswith("experts."):
-            continue
         if prefix and not name.startswith(prefix + "."):
             continue
         if not (
@@ -9264,13 +9262,17 @@ def native_expert_only_regex(model, target_modules):
             or isinstance(getattr(module, "base_layer", None), torch.nn.Linear)
         ):
             continue
-        parents.add(
-            r"\.".join(r"\d+" if part.isdigit() else re.escape(part) for part in name[: matched.start()].split("."))
-        )
-        leaves.add(matched.group(1))
+        matched = _EXPERT_SUBMODULE_PATTERN.search(name)
+        if matched is not None and name[matched.start() :].lstrip(".").startswith("experts."):
+            if matched.group(1) in requested:
+                parents.add(generic(name[: matched.start()]))
+                leaves.add(matched.group(1))
+        elif name.rpartition(".")[2] in requested:
+            others.add(generic(name))  # e.g. the router: plain PEFT matches it by suffix too
     if not leaves:
         return None
-    return moe_expert_submodule_regex(sorted(leaves), parents)
+    regex = moe_expert_submodule_regex(sorted(leaves), parents)
+    return f"(?:{regex})|(?:{'|'.join(sorted(others))})" if others else regex
 
 
 def widen_target_regex_to_expert_submodules(
