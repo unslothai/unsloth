@@ -1,15 +1,4 @@
-"""Regression test for .json parsing in unsloth/dataprep/raw_text.py.
-
-Both .json and .jsonl map to the "json_lines" handler, which used to parse the
-file one line at a time. A real .json file is a single JSON document (commonly
-a top-level list of records), so every line failed json.loads, the whole
-document was dropped, and the handler returned "" (load_from_file then rejected
-the valid file as "empty"). The handler now parses the file as one JSON value
-first and falls back to line-by-line for true .jsonl.
-
-raw_text.py's only third-party import is `datasets`, so we stub it and exec the
-module directly, with no `import unsloth` (which needs a GPU / unsloth_zoo).
-"""
+"""A .json file is one JSON document: parse it whole, falling back to line-by-line only for .jsonl."""
 
 import json
 import sys

@@ -514,7 +514,10 @@ from core.inference.repetition_guard import is_repetition_dominated
 from core.inference.mcp_images import (
     DETACHED_IMAGE_TURN_TEXT as MCP_DETACHED_IMAGE_TURN_TEXT,
     IMAGE_TURN_TEXT as MCP_IMAGE_TURN_TEXT,
+    MAX_MODEL_IMAGES as MCP_MAX_MODEL_IMAGES,
+    MAX_TOTAL_MODEL_IMAGES as MCP_MAX_TOTAL_MODEL_IMAGES,
     append_image_turn as append_mcp_image_turn,
+    is_image_tool as mcp_is_image_tool,
     mentions_images as mcp_images_mentioned_in,
 )
 from core.inference.tool_loop_controller import (
@@ -2419,6 +2422,19 @@ _CONTINUE_TRUNCATED_ANSWER_STATUS = "Continuing the answer..."
 # cut, which costs a call and teaches the model nothing. Sized to leave a short line of real
 # output rather than to guarantee a useful one; the point is to catch the collapse to zero.
 _MIN_USEFUL_RESULT_TOKENS = 64
+# llama.cpp's default per-image embedding cap plus mtmd's delimiters, when the admission figure is out of reach.
+_FALLBACK_IMAGE_TOKENS = 4096 + 128
+
+
+def _mcp_image_tokens(backend) -> int:
+    """Per-image KV allowance for the loaded projector, the one admission charges."""
+    try:
+        from routes.inference import _openai_llama_admission_image_tokens  # noqa: PLC0415
+        return int(_openai_llama_admission_image_tokens(backend))
+    except Exception:  # noqa: BLE001 -- sizing must never break a tool call
+        return _FALLBACK_IMAGE_TOKENS
+
+
 # How many times one tool may return a byte-identical result before the model is told the
 # call is not going to change. Follows OpenClaw's tool-loop detection, which keys on the
 # RESULT rather than the arguments and never intervenes while results are still changing:
@@ -8277,6 +8293,7 @@ def _local_ssl_context() -> ssl.SSLContext:
 
 # Freeing a large model's GPU memory on a busy driver took over 5 s after SIGKILL; this only bounds a stuck process.
 _SIGKILL_REAP_TIMEOUT_S = 30
+_QUIT_SIGNAL_EXIT_GRACE_S = 2
 
 
 class LlamaCppBackend:
@@ -35334,6 +35351,32 @@ class LlamaCppBackend:
         return pgid if pgid == pid else None
 
     @staticmethod
+    def _quit_signal_grace_left(pid) -> Optional[float]:
+        if not _is_signalable_pid(pid) or not hasattr(os, "getpgid"):
+            return None
+        from utils.process_lifetime import seconds_since_quit_signal
+
+        elapsed = seconds_since_quit_signal()
+        try:
+            if elapsed is None or os.getpgid(pid) != os.getpgrp():
+                return None
+        except OSError:
+            return None
+        return max(0.0, _QUIT_SIGNAL_EXIT_GRACE_S - elapsed)
+
+    def _still_listening(self) -> bool:
+        port = getattr(self, "_port", None)
+        if not port:
+            return True
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout = 0.5):
+                return True
+        except ConnectionRefusedError:
+            return False
+        except OSError:
+            return True
+
+    @staticmethod
     def _kill_process_group(pgid):
         """Take down what the leader left behind, if anything is still there."""
         if not _is_signalable_pid(pgid):
@@ -35624,6 +35667,16 @@ class LlamaCppBackend:
             self._torn_down_process = self._process
         try:
             if terminable:
+                _grace = self._quit_signal_grace_left(_pid)
+                if _grace is not None:
+                    # The quit signal already reached it; a second one aborts llama-server on Metal.
+                    try:
+                        self._process.wait(timeout = _grace)
+                    except subprocess.TimeoutExpired:
+                        # Still listening: our signal never reached it (a stop sent to Studio alone).
+                        if not self._still_listening():
+                            self._process.kill()
+                            self._process.wait(timeout = _SIGKILL_REAP_TIMEOUT_S)
                 self._process.terminate()
                 self._process.wait(timeout = 5)
         except subprocess.TimeoutExpired:
@@ -41669,6 +41722,7 @@ class LlamaCppBackend:
                                     # run nearer one or two. Under-priced, the first result
                                     # is handed room the later ARGUMENTS already occupy.
                                     _pending_args = 0
+                                    _pending_exact = True
                                     if _pending_msgs:
                                         try:
                                             _pending_args = self.count_chat_tokens(
@@ -41679,17 +41733,58 @@ class LlamaCppBackend:
                                                 "result budget: pending call count failed",
                                                 exc_info = True,
                                             )
+                                            _pending_exact = False
                                             _pending_args = 2 * estimate_messages_tokens_dense(
                                                 _pending_msgs
                                             )
+                                    # This iteration's cap, not the caller's whole one. A
+                                    # recovery turn with 100 of 1000 tokens left had the
+                                    # result priced as if 1000 were still to come, which
+                                    # reserves room away and can starve a read the request
+                                    # had space for.
+                                    _result_max_tokens = _iteration_max_tokens
+                                    # Auto-compaction off: nothing fits the next prompt to
+                                    # `prompt_budget`, whose quarter-window reply reserve
+                                    # emptied every result from 75% of the window on (#13784).
+                                    # Price to the reply floor the admission gate uses instead,
+                                    # only on an exact count of a thread with no unpriced media:
+                                    # the quarter reserve is what covers either error.
+                                    if (
+                                        context_overflow != "truncate_oldest"
+                                        and (
+                                            _exact_prompt_tokens is not None
+                                            or (_compact_after_execution and _compacted_turn_tokens)
+                                        )
+                                        and _pending_exact
+                                        and messages_without_unpriced_media(conversation)
+                                        is conversation
+                                    ):
+                                        _ctx = self._effective_context_length
+                                        _requested = (
+                                            _iteration_max_tokens
+                                            if _iteration_max_tokens and _iteration_max_tokens > 0
+                                            else _ctx
+                                        )
+                                        _reserve = min(_requested, _reply_floor(_ctx))
+                                        # Images join the thread after the whole batch, unpriced:
+                                        # the ones already collected, and this call's own.
+                                        _images = sum(map(len, batch_mcp_images))
+                                        if (
+                                            mcp_is_image_tool(decision.tool_name)
+                                            and image_share is None
+                                            and self.is_vision
+                                        ):
+                                            _images += MCP_MAX_MODEL_IMAGES
+                                        if _images:
+                                            _reserve += min(
+                                                MCP_MAX_TOTAL_MODEL_IMAGES, _images
+                                            ) * _mcp_image_tokens(self)
+                                        _result_max_tokens = min(
+                                            _reserve, _requested, max(1, _ctx // 4)
+                                        )
                                     _result_budget = tool_result_budget(
                                         self._effective_context_length,
-                                        # This iteration's cap, not the caller's whole
-                                        # one. A recovery turn with 100 of 1000 tokens
-                                        # left had the result priced as if 1000 were
-                                        # still to come, which reserves room away and can
-                                        # starve a read the request had space for.
-                                        _iteration_max_tokens,
+                                        _result_max_tokens,
                                         _spent + _pending_args,
                                     ) // (len(_pending) + 1)
                                     # A budget at or near zero means the call cannot deliver
@@ -41744,7 +41839,7 @@ class LlamaCppBackend:
                                                     # or the rescue is measured against a
                                                     # different request from the one it is
                                                     # rescuing.
-                                                    _iteration_max_tokens,
+                                                    _result_max_tokens,
                                                     _spent_after + _pending_args,
                                                 ) // (len(_pending) + 1)
                                                 logger.info(
@@ -43442,6 +43537,7 @@ class LlamaCppBackend:
         repetition_penalty: float = 1.1,
         cancel_event: Optional[threading.Event] = None,
         stats_holder: Optional[dict] = None,
+        audio_options: Optional[dict] = None,
     ) -> tuple:
         """
         Generate TTS audio via llama-server /completion + codec decode.
@@ -43456,10 +43552,16 @@ class LlamaCppBackend:
 
         tpl, stop, need_ids = self._TTS_PROMPTS[audio_type]
         # Raw prompt, not messages: codec delimiters are the only structure to break (#7066).
-        from core.inference.chat_template_helpers import neutralize_tts_prompt_text
+        from core.inference.chat_template_helpers import (
+            neutralize_tts_prompt_text,
+            tts_prompt_with_voice,
+        )
 
+        prompt_text = tts_prompt_with_voice(
+            neutralize_tts_prompt_text(text, audio_type), audio_type, audio_options
+        )
         payload: dict = {
-            "prompt": tpl.format(text = neutralize_tts_prompt_text(text, audio_type)),
+            "prompt": tpl.format(text = prompt_text),
             "stream": False,
             "n_predict": max_new_tokens,
             "temperature": temperature,

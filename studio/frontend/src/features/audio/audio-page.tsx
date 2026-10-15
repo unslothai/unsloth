@@ -55,7 +55,6 @@ import {
   settledDeleteMarkers,
 } from "./audio-page-policy";
 import { type AudioSourceSelection, clipReference } from "./audio-run-request";
-import { AudioRuntimeUpdateNotice } from "./components/audio-runtime-update-notice";
 import { AudioActiveProvider } from "./components/audio-source-input";
 import {
   audioModelLabel,
@@ -338,7 +337,6 @@ export function AudioPage({
     selectedSttRepoRef,
     sttStatusRefreshGeneration,
     audioCppRuntime,
-    runtimeUpdate,
     sttLoadGeneration,
     sttGgufVariants,
     sttEngines,
@@ -657,7 +655,6 @@ export function AudioPage({
     setSelectedId,
     pendingTranscribeRelease,
     replayQueuedTtsPick,
-    audioOptionSpecs,
     audioOptionValues,
     sttRepo: cloneSttRepo,
   });
@@ -678,7 +675,6 @@ export function AudioPage({
     setSelectedId,
     pendingTranscribeRelease,
     replayQueuedTtsPick,
-    audioOptionSpecs,
     audioOptionValues,
     sttRepo: cloneSttRepo,
   });
@@ -699,7 +695,6 @@ export function AudioPage({
     setSelectedId,
     pendingTranscribeRelease,
     replayQueuedTtsPick,
-    audioOptionSpecs,
     audioOptionValues,
     sttRepo: cloneSttRepo,
   });
@@ -1854,14 +1849,6 @@ export function AudioPage({
                 <p className="text-xs leading-snug text-muted-foreground">
                   {capabilityLine}
                 </p>
-                {runtimeUpdate ? (
-                  <AudioRuntimeUpdateNotice
-                    update={runtimeUpdate}
-                    onUpdated={() =>
-                      Promise.all([refreshStatus(), refreshSttStatus()])
-                    }
-                  />
-                ) : null}
               </div>
 
               {mode === "speak" ? (
@@ -1931,13 +1918,19 @@ export function AudioPage({
                     <AudioActiveProvider value={active}>
                       <CloneRail
                         {...railProps}
+                        audioOptionSpecs={clone.audioOptionSpecs}
                         clone={clone}
                         historyClips={clips}
                       />
                     </AudioActiveProvider>
                   ) : ttsWorkflow === "edit" ? (
                     <AudioActiveProvider value={active}>
-                      <EditRail {...railProps} edit={edit} historyClips={clips} />
+                      <EditRail
+                        {...railProps}
+                        audioOptionSpecs={edit.audioOptionSpecs}
+                        edit={edit}
+                        historyClips={clips}
+                      />
                     </AudioActiveProvider>
                   ) : ttsWorkflow === "convert" ? (
                     <AudioActiveProvider value={active}>

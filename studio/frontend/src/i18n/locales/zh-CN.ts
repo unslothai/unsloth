@@ -61,6 +61,8 @@ export const zhCN = {
       never: "从不",
       scripts: "运行脚本",
       scriptsDescription: "选择模型是否可以在页面上运行脚本。每个脚本运行前都会先向你显示",
+      cursor: "显示光标",
+      cursorDescription: "在模型于页面上点击、输入和拖动的位置显示指针",
       askEveryTime: "每次都询问",
       permissionsTitle: "代理权限",
       permissionsDescription: "选择默认设置，并为特定网站添加例外。无论这里如何设置，都不会填写密码和支付信息字段。",
@@ -83,6 +85,9 @@ export const zhCN = {
     },
     agent: {
       working: "Unsloth 正在此标签页中浏览",
+      waiting: "Unsloth 需要你在 {chat} 的浏览器中回答",
+      otherChat: "另一个聊天",
+      show: "显示",
       stop: "停止",
       allow: "允许",
       deny: "拒绝",
@@ -256,7 +261,7 @@ export const zhCN = {
     annotationScreenshotsAlways: "始终附带",
     annotationScreenshotsNever: "从不附带",
     clearDataSetting: "清除浏览数据",
-    clearDataSettingDescription: "清除浏览历史记录、下载历史记录和缓存的页面。页面不会保留任何 Cookie 或网站数据。",
+    clearDataSettingDescription: "清除浏览历史记录、下载历史记录和缓存的页面。页面仅在重新加载 Studio 之前保留 Cookie 和网站数据。",
     manage: "管理",
     fullView: {
       enter: "全屏视图",
@@ -432,7 +437,7 @@ export const zhCN = {
     },
     clearData: {
       title: "清除浏览数据？",
-      description: "这将清除你的浏览历史记录、下载历史记录和缓存的页面。已下载的文件会保留在你的电脑上。",
+      description: "这会清除浏览历史、下载历史、缓存的页面以及网站 Cookie 和数据，并让你退出各网站。已下载的文件会保留在你的电脑上。",
       cancel: "取消",
       confirm: "清除数据",
       done: "已清除浏览数据",
@@ -448,6 +453,7 @@ export const zhCN = {
       resubmit: "此页面来自表单提交。重新加载会再次提交表单，可能会重复执行该操作。",
       upload: "此视图不支持上传文件。请在系统浏览器中打开该页面后再提交。",
       scriptNavigation: "此页面尝试通过脚本跳转到其他地址，此视图无法跟随。请在系统浏览器中打开。",
+      needsBrowser: "此页面尝试使用此视图阻止的浏览器功能，部分内容可能无法正常工作。请在系统浏览器中打开。",
     },
     native: {
       externalPrompt: "{host} 想要打开 {url}",
@@ -994,6 +1000,9 @@ export const zhCN = {
       resetButton: "重置",
       resetDone: "资料库设置已重置",
       storageSection: "存储空间",
+      downloadsSection: "图片下载",
+      imageInfoStamp: "信息水印",
+      imageInfoStampDescription: "在从图片页面下载的图片底部显示模型、日期和种子。无论是否开启，生成设置都会保存在文件中。",
       storageDescription: "打开一个类别即可按大小从大到小查看文件，并删除不再需要的内容。",
       storageUsed: "资料库已使用 {size}",
       storageDisk: "此磁盘可用 {free}，共 {total}",
@@ -1360,6 +1369,8 @@ export const zhCN = {
       installRuntimeFailed: "运行时安装失败。",
       installRuntimeError: "无法开始安装运行时。",
       unsupportedArch: "Windows 沙箱 (MXC) 仅支持 x64 版 Windows，因此在此电脑上不可用。",
+      builtinNeedsUpdate:
+        "Windows 内置容器需要版本 {required} 或更高，而这台电脑运行的是 {current}。安装最新的 Windows 更新即可无需管理员步骤使用它，或在下方开启备用沙盒。",
       unsupportedBuild: "Windows 沙箱 (MXC) 需要 Windows 11 24H2（版本 26100）或更高版本，因此在此电脑上不可用。",
       permissionsIntro: "选择工具何时先询问，以及 Python 和终端是否也在操作系统沙盒中运行。",
       permissionLabel: "工具权限",
@@ -1706,6 +1717,19 @@ export const zhCN = {
         apiOnlyDescription:
           "空闲卸载会将你在 Unsloth 中加载的模型保留在内存中，只释放由 API 请求加载的模型。",
       },
+      modelAliases: {
+        sectionTitle: "模型别名 (OpenAI API)",
+        description:
+          "为 API 客户端提供固定名称，例如 fast-chat 或 code。指定别名的请求由该别名指向的模型处理，因此更换模型后已连接的应用仍可正常使用。请开启按请求切换模型，以便别名可以加载其模型。",
+        namePlaceholder: "fast-chat",
+        nameAriaLabel: "别名名称",
+        modelAriaLabel: "别名指向的模型",
+        modelPlaceholder: "unsloth/Qwen3-4B-GGUF:Q4_K_M",
+        removeAriaLabel: "删除别名",
+        add: "添加别名",
+        loadError: "无法加载模型别名。",
+        saveError: "无法保存模型别名。",
+      },
       previewSharing: {
         sectionTitle: "预览分享",
         enableLabel: "公开预览链接",
@@ -1824,8 +1848,20 @@ export const zhCN = {
         embeddingModelDescription:
           "用于为文档建立索引和搜索的 Hugging Face 模型或本地路径。默认值为 {defaultModel}。",
         searchPlaceholder: "搜索 HF 上的任意模型",
-        reindexWarning:
-          "仅影响新建立索引的文档。更改模型后请重新上传已有文档。",
+        reindexWarning: "仅影响新建立索引的文档。更改模型后请重新嵌入已有文档。",
+        reembed: {
+          label: "重新嵌入文档",
+          staleOne: "有 1 个文档使用其他嵌入模型建立索引，语义搜索会跳过它。",
+          staleMany: "有 {count} 个文档使用其他嵌入模型建立索引，语义搜索会跳过它们。",
+          staleArchived: "较早的聊天记录使用其他嵌入模型建立索引，语义搜索会跳过它。",
+          running: "正在重新嵌入：{done} / {total}",
+          action: "重新嵌入",
+          stop: "停止",
+          startFailed: "无法开始重新嵌入",
+          stopped: "重新嵌入已停止",
+          finished: "文档已重新嵌入",
+          finishedWithFailures: "{count} 个无法重新嵌入",
+        },
         emptyError: "请输入 Hugging Face 模型 ID 或本地路径。",
         loadError: "加载 embedding 模型设置失败。",
         saveError: "保存 embedding 模型失败。",
@@ -2533,6 +2569,9 @@ export const zhCN = {
         showMemoryBar: "显示显存占用条",
         showMemoryBarDescription:
           "在每个已下载模型的行下方显示预计显存占用：权重、按实际加载的上下文长度计算的 KV 缓存，以及推测解码草稿所需的预留。",
+        fitOnDeviceOnly: "仅显示可运行的模型",
+        fitOnDeviceOnlyDescription:
+          "在模型选择器和 Hub 中隐藏超出本设备显存和内存容量的模型。已下载的模型仍会显示。",
       },
       menu: {
         title: "聊天菜单",
@@ -3056,6 +3095,7 @@ export const zhCN = {
       desktopAppVersion: "桌面应用版本",
       desktopAppVersionUnavailable: "不可用",
       llamaCppVersion: "llama.cpp 版本",
+      audioCppVersion: "audio.cpp 版本",
       hardware: "硬件",
       gpu: "GPU",
       cuda: "CUDA",

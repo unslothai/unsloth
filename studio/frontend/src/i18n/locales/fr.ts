@@ -61,6 +61,8 @@ export const fr = {
       never: "Jamais",
       scripts: "Exécuter des scripts",
       scriptsDescription: "Choisissez si les modèles peuvent exécuter des scripts sur les pages. Chaque script vous est montré avant de s’exécuter",
+      cursor: "Afficher le curseur",
+      cursorDescription: "Affiche un pointeur là où les modèles cliquent, saisissent et font glisser sur la page",
       askEveryTime: "Demander à chaque fois",
       permissionsTitle: "Autorisations de l'agent",
       permissionsDescription: "Choisissez les valeurs par défaut et ajoutez des exceptions pour certains sites. Les champs de mot de passe et de paiement ne sont jamais remplis, quels que soient ces réglages.",
@@ -83,6 +85,9 @@ export const fr = {
     },
     agent: {
       working: "Unsloth navigue dans cet onglet",
+      waiting: "Unsloth attend votre réponse dans le navigateur pour {chat}",
+      otherChat: "une autre discussion",
+      show: "Afficher",
       stop: "Arrêter",
       allow: "Autoriser",
       deny: "Refuser",
@@ -256,7 +261,7 @@ export const fr = {
     annotationScreenshotsAlways: "Toujours inclure",
     annotationScreenshotsNever: "Ne jamais inclure",
     clearDataSetting: "Effacer les données de navigation",
-    clearDataSettingDescription: "Efface l’historique de navigation, l’historique des téléchargements et les pages en cache. Les pages ne conservent aucun cookie ni aucune donnée de site.",
+    clearDataSettingDescription: "Efface l’historique de navigation, l’historique des téléchargements et les pages en cache. Les pages ne conservent les cookies et les données de site que jusqu’au rechargement de Studio.",
     manage: "Gérer",
     fullView: {
       enter: "Plein écran",
@@ -432,7 +437,7 @@ export const fr = {
     },
     clearData: {
       title: "Effacer les données de navigation ?",
-      description: "Cette action efface votre historique de navigation, l’historique des téléchargements et les pages en cache. Les fichiers téléchargés restent sur votre ordinateur.",
+      description: "Cela efface l'historique de navigation, l'historique des téléchargements, les pages en cache ainsi que les cookies et données de sites, ce qui vous déconnecte des sites. Les fichiers téléchargés restent sur votre ordinateur.",
       cancel: "Annuler",
       confirm: "Effacer les données",
       done: "Données de navigation effacées",
@@ -448,6 +453,7 @@ export const fr = {
       resubmit: "Cette page provient d'un formulaire. La recharger renvoie le formulaire, ce qui pourrait répéter son action.",
       upload: "L'envoi de fichiers ne fonctionne pas dans cette vue. Ouvrez la page dans le navigateur du système pour l'envoyer.",
       scriptNavigation: "Cette page a tenté d'aller à une autre adresse par script, ce que cette vue ne peut pas suivre. Ouvrez-la plutôt dans le navigateur du système.",
+      needsBrowser: "Cette page a tenté d'utiliser une fonction du navigateur que cette vue bloque, certaines parties peuvent donc ne pas fonctionner. Ouvrez-la plutôt dans le navigateur du système.",
     },
     native: {
       externalPrompt: "{host} veut ouvrir {url}",
@@ -1001,6 +1007,9 @@ export const fr = {
       resetButton: "Réinitialiser",
       resetDone: "Réglages de la Bibliothèque réinitialisés",
       storageSection: "Stockage",
+      downloadsSection: "Téléchargements d'images",
+      imageInfoStamp: "Tampon d'informations",
+      imageInfoStampDescription: "Affiche le modèle, la date et la graine en bas des images téléchargées depuis la page Images. Les paramètres de génération sont enregistrés dans le fichier dans tous les cas.",
       storageDescription: "Ouvrez une catégorie pour voir ses fichiers du plus lourd au plus léger et supprimez ce dont vous n'avez plus besoin.",
       storageUsed: "{size} utilisés par la Bibliothèque",
       storageDisk: "{free} libres sur {total} sur ce disque",
@@ -1367,6 +1376,7 @@ export const fr = {
       installRuntimeFailed: "L'installation du runtime a échoué.",
       installRuntimeError: "Impossible de lancer l'installation du runtime.",
       unsupportedArch: "Le bac à sable Windows (MXC) ne fonctionne que sous Windows x64, il n'est donc pas disponible sur ce PC.",
+      builtinNeedsUpdate: "Le conteneur intégré de Windows nécessite la build {required} ou plus récente, et ce PC exécute {current}. Installez la dernière mise à jour de Windows pour l'utiliser sans étape administrateur, ou activez le sandbox de secours ci-dessous.",
       unsupportedBuild: "Le bac à sable Windows (MXC) nécessite Windows 11 24H2 (build 26100) ou plus récent, il n'est donc pas disponible sur ce PC.",
       permissionsIntro: "Choisissez quand les outils demandent d'abord, et si Python et le Terminal s'exécutent aussi dans le bac à sable du système.",
       permissionLabel: "Autorisations des outils",
@@ -1743,6 +1753,19 @@ export const fr = {
         apiOnlyDescription:
           "Le déchargement en cas d'inactivité laisse en mémoire un modèle que vous avez chargé depuis Unsloth et ne libère que ceux chargés par une requête API.",
       },
+      modelAliases: {
+        sectionTitle: "Alias de modèles (OpenAI API)",
+        description:
+          "Des noms stables pour les clients de l’API, comme fast-chat ou code. Une requête qui nomme un alias est servie par le modèle vers lequel il pointe, donc les apps connectées continuent de fonctionner quand vous changez de modèle. Activez Changer de modèle par requête pour qu’un alias puisse charger son modèle.",
+        namePlaceholder: "fast-chat",
+        nameAriaLabel: "Nom de l’alias",
+        modelAriaLabel: "Modèle vers lequel pointe l’alias",
+        modelPlaceholder: "unsloth/Qwen3-4B-GGUF:Q4_K_M",
+        removeAriaLabel: "Supprimer l’alias",
+        add: "Ajouter un alias",
+        loadError: "Impossible de charger les alias de modèles.",
+        saveError: "Impossible d’enregistrer les alias de modèles.",
+      },
       previewSharing: {
         sectionTitle: "Partage de l'aperçu",
         enableLabel: "Liens d'aperçu publics",
@@ -1869,7 +1892,23 @@ export const fr = {
           "Modèle Hugging Face ou chemin local utilisé pour indexer et rechercher vos documents. La valeur par défaut est {defaultModel}.",
         searchPlaceholder: "Rechercher n'importe quel modèle sur HF",
         reindexWarning:
-          "N'affecte que les documents nouvellement indexés. Téléversez à nouveau les documents existants après avoir changé de modèle.",
+          "N'affecte que les documents nouvellement indexés. Ré-encodez les documents existants après avoir changé de modèle.",
+        reembed: {
+          label: "Ré-encoder les documents",
+          staleOne:
+            "1 document a été indexé avec un autre modèle d'embedding, la recherche sémantique l'ignore donc.",
+          staleMany:
+            "{count} documents ont été indexés avec un autre modèle d'embedding, la recherche sémantique les ignore donc.",
+          staleArchived:
+            "L'historique de chat antérieur a été indexé avec un autre modèle d'embedding, la recherche sémantique l'ignore donc.",
+          running: "Ré-encodage : {done} sur {total}",
+          action: "Ré-encoder",
+          stop: "Arrêter",
+          startFailed: "Impossible de lancer le ré-encodage",
+          stopped: "Ré-encodage interrompu",
+          finished: "Documents ré-encodés",
+          finishedWithFailures: "{count} n'ont pas pu être ré-encodés",
+        },
         emptyError:
           "Saisissez un identifiant de modèle Hugging Face ou un chemin local.",
         loadError: "Échec du chargement du paramètre du modèle d'embedding.",
@@ -2608,6 +2647,9 @@ export const fr = {
         showMemoryBar: "Afficher la barre d’utilisation de la VRAM",
         showMemoryBarDescription:
           "Affiche sous la ligne de chaque modèle téléchargé son utilisation estimée de la VRAM : poids, cache KV à la longueur de contexte avec laquelle il sera chargé, et toute réserve de brouillon spéculatif.",
+        fitOnDeviceOnly: "Afficher uniquement les modèles compatibles",
+        fitOnDeviceOnlyDescription:
+          "Masque dans le sélecteur de modèles et le Hub les modèles trop volumineux pour la mémoire GPU et la RAM de cet appareil. Les modèles téléchargés restent visibles.",
       },
       menu: {
         title: "Menu du chat",
@@ -3154,6 +3196,7 @@ export const fr = {
       desktopAppVersion: "Version de l’application de bureau",
       desktopAppVersionUnavailable: "Indisponible",
       llamaCppVersion: "Version de llama.cpp",
+      audioCppVersion: "Version d'audio.cpp",
       hardware: "Matériel",
       gpu: "GPU",
       cuda: "CUDA",

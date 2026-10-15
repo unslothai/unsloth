@@ -35,9 +35,6 @@ def _render(template_name, messages, **kwargs):
     return tmpl.render(**ctx)
 
 
-# ---------- system turn and <|think|> placement ----------
-
-
 def test_system_message_emits_dedicated_system_turn():
     msgs = [
         {"role": "system", "content": "You are helpful"},
@@ -89,9 +86,6 @@ def test_alternation_violation_raises_template_error():
     msgs = [{"role": "user", "content": "A"}, {"role": "user", "content": "B"}]
     with pytest.raises(TemplateError):
         _render("gemma4_template", msgs)
-
-
-# ---------- strip_thinking macro semantics ----------
 
 
 def test_strip_thinking_strips_matched_pair():
@@ -153,11 +147,7 @@ def test_multi_turn_strips_all_historical_model_turns():
     assert "A1" in out and "A2" in out
 
 
-# ---------- thinking-template gen-prompt injection ----------
-
-
 def test_thinking_template_injects_empty_thought_channel_by_default():
-    # enable_thinking defaults False, so the gen-prompt injection fires.
     msgs = [{"role": "user", "content": "Hi"}]
     out = _render("gemma4_thinking_template", msgs, add_generation_prompt = True)
     assert out.endswith("<|turn>model\n<|channel>thought\n<channel|>")
