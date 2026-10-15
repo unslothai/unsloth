@@ -2191,7 +2191,12 @@ class _PerDeviceRopeCache:
         device_index = self._ensure_rope_cache(device_index)
         return self.multi_gpu_cos_cached[device_index], self.multi_gpu_sin_cached[device_index]
 
-    def extend_rope_embedding(self, x, seq_len, materialize_len = None):
+    def extend_rope_embedding(
+        self,
+        x,
+        seq_len,
+        materialize_len = None,
+    ):
         # seq_len moves current_rope_size and the dtype as before; materialize_len (default seq_len)
         # is how many rows x's device needs now.
         self._need_rope_rows(seq_len if materialize_len is None else materialize_len)

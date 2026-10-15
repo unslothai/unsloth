@@ -48,7 +48,11 @@ class _CPUTorch:
 _HELPERS = ("_round_rope_size", "_PerDeviceRopeCache")
 
 
-def _load(path, names, extra_ns = None):
+def _load(
+    path,
+    names,
+    extra_ns = None,
+):
     tree = ast.parse(path.read_text(encoding = "utf-8"))
     nodes = []
     for name in names:
@@ -64,7 +68,9 @@ def _load(path, names, extra_ns = None):
             # Helpers only exist once the cache is per device; the classes must always exist.
             if name in _HELPERS:
                 continue
-            pytest.fail(f"{name} is gone from {path.name}; repoint this test rather than deleting it.")
+            pytest.fail(
+                f"{name} is gone from {path.name}; repoint this test rather than deleting it."
+            )
         nodes.append(node)
     ns = {
         "torch": _CPUTorch(),
