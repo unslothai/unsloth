@@ -87,6 +87,7 @@ def _invoke_run_sh(
         "UNSLOTH_GPUS",
         "UNSLOTH_ALLOW_CPU",
         "UNSLOTH_STUDIO_VOLUME",
+        "UNSLOTH_WORKSPACE_VOLUME",
     ):
         env.pop(leak, None)
     env.pop("UNSLOTH_IMAGE", None)
@@ -215,6 +216,36 @@ class TestRunShMountsTheStudioVolume:
     def test_the_flag_is_documented_in_the_header(self):
         body = open(_RUN_SH, encoding = "utf-8").read()
         assert "UNSLOTH_STUDIO_VOLUME=unsloth-studio" in body
+
+
+def _workspace_mounts(argv):
+    return [
+        argv[i + 1] for i, a in enumerate(argv) if a == "-v" and argv[i + 1].endswith(":/workspace")
+    ]
+
+
+@_posix_shell
+class TestRunShKeepsTheWorkspace:
+    @pytest.mark.parametrize("nvidia, amd", [(True, False), (False, True), (False, False)])
+    def test_notebooks_and_their_saves_survive_the_container(self, tmp_path, nvidia, amd):
+        argv, _ = _invoke_run_sh(tmp_path, nvidia = nvidia, amd = amd)
+        assert _workspace_mounts(argv) == ["unsloth-workspace:/workspace"], argv
+
+    def test_an_empty_value_disables_the_mount(self, tmp_path):
+        argv, _ = _invoke_run_sh(
+            tmp_path, nvidia = True, amd = False, extra_env = {"UNSLOTH_WORKSPACE_VOLUME": ""}
+        )
+        assert _workspace_mounts(argv) == [], argv
+
+    def test_the_nested_mounts_are_still_passed(self, tmp_path):
+        argv, _ = _invoke_run_sh(tmp_path, nvidia = True, amd = False)
+        targets = [argv[i + 1].rsplit(":", 1)[1] for i, a in enumerate(argv) if a == "-v"]
+        for nested in (
+            "/workspace/host",
+            "/workspace/.cache/huggingface",
+            "/workspace/.cache/triton",
+        ):
+            assert nested in targets, argv
 
 
 class TestStudioImageAllowsCpu:

@@ -459,7 +459,8 @@ def test_primitives_compile_fullgraph(nf4_kernels):
         torch._dynamo.reset()
 
 
-@pytest.mark.parametrize("bsz", [1, 2])
+# 2 and 8 take the multi-row NF4 GEMV, 9 the dequantize path.
+@pytest.mark.parametrize("bsz", [1, 2, 8, 9])
 def test_fast_linear_forward_compiles_fullgraph(nf4_kernels, bsz):
     _, block = _lora_block(dtype = CDTYPE)
     fn = lambda x: U.fast_linear_forward(block.o_proj, x)

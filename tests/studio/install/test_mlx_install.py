@@ -315,7 +315,7 @@ def test_pin_floor_is_revisited_whenever_the_pins_move():
     assert _repair_specs() == {
         "mlx": "==0.32.3",
         "mlx-lm": "==0.31.3",
-        "mlx-vlm": ">=0.4.4,<=0.7.4",
+        "mlx-vlm": ">=0.4.4,<=0.7.8",
     }
     assert (stack._MLX_MIN_PYTHON, stack._MLX_MIN_MACOS_MAJOR) == ((3, 10), 14)
 

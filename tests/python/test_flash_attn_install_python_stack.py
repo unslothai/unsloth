@@ -813,3 +813,17 @@ class TestInstallPythonStackFlashAttnIntegration:
             )
             == 2
         )
+
+
+class TestWarningColor:
+    def test_optional_install_warning_uses_shell_installer_warn_color(self, capsys):
+        import re
+
+        install_sh = (STUDIO_DIR.parent / "install.sh").read_text(encoding = "utf-8")
+        code = re.search(r'C_WARN="\$\{_ESC\}\[([0-9;]+)m"', install_sh).group(1)
+        result = subprocess.CompletedProcess(["uv"], 1, "", "")
+        with mock.patch.object(ips, "_HAS_COLOR", True):
+            ips._print_optional_install_failure("flash-attn install", result)
+        out = capsys.readouterr().out
+        assert f"\033[{code}mflash-attn install failed (exit code 1)\033[0m" in out
+        assert "\033[96m" not in out

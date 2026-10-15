@@ -127,7 +127,7 @@ else:
     def sliding_window_masker(size = 4096):
         def sliding_window(b, h, q_idx, kv_idx):
             causal_mask = q_idx >= kv_idx
-            window_mask = q_idx - kv_idx <= size
+            window_mask = q_idx - kv_idx < size
             return causal_mask & window_mask
 
         return sliding_window

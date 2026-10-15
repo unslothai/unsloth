@@ -580,6 +580,7 @@ def _nf4_kernels_supported():
 # UNSLOTH_BNB_TRITON=0 keeps the bitsandbytes ctypes path.
 _USE_NF4_KERNELS = False
 _TRITON_GEMV_EAGER = False
+_GEMV_MAX_ROWS = 1
 _is_compiling = torch.compiler.is_compiling
 _current_device = torch.cuda.current_device
 if (
@@ -591,7 +592,14 @@ if (
     try:
         import triton
         from .nf4 import dequantize_nf4, dequantize_nf4_planned
-        from .nf4_gemv import gemv_nf4, gemv_nf4_planned, triton_gemv_eager
+        from .nf4_gemv import GEMV_MAX_ROWS as _GEMV_MAX_ROWS
+        from .nf4_gemv import (
+            gemv_nf4,
+            gemv_nf4_planned,
+            gemv_nf4_rows,
+            gemv_nf4_rows_planned,
+            triton_gemv_eager,
+        )
 
         _USE_NF4_KERNELS = True
         _TRITON_GEMV_EAGER = triton_gemv_eager()
@@ -1386,6 +1394,132 @@ def _quant_state_dtype(quant_state):
     return getattr(quant_state, "dtype", None)
 
 
+# Max GEMV decode rows per compute capability, from end-to-end decode A/Bs (#2798). Fixed, not timed, so
+# decoding is reproducible; others dequantize. UNSLOTH_GEMV_MAX_ROWS overrides where the Triton GEMV runs.
+_GEMV_ROWS_BY_ARCH = {(7, 5): 4, (8, 0): 2, (8, 9): 4, (12, 0): 4}
+_GEMV_ROWS_CAP = {}
+
+
+def _gemv_rows_cap(device):
+    index = device.index
+    cap = _GEMV_ROWS_CAP.get(index)
+    if cap is None:
+        if "UNSLOTH_GEMV_MAX_ROWS" in os.environ:
+            cap = _GEMV_MAX_ROWS
+        else:
+            try:
+                # ROCm reports gfx versions here (gfx1200 is (12, 0)), so the table is CUDA only.
+                arch = None if torch.version.hip else torch.cuda.get_device_capability(device)
+            except Exception:
+                arch = None
+            cap = min(_GEMV_MAX_ROWS, _GEMV_ROWS_BY_ARCH.get(arch, 1))
+        _GEMV_ROWS_CAP[index] = cap
+    return cap
+
+
+def _gemv_rows(X, W, quant_state, out):
+    """One gemv_nf4_rows launch for 2.._GEMV_MAX_ROWS decode rows (#2798); None = dequantize."""
+    M = X.shape[0]
+    # First, so rows above the cap cost the dequantize path nothing.
+    if not 2 <= M <= _gemv_rows_cap(X.device) or W.device != X.device:
+        return None
+    eager = (
+        not _is_compiling()
+        and type(quant_state) is not list
+        and X.is_contiguous()
+        and X.device.index == _current_device()
+    )
+    if eager:
+        plans = getattr(quant_state, "_unsloth_gemv_rows", None)
+        plan = plans.get(M) if plans is not None else None
+        if (
+            plan
+            and plan[0] == W.data_ptr()
+            and plan[1] is quant_state.absmax
+            and plan[2] is X.dtype
+            and X.data_ptr() & 15 == plan[3]
+            and X.numel() == M * plan[7]
+            and (
+                plan[4] == plan[6]
+                if out is None
+                else (
+                    out.dtype is X.dtype
+                    and out.data_ptr() & 15 == 0
+                    and out.stride(0) == plan[4]
+                    and out.stride(-1) == 1
+                    and out.shape == (M, 1, plan[6])
+                    and out.device == X.device
+                )
+            )
+        ):
+            if out is None:
+                out = torch_empty((M, 1, plan[6]), dtype = X.dtype, device = X.device)
+            try:
+                if plan[5](X, out):
+                    return out
+            except Exception:
+                pass
+            plans.pop(M, None)
+    absmax, shape, dtype, blocksize, code, code2, absmax2, offset, blocksize2 = _unpack_quant_state(
+        quant_state
+    )
+    if (
+        shape[1] % blocksize != 0
+        or X.dtype not in (torch.float16, torch.bfloat16)
+        or X.numel() != M * shape[1]
+        or any(t is not None and t.device != X.device for t in (absmax, code, code2, absmax2))
+    ):
+        return None
+    if out is not None and (
+        out.device != X.device
+        or out.dtype != X.dtype
+        or out.stride(-1) != 1
+        or out.shape != (M, 1, shape[0])
+        or out.stride(0) < shape[0]
+    ):
+        return None
+    if not X.is_contiguous():
+        X = X.contiguous()
+    args = (absmax, code2, absmax2, offset, code, blocksize, blocksize2, shape)
+    try:
+        if out is None:
+            out = torch_empty((M, 1, shape[0]), dtype = X.dtype, device = X.device)
+        if not eager or out.data_ptr() & 15:
+            return gemv_nf4_rows(X, W, *args, out)
+        rerun = gemv_nf4_rows_planned(X, W, *args, out)
+        if rerun is not None:
+            _rows_plans(quant_state)[M] = _NF4Plan(
+                [
+                    W.data_ptr(),
+                    quant_state.absmax,
+                    X.dtype,
+                    X.data_ptr() & 15,
+                    out.stride(0),
+                    rerun,
+                    int(shape[0]),
+                    int(shape[1]),
+                ]
+            )
+        return out
+    except Exception as error:
+        if not _nf4_kernels_failed(error):
+            raise
+        return None
+
+
+class _NF4Plans(dict):
+    # Rows -> _NF4Plan; dropped by copies and pickles.
+    def __reduce__(self):
+        return (_no_plan, ())
+
+
+def _rows_plans(quant_state):
+    plans = getattr(quant_state, "_unsloth_gemv_rows", None)
+    if plans is None:
+        plans = quant_state._unsloth_gemv_rows = _NF4Plans()
+    return plans
+
+
 def fast_linear_forward(
     proj,
     X,
@@ -1424,6 +1558,14 @@ def fast_linear_forward(
     elif bsz == 1 and q_len == 1 and _quant_state_dtype(W_quant) != torch_float32:
         # The 4bit gemv kernels are fp16/bf16 only.
         out = fast_gemv(X, W, W_quant, out = out)
+    elif (
+        2 <= bsz <= _GEMV_MAX_ROWS
+        and _USE_NF4_KERNELS
+        and _TRITON_GEMV_EAGER
+        and _quant_state_dtype(W_quant) != torch_float32
+        and (rows := _gemv_rows(X, W, W_quant, out)) is not None
+    ):
+        out = rows
     else:
         W = fast_dequantize(W.t(), W_quant, use_global_buffer = True)
         out = torch_matmul(X, W, out = out)

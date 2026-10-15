@@ -3750,6 +3750,8 @@ class FastBaseModel:
                     finally:
                         # The load deep-copied the config; give the caller's object its fp8 block back.
                         disarm_fp8_to_nf4(model_config)
+                # Before extracting the text core, which does not carry hf_device_map over.
+                fall_back_from_flash_attention_on_pre_ampere(model)
                 model = _text_trainable_core(
                     model, text_intent = bool(text_only) if text_intent is None else bool(text_intent)
                 )
