@@ -1228,3 +1228,31 @@ def test_only_ring_needs_sm80(monkeypatch, backend):
         Trainer()
         assert built == [(2, "ulysses", "allgather")]
 
+
+
+@pytest.mark.parametrize("fsdp2", [False, True])
+def test_total_train_batch_size_counts_cp_groups_not_ranks(monkeypatch, fsdp2):
+    import types
+
+    import transformers
+    import trl
+
+    # The real transformers formula: DDP leaves parallelism_config unset, FSDP2 installs cp_size = 1.
+    class Trainer(transformers.Trainer):
+        def __init__(self, *a, **k):
+            pass
+
+    monkeypatch.setattr(trl, "SFTTrainer", Trainer)
+    cp.patch_sft_trainer()
+    trainer = object.__new__(Trainer)
+    pc = types.SimpleNamespace(cp_size = 1, sp_size = 1, tp_size = 1) if fsdp2 else None
+    trainer.accelerator = types.SimpleNamespace(parallelism_config = pc)
+    trainer.model = types.SimpleNamespace()
+    trainer.is_deepspeed_enabled = False
+    trainer._train_batch_size = 2
+    args = types.SimpleNamespace(world_size = 8, gradient_accumulation_steps = 3)
+    trainer._context_parallel_manager = None
+    assert trainer.get_total_train_batch_size(args) == 2 * 3 * 8
+    # D = 2 data parallel groups of N = 4 CP peers that each consume the same batch.
+    trainer._context_parallel_manager = _manager(size = 4)
+    assert trainer.get_total_train_batch_size(args) == 2 * 3 * 2

@@ -437,6 +437,9 @@ def patch_sft_trainer() -> None:
     original_evaluate = _original("evaluate")
     original_predict = _original("predict")
     original_evaluation_loop = _original("evaluation_loop")
+    has_total_train_batch_size = hasattr(trainer_cls, "get_total_train_batch_size")
+    if has_total_train_batch_size:
+        original_get_total_train_batch_size = _original("get_total_train_batch_size")
 
     def _install_accelerator_state(self):
         manager = getattr(self, "_context_parallel_manager", None)
@@ -670,6 +673,20 @@ def patch_sft_trainer() -> None:
         # Forward and backward both inside, so gradient checkpointing recomputes with ring attention.
         with manager.apply(inputs) if manager else contextlib.nullcontext():
             return original_training_step(self, model, inputs, *args, **kwargs)
+
+    if has_total_train_batch_size:
+
+        @functools.wraps(original_get_total_train_batch_size)
+        def patched_get_total_train_batch_size(self, *args, **kwargs):
+            total = original_get_total_train_batch_size(self, *args, **kwargs)
+            manager = getattr(self, "_context_parallel_manager", None)
+            # CP peers share one batch, but the parallelism_config Unsloth exposes (DDP: none,
+            # FSDP2: cp_size = 1) makes transformers count all D x N ranks as data parallel.
+            if manager is not None and manager.size > 1:
+                total = total // manager.size
+            return total
+
+        trainer_cls.get_total_train_batch_size = patched_get_total_train_batch_size
 
     trainer_cls.__init__ = patched_init
     trainer_cls.prediction_step = patched_prediction_step
