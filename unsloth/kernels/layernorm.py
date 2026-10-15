@@ -136,6 +136,7 @@ class Fast_Layernorm(torch.autograd.Function):
                 LONG_INDEXING = long_indexing(X, Y, block = BLOCK_SIZE),
                 BLOCK_SIZE = BLOCK_SIZE,
                 num_warps = num_warps,
+                enable_fp_fusion = True,
             )
         ctx.eps = eps
         ctx.BLOCK_SIZE = BLOCK_SIZE
@@ -166,6 +167,7 @@ class Fast_Layernorm(torch.autograd.Function):
                 LONG_INDEXING = long_indexing(dY, X, block = ctx.BLOCK_SIZE),
                 BLOCK_SIZE = ctx.BLOCK_SIZE,
                 num_warps = ctx.num_warps,
+                enable_fp_fusion = True,
             )
         dX = dY.view(*shape)
         return dX, None, None, None, None

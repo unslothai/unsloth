@@ -260,11 +260,13 @@ def _launch(
         BLOCK_K = block_k,
     )
     if kernel is _gemv_nf4_kernel or kernel is _gemv_nf4_words_kernel:
-        entry = launch(kernel, grid, args, 8, constexprs, X.device.index, num_warps = num_warps)
+        entry = launch(
+            kernel, grid, args, 8, constexprs, X.device.index, num_warps = num_warps, enable_fp_fusion = True
+        )
         if plan:
             return _rerun(entry, grid, args, X.device.index)
     else:
-        kernel[grid](*args, **constexprs, num_warps = num_warps)
+        kernel[grid](*args, **constexprs, num_warps = num_warps, enable_fp_fusion = True)
     return out
 
 
