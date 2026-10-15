@@ -603,6 +603,15 @@ def _flag_args(args: Sequence[str], flags: frozenset) -> List[str]:
     return out
 
 
+def _keeps_resident() -> bool:
+    """The global "Keep model in GPU memory" setting as the loader resolves it (no RAM-reserve
+    veto), which page-locks the weights on a device that maps them from host memory."""
+    from core.inference.llama_cpp import _model_memory_settings_or_none
+
+    settings = _model_memory_settings_or_none()
+    return bool(settings and settings[0] and not settings[1])
+
+
 def _locks_host_copy(request: Any, args: Sequence[str]) -> bool:
     """mlock in any spelling: a pinned full host copy, on unified memory the pool the layers use."""
     if "mlock" in str(getattr(request, "load_mode", None) or "").lower():
@@ -1503,6 +1512,14 @@ class ClusterServing:
         # memory); with none there they take nothing a plan places.
         local = [d for d in devices if not d.remote]
         unified = bool(local) and _shares_host_memory(local[0])
+        if unified and _keeps_resident():
+            # The loader page-locks the mapping up to the last host-mapped tensor (llama.cpp
+            # grow_to), and this machine's layers come last: about a whole locked copy.
+            self.topology, self.reason = (
+                "single",
+                "Keep model in GPU memory locks a host copy of the model in shared memory",
+            )
+            return request
         checkpoints = self._checkpoints if unified else 0.0
         if not unified and self._host_projector:
             # A --no-mmproj-offload projector stays in host RAM, which a discrete GPU does not share.
@@ -1757,7 +1774,8 @@ class ClusterServing:
         if env_projector:
             projectors.append(os.path.abspath(env_projector))
         loaded = [p for p in dict.fromkeys(projectors) if p not in dropped]
-        self._projector_file = loaded[0] if loaded else auto_projector if auto_bytes else None
+        # llama.cpp keeps the last --mmproj given.
+        self._projector_file = loaded[-1] if loaded else auto_projector if auto_bytes else None
         named_bytes = sum(
             int(ss.gguf_size_bytes(p) or 0) for p in dict.fromkeys(projectors) if p not in dropped
         )

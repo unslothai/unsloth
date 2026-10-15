@@ -69,7 +69,8 @@ uses every GPU on its host, so a managed host is listed only once.
 
 A load that sets its own placement (`--device`, `--split-mode`, `--tensor-split`, `-ot`, `--rpc`,
 a GPU selection, manual memory mode, the tensor-parallel toggle, `--fit off`, `--no-kv-offload`,
-mlock or a micro-batch above 512) is served here as asked. The KV cache and the largest layer are sized
+mlock or a micro-batch above 512) is served here as asked, as is any load on a Mac or DGX Spark
+coordinator while "Keep model in GPU memory" is on (it locks a host copy in the shared memory). The KV cache and the largest layer are sized
 from the GGUF header (read from the Hub for a model not downloaded yet); a model whose KV cache
 cannot be sized that way is served here.
 

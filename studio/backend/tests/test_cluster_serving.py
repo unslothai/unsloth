@@ -248,6 +248,7 @@ def _cluster_env(
     # The fake coordinator is a DGX Spark: its GPU memory is the host RAM pool.
     monkeypatch.setattr(cs, "_shares_host_memory", lambda device: True)
     monkeypatch.setattr(cs, "_kv_unified_supported", lambda binary: True)
+    monkeypatch.setattr(cs, "_keeps_resident", lambda: False)
     seen = []
 
     def fake_list(binary, endpoints):
@@ -3095,3 +3096,49 @@ def test_a_small_share_worker_that_restarted_forces_a_relaunch(monkeypatch):
     _cluster_env(monkeypatch, listing = LISTING + "\n")  # every worker reports its memory free
     out = run(ss.before_load(_request(), 4))
     assert out.force_reload is True
+
+
+@pytest.mark.parametrize("unified", [False, True])
+def test_keep_in_gpu_memory_keeps_a_unified_coordinator_local(monkeypatch, unified):
+    seen = _cluster_env(monkeypatch)
+    monkeypatch.setattr(cs, "_shares_host_memory", lambda device: unified)
+    monkeypatch.setattr(cs, "_keeps_resident", lambda: True)
+    request = _request()
+    out = run(ss.before_load(request, 4))
+    if unified:
+        assert out is request and "locks a host copy" in ss.status()["reason"]
+    else:
+        assert ss.status()["topology"] == "layer_split"  # a discrete GPU is not page-locked
+
+
+def test_keeps_resident_reads_the_saved_settings(monkeypatch):
+    from core.inference import llama_cpp
+    for settings, want in [
+        ((True, False), True),
+        ((True, True), False),
+        ((False, False), False),
+        (None, False),
+    ]:
+        monkeypatch.setattr(llama_cpp, "_model_memory_settings_or_none", lambda s = settings: s)
+        assert cs._keeps_resident() is want
+
+
+def test_the_last_projector_given_is_the_one_sized(monkeypatch, tmp_path):
+    _cluster_env(monkeypatch)
+    first, last = tmp_path / "audio.gguf", tmp_path / "vision.gguf"
+    for p in (first, last):
+        p.write_bytes(b"x")
+    from core.inference import llama_cpp
+
+    seen = []
+    monkeypatch.setattr(
+        llama_cpp, "_mmproj_required_ubatch", lambda path, *a, **k: seen.append(path) or 512
+    )
+    monkeypatch.setattr(
+        ss,
+        "gguf_size_bytes",
+        lambda path: GIB if str(path) in (str(first), str(last)) else 250 * GIB,
+    )
+    extra = ["--mmproj", str(first), "--mmproj", str(last)]
+    run(ss.before_load(_request(max_seq_length = 8192, llama_extra_args = extra), 4))
+    assert seen and str(seen[0]) == str(last)
