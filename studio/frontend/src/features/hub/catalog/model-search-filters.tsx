@@ -13,6 +13,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { BulbIcon } from "@/lib/bulb-icon";
+import { cn } from "@/lib/utils";
 import { AiSpeechIcon } from "@/lib/hugeicons-derived";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { Slider as SliderPrimitive } from "radix-ui";
@@ -47,12 +48,6 @@ const CAPABILITY_ICONS: Record<HubCapabilityFilter, IconSvgElement | null> = {
   embedding: LayoutTable02Icon,
   "image-gen": ImageIcon,
   "video-gen": FlimSlateIcon,
-};
-
-const UPLOADER_LABELS: Record<HubUploader, string> = {
-  unsloth: "Unsloth",
-  organization: "Organizations",
-  personal: "Non-organization",
 };
 
 // The composer menu's label and separator.
@@ -152,6 +147,15 @@ function RangeStops({
   const [lo, hi] = dragging ?? committed;
   const set = lo !== 0 || hi !== last;
   // Thumbs stay inside the track, so stop i sits half a thumb in from each end.
+  // A chip stands in for the label under it; one hugging an end also covers its neighbour.
+  const covered = (i: number) =>
+    i === lo ||
+    i === hi ||
+    (lo === 0 && i === 1) ||
+    (hi === last && i === last - 1);
+  // The end labels and chips hug the track's ends instead of hanging past them.
+  const edge = (i: number) =>
+    i === 0 ? { left: 0 } : i === last ? { right: 0 } : undefined;
   const at = (i: number) =>
     `calc(${THUMB / 2}px + (100% - ${THUMB}px) * ${i / last})`;
   const chip = (i: number) =>
@@ -183,12 +187,15 @@ function RangeStops({
       <div className="relative mx-3 pt-7 pb-1">
         <div aria-hidden={true} className="absolute inset-x-0 top-0 h-5">
           {spec.labels.map((label, i) =>
-            label === null || i === lo || i === hi ? null : (
+            label === null || covered(i) ? null : (
               <span
                 // biome-ignore lint/suspicious/noArrayIndexKey: fixed stops
                 key={i}
-                style={{ left: at(i) }}
-                className="absolute top-0.5 -translate-x-1/2 whitespace-nowrap text-ui-12 text-muted-foreground tabular-nums"
+                style={edge(i) ?? { left: at(i) }}
+                className={cn(
+                  "absolute top-0.5 whitespace-nowrap text-ui-12 text-muted-foreground tabular-nums",
+                  !edge(i) && "-translate-x-1/2",
+                )}
               >
                 {label}
               </span>
@@ -236,7 +243,14 @@ function RangeStops({
             >
               <span
                 aria-hidden={true}
-                className="pointer-events-none absolute bottom-full left-1/2 mb-2 -translate-x-1/2 whitespace-nowrap rounded-md bg-foreground px-1.5 py-0.5 text-ui-12 font-medium text-background tabular-nums"
+                className={cn(
+                  "pointer-events-none absolute bottom-full mb-2 whitespace-nowrap rounded-md bg-foreground px-1.5 py-0.5 text-ui-12 font-medium text-background tabular-nums",
+                  index === 0
+                    ? "left-0"
+                    : index === last
+                      ? "right-0"
+                      : "left-1/2 -translate-x-1/2",
+                )}
               >
                 {chip(index)}
               </span>
@@ -325,6 +339,7 @@ export function ModelSearchFiltersControl({
   onChange,
   capabilities,
   onCapabilitiesChange,
+  isolateFirstCapability,
   uploaders,
   uploadersChanged,
   onUploadersChange,
@@ -337,6 +352,8 @@ export function ModelSearchFiltersControl({
   /** Empty means every box ticked (no filter); otherwise a model with any of the picks is listed. */
   capabilities: HubCapabilityFilter[];
   onCapabilitiesChange: (value: HubCapabilityFilter[]) => void;
+  /** True until the first change from the defaults: that capability pick keeps just that one. */
+  isolateFirstCapability: boolean;
   uploaders: readonly HubUploader[];
   /** False while the default applies, which leaves the icon without its dot. */
   uploadersChanged: boolean;
@@ -347,6 +364,7 @@ export function ModelSearchFiltersControl({
   className?: string;
 }) {
   const [open, setOpen] = useState(false);
+  const unslothOnly = uploaders.length === 1 && uploaders[0] === "unsloth";
   const filtered =
     capabilities.length > 0 ||
     (showModelFilters && (hasModelSearchFilters(value) || uploadersChanged));
@@ -380,100 +398,129 @@ export function ModelSearchFiltersControl({
         sideOffset={8}
         collisionPadding={12}
         onCloseAutoFocus={(event) => event.preventDefault()}
-        className="hub-menu-instant hub-composer-menu menu-soft-surface gap-0 w-[calc(344px*var(--ui-space-scale,1))] max-w-[calc(100vw-1rem)] ring-0"
+        // The sections scroll inside the padding, so a short window keeps the corners round and
+        // Reset all in view; flex children would otherwise shrink the separators away.
+        className="hub-menu-instant hub-composer-menu menu-soft-surface gap-0 overflow-hidden w-[calc(392px*var(--ui-space-scale,1))] max-w-[calc(100vw-1rem)] ring-0"
       >
-        <fieldset>
-          <legend className={SECTION_LABEL}>
-            Capabilities
-            {capabilities.length > 0 && (
-              <button
-                type="button"
-                onClick={() => onCapabilitiesChange([])}
-                className="cursor-pointer transition-colors hover:text-foreground"
-              >
-                Select all
-              </button>
-            )}
-          </legend>
-          <div className="grid grid-cols-2 gap-x-1">
-            {CAPABILITY_FILTER_OPTIONS.map((option) => {
-              const ticked = (key: HubCapabilityFilter) =>
-                capabilities.length === 0 || capabilities.includes(key);
-              const checked = ticked(option.value);
-              const glyph = CAPABILITY_ICONS[option.value];
-              // Kept in the list's order, so it doesn't depend on click order.
-              const next = CAPABILITY_FILTER_OPTIONS.map((o) => o.value).filter(
-                (key) => (key === option.value ? !checked : ticked(key)),
-              );
-              return (
-                <MenuTick
-                  key={option.value}
-                  icon={
-                    glyph ? (
-                      <HugeiconsIcon
-                        icon={glyph}
-                        strokeWidth={2}
-                        className="size-4 shrink-0"
-                      />
-                    ) : (
-                      <BulbIcon className="size-4 shrink-0" />
-                    )
-                  }
-                  label={option.label}
-                  checked={checked}
-                  // The last tick stays: none would list nothing.
-                  locked={next.length === 0}
-                  onToggle={() =>
-                    onCapabilitiesChange(
-                      // The first pick from the default (all ticked) keeps just that one.
-                      capabilities.length === 0
-                        ? [option.value]
-                        : next.length === CAPABILITY_FILTER_OPTIONS.length
-                          ? []
-                          : next,
-                    )
-                  }
-                />
-              );
-            })}
-          </div>
-        </fieldset>
-        {showModelFilters && (
-          <>
-            <div aria-hidden={true} className={SEPARATOR} />
-            <div className="flex flex-col gap-2.5 pb-0.5">
-              {RANGES.map((spec) => (
-                <RangeStops
-                  key={spec.label}
-                  spec={spec}
-                  value={value}
-                  onChange={onChange}
-                />
-              ))}
-            </div>
-            <div aria-hidden={true} className={SEPARATOR} />
-            <fieldset>
-              <legend className={SECTION_LABEL}>Uploader</legend>
-              {HUB_UPLOADERS.map((uploader) => {
-                const checked = uploaders.includes(uploader);
-                const next = HUB_UPLOADERS.filter((key) =>
-                  key === uploader ? !checked : uploaders.includes(key),
+        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain [scrollbar-width:thin]">
+          <fieldset>
+            <legend className={SECTION_LABEL}>
+              Capabilities
+              {capabilities.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => onCapabilitiesChange([])}
+                  className="cursor-pointer transition-colors hover:text-foreground"
+                >
+                  Select all
+                </button>
+              )}
+            </legend>
+            <div className="grid grid-cols-2 gap-x-1">
+              {CAPABILITY_FILTER_OPTIONS.map((option) => {
+                const ticked = (key: HubCapabilityFilter) =>
+                  capabilities.length === 0 || capabilities.includes(key);
+                const checked = ticked(option.value);
+                const glyph = CAPABILITY_ICONS[option.value];
+                // Kept in the list's order, so it doesn't depend on click order.
+                const next = CAPABILITY_FILTER_OPTIONS.map(
+                  (o) => o.value,
+                ).filter((key) =>
+                  key === option.value ? !checked : ticked(key),
                 );
                 return (
                   <MenuTick
-                    key={uploader}
-                    label={UPLOADER_LABELS[uploader]}
+                    key={option.value}
+                    icon={
+                      glyph ? (
+                        <HugeiconsIcon
+                          icon={glyph}
+                          strokeWidth={2}
+                          className="size-4 shrink-0"
+                        />
+                      ) : (
+                        <BulbIcon className="size-4 shrink-0" />
+                      )
+                    }
+                    label={option.label}
                     checked={checked}
+                    // The last tick stays: none would list nothing.
                     locked={next.length === 0}
-                    onToggle={() => onUploadersChange(next)}
+                    onToggle={() =>
+                      onCapabilitiesChange(
+                        capabilities.length === 0 && isolateFirstCapability
+                          ? [option.value]
+                          : next.length === CAPABILITY_FILTER_OPTIONS.length
+                            ? []
+                            : next,
+                      )
+                    }
                   />
                 );
               })}
-            </fieldset>
-          </>
-        )}
-        <div aria-hidden={true} className={SEPARATOR} />
-        <div className="flex items-center justify-end px-3 pt-0.5">
+            </div>
+          </fieldset>
+          {showModelFilters && (
+            <>
+              <div aria-hidden={true} className={SEPARATOR} />
+              <div className="flex flex-col gap-2.5 pb-0.5">
+                {RANGES.map((spec) => (
+                  <RangeStops
+                    key={spec.label}
+                    spec={spec}
+                    value={value}
+                    onChange={onChange}
+                  />
+                ))}
+              </div>
+              <div aria-hidden={true} className={SEPARATOR} />
+              <div className="flex items-center justify-between gap-3 px-3 py-0.5">
+                <span className="text-ui-12 text-muted-foreground">
+                  Uploader
+                </span>
+                <div
+                  role="radiogroup"
+                  aria-label="Uploader"
+                  className="hub-tab-toggle inline-flex h-8 items-center rounded-full"
+                >
+                  {(
+                    [
+                      ["Unsloth", true],
+                      ["All uploaders", false],
+                    ] as const
+                  ).map(([label, unslothOption]) => {
+                    const active = unslothOnly === unslothOption;
+                    return (
+                      <button
+                        key={label}
+                        type="button"
+                        role="radio"
+                        aria-checked={active}
+                        onClick={() => {
+                          if (!active) {
+                            onUploadersChange(
+                              unslothOption ? ["unsloth"] : [...HUB_UPLOADERS],
+                            );
+                          }
+                        }}
+                        className={cn(
+                          "relative flex h-8 cursor-pointer items-center rounded-full px-3 text-xs font-medium transition-colors",
+                          active
+                            ? "hub-tab-toggle-pill text-foreground"
+                            : "text-muted-foreground hover:text-foreground",
+                        )}
+                      >
+                        <span className="relative z-10">{label}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+        <div aria-hidden={true} className={cn(SEPARATOR, "shrink-0")} />
+        <div className="flex shrink-0 items-center justify-end px-3 pt-0.5">
           <Button
             type="button"
             variant="ghost"

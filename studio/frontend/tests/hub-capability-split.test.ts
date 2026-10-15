@@ -82,7 +82,11 @@ test("every capability starts ticked, and the last tick can't be removed", () =>
 
 test("the first pick from the default keeps just that capability", () => {
   const popover = readSrc("features/hub/catalog/model-search-filters.tsx");
-  assert.match(popover, /capabilities\.length === 0\s*\? \[option\.value\]/);
+  assert.match(popover, /capabilities\.length === 0 && isolateFirstCapability\s*\? \[option\.value\]/);
+  // Armed once, until the first change from the defaults; the resets arm it again.
+  const page = readSrc("features/hub/hub-page.tsx");
+  assert.match(page, /setFirstPickArmed\(false\);\s*setCapabilityFilters\(next\);/);
+  assert.match(page, /isolateFirstCapability=\{firstPickArmed\}/);
   assert.doesNotMatch(popover, />\s*Only\s*</);
 });
 
@@ -93,4 +97,11 @@ test("size and context are stepped ranges whose ends mean no limit", () => {
   assert.match(popover, /\[spec\.min\]: next\[0\] === 0 \? undefined : spec\.stops\[next\[0\]\]/);
   assert.match(popover, /\[spec\.max\]: next\[1\] === last \? undefined : spec\.stops\[next\[1\]\]/);
   assert.doesNotMatch(popover, /Apply (filters|limits)/);
+});
+
+test("Uploader is a two-way toggle between Unsloth and every uploader", () => {
+  const popover = readSrc("features/hub/catalog/model-search-filters.tsx");
+  assert.match(popover, /role="radiogroup"\s+aria-label="Uploader"/);
+  assert.match(popover, /\["Unsloth", true\],\s*\["All uploaders", false\]/);
+  assert.match(popover, /unslothOption \? \["unsloth"\] : \[\.\.\.HUB_UPLOADERS\]/);
 });

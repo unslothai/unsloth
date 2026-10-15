@@ -22,10 +22,10 @@ test("Unsloth's uploads by default, every uploader once a search is typed", () =
   assert.match(page, /uploaders\.length === 1 && uploaders\[0\] === "unsloth" \? "unsloth" : "all"/);
 });
 
-test("the popover lists the three uploaders under its own divider", () => {
+test("the popover's uploader toggle picks Unsloth or every uploader", () => {
   assert.match(readSrc("features/hub/lib/model-search-filters.ts"), /"unsloth",\s*"organization",\s*"personal",/);
-  assert.match(popover, /organization: "Organizations",\s*personal: "Non-organization",/);
-  assert.doesNotMatch(popover, /Organizations only/);
+  assert.match(popover, /\["All uploaders", false\]/);
+  assert.doesNotMatch(popover, /Organizations only|Non-organization/);
 });
 
 test("the range notes are hover tooltips beside Parameters and Context length", () => {

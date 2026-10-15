@@ -75,6 +75,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
   onFormatFilterChange,
   capabilityFilters,
   onCapabilityFiltersChange,
+  isolateFirstCapability,
   fitOnDeviceOnly,
   onFitOnDeviceOnlyChange,
   onManageLocalFolders,
@@ -109,6 +110,8 @@ export const ModelsToolbar = memo(function ModelsToolbar({
   /** None picked means every capability. */
   capabilityFilters: HubCapabilityFilter[];
   onCapabilityFiltersChange: (value: HubCapabilityFilter[]) => void;
+  /** Until the first change from the defaults, a capability pick keeps just that one. */
+  isolateFirstCapability: boolean;
   /** Shared with the chat model selector: hide models over the device budget. */
   fitOnDeviceOnly: boolean;
   onFitOnDeviceOnlyChange: (value: boolean) => void;
@@ -511,6 +514,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
             onChange={onSearchFiltersChange}
             capabilities={capabilityFilters}
             onCapabilitiesChange={onCapabilityFiltersChange}
+            isolateFirstCapability={isolateFirstCapability}
             uploaders={uploaders}
             uploadersChanged={uploadersChanged}
             onUploadersChange={onUploadersChange}

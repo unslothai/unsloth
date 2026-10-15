@@ -554,6 +554,26 @@ export function ModelsPage() {
   const [direction, setDirection] = useState<HfSortDirection>("desc");
   // Null until the user picks: then Unsloth's uploads, or every uploader once a search is typed.
   const [uploaderPick, setUploaderPick] = useState<HubUploader[] | null>(null);
+  // Until the popover's first change from the defaults, a capability pick keeps just that one.
+  const [firstPickArmed, setFirstPickArmed] = useState(true);
+  const handlePopoverCapabilitiesChange = useCallback(
+    (next: HubCapabilityFilter[]) => {
+      setFirstPickArmed(false);
+      setCapabilityFilters(next);
+    },
+    [],
+  );
+  const handlePopoverSearchFiltersChange = useCallback(
+    (next: ModelSearchFilters) => {
+      setFirstPickArmed(false);
+      setSearchFilters(next);
+    },
+    [],
+  );
+  const handlePopoverUploadersChange = useCallback((next: HubUploader[]) => {
+    setFirstPickArmed(false);
+    setUploaderPick(next);
+  }, []);
   const urlResourceType: ResourceTypeFilter =
     hubSearch.kind === "datasets" ? "datasets" : "models";
   const [resourceType, setResourceType] =
@@ -660,6 +680,7 @@ export function ModelsPage() {
       // The filters control is Discover-only, so a hidden filter must not reapply on return.
       setSearchFilters({});
       setUploaderPick(null);
+      setFirstPickArmed(true);
       setModelsTab(next);
     },
     [setModelsTab],
@@ -673,6 +694,7 @@ export function ModelsPage() {
       setCapabilityFilters([]);
       setSearchFilters({});
       setUploaderPick(null);
+      setFirstPickArmed(true);
       setSortBrowseActive(false);
       if (next === "models") {
         const preset = findChannel(DEFAULT_DISCOVER_CHANNEL);
@@ -706,6 +728,7 @@ export function ModelsPage() {
       setCapabilityFilters([]);
       setSearchFilters({});
       setUploaderPick(null);
+      setFirstPickArmed(true);
       setSortBrowseActive(false);
       // Clear search: an active query outranks the section in `mode`, hiding the curated list.
       setQuery("");
@@ -724,6 +747,7 @@ export function ModelsPage() {
     setCapabilityFilters([]);
     setSearchFilters({});
     setUploaderPick(null);
+    setFirstPickArmed(true);
     setSortBrowseActive(false);
     void navigate({
       to: "/hub",
@@ -738,6 +762,7 @@ export function ModelsPage() {
     setCapabilityFilters([]);
     setSearchFilters({});
     setUploaderPick(null);
+    setFirstPickArmed(true);
     setDownloadedFormat("all");
     setDiscoverFormat(preset?.format ?? "recommended");
     setSortBy(preset?.sort ?? "trendingScore");
@@ -774,6 +799,7 @@ export function ModelsPage() {
     setSortBrowseActive(true);
     // The media pages run curated Unsloth uploads, so start there.
     setUploaderPick([...UNSLOTH_UPLOADER]);
+    setFirstPickArmed(false);
     void navigate({
       to: "/hub",
       // Discover models, whatever tab or kind the link carried.
@@ -1282,11 +1308,13 @@ export function ModelsPage() {
     setCapabilityFilters([]);
     setSearchFilters({});
     setUploaderPick(null);
+    setFirstPickArmed(true);
   }, [isDiscoverTab, urlSection, navigate]);
   const handleResetPopoverFilters = useCallback(() => {
     setCapabilityFilters([]);
     setSearchFilters({});
     setUploaderPick(null);
+    setFirstPickArmed(true);
   }, []);
   const handleDiscoverFetchIntent = useCallback(() => {
     setDiscoverFetchIntent((value) => value + 1);
@@ -1374,6 +1402,7 @@ export function ModelsPage() {
       setCapabilityFilters([]);
       setSearchFilters({});
       setUploaderPick(null);
+      setFirstPickArmed(true);
       setSortBrowseActive(false);
       setQuery("");
       void navigate({
@@ -1394,6 +1423,7 @@ export function ModelsPage() {
         setCapabilityFilters([]);
         setSearchFilters({});
         setUploaderPick(null);
+        setFirstPickArmed(true);
         setSortBrowseActive(false);
         if (preset) {
           setDiscoverFormat(preset.format);
@@ -1490,6 +1520,7 @@ export function ModelsPage() {
     setCapabilityFilters([]);
     setSearchFilters({});
     setUploaderPick(null);
+    setFirstPickArmed(true);
   }, [isModelDiscover, sectionChannelId, urlCapability]);
   const handleManageLocalFolders = useCallback(
     () => setFoldersDialogOpen(true),
@@ -1553,6 +1584,7 @@ export function ModelsPage() {
       setSortBrowseActive(false);
       // Base models come from other publishers, so search the whole Hub.
       setUploaderPick(null);
+      setFirstPickArmed(true);
       setQuery(trimmed);
       void navigate({
         to: "/hub",
@@ -1977,13 +2009,14 @@ export function ModelsPage() {
           formatFilter={formatFilter}
           onFormatFilterChange={setFormatFilter}
           searchFilters={storedSearchFilters}
-          onSearchFiltersChange={setSearchFilters}
+          onSearchFiltersChange={handlePopoverSearchFiltersChange}
           uploaders={uploaders}
           uploadersChanged={uploaderPick !== null}
-          onUploadersChange={setUploaderPick}
+          onUploadersChange={handlePopoverUploadersChange}
           onResetFilters={handleResetPopoverFilters}
           capabilityFilters={capabilityFilters}
-          onCapabilityFiltersChange={setCapabilityFilters}
+          onCapabilityFiltersChange={handlePopoverCapabilitiesChange}
+          isolateFirstCapability={firstPickArmed}
           fitOnDeviceOnly={fitOnDeviceOnly}
           onFitOnDeviceOnlyChange={setFitOnDeviceOnly}
           onManageLocalFolders={handleManageLocalFolders}
