@@ -58,8 +58,16 @@ def test_nf4_options_and_warmup_carry_fp_fusion():
     assert '"enable_fp_fusion": bool(fp_fusion)' in nf4
     gemv = (KERNELS / "nf4_gemv.py").read_text()
     assert gemv.count("enable_fp_fusion = True") == 2
-    int4 = (KERNELS / "int4_packed.py").read_text()
-    assert "kernel.warmup(*args, grid = grid, **constexprs, enable_fp_fusion = True)" in int4
+    int4 = ast.parse((KERNELS / "int4_packed.py").read_text())
+    warmups = [
+        node
+        for node in ast.walk(int4)
+        if isinstance(node, ast.Call) and getattr(node.func, "attr", None) == "warmup"
+    ]
+    assert warmups and all(
+        any(k.arg == "enable_fp_fusion" and getattr(k.value, "value", None) is True for k in node.keywords)
+        for node in warmups
+    )
 
 
 def _compiled_options(kernel):
