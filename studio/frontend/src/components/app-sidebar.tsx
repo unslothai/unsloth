@@ -2820,8 +2820,11 @@ export function AppSidebar() {
       label: t("shell.navigation.notebooks"),
       active: pathname === "/notebooks",
       onClick: () => {
-        navigate({ to: "/notebooks" });
+        navigateFromRow({ to: "/notebooks" });
         closeMobileIfOpen();
+      },
+      onIntent: () => {
+        preloadSilently(router.preloadRoute({ to: "/notebooks" }));
       },
     },
     // A host with no video device at all is disabled with a hint instead of bouncing off the root guard.

@@ -46,7 +46,7 @@ _CATEGORY_RULES = (
         ("grpo", "gspo", "reinforcement_learning", "nemo-gym", "-ppo", "-dpo", "-orpo"),
     ),
     ("vision", ("vision", "_vl_", "ocr", "pixtral", "deepseek")),
-    ("audio", ("tts", "whisper", "orpheus", "llasa", "csm", "spark_tts", "oute")),
+    ("audio", ("audio", "tts", "whisper", "orpheus", "llasa", "csm", "spark_tts", "oute")),
     ("embedding", ("embedding", "minilm", "bge", "modernbert")),
     ("inference", ("inference", "deployment", "phone")),
     ("reasoning", ("thinking", "reasoning", "codeforces")),

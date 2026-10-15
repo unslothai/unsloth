@@ -81,3 +81,8 @@ def test_rl_and_preference_recipes_are_not_sft(name):
 @pytest.mark.parametrize("name", ["Llama3.1_(8B)-Alpaca.ipynb", "Mistral_Nemo_(12B)-Alpaca.ipynb"])
 def test_sft_recipes_stay_sft(name):
     assert catalog._category(name) == "sft"
+
+
+@pytest.mark.parametrize("name", ["Gemma3N_(4B)-Audio.ipynb", "Gemma4_(E2B)-Audio.ipynb"])
+def test_audio_recipes_are_audio(name):
+    assert catalog._category(name) == "audio"
