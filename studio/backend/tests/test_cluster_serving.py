@@ -2935,3 +2935,51 @@ def test_an_unemittable_request_cache_type_keeps_the_inherited_one(monkeypatch):
     monkeypatch.setattr(cs, "_local_gguf_header", lambda *a, **k: (_llama_header(8), {}))
     run(ss.before_load(_request(max_seq_length = 8192, cache_type_kv = "bogus"), 4))
     assert cs.state().plan.kv_bytes == cs._kv_from_scalars(_llama_header(8), 8192, "f32", "f32", ss)
+
+
+def test_a_config_error_reload_honours_the_callers_placement(monkeypatch):
+    _serve(monkeypatch)
+    monkeypatch.setenv(cs.ENV_NODES, "bad host!")
+    out = run(ss.before_load(_request(llama_extra_args = ["--device", "CUDA0"]), 4))
+    assert out.llama_extra_args == ["--device", "CUDA0"]  # no stale block after it
+    assert out.force_reload is True
+
+
+@pytest.mark.parametrize("unified", [False, True])
+def test_a_host_ram_projector_is_charged_only_on_unified_memory(monkeypatch, tmp_path, unified):
+    _cluster_env(monkeypatch)
+    monkeypatch.setattr(ss, "llama_server_supports", lambda flag, binary = None: True)
+    monkeypatch.setattr(cs, "_shares_host_memory", lambda device: unified)
+    mmproj = tmp_path / "mmproj.gguf"
+    mmproj.write_bytes(b"x")
+    monkeypatch.setattr(
+        ss, "gguf_size_bytes", lambda path: 2 * GIB if str(path) == str(mmproj) else 250 * GIB
+    )
+    extra = ["--mmproj", str(mmproj), "--no-mmproj-offload"]
+    run(ss.before_load(_request(llama_extra_args = extra), 4))
+    plan = cs.state().plan
+    assert plan.extra_bytes == pytest.approx(2 * GIB * cs._MMPROJ_VRAM_SAFETY if unified else 0)
+    assert plan.uncertain_extra_bytes == plan.extra_bytes
+
+
+def test_compute_scratch_is_sized_from_the_slot_floored_batch(monkeypatch):
+    _cluster_env(monkeypatch)
+    seen = []
+    monkeypatch.setattr(cs, "_ctx_compute_bytes", lambda *a, **k: seen.append(a[3]) or 0)
+    run(ss.before_load(_request(max_seq_length = 8192, n_batch = 1), 64))
+    assert seen and set(seen) == {64}
+
+
+def test_recurrent_state_skips_the_periodic_attention_layers():
+    vals = {
+        "general.architecture": "qwen3next",
+        "qwen3next.block_count": 48,
+        "qwen3next.full_attention_interval": 4,
+        "qwen3next.ssm.conv_kernel": 4,
+        "qwen3next.ssm.inner_size": 4096,
+        "qwen3next.ssm.state_size": 128,
+        "qwen3next.ssm.group_count": 16,
+    }
+    per_layer = 3 * (4096 + 2 * 16 * 128) + 128 * 4096
+    assert cs._ssm_state_bytes(vals, 2) == per_layer * 4 * 36 * 2
+    assert cs._recurrent_layers(dict(vals, **{"qwen3next.nextn_predict_layers": 4})) == 33

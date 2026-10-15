@@ -411,8 +411,8 @@ def _effective_checkpoints(
 
 
 def _ssm_state_bytes(vals: Dict[str, Any], n_parallel: int) -> int:
-    """f32 recurrent state per slot, as llama.cpp allocates for Mamba / gated-delta layers;
-    every block counted as recurrent, an upper bound for hybrids."""
+    """f32 recurrent state per slot, as llama.cpp allocates for Mamba / gated-delta layers, over
+    the recurrent layers _mamba_recurrent_state_bytes counts (every block without a layout)."""
     arch = vals.get("general.architecture")
     inner = vals.get(f"{arch}.ssm.inner_size") or 0
     state = vals.get(f"{arch}.ssm.state_size") or 0
@@ -421,7 +421,24 @@ def _ssm_state_bytes(vals: Dict[str, Any], n_parallel: int) -> int:
     conv = max(0, (vals.get(f"{arch}.ssm.conv_kernel") or 0) - 1)
     groups = vals.get(f"{arch}.ssm.group_count") or 0
     per_layer = conv * (inner + 2 * groups * state) + state * inner
-    return int(per_layer * 4 * (vals.get(f"{arch}.block_count") or 0) * max(1, int(n_parallel)))
+    return int(per_layer * 4 * _recurrent_layers(vals) * max(1, int(n_parallel)))
+
+
+def _recurrent_layers(vals: Dict[str, Any]) -> int:
+    """Recurrent blocks as _mamba_recurrent_state_bytes counts them: all but every interval-th
+    (attention) one, else the zero-KV-head ones, else every block; embedded NextN ones excluded."""
+    arch = vals.get("general.architecture")
+    n_layers = max(
+        0,
+        int(vals.get(f"{arch}.block_count") or 0)
+        - int(vals.get(f"{arch}.nextn_predict_layers") or 0),
+    )
+    interval = vals.get(f"{arch}.full_attention_interval")
+    zeros = vals.get(f"{arch}.attention.head_count_kv.zeros")
+    if interval is not None:
+        interval = int(interval or 0)
+        return n_layers - (-(-n_layers // interval) if interval > 0 else n_layers)
+    return min(n_layers, int(zeros)) if zeros else n_layers
 
 
 def _gguf_kv_scalars(f: Any) -> Dict[str, Any]:
@@ -576,6 +593,25 @@ def _locks_host_copy(request: Any, args: Sequence[str]) -> bool:
     if lock and lock not in _LLAMA_ARG_FALSE_VALUES:
         return True
     return "mlock" in (os.environ.get("LLAMA_ARG_LOAD_MODE") or "").lower()
+
+
+def _placement_owner(request: Any, flags: Sequence[str]) -> Optional[str]:
+    """Why the request places the model itself, or None."""
+    from core.inference import spark_serving as ss
+
+    if getattr(request, "gpu_ids", None):
+        return "an explicit GPU selection replaces placement"
+    if str(getattr(request, "gpu_memory_mode", "auto") or "auto") == "manual":
+        return "gpu_memory_mode=manual owns placement"
+    if ss.argv_or_env_rpc(flags):
+        return "the caller supplied --rpc; placement is theirs"
+    placed = _caller_placement(flags)
+    if placed:
+        return f"the caller set {placed}; placement is theirs"
+    if getattr(request, "tensor_parallel", False):
+        # The toggle emits --split-mode tensor, which the block's layer split would override.
+        return "tensor_parallel owns placement"
+    return None
 
 
 def _caller_placement(args: Sequence[str]) -> Optional[str]:
@@ -1222,6 +1258,12 @@ class ClusterServing:
                     return request  # another model: no plan, so no stale block either
                 explicit = getattr(request, "llama_extra_args", None)
                 effective = list(explicit if explicit is not None else (inherited_extra_args or []))
+                owner = _placement_owner(request, _normalized(effective))
+                if owner:
+                    # The block would override it (last wins); before_load forces the reload.
+                    self.topology = "single"
+                    self.reason = f"cluster config: {self.config_error}; {owner}"
+                    return request
                 if not _contains([str(a) for a in effective], self.block):
                     effective += self.block
                 return ss.SparkServing._request_with(request, {"llama_extra_args": effective})
@@ -1231,26 +1273,13 @@ class ClusterServing:
         effective = list(explicit if explicit is not None else (inherited_extra_args or []))
         # llama.cpp reads --ctx_size as --ctx-size; every check below reads the normalised form.
         flags = _normalized(effective)
-        if getattr(request, "gpu_ids", None):
-            self.topology, self.reason = "single", "an explicit GPU selection replaces placement"
-            return request
-        if str(getattr(request, "gpu_memory_mode", "auto") or "auto") == "manual":
-            self.topology, self.reason = "single", "gpu_memory_mode=manual owns placement"
-            return request
-        if ss.argv_or_env_rpc(flags):
-            self.topology, self.reason = "single", "the caller supplied --rpc; placement is theirs"
-            return request
-        placed = _caller_placement(flags)
-        if placed:
-            self.topology, self.reason = "single", f"the caller set {placed}; placement is theirs"
+        owner = _placement_owner(request, flags)
+        if owner:
+            self.topology, self.reason = "single", owner
             return request
         if any(str(a).split("=", 1)[0] in ("-mv", "--model-vocoder") for a in flags):
             # A second model llama.cpp loads beside this one, on devices this does not plan.
             self.topology, self.reason = "single", "a vocoder model loads beside it"
-            return request
-        if getattr(request, "tensor_parallel", False):
-            # The toggle emits --split-mode tensor, which the block's layer split would override.
-            self.topology, self.reason = "single", "tensor_parallel owns placement"
             return request
         from core.inference.llama_server_args import fit_is_effectively_on
 
@@ -1280,10 +1309,13 @@ class ClusterServing:
                 "the caller locks a full host copy of the model (mlock); placement is theirs",
             )
             return request
+        from core.inference.llama_cpp import _emitted_n_batch
+
         batch, ubatch, _named, _named_u = _named_batch_sizes(
             flags,
             os.environ,
-            getattr(request, "n_batch", None),
+            # The loader raises --batch-size to the slot count, and the micro-batch with it.
+            _emitted_n_batch(getattr(request, "n_batch", None), n_parallel),
             getattr(request, "n_ubatch", None),
         )
         if min(batch, ubatch) > 512:
@@ -1419,7 +1451,12 @@ class ClusterServing:
         # Context checkpoints live in host RAM, which a local accelerator may share (unified
         # memory); with none there they take nothing a plan places.
         local = [d for d in devices if not d.remote]
-        checkpoints = self._checkpoints if local and _shares_host_memory(local[0]) else 0.0
+        unified = bool(local) and _shares_host_memory(local[0])
+        checkpoints = self._checkpoints if unified else 0.0
+        if not unified and self._host_projector:
+            # A --no-mmproj-offload projector stays in host RAM, which a discrete GPU does not share.
+            local_extra = max(0.0, local_extra - self._host_projector)
+            self._uncertain_extra = max(0.0, self._uncertain_extra - self._host_projector)
 
         def plan_for(weights: float) -> ClusterPlan:
             return plan_cluster(
@@ -1501,6 +1538,7 @@ class ClusterServing:
 
     async def _size(self, request, n_parallel, extras, ss) -> Tuple[Optional[float], float, float]:
         self._uncertain_extra = 0.0
+        self._host_projector = 0.0
         model_path = str(getattr(request, "model_path", "") or "")
         variant = getattr(request, "gguf_variant", None)
         local_file = ss.cached_repo_file(model_path, variant)
@@ -1583,7 +1621,6 @@ class ClusterServing:
             )
         )
         dropped: List[str] = []
-        # A --no-mmproj-offload projector stays charged: on unified memory host RAM is the pool.
         if self._has_projector and disable_vision:
             # The vision switch drops a named image projector (and an unread URL); an audio-only
             # one stays, as the backend does.
@@ -1666,6 +1703,7 @@ class ClusterServing:
         if host_projector:
             # Charged for unified memory, but a discrete GPU never held it: never freed.
             self._uncertain_extra = _MMPROJ_VRAM_SAFETY * (named_bytes + auto_bytes)
+            self._host_projector = _MMPROJ_VRAM_SAFETY * (named_bytes + auto_bytes)
         if size is None:
             size = await asyncio.to_thread(
                 ss.remote_gguf_size_bytes, model_path, variant, getattr(request, "hf_token", None)
@@ -1722,6 +1760,7 @@ class ClusterServing:
         cells = streams * per_stream if ctx else 0
         from core.inference.llama_cpp import (
             _batch_ubatch_for_mmproj,
+            _emitted_n_batch,
             _mmproj_required_ubatch,
             _unknown_projector_ubatch,
         )
@@ -1740,6 +1779,7 @@ class ClusterServing:
             n_batch, n_ubatch = _batch_ubatch_for_mmproj(
                 required, n_batch, n_ubatch, extras, os.environ
             )
+        n_batch = _emitted_n_batch(n_batch, n_parallel)
         batch, ubatch, _nb, _nu = _named_batch_sizes(extras, os.environ, n_batch, n_ubatch)
         header_kv = _REMOTE_HEADER_KV.pop((model_path, str(variant)), None)
         k_type, v_type = cache_type or "f16", cache_type_v or cache_type or "f16"
@@ -1855,9 +1895,7 @@ class ClusterServing:
         )
         recurrent = max(loader_recurrent or 0, _ssm_state_bytes(header, n_parallel))
         arch = header.get("general.architecture")
-        n_rec = header.get(f"{arch}.attention.head_count_kv.zeros") or header.get(
-            f"{arch}.block_count"
-        )
+        n_rec = _recurrent_layers(header)
         # A whole recurrent layer carries its share of the state, not the model-wide average.
         self._recurrent_layer = float(recurrent) / n_rec if recurrent and n_rec else 0.0
         self._recurrent = float(recurrent)
