@@ -715,8 +715,11 @@ def test_merged_dtype_reaches_the_streaming_merger(saving):
 def test_merged_dtype_refuses_an_older_zoo(saving):
     """An older unsloth_zoo ignores `output_dtype` and writes the base dtype, so refuse."""
     env, records, _ = saving
+    prewarmed = []
+    env["_prewarm_base_model_hub_cache"] = lambda *args, **kwargs: prewarmed.append(args)
     with pytest.raises(RuntimeError, match = "newer unsloth_zoo"):
         env["unsloth_generic_push_to_hub_merged"](
             PeftModel(), "owner/model", token = "fixture", dtype = "float32"
         )
-    assert records["merges"] == []
+    # Refused before the base model is downloaded into the Hub cache.
+    assert records["merges"] == [] and prewarmed == []

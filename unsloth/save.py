@@ -5696,13 +5696,17 @@ def unsloth_generic_save(
             state_dict = model.state_dict()
         if "16bit" in save_method:
             if _requests_float32(dtype):
-                _target_dtype = torch.float32
+                # On the CPU: a float32 copy of a 16-bit model would double its GPU footprint.
+                state_dict = {
+                    k: v.to(device = "cpu", dtype = torch.float32) if v.is_floating_point() else v
+                    for k, v in state_dict.items()
+                }
             else:
                 _target_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
-            state_dict = {
-                k: v.to(dtype = _target_dtype) if v.is_floating_point() else v
-                for k, v in state_dict.items()
-            }
+                state_dict = {
+                    k: v.to(dtype = _target_dtype) if v.is_floating_point() else v
+                    for k, v in state_dict.items()
+                }
         if is_qwen3_5_vlm:
             state_dict = _qwen3_5_vlm_state_dict_for_save(state_dict)
         if state_dict is not None:
@@ -5775,7 +5779,6 @@ def unsloth_generic_save(
         )
     else:
         raise_if_merging_mistral_format_view(model, save_method)
-        _prewarm_base_model_hub_cache(model, save_method = save_method, token = token)
         from unsloth_zoo.saving_utils import merge_and_overwrite_lora
 
         # An older unsloth_zoo accepts `output_dtype` but still writes the base dtype.
@@ -5786,6 +5789,7 @@ def unsloth_generic_save(
                 "Unsloth: `dtype` needs a newer unsloth_zoo. Update via "
                 "`pip install --upgrade --no-cache-dir unsloth_zoo`."
             )
+        _prewarm_base_model_hub_cache(model, save_method = save_method, token = token)
 
         # merged_4bit merges into the loaded (already residual) weights, so it needs no conversion.
         in_place = save_method in ("merged_4bit", "forced_merged_4bit")
