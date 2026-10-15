@@ -435,8 +435,7 @@ export async function generateDiffusionImage(
 ): Promise<DiffusionGenerateResponse> {
   let response: Response;
   try {
-    // No network retry: a re-sent POST would run the whole generation again. A dropped reply is surfaced below as
-    // GenerateResponseLostError instead.
+    // No network retry: a re-sent POST re-runs the whole generation; a dropped reply surfaces below as lost.
     response = await authFetch(
       "/api/inference/images/generate",
       {

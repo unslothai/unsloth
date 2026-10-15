@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// A synchronous image generate that outlives the connection must not be re-sent: the desktop
-// transport retries a dropped POST, and every re-send ran the whole generation again (4 copies).
-
 import assert from "node:assert/strict";
 import test from "node:test";
 
