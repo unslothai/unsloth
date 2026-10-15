@@ -3,6 +3,7 @@
 """Drives run.sh, build.sh and the entrypoint with stub docker, rocm-smi and python: no AMD GPU."""
 
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -1050,3 +1051,27 @@ class TestStudioLaunchRocm:
         assert 'UNSLOTH_ROCM_GFX_ARCH="${ROCM_GFX}"' in body
         ignore = open(os.path.join(_DOCKER, ".dockerignore"), encoding = "utf-8").read()
         assert "!studio_launch.sh" in ignore and "!studio_run.sh" in ignore
+
+
+class TestStudioRocmGgufOnTheGpu:
+    """#5405: GGUF chat in the ROCm Studio image ran on the CPU (CPU llama.cpp bundle)."""
+
+    def _body(self):
+        return open(_STUDIO_DOCKERFILE, encoding = "utf-8").read()
+
+    def test_llama_cpp_is_installed_as_the_vulkan_bundle(self):
+        body = self._body()
+        install = body[
+            body.index(". /etc/unsloth-rocm-build") : body.index("bash install.sh --local")
+        ]
+        assert "UNSLOTH_LLAMA_CPP_BACKEND=vulkan" in install, install
+        assert "UNSLOTH_LLAMA_CPP_BACKEND=cpu" not in body
+        # install.sh falls back to the CPU bundle on a failed Vulkan install
+        assert "assert m.get('backend') == 'vulkan'" in body
+
+    def test_the_radv_driver_is_installed(self):
+        body = self._body()
+        apt = re.search(r"apt-get install -y --no-install-recommends \\\n\s+([^\n]+)", body).group(
+            1
+        )
+        assert "libvulkan1" in apt and "mesa-vulkan-drivers" in apt, apt

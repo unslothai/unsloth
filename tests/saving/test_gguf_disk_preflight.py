@@ -445,6 +445,11 @@ class TestMergeSizing:
         # Not the GGUF estimate, and no headroom: `_FakeModel` has no adapter, so no merge_and_overwrite_lora.
         assert sized == [_merge_preflight_ask(10 * GB, 0)]
 
+    def test_a_float32_merge_is_four_bytes_per_parameter(self, sized):
+        """unsloth#5186: `dtype = float32` doubles the checkpoint, so Kaggle must budget for it."""
+        S._preflight_merge_disk(_FakeModel(), "model", "merged_16bit", widen_to_float32 = True)
+        assert sized == [_merge_preflight_ask(20 * GB, 0)]
+
     @pytest.mark.parametrize("save_method", ["merged 16bit", "MERGED_16BIT", " merged-16bit "])
     def test_supported_spellings_are_measured_too(self, sized, save_method):
         """`unsloth_save_model` normalizes spaces, so these are the same export."""
@@ -1495,7 +1500,8 @@ class TestASuppliedDictIsWhatASixteenBitSaveWrites:
 
         generic = inspect.getsource(S.unsloth_generic_save)
         assert '("16bit" in save_method or is_qwen3_5_vlm) and state_dict is None' in generic
-        assert "v.to(dtype = _target_dtype) if v.is_floating_point() else v" in generic
+        assert "state_dict = _cast_state_dict_16bit(model, state_dict, _target_dtype)" in generic
+        # The other writer overwrites the caller's dictionary with its own.
         assert "state_dict = OrderedDict()" in inspect.getsource(S.unsloth_save_model)
 
 

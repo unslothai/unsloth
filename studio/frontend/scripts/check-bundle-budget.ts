@@ -147,8 +147,28 @@ export const BUDGET = {
   // transfer (6,773,496 -> 6,774,820 B raw, 2,036,386 -> 2,036,728 B transfer against 59ab069b5, one machine
   // and build, Node 24, chunk count unchanged at 95). Lazy-loading it cost more transfer and a 96th startup
   // chunk (Rollup split react-dom out), so it is imported statically and the budget raised by that growth.
-  transferBytes: 2_036_821,
-  rawBytes: 6_774_897,
+  // Opening the OS folder dialog for model folders on Desktop (#13843) adds 235 B raw / 336 B transfer
+  // (6,777,794 -> 6,778,029 B raw, 2,037,725 -> 2,038,061 B transfer against 199987c63, one machine and build,
+  // Node 24, chunk count unchanged at 95). Raised by that growth.
+  // The Windows Long Paths explainer on the first-run startup screen (#13523) adds 1,816 B raw / 519 B
+  // transfer (6,778,788 -> 6,780,604 B raw, 2,038,337 -> 2,038,856 B transfer against 62e063618, one machine
+  // and build, Node 24, chunk count unchanged at 95). Main already measured 3,656 B raw / 1,180 B transfer over
+  // the previous limits there, so they are set to the measured build.
+  // The downloads panel's "Starting…" row (#13738) adds 1,404 B raw / 353 B transfer (6,778,788 -> 6,780,192 B raw,
+  // 2,038,337 -> 2,038,690 B transfer against 7c235de6f, one machine and build, Node 24, 95 chunks). Raised by that growth.
+  // The Image downloads > Info stamp row in Settings > Library, its search entry and strings (#13444) add 348 B
+  // raw / 83 B transfer to the eager settings and English locale chunks (6,780,553 -> 6,780,901 B raw,
+  // 2,038,848 -> 2,038,931 B transfer against 9f5b133254, one machine and build, Node 24, chunk count unchanged
+  // at 95). Raised by that growth.
+  // Drafter training in the Train tab adds about 4.9 KB raw / 1.4 KB transfer (6,628.3 KB raw, 1,992.9 KB transfer
+  // measured against cd424654a, one machine and build, 95 chunks): its persisted training-store fields, their
+  // migration and the en strings hydrate at startup; the section itself is not in the startup set.
+  // The Run settings Load in 4-bit switch (#13841: the per-model field threaded through every chat load path and
+  // the resident-config check) adds 1,448 B raw / 433 B transfer, inline in the eager chat chunk (6,787,367 ->
+  // 6,788,815 B raw, 2,040,805 -> 2,041,238 B transfer against 4494fa58c, one machine and build, Node 24, chunk
+  // count unchanged at 95). Raised by that growth.
+  transferBytes: 2_041_433,
+  rawBytes: 6_788_948,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
