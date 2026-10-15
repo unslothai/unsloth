@@ -980,6 +980,17 @@ def _push_with_mtp_head(save_kwargs):
             revision = save_kwargs["revision"],
             create_pr = save_kwargs["create_pr"],
         )
+    if save_kwargs.get("datasets"):
+        # The local save skips the Hub card, so attribute the datasets as the hub path does.
+        try:
+            from huggingface_hub import metadata_update
+            metadata_update(
+                repo_id, {"datasets": save_kwargs["datasets"]}, overwrite = True, token = token
+            )
+        except Exception as error:
+            logger.warning_once(
+                f"Unsloth: could not update datasets metadata for {repo_id}: {error}"
+            )
     print(f"Unsloth: Saved model with its trained MTP head to https://huggingface.co/{repo_id}")
     return repo_id, username
 
@@ -7038,6 +7049,12 @@ def _unsloth_save_torchao(
 
     if not is_main_process:
         return None
+    if _attached_mtp_head(model) is not None:
+        # The reload below drops native MTP tensors (the reason the head is stitched at all).
+        print(
+            f"Unsloth: torchao {kind} exports do not carry the trained MTP head; use merged_16bit or "
+            "GGUF to keep it."
+        )
 
     from transformers import (
         AutoModelForCausalLM,

@@ -23,6 +23,7 @@ model; every merged / GGUF save then writes the trained head instead of the stoc
 __all__ = ["get_mtp_head", "attach_saved_mtp_head"]
 
 import functools
+import inspect
 import os
 
 
@@ -78,9 +79,16 @@ def get_mtp_head(
         was re-saved without its head.
     random_init: start from random weights instead (for checkpoints without a head).
     dtype: head parameter dtype, float32 by default (the head is small; the target stays as loaded).
+    Without `source` / `random_init`, a head already attached (e.g. re-attached from beside a
+    reloaded adapter) is returned as is.
     """
     import torch
 
+    if source is None and not random_init:
+        from ..save import _attached_mtp_head
+        attached = _attached_mtp_head(model)
+        if attached is not None:
+            return attached if dtype is None else attached.to(dtype = dtype)
     speculative = _zoo_speculative()
     from unsloth_zoo.speculative.mtp import build_mtp_head, load_mtp_state_dict
 
@@ -138,6 +146,13 @@ def get_mtp_head(
     return head
 
 
+def _takes_push_to_hub(fn):
+    try:
+        return "push_to_hub" in inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+
+
 def _wrap_save_pretrained(model):
     """Plain `save_pretrained` keeps the trained head too: beside a LoRA adapter, else in the checkpoint."""
     original = model.save_pretrained
@@ -154,8 +169,16 @@ def _wrap_save_pretrained(model):
         )
 
         internal = _INTERNAL_MTP_SAVE.get()
+        # PEFT's save_pretrained has no push_to_hub (its push_to_hub saves into a folder, then uploads it).
+        push = bool(kwargs.get("push_to_hub")) and _takes_push_to_hub(original)
         if not internal:
             _refuse_mtp_variant(model, kwargs.get("variant"))
+            if push and kwargs.get("create_pr"):
+                # transformers opens the PR and keeps its ref; a second upload would open another.
+                raise ValueError(
+                    "Unsloth: `create_pr = True` cannot carry the trained MTP head. Save locally, then "
+                    "upload the folder with `HfApi().upload_folder(..., create_pr = True)`."
+                )
         result = original(save_directory, *args, **kwargs)
         if internal or not os.path.isdir(save_directory):
             return result
@@ -168,7 +191,7 @@ def _wrap_save_pretrained(model):
         else:
             report = _stitch_mtp_head(model, save_directory)
             files = list(report["files_touched"]) if report else []
-        if kwargs.get("push_to_hub") and files:
+        if push and files:
             # transformers uploaded the folder before the head existed; send the head files after it.
             from huggingface_hub import HfApi
             HfApi(token = kwargs.get("token")).upload_folder(
@@ -177,8 +200,6 @@ def _wrap_save_pretrained(model):
                 folder_path = save_directory,
                 allow_patterns = files,
                 commit_message = "Add the trained MTP head",
-                revision = kwargs.get("revision"),
-                create_pr = bool(kwargs.get("create_pr", False)),
             )
         return result
 
