@@ -162,6 +162,8 @@ struct ViewsState {
     committed: HashSet<String>,
     /// Hidden tabs shown just off the window for a screenshot (`show_for_capture`); a switch leaves them be.
     capturing: HashSet<String>,
+    /// Where `browser_view_show` last put each tab, for a capture that a switch overtook (`end_capture`).
+    placed: HashMap<String, Rect>,
 }
 
 pub fn new_browser_views() -> BrowserViews {
@@ -1423,11 +1425,17 @@ pub async fn browser_view_show<R: Runtime>(
                 if parked {
                     position.x = -size.width - PARK_GAP;
                 }
-                view.set_bounds(Rect {
+                let rect = Rect {
                     position: position.into(),
                     size: size.into(),
-                })
-                .map_err(|error| error.to_string())?;
+                };
+                state
+                    .inner
+                    .lock()
+                    .unwrap()
+                    .placed
+                    .insert(tab_id.clone(), rect);
+                view.set_bounds(rect).map_err(|error| error.to_string())?;
                 view
             }
             None if parked => return Err("no page to park".into()),
@@ -1477,7 +1485,8 @@ pub async fn browser_view_open_background<R: Runtime>(
     bounds: ViewBounds,
 ) -> Result<(), String> {
     require_main(&webview)?;
-    if webview.app_handle().get_webview(&label_for(&tab_id)?).is_some() {
+    let label = label_for(&tab_id)?;
+    if webview.app_handle().get_webview(&label).is_some() {
         return Ok(());
     }
     let url = parse_page_url(&url)?;
@@ -1522,12 +1531,15 @@ pub(crate) fn show_for_capture<R: Runtime>(
     true
 }
 
-/// Hides a page `show_for_capture` showed, unless it became the shown one meanwhile.
+/// Hides a page `show_for_capture` showed. One that became the shown page meanwhile goes back
+/// where the switch put it, not off the window.
 pub(crate) fn end_capture<R: Runtime>(views: &BrowserViews, page: &Webview<R>, tab_id: &str) {
     let mut inner = views.inner.lock().unwrap();
     inner.capturing.remove(tab_id);
     if inner.shown.as_deref() != Some(tab_id) {
         let _ = page.hide();
+    } else if let Some(rect) = inner.placed.get(tab_id) {
+        let _ = page.set_bounds(*rect);
     }
 }
 
@@ -1927,6 +1939,7 @@ pub fn browser_view_close<R: Runtime>(
         inner.urls.remove(&tab_id);
         inner.committed.remove(&tab_id);
         inner.download_starts.remove(&tab_id);
+        inner.placed.remove(&tab_id);
         // `muted` stays: a pruned view reopens muted; unmuting is what forgets it.
         if inner.shown.as_deref() == Some(tab_id.as_str()) {
             set_shown(&state, &mut inner, None);

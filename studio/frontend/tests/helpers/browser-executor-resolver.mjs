@@ -14,7 +14,8 @@ const STUBS = {
   "../native-view":
     "export const hasNativeView = () => globalThis.__native === true; export const nativeAction = () => {};" +
     " export const keepInBackground = (tabId) => globalThis.__keep?.(tabId);" +
-    " export const releaseBackground = (tabId) => void (globalThis.__released ??= []).push(tabId);",
+    " export const releaseBackground = (tabId) => void (globalThis.__released ??= []).push(tabId);" +
+    " export const whenViewOpen = async () => true;",
   "../native-support":
     "export const useNativeBrowser = { getState: () => ({ enabled: globalThis.__native === true }) };" +
     " export const callNative = async (command, args) => (globalThis.__callNative ? globalThis.__callNative(command, args) : null);",

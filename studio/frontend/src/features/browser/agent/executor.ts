@@ -11,7 +11,7 @@ import { toast } from "@/lib/toast";
 import { isTauri } from "@/lib/api-base";
 import { captureHiddenPage, screenshotPage } from "../capture";
 import { useBrowserHistoryStore } from "../history-store";
-import { hasNativeView, keepInBackground, nativeAction, releaseBackground } from "../native-view";
+import { hasNativeView, keepInBackground, nativeAction, releaseBackground, whenViewOpen } from "../native-view";
 import { callNative, useNativeBrowser } from "../native-support";
 import { requestFrameAgent } from "../page-frame";
 import { browserPanelAvailable } from "../panel-availability";
@@ -47,8 +47,16 @@ export type BrowserAction = {
   policy: SitePolicy;
 };
 
-/** `scope`: the chat the run belongs to; sites approved in one chat aren't approved in another. */
-export type ActionContext = { runKey: string; scope?: string; userText: string; fullAccess?: boolean; signal?: AbortSignal };
+/** `scope`: the chat the run belongs to; sites approved in one chat aren't approved in another.
+ *  `chat`: its browser chat when that isn't the thread's own (a compare pane's pair). */
+export type ActionContext = {
+  runKey: string;
+  scope?: string;
+  chat?: string;
+  userText: string;
+  fullAccess?: boolean;
+  signal?: AbortSignal;
+};
 
 /** An action with its chat's session: each chat drives its own tab, in parallel with the others. */
 type Run = ActionContext & { session: Session };
@@ -150,14 +158,11 @@ function sessionFor(chat: string): Session {
   return session;
 }
 
-/** The chat a run's actions belong to, as the browser store names chats (a compare pane's is its pair). */
+/** The chat a run's actions belong to, as the browser store names chats. */
 function chatOf(context: ActionContext): string {
+  if (context.chat) return context.chat;
   const scope = context.scope;
-  if (!scope || scope === "__default") return useBrowserStore.getState().chat;
-  const pair = visibleChatItems(useChatNavigationStore.getState()).find(
-    (item) => item.type === "compare" && item.threadIds?.includes(scope),
-  );
-  return pair ? `compare:${pair.id}` : chatKeyOfThread(scope);
+  return scope && scope !== "__default" ? chatKeyOfThread(scope) : useBrowserStore.getState().chat;
 }
 
 // A chat's page stays open in the background only while its run lasts.
@@ -472,8 +477,10 @@ const DECLINED: Record<Question["ask"], string> = {
 
 /** A question waits in a chat that isn't on screen: say so, with a way there. One toast per chat. */
 function notifyOffScreenQuestion(chat: string): void {
-  const threadId = chat.startsWith(chatKeyOfThread("")) ? chat.slice(chatKeyOfThread("").length) : "";
-  const item = visibleChatItems(useChatNavigationStore.getState()).find((candidate) => candidate.id === threadId) ?? null;
+  // A single chat's key is `single:<thread>`, a compare's `compare:<pair>`; the sidebar row has that id.
+  const [type, id] = [chat.slice(0, chat.indexOf(":")), chat.slice(chat.indexOf(":") + 1)];
+  const item =
+    visibleChatItems(useChatNavigationStore.getState()).find((candidate) => candidate.id === id && candidate.type === type) ?? null;
   toast(translate("browser.agent.waiting", { chat: item?.title || translate("browser.agent.otherChat", undefined, getLocale()) }, getLocale()), {
     id: `browser-agent-question:${chat}`,
     action: item ? { label: translate("browser.agent.show", undefined, getLocale()), onClick: () => openChatItemById(item) } : undefined,
@@ -603,9 +610,15 @@ async function perform(action: BrowserAction, context: Run): Promise<Result> {
     return { ok: false, error: SCRIPTS_OFF };
   }
 
-  const tab = agentTab(context);
-  if (!tab) return { ok: false, error: "No page is open yet. Call browser_navigate first." };
-  showTab(tab, context);
+  const shown = agentTab(context);
+  if (!shown) return { ok: false, error: "No page is open yet. Call browser_navigate first." };
+  showTab(shown, context);
+  // A kept page the cap closed reopens a beat later; its history flags are only good once it has.
+  if (useNativeBrowser.getState().enabled && currentEntry(shown).kind === "web" && !hasNativeView(shown.id)) {
+    await whenViewOpen(shown.id);
+  }
+  const tab = findTab(shown.id);
+  if (!tab) return { ok: false, error: "the browser tab closed." };
   const before = tabUrl(tab);
 
   if (action.op === "back" || action.op === "forward" || action.op === "reload") {

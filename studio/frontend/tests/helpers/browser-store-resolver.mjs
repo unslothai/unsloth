@@ -9,6 +9,7 @@ const CHAT_STUB =
       " const runtime = { incognito: false, setIncognito: (incognito) => void (runtime.incognito = incognito) };" +
       " export const useChatRuntimeStore = { getState: () => runtime };" +
       " export const useChatNavigationStore = { getState: () => ({}) };" +
+      " export const onChatThreadsDeleted = (listener) => void (globalThis.__chatDeleted = listener);" +
       " export const visibleChatItems = () => globalThis.__chatItems ?? [];" +
       " export const openChatItemById = (item) => void (globalThis.__openedChats ??= []).push(item);",
   );

@@ -7567,6 +7567,8 @@ export function createOpenAIStreamAdapter(
                       if (action) {
                         void runBrowserAction(action, {
                           runKey: cancelId,
+                          // A compare pane's browser is its pair's, as the compare view names it.
+                          chat: options.pairId ? `compare:${options.pairId}` : undefined,
                           // Resolved per action: a first turn is re-keyed from "__default" to its id.
                           scope: liveThreadKey(serverCancel),
                           userText,

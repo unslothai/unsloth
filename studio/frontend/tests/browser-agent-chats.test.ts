@@ -110,3 +110,15 @@ test("without native pages a chat off screen is told to wait for its chat", asyn
   assert.match(resultOf("w1")?.error ?? "", /only runs while the chat is open here/);
   assert.equal(agentChat(chatKeyOfThread("elsewhere")).tabId, null);
 });
+
+test("a compare pane's run drives its pair's browser, whatever the sidebar shows", async () => {
+  globals.__native = true;
+  await runBrowserAction(
+    { id: "c1", sessionId: "s", op: "navigate", url: "https://pair.example/", direction: "down", policy },
+    { runKey: "run-pane", scope: "pane-thread", chat: "compare:pair1", userText: "open https://pair.example/" },
+  );
+  assert.equal(resultOf("c1")?.ok, true, resultOf("c1")?.error);
+  const tabId = agentChat("compare:pair1").tabId;
+  assert.equal(useBrowserStore.getState().tabs.find((tab) => tab.id === tabId)?.chat, "compare:pair1");
+  assert.equal(agentChat(chatKeyOfThread("pane-thread")).tabId, null);
+});

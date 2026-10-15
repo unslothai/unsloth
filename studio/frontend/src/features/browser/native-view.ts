@@ -256,7 +256,9 @@ function onNativeEvent(event: NativeEvent): void {
       newTabTimes = newTabTimes.filter((time) => now - time < NEW_TAB_WINDOW_MS);
       if (newTabTimes.length < NEW_TABS_PER_WINDOW) {
         newTabTimes.push(now);
-        store.openUrl(event.url, { newTab: true, from: shownUrl(tab) });
+        // A page at work in a chat off screen opens its popups there, not over this chat's tabs.
+        if (tab.chat !== store.chat) store.openTabIn(tab.chat, event.url, { from: shownUrl(tab), background: true });
+        else store.openUrl(event.url, { newTab: true, from: shownUrl(tab) });
       } else {
         prompt(t("browser.native.externalPrompt", { host: hostOf(shownUrl(tab)), url: event.url }), {
           label: t("browser.native.open"),
@@ -795,10 +797,24 @@ async function openInBackground(tabId: string, url: string, key: number): Promis
     views.set(tabId, key);
   } catch (cause) {
     useBrowserStore.getState().updateTab(tabId, { loading: false, nativeError: error(cause) });
+    // Not retried here: the agent's next action asks again.
+    background = background.filter((id) => id !== tabId);
   } finally {
     openingInBackground.delete(tabId);
   }
+  // Let go (run over, tab closed, cap) while it opened: nothing owns it now.
+  if (!background.includes(tabId) && !panelUp && tabId !== shownView && views.has(tabId)) closeView(tabId);
   syncBackground();
+}
+
+/** True once `tabId`'s page is open (a kept page reopening after the cap closed it), false after `timeoutMs`. */
+export async function whenViewOpen(tabId: string, timeoutMs = 5000): Promise<boolean> {
+  const until = Date.now() + timeoutMs;
+  while (!views.has(tabId) || openingInBackground.has(tabId)) {
+    if (Date.now() > until) return false;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  return true;
 }
 
 function clearSnapshot(): void {

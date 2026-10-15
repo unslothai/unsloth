@@ -102,7 +102,7 @@ const calls: Call[] = [];
 
 register("./helpers/browser-store-resolver.mjs", import.meta.url);
 register("./helpers/native-view-resolver.mjs", import.meta.url);
-const { useBrowserStore } = await import("../src/features/browser/store.ts");
+const { currentEntry, useBrowserStore } = await import("../src/features/browser/store.ts");
 const { keepInBackground, releaseBackground, startNativeViews } = await import("../src/features/browser/native-view.ts");
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 5));
@@ -301,4 +301,39 @@ test("a page at work in a chat off screen opens hidden, follows its tab, and out
   // Let go with no panel up, it closes.
   releaseBackground(tabId);
   assert.ok(calls.some(({ command, args }) => command === "browser_view_close" && args?.tabId === tabId));
+});
+
+test("a background page's popup opens in its own chat, and a page that fails to open isn't retried in a loop", async () => {
+  const store = useBrowserStore.getState();
+  store.closePanel();
+  store.showChat("single:viewer");
+  const tabId = store.openTabIn("single:worker", "https://worker.example/") ?? "";
+  // A target=_blank link the agent clicked there: the popup joins that chat, behind its front tab.
+  const listener = (globalThis as { nativeViewListener?: (event: { payload: unknown }) => void }).nativeViewListener;
+  listener?.({ payload: { kind: "newTab", tabId, url: "https://popup.example/" } });
+  const popup = useBrowserStore.getState().tabs.find((tab) => {
+    const entry = currentEntry(tab);
+    return entry.kind === "web" && entry.url === "https://popup.example/";
+  });
+  assert.equal(popup?.chat, "single:worker");
+  assert.equal(useBrowserStore.getState().tabs.filter((tab) => tab.chat === "single:viewer").length, 0);
+
+  // Opening it keeps failing: one try per request, not a busy loop.
+  const failing = store.openTabIn("single:worker", "https://broken.example/") ?? "";
+  const call = (globalThis as { nativeViewCall?: unknown }).nativeViewCall;
+  let opens = 0;
+  (globalThis as { nativeViewCall?: unknown }).nativeViewCall = (command: string, args?: Record<string, unknown>) => {
+    if (command === "browser_view_open_background" && args?.tabId === failing) {
+      opens += 1;
+      return Promise.reject(new Error("refused"));
+    }
+    return (call as (command: string, args?: Record<string, unknown>) => Promise<unknown>)(command, args);
+  };
+  keepInBackground(failing);
+  await settle();
+  await settle();
+  assert.equal(opens, 1);
+  assert.match(useBrowserStore.getState().tabs.find((tab) => tab.id === failing)?.nativeError ?? "", /refused/);
+  (globalThis as { nativeViewCall?: unknown }).nativeViewCall = call;
+  releaseBackground(tabId);
 });

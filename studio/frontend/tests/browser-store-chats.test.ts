@@ -108,3 +108,19 @@ test("a new chat's tabs follow it to its id on the first save, and moving a tab 
   store.openUrl("https://draft.example/");
   assert.equal(chatTabs(useBrowserStore.getState()).length, 1);
 });
+
+test("a deleted chat's tabs and panel state go with it; the chat on screen keeps its own", () => {
+  const store = useBrowserStore.getState();
+  store.closePanel();
+  store.showChat(chatKeyOfThread("keep"));
+  store.openUrl("https://kept.example/");
+  const gone = chatKeyOfThread("gone");
+  const popup = store.openTabIn(gone, "https://gone.example/", { background: true });
+  assert.ok(popup);
+  assert.ok(gone in useBrowserStore.getState().chats);
+  // Chat deletion reaches the store through the chat feature's listener.
+  (globalThis as { __chatDeleted?: (ids: string[]) => void }).__chatDeleted?.(["gone"]);
+  assert.equal(useBrowserStore.getState().tabs.some((tab) => tab.chat === gone), false);
+  assert.equal(gone in useBrowserStore.getState().chats, false);
+  assert.deepEqual(urls(), ["https://kept.example/"]);
+});

@@ -765,8 +765,13 @@ const SingleContent = memo(function SingleContent({
     useChatRuntimeStore.getState().setSettingsPanelOpen(false);
   }, [researchMatchesThread, closeBrowser]);
 
+  // Leaving Chat closes this chat's browser. Compare keeps this view mounted but hidden, and by
+  // then the panel on screen is the compare chat's: that one stays as it is.
+  const browserChat = useBrowserStore((state) => state.chat);
+  const browserChatRef = useRef<string | null>(null);
+  if (chatActive) browserChatRef.current = browserChat;
   useEffect(() => {
-    if (!chatActive) closeBrowser();
+    if (!chatActive && useBrowserStore.getState().chat === browserChatRef.current) closeBrowser();
   }, [chatActive, closeBrowser]);
 
   // Width on header/notice only: on the root it would restyle the whole thread per resize.

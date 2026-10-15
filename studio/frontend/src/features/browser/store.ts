@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { type DocumentAnnotations, useChatRuntimeStore } from "@/features/chat";
+import { type DocumentAnnotations, onChatThreadsDeleted, useChatRuntimeStore } from "@/features/chat";
 import { create } from "zustand";
 import { unwrapRedirect } from "./address";
 import type { BrowserPage } from "./api";
@@ -292,8 +292,10 @@ type BrowserState = {
   showChat: (chat: string) => void;
   /** A new chat got its id on its first save: its tabs go with it. */
   adoptChat: (from: string, to: string) => void;
-  /** A web tab for `chat`, in front only when that chat is on screen; its id. */
-  openTabIn: (chat: string, url: string) => string | null;
+  /** A web tab for `chat`, in front only when that chat is on screen (`background`: behind its front tab); its id. */
+  openTabIn: (chat: string, url: string, options?: { from?: string; background?: boolean }) => string | null;
+  /** Drops a deleted chat's tabs and panel state. */
+  forgetChat: (chat: string) => void;
   /** `tabId` in front of `chat`'s open panel: now if it is on screen, else when it comes back. */
   revealIn: (chat: string, tabId: string) => void;
   /** Bumped on open, so the panel re-expands after a drag shut. */
@@ -481,6 +483,7 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
     chat: NEW_CHAT,
     chats: {},
     showChat: (chat) => {
+      forgetDeletedChats();
       const state = get();
       if (chat === state.chat) return;
       const chats = { ...state.chats };
@@ -528,11 +531,20 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
         chats: { ...state.chats, [chat]: { open: true, fullView: state.chats[chat]?.fullView ?? false, activeTabId: tabId } },
       }));
     },
-    openTabIn: (chat, url) => {
+    openTabIn: (chat, url, options) => {
       if (!isWeb(url)) return null;
-      const tab = createTab(webEntry(unwrapRedirect(url)));
-      openTab(tab, false, undefined, chat);
+      const tab = createTab(webEntry(unwrapRedirect(url), undefined, undefined, options?.from));
+      openTab(tab, options?.background, undefined, chat);
       return tab.id;
+    },
+    forgetChat: (chat) => {
+      if (chat === get().chat) return;
+      for (const tab of get().tabs) if (tab.chat === chat) get().closeTab(tab.id);
+      set((state) => {
+        if (!(chat in state.chats)) return state;
+        const { [chat]: _forgotten, ...chats } = state.chats;
+        return { chats };
+      });
     },
     openSequence: 0,
     focusAddressSequence: 0,
@@ -787,3 +799,14 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
     splitWithChatOn: (chatSide) => set({ fullView: false, chatSide }),
   };
 });
+
+let watchingDeletes = false;
+
+/** A deleted chat's tabs go with it. Hooked on first use: the chat feature imports this module. */
+function forgetDeletedChats(): void {
+  if (watchingDeletes) return;
+  watchingDeletes = true;
+  onChatThreadsDeleted((threadIds) => {
+    for (const threadId of threadIds) useBrowserStore.getState().forgetChat(chatKeyOfThread(threadId));
+  });
+}
