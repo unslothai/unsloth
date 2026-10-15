@@ -99,6 +99,15 @@ def _output_head(trainer, model):
     # A LoRA / modules_to_save head computes more than weight @ h; leave it to its own forward.
     if head is None or hasattr(head, "base_layer") or hasattr(head, "modules_to_save"):
         return None, None
+    # The kernel reads weight / bias directly: only a plain, unhooked nn.Linear is exactly F.linear(h, W, b).
+    if (
+        type(head) is not torch.nn.Linear
+        or hasattr(head, "_hf_hook")
+        or "forward" in vars(head)
+        or head._forward_hooks
+        or head._forward_pre_hooks
+    ):
+        return None, None
     weight = getattr(head, "weight", None)
     if not isinstance(weight, torch.Tensor) or weight.dim() != 2:
         return None, None

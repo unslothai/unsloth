@@ -555,3 +555,35 @@ def test_rl_replacement_injects_dispatch_only_when_enabled(monkeypatch):
     doc = lines.index('        """Doc."""')
     assert lines[doc + 1].strip().startswith("from unsloth.models.dpo import unsloth_fused_dpo_concatenated_forward")
     assert namespace["dpo_trainer_fused_preference_forward"]("concatenated_inputs", source) == source
+
+
+@pytest.mark.parametrize("kind", ["forward_hook", "pre_hook", "hf_hook", "subclass"])
+def test_hooked_or_custom_head_falls_back(dpo_module, monkeypatch, kind):
+    """The kernel reads the head's weight directly, so a head whose forward does more is left to TRL."""
+    monkeypatch.setattr(dpo_module, "_logit_transforms", lambda unwrapped: (0.0, 0.0, 0.0))
+    batch = _orpo_batch(seed = 4)
+    model = _model(0)
+    head = model.get_output_embeddings()
+    if kind == "forward_hook":
+        head.register_forward_hook(lambda m, i, o: o * 2)
+    elif kind == "pre_hook":
+        head.register_forward_pre_hook(lambda m, i: (i[0] * 2,))
+    elif kind == "hf_hook":
+        head._hf_hook = object()
+    else:
+
+        class Scaled(torch.nn.Linear):
+            def forward(self, x):
+                return super().forward(x) * 2
+
+        head.__class__ = Scaled
+    trainer = _orpo_trainer(dpo_module, model, "orpo", "auto")
+    assert dpo_module._output_head(trainer, model) == (None, None)
+    if kind == "hf_hook":
+        return
+    reference = _run(_orpo_trainer(dpo_module, model, "orpo", False), model, batch)
+    model.zero_grad(set_to_none = True)
+    HiddenStatesLlama.hidden_calls = 0
+    loss, metrics, _ = _run(trainer, model, batch)
+    assert HiddenStatesLlama.hidden_calls == 0
+    torch.testing.assert_close(loss, reference[0])
