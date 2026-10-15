@@ -3232,3 +3232,23 @@ def test_stop_after_the_connection_answered_is_not_acknowledged(client, monkeypa
             inference_routes._external_image_runs.clear()
 
     assert asyncio.run(run()) is False
+
+
+def test_connection_png_parameters_leave_out_unsent_settings():
+    from core.inference.image_gallery import _params_text
+
+    text = _params_text(
+        {
+            "prompt": "a sloth",
+            "steps": 9,
+            "guidance": 0.0,
+            "seed": 123,
+            "width": 512,
+            "height": 256,
+            "model": "qwen-image",
+            "model_kind": "connection",
+        }
+    )
+    assert text == "a sloth\nSize: 512x256, Model: qwen-image"
+    local = _params_text({"prompt": "a sloth", "steps": 9, "guidance": 0.0, "seed": 123})
+    assert "Steps: 9" in local and "Seed: 123" in local
