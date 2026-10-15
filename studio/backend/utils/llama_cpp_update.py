@@ -354,12 +354,23 @@ def _merge_whisper_status(status: dict, *, force_refresh: bool = False) -> dict:
     return status
 
 
+def _whisper_retry_owed() -> bool:
+    """The last job's whisper phase failed, so its Retry may run whisper by itself."""
+    with _job_lock:
+        phases = _job.get("phases") or {}
+    return (phases.get("whisper") or {}).get("state") == _flow.PHASE_ERROR
+
+
 def _settle_whisper_rider(status: dict) -> dict:
-    """List a pending whisper.cpp release only beside a llama.cpp update, backend migration or audio.cpp update it can ride with."""
+    """List a pending whisper.cpp release only beside a llama.cpp update, backend migration or audio.cpp update it can ride with, or for the Retry of a whisper phase that failed."""
     whisper = status.get("whisper")
     if not whisper or not whisper.get("update_available"):
         return status
     if status.get("update_available") or status.get("backend_migration_available"):
+        return status
+    if _whisper_retry_owed():
+        status["update_available"] = True
+        status["update_component"] = "whisper"
         return status
     whisper["update_available"] = False
     whisper["skip_reason"] = "waits_for_llama"
@@ -1283,6 +1294,8 @@ def _run_claimed_job(phases: list[dict]) -> None:
 
 def _start_llama_job(backend_request: Optional[str] = None) -> dict:
     """Shared body of start_update() and start_backend_switch()."""
+    # Read before the claim replaces the previous job.
+    whisper_retry = _whisper_retry_owed()
     if not _claim_operation(backend_request):
         with _job_lock:
             return {
@@ -1358,6 +1371,7 @@ def _start_llama_job(backend_request: Optional[str] = None) -> dict:
             and audio_spec is None
             and whisper_spec is not None
             and not whisper_spec.get("repair")
+            and not whisper_retry
         ):
             # whisper.cpp rides along with a llama.cpp or audio.cpp update and never runs a job by itself.
             whisper_spec = None

@@ -681,6 +681,29 @@ def test_apply_whisper_only_release_starts_no_job(monkeypatch, tmp_path):
     assert events == []
 
 
+def test_a_failed_whisper_phase_can_be_retried_alone(monkeypatch, tmp_path):
+    # llama updated but whisper failed: llama is now current, and Retry must still reach whisper.
+    _setup_llama(monkeypatch, tmp_path, installed = "b9518", latest = "b9518")
+    _setup_whisper(monkeypatch, tmp_path)
+    (tmp_path / "install_whisper_prebuilt.py").write_text("stub")
+    failed = upd._flow.new_job()
+    failed.update(state = "error", phases = {"whisper": {"state": upd._flow.PHASE_ERROR}})
+    monkeypatch.setattr(upd, "_job", failed)
+
+    st = upd.get_update_status(force_refresh = True)
+    assert st["update_available"] is True
+    assert st["update_component"] == "whisper"
+    assert st["whisper"]["update_available"] is True
+
+    events = []
+    _patch_llama_installer(monkeypatch, on_start = lambda cmd: events.append("llama"))
+    _patch_whisper_phase(monkeypatch, events)
+    assert upd.start_update()["started"] is True
+    job = _wait_for_job()
+    assert job["state"] == "success", job
+    assert events == ["whisper"]
+
+
 def test_apply_whisper_rides_with_audio(monkeypatch, tmp_path):
     # llama current, whisper and audio.cpp behind: whisper updates in the audio.cpp round.
     _setup_llama(monkeypatch, tmp_path, installed = "b9518", latest = "b9518")

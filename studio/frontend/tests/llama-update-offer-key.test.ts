@@ -67,3 +67,11 @@ test("without an audio.cpp offer the key matches keys stored before audio joined
   );
   assert.equal(offerKey(status({ ...none })), offerKey(status(null)));
 });
+
+test("a new whisper.cpp release does not change the suppression key", () => {
+  const withWhisper = {
+    ...status(null),
+    whisper: { ...none, update_available: true, installed_tag: "v1.9.5-unsloth.4", latest_tag: "v1.9.5-unsloth.5" },
+  } as unknown as HookModule.LlamaUpdateStatus;
+  assert.equal(offerKey(withWhisper), offerKey(status(null)));
+});
