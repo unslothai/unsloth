@@ -1318,6 +1318,36 @@ class TestInputEmbeddingsLeftInTheFileMapping:
         # Same measured residency, same ceiling: the extra charge is already in the rows.
         assert tied == untied > _FIT_MIN_CTX
 
+    @pytest.mark.parametrize("extra_args, shared", [(None, True), (["--no-mmap"], False)])
+    def test_a_mapped_tied_output_shares_the_files_pages_without_a_measurement(
+        self, tmp_path, monkeypatch, extra_args, shared
+    ):
+        """Mapped, the output's Metal buffer wraps token_embd's pages: no extra bytes.
+        Unmapped (--no-mmap) the duplicate is a real copy and stays charged."""
+        untied, _ = self._published(
+            tmp_path,
+            monkeypatch,
+            n_ctx = 0,
+            measured = None,
+            extra_args = extra_args,
+            budget_bytes = 20 * _GIB,
+        )
+        monkeypatch.setattr(
+            LlamaCppBackend, "_tied_output_bytes", staticmethod(lambda _path: 2 * _GIB)
+        )
+        tied, _ = self._published(
+            tmp_path,
+            monkeypatch,
+            n_ctx = 0,
+            measured = None,
+            extra_args = extra_args,
+            budget_bytes = 20 * _GIB,
+        )
+        assert untied > _FIT_MIN_CTX
+        assert (tied == untied) is shared
+        if not shared:
+            assert tied < untied
+
     def test_a_placement_it_did_not_measure_keeps_the_fitter(self, tmp_path, monkeypatch):
         _, _, cmd = self._launched(
             tmp_path, monkeypatch, n_ctx = 32768, extra_args = ["--load-mode", "none"]

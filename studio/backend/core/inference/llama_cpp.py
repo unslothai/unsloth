@@ -14494,6 +14494,38 @@ class LlamaCppBackend:
         self._metal_model_mib_cache = (key, measured)
         return measured
 
+    @staticmethod
+    def _metal_load_is_mapped(
+        extra_args: Optional[Iterable[str]],
+        *,
+        requested_load_mode: Optional[str],
+        supports_load_mode: bool,
+        settings: tuple[bool, bool],
+        env: Optional[Mapping[str, str]] = None,
+    ) -> bool:
+        """Whether a Metal launch maps the GGUF (no mlock, no-mmap or DirectIO)."""
+        env_view = dict(os.environ if env is None else env)
+        scrub_memory_env(env_view, settings)
+        managed, extras = apply_model_memory_policy(
+            extra_args,
+            supports_load_mode = supports_load_mode,
+            weights_in_host_memory = True,
+            gpu_offload_confirmed = False,
+            env = env_view,
+            settings = settings,
+        )
+        selected, extras = apply_load_mode_policy(
+            extras,
+            supports_load_mode = supports_load_mode,
+            weights_in_host_memory = True,
+            requested_load_mode = requested_load_mode,
+            settings = settings,
+        )
+        mlock, reserves_ram, direct_io = resolve_effective_load_state(
+            [*managed, *selected, *extras], env_view
+        )
+        return not (mlock or reserves_ram or direct_io)
+
     def _metal_demand_paged_embedding_bytes(
         self,
         model_path: Optional[str],
@@ -14532,27 +14564,13 @@ class LlamaCppBackend:
             or _sidecar_adapter_paths(extra_args)
         ):
             return 0
-        env_view = dict(source_env)
-        scrub_memory_env(env_view, settings)
-        managed, extras = apply_model_memory_policy(
+        if not self._metal_load_is_mapped(
             extra_args,
-            supports_load_mode = supports_load_mode,
-            weights_in_host_memory = True,
-            gpu_offload_confirmed = False,
-            env = env_view,
-            settings = settings,
-        )
-        selected, extras = apply_load_mode_policy(
-            extras,
-            supports_load_mode = supports_load_mode,
-            weights_in_host_memory = True,
             requested_load_mode = requested_load_mode,
+            supports_load_mode = supports_load_mode,
             settings = settings,
-        )
-        mlock, reserves_ram, direct_io = resolve_effective_load_state(
-            [*managed, *selected, *extras], env_view
-        )
-        if mlock or reserves_ram or direct_io:
+            env = source_env,
+        ):
             return 0
         layout = self._tensor_spill_layout(model_path, all_shards = True)
         if layout is None or not layout.complete:
@@ -14575,8 +14593,6 @@ class LlamaCppBackend:
         # skipped block reaches no buffer and no table row. Those bytes are in the file and not
         # in the probe, which is the signature the embeddings are being recognised by.
         mapped = int(layout.tensor_bytes) - int(layout.excluded_block_bytes)
-        # The probe's rows hold the tied output duplicate the fit now charges on top of the file.
-        mapped += self._tied_output_vram_bytes(model_path, extra_args, env = source_env)
         unmapped = min(embeddings, max(0, mapped - charged))
         if not unmapped:
             logger.info(
@@ -29411,7 +29427,21 @@ class LlamaCppBackend:
                             layers_fixed = _caller_owns_budget or _paravirtual_cpu_forced,
                             mtp_may_engage = _mtp_will_engage,
                         )
-                        _apple_model_size_fit = model_size_fit - _apple_host_embd
+                        # Mapped, the tied output's Metal buffer wraps token_embd's own file
+                        # pages (llama-model.cpp buffer_from_host_ptr), so it costs nothing extra.
+                        _apple_tied_shared = (
+                            _tied_output_charge
+                            if self._metal_load_is_mapped(
+                                extra_args,
+                                requested_load_mode = load_mode,
+                                supports_load_mode = bool(server_caps.get("supports_load_mode")),
+                                settings = _mem_settings,
+                            )
+                            else 0
+                        )
+                        _apple_model_size_fit = (
+                            model_size_fit - _apple_tied_shared - _apple_host_embd
+                        )
                         if _apple_host_embd:
                             logger.info(
                                 "Metal fit: %.2f GB of input embeddings stay in the CPU "
