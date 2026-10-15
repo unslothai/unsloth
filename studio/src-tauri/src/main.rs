@@ -1090,6 +1090,23 @@ fn confirm_update_during_training(app: &tauri::AppHandle) -> bool {
         .blocking_show()
 }
 
+fn confirm_update_during_downloads(app: &tauri::AppHandle) -> bool {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+
+    app.dialog()
+        .message(
+            "Downloads are still running. Updating now stops the backend and \
+             cancels the downloads in progress.",
+        )
+        .kind(MessageDialogKind::Warning)
+        .title("Downloads in progress")
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "Update anyway".to_string(),
+            "Keep downloading".to_string(),
+        ))
+        .blocking_show()
+}
+
 /// renderer-owned downloads, shell updates and unsaved transcripts must also protect native quit.
 #[derive(Default)]
 pub struct RendererActivity {
@@ -2252,6 +2269,7 @@ fn main() {
             app_menu::set_app_menu_actions,
             browser_webview::browser_view_supported,
             browser_webview::browser_view_show,
+            browser_webview::browser_view_open_background,
             browser_webview::browser_view_navigate,
             browser_webview::browser_view_action,
             browser_webview::browser_view_zoom,

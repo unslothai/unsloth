@@ -889,10 +889,11 @@ class AudioCppBackend:
             )
         except cm.MusicRequestError as exc:
             raise RuntimeError(str(exc)) from exc
+        own_end = cm.self_ending_timeout(model.family, server.backend)
         ctype, data = server.post_json(
             "/v1/tasks/run",
             {"model": server.model_id, "request": request},
-            timeout = _GENERATE_TIMEOUT_SECONDS,
+            timeout = own_end or _GENERATE_TIMEOUT_SECONDS,
             cancel_event = cancel_event,
         )
         return _audio_from_task_response(ctype, data)

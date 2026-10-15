@@ -314,13 +314,7 @@ function PermissionsSection() {
         </div>
       </SettingsRow>
       {/* Its own instance: the chat-page root dialog is not mounted on every page. */}
-      <SandboxSetupDialog
-        open={setupOpen}
-        onOpenChange={setSetupOpen}
-        onLearnMore={() =>
-          permissionsRef.current?.scrollIntoView({ block: "start", behavior: "smooth" })
-        }
-      />
+      <SandboxSetupDialog open={setupOpen} onOpenChange={setSetupOpen} />
     </SettingsSection>
   );
 }
@@ -372,6 +366,9 @@ export function SandboxTab() {
 
 function OsSandboxSections() {
   const t = useT();
+  const sectionRef = useRef<HTMLElement | null>(null);
+  const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
+  const consumeScrollTarget = useSettingsDialogStore((s) => s.consumeScrollTarget);
   const [status, setStatus] = useState<SandboxStatus | null>(null);
   const [job, setJob] = useState<HostPrepJob | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -394,6 +391,17 @@ function OsSandboxSections() {
       mounted.current = false;
     };
   }, []);
+
+  // Waits for the first status read: before it the section is too short to scroll to.
+  const settled = status !== null || error !== null || absent;
+  useEffect(() => {
+    if (scrollTarget !== "sandbox-os" || !settled) return;
+    const frame = window.requestAnimationFrame(() => {
+      sectionRef.current?.scrollIntoView({ block: "start", behavior: "smooth" });
+      consumeScrollTarget("sandbox-os");
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [consumeScrollTarget, scrollTarget, settled]);
 
   // Callers set `loading`: a synchronous setState from the mount effect would cascade a render.
   const refresh = useCallback(
@@ -613,6 +621,7 @@ function OsSandboxSections() {
       ) : (
         <>
           <SettingsSection
+            ref={sectionRef}
             title={t("settings.sandbox.toolsSection")}
             action={
               <Button
@@ -817,6 +826,11 @@ function OsSandboxSections() {
                         {t("settings.sandbox.builtinInUse")}
                       </Badge>
                     </SettingsRow>
+                  ) : null}
+                  {view.builtinUpdate ? (
+                    <p className="py-2 text-xs text-muted-foreground leading-relaxed">
+                      {t("settings.sandbox.builtinNeedsUpdate", view.builtinUpdate)}
+                    </p>
                   ) : null}
                   <SettingsRow
                     label={t("settings.sandbox.optInLabel")}

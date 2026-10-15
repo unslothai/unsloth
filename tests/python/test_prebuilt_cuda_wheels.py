@@ -121,7 +121,7 @@ class TestWorkflowAndResolverAgree:
             assert wheel_utils._UNSLOTH_PREBUILT_VERSIONS[spec["dist"]] == spec["version"], package
 
     def test_every_extra_cell_the_workflow_builds_is_what_the_resolver_asks_for(self):
-        """win_amd64 torch 2.11: outside TORCH_VERSIONS, so the class above does not see it."""
+        """win_amd64 torch 2.10 to 2.12: outside TORCH_VERSIONS, so the class above does not see them."""
         checked = 0
         for (platform, torch_mm), pythons in wheel_utils._UNSLOTH_PREBUILT_EXTRA_CELLS.items():
             built_torches = prebuilt_wheels._platform_torches(platform)
@@ -146,14 +146,16 @@ class TestWorkflowAndResolverAgree:
                     )
                     assert url == f"{OUR_BASE}{built}"
                     checked += 1
-        assert checked == 9
+        assert checked == 18
         extra = {
             (platform, prebuilt_wheels.torch_minor(v))
             for platform in prebuilt_wheels.PLATFORMS
             for v in prebuilt_wheels._platform_torches(platform)
             if v not in prebuilt_wheels.TORCH_VERSIONS
         }
-        assert extra == set(wheel_utils._UNSLOTH_PREBUILT_EXTRA_CELLS)
+        # The resolver only asks for cells the workflow builds. A new cell is built and published
+        # before the resolver asks for it, so users never get a 404 in between.
+        assert set(wheel_utils._UNSLOTH_PREBUILT_EXTRA_CELLS) <= extra
 
     def test_the_two_torch_tables_are_the_same_set(self):
         built = {prebuilt_wheels.torch_minor(version) for version in prebuilt_wheels.TORCH_VERSIONS}
@@ -339,7 +341,7 @@ class TestMatrix:
         [
             {"packages": "flash-attn; rm -rf /"},
             {"packages": "torchvision"},
-            {"torches": "2.12.0"},
+            {"torches": "2.9.0"},
             {"torches": "$(whoami)"},
             {"pythons": "3.9"},
             {"pythons": "3.13 && curl evil"},
