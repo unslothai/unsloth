@@ -12390,6 +12390,35 @@ def test_an_npu_switch_loads_with_the_saved_context_length(monkeypatch):
     assert [(call.model_path, call.max_seq_length) for call in rec.calls] == [(_NPU_MODEL, 16384)]
 
 
+def test_a_deferred_npu_switch_leaves_the_model_preview_owned(monkeypatch):
+    # Chat defers its claim and can still reject after the switch (n > 1 on the NPU); unmarked, the
+    # NPU model then read as Studio-owned and every public preview got 503.
+    _wired(monkeypatch, _FakeBackend("unsloth/A-GGUF"), None)
+    monkeypatch.setattr(inference_route, "_preview_resident_ident", None)
+    asyncio.run(
+        inference_route._maybe_auto_switch_model(
+            _NPU_MODEL, object(), "tester", claim_resident = False
+        )
+    )
+    assert inference_route._get_preview_resident() == _NPU_MODEL
+
+
+def test_an_npu_switch_keeps_the_setting_read_on_entry(monkeypatch):
+    # Turned off mid-request, a second read loaded nothing and the resident GGUF answered instead.
+    _, rec = _wired(monkeypatch, _FakeBackend("unsloth/A-GGUF"), None)
+    state = {"on": True}
+    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: state["on"])
+    refuse = inference_route._refuse_unservable_npu_switch
+
+    async def _refuse_then_turn_off(*args, **kwargs):
+        await refuse(*args, **kwargs)
+        state["on"] = False
+
+    monkeypatch.setattr(inference_route, "_refuse_unservable_npu_switch", _refuse_then_turn_off)
+    _run_hook(_NPU_MODEL)
+    assert [call.model_path for call in rec.calls] == [_NPU_MODEL]
+
+
 def test_an_npu_model_named_with_the_switch_off_says_how_to_load_it(monkeypatch):
     backend, rec = _wired(monkeypatch, _FakeBackend("unsloth/A-GGUF"), None, enabled = False)
     with pytest.raises(HTTPException) as excinfo:

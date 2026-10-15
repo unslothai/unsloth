@@ -11201,22 +11201,17 @@ async def _refuse_unservable_npu_switch(
 
 
 async def _auto_switch_npu_model(
-    named_model: str, fastapi_request: Request, current_subject: str
+    named_model: str, fastapi_request: Request, current_subject: str, *, claim_resident: bool
 ) -> None:
-    """Load a downloaded ``lemonade:<id>`` model a request names, when auto-switch is on.
+    """Load a downloaded ``lemonade:<id>`` model a request names.
 
-    Same lock, gates, waiter count and cancellation as a GGUF switch.
+    The caller has checked auto-switch is on. Same lock, gates, waiter count, cancellation and
+    deferred claim as a GGUF switch.
     """
     from core.inference.gpu_arbiter import require_no_foreign_generations
     from core.inference.llama_keepwarm import inference_lifecycle_gate, model_load_gate
-    from utils.openai_auto_switch_settings import (
-        get_model_override,
-        get_openai_auto_switch_enabled,
-        resolve_fit_max_seq_length,
-    )
+    from utils.openai_auto_switch_settings import get_model_override, resolve_fit_max_seq_length
 
-    if _auto_switch_opted_out(fastapi_request) or not get_openai_auto_switch_enabled():
-        return
     if await asyncio.to_thread(_loaded_satisfies, named_model):
         return
     # The context length saved in the model's settings, as a picker load sends it.
@@ -11241,14 +11236,26 @@ async def _auto_switch_npu_model(
                     if await asyncio.to_thread(_loaded_satisfies, named_model):
                         return
                     require_no_foreign_generations(path = switch_path)
-                    await _load_model_impl(
-                        LoadRequest(model_path = named_model, max_seq_length = max_seq_length or 0),
-                        fastapi_request,
-                        current_subject,
-                        current_request_counted = True,
-                        **({"load_cancel_event": cancel_event} if cancel_event is not None else {}),
-                    )
-                    _raise_if_cancelled()
+                    prior_marker = _get_preview_resident()
+                    loaded_ok = False
+                    try:
+                        await _load_model_impl(
+                            LoadRequest(model_path = named_model, max_seq_length = max_seq_length or 0),
+                            fastapi_request,
+                            current_subject,
+                            current_request_counted = True,
+                            **({"load_cancel_event": cancel_event} if cancel_event is not None else {}),
+                        )
+                        loaded_ok = True
+                        _raise_if_cancelled()
+                    finally:
+                        if not claim_resident:
+                            # Preview-owned until the route's 2xx claims it, so a later rejection
+                            # leaves it evictable, as in the GGUF switch.
+                            if loaded_ok or _loaded_slot_ident() == named_model:
+                                _set_preview_resident(_loaded_slot_ident())
+                            else:
+                                _set_preview_resident(prior_marker)
             finally:
                 # Deregister before releasing the gate, as the GGUF switch does.
                 _note_switch_waiter(key, -1)
@@ -11468,7 +11475,9 @@ async def _maybe_auto_switch_model(
             ),
             rejection_prefix = rejection_prefix,
         )
-        await _auto_switch_npu_model(named_model, fastapi_request, current_subject)
+        await _auto_switch_npu_model(
+            named_model, fastapi_request, current_subject, claim_resident = claim_resident
+        )
         if claim_resident:
             _claim_slot_for_non_preview(fastapi_request)
         return
