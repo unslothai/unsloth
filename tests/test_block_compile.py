@@ -124,6 +124,47 @@ def test_compile_failure_falls_back(monkeypatch, fails_in):
     assert calls == []
 
 
+def test_cache_calls_keep_the_stock_forward(monkeypatch):
+    from transformers.cache_utils import DynamicCache
+
+    M = _load()
+    calls = []
+
+    def fake_compile(fn, **kwargs):
+        def compiled(*args, **kw):
+            calls.append(1)
+            return fn(*args, **kw)
+
+        return compiled
+
+    monkeypatch.setattr(torch, "compile", fake_compile)
+
+    class CacheLayerDecoderLayer(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.proj = torch.nn.Linear(8, 8)
+
+        def forward(
+            self,
+            hidden_states,
+            past_key_value = None,
+            **kwargs,
+        ):
+            return self.proj(hidden_states)
+
+    M._wrap(CacheLayerDecoderLayer, {})
+    layer = CacheLayerDecoderLayer()
+    x = torch.randn(2, 4, 8)
+    with torch.no_grad():
+        layer(x, past_key_value = DynamicCache())
+        layer(x, DynamicCache())
+        layer(x, past_key_values = DynamicCache())
+    assert calls == []
+    with torch.no_grad():
+        layer(x)
+    assert calls  # no cache: compiled
+
+
 def test_gemma4_band_fast_path_in_blocks(monkeypatch):
     M = _load()
     from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS

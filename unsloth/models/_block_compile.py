@@ -546,6 +546,20 @@ def _nf4_in_blocks():
     Linear4bit.forward = forward
 
 
+_CACHE_KWARGS = ("past_key_values", "past_key_value", "cache_params", "layer_past")
+
+
+def _has_cache(args, kwargs):
+    # transformers 4.x layers take the singular `past_key_value`, sometimes positionally.
+    if any(kwargs.get(key) is not None for key in _CACHE_KWARGS):
+        return True
+    try:
+        from transformers.cache_utils import Cache
+    except Exception:
+        return False
+    return any(isinstance(arg, Cache) for arg in args)
+
+
 def _layer_kind(layer):
     attn = getattr(layer, "self_attn", None) or getattr(layer, "linear_attn", None)
     return (
@@ -589,7 +603,7 @@ def _wrap(cls, compile_options):
         if (
             mode == _OFF
             or not self.training
-            or kwargs.get("past_key_values") is not None
+            or _has_cache(args, kwargs)
             or not _enabled()
             or _forced_float32(self)
         ):
