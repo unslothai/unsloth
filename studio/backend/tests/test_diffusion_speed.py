@@ -2972,3 +2972,33 @@ def test_rocm_probe_leaves_the_process_rng_untouched():
     before = torch.random.get_rng_state().clone()
     rc._probe(torch, 0)  # builds the block, then fails to reach a GPU on this host
     assert torch.equal(torch.random.get_rng_state(), before)
+
+
+def test_rocm_probe_oom_publish_is_atomic_with_a_load_boundary(monkeypatch):
+    # start_load() landing between the epoch check and the OOM publish must still win: the new load retries.
+    import threading
+
+    from core.inference import diffusion_rocm_compile as rc
+
+    monkeypatch.delenv(rc.ENV, raising = False)
+    torch = pytest.importorskip("torch")
+    monkeypatch.setattr(torch.version, "hip", "6.4", raising = False)
+    monkeypatch.setattr(rc, "_index", lambda device: 0)
+    monkeypatch.setattr(rc, "_probe", lambda torch, index: (False, "OutOfMemoryError: HIP out of memory"))
+    rc._reset_for_tests()
+    boundary = []
+
+    class _RacingSet(set):
+        def add(self, item):
+            t = threading.Thread(target = rc.start_load, daemon = True)
+            t.start()
+            t.join(0.3)  # an atomic publish keeps it waiting on the state lock until the write is done
+            boundary.append(t)
+            super().add(item)
+
+    monkeypatch.setattr(rc, "_transient", _RacingSet())
+    assert rc.rocm_block_compile_probe()[0] is False
+    boundary[0].join(5)
+    assert not boundary[0].is_alive()
+    assert rc.probe_result(0) is None
+    rc._reset_for_tests()

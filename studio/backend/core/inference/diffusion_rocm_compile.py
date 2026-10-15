@@ -23,6 +23,9 @@ logger = logging.getLogger(__name__)
 ENV = "UNSLOTH_DIFFUSION_ROCM_COMPILE"
 
 _lock = threading.Lock()
+# Guards _epoch / _transient / _result writes only (never held across a compile), so start_load() and the
+# OOM publish are atomic with each other without waiting on a running probe.
+_state_lock = threading.Lock()
 _result: dict[Any, tuple[bool, str]] = {}
 # Indexes whose cached result is an OOM: held for the rest of the load, dropped by start_load().
 _transient: set[Any] = set()
@@ -54,17 +57,19 @@ def rocm_block_compile_known(device: Any = None) -> Optional[bool]:
         return setting == "on"
     # Lock-free: _lock is held for the whole multi-second probe, and a status read must not wait on it.
     index = _index(device)
-    hit = _result.get(index)
-    return None if hit is None or index in _transient else hit[0]
+    with _state_lock:
+        hit = _result.get(index)
+        return None if hit is None or index in _transient else hit[0]
 
 
 def start_load() -> None:
     """A load boundary: an OOM probe from the previous load may be retried now."""
     global _epoch
-    _epoch += 1
-    for index in list(_transient):
-        _result.pop(index, None)
-        _transient.discard(index)
+    with _state_lock:
+        _epoch += 1
+        for index in list(_transient):
+            _result.pop(index, None)
+            _transient.discard(index)
 
 
 def _index(device: Any) -> Any:
@@ -98,7 +103,8 @@ def rocm_block_compile_probe(device: Any = None) -> tuple[bool, str]:
     with _lock:
         if index in _result:
             return _result[index]
-        epoch = _epoch
+        with _state_lock:
+            epoch = _epoch
         ok, why = _probe(torch, index)
         (logger.info if ok else logger.warning)(
             "diffusion.speed: ROCm regional compile probe on cuda:%s: %s (%s)",
@@ -107,11 +113,12 @@ def rocm_block_compile_probe(device: Any = None) -> tuple[bool, str]:
             why,
         )
         # An OOM says the card was busy, not that the compiler is broken: held for this load, retried at the next.
-        if not ok and "OutOfMemoryError" in why:
-            if epoch != _epoch:
-                return ok, why
-            _transient.add(index)
-        _result[index] = (ok, why)
+        with _state_lock:
+            if not ok and "OutOfMemoryError" in why:
+                if epoch != _epoch:
+                    return ok, why
+                _transient.add(index)
+            _result[index] = (ok, why)
         return ok, why
 
 
