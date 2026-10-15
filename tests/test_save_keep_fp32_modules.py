@@ -28,7 +28,9 @@ def helpers():
 
 
 def _tiny_glm_lite():
+    pytest.importorskip("transformers.models.glm4_moe_lite")  # transformers >= 5.3
     from transformers import AutoConfig, AutoModelForCausalLM
+
     config = AutoConfig.for_model(
         "glm4_moe_lite",
         vocab_size = 64,
@@ -67,6 +69,26 @@ def test_router_bias_stays_fp32(helpers, target):
         assert out[k].dtype == torch.float32 and torch.equal(out[k], state_dict[k])
     others = [k for k, v in out.items() if v.is_floating_point() and k not in biases]
     assert others and all(out[k].dtype == target for k in others)
+
+
+@pytest.mark.parametrize("target", [torch.bfloat16, torch.float16])
+def test_strict_list_from_a_submodule_is_honoured(helpers, target):
+    """Same rule on every transformers version: a strict name declared on a nested submodule."""
+
+    class Router(torch.nn.Module):
+        _keep_in_fp32_modules_strict = ["e_score_correction_bias"]
+
+        def __init__(self):
+            super().__init__()
+            self.weight = torch.nn.Parameter(torch.randn(4, 8, dtype = torch.bfloat16))
+            self.register_buffer("e_score_correction_bias", torch.linspace(-1, 1, 4) / 3)
+
+    model = torch.nn.Sequential(torch.nn.Linear(8, 8).to(torch.bfloat16), Router())
+    state_dict = model.state_dict()
+    out = helpers["_cast_state_dict_16bit"](model, state_dict, target)
+    assert out["1.e_score_correction_bias"].dtype == torch.float32
+    assert torch.equal(out["1.e_score_correction_bias"], state_dict["1.e_score_correction_bias"])
+    assert out["1.weight"].dtype == target and out["0.weight"].dtype == target
 
 
 def test_models_without_fp32_modules_cast_everything(helpers):
