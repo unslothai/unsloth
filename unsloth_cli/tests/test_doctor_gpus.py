@@ -20,7 +20,12 @@ import unsloth_cli
 import unsloth_cli.commands.doctor as doctor_mod
 
 
-def _gpu(index, name = "Tesla T4", cap = "7.5", pci = None):
+def _gpu(
+    index,
+    name = "Tesla T4",
+    cap = "7.5",
+    pci = None,
+):
     return {"index": index, "name": name, "capability": cap, "memory_gib": 15.0, "pci": pci}
 
 
@@ -172,16 +177,24 @@ def _fake_torch(count):
     )
 
 
-def _run_doctor(monkeypatch, torch, smoke_results, p2p_disable = None):
+def _run_doctor(
+    monkeypatch,
+    torch,
+    smoke_results,
+    p2p_disable = None,
+):
     monkeypatch.setitem(sys.modules, "torch", torch)
     monkeypatch.setattr(doctor_mod, "_load_pynvml", lambda: None)
     monkeypatch.setattr(doctor_mod, "driver_version", lambda pynvml = None: "550.1")
-    monkeypatch.setattr(
-        doctor_mod, "p2p_copy_probe", lambda t, n: {(0, 1): "ok", (1, 0): "ok"}
-    )
+    monkeypatch.setattr(doctor_mod, "p2p_copy_probe", lambda t, n: {(0, 1): "ok", (1, 0): "ok"})
     calls = []
 
-    def fake_smoke(world, backend, timeout, extra_env = None):
+    def fake_smoke(
+        world,
+        backend,
+        timeout,
+        extra_env = None,
+    ):
         calls.append((world, backend, extra_env))
         return smoke_results[len(calls) - 1]
 

@@ -202,7 +202,11 @@ def nvml_topology(pynvml, gpus: List[dict]):
             pass
 
 
-def p2p_copy_probe(torch, count: int, mib: int = 16) -> dict:
+def p2p_copy_probe(
+    torch,
+    count: int,
+    mib: int = 16,
+) -> dict:
     """{(src, dst): "ok" | "corrupt" | "error: ..." | "inconclusive: ..."} per ordered GPU pair.
 
     The destination is sentinel-filled first: on a translating IOMMU a PCIe peer copy
@@ -395,7 +399,9 @@ def verdict(
             )
     if topology:
         nvlinked = all(v["nvlink"] for v in topology.values())
-        far = sorted(k for k, v in topology.items() if not v["nvlink"] and v["level"] in _PCIE_HOST_LEVELS)
+        far = sorted(
+            k for k, v in topology.items() if not v["nvlink"] and v["level"] in _PCIE_HOST_LEVELS
+        )
         if far:
             hints.append(
                 f"GPU pairs {far} talk through the PCIe host bridge or the CPU "
@@ -419,7 +425,6 @@ def verdict(
 def _load_pynvml():
     try:
         import pynvml
-
         return pynvml
     except Exception:
         return None
