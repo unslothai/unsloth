@@ -1808,18 +1808,10 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
             "image batch is being sliced there without its image counts.",
         )
 
-    pattern_to_find = re.compile(
-        r"^\s*if self\.args\.gradient_accumulation_steps % generate_every != 0 or \(\s*"
-        r"self\.use_vllm and self\.vllm_importance_sampling_correction\s*"
-        r"\):",
-        re.MULTILINE,
-    )
-
-    replacement_text = """
-            if self.args.gradient_accumulation_steps % generate_every != 0 or (
-                self.use_vllm
-            ):"""
-    function, num_replacements = pattern_to_find.subn(replacement_text, function)
+    # TRL's old logprob gate (`generate_every` misaligned, or vLLM with importance sampling
+    # correction) is kept as is. Every consumer of old_per_token_logps (the IS ratio, its delta
+    # metrics, the clip ratios) either runs only under that flag or treats None as
+    # per_token_logps.detach(), so a forced no-grad forward on on-policy vLLM steps is pure cost.
 
     pattern_to_find = re.compile(
         r"(^\s*)all_logprobs = \["  # Capture indentation (group 1)
