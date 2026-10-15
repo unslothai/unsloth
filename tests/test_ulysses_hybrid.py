@@ -246,3 +246,20 @@ def test_hybrid_refuses_multimodal_and_router_aux_loss():
     model.config.vision_config = {"model_type": "qwen3_5_vision"}
     assert cp._hybrid_config_blocker(model) == "multimodal models"
     assert not cp._supports_context_parallel(model, "ulysses")
+
+
+def test_linear_attn_gets_packed_lengths_the_decoder_did_not_forward(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(
+        uh, "ulysses_gated_delta_forward", lambda module, *a, group, **kw: seen.update(kw)
+    )
+    module = torch.nn.Identity()
+    manager = types.SimpleNamespace(
+        backend = "ulysses", group = None, packed_seq_lengths = torch.tensor([3, 5])
+    )
+    uh.wrap_gated_delta_forward(module, lambda: manager)
+    module(torch.zeros(1, 4, 2))
+    assert torch.equal(seen["packed_seq_lengths"], torch.tensor([3, 5]))
+    # Lengths the decoder did forward win.
+    module(torch.zeros(1, 4, 2), packed_seq_lengths = torch.tensor([8]))
+    assert torch.equal(seen["packed_seq_lengths"], torch.tensor([8]))

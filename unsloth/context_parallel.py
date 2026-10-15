@@ -365,10 +365,13 @@ class ContextParallelManager:
                 inputs[name] = tensor[:, rank * local : (rank + 1) * local].contiguous()
         global _ACTIVE_MANAGER
         previous, _ACTIVE_MANAGER = _ACTIVE_MANAGER, self
+        # Some decoders (transformers 5.3 / 5.5) do not forward packed_seq_lengths to linear_attn.
+        self.packed_seq_lengths = inputs.get("packed_seq_lengths")
         try:
             yield
         finally:
             _ACTIVE_MANAGER = previous
+            self.packed_seq_lengths = None
 
     @contextlib.contextmanager
     def apply(self, inputs: dict) -> Iterator[None]:

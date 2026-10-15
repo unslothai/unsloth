@@ -222,6 +222,10 @@ def wrap_gated_delta_forward(module, get_cp_manager) -> None:
         manager = get_cp_manager()
         if manager is None or manager.backend != "ulysses":
             return forward(*args, **kwargs)
+        if kwargs.get("packed_seq_lengths") is None:
+            packed = getattr(manager, "packed_seq_lengths", None)
+            if packed is not None:
+                kwargs["packed_seq_lengths"] = packed
         return ulysses_gated_delta_forward(module, *args, group = manager.group, **kwargs)
 
     module._unsloth_cp_orig_forward = forward
