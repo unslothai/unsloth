@@ -25,6 +25,7 @@ everything (for proving bit-identity). With one selected card nothing here engag
 
 from __future__ import annotations
 
+import atexit
 import contextlib
 import contextvars
 import copy
@@ -40,6 +41,8 @@ from typing import Any, Callable, Iterator, Optional, Sequence
 
 MULTIGPU_ENV = "UNSLOTH_DIFFUSION_MULTIGPU"
 CFG_PARALLEL_ENV = "UNSLOTH_DIFFUSION_CFG_PARALLEL"
+CFG_BATCH_ENV = "UNSLOTH_DIFFUSION_CFG_BATCH"
+LINK_ENV = "UNSLOTH_DIFFUSION_LINK_GIB_S"
 
 # Denoiser attributes: they stay on the primary card under the companion split (the same contract as the speed and
 # offload layers, diffusion_autoopt/targets.py).
@@ -92,6 +95,16 @@ def cfg_parallel_mode() -> str:
     return "auto"
 
 
+def cfg_batch_mode() -> str:
+    """``off`` / ``auto`` (default: only an offloaded denoiser) / ``force`` (a resident one too, as ComfyUI does)."""
+    raw = (os.environ.get(CFG_BATCH_ENV) or "").strip().lower()
+    if raw in ("0", "off", "false", "no", "disable", "disabled"):
+        return "off"
+    if raw == "force":
+        return "force"
+    return "auto"
+
+
 # --------------------------------------------------------------------------------------------------------------------
 # Selection: the cards one load may use, carried from begin_load to the planner of the same load.
 # --------------------------------------------------------------------------------------------------------------------
@@ -132,7 +145,6 @@ def _capability(ordinal: int) -> Optional[tuple[int, int]]:
     """``(major, minor)`` CUDA compute capability of ``ordinal``, None when it cannot be read."""
     try:
         import torch
-
         major, minor = torch.cuda.get_device_capability(int(ordinal))
         return int(major), int(minor)
     except Exception:  # noqa: BLE001
@@ -248,6 +260,27 @@ def _free_total_mib(ordinal: int) -> tuple[Optional[int], Optional[int]]:
         return None, None
 
 
+def usable_free_mib(ordinal: Optional[int]) -> tuple[Optional[int], Optional[int]]:
+    """(usable MiB, total MiB) on a CUDA card: the driver's free figure plus this process's reserved-but-unallocated
+    allocator cache on that card (blocks a new allocation reuses without asking the driver: the replica's last
+    activations, the link probe's buffer). The one free-memory reading in this module: install, build, per-request
+    and phase-boundary checks, and the CFG-batch gate all go through it."""
+    free, total = _free_total_mib(ordinal)
+    if free is None:
+        return None, total
+    try:
+        import torch
+
+        device = torch.device("cuda", int(ordinal))
+        idle = (torch.cuda.memory_reserved(device) - torch.cuda.memory_allocated(device)) // (
+            1 << 20
+        )
+        free += max(0, int(idle))
+    except Exception:  # noqa: BLE001 - the driver figure alone (conservative)
+        pass
+    return int(free), total
+
+
 def probe_devices(ordinals: Sequence[int], *, measure: bool = True) -> dict[int, DeviceProbe]:
     """Name, memory, peer access and copy bandwidth for ``ordinals``. Static facts are cached per process; free
     memory is read on every call because it moves."""
@@ -274,7 +307,9 @@ def probe_devices(ordinals: Sequence[int], *, measure: bool = True) -> dict[int,
                 _STATIC_PROBE[o] = static
         for a in ords:
             for b in ords:
-                if a == b or (a, b) in _PAIR_PROBE:
+                if a == b or (
+                    (a, b) in _PAIR_PROBE and (_PAIR_PROBE[(a, b)][1] is not None or not measure)
+                ):
                     continue
                 try:
                     access = bool(torch.cuda.can_device_access_peer(a, b))
@@ -292,7 +327,7 @@ def probe_devices(ordinals: Sequence[int], *, measure: bool = True) -> dict[int,
                         pass
                 _PAIR_PROBE[(a, b)] = (access, gbps)
     for o in ords:
-        free, total = _free_total_mib(o)
+        free, total = usable_free_mib(o)
         static = _STATIC_PROBE.get(o, {})
         out[o] = DeviceProbe(
             ordinal = o,
@@ -311,20 +346,419 @@ def _reset_probe_cache_for_tests() -> None:
         _PAIR_PROBE.clear()
 
 
+def link_gib_s(
+    src: int,
+    dst: int,
+    probes: Optional[dict[int, DeviceProbe]] = None,
+) -> Optional[float]:
+    """Measured ``src`` -> ``dst`` copy rate in GiB/s (peer or via host), None when unmeasured; ``LINK_ENV`` overrides."""
+    raw = (os.environ.get(LINK_ENV) or "").strip()
+    if raw:
+        try:
+            value = float(raw)
+            if value > 0:
+                return value
+        except ValueError:
+            pass
+    if probes is None or src not in probes:
+        probes = probe_devices((src, dst))
+    probe = probes.get(int(src))
+    if probe is None:
+        return None
+    for other, _access, gbps in probe.peers:
+        if other == int(dst):
+            return gbps
+    return None
+
+
+_LINK_TIER = 0.75
+
+
+def rank_secondaries(
+    primary: int,
+    candidates: Sequence[int],
+    free_of: Callable[[int], Optional[int]],
+    probes: Optional[dict[int, DeviceProbe]] = None,
+) -> list[int]:
+    """``candidates`` best first: measured fast-link tier (within ``_LINK_TIER``), then measured slower links, then
+    unmeasured links (CFG-parallel pricing refuses those); free memory, then ordinal, within a tier. With no link
+    measured at all, every card is one tier (free memory decides)."""
+    cands = [int(o) for o in candidates]
+    if not cands:
+        return []
+    if probes is None:
+        probes = probe_devices((int(primary), *cands))
+
+    def round_trip(o: int) -> Optional[float]:
+        there, back = link_gib_s(primary, o, probes), link_gib_s(o, primary, probes)
+        if there is None or back is None:
+            return None
+        return min(there, back)
+
+    links = {o: round_trip(o) for o in cands}
+    known = [v for v in links.values() if v]
+    top = max(known) if known else None
+
+    def key(o: int) -> tuple[int, int, int]:
+        if top is None:
+            tier = 2
+        elif links[o] is None:
+            tier = 0
+        else:
+            tier = 2 if links[o] >= _LINK_TIER * top else 1
+        free = free_of(o)
+        return (tier, free if free is not None else -1, -o)
+
+    return sorted(cands, key = key, reverse = True)
+
+
+def select_replica_card(
+    primary: int,
+    candidates: Sequence[int],
+    need_mib: int,
+    room_on: Callable[[int], int],
+    probes: Optional[dict[int, DeviceProbe]] = None,
+) -> tuple[Optional[int], list[int], dict[int, DeviceProbe]]:
+    """The one choice of the card a CFG-parallel replica lives on (install, first build, every reselection and
+    rebuild): a fresh probe, the cards whose CURRENT usable memory holds the replica plus the room the phases on that
+    card need (``room_on(card)``: the current per-shape requirement), then the link ranking over those. Returns
+    (best card or None, the cards that fit, the probes)."""
+    if probes is None:
+        probes = probe_devices((primary, *candidates))
+    fits = [
+        int(o)
+        for o in candidates
+        if probes.get(o) is not None
+        and (probes[o].free_mib is None or need_mib + room_on(o) <= probes[o].free_mib)
+    ]
+    if not fits:
+        return None, [], probes
+    ranked = rank_secondaries(primary, fits, lambda o: probes[o].free_mib, probes)
+    return ranked[0], fits, probes
+
+
 def best_secondary(
     selection: MultiGpuSelection, probes: Optional[dict[int, DeviceProbe]] = None
 ) -> Optional[int]:
-    """The secondary with the most free memory (ties to the lowest ordinal)."""
+    """Top of :func:`rank_secondaries`."""
     if not selection.secondaries:
         return None
     if probes is None:
-        probes = probe_devices((selection.primary, *selection.secondaries), measure = False)
+        probes = probe_devices((selection.primary, *selection.secondaries))
 
-    def key(o: int) -> tuple[int, int]:
+    def free_of(o: int) -> Optional[int]:
         p = probes.get(o)
-        return (p.free_mib if p is not None and p.free_mib is not None else -1, -o)
+        return p.free_mib if p is not None else None
 
-    return max(selection.secondaries, key = key)
+    ranked = rank_secondaries(selection.primary, selection.secondaries, free_of, probes)
+    return ranked[0] if ranked else None
+
+
+_RETURN_COPY_OVERLAPS = True
+
+
+def _copy_back(out: Any, primary: Any, side_stream: Any) -> tuple:
+    """(``out`` on ``primary``, event or None)."""
+    torch = _torch()
+    if side_stream is None or getattr(primary, "type", None) != "cuda":
+        return move_to_device(out, primary), None
+    with torch.cuda.stream(side_stream):
+        moved = move_to_device(out, primary)
+        done = torch.cuda.Event()
+        done.record(side_stream)
+    return moved, done
+
+
+def _consume_return(result: tuple, primary: Any) -> Any:
+    """The copied-back output, made safe on the primary's main stream: it waits for the copy's event (no host sync),
+    and each tensor is marked used there so the allocator does not hand its block back to the side stream early."""
+    moved, done = result
+    if done is None:
+        return moved
+    torch = _torch()
+    main = torch.cuda.current_stream(primary)
+    main.wait_event(done)
+    for tensor in _iter_tensors(_as_walkable(moved)):
+        with contextlib.suppress(Exception):
+            tensor.record_stream(main)
+    return moved
+
+
+def price_cfg_parallel(
+    *,
+    branch_s: float,
+    in_bytes: int,
+    out_bytes: int,
+    link_in_gib_s: Optional[float],
+    link_out_gib_s: Optional[float],
+    replica_bytes: int = 0,
+    primary_s: Optional[float] = None,
+) -> dict[str, Any]:
+    """One card (``primary + branch``) vs CFG-parallel (``in_copy + max(primary, branch + out_copy)``)."""
+    measured = bool(link_in_gib_s and link_out_gib_s)
+    if measured:
+        in_copy_s = in_bytes / (link_in_gib_s * (1 << 30))
+        out_copy_s = out_bytes / (link_out_gib_s * (1 << 30))
+        build_s: Optional[float] = replica_bytes / (link_in_gib_s * (1 << 30))
+    else:
+        in_copy_s = out_copy_s = 0.0
+        build_s = None
+    copy_s = in_copy_s + out_copy_s
+    primary = branch_s if primary_s is None else primary_s
+    single = primary + branch_s
+    parallel = (
+        in_copy_s + max(primary, branch_s + out_copy_s)
+        if _RETURN_COPY_OVERLAPS
+        else in_copy_s + max(primary, branch_s) + out_copy_s
+    )
+    chosen = (
+        "cfg_parallel" if measured and parallel <= _PRICE_PARALLEL_FRACTION * single else "single"
+    )
+    return {
+        "strategy": chosen,
+        "link_unmeasured": not measured,
+        "primary_branch_s": round(primary, 4),
+        "branch_s": round(branch_s, 4),
+        "copy_s": round(copy_s, 4),
+        "in_bytes": int(in_bytes),
+        "in_copy_s": round(in_copy_s, 4),
+        "out_copy_s": round(out_copy_s, 4),
+        "single_step_s": round(single, 4),
+        "cfg_parallel_step_s": round(parallel, 4),
+        "replica_build_s_est": None if build_s is None else round(build_s, 3),
+        "link_in_gib_s": link_in_gib_s,
+        "link_out_gib_s": link_out_gib_s,
+    }
+
+
+_PRICE_PARALLEL_FRACTION = 0.9
+
+
+_ROOM_REASON = "replica card lacks room for this shape"
+_SHORT_RENDER_REASON = "short render"
+
+_OFF_ROOM = "room"
+_OFF_SHORT = "short"
+_OFF_TRANSIENT = "transient"
+_OFF_STICKY = "sticky"
+_OFF_PER_REQUEST = frozenset({_OFF_ROOM, _OFF_SHORT, _OFF_TRANSIENT})
+
+
+class _ShapeOff(str):
+    """A shape verdict's reason (a plain string everywhere it is shown) carrying its kind: lifetimes are decided on
+    the kind, never on the wording, so a new reason cannot slip past begin_request."""
+
+    kind: str
+
+    def __new__(cls, reason: str, kind: str) -> "_ShapeOff":
+        verdict = super().__new__(cls, reason)
+        verdict.kind = kind
+        return verdict
+
+
+def _off_kind(verdict: Any) -> Optional[str]:
+    """The kind of a shape verdict; None when there is none; an untyped reason counts as sticky."""
+    if verdict is None:
+        return None
+    return getattr(verdict, "kind", _OFF_STICKY)
+
+
+def _bg_eager_forced() -> bool:
+    try:
+        from .diffusion_bg_compile import eager_forced
+    except Exception:  # noqa: BLE001
+        return False
+    return eager_forced()
+
+
+class ReplicaError(RuntimeError):
+    """A CFG-parallel replica failure, typed by what it means; the router's one handler dispatches on the type."""
+
+
+class ReplicaCapacity(ReplicaError):
+    """The replica card lacks room for this request shape: declined for the shape only, re-read every request (other
+    shapes, and this one once memory frees, try again)."""
+
+
+class ReplicaTransient(ReplicaError):
+    """Out of memory while copying or running the replica for this shape: declined for the shape, its in-flight
+    copies torn down; the replica stays for the shapes that fit."""
+
+
+class ReplicaStructural(ReplicaError):
+    """The denoiser cannot be reproduced on a copy (wrapper, root override, compile record, unverifiable weights, a
+    replica call that fails for any other reason): CFG-parallel off for the load."""
+
+
+def replica_failure_kind(exc: BaseException) -> type:
+    """The outcome class of a failure in a replica path: its own type when typed, out of memory as transient, and
+    anything else as structural (an unknown failure is never retried per shape)."""
+    if isinstance(exc, ReplicaError):
+        return type(exc) if type(exc) is not ReplicaError else ReplicaStructural
+    if is_out_of_memory(exc):
+        return ReplicaTransient
+    return ReplicaStructural
+
+
+def is_out_of_memory(exc: BaseException) -> bool:
+    """Studio's one out-of-memory predicate (diffusion_batched.is_oom_error): class names across torch versions and
+    backends (``OutOfMemoryError_``), backend messages, and the ``__cause__`` / ``__context__`` chain a torch.compile
+    or accelerate wrapper hides an allocation failure behind."""
+    from .diffusion_batched import is_oom_error
+    return is_oom_error(exc)
+
+
+_SHAPE_BOOK_SIZE = 4
+
+
+def _request_shape(request_px: Optional[int], args: tuple, kwargs: dict) -> tuple:
+    return (request_px, tuple(tuple(t.shape) for t in _iter_tensors((args, kwargs))))
+
+
+_MISS_LIMIT = 3
+
+
+class _PredictionPolicy:
+    """Per request shape: does speculation pay (CFG-batch's doubled call, CFG-parallel's predicted replica forward)? A hit (the odd branch matched what was batched)
+    resets the run of misses; a miss (the odd branch changed, or never came) extends it. After ``_MISS_LIMIT``
+    consecutive misses batching stops for that shape (each miss costs a doubled call plus a plain rerun: three
+    branches of compute for two). Reset rules: a new request shape starts with a fresh policy; a shape seen before
+    resumes its own (from the shape book); ``reprice()`` (the denoiser changed) clears every shape's."""
+
+    def __init__(self) -> None:
+        self.hits = 0
+        self.misses = 0
+        self.consecutive = 0
+
+    def hit(self) -> None:
+        self.hits += 1
+        self.consecutive = 0
+
+    @property
+    def stopped(self) -> bool:
+        """Speculation is off for this shape: no attempt runs after the miss limit, so nothing resets it (a fresh
+        policy comes with a new request shape or a cleared book)."""
+        return self.consecutive >= _MISS_LIMIT
+
+    def miss(self) -> bool:
+        """Record a miss; True when speculation should stop for the shape."""
+        self.misses += 1
+        self.consecutive += 1
+        return self.consecutive >= _MISS_LIMIT
+
+
+def _fresh(default: Any) -> Any:
+    """A shape-book default for a new shape: a copy of a list, a new instance of a class, else the value."""
+    if isinstance(default, list):
+        return list(default)
+    if isinstance(default, type):
+        return default()
+    return default
+
+
+class _ShapeBook:
+    """Per-shape copies of a router's pricing fields, most recent last, bounded."""
+
+    def __init__(self, fields: dict):
+        self.defaults = fields
+        self.key: Any = None
+        self.saved: "OrderedDict[Any, dict]" = OrderedDict()
+
+    def switch(self, router: Any, key: Any) -> bool:
+        """Make ``key`` the router's current shape; True when it changed."""
+        if key == self.key:
+            return False
+        if self.key is None and not self.saved:
+            self.key = key
+            return True
+        # take the requested shape out before saving the outgoing one, so a full book never evicts it
+        state = self.saved.pop(key, None)
+        if self.key is not None:
+            self.saved[self.key] = {name: getattr(router, name) for name in self.defaults}
+            self.saved.move_to_end(self.key)
+            while len(self.saved) > _SHAPE_BOOK_SIZE:
+                self.saved.popitem(last = False)
+        for name, default in self.defaults.items():
+            value = state[name] if state is not None else _fresh(default)
+            setattr(router, name, list(value) if isinstance(value, list) else value)
+        self.key = key
+        return True
+
+    def clear(self, router: Any) -> None:
+        self.saved.clear()
+        self.key = None
+        for name, default in self.defaults.items():
+            setattr(router, name, _fresh(default))
+
+    def forget(self, router: Any, predicate: Callable[[dict], bool]) -> None:
+        """Drop saved shapes (and reset the current one) whose state matches ``predicate``."""
+        for key in [k for k, v in self.saved.items() if predicate(v)]:
+            del self.saved[key]
+        current = {name: getattr(router, name) for name in self.defaults}
+        if predicate(current):
+            for name, default in self.defaults.items():
+                setattr(router, name, _fresh(default))
+
+
+class _ShapeVerdicts:
+    """The one per-request-shape verdict for every router (CfgParallelRouter, CfgBatchRouter): why the CURRENT shape
+    runs without the optimization, typed by kind (:class:`_ShapeOff`), and how long it holds:
+
+    - room / short render / transient OOM: cleared at every request entry (:meth:`_clear_request_verdicts`), for the
+      current shape and every saved one;
+    - a transient OOM (:meth:`_shape_oom_off`) becomes sticky after ``_MISS_LIMIT`` requests in a row run out of
+      memory before the optimization completes once (:meth:`_shape_ok` resets the run), so a card that is always too
+      tight does not pay an OOM per request;
+    - sticky (priced out, measured no gain, structural for the shape): until reprice, invalidation or reload.
+
+    Load-wide (structural) failures are not shape verdicts: they go to the router's ``disable``."""
+
+    _VERDICT_LABEL = "optimization"
+    VERDICT_FIELDS = {"shape_disabled": None, "oom_backoff": _PredictionPolicy}
+
+    shape_disabled: Optional[str]
+    oom_backoff: "_PredictionPolicy"
+    shapes: _ShapeBook
+    logger: Any
+
+    def _init_verdicts(self) -> None:
+        self.shape_disabled = None
+        self.oom_backoff = _PredictionPolicy()
+
+    def _shape_off(self, reason: str, kind: str) -> None:
+        """Record ``reason`` (of ``kind``) as the current shape's verdict; the first verdict of a request stands."""
+        if self.shape_disabled is not None:
+            return
+        self.shape_disabled = _ShapeOff(reason, kind)
+        if self.logger is not None:
+            self.logger.info(
+                "diffusion.multigpu: %s off for this request shape (%s)",
+                self._VERDICT_LABEL,
+                reason,
+            )
+
+    def _shape_oom_off(self, reason: str) -> None:
+        """An out-of-memory in the optimized path: transient (retried next request) until the back-off is spent."""
+        if self.oom_backoff.miss():
+            self._shape_off(
+                f"{reason}; {self.oom_backoff.consecutive} requests in a row ran out of memory, kept off for this "
+                "shape",
+                _OFF_STICKY,
+            )
+        else:
+            self._shape_off(reason, _OFF_TRANSIENT)
+
+    def _shape_ok(self) -> None:
+        """The optimized path completed for this shape: the run of OOM requests is broken."""
+        self.oom_backoff.hit()
+
+    def _clear_request_verdicts(self) -> None:
+        """At request entry: drop every verdict whose kind holds for one request only (decided on the kind)."""
+        for state in self.shapes.saved.values():
+            if _off_kind(state.get("shape_disabled")) in _OFF_PER_REQUEST:
+                state["shape_disabled"] = None
+        if _off_kind(self.shape_disabled) in _OFF_PER_REQUEST:
+            self.shape_disabled = None
 
 
 # --------------------------------------------------------------------------------------------------------------------
@@ -405,7 +839,9 @@ def plan_companion_split(
         fits = [o for o, limit in limits.items() if secondary_required <= limit]
         if not fits:
             continue
-        best = max(fits, key = lambda o: (limits[o], -o))
+        best = (
+            rank_secondaries(selection.primary, fits, limits.get)[0] if len(fits) > 1 else fits[0]
+        )
         return CompanionSplit(
             secondary_ordinal = best,
             primary_required_mib = primary_required,
@@ -434,10 +870,12 @@ def choose_component_assignment(
     overhead_mib: int,
     primary_limit_mib: int,
     secondary_limit_mib: int,
+    encode_headroom_mib: Optional[int] = None,
 ) -> Optional[tuple[str, ...]]:
     """Names to place on the secondary so each card holds its share resident, or None. ``sizes`` maps component name
     -> (MiB, role) with role 'dit' / 'text_encoder' / 'other'. A card running a denoiser or the VAE (any 'other'
-    component) is priced with the runtime headroom; a card holding only text encoders with an encoder forward's room.
+    component) is priced with the runtime headroom; a card holding only text encoders with an encoder forward's room:
+    ``encode_headroom_mib`` (the plan's calibrated encode phase) when known, else the static allowance.
     Tried in order: every companion; the text encoders alone; the second denoiser; the second denoiser plus the
     companions. The first denoiser always stays on the primary."""
     dits = [n for n, (_m, r) in sizes.items() if r == "dit"]
@@ -461,10 +899,12 @@ def choose_component_assignment(
         if companions:
             candidates.append(tuple(seconds + companions))
 
+    encode_room = int(encode_headroom_mib) if encode_headroom_mib else TEXT_ENCODER_HEADROOM_MIB
+
     def need(names: list) -> int:
         weights = sum(sizes[n][0] for n in names)
         busy = any(sizes[n][1] != "text_encoder" for n in names)
-        return weights + (headroom_mib if busy else TEXT_ENCODER_HEADROOM_MIB) + overhead_mib
+        return weights + (headroom_mib if busy else encode_room) + overhead_mib
 
     for moved in candidates:
         on_primary = [n for n in sizes if n not in moved]
@@ -503,13 +943,10 @@ def refine_plan_for_multigpu(
     sizes = _loaded_component_mib(pipe)
     if not sizes:
         return plan
-    secondary = best_secondary(selection)
-    if secondary is None:
+    first = best_secondary(selection)
+    if first is None:
         return plan
     mode = getattr(plan, "requested_mode", None)
-    sec_limit = secondary_resident_limit_mib(secondary, mode)
-    if sec_limit is None:
-        return plan
     from .diffusion_memory import _fast_device_budget_mib
 
     primary_limit = (
@@ -525,13 +962,33 @@ def refine_plan_for_multigpu(
         or 0
     )
     overhead = int(plan.estimates.get("base_overhead_mib") or 0)
-    moved = choose_component_assignment(
-        sizes,
-        headroom_mib = headroom,
-        overhead_mib = overhead,
-        primary_limit_mib = int(primary_limit),
-        secondary_limit_mib = int(sec_limit),
-    )
+    # the best card first, then the rest in link-rank order: a fast-link card too small for any share must not hide
+    # a slower one that holds it
+    rest = [o for o in selection.secondaries if o != first]
+    if len(rest) > 1:
+        probes = probe_devices((selection.primary, *selection.secondaries))
+        rest = rank_secondaries(
+            selection.primary,
+            rest,
+            lambda o: probes[o].free_mib if o in probes else None,
+            probes,
+        )
+    moved, secondary = None, None
+    for ordinal in (first, *rest):
+        sec_limit = secondary_resident_limit_mib(ordinal, mode)
+        if sec_limit is None:
+            continue
+        moved = choose_component_assignment(
+            sizes,
+            headroom_mib = headroom,
+            overhead_mib = overhead,
+            primary_limit_mib = int(primary_limit),
+            secondary_limit_mib = int(sec_limit),
+            encode_headroom_mib = plan_encode_headroom_mib(plan),
+        )
+        if moved is not None:
+            secondary = ordinal
+            break
     if moved is None:
         return plan
     reason = (
@@ -558,11 +1015,131 @@ def refine_plan_for_multigpu(
     )
 
 
+def plan_denoise_headroom_mib(plan: Any) -> Optional[int]:
+    """The plan's activation room above the weights (measured, calibrated or estimated), None when unknown."""
+    estimates = getattr(plan, "estimates", None) or {}
+    value = (
+        estimates.get("calibrated_denoise_mib")
+        or estimates.get("measured_runtime_headroom_mib")
+        or estimates.get("calibrated_headroom_mib")
+        or estimates.get("runtime_headroom_mib")
+    )
+    return int(value) if value else None
+
+
+_CALIBRATION_PX = 1024 * 1024
+
+
+def scaled_headroom_mib(
+    headroom_mib: Optional[int],
+    reference_px: Optional[int],
+    request_px: Optional[int],
+    batch: Optional[int] = None,
+) -> int:
+    """A denoise headroom calibrated at one sample of ``reference_px`` pixels, scaled linearly by the request's canvas
+    (when both are known) and by the latent batch (the calibration batch is 1)."""
+    need = int(headroom_mib or 0)
+    if reference_px and request_px:
+        need = int(need * request_px / reference_px)
+    if batch and batch > 1:
+        need *= int(batch)
+    return need
+
+
+def plan_encode_headroom_mib(plan: Any) -> Optional[int]:
+    """The calibrated text-encode phase's room above the weights, None without a per-phase figure (the whole-request
+    figure then covers it)."""
+    estimates = getattr(plan, "estimates", None) or {}
+    if not estimates.get("calibrated_denoise_mib"):
+        return None
+    value = estimates.get("calibrated_encode_mib")
+    return int(value) if value else None
+
+
+_TEXT_ENCODER_ATTRS = ("text_encoder", "text_encoder_2", "text_encoder_3", "text_encoder_4")
+
+
+@dataclasses.dataclass(frozen = True)
+class PhaseNeeds:
+    """One request's activation room above the resident weights per phase, in MiB (batch, canvas, frames and
+    reference tokens included), with the cards the encode and decode run on. The denoise runs on every card a CFG
+    router uses. The phases run one after another, never together: a card's need is the max over the phases it runs."""
+
+    encode_mib: Optional[int] = None
+    denoise_mib: Optional[int] = None
+    decode_mib: Optional[int] = None
+    encode_ordinals: tuple[int, ...] = ()
+    decode_ordinal: Optional[int] = None
+    cfg_batch_denoise_mib: Optional[int] = None
+
+    def room_on(self, ordinal: Optional[int]) -> int:
+        room = int(self.denoise_mib or 0)
+        if ordinal is not None and ordinal in self.encode_ordinals and self.encode_mib:
+            room = max(room, int(self.encode_mib))
+        if ordinal is not None and ordinal == self.decode_ordinal and self.decode_mib:
+            room = max(room, int(self.decode_mib))
+        return room
+
+
+def _cuda_ordinal(module: Any) -> Optional[int]:
+    try:
+        device = _module_device(module) if module is not None else None
+    except Exception:  # noqa: BLE001
+        return None
+    return device.index if getattr(device, "type", None) == "cuda" else None
+
+
+def text_encoder_ordinals(pipe: Any) -> tuple[int, ...]:
+    """CUDA cards holding one of ``pipe``'s text encoders (resident there: an offloaded one encodes on the primary)."""
+    found = []
+    for attr in _TEXT_ENCODER_ATTRS:
+        ordinal = _cuda_ordinal(getattr(pipe, attr, None))
+        if ordinal is not None and ordinal not in found:
+            found.append(ordinal)
+    return tuple(found)
+
+
+def request_phase_needs(
+    pipe: Any,
+    *,
+    encode_mib: Optional[int],
+    denoise_mib: Optional[int],
+    decode_mib: Optional[int],
+    cfg_batch_denoise_mib: Optional[int] = None,
+) -> PhaseNeeds:
+    """A request's per-phase needs (from the generation guard's own estimator) placed on ``pipe``'s cards."""
+    return PhaseNeeds(
+        encode_mib = None if encode_mib is None else int(encode_mib),
+        denoise_mib = None if denoise_mib is None else int(denoise_mib),
+        decode_mib = None if decode_mib is None else int(decode_mib),
+        cfg_batch_denoise_mib = None if cfg_batch_denoise_mib is None else int(cfg_batch_denoise_mib),
+        encode_ordinals = text_encoder_ordinals(pipe),
+        decode_ordinal = _cuda_ordinal(getattr(pipe, "vae", None)),
+    )
+
+
+def plan_decode_headroom_mib(plan: Any) -> Optional[int]:
+    """The calibrated VAE decode phase's room above the weights, None when the plan has no per-phase figure (then
+    :func:`plan_denoise_headroom_mib` is the whole-request figure, which already includes the decode peak)."""
+    estimates = getattr(plan, "estimates", None) or {}
+    if not estimates.get("calibrated_denoise_mib"):
+        return None
+    value = estimates.get("calibrated_decode_mib")
+    return int(value) if value else None
+
+
+def plan_denoise_reference_px(plan: Any) -> Optional[int]:
+    """The canvas (pixels) :func:`plan_denoise_headroom_mib`'s figure holds for when it is the calibrated denoise
+    phase, else None (a whole-request figure is not scaled)."""
+    estimates = getattr(plan, "estimates", None) or {}
+    return _CALIBRATION_PX if estimates.get("calibrated_denoise_mib") else None
+
+
 def secondary_device_memory(ordinal: int) -> Any:
     """A ``DeviceMemory`` reading for a secondary card, or None when unreadable."""
     from .diffusion_memory import DeviceMemory
 
-    free, total = _free_total_mib(int(ordinal))
+    free, total = usable_free_mib(int(ordinal))
     if free is None:
         return None
     return DeviceMemory(
@@ -928,11 +1505,14 @@ def placement_status(pipe: Any) -> Optional[dict[str, Any]]:
         info = _PLACEMENTS.get(pipe)
         cfg = _CFG_ROUTERS.get(pipe)
         declined = _CFG_DECLINES.get(pipe)
+        batch = _CFG_BATCH.get(pipe)
     except TypeError:  # not weak-referenceable: nothing can have been recorded for it
         return None
-    if info is None and cfg is None and declined is None:
+    if info is None and cfg is None and declined is None and batch is None:
         return None
     out: dict[str, Any] = dict(info or {})
+    if batch is not None:
+        out["cfg_batch"] = batch.describe()
     if cfg is not None:
         out["cfg_parallel"] = cfg.describe()
     elif declined is not None:
@@ -1103,29 +1683,86 @@ def _hook_origin(fn: Any) -> str:
 
 
 def _trusted_hook(fn: Any) -> bool:
-    return _hook_origin(fn).startswith(_TRUSTED_HOOK_MODULES) and _portable(fn)
+    """The one hook predicate both CFG routers screen with (submodule and root hooks alike): a Studio hook that captures
+    nothing a copy or a second branch could diverge on, or a Studio hook marked ``_unsloth_shared_ok`` (it touches only
+    process-global state or its call's own arguments, never module state the forward reads)."""
+    return _hook_origin(fn).startswith(_TRUSTED_HOOK_MODULES) and (
+        _portable(fn) or getattr(fn, "_unsloth_shared_ok", False) is True
+    )
 
 
-def _hooks_present(module: Any) -> Optional[str]:
+def _studio_outer_layers(forward: Any) -> tuple[list[Any], Any]:
+    """Peel Studio's own outer forward layers (``_unsloth_outer_forward``: the static step skip, defined in Studio's
+    modules) off an instance forward: (the layers, what they wrap; None = the class forward). A layer whose class is
+    not Studio's, or one that hides what it wraps, stops the peel and stays in place for the caller to judge."""
+    layers: list[Any] = []
+    fn = forward
+    for _ in range(8):
+        if (
+            fn is None
+            or not getattr(fn, "_unsloth_outer_forward", False)
+            or not str(type(fn).__module__ or "").startswith(_TRUSTED_HOOK_MODULES)
+            or not hasattr(fn, "inner")
+        ):
+            break
+        layers.append(fn)
+        fn = fn.inner
+    return layers, fn
+
+
+def _hooks_present(
+    module: Any,
+    *,
+    offload_hooks_ok: bool = False,
+    strict_bound: bool = False,
+) -> Optional[str]:
     """Name of the first submodule carrying state a replica cannot inherit faithfully, else None: a non-offload hook
     registry (step caches), an accelerate hook, or a forward hook / instance forward override below the root whose
     captured state points at the source (deepcopy treats functions as atoms). Offload machinery (diffusers group
     offloading, Studio's prefetchers) is dropped by :func:`build_replica`, which holds every weight resident. The
-    ROOT's torch forward hooks are fine: the source module's ``__call__`` runs them around the router for every
-    branch, and the copy does not carry them."""
+    ROOT's hooks are screened too: for CFG-parallel only their origin matters (the copy never carries them; a foreign
+    one writing module state would update the source only), for CFG-batch the full :func:`_trusted_hook` check. ``offload_hooks_ok``: accelerate's offload hooks pass too
+    (CFG-batch runs the source module itself, so they keep working)."""
     for name, sub in module.named_modules():
         kind = _registry_kind(sub)
         if kind == "other":
             return f"{name or '<root>'}._diffusers_hook ({', '.join(sorted(sub._diffusers_hook.hooks))})"
-        if getattr(sub, "_hf_hook", None) is not None:
+        if getattr(sub, "_hf_hook", None) is not None and not offload_hooks_ok:
             return f"{name or '<root>'}._hf_hook"
-        if name:
-            for attr in ("_forward_hooks", "_forward_pre_hooks"):
-                for hook in (getattr(sub, attr, None) or {}).values():
-                    if not _is_offload_object(hook) and not _trusted_hook(hook):
-                        return f"{name}.{attr}"
+        for attr in ("_forward_hooks", "_forward_pre_hooks"):
+            for hook in (getattr(sub, attr, None) or {}).values():
+                if _is_offload_object(hook):
+                    continue
+                if not name and not offload_hooks_ok:
+                    # CFG-parallel root: the copy never carries it (the source runs it around every branch), so
+                    # portability is moot; Studio's root hooks pass (their per-call module state is mirrored), a foreign
+                    # one blocks (it may write module state only the source would see)
+                    if not _hook_origin(hook).startswith(_TRUSTED_HOOK_MODULES):
+                        return f"<root>.{attr}"
+                    continue
+                if not _trusted_hook(hook):
+                    return f"{name or '<root>'}.{attr}"
         override = sub.__dict__.get("forward")
-        if override is None or isinstance(override, (types.MethodType, CfgParallelRouter)):
+        if not name and not offload_hooks_ok:
+            # CFG-parallel: Studio's outer layers above the router run on the source around every branch and are
+            # never copied into the replica (build_replica drops them); judge what they wrap
+            _layers, override = _studio_outer_layers(override)
+        if (
+            strict_bound
+            and isinstance(override, types.MethodType)
+            and not (
+                override.__self__ is sub
+                and override.__func__ is getattr(type(sub).forward, "__func__", type(sub).forward)
+            )
+            and not _hook_origin(override).startswith(_TRUSTED_HOOK_MODULES)
+        ):
+            return (
+                f"{name or '<root>'}.forward (bound override from {_hook_origin(override) or '?'}; "
+                f"{CFG_BATCH_ENV}=force opts in)"
+            )
+        if override is None or isinstance(
+            override, (types.MethodType, CfgParallelRouter, CfgBatchRouter)
+        ):
             # bound methods are rebound to the copy, the router is dropped
             continue
         if kind == "offload" or _is_offload_object(override):
@@ -1168,7 +1805,7 @@ def _rebind_root_forward(original: Any, source: Any, replica: Any) -> None:
             return  # the class forward: the copy already has it
         replica.__dict__["forward"] = types.MethodType(original.__func__, replica)
         return
-    raise RuntimeError(
+    raise ReplicaStructural(
         f"the denoiser's root forward override ({original!r}) cannot be reproduced on a replica"
     )
 
@@ -1207,9 +1844,11 @@ def build_replica(module: Any, device: Any) -> Any:
             for hook in (getattr(sub, attr, None) or {}).values():
                 if _is_offload_object(hook):
                     memo[id(hook)] = _DROP
+    outer_layers, router = _studio_outer_layers(module.__dict__.get("forward"))
+    for layer in outer_layers:
+        memo[id(layer)] = _DROP
     memo[id(memo)] = keep  # deepcopy's own keep-alive convention
     replica = copy.deepcopy(module, memo)
-    router = module.__dict__.get("forward")
     for sub in replica.modules():
         for key in [k for k, v in sub.__dict__.items() if v is _DROP]:
             del sub.__dict__[key]
@@ -1228,6 +1867,21 @@ def build_replica(module: Any, device: Any) -> Any:
         if hooks is not None:
             hooks.clear()
     compiled_subs = 0
+    ledger: list = []
+    replica.__dict__[_REPLICA_LEDGER] = ledger
+    try:
+        compiled_subs = _compile_replica_blocks(module, replica, device, ledger)
+    except BaseException:
+        release_replica(replica)
+        raise
+    replica._unsloth_replica_compiled = compiled_subs
+    replica.eval()
+    return replica
+
+
+def _compile_replica_blocks(module: Any, replica: Any, device: Any, ledger: list) -> int:
+    torch = _torch()
+    compiled_subs = 0
     for (name, src), (_rname, dst) in zip(module.named_modules(), replica.named_modules()):
         # Plain tensor attributes (cached RoPE tables and the like) were deep-copied on the source card.
         for key, value in list(dst.__dict__.items()):
@@ -1238,18 +1892,151 @@ def build_replica(module: Any, device: Any) -> Any:
             ):
                 dst.__dict__[key] = value.to(device)
         if getattr(src, "_compiled_call_impl", None) is not None:
-            recorded = src.__dict__.get("_unsloth_compile_args")
-            dst._compiled_call_impl = None
-            if recorded is None:
-                raise RuntimeError(f"compiled submodule '{name}' has no recorded compile arguments")
-            args, kwargs = recorded
-            dst.compile(*args, **kwargs)
+            compile_like_source(src, dst, owner = replica, name = name, ledger = ledger)
             compiled_subs += 1
         elif "_compiled_call_impl" in dst.__dict__:
             dst._compiled_call_impl = None
-    replica._unsloth_replica_compiled = compiled_subs
-    replica.eval()
-    return replica
+    return compiled_subs
+
+
+_GRAPH_WRAPPERS = ("GraphedForward", "BlockGraph")
+_LAYER_MARKERS = (
+    "_unsloth_bg_gate",
+    "_unsloth_block_restride",
+    "_unsloth_compile_guard",
+    "_unsloth_stg_adapter",
+)
+
+
+def _is_torch_compiled(fn: Any) -> bool:
+    """torch's own compiled call (Module.compile / torch.compile): the bottom of a wrapper chain."""
+    origin = _hook_origin(fn)
+    return origin.startswith("torch") or str(getattr(fn, "__module__", "") or "").startswith(
+        "torch"
+    )
+
+
+def _wrapper_inner(fn: Any) -> Any:
+    """The one link below a wrapper layer, or None: ``__wrapped__`` (Studio's closures and functools.wraps), the
+    background gate's ``_unsloth_bg_inner``, a ``functools.partial``'s ``func``, a bound method's owner object, a
+    graph wrapper's ``compiled`` / ``compute``."""
+    for attr in ("__wrapped__", "_unsloth_bg_inner"):
+        inner = getattr(fn, attr, None)
+        if inner is not None and inner is not fn:
+            return inner
+    if hasattr(fn, "func") and hasattr(fn, "args") and hasattr(fn, "keywords"):
+        return fn.func
+    if isinstance(fn, types.MethodType):
+        owner = fn.__self__
+        return owner if owner is not fn else None
+    for attr in ("compiled", "compute"):
+        inner = getattr(fn, attr, None)
+        if callable(inner) and inner is not fn:
+            return inner
+    return None
+
+
+def _source_wrapper_markers(outer: Any, name: str) -> dict:
+    """Walk ``outer`` (a source block's ``_compiled_call_impl``) layer by layer down to torch's compiled call, through
+    one inner link per layer (:func:`_wrapper_inner`), recording the Studio layers ({marker: value}). Raises on a layer
+    it cannot rebuild exactly or cannot see below: a wrapper is never dropped silently."""
+    found: dict = {}
+    fn = outer
+    for _ in range(16):
+        if fn is None:
+            raise ReplicaStructural(
+                f"compiled submodule '{name}': the wrapper chain ends without torch's compiled call"
+            )
+        if _is_torch_compiled(fn) and not any(getattr(fn, m, None) for m in _LAYER_MARKERS):
+            return found
+        if getattr(fn, "_unsloth_stg_adapter", False):
+            raise ReplicaStructural(
+                f"compiled submodule '{name}' carries the LTX-2 STG adapter (not rebuilt on a copy)"
+            )
+        markers = [m for m in _LAYER_MARKERS if getattr(fn, m, None) not in (None, False)]
+        graph = type(fn).__name__ in _GRAPH_WRAPPERS and _hook_origin(fn).startswith(
+            _TRUSTED_HOOK_MODULES
+        )
+        if not markers and not graph and not isinstance(fn, types.MethodType):
+            raise ReplicaStructural(
+                f"compiled submodule '{name}' carries an unknown wrapper {type(fn).__name__} (not rebuilt on a copy)"
+            )
+        guard = getattr(fn, "_unsloth_compile_guard", None)
+        if guard is not None:
+            found.setdefault("guard", guard)
+        for marker in markers:
+            found[marker] = True
+        below = _wrapper_inner(fn)
+        if below is None:
+            raise ReplicaStructural(
+                f"compiled submodule '{name}': cannot see below wrapper {type(fn).__name__} (no inner link)"
+            )
+        fn = below
+    raise ReplicaStructural(f"compiled submodule '{name}': wrapper chain too deep to inspect")
+
+
+def compile_like_source(
+    src: Any,
+    dst: Any,
+    *,
+    owner: Any = None,
+    name: str = "",
+    ledger: Optional[list] = None,
+) -> None:
+    """Compile a replica block ``dst`` exactly the way its source ``src`` was: the recorded ``Module.compile``
+    arguments, then the same Studio wrappers rebuilt around the copy's own compiled call (canonical order: restride,
+    the shared compile guard, the background-compile gate). The one builder every replica block goes through."""
+    recorded = src.__dict__.get("_unsloth_compile_args")
+    if recorded is None:
+        raise ReplicaStructural(f"compiled submodule '{name}' has no recorded compile arguments")
+    markers = _source_wrapper_markers(src._compiled_call_impl, name)
+    args, kwargs = recorded
+    dst._compiled_call_impl = None
+    dst.compile(*args, **kwargs)
+    call = dst._compiled_call_impl
+    eager = dst._call_impl
+    if markers.get("_unsloth_block_restride"):
+        from .diffusion_block_restride import wrap as _restride
+        call = _restride(call)
+    guard = markers.get("guard")
+    if guard is not None:
+        call = guard.wrap(call, eager, owner if owner is not None else dst)
+        dst_ref = weakref.ref(dst)
+
+        def restore(ref: Any = dst_ref) -> None:
+            m = ref()
+            if m is not None:
+                m._compiled_call_impl = None
+
+        guard.restores.append(restore)
+        if ledger is not None:
+            ledger.append(lambda g = guard, f = restore: _remove_identity(g.restores, f))
+    if markers.get("_unsloth_bg_gate"):
+        from .diffusion_bg_compile import eager_gate
+        call = eager_gate(call, eager)
+    dst._compiled_call_impl = call
+
+
+def _remove_identity(items: list, value: Any) -> None:
+    for i in range(len(items) - 1, -1, -1):
+        if items[i] is value:
+            del items[i]
+
+
+_REPLICA_LEDGER = "_unsloth_replica_ledger"
+
+
+def release_replica(replica: Any) -> None:
+    """The one teardown for every replica drop path (eviction, invalidation, stale weights, disable, uninstall, unload):
+    every registration the replica made on source-side objects (compile-guard callbacks, ...) is undone, so nothing
+    long-lived keeps the copy, and its card memory, alive. Idempotent."""
+    if replica is None:
+        return
+    ledger = replica.__dict__.get(_REPLICA_LEDGER)
+    while ledger:
+        undo = ledger.pop()
+        with contextlib.suppress(Exception):
+            undo()
 
 
 _ADAPTER_ATTRS = (
@@ -1354,6 +2141,7 @@ class _ReplicaWorker:
             target = self._loop, name = f"unsloth-cfg-replica-{device}", daemon = True
         )
         self._thread.start()
+        _LIVE_WORKERS.add(self)
 
     def _loop(self) -> None:
         torch = _torch()
@@ -1417,6 +2205,21 @@ class _ReplicaWorker:
 
     def close(self) -> None:
         self._jobs.put(None)
+
+    def drain(self, timeout_s: float) -> None:
+        """Stop after the queued jobs and wait for the thread (bounded)."""
+        self.close()
+        self._thread.join(timeout_s)
+
+
+_LIVE_WORKERS: "weakref.WeakSet[_ReplicaWorker]" = weakref.WeakSet()
+
+
+@atexit.register
+def _drain_workers_at_exit() -> None:
+    for worker in list(_LIVE_WORKERS):
+        with contextlib.suppress(Exception):
+            worker.drain(timeout_s = 30.0)
 
 
 def _leaves(
@@ -1550,7 +2353,10 @@ def _mirror_hook_state(pairs: list) -> tuple:
         for key in [
             k
             for k, v in dst.__dict__.items()
-            if k.startswith(_STATE_PREFIX) and isinstance(v, _STATE_TYPES) and k not in mine and k not in _STATE_KEEP
+            if k.startswith(_STATE_PREFIX)
+            and isinstance(v, _STATE_TYPES)
+            and k not in mine
+            and k not in _STATE_KEEP
         ]:
             del dst.__dict__[key]
         for key, value in mine.items():
@@ -1559,7 +2365,7 @@ def _mirror_hook_state(pairs: list) -> tuple:
     return state
 
 
-class CfgParallelRouter:
+class CfgParallelRouter(_ShapeVerdicts):
     """Installed as the denoiser's ``forward``: routes odd branches of a step to the replica.
 
     Once a step has shown two branches, the next step's first odd branch is predicted from the previous one (same
@@ -1569,6 +2375,8 @@ class CfgParallelRouter:
     predicted tensors (identity) and equal plain values, else the prediction is discarded and the branch runs
     unpredicted."""
 
+    _VERDICT_LABEL = "CFG-parallel"
+
     def __init__(
         self,
         module: Any,
@@ -1577,14 +2385,32 @@ class CfgParallelRouter:
         secondary: Any,
         replica_factory: Optional[Callable[[], Any]] = None,
         logger: Any = None,
+        headroom_mib: Optional[int] = None,
+        headroom_reference_px: Optional[int] = None,
+        candidates: Optional[Sequence[int]] = None,
+        decode_headroom_mib: Optional[int] = None,
+        vae_ordinal: Optional[int] = None,
+        encode_headroom_mib: Optional[int] = None,
+        te_ordinals: Sequence[int] = (),
     ):
         torch = _torch()
+        self.decode_headroom_mib = decode_headroom_mib
+        self.vae_ordinal = vae_ordinal
+        self.encode_headroom_mib = encode_headroom_mib
+        self.te_ordinals = tuple(int(o) for o in te_ordinals)
+        self.request_needs: Optional[PhaseNeeds] = None
+        self.headroom_mib = headroom_mib
+        self.headroom_reference_px = headroom_reference_px
+        self.request_px: Optional[int] = None
         self.module_ref = weakref.ref(module)
         self.orig_forward = module.forward
-        # an instance-level forward (bound override, offload wrapper) the replica must reproduce or drop
+        # an instance-level forward (bound override, offload wrapper) the replica must reproduce or drop, and that
+        # uninstall puts back
         self.had_override = "forward" in module.__dict__
+        self.prev_override = module.__dict__.get("forward")
         self.primary = torch.device(primary)
         self.secondary = torch.device(secondary)
+        self.candidates: list[int] = [int(o) for o in (candidates or ())]
         self.logger = logger
         self.replica: Any = None
         self.replica_factory = replica_factory or (lambda: build_replica(module, self.secondary))
@@ -1595,6 +2421,7 @@ class CfgParallelRouter:
         self.cfg_seen = False
         self.singles = 0
         self.prefetched: dict[int, tuple[Any, Any]] = {}
+        self.return_stream: Any = None
         # Tensors the odd branches of the previous step read (negative embeds, masks): copied again before the next
         # step's primary branch is queued, so they are always fresh and never wait behind it.
         self.carry: list[Any] = []
@@ -1608,21 +2435,43 @@ class CfgParallelRouter:
             "predicted_hits": 0,
             "predicted_misses": 0,
             "opaque_primary_calls": 0,
+            "replica_blocked": 0,
         }
+        self.blocked_by: Optional[str] = None
         # the previous step's odd call, classified against its primary call; the launched prediction
         self.template: Optional[tuple[Any, Any, dict]] = None
         self.pending: Optional[dict] = None
         self.b0_leaves: dict = {}
         self.fingerprint: Optional[int] = None
         self.pairs: list = []
+        self.pricing: Optional[dict[str, Any]] = None
+        self.b0_s: Optional[float] = None
+        self._init_verdicts()
+        self.shapes = _ShapeBook(
+            {"pricing": None, "prediction": _PredictionPolicy, **_ShapeVerdicts.VERDICT_FIELDS}
+        )
+        self.prediction = _PredictionPolicy()
+        self.capacity_checked = False
+        self.request_id = 0
+        self.request_step = 0
+        self.request_total_steps: Any = None
+        self.steps_fn: Optional[Callable[[], Any]] = None
+        self.priced_at: Optional[tuple[int, int]] = None
 
     # -- status
     def describe(self) -> dict[str, Any]:
+        off = self.disabled_reason or self.shape_disabled
         return {
+            "strategy": "cfg_parallel" if off is None else "single",
+            "pricing": self.pricing,
+            "shapes_priced": len(self.shapes.saved) + (self.shapes.key is not None),
             "secondary": str(self.secondary),
             "replica_built": self.replica is not None,
             "replica_compiled_submodules": getattr(self.replica, "_unsloth_replica_compiled", None),
-            "disabled_reason": self.disabled_reason,
+            "disabled_reason": off,
+            "disabled_for_shape_only": self.disabled_reason is None
+            and self.shape_disabled is not None,
+            "blocked_by": self.blocked_by,
             **self.stats,
         }
 
@@ -1636,10 +2485,13 @@ class CfgParallelRouter:
         self.drop_replica()
 
     def drop_replica(self) -> None:
+        """Every drop path ends here: the worker, pending work, prefetched copies and the replica's registrations on
+        source-side objects (release_replica), so the copy and its card memory are freed."""
         if self.worker is not None:
             self.worker.close()
             self.worker = None
         self._drop_pending()
+        release_replica(self.replica)
         self.replica = None
         self.pairs = []
         self.prefetched.clear()
@@ -1667,11 +2519,36 @@ class CfgParallelRouter:
                 self._drop_if_stale()
             self._drop_pending()
             self.b0_leaves = dict(_leaves((args, kwargs)))
-            if self.cfg_seen and self.replica is not None and self.disabled_reason is None:
+            self.b0_s = None
+            self.request_step += 1
+            if self.shapes.switch(self, _request_shape(self.request_px, args, kwargs)):
+                self.template = None
+                self.capacity_checked = False
+            if (
+                not self.capacity_checked
+                and self.replica is not None
+                and self.disabled_reason is None
+            ):
+                self.capacity_checked = True
+                self._check_capacity(latent)
+            if (
+                self.cfg_seen
+                and self.replica is not None
+                and self.disabled_reason is None
+                and self.shape_disabled is None
+                and (self.pricing is not None or not self._should_price())
+                and not _bg_eager_forced()
+            ):
                 # Copy this step's inputs to the replica card BEFORE the primary branch is queued: a copy queued after
                 # it would wait for it on the source stream and serialise the two branches.
-                self._prefetch(args, kwargs)
-                self._launch_prediction(latent)
+                try:
+                    if not self.prediction.stopped:
+                        predicted = self._predict(latent)
+                        if predicted is not None:
+                            self._prefetch(*predicted)
+                        self._launch_prediction(latent)
+                except Exception as exc:  # noqa: BLE001 - dispatched on its type by the one handler
+                    self._replica_failure("prefetch", exc)
         if (
             self.branch % 2 == 1
             and self.disabled_reason is None
@@ -1681,10 +2558,36 @@ class CfgParallelRouter:
             self._drop_pending()
             self.template = None
             self.stats["opaque_primary_calls"] += 1
-        elif self.branch % 2 == 1 and self.disabled_reason is None:
+        elif (
+            self.branch % 2 == 1
+            and self.disabled_reason is None
+            and self.shape_disabled is None
+            and not _bg_eager_forced()
+        ):
             self.singles = 0
+            if self.pricing is None and self.replica is not None and self._should_price():
+                self._drop_pending()
+                out, branch_s = self._timed_primary(args, kwargs)
+                self.pricing = self._price(args, kwargs, out, branch_s)
+                self._shape_verdict()
+                if self.branch == 1:
+                    self._record_template(args, kwargs, latent)
+                return out
             if self.replica is None:
                 self.cfg_seen = True
+                if self.pricing is None and self._should_price():
+                    out, branch_s = self._timed_primary(args, kwargs)
+                    self.pricing = self._price(args, kwargs, out, branch_s)
+                    self._shape_verdict()
+                    self.priced_at = (self.request_id, self.request_step)
+                    if self.branch == 1:
+                        self._record_template(args, kwargs, latent)
+                    return out
+                if not self._should_build():
+                    if self.branch == 1:
+                        self._record_template(args, kwargs, latent)
+                    self.stats["primary_calls"] += 1
+                    return self.orig_forward(*args, **kwargs)
                 self._build_replica()
                 if self.branch == 1:
                     self._record_template(args, kwargs, latent)
@@ -1698,14 +2601,334 @@ class CfgParallelRouter:
                     self.stats["replica_calls"] += 1
                     if self.branch == 1:
                         self.stats["steps_parallel"] += 1
+                        self._shape_ok()
                     return out
-                except Exception as exc:  # noqa: BLE001 - this branch is recomputed on the primary below
-                    self.disable(f"replica call failed: {type(exc).__name__}: {exc}")
+                except Exception as exc:  # noqa: BLE001 - recomputed on the primary below; typed by the handler
+                    self._replica_failure("call", exc)
             self.cfg_seen = True
+        if (
+            self.branch == 0
+            and self.pricing is None
+            and self.disabled_reason is None
+            and self.shape_disabled is None
+            and self.singles == 0
+            and self._should_price()
+        ):
+            out, self.b0_s = self._timed_primary(args, kwargs)
+            return out
         self.stats["primary_calls"] += 1
         return self.orig_forward(*args, **kwargs)
 
-    # -- prediction of the next odd branch
+    def _check_capacity(self, latent: Any) -> None:
+        """An existing replica, a new request or shape: decline this shape when the replica card lacks room for its
+        (canvas and batch scaled) activations. A room verdict is re-read every request: free memory moves."""
+        if _off_kind(self.shape_disabled) == _OFF_ROOM:
+            self.shape_disabled = None
+        if self.shape_disabled is not None:
+            return
+        free = self._secondary_free_mib()
+        if free is None:
+            return
+        batch = (
+            int(latent.shape[0])
+            if getattr(latent, "dim", None) is not None and latent.dim() >= 1
+            else None
+        )
+        room = self._room_mib(batch)
+        if room is not None and room > free:
+            self._shape_off(
+                f"{_ROOM_REASON}: needs {int(room)} MiB, {free} MiB free on {self.secondary}",
+                _OFF_ROOM,
+            )
+
+    def _phase_need_mib(self, phase: str) -> Optional[int]:
+        """What ``phase`` (encode / decode) allocates on the replica card, None when that card does not run it: the
+        request's own figure, else the load-time one (decode scaled by canvas)."""
+        index = self.secondary.index
+        needs = self.request_needs
+        if phase == "encode":
+            if needs is not None and needs.denoise_mib:
+                return int(needs.encode_mib or 0) if index in needs.encode_ordinals else None
+            return int(self.encode_headroom_mib or 0) if index in self.te_ordinals else None
+        if phase == "decode":
+            if needs is not None and needs.denoise_mib:
+                return int(needs.decode_mib or 0) if index == needs.decode_ordinal else None
+            if self.vae_ordinal is None or index != self.vae_ordinal:
+                return None
+            return scaled_headroom_mib(
+                self.decode_headroom_mib, self.headroom_reference_px, self.request_px, None
+            )
+        return None
+
+    def ensure_phase_room(self, phase: str) -> bool:
+        """At a phase boundary that allocates on the replica card (encode at request entry, decode at decoder entry):
+        evict the retained replica when the phase would not fit beside it, so a wrong estimate can never cause an OOM
+        the one-card path would not have had. True when the replica stays (or there is none)."""
+        if self.replica is None:
+            return True
+        need = self._phase_need_mib(phase)
+        if not need:
+            return True
+        free = self._secondary_free_mib()
+        if free is None or need <= free:
+            return True
+        if self.logger is not None:
+            self.logger.info(
+                "diffusion.multigpu: evicting the CFG-parallel replica from %s before %s (%d MiB needed, %d free)",
+                self.secondary,
+                phase,
+                need,
+                free,
+            )
+        self.drop_replica()
+        self.stats["replica_evictions"] = self.stats.get("replica_evictions", 0) + 1
+        with contextlib.suppress(Exception):
+            _torch().cuda.empty_cache()
+        return False
+
+    def _secondary_free_mib(self) -> Optional[int]:
+        """Free MiB on the replica card: the driver's figure plus this process's idle cached allocator blocks there
+        (the replica's last activations, reusable without a driver allocation), read on the secondary itself."""
+        free, _total = usable_free_mib(self.secondary.index)
+        return free
+
+    def _room_mib(
+        self,
+        batch: Optional[int],
+        ordinal: Optional[int] = None,
+    ) -> int:
+        """Activation room the replica card needs beside the (retained) replica: the max over the phases that card
+        runs. The odd branch's denoise always; the VAE decode when it hosts the VAE (the routers' inputs are released at
+        decode entry); the text encode when it hosts an encoder (the replica stays across requests, so it sits beside
+        the next request's encode). Phases are sequential, so the max, not the sum. The request's own figures when the
+        generate path supplied them; else the load-time figures, denoise and decode scaled by canvas and batch."""
+        card = self.secondary.index if ordinal is None else ordinal
+        needs = self.request_needs
+        if needs is not None and needs.denoise_mib:
+            return needs.room_on(card)
+        room = scaled_headroom_mib(
+            self.headroom_mib, self.headroom_reference_px, self.request_px, batch
+        )
+        if self.encode_headroom_mib and card is not None and card in self.te_ordinals:
+            room = max(room, int(self.encode_headroom_mib))
+        if self.decode_headroom_mib and self.vae_ordinal is not None and card == self.vae_ordinal:
+            room = max(
+                room,
+                scaled_headroom_mib(
+                    self.decode_headroom_mib, self.headroom_reference_px, self.request_px, batch
+                ),
+            )
+        return room
+
+    def _replica_failure(self, where: str, exc: BaseException) -> None:
+        """The one handler for every failure in a replica path (build, prefetch, call, staleness check): dispatched on
+        :func:`replica_failure_kind` only. Capacity and transient failures decline this request shape (a capacity
+        verdict is re-read every request; a transient one tears the in-flight copies down); a structural one turns
+        CFG-parallel off for the load."""
+        kind = replica_failure_kind(exc)
+        if kind is ReplicaCapacity:
+            self._shape_off(f"{_ROOM_REASON} ({where}): {exc}", _OFF_ROOM)
+        elif kind is ReplicaTransient:
+            self._shape_oom(where, exc)
+        else:
+            self.disable(f"replica {where} failed: {type(exc).__name__}: {exc}")
+
+    def _shape_oom(self, where: str, exc: BaseException) -> None:
+        self._drop_pending()
+        self.prefetched.clear()
+        self.carry = []
+        self.next_carry = []
+        with contextlib.suppress(Exception):
+            _torch().cuda.empty_cache()
+        self._shape_oom_off(f"out of memory on the replica card ({where}): {type(exc).__name__}")
+
+    def _remaining_steps(self) -> Optional[int]:
+        """Denoise steps left in this request, this one included: Studio's step count, else the scheduler's."""
+        total = self.request_total_steps
+        if total is None and self.steps_fn is not None:
+            with contextlib.suppress(Exception):
+                total = self.steps_fn()
+        try:
+            total = int(total) if total else None
+        except (TypeError, ValueError):
+            total = None
+        if total is None:
+            return None
+        return max(0, total - self.request_step + 1)
+
+    def _should_build(self) -> bool:
+        """The one decision for every replica build (the first one and each rebuild after an eviction, a stale-weights
+        drop or an invalidation): never inside the background-compile window; an unpriced router (force, non-CUDA)
+        builds at once; a priced one never on the step it was priced on, never on the first guided step of a request
+        whose length is unknown, and otherwise only when the rest of the request repays the build."""
+        if _bg_eager_forced():
+            return False
+        if self.pricing is None:
+            return True
+        if self.priced_at == (self.request_id, self.request_step):
+            return False
+        if self._remaining_steps() is None:
+            return self.request_step >= 2
+        return self._build_pays_off()
+
+    def _build_pays_off(self) -> bool:
+        """Amortise the first replica build over the request's remaining guided steps (this step runs on the primary
+        while the replica is built, so it gains nothing). Unknown step count: build (this is already the second guided
+        step). Declines this shape for this request only."""
+        remaining = self._remaining_steps()
+        if remaining is None:
+            return True
+        gain_s = float(self.pricing["single_step_s"]) - float(self.pricing["cfg_parallel_step_s"])
+        build_s = self.pricing.get("replica_build_s_est") or 0.0
+        parallel_steps = remaining - 1
+        if parallel_steps > 0 and gain_s * parallel_steps > build_s:
+            return True
+        self._shape_off(
+            f"{_SHORT_RENDER_REASON}: building the replica (~{build_s:.2f}s) does not repay over "
+            f"{max(0, parallel_steps)} remaining steps at {gain_s:.4f}s saved each",
+            _OFF_SHORT,
+        )
+        return False
+
+    def _shape_verdict(self) -> bool:
+        """Apply the current shape's price: True when CFG-parallel runs for it."""
+        if self.pricing["strategy"] == "cfg_parallel":
+            return True
+        if self.pricing.get("link_unmeasured"):
+            self._shape_off(
+                "link unmeasured: one card until a probe measures it (retried next request)",
+                _OFF_STICKY,
+            )
+        else:
+            self._shape_off(
+                "priced out: one card takes "
+                f"{self.pricing['single_step_s']:.4f}s per step, CFG-parallel "
+                f"{self.pricing['cfg_parallel_step_s']:.4f}s (link copies {self.pricing['copy_s']:.4f}s)",
+                _OFF_STICKY,
+            )
+        return False
+
+    def begin_request(
+        self,
+        width: Any = None,
+        height: Any = None,
+        steps: Any = None,
+        steps_fn: Optional[Callable[[], Any]] = None,
+        needs: Optional[PhaseNeeds] = None,
+    ) -> None:
+        self.release_inputs()
+        self.request_needs = needs
+        self.branch = 0
+        self.singles = 0
+        self.ensure_phase_room("encode")
+        self.b0_s = None
+        self.capacity_checked = False
+        self.request_id += 1
+        self.request_step = 0
+        self.request_total_steps = steps
+        self.steps_fn = steps_fn
+        self._clear_request_verdicts()
+        try:
+            self.request_px = int(width) * int(height) if width and height else None
+        except (TypeError, ValueError):
+            self.request_px = None
+        if self.replica is None:
+            self._reselect_secondary()
+        self.shapes.forget(self, lambda st: bool((st.get("pricing") or {}).get("link_unmeasured")))
+
+    def _replica_mib(self) -> int:
+        module = self.module_ref()
+        if module is None:
+            return 0
+        return sum(
+            t.numel() * t.element_size() for t in (*module.parameters(), *module.buffers())
+        ) // (1 << 20)
+
+    def _reselect_secondary(self, batch: Optional[int] = None) -> None:
+        """No replica yet (first build, after an eviction, a stale-weights drop or an invalidation): choose the card
+        again through select_replica_card, on a fresh probe (failed link measurements retried) and the CURRENT usable
+        memory against the current per-shape requirement, so a card that has since filled up is skipped. No card fits:
+        the current one stays (the build then declines the shape for capacity)."""
+        if len(self.candidates) < 2 or self.primary.type != "cuda":
+            return
+        try:
+            best, _fits, _probes = select_replica_card(
+                self.primary.index,
+                self.candidates,
+                self._replica_mib(),
+                lambda o: max(1024, self._room_mib(batch, ordinal = o)),
+            )
+        except Exception:  # noqa: BLE001 - keep the current card
+            return
+        if best is not None and best != self.secondary.index:
+            if self.logger is not None:
+                self.logger.info(
+                    "diffusion.multigpu: CFG-parallel replica card cuda:%s -> cuda:%s (link measured)",
+                    self.secondary.index,
+                    best,
+                )
+            self.secondary = _torch().device("cuda", best)
+            self.shapes.clear(self)
+
+    def end_request(self) -> None:
+        self.release_inputs()
+        self.request_needs = None
+
+    def release_inputs(self) -> None:
+        """Drop every tensor kept between calls (the replica and per-load pricing stay)."""
+        self._drop_pending()
+        self.prefetched.clear()
+        self.carry = []
+        self.next_carry = []
+        self.prev_latent = None
+        self.template = None
+        self.b0_leaves = {}
+
+    def reprice(self) -> None:
+        """Forget every shape's price; a priced-out router is armed again and prices the next guided step."""
+        self.shapes.clear(self)
+        self.b0_s = None
+        if self.disabled_reason is not None and self.disabled_reason.startswith("priced out"):
+            self.disabled_reason = None
+
+    def _should_price(self) -> bool:
+        return (
+            cfg_parallel_mode() != "force"
+            and self.primary.type == "cuda"
+            and self.secondary.type == "cuda"
+        )
+
+    def _timed_primary(self, args: tuple, kwargs: dict) -> tuple[Any, float]:
+        torch = _torch()
+        torch.cuda.synchronize(self.primary)
+        t0 = time.perf_counter()
+        out = self.orig_forward(*args, **kwargs)
+        torch.cuda.synchronize(self.primary)
+        self.stats["primary_calls"] += 1
+        return out, time.perf_counter() - t0
+
+    def _price(self, args: tuple, kwargs: dict, out: Any, branch_s: float) -> dict[str, Any]:
+        in_bytes = sum(t.numel() * t.element_size() for t in self._replica_inputs(args, kwargs))
+        out_bytes = sum(t.numel() * t.element_size() for t in _iter_tensors(_as_walkable(out)))
+        module = self.module_ref()
+        replica_bytes = (
+            sum(t.numel() * t.element_size() for t in (*module.parameters(), *module.buffers()))
+            if module is not None
+            else 0
+        )
+        pricing = price_cfg_parallel(
+            branch_s = branch_s,
+            in_bytes = in_bytes,
+            out_bytes = out_bytes,
+            link_in_gib_s = link_gib_s(self.primary.index, self.secondary.index),
+            link_out_gib_s = link_gib_s(self.secondary.index, self.primary.index),
+            replica_bytes = replica_bytes,
+            primary_s = self.b0_s,
+        )
+        if self.logger is not None:
+            self.logger.info("diffusion.multigpu: CFG strategy priced %s", pricing)
+        return pricing
+
     def _record_template(self, args: tuple, kwargs: dict, latent: Any) -> None:
         torch = _torch()
         b0_by_id = {id(v): p for p, v in self.b0_leaves.items() if isinstance(v, torch.Tensor)}
@@ -1721,9 +2944,6 @@ class CfgParallelRouter:
                     and leaf.numel() <= _SMALL_TENSOR_NUMEL
                     and _bitwise_equal(leaf, self.b0_leaves[path])
                 ):
-                    # Recomputed per call with the primary call's value (``timestep / 1000``): predicted from the
-                    # primary call, verified bitwise at the branch. The check reads a few bytes; the branches are
-                    # waited on right after anyway.
                     kinds[path] = ("b0eq", path)
                 else:
                     kinds[path] = ("const", leaf)
@@ -1761,8 +2981,6 @@ class CfgParallelRouter:
         except Exception:  # noqa: BLE001 - no prediction this step; the branch runs unpredicted
             return
         torch = _torch()
-        # What the replica consumes, kept per tensor: at the real call the sources are compared bitwise against it, so
-        # an in-place edit between launch and the odd branch (same object, new values) rejects the prediction.
         # Version counters cannot do this: inference tensors do not track one.
         snapshots = []
         for (_path, src), (_rpath, used) in zip(
@@ -1778,7 +2996,7 @@ class CfgParallelRouter:
             "leaves": _leaves((p_args, p_kwargs)),
             "by_value": {path for path, kind in kinds.items() if kind[0] == "b0eq"},
             "snapshots": snapshots,
-            "job": self.worker.submit(lambda: replica(*r_args, **r_kwargs)),
+            "job": self.worker.submit(lambda: self._return_copy(replica(*r_args, **r_kwargs))),
         }
 
     def _take_prediction(self, args: tuple, kwargs: dict) -> Any:
@@ -1803,9 +3021,16 @@ class CfgParallelRouter:
             out = None
         if not ok:
             self.stats["predicted_misses"] += 1
+            if self.prediction.miss() and self.logger is not None:
+                self.logger.info(
+                    "diffusion.multigpu: CFG-parallel prediction missed %d consecutive steps; no speculative replica "
+                    "forward for this request shape",
+                    self.prediction.consecutive,
+                )
             return None
         self.stats["predicted_hits"] += 1
-        return move_to_device(out, self.primary)
+        self.prediction.hit()
+        return _consume_return(out, self.primary)
 
     def _drop_pending(self) -> None:
         pending, self.pending = self.pending, None
@@ -1814,6 +3039,7 @@ class CfgParallelRouter:
             with contextlib.suppress(Exception):
                 _ReplicaWorker.wait(pending["job"])
             self.stats["predicted_misses"] += 1
+            self.prediction.miss()
 
     def _drop_if_stale(self) -> None:
         module = self.module_ref()
@@ -1822,7 +3048,9 @@ class CfgParallelRouter:
         try:
             current = weights_fingerprint(module)
         except Exception as exc:  # noqa: BLE001 - unverifiable weights: never risk a stale replica
-            self.disable(f"cannot fingerprint the denoiser: {exc}")
+            self._replica_failure(
+                "staleness check", ReplicaStructural(f"cannot fingerprint the denoiser: {exc}")
+            )
             return
         if current != self.fingerprint:
             if self.logger is not None:
@@ -1836,7 +3064,10 @@ class CfgParallelRouter:
         # was built: the copy would then run uncached while the source's cache saw only the even branches.
         hooked = _hooks_present(module)
         if hooked is not None:
-            self.disable(f"denoiser gained hooks after the replica was built ({hooked})")
+            self._replica_failure(
+                "staleness check",
+                ReplicaStructural(f"denoiser gained hooks after the replica was built ({hooked})"),
+            )
 
     def _build_replica(self) -> None:
         module = self.module_ref()
@@ -1846,16 +3077,28 @@ class CfgParallelRouter:
         try:
             hooked = _hooks_present(module)
             if hooked is not None:
-                raise RuntimeError(f"denoiser carries hooks ({hooked})")
-            need_mib = sum(
-                t.numel() * t.element_size() for t in (*module.parameters(), *module.buffers())
-            ) // (1 << 20)
-            free, _total = _free_total_mib(self.secondary.index)
-            if free is not None and need_mib + 1024 > free:
-                raise RuntimeError(
-                    f"replica needs {need_mib} MiB, {free} MiB free on {self.secondary}"
+                self.blocked_by = f"denoiser carries hooks ({hooked})"
+                self.stats["replica_blocked"] += 1
+                return
+            self.blocked_by = None
+            need_mib = self._replica_mib()
+            batch = (
+                int(self.prev_latent.shape[0])
+                if getattr(self.prev_latent, "dim", None) is not None
+                and self.prev_latent.dim() >= 1
+                else None
+            )
+            self._reselect_secondary(batch)
+            free = self._secondary_free_mib()
+            room = max(1024, self._room_mib(batch))
+            if free is not None and need_mib + room > free:
+                raise ReplicaCapacity(
+                    f"replica needs {need_mib} MiB + {room} MiB room, {free} MiB free on {self.secondary}"
                 )
-            self.fingerprint = weights_fingerprint(module)
+            try:
+                self.fingerprint = weights_fingerprint(module)
+            except Exception as exc:  # noqa: BLE001 - typed below
+                raise ReplicaStructural(f"cannot fingerprint the denoiser: {exc}") from exc
             with _device_context(self.secondary):
                 self.replica = self.replica_factory()
             self.pairs = list(zip(module.modules(), self.replica.modules()))
@@ -1869,17 +3112,28 @@ class CfgParallelRouter:
                     self.secondary,
                     time.perf_counter() - t0,
                 )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 - dispatched on its type by the one handler
+            release_replica(self.replica)
             self.replica = None
-            with contextlib.suppress(Exception):
-                _torch().cuda.empty_cache()
-            self.disable(f"replica unavailable: {exc}")
+            self._replica_failure("build", exc)
+
+    def _replica_inputs(self, args: tuple, kwargs: dict) -> list:
+        """The tensors an odd call with these arguments sends to the replica card (each once, none already there):
+        the one source of both what the prefetch copies and the input bytes the price charges."""
+        seen: set = set()
+        out = []
+        for tensor in _iter_tensors((args, kwargs)):
+            if tensor.device == self.secondary or id(tensor) in seen:
+                continue
+            seen.add(id(tensor))
+            out.append(tensor)
+        return out
 
     def _prefetch(self, args: tuple, kwargs: dict) -> None:
-        for tensor in (*_iter_tensors((args, kwargs)), *self.carry):
-            if tensor.device == self.secondary or id(tensor) in self.prefetched:
-                continue
-            self.prefetched[id(tensor)] = (tensor, tensor.to(self.secondary))
+        """Copy the (predicted) odd call's inputs to the replica card before the primary branch is queued."""
+        for tensor in self._replica_inputs(args, kwargs):
+            if id(tensor) not in self.prefetched:
+                self.prefetched[id(tensor)] = (tensor, tensor.to(self.secondary))
 
     def _to_replica(self, obj: Any) -> Any:
         torch = _torch()
@@ -1914,8 +3168,15 @@ class CfgParallelRouter:
         r_args = self._to_replica(args)
         r_kwargs = self._to_replica(kwargs)
         replica = self.replica
-        out = self.worker.call(lambda: replica(*r_args, **r_kwargs))
-        return move_to_device(out, self.primary)
+        out = self.worker.call(lambda: self._return_copy(replica(*r_args, **r_kwargs)))
+        return _consume_return(out, self.primary)
+
+    def _return_copy(self, out: Any) -> tuple:
+        """On the replica's worker thread, right after its forward is queued: the copy back to the primary card,
+        issued so it overlaps the primary branch (:func:`_copy_back`)."""
+        if self.return_stream is None and _RETURN_COPY_OVERLAPS and self.primary.type == "cuda":
+            self.return_stream = _torch().cuda.Stream(device = self.primary)
+        return _copy_back(out, self.primary, self.return_stream if _RETURN_COPY_OVERLAPS else None)
 
 
 _CFG_ROUTERS: "weakref.WeakKeyDictionary[Any, CfgParallelRouter]" = weakref.WeakKeyDictionary()
@@ -1957,10 +3218,51 @@ def install_cfg_parallel(
     *,
     offload_policy: str,
     logger: Any = None,
+    headroom_mib: Optional[int] = None,
+    headroom_reference_px: Optional[int] = None,
+    decode_headroom_mib: Optional[int] = None,
+    encode_headroom_mib: Optional[int] = None,
 ) -> Optional[str]:
-    """Arm CFG-parallel on ``pipe.transformer`` when a secondary card can hold a replica. The replica is built on the
-    first step that shows two branches, so a guidance-distilled model never pays for it. Returns the decline reason or
-    None when armed."""
+    """Arm CFG-parallel when a secondary card can hold a replica, else CFG-batch for an offloaded denoiser."""
+    reason = _install_cfg_parallel_only(
+        pipe,
+        offload_policy = offload_policy,
+        logger = logger,
+        headroom_mib = headroom_mib,
+        headroom_reference_px = headroom_reference_px,
+        decode_headroom_mib = decode_headroom_mib,
+        encode_headroom_mib = encode_headroom_mib,
+    )
+    if (
+        reason is not None
+        and multigpu_mode() != "off"
+        and (offload_policy not in (None, "none") or cfg_batch_mode() == "force")
+    ):
+        try:
+            batch_reason = install_cfg_batch(
+                pipe,
+                offload_policy = offload_policy,
+                headroom_mib = headroom_mib,
+                headroom_reference_px = headroom_reference_px,
+                logger = logger,
+            )
+        except Exception as exc:  # noqa: BLE001 - an optional lever never fails a load
+            batch_reason = f"{type(exc).__name__}: {exc}"
+        if batch_reason is not None and logger is not None:
+            logger.info("diffusion.multigpu: CFG-batch not armed (%s)", batch_reason)
+    return reason
+
+
+def _install_cfg_parallel_only(
+    pipe: Any,
+    *,
+    offload_policy: str,
+    logger: Any = None,
+    headroom_mib: Optional[int] = None,
+    headroom_reference_px: Optional[int] = None,
+    decode_headroom_mib: Optional[int] = None,
+    encode_headroom_mib: Optional[int] = None,
+) -> Optional[str]:
     selection = current_selection()
     reason = cfg_parallel_decline(pipe, offload_policy = offload_policy, selection = selection)
     if reason is None:
@@ -1981,13 +3283,45 @@ def install_cfg_parallel(
             need_mib = sum(
                 t.numel() * t.element_size() for t in (*denoiser.parameters(), *denoiser.buffers())
             ) // (1 << 20)
-            best = max(candidates, key = lambda o: probes[o].free_mib or -1)
-            free = probes[best].free_mib
-            if free is not None and need_mib + 1024 > free:
-                reason = f"replica needs {need_mib} MiB, {free} MiB free on cuda:{best}"
+            room = max(1024, int(headroom_mib or 0))
+            vae = getattr(pipe, "vae", None)
+            vae_device = _module_device(vae) if vae is not None else None
+            vae_ordinal = vae_device.index if getattr(vae_device, "type", None) == "cuda" else None
+            te_ordinals = text_encoder_ordinals(pipe)
+            load_needs = PhaseNeeds(
+                encode_mib = encode_headroom_mib,
+                denoise_mib = room,
+                decode_mib = decode_headroom_mib,
+                encode_ordinals = te_ordinals,
+                decode_ordinal = vae_ordinal,
+            )
+
+            def room_on(o: int) -> int:
+                # the max over the phases that card runs (they never overlap): denoise, plus the VAE decode / the text
+                # encode where it hosts the VAE / an encoder (the replica is kept across requests)
+                return load_needs.room_on(o)
+
+            best, fits, probes = select_replica_card(
+                primary.index, candidates, need_mib, room_on, probes
+            )
+            if best is None:
+                most = max(candidates, key = lambda o: probes[o].free_mib or -1)
+                reason = (
+                    f"replica needs {need_mib} MiB, {probes[most].free_mib} MiB free on cuda:{most}"
+                )
             else:
                 router = CfgParallelRouter(
-                    denoiser, primary = primary, secondary = f"cuda:{best}", logger = logger
+                    denoiser,
+                    primary = primary,
+                    secondary = f"cuda:{best}",
+                    logger = logger,
+                    headroom_mib = headroom_mib,
+                    headroom_reference_px = headroom_reference_px,
+                    candidates = fits,
+                    decode_headroom_mib = decode_headroom_mib,
+                    vae_ordinal = vae_ordinal,
+                    encode_headroom_mib = encode_headroom_mib,
+                    te_ordinals = te_ordinals,
                 )
                 try:
                     _CFG_ROUTERS[pipe] = router
@@ -2009,21 +3343,97 @@ def install_cfg_parallel(
     return reason
 
 
-def invalidate_cfg_replica(pipe: Any, reason: str, logger: Any = None) -> bool:
-    """Drop the CFG-parallel replica of ``pipe`` after its denoiser was mutated in ways the per-step staleness check
-    does not see (attention backend, eager patches, compile); the next guided step rebuilds it from the source. True
-    when a replica was dropped."""
+def invalidate_cfg_replica(
+    pipe: Any,
+    reason: str,
+    logger: Any = None,
+) -> bool:
+    """The denoiser of ``pipe`` was mutated in ways the per-step checks do not see (attention backend, eager patches,
+    compile): drop the CFG-parallel replica (rebuilt on the next guided step) and forget every per-load price and
+    priced or measured verdict of both CFG routers, so the changed denoiser is priced again. True when a router was
+    reset."""
     try:
         router = _CFG_ROUTERS.get(pipe) if pipe is not None else None
+        batch = _CFG_BATCH.get(pipe) if pipe is not None else None
     except TypeError:
         return False
-    if router is None or router.replica is None:
-        return False
+    reset = False
+    if batch is not None:
+        batch.reprice()
+        reset = True
+    if router is None:
+        return reset
     if logger is not None:
-        logger.info("diffusion.multigpu: CFG-parallel replica dropped (%s); rebuilt on the next guided step", reason)
-    router.stats["replica_rebuilds"] += 1
+        logger.info(
+            "diffusion.multigpu: CFG-parallel replica dropped and repriced (%s); rebuilt on the next guided step",
+            reason,
+        )
+    if router.replica is not None:
+        router.stats["replica_rebuilds"] += 1
     router.drop_replica()
+    router.reprice()
     return True
+
+
+def _routers_of(pipe: Any) -> list:
+    """The CFG routers of ``pipe.transformer``, from the registry kept on the denoiser at install time, so a layer
+    installed above the router later (the deferred static step skip) does not hide it (a from_pipe workflow pipe
+    shares the denoiser)."""
+    denoiser = getattr(pipe, "transformer", None)
+    if denoiser is None:
+        return []
+    router = getattr(denoiser, "__dict__", {}).get("_unsloth_cfg_router")
+    if isinstance(router, (CfgParallelRouter, CfgBatchRouter)):
+        return [router]
+    fn = getattr(denoiser, "__dict__", {}).get("forward")
+    for _ in range(8):
+        if isinstance(fn, (CfgParallelRouter, CfgBatchRouter)):
+            return [fn]
+        fn = getattr(fn, "inner", None) or getattr(fn, "__wrapped__", None)
+        if fn is None:
+            break
+    return []
+
+
+@contextlib.contextmanager
+def cfg_request_scope(
+    pipe: Any,
+    width: Any = None,
+    height: Any = None,
+    steps: Any = None,
+    needs: Optional[PhaseNeeds] = None,
+) -> Iterator[None]:
+    """One Studio generate request around ``pipe()``: the routers forget every per-request field on entry and drop
+    every retained tensor on exit. Outside this scope the routers infer request boundaries from the call pattern.
+    ``steps``: the request's denoise steps when Studio knows them; else the scheduler's timesteps, read when the
+    first replica build is decided (the pipeline has set them by then). ``needs``: the request's per-phase memory from
+    the generation guard's estimator (:func:`request_phase_needs`); without it the routers scale the load-time figures."""
+    routers = _routers_of(pipe)
+    scheduler = getattr(pipe, "scheduler", None)
+    steps_fn = None
+    if scheduler is not None:
+
+        def steps_fn() -> Optional[int]:
+            timesteps = getattr(scheduler, "timesteps", None)
+            return len(timesteps) if timesteps is not None else None
+
+    for router in routers:
+        router.begin_request(width, height, steps, steps_fn, needs)
+    try:
+        yield
+    finally:
+        for router in routers:
+            router.end_request()
+
+
+def release_cfg_inputs(pipe: Any) -> None:
+    """The denoise is over (the decoder was entered): drop the tensors the routers keep between branches, and evict a
+    retained replica whose card runs the decode when the decode would not fit beside it."""
+    for router in _routers_of(pipe):
+        router.release_inputs()
+        ensure = getattr(router, "ensure_phase_room", None)
+        if ensure is not None:
+            ensure("decode")
 
 
 def uninstall_cfg_parallel(pipe: Any) -> None:
@@ -2036,5 +3446,1088 @@ def uninstall_cfg_parallel(pipe: Any) -> None:
     router.drop_replica()
     module = router.module_ref()
     if module is not None and module.__dict__.get("forward") is router:
-        del module.__dict__["forward"]
+        if router.had_override:
+            module.__dict__["forward"] = router.prev_override
+        else:
+            del module.__dict__["forward"]
         module.__dict__.pop("_unsloth_cfg_router", None)
+
+
+def _as_walkable(out: Any) -> Any:
+    if isinstance(out, (tuple, list, dict)) or not dataclasses.is_dataclass(out):
+        return out
+    return {f.name: getattr(out, f.name, None) for f in dataclasses.fields(out)}
+
+
+_BATCH_UPLOAD_FRACTION = 0.6
+# The first batched calls must beat the two plain calls they replace by this factor, else batching stops
+_BATCH_MEASURED_FRACTION = 0.92
+_BATCH_VERIFY_CALLS = 2
+
+
+def price_cfg_batch(
+    *,
+    call_s: Optional[float],
+    upload_s: Optional[float],
+    streamed_bytes: int = 0,
+    h2d_gib_s: Optional[float] = None,
+) -> dict[str, Any]:
+    """Two plain calls vs one batched call: batch when upload-bound or the upload is unmeasured."""
+    if call_s is None or upload_s is None:
+        chosen = "cfg_batch"
+    else:
+        chosen = "cfg_batch" if upload_s >= _BATCH_UPLOAD_FRACTION * call_s else "single"
+    share = round(upload_s / call_s, 3) if call_s and upload_s is not None else None
+    return {
+        "strategy": chosen,
+        "plain_call_s": None if call_s is None else round(call_s, 4),
+        "upload_s": None if upload_s is None else round(upload_s, 4),
+        "streamed_mib": streamed_bytes >> 20,
+        "h2d_gib_s": h2d_gib_s,
+        "upload_share_of_call": share,
+        "single_step_s": None if call_s is None else round(2 * call_s, 4),
+    }
+
+
+def _mutable_container(args: tuple, kwargs: dict) -> tuple[Optional[str], list]:
+    """(path of the first list / dict / set inside the call's arguments or None, the empty dicts passed)."""
+    empties: list = []
+
+    def walk(value: Any, path: tuple, depth: int) -> Optional[str]:
+        if type(value) is dict and not value:
+            empties.append(value)
+            return None
+        if isinstance(value, (list, dict, set, bytearray)):
+            return "/".join(str(p) for p in path) or "<arg>"
+        if isinstance(value, tuple) and depth < 6:
+            for i, v in enumerate(value):
+                found = walk(v, path + (i,), depth + 1)
+                if found is not None:
+                    return found
+        return None
+
+    for i, v in enumerate(args):
+        found = walk(v, (i,), 0)
+        if found is not None:
+            return found, empties
+    for k, v in kwargs.items():
+        found = walk(v, (k,), 0)
+        if found is not None:
+            return found, empties
+    return None, empties
+
+
+_STATE_SCALARS = (bool, int, float, str)
+
+
+_STATE_BUFFER_COPY_BYTES = 64 << 20
+_OBSERVE_CALLS = 2
+
+
+class _StateWatch:
+    """What a stateful forward could advance, decided by observing writes rather than guessing from sizes."""
+
+    def __init__(self, module: Any):
+        self.tensors: list = []
+        for name, t in module.named_parameters():
+            self.tensors.append((name, t, False))
+        owners = {}
+        for sub_name, sub in module.named_modules():
+            for leaf in sub._buffers:
+                owners[f"{sub_name}.{leaf}" if sub_name else leaf] = sub
+        for name, t in module.named_buffers():
+            self.tensors.append((name, t, True))
+        self.owners = owners
+        self.observed_calls = 0
+        self.written: set = set()
+        self.copied: set = set()
+        self.unrestorable: list = []
+        self.slots = [
+            (sub, key)
+            for sub in module.modules()
+            for key, value in sub.__dict__.items()
+            if isinstance(value, _STATE_SCALARS) and not key.startswith(_STATE_PREFIX)
+        ]
+        for name, t, is_buffer in self.tensors:
+            if is_buffer and _tensor_version(t) is None and not self._studio_owned(name):
+                self.written.add(name)
+        self._settle()
+
+    def _studio_owned(self, name: str) -> bool:
+        owner = self.owners.get(name)
+        return str(getattr(type(owner), "__module__", "") or "").startswith(_TRUSTED_HOOK_MODULES)
+
+    def _settle(self) -> None:
+        """Snapshot set: the buffers seen (or presumed) written first, smallest first within the budget."""
+        sizes = {
+            name: t.numel() * t.element_size() for name, t, is_buffer in self.tensors if is_buffer
+        }
+        self.copied = set()
+        spent = 0
+        for name in sorted(self.written, key = lambda n: sizes.get(n, 0)):
+            if name not in sizes or spent + sizes[name] > _STATE_BUFFER_COPY_BYTES:
+                continue
+            self.copied.add(name)
+            spent += sizes[name]
+        for name in sorted((n for n in sizes if n not in self.written), key = lambda n: sizes[n]):
+            if spent + sizes[name] > _STATE_BUFFER_COPY_BYTES:
+                break
+            self.copied.add(name)
+            spent += sizes[name]
+        self.unrestorable = sorted(n for n in self.written if n in sizes and n not in self.copied)
+
+    @property
+    def ready(self) -> bool:
+        return self.observed_calls >= _OBSERVE_CALLS
+
+    def versions(self) -> list:
+        return [_tensor_version(t) for _name, t, _buf in self.tensors]
+
+    def observe(self, before: list) -> None:
+        """After a plain call: record every buffer whose version moved."""
+        for (name, t, is_buffer), version in zip(self.tensors, before):
+            if not is_buffer:
+                continue
+            now = _tensor_version(t)
+            if version is not None and now is not None and now != version:
+                self.written.add(name)
+        self.observed_calls += 1
+        self._settle()
+
+    def snapshot(self) -> dict:
+        versions = self.versions()
+        copies = [
+            t.detach().clone() if is_buffer and name in self.copied else None
+            for name, t, is_buffer in self.tensors
+        ]
+        values = [sub.__dict__.get(key, _DROP) for sub, key in self.slots]
+        return {"versions": versions, "copies": copies, "values": values}
+
+    def restore_changed(self, snap: dict) -> Optional[str]:
+        """Name of the first state the call changed (snapshotted buffers and scalars restored), else None."""
+        changed, _unseen = self.restore(snap)
+        return changed
+
+    def restore(self, snap: dict) -> tuple[Optional[str], Optional[str]]:
+        """(first state changed, first write outside the snapshot set): snapshotted buffers and scalars restored."""
+        torch = _torch()
+        changed = unseen = None
+        for (name, t, is_buffer), version, copy in zip(
+            self.tensors, snap["versions"], snap["copies"]
+        ):
+            now = _tensor_version(t)
+            moved = version is not None and now is not None and now != version
+            if copy is not None and version is None:
+                moved = not _bitwise_equal(t.detach(), copy)
+            if moved:
+                changed = changed or name
+                if copy is not None:
+                    with torch.no_grad():
+                        t.copy_(copy)
+                else:
+                    unseen = unseen or name
+                    if is_buffer:
+                        self.written.add(name)
+        for (sub, key), value in zip(self.slots, snap["values"]):
+            now = sub.__dict__.get(key, _DROP)
+            if now is not value and now != value:
+                changed = changed or key
+                if value is _DROP:
+                    sub.__dict__.pop(key, None)
+                else:
+                    sub.__dict__[key] = value
+        if unseen is not None:
+            self._settle()
+        return changed, unseen
+
+
+def _tensor_version(tensor: Any) -> Optional[int]:
+    try:
+        return int(tensor._version)
+    except Exception:  # noqa: BLE001 - inference tensors track no version
+        return None
+
+
+def _inputs_untouched(fresh_inputs: list, versions: list) -> bool:
+    """True when no fresh input of the batched call was written in place: its version counter unchanged, or, for an
+    inference tensor without one, each dim-0 slice of it still bitwise the caller's untouched source for that branch.
+    The slices are views (``narrow``): the check never allocates another doubled tensor, which on a tight card could
+    run out after the batched forward itself succeeded."""
+    for (tensor, sources), version in zip(fresh_inputs, versions):
+        if version is not None:
+            if _tensor_version(tensor) != version:
+                return False
+            continue
+        if len(sources) == 1:
+            if not _bitwise_equal(tensor, sources[0]):
+                return False
+            continue
+        offset = 0
+        for source in sources:
+            rows = int(source.shape[0])
+            if offset + rows > int(tensor.shape[0]) or not _bitwise_equal(
+                tensor.narrow(0, offset, rows), source
+            ):
+                return False
+            offset += rows
+        if offset != int(tensor.shape[0]):
+            return False
+    return True
+
+
+def _batch_shareable(value: Any) -> bool:
+    torch = _torch()
+    if isinstance(value, (*_PLAIN_TYPES, torch.dtype, torch.device)):
+        return True
+    return isinstance(value, (tuple, list, dict, frozenset)) and not value
+
+
+class _NotBatchable(Exception):
+    pass
+
+
+def _batch_leaves(first: list, second: list, batch: int) -> dict:
+    """One call carrying both branches: per-sample tensors concatenated on dim 0, equal shared values passed once."""
+    torch = _torch()
+    if len(first) != len(second):
+        raise _NotBatchable("the branches pass different arguments")
+    values: dict = {}
+    for (path_a, a), (path_b, b) in zip(first, second):
+        if path_a != path_b:
+            raise _NotBatchable("the branches pass different arguments")
+        if isinstance(a, torch.Tensor) or isinstance(b, torch.Tensor):
+            if not (isinstance(a, torch.Tensor) and isinstance(b, torch.Tensor)):
+                raise _NotBatchable(f"{path_a}: tensor in one branch only")
+            if a.shape != b.shape or a.dtype != b.dtype or a.device != b.device:
+                raise _NotBatchable(f"{path_a}: {tuple(a.shape)} vs {tuple(b.shape)}")
+            if a.dim() >= 1 and a.shape[0] == batch:
+                values[path_a] = torch.cat((a, b), dim = 0)
+            elif a is b or _bitwise_equal(a, b):
+                values[path_a] = a
+            else:
+                raise _NotBatchable(f"{path_a}: differs per branch without a batch dim")
+        elif not (_batch_shareable(a) and _batch_shareable(b)):
+            raise _NotBatchable(f"{path_a}: opaque {type(a).__name__} argument")
+        elif _same_value(a, b):
+            values[path_a] = a
+        else:
+            raise _NotBatchable(f"{path_a}: differs per branch")
+    return values
+
+
+def _split_output(
+    out: Any,
+    batch: int,
+    depth: int = 0,
+) -> tuple[Any, Any]:
+    """(first, second) branch of a batched output, split on leading dim ``2 * batch``; else :class:`_NotBatchable`."""
+    torch = _torch()
+    if isinstance(out, torch.Tensor):
+        if out.dim() >= 1 and out.shape[0] == 2 * batch:
+            return out[:batch], out[batch:]
+        raise _NotBatchable(f"output of shape {tuple(out.shape)} has no doubled batch")
+    if out is None or isinstance(out, _PLAIN_TYPES):
+        return out, out
+    if depth > 4:
+        raise _NotBatchable("output nests too deep")
+    if dataclasses.is_dataclass(out) and not isinstance(out, type):
+        pairs = {
+            f.name: _split_output(getattr(out, f.name), batch, depth + 1)
+            for f in dataclasses.fields(out)
+        }
+        return (
+            dataclasses.replace(out, **{k: v[0] for k, v in pairs.items()}),
+            dataclasses.replace(out, **{k: v[1] for k, v in pairs.items()}),
+        )
+    if isinstance(out, tuple) and not hasattr(out, "_fields"):
+        pairs = [_split_output(v, batch, depth + 1) for v in out]
+        return tuple(p[0] for p in pairs), tuple(p[1] for p in pairs)
+    if isinstance(out, list):
+        pairs = [_split_output(v, batch, depth + 1) for v in out]
+        return [p[0] for p in pairs], [p[1] for p in pairs]
+    if isinstance(out, dict):
+        pairs = {k: _split_output(v, batch, depth + 1) for k, v in out.items()}
+        return type(out)((k, v[0]) for k, v in pairs.items()), type(out)(
+            (k, v[1]) for k, v in pairs.items()
+        )
+    raise _NotBatchable(f"output type {type(out).__name__}")
+
+
+def _registry_hooks_other(module: Any) -> Optional[str]:
+    """A diffusers hook registry that is not offload machinery (a step cache) anywhere in ``module``, else None."""
+    for name, sub in module.named_modules():
+        if _registry_kind(sub) == "other":
+            return f"{name or '<root>'}._diffusers_hook ({', '.join(sorted(sub._diffusers_hook.hooks))})"
+    return None
+
+
+class CfgBatchRouter(_ShapeVerdicts):
+    """Offloaded denoiser ``forward`` running both guidance branches of a step through ONE forward (one upload)."""
+
+    _VERDICT_LABEL = "CFG-batch"
+
+    def __init__(
+        self,
+        module: Any,
+        *,
+        headroom_mib: Optional[int] = None,
+        headroom_reference_px: Optional[int] = None,
+        reason: str = "offloaded denoiser",
+        logger: Any = None,
+    ):
+        self.module_ref = weakref.ref(module)
+        self.orig_forward = module.forward
+        self.had_override = "forward" in module.__dict__
+        self.prev_override = module.__dict__.get("forward")
+        self.headroom_mib = headroom_mib
+        self.request_needs: Optional[PhaseNeeds] = None
+        self.headroom_reference_px = headroom_reference_px
+        self.request_px: Optional[int] = None
+        self.state_watch: Optional[_StateWatch] = None
+        self.reason = reason
+        self.logger = logger
+        self.disabled_reason: Optional[str] = None
+        self.prev_latent: Any = None
+        self.branch = 0
+        self.b0_leaves: dict = {}
+        self.template: Optional[tuple[Any, dict]] = None
+        self.kept: Optional[dict] = None
+        self.last_skip: Optional[str] = None
+        self.pricing: Optional[dict[str, Any]] = None
+        self.plain_times: list[float] = []
+        self.timing_off = False
+        self.verify_batched = _BATCH_VERIFY_CALLS
+        self.batched_times: list[float] = []
+        self.disabled_pending: Optional[str] = None
+        self._init_verdicts()
+        self.shapes = _ShapeBook(
+            {
+                "pricing": None,
+                "plain_times": [],
+                "batched_times": [],
+                "verify_batched": _BATCH_VERIFY_CALLS,
+                "disabled_pending": None,
+                "prediction": _PredictionPolicy,
+                **_ShapeVerdicts.VERDICT_FIELDS,
+            }
+        )
+        self.prediction = _PredictionPolicy()
+        self.stats = {
+            "batched_steps": 0,
+            "batched_hits": 0,
+            "batched_misses": 0,
+            "unbatched_steps": 0,
+            "plain_calls": 0,
+        }
+
+    def describe(self) -> dict[str, Any]:
+        off = self.disabled_reason or self.shape_disabled
+        return {
+            "strategy": "cfg_batch" if off is None else "single",
+            "pricing": self.pricing,
+            "shapes_priced": len(self.shapes.saved) + (self.shapes.key is not None),
+            "engaged_for": self.reason,
+            "disabled_reason": off,
+            "disabled_for_shape_only": self.disabled_reason is None
+            and self.shape_disabled is not None,
+            "last_unbatched_reason": self.last_skip,
+            **self.stats,
+        }
+
+    def begin_request(
+        self,
+        width: Any = None,
+        height: Any = None,
+        steps: Any = None,
+        steps_fn: Optional[Callable[[], Any]] = None,
+        needs: Optional[PhaseNeeds] = None,
+    ) -> None:
+        self.release_inputs()
+        self.request_needs = needs
+        self.branch = 0
+        self.timing_off = False
+        self._clear_request_verdicts()
+        if self.pricing is None:
+            self.plain_times = []
+        try:
+            self.request_px = int(width) * int(height) if width and height else None
+        except (TypeError, ValueError):
+            self.request_px = None
+
+    def end_request(self) -> None:
+        self.release_inputs()
+        self.request_px = None
+        self.request_needs = None
+
+    def release_inputs(self) -> None:
+        """Drop every tensor kept between calls; a pending verdict is applied first."""
+        self._apply_pending()
+        self.kept = None
+        self.template = None
+        self.b0_leaves = {}
+        self.prev_latent = None
+
+    def reprice(self) -> None:
+        """The denoiser changed: forget every shape's price and measured verdicts, so each is priced again."""
+        self.shapes.clear(self)
+        self.timing_off = False
+        self.state_watch = None
+        if self.disabled_reason is not None and self.disabled_reason.startswith(
+            ("priced out", "measured no gain")
+        ):
+            self.disabled_reason = None
+
+    def disable(self, reason: str) -> None:
+        if self.disabled_reason is None:
+            self.disabled_reason = reason
+            if self.logger is not None:
+                self.logger.warning("diffusion.multigpu: CFG-batch disabled (%s)", reason)
+        self.kept = None
+        self.template = None
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        latent = _latent_arg(args, kwargs)
+        if latent is not None and self.prev_latent is not None and latent is self.prev_latent:
+            self.branch += 1
+        else:
+            if self.branch == 0 and self.prev_latent is not None:
+                self.template = None
+                self.plain_times = []
+                if self.pricing is None:
+                    self.timing_off = True
+            self.branch = 0
+            self.prev_latent = latent
+            if self.kept is not None:
+                self.kept = None
+                self._record_miss("the odd branch never came")
+            self._apply_pending()
+            self.b0_leaves = dict(_leaves((args, kwargs)))
+            if self.shapes.switch(self, _request_shape(self.request_px, args, kwargs)):
+                self.template = None
+                if self.pricing is None:
+                    self.timing_off = False
+        if self.disabled_reason is not None or self.shape_disabled is not None or latent is None:
+            return self._plain(args, kwargs)
+        if self.branch == 1 and self.timing_off:
+            self.timing_off = False
+            self.plain_times = []
+        timing = self.pricing is None and not self.timing_off and self._can_time(latent)
+        if self.branch == 0:
+            if self.template is not None and not timing:
+                try:
+                    out = self._batched(args, kwargs, latent)
+                except Exception as exc:  # noqa: BLE001 - anything in the speculative path: plain from here
+                    if is_out_of_memory(exc):
+                        self.kept = None
+                        with contextlib.suppress(Exception):
+                            _torch().cuda.empty_cache()
+                        self._disable_shape(
+                            f"out of memory in the speculative batch ({type(exc).__name__}); one branch per call "
+                            "for this shape",
+                            _OFF_TRANSIENT,
+                        )
+                    else:
+                        self.disable(f"speculative batch failed ({type(exc).__name__}: {exc})")
+                    out = None
+                if out is not None:
+                    return out
+            if timing:
+                self.plain_times = []
+                return self._timed_plain(args, kwargs)
+            return self._plain(args, kwargs)
+        if self.branch == 1:
+            if self.kept is not None:
+                out = self._take(args, kwargs)
+                if out is not None:
+                    self._record_template(args, kwargs, latent)
+                    return out
+            self._record_template(args, kwargs, latent)
+            if timing and len(self.plain_times) == 1:
+                out = self._timed_plain(args, kwargs)
+                self._price()
+                return out
+        return self._plain(args, kwargs)
+
+    def _can_time(self, latent: Any) -> bool:
+        return cfg_batch_mode() != "force" and getattr(latent.device, "type", None) == "cuda"
+
+    def _timed_plain(self, args: tuple, kwargs: dict) -> Any:
+        torch = _torch()
+        torch.cuda.synchronize()
+        t0 = time.perf_counter()
+        out = self._plain(args, kwargs)
+        torch.cuda.synchronize()
+        self.plain_times.append(time.perf_counter() - t0)
+        return out
+
+    def _streamed_bytes(self) -> int:
+        """Bytes of denoiser weights held off the card between calls: what one call uploads."""
+        module = self.module_ref()
+        if module is None:
+            return 0
+        total = 0
+        for t in (*module.parameters(), *module.buffers()):
+            if t.device.type in ("cpu", "meta"):
+                total += t.numel() * t.element_size()
+        return total
+
+    def _price(self) -> None:
+        call_s = min(self.plain_times) if self.plain_times else None
+        streamed = self._streamed_bytes()
+        h2d = None
+        try:
+            torch = _torch()
+            ordinal = torch.cuda.current_device()
+            h2d = probe_devices((ordinal,)).get(ordinal).h2d_gib_s
+        except Exception:  # noqa: BLE001 - unmeasured link: the batched call's own timing decides
+            h2d = None
+        upload_s = streamed / (h2d * (1 << 30)) if h2d else None
+        self.pricing = price_cfg_batch(
+            call_s = call_s, upload_s = upload_s, streamed_bytes = streamed, h2d_gib_s = h2d
+        )
+        if self.logger is not None:
+            self.logger.info("diffusion.multigpu: CFG-batch priced %s", self.pricing)
+        if self.pricing["strategy"] != "cfg_batch":
+            self._disable_shape(
+                f"priced out: a call takes {call_s:.4f}s, its upload {upload_s:.4f}s (compute-bound; the streamed "
+                "blocks already hide behind compute, so one batched call costs as much as two)",
+                _OFF_STICKY,
+            )
+
+    def _plain(self, args: tuple, kwargs: dict) -> Any:
+        self.stats["plain_calls"] += 1
+        watch = self._watch()
+        if watch is None or watch.ready:
+            return self.orig_forward(*args, **kwargs)
+        before = watch.versions()
+        out = self.orig_forward(*args, **kwargs)
+        watch.observe(before)
+        return out
+
+    def _watch(self) -> Optional["_StateWatch"]:
+        if self.state_watch is None:
+            module = self.module_ref()
+            if module is None:
+                return None
+            self.state_watch = _StateWatch(module)
+        return self.state_watch
+
+    def _record_template(self, args: tuple, kwargs: dict, latent: Any) -> None:
+        torch = _torch()
+        b0_by_id = {id(v): p for p, v in self.b0_leaves.items() if isinstance(v, torch.Tensor)}
+        kinds: dict = {}
+        for path, leaf in _leaves((args, kwargs)):
+            if isinstance(leaf, torch.Tensor):
+                if leaf is latent:
+                    kinds[path] = ("latent",)
+                elif id(leaf) in b0_by_id and self.b0_leaves.get(b0_by_id[id(leaf)]) is leaf:
+                    kinds[path] = ("b0", b0_by_id[id(leaf)])
+                elif (
+                    isinstance(self.b0_leaves.get(path), torch.Tensor)
+                    and leaf.numel() <= _SMALL_TENSOR_NUMEL
+                    and _bitwise_equal(leaf, self.b0_leaves[path])
+                ):
+                    kinds[path] = ("b0", path)
+                else:
+                    kinds[path] = ("const", leaf)
+            else:
+                kinds[path] = ("value", leaf)
+        self.template = ((args, kwargs), kinds)
+
+    def _skip(self, reason: str) -> None:
+        self.last_skip = reason
+        self.stats["unbatched_steps"] += 1
+
+    def _batched(self, args: tuple, kwargs: dict, latent: Any) -> Any:
+        torch = _torch()
+        module = self.module_ref()
+        if module is None:
+            return None
+        if module.__dict__.get("forward") is not self:
+            self._skip("an outer forward layer was installed after this router")
+            return None
+        outer = _outer_forward_layer(module, self.orig_forward)
+        if outer is not None:
+            self._skip(f"{outer} under this router")
+            return None
+        hooked = _hooks_present(
+            module, offload_hooks_ok = True, strict_bound = cfg_batch_mode() != "force"
+        )
+        if hooked is not None:
+            self._skip(f"stateful hook present ({hooked})")
+            return None
+        mutable, _empty = _mutable_container(args, kwargs)
+        if mutable is not None:
+            self._skip(
+                f"{mutable}: mutable container argument (the doubled call would not reach the caller's)"
+            )
+            return None
+        structure, kinds = self.template
+        values: dict = {}
+        for path, kind in kinds.items():
+            if kind[0] == "latent":
+                values[path] = latent
+            elif kind[0] == "b0":
+                if kind[1] not in self.b0_leaves:
+                    self._skip("the first branch changed structure")
+                    return None
+                values[path] = self.b0_leaves[kind[1]]
+            elif kind[0] == "const":
+                values[path] = kind[1]
+            else:
+                values[path] = kind[1]
+        try:
+            predicted = _rebuild(structure, values)
+        except KeyError:
+            self._skip("the first branch changed structure")
+            return None
+        first = _leaves((args, kwargs))
+        second = _leaves(predicted)
+        batch = int(latent.shape[0]) if latent.dim() >= 1 else 0
+        if batch < 1:
+            self._skip("latent without a batch dim")
+            return None
+        if not self._memory_ok(latent.device, batch):
+            self._skip("not enough free memory for the doubled batch's activations")
+            return None
+        try:
+            merged = _batch_leaves(first, second, batch)
+            # The caller's empty dicts never reach the speculative call: each gets a fresh empty stand-in, so a
+            # write during the doubled call cannot dirty the object the plain rerun and the caller will use.
+            stand_ins = []
+            # Tensors likewise: a concatenation is already fresh storage
+            first_by_path = dict(first)
+            fresh_inputs = []
+            for path, value in list(merged.items()):
+                if type(value) is dict and not value:
+                    merged[path] = {}
+                    stand_ins.append(merged[path])
+                elif isinstance(value, torch.Tensor):
+                    source = first_by_path.get(path)
+                    if value is source:
+                        merged[path] = value.clone()
+                        fresh_inputs.append((merged[path], (source,)))
+                    else:
+                        fresh_inputs.append((value, (source, dict(second)[path])))
+            fresh_versions = [_tensor_version(t) for t, _src in fresh_inputs]
+            b_args, b_kwargs = _rebuild((args, kwargs), merged)
+            snapshots = [
+                (path, v.clone() if isinstance(v, torch.Tensor) else v) for path, v in second
+            ]
+        except _NotBatchable as exc:
+            self._skip(str(exc))
+            return None
+        except Exception as exc:  # noqa: BLE001 - out of memory: this shape; anything else: structural
+            merged = b_args = b_kwargs = snapshots = None
+            with contextlib.suppress(Exception):
+                torch.cuda.empty_cache()
+            if is_out_of_memory(exc):
+                self._disable_shape(
+                    "out of memory merging the branches; one branch per call for this shape",
+                    _OFF_TRANSIENT,
+                )
+                return None
+            self.disable(
+                f"merging the branches failed ({type(exc).__name__}: {exc}); one branch per call from here"
+            )
+            return None
+        state = _hook_state([(m, m) for m in module.modules()])
+        verify = (
+            self.verify_batched > 0 and len(self.plain_times) == 2 and latent.device.type == "cuda"
+        )
+        watch = self._watch()
+        if not watch.ready:
+            self._skip("observing which buffers a plain call writes")
+            return None
+        if watch.unrestorable and cfg_batch_mode() != "force":
+            self._disable_shape(
+                f"buffer {watch.unrestorable[0]} is written by the forward and too large to snapshot around a "
+                "speculative call; one branch per call for this shape",
+                _OFF_STICKY,
+            )
+            return None
+        state_snapshot = watch.snapshot()
+        try:
+            if verify:
+                torch.cuda.synchronize()
+                t0 = time.perf_counter()
+            out = self.orig_forward(*b_args, **b_kwargs)
+            if state_snapshot is not None:
+                changed, unseen = self._undo_attempt(state_snapshot, report_unseen = True)
+                if unseen is not None:
+                    # A write the observation did not see, to a buffer with no snapshot: it cannot be undone, and no
+                    # rerun is exactly the one-card path (rerunning both branches plain applies it once more; keeping
+                    # the doubled outputs applies it once instead of twice). The allowlisted stateless classes write
+                    # no buffers in forward, so this is only reachable through a foreign patch or force mode: fail
+                    # safe, CFG-batch off for the whole load from this call on, loudly.
+                    self.disable(
+                        f"the batched call wrote {unseen}, a buffer no plain call was seen writing and too large to "
+                        "snapshot; this call's state may differ from one card by that write; one branch per call "
+                        "for this load"
+                    )
+                    return None
+                if changed is not None:
+                    self.disable(
+                        f"the denoiser's forward changes its own state ({changed}); one branch per call"
+                    )
+                    return None
+            if verify:
+                torch.cuda.synchronize()
+                self._check_batched(time.perf_counter() - t0)
+        except Exception as exc:  # noqa: BLE001 - the doubled batch was refused: the branch reruns plain
+            self._undo_attempt(state_snapshot)
+            if is_out_of_memory(exc):
+                del b_args, b_kwargs, merged
+                with contextlib.suppress(Exception):
+                    torch.cuda.empty_cache()
+                self._disable_shape(
+                    "out of memory on the batched call; one branch per call for this shape",
+                    _OFF_TRANSIENT,
+                )
+                return None
+            self.disable(
+                f"the batched call failed ({type(exc).__name__}: {exc}); one branch per call from here"
+            )
+            return None
+        try:
+            untouched = _inputs_untouched(fresh_inputs, fresh_versions)
+        except Exception as exc:  # noqa: BLE001 - the check itself failed after the batched call succeeded
+            self._undo_attempt(state_snapshot)
+            if is_out_of_memory(exc):
+                del b_args, b_kwargs, merged, out
+                with contextlib.suppress(Exception):
+                    torch.cuda.empty_cache()
+                self._disable_shape(
+                    "out of memory verifying the batched call's inputs; one branch per call for this shape",
+                    _OFF_TRANSIENT,
+                )
+                return None
+            self.disable(
+                f"verifying the batched call's inputs failed ({type(exc).__name__}: {exc}); one branch per call "
+                "from here"
+            )
+            return None
+        if not untouched:
+            self._undo_attempt(state_snapshot)
+            self.disable(
+                "the batched call wrote into an input tensor in place; one branch per call from here"
+            )
+            return None
+        if any(stand_ins):
+            self._undo_attempt(state_snapshot)
+            self.disable(
+                "the batched call wrote into an argument dict; one branch per call from here"
+            )
+            return None
+        try:
+            mine, other = _split_output(out, batch)
+        except Exception as exc:  # noqa: BLE001 - incl. a container that cannot be rebuilt: the branch reruns plain
+            self._undo_attempt(state_snapshot)
+            if is_out_of_memory(exc):
+                self._disable_shape(
+                    "out of memory splitting the batched output; one branch per call for this shape",
+                    _OFF_TRANSIENT,
+                )
+                return None
+            self.disable(f"output cannot be split per branch ({type(exc).__name__}: {exc})")
+            return None
+        self.kept = {"out": other, "snapshots": snapshots, "state": state}
+        self.stats["batched_steps"] += 1
+        self._shape_ok()
+        return mine
+
+    def _undo_attempt(
+        self,
+        snapshot: Optional[dict],
+        report_unseen: bool = False,
+    ) -> Any:
+        """The one restore every exit out of a batched call goes through (state change, OOM, exception, an input or
+        dict written, an unsplittable output): snapshotted buffers and scalar slots back to the snapshot, before the
+        branch reruns plain. Returns what had changed (and, with ``report_unseen``, the first write outside the
+        snapshot set), else None."""
+        if snapshot is None or self.state_watch is None:
+            return (None, None) if report_unseen else None
+        try:
+            changed, unseen = self.state_watch.restore(snapshot)
+        except Exception:  # noqa: BLE001 - restoring is best effort on an already failing path
+            changed = unseen = None
+        return (changed, unseen) if report_unseen else changed
+
+    def _check_batched(self, batched_s: float) -> None:
+        """No gain from the fastest early batched call vs two plain calls -> stop batching after this step."""
+        self.verify_batched -= 1
+        self.batched_times.append(batched_s)
+        if self.verify_batched > 0:
+            return
+        batched_s = min(self.batched_times)
+        plain = sum(self.plain_times)
+        if self.pricing is not None:
+            self.pricing["batched_call_s"] = round(batched_s, 4)
+            self.pricing["two_plain_calls_s"] = round(plain, 4)
+        if batched_s > _BATCH_MEASURED_FRACTION * plain:
+            self.disabled_pending = f"measured no gain: one batched call {batched_s:.4f}s vs two plain calls {plain:.4f}s"
+
+    def _memory_ok(
+        self,
+        device: Any,
+        batch: Optional[int] = None,
+    ) -> bool:
+        need = self.needed_mib(batch)
+        if need is None or getattr(device, "type", None) != "cuda":
+            return True
+        torch = _torch()
+        try:
+            free, _total = usable_free_mib(
+                device.index if device.index is not None else torch.cuda.current_device()
+            )
+        except Exception:  # noqa: BLE001 - unreadable: let the OOM backstop decide
+            return True
+        if free is None:
+            return True
+        return free >= need
+
+    def needed_mib(self, batch: Optional[int] = None) -> Optional[int]:
+        """What the ONE batched forward over both branches needs: the gate reads free memory at the step's first call,
+        before either branch has allocated, so nothing of the plain branch is reserved yet and the whole doubled batch
+        (``2 x batch`` samples) is charged, for every placement. In order: the request's doubled figure from the
+        generation guard's estimator (its pixel curve with the batch doubled, floor included); twice the request's
+        single-call figure when the producer gave no doubled one; the load-time calibrated figure scaled by canvas
+        and by ``2 x batch``, linearly; None when no figure is known (the OOM backstop decides)."""
+        needs = self.request_needs
+        if needs is not None and needs.cfg_batch_denoise_mib:
+            return int(needs.cfg_batch_denoise_mib)
+        if needs is not None and needs.denoise_mib:
+            return 2 * int(needs.denoise_mib)
+        if self.headroom_mib is None:
+            return None
+        return scaled_headroom_mib(
+            self.headroom_mib,
+            self.headroom_reference_px,
+            self.request_px,
+            2 * max(1, int(batch or 1)),
+        )
+
+    def _take(self, args: tuple, kwargs: dict) -> Any:
+        kept, self.kept = self.kept, None
+        actual = _leaves((args, kwargs))
+        snaps = kept["snapshots"]
+        ok = len(actual) == len(snaps) and all(
+            pa == ps
+            and (_bitwise_equal(va, vs) if isinstance(vs, _torch().Tensor) else _same_value(va, vs))
+            for (pa, va), (ps, vs) in zip(actual, snaps)
+        )
+        module = self.module_ref()
+        if ok and module is not None:
+            ok = _hook_state([(m, m) for m in module.modules()]) == kept["state"]
+        if not ok:
+            self._record_miss("the odd branch differed from the batched prediction")
+            self._apply_pending()
+            return None
+        self.stats["batched_hits"] += 1
+        self.prediction.hit()
+        self._apply_pending()
+        return kept["out"]
+
+    def _record_miss(self, why: str) -> None:
+        self.stats["batched_misses"] += 1
+        if self.prediction.miss():
+            self._disable_shape(
+                f"the speculative doubled call missed {self.prediction.consecutive} consecutive steps ({why}); one "
+                "branch per call for this shape",
+                _OFF_STICKY,
+            )
+
+    def _apply_pending(self) -> None:
+        if self.disabled_pending is not None:
+            reason, self.disabled_pending = self.disabled_pending, None
+            self._disable_shape(reason, _OFF_STICKY)
+
+    def _disable_shape(self, reason: str, kind: str) -> None:
+        """One branch per call for THIS request shape (the shared typed verdict); the speculative state goes."""
+        if kind == _OFF_TRANSIENT:
+            self._shape_oom_off(reason)
+        else:
+            self._shape_off(reason, kind)
+        self.kept = None
+        self.template = None
+
+
+_CFG_BATCH: "weakref.WeakKeyDictionary[Any, CfgBatchRouter]" = weakref.WeakKeyDictionary()
+
+
+def _outer_forward_layer(module: Any, forward: Any = _DROP) -> Optional[str]:
+    """Default-deny for the forward chain CFG-batch calls, peeled layer by layer through offload wrappers (accelerate
+    and diffusers wrap with ``functools.update_wrapper``, so ``__wrapped__`` names the layer below; accelerate also
+    keeps ``_old_forward``). Every layer must be offload machinery or a Studio forward patch, and the chain must end at
+    the class forward bound to ``module`` or a Studio patch. Studio's outer layers (``_unsloth_outer_forward``: the
+    static step skip) anywhere in the chain, an offload wrapper that hides what it wraps, and anything foreign are
+    refused: its name, else None."""
+    if forward is _DROP:
+        forward = module.__dict__.get("forward")
+    if forward is None:
+        return None
+    class_forward = getattr(type(module).forward, "__func__", type(module).forward)
+    fn = forward
+    for _ in range(12):
+        if isinstance(fn, CfgBatchRouter):
+            fn = fn.orig_forward
+            continue
+        if getattr(fn, "_unsloth_outer_forward", False):
+            return f"outer forward layer {type(fn).__name__}"
+        if (
+            isinstance(fn, types.MethodType)
+            and fn.__self__ is module
+            and fn.__func__ is class_forward
+        ):
+            return None
+        if fn is class_forward:
+            return None
+        if _is_offload_object(fn):
+            below = getattr(fn, "__wrapped__", None)
+            if below is None and getattr(module, "_hf_hook", None) is not None:
+                below = getattr(module, "_old_forward", None)
+            if below is None:
+                return f"offload wrapper {type(fn).__name__} hides what it wraps"
+            fn = below
+            continue
+        if _hook_origin(fn).startswith(_TRUSTED_HOOK_MODULES):
+            below = getattr(fn, "__wrapped__", None)
+            if below is None:
+                return None
+            fn = below
+            continue
+        return f"outer forward layer {type(fn).__name__}"
+    return "forward chain too deep to inspect"
+
+
+# Denoiser classes whose forward keeps no state across calls, so one doubled call equals two per-branch calls
+_CFG_BATCH_STATELESS_CLASSES = frozenset(
+    {
+        "Flux2Transformer2DModel",
+        "FluxTransformer2DModel",
+        "ZImageTransformer2DModel",
+        "QwenImageTransformer2DModel",
+        "WanTransformer3DModel",
+    }
+)
+
+
+def _denoiser_class(module: Any) -> type:
+    """The real transformer class behind compile / PEFT wrappers (``_orig_mod``, ``base_model.model``)."""
+    for _ in range(4):
+        inner = (
+            module.__dict__.get("_modules", {}).get("_orig_mod")
+            if hasattr(module, "__dict__")
+            else None
+        )
+        if inner is None:
+            base = getattr(module, "base_model", None)
+            inner = (
+                getattr(base, "model", None) if base is not None and base is not module else None
+            )
+        if inner is None or inner is module:
+            break
+        module = inner
+    return type(module)
+
+
+def cfg_batch_class_listed(module: Any) -> tuple[bool, str]:
+    """(whether the denoiser's class is on the stateless-forward list, its qualified name)."""
+    cls = _denoiser_class(module)
+    name = f"{cls.__module__}.{cls.__qualname__}"
+    return cls.__module__.startswith(
+        "diffusers."
+    ) and cls.__qualname__ in _CFG_BATCH_STATELESS_CLASSES, name
+
+
+def cfg_batch_decline(pipe: Any, *, offload_policy: str) -> Optional[str]:
+    """Why both guidance branches cannot share one forward on this load, or None."""
+    mode = cfg_batch_mode()
+    if mode == "off":
+        return f"{CFG_BATCH_ENV}=0"
+    torch = _torch()
+    denoiser = getattr(pipe, "transformer", None)
+    if not isinstance(denoiser, torch.nn.Module):
+        return "no DiT denoiser (a U-Net batches its guidance branches)"
+    if getattr(pipe, "transformer_2", None) is not None:
+        return "two-expert denoiser"
+    if getattr(denoiser, "_compiled_call_impl", None) is not None:
+        return "denoiser is compiled whole"
+    if isinstance(denoiser.__dict__.get("forward"), (CfgParallelRouter, CfgBatchRouter)):
+        return "a CFG router is already installed"
+    outer = _outer_forward_layer(denoiser)
+    if outer is not None:
+        return f"{outer} (it would see one doubled call per step)"
+    hooked = _registry_hooks_other(denoiser)
+    if hooked is not None:
+        return f"step cache present ({hooked})"
+    if mode == "force":
+        return None
+    listed, cls_name = cfg_batch_class_listed(denoiser)
+    if not listed:
+        return (
+            f"denoiser class {cls_name} is not on the stateless-forward list "
+            f"({CFG_BATCH_ENV}=force opts it in)"
+        )
+    streamed = offload_policy in ("group", "streaming", "sequential") and (
+        any(_registry_kind(sub) == "offload" for sub in denoiser.modules())
+        or any(getattr(sub, "_hf_hook", None) is not None for sub in denoiser.modules())
+        or any(
+            _is_offload_object(sub.__dict__.get("forward"))
+            for sub in denoiser.modules()
+            if "forward" in sub.__dict__
+        )
+    )
+    if not streamed:
+        return "denoiser is resident (two calls are exact and the weights are not re-uploaded)"
+    return None
+
+
+def install_cfg_batch(
+    pipe: Any,
+    *,
+    offload_policy: str,
+    headroom_mib: Optional[int] = None,
+    headroom_reference_px: Optional[int] = None,
+    logger: Any = None,
+) -> Optional[str]:
+    """Arm :class:`CfgBatchRouter` on ``pipe.transformer``; returns the decline reason or None when armed."""
+    reason = cfg_batch_decline(pipe, offload_policy = offload_policy)
+    if reason is not None:
+        return reason
+    denoiser = pipe.transformer
+    router = CfgBatchRouter(
+        denoiser,
+        headroom_mib = headroom_mib,
+        headroom_reference_px = headroom_reference_px,
+        reason = "forced"
+        if cfg_batch_mode() == "force"
+        else f"offloaded denoiser ({offload_policy})",
+        logger = logger,
+    )
+    try:
+        _CFG_BATCH[pipe] = router
+    except TypeError:
+        return "pipeline cannot be tracked (not weak-referenceable)"
+    denoiser.forward = router
+    denoiser.__dict__["_unsloth_cfg_router"] = router
+    if logger is not None:
+        logger.info("diffusion.multigpu: CFG-batch armed (%s)", router.reason)
+    return None
+
+
+def uninstall_cfg_batch(pipe: Any) -> None:
+    try:
+        router = _CFG_BATCH.pop(pipe, None) if pipe is not None else None
+    except TypeError:
+        return
+    if router is None:
+        return
+    module = router.module_ref()
+    if module is not None and module.__dict__.get("_unsloth_cfg_router") is router:
+        del module.__dict__["_unsloth_cfg_router"]
+    if module is not None and module.__dict__.get("forward") is router:
+        if router.had_override:
+            module.__dict__["forward"] = router.prev_override
+        else:
+            del module.__dict__["forward"]

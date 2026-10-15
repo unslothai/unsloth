@@ -104,6 +104,13 @@ from .diffusion_device import (
 )
 from .diffusion_multigpu import (
     install_cfg_parallel,
+    plan_denoise_headroom_mib,
+    plan_denoise_reference_px,
+    plan_decode_headroom_mib,
+    plan_encode_headroom_mib,
+    request_phase_needs,
+    cfg_request_scope,
+    release_cfg_inputs,
     invalidate_cfg_replica,
     placement_status as multigpu_placement_status,
     refine_plan_for_multigpu,
@@ -146,6 +153,8 @@ from .diffusion_memory import (
     OFFLOAD_STREAMING,
     apply_memory_plan,
     calibrated_image_activation,
+    image_request_phase_mib,
+    guard_condition_pixels as _guard_condition_pixels,
     engage_vae_tiling,
     estimate_gguf_resident_mib,
     estimate_image_runtime_mib,
@@ -1948,7 +1957,10 @@ def _guard_vae_card(
     if device is None:
         return None, False
     with diffusion_device_scope(device.index):
-        vae_kwargs = {**guard_kwargs, "device_memory": reclaimable_snapshot_device_memory(guard_target)}
+        vae_kwargs = {
+            **guard_kwargs,
+            "device_memory": reclaimable_snapshot_device_memory(guard_target),
+        }
     verdict = raise_on_image_activation_shortfall(**vae_kwargs)
     if verdict.action != ACTIVATION_TILE or restore_vae is not None:
         return None, False
@@ -1970,7 +1982,9 @@ def _tile_for_verdict(
     """Engage VAE tiling when the guard says only a tiled decode fits; returns the VAE restore handle. A multi-GPU split
     that decodes on another card is decided by that card's verdict alone: the primary never runs the decode, so its
     tile verdict must not switch the secondary's VAE to the (not bit-identical) tiled path."""
-    vae_restore, vae_card_tiled = _guard_vae_card(pipe, guard_target, guard_kwargs, restore_vae, logger)
+    vae_restore, vae_card_tiled = _guard_vae_card(
+        pipe, guard_target, guard_kwargs, restore_vae, logger
+    )
     if vae_card_tiled:
         return vae_restore
     if verdict.action != ACTIVATION_TILE or _vae_on_other_card(pipe, guard_target):
@@ -2000,7 +2014,6 @@ def _controlnet_streams(state: Any) -> bool:
     model: under any offload policy, a calibrated placement (budgets only the base model), and a multi-GPU split
     (reports "none", but its fit priced only the base pipeline, which one card would have offloaded)."""
     from .diffusion_multigpu import is_split
-
     return (
         getattr(state, "offload_policy", OFFLOAD_NONE) != OFFLOAD_NONE
         or bool(getattr(state, "calibrated_placement", False))
@@ -2033,6 +2046,89 @@ def _calibrated_activation(fam: Any, target: Any) -> Any:
         return activation if sdpa_subquadratic_confirmed(target) else None
     except Exception:  # noqa: BLE001 - unprobed attention keeps the flat estimate
         return None
+
+
+def _cfg_request_needs(
+    state: Any,
+    fam: Any,
+    pipe: Any,
+    target: Any,
+    *,
+    width: Any,
+    height: Any,
+    batch_size: int,
+    condition_pixels: int,
+    controlnet: bool = False,
+    prompts: Optional[int] = None,
+) -> Any:
+    """The CFG routers' per-phase memory for ONE pipeline call (a chunk), from the exact inputs that call runs with: the
+    forward canvas, the chunk's real image count (the guard itself budgets one image off Windows, the OOM backoff being
+    its backstop), the guard's condition pixels (reference / layer images, plus the ControlNet canvas by the guard's own
+    rule), the VAE's live tiling state (a split may leave the secondary VAE untiled whatever the primary's verdict) and
+    the encoder bytes a text-encoder release holds off the card. None when it cannot be computed (the routers then
+    scale the load figures)."""
+    try:
+        vae = getattr(pipe, "vae", None)
+        tiled = bool(getattr(vae, "use_tiling", False)) if vae is not None else False
+        sliced = bool(getattr(vae, "use_slicing", False)) if vae is not None else False
+        condition_pixels = _guard_condition_pixels(
+            width = width,
+            height = height,
+            condition_pixels = condition_pixels,
+            calibrated_placement = bool(getattr(state, "calibrated_placement", False)),
+            controlnet = controlnet,
+        )
+        calibrated = (
+            _calibrated_activation(fam, target)
+            if getattr(state, "calibrated_placement", False)
+            else None
+        )
+        phase_inputs = dict(
+            width = width,
+            height = height,
+            family = getattr(state, "variant_hint", None),
+            condition_pixels = condition_pixels,
+            calibrated = calibrated,
+            tiled = tiled,
+            sliced = sliced,
+            prompts = prompts,
+        )
+        encode, denoise, decode = image_request_phase_mib(batch_size = batch_size, **phase_inputs)
+        _enc, doubled, _dec = image_request_phase_mib(
+            batch_size = 2 * max(1, int(batch_size or 1)), **phase_inputs
+        )
+        releaser = getattr(state, "te_releaser", None)
+        if releaser is not None:
+            encode += int(releaser.held_bytes) // (1 << 20)
+        return request_phase_needs(
+            pipe,
+            encode_mib = encode,
+            denoise_mib = denoise,
+            decode_mib = decode,
+            cfg_batch_denoise_mib = doubled,
+        )
+    except Exception:  # noqa: BLE001 - an estimate for an optional lever never fails a request
+        return None
+
+
+def _chunk_cfg_needs(
+    state: Any, fam: Any, pipe: Any, guard_inputs: Optional[dict], chunk: Sequence[Any]
+) -> Any:
+    """:func:`_cfg_request_needs` for one chunk of jobs (its own image count), None without the guard's inputs."""
+    if not guard_inputs:
+        return None
+    return _cfg_request_needs(
+        state,
+        fam,
+        pipe,
+        guard_inputs["target"],
+        width = guard_inputs["width"],
+        height = guard_inputs["height"],
+        batch_size = max(1, len(chunk)),
+        condition_pixels = guard_inputs["condition_pixels"],
+        controlnet = bool(guard_inputs.get("controlnet")),
+        prompts = 1 if uniform_prompt(list(chunk)) is not None else max(1, len(chunk)),
+    )
 
 
 def _quadratic_attention(
@@ -8492,7 +8588,15 @@ class DiffusionBackend:
                         bg_compile.arm(bg_module, logger = logger) if bg_module is not None else None
                     )
                     # After every forward wrapper of the speed / graph layers, so the replica sees the final module.
-                    install_cfg_parallel(pipe, offload_policy = effective_policy, logger = logger)
+                    install_cfg_parallel(
+                        pipe,
+                        offload_policy = effective_policy,
+                        logger = logger,
+                        headroom_mib = plan_denoise_headroom_mib(plan),
+                        headroom_reference_px = plan_denoise_reference_px(plan),
+                        decode_headroom_mib = plan_decode_headroom_mib(plan),
+                        encode_headroom_mib = plan_encode_headroom_mib(plan),
+                    )
                     te_releaser = te_release.maybe_install(pipe, plan, logger = logger)
                     state = _LoadState(
                         pipe = pipe,
@@ -10000,7 +10104,9 @@ class DiffusionBackend:
             # Placement follows the base offload policy (resident base -> resident, offloaded -> group offload).
             # Calibrated tiers budget only the base model: ControlNet must stream, no resident fallback.
             calibrated = bool(getattr(state, "calibrated_placement", False))
-            if _controlnet_streams(state) and _offload_controlnet_module(cn_model, state.device, logger):
+            if _controlnet_streams(state) and _offload_controlnet_module(
+                cn_model, state.device, logger
+            ):
                 pass
             elif calibrated:
                 del cn_model
@@ -10357,7 +10463,9 @@ class DiffusionBackend:
                     tc.update(tc_before)
             raise
         # the profile patched / compiled the source denoiser: a replica built during the eager images is stale
-        invalidate_cfg_replica(state.pipe, "the deferred speed profile changed the denoiser", logger)
+        invalidate_cfg_replica(
+            state.pipe, "the deferred speed profile changed the denoiser", logger
+        )
 
     def _engage_deferred_profile(self, state: _LoadState) -> None:
         """Engage the deferred `default` speed profile at the start of the 3rd generation this
@@ -10963,6 +11071,8 @@ class DiffusionBackend:
                 # cap; the OOM backoff below halves a failed chunk. Layered: one input per forward (the pipeline's
                 # per-prompt layer stride is only right for one).
                 chunks = [[job] for job in jobs] if layer_count else chunk_jobs(jobs, batch_size)
+                cfg_guard_inputs = None
+                guard_width = guard_height = None
 
                 try:
                     # The dimensions the forward runs at, not the sliders: img2img / inpaint / upscale / edit take
@@ -11031,6 +11141,13 @@ class DiffusionBackend:
                     verdict = raise_on_image_activation_shortfall(**guard_kwargs)
                     restore_vae = _tile_for_verdict(
                         pipe, verdict, guard_target, guard_kwargs, guard_batch, restore_vae, logger
+                    )
+                    cfg_guard_inputs = dict(
+                        target = guard_target,
+                        width = guard_width,
+                        height = guard_height,
+                        condition_pixels = guard_condition_pixels,
+                        controlnet = guard_kwargs["controlnet"],
                     )
                 except ValueError:
                     raise  # the refusal itself: the route turns this into a 400 with the reason
@@ -11262,6 +11379,8 @@ class DiffusionBackend:
                             """The decoder was entered: a HOST position, possibly far ahead of the GPU. Mark the
                             boundary in the stream and let the poller flip once the GPU reaches it; with no event
                             to wait on (CPU, MPS) there is no queue to be ahead of, so flip now."""
+                            # the denoise is over: the CFG routers' retained inputs must not live through the decode
+                            release_cfg_inputs(pipe)
                             marked = False
                             for _ in range(_BOUNDARY_MARK_ATTEMPTS):
                                 with _hold_off_cuda_graph_capture() as clear:
@@ -11283,6 +11402,13 @@ class DiffusionBackend:
                                 protect_ctx,
                                 denoise_phase(pipe, _enter_denoise_phase),
                                 decode_phase(pipe, _enter_decode_phase),
+                                cfg_request_scope(
+                                    pipe,
+                                    guard_width,
+                                    guard_height,
+                                    denoise_steps,
+                                    _chunk_cfg_needs(state, fam, pipe, cfg_guard_inputs, chunk),
+                                ),
                                 _completed_step_poller(_pump),
                             ):
                                 out = render_thread.run(
@@ -11629,6 +11755,12 @@ class DiffusionBackend:
                 state.bg_compile.close()
             except Exception:  # noqa: BLE001 - teardown is best effort
                 pass
+        try:
+            from .diffusion_multigpu import uninstall_cfg_batch, uninstall_cfg_parallel
+            uninstall_cfg_parallel(state.pipe)
+            uninstall_cfg_batch(state.pipe)
+        except Exception:  # noqa: BLE001 - teardown is best effort
+            pass
         # Restore the process-wide backend flags this load flipped so the next `off` load is bit-identical. All
         # idempotent.
         restore_backend_flags(state.backend_flags_before)

@@ -235,6 +235,9 @@ def install(
             if unbacked:
                 cfg.unbacked_sources = prev_unbacked
 
+    # process-global compiler config only, never module state: safe beside a CFG replica / doubled call
+    _enter._unsloth_shared_ok = True
+    _exit._unsloth_shared_ok = True
     try:
         pre = transformer.register_forward_pre_hook(_enter)
         post = transformer.register_forward_hook(_exit, always_call = True)

@@ -67,6 +67,8 @@ def install_prefix_kv_compaction(transformer: Any, logger: Any = None) -> bool:
             compact_prefix_kv_cache(cache)
         return None
 
+    # touches only its call's own kv cache argument / output, never module state
+    _after_prefill._unsloth_shared_ok = True
     try:
         handle = transformer.register_forward_hook(_after_prefill, with_kwargs = True)
     except Exception as exc:  # noqa: BLE001 - a memory saving only

@@ -1139,6 +1139,7 @@ def install_stg_compile_adapter(transformer: Any) -> int:
                 return _inner(*args, **kwargs)
 
         adapted._unsloth_stg_adapter = True
+        adapted.__wrapped__ = inner
         if guard is not None:
             adapted._unsloth_compile_guard = guard
         module._compiled_call_impl = adapted

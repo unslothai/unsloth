@@ -67,6 +67,21 @@ def no_record():
         _NO_RECORD.reset(token)
 
 
+def eager_gate(inner: Any, eager: Any) -> Any:
+    """``inner`` (a compiled call) routed to ``eager`` while ``force_eager`` holds: the compile is still in flight in
+    the background, so entering ``inner`` would compile inline. Shared by the source module and a CFG replica's copy."""
+
+    def gate(*args: Any, **kwargs: Any) -> Any:
+        if _FORCE_EAGER.get():
+            return eager(*args, **kwargs)
+        return inner(*args, **kwargs)
+
+    gate._unsloth_bg_gate = True  # type: ignore[attr-defined]
+    gate._unsloth_bg_inner = inner  # type: ignore[attr-defined]
+    gate.__wrapped__ = inner  # type: ignore[attr-defined]
+    return gate
+
+
 @contextlib.contextmanager
 def force_eager(on: bool = True):
     token = _FORCE_EAGER.set(bool(on))
@@ -145,15 +160,7 @@ class BackgroundCompile:
         inner = getattr(self.module, "_compiled_call_impl", None)
         if inner is None:
             return
-        eager = self.module._call_impl
-
-        def gate(*args: Any, **kwargs: Any) -> Any:
-            if _FORCE_EAGER.get():
-                return eager(*args, **kwargs)
-            return inner(*args, **kwargs)
-
-        gate._unsloth_bg_gate = True  # type: ignore[attr-defined]
-        gate._unsloth_bg_inner = inner  # type: ignore[attr-defined]
+        gate = eager_gate(inner, self.module._call_impl)
         self.module._compiled_call_impl = gate
         self._gate = (gate, inner)
 

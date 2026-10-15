@@ -106,12 +106,20 @@ from .diffusion_device import (
 )
 from .diffusion_multigpu import (
     install_cfg_parallel,
+    plan_denoise_headroom_mib,
+    plan_denoise_reference_px,
+    plan_decode_headroom_mib,
+    plan_encode_headroom_mib,
+    request_phase_needs,
+    cfg_request_scope,
+    release_cfg_inputs,
     is_split as multigpu_is_split,
     placement_status as multigpu_placement_status,
     refine_plan_for_multigpu,
     with_load_selection,
 )
 from .diffusion_memory import (
+    video_request_phase_mib,
     DEFAULT_BASE_OVERHEAD_MIB,
     DEFAULT_GROUP_BLOCKS,
     MEMORY_MODE_AUTO,
@@ -284,6 +292,28 @@ from .video_families import _FAMILIES as _VIDEO_REGISTRY  # noqa: E402
 from .family_profile import trusted_repo_ids as _trusted_repo_ids  # noqa: E402
 
 _TRUSTED_NON_GGUF_VIDEO_REPOS = _trusted_repo_ids(_VIDEO_REGISTRY)
+
+
+def _cfg_video_request_needs(pipe: Any, request_shape: dict) -> Any:
+    """The CFG routers' per-phase memory for this clip, from the generation guard's own video estimator (canvas and
+    frames: the decode peak grows with the clip); None when it cannot be computed (the routers scale load figures)."""
+    try:
+        shape = dict(
+            width = request_shape.get("width"),
+            height = request_shape.get("height"),
+            num_frames = request_shape.get("frames"),
+        )
+        encode, denoise, decode = video_request_phase_mib(**shape)
+        _enc, doubled, _dec = video_request_phase_mib(batch_size = 2, **shape)
+        return request_phase_needs(
+            pipe,
+            encode_mib = encode,
+            denoise_mib = denoise,
+            decode_mib = decode,
+            cfg_batch_denoise_mib = doubled,
+        )
+    except Exception:  # noqa: BLE001 - an estimate for an optional lever never fails a request
+        return None
 
 
 def _gguf_quant_token(filename: Optional[str]) -> Optional[str]:
@@ -2617,7 +2647,11 @@ def _video_offload_vram_floor_mib(
 _VIDEO_SIDECAR_ENCODER_FAMILIES = frozenset({"ltx-2.5"})
 
 
-def _video_single_card_for_sidecar(fam: Any, plan: Any, logger: Any = None) -> Any:
+def _video_single_card_for_sidecar(
+    fam: Any,
+    plan: Any,
+    logger: Any = None,
+) -> Any:
     """The single-card plan in place of a companion split for a sidecar-encoder family; any other plan unchanged."""
     if getattr(fam, "name", None) not in _VIDEO_SIDECAR_ENCODER_FAMILIES:
         return plan
@@ -2625,11 +2659,19 @@ def _video_single_card_for_sidecar(fam: Any, plan: Any, logger: Any = None) -> A
     if getattr(plan, "secondary_ordinal", None) is None or fallback is None:
         return plan
     if logger is not None:
-        logger.info("video.multigpu: one card (the %s text encoder runs in a sidecar a split cannot move)", fam.name)
+        logger.info(
+            "video.multigpu: one card (the %s text encoder runs in a sidecar a split cannot move)",
+            fam.name,
+        )
     return fallback
 
 
-def _video_refine_for_multigpu(fam: Any, pipe: Any, plan: Any, logger: Any = None) -> Any:
+def _video_refine_for_multigpu(
+    fam: Any,
+    pipe: Any,
+    plan: Any,
+    logger: Any = None,
+) -> Any:
     """``refine_plan_for_multigpu``, declined for a sidecar-encoder family (its loaded sizes omit the encoder)."""
     if getattr(fam, "name", None) in _VIDEO_SIDECAR_ENCODER_FAMILIES:
         return plan
@@ -2657,7 +2699,11 @@ def _video_split_card_floors(pipe: Any) -> Optional[tuple]:
         for name, where in placement.items():
             device = torch.device(where)
             module = components.get(name)
-            if device.type != "cuda" or device.index is None or not isinstance(module, torch.nn.Module):
+            if (
+                device.type != "cuda"
+                or device.index is None
+                or not isinstance(module, torch.nn.Module)
+            ):
                 continue
             card = cards.setdefault(int(device.index), [0, False])
             for tensor in chain(module.parameters(), module.buffers()):
@@ -8282,7 +8328,15 @@ class VideoBackend:
                 },
                 logger = logger,
             )
-            install_cfg_parallel(pipe, offload_policy = offload_policy, logger = logger)
+            install_cfg_parallel(
+                pipe,
+                offload_policy = offload_policy,
+                logger = logger,
+                headroom_mib = plan_denoise_headroom_mib(plan),
+                headroom_reference_px = plan_denoise_reference_px(plan),
+                decode_headroom_mib = plan_decode_headroom_mib(plan),
+                encode_headroom_mib = plan_encode_headroom_mib(plan),
+            )
             # Opt-in (UNSLOTH_DIFFUSION_BG_COMPILE=1): off by default so the same seed twice repeats.
             from . import diffusion_bg_compile as bg_compile
 
@@ -10713,6 +10767,8 @@ class VideoBackend:
                     draining, which is the exact lie this boundary exists to remove. The retries are
                     short and only run when contended. A capture that outlasts them really does leave
                     nothing to wait on, and the host position is then the only answer there is."""
+                    # the denoise is over: the CFG routers' retained inputs must not live through the decode
+                    release_cfg_inputs(pipe)
                     marked = False
                     for _ in range(_BOUNDARY_MARK_ATTEMPTS):
                         with _hold_off_cuda_graph_capture() as clear:
@@ -10783,6 +10839,15 @@ class VideoBackend:
                         # Family-agnostic: no video family has a callback between its denoise loop and its decode, so
                         # every one of them gets its decode phase from the decoder itself.
                         stack.enter_context(_decode_phase(pipe, _on_decode))
+                        stack.enter_context(
+                            cfg_request_scope(
+                                pipe,
+                                request_shape.get("width"),
+                                request_shape.get("height"),
+                                request_shape.get("steps"),
+                                _cfg_video_request_needs(pipe, request_shape),
+                            )
+                        )
                         # The decoded clip becomes uint8 on the GPU, bit-identical to the np / pil export (video_frames).
                         stack.enter_context(uint8_video_frames(pipe))
                         stack.enter_context(_completed_step_poller(_pump))
@@ -11706,6 +11771,12 @@ class VideoBackend:
                     state.bg_compile.close()
                 except Exception:  # noqa: BLE001 -- teardown is best effort
                     pass
+            try:
+                from .diffusion_multigpu import uninstall_cfg_batch, uninstall_cfg_parallel
+                uninstall_cfg_parallel(getattr(state, "pipe", None))
+                uninstall_cfg_batch(getattr(state, "pipe", None))
+            except Exception:  # noqa: BLE001 -- teardown is best effort
+                pass
             restore_backend_flags(state.backend_flags)
             # A GGUF load may have installed the compiled GGUF dequantizer; restore the stock kernels so a later
             # speed=off load is bit-identical.

@@ -1398,6 +1398,7 @@ class _CompileGuard:
             return eager(*args, **kwargs)
 
         guarded._unsloth_compile_guard = guard
+        guarded.__wrapped__ = compiled
         return guarded
 
 
