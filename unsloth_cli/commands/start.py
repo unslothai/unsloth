@@ -7087,7 +7087,7 @@ def opencode(
             )
         return
     opencode_model = f"{_OPENCODE_PROVIDER}/{entry['id']}"
-    # The inline OPENCODE_CONFIG_CONTENT below pins the model in the highest-priority layer, so the session model is forced without a --model flag, and no path passes one. Passthrough would misparse it before a subcommand, a --no-launch recipe is consumed by drivers that append `run <prompt>` after it, and OpenCode 2 rejects --model on the root command outright ("Unrecognized flag: --model in command opencode", #13747). A bare launch used to add it on the V1 verdict as a convenience, but a V2 build whose --version probe fails gets that same verdict, so the launch died on the flag.
+    # The inline OPENCODE_CONFIG_CONTENT pin below selects the model, so no path passes --model: it misparses before a passthrough subcommand, lands before the `run <prompt>` drivers append to a --no-launch recipe, and OpenCode 2 rejects it on the root command, which a V2 build whose --version probe fails would get (#13747).
     native_auto = False
     route_native_auto = yolo and (opencode_v2 or _opencode_supports_native_auto(command_name))
     if ctx.args:
