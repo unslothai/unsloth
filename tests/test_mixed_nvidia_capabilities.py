@@ -58,6 +58,7 @@ def _fake_torch(caps, archs = None):
         state["current"] = i
 
     return types.SimpleNamespace(
+        device = __import__("torch").device,
         version = types.SimpleNamespace(hip = None, cuda = "12.8"),
         cuda = types.SimpleNamespace(
             device_count = lambda: len(caps),
@@ -175,7 +176,10 @@ def test_capability_cache_resolves_device_spellings(monkeypatch):
     assert cached("cuda:1") == SM75
     assert cached(torch.device("cuda", 1)) == SM75
     assert cached() == SM86
+    assert cached("cuda") == SM86
     assert calls == [1, 0]  # one real probe per index
+    with pytest.raises(KeyError):
+        cached("cpu")  # not a CUDA device: passed through uncached, as torch would reject it
     assert model_utils._cache_device_capability(cached) is cached  # re-import does not stack
     assert inspect.signature(cached) == inspect.signature(probe)
 
@@ -236,12 +240,18 @@ def test_pre_volta_switch_skips_an_unreadable_card(monkeypatch, capsys):
 def test_gfx906_switch_reads_every_visible_card(monkeypatch, capsys, archs, applied):
     fake = _fake_torch([SM90] * len(archs), archs = archs)
     environ = {}
-    body = _block(DEVICE_TYPE_PY, "# gfx906 (MI50", "\n\n# Pre-Volta NVIDIA")
+    dynamo_config = types.SimpleNamespace(disable = False)
+    body = _block(DEVICE_TYPE_PY, "# gfx906 (MI50", '\n\nif DEVICE_TYPE == "cuda" and torch.cuda.is_available():')
     namespace = _module_namespace(
-        dt, fake, monkeypatch, DEVICE_TYPE = "hip", os = types.SimpleNamespace(environ = environ)
+        dt, fake, monkeypatch, DEVICE_TYPE = "hip", os = types.SimpleNamespace(environ = environ),
+        apply_pre_volta_compile_workaround = lambda major: dt.apply_pre_volta_compile_workaround(
+            major, environ = environ, dynamo_config = dynamo_config
+        ),
     )
     exec(compile(body, str(DEVICE_TYPE_PY), "exec"), namespace)
     out = capsys.readouterr().out
+    # Regions compiled before this check read the live config, not the env vars.
+    assert dynamo_config.disable is applied
     if applied:
         assert environ == {
             "TORCHDYNAMO_DISABLE": "1",
@@ -303,11 +313,18 @@ def test_grpo_tma_options_need_every_visible_card(caps, unreadable, expected):
     assert eval(expression, {"__builtins__": safe_builtins, "torch": fake}) is expected
 
 
-@pytest.mark.parametrize("current,bf16", [(0, True), (2, False)])
-def test_a_partial_scan_falls_back_to_the_current_device(monkeypatch, capsys, current, bf16):
-    # Card 1 unreadable: the readable cards are not "every visible card", so the gate keeps the
-    # pre-mixed-host rule (current device) instead of trusting a partial list.
-    fake = _fake_torch([(9, 0), (9, 0), (7, 5)])
+@pytest.mark.parametrize(
+    "caps,current,bf16",
+    [
+        ([(9, 0), (9, 0), (7, 5)], 0, False),  # a known old card still counts
+        ([(9, 0), (9, 0), (7, 5)], 2, False),
+        ([(9, 0), (9, 0), (9, 0)], 0, True),  # current device is sm90, as on main
+    ],
+)
+def test_a_partial_scan_judges_every_card_it_read(monkeypatch, capsys, caps, current, bf16):
+    # Card 1 unreadable: the gate judges the readable cards, which include the current device,
+    # so it is never less strict than main's current-device rule.
+    fake = _fake_torch(caps)
     real_cap = fake.cuda.get_device_capability
 
     def get_device_capability(device = None):
@@ -319,7 +336,8 @@ def test_a_partial_scan_falls_back_to_the_current_device(monkeypatch, capsys, cu
     fake.cuda.set_device(current)
     namespace = _run_gpu_init_chain(fake, monkeypatch)
     assert namespace["SUPPORTS_BFLOAT16"] is bf16
-    assert "lack bfloat16" not in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert ("[2]" in out) is (not bf16) and "[1]" not in out
     assert _run_model_utils_chain(fake, monkeypatch)["SUPPORTS_BFLOAT16"] is bf16
 
 
@@ -328,3 +346,22 @@ def test_bf16_notice_names_real_device_indices(monkeypatch, capsys):
     _run_gpu_init_chain(_fake_torch([(9, 0), (8, 6), (7, 5)]), monkeypatch)
     out = capsys.readouterr().out
     assert "[2]" in out and "[0]" not in out and "[1]" not in out
+
+
+@pytest.mark.skipif(not __import__("torch").cuda.is_available(), reason = "needs a CUDA device")
+@pytest.mark.parametrize("spelling", [None, 0, "cuda:0", "device", "tensor"])
+def test_capability_cache_traces_in_fullgraph(spelling):
+    # Attention helpers call get_device_capability(Q.device) inside compiled regions.
+    import torch
+
+    import unsloth.models._utils as model_utils
+
+    cached = model_utils._cache_device_capability(inspect.unwrap(torch.cuda.get_device_capability))
+
+    def f(x):
+        arg = {"device": torch.device("cuda"), "tensor": x.device}.get(spelling, spelling)
+        return x * (cached() if arg is None else cached(arg))[0]
+
+    torch._dynamo.reset()
+    x = torch.ones(2, device = "cuda")
+    assert torch.compile(f, fullgraph = True)(x)[0].item() == torch.cuda.get_device_capability(0)[0]

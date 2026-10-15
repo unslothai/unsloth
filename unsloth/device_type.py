@@ -204,34 +204,16 @@ def cuda_visible_capabilities(with_index = False):
 
 
 def cuda_gate_capabilities():
-    """Capabilities a process-wide gate should judge: every visible card when all were read,
-    else only the current device (the pre-mixed-host rule), since a partial scan could
-    hide the weakest card."""
+    """Capabilities a process-wide gate should judge: every card that could be read, which
+    always includes the current device (the pre-mixed-host rule) when it is readable, so a
+    gate is never less strict than before and still sees a known old card beside it."""
     caps = cuda_visible_capabilities()
-    try:
-        complete = len(caps) == torch.cuda.device_count()
-    except Exception:
-        complete = False
-    if complete and caps:
+    if caps:
         return caps
     try:
         return [tuple(torch.cuda.get_device_capability())]
     except Exception:
         return []
-
-
-# gfx906 (MI50 / Radeon VII / Vega 20): Dynamo/Inductor codegen is broken on this legacy GCN arch
-# (ROCm dropped it after 6.3), so compiled graphs crash or miscompile while eager trains fine.
-# Any visible gfx906 counts: compile is process-wide and layers may land on it.
-if DEVICE_TYPE == "hip":
-    if any(arch.split(":")[0].strip().lower() == "gfx906" for arch in hip_visible_archs()):
-        os.environ.setdefault("TORCHDYNAMO_DISABLE", "1")
-        os.environ.setdefault("TORCH_COMPILE_DISABLE", "1")
-        os.environ.setdefault("UNSLOTH_COMPILE_DISABLE", "1")
-        print(
-            "Unsloth: gfx906 (MI50 / Radeon VII) detected - torch.compile disabled "
-            "(community-maintained legacy GCN path)."
-        )
 
 
 # Pre-Volta NVIDIA (Maxwell / Pascal, sm < 7.0): Inductor refuses to emit Triton for these
@@ -265,6 +247,22 @@ def apply_pre_volta_compile_workaround(
     if entry is not None and hasattr(entry, "default"):
         entry.default = True
     return True
+
+
+# gfx906 (MI50 / Radeon VII / Vega 20): Dynamo/Inductor codegen is broken on this legacy GCN arch
+# (ROCm dropped it after 6.3), so compiled graphs crash or miscompile while eager trains fine.
+# Any visible gfx906 counts: compile is process-wide and layers may land on it. Same switch as
+# pre-Volta, so regions compiled while unsloth_zoo imported are turned off too.
+if DEVICE_TYPE == "hip":
+    if any(arch.split(":")[0].strip().lower() == "gfx906" for arch in hip_visible_archs()):
+        os.environ.setdefault("TORCHDYNAMO_DISABLE", "1")
+        os.environ.setdefault("TORCH_COMPILE_DISABLE", "1")
+        os.environ.setdefault("UNSLOTH_COMPILE_DISABLE", "1")
+        apply_pre_volta_compile_workaround(0)  # the live Dynamo config, unless explicitly enabled
+        print(
+            "Unsloth: gfx906 (MI50 / Radeon VII) detected - torch.compile disabled "
+            "(community-maintained legacy GCN path)."
+        )
 
 
 if DEVICE_TYPE == "cuda" and torch.cuda.is_available():

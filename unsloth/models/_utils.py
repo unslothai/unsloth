@@ -3851,7 +3851,6 @@ def _cache_device_capability(get_device_capability):
     call itself returned device 0's answer after torch.cuda.set_device(1)."""
     if getattr(get_device_capability, "_unsloth_per_device_cache", False):
         return get_device_capability
-    from torch.cuda._utils import _get_device_index
 
     cache = {}
 
@@ -3862,10 +3861,14 @@ def _cache_device_capability(get_device_capability):
         elif isinstance(device, int):
             index = device
         else:
+            # torch.device, not torch.cuda._utils._get_device_index: Dynamo traces it (fullgraph).
             try:
-                index = _get_device_index(device, optional = True)
+                device = torch.device(device)
             except Exception:
                 return get_device_capability(device)
+            if device.type != "cuda":
+                return get_device_capability(device)
+            index = torch.cuda.current_device() if device.index is None else device.index
         capability = cache.get(index)
         if capability is None:
             capability = cache[index] = get_device_capability(index)
