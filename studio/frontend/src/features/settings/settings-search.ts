@@ -146,6 +146,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "browser.agentSettings.enable",
     "browser.agentSettings.history",
     "browser.agentSettings.scripts",
+    "browser.agentSettings.cursor",
     "browser.agentSettings.permissionsTitle",
     "browser.linksTitle",
     "browser.openLinksSetting",

@@ -326,7 +326,34 @@ const REF_SPAN = 100_000;
 const LAST_BASE = 9_000 * REF_SPAN;
 
 /** One command in the tab's page, installing the agent there first if this page lacks it. */
-async function pageCall(tab: BrowserTab, command: Record<string, unknown>): Promise<AgentAnswer> {
+let accentRaw = "";
+let accentColor = "";
+
+/** The theme's accent (toggles, badges; a custom Accent included) as rgb(), for the cursor's glow. */
+function cursorAccent(): string {
+  if (typeof document === "undefined") return "";
+  const raw = getComputedStyle(document.documentElement).getPropertyValue("--control-accent").trim();
+  if (raw !== accentRaw) {
+    accentRaw = raw;
+    accentColor = "";
+    // Painted, not read back from fillStyle, which keeps oklch() and color() as written.
+    const canvas = document.createElement("canvas");
+    canvas.width = 1;
+    canvas.height = 1;
+    const context = canvas.getContext("2d", { willReadFrequently: true });
+    if (context && raw) {
+      context.fillStyle = raw;
+      context.fillRect(0, 0, 1, 1);
+      const [r, g, b, a] = context.getImageData(0, 0, 1, 1).data;
+      if (a > 0) accentColor = `rgb(${r}, ${g}, ${b})`;
+    }
+  }
+  return accentColor;
+}
+
+async function pageCall(tab: BrowserTab, request: Record<string, unknown>): Promise<AgentAnswer> {
+  const cursor = useBrowserAgentStore.getState().showCursor;
+  const command = { ...request, cursor, ...(cursor ? { cursorColor: cursorAccent() } : {}) };
   const native = useNativeBrowser.getState().enabled;
   const started = Date.now();
   const fresh = () => {
