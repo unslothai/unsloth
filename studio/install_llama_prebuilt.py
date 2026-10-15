@@ -4221,13 +4221,9 @@ def resolve_release_asset_choice(
     )
     if host.is_windows and host.is_x86_64 and (host.has_usable_nvidia or masked_host is not None):
         selection_host = masked_host or host
-        if (
-            driver_below_cuda_prebuilt_floor(selection_host)
-            and selection_host.driver_cuda_version[0] >= _MIN_CUDA_MAJOR
-        ):
-            # #12842: the Windows source fallback needs a toolkit this driver runs, which
-            # winget rarely offers, so setup would fail. Vulkan still runs on the NVIDIA
-            # GPU (the reporter's Vulkan build worked); CPU only after it. Not under a CUDA
+        if driver_below_cuda_prebuilt_floor(selection_host):
+            # #12842, #13662: the source fallback needs a toolkit this driver runs, which winget
+            # rarely offers. Vulkan still runs on the NVIDIA GPU; CPU after it. Not under a CUDA
             # mask: Vulkan ignores it, so it could take a card the caller hid.
             vulkan_choice = (
                 published_asset_choice_for_kind(release, "windows-vulkan", host = host)

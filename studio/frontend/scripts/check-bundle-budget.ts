@@ -124,8 +124,14 @@ export const BUDGET = {
   // native view, and the off-screen question strings) adds 5,278 B raw / 1,928 B transfer (6,765,003 ->
   // 6,770,281 B raw, 2,033,563 -> 2,035,491 B transfer against a8585676d4, one machine and build, Node 24,
   // chunk count unchanged at 95), raised by that.
-  transferBytes: 2_035_705,
-  rawBytes: 6_770_942,
+  // Always allow on browser agent prompts (#13777) adds 91 B raw / 42 B transfer to the eager chat chunk
+  // (6,770,922 -> 6,771,013 B raw, 2,035,640 -> 2,035,682 B transfer against cd947468f1, one machine and build,
+  // Node 24, chunk count unchanged at 95), which put main 71 B raw over. Raised by that growth.
+  // Word list numbering through the default style and basedOn (#13755) adds 228 B raw / 39 B transfer to the
+  // eager attachment reader (6,770,962 -> 6,771,190 B raw, 2,035,676 -> 2,035,715 B transfer against 7ae1a5386,
+  // one machine and build, Node 24, chunk count unchanged at 95). Raised by that growth.
+  transferBytes: 2_035_744,
+  rawBytes: 6_771_261,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
