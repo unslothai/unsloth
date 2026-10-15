@@ -578,6 +578,32 @@ def _warn_once(message):
         print(message)
 
 
+def _autocast_dtype_differs(query):
+    # SDPA follows autocast; the kernel computes in the input dtype.
+    try:
+        enabled = torch.is_autocast_enabled(query.device.type)
+        dtype = torch.get_autocast_dtype(query.device.type) if enabled else None
+    except (AttributeError, TypeError):
+        enabled = torch.is_autocast_enabled()
+        dtype = torch.get_autocast_gpu_dtype() if enabled else None
+    return enabled and dtype != query.dtype
+
+
+def _math_sdpa_requested():
+    """A disabled memory efficient backend or a math-first sdpa_kernel priority asks for SDPA itself."""
+    cuda = torch.backends.cuda
+    if not cuda.mem_efficient_sdp_enabled():
+        return True
+    order = list(getattr(torch._C, "_get_sdp_priority_order", list)())
+    from torch.nn.attention import SDPBackend
+    math, efficient = int(SDPBackend.MATH), int(SDPBackend.EFFICIENT_ATTENTION)
+    return math in order and efficient in order and order.index(math) < order.index(efficient)
+
+
+if hasattr(torch.compiler, "assume_constant_result"):
+    _math_sdpa_requested = torch.compiler.assume_constant_result(_math_sdpa_requested)
+
+
 def _make_router(original):
     def _sdpa_large_head(module, query, key, value, attention_mask, dropout = 0.0,
                          scaling = None, is_causal = None, **kwargs):
@@ -593,6 +619,8 @@ def _make_router(original):
             and not kwargs.get("output_attentions", False)
             and torch.version.hip is None
             and _shapes_qualify(query, key, value)
+            and not _autocast_dtype_differs(query)
+            and not _math_sdpa_requested()
         ):
             B, S = query.shape[0], query.shape[2]
             intervals = None

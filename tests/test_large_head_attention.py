@@ -271,3 +271,38 @@ def test_patch_self_checks_so_compiled_graphs_use_the_kernel(monkeypatch):
     assert not calls and out.shape == (1, 24, 4, 512)
     assert any("large_head_attention_fwd" in code for code in graphs)
     assert LH._SELF_CHECK.get((str(device), dtype)) is True
+
+
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
+def test_router_defers_autocast_dtype_change():
+    calls, original = _sentinel()
+    router = LH._make_router(original)
+    q = torch.randn(1, 4, 24, 512, device = "cuda", dtype = torch.float16)
+    kv = torch.randn(1, 2, 24, 512, device = "cuda", dtype = torch.float16)
+    before = LH.LARGE_HEAD_ENGAGED["calls"]
+    with torch.autocast("cuda", dtype = torch.float16):
+        assert router(_Module(), q, kv, kv, None)[0] != "original"
+    assert LH.LARGE_HEAD_ENGAGED["calls"] == before + 1
+    with torch.autocast("cuda", dtype = torch.bfloat16):
+        assert router(_Module(), q, kv, kv, None)[0] == "original"
+    assert LH.LARGE_HEAD_ENGAGED["calls"] == before + 1 and len(calls) == 1
+
+
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
+def test_router_honours_math_sdpa_selection():
+    from torch.nn.attention import SDPBackend, sdpa_kernel
+
+    calls, original = _sentinel()
+    router = LH._make_router(original)
+    dtype = _cuda_dtype()
+    q = torch.randn(1, 4, 24, 512, device = "cuda", dtype = dtype)
+    kv = torch.randn(1, 2, 24, 512, device = "cuda", dtype = dtype)
+    before = LH.LARGE_HEAD_ENGAGED["calls"]
+    with sdpa_kernel([SDPBackend.MATH]):
+        assert router(_Module(), q, kv, kv, None)[0] == "original"
+    if hasattr(torch._C, "_get_sdp_priority_order"):
+        with sdpa_kernel([SDPBackend.MATH, SDPBackend.EFFICIENT_ATTENTION], set_priority = True):
+            assert router(_Module(), q, kv, kv, None)[0] == "original"
+    with sdpa_kernel([SDPBackend.EFFICIENT_ATTENTION, SDPBackend.MATH]):
+        assert router(_Module(), q, kv, kv, None)[0] != "original"
+    assert LH.LARGE_HEAD_ENGAGED["calls"] == before + 1
