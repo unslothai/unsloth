@@ -19,6 +19,7 @@ __all__ = [
 
 import inspect
 import os
+import weakref
 
 import torch
 
@@ -61,7 +62,29 @@ def _zoo_kernels():
     return fused_linear_token_logps, linear_mean_logits
 
 
+def _wrappers(model):
+    seen = 0
+    while model is not None and seen < 4:
+        yield model
+        model = getattr(model, "_orig_mod", None)
+        seen += 1
+
+
+def _uses_fsdp1(trainer, model):
+    try:
+        from torch.distributed.fsdp import FullyShardedDataParallel
+    except Exception:
+        return False
+    cache = vars(trainer).setdefault("_unsloth_fsdp1_models", weakref.WeakKeyDictionary())
+    if model not in cache:
+        cache[model] = any(isinstance(m, FullyShardedDataParallel) for m in model.modules())
+    return cache[model]
+
+
 def _output_head(trainer, model):
+    # FSDP1 frees or reshards the unwrapped head's parameter view outside its own forward.
+    if isinstance(model, torch.nn.Module) and _uses_fsdp1(trainer, model):
+        return None, None
     try:
         unwrapped = trainer.accelerator.unwrap_model(model)
     except Exception:
@@ -87,9 +110,12 @@ def _output_head(trainer, model):
     bias = bias if isinstance(bias, torch.Tensor) else None
     # DDP(find_unused_parameters = True) marks a trainable head unused once model(...) returns,
     # so applying it afterwards makes backward mark it ready a second time and raise.
-    if isinstance(model, torch.nn.parallel.DistributedDataParallel) and getattr(
-        model, "find_unused_parameters", False
-    ):
+    # Accelerate's dynamo integration puts DDP under torch.compile's _orig_mod.
+    ddp = next(
+        (m for m in _wrappers(model) if isinstance(m, torch.nn.parallel.DistributedDataParallel)),
+        None,
+    )
+    if ddp is not None and getattr(ddp, "find_unused_parameters", False):
         if any(p is not None and p.requires_grad for p in (weight, bias)):
             return None, None
     # vocab_size == hidden_size: the output width cannot tell hidden states from logits, so

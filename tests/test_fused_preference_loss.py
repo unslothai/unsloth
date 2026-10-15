@@ -425,6 +425,76 @@ def test_orpo_under_ddp_find_unused_falls_back(dpo_module, monkeypatch, tmp_path
         dist.destroy_process_group()
 
 
+def test_orpo_under_compiled_ddp_find_unused_falls_back(dpo_module, monkeypatch, tmp_path):
+    """Accelerate's dynamo integration wraps DDP in torch.compile, leaving it on _orig_mod."""
+    import torch.distributed as dist
+    from torch.nn.parallel import DistributedDataParallel
+
+    if dist.is_initialized():
+        pytest.skip("a process group is already initialised")
+    monkeypatch.setattr(dpo_module, "_logit_transforms", lambda unwrapped: (0.0, 0.0, 0.0))
+
+    class Compiled(torch.nn.Module):
+        def __init__(self, inner):
+            super().__init__()
+            self._orig_mod = inner
+
+        def forward(self, *args, **kwargs):
+            return self._orig_mod(*args, **kwargs)
+
+    class Unwrapping(_Accelerator):
+        def unwrap_model(self, model):
+            return getattr(model, "_orig_mod", model).module
+
+    batch = _orpo_batch(seed = 4)
+    reference = _run(_orpo_trainer(dpo_module, _model(0), "orpo", False), _model(0), batch)
+    dist.init_process_group("gloo", init_method = f"file://{tmp_path / 'store'}", rank = 0, world_size = 1)
+    try:
+        for find_unused in (True, False):
+            model = _model(0)
+            compiled = Compiled(DistributedDataParallel(model, find_unused_parameters = find_unused))
+            trainer = _orpo_trainer(dpo_module, model, "orpo", "auto", accelerator = Unwrapping())
+            HiddenStatesLlama.hidden_calls = 0
+            model.zero_grad(set_to_none = True)
+            loss, metrics, _ = _run(trainer, compiled, batch)
+            grads = {n: p.grad.clone() for n, p in model.named_parameters() if p.grad is not None}
+            assert (HiddenStatesLlama.hidden_calls >= 1) == (not find_unused)
+            _assert_same(reference, (loss, metrics, grads))
+    finally:
+        dist.destroy_process_group()
+
+
+def test_orpo_under_fsdp1_falls_back(dpo_module, monkeypatch, tmp_path):
+    """FSDP1 reshards the head's parameter view after its forward, so the fused path must not read it."""
+    import torch.distributed as dist
+
+    if dist.is_initialized():
+        pytest.skip("a process group is already initialised")
+    try:
+        from torch.distributed.fsdp import FullyShardedDataParallel
+    except Exception:
+        pytest.skip("no FSDP1")
+    monkeypatch.setattr(dpo_module, "_logit_transforms", lambda unwrapped: (0.0, 0.0, 0.0))
+
+    class Unwrapping(_Accelerator):
+        def unwrap_model(self, model):
+            return getattr(model, "module", model)
+
+    batch = _orpo_batch(seed = 4)
+    dist.init_process_group("gloo", init_method = f"file://{tmp_path / 'store'}", rank = 0, world_size = 1)
+    try:
+        model = _model(0)
+        wrapped = FullyShardedDataParallel(model, device_id = torch.device("cpu"), use_orig_params = True)
+        trainer = _orpo_trainer(dpo_module, model, "orpo", "auto", accelerator = Unwrapping())
+        assert dpo_module._output_head(trainer, wrapped) == (None, None)
+        HiddenStatesLlama.hidden_calls = 0
+        loss = _run(trainer, wrapped, batch)[0]
+        assert torch.isfinite(loss) and HiddenStatesLlama.hidden_calls == 0
+        assert dpo_module._output_head(trainer, model)[1] is not None
+    finally:
+        dist.destroy_process_group()
+
+
 def _real_hidden_states_helpers():
     text = (ROOT / "unsloth" / "models" / "rl_replacements.py").read_text()
     start = text.index("def _unsloth_grpo_returns_hidden_states(")
