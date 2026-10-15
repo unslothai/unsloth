@@ -260,6 +260,39 @@ class TestTheCapIsSpentDownAcrossResumes:
         _run(recorder.backend, signal = signal, policy = _RecordingPolicy())
         assert recorder.payloads[0].get("max_tokens") == recorder.payloads[1].get("max_tokens")
 
+    def test_a_long_single_token_spends_one_of_the_cap(self, monkeypatch):
+        # " international" is one token: the four-characters floor called it three, so a
+        # `max_tokens=3` answer ended on `length` after one token and never resumed.
+        signal = preemption.PreemptSignal()
+        recorder = _Recorder(
+            monkeypatch,
+            [
+                [_delta(" international", timings = {"predicted_n": 1})],
+                [
+                    _delta(" relations", timings = {"predicted_n": 1}),
+                    _delta(".", timings = {"predicted_n": 2}),
+                    _finish(),
+                    _done(),
+                ],
+            ],
+            signal = signal,
+        )
+        policy = _RecordingPolicy()
+        events = _run(recorder.backend, signal = signal, policy = policy, max_tokens = 3)
+        assert [p.get("max_tokens") for p in recorder.payloads] == [3, 2]
+        assert _assembled(events) == " international relations."
+        assert _metadata(events)[-1]["finish_reason"] == "stop"
+        assert _metadata(events)[-1]["usage"]["completion_tokens"] == 3
+        # The cache is still charged conservatively: the partial goes back as prompt.
+        assert policy.checkpoints[0].charged_tokens == 3
+
+    def test_the_estimate_stands_in_only_without_a_count(self):
+        spent = LlamaCppBackend._preempt_spent
+        assert spent(None, {"predicted_n": 1}, 1, " international", "") == 1
+        assert spent({"completion_tokens": 2}, None, 1, "x" * 400, "") == 2
+        assert spent(None, None, 1, "x" * 400, "") == 100
+        assert spent(None, None, 0, "", "") == 0
+
 
 class TestThePauseIsChargedWhatTheAttemptDecoded:
     _DENSE = "天地玄黄宇宙洪荒"  # eight CJK tokens; chars // 4 calls this two

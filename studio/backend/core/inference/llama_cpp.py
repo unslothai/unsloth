@@ -40646,6 +40646,13 @@ class LlamaCppBackend:
                 resumes = _preempt_resumes + 1,
                 reason = "kv-pressure",
             )
+            _spent_p = self._preempt_spent(
+                _metadata_usage,
+                _metadata_timings,
+                _tokens_this_stream,
+                content_text,
+                reasoning_text,
+            )
             preempt_policy.on_preempted(checkpoint)
             # Yielded AFTER on_preempted, so the signal cannot precede the lease going back.
             yield {"type": "preempt", "state": "paused"}
@@ -40691,9 +40698,7 @@ class LlamaCppBackend:
                 return
             if isinstance(max_tokens, int) and max_tokens > 0:
                 _window_p = self._effective_context_length or 0
-                if max_tokens - checkpoint.charged_tokens <= 0 and not (
-                    _window_p and max_tokens >= _window_p
-                ):
+                if max_tokens - _spent_p <= 0 and not (_window_p and max_tokens >= _window_p):
                     logger.info("Paused with the caller's output cap spent; ending the turn")
                     yield from _finish_after_giving_up(notice = False)
                     return
@@ -40734,7 +40739,7 @@ class LlamaCppBackend:
             # the cap.
             resume_max_tokens = max_tokens
             if isinstance(max_tokens, int) and max_tokens > 0:
-                resume_max_tokens = max(1, max_tokens - checkpoint.charged_tokens)
+                resume_max_tokens = max(1, max_tokens - _spent_p)
             # Kept for a re-issued resume: dropping the flag made the whole essay appear twice.
             _reissue_continues = continues or continue_final_message
             for _resumed_item in self.generate_chat_completion(
@@ -40837,12 +40842,23 @@ class LlamaCppBackend:
 
     @staticmethod
     def _preempt_charge(usage, timings, observed: int, visible: str, reasoning: str) -> int:
-        """What a pause charges the attempt it aborted: the OBSERVED count when the server sent one,
-        with four-characters-per-token as a floor. Zero skips `note_replayed`, leaving the cap unspent."""
+        """What a pause charges the cache for the attempt it aborted: the OBSERVED count when the
+        server sent one, with four-characters-per-token as a floor, since the partial goes back as
+        prompt. Zero skips `note_replayed`. Not what it spent of the cap: see `_preempt_spent`."""
         counted = _backfill_usage_from_timings(usage, timings) or {}
         return max(
             int(counted.get("completion_tokens") or 0) or max(0, int(observed or 0)),
             LlamaCppBackend._preempt_charged(visible, reasoning),
+        )
+
+    @staticmethod
+    def _preempt_spent(usage, timings, observed: int, visible: str, reasoning: str) -> int:
+        """What the aborted attempt spent of the caller's output cap: the server's own count when it
+        sent one, the cache charge's estimate only when it did not. The floor overrode the count, so
+        one long token charged three ended a `max_tokens=3` answer after one."""
+        counted = _backfill_usage_from_timings(usage, timings) or {}
+        return int(counted.get("completion_tokens") or 0) or LlamaCppBackend._preempt_charge(
+            None, None, observed, visible, reasoning
         )
 
     def _assemble_preempt_resume(
@@ -44805,6 +44821,13 @@ class LlamaCppBackend:
                     content_accum,
                     reasoning_accum,
                 )
+                _pre_spent = self._preempt_spent(
+                    _iter_usage,
+                    _iter_timings,
+                    _tokens_this_stream,
+                    content_accum,
+                    reasoning_accum,
+                )
                 # A textual call the attempt was writing is dropped, not replayed: nothing has
                 # run, and the restarted parser would see only its tail and never run it.
                 _preempt_content = content_accum
@@ -44835,7 +44858,7 @@ class LlamaCppBackend:
                     _decline_the_pause(preempt_policy, "tool round")
                     if preempt_event is not None:
                         preempt_event.clear()
-                    _accumulated_completion_tokens += _pre_charged
+                    _accumulated_completion_tokens += _pre_spent
                     _it_c = _iter_timings or {}
                     _accumulated_predicted_ms += _it_c.get("predicted_ms", 0)
                     _accumulated_predicted_n += _it_c.get("predicted_n", 0)
@@ -44857,7 +44880,7 @@ class LlamaCppBackend:
                     if _spent_so_far is not None:
                         _declined_charged = max_tokens - _spent_so_far
                     else:
-                        _declined_charged += _pre_charged
+                        _declined_charged += _pre_spent
                     _declined_display = (cumulative_display, _last_emitted, in_thinking)
                     try:
                         _declined_continues = self._assemble_preempt_resume(
@@ -44874,7 +44897,7 @@ class LlamaCppBackend:
                         _append_budget_exhausted_nudge = False
                     break
                 _preempt_resumes += 1
-                _accumulated_completion_tokens += _pre_charged
+                _accumulated_completion_tokens += _pre_spent
                 _it_p = _iter_timings or {}
                 _accumulated_predicted_ms += _it_p.get("predicted_ms", 0)
                 _accumulated_predicted_n += _it_p.get("predicted_n", 0)
@@ -45986,6 +46009,13 @@ class LlamaCppBackend:
                     _paused_visible,
                     _paused_reasoning,
                 )
+                _pre_spent_f = self._preempt_spent(
+                    _metadata_usage,
+                    _metadata_timings,
+                    _final_tokens_this_stream,
+                    _paused_visible,
+                    _paused_reasoning,
+                )
                 _checkpoint_f = _preemption.StreamCheckpoint(
                     visible_text = _paused_visible,
                     reasoning_text = _paused_reasoning,
@@ -46019,14 +46049,14 @@ class LlamaCppBackend:
                     _decline_the_pause(preempt_policy, "final pass")
                     if preempt_event is not None:
                         preempt_event.clear()
-                    _accumulated_completion_tokens += _pre_charged_f
+                    _accumulated_completion_tokens += _pre_spent_f
                     _it_d_f = _metadata_timings or {}
                     _accumulated_predicted_ms += _it_d_f.get("predicted_ms", 0)
                     _accumulated_predicted_n += _it_d_f.get("predicted_n", 0)
                     yield from _final_pause_gave_up()
                     return
                 _preempt_resumes += 1
-                _accumulated_completion_tokens += _pre_charged_f
+                _accumulated_completion_tokens += _pre_spent_f
                 _it_p_f = _metadata_timings or {}
                 _accumulated_predicted_ms += _it_p_f.get("predicted_ms", 0)
                 _accumulated_predicted_n += _it_p_f.get("predicted_n", 0)
