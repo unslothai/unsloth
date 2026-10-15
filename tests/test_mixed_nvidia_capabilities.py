@@ -256,12 +256,64 @@ def test_gfx906_switch_reads_every_visible_card(monkeypatch, capsys, archs, appl
         assert environ == {} and out == ""
 
 
-def test_grpo_tma_options_need_every_visible_card():
+def _grpo_all_sm90_expression():
     source = (REPO_ROOT / "unsloth" / "models" / "rl.py").read_text(encoding = "utf-8")
-    branch = source.split('"triton.enable_persistent_tma_matmul"', 1)[0].rsplit(
-        'if DEVICE_TYPE == "cuda":', 1
-    )[1] + source.split('"triton.enable_persistent_tma_matmul"', 1)[1].split(
-        '"cuda.compile_opt_level"', 1
-    )[0]
-    assert "get_device_capability()[0]" not in branch
-    assert "range(torch.cuda.device_count())" in branch
+    block = source.split("all_sm90 = (", 1)[1].split("\n            )", 1)[0]
+    return eval("(" + block + ")")
+
+
+@pytest.mark.parametrize(
+    "caps,unreadable,expected",
+    [
+        ([(10, 0), (10, 0)], set(), True),
+        ([(10, 0), (8, 0)], set(), False),
+        ([(8, 0), (10, 0)], set(), False),
+        # A card whose capability query raises must turn TMA off, not abort the import.
+        ([(10, 0), (10, 0)], {1}, False),
+    ],
+)
+def test_grpo_tma_options_need_every_visible_card(caps, unreadable, expected):
+    import builtins
+
+    fake = _fake_torch(caps)
+    real_cap = fake.cuda.get_device_capability
+
+    def get_device_capability(device = None):
+        if device in unreadable:
+            raise RuntimeError("unreadable")
+        return real_cap(device)
+
+    fake.cuda.get_device_capability = get_device_capability
+
+    def visible(with_index = False):
+        out = []
+        for i in range(fake.cuda.device_count()):
+            try:
+                cap = tuple(fake.cuda.get_device_capability(i))
+            except Exception:
+                continue
+            out.append((i, cap) if with_index else cap)
+        return out
+
+    stub = types.SimpleNamespace(cuda_visible_capabilities = visible)
+    safe_builtins = dict(vars(builtins))
+    safe_builtins["__import__"] = lambda name, *a, **k: stub
+    expression = _grpo_all_sm90_expression()
+    assert "get_device_capability()" not in expression
+    assert eval(expression, {"__builtins__": safe_builtins, "torch": fake}) is expected
+
+
+def test_bf16_notice_names_real_device_indices(monkeypatch, capsys):
+    # Device 0 unreadable, device 2 pre-Ampere: the notice must name 2, not the compacted 1.
+    fake = _fake_torch([(9, 0), (9, 0), (7, 5)])
+    real_cap = fake.cuda.get_device_capability
+
+    def get_device_capability(device = None):
+        if device == 0:
+            raise RuntimeError("unreadable")
+        return real_cap(device)
+
+    fake.cuda.get_device_capability = get_device_capability
+    _run_gpu_init_chain(fake, monkeypatch)
+    out = capsys.readouterr().out
+    assert "[2]" in out and "[1]" not in out

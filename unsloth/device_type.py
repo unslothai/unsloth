@@ -185,9 +185,10 @@ def hip_visible_archs():
     return archs
 
 
-def cuda_visible_capabilities():
+def cuda_visible_capabilities(with_index = False):
     """(major, minor) of every visible CUDA device, guarded per device like hip_visible_archs:
-    process-wide gates (bf16, compile) must hold on the weakest card layers may land on."""
+    process-wide gates (bf16, compile) must hold on the weakest card layers may land on.
+    with_index yields (device_index, (major, minor)), since unreadable cards are skipped."""
     try:
         count = torch.cuda.device_count()
     except Exception:
@@ -195,9 +196,10 @@ def cuda_visible_capabilities():
     caps = []
     for i in range(count):
         try:
-            caps.append(tuple(torch.cuda.get_device_capability(i)))
+            cap = tuple(torch.cuda.get_device_capability(i))
         except Exception:
             continue
+        caps.append((i, cap) if with_index else cap)
     return caps
 
 

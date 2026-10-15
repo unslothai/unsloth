@@ -544,7 +544,7 @@ elif DEVICE_TYPE == "cuda":
     _cuda_caps = cuda_visible_capabilities()
     SUPPORTS_BFLOAT16 = bool(_cuda_caps) and all(major >= 8 for major, _ in _cuda_caps)
     if not SUPPORTS_BFLOAT16 and any(major >= 8 for major, _ in _cuda_caps):
-        _old = [i for i, (major, _) in enumerate(_cuda_caps) if major < 8]
+        _old = [i for i, (major, _) in cuda_visible_capabilities(with_index = True) if major < 8]
         print(
             f"Unsloth: visible GPU(s) {_old} lack bfloat16, so float16 is used on every GPU. "
             "Hide them with CUDA_VISIBLE_DEVICES to train in bfloat16."
