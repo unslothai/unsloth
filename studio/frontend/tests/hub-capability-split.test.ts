@@ -150,3 +150,8 @@ test("audio Diffusers pipelines are neither image nor video gen; a video family 
   assert.deepEqual(generationKinds(["diffusers"], "text-to-audio", "someone/audio-ldm"), { image: false, video: false });
   assert.match(readSrc("features/hub/lib/view-models.ts"), /key === "video-gen" && isVideoFamilyName\(row\.result\.id\)/);
 });
+
+test("a Diffusers pipeline that makes neither images nor video gets no generation pill", () => {
+  const caps = detectCapabilities(["diffusers"], "text-to-audio", "someone/audio-ldm");
+  assert.equal(caps.some((c) => c.key === "diffusion"), false);
+});

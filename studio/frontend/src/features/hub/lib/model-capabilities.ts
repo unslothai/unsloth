@@ -308,8 +308,9 @@ export function detectCapabilities(
         (tag) => tag !== "diffusion" && (tagSet.has(tag) || pipeline === tag),
       )
     : hasAny(DIFFUSION_TAGS);
-  if (imageGenTagged || imageGenName) {
-    const kinds = generationKinds(tags, pipelineTag, modelId);
+  const kinds = generationKinds(tags, pipelineTag, modelId);
+  // A Diffusers audio or video-to-video pipeline makes neither, so it gets no generation pill.
+  if ((imageGenTagged || imageGenName) && (kinds.image || kinds.video)) {
     out.push({
       key: "diffusion",
       label: kinds.video ? "Video gen" : "Image gen",
