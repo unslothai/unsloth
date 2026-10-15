@@ -39,7 +39,14 @@ def test_guard_cache_follows_in_place_updates():
 cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
 
 
-def _run(x, w, gemma, save_output, monkeypatch, enabled = True):
+def _run(
+    x,
+    w,
+    gemma,
+    save_output,
+    monkeypatch,
+    enabled = True,
+):
     monkeypatch.setattr(rms_layernorm, "_SAVE_OUTPUT", enabled)
     x = x.detach().clone().requires_grad_(True)
     saved = []
@@ -55,7 +62,12 @@ def _run(x, w, gemma, save_output, monkeypatch, enabled = True):
     return y, x.grad, saved
 
 
-def _ref_grad(x, w, gemma, eps = 1e-6):
+def _ref_grad(
+    x,
+    w,
+    gemma,
+    eps = 1e-6,
+):
     x64 = x.detach().double().requires_grad_(True)
     w64 = w.double() + 1 if gemma else w.double()
     y = x64 * torch.rsqrt(x64.pow(2).mean(-1, keepdim = True) + eps) * w64
@@ -93,7 +105,9 @@ def test_save_output_grads_and_storage(gemma, dtype, dim, monkeypatch):
 def test_save_output_off_or_unsafe_is_bitwise_old_path(gemma, monkeypatch):
     gen = torch.Generator("cuda").manual_seed(0)
     x = torch.randn(2, 33, 256, device = "cuda", generator = gen).to(torch.bfloat16)
-    w = (torch.randn(256, device = "cuda", generator = gen) * 0.1 + (0 if gemma else 1)).to(torch.bfloat16)
+    w = (torch.randn(256, device = "cuda", generator = gen) * 0.1 + (0 if gemma else 1)).to(
+        torch.bfloat16
+    )
     y0, dx0, _ = _run(x, w, gemma, False, monkeypatch)
     y1, dx1, saved = _run(x, w, gemma, True, monkeypatch, enabled = False)
     assert torch.equal(dx0, dx1) and saved[0].data_ptr() != y1.data_ptr()
@@ -116,6 +130,25 @@ def test_lora_does_not_overwrite_a_saved_norm_output(monkeypatch):
     w = torch.ones(128, device = "cuda", dtype = torch.float16)
     for enabled in (False, True):
         monkeypatch.setattr(rms_layernorm, "_SAVE_OUTPUT", enabled)
-        y = rms_layernorm.Fast_RMS_Layernorm.apply(x.clone().requires_grad_(True), w, 1e-6, False, True)
+        y = rms_layernorm.Fast_RMS_Layernorm.apply(
+            x.clone().requires_grad_(True), w, 1e-6, False, True
+        )
         # LoRA_QKV / LoRA_MLP write dX into their input X in backward unless the norm saved it.
         assert fast_lora._may_overwrite_input(y) is not enabled
+
+
+@cuda
+def test_views_of_a_saved_norm_output_are_not_overwritten(monkeypatch):
+    # The tiled MLP backward feeds the LoRA MLP chunk views of its saved input: split + unsqueeze.
+    from unsloth.kernels import fast_lora
+
+    x = torch.randn(2, 8, 128, device = "cuda", dtype = torch.float16)
+    w = torch.ones(128, device = "cuda", dtype = torch.float16)
+    for enabled in (False, True):
+        monkeypatch.setattr(rms_layernorm, "_SAVE_OUTPUT", enabled)
+        y = rms_layernorm.Fast_RMS_Layernorm.apply(
+            x.clone().requires_grad_(True), w, 1e-6, False, True
+        )
+        chunks = torch.split(y.view(-1, 128), [5, 11], dim = 0)
+        for chunk in chunks:
+            assert fast_lora._may_overwrite_input(chunk.unsqueeze(0)) is not enabled

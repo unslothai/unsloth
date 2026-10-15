@@ -74,8 +74,15 @@ def _has_activation_fake_quantizer(proj):
 
 
 def _may_overwrite_input(X):
-    # Backward writes dX into X; not when an RMSNorm saved X (its output) for its own backward.
-    return _is_compiling() or not getattr(X, "_unsloth_rmsnorm_saved", False)
+    # Backward writes dX into X; not when an RMSNorm saved X (its output) for its own backward,
+    # including through a view of it (tiled MLP chunks).
+    if _is_compiling():
+        return True
+    base = X._base
+    return not (
+        getattr(X, "_unsloth_rmsnorm_saved", False)
+        or (base is not None and getattr(base, "_unsloth_rmsnorm_saved", False))
+    )
 
 
 class LoRA_MLP(torch.autograd.Function):

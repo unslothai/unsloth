@@ -831,8 +831,10 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
         )
         ctx.save_for_backward(Y if ctx.FROM_Y else X, W, r)
         if ctx.FROM_Y:
-            # LoRA_QKV / LoRA_MLP then do not overwrite Y with their dX.
+            # LoRA_QKV / LoRA_MLP then do not overwrite Y with their dX, nor views of it (tiled MLP).
             Y._unsloth_rmsnorm_saved = True
+            if Y._base is not None:
+                Y._base._unsloth_rmsnorm_saved = True
         return Y
 
     @staticmethod
@@ -954,7 +956,13 @@ if _TRACEABLE:
 
 
 @torch.compiler.disable
-def _fast_rms_layernorm_untraced(X, W, eps, gemma, save_output = False):
+def _fast_rms_layernorm_untraced(
+    X,
+    W,
+    eps,
+    gemma,
+    save_output = False,
+):
     return Fast_RMS_Layernorm.apply(X, W, eps, gemma, save_output)
 
 
