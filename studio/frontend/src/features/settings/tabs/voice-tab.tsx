@@ -727,7 +727,7 @@ export function VoiceTab() {
       try {
         const status = await fetchSttStatus(statusNonce, sttModel);
         if (cancelled) return;
-        // a model the user did not pick may switch for this host; the effect reruns for it.
+        // a retired whisper.cpp pick may switch for this host; the effect reruns for it.
         useVoiceSettingsStore.getState().adoptHostSttModel(status);
         if (useVoiceSettingsStore.getState().sttModel !== sttModel) return;
         setDownloadedSttModels(

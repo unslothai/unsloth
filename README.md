@@ -423,7 +423,7 @@ Setup also installs [audio.cpp](https://github.com/0xShug0/audio.cpp) (prebuilt 
 - `UNSLOTH_AUDIO_CPP_ACCELERATOR=cpu` (or `cuda`, `vulkan`, `metal`) picks the bundle instead of auto-detecting.
 - `AUDIOCPP_SERVER_PATH=/path/to/audiocpp_server` uses your own build.
 
-Its Qwen3-ASR 0.6B is the default Unsloth Studio dictation model. Unsloth Studio no longer installs or updates whisper.cpp: Whisper models run on Transformers, and a saved whisper.cpp pick moves there automatically (or to audio.cpp's Qwen3-ASR on an install without PyTorch).
+Unsloth Studio no longer installs or updates whisper.cpp: Whisper models run on Transformers, and a saved whisper.cpp pick moves there automatically (or to llama.cpp's Qwen3-ASR on an install without PyTorch).
 
 #### Uninstall
 

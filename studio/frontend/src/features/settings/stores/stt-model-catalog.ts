@@ -20,8 +20,6 @@ import {
 /** Curated dictation models, mirrored by the backend sidecars. Listed in the
  * order the picker shows them: the recommended models lead. */
 export const STT_MODELS = [
-  "audiocpp-qwen3-asr-0.6b",
-  "audiocpp-qwen3-asr-1.7b",
   "qwen3-asr-0.6b",
   "qwen3-asr-1.7b",
   "tiny",
@@ -29,15 +27,14 @@ export const STT_MODELS = [
   "small",
   "large-v3-turbo",
   "large-v3",
-  ...AUDIO_CPP_STT_KEYS.filter((key) => !key.startsWith("audiocpp-qwen3-asr-")),
+  ...AUDIO_CPP_STT_KEYS,
 ] as const;
 
 /** Models the picker marks as recommended. Qwen3-ASR is more accurate than
- * Whisper at a comparable size and covers more languages, and audio.cpp runs
- * it without PyTorch. */
+ * Whisper at a comparable size and covers more languages. */
 export const RECOMMENDED_STT_MODELS: ReadonlySet<SttModel> = new Set([
-  "audiocpp-qwen3-asr-0.6b",
-  "audiocpp-qwen3-asr-1.7b",
+  "qwen3-asr-0.6b",
+  "qwen3-asr-1.7b",
 ]);
 
 /** The curated Whisper checkpoints, served by Transformers. */
@@ -111,18 +108,15 @@ export const STT_MODEL_REPOS: Record<DefaultSttModel, string> = {
     AUDIO_CPP_DICTATION_MODELS.map((model) => [model.key, model.id]),
   ) as Record<AudioCppSttKey, string>),
 };
-export const DEFAULT_STT_MODEL: DefaultSttModel = "audiocpp-qwen3-asr-0.6b";
-/** The same model on llama.cpp, which every install ships, for hosts without
- * audio.cpp. */
-export const DEFAULT_STT_MODEL_FALLBACK: DefaultSttModel = "qwen3-asr-0.6b";
+export const DEFAULT_STT_MODEL: DefaultSttModel = "qwen3-asr-0.6b";
+/** The same model on audio.cpp, for a host whose llama.cpp cannot serve it. */
+const AUDIO_CPP_DEFAULT_STT_MODEL: DefaultSttModel = "audiocpp-qwen3-asr-0.6b";
 /** The default before Qwen3-ASR, used only by the v1 migration. */
 const LEGACY_DEFAULT_STT_MODEL = "small";
-/** The default from v1 until audio.cpp, written by the v1 migration. */
-const V1_DEFAULT_STT_MODEL = "qwen3-asr-0.6b";
 
-/** Who chose `sttModel`. "default": the app, which may adapt it to the
- * host. "user": the picker, never changed automatically. "whisper-cpp": a
- * Whisper pick saved while whisper.cpp served it, settled once by the host. */
+/** Who chose `sttModel`. "default": the app's default. "user": the picker,
+ * never changed automatically. "whisper-cpp": a Whisper pick saved while
+ * whisper.cpp served it, settled once by the host. */
 export type SttModelSource = "default" | "user" | "whisper-cpp";
 
 export function normalizeSttModelSource(
@@ -154,7 +148,7 @@ export function migrateVoiceSettings(
 ): Record<string, unknown> | undefined {
   let saved = persisted as Record<string, unknown> | undefined;
   if (fromVersion < 1 && saved?.sttModel === LEGACY_DEFAULT_STT_MODEL) {
-    saved = { ...saved, sttModel: V1_DEFAULT_STT_MODEL };
+    saved = { ...saved, sttModel: DEFAULT_STT_MODEL };
   }
   if (fromVersion < 2 && typeof saved?.sttModel === "string") {
     saved = {
@@ -177,9 +171,8 @@ export interface SttHostEngines {
 /**
  * The model to switch to on this host, or null to keep the current one. A
  * retired whisper.cpp pick keeps its key on Transformers, or without PyTorch
- * becomes the audio.cpp default (the llama.cpp twin when audio.cpp is missing
- * too). The untouched default moves to the llama.cpp twin when audio.cpp is
- * missing, and never back. A user's pick is never changed.
+ * becomes the llama.cpp default (its audio.cpp twin when llama.cpp cannot
+ * serve it). Any other model is never changed.
  */
 export function sttModelForHost(
   current: { sttModel: SttModel; sttModelSource: SttModelSource },
@@ -192,20 +185,12 @@ export function sttModelForHost(
     if (host.transformers?.available !== false) {
       return null;
     }
-    if (host.audiocpp?.available) {
+    if (host.mtmd?.available) {
       return { sttModel: DEFAULT_STT_MODEL, sttModelSource: "default" };
     }
-    return host.mtmd?.available
-      ? { sttModel: DEFAULT_STT_MODEL_FALLBACK, sttModelSource: "default" }
+    return host.audiocpp?.available
+      ? { sttModel: AUDIO_CPP_DEFAULT_STT_MODEL, sttModelSource: "default" }
       : null;
-  }
-  if (
-    current.sttModelSource === "default" &&
-    current.sttModel === DEFAULT_STT_MODEL &&
-    host.audiocpp?.available === false &&
-    host.mtmd?.available === true
-  ) {
-    return { sttModel: DEFAULT_STT_MODEL_FALLBACK, sttModelSource: "default" };
   }
   return null;
 }

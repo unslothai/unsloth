@@ -38,20 +38,20 @@ const settleSource = ts
   })
   .outputText.replace(/^export /gm, "");
 
-// A host without audio.cpp: the default settles to its llama.cpp twin.
-const NO_AUDIO_CPP = {
+// A host without PyTorch: a retired whisper.cpp pick settles to llama.cpp Qwen3-ASR.
+const NO_PYTORCH = {
   transformers: { available: false },
-  audiocpp: { available: false },
+  audiocpp: { available: true },
   mtmd: { available: true },
 };
 
-test("a default that returns later in the page is settled again", async () => {
-  store.delete("unsloth_voice_settings");
-  await useVoiceSettingsStore.persist.rehydrate();
-  assert.equal(
-    useVoiceSettingsStore.getState().sttModel,
-    "audiocpp-qwen3-asr-0.6b",
+test("only a retired whisper.cpp pick reads status, once per model", async () => {
+  store.set(
+    "unsloth_voice_settings",
+    JSON.stringify({ state: { sttModel: "small" }, version: 1 }),
   );
+  await useVoiceSettingsStore.persist.rehydrate();
+  assert.equal(useVoiceSettingsStore.getState().sttModelSource, "whisper-cpp");
 
   let statusReads = 0;
   const settleSttModelForHost = new Function(
@@ -60,25 +60,16 @@ test("a default that returns later in the page is settled again", async () => {
     `${settleSource}; return settleSttModelForHost;`,
   )(async () => {
     statusReads++;
-    return NO_AUDIO_CPP;
+    return NO_PYTORCH;
   }, useVoiceSettingsStore) as () => Promise<void>;
 
   await settleSttModelForHost();
   assert.equal(useVoiceSettingsStore.getState().sttModel, "qwen3-asr-0.6b");
-  // The model it settled on is not read again.
+  assert.equal(useVoiceSettingsStore.getState().sttModelSource, "default");
+  assert.equal(statusReads, 1);
+  // The settled default, and any pick after it, needs no read.
+  await settleSttModelForHost();
+  useVoiceSettingsStore.getState().setSttModel("audiocpp-moonshine-tiny");
   await settleSttModelForHost();
   assert.equal(statusReads, 1);
-
-  // An English-only pick, then a language it cannot serve, resets to the default.
-  useVoiceSettingsStore.getState().setSttModel("audiocpp-moonshine-tiny");
-  useVoiceSettingsStore.getState().setDictationLanguage("ja-JP");
-  assert.equal(
-    useVoiceSettingsStore.getState().sttModel,
-    "audiocpp-qwen3-asr-0.6b",
-  );
-  assert.equal(useVoiceSettingsStore.getState().sttModelSource, "default");
-
-  await settleSttModelForHost();
-  assert.equal(useVoiceSettingsStore.getState().sttModel, "qwen3-asr-0.6b");
-  assert.equal(statusReads, 2);
 });

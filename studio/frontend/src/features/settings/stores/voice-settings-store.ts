@@ -120,7 +120,7 @@ export interface VoiceSettingsState {
   setSttModel: (value: SttModel) => void;
   /** who chose `sttModel`; only a "user" pick is never adapted to the host. */
   sttModelSource: SttModelSource;
-  /** switch a model the user did not pick to one this host can run. */
+  /** switch a retired whisper.cpp pick to a model this host can run. */
   adoptHostSttModel: (host: SttHostEngines) => void;
 
   /** quant for a package folder `sttModel`; "" uses its resident or default quant. */

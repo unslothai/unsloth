@@ -75,11 +75,11 @@ test("a saved Transcribe pick on whisper.cpp reads as its Transformers twin", ()
   );
 });
 
-test("dictation settles a model the user did not pick before it preloads or records", () => {
+test("dictation settles a retired whisper.cpp pick before it preloads or records", () => {
   const adapter = readSrc("features/chat/adapters/studio-model-dictation-adapter.ts");
   assert.match(
     adapter,
-    /const hostSettle =\s*!usesExternalEndpoint && settings\.sttModelSource !== "user"\s*\?\s*settleSttModelForHost\(\)/,
+    /const hostSettle =\s*!usesExternalEndpoint && settings\.sttModelSource === "whisper-cpp"\s*\?\s*settleSttModelForHost\(\)/,
   );
   const listen = adapter.slice(adapter.indexOf("  listen(): DictationAdapter.Session {"));
   const awaited = listen.indexOf("await Promise.race([\n            hostSettle,");
@@ -90,7 +90,8 @@ test("dictation settles a model the user did not pick before it preloads or reco
   assert.ok(microphone > 0 && microphone < awaited, "settles after the microphone opens");
   assert.ok(awaited < repinned && repinned < preload && preload < firstSegment);
   assert.match(adapter, /HOST_SETTLE_WAIT_MS = 2_000/);
-  // the status read is shared per model and retried after a failure.
+  // only a whisper.cpp pick reads status; the read is shared per model and retried after a failure.
+  assert.match(adapter, /if \(sttModelSource !== "whisper-cpp"\) return Promise\.resolve\(\);/);
   assert.match(
     adapter,
     /if \(hostSttModelSettle\?\.model === model\) return hostSttModelSettle\.promise;[\s\S]*?adoptHostSttModel\(status\)[\s\S]*?hostSttModelSettle = null;/,

@@ -25028,9 +25028,9 @@ def _resolve_serving_stt_engine(engine: Optional[str]) -> str:
 
     whisper.cpp is retired, but old clients, MCP and API callers still send its
     aliases (``gguf``). Those requests go to Transformers, which serves the same
-    curated Whisper keys; without PyTorch they go to audio.cpp's default ASR,
-    then llama.cpp's Qwen3-ASR, and only then to Transformers' "needs PyTorch"
-    501. _serving_stt_model maps the model to match. Used for download, load,
+    curated Whisper keys; without PyTorch they go to llama.cpp's Qwen3-ASR,
+    then audio.cpp's, and only then to Transformers' "needs PyTorch" 501.
+    _serving_stt_model maps the model to match. Used for download, load,
     unload and transcribe.
     """
     resolved = _resolve_stt_engine(engine)
@@ -25039,10 +25039,10 @@ def _resolve_serving_stt_engine(engine: Optional[str]) -> str:
 
         if stt_sidecar.is_available():
             return "transformers"
-        if stt_audiocpp_sidecar.is_available():
-            return "audiocpp"
         if stt_mtmd_sidecar.is_available():
             return "mtmd"
+        if stt_audiocpp_sidecar.is_available():
+            return "audiocpp"
         return "transformers"
     # mtmd models exist in no other engine, so there is nothing to fall back to.
     return resolved
@@ -25072,14 +25072,14 @@ def _retired_alias_engines() -> tuple[str, ...]:
     """Every engine a retired whisper.cpp alias request may have landed on.
 
     With PyTorch it always lands on Transformers. Without it, it lands on
-    audio.cpp or llama.cpp by what was installed at the time, which can change
+    llama.cpp or audio.cpp by what could serve it at the time, which can change
     mid-session, so a later unload or cancel has to reach each of them.
     """
     from core.inference import stt_sidecar
 
     if stt_sidecar.is_available():
         return ("transformers",)
-    return ("transformers", "audiocpp", "mtmd")
+    return ("transformers", "mtmd", "audiocpp")
 
 
 def _prepare_runtime_fallback_checkpoint(
@@ -25596,7 +25596,7 @@ async def stt_download_cancel(
     engines = [engine]
     if _resolve_stt_engine(requested) == "gguf":
         # A retired alias download may have started on another engine than the
-        # one it resolves to now (audio.cpp installed mid-download), so reach
+        # one it resolves to now (llama.cpp repaired mid-download), so reach
         # each, scoped to its mapped model and the download id.
         engines += [name for name in _retired_alias_engines() if name != engine]
     status = None

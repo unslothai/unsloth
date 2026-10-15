@@ -330,14 +330,15 @@ export function sttEngineStatusFor(
   return status.transformers;
 }
 
-// One status read settles each model the user did not pick; a failed read, or the model
-// changing again later (a settings reset), settles anew.
+// One status read settles each retired whisper.cpp pick; a failed read, or the model
+// changing again later, settles anew.
 type HostSttModelSettle = { model: string; promise: Promise<void> };
 let hostSttModelSettle: HostSttModelSettle | null = null;
 
-/** Switch a model the user did not pick to one this host can run. */
+/** Switch a retired whisper.cpp pick to a model this host can run. */
 export function settleSttModelForHost(): Promise<void> {
-  const model = useVoiceSettingsStore.getState().sttModel;
+  const { sttModel: model, sttModelSource } = useVoiceSettingsStore.getState();
+  if (sttModelSource !== "whisper-cpp") return Promise.resolve();
   if (hostSttModelSettle?.model === model) return hostSttModelSettle.promise;
   const settle: HostSttModelSettle = {
     model,
@@ -581,9 +582,9 @@ export class StudioModelDictationAdapter implements DictationAdapter {
       ? null
       : sttModelVariant(sessionModel, settings.sttGgufVariant);
     const sessionChatId = resolveDictationChatId(this.chatId);
-    // A model the user did not pick may change for this host; nothing is recorded until it settles.
+    // A retired whisper.cpp pick may change for this host; nothing is recorded until it settles.
     const hostSettle =
-      !usesExternalEndpoint && settings.sttModelSource !== "user"
+      !usesExternalEndpoint && settings.sttModelSource === "whisper-cpp"
         ? settleSttModelForHost().catch(() => {})
         : null;
 

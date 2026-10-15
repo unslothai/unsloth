@@ -158,7 +158,7 @@ export function notifyStudioDictationUnavailable(
 
 /** offers local dictation when Web Speech is missing, prompting before a needed download. */
 async function offerLocalDictation(): Promise<void> {
-  // a model the user did not pick may switch for this host before it is offered.
+  // a retired whisper.cpp pick may switch for this host before it is offered.
   await settleSttModelForHost().catch(() => {});
   const { sttModel, sttGgufVariant, setDictationEngine } =
     useVoiceSettingsStore.getState();

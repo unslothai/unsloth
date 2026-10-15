@@ -218,7 +218,7 @@ export function useChatAudioUpload({
           ) {
             return;
           }
-          // a model the user did not pick may switch for this host; the new one is checked next.
+          // a retired whisper.cpp pick may switch for this host; the new one is checked next.
           if (!retainedRef.current) {
             useVoiceSettingsStore.getState().adoptHostSttModel(status);
             if (useVoiceSettingsStore.getState().sttModel.trim() !== targetModel) {

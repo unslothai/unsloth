@@ -5980,7 +5980,7 @@ fi
 
 # ── whisper.cpp (retired) ──
 # Unsloth Studio no longer installs or updates whisper.cpp: Whisper dictation runs on
-# Transformers, and audio.cpp serves the default dictation model. An existing tree is left
+# Transformers, and llama.cpp serves the default dictation model. An existing tree is left
 # in place for the uninstall script to remove.
 if [ -d "$UNSLOTH_HOME/whisper.cpp" ]; then
     verbose_substep "whisper.cpp: retired; Unsloth Studio no longer installs or updates it (existing files are left in place)"

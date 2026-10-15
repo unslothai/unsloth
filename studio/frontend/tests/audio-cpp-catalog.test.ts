@@ -440,14 +440,9 @@ test("dictation settings list the saved keys by their Hub name", () => {
     AUDIO_CPP_STT_KEYS,
     AUDIO_CPP_DICTATION_MODELS.map((model) => model.key),
   );
-  // The audio.cpp Qwen3-ASR keys lead; the other saved keys follow in catalog order.
-  assert.deepEqual(STT_MODELS.slice(0, 2), AUDIO_CPP_STT_KEYS.slice(0, 2));
-  assert.deepEqual(
-    STT_MODELS.slice(-(AUDIO_CPP_STT_KEYS.length - 2)),
-    AUDIO_CPP_STT_KEYS.slice(2),
-  );
-  assert.equal(STT_MODELS[0], "audiocpp-qwen3-asr-0.6b");
-  assert.equal(DEFAULT_STT_MODEL, "audiocpp-qwen3-asr-0.6b");
+  assert.deepEqual(STT_MODELS.slice(-AUDIO_CPP_STT_KEYS.length), AUDIO_CPP_STT_KEYS);
+  assert.equal(STT_MODELS[0], "qwen3-asr-0.6b");
+  assert.equal(DEFAULT_STT_MODEL, "qwen3-asr-0.6b");
   for (const key of AUDIO_CPP_STT_KEYS) {
     const model = audioCppDictationModelFor(key);
     assert.ok(model, key);

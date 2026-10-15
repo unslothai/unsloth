@@ -135,18 +135,18 @@ def test_gguf_download_goes_through_transformers_with_whisper_server_installed(m
 
 
 def test_resolve_serving_stt_engine_never_serves_whisper_cpp(monkeypatch):
-    # The retired alias goes to Transformers when PyTorch is here, else audio.cpp, else
-    # llama.cpp, else Transformers' 501; whisper-server being installed never matters.
+    # The retired alias goes to Transformers when PyTorch is here, else llama.cpp, else
+    # audio.cpp, else Transformers' 501; whisper-server being installed never matters.
     monkeypatch.setattr(ggml_module, "is_available", lambda: True)
     monkeypatch.setattr(stt_module, "is_available", lambda: True)
     monkeypatch.setattr(audiocpp_module, "is_available", lambda: True)
     monkeypatch.setattr(mtmd_module, "is_available", lambda: True)
     assert ri._resolve_serving_stt_engine("gguf") == "transformers"
     monkeypatch.setattr(stt_module, "is_available", lambda: False)
-    assert ri._resolve_serving_stt_engine("gguf") == "audiocpp"
-    monkeypatch.setattr(audiocpp_module, "is_available", lambda: False)
     assert ri._resolve_serving_stt_engine("gguf") == "mtmd"
     monkeypatch.setattr(mtmd_module, "is_available", lambda: False)
+    assert ri._resolve_serving_stt_engine("gguf") == "audiocpp"
+    monkeypatch.setattr(audiocpp_module, "is_available", lambda: False)
     assert ri._resolve_serving_stt_engine("gguf") == "transformers"
     # Transformers is unaffected by any of it.
     assert ri._resolve_serving_stt_engine("transformers") == "transformers"

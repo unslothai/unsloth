@@ -162,8 +162,8 @@ def test_an_alias_cancels_the_transformers_download(host):
 # mapped to there.
 ALIAS_UNLOADS_WITHOUT_PYTORCH = [
     (["transformers"], "small"),
-    (["audiocpp"], DEFAULT_AUDIO_CPP_STT_MODEL),
     (["mtmd"], DEFAULT_MTMD_STT_MODEL),
+    (["audiocpp"], DEFAULT_AUDIO_CPP_STT_MODEL),
 ]
 
 
@@ -173,28 +173,28 @@ def test_an_alias_unloads_the_transformers_model(host):
     assert host.unloads == [(["transformers"], "small")]
 
 
-def test_an_alias_unload_still_frees_llama_cpp_after_audio_cpp_is_installed(host):
-    host.pin(torch = False, audiocpp = False, mtmd = True)
+def test_an_alias_unload_still_frees_audio_cpp_after_llama_cpp_comes_back(host):
+    host.pin(torch = False, audiocpp = True, mtmd = False)
     _load("small", "gguf")
-    assert host.loads == [(DEFAULT_MTMD_STT_MODEL, "mtmd")]
-    # audio.cpp installed mid-session: a fresh resolve would now pick it.
+    assert host.loads == [(DEFAULT_AUDIO_CPP_STT_MODEL, "audiocpp")]
+    # llama.cpp repaired mid-session: a fresh resolve would now pick it.
     host.pin(torch = False, audiocpp = True, mtmd = True)
     asyncio.run(ri.stt_unload(engine = "gguf", model = "small", current_subject = "tester"))
-    assert (["mtmd"], DEFAULT_MTMD_STT_MODEL) in host.unloads
+    assert (["audiocpp"], DEFAULT_AUDIO_CPP_STT_MODEL) in host.unloads
 
 
-def test_an_alias_cancel_still_stops_a_llama_cpp_download_after_audio_cpp_is_installed(host):
-    host.pin(torch = False, audiocpp = False, mtmd = True)
+def test_an_alias_cancel_still_stops_an_audio_cpp_download_after_llama_cpp_comes_back(host):
+    host.pin(torch = False, audiocpp = True, mtmd = False)
     asyncio.run(
         ri.stt_download(
             SttLoadRequest(model = "small", engine = "gguf"), current_subject = "tester", hf_token = None
         )
     )
-    assert host.downloads == [("stt_mtmd_sidecar", "mtmd", DEFAULT_MTMD_STT_MODEL)]
-    # audio.cpp installed mid-download: a fresh resolve would now pick it.
+    assert host.downloads == [("stt_audiocpp_sidecar", "audiocpp", DEFAULT_AUDIO_CPP_STT_MODEL)]
+    # llama.cpp repaired mid-download: a fresh resolve would now pick it.
     host.pin(torch = False, audiocpp = True, mtmd = True)
     asyncio.run(ri.stt_download_cancel(SttLoadRequest(model = "small", engine = "gguf"), "tester"))
-    assert ("stt_mtmd_sidecar", "mtmd", DEFAULT_MTMD_STT_MODEL) in host.cancels
+    assert ("stt_audiocpp_sidecar", "audiocpp", DEFAULT_AUDIO_CPP_STT_MODEL) in host.cancels
 
 
 def _capabilities(model, engine, monkeypatch):
@@ -212,9 +212,7 @@ def _capabilities(model, engine, monkeypatch):
 def test_alias_capabilities_describe_the_engine_that_would_serve_it(host, monkeypatch):
     assert _capabilities("small", "gguf", monkeypatch) == [("small", "transformers")]
     host.pin(torch = False, audiocpp = True, mtmd = True)
-    assert _capabilities("small", "whisper.cpp", monkeypatch) == [
-        (DEFAULT_AUDIO_CPP_STT_MODEL, "audiocpp")
-    ]
+    assert _capabilities("small", "whisper.cpp", monkeypatch) == [(DEFAULT_MTMD_STT_MODEL, "mtmd")]
 
 
 def test_an_alias_transcribes_on_transformers(host):
@@ -253,7 +251,7 @@ def _transcribe_source(model, engine):
         asyncio.run(ri.transcribe_audio_source(body, "tester"))
 
 
-def test_without_pytorch_an_alias_runs_audio_cpp_default_asr(host, monkeypatch):
+def test_without_pytorch_an_alias_runs_llama_cpp_qwen3_asr(host, monkeypatch):
     host.pin(torch = False, audiocpp = True, mtmd = True)
     _load("small", "gguf")
     asyncio.run(ri._transcribe_audio_bytes(b"RIFFfake", "large-v3", None, False, "gguf"))
@@ -266,26 +264,26 @@ def test_without_pytorch_an_alias_runs_audio_cpp_default_asr(host, monkeypatch):
     seen = _stop_after_capabilities(monkeypatch)
     _transcribe_source("small", "gguf")
 
+    assert host.loads == [(DEFAULT_MTMD_STT_MODEL, "mtmd"), (DEFAULT_MTMD_STT_MODEL, "mtmd")]
+    assert host.transcribed == [(DEFAULT_MTMD_STT_MODEL, "mtmd")]
+    assert host.downloads == [("stt_mtmd_sidecar", "mtmd", DEFAULT_MTMD_STT_MODEL)]
+    assert host.unloads == ALIAS_UNLOADS_WITHOUT_PYTORCH
+    assert seen == [(DEFAULT_MTMD_STT_MODEL, "mtmd")]
+    # Managed accounts are checked against the repo the default ASR lives in.
+    assert ri._stt_repo_reference("small", "gguf") == "unslothai/Qwen3-ASR-0.6B-GGUF"
+
+
+def test_without_pytorch_or_llama_cpp_an_alias_runs_audio_cpp_qwen3_asr(host):
+    host.pin(torch = False, audiocpp = True, mtmd = False)
+    _load("small", "gguf")
+    asyncio.run(ri._transcribe_audio_bytes(b"RIFFfake", "small", None, False, "gguf"))
+
     assert host.loads == [
         (DEFAULT_AUDIO_CPP_STT_MODEL, "audiocpp"),
         (DEFAULT_AUDIO_CPP_STT_MODEL, "audiocpp"),
     ]
     assert host.transcribed == [(DEFAULT_AUDIO_CPP_STT_MODEL, "audiocpp")]
-    assert host.downloads == [("stt_audiocpp_sidecar", "audiocpp", DEFAULT_AUDIO_CPP_STT_MODEL)]
-    assert host.unloads == ALIAS_UNLOADS_WITHOUT_PYTORCH
-    assert seen == [(DEFAULT_AUDIO_CPP_STT_MODEL, "audiocpp")]
-    # Managed accounts are checked against the repo the default ASR lives in.
     assert ri._stt_repo_reference("small", "gguf") == "audio-cpp/audio.cpp-gguf"
-
-
-def test_without_pytorch_or_audio_cpp_an_alias_runs_llama_cpp_qwen3_asr(host):
-    host.pin(torch = False, audiocpp = False, mtmd = True)
-    _load("small", "gguf")
-    asyncio.run(ri._transcribe_audio_bytes(b"RIFFfake", "small", None, False, "gguf"))
-
-    assert host.loads == [(DEFAULT_MTMD_STT_MODEL, "mtmd"), (DEFAULT_MTMD_STT_MODEL, "mtmd")]
-    assert host.transcribed == [(DEFAULT_MTMD_STT_MODEL, "mtmd")]
-    assert ri._stt_repo_reference("small", "gguf") == "unslothai/Qwen3-ASR-0.6B-GGUF"
 
 
 def test_with_no_engine_at_all_an_alias_reports_the_pytorch_501(host):
