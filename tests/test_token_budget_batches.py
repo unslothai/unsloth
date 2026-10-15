@@ -1,0 +1,325 @@
+# Copyright 2023-present Daniel Han-Chen, Michael Han-Chen & the Unsloth team. All rights reserved.
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Lesser General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+# You should have received a copy of the GNU Lesser General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+"""UNSLOTH_TOKEN_BALANCE / UNSLOTH_TOKEN_BUDGET: partitioner, step invariants, exact split loss. CPU only."""
+
+from __future__ import annotations
+
+import contextlib
+import importlib.util
+import itertools
+import random
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+torch = pytest.importorskip("torch")
+
+_PATH = Path(__file__).resolve().parents[1] / "unsloth" / "utils" / "token_budget.py"
+_spec = importlib.util.spec_from_file_location("_unsloth_token_budget", _PATH)
+tb = importlib.util.module_from_spec(_spec)
+sys.modules[_spec.name] = tb
+_spec.loader.exec_module(tb)
+
+
+def _sums(values, groups):
+    return [sum(values[i] for i in g) for g in groups]
+
+
+def _best_spread(values, k):
+    best = None
+    for labels in itertools.product(range(k), repeat = len(values)):
+        sums = [0] * k
+        for v, g in zip(values, labels):
+            sums[g] += v
+        spread = max(sums) - min(sums)
+        best = spread if best is None else min(best, spread)
+    return best
+
+
+@pytest.mark.parametrize("seed", range(20))
+def test_karmarkar_karp_is_a_partition_close_to_optimal(seed):
+    rng = random.Random(seed)
+    values = [rng.randint(1, 100) for _ in range(rng.randint(3, 9))]
+    k = rng.choice([2, 3])
+    groups = tb.karmarkar_karp(values, k)
+    assert sorted(i for g in groups for i in g) == list(range(len(values)))
+    sums = _sums(values, groups)
+    assert max(sums) - min(sums) <= _best_spread(values, k) + max(values)
+
+
+def test_karmarkar_karp_equal_size_and_classic_example():
+    groups = tb.karmarkar_karp([8, 7, 6, 5, 4], 2)
+    assert sorted(_sums([8, 7, 6, 5, 4], groups)) == [14, 16]
+    rng = random.Random(0)
+    values = [rng.randint(1, 4096) for _ in range(64)]
+    groups = tb.karmarkar_karp(values, 8, equal_size = True)
+    assert all(len(g) == 8 for g in groups)
+    assert sorted(i for g in groups for i in g) == list(range(64))
+    sums = _sums(values, groups)
+    assert max(sums) - min(sums) < 0.05 * (sum(values) / 8)
+    with pytest.raises(ValueError):
+        tb.karmarkar_karp(values[:63], 8, equal_size = True)
+
+
+def _layout(order, bs, ga, ws):
+    """accelerate BatchSamplerShard: global batch b -> rank b % ws, the rank's (b // ws)-th batch."""
+    batches = [order[i : i + bs] for i in range(0, len(order), bs)]
+    return [[batches[g * ws + r] for g in range(ga)] for r in range(ws)]
+
+
+def _num_items(labels, batches):
+    # HF / zoo count: shifted labels that are not -100, summed over the step's micro-batches.
+    return sum(int((labels[i][1:] != -100).sum()) for batch in batches for i in batch)
+
+
+@pytest.mark.parametrize("ws,ga,bs", [(1, 4, 2), (2, 2, 3), (4, 2, 2), (2, 1, 4)])
+@pytest.mark.parametrize("cross_rank", [True, False])
+def test_step_rows_and_num_items_are_unchanged(ws, ga, bs, cross_rank):
+    rng = random.Random(ws * 100 + ga * 10 + bs)
+    n = ws * ga * bs
+    lengths = [rng.choice([16, 32, 512, 2048]) for _ in range(n)]
+    labels = []
+    for length in lengths:
+        row = torch.randint(0, 50, (length,))
+        row[: rng.randint(0, length - 1)] = -100
+        labels.append(row)
+    order = list(range(n))
+    rng.shuffle(order)
+    balanced = tb.balance_step_indices(order, lengths, bs, ga, ws, cross_rank)
+    assert sorted(balanced) == sorted(order)
+
+    before = _layout(order, bs, ga, ws)
+    after = _layout(balanced, bs, ga, ws)
+    assert sum(_num_items(labels, r) for r in before) == sum(_num_items(labels, r) for r in after)
+    assert all(len(b) == bs for r in after for b in r)
+    if not cross_rank or ws == 1:
+        for r in range(ws):
+            assert sorted(sum(before[r], [])) == sorted(sum(after[r], []))
+            assert _num_items(labels, before[r]) == _num_items(labels, after[r])
+
+
+def test_balancing_evens_out_rank_and_slot_tokens():
+    bs, ga, ws = 4, 4, 4
+    lengths = [4096] * 8 + [64] * (bs * ga * ws - 8)
+    order = list(range(len(lengths)))
+    before = _layout(order, bs, ga, ws)
+    after = _layout(tb.balance_step_indices(order, lengths, bs, ga, ws, True), bs, ga, ws)
+
+    def rank_tokens(layout):
+        return [sum(lengths[i] for b in r for i in b) for r in layout]
+
+    def slot_max(layout):
+        return max(sum(lengths[i] for i in b) for r in layout for b in r)
+
+    assert max(rank_tokens(before)) - min(rank_tokens(before)) > 10_000
+    assert max(rank_tokens(after)) - min(rank_tokens(after)) == 0
+    assert slot_max(after) < slot_max(before)
+
+
+def test_sampler_keeps_the_index_multiset_and_forwards_set_epoch():
+    lengths = [random.Random(i).randint(1, 999) for i in range(23)]
+    base = torch.utils.data.RandomSampler(range(23), generator = torch.Generator().manual_seed(0))
+    sampler = tb.TokenBalancedSampler(base, lengths, batch_size = 2, grad_accum = 2, world_size = 2)
+    out = list(sampler)
+    assert len(sampler) == 23 and sorted(out) == list(range(23))
+    calls = []
+    base.set_epoch = calls.append
+    sampler.set_epoch(3)
+    assert calls == [3]
+    assert sampler.generator is base.generator
+
+
+def _padding_free_batch(segments, mask_boundaries = True):
+    total = sum(segments)
+    torch.manual_seed(0)
+    input_ids = torch.randint(1, 30, (1, total))
+    labels = input_ids.clone()
+    position_ids = torch.cat([torch.arange(s) for s in segments]).unsqueeze(0)
+    if mask_boundaries:
+        labels[position_ids == 0] = -100
+    return {
+        "input_ids": input_ids,
+        "labels": labels,
+        "position_ids": position_ids,
+        "packed_seq_lengths": torch.tensor(segments, dtype = torch.int32),
+    }
+
+
+class _TinyLM(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        torch.manual_seed(0)
+        self.emb = torch.nn.Embedding(32, 8)
+        self.head = torch.nn.Linear(8, 32)
+
+    def loss(self, batch, num_items):
+        logits = self.head(torch.tanh(self.emb(batch["input_ids"])))
+        shift_logits = logits[:, :-1].reshape(-1, 32)
+        shift_labels = batch["labels"][:, 1:].reshape(-1)
+        return torch.nn.functional.cross_entropy(
+            shift_logits, shift_labels, ignore_index = -100, reduction = "sum"
+        ) / num_items
+
+
+def _grads(model, batches, num_items):
+    model.zero_grad()
+    total = 0.0
+    for batch in batches:
+        loss = model.loss(batch, num_items)
+        loss.backward()
+        total += float(loss)
+    return total, [p.grad.clone() for p in model.parameters()]
+
+
+def test_padding_free_split_is_exact_and_respects_the_budget():
+    batch = _padding_free_batch([5, 9, 3, 12, 7, 4])
+    chunks = tb.split_batch_by_token_budget(batch, 16)
+    assert len(chunks) > 1
+    for chunk in chunks:
+        assert chunk["input_ids"].shape[1] <= 16 or len(chunk["packed_seq_lengths"]) == 1
+        assert int(chunk["packed_seq_lengths"].sum()) == chunk["input_ids"].shape[1]
+        assert int(chunk["position_ids"][0, 0]) == 0
+    for key in ("input_ids", "labels", "position_ids"):
+        assert torch.equal(torch.cat([c[key] for c in chunks], dim = 1), batch[key])
+
+    num_items = int((batch["labels"][:, 1:] != -100).sum())
+    model = _TinyLM()
+    full_loss, full_grads = _grads(model, [batch], num_items)
+    split_loss, split_grads = _grads(model, chunks, num_items)
+    assert abs(full_loss - split_loss) < 1e-5
+    for a, b in zip(full_grads, split_grads):
+        torch.testing.assert_close(a, b, atol = 1e-6, rtol = 1e-5)
+
+
+def test_split_refuses_when_a_cut_would_drop_a_real_target():
+    batch = _padding_free_batch([5, 9, 3, 12], mask_boundaries = False)
+    assert tb.split_batch_by_token_budget(batch, 10) == [batch]
+
+
+def test_split_leaves_small_unknown_and_vision_batches_alone():
+    batch = _padding_free_batch([5, 6])
+    assert tb.split_batch_by_token_budget(batch, 64) == [batch]
+    vision = {"input_ids": torch.ones(4, 8, dtype = torch.long), "pixel_values": torch.ones(7, 3)}
+    assert tb.split_batch_by_token_budget(vision, 8) == [vision]
+
+
+def test_padded_rows_split_is_exact():
+    torch.manual_seed(1)
+    input_ids = torch.randint(1, 30, (6, 10))
+    labels = input_ids.clone()
+    labels[:, :3] = -100
+    batch = {"input_ids": input_ids, "labels": labels, "attention_mask": torch.ones_like(input_ids)}
+    chunks = tb.split_batch_by_token_budget(batch, 20)
+    assert [c["input_ids"].shape[0] for c in chunks] == [2, 2, 2]
+    num_items = int((labels[:, 1:] != -100).sum())
+    model = _TinyLM()
+    full_loss, full_grads = _grads(model, [batch], num_items)
+    split_loss, split_grads = _grads(model, chunks, num_items)
+    assert abs(full_loss - split_loss) < 1e-5
+    for a, b in zip(full_grads, split_grads):
+        torch.testing.assert_close(a, b, atol = 1e-6, rtol = 1e-5)
+
+
+class _FakeAccelerator:
+    distributed_type = "DistributedType.MULTI_GPU"
+
+    def __init__(self):
+        self.no_sync_calls = 0
+
+    @contextlib.contextmanager
+    def no_sync(self, model):
+        self.no_sync_calls += 1
+        yield
+
+
+def _fake_trainer():
+    seen = []
+
+    def training_step(model, inputs, num_items_in_batch = None):
+        seen.append((inputs["input_ids"].shape[1], num_items_in_batch))
+        return torch.tensor(float(inputs["input_ids"].shape[1]) / num_items_in_batch)
+
+    trainer = SimpleNamespace(
+        training_step = training_step,
+        get_train_dataloader = lambda: None,
+        accelerator = _FakeAccelerator(),
+        args = SimpleNamespace(gradient_accumulation_steps = 1),
+    )
+    return trainer, seen
+
+
+def test_install_is_a_no_op_without_the_env(monkeypatch):
+    monkeypatch.delenv("UNSLOTH_TOKEN_BUDGET", raising = False)
+    monkeypatch.delenv("UNSLOTH_TOKEN_BALANCE", raising = False)
+    trainer, _ = _fake_trainer()
+    step, loader = trainer.training_step, trainer.get_train_dataloader
+    tb.install_token_budget(trainer)
+    assert trainer.training_step is step and trainer.get_train_dataloader is loader
+
+
+def test_budgeted_training_step_sums_chunks_and_syncs_once(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_TOKEN_BUDGET", "16")
+    monkeypatch.delenv("UNSLOTH_TOKEN_BALANCE", raising = False)
+    trainer, seen = _fake_trainer()
+    tb.install_token_budget(trainer)
+    batch = _padding_free_batch([5, 9, 3, 12, 7, 4])
+    loss = trainer.training_step(None, batch, 100)
+    assert len(seen) > 1 and all(n == 100 for _, n in seen)
+    assert sum(width for width, _ in seen) == 40
+    assert abs(float(loss) - 0.40) < 1e-6
+    assert trainer.accelerator.no_sync_calls == len(seen) - 1
+    assert trainer._unsloth_token_budget_splits == 1
+    # Without a token count the loss is a per-call mean, so the batch is not split.
+    seen.clear()
+    with pytest.raises(TypeError):
+        # The fake divides by num_items_in_batch: reaching it unsplit with None proves the pass-through.
+        trainer.training_step(None, batch, None)
+    assert seen == [(40, None)]
+
+
+def test_balanced_dataloader_end_to_end_with_accelerate_shards(monkeypatch):
+    accelerate_data_loader = pytest.importorskip("accelerate.data_loader")
+    monkeypatch.setenv("UNSLOTH_TOKEN_BALANCE", "1")
+    monkeypatch.delenv("UNSLOTH_TOKEN_BUDGET", raising = False)
+    datasets = pytest.importorskip("datasets")
+    rng = random.Random(0)
+    lengths = [rng.choice([8, 8, 8, 600]) for _ in range(64)]
+    dataset = datasets.Dataset.from_dict({"input_ids": [[1] * n for n in lengths]})
+    bs, ga, ws = 2, 4, 2
+
+    def make(rank):
+        sampler = torch.utils.data.SequentialSampler(dataset)
+        inner = torch.utils.data.BatchSampler(sampler, bs, drop_last = False)
+        shard = accelerate_data_loader.BatchSamplerShard(
+            inner, num_processes = ws, process_index = rank, split_batches = False
+        )
+        loader = SimpleNamespace(batch_sampler = shard, dataset = dataset)
+        trainer = SimpleNamespace(
+            training_step = None,
+            get_train_dataloader = lambda: loader,
+            args = SimpleNamespace(gradient_accumulation_steps = ga, average_tokens_across_devices = True),
+        )
+        tb.install_token_budget(trainer)
+        trainer.get_train_dataloader()
+        assert trainer._unsloth_token_balance_active
+        return list(shard)
+
+    per_rank = [make(r) for r in range(ws)]
+    steps = len(per_rank[0]) // ga
+    for s in range(steps):
+        step_rows = [i for r in range(ws) for b in per_rank[r][s * ga : (s + 1) * ga] for i in b]
+        assert sorted(step_rows) == list(range(s * ga * ws * bs, (s + 1) * ga * ws * bs))
+        tokens = [sum(lengths[i] for b in per_rank[r][s * ga : (s + 1) * ga] for i in b) for r in range(ws)]
+        assert max(tokens) - min(tokens) <= max(lengths)
