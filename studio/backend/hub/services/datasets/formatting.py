@@ -370,16 +370,83 @@ def _load_any_cached_hf_preview_slice(
     return cached_preview
 
 
+_VIEWER_MAX_ROWS = 100
+_VIEWER_MEDIA_TYPES = ("Image", "Audio", "Video", "Pdf")
+
+
+def _viewer_rows(request: CheckFormatRequest, hf_token, preview_size: int) -> Optional[list]:
+    """The first rows from the Hub dataset viewer: one JSON answer of about 100 KB, where streaming reads
+    a whole parquet row group or JSON block (37 MB for FineTome-100k). None whenever it cannot stand in
+    for the stream exactly (offline, ModelScope, a mirror without its own viewer, no answer, cut cells,
+    media columns); the caller then streams as before."""
+    import json
+    import os
+
+    import httpx
+
+    from utils.hf_endpoint import _DEFAULT_HF_ENDPOINT, browser_hf_endpoint, get_hf_datasets_server
+    from utils.hub_settings import MODELSCOPE, active_source
+    from utils.utils import hf_env_offline
+
+    split = request.train_split or "train"
+    if (
+        preview_size > _VIEWER_MAX_ROWS
+        or hf_env_offline()
+        or active_source() == MODELSCOPE
+        or (
+            browser_hf_endpoint() != _DEFAULT_HF_ENDPOINT
+            and not os.environ.get("HF_DATASETS_SERVER")
+        )
+        or not re.fullmatch(r"[\w.-]+", split)
+    ):
+        return None
+    try:
+        response = httpx.get(
+            # /rows, not /first-rows: first-rows caps its answer by size and returns as few as 28 rows.
+            f"{get_hf_datasets_server()}/rows",
+            params = {
+                "dataset": request.dataset_name,
+                "config": request.subset or "default",
+                "split": split,
+                "offset": 0,
+                "length": preview_size,
+            },
+            headers = {"Authorization": f"Bearer {hf_token}"} if hf_token else None,
+            timeout = 10,
+        )
+        body = response.json() if response.status_code == 200 else None
+    except Exception as e:
+        logger.info(
+            "Dataset viewer rows unavailable: %s",
+            download_registry.scrub_secrets(str(e), hf_token = hf_token),
+        )
+        return None
+    body = body or {}
+    entries = body.get("rows") or []
+    expected = min(preview_size, body.get("num_rows_total") or preview_size)
+    features = json.dumps(body.get("features") or [])
+    if (
+        not entries
+        or len(entries) < expected
+        or any(entry.get("truncated_cells") for entry in entries)
+        or any(f'"_type": "{kind}"' in features for kind in _VIEWER_MEDIA_TYPES)
+    ):
+        return None
+    return [entry["row"] for entry in entries[:preview_size]]
+
+
 def load_preview_slice(
     request: CheckFormatRequest,
     hf_token,
     preview_size: int,
     *,
     allow_unlabeled_tier1_fallback: bool = False,
+    viewer_rows: bool = False,
 ):
     """The first ``preview_size`` rows of a dataset and its total row count (None when unknown), read the
     way check-format reads them: a local file directly, else the local cache, one data file, or a stream.
-    ``hf_token`` and the request paths must already be resolved for the account."""
+    ``hf_token`` and the request paths must already be resolved for the account. ``viewer_rows`` asks the
+    Hub dataset viewer first."""
     from itertools import islice
 
     # An audio column decodes on the first preview row, so this precedes every tier.
@@ -432,6 +499,8 @@ def load_preview_slice(
                     "message": "Dataset is not available in the local cache.",
                 },
             )
+        elif viewer_rows and (viewer := _viewer_rows(request, hf_token, preview_size)):
+            preview_slice = Dataset.from_list(viewer)
         else:
             preview_slice = None
 

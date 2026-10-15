@@ -160,11 +160,11 @@ export const BUDGET = {
   // raw / 83 B transfer to the eager settings and English locale chunks (6,780,553 -> 6,780,901 B raw,
   // 2,038,848 -> 2,038,931 B transfer against 9f5b133254, one machine and build, Node 24, chunk count unchanged
   // at 95). Raised by that growth.
-  // The Train tab's Preview tokens button, its dialog and strings (#13850) add 2,181 B raw / 884 B transfer
-  // (6,782,305 -> 6,784,486 B raw, 2,039,244 -> 2,040,128 B transfer against c69969d58, one machine and build,
+  // The Train tab's Preview tokens button, its dialog and strings (#13850) add 2,181 B raw / 866 B transfer
+  // (6,782,305 -> 6,784,486 B raw, 2,039,244 -> 2,040,110 B transfer against c69969d58, one machine and build,
   // Node 24, chunk count unchanged at 95). Lazy-loading the dialog cost more (2.7 KB transfer) and a 96th
   // startup chunk, so it is imported statically and the budget raised by that growth.
-  transferBytes: 2_040_176,
+  transferBytes: 2_040_158,
   rawBytes: 6_784_537,
 };
 

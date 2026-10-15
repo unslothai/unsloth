@@ -276,10 +276,9 @@ function SelectedDatasetCard({
           {t("studio.dataset.clear")}
         </Button>
       </div>
-      <TokenPreviewDialog
-        open={tokenPreviewOpen}
-        onOpenChange={setTokenPreviewOpen}
-      />
+      {tokenPreviewOpen ? (
+        <TokenPreviewDialog open={true} onOpenChange={setTokenPreviewOpen} />
+      ) : null}
     </div>
   );
 }

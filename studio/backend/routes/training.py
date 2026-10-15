@@ -1721,6 +1721,7 @@ def _token_preview_rows(request: TokenPreviewRequest, hf_token) -> list[dict]:
             ),
             hf_token,
             _TOKEN_PREVIEW_POOL_ROWS,
+            viewer_rows = True,
         )
     except HTTPException:
         raise

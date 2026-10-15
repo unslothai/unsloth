@@ -319,3 +319,79 @@ def test_a_stop_during_a_preview_ends_the_worker_it_started(monkeypatch):
     monkeypatch.setattr(service, "_stop_locked", lambda: (stopped.append(True), real_stop_locked()))
     service.preview(("k",), {}, {"text": "hi"})
     assert len(stopped) == 2 and service._proc is None
+
+
+def _viewer(
+    monkeypatch,
+    body,
+    status = 200,
+):
+    import httpx
+
+    from hub.services.datasets import formatting
+    from hub.schemas.datasets import CheckFormatRequest
+
+    calls = []
+
+    def fake_get(url, **kwargs):
+        calls.append((url, kwargs))
+        return types.SimpleNamespace(status_code = status, json = lambda: body)
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+    for var in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE", "HF_DATASETS_SERVER", "HF_ENDPOINT"):
+        monkeypatch.delenv(var, raising = False)
+    request = CheckFormatRequest(dataset_name = "org/data", train_split = "train")
+    return lambda: formatting._viewer_rows(request, "hf_x", 100), calls
+
+
+def _rows(n, **extra):
+    return [
+        {"row_idx": i, "row": {"text": f"row {i}"}, "truncated_cells": [], **extra}
+        for i in range(n)
+    ]
+
+
+def test_viewer_rows_stand_in_only_when_complete(monkeypatch):
+    features = [{"name": "text", "type": {"dtype": "string", "_type": "Value"}}]
+    rows, calls = _viewer(
+        monkeypatch, {"rows": _rows(100), "features": features, "num_rows_total": 5000}
+    )
+    assert rows() == [{"text": f"row {i}"} for i in range(100)]
+    assert calls[0][0].endswith("/rows") and calls[0][1]["params"]["length"] == 100
+    assert calls[0][1]["headers"] == {"Authorization": "Bearer hf_x"}
+    # A dataset smaller than the pool is complete at its own size.
+    rows, _ = _viewer(monkeypatch, {"rows": _rows(7), "features": features, "num_rows_total": 7})
+    assert len(rows()) == 7
+    # Short, cut or media answers fall back to streaming.
+    for body in (
+        {"rows": _rows(28), "features": features, "num_rows_total": 5000},
+        {"rows": _rows(100, truncated_cells = ["text"]), "features": features},
+        {"rows": _rows(100), "features": [{"name": "image", "type": {"_type": "Image"}}]},
+        {"error": "not ready"},
+    ):
+        rows, _ = _viewer(monkeypatch, body)
+        assert rows() is None
+    rows, _ = _viewer(monkeypatch, {"rows": _rows(100), "features": features}, status = 404)
+    assert rows() is None
+
+
+def test_viewer_is_not_asked_offline_or_behind_a_mirror(monkeypatch):
+    from utils import hf_endpoint
+
+    rows, calls = _viewer(monkeypatch, {"rows": _rows(100)})
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    assert rows() is None
+    monkeypatch.delenv("HF_HUB_OFFLINE")
+    monkeypatch.setattr(hf_endpoint, "browser_hf_endpoint", lambda: "https://hf-mirror.com")
+    assert rows() is None
+    assert calls == []
+
+
+def test_only_the_token_preview_asks_the_viewer(monkeypatch):
+    import inspect
+
+    from hub.services.datasets import formatting
+    from routes import training as training_routes
+
+    assert "viewer_rows = True" in inspect.getsource(training_routes._token_preview_rows)
+    assert "viewer_rows" not in inspect.getsource(formatting.check_format_response)
