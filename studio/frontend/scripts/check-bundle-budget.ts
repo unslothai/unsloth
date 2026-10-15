@@ -83,8 +83,45 @@ export const BUDGET = {
   // The KV cache, GPU memory limit and seed engine options (#13596) add 5.7 KB raw / 1.4 KB transfer
   // (6,573.5 -> 6,579.2 KB raw, 1,976.9 -> 1,978.3 KB transfer against abfe3142c, one machine and
   // build), inline in the eager chat and settings chunks like the other engine options; raised by that.
-  transferBytes: 2_026_500,
-  rawBytes: 6_743_000,
+  // Read aloud's token cap and length warning add 0.2 KB raw / 0.1 KB transfer to the eager chat chunk
+  // (6,739,816 -> 6,740,052 B raw, 2,021,725 -> 2,021,835 B transfer against af9d97837e, one machine
+  // and build), which took main over; raised by that.
+  // Seven merges since add 2.1 KB raw / 0.7 KB transfer (6,741,756 -> 6,743,873 B raw, 2,025,885 ->
+  // 2,026,588 B transfer from b44035a64 to cbf0f593d, one machine and build, Node 22), with the chunk count
+  // unchanged and no new dependency. The step that crossed is eval-loss early stopping patience (#13626,
+  // +806 B raw / +311 B transfer: its training field and strings); the maximized window layout fix in the
+  // app provider (#13647) 539 B raw, the + menu reorder (#13679, measured together with #13659) 711 B raw,
+  // and #13703 / #13700 the last 61 B. Raised by that growth so main's margin stays where it was.
+  // The chat menu's Compact conversation item adds 1.6 KB raw / 0.3 KB transfer to the eager chat chunk
+  // (6,741,807 -> 6,743,381 B raw, 2,021,316 -> 2,021,655 B transfer against 2a03c22812), raised by that.
+  // Eleven frontend merges since add 4.6 KB raw / 1.2 KB transfer (6,745,911 -> 6,750,599 B raw, 2,027,285 ->
+  // 2,028,544 B transfer from 85b6414c68 to 8611f1846c, one machine and build, Node 24), with the chunk count
+  // unchanged at 95 and no new dependency. No single step crossed: the composer draft kept across chats
+  // (#13722) 2.1 KB raw / 0.5 KB transfer, the collapsed sidebar rail's Images and Audio entries (#13731)
+  // 2.1 KB raw / 0.4 KB transfer, and #13665, #13614, #13732, #13661, #13538 the rest (#13744's revert
+  // gave back 0.4 KB raw). Raised by that growth so main's margin stays where it was.
+  // Then the Audio API card in Settings (#12821) 2,019 B raw / 557 B transfer and #13630 132 B raw
+  // (6,750,599 -> 6,752,750 B raw, 2,028,544 -> 2,029,099 B transfer to dd56fb3572, same machine and build).
+  // Numbers wrapped tightly in dollars render as math (#13649): the shell-context checks that keep
+  // `$1$?`-style shell text literal add 6,984 B raw / 2,836 B transfer to the eager chat chunk
+  // (6,753,387 -> 6,760,371 B raw, 2,029,398 -> 2,032,234 B transfer against eba7641835, one machine
+  // and build, chunk count unchanged at 95), raised by that.
+  // Re-embedding documents after an embedding model switch (the save toast's action and the Settings row)
+  // adds 3,018 B raw / 905 B transfer (6,760,371 -> 6,763,389 B raw, 2,032,234 -> 2,033,139 B transfer
+  // against 525f3ceae, one machine and build, Node 24, chunk count unchanged at 95). Lazy-loading its store
+  // from both save sites cost 0.3 KB transfer more in chunk overhead, so the budget is raised by that growth.
+  // Keeping the tool pills in step with the loaded model's tool support (#13621) adds 1.2 KB raw / 0.4 KB
+  // transfer to the eager chat chunk (6,753,387 -> 6,754,540 B raw, 2,029,398 -> 2,029,795 B transfer
+  // against 97ed9415f7, before #13649, one machine and build), raised by that.
+  // Offering the newest audio.cpp release in updates (#13589) adds 385 B raw / 80 B transfer to the eager set
+  // (6,764,579 -> 6,764,964 B raw, 2,033,464 -> 2,033,544 B transfer from 91f8457ab3 to 7b6b2a8e48, one machine
+  // and build, Node 24, chunk count unchanged at 95), which put main 43 B raw over. Raised by that growth so
+  // main's margin stays where it was.
+  // Naming the Windows update that adds MXC's built-in container (#13798) adds 358 B raw / 93 B transfer, its
+  // string in the eager English locale (6,765,003 -> 6,765,361 B raw against 3c0061e16, one machine and build,
+  // Node 24, chunk count unchanged at 95), which put main 55 B raw over. Raised by that growth.
+  transferBytes: 2_033_777,
+  rawBytes: 6_765_664,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

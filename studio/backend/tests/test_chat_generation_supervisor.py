@@ -1068,3 +1068,35 @@ def test_the_producers_cancel_event_carries_the_durable_marker_and_its_run_id():
         activity = supervisor._activities.pop("run-durable", None)
         if activity is not None:
             activity.finish()
+
+
+@pytest.mark.asyncio
+async def test_permitted_prefill_renews_lease_but_decode_silence_does_not(durable_run, monkeypatch):
+    from utils.first_token_timeout import start_first_token_wait, finish_first_token_wait
+
+    monkeypatch.setattr(chat_generation_runs, "_renew_interval_seconds", lambda: 0.01)
+    supervisor = ChatGenerationSupervisor(SimpleNamespace(state = SimpleNamespace()))
+    touch = AsyncMock(wraps = supervisor._try_touch_progress)
+    monkeypatch.setattr(supervisor, "_try_touch_progress", touch)
+    observations = []
+
+    async def body():
+        # The sync GGUF reader runs in a copied thread context, while the supervisor
+        # polls the shared wait object from the producer's original context.
+        await asyncio.to_thread(start_first_token_wait, float("inf"))
+        before = touch.await_count
+        await asyncio.sleep(0.08)
+        observations.append(touch.await_count > before)
+        await asyncio.to_thread(finish_first_token_wait)
+        yield 'data: {"choices":[{"delta":{"content":"hello"}}]}\n\n'
+        before = touch.await_count
+        await asyncio.sleep(0.08)
+        observations.append(touch.await_count == before)
+        yield "data: [DONE]\n\n"
+
+    async def fake(*_args, **_kwargs):
+        return SimpleNamespace(status_code = 200, body_iterator = body())
+
+    monkeypatch.setattr(inference, "produce_openai_chat_completions", fake)
+    await supervisor._produce("run-1")
+    assert observations == [True, True]

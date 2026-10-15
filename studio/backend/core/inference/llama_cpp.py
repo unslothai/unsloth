@@ -74,6 +74,7 @@ from core.inference.context_window import (
     fit_rolling_context,
     messages_without_unpriced_media,
     retrieval_budget,
+    fit_oversized_attachments,
     tool_result_budget,
     turn_is_servable,
 )
@@ -298,6 +299,16 @@ def _fit_context(messages, **kwargs):
     # /compact: only a checkpoint reset can honour it, since only its turns are archived.
     force_reset = bool(kwargs.pop("force_reset", False))
     sticky_manual = bool(kwargs.pop("sticky_manual", False))
+    if kwargs.get("count_tokens") is not None:
+        try:
+            messages = fit_oversized_attachments(
+                messages,
+                context_length = kwargs.get("context_length") or 0,
+                max_tokens = kwargs.get("max_tokens"),
+                count_tokens = kwargs["count_tokens"],
+            )
+        except Exception:  # noqa: BLE001 -- the fit below still refuses what cannot fit
+            logger.debug("attachment fit failed", exc_info = True)
     try:
         from core.inference import checkpoint
 
@@ -374,7 +385,27 @@ def _fit_context(messages, **kwargs):
                 return fitted, truncation
     except Exception:  # noqa: BLE001 -- a policy failure must never break a chat
         logger.warning("Checkpoint fit failed; falling back to the rolling window", exc_info = True)
-    return fit_rolling_context(messages, **kwargs)
+    return _fit_rolling_remembered(messages, kwargs)
+
+
+def _fit_rolling_remembered(messages, kwargs):
+    """`fit_rolling_context`, remembering the cut in memory when the caller has no thread to save it on.
+
+    A one-off request cuts as before; a returning one replays its cut and takes the usual headroom bite.
+    """
+    if kwargs.get("keeps_boundary") or int(kwargs.get("sticky_dropped") or 0) > 0:
+        return fit_rolling_context(messages, **kwargs)
+    from core.inference import prefix_boundary
+
+    scope = ("rolling", kwargs.get("context_length"))
+    remembered = prefix_boundary.recall(messages, scope)
+    fitted, truncation = fit_rolling_context(
+        messages,
+        **{**kwargs, "keeps_boundary": remembered > 0, "sticky_dropped": remembered},
+    )
+    if truncation and truncation.get("fits") and int(truncation.get("dropped_messages") or 0) > 0:
+        prefix_boundary.remember(messages, fitted, int(truncation["dropped_messages"]), scope)
+    return fitted, truncation
 
 
 def _fit_with_instruction_pins(
@@ -497,6 +528,7 @@ from core.inference.tool_loop_controller import (
     deferred_nudge_text,
     provisional_tool_provenance,
     restore_replayed_tool_results,
+    with_appended_text,
     tool_call_limit_nudge,
 )
 from state.tool_approvals import (
@@ -511,6 +543,11 @@ from state.tool_approvals import (
 )
 from utils.paths.path_utils import _is_wsl, is_appledouble_metadata
 from utils.code_integrity import code_integrity_block_reason, code_integrity_user_message
+from utils.first_token_timeout import (
+    finish_first_token_wait,
+    socket_timeout,
+    start_first_token_wait,
+)
 
 # The leaf module, not utils.models: importing anything from that package runs its __init__,
 # which pulls in model_config and therefore PyYAML. This is the chat backend, imported wherever
@@ -789,6 +826,9 @@ _SPEC_KIND_CAPABILITY: dict[str, str] = {
 
 # llama.h: #define LLAMA_DEFAULT_SEED 0xFFFFFFFF
 _LLAMA_RANDOM_SEED = 0xFFFFFFFF
+
+
+_EMPTY_THINK_PROBE_LOCK = threading.Lock()
 
 
 def _apply_seeded_llama_request(
@@ -8228,6 +8268,10 @@ def _local_ssl_context() -> ssl.SSLContext:
     return ssl.create_default_context()
 
 
+# Freeing a large model's GPU memory on a busy driver took over 5 s after SIGKILL; this only bounds a stuck process.
+_SIGKILL_REAP_TIMEOUT_S = 30
+
+
 class LlamaCppBackend:
     """Manages a llama-server subprocess for GGUF model inference.
 
@@ -9175,12 +9219,15 @@ class LlamaCppBackend:
     ) -> Optional[bool]:
         """True for a thinking-off follow-up with no reasoning in its history, where the template proves
         that only preserve_thinking replays each answer's empty think block as generated."""
-        if preserve_thinking is not False or not getattr(
-            self, "_supports_preserve_thinking", False
-        ):
+        # Omitted reads as off; the probe proves what replays.
+        if preserve_thinking is True or not getattr(self, "_supports_preserve_thinking", False):
             return preserve_thinking
         mode = self._request_reasoning_kwargs(enable_thinking, reasoning_effort, None) or {}
-        if mode.get("enable_thinking") is not False:
+        thinking = mode.get("enable_thinking")
+        if thinking is None and enable_thinking is None and reasoning_effort is None:
+            # Agents rarely send either: llama-server then renders the load-time default.
+            thinking = getattr(self, "_reasoning_default", None)
+        if thinking is not False:
             return preserve_thinking
         answered = False
         for message in messages or ():
@@ -9204,16 +9251,26 @@ class LlamaCppBackend:
             return preserve_thinking
         return True if self._empty_think_replays_with_preserve() else preserve_thinking
 
-    def _empty_think_replays_with_preserve(self) -> bool:
-        """Probed once per server: generation prompt + answer prefixes the next render only when kept."""
-        key = (
+    def _empty_think_probe_key(self) -> tuple:
+        return (
             getattr(self, "base_url", None),
             id(getattr(self, "_chat_template", None)),
             id(getattr(self, "_chat_template_override", None)),
         )
+
+    def _empty_think_replays_with_preserve(self) -> bool:
+        """Probed once per server: generation prompt + answer prefixes the next render only when kept."""
+        key = self._empty_think_probe_key()
         cached = getattr(self, "_empty_think_preserve_probe", None)
         if cached is not None and cached[0] == key:
             return cached[1]
+        with _EMPTY_THINK_PROBE_LOCK:
+            cached = getattr(self, "_empty_think_preserve_probe", None)
+            if cached is not None and cached[0] == key:
+                return cached[1]
+            return self._probe_empty_think_replay(key)
+
+    def _probe_empty_think_replay(self, key: tuple) -> bool:
         result = False
         try:
             off = dict(self._request_reasoning_kwargs(False, None, None) or {})
@@ -9229,6 +9286,7 @@ class LlamaCppBackend:
                 trust_env = False,
                 verify = _local_ssl_context(),
             ) as client:
+                refused = []
 
                 def _render(msgs, preserve):
                     r = client.post(
@@ -9238,6 +9296,9 @@ class LlamaCppBackend:
                             "chat_template_kwargs": {**off, "preserve_thinking": preserve},
                         },
                     )
+                    # A 4xx is the template's answer, cached; 408 / 429 mean busy.
+                    if 400 <= r.status_code < 500 and r.status_code not in (408, 429):
+                        refused.append(r.status_code)
                     prompt = r.json().get("prompt") if r.status_code == 200 else None
                     return prompt if isinstance(prompt, str) else None
 
@@ -9245,7 +9306,9 @@ class LlamaCppBackend:
                 kept = _render(history, True)
                 dropped = _render(history, False)
             if generated is None or kept is None or dropped is None:
-                return False  # Unanswered: not cached, so the next request asks again.
+                if refused:
+                    self._empty_think_preserve_probe = (key, False)
+                return False
             result = kept.startswith(generated + answer) and not dropped.startswith(
                 generated + answer
             )
@@ -13745,7 +13808,7 @@ class LlamaCppBackend:
 
         No GPU is enumerated on Metal, so the context would default to native and
         over-commit unified memory ("Compute error." at decode, #5118/#6529). Use a
-        fraction of MLX's Metal working-set, else total RAM; 0 off Apple Silicon or
+        fraction of the Metal working set, else total RAM; 0 off Apple Silicon or
         when unresolvable, so callers skip the cap.
 
         Both of those inputs describe the MACHINE, not the moment. MLX's
@@ -13770,13 +13833,9 @@ class LlamaCppBackend:
 
         if not is_apple_silicon():
             return 0
-        rec_bytes = 0
-        try:
-            import mlx.core as mx
-            if mx.metal.is_available():
-                rec_bytes = int(mx.device_info().get("max_recommended_working_set_size") or 0)
-        except Exception:
-            rec_bytes = 0
+        from utils.hardware.hardware import _metal_recommended_working_set_bytes
+
+        rec_bytes = _metal_recommended_working_set_bytes()
         vm = None
         try:
             import psutil
@@ -13969,15 +14028,8 @@ class LlamaCppBackend:
             return 0
         # 0 means the kernel default, Metal's recommended working set.
         if cap_bytes <= 0:
-            try:
-                import mlx.core as mx
-                from utils.hardware.hardware import _mlx_device_info
-                if mx.metal.is_available():
-                    cap_bytes = int(
-                        _mlx_device_info(mx).get("max_recommended_working_set_size") or 0
-                    )
-            except Exception:
-                cap_bytes = 0
+            from utils.hardware.hardware import _metal_recommended_working_set_bytes
+            cap_bytes = _metal_recommended_working_set_bytes()
         if cap_bytes <= 0:
             return 0
         from utils.hardware.hardware import _read_apple_gpu_stats
@@ -14000,14 +14052,10 @@ class LlamaCppBackend:
         headroom = LlamaCppBackend._apple_metal_wired_ceiling_bytes()
         if headroom <= 0:
             return 0.0
-        try:
-            import mlx.core as mx
-            from utils.hardware.hardware import _mlx_device_info
+        from utils.hardware.hardware import _metal_recommended_working_set_bytes
 
-            if not mx.metal.is_available():
-                return 0.0
-            seen = int(_mlx_device_info(mx).get("max_recommended_working_set_size") or 0)
-        except Exception:
+        seen = _metal_recommended_working_set_bytes()
+        if seen <= 0:
             return 0.0
         return max(0.0, (seen - headroom) / (1024 * 1024))
 
@@ -35630,7 +35678,7 @@ class LlamaCppBackend:
             # raised from -- it escapes, and a truly unkillable server would then
             # be reported by nothing at all.
             logger.warning("llama-server did not exit on SIGTERM, sent SIGKILL")
-            self._process.wait(timeout = 5)
+            self._process.wait(timeout = _SIGKILL_REAP_TIMEOUT_S)
         except Exception as e:
             logger.warning(f"Error killing llama-server process: {e}")
         finally:
@@ -37684,7 +37732,7 @@ class LlamaCppBackend:
             trust_env = False,
             verify = _local_ssl_context(),
         ) as client:
-            first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
+            first_token_deadline = start_first_token_wait()
             with self._stream_with_retry(
                 client,
                 url,
@@ -37747,7 +37795,7 @@ class LlamaCppBackend:
         """Iterate a stream while polling cancel and stall timeouts."""
         text_iter = response.iter_text()
         if first_token_deadline is None:
-            first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
+            first_token_deadline = start_first_token_wait()
         last_chunk_at: Optional[float] = None
         last_prefill_progress: Optional[float] = None
         prefill_sse_buffer = ""
@@ -37760,7 +37808,7 @@ class LlamaCppBackend:
                     remaining_s = first_token_deadline - time.monotonic()
                     if remaining_s <= 0:
                         raise httpx.ReadTimeout("The model did not produce a first token in time.")
-                    LlamaCppBackend._set_stream_read_timeout(response, remaining_s)
+                    LlamaCppBackend._set_stream_read_timeout(response, socket_timeout(remaining_s))
                 chunk = next(text_iter)
                 starts_output = last_chunk_at is not None
                 if chunk and last_chunk_at is None:
@@ -37778,8 +37826,9 @@ class LlamaCppBackend:
                             last_prefill_progress is None or processed > last_prefill_progress
                         ):
                             last_prefill_progress = processed
-                            first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
+                            first_token_deadline = start_first_token_wait()
                 if chunk and starts_output:
+                    finish_first_token_wait()
                     if last_chunk_at is None and post_first_chunk_read_timeout_s is not None:
                         LlamaCppBackend._set_stream_read_timeout(
                             response,
@@ -37799,7 +37848,9 @@ class LlamaCppBackend:
                 continue
 
     @staticmethod
-    def _set_stream_read_timeout(response: "httpx.Response", read_timeout_s: float) -> None:
+    def _set_stream_read_timeout(
+        response: "httpx.Response", read_timeout_s: Optional[float]
+    ) -> None:
         """Lower only post-header stream reads; keep prefill timeout long."""
         try:
             timeout_ext = response.request.extensions.get("timeout")
@@ -37853,18 +37904,19 @@ class LlamaCppBackend:
         stall timeout instead of the long prefill timeout."""
         import httpcore
 
-        def _live_read_timeout() -> Optional[float]:
+        def _live_read_timeout(snapshot: Optional[float]) -> Optional[float]:
             if response is None:
-                return None
+                return snapshot
             try:
                 ext = response.request.extensions.get("timeout")
-                if isinstance(ext, dict):
-                    value = ext.get("read")
-                    if isinstance(value, (int, float)):
-                        return float(value)
+                if isinstance(ext, dict) and "read" in ext:
+                    value = ext["read"]
+                    # None is a live value too: an unlimited first-token wait has no read bound.
+                    if value is None or isinstance(value, (int, float)):
+                        return value
             except Exception:
                 pass
-            return None
+            return snapshot
 
         try:
             pool = getattr(getattr(client, "_transport", None), "_pool", None)
@@ -37880,8 +37932,7 @@ class LlamaCppBackend:
                     timeout = None,
                     _orig = orig_read,
                 ):
-                    live = _live_read_timeout()
-                    effective = live if live is not None else timeout
+                    effective = _live_read_timeout(timeout)
                     deadline = None if effective is None else time.monotonic() + effective
                     while True:
                         if cancel_event.is_set():
@@ -37946,11 +37997,14 @@ class LlamaCppBackend:
 
         try:
             if first_token_deadline is None:
-                first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
+                first_token_deadline = start_first_token_wait()
             prefill_read_timeout = max(0.1, first_token_deadline - time.monotonic())
+            if sys.platform == "win32":
+                # Stop cannot wake a Winsock recv parked before headers, so that wait keeps the default bound.
+                prefill_read_timeout = min(prefill_read_timeout, _DEFAULT_FIRST_TOKEN_TIMEOUT_S)
             prefill_timeout = httpx.Timeout(
                 connect = 30,
-                read = prefill_read_timeout,
+                read = socket_timeout(prefill_read_timeout),
                 write = 10,
                 pool = 10,
             )
@@ -37962,11 +38016,13 @@ class LlamaCppBackend:
                 headers = headers,
             ) as response:
                 _response_ref[0] = response
-                if cancel_event is not None:
-                    # Portable mid-stream cancel: the reader polls cancel itself, so
-                    # Stop interrupts a stalled read where the watcher's Windows socket
-                    # shutdown does not. Pass response to honor the live stall timeout.
-                    LlamaCppBackend._install_cancel_aware_read(client, cancel_event, response)
+                # Portable mid-stream cancel: the reader polls cancel itself, so Stop
+                # interrupts a stalled read where the watcher's Windows socket shutdown
+                # does not. Installed without a cancel event too: only this wrapper
+                # honors the live stall timeout over the one latched for the header wait.
+                LlamaCppBackend._install_cancel_aware_read(
+                    client, cancel_event or threading.Event(), response
+                )
                 if cancel_event is not None and cancel_event.is_set():
                     raise _LlamaStreamCancelled
                 yield response
@@ -38247,6 +38303,7 @@ class LlamaCppBackend:
         enable_thinking: Optional[bool] = None,
         reasoning_effort: Optional[str] = None,
         preserve_thinking: Optional[bool] = None,
+        replay_preserve_thinking: bool = True,
         continue_final_message: bool = False,
         seed: Optional[int] = None,
         promote_reasoning_only: bool = True,
@@ -38271,9 +38328,10 @@ class LlamaCppBackend:
         """
         if not self.is_loaded:
             raise RuntimeError("llama-server is not loaded")
-        preserve_thinking = self._replay_preserve_thinking(
-            preserve_thinking, messages, enable_thinking, reasoning_effort
-        )
+        if replay_preserve_thinking:
+            preserve_thinking = self._replay_preserve_thinking(
+                preserve_thinking, messages, enable_thinking, reasoning_effort
+            )
 
         from core.inference.chat_template_helpers import (
             neutralize_control_markup_in_messages,
@@ -38693,6 +38751,8 @@ class LlamaCppBackend:
         enable_thinking: Optional[bool] = None,
         reasoning_effort: Optional[str] = None,
         preserve_thinking: Optional[bool] = None,
+        # False when the caller knows the history held reasoning its conversion dropped.
+        replay_preserve_thinking: bool = True,
         continue_final_message: bool = False,
         max_tool_iterations: int = 25,
         auto_heal_tool_calls: bool = True,
@@ -38742,9 +38802,10 @@ class LlamaCppBackend:
           {"type": "content", "text": "token"}            -- streamed content tokens (cumulative)
           {"type": "reasoning", "text": "token"}          -- streamed reasoning tokens (cumulative)
         """
-        preserve_thinking = self._replay_preserve_thinking(
-            preserve_thinking, messages, enable_thinking, reasoning_effort
-        )
+        if replay_preserve_thinking:
+            preserve_thinking = self._replay_preserve_thinking(
+                preserve_thinking, messages, enable_thinking, reasoning_effort
+            )
         from core.inference.tool_stream_exec import (
             accepts_kwarg,
             accepts_output_callback,
@@ -38908,10 +38969,15 @@ class LlamaCppBackend:
 
         # Gate telling a genuine NAME[ARGS] rehearsal from inactive-name prose; built from the
         # ORIGINAL tools list so a spent one-shot still reads as a tool name. None = no gate.
-        _enabled_names_gate = set(_gguf_active_tool_names(tools)) if tools else None
+        from core.inference.tools import mcp_loadable_specs
+
+        # Plus the MCP tools a search can load mid-turn (#10997).
+        _loadable_mcp = mcp_loadable_specs(tools)
+        _loadable_mcp_names = set(_gguf_active_tool_names(_loadable_mcp))
+        _detect_tools = list(tools or []) + _loadable_mcp
+        _enabled_names_gate = set(_gguf_active_tool_names(_detect_tools)) if tools else None
         # Detection must see the same names as the strip gate (ORIGINAL list, incl. a spent
         # one-shot), else its repeat is stripped but never drained and the turn ends blank.
-        _detect_tools = list(tools or [])
 
         def _reasoning_summary_event(started_at: float) -> dict:
             return {
@@ -39088,7 +39154,6 @@ class LlamaCppBackend:
         # Hold a leading ``{`` well past the 32-char XML cap until it balances (mirrors safetensors).
         _MAX_BARE_JSON_BUFFER = 16384
         _append_budget_exhausted_nudge = True
-        _limit_notice_in_user_turn = False
         # RAG: cap knowledge-base searches per assistant turn. The controller is
         # tool-agnostic, so this gate stays in the loop.
         _kb_search_count = 0
@@ -39347,7 +39412,7 @@ class LlamaCppBackend:
                 (tool.get("function") or {}).get("name")
                 for tool in safe_tools
                 if (tool.get("function") or {}).get("name")
-            }
+            } | (set() if forced_name else _loadable_mcp_names)
             # Shared signal tuple so GGUF BUFFERING wakes on every format the parser knows (like safetensors).
             _tool_xml_signals = _SHARED_TOOL_XML_SIGNALS
 
@@ -40940,7 +41005,6 @@ class LlamaCppBackend:
                 # Collapse exact-duplicate calls and cap the count for the TEXTUAL
                 # fallback (mirrors the safetensors loop; see _MAX_TOOL_CALLS_PER_TURN).
                 _over_cap: list = []
-                _limit_notice_in_user_turn = False
                 if tool_calls and not has_structured_tc and len(tool_calls) > 1:
                     _seen_keys: set = set()
                     _last_workspace_key = None
@@ -41184,6 +41248,7 @@ class LlamaCppBackend:
                             }
                             if decision.tool_call_id:
                                 denied_message["tool_call_id"] = decision.tool_call_id
+                                _tool_card_by_message[id(denied_message)] = decision.tool_call_id
                             conversation.append(denied_message)
                             # The denial is itself the `tool` message that makes the
                             # template render the call it refused, so declining an
@@ -41411,6 +41476,7 @@ class LlamaCppBackend:
                         }
                         if decision.tool_call_id:
                             _refused_message["tool_call_id"] = decision.tool_call_id
+                            _tool_card_by_message[id(_refused_message)] = decision.tool_call_id
                         conversation.append(_refused_message)
                         # The refusal is itself the `tool` message that makes this call's
                         # arguments start rendering, so declining without this leaves the
@@ -41908,8 +41974,10 @@ class LlamaCppBackend:
                     # stall text over would read the same sentence as a repeat and
                     # swallow the one post-tool nudge.
                     _last_reprompt_text = ""
-                    # A tool ran this turn, so it counts against the caller's budget.
-                    _turn_executed_real_tool = True
+                    # A tool ran this turn, so it counts against the caller's budget. Loading
+                    # MCP tools does not, or a budget of one could never call what it found.
+                    if decision.tool_name != "mcp_tool_search":
+                        _turn_executed_real_tool = True
                     _forced_choice_resolved = True
                     _tool_end = completion.tool_end_event()
                     yield _tool_end
@@ -42072,7 +42140,6 @@ class LlamaCppBackend:
                             }
                         else:
                             conversation.append({"role": "user", "content": _limit_text})
-                        _limit_notice_in_user_turn = True
 
                 if batch_mcp_images and self.is_vision:
                     # One block after the whole batch. With a single result "the tool
@@ -42166,11 +42233,13 @@ class LlamaCppBackend:
         # continuing to request tools.
         if max_tool_iterations > 0 and _append_budget_exhausted_nudge:
             if not _attach_internal_feedback_to_tool_result(BUDGET_EXHAUSTED_NUDGE):
-                # Two user turns in a row break strict templates (Gemma), so ride the notice's turn.
-                if _limit_notice_in_user_turn and conversation[-1].get("role") == "user":
+                # Ride the trailing user turn (over-cap notice or promoted image): two in a row break Gemma.
+                if conversation[-1].get("role") == "user":
                     conversation[-1] = {
                         **conversation[-1],
-                        "content": f"{conversation[-1]['content']}\n\n{BUDGET_EXHAUSTED_NUDGE}",
+                        "content": with_appended_text(
+                            conversation[-1]["content"], f"\n\n{BUDGET_EXHAUSTED_NUDGE}"
+                        ),
                     }
                 else:
                     conversation.append({"role": "user", "content": BUDGET_EXHAUSTED_NUDGE})

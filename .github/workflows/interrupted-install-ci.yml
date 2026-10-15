@@ -94,10 +94,10 @@ on:
 
 concurrency:
   # The event is in the group so a scheduled run and a push to main, which share a ref,
-  # cannot cancel each other; the sha makes it unique per commit on main so a merge burst
-  # cannot cancel a pending run (see studio-backend-ci.yml). On a PR branch the group is
-  # the ref, so a new push cancels the run for the previous one.
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
+  # cannot replace each other. On main a merge burst runs the executing commit plus the
+  # tip (see studio-backend-ci.yml). On a PR branch the group is the ref, so a new push
+  # cancels the run for the previous one.
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:

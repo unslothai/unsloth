@@ -162,6 +162,30 @@ def new_throttled_page(ctx):
     return page
 
 
+def close_page_without_waiting(ctx, page) -> None:
+    """Close a page without waiting on its renderer, on Chromium; page.close() elsewhere.
+
+    page.close() returns only once the page reports itself closed, and has no timeout. On the
+    Windows lane it has sat out a whole 540 s step budget on the persisted-monitor reset, the
+    last line printed being "closing the stale page". Attaching a CDP session, reading the
+    target id and Target.closeTarget are all answered by the browser process, so none of them
+    waits on a busy or throttled renderer, and closeTarget returns as soon as the close is
+    queued. Requests the page sends before it is gone are the caller's to discount.
+    """
+    if PLAYWRIGHT_BROWSER == "chromium":
+        try:
+            target = ctx.new_cdp_session(page).send("Target.getTargetInfo")["targetInfo"][
+                "targetId"
+            ]
+            ctx.browser.new_browser_cdp_session().send("Target.closeTarget", {"targetId": target})
+            return
+        except Exception as exc:
+            info(
+                f"WARN closing the page browser-side failed ({exc!r}); falling back to page.close()"
+            )
+    page.close()
+
+
 def recover_or_replace_page(page, ctx, **kwargs):
     """The shared recovery, with the throttle carried onto a replacement page.
 
@@ -228,10 +252,70 @@ FULL_ACCESS_CANCEL = '[data-slot="alert-dialog-cancel"]'
 FULL_ACCESS_CONFIRM = '[data-slot="alert-dialog-action"]'
 
 
+PERMISSION_PILL = 'button[aria-label="Permission level for tool calls"]:visible'
+ROUTE_FALLBACK_TEXT = (
+    "Loading..."  # RouteFallback in studio/frontend/src/app/routes/__root.tsx (common.loading)
+)
+
+
+class ShellMissingControl(AssertionError):
+    """The chat shell booted (composer up, no route fallback) without the permission pill."""
+
+
+def wait_for_settled_shell(
+    page,
+    composer,
+    settle_s = 2.0,
+    fallback_budget_s = 30.0,
+    missing_pill_s = 5.0,
+):
+    """Return once the composer and its permission pill have stayed up together for settle_s.
+
+    The textarea showing once is not the shell settling. On the Windows lane the shell has been seen to drop to the
+    full-page route fallback right after the composer painted, while the backend stalled ~5 s warming torch, and stay
+    there past the next step's 5 s expect. The pill and the textarea render in the same commit, so seeing both once
+    proves nothing either: they have to stay up. A fallback is waited out for up to fallback_budget_s and then raised
+    as a boot failure (the caller re-navigates once). A booted shell, composer up and no fallback, that goes
+    missing_pill_s without the pill raises ShellMissingControl, which the caller must not retry.
+    """
+    pill = page.locator(PERMISSION_PILL).first
+    fallback = page.get_by_text(ROUTE_FALLBACK_TEXT, exact = True)
+    deadline = time.monotonic() + fallback_budget_s
+    stable_since = None
+    pill_missing_since = None
+    while True:
+        now = time.monotonic()
+        has_composer = composer.is_visible()
+        has_pill = pill.is_visible()
+        in_fallback = fallback.count() > 0 and fallback.first.is_visible()
+        if has_composer and has_pill:
+            pill_missing_since = None
+            stable_since = stable_since or now
+            if now - stable_since >= settle_s:
+                return
+        else:
+            stable_since = None
+            if has_composer and not in_fallback:
+                pill_missing_since = pill_missing_since or now
+                if now - pill_missing_since >= missing_pill_s:
+                    raise ShellMissingControl(
+                        f"the composer is up with no route fallback, but the permission pill has been missing for "
+                        f"{missing_pill_s:.0f}s; page.url={page.url}"
+                    )
+            else:
+                pill_missing_since = None
+        if now >= deadline:
+            raise TimeoutError(
+                f"chat shell did not settle in {fallback_budget_s:.0f}s: composer={has_composer} pill={has_pill} "
+                f"route_fallback={in_fallback}; page.url={page.url}"
+            )
+        page.wait_for_timeout(100)
+
+
 def exercise_permission_mode_controls(page, shoot):
     """Exercise labels, migration, persistence, confirmation, and focus."""
     step("permission levels: labels, persistence, confirmation, and focus")
-    pill = page.locator('button[aria-label="Permission level for tool calls"]:visible').first
+    pill = page.locator(PERMISSION_PILL).first
     expect(pill).to_be_visible()
 
     # Stub the sandbox capability so level checks do not depend on the runner's user namespaces.
@@ -1070,14 +1154,21 @@ with sync_playwright() as p:
     # See _playwright_robust.py.
     install_view_transition_killer(ctx)
     system_requests: list[str] = []
-    ctx.on(
-        "request",
-        lambda request: (
-            system_requests.append(request.url)
-            if request.url.split("?", 1)[0].endswith("/api/system")
-            else None
-        ),
-    )
+    # Pages closed without waiting (close_page_without_waiting) can still send a request or two while the
+    # browser tears them down; those are not the page the monitor steps observe.
+    stale_pages: set = set()
+
+    def _count_system_request(request) -> None:
+        if not request.url.split("?", 1)[0].endswith("/api/system"):
+            return
+        try:
+            if request.frame.page in stale_pages:
+                return
+        except Exception:
+            pass  # no frame (a worker): counted, as before
+        system_requests.append(request.url)
+
+    ctx.on("request", _count_system_request)
     page = new_throttled_page(ctx)
     page_errors = []
     page.on("pageerror", lambda e: page_errors.append(str(e)))
@@ -1226,17 +1317,26 @@ with sync_playwright() as p:
         wall_kick()  # as in the change-password loop: the retry logs with bare print()
         try:
             composer.wait_for(state = "visible", timeout = 60_000)
+            wait_for_settled_shell(page, composer)
             last_err = None
             break
+        except ShellMissingControl:
+            # The shell booted and is missing a control: a product defect, not a boot failure. No second render.
+            raise
         except Exception as e:
             last_err = e
             try:
                 cur_url = page.url
             except Exception:
                 cur_url = "<page closed>"
+            try:
+                route_fallback = page.get_by_text(ROUTE_FALLBACK_TEXT, exact = True).count()
+            except Exception:
+                route_fallback = -1
             print(
                 f"[ui]   composer.wait_for attempt {_attempt + 1} failed: "
                 f"{type(e).__name__}: {str(e)[:200]}; page.url={cur_url}; "
+                f"route_fallback={route_fallback}; "
                 f"page_errors={len(page_errors)} console_errors={len(console_errors)}",
                 flush = True,
             )
@@ -2606,9 +2706,10 @@ with sync_playwright() as p:
     # clearing cookies are browser-side calls, and the storage writes go through the
     # fresh page parked on a same-origin JSON endpoint where no app code runs. Each call
     # announces itself first, so a wedge that remains names the call it sits in.
+    stale_pages.add(page)
     info("closing the stale page")
     try:
-        page.close()
+        close_page_without_waiting(ctx, page)
     except Exception as exc:
         info(f"WARN closing the stale page failed: {exc!r}")
     info("clearing stale session cookies")
