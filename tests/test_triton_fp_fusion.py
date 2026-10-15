@@ -42,11 +42,7 @@ def _launch_sites():
             continue
         for node in ast.walk(ast.parse(src)):
             helper = _LAUNCH_HELPERS.get(path.name)
-            if (
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Name)
-                and node.func.id == helper
-            ):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == helper:
                 yield f"{rel}:{node.lineno}:{helper}", node
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Subscript):
                 name = ast.get_source_segment(src, node.func.value)
