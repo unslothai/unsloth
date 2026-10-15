@@ -1828,6 +1828,8 @@ def run_safetensors_tool_loop(
             # Loading MCP tools is not a tool round, or a budget of one could never call what it found.
             if decision.tool_name != "mcp_tool_search":
                 _turn_executed_real_tool = True
+            # Any executed call, discovery included, releases a forced choice (as on llama-server).
+            forced_resolved = True
             yield completion.tool_end_event()
             conversation.append(completion.tool_message())
             # Parsed only when there is a sink for them.
@@ -1885,7 +1887,7 @@ def run_safetensors_tool_loop(
                 caller_images = trim_image_turns(conversation, images_sink, keep = caller_images)
 
         yield {"type": "status", "text": ""}
-        forced_resolved = forced_resolved or _turn_executed_real_tool or tool_denied
+        forced_resolved = forced_resolved or tool_denied
 
         if tool_controller.force_final_answer:
             final_attempt_done = True

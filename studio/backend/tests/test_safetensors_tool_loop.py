@@ -6022,3 +6022,15 @@ def test_a_forced_tool_is_offered_alone_until_it_runs_and_the_cap_runs_one_call(
     _collect_events(loop)
     assert exec_fn.offered == [["web_search"], _MAKE_LOOP_TOOLS]
     assert exec_fn.calls == [("web_search", {})]
+
+
+def test_a_forced_tool_search_is_released_once_discovery_runs(monkeypatch):
+    # As on llama-server: any executed call resolves the forced choice, discovery included.
+    monkeypatch.setitem(globals(), "_MAKE_LOOP_TOOLS", ["web_search", "mcp_tool_search"])
+    loop, exec_fn = _make_loop(
+        turns = [["<function=mcp_tool_search><parameter=query>x</parameter></function>"], ["Done."]],
+        tool_choice = {"type": "function", "function": {"name": "mcp_tool_search"}},
+    )
+    _collect_events(loop)
+    assert [name for name, _ in exec_fn.calls] == ["mcp_tool_search"]
+    assert exec_fn.offered == [["mcp_tool_search"], ["web_search", "mcp_tool_search"]]
