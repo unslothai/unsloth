@@ -184,6 +184,24 @@ def test_an_alias_unload_still_frees_llama_cpp_after_pytorch_is_installed(host):
     assert host.unloads == [(["transformers"], "small"), (["mtmd"], DEFAULT_MTMD_STT_MODEL)]
 
 
+def test_a_failed_alias_load_does_not_mark_its_engine(host, monkeypatch):
+    from core.inference.stt_sidecar import SttModelNotDownloadedError
+
+    _, unload = ri._stt_lifecycle()
+
+    def not_downloaded(*_args, **_kwargs):
+        raise SttModelNotDownloadedError("not downloaded yet")
+
+    monkeypatch.setattr(ri, "_stt_lifecycle", lambda: (not_downloaded, unload))
+    host.pin(torch = False, audiocpp = True, mtmd = True)
+    with pytest.raises(HTTPException):
+        _load("small", "gguf")
+    host.pin(torch = True, audiocpp = True, mtmd = True)
+    asyncio.run(ri.stt_unload(engine = "gguf", model = "small", current_subject = "tester"))
+    # Nothing ran on llama.cpp, so a Qwen3-ASR loaded there directly is not the alias's to free.
+    assert host.unloads == [(["transformers"], "small")]
+
+
 def test_an_alias_cancel_still_stops_an_audio_cpp_download_after_llama_cpp_comes_back(host):
     host.pin(torch = False, audiocpp = True, mtmd = False)
     asyncio.run(

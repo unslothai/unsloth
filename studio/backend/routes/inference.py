@@ -25074,7 +25074,7 @@ def _serving_stt_model(
 
 
 def _note_retired_alias_engine(requested_engine: Optional[str], serving_engine: str) -> None:
-    """Remember the engine a retired alias request is about to run on."""
+    """Remember the engine a retired alias request loaded, started a download or transcribed on."""
     if _resolve_stt_engine(requested_engine) == "gguf":
         _RETIRED_ALIAS_SERVED.add(serving_engine)
 
@@ -25561,7 +25561,6 @@ async def stt_download(
     )
 
     engine = _resolve_serving_stt_engine(payload.engine)
-    _note_retired_alias_engine(payload.engine, engine)
     model = _serving_stt_model(payload.engine, engine, payload.model)
     module = _stt_download_module(engine)
     try:
@@ -25589,6 +25588,7 @@ async def stt_download(
         raise HTTPException(status_code = 422, detail = str(e))
     except SttModelCompatibilityError as e:
         raise HTTPException(status_code = 422, detail = str(e))
+    _note_retired_alias_engine(payload.engine, engine)
     return JSONResponse(content = {**module.download_status(), "download_id": download_id})
 
 
@@ -25647,7 +25647,6 @@ async def stt_load(
     )
 
     engine = _resolve_serving_stt_engine(payload.engine)
-    _note_retired_alias_engine(payload.engine, engine)
     model = _serving_stt_model(payload.engine, engine, payload.model)
     await asyncio.to_thread(
         _prepare_runtime_fallback_checkpoint,
@@ -25682,6 +25681,7 @@ async def stt_load(
         raise HTTPException(status_code = 500, detail = safe_error_detail(e))
     finally:
         await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
+    _note_retired_alias_engine(payload.engine, engine)
     # The load lock is released and another account may have switched engines, so claim only ours.
     loaded = sidecar.loaded_model
     if loaded is not None and loaded == _stt_resolved_model_id(model, engine):
@@ -25850,7 +25850,6 @@ async def _transcribe_audio_result(
             raise HTTPException(status_code = 413, detail = "Audio is too large.")
 
     serving_engine = _resolve_serving_stt_engine(engine)
-    _note_retired_alias_engine(engine, serving_engine)
     model = _serving_stt_model(engine, serving_engine, model)
     if source_path is not None and serving_engine != "audiocpp":
         # Prepared WAVs are capped at 30 min; the encoded-upload cap would refuse past ~13 min.
@@ -25897,6 +25896,7 @@ async def _transcribe_audio_result(
                 load_stt, model, serving_engine, cancel_event, device = device, **load_options
             )
         )
+        _note_retired_alias_engine(engine, serving_engine)
         loaded = getattr(sidecar, "loaded_model", None)
         if loaded is not None and loaded == _stt_resolved_model_id(model, serving_engine):
             account_access.note_resident_account(f"stt:{serving_engine}", loaded)
@@ -26109,7 +26109,6 @@ async def transcribe_audio_source(
 
     engine = body.engine or await asyncio.to_thread(_stt_engine_for_model, body.model)
     serving_engine = _resolve_serving_stt_engine(engine)
-    _note_retired_alias_engine(engine, serving_engine)
     caps = await asyncio.to_thread(
         stt_capabilities.capabilities_for,
         _serving_stt_model(engine, serving_engine, body.model),

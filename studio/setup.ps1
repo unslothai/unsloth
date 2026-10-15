@@ -10423,7 +10423,8 @@ if ($LocalLlamaCppLinked) {
 # Unsloth Studio no longer installs or updates whisper.cpp: Whisper dictation runs on
 # Transformers, and llama.cpp serves the default dictation model. An existing tree is
 # left in place for the uninstall script to remove.
-if (Test-Path -LiteralPath (Join-Path $UnslothHome "whisper.cpp") -PathType Container) {
+# Test-PathQuiet: an unreadable leftover must not stop setup under ErrorActionPreference Stop.
+if (Test-PathQuiet -Path (Join-Path $UnslothHome "whisper.cpp") -PathType Container) {
     Write-SetupVerboseDetail "whisper.cpp: retired; Unsloth Studio no longer installs or updates it (existing files are left in place)"
 }
 

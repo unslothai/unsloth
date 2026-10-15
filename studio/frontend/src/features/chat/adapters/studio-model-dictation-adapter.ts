@@ -938,9 +938,43 @@ export class StudioModelDictationAdapter implements DictationAdapter {
           stream = null;
           return;
         }
+        // Segments read these when they are sent, so a settle can still switch the session.
+        const adoptSettledModel = (): boolean => {
+          const settled = useVoiceSettingsStore.getState();
+          if (settled.sttModel === sessionModel) return false;
+          sessionModel = settled.sttModel;
+          sessionLanguage = resolveModelDictationLanguage(
+            sessionModel,
+            settled.dictationLanguage,
+          );
+          sessionEngine = sttEngineFor(sessionModel);
+          sessionVariant = sttModelVariant(
+            sessionModel,
+            settled.sttGgufVariant,
+          );
+          return true;
+        };
+        const preload = () => {
+          if (!usesExternalEndpoint && sessionEngine) {
+            // warm the model only after mic access; the backend never downloads here
+            void loadSttModel(
+              sessionModel,
+              sessionEngine,
+              undefined,
+              undefined,
+              sessionVariant,
+            ).catch((error: unknown) =>
+              reportTranscriptionError(error, "preload"),
+            );
+          }
+        };
+        let settledInTime = true;
         if (hostSettle) {
+          settledInTime = false;
           await Promise.race([
-            hostSettle,
+            hostSettle.then(() => {
+              settledInTime = true;
+            }),
             new Promise((resolve) => setTimeout(resolve, HOST_SETTLE_WAIT_MS)),
           ]);
           if (ended || cancelled) {
@@ -948,32 +982,16 @@ export class StudioModelDictationAdapter implements DictationAdapter {
             stream = null;
             return;
           }
-          const settled = useVoiceSettingsStore.getState();
-          if (settled.sttModel !== sessionModel) {
-            sessionModel = settled.sttModel;
-            sessionLanguage = resolveModelDictationLanguage(
-              sessionModel,
-              settled.dictationLanguage,
-            );
-            sessionEngine = sttEngineFor(sessionModel);
-            sessionVariant = sttModelVariant(
-              sessionModel,
-              settled.sttGgufVariant,
-            );
+          adoptSettledModel();
+          if (!settledInTime) {
+            // A slow status read still switches the segments recorded after it lands, and
+            // the saved pick is not preloaded meanwhile: it may be one this host cannot run.
+            void hostSettle.then(() => {
+              if (!ended && !cancelled && adoptSettledModel()) preload();
+            });
           }
         }
-        if (!usesExternalEndpoint && sessionEngine) {
-          // warm the model only after mic access; the backend never downloads here
-          void loadSttModel(
-            sessionModel,
-            sessionEngine,
-            undefined,
-            undefined,
-            sessionVariant,
-          ).catch((error: unknown) =>
-            reportTranscriptionError(error, "preload"),
-          );
-        }
+        if (settledInTime) preload();
         stopLevelMeter = startDictationLevelMeter(stream, (rawRms, now) => {
           onAudioFrame(rawRms, now);
         });

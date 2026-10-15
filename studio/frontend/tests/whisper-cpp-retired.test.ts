@@ -82,13 +82,18 @@ test("dictation settles a retired whisper.cpp pick before it preloads or records
     /const hostSettle =\s*!usesExternalEndpoint && settings\.sttModelSource === "whisper-cpp"\s*\?\s*settleSttModelForHost\(\)/,
   );
   const listen = adapter.slice(adapter.indexOf("  listen(): DictationAdapter.Session {"));
-  const awaited = listen.indexOf("await Promise.race([\n            hostSettle,");
-  const repinned = listen.indexOf("sessionEngine = sttEngineFor(sessionModel);");
-  const preload = listen.indexOf("void loadSttModel(");
+  const awaited = listen.indexOf("await Promise.race([\n            hostSettle.then(");
+  const repinned = listen.indexOf("          adoptSettledModel();\n");
+  const preload = listen.indexOf("        if (settledInTime) preload();");
   const firstSegment = listen.indexOf("        startSegment();\n        session.status");
   const microphone = listen.indexOf("await navigator.mediaDevices.getUserMedia(");
   assert.ok(microphone > 0 && microphone < awaited, "settles after the microphone opens");
   assert.ok(awaited < repinned && repinned < preload && preload < firstSegment);
+  // a slower read still switches later segments and preloads the settled model, never the stale pick.
+  assert.match(
+    listen,
+    /if \(!settledInTime\) \{[\s\S]*?void hostSettle\.then\(\(\) => \{\s*if \(!ended && !cancelled && adoptSettledModel\(\)\) preload\(\);/,
+  );
   assert.match(adapter, /HOST_SETTLE_WAIT_MS = 2_000/);
   // only a whisper.cpp pick reads status; the read is shared per model and retried after a failure.
   assert.match(adapter, /if \(sttModelSource !== "whisper-cpp"\) return Promise\.resolve\(\);/);
