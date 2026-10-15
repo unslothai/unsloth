@@ -328,6 +328,18 @@ def test_double_backward_takes_the_dense_dx(N, fused):
     assert torch.isfinite(ggX).all() and ggX.abs().sum() > 0
 
 
+def test_row_gate_keeps_unaligned_shapes_dense(N, monkeypatch):
+    monkeypatch.delenv("UNSLOTH_NVFP4_FUSED", raising = False)
+    monkeypatch.setenv("UNSLOTH_NVFP4_FUSED_MAX_ROWS", "64")
+    dtype = _dtypes()[0]
+    for (n, k), want in (((64, 128), True), ((72, 128), False), ((64, 80), False)):
+        packed, scale, gs = _random_nvfp4(n, k)
+        X = torch.randn(4, k, device = "cuda", dtype = dtype)
+        assert N._fused_ok(X, packed, scale, gs, k) == want, (n, k)
+        monkeypatch.setenv("UNSLOTH_NVFP4_FUSED", "1")
+        assert N._fused_ok(X, packed, scale, gs, k)
+        monkeypatch.delenv("UNSLOTH_NVFP4_FUSED")
+
 def test_offset_width_follows_the_strided_span(N):
     small = torch.empty((2, 4), device = "meta")
     assert not N._needs_int64(small)
