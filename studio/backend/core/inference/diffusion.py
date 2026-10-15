@@ -8154,6 +8154,9 @@ class DiffusionBackend:
                             "diffusion.text_encoder: dropped unused lm_head (%.2fM params); hidden states unchanged",
                             te_trim["params"] / 1e6,
                         )
+                    from .diffusion_te_truncate import truncate_text_encoders
+
+                    truncate_text_encoders(pipe, logger = logger)
                     # Quantise the dense companion text encoder(s) before placement so offload moves the smaller
                     # weights.
                     te_outcome = quantize_text_encoders(
