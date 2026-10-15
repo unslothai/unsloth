@@ -436,6 +436,9 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             # and nvfp4 crash at the first step (the modulation inputs are a stride-0 ``temb.expand``). Spelled out
             # in full because the generic int8 "_mod" token only matches txt_mode_blocks by accident.
             quant_exclude_tokens = _FLUX3_QUANT_KEEP,
+            # Every keep-set measured 0.09-0.12 LPIPS against bf16 on NVFP4, as did BFL's own nvfp4 package. A passing
+            # NVFP4 gate record for a base still lifts it.
+            scheme_deny = frozenset({"nvfp4"}),
         ),
         pipeline_class = "Flux3ModularPipeline",
         transformer_class = "Flux3Transformer2DModel",
@@ -445,9 +448,10 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         max_condition_images = 10,
         # Two DiT patch grids (VAE /8, patch 2): sizes snap to 16 like FLUX.2.
         dimension_multiple = 16,
-        # Each reference (resized to 1 MP) adds 0.65-0.71 GiB of denoise activations, measured on B200: ~0.09 of the
-        # estimator's 8 GiB per output megapixel; 0.1 keeps a margin.
-        condition_pixel_weight = 0.1,
+        # Each reference (resized to 1 MP) adds about 700 MiB of denoise activations in bf16 and 900 MiB with an int8 /
+        # fp8 denoiser, measured on B200, against the estimator's 8192 MiB per megapixel: 0.11 covers the quantised
+        # figure.
+        condition_pixel_weight = 0.11,
     ),
     DiffusionFamily(
         name = "flux.3-klein",
@@ -459,6 +463,9 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             # and nvfp4 crash at the first step (the modulation inputs are a stride-0 ``temb.expand``). Spelled out
             # in full because the generic int8 "_mod" token only matches txt_mode_blocks by accident.
             quant_exclude_tokens = _FLUX3_QUANT_KEEP,
+            # Every keep-set measured 0.09-0.12 LPIPS against bf16 on NVFP4, as did BFL's own nvfp4 package. A passing
+            # NVFP4 gate record for a base still lifts it.
+            scheme_deny = frozenset({"nvfp4"}),
         ),
         pipeline_class = "Flux3DistilledModularPipeline",
         uses_negative_prompt = False,
@@ -468,7 +475,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         reference = True,
         max_condition_images = 10,
         dimension_multiple = 16,
-        condition_pixel_weight = 0.1,
+        condition_pixel_weight = 0.11,
     ),
     # FLUX.2-dev: full (non-distilled) FLUX.2 on the Mistral Flux2Pipeline, so its own entry. Gated base,
     # text-to-image only; sd-cli takes the Mistral encoder from unsloth/FLUX.2-dev-ComfyUI and the VAE from

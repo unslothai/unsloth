@@ -297,6 +297,42 @@ def zero_row_tokens_for_scheme(scheme: str, family: Optional[str] = None) -> tup
     return _NVFP4_FAMILY_ZERO_ROW_NAME_TOKENS.get(str(family or "").strip().lower(), ())
 
 
+# Weight subclasses whose activation quantiser asserts a contiguous input (torchao ``to_mx`` "unsupported",
+# ``nvfp4_quantize`` "Only support contiguous data for now"), and whose dispatch has no op for a stride-0 view.
+_CONTIGUOUS_INPUT_WEIGHTS = frozenset({"MXTensor", "NVFP4Tensor"})
+
+
+def _contiguous_input_pre_hook(module: Any, args: tuple) -> Optional[tuple]:
+    if args and hasattr(args[0], "is_contiguous") and not args[0].is_contiguous():
+        return (args[0].contiguous(), *args[1:])
+    return None
+
+
+def guard_contiguous_activations(module: Any, *, logger: Any = None) -> int:
+    """Hand MX / NVFP4 Linears a contiguous activation. A broadcast input such as ``temb.expand(B, S, D)`` (FLUX.3's
+    per-token modulation, any adaLN fed an expanded embedding) is a stride-0 view; torchao's MX and NVFP4 activation
+    quantisers assert contiguity and crash at the first denoise step. ``contiguous()`` is a no-op for the contiguous
+    inputs every other call passes, and dynamo traces the pre-hook into the compiled graph. Idempotent; returns how
+    many Linears it hooked."""
+    named = getattr(module, "named_modules", None)
+    if not callable(named):
+        return 0
+    hooked = 0
+    for _name, sub in named():
+        weight = getattr(sub, "weight", None)
+        if type(weight).__name__ not in _CONTIGUOUS_INPUT_WEIGHTS or getattr(sub, "_unsloth_contig_hook", False):
+            continue
+        try:
+            sub.register_forward_pre_hook(_contiguous_input_pre_hook)
+            sub._unsloth_contig_hook = True
+            hooked += 1
+        except Exception:  # noqa: BLE001 - a module refusing hooks keeps its old behaviour
+            continue
+    if hooked and logger is not None:
+        logger.info("diffusion.transformer_quant: contiguous-input guard on %d MX/NVFP4 linears", hooked)
+    return hooked
+
+
 def apply_zero_row_guard(
     transformer: Any,
     scheme: str,
@@ -304,7 +340,9 @@ def apply_zero_row_guard(
     *,
     logger: Any = None,
 ) -> tuple[str, ...]:
-    """Guard zero-row-reachable quantized Linears; call AFTER quantization (else the first t2v render crashes)."""
+    """Guard zero-row-reachable quantized Linears; call AFTER quantization (else the first t2v render crashes). Every
+    post-quantisation site calls this, so it also installs the contiguous-input guard for MX / NVFP4 weights."""
+    guard_contiguous_activations(transformer, logger = logger)
     tokens = zero_row_tokens_for_scheme(scheme, family)
     if not tokens:
         return ()
@@ -1611,13 +1649,18 @@ def _run_smoke_probe(scheme: str, device: str) -> Optional[bool]:
 
         lin = torch.nn.Linear(512, 512, bias = False).to(device = device, dtype = torch.bfloat16)
         quantize_(lin, _make_quant_config(scheme), filter_fn = make_filter_fn(0))
+        guard_contiguous_activations(lin)
         # M stays 32 (scaled_mm wants 16-aligned dims); the zero rows go inside it, not after it.
         x = torch.randn(32, 512, device = device, dtype = torch.bfloat16)
         x[16:] = 0
+        # And a stride-0 broadcast, the shape an adaLN sees from ``temb.expand(B, S, D)``: MX / NVFP4 assert a
+        # contiguous activation, so a scheme whose quantised Linears lack the guard fails here, not at the first step.
+        broadcast = torch.randn(1, 1, 512, device = device, dtype = torch.bfloat16).expand(2, 16, 512)
         with torch.no_grad():
             out = lin(x)
+            out_broadcast = lin(broadcast)
         torch.cuda.synchronize()
-        return bool(torch.isfinite(out).all().item())
+        return bool(torch.isfinite(out).all().item() and torch.isfinite(out_broadcast).all().item())
     except Exception as exc:  # noqa: BLE001
         return None if _is_out_of_memory(exc) else False
 

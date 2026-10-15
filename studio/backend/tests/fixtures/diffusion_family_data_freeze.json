@@ -3475,6 +3475,12 @@
    }
   },
   "family_scheme_deny": {
+   "flux.3-klein": [
+    "nvfp4"
+   ],
+   "flux.3-klein-base": [
+    "nvfp4"
+   ],
    "qwen-image": [
     "mxfp8",
     "nvfp4"

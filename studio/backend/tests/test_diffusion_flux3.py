@@ -90,7 +90,7 @@ def test_family_records():
         # A single file / GGUF denoiser assembles around the base's modular companions.
         assert not fam.pipeline_only
         assert fam.supports_torch_compile
-        assert fam.condition_pixel_weight == 0.1
+        assert fam.condition_pixel_weight == 0.11
         assert fam.img2img_pipeline_class is None and fam.inpaint_pipeline_class is None
     # The flow-map checkpoint samples without CFG; the base runs CFG with a negative prompt.
     assert distilled.uses_negative_prompt is False
@@ -477,3 +477,67 @@ def test_gguf_denoiser_reports_its_compute_dtype():
     _pin_compute_dtype(m, torch.bfloat16)
     assert m.dtype == torch.bfloat16
     assert "_unsloth_compute_dtype" not in m.state_dict()
+
+
+def test_nvfp4_is_denied_for_flux3_only():
+    from core.inference import diffusion_transformer_quant as tq
+
+    assert "nvfp4" in tq._FAMILY_SCHEME_DENY[FLUX3_KLEIN_FAMILY_NAME]
+    assert "nvfp4" in tq._FAMILY_SCHEME_DENY[FLUX3_KLEIN_BASE_FAMILY_NAME]
+    assert "flux.2-klein" not in tq._FAMILY_SCHEME_DENY
+
+
+def _mx_linear(torch):
+    """A Linear whose weight class is named like torchao's MXTensor and whose forward asserts a contiguous input,
+    the way ``to_mx`` does."""
+
+    class MXTensor(torch.Tensor):
+        pass
+
+    class _Lin(torch.nn.Linear):
+        def forward(self, x):
+            assert x.is_contiguous(), "unsupported"
+            return super().forward(x)
+
+    lin = _Lin(8, 8, bias = False)
+    lin.weight = torch.nn.Parameter(lin.weight.detach().as_subclass(MXTensor), requires_grad = False)
+    return lin
+
+
+def test_contiguous_guard_feeds_mx_linears_a_contiguous_activation():
+    torch = pytest.importorskip("torch")
+    from core.inference.diffusion_transformer_quant import apply_zero_row_guard, guard_contiguous_activations
+
+    lin = _mx_linear(torch)
+    broadcast = torch.randn(1, 1, 8).expand(2, 4, 8)
+    with pytest.raises(AssertionError):
+        lin(broadcast)
+    model = torch.nn.Sequential(lin, torch.nn.Linear(8, 8))
+    # Installed by the shared post-quantisation hook every path calls; only the MX Linear is hooked, once.
+    apply_zero_row_guard(model, "mxfp8", "flux.3-klein")
+    assert guard_contiguous_activations(model) == 0
+    out = lin(broadcast)
+    assert torch.allclose(out, lin(broadcast.contiguous()))
+    assert not getattr(model[1], "_unsloth_contig_hook", False)
+
+
+def test_smoke_probe_feeds_a_broadcast_activation(monkeypatch):
+    torch = pytest.importorskip("torch")
+    import core.inference.diffusion_transformer_quant as tq
+
+    seen = []
+
+    class _Rec(torch.nn.Linear):
+        def forward(self, x):
+            seen.append(x.is_contiguous())
+            return super().forward(x)
+
+    monkeypatch.setattr(torch.nn, "Linear", _Rec)
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda *a, **k: None)
+    fake_ao = types.ModuleType("torchao.quantization")
+    fake_ao.quantize_ = lambda *a, **k: None
+    monkeypatch.setitem(sys.modules, "torchao.quantization", fake_ao)
+    monkeypatch.setattr(tq, "_make_quant_config", lambda *a, **k: None)
+    assert tq._run_smoke_probe("fp8", "cpu") is True
+    # Two forwards: the zero-row matrix and a stride-0 broadcast.
+    assert seen == [True, False]
