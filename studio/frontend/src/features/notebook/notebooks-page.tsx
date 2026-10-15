@@ -193,12 +193,12 @@ function NotebookCard({
   return (
     <article
       ref={cardRef}
-      className={`group shadow-border relative overflow-hidden rounded-2xl bg-gradient-to-br dark:bg-white/[0.05] ${style.surfaceClassName} ${highlighted ? "ring-2 ring-primary/70" : ""}`}
+      className={`group shadow-border relative overflow-hidden rounded-2xl bg-gradient-to-br dark:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))] ${style.surfaceClassName} ${highlighted ? "ring-2 ring-primary/70" : ""}`}
     >
       <ShineBorder borderWidth={1.2} duration={13} shineColor={style.shineColor} />
       <div className="relative flex h-full min-h-44 flex-col gap-4 p-4">
         <div className="flex items-start justify-between gap-2">
-          <div className="inline-flex size-10 items-center justify-center rounded-xl border border-foreground/10 bg-background/80">
+          <div className="inline-flex size-10 items-center justify-center rounded-xl border border-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-edge-gain,1)),transparent)] bg-background/80">
             <HugeiconsIcon icon={style.icon} className="size-5 text-foreground/90" />
           </div>
           <div className="flex flex-wrap justify-end gap-1.5">
