@@ -52,7 +52,7 @@ test("a managed vLLM or SGLang model compacts like a local GGUF", () => {
   );
   const adapter = readSrc("features/chat/api/chat-adapter.ts");
   // SGLang has no exact count to fit against, so only the vLLM engine asks.
-  assert.match(adapter, /runtime\.loadedEngine === "vllm"/);
+  assert.match(adapter, /isManagedEngine: local && state\.loadedEngine === "vllm"/);
   // A queued turn keeps the engine it was queued against, like loadedIsGguf / loadedIsMlx.
   assert.match(readSrc("features/chat/utils/queued-chat-run-settings.ts"), /"loadedEngine",/);
   assert.match(adapter, /isManagedEngine: isManagedEngineForCompaction/);
@@ -160,9 +160,12 @@ test("MLX chats opt in on the backend's own report and honor disabling auto comp
   // loadedIsMlx is authoritative because isGguf already uses isServedByLlamaCpp.
   const adapter = readSrc("features/chat/api/chat-adapter.ts");
   assert.match(adapter, /isMlx: isMlxForCompaction/);
+  assert.match(adapter, /const local = !isExternalModelId\(checkpoint\);/);
+  assert.match(adapter, /isMlx: local && state\.loadedIsMlx === true/);
+  // The completion and the count read it from the same helper.
   assert.match(
     adapter,
-    /isMlxForCompaction =\s*!isExternalModelId\(params\.checkpoint\) && runtime\.loadedIsMlx === true/,
+    /isMlx: isMlxForCompaction,[\s\S]*?\} = localCompactionEngine\(runtime, params\.checkpoint\);/,
   );
 });
 
