@@ -1827,17 +1827,28 @@ def test_cfg_batch_refuses_an_opaque_mutable_argument():
         state: torch.Tensor
 
     class HolderDit(_BatchDit):
-        def forward(self, hidden_states, timestep, encoder_hidden_states, holder = None, return_dict = False):
+        def forward(
+            self,
+            hidden_states,
+            timestep,
+            encoder_hidden_states,
+            holder = None,
+            return_dict = False,
+        ):
             self.calls += 1
             holder.state.add_(1.0)  # per-call mutation of shared state
-            return (self.proj(hidden_states) * timestep + encoder_hidden_states.tanh() + holder.state,)
+            return (
+                self.proj(hidden_states) * timestep + encoder_hidden_states.tanh() + holder.state,
+            )
 
     def loop(dit, latents, steps, cond, uncond):
         holder = Holder(torch.zeros(1))
         for i in range(steps):
             t = torch.tensor(1.0 - i / steps)
             c = dit(hidden_states = latents, timestep = t, encoder_hidden_states = cond, holder = holder)[0]
-            u = dit(hidden_states = latents, timestep = t, encoder_hidden_states = uncond, holder = holder)[0]
+            u = dit(hidden_states = latents, timestep = t, encoder_hidden_states = uncond, holder = holder)[
+                0
+            ]
             latents = latents - 0.1 * (u + 4.0 * (c - u))
         return latents
 
@@ -1863,7 +1874,10 @@ def test_cfg_batch_stops_timing_a_single_branch_loop(monkeypatch):
     latents = torch.randn(2, 4)
     cond, _ = _embeds()
     for _ in range(5):
-        latents = latents - dit(hidden_states = latents, timestep = torch.tensor(0.5), encoder_hidden_states = cond)[0]
+        latents = (
+            latents
+            - dit(hidden_states = latents, timestep = torch.tensor(0.5), encoder_hidden_states = cond)[0]
+        )
     assert len(timed) == 1  # the first step only: no second branch ever came
 
 

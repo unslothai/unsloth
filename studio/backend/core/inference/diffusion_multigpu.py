@@ -2191,9 +2191,13 @@ def _install_cfg_parallel_only(
             ]
             if not fits:
                 most = max(candidates, key = lambda o: probes[o].free_mib or -1)
-                reason = f"replica needs {need_mib} MiB, {probes[most].free_mib} MiB free on cuda:{most}"
+                reason = (
+                    f"replica needs {need_mib} MiB, {probes[most].free_mib} MiB free on cuda:{most}"
+                )
             else:
-                best = rank_secondaries(primary.index, fits, lambda o: probes[o].free_mib, probes)[0]
+                best = rank_secondaries(primary.index, fits, lambda o: probes[o].free_mib, probes)[
+                    0
+                ]
                 router = CfgParallelRouter(
                     denoiser, primary = primary, secondary = f"cuda:{best}", logger = logger
                 )
@@ -2628,7 +2632,9 @@ class CfgBatchRouter:
             self.disable("out of memory on the batched call; one branch per call from here")
             return None
         except Exception as exc:  # noqa: BLE001 - the doubled batch was refused: the branch reruns plain
-            self.disable(f"the batched call failed ({type(exc).__name__}: {exc}); one branch per call from here")
+            self.disable(
+                f"the batched call failed ({type(exc).__name__}: {exc}); one branch per call from here"
+            )
             return None
         try:
             mine, other = _split_output(out, batch)
