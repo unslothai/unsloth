@@ -170,7 +170,11 @@ def _calibration_ids(dataset, tokenizer, num_samples, max_seq_length):
         elif isinstance(row, (list, tuple)):
             row = {"input_ids": row}
         if "input_ids" in row:
-            sample = list(row["input_ids"])[:max_seq_length]
+            sample = list(row["input_ids"])
+            mask = row.get("attention_mask")
+            if mask is not None:  # padded pretokenized rows: keep the real tokens only
+                sample = [t for t, m in zip(sample, list(mask)) if m]
+            sample = sample[:max_seq_length]
         else:
             sample = text_tokenizer(
                 _row_text(row, tokenizer, chat), truncation = True, max_length = max_seq_length

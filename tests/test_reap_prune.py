@@ -354,3 +354,19 @@ def test_offloaded_activations_give_the_same_result():
     )
     assert a._unsloth_reap_report == b._unsloth_reap_report
     assert a._unsloth_reap_saliency == b._unsloth_reap_saliency
+
+
+def test_pretokenized_padding_is_dropped_via_attention_mask():
+    samples = _samples(n = 5, seed = 11)
+    width = max(len(x) for x in samples)
+    padded = [
+        {
+            "input_ids": [0] * (width - len(x)) + x,
+            "attention_mask": [0] * (width - len(x)) + [1] * len(x),
+        }
+        for x in samples
+    ]
+    a, b = _qwen3_moe(seed = 4), _qwen3_moe(seed = 4)
+    reap.reap_prune(a, None, sparsity = 0.25, dataset = samples, device = "cpu")
+    reap.reap_prune(b, None, sparsity = 0.25, dataset = padded, device = "cpu")
+    assert a._unsloth_reap_saliency == b._unsloth_reap_saliency
