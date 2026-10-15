@@ -11329,8 +11329,10 @@ class LlamaCppBackend:
         architecture: Optional[str] = None
         token_embd_bytes = 0
         alignment = 32  # GGUF's default when general.alignment is absent
-        # A quant type the pinned gguf package predates: sized from the data layout instead.
+        # A quant type the pinned gguf package predates: sized from the data layout instead,
+        # bounded by the next tensor in FILE order (offsets need not follow descriptor order).
         unsized_at: Optional[int] = None
+        offsets: list[int] = []
         with open(path, "rb") as f:
             if struct.unpack("<I", f.read(4))[0] != 0x46554747:  # b"GGUF"
                 return None, False, 0
@@ -11353,10 +11355,7 @@ class LlamaCppBackend:
                 dims = struct.unpack(f"<{n_dims}Q", f.read(8 * n_dims))
                 ggml_type = struct.unpack("<I", f.read(4))[0]
                 offset = struct.unpack("<Q", f.read(8))[0]
-                if unsized_at is not None:
-                    # The next offset bounds the previous tensor (padded).
-                    token_embd_bytes = offset - unsized_at
-                    unsized_at = None
+                offsets.append(offset)
                 if name == b"output.weight":
                     return architecture, True, 0
                 if name == b"token_embd.weight":
@@ -11367,7 +11366,9 @@ class LlamaCppBackend:
                         token_embd_bytes = math.prod(dims) // block[0] * block[1]
             if unsized_at is not None:
                 data_start = -(-f.tell() // alignment) * alignment
-                token_embd_bytes = max(0, os.path.getsize(path) - data_start - unsized_at)
+                data_end = max(0, os.path.getsize(path) - data_start)
+                upper = min((o for o in offsets if o > unsized_at), default = data_end)
+                token_embd_bytes = max(0, upper - unsized_at)
         return architecture, False, token_embd_bytes
 
     @staticmethod
@@ -11377,7 +11378,8 @@ class LlamaCppBackend:
 
         alignment = 32
         items: list[tuple[str, int]] = []
-        unsized: Optional[tuple[str, int]] = None
+        offsets: list[int] = []
+        unsized: list[tuple[str, int]] = []
         with open(path, "rb") as f:
             if struct.unpack("<I", f.read(4))[0] != 0x46554747:
                 return ()
@@ -11396,24 +11398,22 @@ class LlamaCppBackend:
                 dims = struct.unpack(f"<{n_dims}Q", f.read(8 * n_dims))
                 ggml_type = struct.unpack("<I", f.read(4))[0]
                 offset = struct.unpack("<Q", f.read(8))[0]
-                if unsized is not None:
-                    items.append((unsized[0], offset - unsized[1]))
-                    unsized = None
+                offsets.append(offset)
                 if raw_name == b"token_embd.weight" or raw_name.startswith(b"per_layer_token_embd"):
                     name = raw_name.decode("utf-8", "replace")
                     block = GGML_QUANT_SIZES.get(ggml_type)
                     if block is None:
-                        unsized = (name, offset)
+                        unsized.append((name, offset))
                     else:
                         items.append((name, math.prod(dims) // block[0] * block[1]))
-            if unsized is not None:
+            if unsized:
+                # Bounded by the next tensor in file order, like _gguf_scan_tensor_bytes.
                 data_start = -(-f.tell() // alignment) * alignment
-                items.append(
-                    (
-                        unsized[0],
-                        max(0, os.path.getsize(path) - data_start - unsized[1]),
-                    )
-                )
+                data_end = max(0, os.path.getsize(path) - data_start)
+                ordered = sorted(offsets)
+                for name, offset in unsized:
+                    later = ordered[bisect.bisect_right(ordered, offset) :]
+                    items.append((name, max(0, (later[0] if later else data_end) - offset)))
         return tuple(items)
 
     @staticmethod

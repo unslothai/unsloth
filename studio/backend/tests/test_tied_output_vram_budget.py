@@ -238,6 +238,47 @@ def test_a_quant_type_the_pinned_gguf_package_predates_is_still_charged(backend,
     assert expected <= last < expected + 32
 
 
+def _write_reordered_gguf(path: Path, ggml_type: int) -> Path:
+    """token_embd described first and stored first, but the descriptor after it is stored
+    LAST: offsets, not descriptor order, say where token_embd's data ends."""
+    sizes = {"token_embd.weight": 256 * 64 // 256 * 144, "blk.0.ffn_down.weight": 4096}
+    sizes["blk.0.attn_q.weight"] = 2048
+    data_order = ["token_embd.weight", "blk.0.ffn_down.weight", "blk.0.attn_q.weight"]
+    offsets, at = {}, 0
+    for name in data_order:
+        offsets[name] = at
+        at += -(-sizes[name] // 32) * 32
+    shapes = {
+        "token_embd.weight": (256, 64),
+        "blk.0.attn_q.weight": (256, 8),
+        "blk.0.ffn_down.weight": (256, 16),
+    }
+    infos = bytearray()
+    for name in ["token_embd.weight", "blk.0.attn_q.weight", "blk.0.ffn_down.weight"]:
+        raw = name.encode()
+        infos += struct.pack("<Q", len(raw)) + raw + struct.pack("<I", 2)
+        infos += struct.pack("<QQ", *shapes[name]) + struct.pack("<I", ggml_type)
+        infos += struct.pack("<Q", offsets[name])
+    key = b"general.alignment"
+    kv = struct.pack("<Q", len(key)) + key + struct.pack("<II", 4, 32)
+    body = struct.pack("<II", _GGUF_MAGIC, 3) + struct.pack("<QQ", 3, 1) + kv + bytes(infos)
+    path.write_bytes(body + b"\0" * ((-len(body)) % 32) + b"\0" * at)
+    return path
+
+
+def test_an_unknown_quant_type_is_bounded_by_file_order_not_descriptor_order(backend, tmp_path):
+    from gguf.constants import GGML_QUANT_SIZES
+
+    expected = 256 * 64 // 256 * 144
+    known = _write_reordered_gguf(tmp_path / "known.gguf", _TYPE_Q4_K)
+    assert backend._tied_output_bytes(str(known)) == expected
+    unknown = _write_reordered_gguf(tmp_path / "unknown.gguf", max(GGML_QUANT_SIZES) + 1)
+    assert backend._tied_output_bytes(str(unknown)) == expected
+    assert dict(backend._gguf_scan_host_pinned_tensors(str(unknown))) == {
+        "token_embd.weight": expected
+    }
+
+
 def test_an_encoder_only_architecture_is_charged_nothing(backend, tmp_path):
     """BERT ships token_embd and no output.weight, yet nothing is duplicated (bert.cpp)."""
     path = _write_gguf(
