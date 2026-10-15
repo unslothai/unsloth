@@ -430,6 +430,10 @@ export function LibraryTab() {
         {toggle("showCardDates", "settings.library.showCardDates", "settings.library.showCardDatesDescription")}
       </SettingsSection>
 
+      <SettingsSection title={t("settings.library.downloadsSection")}>
+        {toggle("imageInfoStamp", "settings.library.imageInfoStamp", "settings.library.imageInfoStampDescription")}
+      </SettingsSection>
+
       <SettingsSection title={t("settings.library.browsingSection")}>
         {choice("startTab", "settings.library.startTab", "settings.library.startTabDescription")}
         {choice("sort", "settings.library.sort", "settings.library.sortDescription")}
