@@ -244,6 +244,9 @@ def _cluster_env(
     monkeypatch.setattr(cs, "_remote_gguf_header", lambda *a, **k: ({}, {}))
     monkeypatch.setattr(cs, "_local_gguf_header", lambda *a, **k: ({}, {}))
     monkeypatch.setattr(cs, "_ctx_compute_bytes", lambda *a, **k: 0)
+    monkeypatch.setattr(cs, "_remote_projector_bytes", lambda path, token: 0)
+    # The fake coordinator is a DGX Spark: its GPU memory is the host RAM pool.
+    monkeypatch.setattr(cs, "_shares_host_memory", lambda device: True)
     seen = []
 
     def fake_list(binary, endpoints):
@@ -2861,3 +2864,74 @@ def test_a_committed_internal_load_drops_the_split_record(monkeypatch):
     backend._process = SimpleNamespace(args = ["/b/llama-server", "-m", "/models/other.gguf"])
     cs.state().settle_internal_load()
     assert cs.state().block == [] and cs.state()._backend is None
+
+
+def test_checkpoints_are_not_charged_to_a_discrete_gpu(monkeypatch):
+    _cluster_env(monkeypatch)
+    monkeypatch.setattr(cs, "_shares_host_memory", lambda device: False)
+    monkeypatch.setattr(cs, "_effective_checkpoints", lambda *a: 32)
+    monkeypatch.setattr(
+        cs, "_ctx_compute_bytes", lambda *a, **k: MIB if a[7:] == ("checkpoint",) else 0
+    )
+    run(ss.before_load(_request(max_seq_length = 8192), 4))
+    assert cs.state().plan.extra_bytes == 0
+
+
+def test_shares_host_memory_reads_metal_and_the_host_size(monkeypatch):
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    monkeypatch.setattr(
+        LlamaCppBackend, "_host_memory_capacity_mib", staticmethod(lambda: 128 * 1024)
+    )
+    gpu = lambda name, gib: cs.Device(name, name, gib * GIB, gib * GIB)  # noqa: E731
+    assert cs._shares_host_memory(gpu("MTL0", 8))
+    assert cs._shares_host_memory(gpu("CUDA0", 120))  # a GB10 in a 128 GiB Spark
+    assert not cs._shares_host_memory(gpu("CUDA0", 24))  # a discrete card
+
+
+def test_an_unread_hub_projector_listing_keeps_the_load_local(monkeypatch):
+    seen = _cluster_env(monkeypatch)
+    monkeypatch.setattr(ss, "cached_repo_file", lambda path, variant: None)
+    monkeypatch.setattr(ss, "remote_gguf_size_bytes", lambda *a, **k: 250 * GIB)
+    monkeypatch.setattr(cs, "_remote_gguf_header", lambda *a, **k: (_hub_header, {}))
+    monkeypatch.setattr(cs, "_remote_projector_bytes", lambda path, token: None)
+    request = _request(model_path = "org/vision-GGUF")
+    assert run(ss.before_load(request, 4)) is request and seen == []
+    assert "cannot be sized" in ss.status()["reason"]
+
+
+def test_a_config_error_does_not_lend_the_split_to_another_model(monkeypatch):
+    _serve(monkeypatch)
+    monkeypatch.setenv(cs.ENV_NODES, "bad host!")
+    request = _request(model_path = "/models/other.gguf", llama_extra_args = ["--seed", "1"])
+    out = run(ss.before_load(request, 4))
+    assert out.llama_extra_args == ["--seed", "1"]
+
+
+def test_token_embedding_lora_tensors_are_not_counted_as_freed(monkeypatch, tmp_path):
+    lora = tmp_path / "lora.gguf"
+    lora.write_bytes(
+        _gguf_header(
+            {"general.architecture": (8, "llama")},
+            [
+                ("blk.0.attn_q.weight.lora_a", [64, 64], 0),
+                ("token_embd.weight.lora_a", [GIB // 4], 0),
+            ],
+        )
+    )
+    _cluster_env(monkeypatch)
+    monkeypatch.setattr(
+        ss, "gguf_size_bytes", lambda path: 200 * GIB if path == "/models/big.gguf" else GIB
+    )
+    monkeypatch.setattr(cs, "_local_gguf_header", lambda *a, **k: ({}, {0: GIB, -2: GIB}))
+    run(ss.before_load(_request(llama_extra_args = ["--lora", str(lora)]), 4))
+    assert cs.state().plan.host_bytes == 2 * GIB  # the embedding and its adapter
+
+
+def test_an_unemittable_request_cache_type_keeps_the_inherited_one(monkeypatch):
+    _cluster_env(monkeypatch)
+    monkeypatch.setenv("LLAMA_ARG_CACHE_TYPE_K", "f32")
+    monkeypatch.setenv("LLAMA_ARG_CACHE_TYPE_V", "f32")
+    monkeypatch.setattr(cs, "_local_gguf_header", lambda *a, **k: (_llama_header(8), {}))
+    run(ss.before_load(_request(max_seq_length = 8192, cache_type_kv = "bogus"), 4))
+    assert cs.state().plan.kv_bytes == cs._kv_from_scalars(_llama_header(8), 8192, "f32", "f32", ss)

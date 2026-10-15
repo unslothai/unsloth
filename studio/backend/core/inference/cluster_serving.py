@@ -107,8 +107,9 @@ def _gguf_block_count(path: Optional[str], ss: Any) -> Optional[int]:
         return None
 
 
-def _remote_projector_bytes(model_path: str, hf_token: Optional[str]) -> int:
-    """The largest projector a not-yet-downloaded Hub repo ships, 0 when none or unknown."""
+def _remote_projector_bytes(model_path: str, hf_token: Optional[str]) -> Optional[int]:
+    """The largest projector a not-yet-downloaded Hub repo ships: 0 when none, None when the
+    listing could not be read."""
     if not model_path or "/" not in model_path or os.path.isabs(model_path):
         return 0
     try:
@@ -122,7 +123,7 @@ def _remote_projector_bytes(model_path: str, hf_token: Optional[str]) -> int:
         ]
         return max(sizes, default = 0)
     except Exception:
-        return 0
+        return None
 
 
 def _quant_dir_projector(model_file: Optional[str], disable_vision: bool, ss: Any) -> Optional[str]:
@@ -351,6 +352,20 @@ def _ctx_compute_bytes(
                 os.unlink(scratch.name)
             except OSError:
                 pass
+
+
+def _shares_host_memory(device: Device) -> bool:
+    """Whether a local accelerator's memory is the host RAM pool (Apple Silicon, APUs, DGX
+    Spark): Metal always; otherwise a device holding at least half the host's RAM, which leans
+    to charging host buffers on a large discrete card in a small host, the safe side."""
+    if device.name.upper().startswith("MTL"):
+        return True
+    try:
+        from core.inference.llama_cpp import LlamaCppBackend
+        host = (LlamaCppBackend._host_memory_capacity_mib() or 0) * 1024 * 1024
+    except Exception:
+        return True
+    return not host or device.total_bytes >= host / 2
 
 
 def _effective_checkpoints(
@@ -1056,6 +1071,8 @@ class ClusterServing:
         self._recurrent_layer: float = 0.0
         self._kv_layer_frac: float = 0.0
         self._internal_pre: Optional[Tuple[Any, ...]] = None
+        self._requested_model: Tuple[str, Any] = ("", None)
+        self._served_model: Tuple[str, Any] = ("", None)
         self._attention_layers: int = 0
         self._nextn_bytes: float = 0.0
         self._projector_file: Optional[str] = None
@@ -1187,6 +1204,10 @@ class ClusterServing:
         if self._passthrough:
             return request
         self.settle_internal_load()
+        self._requested_model = (
+            str(getattr(request, "model_path", "") or ""),
+            getattr(request, "gguf_variant", None),
+        )
         self._pre_load = (self.topology, self.reason, self.plan, list(self.block))
         # Every return below that does not plan leaves no plan behind for after_load to record.
         self.plan, self.block = None, []
@@ -1197,6 +1218,8 @@ class ClusterServing:
                 # block (the route strips it from inherited args) so a forced reload keeps it.
                 self.topology, _reason, self.plan, self.block = self._pre_load
                 self.reason = f"cluster config: {self.config_error}; still serving the last split"
+                if self._requested_model != self._served_model:
+                    return request  # another model: no plan, so no stale block either
                 explicit = getattr(request, "llama_extra_args", None)
                 effective = list(explicit if explicit is not None else (inherited_extra_args or []))
                 if not _contains([str(a) for a in effective], self.block):
@@ -1293,7 +1316,10 @@ class ClusterServing:
             )
             return request
         if self._projector_url:
-            self.topology, self.reason = "single", "a projector fetched from a URL cannot be sized"
+            self.topology, self.reason = (
+                "single",
+                "a projector fetched during the load (a URL or an unread Hub listing) cannot be sized",
+            )
             return request
         forced = (os.environ.get(ENV_TOPOLOGY) or "").strip().lower().replace("-", "_") or None
         if forced == "single":
@@ -1392,7 +1418,8 @@ class ClusterServing:
         margin = (fit_target_margin_in(flags, os.environ) or 0.0) * 1024 * 1024
         # Context checkpoints live in host RAM, which a local accelerator may share (unified
         # memory); with none there they take nothing a plan places.
-        checkpoints = self._checkpoints if any(not d.remote for d in devices) else 0.0
+        local = [d for d in devices if not d.remote]
+        checkpoints = self._checkpoints if local and _shares_host_memory(local[0]) else 0.0
 
         def plan_for(weights: float) -> ClusterPlan:
             return plan_cluster(
@@ -1508,10 +1535,11 @@ class ClusterServing:
                 except Exception:
                     extra_blocks = {}
                 lora = {k: v for k, v in extra_blocks.items() if k >= 0}
-                if lora or -1 in extra_blocks:
+                if lora or -1 in extra_blocks or -2 in extra_blocks:
                     for k, v in lora.items():
                         layers[k] = layers.get(k, 0) + v  # beside the layer it modifies
                     output += extra_blocks.get(-1, 0)  # beside the output matrix
+                    self._host_embd += extra_blocks.get(-2, 0)  # beside the host embedding
                 else:
                     unread_adapters += int(ss.gguf_size_bytes(path) or 0)
         self._max_block = (
@@ -1586,6 +1614,10 @@ class ClusterServing:
                 remote = await asyncio.to_thread(
                     _remote_projector_bytes, model_path, getattr(request, "hf_token", None)
                 )
+                if remote is None:
+                    # The loader retries its own lookup and may still fetch one: unsized.
+                    self._projector_url = True
+                    remote = 0
                 sidecars += remote
                 auto_bytes += remote
                 if disable_vision:
@@ -1639,7 +1671,11 @@ class ClusterServing:
                 ss.remote_gguf_size_bytes, model_path, variant, getattr(request, "hf_token", None)
             )
         ctx, cache_type, cache_type_v = ss.effective_kv_settings(request, extras)
+        from core.inference.llama_cpp import _VALID_CACHE_TYPES
+
         requested = str(getattr(request, "cache_type_kv", None) or "").strip()
+        if requested.lower() not in _VALID_CACHE_TYPES:
+            requested = ""  # the loader drops a type it cannot emit and keeps the inherited one
         if requested:
             # The loader emits the request's type over an inherited env one; only extras beat it.
             if not ss._last_operand(extras, ss._CACHE_TYPE_K_FLAGS):
@@ -1851,6 +1887,7 @@ class ClusterServing:
         self._pre_load = None
         self._cancel_event = None
         self._backend = llama_backend
+        self._served_model = self._requested_model
         self._started = set()
         plan = self.plan
         local_count = sum(1 for d in plan.devices if not d.remote) if plan is not None else 0
