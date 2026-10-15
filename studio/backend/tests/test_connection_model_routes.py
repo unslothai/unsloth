@@ -1077,3 +1077,38 @@ def test_a_leading_tag_stays_text_when_thinking_is_off(v1, monkeypatch, path):
         body = _messages_body(thinking = {"type": "disabled"})
         text = "".join(b.get("text", "") for b in v1.post(path, json = body).json()["content"])
     assert text == answer
+
+
+def test_messages_carry_preserve_thinking_to_a_vllm_connection(v1, monkeypatch):
+    import routes.inference as inf
+
+    monkeypatch.setattr(
+        inf.providers_db,
+        "get_provider",
+        lambda pid: {
+            "id": pid,
+            "provider_type": "vllm",
+            "base_url": "http://10.0.0.5:8000/v1",
+            "api_type": "chat_completions",
+            "display_name": "vLLM",
+            "is_enabled": True,
+            "reasoning_config": None,
+        },
+    )
+    history = [
+        {"role": "user", "content": "first"},
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "thinking", "thinking": "earlier thought", "signature": ""},
+                {"type": "text", "text": "done"},
+            ],
+        },
+        {"role": "user", "content": "second"},
+    ]
+    v1.post("/v1/messages", json = _messages_body(messages = history, preserve_thinking = True))
+
+    assistant = next(
+        m for m in FakeExternalClient.calls[-1]["stream"]["messages"] if m["role"] == "assistant"
+    )
+    assert assistant["reasoning_content"] == "earlier thought"

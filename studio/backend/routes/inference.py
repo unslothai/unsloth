@@ -42613,6 +42613,7 @@ async def _anthropic_messages_via_connection(
     reasoning = _anthropic_reasoning_args(payload)
     fields["enable_thinking"] = reasoning["enable_thinking"]
     fields["reasoning_effort"] = reasoning["reasoning_effort"]
+    fields["preserve_thinking"] = reasoning.get("preserve_thinking")
     chat_payload = ChatCompletionRequest(
         **{name: value for name, value in fields.items() if value is not None}
     )
