@@ -260,6 +260,25 @@ def _free_total_mib(ordinal: int) -> tuple[Optional[int], Optional[int]]:
         return None, None
 
 
+def usable_free_mib(ordinal: Optional[int]) -> tuple[Optional[int], Optional[int]]:
+    """(usable MiB, total MiB) on a CUDA card: the driver's free figure plus this process's reserved-but-unallocated
+    allocator cache on that card (blocks a new allocation reuses without asking the driver: the replica's last
+    activations, the link probe's buffer). The one free-memory reading in this module: install, build, per-request
+    and phase-boundary checks, and the CFG-batch gate all go through it."""
+    free, total = _free_total_mib(ordinal)
+    if free is None:
+        return None, total
+    try:
+        import torch
+
+        device = torch.device("cuda", int(ordinal))
+        idle = (torch.cuda.memory_reserved(device) - torch.cuda.memory_allocated(device)) // (1 << 20)
+        free += max(0, int(idle))
+    except Exception:  # noqa: BLE001 - the driver figure alone (conservative)
+        pass
+    return int(free), total
+
+
 def probe_devices(ordinals: Sequence[int], *, measure: bool = True) -> dict[int, DeviceProbe]:
     """Name, memory, peer access and copy bandwidth for ``ordinals``. Static facts are cached per process; free
     memory is read on every call because it moves."""
@@ -307,7 +326,7 @@ def probe_devices(ordinals: Sequence[int], *, measure: bool = True) -> dict[int,
                         pass
                 _PAIR_PROBE[(a, b)] = (access, gbps)
     for o in ords:
-        free, total = _free_total_mib(o)
+        free, total = usable_free_mib(o)
         static = _STATIC_PROBE.get(o, {})
         out[o] = DeviceProbe(
             ordinal = o,
@@ -973,7 +992,7 @@ def secondary_device_memory(ordinal: int) -> Any:
     """A ``DeviceMemory`` reading for a secondary card, or None when unreadable."""
     from .diffusion_memory import DeviceMemory
 
-    free, total = _free_total_mib(int(ordinal))
+    free, total = usable_free_mib(int(ordinal))
     if free is None:
         return None
     return DeviceMemory(
@@ -2509,20 +2528,8 @@ class CfgParallelRouter:
     def _secondary_free_mib(self) -> Optional[int]:
         """Free MiB on the replica card: the driver's figure plus this process's idle cached allocator blocks there
         (the replica's last activations, reusable without a driver allocation), read on the secondary itself."""
-        free, _total = _free_total_mib(self.secondary.index)
-        if free is None:
-            return None
-        if self.secondary.type == "cuda":
-            try:
-                torch = _torch()
-                idle = (
-                    torch.cuda.memory_reserved(self.secondary)
-                    - torch.cuda.memory_allocated(self.secondary)
-                ) // (1 << 20)
-                free += max(0, int(idle))
-            except Exception:  # noqa: BLE001 - the driver figure alone (conservative)
-                pass
-        return int(free)
+        free, _total = usable_free_mib(self.secondary.index)
+        return free
 
     def _room_mib(self, batch: Optional[int]) -> int:
         """Activation room the replica card needs beside the (retained) replica: the max over the phases that card
@@ -4116,17 +4123,14 @@ class CfgBatchRouter:
             return True
         torch = _torch()
         try:
-            free, _total = _free_total_mib(
+            free, _total = usable_free_mib(
                 device.index if device.index is not None else torch.cuda.current_device()
             )
-            reserved_idle = (
-                torch.cuda.memory_reserved(device) - torch.cuda.memory_allocated(device)
-            ) // (1 << 20)
         except Exception:  # noqa: BLE001 - unreadable: let the OOM backstop decide
             return True
         if free is None:
             return True
-        return free + int(reserved_idle) >= self.needed_mib(batch)
+        return free >= self.needed_mib(batch)
 
     def needed_mib(self, batch: Optional[int] = None) -> int:
         """The headroom the batched call needs for the second branch of ``batch`` samples (the latent's leading dim):

@@ -4227,3 +4227,48 @@ def test_cfg_batch_stops_after_consecutive_prediction_misses_for_that_shape_only
     before = router.stats["batched_steps"]
     _guided(dit, 3, steps = 3)
     assert router.stats["batched_steps"] > before
+
+
+def test_install_fit_counts_the_secondarys_idle_allocator_cache(monkeypatch):
+    class Pipe:
+        transformer = _Dit()
+
+    pipe = Pipe()
+    monkeypatch.setattr(mg, "_free_total_mib", lambda ordinal: ({0: 20000, 1: 600}[ordinal], 16000))
+    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda device = None: (4000 << 20) if torch.device(device).index == 1 else 0)
+    monkeypatch.setattr(torch.cuda, "memory_allocated", lambda device = None: (1000 << 20) if torch.device(device).index == 1 else 0)
+    monkeypatch.setattr(mg, "cfg_parallel_decline", lambda pipe, **k: None)
+    monkeypatch.setattr(mg, "_module_device", lambda m: torch.device("cuda", 0))
+    monkeypatch.setattr(torch.cuda, "get_device_name", lambda o: "card")
+    monkeypatch.setattr(mg, "_PAIR_PROBE", {(0, 1): (True, 20.0), (1, 0): (True, 20.0)})
+    monkeypatch.setattr(mg, "_STATIC_PROBE", {0: {"name": "card", "h2d": 10.0}, 1: {"name": "card", "h2d": 10.0}})
+    monkeypatch.delenv(mg.LINK_ENV, raising = False)
+    # 600 MiB free per the driver + 3000 MiB of this process's idle cached blocks on cuda:1: the replica fits
+    with mg.selection_scope(mg.MultiGpuSelection(primary = 0, secondaries = (1,))):
+        reason = mg._install_cfg_parallel_only(pipe, offload_policy = "none")
+    assert reason is None, reason
+    assert mg.usable_free_mib(1)[0] == 3600
+
+
+def test_free_memory_is_read_through_one_helper():
+    import ast
+    from pathlib import Path
+
+    tree = ast.parse(Path(mg.__file__).read_text())
+    allowed = {"_free_total_mib": {"trusted_mem_get_info"}, "usable_free_mib": {"memory_reserved", "memory_allocated", "_free_total_mib"}}
+    watched = {"mem_get_info", "trusted_mem_get_info", "memory_reserved", "memory_allocated", "_free_total_mib"}
+    bad = []
+
+    def visit(node, owner):
+        for child in ast.iter_child_nodes(node):
+            name = owner
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)) and isinstance(node, ast.Module):
+                name = child.name
+            if isinstance(child, ast.Call):
+                called = getattr(child.func, "attr", None) or getattr(child.func, "id", None)
+                if called in watched and called not in allowed.get(name, set()):
+                    bad.append(f"{name}:{child.lineno} calls {called}")
+            visit(child, name)
+
+    visit(tree, None)
+    assert bad == []
