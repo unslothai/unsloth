@@ -346,6 +346,7 @@ export function AudioPage({
     sttLoadAbort,
     deferredSttLoad,
     refreshSttStatus,
+    settleSavedSttRepo,
     sttSelected,
     sttReady,
     releaseTranscribeSelection,
@@ -388,6 +389,7 @@ export function AudioPage({
     ensureSttLoaded,
     setLastSttRepo,
     refreshSttStatus,
+    settleSavedSttRepo,
     sttEngineFor,
     readSttResidency,
     sttLoadGeneration,
@@ -658,6 +660,7 @@ export function AudioPage({
     audioOptionSpecs,
     audioOptionValues,
     sttRepo: cloneSttRepo,
+    settleSttRepo: settleSavedSttRepo,
   });
   const convert = useConvertGeneration({
     status,
@@ -679,6 +682,7 @@ export function AudioPage({
     audioOptionSpecs,
     audioOptionValues,
     sttRepo: cloneSttRepo,
+    settleSttRepo: settleSavedSttRepo,
   });
   const edit = useEditGeneration({
     status,
@@ -700,6 +704,7 @@ export function AudioPage({
     audioOptionSpecs,
     audioOptionValues,
     sttRepo: cloneSttRepo,
+    settleSttRepo: settleSavedSttRepo,
   });
   const separate = useSeparateGeneration({
     status,

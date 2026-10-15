@@ -137,10 +137,10 @@ export const BUDGET = {
   // panel's notice for pages that hit a sandbox limit (#13761) adds 143 B raw / 44 B transfer (-> 6,771,852 B raw,
   // 2,035,948 B transfer, one machine and build, Node 24, chunk count unchanged at 95). Raised by both.
   // Retiring whisper.cpp (#13753: the voice settings v2 migration and settling a saved whisper.cpp pick for the
-  // host) adds 1,468 B raw / 506 B transfer to the eager settings and chat chunks (6,771,852 -> 6,773,320 B raw,
-  // 2,035,948 -> 2,036,454 B transfer against 82f16ca554, one machine and build, Node 24, chunk count unchanged at
+  // host) adds 1,468 B raw / 508 B transfer to the eager settings and chat chunks (6,771,852 -> 6,773,320 B raw,
+  // 2,035,948 -> 2,036,456 B transfer against 82f16ca554, one machine and build, Node 24, chunk count unchanged at
   // 95). Raised by that growth so main's margin stays where it was.
-  transferBytes: 2_036_454,
+  transferBytes: 2_036_456,
   rawBytes: 6_773_320,
 };
 

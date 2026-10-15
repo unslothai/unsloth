@@ -122,6 +122,7 @@ export function useCloneGeneration({
   audioOptionSpecs,
   audioOptionValues,
   sttRepo,
+  settleSttRepo,
 }: Pick<
   AudioHostState,
   | "status"
@@ -143,6 +144,7 @@ export function useCloneGeneration({
     audioOptionSpecs: AudioOptionSpec[];
     audioOptionValues: AudioOptionValues;
     sttRepo: string | null;
+    settleSttRepo?: (repo: string | null) => Promise<string | null>;
   }) {
   const reference = useAudioCloneStore((state) => state.reference);
   const referenceText = useAudioCloneStore((state) => state.referenceText);
@@ -161,6 +163,7 @@ export function useCloneGeneration({
 
   const referenceTranscriber = useReferenceTranscribe({
     sttRepo,
+    settleSttRepo,
     onText: (next, source) =>
       useAudioCloneStore.getState().applyTranscript(source, next),
   });

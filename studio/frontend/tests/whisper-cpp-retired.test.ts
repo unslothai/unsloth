@@ -171,6 +171,51 @@ test("a saved Transcribe whisper.cpp pick moves to Qwen3-ASR only without PyTorc
   // a pick the user made before the status read settles is theirs: the fallback must not replace it.
   assert.match(
     sidecar,
-    /const setLastSttRepo = useCallback\(\s*\(repo: string\) => \{[\s\S]*?retiredWhisperPick\.current = false;\s*setLastSttRepoChoice\(repo\);/,
+    /const setLastSttRepo = useCallback\(\s*\(repo: string\) => \{[\s\S]*?retiredWhisperPick\.current = false;\s*retiredWhisperRepo\.current = null;\s*setLastSttRepoChoice\(repo\);/,
   );
+});
+
+test("Audio page loads wait for a saved whisper.cpp pick to settle", () => {
+  // the reference transcriber derives the engine from the settled repo id alone.
+  for (const engine of [true, false]) {
+    const fallback = retiredWhisperFallback({
+      transformers: { available: false },
+      mtmd: { available: engine },
+      audiocpp: { available: true },
+    });
+    assert.ok(fallback);
+    assert.equal(sttEngineForRepoId(fallback.repo), fallback.engine);
+  }
+  const sidecar = readSrc("features/audio/hooks/use-stt-sidecar.ts");
+  // a read a newer one replaced still settles the pick, so a waiting load is not left on the twin.
+  assert.ok(
+    sidecar.indexOf("const fallback = retiredWhisperFallback(stt);") <
+      sidecar.indexOf("if (generation !== sttStatusRefreshGeneration.current) return;"),
+  );
+  assert.match(
+    sidecar,
+    /const settleSavedSttRepo = useCallback\([\s\S]*?if \(!repo \|\| repo !== retiredWhisperRepo\.current\) return repo;\s*if \(retiredWhisperPick\.current\) await refreshSttStatus\(\);[\s\S]*?retiredWhisperSettled\.current \?\? repo/,
+  );
+  const transcription = readSrc("features/audio/hooks/use-transcription.ts");
+  const prepare = transcription.slice(transcription.indexOf("const prepareTranscriptionModel"));
+  assert.ok(
+    prepare.indexOf("await settleSavedSttRepo(lastSttRepo)") >= 0 &&
+      prepare.indexOf("await settleSavedSttRepo(lastSttRepo)") < prepare.indexOf("ensureSttLoaded("),
+  );
+  // a pick made while the host is read wins over the settled saved one.
+  assert.match(prepare, /repo = selectedSttRepoRef\.current \?\? saved;/);
+  const reference = readSrc("features/audio/hooks/use-reference-transcribe.ts");
+  assert.ok(
+    reference.indexOf("await settleSttRepo(sttRepo)") >= 0 &&
+      reference.indexOf("await settleSttRepo(sttRepo)") < reference.indexOf("transcribeAudioInput("),
+  );
+  assert.doesNotMatch(reference, /sttEngineForRepoId\(sttRepo\)|sttSidecarKeyFor\(sttRepo\)/);
+  for (const hook of ["use-clone-generation", "use-edit-generation", "use-convert-generation"]) {
+    assert.match(
+      readSrc(`features/audio/hooks/${hook}.ts`),
+      /useReferenceTranscribe\(\{\s*sttRepo,\s*settleSttRepo,/,
+    );
+  }
+  const page = readSrc("features/audio/audio-page.tsx");
+  assert.equal(page.match(/settleSttRepo: settleSavedSttRepo,/g)?.length, 3);
 });
