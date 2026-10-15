@@ -97,7 +97,6 @@ def _rms_backward_row(
     X_row = tl.load(X + col_offsets, mask = mask, other = 0).to(tl.float32)
     W_row = tl.load(W + col_offsets, mask = mask, other = 0).to(tl.float32)
 
-    # Get saved row variance
     inv_var = tl.load(r).to(tl.float32)
     normed = X_row * inv_var
     if TRAIN_W:
@@ -471,8 +470,7 @@ def _settings(n_cols):
 
 
 def _launch(wrap, kernel, grid, args, n_tensors, constexprs, device, **options):
-    # Eager CUDA launches skip Triton's per-call argument binding (triton_launch.py, off on HIP).
-    # Traced launches (wrap_triton) and stand-ins that are not Triton kernels keep kernel[grid].
+    # Eager CUDA skips Triton's arg binding (triton_launch.py); traced / non-Triton keep kernel[grid].
     if wrap is _eager_kernel and device.type == "cuda" and not torch.compiler.is_compiling():
         fn = kernel
         if isinstance(kernel, triton.runtime.autotuner.Heuristics):
@@ -687,8 +685,7 @@ def _dw_launch(units, device):
 
 @functools.lru_cache(maxsize = None)
 def _dw_row_config(device, n_cols):
-    # Cached (backward is host bound at small shapes). 64-warp SMs, <= 16 elems/lane: cap registers at 64
-    # so all programs stay resident; uncapped, wide rows kept one program per SM. T4: no measured gain.
+    # Cached (host bound). 64-warp SMs, <= 16 elems/lane: cap registers at 64 so all programs stay resident.
     BLOCK_SIZE, num_warps = _settings(n_cols)
     per_sm, options = _DW_PROGRAMS_PER_SM, {}
     if (

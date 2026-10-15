@@ -215,8 +215,7 @@ def _settings(n_cols):
 
 
 def _launch(kernel, grid, args, n_tensors, constexprs, device, **options):
-    # Eager CUDA launches skip Triton's per-call argument binding (triton_launch.py, off on HIP).
-    # torch.compile traces Fast_Layernorm, so a compiling call keeps kernel[grid].
+    # Eager CUDA skips Triton's arg binding (triton_launch.py); compiling calls keep kernel[grid].
     if device.type == "cuda" and not torch.compiler.is_compiling():
         launch(kernel, grid, args, n_tensors, constexprs, device.index, **options)
     else:

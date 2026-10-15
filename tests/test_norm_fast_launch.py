@@ -152,7 +152,7 @@ def test_launches_follow_the_current_stream(kind, width, gemma, train):
     x, dy = _inputs(width, seed = 4)
     ref = _step(kind, gemma, x, weight, bias, dy)
     _clear(weight, bias)
-    _step(kind, gemma, x, weight, bias, dy)  # warm
+    _step(kind, gemma, x, weight, bias, dy)
     _clear(weight, bias)
     side = torch.cuda.Stream()
     late_x = torch.zeros_like(x)
