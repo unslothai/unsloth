@@ -105,6 +105,9 @@ SUPPORTS_GEMMA4 = transformers_version >= Version("5.5.0")
 VLLM_UNSUPPORTED_MODEL_TYPES = ("gpt_oss",)
 # model_type -> unsloth_zoo.empty_model symbol that rebuilds it from vLLM; an older zoo falls back.
 _VLLM_NEEDS_ZOO_SYMBOL = {"nemotron_h": "extract_nemotron_h_mixer"}
+# vLLM 0.31 has no attention backend for these below sm80: TRITON_ATTN needs 96 KB shared memory
+# for Gemma 4's 512-wide global heads (T4 has 64 KB), FlexAttention rejects its KV sharing.
+VLLM_NEEDS_SM80_MODEL_TYPES = ("gemma4", "gemma4_text", "gemma4_unified", "gemma4_unified_text")
 
 
 def _vllm_unsupported_model_types(model_types):
@@ -115,6 +118,23 @@ def _vllm_unsupported_model_types(model_types):
             if not hasattr(zoo_empty_model, symbol):
                 unsupported.append(model_type)
     return unsupported
+
+
+def _vllm_needs_newer_gpu(model_types):
+    """First model type vLLM cannot run on this CUDA GPU (compute capability < 8), else None."""
+    if DEVICE_TYPE != "cuda":
+        return None
+    model_type = next((t for t in model_types if t in VLLM_NEEDS_SM80_MODEL_TYPES), None)
+    if model_type is None:
+        return None
+    import torch
+
+    try:
+        if torch.cuda.get_device_capability()[0] >= 8:
+            return None
+    except Exception:
+        return None
+    return model_type
 
 
 # Transformers v5 meta-device loading corrupts non-persistent buffers (inv_freq); see _fix_rope_inv_freq() below.
@@ -2381,6 +2401,14 @@ class FastModel(FastBaseModel):
             # Without this, vLLM loads the whole model first and weight sharing then crashes (unslothai/unsloth#4541).
             print(
                 f"Unsloth: fast_inference (vLLM) does not support {_vllm_unsupported[0]} yet - will switch to Unsloth inference!"
+            )
+            fast_inference = False
+            _drop_vllm_engine_kwargs(kwargs)
+        _vllm_old_gpu = _vllm_needs_newer_gpu(model_types) if fast_inference else None
+        if _vllm_old_gpu is not None:
+            print(
+                f"Unsloth: fast_inference (vLLM) cannot run {_vllm_old_gpu} on GPUs older than compute capability 8.0 "
+                "(such as T4) - will switch to Unsloth inference!"
             )
             fast_inference = False
             _drop_vllm_engine_kwargs(kwargs)
