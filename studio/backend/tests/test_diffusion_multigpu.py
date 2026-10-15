@@ -1913,7 +1913,9 @@ def test_refine_tries_the_next_card_when_the_fast_link_one_cannot_hold_a_share(m
     # cuda:1 has the fast link but holds nothing; cuda:2 is slower and fits the companions
     monkeypatch.setattr(mg, "secondary_resident_limit_mib", lambda o, mode: {1: 3000, 2: 12750}[o])
     monkeypatch.setattr(mg, "best_secondary", lambda selection, probes = None: 1)
-    monkeypatch.setattr(mg, "rank_secondaries", lambda primary, cands, free_of, probes = None: sorted(cands))
+    monkeypatch.setattr(
+        mg, "rank_secondaries", lambda primary, cands, free_of, probes = None: sorted(cands)
+    )
     monkeypatch.setattr(mg, "probe_devices", lambda ordinals, measure = True: {})
     with mg.selection_scope(mg.MultiGpuSelection(primary = 0, secondaries = (1, 2))):
         refined = mg.refine_plan_for_multigpu(object(), plan)
