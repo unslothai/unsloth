@@ -172,3 +172,15 @@ test("text-to-audio and audio-to-audio pipelines are Audio, so isolating Audio k
     assert.equal(detectCapabilities([], task, "declare-lab/tango").some((c) => c.key === "audio"), true);
   }
 });
+
+test("3D Diffusers pipelines are neither image nor video gen, and Text only never lists them", () => {
+  for (const task of ["text-to-3d", "image-to-3d"]) {
+    assert.deepEqual(generationKinds(["diffusers"], task, "openai/shap-e"), { image: false, video: false });
+    assert.equal(detectCapabilities(["diffusers"], task, "openai/shap-e").some((c) => c.key === "diffusion"), false);
+    assert.match(readSrc("features/hub/lib/view-models.ts"), new RegExp(`"${task}",`));
+  }
+});
+
+test("changing tabs clears dataset modalities along with the other hidden filters", () => {
+  assert.match(readSrc("features/hub/hub-page.tsx"), /setSearchFilters\(\{\}\);\s*setDatasetModalities\(\[\]\);\s*setUploaderPick\(null\);\s*setFirstPickArmed\(true\);\s*setModelsTab\(next\);/);
+});

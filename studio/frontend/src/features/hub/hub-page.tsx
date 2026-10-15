@@ -693,6 +693,7 @@ export function ModelsPage() {
       setSortBrowseActive(false);
       // The filters control is Discover-only, so a hidden filter must not reapply on return.
       setSearchFilters({});
+      setDatasetModalities([]);
       setUploaderPick(null);
       setFirstPickArmed(true);
       setModelsTab(next);

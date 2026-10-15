@@ -286,6 +286,8 @@ const MEDIA_OUTPUT_TASKS: ReadonlySet<string> = new Set([
   "text-to-speech",
   "text-to-audio",
   "audio-to-audio",
+  "text-to-3d",
+  "image-to-3d",
 ]);
 
 /** One Hub filter pick against a row; image and video gen split the shared "diffusion" capability. */

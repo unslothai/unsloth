@@ -53,6 +53,8 @@ const NEITHER_GEN_TASKS = new Set([
   "text-to-audio",
   "audio-to-audio",
   "text-to-speech",
+  "text-to-3d",
+  "image-to-3d",
 ]);
 
 /** A video family in the repo name (not the owner), e.g. LTX-2.3 or Wan2.2. */
