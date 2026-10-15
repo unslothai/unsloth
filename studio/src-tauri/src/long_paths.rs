@@ -8,6 +8,7 @@ use serde::Serialize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
+#[cfg_attr(not(windows), allow(dead_code))]
 pub enum LongPathsStatus {
     Enabled,
     Disabled,
@@ -16,6 +17,7 @@ pub enum LongPathsStatus {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
+#[cfg_attr(not(windows), allow(dead_code))]
 pub enum EnableLongPathsOutcome {
     Enabled,
     Declined,
