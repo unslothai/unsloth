@@ -270,3 +270,43 @@ def test_save_directory_becomes_the_merge_base(tmp_path):
     assert model._unsloth_reap_saved == model.config._name_or_path
     saved = json.loads((tmp_path / "pruned" / "config.json").read_text())
     assert saved.get("num_experts", saved.get("num_local_experts")) == 12
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        # Router weight in a child module (`gate.wg`).
+        lambda T, base: T.HunYuanMoEV1Config(**base, num_experts = 8, moe_topk = 2),
+        # [1, E] score bias in `gate.moe_statics`.
+        lambda T, base: T.Ernie4_5_MoeConfig(
+            **base, moe_num_experts = 8, moe_layer_start_index = 0, moe_k = 2
+        ),
+    ],
+    ids = ["hunyuan_v1_moe", "ernie4_5_moe"],
+)
+def test_per_expert_router_tensors_in_child_modules_are_sliced(build, tmp_path):
+    from transformers import AutoModelForCausalLM
+
+    base = dict(
+        vocab_size = 96,
+        hidden_size = 32,
+        intermediate_size = 48,
+        moe_intermediate_size = 16,
+        num_hidden_layers = 2,
+        num_attention_heads = 4,
+        num_key_value_heads = 4,
+        head_dim = 8,
+        max_position_embeddings = 64,
+        num_experts_per_tok = 2,
+    )
+    torch.manual_seed(0)
+    model = AutoModelForCausalLM.from_config(build(transformers, base), dtype = torch.float64).eval()
+    reap.reap_prune(model, None, sparsity = 0.25, dataset = _samples(), device = "cpu")
+    for name, tensor in list(model.named_parameters()) + list(model.named_buffers()):
+        if ".mlp." in name and "shared" not in name:
+            assert 8 not in tuple(tensor.shape), (name, tuple(tensor.shape))
+    model.save_pretrained(tmp_path)
+    reloaded = AutoModelForCausalLM.from_pretrained(tmp_path, dtype = torch.float64).eval()
+    ids = torch.tensor([_samples(n = 1, seed = 9)[0]])
+    with torch.no_grad():
+        torch.testing.assert_close(reloaded(ids).logits, model(ids).logits)

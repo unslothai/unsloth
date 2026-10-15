@@ -10,15 +10,15 @@ outputs come from the model's own fused experts kernel (one call with every rout
 pair as its own row) instead of per-expert Linear modules, so no extra dependency is needed.
 """
 
+import inspect
 import json
 import os
-import re
 import time
 
 import torch
 import torch.nn as nn
 
-__all__ = ["reap_prune"]
+__all__ = ["reap_prune", "raise_if_unsaved_reap"]
 
 _NUM_EXPERTS_KEYS = ("num_experts", "num_local_experts", "n_routed_experts", "moe_num_experts")
 _NUM_EXPERTS_MODULE_KEYS = ("num_experts", "n_experts", "n_routed_experts", "num_local_experts")
@@ -73,6 +73,14 @@ def _moe_parts(module, num_experts):
         None,
     )
     if router is None:
+        return None
+    try:
+        params = list(inspect.signature(experts.forward).parameters.values())
+    except (TypeError, ValueError):
+        params = []
+    # The tap needs forward(hidden_states, top_k_index, top_k_weights); Llama4 passes one tensor.
+    positional = [p for p in params if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)]
+    if params and len(positional) < 3 and not any(p.kind == p.VAR_POSITIONAL for p in params):
         return None
     if not any(
         p.dim() == 3 and p.shape[0] == num_experts for p in experts.parameters(recurse = False)
@@ -300,18 +308,31 @@ def _retained(saliency, n_drop, n_drop_per_group, n_group):
 @torch.no_grad()
 def _prune_block(block, experts, router, retained, num_experts):
     index = torch.tensor(retained, dtype = torch.long)
-    for module, sliced in ((experts, None), (router, None), (block, "e_score_correction_bias")):
-        for name, param in list(module.named_parameters(recurse = False)):
-            if param.dim() and param.shape[0] == num_experts and sliced in (None, name):
-                new = param.data.index_select(0, index.to(param.device)).contiguous()
-                setattr(module, name, nn.Parameter(new, requires_grad = param.requires_grad))
-        for name, buffer in list(module.named_buffers(recurse = False)):
-            if buffer.dim() and buffer.shape[0] == num_experts and sliced in (None, name):
-                module._buffers[name] = buffer.index_select(0, index.to(buffer.device)).contiguous()
+    # Experts on dim 0; anything per expert inside the router (HunYuan `gate.wg`, AfMoE `router.gate`,
+    # Ernie's [1, E] `moe_statics` bias); the block's own expert biases.
+    targets = [(experts, None)] + [(m, None) for m in router.modules()]
+    targets.append((block, ("e_score_correction_bias", "expert_bias")))
+    for module, only in targets:
+        tensors = list(module.named_parameters(recurse = False))
+        tensors += list(module.named_buffers(recurse = False))
+        for name, tensor in tensors:
+            if only is not None and name not in only or not tensor.dim():
+                continue
+            if tensor.shape[0] == num_experts:
+                dim = 0
+            elif module is not experts and tensor.shape[-1] == num_experts:
+                dim = -1
+            else:
+                continue
+            new = tensor.data.index_select(dim, index.to(tensor.device)).contiguous()
+            if isinstance(tensor, nn.Parameter):
+                setattr(module, name, nn.Parameter(new, requires_grad = tensor.requires_grad))
+            else:
+                module._buffers[name] = new
         for key in _NUM_EXPERTS_MODULE_KEYS:
             if getattr(module, key, None) == num_experts:
                 setattr(module, key, len(retained))
-        if isinstance(getattr(module, "out_features", None), int) and module is router:
+        if module is not experts and getattr(module, "out_features", None) == num_experts:
             module.out_features = len(retained)
     # Kernel configs Unsloth's MoE backend cached for the old expert count.
     if getattr(experts, "_unsloth_moe_configs", None) is not None:
@@ -369,7 +390,11 @@ def _residual_split(layer, block):
     """(norm, block) when the layer ends ``residual + block(norm(residual))`` so a pruned layer's
     output can be rebuilt from the residual alone; verified bitwise per layer before use."""
     norm = getattr(layer, "post_attention_layernorm", None)
-    if isinstance(norm, nn.Module) and getattr(layer, "mlp", None) is block:
+    if (
+        isinstance(norm, nn.Module)
+        and not isinstance(norm, nn.ModuleList)
+        and getattr(layer, "mlp", None) is block
+    ):
         return norm
     return None
 
@@ -383,7 +408,6 @@ def reap_prune(
     max_seq_length = 2048,
     max_batch_tokens = 16384,
     report_path = None,
-    ignore = None,
     device = None,
     offload_hidden_states = None,
     save_directory = None,
@@ -405,7 +429,6 @@ def reap_prune(
         max_seq_length: truncation length per row.
         max_batch_tokens: padded tokens per calibration batch.
         report_path: optional ``.json`` file for ``{layer name: [kept expert ids]}``.
-        ignore: regex patterns (``re.search``) of MoE block names left untouched.
         device: device layers run on; layers stored on the CPU are moved there one at a time.
         offload_hidden_states: keep calibration activations on the CPU (default: only when they
             would take more than a quarter of the free GPU memory).
@@ -439,13 +462,25 @@ def reap_prune(
     if (n_group is None) != (topk_group is None):
         n_group = topk_group = None
 
+    for config in configs:
+        if getattr(config, "zero_expert_num", None):
+            raise ValueError(
+                "Unsloth: REAP does not support MoE routers with zero (identity) experts."
+            )
     owner, layers = _find_layers(model, num_experts)
     if layers is None:
         raise RuntimeError(
             "Unsloth: REAP found no MoE layers with fused experts. It needs transformers 5.x MoE "
             "modules (an `experts` module with 3D expert weights next to a `gate` / `router`)."
         )
-    ignore = list(ignore or [])
+
+    for layer in layers:
+        moe = _layer_moe(layer, num_experts)
+        if moe is not None and any(hasattr(m, "tid2eid") for m in moe[3].modules()):
+            raise ValueError(
+                "Unsloth: REAP does not support hash-routed MoE layers (fixed token to expert "
+                "tables, e.g. DeepSeek-V4), since dropped experts cannot be remapped."
+            )
 
     n_drop = int(num_experts * float(sparsity))
     if n_drop == 0:
@@ -541,13 +576,10 @@ def reap_prune(
                 return _hidden(layer(h, *_to(args, layer_device), **_to(kwargs, layer_device)))
 
             moe = _layer_moe(layer, num_experts)
-            if moe is not None:
-                block_name = layer_names[id(moe[1])]
-                if any(re.search(pattern, block_name) for pattern in ignore):
-                    moe = None
             norm = None
             if moe is not None:
                 _, block, experts, router = moe
+                block_name = layer_names[id(block)]
                 _check_weights(experts, router, block_name)
                 norm = _residual_split(layer, block)
                 residuals = []
@@ -558,10 +590,15 @@ def reap_prune(
                     try:
                         h0 = hidden[0].to(layer_device, non_blocking = True)
                         reference = run(0, h0)
-                        rebuilt = residuals[0] + _hidden(block(norm(residuals[0]))).reshape(
-                            residuals[0].shape
-                        )
-                        if not torch.equal(reference, rebuilt):
+                        try:
+                            same = len(residuals) == 1 and torch.equal(
+                                reference,
+                                residuals[0]
+                                + _hidden(block(norm(residuals[0]))).reshape(residuals[0].shape),
+                            )
+                        except Exception:  # block needs more than hidden states (DeepSeek-V4)
+                            same = False
+                        if not same:
                             norm = None
                     finally:
                         residuals.clear()
@@ -587,6 +624,11 @@ def reap_prune(
                     if hook is not None:
                         hook.remove()
 
+                if saliency.total is None or not saliency.count.sum().item():
+                    raise RuntimeError(
+                        f"Unsloth: REAP saw no tokens reach {block_name}'s experts module; its MoE "
+                        "forward computes the experts itself, so REAP cannot score them."
+                    )
                 scores = saliency.mean()
                 saliencies[block_name] = scores.tolist()
                 retained = _retained(scores, n_drop, n_drop_per_group, n_group)
@@ -619,7 +661,7 @@ def reap_prune(
             model.train()
 
     if not report:
-        raise RuntimeError("Unsloth: REAP pruned no layers (all MoE layers ignored?).")
+        raise RuntimeError("Unsloth: REAP found no MoE layers to prune.")
     for config in configs:
         for key in _NUM_EXPERTS_KEYS:
             if getattr(config, key, None) == num_experts:
@@ -645,10 +687,24 @@ def reap_prune(
     )
     if save_directory is None:
         print(
-            "Unsloth: to LoRA finetune the pruned model and save it merged or to GGUF, pass "
-            "`save_directory` (or save the pruned model and load it again) before `get_peft_model`."
+            "Unsloth: to LoRA finetune the pruned model, pass `save_directory` (or save the pruned "
+            "model and load it again) before `get_peft_model`."
         )
     return model
+
+
+def raise_if_unsaved_reap(model):
+    """LoRA adapters and merged saves record the base checkpoint on disk, which still holds every
+    expert after an in-memory prune."""
+    if getattr(model, "_unsloth_reap_report", None) and not getattr(
+        model, "_unsloth_reap_saved", None
+    ):
+        raise RuntimeError(
+            "Unsloth: this model was REAP pruned in memory only, but LoRA adapters and merged saves "
+            f"point at the base checkpoint `{model.config._name_or_path}`, which still has every "
+            'expert. Call `reap_prune(..., save_directory = "pruned_model")` (or save the pruned '
+            "model and load it again) before `get_peft_model`."
+        )
 
 
 def _is_token_rows(dataset):

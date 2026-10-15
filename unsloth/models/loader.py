@@ -28,7 +28,7 @@ from .mistral import FastMistralModel
 from .qwen2 import FastQwen2Model
 from .qwen3 import FastQwen3Model
 from .qwen3_moe import FastQwen3MoeModel
-from .reap import reap_prune as _reap_prune
+from .reap import reap_prune as _reap_prune, raise_if_unsaved_reap
 from .cohere import FastCohereModel
 from transformers import AutoConfig
 from transformers import __version__ as transformers_version
@@ -1027,6 +1027,7 @@ class FastLanguageModel(FastLlamaModel):
             return FastDiffusionModel.get_peft_model(
                 model, **_diffusion_peft_kwargs(model, args, kwargs)
             )
+        raise_if_unsaved_reap(model)
         return FastLlamaModel.get_peft_model(model, *args, **kwargs)
 
     @staticmethod
@@ -1928,6 +1929,7 @@ class FastModel(FastBaseModel):
                 model,
                 **_diffusion_peft_kwargs(model, args, kwargs, FastBaseModel.get_peft_model),
             )
+        raise_if_unsaved_reap(model)
         return FastBaseModel.get_peft_model(model, *args, **kwargs)
 
     @staticmethod
