@@ -3199,6 +3199,12 @@ _GENERIC_ROCM_WHEEL_GFX: frozenset[str] = frozenset(
 )
 
 
+# Strix APUs: listed first beside a discrete card, they defer to it for torch alone (their
+# per-arch wheels carry no other arch). Not shadowing: llama.cpp and a lone Strix keep them.
+# install.sh's _amd_prefer_discrete_gfx "torch" mode holds the same list.
+_STRIX_APU_GFX: "frozenset[str]" = frozenset({"gfx1150", "gfx1151", "gfx1152"})
+
+
 # Arches whose only wheel route is unreachable once a second GPU is present, so they must
 # never depose an integrated card. gfx906's rocm6.3 route is gated on it being the sole
 # detected arch (_runtime_target_is_gfx906), which no mixed host satisfies.
@@ -3332,9 +3338,13 @@ def _gfx_has_a_wheel_route(gfx: "str | None") -> bool:
     return bool(gfx) and (gfx in _GENERIC_ROCM_WHEEL_GFX or gfx in _GFX_TO_AMD_INDEX_ARCH)
 
 
-# RDNA 1 and Polaris: no Linux index this installer picks carries their kernels (#8529).
+# RDNA 1, Polaris and gfx1153 (Krackan Point 2): no Linux index this installer picks carries
+# their kernels (#8529, #11815); the generic wheel loads and faults on first use. gfx1153 is
+# torch-only here: llama.cpp's LINUX_NO_ROCM_GFX_TARGETS keeps its HIP route.
 # install.sh's get_torch_index_url holds the same list.
-_LINUX_UNCOVERED_AMD_GFX: "frozenset[str]" = frozenset({"gfx1010", "gfx1011", "gfx1012", "gfx803"})
+_LINUX_UNCOVERED_AMD_GFX: "frozenset[str]" = frozenset(
+    {"gfx1010", "gfx1011", "gfx1012", "gfx1153", "gfx803"}
+)
 
 
 def _linux_host_only_uncovered_amd(*arch_lists: "list[str]") -> "str | None":
@@ -3618,7 +3628,8 @@ def _runtime_gfx_target(
         if gfx_devices
         else None
     )
-    if runtime_gfx in _SHADOWING_INTEGRATED_GFX and not _visible_devices_pinned():
+    _strix_first = runtime_gfx in _STRIX_APU_GFX
+    if (runtime_gfx in _SHADOWING_INTEGRATED_GFX or _strix_first) and not _visible_devices_pinned():
         # Unpinned mixed host: only enumeration order put the integrated GPU first, and the
         # wheel family is picked for ONE arch, so letting the APU decide strands the discrete
         # card. Same #7776 preference _detect_windows_gfx_arch applies, stopping at a set mask
@@ -3629,7 +3640,9 @@ def _runtime_gfx_target(
         _others = [
             g
             for g in gfx_devices
-            if g not in _SHADOWING_INTEGRATED_GFX and g not in _MIXED_HOST_UNROUTABLE
+            if g not in _SHADOWING_INTEGRATED_GFX
+            and g not in _MIXED_HOST_UNROUTABLE
+            and not (_strix_first and g in _STRIX_APU_GFX)
         ]
         # Prefer a discrete card the installer can serve: deposing a routable APU for one no
         # index carries (an RDNA 1 dGPU beside a gfx1103) trades a repairable GPU for nothing.
@@ -6670,8 +6683,8 @@ def _ensure_rocm_torch() -> "bool | None":
         _uncovered = _linux_host_only_uncovered_amd(gfx_codes, _host_codes)
         if _uncovered and not rocm_torch_ready:
             _safe_print(
-                f"   AMD {_uncovered}: no ROCm PyTorch wheel carries kernels for this GPU -- "
-                f"not installing ROCm torch for it.\n"
+                f"   AMD {_uncovered}: no ROCm PyTorch wheel Unsloth installs carries kernels for "
+                f"this GPU -- not installing ROCm torch for it.\n"
             )
             return
         _strix_gfx = _AMD_ARCH_INDEX_FLOOR_GFX

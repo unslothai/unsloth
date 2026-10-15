@@ -4740,11 +4740,18 @@ _amd_gfx_is_shadowing_integrated() {
 
 # The card to install for when enumeration put an integrated GPU first (#7776): one arch picks
 # the wheel family, so letting the APU decide strands the discrete card. gfx906 is never a
-# candidate, since naming it on a mixed host strands BOTH cards.
+# candidate, since naming it on a mixed host strands BOTH cards. A third argument of "torch"
+# also defers a Strix APU (gfx1150-gfx1152) to a routable discrete card: its per-arch wheels
+# carry no other arch. Strix stays off the shadowing table, so llama.cpp and a lone Strix keep
+# it. Mirrors _STRIX_APU_GFX in _runtime_gfx_target (install_python_stack.py).
 _amd_prefer_discrete_gfx() {
     _apdg_devs="$1"
     _apdg_sel="$2"
-    if ! _amd_gfx_is_shadowing_integrated "$_apdg_sel"; then
+    _apdg_strix=""
+    case "${3:-}:$_apdg_sel" in
+        torch:gfx1150|torch:gfx1151|torch:gfx1152) _apdg_strix=1 ;;
+    esac
+    if [ -z "$_apdg_strix" ] && ! _amd_gfx_is_shadowing_integrated "$_apdg_sel"; then
         printf '%s' "$_apdg_sel"
         return 0
     fi
@@ -4756,6 +4763,9 @@ _amd_prefer_discrete_gfx() {
     _apdg_others=$(printf '%s\n' "$_apdg_devs" | awk 'NF' | while IFS= read -r _apdg_g; do
         _amd_gfx_is_shadowing_integrated "$_apdg_g" && continue
         [ "$_apdg_g" = gfx906 ] && continue
+        if [ -n "$_apdg_strix" ]; then
+            case "$_apdg_g" in gfx1150|gfx1151|gfx1152) continue ;; esac
+        fi
         printf '%s\n' "$_apdg_g"
     done)
     _apdg_pick=$(printf '%s\n' "$_apdg_others" | awk 'NF' | while IFS= read -r _apdg_g; do
@@ -5938,8 +5948,8 @@ get_torch_index_url() {
         fi
         # end of the miscomputing-arch gate -- tests/sh/test_rocm_bad_arch_gate.sh lifts
         # the block between the header comment above and this line, so keep both exact.
-        # RDNA 1 / Polaris read fine and still have no wheels: no pytorch.org tag and no AMD
-        # per-arch index carries their kernels, so the generic tag below installed a multi-GB
+        # RDNA 1 / Polaris / gfx1153 read fine and still have no wheels: no pytorch.org tag and no
+        # AMD per-arch index carries their kernels (only the opt-in multi-arch index does), so the generic tag below installed a multi-GB
         # torch that faults on its first GPU op (#8529). Only when EVERY probed arch is one, so
         # a covered peer keeps its wheels. A readable HSA_OVERRIDE_GFX_VERSION is the arch the
         # runtime runs, whatever amd-smi reads, so it alone is judged unless an arch is declared.
@@ -5947,7 +5957,7 @@ get_torch_index_url() {
         _amd_hsa_gfx=$(_hsa_override_gfx_arch "${HSA_OVERRIDE_GFX_VERSION:-}" 2>/dev/null) || _amd_hsa_gfx=""
         [ -n "$_amd_hsa_gfx" ] && [ -z "${UNSLOTH_ROCM_GFX_ARCH:-}" ] && _amd_unsup_src="$_amd_hsa_gfx"
         _amd_unsup_all=$(printf '%s\n' "$_amd_unsup_src" | sed 's/:.*$//' | tr '[:upper:]' '[:lower:]' \
-            | awk 'NF { if ($1 !~ /^gfx(1010|1011|1012|803)$/) bad = 1; else if (!seen[$1]++) l = l (l ? ", " : "") $1 }
+            | awk 'NF { if ($1 !~ /^gfx(1010|1011|1012|1153|803)$/) bad = 1; else if (!seen[$1]++) l = l (l ? ", " : "") $1 }
                    END { if (!bad && l != "") print l }')
         if [ -n "$_amd_unsup_all" ]; then
             echo "[WARN] AMD GPU detected ($_amd_unsup_all) -- Unsloth has no ROCm PyTorch wheels for that arch, installing CPU PyTorch." >&2
@@ -6285,7 +6295,7 @@ THEROCK_MIRROR="${UNSLOTH_THEROCK_MIRROR:-https://rocm.nightlies.amd.com/whl-mul
 # absent because TheRock has no Polaris target.
 _therock_device_extra_for_gfx() {
     case "$1" in
-        gfx1010|gfx1011|gfx1012) echo "device-$1" ;;
+        gfx1010|gfx1011|gfx1012|gfx1153) echo "device-$1" ;;
         *) return 1 ;;
     esac
 }
@@ -7157,7 +7167,21 @@ case "$_torch_index_leaf" in
                 _runtime_gfx=""
             elif [ "$_gfx_space" = hip ] && [ -z "${UNSLOTH_ROCM_GFX_ARCH:-}" ] && [ -n "$_runtime_gfx" ]; then
                 # Unmasked iGPU listed first: install for the discrete card (#7776), as setup.sh does.
-                _runtime_gfx=$(_amd_prefer_discrete_gfx "$_gfx_all" "$_runtime_gfx")
+                # Strix too: its per-arch wheels would strand a discrete card beside it.
+                _gfx_igpu="$_runtime_gfx"
+                _runtime_gfx=$(_amd_prefer_discrete_gfx "$_gfx_all" "$_runtime_gfx" torch)
+                case "$_gfx_igpu" in
+                    gfx1150|gfx1151|gfx1152)
+                        if [ "$_runtime_gfx" != "$_gfx_igpu" ]; then
+                            echo "" >&2
+                            echo "  [WARN] Multiple AMD GPUs detected; installing torch for $_runtime_gfx instead of the" >&2
+                            echo "  [WARN] integrated $_gfx_igpu, whose arch-specific wheels carry no $_runtime_gfx kernels." >&2
+                            echo "  [WARN] Set HIP_VISIBLE_DEVICES (or UNSLOTH_ROCM_GFX_ARCH=$_gfx_igpu) and re-run to" >&2
+                            echo "  [WARN] install for the integrated GPU instead." >&2
+                            echo "" >&2
+                        fi
+                        ;;
+                esac
             fi
         fi
         # An explicit UNSLOTH_ROCM_GFX_ARCH=gfx906 pins the runtime target to the MI50 / Radeon VII path and must win over Strix probe-order detection on a mixed Strix + MI50 host, so the Strix reroute is suppressed when it is set. Normalize a copied HIP gcnArchName (gfx906:sramecc-:xnack- to gfx906) and trim whitespace so the suffix or a stray newline does not defeat the exact gfx906 comparisons below.
@@ -7445,7 +7469,7 @@ elif _torch_index_url_is_rocm "$TORCH_INDEX_URL"; then
         # Only when the routing block ran: a pinned index installs what it names, not the dGPU.
         if [ "$_torch_index_pinned" = false ] && [ -z "${UNSLOTH_ROCM_GFX_ARCH:-}" ] && [ -n "$_gpu_disp_gfx" ]; then
             _gpu_disp_pref=$(_amd_prefer_discrete_gfx \
-                "$(printf '%s\n' "$_gpu_disp_records" | awk -F'|' '$1 != "" { print $1 }')" "$_gpu_disp_gfx")
+                "$(printf '%s\n' "$_gpu_disp_records" | awk -F'|' '$1 != "" { print $1 }')" "$_gpu_disp_gfx" torch)
             if [ -n "$_gpu_disp_pref" ] && [ "$_gpu_disp_pref" != "$_gpu_disp_gfx" ]; then
                 substep "Integrated $_gpu_disp_gfx enumerated first; installing for discrete $_gpu_disp_pref"
                 substep "Set UNSLOTH_ROCM_GFX_ARCH=$_gpu_disp_gfx to target the integrated GPU instead."
@@ -7527,7 +7551,7 @@ elif _has_amd_rocm_gpu; then
         _amd_hsa_gfx=$(_hsa_override_gfx_arch "${HSA_OVERRIDE_GFX_VERSION:-}" 2>/dev/null) || _amd_hsa_gfx=""
         [ -n "$_amd_hsa_gfx" ] && [ -z "${UNSLOTH_ROCM_GFX_ARCH:-}" ] && _amd_unsup_read="$_amd_hsa_gfx"
         _amd_unsup_read=$(printf '%s\n' "$_amd_unsup_read" | sed 's/:.*$//' | tr '[:upper:]' '[:lower:]' \
-            | awk 'NF { if ($1 !~ /^gfx(1010|1011|1012|803)$/) bad = 1; else if (!seen[$1]++) l = l (l ? ", " : "") $1 }
+            | awk 'NF { if ($1 !~ /^gfx(1010|1011|1012|1153|803)$/) bad = 1; else if (!seen[$1]++) l = l (l ? ", " : "") $1 }
                    END { if (!bad && l != "") print l }') || _amd_unsup_read=""
     fi
     if [ "$_torch_index_pinned" = true ]; then
