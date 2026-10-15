@@ -42,13 +42,11 @@ export type PageStorageWrite = {
   requested: string | null;
   from?: unknown;
   url?: string | null;
-  /** The writing page's number for this write, echoed back to it. */
   seq?: number | null;
 };
 
 const writeListeners = new Set<(write: PageStorageWrite) => void>();
 
-/** Called after each write with what the store kept, so other open pages of the site can follow. */
 export function onPageStorageWrite(listener: (write: PageStorageWrite) => void): () => void {
   writeListeners.add(listener);
   return () => writeListeners.delete(listener);
@@ -98,7 +96,6 @@ function save(origin: string, tabId: string, area: PageStorageArea, key: string 
   evict();
 }
 
-/** A closed tab's sessionStorage can't be reached again. */
 export function dropTabPageStorage(tabId: string): void {
   const prefix = `session ${tabId} `;
   for (const [id, store] of stores) {
@@ -121,7 +118,6 @@ export function copyTabPageStorage(fromTabId: string, toTabId: string): void {
 
 const clearListeners = new Set<() => void>();
 
-/** Called on clearPageStorage, so open pages can drop their own copies. */
 export function onPageStorageClear(listener: () => void): () => void {
   clearListeners.add(listener);
   return () => clearListeners.delete(listener);

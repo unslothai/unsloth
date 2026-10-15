@@ -238,8 +238,7 @@ export function PageFrame({
       const target = frameRef.current;
       if (!target || site !== origin || area === "session") return;
       const own = from === target;
-      // The writer hears back too, in order, so racing writes from two pages settle on the store's value.
-      // A value the store refused (over quota) stays in the writer's page.
+      // The writer hears back too, so racing pages settle on the store's value; a refused value stays in its page.
       if (own && value !== requested) return;
       const command: FrameCommand = {
         command: "storageSync",
