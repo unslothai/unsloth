@@ -3734,15 +3734,25 @@ def _tensor_version(tensor: Any) -> Optional[int]:
 
 def _inputs_untouched(fresh_inputs: list, versions: list) -> bool:
     """True when no fresh input of the batched call was written in place: its version counter unchanged, or, for an
-    inference tensor without one, its value still the concatenation (or copy) of the caller's untouched sources."""
-    torch = _torch()
+    inference tensor without one, each dim-0 slice of it still bitwise the caller's untouched source for that branch.
+    The slices are views (``narrow``): the check never allocates another doubled tensor, which on a tight card could
+    run out after the batched forward itself succeeded."""
     for (tensor, sources), version in zip(fresh_inputs, versions):
         if version is not None:
             if _tensor_version(tensor) != version:
                 return False
             continue
-        expected = sources[0] if len(sources) == 1 else torch.cat(sources, dim = 0)
-        if not _bitwise_equal(tensor, expected):
+        if len(sources) == 1:
+            if not _bitwise_equal(tensor, sources[0]):
+                return False
+            continue
+        offset = 0
+        for source in sources:
+            rows = int(source.shape[0])
+            if offset + rows > int(tensor.shape[0]) or not _bitwise_equal(tensor.narrow(0, offset, rows), source):
+                return False
+            offset += rows
+        if offset != int(tensor.shape[0]):
             return False
     return True
 
@@ -4009,7 +4019,18 @@ class CfgBatchRouter(_ShapeVerdicts):
                 try:
                     out = self._batched(args, kwargs, latent)
                 except Exception as exc:  # noqa: BLE001 - anything in the speculative path: plain from here
-                    self.disable(f"speculative batch failed ({type(exc).__name__}: {exc})")
+                    if is_out_of_memory(exc):
+                        # an OOM the attempt's own handlers did not see (verification, splitting): this shape only
+                        self.kept = None
+                        with contextlib.suppress(Exception):
+                            _torch().cuda.empty_cache()
+                        self._disable_shape(
+                            f"out of memory in the speculative batch ({type(exc).__name__}); one branch per call "
+                            "for this shape",
+                            _OFF_TRANSIENT,
+                        )
+                    else:
+                        self.disable(f"speculative batch failed ({type(exc).__name__}: {exc})")
                     out = None
                 if out is not None:
                     return out
@@ -4279,7 +4300,25 @@ class CfgBatchRouter(_ShapeVerdicts):
                 f"the batched call failed ({type(exc).__name__}: {exc}); one branch per call from here"
             )
             return None
-        if not _inputs_untouched(fresh_inputs, fresh_versions):
+        try:
+            untouched = _inputs_untouched(fresh_inputs, fresh_versions)
+        except Exception as exc:  # noqa: BLE001 - the check itself failed after the batched call succeeded
+            self._undo_attempt(state_snapshot)
+            if is_out_of_memory(exc):
+                del b_args, b_kwargs, merged, out
+                with contextlib.suppress(Exception):
+                    torch.cuda.empty_cache()
+                self._disable_shape(
+                    "out of memory verifying the batched call's inputs; one branch per call for this shape",
+                    _OFF_TRANSIENT,
+                )
+                return None
+            self.disable(
+                f"verifying the batched call's inputs failed ({type(exc).__name__}: {exc}); one branch per call "
+                "from here"
+            )
+            return None
+        if not untouched:
             # the model writes its inputs in place: one doubled call is not two calls (the caller's are untouched)
             self._undo_attempt(state_snapshot)
             self.disable(
@@ -4297,6 +4336,11 @@ class CfgBatchRouter(_ShapeVerdicts):
             mine, other = _split_output(out, batch)
         except Exception as exc:  # noqa: BLE001 - incl. a container that cannot be rebuilt: the branch reruns plain
             self._undo_attempt(state_snapshot)
+            if is_out_of_memory(exc):
+                self._disable_shape(
+                    "out of memory splitting the batched output; one branch per call for this shape", _OFF_TRANSIENT
+                )
+                return None
             self.disable(f"output cannot be split per branch ({type(exc).__name__}: {exc})")
             return None
         self.kept = {"out": other, "snapshots": snapshots, "state": state}

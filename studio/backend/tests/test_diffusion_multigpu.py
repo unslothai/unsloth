@@ -4797,3 +4797,81 @@ def test_every_per_shape_disable_in_the_module_goes_through_the_typed_verdict():
     for name in ("CfgParallelRouter", "CfgBatchRouter"):
         cls = getattr(mg, name)
         assert issubclass(cls, mg._ShapeVerdicts) and "_shape_off" not in vars(cls)
+
+
+def test_batched_input_verify_compares_slices_without_a_doubled_copy(monkeypatch):
+    # inference tensors carry no version counter, so every successful batch reaches the value check: it must compare
+    # views of the batched tensor against each branch's source, never torch.cat a second doubled tensor
+    with torch.inference_mode():
+        a, b = torch.randn(2, 3, 4), torch.randn(2, 3, 4)
+        merged = torch.cat((a, b), dim = 0)
+        fresh = [(merged, (a, b))]
+        versions = [mg._tensor_version(merged)]
+        assert versions == [None]
+        cats = []
+        real_cat = torch.cat
+        monkeypatch.setattr(torch, "cat", lambda *x, **k: cats.append(1) or real_cat(*x, **k))
+        assert mg._inputs_untouched(fresh, versions)
+        merged[3, 0, 0] += 1.0  # an in-place write into the second branch's half
+        assert not mg._inputs_untouched(fresh, versions)
+        merged[3, 0, 0] -= 1.0
+        merged[0, 0, 0] += 1.0  # and into the first's
+        assert not mg._inputs_untouched(fresh, versions)
+    assert cats == []
+
+
+def test_out_of_memory_while_verifying_batched_inputs_is_transient(monkeypatch):
+    torch.manual_seed(0)
+    dit = _BatchDit()
+    latents = torch.randn(2, 4)
+    cond, uncond = _embeds()
+    reference = _batch_loop(dit, latents.clone(), 4, cond, uncond)
+    router = mg.CfgBatchRouter(dit)
+    dit.forward = router
+    real = mg._inputs_untouched
+    state = {"oom": True}
+
+    def verify(*a, **k):
+        if state["oom"]:
+            raise torch.OutOfMemoryError("CUDA out of memory. Tried to allocate 2.00 GiB")
+        return real(*a, **k)
+
+    monkeypatch.setattr(mg, "_inputs_untouched", verify)
+    router.begin_request(steps = 4)
+    out = _batch_loop(dit, latents.clone(), 4, cond, uncond)
+    router.end_request()
+    torch.testing.assert_close(out, reference, rtol = 0, atol = 0)  # every branch reran plain
+    assert router.disabled_reason is None  # never a load-wide disable
+    assert mg._off_kind(router.shape_disabled) == "transient" and "verifying" in router.shape_disabled
+    state["oom"] = False
+    router.begin_request(steps = 4)
+    before = router.stats["batched_steps"]
+    out = _batch_loop(dit, latents.clone(), 4, cond, uncond)
+    torch.testing.assert_close(out, reference, rtol = 1e-5, atol = 1e-6)
+    assert router.stats["batched_steps"] > before and router.shape_disabled is None
+
+
+@pytest.mark.parametrize("site", ["_split_output", "_batched"])
+def test_any_out_of_memory_in_the_speculative_batch_is_transient(monkeypatch, site):
+    # an OOM from any step of the attempt declines the shape for this request only, never a load-wide disable: the
+    # output split's own handler, and the caller's backstop for one raised anywhere else in _batched
+    torch.manual_seed(0)
+    dit = _BatchDit()
+    latents = torch.randn(2, 4)
+    cond, uncond = _embeds()
+    reference = _batch_loop(dit, latents.clone(), 4, cond, uncond)
+    router = mg.CfgBatchRouter(dit)
+    dit.forward = router
+
+    def oom(*a, **k):
+        raise torch.OutOfMemoryError("CUDA out of memory. Tried to allocate 2.00 GiB")
+
+    if site == "_split_output":
+        monkeypatch.setattr(mg, site, oom)
+    else:
+        monkeypatch.setattr(router, site, oom)
+    router.begin_request(steps = 4)
+    out = _batch_loop(dit, latents.clone(), 4, cond, uncond)
+    torch.testing.assert_close(out, reference, rtol = 0, atol = 0)
+    assert router.disabled_reason is None, router.disabled_reason
+    assert mg._off_kind(router.shape_disabled) == "transient"
