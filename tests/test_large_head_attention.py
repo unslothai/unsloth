@@ -306,3 +306,31 @@ def test_router_honours_math_sdpa_selection():
     with sdpa_kernel([SDPBackend.EFFICIENT_ATTENTION, SDPBackend.MATH]):
         assert router(_Module(), q, kv, kv, None)[0] != "original"
     assert LH.LARGE_HEAD_ENGAGED["calls"] == before + 1
+
+
+def test_router_keeps_wrapped_router_sentinels():
+    # unsloth_zoo's gemma-4 sliding router re-patches on every model load unless the current sdpa
+    # carries its sentinel; without it, it would wrap this router and the two would recurse.
+    mapping, orig = {}, [None]
+
+    def sdpa(module, query, key, value, attention_mask, **kwargs):
+        return "sdpa", None
+
+    def sliding(module, query, key, value, attention_mask, **kwargs):
+        return orig[0](module, query, key, value, attention_mask, **kwargs)
+
+    def patch_sliding():
+        if getattr(mapping["sdpa"], "_unsloth_gemma4_flash", False):
+            return
+        orig[0] = mapping["sdpa"]
+        sliding._unsloth_gemma4_flash = True
+        mapping["sdpa"] = sliding
+
+    mapping["sdpa"] = sdpa
+    patch_sliding()
+    router = LH._make_router(mapping["sdpa"])
+    mapping["sdpa"] = router
+    patch_sliding()  # second model load
+    assert mapping["sdpa"] is router and router._unsloth_large_head and router._unsloth_original is sliding
+    q = torch.randn(1, 2, 4, 64)
+    assert mapping["sdpa"](None, q, q, q, None)[0] == "sdpa"

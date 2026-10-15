@@ -652,6 +652,11 @@ def _make_router(original):
         return original(module, query, key, value, attention_mask, dropout = dropout,
                         scaling = scaling, is_causal = is_causal, **kwargs)
 
+    # Keep the wrapped router's sentinels (unsloth_zoo's gemma-4 sliding router checks its own), so a
+    # second model load does not wrap this router again and recurse between the two.
+    for name, value in vars(original).items() if hasattr(original, "__dict__") else ():
+        if name.startswith(("_unsloth_", "__unsloth_")):
+            setattr(_sdpa_large_head, name, value)
     _sdpa_large_head._unsloth_large_head = True
     _sdpa_large_head._unsloth_original = original
     return _sdpa_large_head
