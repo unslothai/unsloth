@@ -158,9 +158,12 @@ def drafter_capability(model_name: str, hf_token: Optional[str] = None) -> dict:
     try:
         import unsloth_zoo.speculative.eagle3  # noqa: F401
         import unsloth_zoo.speculative.mtp  # noqa: F401
-    except ImportError:
+    except ImportError as exc:
         # An older unsloth_zoo would also misread a native-MTP model as EAGLE-3-only.
-        result["reason"] = "Drafter training needs a newer unsloth_zoo: pip install -U unsloth_zoo"
+        logger.warning("Drafter trainers unavailable: %r", exc)
+        result["reason"] = (
+            f"Drafter training needs a newer unsloth_zoo (pip install -U unsloth_zoo): {exc}"
+        )[:400]
         return result
     try:
         config, source = _text_config(model_name, hf_token)
