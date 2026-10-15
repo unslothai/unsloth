@@ -229,6 +229,8 @@ export interface GgufVariantsResponse {
   default_variant: string | null;
   /** True when Hub metadata or a complete cached download plan proves companion readiness. */
   dependencies_resolved?: boolean;
+  /** "mlx" for precision folders of an MLX repo. */
+  variant_format?: string | null;
 }
 
 async function parseJsonOrThrow<T>(
@@ -360,17 +362,17 @@ export interface DeleteImpact {
   blocked_by: string[];
 }
 
-/** What a delete would actually reclaim and leave behind. Never throws: the confirm dialog
- * still has to open if this preview is unavailable, it just falls back to the plain wording. */
+/** return the delete preview or `null` so confirmation still opens when unavailable. */
 export async function fetchDeleteImpact(
   repoId: string,
   variant?: string | null,
   cachePath?: string | null,
+  hfToken?: string | null,
 ): Promise<DeleteImpact | null> {
   try {
     const response = await authFetch("/api/hub/delete-impact", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...hubTokenHeader(hfToken) },
       body: JSON.stringify(
         variant
           ? { repo_id: repoId, variant, ...(cachePath ? { cache_path: cachePath } : {}) }

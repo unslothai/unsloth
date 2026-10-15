@@ -117,6 +117,25 @@ def _resolve_inventory_handle(value: str) -> str:
 _CHECKPOINTING_OFF = ("false", "0", "no", "none", "off")
 
 
+class DrafterTrainingConfig(BaseModel):
+    """Optional speculative-decoding drafter trained after the fine-tune (omitted or disabled = off)."""
+
+    enabled: bool = False
+    strategy: Literal["auto", "mtp", "eagle3"] = "auto"
+    data_source: Literal["dataset", "regenerate"] = "dataset"
+    max_examples: int = Field(2000, ge = 16, le = 100000)
+    epochs: float = Field(1.0, ge = 0.1, le = 20)
+    learning_rate: Optional[float] = Field(None, gt = 0, le = 1.0)
+    draft_steps: int = Field(3, ge = 1, le = 8)
+
+    @field_validator("max_examples", "draft_steps", "epochs", mode = "before")
+    @classmethod
+    def _reject_booleans(cls, value: Any) -> Any:
+        if isinstance(value, bool):
+            raise ValueError("expected a number, not a boolean")
+        return value
+
+
 class TrainingStartRequest(BaseModel):
     """Request schema for starting training"""
 
@@ -205,6 +224,16 @@ class TrainingStartRequest(BaseModel):
         description = "Whether to load the Hugging Face dataset in streaming mode",
     )
     eval_steps: float = Field(0.00, description = "Fraction of total steps between evals (0-1)")
+    early_stopping_patience: int = Field(
+        0,
+        ge = 0,
+        le = 1000,
+        description = "Stop after this many evaluations without a lower eval loss and keep the best weights. 0 = off",
+    )
+    drafter: Optional[DrafterTrainingConfig] = Field(
+        None,
+        description = "Train a speculative-decoding drafter (MTP head or EAGLE-3) after the fine-tune",
+    )
     dataset_slice_start: Optional[int] = Field(
         None,
         ge = 0,
@@ -230,6 +259,13 @@ class TrainingStartRequest(BaseModel):
     @classmethod
     def _normalize_project_name(cls, value: Optional[str]) -> Optional[str]:
         return normalize_project_name(value)
+
+    @field_validator("early_stopping_patience", mode = "before")
+    @classmethod
+    def _reject_boolean_patience(cls, value: Any) -> Any:
+        if isinstance(value, bool):
+            raise ValueError("early_stopping_patience must be a number, not a boolean")
+        return value
 
     @field_validator("eval_steps", mode = "before")
     @classmethod
@@ -725,6 +761,17 @@ class TrainingStartRequest(BaseModel):
             )
         return self
 
+    @model_validator(mode = "after")
+    def _validate_drafter(self) -> "TrainingStartRequest":
+        drafter = getattr(self, "drafter", None)
+        if drafter is None or not drafter.enabled:
+            return self
+        if getattr(self, "is_embedding", False) or getattr(self, "is_decision", False):
+            raise ValueError("drafter training is only available for text generation models.")
+        if getattr(self, "training_type", None) == "Continued Pretraining":
+            raise ValueError("drafter training is not available for continued pretraining.")
+        return self
+
 
 class TrainingJobResponse(BaseModel):
     """Immediate response when training is initiated"""
@@ -761,6 +808,7 @@ class TrainingStatus(BaseModel):
         "loading_dataset",
         "configuring",
         "training",
+        "training_drafter",
         "finalizing",
         "completed",
         "error",

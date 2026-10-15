@@ -386,22 +386,43 @@ def _resolve_lora_4bit(mc, load_in_4bit: bool) -> bool:
     return load_in_4bit
 
 
-def _ensure_ssm_kernels(targets: list, resp_queue: Any) -> bool:
+def _ensure_ssm_kernels(
+    targets: list,
+    resp_queue: Any,
+    hf_token: str | None = None,
+) -> bool:
     """Install the SSM kernels the given model(s) lazy-import in from_pretrained; no-op for
-    non-SSM models, idempotent. Returns True on success; on a fatal mamba-ssm failure sends a
-    'loaded' failure response and returns False. Call BEFORE importing transformers, which
-    snapshots its optional-backend gates at import (a later install may not be picked up).
+    non-SSM models, idempotent. *targets* are ``(probe_identifier, config_target)`` pairs: the
+    kernels are decided from the config at ``config_target`` (the resolved base), the name only
+    when there is none. Returns True on success; on a fatal mamba-ssm failure sends a 'loaded'
+    failure response and returns False. Call BEFORE importing transformers, which snapshots its
+    optional-backend gates at import; an in-process reload clears them after installing.
     """
     try:
-        from utils.ssm_runtime import ensure_ssm_runtime
+        from utils.ssm_runtime import (
+            ensure_ssm_runtime,
+            refresh_transformers_kernel_gates,
+            resolved_model_is_ssm,
+            resolved_model_wants_causal_conv1d,
+        )
     except Exception as exc:
         logger.debug("ssm_runtime unavailable (%s); skipping SSM kernel pre-install", exc)
         return True
 
     _ssm_status = lambda m: _send_response(resp_queue, {"type": "status", "message": m})
     try:
-        for ssm_target in dict.fromkeys(t for t in targets if t):
-            ensure_ssm_runtime(ssm_target, status_cb = _ssm_status)
+        for probe, config_target in dict.fromkeys(t for t in targets if t and t[0]):
+            config_target = config_target or probe
+            ensure_ssm_runtime(
+                probe,
+                status_cb = _ssm_status,
+                # transformers-free: this runs before the worker's transformers import.
+                wants_causal_conv1d = resolved_model_wants_causal_conv1d(
+                    probe, config_target, hf_token, scan_modeling_source = False
+                ),
+                is_ssm = resolved_model_is_ssm(probe, config_target, hf_token),
+            )
+        refresh_transformers_kernel_gates()
         return True
     except Exception as exc:
         _send_response(
@@ -690,8 +711,13 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
             _ssm_base = (
                 str(mc.base_model) if (mc.is_lora and getattr(mc, "base_model", None)) else None
             )
-            ssm_targets = [ssm_probe_identifier(config["model_name"], _ssm_base)]
-            if not _ensure_ssm_kernels(ssm_targets, resp_queue):
+            ssm_targets = [
+                (
+                    ssm_probe_identifier(config["model_name"], _ssm_base),
+                    _ssm_base or config["model_name"],
+                )
+            ]
+            if not _ensure_ssm_kernels(ssm_targets, resp_queue, hf_token):
                 return
 
         # Heartbeat keeps the orchestrator's inactivity deadline alive during slow
@@ -1138,6 +1164,10 @@ def _generation_kwargs(backend, cmd: dict, cancel_event) -> dict:
         if not _backend_declares(backend, "video"):
             raise RuntimeError("The loaded backend does not read video.")
         gen_kwargs["video"] = cmd["video_base64"]
+    # Only a raw completion carries these; its batch rows are planned from them.
+    for raw in ("prompt_ids", "penalty_window", "grammar"):
+        if raw in cmd:
+            gen_kwargs[raw] = cmd[raw]
 
     return gen_kwargs
 
@@ -1150,12 +1180,20 @@ def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
     one-at-a-time loop the shared event alone. Nothing is asked during the prefill.
     """
     request_id = cmd.get("request_id", "")
+    # Scoped to this request: cleared when it ends.
+    frames = bool(cmd.get("diffusion_frames")) and hasattr(backend, "diffusion_frame_sink")
+    if frames:
+        backend.diffusion_frame_sink = lambda frame: _send_response(
+            resp_queue, {**frame, "request_id": request_id}
+        )
 
     try:
         gen_kwargs = _generation_kwargs(backend, cmd, cancel_event)
 
         use_adapter = cmd.get("use_adapter")
-        if use_adapter is not None:
+        if "prompt_ids" in cmd:
+            generator = _completion_generator(backend, cmd, cancel_event)
+        elif use_adapter is not None:
             generator = backend.generate_with_adapter_control(
                 use_adapter = use_adapter,
                 **gen_kwargs,
@@ -1199,6 +1237,53 @@ def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
     except Exception as exc:
         logger.error("Generation error: %s", exc, exc_info = True)
         _send_response(resp_queue, _generation_error_payload(request_id, exc))
+    finally:
+        if frames:
+            backend.diffusion_frame_sink = None
+
+
+_COMPLETION_OPTIONS = (
+    "seed",
+    "frequency_penalty",
+    "logit_bias",
+    "stop",
+    "penalty_window",
+    "grammar",
+)
+
+
+def _completion_generator(backend, cmd: dict, cancel_event):
+    """A raw-prompt completion, which only a backend with ``generate_completion`` serves."""
+    if not callable(getattr(backend, "generate_completion", None)):
+        raise RuntimeError("The loaded backend does not serve raw-prompt completions.")
+    return backend.generate_completion(
+        cmd["prompt_ids"],
+        temperature = cmd.get("temperature", 0.7),
+        top_p = cmd.get("top_p", 0.9),
+        top_k = cmd.get("top_k", 40),
+        min_p = cmd.get("min_p", 0.0),
+        max_new_tokens = cmd.get("max_new_tokens", 256),
+        repetition_penalty = cmd.get("repetition_penalty", 1.0),
+        presence_penalty = cmd.get("presence_penalty", 0.0),
+        cancel_event = cancel_event,
+        **{key: cmd[key] for key in _COMPLETION_OPTIONS if key in cmd},
+    )
+
+
+def _handle_resolve_prompt(backend, cmd: dict, resp_queue: Any) -> None:
+    """Resolve a raw completion prompt to token ids with the loaded tokenizer."""
+    reply = {"type": "resolve_prompt_response", "request_id": cmd.get("request_id")}
+    resolve = getattr(backend, "resolve_completion_prompt", None)
+    if not callable(resolve):
+        reply["error"] = "The loaded backend does not serve raw-prompt completions."
+    else:
+        try:
+            reply.update(resolve(cmd.get("prompt")))
+        except ValueError as exc:
+            reply["error"], reply["invalid"] = str(exc), True
+        except Exception as exc:
+            reply["error"] = str(exc)
+    _send_response(resp_queue, reply)
 
 
 def _handle_count_tokens(backend, cmd: dict, resp_queue: Any) -> None:
@@ -1264,13 +1349,17 @@ def _rows_apart(backend, requests, cancel_event, stats: list):
     """A declined batch served reply by reply, as the batch's own (row, snapshot) events."""
     for row, request in enumerate(requests):
         if not cancel_event.is_set():
-            generator = backend.generate_chat_response(
-                **{
-                    name: value
-                    for name, value in request.items()
-                    if _backend_declares(backend, name)
-                },
-                cancel_event = cancel_event,
+            generator = (
+                _completion_generator(backend, request, cancel_event)
+                if "prompt_ids" in request
+                else backend.generate_chat_response(
+                    **{
+                        name: value
+                        for name, value in request.items()
+                        if _backend_declares(backend, name)
+                    },
+                    cancel_event = cancel_event,
+                )
             )
             try:
                 for cumulative_text in generator:
@@ -1721,7 +1810,7 @@ def _handle_generate_audio(backend, cmd: dict, resp_queue: Any, cancel_event) ->
             )
             logger.info("Finished audio separation for request_id=%s", request_id)
             return
-        # Only audio.cpp models take per-model options; other backends never see the keyword.
+        # Only audio.cpp and Orpheus (voice) models take per-model options; others never see the keyword.
         extra = {"audio_options": cmd["audio_options"]} if cmd.get("audio_options") else {}
         # Run fields reach only a backend that takes them: a Speak run on a native TTS model carries a
         # workflow its backend has no keyword for.
@@ -2054,7 +2143,11 @@ def run_inference_process(
     if _hw.DEVICE == _hw.DeviceType.MLX and not _native_audio_worker:
         try:
             from core.inference.mlx_inference import MLXInferenceBackend, _init_mlx_distributed
+            from utils.models.diffusion_lm import mlx_refusal
 
+            refusal = mlx_refusal(model_name, _config_hf_token(config))
+            if refusal:
+                raise RuntimeError(refusal)
             backend = MLXInferenceBackend()
             if config.get("mlx_distributed"):
                 group, rank, size = _init_mlx_distributed()
@@ -2230,6 +2323,8 @@ def run_inference_process(
                         _decline_count_tokens(cmd, resp_queue, "A generation is in progress.")
                     else:
                         _handle_count_tokens(backend, cmd, resp_queue)
+                elif cmd_type == "resolve_prompt":
+                    _handle_resolve_prompt(backend, cmd, resp_queue)
                 elif cmd_type == "share_object":
                     _handle_share_object(backend, cmd, resp_queue)
                 elif cmd_type == "load":
@@ -2384,8 +2479,8 @@ def run_inference_process(
     # (arbitrary names must not match the SSM substrings).
     from utils.ssm_runtime import ssm_probe_identifier
 
-    _ssm_targets = [ssm_probe_identifier(model_name, _base)]
-    if not _ensure_ssm_kernels(_ssm_targets, resp_queue):
+    _ssm_targets = [(ssm_probe_identifier(model_name, _base), _base or model_name)]
+    if not _ensure_ssm_kernels(_ssm_targets, resp_queue, _hf_token):
         return
 
     try:
@@ -2496,6 +2591,9 @@ def run_inference_process(
 
             elif cmd_type == "count_tokens":
                 _decline_count_tokens(cmd, resp_queue)
+
+            elif cmd_type == "resolve_prompt":
+                _handle_resolve_prompt(backend, cmd, resp_queue)
 
             elif cmd_type == "share_object":
                 _handle_share_object(backend, cmd, resp_queue)

@@ -29,7 +29,7 @@ on:
   workflow_dispatch:
     inputs:
       torch_versions:
-        description: 'torch versions to build for, comma separated (2.13.0, 2.14.0; 2.11.0 builds on win_amd64 only)'
+        description: 'torch versions to build for, comma separated (2.13.0, 2.14.0; 2.10.0, 2.11.0 and 2.12.0 build on win_amd64 only)'
         type: string
         default: '2.13.0,2.14.0'
       python_versions:
@@ -143,6 +143,10 @@ jobs:
       CCACHE_MAXSIZE: 20G
       # torch writes this into build.ninja unquoted, so the Windows value has no spaces.
       PYTORCH_NVCC: ${{ matrix.pytorch_nvcc }}
+      # Compress every fatbin image; see NVCC_APPEND_FLAGS in prebuilt_wheels.py. The compile
+      # steps append it to NVCC_APPEND_FLAGS, which Windows already sets for _USE_MATH_DEFINES.
+      # Warm and build must agree or the merged ccache would mix both.
+      FATBIN_FLAGS: ${{ matrix.nvcc_append_flags }}
     steps:
       - name: Harden runner (audit)
         # Audit egress because package downloads use changing endpoints. Its agent is Linux-only.
@@ -455,9 +459,10 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: ccache
-          key: prebuilt-ccache-${{ matrix.platform }}-${{ matrix.dist }}-${{ matrix.ref }}-torch${{ matrix.torch }}-${{ matrix.python_tag }}-shard${{ matrix.shard }}of${{ matrix.shards }}-${{ github.run_id }}
+          # ccache_tag names the nvcc flags ccache cannot see, so an older cache is never restored.
+          key: prebuilt-ccache-${{ matrix.platform }}-${{ matrix.ccache_tag }}-${{ matrix.dist }}-${{ matrix.ref }}-torch${{ matrix.torch }}-${{ matrix.python_tag }}-shard${{ matrix.shard }}of${{ matrix.shards }}-${{ github.run_id }}
           restore-keys: |
-            prebuilt-ccache-${{ matrix.platform }}-${{ matrix.dist }}-${{ matrix.ref }}-torch${{ matrix.torch }}-${{ matrix.python_tag }}-shard${{ matrix.shard }}of${{ matrix.shards }}-
+            prebuilt-ccache-${{ matrix.platform }}-${{ matrix.ccache_tag }}-${{ matrix.dist }}-${{ matrix.ref }}-torch${{ matrix.torch }}-${{ matrix.python_tag }}-shard${{ matrix.shard }}of${{ matrix.shards }}-
 
       - name: Compile slice ${{ matrix.shard }} of ${{ matrix.shards }}
         working-directory: src
@@ -474,6 +479,9 @@ jobs:
             export "${pair?}"
             echo "export $pair"
           done
+          export NVCC_APPEND_FLAGS="${NVCC_APPEND_FLAGS:+$NVCC_APPEND_FLAGS }$FATBIN_FLAGS"
+          echo "NVCC_APPEND_FLAGS=$NVCC_APPEND_FLAGS"
+          if [ -z "$FATBIN_FLAGS" ]; then echo "::error::FATBIN_FLAGS is empty"; exit 1; fi
           ccache -z
           # Windows ends the whole process tree at the deadline; see prebuilt_wheels_timeout.py.
           if [ "$RUNNER_OS" = "Windows" ]; then
@@ -508,7 +516,7 @@ jobs:
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: ccache
-          key: prebuilt-ccache-${{ matrix.platform }}-${{ matrix.dist }}-${{ matrix.ref }}-torch${{ matrix.torch }}-${{ matrix.python_tag }}-shard${{ matrix.shard }}of${{ matrix.shards }}-${{ github.run_id }}-${{ github.run_attempt }}
+          key: prebuilt-ccache-${{ matrix.platform }}-${{ matrix.ccache_tag }}-${{ matrix.dist }}-${{ matrix.ref }}-torch${{ matrix.torch }}-${{ matrix.python_tag }}-shard${{ matrix.shard }}of${{ matrix.shards }}-${{ github.run_id }}-${{ github.run_attempt }}
 
   build:
     name: ${{ matrix.label }}
@@ -535,6 +543,10 @@ jobs:
       CCACHE_MAXSIZE: 20G
       # torch writes this into build.ninja unquoted, so the Windows value has no spaces.
       PYTORCH_NVCC: ${{ matrix.pytorch_nvcc }}
+      # Compress every fatbin image; see NVCC_APPEND_FLAGS in prebuilt_wheels.py. The compile
+      # steps append it to NVCC_APPEND_FLAGS, which Windows already sets for _USE_MATH_DEFINES.
+      # Warm and build must agree or the merged ccache would mix both.
+      FATBIN_FLAGS: ${{ matrix.nvcc_append_flags }}
     steps:
       # Keep setup through the mamba patch in sync with warm.
       - name: Harden runner (audit)
@@ -867,6 +879,9 @@ jobs:
             echo "export $pair"
           done
           echo "MAX_JOBS=$MAX_JOBS NVCC_THREADS=$NVCC_THREADS timeout=$BUILD_TIMEOUT"
+          export NVCC_APPEND_FLAGS="${NVCC_APPEND_FLAGS:+$NVCC_APPEND_FLAGS }$FATBIN_FLAGS"
+          echo "NVCC_APPEND_FLAGS=$NVCC_APPEND_FLAGS"
+          if [ -z "$FATBIN_FLAGS" ]; then echo "::error::FATBIN_FLAGS is empty"; exit 1; fi
           if [ "$RUNNER_OS" = "Windows" ]; then
             # Git Bash puts /usr/bin first, and its coreutils `link.exe` (hard links) shadows MSVC's
             # linker: setuptools found it on PATH and every object compiled, then the final link
@@ -913,6 +928,15 @@ jobs:
           fi
           mv "$built" "dist/${WHEEL_NAME}"
           ls -l dist/
+
+      # An uncompressed fatbin still imports, so only its size gives it away (1.49 GB for
+      # flash-attn instead of ~280 MB). Gate it before anything is signed or published.
+      - name: Check the extension size
+        working-directory: src
+        env:
+          PACKAGE: ${{ matrix.package }}
+          WHEEL_NAME: ${{ matrix.wheel_name }}
+        run: python ../unsloth/.github/scripts/prebuilt_wheels.py size-gate --package "$PACKAGE" "dist/${WHEEL_NAME}"
 
       # The whole reason this release exists, so it is a gate and not a report. A fresh venv with
       # the matching torch, the wheel installed from the file, and the compiled extension

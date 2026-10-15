@@ -27,6 +27,7 @@ import inspect
 import os
 import re
 import sys
+import textwrap
 import warnings
 import weakref
 from contextlib import contextmanager
@@ -601,6 +602,12 @@ class Unsloth{RLTrainer_name}(_Unsloth{RLTrainer_name}):
         if "model" in locals() and hasattr(model, "for_training"):
             _use_gc = model._unsloth_gradient_checkpointing if hasattr(model, '_unsloth_gradient_checkpointing') else getattr(args, 'gradient_checkpointing', True)
             model.for_training(use_gradient_checkpointing=_use_gc)
+        if "model" in locals():
+            try:
+                from unsloth.models._ddp_defaults import unsloth_default_ddp_find_unused_parameters
+                unsloth_default_ddp_find_unused_parameters(args, model)
+            except Exception:
+                pass
         super().__init__({RLTrainer_call_args}{RLTrainer_kwargs})
         if "model" in locals() and hasattr(model, "for_inference"):
             model.for_inference()
@@ -2057,10 +2064,28 @@ def _unsloth_average_gradients(ddp, bucket_bytes = 64 << 20):
             flat = torch.cat([g.reshape(-1) for g in chunk])
             dist.all_reduce(flat, group = group)
             flat.div_(world_size)
-            offset = 0
-            for g in chunk:
-                g.copy_(flat[offset : offset + g.numel()].view_as(g))
-                offset += g.numel()
+            # One fused copy back: a per-tensor copy_ loop costs a launch per LoRA tensor (500+ for an 8B model).
+            pieces = [
+                x.view_as(g) for x, g in zip(torch.split(flat, [g.numel() for g in chunk]), chunk)
+            ]
+            # The fused route needs matching strides (one mismatch slows the whole list), so mismatched grads go alone.
+            dst, src = [], []
+            for g, x in zip(chunk, pieces):
+                if g.stride() == x.stride():
+                    dst.append(g)
+                    src.append(x)
+                else:
+                    g.copy_(x)
+            foreach_copy = getattr(torch, "_foreach_copy_", None)
+            try:
+                if foreach_copy is None:
+                    raise NotImplementedError
+                if dst:
+                    foreach_copy(dst, src)
+            except (RuntimeError, NotImplementedError, TypeError):
+                # Private op: fall back to the per-tensor copy if a torch build lacks or rejects it (idempotent).
+                for g, x in zip(dst, src):
+                    g.copy_(x)
             start = stop
 
 
@@ -4232,6 +4257,83 @@ def patch_trl_disable_gradient_checkpointing():
     return
 
 
+def _spans_several_devices(model):
+    device_map = getattr(model, "hf_device_map", None)
+    return isinstance(device_map, dict) and len({str(d) for d in device_map.values()}) > 1
+
+
+def _first_tensor_device(args, kwargs):
+    for key in ("input_ids", "inputs_embeds", "attention_mask", "labels"):
+        value = kwargs.get(key)
+        if isinstance(value, torch.Tensor):
+            return value.device
+    for value in list(args) + list(kwargs.values()):
+        if isinstance(value, torch.Tensor):
+            return value.device
+    return None
+
+
+class _ApplyOnInputDevice:
+    # Triton launches on the current device, not the tensors': off it, TRL's chunked log-prob kernel returns inf.
+    _unsloth_device_patched = True
+
+    def __init__(self, function):
+        self.function = function
+
+    def apply(self, hidden, *args):
+        device = hidden.device
+        backend = getattr(torch, device.type, None) if device.type in ("cuda", "xpu") else None
+        if backend is None or device.index is None or device.index == backend.current_device():
+            return self.function.apply(hidden, *args)
+        with backend.device(device):
+            return self.function.apply(hidden, *args)
+
+
+def patch_trl_fused_lm_head_devices():
+    # TRL >= 1.15's fused head drops accelerate's io_same_device hook: on a split model log_probs stay on lm_head's card (#4030).
+    try:
+        import trl.trainer.utils as _tu
+    except ImportError:
+        return
+    original = getattr(_tu, "add_fused_lm_head", None)
+    if original is None or getattr(original, "_unsloth_device_patched", False):
+        return
+
+    @functools.wraps(original)
+    def add_fused_lm_head(model, *args, **kwargs):
+        result = original(model, *args, **kwargs)
+        if not _spans_several_devices(model):
+            return result
+        kernel = getattr(_tu, "_ChunkedLogProbFunction", None)
+        if kernel is not None and not getattr(kernel, "_unsloth_device_patched", False):
+            _tu._ChunkedLogProbFunction = _ApplyOnInputDevice(kernel)
+        fused_forward = model.forward
+
+        @functools.wraps(fused_forward)
+        def forward(*f_args, **f_kwargs):
+            outputs = fused_forward(*f_args, **f_kwargs)
+            if not f_kwargs.get("fused_lm_head", False):
+                return outputs
+            device = _first_tensor_device(f_args, f_kwargs)
+            if device is None:
+                return outputs
+            for key, value in outputs.items():
+                if isinstance(value, torch.Tensor) and value.device != device:
+                    outputs[key] = value.to(device)
+            return outputs
+
+        model.forward = forward
+        return result
+
+    add_fused_lm_head._unsloth_device_patched = True
+    _tu.add_fused_lm_head = add_fused_lm_head
+    for _mod_name, _mod in list(sys.modules.items()):
+        if _mod is None or not _mod_name.startswith("trl."):
+            continue
+        if getattr(_mod, "add_fused_lm_head", None) is original:
+            setattr(_mod, "add_fused_lm_head", add_fused_lm_head)
+
+
 def patch_trl_openenv():
     for function in RL_ADDITIONAL_FUNCTIONS["openenv"]:
         logger.info(f"Unsloth: Patching trl openenv with function: {function.__name__}")
@@ -4587,6 +4689,46 @@ def _check_async_grpo_adapter_servable(model):
         model.load_lora(os.path.join(directory, "adapter"), load_tensors = True)
 
 
+_ASYNC_GRPO_PPO_LOSS = "per_token_loss = -torch.min(per_token_loss1, per_token_loss2)"
+# Direct double-sided IS (SAO, arXiv 2607.07508 Eq. 3): a token whose pi_theta / pi_rollout ratio leaves
+# (1 - epsilon, 1 + epsilon_high) gets no gradient at all, whatever the sign of its advantage.
+_ASYNC_GRPO_MASKED_LOSS = (
+    "per_token_loss = torch.where("
+    "(coef_1 > 1 - self.epsilon_low) & (coef_1 < 1 + self.epsilon_high), -per_token_loss1, 0.0)"
+)
+_ASYNC_GRPO_MASK_METRICS = (
+    (
+        "is_low_clipped = (coef_1 < 1 - self.epsilon_low) & (advantages < 0)",
+        "is_low_clipped = coef_1 <= 1 - self.epsilon_low",
+    ),
+    (
+        "is_high_clipped = (coef_1 > 1 + self.epsilon_high) & (advantages > 0)",
+        "is_high_clipped = coef_1 >= 1 + self.epsilon_high",
+    ),
+)
+
+
+@functools.lru_cache(maxsize = None)
+def _async_grpo_masked_compute_loss(compute_loss):
+    source = textwrap.dedent(inspect.getsource(compute_loss))
+    if source.count(_ASYNC_GRPO_PPO_LOSS) != 1:
+        raise ValueError(
+            "Unsloth: importance_sampling_mask = True could not find the PPO loss in "
+            f"{compute_loss.__qualname__}, so it cannot be masked. Drop importance_sampling_mask for this trainer."
+        )
+    source = source.replace(_ASYNC_GRPO_PPO_LOSS, _ASYNC_GRPO_MASKED_LOSS)
+    # The clip_ratio metrics then count masked tokens (either advantage sign) instead of PPO-clipped ones.
+    for old, new in _ASYNC_GRPO_MASK_METRICS:
+        source = source.replace(old, new)
+    namespace = {}
+    exec(
+        compile(source, f"<unsloth masked {compute_loss.__qualname__}>", "exec"),
+        compute_loss.__globals__,
+        namespace,
+    )
+    return functools.wraps(compute_loss)(namespace[compute_loss.__name__])
+
+
 def patch_trl_async_grpo():
     # Let TRL's AsyncGRPOTrainer take a loaded Unsloth model; keep packed rows from attending across sequences.
     if importlib.util.find_spec("trl.experimental") is None:
@@ -4629,7 +4771,18 @@ def patch_trl_async_grpo():
     original_train = getattr(trainer_class, "train", None)
 
     @functools.wraps(original_init)
-    def __init__(self, model, *args, **kwargs):
+    def __init__(
+        self,
+        model,
+        *args,
+        importance_sampling_mask = False,
+        **kwargs,
+    ):
+        masked_loss = (
+            _async_grpo_masked_compute_loss(type(self).compute_loss)
+            if importance_sampling_mask
+            else None
+        )
         config = args[1] if len(args) >= 2 else kwargs.get("args")
         if not isinstance(model, str) and config is None:
             name = getattr(getattr(model, "config", None), "_name_or_path", "") or "model"
@@ -4692,6 +4845,8 @@ def patch_trl_async_grpo():
         if server is not None:
             self._unsloth_vllm_server = server
             weakref.finalize(self, server.stop)
+        if masked_loss is not None:
+            self.compute_loss = types.MethodType(masked_loss, self)
 
     trainer_class.__init__ = __init__
     if original_train is not None:
@@ -4745,6 +4900,10 @@ def PatchFastRL(algorithm = None, FastLanguageModel = None):
         return
     # Install the disable_gradient_checkpointing noop BEFORE patch_trl_rl_trainers, which imports more trl.* submodules: anything imported after the sys.modules walk keeps the old binding.
     patch_trl_disable_gradient_checkpointing()
+    try:
+        patch_trl_fused_lm_head_devices()
+    except Exception as e:
+        logger.info(f"Unsloth: Could not patch trl add_fused_lm_head for split models: {e}")
     # Also before patch_trl_rl_trainers, so the generated trainers import the wrapped helpers.
     try:
         from ._trl_tool_templates import patch_trl_tool_chat_templates

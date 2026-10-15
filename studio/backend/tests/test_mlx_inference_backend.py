@@ -33,6 +33,10 @@ FUSIONS = (
     "residual_norm_handoff",
     "packed_gated_delta",
 )
+# Fused scopes zoo's own generate.py enters that Studio does not wrap itself, so they get no
+# _mlx_fused_* helper and stay out of the FUSIONS parametrisations: unsloth_zoo #1757 added
+# fused_verify_attention around speculative verify. The stub still has to answer them.
+ZOO_ONLY_FUSIONS = ("verify_attention",)
 
 
 @pytest.fixture(autouse = True)
@@ -41,7 +45,7 @@ def mlx_inference_patches(monkeypatch, native_vlm_generation_context):
 
     monkeypatch.setattr(mlx_inference, "_vlm_generation_context", contextlib.nullcontext)
     module = types.ModuleType("unsloth_zoo.mlx.inference")
-    for name in FUSIONS:
+    for name in FUSIONS + ZOO_ONLY_FUSIONS:
         setattr(module, f"fused_{name}", _neutral_scope)
     for name, helper in PLAIN_HELPERS.items():
         setattr(module, name, helper)
@@ -2376,6 +2380,7 @@ def _install_fake_text_stack(
             self,
             ids,
             skip_special_tokens = False,
+            clean_up_tokenization_spaces = True,
         ):
             return "".join(str(i) for i in ids)
 
@@ -2443,6 +2448,210 @@ def test_mlx_text_tracks_tokens_on_the_native_reasoning_path(monkeypatch):
     _run_turn(backend, "P1")
     _run_turn(backend, "P2")
     assert captured[1]["prompt"] == [9]
+
+
+def test_mlx_completion_prompt_skips_the_template_and_reuses_the_prompt_cache(monkeypatch):
+    _install_fake_prompt_cache_api(monkeypatch)
+    captured = []
+    token_map = {"P1": [1, 2, 3], "generated": [7, 8]}
+    backend = _install_fake_text_stack(monkeypatch, token_map, captured)
+    _run_turn(backend, "P1")
+
+    monkeypatch.setattr(backend, "_render_text_prompt", lambda *_a, **_k: pytest.fail("templated"))
+    seen = {}
+    monkeypatch.setattr(
+        "core.inference.mlx_inference._mlx_sampling_processors", lambda **kw: seen.update(kw)
+    )
+    monkeypatch.setattr("core.inference.grammar_constraint.GrammarConstraint", _RawConstraint)
+    ids = [1, 2, 3, 7, 8, 9]
+    out = list(backend.generate_completion(ids, max_new_tokens = 4, penalty_window = 4, grammar = "G"))
+
+    assert captured[1]["prompt"] == [9]
+    assert out[-1] == "78" and backend.last_generation_stats["timings"]["cache_n"] == 5
+    assert seen["penalty_prompt"] == [1, 2, 3, 7, 8, 9] and seen["penalty_window"] == 4
+    assert seen["grammar_constraint"].built == ("G", backend._tokenizer)
+    # The reply decodes with skip_special_tokens, so the grammar must not spell text with them.
+    assert seen["grammar_constraint"].options == {"strips_special_tokens": True}
+    # Unconstrained too: llama-server returns the pieces without whitespace cleanup.
+    cleanups, decode = [], type(backend._tokenizer).decode
+    monkeypatch.setattr(
+        type(backend._tokenizer),
+        "decode",
+        lambda tok, ids, **kw: cleanups.append(kw.get("clean_up_tokenization_spaces"))
+        or decode(tok, ids, **kw),
+    )
+    list(backend.generate_completion(ids, max_new_tokens = 4))
+    assert cleanups and set(cleanups) == {False}
+
+
+def _RawConstraint(grammar, tokenizer, **kw):
+    noop = lambda *_a: None
+    return SimpleNamespace(
+        built = (grammar, tokenizer),
+        options = kw,
+        allows_reasoning = False,
+        decoded_dropping = noop,
+        stops_on = noop,
+    )
+
+
+def test_mlx_vlm_completion_prompt_runs_untemplated_from_its_ids(monkeypatch):
+    from core.inference import mlx_inference
+
+    seen = {}
+    mlx_vlm = types.ModuleType("mlx_vlm")
+    mlx_vlm.stream_generate = lambda *a, **kw: seen.update(args = a, kwargs = kw) or iter(
+        [SimpleNamespace(text = "ok", prompt_tokens = 3, generation_tokens = 1)]
+    )
+    monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
+    _install_fake_mlx(monkeypatch)
+    sys.modules["mlx.core"].array = lambda rows: rows
+    monkeypatch.setattr(
+        mlx_inference, "_temporary_mlx_adapter_state", lambda *_a: contextlib.nullcontext()
+    )
+    backend = mlx_inference.MLXInferenceBackend()
+    backend._model, backend._is_vlm = SimpleNamespace(), True
+    backend._tokenizer = backend._processor = SimpleNamespace()
+    monkeypatch.setattr(backend, "_render_vlm_prompt", lambda *_a, **_k: pytest.fail("templated"))
+    monkeypatch.setattr(backend, "_vlm_prompt_cache_session", lambda *a, **_k: seen.update(cache = a))
+    monkeypatch.setattr(mlx_inference, "_mlx_sampling_processors", lambda **kw: seen.update(kw))
+    monkeypatch.setattr("core.inference.grammar_constraint.GrammarConstraint", _RawConstraint)
+
+    assert list(backend.generate_completion([5, 6], max_new_tokens = 2, grammar = "G")) == ["ok"]
+    assert seen["args"][2:] == ("", None) and seen["kwargs"]["input_ids"] == [[5, 6]]
+    assert seen["kwargs"]["skip_special_tokens"] is True
+    assert seen["penalty_prompt"] == [5, 6]
+    assert seen["grammar_constraint"].built == ("G", backend._tokenizer)
+    assert seen["cache"] == (None, None, "")
+
+    # With sampled ids the reply is decoded from them: the runtime's text trims the first
+    # piece's leading space and keeps control tokens, which a raw continuation must not.
+    pieces = {7: " Paris", 8: "<|im_start|>", 9: "!"}
+    backend._tokenizer = SimpleNamespace(
+        decode = lambda ids, skip_special_tokens, clean_up_tokenization_spaces: "".join(
+            pieces[i] for i in ids if not (skip_special_tokens and i == 8)
+        )
+    )
+    responses = [
+        SimpleNamespace(text = text, token = token, generation_tokens = n, prompt_tokens = 2)
+        for n, (token, text) in enumerate([(7, "Paris"), (8, "<|im_start|>"), (9, "!")], 1)
+    ]
+    mlx_vlm.stream_generate = lambda *a, **kw: iter(responses)
+    assert list(backend.generate_completion([5, 6], max_new_tokens = 3))[-1] == " Paris!"
+
+
+def test_a_raw_vision_prompt_decodes_on_its_own_even_when_zoo_could_batch_it(monkeypatch):
+    from core.inference import mlx_inference
+
+    engine = types.ModuleType("unsloth_zoo.mlx.generate")
+    engine.VLM_TOKEN_ID_PROMPTS = True
+    package = types.ModuleType("unsloth_zoo.mlx")
+    package.generate = engine
+    monkeypatch.setitem(sys.modules, "unsloth_zoo", types.ModuleType("unsloth_zoo"))
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx", package)
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.generate", engine)
+    sys.modules["unsloth_zoo"].mlx = package
+    monkeypatch.setattr(mlx_inference, "_batched_vision_engine_gap", lambda _e: None)
+    monkeypatch.setattr(mlx_inference, "_row_processor_gap", lambda _e, _r: None)
+    backend = mlx_inference.MLXInferenceBackend()
+    backend._model = SimpleNamespace(_is_vlm_model = True)
+    assert backend._vlm_batch_unavailable_reason([{}, {}]) is None
+    assert backend._vlm_batch_unavailable_reason([{"prompt_ids": [1]}, {"prompt_ids": [2]}])
+
+
+def test_mlx_batch_rows_plan_a_raw_completion_prompt_untemplated(monkeypatch):
+    from core.inference import mlx_inference
+
+    backend = _install_fake_text_stack(monkeypatch, {"generated": [7]}, [])
+    monkeypatch.setattr(backend, "_render_text_prompt", lambda *_a, **_k: pytest.fail("templated"))
+    seen = {}
+    monkeypatch.setattr(mlx_inference, "_mlx_sampling_processors", lambda **kw: seen.update(kw))
+    row = mlx_inference._row_kwargs({"prompt_ids": [1, 2, 3], "penalty_window": 2})
+    plan = backend._plan_text_row([], **row)
+    assert (plan.prompt, plan.think_prefix, seen["penalty_prompt"], seen["penalty_window"]) == (
+        [1, 2, 3],
+        "",
+        [1, 2, 3],
+        2,
+    )
+    backend._make_row_cache = lambda: None
+    assert backend._batch_prompt_row(plan.prompt, None)[1] == [1, 2, 3]
+    kwargs = []
+    monkeypatch.setattr(type(backend._tokenizer), "decode", lambda _t, _i, **kw: kwargs.append(kw))
+    plan.stream._decode([7])
+    assert kwargs[-1]["clean_up_tokenization_spaces"] is False
+    monkeypatch.setattr(backend, "_render_vlm_prompt", lambda *_a, **_k: pytest.fail("templated"))
+    monkeypatch.setattr(
+        backend, "_generation_limit", lambda prompt, limit, ids, **_k: (prompt, ids)
+    )
+    vision = backend._plan_vlm_request({"prompt_ids": [4, 5], "messages": []})
+    assert (vision.prompt, vision.max_tokens) == ([4, 5], ([4, 5], [4, 5]))
+    assert backend._vlm_batch_prompt([4, 5]) == {"prompt_token_ids": [4, 5]}
+    assert mlx_inference._request_batch_gap({"grammar": "G"})
+
+
+_COMPLETION_TOK = SimpleNamespace(
+    encode = lambda text, add_special_tokens: [100] * add_special_tokens + [ord(c) for c in text],
+    decode = lambda ids, skip_special_tokens, clean_up_tokenization_spaces = True: "".join(
+        chr(i % 256) for i in ids
+    ).replace(" .", "." if clean_up_tokenization_spaces else " ."),
+)
+
+
+@pytest.mark.parametrize(
+    "prompt, ids, text",
+    [
+        ("ab", [100, 97, 98], "ab"),
+        # Only a leading string gets the tokenizer's special tokens.
+        ([5, "ab"], [5, 97, 98], "\x05ab"),
+        (["ab", 5, 6, "c"], [100, 97, 98, 5, 6, 99], "ab\x05\x06c"),
+        ({"prompt_string": [5, "a"]}, [5, 97], "\x05a"),
+        ([199], [199], "\xc7"),
+        ([97, 32, 46], [97, 32, 46], "a ."),
+        ([200], ValueError, None),
+        ([-1], ValueError, None),
+        ([], ValueError, None),
+        ([True], ValueError, None),
+    ],
+)
+def test_mlx_completion_prompt_resolves_as_llama_server_tokenizes_it(prompt, ids, text):
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    backend = MLXInferenceBackend()
+    backend._model = SimpleNamespace(args = SimpleNamespace(vocab_size = 200))
+    backend._tokenizer = _COMPLETION_TOK
+    if ids is ValueError:
+        with pytest.raises(ValueError):
+            backend.resolve_completion_prompt(prompt)
+    else:
+        assert backend.resolve_completion_prompt(prompt) == {
+            "ids": ids,
+            "text": text,
+            "n_vocab": 200,
+        }
+
+
+def test_mlx_penalty_window_scores_the_last_tokens_of_prompt_and_completion():
+    mx = pytest.importorskip("mlx.core")
+    from core.inference import mlx_inference
+
+    presence = mlx_inference._make_mlx_presence_penalty_processor(1.0, window = 2)
+    frequency = mlx_inference._make_mlx_frequency_penalty_processor(1.0, window = 3)
+    z = mx.zeros((1, 5))
+    # The prompt's own tail counts from the first step; tokens past the window do not.
+    assert mx.array_equal(presence(mx.array([1, 2, 3]), z)[0], mx.array([0, 0, -1, -1, 0]))
+    assert mx.array_equal(frequency(mx.array([1, 3, 3, 3]), z)[0], mx.array([0, 0, 0, -3, 0]))
+    off = dict(repetition_penalty = 1.3, presence_penalty = 1.0, frequency_penalty = 1.0)
+    assert mlx_inference._mlx_sampling_processors(penalty_window = 0, **off) is None
+    # Prefill and prompt-cache reuse hand processors only the prompt's last token at first.
+    make = lambda: mlx_inference._mlx_sampling_processors(
+        presence_penalty = 1.0, penalty_window = 3, penalty_prompt = [0, 1, 2, 3]
+    )[0]
+    tail, whole = make(), make()
+    assert tail.history_only
+    assert mx.array_equal(tail(mx.array([3]), z)[0], mx.array([0, -1, -1, -1, 0]))
+    assert mx.array_equal(tail(mx.array([3, 4]), z)[0], mx.array([0, 0, -1, -1, -1]))
+    assert mx.array_equal(whole(mx.array([0, 1, 2, 3]), z)[0], mx.array([0, -1, -1, -1, 0]))
 
 
 def test_mlx_presence_penalty_latches_the_first_decode_step():
@@ -8974,7 +9183,7 @@ def test_mlx_vlm_every_release_reads_one_models_rate_the_same_way(
 ):
     """A model's declared rate must not depend on which mlx-vlm is installed.
 
-    Studio pins ``mlx-vlm>=0.4.4,<=0.7.4``, which spans both shapes: releases with no resolver
+    Studio pins ``mlx-vlm>=0.4.4,<=0.7.8``, which spans both shapes: releases with no resolver
     and, from 0.7.0, releases that have one. Reading the rate only through the resolver left
     every install on the older shape sampling at the library default instead of the rate the
     checkpoint asked for.
@@ -9647,3 +9856,39 @@ def test_a_turboquant_load_turns_a_pin_into_a_request_budget(monkeypatch):
     assert policy(8192, 8192) == (3.5, None, False, 8192)
     assert policy(0, 262144) == (3.5, None, False, None)
     assert policy(8192, 8192, "refused") == (None, 8192, True, None)
+
+
+def test_mlx_precision_folder_loads_from_its_own_download(monkeypatch, tmp_path):
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    _install_fake_mlx(monkeypatch)
+    calls = []
+    _install_fake_fast_mlx(monkeypatch, calls)
+    fetched = []
+
+    def _snapshot_download(
+        repo_id,
+        allow_patterns = None,
+        **_,
+    ):
+        fetched.append((repo_id, allow_patterns))
+        (tmp_path / "6-bit").mkdir(exist_ok = True)
+        (tmp_path / "6-bit" / "config.json").write_text("{}")
+        return str(tmp_path)
+
+    monkeypatch.setattr("huggingface_hub.snapshot_download", _snapshot_download)
+    monkeypatch.setattr("utils.utils.hf_cache_snapshot_dir_for_repo", lambda repo: None)
+
+    backend = MLXInferenceBackend()
+    repo = "orcarouter/Qwen3.8-27B-Uncensored-MLX"
+    config = SimpleNamespace(identifier = repo, is_vision = False, gguf_variant = "6-bit")
+    assert backend.load_model(config)
+    assert calls[-1][0] == (str(tmp_path / "6-bit"),)
+    assert fetched == [(repo, ["6-bit/*"])]
+    assert backend.active_model_name == repo
+    assert backend.models[repo]["gguf_variant"] == "6-bit"
+
+    assert backend.load_model(SimpleNamespace(identifier = repo, is_vision = False))
+    assert calls[-1][0] == (repo,)
+    assert backend.models[repo]["gguf_variant"] is None
+    assert len(fetched) == 1

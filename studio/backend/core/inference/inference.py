@@ -51,6 +51,8 @@ from core.inference.chat_template_helpers import (
     neutralize_tts_prompt_text,
     prompt_opens_reasoning_channel,
     trailing_assistant_text,
+    tts_prompt_with_voice,
+    tts_voice_options,
 )
 from core.inference.presence_penalty import _make_presence_penalty_processor
 from core.inference.generation_timing import (
@@ -705,6 +707,108 @@ def _without_image_parts(messages) -> list[dict]:
     return out
 
 
+_CANVAS_MASK = "\u2591"
+_CANVAS_FRAME_INTERVAL_S = 0.1
+
+
+def _accepts_on_frame(generate_text) -> bool:
+    """An older core would swallow on_frame unused."""
+    import inspect
+
+    candidates = [generate_text]
+    try:
+        from unsloth.models import diffusion_samplers
+        candidates.append(diffusion_samplers.generate_text)
+    except ImportError:
+        pass
+    for fn in candidates:
+        try:
+            if "on_frame" in inspect.signature(fn).parameters:
+                return True
+        except (TypeError, ValueError):
+            continue
+    return False
+
+
+def _render_canvas(tokenizer, tokens, mask_id) -> str:
+    tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
+    parts, run = [], []
+    for token in tokens:
+        if mask_id is not None and token == mask_id:
+            if run:
+                parts.append(tokenizer.decode(run, skip_special_tokens = True))
+                run = []
+            parts.append(_CANVAS_MASK)
+        else:
+            run.append(token)
+    if run:
+        parts.append(tokenizer.decode(run, skip_special_tokens = True))
+    return "".join(parts)
+
+
+def _diffusion_eos_ids(model, tokenizer, chat) -> tuple:
+    """The ids ``generate_text`` cuts its reply at; empty on an older core."""
+    import importlib
+    try:
+        samplers = importlib.import_module("unsloth.models.diffusion_samplers")
+        base = samplers.unwrap_diffusion_model(model)
+        ids = list(samplers._eos_ids(base, tokenizer))
+        if chat:
+            ids += [i for i in samplers._turn_end_ids(tokenizer) if i not in ids]
+        return tuple(ids)
+    except Exception:
+        return ()
+
+
+def _diffusion_frame_relay(
+    tokenizer,
+    sink,
+    interval_s = None,
+    stop = None,
+    eos_ids = (),
+):
+    """on_frame for the core sampler: one frame per interval to ``sink``, cut where the final reply is.
+    Never raises into the sampler."""
+    import time
+
+    last = [float("-inf")]
+    if interval_s is None:
+        interval_s = _CANVAS_FRAME_INTERVAL_S
+
+    def on_frame(frame):
+        now = time.monotonic()
+        # A block's last step is never throttled: later frames build on it.
+        block_end = int(frame.get("step", 0)) >= int(frame.get("total", 0)) > 0
+        if now - last[0] < interval_s and not block_end:
+            return
+        last[0] = now
+        try:
+            tokens = list(frame.get("tokens") or ())
+            for index, token in enumerate(tokens):
+                if token in eos_ids:
+                    tokens = tokens[:index]
+                    break
+            text = _render_canvas(tokenizer, tokens, frame.get("mask_id"))
+            for sequence in stop or ():
+                if sequence and sequence in text:
+                    text = text[: text.index(sequence)]
+            total = int(frame.get("total", 0))
+            sink(
+                {
+                    "type": "diffusion_frame",
+                    "block": int(frame.get("block", 0)),
+                    # Zero-based for the canvas; the sampler's block-end frame is step == total.
+                    "step": max(min(int(frame.get("step", 0)), total - 1), 0),
+                    "total": total,
+                    "text": text,
+                }
+            )
+        except Exception as exc:
+            logger.debug("Dropped a diffusion canvas frame: %s", exc)
+
+    return on_frame
+
+
 class InferenceBackend:
     """Unified inference backend supporting text, vision, and LoRA models"""
 
@@ -723,6 +827,8 @@ class InferenceBackend:
         self.device = get_device().value
         self._audio_codec_manager = AudioCodecManager()
         self.last_generation_stats = None
+        # Set by the worker for one request that asked for canvas frames.
+        self.diffusion_frame_sink = None
 
         # _generation_lock serializes model.generate(). Plain Lock (NOT RLock):
         # RLock reentrancy would let concurrent compare-mode requests race on
@@ -993,6 +1099,9 @@ class InferenceBackend:
                     FastLanguageModel.for_inference(model)
                     self.models[model_name]["model"] = model
                     self.models[model_name]["tokenizer"] = tokenizer
+                    voice_options = tts_voice_options(audio_type)
+                    if voice_options:
+                        self.models[model_name]["audio_options"] = voice_options
 
                 # Load external codec for TTS audio types
                 # (Whisper is ASR, audio_vlm is audio input — neither needs one)
@@ -1024,6 +1133,19 @@ class InferenceBackend:
             exact_model_name = _exact_model_name_for_load(config, load_in_4bit)
             use_exact_model_name = exact_model_name is not None
             load_path = exact_model_name or config.path
+            from utils.models.diffusion_lm import (
+                diffusion_lm_profile_for_model,
+                loaded_diffusion_profile,
+            )
+
+            diffusion_lm_profile = diffusion_lm_profile_for_model(
+                load_path, hf_token = _hf_token_for_loader(hf_token)
+            )
+            if not diffusion_lm_profile and config.is_lora and config.base_model:
+                # A Hub LoRA has no config.json: classify its base before the vision branch claims DiffusionGemma.
+                diffusion_lm_profile = diffusion_lm_profile_for_model(
+                    config.base_model, hf_token = _hf_token_for_loader(hf_token)
+                )
             # A LoRA loads its base model.
             offload_kwargs = _offload_kwargs_for_fit(
                 config.base_model if config.is_lora and config.base_model else load_path,
@@ -1032,7 +1154,39 @@ class InferenceBackend:
                 _hf_token_for_loader(hf_token),
                 mapped = not use_exact_model_name,
             )
-            if config.is_vision:
+            if diffusion_lm_profile:
+                # Text-diffusion LMs (LLaDA, Dream, DiffusionGemma, ...) decode with their own sampler,
+                # never left-to-right generate(); DiffusionGemma's vision tower is not used here.
+                from unsloth import FastModel
+
+                model, tokenizer = FastModel.from_pretrained(
+                    model_name = load_path,
+                    max_seq_length = max_seq_length,
+                    dtype = dtype,
+                    **_load_in_4bit_kwargs(load_in_4bit),
+                    device_map = device_map,
+                    token = _hf_token_for_loader(hf_token),
+                    trust_remote_code = trust_remote_code,
+                    use_exact_model_name = use_exact_model_name,
+                )
+                FastModel.for_inference(model)
+                loaded_profile = loaded_diffusion_profile(model)
+                if not loaded_profile:
+                    # As training does: an autoregressive load must never reach the diffusion sampler.
+                    raise RuntimeError(
+                        f"'{load_path}' is a text-diffusion model ({diffusion_lm_profile}), but the installed "
+                        "Unsloth loaded it as an ordinary model. Update with `unsloth studio update`."
+                    )
+                self.models[model_name]["diffusion_lm_profile"] = loaded_profile
+                self.models[model_name]["is_vision"] = False
+                self.models[model_name]["model"] = model
+                self.models[model_name]["tokenizer"] = tokenizer
+                logger.info(
+                    f"Loaded text-diffusion model for chat (profile: "
+                    f"{self.models[model_name]['diffusion_lm_profile']})"
+                )
+
+            elif config.is_vision:
                 model, processor = _load_with_offload_fallback(
                     FastVisionModel.from_pretrained,
                     model_name = load_path,
@@ -1101,6 +1255,12 @@ class InferenceBackend:
 
                 self.models[model_name]["model"] = model
                 self.models[model_name]["tokenizer"] = tokenizer
+                # A Hub LoRA has no config.json for the probe above, but core still loads a diffusion base
+                # through its diffusion path: decode it with its sampler, never left-to-right.
+                loaded_profile = loaded_diffusion_profile(model)
+                if loaded_profile:
+                    self.models[model_name]["diffusion_lm_profile"] = loaded_profile
+                    logger.info(f"Loaded text-diffusion model for chat (profile: {loaded_profile})")
 
             raise_if_offloaded(self.models[model_name]["model"], device_map, "Inference")
             self.models[model_name]["context_length"] = runtime_context_length(
@@ -1564,6 +1724,22 @@ class InferenceBackend:
             raise RuntimeError("No active model")
 
         model_info = self.models[self.active_model_name]
+        if model_info.get("diffusion_lm_profile"):
+            template_messages = (
+                [{"role": "system", "content": system_prompt}] + messages
+                if system_prompt
+                else messages
+            )
+            yield from self._generate_diffusion_lm(
+                model_info,
+                messages = _without_image_parts(template_messages),
+                temperature = temperature,
+                max_new_tokens = max_new_tokens,
+                cancel_event = cancel_event,
+                _adapter_state = _adapter_state,
+                stop = stop,
+            )
+            return
         is_vision = model_info.get("is_vision", False)
         tokenizer = model_info.get("tokenizer") or model_info.get("processor")
         tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
@@ -2537,6 +2713,78 @@ class InferenceBackend:
                 )
                 yield cleaned
 
+    def _generate_diffusion_lm(
+        self,
+        model_info: dict,
+        prompt: Optional[str] = None,
+        messages: Optional[list] = None,
+        temperature: float = 0.0,
+        max_new_tokens: Optional[int] = 256,
+        cancel_event = None,
+        _adapter_state = None,
+        stop: Optional[list] = None,
+    ) -> Generator[str, None, None]:
+        """A text-diffusion LM fills a whole block at once, so the answer arrives as one completion: there is
+        no left-to-right token stream to forward. Holds the generation lock until the sampler returns, and
+        the sampler polls ``cancel_event`` between denoising steps."""
+        # No token stats come back from the sampler; a previous request's must not be reported for this one.
+        self.last_generation_stats = None
+        from utils.models.diffusion_lm import require_diffusion_api
+
+        if messages:
+            # Same choke point as the left-to-right renderer: role / turn markup inside message text is
+            # neutralised before the sampler renders the chat template.
+            from core.inference.chat_template_helpers import neutralize_for_render
+            tokenizer = model_info["tokenizer"]
+            messages, _, _ = neutralize_for_render(
+                getattr(tokenizer, "tokenizer", tokenizer), messages, None
+            )
+        generate_text = getattr(require_diffusion_api("FastDiffusionModel"), "generate_text", None)
+        if generate_text is None:
+            raise RuntimeError(
+                "Unsloth: chatting with a text-diffusion model needs a newer Unsloth "
+                "(FastDiffusionModel.generate_text). Update with `unsloth studio update`."
+            )
+        try:
+            from unsloth.models.diffusion_samplers import (
+                DiffusionGenerationCancelled as cancelled_error,
+            )
+        except ImportError:  # an older core: no cancellation error to catch
+            cancelled_error = ()
+        frame_kwargs = {}
+        sink = getattr(self, "diffusion_frame_sink", None)
+        if sink is not None and _accepts_on_frame(generate_text):
+            frame_kwargs["on_frame"] = _diffusion_frame_relay(
+                model_info["tokenizer"],
+                sink,
+                stop = stop,
+                eos_ids = _diffusion_eos_ids(
+                    model_info["model"], model_info["tokenizer"], messages is not None
+                ),
+            )
+        with self._generation_lock:
+            if _adapter_state is not None:
+                self._apply_adapter_state(_adapter_state)
+            try:
+                text = generate_text(
+                    model_info["model"],
+                    model_info["tokenizer"],
+                    prompt = prompt,
+                    messages = messages,
+                    max_new_tokens = int(max_new_tokens or 256),
+                    temperature = float(temperature or 0.0),
+                    stop_callback = (lambda: cancel_event is not None and cancel_event.is_set()),
+                    **frame_kwargs,
+                )
+            except cancelled_error:
+                return
+        text = text or ""
+        for sequence in stop or ():
+            if sequence and sequence in text:
+                text = text[: text.index(sequence)]
+        if text and not (cancel_event is not None and cancel_event.is_set()):
+            yield text
+
     def generate_stream(
         self,
         prompt: str,
@@ -2572,6 +2820,17 @@ class InferenceBackend:
         self.last_generation_stats = None
 
         model_info = self.models[self.active_model_name]
+        if model_info.get("diffusion_lm_profile"):
+            yield from self._generate_diffusion_lm(
+                model_info,
+                prompt = prompt,
+                temperature = temperature,
+                max_new_tokens = max_new_tokens,
+                cancel_event = cancel_event,
+                _adapter_state = _adapter_state,
+                stop = stop,
+            )
+            return
         model = model_info["model"]
         # For VLMs the stored "tokenizer" is actually the processor. Unwrap to
         # the real tokenizer so TextIteratorStreamer's skip_prompt /
@@ -2773,6 +3032,7 @@ class InferenceBackend:
         instructions: Optional[str] = None,
         language: Optional[str] = None,
         seed: Optional[int] = None,
+        audio_options: Optional[dict] = None,
     ) -> Tuple[bytes, int]:
         """Generate audio from text for TTS models. Returns (wav_bytes, sample_rate). Blocking."""
         # Reserved for native audio architectures; codec-backed TTS models do
@@ -2792,7 +3052,9 @@ class InferenceBackend:
         top_k = self._normalize_top_k(top_k)
         # Every codec below concatenates its prompt instead of templating it, so this
         # is the one choke point for all four (#7066).
-        text = neutralize_tts_prompt_text(text, audio_type)
+        text = tts_prompt_with_voice(
+            neutralize_tts_prompt_text(text, audio_type), audio_type, audio_options
+        )
 
         if cancel_event is not None and cancel_event.is_set():
             raise RuntimeError("Audio generation cancelled")

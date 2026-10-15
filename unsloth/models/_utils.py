@@ -71,6 +71,7 @@ __all__ = [
     "unsloth_compile_transformers",
     "resolve_model_class",
     "resolve_attention_implementation",
+    "fall_back_from_flash_attention_on_pre_ampere",
     "resolve_encoder_attention_implementation",
     "_set_attn_impl",
     "set_task_config_attr",
@@ -118,6 +119,7 @@ __all__ = [
     "get_moe_expert_submodule_leaves",
     "moe_expert_submodule_regex",
     "widen_target_regex_to_expert_submodules",
+    "native_expert_only_regex",
     "warn_if_zoo_cannot_merge_moe_experts",
     "_select_moe_detection_targets",
     "EMBEDDING_MODULES",
@@ -1612,6 +1614,127 @@ def _set_attn_impl(config, impl):
         return impl
     _write_attn_impl(config, impl)
     return impl
+
+
+def _cuda_index(placement):
+    """CUDA index of a device-map placement, or None for cpu / disk offload."""
+    if isinstance(placement, int):
+        return placement
+    try:
+        device = torch.device(placement)
+    except (RuntimeError, TypeError):
+        return None
+    if device.type != "cuda":
+        return None
+    # A bare "cuda" means the current device, which a framework may have moved off device 0.
+    return torch.cuda.current_device() if device.index is None else device.index
+
+
+def _attention_placements(model, device_map):
+    """Device-map keys that run attention: each attention module's longest-prefix entry, plus entries inside
+    one (a fine-grained map can place q_proj alone). An unresolvable key counts."""
+    keys = sorted((k for k in device_map if isinstance(k, str)), key = len, reverse = True)
+    out = set()
+    for key in keys:
+        try:
+            model.get_submodule(key)
+        except Exception:
+            out.add(key)
+    for name, module in model.named_modules():
+        if not name or "attention" not in type(module).__name__.lower():
+            continue
+        owner = next((k for k in keys if k == "" or name == k or name.startswith(k + ".")), None)
+        if owner is not None:
+            out.add(owner)
+        out.update(k for k in keys if k.startswith(name + "."))
+    return out
+
+
+def _pre_ampere_cuda_devices(model):
+    """CUDA indices that Flash Attention 2 cannot run on (sm < 80) and that the loaded `hf_device_map`
+    puts attention layers on. An `lm_head` or embedding alone there never calls flash."""
+    device_map = getattr(model, "hf_device_map", None)
+    if DEVICE_TYPE != "cuda" or not isinstance(device_map, dict):
+        return []
+    try:
+        indices = {k: _cuda_index(v) for k, v in device_map.items()}
+        pre_ampere = {
+            i
+            for i in set(indices.values())
+            if i is not None and torch.cuda.get_device_capability(i)[0] < 8
+        }
+    except Exception:
+        return []
+    if not pre_ampere:
+        return []  # same-generation hosts never walk the modules
+    attention = _attention_placements(model, device_map)
+    return sorted({indices[k] for k in attention if indices.get(k) in pre_ampere})
+
+
+def fall_back_from_flash_attention_on_pre_ampere(model):
+    """Device 0 chose Flash Attention 2; switch to SDPA (or eager) when the device map also put attention
+    layers on a pre-Ampere card, where every flash call would raise. Same-generation hosts never change."""
+    if not HAS_FLASH_ATTENTION:
+        return False
+    pre_ampere = _pre_ampere_cuda_devices(model)
+    if not pre_ampere:
+        return False
+    model_class = type(model)
+    # Same SDPA eligibility as resolve_attention_implementation: a known-wrong SDPA stays on eager.
+    class_sdpa = getattr(model_class, "_supports_sdpa", False) and not _declares_no_sdpa(
+        model_class
+    )
+    configs, seen = [], set()
+
+    def _collect(config):
+        if config is None or id(config) in seen:
+            return
+        seen.add(id(config))
+        configs.append(config)
+        for key in getattr(config, "sub_configs", None) or ():
+            _collect(getattr(config, key, None))
+
+    for module in model.modules():
+        _collect(getattr(module, "config", None))
+    flash = [
+        config
+        for config in configs
+        if str(_config_get(config, "_attn_implementation", None) or "").startswith(
+            "flash_attention"
+        )
+    ]
+    if not flash:
+        return False
+
+    def _sdpa_ok(config):
+        model_type = (_config_get(config, "model_type", "") or "").lower()
+        # SDPA cannot apply an attention-logit softcap (Gemma 2), so those stay exact on eager.
+        softcap = _config_get(config, "attn_logit_softcapping", None)
+        # A tower already on eager (no SDPA, e.g. DonutSwin) must keep it.
+        eager = _config_get(config, "_attn_implementation", None) == "eager"
+        return not _is_sdpa_excluded(model_type) and not softcap and not eager
+
+    try:
+        from transformers.modeling_utils import PreTrainedModel
+    except Exception:
+        PreTrainedModel = ()
+    towers_sdpa = all(
+        getattr(type(m), "_supports_sdpa", False) and not _declares_no_sdpa(type(m))
+        for m in model.modules()
+        if isinstance(m, PreTrainedModel)
+    )
+    # One answer for the whole tree, decided before any write: a composite's setter recurses into
+    # its children, so a parent rewritten to sdpa would carry a softcapped child with it.
+    ok = class_sdpa and towers_sdpa and all(_sdpa_ok(c) for c in configs)
+    changed = "sdpa" if ok else "eager"
+    for config in flash:
+        _write_attn_impl(config, changed)
+    if changed:
+        print(
+            f"Unsloth: Layers were placed on cuda:{pre_ampere[0]}, which cannot run Flash Attention 2 "
+            f"(compute capability below 8.0), so the model uses {changed} attention instead."
+        )
+    return bool(changed)
 
 
 _REMOTE_CODE_HUB_KWARGS = (
@@ -3571,6 +3694,12 @@ import transformers.trainer
 
 transformers.trainer.get_model_param_count = get_model_param_count
 
+# gc.freeze() the setup-time heap for each outermost Trainer.train(). Installed at import, before
+# PatchFastRL (llama.py) captures `train` for the RL resume guard, so every trainer goes through it.
+from ._gc_train_scope import patch_trainer_train_gc_scope as _patch_trainer_train_gc_scope
+
+_patch_trainer_train_gc_scope(transformers.trainer.Trainer)
+
 
 def patch_mistral_nemo_config(config):
     if "head_dim (" not in config:
@@ -3816,6 +3945,23 @@ elif DEVICE_TYPE == "npu":
     # Ask torch_npu: the module-level False silently rewrote an explicit bfloat16 to float16.
     SUPPORTS_BFLOAT16 = torch.npu.is_bf16_supported()
 
+
+def _xformers_fa3_lacks_sm90a(build_info, capability, flash3) -> bool:
+    # Bundled FA3 is compiled for TORCH_CUDA_ARCH_LIST verbatim; without "9.0a" (conda-forge) its wgmma
+    # kernels trap on H100 and poison the CUDA context (#3963). Unset list = xformers' "8.0 9.0a" default.
+    if tuple(capability) != (9, 0):
+        return False
+    if getattr(flash3, "_C_flashattention3", None) is None:
+        return False
+    if getattr(flash3, "FLASH_VERSION", None) == "pip_pkg":
+        return False
+    try:
+        arch_list = str(build_info.build_env.get("TORCH_CUDA_ARCH_LIST") or "")
+    except Exception:
+        return False
+    return bool(arch_list) and "9.0a" not in arch_list
+
+
 try:
     _xformers_logger = logging.getLogger("xformers")
     _xformers_logger.setLevel(logging.ERROR)
@@ -3877,7 +4023,7 @@ try:
     from xformers._cpp_lib import _register_extensions
 
     try:
-        _register_extensions()
+        _xformers_build = _register_extensions()
     except Exception as error:
         raise ImportError(
             "Unsloth: Xformers was not installed correctly.\n"
@@ -3887,6 +4033,17 @@ try:
             "Longer error message:\n" + str(error)
         ) from error
     import xformers.ops.fmha as xformers
+
+    if (
+        DEVICE_TYPE == "cuda"
+        and torch.cuda.is_available()
+        and hasattr(xformers, "_set_use_fa3")
+        and _xformers_fa3_lacks_sm90a(
+            _xformers_build, torch.cuda.get_device_capability(), getattr(xformers, "flash3", None)
+        )
+    ):
+        xformers._set_use_fa3(False)
+    del _xformers_build
 
     xformers_attention = xformers.memory_efficient_attention
 except ModuleNotFoundError:
@@ -4322,8 +4479,17 @@ if DEVICE_COUNT == 1 and int(os.environ.get("WORLD_SIZE", "1")) <= 1:
     import accelerate.state
 
     accelerate.state.PartialState._prepare_backend = _prepare_backend
+
+    # DeepSpeed keeps its type even on one device: reporting NO turns on accelerate's native AMP, whose
+    # dtype-less autocast under DeepSpeed is float16 and breaks a bfloat16 model (#225).
+    def _single_device_distributed_type(self):
+        real = getattr(self.__dict__.get("state"), "distributed_type", None)
+        return (
+            DistributedType.DEEPSPEED if real == DistributedType.DEEPSPEED else DistributedType.NO
+        )
+
     # Must be a property: a bare function binds as a method, inverting every `!= DistributedType.NO` guard in accelerate (#10016).
-    accelerate.accelerator.Accelerator.distributed_type = property(lambda self: DistributedType.NO)
+    accelerate.accelerator.Accelerator.distributed_type = property(_single_device_distributed_type)
 
 
 _PER_LAYER_DEVICE_MISSING = object()
@@ -5359,6 +5525,9 @@ def patch_gradient_accumulation_fix(Trainer):
         _unsloth_trainer_init.__wrapped__ = _original_trainer_init
         Trainer.__init__ = _unsloth_trainer_init
         Trainer._unsloth_init_wrapped_for_accelerate_gas = True
+
+    # Idempotent: already installed at import unless Trainer was reloaded since.
+    _patch_trainer_train_gc_scope(Trainer)
 
 
 # Real children only: PEFT's LoraModel forwards `base_model` to the backbone, skipping the loss head.
@@ -7177,8 +7346,20 @@ def fast_inference_setup(model_name, model_config):
                 f"Unsloth: Switching from Unsloth dynamic quant to normal quant since\n"
                 f"we do not yet support fast inference for {model_name}"
             )
-            model_name = model_name[: -len("unsloth-bnb-4bit")] + "bnb-4bit"
+            model_name = _vllm_plain_bnb_or_16bit(model_name)
     return fast_inference, model_name
+
+
+def _vllm_plain_bnb_or_16bit(model_name):
+    """`-unsloth-bnb-4bit` -> `-bnb-4bit` when that repo is published, else the 16-bit original (quantized on load)."""
+    from .mapper import FLOAT_TO_INT_MAPPER, INT_TO_FLOAT_MAPPER
+
+    plain = model_name[: -len("unsloth-bnb-4bit")] + "bnb-4bit"
+    lower = model_name.lower()
+    key = lower if lower in INT_TO_FLOAT_MAPPER else FLOAT_TO_INT_MAPPER.get(lower)
+    if key is None or (FLOAT_TO_INT_MAPPER.get(plain.lower()) or "").lower() == key.lower():
+        return plain
+    return INT_TO_FLOAT_MAPPER.get(key) or plain
 
 
 def save_lora_adapter(model, save_directory, *args, **kwargs):
@@ -9028,17 +9209,115 @@ def _remote_expert_parents(model):
     return parents
 
 
+def _native_expert_parents(model, target_modules, requested):
+    """(parents, requested leaves) of native ``experts.<i>`` blocks inside the regex's language scope."""
+    try:
+        pattern = re.compile(target_modules)
+    except re.error:
+        return set(), set()
+    modules = list(model.named_modules())
+    reached_layers = {
+        name.rsplit(".", 2)[0]
+        for name, _ in modules
+        if ".experts." not in name and pattern.fullmatch(name)
+    }
+    in_scope, parents, leaves = {}, set(), set()
+    for name, module in modules:
+        matched = _EXPERT_SUBMODULE_PATTERN.search(name)
+        if matched is None or not name[matched.start() :].lstrip(".").startswith("experts."):
+            continue
+        parent, leaf = name[: matched.start()], matched.group(1)
+        if not parent:
+            continue
+        key = (parent, leaf)
+        if key not in in_scope:
+            layer = parent.rpartition(".")[0]
+            # Mixtral's block_sparse_moe has no MLP keyword; this keeps vision towers out.
+            in_scope[key] = any(pattern.fullmatch(f"{parent}.{t}") for t in requested | {leaf}) or bool(
+                layer and any(r == layer or r.startswith(layer + ".") for r in reached_layers)
+            )
+        if not in_scope[key]:
+            continue
+        parents.add(
+            r"\.".join(r"\d+" if part.isdigit() else re.escape(part) for part in parent.split("."))
+        )
+        if leaf in requested and (
+            isinstance(module, torch.nn.Linear)
+            or isinstance(getattr(module, "base_layer", None), torch.nn.Linear)
+        ):
+            leaves.add(leaf)
+    return parents, leaves
+
+
+def native_expert_only_regex(model, target_modules):
+    """Regex for the explicit leaves found in the language decoder's native ``experts.<i>`` blocks, or None."""
+    try:
+        decoder = model.get_decoder()
+    except Exception:
+        return None
+    prefix = next((name for name, module in model.named_modules() if module is decoder), None)
+    if prefix is None:
+        return None
+    requested = {t for t in target_modules if isinstance(t, str) and "." not in t}
+    if "gate_up_proj" in requested:  # the shorthand reaches split gate / up experts too
+        requested |= {"gate_proj", "up_proj"}
+    def generic(path):
+        return r"\.".join(r"\d+" if part.isdigit() else re.escape(part) for part in path.split("."))
+
+    linears = [
+        name
+        for name, module in model.named_modules()
+        if (not prefix or name.startswith(prefix + "."))
+        and (
+            isinstance(module, torch.nn.Linear)
+            or isinstance(getattr(module, "base_layer", None), torch.nn.Linear)
+        )
+    ]
+    blocks, leaves = set(), set()
+    for name in linears:
+        matched = _EXPERT_SUBMODULE_PATTERN.search(name)
+        if matched is not None and matched.group(1) in requested:
+            if name[matched.start() :].lstrip(".").startswith("experts."):
+                blocks.add(name[: matched.start()])
+                leaves.add(matched.group(1))
+    if not leaves:
+        return None
+    parents = {generic(block) for block in blocks}
+    # Requested expert siblings (router) too, as PEFT suffix matching would.
+    others = {
+        generic(name)
+        for name in linears
+        if name.rpartition(".")[0] in blocks and name.rpartition(".")[2] in requested
+    }
+    regex = moe_expert_submodule_regex(sorted(leaves), parents)
+    return f"(?:{regex})|(?:{'|'.join(sorted(others))})" if others else regex
+
+
 def widen_target_regex_to_expert_submodules(
-    model, target_modules, detect_targets, auto_regex: bool
+    model,
+    target_modules,
+    detect_targets,
+    auto_regex: bool,
+    explicit_leaves: bool = False,
 ):
-    """Widen a generated regex to ``experts.<i>.<leaf>``; a user-written regex is never widened."""
+    """Widen a generated regex to ``experts.<i>.<leaf>``; a user-written regex is never widened.
+    explicit_leaves: the caller's list went through get_peft_regex, which skips native experts
+    that plain PEFT would match, so widen those too."""
     if not auto_regex or not isinstance(target_modules, str):
         return target_modules, detect_targets, []
     # Remote expert blocks only: widening native ones (Qwen3-MoE on 4.x) LoRAs every routed expert.
     parents = _remote_expert_parents(model)
+    named_leaves = set()
+    if explicit_leaves:
+        requested = set()
+        if isinstance(detect_targets, (list, tuple, set)):
+            requested = {t for t in detect_targets if isinstance(t, str) and "." not in t}
+        native, named_leaves = _native_expert_parents(model, target_modules, requested)
+        parents = parents | native
     if not parents:
         return target_modules, detect_targets, []
-    leaves = get_moe_expert_submodule_leaves(model, detect_targets)
+    # Requested names used as-is too, as plain PEFT does (Mixtral's w1 / w2 / w3).
+    leaves = sorted(set(get_moe_expert_submodule_leaves(model, detect_targets)) | named_leaves)
     if not leaves:
         return target_modules, detect_targets, []
     if any(

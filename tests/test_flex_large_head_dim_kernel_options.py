@@ -72,15 +72,15 @@ def test_wrapper_injects_kernel_options_above_256():
 
 
 def test_wrapper_leaves_256_alone():
-    # Not "injects an empty dict": it must not appear at all, so torch keeps its own default.
+    # Must be absent, not an empty dict, so torch keeps its own default.
     assert _call(256).get("kernel_options") is None
 
 
 def test_a_caller_that_asked_for_something_keeps_it():
     got = _call(512, kernel_options = {"BLOCK_M": 16, "num_warps": 8})["kernel_options"]
-    assert got["BLOCK_M"] == 16  # caller's
-    assert got["num_warps"] == 8  # caller's
-    assert got["BLOCK_N"] == 32  # ours, filling the gap
+    assert got["BLOCK_M"] == 16
+    assert got["num_warps"] == 8
+    assert got["BLOCK_N"] == 32
 
 
 def test_other_kwargs_are_passed_through_untouched():
@@ -144,7 +144,6 @@ def _call_with(query, **kwargs):
 
 def test_a_call_that_needs_a_backward_forces_the_main_flex_kernel():
     assert _call_with(_GradTensor((2, 16, 121, 128), True)) == {"FORCE_USE_FLEX_ATTENTION": True}
-    # Above 256 both sets of options apply.
     got = _call_with(_GradTensor((2, 16, 121, 512), True))
     assert got["FORCE_USE_FLEX_ATTENTION"] is True and got["BLOCK_M"] == 32
 
@@ -171,8 +170,8 @@ def test_an_explicit_backend_is_not_combined_with_the_legacy_knob():
 
 
 def test_compiled_flex_backward_matches_eager_for_a_short_static_batch():
-    # B > 1, static query length below 128, 16 * 121 floats per batch (not a multiple of 32): the
-    # shape where flex_decoding's padded logsumexp gave gradients off by 10x or more.
+    # B > 1, static query 121 < 128, 16 * 121 floats per batch (not a multiple of 32): the shape
+    # where flex_decoding's padded logsumexp gave grads off by 10x.
     import torch
 
     if not torch.cuda.is_available():

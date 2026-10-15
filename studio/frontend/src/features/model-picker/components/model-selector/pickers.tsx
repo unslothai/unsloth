@@ -23,6 +23,7 @@ import {
 } from "@/components/ui/tooltip";
 import { isTouchClick } from "@/components/ui/touch-click";
 import { usePlatformStore } from "@/config/env";
+import { useIsAccountOwner } from "@/features/auth";
 import { ApiProviderLogo } from "@/features/chat";
 import {
   type ScanFolderInfo,
@@ -89,6 +90,7 @@ import {
 } from "@/features/hub";
 import type { HfTaskFilter } from "@/features/hub/hooks/use-hub-model-search";
 import { INVENTORY_FRESHNESS_WINDOW_MS } from "@/features/hub/inventory";
+import { pickNativeModelFolder } from "@/features/native-intents";
 import {
   type NpuModel,
   type NpuPickerSource,
@@ -1925,13 +1927,14 @@ function GgufVariantExpander({
 }) {
   const pinnedKeys = usePinnedModelsStore((s) => s.pinned);
   const togglePinnedQuant = usePinnedModelsStore((s) => s.togglePinned);
-  const onUpdateVariant = variantActions?.onUpdate;
+  const [variantsAreGguf, setVariantsAreGguf] = useState(true);
+  const onUpdateVariant = variantsAreGguf ? variantActions?.onUpdate : undefined;
   const updateVariantTitle =
     variantActions?.updateTitle ?? "Update cached model?";
   const renderUpdateVariantDescription =
     variantActions?.renderUpdateDescription;
   const updateDisabled = variantActions?.updateDisabled ?? false;
-  const onDeleteVariant = variantActions?.onDelete;
+  const onDeleteVariant = variantsAreGguf ? variantActions?.onDelete : undefined;
   const deleteVariantTitle =
     variantActions?.deleteTitle ?? "Delete cached model?";
   const renderDeleteVariantDescription =
@@ -1989,6 +1992,7 @@ function GgufVariantExpander({
       }
       setNativeContext(normalized.contextLength);
       setResolvedLocally(normalized.resolvedLocally);
+      setVariantsAreGguf(res?.variant_format !== "mlx");
     };
 
     loadPickerGgufVariants(
@@ -2070,7 +2074,7 @@ function GgufVariantExpander({
         expectedBytes: sizeBytes,
         downloadPresentation,
         contextLength: isAvailable ? contextLength : undefined,
-        isGguf: true,
+        isGguf: variantsAreGguf,
         isVision: variantVisionHint,
         pipelineTag,
       });
@@ -2084,6 +2088,7 @@ function GgufVariantExpander({
       nativeContext,
       pipelineTag,
       variantVisionHint,
+      variantsAreGguf,
     ],
   );
 
@@ -2256,7 +2261,7 @@ function GgufVariantExpander({
     setCompanionBytesByKey(new Map());
     // A local path is resolved too: only the CHECKPOINT is on disk, and its remote base is the
     // larger half, so suppressing the request understated a local row by many gigabytes.
-    if (!resolveDownloadFootprint) {
+    if (!resolveDownloadFootprint || !variantsAreGguf) {
       return () => {
         cancelled = true;
       };
@@ -2310,6 +2315,7 @@ function GgufVariantExpander({
     repoId,
     resolveDownloadFootprint,
     sourceOverride,
+    variantsAreGguf,
   ]);
 
   const variantOptionKeys = useMemo(
@@ -2542,7 +2548,7 @@ function GgufVariantExpander({
                     isDownloaded: true,
                     expectedBytes,
                     contextLength: variantContext,
-                    isGguf: true,
+                    isGguf: variantsAreGguf,
                     isVision: variantVisionHint,
                   })
                 }
@@ -3285,6 +3291,32 @@ export function HubModelPicker({
     [modelGgufIds, resultGgufIds],
   );
 
+  const resultMlxIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const result of [
+      ...results,
+      ...recommendedSearch.results,
+      ...communityQuerySearch.results,
+      ...communityBrowse.results,
+    ]) {
+      if (
+        result.libraryName?.toLowerCase() === "mlx" ||
+        result.tags?.some((tag) => tag.toLowerCase() === "mlx")
+      ) {
+        ids.add(result.id.toLowerCase());
+      }
+    }
+    return ids;
+  }, [
+    results,
+    recommendedSearch.results,
+    communityQuerySearch.results,
+    communityBrowse.results,
+  ]);
+  const [mlxVariantRepoIds, setMlxVariantRepoIds] = useState<
+    ReadonlySet<string>
+  >(() => new Set());
+
   const [expandedGguf, setExpandedGguf] = useState<string | null>(null);
   // GGUF vision support per repo, reported by the expander once it has read the metadata, so On
   // Device rows can badge the name.
@@ -3553,6 +3585,18 @@ export function HubModelPicker({
       onFoldersChange,
     ],
   );
+
+  const isOwner = useIsAccountOwner();
+  const browseForFolder = useCallback(async () => {
+    const picked = await pickNativeModelFolder(isOwner);
+    if (picked === undefined) {
+      setShowFolderBrowser(true);
+    } else if (picked) {
+      setFolderInput(picked);
+      setFolderError(null);
+      void handleAddFolder(picked);
+    }
+  }, [handleAddFolder, isOwner]);
 
   const handleRemoveFolder = useCallback(
     async (id: number) => {
@@ -5958,12 +6002,15 @@ export function HubModelPicker({
     scrollRef,
   ]);
 
-  /** Handle clicking a model row: GGUF repos expand, others load directly. */
+  /** Handle clicking a model row: GGUF repos and MLX precision-folder repos expand, others load. */
   const handleModelClick = useCallback(
     (id: string) => {
-      if (isKnownGgufRepo(id)) {
+      const key = id.toLowerCase();
+      if (isKnownGgufRepo(id) || mlxVariantRepoIds.has(key)) {
         setExpandedGguf((prev) => (prev === id ? null : id));
-      } else {
+        return;
+      }
+      const select = () => {
         // Cached repos load now (a cached vendor copy stands in for its mirror); others download.
         const cached = cachedIdFor(id);
         onSelect(cached ?? id, {
@@ -5972,9 +6019,31 @@ export function HubModelPicker({
           isDownloaded: cached !== null,
           pipelineTag: pipelineTagById.get(id) ?? null,
         });
+      };
+      if (!resultMlxIds.has(key) || isHuggingFaceOffline()) {
+        select();
+        return;
       }
+      void listGgufVariants(id, hfToken || undefined)
+        .then((res) => {
+          if (res.variant_format === "mlx" && res.variants.length > 0) {
+            setMlxVariantRepoIds((prev) => new Set(prev).add(key));
+            setExpandedGguf(id);
+          } else {
+            select();
+          }
+        })
+        .catch(select);
     },
-    [onSelect, isKnownGgufRepo, cachedIdFor, pipelineTagById],
+    [
+      onSelect,
+      isKnownGgufRepo,
+      mlxVariantRepoIds,
+      resultMlxIds,
+      hfToken,
+      cachedIdFor,
+      pipelineTagById,
+    ],
   );
 
   // On Device owns the downloaded and custom-folder models; the Unsloth tab searches the HF
@@ -6017,7 +6086,7 @@ export function HubModelPicker({
     "h-(--picker-control-h) w-(--picker-control-w) shrink-0 justify-between gap-1.5 pl-4 pr-3.5 !border-0 text-xs [&>span]:!text-clip";
   // Tighter menu matching the trigger; keep the option's right padding so the checkmark never overlaps the label.
   const sortMenuContentClassName =
-    "!p-1 !rounded-[14px] [&_[role=option]]:!pl-2 [&_[role=option]]:!py-1.5 [&_[role=option]]:!text-xs [&_[role=option]]:!rounded-[10px]";
+    "picker-option-menu !p-1 !rounded-[14px] [&_[role=option]]:!pl-2 [&_[role=option]]:!py-1.5 [&_[role=option]]:!text-xs [&_[role=option]]:!rounded-[10px]";
   // Device-fit toggle inside the sort menu. The whole row is the button: a Checkbox renders as a
   // <button> and label-click forwarding is unreliable, so the Checkbox is presentational.
   const fitOnDeviceFooter = (
@@ -6069,6 +6138,7 @@ export function HubModelPicker({
         align="end"
         className={sortTriggerClassName}
         contentClassName={sortMenuContentClassName}
+        composer={false}
         triggerContent={sortTriggerContent(
           RECOMMENDED_SORT_OPTIONS.find((o) => o.value === recommendedSort)
             ?.label ?? recommendedSort,
@@ -6084,6 +6154,7 @@ export function HubModelPicker({
         align="end"
         className={sortTriggerClassName}
         contentClassName={sortMenuContentClassName}
+        composer={false}
         triggerContent={sortTriggerContent(
           LOCAL_SORT_OPTIONS.find((o) => o.value === downloadedSort)?.label ??
             downloadedSort,
@@ -6098,6 +6169,7 @@ export function HubModelPicker({
         align="end"
         className={sortTriggerClassName}
         contentClassName={sortMenuContentClassName}
+        composer={false}
         triggerContent={sortTriggerContent(
           LOCAL_SORT_OPTIONS.find((o) => o.value === customSort)?.label ??
             customSort,
@@ -7219,6 +7291,7 @@ export function HubModelPicker({
                 align="end"
                 className={sortTriggerClassName}
                 contentClassName={sortMenuContentClassName}
+                composer={false}
               />
               <HubOptionMenu
                 value={connectedSort}
@@ -7228,6 +7301,7 @@ export function HubModelPicker({
                 align="end"
                 className={sortTriggerClassName}
                 contentClassName={sortMenuContentClassName}
+                composer={false}
                 triggerContent={sortTriggerContent(
                   CONNECTED_SORT_OPTIONS.find(
                     (option) => option.value === connectedSort,
@@ -7245,6 +7319,7 @@ export function HubModelPicker({
                 align="end"
                 className={sortTriggerClassName}
                 contentClassName={sortMenuContentClassName}
+                composer={false}
                 // Audio has no sort for its listing, so the fit toggle lives here.
                 footer={
                   audioTaskPicker && section === "recommended"
@@ -7633,7 +7708,7 @@ export function HubModelPicker({
                     >
                       <button
                         type="button"
-                        onClick={() => setShowFolderBrowser(true)}
+                        onClick={() => void browseForFolder()}
                         title="Browse folders on the server"
                         className="flex items-center gap-1.5 text-ui-10 font-semibold uppercase tracking-wider text-muted-foreground transition-colors hover:text-foreground"
                       >
@@ -7674,7 +7749,7 @@ export function HubModelPicker({
                           type="button"
                           aria-label="Browse for a folder on the server"
                           title="Browse folders on the server"
-                          onClick={() => setShowFolderBrowser(true)}
+                          onClick={() => void browseForFolder()}
                           className="shrink-0 rounded p-0.5 text-muted-foreground/80 transition-colors hover:text-foreground"
                         >
                           <HugeiconsIcon
@@ -7813,7 +7888,7 @@ export function HubModelPicker({
                           />
                           <button
                             type="button"
-                            onClick={() => setShowFolderBrowser(true)}
+                            onClick={() => void browseForFolder()}
                             disabled={folderLoading}
                             aria-label="Browse for folder"
                             title="Browse folders on the server"

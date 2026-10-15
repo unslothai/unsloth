@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for the session-layer -> scoring-layer seam.
-
-Every test here is written against a failure that would otherwise render as a plausible number.
-The seam's whole job is to keep three different absences apart, so each is asserted separately
-rather than through "is not None".
-"""
+"""Each test targets a failure that would render as a plausible number; absences are kept distinct."""
 
 from __future__ import annotations
 
@@ -79,9 +74,6 @@ def _window(
     }
 
 
-# ── the three absences, kept apart ──────────────────────────────────────────────────────────
-
-
 def test_action_absent_from_scene_is_not_attempted():
     m = measures_from_records([_cell()])["10000" if False else 10_000]
     keystroke = m["keystroke_p95_ms"]
@@ -125,9 +117,6 @@ def test_scroll_settle_says_it_is_gesture_time_not_settle_time():
     assert "not post-gesture settle" in scroll.note
 
 
-# ── frame metrics ───────────────────────────────────────────────────────────────────────────
-
-
 def test_frame_metrics_pool_the_active_windows():
     recs = [_cell(), _window("c1", [16.0] * 50 + [200.0], duration_ms = 1000.0)]
     m = measures_from_records(recs)[10_000]
@@ -152,12 +141,7 @@ def test_recorder_never_installed_reads_not_attempted():
 
 
 def test_a_window_that_recorded_no_frames_fails_the_pool_instead_of_dropping_out():
-    """A complete freeze during one action must not be answered for by the windows beside it.
-
-    `compute_frame_stats` already calls a single attempted-but-frameless window a failed
-    measurement. Pooled, that window used to be skipped, and the cell came back with the
-    remaining window's clean numbers.
-    """
+    """A frameless window fails the cell's pool instead of being skipped, so a freeze is not hidden."""
     normal = _window("c1", [16.0] * 50 + [40.0], duration_ms = 1000.0)
     frozen = _window("c1", [], duration_ms = 4000.0)
     m = measures_from_records([_cell(), normal, frozen])[10_000]
@@ -165,7 +149,6 @@ def test_a_window_that_recorded_no_frames_fails_the_pool_instead_of_dropping_out
         assert m[key].attempted is True
         assert m[key].value is None
         assert "no frames at all" in m[key].note
-    # and the giveaway: without the fix these were byte-identical to the cell without the freeze
     alone = measures_from_records([_cell(), normal])[10_000]
     assert alone["max_frame_ms"].value == pytest.approx(40.0)
 
@@ -215,9 +198,6 @@ def test_names_come_from_action_rows_not_the_lossy_embedded_copy():
     assert measures_from_records(recs)[10_000]["keystroke_p95_ms"].value == pytest.approx(31.5)
 
 
-# ── the bare-zero ban still bites after the harness-row exemptions ───────────────────────────
-
-
 def test_bare_zero_outside_an_attested_block_still_fails():
     with pytest.raises(PayloadSchemaError):
         validate_payload({"excluded_cells": [], "result": {"cost_ms": 0}})
@@ -258,12 +238,8 @@ def test_real_payload_shape_round_trips(tmp_path):
     ladder = score_payload(path, [1_000])
     assert [r.tokens for r in ladder.rungs] == [1_000]
     rung = ladder.rungs[0]
-    # keystroke + menu + the three frame metrics = 85% of the weight, over the 60% floor, so the rung
-    # scores despite scroll being legitimately unavailable at this size.
+    # keystroke + menu + three frame metrics = 85% weight, over the 60% floor.
     assert rung.usable is True
-
-
-# ── per-cell readings, which is what makes an A/B paired ─────────────────────────────────────
 
 
 def test_measures_by_cell_keeps_every_repetition():
@@ -327,15 +303,7 @@ def test_a_wire_character_count_of_zero_is_still_a_failure():
 
 
 def test_a_thread_that_was_not_yanked_back_can_still_be_reported():
-    """The block `runtime/session.py` writes as `scroll_intent`, with the reading that broke CI.
-
-    `detached_samples: 7, yanked_back_samples: 0` is the GOOD outcome -- the user scrolled away and
-    the app left them there -- and it made the whole payload unrenderable: the real-path CI session
-    ran every action, wrote its cell, and then `--report` refused with `bare zeros found:
-    $.cells[0].scroll_intent.yanked_back_samples = 0`. The block is derived from the same page-side
-    read as `follow`, which is covered by its own `follow_attempted`, so it carries the same
-    attestation rather than a new exemption.
-    """
+    """A thread the user scrolled away from (yanked_back_samples 0) is a good outcome and must validate."""
     validate_payload(
         {
             "excluded_cells": [],
@@ -357,20 +325,13 @@ def test_a_thread_that_was_not_yanked_back_can_still_be_reported():
 
 
 def test_the_scroll_intent_block_still_attests_in_the_session_layer():
-    """The exemption is an attestation, so it lives with the writer and can be dropped there.
-
-    Pinned at the source because the payload shape that fails is only produced by a live run: a
-    `scroll_intent` block written without `follow_attempted` passes every unit test in this file
-    and refuses the first real session that reaches the report step.
-    """
+    """The scroll_intent block in runtime/session.py must carry follow_attempted, or a live run is
+    refused."""
     session = (Path(__file__).resolve().parents[2] / "runtime" / "session.py").read_text(
         encoding = "utf-8"
     )
     block = session[session.index('row["scroll_intent"] = {') :][:2_000]
     assert '"follow_attempted": bool(follow.get("follow_attempted"))' in block
-
-
-# ── ran is not "did what it claimed" ────────────────────────────────────────────────────────
 
 
 def test_an_action_whose_own_assertion_failed_is_not_a_reading():
@@ -403,9 +364,6 @@ def test_an_action_whose_assertion_passed_is_still_a_reading():
     assert measures_from_records(recs)[10_000]["keystroke_p95_ms"].value == 12.0
 
 
-# ── the composer click, which is the driver's cost and not the build's ───────────────────────
-
-
 def test_setup_windows_are_excluded_so_the_click_does_not_become_the_worst_frame():
     """`setup:composer_click` is mostly Playwright's injected actionability script, which blocks
     the page's main thread exactly as app work would. Pooled into the film it would peg
@@ -428,10 +386,7 @@ def test_setup_is_a_declared_window_kind():
 
 
 def test_a_probe_payload_with_legitimate_zeros_still_validates():
-    """An unseeded rung has no code blocks, and `performance.now()` is coarsened to 100 us, so
-    `code_token_spans`, `blur_inpage_ms` and `forced_layout_ms` can all be a true 0. Before the
-    attestation was written next to them, `--report` refused the whole payload of a run that
-    completed."""
+    """Unseeded rungs can have true zeros from the coarsened clock, which validation must accept."""
     cell = _cell()
     cell["composer_click_ms"] = 120.0
     cell["click_attribution"] = {
@@ -476,14 +431,9 @@ def _payload_with(cell):
     }
 
 
-# The latest attempt is the last one that WROTE anything, not the last one that finished.
-# `CellRunner.run` writes its terminal cell row in a `finally`, which a SIGKILL, an OOM kill or a
-# lost machine never reaches, while the Recorder has already flushed and fsynced every action and
-# window row before it. Keyed on cell rows alone, a resume hard-killed inside a cell left the
-# older, completed attempt named as the latest, and `_resume_set` skipped it.
+# The latest attempt is the last that wrote anything: a killed cell never writes its cell row.
 
 
-# ---------------------------------------------------------------------------------------
 def _stamped(row, session):
     return {**row, "session_id": session}
 
@@ -492,13 +442,11 @@ def test_a_killed_attempt_supersedes_the_completed_one_it_was_re_running():
     records = [
         _stamped(_cell("c1", completed = True), "sess-1"),
         _stamped(_action("c1", "keystroke", timings = {"p95_ms": 40.0}), "sess-1"),
-        # sess-2 got this far and was killed: no cell row was ever written.
         _stamped(_action("c1", "keystroke", timings = {"p95_ms": 900.0}), "sess-2"),
     ]
 
     kept = latest_attempt_rows(records)
 
-    # The old attempt's rows are gone, so nothing reports c1 as completed.
     assert not [r for r in kept if r.get("row_type") == "cell"]
     assert [r["timings"]["p95_ms"] for r in kept if r.get("row_type") == "action"] == [900.0]
 

@@ -96,6 +96,7 @@ except ImportError:
     from utils.paths import is_local_path, normalize_path, resolve_dataset_path
 
 from auth.authentication import authenticated_via_api_key, get_current_subject
+from hub.dependencies import get_hf_token
 from hub.utils.host_paths import redact_host_paths
 from hub.utils.hf_tokens import HfTokenArg, cached_read_refused, hf_token_arg
 
@@ -1683,6 +1684,47 @@ async def get_offload_state(current_subject: str = Depends(get_current_subject))
     return {"active": True, **offload}
 
 
+@router.get("/drafter-capability")
+async def get_drafter_capability(
+    model_name: str,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+    hf_token: Optional[str] = Depends(get_hf_token),
+):
+    """Which speculative-decoding drafter the Train tab can train for `model_name`: the native MTP head
+    when the checkpoint ships one, else an EAGLE-3 drafter where vLLM or llama.cpp can run it."""
+    from core.training.drafter import drafter_capability
+
+    from models.inference import resolve_inventory_handle
+
+    shown = (model_name or "").strip()
+    if not shown or len(shown) > 512:
+        raise HTTPException(status_code = 400, detail = "model_name is required")
+    # A picker `ref:` handle resolves the way TrainingStartRequest resolves it; the answer keeps the handle.
+    name = resolve_inventory_handle(shown)
+    managed = managed_account()
+    if managed:
+        # Same rule as the training routes: Hub ids, or paths inside this account's workspace.
+        try:
+            account_path(name, reference = True, shared_cache = True)
+            # A shared-cache snapshot is another tenant's unless this account may see that model.
+            await asyncio.to_thread(_authorize_cache_fallback, name)
+        except HTTPException:
+            return {
+                "model_name": shown,
+                "has_native_mtp": False,
+                "strategy": None,
+                "supported": False,
+                "reason": "This model is not available to this account.",
+                "vllm": False,
+                "llama_cpp": False,
+            }
+    # The caller's own token comes in the header; without one, ambient credentials for the owner
+    # only, anonymous for API keys and managed accounts (the owner's token must not answer for them).
+    token = hf_token_arg(hf_token, allow_ambient_token = not (via_api_key is True or managed))
+    return {**await asyncio.to_thread(drafter_capability, name, token), "model_name": shown}
+
+
 @router.get("/hardware/visible")
 async def get_visible_hardware_utilization(current_subject: str = Depends(get_current_subject)):
     from utils.hardware import get_visible_gpu_utilization, gpu_query
@@ -1795,6 +1837,13 @@ async def start_training(
     to check progress.
     """
     await asyncio.to_thread(_validate_decision_request, request, via_api_key)
+    if request.drafter is not None and request.drafter.enabled:
+        from core.training.training import should_use_mlx_training_backend
+        if should_use_mlx_training_backend():
+            raise HTTPException(
+                status_code = 400,
+                detail = "Drafter training is not available on Apple Silicon (MLX) yet.",
+            )
     if managed_account():
         from utils.paths import tensorboard_root
 
@@ -2118,6 +2167,12 @@ async def start_training(
             "dataset_streaming": request.dataset_streaming,
             "eval_split": request.eval_split,
             "eval_steps": request.eval_steps,
+            "early_stopping_patience": request.early_stopping_patience,
+            "drafter": (
+                request.drafter.model_dump()
+                if request.drafter is not None and request.drafter.enabled
+                else None
+            ),
             "dataset_slice_start": request.dataset_slice_start,
             "dataset_slice_end": request.dataset_slice_end,
             "custom_format_mapping": request.custom_format_mapping,
@@ -2289,9 +2344,9 @@ async def start_training(
 
             try:
                 from core.systemone import laya_runtime
-                if laya_runtime.status()["device"] not in (None, "cpu"):
+                if laya_runtime.status()["holds_gpu"]:
                     logger.info("Unloading the Decision API model to free GPU memory for training")
-                    laya_runtime.unload()
+                    laya_runtime.unload(reload_after_training = True)
             except Exception as e:
                 logger.warning("Could not unload the Decision API model for training: %s", e)
 
@@ -2645,7 +2700,9 @@ def _build_training_status(
         phase = "error"
     elif is_active:
         msg_lower = status_message.lower()
-        if "loading" in msg_lower or "importing" in msg_lower:
+        if msg_lower.startswith("training drafter"):
+            phase = "training_drafter"
+        elif "loading" in msg_lower or "importing" in msg_lower:
             phase = "loading_model"
         elif any(k in msg_lower for k in ["preparing", "initializing", "configuring"]):
             phase = "configuring"
@@ -2669,6 +2726,7 @@ def _build_training_status(
             "loss": getattr(progress, "loss", None),
             "learning_rate": getattr(progress, "learning_rate", None),
             "output_dir": getattr(backend, "_output_dir", None) or None,
+            "drafter": getattr(progress, "drafter", None),
             "model_download_repo_id": (
                 getattr(backend, "_model_download_repo_id", None) if is_active else None
             ),

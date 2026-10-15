@@ -9,6 +9,7 @@ from hub.services.models import account_access
 
 import asyncio
 import hashlib
+import json
 import re
 import threading
 import time
@@ -66,6 +67,8 @@ from hub.utils.gguf_plan import (
     build_gguf_variant_plans,
     is_main_gguf_variant_path,
     plan_from_expected_files,
+    precision_folder_plans,
+    sibling_sha256,
 )
 from utils.paths.path_utils import is_appledouble_metadata
 
@@ -217,7 +220,7 @@ def _variant_requirement_may_be_forgotten() -> bool:
 
 
 def _build_gguf_variant_requirements(siblings: list) -> dict[str, _GgufVariantRequirement]:
-    return build_gguf_variant_plans(siblings)
+    return build_gguf_variant_plans(siblings) or precision_folder_plans(siblings)
 
 
 def gguf_variant_requirements(
@@ -864,7 +867,7 @@ _CACHE_SPLIT_RE = re.compile(r"-(\d{3,})-of-(\d{3,})(?=\.gguf$)", re.IGNORECASE)
 # Only enumerates candidates for the resolver to adjudicate; drift costs a candidate, not a verdict.
 _KNOWN_QUANT_RE = re.compile(
     r"(UD-)?"
-    r"(MXFP[0-9]+(?:_[A-Z0-9]+)*"
+    r"((?:MX|NV)FP[0-9]+(?:_[A-Z0-9]+)*"
     r"|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?"
     r"|P?TQ[0-9]+_[0-9]+"
     r"|Q[0-9]+_K_[A-Z]+"
@@ -1212,6 +1215,121 @@ async def _audio_cpp_variants_answer(
         # No llama.cpp context window to read off these files.
         cache_authorized = False,
     )
+
+
+_VISION_PIPELINE_TAGS = frozenset(
+    {"image-text-to-text", "image-to-text", "visual-question-answering"}
+)
+
+
+async def _mlx_precision_variants_answer(
+    repo_id: str,
+    hf_token: Optional[str],
+    offline: bool,
+    cache_readable: bool = True,
+) -> Optional[VariantsAnswer]:
+    """The precision folders of an MLX repo (``4-bit/``, ``6-bit/``, ``8bit/``) as its variants,
+    else None. Each folder is a whole checkpoint, so a pick downloads and loads that folder alone."""
+    if is_local_path(repo_id) or not _is_valid_repo_id(repo_id):
+        return None
+    from hub.utils.mlx_variants import cached_precision_folder
+    from hub.utils.snapshot_filters import (
+        precision_variant_subfolders,
+        repo_ships_root_safetensors,
+    )
+    from utils.utils import hf_cache_snapshot_dir_for_repo
+
+    def _listing() -> Optional[GgufVariantsResponse]:
+        sizes: dict[str, int] = {}
+        hashes: dict[str, Optional[str]] = {}
+        has_vision = False
+        if not offline:
+            from huggingface_hub import HfApi
+            try:
+                info = call_with_anonymous_retry(
+                    lambda token: HfApi(token = token).model_info(
+                        repo_id, files_metadata = True, timeout = 5.0
+                    ),
+                    hf_token,
+                )
+            except Exception as exc:  # noqa: BLE001 - fall back to the cached copy below
+                logger.debug("MLX precision folders for %s unavailable: %s", repo_id, exc)
+            else:
+                tags = {str(tag).lower() for tag in (info.tags or [])}
+                if "mlx" not in tags and str(info.library_name or "").lower() != "mlx":
+                    return None
+                sizes = {s.rfilename: int(s.size or 0) for s in (info.siblings or [])}
+                hashes = {s.rfilename: sibling_sha256(s) for s in (info.siblings or [])}
+                has_vision = str(info.pipeline_tag or "").lower() in _VISION_PIPELINE_TAGS
+        if not sizes:
+            # A caller refused this repo's cache learns nothing from it.
+            if not cache_readable:
+                return None
+            snapshot = hf_cache_snapshot_dir_for_repo(repo_id)
+            if snapshot is None:
+                return None
+            sizes = {
+                path.relative_to(snapshot).as_posix(): path.stat().st_size
+                for path in snapshot.rglob("*")
+                if path.is_file()
+            }
+            for folder in precision_variant_subfolders(sizes):
+                try:
+                    config = json.loads((snapshot / folder / "config.json").read_text("utf-8"))
+                except (OSError, ValueError):
+                    continue
+                has_vision = has_vision or isinstance(config.get("vision_config"), dict)
+        folders = precision_variant_subfolders(sizes)
+        if not folders:
+            return None
+
+        def _weights(names) -> Optional[tuple[str, ...]]:
+            # Content hashes: two folders of one architecture and dtype can match in size alone.
+            found = [hashes.get(name) for name in names if name.lower().endswith(".safetensors")]
+            return tuple(sorted(found)) if found and all(found) else None
+
+        root_weights = (
+            _weights([name for name in sizes if "/" not in name])
+            if repo_ships_root_safetensors(sizes)
+            else None
+        )
+        rows = sorted(
+            (
+                GgufVariantDetail(
+                    filename = f"{folder}/",
+                    quant = folder,
+                    size_bytes = sum(sizes[name] for name in names),
+                    download_size_bytes = sum(sizes[name] for name in names),
+                    downloaded = cache_readable
+                    and cached_precision_folder(repo_id, folder) is not None,
+                )
+                for folder, names in folders.items()
+            ),
+            key = lambda row: row.size_bytes,
+        )
+        default = next(
+            (
+                folder
+                for folder, names in folders.items()
+                if root_weights and _weights(names) == root_weights
+            ),
+            None,
+        )
+        loadable = [row.quant for row in rows if row.downloaded]
+        return GgufVariantsResponse(
+            repo_id = repo_id,
+            variants = rows,
+            has_vision = has_vision,
+            default_variant = default,
+            dependencies_resolved = True,
+            loadable_variants = loadable,
+            variant_format = "mlx",
+        )
+
+    response = await asyncio.to_thread(_listing)
+    if response is None:
+        return None
+    return VariantsAnswer(response, None, cache_authorized = False)
 
 
 async def get_gguf_variants_answer(
@@ -2370,8 +2488,28 @@ async def get_gguf_variants_answer(
         configured_cache_key(),
     )
     try:
-        return await _shared_variants_scan(inflight_key, _compute_with_cleanables)
-    except HTTPException:
+        answer = await _shared_variants_scan(inflight_key, _compute_with_cleanables)
+        # Only after an empty GGUF listing, so GGUF answers never change.
+        if not answer.response.variants and not local_path:
+            mlx_answer = await _mlx_precision_variants_answer(
+                repo_id, hf_token, offline, cache_readable = answer.cache_authorized
+            )
+            if mlx_answer is not None:
+                return mlx_answer
+        return answer
+    except HTTPException as exc:
+        # Offline, a repo with no cached GGUF raises here, before the MLX fallback above.
+        if (
+            offline
+            and exc.status_code == 404
+            and not local_path
+            and not hub_cached_read_refused(
+                hf_token, repo_id = repo_id, is_cached = lambda: True, offline = True
+            )
+        ):
+            mlx_answer = await _mlx_precision_variants_answer(repo_id, hf_token, True)
+            if mlx_answer is not None:
+                return mlx_answer
         raise
     except Exception as e:
         scrubbed = modelscope_missing(e) or download_registry.scrub_secrets(
@@ -2396,7 +2534,7 @@ async def get_gguf_variants_response(
     hf_token: Optional[str] = None,
     include_cache_locations: bool = False,
 ) -> GgufVariantsResponse:
-    """The listing alone, for callers that do not read metadata off the same copy."""
+    """return the listing without same-copy metadata."""
     answer = await get_gguf_variants_answer(
         repo_id,
         prefer_local_cache = prefer_local_cache,
@@ -2406,3 +2544,17 @@ async def get_gguf_variants_response(
         include_cache_locations = include_cache_locations,
     )
     return answer.response
+
+
+async def cached_gguf_variant_source_path(
+    repo_id: str,
+    variant: str,
+    hf_token: Optional[str] = None,
+) -> Optional[str]:
+    """return the exact cached file selected after online readiness checks."""
+    answer = await get_gguf_variants_answer(
+        repo_id,
+        hf_token = hf_token,
+        include_cache_locations = True,
+    )
+    return (answer.variant_context_sources or {}).get((variant or "").strip().lower())

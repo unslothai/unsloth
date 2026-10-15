@@ -12,12 +12,10 @@ activated. Expects `pip` and `python` on PATH to point at the venv.
 from __future__ import annotations
 
 import ast
-import contextlib
 import functools
 import glob
 import importlib
 import importlib.util
-import io
 import json
 import locale
 import os
@@ -54,8 +52,6 @@ def _nvidia_library_inventory():
 
 
 from backend.utils.kernel_install import (
-    KERNELS,
-    install_kernel,
     install_prebuilt,
     uninstall_command,
 )
@@ -7382,8 +7378,8 @@ def _green(msg: str) -> str:
     return f"\033[38;5;108m{msg}\033[0m" if _HAS_COLOR else msg
 
 
-def _cyan(msg: str) -> str:
-    return f"\033[96m{msg}\033[0m" if _HAS_COLOR else msg
+def _warn(msg: str) -> str:
+    return f"\033[38;5;136m{msg}\033[0m" if _HAS_COLOR else msg
 
 
 def _red(msg: str) -> str:
@@ -8471,7 +8467,7 @@ def _build_flash_attn_wheel_url(env: dict[str, str]) -> str | None:
 
 
 def _print_optional_install_failure(label: str, result: subprocess.CompletedProcess[str]) -> None:
-    _step("warning", f"{label} failed (exit code {result.returncode})", _cyan)
+    _step("warning", f"{label} failed (exit code {result.returncode})", _warn)
     if result.stdout:
         # Redact any pinned --index-url credentials before printing captured output.
         _safe_print(_redact_install_output(result.stdout).strip())
@@ -8515,14 +8511,14 @@ def _remove_stale_flash_attn() -> None:
         _step(
             "warning",
             "flash-attn was built for another torch or CUDA and does not import; removed it",
-            _cyan,
+            _warn,
         )
     else:
         _step(
             "warning",
             "flash-attn was built for another torch or CUDA and could not be removed; "
             "uninstall flash-attn manually",
-            _cyan,
+            _warn,
         )
 
 
@@ -8568,7 +8564,7 @@ def _ensure_flash_attn() -> None:
                 _step(
                     "warning",
                     "flash-attn wheel installed but is not importable on this GPU; removed it",
-                    _cyan,
+                    _warn,
                 )
             else:
                 # the rejected native module remains discoverable and may terminate training.
@@ -8576,111 +8572,28 @@ def _ensure_flash_attn() -> None:
                     "warning",
                     "flash-attn wheel is not importable on this GPU and could not be "
                     "removed; uninstall flash-attn manually before training",
-                    _cyan,
+                    _warn,
                 )
         elif stale:
             _remove_stale_flash_attn()
-        _step("warning", "Continuing without flash-attn", _cyan)
+        _step("warning", "Continuing without flash-attn", _warn)
         return
 
     if wheel_url is None:
         if IS_WINDOWS:
             _note("no flash-attn prebuilt wheel for this torch build; skipped")
         else:
-            _step("warning", "No compatible flash-attn prebuilt wheel found", _cyan)
+            _step("warning", "No compatible flash-attn prebuilt wheel found", _warn)
     elif wheel_available is None:
         _step(
             "warning",
             "Could not check the flash-attn prebuilt wheel; skipped it",
-            _cyan,
+            _warn,
         )
     else:
-        _step("warning", "No published flash-attn prebuilt wheel found", _cyan)
+        _step("warning", "No published flash-attn prebuilt wheel found", _warn)
     if stale:
         _remove_stale_flash_attn()
-
-
-def _ssm_kernel_install_disabled() -> bool:
-    return os.getenv("UNSLOTH_STUDIO_SKIP_SSM_KERNELS_INSTALL") == "1"
-
-
-def _ensure_ssm_kernels() -> None:
-    """causal-conv1d and mamba-ssm prebuilt wheels at setup, via the wheel-only install_kernel."""
-    if _ssm_kernel_install_disabled() or NO_TORCH or IS_MACOS:
-        return
-    # Bounded on every platform, and a probe that cannot launch skips this optional step.
-    try:
-        env = probe_torch_wheel_env(timeout = _FLASH_ATTN_IMPORT_PROBE_TIMEOUT, include_windows = True)
-    except OSError:
-        return
-    if env is None:
-        return
-
-    # A new runner per call resets install_kernel's per-runner GPU / Triton cache after a torch
-    # repair; it bounds import probes, not installs.
-    def run(cmd, *args, **kwargs):
-        if list(cmd[:2]) == [sys.executable, "-c"]:
-            kwargs.setdefault("timeout", _FLASH_ATTN_IMPORT_PROBE_TIMEOUT)
-        return subprocess.run(cmd, *args, **kwargs)
-
-    def loads(check: str) -> bool | None:
-        try:
-            return (
-                run(
-                    [sys.executable, "-c", check],
-                    stdout = subprocess.DEVNULL,
-                    stderr = subprocess.DEVNULL,
-                ).returncode
-                == 0
-            )
-        except (subprocess.TimeoutExpired, OSError):
-            return None
-
-    for name in ("causal_conv1d", "mamba_ssm"):
-        distribution, check = KERNELS[name]
-        installed = _installed_distribution_version(distribution) is not None
-        # Local first, so an offline re-run does not wait on a wheel HEAD request.
-        if installed and loads(check):
-            _note(f"{name} already installed and loads.")
-            continue
-        status = 0
-        buffer = io.StringIO()
-        if _uv_is_offline():
-            # install_wheel's pip fallback ignores UV_OFFLINE; stale removal below still runs.
-            if not installed:
-                _note(
-                    f"{name} not installed: UV_OFFLINE is set; run `unsloth install-kernels` online"
-                )
-        else:
-            try:
-                with contextlib.redirect_stdout(buffer):
-                    status = install_kernel(name, env, run = run, install_without_gpu = True)
-            except Exception as exc:
-                status = 1
-                buffer.write(f"{type(exc).__name__}: {exc}")
-        # install_kernel redacts only the wheel URL; uv / pip failure text can name another index.
-        for line in _redact_install_output(buffer.getvalue()).splitlines():
-            if line.strip():
-                _note(line.removeprefix("Unsloth: "))
-        if status or f"Unsloth: installed {name} " in buffer.getvalue():
-            _count_install_action()
-        if _installed_distribution_version(distribution) is not None and loads(check) is False:
-            _count_install_action()
-            try:
-                removed = _uninstall_distribution(distribution)
-            except OSError:
-                removed = False
-            if removed:
-                _step("warning", f"{name} does not load with this torch; removed it", _cyan)
-            else:
-                _step(
-                    "warning",
-                    f"{name} does not load with this torch and could not be removed; "
-                    f"uninstall {distribution} manually",
-                    _cyan,
-                )
-        elif status:
-            _step("warning", f"Continuing without {name}", _cyan)
 
 
 # -- uv bootstrap ------------------------------------------------------
@@ -9557,7 +9470,7 @@ def _build_pip_cmd(args: tuple[str, ...]) -> list[str]:
         # By canonical project name: `--upgrade-package mlx` beside `mlx==0.32.3` is one project,
         # and pip refuses a double requirement where uv does not.
         def _project(requirement: str) -> str:
-            # _requirement_name stops at "==" and "@"; a range (mlx-vlm>=0.4.4,<=0.7.4) needs the
+            # _requirement_name stops at "==" and "@"; a range (mlx-vlm>=0.4.4,<=0.7.8) needs the
             # rest.
             return _canonical_package_name(
                 re.split(r"[<>=!~;\[ ]", _requirement_name(requirement), maxsplit = 1)[0]
@@ -10367,7 +10280,7 @@ def _mirror_retry(args: "tuple[str, ...]", output: bytes, rerun) -> "bool | None
     _step(
         "mirror",
         f"{_MIRROR_NAMES[host]} failed; retrying through {next(iter(pairs.values()))}",
-        _cyan,
+        _warn,
     )
     saved = ({name: os.environ.get(name) for name in pairs}, _PYTORCH_WHL_BASE)
     os.environ.update(pairs)
@@ -10644,7 +10557,7 @@ def _has_working_git() -> bool:
 # The MLX stack, one place; test_mlx_install.py compares it with utils/mlx_repair.py's
 # _MLX_INSTALL_SPECS.
 _MLX_PINS: tuple[str, ...] = ("mlx==0.32.3", "mlx-metal==0.32.3", "mlx-lm==0.31.3")
-_MLX_VLM_SPEC = "mlx-vlm>=0.4.4,<=0.7.4"
+_MLX_VLM_SPEC = "mlx-vlm>=0.4.4,<=0.7.8"
 # Exact: llguidance.mlx / llguidance.hf are the API grammar_constraint.py binds to.
 _LLGUIDANCE_PIN = "llguidance==1.8.0"
 _MLX_NAMES: tuple[str, ...] = tuple(spec.partition("==")[0] for spec in _MLX_PINS) + ("mlx-vlm",)
@@ -10967,9 +10880,9 @@ def _report_mlx_stack_health(skipped: bool = False) -> None:
     if not blockers:
         _step("mlx", "training stack ready")
         return
-    _step("mlx", "Train and Export will stay off until this is resolved:", _cyan)
+    _step("mlx", "Train and Export will stay off until this is resolved:", _warn)
     for blocker in blockers:
-        _step("", blocker, _cyan)
+        _step("", blocker, _warn)
 
 
 # The idempotent dependency pass. A skip is legal only when (a) the previous run recorded this
@@ -12420,7 +12333,6 @@ def install_python_stack() -> int:
     if not IS_MACOS and not NO_TORCH:
         base_total += 1  # ROCm torch check (step 2b), non-macOS
         base_total += 1  # flash-attn, Linux and Windows
-        base_total += 1  # causal-conv1d + mamba-ssm, same gate
         if not IS_WINDOWS:
             base_total += 1  # torch final repair (step 13), Linux
         else:
@@ -12831,8 +12743,6 @@ def install_python_stack() -> int:
     if not IS_MACOS and not NO_TORCH:
         _progress("flash-attn")
         _ensure_flash_attn()
-        _progress("mamba kernels")
-        _ensure_ssm_kernels()
 
     # # 6. Patch: override llama_cpp.py with fix from unsloth-zoo  feature/llama-cpp-windows-support branch
     # patch_package_file(
@@ -13016,9 +12926,8 @@ def install_python_stack() -> int:
                 "flash-attn"
             )
             _install_torchao_for_torch(_torch_after_repair)
-            # resync the kernels because the repair can invalidate the wheels selected earlier.
+            # resync flash-attn because the repair can invalidate the wheel selected earlier.
             _ensure_flash_attn()
-            _ensure_ssm_kernels()
         # Unguarded: torch==2.10.0 accepts 2.10.0+rocm7.1, and an earlier run may have moved it.
         _evict_xformers_built_for_another_torch(scope = "linux torch repair", family_only = True)
         _evict_xformers_requiring_another_torch()
@@ -13033,9 +12942,8 @@ def install_python_stack() -> int:
             return 1
         _torch_after_flavor = str(_probe_installed_torch_version() or "")
         if _torch_after_flavor and _torch_after_flavor != _torch_before_flavor:
-            # The kernels were chosen for the torch the invariant just replaced, as in step 13.
+            # flash-attn was chosen for the torch the invariant just replaced, as in step 13.
             _ensure_flash_attn()
-            _ensure_ssm_kernels()
         # A direct run has no setup.ps1 postlude to swap triton back. After the invariant,
         # because the swap keys off the installed +xpu label.
         _ensure_xpu_triton()

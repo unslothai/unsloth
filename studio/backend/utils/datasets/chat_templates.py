@@ -62,6 +62,19 @@ _CUSTOM_PROMPT_TEMPLATE_ERROR = (
 )
 
 
+def _map_with_pickle_fallback(dataset, function, map_kwargs):
+    """dataset.map, retried in one process when the worker processes cannot receive the function: a
+    remote-code tokenizer class is pickled by value and can drag in unpicklable module state (an HTTP
+    client's SSLContext), which fails the whole multi-process map."""
+    try:
+        return dataset.map(function, **map_kwargs)
+    except Exception as exc:
+        if (map_kwargs.get("num_proc") or 1) <= 1 or "pickle" not in str(exc).lower():
+            raise
+        logger.warning(f"Formatting in one process: the worker processes could not be started ({exc})")
+        return dataset.map(function, **{k: v for k, v in map_kwargs.items() if k != "num_proc"})
+
+
 def _custom_prompt_template_error(custom_prompt_template):
     if custom_prompt_template is None:
         return None
@@ -223,8 +236,16 @@ def _sharegpt_tool_turns(conversation, content = "", probe = False):
                 markers.append(f"unslothresult{len(markers)}end")
                 message["content"] = markers[-1]
         elif role == "function_call":
+            raw = message.get("content")
+            if isinstance(raw, list):
+                # A processor-loaded model gets every turn standardized into text parts.
+                raw = "".join(
+                    part.get("text") or ""
+                    for part in raw
+                    if isinstance(part, dict) and part.get("type") == "text"
+                )
             try:
-                calls = json.loads(message.get("content"))
+                calls = json.loads(raw)
             except (TypeError, ValueError, RecursionError):
                 calls = None
             calls = calls if isinstance(calls, list) else [calls]
@@ -467,6 +488,7 @@ def get_dataset_info_summary(dataset_info):
         "sharegpt": "ShareGPT format (needs standardization)",
         "chatml_messages": "ChatML format (messages column) - OpenAI compatible",
         "chatml_conversations": "ChatML format (conversations column) - HuggingFace standard",
+        "pretokenized": "Pre-tokenized (input_ids / labels)",
         "unknown": "Unknown format"
     }
 
@@ -668,7 +690,7 @@ def apply_chat_template_to_dataset(
                 dataset_map_kwargs['num_proc'] = num_proc
                 dataset_map_kwargs['desc'] = "Applying template to Alpaca format"
 
-            formatted_dataset = dataset.map(_format_alpaca, **dataset_map_kwargs)
+            formatted_dataset = _map_with_pickle_fallback(dataset, _format_alpaca, dataset_map_kwargs)
 
             return {
                 "dataset": formatted_dataset,
@@ -794,7 +816,7 @@ def apply_chat_template_to_dataset(
 
                 threading.Thread(target = _poll_tqdm, daemon = True).start()
 
-            formatted_dataset = dataset.map(_format_chatml, **dataset_map_kwargs)
+            formatted_dataset = _map_with_pickle_fallback(dataset, _format_chatml, dataset_map_kwargs)
 
             if _tqdm_monitor_stop is not None:
                 _tqdm_monitor_stop.set()

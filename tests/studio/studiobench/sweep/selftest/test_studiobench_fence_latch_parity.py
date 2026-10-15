@@ -1,33 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-"""A code fence the reader scrolled past on one arm is not a UI change.
-
-THE FALSE ALARM THIS HOLDS. `code-fence-defer.tsx` renders a code fence nobody has come near as a
-plain shell and upgrades it to token spans, one way only, the first time it comes within a viewport.
-On the r100K fast film `reasoning_toggle` leaves the viewport either near the tail or ~20,000px
-higher, at random per cell on ONE build, and the higher landing latches every fence in msg11/13/15
-for the rest of the cell. Their serialisations then differ by up to 1.7 million characters between
-two runs of the same build. A null control whose four cells all happened to land low called every
-later action stable, and two backend-only pull requests failed the gate on 2026-09-23:
-
-    #11727  run 35913031644  model_change / reasoning_toggle / select_all_copy / settings,
-                             msg15(assistant):1847269->2150610c, null control quiet
-    #11724  run 35913021155  image_upload, msg11(assistant):174956->283962c, the null control
-                             could not decide image_upload (one arm missed its slot)
-
-`testdata/` holds both runs' payloads as recorded by CI, trimmed to the fields the verdict reads
-(the verdict text is byte-identical on the trimmed and the full files). They predate the per-fence
-readings, so the first tests replay the failure as it happened. The rest add the readings that
-`scene/parity.js` now takes, modelled on the mechanism: in the messages whose size moved with the
-census's highlight-span count (msg11/13/15/17), each distinct digest is a distinct set of latched
-fences over identical fence TEXT and an identical message outside the fences. That model is the
-claim under test; the live evidence for it is a null run recorded with the new capture, and the
-DOM-level half is `test_the_capture_reads_a_shell_and_its_highlighted_fence_as_one_text` below.
-
-Every "clears" test is paired with one that injects a genuine difference into the same recorded
-payload and requires it to still fail, because a fix for a false alarm that also silences real
-changes is the worse bug.
-"""
+"""Fence latched by viewport position is not a UI change; each clearing test has a real-change twin."""
 
 from __future__ import annotations
 
@@ -48,9 +21,8 @@ from tests.studio.studiobench.sweep import ui_parity as U  # noqa: E402
 TESTDATA = Path(__file__).resolve().parent / "testdata"
 PARITY_JS = Path(__file__).resolve().parents[2] / "scene" / "parity.js"
 
-#: The messages whose serialised size tracked `census.highlight_spans` in the recorded cells.
 LATCHING = (11, 13, 15, 17)
-#: Fences per latching message in the model. Fence 0 is the one every cell latches at mount.
+#: Fence 0 latches at mount in every cell.
 FENCES = 12
 
 
@@ -74,11 +46,7 @@ def _captures(rows: list[dict]):
 
 
 def annotate(*payloads: list[dict]) -> None:
-    """Add the fence readings `scene/parity.js` now records, IN PLACE, across one run's payloads.
-
-    Built over BOTH payloads of a run together, so a digest seen in the null control and in the
-    result maps to the same latch set in each.
-    """
+    """Adds fence readings in place, over all payloads of a run, so one digest maps to one latch set."""
     seen: dict[int, list[str]] = {i: [] for i in LATCHING}
     for rows in payloads:
         for _row, cap in _captures(rows):
@@ -143,9 +111,6 @@ def _recorded(tag: str) -> tuple[list[dict], list[dict]]:
     return _load(f"{tag}_result.payload.jsonl.gz"), _load(f"{tag}_null.payload.jsonl.gz")
 
 
-# ── the failure, replayed from what CI recorded ──────────────────────────────────────────────
-
-
 @pytest.mark.parametrize("tag,flagged", _runs())
 def test_the_recorded_run_reproduces_the_false_alarm(tmp_path, capsys, tag, flagged):
     """As recorded, without fence readings, the verdict fails exactly as CI did."""
@@ -155,7 +120,6 @@ def test_the_recorded_run_reproduces_the_false_alarm(tmp_path, capsys, tag, flag
     section = _stable_section(out)
     for action in flagged:
         assert action in section, (action, section)
-    # And every one of them is an assistant message in the latching set, which is the whole finding.
     for line in section.splitlines():
         for claim in line.split(": ", 1)[1].split(", "):
             assert any(claim.startswith(f"msg{i}(assistant)") for i in LATCHING), line
@@ -169,8 +133,7 @@ def test_fence_readings_clear_the_false_alarm(tmp_path, capsys, tag, flagged):
     rc, out = _run(tmp_path, capsys, result, null)
     assert rc == 0, out
     assert _stable_section(out) == ""
-    # Said, and not paid for in coverage: a latch-only pair is a comparison, not a refusal, so the
-    # --min-compared floor (exit 3) is not what turned this green.
+    # A latch-only pair is a comparison, so the --min-compared floor did not turn this green.
     assert "of which fence-latch only" in out
 
 
@@ -193,9 +156,6 @@ def test_the_workflow_null_audit_still_passes_with_fence_readings(tmp_path, caps
         ]
     )
     assert rc == 0, capsys.readouterr().out
-
-
-# ── the other direction: a real change on the same recorded payload still fails ────────────────
 
 
 def _treatment_rows(rows: list[dict], action: str):
@@ -277,9 +237,6 @@ def test_a_build_whose_fences_never_upgrade_is_not_excused(tmp_path, capsys, tag
     assert "msg17(assistant)" in _stable_section(out)
 
 
-# ── the rule itself ──────────────────────────────────────────────────────────────────────────
-
-
 def _cap(
     fences: list[dict],
     unfenced: str = "u",
@@ -358,7 +315,6 @@ def test_a_payload_recorded_before_the_fence_readings_is_scored_as_before():
     base, treat = _cap(None, digest = "a"), _cap(None, digest = "b")
     assert P.fence_latch_residue(base, treat) == []
     assert P.compare(base, treat)["verdict"] == P.DIFFER
-    # And a message whose digest agrees is never reported, whatever its fences say.
     same = _cap([_f(True)], digest = "a")
     assert P.fence_latch_residue(same, _cap([_f(False)], digest = "a")) == []
 
@@ -370,8 +326,6 @@ def test_the_derived_null_counts_a_latch_only_pair_as_stable():
     row = P.derive_unstable([("settings", P.compare(base, treat))] * 2)["settings"]
     assert row["unstable"] is False and row["observations"] == 2
 
-
-# ── the capture, the real parity.js under node ───────────────────────────────────────────────
 
 HARNESS_JS = r"""
 const fs = require("fs");
@@ -507,17 +461,12 @@ def test_the_capture_reads_a_shell_and_its_highlighted_fence_as_one_text(tmp_pat
             },
         ],
     )
-    # The false alarm, reproduced at the DOM: one fence, two serialisations.
     assert shell["digest"] != lit["digest"]
     assert shell["fences"][0]["latched"] is False and lit["fences"][0]["latched"] is True
-    # ...and the reading that resolves it: same text, same message around it.
     assert shell["fences"][0]["text"] == lit["fences"][0]["text"]
     assert shell["digest_unfenced"] == lit["digest_unfenced"]
-    # The other direction: a changed line of code and a changed sentence are both still seen.
     assert edited["fences"][0]["text"] != lit["fences"][0]["text"]
     assert reworded["digest_unfenced"] != shell["digest_unfenced"]
-    # The digest every existing caller compares is unchanged, and a fence-free message carries no
-    # new fields at all.
     assert all(r["same_as_signature"] for r in (shell, lit, edited, reworded, bare))
     assert bare["fences"] is None and bare["digest_unfenced"] is None
 
@@ -560,9 +509,7 @@ def test_the_capture_keeps_where_a_fence_breaks_its_lines(tmp_path):
     )
     assert moved["fences"][0]["text"] != lit["fences"][0]["text"], "a line break moved"
     assert merged["fences"][0]["text"] != lit["fences"][0]["text"], "two lines joined"
-    # The shell trims trailing newlines; that is not a difference.
     assert trailing["fences"][0]["text"] == lit["fences"][0]["text"]
-    # Blank lines render as a line holding a lone newline, and count once, as in the shell.
     assert blank_lit["fences"][0]["text"] == blank_shell["fences"][0]["text"]
     assert blank_lit["fences"][0]["text"] != lit["fences"][0]["text"]
 

@@ -1,11 +1,8 @@
 #!/bin/bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-#
-# UNSLOTH_STUDIO_FULL_DEPS is read INSIDE install_python_stack.py, and setup.sh's fast path is the
-# branch that never starts it, so `UNSLOTH_STUDIO_FULL_DEPS=1 unsloth studio update` printed
-# "dependencies up to date" and did nothing. The escape now lives in _fast_path_escapes, which the
-# UV_OFFLINE branch calls too. This drives the real blocks and helper out of setup.sh.
+# UNSLOTH_STUDIO_FULL_DEPS is read inside install_python_stack.py, which the fast path never
+# starts, so the escape lives in _fast_path_escapes (also called by the UV_OFFLINE branch).
 
 set -euo pipefail
 
@@ -18,8 +15,7 @@ BLK="$WORK/fastpath_blk.sh"
 OFFLINE_BLK="$WORK/offline_blk.sh"
 HELPERS="$WORK/helpers.sh"
 
-# Every slice assumption is reported as drift: a block that never sourced leaves _SKIP_PYTHON_DEPS
-# at its false default, the answer half the cases want.
+# Slice assumptions report as drift: a block that never sourced leaves the false default.
 drift() {
     echo "FATAL: the fast-path extraction no longer matches $SETUP_SH -- $1" >&2
     echo "       Fix the extraction in $0 (or the block in setup.sh), do not silence it." >&2
@@ -81,9 +77,7 @@ for _fn in _setup_install_is_verified _uv_offline_requested _fast_path_escapes; 
         || drift "$_fn is no longer a top-level function in setup.sh"
 done
 
-# The escape has to live in the SHARED helper, or the offline branch answers differently. Sliced to
-# a FILE, never `awk ... | grep -q`: under `set -o pipefail` grep's early exit kills awk with
-# SIGPIPE and fails the pipeline (the uv cache scan's defect, reproduced here).
+# Sliced to a FILE, never `awk ... | grep -q`: under pipefail grep's early exit SIGPIPEs awk.
 FPE="$WORK/fast_path_escapes.sh"
 awk '/^_fast_path_escapes\(\) \{/ { grab = 1 } grab { print } grab && /^}/ { grab = 0 }' \
     "$SETUP_SH" > "$FPE"
@@ -102,7 +96,7 @@ for _blk in "$BLK" "$OFFLINE_BLK" "$HELPERS"; do
     fi
 done
 
-# This region is POSIX sh like its neighbours: dash parses it or this fails.
+# This region is POSIX sh: dash parses it or this fails.
 if command -v dash >/dev/null 2>&1; then
     if ! _dash_err=$(dash -n "$FPE" 2>&1); then
         echo "$_dash_err" >&2
@@ -122,7 +116,6 @@ check() {
     fi
 }
 
-# A python without site-packages: every probe takes its "cannot answer" path.
 VENV_DIR="$WORK/mock_venv"
 mkdir -p "$VENV_DIR/bin"
 cat << 'EOF' > "$VENV_DIR/bin/python"
@@ -135,23 +128,20 @@ printf 'def verify_install(**kwargs):\n    return {"ok": True}\n' > "$WORK/insta
 _common_env() {
     _PKG_NAME="unsloth"
     SCRIPT_DIR="$WORK"
-    # An ambient torch pin or desktop floor would fire another arm and read false for the wrong
-    # reason.
+    # An ambient torch pin or desktop floor would fire another arm.
     UNSLOTH_TORCH_INDEX_URL=""
     UNSLOTH_TORCH_INDEX_FAMILY=""
     UNSLOTH_DESKTOP_BACKEND_VERSION=""
     _SKIP_PYTHON_DEPS=false
 }
 
-# $1 is passed to the block as the environment variable, or the literal <unset> to remove it.
+# $1 is the env value, or the literal <unset> to remove it.
 eval_fastpath() {
     (
         INSTALLED_VER="2026.8.15"
         LATEST_VER="2026.8.15"
         if [ "$1" = "<unset>" ]; then unset UNSLOTH_STUDIO_FULL_DEPS; else UNSLOTH_STUDIO_FULL_DEPS="$1"; fi
         _common_env
-        # false is also what a block that never ran leaves, so both ways that can happen report
-        # here.
         _STEP_CALLS=0
         step() { _STEP_CALLS=$((_STEP_CALLS + 1)); }
         substep() { :; }
@@ -164,7 +154,7 @@ eval_fastpath() {
     )
 }
 
-# The offline branch prints no `step`, so "did it run at all" is answered by its substeps.
+# The offline branch prints no `step`, so its substeps show it ran.
 eval_offline() {
     (
         INSTALLED_VER="2026.8.15"
@@ -188,7 +178,6 @@ $1"; }
     )
 }
 
-# What the user is told to run, and what it has to print while doing it.
 eval_message() {
     (
         INSTALLED_VER="2026.8.15"
@@ -212,17 +201,14 @@ $1"; }
 
 echo "Testing UNSLOTH_STUDIO_FULL_DEPS against setup.sh's up-to-date fast path:"
 
-# The baseline the hatch has to be able to override: same version, nothing else wrong.
 check "unset leaves the fast path alone" "$(eval_fastpath '<unset>')" "true"
 
-# Accepted exactly as install_python_stack.py's _full_deps_requested: .strip().lower() in ("1",
-# "true", "yes", "on"), or the same command means different things per half.
+# Same truthy set as install_python_stack.py's _full_deps_requested.
 for truthy in 1 true TRUE True yes YES on ON " 1 " "  on  " "	true	"; do
     check "UNSLOTH_STUDIO_FULL_DEPS=[$truthy] forces the dependency pass" \
         "$(eval_fastpath "$truthy")" "false"
 done
 
-# ...and nothing wider: 0/false/empty are what a script wanting the default writes.
 for falsy in 0 false FALSE no off "" " " maybe 2 "1x" "on!" "yes please"; do
     check "UNSLOTH_STUDIO_FULL_DEPS=[$falsy] leaves the fast path alone" \
         "$(eval_fastpath "$falsy")" "true"

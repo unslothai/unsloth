@@ -53,12 +53,14 @@ export const sv = {
       enable: "Låt modeller använda webbläsaren",
       enableDescription: "Modeller öppnar sidor i en egen webbläsarflik, läser dem och klickar och skriver åt dig. Finns även i meny + i skrivfältet.",
       history: "Webbhistorik",
-      historyDescription: "Välj om modeller får läsa webbläsarens historik",
+      historyDescription: "Fullständig åtkomst hoppar över godkännande; Aldrig blockerar fortfarande åtkomst",
       alwaysAsk: "Fråga alltid",
       alwaysAllow: "Tillåt alltid",
       never: "Aldrig",
       scripts: "Köra skript",
       scriptsDescription: "Välj om modeller får köra skript på sidor. Varje skript visas för dig innan det körs",
+      cursor: "Visa markör",
+      cursorDescription: "Visar en pekare där modeller klickar, skriver och drar på sidan",
       askEveryTime: "Fråga varje gång",
       permissionsTitle: "Agentbehörigheter",
       permissionsDescription: "Välj standardvärden och lägg till undantag för vissa webbplatser. Lösenords- och betalningsfält fylls aldrig i, oavsett inställningarna här.",
@@ -81,6 +83,9 @@ export const sv = {
     },
     agent: {
       working: "Unsloth surfar i den här fliken",
+      waiting: "Unsloth behöver ditt svar i webbläsaren för {chat}",
+      otherChat: "en annan chatt",
+      show: "Visa",
       stop: "Stoppa",
       allow: "Tillåt",
       deny: "Neka",
@@ -268,7 +273,7 @@ export const sv = {
     annotationScreenshotsNever: "Ta aldrig med",
     clearDataSetting: "Rensa webbdata",
     clearDataSettingDescription:
-      "Rensa webbhistorik, hämtningshistorik och cachade sidor. Sidor sparar inga cookies eller webbplatsdata.",
+      "Rensa webbhistorik, hämtningshistorik och cachade sidor. Sidor sparar cookies och webbplatsdata bara tills Studio laddas om.",
     manage: "Hantera",
     fullView: {
       enter: "Öppna helvy",
@@ -447,7 +452,7 @@ export const sv = {
     clearData: {
       title: "Rensa webbdata?",
       description:
-        "Detta rensar din webbhistorik, hämtningshistorik och cachade sidor. Hämtade filer finns kvar på datorn.",
+        "Detta rensar din webbhistorik, hämtningshistorik, cachade sidor samt webbplatsers cookies och data, vilket loggar ut dig från webbplatser. Hämtade filer finns kvar på datorn.",
       cancel: "Avbryt",
       confirm: "Rensa data",
       done: "Webbdata rensades",
@@ -470,6 +475,8 @@ export const sv = {
         "Filuppladdningar fungerar inte i den här vyn. Öppna sidan i systemets webbläsare för att skicka den.",
       scriptNavigation:
         "Sidan försökte gå till en annan adress via skript, vilket den här vyn inte kan följa. Öppna den i systemets webbläsare i stället.",
+      needsBrowser:
+        "Sidan försökte använda en webbläsarfunktion som den här vyn blockerar, så delar av den kanske inte fungerar. Öppna den i systemets webbläsare i stället.",
     },
     native: {
       externalPrompt: "{host} vill öppna {url}",
@@ -509,6 +516,17 @@ export const sv = {
     precisionAuto: "Modellens standard",
     precisionHelp:
       "Modellens standard behåller lagrad precision. Andra alternativ konverterar okvantiserade vikter vid inläsning.",
+    kvCache: "KV-cache",
+    kvCacheFp8: "FP8 (halva minnet)",
+    kvCacheHelp:
+      "FP8 lagrar kontextcachen med 8 bitar och rymmer ungefär dubbelt så mycket kontext i samma minne. Utan kalibrerade skalor i checkpointen kan svaren bli något mindre exakta.",
+    gpuMemory: "GPU-minnesgräns",
+    gpuMemoryAuto: "Automatisk",
+    gpuMemoryHelp:
+      "Det mesta av varje vald GPU som motorn får använda. Automatisk använder det som är ledigt; sänk den för att lämna plats åt andra program.",
+    seed: "Seed",
+    seedPlaceholder: "Motorns standard",
+    seedHelp: "Anger motorns slumpfrö. Samtidiga chattar kan fortfarande ändra samplade svar.",
     default: "Standard",
     installRequired: "installation krävs",
     ownerRequired: "Be Studio-ägaren att installera den här motorn.",
@@ -646,20 +664,19 @@ export const sv = {
   },
   rewind: {
     title: "Spola tillbaka",
+    confirmTitle: "Spola tillbaka till det här meddelandet?",
+    restoreLabel: "Återställ",
     pickDescription: "Välj ett meddelande att spola tillbaka till.",
     pickEmpty: "Det finns inga meddelanden att spola tillbaka till än.",
     attachmentOnly: "Endast bilagor",
-    chooseDescription: "Meddelandet öppnas för redigering så att du kan skicka det igen. De nuvarande svaren finns kvar via grenpilarna.",
     modeBoth: "Konversation och filer",
     modeConversation: "Endast konversation",
     modeFiles: "Endast filer",
-    checking: "Kontrollerar filändringar…",
     checkFailed: "Det gick inte att kontrollera filändringar: {error}",
-    noFileChanges: "Inga filändringar efter det här meddelandet",
     summary: "Filer att återställa: {restore}. Att ta bort: {remove}. Att återskapa: {recreate}.",
     conflicts: "Ändrade sedan dess, hoppas över",
     untracked: "Kan inte återställas",
-    scopeNote: "Program som körs, installerade paket och allt utanför den här chattens mapp ändras inte.",
+    scopeNote: "Filer omfattar kod. Program, paket och filer utanför den här chattens mapp ändras inte.",
     back: "Tillbaka",
     cancel: "Avbryt",
     confirm: "Spola tillbaka",
@@ -668,6 +685,7 @@ export const sv = {
     restoredMany: "Återställde {count} filer",
     nothingRestored: "Inga filer behövde återställas",
     skippedCount: "{count} överhoppade",
+    filesNotRestored: "{count} ändrade filer kan inte återställas och lämnas som de är.",
     restoreFailed: "Det gick inte att återställa filerna",
     undo: "Ångra",
     undone: "Filåterställningen ångrades",
@@ -676,6 +694,10 @@ export const sv = {
   chatMenu: {
     more: "Chattalternativ",
     copy: "Kopiera",
+    compact: "Komprimera konversationen",
+    compactQueued: "Komprimering begärd för nästa meddelande",
+    compactEmpty: "Inget att komprimera än",
+    compactUnsupported: "Komprimering kräver en GGUF- eller MLX-modell med verktygsstöd",
   },
   welcome: {
     goodToSeeYou: "Kul att se dig",
@@ -1090,6 +1112,9 @@ export const sv = {
       resetButton: "Återställ",
       resetDone: "Biblioteksinställningarna har återställts",
       storageSection: "Lagring",
+      downloadsSection: "Bildnedladdningar",
+      imageInfoStamp: "Infostämpel",
+      imageInfoStampDescription: "Visa modell, datum och seed längst ned på bilder du laddar ned från sidan Bilder. Genereringsinställningarna sparas i filen oavsett.",
       storageDescription:
         "Öppna en kategori för att se dess filer med de största först och ta bort det du inte längre behöver.",
       storageUsed: "{size} används av biblioteket",
@@ -1480,6 +1505,8 @@ export const sv = {
         "Det gick inte att starta installationen av körmiljön.",
       unsupportedArch:
         "Windows-sandlådan (MXC) körs bara på x64-Windows, så den är inte tillgänglig på den här datorn.",
+      builtinNeedsUpdate:
+        "Windows inbyggda container kräver version {required} eller senare, och den här datorn kör {current}. Installera den senaste Windows-uppdateringen för att använda den utan administratörssteg, eller slå på reservsandlådan nedan.",
       unsupportedBuild:
         "Windows-sandlådan (MXC) kräver Windows 11 24H2 (version 26100) eller senare, så den är inte tillgänglig på den här datorn.",
       permissionsIntro:
@@ -1864,6 +1891,19 @@ export const sv = {
         apiOnlyDescription:
           "Avlastning efter inaktivitet lämnar en modell som du läst in från Unsloth i minnet och frigör endast de som lästs in av en API-begäran.",
       },
+      modelAliases: {
+        sectionTitle: "Modellalias (OpenAI API)",
+        description:
+          "Fasta namn för API-klienter, till exempel fast-chat eller code. En begäran som anger ett alias besvaras av modellen det pekar på, så anslutna appar fortsätter fungera när du byter modell. Slå på Byt modell enligt begäran så att ett alias kan läsa in sin modell.",
+        namePlaceholder: "fast-chat",
+        nameAriaLabel: "Aliasnamn",
+        modelAriaLabel: "Modell som aliaset pekar på",
+        modelPlaceholder: "unsloth/Qwen3-4B-GGUF:Q4_K_M",
+        removeAriaLabel: "Ta bort alias",
+        add: "Lägg till alias",
+        loadError: "Det gick inte att läsa in modellalias.",
+        saveError: "Det gick inte att spara modellalias.",
+      },
       previewSharing: {
         sectionTitle: "Delning av förhandsvisning",
         enableLabel: "Offentliga förhandsvisningslänkar",
@@ -2013,7 +2053,23 @@ export const sv = {
           "Hugging Face-modell eller lokal sökväg som används för att indexera och söka i dina dokument. Standard är {defaultModel}.",
         searchPlaceholder: "Sök efter valfri modell på HF",
         reindexWarning:
-          "Påverkar endast nyindexerade dokument. Ladda upp befintliga dokument igen efter att du har bytt modell.",
+          "Påverkar endast nyindexerade dokument. Bädda in befintliga dokument på nytt efter att du har bytt modell.",
+        reembed: {
+          label: "Bädda in dokument på nytt",
+          staleOne:
+            "1 dokument indexerades med en annan inbäddningsmodell, så semantisk sökning hoppar över det.",
+          staleMany:
+            "{count} dokument indexerades med en annan inbäddningsmodell, så semantisk sökning hoppar över dem.",
+          staleArchived:
+            "Tidigare chatthistorik indexerades med en annan inbäddningsmodell, så semantisk sökning hoppar över den.",
+          running: "Bäddar in på nytt: {done} av {total}",
+          action: "Bädda in på nytt",
+          stop: "Stoppa",
+          startFailed: "Det gick inte att starta ominbäddningen",
+          stopped: "Ominbäddningen stoppades",
+          finished: "Dokumenten har bäddats in på nytt",
+          finishedWithFailures: "{count} kunde inte bäddas in på nytt",
+        },
         emptyError: "Ange ett Hugging Face-modell-ID eller en lokal sökväg.",
         loadError:
           "Det gick inte att läsa in inställningen för inbäddningsmodellen.",
@@ -2753,17 +2809,26 @@ export const sv = {
         showMemoryBar: "Stapel för VRAM-användning",
         showMemoryBarDescription:
           "Visa uppskattat VRAM för modellvikter, kontext och spekulativ avkodning.",
+        fitOnDeviceOnly: "Visa bara modeller som får plats",
+        fitOnDeviceOnlyDescription:
+          "Döljer modeller som är för stora för enhetens GPU-minne och RAM i modellväljaren och Hub. Hämtade modeller visas fortfarande.",
       },
       menu: {
         title: "Chattmeny",
-        description:
-          "Fäst objekt i chattens +-sidomeny. Övriga flyttas till ”Mer”.",
+        description: "Fäst objekt i chattens +-meny och dra dem för att ändra ordning. Övriga hamnar under ”Mer”.",
+        deepResearch: "Djupsökning",
+        browserUse: "Webbläsarstyrning",
         chatWithFiles: "Chatta med filer (RAG)",
         mcp: "MCP",
         skills: "Färdigheter",
         savedPrompts: "Sparade uppmaningar",
         compareChat: "Jämför chatt",
         exportChat: "Exportera chatt",
+        reset: "Återställ standard",
+        addFiles: "Lägg till foton och filer",
+        webSearch: "Webbsökning",
+        tools: "Verktyg",
+        more: "Mer",
       },
       pastedTextThreshold: "Kondensera långa inklistringar",
       pastedTextThresholdDescription:
@@ -2808,6 +2873,18 @@ export const sv = {
         "Äldre turer flyttas till ett sökbart arkiv när en chatt fyller sin kontext.",
       autoCompactKeywords:
         "komprimering komprimera autokomprimering kontextfönster trunkera rullande kontrollpunkt marginal arkiv hämtning återkallning rag sök compaction compact auto-compact context window truncate rolling checkpoint headroom archive retrieval recall search",
+      firstTokenLabel: "Väntegräns för första token",
+      firstTokenDescription: "Hur länge lokala GGUF-modeller får vänta på första token utan framsteg i promptbearbetningen. Gäller nya väntetider för alla konton. Med Obegränsad fortsätter väntan tills du stoppar.",
+      firstTokenDefault: "20 min (standard)",
+      firstTokenCustom: "Anpassad",
+      firstTokenUnlimited: "Obegränsad",
+      firstTokenMinutes: "Väntan på första token i minuter",
+      firstTokenRange: "Minuter (1–10 080)",
+      firstTokenSave: "Spara",
+      firstTokenSaving: "Sparar …",
+      firstTokenLoadError: "Det gick inte att läsa in väntegränsen för första token.",
+      firstTokenSaveError: "Det gick inte att spara väntegränsen för första token.",
+      firstTokenKeywords: "tidsgräns första token promptbearbetning långsam CPU över natten obegränsad väntegräns timeout first token prefill slow CPU overnight unlimited waiting limit",
       toolResultLimit: "Längd på verktygsutdata",
       toolResultLimitDescription: "Tecken i ett Python-, Terminal- eller MCP-resultat som modellen läser. Standard är {count}.",
       toolResultLimitHint: "Längre utdata från Python och Terminal sparas i en fil som modellen kan läsa i delar. En högre gräns gäller modeller som körs i Unsloth, och små kontextfönster får fortfarande mindre. API-modeller behåller standardvärdet om du inte sänker det.",
@@ -3197,6 +3274,23 @@ export const sv = {
         "Appar som använder denna token förlorar åtkomsten omedelbart. Det går inte att ångra.",
       revokeAction: "Återkalla ”{name}”",
       revoking: "Återkallar ...",
+      audioApi: {
+        title: "Ljud-API",
+        description: "Tal, röstkloning, transkribering och ljudsidans arbetsflöden.",
+        speak: "Tala",
+        clone: "Klona",
+        transcribe: "Transkribera",
+        workflows: "Arbetsflöden",
+        separate: "Separera",
+        convert: "Konvertera",
+        music: "Musik",
+        edit: "Redigera",
+        placeholderModel:
+          "Ingen nedladdad modell kan köra det här exemplet än, så modellen som visas är en platshållare. Ladda ned en på ljudsidan först.",
+        autoSwitchOff:
+          "Modellen läses in via namn bara när automatiskt modellbyte är på. Slå på det, eller läs in modellen på dess ljudsida först.",
+        useViaApi: "Använd via API",
+      },
       decisionApi: {
         title: "Decision API",
         docs: "Dokumentation",
@@ -3218,7 +3312,7 @@ export const sv = {
         recommended: "Rekommenderas",
         device: "Kör på",
         deviceDescription:
-          "GPU svarar snabbare men håller sitt minne reserverat tills omstart.",
+          "GPU svarar snabbare och frigör sitt minne när modellen avlastas.",
         deviceCpu: "CPU",
         deviceGpu: "GPU",
         backend: "Körmiljö",
@@ -3280,6 +3374,7 @@ export const sv = {
       desktopAppVersion: "Skrivbordsappens version",
       desktopAppVersionUnavailable: "Inte tillgänglig",
       llamaCppVersion: "llama.cpp-version",
+      audioCppVersion: "audio.cpp-version",
       hardware: "Maskinvara",
       gpu: "GPU",
       cuda: "CUDA",
@@ -3744,6 +3839,21 @@ export const sv = {
         "Används i namn på träningsutdatakataloger, exportstandardvärden och historik.",
       loraSettings: "LoRA-inställningar",
       trainingHyperparameters: "Träningshyperparametrar",
+      drafterSettings: "Drafter för spekulativ avkodning",
+      drafterTrain: "Träna en drafter för spekulativ avkodning",
+      drafterTrainTooltip: "Tränar ett litet utkasthuvud efter finjusteringen så att inferensen går snabbare i llama.cpp och vLLM; utdata ändras inte.",
+      drafterChecking: "Kontrollerar modellen...",
+      drafterUnavailable: "Inte tillgängligt för den här modellen: {reason}",
+      drafterRetrainMtp: "Tränar om modellens MTP-huvud",
+      drafterEagle3: "Tränar en EAGLE-3-drafter (modellen saknar MTP-huvud)",
+      drafterDataSource: "Träningsdata",
+      drafterDataSourceDataset: "Svar från datasetet",
+      drafterDataSourceRegenerate: "Modellens egna svar (långsammare, bättre)",
+      drafterMaxExamples: "Exempel",
+      drafterEpochs: "Epoker",
+      drafterLearningRate: "Inlärningstakt",
+      drafterLearningRateDefault: "Standard",
+      drafterDraftSteps: "Utkasttokens",
       maxSteps: "Maxsteg",
       epochs: "Epoker",
       useMaxSteps: "Använd maxsteg",
@@ -3822,6 +3932,9 @@ export const sv = {
       evalSteps: "Utvärderingssteg",
       evalStepsTooltip:
         "Andel av totala träningssteg mellan utvärderingar (0–1). Ange 0 för att inaktivera utvärdering. Exempel: 0,01 = utvärdera var 1 % av stegen.",
+      earlyStoppingPatience: "Tålamod för early stopping",
+      earlyStoppingPatienceTooltip:
+        "Stoppar träningen efter så här många utvärderingar i rad utan lägre utvärderingsförlust och behåller vikterna från den bästa utvärderingen. Kräver utvärdering (utvärderingssteg över 0). 0 för att stänga av.",
       seed: "Slumptalets startvärde",
       seedTooltip: "Slumptalets startvärde för reproducerbarhet.",
       offloadLayers: "Avlasta lager",
@@ -4093,6 +4206,7 @@ export const sv = {
         configuring: "Konfigurerar",
         training: "Tränar",
         finalizing: "Sparar modell",
+        trainingDrafter: "Tränar drafter",
         completed: "Slutförd",
         error: "Fel",
         stopped: "Stoppad",
@@ -4204,6 +4318,7 @@ export const sv = {
     discard: "Ignorera",
     mentions: "Färdigheter",
     manage: "Hantera färdigheter",
+    turnOff: "Stäng av färdigheter",
     bulkActions: "Färdighetsåtgärder",
     enableAll: "Aktivera alla",
     disableAll: "Inaktivera alla",
