@@ -158,7 +158,6 @@ import type {
 const NO_SEARCH_FILTERS: ModelSearchFilters = {};
 const UNSLOTH_UPLOADER: readonly HubUploader[] = ["unsloth"];
 
-const MODELS_TAB_STORAGE_KEY = "unsloth.hub.modelsTab";
 const ALL_MODELS_VIEW_STORAGE_KEY = "unsloth.hub.allModelsView";
 const INVENTORY_SORT_STORAGE_KEY = "unsloth.hub.inventorySort";
 const RUN_CONFIG_REFRESH_TIMEOUT_MS = 5_000;
@@ -238,29 +237,6 @@ function buildFocusedHeading({
   return isDataset ? "Datasets" : "Models";
 }
 
-function readModelsTabPreference(): ModelsTab | null {
-  if (typeof window === "undefined") {
-    return null;
-  }
-  try {
-    const value = window.localStorage.getItem(MODELS_TAB_STORAGE_KEY);
-    return value === "discover" || value === "downloaded" ? value : null;
-  } catch {
-    return null;
-  }
-}
-
-function writeModelsTabPreference(tab: ModelsTab): void {
-  if (typeof window === "undefined") {
-    return;
-  }
-  try {
-    window.localStorage.setItem(MODELS_TAB_STORAGE_KEY, tab);
-  } catch {
-    return;
-  }
-}
-
 // "All models" defaults to split layout; the choice persists across sessions.
 function readAllModelsViewPreference(): AllModelsView {
   if (typeof window === "undefined") {
@@ -322,12 +298,8 @@ function useModelsTabState(): {
   const navigate = useNavigate();
   const search = useSearch({ from: "/hub" });
   const urlTab: ModelsTab | null = search.tab ?? null;
-  const hasModelDeepLink =
-    typeof search.model === "string" && search.model.length > 0;
-  const [fallbackTab, setFallbackTab] = useState<ModelsTab>(
-    () => readModelsTabPreference() ?? "discover",
-  );
-  const tab = urlTab ?? (hasModelDeepLink ? "discover" : fallbackTab);
+  // Opening the Hub without an explicit ?tab= always lands on Discover; the last tab is not remembered.
+  const tab = urlTab ?? "discover";
 
   useEffect(() => {
     if (urlTab !== null) return;
@@ -340,8 +312,6 @@ function useModelsTabState(): {
 
   const setTab = useCallback(
     (next: ModelsTab) => {
-      setFallbackTab(next);
-      writeModelsTabPreference(next);
       void navigate({
         to: "/hub",
         search: (prev) => ({
