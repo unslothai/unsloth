@@ -211,9 +211,10 @@ from .diffusion_attention import (
     normalize_attention_backend,
     sdpa_math_only,
     sdpa_subquadratic_confirmed,
+    attention_may_run_native,
     begin_attention_run,
+    report_attention_run,
     select_attention_backend,
-    sync_attention_state,
     _ensure_attention_backend_installed,
 )
 from . import diffusion_compile_cache as compile_cache
@@ -1947,9 +1948,14 @@ def _quadratic_attention(
     pipe: Any = None,
 ) -> bool:
     """Whether attention can only run on SDPA math (quadratic memory); False when unknown.
-    Any engaged non-native backend is a fused kernel, so the SDPA probe only speaks for native."""
+    An engaged non-native backend is a fused kernel, so the SDPA probe only speaks for native, unless that backend can
+    hand calls to native SDPA (ROCm flash: masked calls, lengths it does not serve): then budget as native."""
     if engaged_backend is not None and str(engaged_backend) != "native":
-        return False
+        try:
+            if pipe is None or not attention_may_run_native(pipe):
+                return False
+        except Exception:  # noqa: BLE001
+            return False
     try:
         if not sdpa_math_only(target):
             return False
@@ -10483,8 +10489,8 @@ class DiffusionBackend:
                 # Publish an active (step 0) state before the slow pre-denoise setup so a reload mount probe does not
                 # read idle.
                 self._gen = _GenState(total_steps = steps)
-                # ROCm flash: a generation boundary, so the recipe and status describe this run's attention calls.
-                begin_attention_run(state, logger)
+                # ROCm flash: a generation boundary, this run's attention route tally starts at zero.
+                begin_attention_run(state)
             # Reset in the finally, so a failed or cancelled generation frees its reused outputs.
             static_skip_pipe = None
             restore_scheduler: Optional[tuple[Any, Any]] = None
@@ -11291,8 +11297,9 @@ class DiffusionBackend:
                         compile_cache.save_async(state.compile_cache_ctx, logger = logger)
                     except Exception:  # noqa: BLE001 - cache persistence is best-effort
                         pass
-                # ROCm flash: the recipe below and status report what this run executed, not the load-time pick.
-                sync_attention_state(state, logger)
+                # The status badge reports the attention routes this run took (report only: the recipe keeps the
+                # engaged backend).
+                report_attention_run(state)
                 # Last word on cancellation, AFTER the post-denoise work: the event stays registered through the
                 # compile-cache bookkeeping and the page still shows Stop for as long as progress reads active, so a Stop
                 # landing there was answered cancelled = true and then contradicted by the image the route persisted.
@@ -11615,7 +11622,6 @@ class DiffusionBackend:
                 "resolved": None,
                 "generation_defaults": None,
             }
-        sync_attention_state(state, logger)
         from core.inference import diffusion_controlnet, diffusion_lora
         from hub.utils.gguf import extract_quant_token
 

@@ -732,11 +732,11 @@ def _rocm_flash_block_admitted(
 # hidden sizes} lives on that DiT and is active only while it runs (its forward hooks), so a model loaded with explicit
 # flash or UNSLOTH_DIFFUSION_ROCM_FLASH=1 is never gated, whichever loaded first.
 ROCM_FLASH_GATE_ATTR = "_unsloth_rocm_flash_gate"
-# (thread ident, gate) of the DiT forward running now; the ident is checked on eager calls.
-_ROCM_FLASH_ACTIVE: list = [None]
+# Per thread (concurrent image and video forwards never see each other's): ``gate`` and ``tally`` of the DiT forward
+# running now, and ``probing`` while a timing probe runs. Dynamo traces threading.local reads.
+_ROCM_FLASH_LOCAL = threading.local()
 # (device, dtype, hidden, heads, head_dim, bucket) -> flash serves it. In memory: a failed bucket stays native.
 _ROCM_FLASH_BUCKETS: dict[tuple, bool] = {}
-_ROCM_FLASH_PROBING = threading.local()
 _ROCM_FLASH_GATE_LOCK = threading.Lock()
 
 
@@ -750,13 +750,7 @@ def _rocm_flash_bucket(tokens: Any) -> int:
 
 
 def _active_rocm_flash_gate() -> Optional[dict]:
-    active = _ROCM_FLASH_ACTIVE[0]
-    if active is None:
-        return None
-    ident, gate = active
-    if not _compiling() and ident != threading.get_ident():
-        return None
-    return gate
+    return getattr(_ROCM_FLASH_LOCAL, "gate", None)
 
 
 def _rocm_flash_capturing() -> bool:
@@ -775,7 +769,7 @@ def _rocm_flash_length_reason(query: Any, key: Any) -> Optional[str]:
     if not gate:
         return None
     compiling = _compiling()
-    if not compiling and getattr(_ROCM_FLASH_PROBING, "active", False):
+    if not compiling and getattr(_ROCM_FLASH_LOCAL, "probing", False):
         return None
     try:
         _b, seq, heads, head_dim = query.shape
@@ -826,7 +820,7 @@ def _rocm_flash_geometry_admitted(
         ROCM_FLASH_ADMISSIONS[key] = rec
         _log_rocm_flash_verdict(logger, device, geometry, rec, "cached")
         return rec["admitted"]
-    _ROCM_FLASH_PROBING.active = True  # the probe's own flash calls are neither gated nor counted
+    _ROCM_FLASH_LOCAL.probing = True  # the probe's own flash calls are neither gated nor counted
     try:
         rec = _time_rocm_flash_block(device, dtype, *geometry, tokens = tokens)
     except Exception as exc:  # noqa: BLE001 - not cached: retried next load
@@ -835,7 +829,7 @@ def _rocm_flash_geometry_admitted(
         )
         return False
     finally:
-        _ROCM_FLASH_PROBING.active = False
+        _ROCM_FLASH_LOCAL.probing = False
         try:
             import torch
             torch.cuda.empty_cache()
@@ -942,6 +936,33 @@ def _log_rocm_flash_verdict(logger: Any, device: str, geometry: tuple, rec: dict
         pass
 
 
+def _diffusers_flash_path_fingerprint() -> str:
+    """diffusers version + a hash of the code generation runs flash through (``dispatch_attention_fn`` and the
+    registered FLASH backend, unwrapped from Studio's guard), so a diffusers change that alters the call re-times."""
+    import hashlib
+    import inspect
+
+    import diffusers
+    from diffusers.models.attention_dispatch import (
+        AttentionBackendName,
+        _AttentionBackendRegistry,
+        dispatch_attention_fn,
+    )
+
+    flash = _AttentionBackendRegistry._backends[AttentionBackendName.FLASH]
+    while getattr(flash, _SAGE_GUARD_ATTR, False) and getattr(flash, "__wrapped__", None) is not None:
+        flash = flash.__wrapped__
+    parts = []
+    for fn in (dispatch_attention_fn, flash):
+        try:
+            parts.append(inspect.getsource(fn))
+        except (OSError, TypeError):
+            code = getattr(fn, "__code__", None)
+            parts.append(repr((code.co_code, code.co_consts)) if code is not None else repr(fn))
+    digest = hashlib.sha1("\n".join(parts).encode("utf-8")).hexdigest()[:12]
+    return f"diffusers{getattr(diffusers, '__version__', '?')}:{digest}"
+
+
 def _flash_attn_build_fingerprint() -> str:
     """size + mtime_ns of the flash_attn kernel files this process loaded: the CK extension (``flash_attn_2_cuda``) or,
     for the Triton AMD backend, the source files of the package ``flash_attn_interface.flash_attn_gpu`` came from. A
@@ -1023,6 +1044,7 @@ def _rocm_flash_toolchain_key(device: str) -> Optional[str]:
                 os.path.dirname(os.path.realpath(fa.__file__)),
                 backend,
                 f"build{_flash_attn_build_fingerprint()}",
+                _diffusers_flash_path_fingerprint(),
                 hashlib.sha1(src.encode("utf-8")).hexdigest()[:12],
             )
         )
@@ -1539,16 +1561,16 @@ def _install_rocm_flash_dispatch_guard() -> bool:
     return _install_dispatch_guard(
         "flash",
         _rocm_flash_reroute_reason,
-        lambda reason: _note_reroute(
-            "ROCm flash attention", reason, _ROCM_FLASH_ROUTED, _ROCM_FLASH_ROUTED_LOGGED
+        lambda reason: (
+            _note_rocm_flash_route(reason),
+            _note_reroute("ROCm flash attention", reason, _ROCM_FLASH_ROUTED, _ROCM_FLASH_ROUTED_LOGGED),
         ),
         ran = _note_rocm_flash_ran,
     )
 
 
-# Eager calls the flash kernel itself took (the reroutes are counted in _ROCM_FLASH_ROUTED).
-_ROCM_FLASH_RAN: list[int] = [0]
-# Per DiT, what its attention calls actually ran on: {"flash": n, "<reroute reason>": m}.
+# Per DiT, the routes its attention calls took in the current generation: {"flash": n, "<reroute reason>": m}. Report
+# only: nothing reads it to choose a kernel, size memory or key a calibration.
 ROCM_FLASH_TALLY_ATTR = "_unsloth_rocm_flash_tally"
 _ROCM_FLASH_HOOKS_ATTR = "_unsloth_rocm_flash_hooks"
 
@@ -1561,19 +1583,22 @@ def _compiling() -> bool:
         return False
 
 
+def _note_rocm_flash_route(route: str) -> None:
+    """Count one eager call on the running DiT's tally (this thread's). Traced and replayed calls are not counted."""
+    if _compiling() or getattr(_ROCM_FLASH_LOCAL, "probing", False):
+        return
+    tally = getattr(_ROCM_FLASH_LOCAL, "tally", None)
+    if isinstance(tally, dict):
+        tally[route] = tally.get(route, 0) + 1
+
+
 def _note_rocm_flash_ran() -> None:
-    if not _compiling() and not getattr(_ROCM_FLASH_PROBING, "active", False):
-        _ROCM_FLASH_RAN[0] += 1
-
-
-def _rocm_flash_counts() -> dict:
-    return {"flash": _ROCM_FLASH_RAN[0], **_ROCM_FLASH_ROUTED}
+    _note_rocm_flash_route("flash")
 
 
 def _track_rocm_flash_calls(pipe: Any) -> None:
-    """Tally, per DiT, which of its attention calls ran flash and which the guard sent to native (and why), from the
-    guard's counters around each eager forward. Nothing is switched: masked or slower-length calls already run native
-    call by call; this only lets the reported backend follow what ran (``rocm_flash_ran``). Idempotent."""
+    """Forward hooks on each DiT running ROCm flash: while it runs, this thread's gate (auto loads only) and tally are
+    its own. Idempotent."""
     for dit in _attention_dits(pipe):
         register_pre = getattr(dit, "register_forward_pre_hook", None)
         register_post = getattr(dit, "register_forward_hook", None)
@@ -1581,33 +1606,26 @@ def _track_rocm_flash_calls(pipe: Any) -> None:
             continue
         if getattr(dit, _ROCM_FLASH_HOOKS_ATTR, None):
             continue
-        state: dict = {"start": None, "outer": None}
 
-        def pre(_module, _args, state = state, dit = dit) -> None:
+        def pre(_module, _args, dit = dit) -> None:
             if _compiling():
                 return
-            state["outer"] = _ROCM_FLASH_ACTIVE[0]
-            gate = getattr(dit, ROCM_FLASH_GATE_ATTR, None)
-            _ROCM_FLASH_ACTIVE[0] = (threading.get_ident(), gate) if gate else None
-            state["start"] = _rocm_flash_counts()
-
-        def post(_module, _args, _output, state = state, dit = dit) -> None:
-            start = state["start"]
-            if start is None or _compiling():
-                return
-            state["start"] = None
-            _ROCM_FLASH_ACTIVE[0] = state["outer"]
+            outer = getattr(_ROCM_FLASH_LOCAL, "stack", None)
+            if outer is None:
+                outer = _ROCM_FLASH_LOCAL.stack = []
+            outer.append(
+                (getattr(_ROCM_FLASH_LOCAL, "gate", None), getattr(_ROCM_FLASH_LOCAL, "tally", None))
+            )
+            _ROCM_FLASH_LOCAL.gate = getattr(dit, ROCM_FLASH_GATE_ATTR, None) or None
             tally = getattr(dit, ROCM_FLASH_TALLY_ATTR, None)
-            if not isinstance(tally, dict):
-                tally = {}
-            for name, count in _rocm_flash_counts().items():
-                delta = count - start.get(name, 0)
-                if delta > 0:
-                    tally[name] = tally.get(name, 0) + delta
-            try:
-                setattr(dit, ROCM_FLASH_TALLY_ATTR, tally)
-            except Exception:  # noqa: BLE001
-                pass
+            _ROCM_FLASH_LOCAL.tally = tally if isinstance(tally, dict) else None
+
+        def post(_module, _args, _output) -> None:
+            if _compiling():
+                return
+            stack = getattr(_ROCM_FLASH_LOCAL, "stack", None)
+            gate, tally = stack.pop() if stack else (None, None)
+            _ROCM_FLASH_LOCAL.gate, _ROCM_FLASH_LOCAL.tally = gate, tally
 
         try:
             try:  # also after a forward that raised, so a failed run never leaves its gate active
@@ -1621,12 +1639,21 @@ def _track_rocm_flash_calls(pipe: Any) -> None:
             pass
 
 
-def rocm_flash_ran(pipe: Any) -> Optional[tuple[Optional[str], str]]:
-    """``(backend, reason)`` from what the ROCm flash guard actually did for this pipe's DiTs: ``"flash"`` when any
-    call ran flash (the reason counts the native ones), None when every call ran native SDPA. None before any eager
-    attention call was seen (nothing to report yet, or a compiled / graphed run the guard cannot count)."""
+def attention_may_run_native(pipe: Any) -> bool:
+    """Whether some attention call of this pipe can run native SDPA although flash is engaged: ROCm flash routes masked
+    calls (explicit or auto), and in auto lengths flash does not win or that are untimed under compile, to native. For
+    memory budgets: conservative, never from what a past run reported."""
+    return any(getattr(dit, _ROCM_FLASH_HOOKS_ATTR, None) for dit in _attention_dits(pipe))
+
+
+def rocm_flash_ran(pipe: Any) -> Optional[tuple[str, str]]:
+    """``(value, reason)`` describing the current generation's routes for a ROCm flash pipe, or None when it is not one.
+    A run with no counted call (compiled or graphed attention, which the guard cannot see) says so."""
+    dits = [d for d in _attention_dits(pipe) if getattr(d, _ROCM_FLASH_HOOKS_ATTR, None)]
+    if not dits:
+        return None
     total: dict[str, int] = {}
-    for dit in _attention_dits(pipe):
+    for dit in dits:
         tally = getattr(dit, ROCM_FLASH_TALLY_ATTR, None)
         if isinstance(tally, dict):
             for name, count in tally.items():
@@ -1635,21 +1662,23 @@ def rocm_flash_ran(pipe: Any) -> Optional[tuple[Optional[str], str]]:
     flash = total.pop("flash", 0)
     native = sum(total.values())
     if flash + native == 0:
-        return None
+        return "flash", (
+            "ROCm flash_attn; per-call routing is not tracked for compiled or graphed attention (masked calls and "
+            "lengths flash does not serve run native SDPA)"
+        )
     why = ", ".join(f"{name}: {count}" for name, count in sorted(total.items()))
     if native == 0:
-        return "flash", "ROCm flash_attn on every attention call"
+        return "flash", "ROCm flash_attn on every attention call of the last generation"
     if flash == 0:
-        return None, f"ROCm flash_attn admitted, but every attention call ran native SDPA ({why})"
+        return "native", f"ROCm flash_attn engaged, but every attention call of the last generation ran native SDPA ({why})"
     return "flash", (
-        f"ROCm flash_attn on {flash} of {flash + native} attention calls; the rest ran native SDPA ({why})"
+        f"ROCm flash_attn on {flash} of {flash + native} attention calls of the last generation; the rest ran native "
+        f"SDPA ({why})"
     )
 
 
-def begin_attention_run(state: Any, logger: Any = None) -> None:
-    """A generation boundary: settle the state on what the previous run executed, then zero the per-DiT tallies so
-    status, recipes and calibration keys describe this run alone, never a lifetime mix."""
-    sync_attention_state(state, logger)
+def begin_attention_run(state: Any) -> None:
+    """A generation boundary: the per-DiT route tallies restart, so the report after it describes this run alone."""
     for dit in _attention_dits(getattr(state, "pipe", None)):
         if isinstance(getattr(dit, ROCM_FLASH_TALLY_ATTR, None), dict):
             try:
@@ -1658,26 +1687,18 @@ def begin_attention_run(state: Any, logger: Any = None) -> None:
                 pass
 
 
-def sync_attention_state(state: Any, logger: Any = None) -> None:
-    """Point a loaded state's ``attention_backend`` and its ``resolved`` badge at what ran (``rocm_flash_ran``), so
-    status, recipes and calibration keys never claim flash for a model whose calls all ran native. No-op unless the
-    guard has counted calls for this pipe."""
+def report_attention_run(state: Any) -> None:
+    """After a generation: the ``resolved`` attention badge (value + reason) describes the routes it took. Report only:
+    ``state.attention_backend`` stays the engaged backend, which recipes, calibration keys and compile caches key on."""
     try:
         ran = rocm_flash_ran(getattr(state, "pipe", None))
-        if ran is None:
-            return
-        backend, reason = ran
-        if getattr(state, "attention_backend", None) != backend:
-            object.__setattr__(state, "attention_backend", backend)
-            (logger or _module_logger()).info(
-                "diffusion.attention: reported backend now %s: %s", backend or "native", reason
-            )
         resolved = getattr(state, "resolved", None)
         entry = resolved.get("attention_backend") if isinstance(resolved, dict) else None
-        if isinstance(entry, dict) and (
-            entry.get("value") != (backend or "native") or entry.get("reason") != reason
-        ):
-            entry = {**entry, "value": backend or "native", "reason": reason}
+        if ran is None or not isinstance(entry, dict):
+            return
+        value, reason = ran
+        if entry.get("value") != value or entry.get("reason") != reason:
+            entry = {**entry, "value": value, "reason": reason}
             object.__setattr__(state, "resolved", {**resolved, "attention_backend": entry})
     except Exception:  # noqa: BLE001 - reporting only
         pass

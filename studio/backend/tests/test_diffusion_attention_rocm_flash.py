@@ -16,6 +16,7 @@ import core.inference.diffusion_attention as att
 from core.inference.diffusion_attention import select_attention_backend
 
 _REAL_TOOLCHAIN_KEY = att._rocm_flash_toolchain_key
+_REAL_GUARD = att._install_rocm_flash_dispatch_guard
 
 
 @pytest.fixture(autouse = True)
@@ -29,9 +30,8 @@ def _clean(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(att, "_cuda_capability", lambda: (9, 0))
     monkeypatch.setattr(att, "_INSTALL_ATTEMPTED", set())
-    monkeypatch.setattr(att, "_ROCM_FLASH_ACTIVE", [None], raising = False)
+    monkeypatch.setattr(att, "_ROCM_FLASH_LOCAL", __import__("threading").local(), raising = False)
     monkeypatch.setattr(att, "_ROCM_FLASH_BUCKETS", {}, raising = False)
-    monkeypatch.setattr(att, "_ROCM_FLASH_RAN", [0], raising = False)
     monkeypatch.setattr(att, "_ROCM_FLASH_ROUTED", {})
 
 
@@ -458,12 +458,13 @@ def test_block_timer_runs_on_cpu_shapes(monkeypatch):
 
     _diffusers_flash(monkeypatch, flash_attn_func)
     monkeypatch.setattr(torch.cuda, "synchronize", lambda *a, **k: None)
+    att._ROCM_FLASH_LOCAL.tally = {}
     rec = att._time_rocm_flash_block("cpu", torch.bfloat16, 64, 4, 16, tokens = 32)
     assert rec["finite"] and rec["rel_l1"] == 0.0 and rec["native_ms"] > 0 and rec["flash_ms"] > 0
     # attention accuracy + block diagnostic + 2 warm-ups + 5 timed, every one through diffusers' FLASH wrapper with
     # its keyword arguments
     assert len(seen) == 9 and set(seen) == {(0.0, None, False, (-1, -1), False)}
-    assert att._ROCM_FLASH_RAN[0] == 9  # and through Studio's mask guard
+    assert att._ROCM_FLASH_LOCAL.tally == {"flash": 9}  # and through Studio's mask guard
 
 
 def test_flash_attn_rejecting_the_diffusers_arguments_is_not_admitted(monkeypatch, tmp_path):
@@ -1232,7 +1233,7 @@ def test_explicit_flash_is_never_length_gated(monkeypatch, order, explicit):
     auto_dit.run(guarded, [(40000, None)])
     assert ran == ["flash", "native"] and timed == [4096, 32768]
     explicit_dit.run(guarded, [(40000, None)])
-    assert ran[-1] == "flash" and att._ROCM_FLASH_ACTIVE[0] is None
+    assert ran[-1] == "flash" and getattr(att._ROCM_FLASH_LOCAL, "gate", None) is None
 
 
 def test_reapplying_explicit_flash_disarms_the_gate(monkeypatch):
@@ -1265,7 +1266,7 @@ def test_failed_forward_does_not_leave_its_gate_active(monkeypatch):
     att.apply_attention_backend(types.SimpleNamespace(transformer = dit), att.ROCM_FLASH_CANDIDATE, target = _target())
     with pytest.raises(RuntimeError):
         dit(torch.zeros(1))
-    assert att._ROCM_FLASH_ACTIVE[0] is None
+    assert getattr(att._ROCM_FLASH_LOCAL, "gate", None) is None
 
 
 @pytest.mark.parametrize("compiled", [False, True])
@@ -1288,15 +1289,13 @@ def test_symbolic_length_guards_the_bucket_not_the_length(monkeypatch, compiled)
     assert att._rocm_flash_bucket(n) == 16384 and n.compared == [2048, 4096, 8192, 16384, 32768]
     dit, guarded, ran, timed = _length_env(monkeypatch, {4096: 70.0})
     monkeypatch.setattr(att, "_compiling", lambda: compiled)
-    att._ROCM_FLASH_ACTIVE[0] = (0, getattr(dit, att.ROCM_FLASH_GATE_ATTR))
-    if not compiled:
-        att._ROCM_FLASH_ACTIVE[0] = (__import__("threading").get_ident(), att._ROCM_FLASH_ACTIVE[0][1])
+    att._ROCM_FLASH_LOCAL.gate = getattr(dit, att.ROCM_FLASH_GATE_ATTR)
     q = types.SimpleNamespace(shape = (1, Sym(27280), 2, 16), device = "cuda:0", dtype = "torch.bfloat16")
     k = types.SimpleNamespace(shape = (1, Sym(27280), 2, 16))
     monkeypatch.setattr(att, "_rocm_flash_capturing", lambda: compiled)
     # an untimed bucket under compile runs native and is not timed; eager times it
     reason = att._rocm_flash_length_reason(q, k)
-    att._ROCM_FLASH_ACTIVE[0] = None
+    att._ROCM_FLASH_LOCAL.gate = None
     if compiled:
         assert reason == "untimed length" and timed == [4096]
     else:
@@ -1399,30 +1398,27 @@ def _load(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "masks, backend, phrase",
+    "masks, value, phrase",
     [
-        ([True, True], None, "every attention call ran native SDPA (attn_mask: 2)"),
+        ([True, True], "native", "every attention call of the last generation ran native SDPA (attn_mask: 2)"),
         ([False, False], "flash", "on every attention call"),
-        ([True, False], "flash", "on 1 of 2 attention calls; the rest ran native SDPA (attn_mask: 1)"),
+        ([True, False], "flash", "on 1 of 2 attention calls of the last generation; the rest ran native SDPA (attn_mask: 1)"),
     ],
 )
-def test_reported_backend_follows_what_ran(monkeypatch, masks, backend, phrase):
+def test_badge_reports_the_routes_the_run_took(monkeypatch, masks, value, phrase):
     _rocm(monkeypatch)
     guarded, ran = _guarded_flash(monkeypatch)
     _apply_env(monkeypatch)
-    timed = []
-    monkeypatch.setattr(att, "_time_rocm_flash_block", _timer(timed))
+    monkeypatch.setattr(att, "_time_rocm_flash_block", _timer([]))
     dit, pipe, state = _load(monkeypatch)
-    att.sync_attention_state(state)
-    assert state.attention_backend == "flash"  # nothing ran yet: the load-time pick stands
+    att.begin_attention_run(state)
     dit(guarded, masks)
-    att.sync_attention_state(state)
+    att.report_attention_run(state)
     assert ran == ["native" if m else "flash" for m in masks]
-    assert state.attention_backend == backend
     entry = state.resolved["attention_backend"]
-    assert entry["value"] == (backend or "native") and phrase in entry["reason"] and entry["source"] == "auto"
-    # nothing was switched: the DiT keeps the flash backend, and the next unmasked call runs flash
-    assert dit.backends == ["flash"]
+    assert entry["value"] == value and phrase in entry["reason"] and entry["source"] == "auto"
+    # report only: the engaged backend (recipes, calibration and compile keys) is untouched, nothing was switched
+    assert state.attention_backend == "flash" and dit.backends == ["flash"]
     ran.clear()
     dit(guarded, [False])
     assert ran == ["flash"]
@@ -1438,42 +1434,126 @@ def test_mixed_mask_model_keeps_flash_for_unmasked_calls_across_loads(monkeypatc
     monkeypatch.setattr(att, "_time_rocm_flash_block", _timer(timed))
     dit, pipe, state = _load(monkeypatch)
     dit(guarded, [True, True])
-    att.sync_attention_state(state)
-    assert state.attention_backend is None
     _restart(monkeypatch)
     dit2, pipe2, state2 = _load(monkeypatch)
     assert len(timed) == 1 and dit2.backends == ["flash"]
     ran.clear()
     dit2(guarded, [False, True])
-    att.sync_attention_state(state2)
-    assert ran == ["flash", "native"] and state2.attention_backend == "flash"
+    assert ran == ["flash", "native"]
     assert not list((tmp_path / "rocm_flash").glob("masked*"))
 
 
-
 def test_each_generation_reports_its_own_calls(monkeypatch):
-    # run 1 flash, run 2 masked only: run 2 reports native, not a lifetime "flash"
+    # run 1 flash, run 2 masked only, run 3 flash: each badge describes its own run, never a lifetime mix
     _rocm(monkeypatch)
     guarded, ran = _guarded_flash(monkeypatch)
     _apply_env(monkeypatch)
     monkeypatch.setattr(att, "_time_rocm_flash_block", _timer([]))
     dit, pipe, state = _load(monkeypatch)
+    for masks, value in (([False, False], "flash"), ([True, True], "native"), ([False], "flash")):
+        att.begin_attention_run(state)
+        dit(guarded, masks)
+        att.report_attention_run(state)
+        assert state.resolved["attention_backend"]["value"] == value
+        assert state.attention_backend == "flash"
+
+
+def test_compiled_run_reports_routing_untracked(monkeypatch):
+    # a compiled / graphed run never re-enters the guard's Python: the badge says routing is not tracked
+    _rocm(monkeypatch)
+    _guarded_flash(monkeypatch)
+    _apply_env(monkeypatch)
+    monkeypatch.setattr(att, "_time_rocm_flash_block", _timer([]))
+    dit, pipe, state = _load(monkeypatch)
     att.begin_attention_run(state)
-    dit(guarded, [False, False])
-    att.sync_attention_state(state)
-    assert state.attention_backend == "flash"
-    att.begin_attention_run(state)
-    assert state.attention_backend == "flash"  # settled on run 1, tally zeroed
-    dit(guarded, [True, True])
-    att.sync_attention_state(state)
-    assert state.attention_backend is None
-    assert "every attention call ran native SDPA (attn_mask: 2)" in state.resolved["attention_backend"]["reason"]
-    # a later boundary settles on run 2, then run 3 is flash again
-    att.begin_attention_run(state)
-    assert state.attention_backend is None
-    dit(guarded, [False])
-    att.sync_attention_state(state)
-    assert state.attention_backend == "flash" and "on every attention call" in state.resolved["attention_backend"]["reason"]
+    dit.run(lambda *a, **k: None, [])  # a forward whose attention ran inside a compiled graph: nothing counted
+    att.report_attention_run(state)
+    entry = state.resolved["attention_backend"]
+    assert entry["value"] == "flash" and "not tracked for compiled or graphed attention" in entry["reason"]
+
+
+def test_route_tallies_are_per_thread(monkeypatch):
+    # an image and a video forward on two threads at once: each DiT's tally gets only its own calls, and each thread's
+    # gate is its own
+    import threading
+
+    _rocm(monkeypatch)
+    guarded, ran = _guarded_flash(monkeypatch)
+    _apply_env(monkeypatch)
+    monkeypatch.setattr(att, "_time_rocm_flash_block", _timer([]))
+    a, _, _ = _load(monkeypatch)
+    b = _Dit()
+    assert att.apply_attention_backend(types.SimpleNamespace(transformer = b), "flash", target = _target()) == "flash"
+    inside = threading.Barrier(2)
+    gates = {}
+
+    class Pausing:
+        def __init__(self, name):
+            self.name = name
+
+        def __call__(self, *args, **kwargs):
+            if self.name not in gates:
+                inside.wait(timeout = 10)  # both forwards are inside their DiT at once
+                gates[self.name] = att._active_rocm_flash_gate()
+            return guarded(*args, **kwargs)
+
+    ta = threading.Thread(target = a, args = (Pausing("a"), [True, True, True]))
+    tb = threading.Thread(target = b, args = (Pausing("b"), [False]))
+    ta.start(), tb.start()
+    ta.join(10), tb.join(10)
+    tally_a = getattr(a, att.ROCM_FLASH_TALLY_ATTR)
+    tally_b = getattr(b, att.ROCM_FLASH_TALLY_ATTR)
+    assert tally_a == {"attn_mask": 3} and tally_b == {"flash": 1}
+    assert gates["a"] == getattr(a, att.ROCM_FLASH_GATE_ATTR) and gates["b"] is None
+
+
+# The activation memory guard must not trust the flash pick when calls can run native SDPA.
+
+
+@pytest.mark.parametrize("routed, quadratic", [(True, True), (False, False)])
+def test_memory_guard_budgets_quadratic_when_flash_can_hand_calls_to_native(monkeypatch, routed, quadratic):
+    import core.inference.diffusion as diffusion
+
+    _rocm(monkeypatch)
+    _guarded_flash(monkeypatch)
+    _apply_env(monkeypatch)
+    monkeypatch.setattr(att, "_time_rocm_flash_block", _timer([]))
+    monkeypatch.setattr(diffusion, "sdpa_math_only", lambda target: True)
+    import core.inference.diffusion_qwenimage21_math as qm
+
+    monkeypatch.setattr(qm, "bounded_math_attention", lambda pipe: False)
+    dit, pipe, state = _load(monkeypatch)  # Krea 2 style: auto admitted flash, but its calls are masked
+    if not routed:  # a flash pipe with no ROCm routing (e.g. NVIDIA flash): the fused kernel serves every call
+        setattr(dit, att._ROCM_FLASH_HOOKS_ATTR, None)
+    assert diffusion._quadratic_attention(object(), state.attention_backend, pipe) is quadratic
+
+
+def test_diffusers_dispatch_change_retimes(monkeypatch, tmp_path):
+    ad = pytest.importorskip("diffusers.models.attention_dispatch")
+    _rocm(monkeypatch)
+    _apply_env(monkeypatch)
+    binary = _fake_build(monkeypatch, tmp_path)
+    monkeypatch.setattr(att, "_rocm_flash_toolchain_key", _REAL_TOOLCHAIN_KEY)
+    backends = ad._AttentionBackendRegistry._backends
+    monkeypatch.setitem(backends, ad.AttentionBackendName.FLASH, ad._flash_attention)
+    timed = []
+    monkeypatch.setattr(att, "_time_rocm_flash_block", _timer(timed))
+    key = _REAL_TOOLCHAIN_KEY("cuda:0")
+    assert key is not None and "|diffusers" in key and _REAL_TOOLCHAIN_KEY("cuda:0") == key
+    att.apply_attention_backend(_pipe_with_attention()[0], att.ROCM_FLASH_CANDIDATE, target = _target())
+    _restart(monkeypatch)
+
+    def _flash_attention(query, key, value, attn_mask = None, dropout_p = 0.0, is_causal = False, scale = None):
+        return query  # a diffusers release whose flash wrapper changed
+
+    monkeypatch.setitem(backends, ad.AttentionBackendName.FLASH, _flash_attention)
+    assert _REAL_TOOLCHAIN_KEY("cuda:0") != key
+    att.apply_attention_backend(_pipe_with_attention()[0], att.ROCM_FLASH_CANDIDATE, target = _target())
+    assert len(timed) == 2
+    # a Studio guard around the same function does not change it
+    monkeypatch.setitem(backends, ad.AttentionBackendName.FLASH, ad._flash_attention)
+    assert _REAL_GUARD() and _REAL_TOOLCHAIN_KEY("cuda:0") == key
+    del binary
 
 
 @pytest.mark.parametrize("module", ["core.inference.diffusion", "core.inference.video"])
@@ -1485,8 +1565,5 @@ def test_both_generate_paths_mark_the_generation_boundary(module):
     src = inspect.getsource(importlib.import_module(module))
     tree = ast.parse(src)
     gens = [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "generate"]
-    assert gens and any(
-        isinstance(c, ast.Call) and getattr(c.func, "id", None) == "begin_attention_run"
-        for g in gens
-        for c in ast.walk(g)
-    )
+    called = {getattr(c.func, "id", None) for g in gens for c in ast.walk(g) if isinstance(c, ast.Call)}
+    assert gens and {"begin_attention_run", "report_attention_run"} <= called

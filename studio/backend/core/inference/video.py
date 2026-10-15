@@ -54,8 +54,8 @@ from .diffusion_attention import (
     install_hunyuan_attention_trim,
     sdpa_math_only,
     begin_attention_run,
+    report_attention_run,
     select_attention_backend,
-    sync_attention_state,
 )
 from .diffusion_flow_shift import apply_comfy_flow_shift
 from .diffusion_comfy_quant import (
@@ -10011,9 +10011,8 @@ class VideoBackend:
                 if _resolved_inputs is not None and _resolved_inputs.state is not state:
                     raise RuntimeError(VIDEO_CANCELLED_MSG)
                 self._active_generate_cancel = cancel
-                # ROCm flash: a generation boundary. The calibration key below follows what the last run executed,
-                # and this run's attention tally starts at zero.
-                begin_attention_run(state, logger)
+                # ROCm flash: a generation boundary, this run's attention route tally starts at zero.
+                begin_attention_run(state)
             # Bound below, once the request is resolved. None means the failure beat the resolution, and there is
             # nothing truthful to report.
             request_shape: Optional[dict[str, Any]] = None
@@ -10773,6 +10772,8 @@ class VideoBackend:
                 # A cancel during the blocking export/mux must still discard the clip; re-check before it is persisted.
                 if cancel.is_set():
                     raise RuntimeError(VIDEO_CANCELLED_MSG)
+                # The status badge reports the attention routes this run took (report only, keys are unchanged).
+                report_attention_run(state)
                 if len(video_frames) and not fam.modular_workflow:
                     from . import video_stream_residency
 
@@ -11681,7 +11682,6 @@ class VideoBackend:
                 "defaults": None,
                 "resolved": None,
             }
-        sync_attention_state(state, logger)
         from hub.utils.gguf import extract_quant_token
 
         from . import diffusion_cuda_graph
