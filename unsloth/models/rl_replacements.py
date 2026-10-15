@@ -4696,6 +4696,18 @@ except Exception:
     unsloth_chunked_logprobs = None
 
 
+def _unsloth_stock_logps_hook(self, method):
+    """False when a subclass overrides ``get_batch_logps`` below the class defining ``method``: TRL's body would call
+    the override, the chunked path would not."""
+    owner = hook = None
+    for klass in type(self).__mro__:
+        if owner is None and method in vars(klass):
+            owner = klass
+        if hook is None and "get_batch_logps" in vars(klass):
+            hook = klass
+    return hook is None or owner is None or hook in owner.__mro__
+
+
 def _unsloth_pref_chunked_head(self, model):
     """The dense output head when this concatenated_forward can score from hidden states, else ``None``."""
     if unsloth_chunked_logprobs is None:
@@ -4703,6 +4715,8 @@ def _unsloth_pref_chunked_head(self, model):
     if os.environ.get("UNSLOTH_PREFERENCE_CHUNKED", "1").lower() in ("0", "false", "no", "off"):
         return None
     if getattr(self, "is_encoder_decoder", False) or getattr(self, "aux_loss_enabled", False):
+        return None
+    if not _unsloth_stock_logps_hook(self, "concatenated_forward"):
         return None
     # TRL <= 0.25 scores labels against label_pad_token_id but nn.CrossEntropyLoss always ignores -100.
     if getattr(self, "label_pad_token_id", -100) != -100:
@@ -4916,6 +4930,7 @@ for _pref_trainer in ("orpo_trainer", "cpo_trainer"):
         _unsloth_grpo_returns_hidden_states,
         _unsloth_grpo_hidden_states_signal,
         _unsloth_gkd_dense_head,
+        _unsloth_stock_logps_hook,
         _unsloth_pref_chunked_head,
         _unsloth_gkd_logit_transforms,
         _unsloth_pref_logit_transforms,
@@ -4944,7 +4959,12 @@ except Exception:
     _unsloth_masked_logprobs = None
 
 
-def _unsloth_dpo_chunked_head(self, model, concatenated_batch):
+def _unsloth_dpo_chunked_head(
+    self,
+    model,
+    concatenated_batch,
+    method = "concatenated_forward",
+):
     """``(unwrapped_model, head, (multiply, divide, softcap))`` when concatenated_forward can score from hidden
     states, else ``None`` (TRL's own logits path runs). Decided before the forward, which then skips the logits."""
     reason = None
@@ -4954,6 +4974,10 @@ def _unsloth_dpo_chunked_head(self, model, concatenated_batch):
         reason = "UNSLOTH_DPO_CHUNKED=0"
     elif getattr(self, "is_encoder_decoder", False):
         reason = "encoder-decoder"
+    elif getattr(self, "aux_loss_enabled", False):
+        reason = "router aux loss needs the stock forward"
+    elif not _unsloth_stock_logps_hook(self, method):
+        reason = "get_batch_logps overridden"
     elif getattr(self, "padding_free", False):
         reason = "padding_free"
     elif getattr(self, "use_weighting", False):
@@ -5134,6 +5158,7 @@ for _dpo_item in (
     _unsloth_gkd_dense_head,
     _unsloth_gkd_logit_transforms,
     _unsloth_pref_logit_transforms,
+    _unsloth_stock_logps_hook,
     _unsloth_dpo_chunked_head,
     _unsloth_dpo_model_forward,
     _unsloth_dpo_returns_hidden_states,
@@ -5170,7 +5195,10 @@ def _unsloth_kto_hidden_logps(self, chunked, hidden_states, labels, label_pad_to
     average_log_prob=False)``. The stand-in holds each position's vocab sum of the logits, so the
     ``logits/chosen_sum`` metrics (a sum over every position) stay exact."""
     _, head, (multiply, divide, softcap) = chunked
-    labels = labels.to(head.weight.device)
+    # The model may truncate input_ids (see kto_trainer_get_batch_logps): score the common length.
+    n = min(hidden_states.shape[1], labels.shape[1])
+    hidden_states = hidden_states[:, :n]
+    labels = labels[:, :n].to(head.weight.device)
     shifted = labels[:, 1:]
     mask = shifted != label_pad_token_id
     index = torch.cat(
@@ -5237,7 +5265,7 @@ def kto_trainer_chunked_logprobs(function_name, function):
     pad = "self.label_pad_token_id" if "label_pad_token_id" in logps[0].group("rest") else "-100"
     ind = forward[0].group("indent")
     new_forward = (
-        f"{ind}_unsloth_dpo_chunked = _unsloth_dpo_chunked_head(self, model, batch)\n"
+        f'{ind}_unsloth_dpo_chunked = _unsloth_dpo_chunked_head(self, model, batch, "forward")\n'
         f"{ind}outputs = _unsloth_dpo_model_forward(\n"
         f'{ind}    model, batch["completion_input_ids"],\n'
         f'{ind}    dict(model_kwargs, attention_mask=batch["completion_attention_mask"]),\n'
@@ -5273,6 +5301,7 @@ for _kto_item in (
     _unsloth_gkd_dense_head,
     _unsloth_gkd_logit_transforms,
     _unsloth_pref_logit_transforms,
+    _unsloth_stock_logps_hook,
     _unsloth_dpo_chunked_head,
     _unsloth_dpo_model_forward,
     _unsloth_dpo_returns_hidden_states,

@@ -38,6 +38,7 @@ HELPERS = (
     "_unsloth_gkd_dense_head",
     "_unsloth_gkd_logit_transforms",
     "_unsloth_pref_logit_transforms",
+    "_unsloth_stock_logps_hook",
     "_unsloth_dpo_chunked_head",
     "_unsloth_dpo_model_forward",
     "_unsloth_dpo_returns_hidden_states",
@@ -510,3 +511,59 @@ def test_kto_matches_trl(cfg):
     print(
         f"kto {cfg}: loss {loss.item():.6f} vs {base_loss.item():.6f}, worst rel grad diff {worst:.2e}"
     )
+
+
+def test_stock_logps_hook_detects_overrides():
+    hook = _helpers()["_unsloth_stock_logps_hook"]
+
+    class Stock:
+        def get_batch_logps(self):
+            pass
+
+        def concatenated_forward(self):
+            pass
+
+    class Patched(Stock):
+        def concatenated_forward(self):
+            pass
+
+    class UserOverride(Patched):
+        def get_batch_logps(self):
+            pass
+
+    class NoHook:
+        def concatenated_forward(self):
+            pass
+
+    assert hook(Stock(), "concatenated_forward")
+    assert hook(Patched(), "concatenated_forward")
+    assert not hook(UserOverride(), "concatenated_forward")
+    assert hook(NoHook(), "concatenated_forward")
+
+
+def test_router_aux_loss_falls_back():
+    ns = _helpers()
+
+    class Trainer:
+        aux_loss_enabled = True
+
+    trainer = Trainer()
+    assert ns["_unsloth_dpo_chunked_head"](trainer, None, {}) is None
+    assert "router aux loss needs the stock forward" in trainer._unsloth_dpo_chunked_fallbacks
+
+
+def test_kto_scores_the_common_length_when_the_model_truncates():
+    ns = _helpers()
+    torch.manual_seed(0)
+    head = torch.nn.Linear(8, 20, bias = False)
+    hidden = torch.randn(2, 5, 8)
+    labels = torch.randint(0, 20, (2, 7))
+    labels[:, :2] = -100
+    full, _ = ns["_unsloth_kto_hidden_logps"](
+        None, (None, head, (0.0, 0.0, 0.0)), hidden, labels[:, :5], -100
+    )
+    clamped, stand_in = ns["_unsloth_kto_hidden_logps"](
+        None, (None, head, (0.0, 0.0, 0.0)), hidden, labels, -100
+    )
+    torch.testing.assert_close(clamped, full)
+    assert stand_in.shape[:2] == (2, 5)
