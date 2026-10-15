@@ -172,8 +172,16 @@ def _compiling() -> bool:
 
 
 def _outer_gate_owns_untiled(vae: Any) -> bool:
-    """video_vae_untiled's gate turns tiling off for its own attempt and retries tiled itself."""
-    return bool(getattr(vae.__dict__.get("decode"), "_unsloth_untiled_decode", False))
+    """video_vae_untiled's gate turns tiling off for its own attempt and retries tiled itself. Outer wrappers (the ROCm
+    bf16 decode) expose it only through ``__wrapped__``."""
+    fn = vae.__dict__.get("decode")
+    for _ in range(8):
+        if fn is None:
+            return False
+        if getattr(fn, "_unsloth_untiled_decode", False):
+            return True
+        fn = getattr(fn, "__wrapped__", None)
+    return False
 
 
 def _decoded(out: Any) -> Any:
@@ -221,10 +229,10 @@ def install(vae: Any, logger: Any = None) -> bool:
             _set_attrs(vae, current)
             vae._unsloth_vae_oom_halvings = 0
 
-    def _level_quality_ok(level: int, z: Any, args: tuple, kwargs: dict) -> bool:
+    def _level_quality_ok(level: int, z: Any, args: tuple, kwargs: dict) -> Optional[bool]:
         """Halved tiles decode a corner crop (2 tiles a side, so one seam each way; 2 frames) within MIN_PSNR_DB of the
         untiled crop. Measured once per level. When the untiled crop itself runs out of memory, only tiles of at least
-        UNPROBED_MIN_LATENTS are allowed."""
+        UNPROBED_MIN_LATENTS are allowed. None: the halved crop came back the wrong size (level unusable)."""
         if level in quality:
             return quality[level]
         values = halved(stock_attrs, ratio, level, factor) or {}
@@ -250,7 +258,10 @@ def install(vae: Any, logger: Any = None) -> bool:
                 finally:
                     vae.use_tiling = prev_tiling
                 tiled = _decoded(_attempt(level, crop, args, kwargs)).float()
-                mse = float((tiled - ref).pow(2).mean())
+                if tuple(tiled.shape) != tuple(ref.shape):
+                    mse = None  # the halved tiles do not cover the crop: this level is unusable
+                else:
+                    mse = float((tiled - ref).pow(2).mean())
             del ref, tiled
         except Exception as exc:  # noqa: BLE001
             if not is_oom(exc):
@@ -258,6 +269,11 @@ def install(vae: Any, logger: Any = None) -> bool:
             _release_cache(z, vae)
             stats["probe_psnr"][level] = None
             return lat >= UNPROBED_MIN_LATENTS
+        if mse is None:
+            quality[level] = None
+            stats["probe_psnr"][level] = "shape"
+            _release_cache(z, vae)
+            return None
         psnr = 99.0 if mse == 0 else 10.0 * math.log10(4.0 / mse)
         quality[level] = psnr >= MIN_PSNR_DB
         stats["probe_psnr"][level] = round(psnr, 1)
@@ -317,15 +333,21 @@ def install(vae: Any, logger: Any = None) -> bool:
                 if level > start:
                     break
                 continue
-            if level and not _level_quality_ok(level, z, args, kwargs):
-                # Smaller tiles only get worse: fail as the stock decode would have.
-                stats["quality_refused"] += 1
-                error = (
-                    f"VAE decode ran out of memory, and tiles small enough to fit decode {type(vae).__name__} "
-                    "with visible seams; free GPU memory or lower the resolution"
-                )
-                break
-            _release_cache(z, vae)  # outside the handler: the failed attempt's tensors are gone
+            # Outside the handler, and before the probe: the failed attempt's tensors (and a causal decoder's frame
+            # cache) are gone, so the probe does not run out of memory on them.
+            _release_cache(z, vae)
+            if level:
+                usable = _level_quality_ok(level, z, args, kwargs)
+                if usable is None:
+                    continue  # the probe crop came back the wrong size: try the next level
+                if not usable:
+                    # Smaller tiles only get worse: fail as the stock decode would have.
+                    stats["quality_refused"] += 1
+                    error = (
+                        f"VAE decode ran out of memory, and tiles small enough to fit decode {type(vae).__name__} "
+                        "with visible seams; free GPU memory or lower the resolution"
+                    )
+                    break
             if logger is not None:
                 logger.warning(
                     "diffusion.vae_oom: %s decode ran out of memory; retrying %s",

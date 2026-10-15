@@ -365,3 +365,82 @@ def test_wide_tiles_defer_to_halved_stock_tiles_on_oom(monkeypatch):
     assert vae.tile_sample_min_height == stock_tile and not vae.__dict__.get("_unsloth_vae_oom_halvings")
     # the halved tiles still blend: no hard seam against the untiled decode
     assert (out - ref).abs().mean() < 0.1
+
+
+# -- PR review round 1 regressions ------------------------------------------------------------------------------
+
+
+class _StaleCacheWanLike(_WanLike):
+    """A failed full-size attempt leaves a stale frame cache; any decode before ``clear_cache`` runs out of memory."""
+
+    def __init__(self, fits):
+        super().__init__(fits)
+        self.stale = False
+
+    def clear_cache(self):
+        self.stale = False
+
+    def _decode(self, z, return_dict = True):
+        if self.stale:
+            raise _FakeOOM()
+        try:
+            return super()._decode(z, return_dict)
+        except _FakeOOM:
+            self.stale = True
+            raise
+
+
+def test_cache_released_before_the_quality_probe():
+    """Item 1: the probe of the next level must not run against the failed attempt's stale cache. Before the fix the
+    8-latent level's probe ran out of memory and was refused, though 64 px tiles fit."""
+    vae = _StaleCacheWanLike(fits = 64)
+    vae.use_tiling = True
+    O.install(vae)
+    out = vae._decode(torch.zeros(1, 4, 1, 64, 64))
+    assert out[0].shape[-2:] == (512, 512)
+    stats = vae._unsloth_vae_oom_stats
+    assert stats["quality_refused"] == 0 and stats["recovered"] == 1
+    assert stats["probe_psnr"][2] == 99.0
+
+
+class _WrongCropWanLike(_WanLike):
+    """At 128 px tiles the tiled probe crop comes back a different size than the untiled crop."""
+
+    def _decode(self, z, return_dict = True):
+        out = super()._decode(z, return_dict)
+        if z.shape[-1] != 64 and self.use_tiling and self.tile_sample_min_height == 128:
+            return (out[0][..., :-8],)
+        return out
+
+
+def test_probe_shape_mismatch_falls_through_to_the_next_level():
+    """Item 2: a mismatched probe crop marks that level unusable and the ladder moves on. Before the fix the
+    subtraction raised a non-OOM RuntimeError out of the decode."""
+    vae = _WrongCropWanLike(fits = 64)
+    vae.use_tiling = True
+    O.install(vae)
+    out = vae._decode(torch.zeros(1, 4, 1, 64, 64))
+    assert out[0].shape[-2:] == (512, 512)
+    stats = vae._unsloth_vae_oom_stats
+    assert stats["probe_psnr"][1] == "shape" and stats["recovered"] == 1
+    assert [s[1] for s in vae.seen] == [256, 64]  # the unusable 128 px level was never attempted at full size
+
+
+def test_untiled_gate_found_through_wrapped_chain():
+    """Item 3: the ROCm bf16 decode wraps the untiled gate and exposes it only via ``__wrapped__``."""
+    vae = _WanLike(fits = 128)
+    O.install(vae)
+
+    def gate(*a, **k):
+        return None
+
+    gate._unsloth_untiled_decode = True
+
+    def bf16_decode(*a, **k):
+        return gate(*a, **k)
+
+    bf16_decode.__wrapped__ = gate
+    vae.decode = bf16_decode
+    with pytest.raises(RuntimeError, match = "out of memory"):
+        vae._decode(torch.zeros(1, 4, 1, 64, 64))
+    assert vae.seen == [(False, 256, 192)]  # no tiled retry of its own: the gate owns it
