@@ -1029,7 +1029,7 @@ def dense_quant_host_capable(target: Any) -> bool:
     # halves of that decision belong to the load, not to a row.
     from .diffusion_speed import compile_eligible
 
-    if not compile_eligible(target, is_gguf = False, family = None):
+    if not compile_eligible(target, is_gguf = False, family = None, probe = False):
         return False
     # Not redundant with the arch floor: `_scheme_supported` rejects every scheme when the torchao
     # import fails, so an ABI skew would advertise a fast path every load then falls back from.
@@ -1711,6 +1711,11 @@ def _make_quant_config(scheme: str, fast_accum: Optional[bool] = None) -> Any:
             return _quiet_config(Float8DynamicActivationFloat8WeightConfig, **fp8_kwargs)
     if scheme == TQ_NVFP4:
         from torchao.prototype.mx_formats import NVFP4DynamicActivationNVFP4WeightConfig
+
+        from .diffusion_nvfp4_act_quant import install_nvfp4_act_quant_patch
+
+        # Before quantize_: the load-time weight pass stays on torchao (eager); compiled activations use the kernel.
+        install_nvfp4_act_quant_patch()
 
         # Select the CUTLASS FP4 path, not the default Triton kernel (which needs MSLK): on a Blackwell box with
         # CUTLASS FP4 but no MSLK the default fails the smoke probe and falls back to GGUF.

@@ -130,11 +130,21 @@ export const BUDGET = {
   // Word list numbering through the default style and basedOn (#13755) adds 228 B raw / 39 B transfer to the
   // eager attachment reader (6,770,962 -> 6,771,190 B raw, 2,035,676 -> 2,035,715 B transfer against 7ae1a5386,
   // one machine and build, Node 24, chunk count unchanged at 95). Raised by that growth.
+  // The "Only show models that fit" Settings row adds 289 B raw / 77 B transfer (6,771,372 -> 6,771,661 B raw,
+  // 2,035,798 -> 2,035,875 B transfer against 52a3fbefe, 95 chunks, identical under Node 22.22.2 and 24). Main
+  // already measured 111 B raw / 54 B transfer over the previous limits, so they are set to the measured build.
+  // Main was 48 B raw / 29 B transfer over at ffa8fc3b9 (6,771,709 B raw, 2,035,904 B transfer). The browser
+  // panel's notice for pages that hit a sandbox limit (#13761) adds 143 B raw / 44 B transfer (-> 6,771,852 B raw,
+  // 2,035,948 B transfer, one machine and build, Node 24, chunk count unchanged at 95). Raised by both.
+  // Keeping site storage across browser panel pages (#13762) adds 1,644 B raw / 466 B transfer, the page-storage
+  // module the eager browser store imports for tab close and duplicate (6,771,852 -> 6,773,496 B raw, 2,035,948 ->
+  // 2,036,414 B transfer against 82f16ca55, one machine and build, Node 24, chunk count unchanged at 95). Raised by
+  // that growth.
   // The Notebooks page (#6650: its sidebar row, route and English strings; the page itself is lazy) adds
   // 3,355 B raw / 972 B transfer against 2a8def3bde (one machine and build, Node 24, chunk count 95 -> 96),
   // raised by that.
-  transferBytes: 2_036_716,
-  rawBytes: 6_774_616,
+  transferBytes: 2_037_386,
+  rawBytes: 6_776_851,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

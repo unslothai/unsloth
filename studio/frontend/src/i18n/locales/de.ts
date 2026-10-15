@@ -61,6 +61,8 @@ export const de = {
       never: "Nie",
       scripts: "Skripte ausführen",
       scriptsDescription: "Lege fest, ob Modelle Skripte auf Seiten ausführen dürfen. Jedes Skript wird dir vorher angezeigt",
+      cursor: "Cursor anzeigen",
+      cursorDescription: "Zeigt einen Zeiger dort, wo Modelle auf der Seite klicken, tippen und ziehen",
       askEveryTime: "Jedes Mal fragen",
       permissionsTitle: "Agent-Berechtigungen",
       permissionsDescription: "Lege Standardwerte fest und füge Ausnahmen für bestimmte Websites hinzu. Passwort- und Zahlungsfelder werden nie ausgefüllt, egal was hier steht.",
@@ -259,7 +261,7 @@ export const de = {
     annotationScreenshotsAlways: "Immer beifügen",
     annotationScreenshotsNever: "Nie beifügen",
     clearDataSetting: "Browserdaten löschen",
-    clearDataSettingDescription: "Löscht Browserverlauf, Download-Verlauf und zwischengespeicherte Seiten. Seiten speichern keine Cookies oder Website-Daten.",
+    clearDataSettingDescription: "Löscht Browserverlauf, Download-Verlauf und zwischengespeicherte Seiten. Seiten speichern Cookies und Website-Daten nur, bis Studio neu geladen wird.",
     manage: "Verwalten",
     fullView: {
       enter: "Vollansicht",
@@ -435,7 +437,7 @@ export const de = {
     },
     clearData: {
       title: "Browserdaten löschen?",
-      description: "Dadurch werden dein Browserverlauf, Download-Verlauf und zwischengespeicherte Seiten gelöscht. Heruntergeladene Dateien bleiben auf deinem Computer.",
+      description: "Dadurch werden Browserverlauf, Downloadverlauf, zwischengespeicherte Seiten sowie Cookies und Websitedaten gelöscht, und du wirst von Websites abgemeldet. Heruntergeladene Dateien bleiben auf deinem Computer.",
       cancel: "Abbrechen",
       confirm: "Daten löschen",
       done: "Browserdaten gelöscht",
@@ -451,6 +453,7 @@ export const de = {
       resubmit: "Diese Seite stammt aus einem Formular. Erneutes Laden sendet das Formular noch einmal und kann dessen Aktion wiederholen.",
       upload: "Datei-Uploads funktionieren in dieser Ansicht nicht. Öffne die Seite im Systembrowser, um sie zu senden.",
       scriptNavigation: "Diese Seite wollte per Skript zu einer anderen Adresse wechseln, was diese Ansicht nicht nachvollziehen kann. Öffne sie stattdessen im Systembrowser.",
+      needsBrowser: "Diese Seite wollte eine Browserfunktion nutzen, die diese Ansicht blockiert, daher funktionieren Teile davon möglicherweise nicht. Öffne sie stattdessen im Systembrowser.",
     },
     native: {
       externalPrompt: "{host} möchte {url} öffnen",
@@ -2632,6 +2635,9 @@ export const de = {
         showMemoryBar: "VRAM-Auslastungsbalken anzeigen",
         showMemoryBarDescription:
           "Zeigt unter jeder Zeile eines heruntergeladenen Modells den geschätzten VRAM-Bedarf: Gewichte, KV-Cache bei der Kontextlänge, mit der das Modell geladen wird, und eine eventuelle Reserve für spekulatives Decoding.",
+        fitOnDeviceOnly: "Nur passende Modelle anzeigen",
+        fitOnDeviceOnlyDescription:
+          "Blendet in der Modellauswahl und im Hub Modelle aus, die für den GPU-Speicher und RAM dieses Geräts zu groß sind. Heruntergeladene Modelle bleiben sichtbar.",
       },
       menu: {
         title: "Chatmenü",

@@ -31,6 +31,7 @@ import { loadOpenAIAutoSwitchSettings } from "@/features/settings";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { useGpuInfo, useInferenceGpuInfo } from "@/hooks/use-gpu-info";
+import { useIsCompact } from "@/hooks/use-mobile";
 import { useVramBudgetFraction } from "@/hooks/use-vram-budget-fraction";
 import { diffusionRouteSearch } from "@/lib/diffusion-route-search";
 import { subscribeModelLifecycle } from "@/lib/model-lifecycle-events";
@@ -64,7 +65,6 @@ import {
   type InventorySort,
   InventorySortControl,
   InventoryTypeFilterControl,
-  ResultListHeader,
 } from "./catalog/models-table";
 import {
   hasModelSearchFilters,
@@ -281,16 +281,19 @@ function writeModelsTabPreference(tab: ModelsTab): void {
   }
 }
 
-// "All models" defaults to list layout; list-vs-grid choice persists across sessions.
+// "All models" defaults to split layout; the choice persists across sessions.
 function readAllModelsViewPreference(): AllModelsView {
   if (typeof window === "undefined") {
     return "split";
   }
   try {
     const value = window.localStorage.getItem(ALL_MODELS_VIEW_STORAGE_KEY);
-    return value === "grid" || value === "two" || value === "split"
-      ? value
-      : "split";
+    // "grid" was the removed compact list; keep those users on a card layout.
+    if (value === "grid") {
+      window.localStorage.setItem(ALL_MODELS_VIEW_STORAGE_KEY, "two");
+      return "two";
+    }
+    return value === "two" || value === "split" ? value : "split";
   } catch {
     return "split";
   }
@@ -657,6 +660,9 @@ export function ModelsPage() {
   const [allModelsView, setAllModelsViewState] = useState<AllModelsView>(
     readAllModelsViewPreference,
   );
+  const isCompactViewport = useIsCompact();
+  // The split view's auto-picked first row; an explicit selection or leaving split clears it.
+  const autoPreviewIdRef = useRef<string | null>(null);
   // Remembers the last non-split view so "Back to Hub" drops into the prior browsing layout.
   const lastNonSplitViewRef = useRef<AllModelsView>("two");
   const setAllModelsView = useCallback(
@@ -665,6 +671,7 @@ export function ModelsPage() {
       writeAllModelsViewPreference(view);
       // Leaving split view drops the inline preview so the user lands on the full hub list.
       if (view !== "split") {
+        autoPreviewIdRef.current = null;
         void navigate({
           to: "/hub",
           search: (prev) => ({ ...prev, model: undefined }),
@@ -1349,6 +1356,7 @@ export function ModelsPage() {
 
   const handleSelect = useCallback(
     (id: string) => {
+      autoPreviewIdRef.current = null;
       runConfigOpenCoordinator.cancel();
       setRunConfigOpening(null);
       void navigate({
@@ -1361,9 +1369,10 @@ export function ModelsPage() {
   const handleCloseDetail = useCallback(() => {
     runConfigOpenCoordinator.cancel();
     setRunConfigOpening(null);
+    autoPreviewIdRef.current = null;
     // From split view, "Back to Hub" returns to the main hub feed (not the filtered list): leave
     // split mode, reset discover state, and clear the inline preview and channel.
-    if (allModelsView === "split") {
+    if (allModelsView === "split" && !isCompactViewport) {
       const next = lastNonSplitViewRef.current;
       setAllModelsViewState(next);
       writeAllModelsViewPreference(next);
@@ -1385,7 +1394,7 @@ export function ModelsPage() {
       to: "/hub",
       search: (prev) => ({ ...prev, model: undefined }),
     });
-  }, [navigate, allModelsView, runConfigOpenCoordinator]);
+  }, [navigate, allModelsView, isCompactViewport, runConfigOpenCoordinator]);
   const handleQueryChange = useCallback(
     (next: string) => {
       if (next.trim() === "") {
@@ -1453,15 +1462,28 @@ export function ModelsPage() {
     }
   }, [allModelsView]);
 
+  // Narrowing below lg drops the auto-picked preview so the rows show; a model the user opened stays.
+  useEffect(() => {
+    if (!isCompactViewport || allModelsView !== "split") return;
+    if (!urlModel || urlModel !== autoPreviewIdRef.current) return;
+    autoPreviewIdRef.current = null;
+    void navigate({
+      to: "/hub",
+      search: (prev) => ({ ...prev, model: undefined, file: undefined }),
+      replace: true,
+    });
+  }, [isCompactViewport, allModelsView, urlModel, navigate]);
+
   // Split view previews the first row so the detail pane isn't empty. Feed mode included: split
   // view shows only the master list, so its first row lands on a real README, not a placeholder.
   useEffect(() => {
-    if (allModelsView !== "split" || urlModel) return;
+    if (allModelsView !== "split" || urlModel || isCompactViewport) return;
     // Use the filtered rows the master pane renders so the preview never lands on a filtered-out row.
     const firstId = isDiscoverTab
       ? listRows[0]?.id
       : (filteredCachedRows[0]?.id ?? filteredLocalRows[0]?.id);
     if (!firstId) return;
+    autoPreviewIdRef.current = firstId;
     void navigate({
       to: "/hub",
       search: (prev) => ({ ...prev, model: firstId, file: undefined }),
@@ -1470,6 +1492,7 @@ export function ModelsPage() {
   }, [
     allModelsView,
     urlModel,
+    isCompactViewport,
     isDiscoverTab,
     listRows,
     filteredCachedRows,
@@ -1848,9 +1871,6 @@ export function ModelsPage() {
               onRefresh={handleRetrySearch}
               isRefreshing={isLoading}
             />
-            {allModelsView === "grid" && listCount > 0 && (
-              <ResultListHeader isDataset={isDatasetMode} />
-            )}
           </div>
         </div>
       );
@@ -1880,9 +1900,6 @@ export function ModelsPage() {
             onBack={isSortBrowseMode ? handleBackToFeed : undefined}
             actions={ownerToggle}
           />
-        )}
-        {allModelsView === "grid" && listCount > 0 && (
-          <ResultListHeader isDataset={isDatasetMode} />
         )}
       </div>
     );
