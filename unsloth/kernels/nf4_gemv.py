@@ -262,8 +262,7 @@ def _launch(
         BLOCK_K = block_k,
     )
     if not use_words:
-        # Even K drops the K masks; a register table gather replaces the LUT loads (A100 / L4 / T4,
-        # Triton 3.7: 16% to 23% faster, outputs unchanged).
+        # Even K skips K masks; register gather replaces LUT loads: 16-23% faster (A100/L4/T4, Triton 3.7).
         constexprs["EVEN_K"] = K % block_k == 0
         constexprs["LUT_MODE"] = 2 if _HAS_TL_GATHER else 0
     if kernel is _gemv_nf4_kernel or kernel is _gemv_nf4_words_kernel:
