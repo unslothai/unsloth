@@ -1,15 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""GRPO clip-ratio metrics must respect the completion mask for one-token completions.
-
-`masked_batch_mean` inside the generated `compute_loss` took any width-1 tensor as sequence level
-(`importance_sampling_level == "sequence"`) and returned a plain `x.mean()`. With
-`max_completion_length = 1` the token-level tensors are also width 1, so fully masked rows stayed
-in the denominator and clip_ratio/* was diluted. The helper is lifted from
-`unsloth/models/rl_replacements.py` with `ast` so the test tracks the shipped source without
-importing unsloth.
-"""
+"""GRPO clip-ratio metrics must respect the completion mask for one-token completions:
+a width-1 token-level tensor was taken as sequence level, so masked rows diluted clip_ratio/*."""
 
 from __future__ import annotations
 
