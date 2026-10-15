@@ -141,9 +141,9 @@ export const BUDGET = {
   // 2,036,414 B transfer against 82f16ca55, one machine and build, Node 24, chunk count unchanged at 95). Raised by
   // that growth.
   // The Notebooks page (#6650: its sidebar row, route and English strings; the page itself is lazy) adds
-  // 3,355 B raw / 972 B transfer against 2a8def3bde (one machine and build, Node 24, chunk count 95 -> 96),
+  // 3,355 B raw / 1,025 B transfer against 345217f185 (one machine and build, Node 24, chunk count 95 -> 96),
   // raised by that.
-  transferBytes: 2_037_386,
+  transferBytes: 2_037_439,
   rawBytes: 6_776_851,
 };
 
