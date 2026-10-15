@@ -5,15 +5,16 @@ import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { useT } from "@/i18n";
 import { useCallback, useState } from "react";
-import { answerQuestion, stopBrowserAgent, useBrowserAgentStore } from "./agent-store";
+import { useBrowserStore } from "../store";
+import { IDLE_AGENT, answerQuestion, stopBrowserAgent, useBrowserAgentStore } from "./agent-store";
 
-/** Above the agent's tab while it works: what it is doing, its questions, and Stop. */
+/** Above the agent's tab while it works in the chat on screen: what it is doing, its questions, and Stop. */
 export function AgentBar({ activeTabId }: { activeTabId: string | null }) {
   const t = useT();
-  const tabId = useBrowserAgentStore((state) => state.tabId);
+  const chat = useBrowserStore((state) => state.chat);
+  const { tabId, working, runKey, stoppedRun, question } = useBrowserAgentStore((state) => state.chats[chat] ?? IDLE_AGENT);
   // The whole run, not just each action: Stop between calls stops the next one before it starts.
-  const running = useBrowserAgentStore((state) => state.working || (!!state.runKey && state.stoppedRun !== state.runKey));
-  const question = useBrowserAgentStore((state) => state.question);
+  const running = working || (!!runKey && stoppedRun !== runKey);
   const [readId, setReadId] = useState<number | null>(null);
   const script = question?.ask === "script";
   if (!question && !(running && tabId === activeTabId)) return null;
@@ -51,7 +52,7 @@ export function AgentBar({ activeTabId }: { activeTabId: string | null }) {
           </Button>
         </>
       ) : null}
-      <Button type="button" size="xs" variant="outline" onClick={stopBrowserAgent}>
+      <Button type="button" size="xs" variant="outline" onClick={() => stopBrowserAgent(chat)}>
         {t("browser.agent.stop")}
       </Button>
     </div>

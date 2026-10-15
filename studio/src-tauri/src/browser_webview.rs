@@ -160,6 +160,10 @@ struct ViewsState {
     muted: HashSet<String>,
     /// Tabs whose view committed a page of its own since it opened or was last sent somewhere; until then a download's site is the address asked for (or the opener).
     committed: HashSet<String>,
+    /// Hidden tabs shown just off the window for a screenshot (`show_for_capture`); a switch leaves them be.
+    capturing: HashSet<String>,
+    /// Where `browser_view_show` last put each tab, for a capture that a switch overtook (`end_capture`).
+    placed: HashMap<String, Rect>,
 }
 
 pub fn new_browser_views() -> BrowserViews {
@@ -1421,11 +1425,17 @@ pub async fn browser_view_show<R: Runtime>(
                 if parked {
                     position.x = -size.width - PARK_GAP;
                 }
-                view.set_bounds(Rect {
+                let rect = Rect {
                     position: position.into(),
                     size: size.into(),
-                })
-                .map_err(|error| error.to_string())?;
+                };
+                state
+                    .inner
+                    .lock()
+                    .unwrap()
+                    .placed
+                    .insert(tab_id.clone(), rect);
+                view.set_bounds(rect).map_err(|error| error.to_string())?;
                 view
             }
             None if parked => return Err("no page to park".into()),
@@ -1446,13 +1456,96 @@ pub async fn browser_view_show<R: Runtime>(
     if let Some(view) = &target {
         view.show().map_err(|error| error.to_string())?;
     }
+    let capturing: HashSet<String> = state
+        .inner
+        .lock()
+        .unwrap()
+        .capturing
+        .iter()
+        .filter_map(|tab_id| label_for(tab_id).ok())
+        .collect();
     for view in browser_views(&app) {
-        if Some(view.label()) != target.as_ref().map(|view| view.label()) {
+        if Some(view.label()) != target.as_ref().map(|view| view.label())
+            && !capturing.contains(view.label())
+        {
             let _ = view.hide();
         }
     }
     set_shown(&state, &mut state.inner.lock().unwrap(), shown);
     Ok(())
+}
+
+/// Opens a tab's page without showing it: the agent at work in a chat that isn't on screen. Made
+/// just off the window and hidden, so nothing flashes and the page on screen stays.
+#[tauri::command]
+pub async fn browser_view_open_background<R: Runtime>(
+    webview: Webview<R>,
+    tab_id: String,
+    url: String,
+    bounds: ViewBounds,
+) -> Result<(), String> {
+    require_main(&webview)?;
+    let label = label_for(&tab_id)?;
+    if webview.app_handle().get_webview(&label).is_some() {
+        return Ok(());
+    }
+    let url = parse_page_url(&url)?;
+    #[cfg(target_os = "macos")]
+    crate::browser_layer::install(&webview);
+    let off_window = ViewBounds {
+        x: -bounds.width - PARK_GAP,
+        ..bounds
+    };
+    let page = create_view(&webview, &tab_id, url, &off_window)?;
+    if let Err(error) = page.hide() {
+        // The frontend never records a view that failed to open, so it would never close this one.
+        let _ = close_view(&page);
+        return Err(error.to_string());
+    }
+    Ok(())
+}
+
+/// A hidden page paints nothing to capture (WebView2 doesn't render it; WebKit's snapshot waits
+/// on a paint that never comes), so it shows just off the window for the shot. True if it did.
+pub(crate) fn show_for_capture<R: Runtime>(
+    views: &BrowserViews,
+    page: &Webview<R>,
+    tab_id: &str,
+) -> bool {
+    {
+        let mut inner = views.inner.lock().unwrap();
+        if inner.shown.as_deref() == Some(tab_id) || !inner.capturing.insert(tab_id.to_string()) {
+            return false;
+        }
+    }
+    let size = page
+        .bounds()
+        .ok()
+        .zip(page.window().scale_factor().ok())
+        .map(|(rect, factor)| rect.size.to_logical::<f64>(factor))
+        .unwrap_or(LogicalSize::new(1024.0, 768.0));
+    let position = LogicalPosition::new(-size.width - PARK_GAP, 0.0);
+    let _ = page.set_bounds(Rect {
+        position: position.into(),
+        size: size.into(),
+    });
+    if page.show().is_err() {
+        views.inner.lock().unwrap().capturing.remove(tab_id);
+        return false;
+    }
+    true
+}
+
+/// Hides a page `show_for_capture` showed. One that became the shown page meanwhile goes back
+/// where the switch put it, not off the window.
+pub(crate) fn end_capture<R: Runtime>(views: &BrowserViews, page: &Webview<R>, tab_id: &str) {
+    let mut inner = views.inner.lock().unwrap();
+    inner.capturing.remove(tab_id);
+    if inner.shown.as_deref() != Some(tab_id) {
+        let _ = page.hide();
+    } else if let Some(rect) = inner.placed.get(tab_id) {
+        let _ = page.set_bounds(*rect);
+    }
 }
 
 #[tauri::command]
@@ -1851,6 +1944,7 @@ pub fn browser_view_close<R: Runtime>(
         inner.urls.remove(&tab_id);
         inner.committed.remove(&tab_id);
         inner.download_starts.remove(&tab_id);
+        inner.placed.remove(&tab_id);
         // `muted` stays: a pruned view reopens muted; unmuting is what forgets it.
         if inner.shown.as_deref() == Some(tab_id.as_str()) {
             set_shown(&state, &mut inner, None);

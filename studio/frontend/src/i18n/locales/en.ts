@@ -80,6 +80,9 @@ export const en = {
     },
     agent: {
       working: "Unsloth is browsing in this tab",
+      waiting: "Unsloth needs your answer in the browser for {chat}",
+      otherChat: "another chat",
+      show: "Show",
       stop: "Stop",
       allow: "Allow",
       deny: "Deny",
