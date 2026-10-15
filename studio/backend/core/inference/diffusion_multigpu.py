@@ -42,7 +42,6 @@ from typing import Any, Callable, Iterator, Optional, Sequence
 MULTIGPU_ENV = "UNSLOTH_DIFFUSION_MULTIGPU"
 CFG_PARALLEL_ENV = "UNSLOTH_DIFFUSION_CFG_PARALLEL"
 CFG_BATCH_ENV = "UNSLOTH_DIFFUSION_CFG_BATCH"
-# Overrides every measured card-to-card copy rate (GiB/s) used by strategy pricing.
 LINK_ENV = "UNSLOTH_DIFFUSION_LINK_GIB_S"
 
 # Denoiser attributes: they stay on the primary card under the companion split (the same contract as the speed and
@@ -306,7 +305,6 @@ def probe_devices(ordinals: Sequence[int], *, measure: bool = True) -> dict[int,
                 _STATIC_PROBE[o] = static
         for a in ords:
             for b in ords:
-                # a failed measurement is not cached: the next probe tries again
                 if a == b or (
                     (a, b) in _PAIR_PROBE and (_PAIR_PROBE[(a, b)][1] is not None or not measure)
                 ):
@@ -371,7 +369,6 @@ def link_gib_s(
     return None
 
 
-# Links within this fraction of the fastest count as equally fast (probe noise).
 _LINK_TIER = 0.75
 
 
@@ -455,17 +452,11 @@ def best_secondary(
     return ranked[0] if ranked else None
 
 
-# The replica's output is copied back on a side stream of the primary card, issued as soon as the replica's forward is
-# queued, and the primary's main stream waits for it only where the result is consumed: the copy overlaps the primary
-# branch. price_cfg_parallel reads this same flag, so the price follows the stream the copy is issued on.
 _RETURN_COPY_OVERLAPS = True
 
 
 def _copy_back(out: Any, primary: Any, side_stream: Any) -> tuple:
-    """(``out`` on ``primary``, event or None). A cross-card copy runs on the source card's stream after waiting for
-    the destination card's CURRENT stream: with the main stream current that is every primary kernel already queued
-    (the primary branch). With ``side_stream`` (idle) current on the primary instead, the copy follows only the
-    replica's forward, and the event marks its completion."""
+    """(``out`` on ``primary``, event or None)."""
     torch = _torch()
     if side_stream is None or getattr(primary, "type", None) != "cuda":
         return move_to_device(out, primary), None
@@ -501,12 +492,7 @@ def price_cfg_parallel(
     replica_bytes: int = 0,
     primary_s: Optional[float] = None,
 ) -> dict[str, Any]:
-    """One card (``primary + branch``) vs CFG-parallel (``in_copy + max(primary, branch + out_copy)``). The router
-    copies the step's inputs to the replica card BEFORE the primary branch is queued (a copy queued after it would wait
-    for it on the source stream), so the input copy delays both branches and sits outside the overlap; the replica's
-    output copy back overlaps the primary branch. Chosen when it is at most ``_PRICE_PARALLEL_FRACTION`` of one card.
-    ``branch_s`` = the measured odd branch, ``primary_s`` = the measured even branch of the same step (``branch_s``
-    when unmeasured)."""
+    """One card (``primary + branch``) vs CFG-parallel (``in_copy + max(primary, branch + out_copy)``)."""
     measured = bool(link_in_gib_s and link_out_gib_s)
     if measured:
         in_copy_s = in_bytes / (link_in_gib_s * (1 << 30))
@@ -518,13 +504,11 @@ def price_cfg_parallel(
     copy_s = in_copy_s + out_copy_s
     primary = branch_s if primary_s is None else primary_s
     single = primary + branch_s
-    # the copy back overlaps the primary branch only when it is issued on the side stream (_copy_back)
     parallel = (
         in_copy_s + max(primary, branch_s + out_copy_s)
         if _RETURN_COPY_OVERLAPS
         else in_copy_s + max(primary, branch_s) + out_copy_s
     )
-    # an unmeasured link is unknown, not free: one card until a probe measures it (retried on the next request)
     chosen = (
         "cfg_parallel" if measured and parallel <= _PRICE_PARALLEL_FRACTION * single else "single"
     )
@@ -551,11 +535,10 @@ _PRICE_PARALLEL_FRACTION = 0.9
 _ROOM_REASON = "replica card lacks room for this shape"
 _SHORT_RENDER_REASON = "short render"
 
-# Kinds of a per-shape CFG-parallel verdict (CfgParallelRouter.shape_disabled), and how long each holds:
-_OFF_ROOM = "room"  # the replica card lacked room: re-read every request and at every capacity check
-_OFF_SHORT = "short"  # the build would not repay this request: re-decided every request
-_OFF_TRANSIENT = "transient"  # an OOM in a replica path: retried next request, until _MISS_LIMIT in a row
-_OFF_STICKY = "sticky"  # priced out / link unmeasured: until reprice, invalidation or reload (pricing resets it)
+_OFF_ROOM = "room"
+_OFF_SHORT = "short"
+_OFF_TRANSIENT = "transient"
+_OFF_STICKY = "sticky"
 _OFF_PER_REQUEST = frozenset({_OFF_ROOM, _OFF_SHORT, _OFF_TRANSIENT})
 
 
@@ -624,9 +607,6 @@ def is_out_of_memory(exc: BaseException) -> bool:
     return is_oom_error(exc)
 
 
-# Pricing and verification are per request shape: (canvas, every input tensor's shape: latent batch, tokens,
-# conditioning length). The few most recent shapes keep their verdicts; a new shape is priced on its own first
-# guided step.
 _SHAPE_BOOK_SIZE = 4
 
 
@@ -688,7 +668,6 @@ class _ShapeBook:
         if key == self.key:
             return False
         if self.key is None and not self.saved:
-            # the first shape owns whatever the router holds already
             self.key = key
             return True
         # take the requested shape out before saving the outgoing one, so a full book never evicts it
@@ -734,7 +713,6 @@ class _ShapeVerdicts:
     Load-wide (structural) failures are not shape verdicts: they go to the router's ``disable``."""
 
     _VERDICT_LABEL = "optimization"
-    # a router's shape book carries these per shape
     VERDICT_FIELDS = {"shape_disabled": None, "oom_backoff": _PredictionPolicy}
 
     shape_disabled: Optional[str]
@@ -1003,7 +981,6 @@ def refine_plan_for_multigpu(
             overhead_mib = overhead,
             primary_limit_mib = int(primary_limit),
             secondary_limit_mib = int(sec_limit),
-            # the same per-phase source as the pre-load split (plan_companion_split's phase_headroom_mib)
             encode_headroom_mib = plan_encode_headroom_mib(plan),
         )
         if moved is not None:
@@ -1038,8 +1015,6 @@ def refine_plan_for_multigpu(
 def plan_denoise_headroom_mib(plan: Any) -> Optional[int]:
     """The plan's activation room above the weights (measured, calibrated or estimated), None when unknown."""
     estimates = getattr(plan, "estimates", None) or {}
-    # The calibrated denoise phase when the family has one; else the whole-request figure (it includes the VAE decode
-    # peak, so it is conservative: video plans and uncalibrated image plans have no per-phase number).
     value = (
         estimates.get("calibrated_denoise_mib")
         or estimates.get("measured_runtime_headroom_mib")
@@ -1049,7 +1024,6 @@ def plan_denoise_headroom_mib(plan: Any) -> Optional[int]:
     return int(value) if value else None
 
 
-# The canvas the per-family activation calibration was measured at (CalibratedImageActivation: 1024x1024).
 _CALIBRATION_PX = 1024 * 1024
 
 
@@ -1093,8 +1067,6 @@ class PhaseNeeds:
     decode_mib: Optional[int] = None
     encode_ordinals: tuple[int, ...] = ()
     decode_ordinal: Optional[int] = None
-    # CFG-batch's one forward over BOTH branches: the same estimator with the latent batch doubled (the guard's pixel
-    # curve, floor included), not twice ``denoise_mib``; None when the producer did not compute it
     cfg_batch_denoise_mib: Optional[int] = None
 
     def room_on(self, ordinal: Optional[int]) -> int:
@@ -1754,10 +1726,6 @@ def _hooks_present(
             return f"{name or '<root>'}._diffusers_hook ({', '.join(sorted(sub._diffusers_hook.hooks))})"
         if getattr(sub, "_hf_hook", None) is not None and not offload_hooks_ok:
             return f"{name or '<root>'}._hf_hook"
-        # Root hooks are screened for both routers. CFG-batch computes the odd branch inside the first branch's root
-        # hook run, so they pass the full trusted-hook check there. A CFG-parallel replica is built WITHOUT the root
-        # hooks (the source runs them around every branch): a foreign root hook writing module state the forward reads
-        # would update the source only, so it blocks; Studio's own root hooks and offload hooks pass.
         for attr in ("_forward_hooks", "_forward_pre_hooks"):
             for hook in (getattr(sub, attr, None) or {}).values():
                 if _is_offload_object(hook):
@@ -1785,7 +1753,6 @@ def _hooks_present(
             )
             and not _hook_origin(override).startswith(_TRUSTED_HOOK_MODULES)
         ):
-            # a foreign bound forward may keep per-call state on its owner: one doubled call is not two
             return (
                 f"{name or '<root>'}.forward (bound override from {_hook_origin(override) or '?'}; "
                 f"{CFG_BATCH_ENV}=force opts in)"
@@ -1874,8 +1841,6 @@ def build_replica(module: Any, device: Any) -> Any:
             for hook in (getattr(sub, attr, None) or {}).values():
                 if _is_offload_object(hook):
                     memo[id(hook)] = _DROP
-    # Studio's outer layers above the root forward (the static step skip) stay on the source, which runs them around
-    # every branch: the copy gets what they wrap
     outer_layers, router = _studio_outer_layers(module.__dict__.get("forward"))
     for layer in outer_layers:
         memo[id(layer)] = _DROP
@@ -1904,7 +1869,7 @@ def build_replica(module: Any, device: Any) -> Any:
     try:
         compiled_subs = _compile_replica_blocks(module, replica, device, ledger)
     except BaseException:
-        release_replica(replica)  # a half-built copy leaves nothing registered behind
+        release_replica(replica)
         raise
     replica._unsloth_replica_compiled = compiled_subs
     replica.eval()
@@ -1931,10 +1896,6 @@ def _compile_replica_blocks(module: Any, replica: Any, device: Any, ledger: list
     return compiled_subs
 
 
-# Studio wrappers a source block's ``_compiled_call_impl`` can carry, by marker. Each is rebuilt on the replica's copy
-# by compile_like_source (the guard and the background-compile gate keep the copy eager while the source is; the
-# restride keeps one compiled graph). CUDA-graph wrappers (GraphedForward, BlockGraph) hold graphs captured on the
-# source card: the copy runs the compiled call without them (same math, no replay).
 _GRAPH_WRAPPERS = ("GraphedForward", "BlockGraph")
 _LAYER_MARKERS = ("_unsloth_bg_gate", "_unsloth_block_restride", "_unsloth_compile_guard", "_unsloth_stg_adapter")
 
@@ -2019,9 +1980,8 @@ def compile_like_source(
         call = _restride(call)
     guard = markers.get("guard")
     if guard is not None:
-        # the source's guard object: one compile failure drops the source and the copy to eager together
         call = guard.wrap(call, eager, owner if owner is not None else dst)
-        dst_ref = weakref.ref(dst)  # the long-lived source guard must never keep the copy alive
+        dst_ref = weakref.ref(dst)
 
         def restore(ref: Any = dst_ref) -> None:
             m = ref()
@@ -2233,8 +2193,6 @@ class _ReplicaWorker:
         self._thread.join(timeout_s)
 
 
-# Workers still alive at interpreter exit. A daemon thread inside a torch kernel when the interpreter finalizes is
-# unwound mid-C++ (CPython ends it with pthread_exit) and aborts the process, so exit lets every queued job finish first.
 _LIVE_WORKERS: "weakref.WeakSet[_ReplicaWorker]" = weakref.WeakSet()
 
 
@@ -2417,15 +2375,11 @@ class CfgParallelRouter(_ShapeVerdicts):
         te_ordinals: Sequence[int] = (),
     ):
         torch = _torch()
-        # Load-time (calibrated) phase figures, the fallback when a request supplies none: the VAE decode's room is
-        # required on the replica card only when it hosts the VAE, the text encode's only when it hosts an encoder
         self.decode_headroom_mib = decode_headroom_mib
         self.vae_ordinal = vae_ordinal
         self.encode_headroom_mib = encode_headroom_mib
         self.te_ordinals = tuple(int(o) for o in te_ordinals)
-        # this request's per-phase needs (Studio's generation guard estimator), when supplied
         self.request_needs: Optional[PhaseNeeds] = None
-        # the odd branch's activations on the replica card, priced like CFG-batch's (canvas and batch scaled)
         self.headroom_mib = headroom_mib
         self.headroom_reference_px = headroom_reference_px
         self.request_px: Optional[int] = None
@@ -2437,7 +2391,6 @@ class CfgParallelRouter(_ShapeVerdicts):
         self.prev_override = module.__dict__.get("forward")
         self.primary = torch.device(primary)
         self.secondary = torch.device(secondary)
-        # every card that fit the replica at install: a later request may move to a better-measured one
         self.candidates: list[int] = [int(o) for o in (candidates or ())]
         self.logger = logger
         self.replica: Any = None
@@ -2449,7 +2402,6 @@ class CfgParallelRouter(_ShapeVerdicts):
         self.cfg_seen = False
         self.singles = 0
         self.prefetched: dict[int, tuple[Any, Any]] = {}
-        # a side stream on the primary card the replica's output is copied back on (_copy_back)
         self.return_stream: Any = None
         # Tensors the odd branches of the previous step read (negative embeds, masks): copied again before the next
         # step's primary branch is queued, so they are always fresh and never wait behind it.
@@ -2466,7 +2418,6 @@ class CfgParallelRouter(_ShapeVerdicts):
             "opaque_primary_calls": 0,
             "replica_blocked": 0,
         }
-        # why the replica could not be built on the last attempt, when that is retryable (hooks present)
         self.blocked_by: Optional[str] = None
         # the previous step's odd call, classified against its primary call; the launched prediction
         self.template: Optional[tuple[Any, Any, dict]] = None
@@ -2476,17 +2427,12 @@ class CfgParallelRouter(_ShapeVerdicts):
         self.pairs: list = []
         self.pricing: Optional[dict[str, Any]] = None
         self.b0_s: Optional[float] = None
-        # why the CURRENT request shape keeps one card, typed (_ShapeVerdicts); per shape, not per load
         self._init_verdicts()
         self.shapes = _ShapeBook(
             {"pricing": None, "prediction": _PredictionPolicy, **_ShapeVerdicts.VERDICT_FIELDS}
         )
-        # per shape: consecutive prediction misses stop the speculative replica forward (the same policy as CFG-batch)
         self.prediction = _PredictionPolicy()
-        # the replica card's room for this request's activations was checked (per request and per shape change)
         self.capacity_checked = False
-        # this request's denoise steps (counted at each new step) and its step count when Studio / the scheduler
-        # knows it: the first replica build is amortised over what is left
         self.request_id = 0
         self.request_step = 0
         self.request_total_steps: Any = None
@@ -2558,7 +2504,7 @@ class CfgParallelRouter(_ShapeVerdicts):
             self.request_step += 1
             if self.shapes.switch(self, _request_shape(self.request_px, args, kwargs)):
                 self.template = (
-                    None  # the previous shape's odd-branch prediction does not carry over
+                    None
                 )
                 self.capacity_checked = False
             if (
@@ -2579,7 +2525,6 @@ class CfgParallelRouter(_ShapeVerdicts):
                 # Copy this step's inputs to the replica card BEFORE the primary branch is queued: a copy queued after
                 # it would wait for it on the source stream and serialise the two branches.
                 try:
-                    # exactly the predicted odd call's inputs (the ones the price counts), none without a prediction
                     if not self.prediction.stopped:
                         predicted = self._predict(latent)
                         if predicted is not None:
@@ -2600,13 +2545,10 @@ class CfgParallelRouter(_ShapeVerdicts):
             self.branch % 2 == 1
             and self.disabled_reason is None
             and self.shape_disabled is None
-            # the source's compile in flight in the background: no replica build or call this render (it would
-            # compile the copy inline on the secondary); the branch runs on the primary, eager like the source
             and not _bg_eager_forced()
         ):
             self.singles = 0
             if self.pricing is None and self.replica is not None and self._should_price():
-                # a new request shape on a load that already has a replica: price this shape too
                 self._drop_pending()
                 out, branch_s = self._timed_primary(args, kwargs)
                 self.pricing = self._price(args, kwargs, out, branch_s)
@@ -2620,7 +2562,6 @@ class CfgParallelRouter(_ShapeVerdicts):
                     out, branch_s = self._timed_primary(args, kwargs)
                     self.pricing = self._price(args, kwargs, out, branch_s)
                     self._shape_verdict()
-                    # the replica is built on a LATER guided step of this request, if the rest of it repays the build
                     self.priced_at = (self.request_id, self.request_step)
                     if self.branch == 1:
                         self._record_template(args, kwargs, latent)
@@ -2656,7 +2597,6 @@ class CfgParallelRouter(_ShapeVerdicts):
             and self.singles == 0
             and self._should_price()
         ):
-            # until the first guided step is priced (and only before any single-branch step): time the even branch
             out, self.b0_s = self._timed_primary(args, kwargs)
             return out
         self.stats["primary_calls"] += 1
@@ -2799,8 +2739,6 @@ class CfgParallelRouter(_ShapeVerdicts):
         builds at once; a priced one never on the step it was priced on, never on the first guided step of a request
         whose length is unknown, and otherwise only when the rest of the request repays the build."""
         if _bg_eager_forced():
-            # the source's compile is still in flight in the background (this render runs eager): building, and then
-            # first-calling, a compiled copy now would compile it inline on the secondary
             return False
         if self.pricing is None:
             return True
@@ -2834,7 +2772,6 @@ class CfgParallelRouter(_ShapeVerdicts):
         if self.pricing["strategy"] == "cfg_parallel":
             return True
         if self.pricing.get("link_unmeasured"):
-            # sticky: the unmeasured price itself is forgotten at the next request, and the verdict with it
             self._shape_off(
                 "link unmeasured: one card until a probe measures it (retried next request)", _OFF_STICKY
             )
@@ -2847,7 +2784,6 @@ class CfgParallelRouter(_ShapeVerdicts):
             )
         return False
 
-    # -- request lifecycle (Studio's generate path; without it the call pattern decides)
     def begin_request(
         self,
         width: Any = None,
@@ -2860,7 +2796,6 @@ class CfgParallelRouter(_ShapeVerdicts):
         self.request_needs = needs
         self.branch = 0
         self.singles = 0
-        # before the encode: it allocates on the replica card when that card hosts a text encoder
         self.ensure_phase_room("encode")
         self.b0_s = None
         self.capacity_checked = False
@@ -2868,8 +2803,6 @@ class CfgParallelRouter(_ShapeVerdicts):
         self.request_step = 0
         self.request_total_steps = steps
         self.steps_fn = steps_fn
-        # short-render, room and transient-OOM verdicts hold for one request (a longer one may repay the build, free
-        # memory moves); decided on the verdict's kind, structural and priced-out ones stay
         self._clear_request_verdicts()
         try:
             self.request_px = int(width) * int(height) if width and height else None
@@ -2877,7 +2810,6 @@ class CfgParallelRouter(_ShapeVerdicts):
             self.request_px = None
         if self.replica is None:
             self._reselect_secondary()
-        # an unmeasured link is retried on every request
         self.shapes.forget(self, lambda st: bool((st.get("pricing") or {}).get("link_unmeasured")))
 
     def _replica_mib(self) -> int:
@@ -2912,7 +2844,6 @@ class CfgParallelRouter(_ShapeVerdicts):
                     best,
                 )
             self.secondary = _torch().device("cuda", best)
-            # every verdict was priced against the old card's link
             self.shapes.clear(self)
 
     def end_request(self) -> None:
@@ -2936,7 +2867,6 @@ class CfgParallelRouter(_ShapeVerdicts):
         if self.disabled_reason is not None and self.disabled_reason.startswith("priced out"):
             self.disabled_reason = None
 
-    # -- pricing (once per router, on the first guided step)
     def _should_price(self) -> bool:
         return (
             cfg_parallel_mode() != "force"
@@ -2975,7 +2905,6 @@ class CfgParallelRouter(_ShapeVerdicts):
             self.logger.info("diffusion.multigpu: CFG strategy priced %s", pricing)
         return pricing
 
-    # -- prediction of the next odd branch
     def _record_template(self, args: tuple, kwargs: dict, latent: Any) -> None:
         torch = _torch()
         b0_by_id = {id(v): p for p, v in self.b0_leaves.items() if isinstance(v, torch.Tensor)}
@@ -2991,9 +2920,6 @@ class CfgParallelRouter(_ShapeVerdicts):
                     and leaf.numel() <= _SMALL_TENSOR_NUMEL
                     and _bitwise_equal(leaf, self.b0_leaves[path])
                 ):
-                    # Recomputed per call with the primary call's value (``timestep / 1000``): predicted from the
-                    # primary call, verified bitwise at the branch. The check reads a few bytes; the branches are
-                    # waited on right after anyway.
                     kinds[path] = ("b0eq", path)
                 else:
                     kinds[path] = ("const", leaf)
@@ -3031,8 +2957,6 @@ class CfgParallelRouter(_ShapeVerdicts):
         except Exception:  # noqa: BLE001 - no prediction this step; the branch runs unpredicted
             return
         torch = _torch()
-        # What the replica consumes, kept per tensor: at the real call the sources are compared bitwise against it, so
-        # an in-place edit between launch and the odd branch (same object, new values) rejects the prediction.
         # Version counters cannot do this: inference tensors do not track one.
         snapshots = []
         for (_path, src), (_rpath, used) in zip(
@@ -3091,7 +3015,7 @@ class CfgParallelRouter(_ShapeVerdicts):
             with contextlib.suppress(Exception):
                 _ReplicaWorker.wait(pending["job"])
             self.stats["predicted_misses"] += 1
-            self.prediction.miss()  # a forward spent for nothing, same as a rejected prediction
+            self.prediction.miss()
 
     def _drop_if_stale(self) -> None:
         module = self.module_ref()
@@ -3129,8 +3053,6 @@ class CfgParallelRouter(_ShapeVerdicts):
         try:
             hooked = _hooks_present(module)
             if hooked is not None:
-                # Transient (a recording pre-hook of the background compile, a step cache toggled per request): the
-                # odd branch runs on the primary and the next guided step tries again.
                 self.blocked_by = f"denoiser carries hooks ({hooked})"
                 self.stats["replica_blocked"] += 1
                 return
@@ -3142,7 +3064,6 @@ class CfgParallelRouter(_ShapeVerdicts):
                 and self.prev_latent.dim() >= 1
                 else None
             )
-            # the card is chosen again at every build, against this shape's requirement and current memory
             self._reselect_secondary(batch)
             free = self._secondary_free_mib()
             room = max(1024, self._room_mib(batch))
@@ -3278,10 +3199,7 @@ def install_cfg_parallel(
     decode_headroom_mib: Optional[int] = None,
     encode_headroom_mib: Optional[int] = None,
 ) -> Optional[str]:
-    """Arm CFG-parallel when a secondary card can hold a replica, else CFG-batch for an offloaded denoiser.
-    Returns the CFG-parallel decline reason or None. ``headroom_mib``: the batched call's extra activation need.
-    ``decode_headroom_mib`` / ``encode_headroom_mib``: the plan's calibrated VAE decode / text encode room, required
-    on a replica card that also hosts the VAE / a text encoder."""
+    """Arm CFG-parallel when a secondary card can hold a replica, else CFG-batch for an offloaded denoiser."""
     reason = _install_cfg_parallel_only(
         pipe,
         offload_policy = offload_policy,
@@ -3341,8 +3259,6 @@ def _install_cfg_parallel_only(
             need_mib = sum(
                 t.numel() * t.element_size() for t in (*denoiser.parameters(), *denoiser.buffers())
             ) // (1 << 20)
-            # only cards that hold the replica AND its denoise activations (unknown free memory kept), then the
-            # fast-link tier; the canvas is not known yet, so the calibrated canvas prices it here
             room = max(1024, int(headroom_mib or 0))
             vae = getattr(pipe, "vae", None)
             vae_device = _module_device(vae) if vae is not None else None
@@ -3447,7 +3363,6 @@ def _routers_of(pipe: Any) -> list:
     router = getattr(denoiser, "__dict__", {}).get("_unsloth_cfg_router")
     if isinstance(router, (CfgParallelRouter, CfgBatchRouter)):
         return [router]
-    # not installed by install_cfg_*: walk the forward slot through known outer layers
     fn = getattr(denoiser, "__dict__", {}).get("forward")
     for _ in range(8):
         if isinstance(fn, (CfgParallelRouter, CfgBatchRouter)):
@@ -3509,7 +3424,6 @@ def uninstall_cfg_parallel(pipe: Any) -> None:
     router.drop_replica()
     module = router.module_ref()
     if module is not None and module.__dict__.get("forward") is router:
-        # back to the forward the router replaced: an offload wrapper / bound override stays in force
         if router.had_override:
             module.__dict__["forward"] = router.prev_override
         else:
@@ -3517,7 +3431,6 @@ def uninstall_cfg_parallel(pipe: Any) -> None:
         module.__dict__.pop("_unsloth_cfg_router", None)
 
 
-# CFG-batch: both guidance branches through one forward of an offloaded / streamed denoiser.
 
 
 def _as_walkable(out: Any) -> Any:
@@ -3526,9 +3439,8 @@ def _as_walkable(out: Any) -> Any:
     return {f.name: getattr(out, f.name, None) for f in dataclasses.fields(out)}
 
 
-# Below this upload share of a plain call the prefetch stream hides the upload and batching gains nothing.
 _BATCH_UPLOAD_FRACTION = 0.6
-# The first batched calls must beat the two plain calls they replace by this factor, else batching stops.
+# The first batched calls must beat the two plain calls they replace by this factor, else batching stops
 _BATCH_MEASURED_FRACTION = 0.92
 _BATCH_VERIFY_CALLS = 2
 
@@ -3557,13 +3469,8 @@ def price_cfg_batch(
     }
 
 
-# Non-tensor leaves both branches may share in one batched call: immutable plain values, dtypes / devices and the
-# empty containers _leaves returns as leaves.
 def _mutable_container(args: tuple, kwargs: dict) -> tuple[Optional[str], list]:
-    """(path of the first list / dict / set inside the call's arguments or None, the empty dicts passed). A batched
-    call rebuilds the containers it flattens, so a cache dict or counter list the model mutates would never see the
-    per-branch calls; only tuples of tensors and immutable values pass. An EMPTY dict is let through (FLUX.1 passes
-    ``joint_attention_kwargs = {}``): the batched call gets a fresh empty stand-in, checked still empty afterwards."""
+    """(path of the first list / dict / set inside the call's arguments or None, the empty dicts passed)."""
     empties: list = []
 
     def walk(value: Any, path: tuple, depth: int) -> Optional[str]:
@@ -3593,24 +3500,12 @@ def _mutable_container(args: tuple, kwargs: dict) -> tuple[Optional[str], list]:
 _STATE_SCALARS = (bool, int, float, str)
 
 
-# Buffers up to this many bytes are copied before every batched call so a change can be undone (FLUX.2 klein-base:
-# no buffers at all); larger ones are only version-checked.
 _STATE_BUFFER_COPY_BYTES = 64 << 20
-# Plain guided calls whose writes are observed before CFG-batch may speculate (both branches of the first step).
 _OBSERVE_CALLS = 2
 
 
 class _StateWatch:
-    """What a stateful forward could advance, decided by observing writes rather than guessing from sizes.
-
-    Every parameter / buffer version counter (bumped by every in-place op: ``copy_``, ``index_put_``, ``add_``) is
-    read around the first plain guided calls (``_OBSERVE_CALLS``), before any speculation: a buffer whose version
-    never moves is read-only and needs no snapshot (Studio's native int8 / fp8 / NVFP4 / ComfyUI quant weights are
-    buffers of GBs). Only buffers seen to change are snapshotted (within ``_STATE_BUFFER_COPY_BYTES``); speculation
-    is refused when one seen to change does not fit. A tensor without a version counter (an inference tensor) counts
-    as read-only when a Studio-defined module owns it (its quant weight buffers), else as written. Around each batched
-    call every version is compared again: a move outside the snapshot set is a write this watch did not see.
-    Plain scalar attributes of the submodules are watched too (Studio's ``_unsloth_*`` hook state excluded)."""
+    """What a stateful forward could advance, decided by observing writes rather than guessing from sizes."""
 
     def __init__(self, module: Any):
         self.tensors: list = []
@@ -3635,7 +3530,6 @@ class _StateWatch:
         ]
         for name, t, is_buffer in self.tensors:
             if is_buffer and _tensor_version(t) is None and not self._studio_owned(name):
-                # no version counter and not a known Studio quant weight: possibly written
                 self.written.add(name)
         self._settle()
 
@@ -3644,9 +3538,7 @@ class _StateWatch:
         return str(getattr(type(owner), "__module__", "") or "").startswith(_TRUSTED_HOOK_MODULES)
 
     def _settle(self) -> None:
-        """Snapshot set: the buffers seen (or presumed) written first, smallest first within the budget; what budget is
-        left covers the smallest of the others too, so a write the observation missed in a small buffer (a counter
-        that starts moving late) is still undone. Large read-only buffers (quant weights) are never copied."""
+        """Snapshot set: the buffers seen (or presumed) written first, smallest first within the budget."""
         sizes = {
             name: t.numel() * t.element_size() for name, t, is_buffer in self.tensors if is_buffer
         }
@@ -3697,8 +3589,7 @@ class _StateWatch:
         return changed
 
     def restore(self, snap: dict) -> tuple[Optional[str], Optional[str]]:
-        """(first state changed, first write outside the snapshot set): snapshotted buffers and scalars restored; a
-        parameter or an unsnapshotted buffer written in place is reported (and remembered as written) but cannot be."""
+        """(first state changed, first write outside the snapshot set): snapshotted buffers and scalars restored."""
         torch = _torch()
         changed = unseen = None
         for (name, t, is_buffer), version, copy in zip(
@@ -3707,7 +3598,7 @@ class _StateWatch:
             now = _tensor_version(t)
             moved = version is not None and now is not None and now != version
             if copy is not None and version is None:
-                moved = not _bitwise_equal(t.detach(), copy)  # an inference tensor: compare the value
+                moved = not _bitwise_equal(t.detach(), copy)
             if moved:
                 changed = changed or name
                 if copy is not None:
@@ -3794,8 +3685,6 @@ def _batch_leaves(first: list, second: list, batch: int) -> dict:
             else:
                 raise _NotBatchable(f"{path_a}: differs per branch without a batch dim")
         elif not (_batch_shareable(a) and _batch_shareable(b)):
-            # a cache / holder object: one batched call would share (and mutate) it for both branches, and the
-            # odd branch's check would compare the same object with itself
             raise _NotBatchable(f"{path_a}: opaque {type(a).__name__} argument")
         elif _same_value(a, b):
             values[path_a] = a
@@ -3851,12 +3740,7 @@ def _registry_hooks_other(module: Any) -> Optional[str]:
 
 
 class CfgBatchRouter(_ShapeVerdicts):
-    """Offloaded denoiser ``forward`` running both guidance branches of a step through ONE forward (one upload).
-
-    Branches are recognised as in :class:`CfgParallelRouter`; the predicted odd branch is batched with the first and
-    its half kept. The real odd call must match the prediction bitwise (snapshots, so in-place edits are seen) with
-    unchanged hook state, else it runs plain. Not bit-identical to two calls, so only offloaded denoisers by default.
-    Unbatchable steps run as before; OOM on the batched call disables batching and recomputes the branch alone."""
+    """Offloaded denoiser ``forward`` running both guidance branches of a step through ONE forward (one upload)."""
 
     _VERDICT_LABEL = "CFG-batch"
 
@@ -3871,15 +3755,12 @@ class CfgBatchRouter(_ShapeVerdicts):
     ):
         self.module_ref = weakref.ref(module)
         self.orig_forward = module.forward
-        # the instance forward the router replaced (an offload wrapper), put back on uninstall
         self.had_override = "forward" in module.__dict__
         self.prev_override = module.__dict__.get("forward")
         self.headroom_mib = headroom_mib
-        # the canvas (pixels) ``headroom_mib`` was calibrated at; scaled linearly to the request's canvas
         self.request_needs: Optional[PhaseNeeds] = None
         self.headroom_reference_px = headroom_reference_px
         self.request_px: Optional[int] = None
-        # every batched call checks the denoiser for state its forward advances (slots collected once per load)
         self.state_watch: Optional[_StateWatch] = None
         self.reason = reason
         self.logger = logger
@@ -3896,7 +3777,6 @@ class CfgBatchRouter(_ShapeVerdicts):
         self.verify_batched = _BATCH_VERIFY_CALLS
         self.batched_times: list[float] = []
         self.disabled_pending: Optional[str] = None
-        # why the CURRENT request shape runs one branch per call, typed (_ShapeVerdicts); per shape
         self._init_verdicts()
         self.shapes = _ShapeBook(
             {
@@ -3932,7 +3812,6 @@ class CfgBatchRouter(_ShapeVerdicts):
             **self.stats,
         }
 
-    # -- request lifecycle (Studio's generate path; without it the call pattern decides)
     def begin_request(
         self,
         width: Any = None,
@@ -3945,7 +3824,6 @@ class CfgBatchRouter(_ShapeVerdicts):
         self.request_needs = needs
         self.branch = 0
         self.timing_off = False
-        # transient OOM verdicts hold for one request (decided on the kind); priced-out / measured ones stay
         self._clear_request_verdicts()
         if self.pricing is None:
             self.plain_times = []
@@ -3991,41 +3869,37 @@ class CfgBatchRouter(_ShapeVerdicts):
             self.branch += 1
         else:
             if self.branch == 0 and self.prev_latent is not None:
-                # The previous step made one call: a single-branch request. Forget the guided state (no speculation,
-                # no stale timing); a later guided step rebuilds it from scratch.
                 self.template = None
                 self.plain_times = []
                 if self.pricing is None:
-                    self.timing_off = True  # nothing to price: stop syncing
+                    self.timing_off = True
             self.branch = 0
             self.prev_latent = latent
-            if self.kept is not None:  # the previous step never asked for its odd branch
+            if self.kept is not None:
                 self.kept = None
                 self._record_miss("the odd branch never came")
             self._apply_pending()
             self.b0_leaves = dict(_leaves((args, kwargs)))
             if self.shapes.switch(self, _request_shape(self.request_px, args, kwargs)):
                 self.template = (
-                    None  # the previous shape's odd-branch prediction does not carry over
+                    None
                 )
                 if self.pricing is None:
-                    self.timing_off = False  # a new shape: its first guided step is timed plain
+                    self.timing_off = False
         if self.disabled_reason is not None or self.shape_disabled is not None or latent is None:
             return self._plain(args, kwargs)
         if self.branch == 1 and self.timing_off:
-            # guidance resumed: retake both branch timings on the next step
             self.timing_off = False
             self.plain_times = []
         timing = self.pricing is None and not self.timing_off and self._can_time(latent)
         if self.branch == 0:
             if (
                 self.template is not None and not timing
-            ):  # unpriced: this step times both plain calls first
+            ):
                 try:
                     out = self._batched(args, kwargs, latent)
                 except Exception as exc:  # noqa: BLE001 - anything in the speculative path: plain from here
                     if is_out_of_memory(exc):
-                        # an OOM the attempt's own handlers did not see (verification, splitting): this shape only
                         self.kept = None
                         with contextlib.suppress(Exception):
                             _torch().cuda.empty_cache()
@@ -4107,7 +3981,6 @@ class CfgBatchRouter(_ShapeVerdicts):
         watch = self._watch()
         if watch is None or watch.ready:
             return self.orig_forward(*args, **kwargs)
-        # before any speculation: which buffers does a plain call write?
         before = watch.versions()
         out = self.orig_forward(*args, **kwargs)
         watch.observe(before)
@@ -4136,7 +4009,7 @@ class CfgBatchRouter(_ShapeVerdicts):
                     and leaf.numel() <= _SMALL_TENSOR_NUMEL
                     and _bitwise_equal(leaf, self.b0_leaves[path])
                 ):
-                    kinds[path] = ("b0", path)  # recomputed per call with the first branch's value
+                    kinds[path] = ("b0", path)
                 else:
                     kinds[path] = ("const", leaf)
             else:
@@ -4152,7 +4025,6 @@ class CfgBatchRouter(_ShapeVerdicts):
         module = self.module_ref()
         if module is None:
             return None
-        # Only as the outermost forward with no step cache: later layers key per-branch state on separate calls.
         if module.__dict__.get("forward") is not self:
             self._skip("an outer forward layer was installed after this router")
             return None
@@ -4160,7 +4032,6 @@ class CfgBatchRouter(_ShapeVerdicts):
         if outer is not None:
             self._skip(f"{outer} under this router")
             return None
-        # a step cache, or a foreign hook whose per-call state would see one doubled call: the CFG-parallel screen
         hooked = _hooks_present(
             module, offload_hooks_ok = True, strict_bound = cfg_batch_mode() != "force"
         )
@@ -4206,9 +4077,7 @@ class CfgBatchRouter(_ShapeVerdicts):
             # The caller's empty dicts never reach the speculative call: each gets a fresh empty stand-in, so a
             # write during the doubled call cannot dirty the object the plain rerun and the caller will use.
             stand_ins = []
-            # Tensors likewise: a concatenation is already fresh storage; a tensor passed through by identity is
-            # cloned, so an in-place write by the model never reaches the caller's tensors. Each fresh input is
-            # checked after the call (version counter, else its value against the caller's untouched source).
+            # Tensors likewise: a concatenation is already fresh storage
             first_by_path = dict(first)
             fresh_inputs = []
             for path, value in list(merged.items()):
@@ -4235,7 +4104,6 @@ class CfgBatchRouter(_ShapeVerdicts):
             with contextlib.suppress(Exception):
                 torch.cuda.empty_cache()
             if is_out_of_memory(exc):
-                # the concatenation of a larger canvas or batch ran out: this shape only, the branch runs plain
                 self._disable_shape(
                     "out of memory merging the branches; one branch per call for this shape", _OFF_TRANSIENT
                 )
@@ -4253,7 +4121,6 @@ class CfgBatchRouter(_ShapeVerdicts):
             self._skip("observing which buffers a plain call writes")
             return None
         if watch.unrestorable and cfg_batch_mode() != "force":
-            # a buffer the forward writes, too large to snapshot: a speculative call could not be undone
             self._disable_shape(
                 f"buffer {watch.unrestorable[0]} is written by the forward and too large to snapshot around a "
                 "speculative call; one branch per call for this shape",
@@ -4281,7 +4148,6 @@ class CfgBatchRouter(_ShapeVerdicts):
                     )
                     return None
                 if changed is not None:
-                    # its forward advances state once per call: one doubled call is not two (state restored)
                     self.disable(
                         f"the denoiser's forward changes its own state ({changed}); one branch per call"
                     )
@@ -4290,13 +4156,11 @@ class CfgBatchRouter(_ShapeVerdicts):
                 torch.cuda.synchronize()
                 self._check_batched(time.perf_counter() - t0)
         except Exception as exc:  # noqa: BLE001 - the doubled batch was refused: the branch reruns plain
-            # a call that raised may have advanced watched state first: undo it before the plain rerun
             self._undo_attempt(state_snapshot)
             if is_out_of_memory(exc):
                 del b_args, b_kwargs, merged
                 with contextlib.suppress(Exception):
                     torch.cuda.empty_cache()
-                # a larger canvas or batch can run out where smaller ones fit: this shape only
                 self._disable_shape(
                     "out of memory on the batched call; one branch per call for this shape", _OFF_TRANSIENT
                 )
@@ -4324,14 +4188,12 @@ class CfgBatchRouter(_ShapeVerdicts):
             )
             return None
         if not untouched:
-            # the model writes its inputs in place: one doubled call is not two calls (the caller's are untouched)
             self._undo_attempt(state_snapshot)
             self.disable(
                 "the batched call wrote into an input tensor in place; one branch per call from here"
             )
             return None
         if any(stand_ins):
-            # the model writes into that dict: one doubled call is not two calls (the caller's dict is untouched)
             self._undo_attempt(state_snapshot)
             self.disable(
                 "the batched call wrote into an argument dict; one branch per call from here"
@@ -4450,7 +4312,6 @@ class CfgBatchRouter(_ShapeVerdicts):
     def _apply_pending(self) -> None:
         if self.disabled_pending is not None:
             reason, self.disabled_pending = self.disabled_pending, None
-            # a measured verdict (no gain over two plain calls): holds until reprice
             self._disable_shape(reason, _OFF_STICKY)
 
     def _disable_shape(self, reason: str, kind: str) -> None:
@@ -4504,20 +4365,14 @@ def _outer_forward_layer(module: Any, forward: Any = _DROP) -> Optional[str]:
         if _hook_origin(fn).startswith(_TRUSTED_HOOK_MODULES):
             below = getattr(fn, "__wrapped__", None)
             if below is None:
-                return None  # a Studio forward patch at the bottom of the chain
+                return None
             fn = below
             continue
         return f"outer forward layer {type(fn).__name__}"
     return "forward chain too deep to inspect"
 
 
-# Denoiser classes whose forward keeps no state across calls, so one doubled call equals two per-branch calls. Read
-# from the diffusers source (every method outside __init__ scanned for attribute writes and in-place tensor ops):
-# FLUX.2 / klein writes only into a Flux2KVCache passed as an argument (refused as an opaque argument); Z-Image's
-# RopeEmbedder fills its frequency table once, a pure function of the config; Qwen-Image's RoPE tables are pure
-# lru caches; FLUX.1 and Wan write nothing (Wan's fuse_projections is never called by forward). A fully general
-# detector is not possible (a forward may keep arbitrary Python state), so other classes run one branch per call
-# unless UNSLOTH_DIFFUSION_CFG_BATCH=force opts them in.
+# Denoiser classes whose forward keeps no state across calls, so one doubled call equals two per-branch calls
 _CFG_BATCH_STATELESS_CLASSES = frozenset(
     {
         "Flux2Transformer2DModel",
@@ -4644,7 +4499,6 @@ def uninstall_cfg_batch(pipe: Any) -> None:
     if module is not None and module.__dict__.get("_unsloth_cfg_router") is router:
         del module.__dict__["_unsloth_cfg_router"]
     if module is not None and module.__dict__.get("forward") is router:
-        # back to the forward the router replaced: an offload wrapper / bound override stays in force
         if router.had_override:
             module.__dict__["forward"] = router.prev_override
         else:

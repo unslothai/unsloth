@@ -690,7 +690,6 @@ def test_replica_declined_when_a_submodule_hook_captures_the_source():
     router, replicas = _router(dit)
     _cfg_loop(dit, torch.randn(2, 4), steps = 3)
     assert replicas == []
-    # refused for hooks is retryable: the odd branch stays on the primary until the hook is gone
     assert router.describe()["disabled_reason"] is None
     assert "proj._forward_hooks" in router.describe()["blocked_by"]
 
@@ -711,7 +710,6 @@ def test_portable_hooks_and_root_hooks_are_accepted():
     dit.proj.register_forward_hook(hook)
     calls = _ROOT_CALLS
     calls.clear()
-    # one of Studio's root hooks (captures nothing mutable): runs on the source around every branch
     _root_count_hook.__module__ = mg.__name__
     dit.register_forward_pre_hook(_root_count_hook)
     assert mg._hooks_present(dit) is None
@@ -1015,7 +1013,6 @@ def test_mispredicted_branch_is_recomputed_exactly():
     router, _replicas = _router(dit)
     out = loop(5)
     assert torch.equal(out, reference)
-    # three consecutive misses stop speculation for the shape; the last step runs unpredicted
     assert router.stats["predicted_hits"] == 0 and router.stats["predicted_misses"] == mg._MISS_LIMIT
     assert router.stats["replica_calls"] == 4  # still on the replica, just not overlapped
 
@@ -1191,7 +1188,6 @@ def test_in_place_edit_after_launch_rejects_the_prediction():
         router, _replicas = _router(dit)
         out = loop(5)
     assert torch.equal(out, reference)
-    # three consecutive misses stop speculation for the shape; the last step runs unpredicted
     assert router.stats["predicted_hits"] == 0 and router.stats["predicted_misses"] == mg._MISS_LIMIT
 
 
@@ -1252,7 +1248,6 @@ def _flag_post_hook(module, args, output):
 
 
 def test_root_hook_state_on_submodules_reaches_the_replica(monkeypatch):
-    # Studio's own root hooks (the HunyuanVideo trim hook): their _unsloth_* state is mirrored onto the replica
     monkeypatch.setattr(_flag_pre_hook, "__module__", mg.__name__)
     monkeypatch.setattr(_flag_post_hook, "__module__", mg.__name__)
     torch.manual_seed(0)
@@ -1527,7 +1522,7 @@ def test_force_mode_refines_a_resident_plan(monkeypatch):
     with mg.selection_scope(mg.make_selection(0, [0, 1])):
         assert (
             mg.refine_plan_for_multigpu(object(), plan) is plan
-        )  # auto: a resident plan stays on one card
+        )
         monkeypatch.setenv(mg.MULTIGPU_ENV, "force")
         refined = mg.refine_plan_for_multigpu(object(), plan)
     assert refined.secondary_ordinal == 1 and refined.offload_policy == dm.OFFLOAD_NONE
@@ -1559,18 +1554,16 @@ def test_ltx25_sidecar_encoder_keeps_the_single_card_plan(monkeypatch):
     assert vid._video_refine_for_multigpu(wan, object(), single) is split and refined == [1]
 
 
-# ---------------------------------------------------------------------------------------------------- CFG-batch / pricing
 
 
 class _BatchDit(torch.nn.Module):
-    """Per-sample math (no reduction across the batch), as a DiT's is."""
 
     def __init__(self):
         super().__init__()
         self.proj = torch.nn.Linear(4, 4)
         self._log = [
             0
-        ]  # the call counter is test bookkeeping, not model state the stateful-forward check should see
+        ]
         self.rows = []
 
     @property
@@ -1708,7 +1701,7 @@ def test_cfg_batch_out_of_memory_falls_back(monkeypatch):
             raise torch.OutOfMemoryError("fake")
         return inner(*a, **k)
 
-    oom_on_batch.__module__ = mg.__name__  # stands in for a Studio forward patch under the router
+    oom_on_batch.__module__ = mg.__name__
     router.orig_forward = oom_on_batch
     dit.forward = router
     out = _batch_loop(dit, latents.clone(), 4, cond, uncond)
@@ -1717,7 +1710,6 @@ def test_cfg_batch_out_of_memory_falls_back(monkeypatch):
 
 
 def test_cfg_batch_out_of_memory_declines_only_that_shape():
-    # only the 3-row request runs out on its doubled call: a later 2-row request must still batch
     dit = _BatchDit()
     router = mg.CfgBatchRouter(dit)
     inner = router.orig_forward
@@ -1727,7 +1719,7 @@ def test_cfg_batch_out_of_memory_declines_only_that_shape():
             raise torch.OutOfMemoryError("fake")
         return inner(*a, **k)
 
-    oom_on_large_batch.__module__ = mg.__name__  # stands in for a Studio forward patch under the router
+    oom_on_large_batch.__module__ = mg.__name__
     router.orig_forward = oom_on_large_batch
     dit.forward = router
     pipe = _RouterPipe(dit)
@@ -1747,7 +1739,6 @@ def test_cfg_batch_out_of_memory_declines_only_that_shape():
 
 
 def test_shape_book_keeps_a_revisited_shape_when_full():
-    # cycling through one shape more than the book holds must not evict the shape being switched back to
     book = mg._ShapeBook({"pricing": None})
     router = types.SimpleNamespace(pricing = None)
     keys = [f"shape{i}" for i in range(mg._SHAPE_BOOK_SIZE + 1)]
@@ -1760,7 +1751,6 @@ def test_shape_book_keeps_a_revisited_shape_when_full():
 
 
 def test_cfg_batch_merge_out_of_memory_declines_only_that_shape(monkeypatch):
-    # the branch concatenation of the 3-row request runs out: a later 2-row request must still batch
     real = mg._batch_leaves
 
     def merge(first, second, batch):
@@ -1789,7 +1779,7 @@ def test_cfg_batch_merge_out_of_memory_declines_only_that_shape(monkeypatch):
 
 
 def test_cfg_batch_decline_rules(monkeypatch):
-    class Flux2Transformer2DModel(_BatchDit):  # a listed class name from diffusers
+    class Flux2Transformer2DModel(_BatchDit):
         pass
 
     Flux2Transformer2DModel.__module__ = "diffusers.models.transformers.transformer_flux2"
@@ -1831,7 +1821,6 @@ def test_price_cfg_parallel_declines_a_slow_link():
         link_in_gib_s = None,
         link_out_gib_s = None,
     )
-    # an unmeasured link is unknown, not free: one card, flagged so the probe is retried
     assert unknown["strategy"] == "single" and unknown["link_unmeasured"] is True
     assert fast["link_unmeasured"] is False
 
@@ -1878,10 +1867,8 @@ def test_cfg_parallel_router_priced_out_keeps_one_card(monkeypatch):
 
 
 def test_price_cfg_batch_declines_a_compute_bound_call():
-    # T4x2 FLUX.2-klein-base: 2.13 s per call, its 7.7 GB stream at 9.2 GiB/s takes 0.84 s -> compute-bound
     t4 = mg.price_cfg_batch(call_s = 2.13, upload_s = 0.84)
     assert t4["strategy"] == "single"
-    # upload-bound (a fast card on a narrow link): one upload serves both branches
     assert mg.price_cfg_batch(call_s = 0.2, upload_s = 0.18)["strategy"] == "cfg_batch"
     assert mg.price_cfg_batch(call_s = 0.2, upload_s = None)["strategy"] == "cfg_batch"
 
@@ -1897,11 +1884,10 @@ def test_cfg_batch_measured_no_gain_stops_after_the_first_batched_step():
     router.plain_times = [0.1, 0.1]
     router._check_batched(0.5)
     assert router.disabled_pending is None
-    router._check_batched(0.19)  # fastest 0.19 > 0.92 * 0.2: no gain
+    router._check_batched(0.19)
     assert router.verify_batched == 0
     out = _batch_loop(dit, latents.clone(), 5, cond, uncond)
     torch.testing.assert_close(out, reference, rtol = 1e-5, atol = 1e-6)
-    # the verdict was reached before this loop: it applies at the first step boundary, before any batched call
     assert router.stats["batched_steps"] == 0
     assert "measured no gain" in router.describe()["disabled_reason"]
 
@@ -1920,7 +1906,7 @@ def test_cfg_batch_falls_back_when_the_batched_call_rejects_its_inputs():
             raise ValueError("this model only runs batch 2")
         return inner(*a, **k)
 
-    fixed_batch.__module__ = mg.__name__  # stands in for a Studio forward patch under the router
+    fixed_batch.__module__ = mg.__name__
     router.orig_forward = fixed_batch
     dit.forward = router
     out = _batch_loop(dit, latents.clone(), 4, cond, uncond)
@@ -1945,7 +1931,7 @@ def test_cfg_batch_refuses_an_opaque_mutable_argument():
             return_dict = False,
         ):
             self.calls += 1
-            holder.state.add_(1.0)  # per-call mutation of shared state
+            holder.state.add_(1.0)
             return (
                 self.proj(hidden_states) * timestep + encoder_hidden_states.tanh() + holder.state,
             )
@@ -1987,7 +1973,7 @@ def test_cfg_batch_stops_timing_a_single_branch_loop(monkeypatch):
             latents
             - dit(hidden_states = latents, timestep = torch.tensor(0.5), encoder_hidden_states = cond)[0]
         )
-    assert len(timed) == 1  # the first step only: no second branch ever came
+    assert len(timed) == 1
 
 
 def test_cfg_parallel_replica_card_is_chosen_among_those_that_fit(monkeypatch):
@@ -1995,10 +1981,9 @@ def test_cfg_parallel_replica_card_is_chosen_among_those_that_fit(monkeypatch):
         transformer = _Dit()
 
     pipe = Pipe()
-    # the tiny DiT's replica needs only the 1024 MiB margin
     probes = {
         0: _probe(0, 20000, {1: 20.0, 2: 2.0}),
-        1: _probe(1, 500, {0: 20.0}),  # fastest link, cannot hold the replica
+        1: _probe(1, 500, {0: 20.0}),
         2: _probe(2, 9000, {0: 2.0}),
     }
     monkeypatch.setattr(mg, "probe_devices", lambda ordinals, measure = True: probes)
@@ -2019,7 +2004,6 @@ def test_refine_tries_the_next_card_when_the_fast_link_one_cannot_hold_a_share(m
         "vae": (300, "other"),
     }
     monkeypatch.setattr(dm, "_loaded_component_mib", lambda pipe: sizes)
-    # cuda:1 has the fast link but holds nothing; cuda:2 is slower and fits the companions
     monkeypatch.setattr(mg, "secondary_resident_limit_mib", lambda o, mode: {1: 3000, 2: 12750}[o])
     monkeypatch.setattr(mg, "best_secondary", lambda selection, probes = None: 1)
     monkeypatch.setattr(
@@ -2065,7 +2049,6 @@ def test_cfg_batch_single_branch_request_after_a_guided_one_stops_batching():
             latents
             - dit(hidden_states = latents, timestep = torch.tensor(0.5), encoder_hidden_states = cond)[0]
         )
-    # at most the first step of the new request is speculated; none after the single-branch step is seen
     assert router.stats["batched_steps"] - before <= 1
     assert router.template is None
 
@@ -2076,7 +2059,7 @@ def test_cfg_batch_refuses_a_foreign_submodule_hook():
     seen = []
     dit.proj.register_forward_hook(
         lambda m, i, o: seen.append(o.shape[0])
-    )  # stateful, not Studio's
+    )
     cond, uncond = _embeds()
     router = mg.CfgBatchRouter(dit)
     dit.forward = router
@@ -2101,13 +2084,13 @@ def test_cfg_batch_retimes_both_branches_when_guidance_resumes(monkeypatch):
     monkeypatch.setattr(router, "_price", lambda: priced.append(list(router.plain_times)))
     cond, uncond = _embeds()
     latents = torch.randn(2, 4)
-    for i in range(2):  # single-branch steps first
+    for i in range(2):
         step[0] = i
         latents = (
             latents
             - dit(hidden_states = latents, timestep = torch.tensor(0.5), encoder_hidden_states = cond)[0]
         )
-    for i in range(2, 5):  # then guidance
+    for i in range(2, 5):
         step[0] = i
         c = dit(hidden_states = latents, timestep = torch.tensor(0.5), encoder_hidden_states = cond)[0]
         u = dit(hidden_states = latents, timestep = torch.tensor(0.5), encoder_hidden_states = uncond)[0]
@@ -2116,7 +2099,7 @@ def test_cfg_batch_retimes_both_branches_when_guidance_resumes(monkeypatch):
             break
     assert (
         priced and len(priced[0]) == 2 and priced[0][0] == priced[0][1]
-    )  # both from one guided step
+    )
 
 
 def test_cfg_batch_refuses_a_stateful_root_pre_hook():
@@ -2124,7 +2107,7 @@ def test_cfg_batch_refuses_a_stateful_root_pre_hook():
     dit = _BatchDit()
     calls = [0]
 
-    def count(module, args, kwargs):  # per-call state: scales each branch by its call index
+    def count(module, args, kwargs):
         calls[0] += 1
         kwargs = dict(kwargs)
         kwargs["timestep"] = kwargs["timestep"] * (1.0 + 0.01 * calls[0])
@@ -2159,7 +2142,7 @@ def test_cfg_batch_accepts_a_studio_root_hook():
 def test_cfg_batch_declines_a_pre_existing_outer_forward_layer(monkeypatch):
     class Outer:
         _unsloth_outer_forward = (
-            True  # e.g. the static step skip: per-branch state keyed on separate calls
+            True
         )
 
         def __init__(self, module):
@@ -2182,7 +2165,7 @@ def test_cfg_batch_declines_a_pre_existing_outer_forward_layer(monkeypatch):
     plain = Pipe()
     assert (
         mg.install_cfg_batch(plain, offload_policy = "none") is None
-    )  # the class forward alone still arms
+    )
 
 
 def test_cfg_batch_output_rebuild_failure_runs_the_branch_plain(monkeypatch):
@@ -2216,8 +2199,8 @@ def test_cfg_batch_pending_slowdown_applies_on_a_prediction_miss():
 
     def edit(i, u):
         if i == 1:
-            router.disabled_pending = "measured no gain"  # set by the first batched call's timing
-            u.add_(1.0)  # and this step's odd branch misses its prediction
+            router.disabled_pending = "measured no gain"
+            u.add_(1.0)
 
     _batch_loop(dit, torch.randn(2, 4), 4, cond, uncond.clone(), edit = edit)
     assert router.describe()["disabled_reason"] == "measured no gain"
@@ -2225,7 +2208,6 @@ def test_cfg_batch_pending_slowdown_applies_on_a_prediction_miss():
 
 
 def test_cfg_batch_headroom_is_the_denoise_phase_when_calibrated():
-    # FLUX.1-like: decode peaks far above denoise; the batched call only adds denoise activations
     act = dm.CalibratedImageActivation(1_000, 892, 2_666, 600, 2_000)
     plan = dm.plan_diffusion_memory(
         target = _Target(),
@@ -2237,12 +2219,10 @@ def test_cfg_batch_headroom_is_the_denoise_phase_when_calibrated():
         calibrated_activation = act,
     )
     assert mg.plan_denoise_headroom_mib(plan) == 892
-    # without a per-phase figure the conservative whole-request headroom stays
     assert mg.plan_denoise_headroom_mib(_plan()) == _plan().estimates["runtime_headroom_mib"]
 
 
 def _offload_style_wrapper(module, inner):
-    """An accelerate / diffusers style offload wrapper: functools.update_wrapper(partial(new_forward, module), inner)."""
     import functools
 
     def new_forward(mod, *a, **k):
@@ -2273,7 +2253,6 @@ def test_cfg_batch_sees_an_outer_layer_under_an_offload_wrapper(monkeypatch):
     )
     reason = mg.install_cfg_batch(hidden, offload_policy = "none")
     assert reason is not None and "outer forward" in reason
-    # the same wrapper straight over the class forward still arms
     plain = Pipe()
     plain.transformer.forward = _offload_style_wrapper(
         plain.transformer, type(plain.transformer).forward.__get__(plain.transformer)
@@ -2318,7 +2297,7 @@ def test_cfg_batch_refuses_a_mutable_container_argument(make_state):
     assert router.stats["batched_steps"] == 0
     assert (
         state[0] if isinstance(state, list) else len(state)
-    ) == 8  # every per-branch call reached the caller's state
+    ) == 8
     assert "mutable" in router.describe()["last_unbatched_reason"]
 
 
@@ -2372,7 +2351,7 @@ def test_cfg_batch_passes_an_empty_attention_kwargs_dict_and_checks_it():
     cond, uncond = _embeds()
     router = mg.CfgBatchRouter(dit)
     dit.forward = router
-    kwargs_dict = {}  # FLUX.1 passes joint_attention_kwargs = {}
+    kwargs_dict = {}
     latents = torch.randn(2, 4)
     for i in range(4):
         t = torch.tensor(1.0 - i / 4)
@@ -2410,7 +2389,7 @@ def test_cfg_batch_speculation_never_writes_the_callers_empty_dict():
                 + encoder_hidden_states.tanh()
                 + len(joint_attention_kwargs)
             )
-            if hidden_states.shape[0] == 4:  # writes only inside the doubled call
+            if hidden_states.shape[0] == 4:
                 joint_attention_kwargs["seen"] = True
             return (out,)
 
@@ -2460,8 +2439,8 @@ def test_cfg_batch_in_place_write_to_an_input_never_reaches_the_caller():
             out = self.proj(hidden_states) * timestep + encoder_hidden_states.tanh()
             encoder_hidden_states.mul_(
                 0.5
-            )  # writes its input in place: each branch must see its own write
-            timestep.add_(0.0)  # a shared, passed-through tensor written in place as well
+            )
+            timestep.add_(0.0)
             return (out,)
 
     def loop(dit, latents, cond, uncond):
@@ -2484,12 +2463,11 @@ def test_cfg_batch_in_place_write_to_an_input_never_reaches_the_caller():
     torch.testing.assert_close(out, reference, rtol = 0, atol = 0)
     assert torch.equal(c2, ref_cond) and torch.equal(
         u2, ref_uncond
-    )  # every per-branch write reached the caller
+    )
     assert "in place" in router.describe()["disabled_reason"]
 
 
 def test_price_cfg_parallel_uses_both_measured_branches():
-    # a cheap even branch and an expensive odd one: parallel runs the odd one alone, barely faster than both
     lopsided = mg.price_cfg_parallel(
         branch_s = 1.0,
         primary_s = 0.1,
@@ -2499,7 +2477,6 @@ def test_price_cfg_parallel_uses_both_measured_branches():
         link_out_gib_s = 9.0,
     )
     assert lopsided["strategy"] == "single"
-    # the recorded T4x2 numbers (2.38 s branches, 0.001 s copies) still pick CFG-parallel
     t4 = mg.price_cfg_parallel(
         branch_s = 2.376,
         primary_s = 2.38,
@@ -2509,7 +2486,6 @@ def test_price_cfg_parallel_uses_both_measured_branches():
         link_out_gib_s = 9.13,
     )
     assert t4["strategy"] == "cfg_parallel"
-    # the forced 0.02 GiB/s link with a short branch stays priced out
     slow = mg.price_cfg_parallel(
         branch_s = 0.08,
         primary_s = 0.08,
@@ -2524,7 +2500,7 @@ def test_price_cfg_parallel_uses_both_measured_branches():
 def test_cfg_parallel_router_times_both_branches_of_the_first_guided_step(monkeypatch):
     dit = _Dit()
     router, replicas = _router(dit)
-    times = iter([0.1, 1.0])  # even branch, odd branch
+    times = iter([0.1, 1.0])
     monkeypatch.setattr(router, "_should_price", lambda: True)
     monkeypatch.setattr(
         router, "_timed_primary", lambda a, k: (router.orig_forward(*a, **k), next(times))
@@ -2570,7 +2546,7 @@ def test_request_scope_retimes_the_even_branch_after_a_distilled_request(monkeyp
     with mg.cfg_request_scope(pipe, 1024, 1024):
         _cfg_loop(dit, torch.randn(2, 4), steps = 2)
     assert router.pricing is not None and router.pricing["primary_branch_s"] == 0.5
-    assert len(times) == 2  # even and odd branch of the first guided step
+    assert len(times) == 2
 
 
 def test_invalidation_reprices_a_priced_out_router(monkeypatch):
@@ -2624,7 +2600,7 @@ def test_cfg_batch_refuses_a_stateful_forward_and_restores_its_state():
     dit.forward = router
     out = _batch_loop(dit, latents.clone(), 4, cond, uncond)
     torch.testing.assert_close(out, reference, rtol = 0, atol = 0)
-    assert float(dit.seen) == 8.0 and dit.ticks == 8  # once per branch, as two plain calls
+    assert float(dit.seen) == 8.0 and dit.ticks == 8
     assert "state" in router.describe()["disabled_reason"]
 
 
@@ -2640,7 +2616,7 @@ def test_request_scope_stops_speculation_at_a_single_branch_request():
     before = router.stats["batched_steps"]
     with mg.cfg_request_scope(pipe, 64, 64):
         _distilled(dit, steps = 4)
-    assert router.stats["batched_steps"] == before  # not even the first step is speculated
+    assert router.stats["batched_steps"] == before
 
 
 def test_retained_cfg_inputs_are_released_at_decode():
@@ -2653,7 +2629,7 @@ def test_retained_cfg_inputs_are_released_at_decode():
     with mg.cfg_request_scope(pipe, 64, 64):
         _batch_loop(dit, torch.randn(2, 4), 3, cond, uncond)
         assert router.template is not None
-        mg.release_cfg_inputs(pipe)  # the decoder was entered
+        mg.release_cfg_inputs(pipe)
         assert router.template is None and router.b0_leaves == {} and router.kept is None
         assert router.prev_latent is None
 
@@ -2663,12 +2639,11 @@ def test_cfg_batch_headroom_scales_with_the_requested_canvas():
     router = mg.CfgBatchRouter(dit, headroom_mib = 892, headroom_reference_px = 1024 * 1024)
     dit.forward = router
     pipe = _RouterPipe(dit)
-    # the one batched forward carries both branches: the doubled batch is charged
     with mg.cfg_request_scope(pipe, 2048, 2048):
         assert router.needed_mib() == 892 * 4 * 2
     with mg.cfg_request_scope(pipe, 512, 512):
         assert router.needed_mib() == 892 // 4 * 2
-    assert router.needed_mib() == 892 * 2  # outside a request: the calibrated figure
+    assert router.needed_mib() == 892 * 2
 
 
 def test_cfg_batch_catches_a_forward_that_turns_stateful_later():
@@ -2689,7 +2664,7 @@ def test_cfg_batch_catches_a_forward_that_turns_stateful_later():
             self.calls += 1
             if (
                 float(timestep) < 0.5
-            ):  # stateless for the early steps, then advances a buffer every call
+            ):
                 self.seen.add_(1.0)
             return (
                 self.proj(hidden_states) * timestep * (1 + self.seen)
@@ -2718,7 +2693,7 @@ def test_replica_refused_for_hooks_is_retried_once_they_are_gone():
     source = dit.proj
     handle = dit.proj.register_forward_pre_hook(
         lambda m, a: source and None
-    )  # a recording hook, e.g. bg compile
+    )
     _cfg_loop(dit, torch.randn(2, 4), steps = 2)
     assert replicas == [] and router.describe()["disabled_reason"] is None
     assert router.describe()["blocked_by"] is not None
@@ -2744,7 +2719,7 @@ def test_request_scope_finds_a_router_under_a_later_outer_layer():
         _os.environ.pop(mg.CFG_BATCH_ENV, None)
     router = dit.__dict__["forward"]
 
-    class Skip:  # the deferred static step skip takes the forward slot, keeping the router in .inner
+    class Skip:
         _unsloth_outer_forward = True
 
         def __init__(self, inner):
@@ -2777,10 +2752,8 @@ def test_cfg_batch_declines_a_denoiser_class_off_the_stateless_list(monkeypatch)
 
     reason = mg.cfg_batch_decline(Pipe(_BatchDit()), offload_policy = "group")
     assert reason is not None and "stateless-forward list" in reason and mg.CFG_BATCH_ENV in reason
-    # a listed diffusers class passes the list (and is then judged on its offload as before)
     assert "resident" in mg.cfg_batch_decline(Pipe(_listed_dit_class()()), offload_policy = "group")
 
-    # through a compile wrapper: the class behind _orig_mod decides
     class Compiled(torch.nn.Module):
         def __init__(self, inner):
             super().__init__()
@@ -2788,7 +2761,6 @@ def test_cfg_batch_declines_a_denoiser_class_off_the_stateless_list(monkeypatch)
 
     assert mg.cfg_batch_class_listed(Compiled(_listed_dit_class()()))[0]
     assert not mg.cfg_batch_class_listed(Compiled(_BatchDit()))[0]
-    # the opt-in lets an unlisted class batch
     monkeypatch.setenv(mg.CFG_BATCH_ENV, "force")
     assert mg.cfg_batch_decline(Pipe(_BatchDit()), offload_policy = "none") is None
 
@@ -2809,7 +2781,7 @@ def test_cfg_batch_restores_state_when_the_batched_call_raises():
             return_dict = False,
         ):
             self.calls += 1
-            self.seen.add_(1.0)  # advanced before the doubled batch is refused
+            self.seen.add_(1.0)
             if hidden_states.shape[0] == 4:
                 raise ValueError("fixed batch")
             return (self.proj(hidden_states) * timestep * self.seen + encoder_hidden_states.tanh(),)
@@ -2845,17 +2817,12 @@ def test_request_scope_gets_the_effective_canvas_in_both_generate_paths():
         assert len(calls) == 1, name
         return [ast.unparse(a) for a in calls[0].args[1:]]
 
-    # image: the size the forward runs at (img2img / inpaint take it from the input image), not the call kwargs
-    # plus the request's denoise steps (the first replica build is amortised over them)
     assert scope_args("diffusion.py") == [
         "guard_width",
         "guard_height",
-        # the steps the pipeline really denoises (img2img / inpaint strength applied), not the requested count
         "denoise_steps",
-        # each chunk's own figure (its real image count)
         "_chunk_cfg_needs(state, fam, pipe, cfg_guard_inputs, chunk)",
     ]
-    # video: the resolved request canvas (frames do not count)
     assert scope_args("video.py") == [
         "request_shape.get('width')",
         "request_shape.get('height')",
@@ -2871,7 +2838,7 @@ def test_cfg_batch_headroom_scales_with_the_latent_batch():
     pipe = _RouterPipe(dit)
     with mg.cfg_request_scope(pipe, 1024, 1024):
         assert router.needed_mib(1) == 892 * 2
-        assert router.needed_mib(4) == 892 * 8  # four images in the chunk: eight samples in the batched forward
+        assert router.needed_mib(4) == 892 * 8
     with mg.cfg_request_scope(pipe, 2048, 2048):
         assert router.needed_mib(2) == 892 * 4 * 4
 
@@ -2883,7 +2850,7 @@ def test_cfg_parallel_replica_card_must_also_hold_the_denoise_headroom(monkeypat
     pipe = Pipe()
     probes = {
         0: _probe(0, 20000, {1: 20.0, 2: 2.0}),
-        1: _probe(1, 2000, {0: 20.0}),  # holds the weights + 1 GiB, not the 4 GiB of activations
+        1: _probe(1, 2000, {0: 20.0}),
         2: _probe(2, 9000, {0: 2.0}),
     }
     monkeypatch.setattr(mg, "probe_devices", lambda ordinals, measure = True: probes)
@@ -2903,7 +2870,7 @@ def test_cfg_batch_declines_a_foreign_bound_forward_override(monkeypatch):
     torch.manual_seed(0)
     dit = _BatchDit()
 
-    def foreign_forward(self, x):  # e.g. a third-party patch keeping state on its owner
+    def foreign_forward(self, x):
         return torch.nn.functional.linear(x, self.weight, self.bias)
 
     foreign_forward.__module__ = "thirdparty.patch"
@@ -2915,7 +2882,6 @@ def test_cfg_batch_declines_a_foreign_bound_forward_override(monkeypatch):
     assert router.stats["batched_steps"] == 0
     reason = router.describe()["last_unbatched_reason"]
     assert "proj.forward" in reason and mg.CFG_BATCH_ENV in reason
-    # a Studio-installed bound forward still batches
     studio = _BatchDit()
     studio_forward = lambda self, x: torch.nn.functional.linear(x, self.weight, self.bias)  # noqa: E731
     studio_forward.__module__ = mg.__name__
@@ -2924,7 +2890,6 @@ def test_cfg_batch_declines_a_foreign_bound_forward_override(monkeypatch):
     studio.forward = router2
     _batch_loop(studio, torch.randn(2, 4), 4, cond, uncond)
     assert router2.stats["batched_steps"] == 3
-    # and the opt-in batches the foreign one
     monkeypatch.setenv(mg.CFG_BATCH_ENV, "force")
     dit3 = _BatchDit()
     dit3.proj.forward = _types.MethodType(foreign_forward, dit3.proj)
@@ -2940,14 +2905,12 @@ def _guided(
     steps = 2,
     length = 4,
 ):
-    """A guided loop whose latent batch (and conditioning) has ``rows`` rows."""
     latents = torch.randn(rows, length, generator = torch.Generator().manual_seed(rows))
     cond, uncond = _embeds(rows, length)
     return _batch_loop(dit, latents, steps, cond, uncond)
 
 
 def test_cfg_parallel_prices_each_request_shape_on_its_own(monkeypatch):
-    # a small canvas is priced out; a later larger one must be priced itself, not inherit the small verdict
     dit = _BatchDit()
     router, replicas = _router(dit)
     pipe = _RouterPipe(dit)
@@ -2960,13 +2923,12 @@ def test_cfg_parallel_prices_each_request_shape_on_its_own(monkeypatch):
 
     monkeypatch.setattr(router, "_should_price", lambda: True)
     monkeypatch.setattr(router, "_timed_primary", timed_primary)
-    # ~0.1 s per step of copies: dwarfs a 1 ms branch, hides behind a 1 s one
     monkeypatch.setattr(mg, "link_gib_s", lambda src, dst, probes = None: 1e-6)
     router.primary = router.secondary = torch.device("cpu")
     with mg.cfg_request_scope(pipe, 256, 256):
         _guided(dit, 2)
     assert replicas == [] and "priced out" in router.describe()["disabled_reason"]
-    assert router.disabled_reason is None  # a per-shape verdict, not a load-wide one
+    assert router.disabled_reason is None
     with mg.cfg_request_scope(pipe, 1024, 1024):
         _guided(dit, 3, steps = 3)
     assert len(replicas) == 1 and router.stats["replica_calls"] > 0
@@ -2975,13 +2937,12 @@ def test_cfg_parallel_prices_each_request_shape_on_its_own(monkeypatch):
     calls = router.stats["replica_calls"]
     with mg.cfg_request_scope(pipe, 256, 256):
         _guided(dit, 2)
-    # the small shape reuses its stored verdict: no new timing, one card, replica kept for the large shape
     assert timed == [] and router.stats["replica_calls"] == calls and len(replicas) == 1
     assert "priced out" in router.describe()["disabled_reason"]
     with mg.cfg_request_scope(pipe, 1024, 1024):
         _guided(dit, 3)
     assert timed == [] and router.stats["replica_calls"] > calls
-    for rows in range(4, 10):  # the book stays bounded
+    for rows in range(4, 10):
         with mg.cfg_request_scope(pipe, 64 * rows, 64):
             _guided(dit, rows, steps = 1)
     assert len(router.shapes.saved) <= mg._SHAPE_BOOK_SIZE
@@ -3000,7 +2961,7 @@ def test_cfg_batch_prices_each_request_shape_on_its_own(monkeypatch):
         timed.append(rows)
         router.plain_times.append(
             5.0 if rows == 2 else 1.2
-        )  # 1 GiB upload: 2 rows compute-bound, 3 rows not
+        )
         return router._plain(a, k)
 
     monkeypatch.setattr(router, "_can_time", lambda latent: True)
@@ -3033,10 +2994,9 @@ def test_cfg_batch_prices_each_request_shape_on_its_own(monkeypatch):
     timed.clear()
     with mg.cfg_request_scope(pipe, 256, 256):
         _guided(dit, 2)
-    assert timed == [] and router.stats["batched_steps"] == 3  # the stored verdict, not a reprice
+    assert timed == [] and router.stats["batched_steps"] == 3
     with mg.cfg_request_scope(pipe, 1024, 1024):
         _guided(dit, 3, steps = 3)
-    # the large shape kept its price: batched from its first step (template rebuilt), no new timing
     assert timed == [] and router.stats["batched_steps"] == 5
     mg._CFG_BATCH.pop(pipe, None)
 
@@ -3052,10 +3012,9 @@ def test_cfg_parallel_declines_an_unmeasured_link_and_retries_it(monkeypatch):
     router.primary = router.secondary = torch.device("cpu")
     with mg.cfg_request_scope(pipe, 512, 512):
         _guided(dit, 2, steps = 3)
-    # unknown is not free: no replica built on an unmeasured link
     assert replicas == [] and router.stats["replica_calls"] == 0
     assert "link unmeasured" in router.describe()["disabled_reason"]
-    links[0] = 9.0  # the probe succeeds on a later request
+    links[0] = 9.0
     with mg.cfg_request_scope(pipe, 512, 512):
         _guided(dit, 2, steps = 3)
     assert len(replicas) == 1 and router.stats["replica_calls"] > 0
@@ -3066,7 +3025,7 @@ def test_probe_does_not_cache_a_failed_link_measurement(monkeypatch):
     real_empty = torch.empty
     monkeypatch.setattr(
         torch, "empty", lambda *a, device = None, **k: real_empty(*a, **k)
-    )  # the "card" buffers live on the host
+    )
     monkeypatch.setattr(torch.cuda, "can_device_access_peer", lambda a, b: True)
     results = iter([RuntimeError("busy"), RuntimeError("busy"), 20.0, 21.0])
 
@@ -3093,7 +3052,7 @@ def test_uninstall_restores_the_instance_forward_override(kind):
     def offload_wrapper(*a, **k):
         return type(dit).forward(dit, *a, **k)
 
-    dit.forward = offload_wrapper  # an accelerate-style instance override the router sits on
+    dit.forward = offload_wrapper
     if kind == "batch":
         router = mg.CfgBatchRouter(dit)
         mg._CFG_BATCH[pipe] = router
@@ -3117,21 +3076,20 @@ def test_uninstall_restores_the_instance_forward_override(kind):
     else:
         mg._CFG_ROUTERS[pipe2] = router
         mg.uninstall_cfg_parallel(pipe2)
-    assert "forward" not in plain.__dict__  # no override originally: the slot is removed
+    assert "forward" not in plain.__dict__
 
 
 def test_rank_secondaries_puts_measured_links_ahead_of_unmeasured(monkeypatch):
     monkeypatch.delenv(mg.LINK_ENV, raising = False)
     probes = {
         0: _probe(0, 1000, {1: None, 2: 20.0, 3: 2.0}),
-        1: _probe(1, 30000, {0: None}),  # most free memory, link never measured
+        1: _probe(1, 30000, {0: None}),
         2: _probe(2, 9000, {0: 20.0}),
-        3: _probe(3, 15000, {0: 2.0}),  # measured but slow
+        3: _probe(3, 15000, {0: 2.0}),
     }
     sel = mg.MultiGpuSelection(primary = 0, secondaries = (1, 2, 3))
     assert mg.rank_secondaries(0, [1, 2, 3], lambda o: probes[o].free_mib, probes) == [2, 3, 1]
     assert mg.best_secondary(sel, probes) == 2
-    # nothing measured: the free-memory fallback
     blind = {o: _probe(o, p.free_mib, {}) for o, p in probes.items()}
     assert mg.best_secondary(sel, blind) == 1
 
@@ -3164,14 +3122,14 @@ def test_cfg_parallel_rechecks_replica_room_when_the_shape_grows(monkeypatch):
     pipe = _RouterPipe(dit)
     router, replicas = _parallel_cpu_router(dit, monkeypatch, 3000)
     with mg.cfg_request_scope(pipe, 512, 512):
-        _guided(dit, 2, steps = 3)  # 2 x 1000 MiB of activations: fits
+        _guided(dit, 2, steps = 3)
     assert len(replicas) == 1 and router.stats["replica_calls"] > 0
     calls = router.stats["replica_calls"]
     plain = _BatchDit()
     plain.load_state_dict(dit.state_dict())
     reference = _guided(plain, 2, steps = 3)
     with mg.cfg_request_scope(pipe, 1024, 1024):
-        out = _guided(dit, 2, steps = 3)  # 4x the canvas: 8000 MiB > 3000 MiB free
+        out = _guided(dit, 2, steps = 3)
     torch.testing.assert_close(out, reference, rtol = 1e-5, atol = 1e-6)
     assert router.stats["replica_calls"] == calls
     assert "lacks room" in router.describe()["disabled_reason"]
@@ -3219,7 +3177,7 @@ def test_cfg_parallel_replica_oom_declines_only_that_shape(monkeypatch, where):
     calls = router.stats["replica_calls"]
     with mg.cfg_request_scope(pipe, 512, 512):
         _guided(dit, 2, steps = 3)
-    assert router.stats["replica_calls"] > calls  # the shapes that fit keep the replica
+    assert router.stats["replica_calls"] > calls
 
 
 def test_cfg_parallel_replica_builds_under_studios_step_skip_layer():
@@ -3231,16 +3189,13 @@ def test_cfg_parallel_replica_builds_under_studios_step_skip_layer():
     plain.load_state_dict(dit.state_dict())
     reference = _guided(plain, 2, steps = 4)
     router, replicas = _router(dit)
-    # the deferred speed profile installs the static step skip ABOVE the router (it computes every call here)
     skip = StaticStepSkip(dit, inner = router)
     dit.forward = skip
     out = _guided(dit, 2, steps = 4)
     torch.testing.assert_close(out, reference, rtol = 1e-5, atol = 1e-6)
     assert router.blocked_by is None and router.disabled_reason is None
     assert len(replicas) == 1 and router.stats["replica_calls"] > 0
-    # the copy runs what the layer wraps, never a copy of the layer
     assert "forward" not in replicas[0].__dict__
-    # a foreign outer layer still blocks the replica
     class Foreign:
         _unsloth_outer_forward = True
 
@@ -3266,12 +3221,11 @@ def test_cfg_parallel_room_counts_idle_cached_blocks_on_the_secondary(monkeypatc
         torch.cuda, "memory_reserved", lambda device = None: seen.append(device) or 1800 << 20
     )
     monkeypatch.setattr(torch.cuda, "memory_allocated", lambda device = None: 300 << 20)
-    # 1000 MiB free per the driver + 1500 MiB of this process's idle cached blocks >= 2000 MiB
     router._check_capacity(torch.randn(1, 4))
     assert router.shape_disabled is None
     assert seen and all(torch.device(d) == torch.device("cuda", 1) for d in seen)
     monkeypatch.setattr(torch.cuda, "memory_allocated", lambda device = None: 1500 << 20)
-    router._check_capacity(torch.randn(1, 4))  # 1000 + 300 < 2000
+    router._check_capacity(torch.randn(1, 4))
     assert router.shape_disabled is not None and "lacks room" in router.shape_disabled
 
 
@@ -3283,7 +3237,7 @@ def test_cfg_parallel_replica_card_hosting_the_vae_keeps_decode_room(monkeypatch
     pipe = Pipe()
     probes = {
         0: _probe(0, 20000, {1: 20.0, 2: 2.0}),
-        1: _probe(1, 6000, {0: 20.0}),  # fastest link, hosts the VAE: 8000 MiB decode does not fit beside a replica
+        1: _probe(1, 6000, {0: 20.0}),
         2: _probe(2, 5000, {0: 2.0}),
     }
     monkeypatch.setattr(mg, "probe_devices", lambda ordinals, measure = True: probes)
@@ -3301,7 +3255,6 @@ def test_cfg_parallel_replica_card_hosting_the_vae_keeps_decode_room(monkeypatch
     assert reason is None, reason
     router = mg._CFG_ROUTERS[pipe]
     assert router.secondary == torch.device("cuda", 2)
-    # the per-request check prices the decode too whenever the replica card is the VAE's
     router.secondary = torch.device("cuda", 1)
     assert router._room_mib(1) == 8000
     router.secondary = torch.device("cuda", 2)
@@ -3312,7 +3265,6 @@ def test_cfg_parallel_replica_card_hosting_the_vae_keeps_decode_room(monkeypatch
 
 
 def _priced_router(dit, monkeypatch, branch_s = 1.0, link = 1.0):
-    """A CPU router priced like a CUDA one: both branches timed at ``branch_s``, ``link`` GiB/s each way."""
     router, replicas = _router(dit)
     monkeypatch.setattr(router, "_should_price", lambda: True)
     monkeypatch.setattr(
@@ -3332,7 +3284,7 @@ def test_cfg_parallel_one_step_render_never_builds_a_replica(monkeypatch):
     dit = _BatchDit()
     pipe = _RouterPipe(dit)
     router, replicas = _priced_router(dit, monkeypatch)
-    with mg.cfg_request_scope(pipe, 512, 512):  # step count unknown: the build waits for a second guided step
+    with mg.cfg_request_scope(pipe, 512, 512):
         _guided(dit, 2, steps = 1)
     assert router.pricing["strategy"] == "cfg_parallel"
     assert replicas == [] and router.stats["replica_calls"] == 0
@@ -3341,7 +3293,6 @@ def test_cfg_parallel_one_step_render_never_builds_a_replica(monkeypatch):
 def test_cfg_parallel_short_render_declines_when_the_build_outweighs_the_saving(monkeypatch):
     dit = _BatchDit()
     pipe = _RouterPipe(dit)
-    # each guided step saves ~1 s; a 40 GiB replica over a 1 GiB/s link costs ~40 s to build
     router, replicas = _priced_router(dit, monkeypatch)
     monkeypatch.setattr(
         router,
@@ -3358,13 +3309,12 @@ def test_cfg_parallel_short_render_declines_when_the_build_outweighs_the_saving(
     plain = _BatchDit()
     plain.load_state_dict(dit.state_dict())
     reference = _guided(plain, 2, steps = 4)
-    pipe.scheduler = _Sched(4)  # the step count from the pipeline's scheduler
+    pipe.scheduler = _Sched(4)
     with mg.cfg_request_scope(pipe, 512, 512):
         out = _guided(dit, 2, steps = 4)
     torch.testing.assert_close(out, reference, rtol = 1e-5, atol = 1e-6)
     assert replicas == [] and "short render" in router.describe()["disabled_reason"]
     assert router.disabled_reason is None
-    # a long render of the same shape (step count from the scheduler) repays it: built on its second step
     pipe.scheduler = _Sched(60)
     with mg.cfg_request_scope(pipe, 512, 512):
         _guided(dit, 2, steps = 3)
@@ -3387,22 +3337,18 @@ def test_cfg_parallel_long_render_builds_on_step_two_and_engages(monkeypatch):
     with mg.cfg_request_scope(pipe, 512, 512):
         out = _guided(dit, 2, steps = 30)
     torch.testing.assert_close(out, reference, rtol = 1e-5, atol = 1e-6)
-    # denoiser calls before the build: step 1's two branches and step 2's even one -> built on step 2
     assert built_at == [3] and len(replicas) == 1
     assert router.stats["steps_parallel"] >= 27
-    # a later request (even a 1-step one) reuses that replica: no second build
     calls = router.stats["replica_calls"]
     with mg.cfg_request_scope(pipe, 512, 512, steps = 1):
         _guided(dit, 2, steps = 1)
     assert len(replicas) == 1 and router.stats["replica_calls"] > calls
-    # Studio's own step count wins over the scheduler's
     with mg.cfg_request_scope(pipe, 512, 512, steps = 8):
         router.request_step = 3
         assert router._remaining_steps() == 6
 
 
 def _on_cards(monkeypatch, placement):
-    """``_module_device`` answering ``placement[id(module)]`` (cuda ordinal), else the CPU."""
     monkeypatch.setattr(
         mg,
         "_module_device",
@@ -3415,16 +3361,15 @@ def test_cfg_parallel_long_clip_on_the_vae_card_uses_the_request_decode(monkeypa
     pipe = _RouterPipe(dit)
     pipe.vae = torch.nn.Linear(2, 2)
     _on_cards(monkeypatch, {id(pipe.vae): 1})
-    # the load's whole-request headroom, sized at the family's default clip
     router = mg.CfgParallelRouter(dit, primary = "cuda:0", secondary = "cuda:1", headroom_mib = 4000, vae_ordinal = 1)
     dit.forward = router
     monkeypatch.setattr(mg, "_free_total_mib", lambda ordinal: (8000, 80000))
     latent = torch.randn(1, 4)
     with mg.cfg_request_scope(pipe, 1280, 720):
-        router._check_capacity(latent)  # no request figure: the load figure fits
+        router._check_capacity(latent)
     assert router.shape_disabled is None
     encode, denoise, decode = dm.video_request_phase_mib(width = 1280, height = 720, num_frames = 241)
-    assert decode > 8000  # a 241-frame 720p decode peak
+    assert decode > 8000
     needs = mg.request_phase_needs(pipe, encode_mib = encode, denoise_mib = denoise, decode_mib = decode)
     assert needs.decode_ordinal == 1
     with mg.cfg_request_scope(pipe, 1280, 720, 30, needs):
@@ -3447,7 +3392,7 @@ def test_cfg_parallel_replica_on_a_text_encoder_card_keeps_encode_room(monkeypat
     )
     probes = {
         0: _probe(0, 20000, {1: 20.0, 2: 2.0}),
-        1: _probe(1, 5000, {0: 20.0}),  # fastest link, hosts the text encoder: a 6000 MiB encode does not fit
+        1: _probe(1, 5000, {0: 20.0}),
         2: _probe(2, 4000, {0: 2.0}),
     }
     monkeypatch.setattr(mg, "probe_devices", lambda ordinals, measure = True: probes)
@@ -3460,7 +3405,6 @@ def test_cfg_parallel_replica_on_a_text_encoder_card_keeps_encode_room(monkeypat
     assert reason is None, reason
     router = mg._CFG_ROUTERS[pipe]
     assert router.secondary == torch.device("cuda", 2)
-    # per request too: the retained replica sits beside the next request's encode on the encoder's card
     router.secondary = torch.device("cuda", 1)
     assert router._room_mib(1) == 6000
     needs = mg.request_phase_needs(Pipe, encode_mib = 7000, denoise_mib = 1500, decode_mib = 2000)
@@ -3477,7 +3421,6 @@ def test_cfg_routers_count_qwen_image_reference_tokens(monkeypatch):
     from core.inference import diffusion as diffusion_mod
 
     cal = dm.calibrated_image_activation("qwen-image-2.1")
-    # two 1024x1024 reference images beside the 1024x1024 output: the guard's condition pixels
     refs = 2 * 1024 * 1024
     state = type("S", (), {"calibrated_placement": True, "variant_hint": "qwen-image-2.1", "te_releaser": None})()
     fam = type("F", (), {"name": "qwen-image-2.1"})()
@@ -3491,7 +3434,6 @@ def test_cfg_routers_count_qwen_image_reference_tokens(monkeypatch):
     batch = mg.CfgBatchRouter(dit, headroom_mib = cal.denoise_mib, headroom_reference_px = 1024 * 1024)
     dit.forward = batch
     with mg.cfg_request_scope(pipe, 1024, 1024, 20, needs):
-        # the doubled call's gate charges the reference tokens, not just the output canvas, for both branches
         assert needs.cfg_batch_denoise_mib == int(cal.denoise_mib * 6)
         assert batch.needed_mib(1) == int(cal.denoise_mib * 6)
     parallel = mg.CfgParallelRouter(
@@ -3538,7 +3480,6 @@ def test_cfg_request_needs_use_the_real_chunk_batch(monkeypatch):
     inputs = {"target": None, "width": 1024, "height": 1024, "condition_pixels": 0, "controlnet": False}
     one = diffusion_mod._chunk_cfg_needs(state, fam, pipe, inputs, [("p", 1)])
     four = diffusion_mod._chunk_cfg_needs(state, fam, pipe, inputs, [("p", s) for s in range(4)])
-    # the guard budgets one image off Windows; a four-image chunk doubles four latents
     assert one.denoise_mib == int(cal.denoise_mib) and four.denoise_mib == int(cal.denoise_mib * 4)
     assert diffusion_mod._chunk_cfg_needs(state, fam, pipe, None, [("p", 1)]) is None
 
@@ -3548,7 +3489,6 @@ def test_cfg_request_needs_include_the_controlnet_canvas(monkeypatch):
     needs = diffusion_mod._cfg_request_needs(
         state, fam, pipe, None, width = 1024, height = 1024, batch_size = 1, condition_pixels = 0, controlnet = True
     )
-    # the guard's own rule: one output-sized canvas for a ControlNet under a calibrated placement
     assert needs.denoise_mib == int(cal.denoise_mib * 2)
     assert dm.guard_condition_pixels(
         width = 1024, height = 1024, condition_pixels = 0, calibrated_placement = True, controlnet = True
@@ -3558,7 +3498,6 @@ def test_cfg_request_needs_include_the_controlnet_canvas(monkeypatch):
 def test_cfg_request_needs_read_the_vae_live_tiling_state(monkeypatch):
     diffusion_mod, cal, state, fam, pipe = _cfg_needs_fixture(monkeypatch)
     kwargs = dict(width = 1024, height = 1024, batch_size = 1, condition_pixels = 0)
-    # the secondary's VAE left untiled (the primary's tile verdict does not switch it): the untiled decode
     assert diffusion_mod._cfg_request_needs(state, fam, pipe, None, **kwargs).decode_mib == int(cal.decode_mib)
     pipe.vae.use_tiling = True
     assert diffusion_mod._cfg_request_needs(state, fam, pipe, None, **kwargs).decode_mib == int(cal.tiled_decode_mib)
@@ -3568,7 +3507,7 @@ def test_cfg_request_needs_keep_released_encoder_bytes(monkeypatch):
     from core.inference.diffusion_te_release import TextEncoderReleaser
 
     releaser = object.__new__(TextEncoderReleaser)
-    releaser._slots = {}  # released: every slot is an empty tensor now
+    releaser._slots = {}
     releaser._released = True
     releaser._released_bytes = 3 << 30
     assert releaser.releasable_bytes == 0 and releaser.held_bytes == 3 << 30
@@ -3587,14 +3526,13 @@ _CAL = dm.CalibratedImageActivation(
 @pytest.mark.parametrize(
     "images, prompts, tiled, sliced, expected",
     [
-        # (encode, denoise, decode) at 1024x1024, no condition pixels
         (1, 1, False, False, (1000, 2000, 4000)),
-        (4, 1, False, False, (1000, 8000, 16000)),  # shared prompt: one encode, four latents, four decodes
-        (4, 4, False, False, (4000, 8000, 16000)),  # distinct prompts: the encoder sees all four
-        (4, 4, False, True, (4000, 8000, 4000)),  # sliced VAE: one image at a time
-        (4, 4, True, False, (4000, 8000, 2000)),  # tiled, not sliced: every tile carries the whole batch
-        (4, 4, True, True, (4000, 8000, 500)),  # tiled and sliced
-        (2, None, False, False, (2000, 4000, 8000)),  # unknown prompt count: one per image
+        (4, 1, False, False, (1000, 8000, 16000)),
+        (4, 4, False, False, (4000, 8000, 16000)),
+        (4, 4, False, True, (4000, 8000, 4000)),
+        (4, 4, True, False, (4000, 8000, 2000)),
+        (4, 4, True, True, (4000, 8000, 500)),
+        (2, None, False, False, (2000, 4000, 8000)),
     ],
 )
 def test_image_request_phase_mib_scales_each_phase_by_its_own_batch(images, prompts, tiled, sliced, expected):
@@ -3638,7 +3576,7 @@ def _built_replica_router(monkeypatch, free_mib):
     router, replicas = _router(dit)
     _guided(dit, 2, steps = 2)
     assert router.replica is not None
-    router.secondary = torch.device("cuda", 1)  # the card the phases are priced on
+    router.secondary = torch.device("cuda", 1)
     monkeypatch.setattr(mg, "_free_total_mib", lambda ordinal: (free_mib, 80000))
     return dit, pipe, router
 
@@ -3651,7 +3589,6 @@ def test_retained_replica_is_evicted_before_an_encode_that_would_not_fit(monkeyp
     assert router.replica is not None
     big = mg.PhaseNeeds(encode_mib = 3000, denoise_mib = 500, decode_mib = 500, encode_ordinals = (1,))
     with mg.cfg_request_scope(pipe, 512, 512, 4, big):
-        # evicted at request entry, before the pipeline encodes its prompts on that card
         assert router.replica is None
     assert router.stats["replica_evictions"] == 1 and router.disabled_reason is None
 
@@ -3660,13 +3597,12 @@ def test_retained_replica_is_evicted_before_a_decode_that_would_not_fit(monkeypa
     dit, pipe, router = _built_replica_router(monkeypatch, 2000)
     needs = mg.PhaseNeeds(encode_mib = 100, denoise_mib = 500, decode_mib = 1500, decode_ordinal = 1)
     with mg.cfg_request_scope(pipe, 512, 512, 4, needs):
-        mg.release_cfg_inputs(pipe)  # decoder entry
+        mg.release_cfg_inputs(pipe)
         assert router.replica is not None
     needs = mg.PhaseNeeds(encode_mib = 100, denoise_mib = 500, decode_mib = 5000, decode_ordinal = 1)
     with mg.cfg_request_scope(pipe, 512, 512, 4, needs):
         mg.release_cfg_inputs(pipe)
         assert router.replica is None
-    # a card that does not run the decode keeps its replica whatever the figure
     dit2, pipe2, router2 = _built_replica_router(monkeypatch, 10)
     with mg.cfg_request_scope(pipe2, 512, 512, 4, mg.PhaseNeeds(denoise_mib = 1, decode_mib = 9000, decode_ordinal = 0)):
         mg.release_cfg_inputs(pipe2)
@@ -3682,7 +3618,6 @@ def test_foreign_root_pre_hook_writing_module_state_blocks_the_replica():
             return (out[0] * self.gain,)
 
     def gain_hook(module, args, kwargs):
-        # foreign: per-call module state the forward reads (the copy would keep a stale value)
         module.gain = 2.0 if float(kwargs["encoder_hidden_states"].sum()) > 0 else 0.5
 
     def make():
@@ -3713,22 +3648,19 @@ def test_studio_root_hooks_capturing_modules_do_not_block_cfg_parallel():
     seen = []
 
     def begin(module, args):
-        # a Studio root hook holding the module (like the offload prefetch begin / end hooks): never portable
         seen.append(module)
 
     begin.__module__ = "core.inference.diffusion_attention"
     dit.register_forward_pre_hook(begin)
-    # the background-compile recorder: a bound method of an object holding the module
     recorder = BackgroundCompile(dit)
     assert mg._hooks_present(dit) is None
     dit.register_forward_pre_hook(recorder._record, with_kwargs = True)
     assert mg._hooks_present(dit) is None
-    dit._forward_pre_hooks.popitem()  # keep the run itself free of the recorder's own bookkeeping
+    dit._forward_pre_hooks.popitem()
     router, replicas = _router(dit)
     out = _guided(dit, 2, steps = 4)
     torch.testing.assert_close(out, reference, rtol = 0, atol = 0)
     assert len(replicas) == 1 and router.stats["replica_calls"] > 0 and router.blocked_by is None
-    # the same module-capturing hook below the root is still refused (a copy would carry it)
     sub = _BatchDit()
     sub.proj.register_forward_pre_hook(begin)
     assert mg._hooks_present(sub) == "proj._forward_pre_hooks"
@@ -3741,9 +3673,7 @@ def test_text_encoder_only_split_prices_the_calibrated_encode():
         "vae": (1400, "other"),
     }
     kw = dict(headroom_mib = 4000, overhead_mib = 1000, primary_limit_mib = 16000, secondary_limit_mib = 13500)
-    # uncalibrated: the static encoder allowance (11000 + 1024 + 1000 fits 13500)
     assert mg.choose_component_assignment(sizes, **kw) == ("text_encoder",)
-    # calibrated encode of 2200 MiB: the encoder card could not run its own encode
     assert mg.choose_component_assignment(sizes, encode_headroom_mib = 2200, **kw) is None
 
 
@@ -3771,11 +3701,11 @@ def test_cfg_parallel_rebuild_after_eviction_rechecks_amortisation(monkeypatch):
     with mg.cfg_request_scope(pipe, 512, 512, 20):
         _guided(dit, 2, steps = 20)
     assert len(replicas) == 1
-    router.drop_replica()  # evicted at a phase boundary (or dropped for stale weights)
+    router.drop_replica()
     with mg.cfg_request_scope(pipe, 512, 512, 1):
-        _guided(dit, 2, steps = 1)  # a one-step request cannot repay a rebuild
+        _guided(dit, 2, steps = 1)
     assert len(replicas) == 1 and router.replica is None
-    with mg.cfg_request_scope(pipe, 512, 512):  # unknown length: not on the request's first guided step
+    with mg.cfg_request_scope(pipe, 512, 512):
         _guided(dit, 2, steps = 1)
     assert len(replicas) == 1
     with mg.cfg_request_scope(pipe, 512, 512, 20):
@@ -3784,7 +3714,6 @@ def test_cfg_parallel_rebuild_after_eviction_rechecks_amortisation(monkeypatch):
 
 
 class _CountingDit(_BatchDit):
-    """A forward that advances a small buffer counter beside a large static table."""
 
     def __init__(self, fail = None):
         super().__init__()
@@ -3812,13 +3741,11 @@ def test_cfg_batch_every_exit_restores_the_buffers_it_changed(fail):
     dit.forward = router
     out = _guided(dit, 2, steps = 3)
     torch.testing.assert_close(out, reference, rtol = 1e-6, atol = 1e-6)
-    # every attempted doubled call was undone: the counter advanced once per real branch call, as one card does
     assert float(dit.counter) == float(plain.counter) == 6.0
     assert router.stats["batched_steps"] == 0
 
 
 class _QuantStyleDit(_BatchDit):
-    """Native-quant style: a large weight held as a buffer, read (never written) by the forward."""
 
     def __init__(self, write_table = False, late_write = False):
         super().__init__()
@@ -3835,7 +3762,6 @@ class _QuantStyleDit(_BatchDit):
 
 
 def _quant_run(monkeypatch, **kw):
-    # a 16-byte budget: each 256-byte buffer stands in for a GB-sized quant weight
     monkeypatch.setattr(mg, "_STATE_BUFFER_COPY_BYTES", 16)
     torch.manual_seed(0)
     plain = _QuantStyleDit(**kw)
@@ -3852,7 +3778,6 @@ def test_cfg_batch_still_batches_beside_large_read_only_weight_buffers(monkeypat
     plain, dit, router, reference, out = _quant_run(monkeypatch)
     torch.testing.assert_close(out, reference, rtol = 1e-6, atol = 1e-6)
     assert router.stats["batched_steps"] == 3 and router.describe()["disabled_reason"] is None
-    # observed read-only: nothing to snapshot around the doubled call
     assert router.state_watch.written == set() and router.state_watch.unrestorable == []
 
 
@@ -3866,12 +3791,11 @@ def test_cfg_batch_refuses_a_large_buffer_the_forward_writes(monkeypatch):
 
 def test_cfg_batch_unseen_write_during_a_batched_call_disables_the_load(monkeypatch):
     plain, dit, router, reference, out = _quant_run(monkeypatch, late_write = True)
-    # fail safe: an unrestorable late write turns CFG-batch off for the whole load, not one shape
     assert router.disabled_reason is not None and "no plain call was seen writing" in router.disabled_reason
     assert not router.describe()["disabled_for_shape_only"]
     assert "table" in router.state_watch.written
     batched = router.stats["batched_steps"]
-    _guided(dit, 3, steps = 3)  # another shape: still no doubled call
+    _guided(dit, 3, steps = 3)
     assert router.stats["batched_steps"] == batched
 
 
@@ -3879,7 +3803,7 @@ def test_state_watch_treats_versionless_studio_quant_buffers_as_read_only(monkey
     dit = _QuantStyleDit()
     monkeypatch.setattr(mg, "_tensor_version", lambda t: None)
     foreign = mg._StateWatch(dit)
-    assert {"weight_q", "table"} <= foreign.written  # unknown owner, no counter: possibly written
+    assert {"weight_q", "table"} <= foreign.written
     monkeypatch.setattr(_QuantStyleDit, "__module__", "core.inference.diffusion_native_quant")
     assert mg._StateWatch(dit).written == set()
 
@@ -3908,22 +3832,20 @@ def test_replica_blocks_keep_the_compile_guard_and_background_gate():
     mg.install_compile_recorder()
     compiles = []
     dit = _BatchDit()
-    dit.proj = _Block()  # a user-defined block: dynamo traces it (it skips bare torch.nn layers)
+    dit.proj = _Block()
     dit.proj.compile(backend = _counting_backend(compiles))
     assert guard_compiled_blocks(dit) == 1
-    # the background compile's gate on the source block (render 1 runs eager while it compiles)
     dit.proj._compiled_call_impl = bg.eager_gate(dit.proj._compiled_call_impl, dit.proj._call_impl)
     replica = mg.build_replica(dit, torch.device("cpu"))
     call = replica.proj._compiled_call_impl
     assert getattr(call, "_unsloth_bg_gate", False)
-    # one shared guard: a compile failure drops the source and the copy to eager together
     assert call._unsloth_bg_inner._unsloth_compile_guard is dit._unsloth_compile_guard
     x = torch.randn(2, 4)
     with bg.force_eager():
         torch.testing.assert_close(replica.proj(x), dit.proj.forward(x))
-    assert compiles == []  # never compiled inside the window
+    assert compiles == []
     replica.proj(x)
-    assert len(compiles) == 1  # compiled once the window is over
+    assert len(compiles) == 1
 
 
 def test_replica_is_not_built_or_called_inside_the_background_compile_window(monkeypatch):
@@ -3941,7 +3863,7 @@ def test_replica_is_not_built_or_called_inside_the_background_compile_window(mon
     calls = router.stats["replica_calls"]
     with bg.force_eager(), mg.cfg_request_scope(pipe, 512, 512, 20):
         _guided(dit, 2, steps = 3)
-    assert router.stats["replica_calls"] == calls  # an existing replica is not called in the window either
+    assert router.stats["replica_calls"] == calls
 
 
 def test_replica_refuses_an_unknown_compiled_wrapper():
@@ -3950,7 +3872,7 @@ def test_replica_refuses_an_unknown_compiled_wrapper():
     dit.proj.compile(backend = _counting_backend([]))
     inner = dit.proj._compiled_call_impl
 
-    def foreign(*a, **k):  # a wrapper whose semantics the copy cannot reproduce
+    def foreign(*a, **k):
         return inner(*a, **k)
 
     dit.proj._compiled_call_impl = foreign
@@ -3967,7 +3889,6 @@ def test_replica_builder_walks_closure_wrappers_to_a_nested_guard():
     dit.proj = _Block()
     dit.proj.compile(backend = _counting_backend([]))
     guard_compiled_blocks(dit)
-    # a closure wrapper outside the guard that does NOT copy the guard's marker: only the inner link reaches it
     dit.proj._compiled_call_impl = restride.wrap(dit.proj._compiled_call_impl)
     assert getattr(dit.proj._compiled_call_impl, "_unsloth_compile_guard", None) is None
     replica = mg.build_replica(dit, torch.device("cpu"))
@@ -3987,7 +3908,7 @@ def test_replica_builder_refuses_a_studio_layer_it_cannot_see_below():
     def opaque(*a, **k):
         return inner(*a, **k)
 
-    opaque._unsloth_block_restride = True  # a known marker, but no inner link to the rest of the chain
+    opaque._unsloth_block_restride = True
     dit.proj._compiled_call_impl = opaque
     with pytest.raises(RuntimeError, match = "cannot see below"):
         mg.build_replica(dit, torch.device("cpu"))
@@ -4041,13 +3962,13 @@ def test_every_replica_drop_path_releases_it(monkeypatch, path):
     dit, router = _compiled_router()
     guard = dit._unsloth_compile_guard
     ledger = router.replica.__dict__.get("_unsloth_replica_ledger")
-    assert len(guard.restores) == 2  # the source block's and the copy's
+    assert len(guard.restores) == 2
     gone = _weakref.ref(router.replica)
     _drop_by(path, dit, router, monkeypatch)
     assert router.replica is None
-    assert len(guard.restores) == 1  # only the source's own registration remains
+    assert len(guard.restores) == 1
     gc.collect()
-    assert gone() is None  # nothing on the source side keeps the dropped copy alive
+    assert gone() is None
     assert ledger == []
 
 
@@ -4057,11 +3978,11 @@ def test_replica_build_capacity_failure_declines_only_that_shape(monkeypatch):
     router, replicas = _router(dit, headroom_mib = 1000)
     monkeypatch.setattr(router, "_secondary_free_mib", lambda: 1500)
     with mg.cfg_request_scope(pipe, 512, 512):
-        _guided(dit, 2, steps = 3)  # two latents: 2000 MiB of room beside the replica, 1500 free
+        _guided(dit, 2, steps = 3)
     assert replicas == [] and router.disabled_reason is None
     assert "lacks room" in router.describe()["disabled_reason"]
     with mg.cfg_request_scope(pipe, 512, 512):
-        _guided(dit, 1, steps = 3)  # a smaller request retries the build: 1024 MiB fits
+        _guided(dit, 1, steps = 3)
     assert len(replicas) == 1 and router.stats["replica_calls"] > 0
 
 
@@ -4143,7 +4064,7 @@ def test_replica_paths_raise_only_typed_failures():
     assert bad == []
 
 
-class OutOfMemoryError_(RuntimeError):  # a backend subclass named like torch's
+class OutOfMemoryError_(RuntimeError):
     pass
 
 
@@ -4160,7 +4081,7 @@ def _wrapped_oom():
 @pytest.mark.parametrize(
     "make",
     [
-        _wrapped_oom,  # torch.compile hides the allocation failure behind a compiler error
+        _wrapped_oom,
         lambda: OutOfMemoryError_("allocation failed"),
         lambda: RuntimeError("HIP out of memory. Tried to allocate 1.00 GiB"),
         lambda: torch.OutOfMemoryError("CUDA out of memory"),
@@ -4199,10 +4120,10 @@ def test_cfg_batch_wrapped_oom_on_the_batched_call_declines_only_the_shape():
 def test_prediction_policy_reset_rules():
     policy = mg._PredictionPolicy()
     assert not policy.miss() and not policy.miss()
-    policy.hit()  # a hit resets the run
+    policy.hit()
     assert policy.consecutive == 0
     assert not policy.miss() and not policy.miss()
-    assert policy.miss()  # the third consecutive miss stops batching
+    assert policy.miss()
     assert (policy.hits, policy.misses) == (1, 5)
 
 
@@ -4214,7 +4135,7 @@ def test_cfg_batch_stops_after_consecutive_prediction_misses_for_that_shape_only
     cond, uncond = _embeds()
 
     def drift(i, u):
-        u.add_(0.01)  # the odd branch's input changes every step: never predictable
+        u.add_(0.01)
 
     latents = torch.randn(2, 4)
     reference = _batch_loop(plain, latents.clone(), 8, cond.clone(), uncond.clone(), edit = drift)
@@ -4223,9 +4144,8 @@ def test_cfg_batch_stops_after_consecutive_prediction_misses_for_that_shape_only
     out = _batch_loop(dit, latents.clone(), 8, cond.clone(), uncond.clone(), edit = drift)
     torch.testing.assert_close(out, reference, rtol = 1e-5, atol = 1e-6)
     assert router.stats["batched_misses"] == mg._MISS_LIMIT
-    assert router.stats["batched_steps"] == mg._MISS_LIMIT  # no doubled call after the limit
+    assert router.stats["batched_steps"] == mg._MISS_LIMIT
     assert "consecutive" in router.describe()["disabled_reason"] and router.disabled_reason is None
-    # a new request shape starts with a fresh policy and batches again
     before = router.stats["batched_steps"]
     _guided(dit, 3, steps = 3)
     assert router.stats["batched_steps"] > before
@@ -4245,7 +4165,6 @@ def test_install_fit_counts_the_secondarys_idle_allocator_cache(monkeypatch):
     monkeypatch.setattr(mg, "_PAIR_PROBE", {(0, 1): (True, 20.0), (1, 0): (True, 20.0)})
     monkeypatch.setattr(mg, "_STATIC_PROBE", {0: {"name": "card", "h2d": 10.0}, 1: {"name": "card", "h2d": 10.0}})
     monkeypatch.delenv(mg.LINK_ENV, raising = False)
-    # 600 MiB free per the driver + 3000 MiB of this process's idle cached blocks on cuda:1: the replica fits
     with mg.selection_scope(mg.MultiGpuSelection(primary = 0, secondaries = (1,))):
         reason = mg._install_cfg_parallel_only(pipe, offload_policy = "none")
     assert reason is None, reason
@@ -4290,13 +4209,12 @@ def _two_card_router(monkeypatch, probes):
 def test_reselection_skips_a_card_that_has_since_filled_up(monkeypatch):
     probes = {
         0: _probe(0, 20000, {1: 20.0, 2: 2.0}),
-        1: _probe(1, 100, {0: 20.0}),  # fastest link, filled up by another workload since install
+        1: _probe(1, 100, {0: 20.0}),
         2: _probe(2, 9000, {0: 2.0}),
     }
     dit, router = _two_card_router(monkeypatch, probes)
     router.begin_request(512, 512)
     assert router.secondary == torch.device("cuda", 2)
-    # nothing fits anywhere: the current card stays (the build then declines the shape for capacity)
     probes[2] = _probe(2, 100, {0: 2.0})
     router.begin_request(512, 512)
     assert router.secondary == torch.device("cuda", 2)
@@ -4316,7 +4234,6 @@ def test_every_replica_card_choice_goes_through_select_replica_card(monkeypatch)
         1: _probe(1, 9000, {0: 20.0}),
         2: _probe(2, 9000, {0: 2.0}),
     }
-    # install
     class Pipe:
         transformer = _Dit()
 
@@ -4327,18 +4244,15 @@ def test_every_replica_card_choice_goes_through_select_replica_card(monkeypatch)
     with mg.selection_scope(mg.MultiGpuSelection(primary = 0, secondaries = (1, 2))):
         assert mg._install_cfg_parallel_only(Pipe(), offload_policy = "none") is None
     assert len(calls) == 1
-    # request entry without a replica (first build, after an eviction or an invalidation)
     dit, router = _two_card_router(monkeypatch, probes)
     router.begin_request(512, 512)
     assert len(calls) == 2
-    # the build itself
     monkeypatch.setattr(router, "_secondary_free_mib", lambda: 10)
     router._build_replica()
     assert len(calls) == 3 and router.replica is None and "lacks room" in router.describe()["disabled_reason"]
 
 
 def test_calibrated_denoise_room_keeps_the_guards_floor():
-    # 256x256 is 1/16 of the reference token area: the guard charges at least a quarter of the measured figure
     _enc, denoise, _dec = dm.image_request_phase_mib(width = 256, height = 256, calibrated = _CAL)
     assert denoise == int(_CAL.denoise_mib * 0.25)
     assert dm.guard_pixel_scale(256 * 256) == 0.25 and dm.guard_pixel_scale(2048 * 2048) == 4.0
@@ -4351,7 +4265,6 @@ def test_guard_and_phase_figures_share_one_pixel_curve(monkeypatch):
 
 
 def test_cfg_parallel_price_charges_the_input_copy_outside_the_overlap():
-    # the inputs are copied before the primary branch is queued: in_copy + max(primary, branch + out_copy)
     price = mg.price_cfg_parallel(
         branch_s = 1.0,
         primary_s = 2.0,
@@ -4360,18 +4273,16 @@ def test_cfg_parallel_price_charges_the_input_copy_outside_the_overlap():
         link_in_gib_s = 1.0,
         link_out_gib_s = 1.0,
     )
-    assert price["cfg_parallel_step_s"] == 2.9  # not max(2.0, 1.9) = 2.0
-    assert price["strategy"] == "single"  # 2.9 > 0.9 x 3.0
+    assert price["cfg_parallel_step_s"] == 2.9
+    assert price["strategy"] == "single"
     assert price["in_copy_s"] == 0.9 and price["out_copy_s"] == 0.0
     out_only = mg.price_cfg_parallel(
         branch_s = 1.0, primary_s = 2.0, in_bytes = 0, out_bytes = int(0.9 * (1 << 30)), link_in_gib_s = 1.0, link_out_gib_s = 1.0
     )
-    assert out_only["cfg_parallel_step_s"] == 2.0  # the output copy back overlaps the primary branch
+    assert out_only["cfg_parallel_step_s"] == 2.0
 
 
 def test_generate_guard_block_fails_open_without_unbound_names():
-    # every name the activation-guard try assigns and the generate path reads after it is also set before it, so a
-    # failed shape derivation (the block fails open) never becomes an UnboundLocalError before pipe() runs
     import ast
     from pathlib import Path
 
@@ -4385,7 +4296,6 @@ def test_generate_guard_block_fails_open_without_unbound_names():
         for node in ast.walk(fn):
             if not isinstance(node, ast.Try):
                 continue
-            # the activation-guard try: its own first statements derive guard_width / guard_height
             direct = [
                 st
                 for st in node.body
@@ -4419,14 +4329,14 @@ def test_cfg_parallel_prefetch_copies_exactly_the_priced_inputs(monkeypatch):
     router, replicas = _router(dit)
     cond, uncond = _embeds(2, 4)
     latents = torch.randn(2, 4)
-    _batch_loop(dit, latents, 2, cond, uncond)  # builds the replica and the odd-branch template
+    _batch_loop(dit, latents, 2, cond, uncond)
     assert router.template is not None
     latent = torch.randn(2, 4)
     t = torch.tensor(0.5)
     router.b0_leaves = dict(mg._leaves(((), {"hidden_states": latent, "timestep": t, "encoder_hidden_states": cond})))
     predicted = router._predict(latent)
     assert predicted is not None
-    router.secondary = torch.device("meta")  # every host tensor now has to travel
+    router.secondary = torch.device("meta")
     router.prefetched.clear()
     router._prefetch(*predicted)
     copied = sum(src.numel() * src.element_size() for src, _dst in router.prefetched.values())
@@ -4434,7 +4344,6 @@ def test_cfg_parallel_prefetch_copies_exactly_the_priced_inputs(monkeypatch):
     router.primary = torch.device("cpu")
     priced = router._price(predicted[0], predicted[1], torch.zeros(2, 4), 0.1)["in_bytes"]
     assert copied == priced
-    # the positive embeds only the even branch reads are not shipped to the replica card
     assert all(src is not cond for src, _dst in router.prefetched.values())
 
 
@@ -4453,14 +4362,11 @@ def test_cfg_parallel_step_prefetch_ships_only_the_odd_branch_inputs(monkeypatch
     cond, uncond = _embeds(2, 4)
     _batch_loop(dit, torch.randn(2, 4), 5, cond, uncond)
     assert shipped and router.stats["replica_calls"] > 0
-    # the positive embeds (even branch only) never travel; the negative ones (odd branch) do
     assert all(id(cond) not in ids for ids in shipped)
     assert any(id(uncond) in ids for ids in shipped)
 
 
 def test_consistent_parallel_misses_stop_the_speculative_replica_forward():
-    # a fresh negative tensor every step never matches the prediction: without a stop, every step pays two replica
-    # forwards (the speculative one and the real one) for the life of the load
     torch.manual_seed(0)
     dit = _Dit()
     latents = torch.randn(2, 4)
@@ -4482,7 +4388,6 @@ def test_consistent_parallel_misses_stop_the_speculative_replica_forward():
     out = loop()
     assert torch.equal(out, reference)
     assert router.stats["predicted_misses"] == mg._MISS_LIMIT
-    # a second request of the same shape does not start speculating again: one replica forward per step
     before = sum(r.calls for r in replicas)
     assert torch.equal(loop(), reference)
     assert sum(r.calls for r in replicas) - before == steps
@@ -4498,9 +4403,9 @@ def test_parallel_prediction_policy_is_the_batch_class_and_lives_in_the_shape_bo
         router.prediction.miss()
     assert router.prediction.stopped
     router.shapes.switch(router, "a")
-    router.shapes.switch(router, "b")  # a new request shape speculates afresh
+    router.shapes.switch(router, "b")
     assert not router.prediction.stopped
-    router.shapes.switch(router, "a")  # the stopped shape stays stopped
+    router.shapes.switch(router, "a")
     assert router.prediction.stopped
 
 
@@ -4550,9 +4455,6 @@ def _fake_cuda(monkeypatch, log):
 
 @pytest.mark.parametrize("overlaps", [True, False])
 def test_return_copy_stream_and_price_come_from_one_flag(monkeypatch, overlaps):
-    # The price says the copy back overlaps the primary branch only if the copy is issued on the primary card's side
-    # stream (a cross-card copy waits for the destination's CURRENT stream: on the main stream that is the queued
-    # primary branch), and the main stream waits for it only where the result is consumed.
     monkeypatch.setattr(mg, "_RETURN_COPY_OVERLAPS", overlaps)
     log = []
     _fake_cuda(monkeypatch, log)
@@ -4567,15 +4469,13 @@ def test_return_copy_stream_and_price_come_from_one_flag(monkeypatch, overlaps):
     )
     if overlaps:
         assert log == [("copy", "side"), ("record", "side"), ("wait", "main", "side")]
-        assert price["cfg_parallel_step_s"] == 2.5  # max(primary 2.0, replica 1.0 + copy 1.5)
+        assert price["cfg_parallel_step_s"] == 2.5
     else:
         assert log == [("copy", "main")]
-        assert price["cfg_parallel_step_s"] == 3.5  # max(2.0, 1.0) + 1.5: the copy queues behind the primary branch
+        assert price["cfg_parallel_step_s"] == 3.5
 
 
 def test_router_paths_issue_the_return_copy_through_one_helper():
-    # the unpredicted call and the speculative job both copy back via _return_copy, and both results are consumed via
-    # _consume_return; no other move_to_device(..., self.primary) on a replica output
     import inspect
     src = inspect.getsource(mg.CfgParallelRouter)
     assert src.count("self._return_copy(replica(") == 2
@@ -4584,8 +4484,6 @@ def test_router_paths_issue_the_return_copy_through_one_helper():
 
 
 def test_interpreter_exit_waits_for_a_running_replica_job():
-    # A replica job still inside a torch kernel when the interpreter finalizes used to abort the process ("terminate
-    # called without an active exception"): exit must let the worker finish its queued jobs first.
     import os
     import subprocess
     import sys
@@ -4615,7 +4513,6 @@ def test_interpreter_exit_waits_for_a_running_replica_job():
 
 
 def _oom_router(dit):
-    """A CPU router whose replica raises a CUDA-style OOM while ``state["oom"]`` is set."""
     state = {"oom": False}
     replicas = []
 
@@ -4652,13 +4549,13 @@ def test_transient_replica_oom_is_retried_on_the_next_request():
     torch.manual_seed(0)
     dit = _Dit()
     torch.manual_seed(0)
-    reference = _cfg_loop(dit, torch.randn(2, 4), 4)  # the same latents _oom_request draws
+    reference = _cfg_loop(dit, torch.randn(2, 4), 4)
     router, state = _oom_router(dit)
-    _oom_request(dit, router, state, oom = False)  # builds the replica, runs parallel
+    _oom_request(dit, router, state, oom = False)
     out, parallel = _oom_request(dit, router, state, oom = True)
     assert torch.equal(out, reference) and router.shape_disabled is not None
     assert "out of memory" in router.shape_disabled
-    out, parallel = _oom_request(dit, router, state, oom = False)  # the pressure is gone: CFG-parallel again
+    out, parallel = _oom_request(dit, router, state, oom = False)
     assert torch.equal(out, reference)
     assert parallel > 0 and router.shape_disabled is None and router.disabled_reason is None
 
@@ -4668,13 +4565,12 @@ def test_transient_replica_oom_backs_off_after_consecutive_requests():
     dit = _Dit()
     router, state = _oom_router(dit)
     _oom_request(dit, router, state, oom = False)
-    # OOM, OOM, a request that runs parallel steps (resets the run), then _MISS_LIMIT in a row: off for the shape
     for oom in [True, True, False] + [True] * mg._MISS_LIMIT:
         _, parallel = _oom_request(dit, router, state, oom = oom)
         assert (parallel > 0) == (not oom)
     _, parallel = _oom_request(dit, router, state, oom = False)
     assert parallel == 0 and "in a row" in router.shape_disabled
-    assert router.disabled_reason is None  # the shape only; reprice / invalidation / reload starts it again
+    assert router.disabled_reason is None
     router.reprice()
     _, parallel = _oom_request(dit, router, state, oom = False)
     assert parallel > 0
@@ -4691,7 +4587,6 @@ def test_structural_replica_failure_stays_across_requests():
 
 
 def _oom_batch_router(dit):
-    """A CFG-batch router whose doubled call raises a CUDA-style OOM while ``state["oom"]`` is set."""
     state = {"oom": False}
     router = mg.CfgBatchRouter(dit)
     inner = router.orig_forward
@@ -4701,7 +4596,7 @@ def _oom_batch_router(dit):
             raise torch.OutOfMemoryError("CUDA out of memory. Tried to allocate 2.00 GiB")
         return inner(*a, **k)
 
-    oom_on_batch.__module__ = mg.__name__  # stands in for a Studio forward patch under the router
+    oom_on_batch.__module__ = mg.__name__
     router.orig_forward = oom_on_batch
     dit.forward = router
     return router, state
@@ -4724,9 +4619,9 @@ def test_cfg_batch_transient_oom_is_retried_on_the_next_request():
     reference = _batch_loop(dit, latents.clone(), 4, cond, uncond)
     router, state = _oom_batch_router(dit)
     out, batched = _oom_batch_request(dit, router, state, True, latents, cond, uncond)
-    torch.testing.assert_close(out, reference, rtol = 0, atol = 0)  # every branch reran plain
+    torch.testing.assert_close(out, reference, rtol = 0, atol = 0)
     assert batched == 0 and "out of memory" in router.shape_disabled
-    out, batched = _oom_batch_request(dit, router, state, False, latents, cond, uncond)  # pressure gone
+    out, batched = _oom_batch_request(dit, router, state, False, latents, cond, uncond)
     torch.testing.assert_close(out, reference, rtol = 1e-5, atol = 1e-6)
     assert batched > 0 and router.shape_disabled is None and router.disabled_reason is None
 
@@ -4738,14 +4633,13 @@ def test_cfg_batch_transient_oom_backs_off_after_consecutive_requests():
     cond, uncond = _embeds()
     reference = _batch_loop(dit, latents.clone(), 4, cond, uncond)
     router, state = _oom_batch_router(dit)
-    # OOM, OOM, a request that batches (resets the run), then _MISS_LIMIT in a row: off for the shape
     for oom in [True, True, False] + [True] * mg._MISS_LIMIT:
         _, batched = _oom_batch_request(dit, router, state, oom, latents, cond, uncond)
         assert (batched > 0) == (not oom)
     out, batched = _oom_batch_request(dit, router, state, False, latents, cond, uncond)
     torch.testing.assert_close(out, reference, rtol = 0, atol = 0)
     assert batched == 0 and "in a row" in router.shape_disabled and router.disabled_reason is None
-    router.reprice()  # invalidation: the shape is tried again
+    router.reprice()
     _, batched = _oom_batch_request(dit, router, state, False, latents, cond, uncond)
     assert batched > 0
 
@@ -4767,8 +4661,6 @@ def test_both_routers_share_one_typed_shape_verdict(router_kind, kind, cleared):
 
 
 def test_every_per_shape_disable_in_the_module_goes_through_the_typed_verdict():
-    # Module-wide: a shape verdict is stored only by _ShapeVerdicts._shape_off (typed), every disable call names a
-    # kind, no lifetime check reads the wording, and every router whose shape book keeps a verdict is a _ShapeVerdicts.
     import ast
     from pathlib import Path
 
@@ -4800,8 +4692,6 @@ def test_every_per_shape_disable_in_the_module_goes_through_the_typed_verdict():
 
 
 def test_batched_input_verify_compares_slices_without_a_doubled_copy(monkeypatch):
-    # inference tensors carry no version counter, so every successful batch reaches the value check: it must compare
-    # views of the batched tensor against each branch's source, never torch.cat a second doubled tensor
     with torch.inference_mode():
         a, b = torch.randn(2, 3, 4), torch.randn(2, 3, 4)
         merged = torch.cat((a, b), dim = 0)
@@ -4812,10 +4702,10 @@ def test_batched_input_verify_compares_slices_without_a_doubled_copy(monkeypatch
         real_cat = torch.cat
         monkeypatch.setattr(torch, "cat", lambda *x, **k: cats.append(1) or real_cat(*x, **k))
         assert mg._inputs_untouched(fresh, versions)
-        merged[3, 0, 0] += 1.0  # an in-place write into the second branch's half
+        merged[3, 0, 0] += 1.0
         assert not mg._inputs_untouched(fresh, versions)
         merged[3, 0, 0] -= 1.0
-        merged[0, 0, 0] += 1.0  # and into the first's
+        merged[0, 0, 0] += 1.0
         assert not mg._inputs_untouched(fresh, versions)
     assert cats == []
 
@@ -4840,8 +4730,8 @@ def test_out_of_memory_while_verifying_batched_inputs_is_transient(monkeypatch):
     router.begin_request(steps = 4)
     out = _batch_loop(dit, latents.clone(), 4, cond, uncond)
     router.end_request()
-    torch.testing.assert_close(out, reference, rtol = 0, atol = 0)  # every branch reran plain
-    assert router.disabled_reason is None  # never a load-wide disable
+    torch.testing.assert_close(out, reference, rtol = 0, atol = 0)
+    assert router.disabled_reason is None
     assert mg._off_kind(router.shape_disabled) == "transient" and "verifying" in router.shape_disabled
     state["oom"] = False
     router.begin_request(steps = 4)
@@ -4853,8 +4743,6 @@ def test_out_of_memory_while_verifying_batched_inputs_is_transient(monkeypatch):
 
 @pytest.mark.parametrize("site", ["_split_output", "_batched"])
 def test_any_out_of_memory_in_the_speculative_batch_is_transient(monkeypatch, site):
-    # an OOM from any step of the attempt declines the shape for this request only, never a load-wide disable: the
-    # output split's own handler, and the caller's backstop for one raised anywhere else in _batched
     torch.manual_seed(0)
     dit = _BatchDit()
     latents = torch.randn(2, 4)
@@ -4888,8 +4776,6 @@ def _gate_router(monkeypatch, free_mib, needs):
 
 @pytest.mark.parametrize("figure", ["request", "load"])
 def test_cfg_batch_gate_budgets_both_branches(monkeypatch, figure):
-    # The gate reads free memory at the step's first call, before either branch allocates, and the batched forward
-    # carries both: free memory between one and two branch peaks must refuse it.
     needs = mg.PhaseNeeds(denoise_mib = 1000) if figure == "request" else None
     one, two = 1000, 2000
     between = _gate_router(monkeypatch, (one + two) // 2, needs)
@@ -4899,8 +4785,6 @@ def test_cfg_batch_gate_budgets_both_branches(monkeypatch, figure):
 
 
 def test_cfg_batch_gate_uses_the_guard_curve_for_the_doubled_batch(monkeypatch):
-    # below the guard's pixel floor, doubling the batch does not double the figure: the producer's doubled figure
-    # (the curve with the batch doubled) is what the gate charges, not twice a floor-clamped single figure
     from core.inference import diffusion as diffusion_mod
 
     cal = dm.calibrated_image_activation("qwen-image-2.1")
@@ -4919,4 +4803,4 @@ def test_cfg_video_needs_carry_the_doubled_batch_figure():
     from core.inference import video as video_mod
 
     needs = video_mod._cfg_video_request_needs(_RouterPipe(_BatchDit()), {"width": 832, "height": 480, "frames": 33})
-    assert needs.cfg_batch_denoise_mib == 2 * needs.denoise_mib  # video's estimate is linear in the batch
+    assert needs.cfg_batch_denoise_mib == 2 * needs.denoise_mib

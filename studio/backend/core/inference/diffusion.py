@@ -2069,7 +2069,6 @@ def _cfg_request_needs(
     scale the load figures)."""
     try:
         vae = getattr(pipe, "vae", None)
-        # the live VAE state (what the decode will do), not what a verdict asked for
         tiled = bool(getattr(vae, "use_tiling", False)) if vae is not None else False
         sliced = bool(getattr(vae, "use_slicing", False)) if vae is not None else False
         condition_pixels = _guard_condition_pixels(
@@ -2095,11 +2094,9 @@ def _cfg_request_needs(
             prompts = prompts,
         )
         encode, denoise, decode = image_request_phase_mib(batch_size = batch_size, **phase_inputs)
-        # CFG-batch runs both branches in one forward: the same estimator with the latent batch doubled
         _enc, doubled, _dec = image_request_phase_mib(batch_size = 2 * max(1, int(batch_size or 1)), **phase_inputs)
         releaser = getattr(state, "te_releaser", None)
         if releaser is not None:
-            # released encoder weights come back onto their card for the encode
             encode += int(releaser.held_bytes) // (1 << 20)
         return request_phase_needs(
             pipe, encode_mib = encode, denoise_mib = denoise, decode_mib = decode, cfg_batch_denoise_mib = doubled
@@ -2124,7 +2121,6 @@ def _chunk_cfg_needs(
         batch_size = max(1, len(chunk)),
         condition_pixels = guard_inputs["condition_pixels"],
         controlnet = bool(guard_inputs.get("controlnet")),
-        # a shared prompt is encoded once and fanned out (num_images_per_prompt); distinct prompts encode as a list
         prompts = 1 if uniform_prompt(list(chunk)) is not None else max(1, len(chunk)),
     )
 
@@ -11069,10 +11065,7 @@ class DiffusionBackend:
                 # cap; the OOM backoff below halves a failed chunk. Layered: one input per forward (the pipeline's
                 # per-prompt layer stride is only right for one).
                 chunks = [[job] for job in jobs] if layer_count else chunk_jobs(jobs, batch_size)
-                # the guard's inputs, from which each chunk's CFG memory figure is built (None: the routers scale the
-                # load-time figures)
                 cfg_guard_inputs = None
-                # read after the guard block, which fails open: set before it so a failed shape derivation still renders
                 guard_width = guard_height = None
 
                 try:
@@ -11403,7 +11396,6 @@ class DiffusionBackend:
                                 protect_ctx,
                                 denoise_phase(pipe, _enter_denoise_phase),
                                 decode_phase(pipe, _enter_decode_phase),
-                                # the canvas the forward runs at (img2img / inpaint take it from the input image)
                                 cfg_request_scope(
                                     pipe,
                                     guard_width,
@@ -11757,7 +11749,6 @@ class DiffusionBackend:
                 state.bg_compile.close()
             except Exception:  # noqa: BLE001 - teardown is best effort
                 pass
-        # A CFG-parallel replica (and what it registered on the source) is released through the routers' one teardown.
         try:
             from .diffusion_multigpu import uninstall_cfg_batch, uninstall_cfg_parallel
 

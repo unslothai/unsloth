@@ -304,7 +304,6 @@ def _cfg_video_request_needs(pipe: Any, request_shape: dict) -> Any:
             num_frames = request_shape.get("frames"),
         )
         encode, denoise, decode = video_request_phase_mib(**shape)
-        # CFG-batch runs both branches in one forward: the same estimator with the batch doubled
         _enc, doubled, _dec = video_request_phase_mib(batch_size = 2, **shape)
         return request_phase_needs(
             pipe, encode_mib = encode, denoise_mib = denoise, decode_mib = decode, cfg_batch_denoise_mib = doubled
@@ -11767,7 +11766,6 @@ class VideoBackend:
                     state.bg_compile.close()
                 except Exception:  # noqa: BLE001 -- teardown is best effort
                     pass
-            # A CFG-parallel replica (and what it registered on the source) goes through the routers' one teardown.
             try:
                 from .diffusion_multigpu import uninstall_cfg_batch, uninstall_cfg_parallel
 

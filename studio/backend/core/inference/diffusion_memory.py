@@ -1047,8 +1047,6 @@ def estimate_image_runtime_mib(
     )
 
 
-# The smallest share of the 1024x1024 activation figure any request is charged: below it fixed costs (attention
-# workspaces, kernel scratch, the allocator's granularity) dominate and stop shrinking with the canvas.
 _GUARD_PIXEL_SCALE_FLOOR = 0.25
 
 
@@ -2022,7 +2020,6 @@ def plan_diffusion_memory(
             any_offload = policy != OFFLOAD_NONE
             reasons.append(reason)
             estimates["calibrated_headroom_mib"] = calibrated_activation.headroom(tile)
-            # the denoise phase alone: what a second guidance branch in the same call adds (CFG-batch's memory gate)
             estimates["calibrated_denoise_mib"] = int(calibrated_activation.denoise_mib)
             # the decode phase alone: a CFG-parallel replica on the card that hosts the VAE must leave room for it
             # the encode phase alone: a replica kept on a card that hosts a text encoder sits beside the next encode
