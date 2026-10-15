@@ -119,16 +119,17 @@ test("only a default-engine resident hydrates the switch, and an unload resets 1
   const start = applier.indexOf("function residentEngineParams(");
   const body = applier.slice(
     applier.indexOf("return {", start),
-    applier.indexOf("} as const;", start),
+    applier.indexOf("\n}\n", start),
   );
-  const hydrate = new Function("status", `${body}};`) as (
+  const hydrate = new Function("status", body) as (
     status: Record<string, unknown>,
   ) => Record<string, unknown>;
   assert.equal(hydrate({ load_in_4bit: false }).loadIn4bit, false);
   assert.equal(hydrate({ load_in_4bit: true }).loadIn4bit, true);
+  // A managed engine leaves the default-engine choice as the user left it.
   assert.equal(
-    hydrate({ engine: "vllm", load_in_4bit: false }).loadIn4bit,
-    true,
+    "loadIn4bit" in hydrate({ engine: "vllm", load_in_4bit: false }),
+    false,
   );
   assert.equal(hydrate({ is_gguf: true, load_in_4bit: null }).loadIn4bit, true);
 
