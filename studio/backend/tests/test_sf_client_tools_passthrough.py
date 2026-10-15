@@ -1358,7 +1358,12 @@ def test_every_tool_loop_turn_is_billed_not_just_the_last():
     earlier results."""
     folded = _fold(_turn(100, 20), _turn(160, 30), _turn(220, 5))
 
-    assert folded["usage"] == {"prompt_tokens": 220, "completion_tokens": 55, "total_tokens": 275}
+    assert folded["usage"] == {
+        "prompt_tokens": 220,
+        "completion_tokens": 55,
+        "total_tokens": 275,
+        "context_tokens": 225,
+    }
     # Rates describe the summed counts, not the last turn that arrived.
     assert folded["timings"]["predicted_n"] == 55
     assert folded["timings"]["predicted_ms"] == pytest.approx(550.0)
@@ -1378,6 +1383,14 @@ def test_a_turn_that_ends_before_reporting_does_not_erase_the_loop():
     # Reported timings but no usage: the prompt is still the loop's.
     errored = _fold(_turn(100, 20), {"timings": {"predicted_ms": 1.0, "predicted_n": 1}})
     assert errored["usage"] == {"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120}
+
+
+def test_the_context_meter_counts_earlier_turns_once():
+    folded = _fold(_turn(18000, 60), _turn(21500, 80), _turn(25000, 700))
+
+    assert folded["usage"]["total_tokens"] == 25840
+    assert folded["usage"]["context_tokens"] == 25700
+    assert "context_tokens" not in _fold(_turn(18000, 60))["usage"]
 
 
 def test_completion_details_are_summed_with_the_completion_they_describe():
