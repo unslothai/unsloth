@@ -30534,8 +30534,9 @@ class LlamaCppBackend:
                                         1, _fit_load_mode_kwargs["model_size"] - _moe_expert_bytes
                                     ),
                                     "host_only_bytes": _fit_load_mode_kwargs["host_only_bytes"]
-                                    + _moe_expert_bytes
-                                    + _moe_prompt_cache_bytes,
+                                    + _moe_expert_bytes,
+                                    # In place of the planner's own prompt cache term, not on top.
+                                    "prompt_cache_bytes": _moe_prompt_cache_bytes,
                                     "announce": False,
                                 }
                             )
@@ -35732,10 +35733,13 @@ class LlamaCppBackend:
                                 # that crashed and came back under --fit on is the fitter's
                                 # placement, which may hold layers in host RAM: slow with VRAM
                                 # full is then legitimate, not the policy paging.
+                                # So is any launch that reached the child with the fitter on,
+                                # e.g. a --flash-attn off retry that re-enabled it.
                                 fully_gpu_offloaded = (
                                     fully_gpu_offloaded or _spill_keeps_every_layer_on_gpu
                                 )
-                                and not _fit_on_recovered,
+                                and not _fit_on_recovered
+                                and not fit_is_effectively_on(_last_spawn_cmd, env),
                             ),
                         )
                     except Exception as e:
