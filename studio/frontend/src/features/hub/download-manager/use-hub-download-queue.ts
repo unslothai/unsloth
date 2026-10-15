@@ -117,6 +117,6 @@ export function useQueuedHubEntries() {
               e.files.every((f) => j.scopedFiles?.includes(f)),
           ),
       )
-      .map((e) => ({ ...e, planId: p.id })),
+      .map((e) => ({ ...e, planId: p.id, variant: "@hub-assets" })),
   );
 }

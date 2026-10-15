@@ -77,8 +77,8 @@ from utils.kernel_install import (
     uninstall_command,
 )
 from utils.ssm_runtime import (
-    CAUSAL_CONV1D_MODEL_SUBSTRINGS as _CAUSAL_CONV1D_MODEL_SUBSTRINGS,
-    SSM_MODEL_SUBSTRINGS as _SSM_MODEL_SUBSTRINGS,
+    model_is_ssm as _model_is_ssm,
+    model_wants_causal_conv1d as _model_wants_causal_conv1d,
 )
 from utils.wheel_utils import (
     direct_wheel_url,
@@ -1326,11 +1326,6 @@ def _decision_has_llm_backbone(model_load_target: str, hf_token: str | None) -> 
         return False
 
 
-def _model_wants_causal_conv1d(model_name: str) -> bool:
-    name = model_name.lower()
-    return any(key in name for key in _CAUSAL_CONV1D_MODEL_SUBSTRINGS)
-
-
 _hipcc_gcc_install_dir = hipcc_gcc_install_dir
 
 
@@ -1683,8 +1678,16 @@ def _flash_linear_attention_importable() -> bool:
         return False
 
 
-def _ensure_mamba_ssm(event_queue: Any, model_name: str) -> None:
-    if not any(sub in model_name.lower() for sub in _SSM_MODEL_SUBSTRINGS):
+def _ensure_mamba_ssm(
+    event_queue: Any,
+    model_name: str,
+    *,
+    required: bool | None = None,
+) -> None:
+    # `required` is the config-resolved answer (resolved_model_is_ssm); the name is the fallback.
+    if required is None:
+        required = _model_is_ssm(model_name)
+    if not required:
         return
 
     if sys.platform == "win32" and importlib.util.find_spec("triton") is None:
@@ -2184,6 +2187,28 @@ def _activate_transformers_version_or_warn(model_name: str, hf_token: str | None
             model_name,
             exc,
         )
+
+
+def _carry_mlx_chat_template_to_processor(model, tokenizer) -> bool:
+    """MLXTrainer saves the loader's processor when it has one, so a text run on a multimodal base checkpoint (Qwen3.5
+    Base) saved no template and Chat failed with "chat_template is not set". Give it the template the rows used."""
+    processor = getattr(model, "_processor", None)
+    if processor is None or processor is tokenizer:
+        return False
+    trained = tokenizer
+    if type(tokenizer).__name__ == "TokenizerWrapper":
+        trained = getattr(tokenizer, "_tokenizer", tokenizer)
+    template = getattr(trained, "chat_template", None)
+    if not template or getattr(processor, "chat_template", None):
+        return False
+    own = getattr(processor, "tokenizer", None)
+    if own is not None and own is not trained and getattr(own, "chat_template", None):
+        return False
+    processor.chat_template = template
+    if own is not None and own is not trained:
+        # Also carries get_chat_template's end-token remap.
+        processor.tokenizer = trained
+    return True
 
 
 def _mlx_vlm_max_resized_size(width: int, height: int, target: int) -> tuple[int, int]:
@@ -3279,6 +3304,14 @@ def _run_mlx_training(event_queue, stop_queue, config):
     except ImportError:
         _send("status", status_message = "Format helper unavailable, using raw dataset")
 
+    if not is_vlm and dataset_final_format:
+        # get_chat_template returns a new tokenizer unless it is an mlx-lm wrapper, so the rows' template stayed in
+        # the formatter; mirror the CUDA trainer and re-apply it here (no-op for models with a template).
+        from utils.datasets.chat_templates import get_training_chat_template
+        tokenizer = get_training_chat_template(tokenizer, model_name, dataset_final_format)
+        if _carry_mlx_chat_template_to_processor(model, tokenizer):
+            logger.info("Saving the training chat template with the processor")
+
     if eval_enabled and eval_dataset is None:
         from core.training.eval_dataset import (
             MIN_TOTAL_ROWS_FOR_EVAL,
@@ -3995,16 +4028,21 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     # 2) mamba-ssm + flash-attn keep their substring / size gates.
     # 3) FLA gated-delta kernels: vendored by unsloth_zoo, nothing to install.
     # Laya decision models are ModernBERT encoders: none of these apply.
-    # Clef decision models are Qwen3.5 backbones and need the same gated-delta / conv kernels.
+    # Clef decision models are Qwen3.5 backbones: zoo's gated-delta and Triton conv kernels cover them.
     if (
         not config.get("is_decision")
         or config.get("decision_layout") in ("clef", "llm")
         or _decision_has_llm_backbone(model_load_target, _worker_hf_token(config))
     ):
         try:
-            from utils.ssm_runtime import resolved_model_wants_causal_conv1d
+            from utils.ssm_runtime import (
+                resolved_model_is_ssm,
+                resolved_model_wants_causal_conv1d,
+            )
 
-            wants_causal_conv1d = resolved_model_wants_causal_conv1d(
+            is_ssm = resolved_model_is_ssm(model_name, model_load_target, _worker_hf_token(config))
+            # Every mamba-ssm model also runs causal-conv1d.
+            wants_causal_conv1d = is_ssm or resolved_model_wants_causal_conv1d(
                 model_name,
                 model_load_target,
                 _worker_hf_token(config),
@@ -4019,7 +4057,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 model_name,
                 install_causal_conv1d = wants_causal_conv1d,
             )
-            _ensure_mamba_ssm(event_queue, model_name)
+            _ensure_mamba_ssm(event_queue, model_name, required = is_ssm)
             _ensure_flash_attn_for_long_context(
                 event_queue,
                 int(config.get("max_seq_length", 2048)),
