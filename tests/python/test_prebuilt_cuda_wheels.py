@@ -146,7 +146,7 @@ class TestWorkflowAndResolverAgree:
                     )
                     assert url == f"{OUR_BASE}{built}"
                     checked += 1
-        assert checked == 9
+        assert checked == 18
         extra = {
             (platform, prebuilt_wheels.torch_minor(v))
             for platform in prebuilt_wheels.PLATFORMS
