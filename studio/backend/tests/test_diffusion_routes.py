@@ -3168,3 +3168,15 @@ def test_connection_images_are_marked_in_the_gallery(client, monkeypatch):
     resp = _post_generate(client, prompt = "a sloth", provider_id = "conn-1", model = "qwen-image")
     assert resp.status_code == 200, resp.text
     assert resp.json()["images"][0]["model_kind"] == "connection"
+
+
+def test_a_connection_run_reports_active_even_when_local_progress_is_hidden(client, monkeypatch):
+    import hub.services.models.account_access as account_access
+
+    monkeypatch.setattr(account_access, "managed_account", lambda: True)
+    monkeypatch.setattr(account_access, "generation_is_foreign", lambda kind: True)
+    assert client.get("/api/inference/images/generate-progress").json()["active"] is False
+    monkeypatch.setitem(
+        inference_routes._external_image_runs, account_access.account_scope(), {object()}
+    )
+    assert client.get("/api/inference/images/generate-progress").json()["active"] is True

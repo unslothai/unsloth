@@ -48540,11 +48540,18 @@ async def diffusion_load_progress(
 
 @studio_router.get("/images/generate-progress", response_model = DiffusionGenerateProgressResponse)
 async def diffusion_generate_progress(current_subject: str = Depends(get_current_subject)):
-    if account_access.managed_account() and account_access.generation_is_foreign("diffusion"):
+    external = _external_image_run_active()
+
+    def _hidden():
+        if external:
+            return DiffusionGenerateProgressResponse(active = True)
         return account_access.hidden_generate_progress_response(DiffusionGenerateProgressResponse)
+
+    if account_access.managed_account() and account_access.generation_is_foreign("diffusion"):
+        return _hidden()
     mine = account_access.generation_is_mine("diffusion")
     if not mine and account_access.resident_hidden("diffusion"):
-        return account_access.hidden_generate_progress_response(DiffusionGenerateProgressResponse)
+        return _hidden()
     from core.inference.diffusion_engine_router import get_active_diffusion_engine
 
     if (
@@ -48554,11 +48561,11 @@ async def diffusion_generate_progress(current_subject: str = Depends(get_current
             "diffusion", get_active_diffusion_engine().status().get("repo_id")
         )
     ):
-        return account_access.hidden_generate_progress_response(DiffusionGenerateProgressResponse)
+        return _hidden()
 
     progress = get_active_diffusion_engine().generate_progress()
     log_media_generation_progress("image", progress)
-    if not progress["active"] and _external_image_run_active():
+    if external and not progress["active"]:
         progress = {**progress, "active": True}
     # A finished generation still persisting its gallery record counts as active, so a reload probe keeps polling.
     if _diffusion_persist_active > 0 and not progress["active"]:
