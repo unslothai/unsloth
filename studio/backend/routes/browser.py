@@ -183,9 +183,10 @@ _FRAME_CSP = (
 # Opaque origins throw on storage and cookies: these keep a site's data in the panel (page-storage.ts) for the session.
 _PAGE_STORAGE_JS = r"""
         // Past the panel's quota (page-storage.ts) a value stays in this page only.
+        const kept = (key, value) => key.length + value.length <= 131072;
         const sync = (area, key, value) => post({
           type: "storage", area, key, url: pageUrl,
-          value: key !== null && value !== null && key.length + value.length <= 131072 ? value : null,
+          value: key !== null && value !== null && kept(key, value) ? value : null,
         });
         const pageStores = {};
         const pageStore = (area) => {
@@ -214,19 +215,27 @@ _PAGE_STORAGE_JS = r"""
         window.addEventListener("message", (event) => {
           const data = event.data;
           if (event.source !== parent || !data || data.type !== "unsloth:browser-command") return;
-          // Clearing browsing data empties the open page's copy too, so it can't write the data back.
-          if (data.command === "clearStorage") for (const store of Object.values(pageStores)) store.data.clear();
+          // Clearing browsing data empties the open page's copy too. The clear is sent back after any write
+          // still on its way to the panel, so that write can't refill the cleared store.
+          if (data.command === "clearStorage") {
+            for (const [area, store] of Object.entries(pageStores)) {
+              store.data.clear();
+              sync(area, null, null);
+            }
+          }
           // Another open page of this site changed its data, as other tabs do in a browser.
           else if (data.command === "storageSync" && (data.area === "local" || data.area === "cookie") && text(data.key) && text(data.value)) {
             const store = pageStores[data.area];
             if (!store) return;
             const oldValue = data.key === null ? null : (store.data.get(data.key) ?? null);
+            if (data.own === true && data.value === null && oldValue !== null && !kept(data.key, oldValue)) return;
             // Like a browser, a write that changes nothing fires no event (two pages could echo it forever).
             if (data.key === null ? !store.data.size : oldValue === data.value) return;
             if (data.key === null) store.data.clear();
             else if (data.value === null) store.data.delete(data.key);
             else store.data.set(data.key, data.value);
-            if (data.area === "local") {
+            // This page's own write, coming back in order to settle a race with another page: no event.
+            if (data.area === "local" && data.own !== true) {
               try {
                 const url = typeof data.url === "string" ? data.url : "";
                 const change = new StorageEvent("storage", { key: data.key, oldValue, newValue: data.value, url });
@@ -285,7 +294,7 @@ _PAGE_STORAGE_JS = r"""
           const name = at < 0 ? "" : pair.slice(0, at).trim();
           const value = (at < 0 ? pair : pair.slice(at + 1)).trim();
           if ((!name && !value) || name.length + value.length > 4096) return;
-          let maxAge = null, expires = null, path = null;
+          let maxAge = null, expires = null, path = null, domain = "";
           for (const attribute of attributes) {
             const eq = attribute.indexOf("=");
             const key = (eq < 0 ? attribute : attribute.slice(0, eq)).trim().toLowerCase();
@@ -293,6 +302,13 @@ _PAGE_STORAGE_JS = r"""
             if (key === "max-age" && /^-?\d+$/.test(setting)) maxAge = Number(setting);
             else if (key === "expires") expires = Date.parse(setting);
             else if (key === "path" && setting.startsWith("/")) path = setting;
+            else if (key === "domain") domain = setting.replace(/^\./, "").toLowerCase();
+          }
+          if (domain) {
+            let host = "";
+            try { host = new URL(pageUrl).hostname; } catch {}
+            // A browser refuses a Domain the page isn't on; one it is on still stays with this site only.
+            if (host !== domain && !host.endsWith("." + domain)) return;
           }
           const id = name + "=" + (path ?? defaultPath(pagePath()));
           const deadline = maxAge !== null ? Date.now() + maxAge * 1000 : expires !== null && !Number.isNaN(expires) ? expires : null;

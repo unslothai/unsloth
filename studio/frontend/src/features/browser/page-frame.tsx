@@ -27,7 +27,14 @@ export type FrameCommand =
   | { command: "zoom"; value: number }
   | { command: "mute"; on: boolean }
   | { command: "clearStorage" }
-  | { command: "storageSync"; area: PageStorageArea; key: string | null; value: string | null; url: string | null }
+  | {
+      command: "storageSync";
+      area: PageStorageArea;
+      key: string | null;
+      value: string | null;
+      url: string | null;
+      own: boolean;
+    }
   | { command: "annotateInstall"; code: string }
   | { command: "annotate"; on: boolean; color?: string }
   | { command: "annotateForget"; id: number }
@@ -217,10 +224,14 @@ export function PageFrame({
     window.addEventListener("message", listener);
     const stopClearing = onPageStorageClear(() => sendFrameCommand(tabIdRef.current, { command: "clearStorage" }));
     // sessionStorage belongs to one tab, which shows one page.
-    const stopSyncing = onPageStorageWrite(({ origin: site, area, key, value, from, url }) => {
+    const stopSyncing = onPageStorageWrite(({ origin: site, area, key, value, requested, from, url }) => {
       const target = frameRef.current;
-      if (!target || from === target || site !== origin || area === "session") return;
-      const command: FrameCommand = { command: "storageSync", area, key, value, url: url ?? null };
+      if (!target || site !== origin || area === "session") return;
+      const own = from === target;
+      // The writer hears back too, in order, so racing writes from two pages settle on the store's value.
+      // A value the store refused (over quota) stays in the writer's page.
+      if (own && value !== requested) return;
+      const command: FrameCommand = { command: "storageSync", area, key, value, url: url ?? null, own };
       target.contentWindow?.postMessage({ type: "unsloth:browser-command", ...command }, "*");
     });
     return () => {

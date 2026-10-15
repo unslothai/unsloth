@@ -30,8 +30,19 @@ class StorageEvent {
   }
 }
 const stopPages: Array<() => void> = [];
+// Messages between pages and the panel, held in order when a test needs them in flight.
+let deferred: Array<() => void> | null = null;
+const deliver = (run: () => void) => (deferred ? deferred.push(run) : run());
+
+function flush() {
+  while (deferred?.length) {
+    deferred.shift()?.();
+  }
+  deferred = null;
+}
 
 function reset() {
+  deferred = null;
   clearPageStorage();
   for (const stop of stopPages.splice(0)) {
     stop();
@@ -65,7 +76,7 @@ function openPage(url: string, tabId = "tab-1") {
   const post = (message: Record<string, unknown>) => {
     const parsed = parseFrameMessage({ source: "unsloth-browser", ...message });
     if (parsed?.type === "storage" && origin) {
-      writePageStorage(origin, tabId, parsed.area, parsed.key, parsed.value, self, parsed.url);
+      deliver(() => writePageStorage(origin, tabId, parsed.area, parsed.key, parsed.value, self, parsed.url));
     }
   };
   const cfg = { storage: origin ? readPageStorage(origin, tabId) : null };
@@ -77,9 +88,11 @@ function openPage(url: string, tabId = "tab-1") {
   };
   // As page-frame.tsx does for every open page.
   stopPages.push(
-    onPageStorageWrite(({ origin: site, area, key, value, from, url: writer }) => {
-      if (from !== self && site === origin && area !== "session") {
-        message({ type: "unsloth:browser-command", command: "storageSync", area, key, value, url: writer ?? null });
+    onPageStorageWrite(({ origin: site, area, key, value, requested, from, url: writer }) => {
+      const own = from === self;
+      if (site === origin && area !== "session" && !(own && value !== requested)) {
+        const command = { command: "storageSync", area, key, value, url: writer ?? null, own };
+        deliver(() => message({ type: "unsloth:browser-command", ...command }));
       }
     }),
   );
@@ -300,4 +313,41 @@ test("a duplicated tab starts with the original's sessionStorage", () => {
   assert.equal(copy.window.sessionStorage.getItem("step"), "2");
   copy.window.sessionStorage.setItem("step", "3");
   assert.equal(openPage("https://example.com/", "tab-1").window.sessionStorage.getItem("step"), "2");
+});
+
+test("racing writes from two open pages settle on the store's value", () => {
+  reset();
+  const first = openPage("https://example.com/", "tab-1");
+  const second = openPage("https://example.com/", "tab-2");
+  deferred = [];
+  first.window.localStorage.setItem("k", "a");
+  second.window.localStorage.setItem("k", "b");
+  flush();
+  assert.deepEqual(readPageStorage("https://example.com", "tab-1").local, [["k", "b"]]);
+  assert.equal(first.window.localStorage.getItem("k"), "b");
+  assert.equal(second.window.localStorage.getItem("k"), "b");
+});
+
+test("a write on its way during Clear browsing data doesn't come back", () => {
+  reset();
+  const page = openPage("https://example.com/");
+  const stop = onPageStorageClear(() =>
+    deliver(() => page.message({ type: "unsloth:browser-command", command: "clearStorage" })),
+  );
+  deferred = [];
+  page.window.localStorage.setItem("banner", "closed");
+  clearPageStorage();
+  flush();
+  stop();
+  assert.deepEqual(readPageStorage("https://example.com", "tab-1").local, []);
+  assert.equal(page.window.localStorage.getItem("banner"), null);
+});
+
+test("a cookie for a domain the page isn't on is refused", () => {
+  reset();
+  const page = openPage("https://www.example.com/");
+  page.document.cookie = "a=1; Domain=other.example";
+  page.document.cookie = "b=2; Domain=.example.com";
+  page.document.cookie = "c=3; Domain=www.example.com";
+  assert.equal(page.document.cookie, "b=2; c=3");
 });
