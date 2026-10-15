@@ -166,3 +166,9 @@ test("image-text-to-image is image gen; Text only checks media tasks in tags too
   );
   assert.match(readSrc("features/hub/lib/view-models.ts"), /\(row\.result\.tags \?\? \[\]\)\.some\(\(tag\) =>\s*MEDIA_OUTPUT_TASKS\.has\(tag\.toLowerCase\(\)\)/);
 });
+
+test("text-to-audio and audio-to-audio pipelines are Audio, so isolating Audio keeps them", () => {
+  for (const task of ["text-to-audio", "audio-to-audio"]) {
+    assert.equal(detectCapabilities([], task, "declare-lab/tango").some((c) => c.key === "audio"), true);
+  }
+});

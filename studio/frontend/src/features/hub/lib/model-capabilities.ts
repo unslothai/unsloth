@@ -106,6 +106,8 @@ const VISION_TAGS = new Set([
 const AUDIO_TAGS = new Set([
   "audio",
   "audio-text-to-text",
+  "text-to-audio",
+  "audio-to-audio",
   "automatic-speech-recognition",
   "text-to-speech",
   "audio-classification",
