@@ -543,6 +543,13 @@ elif DEVICE_TYPE == "cuda":
     # SUPPORTS_BFLOAT16 is process-wide, so one pre-Ampere card in the visible set disables it for all.
     _cuda_caps = cuda_visible_capabilities()
     SUPPORTS_BFLOAT16 = bool(_cuda_caps) and all(major >= 8 for major, _ in _cuda_caps)
+    if not SUPPORTS_BFLOAT16 and any(major >= 8 for major, _ in _cuda_caps):
+        _old = [i for i, (major, _) in enumerate(_cuda_caps) if major < 8]
+        print(
+            f"Unsloth: visible GPU(s) {_old} lack bfloat16, so float16 is used on every GPU. "
+            "Hide them with CUDA_VISIBLE_DEVICES to train in bfloat16."
+        )
+        del _old
     del _cuda_caps
 
     old_is_bf16_supported = torch.cuda.is_bf16_supported

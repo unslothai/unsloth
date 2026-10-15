@@ -124,6 +124,16 @@ def test_gpu_init_bf16_needs_every_visible_card(monkeypatch, caps, bf16, _floor)
 
 
 @pytest.mark.parametrize("caps,bf16,_floor", CASES)
+def test_mixed_host_says_why_bf16_is_off(monkeypatch, capsys, caps, bf16, _floor):
+    _run_gpu_init_chain(_fake_torch(caps), monkeypatch)
+    out = capsys.readouterr().out
+    mixed = any(c[0] >= 8 for c in caps) and any(c[0] < 8 for c in caps)
+    assert ("lack bfloat16" in out) is mixed
+    if mixed:
+        assert str([i for i, c in enumerate(caps) if c[0] < 8]) in out
+
+
+@pytest.mark.parametrize("caps,bf16,_floor", CASES)
 def test_model_utils_bf16_needs_every_visible_card(monkeypatch, caps, bf16, _floor):
     namespace = _run_model_utils_chain(_fake_torch(caps), monkeypatch)
     assert namespace["SUPPORTS_BFLOAT16"] is bf16
