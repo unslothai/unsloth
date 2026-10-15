@@ -6899,6 +6899,23 @@ def _extra_args_draft_device_pin(extra_args: Optional[Iterable[str]]) -> Optiona
     return last_dev
 
 
+def _extra_args_discount_draft_device_pin(extra_args: Optional[Iterable[str]]) -> Optional[str]:
+    """Devices a separate drafter's host-pinned discount must be proved on.
+
+    As ``_extra_args_effective_draft_device_pin``, except that a user-owned --spec-type
+    with no draft-device flag still follows the main --device (llama.cpp's draft
+    devices default to it), so that device has to be proved discrete too.
+    """
+    pin = _extra_args_effective_draft_device_pin(extra_args)
+    if (
+        pin is None
+        and _extra_args_draft_device(extra_args) is None
+        and _extra_args_set_spec_type(extra_args)
+    ):
+        return _extra_args_main_device(extra_args)
+    return pin
+
+
 def _extra_args_effective_draft_device_pin(extra_args: Optional[Iterable[str]]) -> Optional[str]:
     """GPU device selection the separate drafter inherits (none for a user-owned --spec-type)."""
     if _extra_args_draft_device(extra_args) is not None:
@@ -27675,7 +27692,7 @@ class LlamaCppBackend:
                             )
                             # _shared_memory describes the target's devices; a pinned
                             # drafter must name proved-discrete planned ones itself.
-                            _draft_pin_now = _extra_args_effective_draft_device_pin(
+                            _draft_pin_now = _extra_args_discount_draft_device_pin(
                                 _placement_extras
                             )
                             _draft_pin_discrete = _draft_pin_now is None or (
@@ -27745,7 +27762,7 @@ class LlamaCppBackend:
                             or (_candidate_ids & (_shared_gpu_ids | _unclassified_gpu_ids))
                         ):
                             return 0
-                        _draft_pin = _extra_args_effective_draft_device_pin(_placement_extras)
+                        _draft_pin = _extra_args_discount_draft_device_pin(_placement_extras)
                         if _draft_pin is not None:
                             _draft_devices = {
                                 name.strip().lower()

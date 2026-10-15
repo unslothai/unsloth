@@ -6279,3 +6279,47 @@ def test_the_discount_itself_carries_the_adapter_guard():
     with patch.object(backend, "_host_pinned_weight_bytes", staticmethod(lambda _p: 1024**3)):
         assert backend._host_pinned_vram_discount("m.gguf", ["--lora", "a.gguf"]) == 0
         assert backend._host_pinned_vram_discount("m.gguf", []) == 1024**3
+
+
+def _user_spec_draft_totals(
+    tmp_path,
+    *,
+    device,
+    discount = True,
+):
+    """Planned totals for a user-owned draft-simple spec beside discrete Vulkan0 and an
+    iGPU Vulkan1, with ``device`` as a pass-through --device (no GPU picker)."""
+    gib = 1024**3
+    backend, gguf = _backend(tmp_path, vulkan = True, memory = [(0, 8_000, 16_000), (1, 30_000, 0)])
+    probe = backend._run_vulkan_probe
+
+    def rows(*_a, **_kw):
+        out = probe()
+        out[1]["is_igpu"] = True
+        return out
+
+    backend._run_vulkan_probe = rows
+    totals = []
+
+    def plan(total, gpus, *args, **kwargs):
+        totals.append(total)
+        return None, True
+
+    backend._select_gpus = plan
+    draft = tmp_path / "draft.gguf"
+    draft.write_bytes(b"x")
+    backend._get_gguf_size_bytes = lambda path: 6 * gib if "draft" in str(path) else gib
+    backend._host_pinned_vram_discount = lambda _p, *_a, draft_model = False, **_kw: (
+        3 * gib if (draft_model and discount) else 0
+    )
+    extras = ["--spec-type", "draft-simple", "--model-draft", str(draft), "--device", device]
+    _launch(backend, gguf, extra_args = extras)
+    return totals
+
+
+def test_a_user_owned_drafter_following_an_igpu_device_gets_no_discount(tmp_path):
+    # The drafter's devices default to the pass-through --device, here the iGPU.
+    full = _user_spec_draft_totals(tmp_path, device = "Vulkan1", discount = False)
+    assert min(_user_spec_draft_totals(tmp_path, device = "Vulkan1")) == min(full)
+    # Following a proved-discrete device keeps the discount.
+    assert min(_user_spec_draft_totals(tmp_path, device = "Vulkan0")) == min(full) - 3 * 1024**3
