@@ -147,12 +147,17 @@ export const BUDGET = {
   // transfer (6,773,496 -> 6,774,820 B raw, 2,036,386 -> 2,036,728 B transfer against 59ab069b5, one machine
   // and build, Node 24, chunk count unchanged at 95). Lazy-loading it cost more transfer and a 96th startup
   // chunk (Rollup split react-dom out), so it is imported statically and the budget raised by that growth.
-  // Drafter training in the Train tab: measured 6,624.1 KB raw / 1,991.5 KB transfer on this branch (one machine
-  // and build, after main at 0c09fca8):
-  // its persisted training-store fields, their migration and the en strings hydrate at startup; the
-  // section itself is not in the startup set. Raised by that growth.
-  transferBytes: 2_039_400,
-  rawBytes: 6_783_200,
+  // Opening the OS folder dialog for model folders on Desktop (#13843) adds 235 B raw / 336 B transfer
+  // (6,777,794 -> 6,778,029 B raw, 2,037,725 -> 2,038,061 B transfer against 199987c63, one machine and build,
+  // Node 24, chunk count unchanged at 95). Raised by that growth.
+  // The Windows Long Paths explainer on the first-run startup screen (#13523) adds 1,816 B raw / 519 B
+  // transfer (6,778,788 -> 6,780,604 B raw, 2,038,337 -> 2,038,856 B transfer against 62e063618, one machine
+  // and build, Node 24, chunk count unchanged at 95). Main already measured 3,656 B raw / 1,180 B transfer over
+  // the previous limits there, so they are set to the measured build.
+  // Drafter training in the Train tab: its persisted training-store fields, their migration and the en strings
+  // hydrate at startup; the section itself is not in the startup set. Raised by that growth.
+  transferBytes: 2_038_856,
+  rawBytes: 6_780_604,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
