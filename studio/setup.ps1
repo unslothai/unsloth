@@ -5202,12 +5202,19 @@ if ($LongPathsEnabled) {
     step "long paths" "disabled; unchanged during staging" "Yellow"
 } elseif ($env:UNSLOTH_SETUP_RERUN -eq '1') {
     step "long paths" "disabled; already asked earlier in this update" "Yellow"
+} elseif ($env:UNSLOTH_SKIP_LONG_PATHS -eq '1') {
+    # Declined on the desktop app's explainer: no second UAC.
+    step "long paths" "disabled; skipped at your request" "Yellow"
+    substep "torch.compile / Triton may fail on very long paths. To enable later, in an Admin terminal:" "Yellow"
+    substep 'reg add "HKLM\SYSTEM\CurrentControlSet\Control\FileSystem" /v LongPathsEnabled /t REG_DWORD /d 1 /f' "Yellow"
 } else {
     Write-StudioLine "Windows Long Paths not enabled (required for Triton compilation and deep dependency paths)." -ForegroundColor Yellow
     Write-StudioLine "   This turns on LongPathsEnabled under HKLM, a machine-wide setting, so Windows asks for admin approval." -ForegroundColor Yellow
+    Write-StudioLine "   Windows will show a 'Registry Console Tool' prompt (reg.exe, verified publisher Microsoft Windows)." -ForegroundColor Yellow
     Write-StudioLine "   Requesting admin access to fix..." -ForegroundColor Yellow
     try {
-        $proc = Start-Process -FilePath "reg.exe" `
+        # The system directory itself, not a PATH lookup: this is the binary the prompt names.
+        $proc = Start-Process -FilePath "$([Environment]::SystemDirectory)\reg.exe" `
             -ArgumentList 'add "HKLM\SYSTEM\CurrentControlSet\Control\FileSystem" /v LongPathsEnabled /t REG_DWORD /d 1 /f' `
             -Verb RunAs -Wait -PassThru -ErrorAction Stop
         if ($proc.ExitCode -eq 0) {

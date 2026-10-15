@@ -150,8 +150,12 @@ export const BUDGET = {
   // Opening the OS folder dialog for model folders on Desktop (#13843) adds 235 B raw / 336 B transfer
   // (6,777,794 -> 6,778,029 B raw, 2,037,725 -> 2,038,061 B transfer against 199987c63, one machine and build,
   // Node 24, chunk count unchanged at 95). Raised by that growth.
-  transferBytes: 2_037_157,
-  rawBytes: 6_775_132,
+  // The Windows Long Paths explainer on the first-run startup screen (#13523) adds 1,816 B raw / 519 B
+  // transfer (6,778,788 -> 6,780,604 B raw, 2,038,337 -> 2,038,856 B transfer against 62e063618, one machine
+  // and build, Node 24, chunk count unchanged at 95). Main already measured 3,656 B raw / 1,180 B transfer over
+  // the previous limits there, so they are set to the measured build.
+  transferBytes: 2_038_856,
+  rawBytes: 6_780_604,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
