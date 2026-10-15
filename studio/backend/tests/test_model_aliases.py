@@ -350,13 +350,12 @@ def test_saving_refuses_a_decision_model_id(store, monkeypatch):
 
     import routes.inference as inference
     import routes.settings as settings_routes
-    import routes.systemone as systemone
 
     async def catalog():
         return [{"id": "unsloth/Qwen3-4B-GGUF", "object": "model"}]
 
+    # With the Decision API off nothing lists clef, and it must still be refused.
     monkeypatch.setattr(inference, "_openai_catalog_objects", catalog)
-    monkeypatch.setattr(systemone, "decision_model_objects", lambda: [{"id": "clef"}])
     payload = settings_routes.ModelAliasesPayload(
         aliases = [{"name": "clef", "model": "unsloth/Qwen3-4B-GGUF"}]
     )
