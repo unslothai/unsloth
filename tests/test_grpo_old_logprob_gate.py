@@ -59,7 +59,9 @@ def test_old_logprob_gate_matches_trl():
         (4, 8, False, False, True),
     ],
 )
-def test_old_logprob_gate_truth_table(grad_accum, generate_every, use_vllm, is_correction, expected):
+def test_old_logprob_gate_truth_table(
+    grad_accum, generate_every, use_vllm, is_correction, expected
+):
     condition = _gate_condition(_patched_generate_and_score())
 
     class _Args:
