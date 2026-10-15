@@ -22,7 +22,7 @@ __all__ = ["reap_prune", "raise_if_unsaved_reap"]
 
 _NUM_EXPERTS_KEYS = ("num_experts", "num_local_experts", "n_routed_experts", "moe_num_experts")
 _NUM_EXPERTS_MODULE_KEYS = ("num_experts", "n_experts", "n_routed_experts", "num_local_experts")
-_TOP_K_KEYS = ("num_experts_per_tok", "top_k", "moe_top_k")
+_TOP_K_KEYS = ("num_experts_per_tok", "top_k", "moe_top_k", "top_k_experts")
 _ROUTER_ATTRS = ("gate", "router")
 _DEFAULT_DATASET = "mlabonne/open-perfectblend"
 # llm-compressor's fallback for tokenizers without a chat template (PerfectBlendDataset).
@@ -115,8 +115,9 @@ def _layer_moe(layer, num_experts):
 
 
 def _check_weights(experts, router, layer_name):
-    for owner, kind in ((experts, "experts"), (router, "router")):
-        for name, p in owner.named_parameters(recurse = False):
+    # The router recursively: HunYuan / AfMoE keep its Linear in a child module (bnb would quantize it).
+    for owner, kind, recurse in ((experts, "experts", False), (router, "router", True)):
+        for name, p in owner.named_parameters(recurse = recurse):
             if not p.is_floating_point() or p.element_size() < 2 or p.is_meta:
                 raise RuntimeError(
                     f"Unsloth: REAP needs 16-bit or 32-bit MoE weights, but {layer_name} {kind}.{name} "
@@ -272,12 +273,23 @@ class _Saliency:
         self.total = None
         self.count = None
 
-    def add(self, expert_ids, weights, norms):
+    def add(
+        self,
+        expert_ids,
+        weights,
+        norms,
+        mask = None,
+    ):
         if self.total is None:
             self.total = torch.zeros(self.num_experts, dtype = torch.float64, device = norms.device)
             self.count = torch.zeros(self.num_experts, dtype = torch.float64, device = norms.device)
-        self.total.index_add_(0, expert_ids, weights.to(torch.float64) * norms.to(torch.float64))
-        self.count.index_add_(0, expert_ids, torch.ones_like(norms, dtype = torch.float64))
+        ones = (
+            torch.ones_like(norms, dtype = torch.float64) if mask is None else mask.to(torch.float64)
+        )
+        self.total.index_add_(
+            0, expert_ids, weights.to(torch.float64) * norms.to(torch.float64) * ones
+        )
+        self.count.index_add_(0, expert_ids, ones)
 
     def mean(self):
         if self.total is None:
@@ -357,6 +369,7 @@ class _ExpertsTap:
         self.experts = experts
         self.saliency = saliency
         self.valid = None
+        self.stop = False
         self.original = experts.__dict__.get("forward")
         self.forward = experts.forward
         experts.forward = self
@@ -378,15 +391,17 @@ class _ExpertsTap:
             **kwargs,
         )
         norms = torch.linalg.vector_norm(
-            rows if rows.dtype == torch.float64 else rows.float(), dim = -1
+            rows, dim = -1, dtype = torch.float64 if rows.dtype == torch.float64 else torch.float32
         )
         expert_ids = top_k_index.reshape(-1).long()
         weights = top_k_weights.reshape(-1)
-        valid = self.valid
+        valid, mask = self.valid, None
         if valid is not None and valid.numel() == n_tokens:
-            keep = valid.to(norms.device).repeat_interleave(top_k)
-            expert_ids, weights, norms = expert_ids[keep], weights[keep], norms[keep]
-        self.saliency.add(expert_ids, weights, norms)
+            # Masking by multiplication avoids the host sync boolean indexing needs.
+            mask = valid.to(norms.device, non_blocking = True).repeat_interleave(top_k)
+        self.saliency.add(expert_ids, weights, norms, mask)
+        if self.stop:
+            raise _StopForward
         out = (rows.view(n_tokens, top_k, -1) * top_k_weights.unsqueeze(-1).to(rows.dtype)).sum(1)
         return out.to(rows.dtype).reshape(shape)
 
@@ -558,22 +573,21 @@ def reap_prune(
     try:
         hidden, kwargs_per_batch, valid_per_batch = [], [], []
         embed_device = _layer_device(owner, device)
+        store = None
         for input_ids, valid in batches:
             h, kwargs = _capture_inputs(owner, layers, input_ids.to(embed_device))
+            if not hidden:
+                # Decided from the first batch, so activations never pile up on the GPU first.
+                if offload_hidden_states is None and device.type == "cuda":
+                    padded = sum(x.numel() for x, _ in batches) * h.shape[-1] * h.element_size()
+                    offload_hidden_states = padded > torch.cuda.mem_get_info(device)[0] // 4
+                store = torch.device("cpu") if offload_hidden_states else None
+            if store is not None:
+                h = h.to(store).pin_memory() if torch.cuda.is_available() else h.to(store)
             hidden.append(h)
             kwargs_per_batch.append(kwargs)
             valid_per_batch.append(valid.reshape(-1))
         width = hidden[0].shape[-1]
-        if offload_hidden_states is None and device.type == "cuda":
-            padded = sum(h.numel() for h in hidden) * hidden[0].element_size()
-            free = torch.cuda.mem_get_info(device)[0]
-            offload_hidden_states = padded > free // 4
-        store = torch.device("cpu") if offload_hidden_states else None
-        if store is not None:
-            hidden = [
-                h.to(store).pin_memory() if torch.cuda.is_available() else h.to(store)
-                for h in hidden
-            ]
 
         print(
             f"Unsloth: REAP pruning {n_drop} of {num_experts} experts per MoE layer "
@@ -626,6 +640,9 @@ def reap_prune(
 
                 saliency = _Saliency(num_experts)
                 tap = _ExpertsTap(experts, saliency)
+                # Pass 2 recomputes the layer output, so pass 1 stops right after the experts
+                # (not under accelerate hooks, whose post-forward offload must run).
+                tap.stop = not any(hasattr(m, "_hf_hook") for m in layer.modules())
                 hook = None
                 if norm is not None:
                     hook = norm.register_forward_pre_hook(
@@ -634,7 +651,10 @@ def reap_prune(
                 try:
                     for b in range(len(batches)):
                         tap.valid = valid_per_batch[b]
-                        run(b, hidden[b].to(layer_device, non_blocking = True))
+                        try:
+                            run(b, hidden[b].to(layer_device, non_blocking = True))
+                        except _StopForward:
+                            pass
                         if norm is not None:
                             # The residual is all a verified layer needs later, so it replaces the input.
                             r = residuals.pop()
