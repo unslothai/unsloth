@@ -346,8 +346,21 @@ def _load_prequant_checkpoint(path: str, **kwargs: Any) -> Any:
     from .prequant_safetensors import is_safetensors_checkpoint, load_prequant_safetensors
 
     if is_safetensors_checkpoint(path):
-        return load_prequant_safetensors(path, mmap = bool(kwargs.get("mmap")))
-    return _torch_load_prequant(path, **kwargs)
+        ckpt = load_prequant_safetensors(path, mmap = bool(kwargs.get("mmap")))
+    else:
+        ckpt = _torch_load_prequant(path, **kwargs)
+    _install_fp8_unit_scale()
+    return ckpt
+
+
+def _install_fp8_unit_scale() -> None:
+    """Every pre-quant container and rebuild mode: sm_89 precise-accumulate fp8 GEMMs take the unit-scale form."""
+    try:
+        from .diffusion_fp8_unit_scale import install
+
+        install()
+    except Exception:  # noqa: BLE001 - never block a load on a speed path
+        pass
 
 
 # 0 reads a pickle checkpoint headed for an accelerator into host memory instead of mapping it.

@@ -167,3 +167,19 @@ def test_min_rows_env(monkeypatch):
     assert us._min_rows() == 4096
     monkeypatch.setenv(us.MIN_ROWS_ENV, "junk")
     assert us._min_rows() == us._DEFAULT_MIN_ROWS
+
+
+@pytest.mark.parametrize("container", ["pickle", "safetensors"])
+def test_every_prequant_container_installs_the_dispatch(monkeypatch, container):
+    # The pickle container and the safetensors rebuild-off path never reach prequant_native's torchao API.
+    from core.inference import diffusion_fp8_unit_scale as us
+    from core.inference import diffusion_prequant as dp
+    from core.inference import prequant_safetensors as ps
+
+    calls = []
+    monkeypatch.setattr(us, "install", lambda logger = None: calls.append(container) or True)
+    monkeypatch.setattr(ps, "is_safetensors_checkpoint", lambda path: container == "safetensors")
+    monkeypatch.setattr(ps, "load_prequant_safetensors", lambda path, mmap = False: {"format": "fp8"})
+    monkeypatch.setattr(dp, "_torch_load_prequant", lambda path, **kwargs: {"format": "fp8"})
+    assert dp._load_prequant_checkpoint("model.bin", map_location = "cpu") == {"format": "fp8"}
+    assert calls == [container]
