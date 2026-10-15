@@ -582,3 +582,88 @@ def test_dataset_lengths_are_read_in_batches():
     )
     dataset = dataset.shuffle(seed = 0)
     assert tb._dataset_lengths(dataset) == [len(ids) for ids in dataset["input_ids"]]
+
+
+_DDP_WORKER = r"""
+import contextlib, importlib.util, os, sys
+from types import SimpleNamespace
+import torch, torch.distributed as dist
+
+spec = importlib.util.spec_from_file_location("_tb", sys.argv[1])
+tb = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(tb)
+dist.init_process_group("gloo")
+rank = dist.get_rank()
+segments = [[5, 9, 3, 12, 7, 4], [int(x) for x in sys.argv[2].split(",")]][rank]
+total = sum(segments)
+input_ids = torch.randint(1, 30, (1, total))
+position_ids = torch.cat([torch.arange(s) for s in segments]).unsqueeze(0)
+labels = input_ids.clone()
+labels[position_ids == 0] = -100
+batch = dict(input_ids = input_ids, labels = labels, position_ids = position_ids,
+             packed_seq_lengths = torch.tensor(segments, dtype = torch.int32))
+calls = []
+
+def training_step(model, inputs, num_items_in_batch = None):
+    calls.append(inputs["input_ids"].shape[1])
+    # Stands in for TRL's per-compute_loss metric gather: one collective per call.
+    dist.all_reduce(torch.ones(1))
+    return torch.tensor(0.0)
+
+accelerator = SimpleNamespace(
+    distributed_type = "DistributedType.MULTI_GPU", num_processes = 2, device = torch.device("cpu"),
+    no_sync = lambda model: contextlib.nullcontext(),
+)
+trainer = SimpleNamespace(
+    training_step = training_step, get_train_dataloader = lambda: None, accelerator = accelerator,
+    args = SimpleNamespace(gradient_accumulation_steps = 1), model_accepts_loss_kwargs = True,
+    label_smoother = None,
+)
+os.environ["UNSLOTH_TOKEN_BUDGET"] = "16"
+tb.install_token_budget(trainer)
+trainer.training_step(None, batch, 100)
+print("CALLS", rank, len(calls), flush = True)
+dist.destroy_process_group()
+"""
+
+
+@pytest.mark.parametrize("other, expected", [("8,8", (1, 1)), ("4,5,3,6,2,4,6,4,6", (3, 3))])
+def test_ddp_ranks_split_only_when_every_rank_needs_the_same_count(tmp_path, other, expected):
+    import socket
+    import subprocess
+
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    env = dict(
+        __import__("os").environ,
+        MASTER_ADDR = "127.0.0.1",
+        MASTER_PORT = str(port),
+        WORLD_SIZE = "2",
+    )
+    env.pop("UNSLOTH_TOKEN_BALANCE", None)
+    procs = [
+        subprocess.Popen(
+            [sys.executable, "-c", _DDP_WORKER, str(_PATH), other],
+            env = dict(env, RANK = str(rank)),
+            stdout = subprocess.PIPE,
+            stderr = subprocess.STDOUT,
+            text = True,
+        )
+        for rank in range(2)
+    ]
+    outputs = []
+    try:
+        for p in procs:
+            outputs.append(p.communicate(timeout = 120)[0])
+    finally:
+        for p in procs:
+            if p.poll() is None:
+                p.kill()
+    calls = {}
+    for out in outputs:
+        for line in out.splitlines():
+            if line.startswith("CALLS"):
+                _, rank, n = line.split()
+                calls[int(rank)] = int(n)
+    assert (calls.get(0), calls.get(1)) == expected, outputs

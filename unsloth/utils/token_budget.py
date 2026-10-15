@@ -439,6 +439,18 @@ def _balance_dataloader(trainer, dataloader):
     return True
 
 
+def _same_count_on_every_rank(count, accelerator):
+    if accelerator is None or getattr(accelerator, "num_processes", 1) <= 1:
+        return True
+    import torch.distributed as dist
+
+    if not (dist.is_available() and dist.is_initialized()):
+        return True
+    bounds = torch.tensor([count, -count], dtype = torch.int64, device = accelerator.device)
+    dist.all_reduce(bounds, op = dist.ReduceOp.MAX)
+    return int(bounds[0]) == -int(bounds[1])
+
+
 def install_token_budget(trainer):
     """Install whichever of UNSLOTH_TOKEN_BALANCE / UNSLOTH_TOKEN_BUDGET is set on `trainer`."""
     balance = os.environ.get(_TOKEN_BALANCE_ENV, "0").lower() in ("1", "true", "yes", "on")
@@ -483,6 +495,14 @@ def install_token_budget(trainer):
                 _note_once(trainer, f"Unsloth: UNSLOTH_TOKEN_BUDGET not splitting: {reason}.")
                 return original_training_step(model, inputs, num_items_in_batch, *args, **kwargs)
             chunks = split_batch_by_token_budget(inputs, budget)
+            if not _same_count_on_every_rank(len(chunks), accelerator):
+                # Each chunk runs compute_loss (TRL gathers metrics there) and its own backward:
+                # ranks with different counts would issue mismatched collectives and hang.
+                _note_once(
+                    trainer,
+                    "Unsloth: UNSLOTH_TOKEN_BUDGET not splitting steps whose ranks need different chunk counts.",
+                )
+                return original_training_step(model, inputs, num_items_in_batch, *args, **kwargs)
             if len(chunks) == 1:
                 return original_training_step(model, inputs, num_items_in_batch, *args, **kwargs)
             trainer._unsloth_token_budget_splits += 1
