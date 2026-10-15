@@ -124,8 +124,12 @@ export const BUDGET = {
   // native view, and the off-screen question strings) adds 5,278 B raw / 1,928 B transfer (6,765,003 ->
   // 6,770,281 B raw, 2,033,563 -> 2,035,491 B transfer against a8585676d4, one machine and build, Node 24,
   // chunk count unchanged at 95), raised by that.
-  transferBytes: 2_035_705,
-  rawBytes: 6_770_942,
+  // The Windows Desktop install location row on the first-run screen (#13446) adds 1,323 B raw / 309 B
+  // transfer (6,770,704 -> 6,772,027 B raw, 2,035,548 -> 2,035,857 B transfer against c155cd70d, one machine
+  // and build, Node 24, chunk count unchanged at 95). Lazy-loading it cost 567 B transfer and a 96th startup
+  // chunk (Rollup split react-dom out), so it is imported statically and the budget raised by that growth.
+  transferBytes: 2_036_014,
+  rawBytes: 6_772_265,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
