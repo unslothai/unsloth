@@ -5057,8 +5057,7 @@ class FastBaseModel:
         from ..tokenizer_utils import zero_pad_embedding_rows
 
         zero_pad_embedding_rows(model, tokenizer)
-        # One compiled region per decoder layer (_block_compile.py); falls back per layer.
-        # UNSLOTH_BLOCK_COMPILE=0 or UNSLOTH_COMPILE_DISABLE keeps the stock forward.
+        # One compiled region per decoder layer (_block_compile.py).
         try:
             from ._block_compile import patch_block_compile
             patch_block_compile(model)

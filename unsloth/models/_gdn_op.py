@@ -1,15 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""Gated DeltaNet pieces a compiled decoder block can trace (Qwen3.5, Qwen3.6, Qwen3-Next).
-
-fla's chunk_gated_delta_rule is an autograd.Function dynamo cannot trace. As an opaque op with
-a registered backward (`unsloth::qwen3_5_gdn_chunk`, training case: no initial / final state,
-no cu_seqlens, q/k l2norm in kernel) it sits inside the block's graph; fwd/bwd call the same
-fla functions ChunkGatedDeltaRuleFunction does, and the op is checked bit-equal to it on the
-first real layer before use. The causal depthwise conv is written as shifted multiply-adds so
-the block stays dynamic in the sequence length.
-"""
+"""fla's chunk_gated_delta_rule as an opaque op with a registered backward (training case only),
+checked bit-equal to ChunkGatedDeltaRuleFunction before use, so a Gated DeltaNet layer compiles
+as one graph."""
 
 import torch
 import torch.nn.functional as F
@@ -165,8 +159,6 @@ try:
         ctx.dtypes = (q.dtype, k.dtype, g.dtype)
 
     def _gdn_chunk_backward(ctx, do, *_):
-        # Traced into the backward graph: contiguous here so inductor hands the op the layout
-        # its fake was traced with.
         saved = [t.contiguous() for t in ctx.saved_tensors]
         dq, dk, dv, dg, db = _gdn_chunk_bwd(*saved, do.contiguous(), ctx.scale)
         q_dtype, k_dtype, g_dtype = ctx.dtypes

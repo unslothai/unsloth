@@ -1,25 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""One torch.compile region per transformer block for training.
-
-Each decoder-layer class gets its stock forward compiled whole (attention, MLP or MoE, norms,
-residuals, LoRA and NF4 projections), so a step pays one compiled-region call per layer instead
-of dozens of small regions and eager ops. Pieces that would break or slow the graph:
-
-- Attention marked `torch_compiler_disable_unless_decode` is inlined (UNSLOTH_DECODE_COMPILE set
-  while a block runs); Gemma-4's sliding-window router gets its band verdict precomputed.
-- fla's chunk_gated_delta_rule (Qwen3.5 / Qwen3.6) runs as the opaque op from `_gdn_op`, the
-  causal conv as shifted multiply-adds; bitsandbytes NF4 projections use Unsloth's dequantize.
-- Methods that are themselves torch.compile'd are inlined through their original, and
-  functions whose globals no registered module owns are rebound to one that does.
-
-Sequence dims are marked dynamic before the first compile, so a block compiles once per (layer
-variant, grad mode). Each layer's first compile raises instead of falling back silently: a
-failing layer retries with flex_attention outside its graph, then keeps the stock forward.
-Calls with a KV cache keep the stock forward. UNSLOTH_BLOCK_COMPILE=0 or UNSLOTH_COMPILE_DISABLE
-turns it off.
-"""
+"""One torch.compile region per decoder layer for training (stock forward: attention, MLP or MoE,
+norms, LoRA, NF4). UNSLOTH_BLOCK_COMPILE=0 or UNSLOTH_COMPILE_DISABLE turns it off."""
 
 import functools
 import os
@@ -31,8 +14,7 @@ import torch
 __all__ = ["patch_block_compile"]
 
 _MARK = "_unsloth_block_compiled"
-# No max_autotune: one region per layer class already gives Inductor the large fusions, and
-# autotuning every block multiplies first-step compile time.
+# No max_autotune: it multiplies first-step compile time for every block.
 _COMPILE_OPTIONS = {
     "epilogue_fusion": True,
     "shape_padding": True,
@@ -40,16 +22,12 @@ _COMPILE_OPTIONS = {
 }
 
 
-# gpt-oss: unsloth_zoo builds its flex block mask inside attention (graph breaks on
-# torch.is_inference_mode_enabled) and the block recompiled per sequence length (4 lengths: 27
-# breaks, 53 graphs, 210 s of extra compiles); its per-module compile stays.
+# gpt-oss builds its flex mask inside attention: the block broke and recompiled per length.
 _SKIP = {"GptOssDecoderLayer"}
 
 
 def _enabled():
-    # UNSLOTH_FORCE_FLOAT32 (fp16 GPUs, Gemma-style models): zoo's float32 patches round to fp16 at
-    # chosen points and keep SDPA out of the graph. Inductor drops those intermediate roundings
-    # (emulate_precision_casts is off), so a block there moved LoRA grads 11% vs stock (gemma-3-1b).
+    # UNSLOTH_FORCE_FLOAT32: zoo's patches round to fp16 on purpose; Inductor drops those roundings.
     return (
         os.environ.get("UNSLOTH_BLOCK_COMPILE", "1") != "0"
         and os.environ.get("UNSLOTH_COMPILE_DISABLE", "0") not in ("1", "partial")
@@ -129,8 +107,7 @@ def _rebind_class(cls):
 
 def _mark_seq_dynamic(seq_len, obj):
     if isinstance(obj, torch.Tensor):
-        # The last dim of a float (batch, seq, features) tensor is a width, even when it equals
-        # seq_len; integer ids (mrope position_ids: 3, batch, seq) keep it.
+        # A float tensor's last dim is a width even when it equals seq_len (mrope ids are int).
         last = obj.dim() - 1 if obj.dim() == 3 and obj.is_floating_point() else None
         for dim, size in enumerate(obj.shape):
             if size == seq_len and dim != last:
@@ -166,8 +143,6 @@ def _gdn_chunk_adapter(original):
         beta = None,
         **kwargs,
     ):
-        # Training case only (no recurrent state, no packing, q/k l2norm in kernel); the rest
-        # keeps fla's own Function.
         if (
             _GDN_OP[0]
             and torch.compiler.is_compiling()
@@ -175,8 +150,7 @@ def _gdn_chunk_adapter(original):
             and not kwargs.get("output_final_state")
             and kwargs.get("use_qk_l2norm_in_kernel")
         ):
-            # Contiguous in the graph: Inductor pins a custom op's input strides to the example's
-            # (a sliced projection keeps a size-specialized stride and fails at the next length).
+            # Inductor pins a custom op's input strides; a sliced input fails at the next length.
             q, k, v, g, beta = (t.contiguous() for t in (q, k, v, g, beta))
             out = torch.ops.unsloth.qwen3_5_gdn_chunk(q, k, v, g, beta, q.shape[-1] ** -0.5)
             return out[0], None
@@ -199,8 +173,6 @@ def _route_fla_kernel():
             fn = getattr(module, "chunk_gated_delta_rule", None)
             if callable(fn) and fn not in kernels:
                 kernels.append(fn)
-    # Wrappers of wrappers (hub kernel, then Unsloth's compile-disable shim) all close over the
-    # next one in: follow closures outwards a few levels.
     callers, frontier = list(kernels), list(kernels)
     for _ in range(4):
         found = []
@@ -243,9 +215,7 @@ def _route_fla_kernel():
 
 
 def _causal_conv1d_adapter(original, depthwise_conv):
-    # Inductor's convolution_backward lowering guards on the exact sequence length, so a conv
-    # inside the block recompiles it for every new length. In the training case (no cache, no
-    # packing) the depthwise causal conv runs as K shifted multiply-adds in fp32 instead.
+    # Inductor's conv backward guards on the exact sequence length: recompile per length.
     @functools.wraps(original, updated = ())
     def causal_conv1d_fn(
         hidden_states,
@@ -305,9 +275,7 @@ def _route_causal_conv(gdn):
 
 
 def _route_sm_count(modules = None):
-    # fla's gated-norm backward asks Triton's driver for the SM count; on ROCm that is
-    # hip_utils.get_device_properties, which Dynamo cannot trace (4 breaks per Qwen3.5 block,
-    # gfx1151, torch 2.11). The count is fixed per device: read it eagerly, look it up in the trace.
+    # ROCm: Triton's hip_utils.get_device_properties is untraceable; the SM count is per device.
     for name, module in list((sys.modules if modules is None else modules).items()):
         if module is None or "fla." not in name:
             continue
@@ -371,11 +339,8 @@ def _prepare_gdn(layer, hidden_states):
         _GDN_OP[0] = False
 
 
-# unsloth_zoo's Gemma-4 sliding-window router scans the mask (`_mask_is_plain_band`, data
-# dependent) before taking is_causal SDPA (flash); while compiling it declines, so inside a block
-# every sliding layer fell back to masked, mem-efficient SDPA (Gemma-4 12B on A100: 3.5x the
-# attention backward time, the block 10% slower than eager). The block runs the scan eagerly,
-# stores the verdict on the mask, and a router wrapper reads it while tracing.
+# zoo's Gemma-4 sliding router scans the mask (data dependent) and declines while compiling, so
+# the block runs the scan eagerly and a router wrapper reads the verdict stored on the mask.
 _BAND_MODULE = "unsloth_zoo.temporary_patches.gemma4_banded_attention"
 _BAND_CHECK = [None]
 
@@ -402,8 +367,7 @@ def _gemma4_router_hook():
         return
     _BAND_CHECK[0] = check
 
-    # wraps() copies the router's markers: zoo's sdpa patches skip a function carrying theirs, so
-    # a later model load does not wrap this again with it as the fallback (an endless loop).
+    # wraps() keeps zoo's marker, else a later load wraps this as its own fallback (endless loop).
     @functools.wraps(router)
     def sdpa_attention_forward(
         module,
@@ -486,8 +450,7 @@ def _sliding_window(layer):
 
 
 def _precheck_band(layer, seq_len, args, kwargs):
-    # Every 4D mask entering a block carries the verdict, so the traced read never misses (a
-    # missing attribute would recompile).
+    # Every 4D mask gets a verdict: a missing attribute would recompile.
     check = _BAND_CHECK[0]
     if check is None:
         return
@@ -503,12 +466,10 @@ def _precheck_band(layer, seq_len, args, kwargs):
                 obj._unsloth_block_band = False
 
 
-# Mode of the block being traced: 0 none, _FULL, or _SPLIT (flex_attention left outside the
-# block). Read inside the trace, so dynamo guards on it.
+# Mode of the block being traced (_SPLIT: flex_attention outside); dynamo guards on it.
 _IN_BLOCK = [0]
 _OFF, _FULL, _SPLIT = 0, 1, 2
 _DEMOTION = (_FULL, _SPLIT, _OFF)
-# UNSLOTH_BLOCK_FLEX=outside starts every layer with flex_attention outside its block.
 _FIRST_MODE = _SPLIT if os.environ.get("UNSLOTH_BLOCK_FLEX", "inside") == "outside" else _FULL
 
 
@@ -552,7 +513,6 @@ def _nf4_in_blocks():
     if getattr(current, "_unsloth_block_nf4", False):
         return
 
-    # wraps() copies bnb_override's marker, so a later install does not take this as its fallback.
     @functools.wraps(current)
     def forward(self, x, *args, **kwargs):
         if _IN_BLOCK[0] and torch.compiler.is_compiling() and not args and not kwargs:
@@ -588,12 +548,9 @@ def _wrap(cls, compile_options):
         from unsloth_zoo.temporary_patches.utils import UNSLOTH_DECODE_COMPILE as inline_flag
     except Exception:
         inline_flag = [False]
-    # Each layer's first call per grad mode compiles with errors raised, not swallowed (layers of
-    # one class differ: sliding / full attention, widths, quantized or not). A layer that does not
-    # compile retries with flex_attention outside, then keeps the stock forward. Per layer, never
-    # per class: a checkpointed layer must recompute in the mode its forward ran in.
-    # A failure also sets the starting mode of later layers of the same kind, so 26 identical
-    # Gemma-3 layers do not each retry a compile that cannot fit (L4: flex needs 135 KB smem).
+    # First call per grad mode compiles with errors raised: on failure retry with flex outside,
+    # then the stock forward. The mode is per layer (a checkpoint recompute must not switch graph);
+    # a failure is also the starting mode for later layers of the same kind.
     state = {"reported": set(), "start": {}}
 
     def run(self, hidden_states, args, kwargs, mode):
@@ -612,8 +569,7 @@ def _wrap(cls, compile_options):
         if mode is None:
             mode = state["start"].get(_layer_kind(self), _FIRST_MODE)
             self.__dict__["_unsloth_block_mode"] = mode
-        # Training only: eval / generation keep the stock forward, so their logits match
-        # transformers bit for bit (Inductor's bf16 fusions round differently).
+        # Training only: eval logits stay bit-equal to transformers.
         if (
             mode == _OFF
             or not self.training
@@ -641,8 +597,6 @@ def _wrap(cls, compile_options):
             except torch.OutOfMemoryError:
                 raise
             except Exception as e:
-                # Compile errors, and dynamo internal errors (torch 2.14 T4: an AssertionError
-                # building guards) that the default suppress_errors would have swallowed.
                 if os.environ.get("UNSLOTH_BLOCK_COMPILE_DEBUG") == "1":
                     import traceback
                     traceback.print_exc()
@@ -693,8 +647,7 @@ def _decoder_layer_classes(model):
 
 
 def _torch_supported():
-    # torch 2.6 (T4, transformers 4.57.6): attention and Params4bit broke each block into
-    # 36-69 graphs and QLoRA grads moved 5.4% vs the stock forward; 2.7.1 matched exactly.
+    # torch 2.6: blocks fragmented and QLoRA grads moved vs the stock forward.
     from packaging.version import Version
     return Version(torch.__version__.split("+")[0]) >= Version("2.7")
 
@@ -708,9 +661,7 @@ def _experts_of(module):
 
 
 def _lora_would_fold(experts):
-    # Traced, zoo's MoE LoRA cannot measure whether the experts forward reads its LoRA stash; it
-    # asks the bytecode, and a forward that does not read it gets the LoRA delta folded into every
-    # expert's weights on every call (baddbmm + bmm over the whole stack).
+    # Traced, zoo folds the LoRA delta into every expert's weights when the forward ignores the stash.
     try:
         from unsloth_zoo.temporary_patches import moe_utils as zoo_moe
         reads = zoo_moe._forward_statically_reads_stash(experts)
@@ -722,10 +673,7 @@ def _lora_would_fold(experts):
 
 
 def _experts_outside(layer):
-    # gemma-4-26B-A4B bf16 LoRA, A100-80GB: 875 ms/step stock, 950 with the experts traced inside
-    # each block (LoRA folded), 631 with them outside (one break each). Where the stash is read
-    # (Qwen3.6-35B-A3B bf16: 516 -> 465 ms inside) the experts stay in the block.
-    # Runs at the layer's first call, after get_peft_model has wrapped the experts.
+    # At the layer's first call, after get_peft_model wrapped the experts.
     layer.__dict__["_unsloth_block_moe_done"] = True
     mode = os.environ.get("UNSLOTH_BLOCK_MOE", "auto")
     if mode == "inside":
@@ -750,7 +698,6 @@ def patch_block_compile(model):
     classes = _decoder_layer_classes(model)
     if not classes:
         return []
-    # Only what runs inside a block: the model's top-level forward keeps its own globals.
     inner = {
         type(m)
         for layer_list in _layer_lists(model)

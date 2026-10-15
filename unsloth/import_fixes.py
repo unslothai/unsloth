@@ -265,11 +265,8 @@ if not UNSLOTH_ENABLE_LOGGING:
 
 
 def fix_torch_compiler_disable_unless_decode():
-    """torch < 2.8: `torch.compiler.disable(fn, recursive = False)` marks `fn` (and its code object)
-    in place instead of returning a wrapper, so unsloth_zoo's `torch_compiler_disable_unless_decode`
-    disabled the very function it runs while a decode step or a per-layer block is traced: one
-    graph break per attention call. Hand the zoo decorator a copy with its own code object to
-    disable. A no-op where `disable` returns a wrapper."""
+    """torch < 2.8 marks `fn` itself in `compiler.disable(fn, recursive = False)`, so zoo's
+    decode-aware disable disabled the function it runs: hand it a copy to disable."""
     import functools
     import types
 
