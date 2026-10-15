@@ -418,6 +418,41 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             ),
         ),
     ),
+    # FLUX.3 Image Klein: a 5.6B flow-map DiT with a Qwen3-VL-4B encoder (layers 4..32 stacked) and the FLUX.2 VAE.
+    # Diffusers ships it only as modular blocks, so diffusion_flux3 assembles it per component behind a classic
+    # pipeline face (no model_index.json in the repo). The distilled checkpoint runs 16 steps without CFG and edits
+    # with up to 10 reference images through the same text-to-image call. Base and distilled are separate entries:
+    # they run different block graphs (the base adds a CFG guider and a negative prompt). Base first in the table only
+    # for reading order; the longest-alias match is what keeps "...-klein-base" off the distilled entry.
+    DiffusionFamily(
+        name = "flux.3-klein-base",
+        label = "FLUX.3 Klein Base",
+        pipeline_class = "Flux3ModularPipeline",
+        transformer_class = "Flux3Transformer2DModel",
+        base_repo = "black-forest-labs/flux-3-image-klein-base",
+        aliases = ("flux-3-image-klein-base", "flux3-image-klein-base", "flux3-klein-base"),
+        reference = True,
+        max_condition_images = 10,
+        # Two DiT patch grids (VAE /8, patch 2): sizes snap to 16 like FLUX.2.
+        dimension_multiple = 16,
+        pipeline_only = True,
+        # Modular blocks: regional compile, CUDA graphs and the prequant paths are unmeasured here.
+        supports_torch_compile = False,
+    ),
+    DiffusionFamily(
+        name = "flux.3-klein",
+        label = "FLUX.3 Klein",
+        pipeline_class = "Flux3DistilledModularPipeline",
+        uses_negative_prompt = False,
+        transformer_class = "Flux3Transformer2DModel",
+        base_repo = "black-forest-labs/flux-3-image-klein",
+        aliases = ("flux-3-image-klein", "flux3-image-klein", "flux3-klein"),
+        reference = True,
+        max_condition_images = 10,
+        dimension_multiple = 16,
+        pipeline_only = True,
+        supports_torch_compile = False,
+    ),
     # FLUX.2-dev: full (non-distilled) FLUX.2 on the Mistral Flux2Pipeline, so its own entry. Gated base,
     # text-to-image only; sd-cli takes the Mistral encoder from unsloth/FLUX.2-dev-ComfyUI and the VAE from
     # unsloth/FLUX.2-VAE.
@@ -1008,6 +1043,12 @@ def excluded_model_reason(repo_id: str) -> Optional[str]:
 # Editing / inpaint checkpoints share an arch keyword but need a different pipeline + input image. "layered" rejects a
 # layered checkpoint of any family without a layered entry of its own; Qwen-Image-Layered has one, so it matches that.
 _EDIT_KEYWORDS = ("edit", "kontext", "inpaint", "layered")
+# Repos named after a family that are not image models: FLUX.3's prompt upsampler (``flux-3-image-klein-pup``) is a
+# Qwen3.5 LLM, not a checkpoint any pipeline loads.
+_NON_IMAGE_SIBLING_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "flux.3-klein": ("pup",),
+    "flux.3-klein-base": ("pup",),
+}
 
 
 def _token_in_needle(token: str, needle: str) -> bool:
@@ -1053,6 +1094,11 @@ def detect_family(repo_id: str, override: Optional[str] = None) -> Optional[Diff
         if any(
             _token_in_needle(kw, basename) and not any(kw in tok for tok in matched_tokens)
             for kw in _EDIT_KEYWORDS
+        ):
+            return None
+        if any(
+            _token_in_needle(kw, basename)
+            for kw in _NON_IMAGE_SIBLING_KEYWORDS.get(match.name, ())
         ):
             return None
         return match
@@ -1538,6 +1584,14 @@ _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("kontext", 20, 2.5),  # editing: before the generic flux.1
     ("flux.1", 20, 3.5),
     ("flux1", 20, 3.5),
+    # FLUX.3 Image Klein (ComfyUI and the BFL reference): the undistilled base runs 50 steps at CFG 3.5, the flow-map
+    # distilled checkpoint 16 steps with no CFG. Base first.
+    ("flux-3-image-klein-base", 50, 3.5),
+    ("flux3-image-klein-base", 50, 3.5),
+    ("flux3-klein-base", 50, 3.5),
+    ("flux-3-image-klein", 16, 1.0),
+    ("flux3-image-klein", 16, 1.0),
+    ("flux3-klein", 16, 1.0),
     # Undistilled base runs real CFG; keep before the generic distilled key.
     ("flux.2-klein-base", 20, 5.0),
     ("flux.2-klein", 4, 1.0),
@@ -1774,6 +1828,11 @@ _PIPELINE_MIN_DIFFUSERS: dict[str, str] = {
     # the first release that can carry it. ``_version_tuple`` stops at the first non-numeric part,
     # so a 0.41.0.dev0 build from main reads as (0, 41, 0) and satisfies this too.
     "QwenImage21Pipeline": "0.41.0",
+    # FLUX.3 Image Klein (huggingface/diffusers#15046) is in no release yet, so the first one that can carry it is
+    # 0.42.0. Main and the PR branch both report 0.41.0.dev0, which reads as the 0.41.0 release that lacks it, so the
+    # listing probes the module file instead (``_PIPELINE_PROBE_FILES``).
+    "Flux3ModularPipeline": "0.42.0",
+    "Flux3DistilledModularPipeline": "0.42.0",
     "Krea2Pipeline": "0.39.0",
     # Older than the 0.35 baseline, but listed anyway: the packaging leaves an UNCONSTRAINED diffusers installable
     # below 3.10, so an already-present ancient one satisfies the pin, and quoting the 0.39 floor at a family that has
@@ -1988,7 +2047,32 @@ def local_pipeline_components_are_complete(
 # Studio installs the pinned main build for exactly these classes (studio/backend/requirements/
 # diffusers-main.txt), so the remedy is to put that back, not to chase a release. Delete an entry
 # here the moment its version ships, which is the same moment diffusers-pin.txt moves to it.
-_UNRELEASED_MIN_DIFFUSERS: frozenset = frozenset()
+_UNRELEASED_MIN_DIFFUSERS: frozenset = frozenset({"0.42.0"})
+
+# Classes whose presence a version number cannot answer: an unreleased model on a diffusers main build that reports
+# the same x.y.0.dev0 as the release without it. The listing checks the file that defines the class, relative to the
+# installed diffusers package, which needs no import. Delete an entry once its release is the pin.
+_PIPELINE_PROBE_FILES: dict[str, str] = {
+    "Flux3ModularPipeline": "modular_pipelines/flux3/modular_pipeline.py",
+    "Flux3DistilledModularPipeline": "modular_pipelines/flux3/modular_pipeline.py",
+}
+
+
+def _diffusers_package_has_file(relative: str) -> Optional[bool]:
+    """Whether the installed diffusers package contains ``relative``; None when it cannot be located."""
+    try:
+        import importlib.util
+
+        module = sys.modules.get("diffusers")
+        spec = getattr(module, "__spec__", None) if module is not None else None
+        if spec is None:
+            spec = importlib.util.find_spec("diffusers")
+        locations = list(getattr(spec, "submodule_search_locations", None) or ())
+    except Exception:  # noqa: BLE001 -- an unlocatable package answers nothing
+        return None
+    if not locations:
+        return None
+    return any((Path(location) / relative).is_file() for location in locations)
 
 
 _DIFFUSERS_MAIN_PIN = Path(__file__).resolve().parents[2] / "requirements" / "diffusers-main.txt"
@@ -2278,6 +2362,11 @@ def family_pipeline_available(fam: Optional[DiffusionFamily]) -> bool:
     # is False -- which would hide the model.
     if not name:
         return True
+    probe_file = _PIPELINE_PROBE_FILES.get(name)
+    if probe_file is not None:
+        has_file = _diffusers_package_has_file(probe_file)
+        if has_file is not None:
+            return has_file
     if "diffusers" in sys.modules:
         module = sys.modules["diffusers"]
         # A None entry blocks imports, so preserve the existing fail-open behavior.

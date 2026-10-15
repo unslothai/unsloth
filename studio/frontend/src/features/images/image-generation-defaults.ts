@@ -20,6 +20,11 @@ const MODEL_DEFAULTS: Array<{
   { match: "kontext", steps: 20, guidance: 2.5 },
   { match: "flux.1-krea", steps: 20, guidance: 3.5 },
   { match: "flux.1", steps: 20, guidance: 3.5 },
+  // FLUX.3 Image Klein: base 50 steps at CFG 3.5, the distilled flow-map checkpoint 16 steps without CFG. Base first.
+  { match: "flux-3-image-klein-base", steps: 50, guidance: 3.5 },
+  { match: "flux3-klein-base", steps: 50, guidance: 3.5 },
+  { match: "flux-3-image-klein", steps: 16, guidance: 1 },
+  { match: "flux3-klein", steps: 16, guidance: 1 },
   // Klein base is undistilled. The generic key below covers both distilled sizes.
   { match: "flux.2-klein-base", steps: 20, guidance: 5 },
   { match: "flux.2-klein", steps: 4, guidance: 1 },

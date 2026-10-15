@@ -118,6 +118,7 @@ from .diffusion_hidream import (
     hidream_te4_kwargs,
 )
 from .diffusion_krea2 import KREA2_FAMILY_NAME, load_krea2_pipeline
+from .diffusion_flux3 import FLUX3_COMPONENTS, FLUX3_INDEX, is_flux3_family, load_flux3_pipeline
 from .diffusion_small_host import (
     INT8_DENOISER_NAMES,
     decide_small_host,
@@ -3730,9 +3731,11 @@ class DiffusionBackend:
                     "a 'pipeline' load takes a full diffusers repo, not a single-file name."
                 )
             if local_root.exists():
-                if not local_pipeline_components_are_complete(local_root, "model_index.json"):
+                # FLUX.3 is a Modular Diffusers layout: its manifest is modular_model_index.json.
+                index_name = FLUX3_INDEX if is_flux3_family(fam) else "model_index.json"
+                if not local_pipeline_components_are_complete(local_root, index_name):
                     raise FileNotFoundError(
-                        f"Local pipeline directory has no complete valid model_index.json: {repo_id}"
+                        f"Local pipeline directory has no complete valid {index_name}: {repo_id}"
                     )
             elif path_shaped:
                 raise FileNotFoundError(f"Local model path does not exist: {repo_id}")
@@ -5820,8 +5823,10 @@ class DiffusionBackend:
                 continue
             if exclude_transformer and rel.parts and rel.parts[0] == "transformer":
                 continue
+            # from_pretrained reads <component>/<file> only: a deeper tree (FLUX.3's variants/fp8r, variants/nvfp4
+            # quantised packages) is never loaded and must not be priced.
             if load_itemsize is not None and (
-                len(rel.parts) < 2 or not _pipeline_default_variant_file(rel.as_posix())
+                len(rel.parts) != 2 or not _pipeline_default_variant_file(rel.as_posix())
             ):
                 continue
             try:
@@ -7605,7 +7610,24 @@ class DiffusionBackend:
                                     bf16_pipeline_plan = plan
                                 self._raise_if_load_cancelled(_load_token)
                                 small_host = None
-                                if fam.name == KREA2_FAMILY_NAME:
+                                if is_flux3_family(fam):
+                                    # FLUX.3 ships modular blocks only: assemble per component behind the classic
+                                    # face (diffusion_flux3), from the staged dir when there is one.
+                                    try:
+                                        pipe = load_flux3_pipeline(
+                                            _base_local_dir or fetch_base,
+                                            dtype,
+                                            hf_token = hf_token,
+                                            check_cancelled = lambda: self._raise_if_load_cancelled(
+                                                _load_token
+                                            ),
+                                            local_files_only = local_files_only,
+                                            text_encoder = pipe_kwargs.get("text_encoder"),
+                                            transformer = pipe_kwargs.get("transformer"),
+                                        )
+                                    finally:
+                                        self._stop_load_prefetch()
+                                elif fam.name == KREA2_FAMILY_NAME:
                                     # krea's transformers-5.x configs break the 4.x line: assemble per component from
                                     # pipe_kwargs (pre-cast TE, seeded denoiser or None = dense shards).
                                     try:
@@ -12342,9 +12364,9 @@ def _pipeline_file_downloaded(rfilename: str) -> bool:
     ``transformer/`` subfolder is kept. Top-level docs and ``assets/`` are skipped, and so are
     artifacts the torch loader never touches (ONNX / OpenVINO / Flax exports and dtype-variant
     twins), so an official repo that ships many formats does not prefetch tens of GB it will not
-    load."""
+    load. A Modular Diffusers repo (FLUX.3) has ``modular_model_index.json`` as its manifest."""
     if "/" not in rfilename:  # top-level: only the pipeline manifest is fetched
-        return rfilename == "model_index.json"
+        return rfilename in ("model_index.json", FLUX3_INDEX)
     lower = rfilename.lower()
     if lower.startswith(("assets/", "onnx/", "openvino/")):
         return False
@@ -12378,6 +12400,8 @@ _PIPELINE_WEIGHT_PREFIX_RE = re.compile(
 def _explicit_pipeline_components(fam: Any) -> Optional[tuple[str, ...]]:
     """Component folders opened by image pipelines assembled outside generic Diffusers."""
     name = getattr(fam, "name", None)
+    if is_flux3_family(fam):
+        return FLUX3_COMPONENTS
     if name == KREA2_FAMILY_NAME:
         return ("scheduler", "text_encoder", "tokenizer", "transformer", "vae")
     if name == IDEOGRAM4_FAMILY_NAME:
@@ -12406,7 +12430,11 @@ def _pipeline_components_from_index(
     try:
         from huggingface_hub import hf_hub_download
 
-        if not any(s.rfilename == "model_index.json" for s in (info.siblings or ())):
+        siblings = {s.rfilename for s in (info.siblings or ())}
+        if "model_index.json" not in siblings:
+            if explicit_components is not None and FLUX3_INDEX in siblings:
+                # A modular repo (FLUX.3) whose assembler names its own folders: nothing else to read.
+                return frozenset(str(name) for name in explicit_components), frozenset()
             raise FileNotFoundError(f"{repo_id} has no model_index.json")
         path = hf_hub_download(
             repo_id,
@@ -12455,7 +12483,7 @@ def _pipeline_selected_file(
     components, ignored = selection
     if rfilename in ignored:
         return False
-    if rfilename == "model_index.json":
+    if rfilename in ("model_index.json", FLUX3_INDEX):
         return True
     if "/" not in rfilename or rfilename.split("/", 1)[0] not in components:
         return False

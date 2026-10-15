@@ -9,6 +9,8 @@ const LABELS: Readonly<Record<string, string>> = {
   "flux.1": "FLUX.1",
   "flux.2-klein": "FLUX.2 Klein",
   "flux.2-dev": "FLUX.2 Dev",
+  "flux.3-klein": "FLUX.3 Klein",
+  "flux.3-klein-base": "FLUX.3 Klein Base",
   "flux.1-kontext": "FLUX.1 Kontext",
   "qwen-image": "Qwen Image",
   "qwen-image-2.1": "Qwen Image 2.1",
