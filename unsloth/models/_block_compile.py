@@ -618,8 +618,7 @@ def _wrap(cls, compile_options):
         bit = 2 if torch.is_grad_enabled() else 1
         checked = self.__dict__.get("_unsloth_block_checked", 0)
         if bit == 1 and not checked & 2:
-            # Settle the grad-mode graph first: a checkpoint recompute must not demote below the
-            # mode this no-grad forward ran in. fork_rng: the trial leaves dropout draws alone.
+            # Grad-mode trial first (RNG forked): a checkpoint recompute must not demote below this call.
             devices = [hidden_states.device.index] if hidden_states.is_cuda else []
             with torch.random.fork_rng(devices = devices), torch.enable_grad():
                 forward(self, hidden_states.detach().requires_grad_(), *args, **kwargs)
@@ -734,8 +733,7 @@ def _experts_outside(layer):
 
 def patch_block_compile(model):
     """Compile every decoder-layer class of `model` as one region. Returns the classes wrapped."""
-    # getattr: PeftModel delegates to the model it wraps. Without a flag, the env describes this
-    # load only for unstamped layers; a re-patch (get_peft_model) keeps the stamp.
+    # getattr: PeftModel delegates. The env fills only unstamped layers, so a re-patch keeps the stamp.
     forced = getattr(model, "_unsloth_forced_float32", None)
     env = os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1"
     for layer_list in _layer_lists(model):

@@ -266,7 +266,6 @@ def test_forced_float32_is_decided_per_model(monkeypatch):
     monkeypatch.setenv("UNSLOTH_FORCE_FLOAT32", "1")
     forced = model_of(None)
     assert M.patch_block_compile(forced) == []
-    # A later load of the same family without forcing wraps the class.
     monkeypatch.setenv("UNSLOTH_FORCE_FLOAT32", "0")
     plain = model_of(False)
     assert M.patch_block_compile(plain) == [cls.__name__]
@@ -277,7 +276,6 @@ def test_forced_float32_is_decided_per_model(monkeypatch):
     with torch.no_grad():
         plain.layers[0](x)
     assert len(calls) == 2  # grad-mode trial + the call
-    # Env says forced, but this model was stamped otherwise: still compiled.
     monkeypatch.setenv("UNSLOTH_FORCE_FLOAT32", "1")
     with torch.no_grad():
         plain.layers[1](x)
