@@ -97,7 +97,12 @@ def test_scale_extremes_match_the_dense_weight(N, fused, monkeypatch, dtype, glo
     # Every finite E4M3 scale vs tiny/huge global scales: bit-exact with dense (fp16 inf gives NaN on both).
     codes = torch.tensor([c for c in range(256) if c & 127 != 127], dtype = torch.uint8)
     rows = 32
-    scale = codes[torch.arange(rows * 16) % len(codes)].reshape(rows, 16).cuda().view(torch.float8_e4m3fn)
+    scale = (
+        codes[torch.arange(rows * 16) % len(codes)]
+        .reshape(rows, 16)
+        .cuda()
+        .view(torch.float8_e4m3fn)
+    )
     packed = torch.full((rows, 128), 0x7F, dtype = torch.uint8, device = "cuda")  # -6.0, 6.0
     packed[:, 1::2] = 0x1A  # -1.0, 0.5
     gs = torch.tensor([global_scale], device = "cuda")
@@ -178,7 +183,10 @@ def test_split_reduction_matches_unsplit(N, fused, monkeypatch, dtype, M, N_out,
     packed, scale, gs = _random_nvfp4(N_out, K, seed = 7)
     X = torch.randn(M, K, device = "cuda", dtype = dtype)
     G = torch.randn(M, N_out, device = "cuda", dtype = dtype)
-    splits = (N._fused_config(M, N_out, K, X.device, False)[-1], N._fused_config(M, K, N_out, X.device, True)[-1])
+    splits = (
+        N._fused_config(M, N_out, K, X.device, False)[-1],
+        N._fused_config(M, K, N_out, X.device, True)[-1],
+    )
     assert max(splits) > 1, splits
     Y, dX = _fwd(N, X, packed, scale, gs), _dx(N, G, packed, scale, gs)
     monkeypatch.setattr(N, "_CONFIG_HOOK", lambda *a: N._fused_config(*a)[:-1] + (1,))
@@ -189,7 +197,9 @@ def test_split_reduction_matches_unsplit(N, fused, monkeypatch, dtype, M, N_out,
     _close_to_dense(dX, G @ W)
     monkeypatch.undo()
     monkeypatch.setenv("UNSLOTH_NVFP4_FUSED", "1")
-    assert torch.equal(Y, _fwd(N, X, packed, scale, gs)) and torch.equal(dX, _dx(N, G, packed, scale, gs))
+    assert torch.equal(Y, _fwd(N, X, packed, scale, gs)) and torch.equal(
+        dX, _dx(N, G, packed, scale, gs)
+    )
 
 
 @pytest.mark.parametrize("dtype", _dtypes())
@@ -218,7 +228,11 @@ def test_float32_block_scales(N, fused, monkeypatch):
     scale = scale.float()
     X = torch.randn(9, 160, device = "cuda", dtype = dtype)
     W = N.nvfp4_dequantize(packed, scale, gs, dtype).double()
-    _check(_fwd(N, X, packed, scale, gs), _dense(N, X, packed, scale, gs, monkeypatch), X.double() @ W.t())
+    _check(
+        _fwd(N, X, packed, scale, gs),
+        _dense(N, X, packed, scale, gs, monkeypatch),
+        X.double() @ W.t(),
+    )
 
 
 def test_kill_switch_and_fallbacks(N, monkeypatch):

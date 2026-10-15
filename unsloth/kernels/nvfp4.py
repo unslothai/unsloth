@@ -448,7 +448,13 @@ def _sm_count(index):
     return torch.cuda.get_device_properties(index).multi_processor_count
 
 
-def _fused_config(M, n_out, k_red, device, dx = False):
+def _fused_config(
+    M,
+    n_out,
+    k_red,
+    device,
+    dx = False,
+):
     """(BLOCK_M, BLOCK_OUT, BLOCK_RED, num_warps, num_stages, split) for an [M, k_red] @ [k_red, n_out] product."""
     index = device.index or 0
     stages = 2 if _device_capability(index) < (8, 0) else 3
