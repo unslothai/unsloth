@@ -63,7 +63,7 @@ class TestTheMismatchRule:
         assert version_mismatch("0.6.9", "0.6.9") is False
 
     def test_an_unreadable_version_string_is_not(self):
-        # An unparseable version is not a mismatch; a ruff that does not run is refused earlier.
+        # An unparsable version is not a mismatch; a ruff that does not run is refused earlier.
         assert version_mismatch("0.6.9", None) is False
 
 

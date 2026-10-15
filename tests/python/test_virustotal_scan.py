@@ -499,7 +499,7 @@ class TestRenderMarkdown:
 
 
 class TestFailClosedOnMalformedLookup:
-    """An unparseable 200 must not be read as never seen, or the unreleased bundle is uploaded."""
+    """An unparsable 200 must not be read as never seen, or the unreleased bundle is uploaded."""
 
     def test_malformed_200_does_not_upload(self, tmp_path):
         bundle = tmp_path / "draft.exe"
@@ -597,7 +597,7 @@ class TestSocketBudgetIsClampedToTheDeadline:
 
 
 class TestMalformedUploadAcknowledgement:
-    """An unparseable ack after an accepted upload is a failed attempt to retry, not an immediate error."""
+    """An unparsable ack after an accepted upload is a failed attempt to retry, not an immediate error."""
 
     def test_malformed_ack_retries_with_a_fresh_signed_url(self, tmp_path):
         bundle = tmp_path / "big.exe"

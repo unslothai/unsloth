@@ -157,7 +157,7 @@ def test_an_explicit_host_overrides_the_detected_platform(tmp_path):
 
 
 def test_a_marker_that_exists_but_does_not_parse_is_still_graded(tmp_path):
-    """An unparseable marker still grades the tree; only a missing marker means nothing is installed."""
+    """An unparsable marker still grades the tree; only a missing marker means nothing is installed."""
     root = _installed(tmp_path, binaries = True)
     (root / "UNSLOTH_PREBUILT_INFO.json").write_text('{"release_tag": "b108', encoding = "utf-8")
     assert ILP.load_prebuilt_metadata(root) is None
@@ -242,7 +242,7 @@ def test_an_unparseable_marker_over_a_prebuilt_tree_still_owes_the_shared_payloa
 
 
 def test_an_unparseable_marker_over_a_source_build_stays_lenient(tmp_path):
-    """A source-built tree with an unparseable marker is not required to ship published-only DLL names."""
+    """A source-built tree with an unparsable marker is not required to ship published-only DLL names."""
     host = _windows_host()
     root = _windows_tree(
         tmp_path,

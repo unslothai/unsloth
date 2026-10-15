@@ -1373,7 +1373,7 @@ def test_the_delegated_check_fetches_the_legacy_config_filename(tmp_path, monkey
 
 
 def test_an_unparseable_manifest_refuses_rather_than_passing(tmp_path, monkeypatch):
-    """An unparseable manifest is unverified, not absent; refuse, since below 6.0 nothing else checks it."""
+    """An unparsable manifest is unverified, not absent; refuse, since below 6.0 nothing else checks it."""
     _simulate_pre_six(monkeypatch)
 
     broken = tmp_path / "models--acme--embedder" / "snapshots" / ("a" * 40)

@@ -1777,7 +1777,7 @@ def _read_yaml_object(path: Path) -> Optional[dict]:
 
 
 def _read_json_object(path: Path) -> Optional[dict]:
-    # None when unparseable, so the caller leaves a user-managed file untouched.
+    # None when unparsable, so the caller leaves a user-managed file untouched.
     if not path.exists():
         return {}
     try:
@@ -3020,7 +3020,7 @@ def _write_claude_settings(path: Path, model_id: str, local_env: dict) -> Path:
 
 
 def _claude_version() -> Optional[tuple]:
-    # None means no local `claude`: assume a current build. Unparseable means too old.
+    # None means no local `claude`: assume a current build. Unparsable means too old.
     executable = _which_with_install_dirs("claude")
     if executable is None:
         return None

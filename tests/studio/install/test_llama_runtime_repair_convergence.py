@@ -296,7 +296,7 @@ def build_damaged(
     *,
     corrupt = False,
 ) -> Path:
-    """Builds a complete tree, applies the damage, and with corrupt also writes an unparseable marker."""
+    """Builds a complete tree, applies the damage, and with corrupt also writes an unparsable marker."""
     MF.build_tree(root, host = host, marker = marker, backend = backend)
     runtime = MF._runtime_dir(root, host)
     if corrupt:
@@ -495,7 +495,7 @@ def test_a_corrupt_marker_over_a_damaged_payload_is_graded_and_not_called_uninst
 
 
 def test_the_two_kinds_of_missing_marker_stay_apart(tmp_path):
-    """An absent marker means not installed (None); an unparseable one still grades the payload."""
+    """An absent marker means not installed (None); an unparsable one still grades the payload."""
     host, backend = MF.LINUX, "cuda"
     shape = MF.shape_with_backend(MF.S12, backend)
 
@@ -513,7 +513,7 @@ def test_the_two_kinds_of_missing_marker_stay_apart(tmp_path):
 def test_grading_an_unparseable_marker_keeps_the_no_stricter_invariant(
     tmp_path, cell, host, backend, shape
 ):
-    """The static invariant holds for every damage crossed with an unparseable marker."""
+    """The static invariant holds for every damage crossed with an unparsable marker."""
     marker = MF.shape_with_backend(shape, backend)
     for label, damage in damage_modes(host, backend, marker):
         if damage in _MARKER_DAMAGES:
@@ -532,7 +532,7 @@ def test_grading_an_unparseable_marker_keeps_the_no_stricter_invariant(
 def test_grading_an_unparseable_marker_still_terminates_on_every_cell(
     tmp_path, offline, cell, host, backend, shape
 ):
-    """Unparseable markers over every damage still reach a fixed point under both repair models."""
+    """Unparsable markers over every damage still reach a fixed point under both repair models."""
     marker = MF.shape_with_backend(shape, backend)
     for label, damage in damage_modes(host, backend, marker):
         if damage in _MARKER_DAMAGES:
