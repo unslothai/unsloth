@@ -992,7 +992,7 @@ struct InstallerEnv {
 
 /// Extra environment for the installer child. UNSLOTH_TORCH_UPGRADE=1 is install.sh's and
 /// install.ps1's opt-out from keeping an existing install's torch release.
-/// UNSLOTH_SKIP_LONG_PATHS=1: Long Paths was declined on the startup screen; no second UAC.
+/// UNSLOTH_SKIP_LONG_PATHS=1: Long Paths declined on the startup screen, so setup.ps1 skips its UAC.
 fn installer_env(env: InstallerEnv) -> Vec<(&'static str, &'static str)> {
     let mut vars = Vec::new();
     if env.upgrade_torch {

@@ -118,7 +118,7 @@ function NotInstalledContent({
     busy.current = true;
     setPhase("elevating");
     const outcome = await enableWindowsLongPaths();
-    // "failed" leaves setup.ps1 to retry with its own UAC; the user has been told about it.
+    // "failed" leaves setup.ps1's own UAC as the fallback.
     onInstall({ skipLongPaths: outcome === "declined" });
   }
 

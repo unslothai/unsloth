@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-//! Windows Long Paths, explained on the startup screen and elevated from here before the install,
-//! instead of setup.ps1 raising an unannounced reg.exe UAC minutes into it.
+//! Windows Long Paths, elevated from the startup screen instead of mid-install by setup.ps1.
 
 use serde::Serialize;
 

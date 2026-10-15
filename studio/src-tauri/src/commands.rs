@@ -882,7 +882,6 @@ pub fn open_models_dir(webview: tauri::Webview, path: String) -> Result<(), Stri
 /// Start the first-launch installation process.
 /// Runs the platform installer script with --tauri flag and streams progress events.
 /// Returns "NEEDS_ELEVATION" if system packages need elevated install (Linux only).
-/// `skip_long_paths`: Windows Long Paths was declined on the startup screen.
 #[tauri::command]
 pub async fn start_install(
     app: AppHandle,

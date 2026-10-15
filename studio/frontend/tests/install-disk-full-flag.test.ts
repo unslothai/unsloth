@@ -149,7 +149,6 @@ ${installBody
 test("a skipped Long Paths explainer reaches start_install", async () => {
   assert.deepEqual(await installArgs({ skipLongPaths: true }), { skipLongPaths: true });
   assert.deepEqual(await installArgs(undefined), { skipLongPaths: false });
-  // onClick={startInstall} hands it a click event, which must not read as a skip.
   assert.deepEqual(await installArgs({ type: "click", skipLongPaths: "x" }), {
     skipLongPaths: false,
   });
