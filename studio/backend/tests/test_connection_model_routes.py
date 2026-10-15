@@ -1054,3 +1054,26 @@ def test_responses_keep_a_literal_think_tag_inside_the_answer(v1, monkeypatch):
 
     message = next(item for item in body["output"] if item["type"] == "message")
     assert message["content"][0]["text"] == answer
+
+
+@pytest.mark.parametrize("path", ["/v1/chat/completions", "/v1/responses", "/v1/messages"])
+def test_a_leading_tag_stays_text_when_thinking_is_off(v1, monkeypatch, path):
+    import routes.inference as inf
+
+    answer = "<think>This is literal XML</think>remaining text"
+    monkeypatch.setattr(inf, "ExternalProviderClient", _content_stream(answer))
+    if path == "/v1/chat/completions":
+        body = {
+            "model": CONNECTION_MODEL,
+            "messages": [{"role": "user", "content": "hi"}],
+            "enable_thinking": False,
+        }
+        text = v1.post(path, json = body).json()["choices"][0]["message"]["content"]
+    elif path == "/v1/responses":
+        body = {"model": CONNECTION_MODEL, "input": "hi", "reasoning": {"effort": "none"}}
+        output = v1.post(path, json = body).json()["output"]
+        text = next(i for i in output if i["type"] == "message")["content"][0]["text"]
+    else:
+        body = _messages_body(thinking = {"type": "disabled"})
+        text = "".join(b.get("text", "") for b in v1.post(path, json = body).json()["content"])
+    assert text == answer

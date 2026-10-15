@@ -30777,10 +30777,14 @@ async def _relay_recording_tool_extras(chunks, subject: Optional[str]):
         await chunks.aclose()
 
 
-async def _relay_split_thinking(chunks, stops: Any = None):
+async def _relay_split_thinking(
+    chunks,
+    stops: Any = None,
+    parse_thinking: bool = True,
+):
     """Native thinking arrives as a leading <think> block in content (the Studio chat's form); OpenAI
     clients read it from reasoning_content. The proxy forwards no stop sequences, so cut here."""
-    think = _ResponsesReasoningExtractor(parse_think_markers = True, single_block = True)
+    think = _ResponsesReasoningExtractor(parse_think_markers = parse_thinking, single_block = True)
     stop = _StopSequenceFilter([stops] if isinstance(stops, str) else stops)
     lines = _sse_data_lines(chunks)
     try:
@@ -30938,7 +30942,10 @@ async def openai_chat_completions(
     if connection is None or not isinstance(response, StreamingResponse):
         return response
     response.body_iterator = _relay_split_thinking(
-        _relay_recording_tool_extras(response.body_iterator, current_subject), payload.stop
+        _relay_recording_tool_extras(response.body_iterator, current_subject),
+        payload.stop,
+        # Thinking switched off: a leading tag is the answer's own text.
+        parse_thinking = payload.enable_thinking is not False,
     )
     if collect:
         return await _chat_completion_from_connection_stream(response, payload.model)
@@ -39766,8 +39773,10 @@ async def _responses_stream(
         extractor = _ResponsesReasoningExtractor(
             # A Connection's native thinking arrives as a leading <think> block even when thinking is on
             # by default; only that block is read, so a literal tag later in the answer stays text.
-            parse_think_markers = upstream is not None
-            or _responses_should_parse_think_markers(chat_req, llama_backend),
+            parse_think_markers = (upstream is not None and chat_req.enable_thinking is not False)
+            or (
+                upstream is None and _responses_should_parse_think_markers(chat_req, llama_backend)
+            ),
             single_block = upstream is not None or _response_format_constrains_decoding(chat_req),
         )
         reasoning_state: dict[str, Any] = {"output_index": None, "item_id": None, "opened": False}
@@ -42393,12 +42402,13 @@ async def _anthropic_events_from_openai_sse(
     *,
     single_tool_use: bool = False,
     stop_sequences: Any = None,
+    parse_thinking: bool = True,
 ):
     emitter = AnthropicPassthroughEmitter()
     # Always, like the Studio chat: a provider can think by default with no thinking controls sent.
     # Native thinking leads the reply, so only a leading block is read: a literal tag later in the
     # answer (or inside JSON) stays text.
-    think = _ResponsesReasoningExtractor(parse_think_markers = True, single_block = True)
+    think = _ResponsesReasoningExtractor(parse_think_markers = parse_thinking, single_block = True)
     stop = _StopSequenceFilter(stop_sequences)
     recorder = _ConnectionExtrasRecorder(subject)
     dropped: set[int] = set()
@@ -42619,6 +42629,7 @@ async def _anthropic_messages_via_connection(
         single_tool_use = isinstance(payload.tool_choice, dict)
         and bool(payload.tool_choice.get("disable_parallel_tool_use")),
         stop_sequences = payload.stop_sequences,
+        parse_thinking = chat_payload.enable_thinking is not False,
     )
     if payload.stream:
         return _sse_streaming_response(events)
