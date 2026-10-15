@@ -66,6 +66,7 @@ export function useTranscription({
   ensureSttLoaded,
   setLastSttRepo,
   refreshSttStatus,
+  settleSavedSttRepo,
   sttEngineFor,
   readSttResidency,
   sttLoadGeneration,
@@ -80,6 +81,7 @@ export function useTranscription({
     | "ensureSttLoaded"
     | "setLastSttRepo"
     | "refreshSttStatus"
+    | "settleSavedSttRepo"
     | "sttEngineFor"
     | "readSttResidency"
     | "sttLoadGeneration"
@@ -183,7 +185,13 @@ export function useTranscription({
   }, [draftKey, transcript, transcribedName, transcriptModel, transcriptRecord, transcriptExported, transcriptDetails, speakerNames]);
 
   const prepareTranscriptionModel = useCallback(async () => {
-    const repo = selectedSttRepoRef.current ?? lastSttRepo;
+    let repo = selectedSttRepoRef.current;
+    if (!repo) {
+      // A saved whisper.cpp pick reads the host first; without PyTorch it loads its Qwen3-ASR.
+      const saved = await settleSavedSttRepo(lastSttRepo);
+      if (!activeRef.current) return null;
+      repo = selectedSttRepoRef.current ?? saved;
+    }
     if (!repo) {
       toast.info("Pick a speech-to-text model first.");
       return null;
@@ -226,6 +234,7 @@ export function useTranscription({
     return { model, engine };
   }, [
     lastSttRepo,
+    settleSavedSttRepo,
     sttLoadedModel,
     sttLoadedEngine,
     sttEngineFor,

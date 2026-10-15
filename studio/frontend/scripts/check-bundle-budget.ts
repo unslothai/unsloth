@@ -147,8 +147,12 @@ export const BUDGET = {
   // transfer (6,773,496 -> 6,774,820 B raw, 2,036,386 -> 2,036,728 B transfer against 59ab069b5, one machine
   // and build, Node 24, chunk count unchanged at 95). Lazy-loading it cost more transfer and a 96th startup
   // chunk (Rollup split react-dom out), so it is imported statically and the budget raised by that growth.
-  transferBytes: 2_036_821,
-  rawBytes: 6_774_897,
+  // Retiring whisper.cpp (#13753: the voice settings v2 migration and settling a saved whisper.cpp pick for the
+  // host) adds 1,475 B raw / 279 B transfer to the eager settings and chat chunks (6,777,794 -> 6,779,269 B raw,
+  // 2,037,725 -> 2,038,004 B transfer against 50b9deacb0, one machine and build, Node 24, chunk count unchanged at
+  // 95). Raised by that growth on top of the limits above so main's margin stays where it was.
+  transferBytes: 2_037_100,
+  rawBytes: 6_776_372,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

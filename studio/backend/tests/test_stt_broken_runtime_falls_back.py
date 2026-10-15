@@ -46,15 +46,19 @@ def test_a_runtime_that_cannot_infer_reports_unavailable(monkeypatch):
     assert "RemoteDisconnected" in (stt_ggml_sidecar.runtime_inference_failure() or "")
 
 
-def test_the_serving_engine_then_falls_back_to_transformers(monkeypatch):
+def test_the_serving_engine_is_transformers_healthy_or_broken(monkeypatch):
+    """whisper.cpp is retired: a gguf request lands on Transformers even while a healthy
+    whisper-server is installed, and stays there once the runtime breaks."""
+    from core.inference import stt_sidecar
     from routes import inference as inference_routes
 
     monkeypatch.setattr(stt_ggml_sidecar, "find_whisper_server_binary", lambda: "whisper-server")
     monkeypatch.setattr(stt_ggml_sidecar, "slim_runtime_intact", lambda binary: True)
+    monkeypatch.setattr(stt_sidecar, "is_available", lambda: True)
 
-    assert inference_routes._resolve_serving_stt_engine("gguf") == "gguf"
+    assert stt_ggml_sidecar.is_available() is True
+    assert inference_routes._resolve_serving_stt_engine("gguf") == "transformers"
     stt_ggml_sidecar.note_runtime_inference_failure("RemoteDisconnected")
-    # The fallback exists to avoid 501-ing on every recording; this is that case.
     assert inference_routes._resolve_serving_stt_engine("gguf") == "transformers"
 
 
@@ -105,6 +109,7 @@ def test_the_fallback_fetches_the_transformers_snapshot_it_needs(monkeypatch):
     monkeypatch.setattr(stt_ggml_sidecar, "find_whisper_server_binary", lambda: "whisper-server")
     monkeypatch.setattr(stt_ggml_sidecar, "slim_runtime_intact", lambda binary: True)
     monkeypatch.setattr(stt_sidecar, "is_model_downloaded", lambda model: False)
+    monkeypatch.setattr(stt_sidecar, "is_available", lambda: True)
     started = _shared_setup_1(monkeypatch, stt_sidecar)
 
     # A healthy runtime serves the GGUF itself, so nothing is fetched.

@@ -1199,9 +1199,13 @@ def test_process_alive_snapshots_process_against_concurrent_unload():
 # 3. Unload resolves through the serving engine + attempts every backend ---------
 def test_gguf_unload_targets_transformers_fallback_without_whisper_server(monkeypatch):
     import core.inference.stt_ggml_sidecar as ggml_module
+    import core.inference.stt_sidecar as stt_module
     import routes.inference as ri
 
     monkeypatch.setattr(ggml_module, "is_available", lambda: False)  # no whisper-server
+    monkeypatch.setattr(stt_module, "is_available", lambda: True)
+    # An earlier gguf load landed on the Transformers fallback.
+    monkeypatch.setattr(ri, "_RETIRED_ALIAS_SERVED", {"load": {"transformers"}, "download": set()})
 
     calls: list = []
 

@@ -30,6 +30,7 @@ const MTMD_REPO_BY_KEY: Record<string, string> = {
   "qwen3-asr-1.7b": "unslothai/Qwen3-ASR-1.7B-GGUF",
 };
 
+// whisper.cpp's GGML repos, retired: a saved one resolves to its Transformers twin.
 const GGUF_REPO_BY_KEY: Record<string, string> = {
   tiny: "unslothai/whisper-tiny-GGUF",
   base: "unslothai/whisper-base-GGUF",
@@ -59,7 +60,7 @@ const ENGINE_BY_REPO = new Map<string, AudioSttEngine>([
     (repoId) => [repoId.toLowerCase(), "transformers"] as const,
   ),
   ...Object.values(GGUF_REPO_BY_KEY).map(
-    (repoId) => [repoId.toLowerCase(), "gguf"] as const,
+    (repoId) => [repoId.toLowerCase(), "transformers"] as const,
   ),
   ...Object.values(MTMD_REPO_BY_KEY).map(
     (repoId) => [repoId.toLowerCase(), "mtmd"] as const,
@@ -82,14 +83,13 @@ export function sttRepoIdForSidecarKey(
   // A saved audiocpp dictation key names one folder whatever engine the caller assumed.
   if (engine === "audiocpp" || Object.hasOwn(AUDIOCPP_REPO_BY_KEY, normalized))
     return AUDIOCPP_REPO_BY_KEY[normalized] ?? sidecarKey;
-  if (engine === "gguf") return GGUF_REPO_BY_KEY[normalized] ?? sidecarKey;
   if (engine === "mtmd") return MTMD_REPO_BY_KEY[normalized] ?? sidecarKey;
   return TRANSFORMERS_REPO_BY_KEY[normalized] ?? sidecarKey;
 }
 
-/** Resolve from the picker artifact, not the shared short sidecar key. The curated Whisper and
- *  Qwen3-ASR GGUFs have engines of their own; every other GGUF ASR repo is the audio runtime's,
- *  and a safetensors repo runs on Transformers. */
+/** Resolve from the picker artifact, not the shared short sidecar key. The curated Qwen3-ASR
+ *  GGUFs run on llama.cpp and the retired Whisper GGUFs on Transformers; every other GGUF ASR
+ *  repo is the audio runtime's, and a safetensors repo runs on Transformers. */
 export function sttEngineForRepoId(
   repoId: string,
   isGguf?: boolean | null,
@@ -102,4 +102,57 @@ export function sttEngineForRepoId(
   return isGguf || isAudioCppFolderId(normalized) || GGUF_REPO_SUFFIX.test(leaf)
     ? "audiocpp"
     : "transformers";
+}
+
+const TRANSFORMERS_TWIN_BY_GGUF_REPO = new Map<string, string>(
+  Object.entries(GGUF_REPO_BY_KEY).map(([key, repoId]) => [
+    repoId.toLowerCase(),
+    TRANSFORMERS_REPO_BY_KEY[key],
+  ]),
+);
+
+/** Whether a saved Transcribe pick was a whisper.cpp one: its GGML repo or its engine. */
+export function isRetiredWhisperChoice(repo: string, engine: string): boolean {
+  return (
+    engine === "gguf" ||
+    TRANSFORMERS_TWIN_BY_GGUF_REPO.has(repo.trim().toLowerCase())
+  );
+}
+
+type SttHostAvailability = {
+  transformers?: { available: boolean };
+  mtmd?: { available: boolean };
+  audiocpp?: { available: boolean };
+};
+
+/** Where a retired whisper.cpp pick goes on this host: null keeps its Transformers twin (PyTorch
+ *  is here), otherwise llama.cpp Qwen3-ASR 0.6B, else audio.cpp's, as the backend serves the
+ *  retired engine. undefined while the host cannot tell yet or has neither. */
+export function retiredWhisperFallback(
+  host: SttHostAvailability,
+): { repo: string; engine: AudioSttEngine } | null | undefined {
+  if (host.transformers?.available === true) return null;
+  if (host.transformers?.available !== false) return undefined;
+  if (host.mtmd?.available) {
+    return { repo: MTMD_REPO_BY_KEY["qwen3-asr-0.6b"], engine: "mtmd" };
+  }
+  if (host.audiocpp?.available) {
+    return {
+      repo: AUDIOCPP_REPO_BY_KEY["audiocpp-qwen3-asr-0.6b"],
+      engine: "audiocpp",
+    };
+  }
+  return undefined;
+}
+
+/** A saved Transcribe pick in its current form: a retired whisper.cpp repo or engine becomes
+ *  its Transformers twin. Other picks pass through unchanged. */
+export function canonicalSttChoice(
+  repo: string,
+  engine: string,
+): { repo: string; engine: string } {
+  return {
+    repo: TRANSFORMERS_TWIN_BY_GGUF_REPO.get(repo.trim().toLowerCase()) ?? repo,
+    engine: engine === "gguf" ? "transformers" : engine,
+  };
 }

@@ -121,6 +121,7 @@ export function useCloneGeneration({
   replayQueuedTtsPick,
   audioOptionValues,
   sttRepo,
+  settleSttRepo,
 }: Pick<
   AudioHostState,
   | "status"
@@ -141,6 +142,7 @@ export function useCloneGeneration({
   Pick<AudioModelSlot, "pendingTranscribeRelease" | "replayQueuedTtsPick"> & {
     audioOptionValues: AudioOptionValues;
     sttRepo: string | null;
+    settleSttRepo?: (repo: string | null) => Promise<string | null>;
   }) {
   const reference = useAudioCloneStore((state) => state.reference);
   const referenceText = useAudioCloneStore((state) => state.referenceText);
@@ -163,6 +165,7 @@ export function useCloneGeneration({
 
   const referenceTranscriber = useReferenceTranscribe({
     sttRepo,
+    settleSttRepo,
     onText: (next, source) =>
       useAudioCloneStore.getState().applyTranscript(source, next),
   });
