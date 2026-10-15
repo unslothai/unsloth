@@ -2150,20 +2150,27 @@ def _local_weights_digest(path: Any) -> Optional[str]:
 
 
 def _peak_model_identity(
-    repo_id: Any, gguf_filename: Optional[str], kind: Optional[str], base: Any
+    repo_id: Any,
+    gguf_filename: Optional[str],
+    kind: Optional[str],
+    base: Any,
+    fetch_base: Optional[str] = None,
 ) -> str:
     """The exact build for the learned-peak key: the denoiser source and its weights' revision / fingerprint, plus the
     companion base and its revision for a GGUF / single-file load. ``unknown`` (no learned peak used or recorded)
-    when a revision cannot be read."""
+    when a revision cannot be read. ``fetch_base``: the repo the load actually read ``base`` from."""
     from .diffusion_component_sizes import checkpoint_fingerprint
     from .diffusion_families import mirror_repo
 
-    def _fingerprint(repo: Any, filename: Optional[str] = None) -> tuple[Any, Any]:
-        # Studio fetches a mirrored vendor base from its unsloth/ mirror (byte-identical), so a fresh install holds
-        # only the mirror: read the revision there when the vendor id has none, and name the repo it came from.
+    def _fingerprint(
+        repo: Any, filename: Optional[str] = None, fetched: Optional[str] = None
+    ) -> tuple[Any, Any]:
+        if fetched and str(fetched) != str(repo):
+            return fetched, checkpoint_fingerprint(fetched, filename)
         revision = checkpoint_fingerprint(repo, filename)
-        if revision or filename:
+        if revision or filename or fetched:
             return repo, revision
+        # No load decision: a fresh install may hold only the unsloth/ mirror.
         mirror = mirror_repo(str(repo)) if repo else None
         if mirror and mirror != str(repo):
             mirrored = checkpoint_fingerprint(mirror)
@@ -2171,7 +2178,10 @@ def _peak_model_identity(
                 return mirror, mirrored
         return repo, revision
 
-    repo_id, revision = _fingerprint(repo_id, gguf_filename)
+    pipeline = (kind or "pipeline") == "pipeline"
+    repo_id, revision = _fingerprint(
+        repo_id, gguf_filename, fetch_base if pipeline and str(base) == str(repo_id) else None
+    )
     source = f"{repo_id}/{gguf_filename}" if gguf_filename else str(repo_id)
     if not revision:
         return "unknown"
@@ -2181,8 +2191,8 @@ def _peak_model_identity(
             return "unknown"
         revision = f"{revision}:{weights}"
     identity = f"{source}@{revision}"
-    if (kind or "pipeline") != "pipeline" and base and str(base) != str(repo_id):
-        base, base_revision = _fingerprint(base)
+    if not pipeline and base and str(base) != str(repo_id):
+        base, base_revision = _fingerprint(base, None, fetch_base)
         if not base_revision:
             return "unknown"
         if str(base_revision).startswith("local:"):
@@ -8526,7 +8536,7 @@ class DiffusionBackend:
                             "; ".join(refined_plan.reasons),
                         )
                     plan = refined_plan
-                    peak_model = _peak_model_identity(repo_id, gguf_filename, kind, base)
+                    peak_model = _peak_model_identity(repo_id, gguf_filename, kind, base, fetch_base)
                     if getattr(pipe, "_unsloth_loras", None):
                         peak_model = (
                             "unknown"  # adapters baked in at load: a build the key cannot name
