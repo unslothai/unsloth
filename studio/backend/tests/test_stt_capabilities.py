@@ -52,7 +52,13 @@ def test_qwen3_reports_whether_its_aligner_is_downloaded(hub):
     def aligner():
         return caps.capabilities_for(f"{REPO}/Qwen3-ASR-1.7B-GGUF", "audiocpp")["aligner"]
 
-    assert aligner() == {"downloaded": False, "size_bytes": 1_129_966_496}
+    # The page stages the named quant through the Downloads panel before a timestamped run.
+    assert aligner() == {
+        "id": f"{REPO}/Qwen3-ForcedAligner-0.6B-GGUF",
+        "variant": "Q8_0",
+        "downloaded": False,
+        "size_bytes": 1_129_966_496,
+    }
     _add(hub, "Qwen3-ForcedAligner-0.6B-GGUF", "qwen3_forced_aligner")
     assert aligner()["downloaded"] is True and aligner()["size_bytes"] > 0
 

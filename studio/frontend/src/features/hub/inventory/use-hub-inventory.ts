@@ -45,6 +45,7 @@ import {
   buildLocalInventoryRows,
   cachedInventoryId,
   defaultCapabilities,
+  withUmbrellaFolderRows,
 } from "./view-models";
 import { normalizeTimestamp } from "./inventory-timestamps";
 import {
@@ -62,6 +63,8 @@ export interface HubInventory {
   inventorySettled: boolean;
   inventoryError: boolean;
   inventoryWarning: boolean;
+  /** When the oldest of the latest confirmed Hub cache fetches was sent; null until each has one. */
+  hubCacheRefreshStartedAt: number | null;
   refreshInventory: () => Promise<void>;
   refreshInventoryIfOlderThan: (maxAgeMs: number) => Promise<void>;
 }
@@ -72,6 +75,7 @@ type HubInventoryOptions = {
   kind?: HubInventoryKind;
   enabled?: boolean;
   includeLocal?: boolean;
+  includeUmbrellaFolders?: boolean;
 };
 
 const MODEL_HUB_CACHE_SOURCES = [
@@ -290,6 +294,7 @@ export function useHubInventory(
   const isDatasetMode = (options.kind ?? "models") === "datasets";
   const enabled = options.enabled ?? true;
   const includeLocal = options.includeLocal ?? true;
+  const includeUmbrellaFolders = options.includeUmbrellaFolders ?? false;
   const modelInventory = useDeviceInventorySources(MODEL_HUB_CACHE_SOURCES, {
     hfToken,
     enabled: enabled && !isDatasetMode,
@@ -501,12 +506,21 @@ export function useHubInventory(
     () =>
       [
         ...(isDatasetMode ? [] : liveDownloadRows),
-        ...cachedGguf.map((row) => buildCachedInventoryRow(row, "gguf")),
+        ...withUmbrellaFolderRows(
+          cachedGguf.map((row) => buildCachedInventoryRow(row, "gguf")),
+          includeUmbrellaFolders,
+        ),
         ...cachedModels.map((row) =>
           buildCachedInventoryRow(row, "safetensors"),
         ),
       ].sort(compareCachedRows),
-    [cachedGguf, cachedModels, isDatasetMode, liveDownloadRows],
+    [
+      cachedGguf,
+      cachedModels,
+      includeUmbrellaFolders,
+      isDatasetMode,
+      liveDownloadRows,
+    ],
   );
 
   const cachedDatasetRows = useMemo<CachedInventoryRow[]>(
@@ -731,6 +745,12 @@ export function useHubInventory(
         INVENTORY_FRESHNESS_WINDOW_MS,
       ),
   );
+  const hubCacheStarts = isDatasetMode
+    ? [cachedDatasetsSource.refreshStartedAt]
+    : [cachedGgufSource.refreshStartedAt, cachedModelsSource.refreshStartedAt];
+  const hubCacheRefreshStartedAt = hubCacheStarts.some((start) => start === null)
+    ? null
+    : Math.min(...(hubCacheStarts as number[]));
   const { emptyRevalidationRequired, inventorySettled } =
     resolveInventorySettlement({
       downloadedReady,
@@ -761,6 +781,7 @@ export function useHubInventory(
     inventorySettled,
     inventoryError: inventoryFailed,
     inventoryWarning,
+    hubCacheRefreshStartedAt,
     refreshInventory,
     refreshInventoryIfOlderThan,
   };

@@ -2353,9 +2353,12 @@ def test_gguf_variants_route_answers_when_a_header_read_never_returns(monkeypatc
     """One syscall that never returns cannot be interrupted from inside the walk, so the
     route bounds it. Without that the listing waits on it and the picker has nothing to click."""
     (tmp_path / "model-Q4_K_M.gguf").write_bytes(b"x")
+    # Hung until the test is over, not for a flat 5 s: an abandoned read outlives the test, and
+    # a later test's _drain_context_threads() then sat waiting for this sleep to run out.
+    release = threading.Event()
 
     def hung_read(_path):
-        time.sleep(5)
+        release.wait(5)
         return 8192
 
     monkeypatch.setattr("utils.models.gguf_metadata.read_gguf_context_length", hung_read)
@@ -2386,7 +2389,10 @@ def test_gguf_variants_route_answers_when_a_header_read_never_returns(monkeypatc
         )
         return answer, time.monotonic() - began
 
-    result, elapsed = asyncio.run(drive())
+    try:
+        result, elapsed = asyncio.run(drive())
+    finally:
+        release.set()
     assert [v.quant for v in result.variants] == ["Q4_K_M"]
     assert result.context_length is None
     assert elapsed < 3
@@ -4194,6 +4200,9 @@ def test_switching_cache_storage_does_not_join_a_stuck_scan(monkeypatch, tmp_pat
         cache_home[0] = tmp_path / "healthyvol"
         second = asyncio.ensure_future(GV.get_gguf_variants_answer("org/repo", offline = True))
         done, _ = await asyncio.wait({second}, timeout = 1.5)
+        # Measured; now unwedge the old scan, or asyncio.run's executor shutdown joins its
+        # thread and the test sits out the rest of the 5 s wait.
+        wedged.set()
         for task in (stuck, second):
             task.cancel()
         return bool(done)

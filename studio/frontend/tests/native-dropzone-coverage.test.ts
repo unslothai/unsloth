@@ -52,7 +52,7 @@ test("every file drop zone is reachable from the desktop app", async () => {
     if (!FILE_DROP_MARKERS.some((marker) => source.includes(marker))) continue;
     // The shared readers themselves (the DataTransfer walker, the hook) are not
     // drop zones; their callers are the ones that have to be reachable.
-    if (/export (async )?function filesFromDataTransfer/.test(source)) continue;
+    if (/export (async )?function (filesFromDataTransfer|filesFromDrop)\b/.test(source)) continue;
     if (NATIVE_MARKERS.some((marker) => source.includes(marker))) continue;
     dead.push(path.relative(new URL(".", SRC).pathname, file.pathname));
   }

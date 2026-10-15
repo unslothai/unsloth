@@ -83,6 +83,7 @@ def h3_host(monkeypatch, tmp_path):
         help_text: str | None,
         managed: bool = False,
         lists_accelerator: bool = True,
+        paravirtual: bool = False,
     ):
         monkeypatch.setattr(
             sd_cpp_engine.sys, "platform", "linux" if platform == "wsl" else platform
@@ -92,6 +93,9 @@ def h3_host(monkeypatch, tmp_path):
             "resolve_diffusion_device_target",
             lambda: types.SimpleNamespace(backend = backend, device = device, dtype = None),
         )
+        from core.inference import sd_cpp_args
+
+        monkeypatch.setattr(sd_cpp_args, "metal_is_paravirtual", lambda: paravirtual)
         monkeypatch.setattr(sd_cpp_backend, "_install_allowed", lambda: True)
         monkeypatch.setattr(sd_cpp_backend, "is_managed_binary", lambda _b: managed)
         monkeypatch.setattr(sd_cpp_engine, "SdCppEngine", _Engine)
@@ -194,6 +198,22 @@ def test_h3_preflight_admits_a_capable_build_and_downloads_once(
     assert backend_obj._state is not None
     # A GPU target keeps its device when the build offers an accelerator; CPU/MPS are unchanged.
     assert backend_obj._state.device == device
+
+
+def test_h3_on_a_paravirtual_mac_commits_cpu_and_drops_the_video_claim(h3_host, monkeypatch):
+    # sd.cpp runs a paravirtual Metal GPU on the CPU backend, so the load must not keep the VIDEO claim.
+    from core.inference import gpu_arbiter
+
+    released = []
+    monkeypatch.setattr(
+        gpu_arbiter, "release_if", lambda owner, pred: released.append(owner) or pred()
+    )
+    host = h3_host(
+        platform = "darwin", backend = "mps", device = "mps", help_text = _H3_HELP, paravirtual = True
+    )
+    backend_obj = host.run()
+    assert backend_obj._state is not None and backend_obj._state.device == "cpu"
+    assert released == [gpu_arbiter.VIDEO]
 
 
 @pytest.mark.parametrize("platform", PLATFORMS)

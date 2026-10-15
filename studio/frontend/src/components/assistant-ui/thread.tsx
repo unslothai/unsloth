@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { createPortal } from "react-dom";
 import {
   canQueueTextAttachment,
   normalizeQueuedPrompt,
@@ -20,11 +21,25 @@ import {
   GeneratedImageOverlayProvider,
   useGeneratedImageOverlay,
 } from "@/components/assistant-ui/generated-image-overlay-context";
-import { CompactionNotice } from "@/components/assistant-ui/compaction-notice";
-import { compactionNoticeMessageIds } from "@/components/assistant-ui/message-derived";
-import type { ContextTruncation } from "@/features/chat/utils/context-truncation";
+import { AutoReadAloud } from "@/components/assistant-ui/auto-read-aloud";
+import { CompactionDivider } from "@/components/assistant-ui/compaction-divider";
+import {
+  compactionDividerRows,
+  compactionToolCallDividers,
+  memoOnArrayByKey,
+} from "@/components/assistant-ui/message-derived";
 import { downloadImagePart } from "@/components/assistant-ui/image";
-import { MarkdownText } from "@/components/assistant-ui/markdown-text";
+import {
+  MarkdownText,
+  highlightFenceSource,
+} from "@/components/assistant-ui/markdown-text";
+import { grammarWarmed } from "@/components/assistant-ui/code-fence-defer";
+import {
+  createGrammarPrewarm,
+  type GrammarPrewarm,
+} from "@/components/assistant-ui/grammar-prewarm";
+import { streamActive } from "@/components/assistant-ui/use-reasoning-highlight";
+import { scheduleQuietIdleTask } from "@/lib/schedule-idle-task";
 import { MessageHtmlArtifacts } from "@/components/assistant-ui/message-html-artifacts";
 import {
   MessageResponseDetailsSheet,
@@ -37,12 +52,16 @@ import { ProgressiveMessages } from "@/components/assistant-ui/progressive-messa
 import { MessageMenuTime } from "@/components/assistant-ui/message-menu-time";
 import { UserMessageActionBar, UserMessageFooter } from "@/components/assistant-ui/user-message-actions";
 import { useActionBarFocusReveal } from "@/components/assistant-ui/use-action-bar-focus-reveal";
+import {
+  composerColumnInset,
+  readViewportBox,
+} from "@/components/assistant-ui/composer-column-inset";
 import { MessageTiming } from "@/components/assistant-ui/message-timing";
 import { attachThreadFastCopy } from "@/components/assistant-ui/thread-fast-copy";
 import { attachWheelHoverSuppression } from "@/components/assistant-ui/thread-wheel-hover";
 import { threadHasResearchMessage } from "@/components/assistant-ui/thread-research-presence";
+import { observeThreadWidthSteps } from "@/components/assistant-ui/thread-width-steps";
 import { Reasoning, ReasoningGroup } from "@/components/assistant-ui/reasoning";
-import { RagSourcesGroup } from "@/components/assistant-ui/rag-sources";
 import { researchReplyOwners } from "@/components/assistant-ui/research-reply-owners";
 import { Sources, SourcesGroup } from "@/components/assistant-ui/sources";
 import {
@@ -61,6 +80,7 @@ import { ImageGenerationToolUI } from "@/components/assistant-ui/tool-ui-image-g
 import { KnowledgeBaseToolUI } from "@/components/assistant-ui/tool-ui-knowledge-base";
 import { ReadSkillToolUI } from "@/components/assistant-ui/tool-ui-read-skill";
 import { SkillMentionPopover } from "@/components/assistant-ui/skill-mentions";
+import { isRewindCommand, useRewindDialogStore } from "@/features/chat";
 import { RenderHtmlToolUI } from "@/components/assistant-ui/tool-ui-render-html";
 import { PythonToolUI } from "@/components/assistant-ui/tool-ui-python";
 import { TerminalToolUI } from "@/components/assistant-ui/tool-ui-terminal";
@@ -68,7 +88,6 @@ import { WebSearchToolUI } from "@/components/assistant-ui/tool-ui-web-search";
 import { ChatDictationBar } from "@/components/assistant-ui/chat-dictation-bar";
 import {
   ChatAudioUploadMount,
-  ChatSkillsDialog,
   composerSubmitIntent,
   composerFollowUpBehavior,
   composerShortcutLabels,
@@ -81,8 +100,13 @@ import {
   type ComposerSendShortcut,
   type ComposerSubmitIntent,
   type ComposerFollowUpBehavior,
+  type ContextTruncation,
   attachmentsPastedText,
   hasPendingPromptQueueStart,
+  isCompactCommand,
+  isThreadIncognito,
+  requestThreadCompaction,
+  useCompactRequestStore,
   isPastedTextFile,
   pastedTextQueueKey,
   promptQueueActiveItemChanged,
@@ -97,6 +121,7 @@ import {
   notifyStudioDictationUnavailable,
   YoutubeTranscriptPrompt,
   stripSearchImageTokens,
+  ChatComposerFocusableContext,
   useChatActive,
   useChatAudioUpload,
   useInComparePane,
@@ -156,6 +181,7 @@ import {
   DeepResearchWebsiteAccessDialog,
 } from "@/features/chat/components/deep-research-composer-button";
 import {
+  NativeAttachmentDragContext,
   type NativeIntent,
   useNativeAttachmentTargetKey,
   useNativeIntentStore,
@@ -206,7 +232,10 @@ import {
   watchAutoContinueRun,
 } from "@/features/chat/utils/auto-continue-run-keeper";
 import { McpComposerButton } from "@/features/chat/mcp-composer-button";
-import { SkillsComposerButton } from "@/features/chat/skills-composer-button";
+import {
+  SkillsComposerButton,
+  useSkillsSwitch,
+} from "@/features/chat/skills-composer-button";
 import { pickerAcceptForTextBasenames } from "@/features/chat/text-attachment-accept";
 import {
   COMPOSER_INPUT_SELECTOR,
@@ -219,6 +248,7 @@ import {
 } from "@/features/settings";
 import { FIND_SKIP_ATTRIBUTE } from "@/features/find-in-page";
 import { translate, useT } from "@/i18n";
+import type { TranslationKey } from "@/i18n";
 import {
   clampReasoningEffortToLevels,
   getExternalReasoningCapabilities,
@@ -246,7 +276,7 @@ import {
 import { useExternalProvidersStore } from "@/features/chat/stores/external-providers-store";
 import { saveMarkdownAsProjectSource } from "@/features/rag";
 import {
-  PLUS_MENU_ORDER,
+  splitPlusMenuItems,
   CONVERSATION_MARKDOWN_LABEL,
   addQueuedChatRunSettingsThreadIds,
   adoptPreStreamRunReservation,
@@ -270,6 +300,10 @@ import {
   shouldAbortPendingQueueForSettingsChange,
   resolveDeferredQueuedModelSettings,
   snapshotQueuedChatRunSettings,
+  adoptLegacyDraft,
+  latestDraft,
+  publishDraft,
+  subscribeDraft,
   composerDraftKey,
   composerPasteDraftKey,
   createPastedTextFile,
@@ -324,7 +358,6 @@ import {
 import { useRagAvailabilityStore } from "@/features/rag/api/rag-availability";
 import { ThreadDocumentsBar } from "@/features/rag/components/thread-documents-bar";
 import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge-base-composer-button";
-import { DocumentPreviewMount } from "@/features/rag/components/document-preview-mount";
 import { useUserProfileStore } from "@/features/profile/stores/user-profile-store";
 import { usePublishedFrame } from "@/features/settings/hooks/use-published-frame";
 import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
@@ -340,6 +373,7 @@ import { MicIcon } from "@/lib/mic-icon";
 import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { Tick02Icon } from "@/lib/tick-icon";
+import { BrowserAgentMenuItem, BrowserAgentPill } from "@/features/browser/agent/lazy-composer-toggle";
 import {
   BranchNextIcon,
   BranchPrevIcon,
@@ -379,6 +413,7 @@ import {
   McpServerIcon,
   Scroll01Icon,
   Telescope02Icon,
+  UndoIcon,
   VolumeMute02Icon,
   WorkflowCircle05Icon,
 } from "@hugeicons/core-free-icons";
@@ -407,10 +442,13 @@ import {
   type FC,
   type KeyboardEvent,
   type DragEvent as ReactDragEvent,
+  type PropsWithChildren,
   type ReactNode,
   type RefObject,
   Fragment,
+  Suspense,
   createContext,
+  lazy,
   memo,
   useCallback,
   useContext,
@@ -1831,10 +1869,35 @@ const ThreadMessage: FC = () => {
   }
   return (
     <>
+      <CompactionRowDivider />
       {body}
       <ForkContinuationRule />
+      <PendingCompactionRule />
     </>
   );
+};
+
+const PendingCompactionRule: FC = () => {
+  const threadId = useChatRuntimeStore((s) => s.activeThreadId);
+  const pending = useCompactRequestStore((s) =>
+    threadId === null ? false : s.requested[threadId] === true,
+  );
+  const endsWithReply = useAuiState(
+    ({ message }) => message.isLast && message.role === "assistant",
+  );
+  if (!pending || !endsWithReply) return null;
+  return <CompactionDivider pending={true} className="mt-6" />;
+};
+
+// The selector returns the persisted record, which keeps its identity between renders, so a
+// row re-renders only when a divider arrives or leaves above it.
+const CompactionRowDivider: FC = () => {
+  const truncation = useAuiState(
+    ({ thread, message }) =>
+      compactionDividerRows(thread.messages).get(message.id) ?? null,
+  );
+  if (!truncation) return null;
+  return <CompactionDivider truncation={truncation} />;
 };
 
 /**
@@ -1847,6 +1910,8 @@ const ThreadMessage: FC = () => {
  * The walk stops at the first message the fork did not inherit, so it costs the inherited
  * count rather than the thread length.
  */
+const FORK_BOUNDARY_NONE: readonly string[] = [];
+
 const useTrackForkBoundaryAnchor = (threadId: string | null): void => {
   const inherited = useForkBoundaryStore((s) =>
     threadId === null
@@ -1854,7 +1919,9 @@ const useTrackForkBoundaryAnchor = (threadId: string | null): void => {
       : s.boundaryByThreadId[threadId]?.messageIds,
   );
   const anchor = useAuiState(({ thread }) =>
-    forkBoundaryAnchor(thread.messages, inherited),
+    memoOnArrayByKey(thread.messages, inherited ?? FORK_BOUNDARY_NONE, () =>
+      forkBoundaryAnchor(thread.messages, inherited),
+    ),
   );
   useEffect(() => {
     setForkBoundaryAnchor(threadId, anchor);
@@ -1937,6 +2004,42 @@ const ForkContinuationRule: FC = () => {
   );
 };
 
+const PREWARM_INPUT_QUIET_MS = 1000;
+const PREWARM_INPUT_EVENTS = [
+  "scroll",
+  "wheel",
+  "pointerdown",
+  "keydown",
+  "touchmove",
+] as const;
+let grammarPrewarm: GrammarPrewarm | null = null;
+
+const startGrammarPrewarm = (): void => {
+  if (grammarPrewarm !== null) return;
+  let lastInputAt = Number.NEGATIVE_INFINITY;
+  const noteInput = () => {
+    lastInputAt = performance.now();
+  };
+  for (const type of PREWARM_INPUT_EVENTS) {
+    document.addEventListener(type, noteInput, { capture: true, passive: true });
+  }
+  grammarPrewarm = createGrammarPrewarm(
+    (code, language, late) => highlightFenceSource(code, language, late),
+    {
+      idle: scheduleQuietIdleTask,
+      wait: (callback, ms) => {
+        const timer = setTimeout(callback, ms);
+        return () => clearTimeout(timer);
+      },
+      quiet: () =>
+        !streamActive()
+        && performance.now() - lastInputAt >= PREWARM_INPUT_QUIET_MS,
+      skip: grammarWarmed,
+    },
+  );
+  grammarPrewarm.start();
+};
+
 // Hoisted, so ThreadPrimitive.Messages sees the same children function on every Thread render. An
 // inline arrow changes identity each time, invalidating the memo that keeps the message array from
 // being rebuilt, and the bail-out below it would never get to run.
@@ -1949,11 +2052,17 @@ export const Thread: FC<{
   hideWelcome?: boolean;
   targetThreadId?: string;
 }> = memo(({ hideComposer, hideWelcome, targetThreadId }) => {
+  useEffect(() => {
+    startGrammarPrewarm();
+  }, []);
   // Intent-aware autoscroll replaces assistant-ui's built-in autoscroll to
   // prevent the streaming-mutation race that snaps the viewport back to the
   // bottom while the user scrolls up (see the hook for the full explanation).
-  const { ref: viewportRef, context: autoScrollContext } =
-    useIntentAwareAutoScroll();
+  const {
+    ref: viewportRef,
+    markerRef,
+    context: autoScrollContext,
+  } = useIntentAwareAutoScroll();
 
   const isComposerAttachPending = useAuiState(({ threads }) =>
     targetThreadId ? threads.mainThreadId !== targetThreadId : false,
@@ -1978,7 +2087,14 @@ export const Thread: FC<{
   // Viewport element is owned by the autoscroll hook; mirror it locally for
   // the spacer clamp math. State, not a ref: the keyed provider remounts the
   // viewport on thread switches and the scroll listener must re-attach.
-  const [viewportEl, setViewportEl] = useState<HTMLElement | null>(null);
+  const [viewportSlot, setViewportSlot] = useState<{
+    el: HTMLElement;
+    threadId: string;
+  } | null>(null);
+  const viewportEl =
+    viewportSlot !== null && viewportSlot.threadId === runtimeThreadId
+      ? viewportSlot.el
+      : null;
   // Same element in an identity-stable ref, so ProgressiveMessages can read the viewport without a
   // prop that would rebuild its row array on thread switch. A ref rather than a document-wide query
   // because the Compare panes each mount their own Thread.
@@ -1986,10 +2102,10 @@ export const Thread: FC<{
   const composedViewportRef = useCallback(
     (node: HTMLElement | null) => {
       viewportElRef.current = node;
-      setViewportEl(node);
+      setViewportSlot(node ? { el: node, threadId: runtimeThreadId } : null);
       viewportRef(node);
     },
-    [viewportRef],
+    [viewportRef, runtimeThreadId],
   );
 
   // plain-text copy skips styled data that consumes over 99% of long-thread copy time.
@@ -2052,6 +2168,7 @@ export const Thread: FC<{
       desiredSpacerPxRef.current = null;
       appliedSpacerPxRef.current = null;
       spacerElRef.current?.style.removeProperty("height");
+      autoScrollContext.notifyContentResized();
       return;
     }
     const desired = composerHeight + COMPOSER_SCROLL_GAP_PX;
@@ -2087,6 +2204,7 @@ export const Thread: FC<{
         autoScrollContext.detachFromBottom();
       }
     }
+    autoScrollContext.notifyContentResized();
   }, [composerHeight, hideComposer, autoScrollContext, aui, applySpacerPx, viewportEl]);
 
   // Drop deferred spacer excess once the user has scrolled far enough above
@@ -2166,11 +2284,97 @@ export const Thread: FC<{
     }
   };
 
+  const watchWidthSteps = useCallback(
+    (root: HTMLDivElement | null) =>
+      root ? observeThreadWidthSteps(root) : undefined,
+    [],
+  );
+
   return (
     <GeneratedImageOverlayProvider key={runtimeThreadId} threadId={threadId}>
       <PageDragContext.Provider value={pageDragging}>
+      <IntentAwareScrollProvider value={autoScrollContext}>
+        <ThreadPrimitive.Viewport
+          autoScroll={false}
+          scrollToBottomOnRunStart={false}
+          scrollToBottomOnInitialize={false}
+          scrollToBottomOnThreadSwitch={false}
+          ref={markerRef}
+          className="aui-thread-host hidden"
+          onDragEnter={onDragEnter}
+          onDragOver={onDragOver}
+          onDragLeave={onDragLeave}
+          onDrop={onDrop}
+          aria-hidden={true}
+        >
+          {viewportEl !== null &&
+            createPortal(
+              <>
+          {!hideWelcome && (
+            <AuiIf
+              condition={({ thread }) => thread.isEmpty && !thread.isLoading}
+            >
+              <ThreadWelcome hideComposer={hideComposer} threadId={threadId} />
+            </AuiIf>
+          )}
+
+          {/* Drop-in for ThreadPrimitive.Messages that bounds a long thread's first commit to
+          the tail and mounts the rest over the following frames. Nothing unmounts and the
+          document converges to the tree this rendered before; consumers that cannot wait call
+          completeProgressiveMounts. It takes the propless slot #9042 introduced, for the same
+          reason: React's bail-out needs one shared element per row. See
+          progressive-mount-controller.ts. */}
+          <ProgressiveMessages
+            renderMessage={renderThreadMessage}
+            resetKey={runtimeThreadId}
+            viewportRef={viewportElRef}
+          />
+
+          {/* Bottom slack so the last message has room above the sticky
+          scroll-to-bottom button (and floating composer in single mode),
+          instead of butting against the footer. */}
+          <AuiIf condition={({ thread }) => hideWelcome || !thread.isEmpty}>
+            <div
+              ref={spacerRef}
+              className={cn(
+                "shrink-0",
+                hideComposer
+                  ? "h-16"
+                  : composerHeight == null
+                    ? "h-40"
+                    : undefined,
+              )}
+              aria-hidden={true}
+            />
+          </AuiIf>
+
+          <AuiIf condition={({ thread }) => hideWelcome || !thread.isEmpty}>
+            <ThreadPrimitive.ViewportFooter
+              className={cn(
+                "aui-thread-viewport-footer pointer-events-none sticky z-20 flex w-full justify-center bg-transparent",
+                hideComposer
+                  ? "bottom-3"
+                  : footerBottomPx == null
+                    ? "bottom-[calc(150px*var(--ui-space-scale,1))]"
+                    : undefined,
+              )}
+              style={
+                !hideComposer && footerBottomPx != null
+                  ? { bottom: footerBottomPx }
+                  : undefined
+              }
+            >
+              <ThreadScrollToBottom />
+            </ThreadPrimitive.ViewportFooter>
+          </AuiIf>
+              </>,
+              viewportEl,
+            )}
+        </ThreadPrimitive.Viewport>
+      </IntentAwareScrollProvider>
       <ThreadPrimitive.Root
-        className="aui-root aui-thread-root @container relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden"
+        ref={watchWidthSteps}
+        className="aui-root aui-thread-root relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden [contain:style]"
         style={{
           ["--thread-max-width" as string]: "var(--custom-chat-max-width, 48rem)",
           ["--thread-content-max-width" as string]:
@@ -2181,83 +2385,17 @@ export const Thread: FC<{
         onDragLeave={onDragLeave}
         onDrop={onDrop}
       >
+        {!hideComposer && <AutoReadAloud />}
         <IntentAwareScrollProvider value={autoScrollContext}>
-          <ThreadPrimitive.Viewport
+          <div
             ref={composedViewportRef}
-            autoScroll={false}
-            scrollToBottomOnRunStart={false}
-            scrollToBottomOnInitialize={false}
-            scrollToBottomOnThreadSwitch={false}
             className={cn(
               "aui-thread-viewport aui-stream-viewport relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-x-auto overflow-y-auto scroll-smooth px-5",
               hideComposer
                 ? "pt-4"
-                : // + the chat-model notice, which is an opaque absolute bar
-                  // directly under the header. 0px whenever it is not showing,
-                  // so every other surface keeps the padding it had.
-                  "[--thread-header-offset:calc(var(--studio-content-top-inset,0px)+var(--studio-chat-header-height,48px)+var(--studio-chat-notice-height,0px))] pt-[var(--thread-header-offset)]",
+                : "[--thread-header-offset:calc(var(--studio-content-top-inset,0px)-var(--studio-chat-scroller-top,0px)+var(--studio-chat-header-height,48px))] mt-[var(--studio-chat-scroller-top,0px)] pt-[var(--thread-header-offset)]",
             )}
-          >
-            {!hideWelcome && (
-              <AuiIf
-                condition={({ thread }) => thread.isEmpty && !thread.isLoading}
-              >
-                <ThreadWelcome hideComposer={hideComposer} threadId={threadId} />
-              </AuiIf>
-            )}
-
-            {/* Drop-in for ThreadPrimitive.Messages that bounds a long thread's first commit to
-            the tail and mounts the rest over the following frames. Nothing unmounts and the
-            document converges to the tree this rendered before; consumers that cannot wait call
-            completeProgressiveMounts. It takes the propless slot #9042 introduced, for the same
-            reason: React's bail-out needs one shared element per row. See
-            progressive-mount-controller.ts. */}
-            <ProgressiveMessages
-              renderMessage={renderThreadMessage}
-              resetKey={runtimeThreadId}
-              viewportRef={viewportElRef}
-            />
-
-            {/* Bottom slack so the last message has room above the sticky
-            scroll-to-bottom button (and floating composer in single mode),
-            instead of butting against the footer. */}
-            <AuiIf condition={({ thread }) => hideWelcome || !thread.isEmpty}>
-              <div
-                ref={spacerRef}
-                className={cn(
-                  "shrink-0",
-                  hideComposer
-                    ? "h-16"
-                    : composerHeight == null
-                      ? "h-40"
-                      : undefined,
-                )}
-                aria-hidden={true}
-              />
-            </AuiIf>
-
-            <AuiIf condition={({ thread }) => hideWelcome || !thread.isEmpty}>
-              <ThreadPrimitive.ViewportFooter
-                className={cn(
-                  "aui-thread-viewport-footer pointer-events-none sticky z-20 flex w-full justify-center bg-transparent",
-                  // 150px (was 140px) to add a small gap above the composer
-                  hideComposer
-                    ? "bottom-3"
-                    : footerBottomPx == null
-                      ? "bottom-[calc(150px*var(--ui-space-scale,1))]"
-                      : undefined,
-                )}
-                style={
-                  !hideComposer && footerBottomPx != null
-                    ? { bottom: footerBottomPx }
-                    : undefined
-                }
-              >
-                <ThreadScrollToBottom />
-              </ThreadPrimitive.ViewportFooter>
-            </AuiIf>
-          </ThreadPrimitive.Viewport>
-
+          />
           <GeneratedImageViewportOverlay
             hideComposer={hideComposer}
             bottomOffsetPx={footerBottomPx}
@@ -2274,8 +2412,7 @@ export const Thread: FC<{
           )}
         </IntentAwareScrollProvider>
       </ThreadPrimitive.Root>
-      {/* Document preview, opened by citation badges. */}
-      <DocumentPreviewMount />
+      <RewindDialogMount />
       </PageDragContext.Provider>
     </GeneratedImageOverlayProvider>
   );
@@ -2305,7 +2442,7 @@ const GeneratedImageViewportOverlay: FC<{
     <div className="pointer-events-none absolute inset-0 z-30">
       <button
         type="button"
-        className="pointer-events-auto absolute inset-0 bg-background/65 backdrop-blur-[1px] dark:bg-background/55"
+        className="pointer-events-auto absolute inset-0 bg-background/65 dark:bg-background/55"
         onClick={closeOverlay}
         aria-label="Close generated image preview"
       />
@@ -2433,6 +2570,29 @@ const ThreadComposerDock: FC<{
     };
   }, [onHeightChange]);
 
+  const dockInnerRef = useRef<HTMLDivElement | null>(null);
+  useLayoutEffect(() => {
+    const dock = dockRef.current;
+    const inner = dockInnerRef.current;
+    const viewport = dock?.parentElement?.querySelector<HTMLElement>(
+      ":scope > .aui-thread-viewport",
+    );
+    if (!dock || !inner || !viewport) return;
+    const apply = () => {
+      const inset = composerColumnInset(
+        readViewportBox(viewport),
+        dock.getBoundingClientRect(),
+      );
+      inner.style.setProperty("--composer-dock-inset-left", `${inset.left}px`);
+      inner.style.setProperty("--composer-dock-inset-right", `${inset.right}px`);
+    };
+    apply();
+    const resizeObserver = new ResizeObserver(apply);
+    resizeObserver.observe(viewport);
+    resizeObserver.observe(dock);
+    return () => resizeObserver.disconnect();
+  }, []);
+
   return (
     <div
       ref={dockRef}
@@ -2453,9 +2613,7 @@ const ThreadComposerDock: FC<{
             : "top-[calc(10px*var(--ui-space-scale,1))]",
         )}
       />
-      {/* Narrow panes spend the gutter on the composer instead; index.css
-          trims it off the pane's width, not the window's. */}
-      <div className="unsloth-composer-dock-inner relative px-5 pb-2">
+      <div ref={dockInnerRef} className="unsloth-composer-dock-inner relative pb-2">
         <div className="pointer-events-auto mx-auto w-full max-w-(--thread-max-width)">
           <ComposerAnimated
             disabled={disabled}
@@ -2509,41 +2667,47 @@ const pickRandom = <T,>(arr: T[]): T =>
 
 // Each greeting carries its matching sloth picture so a line always shows the
 // same mascot. Greeting varies by local time; name-bearing lines drop the
-// name when none is set.
-type Welcome = { text: string; sloth: string };
+// name when none is set. Text is a message key, translated at render so a
+// language switch updates the open greeting.
+type Welcome = { key: TranslationKey; name?: string; sloth: string };
 const DEFAULT_WELCOME: Welcome = {
-  text: "What’s on your mind today?",
+  key: "welcome.onYourMind",
   sloth: "sloth magnify final.png",
 };
 
 function buildWelcome(hour: number, name: string): Welcome {
-  const g = (text: string, sloth: string): Welcome => ({ text, sloth });
+  const g = (key: TranslationKey, sloth: string): Welcome => ({ key, sloth });
+  const named = (
+    key: TranslationKey,
+    namedKey: TranslationKey,
+    sloth: string,
+  ): Welcome => (name ? { key: namedKey, name, sloth } : { key, sloth });
   // Use the name on ~a third of lines (only direct salutations where it reads
   // naturally); the rest stay name-free so greetings don't feel repetitive.
   const base: Welcome[] = [
-    g(name ? `Good to see you, ${name}` : "Good to see you", "large sloth wave.png"),
-    g("Ready when you are", "large sloth thumbs.png"),
+    named("welcome.goodToSeeYou", "welcome.goodToSeeYouName", "large sloth wave.png"),
+    g("welcome.readyWhenYouAre", "large sloth thumbs.png"),
     DEFAULT_WELCOME,
-    g("How can I help?", "sloth sir large.png"),
+    g("welcome.howCanIHelp", "sloth sir large.png"),
   ];
   if (hour >= 4 && hour < 9) {
-    const morning = g(name ? `Good morning, ${name}` : "Good morning", "large sloth drink.png");
+    const morning = named("welcome.goodMorning", "welcome.goodMorningName", "large sloth drink.png");
     return pickRandom([...base, morning]);
   }
   if (hour >= 17 && hour < 23) {
     const evening: Welcome[] = [
-      g(name ? `Good evening, ${name}` : "Good evening", "sloth shy large.png"),
-      g("What’s on for tonight?", "large sloth glasses.png"),
+      named("welcome.goodEvening", "welcome.goodEveningName", "sloth shy large.png"),
+      g("welcome.tonight", "large sloth glasses.png"),
     ];
     // Lean toward an evening line, but a base greeting can still appear.
     return pickRandom(Math.random() < 0.75 ? evening : base);
   }
   if (hour >= 23 || hour < 4) {
     return pickRandom([
-      g("Night owl mode?", "large sloth glasses.png"),
-      g("Late night ideas?", "large sloth yay.png"),
-      g("Up late with an idea?", "large sloth heart.png"),
-      g(name ? `The night shift begins, ${name}` : "The night shift begins", "large sloth drink.png"),
+      g("welcome.nightOwl", "large sloth glasses.png"),
+      g("welcome.lateNightIdeas", "large sloth yay.png"),
+      g("welcome.upLate", "large sloth heart.png"),
+      named("welcome.nightShift", "welcome.nightShiftName", "large sloth drink.png"),
     ]);
   }
   return pickRandom(base);
@@ -2558,6 +2722,7 @@ const ThreadWelcome: FC<{
   const nickname = useUserProfileStore((s) => s.nickname);
   const showGreetingSloth = useUserProfileStore((s) => s.showGreetingSloth);
   const [welcome, setWelcome] = useState<Welcome>(DEFAULT_WELCOME);
+  const t = useT();
 
   useEffect(() => {
     // Prefer the nickname; otherwise first name only. Blank falls back to none.
@@ -2585,13 +2750,14 @@ const ThreadWelcome: FC<{
               />
             )}
             <h1 className="aui-thread-welcome-message-inner unsloth-welcome-title fade-in slide-in-from-bottom-1 animate-in text-3xl tracking-[-0.02em] duration-200">
-              {incognito ? "Temporary chat" : welcome.text}
+              {incognito
+                ? t("welcome.temporaryChat")
+                : t(welcome.key, welcome.name ? { name: welcome.name } : undefined)}
             </h1>
           </div>
           {incognito && (
             <p className="aui-thread-welcome-message-inner fade-in -mt-2 animate-in text-center font-heading font-normal text-muted-foreground text-sm duration-200">
-              This chat won't appear in your history and isn't saved. It
-              disappears when you leave.
+              {t("welcome.temporaryChatDescription")}
             </p>
           )}
           {!hideComposer && <ComposerAnimated threadId={threadId} />}
@@ -2615,7 +2781,6 @@ export const ProjectComposer: FC<{
         disableQueue
       />
       {/* Its file cards open previews; the thread's mount is not on this page. */}
-      <DocumentPreviewMount />
     </GeneratedImageOverlayProvider>
   );
 };
@@ -2680,6 +2845,9 @@ function claimPortaledDrop(event: ReactDragEvent): void {
   }
 }
 
+// Never a thread id, so entering or leaving a temporary chat counts as a chat switch.
+const INCOGNITO_DRAFT_SCOPE = "\u0000incognito";
+
 const Composer: FC<{
   disabled?: boolean;
   placeholder?: string;
@@ -2690,6 +2858,7 @@ const Composer: FC<{
   const aui = useAui();
   const isDictating = useAuiState((s) => s.composer.dictation != null);
   const pageDragging = useContext(PageDragContext);
+  const nativeDragging = useContext(NativeAttachmentDragContext);
   const { overlay, closeOverlay } = useGeneratedImageOverlay();
   const setImageToolsEnabled = useChatRuntimeStore(
     (s) => s.setImageToolsEnabled,
@@ -2742,7 +2911,7 @@ const Composer: FC<{
       useChatRuntimeStore.getState().setDeepResearchEnabled(false);
     }
   }, [deepResearchEnabled, hasResearchMessage, researchThreadId, researchUsed]);
-  // More than 4 pills: collapse to icons only. Search, Code, and permissions
+  // More than 4 pills: collapse to icons only. Search, Tools, and permissions
   // always show; Images, RAG, MCP and Deep Research are conditional.
   // Narrow viewports collapse too: the labelled row is wider than a phone composer.
   const isMobile = useIsMobile();
@@ -3662,6 +3831,18 @@ const Composer: FC<{
   const composerIdentity = threadListItemId ?? "";
   composerIdentityRef.current = composerIdentity;
   const chatActive = useChatActive();
+  const composerFocusable = useContext(ChatComposerFocusableContext);
+  // While a Run handoff owns the model picker the input ignores focus(), so its autofocus cannot
+  // dismiss the picker. Gating autoFocus would focus it when the gate lifts; inert would also block
+  // a press and read as Chat being covered.
+  useLayoutEffect(() => {
+    const input = inputRef.current;
+    if (composerFocusable || !input) return;
+    input.focus = () => {};
+    return () => {
+      Reflect.deleteProperty(input, "focus");
+    };
+  }, [composerFocusable, isDictating]);
   const readAudioUploadDraft = useCallback(
     () => aui.composer().getState().text,
     [aui],
@@ -3735,25 +3916,36 @@ const Composer: FC<{
   const canQueueAttachmentPrompt =
     hasAttachments && !attachmentsAreQueueableText && composerAcceptsQueueing;
 
-  // mirror each thread's draft to localStorage and restore it on mount
-  const draftThreadId = referenceThreadId;
-  const draftKey = draftThreadId ? composerDraftKey(draftThreadId) : null;
+  // The shared draft, restored on every chat switch; a temporary chat never reads or writes it.
+  const incognito = useChatRuntimeStore((s) => s.incognito);
+  const draftScope = incognito ? INCOGNITO_DRAFT_SCOPE : referenceThreadId;
+  const draftKey = composerDraftKey();
+  // Text that came from Compare or another tab, so saving it back can't overwrite a newer write.
+  const remoteDraftRef = useRef<string | null>(null);
+  const [draftSource] = useState(() => Symbol("chat composer"));
+  // Whose pastes are on screen: a temporary chat's never cross into the saved draft, nor back.
+  const pasteScopeShownRef = useRef<string | null>(draftScope);
   // unsent pasted File objects need a separate slot because they exist only in memory
-  const pasteDraftKey = draftThreadId
-    ? composerPasteDraftKey(draftThreadId)
-    : null;
-  const lastDraftKeyRef = useRef(draftKey);
-  // save only after this key's paste restore finishes to avoid premature clearing
-  const restoredPasteKeyRef = useRef<string | null>(null);
+  const pasteDraftKey = composerPasteDraftKey();
+  const lastDraftScopeRef = useRef(draftScope);
+  // save only after this chat's paste restore finishes to avoid premature clearing
+  const restoredPasteScopeRef = useRef<string | null | undefined>(undefined);
+  const restoringPasteScopeRef = useRef<string | null | undefined>(undefined);
   const draftSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // draftScope re-runs the restore on every chat switch, though the key stays the same.
   useEffect(() => {
-    const draft = draftKey ? (readComposerDraft(draftKey) ?? "") : "";
     const composer = aui.composer();
     if (!composer.getState().isEditing) return;
+    if (draftScope === INCOGNITO_DRAFT_SCOPE) {
+      composer.setText("");
+      return;
+    }
+    const draft = adoptLegacyDraft(draftScope)
+      ? (readComposerDraft(draftKey) ?? "")
+      : latestDraft();
     // A save that raced the send still holds the sent text, so restoring it
-    // would undo the clear. Keyed on the sending thread, so another thread's
-    // identical draft still restores. Clear rather than return early, which
-    // would leave the previous thread's text on screen under this one.
+    // would undo the clear. Clear rather than return early, which would leave
+    // the previous thread's text on screen under this one.
     if (sentTextGuardBlocksDraft(justSentRef.current, draft, draftKey)) {
       // Written inline rather than via clearStoredDraft, which is declared
       // below this effect. Cancel the pending save too, or it rewrites the key.
@@ -3761,16 +3953,25 @@ const Composer: FC<{
         clearTimeout(draftSaveTimerRef.current);
         draftSaveTimerRef.current = null;
       }
-      if (draftKey) writeComposerDraft(draftKey, "");
+      writeComposerDraft(draftKey, "");
       composer.setText("");
       return;
     }
     composer.setText(draft);
-  }, [draftKey, aui]);
+  }, [draftScope, draftKey, aui]);
+  // Compare's composer or another tab, so whichever is on screen shows the latest draft.
+  useEffect(() => {
+    if (draftScope === INCOGNITO_DRAFT_SCOPE) return;
+    return subscribeDraft(draftSource, (text) => {
+      const composer = aui.composer();
+      if (!composer.getState().isEditing) return;
+      remoteDraftRef.current = text;
+      composer.setText(text);
+    });
+  }, [draftScope, draftSource, aui]);
   // The saved-prompt menu and the prompt storage dialog fill the composer
-  // directly, bypassing the guard. Text appearing while the sending thread is
-  // on screen was put there deliberately, so retire; the draftKey check keeps
-  // another thread's restored draft from doing the same. Read live, or a
+  // directly, bypassing the guard. Text appearing after the send was put there
+  // deliberately, so retire. Read live, or a
   // pending render retires it on stale text. Must stay after the restore
   // above, which clears the raced draft this would otherwise retire on.
   useEffect(() => {
@@ -3785,28 +3986,72 @@ const Composer: FC<{
   useEffect(() => {
     const composer = aui.composer();
     if (!composer.getState().isEditing) return;
-    if (restoredPasteKeyRef.current === pasteDraftKey) return;
-    // The composer outlives a thread switch, so restore only into an empty one
-    // rather than mixing this thread's draft with whatever the last one left.
-    // Changing attachments re-runs this effect, which is how the retry happens.
-    if (composer.getState().attachments.length > 0) return;
-    const stored = pasteDraftKey ? readPasteDraft(pasteDraftKey) : [];
-    if (stored.length === 0) {
-      restoredPasteKeyRef.current = pasteDraftKey;
+    if (restoredPasteScopeRef.current === draftScope) return;
+    if (
+      (pasteScopeShownRef.current === INCOGNITO_DRAFT_SCOPE) !==
+      (draftScope === INCOGNITO_DRAFT_SCOPE)
+    ) {
+      const pasted = composer
+        .getState()
+        .attachments.filter(
+          (attachment) =>
+            pastedTextOf((attachment as { file?: File }).file) !== undefined,
+        );
+      if (pasted.length > 0) {
+        // Removing them changes the attachments, which runs this again.
+        for (const attachment of pasted) {
+          void composer.attachment({ id: attachment.id }).remove();
+        }
+        return;
+      }
+    }
+    pasteScopeShownRef.current = draftScope;
+    if (draftScope === INCOGNITO_DRAFT_SCOPE) {
+      restoredPasteScopeRef.current = draftScope;
       return;
     }
-    // Claim the key only once the attachments are in, so the save effect
+    // Only the saved pastes not on screen: the composer can outlive a switch holding
+    // them, and another attachment (a handoff's image) is no sign they were restored.
+    const shown = composer
+      .getState()
+      .attachments.flatMap((attachment) => {
+        const text = pastedTextOf((attachment as { file?: File }).file);
+        return text === undefined ? [] : [text];
+      });
+    const missing = readPasteDraft(pasteDraftKey).filter((text) => {
+      const at = shown.indexOf(text);
+      if (at === -1) return true;
+      shown.splice(at, 1);
+      return false;
+    });
+    if (missing.length === 0) {
+      restoredPasteScopeRef.current = draftScope;
+      return;
+    }
+    // Its own additions re-run this; one pass per scope, or they double up.
+    if (restoringPasteScopeRef.current === draftScope) return;
+    restoringPasteScopeRef.current = draftScope;
+    // Claim the chat only once the attachments are in, so the save effect
     // cannot write an empty composer over the draft still being restored.
     void Promise.all(
-      stored.map((text) => composer.addAttachment(createPastedTextFile(text))),
+      missing.map((text) => composer.addAttachment(createPastedTextFile(text))),
     ).finally(() => {
-      restoredPasteKeyRef.current = pasteDraftKey;
+      restoringPasteScopeRef.current = undefined;
+      // A switch while these were added re-runs the restore for the new scope instead.
+      if (draftScopeRef.current === draftScope) {
+        restoredPasteScopeRef.current = draftScope;
+      }
     });
-  }, [pasteDraftKey, composerAttachmentSignature, aui]);
+  }, [draftScope, pasteDraftKey, composerAttachmentSignature, aui]);
   // Keyed on the paste identities, never their bodies, so typing beside a
   // megabyte paste does not rewrite it to localStorage every 300ms.
   useEffect(() => {
-    if (!pasteDraftKey || restoredPasteKeyRef.current !== pasteDraftKey) return;
+    if (
+      draftScope === INCOGNITO_DRAFT_SCOPE ||
+      restoredPasteScopeRef.current !== draftScope
+    ) {
+      return;
+    }
     const pastes = aui
       .composer()
       .getState()
@@ -3815,26 +4060,27 @@ const Composer: FC<{
         return text === undefined ? [] : [text];
       });
     writePasteDraft(pasteDraftKey, pastes);
-  }, [composerAttachmentSignature, pasteDraftKey, aui]);
+  }, [composerAttachmentSignature, draftScope, pasteDraftKey, aui]);
   useEffect(() => {
-    // After a thread switch composerText can still hold the previous
-    // thread's text; skip that cycle so it isn't saved under the new key.
-    if (lastDraftKeyRef.current !== draftKey) {
-      lastDraftKeyRef.current = draftKey;
+    // After a thread switch composerText can still hold what was on screen
+    // before the restore; skip that cycle so it can't overwrite the draft.
+    if (lastDraftScopeRef.current !== draftScope) {
+      lastDraftScopeRef.current = draftScope;
       return;
     }
-    if (!draftKey) {
-      return;
-    }
+    if (draftScope === INCOGNITO_DRAFT_SCOPE) return;
+    if (composerText === remoteDraftRef.current) return;
+    remoteDraftRef.current = null;
+    publishDraft(composerText, draftSource);
     const t = setTimeout(() => writeComposerDraft(draftKey, composerText), 300);
     draftSaveTimerRef.current = t;
     return () => clearTimeout(t);
-  }, [composerText, draftKey]);
-  const pasteDraftKeyRef = useRef(pasteDraftKey);
+  }, [composerText, draftScope, draftKey, draftSource]);
+  const draftScopeRef = useRef(draftScope);
   useEffect(() => {
     draftKeyRef.current = draftKey;
-    pasteDraftKeyRef.current = pasteDraftKey;
-  }, [draftKey, pasteDraftKey]);
+    draftScopeRef.current = draftScope;
+  }, [draftKey, draftScope]);
   // Call wherever the composer is emptied because its text left as a message.
   const armJustSent = useCallback((...texts: string[]) => {
     justSentRef.current = armSentTextGuard(
@@ -3851,15 +4097,12 @@ const Composer: FC<{
       clearTimeout(draftSaveTimerRef.current);
       draftSaveTimerRef.current = null;
     }
-    const key = draftKeyRef.current;
-    if (key) {
-      writeComposerDraft(key, "");
-    }
-    const pasteKey = pasteDraftKeyRef.current;
-    if (pasteKey) {
-      writePasteDraft(pasteKey, []);
-    }
-  }, []);
+    // A temporary chat's send was never the stored draft.
+    if (draftScopeRef.current === INCOGNITO_DRAFT_SCOPE) return;
+    publishDraft("", draftSource);
+    writeComposerDraft(composerDraftKey(), "");
+    writePasteDraft(composerPasteDraftKey(), []);
+  }, [draftSource]);
   // react-textarea-autosize re-measures only on value change or window resize,
   // not on the width swap from expanding, so it keeps the taller height and
   // leaves a stray blank row. Nudge a resize whenever input width changes.
@@ -5228,6 +5471,55 @@ const Composer: FC<{
         event.preventDefault();
         return;
       }
+      // A command, not a prompt: ahead of the model and queue gates, so it works with no model loaded.
+      if (!overlay && !hasAttachments && isRewindCommand(composerText)) {
+        event.preventDefault();
+        if (threadIsRunning || aui.thread().getState().isRunning) {
+          toast.error(translate("rewind.waitForResponse"));
+          return;
+        }
+        aui.composer().setText("");
+        useRewindDialogStore.getState().openRewind({
+          threadKey: aui.threadListItem().getState().id,
+          messageId: null,
+        });
+        return;
+      }
+      if (
+        !overlay &&
+        !hasAttachments &&
+        !hasPendingAudio &&
+        isCompactCommand(composerText)
+      ) {
+        event.preventDefault();
+        const runtime = useChatRuntimeStore.getState();
+        if (!referenceThreadId || aui.thread().getState().messages.length === 0) {
+          toast.info("Nothing to compact yet");
+          return;
+        }
+        if (runtime.incognito || isThreadIncognito(referenceThreadId)) {
+          toast.info("Temporary chats are not saved, so they cannot be compacted");
+          return;
+        }
+        // The compacted turns stay reachable only through search_conversation, so no tools, no reset.
+        if (
+          !runtime.supportsTools ||
+          !resumesThought({
+            loadedIsGguf: runtime.loadedIsGguf,
+            loadedIsMlx: runtime.loadedIsMlx,
+            activeGgufVariant: runtime.activeGgufVariant,
+            activeNativePathToken: runtime.activeNativePathToken,
+            checkpoint: runtime.params.checkpoint,
+          })
+        ) {
+          toast.info("/compact works with GGUF and MLX models that support tools");
+          return;
+        }
+        requestThreadCompaction(referenceThreadId);
+        clearStoredDraft();
+        aui.composer().setText("");
+        return;
+      }
       if (disabled || shouldBlockSend()) {
         event.preventDefault();
         parkIfWaitingOnAttachments();
@@ -5430,12 +5722,14 @@ const Composer: FC<{
   );
 
   const queueContextValue: PromptQueueCallbacks = { startQueue, stopQueue };
+  // Skills off sends no read_skill, so a mention would load nothing.
+  const [skillsSwitchOn] = useSkillsSwitch();
 
   const composerContent = (
     <>
       {!isDictating ? (
         <>
-          <ComposerAttachments />
+          <ComposerAttachments oneRowInChat={true} />
           <PendingAudioChip />
         </>
       ) : null}
@@ -5471,6 +5765,7 @@ const Composer: FC<{
               ) : null}
               <WebSearchToggle />
               <CodeToolsToggle />
+              <BrowserAgentPill glyph={(icon) => <PillGlyph>{icon}</PillGlyph>} />
               <ImagesToggle />
               <KnowledgeBaseComposerButton side={effectiveMenuSide} />
               {mcpEnabledForChat ? (
@@ -5530,14 +5825,13 @@ const Composer: FC<{
               {(showWritingToggle || isWritingExpanded) && (
                 <TooltipIconButton
                   type="button"
-                  tooltip={isWritingExpanded ? "Collapse" : "Expand"}
-                  aria-label={
+                  tooltip={
                     isWritingExpanded ? "Collapse composer" : "Expand composer"
                   }
                   aria-expanded={isWritingExpanded}
                   aria-controls={inputId}
                   disabled={disabled}
-                  className="unsloth-composer-expand absolute size-8 rounded-md bg-transparent text-muted-foreground hover:bg-transparent hover:text-muted-foreground dark:hover:bg-transparent aria-expanded:bg-transparent aria-expanded:text-muted-foreground"
+                  className="unsloth-composer-expand absolute -right-1 top-0 size-8 rounded-md bg-transparent text-muted-foreground hover:bg-transparent hover:text-muted-foreground dark:hover:bg-transparent aria-expanded:bg-transparent aria-expanded:text-muted-foreground"
                   onMouseDown={(event) => event.preventDefault()}
                   onClick={toggleWritingExpanded}
                 >
@@ -5601,12 +5895,30 @@ const Composer: FC<{
     </>
   );
 
+  const dropOverlay = (
+    <div
+      className={cn(
+        "aui-composer-drop-overlay pointer-events-none absolute inset-0 z-20 flex flex-col items-center justify-center gap-1 overflow-hidden rounded-[inherit] bg-background/90 opacity-0 backdrop-blur-sm transition-opacity duration-150 group-data-[dragging=true]/dropzone:opacity-100 dark:bg-card/90",
+        (pageDragging || nativeDragging) && "opacity-100",
+      )}
+    >
+      <HugeiconsIcon
+        icon={AttachmentIcon}
+        strokeWidth={2}
+        className="size-6 text-primary"
+      />
+      <span className="text-sm font-medium text-primary">
+        Drop files here
+      </span>
+    </div>
+  );
+
   return (
     <PromptQueueContext.Provider value={queueContextValue}>
     <ComposerPrimitive.Unstable_TriggerPopoverRoot>
       <SkillMentionPopover
         // mentions remain available without Code because each one offers read_skill.
-        enabled={supportsTools}
+        enabled={supportsTools && skillsSwitchOn}
         composerRef={editorRef}
         onConsumesEnterChange={setMentionConsumesEnter}
         onOpenChange={setMentionOpen}
@@ -5618,11 +5930,6 @@ const Composer: FC<{
       className="aui-composer-root relative flex w-full flex-col"
       data-writing-expanded={
         isWritingExpanded && !isDictating ? "true" : undefined
-      }
-      data-writing-toggle={
-        (showWritingToggle || isWritingExpanded) && !isDictating
-          ? "true"
-          : undefined
       }
       aria-disabled={disabled}
       onSubmit={handleSubmit}
@@ -5646,10 +5953,9 @@ const Composer: FC<{
         />
       ) : null}
       {isTauri ? (
-        // Phase 1 native model owns Tauri local-path drops. Restore browser
-        // attachment drops in Tauri once Phase 1d adds token bridging.
         <div className="aui-composer-attachment-dropzone unsloth-composer-surface relative z-10">
           {composerContent}
+          {dropOverlay}
         </div>
       ) : (
         <ComposerPrimitive.AttachmentDropzone
@@ -5659,24 +5965,7 @@ const Composer: FC<{
           onDropCapture={claimPortaledDrop}
         >
           {composerContent}
-          {/* Gemini-style drop affordance, shown while a file is dragged over
-              the composer. Absolute + pointer-events-none so the outline adds
-              no layout shift and the drop still lands. */}
-          <div
-            className={cn(
-              "aui-composer-drop-overlay pointer-events-none absolute inset-0 z-20 flex flex-col items-center justify-center gap-1 overflow-hidden rounded-[inherit] bg-background/90 opacity-0 backdrop-blur-sm transition-opacity duration-150 group-data-[dragging=true]/dropzone:opacity-100 dark:bg-card/90",
-              pageDragging && "opacity-100",
-            )}
-          >
-            <HugeiconsIcon
-              icon={AttachmentIcon}
-              strokeWidth={2}
-              className="size-6 text-primary"
-            />
-            <span className="text-sm font-medium text-primary">
-              Drop files here
-            </span>
-          </div>
+          {dropOverlay}
         </ComposerPrimitive.AttachmentDropzone>
       )}
     </ComposerPrimitive.Root>
@@ -6384,10 +6673,10 @@ const CodeToolsToggle: FC = () => {
       disabled={disabled}
       onClick={() => setCodeToolsEnabled(!codeToolsEnabled)}
       className="composer-pill-btn"
-      data-pill-label="Code"
+      data-pill-label="Tools"
       data-active={codeToolsEnabled && !disabled ? "true" : "false"}
       aria-label={
-        codeToolsEnabled ? "Disable code execution" : "Enable code execution"
+        codeToolsEnabled ? "Disable tools" : "Enable tools"
       }
     >
       <PillGlyph>
@@ -6397,7 +6686,7 @@ const CodeToolsToggle: FC = () => {
           strokeWidth={2}
         />
       </PillGlyph>
-      <span>Code</span>
+      <span>Tools</span>
     </button>
   );
 };
@@ -6535,7 +6824,7 @@ const ToolStatusDisplay: FC = () => {
 // Plus menu: attachment and workflow actions. Opens downward in the welcome
 // composer; the docked composer passes side="top" to open upward.
 const AUDIO_ACCEPT_TOKEN_RE =
-  /^(audio\/|\.(?:wav|mp3|mp2|m4a|ogg|oga|opus|flac|aac|aiff|aif|aifc|caf|wma|amr)$)/i;
+  /^(audio\/|\.(?:wav|mp3|mp2|m4a|ogg|oga|opus|flac|aac|aiff|aif|aifc|caf|wma|amr|m4b|weba|mka)$)/i;
 
 function attachmentAcceptForPicker(accept: string, audioEnabled: boolean): string {
   const enabledAccept =
@@ -6644,6 +6933,7 @@ const ComposerToolsMenu: FC<{
   // Match Search and Code: allow pre-selection before a local model loads.
   const researchDisabled =
     !researchAvailable ||
+    (modelLoaded && !externalSelection && !supportsTools) ||
     (Boolean(externalSelection) &&
       providerModelSupportsStudioTools(
         selectedExternalProvider?.providerType,
@@ -6673,7 +6963,7 @@ const ComposerToolsMenu: FC<{
   }, [navigate]);
 
   const [newProjectOpen, setNewProjectOpen] = useState(false);
-  const [skillsOpen, setSkillsOpen] = useState(false);
+  const [skillsOn, setSkillsOn] = useSkillsSwitch();
   const [promptStorageOpen, setPromptStorageOpen] = useState(false);
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const aui = useAui();
@@ -6704,6 +6994,7 @@ const ComposerToolsMenu: FC<{
   const menuIsDictating = useAuiState((s) => s.composer.dictation != null);
 
   const plusPins = usePlusMenuPrefsStore((s) => s.pins);
+  const plusOrder = usePlusMenuPrefsStore((s) => s.order);
 
   const [recentPrompts, setRecentPrompts] = useState<PromptEntry[]>([]);
   const [recentLists, setRecentLists] = useState<PromptListEntry[]>([]);
@@ -6776,6 +7067,28 @@ const ComposerToolsMenu: FC<{
   // (photos, web search, code) and "More" itself are always shown and live
   // outside this map.
   const plusMenuNodes: Record<PlusMenuItemId, ReactNode> = {
+    deepResearch: researchAvailable ? (
+      <DropdownMenuItem
+        disabled={researchDisabled && !deepResearchEnabled}
+        className={
+          deepResearchEnabled && !researchDisabled
+            ? "text-primary font-medium"
+            : undefined
+        }
+        onSelect={() => setDeepResearchEnabled(!deepResearchEnabled)}
+      >
+        <HugeiconsIcon icon={Telescope02Icon} strokeWidth={2} />
+        Deep research
+        {deepResearchEnabled && !researchDisabled ? (
+          <HugeiconsIcon
+            icon={Tick02Icon}
+            strokeWidth={2}
+            className="ml-auto"
+          />
+        ) : null}
+      </DropdownMenuItem>
+    ) : null,
+    browserUse: <BrowserAgentMenuItem />,
     chatWithFiles: (
       <DropdownMenuItem
         disabled={ragDisabled}
@@ -6809,9 +7122,15 @@ const ComposerToolsMenu: FC<{
       </DropdownMenuItem>
     ),
     skills: (
-      <DropdownMenuItem onSelect={() => setSkillsOpen(true)}>
+      <DropdownMenuItem
+        className={skillsOn ? "text-primary font-medium" : undefined}
+        onSelect={() => setSkillsOn(!skillsOn)}
+      >
         <HugeiconsIcon icon={Scroll01Icon} strokeWidth={2} />
         Skills
+        {skillsOn ? (
+          <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="ml-auto" />
+        ) : null}
       </DropdownMenuItem>
     ),
     savedPrompts: (
@@ -6947,12 +7266,11 @@ const ComposerToolsMenu: FC<{
       </DropdownMenuSub>
     ),
   };
-  const pinnedPlusItems = PLUS_MENU_ORDER.filter((id) => plusPins[id]);
-  const overflowPlusItems = PLUS_MENU_ORDER.filter((id) => !plusPins[id]);
+  const { pinned: pinnedPlusItems, overflow: overflowPlusItems } =
+    splitPlusMenuItems(plusOrder, plusPins);
 
   return (
     <>
-    <ChatSkillsDialog open={skillsOpen} onOpenChange={setSkillsOpen} />
     <PromptStorageDialog
       open={promptStorageOpen}
       onOpenChange={setPromptStorageOpen}
@@ -7034,7 +7352,7 @@ const ComposerToolsMenu: FC<{
             strokeWidth={2}
             className="scale-[1.12]"
           />
-          Code
+          Tools
           {codeToolsEnabled && !codeDisabled ? (
             <HugeiconsIcon
               icon={Tick02Icon}
@@ -7043,27 +7361,6 @@ const ComposerToolsMenu: FC<{
             />
           ) : null}
         </DropdownMenuItem>
-        {researchAvailable ? (
-          <DropdownMenuItem
-            disabled={researchDisabled && !deepResearchEnabled}
-            className={
-              deepResearchEnabled && !researchDisabled
-                ? "text-primary font-medium"
-                : undefined
-            }
-            onSelect={() => setDeepResearchEnabled(!deepResearchEnabled)}
-          >
-            <HugeiconsIcon icon={Telescope02Icon} strokeWidth={2} />
-            Deep research
-            {deepResearchEnabled && !researchDisabled ? (
-              <HugeiconsIcon
-                icon={Tick02Icon}
-                strokeWidth={2}
-                className="ml-auto"
-              />
-            ) : null}
-          </DropdownMenuItem>
-        ) : null}
         {supportsBuiltinImageGeneration && (
           <DropdownMenuItem
             disabled={imageDisabled}
@@ -7459,7 +7756,11 @@ const GeneratingIndicator: FC = () => {
   if (!show) {
     return null;
   }
-  return <span className="text-sm text-muted-foreground">Generating...</span>;
+  return (
+    <span className="generating-glint text-sm text-muted-foreground">
+      Working...
+    </span>
+  );
 };
 
 // Placeholder when stop fires before any visible content (e.g. mid-think).
@@ -7510,15 +7811,21 @@ function useContinuation() {
   const partial = useAuiState(
     ({ message }) => readContinuationSource(message.content).partial,
   );
-  const reasoning = useAuiState(
-    ({ message }) => readContinuationSource(message.content).reasoning,
+  const reasoning = useAuiState(({ message }) =>
+    "status" in message && message.status?.type === "running"
+      ? ""
+      : readContinuationSource(message.content).reasoning,
   );
   // Gemini signs answer and thought parts. A continuation runs from a sibling branch,
   // so both kinds of replay metadata travel with the partial.
   const thoughtSignature = useAuiState(({ message }) =>
     readTextThoughtSignature(message.content),
   );
-  const messageContent = useAuiState(({ message }) => message.content);
+  const messageContent = useAuiState(({ message }) =>
+    "status" in message && message.status?.type === "running"
+      ? undefined
+      : message.content,
+  );
   const thoughtParts = useMemo(
     () => collectGeminiThoughtReplayParts(messageContent),
     [messageContent],
@@ -7829,6 +8136,33 @@ const ContinueMessageBarForLastMessage: FC = () => {
   );
 };
 
+const ToolGroupThenCompaction = memo<
+  PropsWithChildren<{ startIndex: number; endIndex: number }>
+>(({ startIndex, endIndex, children }) => {
+  const truncation = useAuiState(({ thread, message }) => {
+    const marker = compactionToolCallDividers(thread.messages).get(message.id);
+    if (!marker) return null;
+    for (let index = startIndex; index <= endIndex; index += 1) {
+      const part = message.parts[index];
+      if (part?.type === "tool-call" && part.toolCallId === marker.afterToolCallId) {
+        return marker.truncation;
+      }
+    }
+    return null;
+  });
+  return (
+    <>
+      <ToolGroup startIndex={startIndex} endIndex={endIndex}>
+        {children}
+      </ToolGroup>
+      {truncation && (
+        <CompactionDivider truncation={truncation} className="my-6" />
+      )}
+    </>
+  );
+});
+ToolGroupThenCompaction.displayName = "ToolGroupThenCompaction";
+
 const WebSearchToolUIConfirmable = withToolConfirmation(WebSearchToolUI);
 const KnowledgeBaseToolUIConfirmable =
   withToolConfirmation(KnowledgeBaseToolUI);
@@ -7860,7 +8194,7 @@ const ASSISTANT_PART_COMPONENTS = {
   Reasoning: Reasoning,
   ReasoningGroup: ReasoningGroup,
   Source: Sources,
-  ToolGroup: ToolGroup,
+  ToolGroup: ToolGroupThenCompaction,
   tools: {
     by_name: {
       web_search: WebSearchToolUIConfirmable,
@@ -7929,7 +8263,11 @@ const AssistantMessage: FC = () => {
   const aui = useAui();
   const focusReveal = useActionBarFocusReveal();
   const messageId = useAuiState(({ message }) => message.id);
-  const messageContent = useAuiState(({ message }) => message.content);
+  const messageContent = useAuiState(({ message }) =>
+    "status" in message && message.status?.type === "running"
+      ? null
+      : message.content,
+  );
   const metadataResearchRunId = useAuiState(({ message }) =>
     getResearchRunId(message.metadata),
   );
@@ -7943,26 +8281,6 @@ const AssistantMessage: FC = () => {
     researchReplyOwnsRun(boundResearchAssistantMessageId, messageId)
       ? metadataResearchRunId
       : null;
-  // Persisted on the assistant turn that compacted, so the notice survives a reload.
-  const contextTruncation = useAuiState(({ message }) => {
-    const custom = (
-      message.metadata as
-        | { custom?: { contextTruncation?: unknown } }
-        | undefined
-    )?.custom;
-    const value = custom?.contextTruncation;
-    return value && typeof value === "object"
-      ? (value as ContextTruncation)
-      : null;
-  });
-  // Once a thread outgrows the window every request runs the fit, so "this turn
-  // compacted" is true of every later reply and would put a notice on all of them. What
-  // matters is when MORE of the conversation fell out of view: the eviction boundary
-  // rising above the last turn that reported one, or a checkpoint starting inside a tool
-  // loop (which evicts without moving the boundary). Sticky replays stay quiet.
-  const showsNotice = useAuiState(({ thread }) =>
-    compactionNoticeMessageIds(thread.messages).has(messageId),
-  );
   const incognito = useChatRuntimeStore((s) => s.incognito);
 
   // Use global store for editing state to ensure a single source of truth
@@ -8037,34 +8355,30 @@ const AssistantMessage: FC = () => {
       onFocus={focusReveal.onFocus}
       onBlur={focusReveal.onBlur}
     >
-      <div className="aui-assistant-message-content wrap-break-word min-w-0 text-[#0d0d0d] dark:text-foreground leading-relaxed">
-        {contextTruncation && showsNotice && !isEditing && (
-          <CompactionNotice truncation={contextTruncation} />
-        )}
+      <div className="aui-assistant-message-content wrap-break-word min-w-0 text-[#0f1114] dark:text-foreground leading-relaxed">
         {isEditing ? (
-          <div className="flex flex-col gap-2 w-full">
-            {/* Borderless textarea, so auto-grow fits with no scrollbar; the wrapper keeps corners round. */}
-            <div className="overflow-hidden rounded-xl border-[0.5px] border-border bg-muted focus-within:border-ring">
-              <textarea
-                ref={textareaRef}
-                defaultValue={extractTaggedText(messageContent)}
-                className="block w-full p-3 bg-transparent text-foreground outline-none overflow-y-auto resize-none font-mono text-sm max-h-[70dvh]"
-                autoFocus
-                onInput={adjustHeight}
-                onKeyDown={(e) => {
-                  e.stopPropagation();
-                  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-                    handleSave();
-                  }
-                  if (e.key === 'Escape') {
-                    setEditingId(null); // UX: Close editor on Escape
-                  }
-                }}
-              />
-            </div>
-            <div className="flex justify-end gap-2">
-              <Button size="sm" variant="ghost" onClick={() => setEditingId(null)} className="h-8 text-xs">Cancel</Button>
-              <Button size="sm" onClick={handleSave} className="h-8 text-xs">Save</Button>
+          // Same surface as a prompt's EditComposer, at the reply's full width. Bottom gap is padding:
+          // index.css zeroes the margin-bottom of the reply's last descendants.
+          <div className="aui-assistant-edit-root flex w-full flex-col overflow-hidden rounded-2xl bg-muted pb-3">
+            <textarea
+              ref={textareaRef}
+              defaultValue={extractTaggedText(messageContent ?? [])}
+              className="block min-h-14 w-full max-h-[70dvh] resize-none overflow-y-auto bg-transparent p-4 text-foreground text-sm font-[450] outline-none"
+              autoFocus
+              onInput={adjustHeight}
+              onKeyDown={(e) => {
+                e.stopPropagation();
+                if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+                  handleSave();
+                }
+                if (e.key === 'Escape') {
+                  setEditingId(null); // UX: Close editor on Escape
+                }
+              }}
+            />
+            <div className="mx-3 flex items-center gap-2 self-end">
+              <Button type="button" size="sm" variant="ghost" onClick={() => setEditingId(null)}>Cancel</Button>
+              <Button type="button" size="sm" onClick={handleSave}>Save</Button>
             </div>
           </div>
         ) : (
@@ -8087,7 +8401,6 @@ const AssistantMessage: FC = () => {
             */}
                 <MessagePrimitive.Parts components={ASSISTANT_PART_COMPONENTS} />
                 <SourcesGroup />
-                <RagSourcesGroup />
                 <MessageHtmlArtifacts />
                 <ContinueMessageBar />
               </>
@@ -8097,7 +8410,7 @@ const AssistantMessage: FC = () => {
         )}
       </div>
 
-      <div className="aui-assistant-message-footer mt-1.5 -ml-[var(--icon-btn-inset)] flex min-h-8">
+      <div className="aui-assistant-message-footer mt-1.5 -ml-[var(--icon-btn-inset)] flex min-h-8 min-w-0 flex-wrap items-center gap-y-1">
         <BranchPicker className="mr-0.5" />
         <AssistantActionBar />
       </div>
@@ -8410,66 +8723,65 @@ function useDeleteMessage() {
   return { handleDelete, isRunning, hidden: Boolean(researchRunId || ownsResearchMessage) };
 }
 
-// The More menu's Delete, last and in red.
-const DeleteMessageMenuItem: FC = () => {
+const DeleteMessageButton: FC = () => {
   const { handleDelete, isRunning, hidden } = useDeleteMessage();
   if (hidden) {
     return null;
   }
   return (
-    <ActionBarMorePrimitive.Item
+    <TooltipIconButton
+      tooltip="Delete"
       disabled={isRunning}
-      onSelect={() => void handleDelete()}
-      className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm text-destructive outline-none hover:bg-destructive/10 focus:bg-destructive/10 data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
+      onClick={() => void handleDelete()}
+      className="hover:!text-destructive"
     >
       <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
-      Delete
-    </ActionBarMorePrimitive.Item>
+    </TooltipIconButton>
   );
 };
 
 const MORE_MENU_CONTENT_CLASS =
   "aui-action-bar-more-content dropdown-surface z-50 min-w-32 max-h-(--radix-dropdown-menu-content-available-height) flex flex-col overflow-hidden rounded-[21px] bg-popover px-[calc(9px*var(--ui-space-scale,1))] py-2 text-popover-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)]";
 
-const ForkMessageMenuItem: FC = () => {
-  const { forkMessage, forkDisabled } = useForkMessageAction();
-  return (
-    <ActionBarMorePrimitive.Item
-      disabled={forkDisabled}
-      onSelect={() => void forkMessage()}
-      className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
-    >
-      <HugeiconsIcon icon={ForkIcon} strokeWidth={1.75} className="size-icon" />
-      Fork in new chat
-    </ActionBarMorePrimitive.Item>
-  );
+// Loaded on first use: the dialog is not part of the first screen.
+const LazyRewindDialog = lazy(() =>
+  import("@/components/assistant-ui/rewind-dialog").then((module) => ({
+    default: module.RewindDialog,
+  })),
+);
+
+const RewindDialogMount: FC = () => {
+  const requested = useRewindDialogStore((s) => s.request !== null);
+  const [loaded, setLoaded] = useState(false);
+  useEffect(() => {
+    if (requested) setLoaded(true);
+  }, [requested]);
+  // Stays mounted once loaded so closing keeps its animation.
+  return requested || loaded ? (
+    <Suspense fallback={null}>
+      <LazyRewindDialog />
+    </Suspense>
+  ) : null;
 };
 
-// A prompt's More menu: Fork, then Delete.
-const UserMoreMenu: FC = () => {
-  const triggerRef = useRef<HTMLButtonElement>(null);
-  const collisionPadding = useWindowChromeCollisionPadding(undefined);
+const RewindMessageButton: FC = () => {
+  const aui = useAui();
+  const t = useT();
+  const messageId = useAuiState(({ message }) => message.id);
+  const isRunning = useAuiState(({ thread }) => thread.isRunning);
   return (
-    <ActionBarMorePrimitive.Root modal={false}>
-      <ActionBarMorePrimitive.Trigger asChild={true}>
-        <TooltipIconButton ref={triggerRef} tooltip="More" className="data-[state=open]:bg-accent">
-          <MoreHorizontalIcon strokeWidth={1.75} className="size-icon" />
-        </TooltipIconButton>
-      </ActionBarMorePrimitive.Trigger>
-      <ActionBarMorePrimitive.Content
-        side="bottom"
-        align="end"
-        collisionPadding={collisionPadding}
-        onCloseAutoFocus={(e) => e.preventDefault()}
-        className={MORE_MENU_CONTENT_CLASS}
-      >
-        <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
-          <MenuDismissGuard triggerRef={triggerRef} />
-          <ForkMessageMenuItem />
-          <DeleteMessageMenuItem />
-        </div>
-      </ActionBarMorePrimitive.Content>
-    </ActionBarMorePrimitive.Root>
+    <TooltipIconButton
+      tooltip={t("rewind.title")}
+      disabled={isRunning}
+      onClick={() =>
+        useRewindDialogStore.getState().openRewind({
+          threadKey: aui.threadListItem().getState().id,
+          messageId,
+        })
+      }
+    >
+      <HugeiconsIcon icon={UndoIcon} strokeWidth={1.75} className="size-icon" />
+    </TooltipIconButton>
   );
 };
 
@@ -8616,7 +8928,7 @@ const AssistantActionBar: FC = () => {
   const activeProjectId = useChatRuntimeStore((s) => s.activeProjectId);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const ttsEnabled = useVoiceSettingsStore((s) => s.ttsEnabled);
-  // Off by default: Edit response lives in the More menu.
+  // On by default; off moves Edit response into the More menu.
   const inlineEdit = useChatPreferencesStore((s) => s.showInlineEditResponse);
   // hideWhenRunning is thread-level, so a new run would hide this bar and its
   // only Stop reading control while read-aloud keeps playing; keep it shown.
@@ -8641,12 +8953,17 @@ const AssistantActionBar: FC = () => {
         // remounts a bar when focus enters that message, so tabbing brings back what hovering
         // brings back and the controls return to the accessibility tree with it.
         autohide={speaking ? "never" : "not-last"}
-        className="aui-assistant-action-bar-root col-start-3 row-start-2 flex items-center gap-1 text-chat-icon-fg [&_button:not([data-slot=message-timing-trigger])]:size-8 [&_button]:!rounded-full [&_button:hover]:bg-chat-icon-bg-hover [&_button:hover]:text-chat-icon-fg-hover"
+        className="aui-assistant-action-bar-root col-start-3 row-start-2 flex min-w-0 flex-wrap items-center gap-1 text-chat-icon-fg [&_button:not([data-slot=message-timing-trigger])]:size-8 [&_button]:!rounded-full [&_button:hover]:bg-chat-icon-bg-hover [&_button:hover]:text-chat-icon-fg-hover"
       >
         <CopyButton />
         {inlineEdit && <EditAssistantMessageButton />}
-        <ForkCountBadge />
-        <ForkMessageButton />
+        {!researchRunId && !researchActive && (
+          <ActionBarPrimitive.Reload asChild={true}>
+            <TooltipIconButton tooltip="Refresh">
+              <RefreshGlyph strokeWidth={1.75} className="size-icon" />
+            </TooltipIconButton>
+          </ActionBarPrimitive.Reload>
+        )}
         {ttsEnabled && (
           <MessagePrimitive.If speaking={false}>
             <ActionBarPrimitive.Speak asChild={true}>
@@ -8669,13 +8986,9 @@ const AssistantActionBar: FC = () => {
             </TooltipIconButton>
           </ActionBarPrimitive.StopSpeaking>
         </MessagePrimitive.If>
-        {!researchRunId && !researchActive && (
-          <ActionBarPrimitive.Reload asChild={true}>
-            <TooltipIconButton tooltip="Refresh">
-              <RefreshGlyph strokeWidth={1.75} className="size-icon" />
-            </TooltipIconButton>
-          </ActionBarPrimitive.Reload>
-        )}
+        <ForkCountBadge />
+        <ForkMessageButton />
+        <DeleteMessageButton />
         {/* Non-modal: a modal Radix menu writes `pointer-events: none` on <body>, and
             that is an INHERITED property, so every open invalidates style for the whole
             document. On a long thread that recalc is the bulk of the open+close cost. */}
@@ -8770,7 +9083,6 @@ const AssistantActionBar: FC = () => {
                   Save to project sources
                 </ActionBarMorePrimitive.Item>
               )}
-              <DeleteMessageMenuItem />
             </div>
           </ActionBarMorePrimitive.Content>
         </ActionBarMorePrimitive.Root>
@@ -8819,7 +9131,7 @@ const UserMessage: FC = () => {
 
       <div className="aui-user-message-content-wrapper flex w-full min-w-0 flex-col items-end">
         {hasContent ? (
-          <div className="aui-user-message-content wrap-break-word w-fit max-w-[80%] rounded-[24px] bg-[#f5f5f5] px-4 py-2.5 text-[#0d0d0d] dark:text-foreground dark:bg-card">
+          <div className="aui-user-message-content wrap-break-word w-fit max-w-[80%] rounded-[24px] bg-[#f5f5f5] px-4 py-2.5 text-[#0f1114] dark:text-foreground dark:bg-card">
             <MessagePrimitive.Parts />
           </div>
         ) : null}
@@ -8834,7 +9146,7 @@ const UserMessage: FC = () => {
         <ForkChatShortcut />
       </MessagePrimitive.If>
       {/* Reverse traversal reaches a trailing stop before the root. Focusing it
-          mounts the autohidden controls, so the next Shift+Tab enters More
+          mounts the autohidden controls, so the next Shift+Tab enters its controls
           instead of skipping the action bar and leaving the message. */}
       <span
         className="aui-user-reveal-sentinel"
@@ -8862,8 +9174,10 @@ const UserActionBar: FC = () => {
           </TooltipIconButton>
         </ActionBarPrimitive.Edit>
       )}
+      <RewindMessageButton />
       <ForkCountBadge />
-      <UserMoreMenu />
+      <ForkMessageButton />
+      <DeleteMessageButton />
     </UserMessageActionBar>
   );
 };

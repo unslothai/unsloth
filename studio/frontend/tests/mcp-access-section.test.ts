@@ -141,7 +141,11 @@ test("the agent picker keeps the pill trigger and shared list, CLI agents get th
   );
   assert.ok(trigger.length > 0);
   assert.doesNotMatch(trigger, /rounded-/);
-  assert.match(SECTION, /SUPPORTED_AGENTS\.map\(/);
+  assert.match(
+    SECTION,
+    /const MCP_AGENTS = SUPPORTED_AGENTS\.filter\(\(agent\) => hasMcpSnippet\(agent\.id\)\);/,
+  );
+  assert.match(SECTION, /MCP_AGENTS\.map\(/);
   assert.match(SECTION, /from "\.\/coding-agent-list";/);
   assert.match(SECTION, /from "\.\/agent-command-block";/);
   assert.match(SECTION, /MCP_SHELL_AGENT_IDS\.has\(agent\) \? \(\s*<fieldset/);

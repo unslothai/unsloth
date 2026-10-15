@@ -55,17 +55,20 @@ export function AgentIcon({
   darkIcon,
   color,
   mark,
+  compact = false,
 }: {
   logo?: string;
   icon?: string;
   darkIcon?: string;
   color?: string;
   mark?: string;
+  compact?: boolean;
 }) {
+  const markSize = compact ? "size-4" : "size-5";
   if (logo) {
     return (
       <span className="flex size-5 shrink-0 items-center justify-center overflow-hidden rounded">
-        <ApiProviderLogo providerType={logo} className="size-5 rounded" />
+        <ApiProviderLogo providerType={logo} className={cn(markSize, "rounded")} />
       </span>
     );
   }
@@ -80,14 +83,14 @@ export function AgentIcon({
           src={iconSrc}
           alt=""
           aria-hidden={true}
-          className={cn("size-5 object-contain", darkIconSrc && "dark:hidden")}
+          className={cn(markSize, "object-contain", darkIconSrc && "dark:hidden")}
         />
         {darkIconSrc ? (
           <img
             src={darkIconSrc}
             alt=""
             aria-hidden={true}
-            className="hidden size-5 object-contain dark:block"
+            className={cn("hidden object-contain dark:block", markSize)}
           />
         ) : null}
       </span>

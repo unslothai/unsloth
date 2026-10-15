@@ -23,8 +23,11 @@ const LABELS: Readonly<Record<string, string>> = {
   sdxl: "SDXL",
   "minimax-h3": "MiniMax-H3",
   "ltx-2": "LTX-2",
+  "ltx-2.5": "LTX-2.5",
   "wan2.2-ti2v-5b": "Wan2.2 TI2V 5B",
   "wan2.2-t2v-a14b": "Wan2.2 T2V A14B",
+  "wan2.1-t2v-1.3b": "Wan2.1 T2V 1.3B",
+  "wan2.1-t2v-14b": "Wan2.1 T2V 14B",
   "hunyuanvideo-1.5": "HunyuanVideo 1.5 (480p)",
   "hunyuanvideo-1.5-720p": "HunyuanVideo 1.5 (720p)",
 };

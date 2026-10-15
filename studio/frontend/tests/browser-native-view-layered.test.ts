@@ -10,7 +10,11 @@ const frames: (() => void)[] = [];
 const mutations: (() => void)[] = [];
 const rect = (x: number, y: number, width: number, height: number) =>
   ({ left: x, top: y, right: x + width, bottom: y + height, width, height }) as DOMRect;
-type Overlay = { getBoundingClientRect: () => DOMRect; closest: () => null; querySelector: () => object | null };
+type Overlay = {
+  getBoundingClientRect: () => DOMRect;
+  closest: () => null;
+  querySelector: (selector: string) => object | null;
+};
 const overlay = (box: DOMRect): Overlay => ({
   getBoundingClientRect: () => box,
   closest: () => null,
@@ -130,6 +134,17 @@ test("a menu over a layered page neither captures nor hides it, and owns its inp
     assert.equal(placeholder.vars.get("--native-hole-y"), "100px");
     assert.equal(wrapper.vars.has("--native-hole-x"), false);
 
+    // under the app's interface zoom the rect is divided by it: WebKit scales a fixed background's
+    // lengths by the zoom on top of the layout they came from
+    const zoomChanged = (globalThis as { nativeViewZoomChanged?: () => void }).nativeViewZoomChanged;
+    (globalThis as { nativeViewZoom?: number }).nativeViewZoom = 0.8;
+    zoomChanged?.();
+    assert.equal(html.vars.get("--native-hole-x"), "625px");
+    assert.equal(placeholder.vars.get("--native-hole-h"), "750px");
+    (globalThis as { nativeViewZoom?: number }).nativeViewZoom = 1;
+    zoomChanged?.();
+    assert.equal(html.vars.get("--native-hole-x"), "500px");
+
     // a theme switch recolors them, though the page didn't move; read mid-switch, it tries again
     html.className = "html dark";
     for (const element of [html, section, placeholder]) element.background = "rgba(0, 0, 0, 0)";
@@ -138,6 +153,37 @@ test("a menu over a layered page neither captures nor hides it, and owns its inp
     section.background = "oklch(0.2 0 0)";
     await frame();
     assert.equal(section.vars.get("--native-hole-bg"), "oklch(0.2 0 0)");
+
+    // a split drag pins the page at its old width while the panel shrinks past it: the app covers
+    // the overflow by cutting the hole no wider than the panel, and the page view isn't resized,
+    // which would relayout the page every frame
+    let panelLeft = 650;
+    const panelBody = { getBoundingClientRect: () => rect(panelLeft, 0, 1000 - panelLeft, 800), closest: () => null };
+    // the pinned outer page box keeps its old rect, the page's own
+    const outerPage: { parentElement: object; closest: () => unknown; getBoundingClientRect: () => unknown } = {
+      parentElement: panelBody,
+      closest: () => outerPage,
+      getBoundingClientRect: () => rect(500, 100, 500, 600),
+    };
+    const innerPage = { parentElement: outerPage, closest: () => innerPage };
+    const unpinned = placeholder.closest;
+    Object.assign(placeholder, { closest: () => innerPage });
+    const showsBeforeDrag = calls.filter(({ command }) => command === "browser_view_show").length;
+    for (const left of [650, 700, 750]) {
+      panelLeft = left;
+      await frame();
+      assert.equal(section.vars.get("--native-hole-x"), `${left}px`);
+      assert.equal(section.vars.get("--native-hole-w"), `${1000 - left}px`);
+    }
+    assert.equal(calls.filter(({ command }) => command === "browser_view_show").length, showsBeforeDrag, "the page view keeps its frame");
+    // input over the covered strip goes to the app, not the page view still under it
+    assert.deepEqual(lastInput(), {
+      blocked: false,
+      exclude: [{ x: 500, y: 100, width: 250, height: 600, viewportWidth: 1000 }],
+    });
+    Object.assign(placeholder, { closest: unpinned });
+    await frame();
+    assert.equal(section.vars.get("--native-hole-x"), "500px", "released: the whole page again");
 
     const shows = calls.filter(({ command }) => command === "browser_view_show").length;
     blocking.push(overlay(rect(900, 100, 100, 200)));
@@ -157,7 +203,19 @@ test("a menu over a layered page neither captures nor hides it, and owns its inp
     await frame();
     assert.deepEqual(lastInput(), { blocked: true, exclude: [] });
     blocking.length = 0;
-    blocking.push({ ...overlay(rect(0, 600, 200, 100)), querySelector: () => ({}) });
+    blocking.push({
+      ...overlay(rect(0, 600, 200, 100)),
+      querySelector: (selector: string) => (selector.includes("hover-card") ? {} : null),
+    });
+    await frame();
+    assert.deepEqual(lastInput(), { blocked: false, exclude: [] });
+
+    // the dialog the browser opens in (compare, projects, phones) holds the page: it isn't over it
+    blocking.length = 0;
+    blocking.push({
+      ...overlay(rect(0, 0, 1000, 800)),
+      querySelector: (selector: string) => (selector.startsWith("[data-native-page") ? placeholder : null),
+    });
     await frame();
     assert.deepEqual(lastInput(), { blocked: false, exclude: [] });
 
