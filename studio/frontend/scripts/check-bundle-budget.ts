@@ -154,12 +154,18 @@ export const BUDGET = {
   // transfer (6,778,788 -> 6,780,604 B raw, 2,038,337 -> 2,038,856 B transfer against 62e063618, one machine
   // and build, Node 24, chunk count unchanged at 95). Main already measured 3,656 B raw / 1,180 B transfer over
   // the previous limits there, so they are set to the measured build.
+  // The downloads panel's "Starting…" row (#13738) adds 1,404 B raw / 353 B transfer (6,778,788 -> 6,780,192 B raw,
+  // 2,038,337 -> 2,038,690 B transfer against 7c235de6f, one machine and build, Node 24, 95 chunks). Raised by that growth.
+  // The Image downloads > Info stamp row in Settings > Library, its search entry and strings (#13444) add 348 B
+  // raw / 83 B transfer to the eager settings and English locale chunks (6,780,553 -> 6,780,901 B raw,
+  // 2,038,848 -> 2,038,931 B transfer against 9f5b133254, one machine and build, Node 24, chunk count unchanged
+  // at 95). Raised by that growth.
   // The Run settings Load in 4-bit switch (#13841: the per-model field threaded through every chat load path and
   // the resident-config check) adds 1,441 B raw / 497 B transfer, inline in the eager chat chunk (6,780,553 ->
   // 6,781,994 B raw, 2,038,848 -> 2,039,345 B transfer against 90ac3b773, one machine and build, Node 24, chunk
   // count unchanged at 95). Raised by that growth.
-  transferBytes: 2_039_353,
-  rawBytes: 6_782_045,
+  transferBytes: 2_039_789,
+  rawBytes: 6_783_797,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
