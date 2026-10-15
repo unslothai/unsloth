@@ -2,6 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import asyncio
+import contextlib
 import importlib.util
 import os
 import sys
@@ -33,7 +34,8 @@ def captured(monkeypatch):
     monkeypatch.setattr(
         token_preview,
         "run_token_preview",
-        lambda key, config, payload: calls.append((key, config, payload)) or {"samples": []},
+        lambda key, config, payload, record_load = None: calls.append((key, config, payload))
+        or {"samples": []},
     )
     return calls
 
@@ -395,3 +397,103 @@ def test_only_the_token_preview_asks_the_viewer(monkeypatch):
 
     assert "viewer_rows = True" in inspect.getsource(training_routes._token_preview_rows)
     assert "viewer_rows" not in inspect.getsource(formatting.check_format_response)
+
+
+def _scripted_service(monkeypatch, alive_key = None):
+    service = token_preview._TokenPreviewService()
+    starts = []
+
+    def fake_start(key, config):
+        starts.append(key)
+        service._proc = types.SimpleNamespace(is_alive = lambda: True)
+        service._cmd_queue = types.SimpleNamespace(
+            put = lambda item: service._replies.append({"id": item["id"], "ok": True, "result": {}})
+        )
+        service._resp_queue = types.SimpleNamespace(get = lambda timeout: service._replies.pop(0))
+        service._key, service._served = key, False
+
+    service._replies = []
+    monkeypatch.setattr(service, "_start_locked", fake_start)
+    monkeypatch.setattr(service, "_stop_locked", lambda: None)
+    if alive_key is not None:
+        fake_start(alive_key, {})
+        service._served = True
+    return service, starts
+
+
+def test_a_load_is_recorded_whenever_the_request_starts_a_worker(monkeypatch):
+    recorded = []
+
+    def record():
+        recorded.append(True)
+        return contextlib.nullcontext()
+
+    # Warm for the same key: nothing loads, nothing is recorded.
+    service, starts = _scripted_service(monkeypatch, alive_key = ("a",))
+    service.preview(("a",), {}, {"text": "hi"}, record)
+    assert recorded == [] and starts == [("a",)]
+    # Another request swapped the worker in between: this one starts a worker, so it records.
+    service._key = ("b",)
+    service.preview(("a",), {}, {"text": "hi"}, record)
+    assert recorded == [True] and starts[-1] == ("a",)
+
+
+def test_a_retired_account_never_spawns_a_preview_worker(monkeypatch):
+    from core.training import account_jobs
+
+    service = token_preview._TokenPreviewService()
+    spawned = []
+    monkeypatch.setattr(
+        service, "_spawn_locked", lambda key, config: spawned.append(service._account_inflight)
+    )
+    monkeypatch.setattr(account_jobs, "account_is_retired", lambda: True)
+    with pytest.raises(token_preview.TokenPreviewError):
+        service._start_locked(("k",), {})
+    assert spawned == []
+    monkeypatch.setattr(account_jobs, "account_is_retired", lambda: False)
+    service._start_locked(("k",), {})
+    # Retirement sees the start in flight (and refuses) for the whole spawn.
+    assert spawned == [1] and service._account_inflight == 0
+
+
+def test_the_pretokenized_constant_matches_the_training_one():
+    from utils.datasets.pretokenized import PRETOKENIZED_FORMAT
+    assert token_preview_worker.PRETOKENIZED_FORMAT == PRETOKENIZED_FORMAT
+
+
+class _IdTokenizer:
+    chat_template = "x"
+    bos_token = eos_token = None
+
+    def convert_ids_to_tokens(self, ids):
+        return [f"t{i}" for i in ids]
+
+    def decode(self, ids):
+        return " ".join(f"t{i}" for i in ids)
+
+    def __len__(self):
+        return 100
+
+
+def test_pretokenized_rows_show_their_own_ids_and_labels(monkeypatch):
+    import utils.datasets as datasets_pkg
+    from utils.datasets import chat_templates
+
+    rows = [{"input_ids": [1, 2, 3, 4, 5], "labels": [-100, -100, 3, 4, 5]}]
+    monkeypatch.setattr(
+        datasets_pkg,
+        "format_and_template_dataset",
+        lambda dataset, **kwargs: {"dataset": dataset, "final_format": "pretokenized"},
+    )
+    monkeypatch.setattr(chat_templates, "get_training_chat_template", lambda tok, *args: tok)
+    tokenizer = _IdTokenizer()
+    out = token_preview_worker._preview(
+        tokenizer,
+        {"model_name": "m"},
+        {"rows": rows, "train_on_completions": True, "max_seq_length": 4},
+    )
+    sample = out["samples"][0]
+    assert out["final_format"] == "pretokenized"
+    assert [token[0] for token in sample["tokens"]] == [1, 2, 3, 4]
+    assert [token[2] for token in sample["tokens"]] == [False, False, True, True]
+    assert sample["truncated_from"] == 5 and out["masking"]["applied"] is False

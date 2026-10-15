@@ -1744,7 +1744,6 @@ async def token_preview(
     from core.training.token_preview import (
         TokenPreviewError,
         run_token_preview,
-        token_preview_worker_ready,
     )
     from core.training.training import should_use_mlx_training_backend
     from routes.models import _require_model_access_or_caller_token
@@ -1794,18 +1793,15 @@ async def token_preview(
         }
         key = (current_account_id(), model_name, source, hf_token)
         # The tokenizer is loaded only when a worker starts, and which files that load resolves is not
-        # known up front, so every start is recorded; a warm worker fetches nothing.
-        fetch = (
-            recording_a_request_token_fetch(hf_token, source, "model")
-            if remote and not token_preview_worker_ready(key)
-            else contextlib.nullcontext()
+        # known up front, so every load is recorded; a warm worker fetches nothing.
+        return run_token_preview(
+            key,
+            {"model_name": model_name, "tokenizer_source": source, "hf_token": hf_token},
+            payload,
+            (lambda: recording_a_request_token_fetch(hf_token, source, "model"))
+            if remote
+            else None,
         )
-        with fetch:
-            return run_token_preview(
-                key,
-                {"model_name": model_name, "tokenizer_source": source, "hf_token": hf_token},
-                payload,
-            )
 
     try:
         return await asyncio.to_thread(_run)

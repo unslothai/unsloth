@@ -9,12 +9,13 @@ milliseconds; a request for another model, a training start or an idle timeout e
 
 from __future__ import annotations
 
+import contextlib
 import itertools
 import multiprocessing as mp
 import queue
 import threading
 import time
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from loggers import get_logger
 
@@ -78,13 +79,7 @@ class _TokenPreviewService:
             forget_pid(proc.pid)
 
     def _start_locked(self, key: tuple, config: dict) -> None:
-        from core.training.account_jobs import account_process_spec
-        from utils.hf_cache_settings import child_environment_for_spawn, get_hf_cache_paths
-        from utils.native_path_leases import (
-            native_path_secret_removed_for_child_start,
-            run_without_native_path_secret,
-        )
-        from utils.process_lifetime import adopt_pid, is_process_shutting_down
+        from utils.process_lifetime import is_process_shutting_down
         from utils.transformers_version import sidecar_swap_kind
 
         if is_process_shutting_down():
@@ -93,6 +88,31 @@ class _TokenPreviewService:
             raise TokenPreviewError(
                 "A transformers installation is in progress; try the preview again when it finishes."
             )
+        from core.training.account_jobs import account_is_retired
+        from utils.account_context import current_account
+
+        # Owner and in-flight count go up before the spawn, as owned_job does: a retirement in between
+        # then refuses (retry) or sees this worker, instead of finishing before it exists.
+        with self._account_job_lock:
+            if account_is_retired():
+                raise TokenPreviewError("This account has been removed.")
+            self._result_account = current_account()
+            self._account_inflight += 1
+        try:
+            self._spawn_locked(key, config)
+        finally:
+            with self._account_job_lock:
+                self._account_inflight -= 1
+
+    def _spawn_locked(self, key: tuple, config: dict) -> None:
+        from core.training.account_jobs import account_process_spec
+        from utils.hf_cache_settings import child_environment_for_spawn, get_hf_cache_paths
+        from utils.native_path_leases import (
+            native_path_secret_removed_for_child_start,
+            run_without_native_path_secret,
+        )
+        from utils.process_lifetime import adopt_pid
+
         cache_env = get_hf_cache_paths().child_env({})
         with (
             child_environment_for_spawn(cache_env),
@@ -118,42 +138,53 @@ class _TokenPreviewService:
             )
             proc.start()
         adopt_pid(proc.pid)
-        from utils.account_context import current_account
-
         self._proc, self._key, self._served = proc, key, False
-        self._result_account = current_account()
         logger.info("Token preview worker started (pid=%s)", proc.pid)
 
-    def preview(self, key: tuple, config: dict, request: dict) -> dict:
+    def preview(
+        self,
+        key: tuple,
+        config: dict,
+        request: dict,
+        record_load: Optional[Callable[[], Any]] = None,
+    ) -> dict:
+        """``record_load`` wraps a request that loads the tokenizer, decided under the lock so a
+        concurrent request swapping the worker cannot make that load go unrecorded."""
         with self._lock:
-            if not self._alive() or self._key != key:
-                self._stop_locked()
-                self._start_locked(key, config)
-            request_id = next(self._ids)
-            self._cmd_queue.put({**request, "id": request_id})
-            deadline = time.monotonic() + (
-                REQUEST_TIMEOUT_S if self._served else FIRST_REQUEST_TIMEOUT_S
-            )
-            while True:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    self._stop_locked()
-                    raise TokenPreviewError("The token preview timed out.")
-                try:
-                    reply = self._resp_queue.get(timeout = min(remaining, 1.0))
-                except queue.Empty:
-                    if not self._alive():
-                        self._stop_locked()
-                        raise TokenPreviewError("The token preview worker stopped unexpectedly.")
-                    continue
-                if reply.get("id") == request_id:
-                    break
-            self._served = True
-            if reply.get("fatal") or self._stop_pending:
-                self._stop_locked()
+            loads = not (self._alive() and self._key == key and self._served)
+            with record_load() if loads and record_load else contextlib.nullcontext():
+                reply = self._request_locked(key, config, request)
         if not reply.get("ok"):
             raise TokenPreviewError(reply.get("error") or "Token preview failed.")
         return reply["result"]
+
+    def _request_locked(self, key: tuple, config: dict, request: dict) -> dict:
+        if not self._alive() or self._key != key:
+            self._stop_locked()
+            self._start_locked(key, config)
+        request_id = next(self._ids)
+        self._cmd_queue.put({**request, "id": request_id})
+        deadline = time.monotonic() + (
+            REQUEST_TIMEOUT_S if self._served else FIRST_REQUEST_TIMEOUT_S
+        )
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                self._stop_locked()
+                raise TokenPreviewError("The token preview timed out.")
+            try:
+                reply = self._resp_queue.get(timeout = min(remaining, 1.0))
+            except queue.Empty:
+                if not self._alive():
+                    self._stop_locked()
+                    raise TokenPreviewError("The token preview worker stopped unexpectedly.")
+                continue
+            if reply.get("id") == request_id:
+                break
+        self._served = True
+        if reply.get("fatal") or self._stop_pending:
+            self._stop_locked()
+        return reply
 
     def stop(self) -> None:
         # Never waits behind a preview in flight (a first one can take minutes): ending its worker
@@ -174,13 +205,13 @@ class _TokenPreviewService:
 _service = _TokenPreviewService()
 
 
-def run_token_preview(key: tuple, config: dict, request: dict) -> dict:
-    return _service.preview(key, config, request)
-
-
-def token_preview_worker_ready(key: tuple) -> bool:
-    """A live worker already holds the tokenizer for ``key``, so a request loads nothing."""
-    return _service._alive() and _service._key == key and _service._served
+def run_token_preview(
+    key: tuple,
+    config: dict,
+    request: dict,
+    record_load: Optional[Callable[[], Any]] = None,
+) -> dict:
+    return _service.preview(key, config, request, record_load)
 
 
 def stop_token_preview_worker() -> None:

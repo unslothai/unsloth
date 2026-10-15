@@ -24,6 +24,7 @@ from typing import Any
 IDLE_TIMEOUT_S = 300
 # A token list this long already fills the dialog; the counts below still cover the whole row.
 MAX_TOKENS_SHOWN = 4096
+PRETOKENIZED_FORMAT = "pretokenized"  # utils.datasets.pretokenized, kept import-free here
 
 _EXAMPLE_CONVERSATION = [
     {"role": "user", "content": "What is the capital of Hungary?"},
@@ -182,7 +183,36 @@ def _format_rows(tokenizer, config: dict, rows: list) -> tuple[list, str]:
     )
     if not info.get("success", True):
         raise ValueError("; ".join(info.get("errors") or []) or "Dataset formatting failed")
-    return list(info["dataset"]["text"]), str(info.get("final_format", "")).lower()
+    final_format = str(info.get("final_format", "")).lower()
+    if final_format == PRETOKENIZED_FORMAT:
+        # Rows that are already token IDs keep them; there is no text to render.
+        return info["dataset"].to_list(), final_format
+    return list(info["dataset"]["text"]), final_format
+
+
+def _pretokenized(tokenizer, model_name: str, rows: list, max_length: int, request: dict):
+    """IDs, labels, full lengths and masking for pre-tokenized rows, as training prepares them: truncated by
+    prepare_pretokenized_dataset, trained where the rows' own labels say, else masked from input_ids."""
+    from datasets import Dataset
+    from utils.datasets.pretokenized import has_custom_labels, prepare_pretokenized_dataset
+
+    dataset = Dataset.from_list(rows)
+    full_lengths = [len(ids) for ids in dataset["input_ids"]]
+    dataset = prepare_pretokenized_dataset(dataset, max_seq_length = max_length)
+    input_ids = [list(ids) for ids in dataset["input_ids"]]
+    if has_custom_labels(dataset):
+        return (
+            input_ids,
+            [list(row) for row in dataset["labels"]],
+            full_lengths,
+            {"applied": False, "notes": []},
+        )
+    if request.get("train_on_completions"):
+        labels, masking = _mask(
+            tokenizer, model_name, {"input_ids": input_ids}, PRETOKENIZED_FORMAT
+        )
+        return input_ids, labels, full_lengths, masking
+    return input_ids, [None] * len(input_ids), full_lengths, {"applied": False, "notes": []}
 
 
 def _sample(texts: list, count: int, seed: int) -> list:
@@ -217,23 +247,28 @@ def _preview(tokenizer, config: dict, request: dict) -> dict:
     tokenizer = get_training_chat_template(tokenizer, model_name, final_format)
 
     max_length = int(request.get("max_seq_length") or 2048)
-    add_special_tokens = resolve_add_special_tokens(tokenizer, first_text)
-    encoded = tokenizer(
-        texts, truncation = True, max_length = max_length, add_special_tokens = add_special_tokens
-    )
-    full_lengths = [
-        len(ids) for ids in tokenizer(texts, add_special_tokens = add_special_tokens)["input_ids"]
-    ]
-
-    masking = {"applied": False, "notes": []}
-    labels = [None] * len(texts)
-    if request.get("train_on_completions") and final_format != "raw_text" and any(texts):
-        labels, masking = _mask(tokenizer, model_name, dict(encoded), final_format)
+    if final_format == PRETOKENIZED_FORMAT:
+        add_special_tokens = False
+        all_ids, labels, full_lengths, masking = _pretokenized(
+            tokenizer, model_name, texts, max_length, request
+        )
+        texts = [tokenizer.decode(ids) for ids in all_ids]
+    else:
+        add_special_tokens = resolve_add_special_tokens(tokenizer, first_text)
+        encoded = tokenizer(
+            texts, truncation = True, max_length = max_length, add_special_tokens = add_special_tokens
+        )
+        all_ids = encoded["input_ids"]
+        full_lengths = [
+            len(ids) for ids in tokenizer(texts, add_special_tokens = add_special_tokens)["input_ids"]
+        ]
+        masking = {"applied": False, "notes": []}
+        labels = [None] * len(texts)
+        if request.get("train_on_completions") and final_format != "raw_text" and any(texts):
+            labels, masking = _mask(tokenizer, model_name, dict(encoded), final_format)
 
     samples = []
-    for text, input_ids, row_labels, full_length in zip(
-        texts, encoded["input_ids"], labels, full_lengths
-    ):
+    for text, input_ids, row_labels, full_length in zip(texts, all_ids, labels, full_lengths):
         sample = _render_tokens(tokenizer, list(input_ids), row_labels)
         sample["text"] = text
         sample["truncated_from"] = full_length if full_length > len(input_ids) else None
@@ -256,6 +291,19 @@ def _preview(tokenizer, config: dict, request: dict) -> dict:
         "eos_token": getattr(tokenizer, "eos_token", None),
         "example_text": example_text,
     }
+
+
+def _skip_fingerprint_hashing() -> None:
+    """datasets dill-hashes every map function, and the tokenizer each one closes over, to name cache
+    files: 8 of 10 s on 100 FineTome rows. The preview maps in-memory rows only, which never touch the
+    cache, so in this process a random id stands in. Idempotent."""
+    import datasets.arrow_dataset as arrow_dataset
+    import datasets.fingerprint as fingerprint
+
+    random_fingerprint = fingerprint.generate_random_fingerprint
+    for module in (fingerprint, arrow_dataset):
+        if hasattr(module, "update_fingerprint"):
+            module.update_fingerprint = lambda *args, **kwargs: random_fingerprint()
 
 
 def run_token_preview_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None:
@@ -284,6 +332,7 @@ def run_token_preview_process(*, cmd_queue: Any, resp_queue: Any, config: dict) 
             # Paid once here rather than on the first preview; both are needed by most requests.
             import unsloth.chat_templates  # noqa: F401
             import unsloth_zoo.dataset_utils  # noqa: F401
+            _skip_fingerprint_hashing()
         except Exception:  # noqa: BLE001 - the request that needs them reports the failure
             pass
 
