@@ -11,6 +11,7 @@ head on an architecture without an MTP graph would run in neither engine, so it 
 from __future__ import annotations
 
 import gc
+import hashlib
 import json
 import os
 import re
@@ -181,7 +182,9 @@ def drafter_capability(model_name: str, hf_token = None) -> dict:
     """The capability, probed in a child process: importing unsloth_zoo in the API server races its
     background torch warm-up (import deadlock in torch._dynamo) and patches the server process.
     One probe per key at a time (later callers wait for its cached answer), at most two at once."""
-    key = (model_name, hf_token is False, bool(hf_token))
+    # Keyed on the token itself: one caller's private-model answer is never served to another.
+    token_key = hashlib.sha256(hf_token.encode()).hexdigest() if hf_token else hf_token
+    key = (model_name, token_key)
     with _PROBE_LOCKS_GUARD:
         lock = _PROBE_LOCKS.setdefault(key, threading.Lock())
     with lock:

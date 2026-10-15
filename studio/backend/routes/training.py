@@ -96,6 +96,7 @@ except ImportError:
     from utils.paths import is_local_path, normalize_path, resolve_dataset_path
 
 from auth.authentication import authenticated_via_api_key, get_current_subject
+from hub.dependencies import get_hf_token
 from hub.utils.host_paths import redact_host_paths
 from hub.utils.hf_tokens import HfTokenArg, cached_read_refused, hf_token_arg
 
@@ -1688,6 +1689,7 @@ async def get_drafter_capability(
     model_name: str,
     current_subject: str = Depends(get_current_subject),
     via_api_key: bool = Depends(authenticated_via_api_key),
+    hf_token: Optional[str] = Depends(get_hf_token),
 ):
     """Which speculative-decoding drafter the Train tab can train for `model_name`: the native MTP head
     when the checkpoint ships one, else an EAGLE-3 drafter where vLLM or llama.cpp can run it."""
@@ -1701,19 +1703,21 @@ async def get_drafter_capability(
         # Same rule as the training routes: Hub ids, or paths inside this account's workspace.
         try:
             account_path(name, reference = True, shared_cache = True)
+            # A shared-cache snapshot is another tenant's unless this account may see that model.
+            await asyncio.to_thread(_authorize_cache_fallback, name)
         except HTTPException:
             return {
                 "model_name": name,
                 "has_native_mtp": False,
                 "strategy": None,
                 "supported": False,
-                "reason": "Path is outside this account's workspace.",
+                "reason": "This model is not available to this account.",
                 "vllm": False,
                 "llama_cpp": False,
             }
-    # No token in a query string: ambient credentials for the owner only, anonymous for API keys
-    # and managed accounts (the owner's HF token must not answer for them).
-    token = False if (via_api_key is True or managed) else None
+    # The caller's own token comes in the header; without one, ambient credentials for the owner
+    # only, anonymous for API keys and managed accounts (the owner's token must not answer for them).
+    token = hf_token_arg(hf_token, allow_ambient_token = not (via_api_key is True or managed))
     return await asyncio.to_thread(drafter_capability, name, token)
 
 

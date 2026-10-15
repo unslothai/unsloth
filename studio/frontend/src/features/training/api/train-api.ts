@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
+import { hubTokenHeader } from "@/features/hub";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 // eslint-disable-next-line no-restricted-imports
 import { checkDiskSpace } from "@/features/settings/low-disk-check";
@@ -373,10 +374,12 @@ export function getTrainingMetrics(
 export async function getDrafterCapability(
   modelName: string,
   signal?: AbortSignal,
+  hfToken?: string | null,
 ): Promise<DrafterCapability> {
+  // The token rides a header, never the query string (private / gated models).
   const response = await authFetch(
     `/api/train/drafter-capability?model_name=${encodeURIComponent(modelName)}`,
-    { signal },
+    { signal, headers: hubTokenHeader(hfToken?.trim() || null) },
   );
   if (!response.ok) {
     throw new Error(await readFastApiError(response));

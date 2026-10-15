@@ -884,12 +884,25 @@ def test_managed_accounts_probe_only_their_paths_and_never_with_the_owner_token(
         "drafter_capability",
         lambda name, token: seen.append((name, token)) or {"supported": True},
     )
+    visible = {"org/model"}
+
+    def authorize(name, repo_type = "model"):
+        if name not in visible:
+            raise route.HTTPException(status_code = 404, detail = "Model not found")
+
+    monkeypatch.setattr(route, "_authorize_cache_fallback", authorize)
     refused = asyncio.run(
-        route.get_drafter_capability("../../accounts/other/outputs/run", "u", False)
+        route.get_drafter_capability("../../accounts/other/outputs/run", "u", False, None)
     )
-    assert refused["supported"] is False and "outside" in refused["reason"] and seen == []
-    asyncio.run(route.get_drafter_capability("org/model", "u", False))
+    assert refused["supported"] is False and "not available" in refused["reason"] and seen == []
+    # Another tenant's model in the shared cache: refused before anything is read.
+    hidden = asyncio.run(route.get_drafter_capability("org/private", "u", False, None))
+    assert hidden["supported"] is False and seen == []
+    asyncio.run(route.get_drafter_capability("org/model", "u", False, None))
     assert seen == [("org/model", False)]
+    # The caller's own token (X-Unsloth-HF-Token) reaches the probe for a private / gated model.
+    asyncio.run(route.get_drafter_capability("org/model", "u", False, "hf_mine"))
+    assert seen[-1] == ("org/model", "hf_mine")
 
 
 def test_adapter_base_keeps_the_anonymous_token(monkeypatch):

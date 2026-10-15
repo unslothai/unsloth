@@ -3,6 +3,7 @@
 
 import { useEffect } from "react";
 import { useShallow } from "zustand/react/shallow";
+import { getHfToken } from "@/features/hub";
 import { getDrafterCapability } from "../api/train-api";
 import { useTrainingConfigStore } from "../stores/training-config-store";
 
@@ -22,7 +23,7 @@ export function useDrafterCapability(active: boolean): void {
   useEffect(() => {
     if (!active || !selectedModel || capabilityFor === selectedModel) return;
     const controller = new AbortController();
-    getDrafterCapability(selectedModel, controller.signal)
+    getDrafterCapability(selectedModel, controller.signal, getHfToken())
       .then((capability) => {
         if (controller.signal.aborted) return;
         // The backend may echo a resolved path; key the answer on what was asked.
