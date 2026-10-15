@@ -421,6 +421,32 @@ def test_sd_cpps_segment_capacity_failure_reads_as_memory():
     assert sd_cpp_backend.output_shows_capacity_failure(
         "[E] minimax_h3 segment 2/9 (graph) failed during workspace capacity check"
     )
+    assert sd_cpp_backend.output_shows_capacity_failure(
+        "[E] minimax_h3 segment 1/4 (graph) failed during allocated capacity check"
+    )
+
+
+# sd.cpp's model manager logs this when one eviction pass falls short, then recovers: renders that complete print it
+# (gfx1151, 864x480x124 with the pinned reserve: rc 0, a full video, two of these lines in its log).
+_RECOVERED_CAPACITY_WARNING = (
+    "[W] model manager cannot make enough memory available on Vulkan0: need 1038.05 MB device / 5701.21 MB "
+    "budget, available 17290.44 MB device / 5690.66 MB budget --- model_manager.cpp:1944\n"
+)
+
+
+def test_a_recovered_capacity_warning_is_not_a_capacity_failure():
+    """Only the failing segment's [E] line is a capacity failure. Read as one, the warning would hide what really
+    stopped the render: the build-level failure below must still be recorded, and an unrelated crash must not be
+    explained as memory."""
+    assert not sd_cpp_backend.output_shows_capacity_failure(_RECOVERED_CAPACITY_WARNING)
+    build_failure = (
+        "sd-cli exited 1. Last output:\n" + _RECOVERED_CAPACITY_WARNING
+        + "ggml_cuda_compute_forward: error: invalid device function\n"
+    )
+    assert sd_cpp_backend.output_shows_accelerator_failure(build_failure)
+    assert sd_cpp_backend.output_shows_decisive_accelerator_failure(build_failure)
+    crash = "sd-cli exited -11. Last output:\n" + _RECOVERED_CAPACITY_WARNING + "Segmentation fault\n"
+    assert "renderer stopped unexpectedly" in video_failure_detail(RuntimeError(crash))
 
 
 def test_a_bare_device_loss_is_explained_as_likely_memory():

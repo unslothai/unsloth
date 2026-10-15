@@ -1763,10 +1763,12 @@ _ACCELERATOR_CAPACITY_FAILURE_MARKERS: tuple[str, ...] = (
     "allocation failure",
     "insufficient memory",
     "not enough memory",
-    # sd.cpp's graph-cut executor when a segment's device memory cannot be made available.
-    "cannot make enough memory available",
-    "workspace capacity check",
+    # sd.cpp's graph-cut executor when a segment's device memory cannot be made available (ggml_runner.cpp's
+    # fail_segment). Not the model manager's "cannot make enough memory available" warning: it precedes recoveries
+    # too, and renders that complete print it.
+    "failed during workspace capacity check",
     "failed during workspace allocation",
+    "failed during allocated capacity check",
 )
 
 
