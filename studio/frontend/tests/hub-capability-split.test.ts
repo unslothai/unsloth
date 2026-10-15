@@ -70,6 +70,6 @@ test("Text only lists the models no other box covers, so every box ticked lists 
 test("every capability starts ticked, and the last tick can't be removed", () => {
   const popover = readSrc("features/hub/catalog/model-search-filters.tsx");
   assert.match(popover, /capabilities\.length === 0 \|\| capabilities\.includes\(key\)/);
-  assert.match(popover, /const locked = next\.length === 0;/);
+  assert.match(popover, /locked=\{next\.length === 0\}/);
   assert.match(popover, /icon=\{FilterMailIcon\}/);
 });

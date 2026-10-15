@@ -33,3 +33,11 @@ test("the range notes are hover tooltips beside Parameters and Context length", 
   assert.match(popover, /aria-label=\{`About \$\{label\.toLowerCase\(\)\}`\}/);
   assert.match(popover, /icon=\{InformationCircleIcon\}/);
 });
+
+test("the Hub's menus take the composer + menu's shape", () => {
+  const css = readSrc("features/hub/hub.css");
+  assert.match(css, /\.hub-composer-menu\[data-slot\] \{\s*border-radius: 21px !important;/);
+  assert.match(readSrc("features/hub/catalog/hub-option-menu.tsx"), /hub-composer-menu/);
+  assert.match(popover, /hub-composer-menu/);
+  assert.match(popover, /const SEPARATOR = "mx-1 my-1 h-px bg-border\/50";/);
+});

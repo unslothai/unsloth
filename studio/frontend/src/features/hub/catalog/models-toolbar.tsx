@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import {
@@ -22,6 +21,7 @@ import {
   Search01Icon,
   SlidersHorizontalIcon,
   SparklesIcon,
+  Tick02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { memo, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -440,7 +440,10 @@ export const ModelsToolbar = memo(function ModelsToolbar({
               }
             }}
             ariaLabel="Format filter"
-            className={cn(triggerBase, "w-[calc(144px*var(--ui-space-scale,1))]")}
+            className={cn(
+              triggerBase,
+              "w-[calc(144px*var(--ui-space-scale,1))]",
+            )}
           />
         )}
 
@@ -450,7 +453,10 @@ export const ModelsToolbar = memo(function ModelsToolbar({
             options={sortOptions}
             onValueChange={onSortChange}
             ariaLabel="Sort models"
-            className={cn(triggerBase, "w-[calc(128px*var(--ui-space-scale,1))]")}
+            className={cn(
+              triggerBase,
+              "w-[calc(128px*var(--ui-space-scale,1))]",
+            )}
             triggerContent={
               <span className="flex items-center gap-1">
                 <HugeiconsIcon
@@ -459,7 +465,8 @@ export const ModelsToolbar = memo(function ModelsToolbar({
                   className="size-3.5 shrink-0 text-foreground"
                 />
                 <span className="truncate">
-                  {sortOptions.find((option) => option.value === sortBy)?.label ?? sortBy}
+                  {sortOptions.find((option) => option.value === sortBy)
+                    ?.label ?? sortBy}
                 </span>
               </span>
             }
@@ -472,16 +479,19 @@ export const ModelsToolbar = memo(function ModelsToolbar({
                       role="checkbox"
                       aria-checked={fitOnDeviceOnly}
                       onClick={() => onFitOnDeviceOnlyChange(!fitOnDeviceOnly)}
-                      className="flex w-full cursor-pointer select-none items-center gap-2 rounded-[10px] px-3 py-2 text-left text-ui-12p5 text-muted-foreground transition-colors hover:text-foreground"
+                      className={cn(
+                        "hub-menu-row relative flex w-full cursor-pointer select-none items-center py-2 pr-9 pl-3 text-left text-sm",
+                        fitOnDeviceOnly && "font-medium text-primary",
+                      )}
                     >
-                      <Checkbox
-                        checked={fitOnDeviceOnly}
-                        tabIndex={-1}
-                        aria-hidden={true}
-                        // Dark mode's default border all but vanished on the menu surface.
-                        className="pointer-events-none size-3.5 rounded-full dark:border-[color-mix(in_oklab,var(--foreground)_calc(60%*var(--contrast-edge-gain,1)),transparent)] dark:data-checked:border-primary [&_svg]:!size-2.5"
-                      />
                       Only show models that fit
+                      {fitOnDeviceOnly && (
+                        <HugeiconsIcon
+                          icon={Tick02Icon}
+                          strokeWidth={2}
+                          className="pointer-events-none absolute right-3 size-4"
+                        />
+                      )}
                     </button>
                   </TooltipTrigger>
                   <TooltipContent side="bottom">

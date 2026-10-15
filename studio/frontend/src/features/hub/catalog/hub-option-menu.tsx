@@ -205,7 +205,7 @@ export function HubOptionMenu<T extends string>({
         collisionPadding={12}
         onCloseAutoFocus={(event) => event.preventDefault()}
         className={cn(
-          "hub-menu-instant menu-soft-surface w-max min-w-[var(--radix-popover-trigger-width)] max-w-[min(var(--radix-popover-content-available-width),calc(100vw-1rem))] rounded-[14px] p-1 ring-0",
+          "hub-menu-instant hub-composer-menu menu-soft-surface gap-0 w-max min-w-[var(--radix-popover-trigger-width)] max-w-[min(var(--radix-popover-content-available-width),calc(100vw-1rem))] ring-0",
           contentClassName,
         )}
       >
@@ -235,16 +235,15 @@ export function HubOptionMenu<T extends string>({
                 }}
                 onPointerEnter={() => activateIndex(index)}
                 className={cn(
-                  // 14px menu radius minus the 4px padding, so the hover nests
-                  // cleanly into the dropdown's corners.
-                  "relative flex w-full min-w-0 cursor-pointer select-none items-center rounded-[10px] py-2 pr-8 pl-3 text-left text-sm leading-snug outline-none transition-colors",
+                  "hub-menu-row relative flex w-full min-w-0 cursor-pointer select-none items-center py-2 pr-9 pl-3 text-left text-sm outline-none transition-colors",
+                  selectedOption && "font-medium text-primary",
                 )}
               >
                 <span className="flex min-w-0 flex-1 items-center gap-2.5 overflow-hidden whitespace-normal break-words">
                   {option.label}
                 </span>
                 {selectedOption && (
-                  <span className="pointer-events-none absolute right-2 flex size-4 items-center justify-center">
+                  <span className="pointer-events-none absolute right-3 flex size-4 items-center justify-center">
                     <HugeiconsIcon
                       icon={Tick02Icon}
                       strokeWidth={2}
@@ -257,10 +256,11 @@ export function HubOptionMenu<T extends string>({
           })}
         </div>
         {footer && (
-          // -mt-3 cancels the surface's 16px flex gap down to 4px. No side
-          // padding: the footer label carries the same padding as the options
-          // so its checkbox lines up with the option text.
-          <div className="-mt-3 border-t border-border/60 pt-1">{footer}</div>
+          // The line is the composer menu's separator.
+          <div>
+            <div aria-hidden={true} className="mx-1 my-1 h-px bg-border/50" />
+            {footer}
+          </div>
         )}
       </PopoverContent>
     </Popover>

@@ -713,6 +713,30 @@
     background-color: color-mix(in srgb, var(--accent) 60%, var(--popover)) !important;
   }
 
+  /* The Hub's dropdowns in the composer + menu's shape: 12px rows on a 9px side gutter, so the
+     21px corners run concentric, the same surface and the same hover washes. */
+  .hub-composer-menu[data-slot] {
+    border-radius: 21px !important;
+    padding: calc(0.5rem * var(--ui-space-scale, 1)) calc(9px * var(--ui-space-scale, 1)) !important;
+  }
+  html.dark .hub-composer-menu {
+    background-color: var(--card) !important;
+  }
+  .hub-composer-menu .hub-menu-row {
+    margin-block: 2px;
+    border-radius: 12px;
+  }
+  .hub-composer-menu .hub-menu-row:is(:hover, [data-highlighted]) {
+    background-color: rgb(0 0 0 / calc(0.06 * var(--contrast-wash-gain, 1)));
+    color: inherit;
+  }
+  html.dark .hub-composer-menu .hub-menu-row:is(:hover, [data-highlighted]) {
+    background-color: rgb(255 255 255 / calc(0.1 * var(--contrast-wash-gain, 1)));
+  }
+  .hub-composer-menu .hub-menu-row.text-primary:is(:hover, [data-highlighted]) {
+    color: var(--primary);
+  }
+
   .hub-menu-instant *,
   .hub-menu-instant *::before,
   .hub-menu-instant *::after,
