@@ -344,9 +344,23 @@ def _render_conversation(tokenizer, conversation, tools = None, fallback_without
     return _render_messages(tokenizer, conversation, tools, fallback_without_tools)
 
 
+def _thinking_as_reasoning_content(tokenizer, conversation):
+    if "reasoning_content" not in str(getattr(tokenizer, "chat_template", None) or ""):
+        return conversation
+    return [
+        {**message, "reasoning_content": message["thinking"]}
+        if isinstance(message, dict)
+        and message.get("thinking")
+        and message.get("reasoning_content") is None
+        else message
+        for message in conversation
+    ]
+
+
 def _render_messages(tokenizer, conversation, tools = None, fallback_without_tools = True):
     from core.inference.chat_template_helpers import _normalize_tool_call_arguments
 
+    conversation = _thinking_as_reasoning_content(tokenizer, conversation)
     attempts = []
     for messages in (_drop_none_values(conversation), conversation):
         for attempt in (_normalize_tool_call_arguments(messages), messages):
