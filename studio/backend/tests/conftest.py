@@ -120,6 +120,13 @@ _skills_home_counter = itertools.count()
 
 
 @pytest.fixture(autouse = True)
+def _no_vae_structural_verdict_cache(monkeypatch):
+    """Structural VAE fusion verdicts persist under Studio's cache root; tests must not read or write the real one
+    (the cache tests turn it on against a temp dir)."""
+    monkeypatch.setenv("UNSLOTH_VAE_FUSED_STRUCTURAL_CACHE", "0")
+
+
+@pytest.fixture(autouse = True)
 def _no_real_mxc_drive_aliases(monkeypatch):
     # A Windows test host would otherwise map real drive letters; test_mxc_drive_alias.py and the native
     # MXC tests opt back in.

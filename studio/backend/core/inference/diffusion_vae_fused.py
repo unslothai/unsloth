@@ -2154,8 +2154,16 @@ def _install(vae: Any, logger: Any = None) -> int:
 # one tiny decode); the fused decode must match stock within tolerance or the patch is removed.
 # Kill switch ``UNSLOTH_VAE_FUSED_STRUCTURAL=0``.
 STRUCTURAL_ENV = "UNSLOTH_VAE_FUSED_STRUCTURAL"
+# The calibration crop. The trace marks only the norm outputs (cheap at any size), so the crop is sized for the
+# kernels instead: 16 latents keeps every spatial extent a multiple of 16, the same Triton specialisations a full
+# decode uses, so calibrating compiles nothing the real decode would not (an 8-latent crop measured +1.5 to 2 s
+# of extra compiles on a cold Triton cache).
 _PROBE_LATENTS = 16
 _PROBE_FRAMES = 2
+# Calibration verdicts are kept on disk per (class, config, decoder layout, torch, triton, device capability), so a
+# later process skips the trace and the checks. Off: UNSLOTH_VAE_FUSED_STRUCTURAL_CACHE=0.
+STRUCTURAL_CACHE_ENV = "UNSLOTH_VAE_FUSED_STRUCTURAL_CACHE"
+_STRUCTURAL_CACHE_VERSION = 1
 # Output space is [-1, 1]; the measured classes' fused-vs-stock bf16 decode differences sit well under these.
 _PROBE_MAX_ABS = 0.125
 _PROBE_MEAN_ABS = 0.01
@@ -2217,6 +2225,91 @@ def _probe_latent(z: Any) -> Any:
     return z[tuple(sl)].contiguous()
 
 
+def structural_cache_disabled() -> bool:
+    return (os.environ.get(STRUCTURAL_CACHE_ENV) or "").strip().lower() in ("0", "off", "false", "no")
+
+
+def _structural_cache_dir() -> Any:
+    from pathlib import Path
+
+    try:
+        from .diffusion_compile_cache import cache_root
+        return Path(cache_root()) / "vae_structural"
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _vae_config_json(vae: Any) -> str:
+    import json
+
+    cfg = getattr(vae, "config", None)
+    try:
+        data = dict(cfg) if cfg is not None else {}
+    except Exception:  # noqa: BLE001
+        data = dict(getattr(cfg, "__dict__", {}) or {})
+    return json.dumps({k: data[k] for k in sorted(data) if not str(k).startswith("_")}, sort_keys = True, default = str)
+
+
+def structural_cache_key(vae: Any, norms: list, silus: list, device: Any) -> Optional[str]:
+    """Key of a calibration verdict: everything the pairing and the kernels' numerics depend on. Any change (another
+    class, config, decoder layout, torch, triton or device capability) is a new key, so it is traced again."""
+    import hashlib
+
+    torch = _torch()
+    try:
+        import triton
+        triton_version = getattr(triton, "__version__", "?")
+    except Exception:  # noqa: BLE001
+        triton_version = None
+    try:
+        cap = tuple(torch.cuda.get_device_capability(device)) if getattr(device, "type", None) == "cuda" else None
+    except Exception:  # noqa: BLE001
+        cap = None
+    names = {id(m): n for n, m in vae.decoder.named_modules()}
+    layout = [
+        (names.get(id(m), "?"), type(m).__name__, int(getattr(m, "num_groups", 0)), int(getattr(m, "num_channels", 0)))
+        for m in norms
+    ] + [(names.get(id(m), "?"), type(m).__name__) for m in silus]
+    blob = repr((
+        _STRUCTURAL_CACHE_VERSION, f"{type(vae).__module__}.{type(vae).__qualname__}", _vae_config_json(vae), layout,
+        str(torch.__version__), triton_version, cap, _PROBE_LATENTS, _PROBE_MAX_ABS, _PROBE_MEAN_ABS,
+    ))  # fmt: skip
+    return hashlib.sha256(blob.encode()).hexdigest()[:32]
+
+
+def _load_pairing(key: Optional[str], n_norms: int) -> Optional[dict]:
+    import json
+
+    root = _structural_cache_dir()
+    if key is None or root is None or structural_cache_disabled():
+        return None
+    try:
+        data = json.loads((root / f"{key}.json").read_text())
+    except Exception:  # noqa: BLE001 - absent or unreadable: calibrate
+        return None
+    paired = data.get("paired")
+    if data.get("key") != key or data.get("status") not in ("ok", "rejected", "no_match"):
+        return None
+    if not isinstance(paired, list) or len(paired) != n_norms or any(p not in (None, True, False) for p in paired):
+        return None
+    return data
+
+
+def _save_pairing(key: Optional[str], record: dict) -> None:
+    import json
+
+    root = _structural_cache_dir()
+    if key is None or root is None or structural_cache_disabled():
+        return
+    try:
+        root.mkdir(parents = True, exist_ok = True)
+        tmp = root / f".{key}.{os.getpid()}.tmp"
+        tmp.write_text(json.dumps({**record, "key": key}, default = str))
+        os.replace(tmp, root / f"{key}.json")
+    except Exception:  # noqa: BLE001 - a cache that cannot be written only costs the next process a calibration
+        pass
+
+
 def _has_user_hooks(module: Any) -> bool:
     for name in ("_forward_hooks", "_forward_pre_hooks", "_backward_hooks", "_backward_pre_hooks"):
         if getattr(module, name, None):
@@ -2235,36 +2328,70 @@ def _global_module_hooks() -> bool:
     )
 
 
+# Tensor methods that only read metadata: not a reader of the values.
+_META_FUNCS = frozenset((
+    "__get__", "dim", "size", "stride", "numel", "nelement", "ndimension", "element_size", "is_contiguous",
+    "storage_offset", "is_floating_point", "is_complex", "get_device", "__len__", "data_ptr",
+))  # fmt: skip
+
+
+def _tracked_tensor_class() -> Any:
+    """A tensor subclass marking a norm's output: every torch function that touches it reports in, and its results
+    come back as plain tensors, so only the direct readers of a norm output are seen (cheap: no per-op hook on the
+    rest of the decoder)."""
+    torch = _torch()
+    cls = globals().get("_TrackedCls")
+    if cls is not None:
+        return cls
+    from torch.utils._pytree import tree_leaves
+
+    class _Tracked(torch.Tensor):
+        _trace: Any = None
+
+        @classmethod
+        def __torch_function__(cls, func, types_, args = (), kwargs = None):
+            kwargs = kwargs or {}
+            trace = _Tracked._trace
+            if trace is not None and getattr(func, "__name__", "") not in _META_FUNCS:
+                for leaf in tree_leaves((args, kwargs)):
+                    if isinstance(leaf, _Tracked):
+                        trace(leaf)
+            with torch._C.DisableTorchFunctionSubclass():
+                return func(*args, **kwargs)
+
+    globals()["_TrackedCls"] = _Tracked
+    return _Tracked
+
+
 def _trace_group_norm_silu(norms: list, silus: list, run: Any) -> tuple:
     """(calls per norm, outputs of each norm consumed ONLY by an nn.SiLU, run output, info) over one ``run()``.
 
-    A norm's output counts as consumed by the SiLU only when the trace proves the SiLU is its sole reader: every
-    aten op that reads the output tensor (a view, an in-place update, a residual add) is recorded by a dispatch mode,
-    and any such op outside the SiLU call marks it shared. ``info["shared"]``: per norm, outputs read elsewhere;
-    ``info["inputs"]``: per norm, the first input it saw (for the per-site check). Norms or SiLUs carrying hooks of
-    their own, global module hooks, or no dispatch mode available: nothing counts as exclusively consumed."""
-    torch = _torch()
+    A norm's output counts as consumed by the SiLU only when the trace proves the SiLU is its sole reader: the output
+    is marked (a tensor subclass), every torch function reading it (a view, an in-place update, a residual add) is
+    recorded, and any such read outside the SiLU call marks it shared. ``info["shared"]``: per norm, reads elsewhere.
+    Norms or SiLUs carrying hooks of their own, global module hooks, or no subclass support: nothing counts as
+    exclusively consumed."""
     n = len(norms)
     calls, consumed, shared = [0] * n, [0] * n, [0] * n
-    inputs: list = [None] * n
     produced: dict = {}
     keep: list = []
     handles = []
     in_silu: list = []
     hooked = _global_module_hooks() or any(_has_user_hooks(m) for m in (*norms, *silus))
     try:
-        from torch.utils._python_dispatch import TorchDispatchMode
-        from torch.utils._pytree import tree_leaves
+        tracked = _tracked_tensor_class()
     except Exception:  # noqa: BLE001 - no way to see every reader: fuse GroupNorm alone
-        TorchDispatchMode = None  # noqa: N806
+        tracked = None
 
     def norm_hook(idx: int):
-        def hook(_m, inp, out):
+        def hook(_m, _inp, out):
             calls[idx] += 1
-            produced[id(out)] = idx
-            keep.append(out)  # pin the id for the run
-            if inputs[idx] is None and inp:
-                inputs[idx] = inp[0].detach().clone()
+            if tracked is None or type(out) is not _torch().Tensor:
+                return None
+            marked = out.as_subclass(tracked)
+            produced[id(marked)] = idx
+            keep.append(marked)  # pin the id for the run
+            return marked
 
         return hook
 
@@ -2272,64 +2399,62 @@ def _trace_group_norm_silu(norms: list, silus: list, run: Any) -> tuple:
         idx = produced.get(id(inp[0])) if inp else None
         if idx is not None:
             consumed[idx] += 1
-        in_silu.append(idx is not None)
+        in_silu.append(idx)
 
     def silu_post(_m, _inp, _out):
         if in_silu:
             in_silu.pop()
 
-    mode = None
-    if TorchDispatchMode is not None:
+    def read(t: Any) -> None:
+        idx = produced.get(id(t))
+        if idx is not None and not (in_silu and in_silu[-1] == idx):
+            shared[idx] += 1
 
-        class _Readers(TorchDispatchMode):
-            def __torch_dispatch__(self, func, types_, args = (), kwargs = None):
-                kwargs = kwargs or {}
-                if not (in_silu and in_silu[-1]):
-                    for leaf in tree_leaves((args, kwargs)):
-                        idx = produced.get(id(leaf)) if isinstance(leaf, torch.Tensor) else None
-                        if idx is not None:
-                            shared[idx] += 1
-                return func(*args, **kwargs)
-
-        mode = _Readers()
     try:
         for i, m in enumerate(norms):
             handles.append(m.register_forward_hook(norm_hook(i)))
         for m in silus:
             handles.append(m.register_forward_pre_hook(silu_pre))
             handles.append(m.register_forward_hook(silu_post))
-        if mode is not None:
-            with mode:
-                out = run()
-        else:
-            out = run()
+        if tracked is not None:
+            tracked._trace = read
+        out = run()
     finally:
+        if tracked is not None:
+            tracked._trace = None
         for h in handles:
             h.remove()
         keep.clear()
-    if hooked or mode is None:
+    if hooked or tracked is None:
         consumed = [0] * n
     else:
         consumed = [k if sh == 0 else 0 for k, sh in zip(consumed, shared)]
-    return calls, consumed, out, {"shared": shared, "inputs": inputs}
+    if out is not None and tracked is not None and isinstance(out, tracked):
+        out = out.as_subclass(_torch().Tensor)
+    return calls, consumed, out, {"shared": shared}
 
 
-def _site_check(norms: list, paired: list, inputs: list, state: Any) -> Optional[tuple]:
-    """Each fused site against stock on the input it saw in the trace: the fused forward (GroupNorm, + SiLU when
-    paired) vs nn.GroupNorm (+ F.silu). Returns the worst (max abs, mean abs), or None when no site was checked."""
+def _site_hooks(norms: list, paired: list) -> tuple:
+    """Forward hooks comparing each fused site with stock on the input it is given, during the crop decode itself
+    (one pass: no extra kernel specialisations). Returns (handles, worst) where worst is [max abs, mean abs, sites]."""
     torch = _torch()
-    worst = None
-    for norm, act, x in zip(norms, paired, inputs):
-        if act is None or x is None:
+    worst = [0.0, 0.0, 0]
+    handles = []
+    for norm, act in zip(norms, paired):
+        if act is None:
             continue
-        fused = norm.forward(x)
-        ref = _stock_forward(norm)(x)
-        if act:
-            ref = torch.nn.functional.silu(ref)
-        err = (fused.float() - ref.float()).abs()
-        site = (float(err.max()), float(err.mean()))
-        worst = site if worst is None else (max(worst[0], site[0]), max(worst[1], site[1]))
-    return worst
+
+        def hook(m, inp, out, act = act):
+            ref = _stock_forward(m)(inp[0])
+            if act:
+                ref = torch.nn.functional.silu(ref)
+            err = (out.float() - ref.float()).abs()
+            worst[0] = max(worst[0], float(err.max()))
+            worst[1] = max(worst[1], float(err.mean()))
+            worst[2] += 1
+
+        handles.append(norm.register_forward_hook(hook))
+    return handles, worst
 
 
 def _fast_gn_maybe_act(norm: Any, act: bool, state: Any) -> Any:
@@ -2430,6 +2555,7 @@ def install_structural(vae: Any, logger: Any = None) -> int:
     state = types.SimpleNamespace(
         status = "pending", norms = len(norms), gn_silu = 0, gn = 0, calls = 0, kernel_calls = 0,
         max_abs = None, mean_abs = None, site_max_abs = None, site_mean_abs = None, local = threading.local(),
+        paired = None, cached = False,
     )  # fmt: skip
     inner = vae._decode
     torch = _torch()
@@ -2442,6 +2568,32 @@ def install_structural(vae: Any, logger: Any = None) -> int:
         return call
 
     def calibrate(z: Any, args: tuple, kwargs: dict) -> None:
+        key = structural_cache_key(vae, norms, silus, getattr(z, "device", None))
+        cached = _load_pairing(key, len(norms))
+        if cached is not None:
+            # a verdict for this exact class / config / layout / torch / triton / device: no trace, no checks
+            state.cached = True
+            if cached["status"] != "ok":
+                state.status = cached["status"]
+                _structural_unpatch(norms, silus, vae)
+                return
+            paired = cached["paired"]
+            _structural_patch(norms, paired, silus, state, logger)
+            state.status = "ok"
+            state.gn_silu = sum(1 for p in paired if p)
+            state.gn = sum(1 for p in paired if p is False)
+            state.max_abs, state.mean_abs = cached.get("max_abs"), cached.get("mean_abs")
+            state.site_max_abs, state.site_mean_abs = cached.get("site_max_abs"), cached.get("site_mean_abs")
+            state.calls = 0
+            return
+        _calibrate(z, args, kwargs)
+        if state.status in ("ok", "rejected", "no_match"):
+            _save_pairing(key, {
+                "status": state.status, "paired": state.paired, "max_abs": state.max_abs, "mean_abs": state.mean_abs,
+                "site_max_abs": state.site_max_abs, "site_mean_abs": state.site_mean_abs,
+            })  # fmt: skip
+
+    def _calibrate(z: Any, args: tuple, kwargs: dict) -> None:
         tiny = _probe_latent(z)
         with torch.no_grad():
             calls, consumed, ref, info = _trace_group_norm_silu(
@@ -2449,18 +2601,22 @@ def install_structural(vae: Any, logger: Any = None) -> int:
             )
             # fused with its SiLU only when that SiLU is the output's sole reader; otherwise GroupNorm alone
             paired = [None if c == 0 else (c == k) for c, k in zip(calls, consumed)]
+            state.paired = paired
             n = _structural_patch(norms, paired, silus, state, logger)
             if n == 0:
                 state.status = "no_match"
                 _structural_unpatch(norms, silus, vae)
                 return
             state.local.kernel_runs = []  # this calibration's kernel runs (thread-local: not another decode's)
+            handles, worst = _site_hooks(norms, paired)
             try:
-                site = _site_check(norms, paired, info["inputs"], state)
                 out = _decoded_tensor(_fresh(inner)(tiny, *args, **kwargs))
                 fused_ran = bool(state.local.kernel_runs)
             finally:
                 state.local.kernel_runs = None
+                for h in handles:
+                    h.remove()
+            site = (worst[0], worst[1]) if worst[2] else None
             err = (out.float() - ref.float()).abs()
             state.max_abs, state.mean_abs = float(err.max()), float(err.mean())
             state.site_max_abs, state.site_mean_abs = site if site is not None else (None, None)

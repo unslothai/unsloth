@@ -1416,3 +1416,86 @@ def test_scope_stays_outermost_over_the_untiled_gate(monkeypatch):
     assert getattr(scope, "_unsloth_vae_oom_scope", False) and scope.__wrapped__ is gate
     vae.decode(_z())
     assert vae.__dict__["decode"] is scope  # still outermost after a call
+
+
+# -- first-decode cost: tiny-crop pairing and the on-disk verdict cache ------------------------------------------
+
+
+def test_tiny_crop_pairs_like_the_full_crop():
+    """The pairing traced on the smallest calibration crop equals the one traced on a full-size latent."""
+    vae = AutoencoderKLSomethingNew()
+    norms, silus = F._plain_group_norms(vae.decoder), F._plain_silus(vae.decoder)
+    z = torch.randn(1, 8, 40, 40)
+    with torch.no_grad():
+        full = F._trace_group_norm_silu(norms, silus, lambda: vae._decode(z))
+        for side in (F._PROBE_LATENTS, 8, 2):
+            tiny = F._trace_group_norm_silu(norms, silus, lambda: vae._decode(z[..., :side, :side]))
+            assert full[0] == tiny[0] and full[1] == tiny[1], side
+            assert [s > 0 for s in full[3]["shared"]] == [s > 0 for s in tiny[3]["shared"]], side
+    assert F._probe_latent(z).shape[-1] == F._PROBE_LATENTS
+
+
+def _calibrated(monkeypatch, tmp_path, vae, **kw):
+    monkeypatch.setenv(F.STRUCTURAL_CACHE_ENV, "1")
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_COMPILE_CACHE_DIR", str(tmp_path))
+    _fake_kernel(monkeypatch, **kw)
+    traces = []
+    real = F._trace_group_norm_silu
+    monkeypatch.setattr(F, "_trace_group_norm_silu", lambda *a, **k: (traces.append(1), real(*a, **k))[1])
+    F.install_structural(vae)
+    with torch.no_grad():
+        vae._decode(torch.randn(1, 8, 6, 6))
+    return traces
+
+
+def test_structural_verdict_is_cached_and_reused(monkeypatch, tmp_path):
+    first = AutoencoderKLCleanNew()
+    assert _calibrated(monkeypatch, tmp_path, first) == [1]
+    assert first._unsloth_vae_structural.status == "ok" and not first._unsloth_vae_structural.cached
+    assert len(list((tmp_path / "vae_structural").glob("*.json"))) == 1
+    second = AutoencoderKLCleanNew()  # a later process: same class, config, layout, versions
+    assert _calibrated(monkeypatch, tmp_path, second) == []  # no trace, no checks
+    st = second._unsloth_vae_structural
+    assert st.status == "ok" and st.cached and st.gn_silu == first._unsloth_vae_structural.gn_silu
+    assert any(getattr(m.forward, "_unsloth_vae_fused", False) for m in F._plain_group_norms(second.decoder)
+               if "forward" in m.__dict__) or any("forward" in m.__dict__ for m in second.decoder.modules())  # fmt: skip
+
+
+def test_stale_cache_key_traces_again(monkeypatch, tmp_path):
+    """Another torch / triton / config is another key: the old verdict is not used and the VAE is traced again."""
+    assert _calibrated(monkeypatch, tmp_path, AutoencoderKLCleanNew()) == [1]
+    monkeypatch.setattr(torch, "__version__", "0.0.0-other")
+    assert _calibrated(monkeypatch, tmp_path, AutoencoderKLCleanNew()) == [1]
+    assert len(list((tmp_path / "vae_structural").glob("*.json"))) == 2
+
+
+def test_corrupt_or_mismatched_cache_entry_traces_again(monkeypatch, tmp_path):
+    assert _calibrated(monkeypatch, tmp_path, AutoencoderKLCleanNew()) == [1]
+    (entry,) = (tmp_path / "vae_structural").glob("*.json")
+    entry.write_text('{"status": "ok", "paired": [true]}')  # wrong key / length
+    assert _calibrated(monkeypatch, tmp_path, AutoencoderKLCleanNew()) == [1]
+
+
+def test_cached_rejection_skips_fusion(monkeypatch, tmp_path):
+    bad = AutoencoderKLCleanNew()
+    norms = F._plain_group_norms(bad.decoder)
+    assert _calibrated(monkeypatch, tmp_path, bad, wrong_site = norms[0]) == [1]
+    assert bad._unsloth_vae_structural.status == "rejected"
+    again = AutoencoderKLCleanNew()
+    assert _calibrated(monkeypatch, tmp_path, again) == []
+    assert again._unsloth_vae_structural.status == "rejected" and not any(
+        "forward" in m.__dict__ for m in again.decoder.modules()
+    )
+
+
+def test_structural_cache_kill_switch(monkeypatch, tmp_path):
+    assert _calibrated(monkeypatch, tmp_path, AutoencoderKLCleanNew()) == [1]
+    monkeypatch.setenv(F.STRUCTURAL_CACHE_ENV, "0")
+    traces = []
+    real = F._trace_group_norm_silu
+    monkeypatch.setattr(F, "_trace_group_norm_silu", lambda *a, **k: (traces.append(1), real(*a, **k))[1])
+    vae = AutoencoderKLCleanNew()
+    F.install_structural(vae)
+    with torch.no_grad():
+        vae._decode(torch.randn(1, 8, 6, 6))
+    assert traces == [1]
