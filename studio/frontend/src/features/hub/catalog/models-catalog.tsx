@@ -373,18 +373,17 @@ export const ModelsCatalog = memo(function ModelsCatalog({
   // scrollTop to 0 and corrupts the mirror, so visibility + pointer-events-none hides it instead.
   // Non-split reserves an equal `both-edges` gutter so the centered --hub-measure column stays
   // symmetric; split mode pins a narrow master left, so it reserves only the right gutter.
+  // Phones drop the gutter so cards span the same width as the search bar above.
   const scrollPaneClassName =
-    "absolute inset-0 min-h-0 overflow-x-hidden overflow-y-auto pb-6 pt-0 [overflow-anchor:none] [scrollbar-width:thin] " +
+    "absolute inset-0 min-h-0 overflow-x-hidden overflow-y-auto pb-6 pt-0 [overflow-anchor:none] [scrollbar-width:thin] max-md:[scrollbar-gutter:auto] " +
     (discoverView === "split"
       ? "[scrollbar-gutter:stable]"
       : "[scrollbar-gutter:stable_both-edges]");
-  // Split mode keeps the top bar's left padding to align the list header but tightens the right.
+  // Split mode keeps the top bar's left padding to align the list header but tightens the right
+  // once the detail pane sits beside it (lg); below that the list is full width.
   const splitView = discoverView === "split";
-  const discoverColumnClassName = splitView
-    ? "mx-auto w-full max-w-[var(--hub-measure)] pl-5 pr-2 sm:pl-8"
-    : "mx-auto w-full max-w-[var(--hub-measure)] px-5 sm:px-8";
-  const downloadedColumnClassName = splitView
-    ? "mx-auto w-full max-w-[var(--hub-measure)] pl-5 pr-2 sm:pl-8"
+  const columnClassName = splitView
+    ? "mx-auto w-full max-w-[var(--hub-measure)] px-5 sm:px-8 lg:pr-2"
     : "mx-auto w-full max-w-[var(--hub-measure)] px-5 sm:px-8";
   const discoverActive = tab === "discover";
   const downloadedActive = tab === "downloaded";
@@ -427,7 +426,7 @@ export const ModelsCatalog = memo(function ModelsCatalog({
           )}
         >
           {discoverActive ? (
-            <div className={discoverColumnClassName}>
+            <div className={columnClassName}>
               {header ? <div ref={headerRef}>{header}</div> : null}
               <DiscoverList
                 discoverRows={discoverRows}
@@ -475,7 +474,7 @@ export const ModelsCatalog = memo(function ModelsCatalog({
           )}
         >
           {downloadedActive ? (
-            <div className={downloadedColumnClassName}>
+            <div className={columnClassName}>
               {downloadedHeader ? (
                 <div className="flex flex-col gap-3 pt-6">
                   {downloadedHeader}
