@@ -9196,14 +9196,48 @@ def _remote_expert_parents(model):
     return parents
 
 
+def _native_expert_parents(model, target_modules):
+    """Parents of native ``experts.<i>`` blocks in a decoder layer the scoped regex already reaches."""
+    try:
+        pattern = re.compile(target_modules)
+    except re.error:
+        return set()
+    reached_layers = set()
+    blocks = []
+    for name, _ in model.named_modules():
+        matched = _EXPERT_BLOCK_PATTERN.search(name)
+        if matched is not None:
+            if name[matched.start() :].lstrip(".").startswith("experts."):
+                blocks.append(name[: matched.start()])
+        elif ".experts." not in name and pattern.fullmatch(name):
+            reached_layers.add(name.rsplit(".", 2)[0])
+    parents = set()
+    for parent in blocks:
+        layer = parent.rpartition(".")[0]
+        # Same decoder layer as a leaf the family filters kept: a vision tower stays out.
+        if not layer or not any(r == layer or r.startswith(layer + ".") for r in reached_layers):
+            continue
+        parents.add(
+            r"\.".join(r"\d+" if part.isdigit() else re.escape(part) for part in parent.split("."))
+        )
+    return parents
+
+
 def widen_target_regex_to_expert_submodules(
-    model, target_modules, detect_targets, auto_regex: bool
+    model, target_modules, detect_targets, auto_regex: bool, explicit_leaves: bool = False
 ):
-    """Widen a generated regex to ``experts.<i>.<leaf>``; a user-written regex is never widened."""
+    """Widen a generated regex to ``experts.<i>.<leaf>``; a user-written regex is never widened.
+
+    *explicit_leaves* marks a regex built from the caller's explicit leaf list (FastLanguageModel
+    passes finetune_vision_layers=False, which routes the list through get_peft_regex). Unrouted,
+    PEFT suffix-matches that list onto native per-expert Linears (Qwen3-MoE / Mixtral on
+    transformers 4.x), so those experts are widened too; the auto regex keeps them off."""
     if not auto_regex or not isinstance(target_modules, str):
         return target_modules, detect_targets, []
     # Remote expert blocks only: widening native ones (Qwen3-MoE on 4.x) LoRAs every routed expert.
     parents = _remote_expert_parents(model)
+    if explicit_leaves:
+        parents = parents | _native_expert_parents(model, target_modules)
     if not parents:
         return target_modules, detect_targets, []
     leaves = get_moe_expert_submodule_leaves(model, detect_targets)

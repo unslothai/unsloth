@@ -584,3 +584,122 @@ def test_sentence_transformer_probes_use_the_loads_options(monkeypatch):
     for call in calls:
         splats = [getattr(k.value, "id", "") for k in call.keywords if k.arg is None]
         assert "_remote_class_probe_kwargs" in splats, call.lineno
+
+
+def _native_qwen3_moe_4x_model(with_visual = False):
+    """Qwen3-MoE / Mixtral on transformers 4.x: native per-expert Linears under mlp.experts.<i>."""
+
+    class _NativeExpert(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.gate_proj = torch.nn.Linear(8, 16, bias = False)
+            self.up_proj = torch.nn.Linear(8, 16, bias = False)
+            self.down_proj = torch.nn.Linear(16, 8, bias = False)
+
+    _NativeExpert.__module__ = "transformers.models.qwen3_moe.modeling_qwen3_moe"
+
+    class _Attn(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.q_proj = torch.nn.Linear(8, 8, bias = False)
+            self.o_proj = torch.nn.Linear(8, 8, bias = False)
+
+    class _SparseMoe(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.gate = torch.nn.Linear(8, 4, bias = False)
+            self.experts = torch.nn.ModuleList([_NativeExpert() for _ in range(4)])
+
+    class _DecoderLayer(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.self_attn = _Attn()
+            self.mlp = _SparseMoe()
+
+    class _Body(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.layers = torch.nn.ModuleList([_DecoderLayer() for _ in range(2)])
+
+    class _Qwen3Moe(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.config = SimpleNamespace(num_experts = 4, model_type = "qwen3_moe")
+            self.model = _Body()
+            if with_visual:
+                self.visual = torch.nn.ModuleList([_SparseMoe(), _SparseMoe()])
+
+    return _Qwen3Moe()
+
+
+def _explicit_list_regex(model, leaves):
+    """What FastLanguageModel builds for an explicit list: finetune_vision_layers=False routes it
+    through get_peft_regex, whose text-only branch skips mlp.experts.<i>."""
+    import importlib
+
+    stub = sys.modules.get("unsloth_zoo.peft_utils")
+    if stub is not None and getattr(stub, "__file__", None) is None:
+        del sys.modules["unsloth_zoo.peft_utils"]
+    peft_utils = importlib.import_module("unsloth_zoo.peft_utils")
+    return peft_utils.get_peft_regex(
+        model,
+        finetune_vision_layers = False,
+        finetune_language_layers = True,
+        finetune_attention_modules = True,
+        finetune_mlp_modules = True,
+        target_modules = list(leaves),
+    )
+
+
+def test_explicit_leaf_list_reaches_native_per_expert_linears():
+    """FastLanguageModel.get_peft_model(target_modules=[..., gate/up/down_proj]) on Qwen3-MoE
+    under transformers 4.x must LoRA the routed experts, as an unrouted leaf list does in PEFT."""
+    U = _utils()
+    model = _native_qwen3_moe_4x_model()
+    leaves = ["q_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+    regex = _explicit_list_regex(model, leaves)
+    names = [n for n, m in model.named_modules() if isinstance(m, torch.nn.Linear)]
+    assert not any(re.fullmatch(regex, n) for n in names if ".experts." in n)
+
+    widened, detect, found = U.widen_target_regex_to_expert_submodules(
+        model, regex, leaves, auto_regex = True, explicit_leaves = True
+    )
+    assert found == ["down_proj", "gate_proj", "up_proj"] and detect == leaves
+    matched = {n for n in names if re.fullmatch(widened, n)}
+    peft_leaf_match = {n for n in names if n.rpartition(".")[2] in leaves}
+    assert matched == peft_leaf_match
+    assert "model.layers.0.mlp.gate" not in matched  # the router stays frozen
+
+    # A down-only request widens to down_proj alone.
+    regex = _explicit_list_regex(model, ["q_proj", "down_proj"])
+    widened, _, found = U.widen_target_regex_to_expert_submodules(
+        model, regex, ["q_proj", "down_proj"], auto_regex = True, explicit_leaves = True
+    )
+    assert found == ["down_proj"]
+    assert not any(re.fullmatch(widened, n) for n in names if n.endswith((".gate_proj", ".up_proj")))
+
+
+def test_explicit_leaf_list_widening_respects_the_family_filters():
+    U = _utils()
+    leaves = ["q_proj", "gate_proj", "up_proj", "down_proj"]
+    # Attention-only request: nothing to widen.
+    model = _native_qwen3_moe_4x_model()
+    regex = _explicit_list_regex(model, ["q_proj", "o_proj"])
+    kept, _, found = U.widen_target_regex_to_expert_submodules(
+        model, regex, ["q_proj", "o_proj"], auto_regex = True, explicit_leaves = True
+    )
+    assert kept == regex and found == []
+    # The auto regex (target_modules=None) keeps native experts off, as before.
+    kept, _, found = U.widen_target_regex_to_expert_submodules(
+        model, regex, regex, auto_regex = True
+    )
+    assert kept == regex and found == []
+    # A native expert tower outside the language layers stays out with vision off.
+    model = _native_qwen3_moe_4x_model(with_visual = True)
+    regex = _explicit_list_regex(model, leaves)
+    widened, _, found = U.widen_target_regex_to_expert_submodules(
+        model, regex, leaves, auto_regex = True, explicit_leaves = True
+    )
+    matched = {n for n, _ in model.named_modules() if re.fullmatch(widened, n)}
+    assert any(n.startswith("model.layers.") and ".experts." in n for n in matched)
+    assert not any(n.startswith("visual.") for n in matched)
