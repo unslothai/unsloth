@@ -83,6 +83,9 @@ export const fr = {
     },
     agent: {
       working: "Unsloth navigue dans cet onglet",
+      waiting: "Unsloth attend votre réponse dans le navigateur pour {chat}",
+      otherChat: "une autre discussion",
+      show: "Afficher",
       stop: "Arrêter",
       allow: "Autoriser",
       deny: "Refuser",

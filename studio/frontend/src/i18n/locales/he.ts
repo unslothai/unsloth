@@ -84,6 +84,9 @@ export const he = {
     },
     agent: {
       working: "Unsloth גולש בכרטיסייה הזו",
+      waiting: "Unsloth צריך את התשובה שלך בדפדפן עבור {chat}",
+      otherChat: "צ׳אט אחר",
+      show: "הצג",
       stop: "עצירה",
       allow: "אישור",
       deny: "דחייה",
