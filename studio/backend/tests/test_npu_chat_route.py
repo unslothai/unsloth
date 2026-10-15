@@ -977,8 +977,14 @@ def test_a_stop_during_an_npu_load_cancels_it(monkeypatch):
             raise nb.NpuLoadCancelled("cancelled")
 
         def cancel_load(self, model_id):
+            # The first ask lands before the load is registered, as when Stop beats npu.load.
+            asks.append(model_id)
+            if len(asks) == 1:
+                return False
             stopped.set()
             return True
+
+    asks: list[str] = []
 
     def _stop_once_loading():
         loading.wait(10)
@@ -1003,7 +1009,7 @@ def test_a_stop_during_an_npu_load_cancels_it(monkeypatch):
             )
         )
     assert excinfo.value.status_code == 409
-    assert stopped.is_set()
+    assert stopped.is_set() and len(asks) == 2
 
 
 def test_a_reply_cut_short_is_not_reported_complete(flm):

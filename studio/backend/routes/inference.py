@@ -18756,9 +18756,10 @@ async def _load_npu_model(
         # Stop the load mid-way, as a GGUF load polls its cancel event.
         while not load.done():
             await asyncio.wait({load}, timeout = 0.25)
+            # False until npu.load marks itself in flight, so keep asking.
             if load_cancel_event.is_set() and not load.done():
-                await asyncio.to_thread(npu.cancel_load, model_id)
-                break
+                if await asyncio.to_thread(npu.cancel_load, model_id):
+                    break
     try:
         await load
     except NpuLoadCancelled:
