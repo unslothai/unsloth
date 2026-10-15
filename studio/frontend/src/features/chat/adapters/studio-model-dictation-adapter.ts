@@ -939,9 +939,9 @@ export class StudioModelDictationAdapter implements DictationAdapter {
           return;
         }
         // Segments read these when they are sent, so a settle can still switch the session.
-        const adoptSettledModel = (): boolean => {
+        const adoptSettledModel = () => {
           const settled = useVoiceSettingsStore.getState();
-          if (settled.sttModel === sessionModel) return false;
+          if (settled.sttModel === sessionModel) return;
           sessionModel = settled.sttModel;
           sessionLanguage = resolveModelDictationLanguage(
             sessionModel,
@@ -952,7 +952,6 @@ export class StudioModelDictationAdapter implements DictationAdapter {
             sessionModel,
             settled.sttGgufVariant,
           );
-          return true;
         };
         const preload = () => {
           if (!usesExternalEndpoint && sessionEngine) {
@@ -987,7 +986,9 @@ export class StudioModelDictationAdapter implements DictationAdapter {
             // A slow status read still switches the segments recorded after it lands, and
             // the saved pick is not preloaded meanwhile: it may be one this host cannot run.
             void hostSettle.then(() => {
-              if (!ended && !cancelled && adoptSettledModel()) preload();
+              if (ended || cancelled) return;
+              adoptSettledModel();
+              preload();
             });
           }
         }

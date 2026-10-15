@@ -92,7 +92,7 @@ test("dictation settles a retired whisper.cpp pick before it preloads or records
   // a slower read still switches later segments and preloads the settled model, never the stale pick.
   assert.match(
     listen,
-    /if \(!settledInTime\) \{[\s\S]*?void hostSettle\.then\(\(\) => \{\s*if \(!ended && !cancelled && adoptSettledModel\(\)\) preload\(\);/,
+    /if \(!settledInTime\) \{[\s\S]*?void hostSettle\.then\(\(\) => \{\s*if \(ended \|\| cancelled\) return;\s*adoptSettledModel\(\);\s*preload\(\);/,
   );
   assert.match(adapter, /HOST_SETTLE_WAIT_MS = 2_000/);
   // only a whisper.cpp pick reads status; the read is shared per model and retried after a failure.
