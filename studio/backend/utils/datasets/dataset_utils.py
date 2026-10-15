@@ -374,9 +374,7 @@ def _apply_user_mapping_alpaca(
 
 
 def format_dataset(dataset, *args, **kwargs):
-    """``_format_dataset``, except a dataset no format matched that holds token ids routes as pre-tokenized. Any
-    format_type but raw: a format the dropdown kept from an earlier run must not strand a dataset the check calls
-    ready."""
+    """``_format_dataset``, but token-id rows no format matched route as pre-tokenized under any format except raw."""
     bound = inspect.signature(_format_dataset).bind(dataset, *args, **kwargs)
     bound.apply_defaults()
     info = _format_dataset(*bound.args, **bound.kwargs)

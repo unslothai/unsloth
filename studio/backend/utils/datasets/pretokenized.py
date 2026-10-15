@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Pre-tokenized text datasets: rows that already hold ``input_ids`` (optionally ``attention_mask`` and ``labels``). They train as-is: no chat template, no response masking, since the user's ``labels`` are the objective. Auto-detection only claims datasets no other format matched, so every dataset that trained before keeps its route."""
+"""Pre-tokenized text datasets: rows that already hold ``input_ids`` (optionally ``attention_mask`` and ``labels``). They train as-is, without a chat template; user ``labels`` are the objective, so response masking applies only to rows without them. Only datasets no other format matched are claimed, so every dataset that trained before keeps its route."""
 
 PRETOKENIZED_FORMAT = "pretokenized"
 _TOKEN_COLUMNS = ("input_ids", "attention_mask", "labels", "token_type_ids")
@@ -45,7 +45,6 @@ def has_custom_labels(dataset) -> bool:
 
 
 def _check_arrow_table(table, max_seq_length, vocab_size) -> bool:
-    """Validate ids and label lengths over the backing Arrow table; return whether any row needs truncating."""
     import pyarrow.compute as pc
 
     ids = table.column("input_ids")
