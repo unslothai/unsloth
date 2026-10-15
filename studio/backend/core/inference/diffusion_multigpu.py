@@ -1264,7 +1264,9 @@ def _hooks_present(module: Any, *, offload_hooks_ok: bool = False) -> Optional[s
                     if not _is_offload_object(hook) and not _trusted_hook(hook):
                         return f"{name}.{attr}"
         override = sub.__dict__.get("forward")
-        if override is None or isinstance(override, (types.MethodType, CfgParallelRouter, CfgBatchRouter)):
+        if override is None or isinstance(
+            override, (types.MethodType, CfgParallelRouter, CfgBatchRouter)
+        ):
             # bound methods are rebound to the copy, the router is dropped
             continue
         if kind == "offload" or _is_offload_object(override):
@@ -2492,7 +2494,9 @@ class CfgBatchRouter:
             self.plain_times = []
         timing = self.pricing is None and not self.timing_off and self._can_time(latent)
         if self.branch == 0:
-            if self.template is not None and not timing:  # unpriced: this step times both plain calls first
+            if (
+                self.template is not None and not timing
+            ):  # unpriced: this step times both plain calls first
                 out = self._batched(args, kwargs, latent)
                 if out is not None:
                     return out
@@ -2633,7 +2637,9 @@ class CfgBatchRouter:
         try:
             merged = _batch_leaves(first, second, batch)
             b_args, b_kwargs = _rebuild((args, kwargs), merged)
-            snapshots = [(path, v.clone() if isinstance(v, torch.Tensor) else v) for path, v in second]
+            snapshots = [
+                (path, v.clone() if isinstance(v, torch.Tensor) else v) for path, v in second
+            ]
         except _NotBatchable as exc:
             self._skip(str(exc))
             return None

@@ -1952,7 +1952,10 @@ def test_cfg_batch_single_branch_request_after_a_guided_one_stops_batching():
     before = router.stats["batched_steps"]
     latents = torch.randn(2, 4)
     for _ in range(5):
-        latents = latents - dit(hidden_states = latents, timestep = torch.tensor(0.5), encoder_hidden_states = cond)[0]
+        latents = (
+            latents
+            - dit(hidden_states = latents, timestep = torch.tensor(0.5), encoder_hidden_states = cond)[0]
+        )
     # at most the first step of the new request is speculated; none after the single-branch step is seen
     assert router.stats["batched_steps"] - before <= 1
     assert router.template is None
@@ -1962,7 +1965,9 @@ def test_cfg_batch_refuses_a_foreign_submodule_hook():
     torch.manual_seed(0)
     dit = _BatchDit()
     seen = []
-    dit.proj.register_forward_hook(lambda m, i, o: seen.append(o.shape[0]))  # stateful, not Studio's
+    dit.proj.register_forward_hook(
+        lambda m, i, o: seen.append(o.shape[0])
+    )  # stateful, not Studio's
     cond, uncond = _embeds()
     router = mg.CfgBatchRouter(dit)
     dit.forward = router
@@ -1989,7 +1994,10 @@ def test_cfg_batch_retimes_both_branches_when_guidance_resumes(monkeypatch):
     latents = torch.randn(2, 4)
     for i in range(2):  # single-branch steps first
         step[0] = i
-        latents = latents - dit(hidden_states = latents, timestep = torch.tensor(0.5), encoder_hidden_states = cond)[0]
+        latents = (
+            latents
+            - dit(hidden_states = latents, timestep = torch.tensor(0.5), encoder_hidden_states = cond)[0]
+        )
     for i in range(2, 5):  # then guidance
         step[0] = i
         c = dit(hidden_states = latents, timestep = torch.tensor(0.5), encoder_hidden_states = cond)[0]
@@ -1997,4 +2005,6 @@ def test_cfg_batch_retimes_both_branches_when_guidance_resumes(monkeypatch):
         latents = latents - 0.1 * (u + 4.0 * (c - u))
         if priced:
             break
-    assert priced and len(priced[0]) == 2 and priced[0][0] == priced[0][1]  # both from one guided step
+    assert (
+        priced and len(priced[0]) == 2 and priced[0][0] == priced[0][1]
+    )  # both from one guided step
