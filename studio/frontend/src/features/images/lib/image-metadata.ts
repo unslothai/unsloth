@@ -513,6 +513,8 @@ export function parseA1111Parameters(text: string): ImportedRecipe | null {
     prompt: promptLines.join("\n").trim(),
     negative_prompt: negative,
   };
+  let legacySchedule: string | undefined;
+  let hires = false;
   for (const m of settingsLine.matchAll(A1111_FIELD)) {
     const key = m[1].trim().toLowerCase();
     const value = m[2].trim();
@@ -523,8 +525,21 @@ export function parseA1111Parameters(text: string): ImportedRecipe | null {
     else if (key === "model" && value) out.model = value;
     else if (key === "denoising strength" && Number.isFinite(num))
       out.strength = num;
-    else if (key === "sampler") out.sampler = labelId(SAMPLER_LABELS, value);
-    else if (key === "schedule type")
+    else if (key.startsWith("hires")) hires = true;
+    else if (key === "sampler") {
+      out.sampler = labelId(SAMPLER_LABELS, value);
+      // Before AUTOMATIC1111 1.9 the schedule rode on the sampler name: `DPM++ 2M Karras`.
+      const suffix = Object.keys(SCHEDULE_LABELS).find(
+        (id) => id !== "automatic" && value.endsWith(` ${SCHEDULE_LABELS[id]}`),
+      );
+      if (out.sampler === value && suffix) {
+        out.sampler = labelId(
+          SAMPLER_LABELS,
+          value.slice(0, -SCHEDULE_LABELS[suffix].length - 1),
+        );
+        legacySchedule = suffix;
+      }
+    } else if (key === "schedule type")
       out.schedule_type = labelId(SCHEDULE_LABELS, value);
     else if (key === "size") {
       const size = SIZE.exec(value);
@@ -533,6 +548,12 @@ export function parseA1111Parameters(text: string): ImportedRecipe | null {
         out.height = Number(size[2]);
       }
     }
+  }
+  out.schedule_type ??= legacySchedule;
+  // txt2img hires fix also writes a denoising strength; without it the strength means img2img.
+  if (out.strength !== undefined) {
+    if (hires) delete out.strength;
+    else out.workflow ??= "img2img";
   }
   return out.prompt || hasSettings ? out : null;
 }

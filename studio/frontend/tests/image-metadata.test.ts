@@ -767,3 +767,23 @@ test("ComfyUI's SDXL, SD3 and Flux text encoders import their prompt", () => {
   assert.equal(flux?.prompt, "a castle at dawn");
   assert.equal(flux?.guidance, 4);
 });
+
+test("pre-1.9 AUTOMATIC1111 sampler names carry their schedule; denoising strength means img2img", () => {
+  const legacy = parseA1111Parameters("a cat\nSteps: 20, Sampler: DPM++ 2M Karras, CFG scale: 7, Seed: 1, Size: 512x512");
+  assert.equal(legacy?.sampler, "dpmpp_2m");
+  assert.equal(legacy?.schedule_type, "karras");
+  // An explicit Schedule type wins over the suffix.
+  const both = parseA1111Parameters("a cat\nSteps: 20, Sampler: Euler a, Schedule type: Uniform, CFG scale: 7");
+  assert.equal(both?.sampler, "euler_a");
+  assert.equal(both?.schedule_type, "uniform");
+  assert.equal(parseA1111Parameters("a cat\nSteps: 20, Sampler: UniPC Karras")?.sampler, "UniPC");
+  const img2img = parseA1111Parameters("a cat\nSteps: 20, CFG scale: 7, Seed: 1, Denoising strength: 0.4");
+  assert.equal(img2img?.workflow, "img2img");
+  assert.equal(img2img?.strength, 0.4);
+  // txt2img hires fix: the strength belongs to the hires pass, so it is not restored.
+  const hires = parseA1111Parameters(
+    "a cat\nSteps: 20, CFG scale: 7, Seed: 1, Denoising strength: 0.7, Hires upscale: 2, Hires upscaler: Latent",
+  );
+  assert.equal(hires?.workflow, undefined);
+  assert.equal(hires?.strength, undefined);
+});
