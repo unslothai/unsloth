@@ -3,7 +3,6 @@
 
 import { usePlatformStore } from "@/config/env";
 import type { HubFailure } from "@/features/hub/lib/network";
-import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import { cn } from "@/lib/utils";
 import {
   type ReactNode,
@@ -15,6 +14,7 @@ import {
   useLayoutEffect,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
 import type {
   CachedInventoryRow,
@@ -35,8 +35,18 @@ import {
   RESULT_SPLIT_ROW_HEIGHT_PX,
 } from "./models-table";
 
-// Narrower panes truncate two cards per row.
-const TWO_COLUMN_MIN_WIDTH_PX = 1040;
+// Phones and small tablets (768px and under) show one card per row.
+const SINGLE_COLUMN_QUERY = "(max-width: 768px)";
+
+function getSingleColumnSnapshot(): boolean {
+  return window.matchMedia(SINGLE_COLUMN_QUERY).matches;
+}
+
+function subscribeSingleColumn(callback: () => void): () => void {
+  const mql = window.matchMedia(SINGLE_COLUMN_QUERY);
+  mql.addEventListener("change", callback);
+  return () => mql.removeEventListener("change", callback);
+}
 
 export interface ModelsCatalogState {
   tab: ModelsTab;
@@ -161,23 +171,12 @@ export const ModelsCatalog = memo(function ModelsCatalog({
     downloaded: 0,
   });
   const deviceType = usePlatformStore((s) => s.deviceType);
-  const uiSpaceScale = useUiSpaceScale();
-  const [paneWidth, setPaneWidth] = useState(0);
-  useLayoutEffect(() => {
-    if (!discoverScrollEl) {
-      return;
-    }
-    const measure = () => setPaneWidth(discoverScrollEl.clientWidth);
-    measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(discoverScrollEl);
-    return () => observer.disconnect();
-  }, [discoverScrollEl]);
-  const columns =
-    discoverView === "two" &&
-    paneWidth >= TWO_COLUMN_MIN_WIDTH_PX * uiSpaceScale
-      ? 2
-      : 1;
+  const singleColumn = useSyncExternalStore(
+    subscribeSingleColumn,
+    getSingleColumnSnapshot,
+    () => false,
+  );
+  const columns = discoverView === "two" && !singleColumn ? 2 : 1;
 
   const setDiscoverScrollNode = useCallback((node: HTMLDivElement | null) => {
     discoverScrollRef.current = node;
