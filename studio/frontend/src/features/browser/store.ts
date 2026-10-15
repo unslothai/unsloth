@@ -97,7 +97,6 @@ export type BrowserTab = {
   chat: string;
 };
 
-/** A chat's browser while another chat is on screen. */
 type ChatBrowser = { open: boolean; activeTabId: string | null; fullView: boolean };
 
 /** The chat on screen before the chat page names it (chat-page.tsx `shownChatKey`). */
@@ -189,7 +188,6 @@ const newId = (prefix: string) => `${prefix}-${Date.now().toString(36)}-${(nextI
 function createTab(entry: BrowserEntry, openKey: string | null = null): BrowserTab {
   return {
     id: newId("tab"),
-    // Set by openTab to the chat it opens in.
     chat: "",
     history: [entry],
     index: 0,
@@ -295,7 +293,6 @@ type BrowserState = {
   adoptChat: (from: string, to: string) => void;
   /** A web tab for `chat`, in front only when that chat is on screen (`background`: behind its front tab); its id. */
   openTabIn: (chat: string, url: string, options?: { from?: string; background?: boolean }) => string | null;
-  /** Drops a deleted chat's tabs and panel state. */
   forgetChat: (chat: string) => void;
   /** `tabId` in front of `chat`'s open panel: now if it is on screen, else when it comes back. */
   revealIn: (chat: string, tabId: string) => void;
@@ -444,7 +441,6 @@ function moveTo(tab: BrowserTab, index: number): BrowserTab {
   };
 }
 
-/** The shown chat's tabs, in strip order. */
 export function chatTabs(state: Pick<BrowserState, "tabs" | "chat">): BrowserTab[] {
   return state.tabs.filter((tab) => tab.chat === state.chat);
 }

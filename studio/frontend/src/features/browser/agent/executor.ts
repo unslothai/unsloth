@@ -58,7 +58,6 @@ export type ActionContext = {
   signal?: AbortSignal;
 };
 
-/** An action with its chat's session: each chat drives its own tab, in parallel with the others. */
 type Run = ActionContext & { session: Session };
 
 type Result = { ok: boolean; error?: string; url?: string; title?: string; text?: string; note?: string; image?: string };
@@ -113,7 +112,6 @@ export function parseBrowserAction(value: unknown): BrowserAction | null {
   };
 }
 
-/** One chat's agent: what it may reach and where it has been. */
 type Session = {
   chat: string;
   // Sites the user approved or named, where the model may open addresses it made up; every site the
@@ -158,7 +156,6 @@ function sessionFor(chat: string): Session {
   return session;
 }
 
-/** The chat a run's actions belong to, as the browser store names chats. */
 function chatOf(context: ActionContext): string {
   if (context.chat) return liveChat(context.chat);
   const scope = context.scope;
@@ -201,7 +198,6 @@ const TEXT_ROLES = new Set(["textbox", "searchbox", "password", "combobox", "spi
 // A replayed stream frame must not click twice.
 const seen = new Set<string>();
 
-/** Runs a chat's actions one at a time, in the order the model asked for them; chats run side by side. */
 export function runBrowserAction(action: BrowserAction, actionContext: ActionContext): Promise<void> {
   const session = sessionFor(chatOf(actionContext));
   const context: Run = { ...actionContext, session };

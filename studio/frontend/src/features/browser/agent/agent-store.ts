@@ -207,7 +207,6 @@ const DOWNLOAD_GRACE_MS = 120_000;
 
 const runEndListeners = new Set<(chat: string) => void>();
 
-/** `listener(chat)` when a chat's run with the browser tools ends. */
 export function onBrowserAgentRunEnd(listener: (chat: string) => void): () => void {
   runEndListeners.add(listener);
   return () => runEndListeners.delete(listener);
