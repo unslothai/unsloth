@@ -1202,6 +1202,7 @@ function RecipePopover({
   useEffect(() => {
     if (!active) setOpen(false);
   }, [active]);
+  const viaConnection = image.model_kind === "connection";
   return (
     <Popover open={active && open} onOpenChange={(o) => setOpen(active && o)}>
       <PopoverTrigger asChild>
@@ -1298,15 +1299,15 @@ function RecipePopover({
             />
           ) : null}
           <RecipeRow label="Size" value={`${image.width} × ${image.height}`} />
-          <RecipeRow label="Steps" value={String(image.steps)} />
-          <RecipeRow label="Guidance" value={String(image.guidance)} />
+          {!viaConnection && <RecipeRow label="Steps" value={String(image.steps)} />}
+          {!viaConnection && <RecipeRow label="Guidance" value={String(image.guidance)} />}
           {samplerRecipeLabel(image.sampler, image.schedule_type) ? (
             <RecipeRow
               label="Sampler"
               value={samplerRecipeLabel(image.sampler, image.schedule_type) ?? ""}
             />
           ) : null}
-          <RecipeRow label="Seed" value={String(image.seed)} mono />
+          {!viaConnection && <RecipeRow label="Seed" value={String(image.seed)} mono />}
         </div>
         <div className="shrink-0 border-t border-border/60 px-3 py-2.5">
           <Button size="sm" className="w-full gap-1.5" onClick={() => onRestore(image)}>
@@ -1487,6 +1488,7 @@ export function ImagesPage({
     [connections, connectionsEnabled],
   );
   const [externalModelId, setExternalModelId] = useState<string | null>(null);
+  const runTarget = useRef<"connection" | undefined>(undefined);
   const external = useMemo(
     () =>
       externalModels.some((m) => m.id === externalModelId)
@@ -2528,12 +2530,15 @@ export function ImagesPage({
   );
 
   const restoreSettings = useCallback((image: GalleryImage) => {
+    const viaConnection = image.model_kind === "connection";
     // Negative prompt only applies when guidance>0; do not restore a hidden value.
     const restoredNegative = image.guidance > 0 ? (image.negative_prompt ?? "") : "";
     setNegativePrompt(restoredNegative);
     if (restoredNegative) setNegativeOpen(true);
-    setSteps(image.steps);
-    setGuidance(image.guidance);
+    if (!viaConnection) {
+      setSteps(image.steps);
+      setGuidance(image.guidance);
+    }
     const restoredChoice = {
       sampler: image.sampler ?? DEFAULT_SAMPLER,
       scheduleType: image.schedule_type ?? AUTOMATIC_SCHEDULE,
@@ -2542,7 +2547,7 @@ export function ImagesPage({
     else setRestoredSampler(restoredChoice);
     // Restore from the BASE batch seed, not this image's derived seed, or a replay with batch_size
     // advances it again.
-    setSeed(String(image.batch_seed ?? image.seed));
+    if (!viaConnection) setSeed(String(image.batch_seed ?? image.seed));
     const restored = restorableSize(image.width, image.height, image.workflow, sizeLimits);
     setWidth(restored.width);
     setHeight(restored.height);
@@ -4462,6 +4467,7 @@ export function ImagesPage({
     cancelAbort.current?.abort();
     cancelAbort.current = null;
     runToken.current += 1;
+    runTarget.current = external ? "connection" : undefined;
     // Poll the backend's per-step progress across the whole run. A named poll body also serves the
     // visibilitychange listener, so a throttled tab catches up when visible.
     let pollInFlight = false;
@@ -4637,7 +4643,7 @@ export function ImagesPage({
     const abort = new AbortController();
     cancelAbort.current = abort;
     try {
-      const { cancelled } = await cancelDiffusionGeneration(abort.signal);
+      const { cancelled } = await cancelDiffusionGeneration(abort.signal, runTarget.current);
       cancelAcked.current = Boolean(cancelled);
       if (!cancelled) setStopping(false);
     } catch {

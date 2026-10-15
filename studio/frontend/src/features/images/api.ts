@@ -468,13 +468,16 @@ export async function generateDiffusionImage(
  *  nothing persisted. `cancelled` is false when there was nothing to stop. */
 export async function cancelDiffusionGeneration(
   signal?: AbortSignal,
+  target?: "connection",
 ): Promise<{ cancelled: boolean }> {
   return parseJson(
     // No network retry, and abortable. The endpoint always targets whichever generation is active NOW, so a retry or
     // a 401 refresh-and-replay firing after the stopped run settled can land on a run the user started meanwhile.
     // The signal lets the caller drop a pending one.
     await authFetch(
-      "/api/inference/images/generate/cancel",
+      target
+        ? `/api/inference/images/generate/cancel?target=${target}`
+        : "/api/inference/images/generate/cancel",
       { method: "POST", signal },
       { retryNetworkErrors: false },
     ),

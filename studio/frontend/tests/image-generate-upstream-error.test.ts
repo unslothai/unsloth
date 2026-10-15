@@ -12,7 +12,7 @@ afterEach(() => {
   globalThis.fetch = originalFetch;
 });
 
-const { generateDiffusionImage, GenerateResponseLostError } = await import(
+const { cancelDiffusionGeneration, generateDiffusionImage, GenerateResponseLostError } = await import(
   "../src/features/images/api.ts"
 );
 
@@ -40,4 +40,21 @@ test("a proxy's HTML 502 is still a lost response", async () => {
     generateDiffusionImage({ prompt: "a sloth" }),
     (err: unknown) => err instanceof GenerateResponseLostError,
   );
+});
+
+test("Stop on a connection run targets the connection, a local Stop does not", async () => {
+  const urls: string[] = [];
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    urls.push(String(input));
+    return new Response(JSON.stringify({ cancelled: true }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch;
+  await cancelDiffusionGeneration(undefined, "connection");
+  await cancelDiffusionGeneration();
+  assert.deepEqual(urls, [
+    "/api/inference/images/generate/cancel?target=connection",
+    "/api/inference/images/generate/cancel",
+  ]);
 });
