@@ -6,6 +6,7 @@ copies the STOCK head through from the original shards, so without the stitch a 
 model ships a head that was never aligned to it."""
 
 import ast
+from types import SimpleNamespace
 import json
 from pathlib import Path
 
@@ -487,9 +488,15 @@ def test_mtp_push_keeps_the_datasets_metadata(save_module, monkeypatch):
             create_pr = True,
             commit_message = None,
             datasets = ["org/data"],
+            tags = ["my-tag"],
+            model = SimpleNamespace(
+                config = SimpleNamespace(_name_or_path = "org/base", model_type = "qwen3_5")
+            ),
         )
     )
     assert len(calls) == 1 and calls[0][:2] == ("dev", True) and "org/data" in calls[0][2]
+    # A new repo still gets the hub path's model card, with the caller's tags.
+    assert "unsloth" in calls[0][2] and "my-tag" in calls[0][2] and "org/base" in calls[0][2]
 
 
 def test_unsloth_wrapped_save_still_pushes_the_head(save_module, tmp_path, monkeypatch):
@@ -526,3 +533,26 @@ def test_get_mtp_head_returns_the_attached_head(save_module):
     head = _head(torch)
     model = _wrapped(torch, head, registered = False)
     assert get_mtp_head(model) is head
+
+
+def test_plain_save_refuses_pickles_before_writing(save_module, tmp_path):
+    import torch
+
+    model, calls = _wrapped_adapter(torch)
+    with pytest.raises(ValueError, match = "safetensors"):
+        model.save_pretrained(str(tmp_path / "p"), safe_serialization = False)
+    assert calls == []
+
+
+def test_modelscope_snapshot_wins_under_a_peft_wrapper(tmp_path):
+    import torch
+    from unsloth.models.speculative import _checkpoint_source
+
+    inner = torch.nn.Module()
+    inner.config = SimpleNamespace(_name_or_path = "modelscope/only-id")
+    object.__setattr__(inner, "_unsloth_modelscope_snapshot", str(tmp_path))
+    peft = torch.nn.Module()
+    peft.config = SimpleNamespace(_name_or_path = "modelscope/only-id")
+    peft.base_model = torch.nn.Module()
+    peft.base_model.model = inner
+    assert _checkpoint_source(peft) == str(tmp_path)

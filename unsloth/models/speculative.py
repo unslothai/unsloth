@@ -41,27 +41,29 @@ def _zoo_speculative():
 
 def _checkpoint_source(model):
     """The repo id / folder the weights came from, looked up through PEFT wrappers."""
-    seen = set()
-    stack = [model]
+    holders, seen, stack = [], set(), [model]
     while stack:
         holder = stack.pop()
         if holder is None or id(holder) in seen:
             continue
         seen.add(id(holder))
-        # ModelScope loads keep the repo id in the config and the downloaded weights here.
-        snapshot = holder.__dict__.get("_unsloth_modelscope_snapshot")
-        if isinstance(snapshot, str) and os.path.isdir(snapshot):
-            return snapshot
-        config = getattr(holder, "config", None)
-        name = getattr(config, "_name_or_path", None)
-        if name:
-            return name
+        holders.append(holder)
         for attribute in ("base_model", "model"):
             child = holder.__dict__.get("_modules", {}).get(attribute) or holder.__dict__.get(
                 attribute
             )
             if child is not None:
                 stack.append(child)
+    # ModelScope loads keep the repo id in the config and the downloaded weights on the inner
+    # model, under any PEFT wrapper: the snapshot wins over every holder's config.
+    for holder in holders:
+        snapshot = holder.__dict__.get("_unsloth_modelscope_snapshot")
+        if isinstance(snapshot, str) and os.path.isdir(snapshot):
+            return snapshot
+    for holder in holders:
+        name = getattr(getattr(holder, "config", None), "_name_or_path", None)
+        if name:
+            return name
     return None
 
 
@@ -172,6 +174,15 @@ def _wrap_save_pretrained(model):
         )
 
         internal = _INTERNAL_MTP_SAVE.get()
+        if (
+            not internal
+            and kwargs.get("safe_serialization", True) is False
+            and not hasattr(model, "peft_config")
+        ):
+            # The head is stitched into safetensors checkpoints only; refuse before writing.
+            raise ValueError(
+                "Unsloth: a model with a trained MTP head saves as safetensors; drop `safe_serialization = False`."
+            )
         # PEFT's save_pretrained has no push_to_hub (its push_to_hub saves into a folder, then uploads it).
         push = bool(kwargs.get("push_to_hub")) and _takes_push_to_hub(original)
         if not internal:
