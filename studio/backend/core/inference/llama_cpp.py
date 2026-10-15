@@ -33572,6 +33572,8 @@ class LlamaCppBackend:
                 _spec_requested_dflash = any(
                     "draft-dflash" in str(t).lower() for t in spec_flags
                 ) or _extra_args_requests_dflash(extra_args, env = _launch_spec_env)
+                # A paired EAGLE-3 drafter (Studio export) can abort the server the same way.
+                _spec_requested_eagle3 = any("draft-eagle3" in str(t).lower() for t in spec_flags)
                 # Any MTP launch, not only tensor: a respawn would replay a drafter that
                 # aborts every decode (#13253). Cleared if the MTP-drop fallback wins.
                 _mtp_active_for_launched_server = bool(_spec_requested_mtp)
@@ -33653,7 +33655,12 @@ class LlamaCppBackend:
                 _spec_cpu_replay_cmd: Optional[List[str]] = None
                 if (
                     not healthy
-                    and (_spec_requested_mtp or _spec_requested_dspark or _spec_requested_dflash)
+                    and (
+                        _spec_requested_mtp
+                        or _spec_requested_dspark
+                        or _spec_requested_dflash
+                        or _spec_requested_eagle3
+                    )
                     and not _load_cancelled()
                 ):
                     _spec_cpu_replay_cmd = list(_last_spawn_cmd)

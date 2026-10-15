@@ -1584,6 +1584,8 @@ class ExportBackend:
                 else:
                     self.current_model.save_pretrained(save_directory)
                     self.current_tokenizer.save_pretrained(save_directory)
+                    # A full fine-tune trained with a drafter ships it like a merged export.
+                    self._package_drafter_merged(save_directory, repo_id if push_to_hub else None)
 
                 self._write_export_metadata(save_directory)
                 logger.info(f"Model saved successfully to {save_directory}")
@@ -1625,6 +1627,7 @@ class ExportBackend:
                             )
                             self.current_model.save_pretrained(upload_dir)
                             self.current_tokenizer.save_pretrained(upload_dir)
+                            self._package_drafter_merged(upload_dir, repo_id)
                         hf_api = HfApi(token = hf_token)
                         repo_url = hf_api.create_repo(repo_id, private = private, exist_ok = True)
                         repo_id = getattr(repo_url, "repo_id", repo_id)

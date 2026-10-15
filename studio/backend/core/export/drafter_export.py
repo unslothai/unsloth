@@ -33,8 +33,28 @@ def _read_json(path: str) -> Optional[dict]:
     return data if isinstance(data, dict) else None
 
 
+def _hub_adapter_snapshot(repo_id: str) -> Optional[str]:
+    """A Hub adapter's cached files (its manifest and MTP head): the loader re-attached that head."""
+    if os.path.isabs(repo_id) or repo_id.count("/") != 1:
+        return None
+    try:
+        from huggingface_hub import hf_hub_download
+
+        path = hf_hub_download(repo_id, DRAFTER_MANIFEST)
+        for name in ("adapter_config.json", "mtp_head.safetensors"):
+            try:
+                hf_hub_download(repo_id, name)
+            except Exception:
+                pass
+        return os.path.dirname(path)
+    except Exception:
+        return None
+
+
 def training_manifest(checkpoint_dir: Optional[str]) -> Optional[dict]:
     """The manifest the training run wrote, when its drafter is still complete on disk."""
+    if checkpoint_dir and not os.path.isdir(checkpoint_dir):
+        checkpoint_dir = _hub_adapter_snapshot(checkpoint_dir)
     if not checkpoint_dir or not os.path.isdir(checkpoint_dir):
         return None
     manifest = _read_json(os.path.join(checkpoint_dir, DRAFTER_MANIFEST))

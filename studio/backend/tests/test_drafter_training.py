@@ -983,3 +983,58 @@ def test_probe_child_gets_exactly_the_callers_token(monkeypatch):
     seen.clear()
     drafter._probe_capability("org/m", False, ("org/m", False))
     assert "HF_TOKEN" not in seen
+
+
+def test_a_failed_eagle3_launch_retries_without_the_drafter():
+    src = _source("core/inference/llama_cpp.py")
+    assert (
+        '_spec_requested_eagle3 = any("draft-eagle3" in str(t).lower() for t in spec_flags)' in src
+    )
+    gate = src.index("_spec_cpu_replay_cmd: Optional[List[str]] = None")
+    assert "or _spec_requested_eagle3" in src[gate : gate + 600]
+
+
+def test_a_run_without_a_drafter_clears_a_previous_runs(tmp_path):
+    from core.training.drafter import discard_drafter_artifacts
+
+    (tmp_path / "eagle3").mkdir()
+    (tmp_path / "eagle3" / "config.json").write_text("{}")
+    (tmp_path / "drafter.json").write_text(json.dumps({"strategy": "eagle3"}))
+    (tmp_path / "adapter_model.safetensors").write_bytes(b"x")
+    discard_drafter_artifacts(str(tmp_path))
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["adapter_model.safetensors"]
+    src = _source("core/training/worker.py")
+    assert "discard_drafter_artifacts(output_dir)" in src
+
+
+def test_a_hub_adapter_checkpoint_keeps_its_manifest(tmp_path, monkeypatch):
+    import huggingface_hub
+
+    from core.export import drafter_export
+
+    snap = tmp_path / "snap"
+    snap.mkdir()
+    (snap / "drafter.json").write_text(json.dumps({"strategy": "mtp", "draft_steps": 2}))
+    (snap / "adapter_config.json").write_text("{}")
+    (snap / "mtp_head.safetensors").write_bytes(b"h")
+    monkeypatch.setattr(
+        huggingface_hub, "hf_hub_download", lambda repo, name, **k: str(snap / name)
+    )
+    assert drafter_export.training_manifest("me/adapter")["draft_steps"] == 2
+    assert drafter_export.training_manifest(str(tmp_path / "missing")) is None
+
+
+def test_base_exports_package_the_drafter():
+    src = _source("core/export/export.py")
+    fn = src[
+        src.index("def export_base_model") : src.index(
+            "def ", src.index("def export_base_model") + 10
+        )
+    ]
+    assert fn.count("self._package_drafter_merged(") == 2
+
+
+def test_stop_while_saving_drops_the_drafter():
+    src = _source("core/training/drafter.py")
+    save = src.index("write_manifest(output_dir, manifest)")
+    assert "if should_stop():" in src[save - 300 : save]

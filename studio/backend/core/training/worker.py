@@ -5147,6 +5147,9 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 label = "MTP head" if manifest["strategy"] == "mtp" else "EAGLE-3 drafter"
                 drafter_note = f"\nTrained {label} saved with the model."
             progress = trainer.get_training_progress()
+        elif output_dir:
+            from core.training.drafter import discard_drafter_artifacts
+            discard_drafter_artifacts(output_dir)
         if progress.error:
             event_queue.put(
                 {

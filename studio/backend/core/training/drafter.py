@@ -607,8 +607,10 @@ def run_drafter_phase(
         model_name = config.get("model_name") or getattr(trainer, "model_name", "")
         text_config = _model_text_config(model)
         family, status = _mtp_family(text_config)
+        # The checkpoint this run actually loaded (a pinned snapshot), under the caller's token.
+        probe_target = config.get("model_snapshot_path") or model_name
         capability = (
-            capability_in_process(model_name, config.get("hf_token") or None) if model_name else {}
+            capability_in_process(probe_target, config.get("hf_token")) if probe_target else {}
         )
         strategy, refusal = resolve_strategy(cfg.get("strategy", "auto"), capability)
         if strategy is None:
@@ -765,6 +767,10 @@ def run_drafter_phase(
                 vllm = {"method": "eagle3", "num_speculative_tokens": steps},
                 llama_cpp = {"spec_type": "draft-eagle3", "spec_draft_n_max": steps},
             )
+        if should_stop():
+            # Stop pressed while saving: still drop the drafter, before any manifest names it.
+            _discard(output_dir, strategy, head = head, model = model)
+            return None
         write_manifest(output_dir, manifest)
         event_queue.put(
             {
@@ -818,6 +824,12 @@ def _model_text_config(model):
     if config is None:
         return None
     return config.get_text_config() if hasattr(config, "get_text_config") else config
+
+
+def discard_drafter_artifacts(output_dir: str) -> None:
+    """A run that will not train a drafter must not leave a previous run's in a reused folder."""
+    if output_dir and os.path.isfile(os.path.join(output_dir, DRAFTER_MANIFEST)):
+        _discard(output_dir, None)
 
 
 def _discard(
