@@ -133,8 +133,11 @@ export const BUDGET = {
   // The "Only show models that fit" Settings row adds 289 B raw / 77 B transfer (6,771,372 -> 6,771,661 B raw,
   // 2,035,798 -> 2,035,875 B transfer against 52a3fbefe, 95 chunks, identical under Node 22.22.2 and 24). Main
   // already measured 111 B raw / 54 B transfer over the previous limits, so they are set to the measured build.
-  transferBytes: 2_035_875,
-  rawBytes: 6_771_661,
+  // The downloads panel's "Starting…" row for a start still in preflight adds 1,395 B raw / 305 B transfer
+  // (6,771,709 -> 6,773,104 B raw, 2,035,904 -> 2,036,209 B transfer against ffa8fc3b9, 95 chunks, Node 24),
+  // where main already measured 48 B raw / 29 B over; set to the measured build.
+  transferBytes: 2_036_209,
+  rawBytes: 6_773_104,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
