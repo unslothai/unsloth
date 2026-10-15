@@ -408,8 +408,7 @@ _FUSED_CALLS = {"fwd": 0, "bwd": 0}
 
 
 def _read_fused_env():
-    # UNSLOTH_NVFP4_FUSED: 0 = always dense, 1 = always fused, unset = per-GPU row gate (UNSLOTH_NVFP4_FUSED_MAX_ROWS
-    # overrides the limit).
+    # UNSLOTH_NVFP4_FUSED: 0 dense, 1 fused, unset = per-GPU row gate (UNSLOTH_NVFP4_FUSED_MAX_ROWS overrides it).
     rows = os.environ.get("UNSLOTH_NVFP4_FUSED_MAX_ROWS")
     return os.environ.get("UNSLOTH_NVFP4_FUSED", "auto").strip().lower(), int(rows) if rows else None
 
@@ -418,7 +417,7 @@ _FUSED_ENV = None
 
 
 def _fused_env():
-    # Read on the first NVFP4 call, not per call: two os.environ lookups would add about 1 us to every linear.
+    # Read once: os.environ lookups would add about 1 us to every NVFP4 linear.
     global _FUSED_ENV
     if _FUSED_ENV is None:
         _FUSED_ENV = _read_fused_env()
