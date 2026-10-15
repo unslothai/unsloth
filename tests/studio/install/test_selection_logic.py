@@ -3739,7 +3739,11 @@ class TestWindowsMixedAmdUncoveredActiveCard:
             rocm_gfx_targets = list(targets),
         )
 
-    def _resolve(self, targets, backend = None):
+    def _resolve(
+        self,
+        targets,
+        backend = None,
+    ):
         route = INSTALL_LLAMA_PREBUILT.route_backend_request(
             backend = backend,
             published_repo = INSTALL_LLAMA_PREBUILT.DEFAULT_PUBLISHED_REPO,

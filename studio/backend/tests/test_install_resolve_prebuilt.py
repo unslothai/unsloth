@@ -1394,7 +1394,12 @@ def _unpinned_amd_env(monkeypatch):
     monkeypatch.setattr(ilp, "_rocm_torch_preferred", lambda: False)
 
 
-def _route_mixed(targets, backend = None, cpu_mechanism = False, repo = FORK):
+def _route_mixed(
+    targets,
+    backend = None,
+    cpu_mechanism = False,
+    repo = FORK,
+):
     host = _windows_amd_host(
         rocm_gfx_target = ilp._pick_rocm_gfx_target(" ".join(targets)),
         rocm_gfx_targets = list(targets),
@@ -1446,9 +1451,13 @@ def test_upstream_answers_per_repo_for_the_active_card(_unpinned_amd_env):
     assert _route_mixed(("gfx1034", "gfx1030"), repo = UPSTREAM).host.has_rocm is False
 
 
-@pytest.mark.parametrize("mask_env", ["HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"])
+@pytest.mark.parametrize(
+    "mask_env", ["HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"]
+)
 @pytest.mark.parametrize("mask_value", ["0", "1", "", "-1"])
-def test_a_masked_mixed_host_never_moves_to_vulkan(mask_env, mask_value, _unpinned_amd_env, monkeypatch):
+def test_a_masked_mixed_host_never_moves_to_vulkan(
+    mask_env, mask_value, _unpinned_amd_env, monkeypatch
+):
     # Vulkan honours none of these masks, so it would hand over the card the user hid.
     monkeypatch.setenv(mask_env, mask_value)
     host = _windows_amd_host(rocm_gfx_target = "gfx1010", rocm_gfx_targets = ["gfx1010", "gfx1034"])
