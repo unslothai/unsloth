@@ -2277,6 +2277,7 @@ def _as_walkable(out: Any) -> Any:
 _BATCH_UPLOAD_FRACTION = 0.6
 # The first batched call must beat the two plain calls it replaces by this factor, else batching stops.
 _BATCH_MEASURED_FRACTION = 0.92
+_BATCH_VERIFY_CALLS = 2
 
 
 def price_cfg_batch(
@@ -2422,7 +2423,10 @@ class CfgBatchRouter:
         # card's measured host link; the first batched call is timed against them too.
         self.pricing: Optional[dict[str, Any]] = None
         self.plain_times: list[float] = []
-        self.verify_batched = True
+        # The first batched calls are timed (the fastest of them is the verdict: a shared host's one-off stall must
+        # not end batching).
+        self.verify_batched = _BATCH_VERIFY_CALLS
+        self.batched_times: list[float] = []
         self.disabled_pending: Optional[str] = None
         self.stats = {
             "batched_steps": 0,
@@ -2614,7 +2618,7 @@ class CfgBatchRouter:
             (path, v.clone() if isinstance(v, torch.Tensor) else v) for path, v in second
         ]
         state = _hook_state([(m, m) for m in module.modules()])
-        verify = self.verify_batched and len(self.plain_times) == 2 and latent.device.type == "cuda"
+        verify = self.verify_batched > 0 and len(self.plain_times) == 2 and latent.device.type == "cuda"
         try:
             if verify:
                 torch.cuda.synchronize()
@@ -2640,9 +2644,13 @@ class CfgBatchRouter:
         return mine
 
     def _check_batched(self, batched_s: float) -> None:
-        """The first batched call against the two plain calls it replaces: no gain -> stop batching after this step
-        (it is already computed, so its halves are still used)."""
-        self.verify_batched = False
+        """The fastest of the first batched calls against the two plain calls each replaces: no gain -> stop batching
+        after this step (it is already computed, so its halves are still used)."""
+        self.verify_batched -= 1
+        self.batched_times.append(batched_s)
+        if self.verify_batched > 0:
+            return
+        batched_s = min(self.batched_times)
         plain = sum(self.plain_times)
         if self.pricing is not None:
             self.pricing["batched_call_s"] = round(batched_s, 4)

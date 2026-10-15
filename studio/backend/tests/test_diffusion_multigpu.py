@@ -1728,8 +1728,10 @@ def test_cfg_batch_measured_no_gain_stops_after_the_first_batched_step():
     router = mg.CfgBatchRouter(dit)
     dit.forward = router
     router.plain_times = [0.1, 0.1]
-    router._check_batched(0.19)  # 0.19 > 0.92 * 0.2: no gain
-    router.verify_batched = False
+    router._check_batched(0.5)  # a one-off stall alone decides nothing
+    assert router.disabled_pending is None
+    router._check_batched(0.19)  # fastest 0.19 > 0.92 * 0.2: no gain
+    assert router.verify_batched == 0
     out = _batch_loop(dit, latents.clone(), 5, cond, uncond)
     torch.testing.assert_close(out, reference, rtol = 1e-5, atol = 1e-6)
     assert router.stats["batched_steps"] == 1
