@@ -26,6 +26,9 @@ __all__ = [
     "get_flash_adamw_cls_and_kwargs",
 ]
 
+import os
+import sys
+
 import torch
 
 FLASH_ADAMW_NAME = "adamw_flash"
@@ -75,6 +78,15 @@ def _get_flash_adamw_class():
     class UnslothFlashAdamW(FlashAdamW):
         def __init__(self, params, *args, master_weight_bits = 32, **kwargs):
             params = list(params)
+            # flashoptim seeds every group's initial_lr with the constructor lr, and the LR
+            # scheduler then uses it as the group's base lr (setdefault keeps it), which would
+            # drop embedding_learning_rate and loraplus_lr_ratio, and skew decouple_lr decay.
+            params = [
+                {**group, "initial_lr": group.get("initial_lr", group["lr"])}
+                if isinstance(group, dict) and "lr" in group
+                else group
+                for group in params
+            ]
             # flashoptim raises when every parameter is fp32 and master_weight_bits is set,
             # which is the normal LoRA case: there only the 8 bit moments apply.
             tensors = [
@@ -84,6 +96,18 @@ def _get_flash_adamw_class():
             ]
             if tensors and all(p.dtype == torch.float32 for p in tensors):
                 master_weight_bits = None
+            # flashoptim's load_state_dict re-quantizes uncompressed moments with one
+            # optimizer wide bf16 check, which corrupts the other dtype's scales on resume.
+            if (
+                kwargs.get("quantize", True)
+                and not kwargs.get("compress_state_dict", True)
+                and len({p.dtype == torch.bfloat16 for p in tensors}) > 1
+            ):
+                raise ValueError(
+                    "Unsloth: optim = 'adamw_flash' with quantize=True and compress_state_dict=False "
+                    "cannot resume a model mixing bf16 and other trainable dtypes. "
+                    "Drop compress_state_dict=False or quantize=True."
+                )
             super().__init__(params, *args, master_weight_bits = master_weight_bits, **kwargs)
 
     _FLASH_ADAMW_CLASS = UnslothFlashAdamW
@@ -99,12 +123,38 @@ def _is_marked(args):
     return getattr(args, "_unsloth_flash_adamw", False) or _is_marked_in_optim_args(args)
 
 
+def _fsdp_version(args):
+    if getattr(args, "fsdp", None):
+        config = getattr(args, "fsdp_config", None)
+        config = config if isinstance(config, dict) else {}
+        version = config.get("version", config.get("fsdp_version", None))
+        if version is None:
+            import transformers
+            from packaging.version import Version
+
+            version = 2 if Version(transformers.__version__) >= Version("5.10.0") else 1
+        return int(version)
+    if os.environ.get("ACCELERATE_USE_FSDP", "").strip().lower() in ("1", "true", "yes"):
+        return int(os.environ.get("FSDP_VERSION", "").strip() or 1)
+    return None
+
+
 def get_flash_adamw_cls_and_kwargs(args):
     optimizer_cls = _get_flash_adamw_class()
-    if not torch.cuda.is_available():
+    # flashoptim supports only Linux with NVIDIA CUDA; ROCm also reports torch.cuda.is_available().
+    if (
+        not torch.cuda.is_available()
+        or getattr(torch.version, "hip", None)
+        or not sys.platform.startswith("linux")
+    ):
         raise NotImplementedError(
-            "Unsloth: optim = 'adamw_flash' runs fused Triton kernels and needs an NVIDIA GPU. "
-            "Use optim = 'adamw_8bit' or 'adamw_torch' instead."
+            "Unsloth: optim = 'adamw_flash' runs flashoptim's Triton kernels, which support only "
+            "Linux with NVIDIA CUDA GPUs. Use optim = 'adamw_8bit' or 'adamw_torch' instead."
+        )
+    if _fsdp_version(args) == 1:
+        raise ValueError(
+            "Unsloth: optim = 'adamw_flash' does not support FSDP1 (flashoptim supports DDP and FSDP2). "
+            "Set fsdp_config = {'version': 2} or use another optim."
         )
     optimizer_kwargs = {
         "lr": args.learning_rate,
@@ -131,8 +181,14 @@ def _patch_trainer_get_optimizer_cls_and_kwargs():
         return original(args, *other, **kwargs)
 
     get_optimizer_cls_and_kwargs._unsloth_flash_adamw = True
+    get_optimizer_cls_and_kwargs.__wrapped__ = original
     get_optimizer_cls_and_kwargs.__doc__ = original.__doc__
     Trainer.get_optimizer_cls_and_kwargs = staticmethod(get_optimizer_cls_and_kwargs)
+
+
+def is_flash_adamw_marked(training_args):
+    """A config rebuilt from to_dict / to_json_file carries only the optim_args marker."""
+    return _is_marked_in_optim_args(training_args)
 
 
 def mark_flash_adamw(training_args):

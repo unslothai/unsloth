@@ -3415,8 +3415,8 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
 
     if "optim" in call_args:
         RLConfig_post += (
-            "        if _unsloth_flash_adamw:\n"
-            "            from unsloth.optimizers.flash_adamw import mark_flash_adamw\n"
+            "        from unsloth.optimizers.flash_adamw import is_flash_adamw_marked, mark_flash_adamw\n"
+            "        if _unsloth_flash_adamw or is_flash_adamw_marked(self):\n"
             "            mark_flash_adamw(self)\n"
         )
 
