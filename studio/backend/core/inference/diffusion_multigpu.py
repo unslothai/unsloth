@@ -287,7 +287,9 @@ def probe_devices(ordinals: Sequence[int], *, measure: bool = True) -> dict[int,
         for a in ords:
             for b in ords:
                 # a failed measurement is not cached: the next probe tries again
-                if a == b or ((a, b) in _PAIR_PROBE and (_PAIR_PROBE[(a, b)][1] is not None or not measure)):
+                if a == b or (
+                    (a, b) in _PAIR_PROBE and (_PAIR_PROBE[(a, b)][1] is not None or not measure)
+                ):
                     continue
                 try:
                     access = bool(torch.cuda.can_device_access_peer(a, b))
@@ -425,7 +427,9 @@ def price_cfg_parallel(
     single = primary + branch_s
     parallel = max(primary, branch_s + copy_s)
     # an unmeasured link is unknown, not free: one card until a probe measures it (retried on the next request)
-    chosen = "cfg_parallel" if measured and parallel <= _PRICE_PARALLEL_FRACTION * single else "single"
+    chosen = (
+        "cfg_parallel" if measured and parallel <= _PRICE_PARALLEL_FRACTION * single else "single"
+    )
     return {
         "strategy": chosen,
         "link_unmeasured": not measured,
@@ -1902,7 +1906,8 @@ class CfgParallelRouter:
             "replica_built": self.replica is not None,
             "replica_compiled_submodules": getattr(self.replica, "_unsloth_replica_compiled", None),
             "disabled_reason": off,
-            "disabled_for_shape_only": self.disabled_reason is None and self.shape_disabled is not None,
+            "disabled_for_shape_only": self.disabled_reason is None
+            and self.shape_disabled is not None,
             "blocked_by": self.blocked_by,
             **self.stats,
         }
@@ -1950,7 +1955,9 @@ class CfgParallelRouter:
             self.b0_leaves = dict(_leaves((args, kwargs)))
             self.b0_s = None
             if self.shapes.switch(self, _request_shape(self.request_px, args, kwargs)):
-                self.template = None  # the previous shape's odd-branch prediction does not carry over
+                self.template = (
+                    None  # the previous shape's odd-branch prediction does not carry over
+                )
             if (
                 self.cfg_seen
                 and self.replica is not None
@@ -2029,7 +2036,9 @@ class CfgParallelRouter:
         if self.pricing["strategy"] == "cfg_parallel":
             return True
         if self.pricing.get("link_unmeasured"):
-            self.shape_disabled = "link unmeasured: one card until a probe measures it (retried next request)"
+            self.shape_disabled = (
+                "link unmeasured: one card until a probe measures it (retried next request)"
+            )
         else:
             self.shape_disabled = (
                 "priced out: one card takes "
@@ -2037,7 +2046,10 @@ class CfgParallelRouter:
                 f"{self.pricing['cfg_parallel_step_s']:.4f}s (link copies {self.pricing['copy_s']:.4f}s)"
             )
         if self.logger is not None:
-            self.logger.info("diffusion.multigpu: CFG-parallel off for this request shape (%s)", self.shape_disabled)
+            self.logger.info(
+                "diffusion.multigpu: CFG-parallel off for this request shape (%s)",
+                self.shape_disabled,
+            )
         return False
 
     # -- request lifecycle (Studio's generate path; without it the call pattern decides)
@@ -2911,7 +2923,8 @@ class CfgBatchRouter:
             "shapes_priced": len(self.shapes.saved) + (self.shapes.key is not None),
             "engaged_for": self.reason,
             "disabled_reason": off,
-            "disabled_for_shape_only": self.disabled_reason is None and self.shape_disabled is not None,
+            "disabled_for_shape_only": self.disabled_reason is None
+            and self.shape_disabled is not None,
             "last_unbatched_reason": self.last_skip,
             **self.stats,
         }
@@ -2982,7 +2995,9 @@ class CfgBatchRouter:
             self._apply_pending()
             self.b0_leaves = dict(_leaves((args, kwargs)))
             if self.shapes.switch(self, _request_shape(self.request_px, args, kwargs)):
-                self.template = None  # the previous shape's odd-branch prediction does not carry over
+                self.template = (
+                    None  # the previous shape's odd-branch prediction does not carry over
+                )
                 if self.pricing is None:
                     self.timing_off = False  # a new shape: its first guided step is timed plain
         if self.disabled_reason is not None or self.shape_disabled is not None or latent is None:
@@ -3318,7 +3333,9 @@ class CfgBatchRouter:
         if self.shape_disabled is None:
             self.shape_disabled = reason
             if self.logger is not None:
-                self.logger.info("diffusion.multigpu: CFG-batch off for this request shape (%s)", reason)
+                self.logger.info(
+                    "diffusion.multigpu: CFG-batch off for this request shape (%s)", reason
+                )
         self.kept = None
         self.template = None
 

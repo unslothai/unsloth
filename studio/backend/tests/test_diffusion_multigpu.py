@@ -2836,7 +2836,12 @@ def test_cfg_batch_declines_a_foreign_bound_forward_override(monkeypatch):
     assert router3.stats["batched_steps"] == 3
 
 
-def _guided(dit, rows, steps = 2, length = 4):
+def _guided(
+    dit,
+    rows,
+    steps = 2,
+    length = 4,
+):
     """A guided loop whose latent batch (and conditioning) has ``rows`` rows."""
     latents = torch.randn(rows, length, generator = torch.Generator().manual_seed(rows))
     cond, uncond = _embeds(rows, length)
@@ -2895,7 +2900,9 @@ def test_cfg_batch_prices_each_request_shape_on_its_own(monkeypatch):
     def timed_plain(a, k):
         rows = k["hidden_states"].shape[0]
         timed.append(rows)
-        router.plain_times.append(5.0 if rows == 2 else 1.2)  # 1 GiB upload: 2 rows compute-bound, 3 rows not
+        router.plain_times.append(
+            5.0 if rows == 2 else 1.2
+        )  # 1 GiB upload: 2 rows compute-bound, 3 rows not
         return router._plain(a, k)
 
     monkeypatch.setattr(router, "_can_time", lambda latent: True)
@@ -2905,13 +2912,17 @@ def test_cfg_batch_prices_each_request_shape_on_its_own(monkeypatch):
     monkeypatch.setattr(
         mg,
         "probe_devices",
-        lambda ordinals, measure = True: {0: mg.DeviceProbe(
-            ordinal = 0, name = "card", total_mib = 1, free_mib = 1, h2d_gib_s = 1.0, peers = ()
-        )},
+        lambda ordinals, measure = True: {
+            0: mg.DeviceProbe(
+                ordinal = 0, name = "card", total_mib = 1, free_mib = 1, h2d_gib_s = 1.0, peers = ()
+            )
+        },
     )
     with mg.cfg_request_scope(pipe, 256, 256):
         _guided(dit, 2)
-    assert router.stats["batched_steps"] == 0 and "priced out" in router.describe()["disabled_reason"]
+    assert (
+        router.stats["batched_steps"] == 0 and "priced out" in router.describe()["disabled_reason"]
+    )
     assert router.disabled_reason is None
     torch.manual_seed(0)
     plain = _BatchDit()
