@@ -2305,7 +2305,8 @@ def test_a_host_projector_url_keeps_the_load_local(monkeypatch, env):
     assert "URL" in ss.status()["reason"]
 
 
-@pytest.mark.parametrize("extra, freed", [(["--no-mmproj-offload"], 0), ([], 21 * GIB)])
+# A GPU projector frees its file; the 1.4x headroom is an estimate, never credited.
+@pytest.mark.parametrize("extra, freed", [(["--no-mmproj-offload"], 0), ([], 15 * GIB)])
 def test_a_host_ram_projector_is_not_counted_as_freed(monkeypatch, tmp_path, extra, freed):
     _cluster_env(monkeypatch, model_bytes = 85 * GIB)
     monkeypatch.setattr(ss, "llama_server_supports", lambda flag, binary = None: True)
@@ -2792,3 +2793,71 @@ def test_hybrid_attention_kv_is_spread_over_its_attention_layers(monkeypatch):
     )
     run(ss.before_load(_request(max_seq_length = 8192, ctx_checkpoints = 0), 4))
     assert cs.state().plan.layer_bytes == pytest.approx(GIB + 8 * GIB / 20)  # 80 blocks / 4
+
+
+def _serve(monkeypatch, **kw):
+    _cluster_env(monkeypatch, **kw)
+    out = run(ss.before_load(_request(), 4))
+    backend = SimpleNamespace(
+        _process = SimpleNamespace(args = ["/b/llama-server"] + out.llama_extra_args),
+        is_loaded = True,
+    )
+    run(ss.after_load(backend, 4))
+    return backend
+
+
+def test_a_config_error_reload_keeps_the_served_block(monkeypatch):
+    _serve(monkeypatch)
+    block = list(cs.state().block)
+    monkeypatch.setenv(cs.ENV_NODES, "bad host!")
+    out = run(ss.before_load(_request(llama_extra_args = ["--seed", "1"], force_reload = True), 4))
+    assert out.llama_extra_args == ["--seed", "1"] + block
+
+
+@pytest.mark.parametrize(
+    "extra, env, want",
+    [
+        (["--swa-full"], {}, True),
+        ([], {"LLAMA_ARG_SWA_FULL": "1"}, True),
+        ([], {"LLAMA_ARG_SWA_FULL": "0"}, False),
+        ([], {"LLAMA_ARG_SWA_FULL": "off"}, False),
+    ],
+)
+def test_swa_full_is_resolved_like_the_loader_and_reaches_checkpoints(
+    monkeypatch, extra, env, want
+):
+    _cluster_env(monkeypatch)
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    seen = []
+    monkeypatch.setattr(cs, "_ctx_compute_bytes", lambda *a, **k: seen.append((a[7:], k)) or 0)
+    run(ss.before_load(_request(max_seq_length = 8192, llama_extra_args = extra), 4))
+    kinds = {what[0] if what else "": kw.get("swa_full") for what, kw in seen}
+    assert kinds["checkpoint"] is want and kinds["kv"] is want
+
+
+def test_skipped_nextn_blocks_do_not_refuse_a_split(monkeypatch):
+    _cluster_env(monkeypatch, model_bytes = 300 * GIB)
+    header = dict(_llama_header(8), **{"llama.nextn_predict_layers": 1})
+    monkeypatch.setattr(cs, "_local_gguf_header", lambda *a, **k: (header, {78: GIB, 79: 40 * GIB}))
+    run(ss.before_load(_request(), 4))  # 300 GiB does not fit; 260 without the MTP head does
+    assert ss.status()["topology"] == "layer_split"
+    assert cs.state().plan.host_bytes == 0  # already left out of the planned weights
+
+
+def test_a_refused_internal_load_keeps_the_split_record(monkeypatch):
+    _serve(monkeypatch)
+    block = list(cs.state().block)
+    run(ss.reconcile_internal_load())
+    assert cs.state().block == []
+    # Refused before it replaced the primary: the same process still serves the split.
+    cs.state().settle_internal_load()
+    assert cs.state().block == block and cs.state().topology == "layer_split"
+
+
+def test_a_committed_internal_load_drops_the_split_record(monkeypatch):
+    backend = _serve(monkeypatch)
+    run(ss.reconcile_internal_load())
+    backend._process = SimpleNamespace(args = ["/b/llama-server", "-m", "/models/other.gguf"])
+    cs.state().settle_internal_load()
+    assert cs.state().block == [] and cs.state()._backend is None

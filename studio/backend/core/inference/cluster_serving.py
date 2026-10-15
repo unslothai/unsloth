@@ -301,7 +301,9 @@ def _ctx_compute_bytes(
         if not getattr(est, "_embedding_length", None):
             return None
         if what == "checkpoint":
-            return int(est._ctx_checkpoint_bytes(cache_type, flash_attn = flash_attn))
+            return int(
+                est._ctx_checkpoint_bytes(cache_type, swa_full = swa_full, flash_attn = flash_attn)
+            )
         if what == "recurrent":
             return int(est._rollback_state_bytes(n_parallel))
         if what == "kv_peak_ppm":
@@ -1053,6 +1055,7 @@ class ClusterServing:
         self._recurrent: float = 0.0
         self._recurrent_layer: float = 0.0
         self._kv_layer_frac: float = 0.0
+        self._internal_pre: Optional[Tuple[Any, ...]] = None
         self._attention_layers: int = 0
         self._nextn_bytes: float = 0.0
         self._projector_file: Optional[str] = None
@@ -1183,16 +1186,22 @@ class ClusterServing:
         )
         if self._passthrough:
             return request
+        self.settle_internal_load()
         self._pre_load = (self.topology, self.reason, self.plan, list(self.block))
         # Every return below that does not plan leaves no plan behind for after_load to record.
         self.plan, self.block = None, []
         self._down = set()  # _started stays until a load commits: a refusal keeps those workers
         if not self.refresh_nodes() or self.config_error:
             if self.config_error and self._pre_load[3]:
-                # The served split keeps its record, so a later retirement still sees it.
+                # The served split keeps its record, so a later retirement still sees it, and its
+                # block (the route strips it from inherited args) so a forced reload keeps it.
                 self.topology, _reason, self.plan, self.block = self._pre_load
                 self.reason = f"cluster config: {self.config_error}; still serving the last split"
-                return request
+                explicit = getattr(request, "llama_extra_args", None)
+                effective = list(explicit if explicit is not None else (inherited_extra_args or []))
+                if not _contains([str(a) for a in effective], self.block):
+                    effective += self.block
+                return ss.SparkServing._request_with(request, {"llama_extra_args": effective})
             self.topology, self.reason = "single", f"cluster config: {self.config_error}"
             return request
         explicit = getattr(request, "llama_extra_args", None)
@@ -1384,23 +1393,31 @@ class ClusterServing:
         # Context checkpoints live in host RAM, which a local accelerator may share (unified
         # memory); with none there they take nothing a plan places.
         checkpoints = self._checkpoints if any(not d.remote for d in devices) else 0.0
-        plan = plan_cluster(
-            model_bytes,
-            kv_bytes,
-            local_extra + checkpoints,
-            devices,
-            forced = forced,
-            layer_bytes = layer_bytes,
-            margin_bytes = margin,
-            # Every device of a layer split holds its own context-dependent compute scratch.
-            scratch_bytes = self._ctx_compute,
-        )
+
+        def plan_for(weights: float) -> ClusterPlan:
+            return plan_cluster(
+                weights,
+                kv_bytes,
+                local_extra + checkpoints,
+                devices,
+                forced = forced,
+                layer_bytes = layer_bytes,
+                margin_bytes = margin,
+                # Every device of a layer split holds its own context-dependent compute scratch.
+                scratch_bytes = self._ctx_compute,
+            )
+
+        plan = plan_for(model_bytes)
+        skipped = self._nextn_bytes  # in the plan's weights, never loaded on a split
+        if plan.topology == "refuse" and self._nextn_bytes:
+            # A split runs without speculation, so trailing NextN / MTP blocks never load.
+            trimmed = plan_for(model_bytes - self._nextn_bytes)
+            if trimmed.topology == "layer_split":
+                plan, skipped = trimmed, 0.0
         plan.kv_bytes = float(kv_bytes or 0)
         plan.uncertain_extra_bytes = self._uncertain_extra + checkpoints
         plan.layer_bytes = float(layer_bytes or 0.0)
-        plan.host_bytes = self._host_embd + (
-            self._nextn_bytes if plan.topology == "layer_split" else 0.0
-        )
+        plan.host_bytes = self._host_embd + (skipped if plan.topology == "layer_split" else 0.0)
         self.plan = plan
         if plan.topology == "refuse":
             self.topology, self.reason, self.plan, self.block = self._pre_load
@@ -1470,7 +1487,14 @@ class ClusterServing:
             )
         else:
             header, blocks = {}, {}
-        layers = {k: v for k, v in blocks.items() if k >= 0}
+        arch = header.get("general.architecture")
+        nextn = int(header.get(f"{arch}.nextn_predict_layers") or 0)
+        n_blocks = int(header.get(f"{arch}.block_count") or 0)
+        trailing = {k for k in blocks if nextn and n_blocks and k >= n_blocks - nextn}
+        # Trailing NextN / MTP blocks are skipped with speculation off, as a split runs, so they
+        # neither round onto a device nor stay resident.
+        self._nextn_bytes = float(sum(blocks[k] for k in trailing))
+        layers = {k: v for k, v in blocks.items() if k >= 0 and k not in trailing}
         # The input embedding stays on the host; the output matrix (or a tied model's copy of the
         # embedding) is one more lump on the last device.
         self._host_embd = float(blocks.get(-2, 0))
@@ -1605,6 +1629,8 @@ class ClusterServing:
             int(ss.gguf_size_bytes(p) or 0) for p in dict.fromkeys(projectors) if p not in dropped
         )
         sidecars += (_MMPROJ_VRAM_SAFETY - 1) * (named_bytes + auto_bytes)
+        # The headroom above the file is an estimate, never proven freed by a replacement.
+        self._uncertain_extra += (_MMPROJ_VRAM_SAFETY - 1) * (named_bytes + auto_bytes)
         if host_projector:
             # Charged for unified memory, but a discrete GPU never held it: never freed.
             self._uncertain_extra = _MMPROJ_VRAM_SAFETY * (named_bytes + auto_bytes)
@@ -1700,9 +1726,9 @@ class ClusterServing:
             kv_v = "f16"  # without flash attention a quantized V cache starts as f16 (loader retry)
         loader_kv = 0
         self._kv_layer_frac = 0.0
-        swa_full = any(str(a).split("=", 1)[0] == "--swa-full" for a in extras) or bool(
-            (os.environ.get("LLAMA_ARG_SWA_FULL") or "").strip()
-        )
+        from core.inference.llama_cpp import _swa_full_from_args_or_env
+
+        swa_full = bool(_swa_full_from_args_or_env(extras))
         if cells and size:
             # The loader's own estimator first; one cache type, so the heavier axis.
             loader_kv = await asyncio.to_thread(
@@ -1765,6 +1791,7 @@ class ClusterServing:
                 flash_attn,
                 n_parallel,
                 "checkpoint",
+                swa_full = swa_full,
             )
         # A recurrent checkpoint is one slot's state; the loader's probe misses gated-delta layers.
         per_checkpoint = max(per_checkpoint or 0, _ssm_state_bytes(header, 1))
@@ -1806,12 +1833,7 @@ class ClusterServing:
             self._attention_layers = max(1, int(header.get(f"{arch}.block_count") or 0) // interval)
         else:
             self._attention_layers = 0
-        nextn = int(header.get(f"{arch}.nextn_predict_layers") or 0)
-        n_blocks = int(header.get(f"{arch}.block_count") or 0)
-        # Trailing NextN / MTP blocks are skipped with speculation off, as a split runs.
-        self._nextn_bytes = float(
-            sum(v for k, v in blocks.items() if nextn and n_blocks and k >= n_blocks - nextn)
-        )
+
         if kv is None and ctx and size and not recurrent:
             self._unsized_kv = True  # a pure state-space model has no attention KV
         # The loader's KV already holds the recurrent state it can see; add only what it missed.
@@ -1901,6 +1923,33 @@ class ClusterServing:
         if not (self._backend is not None and getattr(self._backend, "is_loaded", False)):
             self.forget_served()
             await self.shutdown()
+
+    def note_internal_load(self) -> None:
+        """A load that bypasses planning is about to start: forget the split, but keep what is
+        needed to put the record back if that load is refused before it replaces the primary."""
+        backend = self._backend
+        if backend is not None and getattr(backend, "is_loaded", False) and self.block:
+            self._internal_pre = (
+                self.topology,
+                self.reason,
+                self.plan,
+                list(self.block),
+                backend,
+                getattr(backend, "_process", None),
+                dict(self._resident),
+            )
+        self.forget_served()
+
+    def settle_internal_load(self) -> None:
+        """Put the split record back when the bypassing load never replaced the primary."""
+        pre, self._internal_pre = self._internal_pre, None
+        if pre is None or self._backend is not None:
+            return
+        topology, reason, plan, block, backend, process, resident = pre
+        if getattr(backend, "is_loaded", False) and getattr(backend, "_process", None) is process:
+            self.topology, self.reason, self.plan, self.block = topology, reason, plan, block
+            self._backend, self._resident = backend, resident
+            _remember_block(block)
 
     def forget_served(self) -> None:
         """A load that bypassed planning replaced the served split; its workers can stay."""

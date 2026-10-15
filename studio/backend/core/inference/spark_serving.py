@@ -3449,6 +3449,8 @@ async def before_load(
         getattr(request, "alongside", False) or getattr(request, "force_alongside", False)
     )
     replacing = not alongside and str(getattr(request, "engine", "auto") or "auto") == "auto"
+    if cluster_serving._STATE is not None:
+        cluster_serving._STATE.settle_internal_load()
     legacy_serving = _STATE is not None and (
         _STATE.peer_process is not None or _STATE.router is not None
     )
@@ -3604,7 +3606,8 @@ async def reconcile_internal_load() -> None:
     from core.inference import cluster_serving
 
     if cluster_serving._STATE is not None:
-        cluster_serving._STATE.forget_served()
+        # Restored if this load is refused before it replaces the primary.
+        cluster_serving._STATE.note_internal_load()
     if _STATE is None or _STATE.attached_backend is None and _STATE.peer_process is None:
         return
     logger.info("spark serving: serving on this node only for a load that bypassed the planner")
