@@ -3020,3 +3020,105 @@ def test_uninstall_restores_the_instance_forward_override(kind):
         mg._CFG_ROUTERS[pipe2] = router
         mg.uninstall_cfg_parallel(pipe2)
     assert "forward" not in plain.__dict__  # no override originally: the slot is removed
+
+
+def test_rank_secondaries_puts_measured_links_ahead_of_unmeasured(monkeypatch):
+    monkeypatch.delenv(mg.LINK_ENV, raising = False)
+    probes = {
+        0: _probe(0, 1000, {1: None, 2: 20.0, 3: 2.0}),
+        1: _probe(1, 30000, {0: None}),  # most free memory, link never measured
+        2: _probe(2, 9000, {0: 20.0}),
+        3: _probe(3, 15000, {0: 2.0}),  # measured but slow
+    }
+    sel = mg.MultiGpuSelection(primary = 0, secondaries = (1, 2, 3))
+    assert mg.rank_secondaries(0, [1, 2, 3], lambda o: probes[o].free_mib, probes) == [2, 3, 1]
+    assert mg.best_secondary(sel, probes) == 2
+    # nothing measured: the free-memory fallback
+    blind = {o: _probe(o, p.free_mib, {}) for o, p in probes.items()}
+    assert mg.best_secondary(sel, blind) == 1
+
+
+def test_cfg_parallel_moves_to_a_card_whose_link_measures_later(monkeypatch):
+    monkeypatch.delenv(mg.LINK_ENV, raising = False)
+    dit = _BatchDit()
+    router = mg.CfgParallelRouter(dit, primary = "cuda:0", secondary = "cuda:1", candidates = [1, 2])
+    measured = {
+        0: _probe(0, 1000, {1: None, 2: 20.0}),
+        1: _probe(1, 30000, {0: None}),
+        2: _probe(2, 9000, {0: 20.0}),
+    }
+    monkeypatch.setattr(mg, "probe_devices", lambda ordinals, measure = True: measured)
+    router.pricing = {"strategy": "single", "link_unmeasured": True}
+    router.shape_disabled = "link unmeasured"
+    router.begin_request(512, 512)
+    assert router.secondary == torch.device("cuda", 2)
+    assert router.pricing is None and router.shape_disabled is None
+
+
+def _parallel_cpu_router(dit, monkeypatch, free_mib):
+    router, replicas = _router(dit, headroom_mib = 1000, headroom_reference_px = 512 * 512)
+    monkeypatch.setattr(mg, "_free_total_mib", lambda ordinal: (free_mib, 80000))
+    return router, replicas
+
+
+def test_cfg_parallel_rechecks_replica_room_when_the_shape_grows(monkeypatch):
+    dit = _BatchDit()
+    pipe = _RouterPipe(dit)
+    router, replicas = _parallel_cpu_router(dit, monkeypatch, 3000)
+    with mg.cfg_request_scope(pipe, 512, 512):
+        _guided(dit, 2, steps = 3)  # 2 x 1000 MiB of activations: fits
+    assert len(replicas) == 1 and router.stats["replica_calls"] > 0
+    calls = router.stats["replica_calls"]
+    plain = _BatchDit()
+    plain.load_state_dict(dit.state_dict())
+    reference = _guided(plain, 2, steps = 3)
+    with mg.cfg_request_scope(pipe, 1024, 1024):
+        out = _guided(dit, 2, steps = 3)  # 4x the canvas: 8000 MiB > 3000 MiB free
+    torch.testing.assert_close(out, reference, rtol = 1e-5, atol = 1e-6)
+    assert router.stats["replica_calls"] == calls
+    assert "lacks room" in router.describe()["disabled_reason"]
+    assert router.disabled_reason is None and router.replica is not None
+    with mg.cfg_request_scope(pipe, 512, 512):
+        _guided(dit, 2, steps = 3)
+    assert router.stats["replica_calls"] > calls
+
+
+@pytest.mark.parametrize("where", ["prefetch", "forward"])
+def test_cfg_parallel_replica_oom_declines_only_that_shape(monkeypatch, where):
+    dit = _BatchDit()
+    pipe = _RouterPipe(dit)
+    router, replicas = _parallel_cpu_router(dit, monkeypatch, None)
+    with mg.cfg_request_scope(pipe, 512, 512):
+        _guided(dit, 2, steps = 3)
+    assert len(replicas) == 1
+    if where == "prefetch":
+        real = router._prefetch
+
+        def prefetch(a, k):
+            if k["hidden_states"].shape[0] == 3:
+                raise torch.OutOfMemoryError("CUDA out of memory. Tried to allocate 2.00 GiB")
+            return real(a, k)
+
+        monkeypatch.setattr(router, "_prefetch", prefetch)
+    else:
+        replica = replicas[0]
+        real_forward = replica.forward
+
+        def forward(*a, **k):
+            if k["hidden_states"].shape[0] == 3:
+                raise torch.OutOfMemoryError("CUDA out of memory. Tried to allocate 2.00 GiB")
+            return real_forward(*a, **k)
+
+        replica.forward = forward
+    plain = _BatchDit()
+    plain.load_state_dict(dit.state_dict())
+    reference = _guided(plain, 3, steps = 3)
+    with mg.cfg_request_scope(pipe, 1024, 1024):
+        out = _guided(dit, 3, steps = 3)
+    torch.testing.assert_close(out, reference, rtol = 1e-5, atol = 1e-6)
+    assert "out of memory" in router.describe()["disabled_reason"]
+    assert router.disabled_reason is None and router.replica is not None
+    calls = router.stats["replica_calls"]
+    with mg.cfg_request_scope(pipe, 512, 512):
+        _guided(dit, 2, steps = 3)
+    assert router.stats["replica_calls"] > calls  # the shapes that fit keep the replica

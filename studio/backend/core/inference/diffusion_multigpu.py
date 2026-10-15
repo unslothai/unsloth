@@ -361,7 +361,9 @@ def rank_secondaries(
     free_of: Callable[[int], Optional[int]],
     probes: Optional[dict[int, DeviceProbe]] = None,
 ) -> list[int]:
-    """``candidates`` best first: fast-link tier (within ``_LINK_TIER``; unmeasured not penalised), free memory, ordinal."""
+    """``candidates`` best first: measured fast-link tier (within ``_LINK_TIER``), then measured slower links, then
+    unmeasured links (CFG-parallel pricing refuses those); free memory, then ordinal, within a tier. With no link
+    measured at all, every card is one tier (free memory decides)."""
     cands = [int(o) for o in candidates]
     if not cands:
         return []
@@ -379,9 +381,14 @@ def rank_secondaries(
     top = max(known) if known else None
 
     def key(o: int) -> tuple[int, int, int]:
-        fast = top is None or links[o] is None or links[o] >= _LINK_TIER * top
+        if top is None:
+            tier = 2
+        elif links[o] is None:
+            tier = 0
+        else:
+            tier = 2 if links[o] >= _LINK_TIER * top else 1
         free = free_of(o)
-        return (1 if fast else 0, free if free is not None else -1, -o)
+        return (tier, free if free is not None else -1, -o)
 
     return sorted(cands, key = key, reverse = True)
 
@@ -445,6 +452,13 @@ def price_cfg_parallel(
 
 
 _PRICE_PARALLEL_FRACTION = 0.9
+
+
+_ROOM_REASON = "replica card lacks room for this shape"
+
+
+def _is_oom(exc: BaseException) -> bool:
+    return type(exc).__name__ == "OutOfMemoryError" or "out of memory" in str(exc).lower()
 
 
 # Pricing and verification are per request shape: (canvas, every input tensor's shape: latent batch, tokens,
@@ -1842,6 +1856,7 @@ class CfgParallelRouter:
         logger: Any = None,
         headroom_mib: Optional[int] = None,
         headroom_reference_px: Optional[int] = None,
+        candidates: Optional[Sequence[int]] = None,
     ):
         torch = _torch()
         # the odd branch's activations on the replica card, priced like CFG-batch's (canvas and batch scaled)
@@ -1856,6 +1871,8 @@ class CfgParallelRouter:
         self.prev_override = module.__dict__.get("forward")
         self.primary = torch.device(primary)
         self.secondary = torch.device(secondary)
+        # every card that fit the replica at install: a later request may move to a better-measured one
+        self.candidates: list[int] = [int(o) for o in (candidates or ())]
         self.logger = logger
         self.replica: Any = None
         self.replica_factory = replica_factory or (lambda: build_replica(module, self.secondary))
@@ -1894,6 +1911,8 @@ class CfgParallelRouter:
         # why the CURRENT request shape keeps one card (priced out, link unmeasured); per shape, not per load
         self.shape_disabled: Optional[str] = None
         self.shapes = _ShapeBook({"pricing": None, "shape_disabled": None})
+        # the replica card's room for this request's activations was checked (per request and per shape change)
+        self.capacity_checked = False
 
     # -- status
     def describe(self) -> dict[str, Any]:
@@ -1958,6 +1977,14 @@ class CfgParallelRouter:
                 self.template = (
                     None  # the previous shape's odd-branch prediction does not carry over
                 )
+                self.capacity_checked = False
+            if (
+                not self.capacity_checked
+                and self.replica is not None
+                and self.disabled_reason is None
+            ):
+                self.capacity_checked = True
+                self._check_capacity(latent)
             if (
                 self.cfg_seen
                 and self.replica is not None
@@ -1967,8 +1994,13 @@ class CfgParallelRouter:
             ):
                 # Copy this step's inputs to the replica card BEFORE the primary branch is queued: a copy queued after
                 # it would wait for it on the source stream and serialise the two branches.
-                self._prefetch(args, kwargs)
-                self._launch_prediction(latent)
+                try:
+                    self._prefetch(args, kwargs)
+                    self._launch_prediction(latent)
+                except Exception as exc:  # noqa: BLE001 - this shape runs on one card
+                    if not _is_oom(exc):
+                        raise
+                    self._shape_oom("prefetch", exc)
         if (
             self.branch % 2 == 1
             and self.disabled_reason is None
@@ -2015,7 +2047,11 @@ class CfgParallelRouter:
                         self.stats["steps_parallel"] += 1
                     return out
                 except Exception as exc:  # noqa: BLE001 - this branch is recomputed on the primary below
-                    self.disable(f"replica call failed: {type(exc).__name__}: {exc}")
+                    if _is_oom(exc):
+                        # this canvas / batch does not fit beside the replica; other shapes keep it
+                        self._shape_oom("replica forward", exc)
+                    else:
+                        self.disable(f"replica call failed: {type(exc).__name__}: {exc}")
             self.cfg_seen = True
         if (
             self.branch == 0
@@ -2030,6 +2066,45 @@ class CfgParallelRouter:
             return out
         self.stats["primary_calls"] += 1
         return self.orig_forward(*args, **kwargs)
+
+    def _check_capacity(self, latent: Any) -> None:
+        """An existing replica, a new request or shape: decline this shape when the replica card lacks room for its
+        (canvas and batch scaled) activations. A room verdict is re-read every request: free memory moves."""
+        if self.shape_disabled is not None and self.shape_disabled.startswith(_ROOM_REASON):
+            self.shape_disabled = None
+        if self.shape_disabled is not None:
+            return
+        free, _total = _free_total_mib(self.secondary.index)
+        if free is None:
+            return
+        batch = (
+            int(latent.shape[0])
+            if getattr(latent, "dim", None) is not None and latent.dim() >= 1
+            else None
+        )
+        room = scaled_headroom_mib(
+            self.headroom_mib, self.headroom_reference_px, self.request_px, batch
+        )
+        if room is not None and room > free:
+            self._shape_off(
+                f"{_ROOM_REASON}: needs {int(room)} MiB, {free} MiB free on {self.secondary}"
+            )
+
+    def _shape_oom(self, where: str, exc: BaseException) -> None:
+        self._drop_pending()
+        self.prefetched.clear()
+        self.carry = []
+        self.next_carry = []
+        with contextlib.suppress(Exception):
+            _torch().cuda.empty_cache()
+        self._shape_off(f"out of memory on the replica card ({where}): {type(exc).__name__}")
+
+    def _shape_off(self, reason: str) -> None:
+        self.shape_disabled = reason
+        if self.logger is not None:
+            self.logger.info(
+                "diffusion.multigpu: CFG-parallel off for this request shape (%s)", reason
+            )
 
     def _shape_verdict(self) -> bool:
         """Apply the current shape's price: True when CFG-parallel runs for it."""
@@ -2062,12 +2137,41 @@ class CfgParallelRouter:
         self.branch = 0
         self.singles = 0
         self.b0_s = None
+        self.capacity_checked = False
+        if self.replica is None:
+            self._reselect_secondary()
         # an unmeasured link is retried on every request
         self.shapes.forget(self, lambda st: bool((st.get("pricing") or {}).get("link_unmeasured")))
         try:
             self.request_px = int(width) * int(height) if width and height else None
         except (TypeError, ValueError):
             self.request_px = None
+
+    def _reselect_secondary(self) -> None:
+        """No replica yet: re-rank the install-time cards on a fresh probe (failed link measurements are retried), so
+        a card whose link measures now wins over one still unmeasured."""
+        if len(self.candidates) < 2 or self.primary.type != "cuda":
+            return
+        try:
+            probes = probe_devices((self.primary.index, *self.candidates))
+
+            def free_of(o: int) -> Optional[int]:
+                p = probes.get(o)
+                return p.free_mib if p is not None else None
+
+            best = rank_secondaries(self.primary.index, self.candidates, free_of, probes)[0]
+        except Exception:  # noqa: BLE001 - keep the current card
+            return
+        if best != self.secondary.index:
+            if self.logger is not None:
+                self.logger.info(
+                    "diffusion.multigpu: CFG-parallel replica card cuda:%s -> cuda:%s (link measured)",
+                    self.secondary.index,
+                    best,
+                )
+            self.secondary = _torch().device("cuda", best)
+            # every verdict was priced against the old card's link
+            self.shapes.clear(self)
 
     def end_request(self) -> None:
         self.release_inputs()
@@ -2481,6 +2585,7 @@ def _install_cfg_parallel_only(
                     logger = logger,
                     headroom_mib = headroom_mib,
                     headroom_reference_px = headroom_reference_px,
+                    candidates = fits,
                 )
                 try:
                     _CFG_ROUTERS[pipe] = router
