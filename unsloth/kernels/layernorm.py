@@ -117,11 +117,8 @@ def layernorm_backward(
     )
 
 
-# dW / dB follow flash-linear-attention's layer_norm_bwd_kernel_row + layer_norm_bwd
-# (https://github.com/fla-org/flash-linear-attention, fla/modules/norm/layernorm.py, MIT licence,
-# Copyright (c) 2023-2026 Songlin Yang, Yu Zhang, Zhiyuan Li): a few persistent programs each own a
-# run of rows, add dY * xhat and dY into fp32 registers while computing dX, and store one partial
-# row each; the partials are summed afterwards. dX per row is the frozen kernel's, same helper.
+# dW / dB follow flash-linear-attention's layer_norm_bwd_kernel_row (fla/modules/norm/layernorm.py,
+# MIT licence, Copyright (c) 2023-2026 Songlin Yang, Yu Zhang, Zhiyuan Li).
 @triton.jit
 def layernorm_backward_dw(
     dY,
@@ -177,8 +174,7 @@ def layernorm_backward_dw(
 def _layernorm_sum_partials(
     partials, out0, out1, n_programs, n_cols, BLOCK_ROWS: tl.constexpr, BLOCK_COLS: tl.constexpr
 ):
-    # Fixed tile order, so eager and torch.compile give the same bytes (a torch sum here is
-    # re-lowered by Inductor in another order). Axis 1 picks the partial set: out0, then out1.
+    # Not torch.sum: Inductor reorders it, so eager and compiled bytes would differ.
     which = tl.program_id(1)
     cols = tl.program_id(0) * BLOCK_COLS + tl.arange(0, BLOCK_COLS)
     col_mask = cols < n_cols
@@ -195,8 +191,7 @@ def _layernorm_sum_partials(
         tl.store(out1 + cols, total.to(out1.dtype.element_ty), mask = col_mask)
 
 
-# fla runs one program per SM, which at 4 to 8 warps leaves an A100 SM mostly idle; filling half of
-# each SM's warps measured best on both A100 (1.1x to 1.2x at 1024 / 2048 columns) and T4.
+# Half of each SM's warps (not fla's one program per SM) measured best on A100 and T4.
 @functools.lru_cache(maxsize = None)
 def _dw_slots(device):
     try:
@@ -281,8 +276,7 @@ class Fast_Layernorm(torch.autograd.Function):
         programs = max(1, min(n_rows, sms * max(1, warps_per_sm // ctx.num_warps)))
         rows_per_program = max(1, triton.cdiv(n_rows, programs))
         programs = max(1, triton.cdiv(n_rows, rows_per_program))
-        # One buffer for both partials: every program stores its rows, so empty is enough (zeros only
-        # when nothing launches). At small shapes the backward is host bound, so fewer ops matter.
+        # Every program stores its partial row, so empty suffices unless nothing launches.
         alloc = torch.empty if n_rows > 0 else torch.zeros
         partials = alloc(
             (train_w + train_b, programs, n_cols), dtype = torch.float32, device = dY.device

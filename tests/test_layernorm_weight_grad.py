@@ -87,7 +87,7 @@ def test_layernorm_trainable_matches_frozen_y_and_dx(cols, dtype):
     fy, fdx, fdw, fdb = _fast(layer, inputs, grad)
     assert fdw is None and fdb is None
     assert torch.equal(y, fy)
-    # Same per-row math, but the persistent loop contracts a few products differently: <= 1 ulp.
+    # Persistent loop contracts some products differently: <= 1 ulp.
     ulp = 2**-7 if dtype == torch.bfloat16 else 2**-10
     torch.testing.assert_close(dx.float(), fdx.float(), rtol = ulp, atol = 1e-6)
 
