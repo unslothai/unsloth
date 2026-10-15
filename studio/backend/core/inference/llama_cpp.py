@@ -8786,6 +8786,10 @@ class LlamaCppBackend:
         # The "--load-mode none" tokens the FIT emitted, so paths that replace the
         # placement can take them back out. Empty for a mode the user asked for.
         self._fit_load_mode_flags: list[str] = []
+        # The "-lzm <mode>" pair Studio appended from the selected devices' mmap support, so every
+        # replay on a different device set can take it back out. Empty when the user chose a mode
+        # or Studio emitted none.
+        self._studio_lazy_mode_flags: list[str] = []
         # The pair a launch in flight is committed to, None when none is. ONE attribute:
         # a separate marker and snapshot read out of step answered a save with
         # reload_required=false about a child already committed to the pre-save flags.
@@ -20959,6 +20963,7 @@ class LlamaCppBackend:
         self._memory_policy_extras_touched = False
         self._memory_mlock_applicable = True
         self._fit_load_mode_flags = []
+        self._studio_lazy_mode_flags = []
         self._memory_pending_launch = None
         self._n_ubatch = self._DEFAULT_N_UBATCH
         self._requested_n_batch = None
@@ -25302,6 +25307,17 @@ class LlamaCppBackend:
             return False
         return True
 
+    def _drop_emitted_lazy_mode(self, argv: Iterable[str]) -> list[str]:
+        """``argv`` without the ``-lzm`` pair Studio derived from the devices it launched on.
+
+        Every replay that changes the device set (both CPU replays, the arch-crash retry) calls
+        this: the mode was the selected devices' mmap answer, and with other devices llama.cpp's
+        auto has to decide again. Only the run Studio appended goes (it precedes the user's
+        extras), so a user's own ``-lzm`` survives.
+        """
+        flags = list(getattr(self, "_studio_lazy_mode_flags", None) or ())
+        return _without_subsequence(list(argv), flags) if flags else list(argv)
+
     def _prepare_cpu_fallback_launch(
         self,
         binary: Optional[str],
@@ -25335,6 +25351,8 @@ class LlamaCppBackend:
         # The replay runs on no GPU, so the VRAM half of the fit that chose "none" is
         # void and mmap is what keeps the host-RAM load survivable: hand the CPU attempt
         # llama.cpp's auto back. Only Unsloth's own tokens; a user's is theirs.
+        # Studio's -lzm answered the dropped devices' mmap support; with none left, auto decides.
+        replay = self._drop_emitted_lazy_mode(replay)
         if self._fit_load_mode_flags:
             replay = _without_subsequence(replay, self._fit_load_mode_flags)
             logger.info(
@@ -27050,7 +27068,10 @@ class LlamaCppBackend:
                 # Auto dropped the drafter because only the target fit. Bound before the
                 # try: the launch below reads it either way.
                 _spec_dropped_no_vram = False
-                _planner_owns_fit = self._planner_may_run(
+                # Manual placement is the user's (the branches below empty the GPU pool to bypass
+                # every planner), the same as a typed -ngl / --device, which _planner_may_run
+                # already declines. Owning it anyway credits zero VRAM to the prompt-cache clamp.
+                _planner_owns_fit = gpu_memory_mode != "manual" and self._planner_may_run(
                     extra_args, os.environ, load_mode = load_mode
                 )
                 # The context Auto wanted BEFORE it settled for _AUTO_OFFLOAD_CTX, when the
@@ -29869,6 +29890,23 @@ class LlamaCppBackend:
                             flash_attn = planned_flash_attn,
                         )[1]
 
+                    # The per-layer ratios at any context and slot count, on the geometry
+                    # _kv_bytes_at prices, so the fitter arm splits one request's live cache by
+                    # where it really sits rather than by the reservation's proportions.
+                    @functools.lru_cache(maxsize = 256)
+                    def _kv_layer_weights_at(ctx: int, slots: int) -> tuple[int, ...]:
+                        return tuple(
+                            self._kv_layer_weights(
+                                max(256, int(ctx)),
+                                swa_full = swa_full,
+                                n_parallel = max(1, int(slots)),
+                                kv_unified = planned_kv_unified,
+                                n_ubatch = _ubatch_for_slots(max(1, int(slots))),
+                                flash_attn = planned_flash_attn,
+                                cache_type_kv = cache_type_kv,
+                            )
+                        )
+
                     # The window-bound half of the same measurement kv_cache_bytes sums, which
                     # the planner charges at a different rate and cannot decompose itself.
                     _spill_kv_swa_bytes = (
@@ -30001,6 +30039,9 @@ class LlamaCppBackend:
                         # than scaling a measurement it cannot decompose. Never serialised.
                         "kv_bytes_at": _kv_bytes_at if _planner_owns_fit else None,
                         "kv_swa_bytes_at": _kv_swa_bytes_at if _planner_owns_fit else None,
+                        "kv_layer_weights_at": (
+                            _kv_layer_weights_at if _planner_owns_fit else None
+                        ),
                         "n_ubatch_by_parallel": _spill_ubatch_by_parallel,
                         "kv_recurrent_bytes_per_slot": int(self._rollback_state_bytes(1)),
                         # Rung 0: the projector, separable from extra_gpu_bytes so the planner
@@ -30991,6 +31032,9 @@ class LlamaCppBackend:
                     )
                     if _planner_owns_fit
                     else None
+                )
+                self._studio_lazy_mode_flags = (
+                    ["-lzm", _emitted_lazy_mode] if _emitted_lazy_mode is not None else []
                 )
                 if _emitted_lazy_mode is not None:
                     cmd.extend(["-lzm", _emitted_lazy_mode])
@@ -33922,10 +33966,8 @@ class LlamaCppBackend:
                     if not _crashed or not _cpu_fallback_eligible or _load_cancelled():
                         return False
                     # Studio's -lzm was decided off the crashed devices' mmap support; with no
-                    # device left, llama.cpp's auto decides again. Only the run Studio appended
-                    # goes (it precedes the user's extras), so an explicit -lzm stays.
-                    if _emitted_lazy_mode:
-                        failed_cmd = _without_subsequence(failed_cmd, ["-lzm", _emitted_lazy_mode])
+                    # device left, llama.cpp's auto decides again. _prepare_cpu_fallback_launch
+                    # drops it (_drop_emitted_lazy_mode), so an explicit -lzm stays.
                     fallback_has_mmproj = self._launch_has_mmproj(failed_cmd, env)
                     prepared = self._prepare_cpu_fallback_launch(
                         binary,
@@ -34325,8 +34367,7 @@ class LlamaCppBackend:
                     # integrated sibling turns llama.cpp's auto off; left in, "on" pages a table
                     # through a device that cannot map it. Auto decides again for the respawn
                     # (when there is none the load fails and the argv is not used again).
-                    if _emitted_lazy_mode:
-                        cmd = _without_subsequence(cmd, ["-lzm", _emitted_lazy_mode])
+                    cmd = self._drop_emitted_lazy_mode(cmd)
                     _crashed = sorted(set(gpu_indices))
                     # _detected_gpus, not gpus: the post-picker enumeration this launch
                     # planned against, and unlike `gpus` it survives the manual mode that
@@ -38151,6 +38192,11 @@ class LlamaCppBackend:
                 kv_swa_bytes_at = (
                     inputs.get("kv_swa_bytes_at")
                     if callable(inputs.get("kv_swa_bytes_at"))
+                    else None
+                ),
+                kv_layer_weights_at = (
+                    inputs.get("kv_layer_weights_at")
+                    if callable(inputs.get("kv_layer_weights_at"))
                     else None
                 ),
                 # The same measurement at any context, so the ladder re-prices the cache instead

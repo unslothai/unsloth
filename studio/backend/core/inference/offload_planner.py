@@ -202,6 +202,10 @@ class PlanOptions:
     # The same half at any (context, slot count): compact SWA storage is per stream, so rung 1
     # shrinks it with the slots and the scalar above goes stale.
     kv_swa_bytes_at: Optional[Callable[[int, int], int]] = None
+    # The per-layer cache RATIOS at any (context, slot count), the same geometry ``kv_bytes_at``
+    # prices. A window layer and a full-context one scale differently, so the reserved vector
+    # mis-splits the cache one request populates; this re-splits it at the live prefix.
+    kv_layer_weights_at: Optional[Callable[[int, int], Sequence[int]]] = None
     overhead_bytes_at: Optional[Callable[[int], int]] = None
     n_ubatch_by_parallel: Mapping[int, int] = field(default_factory = dict)
     draft_bytes: int = 0
@@ -731,6 +735,35 @@ def _fit_fallback_placement(
     else:
         kv_live_total = int(cache_bytes(layout, live_tokens, kv_quantised = quantised) * floor_scale)
 
+    # Where the LIVE cache sits. ``weights`` split the reservation, which is what moving a layer
+    # frees; one request populates a window layer only up to its window but a full-context layer
+    # only up to the live prefix, so its traffic splits by the vector at that prefix. Only for the
+    # estimator branch above, whose total was priced at (live_tokens, 1) on the same geometry.
+    live_weights: list[int] = []
+    if (
+        not kv_on_host
+        and layout.has_swa
+        and weights
+        and opts.kv_bytes_at is not None
+        and opts.kv_layer_weights_at is not None
+    ):
+        live_weights = [max(0, int(w)) for w in opts.kv_layer_weights_at(live_tokens, 1)]
+        if len(live_weights) != layout.n_layers or not any(live_weights):
+            live_weights = []
+    live_shares: list[int] = []
+    running = 0
+    for block in blocks:
+        running += live_weights[block.index] if live_weights else 0
+        live_shares.append(running)
+
+    def kv_live_freed(moved: int) -> int:
+        """Live cache bytes, the decode traffic, the first ``moved`` blocks carry to the host."""
+        if not live_weights:
+            return kv_freed(kv_live_total, moved)
+        if moved <= 0 or live_shares[-1] <= 0:
+            return 0
+        return int(kv_live_total * live_shares[min(moved, len(live_shares)) - 1] / live_shares[-1])
+
     if layout.is_moe:
         # MEASURED, not assumed. On MoE, ``--fit on`` keeps EVERY layer on the device and moves
         # only the trailing layers' expert tensors through the same kind of tensor override the
@@ -760,7 +793,7 @@ def _fit_fallback_placement(
                     groups.append(
                         TensorGroup("recurrent (moved layers)", host_recurrent, Access.CONTIGUOUS)
                     )
-                return Placement(host_groups = groups, kv_host_bytes = kv_freed(kv_live_total, moved))
+                return Placement(host_groups = groups, kv_host_bytes = kv_live_freed(moved))
         return None
 
     # Dense, where the whole-layer model IS what happens: the fitter only lowers n_gpu_layers
@@ -780,7 +813,7 @@ def _fit_fallback_placement(
             groups.append(
                 TensorGroup("recurrent (moved layers)", host_recurrent, Access.CONTIGUOUS)
             )
-        live_kv = kv_freed(kv_live_total, moved)
+        live_kv = kv_live_freed(moved)
         # ``kv_host_bytes``, so this is charged at ``Access.KV_CACHE``'s calibrated 20.1x and not
         # at the contiguous weight rate: a host layer's cache is a host buffer
         # (llama-kv-cache.cpp:214-225), but batch-1 attention over it is a strided GEMV, not the
