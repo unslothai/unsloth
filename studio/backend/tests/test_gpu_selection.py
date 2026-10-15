@@ -1921,7 +1921,6 @@ class TestRouteErrors(unittest.TestCase):
             )
 
         self.assertEqual(response.status, "queued")
-        # A DDP rank needs a full replica per card: resident models go, the pooled estimate is never asked.
         self.assertEqual(seen["keep"][0], False)
         self.assertNotIn("vram_optimizer", seen)
 
