@@ -9252,7 +9252,10 @@ const EditComposer: FC = () => {
   const editEmpty = useAuiState(({ composer }) => composer.isEmpty);
   const messageId = useAuiState(({ message }) => message.id);
   const isRunning = useAuiState(({ thread }) => thread.isRunning);
-  const saveOnly = useChatRuntimeStore((s) => s.editWithoutRunMessageIds.includes(messageId));
+  // Read once at mount: StrictMode's dev-only effect replay runs the cleanup below first.
+  const [saveOnly] = useState(() =>
+    useChatRuntimeStore.getState().editWithoutRunMessageIds.includes(messageId),
+  );
   const incognito = useChatRuntimeStore((s) => s.incognito);
 
   useEffect(

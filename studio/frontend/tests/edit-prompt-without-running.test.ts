@@ -188,8 +188,9 @@ test("each open editor keeps its own save-only mode", () => {
     store,
     /setEditWithoutRun: \(id, on\) =>\s*set\(\(s\) => \{\s*const ids = s\.editWithoutRunMessageIds\.filter\(\(x\) => x !== id\);\s*return \{ editWithoutRunMessageIds: on \? \[\.\.\.ids, id\] : ids \};/,
   );
+  // Captured at mount, so the cleanup StrictMode replays on mount cannot flip Save to Send.
   assert.match(
     component("EditComposer"),
-    /const saveOnly = useChatRuntimeStore\(\(s\) => s\.editWithoutRunMessageIds\.includes\(messageId\)\);/,
+    /const \[saveOnly\] = useState\(\(\) =>\s*useChatRuntimeStore\.getState\(\)\.editWithoutRunMessageIds\.includes\(messageId\),\s*\);/,
   );
 });
