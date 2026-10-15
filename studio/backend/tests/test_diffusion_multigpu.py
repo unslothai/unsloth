@@ -1013,7 +1013,9 @@ def test_mispredicted_branch_is_recomputed_exactly():
     router, _replicas = _router(dit)
     out = loop(5)
     assert torch.equal(out, reference)
-    assert router.stats["predicted_hits"] == 0 and router.stats["predicted_misses"] == mg._MISS_LIMIT
+    assert (
+        router.stats["predicted_hits"] == 0 and router.stats["predicted_misses"] == mg._MISS_LIMIT
+    )
     assert router.stats["replica_calls"] == 4  # still on the replica, just not overlapped
 
 
@@ -1188,7 +1190,9 @@ def test_in_place_edit_after_launch_rejects_the_prediction():
         router, _replicas = _router(dit)
         out = loop(5)
     assert torch.equal(out, reference)
-    assert router.stats["predicted_hits"] == 0 and router.stats["predicted_misses"] == mg._MISS_LIMIT
+    assert (
+        router.stats["predicted_hits"] == 0 and router.stats["predicted_misses"] == mg._MISS_LIMIT
+    )
 
 
 def test_deferred_speed_profile_invalidates_the_replica(monkeypatch):
@@ -1520,9 +1524,7 @@ def test_force_mode_refines_a_resident_plan(monkeypatch):
     monkeypatch.setattr(mg, "secondary_resident_limit_mib", lambda o, mode: 12750)
     monkeypatch.setattr(mg, "best_secondary", lambda selection, probes = None: 1)
     with mg.selection_scope(mg.make_selection(0, [0, 1])):
-        assert (
-            mg.refine_plan_for_multigpu(object(), plan) is plan
-        )
+        assert mg.refine_plan_for_multigpu(object(), plan) is plan
         monkeypatch.setenv(mg.MULTIGPU_ENV, "force")
         refined = mg.refine_plan_for_multigpu(object(), plan)
     assert refined.secondary_ordinal == 1 and refined.offload_policy == dm.OFFLOAD_NONE
@@ -1554,16 +1556,11 @@ def test_ltx25_sidecar_encoder_keeps_the_single_card_plan(monkeypatch):
     assert vid._video_refine_for_multigpu(wan, object(), single) is split and refined == [1]
 
 
-
-
 class _BatchDit(torch.nn.Module):
-
     def __init__(self):
         super().__init__()
         self.proj = torch.nn.Linear(4, 4)
-        self._log = [
-            0
-        ]
+        self._log = [0]
         self.rows = []
 
     @property
@@ -2057,9 +2054,7 @@ def test_cfg_batch_refuses_a_foreign_submodule_hook():
     torch.manual_seed(0)
     dit = _BatchDit()
     seen = []
-    dit.proj.register_forward_hook(
-        lambda m, i, o: seen.append(o.shape[0])
-    )
+    dit.proj.register_forward_hook(lambda m, i, o: seen.append(o.shape[0]))
     cond, uncond = _embeds()
     router = mg.CfgBatchRouter(dit)
     dit.forward = router
@@ -2097,9 +2092,7 @@ def test_cfg_batch_retimes_both_branches_when_guidance_resumes(monkeypatch):
         latents = latents - 0.1 * (u + 4.0 * (c - u))
         if priced:
             break
-    assert (
-        priced and len(priced[0]) == 2 and priced[0][0] == priced[0][1]
-    )
+    assert priced and len(priced[0]) == 2 and priced[0][0] == priced[0][1]
 
 
 def test_cfg_batch_refuses_a_stateful_root_pre_hook():
@@ -2141,9 +2134,7 @@ def test_cfg_batch_accepts_a_studio_root_hook():
 
 def test_cfg_batch_declines_a_pre_existing_outer_forward_layer(monkeypatch):
     class Outer:
-        _unsloth_outer_forward = (
-            True
-        )
+        _unsloth_outer_forward = True
 
         def __init__(self, module):
             self.inner = type(module).forward.__get__(module)
@@ -2163,9 +2154,7 @@ def test_cfg_batch_declines_a_pre_existing_outer_forward_layer(monkeypatch):
     reason = mg.install_cfg_batch(pipe, offload_policy = "none")
     assert reason is not None and "outer forward" in reason
     plain = Pipe()
-    assert (
-        mg.install_cfg_batch(plain, offload_policy = "none") is None
-    )
+    assert mg.install_cfg_batch(plain, offload_policy = "none") is None
 
 
 def test_cfg_batch_output_rebuild_failure_runs_the_branch_plain(monkeypatch):
@@ -2295,9 +2284,7 @@ def test_cfg_batch_refuses_a_mutable_container_argument(make_state):
     state = make_state()
     loop(dit, torch.randn(2, 4), 4, cond, uncond, state)
     assert router.stats["batched_steps"] == 0
-    assert (
-        state[0] if isinstance(state, list) else len(state)
-    ) == 8
+    assert (state[0] if isinstance(state, list) else len(state)) == 8
     assert "mutable" in router.describe()["last_unbatched_reason"]
 
 
@@ -2437,9 +2424,7 @@ def test_cfg_batch_in_place_write_to_an_input_never_reaches_the_caller():
         ):
             self.calls += 1
             out = self.proj(hidden_states) * timestep + encoder_hidden_states.tanh()
-            encoder_hidden_states.mul_(
-                0.5
-            )
+            encoder_hidden_states.mul_(0.5)
             timestep.add_(0.0)
             return (out,)
 
@@ -2461,9 +2446,7 @@ def test_cfg_batch_in_place_write_to_an_input_never_reaches_the_caller():
     c2, u2 = cond.clone(), uncond.clone()
     out = loop(dit, latents.clone(), c2, u2)
     torch.testing.assert_close(out, reference, rtol = 0, atol = 0)
-    assert torch.equal(c2, ref_cond) and torch.equal(
-        u2, ref_uncond
-    )
+    assert torch.equal(c2, ref_cond) and torch.equal(u2, ref_uncond)
     assert "in place" in router.describe()["disabled_reason"]
 
 
@@ -2662,9 +2645,7 @@ def test_cfg_batch_catches_a_forward_that_turns_stateful_later():
             return_dict = False,
         ):
             self.calls += 1
-            if (
-                float(timestep) < 0.5
-            ):
+            if float(timestep) < 0.5:
                 self.seen.add_(1.0)
             return (
                 self.proj(hidden_states) * timestep * (1 + self.seen)
@@ -2691,9 +2672,7 @@ def test_replica_refused_for_hooks_is_retried_once_they_are_gone():
     dit = _Dit()
     router, replicas = _router(dit)
     source = dit.proj
-    handle = dit.proj.register_forward_pre_hook(
-        lambda m, a: source and None
-    )
+    handle = dit.proj.register_forward_pre_hook(lambda m, a: source and None)
     _cfg_loop(dit, torch.randn(2, 4), steps = 2)
     assert replicas == [] and router.describe()["disabled_reason"] is None
     assert router.describe()["blocked_by"] is not None
@@ -2959,9 +2938,7 @@ def test_cfg_batch_prices_each_request_shape_on_its_own(monkeypatch):
     def timed_plain(a, k):
         rows = k["hidden_states"].shape[0]
         timed.append(rows)
-        router.plain_times.append(
-            5.0 if rows == 2 else 1.2
-        )
+        router.plain_times.append(5.0 if rows == 2 else 1.2)
         return router._plain(a, k)
 
     monkeypatch.setattr(router, "_can_time", lambda latent: True)
@@ -3023,9 +3000,7 @@ def test_cfg_parallel_declines_an_unmeasured_link_and_retries_it(monkeypatch):
 def test_probe_does_not_cache_a_failed_link_measurement(monkeypatch):
     mg._reset_probe_cache_for_tests()
     real_empty = torch.empty
-    monkeypatch.setattr(
-        torch, "empty", lambda *a, device = None, **k: real_empty(*a, **k)
-    )
+    monkeypatch.setattr(torch, "empty", lambda *a, device = None, **k: real_empty(*a, **k))
     monkeypatch.setattr(torch.cuda, "can_device_access_peer", lambda a, b: True)
     results = iter([RuntimeError("busy"), RuntimeError("busy"), 20.0, 21.0])
 
@@ -3196,6 +3171,7 @@ def test_cfg_parallel_replica_builds_under_studios_step_skip_layer():
     assert router.blocked_by is None and router.disabled_reason is None
     assert len(replicas) == 1 and router.stats["replica_calls"] > 0
     assert "forward" not in replicas[0].__dict__
+
     class Foreign:
         _unsloth_outer_forward = True
 
@@ -3259,12 +3235,22 @@ def test_cfg_parallel_replica_card_hosting_the_vae_keeps_decode_room(monkeypatch
     assert router._room_mib(1) == 8000
     router.secondary = torch.device("cuda", 2)
     assert router._room_mib(1) == 2000
-    plan = type("P", (), {"estimates": {"calibrated_denoise_mib": 3000, "calibrated_decode_mib": 7000}})()
+    plan = type(
+        "P", (), {"estimates": {"calibrated_denoise_mib": 3000, "calibrated_decode_mib": 7000}}
+    )()
     assert mg.plan_decode_headroom_mib(plan) == 7000
-    assert mg.plan_decode_headroom_mib(type("P", (), {"estimates": {"runtime_headroom_mib": 9000}})()) is None
+    assert (
+        mg.plan_decode_headroom_mib(type("P", (), {"estimates": {"runtime_headroom_mib": 9000}})())
+        is None
+    )
 
 
-def _priced_router(dit, monkeypatch, branch_s = 1.0, link = 1.0):
+def _priced_router(
+    dit,
+    monkeypatch,
+    branch_s = 1.0,
+    link = 1.0,
+):
     router, replicas = _router(dit)
     monkeypatch.setattr(router, "_should_price", lambda: True)
     monkeypatch.setattr(
@@ -3352,7 +3338,9 @@ def _on_cards(monkeypatch, placement):
     monkeypatch.setattr(
         mg,
         "_module_device",
-        lambda m: torch.device("cuda", placement[id(m)]) if id(m) in placement else torch.device("cpu"),
+        lambda m: torch.device("cuda", placement[id(m)])
+        if id(m) in placement
+        else torch.device("cpu"),
     )
 
 
@@ -3361,7 +3349,9 @@ def test_cfg_parallel_long_clip_on_the_vae_card_uses_the_request_decode(monkeypa
     pipe = _RouterPipe(dit)
     pipe.vae = torch.nn.Linear(2, 2)
     _on_cards(monkeypatch, {id(pipe.vae): 1})
-    router = mg.CfgParallelRouter(dit, primary = "cuda:0", secondary = "cuda:1", headroom_mib = 4000, vae_ordinal = 1)
+    router = mg.CfgParallelRouter(
+        dit, primary = "cuda:0", secondary = "cuda:1", headroom_mib = 4000, vae_ordinal = 1
+    )
     dit.forward = router
     monkeypatch.setattr(mg, "_free_total_mib", lambda ordinal: (8000, 80000))
     latent = torch.randn(1, 4)
@@ -3413,7 +3403,9 @@ def test_cfg_parallel_replica_on_a_text_encoder_card_keeps_encode_room(monkeypat
     assert router._room_mib(1) == 7000
     router.secondary = torch.device("cuda", 2)
     assert router._room_mib(1) == 1500
-    plan = type("P", (), {"estimates": {"calibrated_denoise_mib": 900, "calibrated_encode_mib": 2200}})()
+    plan = type(
+        "P", (), {"estimates": {"calibrated_denoise_mib": 900, "calibrated_encode_mib": 2200}}
+    )()
     assert mg.plan_encode_headroom_mib(plan) == 2200
 
 
@@ -3422,7 +3414,11 @@ def test_cfg_routers_count_qwen_image_reference_tokens(monkeypatch):
 
     cal = dm.calibrated_image_activation("qwen-image-2.1")
     refs = 2 * 1024 * 1024
-    state = type("S", (), {"calibrated_placement": True, "variant_hint": "qwen-image-2.1", "te_releaser": None})()
+    state = type(
+        "S",
+        (),
+        {"calibrated_placement": True, "variant_hint": "qwen-image-2.1", "te_releaser": None},
+    )()
     fam = type("F", (), {"name": "qwen-image-2.1"})()
     monkeypatch.setattr(diffusion_mod, "_calibrated_activation", lambda f, t: cal)
     dit = _BatchDit()
@@ -3437,7 +3433,10 @@ def test_cfg_routers_count_qwen_image_reference_tokens(monkeypatch):
         assert needs.cfg_batch_denoise_mib == int(cal.denoise_mib * 6)
         assert batch.needed_mib(1) == int(cal.denoise_mib * 6)
     parallel = mg.CfgParallelRouter(
-        _BatchDit(), primary = "cuda:0", secondary = "cuda:1", headroom_mib = cal.denoise_mib,
+        _BatchDit(),
+        primary = "cuda:0",
+        secondary = "cuda:1",
+        headroom_mib = cal.denoise_mib,
         headroom_reference_px = 1024 * 1024,
     )
     parallel.begin_request(1024, 1024, needs = needs)
@@ -3452,21 +3451,34 @@ def test_cfg_routers_fall_back_to_scaling_the_load_figure_without_a_request_figu
     with mg.cfg_request_scope(pipe, 2048, 2048):
         assert batch.needed_mib(2) == 1000 * 4 * 2 * 2
     parallel = mg.CfgParallelRouter(
-        _BatchDit(), primary = "cuda:0", secondary = "cuda:1", headroom_mib = 1000,
-        headroom_reference_px = 1024 * 1024, decode_headroom_mib = 3000, vae_ordinal = 1,
+        _BatchDit(),
+        primary = "cuda:0",
+        secondary = "cuda:1",
+        headroom_mib = 1000,
+        headroom_reference_px = 1024 * 1024,
+        decode_headroom_mib = 3000,
+        vae_ordinal = 1,
     )
     parallel.begin_request(2048, 2048)
     assert parallel._room_mib(1) == 3000 * 4
 
 
-def _cfg_needs_fixture(monkeypatch, calibrated_placement = True, releaser = None):
+def _cfg_needs_fixture(
+    monkeypatch,
+    calibrated_placement = True,
+    releaser = None,
+):
     from core.inference import diffusion as diffusion_mod
 
     cal = dm.calibrated_image_activation("flux.2-klein")
     state = type(
         "S",
         (),
-        {"calibrated_placement": calibrated_placement, "variant_hint": "flux.2-klein", "te_releaser": releaser},
+        {
+            "calibrated_placement": calibrated_placement,
+            "variant_hint": "flux.2-klein",
+            "te_releaser": releaser,
+        },
     )()
     fam = type("F", (), {"name": "flux.2-klein"})()
     monkeypatch.setattr(diffusion_mod, "_calibrated_activation", lambda f, t: cal)
@@ -3477,7 +3489,13 @@ def _cfg_needs_fixture(monkeypatch, calibrated_placement = True, releaser = None
 
 def test_cfg_request_needs_use_the_real_chunk_batch(monkeypatch):
     diffusion_mod, cal, state, fam, pipe = _cfg_needs_fixture(monkeypatch)
-    inputs = {"target": None, "width": 1024, "height": 1024, "condition_pixels": 0, "controlnet": False}
+    inputs = {
+        "target": None,
+        "width": 1024,
+        "height": 1024,
+        "condition_pixels": 0,
+        "controlnet": False,
+    }
     one = diffusion_mod._chunk_cfg_needs(state, fam, pipe, inputs, [("p", 1)])
     four = diffusion_mod._chunk_cfg_needs(state, fam, pipe, inputs, [("p", s) for s in range(4)])
     assert one.denoise_mib == int(cal.denoise_mib) and four.denoise_mib == int(cal.denoise_mib * 4)
@@ -3487,20 +3505,35 @@ def test_cfg_request_needs_use_the_real_chunk_batch(monkeypatch):
 def test_cfg_request_needs_include_the_controlnet_canvas(monkeypatch):
     diffusion_mod, cal, state, fam, pipe = _cfg_needs_fixture(monkeypatch)
     needs = diffusion_mod._cfg_request_needs(
-        state, fam, pipe, None, width = 1024, height = 1024, batch_size = 1, condition_pixels = 0, controlnet = True
+        state,
+        fam,
+        pipe,
+        None,
+        width = 1024,
+        height = 1024,
+        batch_size = 1,
+        condition_pixels = 0,
+        controlnet = True,
     )
     assert needs.denoise_mib == int(cal.denoise_mib * 2)
-    assert dm.guard_condition_pixels(
-        width = 1024, height = 1024, condition_pixels = 0, calibrated_placement = True, controlnet = True
-    ) == 1024 * 1024
+    assert (
+        dm.guard_condition_pixels(
+            width = 1024, height = 1024, condition_pixels = 0, calibrated_placement = True, controlnet = True
+        )
+        == 1024 * 1024
+    )
 
 
 def test_cfg_request_needs_read_the_vae_live_tiling_state(monkeypatch):
     diffusion_mod, cal, state, fam, pipe = _cfg_needs_fixture(monkeypatch)
     kwargs = dict(width = 1024, height = 1024, batch_size = 1, condition_pixels = 0)
-    assert diffusion_mod._cfg_request_needs(state, fam, pipe, None, **kwargs).decode_mib == int(cal.decode_mib)
+    assert diffusion_mod._cfg_request_needs(state, fam, pipe, None, **kwargs).decode_mib == int(
+        cal.decode_mib
+    )
     pipe.vae.use_tiling = True
-    assert diffusion_mod._cfg_request_needs(state, fam, pipe, None, **kwargs).decode_mib == int(cal.tiled_decode_mib)
+    assert diffusion_mod._cfg_request_needs(state, fam, pipe, None, **kwargs).decode_mib == int(
+        cal.tiled_decode_mib
+    )
 
 
 def test_cfg_request_needs_keep_released_encoder_bytes(monkeypatch):
@@ -3519,7 +3552,11 @@ def test_cfg_request_needs_keep_released_encoder_bytes(monkeypatch):
 
 
 _CAL = dm.CalibratedImageActivation(
-    text_encoder_mib = 1000, denoise_mib = 2000, decode_mib = 4000, tiled_decode_mib = 500, max_canvas_mib = 9000
+    text_encoder_mib = 1000,
+    denoise_mib = 2000,
+    decode_mib = 4000,
+    tiled_decode_mib = 500,
+    max_canvas_mib = 9000,
 )
 
 
@@ -3535,7 +3572,9 @@ _CAL = dm.CalibratedImageActivation(
         (2, None, False, False, (2000, 4000, 8000)),
     ],
 )
-def test_image_request_phase_mib_scales_each_phase_by_its_own_batch(images, prompts, tiled, sliced, expected):
+def test_image_request_phase_mib_scales_each_phase_by_its_own_batch(
+    images, prompts, tiled, sliced, expected
+):
     got = dm.image_request_phase_mib(
         width = 1024,
         height = 1024,
@@ -3550,7 +3589,9 @@ def test_image_request_phase_mib_scales_each_phase_by_its_own_batch(images, prom
 
 @pytest.mark.parametrize("images", [1, 3])
 def test_image_request_phase_mib_uncalibrated_charges_the_guard_estimate(images):
-    whole = dm.estimate_image_runtime_mib(width = 1024, height = 1024, batch_size = images, family = "flux.1")
+    whole = dm.estimate_image_runtime_mib(
+        width = 1024, height = 1024, batch_size = images, family = "flux.1"
+    )
     got = dm.image_request_phase_mib(
         width = 1024, height = 1024, batch_size = images, prompts = 1, family = "flux.1", sliced = True
     )
@@ -3559,15 +3600,25 @@ def test_image_request_phase_mib_uncalibrated_charges_the_guard_estimate(images)
 
 def test_cfg_chunk_needs_encode_distinct_prompts_as_a_batch(monkeypatch):
     diffusion_mod, cal, state, fam, pipe = _cfg_needs_fixture(monkeypatch)
-    inputs = {"target": None, "width": 1024, "height": 1024, "condition_pixels": 0, "controlnet": False}
-    shared = diffusion_mod._chunk_cfg_needs(state, fam, pipe, inputs, [("cat", s) for s in range(4)])
-    mixed = diffusion_mod._chunk_cfg_needs(state, fam, pipe, inputs, [(f"p{s}", s) for s in range(4)])
+    inputs = {
+        "target": None,
+        "width": 1024,
+        "height": 1024,
+        "condition_pixels": 0,
+        "controlnet": False,
+    }
+    shared = diffusion_mod._chunk_cfg_needs(
+        state, fam, pipe, inputs, [("cat", s) for s in range(4)]
+    )
+    mixed = diffusion_mod._chunk_cfg_needs(
+        state, fam, pipe, inputs, [(f"p{s}", s) for s in range(4)]
+    )
     assert shared.encode_mib == int(cal.text_encoder_mib)
     assert mixed.encode_mib == int(cal.text_encoder_mib * 4)
     pipe.vae.use_slicing = True
-    assert diffusion_mod._chunk_cfg_needs(state, fam, pipe, inputs, [("cat", 0)] * 4).decode_mib == int(
-        cal.decode_mib
-    )
+    assert diffusion_mod._chunk_cfg_needs(
+        state, fam, pipe, inputs, [("cat", 0)] * 4
+    ).decode_mib == int(cal.decode_mib)
 
 
 def _built_replica_router(monkeypatch, free_mib):
@@ -3604,7 +3655,9 @@ def test_retained_replica_is_evicted_before_a_decode_that_would_not_fit(monkeypa
         mg.release_cfg_inputs(pipe)
         assert router.replica is None
     dit2, pipe2, router2 = _built_replica_router(monkeypatch, 10)
-    with mg.cfg_request_scope(pipe2, 512, 512, 4, mg.PhaseNeeds(denoise_mib = 1, decode_mib = 9000, decode_ordinal = 0)):
+    with mg.cfg_request_scope(
+        pipe2, 512, 512, 4, mg.PhaseNeeds(denoise_mib = 1, decode_mib = 9000, decode_ordinal = 0)
+    ):
         mg.release_cfg_inputs(pipe2)
     assert router2.replica is not None
 
@@ -3613,7 +3666,13 @@ def test_foreign_root_pre_hook_writing_module_state_blocks_the_replica():
     torch.manual_seed(0)
 
     class ScaledDit(_BatchDit):
-        def forward(self, hidden_states, timestep, encoder_hidden_states, return_dict = False):
+        def forward(
+            self,
+            hidden_states,
+            timestep,
+            encoder_hidden_states,
+            return_dict = False,
+        ):
             out = super().forward(hidden_states, timestep, encoder_hidden_states, return_dict)
             return (out[0] * self.gain,)
 
@@ -3672,7 +3731,9 @@ def test_text_encoder_only_split_prices_the_calibrated_encode():
         "text_encoder": (11000, "text_encoder"),
         "vae": (1400, "other"),
     }
-    kw = dict(headroom_mib = 4000, overhead_mib = 1000, primary_limit_mib = 16000, secondary_limit_mib = 13500)
+    kw = dict(
+        headroom_mib = 4000, overhead_mib = 1000, primary_limit_mib = 16000, secondary_limit_mib = 13500
+    )
     assert mg.choose_component_assignment(sizes, **kw) == ("text_encoder",)
     assert mg.choose_component_assignment(sizes, encode_headroom_mib = 2200, **kw) is None
 
@@ -3682,13 +3743,20 @@ def test_refine_passes_the_plans_calibrated_encode(monkeypatch):
 
     plan = _plan()
     plan = _dc.replace(
-        plan, estimates = {**plan.estimates, "calibrated_denoise_mib": 900, "calibrated_encode_mib": 2200}
+        plan,
+        estimates = {**plan.estimates, "calibrated_denoise_mib": 900, "calibrated_encode_mib": 2200},
     )
     seen = []
-    monkeypatch.setattr(dm, "_loaded_component_mib", lambda pipe: {"transformer": (9000, "dit"), "text_encoder": (8000, "text_encoder")})
+    monkeypatch.setattr(
+        dm,
+        "_loaded_component_mib",
+        lambda pipe: {"transformer": (9000, "dit"), "text_encoder": (8000, "text_encoder")},
+    )
     monkeypatch.setattr(mg, "secondary_resident_limit_mib", lambda o, mode: 12000)
     monkeypatch.setattr(mg, "best_secondary", lambda selection, probes = None: 1)
-    monkeypatch.setattr(mg, "choose_component_assignment", lambda sizes, **k: seen.append(k) or None)
+    monkeypatch.setattr(
+        mg, "choose_component_assignment", lambda sizes, **k: seen.append(k) or None
+    )
     with mg.selection_scope(mg.MultiGpuSelection(primary = 0, secondaries = (1,))):
         mg.refine_plan_for_multigpu(object(), plan)
     assert seen and seen[0]["encode_headroom_mib"] == 2200
@@ -3714,14 +3782,19 @@ def test_cfg_parallel_rebuild_after_eviction_rechecks_amortisation(monkeypatch):
 
 
 class _CountingDit(_BatchDit):
-
     def __init__(self, fail = None):
         super().__init__()
         self.register_buffer("table", torch.zeros(64))
         self.register_buffer("counter", torch.zeros(1))
         self.fail = fail
 
-    def forward(self, hidden_states, timestep, encoder_hidden_states, return_dict = False):
+    def forward(
+        self,
+        hidden_states,
+        timestep,
+        encoder_hidden_states,
+        return_dict = False,
+    ):
         self.counter += 1
         if hidden_states.shape[0] > 2 and self.fail == "oom":
             raise torch.OutOfMemoryError("CUDA out of memory. Tried to allocate 2.00 GiB")
@@ -3746,15 +3819,24 @@ def test_cfg_batch_every_exit_restores_the_buffers_it_changed(fail):
 
 
 class _QuantStyleDit(_BatchDit):
-
-    def __init__(self, write_table = False, late_write = False):
+    def __init__(
+        self,
+        write_table = False,
+        late_write = False,
+    ):
         super().__init__()
         self.register_buffer("weight_q", torch.ones(64))
         self.register_buffer("table", torch.zeros(64))
         self.write_table = write_table
         self.late_write = late_write
 
-    def forward(self, hidden_states, timestep, encoder_hidden_states, return_dict = False):
+    def forward(
+        self,
+        hidden_states,
+        timestep,
+        encoder_hidden_states,
+        return_dict = False,
+    ):
         if self.write_table or (self.late_write and float(timestep) < 0.5):
             self.table.add_(1.0)
         out = super().forward(hidden_states, timestep, encoder_hidden_states, return_dict)[0]
@@ -3786,12 +3868,18 @@ def test_cfg_batch_refuses_a_large_buffer_the_forward_writes(monkeypatch):
     torch.testing.assert_close(out, reference, rtol = 1e-6, atol = 1e-6)
     assert float(dit.table[0]) == float(plain.table[0]) == 8.0
     assert router.stats["batched_steps"] == 0
-    assert "table" in router.describe()["disabled_reason"] and router.describe()["disabled_for_shape_only"]
+    assert (
+        "table" in router.describe()["disabled_reason"]
+        and router.describe()["disabled_for_shape_only"]
+    )
 
 
 def test_cfg_batch_unseen_write_during_a_batched_call_disables_the_load(monkeypatch):
     plain, dit, router, reference, out = _quant_run(monkeypatch, late_write = True)
-    assert router.disabled_reason is not None and "no plain call was seen writing" in router.disabled_reason
+    assert (
+        router.disabled_reason is not None
+        and "no plain call was seen writing" in router.disabled_reason
+    )
     assert not router.describe()["disabled_for_shape_only"]
     assert "table" in router.state_watch.written
     batched = router.stats["batched_steps"]
@@ -4013,13 +4101,22 @@ def test_replica_failures_dispatch_on_type_only(exc, outcome, reason):
 
 @pytest.mark.parametrize(
     "site",
-    ["root_override", "unknown_wrapper", "no_inner_link", "stg_adapter", "no_compile_record", "fingerprint"],
+    [
+        "root_override",
+        "unknown_wrapper",
+        "no_inner_link",
+        "stg_adapter",
+        "no_compile_record",
+        "fingerprint",
+    ],
 )
 def test_every_structural_replica_raise_site_disables_the_load(monkeypatch, site):
     dit = _BatchDit()
     router, _ = _router(dit)
     if site == "fingerprint":
-        monkeypatch.setattr(mg, "weights_fingerprint", lambda m: (_ for _ in ()).throw(RuntimeError("no view")))
+        monkeypatch.setattr(
+            mg, "weights_fingerprint", lambda m: (_ for _ in ()).throw(RuntimeError("no view"))
+        )
     else:
         router.replica_factory = lambda: (_ for _ in ()).throw(mg.ReplicaStructural(site))
     router._build_replica()
@@ -4060,7 +4157,9 @@ def test_replica_paths_raise_only_typed_failures():
                 and getattr(n.func, "attr", None) == "disable"
                 and scope.name not in ("_replica_failure", "disable")
             ):
-                bad.append(f"{scope.name}:{n.lineno} disables directly (route it through _replica_failure)")
+                bad.append(
+                    f"{scope.name}:{n.lineno} disables directly (route it through _replica_failure)"
+                )
     assert bad == []
 
 
@@ -4092,7 +4191,9 @@ def test_wrapped_and_backend_oom_decline_only_the_shape(make):
     dit = _BatchDit()
     router, _ = _router(dit)
     router._replica_failure("call", make())
-    assert router.disabled_reason is None and "out of memory" in router.describe()["disabled_reason"]
+    assert (
+        router.disabled_reason is None and "out of memory" in router.describe()["disabled_reason"]
+    )
 
 
 def test_cfg_batch_wrapped_oom_on_the_batched_call_declines_only_the_shape():
@@ -4157,13 +4258,23 @@ def test_install_fit_counts_the_secondarys_idle_allocator_cache(monkeypatch):
 
     pipe = Pipe()
     monkeypatch.setattr(mg, "_free_total_mib", lambda ordinal: ({0: 20000, 1: 600}[ordinal], 16000))
-    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda device = None: (4000 << 20) if torch.device(device).index == 1 else 0)
-    monkeypatch.setattr(torch.cuda, "memory_allocated", lambda device = None: (1000 << 20) if torch.device(device).index == 1 else 0)
+    monkeypatch.setattr(
+        torch.cuda,
+        "memory_reserved",
+        lambda device = None: (4000 << 20) if torch.device(device).index == 1 else 0,
+    )
+    monkeypatch.setattr(
+        torch.cuda,
+        "memory_allocated",
+        lambda device = None: (1000 << 20) if torch.device(device).index == 1 else 0,
+    )
     monkeypatch.setattr(mg, "cfg_parallel_decline", lambda pipe, **k: None)
     monkeypatch.setattr(mg, "_module_device", lambda m: torch.device("cuda", 0))
     monkeypatch.setattr(torch.cuda, "get_device_name", lambda o: "card")
     monkeypatch.setattr(mg, "_PAIR_PROBE", {(0, 1): (True, 20.0), (1, 0): (True, 20.0)})
-    monkeypatch.setattr(mg, "_STATIC_PROBE", {0: {"name": "card", "h2d": 10.0}, 1: {"name": "card", "h2d": 10.0}})
+    monkeypatch.setattr(
+        mg, "_STATIC_PROBE", {0: {"name": "card", "h2d": 10.0}, 1: {"name": "card", "h2d": 10.0}}
+    )
     monkeypatch.delenv(mg.LINK_ENV, raising = False)
     with mg.selection_scope(mg.MultiGpuSelection(primary = 0, secondaries = (1,))):
         reason = mg._install_cfg_parallel_only(pipe, offload_policy = "none")
@@ -4176,14 +4287,25 @@ def test_free_memory_is_read_through_one_helper():
     from pathlib import Path
 
     tree = ast.parse(Path(mg.__file__).read_text())
-    allowed = {"_free_total_mib": {"trusted_mem_get_info"}, "usable_free_mib": {"memory_reserved", "memory_allocated", "_free_total_mib"}}
-    watched = {"mem_get_info", "trusted_mem_get_info", "memory_reserved", "memory_allocated", "_free_total_mib"}
+    allowed = {
+        "_free_total_mib": {"trusted_mem_get_info"},
+        "usable_free_mib": {"memory_reserved", "memory_allocated", "_free_total_mib"},
+    }
+    watched = {
+        "mem_get_info",
+        "trusted_mem_get_info",
+        "memory_reserved",
+        "memory_allocated",
+        "_free_total_mib",
+    }
     bad = []
 
     def visit(node, owner):
         for child in ast.iter_child_nodes(node):
             name = owner
-            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)) and isinstance(node, ast.Module):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)) and isinstance(
+                node, ast.Module
+            ):
                 name = child.name
             if isinstance(child, ast.Call):
                 called = getattr(child.func, "attr", None) or getattr(child.func, "id", None)
@@ -4234,6 +4356,7 @@ def test_every_replica_card_choice_goes_through_select_replica_card(monkeypatch)
         1: _probe(1, 9000, {0: 20.0}),
         2: _probe(2, 9000, {0: 2.0}),
     }
+
     class Pipe:
         transformer = _Dit()
 
@@ -4249,7 +4372,11 @@ def test_every_replica_card_choice_goes_through_select_replica_card(monkeypatch)
     assert len(calls) == 2
     monkeypatch.setattr(router, "_secondary_free_mib", lambda: 10)
     router._build_replica()
-    assert len(calls) == 3 and router.replica is None and "lacks room" in router.describe()["disabled_reason"]
+    assert (
+        len(calls) == 3
+        and router.replica is None
+        and "lacks room" in router.describe()["disabled_reason"]
+    )
 
 
 def test_calibrated_denoise_room_keeps_the_guards_floor():
@@ -4260,7 +4387,9 @@ def test_calibrated_denoise_room_keeps_the_guards_floor():
 
 def test_guard_and_phase_figures_share_one_pixel_curve(monkeypatch):
     monkeypatch.setattr(dm, "guard_pixel_scale", lambda target, cond = 0, batch = 1: 3.0)
-    assert dm.image_request_phase_mib(width = 512, height = 512, calibrated = _CAL)[1] == int(_CAL.denoise_mib * 3.0)
+    assert dm.image_request_phase_mib(width = 512, height = 512, calibrated = _CAL)[1] == int(
+        _CAL.denoise_mib * 3.0
+    )
     assert dm.estimate_image_runtime_mib(width = 512, height = 512) == int(8192 * 3.0)
 
 
@@ -4277,7 +4406,12 @@ def test_cfg_parallel_price_charges_the_input_copy_outside_the_overlap():
     assert price["strategy"] == "single"
     assert price["in_copy_s"] == 0.9 and price["out_copy_s"] == 0.0
     out_only = mg.price_cfg_parallel(
-        branch_s = 1.0, primary_s = 2.0, in_bytes = 0, out_bytes = int(0.9 * (1 << 30)), link_in_gib_s = 1.0, link_out_gib_s = 1.0
+        branch_s = 1.0,
+        primary_s = 2.0,
+        in_bytes = 0,
+        out_bytes = int(0.9 * (1 << 30)),
+        link_in_gib_s = 1.0,
+        link_out_gib_s = 1.0,
     )
     assert out_only["cfg_parallel_step_s"] == 2.0
 
@@ -4307,17 +4441,24 @@ def test_generate_guard_block_fails_open_without_unbound_names():
             if not direct:
                 continue
             assigned = {
-                n.id for b in node.body for n in ast.walk(b) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store)
+                n.id
+                for b in node.body
+                for n in ast.walk(b)
+                if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store)
             }
             before = {
                 n.id
                 for n in ast.walk(fn)
-                if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store) and n.lineno < node.lineno
+                if isinstance(n, ast.Name)
+                and isinstance(n.ctx, ast.Store)
+                and n.lineno < node.lineno
             }
             later = {
                 n.id
                 for n in ast.walk(fn)
-                if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load) and n.lineno > node.end_lineno
+                if isinstance(n, ast.Name)
+                and isinstance(n.ctx, ast.Load)
+                and n.lineno > node.end_lineno
             }
             found.append(sorted((assigned & later) - before))
     assert found and all(unbound == [] for unbound in found), found
@@ -4333,7 +4474,9 @@ def test_cfg_parallel_prefetch_copies_exactly_the_priced_inputs(monkeypatch):
     assert router.template is not None
     latent = torch.randn(2, 4)
     t = torch.tensor(0.5)
-    router.b0_leaves = dict(mg._leaves(((), {"hidden_states": latent, "timestep": t, "encoder_hidden_states": cond})))
+    router.b0_leaves = dict(
+        mg._leaves(((), {"hidden_states": latent, "timestep": t, "encoder_hidden_states": cond}))
+    )
     predicted = router._predict(latent)
     assert predicted is not None
     router.secondary = torch.device("meta")
@@ -4428,6 +4571,7 @@ class _FakeEvent:
 
 def _fake_cuda(monkeypatch, log):
     import types
+
     current = {"stream": "main"}
     side, main = _FakeStream("side", log), _FakeStream("main", log)
 
@@ -4465,7 +4609,12 @@ def test_return_copy_stream_and_price_come_from_one_flag(monkeypatch, overlaps):
     result = router._return_copy(out)
     assert mg._consume_return(result, router.primary) is out
     price = mg.price_cfg_parallel(
-        branch_s = 1.0, primary_s = 2.0, in_bytes = 0, out_bytes = int(1.5 * (1 << 30)), link_in_gib_s = 1.0, link_out_gib_s = 1.0
+        branch_s = 1.0,
+        primary_s = 2.0,
+        in_bytes = 0,
+        out_bytes = int(1.5 * (1 << 30)),
+        link_in_gib_s = 1.0,
+        link_out_gib_s = 1.0,
     )
     if overlaps:
         assert log == [("copy", "side"), ("record", "side"), ("wait", "main", "side")]
@@ -4477,6 +4626,7 @@ def test_return_copy_stream_and_price_come_from_one_flag(monkeypatch, overlaps):
 
 def test_router_paths_issue_the_return_copy_through_one_helper():
     import inspect
+
     src = inspect.getsource(mg.CfgParallelRouter)
     assert src.count("self._return_copy(replica(") == 2
     assert src.count("_consume_return(out, self.primary)") == 2
@@ -4508,7 +4658,9 @@ def test_interpreter_exit_waits_for_a_running_replica_job():
     )
     env = dict(os.environ, CUDA_VISIBLE_DEVICES = "", OMP_NUM_THREADS = "2")
     for _ in range(3):
-        done = subprocess.run([sys.executable, "-c", script], env = env, capture_output = True, timeout = 120)
+        done = subprocess.run(
+            [sys.executable, "-c", script], env = env, capture_output = True, timeout = 120
+        )
         assert done.returncode == 0, done.stderr.decode()[-500:]
 
 
@@ -4645,12 +4797,18 @@ def test_cfg_batch_transient_oom_backs_off_after_consecutive_requests():
 
 
 @pytest.mark.parametrize("router_kind", ["parallel", "batch"])
-@pytest.mark.parametrize("kind, cleared", [("room", True), ("short", True), ("transient", True), ("sticky", False)])
+@pytest.mark.parametrize(
+    "kind, cleared", [("room", True), ("short", True), ("transient", True), ("sticky", False)]
+)
 def test_both_routers_share_one_typed_shape_verdict(router_kind, kind, cleared):
     dit = _BatchDit()
     router = _router(dit)[0] if router_kind == "parallel" else mg.CfgBatchRouter(dit)
     assert isinstance(router, mg._ShapeVerdicts)
-    reason = "short render: worded like a per-request verdict" if kind == "sticky" else "a reason worded anew"
+    reason = (
+        "short render: worded like a per-request verdict"
+        if kind == "sticky"
+        else "a reason worded anew"
+    )
     router._shape_off(reason, kind)
     router.shapes.switch(router, "a")
     router.shapes.switch(router, "b")
@@ -4675,17 +4833,26 @@ def test_every_per_shape_disable_in_the_module_goes_through_the_typed_verdict():
         if isinstance(node, ast.Assign):
             for t in node.targets:
                 named = (isinstance(t, ast.Attribute) and t.attr == "shape_disabled") or (
-                    isinstance(t, ast.Subscript) and isinstance(t.slice, ast.Constant) and t.slice.value == "shape_disabled"
+                    isinstance(t, ast.Subscript)
+                    and isinstance(t.slice, ast.Constant)
+                    and t.slice.value == "shape_disabled"
                 )
-                if named and not (isinstance(node.value, ast.Constant) and node.value.value is None):
+                if named and not (
+                    isinstance(node.value, ast.Constant) and node.value.value is None
+                ):
                     stores.append((owners.get(id(node)), ast.unparse(node)))
-        if isinstance(node, ast.Call) and getattr(node.func, "attr", None) in ("_shape_off", "_disable_shape"):
+        if isinstance(node, ast.Call) and getattr(node.func, "attr", None) in (
+            "_shape_off",
+            "_disable_shape",
+        ):
             assert len(node.args) + len(node.keywords) == 2, ast.unparse(node)
         if isinstance(node, ast.Call) and getattr(node.func, "attr", None) == "startswith":
             assert "shape_disabled" not in ast.unparse(node), ast.unparse(node)
         if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "setattr":
             assert "shape_disabled" not in ast.unparse(node.args[1]) if len(node.args) > 1 else True
-    assert stores == [(("_ShapeVerdicts", "_shape_off"), "self.shape_disabled = _ShapeOff(reason, kind)")], stores
+    assert stores == [
+        (("_ShapeVerdicts", "_shape_off"), "self.shape_disabled = _ShapeOff(reason, kind)")
+    ], stores
     for name in ("CfgParallelRouter", "CfgBatchRouter"):
         cls = getattr(mg, name)
         assert issubclass(cls, mg._ShapeVerdicts) and "_shape_off" not in vars(cls)
@@ -4732,7 +4899,9 @@ def test_out_of_memory_while_verifying_batched_inputs_is_transient(monkeypatch):
     router.end_request()
     torch.testing.assert_close(out, reference, rtol = 0, atol = 0)
     assert router.disabled_reason is None
-    assert mg._off_kind(router.shape_disabled) == "transient" and "verifying" in router.shape_disabled
+    assert (
+        mg._off_kind(router.shape_disabled) == "transient" and "verifying" in router.shape_disabled
+    )
     state["oom"] = False
     router.begin_request(steps = 4)
     before = router.stats["batched_steps"]
@@ -4765,7 +4934,6 @@ def test_any_out_of_memory_in_the_speculative_batch_is_transient(monkeypatch, si
     assert mg._off_kind(router.shape_disabled) == "transient"
 
 
-
 def _gate_router(monkeypatch, free_mib, needs):
     dit = _BatchDit()
     router = mg.CfgBatchRouter(dit, headroom_mib = 1000, headroom_reference_px = 1024 * 1024)
@@ -4788,19 +4956,33 @@ def test_cfg_batch_gate_uses_the_guard_curve_for_the_doubled_batch(monkeypatch):
     from core.inference import diffusion as diffusion_mod
 
     cal = dm.calibrated_image_activation("qwen-image-2.1")
-    state = type("S", (), {"calibrated_placement": True, "variant_hint": "qwen-image-2.1", "te_releaser": None})()
+    state = type(
+        "S",
+        (),
+        {"calibrated_placement": True, "variant_hint": "qwen-image-2.1", "te_releaser": None},
+    )()
     fam = type("F", (), {"name": "qwen-image-2.1"})()
     monkeypatch.setattr(diffusion_mod, "_calibrated_activation", lambda f, t: cal)
     needs = diffusion_mod._cfg_request_needs(
-        state, fam, _RouterPipe(_BatchDit()), None, width = 256, height = 256, batch_size = 1, condition_pixels = 0
+        state,
+        fam,
+        _RouterPipe(_BatchDit()),
+        None,
+        width = 256,
+        height = 256,
+        batch_size = 1,
+        condition_pixels = 0,
     )
-    assert needs.cfg_batch_denoise_mib == int(cal.denoise_mib * dm.guard_pixel_scale(256 * 256, 0, 2))
+    assert needs.cfg_batch_denoise_mib == int(
+        cal.denoise_mib * dm.guard_pixel_scale(256 * 256, 0, 2)
+    )
     router = _gate_router(monkeypatch, 0, needs)
     assert router.needed_mib(1) == needs.cfg_batch_denoise_mib
 
 
 def test_cfg_video_needs_carry_the_doubled_batch_figure():
     from core.inference import video as video_mod
-
-    needs = video_mod._cfg_video_request_needs(_RouterPipe(_BatchDit()), {"width": 832, "height": 480, "frames": 33})
+    needs = video_mod._cfg_video_request_needs(
+        _RouterPipe(_BatchDit()), {"width": 832, "height": 480, "frames": 33}
+    )
     assert needs.cfg_batch_denoise_mib == 2 * needs.denoise_mib

@@ -272,7 +272,9 @@ def usable_free_mib(ordinal: Optional[int]) -> tuple[Optional[int], Optional[int
         import torch
 
         device = torch.device("cuda", int(ordinal))
-        idle = (torch.cuda.memory_reserved(device) - torch.cuda.memory_allocated(device)) // (1 << 20)
+        idle = (torch.cuda.memory_reserved(device) - torch.cuda.memory_allocated(device)) // (
+            1 << 20
+        )
         free += max(0, int(idle))
     except Exception:  # noqa: BLE001 - the driver figure alone (conservative)
         pass
@@ -603,7 +605,6 @@ def is_out_of_memory(exc: BaseException) -> bool:
     backends (``OutOfMemoryError_``), backend messages, and the ``__cause__`` / ``__context__`` chain a torch.compile
     or accelerate wrapper hides an allocation failure behind."""
     from .diffusion_batched import is_oom_error
-
     return is_oom_error(exc)
 
 
@@ -731,7 +732,9 @@ class _ShapeVerdicts:
         self.shape_disabled = _ShapeOff(reason, kind)
         if self.logger is not None:
             self.logger.info(
-                "diffusion.multigpu: %s off for this request shape (%s)", self._VERDICT_LABEL, reason
+                "diffusion.multigpu: %s off for this request shape (%s)",
+                self._VERDICT_LABEL,
+                reason,
             )
 
     def _shape_oom_off(self, reason: str) -> None:
@@ -1897,13 +1900,20 @@ def _compile_replica_blocks(module: Any, replica: Any, device: Any, ledger: list
 
 
 _GRAPH_WRAPPERS = ("GraphedForward", "BlockGraph")
-_LAYER_MARKERS = ("_unsloth_bg_gate", "_unsloth_block_restride", "_unsloth_compile_guard", "_unsloth_stg_adapter")
+_LAYER_MARKERS = (
+    "_unsloth_bg_gate",
+    "_unsloth_block_restride",
+    "_unsloth_compile_guard",
+    "_unsloth_stg_adapter",
+)
 
 
 def _is_torch_compiled(fn: Any) -> bool:
     """torch's own compiled call (Module.compile / torch.compile): the bottom of a wrapper chain."""
     origin = _hook_origin(fn)
-    return origin.startswith("torch") or str(getattr(fn, "__module__", "") or "").startswith("torch")
+    return origin.startswith("torch") or str(getattr(fn, "__module__", "") or "").startswith(
+        "torch"
+    )
 
 
 def _wrapper_inner(fn: Any) -> Any:
@@ -1934,13 +1944,19 @@ def _source_wrapper_markers(outer: Any, name: str) -> dict:
     fn = outer
     for _ in range(16):
         if fn is None:
-            raise ReplicaStructural(f"compiled submodule '{name}': the wrapper chain ends without torch's compiled call")
+            raise ReplicaStructural(
+                f"compiled submodule '{name}': the wrapper chain ends without torch's compiled call"
+            )
         if _is_torch_compiled(fn) and not any(getattr(fn, m, None) for m in _LAYER_MARKERS):
             return found
         if getattr(fn, "_unsloth_stg_adapter", False):
-            raise ReplicaStructural(f"compiled submodule '{name}' carries the LTX-2 STG adapter (not rebuilt on a copy)")
+            raise ReplicaStructural(
+                f"compiled submodule '{name}' carries the LTX-2 STG adapter (not rebuilt on a copy)"
+            )
         markers = [m for m in _LAYER_MARKERS if getattr(fn, m, None) not in (None, False)]
-        graph = type(fn).__name__ in _GRAPH_WRAPPERS and _hook_origin(fn).startswith(_TRUSTED_HOOK_MODULES)
+        graph = type(fn).__name__ in _GRAPH_WRAPPERS and _hook_origin(fn).startswith(
+            _TRUSTED_HOOK_MODULES
+        )
         if not markers and not graph and not isinstance(fn, types.MethodType):
             raise ReplicaStructural(
                 f"compiled submodule '{name}' carries an unknown wrapper {type(fn).__name__} (not rebuilt on a copy)"
@@ -1960,7 +1976,12 @@ def _source_wrapper_markers(outer: Any, name: str) -> dict:
 
 
 def compile_like_source(
-    src: Any, dst: Any, *, owner: Any = None, name: str = "", ledger: Optional[list] = None
+    src: Any,
+    dst: Any,
+    *,
+    owner: Any = None,
+    name: str = "",
+    ledger: Optional[list] = None,
 ) -> None:
     """Compile a replica block ``dst`` exactly the way its source ``src`` was: the recorded ``Module.compile``
     arguments, then the same Studio wrappers rebuilt around the copy's own compiled call (canonical order: restride,
@@ -1976,7 +1997,6 @@ def compile_like_source(
     eager = dst._call_impl
     if markers.get("_unsloth_block_restride"):
         from .diffusion_block_restride import wrap as _restride
-
         call = _restride(call)
     guard = markers.get("guard")
     if guard is not None:
@@ -1993,7 +2013,6 @@ def compile_like_source(
             ledger.append(lambda g = guard, f = restore: _remove_identity(g.restores, f))
     if markers.get("_unsloth_bg_gate"):
         from .diffusion_bg_compile import eager_gate
-
         call = eager_gate(call, eager)
     dst._compiled_call_impl = call
 
@@ -2503,9 +2522,7 @@ class CfgParallelRouter(_ShapeVerdicts):
             self.b0_s = None
             self.request_step += 1
             if self.shapes.switch(self, _request_shape(self.request_px, args, kwargs)):
-                self.template = (
-                    None
-                )
+                self.template = None
                 self.capacity_checked = False
             if (
                 not self.capacity_checked
@@ -2675,7 +2692,11 @@ class CfgParallelRouter(_ShapeVerdicts):
         free, _total = usable_free_mib(self.secondary.index)
         return free
 
-    def _room_mib(self, batch: Optional[int], ordinal: Optional[int] = None) -> int:
+    def _room_mib(
+        self,
+        batch: Optional[int],
+        ordinal: Optional[int] = None,
+    ) -> int:
         """Activation room the replica card needs beside the (retained) replica: the max over the phases that card
         runs. The odd branch's denoise always; the VAE decode when it hosts the VAE (the routers' inputs are released at
         decode entry); the text encode when it hosts an encoder (the replica stays across requests, so it sits beside
@@ -2685,7 +2706,9 @@ class CfgParallelRouter(_ShapeVerdicts):
         needs = self.request_needs
         if needs is not None and needs.denoise_mib:
             return needs.room_on(card)
-        room = scaled_headroom_mib(self.headroom_mib, self.headroom_reference_px, self.request_px, batch)
+        room = scaled_headroom_mib(
+            self.headroom_mib, self.headroom_reference_px, self.request_px, batch
+        )
         if self.encode_headroom_mib and card is not None and card in self.te_ordinals:
             room = max(room, int(self.encode_headroom_mib))
         if self.decode_headroom_mib and self.vae_ordinal is not None and card == self.vae_ordinal:
@@ -2773,7 +2796,8 @@ class CfgParallelRouter(_ShapeVerdicts):
             return True
         if self.pricing.get("link_unmeasured"):
             self._shape_off(
-                "link unmeasured: one card until a probe measures it (retried next request)", _OFF_STICKY
+                "link unmeasured: one card until a probe measures it (retried next request)",
+                _OFF_STICKY,
             )
         else:
             self._shape_off(
@@ -2816,9 +2840,9 @@ class CfgParallelRouter(_ShapeVerdicts):
         module = self.module_ref()
         if module is None:
             return 0
-        return sum(t.numel() * t.element_size() for t in (*module.parameters(), *module.buffers())) // (
-            1 << 20
-        )
+        return sum(
+            t.numel() * t.element_size() for t in (*module.parameters(), *module.buffers())
+        ) // (1 << 20)
 
     def _reselect_secondary(self, batch: Optional[int] = None) -> None:
         """No replica yet (first build, after an eviction, a stale-weights drop or an invalidation): choose the card
@@ -3262,9 +3286,7 @@ def _install_cfg_parallel_only(
             room = max(1024, int(headroom_mib or 0))
             vae = getattr(pipe, "vae", None)
             vae_device = _module_device(vae) if vae is not None else None
-            vae_ordinal = (
-                vae_device.index if getattr(vae_device, "type", None) == "cuda" else None
-            )
+            vae_ordinal = vae_device.index if getattr(vae_device, "type", None) == "cuda" else None
             te_ordinals = text_encoder_ordinals(pipe)
             load_needs = PhaseNeeds(
                 encode_mib = encode_headroom_mib,
@@ -3429,8 +3451,6 @@ def uninstall_cfg_parallel(pipe: Any) -> None:
         else:
             del module.__dict__["forward"]
         module.__dict__.pop("_unsloth_cfg_router", None)
-
-
 
 
 def _as_walkable(out: Any) -> Any:
@@ -3645,7 +3665,9 @@ def _inputs_untouched(fresh_inputs: list, versions: list) -> bool:
         offset = 0
         for source in sources:
             rows = int(source.shape[0])
-            if offset + rows > int(tensor.shape[0]) or not _bitwise_equal(tensor.narrow(0, offset, rows), source):
+            if offset + rows > int(tensor.shape[0]) or not _bitwise_equal(
+                tensor.narrow(0, offset, rows), source
+            ):
                 return False
             offset += rows
         if offset != int(tensor.shape[0]):
@@ -3881,9 +3903,7 @@ class CfgBatchRouter(_ShapeVerdicts):
             self._apply_pending()
             self.b0_leaves = dict(_leaves((args, kwargs)))
             if self.shapes.switch(self, _request_shape(self.request_px, args, kwargs)):
-                self.template = (
-                    None
-                )
+                self.template = None
                 if self.pricing is None:
                     self.timing_off = False
         if self.disabled_reason is not None or self.shape_disabled is not None or latent is None:
@@ -3893,9 +3913,7 @@ class CfgBatchRouter(_ShapeVerdicts):
             self.plain_times = []
         timing = self.pricing is None and not self.timing_off and self._can_time(latent)
         if self.branch == 0:
-            if (
-                self.template is not None and not timing
-            ):
+            if self.template is not None and not timing:
                 try:
                     out = self._batched(args, kwargs, latent)
                 except Exception as exc:  # noqa: BLE001 - anything in the speculative path: plain from here
@@ -4105,7 +4123,8 @@ class CfgBatchRouter(_ShapeVerdicts):
                 torch.cuda.empty_cache()
             if is_out_of_memory(exc):
                 self._disable_shape(
-                    "out of memory merging the branches; one branch per call for this shape", _OFF_TRANSIENT
+                    "out of memory merging the branches; one branch per call for this shape",
+                    _OFF_TRANSIENT,
                 )
                 return None
             self.disable(
@@ -4162,7 +4181,8 @@ class CfgBatchRouter(_ShapeVerdicts):
                 with contextlib.suppress(Exception):
                     torch.cuda.empty_cache()
                 self._disable_shape(
-                    "out of memory on the batched call; one branch per call for this shape", _OFF_TRANSIENT
+                    "out of memory on the batched call; one branch per call for this shape",
+                    _OFF_TRANSIENT,
                 )
                 return None
             self.disable(
@@ -4205,7 +4225,8 @@ class CfgBatchRouter(_ShapeVerdicts):
             self._undo_attempt(state_snapshot)
             if is_out_of_memory(exc):
                 self._disable_shape(
-                    "out of memory splitting the batched output; one branch per call for this shape", _OFF_TRANSIENT
+                    "out of memory splitting the batched output; one branch per call for this shape",
+                    _OFF_TRANSIENT,
                 )
                 return None
             self.disable(f"output cannot be split per branch ({type(exc).__name__}: {exc})")
@@ -4215,7 +4236,11 @@ class CfgBatchRouter(_ShapeVerdicts):
         self._shape_ok()
         return mine
 
-    def _undo_attempt(self, snapshot: Optional[dict], report_unseen: bool = False) -> Any:
+    def _undo_attempt(
+        self,
+        snapshot: Optional[dict],
+        report_unseen: bool = False,
+    ) -> Any:
         """The one restore every exit out of a batched call goes through (state change, OOM, exception, an input or
         dict written, an unsplittable output): snapshotted buffers and scalar slots back to the snapshot, before the
         branch reruns plain. Returns what had changed (and, with ``report_unseen``, the first write outside the
@@ -4276,7 +4301,10 @@ class CfgBatchRouter(_ShapeVerdicts):
         if self.headroom_mib is None:
             return None
         return scaled_headroom_mib(
-            self.headroom_mib, self.headroom_reference_px, self.request_px, 2 * max(1, int(batch or 1))
+            self.headroom_mib,
+            self.headroom_reference_px,
+            self.request_px,
+            2 * max(1, int(batch or 1)),
         )
 
     def _take(self, args: tuple, kwargs: dict) -> Any:

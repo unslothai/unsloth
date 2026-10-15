@@ -2094,12 +2094,18 @@ def _cfg_request_needs(
             prompts = prompts,
         )
         encode, denoise, decode = image_request_phase_mib(batch_size = batch_size, **phase_inputs)
-        _enc, doubled, _dec = image_request_phase_mib(batch_size = 2 * max(1, int(batch_size or 1)), **phase_inputs)
+        _enc, doubled, _dec = image_request_phase_mib(
+            batch_size = 2 * max(1, int(batch_size or 1)), **phase_inputs
+        )
         releaser = getattr(state, "te_releaser", None)
         if releaser is not None:
             encode += int(releaser.held_bytes) // (1 << 20)
         return request_phase_needs(
-            pipe, encode_mib = encode, denoise_mib = denoise, decode_mib = decode, cfg_batch_denoise_mib = doubled
+            pipe,
+            encode_mib = encode,
+            denoise_mib = denoise,
+            decode_mib = decode,
+            cfg_batch_denoise_mib = doubled,
         )
     except Exception:  # noqa: BLE001 - an estimate for an optional lever never fails a request
         return None
@@ -11751,7 +11757,6 @@ class DiffusionBackend:
                 pass
         try:
             from .diffusion_multigpu import uninstall_cfg_batch, uninstall_cfg_parallel
-
             uninstall_cfg_parallel(state.pipe)
             uninstall_cfg_batch(state.pipe)
         except Exception:  # noqa: BLE001 - teardown is best effort

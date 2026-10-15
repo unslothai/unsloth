@@ -1043,14 +1043,19 @@ def estimate_image_runtime_mib(
         w = h = _QWEN_LAYERED_CANVAS
         cond = (_QWEN_LAYERED_LAYERS + 1) * w * h
     return max(
-        1024, int(8192 * guard_pixel_scale(w * h, cond, batch) * _family_activation_multiplier(family))
+        1024,
+        int(8192 * guard_pixel_scale(w * h, cond, batch) * _family_activation_multiplier(family)),
     )
 
 
 _GUARD_PIXEL_SCALE_FLOOR = 0.25
 
 
-def guard_pixel_scale(target_pixels: int, condition_pixels: int = 0, batch: int = 1) -> float:
+def guard_pixel_scale(
+    target_pixels: int,
+    condition_pixels: int = 0,
+    batch: int = 1,
+) -> float:
     """The generation guard's pixel curve: (target + weighted condition pixels) x batch over 1024x1024, never below
     ``_GUARD_PIXEL_SCALE_FLOOR``. Shared by the whole-request estimate and the per-phase CFG figures."""
     scale = (
@@ -1096,7 +1101,9 @@ def image_request_phase_mib(
         )
         return whole, whole, whole
     reference = float(DEFAULT_IMAGE_WIDTH * DEFAULT_IMAGE_HEIGHT)
-    per_image_decode = calibrated.tiled_decode_mib if tiled else calibrated.decode_mib * (w * h / reference)
+    per_image_decode = (
+        calibrated.tiled_decode_mib if tiled else calibrated.decode_mib * (w * h / reference)
+    )
     return (
         int(calibrated.text_encoder_mib * encoded),
         int(calibrated.denoise_mib * guard_pixel_scale(w * h, cond, images)),
@@ -4725,7 +4732,9 @@ def guard_condition_pixels(
     denoise). Shared with the CFG routers' request figure so both price the same tokens."""
     pixels = max(0, int(condition_pixels or 0))
     if calibrated_placement and controlnet:
-        pixels += max(64, int(width or DEFAULT_IMAGE_WIDTH)) * max(64, int(height or DEFAULT_IMAGE_HEIGHT))
+        pixels += max(64, int(width or DEFAULT_IMAGE_WIDTH)) * max(
+            64, int(height or DEFAULT_IMAGE_HEIGHT)
+        )
     return pixels
 
 

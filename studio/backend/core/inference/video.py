@@ -306,10 +306,15 @@ def _cfg_video_request_needs(pipe: Any, request_shape: dict) -> Any:
         encode, denoise, decode = video_request_phase_mib(**shape)
         _enc, doubled, _dec = video_request_phase_mib(batch_size = 2, **shape)
         return request_phase_needs(
-            pipe, encode_mib = encode, denoise_mib = denoise, decode_mib = decode, cfg_batch_denoise_mib = doubled
+            pipe,
+            encode_mib = encode,
+            denoise_mib = denoise,
+            decode_mib = decode,
+            cfg_batch_denoise_mib = doubled,
         )
     except Exception:  # noqa: BLE001 - an estimate for an optional lever never fails a request
         return None
+
 
 def _gguf_quant_token(filename: Optional[str]) -> Optional[str]:
     """The quant a GGUF filename names (``Q4_K_M``, ``BF16``), as the status reports it in ``gguf_variant``."""
@@ -11768,7 +11773,6 @@ class VideoBackend:
                     pass
             try:
                 from .diffusion_multigpu import uninstall_cfg_batch, uninstall_cfg_parallel
-
                 uninstall_cfg_parallel(getattr(state, "pipe", None))
                 uninstall_cfg_batch(getattr(state, "pipe", None))
             except Exception:  # noqa: BLE001 -- teardown is best effort
