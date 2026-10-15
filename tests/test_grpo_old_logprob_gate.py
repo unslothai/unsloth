@@ -52,10 +52,10 @@ def test_old_logprob_gate_matches_trl():
 @pytest.mark.parametrize(
     "grad_accum, generate_every, use_vllm, is_correction, expected",
     [
-        (4, 4, True, False, False),  # on-policy vLLM, correction off: no extra forward
-        (4, 4, True, True, True),  # vLLM IS correction needs old logps
-        (4, 4, False, False, False),  # on-policy HF generation
-        (4, 8, True, False, True),  # misaligned: samples can be stale
+        (4, 4, True, False, False),
+        (4, 4, True, True, True),
+        (4, 4, False, False, False),
+        (4, 8, True, False, True),
         (4, 8, False, False, True),
     ],
 )
