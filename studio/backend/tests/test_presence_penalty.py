@@ -547,3 +547,19 @@ def test_a_raw_prompt_queued_behind_a_generation_stops_waiting_on_cancel():
     with pytest.raises(InterruptedError):
         orch.resolve_completion_prompt("p", cancel_event = cancel)
     assert time.monotonic() - started < 2
+
+
+def test_a_raw_prompt_reply_wait_stops_on_cancel():
+    import time
+
+    from core.inference.orchestrator import InferenceOrchestrator
+
+    orch = InferenceOrchestrator.__new__(InferenceOrchestrator)
+    orch._ensure_subprocess_alive = lambda: True
+    cancel = threading.Event()
+    threading.Timer(0.2, cancel.set).start()
+    started = time.monotonic()
+    reply = orch._await_reply(
+        lambda timeout: time.sleep(timeout) or None, "r", "t", "c", 30.0, cancel.is_set
+    )
+    assert reply is None and time.monotonic() - started < 3

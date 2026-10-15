@@ -2966,10 +2966,21 @@ class InferenceOrchestrator:
             logger.warning("Could not preflight the context window: %s", exc)
             return unchanged
 
-    def _await_reply(self, read_one, request_id, reply_type, crash_context, timeout):
-        """The worker's *reply_type* answer to *request_id*, or None once *timeout* passes."""
+    def _await_reply(
+        self,
+        read_one,
+        request_id,
+        reply_type,
+        crash_context,
+        timeout,
+        cancelled = None,
+    ):
+        """The worker's *reply_type* answer to *request_id*, or None once *timeout* passes
+        or *cancelled* returns true."""
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
+            if cancelled is not None and cancelled():
+                return None
             candidate = read_one(timeout = min(1.0, deadline - time.monotonic()))
             if candidate is None:
                 if not self._ensure_subprocess_alive():
@@ -3018,6 +3029,7 @@ class InferenceOrchestrator:
                         "resolve_prompt_response",
                         "prompt resolution",
                         timeout,
+                        cancelled,
                     )
                     # A dispatched generation the worker runs alone answers first, however long.
                     if self._replies_in_flight() <= 1 or cancelled():

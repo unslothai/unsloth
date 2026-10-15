@@ -2515,6 +2515,7 @@ def test_mlx_vlm_completion_prompt_runs_untemplated_from_its_ids(monkeypatch):
 
     assert list(backend.generate_completion([5, 6], max_new_tokens = 2, grammar = "G")) == ["ok"]
     assert seen["args"][2:] == ("", None) and seen["kwargs"]["input_ids"] == [[5, 6]]
+    assert seen["kwargs"]["skip_special_tokens"] is True
     assert seen["penalty_prompt"] == [5, 6]
     assert seen["grammar_constraint"].built == ("G", backend._tokenizer)
     assert seen["cache"] == (None, None, "")

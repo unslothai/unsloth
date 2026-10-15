@@ -6527,6 +6527,8 @@ class MLXInferenceBackend:
         if prompt_ids is not None:
             import mlx.core as mx
             vlm_kwargs["input_ids"] = mx.array([list(prompt_ids)])
+            # As the text path and llama-server: control tokens are not reply text.
+            vlm_kwargs["skip_special_tokens"] = True
         elif not self._reads_vision_input():
             # mlx-vlm adds special tokens by family, doubling a BOS the template already emitted.
             import mlx.core as mx
