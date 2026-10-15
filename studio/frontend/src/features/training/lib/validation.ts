@@ -12,6 +12,7 @@ import {
 } from "./manual-dataset-options";
 import { isLocalTrainingModelSelection } from "./model-selection";
 import { isUntrainableModelFormat } from "./model-support";
+import { ddpSupportsModel } from "./training-gpu-selection";
 import {
   isTrainingLoraVariantSupportedOnDevice,
   isTrainingMethodSupportedOnDevice,
@@ -223,12 +224,7 @@ export function validateTrainingConfig(
       errorKey: "studio.training.validation.singleGpuRequired",
     };
   }
-  if (
-    config.parallelismMode === "ddp" &&
-    (config.isEmbeddingModel ||
-      config.modelType === "embeddings" ||
-      config.modelType === "decision")
-  ) {
+  if (config.parallelismMode === "ddp" && !ddpSupportsModel(config)) {
     return {
       ok: false,
       errorKey: "studio.training.validation.ddpModelUnsupported",

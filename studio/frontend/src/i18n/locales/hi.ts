@@ -3761,7 +3761,7 @@ export const hi = {
       setupChanged:
         "जांच के दौरान ट्रेनिंग सेटअप बदल गया। इसकी समीक्षा करें और फिर से ट्रेनिंग शुरू करें।",
       validation: {
-        ddpModelUnsupported: "DDP एम्बेडिंग या निर्णय मॉडल का समर्थन नहीं करता। कोई अन्य GPU प्लेसमेंट चुनें।",
+        ddpModelUnsupported: "DDP केवल टेक्स्ट मॉडल का समर्थन करता है। कोई अन्य GPU प्लेसमेंट चुनें।",
         multipleGpusRequired: "इस मोड के लिए कम से कम दो GPU चुनें।",
         singleGpuRequired: "एकल-GPU प्रशिक्षण के लिए ठीक एक GPU चुनें।",
         gpuSelectionUnavailable: "चयनित GPU उपलब्ध नहीं हैं। हार्डवेयर चयन रीफ़्रेश करें और फिर प्रयास करें।",

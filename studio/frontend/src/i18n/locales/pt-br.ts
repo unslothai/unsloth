@@ -3778,7 +3778,7 @@ export const ptBR = {
       setupChanged:
         "A configuração de treinamento mudou durante a verificação. Revise-a e inicie o treinamento novamente.",
       validation: {
-        ddpModelUnsupported: "O DDP não oferece suporte a modelos de embedding ou de decisão. Escolha outra alocação de GPU.",
+        ddpModelUnsupported: "O DDP oferece suporte apenas a modelos de texto. Escolha outra alocação de GPU.",
         multipleGpusRequired: "Selecione pelo menos duas GPUs para este modo.",
         singleGpuRequired: "Selecione exatamente uma GPU para treinamento em GPU única.",
         gpuSelectionUnavailable: "As GPUs selecionadas não estão disponíveis. Atualize a seleção de hardware e tente novamente.",

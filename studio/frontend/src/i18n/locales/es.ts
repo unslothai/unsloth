@@ -3809,7 +3809,7 @@ export const es = {
       validation: {
         singleGpuRequired: "Selecciona exactamente una GPU para el entrenamiento con una sola GPU.",
         gpuSelectionUnavailable: "Las GPU seleccionadas no están disponibles. Actualiza la selección de hardware e inténtalo de nuevo.",
-        ddpModelUnsupported: "DDP no admite modelos de embeddings ni de decisión. Elige otra asignación de GPU.",
+        ddpModelUnsupported: "DDP solo admite modelos de texto. Elige otra asignación de GPU.",
         multipleGpusRequired: "Selecciona al menos dos GPU para este modo.",
         s3MultimodalUnsupported:
           "Los conjuntos de datos de S3 todavía no son compatibles con el entrenamiento de visión.",

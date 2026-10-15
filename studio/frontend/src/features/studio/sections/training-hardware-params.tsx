@@ -12,7 +12,10 @@ import {
 import { TabsContent } from "@/components/ui/tabs";
 import { usePlatformStore } from "@/config/env";
 import { useTrainingConfigStore } from "@/features/training";
-import { reconcileTrainingGpuSelection } from "@/features/training/lib/training-gpu-selection";
+import {
+  ddpSupportsModel,
+  reconcileTrainingGpuSelection,
+} from "@/features/training/lib/training-gpu-selection";
 import type { TrainingParallelismMode } from "@/features/training/types/config";
 import {
   cachedTrainingGpuIndices,
@@ -34,11 +37,7 @@ export function TrainingHardwareParams(): ReactElement {
       parallelismMode: state.parallelismMode,
       selectedGpuIds: state.selectedGpuIds,
       setGpuSelection: state.setGpuSelection,
-      // The server rejects DDP for these: neither path is rank-aware.
-      ddpModel:
-        !state.isEmbeddingModel &&
-        state.modelType !== "embeddings" &&
-        state.modelType !== "decision",
+      ddpModel: ddpSupportsModel(state),
     })),
   );
   // Not `pinnable`: it encodes llama.cpp support and wrongly excludes XPU.

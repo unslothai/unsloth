@@ -3774,7 +3774,7 @@ export const en = {
       chooseDataset: "Choose a dataset",
       chooseModelAndDataset: "Choose model and dataset",
       validation: {
-        ddpModelUnsupported: "DDP does not support embedding or decision models. Choose another GPU placement.",
+        ddpModelUnsupported: "DDP supports text models only. Choose another GPU placement.",
         multipleGpusRequired: "Select at least two GPUs for this mode.",
         singleGpuRequired: "Select exactly one GPU for single-GPU training.",
         gpuSelectionUnavailable: "The selected GPUs are unavailable. Refresh the hardware selection and try again.",

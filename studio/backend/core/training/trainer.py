@@ -1048,10 +1048,12 @@ class UnslothTrainer:
                 )
 
             def on_train_end(self, args, state, control, **kwargs):
-                # Every rank takes the save path of the last agreement, not a stop that landed after it.
-                agreed = getattr(trainer_ref, "_ddp_agreed_stop", None)
-                if agreed is not None:
-                    trainer_ref.should_stop, trainer_ref.save_on_stop = agreed
+                # One more agreement (a stop can land during the final evaluation) so every rank finalizes alike.
+                if world_size_from_env() > 1:
+                    trainer_ref._agree_on_ddp_stop(args.device)
+                    agreed = getattr(trainer_ref, "_ddp_agreed_stop", None)
+                    if agreed is not None:
+                        trainer_ref.should_stop, trainer_ref.save_on_stop = agreed
 
             def on_step_end(self, args, state, control, **kwargs):
                 if (

@@ -3672,7 +3672,7 @@ export const zhCN = {
         "无法验证数据集与此模型是否兼容。请检查网络连接或 Hugging Face token；开始训练时会重试检查。",
       setupChanged: "检查期间，训练设置发生了变化。请确认设置后重新开始训练。",
       validation: {
-        ddpModelUnsupported: "DDP 不支持嵌入模型或决策模型。请选择其他 GPU 分配方式。",
+        ddpModelUnsupported: "DDP 仅支持文本模型。请选择其他 GPU 分配方式。",
         multipleGpusRequired: "此模式至少需要选择两个 GPU。",
         singleGpuRequired: "单 GPU 训练必须选择且仅选择一个 GPU。",
         gpuSelectionUnavailable: "选定的 GPU 不可用。请刷新硬件选择后重试。",

@@ -3844,7 +3844,7 @@ export const he = {
       chooseDataset: "בחר מערך נתונים",
       chooseModelAndDataset: "בחר מודל ומערך נתונים",
       validation: {
-        ddpModelUnsupported: "DDP אינו תומך במודלי הטמעה או במודלי החלטה. בחר מיקום GPU אחר.",
+        ddpModelUnsupported: "DDP תומך במודלי טקסט בלבד. בחר מיקום GPU אחר.",
         multipleGpusRequired: "בחר לפחות שני GPUs עבור מצב זה.",
         singleGpuRequired: "בחר GPU אחד בדיוק עבור אימון ב-GPU יחיד.",
         gpuSelectionUnavailable: "ה-GPUs הנבחרים אינם זמינים. רענן את בחירת החומרה ונסה שוב.",

@@ -730,13 +730,12 @@ class TrainingStartRequest(BaseModel):
             raise ValueError("parallelism_mode='model_parallel' requires at least two gpu_ids.")
         if self.parallelism_mode == "ddp" and len(ids) < 2:
             raise ValueError("parallelism_mode='ddp' requires at least two gpu_ids.")
-        # Neither path is rank-aware: decision models train on one GPU, embedding saves on every rank.
-        if self.parallelism_mode == "ddp" and (
-            getattr(self, "is_embedding", False) or getattr(self, "is_decision", False)
+        # DDP covers the text path only; the others are not rank-aware.
+        if self.parallelism_mode == "ddp" and any(
+            getattr(self, flag, False)
+            for flag in ("is_embedding", "is_decision", "is_dataset_image", "is_dataset_audio")
         ):
-            raise ValueError(
-                "parallelism_mode='ddp' does not support embedding or decision models."
-            )
+            raise ValueError("parallelism_mode='ddp' supports text models only.")
         return self
 
     @model_validator(mode = "after")

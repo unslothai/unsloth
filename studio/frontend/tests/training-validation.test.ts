@@ -97,11 +97,15 @@ test("training validation rejects empty explicit GPU selections", () => {
   );
 });
 
-test("DDP is rejected for embedding and decision models", () => {
+test("DDP is rejected for every model that is not a text model", () => {
   for (const model of [
     { isEmbeddingModel: true },
+    { isVisionModel: true },
+    { isAudioModel: true },
+    { isDatasetImage: true },
     { modelType: "embeddings" as const },
     { modelType: "decision" as const },
+    { modelType: "vision" as const },
   ]) {
     assert.equal(
       validateTrainingConfig({
