@@ -43832,17 +43832,15 @@ class _AnthropicToolEventRules:
             # a dropped tool still runs and suppresses the stall keepalive.
             return [_OPENAI_PASSTHROUGH_SSE_KEEPALIVE]
         if etype in ("tool_output", "tool_args"):
-            # No Anthropic Messages equivalent (the full call/result follow in tool_use /
-            # tool_result), so drop them. They suppress the stall keepalive, so emit a
-            # rate-limited one instead of going silent past the ~100s proxy cap.
+            # No Messages equivalent, but they suppress the stall keepalive: send a rate-limited
+            # one instead of going silent past the ~100s proxy cap.
             _now = time.monotonic()
             if _now - self._last_drop_keepalive >= _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S:
                 self._last_drop_keepalive = _now
                 return [_OPENAI_PASSTHROUGH_SSE_KEEPALIVE]
             return []
         if self._drop_until_tool_end:
-            # disable_parallel_tool_use: skip every event until (and
-            # including) this dropped tool call's tool_end.
+            # Skip through the dropped call's tool_end.
             if etype == "tool_end":
                 self._drop_until_tool_end = False
             return []
@@ -43850,9 +43848,8 @@ class _AnthropicToolEventRules:
             _fr = event.get("finish_reason")
             if _fr is not None:
                 self._finish_reason = _fr
-        # Strip leaked tool-call XML first, so a purely-tool-XML content event doesn't
-        # count as text. The protected helper keeps <think> rehearsal and balanced
-        # [TOOL_CALLS] trailing prose, which a raw sub corrupts.
+        # Strip leaked tool XML first; the protected helper keeps <think> rehearsal and balanced
+        # [TOOL_CALLS] prose, which a raw sub corrupts.
         if etype == "content":
             event = dict(event)
             event["text"] = self._span_guard.strip(
@@ -43860,8 +43857,7 @@ class _AnthropicToolEventRules:
                 auto_heal_tool_calls = True,
                 enabled_tool_names = self._display_names,
             )
-        # disable_parallel_tool_use: keep only the first tool_use block, dropping
-        # later tool_start/tool_end pairs (by state, not id: ids may be empty).
+        # Parallel cap by state, not id: ids may be empty.
         if etype == "tool_start":
             if self._disable_parallel_tool_use and self._tool_blocks_emitted >= 1:
                 self._drop_until_tool_end = True
@@ -44837,16 +44833,11 @@ def _anthropic_passthrough_chunk_lines(
     if isinstance(chunk, dict):
         error_message = _monitor_openai_error_message(chunk)
         if error_message:
-            # Upstream HTTP-200 SSE error payload (data: {"error": ...}):
-            # emitter.feed_chunk ignores chunks without choices, so the stream
-            # would finish cleanly and the middleware would claim a preview-owned
-            # model. Flag failed and surface an Anthropic error event instead of a
-            # silent message_stop (mirrors the OpenAI passthrough / Responses).
+            # A 200 SSE error payload has no choices, so feed_chunk would end cleanly and the
+            # middleware would claim a preview-owned model: flag failed and send an error event.
             from core.inference.llama_keepwarm import mark_response_failed
             mark_response_failed(getattr(request, "scope", None))
-            # The message alone can be count-less while the chunk still
-            # carries n_prompt_tokens/n_ctx; keep the clean message and let
-            # the formatter recover the totals from the payload.
+            # The formatter recovers n_prompt_tokens/n_ctx from the payload when the message lacks them.
             return [
                 _anthropic_upstream_stream_error_event(
                     error_message,
@@ -45215,10 +45206,7 @@ def _anthropic_message_from_openai_completion(
 
     content_blocks = []
     tool_calls = []
-    # Reasoning first: llama-server splits <think> into reasoning_content on any
-    # turn whose format it can parse, and Anthropic orders thinking ahead of the
-    # answer. Reading only `content` drops the trace and the model looks like it
-    # never thought.
+    # Anthropic orders thinking ahead of the answer; reading only `content` drops the trace.
     reasoning = message.get("reasoning_content") or ""
     if reasoning.strip():
         if parse_think:
