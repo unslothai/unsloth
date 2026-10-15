@@ -76,7 +76,8 @@ def test_new_revision_is_created_before_the_upload(push):
 
 
 @pytest.mark.parametrize(
-    "kwargs", [{}, {"create_pr": True}, {"revision": "refs/pr/3"}, {"revision": "v2", "create_pr": True}]
+    "kwargs",
+    [{}, {"create_pr": True}, {"revision": "refs/pr/3"}, {"revision": "v2", "create_pr": True}],
 )
 def test_no_branch_is_created_without_a_new_revision(push, kwargs):
     names = push(**kwargs)
