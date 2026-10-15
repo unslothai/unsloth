@@ -51,7 +51,10 @@ test("Stop on a connection run targets the connection, a local Stop does not", a
       headers: { "content-type": "application/json" },
     });
   }) as typeof fetch;
-  await cancelDiffusionGeneration(undefined, "connection");
+  const { cancelConnectionImageGeneration } = await import(
+    "../src/features/images/connection-cancel.ts"
+  );
+  await cancelConnectionImageGeneration();
   await cancelDiffusionGeneration();
   assert.deepEqual(urls, [
     "/api/inference/images/generate/cancel?target=connection",
@@ -76,6 +79,12 @@ test("any local load takes the page back from a connection", async () => {
   const load = page.slice(page.indexOf("const handleLoad = useCallback("));
   const head = load.slice(0, load.indexOf("if (pollTimer.current) clearTimeout(pollTimer.current);"));
   assert.match(head, /setExternalModelId\(null\);/);
+});
+
+test("the connection Stop stays out of the startup bundle's api module", async () => {
+  const { readSrc } = await import("./helpers/kit.ts");
+  assert.doesNotMatch(readSrc("features/images/api.ts"), /target=connection/);
+  assert.match(readSrc("features/images/images-page.tsx"), /from "\.\/connection-cancel"/);
 });
 
 test("a connected pick hides ControlNet without clearing the local setup", async () => {

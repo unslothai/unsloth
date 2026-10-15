@@ -154,6 +154,7 @@ import {
   useExternalProvidersStore,
 } from "@/features/chat";
 import { ModelLoadDescription } from "@/features/chat/components/model-load-status";
+import { cancelConnectionImageGeneration } from "./connection-cancel";
 import {
   type ImageGenerationPresetParams,
   MediaGenerationPresetControl,
@@ -4661,7 +4662,9 @@ export function ImagesPage({
     const abort = new AbortController();
     cancelAbort.current = abort;
     try {
-      const { cancelled } = await cancelDiffusionGeneration(abort.signal, runTarget.current);
+      const { cancelled } = runTarget.current
+        ? await cancelConnectionImageGeneration(abort.signal)
+        : await cancelDiffusionGeneration(abort.signal);
       cancelAcked.current = Boolean(cancelled);
       if (!cancelled) setStopping(false);
     } catch {
