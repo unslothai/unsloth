@@ -200,7 +200,19 @@ export async function updateThreadMessage(args: {
       finalContent.push({ type: 'text', text });
     };
 
-    if (Array.isArray(originalContent)) {
+    if (plainText && Array.isArray(originalContent)) {
+      // The new text takes the first text part's place; images and audio keep theirs.
+      let placed = false;
+      for (const part of originalContent) {
+        if (!isEditablePart(part)) {
+          finalContent.push(part);
+          continue;
+        }
+        if (!placed && newText) finalContent.push({ type: 'text', text: newText });
+        placed = true;
+      }
+      if (!placed && newText) finalContent.push({ type: 'text', text: newText });
+    } else if (Array.isArray(originalContent)) {
       const nonEditableParts = originalContent.filter(
         (part: any) => !isEditablePart(part)
       );

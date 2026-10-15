@@ -74,7 +74,7 @@ function conversation(): Exported {
   };
 }
 
-async function savePrompt(newText: string) {
+async function savePrompt(newText: string, content?: unknown[]) {
   const saved: Record<string, unknown>[] = [];
   const module = loadWithStubs<Module>(
     new URL("../src/features/chat/utils/update-thread-message.ts", import.meta.url),
@@ -90,6 +90,7 @@ async function savePrompt(newText: string) {
     },
   );
   let current = conversation();
+  if (content) current.messages[0].message.content = content;
   const before = structuredClone(current);
   await module.updateThreadMessage({
     thread: { export: () => current, import: (data) => (current = data) },
@@ -193,4 +194,20 @@ test("each open editor keeps its own save-only mode", () => {
     component("EditComposer"),
     /const \[saveOnly\] = useState\(\(\) =>\s*useChatRuntimeStore\.getState\(\)\.editWithoutRunMessageIds\.includes\(messageId\),\s*\);/,
   );
+});
+
+test("a prompt's images and audio keep their places around the edited text", async () => {
+  const image = { type: "image", image: "data:image/png;base64,AAAA" };
+  const audio = { type: "audio", audio: { data: "AAAA", format: "wav" } };
+  const { saved } = await savePrompt("compare these", [
+    image,
+    { type: "text", text: "old words" },
+    audio,
+  ]);
+  const { record } = saved[0] as { record: Record<string, unknown> };
+  assert.deepEqual(record.content, [image, { type: "text", text: "compare these" }, audio]);
+
+  const imageOnly = await savePrompt("now with words", [image]);
+  const { record: added } = imageOnly.saved[0] as { record: Record<string, unknown> };
+  assert.deepEqual(added.content, [image, { type: "text", text: "now with words" }]);
 });
