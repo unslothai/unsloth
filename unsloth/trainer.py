@@ -1753,6 +1753,13 @@ def _backwards_compatible_trainer(trainer_class, config_class):
             kwargs["args"] = config
         _ensure_warnings_issued(args[0] if args else kwargs.get("model"))
         original_init(self, *args, **kwargs)
+        if os.environ.get("UNSLOTH_LOG_MFU", "0") == "1":
+            try:
+                from .utils.mfu import add_mfu_callback
+
+                add_mfu_callback(self)
+            except Exception as exc:
+                logger.warning(f"Unsloth: could not enable MFU logging ({exc}).")
 
     return new_init
 
