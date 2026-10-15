@@ -3,6 +3,7 @@
 
 """Tests for Anthropic Messages API schemas and translation layer (no server/GPU)."""
 
+import contextlib
 import sys
 import os
 import json
@@ -6809,3 +6810,369 @@ def test_the_anthropic_count_refusal_is_name_aware():
     assert _messages_have_promotable_mcp_images(
         [{"role": "tool", "tool_call_id": "x", "content": "out\n" + mcp_images.SENTINEL + envelope}]
     )
+
+
+_COUNT_TOOL = {"name": "lookup", "description": "d", "input_schema": {"type": "object"}}
+_COUNT_OPENAI_TOOL = {
+    "type": "function",
+    "function": {"name": "lookup", "description": "d", "parameters": {"type": "object"}},
+}
+_COUNT_USER = {"role": "user", "content": "hi"}
+_COUNT_OTHER = {"name": "other", "input_schema": {"type": "object"}}
+_COUNT_OPENAI_OTHER = {
+    "type": "function",
+    "function": {"name": "other", "description": "", "parameters": {"type": "object"}},
+}
+_COUNT_FORCED = {"type": "function", "function": {"name": "lookup"}}
+_IP_WEB_SEARCH = {"type": "web_search_20250305", "name": "web_search"}
+
+
+class TestInProcessCountTokens:
+    """/v1/messages/count_tokens on a resident MLX model prices what chat's count prices."""
+
+    def _count(
+        self,
+        monkeypatch,
+        route,
+        payload,
+        *,
+        is_mlx = True,
+    ):
+        from starlette.requests import Request
+        import routes.inference as inf
+
+        calls = []
+
+        class _Resident:
+            active_model_name = "mlx/m"
+            load_generation = 0
+            models = {"mlx/m": {"is_mlx": is_mlx, "is_vision": False}}
+
+            def count_chat_tokens(self, messages, system, **kwargs):
+                calls.append((messages, system, kwargs))
+                return 7, "mlx/m"
+
+        async def _switch(*_args, **_kwargs):
+            return None
+
+        monkeypatch.setattr(inf, "get_inference_backend", lambda: _Resident())
+        monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False))
+        monkeypatch.setattr(inf, "_maybe_auto_switch_model", _switch)
+        monkeypatch.setattr(
+            inf, "_detect_safetensors_features", lambda *a, **k: {"supports_tools": True}
+        )
+        scope = {"type": "http", "method": "POST", "path": "/", "headers": [], "query_string": b""}
+        response = asyncio.run(route(payload = payload, request = Request(scope), current_subject = "t"))
+        return json.loads(response.body), calls
+
+    @pytest.mark.parametrize("policy", [None, True])
+    @pytest.mark.parametrize(
+        "anthropic, chat, tools",
+        [
+            (
+                {"system": "be brief", "messages": [{"role": "user", "content": "hi"}]},
+                {
+                    "messages": [
+                        {"role": "system", "content": "be brief"},
+                        {"role": "user", "content": "hi"},
+                    ],
+                    "tool_choice": "none",
+                },
+                [],
+            ),
+            (
+                {
+                    "messages": [_COUNT_USER],
+                    "tools": [_COUNT_TOOL, _COUNT_OTHER],
+                    "tool_choice": {"type": "tool", "name": "lookup"},
+                },
+                {
+                    "messages": [_COUNT_USER],
+                    "tools": [_COUNT_OPENAI_TOOL, _COUNT_OPENAI_OTHER],
+                    "tool_choice": _COUNT_FORCED,
+                },
+                ["lookup"],
+            ),
+            (
+                {"messages": [_COUNT_USER], "tools": [_IP_WEB_SEARCH]},
+                {"messages": [_COUNT_USER], "enable_tools": True, "enabled_tools": ["web_search"]},
+                ["web_search"],
+            ),
+        ],
+        ids = ["plain", "forced_client_tool", "server_tool"],
+    )
+    def test_counts_what_chat_counts_for_the_translated_request(
+        self, monkeypatch, policy, anthropic, chat, tools
+    ):
+        import routes.inference as inf
+        from models.inference import ChatCountTokensRequest
+
+        set_tool_policy(policy)
+        try:
+            body, calls = self._count(
+                monkeypatch, inf.anthropic_count_tokens, AnthropicMessagesRequest(**anthropic)
+            )
+            _, chat_calls = self._count(
+                monkeypatch, inf.chat_count_tokens, ChatCountTokensRequest(**chat)
+            )
+        finally:
+            reset_tool_policy()
+        assert body == {"input_tokens": 7}
+        assert calls == chat_calls
+        # A hard --enable-tools policy prices no catalog the Messages route did not select.
+        assert [t["function"]["name"] for t in calls[0][2]["tools"] or []] == tools
+
+    def test_an_archived_thread_prices_only_the_selected_server_tools(self, monkeypatch):
+        import routes.inference as inf
+
+        # Chat's own selection adds search_conversation for an archived thread.
+        monkeypatch.setattr(inf, "_thread_has_conversation_archive", lambda _thread: True)
+        payload = AnthropicMessagesRequest(
+            messages = [_COUNT_USER], tools = [_IP_WEB_SEARCH], thread_id = "t"
+        )
+        _, calls = self._count(monkeypatch, inf.anthropic_count_tokens, payload)
+        assert [t["function"]["name"] for t in calls[0][2]["tools"]] == ["web_search"]
+
+    @pytest.mark.parametrize(
+        "fields, is_mlx, status, detail",
+        [
+            ({"enable_tools": True}, False, 503, "No GGUF model loaded"),
+        ],
+        ids = ["not_mlx"],
+    )
+    def test_what_it_cannot_price_is_refused(self, monkeypatch, fields, is_mlx, status, detail):
+        import routes.inference as inf
+
+        payload = AnthropicMessagesRequest(messages = [{"role": "user", "content": "hi"}], **fields)
+        with pytest.raises(HTTPException) as exc:
+            self._count(monkeypatch, inf.anthropic_count_tokens, payload, is_mlx = is_mlx)
+        assert exc.value.status_code == status
+        assert detail in json.dumps(exc.value.detail)
+
+
+_IP_CHUNKS = [{"delta": {"content": "hi"}}, {"delta": {}, "finish_reason": "stop"}]
+_IP_SSE = (
+    "".join(f"data: {json.dumps({'choices': [c]})}\n\n" for c in _IP_CHUNKS) + "data: [DONE]\n\n"
+)
+_IP_JSON = {"choices": [{"message": {"content": "hi"}, "finish_reason": "stop"}]}
+_IP_SOURCE = {"type": "base64", "media_type": "image/png", "data": "QUJD"}
+_IP_IMAGE = {"type": "image", "source": _IP_SOURCE}
+_IP_FORMAT = {"output_config": {"format": {"type": "json_schema", "schema": {}}}}
+
+
+class TestInProcessMessages:
+    """/v1/messages on an in-process model: chat's output through the passthrough translators."""
+
+    def _serve(
+        self,
+        monkeypatch,
+        stream,
+        *timing,
+        sse = _IP_SSE,
+        **fields,
+    ):
+        stop_at, taken = timing or (None, -1)
+        from starlette.requests import Request
+        from starlette.responses import JSONResponse
+        import routes.inference as inf
+
+        seen = self.seen = {"closed": [], "unstarted": 0, "monitor": []}
+
+        async def fake_chat(chat_req, request, subject):
+            seen.update(req = chat_req, skip = request.state.skip_api_monitor)
+            seen["ui"] = inf._ui_stream_events_enabled(request)
+            seen["cap"] = inf._delegated_tool_names.get()
+            if not chat_req.stream:
+                if stop_at is not None:
+                    request.state.generation_cancel_event.set()
+                return JSONResponse(_IP_JSON)
+
+            async def body():
+                try:
+                    for i, line in enumerate(sse.split("\n\n")[:-1]):
+                        if i == stop_at:  # a Stop by the Messages id
+                            seen["stopped"] = inf._cancel_by_keys([seen["message_id"]])
+                            seen["runs"] = inf.active_generations.snapshot()
+                            if raise_on_stop:  # as the managed vLLM / SGLang tool path does
+                                raise asyncio.CancelledError()
+                        yield line + "\n\n"
+                except BaseException as exc:
+                    seen["closed"].append(type(exc).__name__ + "!" * seen.get("late", 0))
+                    raise
+
+            unstarted = lambda: seen.update(unstarted = 1) or asyncio.sleep(0)  # noqa: E731
+            return inf._SameTaskStreamingResponse(body(), unstarted_cleanup = unstarted)
+
+        raise_on_stop = fields.pop("raise_on_stop", False)
+        entry = {"is_mlx": True, "is_vision": fields.pop("vision", False)}
+        if fields.pop("speech", False):
+            entry.update(is_audio = True, audio_type = "csm")
+        backend = SimpleNamespace(active_model_name = "m", models = {"m": entry})
+        backend.count_chat_tokens = lambda *a, **k: (5, "m")
+        switch = lambda *a, **k: seen.update(switch = k) or asyncio.sleep(0)  # noqa: E731
+        for name, value in [
+            ("openai_chat_completions", fake_chat),
+            ("get_inference_backend", lambda: backend),
+            ("get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)),
+            ("_maybe_auto_switch_model", switch),
+            ("_detect_safetensors_features", lambda *a, **k: {}),
+        ]:
+            monkeypatch.setattr(inf, name, value)
+        monkeypatch.setattr(inf.api_monitor, "finish", lambda _id, *a: seen["monitor"].append(a))
+        scope = {"type": "http", "method": "POST", "path": "/v1/messages", "headers": []}
+        request = seen["request"] = Request(scope)
+        fields.setdefault("messages", [_COUNT_USER])
+        payload = AnthropicMessagesRequest(model = "m", max_tokens = 16, stream = bool(stream), **fields)
+
+        async def run():
+            response = await inf.anthropic_messages(payload, request, "t")
+            if not stream or taken is None:
+                return response.body.decode() if not stream else await response._unstarted_cleanup()
+            out, it = [], response.body_iterator
+            async for part in it:
+                out.append(part)
+                if "message_start" in part:
+                    seen["message_id"] = json.loads(part.split("data: ", 1)[1])["message"]["id"]
+                if len(out) == taken:
+                    with pytest.raises(asyncio.CancelledError):
+                        await it.athrow(asyncio.CancelledError())
+                    seen["late"] = 1  # closing only at loop shutdown is a leak
+            return "".join(out)
+
+        return asyncio.run(run()), seen
+
+    @pytest.mark.parametrize(
+        "stream, stop_at, taken, closed",
+        [
+            (1, 1, -1, ["GeneratorExit"]),
+            (1, None, None, []),
+            (1, None, 2, ["CancelledError"]),
+            (0, 0, -1, []),
+        ],
+        ids = ["stop_by_message_id", "never_started", "outer_cancel", "stopped_json"],
+    )
+    def test_stop_ends_as_on_llama_server(self, monkeypatch, stream, stop_at, taken, closed):
+        import routes.inference as inf
+
+        with pytest.raises(asyncio.CancelledError) if not stream else contextlib.nullcontext():
+            out, seen = self._serve(monkeypatch, stream, stop_at, taken, session_id = "s1")
+        if not stream:
+            return  # the llama-server JSON path never answers a stopped run either
+        assert seen["skip"] is True and seen["req"].session_id == "s1"
+        assert seen["closed"] == closed and seen["unstarted"] == (taken is None)
+        assert ("cancelled",) in seen["monitor"]
+        assert not [k for k in inf._CANCEL_REGISTRY if "msg_" in str(k)]
+        if stop_at is not None:
+            assert seen["stopped"] == 1 and out.endswith('{"type": "message_stop"}\n\n')
+            assert seen["runs"] == []  # chat's own tracker records the run
+            assert seen["request"].scope.get("_unsloth_keepwarm_response_failed")
+
+    @pytest.mark.parametrize(
+        "fields, reason, multiple",
+        [
+            ({}, None, None),
+            (_IP_FORMAT, None, None),
+            ({"enable_tools": True, "permission_mode": "off"}, None, None),
+            (
+                {"messages": [{"role": "user", "content": [_IP_IMAGE, _IP_IMAGE]}], "vision": True},
+                None,
+                True,
+            ),
+            ({"messages": []}, "non-system", None),
+        ],
+        ids = ["plain", "json_format", "server_tools", "two_images", "no_turn"],
+    )
+    def test_refused_before_a_load(self, monkeypatch, fields, reason, multiple):
+        with pytest.raises(HTTPException) if reason else contextlib.nullcontext():
+            self._serve(monkeypatch, 0, **fields)
+        sw = self.seen["switch"]
+        assert sw["gguf_only"] is (reason is not None)
+        assert reason in sw["gguf_only_reason"] if reason else sw["gguf_only_reason"] is None
+        assert (sw["image_preflight"] or {}).get("multiple") is multiple
+
+    def test_a_source_raising_on_stop_still_ends_the_stream_cleanly(self, monkeypatch):
+        out, seen = self._serve(monkeypatch, 1, 1, -1, raise_on_stop = True)
+        assert seen["stopped"] == 1 and out.endswith('{"type": "message_stop"}\n\n')
+        assert not [
+            k for k in __import__("routes.inference").inference._CANCEL_REGISTRY if "msg_" in str(k)
+        ]
+
+    @pytest.mark.parametrize("stream", [0, 1])
+    def test_a_sampling_value_chat_rejects_is_a_400_before_a_load(self, monkeypatch, stream):
+        # Messages bounds top_k less tightly than chat; a GGUF target still takes it.
+        with pytest.raises(HTTPException) as err:
+            self._serve(monkeypatch, stream, top_k = 200)
+        assert err.value.status_code == 400 and "top_k" in json.dumps(err.value.detail)
+        assert self.seen["switch"]["gguf_only"] is True and "req" not in self.seen
+
+    @pytest.mark.parametrize("stream", [0, 1])
+    def test_a_resident_speech_model_is_not_served_through_chat(self, monkeypatch, stream):
+        # Chat answers a TTS model with a finished clip, never a text reply.
+        with pytest.raises(HTTPException) as err:
+            self._serve(monkeypatch, stream, speech = True)
+        assert "req" not in self.seen
+        assert "GGUF" in json.dumps(err.value.detail)
+
+    @pytest.mark.parametrize("vision", [True, False])
+    def test_an_image_on_a_text_only_model_names_its_block(self, monkeypatch, vision):
+        turns = [
+            {"role": "user", "content": "Hi."},
+            {"role": "assistant", "content": "Hello."},
+            {"role": "user", "content": [{"type": "text", "text": "What?"}, _IP_IMAGE]},
+        ]
+        with contextlib.nullcontext() if vision else pytest.raises(HTTPException) as err:
+            self._serve(monkeypatch, 0, messages = turns, vision = vision)
+        assert ("req" in self.seen) is vision
+        if not vision:
+            assert err.value.detail.startswith("messages.2.content.1.image: ")
+
+    @pytest.mark.parametrize("choice, kept", [(None, True), ({"type": "auto"}, False)])
+    def test_a_json_output_format_reaches_chat_unless_a_tool_may_run(
+        self, monkeypatch, choice, kept
+    ):
+        tool = {"name": "lookup", "input_schema": {"type": "object"}}
+        tools = {"tools": [tool], "tool_choice": choice} if choice else {}
+        self._serve(monkeypatch, 0, **_IP_FORMAT, **tools)
+        assert (self.seen["req"].response_format is not None) is kept
+
+    @pytest.mark.parametrize("stream", [1, 0])
+    def test_server_tools_run_in_chats_loop_and_answer_as_on_llama_server(
+        self, monkeypatch, stream
+    ):
+        frames = [
+            {"choices": [{"delta": {"reasoning_content": "plan"}}]},
+            {"choices": [{"delta": {"content": "Searching."}}]},
+            {
+                "type": "tool_start",
+                "tool_name": "web_search",
+                "tool_call_id": "c1",
+                "arguments": {},
+            },
+            {"type": "tool_status", "content": "Searching"},
+            {"type": "tool_end", "tool_name": "web_search", "tool_call_id": "c1", "result": "r"},
+            {"choices": [{"delta": {"reasoning_content": "ok"}}]},
+            {"choices": [{"delta": {"content": "Done."}, "finish_reason": "stop"}]},
+            {"choices": [], "usage": {"prompt_tokens": 9, "completion_tokens": 4}},
+        ]
+        sse = "".join(f"data: {json.dumps(f)}\n\n" for f in frames) + "data: [DONE]\n\n"
+        choice = {"type": "tool", "name": "web_search_20250305", "disable_parallel_tool_use": True}
+        out, seen = self._serve(
+            monkeypatch, stream, sse = sse, tools = [_IP_WEB_SEARCH], tool_choice = choice
+        )
+        req = seen["req"]
+        assert seen["ui"] is True and seen["cap"] == {"web_search"}
+        assert req.enabled_tools == ["web_search"]
+        assert req.tool_choice == {"type": "function", "function": {"name": "web_search"}}
+        assert req.confirm_tool_calls is False and req.parallel_tool_calls is False
+        if stream:
+            starts = [
+                json.loads(e.split("data: ")[1]) for e in out.split("\n\n") if "block_start" in e
+            ]
+            kinds = [s["content_block"]["type"] for s in starts]
+            assert out.endswith('{"type": "message_stop"}\n\n')
+        else:
+            body = json.loads(out)
+            kinds = [b["type"] for b in body["content"]]
+            assert body["usage"]["input_tokens"] == 9 and body["stop_reason"] == "end_turn"
+        tool_blocks = ["server_tool_use", "web_search_tool_result"]
+        assert kinds == ["thinking", "text", *tool_blocks, "thinking", "text"]

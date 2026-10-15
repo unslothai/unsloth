@@ -160,6 +160,17 @@ export const BUDGET = {
   // raw / 83 B transfer to the eager settings and English locale chunks (6,780,553 -> 6,780,901 B raw,
   // 2,038,848 -> 2,038,931 B transfer against 9f5b133254, one machine and build, Node 24, chunk count unchanged
   // at 95). Raised by that growth.
+  // Drafter training in the Train tab adds about 4.9 KB raw / 1.4 KB transfer (6,628.3 KB raw, 1,992.9 KB transfer
+  // measured against cd424654a, one machine and build, 95 chunks): its persisted training-store fields, their
+  // migration and the en strings hydrate at startup; the section itself is not in the startup set.
+  // The Run settings Load in 4-bit switch (#13841: the per-model field threaded through every chat load path and
+  // the resident-config check) adds 1,448 B raw / 433 B transfer, inline in the eager chat chunk (6,787,367 ->
+  // 6,788,815 B raw, 2,040,805 -> 2,041,238 B transfer against 4494fa58c, one machine and build, Node 24, chunk
+  // count unchanged at 95). Raised by that growth.
+  // The Train tab's Preview tokens button, its dialog and strings (#13850) add 2,233 B raw / 858 B transfer
+  // (6,788,764 -> 6,790,997 B raw, 2,041,243 -> 2,042,101 B transfer against 5e5511027, one machine and build,
+  // Node 24, chunk count unchanged at 95). Lazy-loading the dialog cost more (2.7 KB transfer) and a 96th
+  // startup chunk, so it is imported statically and the budget raised by that growth.
   // The paused and queued chat states (admission status, the paused continuation reason) add 2.3 KB
   // raw / 1.0 KB transfer to the eager chat chunk (6,570.6 -> 6,572.9 KB raw, 1,975.5 -> 1,976.5 KB
   // transfer against b8d76e169, one machine and build). They render on the first chat screen, so
@@ -171,11 +182,11 @@ export const BUDGET = {
   // raw, 2,026,381 -> 2,029,284 B transfer, one machine and build).
   // Re-measured on main at 5e927b0fa: +7,064 B raw / +2,314 B transfer (6,764,333 -> 6,771,397 B raw,
   // 2,033,495 -> 2,035,809 B transfer, one machine and build).
-  // Re-measured on main at f6c34ddbc: +7,214 B raw / +2,653 B transfer (6,781,377 -> 6,788,591 B raw,
-  // 2,039,139 -> 2,041,792 B transfer, one machine and build). On main's limits plus that growth, with
+  // Re-measured on main at a2003f1a0: +7,225 B raw / +2,416 B transfer (6,790,366 -> 6,797,591 B raw,
+  // 2,042,026 -> 2,044,442 B transfer, one machine and build). On main's limits plus that growth, with
   // 0.9 KB raw / 0.4 KB transfer above it for the CI runner, which measured this branch 0.6 KB raw higher.
-  transferBytes: 2_042_345,
-  rawBytes: 6_790_470,
+  transferBytes: 2_045_107,
+  rawBytes: 6_799_306,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
