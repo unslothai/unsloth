@@ -140,11 +140,19 @@ export const BUDGET = {
   // module the eager browser store imports for tab close and duplicate (6,771,852 -> 6,773,496 B raw, 2,035,948 ->
   // 2,036,414 B transfer against 82f16ca55, one machine and build, Node 24, chunk count unchanged at 95). Raised by
   // that growth.
-  // The Windows Long Paths explainer on the first-run startup screen (#13523) adds 1,849 B raw / 525 B
-  // transfer (6,773,496 -> 6,775,345 B raw, 2,036,386 -> 2,036,911 B transfer against 59ab069b5, one machine
-  // and build, Node 24, chunk count unchanged at 95). It renders on that first screen, so raised by that growth.
-  transferBytes: 2_036_939,
-  rawBytes: 6_775_345,
+  // Hub Run refusing audio models neither Audio nor chat can run (#13812) adds 77 B raw / 65 B transfer
+  // (6,773,445 -> 6,773,522 B raw, 2,036,392 -> 2,036,457 B transfer against 59ab069b5, one machine and build,
+  // Node 24, chunk count unchanged at 95). Raised by that growth.
+  // The Windows Desktop install location row on the first-run screen (#13446) adds 1,324 B raw / 342 B
+  // transfer (6,773,496 -> 6,774,820 B raw, 2,036,386 -> 2,036,728 B transfer against 59ab069b5, one machine
+  // and build, Node 24, chunk count unchanged at 95). Lazy-loading it cost more transfer and a 96th startup
+  // chunk (Rollup split react-dom out), so it is imported statically and the budget raised by that growth.
+  // The Windows Long Paths explainer on the first-run startup screen (#13523) adds 1,816 B raw / 479 B
+  // transfer (6,777,794 -> 6,779,610 B raw, 2,037,725 -> 2,038,204 B transfer against 50b9deacb, one machine
+  // and build, Node 24, chunk count unchanged at 95). Main already measured 2,897 B raw / 904 B transfer over
+  // the previous limits there, so they are set to the measured build.
+  transferBytes: 2_038_204,
+  rawBytes: 6_779_610,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

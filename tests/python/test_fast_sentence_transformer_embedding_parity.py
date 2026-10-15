@@ -1,15 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team.
-"""Regression guard for issue #6881: FastSentenceTransformer must preprocess text
-like a stock SentenceTransformer for decoder embedding models. ST 5.x infers a
-"message" modality for chat-template models (e.g. Qwen/Qwen3-Embedding), so building
-via `Transformer(model_name, ...)` chat-wraps inputs and degrades embeddings;
-`_create_transformer_module` uses `Transformer.load(...)` instead.
-
-Layers: test_transformer_load_signature_supports_unsloth_kwargs (fast, runs when ST
-is importable) and test_fast_sentence_transformer_matches_stock_st (end-to-end parity,
-opt-in via UNSLOTH_EMBEDDING_PARITY_MODEL so default CI is unaffected).
-"""
+"""Use Transformer.load: ST 5.x infers a chat message modality that chat-wraps embedding inputs."""
 
 from __future__ import annotations
 
@@ -77,14 +68,12 @@ def test_fast_sentence_transformer_matches_stock_st():
     from sentence_transformers import SentenceTransformer
 
     device = "cuda"
-    # Prefer bf16 when the GPU supports it: fp16 overflows to NaN on bf16-native
-    # embedders such as EmbeddingGemma (Gemma3), which would mask real parity.
+    # fp16 overflows to NaN on bf16-native embedders like EmbeddingGemma.
     dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
     texts = _probe_texts()
     max_seq_length = 256
 
-    # Control FIRST, before importing unsloth, so its global import patches never touch the stock reference (mirrors the
-    # issue's "restart runtime" repro).
+    # Build the control before importing unsloth so its global patches never touch it.
     ctrl = SentenceTransformer(model_id, device = device, model_kwargs = {"torch_dtype": dtype})
     ctrl.max_seq_length = max_seq_length
     ctrl_ids = ctrl.tokenize([texts[0]])["input_ids"][0].tolist()
@@ -107,7 +96,6 @@ def test_fast_sentence_transformer_matches_stock_st():
         fast.encode(texts, normalize_embeddings = True, batch_size = 8), dtype = np.float32
     )
 
-    # Identical tokenization = no chat-template wrapping slipped in (the #6881 defect).
     assert fast_ids == ctrl_ids, (
         f"tokenization diverged (chat-template wrapping regressed?):\n"
         f"  stock: {ctrl_ids}\n  fast:  {fast_ids}"

@@ -72,8 +72,7 @@ def test_clean_machine_workflow_uses_resolver_but_preserves_explicit_tag():
 
 
 def test_the_resolver_stops_at_the_newest_release_holding_the_asset():
-    # One lookup per release per matrix leg was the cost, and a transient failure
-    # on an irrelevant older release failed the leg. Newest first, stop on match.
+    # Newest first, stop on match: a transient failure on an older release must not fail the leg.
     looked_up: list[str] = []
     releases = [
         {"tagName": "v0.1.527-beta", "createdAt": "2026-03-01T00:00:00Z"},

@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { DiagnosticsCopyActions } from "@/components/tauri/diagnostics-copy-actions";
+import InstallLocation from "@/components/tauri/install-location";
 import { LogDetails } from "@/components/tauri/log-details";
 import {
   installProgressMessage,
@@ -158,6 +159,7 @@ function NotInstalledContent({
         >
           Get Started
         </Button>
+        <InstallLocation disabled={phase !== "idle"} />
       </div>
     </div>
   );
