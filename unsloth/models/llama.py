@@ -16,6 +16,7 @@ import torch
 import gc
 import contextlib
 import math
+import sys
 import functools
 from typing import Optional, Tuple, List, Union
 
@@ -41,10 +42,21 @@ from ._utils import (
 
 try:
     from unsloth_zoo.fused_losses.cross_entropy_loss import unsloth_fsdp_unshard
-except ImportError:  # unsloth_zoo without unsloth-zoo#1751's fix
+except ImportError:  # unsloth_zoo predating the helper (unsloth-zoo#1751)
+
+    @torch.compiler.disable
+    def _fsdp_unshard(module):
+        module.unshard()
 
     def unsloth_fsdp_unshard(module):
-        return None
+        if not torch.distributed.is_available() or not torch.distributed.is_initialized():
+            return
+        FSDPModule = getattr(sys.modules.get("torch.distributed.fsdp"), "FSDPModule", None)
+        if FSDPModule is None:
+            return
+        for submodule in module.modules():
+            if isinstance(submodule, FSDPModule):
+                _fsdp_unshard(submodule)
 
 
 from .loader_utils import (
