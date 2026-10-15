@@ -353,6 +353,21 @@ def _sequence_lengths(kwargs, args):
     return None
 
 
+def _unsupported_setup(
+    model,
+    args,
+    trainer_name = "",
+):
+    """True where the per-token count does not describe the step, so nothing is reported:
+    diffusion objectives (extra no-grad passes, encoder + canvas, recomputed heads) and
+    single-process DataParallel (the hook runs once per replica, concurrently)."""
+    model_type = str(getattr(_model_config(model), "model_type", "") or "")
+    if "diffusion" in model_type.lower() or "Diffusion" in trainer_name:
+        return True
+    # Trainer sets n_gpu > 1 only for DataParallel; distributed processes see 1.
+    return (getattr(args, "n_gpu", 1) or 1) > 1
+
+
 class UnslothMFUCallback(TrainerCallback):
     """Adds `train_tflops_per_gpu` and `train_mfu` to training logs. Prefer `add_mfu_callback`."""
 
@@ -372,6 +387,7 @@ class UnslothMFUCallback(TrainerCallback):
         self._devices = []
         self._unsloth_head_window = False
         self._enabled = True
+        self._trainer_name = ""
         self._reset()
 
     def _reset(self):
@@ -430,7 +446,9 @@ class UnslothMFUCallback(TrainerCallback):
             return
         config = _model_config(model)
         # One length per sequence cannot describe separate source and target lengths.
-        self._enabled = not getattr(config, "is_encoder_decoder", False)
+        self._enabled = not getattr(config, "is_encoder_decoder", False) and not _unsupported_setup(
+            model, args, self._trainer_name
+        )
         if not self._enabled:
             return
         checkpointing = self.gradient_checkpointing
@@ -549,5 +567,6 @@ def add_mfu_callback(trainer, **kwargs):
             callbacks.insert(0, callbacks.pop(index))
             return callback
     callback = UnslothMFUCallback(**kwargs)
+    callback._trainer_name = type(trainer).__name__
     trainer.callback_handler.callbacks.insert(0, callback)
     return callback

@@ -549,3 +549,17 @@ def test_sentence_transformer_dense_after_pooling_is_not_per_token():
     wrapper = torch.nn.Sequential(torch.nn.Module(), torch.nn.Module(), torch.nn.Linear(16, 16))
     wrapper[0].auto_model = inner
     assert mfu.count_linear_flops_per_token(wrapper)[0] == plain
+
+
+def test_diffusion_and_data_parallel_report_nothing():
+    from types import SimpleNamespace
+
+    model = _model()
+    assert not mfu._unsupported_setup(model, SimpleNamespace(n_gpu = 1))
+    assert mfu._unsupported_setup(model, SimpleNamespace(n_gpu = 2))
+    assert mfu._unsupported_setup(model, SimpleNamespace(n_gpu = 1), "DiffusionTrainer")
+    model.config.model_type = "diffusion_gemma"
+    assert mfu._unsupported_setup(model, SimpleNamespace(n_gpu = 1))
+    callback = mfu.UnslothMFUCallback(peak_tflops = 1)
+    callback.on_train_begin(SimpleNamespace(n_gpu = 1), _State(), None, model = model)
+    assert not callback._enabled and callback._handle is None
