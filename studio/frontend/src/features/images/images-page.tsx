@@ -3737,6 +3737,15 @@ export function ImagesPage({
       // stays interactive during a generation: refusing it there was a silent dead click.
       if (busy !== null && !downloadOnlyPick) return;
       if (meta.source === "external") {
+        if (!downloadOnlyPick) {
+          if (quantRevert.current && quantRevert.current === stagedQuantRevert.current) {
+            revertPick(quantRevert.current);
+            quantRevert.current = null;
+          }
+          pickGuard.cancel();
+          pickToast.dismissAll();
+          beginPick();
+        }
         setExternalModelId(id);
         return;
       }
@@ -3928,6 +3937,7 @@ export function ImagesPage({
       loadGgufRepoPick,
       loadOrStage,
       pickGuard,
+      pickToast,
       quant,
       revertPick,
     ],
@@ -3951,6 +3961,7 @@ export function ImagesPage({
       // The deploy owns the page now: a resolving pick or a staged download would load over the base it is about to.
       pickGuard.cancel();
       pickToast.dismissAll();
+      setExternalModelId(null);
       pendingDeploy.current = { loraId: stem, family: args.family };
       if (args.trigger.trim()) setPrompt(args.trigger.trim());
       setPageMode("create");
@@ -4420,7 +4431,7 @@ export function ImagesPage({
     }
     // Resolve a base seed up front, so each sequential image gets a distinct, reproducible seed (base + i).
     let baseSeed: number;
-    if (seed.trim()) {
+    if (seed.trim() && !external) {
       const n = Number(seed);
       if (!Number.isInteger(n) || n < 0 || n > Number.MAX_SAFE_INTEGER) {
         toast.error("Seed must be a non-negative integer");

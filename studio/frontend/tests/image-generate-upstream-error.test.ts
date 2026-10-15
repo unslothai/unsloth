@@ -58,3 +58,13 @@ test("Stop on a connection run targets the connection, a local Stop does not", a
     "/api/inference/images/generate/cancel",
   ]);
 });
+
+test("a connected pick retires a staged local pick and skips the hidden seed", async () => {
+  const { readSrc } = await import("./helpers/kit.ts");
+  const page = readSrc("features/images/images-page.tsx");
+  const branch = page.slice(page.indexOf('if (meta.source === "external") {'));
+  const body = branch.slice(0, branch.indexOf("setExternalModelId(id);"));
+  assert.match(body, /pickGuard\.cancel\(\);/);
+  assert.match(body, /beginPick\(\);/);
+  assert.match(page, /if \(seed\.trim\(\) && !external\) \{/);
+});
