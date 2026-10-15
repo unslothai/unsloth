@@ -111,7 +111,7 @@ class _TokenPreviewService:
             native_path_secret_removed_for_child_start,
             run_without_native_path_secret,
         )
-        from utils.process_lifetime import adopt_pid
+        from utils.process_lifetime import adopt_pid, is_process_shutting_down
 
         cache_env = get_hf_cache_paths().child_env({})
         with (
@@ -139,6 +139,11 @@ class _TokenPreviewService:
             proc.start()
         adopt_pid(proc.pid)
         self._proc, self._key, self._served = proc, key, False
+        # _start_locked checked the latch before the spawn, but a quit can land in between: the
+        # shutdown sweep may already have taken its snapshot, so reap this worker here.
+        if is_process_shutting_down():
+            self._stop_locked()
+            raise TokenPreviewError("Unsloth is shutting down.")
         logger.info("Token preview worker started (pid=%s)", proc.pid)
 
     def preview(
