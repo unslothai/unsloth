@@ -41692,7 +41692,12 @@ class LlamaCppBackend:
                                     # `prompt_budget`, whose quarter-window reply reserve
                                     # emptied every result from 75% of the window on (#13784).
                                     # Price to the reply floor the admission gate uses instead.
-                                    if context_overflow != "truncate_oldest":
+                                    # Not with media in the thread: `_spent` leaves it out, and
+                                    # the quarter reserve is what covers it.
+                                    if context_overflow != "truncate_oldest" and (
+                                        messages_without_unpriced_media(conversation)
+                                        is conversation
+                                    ):
                                         _result_max_tokens = min(
                                             _iteration_max_tokens
                                             if _iteration_max_tokens and _iteration_max_tokens > 0

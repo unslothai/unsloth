@@ -45,6 +45,7 @@ def _run_one_call(
     *,
     context_overflow,
     max_tokens = _CTX,
+    messages = None,
 ):
     received: list[object] = []
     results: list[str] = []
@@ -69,7 +70,7 @@ def _run_one_call(
 
     events = list(
         backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "Run the script"}],
+            messages = messages or [{"role": "user", "content": "Run the script"}],
             tools = [_WEB_SEARCH_TOOL],
             max_tool_iterations = 4,
             max_tokens = max_tokens,
@@ -102,4 +103,16 @@ def test_compaction_on_keeps_the_fit_target(monkeypatch):
     budget, _ = _run_one_call(monkeypatch, context_overflow = "truncate_oldest")
 
     # 0.99 * 120K - 120.5K: the fit compaction trims to, unchanged.
+    assert budget == 0
+
+
+def test_compaction_off_keeps_the_reserve_while_media_is_unpriced(monkeypatch):
+    # The count strips images, so only the quarter reserve stands between the result and them.
+    image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0KGgo="}}
+    budget, _ = _run_one_call(
+        monkeypatch,
+        context_overflow = None,
+        messages = [{"role": "user", "content": [{"type": "text", "text": "Run it"}, image]}],
+    )
+
     assert budget == 0
