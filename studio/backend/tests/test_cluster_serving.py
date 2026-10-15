@@ -2263,7 +2263,7 @@ def test_a_state_space_model_without_attention_kv_is_sized(monkeypatch):
         "mamba2.ssm.group_count": 8,
     }
     monkeypatch.setattr(cs, "_local_gguf_header", lambda *a, **k: (header, {}))
-    run(ss.before_load(_request(max_seq_length = 8192), 4))
+    run(ss.before_load(_request(max_seq_length = 8192, ctx_checkpoints = 0), 4))
     assert ss.status()["topology"] == "layer_split"
     assert cs.state().plan.kv_bytes == cs._ssm_state_bytes(header, 4)
 
@@ -2355,7 +2355,7 @@ def test_context_compute_is_kept_free_on_every_device(monkeypatch):
     _cluster_env(monkeypatch)
     run(ss.before_load(_request(max_seq_length = 8192), 4))
     plain = cs.state().plan.reason
-    monkeypatch.setattr(cs, "_ctx_compute_bytes", lambda *a, **k: 2 * GIB)
+    monkeypatch.setattr(cs, "_ctx_compute_bytes", lambda *a, **k: 0 if a[7:] else 2 * GIB)
     run(ss.before_load(_request(max_seq_length = 8192), 4))
     # 4 devices x 2 GiB less usable.
     assert "277.5 GiB usable" in plain and "269.5 GiB usable" in cs.state().plan.reason
@@ -2441,3 +2441,85 @@ def test_an_invalid_config_keeps_a_served_splits_workers(monkeypatch, tmp_path):
     assert "cluster config" in ss.status()["reason"]
     run(ss.after_load(backend, 4))  # the route reused the loaded primary
     assert stopped == [] and "10.0.0.2:50052" in cs.state().workers
+
+
+@pytest.mark.parametrize(
+    "kw, extra, count",
+    [({}, [], 32), ({"ctx_checkpoints": 4}, [], 4), ({}, ["--ctx-checkpoints", "0"], 0)],
+)
+def test_context_checkpoints_are_charged_to_this_machine(monkeypatch, kw, extra, count):
+    _cluster_env(monkeypatch)
+    monkeypatch.setattr(cs, "_ctx_compute_bytes", lambda *a, **k: 10 * 2**20 if a[7:] else 0)
+    out = run(ss.before_load(_request(max_seq_length = 8192, llama_extra_args = extra, **kw), 4))
+    plan = cs.state().plan
+    charged = count * 4 * 10 * 2**20
+    assert plan.extra_bytes == pytest.approx(charged)
+    assert plan.uncertain_extra_bytes == pytest.approx(charged)  # never counted as freed
+    assert out is not None
+
+
+@pytest.mark.parametrize("flag", ["-mlock", "-lm"])
+def test_short_mlock_spellings_keep_the_load_local(monkeypatch, flag):
+    seen = _cluster_env(monkeypatch)
+    extra = [flag] if flag == "-mlock" else [flag, "mlock"]
+    request = _request(llama_extra_args = extra)
+    assert run(ss.before_load(request, 4)) is request and seen == []
+
+
+def test_asymmetric_key_and_value_widths_are_sized_apart():
+    vals = dict(_llama_header(8))
+    vals["llama.attention.key_length"] = 128
+    vals["llama.attention.value_length"] = 256
+    kv = cs._kv_from_scalars(vals, 1024, "q8_0", "f16", ss)
+    per_cell = 128 * ss.kv_bytes_per_elem("q8_0") + 256 * ss.kv_bytes_per_elem("f16")
+    assert kv == int(80 * 1024 * 8 * per_cell)
+
+
+def test_lora_output_tensors_join_the_output_lump(monkeypatch, tmp_path):
+    lora = tmp_path / "lora.gguf"
+    lora.write_bytes(
+        _gguf_header(
+            {"general.architecture": (8, "llama")},
+            [
+                ("blk.0.attn_q.weight.lora_a", [64, 64], 0),
+                ("output.weight.lora_b", [GIB // 4, 2], 0),
+            ],
+        )
+    )
+    _cluster_env(monkeypatch)
+    monkeypatch.setattr(
+        ss, "gguf_size_bytes", lambda path: 200 * GIB if path == "/models/big.gguf" else GIB
+    )
+    monkeypatch.setattr(cs, "_gguf_block_count", lambda path, ss: 100)
+    monkeypatch.setattr(cs, "_local_gguf_header", lambda *a, **k: ({}, {0: GIB, -1: GIB}))
+    run(ss.before_load(_request(llama_extra_args = ["--lora", str(lora)]), 4))
+    assert cs.state()._max_block == 3 * GIB  # the 1 GiB output plus its 2 GiB adapter
+
+
+def test_the_compute_reserve_prices_the_lighter_cache_axis_and_planned_flash_attention(monkeypatch):
+    _cluster_env(monkeypatch)
+    seen = []
+    monkeypatch.setattr(cs, "_ctx_compute_bytes", lambda *a, **k: seen.append(a) or 0)
+    monkeypatch.setattr(ss, "llama_server_supports", lambda flag, binary = None: True)
+    extra = ["-ctk", "f16", "-ctv", "q4_0"]
+    run(ss.before_load(_request(max_seq_length = 8192, llama_extra_args = extra), 4))
+    assert seen[0][4] == "q4_0" and seen[0][5] is True  # a quantized V forces flash attention on
+    seen.clear()
+    run(ss.before_load(_request(max_seq_length = 8192, llama_extra_args = ["-fa", "auto"]), 4))
+    assert seen[0][5] is False  # auto is priced as the costlier answer, as the loader does
+
+
+def test_an_invalid_config_keeps_the_served_split_record(monkeypatch):
+    _cluster_env(monkeypatch)
+    out = run(ss.before_load(_request(), 4))
+    backend = SimpleNamespace(
+        _process = SimpleNamespace(args = ["/b/llama-server"] + out.llama_extra_args),
+        is_loaded = True,
+    )
+    run(ss.after_load(backend, 4))
+    block = list(cs.state().block)
+    monkeypatch.setenv(cs.ENV_NODES, "bad host!")
+    run(ss.before_load(_request(), 4))
+    run(ss.after_load(backend, 4))  # the route reused the loaded primary
+    assert cs.state().block == block and cs.state().topology == "layer_split"
+    assert "still serving" in ss.status()["reason"]

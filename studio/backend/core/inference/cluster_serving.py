@@ -165,6 +165,7 @@ _KV_KEY_SUFFIXES = (
     ".attention.head_count_kv",
     ".embedding_length",
     ".attention.key_length",
+    ".attention.value_length",
     ".ssm.conv_kernel",
     ".ssm.inner_size",
     ".ssm.state_size",
@@ -244,7 +245,7 @@ def _read_gguf_header(
         match = re.match(r"blk\.(\d+)\.", name)
         # The output matrix (or the token embedding tied embeddings copy there) is one more
         # indivisible allocation, kept on the last device; -2 / -1 below.
-        index = int(match.group(1)) if match else _OUTPUT_KEYS.get(name)
+        index = int(match.group(1)) if match else _OUTPUT_KEYS.get(name.split(".", 1)[0])
         if index is None:
             continue
         if ttype not in GGML_QUANT_SIZES:
@@ -254,7 +255,7 @@ def _read_gguf_header(
     return out, blocks
 
 
-_OUTPUT_KEYS = {"output.weight": -1, "token_embd.weight": -2}
+_OUTPUT_KEYS = {"output": -1, "token_embd": -2}
 # The KV section of the last uncached header read, for the loader's own metadata reader.
 _REMOTE_HEADER_KV: Dict[Tuple[str, str], bytes] = {}
 
@@ -267,9 +268,11 @@ def _ctx_compute_bytes(
     cache_type: Optional[str],
     flash_attn: bool,
     n_parallel: int,
+    checkpoint: bool = False,
 ) -> Optional[int]:
-    """The loader's per-device context-dependent compute scratch on a layer split, from its own
-    estimator over this GGUF's header; None when the header cannot be read."""
+    """The loader's per-device context-dependent compute scratch on a layer split (with
+    ``checkpoint``, one slot's context checkpoint), from its own estimator over this GGUF's
+    header; None when the header cannot be read."""
     if ctx <= 0:
         return 0
     import tempfile
@@ -290,6 +293,8 @@ def _ctx_compute_bytes(
         est._read_gguf_metadata(path)
         if not getattr(est, "_embedding_length", None):
             return None
+        if checkpoint:
+            return int(est._ctx_checkpoint_bytes(cache_type, flash_attn = flash_attn))
         return int(
             est._compute_buffer_ctx_bytes(
                 ctx,
@@ -344,10 +349,11 @@ def _kv_from_scalars(
         head_dim = n_embd // n_head
     if not (n_layer and n_kv and head_dim):
         return None
-    per_elem = ss.kv_bytes_per_elem(cache_type) + ss.kv_bytes_per_elem(
+    value_dim = vals.get(f"{arch}.attention.value_length") or head_dim
+    per_cell = head_dim * ss.kv_bytes_per_elem(cache_type) + value_dim * ss.kv_bytes_per_elem(
         cache_type if cache_type_v is None else cache_type_v
     )
-    return int(n_layer * int(ctx) * n_kv * head_dim * per_elem)
+    return int(n_layer * int(ctx) * n_kv * per_cell)
 
 
 def _local_gguf_header(path: str, ss: Any) -> Tuple[Dict[str, Any], Dict[int, int]]:
@@ -459,11 +465,13 @@ def _locks_host_copy(request: Any, args: Sequence[str]) -> bool:
     """mlock in any spelling: a pinned full host copy, on unified memory the pool the layers use."""
     if "mlock" in str(getattr(request, "load_mode", None) or "").lower():
         return True
+    from core.inference.llama_server_args import _LOAD_MODE_FLAGS, _MLOCK_FLAGS
+
     for i, a in enumerate(args):
         name, eq, inline = str(a).partition("=")
-        if name == "--mlock":
+        if name in _MLOCK_FLAGS:
             return True
-        if name == "--load-mode":
+        if name in _LOAD_MODE_FLAGS:
             value = inline if eq else (str(args[i + 1]) if i + 1 < len(args) else "")
             if "mlock" in value.lower():
                 return True
@@ -963,6 +971,7 @@ class ClusterServing:
         self._max_block: Optional[float] = None
         self._host_embd: float = 0.0
         self._ctx_compute: float = 0.0
+        self._checkpoints: float = 0.0
         self._uncertain_extra: float = 0.0
         # Workers this load (re)started: they hold none of the served split's buffers.
         self._started: set = set()
@@ -1072,6 +1081,11 @@ class ClusterServing:
         self.plan, self.block = None, []
         self._down = set()  # _started stays until a load commits: a refusal keeps those workers
         if not self.refresh_nodes() or self.config_error:
+            if self.config_error and self._pre_load[3]:
+                # The served split keeps its record, so a later retirement still sees it.
+                self.topology, _reason, self.plan, self.block = self._pre_load
+                self.reason = f"cluster config: {self.config_error}; still serving the last split"
+                return request
             self.topology, self.reason = "single", f"cluster config: {self.config_error}"
             return request
         explicit = getattr(request, "llama_extra_args", None)
@@ -1249,10 +1263,13 @@ class ClusterServing:
 
         # llama.cpp's fitter keeps an explicit --fit-target free on every device.
         margin = (fit_target_margin_in(flags, os.environ) or 0.0) * 1024 * 1024
+        # Context checkpoints live in host RAM, which a local accelerator may share (unified
+        # memory); with none there they take nothing a plan places.
+        checkpoints = self._checkpoints if any(not d.remote for d in devices) else 0.0
         plan = plan_cluster(
             model_bytes,
             kv_bytes,
-            local_extra,
+            local_extra + checkpoints,
             devices,
             forced = forced,
             layer_bytes = layer_bytes,
@@ -1261,7 +1278,7 @@ class ClusterServing:
             scratch_bytes = self._ctx_compute,
         )
         plan.kv_bytes = float(kv_bytes or 0)
-        plan.uncertain_extra_bytes = self._uncertain_extra
+        plan.uncertain_extra_bytes = self._uncertain_extra + checkpoints
         plan.layer_bytes = float(layer_bytes or 0.0)
         plan.host_bytes = self._host_embd
         self.plan = plan
@@ -1347,9 +1364,10 @@ class ClusterServing:
                 except Exception:
                     extra_blocks = {}
                 lora = {k: v for k, v in extra_blocks.items() if k >= 0}
-                if lora:
+                if lora or -1 in extra_blocks:
                     for k, v in lora.items():
                         layers[k] = layers.get(k, 0) + v  # beside the layer it modifies
+                    output += extra_blocks.get(-1, 0)  # beside the output matrix
                 else:
                     unread_adapters += int(ss.gguf_size_bytes(path) or 0)
         self._max_block = (
@@ -1500,10 +1518,10 @@ class ClusterServing:
         kv = None
         self._unsized_kv = False
         from core.inference.llama_cpp import (
-            _flash_attn_enabled_from_args,
             _kv_cache_cell_layout,
             _kv_unified_from_args,
             _named_batch_sizes,
+            _planned_flash_attn_state,
         )
 
         # Studio passes --kv-unified for several slots; --no-kv-unified gives each its own
@@ -1511,31 +1529,74 @@ class ClusterServing:
         unified = _kv_unified_from_args(extras, default = n_parallel > 1)
         _slots, streams, per_stream = _kv_cache_cell_layout(ctx, n_parallel, unified)
         cells = streams * per_stream if ctx else 0
-        if local_file and cells:
+        if cells and size:
+            kv = _kv_from_scalars(header, cells, cache_type, cache_type_v, ss)
+        if kv is None and local_file and cells:
             kv = await asyncio.to_thread(
                 ss.estimate_kv_bytes, local_file, cells, cache_type, cache_type_v
             )
-        if kv is None and cells and size:
-            kv = _kv_from_scalars(header, cells, cache_type, cache_type_v, ss)
         batch, ubatch, _nb, _nu = _named_batch_sizes(
             extras,
             os.environ,
             getattr(request, "n_batch", None),
             getattr(request, "n_ubatch", None),
         )
+        header_kv = _REMOTE_HEADER_KV.pop((model_path, str(variant)), None)
+        k_type, v_type = cache_type or "f16", cache_type_v or cache_type or "f16"
+        # Either quantized axis allocates dequantization scratch: price the lighter one.
+        lighter = min((k_type, v_type), key = ss.kv_bytes_per_elem)
+        binary = ss.llama_server_binary()
+        try:
+            supports_fa = not binary or ss.llama_server_supports("--flash-attn", binary)
+        except Exception:
+            supports_fa = True
+        flash_attn = _planned_flash_attn_state(
+            extras,
+            planned_cache_types = (k_type, v_type),
+            supports_flash_attn = supports_fa,
+            architecture = header.get("general.architecture"),
+            env = os.environ,
+        )
         compute = await asyncio.to_thread(
             _ctx_compute_bytes,
             local_file,
-            _REMOTE_HEADER_KV.pop((model_path, str(variant)), None),
+            header_kv,
             ctx,
             min(batch, ubatch),
-            cache_type,
-            _flash_attn_enabled_from_args(extras, default = True),
+            lighter,
+            flash_attn,
             n_parallel,
         )
         if ctx and size and compute is None:
             self._unsized_kv = True
         self._ctx_compute = float(compute or 0)
+        # Context checkpoints are host RAM, the same pool on unified memory: charged to this
+        # machine, never counted as freed.
+        from core.inference.llama_cpp import _env_ctx_checkpoints_override
+        from core.inference.llama_server_args import parse_ctx_checkpoints_override
+
+        count = parse_ctx_checkpoints_override(extras)
+        if count is None:
+            count = getattr(request, "ctx_checkpoints", None)
+        if count is None:
+            count = _env_ctx_checkpoints_override(os.environ)
+        count = 32 if count is None else max(0, int(count))  # llama.cpp's default per slot
+        per_checkpoint = 0
+        if count and ctx:
+            per_checkpoint = await asyncio.to_thread(
+                _ctx_compute_bytes,
+                local_file,
+                header_kv,
+                ctx,
+                min(batch, ubatch),
+                cache_type,
+                flash_attn,
+                n_parallel,
+                True,
+            )
+        # A recurrent checkpoint is one slot's state; the loader's probe misses gated-delta layers.
+        per_checkpoint = max(per_checkpoint or 0, _ssm_state_bytes(header, 1) if count else 0)
+        self._checkpoints = float(per_checkpoint * count * max(1, n_parallel))
         recurrent = _ssm_state_bytes(header, n_parallel)
         if kv is None and ctx and size and not recurrent:
             self._unsized_kv = True  # a pure state-space model has no attention KV
