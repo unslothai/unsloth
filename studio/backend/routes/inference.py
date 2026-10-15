@@ -11244,7 +11244,11 @@ async def _auto_switch_npu_model(
                             fastapi_request,
                             current_subject,
                             current_request_counted = True,
-                            **({"load_cancel_event": cancel_event} if cancel_event is not None else {}),
+                            **(
+                                {"load_cancel_event": cancel_event}
+                                if cancel_event is not None
+                                else {}
+                            ),
                         )
                         loaded_ok = True
                         _raise_if_cancelled()
