@@ -41682,14 +41682,26 @@ class LlamaCppBackend:
                                             _pending_args = 2 * estimate_messages_tokens_dense(
                                                 _pending_msgs
                                             )
+                                    # This iteration's cap, not the caller's whole one. A
+                                    # recovery turn with 100 of 1000 tokens left had the
+                                    # result priced as if 1000 were still to come, which
+                                    # reserves room away and can starve a read the request
+                                    # had space for.
+                                    _result_max_tokens = _iteration_max_tokens
+                                    # Auto-compaction off: nothing fits the next prompt to
+                                    # `prompt_budget`, whose quarter-window reply reserve
+                                    # emptied every result from 75% of the window on (#13784).
+                                    # Price to the reply floor the admission gate uses instead.
+                                    if context_overflow != "truncate_oldest":
+                                        _result_max_tokens = min(
+                                            _iteration_max_tokens
+                                            if _iteration_max_tokens and _iteration_max_tokens > 0
+                                            else self._effective_context_length,
+                                            _reply_floor(self._effective_context_length),
+                                        )
                                     _result_budget = tool_result_budget(
                                         self._effective_context_length,
-                                        # This iteration's cap, not the caller's whole
-                                        # one. A recovery turn with 100 of 1000 tokens
-                                        # left had the result priced as if 1000 were
-                                        # still to come, which reserves room away and can
-                                        # starve a read the request had space for.
-                                        _iteration_max_tokens,
+                                        _result_max_tokens,
                                         _spent + _pending_args,
                                     ) // (len(_pending) + 1)
                                     # A budget at or near zero means the call cannot deliver
@@ -41744,7 +41756,7 @@ class LlamaCppBackend:
                                                     # or the rescue is measured against a
                                                     # different request from the one it is
                                                     # rescuing.
-                                                    _iteration_max_tokens,
+                                                    _result_max_tokens,
                                                     _spent_after + _pending_args,
                                                 ) // (len(_pending) + 1)
                                                 logger.info(
