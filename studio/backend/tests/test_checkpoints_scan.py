@@ -368,3 +368,27 @@ def test_scan_checkpoints_keeps_root_adapter_first(tmp_path, monkeypatch):
             },
         )
     ]
+
+
+def test_scan_checkpoints_reads_training_loss_past_an_eval_entry(tmp_path, monkeypatch):
+    outputs_dir = _make_outputs_dir(tmp_path, monkeypatch)
+    run_dir = outputs_dir / "run_eval"
+    checkpoint_dir = run_dir / "checkpoint-50"
+    checkpoint_dir.mkdir(parents = True)
+    (checkpoint_dir / "adapter_config.json").write_text("{}")
+    # A step that both evaluates and saves: the Trainer logs the eval metrics last.
+    (checkpoint_dir / "trainer_state.json").write_text(
+        json.dumps(
+            {
+                "log_history": [
+                    {"epoch": 0.25, "loss": 0.5, "step": 25},
+                    {"epoch": 0.5, "grad_norm": 1.5, "loss": 0.25, "step": 50},
+                    {"epoch": 0.5, "eval_loss": 0.75, "eval_runtime": 2.0, "step": 50},
+                ]
+            }
+        )
+    )
+
+    models = checkpoints_module.scan_checkpoints(outputs_dir = str(outputs_dir))
+
+    assert models[0][1] == [("checkpoint-50", str(checkpoint_dir), 0.25)]

@@ -129,16 +129,18 @@ def _infer_base_model_from_history(checkpoint_dir: Path) -> Optional[str]:
 
 
 def _read_checkpoint_loss(checkpoint_path: Path) -> Optional[float]:
-    """Read loss from the last log_history entry of trainer_state.json, or None."""
+    """Read the latest training loss from trainer_state.json's log_history, or None."""
     trainer_state = checkpoint_path / "trainer_state.json"
     if not own_entry(trainer_state):
         return None
     try:
         with open(trainer_state, encoding = "utf-8-sig") as f:
             state = json.load(f)
-        log_history = state.get("log_history", [])
-        if log_history:
-            return log_history[-1].get("loss")
+        # Not just the last entry: on a step that also evaluates, the Trainer logs the
+        # eval metrics after the training loss and before it saves the checkpoint.
+        for entry in reversed(state.get("log_history") or []):
+            if isinstance(entry, dict) and "loss" in entry:
+                return entry["loss"]
     except Exception as e:
         logger.debug(f"Could not read loss from {trainer_state}: {e}")
     return None
