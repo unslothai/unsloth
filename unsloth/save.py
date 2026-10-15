@@ -971,20 +971,34 @@ def _push_with_mtp_head(save_kwargs):
         unsloth_save_model(
             **{**save_kwargs, "save_directory": directory, "push_to_hub": False, "token": token}
         )
-        if save_kwargs.get("datasets"):
-            # In the staged README, so the attribution lands in this commit on this revision.
-            from huggingface_hub import hf_hub_download, metadata_save
+        # The card the hub path writes, staged here so it lands in this commit on this revision.
+        from huggingface_hub import ModelCard, hf_hub_download, metadata_save
 
-            readme = os.path.join(directory, "README.md")
-            if not os.path.isfile(readme):
-                try:
-                    shutil.copyfile(
-                        hf_hub_download(repo_id, "README.md", revision = revision, token = token),
-                        readme,
+        readme = os.path.join(directory, "README.md")
+        if not os.path.isfile(readme):
+            try:
+                shutil.copyfile(
+                    hf_hub_download(repo_id, "README.md", revision = revision, token = token),
+                    readme,
+                )
+            except Exception:  # new repo or no card yet
+                config = save_kwargs["model"].config
+                ModelCard(
+                    MODEL_CARD.format(
+                        username = username,
+                        base_model = config._name_or_path,
+                        model_type = config.model_type,
+                        method = "finetuned",
+                        extra = "unsloth",
                     )
-                except Exception:
-                    pass  # new repo or no card yet
-            metadata_save(readme, {"datasets": save_kwargs["datasets"]})
+                ).save(readme)
+        tags = ModelCard.load(readme).data.tags or []
+        metadata = {
+            "tags": list(dict.fromkeys([*tags, *(save_kwargs.get("tags") or []), "unsloth"]))
+        }
+        if save_kwargs.get("datasets"):
+            metadata["datasets"] = save_kwargs["datasets"]
+        metadata_save(readme, metadata)
         api.upload_folder(
             folder_path = directory,
             path_in_repo = ".",
