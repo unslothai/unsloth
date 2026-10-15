@@ -619,7 +619,6 @@ def _native_qwen3_moe_4x_model(with_visual = False, dense_first = False):
     class _Body(torch.nn.Module):
         def __init__(self):
             super().__init__()
-            # dense_first: DeepSeek-V3's first_k_dense_replace layout.
             self.layers = torch.nn.ModuleList([_DecoderLayer(dense_first and i == 0) for i in range(2)])
 
     class _Qwen3Moe(torch.nn.Module):
@@ -667,7 +666,7 @@ def test_explicit_leaf_list_reaches_native_per_expert_linears():
     matched = {n for n in names if re.fullmatch(widened, n)}
     peft_leaf_match = {n for n in names if n.rpartition(".")[2] in leaves}
     assert matched == peft_leaf_match
-    assert "model.layers.0.mlp.gate" not in matched  # the router stays frozen
+    assert "model.layers.0.mlp.gate" not in matched
 
     regex = _explicit_list_regex(model, ["q_proj", "down_proj"])
     widened, _, found = U.widen_target_regex_to_expert_submodules(
@@ -678,7 +677,6 @@ def test_explicit_leaf_list_reaches_native_per_expert_linears():
         re.fullmatch(widened, n) for n in names if n.endswith((".gate_proj", ".up_proj"))
     )
 
-    # MLP-only lists: no attention leaf, every layer sparse or a dense first layer.
     for dense_first in (False, True):
         model = _native_qwen3_moe_4x_model(dense_first = dense_first)
         names = [n for n, m in model.named_modules() if isinstance(m, torch.nn.Linear)]
@@ -703,7 +701,6 @@ def test_explicit_leaf_list_widening_respects_the_family_filters():
     assert kept == regex and found == []
     kept, _, found = U.widen_target_regex_to_expert_submodules(model, regex, regex, auto_regex = True)
     assert kept == regex and found == []
-    # Native experts outside language layers stay out.
     model = _native_qwen3_moe_4x_model(with_visual = True)
     regex = _explicit_list_regex(model, leaves)
     widened, _, found = U.widen_target_regex_to_expert_submodules(
@@ -795,7 +792,7 @@ def test_expert_only_mixtral_list_falls_back_to_the_decoders_experts():
     want = {n for n in names if n.endswith((".w1", ".w2", ".w3", ".gate"))}
     assert any(n.endswith(".block_sparse_moe.gate") for n in want)
     assert {n for n in names if re.fullmatch(regex, n)} == want
-    # Reached only when Zoo already dropped the other families (finetune_attention_modules=False).
+    # Zoo already dropped the other families (finetune_attention_modules=False).
     regex = U.native_expert_only_regex(model, ["q_proj", "w1", "w2", "w3"])
     assert {n for n in names if re.fullmatch(regex, n)} == {n for n in names if n.endswith((".w1", ".w2", ".w3"))}
     model = _native_qwen3_moe_4x_model()
