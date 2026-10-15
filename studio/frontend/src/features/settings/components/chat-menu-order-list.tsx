@@ -28,6 +28,26 @@ function FixedRow({ icon, label }: { icon: IconSvgElement; label: string }) {
   );
 }
 
+// Deep research sits under Tools in the menu whenever it is on: it toggles but has no place to drag to.
+function ToggleRow({ id, meta }: { id: PlusMenuItemId; meta: ItemMeta }) {
+  const pinned = usePlusMenuPrefsStore((s) => s.pins[id]);
+  const togglePin = usePlusMenuPrefsStore((s) => s.togglePin);
+  return (
+    <div data-menu-item={id} className="flex h-9 items-center gap-2.5 rounded-lg px-2">
+      <span className="size-4 shrink-0" aria-hidden="true" />
+      <span className="flex size-4 items-center justify-center text-foreground/80 [&_svg]:size-4">
+        {meta.icon}
+      </span>
+      <span className="text-ui-13 text-foreground">{meta.label}</span>
+      <Switch className="ml-auto" aria-label={meta.label} checked={pinned} onCheckedChange={() => togglePin(id)} />
+    </div>
+  );
+}
+
+const FIXED_TOGGLE: PlusMenuItemId = "deepResearch";
+// The stored order keeps every id; only the draggable ones are shown and moved here.
+const withFixed = (ids: PlusMenuItemId[]): PlusMenuItemId[] => [FIXED_TOGGLE, ...ids.filter((id) => id !== FIXED_TOGGLE)];
+
 function MovableRow({
   id,
   meta,
@@ -83,7 +103,7 @@ function MovableRow({
           e.preventDefault();
           const next = [...order];
           next.splice(to, 0, ...next.splice(index, 1));
-          setOrder(next);
+          setOrder(withFixed(next));
         }}
         className="flex size-4 shrink-0 cursor-grab touch-none items-center justify-center text-muted-foreground active:cursor-grabbing"
       >
@@ -123,10 +143,10 @@ export function ChatMenuOrderList({
     draftRef.current = ids;
     setDraftState(ids);
   };
-  const shown = draft ?? order;
+  const shown = (draft ?? order).filter((id) => id !== FIXED_TOGGLE);
   const drop = () => {
     if (draftRef.current) {
-      setOrder(draftRef.current);
+      setOrder(withFixed(draftRef.current));
     }
     setDraft(null);
   };
@@ -141,6 +161,7 @@ export function ChatMenuOrderList({
       />
       <FixedRow icon={InternetIcon} label={t("settings.chat.menu.webSearch")} />
       <FixedRow icon={CodeIcon} label={t("settings.chat.menu.tools")} />
+      <ToggleRow id={FIXED_TOGGLE} meta={items[FIXED_TOGGLE]} />
       <div className="mx-2 my-1 border-t border-border/70" />
       <Reorder.Group
         ref={listRef}
