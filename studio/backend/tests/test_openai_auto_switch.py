@@ -12482,7 +12482,12 @@ def test_messages_with_switching_on_and_an_npu_model_loaded_names_it(monkeypatch
     assert _NPU_MODEL in str(excinfo.value.detail)
 
 
-def _npu_catalog_entry(monkeypatch, *, vision, tools = False):
+def _npu_catalog_entry(
+    monkeypatch,
+    *,
+    vision,
+    tools = False,
+):
     from core.inference import npu_backend as nb
     class _Npu:
         def loadable_model(self, model_id):

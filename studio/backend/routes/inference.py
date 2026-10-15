@@ -30193,7 +30193,8 @@ def _refuse_npu_chat_request(payload, *, supports_vision: bool, supports_tools: 
     if payload.tools and payload.tool_choice != "none":
         if payload.parallel_tool_calls is False:
             _raise_unsupported_openai_parameter(
-                "parallel_tool_calls", "FastFlowLM on the NPU cannot limit a reply to one tool call."
+                "parallel_tool_calls",
+                "FastFlowLM on the NPU cannot limit a reply to one tool call.",
             )
         if payload.tool_choice not in (None, "auto"):
             _raise_unsupported_openai_parameter(
