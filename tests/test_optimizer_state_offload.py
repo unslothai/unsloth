@@ -284,3 +284,101 @@ def test_layerwise_optimizer_dict_is_offloaded():
         optimizer_dict[p].step()
     for inner in optimizer_dict.values():
         assert _state_devices(inner) == {"cpu"}
+
+
+def _hooked(module, optimizer, chunk_bytes):
+    offloader = module._StateOffloader(optimizer, chunk_bytes = chunk_bytes)
+    optimizer.register_step_pre_hook(offloader._pre_step)
+    optimizer.register_step_post_hook(offloader._post_step)
+    return offloader
+
+
+def test_chunked_step_synchronizes_chunk_copies(monkeypatch):
+    module = _module()
+    params = [torch.nn.Parameter(torch.randn(16)) for _ in range(3)]
+    offloader = _hooked(module, torch.optim.AdamW(params), chunk_bytes = 1)
+    offload = offloader.offload
+    # CPU tensors are never copied, so stand in for the device a chunk copy was issued on.
+    monkeypatch.setattr(offloader, "offload", lambda params = None: offload(params) | ({"dev"} if params else set()))
+    synced = []
+    monkeypatch.setattr(module, "_synchronize", synced.append)
+    for p in params:
+        p.grad = torch.ones_like(p)
+    offloader.optimizer.step()
+    assert synced == ["dev"]
+
+
+def test_unstepped_chunk_size_counts_centered_rmsprop_momentum():
+    module = _module()
+    n = 1000
+    params = [torch.nn.Parameter(torch.randn(n)) for _ in range(2)]
+    plain = module._StateOffloader(torch.optim.RMSprop(params, centered = True), chunk_bytes = 20 * n)
+    assert len(plain._chunks(params)) == 1
+    both = torch.optim.RMSprop(params, centered = True, momentum = 0.9)
+    assert len(module._StateOffloader(both, chunk_bytes = 20 * n)._chunks(params)) == 2
+
+
+def test_single_chunk_restores_only_active_state(monkeypatch):
+    module = _module()
+    active, idle = torch.nn.Parameter(torch.randn(16)), torch.nn.Parameter(torch.randn(16))
+    offloader = _hooked(module, torch.optim.AdamW([active, idle]), chunk_bytes = None)
+    restored = []
+    monkeypatch.setattr(offloader, "restore", lambda params = None: restored.append(params))
+    active.grad = torch.ones_like(active)
+    offloader.optimizer.step()
+    assert restored == [[active]]
+
+
+def test_chunked_step_runs_external_hooks_once():
+    module = _module()
+    params = [torch.nn.Parameter(torch.randn(16)) for _ in range(3)]
+    optimizer = torch.optim.AdamW(params, lr = 0.1)
+    _hooked(module, optimizer, chunk_bytes = 1)
+    calls = []
+    optimizer.register_step_pre_hook(lambda *a: calls.append("pre"))
+    optimizer.register_step_post_hook(lambda *a: calls.append("post"))
+    reference = torch.optim.AdamW([torch.nn.Parameter(p.detach().clone()) for p in params], lr = 0.1)
+    for p, q in zip(params, reference.param_groups[0]["params"]):
+        p.grad = torch.ones_like(p)
+        q.grad = torch.ones_like(q)
+    optimizer.step()
+    reference.step()
+    assert calls == ["pre", "post"]
+    for p, q in zip(params, reference.param_groups[0]["params"]):
+        assert torch.equal(p, q)
+
+
+def test_list_state_tensors_are_sized():
+    module = _module()
+    params = [torch.nn.Parameter(torch.randn(4)) for _ in range(2)]
+    optimizer = torch.optim.AdamW(params)
+    optimizer.state[params[0]]["old_dirs"] = [torch.zeros(1000)]
+    assert len(module._StateOffloader(optimizer, chunk_bytes = 100)._chunks(params)) == 2
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
+def test_lbfgs_history_is_offloaded():
+    module = _module()
+    torch.manual_seed(0)
+    target = torch.randn(64, device = "cuda")
+
+    def run(offload):
+        p = torch.nn.Parameter(torch.zeros(64, device = "cuda"))
+        optimizer = torch.optim.LBFGS([p], lr = 0.5, history_size = 4, max_iter = 3)
+        if offload:
+            module.offload_optimizer_state(optimizer)
+
+        def closure():
+            optimizer.zero_grad()
+            loss = ((p - target) ** 2).sum()
+            loss.backward()
+            return loss
+
+        for _ in range(3):
+            optimizer.step(closure)
+        return p.detach(), optimizer.state[p]
+
+    base, _ = run(False)
+    head, state = run(True)
+    assert torch.allclose(base, head)
+    assert state["old_dirs"] and all(t.device.type == "cpu" for t in state["old_dirs"] + state["ro"])

@@ -73,6 +73,15 @@ def _tensor_attrs(value):
     ]
 
 
+def _held_tensors(value):
+    if isinstance(value, torch.Tensor):
+        return [value]
+    # LBFGS keeps its history (old_dirs, old_stps, ro) as lists of tensors.
+    if isinstance(value, (list, tuple)):
+        return [v for v in value if isinstance(v, torch.Tensor)]
+    return [t for _, t in _tensor_attrs(value)]
+
+
 def _synchronize(device):
     module = getattr(torch, device.type, None)
     sync = getattr(module, "synchronize", None)
@@ -91,6 +100,7 @@ class _StateOffloader:
         self.steps = 0
         self.inside = False
         self.hidden = None
+        self.pending = set()
 
     def _host_buffer(self, param, key, src):
         buffer = self.buffers.get((param, key))
@@ -116,7 +126,19 @@ class _StateOffloader:
     def offload(self, params = None):
         devices = set()
         for param, state in self._states(params):
-            for key, value in state.items():
+            for key, value in list(state.items()):
+                if isinstance(value, (list, tuple)):
+                    items = list(value)
+                    for i, local in enumerate(items):
+                        if isinstance(local, torch.Tensor) and local.device.type != "cpu":
+                            devices.add(local.device)
+                            items[i] = self._host_buffer(param, (key, i), local)
+                            self.offloaded[(param, (key, i))] = local.device
+                    if isinstance(value, list):
+                        value[:] = items
+                    else:
+                        state[key] = type(value)(items)
+                    continue
                 for name, local in _tensor_attrs(value):
                     if local.device.type == "cpu":
                         continue
@@ -146,7 +168,18 @@ class _StateOffloader:
 
     def restore(self, params = None):
         for param, state in self._states(params):
-            for key, value in state.items():
+            for key, value in list(state.items()):
+                if isinstance(value, (list, tuple)):
+                    items = list(value)
+                    for i, local in enumerate(items):
+                        device = self.offloaded.get((param, (key, i)))
+                        if device is not None and isinstance(local, torch.Tensor) and local.device != device:
+                            items[i] = local.to(device, non_blocking = True)
+                    if isinstance(value, list):
+                        value[:] = items
+                    else:
+                        state[key] = type(value)(items)
+                    continue
                 for name, local in _tensor_attrs(value):
                     device = self.offloaded.get((param, (key, name)))
                     if device is not None and local.device != device:
@@ -173,14 +206,15 @@ class _StateOffloader:
         state = self.optimizer.state
         groups = {p: g for g in self.optimizer.param_groups for p in g["params"]}
         for p in params:
-            held = []
-            for v in state.get(p, {}).values():
-                held += [v] if isinstance(v, torch.Tensor) else [t for _, t in _tensor_attrs(v)]
+            held = [t for v in state.get(p, {}).values() for t in _held_tensors(v)]
             if held:
                 nbytes = sum(v.numel() * v.element_size() for v in held)
             else:
-                # Not stepped yet: Adam-style moments (a third with amsgrad), at least fp32 each.
-                moments = 3 if groups.get(p, {}).get("amsgrad") else 2
+                # Not stepped yet: two moments, a third with amsgrad or centered RMSprop with
+                # momentum (square_avg, momentum_buffer, grad_avg), at least fp32 each.
+                group = groups.get(p, {})
+                third = group.get("amsgrad") or (group.get("centered") and group.get("momentum", 0) > 0)
+                moments = 3 if third else 2
                 nbytes = moments * max(p.element_size(), 4) * p.numel()
             if chunk and size + nbytes > self.chunk_bytes:
                 chunks.append(chunk)
@@ -203,11 +237,18 @@ class _StateOffloader:
         chunks = self._chunks(params)
         closure = args[0] if args else kwargs.get("closure")
         # A closure recomputes the loss on every call, so it must run once over all parameters.
-        if len(chunks) <= 1 or closure is not None or not _chunk_safe(optimizer):
+        if closure is not None or not _chunk_safe(optimizer):
             self.restore()
             return
-        # Step each chunk here through the class step (the hooks see `inside` and return), then
-        # hide every gradient so the caller's own step call finds nothing left to update.
+        # Chunk-safe steps never touch parameters without a gradient, so their state stays on host.
+        if len(chunks) <= 1:
+            self.restore(params)
+            return
+        # Step each chunk through the unhooked class step, so registered step hooks run once for
+        # the logical step, then hide every gradient so the caller's own step finds nothing left.
+        step = type(optimizer).step
+        if getattr(step, "hooked", False):
+            step = getattr(step, "__wrapped__", step)
         grads = [p.grad for p in params]
         devices = set()
         self.inside = True
@@ -217,7 +258,7 @@ class _StateOffloader:
                 for p, g in zip(params, grads):
                     p.grad = g if p in members else None
                 self.restore(chunk)
-                type(optimizer).step(optimizer, *args, **kwargs)
+                step(optimizer, *args, **kwargs)
                 devices |= self.offload(chunk)
         except BaseException:
             for p, g in zip(params, grads):
@@ -229,6 +270,8 @@ class _StateOffloader:
         for p in params:
             p.grad = None
         self.hidden = (params, grads)
+        # The chunk copies are still in flight; the post hook's offload finds nothing left to copy.
+        self.pending = devices
 
     def _post_step(self, optimizer, args, kwargs):
         if self.inside:
@@ -238,7 +281,8 @@ class _StateOffloader:
                 p.grad = g
             self.hidden = None
         self.steps += 1
-        self.finish(self.offload())
+        devices, self.pending = self.pending, set()
+        self.finish(devices | self.offload())
 
 
 def offload_optimizer_state(optimizer, pin_memory = True, chunk_bytes = None):
