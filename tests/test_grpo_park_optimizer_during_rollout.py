@@ -121,7 +121,6 @@ def test_park_moves_state_and_grads_then_restores_exact_values(monkeypatch):
     for p in model.parameters():
         assert torch.equal(p.grad, grads_before[id(p)])
 
-    # The optimizer still steps after the round trip.
     optimizer.step()
 
 
