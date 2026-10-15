@@ -261,7 +261,7 @@ export const ko = {
     annotationScreenshotsAlways: "항상 포함",
     annotationScreenshotsNever: "포함하지 않음",
     clearDataSetting: "인터넷 사용 기록 삭제",
-    clearDataSettingDescription: "방문 기록, 다운로드 기록, 캐시된 페이지를 삭제합니다. 페이지는 쿠키나 사이트 데이터를 저장하지 않습니다.",
+    clearDataSettingDescription: "방문 기록, 다운로드 기록, 캐시된 페이지를 삭제합니다. 페이지는 Studio를 다시 불러올 때까지만 쿠키와 사이트 데이터를 저장합니다.",
     manage: "관리",
     fullView: {
       enter: "전체 보기",
@@ -437,7 +437,7 @@ export const ko = {
     },
     clearData: {
       title: "인터넷 사용 기록을 삭제할까요?",
-      description: "방문 기록, 다운로드 기록, 캐시된 페이지가 삭제됩니다. 다운로드한 파일은 컴퓨터에 그대로 남습니다.",
+      description: "방문 기록, 다운로드 기록, 캐시된 페이지, 사이트 쿠키와 데이터를 삭제하며 사이트에서 로그아웃됩니다. 다운로드한 파일은 컴퓨터에 남아 있습니다.",
       cancel: "취소",
       confirm: "데이터 삭제",
       done: "인터넷 사용 기록을 삭제했습니다",

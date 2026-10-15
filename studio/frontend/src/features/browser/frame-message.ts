@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import type { PageStorageArea } from "./page-storage";
+
 export type FrameMessage =
   | {
       type: "navigate";
@@ -31,7 +33,15 @@ export type FrameMessage =
   /** A fetch or XHR to the page's own site, for the panel to make (routes/browser_network.py);
    *  `request` is null for one the panel won't make (malformed, too large), which then fails. */
   | { type: "request"; id: string; request: PageRequest | null }
-  | { type: "requestAbort"; id: string };
+  | { type: "requestAbort"; id: string }
+  | {
+      type: "storage";
+      area: PageStorageArea;
+      key: string | null;
+      value: string | null;
+      url: string | null;
+      seq: number | null;
+    };
 
 export type RedirectMode = "follow" | "error" | "manual";
 
@@ -84,6 +94,10 @@ const MAX_REQUEST_BODY_BYTES = 1024 * 1024;
 
 const text = (value: unknown, max: number): string | null =>
   typeof value === "string" && value.length <= max ? value : null;
+
+const STORAGE_AREAS = new Set<unknown>(["local", "session", "cookie"]);
+// An area's quota (page-storage.ts).
+const MAX_STORAGE_CHARS = 128 * 1024;
 
 const title = (value: unknown): string => (typeof value === "string" ? value.slice(0, MAX_TITLE_CHARS) : "");
 
@@ -230,6 +244,18 @@ export function parseFrameMessage(data: unknown): FrameMessage | null {
       const id = text(message.id, 64);
       if (!id) return null;
       return message.type === "request" ? { type: "request", id, request: pageRequest(message) } : { type: "requestAbort", id };
+    }
+    case "storage": {
+      const { area, key, value } = message;
+      if (!STORAGE_AREAS.has(area)) return null;
+      const url = text(message.url, MAX_URL_CHARS);
+      const seq = Number.isSafeInteger(message.seq) && (message.seq as number) > 0 ? (message.seq as number) : null;
+      if (key === null) return { type: "storage", area: area as PageStorageArea, key: null, value: null, url, seq };
+      const name = text(key, MAX_STORAGE_CHARS);
+      const stored = value === null ? null : text(value, MAX_STORAGE_CHARS);
+      return name === null || (value !== null && stored === null)
+        ? null
+        : { type: "storage", area: area as PageStorageArea, key: name, value: stored, url, seq };
     }
     default:
       return null;
