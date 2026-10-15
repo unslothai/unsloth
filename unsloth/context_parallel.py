@@ -360,9 +360,6 @@ def patch_sft_trainer() -> None:
             return
         accelerator.state.device_mesh = manager.device_mesh
         _INSTALLED_MESH[:] = [manager.device_mesh]
-        # Ring attention's backward collectives must not straddle DDP's no_sync accumulation.
-        if hasattr(accelerator, "gradient_state"):
-            accelerator.gradient_state.plugin_kwargs["sync_each_batch"] = True
         # A PEFT model is not a PreTrainedModel, so the Trainer asks DDP for find_unused_parameters,
         # which fails with reentrant checkpointing ("mark a variable ready only once"). transformers
         # 5.x builds the DDP handler at init, 4.x rebuilds it from the argument when it wraps the model.
