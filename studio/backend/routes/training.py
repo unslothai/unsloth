@@ -1695,8 +1695,8 @@ async def get_visible_hardware_utilization(current_subject: str = Depends(get_cu
         return await asyncio.to_thread(get_visible_gpu_utilization)
 
 
-# Rows read from the head of the dataset; the worker formats them all and shows a few at random.
-_TOKEN_PREVIEW_POOL_ROWS = 64
+# As many head rows as prepare_raw_text_dataset scores to pick a column; the worker shows a few at random.
+_TOKEN_PREVIEW_POOL_ROWS = 100
 
 
 def _token_preview_rows(request: TokenPreviewRequest, hf_token) -> list[dict]:
@@ -1778,7 +1778,11 @@ async def token_preview(
             "custom_format_mapping": request.custom_format_mapping,
             "raw_text": request.is_cpt or request.format_type == "raw",
             "is_cpt": request.is_cpt,
-            "train_on_completions": request.train_on_completions and not request.is_cpt,
+            # The trainer never masks audio models or DeepSeek OCR (it skips apply_completion_masking).
+            "train_on_completions": request.train_on_completions
+            and not request.is_cpt
+            and request.model_type != "audio"
+            and not ("deepseek" in model_name.lower() and "ocr" in model_name.lower()),
             "max_seq_length": request.max_seq_length,
             "num_samples": request.num_samples,
             "seed": request.seed,

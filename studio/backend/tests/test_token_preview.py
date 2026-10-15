@@ -28,7 +28,7 @@ def captured(monkeypatch):
     from hub.services.datasets import formatting
 
     calls = []
-    rows = Dataset.from_list([{"text": f"row {i}"} for i in range(64)])
+    rows = Dataset.from_list([{"text": f"row {i}"} for i in range(100)])
     monkeypatch.setattr(formatting, "load_preview_slice", lambda *args, **kwargs: (rows, 64))
     monkeypatch.setattr(
         token_preview,
@@ -57,7 +57,7 @@ def test_the_pool_and_the_run_settings_reach_the_worker(captured):
         )
     )
     payload = captured[-1][2]
-    assert len(payload["rows"]) == 64
+    assert len(payload["rows"]) == 100
     assert (payload["num_samples"], payload["seed"]) == (3, 1)
     assert payload["train_on_completions"] is True
     assert payload["raw_text"] is False
@@ -232,3 +232,15 @@ class _LegacySentencePiece:
 
 def test_a_sentencepiece_word_keeps_its_leading_space():
     assert token_preview_worker._token_text(_LegacySentencePiece(), 1, "▁quick") == " quick"
+
+
+def test_audio_models_train_every_token_as_training_does(captured):
+    _call_route(
+        TokenPreviewRequest(
+            model_name = "unsloth/orpheus-3b-0.1-ft",
+            model_type = "audio",
+            text = "hi",
+            train_on_completions = True,
+        )
+    )
+    assert captured[-1][2]["train_on_completions"] is False

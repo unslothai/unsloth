@@ -754,6 +754,7 @@ class TokenPreviewRequest(BaseModel):
     the model's tokenizer is read, never its weights."""
 
     model_name: str = Field(..., min_length = 1)
+    model_type: Optional[str] = None
     load_in_4bit: bool = True
     dataset_name: Optional[str] = None
     subset: Optional[str] = None

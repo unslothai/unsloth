@@ -70,6 +70,7 @@ export async function fetchTokenPreview({
     },
     body: JSON.stringify({
       model_name: start.model_name,
+      model_type: config.modelType,
       load_in_4bit: start.load_in_4bit,
       dataset_name: datasetName || null,
       subset: start.subset,
