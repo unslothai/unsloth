@@ -3788,6 +3788,8 @@ _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
     f"magick in.png {_OUTSIDE_DIR}/photo.png",
     r"ffmpeg -y -i in.wav C:\Users\alice\Documents\interview.wav",
     f"pandoc notes.md -o{_OUTSIDE_DIR}/report.docx",
+    "pandoc notes.md -o /opt/report.docx",
+    "pandoc notes.md --output=/usr/share/doc/report.docx",
 )
 
 _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (

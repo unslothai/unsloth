@@ -1219,6 +1219,28 @@ _SHELL_ASSIGN_TOKEN_RE = re.compile(r"^[A-Za-z_]\w*=")
 _BARE_SWITCH_RE = re.compile(r"^[/\\][^/\\]*$")
 
 
+# `pandoc --help`: "-o FILE, --output=FILE  Write output to FILE"; the same spelling names the output file
+# for most tools this scan has no table for.
+_OUTPUT_FILE_FLAGS = frozenset({"-o", "--output"})
+
+
+def _unlisted_command_operands(args) -> "list[tuple[str, bool]]":
+    operands = []
+    writes_next = False
+    for arg in args:
+        writing, writes_next = writes_next, False
+        value = arg
+        if arg.startswith("-"):
+            flag, _, value = arg.partition("=")
+            if not value and not arg.startswith("--"):
+                flag, value = arg[:2], arg[2:]
+            writing = flag in _OUTPUT_FILE_FLAGS
+            writes_next = writing and not value
+        if _looks_absolute(value) and not _BARE_SWITCH_RE.match(value):
+            operands.append((value, writing))
+    return operands
+
+
 def _terminal_path_operands(tokens, text = None) -> "list[tuple[str, bool]]":
     """Absolute file operands a command list touches, as ``(path, writing)``.
 
@@ -1615,17 +1637,7 @@ def _segment_path_operands(segment) -> "list[tuple[str, bool]]":
     if not (read_cmd or write_cmd or dest_last or flag_only):
         if command in _classified_terminal_commands():
             return launched
-        values = (
-            arg.partition("=")[2] or ("" if arg.startswith("--") else arg[2:])
-            if arg.startswith("-")
-            else arg
-            for arg in args
-        )
-        return launched + [
-            (value, False)
-            for value in values
-            if _looks_absolute(value) and not _BARE_SWITCH_RE.match(value)
-        ]
+        return launched + _unlisted_command_operands(args)
     inplace = command in ("sed", "perl") and any(
         arg in _SED_INPLACE_FLAGS or arg.startswith("--in-place") or _clusters_inplace(arg)
         for arg in args
