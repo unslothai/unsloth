@@ -22,11 +22,10 @@ sequence shards. Packed metadata (cu_seqlens) therefore stays global.
 """
 
 from dataclasses import replace
-from typing import NamedTuple, Optional
+from typing import NamedTuple
 
 import torch
 import torch.distributed as dist
-import torch.nn.functional as F
 
 __all__ = [
     "UlyssesHeadPlan",
@@ -34,7 +33,6 @@ __all__ = [
     "seq_to_head",
     "head_to_seq",
     "ulysses_attention",
-    "ulysses_prepare_batch",
 ]
 
 
@@ -148,12 +146,6 @@ def ulysses_attention(run_attention_fn, config, context, Q, K, V, group):
     return head_to_seq(A, group)
 
 
-def _right_padded(attention_mask):
-    keep = attention_mask != 0
-    # Right padded: once a row hits padding it never returns to real tokens.
-    return bool((keep[:, 1:] <= keep[:, :-1]).all())
-
-
 def _document_positions(packed_seq_lengths, total, device):
     lengths = [int(x) for x in packed_seq_lengths.tolist()]
     pieces = [torch.arange(length, device = device) for length in lengths]
@@ -165,68 +157,3 @@ def _document_positions(packed_seq_lengths, total, device):
     if used < total:
         pieces.append(torch.arange(total - used, device = device))
     return torch.cat(pieces)[None]
-
-
-def ulysses_prepare_batch(
-    input_ids,
-    labels = None,
-    position_ids = None,
-    attention_mask = None,
-    packed_seq_lengths = None,
-    *,
-    rank,
-    size,
-    pad_token_id = 0,
-):
-    """Shift labels and build positions on the full sequence, pad to a multiple of `size`, keep this
-    rank's contiguous slice. packed_seq_lengths stays global (attention sees the whole sequence)."""
-    bsz, seq_len = input_ids.shape
-    device = input_ids.device
-    if attention_mask is not None:
-        if attention_mask.dim() != 2:
-            raise ValueError(
-                "Unsloth: Ulysses context parallelism needs a 2D attention_mask, got "
-                f"{attention_mask.dim()}D."
-            )
-        if not _right_padded(attention_mask):
-            raise ValueError(
-                "Unsloth: Ulysses context parallelism needs right padding (tokenizer.padding_side = 'right')."
-            )
-    if packed_seq_lengths is not None and bsz != 1:
-        raise ValueError(
-            f"Unsloth: packed batches must be a single row under Ulysses context parallelism, got {bsz}."
-        )
-
-    shift_labels = None
-    if labels is not None:
-        shift_labels = F.pad(labels, (0, 1), value = -100)[:, 1:]
-
-    if position_ids is None:
-        if packed_seq_lengths is not None:
-            position_ids = _document_positions(packed_seq_lengths, seq_len, device)
-        else:
-            position_ids = torch.arange(seq_len, device = device)[None].expand(bsz, -1)
-    position_ids = position_ids.to(device).expand(bsz, -1)
-
-    padded_len = -(-seq_len // size) * size
-    pad = padded_len - seq_len
-    if pad:
-        input_ids = F.pad(input_ids, (0, pad), value = pad_token_id)
-        if shift_labels is not None:
-            shift_labels = F.pad(shift_labels, (0, pad), value = -100)
-        tail = position_ids[:, -1:] + torch.arange(1, pad + 1, device = device)
-        position_ids = torch.cat([position_ids, tail.to(position_ids.dtype)], dim = 1)
-
-    local_len = padded_len // size
-    start = rank * local_len
-    stop = start + local_len
-    out = {
-        "input_ids": input_ids[:, start:stop].contiguous(),
-        "position_ids": position_ids[:, start:stop].contiguous(),
-        "packed_seq_lengths": packed_seq_lengths,
-        "global_seq_len": padded_len,
-        "pad_len": pad,
-    }
-    if shift_labels is not None:
-        out["shift_labels"] = shift_labels[:, start:stop].contiguous()
-    return out

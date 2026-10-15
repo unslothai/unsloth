@@ -763,7 +763,6 @@ def _gated_trainer(monkeypatch, model = None, **args_overrides):
         ({"context_parallel_size": "2"}, ValueError),
         ({"context_parallel_backend": "tree"}, ValueError),
         ({"context_parallel_rotate_method": "ring"}, ValueError),
-        ({"context_parallel_backend": "ulysses"}, NotImplementedError),
     ],
 )
 def test_bad_cp_options_fail_before_the_trainer_builds(monkeypatch, overrides, error):
@@ -1011,3 +1010,86 @@ def test_generated_sft_config_carries_the_cp_options(tmp_path):
     assert cp.context_parallel_options(config) == (2, "ring", "alltoall")
     default = config_module.SFTConfig(output_dir = str(tmp_path), report_to = "none")
     assert cp.context_parallel_options(default) == (1, "ring", "allgather")
+
+
+class _FakeCPMesh:
+    def __init__(self, rank):
+        self.rank = rank
+
+    def get_local_rank(self):
+        return self.rank
+
+    def get_group(self):
+        return ("group", self.rank)
+
+
+def _ulysses_manager(rank, size = 2):
+    manager = _manager(size)
+    manager.backend = "ulysses"
+    manager.mesh = _FakeCPMesh(rank)
+    return manager
+
+
+def test_ulysses_shards_contiguously_after_global_shift():
+    labels = torch.tensor([[-100, 5, 6, 7, 8, 9, 10]])
+    shards = []
+    for rank in range(2):
+        inputs = {"input_ids": torch.arange(1, 8)[None], "labels": labels.clone()}
+        manager = _ulysses_manager(rank)
+        with manager.apply(inputs):
+            assert cp.get_cp_manager() is manager
+            shards.append(inputs)
+        assert cp.get_cp_manager() is None
+    # 7 tokens pad to 8 (a multiple of size, not 2 * size); rank 0 keeps the first half.
+    assert [s["input_ids"].tolist() for s in shards] == [[[1, 2, 3, 4]], [[5, 6, 7, 0]]]
+    assert [s["shift_labels"].tolist() for s in shards] == [[[5, 6, 7, 8]], [[9, 10, -100, -100]]]
+    assert [s["position_ids"].tolist() for s in shards] == [[[0, 1, 2, 3]], [[4, 5, 6, 7]]]
+
+
+def test_ulysses_packed_batch_keeps_global_lengths_and_masks_document_starts():
+    lengths = torch.tensor([3, 4], dtype = torch.int32)
+    labels = torch.tensor([[10, 11, 12, 20, 21, 22, 23]])
+    shards = []
+    for rank in range(2):
+        inputs = {
+            "input_ids": torch.arange(7)[None],
+            "labels": labels.clone(),
+            "packed_seq_lengths": lengths,
+        }
+        with _ulysses_manager(rank).apply(inputs):
+            shards.append(inputs)
+    assert all(s["packed_seq_lengths"] is lengths for s in shards)
+    # Positions reset per document; the last token of document 0 must not target document 1's first.
+    assert torch.cat([s["position_ids"] for s in shards], 1).tolist() == [[0, 1, 2, 0, 1, 2, 3, 4]]
+    shift = torch.cat([s["shift_labels"] for s in shards], 1).tolist()
+    assert shift == [[11, 12, -100, 21, 22, 23, -100, -100]]
+
+
+def test_ring_refuses_packed_batches():
+    inputs = {"input_ids": torch.ones(1, 4, dtype = torch.long), "packed_seq_lengths": torch.tensor([4])}
+    manager = _manager()
+    manager.backend = "ring"
+    with pytest.raises(ValueError, match = "ring context parallelism does not support packing"):
+        manager._prepare_inputs(inputs)
+
+
+def test_ulysses_keeps_varlen_and_routes_attention_through_the_exchange(monkeypatch):
+    calls = []
+
+    def fake_ulysses(run_attention_fn, config, context, Q, K, V, group):
+        calls.append((run_attention_fn, group))
+        return "exchanged"
+
+    monkeypatch.setattr(ad, "ulysses_attention", fake_ulysses)
+    manager = _ulysses_manager(1)
+    monkeypatch.setattr(cp, "_ACTIVE_MANAGER", manager)
+    if ad.HAS_FLASH_ATTENTION:
+        assert ad.select_attention_backend(True) == ad.FLASH_VARLEN
+    else:
+        assert ad.select_attention_backend(True) != ad.FLASH_VARLEN
+    assert ad.run_attention(config = None, context = None, Q = 1, K = 2, V = 3) == "exchanged"
+    assert calls == [(ad._run_attention, ("group", 1))]
+    manager.backend = "ring"
+    with pytest.raises(ValueError, match = "context_parallel_backend = 'ulysses'"):
+        ad.select_attention_backend(True)
+

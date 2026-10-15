@@ -26,6 +26,7 @@ import torch.nn.functional as F
 from ..device_type import DEVICE_TYPE
 from ..models._utils import *
 from ..context_parallel import get_cp_manager
+from .ulysses import ulysses_attention
 from ..utils.packing import (
     build_sdpa_packed_attention_mask,
     build_xformers_block_causal_mask,
@@ -528,13 +529,20 @@ class AttentionContext:
     is_causal: bool = True
 
 
+def _ring_attention_active() -> bool:
+    # Ulysses hands whole sequences to the normal dispatcher, so only the ring needs SDPA.
+    manager = get_cp_manager()
+    return manager is not None and manager.backend == "ring"
+
+
 def select_attention_backend(use_varlen: bool = False) -> str:
     """Return attention backend based on availability / priority order."""
 
-    if get_cp_manager() is not None:
+    if _ring_attention_active():
         if use_varlen:
             raise ValueError(
-                "Unsloth: context parallelism does not support packing / padding-free."
+                "Unsloth: ring context parallelism does not support packing / padding-free; "
+                "use context_parallel_backend = 'ulysses'."
             )
         return SDPA
     if HAS_FLASH_ATTENTION:
@@ -611,6 +619,15 @@ def run_attention(
     Varlen flash is preferred for packed batches as it avoids padding; xFormers
     and SDPA handle packing via a block-diagonal mask.
     """
+    manager = get_cp_manager()
+    if manager is not None and manager.backend == "ulysses":
+        return ulysses_attention(_run_attention, config, context, Q, K, V, manager.group)
+    return _run_attention(config = config, context = context, Q = Q, K = K, V = V)
+
+
+def _run_attention(
+    *, config: AttentionConfig, context: AttentionContext, Q: Tensor, K: Tensor, V: Tensor
+) -> Tensor:
 
     # PrefixGrouper shared-prefix attention (GRPO dedup): Q/K/V here are [bsz, H, T, D] while the kernel
     # takes and returns [1, T, H, D], matching the other backends.
@@ -733,11 +750,12 @@ def run_attention(
     # DoRA promotes q/k/v_proj outputs to fp32, which FlashAttention rejects (as does the xformers
     # flash-2 op on sm_100+), so downcast any fp32 Q/K/V to a supported dtype (#1013).
     # Ring attention (context parallelism) likewise needs a flash-eligible dtype.
-    cp_out_dtype = Q.dtype if backend == SDPA and get_cp_manager() is not None else None
+    ring = backend == SDPA and _ring_attention_active()
+    cp_out_dtype = Q.dtype if ring else None
     if (
         backend in (FLASH_DENSE, FLASH_VARLEN)
         or (backend == XFORMERS and xformers_fp32_unsupported)
-        or (backend == SDPA and get_cp_manager() is not None)
+        or ring
     ) and torch.float32 in (
         Q.dtype,
         K.dtype,
@@ -975,7 +993,7 @@ def run_attention(
         # gathers and accumulates n_kv_heads, not n_heads (about half the peak). UNSLOTH_CP_GQA=0 expands.
         if (
             use_sdpa_gqa
-            and get_cp_manager() is not None
+            and _ring_attention_active()
             and os.environ.get("UNSLOTH_CP_GQA", "1") == "0"
         ):
             use_sdpa_gqa = False

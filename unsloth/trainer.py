@@ -1863,14 +1863,17 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 # several classes, so a "yes" from the resolved one is not proof about the
                 # instance. A correct "no" has already turned both flags off, which is the
                 # condition the post-init check skips on, so leaving it armed is free.
-        is_context_parallel = (getattr(config_arg, "context_parallel_size", 1) or 1) > 1
+        # Ulysses gives attention whole sequences, so packing / padding-free still work there.
+        is_ring_context_parallel = (getattr(config_arg, "context_parallel_size", 1) or 1) > 1 and (
+            getattr(config_arg, "context_parallel_backend", None) or "ring"
+        ) == "ring"
         # Read before __init__: the compiled trainer ends it with model.for_inference(), which sets the flag.
         eval_logits_wanted = os.environ.get(
             "UNSLOTH_RETURN_LOGITS", "0"
         ) == "1" or _wants_eval_logits(original_init, args, kwargs)
         blocked = (
             (data_collator is not None)
-            or is_context_parallel
+            or is_ring_context_parallel
             or (is_processor and not processor_text_only)
             or is_auto_processor_vlm
             or is_vision_dataset
@@ -1887,7 +1890,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
             if hasattr(config_arg, "padding_free"):
                 setattr(config_arg, "padding_free", False)
         # TRL resolves eval_packing on its own; packed eval batches would hit ring attention's varlen refusal.
-        if is_context_parallel and getattr(config_arg, "eval_packing", None):
+        if is_ring_context_parallel and getattr(config_arg, "eval_packing", None):
             setattr(config_arg, "eval_packing", False)
 
         if blocked and requested_pack:
@@ -1904,8 +1907,8 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 reason = "hybrid linear-attention model"
             elif is_unsupported_model:
                 reason = f"unsupported model type(s): {', '.join(model_types)}"
-            elif is_context_parallel:
-                reason = "context parallelism"
+            elif is_ring_context_parallel:
+                reason = "ring context parallelism"
             elif forward_rejects_packing:
                 # Name the real blocker, else this falls through to the
                 # UNSLOTH_RETURN_LOGITS branch and points at an unset flag. For a string

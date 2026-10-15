@@ -477,14 +477,15 @@ if __name__ == "__main__":
         "--context_parallel_size",
         type = int,
         default = 1,
-        help = "Ranks per context parallel group (SDPA ring attention, torchrun, PyTorch >= 2.7).",
+        help = "Ranks per context parallel group (torchrun, PyTorch >= 2.7).",
     )
     training_group.add_argument(
         "--context_parallel_backend",
         type = str,
         default = "ring",
-        choices = ["ring"],
-        help = "Context parallel attention backend.",
+        choices = ["ring", "ulysses"],
+        help = "Context parallel attention backend: ring (SDPA ring attention) or ulysses "
+        "(all-to-all over heads; keeps packing and FA3 / FA4, needs heads divisible by the size).",
     )
     training_group.add_argument(
         "--context_parallel_rotate_method",

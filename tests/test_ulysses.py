@@ -95,10 +95,16 @@ def _reference(Q, K, V, lengths = None):
     return out.transpose(1, 2)
 
 
-def _spawn(fn, world, *args):
+def _spawn(fn, world, *args, start_method = "spawn"):
     with tempfile.TemporaryDirectory() as d:
         init_file = os.path.join(d, "init")
-        mp.spawn(_entry, args = (world, init_file, fn, args), nprocs = world, join = True)
+        mp.start_processes(
+            _entry,
+            args = (world, init_file, fn, args),
+            nprocs = world,
+            join = True,
+            start_method = start_method,
+        )
 
 
 def _entry(rank, world, init_file, fn, args):
@@ -243,71 +249,6 @@ def test_ulysses_attention_refuses_masks_and_cache():
             U.ulysses_attention(_fake_run_attention, config, bad, x, x, x, None)
 
 
-@pytest.mark.parametrize("size", [2, 3, 4])
-def test_prepare_batch_round_trip(size):
-    torch.manual_seed(0)
-    B, L = 2, 11
-    input_ids = torch.randint(1, 100, (B, L))
-    labels = input_ids.clone()
-    labels[:, :3] = -100
-    mask = torch.ones(B, L, dtype = torch.long)
-    mask[1, 8:] = 0
-    labels[1, 8:] = -100
-    shards = [
-        U.ulysses_prepare_batch(
-            input_ids, labels, None, mask, None, rank = r, size = size, pad_token_id = 7
-        )
-        for r in range(size)
-    ]
-    padded = -(-L // size) * size
-    ids = torch.cat([s["input_ids"] for s in shards], dim = 1)
-    shift = torch.cat([s["shift_labels"] for s in shards], dim = 1)
-    pos = torch.cat([s["position_ids"] for s in shards], dim = 1)
-    assert ids.shape == (B, padded) and all(s["global_seq_len"] == padded for s in shards)
-    assert torch.equal(ids[:, :L], input_ids) and bool((ids[:, L:] == 7).all())
-    expected_shift = torch.full((B, padded), -100)
-    expected_shift[:, : L - 1] = labels[:, 1:]
-    assert torch.equal(shift, expected_shift)
-    assert torch.equal(pos, torch.arange(padded)[None].expand(B, -1))
-
-
-def test_prepare_batch_packed_positions_and_lengths():
-    lengths = torch.tensor([4, 5, 2], dtype = torch.int32)
-    L = 12  # one trailing pad token past sum(lengths)
-    input_ids = torch.arange(L)[None]
-    labels = input_ids.clone()
-    shards = [
-        U.ulysses_prepare_batch(input_ids, labels, None, None, lengths, rank = r, size = 4)
-        for r in range(4)
-    ]
-    pos = torch.cat([s["position_ids"] for s in shards], dim = 1)
-    assert pos.tolist() == [[0, 1, 2, 3, 0, 1, 2, 3, 4, 0, 1, 0]]
-    assert all(s["packed_seq_lengths"] is lengths for s in shards)
-    # Given position_ids win and are only extended for the CP pad.
-    given = torch.tensor([[0, 1, 2, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9]])
-    shards = [
-        U.ulysses_prepare_batch(
-            torch.zeros(1, 13, dtype = torch.long), None, given, None, lengths, rank = r, size = 2
-        )
-        for r in range(2)
-    ]
-    pos = torch.cat([s["position_ids"] for s in shards], dim = 1)
-    assert pos.tolist() == [given[0].tolist() + [10]]
-    assert "shift_labels" not in shards[0]
-
-
-def test_prepare_batch_refusals():
-    ids = torch.zeros(2, 4, dtype = torch.long)
-    with pytest.raises(ValueError, match = "right padding"):
-        U.ulysses_prepare_batch(
-            ids, None, None, torch.tensor([[0, 1, 1, 1], [1, 1, 1, 1]]), rank = 0, size = 2
-        )
-    with pytest.raises(ValueError, match = "2D attention_mask"):
-        U.ulysses_prepare_batch(ids, None, None, torch.ones(2, 1, 4, 4), rank = 0, size = 2)
-    with pytest.raises(ValueError, match = "single row"):
-        U.ulysses_prepare_batch(ids, None, None, None, torch.tensor([4, 4]), rank = 0, size = 2)
-
-
 def _real_dispatch_worker(rank, world, run_attention, AttentionConfig, AttentionContext):
     torch.manual_seed(7)
     B, H, Hkv, T, D = 2, 4, 2, 4 * world, 8
@@ -332,14 +273,43 @@ def _real_dispatch_worker(rank, world, run_attention, AttentionConfig, Attention
     out = U.ulysses_attention(run_attention, config, context, Q[:, :, sl], K[:, :, sl], V[:, :, sl], None)
     torch.testing.assert_close(out, ref[:, sl], rtol = 1e-5, atol = 1e-5)
 
+    # Packed row: documents cross the shard seam, the pad tail is covered by the dispatcher.
+    lengths = torch.tensor([3, T - 5], dtype = torch.int32)
+    cu_seqlens = torch.zeros(3, dtype = torch.int32)
+    cu_seqlens[1:] = torch.cumsum(lengths, 0)
+    Q, K, V = Q[:1], K[:1], V[:1]
+    ref = _reference(Q, K, V, lengths.tolist())
+    context = AttentionContext(
+        bsz = 1,
+        q_len = S,
+        kv_seq_len = S,
+        n_heads = H,
+        head_dim = D,
+        requires_grad = False,
+        seq_info = (lengths, cu_seqlens, int(lengths.max())),
+        attention_mask = None,
+        causal_mask = None,
+    )
+    out = U.ulysses_attention(run_attention, config, context, Q[:, :, sl], K[:, :, sl], V[:, :, sl], None)
+    torch.testing.assert_close(out, ref[:, sl], rtol = 1e-5, atol = 1e-5)
+
 
 def test_real_run_attention_sdpa_path():
     try:
         from unsloth.utils.attention_dispatch import (
             AttentionConfig,
             AttentionContext,
-            run_attention,
+            _run_attention,
         )
     except Exception as exc:  # the unsloth package import needs an accelerator
         pytest.skip(f"unsloth.utils.attention_dispatch does not import here: {type(exc).__name__}")
-    _spawn(_real_dispatch_worker, 2, run_attention, AttentionConfig, AttentionContext)
+    # Forked, not spawned: a fresh interpreter would re-import unsloth without the test GPU spoof.
+    # The workers only touch CPU tensors.
+    _spawn(
+        _real_dispatch_worker,
+        2,
+        _run_attention,
+        AttentionConfig,
+        AttentionContext,
+        start_method = "fork",
+    )

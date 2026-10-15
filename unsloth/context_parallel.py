@@ -88,15 +88,12 @@ def context_parallel_options(config) -> tuple:
             "Unsloth: context_parallel_rotate_method must be one of "
             f"{_ROTATE_METHODS}, got {rotate_method!r}."
         )
-    if size > 1 and backend == "ulysses":
-        raise NotImplementedError(
-            "Unsloth: context_parallel_backend = 'ulysses' is not available yet; use 'ring'."
-        )
     return size, backend, rotate_method
 
 
 def _ring_unsupported_attention(config) -> Optional[str]:
-    # The ring runs plain causal SDPA with no mask, window or logit softcap.
+    # The ring runs plain causal SDPA with no mask, window or logit softcap. Llama's forward (the only
+    # one allowed under either backend) also ignores these, so Ulysses refuses them too.
     configs = [config]
     text_config = getattr(config, "text_config", None)
     if text_config is not None and text_config is not config:
@@ -133,6 +130,7 @@ def _unregister_cp_sharding_rules() -> None:
 
 
 from .device_type import DEVICE_TYPE_TORCH
+from .utils.ulysses import _document_positions, ulysses_head_plan
 
 # A module global, not a ContextVar: on CUDA autograd runs backward (and so the reentrant
 # checkpoint recompute) on its own device thread, where a ContextVar set here reads as unset.
@@ -165,13 +163,16 @@ def _supports_context_parallel(model) -> bool:
 
 
 def _self_attn_pre_forward_hook(_module, module_args, module_kwargs):
-    # Ring attention only supports is_causal with no mask; right padding is already -100 in labels.
+    # Both backends run causal attention with no mask; right padding is already -100 in labels.
     if get_cp_manager() is not None and "attention_mask" in module_kwargs:
         module_kwargs["attention_mask"] = None
     return module_args, module_kwargs
 
 
 class ContextParallelManager:
+    backend = "ring"
+    rotate_method = "allgather"
+
     def __init__(self, size: int, backend: str = "ring", rotate_method: str = "allgather"):
         self.size = size
         self.backend = backend
@@ -184,6 +185,10 @@ class ContextParallelManager:
             mesh_dim_names = ("dp_replicate", "cp"),
         )
         self.mesh = self.device_mesh["cp"]
+
+    @property
+    def group(self):
+        return self.mesh.get_group()
 
     def attach_attention_hooks(self, model: torch.nn.Module) -> None:
         # Marked on the module: a second CP trainer on the same model must not stack another hook.
@@ -201,8 +206,18 @@ class ContextParallelManager:
                 "Unsloth: context parallelism needs input_ids batches (not inputs_embeds)."
             )
         bsz, seq_len = input_ids.shape
+        packed_seq_lengths = inputs.get("packed_seq_lengths")
+        ulysses = self.backend == "ulysses"
+        if packed_seq_lengths is not None and not ulysses:
+            raise ValueError("Unsloth: ring context parallelism does not support packing.")
+        if packed_seq_lengths is not None and bsz != 1:
+            raise ValueError(f"Unsloth: packed batches must be a single row, got {bsz} rows.")
         # .get: a collator may carry the key with None, which would leave positions shard-local.
-        if inputs.get("position_ids") is None:
+        if inputs.get("position_ids") is None and packed_seq_lengths is not None:
+            inputs["position_ids"] = _document_positions(
+                packed_seq_lengths, seq_len, input_ids.device
+            )
+        elif inputs.get("position_ids") is None:
             inputs["position_ids"] = (
                 torch.arange(seq_len, device = input_ids.device).expand(bsz, -1).contiguous()
             )
@@ -216,9 +231,13 @@ class ContextParallelManager:
             )
         labels = inputs.get("labels")
         if inputs.get("shift_labels") is None and labels is not None:
+            # Shard-local labels cannot see document starts on another shard: mask them here.
+            from .utils.packing import mask_packed_boundary_labels
+
+            labels = mask_packed_boundary_labels(labels, packed_seq_lengths)
             inputs["shift_labels"] = F.pad(labels, (0, 1), value = -100)[:, 1:].contiguous()
-        # The load balancer splits the sequence into 2 * size chunks.
-        pad = (-seq_len) % (2 * self.size)
+        # The ring's load balancer splits the sequence into 2 * size chunks, Ulysses into size.
+        pad = (-seq_len) % (self.size if ulysses else 2 * self.size)
         if pad:
             for name in _BUFFER_NAMES:
                 tensor = inputs.get(name)
@@ -233,7 +252,7 @@ class ContextParallelManager:
     @contextlib.contextmanager
     def _rotate_method_scope(self) -> Iterator[None]:
         # Process-wide torch state, read in forward and backward: set per step, restored after.
-        rotate_method = getattr(self, "rotate_method", "allgather")
+        rotate_method = self.rotate_method
         if _cp_options is None or set_rotate_method is None:
             if rotate_method != "allgather":
                 raise RuntimeError(
@@ -249,8 +268,29 @@ class ContextParallelManager:
             _cp_options.rotate_method = previous
 
     @contextlib.contextmanager
+    def _ulysses_scope(self, inputs: dict) -> Iterator[None]:
+        # Contiguous shards; attention exchanges them for head shards (utils/ulysses.py), so
+        # packed_seq_lengths stays global.
+        rank = self.mesh.get_local_rank()
+        for name in _BUFFER_NAMES:
+            tensor = inputs.get(name)
+            if isinstance(tensor, torch.Tensor) and tensor.ndim > 1:
+                local = tensor.shape[1] // self.size
+                inputs[name] = tensor[:, rank * local : (rank + 1) * local].contiguous()
+        global _ACTIVE_MANAGER
+        previous, _ACTIVE_MANAGER = _ACTIVE_MANAGER, self
+        try:
+            yield
+        finally:
+            _ACTIVE_MANAGER = previous
+
+    @contextlib.contextmanager
     def apply(self, inputs: dict) -> Iterator[None]:
         self._prepare_inputs(inputs)
+        if self.backend == "ulysses":
+            with self._ulysses_scope(inputs):
+                yield
+            return
         buffers = [
             inputs[name]
             for name in _BUFFER_NAMES
@@ -395,7 +435,11 @@ def patch_sft_trainer() -> None:
             raise RuntimeError(
                 f"Unsloth: world size {world_size} is not a multiple of context_parallel_size {size}."
             )
-        if torch.cuda.is_available() and torch.cuda.get_device_capability()[0] < 8:
+        if (
+            backend == "ring"
+            and torch.cuda.is_available()
+            and torch.cuda.get_device_capability()[0] < 8
+        ):
             # Pure torch ring attention fails in backward without flash (2x T4, torch 2.10).
             raise NotImplementedError(
                 "Unsloth: context parallelism needs flash attention (compute capability >= 8.0)."
@@ -428,11 +472,21 @@ def patch_sft_trainer() -> None:
         # Older accelerate ignores the "cp" mesh dim, so CP peers would get different batches.
         if Version(accelerate.__version__) < Version("1.10.0"):
             raise NotImplementedError("Unsloth: context parallelism needs accelerate >= 1.10.0.")
-        # The ring runs plain causal SDPA: the windowed mask Unsloth builds otherwise is dropped.
-        unsupported = _ring_unsupported_attention(getattr(self.model, "config", None))
+        # Plain causal attention: the windowed mask Unsloth builds otherwise is dropped.
+        model_config = getattr(self.model, "config", None)
+        unsupported = _ring_unsupported_attention(model_config)
         if unsupported is not None:
             raise NotImplementedError(
-                f"Unsloth: ring context parallelism does not support {unsupported}."
+                f"Unsloth: {backend} context parallelism does not support {unsupported}."
+            )
+        if backend == "ulysses":
+            # Every rank raises here, before any collective.
+            text_config = getattr(model_config, "text_config", None) or model_config
+            ulysses_head_plan(
+                text_config.num_attention_heads,
+                getattr(text_config, "num_key_value_heads", None)
+                or text_config.num_attention_heads,
+                size,
             )
         if not _supports_context_parallel(self.model):
             raise NotImplementedError(
@@ -459,6 +513,7 @@ def patch_sft_trainer() -> None:
         _install_accelerator_state(self)
         # Packing (which ring disables) is the usual route to FA3 / FA4; the ring calls the same
         # flash ops those override, so scope them to train() here too. Idempotent per trainer.
+        # Ulysses runs the normal dispatcher on whole sequences, so it gets them either way.
         from .utils.packing import _scope_flash_attention_impl
 
         _scope_flash_attention_impl(self.model, self)
