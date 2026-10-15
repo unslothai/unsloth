@@ -4698,6 +4698,15 @@ def _connect(
                     "`unsloth start codex` and `unsloth start opencode`."
                 )
             typer.echo(f"Using {requested} from the Connection {connection['connection']}.")
+            # A Connection reports no context window; an explicit one lets agents size compaction.
+            if load.max_seq_length > 0:
+                connection["context_length"] = load.max_seq_length
+            else:
+                typer.echo(
+                    "Pass --max-seq-length with the model's context window so the agent can "
+                    "compact before the provider runs out of context.",
+                    err = True,
+                )
             if (
                 key not in _cached_keys(_key_cache_path(), base, "minted")
                 and not api_key

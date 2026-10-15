@@ -28147,6 +28147,17 @@ def _build_external_messages(
                 and native["content"]
             ):
                 replay["extra_content"] = {"anthropic": {"content": native["content"]}}
+        if (
+            provider_type == "openai"
+            and not emit_message_extra_content
+            and msg.role == "assistant"
+            and isinstance(msg.extra_content, dict)
+            and msg.extra_content.get("openai_responses_reasoning")
+        ):
+            # OpenAI wants a tool call's reasoning items back with its outputs; only that key.
+            replay["extra_content"] = {
+                "openai_responses_reasoning": msg.extra_content["openai_responses_reasoning"]
+            }
         # Drop role=tool messages whose matching server-builtin tool_call was
         # filtered above. An orphan tool_result with no matching tool_call is
         # rejected by OpenAI Responses and Anthropic.
@@ -28191,6 +28202,7 @@ def _build_external_messages(
                     out["name"] = msg.name
             if emit_message_extra_content and msg.role == "assistant" and msg.extra_content:
                 out["extra_content"] = msg.extra_content
+
             result.append(out)
             continue
         # Assistant messages with content=None but populated tool_calls are

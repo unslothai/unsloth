@@ -6802,6 +6802,30 @@ def test_opencode_uses_a_connection_model(fake_studio, tmp_path):
     )
 
 
+def test_opencode_sizes_a_connection_model_from_max_seq_length(fake_studio, tmp_path):
+    # Without a limit OpenCode treats the context as 0 and never compacts.
+    fake_studio.state["providers"] = [GEMINI_CONNECTION]
+    result = CliRunner().invoke(
+        start.start_app,
+        ["opencode", "--no-launch", "--model", "gemini-2.5-flash", "--max-seq-length", "1048576"],
+    )
+    assert result.exit_code == 0, result.output
+    assert _loads(fake_studio) == []
+    config = json.loads((tmp_path / "agents" / "opencode" / "opencode.json").read_text())
+    model = config["provider"][start._OPENCODE_PROVIDER]["models"][GEMINI_ID]
+    assert model["limit"]["context"] == 1048576
+    assert "Pass --max-seq-length" not in result.output
+
+
+def test_a_connection_model_without_a_window_says_how_to_give_one(fake_studio):
+    fake_studio.state["providers"] = [GEMINI_CONNECTION]
+    result = CliRunner().invoke(
+        start.start_app, ["opencode", "--no-launch", "--model", "gemini-2.5-flash"]
+    )
+    assert result.exit_code == 0, result.output
+    assert "Pass --max-seq-length with the model's context window" in result.output
+
+
 @pytest.mark.parametrize("agent", ["pi", "hermes", "openclaw"])
 def test_agents_without_connection_support_fail_before_loading(fake_studio, agent):
     fake_studio.state["providers"] = [GEMINI_CONNECTION]
