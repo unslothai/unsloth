@@ -408,7 +408,10 @@ from core.inference.repetition_guard import is_repetition_dominated
 from core.inference.mcp_images import (
     DETACHED_IMAGE_TURN_TEXT as MCP_DETACHED_IMAGE_TURN_TEXT,
     IMAGE_TURN_TEXT as MCP_IMAGE_TURN_TEXT,
+    MAX_MODEL_IMAGES as MCP_MAX_MODEL_IMAGES,
+    MAX_TOTAL_MODEL_IMAGES as MCP_MAX_TOTAL_MODEL_IMAGES,
     append_image_turn as append_mcp_image_turn,
+    is_image_tool as mcp_is_image_tool,
     mentions_images as mcp_images_mentioned_in,
 )
 from core.inference.tool_loop_controller import (
@@ -2004,7 +2007,24 @@ _MAX_LENGTH_CONTINUATIONS = 2
 _CONTINUE_AFTER_LENGTH_STATUS = "Continuing after a long thought..."
 _CONTINUE_TRUNCATED_ANSWER_STATUS = "Continuing the answer..."
 _MIN_USEFUL_RESULT_TOKENS = 64
-# Keyed on identical RESULTS, not arguments (as OpenClaw's loop detection).
+# llama.cpp's default per-image embedding cap plus mtmd's delimiters, when the admission figure is out of reach.
+_FALLBACK_IMAGE_TOKENS = 4096 + 128
+
+
+def _mcp_image_tokens(backend) -> int:
+    """Per-image KV allowance for the loaded projector, the one admission charges."""
+    try:
+        from routes.inference import _openai_llama_admission_image_tokens  # noqa: PLC0415
+        return int(_openai_llama_admission_image_tokens(backend))
+    except Exception:  # noqa: BLE001 -- sizing must never break a tool call
+        return _FALLBACK_IMAGE_TOKENS
+
+
+# How many times one tool may return a byte-identical result before the model is told the
+# call is not going to change. Follows OpenClaw's tool-loop detection, which keys on the
+# RESULT rather than the arguments and never intervenes while results are still changing:
+# the arguments varied on every one of the 18 calls observed here, so an argument-keyed
+# guard would have watched the whole thing happen.
 _MAX_IDENTICAL_TOOL_RESULTS = 3
 
 _UNSET = object()
@@ -32517,6 +32537,7 @@ class LlamaCppBackend:
                                         )
                                     # Measured: pending args may be base64/JSON/code that tokenise densely.
                                     _pending_args = 0
+                                    _pending_exact = True
                                     if _pending_msgs:
                                         try:
                                             _pending_args = self.count_chat_tokens(
@@ -32527,12 +32548,58 @@ class LlamaCppBackend:
                                                 "result budget: pending call count failed",
                                                 exc_info = True,
                                             )
+                                            _pending_exact = False
                                             _pending_args = 2 * estimate_messages_tokens_dense(
                                                 _pending_msgs
                                             )
+                                    # This iteration's cap, not the caller's whole one. A
+                                    # recovery turn with 100 of 1000 tokens left had the
+                                    # result priced as if 1000 were still to come, which
+                                    # reserves room away and can starve a read the request
+                                    # had space for.
+                                    _result_max_tokens = _iteration_max_tokens
+                                    # Auto-compaction off: nothing fits the next prompt to
+                                    # `prompt_budget`, whose quarter-window reply reserve
+                                    # emptied every result from 75% of the window on (#13784).
+                                    # Price to the reply floor the admission gate uses instead,
+                                    # only on an exact count of a thread with no unpriced media:
+                                    # the quarter reserve is what covers either error.
+                                    if (
+                                        context_overflow != "truncate_oldest"
+                                        and (
+                                            _exact_prompt_tokens is not None
+                                            or (_compact_after_execution and _compacted_turn_tokens)
+                                        )
+                                        and _pending_exact
+                                        and messages_without_unpriced_media(conversation)
+                                        is conversation
+                                    ):
+                                        _ctx = self._effective_context_length
+                                        _requested = (
+                                            _iteration_max_tokens
+                                            if _iteration_max_tokens and _iteration_max_tokens > 0
+                                            else _ctx
+                                        )
+                                        _reserve = min(_requested, _reply_floor(_ctx))
+                                        # Images join the thread after the whole batch, unpriced:
+                                        # the ones already collected, and this call's own.
+                                        _images = sum(map(len, batch_mcp_images))
+                                        if (
+                                            mcp_is_image_tool(decision.tool_name)
+                                            and image_share is None
+                                            and self.is_vision
+                                        ):
+                                            _images += MCP_MAX_MODEL_IMAGES
+                                        if _images:
+                                            _reserve += min(
+                                                MCP_MAX_TOTAL_MODEL_IMAGES, _images
+                                            ) * _mcp_image_tokens(self)
+                                        _result_max_tokens = min(
+                                            _reserve, _requested, max(1, _ctx // 4)
+                                        )
                                     _result_budget = tool_result_budget(
                                         self._effective_context_length,
-                                        _iteration_max_tokens,
+                                        _result_max_tokens,
                                         _spent + _pending_args,
                                     ) // (len(_pending) + 1)
                                     # A near-zero budget yields only a truncation notice; compact first.
@@ -32568,7 +32635,11 @@ class LlamaCppBackend:
                                             if _spent_after is not None:
                                                 _rescued = tool_result_budget(
                                                     self._effective_context_length,
-                                                    _iteration_max_tokens,
+                                                    # The same cap the first pricing used,
+                                                    # or the rescue is measured against a
+                                                    # different request from the one it is
+                                                    # rescuing.
+                                                    _result_max_tokens,
                                                     _spent_after + _pending_args,
                                                 ) // (len(_pending) + 1)
                                                 logger.info(

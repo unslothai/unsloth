@@ -14340,8 +14340,12 @@ def _is_bot_check(status: int, headers) -> bool:
     if headers.get("x-datadome") or headers.get("x-dd-b"):
         return True
     server = (headers.get("Server") or "").lower()
-    # Rate limits and outages behind these CDNs carry the same Server header.
-    return status == 403 and ("cloudflare" in server or "akamaighost" in server)
+    if status != 403:
+        return False
+    # Cloudflare names itself on every response it proxies; its own blocks skip the cache and send no CF-Cache-Status.
+    if "cloudflare" in server:
+        return headers.get("cf-cache-status") is None
+    return "akamaighost" in server
 
 
 def _fetch_url_raw(
@@ -15180,14 +15184,21 @@ def _fetch_page_text(
         if err is None and body.strip():
             return _truncate_page_text(body.strip(), max_chars)
 
+    meta: dict = {}
     err, body, content_type = _fetch_url_raw(
         url,
         timeout = timeout,
         deadline = deadline,
         cancel_event = cancel_event,
+        meta_out = meta,
         **policy_kwargs,
     )
     if err is not None:
+        if meta.get("bot_check"):
+            return (
+                f"{err.rstrip()}. The site's bot protection blocked this automated request; "
+                "fetching this site again will not help, so use another source."
+            )
         return err
 
     # Sniff the body when Content-Type is missing or wrong.

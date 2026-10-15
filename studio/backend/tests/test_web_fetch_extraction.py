@@ -1052,6 +1052,7 @@ def test_fetch_page_text_falls_back_to_html_when_readme_api_fails(monkeypatch):
         extra_headers = None,
         deadline = None,
         cancel_event = None,
+        meta_out = None,
     ):
         if url.startswith("https://api.github.com/"):
             return "Failed to fetch URL: HTTP 403 rate limited", "", ""
@@ -1074,6 +1075,7 @@ def test_fetch_page_text_reads_github_file_link_as_raw_file(monkeypatch):
         extra_headers = None,
         deadline = None,
         cancel_event = None,
+        meta_out = None,
     ):
         calls.append(url)
         if url.startswith("https://raw.githubusercontent.com/"):
@@ -1099,6 +1101,7 @@ def test_fetch_page_text_falls_back_to_github_file_page_when_raw_fails(monkeypat
         extra_headers = None,
         deadline = None,
         cancel_event = None,
+        meta_out = None,
     ):
         calls.append(url)
         if url.startswith("https://raw.githubusercontent.com/"):
@@ -1123,6 +1126,7 @@ def test_fetch_page_text_keeps_semicolon_in_github_file_name(monkeypatch):
         extra_headers = None,
         deadline = None,
         cancel_event = None,
+        meta_out = None,
     ):
         calls.append(url)
         return None, "file body", "text/plain"
@@ -1151,6 +1155,7 @@ def test_fetch_page_text_leaves_other_github_urls_on_their_page(monkeypatch, url
         extra_headers = None,
         deadline = None,
         cancel_event = None,
+        meta_out = None,
     ):
         calls.append(url)
         return "Failed to fetch URL: HTTP 403", "", ""
@@ -1174,6 +1179,7 @@ def _page_text(monkeypatch, url, body, content_type):
         extra_headers = None,
         deadline = None,
         cancel_event = None,
+        meta_out = None,
     ):
         return None, body, content_type
 
@@ -1243,6 +1249,7 @@ def test_fetch_page_text_propagates_fetch_errors(monkeypatch):
         extra_headers = None,
         deadline = None,
         cancel_event = None,
+        meta_out = None,
     ):
         return "Failed to fetch URL: HTTP 404 Not Found", "", ""
 
@@ -1676,6 +1683,7 @@ def test_fetch_page_text_keeps_a_markdown_readme_verbatim(
         extra_headers = None,
         deadline = None,
         cancel_event = None,
+        meta_out = None,
     ):
         assert url == "https://api.github.com/repos/unslothai/unsloth/readme"
         return (None, md_readme, "text/plain")
@@ -2221,6 +2229,7 @@ def test_fetch_page_text_missing_content_type_html_sniffed(monkeypatch):
         extra_headers = None,
         deadline = None,
         cancel_event = None,
+        meta_out = None,
     ):
         return None, _GITHUB_PAGE, ""
 
@@ -2530,6 +2539,7 @@ def test_fetch_page_text_shares_one_deadline_across_readme_and_fallback(monkeypa
         extra_headers = None,
         deadline = None,
         cancel_event = None,
+        meta_out = None,
     ):
         seen_deadlines.append(deadline)
         return "Failed to fetch URL: HTTP 429 rate limited", "", ""

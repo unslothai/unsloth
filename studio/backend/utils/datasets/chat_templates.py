@@ -232,8 +232,16 @@ def _sharegpt_tool_turns(conversation, content = "", probe = False,):
                 markers.append(f"unslothresult{len(markers)}end")
                 message["content"] = markers[-1]
         elif role == "function_call":
+            raw = message.get("content")
+            if isinstance(raw, list):
+                # A processor-loaded model gets every turn standardized into text parts.
+                raw = "".join(
+                    part.get("text") or ""
+                    for part in raw
+                    if isinstance(part, dict) and part.get("type") == "text"
+                )
             try:
-                calls = json.loads(message.get("content"))
+                calls = json.loads(raw)
             except (TypeError, ValueError, RecursionError):
                 calls = None
             calls = calls if isinstance(calls, list) else [calls]

@@ -58,6 +58,8 @@ export const en = {
       never: "Never",
       scripts: "Run scripts",
       scriptsDescription: "Choose whether models can run scripts on pages. You see each script before it runs",
+      cursor: "Show cursor",
+      cursorDescription: "Show a pointer where models click, type and drag on the page",
       askEveryTime: "Ask every time",
       permissionsTitle: "Agent permissions",
       permissionsDescription: "Choose defaults and add exceptions for specific sites. Password and payment fields are never filled, whatever these say.",

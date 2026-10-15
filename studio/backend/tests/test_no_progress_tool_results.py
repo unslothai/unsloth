@@ -356,6 +356,8 @@ def test_the_budget_rescue_recounts_with_the_stand_in_reply_too(monkeypatch):
             messages = [_thread[0], *_older, *_thread[1:]],
             tools = [_WEB_SEARCH_TOOL],
             max_tool_iterations = 4,
+            # The fit target the rescue defends; compaction off prices to the reply floor.
+            context_overflow = "truncate_oldest",
         )
     )
 

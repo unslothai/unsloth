@@ -131,6 +131,15 @@ def _av_open(av, source: str):
         return av.open(source, mode = "r", format = None)
 
 
+def _decoded_frames(av, container):
+    for packet in container.demux(container.streams.audio[0]):
+        try:
+            frames = packet.decode()
+        except av.error.InvalidDataError:
+            continue
+        yield from frames
+
+
 def transcode(
     src: Path,
     dst: Path,
@@ -172,7 +181,7 @@ def transcode(
             if not container.streams.audio:
                 raise AudioInputError(400, "This file has no audio stream.")
             try:
-                for frame in container.decode(container.streams.audio[0]):
+                for frame in _decoded_frames(av, container):
                     if resampler is None:
                         rate = rate or min(int(frame.sample_rate or 0), MAX_RATE)
                         if rate <= 0:
