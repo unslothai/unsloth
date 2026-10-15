@@ -160,7 +160,6 @@ def uninstall() -> None:
         return
     try:
         from torchao.quantization.quantize_.workflows.float8 import float8_tensor as _f8t
-
         if _STATE["orig"] is not None:
             _f8t.addmm_float8_unwrapped_inference = _STATE["orig"]
     finally:

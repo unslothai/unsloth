@@ -1671,7 +1671,6 @@ def _install_fp8_unit_scale() -> None:
         import logging
 
         from .diffusion_fp8_unit_scale import install
-
         install(logger = logging.getLogger(__name__))
     except Exception:  # noqa: BLE001 - never block a load on a speed path
         pass

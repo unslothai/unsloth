@@ -89,7 +89,6 @@ def _torchao_api() -> Optional[dict]:
         return None
     try:
         from .diffusion_fp8_unit_scale import install as _install_fp8_unit_scale
-
         _install_fp8_unit_scale()
     except Exception:  # noqa: BLE001 - never block a load on a speed path
         pass

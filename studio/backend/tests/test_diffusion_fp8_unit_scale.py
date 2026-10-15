@@ -60,7 +60,12 @@ def test_auto_installs_on_ada_idempotent_and_reversible(monkeypatch):
     assert f8t.addmm_float8_unwrapped_inference is before
 
 
-def _operands(m, k = 64, n = 48, seed = 0):
+def _operands(
+    m,
+    k = 64,
+    n = 48,
+    seed = 0,
+):
     g = torch.Generator().manual_seed(seed)
     a = (torch.randn(m, k, generator = g) * 3).to(torch.float8_e4m3fn)
     b = (torch.randn(n, k, generator = g) * 3).to(torch.float8_e4m3fn).t()
@@ -88,7 +93,6 @@ class _FakeDevice:
 
 
 class _Dev:
-
     def __init__(self, t):
         self.t = t
         self.device = _FakeDevice()
@@ -98,7 +102,15 @@ class _Dev:
         return self.t.dim()
 
 
-def _emulated_scaled_mm(a, b, scale_a, scale_b, out_dtype, use_fast_accum = False, **_):
+def _emulated_scaled_mm(
+    a,
+    b,
+    scale_a,
+    scale_b,
+    out_dtype,
+    use_fast_accum = False,
+    **_,
+):
     a = a.t if isinstance(a, _Dev) else a
     acc = (a.float() * scale_a.float()) @ (b.float() * scale_b.float())
     return acc.to(out_dtype)
@@ -109,7 +121,16 @@ def test_epilogue_matches_rowwise_math(monkeypatch, bias):
     _caps(monkeypatch, {0: (8, 9)})
     rowwise_calls = []
 
-    def rowwise(a, sa, b, sb, output_dtype, output_scale = None, bias = None, use_fast_accum = False):
+    def rowwise(
+        a,
+        sa,
+        b,
+        sb,
+        output_dtype,
+        output_scale = None,
+        bias = None,
+        use_fast_accum = False,
+    ):
         rowwise_calls.append(a.shape[0])
         a = a.t if isinstance(a, _Dev) else a
         out = (a.float() @ b.float()) * sa * sb
@@ -117,7 +138,9 @@ def test_epilogue_matches_rowwise_math(monkeypatch, bias):
 
     monkeypatch.setattr(f8t, "addmm_float8_unwrapped_inference", rowwise)
     monkeypatch.setattr(torch, "_scaled_mm", _emulated_scaled_mm)
-    monkeypatch.setattr(torch, "ones", lambda *a, device = None, dtype = None: torch.tensor(1.0, dtype = dtype))
+    monkeypatch.setattr(
+        torch, "ones", lambda *a, device = None, dtype = None: torch.tensor(1.0, dtype = dtype)
+    )
     monkeypatch.setenv(us.MIN_ROWS_ENV, "1024")
     assert us.install() is True
     fn = f8t.addmm_float8_unwrapped_inference
@@ -128,7 +151,7 @@ def test_epilogue_matches_rowwise_math(monkeypatch, bias):
     assert us.stats()["unit_scale"] == 1
     # One extra bf16 rounding of the unscaled accumulator (bias adds after it, so measure against the output range).
     err = (got.float() - want.float()).abs().max()
-    assert err <= 2 ** -7 * want.float().abs().max()
+    assert err <= 2**-7 * want.float().abs().max()
     assert torch.isfinite(got).all()
 
     small = _operands(256)
