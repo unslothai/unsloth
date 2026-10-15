@@ -2980,13 +2980,13 @@ class CfgBatchRouter:
         verify = (
             self.verify_batched > 0 and len(self.plain_times) == 2 and latent.device.type == "cuda"
         )
+        if self.state_watch is None:
+            self.state_watch = _StateWatch(module)
+        state_snapshot = self.state_watch.snapshot()
         try:
             if verify:
                 torch.cuda.synchronize()
                 t0 = time.perf_counter()
-            if self.state_watch is None:
-                self.state_watch = _StateWatch(module)
-            state_snapshot = self.state_watch.snapshot()
             out = self.orig_forward(*b_args, **b_kwargs)
             if state_snapshot is not None:
                 changed = self.state_watch.restore_changed(state_snapshot)
@@ -2999,11 +2999,16 @@ class CfgBatchRouter:
                 self._check_batched(time.perf_counter() - t0)
         except torch.OutOfMemoryError:
             del b_args, b_kwargs, merged
+            # a call that raised may have advanced watched state first: undo it before the plain rerun
+            with contextlib.suppress(Exception):
+                self.state_watch.restore_changed(state_snapshot)
             with contextlib.suppress(Exception):
                 torch.cuda.empty_cache()
             self.disable("out of memory on the batched call; one branch per call from here")
             return None
         except Exception as exc:  # noqa: BLE001 - the doubled batch was refused: the branch reruns plain
+            with contextlib.suppress(Exception):
+                self.state_watch.restore_changed(state_snapshot)
             self.disable(
                 f"the batched call failed ({type(exc).__name__}: {exc}); one branch per call from here"
             )
@@ -3142,6 +3147,44 @@ def _outer_forward_layer(module: Any, forward: Any = _DROP) -> Optional[str]:
     return "forward chain too deep to inspect"
 
 
+# Denoiser classes whose forward keeps no state across calls, so one doubled call equals two per-branch calls. Read
+# from the diffusers source (every method outside __init__ scanned for attribute writes and in-place tensor ops):
+# FLUX.2 / klein writes only into a Flux2KVCache passed as an argument (refused as an opaque argument); Z-Image's
+# RopeEmbedder fills its frequency table once, a pure function of the config; Qwen-Image's RoPE tables are pure
+# lru caches; FLUX.1 and Wan write nothing (Wan's fuse_projections is never called by forward). A fully general
+# detector is not possible (a forward may keep arbitrary Python state), so other classes run one branch per call
+# unless UNSLOTH_DIFFUSION_CFG_BATCH=force opts them in.
+_CFG_BATCH_STATELESS_CLASSES = frozenset(
+    {
+        "Flux2Transformer2DModel",
+        "FluxTransformer2DModel",
+        "ZImageTransformer2DModel",
+        "QwenImageTransformer2DModel",
+        "WanTransformer3DModel",
+    }
+)
+
+
+def _denoiser_class(module: Any) -> type:
+    """The real transformer class behind compile / PEFT wrappers (``_orig_mod``, ``base_model.model``)."""
+    for _ in range(4):
+        inner = module.__dict__.get("_modules", {}).get("_orig_mod") if hasattr(module, "__dict__") else None
+        if inner is None:
+            base = getattr(module, "base_model", None)
+            inner = getattr(base, "model", None) if base is not None and base is not module else None
+        if inner is None or inner is module:
+            break
+        module = inner
+    return type(module)
+
+
+def cfg_batch_class_listed(module: Any) -> tuple[bool, str]:
+    """(whether the denoiser's class is on the stateless-forward list, its qualified name)."""
+    cls = _denoiser_class(module)
+    name = f"{cls.__module__}.{cls.__qualname__}"
+    return cls.__module__.startswith("diffusers.") and cls.__qualname__ in _CFG_BATCH_STATELESS_CLASSES, name
+
+
 def cfg_batch_decline(pipe: Any, *, offload_policy: str) -> Optional[str]:
     """Why both guidance branches cannot share one forward on this load, or None."""
     mode = cfg_batch_mode()
@@ -3165,6 +3208,12 @@ def cfg_batch_decline(pipe: Any, *, offload_policy: str) -> Optional[str]:
         return f"step cache present ({hooked})"
     if mode == "force":
         return None
+    listed, cls_name = cfg_batch_class_listed(denoiser)
+    if not listed:
+        return (
+            f"denoiser class {cls_name} is not on the stateless-forward list "
+            f"({CFG_BATCH_ENV}=force opts it in)"
+        )
     streamed = offload_policy in ("group", "streaming", "sequential") and (
         any(_registry_kind(sub) == "offload" for sub in denoiser.modules())
         or any(getattr(sub, "_hf_hook", None) is not None for sub in denoiser.modules())

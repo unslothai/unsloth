@@ -11303,9 +11303,8 @@ class DiffusionBackend:
                                 protect_ctx,
                                 denoise_phase(pipe, _enter_denoise_phase),
                                 decode_phase(pipe, _enter_decode_phase),
-                                cfg_request_scope(
-                                    pipe, chunk_kwargs.get("width"), chunk_kwargs.get("height")
-                                ),
+                                # the canvas the forward runs at (img2img / inpaint take it from the input image)
+                                cfg_request_scope(pipe, guard_width, guard_height),
                                 _completed_step_poller(_pump),
                             ):
                                 out = render_thread.run(

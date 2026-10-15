@@ -1701,9 +1701,15 @@ def test_cfg_batch_out_of_memory_falls_back(monkeypatch):
 
 
 def test_cfg_batch_decline_rules(monkeypatch):
+    class Flux2Transformer2DModel(_BatchDit):  # a listed class name from diffusers
+        pass
+
+    Flux2Transformer2DModel.__module__ = "diffusers.models.transformers.transformer_flux2"
+    Flux2Transformer2DModel.__qualname__ = "Flux2Transformer2DModel"
+
     class Pipe:
         def __init__(self):
-            self.transformer = _BatchDit()
+            self.transformer = Flux2Transformer2DModel()
 
     assert "resident" in mg.cfg_batch_decline(Pipe(), offload_policy = "none")
     assert "resident" in mg.cfg_batch_decline(Pipe(), offload_policy = "group")
@@ -2638,3 +2644,86 @@ def test_request_scope_finds_a_router_under_a_later_outer_layer():
     assert router.template is None
     with mg.cfg_request_scope(pipe, 2048, 2048):
         assert router.request_px == 2048 * 2048
+
+
+def _listed_dit_class():
+    class FluxTransformer2DModel(_BatchDit):
+        pass
+
+    FluxTransformer2DModel.__module__ = "diffusers.models.transformers.transformer_flux"
+    FluxTransformer2DModel.__qualname__ = "FluxTransformer2DModel"
+    return FluxTransformer2DModel
+
+
+def test_cfg_batch_declines_a_denoiser_class_off_the_stateless_list(monkeypatch):
+    class Pipe:
+        def __init__(self, dit):
+            self.transformer = dit
+
+    reason = mg.cfg_batch_decline(Pipe(_BatchDit()), offload_policy = "group")
+    assert reason is not None and "stateless-forward list" in reason and mg.CFG_BATCH_ENV in reason
+    # a listed diffusers class passes the list (and is then judged on its offload as before)
+    assert "resident" in mg.cfg_batch_decline(Pipe(_listed_dit_class()()), offload_policy = "group")
+
+    # through a compile wrapper: the class behind _orig_mod decides
+    class Compiled(torch.nn.Module):
+        def __init__(self, inner):
+            super().__init__()
+            self._orig_mod = inner
+
+    assert mg.cfg_batch_class_listed(Compiled(_listed_dit_class()()))[0]
+    assert not mg.cfg_batch_class_listed(Compiled(_BatchDit()))[0]
+    # the opt-in lets an unlisted class batch
+    monkeypatch.setenv(mg.CFG_BATCH_ENV, "force")
+    assert mg.cfg_batch_decline(Pipe(_BatchDit()), offload_policy = "none") is None
+
+
+def test_cfg_batch_restores_state_when_the_batched_call_raises():
+    torch.manual_seed(0)
+
+    class RaisingDit(_BatchDit):
+        def __init__(self):
+            super().__init__()
+            self.register_buffer("seen", torch.zeros(()))
+
+        def forward(self, hidden_states, timestep, encoder_hidden_states, return_dict = False):
+            self.calls += 1
+            self.seen.add_(1.0)  # advanced before the doubled batch is refused
+            if hidden_states.shape[0] == 4:
+                raise ValueError("fixed batch")
+            return (self.proj(hidden_states) * timestep * self.seen + encoder_hidden_states.tanh(),)
+
+    cond, uncond = _embeds()
+    latents = torch.randn(2, 4)
+    ref = RaisingDit()
+    reference = _batch_loop(ref, latents.clone(), 4, cond, uncond)
+    dit = RaisingDit()
+    dit.load_state_dict(ref.state_dict())
+    dit.seen.zero_()
+    router = mg.CfgBatchRouter(dit)
+    dit.forward = router
+    out = _batch_loop(dit, latents.clone(), 4, cond, uncond)
+    torch.testing.assert_close(out, reference, rtol = 0, atol = 0)
+    assert float(dit.seen) == float(ref.seen)
+    assert "ValueError" in router.describe()["disabled_reason"]
+
+
+def test_request_scope_gets_the_effective_canvas_in_both_generate_paths():
+    import ast
+    from pathlib import Path
+
+    root = Path(mg.__file__).parent
+
+    def scope_args(name):
+        tree = ast.parse((root / name).read_text())
+        calls = [
+            n for n in ast.walk(tree)
+            if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "cfg_request_scope"
+        ]
+        assert len(calls) == 1, name
+        return [ast.unparse(a) for a in calls[0].args[1:]]
+
+    # image: the size the forward runs at (img2img / inpaint take it from the input image), not the call kwargs
+    assert scope_args("diffusion.py") == ["guard_width", "guard_height"]
+    # video: the resolved request canvas (frames do not count)
+    assert scope_args("video.py") == ["request_shape.get('width')", "request_shape.get('height')"]
