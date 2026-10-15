@@ -3247,6 +3247,7 @@ class TestTheCarveOutDecidesTheUnifiedMemoryEnv:
         *,
         tied,
         model_bytes = 18 * GIB,
+        extra_args = None,
     ):
         """A file on a 16 GiB carve-out, with 1 GiB token_embd and 2.5 GiB PLE."""
         embd, ple = 1 * GIB, GIB * 5 // 2
@@ -3281,7 +3282,11 @@ class TestTheCarveOutDecidesTheUnifiedMemoryEnv:
             returncode = None,
             model_bytes = model_bytes,
             backend = backend,
-            intent_kwargs = {"gpu_memory_mode": "manual", "gpu_layers": 9},
+            intent_kwargs = {
+                "gpu_memory_mode": "manual",
+                "gpu_layers": 9,
+                **({"extra_args": extra_args} if extra_args else {}),
+            },
         )[0]
 
     def test_an_untied_file_subtracts_its_per_layer_embeddings_once(
@@ -3304,6 +3309,19 @@ class TestTheCarveOutDecidesTheUnifiedMemoryEnv:
         # 18 - 1 - 2.5 + 1 = 15.5 GiB, under the carve-out.
         _cmd, env = self._load_with_embeddings(tmp_path, monkeypatch, tied = True)
         assert "GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in env
+
+    @pytest.mark.parametrize("flag", ["--lora", "--control-vector"])
+    def test_a_resident_adapter_keeps_the_per_layer_slack(
+        self, tmp_path, monkeypatch, probe_env, flag
+    ):
+        # Same 18 GiB tied file, plus an adapter nothing prices: the need stays the
+        # whole file (as the VRAM fit's discount stands down), so the carve-out gets it.
+        adapter = tmp_path / "adapter.gguf"
+        adapter.write_bytes(b"GGUF")
+        _cmd, env = self._load_with_embeddings(
+            tmp_path, monkeypatch, tied = True, extra_args = [flag, str(adapter)]
+        )
+        assert env.get("GGML_CUDA_ENABLE_UNIFIED_MEMORY") == "1"
 
     def _apu_and_dgpu(self, monkeypatch, ram_mib):
         _apply_os(monkeypatch, "linux", is_rocm = True)

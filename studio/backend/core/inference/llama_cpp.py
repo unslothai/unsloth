@@ -32831,8 +32831,9 @@ class LlamaCppBackend:
                         return None
                     if int(getattr(layout, "lm_head_bytes", 0) or 0):
                         need -= int(getattr(layout, "token_embd_bytes", 0) or 0)
-                    else:
+                    elif not _sidecar_adapter_paths(run_argv):
                         # The per-layer table is input-layer too and never duplicated.
+                        # Not beside a resident adapter: the same slack the VRAM fit keeps.
                         need -= sum(
                             size
                             for name, size in self._host_pinned_weight_items(model_path)
