@@ -144,7 +144,64 @@ def eagle3_support(config) -> tuple[bool, bool, Optional[str]]:
     return vllm, llama_cpp, None
 
 
-def drafter_capability(model_name: str, hf_token: Optional[str] = None) -> dict:
+_CAPABILITY_CACHE: dict = {}
+_CAPABILITY_TTL_S = 600
+_TOKEN_ENV = "UNSLOTH_DRAFTER_PROBE_TOKEN"
+_PROBE = """
+import json, os, sys
+os.environ.setdefault("UNSLOTH_IS_PRESENT", "1")
+sys.path.insert(0, os.getcwd())
+token = os.environ.pop({env!r}, "")
+token = False if token == "0" else (token or None)
+from core.training.drafter import capability_in_process
+print("DRAFTER_CAPABILITY " + json.dumps(capability_in_process(sys.argv[1], token)))
+"""
+
+
+def drafter_capability(model_name: str, hf_token = None) -> dict:
+    """The capability, probed in a child process: importing unsloth_zoo in the API server races its
+    background torch warm-up (import deadlock in torch._dynamo) and patches the server process."""
+    import subprocess
+    import sys
+
+    key = (model_name, hf_token is False, bool(hf_token))
+    hit = _CAPABILITY_CACHE.get(key)
+    if hit and time.time() - hit[0] < _CAPABILITY_TTL_S:
+        return dict(hit[1])
+    env = dict(os.environ)
+    env[_TOKEN_ENV] = "0" if hf_token is False else (hf_token or "")
+    result = None
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", _PROBE.format(env = _TOKEN_ENV), model_name],
+            cwd = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+            env = env,
+            capture_output = True,
+            text = True,
+            timeout = 300,
+        )
+        for line in proc.stdout.splitlines():
+            if line.startswith("DRAFTER_CAPABILITY "):
+                result = json.loads(line[len("DRAFTER_CAPABILITY ") :])
+        if result is None:
+            logger.warning("Drafter capability probe failed: %s", (proc.stderr or "")[-2000:])
+    except (OSError, subprocess.SubprocessError, ValueError) as exc:
+        logger.warning("Drafter capability probe failed: %r", exc)
+    if result is None:
+        return {
+            "model_name": model_name,
+            "has_native_mtp": False,
+            "strategy": None,
+            "supported": False,
+            "reason": "Could not check this model for drafter support.",
+            "vllm": False,
+            "llama_cpp": False,
+        }
+    _CAPABILITY_CACHE[key] = (time.time(), result)
+    return dict(result)
+
+
+def capability_in_process(model_name: str, hf_token: Optional[str] = None) -> dict:
     """What the Train tab can offer for this model. Head presence comes from the checkpoint's tensor index."""
     result = {
         "model_name": model_name,
@@ -470,7 +527,7 @@ def run_drafter_phase(
         text_config = _model_text_config(model)
         family, status = _mtp_family(text_config)
         capability = (
-            drafter_capability(model_name, config.get("hf_token") or None) if model_name else {}
+            capability_in_process(model_name, config.get("hf_token") or None) if model_name else {}
         )
         strategy, refusal = resolve_strategy(cfg.get("strategy", "auto"), capability)
         if strategy is None:

@@ -216,7 +216,7 @@ def fake_zoo(monkeypatch):
 
     monkeypatch.setattr(
         drafter,
-        "drafter_capability",
+        "capability_in_process",
         lambda name, token = None: {
             "supported": True,
             "strategy": "eagle3",
@@ -340,7 +340,7 @@ def test_unsupported_model_is_a_warning(fake_zoo, tmp_path, monkeypatch):
     drafter, trainer = fake_zoo
     monkeypatch.setattr(
         drafter,
-        "drafter_capability",
+        "capability_in_process",
         lambda name, token = None: {"supported": False, "reason": "no drafter for gemma3"},
     )
     q = _Queue()
@@ -518,7 +518,7 @@ def test_phase_mtp_saves_head_beside_adapter(fake_zoo, tmp_path, monkeypatch):
     drafter, trainer = fake_zoo
     monkeypatch.setattr(
         drafter,
-        "drafter_capability",
+        "capability_in_process",
         lambda name, token = None: {
             "supported": True,
             "strategy": "mtp",
@@ -564,7 +564,7 @@ def test_capability_refuses_without_the_zoo_drafter_trainers(monkeypatch):
     monkeypatch.setattr(
         drafter, "_text_config", lambda *a, **k: pytest.fail("config read before the zoo check")
     )
-    cap = drafter.drafter_capability("unsloth/Qwen3.5-2B")
+    cap = drafter.capability_in_process("unsloth/Qwen3.5-2B")
     assert cap["supported"] is False and cap["strategy"] is None
     assert "unsloth_zoo" in cap["reason"]
 
@@ -627,3 +627,63 @@ def test_manifest_records_the_data_source_actually_used(
     assert manifest["data_source"] == used
     if used == "dataset":
         assert any("using the dataset's answers" in e.get("message", "") for e in q)
+
+
+def test_route_capability_probes_in_a_child_process(monkeypatch):
+    """The API server never imports unsloth_zoo for the capability (it raced the torch warm-up there)."""
+    import subprocess
+    from core.training import drafter
+
+    calls = []
+
+    def fake_run(argv, **kw):
+        calls.append((argv, kw))
+        out = {
+            "model_name": argv[-1],
+            "has_native_mtp": True,
+            "strategy": "mtp",
+            "supported": True,
+            "reason": None,
+            "vllm": True,
+            "llama_cpp": True,
+        }
+        return subprocess.CompletedProcess(
+            argv, 0, "Unsloth banner\nDRAFTER_CAPABILITY " + json.dumps(out) + "\n", ""
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    drafter._CAPABILITY_CACHE.clear()
+    cap = drafter.drafter_capability("org/m", False)
+    assert cap["strategy"] == "mtp" and cap["supported"]
+    argv, kw = calls[0]
+    assert argv[0] == sys.executable and "org/m" == argv[-1]
+    assert kw["env"][drafter._TOKEN_ENV] == "0"  # anonymous, and never on the command line
+    assert drafter.drafter_capability("org/m", False) == cap and len(calls) == 1  # cached
+    monkeypatch.setattr(
+        subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 1, "", "boom")
+    )
+    assert drafter.drafter_capability("org/other")["supported"] is False
+
+
+def test_capability_child_process_runs_for_real(tmp_path):
+    """The probe script itself imports and answers (local config, no network)."""
+    from core.training import drafter
+
+    (tmp_path / "config.json").write_text(
+        json.dumps(
+            {
+                "model_type": "llama",
+                "architectures": ["LlamaForCausalLM"],
+                "hidden_size": 64,
+                "intermediate_size": 128,
+                "num_hidden_layers": 4,
+                "num_attention_heads": 4,
+                "num_key_value_heads": 4,
+                "vocab_size": 256,
+            }
+        )
+    )
+    pytest.importorskip("unsloth_zoo.speculative.eagle3")
+    drafter._CAPABILITY_CACHE.clear()
+    cap = drafter.drafter_capability(str(tmp_path))
+    assert cap["strategy"] == "eagle3" and cap["supported"], cap
