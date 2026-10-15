@@ -97,7 +97,9 @@ IDLE_MACS = [
 
 
 @pytest.mark.parametrize("ram_gb, available, working_set", IDLE_MACS)
-def test_an_idle_mac_keeps_every_load_the_ram_reading_admitted(mac, monkeypatch, ram_gb, available, working_set):
+def test_an_idle_mac_keeps_every_load_the_ram_reading_admitted(
+    mac, monkeypatch, ram_gb, available, working_set
+):
     ram = ram_gb * 1024
     monkeypatch.setattr(dm, "_system_memory_mib", lambda: (ram, available))
     mac["working_set"] = (working_set, 0)
