@@ -443,6 +443,34 @@ def test_patch_hybrid_varlen_active_and_idempotent(monkeypatch):
     assert scan_orig.calls[-1] is None
 
 
+def test_patch_hybrid_varlen_survives_accelerate_unwrap(monkeypatch):
+    # TRL runs accelerate's extract_model_from_parallel(keep_fp32_wrapper = False) every step
+    # after a mixed-precision prepare_model; it rebinds the forward it finds with
+    # MethodType(forward, model). A plain-function wrapper then got the model positionally:
+    # "PeftModelForCausalLM.forward() got multiple values for argument 'input_ids'".
+    from types import MethodType
+    from accelerate.utils import extract_model_from_parallel
+    from accelerate.utils.operations import convert_outputs_to_fp32
+
+    monkeypatch.setenv("UNSLOTH_EXPERIMENTAL_HYBRID_PACKING", "1")
+    model = _ShimHybridModel()
+    assert patch_hybrid_linear_attention_varlen(model) is True
+    assert list(inspect.signature(model.forward).parameters)[:3] == [
+        "input_ids",
+        "position_ids",
+        "packed_seq_lengths",
+    ]
+    # Accelerator.prepare_model with native AMP (accelerate/accelerator.py).
+    model._original_forward = model.forward
+    if hasattr(model.forward, "__func__"):
+        model.forward = MethodType(convert_outputs_to_fp32(model.forward.__func__), model)
+    else:
+        model.forward = convert_outputs_to_fp32(model.forward)
+    model = extract_model_from_parallel(model, keep_fp32_wrapper = False)
+    out = model(input_ids = torch.zeros(1, 6, dtype = torch.long), use_cache = False)
+    assert out.shape == (1, 6)
+
+
 def test_patch_hybrid_varlen_torch_fallback_fail_closed(monkeypatch):
     monkeypatch.setenv("UNSLOTH_EXPERIMENTAL_HYBRID_PACKING", "1")
     model = _ShimHybridModel()
@@ -1846,7 +1874,7 @@ def test_enable_padding_free_metadata():
 # has_real_accelerator(), not has_real_cuda(): the body below picks xpu when cuda is absent
 # and _build_packed_training_setup has an xpu dtype arm, so this is real XPU coverage.
 @pytest.mark.skipif(not has_real_accelerator(), reason = "builds a real 4bit model on an accelerator")
-def test_packing_sdpa(tmp_path):
+def test_packing_sdpa(tmp_path, monkeypatch):
     if torch.cuda.is_available():
         device = torch.device("cuda")
     elif torch.xpu.is_available():
@@ -1886,9 +1914,12 @@ def test_packing_sdpa(tmp_path):
         segment_calls.append(lengths)
         return lengths
 
-    def _capture_loss(*, logits, labels, **loss_kwargs):
+    def _capture_loss(*, hidden_states, labels, **loss_kwargs):
         captured_loss_labels["labels"] = labels.detach().to("cpu")
-        return torch.zeros((), device = logits.device, dtype = logits.dtype)
+        return torch.zeros((), device = hidden_states.device, dtype = hidden_states.dtype)
+
+    # Unmasked labels, so only the model's own boundary guard can mask the document starts.
+    inputs["labels"] = inputs["input_ids"].clone()
 
     with ExitStack() as stack:
         stack.enter_context(patch.object(attention_dispatch_utils, "HAS_FLASH_ATTENTION", False))
@@ -1903,10 +1934,12 @@ def test_packing_sdpa(tmp_path):
         stack.enter_context(
             patch.object(
                 llama_mod,
-                "fast_cross_entropy_loss",
+                "unsloth_fused_ce_loss",
                 side_effect = _capture_loss,
             )
         )
+        # Packed training's loss path: the fused CE on raw labels (UNSLOTH_RETURN_LOGITS=1 blocks packing).
+        monkeypatch.setenv("UNSLOTH_RETURN_LOGITS", "0")
         with torch.no_grad():
             outputs = model(**inputs)
 
@@ -1916,10 +1949,12 @@ def test_packing_sdpa(tmp_path):
     assert outputs.loss is not None
     assert "labels" in captured_loss_labels
     flat_loss_labels = captured_loss_labels["labels"].reshape(-1)
-    boundaries = (
-        torch.cumsum(batch["packed_seq_lengths"].to(device = "cpu", dtype = torch.long), dim = 0) - 1
-    )
-    for idx in boundaries.tolist():
+    # Raw labels (the kernel shifts): each later document's first token must not be a target.
+    starts = torch.cumsum(batch["packed_seq_lengths"].to(device = "cpu", dtype = torch.long), dim = 0)[
+        :-1
+    ]
+    assert starts.numel() > 0
+    for idx in starts.tolist():
         assert flat_loss_labels[idx].item() == -100
     assert torch.any(flat_loss_labels != -100)
 
@@ -2320,11 +2355,9 @@ def test_fused_ce_branch_masks_packed_boundaries(monkeypatch, module_name):
     assert labels.reshape(-1).tolist() == list(range(seq))
 
 
-# 3. the collator wrappers must leave boundary targets in place: unsloth_zoo counts num_items_in_batch off this
-#    batch and already deducts them
+# wrappers match TRL >= 0.23.1 masking; the zoo count includes each real target once
 class _UnmaskedPackingCollator:
-    """Padding-free collator that does NOT pre-mask boundaries, like TRL < 0.24 - a test
-    built on TRL 0.24+ output would pass either way."""
+    """padding-free collator with unmasked boundaries, like TRL < 0.23.1."""
 
     def __init__(self):
         self.padding_free = True
@@ -2339,16 +2372,23 @@ class _UnmaskedPackingCollator:
 
 
 def _zoo_num_items_in_batch(batch):
-    """The count unsloth_zoo._unsloth_get_batch_samples derives from a batch."""
-    count = int((batch["labels"][..., 1:] != -100).sum())
+    """unsloth_zoo._unsloth_get_batch_samples' count: boundary slots zeroed, not subtracted."""
+    token_count = batch["labels"][..., 1:] != -100
     lengths = batch.get("packed_seq_lengths")
     if lengths is not None:
-        count -= int(torch.count_nonzero(lengths > 0)) - 1
-    return count
+        n_shift = token_count.shape[-1]
+        n_rows = token_count.numel() // n_shift
+        starts = torch.cumsum(lengths.long(), dim = 0)[:-1]
+        rows = torch.div(starts, n_shift + 1, rounding_mode = "floor")
+        cols = starts - rows * (n_shift + 1)
+        keep = (cols > 0) & (rows < n_rows)
+        token_count = token_count.reshape(n_rows, n_shift).clone()
+        token_count[rows[keep], cols[keep] - 1] = False
+    return int(token_count.sum())
 
 
 @pytest.mark.parametrize("wrapper", [enable_sample_packing, enable_padding_free_metadata])
-def test_collator_keeps_boundary_targets_for_the_num_items_deduction(wrapper):
+def test_collator_masks_boundary_targets_and_num_items_counts_them_once(wrapper):
     model = SimpleNamespace(max_seq_length = 16, children = lambda: [])
     trainer = SimpleNamespace(
         args = SimpleNamespace(remove_unused_columns = True),
@@ -2356,25 +2396,68 @@ def test_collator_keeps_boundary_targets_for_the_num_items_deduction(wrapper):
     )
     wrapper(model, trainer)
 
+    examples = [
+        {"input_ids": [10, 11, 12], "seq_lengths": [2, 1]},
+        {"input_ids": [13, 14, 15], "seq_lengths": [3]},
+    ]
+    batch = trainer.data_collator.torch_call(examples)
+    # boundary labels match TRL >= 0.23.1
+    assert batch["labels"].reshape(-1).tolist() == [-100, 11, -100, -100, 14, 15]
+    assert batch["input_ids"].reshape(-1).tolist() == [10, 11, 12, 13, 14, 15]
+    assert _zoo_num_items_in_batch(batch) == 3
+    assert examples[0] == {"input_ids": [10, 11, 12], "seq_lengths": [2, 1]}
+
+
+@pytest.mark.parametrize("wrapper", [enable_sample_packing, enable_padding_free_metadata])
+def test_collator_boundary_mask_is_a_no_op_on_trl_masked_labels(wrapper):
+    class _MaskedPackingCollator(_UnmaskedPackingCollator):
+        def torch_call(self, examples):
+            batch = super().torch_call(examples)
+            position_ids = torch.cat(
+                [torch.arange(n) for ex in examples for n in ex["seq_lengths"]]
+            ).view(1, -1)
+            batch["labels"][position_ids == 0] = -100
+            return batch
+
+    model = SimpleNamespace(max_seq_length = 16, children = lambda: [])
+    trainer = SimpleNamespace(
+        args = SimpleNamespace(remove_unused_columns = True), data_collator = _MaskedPackingCollator()
+    )
+    wrapper(model, trainer)
     batch = trainer.data_collator.torch_call(
         [
             {"input_ids": [10, 11, 12], "seq_lengths": [2, 1]},
             {"input_ids": [13, 14, 15], "seq_lengths": [3]},
         ]
     )
-    assert batch["labels"].reshape(-1).tolist() == [10, 11, 12, 13, 14, 15]
-    # docs [10,11] [12] [13,14,15] -> 1 + 0 + 2 real CE targets
+    assert batch["labels"].reshape(-1).tolist() == [-100, 11, -100, -100, 14, 15]
     assert _zoo_num_items_in_batch(batch) == 3
 
 
-# 4. idempotence, discriminating (an identity helper must not pass)
+def test_collator_boundary_mask_leaves_unflattened_rows_alone():
+    class _RowCollator(_UnmaskedPackingCollator):
+        def torch_call(self, examples):
+            rows = [ex["input_ids"] for ex in examples]
+            return {"input_ids": torch.tensor(rows), "labels": torch.tensor(rows)}
+
+    model = SimpleNamespace(max_seq_length = 16, children = lambda: [])
+    trainer = SimpleNamespace(
+        args = SimpleNamespace(remove_unused_columns = True), data_collator = _RowCollator()
+    )
+    enable_sample_packing(model, trainer)
+    batch = trainer.data_collator.torch_call(
+        [{"input_ids": [10, 11, 12]}, {"input_ids": [13, 14, 15]}]
+    )
+    assert batch["labels"].tolist() == [[10, 11, 12], [13, 14, 15]]
+
+
 def test_guard_is_idempotent_and_actually_masks():
     lengths = torch.tensor([2, 1, 3], dtype = torch.int32)
     labels = torch.arange(6, dtype = torch.long).view(1, 6)
     once = mask_packed_boundary_labels(labels, lengths)
     twice = mask_packed_boundary_labels(once, lengths)
     assert torch.equal(twice, once)
-    # idempotence alone is trivial for an identity helper, so pin the values
+    # an identity helper would also pass the idempotence check
     assert once.reshape(-1).tolist() == [-100, 1, -100, -100, 4, 5]
 
 

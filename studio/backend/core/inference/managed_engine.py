@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import hashlib
 import os
+import re
 import secrets
 import socket
 import subprocess
@@ -24,11 +25,14 @@ import httpx
 from utils.hardware.hardware import resolve_requested_gpu_ids
 
 from .engine_install import (
+    ENGINE_NAMES,
+    built_for_this_gpu,
     driver_library_path,
     engine_lease,
     installed,
     profile,
     profile_digest,
+    rocm_loads_quantization,
     stale,
     support_reason,
 )
@@ -40,6 +44,7 @@ from .engine_adapters import (
     memory_reserve_mib,
     RESERVE_SHARE,
     launch_arguments,
+    reasoning_parser_for_template,
     tool_parser_for_template,
 )
 
@@ -61,19 +66,47 @@ def validate_load(engine: str, request) -> list[int]:
     gpu_ids = resolve_requested_gpu_ids(gpu_ids) if gpu_ids else resolve_requested_gpu_ids(None)[:1]
     if not gpu_ids:
         raise ValueError("Studio has no GPU it can assign to this engine.")
+    from . import wsl_host
+
+    if len(gpu_ids) > 1 and wsl_host.active() and profile(engine)["platform"] == "rocm":
+        raise ValueError(
+            f"On Windows, {ENGINE_NAMES[engine]} runs on one AMD GPU. Select a single GPU."
+        )
+    if not wsl_host.active() and profile(engine)["platform"] == "rocm":
+        from utils.hardware.hardware import _rocm_visibility_masks_are_stacked
+
+        # HIP renumbers devices after GPU_DEVICE_ORDINAL, and a HIP mask over a ROCr mask indexes
+        # what ROCr left: either way the engine's own mask could name another card.
+        if os.environ.get("GPU_DEVICE_ORDINAL", "").strip():
+            mask = "GPU_DEVICE_ORDINAL set"
+        elif _rocm_visibility_masks_are_stacked():
+            mask = "both ROCR_VISIBLE_DEVICES and HIP_VISIBLE_DEVICES (or CUDA_VISIBLE_DEVICES) set"
+        else:
+            mask = None
+        if mask:
+            raise ValueError(
+                f"{ENGINE_NAMES[engine]} cannot select AMD GPUs while Studio runs with {mask}. "
+                "Use only HIP_VISIBLE_DEVICES or only ROCR_VISIBLE_DEVICES instead."
+            )
     for gpu_id in gpu_ids:
         reason = support_reason(engine, gpu_id)
         if reason:
             raise ValueError(f"GPU {gpu_id}: {reason}")
     info = installed(engine)
     if not info:
-        raise ValueError(f"Install {engine} in Settings > System > Inference engines first.")
+        raise ValueError(
+            f"Install {ENGINE_NAMES[engine]} in Settings > System > Inference engines first."
+        )
     if stale(info):
         raise ValueError(
-            f"Studio's packages changed since {engine} was installed. Repair it in Settings > System > Inference engines."
+            f"Studio's packages changed since {ENGINE_NAMES[engine]} was installed. Repair it in Settings > System > Inference engines."
         )
-    if info.get("profile_digest") != profile_digest(engine) and not info.get("restored"):
-        raise ValueError(f"Update {engine} in Settings > System > Inference engines first.")
+    if info.get("profile_digest") != profile_digest(engine) and not (
+        info.get("restored") and built_for_this_gpu(engine, info)
+    ):
+        raise ValueError(
+            f"Update {ENGINE_NAMES[engine]} in Settings > System > Inference engines first."
+        )
     if (
         request.gguf_variant
         or request.model_path.lower().endswith(".gguf")
@@ -88,6 +121,14 @@ def validate_load(engine: str, request) -> list[int]:
 
     # Refused here, before the resident model is unloaded, not when the engine command is built.
     precision = getattr(request, "engine_precision", "auto")
+    loadable = profile(engine)["precisions"]
+    if precision not in loadable:
+        names = {"bf16": "BF16", "fp16": "FP16", "int8": "INT8", "fp8": "FP8", "int4": "4-bit"}
+        offered = ", ".join(names[p] for p in loadable if p != "auto")
+        raise ValueError(
+            f"{ENGINE_NAMES[engine]} on this GPU cannot load weights as {names.get(precision, precision)}. "
+            f"Choose {offered} or Model default."
+        )
     if (
         engine == "sglang"
         and precision in ("int8", "int4")
@@ -136,6 +177,9 @@ def validate_model(
     engine = "vllm",
     precision = "auto",
     parallelism = "tensor",
+    kv_cache_dtype = "auto",
+    seed = None,
+    gpu_memory_utilization = None,
 ) -> dict:
     """Check plain metadata before releasing the previous resident model."""
     if config.is_local:
@@ -152,6 +196,16 @@ def validate_model(
     if quant and precision != "auto":
         raise ValueError(
             "This checkpoint is already quantized. Choose Model default to use its stored precision."
+        )
+    if quant.get("quant_method") == "bitsandbytes" and not profile(engine)["bitsandbytes"]:
+        raise ValueError(
+            f"{ENGINE_NAMES[engine]} on this GPU cannot load BitsAndBytes checkpoints. Choose an unquantized "
+            "or AWQ checkpoint."
+        )
+    if profile(engine)["platform"] == "rocm" and not rocm_loads_quantization(quant):
+        raise ValueError(
+            f"{ENGINE_NAMES[engine]} on AMD GPUs cannot load this checkpoint's quantization. Choose an "
+            "unquantized, AWQ, or INT8 / INT4 compressed-tensors checkpoint."
         )
     if (
         quant.get("quant_method") == "bitsandbytes"
@@ -171,8 +225,10 @@ def validate_model(
             "SGLang cannot load prequantized BitsAndBytes checkpoints across pipeline stages. "
             "Select one GPU, use Replicas, or load an unquantized checkpoint with 4-bit precision."
         )
+    template = _model_chat_template(config, hf_token)
+    reasoning_parser = reasoning_parser_for_template(template, engine)
     options = {
-        "tool_parser": tool_parser_for_template(_model_chat_template(config, hf_token), engine),
+        "tool_parser": tool_parser_for_template(template, engine),
         "precision": precision,
         "parallelism": parallelism,
         "is_vision": bool(metadata.get("vision_config") or getattr(config, "is_vision", False)),
@@ -186,9 +242,27 @@ def validate_model(
         or (engine == "vllm" and precision == "int4" and parallelism != "pipeline")
         else "auto",
     }
-    if precision == "fp8":
-        # Eager TorchAO FP8 on Ampere: Triton cannot compile its casts, SGLang online FP8 is invalid.
+    # Unset options stay out of the dict, so a default load keeps today's argv and cache key.
+    if kv_cache_dtype != "auto":
+        options["kv_cache_dtype"] = kv_cache_dtype
+    if seed is not None:
+        options["seed"] = seed
+    if gpu_memory_utilization is not None:
+        options["gpu_memory_utilization"] = gpu_memory_utilization
+    if reasoning_parser:
+        from .llama_cpp import detect_reasoning_flags
+        options["reasoning_parser"] = reasoning_parser
+        options["reasoning_flags"] = detect_reasoning_flags(
+            template,
+            # The detector reads DeepSeek's `thinking` toggle off the id; a renamed local directory loses it.
+            f"deepseek {config.identifier}"
+            if reasoning_parser == "deepseek_v3"
+            else config.identifier,
+            log_source = "managed engine",
+        )
+    if (precision == "fp8" or kv_cache_dtype == "fp8") and profile(engine)["platform"] == "cuda":
         from utils.hardware.nvidia import _nvidia_smi_executable
+
         result = subprocess.run(
             [
                 _nvidia_smi_executable(),
@@ -205,8 +279,23 @@ def validate_model(
             timeout = 60,
             check = True,
         )
-        options["disable_cuda_graph"] = any(float(cap) < 8.9 for cap in result.stdout.splitlines())
+        caps = [float(cap) for cap in result.stdout.splitlines() if cap.strip()]
+        if precision == "fp8":
+            # Eager TorchAO FP8 on Ampere: Triton cannot compile its casts, SGLang online FP8 is invalid.
+            options["disable_cuda_graph"] = any(cap < 8.9 for cap in caps)
+        if kv_cache_dtype == "fp8" and any(cap < 8.0 for cap in caps):
+            # vLLM 0.30 refuses it at startup on Turing ("native FP8 requires SM89+"); Ampere runs it.
+            raise ValueError(
+                "An FP8 KV cache needs an Ampere or newer NVIDIA GPU. "
+                "Choose Model default for KV cache on this GPU."
+            )
     metadata = metadata.get("text_config") or metadata
+    if engine == "sglang" and kv_cache_dtype == "fp8" and metadata.get("kv_lora_rank"):
+        # Studio pins SGLang to the Triton attention backend, whose MLA path has no FP8 KV cache.
+        raise ValueError(
+            "SGLang cannot use an FP8 KV cache with this model's attention. "
+            "Choose Model default for KV cache, or use vLLM."
+        )
     size = len(gpu_ids or [0])
     if size > 1 and parallelism == "tensor":
         for field in ("num_attention_heads", "hidden_size", "intermediate_size"):
@@ -242,9 +331,163 @@ def _deep_gemm_unloadable(environment: str) -> bool:
     return False
 
 
-# Engine silence, not total startup time: an uncached Hub model downloads inside the engine.
-STARTUP_STALL_S = 900
+# The engine's own torch on its devices: what vLLM budgets against on ROCm (amd-smi may be absent).
+_DEVICE_MEMORY = (
+    "import json, torch; print(json.dumps("
+    "[torch.cuda.mem_get_info(i) for i in range(torch.cuda.device_count())]))"
+)
+
+
+def _memory_line(output: str) -> list:
+    """The probe's JSON out of everything the engine's imports print: wsl.exe returns stderr with
+    stdout, and torch can warn there after the measurement."""
+    for line in reversed(output.splitlines()):
+        if line.startswith("[["):
+            return json.loads(line)
+    raise ValueError("The GPU memory probe printed no measurement")
+
+
+def _wsl_amd_usable_mib(gpu_ids) -> list[tuple[float, bool]] | None:
+    """(MiB, is an APU) for what each selected AMD GPU can allocate through WSL, or None when
+    Windows cannot say.
+
+    Through DXG the pool HIP reports is the dedicated memory plus a share of the host's RAM, and an
+    allocation past what the host can back hangs instead of failing. So a discrete card keeps its
+    dedicated memory, and an APU adds 80% of the host RAM Windows reports available now."""
+    try:
+        import psutil
+        import torch
+        from utils.hardware.hardware import (
+            _normalize_adapter_name,
+            _props_gfx_arch,
+            _rocm_props_are_positively_unified,
+            _torch_ordinal_physical_ids,
+            _windows_amd_adapter_records_or_none,
+        )
+
+        records = list((_windows_amd_adapter_records_or_none() or {}).values())
+        count = torch.cuda.device_count()
+        physical = _torch_ordinal_physical_ids(count) or list(range(count))
+        available = psutil.virtual_memory().available
+        caps = []
+        for gpu_id in gpu_ids:
+            props = torch.cuda.get_device_properties(physical.index(gpu_id))
+            matches = [
+                record
+                for record in records
+                if record.get("gfx") == _props_gfx_arch(props)
+                or _normalize_adapter_name(record["name"]) == _normalize_adapter_name(props.name)
+            ]
+            if len(matches) != 1 or "dedicated_memory_bytes" not in matches[0]:
+                return None
+            usable = matches[0]["dedicated_memory_bytes"]
+            unified = bool(_rocm_props_are_positively_unified(props))
+            if unified:
+                usable += 0.8 * available
+            caps.append((usable / 2**20, unified))
+        return caps
+    except Exception:
+        return None
+
+
+def _engine_memory_rows(
+    info: dict, child_env: dict, gpu_ids: list[int]
+) -> list[tuple[float, float]]:
+    """(total, free) MiB of each device the engine will see, in its order."""
+    from . import wsl_host
+
+    command = [info["path"] + "/bin/python", "-I", "-c", _DEVICE_MEMORY]
+    if info.get("host") == "wsl":
+        output = wsl_host.guest(command, env = child_env, timeout = 180)
+    else:
+        output = subprocess.run(
+            command,
+            env = child_env,
+            capture_output = True,
+            **windows_hidden_subprocess_kwargs(),
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 180,
+            check = True,
+        ).stdout
+    rows = [(total / 2**20, free / 2**20) for free, total in _memory_line(output)]
+    if info.get("host") == "wsl":
+        caps = _wsl_amd_usable_mib(list(gpu_ids))
+        if caps is None or len(caps) != len(rows):
+            # Windows did not say; the VM's own free memory is the smaller, safe bound.
+            meminfo = wsl_host.guest(["cat", "/proc/meminfo"], timeout = 60)
+            match = re.search(r"^MemAvailable:\s+(\d+) kB", meminfo, re.M)
+            if not match:
+                raise ValueError("Could not read the memory of the WSL environment")
+            caps = [(int(match.group(1)) / 1024, True)] * len(rows)
+        # A discrete card's cap is its whole dedicated memory; what is already allocated in HIP's
+        # pool comes off it. An APU's cap is read from what the host has available now.
+        rows = [
+            (total, max(0.0, min(free, cap if unified else cap - (total - free))))
+            for (total, free), (cap, unified) in zip(rows, caps)
+        ]
+    return rows
+
+
+def _rocm_visibility(env: dict, gpu_ids) -> dict:
+    """The child's device mask on ROCm. vLLM refuses a HIP_VISIBLE_DEVICES that differs from
+    CUDA_VISIBLE_DEVICES, and HIP numbers devices after an inherited ROCR_VISIBLE_DEVICES, so the
+    physical ids become ordinals into that list, or the ROCr mask goes when they cannot."""
+    from utils.hardware.hardware import _rocr_relative_visibility
+
+    physical = ",".join(str(i) for i in gpu_ids)
+    mask = _rocr_relative_visibility(physical)
+    if mask is None:
+        env.pop("ROCR_VISIBLE_DEVICES", None)
+        mask = physical
+    return {"HIP_VISIBLE_DEVICES": mask, "CUDA_VISIBLE_DEVICES": mask}
+
+
+# SGLang raises when its derived gRPC port (HTTP + 10000) exceeds 65535.
+_PORT_LIMIT = 55535
+# Launch options that change no compiled artifact, so they share the compile cache.
+_UNCACHED_OPTIONS = frozenset(("seed", "gpu_memory_utilization"))
+
+
+def _free_port(limit: int | None = _PORT_LIMIT) -> int:
+    """A free local port no higher than ``limit`` (None: any). Windows hands out ephemeral ports in
+    sequence from 49152, so once its counter passes the limit the OS never offers a low enough
+    one; free ports below it are then tried at random."""
+    limit = limit or 65535
+    for attempt in range(100):
+        with socket.socket() as sock:
+            candidate = 0 if attempt == 0 else 20000 + secrets.randbelow(limit - 20000 + 1)
+            try:
+                sock.bind(("127.0.0.1", candidate))
+            except OSError:
+                continue
+            port = sock.getsockname()[1]
+        if port <= limit:
+            return port
+    raise RuntimeError("Could not allocate an inference server port.")
+
+
+# Engine silence, not total startup time: an uncached Hub model downloads inside the engine, and
+# a first load can compile (torch.compile, Triton kernels) for tens of minutes without a line,
+# as a block-FP8 27B did on gfx1151 for over 17 minutes.
+STARTUP_STALL_S = 3600
 STARTUP_LIMIT_S = 4 * 3600
+
+# vLLM 0.30 on hybrid models when its default max_num_seqs outruns the KV budget (Qwen3.8 NVFP4 on 32 GB, #8861).
+_MAMBA_SEQ_LIMIT = re.compile(
+    r"max_num_seqs \((\d+)\) exceeds available Mamba cache blocks \((\d+)\)"
+)
+
+
+# Per launch config, so a reload skips the failing first launch.
+_SEQ_LIMITS: dict[tuple, int] = {}
+
+
+class _MambaSeqLimit(RuntimeError):
+    def __init__(self, message: str, blocks: int):
+        super().__init__(message)
+        self.blocks = blocks
 
 
 def _token_file_token(env) -> str | None:
@@ -280,8 +523,10 @@ class ManagedEngine:
         self._lease = None
         self._reader = None
         self._tail = deque(maxlen = 200)
+        self._mamba_blocks = None
         self._last_output = time.monotonic()
         self.base_url = ""
+        self.reasoning_parser = None
         self._guest_environment = None
         # A URL-safe token can start with '-', which CLI parsers read as an option.
         self.key = "studio-" + secrets.token_urlsafe(32)
@@ -301,6 +546,44 @@ class ManagedEngine:
         model_path = None,
     ):
         """``model`` is the served name; ``model_path`` is what the engine loads when they differ."""
+        args = (model, context, gpu_ids, env, cancel_event)
+        options = dict(options or {})
+        key = (
+            self.engine,
+            model_path or model,
+            context,
+            tuple(gpu_ids or ()),
+            repr(sorted(options.items())),
+        )
+        if key in _SEQ_LIMITS and "max_num_seqs" not in options:
+            options["max_num_seqs"] = _SEQ_LIMITS[key]
+        try:
+            return self._start_once(*args, options or None, trust_remote_code, model_path)
+        except _MambaSeqLimit as exc:
+            if cancel_event is not None and cancel_event.is_set():
+                raise RuntimeError("Model load cancelled") from exc
+            if exc.blocks >= options.get("max_num_seqs", exc.blocks + 1):
+                raise
+            # Once, at the count vLLM measured: fewer sequences only shrink its CUDA graphs.
+            _SEQ_LIMITS[key] = exc.blocks
+            self._tail.clear()
+            self._mamba_blocks = None
+            self.phase = "starting"
+            return self._start_once(
+                *args, {**options, "max_num_seqs": exc.blocks}, trust_remote_code, model_path
+            )
+
+    def _start_once(
+        self,
+        model: str,
+        context: int,
+        gpu_ids,
+        env: dict,
+        cancel_event,
+        options,
+        trust_remote_code,
+        model_path,
+    ):
         from utils.process_lifetime import (
             adopt_pid,
             child_popen_kwargs,
@@ -321,17 +604,10 @@ class ManagedEngine:
                 info = installed(self.engine)
                 if info is None:
                     raise RuntimeError("The selected engine is no longer installed.")
-                # SGLang raises when its derived gRPC port (HTTP + 10000) exceeds 65535.
-                for _ in range(100):
-                    with socket.socket() as sock:
-                        sock.bind(("127.0.0.1", 0))
-                        port = sock.getsockname()[1]
-                    if self.engine != "sglang" or port <= 55535:
-                        break
-                else:
-                    raise RuntimeError("Could not allocate an inference server port.")
+                port = _free_port(_PORT_LIMIT if self.engine == "sglang" else None)
                 self.base_url = f"http://127.0.0.1:{port}"
                 self.model, self.context = model, context or 4096
+                self.reasoning_parser = (options or {}).get("reasoning_parser")
                 stdin = None
                 if info.get("host") == "wsl":
                     command, child_env = self._wsl_command(
@@ -362,6 +638,9 @@ class ManagedEngine:
                         ]
                     )
                     child_env["CUDA_VISIBLE_DEVICES"] = ",".join(str(i) for i in (gpu_ids or [0]))
+                    rocm = info.get("platform") == "rocm"
+                    if rocm:
+                        child_env.update(_rocm_visibility(child_env, gpu_ids or [0]))
                     child_env["PYTHONNOUSERSITE"] = "1"
                     from .engine_install import engine_root
 
@@ -380,8 +659,14 @@ class ManagedEngine:
 
                     child_env.pop("CUDA_PATH", None)
                     child_env.update(cuda_environment(info))
+                    measure = (
+                        (lambda ids: _engine_memory_rows(info, child_env, ids)) if rocm else None
+                    )
                     memory_fraction = gpu_memory_fraction(
-                        gpu_ids or [0], memory_reserve_mib(self.engine, options), RESERVE_SHARE
+                        gpu_ids or [0],
+                        memory_reserve_mib(self.engine, options),
+                        RESERVE_SHARE,
+                        measure,
                     )
                     child_env.update(self.adapter.environment(len(gpu_ids or [0])))
                     child_env.update(self.adapter.key_environment(self.key))
@@ -446,7 +731,12 @@ class ManagedEngine:
                     ):
                         raise RuntimeError("Model load cancelled")
                     if not self.alive():
-                        raise RuntimeError("Engine failed to start. " + "\n".join(self._tail))
+                        if self._reader is not None:
+                            self._reader.join(timeout = 2)
+                        message = "Engine failed to start. " + "\n".join(self._tail)
+                        if self._mamba_blocks:
+                            raise _MambaSeqLimit(message, self._mamba_blocks)
+                        raise RuntimeError(message)
                     try:
                         response = client.get(self.base_url + "/health", headers = self.headers)
                         if response.status_code == 200:
@@ -456,8 +746,13 @@ class ManagedEngine:
                         pass
                     self._cancel.wait(0.25)
                 raise RuntimeError(
-                    "Engine startup timed out. Try a smaller model or context length."
+                    "Engine startup timed out. Try a smaller model or context length.\n"
+                    + "\n".join(list(self._tail)[-20:])
                 )
+        except _MambaSeqLimit:
+            # Not a stop request: an external stop() meanwhile must still cancel the relaunch.
+            self._teardown()
+            raise
         except Exception:
             self.stop()
             raise
@@ -469,7 +764,15 @@ class ManagedEngine:
         return hashlib.sha256(
             policy
             + json.dumps(
-                [info.get("profile_digest"), model, self.context, gpu_ids, options],
+                [
+                    info.get("profile_digest"),
+                    model,
+                    self.context,
+                    gpu_ids,
+                    {k: v for k, v in options.items() if k not in _UNCACHED_OPTIONS}
+                    if options
+                    else options,
+                ],
                 sort_keys = True,
             ).encode()
         ).hexdigest()[:16]
@@ -486,13 +789,20 @@ class ManagedEngine:
         environment = info["path"]
         wsl_host.guest(["test", "-x", environment + "/bin/python"], timeout = 300)
         cache = f"{guest_root}/cache/{self.engine}/{self._cache_key(info, model, gpu_ids, options)}"
+        rocm = info.get("platform") == "rocm"
+        # NVIDIA GPUs are matched by UUID; the one AMD GPU a WSL engine may use is the same ordinal.
+        devices = ",".join(
+            str(i)
+            for i in (
+                list(gpu_ids or [0]) if rocm else wsl_host.guest_gpu_indices(list(gpu_ids or [0]))
+            )
+        )
         guest_env = {
             "PATH": environment
             + "/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/lib/wsl/lib",
             "CUDA_DEVICE_ORDER": "PCI_BUS_ID",
-            "CUDA_VISIBLE_DEVICES": ",".join(
-                str(i) for i in wsl_host.guest_gpu_indices(list(gpu_ids or [0]))
-            ),
+            "CUDA_VISIBLE_DEVICES": devices,
+            **({"HIP_VISIBLE_DEVICES": devices, **wsl_host.rocm_environment()} if rocm else {}),
             "PYTHONNOUSERSITE": "1",
             # C++ links FlashInfer JIT kernels against WSL's driver, outside the usual linker paths.
             "LIBRARY_PATH": "/usr/lib/wsl/lib",
@@ -513,6 +823,7 @@ class ManagedEngine:
         if self.engine == "vllm" and info.get("deep_gemm_unloadable"):
             guest_env["VLLM_USE_DEEP_GEMM"] = "0"
         target = wsl_host.to_guest_path(model_path) if model_path else model
+        measure = (lambda ids: _engine_memory_rows(info, guest_env, ids)) if rocm else None
         command = self.adapter.command(
             environment + "/bin/python",
             target,
@@ -520,7 +831,7 @@ class ManagedEngine:
             self.key,
             self.context,
             gpu_memory_fraction(
-                gpu_ids or [0], memory_reserve_mib(self.engine, options), RESERVE_SHARE
+                gpu_ids or [0], memory_reserve_mib(self.engine, options), RESERVE_SHARE, measure
             ),
             len(gpu_ids or [0]),
             **(
@@ -567,6 +878,9 @@ class ManagedEngine:
         from utils.native_path_leases import redact_native_paths
         for line in proc.stdout:
             self._last_output = time.monotonic()
+            if self.engine == "vllm" and (limit := _MAMBA_SEQ_LIMIT.search(line)):
+                # Data-parallel ranks each report their own count; the tightest binds all.
+                self._mamba_blocks = min(int(limit.group(2)), self._mamba_blocks or 1 << 30)
             stage = self.adapter.progress(line)
             if stage and self.phase != "ready":
                 self.phase = stage
@@ -577,9 +891,11 @@ class ManagedEngine:
             )
 
     def stop(self) -> bool:
-        from utils.process_lifetime import terminate_pid, forget_pid
-
         self._cancel.set()
+        return self._teardown()
+
+    def _teardown(self) -> bool:
+        from utils.process_lifetime import terminate_pid, forget_pid
         with self._lock:
             if self.process is not None:
                 graceful = False
@@ -611,6 +927,51 @@ class ManagedEngine:
                 self._lease = None
         return True
 
+    def reasoning_fields(
+        self,
+        enable_thinking = None,
+        reasoning_effort = None,
+        preserve_thinking = None,
+    ) -> dict:
+        """Request fields for the template's thinking controls; without a parser thinking stays off."""
+        if not self.reasoning_parser:
+            return {"chat_template_kwargs": {"enable_thinking": False}}
+        kwargs = {}
+        if enable_thinking is not None:
+            kwargs["enable_thinking"] = bool(enable_thinking)
+        elif reasoning_effort is None:
+            kwargs["enable_thinking"] = False
+        if "enable_thinking" in kwargs:
+            # DeepSeek V3.1+ templates read `thinking`; vLLM drops whichever one a template never names.
+            kwargs["thinking"] = kwargs["enable_thinking"]
+        if preserve_thinking is not None:
+            kwargs["preserve_thinking"] = bool(preserve_thinking)
+        fields = {"chat_template_kwargs": kwargs}
+        if reasoning_effort is not None:
+            # vLLM hands it to the template, which owns the accepted levels.
+            fields["reasoning_effort"] = reasoning_effort
+        return fields
+
+    def replay_reasoning(
+        self,
+        messages,
+        preserve_thinking = None,
+    ):
+        """vLLM reads a past turn's thinking from ``reasoning``, Studio keeps it as ``reasoning_content``."""
+        if not (self.reasoning_parser and preserve_thinking):
+            return messages
+        # Moved, not copied: the context fit prices the whole message, so a copy charges the thought twice.
+        return [
+            {k: v for k, v in message.items() if k != "reasoning_content"}
+            | {"reasoning": message["reasoning_content"]}
+            if isinstance(message, dict)
+            and message.get("role") == "assistant"
+            and isinstance(message.get("reasoning_content"), str)
+            and "reasoning" not in message
+            else message
+            for message in messages
+        ]
+
     def count_tokens(
         self,
         messages,
@@ -623,15 +984,27 @@ class ManagedEngine:
             raise RuntimeError("Exact prompt token counting is unavailable for this engine.")
         if system_prompt:
             messages = [{"role": "system", "content": system_prompt}, *messages]
+        fields = self.reasoning_fields(
+            kwargs.get("enable_thinking"),
+            kwargs.get("reasoning_effort"),
+            kwargs.get("preserve_thinking"),
+        )
+        # /tokenize takes template controls only in chat_template_kwargs; /chat/completions moves the
+        # top-level effort there itself, and turns thinking on for it unless told otherwise.
+        effort = fields.pop("reasoning_effort", None)
+        if effort is not None:
+            template_kwargs = fields["chat_template_kwargs"]
+            template_kwargs["reasoning_effort"] = effort
+            template_kwargs.setdefault("enable_thinking", effort != "none")
         with httpx.Client(trust_env = False, timeout = 30) as client:
             response = client.post(
                 self.base_url + "/tokenize",
                 headers = self.headers,
                 json = {
                     "model": self.model,
-                    "messages": messages,
+                    "messages": self.replay_reasoning(messages, kwargs.get("preserve_thinking")),
                     "add_generation_prompt": True,
-                    "chat_template_kwargs": {"enable_thinking": False},
+                    **fields,
                 },
             )
             response.raise_for_status()
@@ -700,17 +1073,16 @@ class ManagedEngine:
                         )
                         message["content"] = parts
                         break
-        if (
-            params.get("continue_final_message")
-            or params.get("enable_thinking")
-            or params.get("preserve_thinking")
+        if params.get("continue_final_message") or (
+            not self.reasoning_parser
+            and (params.get("enable_thinking") or params.get("preserve_thinking"))
         ):
             raise ValueError(
                 "Continuation and reasoning controls are unavailable for this engine profile."
             )
         from .engine_transport import engine_messages
 
-        messages = engine_messages(messages)
+        messages = self.replay_reasoning(engine_messages(messages), params.get("preserve_thinking"))
         payload = {
             "model": self.model,
             "messages": messages,
@@ -737,12 +1109,19 @@ class ManagedEngine:
         limit = params.get("max_new_tokens") or 0
         if limit > 0 and (not self.context or limit < self.context):
             payload["max_tokens"] = limit
-        payload["chat_template_kwargs"] = {"enable_thinking": False}
+        payload.update(
+            self.reasoning_fields(
+                params.get("enable_thinking"),
+                params.get("reasoning_effort"),
+                params.get("preserve_thinking"),
+            )
+        )
         from .engine_transport import stream_chat_events
 
         def cancelled():
             return self._cancel.is_set() or (cancel_event is not None and cancel_event.is_set())
 
+        thinking = False
         for event in stream_chat_events(self.base_url, self.headers, payload, cancelled):
             if event.get("usage") and stats_holder is not None:
                 stats_holder.setdefault("stats", {})["usage"] = event["usage"]
@@ -751,6 +1130,13 @@ class ManagedEngine:
             for choice in event.get("choices", []):
                 if choice.get("finish_reason") and stats_holder is not None:
                     stats_holder.setdefault("stats", {})["finish_reason"] = choice["finish_reason"]
-                content = choice.get("delta", {}).get("content")
+                delta = choice.get("delta", {})
+                # The parser splits thinking out; <think> markup is what the route's extractor reads.
+                reasoning = delta.get("reasoning") or delta.get("reasoning_content")
+                if reasoning:
+                    yield reasoning if thinking else "<think>" + reasoning
+                    thinking = True
+                content = delta.get("content")
                 if content:
-                    yield content
+                    yield "</think>" + content.lstrip("\n") if thinking else content
+                    thinking = False

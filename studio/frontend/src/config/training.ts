@@ -168,6 +168,7 @@ export const DEFAULT_HYPERPARAMS = {
   maxSteps: 60,
   saveSteps: 0,
   evalSteps: 0.0,
+  earlyStoppingPatience: 0,
   packing: false,
   trainOnCompletions: false,
   gradientCheckpointing: "unsloth" as const,
@@ -231,10 +232,29 @@ export const PRIORITY_TRAINING_MODELS: readonly string[] = [
   "unsloth/Llama-3.2-3B-Instruct",
 ];
 
+const LAYA_TRAINING_MODEL = "convaiinnovations/laya";
+const CLEF_OMNI_MLX_TRAINING_MODEL = "mlx-community/clef-omni-8bit";
+
+/** The pinned models for a device: Clef Omni trains only through MLX, so only a Mac lists it. */
+export function priorityTrainingModels(
+  deviceType?: string | null,
+): readonly string[] {
+  return deviceType === "mac"
+    ? PRIORITY_TRAINING_MODELS.flatMap((id) =>
+        id === LAYA_TRAINING_MODEL ? [id, CLEF_OMNI_MLX_TRAINING_MODEL] : [id],
+      )
+    : PRIORITY_TRAINING_MODELS;
+}
+
 /** Pin priority models to the top of a list of model IDs, preserving their defined order. */
-export function applyPriorityOrdering(ids: string[]): string[] {
+export function applyPriorityOrdering(
+  ids: string[],
+  deviceType?: string | null,
+): string[] {
   const idSet = new Set(ids);
-  const pinned = PRIORITY_TRAINING_MODELS.filter((id) => idSet.has(id));
+  const pinned = priorityTrainingModels(deviceType).filter((id) =>
+    idSet.has(id),
+  );
   const pinnedSet = new Set(pinned);
   const rest = ids.filter((id) => !pinnedSet.has(id));
   return [...pinned, ...rest];

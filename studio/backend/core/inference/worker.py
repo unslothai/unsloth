@@ -232,6 +232,17 @@ def _decode_image(image_base64: str):
     return Image.open(BytesIO(image_data))
 
 
+def _active_model_is_deepseek_ocr(backend) -> bool:
+    from core.inference.model_ids import is_deepseek_ocr
+
+    models = getattr(backend, "models", None)
+    if not isinstance(models, dict):
+        return False
+    return is_deepseek_ocr(
+        (models.get(getattr(backend, "active_model_name", None)) or {}).get("model")
+    )
+
+
 def _resize_image(img, max_size: int = 800):
     """Resize image while maintaining aspect ratio."""
     if img is None:
@@ -766,6 +777,11 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 "has_audio_input": getattr(mc, "has_audio_input", False),
                 "can_batch": _load_can_batch(backend),
             }
+            if _active_model_is_deepseek_ocr(backend):
+                from core.inference.model_ids import DEEPSEEK_OCR_MAX_IMAGE_SIDE
+
+                # The route resizes before the IPC hop, so it needs the raised cap too.
+                model_info["max_image_side"] = DEEPSEEK_OCR_MAX_IMAGE_SIDE
             _bm = getattr(backend, "models", {}) or {}
             _entry = (
                 _bm.get(mc.identifier) or _bm.get(getattr(backend, "active_model_name", None)) or {}
@@ -1067,14 +1083,16 @@ def _dispatch_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> Non
 
 
 def _generation_kwargs(backend, cmd: dict, cancel_event) -> dict:
+    resize = _resize_image
+    if _active_model_is_deepseek_ocr(backend):
+        from core.inference.model_ids import DEEPSEEK_OCR_MAX_IMAGE_SIDE
+        resize = functools.partial(_resize_image, max_size = DEEPSEEK_OCR_MAX_IMAGE_SIDE)
     image = None
     image_b64 = cmd.get("image_base64")
     if image_b64:
-        image = _resize_image(_decode_image(image_b64))
+        image = resize(_decode_image(image_b64))
     images = [
-        _resize_image(_decode_image(encoded))
-        for encoded in cmd.get("images_base64") or ()
-        if encoded
+        resize(_decode_image(encoded)) for encoded in cmd.get("images_base64") or () if encoded
     ]
 
     gen_kwargs = {
@@ -1132,6 +1150,12 @@ def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
     one-at-a-time loop the shared event alone. Nothing is asked during the prefill.
     """
     request_id = cmd.get("request_id", "")
+    # Scoped to this request: cleared when it ends.
+    frames = bool(cmd.get("diffusion_frames")) and hasattr(backend, "diffusion_frame_sink")
+    if frames:
+        backend.diffusion_frame_sink = lambda frame: _send_response(
+            resp_queue, {**frame, "request_id": request_id}
+        )
 
     try:
         gen_kwargs = _generation_kwargs(backend, cmd, cancel_event)
@@ -1181,6 +1205,9 @@ def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
     except Exception as exc:
         logger.error("Generation error: %s", exc, exc_info = True)
         _send_response(resp_queue, _generation_error_payload(request_id, exc))
+    finally:
+        if frames:
+            backend.diffusion_frame_sink = None
 
 
 def _handle_count_tokens(backend, cmd: dict, resp_queue: Any) -> None:
@@ -2036,7 +2063,11 @@ def run_inference_process(
     if _hw.DEVICE == _hw.DeviceType.MLX and not _native_audio_worker:
         try:
             from core.inference.mlx_inference import MLXInferenceBackend, _init_mlx_distributed
+            from utils.models.diffusion_lm import mlx_refusal
 
+            refusal = mlx_refusal(model_name, _config_hf_token(config))
+            if refusal:
+                raise RuntimeError(refusal)
             backend = MLXInferenceBackend()
             if config.get("mlx_distributed"):
                 group, rank, size = _init_mlx_distributed()

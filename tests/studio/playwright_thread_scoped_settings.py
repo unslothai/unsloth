@@ -375,7 +375,7 @@ def choose_permission(page, label):
 
 
 def expect_pills(page, where, search, code, permission):
-    for label, wanted in (("Search", search), ("Code", code)):
+    for label, wanted in (("Search", search), ("Tools", code)):
         expect(pill(page, label)).to_have_attribute(
             "data-active", "true" if wanted else "false", timeout = TIMEOUT_MS
         )
@@ -577,8 +577,8 @@ def main():
         open_thread(page, thread_b)
         expect_pills(page, "B on first open", False, False, "Approve for me")
 
-        step("set Chat B to Code on, Run automatically")
-        pill(page, "Code").click()
+        step("set Chat B to Tools on, Run automatically")
+        pill(page, "Tools").click()
         choose_permission(page, "Run automatically")
         expect_pills(page, "B after editing", False, True, "Run automatically")
         shoot(page, "02-chat-b-edited")

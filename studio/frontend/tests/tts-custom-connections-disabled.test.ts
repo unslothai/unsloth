@@ -120,6 +120,7 @@ function load(
         },
       },
       "@/lib/toast": { toast: { error: () => {} } },
+      "@/features/audio/audio-workspace-constants": { TTS_MAX_TOKENS: 8192 },
     },
   );
   return {

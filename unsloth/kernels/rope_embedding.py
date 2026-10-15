@@ -10,10 +10,12 @@
 # You should have received a copy of the GNU Lesser General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+import functools
+import weakref
 import triton
 import triton.language as tl
 import torch
-from ..device_type import DEVICE_COUNT
+from ..device_type import DEVICE_COUNT, DEVICE_TYPE_TORCH
 from typing import Tuple
 from .utils import calculate_settings, long_indexing, torch_gpu_device, torch_device_stream
 from .rms_layernorm import (
@@ -27,17 +29,17 @@ from .rms_layernorm import (
 
 def _rope_embedding_QK(
     Q,
-    Q_batch_stride,
-    Q_head_stride,
-    Q_seq_stride,
+    Q_batch_stride,  # s*h*d: varies with seq_len
+    Q_head_stride,  # d fwd, s*d bwd
+    Q_seq_stride: tl.constexpr,  # h*d fwd, d bwd
     K,
     K_batch_stride,
     K_head_stride,
-    K_seq_stride,
+    K_seq_stride: tl.constexpr,  # kv*d fwd, d bwd
     cos,
-    cos_row_stride,
+    cos_row_stride: tl.constexpr,  # d
     sin,
-    sin_row_stride,
+    sin_row_stride: tl.constexpr,  # d
     rope_embedding_indices,
     seqlen,
     head_dim: tl.constexpr,
@@ -46,6 +48,7 @@ def _rope_embedding_QK(
     HAS_ROPE_INDICES: tl.constexpr,
     LONG_INDEXING: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
+    EVICT_INDICES: tl.constexpr,
 ):
     row_position = tl.program_id(0)
     head_position = tl.program_id(1)
@@ -54,10 +57,13 @@ def _rope_embedding_QK(
     mask = col_offsets < half_head_dim
 
     if HAS_ROPE_INDICES:
-        rot_position = tl.load(
-            rope_embedding_indices + row_position,
-            eviction_policy = "evict_first",
-        ).to(tl.int32)
+        if EVICT_INDICES:
+            rot_position = tl.load(
+                rope_embedding_indices + row_position,
+                eviction_policy = "evict_first",
+            ).to(tl.int32)
+        else:
+            rot_position = tl.load(rope_embedding_indices + row_position).to(tl.int32)
     else:
         rot_position = row_position % seqlen
 
@@ -250,6 +256,19 @@ class Fast_RoPE_Embedding(torch.autograd.Function):
         )
 
 
+@functools.lru_cache(maxsize = None)
+def _eviction_hints_ok_at(device_type, index):
+    # ptxas rejects ld eviction hints below sm_70 (Maxwell, Pascal).
+    if device_type != "cuda" or torch.version.hip is not None:
+        return True
+    return torch.cuda.get_device_capability(index)[0] >= 7
+
+
+def _eviction_hints_ok(device):
+    index = device.index if device.index is not None else torch.cuda.current_device()
+    return _eviction_hints_ok_at(device.type, index)
+
+
 def _rope_qk(Q, K, cos, sin, rope_ptr, has_indices, backward, wrap):
     # Rotates Q [batch, n_heads_Q, seq_len, head_dim] and K in place, at any strides.
     batch, n_heads_Q, seq_len, head_dim = Q.shape
@@ -276,6 +295,7 @@ def _rope_qk(Q, K, cos, sin, rope_ptr, has_indices, backward, wrap):
         HAS_ROPE_INDICES = has_indices,
         LONG_INDEXING = long_indexing(Q, K, block = BLOCK_SIZE),
         BLOCK_SIZE = BLOCK_SIZE,
+        EVICT_INDICES = _eviction_hints_ok(Q.device),
         num_warps = num_warps,
     )
 
@@ -377,14 +397,113 @@ if _TRACEABLE:
     _tag_compile_cache(__file__)
 
 
+# The RoPE stream drain exists only for models split over devices (#3049, #3061); single-device skips it.
+_SPLIT_MODELS = weakref.WeakSet()
+
+# Unregistered or untrackable split seen: drain every call from then on.
+_UNREGISTERED_SPLIT_SEEN = False
+
+if DEVICE_COUNT > 1:
+    _current_device = getattr(torch, DEVICE_TYPE_TORCH).current_device
+else:
+    _current_device = None
+
+
+def _accelerator_indices(device_map):
+    # Index-less "cuda" means the current device, not device 0.
+    current = _current_device() if _current_device is not None else 0
+    indices = set()
+    for value in device_map.values():
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, int):
+            indices.add(value)
+            continue
+        text = str(value)
+        if text.isdigit():
+            indices.add(int(text))
+            continue
+        if text in ("cpu", "disk", "meta"):
+            continue
+        try:
+            device = torch.device(text)
+        except Exception:
+            continue
+        if device.type in ("cpu", "meta"):
+            continue
+        indices.add(current if device.index is None else device.index)
+    return indices
+
+
+def register_split_model(model, device_map = None):
+    """Never raises: a split that cannot be tracked (an unhashable model) drains every call instead."""
+    global _UNREGISTERED_SPLIT_SEEN
+    if DEVICE_COUNT <= 1:
+        return False
+    try:
+        if device_map is None:
+            device_map = getattr(model, "hf_device_map", None)
+        if not isinstance(device_map, dict) or len(_accelerator_indices(device_map)) < 2:
+            return False
+        _SPLIT_MODELS.add(model)
+    except Exception:
+        _UNREGISTERED_SPLIT_SEEN = True
+    return True
+
+
+def _register_splits_on_dispatch():
+    import sys
+
+    try:
+        import accelerate.big_modeling as big_modeling
+    except Exception:
+        return
+    original = big_modeling.dispatch_model
+    if getattr(original, "_unsloth_registers_split", False):
+        return
+
+    @functools.wraps(original)
+    def dispatch_model(model, device_map, *args, **kwargs):
+        out = original(model, device_map, *args, **kwargs)
+        register_split_model(model, device_map)
+        return out
+
+    dispatch_model._unsloth_registers_split = True
+    # transformers binds it by name at import.
+    for name in (
+        "accelerate",
+        "accelerate.big_modeling",
+        "transformers.modeling_utils",
+        "transformers.integrations.accelerate",
+        "transformers.integrations.peft",
+    ):
+        module = sys.modules.get(name)
+        if module is not None and getattr(module, "dispatch_model", None) is original:
+            module.dispatch_model = dispatch_model
+
+
+if DEVICE_COUNT > 1:
+    _register_splits_on_dispatch()
+
+
+def _sync_if_split(Q):
+    global _UNREGISTERED_SPLIT_SEEN
+    if DEVICE_COUNT <= 1:
+        return
+    if not (_SPLIT_MODELS or _UNREGISTERED_SPLIT_SEEN):
+        if Q.get_device() == _current_device():
+            return
+        _UNREGISTERED_SPLIT_SEEN = True
+    torch_device_stream(Q.device).synchronize()
+
+
 def _fast_rope_embedding_eager(Q, K, cos, sin, rope_embedding_indices):
     if rope_embedding_indices is not None:
         Q_out, K_out = Fast_RoPE_Embedding_QK.apply(Q, K, cos, sin, rope_embedding_indices)
     else:
         Q_out = Fast_RoPE_Embedding.apply(Q.transpose(1, 2).contiguous(), cos, sin).transpose(1, 2)
         K_out = Fast_RoPE_Embedding.apply(K.transpose(1, 2).contiguous(), cos, sin).transpose(1, 2)
-    if DEVICE_COUNT > 1:
-        torch_device_stream(Q.device).synchronize()
+    _sync_if_split(Q)
     return Q_out, K_out
 
 
@@ -448,5 +567,5 @@ class Slow_RoPE_Embedding(torch.autograd.Function):
 def inplace_rope_embedding(Q, K, cos, sin, position_ids):
     Q = Slow_RoPE_Embedding.apply(Q, cos, sin, position_ids)
     K = Slow_RoPE_Embedding.apply(K, cos, sin, position_ids)
-    torch_device_stream(Q.device).synchronize()
+    _sync_if_split(Q)
     return Q, K

@@ -327,15 +327,403 @@ def test_hidden_regions_with_inline_children_end_at_the_implied_close(
 
 
 def test_skipped_tag_implicitly_closes_hidden_paragraph():
-    # A skipped block (<nav>/<footer>) also closes an open <p>. The optional-close
-    # bookkeeping must run before the skip, or the never-closed <p hidden> keeps its
-    # hidden mark and swallows every following sibling.
+    # optional-close bookkeeping must run before skipped blocks or an unclosed hidden paragraph hides later siblings
     for skipped in ("nav", "footer"):
         html = f"<body><p hidden>secret<{skipped}>chrome</{skipped}>VISIBLE</body>"
         out = html_to_markdown(html)
         assert "secret" not in out
         assert "chrome" not in out
         assert "VISIBLE" in out
+
+
+@pytest.mark.parametrize("skipped", ["nav", "footer", "button"])
+@pytest.mark.parametrize("main_content", [False, True])
+def test_skipped_tag_closed_by_its_parent_keeps_the_rest_of_the_page(skipped, main_content):
+    html = (
+        f"<body><div><{skipped}><div><a href=/x>Menu</a></div></div>"
+        "<main><h1>Title</h1><p>Real text of the page that must reach the model.</p></main></body>"
+    )
+    out = html_to_markdown(html, main_content = main_content)
+    assert "Menu" not in out
+    assert "Real text of the page" in out
+
+
+@pytest.mark.parametrize("main_content", [False, True])
+def test_html_block_start_breaks_out_of_svg(main_content):
+    html = (
+        "<body><div><svg><div><a href=/x>Menu</a></div></div>"
+        "<main><h1>Title</h1><p>Real text of the page.</p></main></body>"
+    )
+    out = html_to_markdown(html, main_content = main_content)
+    assert "Menu" in out
+    assert "Real text of the page" in out
+
+
+@pytest.mark.parametrize("main_content", [False, True])
+def test_heading_button_after_foreign_breakout_is_kept(main_content):
+    html = "<svg><h1><button>Title</button></h1><p>Body text</p>"
+    out = html_to_markdown(html, main_content = main_content)
+    assert "Title" in out and "Body text" in out
+
+
+@pytest.mark.parametrize(
+    "outside",
+    [
+        "<div><template><p>Hidden</div><p>Template text</p></template></div>",
+        "<nav><template><p>Hidden</nav><p>Template text</p></template></nav>",
+    ],
+)
+def test_end_tag_outside_a_template_keeps_it_skipped(outside):
+    out = html_to_markdown(outside + "<p>After</p>")
+    assert "Hidden" not in out and "Template text" not in out
+    assert "After" in out
+
+
+@pytest.mark.parametrize(
+    "html",
+    [
+        "<form><nav>Hidden</form>Menu text</nav><p>After</p>",
+        "<span><nav>Hidden</span>Menu text</nav><p>After</p>",
+        "<a><nav>Hidden</a>Menu text</nav><p>After</p>",
+        "<b><nav>Hidden</b>Menu text</nav><p>After</p>",
+        "<div><select><option>Hidden</div>Menu text</select></div><p>After</p>",
+        (
+            "<div><table><tr><td><nav>Hidden</div>Menu text</nav></td></tr></table>"
+            "</div><p>After</p>"
+        ),
+        "<nav><table><tr><td>Hidden</nav>Menu text</td></tr></table></nav><p>After</p>",
+        "<nav><select><option>Hidden</nav>Menu text</select></nav><p>After</p>",
+        "<body><nav>Hidden</body>Menu text</nav><p>After</p>",
+    ],
+)
+@pytest.mark.parametrize("main_content", [False, True])
+def test_ancestor_end_tag_that_does_not_pop_a_skipped_element_keeps_it_skipped(html, main_content):
+    out = html_to_markdown(html, main_content = main_content)
+    assert "Hidden" not in out and "Menu text" not in out
+    assert "After" in out
+
+
+@pytest.mark.parametrize("main_content", [False, True])
+def test_matching_skipped_root_cannot_close_across_select_scope(main_content):
+    html = "<datalist><select><option>Hidden</datalist>Menu text</select></datalist><p>After</p>"
+    out = html_to_markdown(html, main_content = main_content)
+    assert "Hidden" not in out and "Menu text" not in out
+    assert "After" in out
+
+
+@pytest.mark.parametrize("main_content", [False, True])
+def test_dialog_skip_does_not_recover_through_implicitly_closed_paragraph(main_content):
+    html = "<p>intro<dialog>Hidden</p>Menu text</dialog><p>After</p>"
+    out = html_to_markdown(html, main_content = main_content)
+    assert "Hidden" not in out and "Menu text" not in out
+    assert "intro" in out and "After" in out
+
+
+@pytest.mark.parametrize("block", ["center", "dir", "listing", "search", "summary"])
+@pytest.mark.parametrize("main_content", [False, True])
+def test_block_start_closes_paragraph_before_skipped_form_chrome(block, main_content):
+    html = f"<p>intro<{block}><datalist>Hidden</p>Menu text</datalist></{block}><p>After</p>"
+    out = html_to_markdown(html, main_content = main_content)
+    assert "Hidden" not in out and "Menu text" not in out
+    assert "intro" in out and "After" in out
+
+
+@pytest.mark.parametrize("main_content", [False, True])
+def test_paragraph_start_recovery_stops_at_button_scope_barrier(main_content):
+    html = "<p hidden><object><center>SECRET</center></object><p>AFTER</p>"
+    out = html_to_markdown(html, main_content = main_content)
+    assert "SECRET" not in out
+    assert "AFTER" in out
+
+
+@pytest.mark.parametrize("table_tag", ["caption", "tbody", "td", "tfoot", "th", "thead", "tr"])
+@pytest.mark.parametrize("main_content", [False, True])
+def test_table_only_tag_outside_table_cannot_recover_skipped_content(table_tag, main_content):
+    html = f"<{table_tag}><nav>Hidden</{table_tag}>Menu text</nav><p>After</p>"
+    out = html_to_markdown(html, main_content = main_content)
+    assert "Hidden" not in out and "Menu text" not in out
+    assert "After" in out
+
+
+@pytest.mark.parametrize("main_content", [False, True])
+def test_caption_start_closes_the_active_cell_before_skip_recovery(main_content):
+    html = "<table><tr><td><caption><nav>Hidden</td>Menu text</nav></caption></table><p>After</p>"
+    out = html_to_markdown(html, main_content = main_content)
+    assert "Hidden" not in out and "Menu text" not in out
+    assert "After" in out
+
+
+@pytest.mark.parametrize("main_content", [False, True])
+def test_table_cell_start_reconciles_while_content_is_skipped(main_content):
+    html = "<table><tr><td><nav>Hidden<td></nav>Visible</td></tr></table>"
+    out = html_to_markdown(html, main_content = main_content)
+    assert "Hidden" not in out
+    assert "Visible" in out
+
+
+@pytest.mark.parametrize("main_content", [False, True])
+def test_nested_button_start_replaces_outer_skipped_button(main_content):
+    html = "<button>Title<button>Inner</button><nav>Hidden</button>Menu text</nav><p>After</p>"
+    out = html_to_markdown(html, main_content = main_content)
+    assert "Title" not in out and "Inner" not in out
+    assert "Hidden" not in out and "Menu text" not in out
+    assert "After" in out
+
+
+@pytest.mark.parametrize("foreign", ["<svg><g>", "<math><mrow>"])
+@pytest.mark.parametrize("main_content", [False, True])
+def test_foreign_button_start_does_not_close_html_button(foreign, main_content):
+    closing = "</g></svg>" if foreign.startswith("<svg") else "</mrow></math>"
+    html = (
+        f"<button>Title{foreign}<button>Inner</button>{closing}"
+        "<nav>Hidden</button>Menu text</nav><p>After</p>"
+    )
+    out = html_to_markdown(html, main_content = main_content)
+    assert "Title" not in out and "Inner" not in out and "Hidden" not in out
+    assert "Menu text" in out and "After" in out
+
+
+@pytest.mark.parametrize("root, descendant", [("svg", "foreignObject"), ("math", "mi")])
+@pytest.mark.parametrize("main_content", [False, True])
+def test_foreign_root_end_closes_through_foreign_descendant(root, descendant, main_content):
+    html = f"<{root}><{descendant}>Hidden</{root}><p>Real text</p>"
+    out = html_to_markdown(html, main_content = main_content)
+    assert "Hidden" not in out
+    assert "Real text" in out
+
+
+@pytest.mark.parametrize("main_content", [False, True])
+def test_foreign_end_tag_closes_through_integration_point(main_content):
+    html = "<svg><g><foreignObject></g><p>Visible</p></svg><p>After</p>"
+    out = html_to_markdown(html, main_content = main_content)
+    assert "Visible" in out and "After" in out
+
+
+@pytest.mark.parametrize("main_content", [False, True])
+def test_foreign_breakout_keeps_html_skipped_ancestor(main_content):
+    html = "<nav><svg><g><foreignObject></g><p>Hidden</p></nav><p>After</p>"
+    out = html_to_markdown(html, main_content = main_content)
+    assert "Hidden" not in out
+    assert "After" in out
+
+
+@pytest.mark.parametrize(
+    "html",
+    [
+        "<svg><foreignObject><div>Hidden</svg>Menu text</div></foreignObject></svg>",
+        "<math><mtext><div>Hidden</math>Menu text</div></mtext></math>",
+    ],
+)
+@pytest.mark.parametrize("main_content", [False, True])
+def test_foreign_root_end_stops_at_html_integration_descendant(html, main_content):
+    out = html_to_markdown(html + "<p>After</p>", main_content = main_content)
+    assert "Hidden" not in out and "Menu text" not in out
+    assert "After" in out
+
+
+@pytest.mark.parametrize("main_content", [False, True])
+def test_generic_datalist_end_stops_at_special_descendant(main_content):
+    html = "<datalist><nav>Hidden</datalist>Menu text</nav></datalist><p>After</p>"
+    out = html_to_markdown(html, main_content = main_content)
+    assert "Hidden" not in out and "Menu text" not in out
+    assert "After" in out
+
+
+@pytest.mark.parametrize("skipped", ["dialog", "footer", "nav"])
+@pytest.mark.parametrize("main_content", [False, True])
+def test_scoped_block_skip_end_pops_special_descendant(skipped, main_content):
+    html = f"<{skipped}><div>Hidden</{skipped}><main>Visible article</main>"
+    out = html_to_markdown(html, main_content = main_content)
+    assert "Hidden" not in out
+    assert "Visible article" in out
+
+
+@pytest.mark.parametrize("main_content", [False, True])
+def test_nested_form_start_is_ignored_before_datalist_end(main_content):
+    html = "<form><datalist>Hidden<form>ignored</datalist><p>Visible article</p></form>"
+    out = html_to_markdown(html, main_content = main_content)
+    assert "Hidden" not in out and "ignored" not in out
+    assert "Visible article" in out
+
+
+@pytest.mark.parametrize("main_content", [False, True])
+def test_foreign_form_end_clears_html_form_pointer(main_content):
+    html = "<form><svg><g>Hidden</form></g></svg><form hidden><p>SECRET</p></form><p>After</p>"
+    out = html_to_markdown(html, main_content = main_content)
+    assert "Hidden" not in out and "SECRET" not in out
+    assert "After" in out
+
+
+@pytest.mark.parametrize("main_content", [False, True])
+def test_matching_foreign_form_end_keeps_html_form_pointer(main_content):
+    html = "<form><svg><form>Hidden</form></svg><form hidden><p>SECRET</p></form><p>After</p>"
+    out = html_to_markdown(html, main_content = main_content)
+    assert "Hidden" not in out
+    assert "SECRET" in out and "After" in out
+
+
+@pytest.mark.parametrize("item", ["dd", "dt", "li"])
+@pytest.mark.parametrize("main_content", [False, True])
+def test_list_item_start_closes_paragraph_before_skip_recovery(item, main_content):
+    html = f"<p>intro<{item}><datalist>Hidden</p>Menu text</datalist><p>After</p>"
+    out = html_to_markdown(html, main_content = main_content)
+    assert "Hidden" not in out and "Menu text" not in out
+    assert "intro" in out and "After" in out
+
+
+@pytest.mark.parametrize("heading", ["h1", "h2", "h3", "h4", "h5", "h6"])
+@pytest.mark.parametrize("main_content", [False, True])
+def test_heading_start_closes_open_heading_before_skip_recovery(heading, main_content):
+    html = f"<{heading}>Title<h2>Sub</h2><nav>Hidden</{heading}>Menu text</nav><p>After</p>"
+    out = html_to_markdown(html, main_content = main_content)
+    assert "Title" in out and "Sub" in out and "After" in out
+    assert "Hidden" not in out and "Menu text" not in out
+
+
+@pytest.mark.parametrize("main_content", [False, True])
+def test_heading_start_only_pops_a_current_heading(main_content):
+    html = "<h1><span>Title<h2>Sub</h2><nav>Hidden</h1>Menu text</nav><p>After</p>"
+    out = html_to_markdown(html, main_content = main_content)
+    assert "Title" in out and "Sub" in out and "Menu text" in out and "After" in out
+    assert "Hidden" not in out
+
+
+@pytest.mark.parametrize("main_content", [False, True])
+def test_mismatched_heading_end_reconciles_before_skip_recovery(main_content):
+    html = "<h1>Title</h2><nav>Hidden</h1>Menu text</nav><p>After</p>"
+    out = html_to_markdown(html, main_content = main_content)
+    assert "Title" in out and "After" in out
+    assert "Hidden" not in out and "Menu text" not in out
+
+
+@pytest.mark.parametrize("main_content", [False, True])
+def test_table_start_closes_active_table_outside_cell(main_content):
+    html = "<table><table><tr><td>X</td></tr></table><nav>Hidden</table>Menu text</nav><p>After</p>"
+    out = html_to_markdown(html, main_content = main_content)
+    assert "X" in out and "After" in out
+    assert "Hidden" not in out and "Menu text" not in out
+
+
+@pytest.mark.parametrize("main_content", [False, True])
+def test_table_start_pops_skipped_descendant_of_active_table(main_content):
+    html = "<table><nav>Hidden<table><tr><td>X</td></tr></table><p>After</p>"
+    out = html_to_markdown(html, main_content = main_content)
+    assert "Hidden" not in out
+    assert "X" in out and "After" in out
+
+
+@pytest.mark.parametrize("main_content", [False, True])
+def test_table_start_inside_caption_remains_nested(main_content):
+    html = (
+        "<table><caption><nav>Hidden<table><tr><td>X</td></tr></table>"
+        "Menu text</nav></caption></table><p>After</p>"
+    )
+    out = html_to_markdown(html, main_content = main_content)
+    assert "Hidden" not in out and "X" not in out and "Menu text" not in out
+    assert "After" in out
+
+
+@pytest.mark.parametrize("main_content", [False, True])
+def test_custom_select_keeps_table_and_following_paragraph_suppressed(main_content):
+    html = "<select><table>Hidden</select><p>Real text</p>"
+    assert html_to_markdown(html, main_content = main_content) == ""
+
+
+@pytest.mark.parametrize(
+    "html",
+    [
+        "<section><nav>Hidden</section><p>Visible text</p>",
+        "<ul><li><nav>Hidden</li><li>Visible text</li></ul>",
+        "<table><tr><td><nav>Hidden</td><td>Visible text</td></tr></table>",
+        "<h1><nav>Hidden</h2><p>Visible text</p>",
+    ],
+)
+@pytest.mark.parametrize("main_content", [False, True])
+def test_ancestor_end_tag_that_pops_a_skipped_element_ends_suppression(html, main_content):
+    out = html_to_markdown(html, main_content = main_content)
+    assert "Hidden" not in out
+    assert "Visible text" in out
+
+
+@pytest.mark.parametrize(
+    "opening",
+    ["<blockquote>", "<pre>", "<a href='/real'>", "<ol><li>"],
+)
+def test_recovered_ancestor_flushes_open_content_buffers_before_scoring(opening):
+    real = "real article prose " * 20
+    decoy = "unrelated decoy prose " * 20
+    html = f"<article>{opening}{real}<nav>Hidden</article><main><p>{decoy}</p></main>"
+    out = html_to_markdown(html, main_content = True)
+    assert "real article prose" in out
+    assert "unrelated decoy prose" not in out
+
+
+def test_mismatched_heading_recovery_closes_the_open_heading_before_scoring():
+    real = "real article prose " * 20
+    decoy = "unrelated decoy prose " * 20
+    html = (
+        f"<article><h1>Real title<nav>Hidden</h2><p>{real}</p></article>"
+        f"<main><p>{decoy}</p></main>"
+    )
+    out = html_to_markdown(html, main_content = True)
+    assert "real article prose" in out
+    assert "unrelated decoy prose" not in out
+
+
+@pytest.mark.parametrize(
+    "foreign",
+    [
+        "<svg><foreignObject><p>Hidden</div>Menu text</p></foreignObject></svg>",
+        "<svg><desc><p>Hidden</div>Menu text</p></desc></svg>",
+        "<svg><title>Hidden</div>Menu text</title></svg>",
+        "<math><mi><p>Hidden</div>Menu text</p></mi></math>",
+        "<math><mo><p>Hidden</div>Menu text</p></mo></math>",
+        "<math><mn><p>Hidden</div>Menu text</p></mn></math>",
+        "<math><ms><p>Hidden</div>Menu text</p></ms></math>",
+        "<math><mtext><p>Hidden</div>Menu text</p></mtext></math>",
+        '<math><annotation-xml encoding="text/html"><p>Hidden</div>Menu text</p>'
+        "</annotation-xml></math>",
+        '<math><annotation-xml encoding="application/xhtml+xml"><p>Hidden</div>Menu text</p>'
+        "</annotation-xml></math>",
+    ],
+)
+@pytest.mark.parametrize("main_content", [False, True])
+def test_foreign_content_scope_barriers_keep_skipped_text_hidden(foreign, main_content):
+    html = f"<div>{foreign}</div><p>After</p>"
+    out = html_to_markdown(html, main_content = main_content)
+    assert "Hidden" not in out and "Menu text" not in out
+    assert "After" in out
+
+
+def test_html_element_named_like_foreign_barrier_does_not_block_recovery():
+    html = "<div><nav><foreignobject>Hidden</div>Visible</foreignobject></nav><p>After</p>"
+    out = html_to_markdown(html)
+    assert "Hidden" not in out
+    assert "Visible" in out and "After" in out
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        lambda n: "<body><nav><ul>" + "<li>x" * n + "</a>" * n + "</ul></nav>",
+        lambda n: "<body>"
+        + "<div>" * n
+        + "<nav><template>x"
+        + "</div>" * n
+        + "</template>"
+        + "</span>" * n,
+    ],
+)
+def test_stray_end_tags_in_a_skipped_menu_stay_linear(build):
+    import time
+
+    timings = []
+    for count in (1000, 8000):
+        start = time.perf_counter()
+        html_to_markdown(build(count), main_content = True)
+        timings.append(time.perf_counter() - start)
+    # eight times the input should remain well below quadratic growth
+    assert timings[1] < timings[0] * 24, timings
 
 
 @pytest.mark.parametrize(
@@ -867,6 +1255,232 @@ def test_page_that_fits_keeps_its_links(monkeypatch):
     assert "[topic 1](https://en.wikipedia.org/wiki/Some_Long_Article_Title_1)" in out
     assert "[a related page](/wiki/Another_Related_Page_1)" in out
     assert "[[1]](#cite_note-1)" in out
+
+
+@pytest.mark.parametrize(
+    "markup, expected",
+    [
+        ("(2<sup>53</sup> &ndash; 1)", "(2^53 – 1)"),
+        ("2<sup>&minus;52</sup>", "2^−52"),
+        ("1.898&times;10<sup>27</sup> kg", "1.898×10^27 kg"),
+        ("6.02214076&times;10<sup>23</sup> mol<sup>&minus;1</sup>", "6.02214076×10^23 mol^−1"),
+        ("2<sup><i>n</i>+1</sup> nodes", "2^(*n*+1) nodes"),
+        ("2<sup>n + 1</sup>", "2^(n + 1)"),
+        ("the 1<sup>st</sup> and 2<sup>nd</sup>", "the 1st and 2nd"),
+        ("Intel<sup>&reg;</sup> Core<sup>&trade;</sup> i7", "Intel® Core™ i7"),
+        ("now $19<sup>.99</sup> only", "now $19.99 only"),
+        ("price<sup>*</sup> and terms<sup>&dagger;</sup>", "price* and terms†"),
+        ("10<sup>6 </sup>years", "10^6 years"),
+        ("Add <sup>1</sup>&frasl;<sub>2</sub> cup", "Add 1⁄2 cup"),
+        ("Add 1 <sup>1</sup>/<sub>2</sub> cups", "Add 1 1/2 cups"),
+        ("<sup>1</sup> Footnote text", "1 Footnote text"),
+        ("Add <em><sup>1</sup></em>&frasl; cup", "Add *1*⁄ cup"),
+        ("the 1<sup><em>st</em></sup> one", "the 1*st* one"),
+        ("a<b><sup>2</sup></b>", "a**^2**"),
+        ("x<sup>n&times;2</sup>", "x^(n×2)"),
+        ("x<sup>2n</sup> and y<sup>n2</sup>", "x^(2n) and y^(n2)"),
+        ("x<sup>2<em>n</em></sup>", "x^(2*n*)"),
+        ("x<sup>2*3</sup> and x<sup><em>n</em></sup>", "x^(2*3) and x^*n*"),
+        ("e<sup>i&pi;</sup> + 1 = 0", "e^(iπ) + 1 = 0"),
+        ("now $19<sup>99</sup> or &euro; 1,299<sup>95</sup>", "now $1999 or € 1,29995"),
+        ("<b>$19</b><sup>99</sup>", "**$19**99"),
+        ("$<b>19</b><sup>99</sup>", "$**19**99"),
+        ("Brand<sup>TM</sup> and Service<sup>SM</sup>", "BrandTM and ServiceSM"),
+        ("el 1<sup>º</sup> y la 2<sup>ª</sup>, x<sup>a</sup>", "el 1º y la 2ª, x^a"),
+        (
+            "le XV<sup>e</sup> siècle, François I<sup>er</sup>, MAX<sup>e</sup>",
+            "le XVe siècle, François Ier, MAX^e",
+        ),
+        ("<span>$</span> <b>19</b><sup>99</sup>", "$ **19**99"),
+        (
+            "&#8378;19<sup>99</sup> or &#8369;19<sup>99</sup>, a19<sup>2</sup>",
+            "₺1999 or ₱1999, a19^2",
+        ),
+        (
+            "CHF 19<sup>95</sup> or USD 19<sup>99</sup>, ABC 10<sup>3</sup>",
+            "CHF 1995 or USD 1999, ABC 10^3",
+        ),
+        (
+            "AED 19<sup>99</sup>, TWD 19<sup>99</sup>, ILS 19<sup>99</sup>",
+            "AED 1999, TWD 1999, ILS 1999",
+        ),
+        (
+            "ZWG 19<sup>99</sup>, les 1<sup>ers</sup> et 1<sup>res</sup>",
+            "ZWG 1999, les 1ers et 1res",
+        ),
+        ("$2<sup>n</sup> and USD 10<sup>6</sup>, $19<sup>99</sup>", "$2^n and USD 10^6, $1999"),
+        (
+            'XCG 19<sup>99</sup>, claim<sup role="doc-noteref presentation">2</sup>',
+            "XCG 1999, claim2",
+        ),
+        ("le P<sup>r</sup> Martin et les P<sup>rs</sup>", "le Pr Martin et les Prs"),
+        ("CHF 1’299<sup>95</sup> or CHF 1'299<sup>95</sup>", "CHF 1’29995 or CHF 1'29995"),
+        ("Marque<sup>MC</sup> et Produit<sup>MD</sup>", "MarqueMC et ProduitMD"),
+        ("Brand<sup>(TM)</sup> and Other<sup>(R)</sup>", "Brand(TM) and Other(R)"),
+        (
+            "KWD 19<sup>950</sup>, BHD 1<sup>234</sup>, USD 10<sup>100</sup>",
+            "KWD 19950, BHD 1234, USD 10^100",
+        ),
+        ("M<sup>r</sup>, M<sup>s</sup> and M<sup>rs</sup> Smith", "Mr, Ms and Mrs Smith"),
+        ("JPY 10<sup>12</sup> and KRW 10<sup>12</sup>", "JPY 10^12 and KRW 10^12"),
+        ("les 1<sup>ères</sup> places", "les 1ères places"),
+        ("John J<sup>r</sup> and John S<sup>r</sup>", "John Jr and John Sr"),
+        ("VED 19<sup>99</sup> and S<sup>T</sup>", "VED 1999 and S^T"),
+        (
+            'claim<sup class="footnote-reference">2</sup>, la 2<sup>de</sup>, le 2<sup>d</sup>',
+            "claim2, la 2de, le 2d",
+        ),
+        (
+            "la P<sup>re</sup> Durand, 12<sup>bis</sup> rue, article 3<sup>ter</sup>",
+            "la Pre Durand, 12bis rue, article 3ter",
+        ),
+        (
+            'claim<sup class="citation">2</sup> and fact<sup class="endnote-ref">3</sup>',
+            "claim2 and fact3",
+        ),
+        ("la D<sup>re</sup> Roy et les D<sup>res</sup>", "la Dre Roy et les Dres"),
+        (
+            'x<sup class="excited">2</sup> and 10<sup>.5</sup>, $19<sup>.99</sup>',
+            "x^2 and 10^(.5), $19.99",
+        ),
+        (
+            'claim<sup class="fnref">2</sup>, fact<sup class="fn-ref">3</sup>, Marca<sup>MR</sup>',
+            "claim2, fact3, MarcaMR",
+        ),
+        (
+            "les S<sup>ts</sup>, les S<sup>tes</sup> et les C<sup>ies</sup>",
+            "les Sts, les Stes et les Cies",
+        ),
+        ("les 2<sup>nds</sup>", "les 2nds"),
+        ("（a+b）<sup>2</sup> and 「引用」<sup>1</sup>", "（a+b）^2 and 「引用」1"),
+        (
+            '&euro;19<sup>,99</sup> and claim<sup class="reference-number">2</sup>',
+            "€19,99 and claim2",
+        ),
+        (
+            "SVC 19<sup>99</sup>, claim<sup>1&ndash;3</sup>, fact<sup>2,5</sup>, 10<sup>-3</sup>",
+            "SVC 1999, claim1–3, fact2,5, 10^-3",
+        ),
+        ("x<sup>2,5</sup> and 10<sup>1,000</sup>", "x^2,5 and 10^1,000"),
+        ("&#8363;10<sup>12</sup> and &#8361;10<sup>12</sup>", "₫10^12 and ₩10^12"),
+        ("claim<sup>1,3&ndash;5</sup>", "claim1,3–5"),
+        ("Doors 9:30<sup>pm</sup>, ends 11<sup>p.m.</sup>", "Doors 9:30pm, ends 11p.m."),
+        ("10<sup>6&ndash;8</sup> CFU/mL and 10<sup>d</sup>", "10^(6–8) CFU/mL and 10^d"),
+        ("(x+1)<sup>2&ndash;4</sup>", "(x+1)^(2–4)"),
+        (
+            "M<sup>me</sup> Dupont, D<sup>r</sup> Martin, n<sup>o</sup> 5, Om<sup>e</sup>",
+            "Mme Dupont, Dr Martin, no 5, Om^e",
+        ),
+        ("&euro;1.299<sup>95</sup> or &euro;1 299<sup>95</sup>", "€1.29995 or €1 29995"),
+        (
+            'claim<sup role="doc-noteref">1</sup> and fact<sup class="footnote">2</sup>',
+            "claim1 and fact2",
+        ),
+        ("x<sup>-n</sup> and 10<sup>2.5</sup>", "x^-n and 10^2.5"),
+        ("now $19<sup><em>.99</em></sup>", "now $19*.99*"),
+        ("A fact.<sup>1</sup> Next, a list,<sup>2</sup>", "A fact.1 Next, a list,2"),
+        ("(a+b)<sup>2</sup> and km<sup>2</sup>.", "(a+b)^2 and km^2."),
+        ("le 1<sup>er</sup> mai, 2<sup>e</sup> et x<sup>e</sup>", "le 1er mai, 2e et x^e"),
+    ],
+)
+def test_superscripts_keep_their_exponent(markup, expected):
+    assert html_to_markdown(f"<p>{markup}</p>") == expected
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "<h1><a href='/p'>E=mc<sup>2</sup></a></h1>",
+        "<a href='/p'><h1>E=mc<sup>2</sup></h1></a>",
+    ],
+)
+def test_linked_header_title_keeps_one_exponent(title):
+    nav = "".join(f"<a href='/s{i}'>Section number {i}</a> " for i in range(12))
+    html = f"<header>{title}{nav}</header><p>{'Body text here. ' * 40}</p>"
+    out = html_to_markdown(html, main_content = True)
+    assert out.count("E=mc") == 1
+    assert "E=mc^2](/p)" in out
+
+
+def test_stripped_header_keeps_the_exponent_in_its_heading():
+    nav = "".join(f"<a href='/s{i}'>Section number {i}</a> " for i in range(12))
+    html = f"<header><h1>E=mc<sup>2</sup></h1>{nav}</header><p>{'Body text here. ' * 40}</p>"
+    out = html_to_markdown(html, main_content = True)
+    assert "# E=mc^2" in out
+    assert "E=mc2" not in out
+
+
+def test_deeply_nested_superscripts_track_a_bounded_depth():
+    out = html_to_markdown("<p>x" + "<sup>a" * 50 + "</sup>" * 50 + "</p>")
+    assert out.translate(str.maketrans("", "", "^()")) == "x" + "a" * 50
+    assert out.count("^") == 8
+
+
+def test_linked_footnote_wrapping_its_superscript_renders_unchanged():
+    html = '<p>text<a role="doc-noteref" href="#fn1"><sup>1</sup></a> more</p>'
+    assert html_to_markdown(html) == "text[1](#fn1) more"
+
+
+def test_exponent_headings_do_not_read_as_body_prose():
+    heads = "".join(f"<h2>x<sup>n+{i}</sup></h2>" for i in range(67))
+    body = "<p>" + "Real document body sentence. " * 12 + "</p>"
+    html = f"<html><body><article>{heads}</article><div>{body}</div></body></html>"
+    assert "Real document body" in html_to_markdown(html, main_content = True)
+
+
+def test_same_site_linked_base_keeps_its_exponent():
+    site_links = SiteLinks("https://e.com/page")
+    html = '<p>5 <a href="/metre">m</a><sup>2</sup> and <a href="https://x.org/m">m</a><sup>3</sup></p>'
+    out = site_links.clean(html_to_markdown(html, site_links = site_links))
+    assert out == "5 [m](/metre)^2 and [m](https://x.org/m)^3"
+
+
+def test_empty_superscripts_do_not_rescan_the_page():
+    start = time.perf_counter()
+    html_to_markdown("<p>" + "<i></i><sup></sup>" * 8000 + "</p>")
+    assert time.perf_counter() - start < 2
+    start = time.perf_counter()
+    html_to_markdown("<p>" + "*" * 250000 + "<sup></sup>" * 23000 + "</p>")
+    assert time.perf_counter() - start < 3
+    start = time.perf_counter()
+    html_to_markdown("<p>claim<sup>" + "1–" * 16000 + "x</sup></p>")
+    assert time.perf_counter() - start < 2
+    start = time.perf_counter()
+    html_to_markdown(
+        "<p>" + "<b>" + "word 1 " * 40000 + "</b>" * 1 + "9" + "<sup></sup>" * 20000 + "</p>"
+    )
+    assert time.perf_counter() - start < 3
+
+
+def test_unclosed_superscripts_do_not_exhaust_the_depth_cap():
+    html = "<p>x<sup>2</p>" * 10 + "<p>1.898&times;10<sup>27</sup> kg</p>"
+    assert html_to_markdown(html).endswith("1.898×10^27 kg")
+
+
+def test_untracked_superscripts_keep_the_stack_bounded():
+    from core.inference._html_to_md import _MarkdownRenderer
+
+    renderer = _MarkdownRenderer()
+    renderer.feed("<p>" + "<sup>" * 5000 + "x")
+    assert len(renderer._sup_starts) <= 8
+
+
+def test_footnote_superscripts_render_unchanged():
+    html = (
+        '<p>mass<sup class="reference"><a href="#cite_note-12">[12]</a></sup> and '
+        "volume<sup>[13]</sup></p>"
+    )
+    assert html_to_markdown(html) == "mass[[12]](#cite_note-12) and volume[13]"
+
+
+def test_fetched_page_keeps_exponents_beside_footnotes(monkeypatch):
+    body = (
+        "<html><body><main><article><p>Jupiter has a mass of 1.898&times;10<sup>27</sup> kg"
+        '<sup class="reference"><a href="#cite_note-12">[12]</a></sup> and a surface area of '
+        "6.1419&times;10<sup>10</sup> km<sup>2</sup>.</p></article></main></body></html>"
+    )
+    out = _page_text(monkeypatch, "https://en.wikipedia.org/wiki/Jupiter", body, "text/html")
+    assert "1.898×10^27 kg[[12]](#cite_note-12) and a surface area of 6.1419×10^10 km^2." in out
 
 
 def test_page_cut_by_the_room_left_drops_its_site_link_urls(monkeypatch):

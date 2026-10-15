@@ -519,10 +519,9 @@ def test_active_model_config_round_trips_gpu_fields():
     # Only GGUF carries the offload knobs; an optional engine keeps just its GPU pick.
     flat = " ".join(src.split())
     assert "if (!isGguf) {" in flat and ": base; }" in flat
-    assert (
-        'engine === "vllm" || engine === "sglang" ? { ...base, selectedGpuIds, selectedGpuIndexKind }'
-        in flat
-    )
+    managed = flat.split('engine === "vllm" || engine === "sglang" ? { ...base,', 1)
+    assert len(managed) == 2
+    assert "selectedGpuIds, selectedGpuIndexKind" in managed[1].split("}", 1)[0]
     assert "loadedLlamaExtraArgs != null" in src
     assert "llamaExtraArgs: [...loadedLlamaExtraArgs]" in src
     assert "useActiveModelConfig(" in _read("features/chat/chat-page.tsx")
@@ -1340,7 +1339,7 @@ def test_an_mlx_target_is_offered_a_context_length_not_a_sequence_length():
     page = _read("features/model-picker/components/model-config-page.tsx")
     assert 'const label = isMlx ? "Context Length" : "Max Seq Length";' in page
     # A number, not a word: the placeholder is only for a window nobody has read.
-    assert 'displayValue={isMlx && windowUnknown ? "—" : undefined}' in page
+    assert 'displayValue={isMlx && windowUnknown && !dragging ? "—" : undefined}' in page
     assert (
         "savedContextPin(config) == null &&\n                mlxServedWindow == null &&\n"
         "                npuServedWindow == null\n" in page
@@ -1351,7 +1350,7 @@ def test_an_mlx_target_is_offered_a_context_length_not_a_sequence_length():
     assert re.search(r"const servedWindow = [^;]*Math\.floor\(value\)\n\s*: null;", page), page
     numeric = _read("features/model-picker/components/numeric-value-input.tsx")
     # Typing the shown number is a choice even where it equals the value beneath it.
-    assert "derived={isMlx && !pinned}" in page
+    assert "derived={isMlx && !pinned && !dragging}" in page
     assert "pinned={savedContextPin(config) != null}" in page
     # Committing pins that exact number; one outside the control's range is no commit,
     # which is why the slider stays inside it too.
@@ -1359,7 +1358,10 @@ def test_an_mlx_target_is_offered_a_context_length_not_a_sequence_length():
     assert re.search(r"shown && \(\(max[^{]+parsed < min\)+ \{\n\s+return null;", numeric)
     assert "const final = commitDraft(draftRef.current);\n          dirtyRef" in numeric
     assert "value={maxSeqLengthValue}\n              max={maxSeqLengthMax}" in page
-    assert "value={[Math.min(Math.max(value, MAX_SEQ_LENGTH_MIN), max)]}" in page
+    assert re.search(
+        r"useSliderDraft\(\n(?:\s*//[^\n]*\n)*\s*Math\.min\(Math\.max\(value, MAX_SEQ_LENGTH_MIN\), max\),",
+        page,
+    )
     assert "const final = shown ? parsed : snapToStep(parsed, step, min, max);" in numeric
     assert re.search(
         r"MAX_SEQ_LENGTH_MAX,\s+Math\.max\(native\w+, maxSeqLengthValue\),\s+\);", page

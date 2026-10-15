@@ -66,13 +66,51 @@ class UnslothVisionDataCollator(_UnslothVisionDataCollatorBase):
     of silently training on empty video tensors (issue #5085).
     """
 
-    __slots__ = ("_checked_video_paths",)
+    __slots__ = ("_checked_video_paths", "_padding_free", "_deferring_check")
 
-    def __init__(self, *args, **kwargs):
+    def __init__(
+        self,
+        *args,
+        padding_free = False,
+        **kwargs,
+    ):
         super().__init__(*args, **kwargs)
         self._checked_video_paths = set()
+        self._padding_free = bool(padding_free)
+        if self._padding_free:
+            from unsloth.utils.mm_packing import prepare_packed_multimodal_model
+            prepare_packed_multimodal_model(args[0] if args else kwargs.get("model"))
+
+    @property
+    def padding_free(self):
+        return getattr(self, "_padding_free", False)
 
     def __call__(self, examples):
+        if getattr(self, "_padding_free", False):
+            from unsloth.utils.mm_packing import pack_multimodal_documents
+
+            # Collate one document at a time, but judge supervision over the whole batch as the base does.
+            self._deferring_check = True
+            try:
+                docs = [self._collate_unpacked([example]) for example in examples]
+            finally:
+                self._deferring_check = False
+            if self.train_on_responses_only and hasattr(
+                _UnslothVisionDataCollatorBase, "_check_supervised"
+            ):
+                self._check_supervised(*_stack_rows(docs))
+            return pack_multimodal_documents(docs, ignore_index = self.ignore_index)
+        return self._collate_unpacked(examples)
+
+    def _check_supervised(
+        self,
+        labels,
+        attention_mask = None,
+    ):
+        if not getattr(self, "_deferring_check", False):
+            return super()._check_supervised(labels, attention_mask)
+
+    def _collate_unpacked(self, examples):
         formatting_func = self.formatting_func
         if formatting_func is not None:
             examples = [formatting_func(example) for example in examples]
@@ -90,6 +128,58 @@ class UnslothVisionDataCollator(_UnslothVisionDataCollatorBase):
         view = copy.copy(self)
         view.formatting_func = None
         return super(UnslothVisionDataCollator, view).__call__(examples)
+
+
+def _stack_rows(docs):
+    """Per-document labels / attention masks as one right-padded batch."""
+    import torch
+
+    width = max(doc["labels"].shape[-1] for doc in docs)
+    labels = torch.full((len(docs), width), -100, dtype = docs[0]["labels"].dtype)
+    attention_mask = torch.zeros((len(docs), width), dtype = torch.long)
+    for row, doc in enumerate(docs):
+        n = doc["labels"].shape[-1]
+        labels[row, :n] = doc["labels"][0].cpu()
+        mask = doc.get("attention_mask")
+        attention_mask[row, :n] = mask[0].cpu() if torch.is_tensor(mask) else 1
+    return labels, attention_mask
+
+
+def _collator_packing_conflict(
+    trainer,
+    wants_eval_logits,
+    forward_rejects_packing = False,
+):
+    """Why a packing collator must fall back to padded rows, else None (the args-level gates miss it)."""
+    if forward_rejects_packing:
+        return "the model's forward() does not accept packed_seq_lengths"
+    if wants_eval_logits:
+        return "evaluation needs one prediction row per example"
+    parallelism_config = getattr(getattr(trainer, "accelerator", None), "parallelism_config", None)
+    if getattr(parallelism_config, "cp_enabled", False):
+        return "context parallelism drops the per-document attention mask"
+    return None
+
+
+def _unpacked_for_evaluation(trainer, collator):
+    """Pack training batches only: evaluation counts examples (and weights eval_loss) by input_ids.shape[0].
+    A DataLoader captures its collate_fn when built, so build eval / test ones from an unpacked copy."""
+    unpacked = copy.copy(collator)
+    unpacked._padding_free = False
+
+    def unpack(original):
+        @wraps(original)
+        def get_dataloader(*args, **kwargs):
+            packed, trainer.data_collator = trainer.data_collator, unpacked
+            try:
+                return original(*args, **kwargs)
+            finally:
+                trainer.data_collator = packed
+
+        return get_dataloader
+
+    trainer.get_eval_dataloader = unpack(trainer.get_eval_dataloader)
+    trainer.get_test_dataloader = unpack(trainer.get_test_dataloader)
 
 
 _AUTO_PADDING_FREE_ENV_DISABLED = os.environ.get(
@@ -290,6 +380,157 @@ def _is_vision_eval_dataset(dataset, *, unknown_is_vision = False) -> bool:
     return _is_vision_dataset(dataset, unknown_is_vision = unknown_is_vision)
 
 
+_MULTIMODAL_DATASET_KEYS = _VISION_DATASET_KEYS | frozenset(
+    {
+        "audio",
+        "audios",
+        "audio_values",
+        "input_features",
+        "input_features_mask",
+        "pixel_values_images",
+    }
+)
+_MULTIMODAL_FEATURE_TYPES = ("Image", "Audio", "Video", "Pdf")
+# Media-named keys (image_path, audio_url, ...) may be loaded by the processor even as strings.
+_MEDIA_NAME_PARTS = ("image", "audio", "video", "pixel", "input_values", "input_features")
+
+
+def _is_media_name(name) -> bool:
+    if not isinstance(name, str):
+        return False
+    lowered = name.lower()
+    return lowered in _MULTIMODAL_DATASET_KEYS or any(part in lowered for part in _MEDIA_NAME_PARTS)
+
+
+def _features_have_media(features) -> bool:
+    stack = [(features, False)]
+    seen = 0
+    while stack:
+        node, nested = stack.pop()
+        seen += 1
+        if seen > 10_000:
+            return True  # pathological schema: assume media rather than guess
+        if type(node).__name__ in _MULTIMODAL_FEATURE_TYPES:
+            return True
+        if isinstance(node, dict):
+            if any(_is_media_name(key) for key in node):
+                return True
+            # Only {"type", "text"} content parts are provably text.
+            if nested and "type" in node and set(node) - {"type", "text"}:
+                return True
+            stack.extend((value, True) for value in node.values())
+        elif isinstance(node, (list, tuple)):
+            stack.extend((value, True) for value in node)
+        else:
+            inner = getattr(node, "feature", None)  # Sequence / List / LargeList
+            if inner is not None:
+                stack.append((inner, True))
+    return False
+
+
+def _is_text_only_dataset(dataset) -> bool:
+    """Positively text-only: unknown schemas (lists, feature-less streams) count as media."""
+    if dataset is None:
+        return False
+    column_names = getattr(dataset, "column_names", None)
+    if column_names is None:
+        return False
+    if any(_is_media_name(name) for name in column_names):
+        return False
+    # with_transform / set_transform rows can carry images the stored columns do not show.
+    if (getattr(dataset, "format", None) or {}).get("type") == "custom":
+        return False
+    features = getattr(dataset, "features", None)
+    if features is None:
+        # Streaming datasets lack types, so embedded images cannot be ruled out.
+        return False
+    return not _features_have_media(features)
+
+
+def _is_text_only_eval_dataset(dataset) -> bool:
+    if dataset is None:
+        return True
+    if isinstance(dataset, dict):
+        return all(_is_text_only_dataset(split) for split in dataset.values())
+    return _is_text_only_dataset(dataset)
+
+
+def _uses_multimodal_rope(model_config) -> bool:
+    """mRoPE models build a packed mask only from 4-row position_ids; 2D ids leak across docs."""
+    if model_config is None:
+        return True  # unknown: assume the worst
+    try:
+        stack = [model_config.to_dict()]
+    except Exception:
+        return True
+    seen = 0
+    while stack:
+        node = stack.pop()
+        seen += 1
+        if seen > 10_000:
+            return True
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key in ("mrope_section", "mrope_interleaved"):
+                    return True
+                if key in ("rope_type", "type") and value == "mrope":
+                    return True
+                if isinstance(value, (dict, list, tuple)):
+                    stack.append(value)
+        elif isinstance(node, (list, tuple)):
+            stack.extend(x for x in node if isinstance(x, (dict, list, tuple)))
+    return False
+
+
+# mRoPE families whose text model expands 2D position_ids into the text row (transformers 5.2+),
+# so packed text rows get the per-document mask, exactly as with processing_class=processor.tokenizer.
+_PROCESSOR_TEXT_PACKING_MROPE_MODELS = frozenset({"qwen3_5", "qwen3_5_moe"})
+
+_PROCESSOR_TEXT_PACKING_MODELS = (
+    frozenset(
+        {"gemma3", "gemma3_text", "gemma4", "gemma4_text", "gemma4_unified", "gemma4_unified_text"}
+    )
+    | _PROCESSOR_TEXT_PACKING_MROPE_MODELS
+)
+
+
+def _processor_text_only(
+    processing_class, data_collator, train_dataset, eval_dataset, model_config
+) -> bool:
+    """A processor on text-only rows tokenizes like its tokenizer, so packing is safe."""
+    if os.environ.get("UNSLOTH_PROCESSOR_TEXT_PACKING", "1").lower() in ("0", "false", "no", "off"):
+        return False
+    # Only families whose packed text rows are verified to equal each document alone.
+    if getattr(model_config, "model_type", None) not in _PROCESSOR_TEXT_PACKING_MODELS:
+        return False
+    # TRL < 1.10 refuses packing / padding-free for any processor; skip a doomed __init__.
+    if Version(trl.__version__) < Version("1.10.0"):
+        return False
+    if data_collator is not None:
+        return False
+    if getattr(
+        model_config, "model_type", None
+    ) not in _PROCESSOR_TEXT_PACKING_MROPE_MODELS and _uses_multimodal_rope(model_config):
+        return False
+    if getattr(processing_class, "tokenizer", None) is None:
+        return False
+    return _is_text_only_dataset(train_dataset) and _is_text_only_eval_dataset(eval_dataset)
+
+
+# TRL < 1.10 raises the first two for any processor; 1.10+ the last two when a sample holds images.
+_TRL_VLM_PACKING_REJECTIONS = (
+    "packing is not supported for vision-language models",
+    "padding-free training is yet not supported for vision-language models",
+    "packing is not supported for vision datasets",
+    "padding-free training is yet not supported for vision datasets",
+)
+
+
+def _is_trl_vlm_packing_rejection(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return any(msg in message for msg in _TRL_VLM_PACKING_REJECTIONS)
+
+
 _HYBRID_CONFIG_MARKERS = (
     "linear_conv_kernel_dim",
     "linear_key_head_dim",
@@ -347,7 +588,7 @@ def _attribute_path(obj, path):
     return obj
 
 
-def _forward_accepts_packing_kwargs(model) -> bool:
+def _forward_accepts_packing_kwargs(model, name = "packed_seq_lengths") -> bool:
     """Can this model's forward be handed the packing metadata at all?
 
     Padding-free passes `packed_seq_lengths` down, and a forward naming neither it
@@ -406,10 +647,10 @@ def _forward_accepts_packing_kwargs(model) -> bool:
             break
         target = unwrapped
 
-    return _forward_signature_accepts_packing(getattr(target, "forward", None))
+    return _forward_signature_accepts_packing(getattr(target, "forward", None), name)
 
 
-def _forward_signature_accepts_packing(forward) -> bool:
+def _forward_signature_accepts_packing(forward, name = "packed_seq_lengths") -> bool:
     """The signature question alone, so a class can be asked it as well as an instance.
 
     Shared, not duplicated: a disagreement would turn padding-free on for one
@@ -423,7 +664,7 @@ def _forward_signature_accepts_packing(forward) -> bool:
         return True
     if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values()):
         return True
-    return "packed_seq_lengths" in parameters
+    return name in parameters
 
 
 def _resolve_string_model_class(model_name, model_config, config_arg):
@@ -1196,7 +1437,7 @@ class UnslothTrainer(SFTTrainer):
         )
 
         if not any("rank" in group for group in param_groups):
-            # make_q_galore_param_groups selects on param.dim() >= 2, and FSDP1 hands us 1-D
+            # make_q_galore_param_groups selects on param.dim() == 2, and FSDP1 hands us 1-D
             # views: FlatParameter with use_orig_params=False, and a 1-D sharded view even
             # with use_orig_params=True. Nothing matches, so a requested Q-GaLore run would
             # quietly become ordinary 8-bit AdamW. Say so instead.
@@ -1564,8 +1805,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 else model
             )
             is_hybrid = _is_hybrid_linear_attention_model(hybrid_target)
-            # Hybrid models corrupt packed batches unless the gated-delta / Mamba2 conv and scan reset at
-            # sequence boundaries, so enable the experimental varlen shim (flag plus kernels) or keep them blocked.
+            # Hybrid models pack only when the varlen shim's kernel checks and exactness probe pass.
             if (
                 is_hybrid
                 and not isinstance(model, str)
@@ -1583,6 +1823,9 @@ def _patch_sft_trainer_auto_packing(trl_module):
         train_dataset = args[3] if len(args) >= 4 else kwargs.get("train_dataset")
         eval_dataset = args[4] if len(args) >= 5 else kwargs.get("eval_dataset")
         is_processor = isinstance(processing_class, ProcessorMixin)
+        processor_text_only = is_processor and _processor_text_only(
+            processing_class, data_collator, train_dataset, eval_dataset, model_config
+        )
         is_auto_processor_vlm = is_vlm and processing_class is None
         is_vision_dataset = (
             data_collator is None
@@ -1614,17 +1857,20 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 # instance. A correct "no" has already turned both flags off, which is the
                 # condition the post-init check skips on, so leaving it armed is free.
         is_context_parallel = (getattr(config_arg, "context_parallel_size", 1) or 1) > 1
+        # Read before __init__: the compiled trainer ends it with model.for_inference(), which sets the flag.
+        eval_logits_wanted = os.environ.get(
+            "UNSLOTH_RETURN_LOGITS", "0"
+        ) == "1" or _wants_eval_logits(original_init, args, kwargs)
         blocked = (
             (data_collator is not None)
             or is_context_parallel
-            or is_processor
+            or (is_processor and not processor_text_only)
             or is_auto_processor_vlm
             or is_vision_dataset
             or is_unsupported_model
             or is_encoder_decoder
             or (is_hybrid and not hybrid_varlen_active)
-            or (os.environ.get("UNSLOTH_RETURN_LOGITS", "0") == "1")
-            or _wants_eval_logits(original_init, args, kwargs)
+            or eval_logits_wanted
             or forward_rejects_packing
         )
         requested_pack = bool(getattr(config_arg, "packing", False))
@@ -1689,7 +1935,23 @@ def _patch_sft_trainer_auto_packing(trl_module):
         try:
             original_init(self, *args, **kwargs)
         except ValueError as exc:
-            if packing_active and _should_skip_auto_packing_error(exc):
+            if processor_text_only and not blocked and _is_trl_vlm_packing_rejection(exc):
+                if requested_pack:
+                    logger.warning(
+                        "Unsloth: packing=True ignored (this TRL version refuses it for processors)."
+                    )
+                else:
+                    logger.info("Unsloth: padding-free disabled for the processor (%s).", exc)
+                for _attr in ("packing", "padding_free"):
+                    if hasattr(config_arg, _attr):
+                        setattr(config_arg, _attr, False)
+                packing_active = False
+                auto_padding_free_active = False
+                blocked = True
+                # Release the failed attempt's frames (may hold a loaded model) before retrying.
+                exc.__traceback__ = None
+                original_init(self, *args, **kwargs)
+            elif packing_active and _should_skip_auto_packing_error(exc):
                 logger.info(
                     "Unsloth: Auto sample packing failed because trainer reported an incompatible setup (%s).",
                     exc,
@@ -1740,6 +2002,18 @@ def _patch_sft_trainer_auto_packing(trl_module):
             # Mirror the block on the trainer args to avoid re-enabling later
             setattr(trainer_args, "packing", False)
             setattr(trainer_args, "padding_free", False)
+
+        collator = getattr(self, "data_collator", None)
+        # TRL's text collator also has `padding_free`; it must keep its wrapped, per-document eval batches.
+        if isinstance(collator, UnslothVisionDataCollator) and collator.padding_free:
+            reason = _collator_packing_conflict(self, eval_logits_wanted, forward_rejects_packing)
+            if reason is not None:
+                collator._padding_free = False
+                logger.warning(
+                    f"Unsloth: UnslothVisionDataCollator(padding_free=True) ignored ({reason})."
+                )
+            else:
+                _unpacked_for_evaluation(self, collator)
 
         if not blocked and trainer_packing and (packing_active or _should_pack(trainer_args)):
             enable_sample_packing(self.model, self)

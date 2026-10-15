@@ -19,6 +19,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { useChatFavoritesStore } from "@/features/library/chats/favorites-store";
+import { resumesThought } from "@/features/model-picker";
 import { useShortcutLabel } from "@/features/settings";
 import type { ShortcutId } from "@/features/settings";
 import { useT } from "@/i18n";
@@ -47,18 +48,32 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { ForkIcon } from "@/lib/fork-icon";
-import type { ReactNode } from "react";
+import { type ReactNode, useSyncExternalStore } from "react";
+import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import {
   type ActiveChatMenu,
   useActiveChatMenuStore,
 } from "../stores/active-chat-menu-store";
+import { requestThreadCompaction } from "../stores/compact-request-store";
+import {
+  liveThreadBranch,
+  liveThreadRunning,
+  subscribeLiveThreadViews,
+} from "../utils/live-thread-head";
+import {
+  hasPreStreamRunReservation,
+  subscribePreStreamRunReservations,
+} from "../utils/pre-stream-run-reservation";
+import { deriveContextUsageBar } from "../lib/context-usage-bar-state";
+import { UsageRing } from "./context-usage-bar";
 import {
   type ConversationExportFormat,
   chatExportOptions,
   exportConversationByFormat,
   getSidebarItemThreadIds,
+  regenerateChatTitleWithToast,
 } from "./chat-row-menu";
-import { OpenChatFolderItem } from "./open-chat-folder-item";
+import { OpenChatFolderItem, UploadToChatFolderItem } from "./open-chat-folder-item";
 
 const MENU = "library-actions-menu";
 const ICON = "size-icon";
@@ -150,8 +165,60 @@ function TemporaryChatButton({
 
 function ChatMenuItems({ menu }: { menu: ActiveChatMenu }) {
   const t = useT();
+  const preStreamRunActive = useSyncExternalStore(
+    subscribePreStreamRunReservations,
+    () => hasPreStreamRunReservation([menu.item.id]),
+    () => false,
+  );
+  const liveRunActive = useSyncExternalStore(
+    subscribeLiveThreadViews,
+    () => liveThreadRunning(menu.item.id),
+    () => false,
+  );
+  const busy = useChatRuntimeStore((state) =>
+    state.modelLoading || Boolean(state.runningByThreadId[menu.item.id]),
+  ) || preStreamRunActive || liveRunActive;
+  const usedPercent = useChatRuntimeStore((state) => {
+    const usage =
+      state.activeThreadId === menu.item.id
+        ? state.contextUsage
+        : state.contextUsageByThreadId[menu.item.id];
+    return deriveContextUsageBar({
+      used: usage?.contextTokens ?? usage?.totalTokens ?? null,
+      total: state.loadedContextLength,
+    })?.percent ?? null;
+  });
+  const compact = () => {
+    const runtime = useChatRuntimeStore.getState();
+    if (
+      menu.item.type !== "single" ||
+      runtime.modelLoading ||
+      runtime.runningByThreadId[menu.item.id] ||
+      hasPreStreamRunReservation([menu.item.id]) ||
+      liveThreadRunning(menu.item.id)
+    ) return;
+    if (!liveThreadBranch(menu.item.id)?.length) {
+      toast.info(t("chatMenu.compactEmpty"));
+      return;
+    }
+    if (!runtime.supportsTools || !resumesThought({
+      loadedIsGguf: runtime.loadedIsGguf,
+      loadedIsMlx: runtime.loadedIsMlx,
+      activeGgufVariant: runtime.activeGgufVariant,
+      activeNativePathToken: runtime.activeNativePathToken,
+      checkpoint: runtime.params.checkpoint,
+    })) {
+      toast.info(t("chatMenu.compactUnsupported"));
+      return;
+    }
+    requestThreadCompaction(menu.item.id);
+    toast.info(t("chatMenu.compactQueued"));
+  };
   const favorite = useChatFavoritesStore((state) =>
     state.chatIds.includes(menu.item.id),
+  );
+  const generating = useChatRuntimeStore((s) =>
+    getSidebarItemThreadIds(menu.item).some((id) => Boolean(s.runningByThreadId[id])),
   );
   // As the Library exports one: each thread behind the chat, a comparison's two included.
   const exportAs = async (format: ConversationExportFormat) => {
@@ -172,8 +239,8 @@ function ChatMenuItems({ menu }: { menu: ActiveChatMenu }) {
       </Item>
       <Item
         icon={Refresh01Icon}
-        onSelect={menu.regenerateTitle}
-        disabled={!menu.canRegenerateTitle}
+        onSelect={() => void regenerateChatTitleWithToast(menu.item)}
+        disabled={generating}
       >
         {t("library.menu.regenerateTitle")}
       </Item>
@@ -218,6 +285,17 @@ function ChatMenuItems({ menu }: { menu: ActiveChatMenu }) {
         )}
       </Item>
       <DropdownMenuSeparator className="mx-3" />
+      <Item
+        glyph={
+          <span className="flex [--track:color-mix(in_srgb,currentColor_30%,transparent)]">
+            <UsageRing percent={usedPercent} stroke="stroke-current" />
+          </span>
+        }
+        onSelect={compact}
+        disabled={menu.item.type !== "single" || busy}
+      >
+        {t("chatMenu.compact")}
+      </Item>
       <Item
         glyph={<HugeiconsIcon icon={ForkIcon} strokeWidth={1.75} className={ICON} />}
         onSelect={menu.fork}
@@ -335,6 +413,7 @@ function ChatMenuItems({ menu }: { menu: ActiveChatMenu }) {
         </DropdownMenuSubContent>
       </DropdownMenuSub>
       <OpenChatFolderItem item={menu.item} />
+      <UploadToChatFolderItem item={menu.item} />
       <DropdownMenuSeparator className="mx-3" />
       <Item icon={Archive03Icon} onSelect={menu.archive} shortcut="archiveChat">
         {t("settings.data.library.archive")}

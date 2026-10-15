@@ -109,10 +109,17 @@ def _http_error(status_code: int, detail: str):
     return HTTPException(status_code = status_code, detail = detail)
 
 
+def _is_image_lora_file(path: Path) -> bool:
+    from core.inference.diffusion_lora import is_image_lora_file
+    return is_image_lora_file(path)
+
+
 def _is_immediate_model_weight_file(path: Path) -> bool:
     if is_appledouble_metadata(path):
         return False
     suffix = path.suffix.lower()
+    if suffix in (".safetensors", ".gguf") and _is_image_lora_file(path):
+        return False
     if suffix == ".safetensors":
         return True
     if suffix == ".gguf":
@@ -389,6 +396,7 @@ def _scan_models_dir(
                 and child.suffix.lower() == ".gguf"
                 and child.is_file()
                 and not is_appledouble_metadata(child)
+                and not _is_image_lora_file(child)
             )
             if not is_dir and not is_gguf_file:
                 continue
@@ -754,6 +762,7 @@ def _scan_lmstudio_dir(
                     child.suffix.lower() == ".gguf"
                     and child.is_file()
                     and not is_appledouble_metadata(child)
+                    and not _is_image_lora_file(child)
                 ):
                     try:
                         updated_at = child.stat().st_mtime
@@ -808,6 +817,7 @@ def _scan_lmstudio_dir(
                         model_dir.suffix.lower() == ".gguf"
                         and model_dir.is_file()
                         and not is_appledouble_metadata(model_dir)
+                        and not _is_image_lora_file(model_dir)
                     ):
                         try:
                             updated_at = model_dir.stat().st_mtime
@@ -1567,6 +1577,38 @@ def add_scan_folder_response(path: str, recursive: Optional[bool] = None) -> dic
         invalidate_index()
         warm_index_soon()
     return folder
+
+
+LAUNCH_MODELS_DIRS_ENV = "UNSLOTH_STUDIO_MODELS_DIRS"
+
+
+def register_launch_scan_folders(raw: Optional[str] = None) -> list[str]:
+    """Add the ``unsloth studio --models-dir`` folders (os.pathsep-joined) as Custom Folders.
+    Re-launching with the same folder is a no-op; a rejected folder is logged, never fatal."""
+    if raw is None:
+        raw = os.environ.get(LAUNCH_MODELS_DIRS_ENV, "")
+    added: list[str] = []
+    for path in (p.strip() for p in raw.split(os.pathsep)):
+        if not path:
+            continue
+        try:
+            folder, inserted = add_scan_folder_with_status(_coerce_scan_folder_path(path))
+        except ValueError as e:
+            logger.warning(
+                "--models-dir folder skipped: %s (path=%s)",
+                scrub_paths(e),
+                short_path_for_log(path),
+            )
+            continue
+        if inserted:
+            added.append(folder["path"])
+            logger.info(
+                "Scan folder added from --models-dir: %s", short_path_for_log(folder["path"])
+            )
+    if added:
+        from core.inference.local_model_resolver import invalidate_index
+        invalidate_index()
+    return added
 
 
 def remove_scan_folder_response(folder_id: int) -> dict:

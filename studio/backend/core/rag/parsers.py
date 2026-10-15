@@ -15,6 +15,7 @@ import logging
 import os
 import re
 import secrets
+import struct
 from dataclasses import dataclass
 from html.parser import HTMLParser
 
@@ -797,11 +798,31 @@ def _docx_math_text(element) -> str:
     return "".join(_docx_math_text(child) for child in element.iterchildren("*"))
 
 
+def _docx_checkbox(field) -> str:
+    box = field.find(f"{_W}ffData/{_W}checkBox")
+    if box is None:
+        return ""
+    flag = box.find(_W + "checked")
+    if flag is None:
+        flag = box.find(_W + "default")
+    ticked = flag is not None and flag.get(_W + "val", "true") not in ("0", "false", "off")
+    return "☒" if ticked else "☐"
+
+
+def _docx_run_text(run) -> str:
+    if run.find(f"{_W}fldChar/{_W}ffData/{_W}checkBox") is None:
+        return run.text
+    return "".join(
+        _docx_checkbox(e) if e.tag == _W + "fldChar" else str(e)
+        for e in run.xpath("w:br | w:cr | w:noBreakHyphen | w:ptab | w:t | w:tab | w:fldChar")
+    )
+
+
 def _docx_paragraph_text(paragraph) -> str:
     """Paragraph.text skips runs wrapped in w:ins, w:sdt, w:fldSimple, w:smartTag, and equations."""
     p = paragraph._p
     return "".join(
-        _docx_math_text(node) if node.tag in _DOCX_MATH else node.text
+        _docx_math_text(node) if node.tag in _DOCX_MATH else _docx_run_text(node)
         for node in p.iter(_W + "r", *_DOCX_MATH)
         if not _docx_inside(node, p, _DOCX_SKIP_RUNS_OR_MATH)
     )
@@ -847,12 +868,37 @@ def _docx_table_rows(table) -> list[str]:
     return rows
 
 
+_WORD_EXTS = frozenset((".docx", ".docm", ".dotx", ".dotm"))
+_WORD_MAIN_TYPES = (
+    "application/vnd.ms-word.document.macroEnabled.main+xml",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.template.main+xml",
+    "application/vnd.ms-word.template.macroEnabledTemplate.main+xml",
+)
+
+
+def _open_word(path: str):
+    # docx.Document() rejects the macro and template main parts.
+    import docx  # noqa: F401  (registers the part types)
+    from docx.opc.constants import CONTENT_TYPE as CT
+    from docx.opc.part import PartFactory
+    from docx.package import Package
+    from docx.parts.document import DocumentPart
+
+    for content_type in _WORD_MAIN_TYPES:
+        PartFactory.part_type_for.setdefault(content_type, DocumentPart)
+    part = Package.open(path).main_document_part
+    if part.content_type not in (CT.WML_DOCUMENT_MAIN, *_WORD_MAIN_TYPES):
+        raise ValueError(
+            f"file '{os.path.basename(path)}' is not a Word file, content type is '{part.content_type}'"
+        )
+    return part.document
+
+
 def _docx(path: str) -> list[Page]:
-    import docx
     from docx.table import Table
     from docx.text.paragraph import Paragraph
 
-    document = docx.Document(path)
+    document = _open_word(path)
     lines: list[str] = []
     _docx_unwrap_table_controls(document.element.body)
     label_notes = _docx_mark_notes(document)
@@ -1051,8 +1097,17 @@ def parse(path: str, *, want_images: bool = False):
         pages, images, _total = _pdf(path, want_images)
         return (pages, images) if want_images else pages
 
-    if ext == ".docx":
+    if ext in _WORD_EXTS:
         pages = _docx(path)
+        return (pages, []) if want_images else pages
+
+    if ext in config.DOCUMENT_UPLOAD_EXTS:
+        pages = _office_document(path, ext)
+        return (pages, []) if want_images else pages
+
+    # .dot/.pot are Graphviz and gettext text too; only an OLE compound file is a Word/PowerPoint template.
+    if ext in _OFFICE_TEMPLATE_EXTS and _is_compound_file(path):
+        pages = _office_document(path, _OFFICE_TEMPLATE_EXTS[ext])
         return (pages, []) if want_images else pages
 
     if ext in (".html", ".htm", ".txt", ".md", ".markdown") or ext in config.SOURCE_TEXT_EXTS:
@@ -1069,6 +1124,48 @@ def parse(path: str, *, want_images: bool = False):
         return (pages, []) if want_images else pages
 
     raise ValueError(f"unsupported file type: {ext}")
+
+
+_OFFICE_TEMPLATE_EXTS = {".dot": ".doc", ".pot": ".ppt"}
+_OLE_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+
+
+def _is_compound_file(path: str) -> bool:
+    with open(path, "rb") as f:
+        return f.read(len(_OLE_MAGIC)) == _OLE_MAGIC
+
+
+def _html_bytes_text(raw: bytes) -> str:
+    return "\n\n".join(page.text for page in _html(_decode_text(raw, html = True)))
+
+
+def _xhtml(path: str) -> list[tuple[str, int | None]]:
+    with open(path, "rb") as f:
+        return [(_html_bytes_text(f.read()), None)]
+
+
+def _office_document(path: str, ext: str) -> list[Page]:
+    from . import office_formats as office
+
+    readers = {
+        ".doc": office.doc,
+        **dict.fromkeys((".xls", ".xlt"), office.xls),
+        **dict.fromkeys((".ppt", ".pps"), office.ppt),
+        ".rtf": office.rtf,
+        ".epub": lambda p: office.epub(p, _html_bytes_text),
+        ".msg": lambda p: office.msg(p, _html_bytes_text),
+        **dict.fromkeys((".xlsx", ".xlsm", ".xltx", ".xltm"), office.xlsx),
+        **dict.fromkeys((".pptx", ".pptm", ".potx", ".potm", ".ppsx", ".ppsm"), office.pptx),
+        **dict.fromkeys((".odt", ".ods", ".odp", ".ott", ".ots", ".otp"), office.opendocument),
+        # .mht/.mhtml are MIME with an HTML body.
+        **dict.fromkeys((".eml", ".mht", ".mhtml"), lambda p: office.eml(p, _html_bytes_text)),
+        **dict.fromkeys((".xhtml", ".xht"), _xhtml),
+    }
+    try:
+        sections = readers[ext](path)
+    except (KeyError, IndexError, struct.error, UnicodeError, EOFError) as exc:
+        raise ValueError(f"could not read {os.path.basename(path)}: file is damaged") from exc
+    return [_page(text, number) for text, number in sections if text.strip()]
 
 
 def parse_text(text: str) -> list[Page]:

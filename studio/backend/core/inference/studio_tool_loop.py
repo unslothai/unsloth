@@ -83,6 +83,8 @@ from core.inference.tool_loop_controller import (
     canonical_arguments_text,
     mcp_display_parts,
     provisional_tool_provenance,
+    restore_replayed_tool_results,
+    with_appended_text,
     strip_result_for_model,
 )
 from core.inference.tool_stream_exec import (
@@ -177,10 +179,11 @@ def _truncate_for_model(
     joiner: str = "\n",
 ) -> str:
     """Hold a hosted result to the same cap a local result gets. Read off ``tools`` rather than
-    copied, so an install that lowers ``UNSLOTH_TOOL_RESULT_MAX_CHARS`` gets the lower cap here
-    too."""
+    copied, so an install that lowers ``UNSLOTH_TOOL_RESULT_MAX_CHARS`` (or the Settings > Chat
+    limit) gets the lower cap here too. A raised setting is not applied: the provider's window is
+    unknown here."""
     if limit is None:
-        limit = tools_module._MAX_OUTPUT_CHARS
+        limit = min(tools_module._tool_result_max_chars(), tools_module._MAX_OUTPUT_CHARS)
     if len(text) <= limit:
         return text
     return text[:limit] + f"{joiner}... [truncated, {len(text) - limit} more characters]"
@@ -1351,12 +1354,11 @@ def _append_user_turn(conversation: list[dict[str, Any]], content: str) -> None:
     if not content:
         return
     last = conversation[-1] if conversation else None
-    if (
-        isinstance(last, dict)
-        and last.get("role") == "user"
-        and isinstance(last.get("content"), str)
-    ):
-        conversation[-1] = {**last, "content": f"{last['content']}\n\n{content}"}
+    if isinstance(last, dict) and last.get("role") == "user":
+        conversation[-1] = {
+            **last,
+            "content": with_appended_text(last.get("content") or "", f"\n\n{content}"),
+        }
         return
     conversation.append({"role": "user", "content": content})
 
@@ -1405,7 +1407,9 @@ async def stream_with_studio_tools(
     cancel_event: threading.Event,
     mcp_image = None,
 ) -> AsyncIterator[str]:
-    conversation = [dict(message) for message in run.messages]
+    # Off the loop: restoring may parse an envelope.
+    restored = await asyncio.to_thread(restore_replayed_tool_results, run.messages)
+    conversation = [dict(message) for message in restored]
     if mcp_image is not None:
         targets = await asyncio.to_thread(mcp_image_targets, sorted(_tool_names(policy.tools)))
         conversation = note_attached_image(conversation, targets)
@@ -1414,7 +1418,7 @@ async def stream_with_studio_tools(
     # cap run-owned image parts across the full loop without counting caller attachments.
     loop_mcp_image_parts: list = list(run.promoted_image_parts)
     # preserve the request branch for tools that search conversation history.
-    request_branch = list(run.messages)
+    request_branch = list(restored)
     remaining = policy.max_calls
     unlimited = remaining >= 9999
     session_id = run.session_id
@@ -1609,7 +1613,10 @@ async def stream_with_studio_tools(
 
                 delta = choice.get("delta")
                 delta = delta if isinstance(delta, dict) else {}
+                # vLLM 0.11+ streams thinking as `reasoning`; llama-server and Kimi as `reasoning_content`.
                 reasoning = delta.get("reasoning_content")
+                if reasoning is None:
+                    reasoning = delta.get("reasoning")
                 if getattr(transport, "preserves_reasoning", False) and isinstance(reasoning, str):
                     turn.reasoning.append(reasoning)
                 content = delta.get("content")

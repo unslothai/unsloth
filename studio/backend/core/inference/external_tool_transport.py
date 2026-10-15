@@ -20,7 +20,7 @@ import threading
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
-from core.inference.external_provider import ExternalProviderClient
+from core.inference.external_provider import ExternalProviderClient, _is_kimi_k3
 
 
 # /inference/cancel and the model-load path only set a threading.Event, so an asyncio consumer has to poll it. Same
@@ -73,8 +73,9 @@ class OAICompatTransport:
         self._initial_message_count: int | None = None
         self._last_tools: list[dict[str, Any]] | None = None
         self.preserves_reasoning = (
-            client.provider_type == "llama_cpp" and request_kwargs.get("preserve_thinking") is True
-        )
+            client.provider_type in ("llama_cpp", "vllm")
+            and request_kwargs.get("preserve_thinking") is True
+        ) or _is_kimi_k3(client.provider_type, model)
 
     def stream(
         self,

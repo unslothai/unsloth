@@ -208,12 +208,13 @@ def _route_client(prefix = ""):
     """The real inference router, with only the auth dependency stubbed."""
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
-    from auth.authentication import get_current_subject
+    from auth.authentication import authenticated_via_api_key, get_current_subject
     import routes.inference as inference_route
 
     app = FastAPI()
     app.include_router(inference_route.router, prefix = prefix)
     app.dependency_overrides[get_current_subject] = lambda: "test"
+    app.dependency_overrides[authenticated_via_api_key] = lambda: False
     return TestClient(app, raise_server_exceptions = False)
 
 

@@ -482,7 +482,7 @@ def add_chunks(
     ``vectors`` parallels ``chunks``; optional ``regions`` (also parallel) holds
     per-chunk PDF highlight rects, stored as JSON."""
     if len(vectors):
-        rag_db.ensure_vec(conn, len(vectors[0]))
+        rag_db.ensure_vec(conn, len(vectors[0]), document_id)
     vec_rowids: list[int] = []
     for i, (chunk, vector) in enumerate(zip(chunks, vectors)):
         chunk_id = f"{document_id}:{chunk.chunk_index}"
@@ -520,8 +520,77 @@ def add_chunks(
                 (scope, chunk_id, _f32(vector)),
             ).lastrowid
         )
+    # Another writer's width change may have marked this document while it was encoding.
+    rag_db.restore_dropped_identity(conn, document_id)
     conn.commit()
     _remember_vec_rowids(conn, document_id, vec_rowids)
+
+
+def replace_document_vectors(
+    conn: sqlite3.Connection,
+    document_id: str,
+    stale_model: str | None,
+    chunk_ids: list[str],
+    vectors,
+    identity: str,
+    model_name: str,
+) -> bool:
+    """Swap a document's vectors in place and stamp ``identity``, keeping its id and chunk ids.
+
+    Writes only while the row is still the one that was encoded: present, still under
+    ``stale_model``, with the same chunks, and ``model_name`` still the configured model. A delete,
+    a re-upload, another re-embed or a model switch in between wins, and False is returned."""
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        row = conn.execute(
+            "SELECT scope, embedding_model FROM documents WHERE id=?", (document_id,)
+        ).fetchone()
+        current = [
+            r["id"]
+            for r in conn.execute(
+                "SELECT id FROM chunks WHERE document_id=? ORDER BY chunk_index", (document_id,)
+            )
+        ]
+        if (
+            row is None
+            or row["embedding_model"] != stale_model
+            or current != list(chunk_ids)
+            or len(vectors) != len(current)
+            or not current
+            # Uncached, under the write lock: old-width vectors would drop every row the new model wrote.
+            or config.effective_embedding_model(fresh = True) != model_name
+        ):
+            conn.rollback()
+            return False
+        scope = row["scope"]
+        rag_db.ensure_vec(conn, len(vectors[0]), document_id)
+        # One partition scan for the document's rows ('; sorts right after ':'), then delete by rowid.
+        stale_rowids = [
+            r["rowid"]
+            for r in conn.execute(
+                "SELECT rowid FROM chunks_vec WHERE scope=? AND chunk_id > ? AND chunk_id < ?",
+                (scope, f"{document_id}:", f"{document_id};"),
+            )
+        ]
+        for start in range(0, len(stale_rowids), _ID_BATCH):
+            batch = stale_rowids[start : start + _ID_BATCH]
+            conn.execute(
+                f"DELETE FROM chunks_vec WHERE rowid IN ({','.join('?' * len(batch))})", batch
+            )
+        rowids = [
+            conn.execute(
+                "INSERT INTO chunks_vec(scope, chunk_id, embedding) VALUES(?,?,?)",
+                (scope, chunk_id, _f32(vector)),
+            ).lastrowid
+            for chunk_id, vector in zip(current, vectors)
+        ]
+        conn.execute("UPDATE documents SET embedding_model=? WHERE id=?", (identity, document_id))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    _remember_vec_rowids(conn, document_id, rowids)
+    return True
 
 
 def delete_document(
@@ -843,6 +912,19 @@ def search_dense(
     written before identities carried a backend match on the model name alone, and
     NULL-model legacy documents are assumed current, matching the ingestion dedupe
     rule."""
+    # One snapshot for the KNN and the identity filter, as in search_lexical: a re-embed swap committed
+    # between them would pass an old-space distance under the new identity.
+    own_read_txn = not conn.in_transaction
+    if own_read_txn:
+        conn.execute("BEGIN")
+    try:
+        return _search_dense(conn, scope, vector, k, embedding_model)
+    finally:
+        if own_read_txn:
+            conn.commit()
+
+
+def _search_dense(conn: sqlite3.Connection, scope, vector, k: int, embedding_model: str | None):
     if not rag_db.vec_table_exists(conn):
         return []
     dim = rag_db.vec_table_dim(conn)
@@ -945,7 +1027,9 @@ def count_untagged_documents(conn: sqlite3.Connection) -> int:
     behind the user's back, so this exists to say how many are in that state."""
     tags = " ".join(f"AND embedding_model NOT LIKE '{t}:%'" for t in config.EMBEDDING_IDENTITY_TAGS)
     row = conn.execute(
-        f"SELECT COUNT(*) AS n FROM documents WHERE embedding_model IS NOT NULL {tags}"
+        f"SELECT COUNT(*) AS n FROM documents WHERE embedding_model IS NOT NULL {tags} "
+        "AND embedding_model NOT LIKE ?",
+        (rag_db.VECTORS_DROPPED + "%",),
     ).fetchone()
     return int(row["n"]) if row else 0
 
