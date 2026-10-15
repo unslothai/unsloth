@@ -116,9 +116,19 @@ def _mtp_source_candidates(source: str) -> list[str]:
     return candidates
 
 
-def _find_mtp_source(source: str, config) -> Optional[str]:
+def _find_mtp_source(
+    source: str,
+    config,
+    repo_id: Optional[str] = None,
+) -> Optional[str]:
+    """`repo_id` is the model id when `source` is a pinned snapshot path, whose name has lost the
+    quantized suffix the original-repo fallback strips."""
     from unsloth_zoo.speculative.mtp import find_mtp_tensor_names
-    for candidate in _mtp_source_candidates(source):
+
+    candidates = _mtp_source_candidates(source)
+    if repo_id and repo_id != source:
+        candidates += [c for c in _mtp_source_candidates(repo_id) if c not in candidates]
+    for candidate in candidates:
         try:
             if find_mtp_tensor_names(candidate, config = config):
                 return candidate
@@ -238,7 +248,11 @@ def _probe_capability(model_name: str, hf_token, key) -> dict:
     return dict(result)
 
 
-def capability_in_process(model_name: str, hf_token: Optional[str] = None) -> dict:
+def capability_in_process(
+    model_name: str,
+    hf_token: Optional[str] = None,
+    repo_id: Optional[str] = None,
+) -> dict:
     """What the Train tab can offer for this model. Head presence comes from the checkpoint's tensor index."""
     result = {
         "model_name": model_name,
@@ -265,7 +279,7 @@ def capability_in_process(model_name: str, hf_token: Optional[str] = None) -> di
         result["reason"] = f"Could not read the model config: {exc}"
         return result
     family, status = _mtp_family(config)
-    mtp_source = _find_mtp_source(source, config) if family is not None else None
+    mtp_source = _find_mtp_source(source, config, repo_id) if family is not None else None
     if mtp_source is not None:
         result.update(
             has_native_mtp = True,
@@ -610,7 +624,9 @@ def run_drafter_phase(
         # The checkpoint this run actually loaded (a pinned snapshot), under the caller's token.
         probe_target = config.get("model_snapshot_path") or model_name
         capability = (
-            capability_in_process(probe_target, config.get("hf_token")) if probe_target else {}
+            capability_in_process(probe_target, config.get("hf_token"), repo_id = model_name)
+            if probe_target
+            else {}
         )
         strategy, refusal = resolve_strategy(cfg.get("strategy", "auto"), capability)
         if strategy is None:
@@ -670,7 +686,11 @@ def run_drafter_phase(
             from unsloth import FastModel, MTPTrainingArguments, UnslothMTPTrainer
 
             # The pinned snapshot this run loaded, not the repo's default branch.
-            source = _find_mtp_source(capability_source(probe_target, config), text_config)
+            source = _find_mtp_source(
+                capability_source(probe_target, config),
+                text_config,
+                capability_source(model_name, config) if model_name else None,
+            )
             head = FastModel.get_mtp_head(model, source = source, random_init = source is None)
             args = _training_args(
                 MTPTrainingArguments, ckpt_dir, cfg, strategy, seed, {"mtp_num_steps": steps}
@@ -743,6 +763,9 @@ def run_drafter_phase(
                 "llama_cpp": bool(capability.get("llama_cpp")),
             },
         }
+        if should_stop():
+            _discard(output_dir, strategy, head = head, model = model)
+            return None
         if strategy == "mtp":
             from unsloth.save import _save_mtp_head_beside_adapter, _stitch_mtp_head
             if os.path.isfile(os.path.join(output_dir, "adapter_config.json")):
@@ -770,8 +793,9 @@ def run_drafter_phase(
                 vllm = {"method": "eagle3", "num_speculative_tokens": steps},
                 llama_cpp = {"spec_type": "draft-eagle3", "spec_draft_n_max": steps},
             )
-        if should_stop():
-            # Stop pressed while saving: still drop the drafter, before any manifest names it.
+        if should_stop() and manifest["files"]:
+            # Stop pressed while saving: still drop the drafter, before any manifest names it. A head
+            # already stitched into a full fine-tune's shards cannot be dropped, so it stays recorded.
             _discard(output_dir, strategy, head = head, model = model)
             return None
         write_manifest(output_dir, manifest)

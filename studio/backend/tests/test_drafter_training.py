@@ -220,7 +220,7 @@ def fake_zoo(monkeypatch):
     monkeypatch.setattr(
         drafter,
         "capability_in_process",
-        lambda name, token = None: {
+        lambda name, token = None, **_: {
             "supported": True,
             "strategy": "eagle3",
             "has_native_mtp": False,
@@ -360,7 +360,7 @@ def test_unsupported_model_is_a_warning(fake_zoo, tmp_path, monkeypatch):
     monkeypatch.setattr(
         drafter,
         "capability_in_process",
-        lambda name, token = None: {"supported": False, "reason": "no drafter for gemma3"},
+        lambda name, token = None, **_: {"supported": False, "reason": "no drafter for gemma3"},
     )
     q = _Queue()
     assert drafter.run_drafter_phase(trainer, _config(), str(tmp_path), q, lambda *a: None) is None
@@ -549,7 +549,7 @@ def test_phase_mtp_saves_head_beside_adapter(fake_zoo, tmp_path, monkeypatch, sn
     monkeypatch.setattr(
         drafter,
         "capability_in_process",
-        lambda name, token = None: {
+        lambda name, token = None, **_: {
             "supported": True,
             "strategy": "mtp",
             "has_native_mtp": True,
@@ -560,7 +560,9 @@ def test_phase_mtp_saves_head_beside_adapter(fake_zoo, tmp_path, monkeypatch, sn
     monkeypatch.setattr(drafter, "_mtp_family", lambda config: ("qwen3_5", "drafts"))
     searched = []
     monkeypatch.setattr(
-        drafter, "_find_mtp_source", lambda source, config: searched.append(source) or "org/base"
+        drafter,
+        "_find_mtp_source",
+        lambda source, config, repo_id = None: searched.append(source) or "org/base",
     )
     calls = {}
     unsloth = types.ModuleType("unsloth")
@@ -926,6 +928,16 @@ def test_managed_accounts_probe_only_their_paths_and_never_with_the_owner_token(
     # The caller's own token (X-Unsloth-HF-Token) reaches the probe for a private / gated model.
     asyncio.run(route.get_drafter_capability("org/model", "u", False, "hf_mine"))
     assert seen[-1] == ("org/model", "hf_mine")
+    # A picker inventory handle is probed as the path it stands for; the answer keeps the handle.
+    import models.inference as inference_models
+
+    monkeypatch.setattr(
+        inference_models,
+        "resolve_inventory_handle",
+        lambda value: "org/model" if value == "ref:abc" else value,
+    )
+    answer = asyncio.run(route.get_drafter_capability("ref:abc", "u", False, None))
+    assert seen[-1] == ("org/model", False) and answer["model_name"] == "ref:abc"
 
 
 def test_adapter_base_keeps_the_anonymous_token(monkeypatch):
@@ -1057,10 +1069,51 @@ def test_base_exports_package_the_drafter():
     assert fn.count("self._package_drafter_merged(") == 2
 
 
-def test_stop_while_saving_drops_the_drafter():
-    src = _source("core/training/drafter.py")
-    save = src.index("write_manifest(output_dir, manifest)")
-    assert "if should_stop():" in src[save - 300 : save]
+@pytest.mark.parametrize("adapter", [True, False])
+def test_stop_while_saving(fake_zoo, tmp_path, monkeypatch, adapter):
+    """A sidecar head is dropped; one already stitched into a full fine-tune's shards stays recorded."""
+    drafter, trainer = fake_zoo
+    monkeypatch.setattr(
+        drafter,
+        "capability_in_process",
+        lambda name, token = None, **_: {
+            "supported": True,
+            "strategy": "mtp",
+            "has_native_mtp": True,
+            "vllm": True,
+            "llama_cpp": True,
+        },
+    )
+    monkeypatch.setattr(drafter, "_mtp_family", lambda config: ("qwen3_5", "drafts"))
+    monkeypatch.setattr(drafter, "_find_mtp_source", lambda *a: "org/base")
+    unsloth = types.ModuleType("unsloth")
+    unsloth.FastModel = types.SimpleNamespace(get_mtp_head = lambda *a, **k: object())
+    unsloth.MTPTrainingArguments = _Args
+    unsloth.UnslothMTPTrainer = _FakeDrafterTrainer
+
+    def save_then_stop(
+        model,
+        d,
+        name = "mtp_head.safetensors",
+    ):
+        Path(d, name).write_bytes(b"h")
+        trainer.should_stop = True
+
+    save = types.ModuleType("unsloth.save")
+    save._save_mtp_head_beside_adapter = save_then_stop
+    save._stitch_mtp_head = lambda model, d: save_then_stop(model, d, "model.safetensors")
+    monkeypatch.setitem(sys.modules, "unsloth", unsloth)
+    monkeypatch.setitem(sys.modules, "unsloth.save", save)
+    if adapter:
+        (tmp_path / "adapter_config.json").write_text("{}")
+    manifest = drafter.run_drafter_phase(
+        trainer, _config(), str(tmp_path), _Queue(), lambda *a: None
+    )
+    if adapter:
+        assert manifest is None and not (tmp_path / "mtp_head.safetensors").exists()
+        assert not (tmp_path / "drafter.json").exists()
+    else:
+        assert manifest["files"] == [] and (tmp_path / "drafter.json").is_file()
 
 
 def test_hub_manifest_recovery_uses_the_load_credential(monkeypatch, tmp_path):
@@ -1086,3 +1139,18 @@ def test_hub_manifest_recovery_uses_the_load_credential(monkeypatch, tmp_path):
         "strategy": "mtp"
     }
     assert calls and all(token == "hf_secret" for _, token in calls)
+
+
+def test_pinned_quantized_snapshot_keeps_the_original_repo_fallback(monkeypatch):
+    """A snapshot path has lost the -bnb-4bit suffix; the repo id still finds the original's head."""
+    from core.training import drafter
+
+    tried = []
+    mtp = types.ModuleType("unsloth_zoo.speculative.mtp")
+    mtp.find_mtp_tensor_names = lambda name, config = None: tried.append(name) or name == "org/Model"
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.speculative.mtp", mtp)
+    snapshot = "/hf/models--org--Model-bnb-4bit/snapshots/abc123"
+    assert drafter._find_mtp_source(snapshot, None, "org/Model-bnb-4bit") == "org/Model"
+    assert tried == [snapshot, "org/Model-bnb-4bit", "org/Model"]
+    tried.clear()
+    assert drafter._find_mtp_source(snapshot, None) is None and tried == [snapshot]

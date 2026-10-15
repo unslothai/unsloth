@@ -1695,9 +1695,13 @@ async def get_drafter_capability(
     when the checkpoint ships one, else an EAGLE-3 drafter where vLLM or llama.cpp can run it."""
     from core.training.drafter import drafter_capability
 
-    name = (model_name or "").strip()
-    if not name or len(name) > 512:
+    from models.inference import resolve_inventory_handle
+
+    shown = (model_name or "").strip()
+    if not shown or len(shown) > 512:
         raise HTTPException(status_code = 400, detail = "model_name is required")
+    # A picker `ref:` handle resolves the way TrainingStartRequest resolves it; the answer keeps the handle.
+    name = resolve_inventory_handle(shown)
     managed = managed_account()
     if managed:
         # Same rule as the training routes: Hub ids, or paths inside this account's workspace.
@@ -1707,7 +1711,7 @@ async def get_drafter_capability(
             await asyncio.to_thread(_authorize_cache_fallback, name)
         except HTTPException:
             return {
-                "model_name": name,
+                "model_name": shown,
                 "has_native_mtp": False,
                 "strategy": None,
                 "supported": False,
@@ -1718,7 +1722,7 @@ async def get_drafter_capability(
     # The caller's own token comes in the header; without one, ambient credentials for the owner
     # only, anonymous for API keys and managed accounts (the owner's token must not answer for them).
     token = hf_token_arg(hf_token, allow_ambient_token = not (via_api_key is True or managed))
-    return await asyncio.to_thread(drafter_capability, name, token)
+    return {**await asyncio.to_thread(drafter_capability, name, token), "model_name": shown}
 
 
 @router.get("/hardware/visible")
