@@ -130,34 +130,46 @@ def driver_version(pynvml = None) -> Optional[str]:
         return None
 
 
-def nvml_topology(pynvml, gpus: List[dict]) -> Optional[dict]:
-    """{(a, b): {"level": "PHB", "nvlink": bool, "p2p_read": bool}} keyed by torch index.
+def nvml_topology(pynvml, gpus: List[dict]):
+    """({(a, b): {"level": "PHB", "nvlink": bool, "p2p_read": bool}} keyed by torch index, error).
 
     Handles are looked up by PCI bus id, since NVML numbers GPUs in PCI order and
     ignores CUDA_VISIBLE_DEVICES / CUDA_DEVICE_ORDER, which renumber them for torch.
+    A query a virtualised GPU refuses degrades that field instead of the whole table.
     """
-    if pynvml is None or len(gpus) < 2 or any(g["pci"] is None for g in gpus):
-        return None
+    if pynvml is None:
+        return None, "nvidia-ml-py is not installed"
+    if len(gpus) < 2 or any(g["pci"] is None for g in gpus):
+        return None, "torch does not report PCI bus ids"
     read_idx = getattr(pynvml, "NVML_P2P_CAPS_INDEX_READ", 0)
     nvlink_idx = getattr(pynvml, "NVML_P2P_CAPS_INDEX_NVLINK", 2)
     status_ok = getattr(pynvml, "NVML_P2P_STATUS_OK", 0)
+
+    def query(fn, *args):
+        try:
+            return fn(*args)
+        except Exception:
+            return None
+
     try:
         pynvml.nvmlInit()
+    except Exception as e:
+        return None, f"nvmlInit failed: {e}"
+    try:
         handles = [pynvml.nvmlDeviceGetHandleByPciBusId(g["pci"].encode()) for g in gpus]
         out = {}
         for a in range(len(gpus)):
             for b in range(a + 1, len(gpus)):
-                level = pynvml.nvmlDeviceGetTopologyCommonAncestor(handles[a], handles[b])
+                ha, hb = handles[a], handles[b]
+                level = query(pynvml.nvmlDeviceGetTopologyCommonAncestor, ha, hb)
                 out[(a, b)] = {
-                    "level": _TOPOLOGY_LABELS.get(int(level), str(level)),
-                    "nvlink": pynvml.nvmlDeviceGetP2PStatus(handles[a], handles[b], nvlink_idx)
-                    == status_ok,
-                    "p2p_read": pynvml.nvmlDeviceGetP2PStatus(handles[a], handles[b], read_idx)
-                    == status_ok,
+                    "level": "?" if level is None else _TOPOLOGY_LABELS.get(int(level), str(level)),
+                    "nvlink": query(pynvml.nvmlDeviceGetP2PStatus, ha, hb, nvlink_idx) == status_ok,
+                    "p2p_read": query(pynvml.nvmlDeviceGetP2PStatus, ha, hb, read_idx) == status_ok,
                 }
-        return out
-    except Exception:
-        return None
+        return out, None
+    except Exception as e:
+        return None, f"NVML query failed: {type(e).__name__}: {e}"
     finally:
         try:
             pynvml.nvmlShutdown()
@@ -312,8 +324,8 @@ def verdict(
         no_p2p = sorted(k for k, v in topology.items() if not v["p2p_read"])
         if no_p2p and not bad_pairs:
             hints.append(
-                f"NVML reports no P2P read support for {no_p2p}; NCCL will stage those "
-                "transfers through host memory, which is slower but correct."
+                f"NVML does not confirm P2P reads for {no_p2p} (common on cloud VMs). "
+                "If NCCL is slow there it is staging transfers through host memory."
             )
     if healthy and not hints:
         hints.append("No problems found.")
@@ -371,10 +383,10 @@ def doctor(
     topology = p2p = smoke = smoke_no_p2p = None
     count = len(info["gpus"])
     if count > 1:
-        topology = nvml_topology(pynvml, info["gpus"])
+        topology, topology_error = nvml_topology(pynvml, info["gpus"])
         typer.echo("\n=== Topology (NVML) ===")
         if topology is None:
-            typer.echo("  unavailable (install nvidia-ml-py for the topology summary)")
+            typer.echo(f"  unavailable: {topology_error}")
         else:
             for (a, b), v in sorted(topology.items()):
                 typer.echo(

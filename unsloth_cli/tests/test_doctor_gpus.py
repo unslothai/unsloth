@@ -115,15 +115,28 @@ class _FakeNvml:
 def test_nvml_topology_keys_by_torch_index_via_pci_bus():
     nvml = _FakeNvml()
     gpus = [_gpu(0, pci = "bus-c"), _gpu(1, pci = "bus-a"), _gpu(2, pci = "bus-b")]
-    topo = doctor_mod.nvml_topology(nvml, gpus)
+    topo, err = doctor_mod.nvml_topology(nvml, gpus)
+    assert err is None
     assert topo[(0, 1)] == {"level": "SYS", "nvlink": False, "p2p_read": True}
     assert topo[(1, 2)] == {"level": "PHB", "nvlink": True, "p2p_read": True}
     assert nvml.shutdown
 
 
 def test_nvml_topology_absent_without_pynvml_or_pci():
-    assert doctor_mod.nvml_topology(None, [_gpu(0, pci = "a"), _gpu(1, pci = "b")]) is None
-    assert doctor_mod.nvml_topology(_FakeNvml(), [_gpu(0), _gpu(1)]) is None
+    topo, err = doctor_mod.nvml_topology(None, [_gpu(0, pci = "a"), _gpu(1, pci = "b")])
+    assert topo is None and "nvidia-ml-py" in err
+    topo, err = doctor_mod.nvml_topology(_FakeNvml(), [_gpu(0), _gpu(1)])
+    assert topo is None and "PCI" in err
+
+
+def test_nvml_topology_survives_a_refused_query():
+    class Refusing(_FakeNvml):
+        def nvmlDeviceGetP2PStatus(self, a, b, idx):
+            raise RuntimeError("Not Supported")
+
+    topo, err = doctor_mod.nvml_topology(Refusing(), [_gpu(0, pci = "bus-a"), _gpu(1, pci = "bus-c")])
+    assert err is None
+    assert topo[(0, 1)] == {"level": "SYS", "nvlink": False, "p2p_read": False}
 
 
 def test_allreduce_smoke_gloo_two_ranks():

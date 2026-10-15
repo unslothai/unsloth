@@ -26,11 +26,21 @@ def test_off_by_default():
 @pytest.mark.parametrize("flag", ["1", "true", "ON"])
 def test_sets_nccl_and_flight_recorder_env(flag):
     env = {"UNSLOTH_DEBUG_DISTRIBUTED": flag}
-    _module().apply_debug_distributed_env(env)
+    _module().apply_debug_distributed_env(env, torch_version = "2.13.0+cu130")
     assert env["TORCH_NCCL_DESYNC_DEBUG"] == "1"
     assert env["TORCH_NCCL_DUMP_ON_TIMEOUT"] == "1"
     assert env["NCCL_DEBUG"] == "INFO"
-    assert env["TORCH_FR_BUFFER_SIZE"] == env["TORCH_NCCL_TRACE_BUFFER_SIZE"] == "2000"
+    # Setting the old name too makes torch >= 2.8 warn that it is deprecated.
+    assert env["TORCH_FR_BUFFER_SIZE"] == "2000"
+    assert "TORCH_NCCL_TRACE_BUFFER_SIZE" not in env
+
+
+@pytest.mark.parametrize("version", ["2.6.0", "2.7.1+cu126"])
+def test_old_torch_gets_the_old_flight_recorder_name(version):
+    env = {"UNSLOTH_DEBUG_DISTRIBUTED": "1"}
+    _module().apply_debug_distributed_env(env, torch_version = version)
+    assert env["TORCH_NCCL_TRACE_BUFFER_SIZE"] == "2000"
+    assert "TORCH_FR_BUFFER_SIZE" not in env
 
 
 def test_user_values_win_and_old_buffer_name_is_respected():
