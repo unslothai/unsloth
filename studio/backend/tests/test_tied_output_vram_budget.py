@@ -406,7 +406,7 @@ def test_the_budget_sizes_from_what_lands_in_vram(backend, tied_gguf):
 
     src = inspect.getsource(backend)
     assert (
-        "+ self._tied_output_bytes(model_path)" in src
+        "+ LlamaCppBackend._tied_output_vram_bytes(" in src
     ), "the context budget no longer charges the tied-embedding duplicate"
     assert "- _host_pinned" in src, "the context budget no longer discounts host-pinned embeddings"
     assert "_host_pinned_vram_discount(" in src
@@ -791,7 +791,7 @@ def test_every_site_that_prices_the_weights_carries_both_corrections(backend):
     import inspect
 
     src = inspect.getsource(backend.load_model)
-    assert "_tied_output_charge = self._tied_output_bytes(model_path)" in src
+    assert "_tied_output_charge = self._tied_output_vram_bytes(" in src
     assert "weights_size = gguf_size + _tied_output_charge" in src
     assert "_model_weight_vram_bytes = max(0, weights_size - _host_pinned)" in src
     assert "model_size = _model_weight_vram_bytes + mmproj_size" in src

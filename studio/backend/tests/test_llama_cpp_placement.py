@@ -6119,3 +6119,70 @@ def test_the_drafterless_retry_reserves_the_weights_that_land_in_vram(tmp_path, 
     assert "draft-mtp" not in retry and retry[retry.index("--parallel") + 1] == "4"
     # 16 GiB file and a flat 1 GiB KV estimate, all on the one card.
     assert backend._planned_vram_mib == {0: (16 - host_pinned_gib + 1) * 1024}
+
+
+def _tied_override_total(
+    tmp_path,
+    monkeypatch,
+    *,
+    extra_args,
+    tied_gib,
+    drafter = False,
+):
+    """First planned total for a tied 4 GiB target (and, with ``drafter``, a tied 4 GiB
+    sidecar) whose 1 GiB token_embd.weight the extras may override onto Vulkan0."""
+    gib = 1024**3
+    backend, gguf = _backend(tmp_path, vulkan = True, memory = [(0, 30_000, 32_000)])
+    monkeypatch.setattr(
+        LlamaCppBackend, "_tied_output_bytes", staticmethod(lambda _path: tied_gib * gib)
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_host_pinned_weight_items",
+        staticmethod(lambda _path: (("token_embd.weight", gib),)),
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_host_pinned_weight_bytes", staticmethod(lambda _path: gib)
+    )
+    backend._get_gguf_size_bytes = lambda _path: 4 * gib
+    totals = []
+
+    def plan(total, gpus, *args, **kwargs):
+        totals.append(total)
+        return None, True
+
+    backend._select_gpus = plan
+    kwargs = {}
+    if drafter:
+        backend.probe_server_capabilities = lambda _binary = None: {
+            "mtp_token": "draft-mtp",
+            "spec_draft_n_max_flag": "--spec-draft-n-max",
+        }
+        backend._resolve_launch_mtp_path = lambda **_kwargs: "/fake/mtp.gguf"
+        kwargs = {"mtp_draft_path": "/fake/mtp.gguf", "speculative_type": "mtp"}
+    _launch(backend, gguf, gpu_ids = [0], extra_args = extra_args, **kwargs)
+    return totals[0]
+
+
+@pytest.mark.parametrize("flag", ["-ot", "--override-tensor"])
+def test_a_gpu_override_of_a_tied_embedding_charges_no_duplicate(tmp_path, monkeypatch, flag):
+    # Both uses resolve to Vulkan0, so llama.cpp hands the output the same tensor.
+    override = [flag, "token_embd.weight=Vulkan0"]
+    tied = _tied_override_total(tmp_path, monkeypatch, extra_args = override, tied_gib = 1)
+    untied = _tied_override_total(tmp_path, monkeypatch, extra_args = override, tied_gib = 0)
+    assert tied == untied
+    # Without the override the duplicate is a second matrix and stays charged.
+    assert _tied_override_total(tmp_path, monkeypatch, extra_args = None, tied_gib = 1) > (
+        _tied_override_total(tmp_path, monkeypatch, extra_args = None, tied_gib = 0)
+    )
+
+
+def test_a_gpu_draft_override_of_a_tied_embedding_charges_no_duplicate(tmp_path, monkeypatch):
+    override = ["-otd", "token_embd.weight=Vulkan0", "-ot", "token_embd.weight=Vulkan0"]
+    tied = _tied_override_total(
+        tmp_path, monkeypatch, extra_args = override, tied_gib = 1, drafter = True
+    )
+    untied = _tied_override_total(
+        tmp_path, monkeypatch, extra_args = override, tied_gib = 0, drafter = True
+    )
+    assert tied == untied

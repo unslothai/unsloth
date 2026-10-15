@@ -11282,16 +11282,39 @@ class LlamaCppBackend:
             logger.debug("tied-output probe failed for %s (%s)", identity, exc)
             return 0
 
+    def _tied_output_vram_bytes(
+        self,
+        model_path: str,
+        extra_args: Optional[Iterable[str]] = None,
+        *,
+        env: Optional[Mapping[str, str]] = None,
+        draft_model: bool = False,
+    ) -> int:
+        """``_tied_output_bytes``, or 0 when an exact-name GPU override puts token_embd.weight
+        in the output's buffer: llama.cpp then reuses it (llama-model-loader.cpp, TENSOR_DUPLICATED)."""
+        moved = self._host_floor_moved_names(
+            self._host_pinned_weight_items(model_path),
+            self._tensor_override_mappings(extra_args, env, draft_model = draft_model),
+        )
+        if "token_embd.weight" in moved:
+            return 0
+        return self._tied_output_bytes(model_path)
+
     def _separate_drafter_weight_vram_bytes(
         self,
         model_path: str,
         host_pinned_bytes: int = 0,
+        *,
+        extra_args: Optional[Iterable[str]] = None,
+        env: Optional[Mapping[str, str]] = None,
     ) -> int:
         """Weight bytes a separate GPU drafter actually allocates in VRAM."""
         return max(
             0,
             self._get_gguf_size_bytes(model_path)
-            + self._tied_output_bytes(model_path)
+            + LlamaCppBackend._tied_output_vram_bytes(
+                self, model_path, extra_args, env = env, draft_model = True
+            )
             - max(0, int(host_pinned_bytes)),
         )
 
@@ -14493,7 +14516,7 @@ class LlamaCppBackend:
         # in the probe, which is the signature the embeddings are being recognised by.
         mapped = int(layout.tensor_bytes) - int(layout.excluded_block_bytes)
         # The probe's rows hold the tied output duplicate the fit now charges on top of the file.
-        mapped += self._tied_output_bytes(model_path)
+        mapped += self._tied_output_vram_bytes(model_path, extra_args, env = source_env)
         unmapped = min(embeddings, max(0, mapped - charged))
         if not unmapped:
             logger.info(
@@ -26997,7 +27020,9 @@ class LlamaCppBackend:
                     if _user_mmproj_offload is False and launch_mmproj_path:
                         # Still in system RAM, which the APU shortfall guard prices.
                         _mmproj_pinned_bytes = self._mmproj_vram_bytes(launch_mmproj_path)
-                    _tied_output_charge = self._tied_output_bytes(model_path)
+                    _tied_output_charge = self._tied_output_vram_bytes(
+                        model_path, extra_args, env = os.environ
+                    )
                     weights_size = gguf_size + _tied_output_charge
                     from utils.hardware import is_apple_silicon
 
@@ -27581,10 +27606,14 @@ class LlamaCppBackend:
                             _mtp_draft_weights = self._separate_drafter_weight_vram_bytes(
                                 _mtp_draft_for_budget,
                                 _draft_host_pinned,
+                                extra_args = extra_args,
+                                env = os.environ,
                             )
                             _mtp_draft_weights_candidate = self._separate_drafter_weight_vram_bytes(
                                 _mtp_draft_for_budget,
                                 _draft_host_pinned_candidate,
+                                extra_args = extra_args,
+                                env = os.environ,
                             )
                         except Exception:
                             _draft_host_pinned = 0
