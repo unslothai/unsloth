@@ -223,7 +223,10 @@ def _nvfp4_weight_tile(
         tl.join(_e2m1_to_float_bits(byte & 15), _e2m1_to_float_bits(byte >> 4)),
         (BLOCK_R, BLOCK_K // 16, 16),
     )
-    return tl.reshape(values * group_scale[:, :, None], (BLOCK_R, BLOCK_K)).to(OUT_DTYPE)
+    w = tl.reshape(values * group_scale[:, :, None], (BLOCK_R, BLOCK_K))
+    # Padding past K stays 0 even under an inf scale (0 * inf), as dense never sees those lanes.
+    w = tl.where((k0 + tl.arange(0, BLOCK_K))[None, :] < half_cols * 2, w, 0.0)
+    return w.to(OUT_DTYPE)
 
 
 @triton.jit

@@ -282,6 +282,28 @@ def test_extra_scale_columns_are_ignored(N, fused, monkeypatch):
     assert torch.equal(N._nvfp4_matmul_bwd(G, packed, wide, gs), N._nvfp4_matmul_bwd(G, packed, scale, gs))
 
 
+def test_inf_scale_in_the_last_group_matches_dense(N, fused, monkeypatch):
+    dtype = _dtypes()[0]
+    packed, scale, gs = _random_nvfp4(64, 104)  # the last group is half padding
+    scale = scale.float()
+    scale[:, -1] = float("inf")
+    packed[:, 48:] = 0x22  # E2M1 1.0 in the last group: its weights are +inf, never 0 * inf
+    X = torch.randn(4, 104, device = "cuda", dtype = dtype).abs() + 0.1
+    Y = _fwd(N, X, packed, scale, gs)
+    ref = _dense(N, X, packed, scale, gs, monkeypatch)
+    assert torch.isinf(ref).all() and not torch.isnan(ref).any()
+    assert torch.equal(Y, ref)
+
+
+def test_column_strided_e4m3_scales(N, fused, monkeypatch):
+    dtype = _dtypes()[0]
+    packed, scale, gs = _random_nvfp4(64, 128)
+    strided = torch.stack([scale, scale], dim = -1).reshape(scale.shape[0], -1)[:, ::2]
+    assert strided.stride(-1) == 2 and torch.equal(strided.view(torch.uint8), scale.view(torch.uint8))
+    X = torch.randn(4, 128, device = "cuda", dtype = dtype)
+    assert torch.equal(_fwd(N, X, packed, strided, gs), _fwd(N, X, packed, scale, gs))
+
+
 def test_double_backward_takes_the_dense_dx(N, fused):
     dtype = _dtypes()[0]
     packed, scale, gs = _random_nvfp4(64, 128)
