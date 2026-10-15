@@ -183,20 +183,30 @@ def test_research_presentation_is_integrated() -> None:
     assert "Deep research" in thread
     research_gate = thread.split("const researchDisabled =", 1)[1].split(";", 1)[0]
     assert "!modelLoaded" not in research_gate
+    assert re.search(r"modelLoaded\s*&&\s*!externalSelection\s*&&\s*!supportsTools", research_gate)
     assert "<ResearchMessage />" in thread
     assert "if (researchRunId) return null" in thread
     assert "!researchRunId &&" in thread
-    # A research message has no Delete. Since #12735 Delete is a More-menu item whose hook reports
-    # `hidden` for research messages, and the item renders nothing when hidden; before that the
-    # bar's button returned null on the same condition. Either spelling, the gate must be there.
+    # A research message has no Delete. The hook reports `hidden` for research messages, and every
+    # component that renders Delete from it renders nothing when hidden. That component has been a
+    # bar button, a More-menu item (#12735) and a bar button again (#13615), so it is found by the
+    # hook it calls rather than by its name.
     delete_hook = thread.split("function useDeleteMessage()", 1)[1].split("\n}\n", 1)[0]
     assert re.search(
         r"hidden:\s*Boolean\(\s*researchRunId\s*\|\|\s*ownsResearchMessage\s*\)", delete_hook
     )
-    delete_item = thread.split("const DeleteMessageMenuItem: FC = () => {", 1)[1].split(
-        "\n};\n", 1
-    )[0]
-    assert re.search(r"if\s*\(\s*hidden\s*\)\s*\{?\s*return null", delete_item)
+    delete_controls = {
+        name: body
+        for name, body in re.findall(
+            r"^const (\w+): FC = \(\) => \{\n([\s\S]*?)\n\};\n", thread, re.M
+        )
+        if "useDeleteMessage()" in body
+    }
+    assert delete_controls, "no thread.tsx component renders Delete through useDeleteMessage()"
+    for name, body in delete_controls.items():
+        assert re.search(
+            r"if\s*\(\s*hidden\s*\)\s*\{?\s*return null", body
+        ), f"{name} renders Delete without the research-message gate"
     assert "ResearchMessageRunIdContext = createContext<string | null>(null)" in thread
     assert "researchReplyOwnsRun(boundResearchAssistantMessageId, messageId)" in thread
     assert "<ResearchMessageRunIdContext.Provider value={researchRunId}>" in thread
@@ -275,7 +285,7 @@ def test_research_presentation_is_integrated() -> None:
     checkpoint_update = store.split("setCheckpoint: (modelId, ggufVariant, options) =>", 1)[
         1
     ].split("setActiveThreadId:", 1)[0]
-    assert "saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false)" in checkpoint_update
+    assert "saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY" not in checkpoint_update
     # #8686 put a chat-scoped override in front of the global read here, so the literal `const permissionMode =
     # loadPermissionMode();` this used to pin is gone. The read itself is the contract, and it is still per call:
     # toggling deep research re-resolves the permission level, taking the chat's own level when it has one and the
@@ -338,7 +348,8 @@ def test_research_is_one_shot_per_thread_without_disabling_normal_chat() -> None
     assert "runtime.setDeepResearchEnabled(false)" in adapter
     assert "effectiveDeepResearchEnabled" in thread
     assert "researchAvailable={!researchUsed}" in thread
-    assert "{researchAvailable ? (" in thread
+    # #13679: the + menu is a keyed list.
+    assert "deepResearch: researchAvailable ? (" in thread
     assert "setToolsEnabled" in thread
     assert "Web search" in thread
 

@@ -62,4 +62,4 @@ def test_tool_transport_reasoning_policy(provider, value):
         provider_type = provider, base_url = "http://localhost:8080/v1", api_key = ""
     )
     transport = OAICompatTransport(client, model = "test", preserve_thinking = value)
-    assert transport.preserves_reasoning is (provider == "llama_cpp" and value is True)
+    assert transport.preserves_reasoning is (provider in ("llama_cpp", "vllm") and value is True)

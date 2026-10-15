@@ -69,6 +69,7 @@ from core.inference.diffusion_memory import (
     OFFLOAD_NONE,
     OFFLOAD_SEQUENTIAL,
 )
+from core.inference import sd_cpp_args as sd_cpp_args_mod
 from core.inference.sd_cpp_args import (
     CPU_BACKEND_FLAGS,
     SdCppGenParams,
@@ -528,7 +529,7 @@ def _remember_device_listing(binary: Optional[str], text: Optional[str]) -> None
     if not binary:
         return
     if text is None:
-        _LAST_DEVICE_LISTING.pop(binary, None)
+        # Keep the last good listing; readers check (size, mtime_ns), so a changed binary's listing is never served.
         return
     _LAST_DEVICE_LISTING[binary] = (_binary_stat_identity(binary), text)
 
@@ -1009,8 +1010,9 @@ def _note_failed_upgrade(accelerator: str) -> None:
 # kernels for 27 gfx targets but bundles no HIP/BLAS runtime (NEEDED libhipblas.so.3,
 # librocblas.so.5, libamdhip64.so.7 from the HOST), so any host without a matching ROCm userspace
 # fails it. Linux: exits 0 listing CPU only (caught by the device probe). Windows: exits 0xC0000135
-# with no output (caught by exit status). One-way and one-deep; CUDA needs no rung.
-_ACCELERATOR_FALLBACK: dict[str, str] = {"rocm": "vulkan"}
+# with no output (caught by exit status). One-way and one-deep; CUDA needs no rung. Vulkan falls
+# to CPU: a CPU-torch host is routed to it, and one that cannot start it must not lose sd.cpp.
+_ACCELERATOR_FALLBACK: dict[str, str] = {"rocm": "vulkan", "vulkan": "cpu"}
 
 
 # The sonames the upstream ROCm archive imports and does not ship.
@@ -1041,6 +1043,108 @@ def rocm_runtime_resolvable() -> Optional[bool]:
         except Exception:  # noqa: BLE001 - an unexpected loader failure establishes nothing
             return None
     return True
+
+
+def rocm_runtime_missing_sonames() -> Optional[list[str]]:
+    """The ROCm runtime libraries the loader cannot open here: [] when all load, None when it cannot be asked
+    (Windows, macOS, no ctypes, an unexpected loader error), which says nothing either way."""
+    if os.name != "posix" or sys.platform == "darwin":
+        return None
+    try:
+        import ctypes
+    except Exception:  # noqa: BLE001
+        return None
+    missing = []
+    for soname in _ROCM_RUNTIME_SONAMES:
+        try:
+            ctypes.CDLL(soname)
+        except OSError:
+            missing.append(soname)
+        except Exception:  # noqa: BLE001 - an unexpected loader failure establishes nothing
+            return None
+    return missing
+
+
+ACCELERATOR_FALLBACK_CLEAR_HINT = (
+    "to retry the failed GPU build after fixing that, clear the record with "
+    "DELETE /api/settings/diffusion-accelerator-fallback (or restart with "
+    "UNSLOTH_DIFFUSION_SD_CPP_VULKAN_FALLBACK=0 to never fall back)"
+)
+
+
+def accelerator_fallback_reason(accelerator: Optional[str]) -> str:
+    """Why the ``accelerator`` build is being replaced, in words a user can act on."""
+    if _accelerator_class_of(accelerator) != "rocm":
+        return "its build did not list a GPU"
+    if os.name == "nt":
+        # The loader cannot be asked ahead of time on Windows; a missing DLL is exit 0xC0000135 with no output.
+        return (
+            "the ROCm build needs the AMD HIP SDK 7.x runtime DLLs (amdhip64_7.dll, hipblas.dll, rocblas.dll) on "
+            "PATH; without them Windows stops it before it prints anything (exit 0xC0000135), or the card's gfx "
+            "target is missing from the prebuilt"
+        )
+    missing = rocm_runtime_missing_sonames()
+    if missing is None:
+        return (
+            "the ROCm build listed no GPU (whether the host ROCm 7 runtime loads could not be checked here, so "
+            "either it is missing or the card's gfx target is not in the prebuilt)"
+        )
+    if missing:
+        return (
+            "the ROCm build needs the host ROCm 7 runtime and the loader cannot find "
+            + ", ".join(missing)
+            + " (install ROCm 7.x userspace or add /opt/rocm/lib to the loader path)"
+        )
+    return (
+        "the ROCm build listed no GPU (the ROCm runtime loads, so the card's gfx target may be missing from the "
+        "prebuilt, or /dev/kfd is not accessible to this user)"
+    )
+
+
+# ggml device-name prefix -> accelerator class, for a build no install record describes.
+_LISTED_DEVICE_CLASSES: dict[str, str] = {
+    "VULKAN": "vulkan",
+    "ROCM": "rocm",
+    "CUDA": "cuda",
+    "SYCL": "sycl",
+    "METAL": "metal",
+    "OPENCL": "opencl",
+}
+
+
+def sd_cpp_listed_device(
+    binary: Optional[str],
+    device_name: Optional[str] = None,
+    *,
+    probe: bool = True,
+) -> "tuple[Optional[str], Optional[str]]":
+    """``(accelerator class, description)`` of the device ``binary`` renders on, from its own ``--list-devices``:
+    ``device_name`` when pinned, else the first non-CPU device (sd.cpp's own default). ``(None, None)`` when the
+    listing is unreadable or names no GPU. What an unowned build (SD_CLI_PATH / UNSLOTH_SD_CPP_PATH) is, since
+    no install record says. ``probe = False`` only reads the listing the last accelerator verdict took of this
+    file (no subprocess)."""
+    if not binary:
+        return None, None
+    text = None
+    seen = _LAST_DEVICE_LISTING.get(binary)
+    if seen is not None and seen[0] == _binary_stat_identity(binary):
+        text = seen[1]
+    elif probe:
+        text = _sd_cpp_probe_output(binary, "--list-devices")
+    if text is None:
+        return None, None
+    for line in text.splitlines():
+        parts = line.split("\t", 1)
+        if len(parts) != 2:
+            continue
+        name = parts[0].strip()
+        klass = _LISTED_DEVICE_CLASSES.get(name.rstrip("0123456789").upper())
+        if klass is None:
+            continue
+        if device_name is not None and name != device_name:
+            continue
+        return klass, parts[1].strip() or None
+    return None, None
 
 
 def accelerator_probe_failure_is_decisive(accelerator: Optional[str]) -> bool:
@@ -1562,6 +1666,9 @@ _ACCELERATOR_DECISIVE_FAILURE_MARKERS: tuple[str, ...] = (
     "hiperrornobinaryforgpu",
     "no kernel image is available",
     "invalid device function",
+    # vulkan-hpp's spellings and the C enum: this driver cannot run the Vulkan build.
+    "errorincompatibledriver",
+    "vk_error_incompatible_driver",
 )
 
 # AMBIGUOUS: names a GPU fault without establishing the BUILD as the cause. #9278 with offload on
@@ -1573,6 +1680,10 @@ _ACCELERATOR_AMBIGUOUS_FAILURE_MARKERS: tuple[str, ...] = (
     "rocm error",
     "rocblas error",
     "memory access fault by gpu node",
+    "errordevicelost",
+    "vk_error_device_lost",
+    "errorinitializationfailed",
+    "vk_error_initialization_failed",
 )
 
 # Windows loader deaths print nothing, so only the exit status shows them. DECISIVE.
@@ -1661,11 +1772,17 @@ def preferred_accelerator(accelerator: Optional[str], card: Optional[str] = None
 
     A function of the stored record only, never of the live host: the loader preflight is applied
     where the runtime verdict is interpreted, so this stays reproducible."""
-    klass = _accelerator_class_of(accelerator) or (accelerator or "auto")
-    nxt = fallback_accelerator_for(klass)
-    if nxt and accelerator_runtime_failed(klass, card):
-        return nxt
-    return accelerator or "auto"
+    chosen = accelerator or "auto"
+    klass = _accelerator_class_of(accelerator) or chosen
+    seen: set[str] = set()
+    # Walk the ladder (rocm -> vulkan -> cpu) past every rung already shown unrunnable.
+    while klass not in seen:
+        seen.add(klass)
+        nxt = fallback_accelerator_for(klass)
+        if not (nxt and accelerator_runtime_failed(klass, card)):
+            break
+        chosen = klass = nxt
+    return chosen
 
 
 def _incomplete_tree_replacement(exc: BaseException) -> bool:
@@ -2023,6 +2140,29 @@ def sd_cpp_binary_runs_family(binary: Optional[str], fam: Any) -> bool:
     return binary_carries_marker(binary, getattr(fam, "sd_cpp_arch_marker", None))
 
 
+def managed_sd_cpp_accelerator() -> Optional[str]:
+    """The accelerator class of the managed sd-server install, else of the managed sd-cli (an
+    unowned SD_SERVER_PATH the router drops leaves the CLI to run), or None."""
+    try:
+        for binary in (find_sd_server_binary(), find_sd_cpp_binary()):
+            accelerator = _installed_accelerator_of(binary) if binary else None
+            if accelerator:
+                return accelerator
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
+def sd_cpp_binaries_all_cpu() -> bool:
+    """Whether every sd.cpp binary a load could run (server, else CLI) is a managed CPU install.
+    An unowned SD_SERVER_PATH / SD_CLI_PATH build may render on a GPU, so it never counts."""
+    try:
+        binaries = [b for b in (find_sd_server_binary(), find_sd_cpp_binary()) if b]
+        return bool(binaries) and all(_installed_accelerator_of(b) == "cpu" for b in binaries)
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _installed_accelerator_of(binary: Optional[str]) -> Optional[str]:
     """The accelerator class recorded for the managed install ``binary`` belongs to.
 
@@ -2108,6 +2248,16 @@ def note_unlaunchable_accelerator_build(
         logger.debug("could not record the sd.cpp launch failure: %s", exc)
 
 
+def _install_kwargs(accelerator: str) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {"accelerator": accelerator}
+    if _accelerator_class_of(accelerator) == "cuda":
+        from core.inference.sd_cpp_engine import host_cuda_runtime_major
+        major = host_cuda_runtime_major()
+        if major:
+            kwargs["cuda_major"] = major
+    return kwargs
+
+
 def ensure_sd_cpp_binary(*, allow_install: bool = True, accelerator: str = "cpu") -> Optional[str]:
     """Path to a usable ``sd-cli`` binary, installing the prebuilt once if needed. Returns the
     binary path, or None when it is absent and cannot be installed (install disabled, no network,
@@ -2138,7 +2288,7 @@ def ensure_sd_cpp_binary(*, allow_install: bool = True, accelerator: str = "cpu"
             if not claimed:
                 return fallback  # something is running in there; retry on a later load
             try:
-                path = _install(accelerator = accelerator)
+                path = _install(**_install_kwargs(accelerator))
                 logger.info("sd-cli installed at %s", path)
                 return str(path)
             except Exception as exc:  # noqa: BLE001 -- download/extract failure -> fall back
@@ -2197,7 +2347,7 @@ def ensure_sd_server_binary(
             if not claimed:
                 return fallback  # something is running in there; retry on a later load
             try:
-                _install(accelerator = accelerator)  # extracts sd-cli AND sd-server
+                _install(**_install_kwargs(accelerator))  # extracts sd-cli AND sd-server
             except Exception as exc:  # noqa: BLE001 -- download/extract failure -> fall back
                 logger.warning("sd-server auto-install failed: %s", exc)
                 # Also when only the CLI survives (a legacy server-less tree): the router probes ensure_sd_cpp_binary
@@ -3045,16 +3195,52 @@ class SdCppDiffusionBackend:
                 if off_torch is not None
                 else resolve_diffusion_device_target().device
             )
+            # A paravirtual Mac GPU runs sd.cpp on the CPU backend (see metal_text_encoder_flags), so record that.
+            if sd_cpp_args_mod.forces_cpu_backend(device):
+                device = "cpu"
+            torch_device = device
+
+            def _running() -> tuple[Optional[str], Optional[str]]:
+                if mode == "server":
+                    return server_accelerator, server_binary
+                return engine_accelerator, getattr(engine, "binary", None)
+
+            def _placement(
+                run_accelerator: Optional[str], binary: Optional[str]
+            ) -> tuple[str, tuple[str, ...]]:
+                # Read off the build this load runs, never the requested one. SD_SERVER_PATH /
+                # SD_CLI_PATH builds carry no install record, so their own device listing says.
+                if run_accelerator is None and binary:
+                    run_accelerator = sd_cpp_listed_device(binary)[0]
+                klass = _accelerator_class_of(run_accelerator) if run_accelerator else None
+                # A CPU torch running the Vulkan build renders on a card torch never measured, so
+                # auto offloads.
+                vulkan = torch_device == "cpu" and off_torch is None and klass == "vulkan"
+                placed = "vulkan" if vulkan else torch_device
+                # The fallback ladder can leave a CUDA / XPU torch running the CPU build. Not
+                # MPS: the macOS bundle is recorded as cpu and still renders on Metal.
+                if klass == "cpu" and off_torch is None and torch_device in ("cuda", "xpu"):
+                    placed = "cpu"
+                # Honor speed everywhere; offload only off-CPU (on CPU weights are resident, so the flags are no-ops)
+                if placed == "cpu":
+                    return placed, ()
+                return placed, tuple(
+                    offload_flags(_memory_policy(memory_mode, cpu_offload or vulkan))
+                )
+
+            device, offload = _placement(*_running())
             spawn_env = off_torch.child_env() if off_torch is not None else None
-            # Honor speed everywhere; offload only off-CPU (on CPU weights are resident, so the flags are no-ops)
-            offload: tuple[str, ...] = ()
-            if device != "cpu":
-                offload = tuple(offload_flags(_memory_policy(memory_mode, cpu_offload)))
             # The device pin is NOT folded in here: the binary can still change below, through the deferred
             # accelerator install, the post-download re-resolve, or a server start that falls back to one-shot, and
             # the ggml device names come from whichever build ends up running. It is added at each point the flags are
             # handed to a binary instead.
-            gpu_ordinal = gpu_ordinal if device == "cuda" else None
+            # The route's card, applied only while the placement is CUDA: a deferred upgrade can move
+            # a load placed on the CPU bundle back onto the selected GPU.
+            selected_ordinal = gpu_ordinal
+
+            def _ordinal() -> Optional[int]:
+                return selected_ordinal if device == "cuda" else None
+
             native_speed = _native_speed_for(speed_mode)
 
             # Tear down the old model then commit the new one under _generate_lock: abort and WAIT for a generation
@@ -3090,6 +3276,8 @@ class SdCppDiffusionBackend:
                     # archive.
                     server_accelerator = _installed_accelerator_of(server_binary)
                     engine_accelerator = _installed_accelerator_of(getattr(engine, "binary", None))
+                    # The upgrade may have landed or kept the old build; place for whichever runs.
+                    device, offload = _placement(*_running())
                 # A new checkpoint earns a fresh attempt on the GPU backend: the previous abort says nothing about
                 # this graph.
                 self._cpu_backend_forced = False
@@ -3128,6 +3316,7 @@ class SdCppDiffusionBackend:
                             engine_accelerator = _installed_accelerator_of(
                                 getattr(engine, "binary", None)
                             )
+                            device, offload = _placement(*_running())
                         elif _installed_accelerator_of(server_binary) != server_accelerator:
                             raise RuntimeError(
                                 "The stable-diffusion.cpp server binary was replaced by an install "
@@ -3168,7 +3357,7 @@ class SdCppDiffusionBackend:
                             files,
                             vae_format = fam.sd_cpp_vae_format,
                             offload = _offload_with_device_pin_impl(
-                                offload, server_binary, gpu_ordinal
+                                offload, server_binary, _ordinal()
                             ),
                             native_speed = native_speed,
                             threads = _default_threads(),
@@ -3202,6 +3391,12 @@ class SdCppDiffusionBackend:
                         # which re-resolves sd-cli and reads its real accelerator, rejected it as a
                         # different-accelerator replacement: the load reports success and then cannot generate.
                         fallback: Optional[SdCppEngine] = None
+                        cached = getattr(self._engine, "binary", None)
+                        if cached and _installed_accelerator_of(
+                            cached
+                        ) != self._resolved_accelerator(self._loading_card):
+                            # The failure just recorded can move the preferred build off a cached sd-cli.
+                            self._engine = None
                         try:
                             fallback = self._resolve_engine()
                             usable = fallback.version() is not None
@@ -3217,6 +3412,7 @@ class SdCppDiffusionBackend:
                             getattr(fallback, "binary", None)
                         )
                         mode = "oneshot"
+                        device, offload = _placement(*_running())
                     finally:
                         if not started_ok:
                             with self._lock:
@@ -3238,7 +3434,7 @@ class SdCppDiffusionBackend:
                     _offload_with_device_pin_impl(
                         offload,
                         server_binary if mode == "server" else getattr(engine, "binary", None),
-                        gpu_ordinal,
+                        _ordinal(),
                     )
                 )
                 state = _SdState(
@@ -3274,7 +3470,7 @@ class SdCppDiffusionBackend:
                         _resolved_server_physical_gpu_id(
                             server_binary,
                             device,
-                            gpu_ordinal,
+                            _ordinal(),
                             committed_offload_flags,
                         )
                         if mode == "server" and off_torch is None

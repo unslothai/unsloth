@@ -1443,6 +1443,91 @@ def test_seed_preview_file_follows_the_config_data_dir(monkeypatch, tmp_path):
     assert response.resolved_path == "datasets/org/repo/fr/train*.parquet"
 
 
+def _seed_inspect_as(monkeypatch, tmp_path, *, managed):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    monkeypatch.setattr(seed_route, "managed_account", lambda: managed)
+    monkeypatch.setattr(seed_route, "refuse_unauthorized_dataset_preview", lambda *a, **k: None)
+    monkeypatch.setattr(seed_route, "_list_hf_repo_files", lambda **kwargs: ["train.csv"])
+    monkeypatch.setattr(seed_route, "_list_hf_dataset_configs", lambda **kwargs: [])
+    read = []
+
+    def fake_preview(*, load_dataset_fn, load_kwargs, preview_size):
+        read.append(load_kwargs)
+        return [{"secret": "owner-only"}]
+
+    monkeypatch.setattr(seed_route, "_load_preview_rows", fake_preview)
+
+    def inspect(name):
+        return seed_route.inspect_seed_dataset(
+            SimpleNamespace(
+                dataset_name = name, split = "train", subset = None, hf_token = None, preview_size = 1
+            ),
+            allow_ambient_token = False,
+        )
+
+    return inspect, read
+
+
+def _seed_folders(tmp_path):
+    owner_rows = tmp_path / "owner" / "uploads"
+    owner_rows.mkdir(parents = True)
+    (owner_rows / "train.csv").write_text("secret\nowner-only\n")
+    own = tmp_path / "accounts" / "alice" / "seeds"
+    own.mkdir(parents = True)
+    (own / "train.csv").write_text("a\n1\n")
+    # load_dataset honours a card's data_files, so a folder of its own can still point elsewhere.
+    (own / "README.md").write_text(
+        f"---\nconfigs:\n- config_name: default\n  data_files: {owner_rows / 'train.csv'}\n---\n"
+    )
+    linked = tmp_path / "accounts" / "alice" / "linked"
+    linked.mkdir()
+    (linked / "train.csv").symlink_to(owner_rows / "train.csv")
+    return owner_rows, own, linked
+
+
+# A managed account previews Hub ids only (what the UI's Hugging Face mode sends); every local
+# folder is refused before load_dataset, whatever its card, links or later swaps say.
+@pytest.mark.parametrize(
+    "name", ["owner", "own", "linked", "org/\x00repo", "../repo", "~nobody/repo", "a/b/c"]
+)
+def test_a_managed_account_inspects_hub_ids_only(monkeypatch, tmp_path, name):
+    owner_rows, own, linked = _seed_folders(tmp_path)
+    # Forward slashes, which Windows accepts too: a backslash path is refused earlier, as not org/repo.
+    folders = {"owner": owner_rows, "own": own, "linked": linked}
+    name = folders[name].as_posix() if name in folders else name
+    inspect, read = _seed_inspect_as(monkeypatch, tmp_path, managed = True)
+
+    with pytest.raises(HTTPException) as refused:
+        inspect(name)
+
+    assert refused.value.status_code == 403
+    assert read == []
+    inspect("org/repo")
+    assert read
+
+
+@pytest.mark.parametrize("name", ["//attacker/share", "\\\\attacker\\share", "org/repo/extra"])
+def test_a_malformed_id_never_reaches_the_filesystem(monkeypatch, tmp_path, name):
+    inspect, read = _seed_inspect_as(monkeypatch, tmp_path, managed = True)
+    probed = []
+    monkeypatch.setattr(Path, "exists", lambda self: probed.append(str(self)) or False)
+
+    with pytest.raises(HTTPException) as refused:
+        inspect(name)
+
+    assert refused.value.status_code in (400, 403)
+    assert probed == [] and read == []
+
+
+def test_the_owner_still_inspects_a_local_folder(monkeypatch, tmp_path):
+    _owner_rows, own, _linked = _seed_folders(tmp_path)
+    inspect, read = _seed_inspect_as(monkeypatch, tmp_path, managed = False)
+
+    inspect(own.as_posix())
+
+    assert read
+
+
 def test_seed_hf_path_treats_an_unnamed_config_as_the_default(monkeypatch, tmp_path):
     seed_route = _load_seed_route(monkeypatch, tmp_path)
     configs = [

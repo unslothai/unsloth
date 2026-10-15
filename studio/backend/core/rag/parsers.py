@@ -798,11 +798,31 @@ def _docx_math_text(element) -> str:
     return "".join(_docx_math_text(child) for child in element.iterchildren("*"))
 
 
+def _docx_checkbox(field) -> str:
+    box = field.find(f"{_W}ffData/{_W}checkBox")
+    if box is None:
+        return ""
+    flag = box.find(_W + "checked")
+    if flag is None:
+        flag = box.find(_W + "default")
+    ticked = flag is not None and flag.get(_W + "val", "true") not in ("0", "false", "off")
+    return "☒" if ticked else "☐"
+
+
+def _docx_run_text(run) -> str:
+    if run.find(f"{_W}fldChar/{_W}ffData/{_W}checkBox") is None:
+        return run.text
+    return "".join(
+        _docx_checkbox(e) if e.tag == _W + "fldChar" else str(e)
+        for e in run.xpath("w:br | w:cr | w:noBreakHyphen | w:ptab | w:t | w:tab | w:fldChar")
+    )
+
+
 def _docx_paragraph_text(paragraph) -> str:
     """Paragraph.text skips runs wrapped in w:ins, w:sdt, w:fldSimple, w:smartTag, and equations."""
     p = paragraph._p
     return "".join(
-        _docx_math_text(node) if node.tag in _DOCX_MATH else node.text
+        _docx_math_text(node) if node.tag in _DOCX_MATH else _docx_run_text(node)
         for node in p.iter(_W + "r", *_DOCX_MATH)
         if not _docx_inside(node, p, _DOCX_SKIP_RUNS_OR_MATH)
     )
@@ -1085,6 +1105,11 @@ def parse(path: str, *, want_images: bool = False):
         pages = _office_document(path, ext)
         return (pages, []) if want_images else pages
 
+    # .dot/.pot are Graphviz and gettext text too; only an OLE compound file is a Word/PowerPoint template.
+    if ext in _OFFICE_TEMPLATE_EXTS and _is_compound_file(path):
+        pages = _office_document(path, _OFFICE_TEMPLATE_EXTS[ext])
+        return (pages, []) if want_images else pages
+
     if ext in (".html", ".htm", ".txt", ".md", ".markdown") or ext in config.SOURCE_TEXT_EXTS:
         is_html = ext in (".html", ".htm")
         with open(path, "rb") as f:
@@ -1101,6 +1126,15 @@ def parse(path: str, *, want_images: bool = False):
     raise ValueError(f"unsupported file type: {ext}")
 
 
+_OFFICE_TEMPLATE_EXTS = {".dot": ".doc", ".pot": ".ppt"}
+_OLE_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+
+
+def _is_compound_file(path: str) -> bool:
+    with open(path, "rb") as f:
+        return f.read(len(_OLE_MAGIC)) == _OLE_MAGIC
+
+
 def _html_bytes_text(raw: bytes) -> str:
     return "\n\n".join(page.text for page in _html(_decode_text(raw, html = True)))
 
@@ -1115,8 +1149,8 @@ def _office_document(path: str, ext: str) -> list[Page]:
 
     readers = {
         ".doc": office.doc,
-        ".xls": office.xls,
-        ".ppt": office.ppt,
+        **dict.fromkeys((".xls", ".xlt"), office.xls),
+        **dict.fromkeys((".ppt", ".pps"), office.ppt),
         ".rtf": office.rtf,
         ".epub": lambda p: office.epub(p, _html_bytes_text),
         ".msg": lambda p: office.msg(p, _html_bytes_text),

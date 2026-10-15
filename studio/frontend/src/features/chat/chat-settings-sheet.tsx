@@ -1140,7 +1140,7 @@ export function ChatSettingsPanel({
             <span className="flex h-[var(--studio-chat-control-height,34px)] flex-1 items-center text-ui-16 font-semibold tracking-[0em] dark:tracking-[0.015em] text-nav-fg">
               Run settings
             </span>
-            <Tooltip>
+            <Tooltip key={open ? "open" : "closed"}>
                 <TooltipPrimitive.Trigger asChild={true}>
                 {/* Centred in the control row, as the header's open button is, so the toggle doesn't jump. */}
                 <button
@@ -1909,6 +1909,7 @@ export function ChatSettingsPanel({
       ref={asideRef}
       data-tour="chat-settings"
       data-slot="chat-settings-panel"
+      inert={!open}
       className={cn(
         "relative z-50 shrink-0 bg-panel-surface text-panel-surface-fg font-heading",
         open ? "w-(--chat-settings-width)" : "w-0 overflow-hidden",

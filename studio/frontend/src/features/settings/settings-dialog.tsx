@@ -4,6 +4,7 @@
 import { useIsAccountOwner } from "@/features/auth";
 import { resolveSettingsTab, settingsTabVisible } from "./settings-tab-visibility";
 import { Button } from "@/components/ui/button";
+import { DropdownGlowContext } from "@/components/ui/dropdown-glow";
 import {
   Dialog,
   DialogContent,
@@ -474,7 +475,8 @@ export function SettingsDialog() {
         <DialogContent
           data-settings-dialog
           showCloseButton={false}
-          overlayClassName="bg-black/30 supports-backdrop-filter:backdrop-blur-[2px]"
+          overlayClassName="bg-black/40"
+          overlayTone="strong"
           onCloseAutoFocus={(e) => {
             // radix loses its previous-focus reference when the tab focus runs in requestAnimationFrame.
             const focusTarget = [opener, openerFallback].find(
@@ -679,42 +681,45 @@ export function SettingsDialog() {
             </aside>
 
             <main className="relative flex min-h-0 min-w-0 flex-1 flex-col bg-background">
-              <button
-                type="button"
-                onClick={closeDialog}
-                className="absolute top-3 end-3 z-10 flex size-[calc(30px*var(--ui-space-scale,1))] items-center justify-center rounded-full text-[#383835] dark:text-foreground transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                aria-label={t("settings.dialog.closeAriaLabel")}
-              >
-                <HugeiconsIcon icon={Cancel01Icon} className="size-4" />
-              </button>
-              <div
-                ref={mainScrollRef}
-                className="hover-scrollbar flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto p-6 [scrollbar-gutter:stable]"
-              >
-                {/* Only a panel's first view waits, so the fallback is delayed and a
-                    promptly arriving panel never flashes it. */}
-                <SettingsPanelBoundary
-                  tab={panelTab}
-                  message={t("settings.dialog.panelFailed")}
-                  reloadLabel={t("settings.dialog.panelReload")}
+              {/* The pane is the page colour, not the dialog's card, so its dropdowns glow in --background. */}
+              <DropdownGlowContext.Provider value={null}>
+                <button
+                  type="button"
+                  onClick={closeDialog}
+                  className="absolute top-3 end-3 z-10 flex size-[calc(30px*var(--ui-space-scale,1))] items-center justify-center rounded-full text-[#383835] dark:text-foreground transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  aria-label={t("settings.dialog.closeAriaLabel")}
                 >
-                  <Suspense
-                    fallback={
-                      <div className="fade-in fill-mode-both flex flex-1 animate-in items-center justify-center text-muted-foreground text-sm delay-300 duration-150">
-                        {t("common.loading")}
-                      </div>
-                    }
+                  <HugeiconsIcon icon={Cancel01Icon} className="size-4" />
+                </button>
+                <div
+                  ref={mainScrollRef}
+                  className="hover-scrollbar flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto p-6 [scrollbar-gutter:stable]"
+                >
+                  {/* Only a panel's first view waits, so the fallback is delayed and a
+                      promptly arriving panel never flashes it. */}
+                  <SettingsPanelBoundary
+                    tab={panelTab}
+                    message={t("settings.dialog.panelFailed")}
+                    reloadLabel={t("settings.dialog.panelReload")}
                   >
-                    <Tab
-                      searchEntry={
-                        pendingScroll?.tab === panelTab
-                          ? pendingScroll.entry
-                          : undefined
+                    <Suspense
+                      fallback={
+                        <div className="fade-in fill-mode-both flex flex-1 animate-in items-center justify-center text-muted-foreground text-sm delay-300 duration-150">
+                          {t("common.loading")}
+                        </div>
                       }
-                    />
-                  </Suspense>
-                </SettingsPanelBoundary>
-              </div>
+                    >
+                      <Tab
+                        searchEntry={
+                          pendingScroll?.tab === panelTab
+                            ? pendingScroll.entry
+                            : undefined
+                        }
+                      />
+                    </Suspense>
+                  </SettingsPanelBoundary>
+                </div>
+              </DropdownGlowContext.Provider>
             </main>
           </div>
         </DialogContent>
