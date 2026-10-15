@@ -285,8 +285,7 @@ export function installPageAgent(): PageAgent {
       if (style === null) el.removeAttribute("style");
     }
     masked.clear();
-    // Out of the model's screenshots: it would read the pointer as part of the page.
-    if (cursor) cursor.arrow.style.visibility = on ? "hidden" : "";
+    cursor.mask(on);
     if (!on) return { ok: true };
     const fields: HTMLInputElement[] = [];
     const visit = (root: Document | ShadowRoot) => {
@@ -541,120 +540,148 @@ export function installPageAgent(): PageAgent {
   // no MutationObserver on the document sees, so the page and the settle wait only see it inserted
   // once; it moves by transform (compositor only) and pointer-events: none keeps it out of hit tests.
   // CSSOM and createElementNS only: a page's CSP or Trusted Types can block <style> and innerHTML.
-  let cursorOn = false;
-  // Studio's accent as "r,g,b"; the panel sends it normalized, and nothing else reaches the cssText.
-  let cursorRgb = "59,130,246";
-  let cursor: {
-    host: HTMLElement;
-    arrow: HTMLElement;
-    ring: HTMLElement;
-    rgb: string;
-    shown: boolean;
-    idle: number;
-  } | null = null;
-  const tint = (c: { arrow: HTMLElement; ring: HTMLElement; rgb: string }) => {
-    c.rgb = cursorRgb;
-    c.arrow.style.filter = `drop-shadow(0 0 3px rgba(${cursorRgb},.95)) drop-shadow(0 0 7px rgba(${cursorRgb},.55))`;
-    c.ring.style.borderColor = `rgba(${cursorRgb},.9)`;
-  };
-  const CURSOR_IDLE_MS = 4000;
-  const makeCursor = () => {
-    const host = document.createElement("unsloth-agent-cursor");
-    host.style.cssText =
-      "all:initial!important;display:block!important;position:fixed!important;left:0!important;top:0!important;" +
-      "width:0!important;height:0!important;overflow:visible!important;pointer-events:none!important;z-index:2147483647!important;" +
-      "contain:layout style size!important";
-    host.setAttribute("aria-hidden", "true");
-    const root = host.attachShadow({ mode: "closed" });
-    const arrow = document.createElement("div");
-    arrow.style.cssText =
-      "position:absolute;left:0;top:0;width:24px;height:24px;margin:-3px 0 0 -3px;opacity:0;will-change:transform,opacity;" +
-      "transition:opacity 160ms ease-out";
-    const ring = document.createElement("div");
-    ring.style.cssText =
-      "position:absolute;left:-11px;top:-11px;width:28px;height:28px;box-sizing:border-box;border-radius:50%;border:2px solid;opacity:0";
-    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-    svg.setAttribute("viewBox", "0 0 24 24");
-    svg.setAttribute("width", "24");
-    svg.setAttribute("height", "24");
-    svg.style.display = "block";
-    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-    // Hugeicons cursor-02 (stroke rounded), filled so it reads on any page; its tip is at (3, 3).
-    path.setAttribute(
-      "d",
-      "M9.80282 4.62973L15.8364 6.99069C19.3164 8.35243 21.0564 9.03329 20.9987 10.1133C20.941 11.1934 19.1251 11.6886 15.4933 12.6791C14.412 12.974 13.8713 13.1215 13.4964 13.4963C13.1215 13.8712 12.9741 14.4119 12.6791 15.4933C11.6887 19.125 11.1934 20.9409 10.1134 20.9986C9.03335 21.0563 8.35249 19.3163 6.99075 15.8363L4.62979 9.80276C3.20411 6.15934 2.49127 4.33764 3.41448 3.41442C4.3377 2.49121 6.15941 3.20405 9.80282 4.62973Z",
-    );
-    path.setAttribute("fill", "#0b0b0f");
-    path.setAttribute("stroke", "#fff");
-    path.setAttribute("stroke-width", "1.5");
-    path.setAttribute("stroke-linejoin", "round");
-    svg.append(path);
-    arrow.append(ring, svg);
-    root.append(arrow);
-    const made = { host, arrow, ring, rgb: "", shown: false, idle: 0 };
-    tint(made);
-    return made;
-  };
-  const removeCursor = () => {
-    if (!cursor) return;
-    clearTimeout(cursor.idle);
-    cursor.host.remove();
-    cursor = null;
-  };
-  // A modal dialog, an open popover or a fullscreen element paints above every z-index (and fullscreen
-  // shows only its own subtree), so the cursor goes into the topmost one. Not the top layer itself:
-  // a popover's ::backdrop could take the user's clicks.
-  const cursorLayer = (): Element => {
-    let top: Element | null = document.fullscreenElement;
-    // Queried apart: a selector this engine doesn't know would void the other.
-    for (const selector of ["dialog:modal", ":popover-open"]) {
-      try {
-        const open = document.querySelectorAll(selector);
-        if (open.length > 0) top = open[open.length - 1];
-      } catch {
-        // Unknown selector.
+  const cursor = (() => {
+    const SVG = "http://www.w3.org/2000/svg";
+    const IDLE_MS = 4000;
+    let on = false;
+    // Studio's accent as "r,g,b"; only digits parsed from rgb() ever reach a style.
+    let rgb = "59,130,246";
+    let parts: { host: HTMLElement; mover: HTMLElement; arrow: SVGSVGElement; ring: HTMLElement; rgb: string } | null = null;
+    let shown = false;
+    let masking = false;
+    let idle = 0;
+    // Only the host needs !important (page CSS can reach it); inside the closed root it would also
+    // outrank the ring's animation.
+    const styled = <E extends Element>(el: E, css: Record<string, string>, important = false): E => {
+      for (const [name, value] of Object.entries(css)) {
+        (el as unknown as HTMLElement).style.setProperty(name, value, important ? "important" : "");
       }
-    }
-    return top && !/^(video|img|canvas|iframe|input|textarea|select)$/i.test(top.tagName) ? top : document.documentElement;
-  };
-  /** `glideMs`: drag steps come every frame, so they follow closely; a jump to a new target eases. */
-  const pointTo = (at: Point, press: boolean, glideMs = 180) => {
-    if (!cursorOn) return;
-    // A page that rebuilds <html>'s children drops it; it comes back on the next action.
-    if (!cursor?.host.isConnected) {
-      removeCursor();
-      cursor = makeCursor();
-    }
-    const c = cursor;
-    if (c.rgb !== cursorRgb) tint(c);
-    const parent = cursorLayer();
-    if (c.host.parentNode !== parent) {
-      parent.append(c.host);
-      c.shown = false;
-    }
-    const glide = c.shown;
-    // Appearing after a rest: at the target, not gliding in from where it faded.
-    c.arrow.style.transition = glide
-      ? `transform ${glideMs}ms cubic-bezier(.2,.7,.3,1),opacity 160ms ease-out`
-      : "opacity 160ms ease-out";
-    c.arrow.style.transform = `translate3d(${Math.round(at.x)}px,${Math.round(at.y)}px,0)`;
-    c.arrow.style.opacity = "1";
-    c.shown = true;
-    if (press) {
-      c.ring.animate(
-        [
-          { transform: "scale(.35)", opacity: 0.9 },
-          { transform: "scale(1.5)", opacity: 0 },
-        ],
-        { duration: 420, delay: glide ? glideMs : 0, easing: "ease-out" },
+      return el;
+    };
+    // The glow is on the arrow alone: under a shared filter the ring's pulse would re-run it every frame.
+    const tint = () => {
+      if (!parts || parts.rgb === rgb) return;
+      parts.rgb = rgb;
+      parts.arrow.style.filter = `drop-shadow(0 0 3px rgba(${rgb},.95)) drop-shadow(0 0 7px rgba(${rgb},.55))`;
+      parts.ring.style.borderColor = `rgba(${rgb},.9)`;
+    };
+    const build = () => {
+      if (parts?.host.isConnected) return parts;
+      remove();
+      const host = styled(document.createElement("unsloth-agent-cursor"), {
+        all: "initial", display: "block", position: "fixed", left: "0", top: "0", width: "0", height: "0",
+        overflow: "visible", "pointer-events": "none", "z-index": "2147483647", contain: "layout style size",
+      }, true);
+      host.setAttribute("aria-hidden", "true");
+      const root = host.attachShadow({ mode: "closed" });
+      const mover = styled(document.createElement("div"), {
+        position: "absolute", left: "0", top: "0", opacity: "0", "will-change": "transform, opacity",
+        transition: "opacity 160ms ease-out",
+      });
+      const ring = styled(document.createElement("div"), {
+        position: "absolute", left: "-14px", top: "-14px", width: "28px", height: "28px", "box-sizing": "border-box",
+        "border-radius": "50%", border: "2px solid", opacity: "0",
+      });
+      // Hugeicons cursor-02 (stroke rounded), filled so it reads on any page; its tip is at (3, 3).
+      const arrow = styled(document.createElementNS(SVG, "svg"), {
+        position: "absolute", left: "-3px", top: "-3px", width: "24px", height: "24px", overflow: "visible",
+      });
+      arrow.setAttribute("viewBox", "0 0 24 24");
+      const path = document.createElementNS(SVG, "path");
+      path.setAttribute(
+        "d",
+        "M9.80282 4.62973L15.8364 6.99069C19.3164 8.35243 21.0564 9.03329 20.9987 10.1133C20.941 11.1934 19.1251 11.6886 15.4933 12.6791C14.412 12.974 13.8713 13.1215 13.4964 13.4963C13.1215 13.8712 12.9741 14.4119 12.6791 15.4933C11.6887 19.125 11.1934 20.9409 10.1134 20.9986C9.03335 21.0563 8.35249 19.3163 6.99075 15.8363L4.62979 9.80276C3.20411 6.15934 2.49127 4.33764 3.41448 3.41442C4.3377 2.49121 6.15941 3.20405 9.80282 4.62973Z",
       );
+      path.setAttribute("fill", "#0b0b0f");
+      path.setAttribute("stroke", "#fff");
+      path.setAttribute("stroke-width", "1.5");
+      path.setAttribute("stroke-linejoin", "round");
+      arrow.append(path);
+      mover.append(ring, arrow);
+      root.append(mover);
+      parts = { host, mover, arrow, ring, rgb: "" };
+      shown = false;
+      return parts;
+    };
+    // A modal dialog, an open popover or a fullscreen element paints above every z-index (and fullscreen
+    // shows only its own subtree), so the cursor goes into the topmost one. Not the top layer itself:
+    // a popover's ::backdrop could take the user's clicks.
+    const layer = (): Element => {
+      let top: Element | null = document.fullscreenElement;
+      // Queried apart: a selector this engine doesn't know would void the other.
+      for (const selector of ["dialog:modal", ":popover-open"]) {
+        try {
+          const open = document.querySelectorAll(selector);
+          if (open.length > 0) top = open[open.length - 1];
+        } catch {
+          // Unknown selector.
+        }
+      }
+      return top && !/^(video|img|canvas|iframe|input|textarea|select)$/i.test(top.tagName) ? top : document.documentElement;
+    };
+    function remove() {
+      window.clearTimeout(idle);
+      parts?.host.remove();
+      parts = null;
+      shown = false;
     }
-    clearTimeout(c.idle);
-    c.idle = window.setTimeout(() => {
-      c.arrow.style.opacity = "0";
-      c.shown = false;
-    }, CURSOR_IDLE_MS);
-  };
+    return {
+      get on() {
+        return on;
+      },
+      /** From every command, so turning it off in Settings clears it at the next call. */
+      configure(command: Record<string, unknown>) {
+        if (typeof command.cursor === "boolean" && command.cursor !== on) {
+          on = command.cursor;
+          if (!on) remove();
+        }
+        const color = typeof command.cursorColor === "string" ? /^rgb\((\d{1,3}), (\d{1,3}), (\d{1,3})\)$/.exec(command.cursorColor) : null;
+        if (color) rgb = color.slice(1).map((part) => Math.min(255, Number(part))).join(",");
+      },
+      /** Glides to `at` (CSS px of the viewport); `press` adds the ring. Drag steps come every frame,
+       *  so they follow closely (`glideMs`); a jump to a new target eases. */
+      show(at: Point, press: boolean, glideMs = 180) {
+        if (!on) return;
+        const c = build();
+        tint();
+        const parent = layer();
+        if (c.host.parentNode !== parent) {
+          parent.append(c.host);
+          shown = false;
+        }
+        // Appearing after a rest: at the target, not gliding in from where it faded, and without the
+        // forced layout a transition reset would need.
+        const glide = shown;
+        c.mover.style.transition = glide
+          ? `transform ${glideMs}ms cubic-bezier(.2,.7,.3,1), opacity 160ms ease-out`
+          : "opacity 160ms ease-out";
+        c.mover.style.transform = `translate3d(${Math.round(at.x)}px, ${Math.round(at.y)}px, 0)`;
+        c.mover.style.opacity = masking ? "0" : "1";
+        shown = true;
+        if (press && typeof c.ring.animate === "function") {
+          c.ring.animate(
+            [
+              { transform: "scale(.35)", opacity: 0.9 },
+              { transform: "scale(1.5)", opacity: 0 },
+            ],
+            { duration: 420, delay: glide ? glideMs : 0, easing: "ease-out" },
+          );
+        }
+        window.clearTimeout(idle);
+        idle = window.setTimeout(() => {
+          shown = false;
+          if (parts) parts.mover.style.opacity = "0";
+        }, IDLE_MS);
+      },
+      /** Out of the model's screenshots: it would read the pointer as part of the page. */
+      mask(hide: boolean) {
+        masking = hide;
+        if (!parts) return;
+        parts.mover.style.transition = "none";
+        parts.mover.style.opacity = !hide && shown ? "1" : "0";
+      },
+    };
+  })();
   /** Where an action will land, taken before it runs: a click can remove its own target. Scrolled as
    *  the action itself scrolls (so its own scroll is then a no-op); a dropdown, which isn't scrolled, as it is. */
   const aimAt = (command: Record<string, unknown>): Point | null => {
@@ -1306,19 +1333,11 @@ export function installPageAgent(): PageAgent {
     }
   };
 
-  // Every command says whether the cursor is on, so turning it off in Settings clears it at the next call.
   const run = (command: Record<string, unknown>): Record<string, unknown> => {
-    if (typeof command.cursor === "boolean" && command.cursor !== cursorOn) {
-      cursorOn = command.cursor;
-      if (!cursorOn) removeCursor();
-    }
-    if (typeof command.cursorColor === "string") {
-      const rgb = /^rgb\((\d{1,3}), (\d{1,3}), (\d{1,3})\)$/.exec(command.cursorColor);
-      if (rgb) cursorRgb = rgb.slice(1).map((part) => Math.min(255, Number(part))).join(",");
-    }
+    cursor.configure(command);
     let aim: Point | null = null;
     try {
-      aim = cursorOn ? aimAt(command) : null;
+      aim = cursor.on ? aimAt(command) : null;
     } catch {
       // Only a picture: the action still runs.
     }
@@ -1326,7 +1345,7 @@ export function installPageAgent(): PageAgent {
     if (aim && answer.ok === true) {
       try {
         const move = command.op === "pointer" && command.phase === "move";
-        pointTo(aim, command.op !== "pointer" || command.phase === "down", move ? 40 : 180);
+        cursor.show(aim, command.op !== "pointer" || command.phase === "down", move ? 40 : 180);
       } catch {
         // Only a picture: the action already happened.
       }
