@@ -3,11 +3,8 @@
 
 """One-pass NVFP4 quantiser for torchao's ``NVFP4Tensor.to_nvfp4`` (two-level scales, swizzled block scales).
 
-torchao quantises in plain torch ops; under Inductor that becomes a per-element kernel that recomputes the block
-scale for every element and writes an unpacked uint8 tensor, then a second kernel packs nibbles and a third
-swizzles the scales (78 + 2 x 12 us for one 4128 x 3840 Z-Image activation on B200, about 3x the NVFP4 GEMM it
-feeds). This kernel does all three in one pass over the activation. It is a ``triton_op``, so Inductor and CUDA
-graph capture see an ordinary kernel.
+Under Inductor torchao's version is three kernels (quantise, pack, swizzle); this ``triton_op`` does all three in
+one pass.
 
 Arithmetic is torchao's, in torchao's order (block max / 6, divide by the per-tensor scale, clamp to
 [2^-6, 448], e4m3, then ``x * ((1 / s) / scale_fp8)``, clamp to +-6, round-to-nearest-even onto e2m1 by the
@@ -197,9 +194,7 @@ def _patched_to_nvfp4(
     use_triton_kernel: bool = False,
     act_quant_kwargs = None,
 ):
-    # Nothing mutable is read or written while Dynamo traces: a guard on a counter recompiles every call. The kill
-    # switch is read once, at install; eager calls are counted (as torchao fallbacks), compiled ones show up as the
-    # kernel in a profile.
+    # Nothing mutable is touched while tracing: a guard on a counter would recompile every call.
     import torch
 
     counting = not _traced(data_hp)
@@ -242,9 +237,8 @@ def _patched_to_nvfp4(
 
 
 def verify(device: Any = None) -> tuple:
-    """Bit-identity against torchao's ``to_nvfp4`` as Inductor compiles it (the path Studio runs), on shapes with
-    and without scale padding. Eager torchao divides by 6 where Inductor multiplies by 1/6, so eager can differ in
-    the last fp32 bit of a block scale; that rate is recorded, not gated."""
+    """Bit-identity against Inductor-compiled torchao ``to_nvfp4``. Eager torchao may differ in the last bit of a
+    block scale (divide vs multiply by 1/6); that is recorded, not gated."""
     import torch
     from torchao.prototype.mx_formats.nvfp4_tensor import NVFP4Tensor, per_tensor_amax_to_scale
 
@@ -280,7 +274,7 @@ def _verify_shapes(device, reference, compiled, op, op_compiled) -> tuple:
             return False, f"packed data differs from compiled torchao at {m}x{k}"
         if not torch.equal(want_sf, sf):
             return False, f"block scales differ from compiled torchao at {m}x{k}"
-        # And as Inductor will run it: the op inside a compiled graph (catches a kernel Inductor cannot re-import).
+        # Inside a compiled graph too: catches a kernel Inductor cannot re-import.
         cq, csf = op_compiled(x, s.reshape(1).to(torch.float32))
         if not (torch.equal(cq, q) and torch.equal(csf, sf)):
             return False, f"the compiled op differs from the eager op at {m}x{k}"
