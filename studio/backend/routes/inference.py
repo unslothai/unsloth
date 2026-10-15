@@ -11617,6 +11617,24 @@ def _estimate_gguf_required_gb(
                 # Split-aware: discovery hands back shard 1.
                 total_bytes += LlamaCppBackend._get_gguf_size_bytes(str(f))
                 _sized_keys.add(_same_file_key(str(f)))
+        # An EAGLE-3 drafter a Studio export paired with this GGUF (drafter.json): the
+        # launch attaches it under Auto, so it is charged like the sidecars above.
+        if main and not _charge_no_drafter and _spec_mode in ("auto", "eagle3"):
+            try:
+                from core.export.drafter_export import eagle3_sidecar_path
+                _eagle3 = eagle3_sidecar_path(str(main))
+            except Exception:
+                _eagle3 = None
+            # Like DSpark / DFlash: a binary without draft-eagle3 never opens it.
+            if _eagle3:
+                try:
+                    if not LlamaCppBackend.probe_server_capabilities().get("supports_eagle3"):
+                        _eagle3 = None
+                except Exception:
+                    _eagle3 = None
+            if _eagle3 and _same_file_key(_eagle3) not in _sized_keys:
+                total_bytes += LlamaCppBackend._get_gguf_size_bytes(_eagle3)
+                _sized_keys.add(_same_file_key(_eagle3))
 
         # Extras --model-draft is charged exactly once (often the same file as a discovered sidecar).
         _extras_bytes = 0

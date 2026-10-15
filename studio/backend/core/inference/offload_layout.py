@@ -18,6 +18,8 @@ import os
 
 logger = logging.getLogger(__name__)
 
+# Hybrid Mamba-2 archs storing head_count_kv (and on Bolt expert_used_count) per layer.
+_NEMOTRON_H_ARCHS = frozenset({"nemotron_h", "nemotron_h_moe"})
 _BLOCK_RE = re.compile(r"^blk\.(\d+)\.(.+)$")
 
 # Sparse experts incl. fused/chunked forms; NOT ffn_routed_*: kimi-k3 reads it every token
@@ -180,7 +182,18 @@ def _layout_from_readers(readers) -> ModelLayout:
     if not n_kv_head or not key_len or not val_len:
         return ModelLayout()
 
-    kv_per_token = int(n_attention) * int(n_kv_head) * (int(key_len) + int(val_len)) * 2
+    nemotron_h = arch in _NEMOTRON_H_ARCHS
+    if nemotron_h and isinstance(n_kv_head, (list, tuple)):
+        # Per-layer head_count_kv: 0 marks a layer without an attention cache. The recurrent (Mamba) layers are the ones
+        # with neither attention nor an FFN; the rest are dense or MoE FFN blocks.
+        heads = [int(h) for h in list(n_kv_head)[:n_layers]]
+        ffn = _field(reader, f"{arch}.feed_forward_length")
+        ffn = [int(f) for f in list(ffn)[:n_layers]] if isinstance(ffn, (list, tuple)) else [0] * len(heads)
+        n_attention = sum(1 for h in heads if h > 0)
+        n_recurrent = sum(1 for h, f in zip(heads, ffn) if h == 0 and f == 0)
+        kv_per_token = sum(heads) * (int(key_len) + int(val_len)) * 2
+    else:
+        kv_per_token = int(n_attention) * int(n_kv_head) * (int(key_len) + int(val_len)) * 2
 
     has_swa = bool(_field(reader, f"{arch}.attention.sliding_window") or 0)
 
@@ -197,7 +210,10 @@ def _layout_from_readers(readers) -> ModelLayout:
         recurrent = n_recurrent * (n_embd_r + n_embd_s) * 4
 
     n_expert = int(_field(reader, f"{arch}.expert_count") or 0)
-    n_expert_used = int(_field(reader, f"{arch}.expert_used_count") or 0)
+    n_expert_used = _field(reader, f"{arch}.expert_used_count") or 0
+    if nemotron_h and isinstance(n_expert_used, (list, tuple)):
+        n_expert_used = max((int(n) for n in n_expert_used), default = 0)  # per layer on Nemotron 3.5 Bolt
+    n_expert_used = int(n_expert_used)
     is_moe = bool(n_expert)
 
     spill: dict[int, int] = {}

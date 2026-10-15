@@ -256,6 +256,7 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
         "eval_split": values.get("eval_split"),
         "eval_steps": values.get("eval_steps", 0.00),
         "early_stopping_patience": values.get("early_stopping_patience", 0),
+        "drafter": values.get("drafter"),
         "dataset_streaming": values.get("dataset_streaming", False),
         "dataset_slice_start": values.get("dataset_slice_start"),
         "dataset_slice_end": values.get("dataset_slice_end"),
@@ -687,6 +688,9 @@ class TrainingProgress:
     offload: Optional[dict] = None
     output_dir: Optional[str] = None
     is_run_summary: bool = False
+    # Drafter phase after the fine-tune: {strategy, step, total_steps, loss, top1, state}. Kept apart
+    # from the SFT fields so its step counter never lands in the SFT loss history.
+    drafter: Optional[dict] = None
 
 
 # Marks an omitted mode, which keeps the loaded one; a literal default would overwrite it.
@@ -3159,6 +3163,14 @@ class TrainingBackend:
 
             elif etype == "status":
                 self._progress.status_message = event.get("message", "")
+                self._progress.is_training = True
+
+            elif etype == "drafter_progress":
+                info = {
+                    k: event.get(k)
+                    for k in ("strategy", "step", "total_steps", "loss", "top1", "state")
+                }
+                self._progress.drafter = info
                 self._progress.is_training = True
 
             elif etype == "warning":
