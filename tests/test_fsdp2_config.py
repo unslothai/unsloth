@@ -26,13 +26,15 @@ def _clean_env(monkeypatch):
         monkeypatch.delenv(key, raising = False)
 
 
-def _accelerator(policy, mixed_precision = "fp16", version = 2, auto_wrap_policy = object()):
+def _accelerator(policy, mixed_precision = "fp16", version = 2, auto_wrap_policy = object(), auto = True):
     plugin = types.SimpleNamespace(
         fsdp_version = version,
         mixed_precision_policy = policy,
         auto_wrap_policy = auto_wrap_policy,
         reshard_after_forward = True,
     )
+    if auto:
+        setattr(plugin, fsdp2._AUTO_POLICY, policy)
     return types.SimpleNamespace(
         state = types.SimpleNamespace(fsdp_plugin = plugin), mixed_precision = mixed_precision
     )
@@ -51,11 +53,28 @@ def test_accelerates_auto_policy_reduces_in_fp32(dtype, name):
 
 def test_a_policy_the_user_wrote_is_left_alone():
     user = MixedPrecisionPolicy(param_dtype = torch.float16, reduce_dtype = torch.float16)
-    acc = _accelerator(user, "bf16")
+    acc = _accelerator(user, "bf16", auto = False)
     assert fsdp2.fill_fsdp2_mixed_precision(acc) is user
     user = MixedPrecisionPolicy(param_dtype = None, reduce_dtype = torch.float32)
-    acc = _accelerator(user, "fp16")
+    acc = _accelerator(user, "fp16", auto = False)
     assert fsdp2.fill_fsdp2_mixed_precision(acc) is user
+    # Same dtypes as accelerate's automatic policy, but written by the user.
+    user = MixedPrecisionPolicy(param_dtype = torch.float16, reduce_dtype = torch.float16, output_dtype = torch.float16)
+    acc = _accelerator(user, "fp16", auto = False)
+    assert fsdp2.fill_fsdp2_mixed_precision(acc) is user
+
+
+def test_provenance_tags_only_the_policy_accelerate_builds():
+    from accelerate.utils import FullyShardedDataParallelPlugin
+    assert fsdp2.install_fsdp2_policy_provenance()
+    plugin = types.SimpleNamespace(fsdp_version = 2, mixed_precision_policy = None)
+    FullyShardedDataParallelPlugin.set_mixed_precision(plugin, "fp16")
+    assert getattr(plugin, fsdp2._AUTO_POLICY) is plugin.mixed_precision_policy
+    user = MixedPrecisionPolicy(param_dtype = torch.float16, reduce_dtype = torch.float16, output_dtype = torch.float16)
+    plugin = types.SimpleNamespace(fsdp_version = 2, mixed_precision_policy = user)
+    FullyShardedDataParallelPlugin.set_mixed_precision(plugin, "fp16")
+    assert plugin.mixed_precision_policy is user
+    assert not hasattr(plugin, fsdp2._AUTO_POLICY)
 
 
 def test_no_mixed_precision_and_the_opt_out(monkeypatch):

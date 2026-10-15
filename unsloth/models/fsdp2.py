@@ -16,6 +16,7 @@ import torch
 
 __all__ = [
     "fsdp2_trainer_setup",
+    "install_fsdp2_policy_provenance",
     "install_fsdp2_prepare_hook",
     "install_fsdp2_no_sync",
 ]
@@ -63,12 +64,45 @@ def _compute_dtype(accelerator):
     )
 
 
+_AUTO_POLICY = "_unsloth_auto_mixed_precision_policy"
+
+
+def install_fsdp2_policy_provenance():
+    """Tag the policy accelerate builds from `mixed_precision` itself, so a user-written policy with
+    the same dtypes is never mistaken for it. Must run before the Accelerator is created."""
+    try:
+        from accelerate.utils import FullyShardedDataParallelPlugin
+    except Exception:
+        return False
+    original = getattr(FullyShardedDataParallelPlugin, "set_mixed_precision", None)
+    if original is None:
+        return False
+    if getattr(original, _PATCHED, False):
+        return True
+
+    @functools.wraps(original)
+    def set_mixed_precision(self, mixed_precision, *args, **kwargs):
+        before = getattr(self, "mixed_precision_policy", None)
+        result = original(self, mixed_precision, *args, **kwargs)
+        override = kwargs.get("override", args[1] if len(args) > 1 else False)
+        after = getattr(self, "mixed_precision_policy", None)
+        if before is None and not override and after is not None:
+            setattr(self, _AUTO_POLICY, after)
+        return result
+
+    setattr(set_mixed_precision, _PATCHED, True)
+    FullyShardedDataParallelPlugin.set_mixed_precision = set_mixed_precision
+    return True
+
+
 def fill_fsdp2_mixed_precision(accelerator):
     """Only rewrites accelerate's automatic policy (every dtype = compute dtype): it casts the loss
     to float16, where the 65536 loss scale overflows and the scaler skips the first steps."""
     plugin = getattr(getattr(accelerator, "state", None), "fsdp_plugin", None)
     policy = getattr(plugin, "mixed_precision_policy", None)
     if policy is None or _keep_accelerate_defaults():
+        return policy
+    if getattr(plugin, _AUTO_POLICY, None) is not policy:
         return policy
     try:
         from torch.distributed.fsdp import MixedPrecisionPolicy
