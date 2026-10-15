@@ -11,11 +11,8 @@
 
 """Optimizer-state-only CPU offload (UNSLOTH_OFFLOAD_OPTIMIZER_STATE=1).
 
-Optimizer state (Adam moments, bitsandbytes 8-bit state + absmax) lives in pinned host memory
-between steps and is copied to the accelerator only for optimizer.step, so the GPU peak becomes
-max(activations, optimizer state) instead of their sum. Weights and gradients stay on the GPU.
-Works on any torch.optim.Optimizer subclass through step pre / post hooks, so the optimizer
-object, its class and every caller (accelerate, GradScaler, LR schedulers) stay unchanged.
+State lives in pinned host memory between steps and visits the GPU only inside optimizer.step,
+so peak memory is max(activations, optimizer state) instead of their sum.
 """
 
 import copy
@@ -60,7 +57,6 @@ class _StateOffloader:
         self.optimizer = optimizer
         self.pin_memory = pin_memory
         self.buffers = {}
-        # (param, key) -> device the tensor came from, restored before every step.
         self.offloaded = {}
         self.offloaded_bytes = 0
         self.steps = 0
@@ -165,7 +161,6 @@ def offload_optimizer_state(optimizer, pin_memory = True):
 
     optimizer.load_state_dict = _load_state_dict_and_offload
     optimizer._unsloth_state_offloader = offloader
-    # A state that already exists (optimizer passed in after some steps) goes to host now.
     offloader.offload()
     return offloader
 
