@@ -17,7 +17,6 @@ def _is_token_list(value) -> bool:
 
 
 def is_pretokenized_dataset(dataset) -> bool:
-    """True when the sampled rows hold non-empty integer ``input_ids`` and, if present, ``labels`` of the same length."""
     from .format_detection import _sample_dataset_rows
 
     rows = _sample_dataset_rows(dataset, limit = _SAMPLE_ROWS)
@@ -73,7 +72,7 @@ def prepare_pretokenized_dataset(
     max_seq_length,
     vocab_size = None,
 ):
-    """Validate ids against the model's vocabulary and cut every token column to ``max_seq_length``. Unsloth's SFT preparation passes tokenized rows through untouched, so without this an over-long row reaches the model whole and an id past the embedding table is a device-side assert mid-run. Idempotent."""
+    """Unsloth's SFT preparation passes tokenized rows through untouched: an over-long row would reach the model whole and an id past the embedding table is a device-side assert mid-run. Idempotent."""
     columns = [c for c in _TOKEN_COLUMNS if c in _column_names(dataset)]
     table = getattr(dataset, "data", None)
     needs_truncation = True
