@@ -1558,7 +1558,6 @@ def test_cfg_batch_runs_one_forward_per_step_and_matches():
     dit.forward = router
     out = _batch_loop(dit, latents.clone(), 5, cond, uncond)
     torch.testing.assert_close(out, reference, rtol = 1e-5, atol = 1e-6)
-    # step 0 learns the odd branch (two calls), steps 1-4 run one batched call each
     assert dit.calls == 2 + 4 and dit.rows[2:] == [4, 4, 4, 4]
     assert router.stats["batched_steps"] == 4 and router.stats["batched_hits"] == 4
     assert router.describe()["strategy"] == "cfg_batch"
@@ -1572,7 +1571,7 @@ def test_cfg_batch_rejects_an_odd_branch_edited_in_place():
 
     def edit(i, u):
         if i == 2:
-            u.add_(1.0)  # same object, new values: the kept half is stale
+            u.add_(1.0)
 
     reference = _batch_loop(dit, latents.clone(), 4, cond, uncond.clone(), edit = edit)
     router = mg.CfgBatchRouter(dit)
@@ -1641,7 +1640,7 @@ def test_cfg_batch_decline_rules(monkeypatch):
             self.transformer = _BatchDit()
 
     assert "resident" in mg.cfg_batch_decline(Pipe(), offload_policy = "none")
-    assert "resident" in mg.cfg_batch_decline(Pipe(), offload_policy = "group")  # no offload hooks on it
+    assert "resident" in mg.cfg_batch_decline(Pipe(), offload_policy = "group")
     monkeypatch.setenv(mg.CFG_BATCH_ENV, "force")
     assert mg.cfg_batch_decline(Pipe(), offload_policy = "none") is None
     monkeypatch.setenv(mg.CFG_BATCH_ENV, "0")
@@ -1681,13 +1680,12 @@ def test_rank_secondaries_prefers_the_fast_link_then_free_memory(monkeypatch):
     probes = {
         0: _probe(0, 1000, {1: 20.0, 2: 2.0, 3: 18.0}),
         1: _probe(1, 9000, {0: 20.0}),
-        2: _probe(2, 15000, {0: 2.0}),  # most free, slow link
+        2: _probe(2, 15000, {0: 2.0}),
         3: _probe(3, 12000, {0: 19.0}),
     }
     sel = mg.MultiGpuSelection(primary = 0, secondaries = (1, 2, 3))
     assert mg.best_secondary(sel, probes) == 3
     assert mg.rank_secondaries(0, [1, 2, 3], lambda o: probes[o].free_mib, probes) == [3, 1, 2]
-    # unmeasured links: free memory alone, as before
     blind = {o: _probe(o, p.free_mib, {}) for o, p in probes.items()}
     assert mg.best_secondary(sel, blind) == 2
 
@@ -1702,7 +1700,7 @@ def test_cfg_parallel_router_priced_out_keeps_one_card(monkeypatch):
     monkeypatch.setattr(
         router, "_timed_primary", lambda a, k: (router.orig_forward(*a, **k), 1e-4)
     )
-    monkeypatch.setattr(mg, "link_gib_s", lambda src, dst, probes = None: 1e-9)  # a few bytes take seconds
+    monkeypatch.setattr(mg, "link_gib_s", lambda src, dst, probes = None: 1e-9)
     router.primary = router.secondary = torch.device("cpu")
     out = _cfg_loop(dit, latents.clone(), steps = 4)
     assert torch.equal(out, reference)
@@ -1728,7 +1726,7 @@ def test_cfg_batch_measured_no_gain_stops_after_the_first_batched_step():
     router = mg.CfgBatchRouter(dit)
     dit.forward = router
     router.plain_times = [0.1, 0.1]
-    router._check_batched(0.5)  # a one-off stall alone decides nothing
+    router._check_batched(0.5)
     assert router.disabled_pending is None
     router._check_batched(0.19)  # fastest 0.19 > 0.92 * 0.2: no gain
     assert router.verify_batched == 0

@@ -40,10 +40,8 @@ from typing import Any, Callable, Iterator, Optional, Sequence
 
 MULTIGPU_ENV = "UNSLOTH_DIFFUSION_MULTIGPU"
 CFG_PARALLEL_ENV = "UNSLOTH_DIFFUSION_CFG_PARALLEL"
-# Both guidance branches through ONE forward of an offloaded / streamed denoiser (each streamed block uploaded once).
 CFG_BATCH_ENV = "UNSLOTH_DIFFUSION_CFG_BATCH"
-# Overrides every measured card-to-card copy rate (GiB/s) the strategy pricing reads: reproduces a slow link on a fast
-# host. Unset: the probe's measurement.
+# Overrides every measured card-to-card copy rate (GiB/s) used by strategy pricing.
 LINK_ENV = "UNSLOTH_DIFFUSION_LINK_GIB_S"
 
 # Denoiser attributes: they stay on the primary card under the companion split (the same contract as the speed and
@@ -329,8 +327,7 @@ def _reset_probe_cache_for_tests() -> None:
 def link_gib_s(
     src: int, dst: int, probes: Optional[dict[int, DeviceProbe]] = None
 ) -> Optional[float]:
-    """Measured copy rate from card ``src`` to card ``dst`` (GiB/s; the real path: peer, or bounced through the host
-    when the cards have no peer access), None when unmeasured. ``UNSLOTH_DIFFUSION_LINK_GIB_S`` overrides it."""
+    """Measured ``src`` -> ``dst`` copy rate in GiB/s (peer or via host), None when unmeasured; ``LINK_ENV`` overrides."""
     raw = (os.environ.get(LINK_ENV) or "").strip()
     if raw:
         try:
@@ -350,8 +347,7 @@ def link_gib_s(
     return None
 
 
-# Links within this fraction of the fastest candidate's rate count as equally fast (probe noise, one PCIe generation
-# apart from a shared switch); a slower one is chosen only when no fast card fits.
+# Links within this fraction of the fastest count as equally fast (probe noise).
 _LINK_TIER = 0.75
 
 
@@ -361,8 +357,7 @@ def rank_secondaries(
     free_of: Callable[[int], Optional[int]],
     probes: Optional[dict[int, DeviceProbe]] = None,
 ) -> list[int]:
-    """``candidates`` best first: the fast-link tier (a round trip to the primary within ``_LINK_TIER`` of the best
-    measured one; an unmeasured link is not penalised), then the most free memory, then the lowest ordinal."""
+    """``candidates`` best first: fast-link tier (within ``_LINK_TIER``; unmeasured not penalised), free memory, ordinal."""
     cands = [int(o) for o in candidates]
     if not cands:
         return []
@@ -390,7 +385,7 @@ def rank_secondaries(
 def best_secondary(
     selection: MultiGpuSelection, probes: Optional[dict[int, DeviceProbe]] = None
 ) -> Optional[int]:
-    """The secondary on the fastest link to the primary (see :func:`rank_secondaries`), most free memory within it."""
+    """Top of :func:`rank_secondaries`."""
     if not selection.secondaries:
         return None
     if probes is None:
@@ -413,12 +408,7 @@ def price_cfg_parallel(
     link_out_gib_s: Optional[float],
     replica_bytes: int = 0,
 ) -> dict[str, Any]:
-    """Per-step price of one guided step on one card vs CFG-parallel, from one measured branch and the measured link.
-
-    One card runs both branches: ``2 * branch``. CFG-parallel overlaps the primary branch with the replica's, which
-    waits for its inputs to cross the link and its output to come back: ``max(branch, branch + copy)``. Chosen when
-    the copies cost at most ``_PRICE_COPY_FRACTION`` of a branch, so a link only just above break-even (where copy
-    contention and a jittery branch time eat the gain) keeps one card. An unmeasured link prices nothing."""
+    """One card (``2 * branch``) vs CFG-parallel (``branch + copy``, if copy <= ``_PRICE_COPY_FRACTION``)."""
     if link_in_gib_s and link_out_gib_s:
         copy_s = in_bytes / (link_in_gib_s * (1 << 30)) + out_bytes / (link_out_gib_s * (1 << 30))
         build_s: Optional[float] = replica_bytes / (link_in_gib_s * (1 << 30))
@@ -520,7 +510,6 @@ def plan_companion_split(
         fits = [o for o, limit in limits.items() if secondary_required <= limit]
         if not fits:
             continue
-        # several cards fit: the fast-link tier first (the moved components' inputs / outputs cross it per request)
         best = (
             rank_secondaries(selection.primary, fits, limits.get)[0]
             if len(fits) > 1
@@ -1823,7 +1812,6 @@ class CfgParallelRouter:
             if self.replica is None:
                 self.cfg_seen = True
                 if self.pricing is None and self._should_price():
-                    # Price before paying for the replica: this branch runs on the primary anyway, timed.
                     out, branch_s = self._timed_primary(args, kwargs)
                     self.pricing = self._price(args, kwargs, out, branch_s)
                     if self.pricing["strategy"] != "cfg_parallel":
@@ -1874,8 +1862,6 @@ class CfgParallelRouter:
         return out, time.perf_counter() - t0
 
     def _price(self, args: tuple, kwargs: dict, out: Any, branch_s: float) -> dict[str, Any]:
-        # Every tensor of the odd call crosses to the replica each step (the latent changes; the carried tensors are
-        # copied again so they never wait behind the primary branch); its output comes back.
         in_bytes = sum(t.numel() * t.element_size() for t in _iter_tensors((args, kwargs)))
         out_bytes = sum(t.numel() * t.element_size() for t in _iter_tensors(_as_walkable(out)))
         module = self.module_ref()
@@ -2150,11 +2136,8 @@ def install_cfg_parallel(
     logger: Any = None,
     headroom_mib: Optional[int] = None,
 ) -> Optional[str]:
-    """Arm the guidance strategy of this load. CFG-parallel on ``pipe.transformer`` when a secondary card can hold a
-    replica (built on the first step that shows two branches, so a guidance-distilled model never pays for it; priced
-    against the measured link on that step). Otherwise, for an offloaded / streamed denoiser on any number of cards,
-    CFG-batch (both branches through one forward, each streamed block uploaded once). Returns the CFG-parallel decline
-    reason or None when it was armed. ``headroom_mib`` = the plan's denoise headroom (the batched call's extra need)."""
+    """Arm CFG-parallel when a secondary card can hold a replica, else CFG-batch for an offloaded denoiser.
+    Returns the CFG-parallel decline reason or None. ``headroom_mib``: the batched call's extra activation need."""
     reason = _install_cfg_parallel_only(pipe, offload_policy = offload_policy, logger = logger)
     if (
         reason is not None
@@ -2198,7 +2181,6 @@ def _install_cfg_parallel_only(
             need_mib = sum(
                 t.numel() * t.element_size() for t in (*denoiser.parameters(), *denoiser.buffers())
             ) // (1 << 20)
-            # the fast-link tier first (the latent and the output cross it every step), then free memory
             best = rank_secondaries(
                 primary.index, candidates, lambda o: probes[o].free_mib, probes
             )[0]
@@ -2260,22 +2242,18 @@ def uninstall_cfg_parallel(pipe: Any) -> None:
         module.__dict__.pop("_unsloth_cfg_router", None)
 
 
-# --------------------------------------------------------------------------------------------------------------------
 # CFG-batch: both guidance branches through one forward of an offloaded / streamed denoiser.
-# --------------------------------------------------------------------------------------------------------------------
 
 
 def _as_walkable(out: Any) -> Any:
-    """A denoiser output as plain containers for :func:`_iter_tensors` (a diffusers ``BaseOutput`` is a dict)."""
     if isinstance(out, (tuple, list, dict)) or not dataclasses.is_dataclass(out):
         return out
     return {f.name: getattr(out, f.name, None) for f in dataclasses.fields(out)}
 
 
-# Batch only when the upload is at least this share of a plain call: below it the call is compute-bound, the
-# prefetch stream already hides the upload, and a batched call costs about two plain ones.
+# Below this upload share of a plain call the prefetch stream hides the upload and batching gains nothing.
 _BATCH_UPLOAD_FRACTION = 0.6
-# The first batched call must beat the two plain calls it replaces by this factor, else batching stops.
+# The first batched calls must beat the two plain calls they replace by this factor, else batching stops.
 _BATCH_MEASURED_FRACTION = 0.92
 _BATCH_VERIFY_CALLS = 2
 
@@ -2287,12 +2265,7 @@ def price_cfg_batch(
     streamed_bytes: int = 0,
     h2d_gib_s: Optional[float] = None,
 ) -> dict[str, Any]:
-    """One guided step of an offloaded denoiser as two plain calls vs one batched call.
-
-    A plain call costs about ``max(compute, upload)`` (the prefetch stream overlaps them); the batched one about
-    ``max(2 * compute, upload)``. Upload-bound (``upload >= _BATCH_UPLOAD_FRACTION * call``) -> batch: up to 2x.
-    Compute-bound -> one card as before. Unknown upload (unmeasured link) -> batch, and the first batched call's
-    measured time decides."""
+    """Two plain calls vs one batched call: batch when upload-bound or the upload is unmeasured."""
     if call_s is None or upload_s is None:
         chosen = "cfg_batch"
     else:
@@ -2314,10 +2287,7 @@ class _NotBatchable(Exception):
 
 
 def _batch_leaves(first: list, second: list, batch: int) -> dict:
-    """Leaf values of one call carrying both branches: a per-sample tensor (leading dim == the latent's batch) is
-    concatenated along dim 0; a tensor both branches share unchanged (RoPE tables, a scalar timestep) and an equal
-    plain value pass through once. Anything else (prompt embeddings of different lengths, a per-branch list) cannot
-    ride one call: :class:`_NotBatchable`."""
+    """One call carrying both branches: per-sample tensors concatenated on dim 0, equal shared values passed once."""
     torch = _torch()
     if len(first) != len(second):
         raise _NotBatchable("the branches pass different arguments")
@@ -2344,8 +2314,7 @@ def _batch_leaves(first: list, second: list, batch: int) -> dict:
 
 
 def _split_output(out: Any, batch: int, depth: int = 0) -> tuple[Any, Any]:
-    """(first branch, second branch) of a batched denoiser output: every tensor with leading dim ``2 * batch`` split
-    along dim 0, containers rebuilt with their type. Any other tensor cannot be attributed: :class:`_NotBatchable`."""
+    """(first, second) branch of a batched output, split on leading dim ``2 * batch``; else :class:`_NotBatchable`."""
     torch = _torch()
     if isinstance(out, torch.Tensor):
         if out.dim() >= 1 and out.shape[0] == 2 * batch:
@@ -2382,22 +2351,12 @@ def _registry_hooks_other(module: Any) -> Optional[str]:
 
 
 class CfgBatchRouter:
-    """Installed as an offloaded denoiser's ``forward``: runs both guidance branches of a step through ONE forward.
+    """Offloaded denoiser ``forward`` running both guidance branches of a step through ONE forward (one upload).
 
-    An offloaded / streamed denoiser uploads every block from host memory on each call, so true CFG's two calls per
-    step pay the upload twice. Branches are recognised exactly as :class:`CfgParallelRouter` does (the same latent
-    tensor object in consecutive calls) and the odd branch is predicted the same way from the previous step's. At the
-    first branch of a step the predicted odd branch is concatenated onto it along the batch dimension and one forward
-    runs (each block streamed once); the first half of the output is returned, the second kept. The real odd call must
-    then pass the same structure, the same plain values and bitwise the same tensors as the prediction (snapshots are
-    compared, so an in-place edit in between is seen) and the source's per-call hook state must be unchanged; else the
-    kept half is dropped and the branch runs as a plain call. Not bit-identical to two calls (batch-2 GEMM / attention
-    kernels may differ), so it is limited to offloaded denoisers by default where it removes a whole upload per step;
-    ``UNSLOTH_DIFFUSION_CFG_BATCH=force`` batches a resident one too (ComfyUI batches cond + uncond by default).
-
-    Steps that cannot batch (different prompt lengths, an output without a doubled batch, an outer forward layer or
-    a step cache installed later) run as before. Out of memory on the batched call disables batching for the load and
-    the branch is recomputed alone."""
+    Branches are recognised as in :class:`CfgParallelRouter`; the predicted odd branch is batched with the first and
+    its half kept. The real odd call must match the prediction bitwise (snapshots, so in-place edits are seen) with
+    unchanged hook state, else it runs plain. Not bit-identical to two calls, so only offloaded denoisers by default.
+    Unbatchable steps run as before; OOM on the batched call disables batching and recomputes the branch alone."""
 
     def __init__(
         self,
@@ -2419,12 +2378,8 @@ class CfgBatchRouter:
         self.template: Optional[tuple[Any, dict]] = None
         self.kept: Optional[dict] = None
         self.last_skip: Optional[str] = None
-        # Pricing: the first guided step's two plain calls are timed against the bytes the call streams over the
-        # card's measured host link; the first batched call is timed against them too.
         self.pricing: Optional[dict[str, Any]] = None
         self.plain_times: list[float] = []
-        # The first batched calls are timed (the fastest of them is the verdict: a shared host's one-off stall must
-        # not end batching).
         self.verify_batched = _BATCH_VERIFY_CALLS
         self.batched_times: list[float] = []
         self.disabled_pending: Optional[str] = None
@@ -2490,7 +2445,6 @@ class CfgBatchRouter:
                 return out
         return self._plain(args, kwargs)
 
-    # -- pricing
     def _can_time(self, latent: Any) -> bool:
         return cfg_batch_mode() != "force" and getattr(latent.device, "type", None) == "cuda"
 
@@ -2504,8 +2458,7 @@ class CfgBatchRouter:
         return out
 
     def _streamed_bytes(self) -> int:
-        """Bytes of denoiser weights held off the card between calls (on the host, or meta under sequential
-        offload): what one call uploads."""
+        """Bytes of denoiser weights held off the card between calls: what one call uploads."""
         module = self.module_ref()
         if module is None:
             return 0
@@ -2570,8 +2523,7 @@ class CfgBatchRouter:
         module = self.module_ref()
         if module is None:
             return None
-        # Only while this router is the outermost forward and no step cache hooks the denoiser: a layer added later
-        # (static step skip, FBCache) keys its per-branch state on separate calls.
+        # Only as the outermost forward with no step cache: later layers key per-branch state on separate calls.
         if module.__dict__.get("forward") is not self:
             self._skip("an outer forward layer was installed after this router")
             return None
@@ -2613,7 +2565,6 @@ class CfgBatchRouter:
             self._skip("not enough free memory for a second branch's activations")
             return None
         b_args, b_kwargs = _rebuild((args, kwargs), merged)
-        # The odd branch is verified against what it consumed, by value: snapshots of its tensors.
         snapshots = [
             (path, v.clone() if isinstance(v, torch.Tensor) else v) for path, v in second
         ]
@@ -2636,7 +2587,6 @@ class CfgBatchRouter:
         try:
             mine, other = _split_output(out, batch)
         except _NotBatchable as exc:
-            # computed with both branches: the first half cannot be told apart, so this load stops batching
             self.disable(f"output cannot be split per branch ({exc})")
             return None
         self.kept = {"out": other, "snapshots": snapshots, "state": state}
@@ -2644,8 +2594,7 @@ class CfgBatchRouter:
         return mine
 
     def _check_batched(self, batched_s: float) -> None:
-        """The fastest of the first batched calls against the two plain calls each replaces: no gain -> stop batching
-        after this step (it is already computed, so its halves are still used)."""
+        """No gain from the fastest early batched call vs two plain calls -> stop batching after this step."""
         self.verify_batched -= 1
         self.batched_times.append(batched_s)
         if self.verify_batched > 0:
