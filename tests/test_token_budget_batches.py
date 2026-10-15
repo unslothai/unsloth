@@ -247,6 +247,8 @@ def _fake_trainer():
         get_train_dataloader = lambda: None,
         accelerator = _FakeAccelerator(),
         args = SimpleNamespace(gradient_accumulation_steps = 1),
+        model_accepts_loss_kwargs = True,
+        label_smoother = None,
     )
     return trainer, seen
 
@@ -301,6 +303,7 @@ def test_balanced_dataloader_end_to_end_with_accelerate_shards(monkeypatch):
             training_step = None,
             get_train_dataloader = lambda: loader,
             args = SimpleNamespace(gradient_accumulation_steps = ga, average_tokens_across_devices = True),
+            model_accepts_loss_kwargs = True,
         )
         tb.install_token_budget(trainer)
         trainer.get_train_dataloader()
@@ -314,3 +317,130 @@ def test_balanced_dataloader_end_to_end_with_accelerate_shards(monkeypatch):
         assert sorted(step_rows) == list(range(s * ga * ws * bs, (s + 1) * ga * ws * bs))
         tokens = [sum(lengths[i] for b in per_rank[r][s * ga : (s + 1) * ga] for i in b) for r in range(ws)]
         assert max(tokens) - min(tokens) <= max(lengths)
+
+
+class _MeanLabelSmoother:
+    # transformers < 5 LabelSmoother.__call__ signature: no num_items_in_batch, returns a per-call mean.
+    def __call__(self, model_output, labels, shift_labels = False):
+        raise AssertionError("not called")
+
+
+class _CountLabelSmoother:
+    def __call__(self, model_output, labels, shift_labels = False, num_items_in_batch = None):
+        raise AssertionError("not called")
+
+
+def _moe_model(coef):
+    config = SimpleNamespace(output_router_logits = True, router_aux_loss_coef = coef)
+    return SimpleNamespace(config = config)
+
+
+@pytest.mark.parametrize(
+    "override,splits",
+    [
+        ({}, True),
+        ({"label_smoother": _CountLabelSmoother()}, True),
+        ({"label_smoother": _MeanLabelSmoother()}, False),
+        ({"model_accepts_loss_kwargs": False}, False),
+        ({"aux_loss_enabled": True}, False),
+        ({"model": _moe_model(0.01)}, False),
+        ({"model": _moe_model(0.0)}, True),
+    ],
+)
+def test_split_steps_aside_when_chunk_losses_do_not_sum_exactly(monkeypatch, capsys, override, splits):
+    monkeypatch.setenv("UNSLOTH_TOKEN_BUDGET", "16")
+    monkeypatch.delenv("UNSLOTH_TOKEN_BALANCE", raising = False)
+    trainer, seen = _fake_trainer()
+    for key, value in override.items():
+        setattr(trainer, key, value)
+    tb.install_token_budget(trainer)
+    batch = _padding_free_batch([5, 9, 3, 12, 7, 4])
+    trainer.training_step(None, batch, 100)
+    trainer.training_step(None, batch, 100)
+    assert (len(seen) > 2) == splits
+    if not splits:
+        assert seen == [(40, 100), (40, 100)]
+        assert capsys.readouterr().out.count("UNSLOTH_TOKEN_BUDGET not splitting") == 1
+
+
+def test_split_refuses_media_keys_and_per_sample_metadata():
+    rows = {"input_ids": torch.ones(4, 8, dtype = torch.long), "labels": torch.ones(4, 8, dtype = torch.long)}
+    assert len(tb.split_batch_by_token_budget(rows, 8)) == 4
+    # Flattened images that happen to total B rows still must not be paired row by row.
+    for extra in (
+        {"pixel_values": torch.ones(4, 3)},
+        {"image_grid_thw": torch.ones(4, 3, dtype = torch.long)},
+        {"num_images": [0, 2, 1, 1]},
+    ):
+        batch = {**rows, **extra}
+        assert tb.split_batch_by_token_budget(batch, 8) == [batch]
+    packed = {**_padding_free_batch([5, 9, 3, 12]), "pixel_values": torch.ones(1, 29, 3)}
+    assert tb.split_batch_by_token_budget(packed, 10) == [packed]
+
+
+def _shard_steps(n, bs, ga, ws, balance, **trainer_kwargs):
+    accelerate_data_loader = pytest.importorskip("accelerate.data_loader")
+    datasets = pytest.importorskip("datasets")
+    rng = random.Random(1)
+    lengths = [rng.choice([8, 8, 8, 600]) for _ in range(n)]
+    dataset = datasets.Dataset.from_dict({"input_ids": [[1] * k for k in lengths]})
+    per_rank, active = [], []
+    for rank in range(ws):
+        base = torch.utils.data.RandomSampler(dataset, generator = torch.Generator().manual_seed(3))
+        inner = torch.utils.data.BatchSampler(base, bs, drop_last = False)
+        shard = accelerate_data_loader.BatchSamplerShard(
+            inner, num_processes = ws, process_index = rank, split_batches = False, even_batches = True
+        )
+        if balance:
+            loader = SimpleNamespace(batch_sampler = shard, dataset = dataset)
+            kwargs = {"model_accepts_loss_kwargs": True, **trainer_kwargs}
+            trainer = SimpleNamespace(
+                training_step = None,
+                get_train_dataloader = lambda: loader,
+                args = SimpleNamespace(gradient_accumulation_steps = ga, average_tokens_across_devices = True),
+                **kwargs,
+            )
+            tb.install_token_budget(trainer)
+            trainer.get_train_dataloader()
+            active.append(trainer._unsloth_token_balance_active)
+        per_rank.append(list(shard))
+    steps = []
+    for s in range(-(-len(per_rank[0]) // ga)):
+        steps.append(sorted(i for r in range(ws) for b in per_rank[r][s * ga : (s + 1) * ga] for i in b))
+    return steps, active
+
+
+@pytest.mark.parametrize("n", [61, 64, 67])
+def test_balance_keeps_every_step_including_the_even_batches_tail(monkeypatch, n):
+    monkeypatch.setenv("UNSLOTH_TOKEN_BALANCE", "1")
+    monkeypatch.delenv("UNSLOTH_TOKEN_BUDGET", raising = False)
+    bs, ga, ws = 2, 4, 2
+    plain, _ = _shard_steps(n, bs, ga, ws, balance = False)
+    balanced, active = _shard_steps(n, bs, ga, ws, balance = True)
+    assert all(active)
+    assert balanced == plain
+
+
+@pytest.mark.parametrize(
+    "override",
+    [{"model_accepts_loss_kwargs": False}, {"label_smoother": _MeanLabelSmoother()}, {"aux_loss_enabled": True}],
+)
+def test_balance_steps_aside_when_slot_grouping_changes_the_loss(monkeypatch, capsys, override):
+    monkeypatch.setenv("UNSLOTH_TOKEN_BALANCE", "1")
+    monkeypatch.delenv("UNSLOTH_TOKEN_BUDGET", raising = False)
+    plain, _ = _shard_steps(64, 2, 4, 1, balance = False)
+    balanced, active = _shard_steps(64, 2, 4, 1, balance = True, **override)
+    assert active == [False] and balanced == plain
+    assert "UNSLOTH_TOKEN_BALANCE ignored" in capsys.readouterr().out
+
+
+def test_real_label_smoother_is_classified_by_its_signature():
+    trainer_pt_utils = pytest.importorskip("transformers.trainer_pt_utils")
+    import transformers
+
+    smoother = trainer_pt_utils.LabelSmoother(epsilon = 0.1)
+    trainer = SimpleNamespace(model_accepts_loss_kwargs = True, label_smoother = smoother)
+    uses_count = tb._loss_uses_step_count(trainer)
+    if int(transformers.__version__.split(".")[0]) < 5:
+        assert not uses_count
+    assert uses_count == ("num_items_in_batch" in __import__("inspect").signature(smoother.__call__).parameters)

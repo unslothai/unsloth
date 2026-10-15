@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import contextlib
 import heapq
+import inspect
 import itertools
 import os
 from collections.abc import Mapping
@@ -109,7 +110,11 @@ def balance_step_indices(
 
 
 class TokenBalancedSampler(torch.utils.data.Sampler):
-    """Applies `balance_step_indices` to each full step window; a partial tail passes through."""
+    """Applies `balance_step_indices` to each full step window; a partial tail passes through.
+
+    `keep_first_window` passes the first window through unchanged: accelerate's BatchSamplerShard
+    (even_batches) pads an uneven tail with the first `world_size * batch_size` indices it saw.
+    """
 
     def __init__(
         self,
@@ -119,6 +124,7 @@ class TokenBalancedSampler(torch.utils.data.Sampler):
         grad_accum,
         world_size = 1,
         cross_rank = True,
+        keep_first_window = False,
     ):
         self.sampler = sampler
         self.lengths = lengths
@@ -126,6 +132,7 @@ class TokenBalancedSampler(torch.utils.data.Sampler):
         self.grad_accum = int(grad_accum)
         self.world_size = int(world_size)
         self.cross_rank = bool(cross_rank)
+        self.keep_first_window = bool(keep_first_window)
 
     def __len__(self):
         return len(self.sampler)
@@ -133,9 +140,14 @@ class TokenBalancedSampler(torch.utils.data.Sampler):
     def __iter__(self):
         window = self.batch_size * self.grad_accum * self.world_size
         buffer = []
+        first = self.keep_first_window
         for index in self.sampler:
             buffer.append(index)
-            if len(buffer) == window:
+            if len(buffer) == window and first:
+                first = False
+                yield from buffer
+                buffer = []
+            elif len(buffer) == window:
                 yield from balance_step_indices(
                     buffer,
                     self.lengths,
@@ -240,6 +252,30 @@ def _split_rows(batch, budget):
     return chunks
 
 
+# Media tensors need not have one row per text row (flattened images, patches), so their batches are never split.
+_MEDIA_KEY_PARTS = (
+    "pixel",
+    "image",
+    "video",
+    "audio",
+    "vision",
+    "input_features",
+    "grid_thw",
+    "aspect_ratio",
+    "cross_attention",
+)
+
+
+def _splittable_keys(batch):
+    for key, value in batch.items():
+        if any(part in str(key).lower() for part in _MEDIA_KEY_PARTS):
+            return False
+        # Per-sample metadata in a list would be copied whole into every chunk.
+        if isinstance(value, (list, tuple, Mapping)):
+            return False
+    return True
+
+
 def split_batch_by_token_budget(batch, budget):
     """Split a collated text batch into sub-batches of at most `budget` tokens, else return `[batch]`.
 
@@ -250,6 +286,8 @@ def split_batch_by_token_budget(batch, budget):
         return [batch]
     input_ids = batch.get("input_ids")
     if not isinstance(input_ids, torch.Tensor) or input_ids.dim() != 2:
+        return [batch]
+    if not _splittable_keys(batch):
         return [batch]
     if input_ids.shape[0] == 1 and (
         "packed_seq_lengths" in batch or "position_ids" in batch
@@ -277,14 +315,73 @@ def _dataset_lengths(dataset):
     return [len(ids) for ids in dataset["input_ids"]]
 
 
+def _accepts_num_items(fn):
+    try:
+        return "num_items_in_batch" in inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+
+
+def _loss_uses_step_count(trainer):
+    """True when each micro-batch loss is a sum divided by the step's shared num_items_in_batch."""
+    if getattr(trainer, "compute_loss_func", None) is not None:
+        return True
+    # Without loss kwargs the Trainer counts nothing and every micro-batch loss is its own mean.
+    if not getattr(trainer, "model_accepts_loss_kwargs", False):
+        return False
+    smoother = getattr(trainer, "label_smoother", None)
+    # transformers < 5 LabelSmoother returns a per-call mean.
+    return smoother is None or _accepts_num_items(smoother.__call__)
+
+
+def _router_aux_loss_active(trainer):
+    """MoE load-balancing loss is a nonlinear per-batch statistic, so regrouping rows changes it."""
+    if getattr(trainer, "aux_loss_enabled", False):
+        return True
+    model = getattr(trainer, "model", None)
+    model = getattr(model, "module", model)
+    config = getattr(model, "config", None)
+    configs = [config]
+    if hasattr(config, "get_text_config"):
+        configs.append(config.get_text_config())
+    for cfg in configs:
+        if getattr(cfg, "output_router_logits", False) and getattr(cfg, "router_aux_loss_coef", 1.0) != 0:
+            return True
+    return False
+
+
+def _exactness_blocker(trainer):
+    if not _loss_uses_step_count(trainer):
+        return "the loss is a per-micro-batch mean (no shared num_items_in_batch, or label smoothing)"
+    if _router_aux_loss_active(trainer):
+        return "the MoE router auxiliary loss is active"
+    return None
+
+
+def _note_once(trainer, message):
+    notes = getattr(trainer, "_unsloth_token_budget_notes", None)
+    if notes is None:
+        notes = set()
+        trainer._unsloth_token_budget_notes = notes
+    if message not in notes:
+        notes.add(message)
+        print(message)
+
+
 def _balance_dataloader(trainer, dataloader):
+    if _exactness_blocker(trainer) is not None:
+        return False
     batch_sampler = getattr(dataloader, "batch_sampler", None)
     world_size = 1
+    keep_first_window = False
     if hasattr(batch_sampler, "num_processes") and hasattr(batch_sampler, "batch_sampler"):
         # accelerate's BatchSamplerShard with split_batches False deals whole batches round robin.
         if getattr(batch_sampler, "split_batches", False):
             return False
         world_size = int(batch_sampler.num_processes)
+        keep_first_window = not getattr(batch_sampler, "drop_last", False) and getattr(
+            batch_sampler, "even_batches", True
+        )
         batch_sampler = batch_sampler.batch_sampler
     if not isinstance(batch_sampler, torch.utils.data.BatchSampler):
         return False
@@ -297,6 +394,8 @@ def _balance_dataloader(trainer, dataloader):
     lengths = _dataset_lengths(getattr(dataloader, "dataset", None))
     if lengths is None:
         return False
+    if keep_first_window and len(sampler) % (world_size * batch_sampler.batch_size) == 0:
+        keep_first_window = False
     args = trainer.args
     # Moving rows between ranks keeps the loss exact only when the token count is global.
     cross_rank = world_size > 1 and bool(getattr(args, "average_tokens_across_devices", False))
@@ -307,6 +406,7 @@ def _balance_dataloader(trainer, dataloader):
         args.gradient_accumulation_steps,
         world_size,
         cross_rank,
+        keep_first_window,
     )
     return True
 
@@ -326,7 +426,8 @@ def install_token_budget(trainer):
             dataloader = original_get_train_dataloader(*args, **kwargs)
             trainer._unsloth_token_balance_active = _balance_dataloader(trainer, dataloader)
             if not trainer._unsloth_token_balance_active:
-                print("Unsloth: UNSLOTH_TOKEN_BALANCE ignored for this dataloader.")
+                reason = _exactness_blocker(trainer) or "unsupported sampler or dataset"
+                _note_once(trainer, f"Unsloth: UNSLOTH_TOKEN_BALANCE ignored: {reason}.")
             return dataloader
 
         trainer.get_train_dataloader = get_train_dataloader
@@ -342,6 +443,10 @@ def install_token_budget(trainer):
             if num_items_in_batch is None or not (
                 distributed_type.endswith("NO") or distributed_type.endswith("MULTI_GPU")
             ):
+                return original_training_step(model, inputs, num_items_in_batch, *args, **kwargs)
+            reason = _exactness_blocker(trainer)
+            if reason is not None:
+                _note_once(trainer, f"Unsloth: UNSLOTH_TOKEN_BUDGET not splitting: {reason}.")
                 return original_training_step(model, inputs, num_items_in_batch, *args, **kwargs)
             chunks = split_batch_by_token_budget(inputs, budget)
             if len(chunks) == 1:
