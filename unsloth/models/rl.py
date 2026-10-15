@@ -3035,6 +3035,18 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "pass\n"
         )
 
+    if trainer_file == "grpo_trainer":
+        RLTrainer_post += (
+            "if os.environ.get('UNSLOTH_GRPO_ROUTING_REPLAY', '0') == '1' and hasattr(model, 'vllm_engine'):\n"
+            "    try:\n"
+            "        from unsloth_zoo.routing_replay import install_routing_replay\n"
+            "    except ImportError:\n"
+            "        print('Unsloth: UNSLOTH_GRPO_ROUTING_REPLAY=1 needs a newer unsloth_zoo: pip install -U unsloth_zoo')\n"
+            "    else:\n"
+            "        install_routing_replay(model, model.vllm_engine, getattr(self, 'processing_class', None))\n"
+            "pass\n"
+        )
+
     if trainer_file == "gkd_trainer":
         # Match native GKD's pure JSD at T=1 without changing the generation temperature.
         RLTrainer_post += (
