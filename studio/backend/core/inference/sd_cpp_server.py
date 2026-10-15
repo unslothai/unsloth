@@ -56,6 +56,7 @@ from core.inference.sd_cpp_engine import (
     _sd_cpp_command_for_log,
     _sd_cpp_command_summary,
     _verbose_native_logs,
+    binary_accelerator,
     runtime_env,
 )
 from utils.native_path_leases import child_env_without_native_path_secret
@@ -225,6 +226,7 @@ class SdCppServer:
                 scratch_dir = self._scratch_dir,
                 verbose = True,  # sd-server prints the per-step sampling lines we parse
                 extra_args = list(extra_args or []),
+                accelerator = binary_accelerator(self.binary),
             )
             run_env = runtime_env(self.binary, child_env_without_native_path_secret())
             if env:

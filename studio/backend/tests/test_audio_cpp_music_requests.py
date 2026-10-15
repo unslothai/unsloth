@@ -290,7 +290,7 @@ def test_status_reports_the_music_studio_rules():
         "max_ranges": 1,
         "max_source_s": 240.0,
     }
-    # Upstream ACE-Step 1.5 offers "complete" and 1-200 steps on base only; turbo keeps 1-20.
+    # Upstream ACE-Step 1.5 offers "complete" and 1-200 steps on base only; turbo keeps 1-8.
     base = _ace_base()
     assert audio_cpp_backend.model_info_fields(base)["audio_music"]["modes"][1]["actions"] == [
         "repaint",
@@ -300,9 +300,11 @@ def test_status_reports_the_music_studio_rules():
     ]
     steps = {o["name"]: o for o in base.options}["num_inference_steps"]
     assert (steps["max"], steps["default"]) == (200, 32)
-    turbo = base.with_variant(AudioCppVariant("turbo/Q8_0", (), "ACE-Step1.5-GGUF/turbo/t.gguf"))
+    turbo = base.with_variant(
+        AudioCppVariant("turbo/Q8_0", (), "ACE-Step1.5-GGUF/turbo/ace-step-1.5-turbo-q8_0.gguf")
+    )
     assert "continue" not in turbo.music.mode("edit").actions
-    assert {o["name"]: o for o in turbo.options}["num_inference_steps"]["max"] == 20
+    assert {o["name"]: o for o in turbo.options}["num_inference_steps"]["max"] == 8
     stable = cm.music_rules(_model("stable_audio", "Stable-Audio-3-Medium-GGUF", strict = False))
     assert [m["id"] for m in stable["modes"]] == ["song", "sfx", "edit"]
     assert stable["modes"][0]["variations"] == {"max": 4, "how": "batch", "loaded": 1}
@@ -395,7 +397,14 @@ def test_minimax_gguf_keeps_its_body_through_the_studio():
         "text": "lofi",
         "lyrics": "[verse] hi",
         "duration_seconds": 20.0,
-        "options": {"lyrics": "[verse] hi"},
+        # Recommended MiniMax defaults ride along with Unsloth Studio's own lyrics option.
+        "options": {
+            "lyrics": "[verse] hi",
+            "num_inference_steps": 30,
+            "guidance_scale": 1.7,
+            "ar_guidance_scale": 1.5,
+            "top_k": 50,
+        },
         "seed": "3",
     }
     assert "duration_sec" not in set(_keys(request))
@@ -414,7 +423,7 @@ def test_ace_step_song_and_instrumental():
         "text": "synth pop",
         "duration_seconds": 45.0,
         "lyrics": "[verse] la",
-        "options": {"bpm": 100, "timesignature": "3"},
+        "options": {"bpm": 100, "timesignature": "3", "num_inference_steps": 8},
         "seed": "7",
     }
     _run(b, text = "synth pop", lyrics = "[verse] la", instrumental = True)
@@ -435,7 +444,14 @@ def test_stable_audio_batches_variations_as_a_string(starts, tmp_path):
     run.mkdir()
     wav, rate = _run(b, text = "house", duration_s = 6, variations = 3, seed = None, output_dir = str(run))
     request = b._server.calls[0][1]["request"]
-    assert request["options"] == {"batch_size": "3"} and "seed" not in request
+    assert (
+        request["options"]
+        == {
+            "batch_size": "3",
+            **STABLE_AUDIO_DEFAULTS,
+        }
+        and "seed" not in request
+    )
     assert rate == 44100 and wav[:4] == b"RIFF"
     manifest = json.loads((run / "outputs.json").read_text())
     assert [m["id"] for m in manifest] == ["audio_0"]  # the fake answers one take
@@ -553,15 +569,29 @@ def test_ace_step_repaint_has_no_duration_and_may_pass_the_end(source):
             "repainting_start": 5.0,
             "repainting_end": 14.0,
             "repaint_strength": 0.4,
+            "num_inference_steps": 8,
         },
         "seed": "7",
     }
     assert "duration_seconds" not in set(_keys(request))
 
 
+# Recommended defaults Unsloth Studio fills when the user leaves them unset.
+STABLE_AUDIO_DEFAULTS = {"num_inference_steps": 8, "guidance_scale": 1.0, "apg_scale": 1.0}
+ACE_BASE_DEFAULTS = {
+    "num_inference_steps": 32,
+    "guidance_scale": 7.0,
+    "shift": 1.0,
+    "lm_temperature": 0.85,
+    "lm_cfg_scale": 2.0,
+    "lm_top_p": 0.9,
+    "lm_top_k": 0,
+}
+
+
 def _ace_base():
     return _model("ace_step", strict = False).with_variant(
-        AudioCppVariant("base/Q8_0", (), "ACE-Step1.5-GGUF/base/b.gguf")
+        AudioCppVariant("base/Q8_0", (), "ACE-Step1.5-GGUF/base/ace-step-1.5-base-q8_0.gguf")
     )
 
 
@@ -572,14 +602,23 @@ def test_ace_step_extend_cover_and_continue(source):
         "route": "repaint",
         "repainting_start": 10.0,
         "repainting_end": 22.0,
+        **ACE_BASE_DEFAULTS,
     }
     # strength is how much to change, so a light cover keeps most source-conditioned steps.
     _run(b, mode = "edit", text = "jazz", source = source, edit = {"action": "cover", "strength": 0.25})
-    assert _request(b, 1)["options"] == {"route": "cover", "audio_cover_strength": 0.75}
+    assert _request(b, 1)["options"] == {
+        "route": "cover",
+        "audio_cover_strength": 0.75,
+        **ACE_BASE_DEFAULTS,
+    }
     _run(
         b, mode = "edit", text = "add drums", source = source, duration_s = 30, edit = {"action": "continue"}
     )
-    assert _request(b, 2)["options"] == {"route": "complete", "duration_seconds": 30.0}
+    assert _request(b, 2)["options"] == {
+        "route": "complete",
+        "duration_seconds": 30.0,
+        **ACE_BASE_DEFAULTS,
+    }
 
 
 def test_stable_audio_inpaint_sorts_and_merges_ranges(source):
@@ -602,6 +641,7 @@ def test_stable_audio_inpaint_sorts_and_merges_ranges(source):
         "audio_input_kind": "inpaint_audio",
         "inpaint_mask_start_seconds": "1,5,9.5",
         "inpaint_mask_end_seconds": "2,6.5,10",
+        **STABLE_AUDIO_DEFAULTS,
     }
     assert request["duration_seconds"] == 10.0 and request["audio"] == source
 
@@ -609,7 +649,11 @@ def test_stable_audio_inpaint_sorts_and_merges_ranges(source):
 def test_stable_audio_restyle_sends_init_noise(source):
     b = _backend(_model("stable_audio", strict = False))
     _run(b, mode = "edit", text = "lofi", source = source, edit = {"action": "restyle", "strength": 0.45})
-    assert _request(b)["options"] == {"audio_input_kind": "init_audio", "init_noise_level": 0.45}
+    assert _request(b)["options"] == {
+        "audio_input_kind": "init_audio",
+        "init_noise_level": 0.45,
+        **STABLE_AUDIO_DEFAULTS,
+    }
 
 
 def test_an_edit_the_family_does_not_offer_fails_before_any_call(source):
