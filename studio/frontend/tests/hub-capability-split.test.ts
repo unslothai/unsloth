@@ -70,7 +70,7 @@ test("Text only lists the models no other box covers, so every box ticked lists 
   assert.equal(HUB_CAPABILITY_FILTERS[0], "text");
   const viewModels = readSrc("features/hub/lib/view-models.ts");
   assert.match(viewModels, /\{ value: "text", label: "Text only" \}/);
-  assert.match(viewModels, /if \(key === "text"\) \{\s*return !HUB_CAPABILITY_FILTERS\.some\(\s*\(other\) => other !== "text" && matchesHubCapability\(row, other\),/);
+  assert.match(viewModels, /if \(key === "text"\) \{\s*return \(\s*!HUB_CAPABILITY_FILTERS\.some\(\s*\(other\) => other !== "text" && matchesHubCapability\(row, other\),/);
 });
 
 test("every capability starts ticked, and the last tick can't be removed", () => {
@@ -129,5 +129,14 @@ test("LTX versions are video, and video-to-video is not offered as runnable vide
   assert.equal(generationKinds(["diffusers"], undefined, "unsloth/LTX-2.3-GGUF").video, true);
   assert.equal(generationKinds(["diffusers"], undefined, "Lightricks/LTX-Video").video, true);
   // The Video page takes a prompt and reference images, never a source video.
-  assert.equal(generationKinds(["diffusers"], "video-to-video", "someone/restyle").video, false);
+  assert.deepEqual(generationKinds(["diffusers"], "video-to-video", "someone/restyle"), { image: false, video: false });
+  assert.equal(generationKinds(["diffusers"], undefined, "unsloth/MiniMax-H3-GGUF").video, true);
+});
+
+test("Text only never lists a media pipeline, even one no capability box claims", () => {
+  const viewModels = readSrc("features/hub/lib/view-models.ts");
+  assert.match(viewModels, /!matchesCapability\(row\.capabilities, "diffusion"\) &&\s*!MEDIA_OUTPUT_TASKS\.has\(/);
+  for (const task of ["image-text-to-image", "text-to-audio", "audio-to-audio", "video-to-video"]) {
+    assert.match(viewModels, new RegExp(`"${task}",`));
+  }
 });
