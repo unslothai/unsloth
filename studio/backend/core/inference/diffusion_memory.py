@@ -1949,6 +1949,10 @@ def plan_diffusion_memory(
             estimates["calibrated_headroom_mib"] = calibrated_activation.headroom(tile)
             # the denoise phase alone: what a second guidance branch in the same call adds (CFG-batch's memory gate)
             estimates["calibrated_denoise_mib"] = int(calibrated_activation.denoise_mib)
+            # the decode phase alone: a CFG-parallel replica on the card that hosts the VAE must leave room for it
+            estimates["calibrated_decode_mib"] = int(
+                calibrated_activation.tiled_decode_mib if tile else calibrated_activation.decode_mib
+            )
     split = _multigpu_companion_split(
         target = target,
         device_memory = device_memory,

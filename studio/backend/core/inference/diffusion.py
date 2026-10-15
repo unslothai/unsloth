@@ -106,6 +106,7 @@ from .diffusion_multigpu import (
     install_cfg_parallel,
     plan_denoise_headroom_mib,
     plan_denoise_reference_px,
+    plan_decode_headroom_mib,
     cfg_request_scope,
     release_cfg_inputs,
     invalidate_cfg_replica,
@@ -8506,6 +8507,7 @@ class DiffusionBackend:
                         logger = logger,
                         headroom_mib = plan_denoise_headroom_mib(plan),
                         headroom_reference_px = plan_denoise_reference_px(plan),
+                        decode_headroom_mib = plan_decode_headroom_mib(plan),
                     )
                     te_releaser = te_release.maybe_install(pipe, plan, logger = logger)
                     state = _LoadState(

@@ -799,6 +799,16 @@ def scaled_headroom_mib(
     return need
 
 
+def plan_decode_headroom_mib(plan: Any) -> Optional[int]:
+    """The calibrated VAE decode phase's room above the weights, None when the plan has no per-phase figure (then
+    :func:`plan_denoise_headroom_mib` is the whole-request figure, which already includes the decode peak)."""
+    estimates = getattr(plan, "estimates", None) or {}
+    if not estimates.get("calibrated_denoise_mib"):
+        return None
+    value = estimates.get("calibrated_decode_mib")
+    return int(value) if value else None
+
+
 def plan_denoise_reference_px(plan: Any) -> Optional[int]:
     """The canvas (pixels) :func:`plan_denoise_headroom_mib`'s figure holds for when it is the calibrated denoise
     phase, else None (a whole-request figure is not scaled)."""
@@ -1357,6 +1367,25 @@ def _trusted_hook(fn: Any) -> bool:
     return _hook_origin(fn).startswith(_TRUSTED_HOOK_MODULES) and _portable(fn)
 
 
+def _studio_outer_layers(forward: Any) -> tuple[list[Any], Any]:
+    """Peel Studio's own outer forward layers (``_unsloth_outer_forward``: the static step skip, defined in Studio's
+    modules) off an instance forward: (the layers, what they wrap; None = the class forward). A layer whose class is
+    not Studio's, or one that hides what it wraps, stops the peel and stays in place for the caller to judge."""
+    layers: list[Any] = []
+    fn = forward
+    for _ in range(8):
+        if (
+            fn is None
+            or not getattr(fn, "_unsloth_outer_forward", False)
+            or not str(type(fn).__module__ or "").startswith(_TRUSTED_HOOK_MODULES)
+            or not hasattr(fn, "inner")
+        ):
+            break
+        layers.append(fn)
+        fn = fn.inner
+    return layers, fn
+
+
 def _hooks_present(
     module: Any,
     *,
@@ -1384,6 +1413,10 @@ def _hooks_present(
                     if not _is_offload_object(hook) and not _trusted_hook(hook):
                         return f"{name}.{attr}"
         override = sub.__dict__.get("forward")
+        if not name and not offload_hooks_ok:
+            # CFG-parallel: Studio's outer layers above the router run on the source around every branch and are
+            # never copied into the replica (build_replica drops them); judge what they wrap
+            _layers, override = _studio_outer_layers(override)
         if (
             strict_bound
             and isinstance(override, types.MethodType)
@@ -1482,9 +1515,13 @@ def build_replica(module: Any, device: Any) -> Any:
             for hook in (getattr(sub, attr, None) or {}).values():
                 if _is_offload_object(hook):
                     memo[id(hook)] = _DROP
+    # Studio's outer layers above the root forward (the static step skip) stay on the source, which runs them around
+    # every branch: the copy gets what they wrap
+    outer_layers, router = _studio_outer_layers(module.__dict__.get("forward"))
+    for layer in outer_layers:
+        memo[id(layer)] = _DROP
     memo[id(memo)] = keep  # deepcopy's own keep-alive convention
     replica = copy.deepcopy(module, memo)
-    router = module.__dict__.get("forward")
     for sub in replica.modules():
         for key in [k for k, v in sub.__dict__.items() if v is _DROP]:
             del sub.__dict__[key]
@@ -1858,8 +1895,13 @@ class CfgParallelRouter:
         headroom_mib: Optional[int] = None,
         headroom_reference_px: Optional[int] = None,
         candidates: Optional[Sequence[int]] = None,
+        decode_headroom_mib: Optional[int] = None,
+        vae_ordinal: Optional[int] = None,
     ):
         torch = _torch()
+        # the VAE decode's room above its weights, required on the replica card only when it hosts the VAE
+        self.decode_headroom_mib = decode_headroom_mib
+        self.vae_ordinal = vae_ordinal
         # the odd branch's activations on the replica card, priced like CFG-batch's (canvas and batch scaled)
         self.headroom_mib = headroom_mib
         self.headroom_reference_px = headroom_reference_px
@@ -2075,7 +2117,7 @@ class CfgParallelRouter:
             self.shape_disabled = None
         if self.shape_disabled is not None:
             return
-        free, _total = _free_total_mib(self.secondary.index)
+        free = self._secondary_free_mib()
         if free is None:
             return
         batch = (
@@ -2083,13 +2125,47 @@ class CfgParallelRouter:
             if getattr(latent, "dim", None) is not None and latent.dim() >= 1
             else None
         )
-        room = scaled_headroom_mib(
-            self.headroom_mib, self.headroom_reference_px, self.request_px, batch
-        )
+        room = self._room_mib(batch)
         if room is not None and room > free:
             self._shape_off(
                 f"{_ROOM_REASON}: needs {int(room)} MiB, {free} MiB free on {self.secondary}"
             )
+
+    def _secondary_free_mib(self) -> Optional[int]:
+        """Free MiB on the replica card: the driver's figure plus this process's idle cached allocator blocks there
+        (the replica's last activations, reusable without a driver allocation), read on the secondary itself."""
+        free, _total = _free_total_mib(self.secondary.index)
+        if free is None:
+            return None
+        if self.secondary.type == "cuda":
+            try:
+                torch = _torch()
+                idle = (
+                    torch.cuda.memory_reserved(self.secondary)
+                    - torch.cuda.memory_allocated(self.secondary)
+                ) // (1 << 20)
+                free += max(0, int(idle))
+            except Exception:  # noqa: BLE001 - the driver figure alone (conservative)
+                pass
+        return int(free)
+
+    def _room_mib(self, batch: Optional[int]) -> int:
+        """Activation room the replica card needs beside the replica: the odd branch's denoise activations, and when
+        that card also runs the VAE decode, the decode peak (the two phases do not overlap: the routers' inputs are
+        released at decode entry), both scaled by canvas and batch."""
+        room = scaled_headroom_mib(self.headroom_mib, self.headroom_reference_px, self.request_px, batch)
+        if (
+            self.decode_headroom_mib
+            and self.vae_ordinal is not None
+            and self.secondary.index == self.vae_ordinal
+        ):
+            room = max(
+                room,
+                scaled_headroom_mib(
+                    self.decode_headroom_mib, self.headroom_reference_px, self.request_px, batch
+                ),
+            )
+        return room
 
     def _shape_oom(self, where: str, exc: BaseException) -> None:
         self._drop_pending()
@@ -2383,19 +2459,14 @@ class CfgParallelRouter:
             need_mib = sum(
                 t.numel() * t.element_size() for t in (*module.parameters(), *module.buffers())
             ) // (1 << 20)
-            free, _total = _free_total_mib(self.secondary.index)
+            free = self._secondary_free_mib()
             batch = (
                 int(self.prev_latent.shape[0])
                 if getattr(self.prev_latent, "dim", None) is not None
                 and self.prev_latent.dim() >= 1
                 else None
             )
-            room = max(
-                1024,
-                scaled_headroom_mib(
-                    self.headroom_mib, self.headroom_reference_px, self.request_px, batch
-                ),
-            )
+            room = max(1024, self._room_mib(batch))
             if free is not None and need_mib + room > free:
                 raise RuntimeError(
                     f"replica needs {need_mib} MiB, {free} MiB free on {self.secondary}"
@@ -2504,15 +2575,18 @@ def install_cfg_parallel(
     logger: Any = None,
     headroom_mib: Optional[int] = None,
     headroom_reference_px: Optional[int] = None,
+    decode_headroom_mib: Optional[int] = None,
 ) -> Optional[str]:
     """Arm CFG-parallel when a secondary card can hold a replica, else CFG-batch for an offloaded denoiser.
-    Returns the CFG-parallel decline reason or None. ``headroom_mib``: the batched call's extra activation need."""
+    Returns the CFG-parallel decline reason or None. ``headroom_mib``: the batched call's extra activation need.
+    ``decode_headroom_mib``: the VAE decode's room, required on a replica card that also hosts the VAE."""
     reason = _install_cfg_parallel_only(
         pipe,
         offload_policy = offload_policy,
         logger = logger,
         headroom_mib = headroom_mib,
         headroom_reference_px = headroom_reference_px,
+        decode_headroom_mib = decode_headroom_mib,
     )
     if (
         reason is not None
@@ -2541,6 +2615,7 @@ def _install_cfg_parallel_only(
     logger: Any = None,
     headroom_mib: Optional[int] = None,
     headroom_reference_px: Optional[int] = None,
+    decode_headroom_mib: Optional[int] = None,
 ) -> Optional[str]:
     selection = current_selection()
     reason = cfg_parallel_decline(pipe, offload_policy = offload_policy, selection = selection)
@@ -2565,10 +2640,22 @@ def _install_cfg_parallel_only(
             # only cards that hold the replica AND its denoise activations (unknown free memory kept), then the
             # fast-link tier; the canvas is not known yet, so the calibrated canvas prices it here
             room = max(1024, int(headroom_mib or 0))
+            vae = getattr(pipe, "vae", None)
+            vae_device = _module_device(vae) if vae is not None else None
+            vae_ordinal = (
+                vae_device.index if getattr(vae_device, "type", None) == "cuda" else None
+            )
+
+            def room_on(o: int) -> int:
+                # a card that also runs the VAE decode needs the decode peak too (phases do not overlap)
+                if decode_headroom_mib and o == vae_ordinal:
+                    return max(room, int(decode_headroom_mib))
+                return room
+
             fits = [
                 o
                 for o in candidates
-                if probes[o].free_mib is None or need_mib + room <= probes[o].free_mib
+                if probes[o].free_mib is None or need_mib + room_on(o) <= probes[o].free_mib
             ]
             if not fits:
                 most = max(candidates, key = lambda o: probes[o].free_mib or -1)
@@ -2587,6 +2674,8 @@ def _install_cfg_parallel_only(
                     headroom_mib = headroom_mib,
                     headroom_reference_px = headroom_reference_px,
                     candidates = fits,
+                    decode_headroom_mib = decode_headroom_mib,
+                    vae_ordinal = vae_ordinal,
                 )
                 try:
                     _CFG_ROUTERS[pipe] = router

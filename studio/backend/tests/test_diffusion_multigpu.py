@@ -3195,3 +3195,92 @@ def test_cfg_parallel_replica_oom_declines_only_that_shape(monkeypatch, where):
     with mg.cfg_request_scope(pipe, 512, 512):
         _guided(dit, 2, steps = 3)
     assert router.stats["replica_calls"] > calls  # the shapes that fit keep the replica
+
+
+def test_cfg_parallel_replica_builds_under_studios_step_skip_layer():
+    from core.inference.diffusion_step_skip import StaticStepSkip
+
+    torch.manual_seed(0)
+    dit = _BatchDit()
+    plain = _BatchDit()
+    plain.load_state_dict(dit.state_dict())
+    reference = _guided(plain, 2, steps = 4)
+    router, replicas = _router(dit)
+    # the deferred speed profile installs the static step skip ABOVE the router (it computes every call here)
+    skip = StaticStepSkip(dit, inner = router)
+    dit.forward = skip
+    out = _guided(dit, 2, steps = 4)
+    torch.testing.assert_close(out, reference, rtol = 1e-5, atol = 1e-6)
+    assert router.blocked_by is None and router.disabled_reason is None
+    assert len(replicas) == 1 and router.stats["replica_calls"] > 0
+    # the copy runs what the layer wraps, never a copy of the layer
+    assert "forward" not in replicas[0].__dict__
+    # a foreign outer layer still blocks the replica
+    class Foreign:
+        _unsloth_outer_forward = True
+
+        def __init__(self, inner):
+            self.inner = inner
+
+        def __call__(self, *a, **k):
+            return self.inner(*a, **k)
+
+    dit2 = _BatchDit()
+    router2, replicas2 = _router(dit2)
+    dit2.forward = Foreign(router2)
+    _guided(dit2, 2, steps = 3)
+    assert replicas2 == [] and "forward" in (router2.blocked_by or "")
+
+
+def test_cfg_parallel_room_counts_idle_cached_blocks_on_the_secondary(monkeypatch):
+    dit = _BatchDit()
+    router = mg.CfgParallelRouter(dit, primary = "cuda:0", secondary = "cuda:1", headroom_mib = 2000)
+    monkeypatch.setattr(mg, "_free_total_mib", lambda ordinal: (1000, 80000))
+    seen = []
+    monkeypatch.setattr(
+        torch.cuda, "memory_reserved", lambda device = None: seen.append(device) or 1800 << 20
+    )
+    monkeypatch.setattr(torch.cuda, "memory_allocated", lambda device = None: 300 << 20)
+    # 1000 MiB free per the driver + 1500 MiB of this process's idle cached blocks >= 2000 MiB
+    router._check_capacity(torch.randn(1, 4))
+    assert router.shape_disabled is None
+    assert seen and all(torch.device(d) == torch.device("cuda", 1) for d in seen)
+    monkeypatch.setattr(torch.cuda, "memory_allocated", lambda device = None: 1500 << 20)
+    router._check_capacity(torch.randn(1, 4))  # 1000 + 300 < 2000
+    assert router.shape_disabled is not None and "lacks room" in router.shape_disabled
+
+
+def test_cfg_parallel_replica_card_hosting_the_vae_keeps_decode_room(monkeypatch):
+    class Pipe:
+        transformer = _Dit()
+        vae = torch.nn.Linear(2, 2)
+
+    pipe = Pipe()
+    probes = {
+        0: _probe(0, 20000, {1: 20.0, 2: 2.0}),
+        1: _probe(1, 6000, {0: 20.0}),  # fastest link, hosts the VAE: 8000 MiB decode does not fit beside a replica
+        2: _probe(2, 5000, {0: 2.0}),
+    }
+    monkeypatch.setattr(mg, "probe_devices", lambda ordinals, measure = True: probes)
+    monkeypatch.setattr(mg, "cfg_parallel_decline", lambda pipe, **k: None)
+    monkeypatch.setattr(
+        mg,
+        "_module_device",
+        lambda m: torch.device("cuda", 1 if m is Pipe.vae else 0),
+    )
+    monkeypatch.delenv(mg.LINK_ENV, raising = False)
+    with mg.selection_scope(mg.MultiGpuSelection(primary = 0, secondaries = (1, 2))):
+        reason = mg._install_cfg_parallel_only(
+            pipe, offload_policy = "none", headroom_mib = 2000, decode_headroom_mib = 8000
+        )
+    assert reason is None, reason
+    router = mg._CFG_ROUTERS[pipe]
+    assert router.secondary == torch.device("cuda", 2)
+    # the per-request check prices the decode too whenever the replica card is the VAE's
+    router.secondary = torch.device("cuda", 1)
+    assert router._room_mib(1) == 8000
+    router.secondary = torch.device("cuda", 2)
+    assert router._room_mib(1) == 2000
+    plan = type("P", (), {"estimates": {"calibrated_denoise_mib": 3000, "calibrated_decode_mib": 7000}})()
+    assert mg.plan_decode_headroom_mib(plan) == 7000
+    assert mg.plan_decode_headroom_mib(type("P", (), {"estimates": {"runtime_headroom_mib": 9000}})()) is None

@@ -108,6 +108,7 @@ from .diffusion_multigpu import (
     install_cfg_parallel,
     plan_denoise_headroom_mib,
     plan_denoise_reference_px,
+    plan_decode_headroom_mib,
     cfg_request_scope,
     release_cfg_inputs,
     is_split as multigpu_is_split,
@@ -8308,6 +8309,7 @@ class VideoBackend:
                 logger = logger,
                 headroom_mib = plan_denoise_headroom_mib(plan),
                 headroom_reference_px = plan_denoise_reference_px(plan),
+                decode_headroom_mib = plan_decode_headroom_mib(plan),
             )
             # Opt-in (UNSLOTH_DIFFUSION_BG_COMPILE=1): off by default so the same seed twice repeats.
             from . import diffusion_bg_compile as bg_compile
