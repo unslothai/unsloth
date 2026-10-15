@@ -33564,15 +33564,48 @@ class LlamaCppBackend:
                         )
                     return stripped
 
-                def _revoke_spill_plan(run_cmd, why):
+                def _revoke_spill_plan(
+                    run_cmd,
+                    why,
+                    *,
+                    rearm_page_lock = True,
+                ):
                     """``_drop_tensor_spill``, plus the locals the plan rewrote."""
                     nonlocal n_parallel, _spill_keeps_every_layer_on_gpu
                     nonlocal effective_ctx, max_available_ctx
                     nonlocal kv_cache_unified, _auto_ctx_checkpoints, _auto_ckpt_emitted
+                    nonlocal _mem_host_resident
                     reverted = self._drop_tensor_spill(run_cmd, why)
                     if reverted is run_cmd:
                         return run_cmd
+                    _plan_kept_every_layer = _spill_keeps_every_layer_on_gpu
                     _spill_keeps_every_layer_on_gpu = False
+                    # A plan that kept every layer on the card skipped the page-lock, and the
+                    # --fit on placement this hands back may leave weights in host RAM: re-arm
+                    # it like the --fit on crash retry does. Not for the CPU fallback, which
+                    # decides its own load mode.
+                    if (
+                        rearm_page_lock
+                        and _plan_kept_every_layer
+                        and _mem_should_mlock
+                        and not _mem_host_resident
+                    ):
+                        reverted = [
+                            *reverted,
+                            *(
+                                ["--load-mode", "mmap+mlock"]
+                                if server_caps.get("supports_load_mode")
+                                else ["--mlock"]
+                            ),
+                        ]
+                        _mem_host_resident = True
+                        self._memory_mlock_applicable = True
+                        self._memory_policy_active = True
+                        logger.info(
+                            "Model Memory: re-applying the page-lock; the tensor-spill plan "
+                            "that kept every layer on the GPU was revoked (%s).",
+                            why,
+                        )
                     # So does the plan's load mode: the fitter can put far more on the host than
                     # the plan did, so a retry that keeps "none" turns a pageable fallback into a
                     # host-RAM OOM.
@@ -34073,7 +34106,9 @@ class LlamaCppBackend:
                     # strips -ngl/--fit/-ot one by one, after which the contiguous match in
                     # _drop_tensor_spill fails and the context, slots and cache it priced
                     # against GPU memory ride onto the host.
-                    failed_cmd = _revoke_spill_plan(failed_cmd, "CPU fallback")
+                    failed_cmd = _revoke_spill_plan(
+                        failed_cmd, "CPU fallback", rearm_page_lock = False
+                    )
                     fallback_has_mmproj = self._launch_has_mmproj(failed_cmd, env)
                     prepared = self._prepare_cpu_fallback_launch(
                         binary,
@@ -34326,7 +34361,7 @@ class LlamaCppBackend:
                         # path: the plan was priced against the GPU this replay drops.
                         prepared = self._prepare_cpu_fallback_launch(
                             binary,
-                            _revoke_spill_plan(cmd, "CPU fallback"),
+                            _revoke_spill_plan(cmd, "CPU fallback", rearm_page_lock = False),
                             env,
                             server_caps,
                             drop_full_offload_threads = _drop_full_offload_threads,
