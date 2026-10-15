@@ -660,7 +660,6 @@ export function ModelsPage() {
   const [allModelsView, setAllModelsViewState] = useState<AllModelsView>(
     readAllModelsViewPreference,
   );
-  // Below lg the split detail pane overlays the list, so split view opens on the rows instead.
   const isCompactViewport = useIsCompact();
   // The split view's auto-picked first row; an explicit selection or leaving split clears it.
   const autoPreviewIdRef = useRef<string | null>(null);

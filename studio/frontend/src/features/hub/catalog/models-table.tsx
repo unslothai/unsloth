@@ -499,7 +499,7 @@ export const ResultCard = memo(function ResultCard({
           <VerifiedOwner owner={row.owner} />
         </span>
         <div className="flex min-w-0 items-center gap-2 overflow-hidden text-ui-11p5 leading-ui-16 tabular-nums text-muted-foreground/65">
-          {/* Phone-width cards drop the task label, then the date, so downloads and likes still fit. */}
+          {/* Narrow cards drop the task label, then the date. */}
           {textParts.map((part, index) => (
             <span
               key={part.key}

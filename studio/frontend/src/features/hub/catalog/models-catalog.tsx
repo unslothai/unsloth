@@ -35,8 +35,7 @@ import {
   RESULT_SPLIT_ROW_HEIGHT_PX,
 } from "./models-table";
 
-// Below this pane width two cards per row truncate names and stats, so the
-// two-column view falls back to one card per row.
+// Narrower panes truncate two cards per row.
 const TWO_COLUMN_MIN_WIDTH_PX = 1040;
 
 export interface ModelsCatalogState {
@@ -373,14 +372,12 @@ export const ModelsCatalog = memo(function ModelsCatalog({
   // scrollTop to 0 and corrupts the mirror, so visibility + pointer-events-none hides it instead.
   // Non-split reserves an equal `both-edges` gutter so the centered --hub-measure column stays
   // symmetric; split mode pins a narrow master left, so it reserves only the right gutter.
-  // Phones drop the gutter so cards span the same width as the search bar above.
   const scrollPaneClassName =
     "absolute inset-0 min-h-0 overflow-x-hidden overflow-y-auto pb-6 pt-0 [overflow-anchor:none] [scrollbar-width:thin] max-md:[scrollbar-gutter:auto] " +
     (discoverView === "split"
       ? "[scrollbar-gutter:stable]"
       : "[scrollbar-gutter:stable_both-edges]");
-  // Split mode keeps the top bar's left padding to align the list header but tightens the right
-  // once the detail pane sits beside it (lg); below that the list is full width.
+  // Split mode tightens the right padding only once the detail pane sits beside it (lg).
   const splitView = discoverView === "split";
   const columnClassName = splitView
     ? "mx-auto w-full max-w-[var(--hub-measure)] px-5 sm:px-8 lg:pr-2"
