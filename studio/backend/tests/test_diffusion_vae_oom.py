@@ -506,3 +506,47 @@ def test_rejected_structural_fusion_restores_contiguous_layout(monkeypatch):
         vae._decode(torch.randn(1, 8, 6, 6) * 3)
     assert vae._unsloth_vae_structural.status == "rejected"
     assert vae.decoder.proj3d.weight.is_contiguous()
+
+
+def test_halving_continues_on_the_axis_above_the_floor():
+    """An axis already at the 8-latent floor keeps its size while the other keeps halving."""
+    attrs = {"tile_sample_min_height": 256, "tile_sample_min_width": 128}
+    assert O.halved(attrs, 8, 1) == {"tile_sample_min_height": 128, "tile_sample_min_width": 64}
+    assert O.halved(attrs, 8, 2) == {"tile_sample_min_height": 64, "tile_sample_min_width": 64}
+    assert O.halved(attrs, 8, 3) is None
+
+
+class _UntiledProbeOOMWanLike(_WanLike):
+    """The untiled reference crop of the quality probe never fits."""
+
+    def __init__(self, fits):
+        super().__init__(fits)
+        self.untiled_probes = 0
+
+    def _decode(self, z, return_dict = True):
+        if z.shape[-1] != 64 and not self.use_tiling:
+            self.untiled_probes += 1
+            raise _FakeOOM()
+        return super()._decode(z, return_dict)
+
+
+def test_unprobed_level_is_remembered_with_the_working_level():
+    """A level allowed after its probe ran out of memory is not probed again once it is the remembered level."""
+    vae = _UntiledProbeOOMWanLike(fits = 128)
+    vae.use_tiling = True
+    O.install(vae)
+    z = torch.zeros(1, 4, 1, 64, 64)
+    assert vae._decode(z)[0].shape[-2:] == (512, 512)
+    assert vae.untiled_probes == 1 and vae._unsloth_vae_oom_stats["probe_psnr"][1] is None
+    vae.seen.clear()
+    assert vae._decode(z)[0].shape[-2:] == (512, 512)
+    assert vae.untiled_probes == 1
+    assert [s[1] for s in vae.seen] == [128]
+
+
+def test_ratio_from_tile_geometry_when_nothing_else_publishes_it():
+    class _Bare:
+        tile_sample_min_size = 512
+        tile_latent_min_size = 32
+
+    assert O._spatial_ratio(_Bare()) == 16

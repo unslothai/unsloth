@@ -65,6 +65,10 @@ def _spatial_ratio(vae: Any) -> int:
             return 2 ** (len(boc) - 1)
     except Exception:  # noqa: BLE001
         pass
+    for axis in _AXES:
+        sample, latent = _int_attr(vae, f"tile_sample_min_{axis}"), _int_attr(vae, f"tile_latent_min_{axis}")
+        if sample and latent and sample % latent == 0:
+            return sample // latent
     return 8
 
 
@@ -89,12 +93,24 @@ def _overlap_ok(latent: int, sample: int, factor: Optional[float]) -> bool:
     return abs(step - round(step)) < 1e-9 and abs(blend - round(blend)) < 1e-9 and round(step) > 0
 
 
+def _axis_latents(base_latent: int, ratio: int, level: int, overlap_factor: Optional[float]) -> Optional[int]:
+    """One axis's tile size in latents at ``level``, or None when it is under the floor or no smaller than at
+    ``level - 1``."""
+    scale = 2**level
+    prev = max(MIN_TILE_LATENTS, base_latent // (scale // 2)) if level > 1 else base_latent
+    lat = max(MIN_TILE_LATENTS, base_latent // scale)  # the last halving lands on the floor
+    while lat >= MIN_TILE_LATENTS and not _overlap_ok(lat, lat * ratio, overlap_factor):
+        lat -= 1
+    if lat < MIN_TILE_LATENTS or lat >= prev or lat >= base_latent:
+        return None
+    return lat
+
+
 def halved(attrs: dict, ratio: int, level: int, overlap_factor: Optional[float] = None) -> Optional[dict]:
-    """``attrs`` with the tile geometry halved ``level`` times, every size a whole number of latents, or None under the
-    floor / when nothing can be halved."""
+    """``attrs`` with the tile geometry halved ``level`` times, every size a whole number of latents. An axis already
+    at the floor keeps its last size while the others keep halving; None when no axis gets smaller at ``level``."""
     if level <= 0:
         return dict(attrs)
-    scale = 2**level
     new = dict(attrs)
     touched = False
     for axis in _AXES:
@@ -103,13 +119,16 @@ def halved(attrs: dict, ratio: int, level: int, overlap_factor: Optional[float] 
         if sample is None and latent is None:
             continue
         base_latent = latent if latent is not None else sample // ratio
-        prev = max(MIN_TILE_LATENTS, base_latent // (scale // 2)) if level > 1 else base_latent
-        lat = max(MIN_TILE_LATENTS, base_latent // scale)  # the last halving lands on the floor
-        while lat >= MIN_TILE_LATENTS and not _overlap_ok(lat, lat * ratio, overlap_factor):
-            lat -= 1
-        if lat < MIN_TILE_LATENTS or lat >= prev or lat >= base_latent:
-            return None  # under the floor, or no smaller than the previous level
-        touched = True
+        axis_level, lat = level, None
+        while axis_level > 0:
+            lat = _axis_latents(base_latent, ratio, axis_level, overlap_factor)
+            if lat is not None:
+                break
+            axis_level -= 1
+        if lat is None:
+            continue  # this axis cannot shrink at all: stock geometry
+        touched = touched or axis_level == level
+        scale = 2**axis_level
         if sample is not None:
             new[s_name] = lat * ratio
         if latent is not None:
@@ -268,7 +287,10 @@ def install(vae: Any, logger: Any = None) -> bool:
                 raise
             _release_cache(z, vae)
             stats["probe_psnr"][level] = None
-            return lat >= UNPROBED_MIN_LATENTS
+            if lat < UNPROBED_MIN_LATENTS:
+                return False  # not cached: with more memory free the probe may run next time
+            quality[level] = True  # a remembered working level must not rerun a probe known to run out of memory
+            return True
         if mse is None:
             quality[level] = None
             stats["probe_psnr"][level] = "shape"
