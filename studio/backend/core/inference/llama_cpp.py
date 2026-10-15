@@ -11127,7 +11127,9 @@ class LlamaCppBackend:
         for spec in values:
             for mapping in spec.split(","):
                 pattern, sep, buft = mapping.rpartition("=")
-                if not sep or not pattern:
+                # An empty pattern is legal (arg.cpp splits at the first '=') and
+                # std::regex_search matches every tensor with it.
+                if not sep:
                     continue
                 mappings.append((pattern, buft.strip()))
         return tuple(mappings)
@@ -11166,7 +11168,7 @@ class LlamaCppBackend:
         for spec in values:
             for mapping in spec.split(","):
                 pattern, sep, buft = mapping.rpartition("=")
-                if not sep or not pattern or buft.strip().upper() == "CPU":
+                if not sep or buft.strip().upper() == "CPU":
                     continue
                 return True
         return False

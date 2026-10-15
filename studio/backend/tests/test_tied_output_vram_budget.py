@@ -1201,3 +1201,26 @@ def test_the_load_mode_fit_removes_a_lazy_table_once():
     footprint -= table - min(table, embd + table)  # lazy_read_bytes left for the footprint
     spill = max(0, footprint - host_only - vram) + host_only
     assert spill == (device - vram) + embd
+
+
+@pytest.mark.parametrize(
+    "extra_args, env, draft_model",
+    [
+        (["-ot", "=Vulkan0"], {}, False),
+        (["--override-tensor=,=CUDA0"], {}, False),
+        ([], {"LLAMA_ARG_OVERRIDE_TENSOR": "=CUDA0"}, False),
+        (["-otd", "=Vulkan0"], {}, True),
+    ],
+)
+def test_an_empty_override_pattern_matches_every_tensor(
+    backend, tied_gguf, extra_args, env, draft_model
+):
+    """arg.cpp splits at the first '=' and keeps an empty pattern, and std::regex_search
+    with an empty regex matches every tensor, token_embd.weight included."""
+    assert backend._override_moves_host_pinned(extra_args, env, draft_model = draft_model)
+    assert (
+        backend._host_pinned_vram_discount(
+            str(tied_gguf), extra_args, env = env, draft_model = draft_model
+        )
+        == 0
+    )
