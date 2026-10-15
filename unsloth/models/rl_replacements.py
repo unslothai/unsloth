@@ -2623,6 +2623,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             # Sequence packing (default on; UNSLOTH_GRPO_SEQ_PACKING=0 disables): one varlen block-diagonal forward replaces the padded loop exactly and fixes its left-pad RoPE error. Self-verified, re-checked as T grows, falls back if a backend ignores packed_seq_lengths, and lm_head runs on completion positions only.
             _pk_result = None
             _pk_use = False
+            _pk_T = None
             _pk_enabled = UNSLOTH_GRPO_SEQ_PACKING_ON
             # Without zoo#840's masked-column guard, zeroed prompt/pad columns turn NaN in exp().
             _pk_enabled = _pk_enabled and UNSLOTH_ZOO_HAS_MASKED_COL_GUARD
@@ -2832,14 +2833,24 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                         flush = True,
                                     )
                 except Exception as _pk_err:
-                    # Any failure: drop intermediates, use the padded loop, do not retry.
+                    # Any failure: drop intermediates and use the padded loop for this batch.
                     _pk_hidden = None
                     _pk_sel = None
                     _pk_result = None
                     _pk_use = False
-                    if isinstance(_pk_err, torch.cuda.OutOfMemoryError):
+                    if isinstance(_pk_err, torch.cuda.OutOfMemoryError) and _pk_T is not None:
+                        # An OOM says this flattened length does not fit, not that packing is wrong: keep packing smaller batches.
                         torch.cuda.empty_cache()
-                    unwrapped_model._unsloth_seq_packing_nograd_ok = False
+                        _pk_unsafe = getattr(
+                            unwrapped_model, "_unsloth_seq_packing_nograd_unsafe_T", None
+                        )
+                        unwrapped_model._unsloth_seq_packing_nograd_unsafe_T = (
+                            _pk_T if _pk_unsafe is None else min(_pk_unsafe, _pk_T)
+                        )
+                    else:
+                        if isinstance(_pk_err, torch.cuda.OutOfMemoryError):
+                            torch.cuda.empty_cache()
+                        unwrapped_model._unsloth_seq_packing_nograd_ok = False
                     if UNSLOTH_ENABLE_LOGGING:
                         print(
                             f"[Unsloth] GRPO sequence-packing (no-grad) disabled (fell back to padded): {_pk_err!r}",
