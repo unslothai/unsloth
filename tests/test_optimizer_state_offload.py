@@ -86,7 +86,13 @@ def test_deepspeed_is_skipped(monkeypatch):
     assert trainer.create_scheduler is original
 
 
-def _train(optimizer_factory, offload, steps = 6, seed = 0, chunk_bytes = None):
+def _train(
+    optimizer_factory,
+    offload,
+    steps = 6,
+    seed = 0,
+    chunk_bytes = None,
+):
     module = _module()
     torch.manual_seed(seed)
     model = torch.nn.Sequential(
@@ -244,7 +250,9 @@ def test_nested_state_tensors_are_sized():
     optimizer = torch.optim.AdamW([param])
     optimizer.state[param]["projector"] = _Projector(torch.zeros(1000))
     offloader = module._StateOffloader(optimizer, chunk_bytes = 1)
-    assert [name for name, _ in module._tensor_attrs(optimizer.state[param]["projector"])] == ["ortho_matrix"]
+    assert [name for name, _ in module._tensor_attrs(optimizer.state[param]["projector"])] == [
+        "ortho_matrix"
+    ]
     other = torch.nn.Parameter(torch.randn(4))
     assert len(offloader._chunks([param, other])) == 2
 
@@ -273,7 +281,9 @@ def test_nested_state_object_round_trip():
 @pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
 def test_layerwise_optimizer_dict_is_offloaded():
     module = _module()
-    LayerWiseDummyOptimizer = pytest.importorskip("transformers.trainer_pt_utils").LayerWiseDummyOptimizer
+    LayerWiseDummyOptimizer = pytest.importorskip(
+        "transformers.trainer_pt_utils"
+    ).LayerWiseDummyOptimizer
     params = [torch.nn.Parameter(torch.randn(256, device = "cuda")) for _ in range(2)]
     optimizer_dict = {p: torch.optim.AdamW([p], lr = 1e-3) for p in params}
     dummy = LayerWiseDummyOptimizer(optimizer_dict = optimizer_dict, lr = 1e-3)
@@ -299,7 +309,9 @@ def test_chunked_step_synchronizes_chunk_copies(monkeypatch):
     offloader = _hooked(module, torch.optim.AdamW(params), chunk_bytes = 1)
     offload = offloader.offload
     # CPU tensors are never copied, so stand in for the device a chunk copy was issued on.
-    monkeypatch.setattr(offloader, "offload", lambda params = None: offload(params) | ({"dev"} if params else set()))
+    monkeypatch.setattr(
+        offloader, "offload", lambda params = None: offload(params) | ({"dev"} if params else set())
+    )
     synced = []
     monkeypatch.setattr(module, "_synchronize", synced.append)
     for p in params:
@@ -381,7 +393,9 @@ def test_lbfgs_history_is_offloaded():
     base, _ = run(False)
     head, state = run(True)
     assert torch.allclose(base, head)
-    assert state["old_dirs"] and all(t.device.type == "cpu" for t in state["old_dirs"] + state["ro"])
+    assert state["old_dirs"] and all(
+        t.device.type == "cpu" for t in state["old_dirs"] + state["ro"]
+    )
 
 
 def test_chunked_step_runs_after_later_pre_hooks():
@@ -446,7 +460,10 @@ def test_load_state_dict_keeps_state_on_host(fused):
         p.grad = torch.ones_like(p)
     source.step()
     saved = {
-        "state": {k: {n: t.cpu().clone() for n, t in v.items()} for k, v in source.state_dict()["state"].items()},
+        "state": {
+            k: {n: t.cpu().clone() for n, t in v.items()}
+            for k, v in source.state_dict()["state"].items()
+        },
         "param_groups": source.state_dict()["param_groups"],
     }
     clones = [torch.nn.Parameter(p.detach().clone()) for p in params]

@@ -49,7 +49,12 @@ def _innermost(optimizer):
 
 # Classes whose step only touches parameters that have a gradient, so stepping one chunk at a time
 # is the same update. Others (schedulefree advances group["k"] on every call) step unchunked.
-_CHUNK_SAFE_MODULES = ("torch.optim.", "bitsandbytes.", "transformers.optimization", "unsloth.optimizers.")
+_CHUNK_SAFE_MODULES = (
+    "torch.optim.",
+    "bitsandbytes.",
+    "transformers.optimization",
+    "unsloth.optimizers.",
+)
 
 
 def _chunk_safe(optimizer):
@@ -68,7 +73,8 @@ def _tensor_attrs(value):
         slots = vars(cls).get("__slots__", ())
         names.update((slots,) if isinstance(slots, str) else slots)
     return [
-        (name, getattr(value, name)) for name in sorted(names)
+        (name, getattr(value, name))
+        for name in sorted(names)
         if isinstance(getattr(value, name, None), torch.Tensor)
     ]
 
@@ -96,7 +102,12 @@ def _synchronize(device):
 
 
 class _StateOffloader:
-    def __init__(self, optimizer, pin_memory = True, chunk_bytes = None):
+    def __init__(
+        self,
+        optimizer,
+        pin_memory = True,
+        chunk_bytes = None,
+    ):
         self.optimizer = optimizer
         self.pin_memory = pin_memory
         self.chunk_bytes = chunk_bytes if chunk_bytes is not None else _chunk_bytes()
@@ -129,7 +140,11 @@ class _StateOffloader:
         state = self.optimizer.state
         return [(p, state[p]) for p in params if p in state]
 
-    def offload(self, params = None, device_of = None):
+    def offload(
+        self,
+        params = None,
+        device_of = None,
+    ):
         # device_of(param, key, tensor) names the device of state that is already on the host
         # (a checkpoint just loaded there), None to leave it host-only.
         devices = set()
@@ -188,7 +203,11 @@ class _StateOffloader:
                     items = list(value)
                     for i, local in enumerate(items):
                         device = self.offloaded.get((param, (key, i)))
-                        if device is not None and isinstance(local, torch.Tensor) and local.device != device:
+                        if (
+                            device is not None
+                            and isinstance(local, torch.Tensor)
+                            and local.device != device
+                        ):
                             items[i] = local.to(device, non_blocking = True)
                     if isinstance(value, list):
                         value[:] = items
@@ -228,7 +247,9 @@ class _StateOffloader:
                 # Not stepped yet: two moments, a third with amsgrad or centered RMSprop with
                 # momentum (square_avg, momentum_buffer, grad_avg), at least fp32 each.
                 group = groups.get(p, {})
-                third = group.get("amsgrad") or (group.get("centered") and group.get("momentum", 0) > 0)
+                third = group.get("amsgrad") or (
+                    group.get("centered") and group.get("momentum", 0) > 0
+                )
                 moments = 3 if third else 2
                 nbytes = moments * max(p.element_size(), 4) * p.numel()
             if chunk and size + nbytes > self.chunk_bytes:
@@ -251,6 +272,7 @@ class _StateOffloader:
         if closure is not None or not _chunk_safe(optimizer):
             self.restore()
             return
+
         # Chunk-safe steps call a closure first, before any update, so the chunked updates run
         # after every step pre hook (registered later ones too), as a plain step would.
         def _chunked_updates():
@@ -314,7 +336,11 @@ class _StateOffloader:
         self.finish(devices | self.offload())
 
 
-def offload_optimizer_state(optimizer, pin_memory = True, chunk_bytes = None):
+def offload_optimizer_state(
+    optimizer,
+    pin_memory = True,
+    chunk_bytes = None,
+):
     """Keep `optimizer`'s state on the host between steps. Idempotent; returns the offloader or None."""
     optimizer = _innermost(optimizer)
     if not isinstance(optimizer, torch.optim.Optimizer):
@@ -333,9 +359,7 @@ def offload_optimizer_state(optimizer, pin_memory = True, chunk_bytes = None):
     # Paged bitsandbytes state already spills to host through unified memory.
     if getattr(optimizer, "is_paged", False):
         return None
-    if not any(
-        p.device.type != "cpu" for group in optimizer.param_groups for p in group["params"]
-    ):
+    if not any(p.device.type != "cpu" for group in optimizer.param_groups for p in group["params"]):
         return None
 
     offloader = _StateOffloader(optimizer, pin_memory = pin_memory, chunk_bytes = chunk_bytes)
@@ -368,7 +392,9 @@ def offload_optimizer_state(optimizer, pin_memory = True, chunk_bytes = None):
                 moved[id(out)] = param.device
                 return out
 
-            torch.optim.Optimizer._process_value_according_to_param_policy = staticmethod(_host_policy)
+            torch.optim.Optimizer._process_value_according_to_param_policy = staticmethod(
+                _host_policy
+            )
         try:
             result = load_state_dict(state_dict, *args, **kwargs)
         finally:
@@ -385,7 +411,8 @@ def offload_optimizer_state(optimizer, pin_memory = True, chunk_bytes = None):
                 optimizer.initialized = True
             device_of = lambda param, key, local: (
                 param.device
-                if not isinstance(key, tuple) and param.device.type != "cpu"
+                if not isinstance(key, tuple)
+                and param.device.type != "cpu"
                 and not getattr(local, "is_paged", False)
                 else None
             )
@@ -408,7 +435,9 @@ def install_optimizer_state_offload(trainer):
     if not optimizer_state_offload_enabled():
         return False
     if getattr(trainer, "is_deepspeed_enabled", False):
-        print("Unsloth: UNSLOTH_OFFLOAD_OPTIMIZER_STATE is ignored under DeepSpeed (use its offload_optimizer).")
+        print(
+            "Unsloth: UNSLOTH_OFFLOAD_OPTIMIZER_STATE is ignored under DeepSpeed (use its offload_optimizer)."
+        )
         return False
     create_scheduler = trainer.create_scheduler
     if getattr(create_scheduler, "_unsloth_state_offload", False):
@@ -419,9 +448,15 @@ def install_optimizer_state_offload(trainer):
         scheduler = create_scheduler(*args, **kwargs)
         optimizer = kwargs.get("optimizer", args[1] if len(args) > 1 else None)
         optimizer = optimizer if optimizer is not None else getattr(trainer, "optimizer", None)
-        if optimizer is not None and offload_optimizer_state(optimizer) is not None and not _PRINTED:
+        if (
+            optimizer is not None
+            and offload_optimizer_state(optimizer) is not None
+            and not _PRINTED
+        ):
             _PRINTED = True
-            print("Unsloth: Optimizer state is offloaded to CPU between steps (UNSLOTH_OFFLOAD_OPTIMIZER_STATE=1).")
+            print(
+                "Unsloth: Optimizer state is offloaded to CPU between steps (UNSLOTH_OFFLOAD_OPTIMIZER_STATE=1)."
+            )
         return scheduler
 
     _create_scheduler_offload_state._unsloth_state_offload = True
