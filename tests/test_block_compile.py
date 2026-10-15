@@ -203,10 +203,8 @@ def test_sm_count_is_read_outside_the_trace(monkeypatch):
         return 7
 
     fla.get_multiprocessor_count = get_multiprocessor_count
-    monkeypatch.setitem(sys.modules, fla.__name__, fla)
     monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
-    monkeypatch.setattr(M, "_SM_COUNT", {})
-    M._route_sm_count()
+    M._route_sm_count({fla.__name__: fla})
     out = torch.compile(
         lambda x: x * fla.get_multiprocessor_count(0), fullgraph = True, backend = "eager"
     )(torch.ones(2))

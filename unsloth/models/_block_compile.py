@@ -304,21 +304,18 @@ def _route_causal_conv(gdn):
             space["causal_conv1d_fn"] = _causal_conv1d_adapter(fn, _causal_depthwise_conv)
 
 
-_SM_COUNT = {}
-
-
-def _route_sm_count():
+def _route_sm_count(modules = None):
     # fla's gated-norm backward asks Triton's driver for the SM count; on ROCm that is
     # hip_utils.get_device_properties, which Dynamo cannot trace (4 breaks per Qwen3.5 block,
     # gfx1151, torch 2.11). The count is fixed per device: read it eagerly, look it up in the trace.
-    for name, module in list(sys.modules.items()):
+    for name, module in list((sys.modules if modules is None else modules).items()):
         if module is None or "fla." not in name:
             continue
         fn = getattr(module, "get_multiprocessor_count", None)
         if not callable(fn) or getattr(fn, "_unsloth_block_adapter", False):
             continue
         try:
-            _SM_COUNT[name] = {i: int(fn(i)) for i in range(torch.cuda.device_count())}
+            counts = {i: int(fn(i)) for i in range(torch.cuda.device_count())}
         except Exception:
             continue
 
@@ -326,9 +323,9 @@ def _route_sm_count():
         def get_multiprocessor_count(
             tensor_idx = 0,
             _original = fn,
-            _key = name,
+            _counts = counts,
         ):
-            count = _SM_COUNT[_key].get(tensor_idx)
+            count = _counts.get(tensor_idx)
             return _original(tensor_idx) if count is None else count
 
         get_multiprocessor_count._unsloth_block_adapter = True
