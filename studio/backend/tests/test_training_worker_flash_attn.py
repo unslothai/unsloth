@@ -603,22 +603,11 @@ def test_causal_conv1d_fast_path_preserves_wheel_first_install_args(monkeypatch)
 
 
 @not_on_windows
-def test_causal_conv1d_fast_path_skips_qwen3_6_variants_on_zoo_triton_conv(monkeypatch):
-    # unsloth-zoo runs Qwen3.5 / 3.6 / Qwen3-Next on its own Triton causal conv (on a CUDA torch
-    # with Triton, pinned here so a CPU-only CI host answers the same).
-    from utils import ssm_runtime
-
+def test_causal_conv1d_fast_path_includes_qwen3_6_variants(monkeypatch):
+    # The native kernel: zoo's Triton conv has no decode update and a sequence-sized dW scratch.
     install_mock = mock.Mock(return_value = True)
     monkeypatch.setattr(worker, "_install_package_wheel_first", install_mock)
-    monkeypatch.setattr(ssm_runtime, "_zoo_triton_platform_usable", lambda: True)
-    monkeypatch.delenv("UNSLOTH_DISABLE_TRITON_CAUSAL_CONV1D", raising = False)
 
-    for model_name in ("unsloth/Qwen3.6-4B", "unsloth/Qwen3_6-4B"):
-        worker._ensure_causal_conv1d_fast_path(event_queue = [], model_name = model_name)
-    assert install_mock.call_count == 0
-
-    # zoo's kill switch puts them back on the prebuilt causal-conv1d.
-    monkeypatch.setenv("UNSLOTH_DISABLE_TRITON_CAUSAL_CONV1D", "1")
     for model_name in ("unsloth/Qwen3.6-4B", "unsloth/Qwen3_6-4B"):
         worker._ensure_causal_conv1d_fast_path(event_queue = [], model_name = model_name)
     assert install_mock.call_count == 2
@@ -1612,3 +1601,19 @@ def test_windows_rejected_wheel_does_not_fall_back_to_pypi(monkeypatch):
     )
     assert ok is False and installed is True
     assert runs == []
+
+
+@pytest.mark.parametrize("capability, installs", [((7, 5), False), ((8, 0), True), ((12, 0), True)])
+def test_long_context_flash_attn_is_not_downloaded_below_sm80(monkeypatch, capability, installs):
+    from utils import kernel_install
+
+    statuses: list[str] = []
+    install_mock = mock.Mock(return_value = True)
+    monkeypatch.setattr(worker, "_should_try_runtime_flash_attn_install", lambda length: True)
+    monkeypatch.setattr(kernel_install, "_gpu_capability", lambda run: capability)
+    monkeypatch.setattr(worker, "_install_package_wheel_first", install_mock)
+    monkeypatch.setattr(worker, "_send_status", lambda queue, message: statuses.append(message))
+    worker._ensure_flash_attn_for_long_context(event_queue = [], max_seq_length = 65536)
+    assert install_mock.called is installs
+    if not installs:
+        assert any("sm80" in message for message in statuses)

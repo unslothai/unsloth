@@ -239,6 +239,52 @@ def _send_response(resp_queue: Any, response: dict) -> None:
         logger.error("Failed to send response: %s", exc)
 
 
+def _provision_ssm_kernels(
+    checkpoint_path: str, base_model: str | None, hf_token, resp_queue: Any
+) -> bool:
+    """Install the causal-conv1d / mamba-ssm a checkpoint needs before Unsloth and its modeling
+    import, decided from its config (a LoRA's base config), as a training or chat load does.
+    Returns False after reporting a failure only for a model that cannot load without mamba-ssm."""
+    try:
+        from utils.ssm_runtime import provision_ssm_kernels, ssm_probe_identifier
+        from utils.transformers_version import _remote_lora_base
+    except Exception as exc:
+        logger.debug("ssm_runtime unavailable (%s); skipping SSM kernel install", exc)
+        return True
+    base = base_model
+    if not base:
+        try:
+            # Raw HTTP, no ML import; a local adapter's base is read by the provisioner itself.
+            base = _remote_lora_base(checkpoint_path, hf_token or None)
+        except Exception as exc:
+            logger.debug("Could not resolve the adapter base for SSM kernels: %s", exc)
+    status = lambda message: _send_response(
+        resp_queue, {"type": "status", "message": message, "ts": time.time()}
+    )
+    try:
+        provision_ssm_kernels(
+            ssm_probe_identifier(checkpoint_path, base),
+            checkpoint_path,
+            hf_token or None,
+            adapter_base = base,
+            status_cb = status,
+        )
+        return True
+    except Exception as exc:
+        _send_response(
+            resp_queue,
+            {
+                "type": "error",
+                "error": (
+                    "This model needs SSM kernel libraries (causal-conv1d / mamba-ssm) "
+                    f"that could not be installed: {exc}"
+                ),
+                "ts": time.time(),
+            },
+        )
+        return False
+
+
 def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
     from hub.utils.hf_tokens import hf_token_arg
 
@@ -608,6 +654,14 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
 
     install_torchao_windows_rocm_real_or_stub()
 
+    # Before Unsloth and the modeling import: transformers captures its kernel gates at import, and
+    # some remote modeling code (Nemotron-H) cannot import at all without mamba-ssm.
+    with _offline_window_if_unreachable(step = "installing SSM kernels"):
+        if not _provision_ssm_kernels(
+            checkpoint_path, config.get("base_model") or None, config.get("hf_token"), resp_queue
+        ):
+            return
+
     try:
         _send_response(
             resp_queue,
@@ -686,6 +740,13 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
             if cmd_type == "load":
                 # Load a new checkpoint, reusing this subprocess.
                 backend.cleanup_memory()
+                if not _provision_ssm_kernels(
+                    cmd["checkpoint_path"],
+                    cmd.get("base_model") or None,
+                    cmd.get("hf_token"),
+                    resp_queue,
+                ):
+                    continue
                 # Offline window also covers this load's Hub preflights (re-probed per load).
                 with _offline_window_if_unreachable():
                     _handle_load(backend, cmd, resp_queue)

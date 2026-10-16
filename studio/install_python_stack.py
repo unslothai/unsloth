@@ -52,6 +52,8 @@ def _nvidia_library_inventory():
 
 
 from backend.utils.kernel_install import (
+    KERNELS,
+    gpu_below_flash_attn_floor,
     install_prebuilt,
     uninstall_command,
 )
@@ -8522,6 +8524,12 @@ def _remove_stale_flash_attn() -> None:
         )
 
 
+def _flash_attn_gpu_below_floor() -> bool:
+    """A visible CUDA GPU below sm80 (a T4), where Unsloth leaves FlashAttention 2 off. No visible
+    GPU is False: an image build installs ahead of the GPU it will run on."""
+    return gpu_below_flash_attn_floor()
+
+
 def _ensure_flash_attn() -> None:
     if _flash_attn_install_disabled():
         return
@@ -8540,6 +8548,12 @@ def _ensure_flash_attn() -> None:
     # a failed flash-attn probe proves staleness only when torch still imports.
     stale = env is not None and _installed_distribution_version("flash-attn") is not None
     wheel_url = _build_flash_attn_wheel_url(env) if env else None
+    if wheel_url and not (env or {}).get("hip_version") and _flash_attn_gpu_below_floor():
+        # Unsloth only turns FlashAttention 2 on from sm80; a T4 would download it for nothing.
+        _note("flash-attn needs an sm80 or newer GPU; skipped")
+        if stale:
+            _remove_stale_flash_attn()
+        return
     wheel_available = url_exists(wheel_url) if wheel_url else False
     if wheel_available:
         # installing a distribution invalidates caches keyed on the action counter.
@@ -8594,6 +8608,47 @@ def _ensure_flash_attn() -> None:
         _step("warning", "No published flash-attn prebuilt wheel found", _warn)
     if stale:
         _remove_stale_flash_attn()
+
+
+def _remove_stale_ssm_kernels() -> None:
+    """Remove an installed causal-conv1d / mamba-ssm whose compiled extension no longer imports,
+    e.g. built for the torch a repair just replaced. Never installs: a model that needs them
+    installs them when it loads, and a broken native module left behind can take that load down."""
+    if NO_TORCH or IS_MACOS:
+        return
+    for name in ("causal_conv1d", "mamba_ssm"):
+        distribution, check = KERNELS[name]
+        if _installed_distribution_version(distribution) is None:
+            continue
+        try:
+            loads = (
+                subprocess.run(
+                    [sys.executable, "-c", check],
+                    stdout = subprocess.DEVNULL,
+                    stderr = subprocess.DEVNULL,
+                    timeout = _FLASH_ATTN_IMPORT_PROBE_TIMEOUT,
+                ).returncode
+                == 0
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            # Inconclusive (a hung or unlaunchable probe), not proof it is broken.
+            continue
+        if loads:
+            continue
+        _count_install_action()
+        try:
+            removed = _uninstall_distribution(distribution)
+        except OSError:
+            removed = False
+        if removed:
+            _step("warning", f"{name} does not load with this torch; removed it", _warn)
+        else:
+            _step(
+                "warning",
+                f"{name} does not load with this torch and could not be removed; "
+                f"uninstall {distribution} manually",
+                _warn,
+            )
 
 
 # -- uv bootstrap ------------------------------------------------------
@@ -12743,6 +12798,7 @@ def install_python_stack() -> int:
     if not IS_MACOS and not NO_TORCH:
         _progress("flash-attn")
         _ensure_flash_attn()
+        _remove_stale_ssm_kernels()
 
     # # 6. Patch: override llama_cpp.py with fix from unsloth-zoo  feature/llama-cpp-windows-support branch
     # patch_package_file(
@@ -12928,6 +12984,7 @@ def install_python_stack() -> int:
             _install_torchao_for_torch(_torch_after_repair)
             # resync flash-attn because the repair can invalidate the wheel selected earlier.
             _ensure_flash_attn()
+            _remove_stale_ssm_kernels()
         # Unguarded: torch==2.10.0 accepts 2.10.0+rocm7.1, and an earlier run may have moved it.
         _evict_xformers_built_for_another_torch(scope = "linux torch repair", family_only = True)
         _evict_xformers_requiring_another_torch()
@@ -12944,6 +13001,7 @@ def install_python_stack() -> int:
         if _torch_after_flavor and _torch_after_flavor != _torch_before_flavor:
             # flash-attn was chosen for the torch the invariant just replaced, as in step 13.
             _ensure_flash_attn()
+            _remove_stale_ssm_kernels()
         # A direct run has no setup.ps1 postlude to swap triton back. After the invariant,
         # because the swap keys off the installed +xpu label.
         _ensure_xpu_triton()

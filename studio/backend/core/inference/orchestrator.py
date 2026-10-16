@@ -2385,6 +2385,15 @@ class InferenceOrchestrator:
                     logger.info("Model '%s' loaded successfully in subprocess", model_name)
                     return True
                 else:
+                    if resp.get("error_kind") == "ssm_runtime_restart_required" and attempt == 0:
+                        # The worker installed an SSM kernel after its transformers had already
+                        # imported the model's modeling module; a fresh worker binds it.
+                        logger.info(
+                            "Respawning the inference worker for '%s' to pick up new SSM kernels",
+                            model_name,
+                        )
+                        self._shutdown_subprocess(timeout = 5)
+                        continue
                     # Worker reports failures (consent gate included) under "message".
                     error = resp.get("message") or resp.get("error") or "Failed to load model"
                     self.active_model_name = None

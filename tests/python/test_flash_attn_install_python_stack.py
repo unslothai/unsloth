@@ -46,7 +46,14 @@ sys.path.insert(0, str(STUDIO_DIR))
 sys.path.insert(0, str(STUDIO_DIR / "backend"))
 
 import install_python_stack as ips
+import pytest
 from utils import wheel_utils
+
+
+@pytest.fixture(autouse = True)
+def _an_sm80_gpu(monkeypatch):
+    # The host's real GPU must not decide these tests; the capability cases below override it.
+    monkeypatch.setattr(ips, "_flash_attn_gpu_below_floor", lambda: False)
 
 
 class TestPrebuiltWheelTorchMapping:
@@ -827,3 +834,64 @@ class TestWarningColor:
         out = capsys.readouterr().out
         assert f"\033[{code}mflash-attn install failed (exit code 1)\033[0m" in out
         assert "\033[96m" not in out
+
+
+class TestFlashAttnCapabilityFloor:
+    """Unsloth only enables FlashAttention 2 from sm80: below it the wheel is never downloaded."""
+
+    def _run(self, monkeypatch, capability):
+        from utils import kernel_install
+
+        monkeypatch.setattr(
+            ips,
+            "_flash_attn_gpu_below_floor",
+            lambda: kernel_install.gpu_below_flash_attn_floor(lambda *a, **k: None),
+        )
+        monkeypatch.setattr(kernel_install, "_gpu_capability", lambda run: capability)
+        calls = {"head": 0, "install": 0}
+        notes = []
+        with (
+            mock.patch.object(ips, "NO_TORCH", False),
+            mock.patch.object(ips, "IS_WINDOWS", True),
+            mock.patch.object(ips, "IS_MACOS", False),
+            mock.patch.object(ips, "_flash_attn_importable", return_value = False),
+            mock.patch.object(ips, "_installed_distribution_version", return_value = None),
+            mock.patch.object(
+                ips,
+                "probe_torch_wheel_env",
+                return_value = {
+                    "python_tag": "cp313",
+                    "abi_tag": "cp313",
+                    "torch_mm": "2.13",
+                    "cuda_major": "13",
+                    "cxx11abi": "TRUE",
+                    "platform_tag": "win_amd64",
+                    "hip_version": "",
+                },
+            ),
+            mock.patch.object(
+                ips,
+                "url_exists",
+                side_effect = lambda url: calls.__setitem__("head", calls["head"] + 1) or True,
+            ),
+            mock.patch.object(
+                ips,
+                "install_prebuilt",
+                side_effect = lambda *a, **k: calls.__setitem__("install", calls["install"] + 1)
+                or "installed",
+            ),
+            mock.patch.object(ips, "_note", side_effect = notes.append),
+            mock.patch.object(ips, "_count_install_action"),
+        ):
+            ips._ensure_flash_attn()
+        return calls, notes
+
+    def test_a_t4_does_not_download_flash_attn(self, monkeypatch):
+        calls, notes = self._run(monkeypatch, (7, 5))
+        assert calls == {"head": 0, "install": 0}
+        assert any("sm80" in note for note in notes)
+
+    @pytest.mark.parametrize("capability", [(8, 0), (12, 0), None])
+    def test_sm80_and_newer_or_no_visible_gpu_still_install(self, monkeypatch, capability):
+        calls, _ = self._run(monkeypatch, capability)
+        assert calls == {"head": 1, "install": 1}

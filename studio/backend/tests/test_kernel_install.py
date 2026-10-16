@@ -737,3 +737,12 @@ def test_windows_mamba_ssm_installs_with_triton(uv, monkeypatch):
     assert run.installer_calls[0][-1].endswith(
         "mamba_ssm-2.3.2.post1+cu13torch2.13cxx11abiTRUE-cp313-cp313-win_amd64.whl"
     )
+
+
+@pytest.mark.parametrize(
+    "capability, below",
+    [((7, 5), True), ((7, 0), True), ((8, 0), False), ((12, 0), False), (None, False)],
+)
+def test_flash_attn_floor_is_sm80_and_no_visible_gpu_is_not_below(monkeypatch, capability, below):
+    monkeypatch.setattr(kernel_install, "_gpu_capability", lambda run: capability)
+    assert kernel_install.gpu_below_flash_attn_floor() is below

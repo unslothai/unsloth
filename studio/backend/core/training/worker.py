@@ -2147,6 +2147,12 @@ def _should_try_runtime_flash_attn_install(max_seq_length: int) -> bool:
 def _ensure_flash_attn_for_long_context(event_queue: Any, max_seq_length: int) -> None:
     if not _should_try_runtime_flash_attn_install(max_seq_length):
         return
+    from utils.kernel_install import gpu_below_flash_attn_floor
+
+    if gpu_below_flash_attn_floor():
+        # Unsloth only turns FlashAttention 2 on from sm80 (a T4 is sm75): nothing to download.
+        _send_status(event_queue, "flash-attn needs an sm80 or newer GPU; continuing without it")
+        return
 
     installed = _install_package_wheel_first(
         event_queue = event_queue,
@@ -4028,25 +4034,25 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     # 2) mamba-ssm + flash-attn keep their substring / size gates.
     # 3) FLA gated-delta kernels: vendored by unsloth_zoo, nothing to install.
     # Laya decision models are ModernBERT encoders: none of these apply.
-    # Clef decision models are Qwen3.5 backbones: zoo's gated-delta and Triton conv kernels cover them.
+    # Clef decision models are Qwen3.5 backbones and need the same gated-delta / conv kernels.
     if (
         not config.get("is_decision")
         or config.get("decision_layout") in ("clef", "llm")
         or _decision_has_llm_backbone(model_load_target, _worker_hf_token(config))
     ):
         try:
-            from utils.ssm_runtime import (
-                resolved_model_is_ssm,
-                resolved_model_wants_causal_conv1d,
-            )
+            from utils.ssm_runtime import resolve_ssm_kernels
 
-            is_ssm = resolved_model_is_ssm(model_name, model_load_target, _worker_hf_token(config))
-            # Every mamba-ssm model also runs causal-conv1d.
-            wants_causal_conv1d = is_ssm or resolved_model_wants_causal_conv1d(
+            # A continued local adapter loads from its folder, but its base decides the kernels:
+            # the authorized pin when the run was checked, else the adapter's recorded base.
+            kernels = resolve_ssm_kernels(
                 model_name,
                 model_load_target,
                 _worker_hf_token(config),
+                adapter_base = config.get("adapter_base_pin") or None,
             )
+            is_ssm = kernels.mamba_ssm
+            wants_causal_conv1d = kernels.causal_conv1d
             _ensure_causal_conv1d_fast_path(
                 event_queue,
                 model_name,

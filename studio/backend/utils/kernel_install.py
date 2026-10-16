@@ -276,6 +276,16 @@ def _gpu_capability(run: Callable[..., subprocess.CompletedProcess]) -> tuple[in
     return _CAPABILITY[run]
 
 
+def gpu_below_flash_attn_floor(
+    run: Callable[..., subprocess.CompletedProcess] = subprocess.run,
+) -> bool:
+    """Whether the best visible CUDA GPU is below sm80, where Unsloth leaves FlashAttention 2 off
+    (a T4 is sm75), so a flash-attn download would go unused. No visible GPU answers False: an
+    image build installs ahead of the GPU it will run on."""
+    capability = _gpu_capability(run)
+    return capability is not None and capability < (8, 0)
+
+
 def _probe_gpu_capability(
     run: Callable[..., subprocess.CompletedProcess],
 ) -> tuple[int, int] | None:
