@@ -450,7 +450,9 @@ def _planned_progress_files(
 
     if kind != "pipeline" and gguf_filename:
         add(repo_id, gguf_filename, (file_sizes.get(repo_id) or {}).get(gguf_filename, 0))
-    base_sizes = file_sizes.get(base) or file_sizes.get(repo_id if kind == "pipeline" else base) or {}
+    base_sizes = (
+        file_sizes.get(base) or file_sizes.get(repo_id if kind == "pipeline" else base) or {}
+    )
     for name in base_files:
         add(fetch_base or base, name, base_sizes.get(name, 0))
     if dit_prequant is not None:
@@ -464,7 +466,11 @@ def _sibling_blob_key(sibling: Any) -> Optional[str]:
     """The name huggingface_hub gives this file's blob (and its ``<key>.incomplete`` while downloading): the LFS
     sha256 for an LFS file, else the git blob id. None when the listing did not say."""
     lfs = getattr(sibling, "lfs", None)
-    sha = (lfs.get("sha256") if isinstance(lfs, dict) else getattr(lfs, "sha256", None)) if lfs else None
+    sha = (
+        (lfs.get("sha256") if isinstance(lfs, dict) else getattr(lfs, "sha256", None))
+        if lfs
+        else None
+    )
     key = sha or getattr(sibling, "blob_id", None)
     return str(key) if key else None
 
@@ -492,7 +498,10 @@ def _planned_blob_keys(
 def _listing_extra(listing_repo: str, rfilename: str) -> bool:
     """A file an artifact mirror ships beside the upstream folders that no pipeline load reads (its sample renders);
     the root checkpoints are already excluded by every listing filter's top-level rule."""
-    return mirror_hosts_artifacts(listing_repo) and rfilename.split("/", 1)[0] in ("samples", "assets")
+    return mirror_hosts_artifacts(listing_repo) and rfilename.split("/", 1)[0] in (
+        "samples",
+        "assets",
+    )
 
 
 def hub_cache_dir() -> str:
@@ -5979,7 +5988,9 @@ class DiffusionBackend:
             for name, size in files:
                 key = (blob_keys or {}).get((repo.lower(), name))
                 if key:
-                    remaining_by_key[key] = remaining_by_key.get(key, 0) + max(0, size - done_by_file[name])
+                    remaining_by_key[key] = remaining_by_key.get(key, 0) + max(
+                        0, size - done_by_file[name]
+                    )
                 elif size:
                     unkeyed = True
             in_flight = 0
@@ -6002,7 +6013,12 @@ class DiffusionBackend:
         return DiffusionBackend._cache_bytes(repo_id)
 
     @staticmethod
-    def _cache_bytes(repo_id: str, *, pipeline_only: bool = False, in_flight: bool = False) -> int:
+    def _cache_bytes(
+        repo_id: str,
+        *,
+        pipeline_only: bool = False,
+        in_flight: bool = False,
+    ) -> int:
         """Bytes of ``repo_id`` on disk across every cache root, for progress and the pipeline plan.
 
         Scoped per root to the revision that root serves (``refs/main``), because ``blobs/`` is

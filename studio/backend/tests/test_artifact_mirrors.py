@@ -283,7 +283,9 @@ def test_on_device_lists_an_artifact_mirror_as_its_checkpoint_only(tmp_path, cac
     ]
 
 
-def test_load_progress_through_an_artifact_mirror_counts_only_the_pipeline_part(monkeypatch, tmp_path):
+def test_load_progress_through_an_artifact_mirror_counts_only_the_pipeline_part(
+    monkeypatch, tmp_path
+):
     """A bf16 Turbo load fetches only the diffusers folders of unsloth/Qwen-Image-2.1-Turbo-FP8, so expected_bytes
     counts only those. FP8 / INT8 checkpoints already cached at the repo root must not count toward progress, while
     the blob downloading right now must."""
@@ -361,7 +363,9 @@ def test_every_artifact_mirror_is_refused_as_a_pipeline_pick(repo):
     assert df.canonical_base(repo).lower() in str(excinfo.value).lower()
 
 
-def test_progress_of_a_gguf_picked_from_an_artifact_mirror_counts_only_what_it_loads(monkeypatch, tmp_path):
+def test_progress_of_a_gguf_picked_from_an_artifact_mirror_counts_only_what_it_loads(
+    monkeypatch, tmp_path
+):
     """unsloth/Z-Image-GGUF is both the pick and its base's companion repo. A sibling quant and the sample renders
     already cached there are not part of this load; the selected quant, the pipeline folders and the in-flight blob
     are."""
@@ -401,7 +405,9 @@ def test_progress_of_a_gguf_picked_from_an_artifact_mirror_counts_only_what_it_l
     assert progress["bytes_downloaded"] == 5_000 + sum(pipeline.values()) + 1_000
 
 
-def test_a_gguf_and_its_folders_split_across_cache_roots_keep_one_row_per_root(monkeypatch, tmp_path):
+def test_a_gguf_and_its_folders_split_across_cache_roots_keep_one_row_per_root(
+    monkeypatch, tmp_path
+):
     """The quant cached in one root, the base's folders (fetched after a cache-folder change) in the other. A delete
     is scoped to one cache root, so each root keeps its own row and each row's size is what its delete frees: the
     GGUF row counts only its own root, and the folders copy is the GGUF's companion, never a pick."""
@@ -423,14 +429,18 @@ def test_a_gguf_and_its_folders_split_across_cache_roots_keep_one_row_per_root(m
     )
     monkeypatch.setattr(cache_inventory, "_cached_row_task", lambda *_a, **_k: "text-to-image")
     folder_rows = [
-        r for r in cache_inventory._scan_cached_models(active_hub_cache = folder_root) if r["repo_id"] == repo
+        r
+        for r in cache_inventory._scan_cached_models(active_hub_cache = folder_root)
+        if r["repo_id"] == repo
     ]
     assert len(folder_rows) == 1
     assert folder_rows[0]["companion"] is True and not folder_rows[0]["single_file"]
     assert folder_rows[0]["cache_path"] == str(in_folder_root.repo_path)
     assert folder_rows[0]["size_bytes"] > 0
     gguf_rows = [
-        r for r in cache_inventory._scan_cached_gguf(active_hub_cache = folder_root) if r["repo_id"] == repo
+        r
+        for r in cache_inventory._scan_cached_gguf(active_hub_cache = folder_root)
+        if r["repo_id"] == repo
     ]
     assert len(gguf_rows) == 1
     assert gguf_rows[0]["size_bytes"] == 5_000
@@ -465,7 +475,9 @@ def test_a_custom_folder_with_the_gguf_and_folders_in_two_caches_keeps_one_row_p
 
     rows = [
         r
-        for r in local_inventory._scan_custom_folder(folder, hf_caches = [(first, None), (second, None)])
+        for r in local_inventory._scan_custom_folder(
+            folder, hf_caches = [(first, None), (second, None)]
+        )
         if r.model_id == repo
     ]
     gguf = [r for r in rows if r.model_format == "gguf"]
@@ -509,7 +521,11 @@ _SHAPES = {
         kind = "pipeline",
         base = "Qwen/Qwen-Image-2.1-Turbo",
         fetch = _FP8_REPO,
-        base_files = {"model_index.json": 7, "transformer/config.json": 2, "vae/diffusion_pytorch_model.safetensors": 300},
+        base_files = {
+            "model_index.json": 7,
+            "transformer/config.json": 2,
+            "vae/diffusion_pytorch_model.safetensors": 300,
+        },
         dit = (_FP8_REPO, "Qwen-Image-2.1-Turbo-FP8.safetensors", 7_000),
         extra = {_FP8_REPO: {"Qwen-Image-2.1-Turbo-INT8.safetensors": 7_100, "samples/a.png": 900}},
     ),
@@ -529,7 +545,9 @@ _SHAPES = {
 
 
 @pytest.mark.parametrize("shape", sorted(_SHAPES))
-def test_progress_reaches_expected_exactly_when_every_planned_file_is_cached(monkeypatch, tmp_path, shape):
+def test_progress_reaches_expected_exactly_when_every_planned_file_is_cached(
+    monkeypatch, tmp_path, shape
+):
     """expected_bytes and the progress scan come from ONE list of planned files, so whatever else the repos hold
     (sibling quants, other prequant schemes, sample renders), downloaded equals expected once every planned file is
     cached, and stays below it while one is still in flight."""
@@ -602,9 +620,18 @@ def test_run_load_counts_a_prequant_denoiser_hosted_in_the_companion_mirror(monk
 
     base = "Qwen/Qwen-Image-2.1-Turbo"
     dit = (_FP8_REPO, "Qwen-Image-2.1-Turbo-FP8.safetensors", 7_000)
-    base_files = {"model_index.json": 7, "transformer/config.json": 2, "vae/diffusion_pytorch_model.safetensors": 300}
+    base_files = {
+        "model_index.json": 7,
+        "transformer/config.json": 2,
+        "vae/diffusion_pytorch_model.safetensors": 300,
+    }
 
-    def estimate(*_a, file_sizes_out = None, fetch_repos_out = None, **_k):
+    def estimate(
+        *_a,
+        file_sizes_out = None,
+        fetch_repos_out = None,
+        **_k,
+    ):
         if file_sizes_out is not None:
             file_sizes_out[base] = dict(base_files)
         if fetch_repos_out is not None:
@@ -624,15 +651,21 @@ def test_run_load_counts_a_prequant_denoiser_hosted_in_the_companion_mirror(monk
         "_cache_file_bytes": staticmethod(lambda repo, f: on_disk.get((repo, f), 0)),
         "_hub_cache_repo_dirs": staticmethod(lambda repo: []),
         # What the old scoped scan saw in the mirror: the diffusers folders only.
-        "_cache_bytes": staticmethod(lambda repo, **k: sum(base_files.values()) if repo == _FP8_REPO else 0),
+        "_cache_bytes": staticmethod(
+            lambda repo, **k: sum(base_files.values()) if repo == _FP8_REPO else 0
+        ),
     }.items():
         monkeypatch.setattr(DiffusionBackend, name, value)
     monkeypatch.setattr(dmod, "_assert_base_repo_accessible", lambda *a, **k: None)
-    monkeypatch.setattr(dmod, "prefer_ungated_mirror", lambda b, *a, **k: _FP8_REPO if b == base else b)
+    monkeypatch.setattr(
+        dmod, "prefer_ungated_mirror", lambda b, *a, **k: _FP8_REPO if b == base else b
+    )
     monkeypatch.setattr(dmod, "assert_flux2_pick_compatible", lambda *a, **k: None)
     monkeypatch.setattr(dmod, "assert_pick_is_not_speech", lambda *a, **k: None)
     seen = []
-    monkeypatch.setattr(DiffusionBackend, "load_pipeline", lambda self, **kw: seen.append(self.load_progress()))
+    monkeypatch.setattr(
+        DiffusionBackend, "load_pipeline", lambda self, **kw: seen.append(self.load_progress())
+    )
     backend = DiffusionBackend()
     backend._loading = _LoadingState(repo_id = base, base_repo = None)
     backend._load_token = 7
@@ -677,7 +710,9 @@ def test_a_stale_incomplete_blob_from_a_cancelled_sibling_is_not_progress(monkey
     assert backend.load_progress()["bytes_downloaded"] == 2_000
 
 
-def test_a_folders_only_copy_in_the_other_root_is_a_companion_row_and_no_orphan(monkeypatch, tmp_path):
+def test_a_folders_only_copy_in_the_other_root_is_a_companion_row_and_no_orphan(
+    monkeypatch, tmp_path
+):
     """The GGUF in one cache root, the mirror's folders in the other: the compatibility cached-models route lists no
     single-file row for the folders copy, and Free up space does not offer it, since the installed GGUF loads its
     companions from it."""
@@ -707,7 +742,9 @@ def test_a_folders_only_copy_in_the_other_root_is_a_companion_row_and_no_orphan(
     assert [c for c in offered if c["repo_id"] == repo] == []
 
 
-def test_a_resumed_planned_blob_counts_its_earlier_bytes_and_a_siblings_never_counts(monkeypatch, tmp_path):
+def test_a_resumed_planned_blob_counts_its_earlier_bytes_and_a_siblings_never_counts(
+    monkeypatch, tmp_path
+):
     """huggingface_hub writes a file to ``blobs/<blob key>.incomplete``. A planned shard resumed at 90% counts its
     90% at once (not 0% until it finishes), while another download's blob in the same repo, new or old, counts
     nothing."""
@@ -736,7 +773,9 @@ def test_a_resumed_planned_blob_counts_its_earlier_bytes_and_a_siblings_never_co
         planned_blob_keys = {(repo.lower(), planned[0][1]): "a1b2"},
     )
     assert backend.load_progress()["bytes_downloaded"] == 9_000
-    (blobs / "eeee.incomplete").write_bytes(b"\0" * 3_000)  # another download starting after the load
+    (blobs / "eeee.incomplete").write_bytes(
+        b"\0" * 3_000
+    )  # another download starting after the load
     assert backend.load_progress()["bytes_downloaded"] == 9_000
 
 

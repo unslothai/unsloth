@@ -1356,7 +1356,8 @@ def _scan_cached_models(
                         )
                     ),
                     # Listed so tens of GB of companion weights stay visible and deletable, but flagged so no picker offers a denoiser-less repo as a load.
-                    "companion": cross_root_folders or _cached_row_companion(repo_id, load_snapshot),
+                    "companion": cross_root_folders
+                    or _cached_row_companion(repo_id, load_snapshot),
                     "diffusers": _cached_row_is_diffusers(repo_info, load_snapshot),
                     **local_metadata,
                 }

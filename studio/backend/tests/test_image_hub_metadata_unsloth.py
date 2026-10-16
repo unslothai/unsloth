@@ -39,7 +39,10 @@ _PIPELINE_FILES = {
 }
 _MODEL_INDEX = {
     "_class_name": "DiffusionPipeline",
-    **{c: ["diffusers", "Component"] for c in ("scheduler", "text_encoder", "tokenizer", "transformer", "vae")},
+    **{
+        c: ["diffusers", "Component"]
+        for c in ("scheduler", "text_encoder", "tokenizer", "transformer", "vae")
+    },
 }
 # What an artifact mirror ships beside the upstream folders: root checkpoints and sample renders.
 _ARTIFACT_EXTRAS = {"Model-FP8.safetensors": 7_000, "samples/fp8_1.png": 1_000}
@@ -105,7 +108,6 @@ def _record_hub(monkeypatch, tmp_path) -> list[tuple[str, str]]:
         asked.append(("hf_hub_download", repo_id))
         if kwargs.get("local_files_only"):
             from huggingface_hub.errors import LocalEntryNotFoundError
-
             raise LocalEntryNotFoundError(f"{repo_id}/{filename}")
         out = tmp_path / "dl" / repo_id.replace("/", "--") / filename
         out.parent.mkdir(parents = True, exist_ok = True)
@@ -145,7 +147,9 @@ def _vendor_calls(asked: list[tuple[str, str]], pick: str) -> list[tuple[str, st
 def hub(monkeypatch, tmp_path):
     monkeypatch.setattr(df, "_upstream_is_cached", lambda *a, **k: False)
     monkeypatch.delenv("UNSLOTH_DIFFUSION_NO_MIRROR", raising = False)
-    monkeypatch.setattr(DiffusionBackend, "_hub_file_is_loadable", staticmethod(lambda *a, **k: False))
+    monkeypatch.setattr(
+        DiffusionBackend, "_hub_file_is_loadable", staticmethod(lambda *a, **k: False)
+    )
     return _record_hub(monkeypatch, tmp_path)
 
 

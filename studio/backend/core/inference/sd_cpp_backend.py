@@ -3897,6 +3897,7 @@ class SdCppDiffusionBackend:
         total = 0
         try:
             from huggingface_hub import HfApi
+
             api = HfApi(token = hf_token)
             # Sized where _fetch_assets pulls from: a gated vendor id answers an anonymous user with nothing, which
             # left CLIP / T5 at 0 bytes and the bar finalizing while they downloaded.

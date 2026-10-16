@@ -5525,7 +5525,6 @@ def cached_model_rows(cache_scans = None) -> list[dict]:
     # whose diffusers folders sit in the other is a GGUF repo, so its folders-only copy is no row of this listing.
     try:
         from hub.services.models.cache_inventory import _artifact_gguf_repo_ids
-
         artifact_gguf_keys = _artifact_gguf_repo_ids(cache_scans)
     except Exception:  # noqa: BLE001 -- no table means no artifact mirrors
         artifact_gguf_keys = set()

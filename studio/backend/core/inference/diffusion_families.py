@@ -1561,7 +1561,11 @@ def prefer_ungated_mirror(
         return base
     # ``other_root`` for a fetch that resolves each file through either cache root (``reuse_other_cache_root``):
     # an upstream copy left in the pre-change root then serves the load, so it must keep the upstream id.
-    cached = _upstream_is_cached(base, files, other_root = True) if other_root else _upstream_is_cached(base, files)
+    cached = (
+        _upstream_is_cached(base, files, other_root = True)
+        if other_root
+        else _upstream_is_cached(base, files)
+    )
     return base if cached else mirror
 
 
@@ -2492,9 +2496,10 @@ def prequant_only_repo_ids() -> frozenset[str]:
     lowered = {b.strip().lower() for b in bases if b}
     # Every artifact mirror too: the -GGUF ones host no prequant scheme, but their folders are the BASE's pipeline
     # all the same, and a pipeline pick of the repo id itself is the wrong request.
-    return frozenset(
-        r.strip().lower() for r in hosted if r and r.strip().lower() not in lowered
-    ) | _ARTIFACT_MIRRORS
+    return (
+        frozenset(r.strip().lower() for r in hosted if r and r.strip().lower() not in lowered)
+        | _ARTIFACT_MIRRORS
+    )
 
 
 def prequant_repo_role(
