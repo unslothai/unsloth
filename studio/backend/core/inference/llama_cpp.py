@@ -28900,19 +28900,19 @@ class LlamaCppBackend:
                         # --[no-]mmproj-offload, --mmproj-device / -mmdev and their env twins.
                         _mmproj_place = _mmproj_placement(_child_extras, _child_env)
                         _mmproj_host_bytes = 0
-                        if effective_is_vision and mmproj_size > 0:
+                        # A named device may be a companion card gpu_ids exposes
+                        # (_widen_pin_ids_for_companion_devices); a CPU name fails
+                        # parse_device_list. Unreadable: arg.cpp throws. Either way, unknown,
+                        # and whatever the budget sized: a name after an offload-off turns the
+                        # offload back on (mmproj_use_gpu = true), past a 0-byte budget.
+                        if effective_is_vision and _mmproj_place not in ("host", "default"):
+                            return None
+                        if effective_is_vision and mmproj_size > 0 and _mmproj_place == "host":
                             # model_size_fit charged the projector and its soft overhead to the
                             # card (the offload resolved on). Host RAM: they are not there.
-                            if _mmproj_place == "host":
-                                _mmproj_host_bytes = mmproj_size + int(
-                                    mmproj_size * (self._MMPROJ_VRAM_SAFETY - 1.0)
-                                )
-                            # A named device may be a companion card gpu_ids exposes
-                            # (_widen_pin_ids_for_companion_devices); a CPU name fails
-                            # parse_device_list. Unreadable: arg.cpp throws. Either way,
-                            # unknown.
-                            elif _mmproj_place != "default":
-                                return None
+                            _mmproj_host_bytes = mmproj_size + int(
+                                mmproj_size * (self._MMPROJ_VRAM_SAFETY - 1.0)
+                            )
                         # A drafter model pinned by --spec-draft-device to a device this
                         # estimate cannot map to the card (common_base_params_to_speculative,
                         # common/speculative.cpp); a CPU / none pin is already priced off
