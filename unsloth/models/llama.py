@@ -1417,7 +1417,8 @@ def LlamaModel_fast_forward(
         # had the attention refactor, so it always takes this path.
         # max_position_embeddings still sets the cache size and dtype as before, but only the rows
         # this batch (or the declared max_seq_length) can index are built, on this device only.
-        rope_rows = max(seq_length_with_past, getattr(self, "max_seq_length", None) or 0)
+        rope_len = max(seq_length_with_past, getattr(self, "max_seq_length", None) or 0)
+        rope_rows = rope_len
         if position_ids is not None:
             # Explicit positions (offsets, generate, packing) can index any row below
             # max_position_embeddings; bounding them needs a host sync, so build them all as before.
@@ -1427,7 +1428,8 @@ def LlamaModel_fast_forward(
             self.config.max_position_embeddings,
             materialize_len = rope_rows,
         )
-        position_embeddings = self.rotary_emb.get_cached(rope_rows, hidden_states.device.index)
+        # rope_rows only sizes the build; LongRoPE picks its short or long factors from rope_len.
+        position_embeddings = self.rotary_emb.get_cached(rope_len, hidden_states.device.index)
     else:
         position_embeddings = None
 

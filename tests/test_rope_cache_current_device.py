@@ -333,3 +333,17 @@ def test_starting_cache_is_computed_on_cpu():
     cos, sin = rope.get_cached(10, 0)
     ref_cos, ref_sin = _reference(4096)
     assert torch.equal(cos, ref_cos) and torch.equal(sin, ref_sin)
+
+
+def test_model_forward_position_ids_keep_longrope_short_factors():
+    # Building every row for explicit positions must not switch a short input to the long factors.
+    rope = _llama_ns()["LongRopeRotaryEmbedding"](
+        dim = DIM,
+        max_position_embeddings = 128,
+        original_max_position_embeddings = 16,
+        short_factor = [1.0] * (DIM // 2),
+        long_factor = [2.0] * (DIM // 2),
+    )
+    cos, sin = _model_forward_rope(rope, 4, torch.tensor([[0, 1, 2, 3]]), 128, max_seq_length = 8)
+    assert cos is rope.multi_gpu_short_cos_cached[0]
+    assert sin is rope.multi_gpu_short_sin_cached[0]
