@@ -133,7 +133,7 @@ export const N_PARALLEL_MAX = 64;
 
 // Mirrors vram_budget_settings.py VRAM_FRACTION_MIN/MAX/DEFAULT as whole percent (the slider is integer).
 // Server-wide, so these only bound the control; the value lives in /api/settings/vram-budget.
-export const VRAM_BUDGET_PERCENT_MIN = 80;
+export const VRAM_BUDGET_PERCENT_MIN = 0;
 export const VRAM_BUDGET_PERCENT_MAX = 100;
 export const VRAM_BUDGET_PERCENT_DEFAULT = 97;
 // Tenths: a whole percent is ~245 MiB of context on a 24 GB card. Mirrors
