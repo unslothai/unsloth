@@ -3707,18 +3707,27 @@ export function ImagesPage({
       // A pick from a linked instance loads and generates there; its load fetches what is missing,
       // so it skips this machine's download manager.
       const machine = pickMeta.linkedInstanceId ?? null;
+      // A Download only selection fetches files; it does not take over the page. Retiring the staged
+      // intent and claiming the page for it stranded a load that was already downloading: that model
+      // finished downloading and then never loaded, with no toast and nothing to retry from.
+      const downloadOnlyPick = modelSelectionAction === "download";
       if (machine !== getImagesMachine()) {
+        // Progress, Stop and the gallery all follow the machine, so it never moves under active work.
+        if (busy !== null) return;
         setImagesMachine(machine);
         setImagesMachineState(machine);
+        // The shelf belongs to the old machine: drop it, fence any listing still in flight, refetch.
+        stripEpoch.current += 1;
+        galleryCache.images = [];
+        galleryCache.hasMore = false;
+        setImages([]);
+        setHasMore(false);
+        void loadGallery();
         void refreshStatus();
       }
       const meta: ModelSelectorChangeMeta = machine
         ? { ...pickMeta, source: "local" }
         : pickMeta;
-      // A Download only selection fetches files; it does not take over the page. Retiring the staged
-      // intent and claiming the page for it stranded a load that was already downloading: that model
-      // finished downloading and then never loaded, with no toast and nothing to retry from.
-      const downloadOnlyPick = modelSelectionAction === "download";
       // Ignore picks while a load/generation/unload is in flight: the backend rejects a second load
       // with a 409. A download-only pick submits no load, so that cannot happen, and the selector
       // stays interactive during a generation: refusing it there was a silent dead click.
@@ -3907,6 +3916,7 @@ export function ImagesPage({
       currentLoadAdvanced,
       familyOverride,
       handleLoad,
+      loadGallery,
       loadGgufRepoPick,
       loadOrStage,
       pickGuard,
