@@ -3790,6 +3790,8 @@ _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
     f"pandoc notes.md -o{_OUTSIDE_DIR}/report.docx",
     "pandoc notes.md -o /opt/report.docx",
     "pandoc notes.md --output=/usr/share/doc/report.docx",
+    "ffmpeg -y -i in.wav /usr/share/sounds/out.wav",
+    "magick in.png /usr/share/pixmaps/photo.png",
 )
 
 _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
@@ -4129,6 +4131,8 @@ _INDIRECT_BENIGN_TERMINAL = (
     "mkdir ~/.config/myapp",
     "ffmpeg -y -i in.wav out.wav",
     "ffprobe /usr/share/sounds/alert.wav",
+    "ffmpeg -i /usr/share/sounds/alert.wav out.wav",
+    "magick /usr/share/pixmaps/logo.png out.png",
     "pandoc notes.md --output=report.docx",
     "export PATH=/home/alice/bin:$PATH",
     "robocopy src dst /E",

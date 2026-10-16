@@ -1223,11 +1223,16 @@ _BARE_SWITCH_RE = re.compile(r"^[/\\][^/\\]*$")
 # for most tools this scan has no table for.
 _OUTPUT_FILE_FLAGS = frozenset({"-o", "--output"})
 
+# Tools that name their output positionally. `ffmpeg ... {[input_options] -i input} ... output`:
+# every operand but an `-i` value is written. `magick input-file ... output-file`: the last one is.
+_POSITIONAL_OUTPUT_COMMANDS = {"ffmpeg": "not_input", "magick": "last", "convert": "last"}
 
-def _unlisted_command_operands(args) -> "list[tuple[str, bool]]":
+
+def _unlisted_command_operands(command, args) -> "list[tuple[str, bool]]":
+    outputs = _POSITIONAL_OUTPUT_COMMANDS.get(command)
     operands = []
     writes_next = False
-    for arg in args:
+    for index, arg in enumerate(args):
         writing, writes_next = writes_next, False
         value = arg
         if arg.startswith("-"):
@@ -1236,6 +1241,10 @@ def _unlisted_command_operands(args) -> "list[tuple[str, bool]]":
                 flag, value = arg[:2], arg[2:]
             writing = flag in _OUTPUT_FILE_FLAGS
             writes_next = writing and not value
+        elif outputs == "last":
+            writing = writing or index == len(args) - 1
+        elif outputs == "not_input":
+            writing = writing or index == 0 or args[index - 1] != "-i"
         if _looks_absolute(value) and not _BARE_SWITCH_RE.match(value):
             operands.append((value, writing))
     return operands
@@ -1637,7 +1646,7 @@ def _segment_path_operands(segment) -> "list[tuple[str, bool]]":
     if not (read_cmd or write_cmd or dest_last or flag_only):
         if command in _classified_terminal_commands():
             return launched
-        return launched + _unlisted_command_operands(args)
+        return launched + _unlisted_command_operands(command, args)
     inplace = command in ("sed", "perl") and any(
         arg in _SED_INPLACE_FLAGS or arg.startswith("--in-place") or _clusters_inplace(arg)
         for arg in args
