@@ -1042,6 +1042,10 @@ _GPU_NAME_GFX_TABLE: "list[tuple[str, str]]" = [
 # Only the Windows multi-arch route ships these (#11755, #11815); Linux installers decline them.
 _ROCM_SUPPORTED_GFX_WINDOWS_ONLY = frozenset({"gfx1010", "gfx1011", "gfx1012", "gfx1153"})
 
+# Krackan Point 2 (gfx1153) names overlap the table's gfx1152 row; the Linux installers read them
+# first and leave CPU torch on purpose (install_python_stack._LINUX_KRACKAN2_NAME_RE).
+_LINUX_KRACKAN2_NAME_RE = r"820M|Krackan ?(?:Point ?)?2|AI 5 (?:PRO )?330"
+
 
 def _rocm_supported_gfx_here() -> "frozenset[str]":
     """The arches the installers ship a ROCm wheel for on THIS platform."""
@@ -1071,6 +1075,11 @@ def _amd_device_can_establish_a_mismatch(device: Dict[str, Any]) -> bool:
         if gfx
     ]
     if not candidates:
+        # A lone Linux gfx1153 is declined by the installers, so its CPU wheel is no fault.
+        if platform.system() != "Windows" and re.search(
+            _LINUX_KRACKAN2_NAME_RE, device.get("name") or "", re.IGNORECASE
+        ):
+            return False
         # The DirectX registry publishes AdapterFamily only when the driver wrote one, so a supported Windows card can arrive with no arch. setup.ps1 answers that from the marketing name; the probe below can only speak for Linux.
         _named = _rocm_supported_gfx_from_gpu_name(device.get("name") or "")
         if _named:
@@ -2021,6 +2030,15 @@ def _cuda_order_matches_smi() -> bool:
         return False
     logger.debug("Skipping SMI VRAM query: CUDA_DEVICE_ORDER is not PCI_BUS_ID")
     return False
+
+
+def _mask_names_cuda_ordinals(parent_visible_spec: Dict[str, Any]) -> bool:
+    """Whether a numeric CUDA_VISIBLE_DEVICES under an explicit non-PCI CUDA_DEVICE_ORDER names CUDA ordinals rather than nvidia-smi rows, so the SMI rows it filters are other cards and only torch can rank the ones the ids select. Unmasked ids stay SMI rows: apply_gpu_ids pins PCI_BUS_ID for them."""
+    if IS_ROCM or not parent_visible_spec.get("numeric_ids"):
+        return False
+    if parent_visible_spec.get("raw") is None or "CUDA_DEVICE_ORDER" not in os.environ:
+        return False
+    return not _cuda_order_matches_smi()
 
 
 def _amd_smi_ids_for_hip_ids(hip_ids: Optional[list[int]]) -> Optional[list[int]]:
@@ -6087,7 +6105,20 @@ def auto_select_gpu_ids(
         metadata["selected_gpu_ids"] = parent_ids
         return parent_ids, metadata
 
-    utilization = get_visible_gpu_utilization()
+    if _mask_names_cuda_ordinals(parent_visible_spec):
+        # The display keeps the CLI rows; ranking needs the cards the worker will get.
+        utilization = {
+            "devices": [
+                {
+                    "index": td["index"],
+                    "vram_total_gb": td["total_gb"],
+                    "vram_used_gb": td["used_gb"],
+                }
+                for td in _torch_get_per_device_info(get_parent_visible_gpu_ids())
+            ]
+        }
+    else:
+        utilization = get_visible_gpu_utilization()
     devices = [d for d in utilization.get("devices", []) if d.get("index") not in _uncovered]
     parent_ids = _covered(get_parent_visible_gpu_ids())
 
@@ -6874,6 +6905,14 @@ def _rocr_relative_visibility(value: str) -> Optional[str]:
     return ",".join(str(agents.index(gpu_id)) for gpu_id in wanted)
 
 
+def _unmasked_ids_are_smi_rows() -> bool:
+    """Whether unmasked GPU ids came from nvidia-smi rows (PCI order) rather than the torch fallback, which lists ordinals in CUDA's own order. Out of process, no CUDA context; False on any failure."""
+    try:
+        return _smi_visible_utilization({"numeric_ids": None, "raw": None}) is not None
+    except Exception:
+        return False
+
+
 def apply_gpu_ids(gpu_ids, backend: Optional[str] = None) -> None:
     if gpu_ids is None:
         return
@@ -6948,6 +6987,17 @@ def apply_gpu_ids(gpu_ids, backend: Optional[str] = None) -> None:
         if _relative is not None:
             value = _relative
 
+    # No inherited mask: the ids are nvidia-smi rows (PCI order), so pin the order the
+    # way every other Studio child is pinned; an explicit FASTEST_FIRST would hand the
+    # worker another card. An inherited mask keeps its order, the ids being its entries.
+    # Without nvidia-smi the picker listed torch ordinals in the explicit order: keep it.
+    if (
+        not _rocm_build
+        and os.environ.get("CUDA_VISIBLE_DEVICES") is None
+        and os.environ.get("CUDA_DEVICE_ORDER", "PCI_BUS_ID") != "PCI_BUS_ID"
+        and _unmasked_ids_are_smi_rows()
+    ):
+        os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
     os.environ["CUDA_VISIBLE_DEVICES"] = value
     # Wider than the build check: writing HIP on NVIDIA is inert, a missed mirror is not.
     _inherits_rocm_visibility = (

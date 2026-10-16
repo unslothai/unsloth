@@ -1974,6 +1974,11 @@ def forced_tool_catalog(tool_choice, tools):
     ]
 
 
+def forced_turn_tools(tool_choice, tools):
+    """The catalog a local tool-loop turn renders: only the forced tool while one is pinned."""
+    return forced_tool_catalog(tool_choice, tools) or tools
+
+
 def _tokenizer_objects(tokenizer) -> tuple:
     """Return a processor/tokenizer and its distinct nested tokenizer."""
     if tokenizer is None:

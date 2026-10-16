@@ -547,6 +547,12 @@ def test_context_dependent_unsloth_zoo_findings_are_digest_pinned():
             "unsloth_zoo/mlx/loader.py",
             "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
         ),
+        # Execs a vLLM method rebuilt from edited source: what runs is decided by the edit
+        # tables and the source lookup elsewhere in the file, not by the matched exec line.
+        (
+            "unsloth_zoo/vllm_gdn_replayssm.py",
+            "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+        ),
     }
     # Superseded compiler.py evidence hashes, frozen by construction, so unpinned is safe.
     # Anything else must be pinned: an unpinned variant suppresses for any file contents.
@@ -594,7 +600,12 @@ def test_context_dependent_unsloth_zoo_pins_reopen_on_other_file_changes():
         entry
         for entry in entries
         if entry.get("package") == "unsloth-zoo"
-        and entry.get("file") in {"unsloth_zoo/vision_utils.py", "unsloth_zoo/compiler.py"}
+        and entry.get("file")
+        in {
+            "unsloth_zoo/vision_utils.py",
+            "unsloth_zoo/compiler.py",
+            "unsloth_zoo/vllm_gdn_replayssm.py",
+        }
         and entry.get("file_sha256")
     ]
     # Count (file, check) pairs, not entries: re-approval may append a revision.
@@ -605,6 +616,10 @@ def test_context_dependent_unsloth_zoo_pins_reopen_on_other_file_changes():
         ),
         ("unsloth_zoo/vision_utils.py", "Accesses cloud metadata/IMDS AND makes network calls"),
         ("unsloth_zoo/compiler.py", "Advanced obfuscation (marshal/compile/zlib) + exec/eval"),
+        (
+            "unsloth_zoo/vllm_gdn_replayssm.py",
+            "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+        ),
     }
     baseline = sp._load_baseline(str(path))
     for entry in targets:

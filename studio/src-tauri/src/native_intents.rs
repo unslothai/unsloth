@@ -485,10 +485,23 @@ pub async fn pick_hugging_face_cache_dir(
     app: AppHandle,
 ) -> Result<Option<String>, String> {
     ensure_main_window(&webview)?;
+    pick_local_folder(&app, "Choose model download location").await
+}
+
+#[tauri::command]
+pub async fn pick_native_model_folder(
+    webview: tauri::Webview,
+    app: AppHandle,
+) -> Result<Option<String>, String> {
+    ensure_main_window(&webview)?;
+    pick_local_folder(&app, "Choose a model folder").await
+}
+
+async fn pick_local_folder(app: &AppHandle, title: &str) -> Result<Option<String>, String> {
     let (tx, rx) = tokio::sync::oneshot::channel();
     app.dialog()
         .file()
-        .set_title("Choose model download location")
+        .set_title(title)
         .pick_folder(move |path| {
             let _ = tx.send(path);
         });
