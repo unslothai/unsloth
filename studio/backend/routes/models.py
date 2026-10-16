@@ -5501,6 +5501,15 @@ def _repo_model_can_chat(repo_info, selected: Optional[Path] = None) -> Optional
     return None
 
 
+def _repo_hosts_artifacts(repo_id: str) -> bool:
+    """``mirror_hosts_artifacts``, False when the family tables are unavailable."""
+    try:
+        from core.inference.diffusion_families import mirror_hosts_artifacts
+        return mirror_hosts_artifacts(repo_id)
+    except Exception:  # noqa: BLE001 -- no table means no artifact mirrors
+        return False
+
+
 def cached_model_rows(cache_scans = None) -> list[dict]:
     _WEIGHT_EXTENSIONS = _NON_GGUF_WEIGHT_EXTENSIONS
     if cache_scans is None:
@@ -5549,9 +5558,12 @@ def cached_model_rows(cache_scans = None) -> list[dict]:
                 key = repo_id.lower()
                 existing = seen_lower.get(key)
                 # A companion-only prefetch (manifest + VAE/TE but no transformer shards) is not a loadable pipeline; treat it as partial.
-                is_partial = _cached_repo_partial(
-                    repo_id, Path(repo_info.repo_path), selected
-                ) or _repo_pipeline_missing_denoiser(repo_info, selected)
+                # The FP8 artifact mirror lists as its root checkpoint, as released builds did: its diffusers folders
+                # belong to the BASE pick, and a pipeline pick of the repo itself is refused.
+                artifact_checkpoint = _repo_hosts_artifacts(repo_id)
+                is_partial = _cached_repo_partial(repo_id, Path(repo_info.repo_path), selected) or (
+                    not artifact_checkpoint and _repo_pipeline_missing_denoiser(repo_info, selected)
+                )
                 # Prefer the most COMPLETE snapshot, then largest: a partial copy in one cache root must not shadow a complete copy in another.
                 if existing is None or (not is_partial, total_size) > (
                     not bool(existing.get("partial")),
@@ -5559,13 +5571,17 @@ def cached_model_rows(cache_scans = None) -> list[dict]:
                 ):
                     row_task = _cached_repo_task(repo_info, selected)
                     is_diffusers = _repo_is_diffusers(repo_info, selected)
-                    has_pipeline_index = _repo_has_pipeline_index(repo_info, selected)
+                    has_pipeline_index = not artifact_checkpoint and _repo_has_pipeline_index(
+                        repo_info, selected
+                    )
                     row = {
                         "repo_id": repo_id,
                         "size_bytes": total_size,
                         "task": row_task,
                     }
-                    pipeline_artifact_kind = _diffusers_pipeline_artifact_kind(selected)
+                    pipeline_artifact_kind = (
+                        None if artifact_checkpoint else _diffusers_pipeline_artifact_kind(selected)
+                    )
                     if pipeline_artifact_kind is not None:
                         row["artifact_kind"] = pipeline_artifact_kind
                     # Pin a copy its bare id cannot reach, so the pick loads the found snapshot.

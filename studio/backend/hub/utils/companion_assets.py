@@ -54,14 +54,30 @@ def read_companion_links() -> dict[str, list[str]]:
     raw = payload.get("links")
     if not isinstance(raw, dict):
         return {}
+    retired = _retired_link_ids()
     links: dict[str, list[str]] = {}
     for checkpoint, bases in raw.items():
         if not isinstance(checkpoint, str) or not isinstance(bases, list):
             continue
-        clean = [b.strip() for b in bases if isinstance(b, str) and b.strip()]
+        # A link to a repo nothing loads from any more is dropped on read (and so from the file on the next write):
+        # it would otherwise pin a retired sd-cli repack for as long as the GGUF that once fetched it stays installed.
+        clean = [
+            b.strip()
+            for b in bases
+            if isinstance(b, str) and b.strip() and _normalise(b) not in retired
+        ]
         if clean:
             links[_normalise(checkpoint)] = clean
     return links
+
+
+def _retired_link_ids() -> frozenset[str]:
+    """``retired_companion_link_ids``, empty when the family tables are unavailable (every link then counts)."""
+    try:
+        from core.inference.diffusion_families import retired_companion_link_ids
+        return retired_companion_link_ids()
+    except Exception:  # noqa: BLE001 -- no table means nothing is known to be retired
+        return frozenset()
 
 
 def _write_companion_links(links: dict[str, list[str]]) -> bool:

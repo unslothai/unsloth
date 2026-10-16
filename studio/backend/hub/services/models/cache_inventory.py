@@ -1224,6 +1224,13 @@ def _scan_cached_models(
                 ):
                     skipped_gguf += 1
                     continue
+                # The FP8 artifact mirror (unsloth/Qwen-Image-2.1-Turbo-FP8): its folders are what a pick of the BASE
+                # fetches, and a pipeline pick of the repo itself is refused, so the row stays the root checkpoint row
+                # released builds listed, whatever part of the folders is cached.
+                artifact_checkpoint = not has_main_gguf and _hosts_artifacts(repo_id)
+                # A GGUF artifact mirror holding the WHOLE pipeline (a bf16 pick of its base): listed so those bytes
+                # stay visible and deletable, but as a companion, since a pipeline pick of the -GGUF id is refused.
+                artifact_folders = has_main_gguf and _hosts_artifacts(repo_id)
                 key = repo_id.lower()
                 existing = seen_lower.get(key)
                 identity = _resolve_load_identity(
@@ -1259,7 +1266,9 @@ def _scan_cached_models(
                     ),
                 )
                 # A companion-only prefetch passes the download check yet cannot from_pretrained, so mark it partial.
-                companion_only = hf_cache_scan.snapshot_pipeline_missing_denoiser(load_snapshot)
+                companion_only = not artifact_checkpoint and hf_cache_scan.snapshot_pipeline_missing_denoiser(
+                    load_snapshot
+                )
                 snapshot_partial = download_partial or companion_only
                 # Flags are OR-ed over revisions, so no payload snapshot means no directory serves the row and it would reach for the Hub.
                 if not payload.payload_snapshots:
@@ -1292,7 +1301,9 @@ def _scan_cached_models(
                     if not any(tag.lower() == "whisper" for tag in tags):
                         tags.append("whisper")
                     local_metadata["tags"] = tags
-                pipeline_artifact_kind = _diffusers_pipeline_artifact_kind(load_snapshot)
+                pipeline_artifact_kind = (
+                    None if artifact_checkpoint else _diffusers_pipeline_artifact_kind(load_snapshot)
+                )
                 row = {
                     "repo_id": repo_id,
                     "size_bytes": payload.size_bytes,
@@ -1330,10 +1341,13 @@ def _scan_cached_models(
                     # Diffusion repos with no pipeline index load only via from_single_file, so the task pickers must not offer them as pipeline loads.
                     "single_file": bool(
                         row_task is not None
-                        and not hf_cache_scan.snapshot_has_pipeline_index(load_snapshot)
+                        and (
+                            artifact_checkpoint
+                            or not hf_cache_scan.snapshot_has_pipeline_index(load_snapshot)
+                        )
                     ),
                     # Listed so tens of GB of companion weights stay visible and deletable, but flagged so no picker offers a denoiser-less repo as a load.
-                    "companion": _cached_row_companion(repo_id, load_snapshot),
+                    "companion": artifact_folders or _cached_row_companion(repo_id, load_snapshot),
                     "diffusers": _cached_row_is_diffusers(repo_info, load_snapshot),
                     **local_metadata,
                 }

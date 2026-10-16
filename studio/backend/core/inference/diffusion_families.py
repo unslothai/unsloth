@@ -369,7 +369,6 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         controlnet_pipeline_class = "FluxControlNetPipeline",
         controlnet_model_class = "FluxControlNetModel",
         sd_cpp_vae = ("black-forest-labs/FLUX.1-schnell", "ae.safetensors"),
-        # Byte-identical mirror of comfyanonymous/flux_text_encoders (CLIP-L + T5-XXL fp16).
         sd_cpp_text_encoders = _FLUX1_SD_CPP_TEXT_ENCODERS,
     ),
     # FLUX.2-klein is Flux2KleinPipeline (Qwen3 encoder), not the Mistral Flux2Pipeline, so it must precede a generic
@@ -1280,8 +1279,16 @@ _MIRROR_PAIRS: tuple[tuple[str, str], ...] = _GATED_MIRROR_PAIRS + _UNGATED_MIRR
 # official diffusers folders). A user picks these ids directly, so they are never "just a copy of the upstream": no
 # opt-out may rewrite them to the upstream (which has no such checkpoint), a cached one is its own checkpoint rather
 # than a stand-in for the base, and only the folder part of the snapshot is the pipeline.
+# Listed by hand, never inferred from a -GGUF / -FP8 suffix: unsloth/ideogram-4-fp8 is an ordinary complete copy of
+# ideogram-ai/ideogram-4-fp8 (the FP8 is in the upstream name), so it must keep canonicalising like every full mirror.
 _ARTIFACT_MIRRORS: frozenset[str] = frozenset(
-    m.lower() for _u, m in _MIRROR_PAIRS if m.lower().endswith(("-gguf", "-fp8"))
+    {
+        "unsloth/z-image-gguf",
+        "unsloth/qwen-image-2.1-turbo-fp8",
+        "unsloth/qwen-image-edit-gguf",
+        "unsloth/qwen-image-edit-2509-gguf",
+        "unsloth/qwen-image-layered-gguf",
+    }
 )
 _GATED_MIRRORS: dict[str, str] = {u.lower(): m for u, m in _MIRROR_PAIRS}
 _MIRROR_UPSTREAM: dict[str, str] = {m.lower(): u for u, m in _MIRROR_PAIRS}
@@ -2407,6 +2414,26 @@ _RETIRED_SD_CPP_COMPANION_REPOS: frozenset[str] = frozenset(
         "unsloth/flux.2-klein-9b-comfyui",
     }
 )
+
+
+# The community repacks those retired copies stood in for. Released builds sent an sd-cli fetch back to one already
+# cached, so a recorded companion link may name it. Ordinary cached repos otherwise (some also ship denoiser files), so
+# this set only drops stale LINKS; it never makes one a companion.
+_RETIRED_SD_CPP_LEGACY_SOURCES: frozenset[str] = frozenset(
+    {
+        "comfyanonymous/flux_text_encoders",
+        "comfy-org/qwen-image_comfyui",
+        "comfy-org/flux2-dev",
+        "comfy-org/z_image_turbo",
+        "comfy-org/vae-text-encorder-for-flux-klein-9b",
+    }
+)
+
+
+def retired_companion_link_ids() -> frozenset[str]:
+    """Lowercased repo ids no load reads any more, so a companion link naming one is stale: released sd.cpp loads
+    recorded these asset repos, and an installed GGUF must not keep pinning them in Free up space forever."""
+    return _RETIRED_SD_CPP_COMPANION_REPOS | _RETIRED_SD_CPP_LEGACY_SOURCES
 
 
 def sd_cpp_companion_only_repo_ids() -> frozenset[str]:

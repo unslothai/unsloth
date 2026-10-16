@@ -1064,3 +1064,28 @@ def test_a_retired_comfy_companion_left_by_a_released_build_is_offered_for_clean
     _install(monkeypatch, _repo(retired, [("split_files/vae/ae.safetensors", 900_000)]))
     offered = asyncio.run(companion_cleanup.orphan_companions_response())["companions"]
     assert [c["repo_id"].lower() for c in offered] == [retired.lower()]
+
+
+def test_a_link_to_a_retired_sd_cli_repack_no_longer_pins_it(monkeypatch):
+    """A released sd.cpp load recorded the repos it fetched its VAE / encoders from. This build never reads them, so a
+    still-installed GGUF must not keep them required: they are offered by Free up space, and the next write drops
+    them from the file."""
+    gguf = "unsloth/Z-Image-Turbo-GGUF"
+    retired = "unsloth/Z-Image-Turbo-ComfyUI"
+    repack = "Comfy-Org/z_image_turbo"
+    for stale in (retired, repack, "Tongyi-MAI/Z-Image-Turbo"):
+        assert companion_assets.record_companion_link(gguf, stale) is True
+    links = companion_assets.read_companion_links()
+    assert links[gguf.lower()] == ["Tongyi-MAI/Z-Image-Turbo"]
+
+    scans = _install(
+        monkeypatch,
+        _repo(gguf, [("z-image-turbo-Q4_K_M.gguf", 5_000)]),
+        _repo(retired, [("split_files/vae/ae.safetensors", 900_000)]),
+    )
+    required = companion_assets.required_companion_bases(scans)
+    assert retired.lower() not in required
+    assert repack.lower() not in required
+    assert required["tongyi-mai/z-image-turbo"] == {gguf}
+    offered = asyncio.run(companion_cleanup.orphan_companions_response())["companions"]
+    assert retired.lower() in [c["repo_id"].lower() for c in offered]
