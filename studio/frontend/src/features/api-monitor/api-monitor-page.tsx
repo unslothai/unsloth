@@ -40,8 +40,8 @@ import {
   Delete02Icon,
   PauseIcon,
   PlayIcon,
-  PowerSocket01Icon,
   Refresh01Icon,
+  RemoveCircleIcon,
   Settings02Icon,
   ApiIcon,
 } from "@hugeicons/core-free-icons";
@@ -767,17 +767,17 @@ export function ApiMonitorPage(): ReactElement {
             disabled={unloading || modelLoading || !data?.active_model}
             title={
               data?.active_model
-                ? `Unload ${data.active_model} and free its VRAM`
+                ? `Eject ${data.active_model} and free its VRAM`
                 : "No model is loaded"
             }
             className="h-9 gap-1.5 rounded-full"
           >
             <HugeiconsIcon
-              icon={PowerSocket01Icon}
+              icon={RemoveCircleIcon}
               strokeWidth={1.75}
               className="size-4"
             />
-            {unloading ? "Unloading" : "Unload"}
+            {unloading ? "Ejecting" : "Eject"}
           </Button>
           <Button
             type="button"
@@ -819,14 +819,15 @@ export function ApiMonitorPage(): ReactElement {
             onClick={() =>
               useSettingsDialogStore.getState().openDialog("api-keys")
             }
-            className="h-9 gap-1.5 rounded-full"
+            title="API settings"
+            aria-label="API settings"
+            className="size-9 rounded-full p-0"
           >
             <HugeiconsIcon
               icon={Settings02Icon}
               strokeWidth={1.75}
               className="size-4"
             />
-            API settings
           </Button>
         </div>
       </header>
