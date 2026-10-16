@@ -6973,6 +6973,32 @@ def _widen_pin_ids_for_companion_devices(
     return widened, f"{main_ids} -> {widened}"
 
 
+_DRAFT_OVERRIDE_TENSOR_FLAGS = frozenset(
+    {"-otd", "--override-tensor-draft", "--spec-draft-override-tensor"}
+)
+
+
+def _named_gpu_device(value: Optional[str]) -> bool:
+    """True when a companion device value names a card; cpu/none keep it on the host."""
+    if value is None:
+        return False
+    devs = [d.strip().lower() for d in str(value).split(",") if d.strip()]
+    return bool(devs) and not all(d in ("cpu", "none") for d in devs)
+
+
+def _moe_cache_requested(value: Optional[str]) -> bool:
+    """True when a --moe-cache-mib value asks llama.cpp for an expert cache (0 is none)."""
+    if value is None:
+        return False
+    text = str(value).strip().lower()
+    if not text:
+        return False
+    try:
+        return int(text) != 0
+    except ValueError:
+        return True
+
+
 def _extra_args_draft_device_pin(extra_args: Optional[Iterable[str]]) -> Optional[str]:
     """Return a GPU draft-device override; cpu/none do not conflict with a pin."""
     last_dev = _extra_args_draft_device(extra_args)
@@ -30637,6 +30663,11 @@ class LlamaCppBackend:
                     # allowance, exactly what _fit_model_size and _fit_soft_overhead
                     # just charged, and the same abstain when it cannot be sized.
                     _spill_inputs["env_mmproj_unsized"] = _fit_env_mmproj_unsized
+                    # The fit abstains on a drafter split across the host (engaged but
+                    # unsized), and so must a plan pinned with --fit off: draft_bytes
+                    # carries the drafter whole while its tail and that tail's KV stay in
+                    # host RAM.
+                    _spill_inputs["draft_split_across_host"] = _draft_split_across_host
                     _spill_inputs["env_mmproj_bytes"] = (
                         0
                         if _fit_env_mmproj_on_host
@@ -38252,6 +38283,23 @@ class LlamaCppBackend:
             # drafter on the pinned card -- approving a footprint for the wrong
             # device, then pinning it with --fit off. cpu/none are not a pin.
             or _extra_args_draft_device_pin(extra_args)
+            # Draft tensor overrides re-place the drafter's weights the seam charges, whole,
+            # on the GPU: -otd .*=CPU puts them in host RAM no term of the plan pays for, and a
+            # partial pattern moves a share nothing here can name.
+            or _extra_args_set_any_flag(extra_args, _DRAFT_OVERRIDE_TENSOR_FLAGS)
+            # A projector on a named card, the projector's twin of the draft pin: its bytes
+            # ride extra_resident_bytes, booked onto device 0, while llama.cpp loads it on the
+            # card named. cpu/none keep it off every card.
+            or _named_gpu_device(
+                _extra_args_device(extra_args, {"--mmproj-device", "-mmdev"})
+                or source_env.get("MTMD_BACKEND_DEVICE")
+            )
+            # A user MoE expert cache is VRAM llama.cpp allocates on top of the plan, and the
+            # plan pins --fit off, so nothing re-fits it. 0 allocates nothing.
+            or _moe_cache_requested(
+                _extra_args_device(extra_args, {"--moe-cache-mib"})
+                or source_env.get("LLAMA_ARG_MOE_CACHE_MIB")
+            )
             # -sm row and -sm tensor split WITHIN a tensor rather than handing out
             # whole rows of layers, so the row model below does not describe them.
             # `tensor` is a real accepted value (common/arg.cpp:2762-2776) and goes
@@ -38361,6 +38409,12 @@ class LlamaCppBackend:
         if not inputs or not LlamaCppBackend._planner_may_run(
             extra_args, source_env, load_mode = inputs.get("load_mode")
         ):
+            return None
+        if inputs.get("draft_split_across_host"):
+            logger.debug(
+                "Tensor spill: declined, a fixed -ngld splits the drafter between the GPU "
+                "and host RAM, which nothing here can size"
+            )
             return None
 
         # An integrated CUDA SoC (Jetson, DGX Spark) is unified memory too, and nothing else here

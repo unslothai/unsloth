@@ -15,6 +15,8 @@ for _p in (_BACKEND_DIR, _TESTS_DIR):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
+import pytest  # noqa: E402
+
 from core.inference.offload_cost_model import HostProfile  # noqa: E402
 from core.inference.offload_planner import (  # noqa: E402
     Plan,
@@ -317,3 +319,83 @@ def test_a_revoked_all_on_gpu_plan_drops_the_dio_applicability(tmp_path, monkeyp
     assert seen.get("first_dio_applicable") is True, "harness: the plan launch read DIO applicable"
     assert cmds[-1][cmds[-1].index("--fit") + 1] == "on", cmds[-1]
     assert backend._memory_dio_applicable is False
+
+
+# --- pass-through placement the plan cannot price ---------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "env, extra_args",
+    [
+        # -otd .*=CPU: the drafter's weights go to host RAM while the seam charges them, whole,
+        # on the GPU; a partial pattern moves an unknown share. Either way it is user placement.
+        ({}, ["-otd", ".*=CPU"]),
+        ({}, ["--override-tensor-draft", "ffn=CPU"]),
+        ({}, ["--spec-draft-override-tensor=.*=CPU"]),
+        # A projector on a named card: its bytes ride extra_resident_bytes, which
+        # _per_device_shortfall books onto device 0, the same reason a pinned drafter declines.
+        ({}, ["--mmproj-device", "CUDA1"]),
+        ({}, ["-mmdev", "ROCm0"]),
+        ({"MTMD_BACKEND_DEVICE": "CUDA1"}, None),
+        # A user MoE expert cache is VRAM llama.cpp allocates on top of the plan, which pins
+        # --fit off, so nothing re-fits the overflow.
+        ({}, ["--moe-cache-mib", "4096"]),
+        ({}, ["--moe-cache-mib=auto"]),
+        ({"LLAMA_ARG_MOE_CACHE_MIB": "2048"}, None),
+    ],
+    ids = [
+        "otd_cpu",
+        "otd_long",
+        "otd_spec_inline",
+        "mmproj_device",
+        "mmdev",
+        "mtmd_env",
+        "moe_cache",
+        "moe_cache_auto_inline",
+        "moe_cache_env",
+    ],
+)
+def test_pass_through_placement_the_plan_cannot_price_declines(env, extra_args):
+    from core.inference.llama_cpp import LlamaCppBackend
+    from test_offload_planner_seam import _inputs, _Stub
+
+    full_env = {"UNSLOTH_SMART_OFFLOAD": "1", **env}
+    assert LlamaCppBackend._planner_may_run(extra_args, full_env) is False
+    assert _Stub()._planned_tensor_spill(_inputs(), extra_args = extra_args, env = full_env) is None
+
+
+@pytest.mark.parametrize(
+    "env, extra_args",
+    [
+        ({}, ["--mmproj-device", "none"]),
+        ({}, ["-mmdev", "cpu"]),
+        ({}, ["--moe-cache-mib", "0"]),
+        ({"LLAMA_ARG_MOE_CACHE_MIB": "0"}, None),
+    ],
+    ids = ["mmproj_none", "mmproj_cpu", "moe_cache_zero", "moe_cache_env_zero"],
+)
+def test_placement_that_keeps_nothing_on_a_card_still_plans(env, extra_args):
+    from core.inference.llama_cpp import LlamaCppBackend
+    assert LlamaCppBackend._planner_may_run(extra_args, {"UNSLOTH_SMART_OFFLOAD": "1", **env})
+
+
+def test_a_drafter_split_across_the_host_is_not_planned():
+    """A positive -ngld below the drafter's block count leaves its tail and that tail's KV in host
+    RAM while draft_bytes carries the drafter whole: the fit abstains on it as engaged but unsized,
+    and a plan pinned with --fit off must as well."""
+    from test_offload_planner_seam import _inputs, _Stub
+
+    env = {"UNSLOTH_SMART_OFFLOAD": "1"}
+    assert _Stub()._planned_tensor_spill(_inputs(), env = env) is not None
+    inputs = _inputs()
+    inputs["draft_split_across_host"] = True
+    assert _Stub()._planned_tensor_spill(inputs, env = env) is None
+
+
+def test_the_launch_hands_the_split_drafter_verdict_to_the_seam():
+    import inspect
+
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    src = inspect.getsource(LlamaCppBackend.load_model)
+    assert '_spill_inputs["draft_split_across_host"] = _draft_split_across_host' in src
