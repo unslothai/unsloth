@@ -31,7 +31,11 @@ class _ClosedQueue:
 
 
 def test_a_nemotron_h_export_provisions_kernels_before_the_backend_import(monkeypatch, tmp_path):
-    order = [step for step in _run_export(monkeypatch, tmp_path, {}) if step[0] != "window"]
+    order = [
+        step
+        for step in _run_export(monkeypatch, tmp_path, {"device_backend": "cuda"})
+        if step[0] != "window"
+    ]
     assert order[0] == ("provision", True, True)
     assert order.index(("provision", True, True)) < order.index(("import",))
     assert ("load",) in order
@@ -130,8 +134,9 @@ def test_a_failed_required_install_stops_the_export_before_the_import(monkeypatc
     checkpoint.mkdir()
     (checkpoint / "config.json").write_text(json.dumps({"model_type": "falcon_h1"}))
     monkeypatch.setattr(ssm_runtime, "_install_kernel", lambda **k: False)
+    monkeypatch.setattr(ssm_runtime, "_torch_env", lambda: {"cuda_version": "12.8"})
     queue = _Queue()
-    assert export_worker._provision_ssm_kernels(str(checkpoint), None, None, queue) is False
+    assert export_worker._provision_ssm_kernels(str(checkpoint), None, None, queue, "cuda") is False
     assert queue[-1]["type"] == "error"
     assert "mamba-ssm" in queue[-1]["error"]
 
@@ -142,7 +147,7 @@ def test_an_optional_ssm_family_exports_on_the_torch_path(monkeypatch, tmp_path)
     (checkpoint / "config.json").write_text(json.dumps({"model_type": "jamba"}))
     monkeypatch.setattr(ssm_runtime, "_install_kernel", lambda **k: False)
     queue = _Queue()
-    assert export_worker._provision_ssm_kernels(str(checkpoint), None, None, queue) is True
+    assert export_worker._provision_ssm_kernels(str(checkpoint), None, None, queue, "cuda") is True
     assert not any(item.get("type") == "error" for item in queue)
 
 
@@ -160,7 +165,7 @@ def test_a_lora_export_resolves_its_base(monkeypatch, tmp_path, pinned):
     )
     monkeypatch.setattr("utils.transformers_version._remote_lora_base", lambda *a, **k: None)
     assert export_worker._provision_ssm_kernels(
-        str(adapter), str(base) if pinned else None, None, _Queue()
+        str(adapter), str(base) if pinned else None, None, _Queue(), "cuda"
     )
     assert seen == [True]
 
@@ -191,7 +196,7 @@ def test_mlx_cpu_and_macos_exports_install_no_cuda_kernels(
     assert queue == []
 
 
-@pytest.mark.parametrize("device_backend", ["cuda", None])
+@pytest.mark.parametrize("device_backend", ["cuda", "rocm"])
 def test_cuda_exports_still_provision(monkeypatch, tmp_path, device_backend):
     checkpoint = tmp_path / "qwen"
     checkpoint.mkdir()
@@ -220,3 +225,15 @@ def test_both_export_provisioning_sites_pass_the_device_backend():
     assert len(calls) == 2
     for call in calls:
         assert ast.unparse(call.args[4]) == "config.get('device_backend')"
+
+
+@pytest.mark.parametrize("device_backend", ["xpu", None, ""])
+def test_xpu_or_unspecified_exports_install_no_cuda_kernels(monkeypatch, tmp_path, device_backend):
+    # Only a CUDA / ROCm export provisions: XPU builds none, and an unknown backend is not CUDA.
+    monkeypatch.setattr(export_worker.sys, "platform", "linux")
+    monkeypatch.setattr(
+        ssm_runtime,
+        "provision_ssm_kernels",
+        lambda *a, **k: pytest.fail("no SSM kernel provisioning off CUDA / ROCm"),
+    )
+    assert export_worker._provision_ssm_kernels("acme/hybrid", None, None, _Queue(), device_backend)

@@ -1453,19 +1453,37 @@ def _install_package_wheel_first(
         logger.info("Skipping %s installation while offline", display_name)
         return False
 
-    installed = False
-    try:
-        installed = _attempt_package_install(
-            event_queue = event_queue,
-            import_name = import_name,
-            display_name = display_name,
-            pypi_name = pypi_name,
-            **kwargs,
-        )
-        return installed
-    finally:
-        if not installed:
-            _reject_install(event_queue, pypi_name, display_name, "will not import")
+    from utils.kernel_install import kernel_install_lock
+
+    # One install per package and environment at a time, across Studio workers: precheck, install,
+    # verify and cleanup are one transaction, or a failed peer could remove what another verified.
+    with kernel_install_lock(
+        import_name,
+        on_wait = lambda: _send_status(
+            event_queue, f"Waiting for another process installing {display_name}..."
+        ),
+    ) as held:
+        if not held:
+            _send_status(
+                event_queue, f"Another process is still installing {display_name}; skipping it"
+            )
+            return False
+        if _is_importable(import_name):
+            logger.info("%s installed by another process", display_name)
+            return True
+        installed = False
+        try:
+            installed = _attempt_package_install(
+                event_queue = event_queue,
+                import_name = import_name,
+                display_name = display_name,
+                pypi_name = pypi_name,
+                **kwargs,
+            )
+            return installed
+        finally:
+            if not installed:
+                _reject_install(event_queue, pypi_name, display_name, "will not import")
 
 
 def _attempt_package_install(
@@ -1481,12 +1499,19 @@ def _attempt_package_install(
     wheel_url_builder: Callable[[dict[str, str] | None], str | None] | None = None,
     pypi_spec: str | None = None,
     pypi_status_message: str | None = None,
+    allow_source_build: bool = True,
 ) -> bool:
     """The install itself. Call it through _install_package_wheel_first, never directly."""
     # Set when a wheel installed but would not import; see the uninstall before the fallback.
     wheel_rejected = False
 
     env = probe_torch_wheel_env(timeout = 30, include_windows = True)
+    if not env or not (env.get("cuda_version") or env.get("cuda_major") or env.get("hip_version")):
+        # These are CUDA / ROCm extensions: CPU-only, XPU, MPS or an unreadable torch builds none.
+        _send_status(
+            event_queue, f"{display_name} needs a CUDA or ROCm build of torch; skipping it"
+        )
+        return False
     # Windows is wheel-only: a PyPI fallback there is a source build needing MSVC + the CUDA toolkit.
     wheel_only = sys.platform == "win32" or is_windows_wheel_env(env)
     if wheel_url_builder is not None:
@@ -1503,7 +1528,14 @@ def _attempt_package_install(
     wheel_available = url_exists(wheel_url) if wheel_url else False
     if wheel_url is None:
         logger.info("No compatible %s wheel candidate", display_name)
-    elif wheel_available:
+    elif wheel_available is not False:
+        # Only a 404 proves nothing is published: an unanswered HEAD (a proxy refusing HEAD but
+        # serving the download) still tries the wheel, and falls back only if that fails.
+        if wheel_available is None:
+            _send_status(
+                event_queue,
+                f"Could not check the {display_name} prebuilt wheel; trying to download it.",
+            )
         _send_status(event_queue, f"Installing {display_name} for faster training...")
         outcome = install_prebuilt(
             wheel_url,
@@ -1529,17 +1561,14 @@ def _attempt_package_install(
                 "removing it" if wheel_only else "falling back to PyPI",
             )
             wheel_rejected = True
-    elif wheel_available is None:
-        _send_status(
-            event_queue,
-            f"Could not check the {display_name} prebuilt wheel; "
-            + ("skipping it." if wheel_only else "installing from PyPI."),
-        )
     else:
         logger.info("No published %s wheel found: %s", display_name, wheel_url)
 
     if wheel_only:
         logger.info("%s: no usable prebuilt wheel for Windows; skipping", display_name)
+        return False
+    if not allow_source_build:
+        _send_status(event_queue, f"No usable prebuilt {display_name} for this torch; skipping it")
         return False
 
     is_hip = env and env.get("hip_version")
@@ -1603,8 +1632,11 @@ def _attempt_package_install(
             _gcc_dir,
         )
 
+    from utils.kernel_install import run_process_tree
+
     try:
-        result = _sp.run(pypi_cmd, **_run_kwargs)
+        # Bounded, and a timeout stops the compilers pip / uv started too.
+        result = run_process_tree(pypi_cmd, run = _sp.run, **_run_kwargs)
     except _sp.TimeoutExpired:
         logger.error(
             "%s installation timed out after %ds",
@@ -1699,8 +1731,12 @@ def _ensure_mamba_ssm(
     model_name: str,
     *,
     required: bool | None = None,
+    essential: bool = True,
 ) -> None:
     # `required` is the config-resolved answer (resolved_model_is_ssm); the name is the fallback.
+    # `essential`: the model cannot load without it (Nemotron-H, Falcon-H1, Granite-4.0-H). The
+    # others have a torch path and get mamba-ssm only as a prebuilt wheel where unsloth_zoo keeps
+    # its fast path on, never as a source build.
     if required is None:
         required = _model_is_ssm(model_name)
     if not required:
@@ -1711,8 +1747,19 @@ def _ensure_mamba_ssm(
         _send_status(event_queue, "mamba-ssm needs Triton on Windows (triton-windows); skipping it")
         return
 
+    if not essential and not _is_importable(MAMBA_SSM.import_name):
+        from utils.ssm_runtime import _mamba_ssm_floor_reason
+        reason = _mamba_ssm_floor_reason()
+        if reason is not None:
+            _send_status(event_queue, f"Skipping mamba-ssm, which {reason}")
+            return
+
     logger.info("SSM model detected; setting up mamba-ssm after causal-conv1d")
-    _install_package_wheel_first(event_queue = event_queue, **_pinned_kernel_kwargs(MAMBA_SSM))
+    _install_package_wheel_first(
+        event_queue = event_queue,
+        **_pinned_kernel_kwargs(MAMBA_SSM),
+        allow_source_build = essential,
+    )
 
 
 def _rocm_classify_unified_memory(props: Any) -> tuple[str, bool]:
@@ -4104,7 +4151,12 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 model_name,
                 install_causal_conv1d = wants_causal_conv1d,
             )
-            _ensure_mamba_ssm(event_queue, model_name, required = is_ssm)
+            _ensure_mamba_ssm(
+                event_queue,
+                model_name,
+                required = is_ssm,
+                essential = kernels.mamba_ssm_required,
+            )
             _ensure_flash_attn_for_long_context(
                 event_queue,
                 int(config.get("max_seq_length", 2048)),

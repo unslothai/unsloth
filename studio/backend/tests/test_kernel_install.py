@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import time
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -823,7 +824,8 @@ def test_source_build_run_kwargs(monkeypatch):
     kwargs, gcc = kernel_install.source_build_run_kwargs(
         is_hip = False, gcc_install_dir = lambda: pytest.fail("non-HIP never looks for gcc")
     )
-    assert gcc is None and "timeout" not in kwargs
+    # CUDA builds get the same overall deadline as ROCm ones.
+    assert gcc is None and kwargs["timeout"] == 1800
     assert kwargs["encoding"] == "utf-8" and kwargs["stderr"] == subprocess.STDOUT
 
     kwargs, gcc = kernel_install.source_build_run_kwargs(
@@ -935,3 +937,66 @@ def test_install_wheel_never_falls_back_to_pip_under_uv_offline(monkeypatch):
         "https://example.invalid/k.whl", python_executable = sys.executable, use_uv = True, run = run
     )
     assert [installer for installer, _ in attempts] == ["uv", "pip"]
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "POSIX process groups")
+def test_a_timed_out_build_stops_its_whole_process_tree(tmp_path):
+    # pip / uv start nvcc / hipcc / ninja; a timeout must stop those too, not just the leader.
+    pid_file = tmp_path / "grandchild.pid"
+    script = (
+        "import subprocess, sys, time; "
+        "p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']); "
+        f"open({str(pid_file)!r}, 'w').write(str(p.pid)); "
+        "time.sleep(60)"
+    )
+    with pytest.raises(subprocess.TimeoutExpired):
+        kernel_install.run_process_tree(
+            [sys.executable, "-c", script], timeout = 3, stdout = subprocess.PIPE
+        )
+    grandchild = int(pid_file.read_text())
+    for _ in range(50):
+        try:
+            os.kill(grandchild, 0)
+        except ProcessLookupError:
+            break
+        # Reaped by init once killed; a zombie still answers kill(0) briefly.
+        with open(f"/proc/{grandchild}/stat") as stat:
+            if stat.read().split()[2] == "Z":
+                break
+        time.sleep(0.1)
+    else:
+        os.kill(grandchild, 9)
+        pytest.fail("the build's grandchild outlived the timeout")
+
+
+def test_a_test_double_runner_is_called_as_given():
+    calls = []
+
+    def run(cmd, **kwargs):
+        calls.append(kwargs)
+        return subprocess.CompletedProcess(cmd, 0)
+
+    kernel_install.run_process_tree(["x"], run = run, timeout = 5, text = True)
+    assert calls == [{"timeout": 5, "text": True}]
+
+
+def test_the_kernel_lock_is_exclusive_bounded_and_beats_while_waiting(tmp_path, monkeypatch):
+    monkeypatch.setattr(kernel_install, "_kernel_lock_path", lambda name: str(tmp_path / name))
+    beats = []
+    with kernel_install.kernel_install_lock("causal_conv1d") as first:
+        assert first is True
+        with kernel_install.kernel_install_lock(
+            "causal_conv1d", on_wait = lambda: beats.append(1), wait_seconds = 1.2, beat_seconds = 0.4
+        ) as second:
+            assert second is False  # held elsewhere past the bound: install nothing
+        with kernel_install.kernel_install_lock("mamba_ssm", wait_seconds = 0) as other:
+            assert other is True  # one lock per kernel
+    assert len(beats) >= 2
+    with kernel_install.kernel_install_lock("causal_conv1d", wait_seconds = 0) as again:
+        assert again is True  # released
+
+
+def test_the_kernel_lock_is_per_environment(monkeypatch):
+    first = kernel_install._kernel_lock_path("causal_conv1d")
+    monkeypatch.setattr(kernel_install.sys, "prefix", "/some/other/venv")
+    assert kernel_install._kernel_lock_path("causal_conv1d") != first

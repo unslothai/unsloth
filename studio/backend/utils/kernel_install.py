@@ -11,14 +11,16 @@ The CLI is wheel-only (never a source build) and uses --no-deps so torch is neve
 from __future__ import annotations
 
 import argparse
+import errno
 import importlib.metadata
 import os
 import platform
 import shutil
 import subprocess
 import sys
+from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 from utils.child_stdio import utf8_child_env
 from utils.wheel_utils import (
@@ -144,12 +146,162 @@ def source_build_command(spec: str, *, use_uv: bool, is_hip: bool, reinstall: bo
     return cmd
 
 
+SOURCE_BUILD_TIMEOUT = 1800
+# The real runner, captured at import: a caller handing in anything else (a test double, or
+# subprocess.run patched over) gets exactly that called.
+_SUBPROCESS_RUN = subprocess.run
+
+
+def run_process_tree(
+    cmd: list[str],
+    *,
+    run: Callable[..., Any] = _SUBPROCESS_RUN,
+    **kwargs: Any,
+) -> subprocess.CompletedProcess:
+    """``run(cmd, **kwargs)``, but when *run* is the real ``subprocess.run`` a ``timeout`` stops the
+    whole process tree (pip / uv and the nvcc / hipcc / ninja they start), not just its leader,
+    which ``subprocess.run`` alone would leave compiling. Raises ``TimeoutExpired`` as run does."""
+    timeout = kwargs.pop("timeout", None)
+    if run is not _SUBPROCESS_RUN or timeout is None:
+        if timeout is not None:
+            kwargs["timeout"] = timeout
+        return run(cmd, **kwargs)
+    if os.name == "nt":
+        kwargs.setdefault("creationflags", getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
+    else:
+        kwargs["start_new_session"] = True
+    with subprocess.Popen(cmd, **kwargs) as process:
+        try:
+            stdout, stderr = process.communicate(timeout = timeout)
+        except subprocess.TimeoutExpired:
+            _kill_process_tree(process)
+            process.communicate()
+            raise subprocess.TimeoutExpired(cmd, timeout)
+        except BaseException:
+            _kill_process_tree(process)
+            raise
+    return subprocess.CompletedProcess(cmd, process.returncode, stdout, stderr)
+
+
+def _kill_process_tree(process: subprocess.Popen) -> None:
+    try:
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(process.pid)],
+                stdout = subprocess.DEVNULL,
+                stderr = subprocess.DEVNULL,
+                timeout = 60,
+            )
+        else:
+            import signal
+            os.killpg(process.pid, signal.SIGKILL)
+    except Exception:
+        pass
+    try:
+        process.kill()
+    except Exception:
+        pass
+
+
+# Long enough for one source build under another process's lock, then give up rather than block.
+KERNEL_LOCK_WAIT = SOURCE_BUILD_TIMEOUT + 600
+_LOCK_CONTENDED = frozenset(
+    code
+    for code in (
+        getattr(errno, "EACCES", None),
+        getattr(errno, "EAGAIN", None),
+        getattr(errno, "EWOULDBLOCK", None),
+        getattr(errno, "EDEADLK", None),
+        getattr(errno, "EDEADLOCK", None),
+    )
+    if code is not None
+)
+
+
+def _kernel_lock_path(name: str) -> str:
+    import hashlib
+    import tempfile
+
+    # One lock per environment and kernel: two Studio workers sharing a venv, never two venvs.
+    env = hashlib.sha256(os.path.realpath(sys.prefix).encode("utf-8")).hexdigest()[:16]
+    folder = os.path.join(tempfile.gettempdir(), "unsloth-kernel-locks")
+    os.makedirs(folder, exist_ok = True)
+    return os.path.join(folder, f"{env}-{name}.lock")
+
+
+@contextmanager
+def kernel_install_lock(
+    name: str,
+    *,
+    on_wait: Callable[[], None] | None = None,
+    wait_seconds: float = KERNEL_LOCK_WAIT,
+    beat_seconds: float = 60.0,
+) -> Iterator[bool]:
+    """Hold the cross-process lock for installing kernel *name* into this environment, covering the
+    whole precheck / install / verify / cleanup transaction. Yields True when held, False when
+    another process kept it past *wait_seconds* (the caller then installs nothing). A filesystem
+    that cannot lock at all yields True: there is nothing to coordinate with. *on_wait* is called
+    when the wait starts and every *beat_seconds* while it lasts."""
+    import time
+
+    try:
+        handle = open(_kernel_lock_path(name), "a+b")
+    except OSError:
+        yield True
+        return
+    held = False
+    try:
+        deadline = time.monotonic() + wait_seconds
+        next_beat = 0.0
+        while True:
+            try:
+                if os.name == "nt":
+                    import msvcrt
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                held = True
+                break
+            except (OSError, ImportError) as exc:
+                if not isinstance(exc, OSError) or exc.errno not in _LOCK_CONTENDED:
+                    break  # cannot lock here at all
+                now = time.monotonic()
+                if now >= deadline:
+                    handle.close()
+                    yield False
+                    return
+                if on_wait is not None and now >= next_beat:
+                    next_beat = now + beat_seconds
+                    try:
+                        on_wait()
+                    except Exception:
+                        pass
+                time.sleep(0.5)
+        yield True
+    finally:
+        if held:
+            try:
+                if os.name == "nt":
+                    import msvcrt
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            except (OSError, ImportError):
+                pass
+        if not handle.closed:
+            handle.close()
+
+
 def source_build_run_kwargs(
     *, is_hip: bool, gcc_install_dir: Callable[[], str | None]
 ) -> tuple[dict[str, Any], str | None]:
     """subprocess.run kwargs for a source build, and the gcc dir added to HIPCC_COMPILE_FLAGS_APPEND
-    (None when nothing was added). Non-HIP builds have no timeout so slow builds (causal-conv1d on
-    aarch64) are not aborted; ROCm builds take 10-30 min, bounded at 1800 s."""
+    (None when nothing was added). ROCm builds take 10-30 min; every build is bounded at
+    SOURCE_BUILD_TIMEOUT (1800 s)."""
     kwargs: dict[str, Any] = {
         "stdout": subprocess.PIPE,
         "stderr": subprocess.STDOUT,
@@ -159,9 +311,11 @@ def source_build_run_kwargs(
         "errors": "replace",
         "env": utf8_child_env(),
     }
+    # One overall deadline for every source build, CUDA as well as ROCm: run it through
+    # run_process_tree so a timeout also stops the compilers pip / uv started.
+    kwargs["timeout"] = SOURCE_BUILD_TIMEOUT
     if not is_hip:
         return kwargs, None
-    kwargs["timeout"] = 1800
     existing = os.environ.get("HIPCC_COMPILE_FLAGS_APPEND", "")
     if "--gcc-install-dir" in existing:
         return kwargs, None

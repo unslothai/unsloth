@@ -38,6 +38,24 @@ def _clear_offline_environment(monkeypatch):
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
     monkeypatch.delenv("UV_OFFLINE", raising = False)
+    # A CUDA torch with nothing published for it unless a test says otherwise: the host's own
+    # torch and the network must not decide the tests.
+    monkeypatch.setattr(
+        worker,
+        "probe_torch_wheel_env",
+        lambda timeout = 30, include_windows = False: {
+            "python_tag": "cp313",
+            "abi_tag": "cp313",
+            "torch_mm": "0.0",
+            "torch_version": "0.0.0",
+            "cuda_version": "12.8",
+            "cuda_major": "12",
+            "hip_version": "",
+            "cxx11abi": "TRUE",
+            "platform_tag": "linux_x86_64",
+        },
+    )
+    monkeypatch.setattr(worker, "url_exists", lambda url: False)
 
 
 @pytest.fixture(autouse = True)
@@ -652,6 +670,7 @@ def test_mamba_ssm_path_preserves_wheel_first_install_args(monkeypatch):
         filename_prefix = "mamba_ssm",
         release_tag = worker.MAMBA_SSM.release_tag,
         release_base_url = "https://github.com/state-spaces/mamba/releases/download",
+        allow_source_build = True,
     )
 
 
@@ -999,7 +1018,9 @@ def test_no_install_path_pips_flash_linear_attention_or_tilelang(monkeypatch, uv
     monkeypatch.setattr(worker, "_is_importable", lambda name: False)
     monkeypatch.setattr(worker, "_is_importable_isolated", lambda name: True)
     monkeypatch.setattr(
-        worker, "probe_torch_wheel_env", lambda timeout = 30, include_windows = False: {}
+        worker,
+        "probe_torch_wheel_env",
+        lambda timeout = 30, include_windows = False: {"cuda_version": "12.8"},
     )
     monkeypatch.setattr(worker, "url_exists", lambda url: False)
     monkeypatch.setattr(worker, "install_wheel", mock.Mock())
@@ -1590,7 +1611,7 @@ def test_windows_installs_a_published_wheel(monkeypatch):
 
 @pytest.mark.parametrize(
     ("wheel_url", "exists"),
-    [(None, False), ("https://x/fa.whl", False), ("https://x/fa.whl", None)],
+    [(None, False), ("https://x/fa.whl", False)],
 )
 def test_windows_never_falls_back_to_pypi(monkeypatch, wheel_url, exists):
     ok, runs, installed = _windows_attempt(
@@ -1681,3 +1702,160 @@ def test_rocm_long_context_still_installs_flash_attn(monkeypatch):
     monkeypatch.setattr(worker, "_install_package_wheel_first", install_mock)
     worker._ensure_flash_attn_for_long_context(event_queue = [], max_seq_length = 65536)
     assert install_mock.called
+
+
+# An unanswered HEAD (a proxy refusing HEAD but serving the download) is not "unpublished": setup
+# always tried the wheel then, and only a real download / import failure falls back.
+
+
+def test_windows_an_unanswered_head_still_downloads_the_wheel(monkeypatch):
+    ok, runs, installed = _windows_attempt(
+        monkeypatch,
+        wheel_url = "https://x/fa-win_amd64.whl",
+        exists = None,
+        importable_after_install = True,
+    )
+    assert ok is True and installed is True
+    assert runs == []
+
+
+def test_linux_an_unanswered_head_installs_the_wheel_not_a_source_build(monkeypatch):
+    monkeypatch.setattr(worker.sys, "platform", "linux")
+    monkeypatch.setattr(worker, "url_exists", lambda url: None)
+    installs = []
+    monkeypatch.setattr(
+        worker,
+        "install_wheel",
+        lambda url, **k: installs.append(url)
+        or [("uv", subprocess.CompletedProcess(["uv"], 0, ""))],
+    )
+    monkeypatch.setattr(worker, "_is_importable_isolated", lambda name: bool(installs))
+    monkeypatch.setattr(worker, "_send_status", lambda queue, message: None)
+    builds = []
+    monkeypatch.setattr(
+        worker._sp,
+        "run",
+        lambda cmd, **k: builds.append(cmd) or subprocess.CompletedProcess(cmd, 0, ""),
+    )
+    ok = worker._attempt_package_install(
+        event_queue = [],
+        **worker._pinned_kernel_kwargs(worker.MAMBA_SSM),
+    )
+    assert ok is True
+    assert len(installs) == 1 and builds == []
+
+
+# Optional mamba-ssm (Mamba, Jamba, Zamba, Bamba...): a prebuilt wheel or the torch path, never a
+# source build; the families that cannot load without it keep the source fallback.
+
+
+@pytest.mark.parametrize("essential", [False, True])
+def test_optional_mamba_ssm_never_source_builds(monkeypatch, essential):
+    monkeypatch.setattr(worker.sys, "platform", "linux")
+    monkeypatch.setattr(worker, "_is_importable", lambda name: False)
+    monkeypatch.setattr(worker, "_is_importable_isolated", lambda name: False)
+    monkeypatch.setattr("utils.ssm_runtime._mamba_ssm_floor_reason", lambda: None)
+    monkeypatch.setattr(worker, "_send_status", lambda queue, message: None)
+    monkeypatch.setattr(worker, "_reject_install", lambda *a, **k: None)
+    monkeypatch.setattr(worker.shutil, "which", lambda name: None)
+    builds = []
+    monkeypatch.setattr(
+        worker._sp,
+        "run",
+        lambda cmd, **k: builds.append(cmd) or subprocess.CompletedProcess(cmd, 1, ""),
+    )
+    worker._ensure_mamba_ssm([], "ai21labs/Jamba-v0.1", required = True, essential = essential)
+    assert bool([cmd for cmd in builds if "mamba-ssm==" in " ".join(cmd)]) is essential
+
+
+def test_optional_mamba_ssm_is_skipped_below_the_setup_floor(monkeypatch):
+    statuses = []
+    install = mock.Mock()
+    monkeypatch.setattr(worker, "_is_importable", lambda name: False)
+    monkeypatch.setattr(
+        "utils.ssm_runtime._mamba_ssm_floor_reason",
+        lambda: "needs sm80, or sm75 with Triton 3.4+ (torch 2.8+), and Triton is 3.3",
+    )
+    monkeypatch.setattr(worker, "_install_package_wheel_first", install)
+    monkeypatch.setattr(worker, "_send_status", lambda queue, message: statuses.append(message))
+    worker._ensure_mamba_ssm([], "ai21labs/Jamba-v0.1", required = True, essential = False)
+    assert not install.called
+    assert any("sm75 with Triton 3.4" in message for message in statuses)
+
+
+def test_a_required_hybrid_on_a_t4_still_installs_mamba_ssm(monkeypatch):
+    # As before setup stopped provisioning: Nemotron-H / Falcon-H1 / Granite-4.0-H install it on
+    # any GPU (the runtime never applied setup's floor to them).
+    install = mock.Mock()
+    monkeypatch.setattr(worker, "_is_importable", lambda name: False)
+    monkeypatch.setattr(
+        "utils.ssm_runtime._mamba_ssm_floor_reason", lambda: pytest.fail("no floor for these")
+    )
+    monkeypatch.setattr(worker, "_install_package_wheel_first", install)
+    worker._ensure_mamba_ssm([], "tiiuae/Falcon-H1-0.5B", required = True, essential = True)
+    assert install.called
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        None,  # the probe failed
+        {"cuda_version": "", "hip_version": "", "platform_tag": "linux_x86_64"},  # CPU / XPU torch
+    ],
+)
+def test_no_cuda_or_rocm_torch_installs_nothing(monkeypatch, env):
+    monkeypatch.setattr(worker, "probe_torch_wheel_env", lambda **k: env)
+    statuses = []
+    monkeypatch.setattr(worker, "_send_status", lambda queue, message: statuses.append(message))
+    install = mock.Mock()
+    monkeypatch.setattr(worker, "install_wheel", install)
+    builds = []
+    monkeypatch.setattr(worker._sp, "run", lambda cmd, **k: builds.append(cmd))
+    assert (
+        worker._attempt_package_install(
+            event_queue = [], **worker._pinned_kernel_kwargs(worker.CAUSAL_CONV1D)
+        )
+        is False
+    )
+    assert not install.called and builds == []
+    assert any("CUDA or ROCm" in message for message in statuses)
+
+
+def test_the_training_install_runs_under_the_kernel_lock(monkeypatch):
+    from utils import kernel_install
+
+    entered = []
+
+    class _Lock:
+        def __init__(self, name, **kwargs):
+            entered.append(name)
+
+        def __enter__(self):
+            return False  # another process kept it
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(kernel_install, "kernel_install_lock", _Lock)
+    monkeypatch.setattr(worker, "_is_importable", lambda name: False)
+    attempt = mock.Mock()
+    monkeypatch.setattr(worker, "_attempt_package_install", attempt)
+    monkeypatch.setattr(worker, "_send_status", lambda queue, message: None)
+    assert (
+        worker._install_package_wheel_first(
+            event_queue = [], **worker._pinned_kernel_kwargs(worker.CAUSAL_CONV1D)
+        )
+        is False
+    )
+    assert entered == ["causal_conv1d"] and not attempt.called
+
+
+def test_a_peer_finishing_the_install_while_waiting_is_success(monkeypatch):
+    states = iter([False, True])  # before the lock, then after it
+    monkeypatch.setattr(worker, "_is_importable", lambda name: next(states))
+    attempt = mock.Mock()
+    monkeypatch.setattr(worker, "_attempt_package_install", attempt)
+    assert worker._install_package_wheel_first(
+        event_queue = [], **worker._pinned_kernel_kwargs(worker.CAUSAL_CONV1D)
+    )
+    assert not attempt.called

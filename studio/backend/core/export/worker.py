@@ -240,9 +240,10 @@ def _send_response(resp_queue: Any, response: dict) -> None:
 
 
 def _export_uses_cuda_kernels(device_backend) -> bool:
-    """causal-conv1d / mamba-ssm are CUDA / ROCm extensions: an MLX or CPU export (and any macOS
-    one) never loads them, as training and chat skip them there."""
-    return sys.platform != "darwin" and str(device_backend or "") not in ("mlx", "cpu")
+    """causal-conv1d / mamba-ssm are CUDA / ROCm extensions, so only a CUDA export (ROCm reports as
+    "cuda" too) provisions them: MLX, CPU, XPU, an unspecified backend and any macOS export never
+    load them. ssm_runtime then checks the torch build itself."""
+    return sys.platform != "darwin" and str(device_backend or "") in ("cuda", "rocm")
 
 
 def _provision_ssm_kernels(

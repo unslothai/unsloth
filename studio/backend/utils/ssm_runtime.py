@@ -281,14 +281,24 @@ def _dependency_target(model_load_target: str, adapter_base: str | None) -> str:
     return _local_adapter_base(model_load_target) or model_load_target
 
 
+# Configs read for the kernel decision, per process: a load's preflight, its _handle_load and each
+# kernel share one read (a cold Hub read can take seconds).
+_MODEL_CONFIGS: dict[tuple[str, str | None], dict | None] = {}
+
+
 def _resolved_model_config(model_load_target: str, hf_token: str | None) -> dict | None:
+    key = (str(model_load_target), hf_token)
+    if key in _MODEL_CONFIGS:
+        return _MODEL_CONFIGS[key]
     try:
         from utils.transformers_version import _load_config_json
         model_config = _load_config_json(model_load_target, hf_token)
     except Exception as exc:
         logger.debug("Could not inspect model config for SSM kernels: %s", exc)
-        return None
-    return model_config if isinstance(model_config, dict) else None
+        model_config = None
+    model_config = model_config if isinstance(model_config, dict) else None
+    _MODEL_CONFIGS[key] = model_config
+    return model_config
 
 
 def resolve_ssm_kernels(
@@ -297,12 +307,15 @@ def resolve_ssm_kernels(
     hf_token: str | None,
     *,
     adapter_base: str | None = None,
+    model_config: dict | None = None,
 ) -> SsmKernels:
     """The kernels the model at *model_load_target* needs, from its config (an adapter's base
-    config when it is an adapter); the name lists only when there is no config to read."""
+    config when it is an adapter); the name lists only when there is no config to read. A caller
+    that already read the deciding config passes it as *model_config*."""
     target = _dependency_target(model_load_target, adapter_base)
     probe = target if target != model_load_target else model_name
-    model_config = _resolved_model_config(target, hf_token)
+    if model_config is None:
+        model_config = _resolved_model_config(target, hf_token)
     model_types: frozenset[str] = frozenset()
     is_ssm = required = wants = None
     remote_code: frozenset = frozenset()
@@ -545,6 +558,81 @@ def _run_with_heartbeat(run, cmd, status_cb, display_name, **kwargs):
         return run(cmd, **kwargs)
 
 
+# The torch build this process installs kernels for, probed once (one torch import in a child).
+_TORCH_ENV: dict = {}
+# Kernels whose install already failed in this process, keyed by kernel, torch and toolchain, so a
+# later load stage (or the next load in the same worker) does not download or compile them again.
+_FAILED_INSTALLS: set = set()
+
+
+def _torch_env() -> dict[str, str] | None:
+    key = probe_torch_wheel_env
+    if key not in _TORCH_ENV:
+        _TORCH_ENV[key] = probe_torch_wheel_env(timeout = 30, include_windows = True)
+    return _TORCH_ENV[key]
+
+
+def _kernel_backend(env: dict[str, str] | None) -> str | None:
+    """ "cuda" or "hip" for a torch these kernels build / ship for; None for CPU-only, XPU, MPS,
+    or a torch the probe could not read, which take the model's torch path instead."""
+    if not env:
+        return None
+    if env.get("hip_version"):
+        return "hip"
+    if env.get("cuda_version") or env.get("cuda_major"):
+        return "cuda"
+    return None
+
+
+def _failure_key(import_name: str) -> tuple:
+    try:
+        import importlib.metadata as metadata
+        torch_version = metadata.version("torch")
+    except Exception:
+        torch_version = None
+    return (
+        import_name,
+        sys.executable,
+        torch_version,
+        shutil.which("nvcc"),
+        shutil.which("hipcc"),
+        os.environ.get("CUDA_HOME") or os.environ.get("CUDA_PATH"),
+        os.environ.get("ROCM_PATH"),
+    )
+
+
+def _installed_distribution(pypi_name: str) -> bool:
+    try:
+        import importlib.metadata as metadata
+        metadata.version(pypi_name)
+        return True
+    except Exception:
+        return False
+
+
+def _remove_broken(pypi_name: str, display_name: str, run: Callable[..., Any]) -> None:
+    """Uninstall a distribution whose extension does not import, as the training worker does: a
+    later availability check would otherwise find it and fail instead of taking the torch path."""
+    if not _installed_distribution(pypi_name):
+        return
+    try:
+        removed = (
+            run(
+                uninstall_command(pypi_name, use_uv = bool(shutil.which("uv"))),
+                stdout = subprocess.DEVNULL,
+                stderr = subprocess.DEVNULL,
+            ).returncode
+            == 0
+        )
+    except Exception:
+        removed = False
+    logger.warning(
+        "%s does not import; %s",
+        display_name,
+        "removed it" if removed else f"uninstall {pypi_name} manually",
+    )
+
+
 def _install_kernel(
     *,
     import_name: str,
@@ -556,8 +644,12 @@ def _install_kernel(
     status_cb: StatusCb,
     run: Callable[..., Any],
     newly_installed: list[str] | None = None,
+    allow_source_build: bool = True,
 ) -> bool:
-    """Install one kernel wheel-first, then a HIP-aware PyPI source build (never on Windows). Returns True iff importable afterwards; idempotent (no-op when already installed). An install this call made is appended to *newly_installed*."""
+    """Install one kernel wheel-first, then (when *allow_source_build*) a HIP-aware PyPI source build
+    (never on Windows). Returns True iff importable afterwards; idempotent (no-op when already
+    installed). An install this call made is appended to *newly_installed*. One install per kernel
+    runs at a time across processes; a failed one is not retried in this process."""
     if _is_importable(import_name):
         logger.info("%s already installed", display_name)
         return True
@@ -569,7 +661,69 @@ def _install_kernel(
         logger.info("Skipping %s installation while offline", display_name)
         return False
 
-    env = probe_torch_wheel_env(timeout = 30, include_windows = True)
+    failure_key = _failure_key(import_name)
+    if failure_key in _FAILED_INSTALLS:
+        logger.info("%s already failed to install in this process; not retrying", display_name)
+        return False
+
+    from utils.kernel_install import kernel_install_lock
+
+    with kernel_install_lock(
+        import_name,
+        on_wait = lambda: _emit(
+            status_cb, f"Waiting for another process installing {display_name}..."
+        ),
+    ) as held:
+        if not held:
+            _emit(status_cb, f"Another process is still installing {display_name}; skipping it.")
+            return False
+        # Another process may have installed it while this one waited.
+        if _is_importable(import_name):
+            logger.info("%s installed by another process", display_name)
+            return True
+        installed = _install_kernel_locked(
+            import_name = import_name,
+            display_name = display_name,
+            pypi_name = pypi_name,
+            package_version = package_version,
+            release_tag = release_tag,
+            release_base_url = release_base_url,
+            status_cb = status_cb,
+            run = run,
+            allow_source_build = allow_source_build,
+        )
+        if installed is None:
+            return False  # nothing attempted (unsupported torch backend)
+        if installed:
+            if newly_installed is not None:
+                newly_installed.append(import_name)
+            return True
+        _remove_broken(pypi_name, display_name, run)
+        _FAILED_INSTALLS.add(failure_key)
+        return False
+
+
+def _install_kernel_locked(
+    *,
+    import_name: str,
+    display_name: str,
+    pypi_name: str,
+    package_version: str,
+    release_tag: str,
+    release_base_url: str,
+    status_cb: StatusCb,
+    run: Callable[..., Any],
+    allow_source_build: bool,
+) -> bool | None:
+    """The install itself, under the kernel's lock. None when nothing was attempted."""
+    env = _torch_env()
+    backend = _kernel_backend(env)
+    if backend is None:
+        _emit(
+            status_cb,
+            f"{display_name} needs a CUDA or ROCm build of torch; using the model's torch path.",
+        )
+        return None
     wheel_only = sys.platform == "win32" or is_windows_wheel_env(env)
     wheel_url = direct_wheel_url(
         filename_prefix = import_name,
@@ -579,7 +733,14 @@ def _install_kernel(
         env = env,
     )
     wheel_available = url_exists(wheel_url) if wheel_url else False
-    if wheel_available:
+    # Only a 404 proves nothing is published: an unanswered HEAD (a proxy refusing HEAD but serving
+    # the download) still tries the wheel, as setup always did.
+    if wheel_url and wheel_available is not False:
+        if wheel_available is None:
+            _emit(
+                status_cb,
+                f"Could not check the {display_name} prebuilt wheel; trying to download it.",
+            )
         _emit(status_cb, f"Installing {display_name} (prebuilt kernel) for this model...")
         # Keep quiet downloads and unpacks within the inactivity deadline (#9398).
         with _heartbeat(
@@ -600,55 +761,34 @@ def _install_kernel(
                 use_uv = bool(shutil.which("uv")),
                 run = run,
             )
-            if outcome == "installed":
-                logger.info("Installed prebuilt %s wheel", display_name)
-                if newly_installed is not None:
-                    newly_installed.append(import_name)
-                return True
-            if outcome == "rejected":
-                if wheel_only:
-                    removed = (
-                        run(
-                            uninstall_command(pypi_name, use_uv = bool(shutil.which("uv"))),
-                            stdout = subprocess.DEVNULL,
-                            stderr = subprocess.DEVNULL,
-                        ).returncode
-                        == 0
-                    )
-                    logger.warning(
-                        "%s wheel installed but not importable; %s",
-                        display_name,
-                        "removed it" if removed else f"uninstall {pypi_name} manually",
-                    )
-                    return False
-                logger.warning(
-                    "%s wheel installed but not importable; building from source",
-                    display_name,
-                )
+        if outcome == "installed":
+            logger.info("Installed prebuilt %s wheel", display_name)
+            return True
+        if outcome == "rejected":
+            logger.warning("%s wheel installed but not importable", display_name)
+            # Remove it before any rebuild: pip / uv would call the broken copy "satisfied".
+            _remove_broken(pypi_name, display_name, run)
     elif wheel_only:
         logger.info(
             "No prebuilt %s wheel for this Windows environment (%s); using the torch fallback",
             display_name,
             wheel_url,
         )
-    elif wheel_available is None:
-        _emit(
-            status_cb,
-            f"Could not check the {display_name} prebuilt wheel; building it from source.",
-        )
     else:
-        logger.info(
-            "No prebuilt %s wheel for this environment (%s); building from source",
-            display_name,
-            wheel_url,
-        )
+        logger.info("No prebuilt %s wheel for this environment (%s)", display_name, wheel_url)
 
     if wheel_only:
+        return False
+    if not allow_source_build:
+        _emit(
+            status_cb,
+            f"No usable prebuilt {display_name} for this torch; using the model's torch path.",
+        )
         return False
 
     # Source build (slow). ROCm has no prebuilt wheel and needs hipcc + a gcc-install-dir shim.
     spec = f"{pypi_name}=={package_version}"
-    is_hip = bool((env or {}).get("hip_version"))
+    is_hip = backend == "hip"
     if is_hip and not shutil.which("hipcc"):
         _emit(status_cb, f"{display_name}: hipcc not found; install the ROCm HIP SDK to build it.")
         return False
@@ -659,18 +799,23 @@ def _install_kernel(
     # Reinstall so the source build replaces a broken wheel instead of no-opping as "already satisfied".
     cmd = source_build_command(spec, use_uv = bool(shutil.which("uv")), is_hip = is_hip, reinstall = True)
     run_kwargs, _ = source_build_run_kwargs(is_hip = is_hip, gcc_install_dir = _hipcc_gcc_install_dir)
+    from utils.kernel_install import run_process_tree
+
     try:
-        result = _run_with_heartbeat(run, cmd, status_cb, display_name, **run_kwargs)
+        result = _run_with_heartbeat(
+            lambda command, **kwargs: run_process_tree(command, run = run, **kwargs),
+            cmd,
+            status_cb,
+            display_name,
+            **run_kwargs,
+        )
     except subprocess.TimeoutExpired:
         logger.error("%s source build timed out", display_name)
         _emit(status_cb, f"{display_name} source build timed out.")
         return False
     if getattr(result, "returncode", 1) != 0:
         logger.warning("%s source install failed:\n%s", display_name, getattr(result, "stdout", ""))
-    importable = _is_importable(import_name)
-    if importable and newly_installed is not None:
-        newly_installed.append(import_name)
-    return importable
+    return _is_importable(import_name)
 
 
 def _pinned_kwargs(kernel: PinnedKernel) -> dict[str, str]:
@@ -709,12 +854,13 @@ def ensure_ssm_runtime(
     if not (wants_causal_conv1d or is_ssm):
         return installed
 
-    def _install(kernel: PinnedKernel) -> bool:
+    def _install(kernel: PinnedKernel, *, allow_source_build: bool = True) -> bool:
         return _install_kernel(
             **_pinned_kwargs(kernel),
             status_cb = status_cb,
             run = run,
             newly_installed = installed,
+            allow_source_build = allow_source_build,
         )
 
     # causal-conv1d first: SSM modeling files lazy-import it, and mamba-ssm's fast path uses it.
@@ -738,13 +884,48 @@ def ensure_ssm_runtime(
             status_cb, "mamba-ssm needs Triton on Windows (triton-windows); using the torch path."
         )
         return installed
-    if not _install(MAMBA_SSM):
-        if mamba_ssm_required:
+    if not mamba_ssm_required:
+        # The families with a torch path get mamba-ssm only as a prebuilt wheel, and only where
+        # unsloth_zoo keeps its fast path on (setup's sm80 / sm75 + Triton 3.4 floor): never a
+        # source build, as before setup stopped installing it for every model.
+        reason = None if _is_importable(MAMBA_SSM.import_name) else _mamba_ssm_floor_reason()
+        if reason is not None:
+            _emit(status_cb, f"Skipping mamba-ssm, which {reason}; using the model's torch path.")
+            return installed
+    if not _install(MAMBA_SSM, allow_source_build = mamba_ssm_required):
+        if mamba_ssm_required and _kernel_backend(_torch_env()) is not None:
             raise RuntimeError(
                 f"Could not install mamba-ssm, required by this Mamba model. {offline_hint}"
             )
         _emit(status_cb, "mamba-ssm is not available; continuing on the model's torch path.")
     return installed
+
+
+def _mamba_ssm_floor_reason() -> str | None:
+    """Why an optional mamba-ssm stays off this machine's GPU, or None when unsloth_zoo would use
+    it: setup's rule (kernel_install), from the torch already imported here when there is one."""
+    from utils import kernel_install
+
+    capability = None
+    torch = sys.modules.get("torch")
+    if torch is not None:
+        try:
+            if getattr(torch.version, "hip", None):
+                return None
+            if torch.cuda.is_available() and torch.cuda.device_count():
+                capability = max(
+                    tuple(torch.cuda.get_device_capability(i))
+                    for i in range(torch.cuda.device_count())
+                )
+        except Exception:
+            capability = None
+    if capability is None:
+        capability = kernel_install._gpu_capability(subprocess.run)
+    if capability is None:
+        return "needs a visible GPU"
+    if capability >= (8, 0):
+        return None
+    return kernel_install._pre_ampere_skip_reason("mamba_ssm", capability, subprocess.run)
 
 
 def provision_ssm_kernels(
@@ -753,6 +934,7 @@ def provision_ssm_kernels(
     hf_token: str | None,
     *,
     adapter_base: str | None = None,
+    model_config: dict | None = None,
     status_cb: StatusCb = None,
     run: Callable[..., Any] = subprocess.run,
 ) -> tuple[SsmKernels, list[str]]:
@@ -760,7 +942,11 @@ def provision_ssm_kernels(
     resolved and what this call newly installed. Raises ``RuntimeError`` only for a model that
     cannot load without ``mamba_ssm``."""
     kernels = resolve_ssm_kernels(
-        model_name, model_load_target, hf_token, adapter_base = adapter_base
+        model_name,
+        model_load_target,
+        hf_token,
+        adapter_base = adapter_base,
+        model_config = model_config,
     )
     installed = ensure_ssm_runtime(
         kernels.probe,
