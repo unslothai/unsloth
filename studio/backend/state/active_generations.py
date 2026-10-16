@@ -123,6 +123,8 @@ def _matching(
     account_id: Optional[str],
     exclude: Collection[threading.Event],
     only: Optional[Collection[threading.Event]] = None,
+    *,
+    include_external: bool = True,
 ) -> list[dict[str, Any]]:
     return [
         e
@@ -130,6 +132,7 @@ def _matching(
         if (account_id is None or e["account_id"] == account_id)
         and e["event"] not in exclude
         and (only is None or e["event"] in only)
+        and (include_external or not e["external"])
     ]
 
 
@@ -137,11 +140,13 @@ def snapshot(
     account_id: Optional[str] = None,
     exclude: Collection[threading.Event] = (),
     only: Optional[Collection[threading.Event]] = None,
+    *,
+    include_external: bool = True,
 ) -> list[dict[str, Any]]:
     """In-flight generations, newest last; ``account_id`` None (all) is shutdown/arbiter only.
     ``exclude`` leaves out the runs holding those cancel events."""
     with _LOCK:
-        entries = _matching(account_id, exclude, only)
+        entries = _matching(account_id, exclude, only, include_external = include_external)
     entries.sort(key = lambda e: e["started_at"])
     return [
         {
@@ -161,6 +166,8 @@ def active_thread_ids(
     account_id: Optional[str] = None,
     exclude: Collection[threading.Event] = (),
     only: Optional[Collection[threading.Event]] = None,
+    *,
+    include_external: bool = True,
 ) -> list[str]:
     """Distinct conversation ids with a generation in flight, in start order.
 
@@ -168,18 +175,23 @@ def active_thread_ids(
     this cannot name it.
     """
     seen: list[str] = []
-    for e in snapshot(account_id, exclude, only):
+    for e in snapshot(account_id, exclude, only, include_external = include_external):
         tid = e["thread_id"]
         if tid and tid not in seen:
             seen.append(tid)
     return seen
 
 
-def count(account_id: Optional[str] = None, exclude: Collection[threading.Event] = ()) -> int:
+def count(
+    account_id: Optional[str] = None,
+    exclude: Collection[threading.Event] = (),
+    *,
+    include_external: bool = True,
+) -> int:
     with _LOCK:
-        if account_id is None and not exclude:
+        if account_id is None and not exclude and include_external:
             return len(_ACTIVE)
-        return len(_matching(account_id, exclude))
+        return len(_matching(account_id, exclude, include_external = include_external))
 
 
 def foreign_count(account_id: str) -> int:
@@ -190,16 +202,18 @@ def foreign_count(account_id: str) -> int:
         )
 
 
-def external_events() -> set[threading.Event]:
-    with _LOCK:
-        return {e["event"] for e in _ACTIVE.values() if e["external"]}
-
-
-def cancel_all(account_id: Optional[str] = None, exclude: Collection[threading.Event] = ()) -> int:
+def cancel_all(
+    account_id: Optional[str] = None,
+    exclude: Collection[threading.Event] = (),
+    *,
+    include_external: bool = True,
+) -> int:
     """Signal in-flight generations to stop, returning the count. Request-driven callers must pass
     ``account_id``; None means everyone and is for shutdown only."""
     with _LOCK:
-        events = [e["event"] for e in _matching(account_id, exclude)]
+        events = [
+            e["event"] for e in _matching(account_id, exclude, include_external = include_external)
+        ]
     for ev in events:
         try:
             ev.set()

@@ -3081,6 +3081,33 @@ def test_an_external_tool_chat_is_not_stopped_by_a_local_model_swap():
     assert active_generations.count() == 0
 
 
+def test_external_registration_racing_the_swap_gate_stays_excluded(monkeypatch):
+    gate = _route_gate()
+    event = threading.Event()
+    tracker = active_generations.ActiveGeneration(
+        event,
+        thread_id = "external-chat",
+        external = True,
+    )
+    original_count = active_generations.count
+    entered = False
+
+    def count_after_registration(*args, **kwargs):
+        nonlocal entered
+        if not entered:
+            tracker.__enter__()
+            entered = True
+        return original_count(*args, **kwargs)
+
+    monkeypatch.setattr(active_generations, "count", count_after_registration)
+    try:
+        assert gate(force = False, action = "Unloading the model") == 0
+        assert not event.is_set()
+    finally:
+        if entered:
+            tracker.__exit__(None, None, None)
+
+
 def test_an_external_tool_chat_still_stops_on_its_own_stop():
     _route_gate()
 

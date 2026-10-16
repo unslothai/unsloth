@@ -9362,9 +9362,7 @@ async def _wait_for_model_switch_idle(
         elsewhere = model_slots.all_generations()
         active_others -= min(active_others, len(elsewhere))
         if cancel_pending:
-            cancellable = active_generations.count(
-                account_id, elsewhere | active_generations.external_events()
-            )
+            cancellable = active_generations.count(account_id, elsewhere, include_external = False)
             active_others -= min(active_others, cancellable)
         if active_others <= queued_switches:
             return
@@ -17427,19 +17425,19 @@ def _raise_or_cancel_active_generations(
         # first would end the caller's chats for nothing. Keyed on account_scope(), whose count
         # drops while a deactivated account's generation still holds the GPU.
         require_no_foreign_generations(scope)
-    elsewhere = model_slots.all_generations() | active_generations.external_events()
-    if not active_generations.count(scope, elsewhere):
+    elsewhere = model_slots.all_generations()
+    if not active_generations.count(scope, elsewhere, include_external = False):
         return 0
     if not force:
         raise _active_generations_conflict(
             action,
-            active_generations.count(scope, elsewhere),
-            active_generations.active_thread_ids(scope, elsewhere),
+            active_generations.count(scope, elsewhere, include_external = False),
+            active_generations.active_thread_ids(scope, elsewhere, include_external = False),
         )
     if not cancel:
         # Refusal-only pass: the caller cancels later, once nothing can still reject the load.
         return 0
-    cancelled = active_generations.cancel_all(scope, elsewhere)
+    cancelled = active_generations.cancel_all(scope, elsewhere, include_external = False)
     if cancelled:
         logger.info(
             "model_swap_cancelled_active_generations",
@@ -17479,9 +17477,7 @@ async def _cancel_and_drain_for_sidecar_swap(timeout_s: Optional[float] = None) 
                 current_request_counted = False, include_pending = False
             )
             if discount_registered:
-                counted -= min(
-                    counted, active_generations.count(None, active_generations.external_events())
-                )
+                counted -= min(counted, active_generations.count(None, include_external = False))
             if counted <= 0:
                 return True
             if time.monotonic() >= deadline:
@@ -17696,7 +17692,7 @@ async def get_active_generations(
     """
     scope = account_access.account_scope()
     # ``model``: only the chats an unload of that model stops, the same split its scoped 409 uses.
-    exclude, only, llama = active_generations.external_events(), None, None
+    exclude, only, llama = set(), None, None
     if model and model_slots.slots:
         slot = await asyncio.to_thread(
             model_slots.serving_slot, model, model_slots.visible(), _loaded_satisfies
@@ -17707,7 +17703,7 @@ async def get_active_generations(
             exclude |= model_slots.all_generations()
         else:
             only = set()  # no loaded model by that name: its unload stops nothing
-    entries = active_generations.snapshot(scope, exclude, only)
+    entries = active_generations.snapshot(scope, exclude, only, include_external = False)
     # A tracker's model can be a native local path (the legacy stream records active_model_name
     # verbatim); redact here, the one place that serialises it.
     for _entry in entries:
@@ -17721,7 +17717,9 @@ async def get_active_generations(
     return {
         "active": entries,
         "count": len(entries),
-        "thread_ids": active_generations.active_thread_ids(scope, exclude, only),
+        "thread_ids": active_generations.active_thread_ids(
+            scope, exclude, only, include_external = False
+        ),
         "parallel_slots": max(1, int(slots)),
     }
 
