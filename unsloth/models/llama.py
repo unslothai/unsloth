@@ -1069,7 +1069,9 @@ def LlamaDecoderLayer_fast_forward(
         hidden_states += residual
     else:
         residual = hidden_states
-        hidden_states = fast_rms_layernorm(self.input_layernorm, hidden_states, save_output = True)
+        hidden_states = fast_rms_layernorm(
+            self.input_layernorm, hidden_states, save_output = True, reuse_grad = True
+        )
         hidden_states, self_attn_weights, present_key_value = self.self_attn(
             hidden_states = hidden_states,
             causal_mask = causal_mask,
@@ -1086,7 +1088,7 @@ def LlamaDecoderLayer_fast_forward(
 
         residual = hidden_states
         hidden_states = fast_rms_layernorm(
-            self.post_attention_layernorm, hidden_states, save_output = True
+            self.post_attention_layernorm, hidden_states, save_output = True, reuse_grad = True
         )
         hidden_states = self.mlp(hidden_states)
         hidden_states = residual + hidden_states
@@ -1498,9 +1500,13 @@ def LlamaModel_fast_forward(
     elif IS_COHERE:
         hidden_states = self.norm(hidden_states)
     elif IS_FALCON_H1:
-        hidden_states = fast_rms_layernorm(self.final_layernorm, hidden_states, gemma = IS_GEMMA)
+        hidden_states = fast_rms_layernorm(
+            self.final_layernorm, hidden_states, gemma = IS_GEMMA, reuse_grad = True
+        )
     else:
-        hidden_states = fast_rms_layernorm(self.norm, hidden_states, gemma = IS_GEMMA)
+        hidden_states = fast_rms_layernorm(
+            self.norm, hidden_states, gemma = IS_GEMMA, reuse_grad = True
+        )
 
     if output_hidden_states:
         all_hidden_states += (hidden_states,)

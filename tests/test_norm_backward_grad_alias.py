@@ -79,3 +79,44 @@ def test_layernorm_backward_leaves_shared_grad_alone(train_weight, dtype):
     b = (0.1 * torch.randn(256, device = "cuda")).to(dtype).requires_grad_(train_weight)
     norm = lambda x: Fast_Layernorm.apply(x, W, b, 1e-6)
     _check(norm, lambda x: _ln_fp64(x, W, b), dtype)
+
+
+@pytest.mark.gpu
+@pytest.mark.skipif(not has_real_cuda(), reason = "CUDA Triton kernels required")
+@pytest.mark.parametrize("gemma", [False, True])
+@pytest.mark.parametrize("save_output", [False, True])
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
+def test_rms_layernorm_reuse_grad_matches_and_saves_a_buffer(
+    gemma, save_output, dtype, monkeypatch
+):
+    # Pre-norm decoder norms feed only layers that return a fresh grad, so they let dX overwrite
+    # dY: same bits as the fresh buffer, and one activation less at the backward peak.
+    from unsloth.kernels import rms_layernorm
+    from unsloth.kernels.rms_layernorm import Fast_RMS_Layernorm
+
+    monkeypatch.setattr(rms_layernorm, "_SAVE_OUTPUT", save_output)
+    torch.manual_seed(0)
+    shape = (2, 512, 1024)
+    W = (1.0 + 0.1 * torch.randn(shape[-1], device = "cuda")).to(dtype)
+    proj = torch.randn(shape[-1], 64, device = "cuda", dtype = dtype) / 32
+    x0 = torch.randn(shape, device = "cuda", dtype = dtype)
+
+    def step(reuse_grad):
+        x = x0.clone().requires_grad_()
+        y = Fast_RMS_Layernorm.apply(x, W, 1e-6, gemma, save_output, reuse_grad)
+        (y @ proj).float().square().mean().backward()
+        return x.grad
+
+    results = {}
+    for reuse_grad in (False, True):
+        step(reuse_grad)
+        torch.cuda.synchronize()
+        base = torch.cuda.memory_allocated()
+        torch.cuda.reset_peak_memory_stats()
+        grad = step(reuse_grad)
+        torch.cuda.synchronize()
+        results[reuse_grad] = (grad, torch.cuda.max_memory_allocated() - base)
+    assert torch.equal(results[False][0], results[True][0])
+    saved = results[False][1] - results[True][1]
+    activation = x0.numel() * x0.element_size()
+    assert saved == (0 if gemma else activation), (saved, activation)
