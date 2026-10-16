@@ -11,7 +11,7 @@ import {
   storeAuthTokens,
 } from "./session";
 import { refreshSession } from "./api";
-import { setLoginMode } from "./login-client";
+import { fetchAuthStatus } from "./login-client";
 import {
   OWNER_BROWSER_ACCOUNT,
   transitionBrowserAccount,
@@ -106,8 +106,10 @@ async function doTauriAutoAuth(options: TauriAutoAuthOptions): Promise<boolean> 
     await transitionBrowserAccount(OWNER_BROWSER_ACCOUNT, "/chat", () => {
       storeAuthTokens(tokens.access_token, tokens.refresh_token);
       setMustChangePassword(false);
-      setLoginMode("single");
     });
+    // Owner tokens no longer imply a one-account install: the owner keeps signing in while the
+    // bootstrap password stands, so the login mode has to come from the server.
+    await fetchAuthStatus().catch(() => undefined);
     clearTauriAuthFailure();
     return true;
   } catch (error) {

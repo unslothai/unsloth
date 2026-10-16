@@ -66,8 +66,13 @@ function fixture(t: { after(fn: () => void): void }, tauri = true) {
     "./session": session,
     "./api": session,
     "./login-client": {
-      setLoginMode: (mode: string, fullAccess?: boolean) => {
-        loginModes.push([mode, fullAccess]);
+      // Mirrors the real reader: one status request, published as the login mode.
+      fetchAuthStatus: async () => {
+        const response = await globalThis.fetch("/api/auth/status");
+        if (!response.ok) throw new Error("Failed to load auth status.");
+        const result = await response.json();
+        loginModes.push([result.login_mode ?? "single", result.full_access]);
+        return result;
       },
     },
     "@/lib/account-transition": {
@@ -189,7 +194,27 @@ test("returning to one account restores desktop auto-login and guard shortcuts",
   assert.equal(f.access, "restored-owner");
   await f.guards.requireAuth();
   await assert.rejects(f.guards.requireGuest(), { to: "/chat" });
-  assert.equal(f.statusCalls, 0);
+  // The one status read belongs to the exchange; the guards still take their shortcuts.
+  assert.equal(f.statusCalls, 1);
+  assert.deepEqual(f.loginModes, [["single", undefined]]);
+});
+
+test("a multi-account install signs the owner in while the bootstrap password stands", async (t) => {
+  const f = fixture(t);
+  f.setStatus({
+    initialized: true,
+    requires_password_change: true,
+    login_mode: "multi",
+    full_access: false,
+  });
+  assert.equal(await f.auth.tauriAutoAuth({ force: true }), true);
+  assert.equal(f.auth.isTauriLoginRequired(), false);
+  assert.equal(f.access, "owner-access");
+  assert.deepEqual(f.navigations, []);
+  assert.deepEqual(f.transitions, [{ account: "unsloth", route: "/chat" }]);
+  assert.deepEqual(f.loginModes, [["multi", false]]);
+  await f.guards.requireAuth();
+  await assert.rejects(f.guards.requireGuest(), { to: "/chat" });
 });
 
 for (const passwordChange of [false, true]) {
