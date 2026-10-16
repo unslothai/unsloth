@@ -656,7 +656,9 @@ def assert_flux2_pick_compatible(
         raise ValueError(reason)
 
 
-def _flux3_pipeline_index(repo_id: str, token: Optional[str], allow_network: bool) -> Optional[dict]:
+def _flux3_pipeline_index(
+    repo_id: str, token: Optional[str], allow_network: bool
+) -> Optional[dict]:
     """A FLUX.3 pipeline's ``modular_model_index.json``: the local folder's, the cached copy, or (when allowed) a
     fetch of that one small file. None on anything unreadable."""
     import json
@@ -674,8 +676,9 @@ def _flux3_pipeline_index(repo_id: str, token: Optional[str], allow_network: boo
         if local is None and allow_network:
             from huggingface_hub import hf_hub_download
             from utils.hf_cache_settings import active_hf_hub_cache
-
-            local = hf_hub_download(repo_id, FLUX3_INDEX, token = token, cache_dir = active_hf_hub_cache())
+            local = hf_hub_download(
+                repo_id, FLUX3_INDEX, token = token, cache_dir = active_hf_hub_cache()
+            )
         if local is None:
             return None
         payload = json.loads(Path(local).read_text(encoding = "utf-8-sig"))
@@ -727,7 +730,9 @@ def assert_flux3_pick_compatible(
         # A full modular pipeline: its manifest names the variant. Same refusal, before the teardown.
         from .diffusion_flux3 import flux3_family_blocks_mismatch, flux3_index_family
 
-        declared = flux3_index_family(_flux3_pipeline_index(repo_id, normalize_token(hf_token), allow_network))
+        declared = flux3_index_family(
+            _flux3_pipeline_index(repo_id, normalize_token(hf_token), allow_network)
+        )
         reason = flux3_family_blocks_mismatch(name, declared, repo_id)
         if reason is not None:
             raise ValueError(reason)

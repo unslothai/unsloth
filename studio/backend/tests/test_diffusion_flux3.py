@@ -981,13 +981,20 @@ def test_a_pipeline_of_the_other_variant_is_refused_before_eviction(
 def test_the_loader_backstop_refuses_a_block_graph_of_the_other_family():
     from core.inference.diffusion_flux3 import flux3_family_blocks_mismatch, flux3_index_family
 
-    assert flux3_family_blocks_mismatch(FLUX3_KLEIN_FAMILY_NAME, FLUX3_DISTILLED_BLOCKS, "r") is None
+    assert (
+        flux3_family_blocks_mismatch(FLUX3_KLEIN_FAMILY_NAME, FLUX3_DISTILLED_BLOCKS, "r") is None
+    )
     assert "flux.3-klein-base" in flux3_family_blocks_mismatch(
         FLUX3_KLEIN_FAMILY_NAME, FLUX3_BASE_BLOCKS, "r"
     )
     assert flux3_family_blocks_mismatch(None, FLUX3_BASE_BLOCKS, "r") is None
-    assert flux3_index_family({"_class_name": "Flux3ModularPipeline"}) == FLUX3_KLEIN_BASE_FAMILY_NAME
-    assert flux3_index_family({"_blocks_class_name": FLUX3_DISTILLED_BLOCKS}) == FLUX3_KLEIN_FAMILY_NAME
+    assert (
+        flux3_index_family({"_class_name": "Flux3ModularPipeline"}) == FLUX3_KLEIN_BASE_FAMILY_NAME
+    )
+    assert (
+        flux3_index_family({"_blocks_class_name": FLUX3_DISTILLED_BLOCKS})
+        == FLUX3_KLEIN_FAMILY_NAME
+    )
     assert flux3_index_family({}) is None
 
 
@@ -997,8 +1004,13 @@ def test_canonical_family_names_get_the_flux3_recipe():
     assert default_generation_params("flux.3-klein") == (16, 1.0)
     assert default_generation_params("flux.3-klein-base") == (25, 3.5)
     # An opaque local pipeline names no variant; the resident recipe falls back to the family.
-    for name, want in ((FLUX3_KLEIN_FAMILY_NAME, (16, 1.0)), (FLUX3_KLEIN_BASE_FAMILY_NAME, (25, 3.5))):
-        got = _generation_defaults_for("/models/my-model", None, "/models/my-model", family = _family(name))
+    for name, want in (
+        (FLUX3_KLEIN_FAMILY_NAME, (16, 1.0)),
+        (FLUX3_KLEIN_BASE_FAMILY_NAME, (25, 3.5)),
+    ):
+        got = _generation_defaults_for(
+            "/models/my-model", None, "/models/my-model", family = _family(name)
+        )
         assert (got["steps"], got["guidance"]) == want
 
 

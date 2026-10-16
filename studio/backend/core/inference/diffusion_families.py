@@ -2468,7 +2468,9 @@ def modular_image_family_names(names: Iterable[str]) -> tuple[str, ...]:
     opaque folder picked under an explicit family override is classed ``diffusers_modular_pipeline`` (FLUX.3)."""
     by_name = {f.name: f for f in _FAMILIES}
     return tuple(
-        n for n in names if str(getattr(by_name.get(n), "pipeline_class", "")).endswith("ModularPipeline")
+        n
+        for n in names
+        if str(getattr(by_name.get(n), "pipeline_class", "")).endswith("ModularPipeline")
     )
 
 

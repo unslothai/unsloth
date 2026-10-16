@@ -119,7 +119,11 @@ def flux3_family_blocks_mismatch(
 ) -> Optional[str]:
     """Why ``source`` (declaring the FLUX.3 family or block class ``declared``) cannot load as ``family_name``."""
     declared = _BLOCKS_FAMILY.get(declared, declared) if declared else None
-    if family_name not in FLUX3_FAMILY_BLOCKS or declared not in FLUX3_FAMILY_BLOCKS or declared == family_name:
+    if (
+        family_name not in FLUX3_FAMILY_BLOCKS
+        or declared not in FLUX3_FAMILY_BLOCKS
+        or declared == family_name
+    ):
         return None
     what = "distilled FLUX.3 Klein" if declared == FLUX3_KLEIN_FAMILY_NAME else "FLUX.3 Klein base"
     return (
