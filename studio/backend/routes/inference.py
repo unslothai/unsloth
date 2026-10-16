@@ -49157,16 +49157,29 @@ async def _selected_gpu_ordinal(gpu_ids, *, allow_ranking: bool = True) -> Optio
     trainer holds the cards: the ids are still validated and translated (mask plus nvidia-smi, no
     CUDA context), so a bad pick is refused at the plan rather than tens of gigabytes later.
     """
+    from core.inference import diffusion_device
     from core.inference.diffusion_device import (
         resolve_diffusion_device_target,
         resolve_selected_cuda_ordinal,
     )
 
-    if not gpu_ids:
+    if not gpu_ids and not allow_ranking:
         return None
     device = await asyncio.to_thread(lambda: resolve_diffusion_device_target().device)
     if device != "cuda":
         return None
+    if not gpu_ids:
+        # An auto-switch load uses the card its locality check planned against.
+        from core.inference.media_locality import planned_gpu_ordinal
+
+        pinned, ordinal = planned_gpu_ordinal()
+        if pinned:
+            return ordinal
+        # Automatic ranks the visible cards too (#8235); the current device is PCI slot 0.
+        # Pinned for this request, so begin_load's own fallback reuses it (None included).
+        ordinal = await asyncio.to_thread(diffusion_device.resolve_auto_cuda_ordinal)
+        diffusion_device._PLANNED_ORDINAL.set(ordinal)
+        return ordinal
     # The keyword only when it is not the default, so the ordinary path calls the resolver with
     # the same one-argument shape it always had (a monkeypatched seam still fits it).
     if allow_ranking:
