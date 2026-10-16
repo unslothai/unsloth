@@ -60,14 +60,16 @@ const CAPABILITY_ICONS: Record<HubCapabilityFilter, IconSvgElement | null> = {
   "video-gen": FlimSlateIcon,
 };
 
-const SECTION_LABEL =
-  "flex w-full items-center justify-between px-3 pt-2 pb-1.5 text-ui-12 text-muted-foreground";
-const SEPARATOR = "mx-1 my-2 h-px bg-border";
+// Gaps are 17px scaled; leading-[1.25] is Inter's text box, so they measure to the glyphs.
+const TEXT_BOX = "leading-[1.25]";
+const SECTION_LABEL = cn(
+  "flex w-full items-center justify-between px-3 pb-2 text-ui-12 text-muted-foreground",
+  TEXT_BOX,
+);
 const PICKED_FILL =
   "bg-[color-mix(in_oklab,var(--foreground)_calc(9%*var(--contrast-wash-gain,1)),var(--popover))] dark:bg-[color-mix(in_srgb,var(--accent),white_8%)]";
 const UNPICKED_FILL =
   "bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),var(--popover))] hover:bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),var(--popover))] dark:bg-[color-mix(in_srgb,var(--accent)_60%,transparent)] dark:hover:bg-(--accent)";
-const SECTION_GAP = "mx-1 my-2 h-px";
 
 type LimitKey =
   | "minParams"
@@ -265,7 +267,11 @@ function RangeStops({
         )}
       </legend>
       {/* Inset by an end pill's overhang, so the pills line up with the labels above. */}
-      <div className={cn("relative mx-4.5 pt-7 pb-1", SLIDER_FG)}>
+      {/* Ends at the thumb's edge, which doesn't scale with the h-4 root, so the gap below matches. */}
+      <div
+        style={{ marginBottom: `calc((${THUMB}px - var(--spacing) * 4) / 2)` }}
+        className={cn("relative mx-4.5 pt-7", SLIDER_FG)}
+      >
         <div aria-hidden={true} className="absolute inset-x-0 top-0 h-5">
           {spec.labels.map((label, i) =>
             label === null && !covered(i) ? null : (
@@ -402,8 +408,8 @@ function SwitchField({
   onCheckedChange: (checked: boolean) => void;
 }) {
   return (
-    <div className="flex items-start justify-between gap-3 px-3">
-      <span className="pt-0.5 text-ui-12 text-muted-foreground">
+    <div className="flex items-center justify-between gap-3 px-3">
+      <span className="text-ui-12 text-muted-foreground">
         <HoverInfo label={label}>{about}</HoverInfo>
       </span>
       <Switch
@@ -430,8 +436,8 @@ function SegmentedRow<T extends string>({
   onChange: (value: T) => void;
 }) {
   return (
-    <div className="flex items-start justify-between gap-3 px-3">
-      <span className="pt-0.5 text-ui-12 text-muted-foreground">
+    <div className="flex items-center justify-between gap-3 px-3">
+      <span className="text-ui-12 text-muted-foreground">
         <HoverInfo label={label}>{about}</HoverInfo>
       </span>
       <div
@@ -595,7 +601,7 @@ export function ModelSearchFiltersControl({
         // Reset all in view; flex children would otherwise shrink the separators away.
         className="hub-menu-instant hub-composer-menu menu-soft-surface gap-0 overflow-hidden w-[calc(392px*var(--ui-space-scale,1))] max-w-[calc(100vw-1rem)] ring-0"
       >
-        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain [scrollbar-width:thin]">
+        <div className="flex min-h-0 flex-1 flex-col gap-4.25 overflow-y-auto overscroll-contain pt-2.25 pb-4.25 [scrollbar-width:thin]">
           {modelSections && (
             <>
               <fieldset>
@@ -611,7 +617,7 @@ export function ModelSearchFiltersControl({
                     </button>
                   )}
                 </legend>
-                <div className="grid grid-cols-2 gap-1.5 px-3 pb-0.5">
+                <div className="grid grid-cols-2 gap-1.5 px-3">
                   {CAPABILITY_FILTER_OPTIONS.map((option) => {
                     const ticked = (key: HubCapabilityFilter) =>
                       capabilities.length === 0 || capabilities.includes(key);
@@ -654,36 +660,15 @@ export function ModelSearchFiltersControl({
                   })}
                 </div>
               </fieldset>
-              {showModelFilters && (
-                <>
-                  <div
-                    aria-hidden={true}
-                    className={cn(
-                      SECTION_GAP,
-                      "mt-[calc(5px*var(--ui-space-scale,1))]",
-                    )}
+              {showModelFilters &&
+                RANGES.map((spec) => (
+                  <RangeStops
+                    key={spec.label}
+                    spec={spec}
+                    value={value}
+                    onChange={onChange}
                   />
-                  <div className="flex flex-col gap-2.5 pb-0.5">
-                    {RANGES.map((spec) => (
-                      <RangeStops
-                        key={spec.label}
-                        spec={spec}
-                        value={value}
-                        onChange={onChange}
-                      />
-                    ))}
-                  </div>
-                </>
-              )}
-              <div
-                aria-hidden={true}
-                className={cn(
-                  SECTION_GAP,
-                  showModelFilters
-                    ? "mt-0"
-                    : "mt-[calc(5px*var(--ui-space-scale,1))]",
-                )}
-              />
+                ))}
             </>
           )}
           {datasetSections && (
@@ -701,7 +686,7 @@ export function ModelSearchFiltersControl({
                     </button>
                   )}
                 </legend>
-                <div className="grid grid-cols-2 gap-1.5 px-3 pb-0.5">
+                <div className="grid grid-cols-2 gap-1.5 px-3">
                   {DATASET_MODALITIES.map((modality) => {
                     const ticked = (key: DatasetModality) =>
                       modalities.length === 0 || modalities.includes(key);
@@ -737,57 +722,45 @@ export function ModelSearchFiltersControl({
                   })}
                 </div>
               </fieldset>
-              <div
-                aria-hidden={true}
-                className={cn(
-                  SECTION_GAP,
-                  "mt-[calc(5px*var(--ui-space-scale,1))]",
-                )}
+              <RangeStops
+                spec={DATASET_ROWS}
+                value={value}
+                onChange={onChange}
               />
-              <div className="pb-0.5">
-                <RangeStops
-                  spec={DATASET_ROWS}
-                  value={value}
-                  onChange={onChange}
-                />
-              </div>
-              <div aria-hidden={true} className={cn(SECTION_GAP, "mt-0")} />
             </>
           )}
-          <div className="flex flex-col gap-3 pt-2 pb-[calc(7px*var(--ui-space-scale,1))]">
-            {/* The Hub search's own scope, so it stays on ModelScope too; datasets take none. */}
-            {modelSections && (
-              <SegmentedRow
-                label="Uploader"
-                about="Unsloth lists Unsloth's own uploads. All uploaders searches every account on the Hub; a search starts there."
-                value={unslothOnly ? "unsloth" : "all"}
-                options={[
-                  ["unsloth", "Unsloth"],
-                  ["all", "All uploaders"],
-                ]}
-                onChange={(next) =>
-                  onUploadersChange(
-                    next === "unsloth" ? ["unsloth"] : [...HUB_UPLOADERS],
-                  )
-                }
-              />
-            )}
-            <div>
-              <SwitchField
-                label="Datasets only"
-                about="Lists datasets instead of models."
-                checked={datasets}
-                onCheckedChange={onDatasetsChange}
-              />
-            </div>
-          </div>
+          {/* The Hub search's own scope, so it stays on ModelScope too; datasets take none. */}
+          {modelSections && (
+            <SegmentedRow
+              label="Uploader"
+              about="Unsloth lists Unsloth's own uploads. All uploaders searches every account on the Hub; a search starts there."
+              value={unslothOnly ? "unsloth" : "all"}
+              options={[
+                ["unsloth", "Unsloth"],
+                ["all", "All uploaders"],
+              ]}
+              onChange={(next) =>
+                onUploadersChange(
+                  next === "unsloth" ? ["unsloth"] : [...HUB_UPLOADERS],
+                )
+              }
+            />
+          )}
+          <SwitchField
+            label="Datasets only"
+            about="Lists datasets instead of models."
+            checked={datasets}
+            onCheckedChange={onDatasetsChange}
+          />
         </div>
-        <div aria-hidden={true} className={cn(SEPARATOR, "mb-1.5 shrink-0")} />
-        <div className="flex shrink-0 items-center justify-end px-3 pb-0.5">
+        <div aria-hidden={true} className="mx-3 h-px shrink-0 bg-border" />
+        <div className="flex shrink-0 items-center justify-end px-3 pt-3 pb-1">
           <Button
             type="button"
             variant="ghost"
             size="xs"
+            // "Reset all" has no descenders: its ink sits 0.25em inside the text box on each side.
+            className={cn(TEXT_BOX, "-my-[0.25em]")}
             disabled={!filtered}
             onClick={onReset}
           >

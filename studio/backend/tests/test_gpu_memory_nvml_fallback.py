@@ -185,7 +185,8 @@ class TestTheMemoryProbeFallsBackToNvml:
             raise AssertionError("no other probe should run")
 
         monkeypatch.setattr(mod.subprocess, "run", smi_ok)
-        assert LlamaCppBackend._get_gpu_memory() == [(0, 60000, 81920), (1, 20000, 24576)]
+        # nvidia-smi answering cannot place an unresolved uuid mask: no whole-card rows.
+        assert LlamaCppBackend._get_gpu_memory() == []
         # The inherited uuid mask is still what the child gets, a MIG parent still its slice.
         assert LlamaCppBackend._child_visibility_for([1, 0]) == "GPU-bbbb2222-1,MIG-cccc3333-0"
         # The mask changing underneath is read as it is now, not as it was at the probe.

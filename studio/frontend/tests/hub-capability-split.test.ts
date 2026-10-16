@@ -62,7 +62,7 @@ test("capabilities are picked in the filter popover, which sits right after the 
   const popover = readSrc("features/hub/catalog/model-search-filters.tsx");
   assert.match(popover, /CAPABILITY_FILTER_OPTIONS\.map\(\(option\) => \{/);
   assert.match(popover, /role="checkbox"\s+aria-checked=\{checked\}/);
-  assert.match(popover, /\{showModelFilters && \(/);
+  assert.match(popover, /\{showModelFilters &&\s+RANGES\.map\(/);
 });
 
 test("Text only lists the models no other box covers, so every box ticked lists every model", () => {

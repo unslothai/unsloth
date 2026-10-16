@@ -98,6 +98,7 @@ def _gpu_record_helpers(source: str) -> str:
             "_gfx_arch_slots",
             "_amd_smi_hip_order",
             "_amd_prefer_discrete_gfx",
+            "_hsa_override_gfx_arch",
             "_amd_gfx_is_shadowing_integrated",
             "_amd_gfx_has_wheel_route",
             "_amd_arch_index_family_for_gfx",
@@ -6440,7 +6441,9 @@ class TestStrixRocm71Override:
             r"^_infer_amd_gfx_arch_from_gpu_name\(\) \{\n.*?\n\}\n", source, re.S | re.M
         )
         scan = re.search(
-            r"^    if command -v lspci[^\n]*\n.*?\nEOF\n    fi\n    return 1\n", source, re.S | re.M
+            r"^    if command -v lspci[^\n]*\n.*?\nEOF\n    fi\n.*?    return 1\n",
+            source,
+            re.S | re.M,
         )
         assert name_fn and scan, "could not extract the lspci scan block"
         cases = (

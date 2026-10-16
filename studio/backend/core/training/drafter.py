@@ -212,6 +212,7 @@ def _probe_capability(model_name: str, hf_token, key) -> dict:
     import sys
 
     from hub.utils.hf_tokens import apply_token_to_child_env
+    from utils.child_stdio import utf8_child_env
 
     env = dict(os.environ)
     env[_TOKEN_ENV] = "0" if hf_token is False else (hf_token or "")
@@ -222,9 +223,12 @@ def _probe_capability(model_name: str, hf_token, key) -> dict:
         proc = subprocess.run(
             [sys.executable, "-c", _PROBE.format(env = _TOKEN_ENV), model_name],
             cwd = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-            env = env,
+            # Decoded as UTF-8 below, so the child has to write it on every locale.
+            env = utf8_child_env(env),
             capture_output = True,
             text = True,
+            encoding = "utf-8",
+            errors = "replace",
             timeout = 300,
         )
         for line in proc.stdout.splitlines():
