@@ -7517,7 +7517,9 @@ def test_the_grammar_stops_on_the_token_the_decode_loop_stops_on():
 
     tokenizer, runtime_stop = _two_stop_tokenizer()
     wrapped = TokenizerWrapper(tokenizer, eos_token_ids = [runtime_stop])
-    assert _stop_offered_after_the_document(wrapped, tokenizer) == {runtime_stop}
+    # mlx-lm 0.32 also keeps the tokenizer's own end token in the wrapper's stop set.
+    assert runtime_stop in wrapped.eos_token_ids
+    assert _stop_offered_after_the_document(wrapped, tokenizer) == set(wrapped.eos_token_ids)
     assert _stop_offered_after_the_document(tokenizer, tokenizer) == {tokenizer.eos_token_id}
 
 
@@ -7876,12 +7878,19 @@ def test_mlx_stream_detokenizer_handles_one_that_cannot_be_copied():
         def decode(self, token_ids):
             return "".join(f"<{token_id}>" for token_id in token_ids)
 
+        def encode(
+            self,
+            text,
+            add_special_tokens = True,
+        ):
+            return [ord(c) for c in text]
+
     class _PerRead:
         """Stands in for ``TokenizerWrapper``, whose ``detokenizer`` is a property."""
 
         @property
         def detokenizer(self):
-            return detokenizers.NaiveStreamingDetokenizer(_Tok())
+            return _uncopyable_naive_detokenizer(detokenizers)(_Tok())
 
     source = _PerRead()
     with pytest.raises(AttributeError):

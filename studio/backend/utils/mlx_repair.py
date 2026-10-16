@@ -30,10 +30,10 @@ _UNRESOLVED_PYTHON_MARKER = "No virtual environment or system Python installatio
 _MLX_MIN_VERSIONS = {"mlx": "0.22.0", "mlx-lm": "0.31.2", "mlx-vlm": "0.4.4"}
 _MLX_PACKAGE_NAMES = tuple(_MLX_MIN_VERSIONS)
 _MLX_RUNTIME_IMPORTS = ("mlx.core", "mlx_lm", "mlx_lm.sample_utils", "mlx_vlm")
-# What the self-heal INSTALLS (the floors above judge a stack already there). Pinned, not floored: this install is unattended and mlx breaks in patch releases (0.32.1, unslothai/unsloth#9466). Keep in sync with unsloth-zoo's darwin deps. mlx 0.32.3 rather than mlx-vlm's 0.32.2 floor: 0.32.2's GQA-8 decode kernel read the first sequence's KV for every batch row (mlx#4431). mlx-vlm stays a range: 0.7.8 under the installer's transformers override, 0.6.4 under the plain cap.
+# What the self-heal INSTALLS (the floors above judge a stack already there). Pinned, not floored: this install is unattended and mlx breaks in patch releases (0.32.1, unslothai/unsloth#9466). Keep in sync with unsloth-zoo's darwin deps. mlx 0.32.3 rather than mlx-vlm's 0.32.2 floor: 0.32.2's GQA-8 decode kernel read the first sequence's KV for every batch row (mlx#4431). mlx-vlm stays a range: 0.7.8 under the installer's transformers override, 0.6.4 under the plain cap. mlx-lm is a range too: 0.32 requires Python 3.11, so Python 3.10 resolves 0.31.3.
 _MLX_INSTALL_SPECS = {
     "mlx": "==0.32.3",
-    "mlx-lm": "==0.31.3",
+    "mlx-lm": ">=0.31.3,<=0.32.2",
     "mlx-vlm": ">=0.4.4,<=0.7.8",
 }
 MLX_PACKAGES = tuple(f"{name}{spec}" for name, spec in _MLX_INSTALL_SPECS.items())
@@ -75,15 +75,15 @@ def _zoo_declared_specifier(package: str) -> str:
 
 
 def _install_packages() -> tuple[str, ...]:
-    """MLX_PACKAGES, with mlx-vlm narrowed to what the installed unsloth-zoo declares.
+    """MLX_PACKAGES, with mlx-lm and mlx-vlm narrowed to what the installed unsloth-zoo declares.
 
-    Only mlx-vlm: it is the one whose call shape the zoo has to match, and mlx/mlx-lm are pinned
-    exactly at both ends, so intersecting those would just empty the range on any zoo a patch release
-    behind. Both specifiers are passed and uv intersects them.
+    The ranged two, whose call shapes the zoo has to match: a zoo pinning mlx-lm 0.31.3 keeps 0.31.3.
+    mlx is pinned exactly at both ends, so intersecting it would just empty the range on any zoo a
+    patch release behind. Both specifiers are passed and uv intersects them.
     """
     packages = []
     for name, spec in _MLX_INSTALL_SPECS.items():
-        declared = _zoo_declared_specifier(name) if name == "mlx-vlm" else ""
+        declared = _zoo_declared_specifier(name) if name in ("mlx-lm", "mlx-vlm") else ""
         packages.append(f"{name}{spec},{declared}" if declared else f"{name}{spec}")
     return tuple(packages)
 
