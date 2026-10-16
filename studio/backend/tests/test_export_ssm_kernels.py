@@ -135,10 +135,25 @@ def test_a_failed_required_install_stops_the_export_before_the_import(monkeypatc
     (checkpoint / "config.json").write_text(json.dumps({"model_type": "falcon_h1"}))
     monkeypatch.setattr(ssm_runtime, "_install_kernel", lambda **k: False)
     monkeypatch.setattr(ssm_runtime, "_torch_env", lambda: {"cuda_version": "12.8"})
+    # A transformers without the native Falcon-H1 model cannot load it without mamba-ssm.
+    monkeypatch.setattr(ssm_runtime, "native_modeling_available", lambda model_type: False)
     queue = _Queue()
     assert export_worker._provision_ssm_kernels(str(checkpoint), None, None, queue, "cuda") is False
     assert queue[-1]["type"] == "error"
     assert "mamba-ssm" in queue[-1]["error"]
+
+
+def test_a_native_required_hybrid_exports_without_mamba_ssm(monkeypatch, tmp_path):
+    checkpoint = tmp_path / "falcon"
+    checkpoint.mkdir()
+    (checkpoint / "config.json").write_text(json.dumps({"model_type": "falcon_h1"}))
+    monkeypatch.setattr(ssm_runtime, "_install_kernel", lambda **k: False)
+    monkeypatch.setattr(ssm_runtime, "_torch_env", lambda: {"cuda_version": "12.8"})
+    monkeypatch.setattr(ssm_runtime, "native_modeling_available", lambda model_type: True)
+    queue = _Queue()
+    assert export_worker._provision_ssm_kernels(str(checkpoint), None, None, queue, "cuda") is True
+    assert not any(item.get("type") == "error" for item in queue)
+    assert any("Warning: could not install mamba-ssm" in item.get("message", "") for item in queue)
 
 
 def test_an_optional_ssm_family_exports_on_the_torch_path(monkeypatch, tmp_path):

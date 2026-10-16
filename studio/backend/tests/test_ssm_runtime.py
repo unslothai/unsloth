@@ -34,6 +34,8 @@ def _clear_offline_environment(monkeypatch):
     monkeypatch.setattr(ssm_runtime, "_TORCH_ENV", {})
     monkeypatch.setattr(ssm_runtime, "_FAILED_INSTALLS", set())
     monkeypatch.setattr(ssm_runtime, "_MODEL_CONFIGS", {})
+    monkeypatch.setattr(ssm_runtime, "_REMOTE_SOURCES", {})
+    monkeypatch.setattr(ssm_runtime, "_NATIVE_MODELING_CACHE", {})
     # This host's GPU must not decide the optional-mamba floor; its own tests set it.
     monkeypatch.setattr(ssm_runtime, "_mamba_ssm_floor_reason", lambda: None)
     # Nor its torch build: a CUDA torch unless a test says otherwise.
@@ -173,9 +175,10 @@ def test_causal_only_model_skips_mamba(monkeypatch):
 
 
 def test_failure_raises_runtime_error(monkeypatch):
-    # A true SSM model whose mamba-ssm cannot install is fatal (cryptic mid-load import
-    # otherwise). "Nemotron-3-Nano-30B-A3B" matches the SSM substrings.
+    # A required-family model this transformers has no native implementation of cannot load
+    # without mamba-ssm, so a failed install is fatal (cryptic mid-load import otherwise).
     monkeypatch.setattr(ssm_runtime, "_install_kernel", lambda **k: False)
+    monkeypatch.setattr(ssm_runtime, "native_modeling_available", lambda model_type: False)
     with pytest.raises(RuntimeError):
         ssm_runtime.ensure_ssm_runtime("unsloth/Nemotron-3-Nano-30B-A3B")
 
@@ -1046,6 +1049,7 @@ def test_resolved_answers_override_the_name(monkeypatch):
 
 def test_the_mamba_ssm_failure_names_the_offline_remedy(monkeypatch):
     monkeypatch.setattr(ssm_runtime, "_install_kernel", lambda **k: False)
+    monkeypatch.setattr(ssm_runtime, "native_modeling_available", lambda model_type: False)
     with pytest.raises(RuntimeError, match = "unsloth install-kernels"):
         ssm_runtime.ensure_ssm_runtime("tiiuae/Falcon-H1-0.5B")
 
@@ -1114,8 +1118,8 @@ def test_inference_worker_resolves_kernels_from_the_base_config(monkeypatch, tmp
     assert seen == [("renamed", True, True, True)]
 
     src = (_BACKEND / "core" / "inference" / "worker.py").read_text(encoding = "utf-8")
-    assert "_ensure_ssm_kernels(ssm_targets, resp_queue, hf_token)" in src
-    assert "_ensure_ssm_kernels(_ssm_targets, resp_queue, _hf_token)" in src
+    assert "_ensure_ssm_kernels(ssm_targets, resp_queue, hf_token, trust_remote_code)" in src
+    assert "_ensure_ssm_kernels(_ssm_targets, resp_queue, _hf_token, _trust_remote_code)" in src
 
 
 # ── mamba-ssm is fatal only where the model cannot load without it ────────────
@@ -1586,3 +1590,187 @@ def test_torch_212_keeps_the_source_fallback(monkeypatch):
     host = _Host(monkeypatch, env = {**_CUDA, "torch_mm": "2.12"}, head = False, build_ok = True)
     assert host.install() is True
     assert len(host.builds) == 1
+
+
+# ── when a missing mamba-ssm refuses the load (AMD hardware report, PR #13971) ──────────────────
+
+_NVIDIA_REMOTE_NEMOTRON = """
+from transformers.utils.import_utils import is_mamba_2_ssm_available
+
+if is_mamba_2_ssm_available():
+    from mamba_ssm.ops.triton.ssd_combined import mamba_chunk_scan_combined
+else:
+    mamba_chunk_scan_combined = None
+
+try:
+    from mamba_ssm.ops.triton.layernorm_gated import rmsnorm_fn
+except ImportError:
+    raise ImportError("mamba-ssm is required by the Mamba model but cannot be imported")
+"""
+
+_GATED_REMOTE = """
+try:
+    from mamba_ssm.ops.triton.layernorm_gated import rmsnorm_fn
+except ImportError:
+    rmsnorm_fn = None
+if is_mamba_2_ssm_available():
+    import mamba_ssm
+"""
+
+
+def _checkpoint(
+    tmp_path,
+    model_type,
+    auto_map = None,
+    modeling = None,
+    name = "ckpt",
+):
+    folder = tmp_path / name
+    folder.mkdir()
+    config = {"model_type": model_type}
+    if auto_map:
+        config["auto_map"] = auto_map
+    (folder / "config.json").write_text(json.dumps(config))
+    for filename, text in (modeling or {}).items():
+        (folder / filename).write_text(text)
+    return str(folder)
+
+
+def _failing_mamba(monkeypatch):
+    attempts = []
+
+    def _install(**kwargs):
+        attempts.append((kwargs["import_name"], kwargs.get("allow_source_build")))
+        return False
+
+    monkeypatch.setattr(ssm_runtime, "_install_kernel", _install)
+    monkeypatch.setattr(ssm_runtime.importlib.util, "find_spec", lambda *a, **k: object())
+    return attempts
+
+
+@pytest.mark.parametrize("model_type", ["nemotron_h", "falcon_h1", "granitemoehybrid"])
+def test_a_native_required_hybrid_loads_with_a_warning(monkeypatch, tmp_path, model_type):
+    # The native transformers model runs without mamba-ssm (it trains on Windows ROCm with none):
+    # still worth a source build, but a failure is a warning, not a refused load.
+    attempts = _failing_mamba(monkeypatch)
+    monkeypatch.setattr(ssm_runtime, "native_modeling_available", lambda t: True)
+    statuses = []
+    kernels, installed = ssm_runtime.provision_ssm_kernels(
+        "nvidia/NVIDIA-Nemotron-Nano-9B-v2",
+        _checkpoint(tmp_path, model_type),
+        None,
+        status_cb = statuses.append,
+    )
+    assert kernels.mamba_ssm_required and not kernels.mamba_ssm_fatal
+    assert ("mamba_ssm", True) in attempts  # the source fallback is kept for these three
+    assert installed == []
+    assert any("Warning: could not install mamba-ssm" in message for message in statuses)
+
+
+def test_remote_code_that_imports_mamba_ssm_still_refuses(monkeypatch, tmp_path):
+    _failing_mamba(monkeypatch)
+    monkeypatch.setattr(ssm_runtime, "native_modeling_available", lambda t: True)
+    target = _checkpoint(
+        tmp_path,
+        "nemotron_h",
+        auto_map = {"AutoModelForCausalLM": "modeling_nemotron_h.NemotronHForCausalLM"},
+        modeling = {"modeling_nemotron_h.py": _NVIDIA_REMOTE_NEMOTRON},
+    )
+    with pytest.raises(RuntimeError, match = "Could not install mamba-ssm"):
+        ssm_runtime.provision_ssm_kernels(target, target, None, trust_remote_code = True)
+
+
+def test_the_same_checkpoint_without_trust_loads_natively(monkeypatch, tmp_path):
+    # auto_map is only followed under trust_remote_code (or when transformers lacks the model).
+    _failing_mamba(monkeypatch)
+    monkeypatch.setattr(ssm_runtime, "native_modeling_available", lambda t: True)
+    target = _checkpoint(
+        tmp_path,
+        "nemotron_h",
+        auto_map = {"AutoModelForCausalLM": "modeling_nemotron_h.NemotronHForCausalLM"},
+        modeling = {"modeling_nemotron_h.py": _NVIDIA_REMOTE_NEMOTRON},
+    )
+    kernels, _ = ssm_runtime.provision_ssm_kernels(target, target, None, trust_remote_code = False)
+    assert not kernels.mamba_ssm_fatal
+
+
+def test_remote_code_with_a_guarded_import_loads(monkeypatch, tmp_path):
+    _failing_mamba(monkeypatch)
+    monkeypatch.setattr(ssm_runtime, "native_modeling_available", lambda t: True)
+    target = _checkpoint(
+        tmp_path,
+        "nemotron_h",
+        auto_map = {"AutoModelForCausalLM": "model.CustomForCausalLM"},
+        modeling = {"model.py": _GATED_REMOTE},
+    )
+    kernels, _ = ssm_runtime.provision_ssm_kernels(target, target, None, trust_remote_code = True)
+    assert not kernels.mamba_ssm_fatal
+
+
+def test_unreadable_remote_code_is_treated_as_requiring_it(monkeypatch, tmp_path):
+    _failing_mamba(monkeypatch)
+    monkeypatch.setattr(ssm_runtime, "native_modeling_available", lambda t: True)
+    target = _checkpoint(
+        tmp_path,
+        "falcon_h1",
+        auto_map = {"AutoModelForCausalLM": "modeling_falcon_h1.FalconH1ForCausalLM"},
+    )
+    with pytest.raises(RuntimeError):
+        ssm_runtime.provision_ssm_kernels(target, target, None, trust_remote_code = True)
+
+
+@pytest.mark.parametrize("model_type", ["nemotron_h", "falcon_h1"])
+def test_a_transformers_without_the_native_model_still_refuses(monkeypatch, tmp_path, model_type):
+    _failing_mamba(monkeypatch)
+    monkeypatch.setattr(ssm_runtime, "native_modeling_available", lambda t: False)
+    target = _checkpoint(tmp_path, model_type)
+    with pytest.raises(RuntimeError, match = "Could not install mamba-ssm"):
+        ssm_runtime.provision_ssm_kernels(target, target, None)
+
+
+def test_windows_without_triton_refuses_only_a_fatal_load(monkeypatch, tmp_path):
+    monkeypatch.setattr(ssm_runtime.sys, "platform", "win32")
+    monkeypatch.setattr(ssm_runtime, "_install_kernel", lambda **k: False)
+    monkeypatch.setattr(
+        ssm_runtime.importlib.util,
+        "find_spec",
+        lambda name, *a, **k: None if name == "triton" else object(),
+    )
+    statuses = []
+    monkeypatch.setattr(ssm_runtime, "native_modeling_available", lambda t: True)
+    ssm_runtime.provision_ssm_kernels(
+        "x", _checkpoint(tmp_path, "nemotron_h", name = "a"), None, status_cb = statuses.append
+    )
+    assert any("triton-windows" in message for message in statuses)
+    monkeypatch.setattr(ssm_runtime, "native_modeling_available", lambda t: False)
+    with pytest.raises(RuntimeError, match = "triton-windows"):
+        ssm_runtime.provision_ssm_kernels("x", _checkpoint(tmp_path, "nemotron_h", name = "b"), None)
+
+
+def test_native_modeling_is_read_from_the_installed_transformers(monkeypatch, tmp_path):
+    models = tmp_path / "transformers" / "models"
+    (models / "falcon_h1").mkdir(parents = True)
+    (models / "falcon_h1" / "modeling_falcon_h1.py").write_text("")
+    (models / "nemotron_h").mkdir()
+    (models / "nemotron_h" / "configuration_nemotron_h.py").write_text("")
+    monkeypatch.setattr(ssm_runtime, "_transformers_models_dir", lambda: models)
+    monkeypatch.setattr(ssm_runtime, "_NATIVE_MODELING_CACHE", {})
+    assert ssm_runtime.native_modeling_available("falcon_h1") is True
+    assert ssm_runtime.native_modeling_available("nemotron_h") is False  # config only
+    assert ssm_runtime.native_modeling_available("granitemoehybrid") is False
+
+
+@pytest.mark.parametrize(
+    "source, fatal",
+    [
+        ("import mamba_ssm\n", True),
+        ("from mamba_ssm.ops import x\n", True),
+        (_NVIDIA_REMOTE_NEMOTRON, True),
+        (_GATED_REMOTE, False),
+        ("def f():\n    import mamba_ssm\n", False),
+        ("import torch\n", False),
+        ("def broken(:\n", True),
+    ],
+)
+def test_the_unconditional_import_scan(source, fatal):
+    assert ssm_runtime._imports_mamba_ssm_unconditionally(source) is fatal

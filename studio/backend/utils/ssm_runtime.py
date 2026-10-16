@@ -103,6 +103,12 @@ class SsmKernels(NamedTuple):
     # (dynamic-module namespace, implementation module) pairs from the config's auto_map, as
     # transformers names them under transformers_modules (see remote_code_modules).
     remote_code: frozenset = frozenset()
+    # Whether the load will import code that cannot run without mamba_ssm, so a failed install
+    # must refuse it: remote modeling code importing it unconditionally, or a model type this
+    # transformers has no native implementation of. mamba_ssm_required alone (Nemotron-H,
+    # Falcon-H1, Granite-4.0-H) only means "worth a source build": their native transformers
+    # models run without it.
+    mamba_ssm_fatal: bool = False
 
 
 def _base_model_type(model_type: str) -> str:
@@ -146,9 +152,10 @@ def _transformers_models_dir() -> Path | None:
         return None
     if spec is None:
         return None
-    locations = list(spec.submodule_search_locations or ())
-    if not locations and spec.origin:
-        locations = [str(Path(spec.origin).parent)]
+    locations = list(getattr(spec, "submodule_search_locations", None) or ())
+    origin = getattr(spec, "origin", None)
+    if not locations and origin:
+        locations = [str(Path(origin).parent)]
     for location in locations:
         models_dir = Path(location) / "models"
         if models_dir.is_dir():
@@ -230,6 +237,179 @@ def model_config_requires_mamba_ssm(model_config: dict) -> bool | None:
     )
 
 
+# The required families by name, for a decision with no config to read.
+_REQUIRED_MODEL_TYPE_BY_SUBSTRING = (
+    ("nemotron_h", "nemotron_h"),
+    ("nemotron-h", "nemotron_h"),
+    ("nemotron-3-nano", "nemotron_h"),
+    ("falcon_h1", "falcon_h1"),
+    ("falcon-h1", "falcon_h1"),
+    ("granite-4.0-h", "granitemoehybrid"),
+    ("granitemoehybrid", "granitemoehybrid"),
+)
+_NATIVE_MODELING_CACHE: dict[tuple[str, str], bool] = {}
+
+
+def native_modeling_available(model_type: str) -> bool:
+    """Whether the active transformers ships a native implementation of *model_type*
+    (``models/<type>/modeling_*.py`` on disk), found without importing transformers."""
+    models_dir = _transformers_models_dir()
+    if models_dir is None:
+        return False
+    key = (str(models_dir), model_type)
+    if key not in _NATIVE_MODELING_CACHE:
+        try:
+            _NATIVE_MODELING_CACHE[key] = any((models_dir / model_type).glob("modeling_*.py"))
+        except OSError:
+            _NATIVE_MODELING_CACHE[key] = False
+    return _NATIVE_MODELING_CACHE[key]
+
+
+def _imports_mamba_ssm_unconditionally(source: str) -> bool:
+    """Whether module *source* imports ``mamba_ssm`` at import time with no way around it: a
+    top-level import, or one in a ``try`` whose handler raises. One under an ``if`` (an
+    ``is_mamba_2_ssm_available()`` gate) or with a fallback handler does not count. Unparseable
+    source counts: it cannot be shown safe."""
+    import ast
+
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError):
+        return True
+
+    def imports_mamba(statements) -> bool:
+        for node in statements:
+            if isinstance(node, ast.Import) and any(
+                alias.name.split(".")[0] == "mamba_ssm" for alias in node.names
+            ):
+                return True
+            if (
+                isinstance(node, ast.ImportFrom)
+                and (node.module or "").split(".")[0] == "mamba_ssm"
+            ):
+                return True
+        return False
+
+    for node in tree.body:
+        if imports_mamba([node]):
+            return True
+        if isinstance(node, ast.Try) and imports_mamba(node.body):
+            if any(
+                any(isinstance(inner, ast.Raise) for inner in ast.walk(handler))
+                for handler in node.handlers
+            ):
+                return True
+    return False
+
+
+_REMOTE_SOURCES: dict[tuple[str, str, str | None], str | None] = {}
+
+
+def _remote_source_text(repo: str, filename: str, hf_token: str | None) -> str | None:
+    """The text of *filename* in a local checkpoint or a Hub repo (the local HF cache first, then
+    the Hub unless offline), or None when it cannot be read."""
+    key = (repo, filename, hf_token)
+    if key in _REMOTE_SOURCES:
+        return _REMOTE_SOURCES[key]
+    text = None
+    try:
+        if os.path.isdir(repo):
+            path = Path(repo) / filename
+            text = path.read_text(encoding = "utf-8") if path.is_file() else None
+        elif repo.count("/") == 1:
+            text = _hub_cached_text(repo, filename)
+            from utils.utils import hf_env_offline
+            if text is None and not hf_env_offline():
+                import urllib.request
+
+                from utils.transformers_version import _hf_raw_url, _hf_urlopen
+
+                headers = {"User-Agent": "unsloth-studio"}
+                if isinstance(hf_token, str) and hf_token:
+                    headers["Authorization"] = f"Bearer {hf_token}"
+                request = urllib.request.Request(_hf_raw_url(repo, filename), headers = headers)
+                with _hf_urlopen(request, timeout = 10) as response:
+                    text = response.read().decode("utf-8", errors = "replace")
+    except Exception as exc:
+        logger.debug("Could not read %s from %s: %s", filename, repo, exc)
+        text = None
+    _REMOTE_SOURCES[key] = text
+    return text
+
+
+def _hub_cached_text(repo: str, filename: str) -> str | None:
+    try:
+        from utils.hf_cache_settings import get_hf_cache_paths
+
+        repo_dir = Path(str(get_hf_cache_paths().hub_cache)) / (
+            "models--" + repo.replace("/", "--")
+        )
+        ref = repo_dir / "refs" / "main"
+        candidates = []
+        if ref.is_file():
+            candidates.append(
+                repo_dir / "snapshots" / ref.read_text(encoding = "utf-8").strip() / filename
+            )
+        candidates += sorted(
+            repo_dir.glob(f"snapshots/*/{filename}"), key = lambda p: p.stat().st_mtime, reverse = True
+        )
+        for path in candidates:
+            if path.is_file():
+                return path.read_text(encoding = "utf-8")
+    except Exception as exc:
+        logger.debug("HF cache lookup of %s in %s failed: %s", filename, repo, exc)
+    return None
+
+
+def _remote_model_sources(checkpoint: str, model_config: dict) -> list[tuple[str, str]]:
+    """(repo, file) of the model classes the config's ``auto_map`` names."""
+    auto_map = model_config.get("auto_map") if isinstance(model_config, dict) else None
+    if not isinstance(auto_map, dict):
+        return []
+    sources = []
+    for key, value in auto_map.items():
+        if not str(key).startswith("AutoModel"):
+            continue
+        for reference in value if isinstance(value, (list, tuple)) else (value,):
+            if not isinstance(reference, str) or "." not in reference:
+                continue
+            source, _, reference = reference.rpartition("--")
+            module = reference.rsplit(".", 1)[0]
+            sources.append((source or checkpoint, module.replace(".", "/") + ".py"))
+    return list(dict.fromkeys(sources))
+
+
+def mamba_ssm_is_fatal(
+    checkpoint: str,
+    model_config: dict | None,
+    model_types,
+    *,
+    trust_remote_code: bool | None,
+    hf_token: str | None = None,
+) -> bool:
+    """Whether loading this required-family model (Nemotron-H, Falcon-H1, Granite-4.0-H) imports
+    code that cannot run without mamba_ssm. Remote code (auto_map, loaded under trust_remote_code
+    or because transformers has no native class) counts when a model module imports it
+    unconditionally; otherwise it is fatal only when transformers lacks the native model."""
+    required_types = {t for t in model_types if t in REQUIRED_SSM_MODEL_TYPES}
+    native = bool(required_types) and all(native_modeling_available(t) for t in required_types)
+    sources = _remote_model_sources(checkpoint, model_config or {})
+    if sources and (trust_remote_code or not native):
+        for repo, filename in sources:
+            text = _remote_source_text(repo, filename, hf_token)
+            if text is None or _imports_mamba_ssm_unconditionally(text):
+                return True
+        return False
+    return not native
+
+
+def _name_mamba_ssm_is_fatal(model_name: str) -> bool:
+    """mamba_ssm_is_fatal from the name alone: the family's native model is missing."""
+    name = (model_name or "").lower()
+    types = {model_type for sub, model_type in _REQUIRED_MODEL_TYPE_BY_SUBSTRING if sub in name}
+    return bool(types) and not all(native_modeling_available(t) for t in types)
+
+
 def model_config_wants_causal_conv1d(model_config: dict) -> bool | None:
     model_types, architectures = _config_identifiers(model_config)
     if model_config_is_ssm(model_config):
@@ -309,6 +489,7 @@ def resolve_ssm_kernels(
     *,
     adapter_base: str | None = None,
     model_config: dict | None = None,
+    trust_remote_code: bool | None = None,
 ) -> SsmKernels:
     """The kernels the model at *model_load_target* needs, from its config (an adapter's base
     config when it is an adapter); the name lists only when there is no config to read. A caller
@@ -339,6 +520,18 @@ def resolve_ssm_kernels(
         required = model_requires_mamba_ssm(probe)
     if wants is None:
         wants = model_wants_causal_conv1d(probe)
+    fatal = False
+    if is_ssm and required:
+        if model_config is not None and model_types:
+            fatal = mamba_ssm_is_fatal(
+                target,
+                model_config,
+                model_types,
+                trust_remote_code = trust_remote_code,
+                hf_token = hf_token,
+            )
+        else:
+            fatal = _name_mamba_ssm_is_fatal(probe)
     # Every mamba-ssm model also runs causal-conv1d.
     return SsmKernels(
         causal_conv1d = bool(wants or is_ssm),
@@ -347,6 +540,7 @@ def resolve_ssm_kernels(
         probe = probe,
         model_types = model_types,
         remote_code = remote_code,
+        mamba_ssm_fatal = bool(fatal),
     )
 
 
@@ -848,14 +1042,18 @@ def ensure_ssm_runtime(
     wants_causal_conv1d: bool | None = None,
     is_ssm: bool | None = None,
     mamba_ssm_required: bool | None = None,
+    mamba_ssm_fatal: bool | None = None,
 ) -> list[str]:
-    """Install the SSM kernels *model_name* needs before load, wheel-first; a no-op for non-SSM models and idempotent. Returns the kernels newly installed by this call. Only a model that cannot load without ``mamba_ssm`` (Nemotron-H, Falcon-H1, Granite-4.0-H) fails on it (``RuntimeError`` instead of a cryptic mid-load failure); for the rest, and for ``causal_conv1d``, a missing kernel leaves transformers' torch path."""
+    """Install the SSM kernels *model_name* needs before load, wheel-first; a no-op for non-SSM models and idempotent. Returns the kernels newly installed by this call. Nemotron-H, Falcon-H1 and Granite-4.0-H (*mamba_ssm_required*) are worth a source build; a load fails on a missing ``mamba_ssm`` (``RuntimeError`` instead of a cryptic mid-load failure) only when *mamba_ssm_fatal*: it imports code that cannot run without it. Everything else, and ``causal_conv1d``, leaves transformers' torch path."""
     # The caller's config-resolved answers win; the name match is the default.
     if is_ssm is None:
         is_ssm = model_is_ssm(model_name)
     if mamba_ssm_required is None:
         mamba_ssm_required = model_requires_mamba_ssm(model_name)
     mamba_ssm_required = bool(is_ssm and mamba_ssm_required)
+    if mamba_ssm_fatal is None:
+        mamba_ssm_fatal = mamba_ssm_required and _name_mamba_ssm_is_fatal(model_name)
+    mamba_ssm_fatal = bool(mamba_ssm_required and mamba_ssm_fatal)
     if wants_causal_conv1d is None:
         wants_causal_conv1d = model_wants_causal_conv1d(model_name)
     # Every mamba-ssm model also runs causal-conv1d.
@@ -885,7 +1083,7 @@ def ensure_ssm_runtime(
     )
     if sys.platform == "win32" and importlib.util.find_spec("triton") is None:
         # mamba_ssm imports triton at load and the wheel goes in --no-deps.
-        if mamba_ssm_required:
+        if mamba_ssm_fatal:
             raise RuntimeError(
                 "mamba-ssm, required by this Mamba model, needs Triton on Windows "
                 "(the triton-windows package); install it and reload the model."
@@ -903,11 +1101,18 @@ def ensure_ssm_runtime(
             _emit(status_cb, f"Skipping mamba-ssm, which {reason}; using the model's torch path.")
             return installed
     if not _install(MAMBA_SSM, allow_source_build = mamba_ssm_required):
-        if mamba_ssm_required and _kernel_backend(_torch_env()) is not None:
+        if mamba_ssm_fatal and _kernel_backend(_torch_env()) is not None:
             raise RuntimeError(
                 f"Could not install mamba-ssm, required by this Mamba model. {offline_hint}"
             )
-        _emit(status_cb, "mamba-ssm is not available; continuing on the model's torch path.")
+        if mamba_ssm_required:
+            _emit(
+                status_cb,
+                "Warning: could not install mamba-ssm; loading this model on transformers' torch "
+                "path, which is slower and uses more memory.",
+            )
+        else:
+            _emit(status_cb, "mamba-ssm is not available; continuing on the model's torch path.")
     return installed
 
 
@@ -945,6 +1150,7 @@ def provision_ssm_kernels(
     *,
     adapter_base: str | None = None,
     model_config: dict | None = None,
+    trust_remote_code: bool | None = None,
     status_cb: StatusCb = None,
     run: Callable[..., Any] = subprocess.run,
 ) -> tuple[SsmKernels, list[str]]:
@@ -957,6 +1163,7 @@ def provision_ssm_kernels(
         hf_token,
         adapter_base = adapter_base,
         model_config = model_config,
+        trust_remote_code = trust_remote_code,
     )
     installed = ensure_ssm_runtime(
         kernels.probe,
@@ -965,6 +1172,7 @@ def provision_ssm_kernels(
         wants_causal_conv1d = kernels.causal_conv1d,
         is_ssm = kernels.mamba_ssm,
         mamba_ssm_required = kernels.mamba_ssm_required,
+        mamba_ssm_fatal = kernels.mamba_ssm_fatal,
     )
     if installed:
         refresh_transformers_kernel_gates()

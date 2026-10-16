@@ -393,6 +393,7 @@ def _ensure_ssm_kernels(
     targets: list,
     resp_queue: Any,
     hf_token: str | None = None,
+    trust_remote_code: bool | None = None,
 ) -> bool:
     """Install the SSM kernels the given model(s) lazy-import in from_pretrained; no-op for
     non-SSM models, idempotent. *targets* are ``(probe_identifier, config_target)`` pairs: the
@@ -414,8 +415,14 @@ def _ensure_ssm_kernels(
     _ssm_status = lambda m: _send_response(resp_queue, {"type": "status", "message": m})
     try:
         for probe, config_target in dict.fromkeys(t for t in targets if t and t[0]):
+            # trust_remote_code decides whether an auto_map model loads its remote code, and so
+            # whether a missing mamba-ssm refuses the load (see ssm_runtime.mamba_ssm_is_fatal).
             kernels, installed = provision_ssm_kernels(
-                probe, config_target or probe, hf_token, status_cb = _ssm_status
+                probe,
+                config_target or probe,
+                hf_token,
+                trust_remote_code = trust_remote_code,
+                status_cb = _ssm_status,
             )
             stale = (
                 modeling_modules_needing_restart(kernels.model_types, kernels.remote_code)
@@ -735,7 +742,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                     _ssm_base or config["model_name"],
                 )
             ]
-            if not _ensure_ssm_kernels(ssm_targets, resp_queue, hf_token):
+            if not _ensure_ssm_kernels(ssm_targets, resp_queue, hf_token, trust_remote_code):
                 return
 
         # Heartbeat keeps the orchestrator's inactivity deadline alive during slow
@@ -2498,7 +2505,7 @@ def run_inference_process(
     from utils.ssm_runtime import ssm_probe_identifier
 
     _ssm_targets = [(ssm_probe_identifier(model_name, _base), _base or model_name)]
-    if not _ensure_ssm_kernels(_ssm_targets, resp_queue, _hf_token):
+    if not _ensure_ssm_kernels(_ssm_targets, resp_queue, _hf_token, _trust_remote_code):
         return
 
     try:
