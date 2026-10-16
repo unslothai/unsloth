@@ -576,7 +576,18 @@ def can_use_fp8_rowwise_gemv(X, weight, weight_scale):
     if _fp8_kernel_unsupported(weight):
         return False
     # The miscompile hits BLOCK_N 4 / 8 only; BLOCK_N 1 at 2 warps is exact on Triton 3.3 too.
-    return _gemv_block_n(weight.shape[0]) == 1 or not _fp8_gemv_miscompiles(weight.device)
+    return not _fp8_gemv_miscompiles(weight.device) or (
+        _gemv_block_n(weight.shape[0]) == 1 and _triton_builds_blackwell()
+    )
+
+
+@functools.lru_cache(maxsize = None)
+def _triton_builds_blackwell():
+    # Triton 3.2 bundles a ptxas without sm_100 / sm_120.
+    try:
+        return Version(triton.__version__).release[:2] >= (3, 3)
+    except Exception:
+        return False
 
 
 def _gemv_block_n(N):

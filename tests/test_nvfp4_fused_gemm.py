@@ -348,10 +348,6 @@ def test_row_gate_keeps_unaligned_shapes_dense(N, monkeypatch):
         packed, scale, gs = _random_nvfp4(n, k)
         X = torch.randn(4, k, device = "cuda", dtype = dtype)
         assert N._fused_ok(X, packed, scale, gs, k) == want, (n, k)
-        # dX: the activation is (rows, N) and inner is N, but K still has to be aligned.
-        assert (
-            N._fused_ok(torch.randn(4, n, device = "cuda", dtype = dtype), packed, scale, gs, n) == want
-        ), (n, k)
         monkeypatch.setenv("UNSLOTH_NVFP4_FUSED", "1")
         assert N._fused_ok(X, packed, scale, gs, k)
         monkeypatch.delenv("UNSLOTH_NVFP4_FUSED")

@@ -45,6 +45,18 @@ def test_gate(F, monkeypatch, capability, version, hip, expected):
         F._fp8_gemv_miscompiles.cache_clear()
 
 
+@pytest.mark.parametrize("version, expected", [("3.2.0", False), ("3.3.1", True), ("3.4.0", True)])
+def test_block_n_1_exception_needs_a_triton_that_builds_blackwell(
+    F, monkeypatch, version, expected
+):
+    monkeypatch.setattr(F.triton, "__version__", version)
+    F._triton_builds_blackwell.cache_clear()
+    try:
+        assert F._triton_builds_blackwell() is expected
+    finally:
+        F._triton_builds_blackwell.cache_clear()
+
+
 @pytest.mark.skipif(not has_real_cuda(), reason = "needs a GPU")
 @pytest.mark.parametrize("N, K", [(5000, 1536), (40000, 1024), (4096, 4096), (4095, 4096), (33, 7)])
 def test_chosen_gemv_is_exact(F, N, K):
