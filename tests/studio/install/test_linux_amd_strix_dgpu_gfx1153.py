@@ -431,3 +431,63 @@ def test_setup_sh_gfx1153_keeps_its_hip_guidance():
     block = source[source.index('step "gpu" "AMD GPU detected ($_setup_unsup_gfx)'):]
     block = block[: block.index("elif [ -n \"$_setup_mkt\" ]")]
     assert 'if [ "$_setup_unsup_gfx" = gfx1153 ]' in block and "llama.cpp HIP build" in block
+
+
+
+def _setup_unsupported_lookup(gpu_name, lspci_lines, tmp_path):
+    """setup.sh's runtime-less unsupported lookup, with its covered-peer guard and a scripted lspci."""
+    import os
+    import shutil
+    import subprocess
+
+    from test_rdna1_unsupported_message_8529 import _SETUP_SH, _sh_function_body
+
+    src = _SETUP_SH.read_text(encoding = "utf-8")
+    body = "\n".join(
+        _sh_function_body(src, name)
+        for name in (
+            "_setup_supported_gfx_from_name",
+            "_setup_unsupported_gfx_from_name",
+            "_setup_unsupported_gfx_any",
+        )
+    )
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for tool in ("sh", "grep", "cat", "sed", "tr", "awk", "printf"):
+        found = shutil.which(tool)
+        if found:
+            (bin_dir / tool).symlink_to(found)
+    if lspci_lines is not None:
+        fake = bin_dir / "lspci"
+        printed = "\n".join(lspci_lines)
+        fake.write_text(f'#!/bin/sh\ncat <<"LSPCI_EOF"\n{printed}\nLSPCI_EOF\n', encoding = "utf-8")
+        fake.chmod(0o755)
+    out = subprocess.run(
+        ["sh", "-c", f'{body}\n_setup_unsupported_gfx_any "$1" || true\n', "sh", gpu_name],
+        stdout = subprocess.PIPE,
+        stderr = subprocess.DEVNULL,
+        text = True,
+        timeout = 30,
+        env = dict(os.environ, PATH = str(bin_dir)),
+    )
+    return out.stdout.strip()
+
+
+_K2_LINE = "c5:00.0 Display controller [0380]: Advanced Micro Devices, Inc. [AMD/ATI] Krackan Point 2 [1002:1114]"
+_NAVI31_LINE = (
+    "03:00.0 VGA compatible controller [0300]: Advanced Micro Devices, Inc. [AMD/ATI] "
+    "Navi 31 [Radeon RX 7900 XTX] [1002:744c]"
+)
+
+
+@pytest.mark.parametrize(
+    "gpu_name,lspci,expected",
+    [
+        ("", [_K2_LINE], "gfx1153"),
+        ("AMD Radeon 820M", None, "gfx1153"),
+        ("", [_K2_LINE, _NAVI31_LINE], ""),
+    ],
+)
+def test_setup_sh_runtime_less_summary_names_gfx1153(gpu_name, lspci, expected, tmp_path):
+    # No rocminfo / amd-smi: the summary still warns for a lone Krackan Point 2, never beside a covered peer.
+    assert _setup_unsupported_lookup(gpu_name, lspci, tmp_path) == expected
