@@ -6228,12 +6228,12 @@ class DiffusionBackend:
         Uncached checkpoints are priced from the family table (``exact=False``). Never raises."""
         try:
             from .diffusion_te_prequant import (
-                TE_INT8_CONVROT_BUDGET_SCALE,
                 TE_PREQUANT_BUDGET_SCALE,
                 TE_PREQUANT_COMPONENTS,
                 int8_convrot_te_runs_on,
                 te_candidate_filenames,
                 te_candidate_is_readable,
+                te_int8_convrot_budget_scale,
                 te_prequant_sources_for_base,
             )
 
@@ -6315,7 +6315,7 @@ class DiffusionBackend:
                 share = table_priced / max(1, len(sources))
                 # MPS only takes the int8 ConvRot file, smaller than the fp8 one.
                 scale = (
-                    TE_INT8_CONVROT_BUDGET_SCALE
+                    te_int8_convrot_budget_scale(fam)
                     if int8_convrot_te_runs_on(target)
                     else TE_PREQUANT_BUDGET_SCALE
                 )

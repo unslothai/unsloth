@@ -55,6 +55,20 @@ TE_INT8_CONVROT_FILES: dict[str, dict[str, tuple[str, str]]] = {
             "Qwen-Image-2.1-text_encoder-INT8-ConvRot.safetensors",
         ),
     },
+    # Qwen3-VL-4B, the same build as BFL's qwen3vl_4b_int8_convrot except that embed_tokens stays bf16: every int8
+    # projection matches BFL's byte for byte. The base and distilled repos carry the same bytes (one encoder).
+    "flux.3-klein": {
+        "text_encoder": (
+            "unsloth/flux-3-image-klein-FP8",
+            "flux-3-image-klein-text_encoder-INT8-ConvRot.safetensors",
+        ),
+    },
+    "flux.3-klein-base": {
+        "text_encoder": (
+            "unsloth/flux-3-image-klein-base-FP8",
+            "flux-3-image-klein-base-text_encoder-INT8-ConvRot.safetensors",
+        ),
+    },
 }
 
 # The scheme the loaded FILE carried ("fp8" / "int8"), so quantize_text_encoders never re-casts an int8 encoder.
@@ -132,6 +146,15 @@ TE_PREQUANT_BUDGET_SCALE = 0.65
 # The int8 ConvRot encoder alone (no fp8 fallback to cover): Qwen-Image-2.1's is 9,349,769,248 bytes against
 # 17,534,339,488 for the dense encoder, 0.533, rounded up.
 TE_INT8_CONVROT_BUDGET_SCALE = 0.56
+# Per family where the default under-states: FLUX.3's Qwen3-VL-4B file is 5,247,076,320 bytes against 8,875,719,344
+# dense, 0.591 (its bf16 embedding table is a larger share of a 4B encoder), rounded up.
+_TE_INT8_CONVROT_BUDGET_SCALES = {"flux.3-klein": 0.60, "flux.3-klein-base": 0.60}
+
+
+def te_int8_convrot_budget_scale(fam: Any) -> float:
+    """Fraction of the bf16 encoder the family's int8 ConvRot file occupies, for memory budgeting."""
+    name = str(getattr(fam, "name", fam) or "").strip().lower()
+    return _TE_INT8_CONVROT_BUDGET_SCALES.get(name, TE_INT8_CONVROT_BUDGET_SCALE)
 
 
 def te_prequant_budget_scale(
@@ -166,7 +189,7 @@ def te_prequant_budget_scale(
     if not sources:
         return 1.0
     if _int8_convrot_only(te_quant_mode, target):
-        return TE_INT8_CONVROT_BUDGET_SCALE
+        return te_int8_convrot_budget_scale(fam)
     return TE_PREQUANT_BUDGET_SCALE
 
 
@@ -202,6 +225,13 @@ _TE_EQUIVALENT_BASES: tuple[frozenset[str], ...] = (
         {
             "qwen/qwen-image-2.1",
             "qwen/qwen-image-2.1-turbo",
+        }
+    ),
+    # Qwen3-VL-4B: the FLUX.3 Klein distilled and base text_encoder/ shards carry identical sha256 (2026-10-16)
+    frozenset(
+        {
+            "black-forest-labs/flux-3-image-klein",
+            "black-forest-labs/flux-3-image-klein-base",
         }
     ),
     # Qwen3-4B: identical sha256 across the Krea-2 pair (compared 2026-08-25)
@@ -921,7 +951,13 @@ def _build_int8_convrot_encoder(
     import torch
     from accelerate import init_empty_weights
 
-    from .diffusion_text_encoder_trim import LM_HEAD_KEY, trim_text_encoder
+    from .diffusion_text_encoder_trim import (
+        LM_HEAD_KEY,
+        _no_logits_head_class,
+        config_ties_lm_head,
+        is_trimmed,
+        trim_text_encoder,
+    )
     from .video_minimax_h3_te import (
         H3_TE_CONVROT_GROUP,
         _int8_convrot_linear_class,
@@ -942,6 +978,11 @@ def _build_int8_convrot_encoder(
     with init_empty_weights(include_buffers = False):
         encoder = encoder_cls(config)
     trim_text_encoder(encoder)
+    if not is_trimmed(encoder) and config_ties_lm_head(config):
+        # A tied head (FLUX.3's Qwen3-VL-4B) is kept by the trim, but this file has no lm_head key for it and the
+        # family reads hidden states only, so drop it here: a meta head would fail the strict load below.
+        head = encoder.lm_head
+        encoder.lm_head = _no_logits_head_class()(head.in_features, head.out_features)
     linear_cls = _int8_convrot_linear_class()
     for prefix in quantized:
         blob = state_dict.pop(prefix + quant_suffix, None)
