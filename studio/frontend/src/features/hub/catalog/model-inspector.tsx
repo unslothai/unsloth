@@ -33,8 +33,9 @@ import {
   Download01Icon,
   FavouriteIcon,
   InternetIcon,
+  LayerIcon,
   LayersLogoIcon,
-  LibraryIcon,
+  LibrariesIcon,
   LicenseIcon,
   PackageIcon,
   RamMemoryIcon,
@@ -43,10 +44,11 @@ import {
 import { TextToSpeechIcon } from "@/lib/hugeicons-derived";
 import type { IconSvgElement } from "@hugeicons/react";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { memo, useDeferredValue, useMemo } from "react";
+import { memo, useCallback, useDeferredValue, useMemo, useState } from "react";
 import { selectActiveJob, useDownloadManagerStore } from "../download-manager";
 import { useCopyFeedback } from "../hooks/use-copy-feedback";
 import { useDatasetSize } from "../hooks/use-dataset-size";
+import { ggufMemoryLabel } from "../hooks/use-hub-model-vram";
 import {
   type HubModelRunSelection,
   hubModelRunsOnAudioPage,
@@ -237,7 +239,7 @@ function BaseModelSearchChip({
   const content = (
     <>
       <HugeiconsIcon
-        icon={LayersLogoIcon}
+        icon={LayerIcon}
         strokeWidth={1.75}
         className="size-3.5 shrink-0 text-muted-foreground"
       />
@@ -474,6 +476,19 @@ export const ModelInspector = memo(function ModelInspector({
     onRun,
     runConfigPending = false,
   } = actions;
+  const [selectedGguf, setSelectedGguf] = useState<{
+    repoId: string;
+    bytes: number | null;
+  } | null>(null);
+  const onSelectedGgufBytesChange = useCallback(
+    (repoId: string, bytes: number | null) =>
+      setSelectedGguf((prev) =>
+        prev?.repoId === repoId && prev.bytes === bytes
+          ? prev
+          : { repoId, bytes },
+      ),
+    [],
+  );
   const deviceType = usePlatformStore((s) => s.deviceType);
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
   const chatOnlyMeasured = usePlatformStore(
@@ -621,6 +636,19 @@ export const ModelInspector = memo(function ModelInspector({
       ? (selection: HubModelRunSelection) => onRun(selection, mediaPage)
       : undefined;
 
+  const downloadRepoId = model.isLocal
+    ? (model.hubRepoId ?? model.id)
+    : model.id;
+  const showsGgufDownloadCard =
+    !isDataset &&
+    (!model.isLocal || hasActiveHubDownload) &&
+    (model.isGguf || Boolean(preferredGgufFile));
+  const memoryLabel = showsGgufDownloadCard
+    ? ggufMemoryLabel(
+        minMemory,
+        selectedGguf?.repoId === downloadRepoId ? selectedGguf.bytes : null,
+      )
+    : minMemory;
   const languages = parseLanguageTags(model.tags);
   const datasetSizeBytes =
     datasetSize?.numBytesParquet ?? datasetSize?.numBytesOriginal ?? null;
@@ -762,7 +790,7 @@ export const ModelInspector = memo(function ModelInspector({
               showMemoryBar={!runsOnMediaRuntime}
               mediaPage={mediaPage}
               assetRuntime={mediaPage ?? (["text-to-speech", "text-to-audio"].includes(model.pipelineTag ?? model.task ?? "") ? "audio" : undefined)}
-              repoId={model.isLocal ? (model.hubRepoId ?? model.id) : model.id}
+              repoId={downloadRepoId}
               isGguf={model.isGguf}
               {...downloadState}
               companionPrefetch={model.companionPrefetch === true}
@@ -782,6 +810,7 @@ export const ModelInspector = memo(function ModelInspector({
               onChange={onInventoryChange}
               isMlx={isMlx}
               onRunPrecision={precisionRunAction}
+              onSelectedGgufBytesChange={onSelectedGgufBytesChange}
             />
           )}
         </InspectorDownloadSlot>
@@ -829,12 +858,16 @@ export const ModelInspector = memo(function ModelInspector({
             <StatRow label="Parameters" value={paramsLabel} icon={CpuIcon} />
           )}
           {libraryLabel && (
-            <StatRow label="Library" value={libraryLabel} icon={LibraryIcon} />
+            <StatRow
+              label="Library"
+              value={libraryLabel}
+              icon={LibrariesIcon}
+            />
           )}
           {!isDataset && (
             <StatRow
               label="Memory"
-              value={minMemory ?? "N/A"}
+              value={memoryLabel ?? "N/A"}
               icon={RamMemoryIcon}
             />
           )}

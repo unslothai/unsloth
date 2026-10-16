@@ -48,3 +48,14 @@ export function useHubModelVram(
 
   return { vramInfo, minMemory };
 }
+
+/** A GGUF loads one quant, so the quant picked in the download card is the
+ * memory floor; cachedBytes sums every cached quant and is absent before download. */
+export function ggufMemoryLabel(
+  minMemory: string | null,
+  selectedQuantBytes: number | null | undefined,
+): string | null {
+  if (selectedQuantBytes && selectedQuantBytes > 0)
+    return formatBytes(selectedQuantBytes);
+  return minMemory;
+}

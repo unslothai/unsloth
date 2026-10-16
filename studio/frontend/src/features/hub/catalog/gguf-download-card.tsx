@@ -80,6 +80,7 @@ import {
 } from "../lib/gguf-filename";
 import {
   ggufVariantDisplayLabel,
+  ggufVariantDownloadSizeBytes,
   ggufVariantTransferLabel,
   sortDownloadableGgufVariants,
 } from "../lib/gguf-variant-sort";
@@ -673,6 +674,7 @@ export function GgufDownloadCard({
   onChange,
   showMemoryBar = true,
   mediaPage,
+  onSelectedBytesChange,
 }: {
   repoId: string;
   isActive: boolean;
@@ -701,6 +703,8 @@ export function GgufDownloadCard({
   /** Selects the companion download planner and hides llama.cpp fit badges,
    *  whose memory and offload rules do not apply to media models. */
   mediaPage?: MediaStudioPage;
+  /** The selected quant's full size, which the detail view shows as its memory floor. */
+  onSelectedBytesChange?: (repoId: string, bytes: number | null) => void;
 }) {
   const mediaRuntime = mediaPage !== undefined;
   const hfToken = useHfTokenStore((s) => s.token);
@@ -795,6 +799,12 @@ export function GgufDownloadCard({
   const selected =
     sortedVariants?.find((v) => ggufVariantsMatch(v.quant, selectedQuant)) ??
     null;
+  const selectedBytes = selected
+    ? ggufVariantDownloadSizeBytes(selected)
+    : null;
+  useEffect(() => {
+    onSelectedBytesChange?.(repoId, selectedBytes);
+  }, [onSelectedBytesChange, repoId, selectedBytes]);
   const companionBytesByKey = useMediaCompanionBytes(
     mediaPage,
     repoId,
