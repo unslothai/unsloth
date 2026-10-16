@@ -608,6 +608,7 @@ def test_setup_sh_name_inference_reads_krackan_point_2_first(name, expected):
 # ── Codex round 3: setup.sh name inference keeps the covered-peer guard ─────
 
 
+@_POSIX
 @pytest.mark.parametrize(
     "mkt,lspci,expected",
     [
