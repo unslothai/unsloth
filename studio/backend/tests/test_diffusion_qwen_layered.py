@@ -100,8 +100,14 @@ def _png(size = (96, 64), color = (120, 30, 30, 77)) -> str:
 
 
 @pytest.fixture
-def layered(fake_runtime, tmp_path):
+def layered(fake_runtime, tmp_path, monkeypatch):
     import diffusers
+
+    # A fresh install: nothing cached, so the companions come from the unsloth mirror, not this host's cache.
+    monkeypatch.setattr(
+        "core.inference.diffusion_families._upstream_is_cached", lambda repo_id, files = None, **_k: False
+    )
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_NO_MIRROR", raising = False)
 
     diffusers.QwenImageLayeredPipeline = _FakeLayeredPipeline
     diffusers.QwenImageTransformer2DModel = _FakeTransformer
@@ -176,11 +182,13 @@ def test_layered_family_contract():
 def test_gguf_transformer_reads_the_layered_config(layered):
     assert layered._state.family.name == "qwen-image-layered"
     # The GGUF supplies weights only; the layered transformer config (additional t cond, layer3d RoPE) comes from the
-    # base, and so do the RGBA VAE and the pipeline.
-    assert _FakeTransformer.last["config"] == "Qwen/Qwen-Image-Layered"
+    # base, and so do the RGBA VAE and the pipeline. Fetched from the byte-identical unsloth mirror; status keeps the
+    # upstream id.
+    assert _FakeTransformer.last["config"] == "unsloth/Qwen-Image-Layered"
     assert _FakeTransformer.last["subfolder"] == "transformer"
     assert _FakeTransformer.last["path"].endswith("qwen-image-layered-UD-Q4_K_XL.gguf")
-    assert _FakeLayeredPipeline.base == "Qwen/Qwen-Image-Layered"
+    assert _FakeLayeredPipeline.base == "unsloth/Qwen-Image-Layered"
+    assert layered.status()["base_repo"] == "Qwen/Qwen-Image-Layered"
     assert layered.status()["workflows"] == ["edit"]
 
 

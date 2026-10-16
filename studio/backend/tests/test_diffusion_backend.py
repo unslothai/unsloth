@@ -229,7 +229,7 @@ def _all_cached(monkeypatch):
 
 def test_gated_mirror_table_round_trips():
     """Both directions, exact case: canonical_base must hand back a real repo id."""
-    assert len(_MIRROR_PAIRS) == 25
+    assert len(_MIRROR_PAIRS) == 30
     for upstream, mirror in _MIRROR_PAIRS:
         assert mirror_repo(upstream) == mirror
         assert canonical_base(mirror) == upstream
@@ -252,7 +252,7 @@ def test_only_the_genuinely_gated_half_reads_as_gated():
     is mirrored, and which the Hub serves anonymously.
     """
     assert len(_GATED_MIRROR_PAIRS) == 12
-    assert len(_UNGATED_MIRROR_PAIRS) == 13
+    assert len(_UNGATED_MIRROR_PAIRS) == 18
     for upstream, _mirror in _GATED_MIRROR_PAIRS:
         assert upstream_is_gated(upstream), upstream
         assert upstream_is_gated(upstream.upper()), upstream
@@ -275,12 +275,6 @@ def test_no_mirror_is_a_companion_only_repo():
     companions = sd_cpp_companion_only_repo_ids()
     for _upstream, mirror in _MIRROR_PAIRS:
         assert mirror.lower() not in companions, mirror
-
-
-# Vendor bases the catalog offers before their unsloth mirror exists on the Hub. A mirror row for a
-# repo that is not there would 404 every fetch it redirects, so the table cannot lead the upload;
-# this names the gap instead of letting the check below go red on every PR until it closes.
-_MIRRORS_NOT_YET_PUBLISHED: frozenset[str] = frozenset({"qwen/qwen-image-2.1-turbo"})
 
 
 def test_every_third_party_bf16_pipeline_the_catalog_offers_is_mirrored():
@@ -311,18 +305,8 @@ def test_every_third_party_bf16_pipeline_the_catalog_offers_is_mirrored():
         if not repo.lower().startswith("unsloth/")
         and "hunyuan" not in repo.lower()
         and repo.lower() not in mirrored
-        and repo.lower() not in _MIRRORS_NOT_YET_PUBLISHED
     )
     assert not missing, f"catalog offers these vendor bases with no unsloth mirror: {missing}"
-    # Each pending entry has to still be pending and still offered, so the exception cannot
-    # outlive the gap it names.
-    for repo in _MIRRORS_NOT_YET_PUBLISHED:
-        assert (
-            repo not in mirrored
-        ), f"{repo} is in the mirror table now; drop it from _MIRRORS_NOT_YET_PUBLISHED"
-        assert repo in {
-            o.lower() for o in offered
-        }, f"the catalog no longer offers {repo}; drop it from _MIRRORS_NOT_YET_PUBLISHED"
 
 
 def test_the_qwen_2512_mirror_covers_the_card_tag_route(monkeypatch):

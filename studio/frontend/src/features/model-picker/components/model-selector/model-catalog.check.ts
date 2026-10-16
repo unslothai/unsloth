@@ -148,7 +148,7 @@ assert.equal(groupForRepoId("unsloth/Qwen-Image-2.1-GGUF", IMAGE_CATALOG)?.canon
     assert.equal(turbo.format, base.format, JSON.stringify(host));
     assert.equal(
       turbo.repoId,
-      base.format === "gguf" ? "unsloth/Qwen-Image-2.1-Turbo-GGUF" : "Qwen/Qwen-Image-2.1-Turbo",
+      base.format === "gguf" ? "unsloth/Qwen-Image-2.1-Turbo-GGUF" : "unsloth/Qwen-Image-2.1-Turbo",
     );
   }
   assert.equal(

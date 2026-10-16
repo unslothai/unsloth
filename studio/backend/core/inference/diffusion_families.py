@@ -1240,12 +1240,20 @@ _UNGATED_MIRROR_PAIRS: tuple[tuple[str, str], ...] = (
     ("Qwen/Qwen-Image-2.1", "unsloth/Qwen-Image-2.1"),
     ("Qwen/Qwen-Image", "unsloth/Qwen-Image"),
     ("Qwen/Qwen-Image-Edit-2511", "unsloth/Qwen-Image-Edit-2511"),
+    # Variant bases reached only through a GGUF's base_model card tag (Edit, Edit-2509, Z-Image) or a named variant
+    # (2.1 Turbo, also a direct bf16 pick), plus Layered, whose sd-cli VAE is read straight from its base. Without a
+    # row each one fetches its companions from the vendor.
+    ("Qwen/Qwen-Image-2.1-Turbo", "unsloth/Qwen-Image-2.1-Turbo"),
+    ("Qwen/Qwen-Image-Edit", "unsloth/Qwen-Image-Edit"),
+    ("Qwen/Qwen-Image-Edit-2509", "unsloth/Qwen-Image-Edit-2509"),
+    ("Qwen/Qwen-Image-Layered", "unsloth/Qwen-Image-Layered"),
     ("black-forest-labs/FLUX.2-klein-4B", "unsloth/FLUX.2-klein-4B"),
     # Lookup is by exact id, so every VARIANT a pick can resolve to needs its own row: the base-4B is what
     # `unsloth/FLUX.2-klein-base-4B-GGUF` resolves to from its card tag, and Dev / Fast are offered directly as bf16
     # pipeline picks. Without these three the table silently misses them.
     ("black-forest-labs/FLUX.2-klein-base-4B", "unsloth/FLUX.2-klein-base-4B"),
     ("Tongyi-MAI/Z-Image-Turbo", "unsloth/Z-Image-Turbo"),
+    ("Tongyi-MAI/Z-Image", "unsloth/Z-Image"),
     ("Alpha-VLLM/Lumina-Image-2.0", "unsloth/Lumina-Image-2.0"),
     ("HiDream-ai/HiDream-I1-Full", "unsloth/HiDream-I1-Full"),
     ("HiDream-ai/HiDream-I1-Dev", "unsloth/HiDream-I1-Dev"),
