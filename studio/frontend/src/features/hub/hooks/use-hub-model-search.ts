@@ -822,13 +822,13 @@ export function useHubModelSearch(
           },
         );
       }
-      // Latest picked from the sort menu: the same ranking as the feed, over the chosen uploaders.
-      // An owner/repo query keeps the pinned-publisher path below, by date.
-      if (sortBy === "fresh" && !isPublisherQuery) {
+      // Latest picked from the sort menu while browsing: the same ranking as the feed, over the chosen
+      // uploaders. A typed search keeps the search paths below (Unsloth floated, tasks checked
+      // client-side), newest first.
+      if (sortBy === "fresh" && !trimmed) {
         return freshChannelIterator(
           { owner: unslothOnly ? "unsloth" : undefined },
           {
-            query: trimmed || undefined,
             sortDirection,
             accessToken,
             signal,
@@ -916,7 +916,6 @@ export function useHubModelSearch(
       trimmed,
       searchQuery,
       pinnedId,
-      isPublisherQuery,
       task,
       accessToken,
       stablePriorityIds,
