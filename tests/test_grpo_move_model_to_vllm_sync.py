@@ -118,7 +118,12 @@ def test_other_functions_and_trainers_still_stripped():
     ):
         out = _strip_vllm_weight_loads(function, line, trainer_file)
         assert "load_weights" not in out and "pass" in out
-    assert _strip_vllm_weight_loads("_move_model_to_vllm", line, "grpo_trainer") == line
+    for function in (
+        "_move_model_to_vllm",
+        "_sync_fsdp_params_to_vllm",
+        "_sync_fsdp2_params_to_vllm",
+    ):
+        assert _strip_vllm_weight_loads(function, line, "grpo_trainer") == line
 
 
 class Params4bit(torch.nn.Parameter):
@@ -132,4 +137,13 @@ def test_bnb_quantized_base_keeps_no_op():
     trainer.model.weight = Params4bit(trainer.model.weight.data, requires_grad = False)
     method = _patched_method()
     assert method(trainer) is None and method(trainer) is None
+    assert rec.loaded == [] and rec.resets == 0
+
+
+def test_quantized_load_flag_keeps_no_op():
+    # FSDP2 wraps Params4bit into a DTensor; the model's load flag still marks it quantized.
+    trainer, rec = _trainer("colocate")
+    trainer.model.is_loaded_in_4bit = True
+    method = _patched_method()
+    assert method(trainer) is None
     assert rec.loaded == [] and rec.resets == 0

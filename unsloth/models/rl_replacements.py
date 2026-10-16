@@ -2286,7 +2286,8 @@ def grpo_trainer__move_model_to_vllm(function_name, function):
         f"{indent}if getattr(getattr(self, 'llm', None), 'shared_weights', False):\n"
         f"{indent}    return None\n"
         f"{indent}if getattr(self, '_unsloth_bnb_vllm_sync_skip', None) is None:\n"
-        f"{indent}    self._unsloth_bnb_vllm_sync_skip = any(type(_p).__name__ in ('Params4bit', 'Int8Params') for _p in self.model.parameters())\n"
+        # FSDP2 turns Params4bit into a DTensor, so also read the load flags the model keeps.
+        f"{indent}    self._unsloth_bnb_vllm_sync_skip = bool(getattr(self.model, 'is_loaded_in_4bit', False) or getattr(self.model, 'is_loaded_in_8bit', False)) or any(type(_p).__name__ in ('Params4bit', 'Int8Params') for _p in self.model.parameters())\n"
         f"{indent}    if self._unsloth_bnb_vllm_sync_skip:\n"
         f"{indent}        print('Unsloth: vLLM weight sync is skipped for a bitsandbytes 4-bit / 8-bit model without fast_inference, so rollouts use the initial weights. Load with fast_inference = True to sample from the trained model.')\n"
         f"{indent}if self._unsloth_bnb_vllm_sync_skip:\n"

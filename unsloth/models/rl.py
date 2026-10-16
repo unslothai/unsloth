@@ -102,6 +102,7 @@ _FSDP_DEFAULT_VERSION = 2 if transformers_version >= Version("5.10.0") else 1
 _GRPO_VLLM_SYNC_FUNCTIONS = frozenset(
     (
         "_move_model_to_vllm",
+        "_sync_fsdp_params_to_vllm",  # TRL < 0.20
         "_sync_fsdp1_params_to_vllm",
         "_sync_fsdp2_params_to_vllm",
     )
