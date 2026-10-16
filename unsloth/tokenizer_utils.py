@@ -1720,17 +1720,11 @@ def check_tokenizer(
             bad_tokens = list(added_tokens_fast.values())[j:]
             if not _reload:
                 added_tokens = [str(x) for x in tokenizer.added_tokens_decoder.values()]
-                special_tokens = tokenizer.special_tokens_map
-                import itertools
-
-                special_tokens = frozenset(
-                    itertools.chain.from_iterable(
-                        [x] if type(x) is str else x for x in special_tokens.values()
-                    )
-                )
+                # special_tokens_map drops the extra special tokens on transformers 5.x
+                special_tokens = frozenset(str(x) for x in tokenizer.all_special_tokens)
                 can_be_removed1 = [x for x in bad_tokens if x not in special_tokens]
                 can_be_removed2 = [
-                    x for x in can_be_removed1 if x in tokenizer._added_tokens_encoder.keys()
+                    x for x in can_be_removed1 if x in tokenizer.added_tokens_encoder.keys()
                 ]
 
                 can_be_removed = (len(can_be_removed1) == len(bad_tokens)) and (
@@ -1740,9 +1734,10 @@ def check_tokenizer(
                 remove_generic = False
                 try_mapper = []
                 if not can_be_removed:
-                    names = dir(tokenizer)
-                    names = (x for x in names if x.endswith("_token") and x.count("_") == 1)
-                    generic_tokens = [(x, getattr(tokenizer, x, None)) for x in names]
+                    # dir(tokenizer) misses the *_token attributes on transformers 5.x
+                    generic_tokens = [
+                        (x, y) for x, y in tokenizer.special_tokens_map.items() if type(y) is str
+                    ]
 
                     try_removal = []
                     for token in bad_tokens:
@@ -1757,11 +1752,21 @@ def check_tokenizer(
                     can_be_removed1 = bad_tokens
 
                 if can_be_removed:
-                    for j, bad_token in enumerate(can_be_removed1):
-                        remove_id = tokenizer._added_tokens_encoder[bad_token]
-                        del tokenizer._added_tokens_decoder[remove_id]
-                        del tokenizer._added_tokens_encoder[bad_token]
+                    if getattr(tokenizer, "is_fast", False):
+                        # Fast tokenizers read added tokens from the Rust backend, so drop them there.
+                        import json
 
+                        state = json.loads(tokenizer._tokenizer.to_str())
+                        state["added_tokens"] = [
+                            x for x in state["added_tokens"] if x["content"] not in can_be_removed1
+                        ]
+                        tokenizer._tokenizer = tokenizer._tokenizer.from_str(json.dumps(state))
+                    else:
+                        for bad_token in can_be_removed1:
+                            remove_id = tokenizer._added_tokens_encoder[bad_token]
+                            del tokenizer._added_tokens_decoder[remove_id]
+                            del tokenizer._added_tokens_encoder[bad_token]
+                    for j, bad_token in enumerate(can_be_removed1):
                         if remove_generic and (try_removal[j] == bad_token):
                             setattr(tokenizer, try_mapper[j], None)
                             setattr(tokenizer, try_mapper[j] + "_id", None)
