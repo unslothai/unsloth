@@ -277,6 +277,19 @@ def test_fastest_first_mask_corrects_mig_on_the_physical_row(monkeypatch):
     assert torch_calls == []
 
 
+def test_torch_fallback_rows_skip_the_physical_mig_correction(monkeypatch):
+    # No bus-id mapping: torch rows carry mask ids and already report slice memory. Physical row 0 is a
+    # MIG card, but mask id 0 is another card, so correcting it would hide the card that has room.
+    from core.inference.llama_cpp import LlamaCppBackend
+    from utils.hardware import nvidia
+
+    torch_calls, _reads = _fastest_first_host(monkeypatch, None)
+    monkeypatch.setattr(nvidia, "get_mig_gpu_indices", lambda: {0})
+    monkeypatch.setattr(LlamaCppBackend, "_get_gpu_memory_nvml", staticmethod(lambda: [(0, 1024, 5120)]))
+    assert _auto(_FASTEST) == [0]  # torch: mask id 0 has 70 GB free
+    assert torch_calls == [[0, 1]]
+
+
 def test_bus_ids_from_both_tools_join():
     from utils.hardware import nvidia
     assert nvidia._normalize_bus_id("00000000:3B:00.0") == nvidia._normalize_bus_id("0000:3b:00.0")

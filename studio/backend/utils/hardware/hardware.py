@@ -6183,8 +6183,11 @@ def auto_select_gpu_ids(
         # nvidia-smi telemetry for the cards the ids select, joined by PCI bus id out of process.
         utilization = smi_by_ordinal
     elif _mask_names_cuda_ordinals(parent_visible_spec):
-        # The display keeps the CLI rows; ranking needs the cards the worker will get.
+        # The display keeps the CLI rows; ranking needs the cards the worker will get. Torch already
+        # reports a MIG slice's own memory, and these rows carry mask ids, not the physical rows the
+        # MIG correction keys on, so it must not run on them.
         utilization = {
+            "mig_corrected": True,
             "devices": [
                 {
                     "index": td["index"],
