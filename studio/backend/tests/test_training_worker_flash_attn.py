@@ -648,6 +648,9 @@ def test_causal_conv1d_fast_path_includes_qwen3_6_variants(monkeypatch):
 def test_mamba_ssm_follows_the_resolved_answer_not_the_name(monkeypatch):
     install_mock = mock.Mock(return_value = True)
     monkeypatch.setattr(worker, "_install_package_wheel_first", install_mock)
+    # Not the sm80 floor under test: keep a GPU-less runner from skipping the optional family.
+    monkeypatch.setattr("utils.ssm_runtime._mamba_ssm_floor_reason", lambda: None)
+    monkeypatch.setattr(worker, "_is_importable", lambda name: False)
     # A real hybrid whose id lacks the substrings (resolved from its config) still installs.
     worker._ensure_mamba_ssm(
         event_queue = [], model_name = "nvidia/NVIDIA-Nemotron-Nano-9B-v2", required = True

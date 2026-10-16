@@ -956,20 +956,25 @@ def test_a_timed_out_build_stops_its_whole_process_tree(tmp_path):
         f"open({str(pid_file)!r}, 'w').write(str(p.pid)); "
         "time.sleep(60)"
     )
+    # A generous timeout: on a loaded host the child can take seconds to start its grandchild.
     with pytest.raises(subprocess.TimeoutExpired):
         kernel_install.run_process_tree(
-            [sys.executable, "-c", script], timeout = 3, stdout = subprocess.PIPE
+            [sys.executable, "-c", script], timeout = 15, stdout = subprocess.PIPE
         )
+    assert pid_file.exists(), "the build never started its grandchild within the timeout"
     grandchild = int(pid_file.read_text())
-    for _ in range(50):
+    for _ in range(100):
         try:
             os.kill(grandchild, 0)
         except ProcessLookupError:
             break
         # Reaped by init once killed; a zombie still answers kill(0) briefly.
-        with open(f"/proc/{grandchild}/stat") as stat:
-            if stat.read().split()[2] == "Z":
-                break
+        try:
+            with open(f"/proc/{grandchild}/stat") as stat:
+                if stat.read().split()[2] == "Z":
+                    break
+        except FileNotFoundError:
+            break
         time.sleep(0.1)
     else:
         os.kill(grandchild, 9)
