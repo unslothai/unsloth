@@ -2434,6 +2434,11 @@ def _unsupported_gfx_arch_from_gpu_name(name: str) -> "str | None":
     return None
 
 
+# Krackan Point 2 names overlap the Krackan patterns of the shared name table (gfx1152);
+# the Linux runtime-less paths test them first so the uncovered-arch fallback sees gfx1153.
+_LINUX_KRACKAN2_NAME_RE = r"820M|Krackan ?(?:Point ?)?2|AI 5 (?:PRO )?330"
+
+
 def _linux_amd_gfx_from_cpuinfo() -> "str | None":
     """Infer gfx arch from /proc/cpuinfo on integrated AMD APUs (Strix Halo/Point)."""
     try:
@@ -2444,6 +2449,8 @@ def _linux_amd_gfx_from_cpuinfo() -> "str | None":
         return "gfx1151"
     if re.search(r"890M|880M|Strix Point|HX 37[05]|AI 9 HX|AI 9 36[05]", text, re.IGNORECASE):
         return "gfx1150"
+    if re.search(_LINUX_KRACKAN2_NAME_RE, text, re.IGNORECASE):
+        return "gfx1153"
     if re.search(
         r"860M|840M|Krackan|AI 7 35[05]|AI 5 34[05]|AI 7 PRO 35|AI 5 33", text, re.IGNORECASE
     ):
@@ -2451,12 +2458,13 @@ def _linux_amd_gfx_from_cpuinfo() -> "str | None":
     return None
 
 
-def _linux_amd_gfx_from_lspci() -> "str | None":
+def _linux_amd_gfx_from_lspci(beside_krackan2: bool = False) -> "str | None":
     """First AMD display-class lspci line mapping to a known gfx arch. A non-AMD
     controller can enumerate first (Intel/ASPEED before an AMD dGPU), so scan
     them all. The vendor guard is case-SENSITIVE: a -i "ATI" would match
     "CorporATIon" on every Intel/NVIDIA line. Whole-line matching also survives
-    the 0000: PCI domain prefix."""
+    the 0000: PCI domain prefix. beside_krackan2 skips that APU's own iGPU line, so only a
+    discrete peer answers."""
     lspci = shutil.which("lspci")
     if not lspci:
         return None
@@ -2474,15 +2482,21 @@ def _linux_amd_gfx_from_lspci() -> "str | None":
         return None
     if result.returncode != 0:
         return None
+    # A Krackan Point 2 line (gfx1153, no Linux torch wheel) is only the fallback: a covered
+    # adapter later in the list still answers, as for the CPU-name case.
+    krackan2 = beside_krackan2
     for line in result.stdout.splitlines():
         if not re.search(r"VGA compatible controller|3D controller|Display controller", line, re.I):
             continue
         if not re.search(r"AMD|ATI", line):
             continue
+        if re.search(_LINUX_KRACKAN2_NAME_RE, line, re.IGNORECASE):
+            krackan2 = True
+            continue
         arch = _gfx_arch_from_gpu_name(line)
-        if arch:
+        if arch and not (krackan2 and arch in ("gfx1152", "gfx1153")):
             return arch
-    return None
+    return "gfx1153" if krackan2 and not beside_krackan2 else None
 
 
 def _is_wsl() -> bool:
@@ -2547,6 +2561,9 @@ def _infer_linux_amd_gfx_arch() -> "str | None":
         # fallback reads the same PCI space and would find nothing here either.
         return None
     cpu_gfx = _linux_amd_gfx_from_cpuinfo()
+    if cpu_gfx == "gfx1153":
+        # Krackan Point 2 has no Linux torch wheel, so a discrete AMD card lspci names wins.
+        return _linux_amd_gfx_from_lspci(beside_krackan2 = True) or cpu_gfx
     if cpu_gfx:
         return cpu_gfx
     return _linux_amd_gfx_from_lspci()
@@ -3201,6 +3218,12 @@ _GENERIC_ROCM_WHEEL_GFX: frozenset[str] = frozenset(
 )
 
 
+# Strix APUs: listed first beside a discrete card, they defer to it for torch alone (their
+# per-arch wheels carry no other arch). Not shadowing: llama.cpp and a lone Strix keep them.
+# install.sh's _amd_prefer_discrete_gfx "torch" mode holds the same list.
+_STRIX_APU_GFX: "frozenset[str]" = frozenset({"gfx1150", "gfx1151", "gfx1152"})
+
+
 # Arches whose only wheel route is unreachable once a second GPU is present, so they must
 # never depose an integrated card. gfx906's rocm6.3 route is gated on it being the sole
 # detected arch (_runtime_target_is_gfx906), which no mixed host satisfies.
@@ -3334,9 +3357,13 @@ def _gfx_has_a_wheel_route(gfx: "str | None") -> bool:
     return bool(gfx) and (gfx in _GENERIC_ROCM_WHEEL_GFX or gfx in _GFX_TO_AMD_INDEX_ARCH)
 
 
-# RDNA 1 and Polaris: no Linux index this installer picks carries their kernels (#8529).
+# RDNA 1, Polaris and gfx1153 (Krackan Point 2): no Linux index this installer picks carries
+# their kernels (#8529, #11815); the generic wheel loads and faults on first use. gfx1153 is
+# torch-only here: llama.cpp's LINUX_NO_ROCM_GFX_TARGETS keeps its HIP route.
 # install.sh's get_torch_index_url holds the same list.
-_LINUX_UNCOVERED_AMD_GFX: "frozenset[str]" = frozenset({"gfx1010", "gfx1011", "gfx1012", "gfx803"})
+_LINUX_UNCOVERED_AMD_GFX: "frozenset[str]" = frozenset(
+    {"gfx1010", "gfx1011", "gfx1012", "gfx1153", "gfx803"}
+)
 
 
 def _linux_host_only_uncovered_amd(*arch_lists: "list[str]") -> "str | None":
@@ -3620,7 +3647,15 @@ def _runtime_gfx_target(
         if gfx_devices
         else None
     )
-    if runtime_gfx in _SHADOWING_INTEGRATED_GFX and not _visible_devices_pinned():
+    # Strix defers only where the discrete card's wheel can be installed and will run: a readable
+    # ROCm version (the versionless path has no generic tag for it) and no HSA override (which
+    # spoofs every agent, the dGPU included). Otherwise it keeps its own per-arch index, as before.
+    _strix_first = (
+        runtime_gfx in _STRIX_APU_GFX
+        and _detect_rocm_version() is not None
+        and _hsa_override_gfx_arch(os.environ.get("HSA_OVERRIDE_GFX_VERSION")) is None
+    )
+    if (runtime_gfx in _SHADOWING_INTEGRATED_GFX or _strix_first) and not _visible_devices_pinned():
         # Unpinned mixed host: only enumeration order put the integrated GPU first, and the
         # wheel family is picked for ONE arch, so letting the APU decide strands the discrete
         # card. Same #7776 preference _detect_windows_gfx_arch applies, stopping at a set mask
@@ -3631,7 +3666,9 @@ def _runtime_gfx_target(
         _others = [
             g
             for g in gfx_devices
-            if g not in _SHADOWING_INTEGRATED_GFX and g not in _MIXED_HOST_UNROUTABLE
+            if g not in _SHADOWING_INTEGRATED_GFX
+            and g not in _MIXED_HOST_UNROUTABLE
+            and not (_strix_first and g in _STRIX_APU_GFX)
         ]
         # Prefer a discrete card the installer can serve: deposing a routable APU for one no
         # index carries (an RDNA 1 dGPU beside a gfx1103) trades a repairable GPU for nothing.
@@ -6589,8 +6626,16 @@ def _ensure_rocm_torch() -> "bool | None":
         # This branch installs for the inferred arch without asking the mask layers, so an
         # ordinal the guess cannot account for reaches the wheel the preflight already
         # declines. An explicit arch is exempt above, and no ordinal contradicts it.
-        and (_gfx_override_env or _runtime_gfx_target(_inferred_linux_gfx)[0] is not None)
+        and (
+            _gfx_override_env
+            or (_inferred_target := _runtime_gfx_target(_inferred_linux_gfx)[0]) is not None
+        )
     ):
+        # The discrete card a leading Strix deferred to. One served only by the generic index
+        # (gfx942) skips this per-arch install: the generic route below installs for it, since
+        # the deferral already required a readable ROCm version.
+        if not _gfx_override_env and _inferred_target != _inferred_linux_gfx:
+            _inferred_linux_gfx = _inferred_target
         index_url = _amd_arch_index_url(_inferred_linux_gfx)
         if index_url is not None:
             # The bare arch _amd_arch_index_url resolved the URL from: stripping the suffix there is
@@ -6672,8 +6717,8 @@ def _ensure_rocm_torch() -> "bool | None":
         _uncovered = _linux_host_only_uncovered_amd(gfx_codes, _host_codes)
         if _uncovered and not rocm_torch_ready:
             _safe_print(
-                f"   AMD {_uncovered}: no ROCm PyTorch wheel carries kernels for this GPU -- "
-                f"not installing ROCm torch for it.\n"
+                f"   AMD {_uncovered}: no ROCm PyTorch wheel Unsloth installs carries kernels for "
+                f"this GPU -- not installing ROCm torch for it.\n"
             )
             return
         _strix_gfx = _AMD_ARCH_INDEX_FLOOR_GFX
@@ -6718,8 +6763,12 @@ def _ensure_rocm_torch() -> "bool | None":
                     _clear_confirmed_hsa_spoof(_selected_gfx)
             else:
                 _gfx_str = ", ".join(sorted(_detected_strix))
+                # Unpinned, the discrete-card preference in _runtime_gfx_target moved it.
+                _selector = (
+                    "HIP_VISIBLE_DEVICES" if _visible_devices_pinned() else "the discrete GPU"
+                )
                 _safe_print(
-                    f"   AMD per-gfx GPU ({_gfx_str}) present but HIP_VISIBLE_DEVICES "
+                    f"   AMD per-gfx GPU ({_gfx_str}) present but {_selector} "
                     f"selects another runtime target ({_runtime_gfx});\n"
                     f"   skipping AMD per-gfx index override.\n"
                 )

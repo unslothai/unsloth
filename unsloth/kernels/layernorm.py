@@ -15,6 +15,7 @@ import triton
 import triton.language as tl
 import torch
 from .utils import calculate_settings, long_indexing, torch_gpu_device
+from . import triton_launch
 from .triton_launch import launch
 from unsloth_zoo.patching_utils import (
     patch_layernorm,
@@ -222,7 +223,8 @@ def _settings(n_cols):
 
 def _launch(kernel, grid, args, n_tensors, constexprs, device, **options):
     # Eager CUDA skips Triton's arg binding (triton_launch.py); compiling calls keep kernel[grid].
-    if device.type == "cuda" and not torch.compiler.is_compiling():
+    # is_compiling first: Dynamo must not read (and guard on) the mutable _ENABLED.
+    if not torch.compiler.is_compiling() and triton_launch._ENABLED and device.type == "cuda":
         launch(kernel, grid, args, n_tensors, constexprs, device.index, **options)
     else:
         kernel[grid](*args, **constexprs, **options)
