@@ -2777,7 +2777,9 @@ def _list_rocm_gfx_targets(out: str) -> list[str]:
 
 
 def _pick_rocm_gfx_target(
-    out: str, rocr_filtered: bool = False, hip_filtered: bool = False
+    out: str,
+    rocr_filtered: bool = False,
+    hip_filtered: bool = False,
 ) -> str | None:
     """Choose the gfx target rocminfo / hipinfo report for the active GPU.
 

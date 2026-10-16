@@ -37,7 +37,9 @@ def hipinfo_listing(archs):
 
 
 def amd_smi_listing(archs):
-    return "".join(f"GPU: {i}\n    TARGET_GRAPHICS_VERSION: {arch}\n" for i, arch in enumerate(archs))
+    return "".join(
+        f"GPU: {i}\n    TARGET_GRAPHICS_VERSION: {arch}\n" for i, arch in enumerate(archs)
+    )
 
 
 def detect(monkeypatch, probe, stdout, env):
