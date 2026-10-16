@@ -378,8 +378,17 @@ FACTORIES = {
     ),
 }
 
+_LINKED_INSTANCE = (
+    "a linked instance is the installation's link to another Unsloth Studio server, not an "
+    "account's object, and every route on it is owner-only (require_installation_owner), so no "
+    "account owns it"
+)
+
 SKIPPED = {
     "routes.openai_codex_auth:POST:/{provider_id}/oauth/flows/{flow_id}/complete": (
         "completing a flow exchanges the pasted authorization code with auth.openai.com"
     ),
+    "routes.linked_instances:PATCH:/{instance_id}": _LINKED_INSTANCE,
+    "routes.linked_instances:DELETE:/{instance_id}": _LINKED_INSTANCE,
+    "routes.linked_instances:POST:/{instance_id}/test": _LINKED_INSTANCE,
 }
