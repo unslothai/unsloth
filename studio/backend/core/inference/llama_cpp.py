@@ -92,6 +92,7 @@ from core.inference.llama_server_args import (
     _CACHE_TYPE_V_FLAGS,
     _CTX_CHECKPOINTS_FLAGS,
     _DEVICE_FLAGS,
+    _FIT_TARGET_FLAGS,
     _GPU_LAYER_FLAGS,
     _LAYER_OFFLOAD_FLAGS,
     _MOE_OFFLOAD_FLAGS,
@@ -28951,6 +28952,12 @@ class LlamaCppBackend:
                         # A --fit-ctx Studio did not emit moves llama.cpp's fit.
                         if _fit_ctx_overridden(_child_extras, _child_env):
                             return None
+                        # common/fit.cpp sizes the split before pass-through adapters load
+                        # (common_init_from_params); their tensors then follow each base
+                        # layer's buffer, so which expert slices they displace is unknown.
+                        # An unreadable adapter is unsized. Either way, unknown.
+                        if _sidecar_adapter_bytes(_child_extras) != 0:
+                            return None
                         # A pass-through MoE cache (argv beats env, "0" turns it off) takes VRAM
                         # these terms do not price and keeps the routed experts on the host.
                         _cache_mib = _extra_args_device(_child_extras, {"--moe-cache-mib"})
@@ -29066,6 +29073,13 @@ class LlamaCppBackend:
                         )
                         if not _margin_exact:
                             return None
+                        # A value the child reads but this cannot (std::stoull throws on
+                        # "foo", common/arg.cpp) is no margin to fall back past: unknown.
+                        if (
+                            _margin_mib is None
+                            and _last_flag_value(_child_extras, _FIT_TARGET_FLAGS) is not None
+                        ):
+                            return None
                         if _margin_mib is None:
                             _emits = _supports_fit_target and (
                                 _auto_fit or _managed_mib != _LLAMA_FIT_TARGET_DEFAULT_MIB
@@ -29077,8 +29091,16 @@ class LlamaCppBackend:
                                 )
                                 if not _margin_exact:
                                     return None
+                                if (
+                                    _env_mib is None
+                                    and str(_child_env.get("LLAMA_ARG_FIT_TARGET") or "").strip()
+                                ):
+                                    return None
                             # An inherited 0 is a valid margin, not "unset".
                             _margin_mib = _managed_mib if _env_mib is None else _env_mib
+                        # std::stoull wraps a negative entry to a margin past any card.
+                        if _margin_mib < 0:
+                            return None
                         # A lazily read table stays mmap'd on the host, never on the GPU.
                         _lazy_host = self._lazy_read_host_bytes(
                             model_path,
