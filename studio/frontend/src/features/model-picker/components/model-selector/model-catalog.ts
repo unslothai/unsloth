@@ -256,8 +256,8 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     ],
   },
   {
-    // A different denoiser with its own FP8/INT8 checkpoints. The canonical id stays the vendor id saved picks
-    // carry; the row fetches the byte-identical unsloth mirror.
+    // A different denoiser with its own FP8/INT8 checkpoints. The bf16 row keeps the vendor id; the backend fetches
+    // it from unsloth/Qwen-Image-2.1-Turbo-FP8, which carries the official diffusers folders byte-identical.
     canonicalId: "Qwen/Qwen-Image-2.1-Turbo",
     displayName: "Qwen-Image 2.1 Turbo",
     description: "Text-to-image and image editing in 8 steps",
@@ -267,7 +267,7 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     // Right after 2.1's group, so its "Fast FP8" row sits directly under 2.1's at the top.
     pinToTop: true,
     artifacts: [
-      bf16Mirror("Qwen/Qwen-Image-2.1-Turbo", 33, {
+      bf16Pipeline("Qwen/Qwen-Image-2.1-Turbo", 33, {
         totalParams: 7115124736,
         prequantRepo: "unsloth/Qwen-Image-2.1-Turbo-FP8",
         prequantSizeGb: { fp8: 7.12, int8: 7.26 },

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import json
 import logging
 import os
 import re
@@ -2540,6 +2541,25 @@ def _map_guidance(
     return cfg, None
 
 
+def _assert_shards_beside_index(kind: str, path: str) -> None:
+    """sd-cli resolves a ``*.safetensors.index.json`` encoder's shards relative to the index, so every shard it names
+    must sit in the same snapshot directory. The shards are fetched as their own assets, which normally lands them
+    there; a cache split across two roots could not, and sd-cli would then fail deep in the load. Say so here."""
+    if not str(path).endswith(".safetensors.index.json"):
+        return
+    try:
+        with open(path, encoding = "utf-8") as fh:
+            shards = set((json.load(fh).get("weight_map") or {}).values())
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(f"cannot read the {kind} shard index '{path}': {exc}") from exc
+    missing = sorted(s for s in shards if not (Path(path).parent / s).exists())
+    if missing:
+        raise RuntimeError(
+            f"the {kind} encoder's shards {missing} are not beside its index in '{Path(path).parent}'; "
+            "clear that model from the cache and load it again"
+        )
+
+
 def _fetch_repo_map(assets: list[tuple[str, str, str]], hf_token: Optional[str]) -> dict[str, str]:
     """upstream asset repo -> the repo to actually fetch from (its ungated mirror, or itself).
     Decided per REPO over its whole file list, the same input ``download_plan`` uses, so staging
@@ -3898,6 +3918,8 @@ class SdCppDiffusionBackend:
                         self._loading.downloaded_bytes += os.path.getsize(path)
                     except OSError:
                         pass
+        for kind, path in paths.items():
+            _assert_shards_beside_index(kind, path)
         return paths
 
     def load_progress(self) -> dict[str, Any]:

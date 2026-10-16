@@ -522,13 +522,18 @@ def test_a_repack_split_across_the_two_cache_roots_still_counts(monkeypatch, tmp
     a split pair absent and re-pulls several GB the two roots already have between them (offline,
     it fails outright). Reachable with an interrupted download either side of the change: the file
     fetched before it stays in the old root, the one fetched after lands in the new one.
+
+    Uses a synthetic mirror -> repack row: the mechanism is generic, and no image asset is a
+    repack any more.
     """
     from huggingface_hub import constants
 
+    from core.inference import diffusion_families
     from core.inference.diffusion_families import _upstream_is_cached, prefer_cached_legacy_source
 
-    repack = "Comfy-Org/z_image_turbo"
-    mirror = "unsloth/Z-Image-Turbo-ComfyUI"
+    repack = "some-org/example-repack"
+    mirror = "unsloth/example-repack-mirror"
+    monkeypatch.setitem(diffusion_families._SD_CPP_LEGACY_SOURCES, mirror.lower(), repack)
     first, second = "split_files/vae/ae.safetensors", "split_files/text_encoders/te.safetensors"
     live, other = tmp_path / "live", tmp_path / "other"
 

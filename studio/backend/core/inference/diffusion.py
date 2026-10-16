@@ -76,6 +76,7 @@ from .diffusion_families import (
     detect_family_for_pick,
     excluded_model_reason,
     prefer_ungated_mirror,
+    mirror_hosts_artifacts,
     prequant_only_repo_ids,
     prequant_repo_role,
     resolve_base_repo,
@@ -5751,7 +5752,7 @@ class DiffusionBackend:
         return best
 
     @staticmethod
-    def _cache_bytes(repo_id: str) -> int:
+    def _cache_bytes(repo_id: str, *, pipeline_only: bool = False) -> int:
         """Bytes of ``repo_id`` on disk across every cache root, for progress and the pipeline plan.
 
         Scoped per root to the revision that root serves (``refs/main``), because ``blobs/`` is
@@ -5759,6 +5760,10 @@ class DiffusionBackend:
         different etags, so summing the whole dir counts a stale full copy on top of the live
         partial one and ``load_progress`` reports finalizing through the rest of a multi-GB pull.
         The in-flight ``blobs/*.incomplete`` still counts: those are this download's own bytes.
+
+        ``pipeline_only`` counts just the diffusers part of the snapshot (``model_index.json`` and the component
+        folders), for a repo that also carries root GGUF / prequant checkpoints the pipeline never reads. Blobs
+        that cannot be attributed to a path are left out there.
 
         Keyed by blob filename, not summed per root: a blob is named after the file's etag, so a
         copy present in both roots counts once. Scanning only the live root reports 0 for a load a
@@ -5780,16 +5785,22 @@ class DiffusionBackend:
             except OSError:
                 blobs = []  # repo not in this root yet / unreadable / no-symlink cache mode
             if snapshot is None:
-                for entry in blobs:
-                    _add(entry.name, entry)
+                if not pipeline_only:
+                    for entry in blobs:
+                        _add(entry.name, entry)
                 continue
-            for entry in blobs:
-                if entry.name.endswith(".incomplete"):
-                    _add(entry.name, entry)
+            if not pipeline_only:
+                for entry in blobs:
+                    if entry.name.endswith(".incomplete"):
+                        _add(entry.name, entry)
             try:
                 for f in snapshot.rglob("*"):
                     if not f.is_file():
                         continue
+                    if pipeline_only:
+                        rel = f.relative_to(snapshot).as_posix()
+                        if "/" not in rel and rel != "model_index.json":
+                            continue
                     # Dedupe on the path INSIDE the snapshot, so one logical file counts once however many roots hold
                     # it. The etag would not: each root serves its own revision, so a republished file summed both
                     # copies and could report finalizing at half the real progress. Works for a no-symlink cache too,
@@ -10024,7 +10035,9 @@ class DiffusionBackend:
                 self._local_dir_weight_bytes(staged_repo, exclude_transformer = False)
                 if staged_repo is not None and staged_repo.is_dir()
                 else 0,
-                self._cache_bytes(cache_repo) if cache_repo else 0,
+                self._cache_bytes(cache_repo, pipeline_only = mirror_hosts_artifacts(cache_repo))
+                if cache_repo
+                else 0,
             )
             if load_dtype is not None:
                 # Cached bytes are what the repo STORES, not what the load holds at this dtype.

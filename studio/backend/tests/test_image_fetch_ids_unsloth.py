@@ -64,13 +64,31 @@ _CARD_BASES: dict[str, str] = {
     "unsloth/FLUX.2-klein-base-9B-GGUF": "black-forest-labs/FLUX.2-klein-base-9B",
 }
 
+# These five have no separate mirror repo: the official diffusers folders live inside the model's existing unsloth
+# repo (-FP8 where one exists, else -GGUF).
 _NEW_PAIRS = (
-    ("Qwen/Qwen-Image-2.1-Turbo", "unsloth/Qwen-Image-2.1-Turbo"),
-    ("Qwen/Qwen-Image-Edit", "unsloth/Qwen-Image-Edit"),
-    ("Qwen/Qwen-Image-Edit-2509", "unsloth/Qwen-Image-Edit-2509"),
-    ("Qwen/Qwen-Image-Layered", "unsloth/Qwen-Image-Layered"),
-    ("Tongyi-MAI/Z-Image", "unsloth/Z-Image"),
+    ("Qwen/Qwen-Image-2.1-Turbo", "unsloth/Qwen-Image-2.1-Turbo-FP8"),
+    ("Qwen/Qwen-Image-Edit", "unsloth/Qwen-Image-Edit-GGUF"),
+    ("Qwen/Qwen-Image-Edit-2509", "unsloth/Qwen-Image-Edit-2509-GGUF"),
+    ("Qwen/Qwen-Image-Layered", "unsloth/Qwen-Image-Layered-GGUF"),
+    ("Tongyi-MAI/Z-Image", "unsloth/Z-Image-GGUF"),
 )
+
+# Repacks built by ComfyUI (or its unsloth/* copies). No image load may fetch from one, not even through the
+# legacy-cache fallback.
+_COMFY_MADE: frozenset[str] = frozenset({
+    "unsloth/flux-text-encoders",
+    "unsloth/qwen-image-comfyui",
+    "unsloth/flux.2-vae",
+    "unsloth/flux.2-dev-comfyui",
+    "unsloth/z-image-turbo-comfyui",
+    "unsloth/flux.2-klein-9b-comfyui",
+})
+
+
+def _is_comfy(repo: str) -> bool:
+    r = repo.lower()
+    return r in _COMFY_MADE or r.startswith(("comfy-org/", "comfyanonymous/")) or "comfyui" in r or "comfy" in r.split("/")[0]
 
 
 @pytest.fixture(autouse = True)
@@ -85,6 +103,8 @@ def _fetch_id(repo: str) -> str:
 
 
 def _allowed(repo: str) -> bool:
+    if _is_comfy(repo):
+        return False
     return repo.lower().startswith("unsloth/") or repo.lower() in _LICENCE_BLOCKED
 
 
@@ -161,7 +181,7 @@ def test_layered_sd_cpp_vae_comes_from_the_mirror():
     fam = detect_family("", override = "qwen-image-layered")
     assert fam is not None and fam.sd_cpp_vae
     rows = [r for r in _sd_cpp_fetch_ids() if r[0] == "qwen-image-layered" and r[1] == "sd_cpp:vae"]
-    assert rows and rows[0][3] == "unsloth/Qwen-Image-Layered"
+    assert rows and rows[0][3] == "unsloth/Qwen-Image-Layered-GGUF"
 
 
 def _image_catalog() -> str:
@@ -228,3 +248,23 @@ def test_licence_allowlist_is_still_needed():
     rows = {r.lower() for _h, r in _catalog_rows()}
     for repo in _THIRD_PARTY_DENOISER_ROWS:
         assert repo in rows, f"the catalog no longer offers {repo}; drop it from _THIRD_PARTY_DENOISER_ROWS"
+
+
+def test_no_image_asset_names_a_comfy_repack():
+    """Neither the tables nor the fetch map may name a ComfyUI-built file, and the legacy-cache fallback must not be
+    able to turn an image asset back into one."""
+    rows = _family_fetch_ids() + _sd_cpp_fetch_ids()
+    bad = [r for r in rows if _is_comfy(r[2]) or _is_comfy(r[3])]
+    assert not bad, bad
+    image_assets = {r[2].lower() for r in rows} | {r[3].lower() for r in rows}
+    for key, legacy in df._SD_CPP_LEGACY_SOURCES.items():
+        assert key not in image_assets, (key, legacy)
+        assert key not in _COMFY_MADE, key
+
+
+def test_sd_cpp_text_encoders_are_unsloth_ggufs_or_official_files():
+    """Every sd-cli text encoder is an unsloth GGUF or an official upstream file (through its unsloth mirror)."""
+    for fam, role, repo, fetch in _sd_cpp_fetch_ids():
+        if role == "sd_cpp:vae":
+            continue
+        assert fetch.lower().startswith("unsloth/") and not _is_comfy(fetch), (fam, role, repo, fetch)

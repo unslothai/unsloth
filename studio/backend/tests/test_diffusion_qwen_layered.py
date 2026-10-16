@@ -182,12 +182,12 @@ def test_layered_family_contract():
 def test_gguf_transformer_reads_the_layered_config(layered):
     assert layered._state.family.name == "qwen-image-layered"
     # The GGUF supplies weights only; the layered transformer config (additional t cond, layer3d RoPE) comes from the
-    # base, and so do the RGBA VAE and the pipeline. Fetched from the byte-identical unsloth mirror; status keeps the
-    # upstream id.
-    assert _FakeTransformer.last["config"] == "unsloth/Qwen-Image-Layered"
+    # base, and so do the RGBA VAE and the pipeline. Fetched from the official folders inside
+    # unsloth/Qwen-Image-Layered-GGUF; status keeps the upstream id.
+    assert _FakeTransformer.last["config"] == "unsloth/Qwen-Image-Layered-GGUF"
     assert _FakeTransformer.last["subfolder"] == "transformer"
     assert _FakeTransformer.last["path"].endswith("qwen-image-layered-UD-Q4_K_XL.gguf")
-    assert _FakeLayeredPipeline.base == "unsloth/Qwen-Image-Layered"
+    assert _FakeLayeredPipeline.base == "unsloth/Qwen-Image-Layered-GGUF"
     assert layered.status()["base_repo"] == "Qwen/Qwen-Image-Layered"
     assert layered.status()["workflows"] == ["edit"]
 

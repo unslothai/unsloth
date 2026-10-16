@@ -1212,6 +1212,14 @@ def _scan_cached_models(
                 if not payload.has_runnable_weights:
                     skipped_no_weights += 1
                     continue
+                # A GGUF repo that also carries the official diffusers folders (it is the base's mirror): companions
+                # without the bf16 transformer are part of the GGUF row, not a second row whose delete would wipe the
+                # quants with them.
+                if has_main_gguf and _hosts_artifacts(repo_id) and hf_cache_scan.snapshot_pipeline_missing_denoiser(
+                    payload.payload_snapshot or snapshot_path
+                ):
+                    skipped_gguf += 1
+                    continue
                 key = repo_id.lower()
                 existing = seen_lower.get(key)
                 identity = _resolve_load_identity(
@@ -1388,3 +1396,12 @@ async def list_cached_models_response(hf_token: Optional[str] = None):
             status_code = 500,
             detail = "Failed to read the local model cache.",
         ) from e
+
+
+def _hosts_artifacts(repo_id: str) -> bool:
+    """``mirror_hosts_artifacts``, False when the family tables are unavailable."""
+    try:
+        from core.inference.diffusion_families import mirror_hosts_artifacts
+        return mirror_hosts_artifacts(repo_id)
+    except Exception:  # noqa: BLE001 -- no table means no artifact mirrors
+        return False

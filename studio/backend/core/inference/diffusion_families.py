@@ -291,6 +291,17 @@ _HIDREAM_BF16_WHEN_RESIDENT = (
     "INT8 is barely faster than compiled bf16 on a card that holds bf16 and changes image detail"
 )
 
+# FLUX.1's sd-cli encoders are BFL's own diffusers files, read as-is: sd.cpp loads the CLIP-L text_encoder and the
+# sharded T5 through its index (the shards sit beside it in the snapshot). The shards are listed so every fetch,
+# size and cache probe sees them as plain files; ``*_shard`` kinds are fetched but never handed to sd-cli. dev, Krea
+# and Kontext reuse schnell's files, as they shared one repack before.
+_FLUX1_SD_CPP_TEXT_ENCODERS: tuple[tuple[str, str, str], ...] = (
+    ("black-forest-labs/FLUX.1-schnell", "text_encoder/model.safetensors", "clip_l"),
+    ("black-forest-labs/FLUX.1-schnell", "text_encoder_2/model.safetensors.index.json", "t5xxl"),
+    ("black-forest-labs/FLUX.1-schnell", "text_encoder_2/model-00001-of-00002.safetensors", "t5xxl_shard"),
+    ("black-forest-labs/FLUX.1-schnell", "text_encoder_2/model-00002-of-00002.safetensors", "t5xxl_shard"),
+)
+
 # Keyed by architecture, not per variant: the base repo is read from the HF base_model tag at load time, so one entry
 # covers Turbo/full, schnell/dev.
 _FAMILIES: tuple[DiffusionFamily, ...] = (
@@ -351,10 +362,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         controlnet_model_class = "FluxControlNetModel",
         sd_cpp_vae = ("black-forest-labs/FLUX.1-schnell", "ae.safetensors"),
         # Byte-identical mirror of comfyanonymous/flux_text_encoders (CLIP-L + T5-XXL fp16).
-        sd_cpp_text_encoders = (
-            ("unsloth/flux-text-encoders", "clip_l.safetensors", "clip_l"),
-            ("unsloth/flux-text-encoders", "t5xxl_fp16.safetensors", "t5xxl"),
-        ),
+        sd_cpp_text_encoders = _FLUX1_SD_CPP_TEXT_ENCODERS,
     ),
     # FLUX.2-klein is Flux2KleinPipeline (Qwen3 encoder), not the Mistral Flux2Pipeline, so it must precede a generic
     # flux match.
@@ -408,19 +416,17 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         inpaint_pipeline_class = "Flux2KleinInpaintPipeline",
         # FLUX.2 scales >1MP inputs to ~1MP, so outpaint can't grow.
         inpaint_preserves_size = False,
-        sd_cpp_vae = ("unsloth/FLUX.2-VAE", "split_files/vae/flux2-vae.safetensors"),
+        # BFL's own diffusers VAE file, byte-identical to the single-file repack this used to name.
+        sd_cpp_vae = ("black-forest-labs/FLUX.2-dev", "vae/diffusion_pytorch_model.safetensors"),
         sd_cpp_vae_format = "flux2",
-        sd_cpp_text_encoders = (
-            (
-                "unsloth/Z-Image-Turbo-ComfyUI",
-                "split_files/text_encoders/qwen_3_4b.safetensors",
-                "llm",
-            ),
-        ),
+        # Klein 4B's text encoder IS Qwen3-4B (byte-identical shards to unsloth/Qwen3-4B; the BF16 GGUF matches it
+        # tensor for tensor and renders pixel-identical to the old single-file encoder), so sd-cli reads unsloth's
+        # own GGUF of it. Q8_0, not Q4_K_M: on klein 4B the Q4 encoder moved renders by LPIPS 0.15, Q8 by 0.06.
+        sd_cpp_text_encoders = (("unsloth/Qwen3-4B-GGUF", "Qwen3-4B-Q8_0.gguf", "llm"),),
     ),
     # FLUX.2-dev: full (non-distilled) FLUX.2 on the Mistral Flux2Pipeline, so its own entry. Gated base,
-    # text-to-image only; sd-cli takes the Mistral encoder from unsloth/FLUX.2-dev-ComfyUI and the VAE from
-    # unsloth/FLUX.2-VAE.
+    # text-to-image only; sd-cli takes the Mistral encoder from unsloth's Mistral-Small-3.2 GGUF and the VAE from
+    # BFL's own diffusers file.
     DiffusionFamily(
         name = "flux.2-dev",
         label = "FLUX.2-dev",
@@ -438,12 +444,15 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         aliases = ("flux2-dev", "flux2dev"),
         trainable = True,
         train_base_repos = ("black-forest-labs/FLUX.2-dev",),
-        sd_cpp_vae = ("unsloth/FLUX.2-VAE", "split_files/vae/flux2-vae.safetensors"),
+        # BFL's own diffusers VAE file, byte-identical to the single-file repack this used to name.
+        sd_cpp_vae = ("black-forest-labs/FLUX.2-dev", "vae/diffusion_pytorch_model.safetensors"),
         sd_cpp_vae_format = "flux2",
+        # FLUX.2-dev's text encoder is Mistral-Small-3.2-24B-Instruct-2506 (byte-identical shards to the unsloth
+        # copy; the BF16 GGUF matches every text tensor), so sd-cli reads unsloth's GGUF of it.
         sd_cpp_text_encoders = (
             (
-                "unsloth/FLUX.2-dev-ComfyUI",
-                "split_files/text_encoders/mistral_3_small_flux2_bf16.safetensors",
+                "unsloth/Mistral-Small-3.2-24B-Instruct-2506-GGUF",
+                "Mistral-Small-3.2-24B-Instruct-2506-Q4_K_M.gguf",
                 "llm",
             ),
         ),
@@ -465,10 +474,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         edit = True,
         # Native: FLUX.1's VAE + CLIP-L / T5-XXL, the source as a reference image (sd.cpp docs/kontext.md).
         sd_cpp_vae = ("black-forest-labs/FLUX.1-schnell", "ae.safetensors"),
-        sd_cpp_text_encoders = (
-            ("unsloth/flux-text-encoders", "clip_l.safetensors", "clip_l"),
-            ("unsloth/flux-text-encoders", "t5xxl_fp16.safetensors", "t5xxl"),
-        ),
+        sd_cpp_text_encoders = _FLUX1_SD_CPP_TEXT_ENCODERS,
     ),
     DiffusionFamily(
         # Qwen instruction editing: the 2511 checkpoint ships as QwenImageEditPlusPipeline. Specific aliases first so
@@ -511,7 +517,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         fp16_incompatible = True,
         # Native: qwen-image's VAE + Qwen2.5-VL, plus its projector (edits read the source through the VLM; a GGUF
         # encoder has no vision weights). 2511 needs no flag: sd.cpp keys zero_cond_t off __index_timestep_zero__.
-        sd_cpp_vae = ("unsloth/Qwen-Image-ComfyUI", "split_files/vae/qwen_image_vae.safetensors"),
+        # The official diffusers VAE; sd.cpp maps its names itself, as it does for Layered's.
+        sd_cpp_vae = ("Qwen/Qwen-Image", "vae/diffusion_pytorch_model.safetensors"),
         sd_cpp_text_encoders = (
             (
                 "unsloth/Qwen2.5-VL-7B-Instruct-GGUF",
@@ -607,8 +614,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         inpaint_pipeline_class = "QwenImageInpaintPipeline",
         controlnet_pipeline_class = "QwenImageControlNetPipeline",
         controlnet_model_class = "QwenImageControlNetModel",
-        # Byte-identical mirror of Comfy-Org/Qwen-Image_ComfyUI.
-        sd_cpp_vae = ("unsloth/Qwen-Image-ComfyUI", "split_files/vae/qwen_image_vae.safetensors"),
+        # The official diffusers VAE; sd.cpp maps its names itself, as it does for Layered's.
+        sd_cpp_vae = ("Qwen/Qwen-Image", "vae/diffusion_pytorch_model.safetensors"),
         # Qwen2.5-VL as a Q4_K_M GGUF keeps the CPU RAM win (bf16 encoder is ~15 GB). sd-cli --qwen2vl aliases --llm.
         sd_cpp_text_encoders = (
             (
@@ -821,15 +828,12 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         fp16_guard = "rescale_post_norm",
         mlx_model_config = "z-image-turbo",
         mlx_model_config_by_base = (("Tongyi-MAI/Z-Image", "z-image"),),
-        # Byte-identical mirror of Comfy-Org/z_image_turbo (AE + Qwen3-4B).
-        sd_cpp_vae = ("unsloth/Z-Image-Turbo-ComfyUI", "split_files/vae/ae.safetensors"),
-        sd_cpp_text_encoders = (
-            (
-                "unsloth/Z-Image-Turbo-ComfyUI",
-                "split_files/text_encoders/qwen_3_4b.safetensors",
-                "llm",
-            ),
-        ),
+        # Z-Image decodes with the FLUX.1 autoencoder: BFL's ae.safetensors, byte-identical to the repack's file.
+        sd_cpp_vae = ("black-forest-labs/FLUX.1-schnell", "ae.safetensors"),
+        # Z-Image's encoder differs from stock Qwen3-4B only in the LAST layer's MLP, which neither diffusers
+        # (hidden_states[-2]) nor sd.cpp (out_layers {35}) reads, so the conditioning is the same. Same Q8_0 file
+        # klein 4B reads, so one download serves both.
+        sd_cpp_text_encoders = (("unsloth/Qwen3-4B-GGUF", "Qwen3-4B-Q8_0.gguf", "llm"),),
     ),
     DiffusionFamily(
         name = "krea-2",
@@ -1241,19 +1245,21 @@ _UNGATED_MIRROR_PAIRS: tuple[tuple[str, str], ...] = (
     ("Qwen/Qwen-Image", "unsloth/Qwen-Image"),
     ("Qwen/Qwen-Image-Edit-2511", "unsloth/Qwen-Image-Edit-2511"),
     # Variant bases reached only through a GGUF's base_model card tag (Edit, Edit-2509, Z-Image) or a named variant
-    # (2.1 Turbo, also a direct bf16 pick), plus Layered, whose sd-cli VAE is read straight from its base. Without a
-    # row each one fetches its companions from the vendor.
-    ("Qwen/Qwen-Image-2.1-Turbo", "unsloth/Qwen-Image-2.1-Turbo"),
-    ("Qwen/Qwen-Image-Edit", "unsloth/Qwen-Image-Edit"),
-    ("Qwen/Qwen-Image-Edit-2509", "unsloth/Qwen-Image-Edit-2509"),
-    ("Qwen/Qwen-Image-Layered", "unsloth/Qwen-Image-Layered"),
+    # (2.1 Turbo, also a direct bf16 pick), plus Layered, whose sd-cli VAE is read straight from its base. No separate
+    # mirror repo: the official diffusers folders (model_index.json, transformer/, text_encoder/, tokenizer/,
+    # processor/, scheduler/, vae/) sit byte-identical at their upstream paths inside the model's EXISTING unsloth
+    # repo, its -FP8 repo where one exists, else its -GGUF repo, beside the quantised files that repo already ships.
+    ("Qwen/Qwen-Image-2.1-Turbo", "unsloth/Qwen-Image-2.1-Turbo-FP8"),
+    ("Qwen/Qwen-Image-Edit", "unsloth/Qwen-Image-Edit-GGUF"),
+    ("Qwen/Qwen-Image-Edit-2509", "unsloth/Qwen-Image-Edit-2509-GGUF"),
+    ("Qwen/Qwen-Image-Layered", "unsloth/Qwen-Image-Layered-GGUF"),
     ("black-forest-labs/FLUX.2-klein-4B", "unsloth/FLUX.2-klein-4B"),
     # Lookup is by exact id, so every VARIANT a pick can resolve to needs its own row: the base-4B is what
     # `unsloth/FLUX.2-klein-base-4B-GGUF` resolves to from its card tag, and Dev / Fast are offered directly as bf16
     # pipeline picks. Without these three the table silently misses them.
     ("black-forest-labs/FLUX.2-klein-base-4B", "unsloth/FLUX.2-klein-base-4B"),
     ("Tongyi-MAI/Z-Image-Turbo", "unsloth/Z-Image-Turbo"),
-    ("Tongyi-MAI/Z-Image", "unsloth/Z-Image"),
+    ("Tongyi-MAI/Z-Image", "unsloth/Z-Image-GGUF"),
     ("Alpha-VLLM/Lumina-Image-2.0", "unsloth/Lumina-Image-2.0"),
     ("HiDream-ai/HiDream-I1-Full", "unsloth/HiDream-I1-Full"),
     ("HiDream-ai/HiDream-I1-Dev", "unsloth/HiDream-I1-Dev"),
@@ -1262,6 +1268,13 @@ _UNGATED_MIRROR_PAIRS: tuple[tuple[str, str], ...] = (
     ("stabilityai/sdxl-turbo", "unsloth/sdxl-turbo"),
 )
 _MIRROR_PAIRS: tuple[tuple[str, str], ...] = _GATED_MIRROR_PAIRS + _UNGATED_MIRROR_PAIRS
+# Mirror targets that are ALSO a model's own artifact repo (its GGUF / prequant checkpoints sit at the root beside the
+# official diffusers folders). A user picks these ids directly, so they are never "just a copy of the upstream": no
+# opt-out may rewrite them to the upstream (which has no such checkpoint), a cached one is its own checkpoint rather
+# than a stand-in for the base, and only the folder part of the snapshot is the pipeline.
+_ARTIFACT_MIRRORS: frozenset[str] = frozenset(
+    m.lower() for _u, m in _MIRROR_PAIRS if m.lower().endswith(("-gguf", "-fp8"))
+)
 _GATED_MIRRORS: dict[str, str] = {u.lower(): m for u, m in _MIRROR_PAIRS}
 _MIRROR_UPSTREAM: dict[str, str] = {m.lower(): u for u, m in _MIRROR_PAIRS}
 _GATED_UPSTREAMS: frozenset[str] = frozenset(u.lower() for u, _m in _GATED_MIRROR_PAIRS)
@@ -1270,6 +1283,11 @@ _GATED_UPSTREAMS: frozenset[str] = frozenset(u.lower() for u, _m in _GATED_MIRRO
 def mirror_repo(repo_id: Optional[str]) -> Optional[str]:
     """The unsloth mirror of ``repo_id``, or None when it is not a mirrored vendor base."""
     return _GATED_MIRRORS.get((repo_id or "").strip().lower())
+
+
+def mirror_hosts_artifacts(repo_id: Optional[str]) -> bool:
+    """True when ``repo_id`` is a mirror target that also ships the model's own GGUF / prequant checkpoints."""
+    return (repo_id or "").strip().lower() in _ARTIFACT_MIRRORS
 
 
 def upstream_is_gated(repo_id: Optional[str]) -> bool:
@@ -1439,12 +1457,8 @@ def cache_holds_files(repo_id: str, files: Sequence[str]) -> bool:
 # keyed by repo id, so re-pointing the table alone would re-download up to tens of GB on upgrade and fail outright
 # offline.
 _SD_CPP_LEGACY_SOURCES: dict[str, str] = {
-    "unsloth/flux-text-encoders": "comfyanonymous/flux_text_encoders",
-    "unsloth/qwen-image-comfyui": "Comfy-Org/Qwen-Image_ComfyUI",
-    "unsloth/flux.2-vae": "Comfy-Org/flux2-dev",
-    "unsloth/flux.2-dev-comfyui": "Comfy-Org/flux2-dev",
-    "unsloth/z-image-turbo-comfyui": "Comfy-Org/z_image_turbo",
-    "unsloth/flux.2-klein-9b-comfyui": "Comfy-Org/vae-text-encorder-for-flux-klein-9b",
+    # No image entry: every image sd-cli asset is now an official upstream file or an unsloth GGUF, so no image load
+    # reads a Comfy-made repack, not even one already in the cache.
     "unsloth/wan2.2-ti2v-5b-gguf": "QuantStack/Wan2.2-TI2V-5B-GGUF",
     # MiniMax-H3, where only PART of the mirror came from the repack: the two VAEs now sit beside the denoisers in the
     # GGUF repo, and the int8 ConvRot conditioner beside the other prequantized checkpoints. That is why every caller
@@ -1518,7 +1532,10 @@ def prefer_ungated_mirror(
     """
     del hf_token  # noqa: F841 -- signature stability only
     if os.environ.get("UNSLOTH_DIFFUSION_NO_MIRROR", "").strip():
-        return base if _is_local_path(base) else canonical_base(base)
+        # An artifact repo stays itself: its GGUF / FP8 checkpoint does not exist under the upstream id.
+        if _is_local_path(base) or mirror_hosts_artifacts(base):
+            return base
+        return canonical_base(base)
     mirror = mirror_repo(base)
     if not mirror:
         return base
@@ -2363,14 +2380,8 @@ def family_sd_cpp_supported(fam: DiffusionFamily) -> bool:
 
 
 # FLUX.2-klein 9B pairs with Qwen3-8B, the 4B with the family-default Qwen3-4B (a mismatched encoder fails deep in
-# sd-cli), so pick per variant. Byte-identical mirror of Comfy-Org/vae-text-encorder-for-flux-klein-9b.
-_FLUX2_KLEIN_9B_SD_CPP_TEXT_ENCODERS = (
-    (
-        "unsloth/FLUX.2-klein-9B-ComfyUI",
-        "split_files/text_encoders/qwen_3_8b.safetensors",
-        "llm",
-    ),
-)
+# sd-cli), so pick per variant. Klein 9B's text encoder is byte-identical to unsloth/Qwen3-8B.
+_FLUX2_KLEIN_9B_SD_CPP_TEXT_ENCODERS = (("unsloth/Qwen3-8B-GGUF", "Qwen3-8B-Q4_K_M.gguf", "llm"),)
 
 
 def sd_cpp_companion_only_repo_ids() -> frozenset[str]:
