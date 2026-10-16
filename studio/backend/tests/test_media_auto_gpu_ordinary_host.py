@@ -272,7 +272,9 @@ def test_fastest_first_mask_corrects_mig_on_the_physical_row(monkeypatch):
 
     torch_calls, _reads = _fastest_first_host(monkeypatch, [1, 0])
     monkeypatch.setattr(nvidia, "get_mig_gpu_indices", lambda: {1})
-    monkeypatch.setattr(LlamaCppBackend, "_get_gpu_memory_nvml", staticmethod(lambda: [(1, 4096, 5120)]))
+    monkeypatch.setattr(
+        LlamaCppBackend, "_get_gpu_memory_nvml", staticmethod(lambda: [(1, 4096, 5120)])
+    )
     with patch.dict(os.environ, _FASTEST, clear = True):
         rows = hw._smi_rows_for_cuda_ordinals([0, 1])
         ids, _meta = hw.auto_select_gpu_ids("m", required_override_gb = 8.0)
@@ -292,7 +294,9 @@ def test_torch_fallback_rows_skip_the_physical_mig_correction(monkeypatch):
 
     torch_calls, _reads = _fastest_first_host(monkeypatch, None)
     monkeypatch.setattr(nvidia, "get_mig_gpu_indices", lambda: {0})
-    monkeypatch.setattr(LlamaCppBackend, "_get_gpu_memory_nvml", staticmethod(lambda: [(0, 1024, 5120)]))
+    monkeypatch.setattr(
+        LlamaCppBackend, "_get_gpu_memory_nvml", staticmethod(lambda: [(0, 1024, 5120)])
+    )
     assert _auto(_FASTEST) == [0]  # torch: mask id 0 has 70 GB free
     assert torch_calls == [[0, 1]]
 

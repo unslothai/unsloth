@@ -6202,7 +6202,7 @@ def auto_select_gpu_ids(
                     "vram_used_gb": td["used_gb"],
                 }
                 for td in _torch_get_per_device_info(get_parent_visible_gpu_ids())
-            ]
+            ],
         }
     else:
         utilization = get_visible_gpu_utilization()
