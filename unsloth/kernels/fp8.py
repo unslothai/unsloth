@@ -584,8 +584,7 @@ def can_use_fp8_rowwise_gemv(X, weight, weight_scale):
         return False
     if not _fp8_gemv_miscompiles(weight.device):
         return True
-    # Triton 3.3 on Blackwell is exact at BLOCK_N 1 (N <= 4096). Measured on RTX PRO 6000 it beats
-    # dequant + matmul when N >= 256 or K <= 4096; fewer rows over a longer K leave most SMs idle.
+    # Triton 3.3 is exact at BLOCK_N 1 (N <= 4096); beats dequant + matmul when N >= 256 or K <= 4096 (RTX PRO 6000).
     N, K = weight.shape
     return N <= 4096 and (N >= 256 or K <= 4096) and _triton_builds_blackwell()
 

@@ -105,7 +105,6 @@ def test_gate_traces_without_graph_break(F, monkeypatch, version):
         ((10, 0), "3.3.1", 255, 4097, False),
         ((12, 0), "3.3.1", 2, 65536, False),
         ((10, 0), "3.3.1", 4097, 1024, False),
-        # Triton 3.2 cannot build Blackwell; 3.4 is exact everywhere; Hopper is never gated.
         ((10, 0), "3.2.0", 256, 4096, False),
         ((10, 0), "3.4.0", 4097, 8192, True),
         ((10, 0), "3.4.0", 2, 65536, True),
@@ -133,7 +132,6 @@ def test_gate_boundary(F, monkeypatch, capability, version, N, K, expected):
 @pytest.mark.skipif(not has_real_cuda(), reason = "needs a GPU")
 @pytest.mark.parametrize("N, K", [(1024, 512), (2, 65536)])
 def test_gemv_route_compiles_fullgraph(F, N, K):
-    # The decode route as fast_linear_forward runs it, on this device's real capability and Triton.
     if F._fp8_kernel_unsupported(torch.empty(1, device = "cuda", dtype = torch.float8_e4m3fn)):
         pytest.skip("no fp8e4nv Triton kernel on this device")
     X = torch.randn(1, 1, K, device = "cuda", dtype = torch.bfloat16)
