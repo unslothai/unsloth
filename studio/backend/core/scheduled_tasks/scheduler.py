@@ -264,11 +264,13 @@ def save_chat(task: dict, run: dict, answer: Answer, started_at: int, finished_a
             "modelId": model,
             "createdAt": started_at,
             "updatedAt": answered_at,
+            "scheduledTaskId": task["id"],
         }
     )
     parts: list[dict] = []
+    source = {"taskId": task["id"], "runId": run["id"]}
     metadata: dict = {
-        "scheduledTask": {"taskId": task["id"], "runId": run["id"]},
+        "scheduledTask": source,
         # The shape a server-produced local reply carries, so the chat shows which model answered.
         "responseDetails": {
             "modelId": model,
@@ -299,6 +301,7 @@ def save_chat(task: dict, run: dict, answer: Answer, started_at: int, finished_a
                     "parentId": None,
                     "role": "user",
                     "content": [{"type": "text", "text": task["prompt"]}],
+                    "metadata": {"scheduledTask": source},
                     "createdAt": started_at,
                 },
                 {

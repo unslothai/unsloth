@@ -14,6 +14,9 @@ export const Route = createRoute({
   getParentRoute: () => rootRoute,
   path: "/tasks",
   staticData: { titleKey: "shell.navigation.tasks" },
+  // ?edit=<task id> opens that task's dialog, e.g. from "Sent by scheduled task" in its chat.
+  validateSearch: (search: Record<string, unknown>): { edit?: string } =>
+    typeof search.edit === "string" && search.edit !== "" ? { edit: search.edit } : {},
   beforeLoad: () => requireAuth(),
   component: TasksPage,
 });

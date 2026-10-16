@@ -4161,6 +4161,11 @@ export const en = {
     search: "Search scheduled tasks",
     // Read out for the dot on a task whose latest run the user has not opened yet.
     newResult: "New result",
+    // Above a prompt a task sent; opens that task for editing.
+    sentBy: "Sent by scheduled task",
+    // Read out for the clock on a Recents row a task's run made.
+    chatMark: "Chat from a scheduled task",
+    taskMissing: "This task no longer exists.",
     emptyTitle: "No scheduled tasks yet",
     emptyDescription: "Get a daily summary, a weekly reminder, or anything else you want done on a schedule.",
     createFirst: "Create a task",

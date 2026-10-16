@@ -417,6 +417,7 @@ import {
   UndoIcon,
   VolumeMute02Icon,
   WorkflowCircle05Icon,
+  Clock01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { RefreshGlyph } from "@/lib/refresh-icon";
@@ -9144,6 +9145,36 @@ const UserMessageAudio: FC = () => {
   );
 };
 
+function scheduledTaskIdOf(custom: unknown): string | null {
+  const source = (custom as { scheduledTask?: { taskId?: unknown } } | undefined)?.scheduledTask;
+  return typeof source?.taskId === "string" ? source.taskId : null;
+}
+
+/** "Sent by scheduled task" over a prompt a task's run sent, opening that task to edit. The
+ *  reply carries the same mark, so a prompt whose own was lost on a rewrite still finds it. */
+const ScheduledTaskSource: FC = () => {
+  const t = useT();
+  const navigate = useNavigate();
+  const taskId = useAuiState(({ thread, message }) => {
+    const own = scheduledTaskIdOf(message.metadata?.custom);
+    if (own) return own;
+    const index = thread.messages.findIndex((entry) => entry.id === message.id);
+    const reply = index >= 0 ? thread.messages[index + 1] : undefined;
+    return reply?.role === "assistant" ? scheduledTaskIdOf(reply.metadata?.custom) : null;
+  });
+  if (!taskId) return null;
+  return (
+    <button
+      type="button"
+      onClick={() => void navigate({ to: "/tasks", search: { edit: taskId } })}
+      className="inline-flex cursor-pointer items-center gap-1.5 rounded-md text-ui-13 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+    >
+      <HugeiconsIcon icon={Clock01Icon} strokeWidth={1.75} className="size-3.5" />
+      {t("scheduledTasks.sentBy")}
+    </button>
+  );
+};
+
 const UserMessage: FC = () => {
   const focusReveal = useActionBarFocusReveal();
   // Attachments alone (annotations, images) get no empty bubble under them.
@@ -9157,6 +9188,7 @@ const UserMessage: FC = () => {
       tabIndex={0}
       {...focusReveal}
     >
+      <ScheduledTaskSource />
       <UserMessageAttachments />
       <UserMessageAudio />
 

@@ -11,7 +11,7 @@ import {
   Clock01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useNavigate } from "@tanstack/react-router";
+import { useNavigate, useSearch } from "@tanstack/react-router";
 import { PauseIcon, PlayIcon } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
@@ -327,6 +327,18 @@ export function TasksPage() {
   useEffect(() => {
     if (pageUnseen) clearPageUnseen();
   }, [pageUnseen, clearPageUnseen]);
+
+  // ?edit=<id>: open that task once the list has it, then drop the parameter so closing the
+  // dialog or reloading does not open it again.
+  const navigate = useNavigate();
+  const editId = useSearch({ strict: false }).edit;
+  useEffect(() => {
+    if (!editId || status !== "ready") return;
+    const target = tasks.find((task) => task.id === editId);
+    if (target) setEditing(target);
+    else toast.info(t("scheduledTasks.taskMissing"));
+    void navigate({ to: "/tasks", search: {}, replace: true });
+  }, [editId, status, tasks, navigate, t]);
 
   function toggleStatus(status: TaskStatus, on: boolean) {
     const next = STATUSES.filter((candidate) => (candidate === status ? on : shown.includes(candidate)));

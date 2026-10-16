@@ -43,6 +43,7 @@ function toSidebarItem(row: SidebarRowRecord): SidebarItem | null {
     ...(row.modifiedAt ? { modifiedAt: row.modifiedAt } : {}),
     ...(row.modelIds?.length ? { modelIds: row.modelIds } : {}),
     ...(row.type === "single" ? { isFork: Boolean(row.isFork) } : {}),
+    ...(row.isScheduled ? { isScheduled: true } : {}),
     projectId: row.projectId ?? null,
   };
 }

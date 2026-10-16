@@ -5389,6 +5389,8 @@ export function AppSidebar() {
     );
     const hasUnreadActivity =
       !isGenerating && !hasQueuedActivity && alreadyUnread;
+    // A scheduled task's chat carries a clock in the same slot, once there is no news to show.
+    const showScheduledMark = Boolean(item.isScheduled) && !showWorkSpinner && !hasUnreadActivity;
     const itemClass = cn(
       variant === "project"
         ? "group/project-chat-item relative"
@@ -5407,7 +5409,7 @@ export function AppSidebar() {
       isPinned && variant !== "project" && "gap-[calc(8.5px*var(--ui-space-scale,1))]",
       // A spinner glyph cannot truncate, and the pin and the kebab overlay that same edge, so a
       // working row holds their room open whether or not it is hovered.
-      showWorkSpinner ? "pr-16" : hasUnreadActivity ? "pr-7" : undefined,
+      showWorkSpinner ? "pr-16" : hasUnreadActivity || showScheduledMark ? "pr-7" : undefined,
       // Coarse pointers reveal the actions permanently, so the spinner drops back beside
       // them (right-16, ending 78px in) and the title has to clear that, not just pr-16.
       showWorkSpinner && "[@media(pointer:coarse)]:pr-[calc(78px*var(--ui-space-scale,1))]",
@@ -5527,6 +5529,20 @@ export function AppSidebar() {
               >
                 {/* Accent, not a warning colour: a finished reply is news, not a fault. */}
                 <span className="size-2 rounded-full bg-primary" />
+              </span>
+            ) : null}
+            {showScheduledMark ? (
+              <span
+                role="img"
+                aria-label={translate("scheduledTasks.chatMark")}
+                className={cn(
+                  "pointer-events-none absolute right-2 top-1/2 z-10 flex size-4 -translate-y-1/2 items-center justify-center text-muted-foreground transition-opacity",
+                  variant === "project"
+                    ? "group-hover/project-chat-item:opacity-0 group-has-[.sidebar-row-action[data-state=open]]/project-chat-item:opacity-0"
+                    : "group-hover/recent-item:opacity-0 group-has-[.sidebar-row-action[data-state=open]]/recent-item:opacity-0",
+                )}
+              >
+                <HugeiconsIcon icon={Clock01Icon} strokeWidth={1.75} className="size-3.5" />
               </span>
             ) : null}
             {variant === "project" && (

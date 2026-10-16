@@ -513,6 +513,23 @@ def test_a_run_saves_the_exchange_as_a_new_chat(monkeypatch):
     assert isinstance(duration, int) and assistant["metadata"]["reasoningDurations"] == [duration]
 
 
+def test_a_run_chat_is_marked_as_the_tasks_and_keeps_the_mark(monkeypatch):
+    task, run = claim_manual_run()
+    run_scheduler(task, run, answer = Answer(content = "Hi.", reasoning = "", model = "m"), monkeypatch = monkeypatch)
+
+    thread_id = db.get_task(task["id"])["lastRun"]["threadId"]
+    thread = studio_db.get_chat_thread(thread_id)
+    assert thread["scheduledTaskId"] == task["id"]
+    user, _assistant = studio_db.list_chat_messages(thread_id)
+    assert user["metadata"]["scheduledTask"] == {"taskId": task["id"], "runId": run["id"]}
+    (row,) = [r for r in studio_db.list_chat_sidebar_rows()["rows"] if thread_id in r["threadIds"]]
+    assert row["isScheduled"] is True
+
+    # The chat page writes the whole record back without the field: the mark stays.
+    studio_db.upsert_chat_thread({**thread, "title": "Renamed", "scheduledTaskId": None})
+    assert studio_db.get_chat_thread(thread_id)["scheduledTaskId"] == task["id"]
+
+
 def test_an_answer_without_reasoning_carries_no_reasoning_time(monkeypatch):
     task, run = claim_manual_run()
     answer = Answer(content = "Dawn light on the sill.", reasoning = "", model = "gemma-3")

@@ -90,7 +90,7 @@ test("every chat row offers the pin without opening a menu", () => {
 test("a chat row reserves one gutter, whatever its state", () => {
   assert.match(
     APP_SIDEBAR,
-    /showWorkSpinner \? "pr-16" : hasUnreadActivity \? "pr-7" : undefined,/,
+    /showWorkSpinner \? "pr-16" : hasUnreadActivity \|\| showScheduledMark \? "pr-7" : undefined,/,
   );
   assert.ok(
     !APP_SIDEBAR.includes("hasSecondaryRowAction"),
