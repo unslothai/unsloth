@@ -60,14 +60,17 @@ FACTS_JS = """
   const api = window.__heavyThread;
   const target = api.actionButton("Copy");
   if (!window.__dismissProbeTarget) {
-    window.__dismissProbeTarget = { clicks: 0 };
+    window.__dismissProbeTarget = { clicks: 0, button: null };
+    // Keep the actual button from the pre-click hit test. React may re-render the
+    // action bar during onClick before the event reaches this bubble-phase listener.
     window.addEventListener("click", (event) => {
-      const copy = window.__heavyThread.actionButton("Copy");
-      if (copy && event.target instanceof Node && copy.contains(event.target)) {
+      const button = window.__dismissProbeTarget.button;
+      if (button && event.composedPath().includes(button)) {
         window.__dismissProbeTarget.clicks += 1;
       }
     });
   }
+  window.__dismissProbeTarget.button = target;
   const r = target ? target.getBoundingClientRect() : null;
   const x = r ? r.x + r.width / 2 : 0;
   const y = r ? r.y + r.height / 2 : 0;
@@ -251,7 +254,11 @@ async def one_case(
     control = await page.evaluate(FACTS_JS)
     if not control["targetRect"]:
         return {"case": case, "error": "no Copy button"}
-    await page.mouse.click(control["targetRect"]["x"], control["targetRect"]["y"])
+    # Click the live, actionable element rather than stale coordinates from an earlier
+    # layout snapshot. Still a real browser pointer click, not a dispatched DOM event.
+    await page.locator('[data-role="assistant"]').last.get_by_role(
+        "button", name = "Copy", exact = True
+    ).click(timeout = 5000)
     await until(page, f"n => ({FACTS_JS})().targetClicks > n", 2000, arg = control["targetClicks"])
     counted = (await page.evaluate(FACTS_JS))["targetClicks"] - control["targetClicks"]
     if counted != 1:
