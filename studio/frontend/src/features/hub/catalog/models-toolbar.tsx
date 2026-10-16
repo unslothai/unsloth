@@ -53,6 +53,8 @@ const SORT_OPTIONS: ReadonlyArray<{
   value: HfSortKey;
   label: string;
 }> = [
+  // New and trending together; Newest is creation date alone.
+  { value: "fresh", label: "Latest" },
   { value: "createdAt", label: "Newest" },
   { value: "trendingScore", label: "Trending" },
   { value: "downloads", label: "Most downloads" },
@@ -239,7 +241,9 @@ export const ModelsToolbar = memo(function ModelsToolbar({
   const sortOptions = useMemo<HubOption<HfSortKey>[]>(
     () =>
       SORT_OPTIONS.filter(
-        (option) => hubSource !== "modelscope" || option.value !== "createdAt",
+        (option) =>
+          hubSource !== "modelscope" ||
+          (option.value !== "createdAt" && option.value !== "fresh"),
       ).map((option) => ({
         value: option.value,
         label: option.label,

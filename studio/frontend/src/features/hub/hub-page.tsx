@@ -893,9 +893,10 @@ export function ModelsPage() {
 
   const requestedSort: HfSortKey =
     isFeedMode && liveListChannel ? liveListChannel.sort : sortBy;
-  // ModelScope has no creation-date sort; its closest is last modified.
+  // ModelScope has neither a creation-date sort nor trending; its closest is last modified.
   const effectiveSort: HfSortKey =
-    hubSource === "modelscope" && requestedSort === "createdAt"
+    hubSource === "modelscope" &&
+    (requestedSort === "createdAt" || requestedSort === "fresh")
       ? "lastModified"
       : requestedSort;
   const effectiveDirection: HfSortDirection = isFeedMode ? "desc" : direction;

@@ -21,6 +21,7 @@ import { EMBEDDING_TAGS, estimateSizeFromDtypes } from "../lib/hf-model-meta";
 import { mergeTaskIterators } from "../lib/merge-task-iterators";
 import { detectBaseModel } from "../lib/model-capabilities";
 import { isGgufLike } from "../lib/model-identifiers";
+import { type FreshRankable, rankFresh } from "../lib/fresh-ranking";
 import { fetchWithTimeout } from "../lib/network";
 import {
   type UnslothSupport,
@@ -46,6 +47,7 @@ const ALL_FIELDS = [
   "createdAt",
   "downloadsAllTime",
   "gguf",
+  "trendingScore",
 ] as unknown as (
   | "safetensors"
   | "tags"
@@ -59,6 +61,8 @@ export { classifyUnslothSupport };
 export type { UnslothSupport, UnslothSupportStatus };
 
 export type HfSortKey =
+  // Not a Hub sort: trending weighed against age, ranked here (lib/fresh-ranking.ts).
+  | "fresh"
   | "trendingScore"
   | "downloads"
   | "likes"
@@ -66,6 +70,11 @@ export type HfSortKey =
   | "createdAt";
 
 export type HfSortDirection = "desc" | "asc";
+
+/** The Hub's own sort for a listing; fresh is ranked from a newest-first one. */
+export function hubListingSort(sortBy: HfSortKey): Exclude<HfSortKey, "fresh"> {
+  return sortBy === "fresh" ? "createdAt" : sortBy;
+}
 export type HfTaskFilter = PipelineType | readonly PipelineType[] | undefined;
 
 function normalizeTaskFilter(task: HfTaskFilter): readonly PipelineType[] {
@@ -153,7 +162,7 @@ function makeSortFetch(
       url.searchParams.set("num_parameters", parameterFilter);
 
     if (sortBy && !url.searchParams.has("sort")) {
-      url.searchParams.set("sort", sortBy);
+      url.searchParams.set("sort", hubListingSort(sortBy));
     }
     const effectiveSort = (url.searchParams.get("sort") ?? sortBy) as
       | HfSortKey
@@ -465,6 +474,42 @@ export interface HfModelSearchChannel {
   idSuffix?: string;
 }
 
+/** Candidates per listing for the fresh ranking: the newest and the most trending. */
+const FRESH_POOL = 100;
+
+/** Ranks the newest and the most trending uploads together, then carries on through the rest by date. */
+async function* freshChannelIterator(
+  channel: HfModelSearchChannel,
+  opts: Omit<Parameters<typeof createChannelIterator>[1], "sortBy">,
+): AsyncGenerator<unknown> {
+  const listing = (sortBy: HfSortKey) =>
+    createChannelIterator(channel, { ...opts, sortBy, sortDirection: "desc" });
+  const newest = listing("createdAt");
+  // Read by hand: breaking out of a for-await would close the listing the tail continues.
+  const take = async (iter: AsyncGenerator<unknown>) => {
+    const items: unknown[] = [];
+    while (items.length < FRESH_POOL) {
+      const next = await iter.next();
+      if (next.done) break;
+      items.push(next.value);
+    }
+    return items;
+  };
+  const trending = listing("trendingScore");
+  const [byDate, byTrend] = await Promise.all([take(newest), take(trending)]);
+  void trending.return(undefined);
+  const pool = new Map<string, FreshRankable>();
+  for (const model of [...byDate, ...byTrend]) {
+    const name = (model as { name?: string }).name;
+    if (name && !pool.has(name)) pool.set(name, model as FreshRankable);
+  }
+  yield* rankFresh([...pool.values()], Date.now());
+  for await (const model of newest) {
+    const name = (model as { name?: string }).name;
+    if (!name || !pool.has(name)) yield model;
+  }
+}
+
 function createChannelIterator(
   channel: HfModelSearchChannel,
   opts: {
@@ -476,6 +521,9 @@ function createChannelIterator(
     parameterFilter?: string;
   },
 ): AsyncGenerator<unknown> {
+  if (opts.sortBy === "fresh") {
+    return freshChannelIterator(channel, opts);
+  }
   const channelTags =
     channel.tags && channel.tags.length ? [...channel.tags] : undefined;
   const queryString = opts.query || channel.query || undefined;
@@ -493,7 +541,7 @@ function createChannelIterator(
       opts.signal,
       opts.parameterFilter,
     ),
-    sort: opts.sortBy,
+    sort: hubListingSort(opts.sortBy),
     ...(opts.accessToken
       ? { credentials: { accessToken: opts.accessToken } }
       : {}),
@@ -537,7 +585,7 @@ async function* channelUnslothFirstIterator(
       opts.signal,
       opts.parameterFilter,
     ),
-    sort: opts.sortBy,
+    sort: hubListingSort(opts.sortBy),
     ...creds,
   }) as AsyncGenerator<unknown>;
   let count = 0;
@@ -569,7 +617,7 @@ async function* channelUnslothFirstIterator(
       opts.signal,
       opts.parameterFilter,
     ),
-    sort: opts.sortBy,
+    sort: hubListingSort(opts.sortBy),
     ...creds,
   }) as AsyncGenerator<unknown>;
   for await (const model of generalIter) {
@@ -800,7 +848,7 @@ export function useHubModelSearch(
                 taskSignal,
                 filterRange,
               ),
-              sort: sortBy,
+              sort: hubListingSort(sortBy),
               ...(accessToken ? { credentials: { accessToken } } : {}),
             }) as AsyncGenerator<unknown>,
           signal,
@@ -813,7 +861,7 @@ export function useHubModelSearch(
           search: { query: searchQuery, owner: "unsloth" },
           additionalFields: ALL_FIELDS,
           fetch: makeSortFetch(sortBy, sortDirection, signal, filterRange),
-          sort: sortBy,
+          sort: hubListingSort(sortBy),
           ...(accessToken ? { credentials: { accessToken } } : {}),
         }) as AsyncGenerator<unknown>;
       }
