@@ -294,7 +294,17 @@ def test_load_progress_through_an_artifact_mirror_counts_only_the_pipeline_part(
         "vae/diffusion_pytorch_model.safetensors": 300,
         "text_encoder/model.safetensors": 600,
     }
-    _snapshot(tmp_path, _FP8_REPO, {**pipeline, "qwen-image-2.1-turbo-fp8.safetensors": 50_000})
+    # Sample renders and the root checkpoint are cached too; neither is a pipeline file the plan counted.
+    _snapshot(
+        tmp_path,
+        _FP8_REPO,
+        {
+            **pipeline,
+            "qwen-image-2.1-turbo-fp8.safetensors": 50_000,
+            "samples/fp8_1.png": 20_000,
+            "assets/preview.png": 20_000,
+        },
+    )
     blobs = tmp_path / f"models--{_FP8_REPO.replace('/', '--')}" / "blobs"
     blobs.mkdir(parents = True, exist_ok = True)
     (blobs / "abc.incomplete").write_bytes(b"\0" * 1_000)
@@ -339,3 +349,13 @@ def test_on_device_keeps_a_gguf_cached_in_an_older_revision_than_the_folders(tmp
     assert [r.model_format for r in rows] == ["gguf"]
     assert rows[0].size_bytes > 5_000 + sum(v for k, v in _DENOISER.items())
     assert not rows[0].partial
+
+
+@pytest.mark.parametrize("repo", sorted(df._ARTIFACT_MIRRORS))
+def test_every_artifact_mirror_is_refused_as_a_pipeline_pick(repo):
+    """Its folders are its base's pipeline, reached by picking the base. An explicit pipeline pick of the repo id
+    itself is refused, naming that base, for the -GGUF mirrors as for the FP8 one."""
+    assert repo in df.prequant_only_repo_ids()
+    with pytest.raises(ValueError, match = "pre-quantised") as excinfo:
+        DiffusionBackend().validate_load_request(repo, model_kind = "pipeline")
+    assert df.canonical_base(repo).lower() in str(excinfo.value).lower()

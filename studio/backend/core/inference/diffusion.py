@@ -3648,6 +3648,9 @@ class DiffusionBackend:
             and not _is_local_path(repo_id)
         ):
             bases, schemes, te_schemes = prequant_repo_role(fam, repo_id)
+            if not bases and mirror_hosts_artifacts(repo_id):
+                # An artifact mirror: its folders are its base's pipeline, so name that base, not the family default.
+                bases = (canonical_base(repo_id),)
             shown = " or ".join(bases) or fam.base_repo
             knobs = []
             if schemes:
@@ -5835,6 +5838,9 @@ class DiffusionBackend:
                     if pipeline_only:
                         rel = f.relative_to(snapshot).as_posix()
                         if "/" not in rel and rel != "model_index.json":
+                            continue
+                        # The same predicate the plan's listing drops these with, so the two cannot drift.
+                        if _listing_extra(repo_id, rel):
                             continue
                     # Dedupe on the path INSIDE the snapshot, so one logical file counts once however many roots hold
                     # it. The etag would not: each root serves its own revision, so a republished file summed both

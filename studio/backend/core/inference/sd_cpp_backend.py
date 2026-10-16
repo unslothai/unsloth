@@ -3884,12 +3884,15 @@ class SdCppDiffusionBackend:
         try:
             from huggingface_hub import HfApi
             api = HfApi(token = hf_token)
+            # Sized where _fetch_assets pulls from: a gated vendor id answers an anonymous user with nothing, which
+            # left CLIP / T5 at 0 bytes and the bar finalizing while they downloaded.
+            fetch_repo = _fetch_repo_map(assets, hf_token)
             for repo, fn, kind in assets:
                 # Only the transformer can be a local path; others are always HF ids.
                 if kind == "diffusion_model" and Path(repo).expanduser().exists():
                     continue
                 try:
-                    info = api.get_paths_info(repo, paths = [fn], expand = False)
+                    info = api.get_paths_info(fetch_repo.get(repo, repo), paths = [fn], expand = False)
                     for it in info:
                         total += int(getattr(it, "size", 0) or 0)
                 except Exception:  # noqa: BLE001 -- one missing size is non-fatal

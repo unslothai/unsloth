@@ -2490,7 +2490,11 @@ def prequant_only_repo_ids() -> frozenset[str]:
             bases.add(fam.deploy_base_repo)
     bases.update(rid for pair in _MIRROR_PAIRS for rid in pair if not mirror_hosts_artifacts(rid))
     lowered = {b.strip().lower() for b in bases if b}
-    return frozenset(r.strip().lower() for r in hosted if r and r.strip().lower() not in lowered)
+    # Every artifact mirror too: the -GGUF ones host no prequant scheme, but their folders are the BASE's pipeline
+    # all the same, and a pipeline pick of the repo id itself is the wrong request.
+    return frozenset(
+        r.strip().lower() for r in hosted if r and r.strip().lower() not in lowered
+    ) | _ARTIFACT_MIRRORS
 
 
 def prequant_repo_role(

@@ -2953,3 +2953,31 @@ def test_the_native_fetch_keeps_an_upstream_cached_only_in_the_pre_change_root(m
     assert bk._fetch_repo_map(assets, None) == {
         "black-forest-labs/FLUX.1-schnell": "black-forest-labs/FLUX.1-schnell"
     }
+
+
+def test_the_native_progress_total_is_sized_where_the_assets_are_fetched(monkeypatch):
+    """An anonymous user gets nothing back from a gated vendor id, so sizing FLUX.1's CLIP / T5 there left them at 0
+    bytes and the bar finalizing while they downloaded. The total asks the repo _fetch_assets pulls from."""
+    from types import SimpleNamespace
+
+    from huggingface_hub import HfApi
+
+    _no_cache(monkeypatch)
+    asked = []
+
+    def get_paths_info(self, repo_id, paths, **kwargs):
+        asked.append(repo_id)
+        if not repo_id.startswith("unsloth/"):
+            raise PermissionError("gated")
+        return [SimpleNamespace(path = p, size = 1_000) for p in paths]
+
+    monkeypatch.setattr(HfApi, "get_paths_info", get_paths_info)
+    b = SdCppDiffusionBackend(engine = _FakeEngine())
+    b._loading = SimpleNamespace(expected_bytes = 0)
+    assets = [
+        ("black-forest-labs/FLUX.1-schnell", "text_encoder/model.safetensors", "clip_l"),
+        ("black-forest-labs/FLUX.1-schnell", "ae.safetensors", "vae"),
+    ]
+    b._set_expected_bytes(assets, None)
+    assert asked == ["unsloth/FLUX.1-schnell", "unsloth/FLUX.1-schnell"]
+    assert b._loading.expected_bytes == 2_000
