@@ -1066,12 +1066,16 @@ def load_comfy_quant_transformer(
     local_files_only = bool(kwargs.pop("local_files_only", False))
     if not isinstance(config_repo, str):
         raise ValueError("a ComfyUI-quantized single file needs the base repo's transformer config")
+    from .diffusion_families import pinned_revision_kwargs
+
+    kwargs.pop("revision", None)  # the pin below is keyed on config_repo itself
     config = transformer_cls.load_config(
         config_repo,
         subfolder = subfolder,
         token = token,
         cache_dir = cache_dir,
         local_files_only = local_files_only,
+        **pinned_revision_kwargs(config_repo),
     )
     expected, optional = transformer_cls._get_signature_keys(transformer_cls)
     config.update({k: v for k, v in kwargs.items() if k in expected or k in optional})

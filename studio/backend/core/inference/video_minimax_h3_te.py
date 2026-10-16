@@ -329,8 +329,11 @@ def load_h3_quantized_text_encoder(
             gguf_header_delta = True,
         )
 
+        from .diffusion_families import pinned_revision_kwargs
+
         config = transformers.AutoConfig.from_pretrained(
             local_base or base,
+            **pinned_revision_kwargs(local_base or base),
             subfolder = "text_encoder",
             token = hf_token,
             cache_dir = cache_dir,

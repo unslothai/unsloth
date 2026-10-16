@@ -2693,12 +2693,15 @@ def _load_transformer_config(
     last: Optional[BaseException] = None
     for root in _config_cache_roots(checkpoint_path, cache_dir):
         try:
+            from .diffusion_families import pinned_revision_kwargs
+
             return transformer_cls.load_config(
                 base,
                 subfolder = subfolder,
                 token = hf_token,
                 cache_dir = root,
                 local_files_only = local_files_only,
+                **pinned_revision_kwargs(base),
             )
         except Exception as exc:  # noqa: BLE001 - try the other root before giving up
             last = exc

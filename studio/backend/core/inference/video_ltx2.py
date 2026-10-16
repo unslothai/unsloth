@@ -1010,7 +1010,15 @@ class _LTX23PrequantConfig:
     def load_config(self, _base: str, **kwargs: Any) -> dict[str, Any]:
         from diffusers import LTX2VideoTransformer3DModel
 
-        config = dict(LTX2VideoTransformer3DModel.load_config(self.config_repo, **kwargs))
+        from .diffusion_families import pinned_revision_kwargs
+
+        # Pinned on the repo actually read, which need not be the caller's ``_base``.
+        kwargs.pop("revision", None)
+        config = dict(
+            LTX2VideoTransformer3DModel.load_config(
+                self.config_repo, **kwargs, **pinned_revision_kwargs(self.config_repo)
+            )
+        )
         config.update(LTX_2_3_TRANSFORMER_CONFIG_OVERRIDES)
         return config
 

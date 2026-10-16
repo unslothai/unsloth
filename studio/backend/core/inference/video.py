@@ -1438,6 +1438,11 @@ def _keep_fetched_checkpoint(
     return out
 
 
+def _plan_total(plan: dict[str, "_PlannedFetch"]) -> Optional[int]:
+    """The bytes a plan sums to (what ``expected_bytes`` reports), None for an empty one."""
+    return sum(size for entry in plan.values() for _name, _key, size in entry.files) or None
+
+
 def _plan_fetch(
     logical: str,
     listing: str,
@@ -1453,11 +1458,7 @@ def _plan_fetch(
     repo = _video_fetch_repo(logical, hf_token, files = wanted, checkpoint = checkpoint) or logical
     meta = {s.rfilename: s for s in (getattr(info, "siblings", None) or [])}
     files = tuple(
-        (
-            name,
-            _sibling_etag(meta[name]) if name in meta else None,
-            int(getattr(meta.get(name), "size", 0) or 0),
-        )
+        (name, _sibling_etag(meta[name]) if name in meta else None, int(getattr(meta.get(name), "size", 0) or 0))
         for name in wanted
     )
     revision = getattr(info, "sha", None) if repo.lower() == (listing or "").lower() else None
@@ -3949,9 +3950,7 @@ class VideoBackend:
                         checkpoint = True,
                     )
                 )
-                checkpoint_revision = (
-                    checkpoint_plan.revision if checkpoint_plan is not None else None
-                )
+                checkpoint_revision = checkpoint_plan.revision if checkpoint_plan is not None else None
                 checkpoint_local = Path(
                     hf_hub_download_with_xet_fallback(
                         checkpoint_repo,
@@ -4020,6 +4019,8 @@ class VideoBackend:
                         planned_files = (replanned := {}),
                     )
                     planned_files = _keep_fetched_checkpoint(replanned, planned_files)
+                    # The total follows the plan actually kept: the retained checkpoint entry, not a re-listed one.
+                    expected = _plan_total(planned_files) if expected else expected
                     with self._lock:
                         if self._load_token == token and self._loading is not None:
                             self._loading.expected_bytes = expected
@@ -4109,6 +4110,8 @@ class VideoBackend:
                     skip_te_override = actual_te_skip,
                 )
                 planned_files = _keep_fetched_checkpoint(replanned, planned_files)
+                # The total follows the plan actually kept: the retained checkpoint entry, not a re-listed newer one.
+                expected = _plan_total(planned_files) if expected else expected
                 with self._lock:
                     if self._load_token == token and self._loading is not None:
                         self._loading.expected_bytes = expected
@@ -4147,7 +4150,13 @@ class VideoBackend:
             kwargs["_base_fetch_revision"] = base_fetch_choice.get("revision")
             from .safetensors_pread import pread_safetensors
 
-            with pread_safetensors():
+            from .diffusion_families import pinned_repo_revision
+
+            # Every hub-id config read of the base during assembly (encoder / VAE / transformer configs, the LTX-2.5
+            # companions and encoder worker) reads the commit the plan pinned; a no-op for an unpinned load.
+            with pread_safetensors(), pinned_repo_revision(
+                kwargs.get("_base_fetch_repo"), kwargs.get("_base_fetch_revision")
+            ):
                 self.load_pipeline(**kwargs)
             with self._lock:
                 if self._load_token == token:
@@ -6788,6 +6797,7 @@ class VideoBackend:
         roots = [Path(hub_cache_dir())]
         try:
             from huggingface_hub import constants
+
             if Path(constants.HF_HUB_CACHE) != roots[0]:
                 roots.append(Path(constants.HF_HUB_CACHE))
         except Exception:  # noqa: BLE001 -- the live root alone
@@ -6808,10 +6818,7 @@ class VideoBackend:
                     folder = root / ("models--" + repo.replace("/", "--"))
                     try:
                         if etag:
-                            candidates = [
-                                folder / "blobs" / etag,
-                                folder / "blobs" / f"{etag}.incomplete",
-                            ]
+                            candidates = [folder / "blobs" / etag, folder / "blobs" / f"{etag}.incomplete"]
                         else:
                             ref = folder / "refs" / "main"
                             rev = entry.revision or (
@@ -7546,6 +7553,8 @@ class VideoBackend:
                 _stop_ltx25_encoder(stale_encoder[1])
             ltx25_client = start_text_encoder(
                 repo = _base_local_dir or fetch_base,
+                # The plan's commit when the worker reads the hub id (a staged dir already is that commit).
+                revision = None if _base_local_dir else _base_fetch_revision,
                 hf_token = hf_token,
                 cache_dir = hub_cache_dir(),
                 local_files_only = local_files_only,
@@ -7573,6 +7582,10 @@ class VideoBackend:
         pipeline_cls = getattr(diffusers, fam.pipeline_class)
         # cache_dir pins every loader call to the live cache root, so a mid-session change cannot split one model across
         # roots.
+        def _pinned_base_kwargs() -> dict[str, Any]:
+            """A hub-id base read takes the plan's commit; the staged dir already is that commit."""
+            return {"revision": _base_fetch_revision} if _base_fetch_revision and not _base_local_dir else {}
+
         pipe_kwargs: dict[str, Any] = {
             "torch_dtype": dtype,
             "cache_dir": hub_cache_dir(),
@@ -7688,12 +7701,7 @@ class VideoBackend:
             # The pre-downloaded snapshot dir keeps from_pretrained off the hub; hub id when pre-download was skipped.
             pipe = pipeline_cls.from_pretrained(
                 _base_local_dir or fetch_base,
-                # A hub id here reads the plan's commit; the staged dir already is that commit.
-                **(
-                    {"revision": _base_fetch_revision}
-                    if _base_fetch_revision and not _base_local_dir
-                    else {}
-                ),
+                **_pinned_base_kwargs(),
                 **pipe_kwargs,
             )
         else:
@@ -7702,6 +7710,8 @@ class VideoBackend:
             sf_kwargs: dict[str, Any] = {
                 "torch_dtype": dtype,
                 "config": fetch_base,
+                # The plan's commit for that config (absent for an unpinned load).
+                **({"revision": _base_fetch_revision} if _base_fetch_revision else {}),
                 "subfolder": "transformer",
                 "token": hf_token,
                 "cache_dir": hub_cache_dir(),
@@ -7890,6 +7900,7 @@ class VideoBackend:
                 else:
                     pipe = pipeline_cls.from_pretrained(
                         _base_local_dir or fetch_base,
+                        **_pinned_base_kwargs(),
                         **{**pipe_kwargs, "transformer": ltx25_transformer},
                     )
             else:
@@ -7926,7 +7937,7 @@ class VideoBackend:
                         Path(str(partner_path)).name,
                     )
                 pipe = pipeline_cls.from_pretrained(
-                    _base_local_dir or fetch_base, **{**pipe_kwargs, **experts}
+                    _base_local_dir or fetch_base, **_pinned_base_kwargs(), **{**pipe_kwargs, **experts}
                 )
 
         # The dtype dict already loads the Wan VAE at float32; belt-and-suspenders for any path that bypassed it (e.g. a
@@ -8897,11 +8908,7 @@ class VideoBackend:
             load_kwargs["token"] = hf_token
         pipe = diffusers.ModularPipeline.from_pretrained(
             _base_local_dir or fetch_base,
-            **(
-                {"revision": _base_fetch_revision}
-                if _base_fetch_revision and not _base_local_dir
-                else {}
-            ),
+            **({"revision": _base_fetch_revision} if _base_fetch_revision and not _base_local_dir else {}),
             **load_kwargs,
         )
         transformer_quant_engaged: Optional[str] = None

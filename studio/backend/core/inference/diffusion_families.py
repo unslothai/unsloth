@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import contextvars
 import os
 import re
 import sys
@@ -1291,6 +1292,48 @@ _MIRROR_UPSTREAM: dict[str, str] = {m.lower(): u for u, m in _ALL_MIRROR_PAIRS}
 _GATED_UPSTREAMS: frozenset[str] = frozenset(
     u.lower() for u, _m in _GATED_MIRROR_PAIRS + _VIDEO_GATED_MIRROR_PAIRS
 )
+
+
+# Repo id (lowercased) -> the commit a load's plan pinned it to, for the duration of that load's assembly. Set only by
+# ``pinned_repo_revision`` around a video load; every hub-id CONFIG read of a base repo (encoder / VAE / transformer
+# configs, model_index, the LTX-2.5 companions) asks ``pinned_revision_kwargs`` so it reads the planned commit. Empty
+# outside such a block, so unpinned callers (image loads, direct calls) pass no revision and behave as before.
+_PINNED_REVISIONS: "contextvars.ContextVar[Optional[dict[str, str]]]" = contextvars.ContextVar(
+    "unsloth_pinned_repo_revisions", default = None
+)
+
+
+def _pins() -> "contextvars.ContextVar[Optional[dict[str, str]]]":
+    return _PINNED_REVISIONS
+
+
+class pinned_repo_revision:
+    """``with pinned_repo_revision(repo, revision):`` pins hub-id reads of ``repo`` to ``revision`` in this context.
+    A no-op when either is missing or ``repo`` is a local path."""
+
+    def __init__(self, repo: Optional[str], revision: Optional[str]):
+        self._key = (repo or "").strip().lower() if repo and revision and not _is_local_path(repo) else ""
+        self._revision = revision
+        self._token = None
+
+    def __enter__(self) -> "pinned_repo_revision":
+        if self._key:
+            var = _pins()
+            self._token = var.set({**(var.get() or {}), self._key: str(self._revision)})
+        return self
+
+    def __exit__(self, *_exc: Any) -> None:
+        if self._token is not None:
+            _pins().reset(self._token)
+            self._token = None
+
+
+def pinned_revision_kwargs(repo: Any) -> dict[str, str]:
+    """``{"revision": <commit>}`` when ``repo`` is pinned in this context, else ``{}``."""
+    if not isinstance(repo, str) or not repo:
+        return {}
+    revision = (_pins().get() or {}).get(repo.strip().lower())
+    return {"revision": revision} if revision else {}
 
 
 def mirror_repo(repo_id: Optional[str]) -> Optional[str]:

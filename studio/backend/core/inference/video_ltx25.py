@@ -448,8 +448,11 @@ def load_latent_upsampler(
         return _build_from_config(
             LTX2LatentUpsamplerModel, LTX25_UPSAMPLER_CONFIG, load_file(path), {}, torch_dtype
         )
+    from .diffusion_families import pinned_revision_kwargs
+
     return LTX2LatentUpsamplerModel.from_pretrained(
         base_repo,
+        **pinned_revision_kwargs(base_repo),
         subfolder = LATENT_UPSAMPLER_SUBFOLDER,
         torch_dtype = torch_dtype,
         token = hf_token,
@@ -524,10 +527,13 @@ def ltx25_companion_path(
         return str(target)
     from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
 
+    from .diffusion_families import pinned_revision_kwargs
+
     return hf_hub_download_with_xet_fallback(
         base,
         filename,
         hf_token,
+        **pinned_revision_kwargs(base),
         reuse_other_cache_root = True,
         local_files_only = local_files_only,
     )
@@ -1067,6 +1073,7 @@ def close_encoder(pipe: Any) -> None:
 def start_text_encoder(
     *,
     repo: str,
+    revision: Optional[str] = None,
     hf_token: Optional[str],
     cache_dir: Optional[str],
     local_files_only: bool,
@@ -1092,6 +1099,10 @@ def start_text_encoder(
         budget_mib = budget_mib,
         te_quant = te_quant,
     )
+    from .diffusion_families import pinned_revision_kwargs
+
+    # The worker is another process: the plan's commit travels in its config (absent when unpinned).
+    client.config.update({"revision": revision} if revision else pinned_revision_kwargs(repo))
     client.start()
     return client
 

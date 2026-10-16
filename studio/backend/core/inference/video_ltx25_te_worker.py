@@ -62,6 +62,7 @@ def _single_file_folder(config: dict) -> str:
         path = hf_hub_download(
             repo,
             name,
+            **({"revision": config["revision"]} if config.get("revision") else {}),
             token = config.get("hf_token") or None,
             cache_dir = config.get("cache_dir") or None,
             local_files_only = bool(config.get("local_files_only")),
@@ -133,6 +134,8 @@ def _load(config: dict) -> tuple[Any, Any]:
         "token": config.get("hf_token") or None,
         "cache_dir": config.get("cache_dir") or None,
         "local_files_only": bool(config.get("local_files_only")),
+        # The load plan's commit for the base, when it pinned one.
+        **({"revision": config["revision"]} if config.get("revision") else {}),
     }
     if config.get("single_file"):
         import shutil
