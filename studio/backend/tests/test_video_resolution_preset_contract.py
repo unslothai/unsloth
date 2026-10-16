@@ -164,9 +164,10 @@ def test_the_frontend_fallback_is_a_usable_default_for_the_family_it_mirrors():
     ), f"the fallback leads with {fallback[0]}, which is not the default preset of any family"
 
 
-def test_the_resolution_select_renders_the_backend_presets_not_a_hardcoded_list():
-    """The select must map over the memo fed by ``status.defaults.resolution_presets``;
-    if it were rebound to the fallback the backend's per-family list would never show."""
+def test_the_size_controls_follow_the_backend_presets_not_a_hardcoded_list():
+    """The trained-size select and the size limits must read the memo fed by
+    ``status.defaults.resolution_presets``; if they were rebound to the fallback the backend's
+    per-family list would never show."""
     src = _VIDEO_PAGE.read_text(encoding = "utf-8")
     memo = src[src.index("const resolutionPresets = useMemo<") :]
     memo = memo[: memo.index("\n  }, [")]
@@ -174,6 +175,7 @@ def test_the_resolution_select_renders_the_backend_presets_not_a_hardcoded_list(
     assert "FALLBACK_RESOLUTION_PRESETS" in memo
     # Only the empty/absent case falls back.
     assert "presets && presets.length > 0" in memo
-    assert "{resolutionPresets.map(([w, h], i) => (" in src
-    # And the generate call sends the SELECTED preset, so the offered pair is the one rendered.
-    assert "const preset = resolutionPresets[resolutionIdx] ?? resolutionPresets[0];" in src
+    assert "{resolutionPresets.map(([w, h]) => (" in src
+    assert "videoSizeLimits(status?.defaults, resolutionPresets)" in src
+    # And the generate call sends the fitted size, so the size shown is the one rendered.
+    assert "width: sourceSized ? undefined : videoSize[0]," in src

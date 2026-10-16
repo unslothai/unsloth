@@ -39,6 +39,7 @@ from core.inference.video_families import (
     snap_num_frames,
     snap_video_size,
     validate_video_request_shape,
+    video_custom_size_bounds,
 )
 from core.inference.video_minimax_h3 import h3_conditioning_mode
 from models.inference import VideoReferenceVideo
@@ -46,7 +47,7 @@ from routes.video import router as video_router
 
 # LTX-2 is the reference family for the single-family cases: 4 presets and frame_step 8.
 LTX2 = detect_video_family("Lightricks/LTX-2")
-# Wan is the contrast family: 704x1216 is an LTX-2 preset and is not one of Wan's.
+# Wan is the contrast family: 768x512 is an LTX-2 preset and below Wan TI2V's trained area.
 WAN_TI2V_5B = detect_video_family("Wan-AI/Wan2.2-TI2V-5B-Diffusers")
 
 
@@ -195,13 +196,65 @@ def test_omitted_fields_are_always_valid():
 def test_a_half_specified_size_resolves_against_the_default_preset():
     """generate() fills a missing side from presets[0], so the check must judge the
     same pair it will actually denoise."""
-    # 768 alone resolves to 768x512, the default preset.
     validate_video_request_shape(LTX2, width = 768)
     validate_video_request_shape(LTX2, height = 512)
-    # 1216 alone resolves to 1216x512, which is NOT a preset (1216 only pairs with 704).
+    # 1216 alone resolves to 1216x512: off the presets but on /32 and inside the area band.
+    validate_video_request_shape(LTX2, width = 1216)
+    # 2048 alone resolves to 2048x512, wider than 4:1.
     with pytest.raises(ValueError) as excinfo:
-        validate_video_request_shape(LTX2, width = 1216)
-    assert "1216x512" in str(excinfo.value)
+        validate_video_request_shape(LTX2, width = 2048)
+    assert "2048x512" in str(excinfo.value)
+
+
+def test_a_custom_size_on_the_multiple_and_inside_the_band_is_accepted():
+    # 1024x576 is 16:9, on LTX-2's /32 grid and between its smallest and largest preset areas.
+    validate_video_request_shape(LTX2, width = 1024, height = 576, num_frames = 97)
+    validate_video_request_shape(LTX2, width = 576, height = 1024)
+    validate_video_request_shape(LTX2, width = 640, height = 640)
+    # The grid is the family's own: 848 is on a /16 grid and off LTX-2's /32 one.
+    validate_video_request_shape(
+        replace(LTX2, resolution_multiple = 16), width = 848, height = 480, num_frames = 97
+    )
+
+
+def test_a_size_off_the_multiple_is_refused_with_the_multiple_named():
+    with pytest.raises(ValueError) as excinfo:
+        validate_video_request_shape(LTX2, width = 1000, height = 576)
+    message = str(excinfo.value)
+    assert "1000x576" in message and "multiples of 32" in message
+    assert "768x512" in message
+    with pytest.raises(ValueError):
+        validate_video_request_shape(LTX2, width = 848, height = 480)
+
+
+def test_a_size_outside_the_area_band_or_too_narrow_is_refused():
+    min_pixels, max_pixels, max_aspect = video_custom_size_bounds(LTX2)
+    assert max_pixels == 1216 * 704
+    assert min_pixels == 768 * 512
+    assert max_aspect == 4.0
+    # Larger than the largest preset: a memory plan budgeted at that preset would not hold.
+    with pytest.raises(ValueError, match = "pixels"):
+        validate_video_request_shape(LTX2, width = 1280, height = 1024)
+    # Smaller than the smallest preset.
+    with pytest.raises(ValueError, match = "pixels"):
+        validate_video_request_shape(LTX2, width = 512, height = 512)
+    # A family trained at one area still gets a band down to half of it.
+    single = replace(LTX2, resolution_presets = ((832, 480), (480, 832)))
+    assert video_custom_size_bounds(single)[0] == 832 * 480 // 2
+    validate_video_request_shape(single, width = 512, height = 512)
+    # Inside the band but past 4:1.
+    with pytest.raises(ValueError, match = "aspect ratio"):
+        validate_video_request_shape(LTX2, width = 1536, height = 352)
+
+
+def test_the_status_payload_reports_the_custom_size_bounds():
+    defaults = video_module._custom_size_defaults(LTX2)
+    assert defaults == {
+        "custom_size_min_pixels": 768 * 512,
+        "custom_size_max_pixels": 1216 * 704,
+        "custom_size_max_aspect": 4.0,
+    }
+    assert video_module._custom_size_defaults(replace(LTX2, resolution_presets = ())) == {}
 
 
 def test_presets_spelled_as_lists_still_match():
@@ -378,6 +431,17 @@ def test_generate_accepts_every_declared_preset_of_the_loaded_family(client, bac
         assert (record["width"], record["height"]) == (width, height)
 
 
+def test_generate_renders_a_custom_size_and_refuses_one_off_the_multiple(client, backend):
+    backend.load_as(LTX2)
+    resp = client.post("/api/inference/video/generate", json = _payload(width = 1024, height = 576))
+    assert resp.status_code == 200, resp.text
+    record = _wait_terminal(client)["video"]
+    assert (record["width"], record["height"]) == (1024, 576)
+    resp = client.post("/api/inference/video/generate", json = _payload(width = 1000, height = 576))
+    assert resp.status_code == 422, resp.text
+    assert "multiples of 32" in resp.json()["detail"]
+
+
 def test_generate_rejects_an_off_lattice_frame_count_with_422(client, backend):
     backend.load_as(LTX2)
     resp = client.post("/api/inference/video/generate", json = _payload(num_frames = 100))
@@ -471,18 +535,18 @@ def test_the_shape_is_judged_under_the_lock_that_reserves_the_state(backend, mon
 
 
 def test_a_family_swap_cannot_slip_between_the_check_and_the_job(backend):
-    """The consequence, end to end rather than by construction. 704x1216 is a real LTX-2 preset
-    and is not one of Wan's, so whichever family is resident when the lock is taken decides the
-    outcome -- and the job that runs afterwards is the one that was judged."""
+    """The consequence, end to end rather than by construction. 768x512 is a real LTX-2 preset
+    and is smaller than Wan TI2V's trained frames, so whichever family is resident when the lock
+    is taken decides the outcome -- and the job that runs afterwards is the one that was judged."""
     backend.load_as(LTX2)
-    backend.begin_generate(prompt = "a cat", width = 704, height = 1216)  # accepted for LTX-2
+    backend.begin_generate(prompt = "a cat", width = 768, height = 512)  # accepted for LTX-2
     backend.cancel_generate()
     # The worker clears the slot asynchronously and this test is about the check, not the job.
     backend._generate_job_active = False
 
     backend.load_as(WAN_TI2V_5B)
     with pytest.raises(ValueError):
-        backend.begin_generate(prompt = "a cat", width = 704, height = 1216)
+        backend.begin_generate(prompt = "a cat", width = 768, height = 512)
     assert not backend._generate_job_active, "a refused shape must not reserve the job slot"
 
 
