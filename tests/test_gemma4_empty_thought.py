@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""Gemma-4 26B / 31B empty thought channel on non-thinking model turns; E2B / E4B unchanged.
-
-unsloth import needs a GPU, so template code is pulled out via ast.
-"""
+"""Gemma-4 26B/31B get an empty thought channel on non-thinking turns; E2B/E4B stay unchanged."""
 
 import ast
 import os

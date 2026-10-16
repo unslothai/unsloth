@@ -18,17 +18,18 @@ import triton.language as tl
 import torch
 from typing import Tuple
 from .utils import calculate_settings, long_indexing, torch_gpu_device
+from .triton_launch import launch
 
 
 @triton.jit
 def _rms_layernorm_forward(
     Y,
-    Y_row_stride: tl.constexpr,
     X,
-    X_row_stride: tl.constexpr,
     W,
-    W_row_stride: tl.constexpr,
     r,
+    Y_row_stride: tl.constexpr,
+    X_row_stride: tl.constexpr,
+    W_row_stride: tl.constexpr,
     r_row_stride: tl.constexpr,
     n_cols: tl.constexpr,
     eps: tl.constexpr,
@@ -98,7 +99,6 @@ def _rms_backward_row(
     X_row = tl.load(X + col_offsets, mask = mask, other = 0).to(tl.float32)
     W_row = tl.load(W + col_offsets, mask = mask, other = 0).to(tl.float32)
 
-    # Get saved row variance
     inv_var = tl.load(r).to(tl.float32)
     if FROM_Y:
         # Masked lanes would be 0 / 0.
@@ -126,18 +126,18 @@ def _rms_backward_row(
 
 def _rms_layernorm_backward(
     dY,
-    dY_row_stride: tl.constexpr,
     dX,
-    dX_row_stride: tl.constexpr,
     X,
-    X_row_stride: tl.constexpr,
     W,
-    W_row_stride: tl.constexpr,
     r,
-    r_row_stride: tl.constexpr,
     dW,
     n_rows,
     rows_per_program,
+    dY_row_stride: tl.constexpr,
+    dX_row_stride: tl.constexpr,
+    X_row_stride: tl.constexpr,
+    W_row_stride: tl.constexpr,
+    r_row_stride: tl.constexpr,
     n_cols: tl.constexpr,
     eps: tl.constexpr,
     GEMMA: tl.constexpr,
@@ -218,12 +218,12 @@ _rms_layernorm_backward = triton.heuristics(
 @triton.jit
 def _gemma_rms_layernorm_forward(
     Y,
-    Y_row_stride: tl.constexpr,
     X,
-    X_row_stride: tl.constexpr,
     W,
-    W_row_stride: tl.constexpr,
     r,
+    Y_row_stride: tl.constexpr,
+    X_row_stride: tl.constexpr,
+    W_row_stride: tl.constexpr,
     r_row_stride: tl.constexpr,
     n_cols: tl.constexpr,
     eps: tl.constexpr,
@@ -283,12 +283,12 @@ def _row_dot_in_row_kernel_order(a, b, ROWS: tl.constexpr, WARPS: tl.constexpr):
 @triton.jit
 def _rms_layernorm_forward_rows(
     Y,
-    Y_row_stride: tl.constexpr,
     X,
-    X_row_stride: tl.constexpr,
     W,
     r,
     n_rows,
+    Y_row_stride: tl.constexpr,
+    X_row_stride: tl.constexpr,
     n_cols: tl.constexpr,
     eps: tl.constexpr,
     GEMMA: tl.constexpr,
@@ -388,16 +388,16 @@ def _rms_backward_rows_block(
 @triton.jit
 def _rms_layernorm_backward_rows(
     dY,
-    dY_row_stride: tl.constexpr,
     dX,
-    dX_row_stride: tl.constexpr,
     X,
-    X_row_stride: tl.constexpr,
     W,
     r,
     dW,
     n_rows,
     blocks_per_program,
+    dY_row_stride: tl.constexpr,
+    dX_row_stride: tl.constexpr,
+    X_row_stride: tl.constexpr,
     n_cols: tl.constexpr,
     eps: tl.constexpr,
     GEMMA: tl.constexpr,
@@ -472,6 +472,36 @@ def _rms_sum_dw_partials(
     tl.store(dW + cols, tl.sum(acc, axis = 0).to(dW.dtype.element_ty), mask = col_mask)
 
 
+def _cdiv(a, b):
+    # triton.cdiv's formula without its call overhead (a ConstexprFunction on recent Triton).
+    return (a + b - 1) // b
+
+
+_cached_settings = functools.lru_cache(maxsize = None)(calculate_settings)
+
+
+def _settings(n_cols):
+    # Cached per width for eager calls (host bound at small shapes); tracing calls it directly.
+    if torch.compiler.is_compiling():
+        return calculate_settings(n_cols)
+    return _cached_settings(n_cols)
+
+
+def _launch(wrap, kernel, grid, args, n_tensors, constexprs, device, **options):
+    # Eager CUDA skips Triton's arg binding (triton_launch.py); traced / non-Triton keep kernel[grid].
+    if wrap is _eager_kernel and device.type == "cuda" and not torch.compiler.is_compiling():
+        fn = kernel
+        if isinstance(kernel, triton.runtime.autotuner.Heuristics):
+            # What Heuristics.run does; these heuristics only read their own constexpr.
+            fn, constexprs = kernel.fn, dict(constexprs)
+            for name, heuristic in kernel.values.items():
+                constexprs[name] = heuristic(constexprs)
+        if isinstance(fn, triton.runtime.jit.JITFunction):
+            launch(fn, grid, args, n_tensors, constexprs, device.index, **options)
+            return
+    wrap(kernel)[grid](*args, **constexprs, **options)
+
+
 # Off on ROCm (64-lane wavefronts reduce in another order) and before Triton 3.6 (slower backward).
 def _triton_at_least(major, minor):
     try:
@@ -493,7 +523,7 @@ def _multirow_settings(n_cols):
     # Only widths 33..128 (one element per lane) can replay the one-row order; others stay one-row.
     if not _MULTIROW:
         return None
-    BLOCK_SIZE, num_warps = calculate_settings(n_cols)
+    BLOCK_SIZE, num_warps = _settings(n_cols)
     if num_warps != 4 or not (64 <= BLOCK_SIZE <= 128):
         return None
     return BLOCK_SIZE, _MULTIROW_ELEMENTS // BLOCK_SIZE, BLOCK_SIZE // 32, _MULTIROW_NUM_WARPS
@@ -583,53 +613,62 @@ def _rms_forward(
 ):
     # multirow: None picks (self-checked), False forces one row, settings force multi-row.
     n_rows, n_cols = X.shape
-    Y = torch.empty((n_rows, n_cols), dtype = X.dtype, device = X.device)
-    r = torch.empty(n_rows, dtype = torch.float32, device = X.device)
+    device = X.device
+    Y = torch.empty((n_rows, n_cols), dtype = X.dtype, device = device)
+    r = torch.empty(n_rows, dtype = torch.float32, device = device)
     if multirow is None:
         multirow = _multirow_checked(X, W, eps, gemma)
     long = long_indexing(X, Y, block = _INDEX_MARGIN)
     if multirow:
         BLOCK_SIZE, ROWS, WARPS, num_warps = multirow
         try:
-            wrap(_rms_layernorm_forward_rows)[((n_rows + ROWS - 1) // ROWS,)](
-                Y,
-                Y.stride(0),
-                X,
-                X.stride(0),
-                W,
-                r,
-                n_rows,
-                n_cols,
-                eps,
-                GEMMA = gemma,
-                BLOCK_SIZE = BLOCK_SIZE,
-                ROWS = ROWS,
-                WARPS = WARPS,
-                # int32 rows measured slower only for the Gemma multi-row forward: keep main's int64.
-                LONG_INDEXING = long or gemma,
+            _launch(
+                wrap,
+                _rms_layernorm_forward_rows,
+                ((n_rows + ROWS - 1) // ROWS,),
+                (Y, X, W, r, n_rows),
+                4,
+                dict(
+                    Y_row_stride = Y.stride(0),
+                    X_row_stride = X.stride(0),
+                    n_cols = n_cols,
+                    eps = eps,
+                    GEMMA = gemma,
+                    BLOCK_SIZE = BLOCK_SIZE,
+                    ROWS = ROWS,
+                    WARPS = WARPS,
+                    # int32 rows measured slower only for the Gemma multi-row forward: keep main's int64.
+                    LONG_INDEXING = long or gemma,
+                ),
+                device,
                 num_warps = num_warps,
+                enable_fp_fusion = True,
             )
             return Y, r
         except Exception as error:
             if _multirow_must_raise(error, wrap):
                 raise
             _multirow_disable(f"launch failed: {error!r}")
-    BLOCK_SIZE, num_warps = calculate_settings(n_cols)
-    fx = _gemma_rms_layernorm_forward if gemma else _rms_layernorm_forward
-    wrap(fx)[(n_rows,)](
-        Y,
-        Y.stride(0),
-        X,
-        X.stride(0),
-        W,
-        W.stride(0),
-        r,
-        r.stride(0),
-        n_cols,
-        eps,
-        LONG_INDEXING = long,
-        BLOCK_SIZE = BLOCK_SIZE,
+    BLOCK_SIZE, num_warps = _settings(n_cols)
+    _launch(
+        wrap,
+        _gemma_rms_layernorm_forward if gemma else _rms_layernorm_forward,
+        (n_rows,),
+        (Y, X, W, r),
+        4,
+        dict(
+            Y_row_stride = Y.stride(0),
+            X_row_stride = X.stride(0),
+            W_row_stride = W.stride(0),
+            r_row_stride = r.stride(0),
+            n_cols = n_cols,
+            eps = eps,
+            LONG_INDEXING = long,
+            BLOCK_SIZE = BLOCK_SIZE,
+        ),
+        device,
         num_warps = num_warps,
+        enable_fp_fusion = True,
     )
     return Y, r
 
@@ -654,8 +693,8 @@ def _max_sm_threads(device):
 
 
 def _dw_split(units, max_programs):
-    per_program = max(1, triton.cdiv(units, max(1, min(units, max_programs))))
-    return max(1, triton.cdiv(units, per_program)), per_program
+    per_program = max(1, _cdiv(units, max(1, min(units, max_programs))))
+    return max(1, _cdiv(units, per_program)), per_program
 
 
 def _dw_launch(units, device):
@@ -664,18 +703,17 @@ def _dw_launch(units, device):
 
 @functools.lru_cache(maxsize = None)
 def _dw_row_config(device, n_cols):
-    # Cached (backward is host bound at small shapes). 64-warp SMs, <= 16 elems/lane: cap registers at 64
-    # so all programs stay resident; uncapped, wide rows kept one program per SM. T4: no measured gain.
-    BLOCK_SIZE, num_warps = calculate_settings(n_cols)
-    per_sm, launch = _DW_PROGRAMS_PER_SM, {}
+    # Cached (host bound). 64-warp SMs, <= 16 elems/lane: cap registers at 64 so all programs stay resident.
+    BLOCK_SIZE, num_warps = _settings(n_cols)
+    per_sm, options = _DW_PROGRAMS_PER_SM, {}
     if (
         device.type == "cuda"
         and not torch.version.hip
         and BLOCK_SIZE <= 512 * num_warps
         and _max_sm_threads(device) >= 2048
     ):
-        per_sm, launch = max(1, 32 // num_warps), {"maxnreg": 64}
-    return BLOCK_SIZE, num_warps, _sm_count(device) * per_sm, launch
+        per_sm, options = max(1, 32 // num_warps), {"maxnreg": 64}
+    return BLOCK_SIZE, num_warps, _sm_count(device) * per_sm, options
 
 
 def _rms_backward(
@@ -693,39 +731,41 @@ def _rms_backward(
 ):
     # Non-Gemma writes dX over dY (the kernel ignores dX); Gemma writes into dX.
     n_rows, n_cols = dY.shape
+    device = dY.device
     if multirow is None:
         multirow = _multirow_checked(X, W, eps, gemma)
     long = long_indexing(dY, dX, X, block = _INDEX_MARGIN)
     partials = None
     if multirow:
         BLOCK_SIZE, ROWS, WARPS, num_warps = multirow
-        programs, per_program = triton.cdiv(n_rows, ROWS), 1
+        programs, per_program = _cdiv(n_rows, ROWS), 1
         if train_w:
-            programs, per_program = _dw_launch(programs, dY.device)
-            partials = torch.empty((programs, n_cols), dtype = torch.float32, device = dY.device)
+            programs, per_program = _dw_launch(programs, device)
+            partials = torch.empty((programs, n_cols), dtype = torch.float32, device = device)
         try:
-            wrap(_rms_layernorm_backward_rows)[(programs,)](
-                dY,
-                dY.stride(0),
-                dX,
-                dX.stride(0),
-                X,
-                X.stride(0),
-                W,
-                r,
-                r if partials is None else partials,
-                n_rows,
-                per_program,
-                n_cols,
-                eps,
-                GEMMA = gemma,
-                BLOCK_SIZE = BLOCK_SIZE,
-                ROWS = ROWS,
-                WARPS = WARPS,
-                LONG_INDEXING = long,
-                TRAIN_W = train_w,
-                FROM_Y = from_y,
+            _launch(
+                wrap,
+                _rms_layernorm_backward_rows,
+                (programs,),
+                (dY, dX, X, W, r, r if partials is None else partials, n_rows, per_program),
+                6,
+                dict(
+                    dY_row_stride = dY.stride(0),
+                    dX_row_stride = dX.stride(0),
+                    X_row_stride = X.stride(0),
+                    n_cols = n_cols,
+                    eps = eps,
+                    GEMMA = gemma,
+                    BLOCK_SIZE = BLOCK_SIZE,
+                    ROWS = ROWS,
+                    WARPS = WARPS,
+                    LONG_INDEXING = long,
+                    TRAIN_W = train_w,
+                    FROM_Y = from_y,
+                ),
+                device,
                 num_warps = num_warps,
+                enable_fp_fusion = True,
             )
         except Exception as error:
             if _multirow_must_raise(error, wrap):
@@ -733,36 +773,37 @@ def _rms_backward(
             _multirow_disable(f"launch failed: {error!r}")
         else:
             return _rms_sum_partials(partials, W, wrap)
-    programs, per_program, launch = n_rows, 1, {}
+    programs, per_program, options = n_rows, 1, {}
     if train_w:
-        BLOCK_SIZE, num_warps, max_programs, launch = _dw_row_config(dY.device, int(n_cols))
+        BLOCK_SIZE, num_warps, max_programs, options = _dw_row_config(device, int(n_cols))
         programs, per_program = _dw_split(n_rows, max_programs)
-        partials = torch.empty((programs, n_cols), dtype = torch.float32, device = dY.device)
+        partials = torch.empty((programs, n_cols), dtype = torch.float32, device = device)
     else:
-        BLOCK_SIZE, num_warps = calculate_settings(n_cols)
-    wrap(_rms_layernorm_backward)[(programs,)](
-        dY,
-        dY.stride(0),
-        dX,
-        dX.stride(0),
-        X,
-        X.stride(0),
-        W,
-        W.stride(0),
-        r,
-        r.stride(0),
-        r if partials is None else partials,
-        n_rows,
-        per_program,
-        n_cols,
-        eps,
-        GEMMA = gemma,
-        LONG_INDEXING = long,
-        BLOCK_SIZE = BLOCK_SIZE,
-        TRAIN_W = train_w,
-        FROM_Y = from_y,
+        BLOCK_SIZE, num_warps = _settings(n_cols)
+    _launch(
+        wrap,
+        _rms_layernorm_backward,
+        (programs,),
+        (dY, dX, X, W, r, r if partials is None else partials, n_rows, per_program),
+        6,
+        dict(
+            dY_row_stride = dY.stride(0),
+            dX_row_stride = dX.stride(0),
+            X_row_stride = X.stride(0),
+            W_row_stride = W.stride(0),
+            r_row_stride = r.stride(0),
+            n_cols = n_cols,
+            eps = eps,
+            GEMMA = gemma,
+            LONG_INDEXING = long,
+            BLOCK_SIZE = BLOCK_SIZE,
+            TRAIN_W = train_w,
+            FROM_Y = from_y,
+        ),
+        device,
         num_warps = num_warps,
-        **launch,
+        **options,
+        enable_fp_fusion = True,
     )
     return _rms_sum_partials(partials, W, wrap)
 
@@ -772,8 +813,15 @@ def _rms_sum_partials(partials, W, wrap):
         return None
     programs, n_cols = partials.shape
     dW = torch.empty(n_cols, dtype = W.dtype, device = partials.device)
-    wrap(_rms_sum_dw_partials)[(triton.cdiv(n_cols, 64),)](
-        partials, dW, programs, n_cols, BLOCK_ROWS = 64, BLOCK_COLS = 64
+    _launch(
+        wrap,
+        _rms_sum_dw_partials,
+        (_cdiv(n_cols, 64),),
+        (partials, dW, programs, n_cols),
+        2,
+        dict(BLOCK_ROWS = 64, BLOCK_COLS = 64),
+        partials.device,
+        enable_fp_fusion = True,
     )
     return dW
 

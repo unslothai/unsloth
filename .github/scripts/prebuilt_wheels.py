@@ -24,11 +24,13 @@ Subcommands:
   wheel-name     print the single upstream-style filename for one cell.
   notes          read `sha256  filename` lines on stdin and print the release body.
   sums           read `sha256  filename` lines on stdin and print SHA256SUMS for the wheels.
+  size-gate      fail if a built wheel's CUDA extension is larger than its package allows.
 
 Usage:
   prebuilt_wheels.py matrix
   prebuilt_wheels.py wheel-name --package flash-attn --torch 2.13.0 --python 3.13 [--platform win_amd64]
   prebuilt_wheels.py notes --tag prebuilt-wheels-cu13 --repo unslothai/unsloth < SHA256SUMS
+  prebuilt_wheels.py size-gate --package flash-attn dist/flash_attn-*.whl
 """
 
 from __future__ import annotations
@@ -37,6 +39,7 @@ import argparse
 import json
 import os
 import sys
+import zipfile
 
 # The CUDA major that every wheel here is built against, and the only one. It is the local
 # version segment upstream writes (cu13), not the toolkit patch level: upstream normalises
@@ -53,6 +56,24 @@ CUDA_TOOLKIT = "13.0"
 # The tag is still in the filename because it is in every upstream filename, and a resolver
 # that pattern-matches upstream names has to find it here too.
 CXX11_ABI = "TRUE"
+
+# Device code is most of every wheel. Upstream flash-attn 2.8.1 compressed all of it; the commit
+# we build from dropped those flags, and in default mode its cubins went in uncompressed (the zip
+# still gets 3.5x out of the 1.49 GB extension; upstream's is 139 MB). Measured on one flash-attn
+# TU (nvcc 13.1, sm_80/90/100/120 + compute_120 PTX): 18.8 MB as is, 3.5 MB with these flags, and
+# the module loads no slower. causal-conv1d's and mamba-ssm's large cubins are already compressed
+# in default mode; repacking the released ones in size mode takes causal_conv1d_cuda from 248 to
+# 103 MB and selective_scan_cuda to about two thirds.
+# The workflow appends this to NVCC_APPEND_FLAGS (Windows already puts _USE_MATH_DEFINES there),
+# which nvcc reads itself, so it reaches every nvcc call each setup.py makes without patching
+# them; it is not in SPECS' env because that is word-split. --compress-mode=size needs a
+# CUDA >= 12.4 driver to load, below the cu13 floor.
+NVCC_APPEND_FLAGS = "-Xfatbin -compress-all --compress-mode=size"
+
+# ccache hashes the nvcc command line, not NVCC_APPEND_FLAGS, and the Linux runners' ccache (4.5)
+# has no namespaces, so the flags' identity goes into the actions/cache key instead: a cache
+# saved before them would otherwise hand back uncompressed objects.
+CCACHE_TAG = "fatbin-size"
 
 # The Linux tag. The wheel is tagged linux_x86_64 rather than manylinux_*, exactly as upstream
 # tags its own, so pip installs it on any glibc without a floor check; the practical floor is the
@@ -177,6 +198,9 @@ SPECS = {
         # Leave time to upload partial caches after a build timeout.
         "build_timeout": "300m",
         "import_names": ["flash_attn", "flash_attn_2_cuda"],
+        # Largest CUDA extension the size gate lets through, in MB. Compressed it is ~280; the
+        # uncompressed build that prompted the gate was 1,488.
+        "max_extension_mb": 450,
     },
     "causal-conv1d": {
         "dist": "causal_conv1d",
@@ -191,6 +215,8 @@ SPECS = {
         },
         "build_timeout": "120m",
         "import_names": ["causal_conv1d", "causal_conv1d_cuda"],
+        # ~105 with these flags, 263 in default mode.
+        "max_extension_mb": 160,
     },
     "mamba-ssm": {
         "dist": "mamba_ssm",
@@ -212,6 +238,9 @@ SPECS = {
         "patch": "cxx20",
         "build_timeout": "180m",
         "import_names": ["mamba_ssm", "selective_scan_cuda"],
+        # ~230 with these flags, 358 in default mode: the gate only catches flags that never
+        # reached nvcc.
+        "max_extension_mb": 300,
     },
 }
 
@@ -381,6 +410,9 @@ def build_matrix(
                             "build_timeout": spec["build_timeout"],
                             "shards": spec.get("shards", 0),
                             "build_env": _build_env(spec, platform),
+                            "nvcc_append_flags": NVCC_APPEND_FLAGS,
+                            "ccache_tag": CCACHE_TAG,
+                            "max_extension_mb": spec["max_extension_mb"],
                             "import_names": " ".join(spec["import_names"]),
                             "wheel_name": wheel_name(
                                 package, torch_version, python_version, platform
@@ -621,6 +653,37 @@ def _read_digest_lines() -> list[tuple[str, str]]:
     return entries
 
 
+def extension_sizes(wheel: str) -> dict[str, int]:
+    """Uncompressed size of each compiled extension (.so / .pyd) in a wheel, by member name."""
+    with zipfile.ZipFile(wheel) as archive:
+        return {
+            info.filename: info.file_size
+            for info in archive.infolist()
+            if info.filename.endswith((".so", ".pyd"))
+        }
+
+
+def _cmd_size_gate(args: argparse.Namespace) -> int:
+    if args.package not in SPECS:
+        raise SystemExit(f"unknown package {args.package!r}")
+    limit = SPECS[args.package]["max_extension_mb"]
+    sizes = extension_sizes(args.wheel)
+    if not sizes:
+        raise SystemExit(f"{args.wheel}: no compiled extension in the wheel")
+    over = False
+    for name, size in sorted(sizes.items()):
+        megabytes = size / 1e6
+        print(f"{name}: {megabytes:.0f} MB (limit {limit} MB)")
+        over = over or megabytes > limit
+    if over:
+        print(
+            f"::error::{args.wheel}: a CUDA extension is over {limit} MB; is NVCC_APPEND_FLAGS "
+            "reaching nvcc?"
+        )
+        return 1
+    return 0
+
+
 def _cmd_notes(args: argparse.Namespace) -> int:
     sys.stdout.write(render_notes(_read_digest_lines(), tag = args.tag, repo = args.repo))
     return 0
@@ -658,6 +721,11 @@ def main(argv: list[str] | None = None) -> int:
 
     sums_parser = sub.add_parser("sums", help = "print SHA256SUMS for every wheel, digests on stdin")
     sums_parser.set_defaults(func = _cmd_sums)
+
+    gate_parser = sub.add_parser("size-gate", help = "fail if the wheel's extension is too large")
+    gate_parser.add_argument("--package", required = True)
+    gate_parser.add_argument("wheel")
+    gate_parser.set_defaults(func = _cmd_size_gate)
 
     args = parser.parse_args(argv)
     return args.func(args)
