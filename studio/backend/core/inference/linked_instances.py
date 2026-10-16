@@ -347,6 +347,10 @@ async def probe(instance: dict) -> dict:
     }
 
 
+# Media models carry a task; only tasks whose endpoint forwards a linked id are advertised.
+FORWARDED_TASKS: frozenset[str] = frozenset()
+
+
 async def _instance_catalog(instance: dict) -> list[dict]:
     cached = _catalog_cache.get(instance["id"])
     if cached and time.monotonic() - cached[0] < _CATALOG_TTL_S:
@@ -360,6 +364,7 @@ async def _instance_catalog(instance: dict) -> list[dict]:
             "linked_instance": instance["name"],
         }
         for model in result["models"]
+        if model.get("task") is None or model["task"] in FORWARDED_TASKS
     ]
     _catalog_cache[instance["id"]] = (time.monotonic(), objects)
     return objects
