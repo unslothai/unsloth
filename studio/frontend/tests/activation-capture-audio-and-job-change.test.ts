@@ -56,3 +56,17 @@ test("the next fetch for the same job asks from the last step it saw", async () 
   assert.deepEqual(since, [undefined, 10]);
   assert.deepEqual(data?.records.map((r) => r.step), [10, 20]);
 });
+
+test("two overlapping fetches for the same job merge each step once", async () => {
+  const pending: Array<(v: unknown) => void> = [];
+  const acc = createActivationAccumulator(
+    (() => new Promise((resolve) => pending.push(resolve))) as never,
+  );
+  const first = acc.fetch("job");
+  const second = acc.fetch("job");
+  pending[0]({ metadata: null, records: [record(1), record(2)] });
+  pending[1]({ metadata: null, records: [record(1), record(2), record(3)] });
+  await first;
+  const data = await second;
+  assert.deepEqual(data?.records.map((r) => r.step), [1, 2, 3]);
+});

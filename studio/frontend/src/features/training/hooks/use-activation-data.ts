@@ -46,11 +46,15 @@ export function createActivationAccumulator(fetchFn: FetchActivations = fetchAct
       const started = generation;
       const result = await fetchFn(jobId, outputDir, lastStep);
       if (started !== generation) return null;
-      if (result.records.length > 0) {
-        lastStep = Math.max(...result.records.map((r) => r.step));
+      // Overlapping fetches ask from the same step; keep only steps not merged yet.
+      const seen = lastStep;
+      const fresh =
+        seen === undefined ? result.records : result.records.filter((r) => r.step > seen);
+      if (fresh.length > 0) {
+        lastStep = Math.max(...fresh.map((r) => r.step));
         data = {
           metadata: result.metadata ?? data.metadata,
-          records: [...data.records, ...result.records],
+          records: [...data.records, ...fresh],
         };
       } else if (lastStep === undefined) {
         // Training started but no captures yet: surface metadata if available.
