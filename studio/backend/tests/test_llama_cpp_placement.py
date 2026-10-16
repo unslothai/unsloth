@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import dataclasses
 import os
+import re
 import struct
 import subprocess
 import sys
@@ -6507,3 +6508,159 @@ def test_the_header_scan_refuses_what_it_cannot_parse(tmp_path):
     with pytest.raises(ValueError):
         LlamaCppBackend._gguf_scan_tensor_bytes(str(bad))
     assert LlamaCppBackend()._gguf_tensor_scan(str(bad)) is None
+
+
+# --- r11: every device name the child parses stays resolvable through the launch ---
+
+_LAUNCH_DEVICE_OPTIONS = (
+    "--device",
+    "-dev",
+    "--mmproj-device",
+    "-mmdev",
+    "--spec-draft-device",
+    "-devd",
+    "--device-draft",
+)
+
+
+def _launch_unresolvable_names(result, host_gpus = 2):
+    """Device names llama.cpp's parse_device_list rejects in the launched child: env twins
+    first, then every argv occurrence; "none" alone is skipped. No mask leaves all
+    ``host_gpus`` visible. Independent of the code under test."""
+    env, cmd = result["env"], [str(t) for t in result["cmd"]]
+    mask = env.get("CUDA_VISIBLE_DEVICES")
+    if mask is None:
+        visible = host_gpus
+    else:
+        visible = 0 if mask == "-1" else len([m for m in mask.split(",") if m.strip()])
+    values = [env[n] for n in ("LLAMA_ARG_DEVICE", "MTMD_BACKEND_DEVICE") if n in env]
+    for i, raw in enumerate(cmd):
+        head, eq, inline = raw.partition("=")
+        if head in _LAUNCH_DEVICE_OPTIONS:
+            values.append(inline if eq else cmd[i + 1])
+    bad = []
+    for value in values:
+        if value == "none":
+            continue
+        for name in value.split(","):
+            m = re.fullmatch(r"(CUDA|ROCm)(\d+)", name.strip())
+            if not m or int(m.group(2)) >= visible:
+                bad.append(name)
+    return bad
+
+
+def _two_gpu_pinned_to_first(tmp_path, monkeypatch, env):
+    for name in (
+        "CUDA_VISIBLE_DEVICES",
+        "HIP_VISIBLE_DEVICES",
+        "ROCR_VISIBLE_DEVICES",
+        "LLAMA_ARG_DEVICE",
+        "MTMD_BACKEND_DEVICE",
+        "LLAMA_ARG_MAIN_GPU",
+    ):
+        monkeypatch.delenv(name, raising = False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    backend, gguf = _backend_non_vulkan(tmp_path, memory = [(0, 12_000, 16_000), (1, 12_000, 16_000)])
+    # The planner fits GPU 0 alone (the CPU-projector budget the reviews reproduced).
+    backend._select_gpus = lambda *args, **kwargs: ([0], False)
+    return backend, gguf
+
+
+@pytest.mark.parametrize(
+    ("extra_args", "env"),
+    [
+        pytest.param(
+            ["--mmproj-offload", "--mmproj-device", "none"],
+            {"MTMD_BACKEND_DEVICE": "CUDA1"},
+            id = "env_mtmd-mmproj_none",
+        ),
+        pytest.param(
+            ["-mmdev", "none"], {"MTMD_BACKEND_DEVICE": "CUDA1"}, id = "env_mtmd-mmdev_none"
+        ),
+        pytest.param(
+            ["--mmproj-device", "CUDA0"], {"MTMD_BACKEND_DEVICE": "CUDA1"}, id = "env_mtmd-mmproj_gpu"
+        ),
+        pytest.param(["--device", "CUDA0"], {"LLAMA_ARG_DEVICE": "CUDA1"}, id = "env_device-device"),
+        pytest.param(
+            [
+                "--mmproj-offload",
+                "--mmproj-device",
+                "none",
+                "--device",
+                "CUDA1",
+                "--device",
+                "CUDA0",
+            ],
+            {},
+            id = "device-device",
+        ),
+        pytest.param(["-dev", "CUDA1", "-dev", "CUDA0"], {}, id = "dev-dev"),
+        pytest.param(
+            ["--mmproj-device", "CUDA1"],
+            {"LLAMA_ARG_DEVICE": "CUDA0"},
+            id = "env_final_device-mmproj_gpu",
+        ),
+        pytest.param(
+            ["--spec-draft-device", "CUDA1"],
+            {"LLAMA_ARG_DEVICE": "CUDA0"},
+            id = "env_final_device-draft_gpu",
+        ),
+        # Controls fixed in r10: argv companions overridden by none.
+        pytest.param(["--mmproj-device", "CUDA1", "-mmdev", "none"], {}, id = "mmproj-mmdev_none"),
+        pytest.param(["--spec-draft-device", "CUDA1", "-devd", "none"], {}, id = "draft-devd_none"),
+    ],
+)
+def test_a_pinned_launch_keeps_every_parsed_device_name_resolvable(
+    tmp_path, monkeypatch, extra_args, env
+):
+    backend, gguf = _two_gpu_pinned_to_first(tmp_path, monkeypatch, env)
+    result = _launch(backend, gguf, extra_args = list(extra_args))
+    assert result["env"]["CUDA_VISIBLE_DEVICES"] == "0,1"
+    assert _launch_unresolvable_names(result) == []
+
+
+@pytest.mark.parametrize(
+    ("extra_args", "env"),
+    [
+        pytest.param(
+            ["--mmproj-device", "none"], {"MTMD_BACKEND_DEVICE": "CUDA1"}, id = "env_mtmd-mmproj_none"
+        ),
+        pytest.param(["--mmproj-device", "CUDA1", "-mmdev", "none"], {}, id = "mmproj-mmdev_none"),
+        pytest.param(["--spec-draft-device", "CUDA1", "-devd", "none"], {}, id = "draft-devd_none"),
+    ],
+)
+def test_an_explicit_pick_clears_an_overridden_name_it_excludes(
+    tmp_path, monkeypatch, extra_args, env
+):
+    # gpu_ids [0] is the user's own pick: GPU 1 stays hidden, and the overridden value
+    # naming it (it places nothing) is cleared instead of failing "invalid device".
+    backend, gguf = _two_gpu_pinned_to_first(tmp_path, monkeypatch, env)
+    result = _launch(backend, gguf, gpu_ids = [0], extra_args = list(extra_args))
+    assert result["env"]["CUDA_VISIBLE_DEVICES"] == "0"
+    assert _launch_unresolvable_names(result) == []
+
+
+@pytest.mark.parametrize(
+    ("extra_args", "env"),
+    [
+        pytest.param(
+            ["--mmproj-device", "none"], {"MTMD_BACKEND_DEVICE": "CUDA0"}, id = "env_mtmd-mmproj_none"
+        ),
+        pytest.param(
+            ["--device", "none"], {"LLAMA_ARG_DEVICE": "CUDA0"}, id = "env_device-device_none"
+        ),
+        pytest.param(["-mmdev", "CUDA0", "--mmproj-device", "none"], {}, id = "mmdev-mmproj_none"),
+        pytest.param(["-dev", "CUDA0", "--device", "none"], {}, id = "dev-device_none"),
+        pytest.param(["--device-draft", "CUDA0", "-devd", "none"], {}, id = "device_draft-devd_none"),
+    ],
+)
+def test_a_zero_offload_launch_keeps_a_parsed_gpu_name_visible(
+    tmp_path, monkeypatch, extra_args, env
+):
+    backend, gguf = _two_gpu_pinned_to_first(tmp_path, monkeypatch, env)
+    result = _launch(
+        backend, gguf, gpu_memory_mode = "manual", gpu_layers = 0, extra_args = list(extra_args)
+    )
+    assert result["env"].get("CUDA_VISIBLE_DEVICES") != "-1"
+    assert _launch_unresolvable_names(result) == []
