@@ -3766,7 +3766,6 @@ class _TextBatchSession:
             all_tokens = [prefix],
             samplers = [plan.sampler],
             logits_processors = [_row_logits_processors(plan.processors)],
-            state_machines = None,
         )
         if len(uids) != 1:
             self.generator.remove(list(uids))
