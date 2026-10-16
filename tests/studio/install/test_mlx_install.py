@@ -305,7 +305,7 @@ def test_mlx_command_preserves_pins_and_interpreter_on_fallback(monkeypatch, ret
 def test_mlx_pin_floor_matches_the_published_wheels(
     monkeypatch, python_version, macos_major, installable
 ):
-    """mlx 0.32.3 ships macosx_14_0_arm64 wheels, no sdist, and the pinned set starts at cp310."""
+    """mlx 0.32.4 ships macosx_14_0_arm64 wheels, no sdist, and the pinned set starts at cp310."""
     monkeypatch.setattr(stack.sys, "version_info", python_version)
     monkeypatch.setattr(stack, "_macos_release_major", Mock(return_value = macos_major))
     assert stack._mlx_pins_are_installable() is installable
@@ -314,7 +314,7 @@ def test_mlx_pin_floor_matches_the_published_wheels(
 def test_pin_floor_is_revisited_whenever_the_pins_move():
     """A pin bumped without its floor silently starts failing installs, so tie them here."""
     assert _repair_specs() == {
-        "mlx": "==0.32.3",
+        "mlx": "==0.32.4",
         "mlx-lm": ">=0.31.3,<=0.32.2",
         "mlx-vlm": ">=0.4.4,<=0.7.8",
     }
@@ -485,7 +485,7 @@ def test_an_unchanged_zoo_does_not_re_resolve_mlx(monkeypatch):
 
 
 def test_mlx_image_engine_pins_leave_the_mlx_stack_alone():
-    assert stack._MLX_PINS == ("mlx==0.32.3", "mlx-metal==0.32.3")
+    assert stack._MLX_PINS == ("mlx==0.32.4", "mlx-metal==0.32.4")
     names = {Requirement(spec).name.lower() for spec in stack._MLX_DIFFUSION_PINS}
     names |= {Requirement(spec).name.lower() for spec in stack._MLX_DIFFUSION_DEPS}
     assert names == {"mflux", "piexif", "platformdirs", "toml"}

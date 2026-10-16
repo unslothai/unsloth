@@ -64,7 +64,7 @@ def test_uv_cmd_targets_this_interpreter_with_mlx_packages(monkeypatch):
     # install cannot cross a major line on its own.
     assert "mlx-vlm>=0.4.4,<=0.7.8" in cmd
     # Pinned, not floored: see _MLX_INSTALL_SPECS.
-    assert "mlx==0.32.3" in cmd
+    assert "mlx==0.32.4" in cmd
     assert "mlx-lm>=0.31.3,<=0.32.2" in cmd
     # Look the requirement up by name rather than by prefix. Asserting on
     # startswith("mlx==") could only ever be checked on a spec that already
@@ -86,7 +86,7 @@ def test_install_narrows_mlx_vlm_to_what_the_installed_zoo_declares(monkeypatch)
     assert "<0.7.0" in vlm
     # mlx is pinned at both ends, so it is left alone: intersecting it with a zoo one patch
     # release behind would empty the range and break every self-heal.
-    assert "mlx==0.32.3" in packages
+    assert "mlx==0.32.4" in packages
     assert "mlx-lm>=0.31.3,<=0.32.2" in packages
 
 
