@@ -391,6 +391,17 @@ def test_stop_that_reports_not_found_is_already_stopped(monkeypatch):
     assert fake.kinds()[-1] == "stop" and cl.list_sessions() == []
 
 
+def test_stop_keeps_the_record_when_the_cli_is_gone(monkeypatch):
+    fake = FakeColab()
+    monkeypatch.setattr(cl, "run_shell", fake)
+    cl._run_job(_job())
+    fake.stop_rc = (127, "bash: line 1: colab: command not found")
+    fake.status_rc = (127, "bash: line 1: colab: command not found")
+    with pytest.raises(cl.LaunchError):
+        cl.stop_session("unsloth-colab-l4")
+    assert len(cl.list_sessions()) == 1 and len(linked_instances_db.list_instances()) == 1
+
+
 def test_start_launch_validates_before_spawning(monkeypatch):
     fake = FakeColab()
     monkeypatch.setattr(cl, "run_shell", fake)

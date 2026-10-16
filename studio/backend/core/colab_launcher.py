@@ -727,11 +727,14 @@ def _stop_session(session: str, *, drop_link: bool) -> None:
         raise LaunchError("The Colab CLI is not reachable from this machine.")
     auth = record.get("auth") if record else None
     result = run_shell(runner, _colab(session, auth, "stop", "-s", session), timeout = STOP_TIMEOUT)
-    if result.timed_out or (result.returncode != 0 and "not found" not in result.output.lower()):
+    # Only the CLI's own answer for a missing session means stopped: bash's "colab: command not
+    # found" (exit 127) says nothing about the VM, which may still be billing.
+    gone = f"session '{session}' not found"
+    if result.timed_out or (result.returncode != 0 and gone not in result.output.lower()):
         status = run_shell(
             runner, _colab(session, auth, "status", "-s", session), timeout = PROBE_TIMEOUT
         )
-        if status.timed_out or session_alive(status.output, session):
+        if status.timed_out or status.returncode != 0 or session_alive(status.output, session):
             raise LaunchError(f"colab stop failed: {_last_line(result.output)}")
     if record and drop_link and record.get("instance_id"):
         linked_instances_db.delete_instance(record["instance_id"])
