@@ -241,7 +241,13 @@ def rl_lengths(objective: str, max_seq_length: int, settings: dict) -> tuple[int
 
 
 def _reward_funcs(
-    reward_specs, worker_cls, make_python, make_rule, *, mode = "required", isolation = None
+    reward_specs,
+    worker_cls,
+    make_python,
+    make_rule,
+    *,
+    mode = "required",
+    isolation = None,
 ) -> list:
     """In ``reward_specs`` order, since TRL pairs ``reward_weights`` with them by position.
     ``mode`` is the os_sandbox mode: ``required`` refuses a host without OS isolation, ``auto``
@@ -261,7 +267,7 @@ def _reward_funcs(
                 f"Python rewards need the OS sandbox, and it is not available here ({exc}). "
                 f"{remediation} To run them with software safeguards only, which do not "
                 "stop a reward from reading your files, writing outside its folder or using the "
-                f"network, set {PYTHON_REWARD_ISOLATION_FIELD} to \"auto\"."
+                f'network, set {PYTHON_REWARD_ISOLATION_FIELD} to "auto".'
             ) from exc
         if worker.isolation.get("os_isolation"):
             logger.info("Python rewards run with %s", worker.isolation)
@@ -271,8 +277,7 @@ def _reward_funcs(
             isolation.update(worker.isolation)
         python_funcs = dict(zip((s["name"] for s in python), make_python(python, worker)))
     return [
-        python_funcs[s["name"]] if s.get("kind") == "python" else make_rule(s)
-        for s in reward_specs
+        python_funcs[s["name"]] if s.get("kind") == "python" else make_rule(s) for s in reward_specs
     ]
 
 

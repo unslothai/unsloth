@@ -313,7 +313,7 @@ def import_reward(raw: str, *, overwrite: bool = False) -> dict:
             raise RewardExistsError(f"A reward named '{spec['name']}' already exists.")
         target.mkdir(parents = True, exist_ok = True)
         # Re-render from the parsed spec so only validated fields reach disk.
-        (target / "REWARD.md").write_text(render_reward_markdown(spec), "utf-8")
+        (target / "REWARD.md").write_text(render_reward_markdown(spec), encoding = "utf-8")
     return {**spec, "source": "user", "valid": True, "error": None, "shadowed": False}
 
 
@@ -480,7 +480,6 @@ def preview_scores(
     isolation = None
     if python:
         from core.training.python_rewards import PythonRewardError, preview_python_scores
-
         if row is None and reference is not None:
             row = {"answer": reference}
         try:
