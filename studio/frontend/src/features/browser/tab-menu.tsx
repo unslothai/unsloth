@@ -25,6 +25,7 @@ import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { ForkIcon } from "@/lib/fork-icon";
 import { openExternalLink } from "@/lib/open-link";
 import { toast } from "@/lib/toast";
+import { cn } from "@/lib/utils";
 import {
   Add01Icon,
   BubbleChatAddIcon,
@@ -47,7 +48,8 @@ import { hostOf } from "./address";
 import { callNative, useNativeBrowser } from "./native-support";
 import { nativeAction, hasNativeView } from "./native-view";
 import { type PinnedPage, usePinnedPagesStore } from "./pinned-pages-store";
-import { type BrowserTab, currentEntry, useBrowserStore } from "./store";
+import { type BrowserTab, chatTabs, currentEntry, useBrowserStore } from "./store";
+import { useShallow } from "zustand/shallow";
 
 const ICON = "size-icon";
 
@@ -88,7 +90,7 @@ export function tabAddress(tab: BrowserTab | undefined): string | null {
 /** The tab showing a pinned page, if one is open. */
 export function usePinnedTab(pinnedId: string | undefined): BrowserTab | undefined {
   return useBrowserStore((state) =>
-    pinnedId ? state.tabs.find((tab) => tab.pinnedId === pinnedId) : undefined,
+    pinnedId ? chatTabs(state).find((tab) => tab.pinnedId === pinnedId) : undefined,
   );
 }
 
@@ -181,17 +183,20 @@ export function TabMenuItems({
   tab,
   pinned,
   strip = false,
+  subClassName = "browser-menu unsloth-plus-menu sidebar-row-menu",
   onRename,
 }: {
   P: TabMenuParts;
   tab?: BrowserTab;
   pinned?: PinnedPage;
   strip?: boolean;
+  /** Surface classes of the menu these items sit in, for its submenus. */
+  subClassName?: string;
   onRename: () => void;
 }) {
   const t = useT();
   const navigate = useNavigate();
-  const tabs = useBrowserStore((state) => state.tabs);
+  const tabs = useBrowserStore(useShallow(chatTabs));
   const url = (tab && tabAddress(tab)) ?? pinned?.url ?? null;
   const pinnedId = pinned?.id ?? tab?.pinnedId ?? null;
   const index = tab ? tabs.findIndex((other) => other.id === tab.id) : -1;
@@ -238,7 +243,7 @@ export function TabMenuItems({
             <HugeiconsIcon icon={ForkIcon} strokeWidth={1.75} className={ICON} />
             <span>{t("browser.tabMenu.fork")}</span>
           </P.SubTrigger>
-          <P.SubContent className="browser-menu unsloth-plus-menu sidebar-row-menu w-48">
+          <P.SubContent className={cn(subClassName, "w-48")}>
             <Row P={P} icon={BubbleChatAddIcon} onSelect={() => forkToChat(navigate, { tab, url }, false)}>
               {t("browser.tabMenu.forkNewChat")}
             </Row>

@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { cn } from "@/lib/utils";
 import {
   Select,
   SelectContent,
@@ -108,6 +109,25 @@ const PROVIDER_FORM_DURATION = 0.2;
 const CUSTOM_PROVIDER_MISSING_KEY_MESSAGE =
   "No API key found. Add a valid API key for this connection.";
 const HIDDEN_PROVIDER_TYPES = new Set(["qwen"]);
+
+// Ends the open provider menu just above this item so the rows from it on need a scroll.
+function capProviderMenuAtItem(item: HTMLElement | null) {
+  const content = item?.closest<HTMLElement>("[data-slot=select-content]");
+  if (!item || !content) return;
+  // offsetTop chain, not getBoundingClientRect: the open animation scales the menu.
+  let top = 0;
+  for (
+    let node: HTMLElement | null = item;
+    node && node !== content;
+    node = node.offsetParent as HTMLElement | null
+  ) {
+    top += node.offsetTop;
+  }
+  const viewport = item.closest<HTMLElement>("[data-radix-select-viewport]");
+  top -= viewport?.scrollTop ?? 0;
+  top += Number.parseFloat(getComputedStyle(content).paddingBottom) || 0;
+  content.style.maxHeight = `min(var(--radix-select-content-available-height), ${top}px)`;
+}
 
 function parseManualModelIds(text: string): string[] {
   const seen = new Set<string>();
@@ -327,7 +347,7 @@ export function ChatProvidersSettings({
     (!editingProviderId || editingBackendProviderType === "custom");
   const showCustomReasoning =
     isCustomReasoningConnection && apiType === "chat_completions";
-  // Unsloth runs Search, Code, MCP and RAG on this machine for any provider advertising the
+  // Unsloth runs Search, Tools, MCP and RAG on this machine for any provider advertising the
   // capability, with no extra opt-in. Say so where the connection is created: tool results
   // also travel back to the provider as the next turn's input.
   const runsStudioToolsLocally =
@@ -341,6 +361,21 @@ export function ChatProvidersSettings({
     () => new Map(registry.map((entry) => [entry.provider_type, entry])),
     [registry],
   );
+  // Decision-only connections (TypeSafe, Liquid AI) sit last, below the menu's fold.
+  const menuRegistry = useMemo(() => {
+    const visible = registry.filter(
+      (entry) => !HIDDEN_PROVIDER_TYPES.has(entry.provider_type),
+    );
+    const isDecision = (entry: ProviderRegistryEntry) =>
+      isDecisionConnection({ providerType: entry.provider_type });
+    return [
+      ...visible.filter((entry) => !isDecision(entry)),
+      ...visible.filter(isDecision),
+    ];
+  }, [registry]);
+  const firstBelowFoldProviderType = menuRegistry.find((entry) =>
+    isDecisionConnection({ providerType: entry.provider_type }),
+  )?.provider_type;
   const selectedProviderContract = registryByType.get(
     toExternalBackendProviderType(providerType),
   );
@@ -381,10 +416,19 @@ export function ChatProvidersSettings({
     availableModels.length > 0;
   const missingModelCatalogBaseUrl =
     supportsRemoteModelCatalog(providerType) && baseUrlDraft.trim().length === 0;
-  const editingProviderHasSavedKey = Boolean(
-    editingProviderId &&
-      providers.find((provider) => provider.id === editingProviderId)?.hasApiKey,
-  );
+  const editingProvider = editingProviderId
+    ? providers.find((provider) => provider.id === editingProviderId)
+    : undefined;
+  const editingProviderHasSavedKey = Boolean(editingProvider?.hasApiKey);
+  const selectedProviderLabel = isCustomProviderType(providerType)
+    ? customProviderDisplayName(providerType)
+    : selectedProviderContract?.display_name;
+  // A saved connection reads as its name; only an unsaved draft is "New".
+  const formTitle = editingProviderId
+    ? editingProvider?.name || selectedProviderLabel || "Edit"
+    : selectedProviderLabel
+      ? `New ${selectedProviderLabel}`
+      : "New";
   const missingModelCatalogApiKey =
     !isCustomProvider &&
     !isCuratedModelList &&
@@ -422,6 +466,13 @@ export function ChatProvidersSettings({
     : `${availableModels.length} models`;
   const modelSearchInputClassName =
     "h-8 w-full bg-background/55 text-xs placeholder:text-muted-foreground/65 focus-visible:border-border focus-visible:ring-0";
+  // Full-bleed rows of the Models card (-mx-4 undoes the body padding). The list grows with its rows
+  // and only scrolls past 10 (rows are min-h-9, plus 1px dividers).
+  const modelListClassName = cn(
+    "-mx-4 divide-y divide-border/60 border-border/60 border-y last:-mb-4 last:border-b-0",
+    filteredAvailableModels.length > 10 &&
+      "max-h-[calc(var(--spacing)*90+10px)] overflow-y-auto",
+  );
 
   useEffect(() => {
     providersRef.current = providers;
@@ -1449,7 +1500,7 @@ export function ChatProvidersSettings({
 
   if (page === "form") {
     return (
-      <div className="@container -mt-3 flex min-h-0 flex-col gap-2">
+      <div className="@container -mt-3 flex shrink-0 flex-col gap-2">
         <header className="flex items-center gap-2 pr-8">
           <Button
             type="button"
@@ -1467,8 +1518,11 @@ export function ChatProvidersSettings({
               Connections
             </span>
             <span className="size-1 rounded-full bg-muted-foreground/35" />
-            <span className="truncate text-xs font-medium text-muted-foreground">
-              {editingProviderId ? "Edit" : "New"}
+            <span
+              className="truncate text-xs font-medium text-muted-foreground"
+              title={formTitle}
+            >
+              {formTitle}
             </span>
           </div>
         </header>
@@ -1510,8 +1564,19 @@ export function ChatProvidersSettings({
                   >
                     <SelectValue placeholder="Choose a connection" />
                   </SelectTrigger>
-                  <SelectContent>
+                  {/* No scroll chevrons: the list scrolls by wheel, trackpad and keyboard. */}
+                  <SelectContent className="[&_[data-slot=select-scroll-down-button]]:hidden [&_[data-slot=select-scroll-up-button]]:hidden">
                     <SelectGroup>
+                      <SelectItem value={LEGACY_CUSTOM_PROVIDER_TYPE}>
+                        <span className="flex min-w-0 items-center gap-2">
+                          <ApiProviderLogo
+                            providerType={LEGACY_CUSTOM_PROVIDER_TYPE}
+                            className="size-4"
+                            title={CUSTOM_PROVIDER_DISPLAY_NAME}
+                          />
+                          <span className="truncate">{CUSTOM_PROVIDER_DISPLAY_NAME}</span>
+                        </span>
+                      </SelectItem>
                       {CUSTOM_PROVIDER_PRESETS.map((preset) => (
                         <SelectItem
                           key={preset.providerType}
@@ -1527,28 +1592,18 @@ export function ChatProvidersSettings({
                           </span>
                         </SelectItem>
                       ))}
-                      <SelectItem value={LEGACY_CUSTOM_PROVIDER_TYPE}>
-                        <span className="flex min-w-0 items-center gap-2">
-                          <ApiProviderLogo
-                            providerType={LEGACY_CUSTOM_PROVIDER_TYPE}
-                            className="size-4"
-                            title={CUSTOM_PROVIDER_DISPLAY_NAME}
-                          />
-                          <span className="truncate">{CUSTOM_PROVIDER_DISPLAY_NAME}</span>
-                        </span>
-                      </SelectItem>
                     </SelectGroup>
                     <SelectSeparator />
                     <SelectGroup>
-                      {registry
-                        .filter(
-                          (entry) =>
-                            !HIDDEN_PROVIDER_TYPES.has(entry.provider_type),
-                        )
-                        .map((entry) => (
+                      {menuRegistry.map((entry) => (
                           <SelectItem
                             key={entry.provider_type}
                             value={entry.provider_type}
+                            ref={
+                              entry.provider_type === firstBelowFoldProviderType
+                                ? capProviderMenuAtItem
+                                : undefined
+                            }
                           >
                             <span className="flex min-w-0 items-center gap-2">
                               <ApiProviderLogo
@@ -1882,8 +1937,8 @@ export function ChatProvidersSettings({
               {runsStudioToolsLocally ? (
                 <div className="px-4 py-3">
                   <p className="text-xs text-muted-foreground">
-                    Models on this connection can use Unsloth&apos;s Search, Code,
-                    MCP and Docs tools. Those run on this machine, and their
+                    Models on this connection can use Unsloth&apos;s Search, Tools,
+                    MCP and Docs. Those run on this machine, and their
                     results are sent back to the provider as part of the next
                     message. Code and terminal calls still ask before anything
                     risky runs.
@@ -2023,7 +2078,7 @@ export function ChatProvidersSettings({
                       Select from suggestions below or enter exact model IDs.
                     </p>
                     {availableModels.length > 0 ? (
-                      <div className="space-y-3 rounded-md border border-border/70 bg-background/50 p-3">
+                      <>
                         <div className="grid grid-cols-[minmax(90px,auto)_minmax(0,1fr)_auto] items-center gap-3 @max-[520px]:grid-cols-1">
                           <span className="whitespace-nowrap text-xs font-medium text-muted-foreground">
                             {availableModelsLabel}
@@ -2063,16 +2118,16 @@ export function ChatProvidersSettings({
                             </Button>
                           </div>
                         </div>
-                        <ul className="max-h-56 overflow-y-auto scroll-rounded rounded-md border border-border/70 bg-background/50">
+                        <ul className={modelListClassName}>
                           {filteredAvailableModels.length === 0 ? (
-                            <li className="px-3 py-3 text-xs text-muted-foreground">
+                            <li className="px-4 py-2.5 text-xs text-muted-foreground">
                               No matching models
                             </li>
                           ) : (
                             filteredAvailableModels.map((model, index) => (
                               <li
                                 key={model}
-                                className="flex cursor-pointer items-center gap-2.5 border-border/60 border-b px-3 py-2 last:border-b-0 hover:bg-muted/35"
+                                className="flex min-h-9 cursor-pointer items-center gap-2.5 px-4 py-1.5 hover:bg-muted/35"
                                 onClick={() => toggleModel(model)}
                               >
                                 <Checkbox
@@ -2090,7 +2145,7 @@ export function ChatProvidersSettings({
                             ))
                           )}
                         </ul>
-                      </div>
+                      </>
                     ) : null}
                     {modelIdsEditable ? (
                       <div className="space-y-2">
@@ -2152,16 +2207,16 @@ export function ChatProvidersSettings({
                             </Button>
                           </div>
                         </div>
-                        <ul className="max-h-56 overflow-y-auto scroll-rounded rounded-md border border-border/70 bg-background/50">
+                        <ul className={modelListClassName}>
                           {filteredAvailableModels.length === 0 ? (
-                            <li className="px-3 py-3 text-xs text-muted-foreground">
+                            <li className="px-4 py-2.5 text-xs text-muted-foreground">
                               No matching models
                             </li>
                           ) : (
                             filteredAvailableModels.map((model, index) => (
                               <li
                                 key={model}
-                                className="flex cursor-pointer items-center gap-2.5 border-border/60 border-b px-3 py-2 last:border-b-0 hover:bg-muted/35"
+                                className="flex min-h-9 cursor-pointer items-center gap-2.5 px-4 py-1.5 hover:bg-muted/35"
                                 onClick={() => toggleModel(model)}
                               >
                                 <Checkbox
@@ -2212,7 +2267,8 @@ export function ChatProvidersSettings({
             </AnimatePresence>
           </section>
 
-          <div className="mb-3 flex flex-wrap items-center justify-end gap-3">
+          {/* -mb-3 trims the settings pane's p-6 so the gap below the buttons matches the gap-3 above. */}
+          <div className="-mb-3 flex flex-wrap items-center justify-end gap-3">
             <div className="flex flex-wrap gap-2">
               <Button
                 type="button"
@@ -2426,7 +2482,7 @@ export function ChatProvidersDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
-        overlayClassName="bg-black/50 backdrop-blur-sm"
+        overlayClassName="bg-black/50"
         className="flex max-h-[90dvh] w-[96vw] flex-col gap-0 overflow-y-auto p-8 sm:max-w-none md:max-w-[calc(44rem*var(--ui-space-scale,1))]"
       >
         <DialogHeader className="sr-only">

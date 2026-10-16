@@ -297,8 +297,8 @@ _MANAGED_CLI_IMPORT_PROBE = (
 # Generous: cold interpreter start plus package import. A timeout means "no verdict", not failure.
 _MANAGED_CLI_IMPORT_PROBE_TIMEOUT = 60
 
-# ERROR_ACCESS_DISABLED_BY_POLICY, surfaced by Python as OSError.winerror.
-_ERROR_ACCESS_DISABLED_BY_POLICY = 1260
+# Policy refusals: AppLocker 1260, App Control / Smart App Control 4551. Not 577: a bad hash can be a damaged file.
+_APPLICATION_CONTROL_WINERRORS = frozenset({1260, 4551})
 
 
 def _managed_cli_argv(
@@ -314,7 +314,7 @@ def _managed_cli_argv(
 
 def _is_application_control_block(error: OSError) -> bool:
     """True when Windows refused to start a program by policy: nothing ran."""
-    return getattr(error, "winerror", None) == _ERROR_ACCESS_DISABLED_BY_POLICY
+    return getattr(error, "winerror", None) in _APPLICATION_CONTROL_WINERRORS
 
 
 @contextlib.contextmanager
@@ -383,6 +383,41 @@ def _openable_host_for_bind(run_mod, host: str) -> str:
     if _is_wildcard_bind(share_host):
         return _loopback_bind_host_for(host)
     return share_host
+
+
+def _require_valid_tls_flags(
+    ssl_certfile: Optional[Path],
+    ssl_keyfile: Optional[Path],
+    *,
+    secure: bool,
+    cloudflare: Optional[bool],
+) -> None:
+    """Fail on a bad --ssl-certfile/--ssl-keyfile launch before the password gate can change or strip credentials.
+    run_server re-checks the same rules (utils/studio_tls.py) for direct `run.py` callers."""
+    if ssl_certfile is None and ssl_keyfile is None:
+        return
+    if ssl_certfile is None or ssl_keyfile is None:
+        typer.echo("Error: --ssl-certfile and --ssl-keyfile must be passed together.", err = True)
+        raise typer.Exit(2)
+    if secure or cloudflare:
+        typer.echo(
+            "Error: --ssl-certfile/--ssl-keyfile serve HTTPS directly; do not combine them "
+            "with --secure or --cloudflare.",
+            err = True,
+        )
+        raise typer.Exit(2)
+    import ssl
+
+    try:
+        ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER).load_cert_chain(
+            str(ssl_certfile.expanduser()), str(ssl_keyfile.expanduser())
+        )
+    except (OSError, ssl.SSLError) as exc:
+        typer.echo(
+            f"Error: could not load the TLS certificate and key ({ssl_certfile}, {ssl_keyfile}): {exc}",
+            err = True,
+        )
+        raise typer.Exit(2)
 
 
 def _require_bind_host(host: str) -> None:
@@ -1660,6 +1695,18 @@ def _enforce_password_change_before_exposure(
         conn.close()
 
 
+def _parse_gpu_ids(value: Optional[str]) -> Optional[List[int]]:
+    if value is None or not value.strip():
+        return None
+    try:
+        ids = [int(part) for part in value.split(",") if part.strip()]
+    except ValueError:
+        raise ValueError(f"--gpus takes comma-separated GPU indices such as 0,1, not {value!r}.")
+    if any(i < 0 for i in ids) or len(set(ids)) != len(ids):
+        raise ValueError(f"--gpus needs distinct, non-negative GPU indices, not {value!r}.")
+    return ids or None
+
+
 def _load_model_via_http(
     port: int,
     api_key: str,
@@ -1676,6 +1723,8 @@ def _load_model_via_http(
     request_host: str = "127.0.0.1",
     engine: str = "auto",
     engine_precision: str = "auto",
+    engine_parallelism: str = "tensor",
+    gpu_ids: Optional[List[int]] = None,
 ) -> dict:
     import json
     import urllib.request
@@ -1704,6 +1753,10 @@ def _load_model_via_http(
     if engine != "auto":
         payload["engine"] = engine
         payload["engine_precision"] = engine_precision
+        if engine_parallelism != "tensor":
+            payload["engine_parallelism"] = engine_parallelism
+    if gpu_ids:
+        payload["gpu_ids"] = list(gpu_ids)
 
     data = json.dumps(payload).encode()
     url = f"http://{_url_host(request_host)}:{port}/api/inference/load"
@@ -1809,6 +1862,33 @@ def _format_context_length_line(load_result: dict) -> Optional[str]:
     return f"  Context length: {value_int} tokens"
 
 
+_MODELS_DIRS_ENV = "UNSLOTH_STUDIO_MODELS_DIRS"
+
+
+def _export_models_dirs(models_dir: Optional[List[Path]]) -> None:
+    """Hand --models-dir to the backend through the env, which both launch paths keep; the backend adds each as a Custom Folder."""
+    if not models_dir:
+        return
+    resolved = []
+    for raw in models_dir:
+        path = Path(raw).expanduser()
+        if not path.is_dir():
+            typer.echo(f"Error: --models-dir {raw} is not an existing folder.", err = True)
+            raise typer.Exit(2)
+        resolved_path = str(path.resolve())
+        if os.pathsep in resolved_path:
+            typer.echo(
+                f"Error: --models-dir {raw} contains '{os.pathsep}', which cannot be passed "
+                "to Studio. Rename the folder or add it from Custom Folders in the model picker.",
+                err = True,
+            )
+            raise typer.Exit(2)
+        resolved.append(resolved_path)
+    existing = [p for p in os.environ.get(_MODELS_DIRS_ENV, "").split(os.pathsep) if p]
+    merged = list(dict.fromkeys(existing + resolved))
+    os.environ[_MODELS_DIRS_ENV] = os.pathsep.join(merged)
+
+
 @studio_app.callback(invoke_without_command = True)
 def studio_default(
     ctx: typer.Context,
@@ -1886,11 +1966,30 @@ def studio_default(
         "`--password -` to read one line from stdin. A literal value is visible in the "
         "process list and shell history. Rotate later with `unsloth studio reset-password`.",
     ),
+    ssl_certfile: Optional[Path] = typer.Option(
+        None,
+        "--ssl-certfile",
+        help = "Serve HTTPS with this certificate (PEM, full chain), e.g. a Tailscale or "
+        "Let's Encrypt .crt. Needs --ssl-keyfile. Not combinable with --secure / --cloudflare.",
+    ),
+    ssl_keyfile: Optional[Path] = typer.Option(
+        None,
+        "--ssl-keyfile",
+        help = "Private key (PEM) for --ssl-certfile.",
+    ),
+    models_dir: Optional[List[Path]] = typer.Option(
+        None,
+        "--models-dir",
+        help = "Add a folder of local models to Studio (repeatable). It is saved as a "
+        "Custom Folder, so its models show up in the Chat and Train model pickers on this "
+        "and later launches; remove it from Custom Folders in the model picker.",
+    ),
 ):
     """Launch the Unsloth Studio server."""
     # --not-secure is a deprecated alias for --no-secure.
     secure = _resolve_secure(secure, not_secure)
     _ensure_studio_env_exported()
+    _export_models_dirs(models_dir)
     if ctx.invoked_subcommand is not None:
         # Typer does not forward parent options, so `unsloth studio --parallel N run` would drop N.
         if parallel != _PARALLEL_DEFAULT_PLAIN:
@@ -1968,9 +2067,17 @@ def studio_default(
                 err = True,
             )
             raise typer.Exit(2)
+        if ssl_certfile is not None or ssl_keyfile is not None:
+            typer.echo(
+                "Error: --ssl-certfile/--ssl-keyfile apply to `unsloth studio` itself, "
+                f"not to `unsloth studio {ctx.invoked_subcommand}`.",
+                err = True,
+            )
+            raise typer.Exit(2)
         return
 
     _require_bind_host(host)
+    _require_valid_tls_flags(ssl_certfile, ssl_keyfile, secure = secure, cloudflare = cloudflare)
     runtime_gate_handoff = _studio_runtime_gate.consume_runtime_gate_handoff()
     runtime_gate_acquire = _studio_runtime_gate.consume_runtime_gate_acquire()
     _preserve_cloudflare_intent(cloudflare, secure)
@@ -2084,6 +2191,10 @@ def studio_default(
                 args.append("--enable-tools")
             elif enable_tools is False:
                 args.append("--disable-tools")
+            if ssl_certfile is not None:
+                args.extend(["--ssl-certfile", str(ssl_certfile)])
+            if ssl_keyfile is not None:
+                args.extend(["--ssl-keyfile", str(ssl_keyfile)])
             # On Windows os.execvp keeps the parent alive and Ctrl+C would orphan the child.
             if sys.platform == "win32":
                 import subprocess as _sp
@@ -2127,7 +2238,8 @@ def studio_default(
 
         if not silent:
             launch_host = _openable_host_for_bind(run_mod, host)
-            typer.echo(f"Starting Unsloth Studio on http://{_url_host(launch_host)}:{port}")
+            scheme = "https" if ssl_certfile is not None else "http"
+            typer.echo(f"Starting Unsloth Studio on {scheme}://{_url_host(launch_host)}:{port}")
 
         run_kwargs = dict(
             host = host,
@@ -2139,6 +2251,9 @@ def studio_default(
             secure = secure,
             enable_tools = enable_tools,
         )
+        if ssl_certfile is not None or ssl_keyfile is not None:
+            run_kwargs["ssl_certfile"] = str(ssl_certfile) if ssl_certfile else None
+            run_kwargs["ssl_keyfile"] = str(ssl_keyfile) if ssl_keyfile else None
         if resolved_frontend is not None:
             run_kwargs["frontend_path"] = resolved_frontend
         run_server(**run_kwargs)
@@ -2153,6 +2268,7 @@ def studio_default(
             while True:
                 time.sleep(1)
     except KeyboardInterrupt:
+        getattr(run_mod, "_note_quit_signal", lambda: None)()
         run_mod._graceful_shutdown(run_mod._server)
         typer.echo("\nShutting down...")
     finally:
@@ -2262,7 +2378,8 @@ def run(
         help = (
             "Model path or HF repo. Accepts llama.cpp-style "
             "`org/repo:variant` syntax. `-hf` / `--hf-repo` match "
-            "llama-server's spelling."
+            "llama-server's spelling. An AMD Ryzen AI NPU model is "
+            "`lemonade:<id>` or its bare id, e.g. `qwen3-0.6b-FLM`."
         ),
     ),
     gguf_variant: Optional[str] = typer.Option(
@@ -2510,6 +2627,25 @@ def run(
         "`--password -` to read one line from stdin. A literal value is visible in the "
         "process list and shell history. Rotate later with `unsloth studio reset-password`.",
     ),
+    engine_parallelism: Literal["tensor", "pipeline", "data"] = typer.Option(
+        "tensor",
+        "--engine-parallelism",
+        rich_help_panel = _RUN_PANEL_MODEL,
+        help = (
+            "How --engine vllm/sglang uses several GPUs: tensor splits each layer, pipeline "
+            "splits the layers, data runs one replica per GPU and spreads requests across "
+            "them. pipeline and data use every visible GPU unless --gpus narrows it."
+        ),
+    ),
+    gpus: Optional[str] = typer.Option(
+        None,
+        "--gpus",
+        rich_help_panel = _RUN_PANEL_MODEL,
+        help = (
+            "Comma-separated GPU indices to load the model on, for example 0,1 (the "
+            "Studio GPU picker). Default: automatic selection."
+        ),
+    ),
 ):
     """Start Unsloth, load a model, print an API key -- one-liner server.
 
@@ -2527,6 +2663,7 @@ def run(
         unsloth studio run --model unsloth/Qwen3-1.7B-GGUF --temperature 0.7 --seed 42 --parallel 8
         unsloth studio run --model some-model --chat-template-file /path/to/tpl.jinja
         unsloth studio run --model unsloth/Qwen3-27B-GGUF --gguf-variant Q8_0 --tensor-parallel
+        unsloth studio run --model unsloth/Qwen3-8B --engine vllm --engine-parallelism data
     """
     # Passed via env, so an older re-exec target ignores it instead of treating it as a llama-server arg.
     inherited_start_api_key_marker = _consume_start_api_key_marker_env()
@@ -2564,12 +2701,14 @@ def run(
             os.environ[_sampling_env] = str(_sampling_value)
 
     # Set before any re-exec. --log-verbose keeps llama-server's own -v passthrough working.
+    added_log_verbose = False
     if verbose:
         _enable_verbose_access_logs()
         if engine == "auto" and not any(
             a in ("--verbose", "-v", "--log-verbose") for a in extra_llama_args
         ):
             extra_llama_args.append("--log-verbose")
+            added_log_verbose = True
     if disable_dns_pinning:
         os.environ["UNSLOTH_STUDIO_DISABLE_DNS_PINNING"] = "1"
     else:
@@ -2599,8 +2738,23 @@ def run(
         )
         raise typer.Exit(2)
 
+    from unsloth_cli._npu import npu_model_path
+
+    # An NPU model's `lemonade:` prefix is not a llama.cpp `repo:variant` split.
+    npu_path = npu_model_path(model)
+    if npu_path:
+        if added_log_verbose:
+            extra_llama_args.remove("--log-verbose")
+        if gguf_variant or extra_llama_args or engine != "auto":
+            typer.echo(
+                "Error: NPU models run on FastFlowLM; --gguf-variant, --engine and "
+                "llama-server flags do not apply to them.",
+                err = True,
+            )
+            raise typer.Exit(2)
+        model = npu_path
     # Parse llama.cpp `repo:variant`; error if it disagrees with --gguf-variant.
-    parsed_repo, embedded_variant = _split_repo_variant(model)
+    parsed_repo, embedded_variant = (model, None) if npu_path else _split_repo_variant(model)
     if embedded_variant:
         if gguf_variant and gguf_variant != embedded_variant:
             typer.echo(
@@ -2617,6 +2771,17 @@ def run(
             "llama-server flags apply only to the default backend.",
             err = True,
         )
+        raise typer.Exit(2)
+    if engine == "auto" and engine_parallelism != "tensor":
+        typer.echo(
+            "Error: --engine-parallelism applies only to --engine vllm or --engine sglang.",
+            err = True,
+        )
+        raise typer.Exit(2)
+    try:
+        gpu_ids = _parse_gpu_ids(gpus)
+    except ValueError as exc:
+        typer.echo(f"Error: {exc}", err = True)
         raise typer.Exit(2)
 
     _require_bind_host(host)
@@ -2768,6 +2933,11 @@ def run(
         args.append("--tensor-parallel" if tensor_parallel else "--no-tensor-parallel")
         if engine != "auto":
             args.extend(["--engine", engine, "--engine-precision", engine_precision])
+        # Only when set: an older studio-venv CLI would hand unknown flags to llama-server.
+        if engine_parallelism != "tensor":
+            args.extend(["--engine-parallelism", engine_parallelism])
+        if gpu_ids:
+            args.extend(["--gpus", ",".join(str(i) for i in gpu_ids)])
         if verbose:
             args.append("--verbose")
         if extra_llama_args:
@@ -2845,6 +3015,34 @@ def run(
             except RuntimeError as exc:
                 typer.echo(f"Error: {exc}", err = True)
                 raise typer.Exit(1)
+        if engine_parallelism != "tensor" and not gpu_ids:
+            # The engine otherwise gets one GPU, which makes pipeline / data a no-op.
+            from utils.hardware.hardware import resolve_requested_gpu_ids
+            gpu_ids = resolve_requested_gpu_ids(None)
+        if npu_path:
+            from unsloth_cli._npu import prepare_npu_model
+            def _npu_request(method, path, payload, timeout):
+                import urllib.request
+                request = urllib.request.Request(
+                    f"http://{_url_host(request_host)}:{actual_port}{path}",
+                    data = None if payload is None else json.dumps(payload).encode(),
+                    headers = {
+                        "Content-Type": "application/json",
+                        "Authorization": f"Bearer {api_key}",
+                    },
+                    method = method,
+                )
+                return _direct_urlopen(request, timeout = timeout)
+
+            try:
+                prepare_npu_model(
+                    _npu_request,
+                    model,
+                    (lambda _line: None) if silent else typer.echo,
+                )
+            except RuntimeError as exc:
+                typer.echo(f"Error: {exc}", err = True)
+                raise typer.Exit(1)
         if not silent:
             typer.echo(f"Loading model: {model}...")
         try:
@@ -2863,6 +3061,8 @@ def run(
                 request_host = request_host,
                 engine = engine,
                 engine_precision = engine_precision,
+                engine_parallelism = engine_parallelism,
+                gpu_ids = gpu_ids,
             )
         except RuntimeError as exc:
             typer.echo(f"Error: {exc}", err = True)
@@ -2919,7 +3119,8 @@ def run(
             typer.echo(context_length_line)
         typer.echo(f"  API Key:      {api_key}")
         typer.echo("")
-        typer.echo("  OpenAI / Anthropic SDK base URL:")
+        # An NPU model serves /v1/chat/completions only: no Anthropic or streaming Responses example.
+        typer.echo("  OpenAI SDK base URL:" if npu_path else "  OpenAI / Anthropic SDK base URL:")
         typer.echo(f"    {sdk_base_url}")
         typer.echo("=" * 56)
         typer.secho(_tool_notice, fg = _tool_notice_fg, bold = True)
@@ -2932,20 +3133,21 @@ def run(
             """    -d '{"messages": [{"role": "user", "content": "Hello"}], "stream": true}'"""
         )
         typer.echo("")
-        typer.echo("Anthropic Messages:")
-        typer.echo(f"  curl {sdk_base_url}/messages \\")
-        typer.echo(f'    -H "Authorization: Bearer {api_key}" \\')
-        typer.echo('    -H "Content-Type: application/json" \\')
-        typer.echo(
-            """    -d '{"max_tokens": 256, "messages": [{"role": "user", "content": "Hello"}], "stream": true}'"""
-        )
-        typer.echo("")
-        typer.echo("OpenAI Responses:")
-        typer.echo(f"  curl {sdk_base_url}/responses \\")
-        typer.echo(f'    -H "Authorization: Bearer {api_key}" \\')
-        typer.echo('    -H "Content-Type: application/json" \\')
-        typer.echo("""    -d '{"input": "Hello", "stream": true}'""")
-        typer.echo("")
+        if not npu_path:
+            typer.echo("Anthropic Messages:")
+            typer.echo(f"  curl {sdk_base_url}/messages \\")
+            typer.echo(f'    -H "Authorization: Bearer {api_key}" \\')
+            typer.echo('    -H "Content-Type: application/json" \\')
+            typer.echo(
+                """    -d '{"max_tokens": 256, "messages": [{"role": "user", "content": "Hello"}], "stream": true}'"""
+            )
+            typer.echo("")
+            typer.echo("OpenAI Responses:")
+            typer.echo(f"  curl {sdk_base_url}/responses \\")
+            typer.echo(f'    -H "Authorization: Bearer {api_key}" \\')
+            typer.echo('    -H "Content-Type: application/json" \\')
+            typer.echo("""    -d '{"input": "Hello", "stream": true}'""")
+            typer.echo("")
     else:
         if secure and _cf_url:
             typer.echo(f"URL:     {_cf_url}")
@@ -2967,6 +3169,7 @@ def run(
             while True:
                 time.sleep(1)
     except KeyboardInterrupt:
+        getattr(run_mod, "_note_quit_signal", lambda: None)()
         run_mod._graceful_shutdown(run_mod._server)
         typer.echo("\nShutting down...")
     finally:
@@ -3799,6 +4002,33 @@ def _with_studio_uv_cache(env: Optional[dict], cwd: Optional[Path] = None) -> Op
     return {**(env or os.environ), "UV_CACHE_DIR": str(studio_cache)}
 
 
+def _with_studio_uv(env: Optional[dict]) -> Optional[dict]:
+    """An install with a custom UNSLOTH_STUDIO_HOME keeps its uv-managed Python in <home>/python
+    and its own uv in <home>/uv; only that installer creates <home>/python. Without this, setup
+    would put a missing or stale uv, and any managed Python, in the profile. setup version-checks
+    the uv it finds there and replaces it in place; a uv already on PATH is used as before."""
+    try:
+        if (
+            not _STUDIO_HOME_IS_CUSTOM
+            or STUDIO_HOME.resolve() == (Path.home() / ".unsloth" / "studio").resolve()
+        ):
+            return env
+    except (OSError, RuntimeError, ValueError):
+        return env
+    if not (STUDIO_HOME / "python").is_dir():
+        return env
+    out = {**(env if env is not None else os.environ)}
+    if not (out.get("UV_PYTHON_INSTALL_DIR") or "").strip():
+        out["UV_PYTHON_INSTALL_DIR"] = str(STUDIO_HOME / "python")
+    # astral's unmanaged mode: that directory, no profile or user PATH edit (setup.sh, setup.ps1).
+    if not any(
+        (out.get(k) or "").strip()
+        for k in ("UV_INSTALL_DIR", "UV_UNMANAGED_INSTALL", "XDG_BIN_HOME")
+    ):
+        out["UV_UNMANAGED_INSTALL"] = str(STUDIO_HOME / "uv")
+    return out
+
+
 def _run_setup_script(*, verbose: bool = False, repo_root: Optional[Path] = None) -> None:
     script = _find_setup_script(repo_root)
     if not script:
@@ -3815,6 +4045,7 @@ def _run_setup_script(*, verbose: bool = False, repo_root: Optional[Path] = None
     # Where setup runs uv from: setup.sh cds into its own directory, setup.ps1 keeps this cwd.
     setup_cwd = None if platform.system() == "Windows" else script.parent
     env = _with_studio_uv_cache(env, cwd = setup_cwd)
+    env = _with_studio_uv(env)
     # Saves setup.ps1 the process walk. A HINT, not a promise: only the desktop spawn guarantees
     # the managed venv's python, while a pip install, a checkout or a staged run puts an
     # interpreter here that is nowhere near $VenvDir. Get-SetupHostInterpreterInVenv tests

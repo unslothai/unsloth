@@ -240,7 +240,7 @@ test("the budget reads as a percentage and steps in tenths", () => {
   const row = vramBudgetRowSource();
   // Without the suffix, 97 sits between controls measured in layers and tokens
   // and reads as neither.
-  assert.match(row, /displayValue=\{`\$\{percent\}%`\}/);
+  assert.match(row, /format=\{\(v\) => `\$\{v\}%`\}/);
   assert.match(row, /step=\{VRAM_BUDGET_PERCENT_STEP\}/);
   // The shared slider defaults to whole steps, so the other callers are untouched.
   const slider = pageSource.slice(

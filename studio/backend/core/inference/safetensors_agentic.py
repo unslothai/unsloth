@@ -63,11 +63,14 @@ from core.inference.mcp_images import (
 )
 from core.inference.tool_loop_controller import (
     _WORKSPACE_READ_TOOLS,
-    _WORKSPACE_TOOLS,
+    BROWSER_TOOL_NAMES,
     ToolLoopController,
+    _reruns_after_new_work,
     append_deferred_nudges,
     awaiting_approval_status,
     coerce_tool_arguments,
+    restore_replayed_tool_results,
+    with_appended_text,
     status_for_tool,
     tool_call_limit_nudge,
     tool_event_provenance,
@@ -75,6 +78,8 @@ from core.inference.tool_loop_controller import (
 from core.inference.chat_template_helpers import (
     append_assistant_turn,
     trailing_assistant_resume_kind,
+    forced_tool_name,
+    forced_turn_tools,
 )
 from core.inference.passthrough_healing import nudge_enabled
 from state.tool_approvals import (
@@ -621,6 +626,7 @@ def run_safetensors_tool_loop(
     execute_tool: Callable[..., str],
     cancel_event: Optional[threading.Event] = None,
     auto_heal_tool_calls: bool = True,
+    deduplicate_tool_calls: bool = True,
     nudge_tool_calls: Optional[bool] = None,
     max_tool_iterations: int = 25,
     tool_call_timeout: int = 300,
@@ -642,6 +648,8 @@ def run_safetensors_tool_loop(
     images_sink: Optional[list] = None,
     caller_image_indexes: "tuple[int, ...]" = (),
     context_fitter: Optional[Callable[[list, list, list], dict]] = None,
+    tool_choice = None,
+    disable_parallel_tool_use: bool = False,
 ) -> Generator[dict, None, None]:
     """Drive an agentic tool loop on top of a cumulative-text generator.
 
@@ -663,7 +671,11 @@ def run_safetensors_tool_loop(
 
     * ``{"type": "tool_end", "tool_name", "tool_call_id", "result"}``
     """
-    conversation = list(messages)
+    if mcp_image is not None:
+        from core.inference.mcp_image import note_attached_image
+        from core.inference.tools import mcp_image_targets
+        messages = note_attached_image(messages, mcp_image_targets(_active_tool_names(tools)))
+    conversation = restore_replayed_tool_results(messages)
     # Where the caller's own attachment sits in the seeded sink. The cap is about what
     # the loop RE-SENDS, so that entry is never the one it drops -- but it is not the
     # whole seed: a resumed chat seeds replayed pictures too, and exempting those would
@@ -674,7 +686,8 @@ def run_safetensors_tool_loop(
     # switch to safetensors, so search_conversation is advertised here too and needs the
     # same filtering: the stored rows are the whole DAG, and Retry leaves the replaced
     # response in them.
-    _live_branch = list(messages)
+    # Restored dicts are new; the branch matches by identity.
+    _live_branch = list(conversation)
     # ...and the replies and tool results the loop adds to it: a fit can evict this request's
     # own earlier tool exchange into the archive, where the client's messages alone would
     # refuse it. Not the loop's user turns: those are its own notices, and recall searches
@@ -745,14 +758,20 @@ def run_safetensors_tool_loop(
     # Autoinject ran a KB search outside the controller, so it counts as an
     # executed tool for the plan-without-action gate.
     rag_autoinjected = bool(_auto)
+    # As on llama-server: a forced tool is the only one offered until a call runs or is denied.
+    forced_resolved = rag_autoinjected and forced_tool_name(tool_choice) == "search_knowledge_base"
 
     unrestricted_tools = not tools
     # Gate telling a genuine NAME[ARGS] rehearsal from inactive-name prose; built from the
     # ORIGINAL tools list so a spent one-shot still reads as a tool name. None = unrestricted.
-    _enabled_names_gate = None if unrestricted_tools else set(_active_tool_names(tools))
+    from core.inference.tools import mcp_loadable_specs
+
+    # Plus the MCP tools a search can load mid-turn (#10997).
+    _loadable_mcp = [] if unrestricted_tools else mcp_loadable_specs(tools)
+    _detect_tools = [] if unrestricted_tools else list(tools or []) + _loadable_mcp
+    _enabled_names_gate = None if unrestricted_tools else set(_active_tool_names(_detect_tools))
     # Detection must see the same names as the strip gate (ORIGINAL list, incl. a spent
     # one-shot), else its repeat is stripped but never drained and the turn ends blank.
-    _detect_tools = [] if unrestricted_tools else list(tools or [])
     # Sanitized at construction: prepare_call authorizes against the controller, so a tool
     # dropped from the prompt for unsafe markup must leave the controller too. The gates above
     # keep the ORIGINAL names: those decide what LOOKS like a call, not what may run (#7066).
@@ -771,6 +790,7 @@ def run_safetensors_tool_loop(
     tool_controller = ToolLoopController(
         tools = (None if unrestricted_tools else _authorized),
         auto_heal_tool_calls = auto_heal_tool_calls,
+        deduplicate_tool_calls = deduplicate_tool_calls,
         session_id = session_id,
         thread_id = thread_id,
     )
@@ -779,6 +799,10 @@ def run_safetensors_tool_loop(
     final_attempt_done = False
     next_call_id = 0
     reprompt_count = 0
+    # A browser task is many steps, each a chance to announce the next one and stop: there one
+    # nudge per tool turn, as in the GGUF and external loops; other requests never nudge after a tool.
+    browser_turns = any(name in BROWSER_TOOL_NAMES for name in _active_tool_names(tools or []))
+    post_tool_reprompts = 0
     # Text that triggered the last nudge; if the retry restates it, stop (GGUF parity).
     last_reprompt_text = ""
     # A denied tool confirmation must not be answered with a plan-without-action
@@ -806,7 +830,11 @@ def run_safetensors_tool_loop(
     _state_draining = 2
 
     # Reserve re-prompt slots so they don't eat the caller's tool budget.
-    _extra_iters = MAX_ACT_REPROMPTS if max_tool_iterations > 0 else 0
+    _extra_iters = (
+        MAX_ACT_REPROMPTS + (max_tool_iterations if browser_turns else 0)
+        if max_tool_iterations > 0
+        else 0
+    )
     for iteration in range(max_tool_iterations + _extra_iters + 1):
         if cancel_event is not None and cancel_event.is_set():
             return
@@ -820,11 +848,18 @@ def run_safetensors_tool_loop(
             if not active_tools and not unrestricted_tools:
                 final_attempt_done = True
                 active_tools = []
+            elif not forced_resolved:
+                active_tools = forced_turn_tools(tool_choice, active_tools)
 
         tool_protocol_active = not final_attempt_done and (unrestricted_tools or bool(active_tools))
         tool_xml_signals = TOOL_XML_SIGNALS if tool_protocol_active else ()
         # Gate the markerless bare-JSON form on enabled names so an ordinary JSON answer isn't misread as a call.
-        _enabled_tool_names = None if unrestricted_tools else set(_active_tool_names(active_tools))
+        _enabled_tool_names = (
+            None
+            if unrestricted_tools
+            else set(_active_tool_names(active_tools))
+            | (set(_active_tool_names(_loadable_mcp)) if active_tools else set())
+        )
 
         # Refit every iteration: tool results grow the prompt after the first turn. Given
         # the prompt, this turn's tools and the live branch; returns `messages` and `events`.
@@ -1276,14 +1311,20 @@ def run_safetensors_tool_loop(
                     content_accum,
                     reasoning_prefilled = reasoning_prefilled,
                 )
+                already_acted = any(record.executed for record in tool_controller.history)
                 if (
                     auto_heal_tool_calls
                     and nudge_enabled(nudge_tool_calls)
                     and active_tools
-                    and reprompt_count < MAX_ACT_REPROMPTS
-                    and not rag_autoinjected
+                    and (
+                        post_tool_reprompts < 1
+                        if already_acted
+                        else reprompt_count < MAX_ACT_REPROMPTS
+                    )
+                    # Retrieval injected up front is no reason to stop a browser task mid-way.
+                    and (not rag_autoinjected or (browser_turns and already_acted))
                     and not tool_denied
-                    and not any(record.executed for record in tool_controller.history)
+                    and (browser_turns or not already_acted)
                     and not is_reprompt_repeat(intent_text, last_reprompt_text)
                     and is_short_intent_without_action(intent_text)
                     # Markup stripped first: a call fenced inside <tool_call> is not an answer.
@@ -1299,13 +1340,16 @@ def run_safetensors_tool_loop(
                         )
                     )
                 ):
-                    reprompt_count += 1
+                    if already_acted:
+                        post_tool_reprompts += 1
+                    else:
+                        reprompt_count += 1
                     last_reprompt_text = intent_text
                     logger.info(
                         "Safetensors re-prompt %d/%d: model responded without "
                         "calling tools (%d chars)",
-                        reprompt_count,
-                        MAX_ACT_REPROMPTS,
+                        post_tool_reprompts if already_acted else reprompt_count,
+                        1 if already_acted else MAX_ACT_REPROMPTS,
                         len(intent_text),
                     )
                     # Merges into a resumed partial: the nudge that follows is a user
@@ -1421,10 +1465,13 @@ def run_safetensors_tool_loop(
             novel_kept = 0
             novel_at_last_keep: dict = {}
             deduped: list = []
-            for _tc in tool_calls:
+            if not deduplicate_tool_calls:
+                deduped = tool_calls[:_MAX_TOOL_CALLS_PER_TURN]
+                over_cap = tool_calls[_MAX_TOOL_CALLS_PER_TURN:]
+            for _tc in tool_calls if deduplicate_tool_calls else ():
                 _fn = _tc.get("function", {}) or {}
                 _key = (_fn.get("name", ""), str(_fn.get("arguments", "")))
-                if _fn.get("name") in _WORKSPACE_TOOLS:
+                if _reruns_after_new_work(_fn.get("name")):
                     if _key == last_workspace_key:
                         continue
                     if _key in seen_keys:
@@ -1434,7 +1481,8 @@ def run_safetensors_tool_loop(
                         novel_kept += 1
                     novel_at_last_keep[_key] = novel_kept
                     last_workspace_key = _key
-                elif _key in seen_keys:
+                # A browser call acts on the page as it is then: two scrolls are two scrolls.
+                elif _key in seen_keys and _fn.get("name") not in BROWSER_TOOL_NAMES:
                     continue
                 seen_keys.add(_key)
                 if len(deduped) < _MAX_TOOL_CALLS_PER_TURN:
@@ -1454,6 +1502,9 @@ def run_safetensors_tool_loop(
                     _MAX_TOOL_CALLS_PER_TURN,
                 )
             tool_calls = deduped
+            # Truncated before the assistant turn is built, so extra calls never run.
+            if disable_parallel_tool_use and len(tool_calls) > 1:
+                tool_calls, over_cap = tool_calls[:1], []
 
         assistant_msg: dict = {"role": "assistant", "content": content_text}
         assistant_appended = False
@@ -1480,6 +1531,14 @@ def run_safetensors_tool_loop(
             # consecutive results the same way -- so without the id a batch persisted
             # as separate pairs replayed as several pictures on the next request.
             decision.provenance["round_id"] = iteration
+            image_share = None
+            if decision.should_execute and mcp_image is not None:
+                from core.inference.tools import mcp_image_share
+                image_share = mcp_image_share(decision.tool_name, decision.arguments, mcp_image)
+                if image_share is not None:
+                    decision = tool_controller.reprepare_call(
+                        decision, provisional = provisional_match
+                    )
 
             if not decision.should_execute:
                 if content_text and not assistant_appended:
@@ -1525,8 +1584,6 @@ def run_safetensors_tool_loop(
             # Bypass wins here too, so a direct internal caller with both flags
             # never prompts. "auto" pauses only high-risk calls; "off" pauses only a
             # high-risk python/terminal call without OS isolation.
-            from core.inference.tools import mcp_image_share
-
             needs_confirm = needs_tool_confirmation(
                 confirm_tool_calls = bool(confirm_tool_calls),
                 bypass_permissions = bypass_permissions,
@@ -1536,7 +1593,6 @@ def run_safetensors_tool_loop(
                 sandbox_level = sandbox_level,
             )
             # Sending the user's image always asks, whatever the permission mode.
-            image_share = mcp_image_share(decision.tool_name, decision.arguments, mcp_image)
             needs_confirm = needs_confirm or image_share is not None
             strict_isolation = requires_os_isolation(
                 confirm_tool_calls = bool(confirm_tool_calls),
@@ -1769,7 +1825,11 @@ def run_safetensors_tool_loop(
             completion = tool_controller.record_result(decision, result)
             if provisional_match:
                 provisional_resolved = True
-            _turn_executed_real_tool = True
+            # Loading MCP tools is not a tool round, or a budget of one could never call what it found.
+            if decision.tool_name != "mcp_tool_search":
+                _turn_executed_real_tool = True
+            # Any executed call, discovery included, releases a forced choice (as on llama-server).
+            forced_resolved = True
             yield completion.tool_end_event()
             conversation.append(completion.tool_message())
             # Parsed only when there is a sink for them.
@@ -1827,6 +1887,7 @@ def run_safetensors_tool_loop(
                 caller_images = trim_image_turns(conversation, images_sink, keep = caller_images)
 
         yield {"type": "status", "text": ""}
+        forced_resolved = forced_resolved or tool_denied
 
         if tool_controller.force_final_answer:
             final_attempt_done = True
@@ -1838,12 +1899,19 @@ def run_safetensors_tool_loop(
         # consume budget so the model gets its nudge and another tool-enabled turn (GGUF parity).
         if _turn_executed_real_tool:
             _executed_tool_iters += 1
+            post_tool_reprompts = 0
+            if browser_turns:
+                # A new step may stall in the same words as the last one (external loop parity).
+                last_reprompt_text = ""
         if _executed_tool_iters >= max_tool_iterations and not final_attempt_done:
             final_attempt_done = True
-            if over_cap:
+            # Ride a trailing user turn, as the GGUF loop does.
+            if over_cap or conversation[-1].get("role") == "user":
                 conversation[-1] = {
                     **conversation[-1],
-                    "content": f"{conversation[-1]['content']}\n\n{BUDGET_EXHAUSTED_NUDGE}",
+                    "content": with_appended_text(
+                        conversation[-1]["content"], f"\n\n{BUDGET_EXHAUSTED_NUDGE}"
+                    ),
                 }
             else:
                 conversation.append({"role": "user", "content": BUDGET_EXHAUSTED_NUDGE})

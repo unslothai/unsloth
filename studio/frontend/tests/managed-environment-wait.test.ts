@@ -117,6 +117,7 @@ function harness(
     setStatus: (status: string) => statuses.push(status),
     syncTrayStatus: noop,
     setError: (error: string) => errors.push(error),
+    setInstallDiskFull: noop,
     setApiBase: noop,
     setIsExternalServer: noop,
     stopExternalServerPoll: noop,

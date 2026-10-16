@@ -35,14 +35,18 @@ from .auth import (
 )
 from .export import (
     LoadCheckpointRequest,
+    ExportCancelRequest,
     ExportStatusResponse,
     ExportOperationResponse,
     ExportMergedModelRequest,
     ExportBaseModelRequest,
     ExportGGUFRequest,
     ConvertQ4NXRequest,
+    ExportDiffusionLoRARequest,
     ExportLoRAAdapterRequest,
     LlmCompressorExportProbeResponse,
+    DecisionExportInfo,
+    ExportDecisionInfoResponse,
 )
 from .users import Token
 from .inference import (
@@ -94,14 +98,18 @@ __all__ = [
     "ModelCheckpoints",
     "CheckpointListResponse",
     "LoadCheckpointRequest",
+    "ExportCancelRequest",
     "ExportStatusResponse",
     "ExportOperationResponse",
     "ExportMergedModelRequest",
     "ExportBaseModelRequest",
     "ExportGGUFRequest",
     "ConvertQ4NXRequest",
+    "ExportDiffusionLoRARequest",
     "ExportLoRAAdapterRequest",
     "LlmCompressorExportProbeResponse",
+    "DecisionExportInfo",
+    "ExportDecisionInfoResponse",
     "Token",
     "LoadRequest",
     "UnloadRequest",

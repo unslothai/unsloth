@@ -152,6 +152,7 @@ export function useTauriBackend() {
   const statusRef = useRef<BackendStatus>(status);
   const [logs, setLogs] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [installDiskFull, setInstallDiskFull] = useState(false);
   // Guard against double startServer calls
   const startingRef = useRef(false);
   // Guard against double stopServer calls
@@ -206,18 +207,21 @@ export function useTauriBackend() {
     stopManagedEnvironmentWait();
     statusRef.current = nextStatus;
     setStatus(nextStatus);
+    setInstallDiskFull(false);
     syncTrayStatus(nextStatus);
   }
 
   function setBackendError(
     nextError: string,
     nextStatus: BackendStatus = "error",
+    diskFull = false,
   ) {
     if (authFailureRef.current) return;
     stopManagedEnvironmentWait();
     statusRef.current = nextStatus;
     setStatus(nextStatus);
     setError(nextError);
+    setInstallDiskFull(diskFull);
     syncTrayStatus(nextStatus);
   }
 
@@ -566,7 +570,9 @@ export function useTauriBackend() {
     setBackendStatus("stopped");
   }
 
-  async function startInstall() {
+  // Strict check: onClick passes a click event here.
+  async function startInstall(options?: { skipLongPaths?: boolean }) {
+    const skipLongPaths = options?.skipLongPaths === true;
     elevationResumeRef.current = null;
     setCurrentStepIndex(-1);
     setProgressDetail(null);
@@ -576,7 +582,7 @@ export function useTauriBackend() {
     clearBackendError();
     const { invoke } = await import("@tauri-apps/api/core");
     try {
-      await invoke("start_install");
+      await invoke("start_install", { skipLongPaths });
       // Install done: start the managed backend we just installed. Don't run the general preflight
       // here, it can attach to an unrelated running CLI/backend before launching ours. The
       // install-complete listener does NOT call startServer() to avoid a double-start race.
@@ -588,6 +594,9 @@ export function useTauriBackend() {
       // NEEDS_ELEVATION is not a real error: the Rust side also emits install-needs-elevation (sets
       // needs-elevation status). Don't race with it by setting install-error here.
       if (msg.includes("NEEDS_ELEVATION")) return;
+      // install-failed is emitted before the command returns and already set this error
+      // with its disk-full flag; setting it again here would clear that flag.
+      if (statusRef.current === "install-error") return;
       setBackendError(msg, "install-error");
     }
   }
@@ -755,8 +764,8 @@ export function useTauriBackend() {
         setProgressDetail(e.payload);
       });
 
-      register<string>("install-failed", (e) => {
-        setBackendError(e.payload, "install-error");
+      register<{ message: string; diskFull: boolean }>("install-failed", (e) => {
+        setBackendError(e.payload.message, "install-error", e.payload.diskFull);
       });
 
       register<string>("repair-progress", (e) => {
@@ -869,7 +878,7 @@ export function useTauriBackend() {
   }, []);
 
   return {
-    status, logs, error, isExternalServer, closing,
+    status, logs, error, installDiskFull, isExternalServer, closing,
     currentStepIndex, progressDetail, startupMessage, elevationPackages,
     startServer, stopServer, startInstall,
     retry, retryInstall, approveElevation, copyDiagnostics,

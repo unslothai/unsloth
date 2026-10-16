@@ -106,9 +106,12 @@ Object.assign(globalThis, {
   window: { AudioContext: FakeAudioContext },
 });
 
-const { PcmRecorder, encodeWav, mediaRecorderCanEncodeAudio } = await import(
-  "../src/features/chat/adapters/pcm-recorder.ts"
-);
+const {
+  PcmRecorder,
+  createAudioRecorder,
+  encodeWav,
+  mediaRecorderCanEncodeAudio,
+} = await import("../src/features/chat/adapters/pcm-recorder.ts");
 
 const newRecorder = () => {
   FakeAudioContext.last = null;
@@ -346,6 +349,64 @@ test("secondsWithin keeps a WAV inside the upload cap", () => {
   // caller stops on this, has to stay under the cap.
   const inFlightBytes = 4096 * 2;
   assert.ok(44 + seconds * 32_000 + inFlightBytes < cap);
+});
+
+// --- MediaRecorder that advertises Opus but refuses to start (#11939) --------
+
+test("a MediaRecorder that refuses to start falls back to PCM", () => {
+  let startError = new Error("device lost");
+  let constructed = 0;
+  class RefusingMediaRecorder {
+    static isTypeSupported = (type: string) =>
+      type === "audio/webm;codecs=opus";
+    state = "inactive";
+    mimeType = "audio/webm;codecs=opus";
+    constructor() {
+      constructed += 1;
+    }
+    addEventListener(): void {}
+    start(): void {
+      throw startError;
+    }
+    stop(): void {}
+  }
+  Object.assign(globalThis, { MediaRecorder: RefusingMediaRecorder });
+  const stream = { active: true } as unknown as MediaStream;
+
+  // Anything but the engine's refusal is still the caller's error.
+  assert.throws(() => createAudioRecorder(stream).start(250), /device lost/);
+
+  startError = Object.assign(new Error("unsupported"), {
+    name: "NotSupportedError",
+  });
+  // So is the same error name for a stream whose tracks have ended.
+  const ended = { active: false } as unknown as MediaStream;
+  assert.throws(() => createAudioRecorder(ended).start(250), /unsupported/);
+  const recorder = createAudioRecorder(stream, "audio/webm;codecs=opus");
+  const events: string[] = [];
+  let recorded: { data: Blob } | null = null;
+  recorder.addEventListener("dataavailable", (event) => {
+    events.push("dataavailable");
+    recorded = event;
+  });
+  recorder.addEventListener("stop", () => events.push("stop"), { once: true });
+  recorder.start(250);
+  assert.equal(recorder.state, "recording");
+  assert.equal(recorder.mimeType, "audio/wav");
+  FakeAudioContext.last?.processor.emit(new Float32Array([1, -1]));
+  recorder.stop();
+  assert.deepEqual(events, ["dataavailable", "stop"]);
+  assert.equal((recorded as unknown as { data: Blob }).data.type, "audio/wav");
+  // The listener options survive the swap: a once listener does not fire again.
+  recorder.start();
+  recorder.stop();
+  assert.deepEqual(events, ["dataavailable", "stop", "dataavailable"]);
+
+  // Later segments skip the recorder that is known not to start.
+  assert.equal(constructed, 3);
+  assert.ok(createAudioRecorder(stream) instanceof PcmRecorder);
+  assert.equal(constructed, 3);
+  delete (globalThis as { MediaRecorder?: unknown }).MediaRecorder;
 });
 
 // --- Neither call site may construct a MediaRecorder directly again ----------

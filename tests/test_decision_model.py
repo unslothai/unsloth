@@ -13,10 +13,16 @@ from real_accelerator import has_real_cuda
 
 torch = pytest.importorskip("torch")
 
+import unsloth
+
+# The torch backend: on Apple Silicon unsloth serves decision models from decision_mlx instead.
+if unsloth._IS_MLX:
+    pytest.skip("the torch backend", allow_module_level = True)
+
 from transformers import TrainerCallback, TrainingArguments
 
 from unsloth import DecisionTrainer, FastDecisionModel
-from unsloth.models import decision
+from unsloth.models import _decision_common, decision
 from unsloth.models.decision import (
     DecisionDataCollator,
     DecisionDataError,
@@ -171,7 +177,7 @@ def test_laya_is_the_copy_vendored_with_unsloth(monkeypatch, fresh_laya):
 
 
 def test_missing_vendored_laya_is_a_clear_error(monkeypatch, tmp_path, fresh_laya):
-    monkeypatch.setattr(decision, "_VENDORED_LAYA", tmp_path / "laya" / "__init__.py")
+    monkeypatch.setattr(_decision_common, "_VENDORED_LAYA", tmp_path / "laya" / "__init__.py")
     with pytest.raises(ImportError, match = "Unsloth: decision models need laya"):
         decision._laya()
 
@@ -419,10 +425,15 @@ def test_train_calibrate_save_and_serve(checkpoint, tmp_path, lora):
     encoder_config = (checkpoint / "encoder" / "config.json").read_bytes()
     assert (tmp_path / "out" / "encoder" / "config.json").read_bytes() == encoder_config
     agent = laya.load(str(tmp_path / "out"), device = "cpu")
-    assert agent.predict("the server is down again", QUESTIONS)["answers"]["team"]["choice"] in (
-        "outage",
-        "billing",
-    )
+    served = agent.predict("the server is down again", QUESTIONS)["answers"]
+    assert served["team"]["choice"] in ("outage", "billing")
+    # predict() answers like the served checkpoint, from the model in memory.
+    ours = FastDecisionModel.predict(model, tokenizer, "the server is down again", QUESTIONS)
+    assert set(ours) == set(QUESTIONS)
+    for name, answer in served.items():
+        assert ours[name]["type"] == answer["type"]
+        for key, value in (answer.get("probabilities") or {}).items():
+            assert ours[name]["probabilities"][key] == pytest.approx(value, abs = 0.02)
 
     FastDecisionModel.for_inference(model)
     assert not model.training
@@ -434,6 +445,124 @@ def test_train_calibrate_save_and_serve(checkpoint, tmp_path, lora):
     expected.update((k, v) for k, v in model.state_dict().items() if not k.startswith("encoder."))
     assert weights.keys() == expected.keys()
     assert all(torch.equal(weights[k], v.detach().cpu().half()) for k, v in expected.items())
+
+
+def test_long_runs_compile_the_encoder_layers_and_leave_them_eager(
+    checkpoint, tmp_path, monkeypatch
+):
+    from unsloth.models import _decision_fast
+
+    model, tokenizer = FastDecisionModel.from_pretrained(
+        str(checkpoint), use_gradient_checkpointing = False
+    )
+    model = FastDecisionModel.get_peft_model(model, r = 4, lora_alpha = 8)
+    items, _ = FastDecisionModel.build_dataset([_row(i) for i in range(8)], tokenizer, model)
+    compiled, static = [], []
+    monkeypatch.setattr(torch.nn.Module, "compile", lambda self, **kw: compiled.append((self, kw)))
+    monkeypatch.setattr(_decision_fast, "_compile_static", lambda fn: static.append(fn) or fn)
+    layers = _decision_fast._encoder_layers(model)
+    assert len(layers) == 2
+    trainer = DecisionTrainer(model = model, args = _args(tmp_path, max_steps = 1), train_dataset = items)
+    # Short runs and CPUs stay eager; UNSLOTH_DECISION_COMPILE=1 forces it, =0 refuses it.
+    monkeypatch.delenv("UNSLOTH_DECISION_COMPILE", raising = False)
+    trainer.train()
+    assert not compiled
+    assert _decision_fast._wants_compile(model, 10**6) == next(model.parameters()).is_cuda
+    monkeypatch.setattr(_decision_fast, "_on_gpu", lambda model: True)
+    assert _decision_fast._wants_compile(model, _decision_fast.COMPILE_MIN_FORWARDS)
+    assert not _decision_fast._wants_compile(model, _decision_fast.COMPILE_MIN_FORWARDS - 1)
+    monkeypatch.setenv("UNSLOTH_DECISION_COMPILE", "1")
+    trainer.train()
+    # The test decisions are short, so each layer compiles once for static 64-token buckets.
+    assert not compiled and len(static) == len(layers)
+    assert all(layer._compiled_call_impl is None for layer in layers)
+    monkeypatch.setattr(_decision_fast, "STATIC_MAX_LEN", 0)
+    trainer.train()
+    assert [m for m, _ in compiled] == layers and all(kw == {"dynamic": True} for _, kw in compiled)
+    assert all(layer._compiled_call_impl is None for layer in layers)
+    monkeypatch.setenv("UNSLOTH_DECISION_COMPILE", "0")
+    assert not _decision_fast._wants_compile(model, 10**6)
+
+
+def test_a_failing_compile_trains_eagerly(checkpoint, tmp_path, monkeypatch):
+    from unsloth.models import _decision_fast as fast
+
+    model, tokenizer = FastDecisionModel.from_pretrained(
+        str(checkpoint), use_gradient_checkpointing = False
+    )
+    model = FastDecisionModel.get_peft_model(model, r = 4, lora_alpha = 8)
+    items, _ = FastDecisionModel.build_dataset([_row(i) for i in range(8)], tokenizer, model)
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("inductor cannot serve this platform")
+
+    def compile(self, **kwargs):
+        self._compiled_call_impl = broken
+
+    monkeypatch.setattr(torch.nn.Module, "compile", compile)
+    monkeypatch.setattr(fast, "_compile_static", lambda fn: broken)
+    monkeypatch.setenv("UNSLOTH_DECISION_COMPILE", "1")
+    trainer = DecisionTrainer(model = model, args = _args(tmp_path, max_steps = 2), train_dataset = items)
+    trainer.train()
+    assert trainer.state.global_step == 2
+    assert model._unsloth_decision_compiled is False
+    assert all(layer._compiled_call_impl is None for layer in fast._encoder_layers(model))
+    assert all(p.grad is None or torch.isfinite(p.grad).all() for p in model.parameters())
+
+
+def test_compiled_layers_checkpoint_with_torch_and_get_unsloths_back(
+    checkpoint, tmp_path, monkeypatch
+):
+    import functools
+
+    from unsloth.models import _decision_fast as fast
+
+    torch_checkpoint = fast._torch_checkpoint()
+    assert torch_checkpoint.__module__ == "torch.utils.checkpoint"
+
+    model, _ = FastDecisionModel.from_pretrained(str(checkpoint), use_gradient_checkpointing = False)
+    model = FastDecisionModel.get_peft_model(model, r = 4, lora_alpha = 8)
+    layers = fast._encoder_layers(model)
+
+    def unsloth_checkpoint(*args, **kwargs):
+        raise AssertionError("compiled layers must not use Unsloth's checkpoint")
+
+    offloaded = functools.partial(unsloth_checkpoint, use_reentrant = True)
+    # unsloth_zoo patches torch.utils.checkpoint.checkpoint once a model loads with its checkpointing.
+    monkeypatch.setattr(torch.utils.checkpoint, "_old_checkpoint", torch_checkpoint, raising = False)
+    monkeypatch.setattr(torch.utils.checkpoint, "checkpoint", unsloth_checkpoint)
+    for layer in layers:
+        layer._gradient_checkpointing_func = offloaded
+    monkeypatch.setattr(torch.nn.Module, "compile", lambda self, **kw: None)
+    monkeypatch.setattr(fast, "_wants_compile", lambda model, forwards: True)
+    monkeypatch.setattr(fast, "_warm_up", lambda model, amp_dtype: None)
+    with fast.compiled_encoder(model, 10**6) as compiled:
+        assert compiled
+        for layer in layers:
+            func = layer._gradient_checkpointing_func
+            assert func.func is torch_checkpoint and func.keywords == {"use_reentrant": False}
+    assert all(layer._gradient_checkpointing_func is offloaded for layer in layers)
+
+    def broken(model, amp_dtype):
+        raise RuntimeError("inductor cannot serve this platform")
+
+    monkeypatch.setattr(fast, "_warm_up", broken)
+    with fast.compiled_encoder(model, 10**6) as compiled:
+        assert not compiled
+        assert all(layer._gradient_checkpointing_func is offloaded for layer in layers)
+
+    # torch.compile itself can refuse (an unsupported Python): the second layer raises here.
+    def refuse(self, **kwargs):
+        if self is layers[1]:
+            raise RuntimeError("Dynamo is not supported on this Python")
+        self._compiled_call_impl = lambda *a, **k: None
+
+    monkeypatch.setattr(torch.nn.Module, "compile", refuse)
+    monkeypatch.setattr(fast, "_warm_up", lambda model, amp_dtype: None)
+    with fast.compiled_encoder(model, 10**6) as compiled:
+        assert not compiled
+        assert all(layer._compiled_call_impl is None for layer in layers)
+        assert all(layer._gradient_checkpointing_func is offloaded for layer in layers)
 
 
 def test_a_resized_laya_vocabulary_saves_and_reloads(checkpoint, tmp_path):
@@ -470,6 +599,44 @@ def test_full_clef_finetuning_never_quantizes_the_backbone(tmp_path, monkeypatch
     assert seen[1].get("quantization_config") is not None
 
 
+def test_the_compile_warm_up_leaves_the_rng_where_it_was(checkpoint, monkeypatch):
+    from unsloth.models import _decision_fast as fast
+
+    model, _ = FastDecisionModel.from_pretrained(str(checkpoint), use_gradient_checkpointing = False)
+    monkeypatch.setattr(torch.nn.Module, "compile", lambda self, **kw: None)
+    monkeypatch.setattr(fast, "_wants_compile", lambda model, forwards: True)
+    torch.manual_seed(0)
+    before = torch.get_rng_state()
+    with fast.compiled_encoder(model, 10**6) as compiled:
+        assert compiled
+        assert torch.equal(torch.get_rng_state(), before)
+
+
+def test_the_compile_warm_up_forks_the_rng_of_the_models_own_accelerator(monkeypatch):
+    from unsloth.models import _decision_fast as fast
+
+    forked = []
+
+    class Forked(Exception):
+        pass
+
+    def fork_rng(**kwargs):
+        forked.append(kwargs)
+        raise Forked
+
+    model = types.SimpleNamespace(
+        training = True,
+        parameters = lambda: iter([torch.empty(1, device = "meta")]),
+        train = lambda mode = True: None,
+        encoder = types.SimpleNamespace(config = types.SimpleNamespace(vocab_size = 100)),
+    )
+    monkeypatch.setattr(torch.random, "fork_rng", fork_rng)
+    with pytest.raises(Forked):
+        fast._warm_up(model, None)
+    # An XPU / MPS model forks its own RNG, not CUDA's (meta stands in for any accelerator).
+    assert forked == [{"devices": [0], "device_type": "meta"}]
+
+
 def test_clef_backbone_stays_on_one_device_unless_the_caller_places_it(tmp_path, monkeypatch):
     from unsloth.models import loader, loader_utils
 
@@ -499,6 +666,8 @@ def test_toy_task_beats_the_base_model(checkpoint, tmp_path, monkeypatch):
     # only after ~100 steps on a GPU (same curve otherwise, any precision), so 80 steps is a threshold
     # tuned to CPU arithmetic, not a GPU defect.
     monkeypatch.setattr(decision, "_device", lambda: torch.device("cpu"))
+    # Eager too: a compiled encoder draws the same accuracy from a different 45-decision RNG stream.
+    monkeypatch.setenv("UNSLOTH_DECISION_COMPILE", "0")
     model, tokenizer = FastDecisionModel.from_pretrained(
         str(checkpoint), use_gradient_checkpointing = False
     )
@@ -851,6 +1020,7 @@ def test_clef_metrics_score_in_the_runs_batch_size(monkeypatch):
         items,
         pad_token_id,
         batch_size = 4,
+        processor = None,
     ):
         seen.append(batch_size)
         raise StopIteration
@@ -886,8 +1056,10 @@ def test_clef_loads_scores_like_cloudflares_model_and_trains(clef_checkpoint, tm
         ours_same_dtype, _ = model(batch["input_ids"], batch["attention_mask"], batch["records"])
         model.head = fp32_head
     for row, z in enumerate(theirs):
-        assert torch.allclose(ours_same_dtype[row, : len(z)].float(), z, atol = 2e-2, rtol = 2e-2)
-        assert torch.allclose(ours[row, : len(z)].float(), z, atol = 0.1)
+        same = ours_same_dtype[row, : len(z)].float()
+        assert torch.allclose(same, z, atol = 2e-2, rtol = 2e-2), (row, (same - z).abs().max(), same, z)
+        fp32 = ours[row, : len(z)].float()
+        assert torch.allclose(fp32, z, atol = 0.1), (row, (fp32 - z).abs().max(), fp32, z)
 
     items, report = FastDecisionModel.build_dataset(_clef_rows(64), processor, model)
     assert report["skipped"] == 0 and len(items) == 64 and len(items[0]["targets"]) == 4
@@ -919,7 +1091,7 @@ def test_clef_loads_scores_like_cloudflares_model_and_trains(clef_checkpoint, tm
     )
     trainer.train()
     after = FastDecisionModel.evaluate(model, processor, holdout)
-    assert min(losses[-5:]) < losses[0] and after["loss"] < before["loss"]
+    assert min(losses[-5:]) < losses[0] and after["loss"] < before["loss"], (losses, before, after)
     calibration = FastDecisionModel.calibrate(model, processor, holdout)
     assert "accuracy" in calibration
     # Fitted to the gold labels, so the calibrated confidence tracks being right.
@@ -947,15 +1119,30 @@ def test_clef_loads_scores_like_cloudflares_model_and_trains(clef_checkpoint, tm
         trained, _ = model(batch["input_ids"], batch["attention_mask"], batch["records"])
         again, _ = reloaded(batch["input_ids"], batch["attention_mask"], batch["records"])
         theirs = released(batch)[0]
-    # Saved in bf16, so the reload rounds the trained weights.
-    # Compared as served probabilities: the folded head is trained / folded, and a small folded
-    # temperature would magnify bf16 rounding if the logits were compared directly.
+    # bf16 reload rounding grows with the per-run logit scale, so the bound is relative (10 B200 runs
+    # peaked at 1.6%); a fold left out or doubled is off by >= 20%.
     mask = trained > -1e3
-    served = torch.softmax((trained / folded).masked_fill(~mask, -1e4), -1)
-    reloaded_served = torch.softmax(again.masked_fill(~mask, -1e4), -1)
-    assert torch.allclose(served, reloaded_served, atol = 0.02)
+    expected = (trained / folded).float()[mask]
+    error = (again.float()[mask] - expected).abs().max().item()
+    scale = expected.abs().max().item()
+    assert error <= 0.03 * scale + 0.05, (error, scale, folded)
     for row, z in enumerate(theirs):
-        assert int(z.argmax()) == int(again[row, : len(z)].argmax())
+        assert int(z.argmax()) == int(again[row, : len(z)].argmax()), (row, z, again[row, : len(z)])
+    # predict() serves the same calibrated answer from memory, the merged reload and the adapters.
+    state = "the server is down again"
+    ours = FastDecisionModel.predict(model, processor, state, QUESTIONS)
+    merged = FastDecisionModel.predict(reloaded, processor, state, QUESTIONS)
+    model.save_pretrained(str(tmp_path / "adapters"))
+    from_adapters, _ = FastDecisionModel.from_pretrained(
+        str(tmp_path / "adapters"), max_seq_length = 512
+    )
+    assert from_adapters.decision_config["base_model"] == str(clef_checkpoint)
+    adapters = FastDecisionModel.predict(from_adapters, processor, state, QUESTIONS)
+    for name in QUESTIONS:
+        for other in (merged, adapters):
+            assert other[name]["type"] == ours[name]["type"]
+            for key, value in (ours[name].get("probabilities") or {}).items():
+                assert other[name]["probabilities"][key] == pytest.approx(value, abs = 0.03)
 
 
 @pytest.mark.skipif(not has_real_cuda(), reason = "the fast kernels need a CUDA device")
@@ -1256,7 +1443,7 @@ def test_clef_calibration_fits_being_right_and_serves_through_the_head_temperatu
     )
 
 
-def test_clef_autocasts_only_in_bfloat16_and_never_on_the_float32_path(monkeypatch):
+def test_clef_autocasts_as_it_trains_and_never_on_the_float32_path(monkeypatch):
     model = torch.nn.Linear(1, 1)
     cuda = torch.device("cuda")
     monkeypatch.setattr(decision, "is_bfloat16_supported", lambda: True)
@@ -1264,9 +1451,64 @@ def test_clef_autocasts_only_in_bfloat16_and_never_on_the_float32_path(monkeypat
     model._unsloth_forced_float32 = True
     assert decision._clef_amp_dtype(model, cuda) is None
     model._unsloth_forced_float32 = False
+    # A T4: an fp16 model autocasts like its fp16 training, else its fp32 norms meet fp16 Linears.
     monkeypatch.setattr(decision, "is_bfloat16_supported", lambda: False)
+    assert decision._clef_amp_dtype(model, cuda) == torch.float16
+    model._unsloth_forced_float32 = True
     assert decision._clef_amp_dtype(model, cuda) is None
+    model._unsloth_forced_float32 = False
     assert decision._clef_amp_dtype(model, torch.device("cpu")) is None
+
+
+def test_a_clef_prompt_that_fits_exactly_is_not_truncated(monkeypatch):
+    # Serving (Studio's Decision API) and predict share this rule.
+    from unsloth.models import clef
+
+    def encode(
+        tokenizer,
+        record,
+        max_length,
+        processor = None,
+    ):
+        # The state needs `natural` tokens; anything over max_length is cut to fit.
+        return types.SimpleNamespace(input_ids = [0] * min(record["state"], max_length))
+
+    monkeypatch.setattr(clef, "encode_record", encode)
+    size = 16384
+
+    def truncated(natural):
+        encoded = encode(None, {"state": natural}, size)
+        return decision._clef_truncated(None, natural, {}, encoded, size)
+
+    assert (truncated(size - 1), truncated(size), truncated(size + 1)) == (False, False, True)
+
+
+@pytest.mark.parametrize("forced", [False, True])
+def test_clef_trains_under_the_autocast_it_evaluates_in(tmp_path, monkeypatch, forced):
+    # A previous trainer leaves fp16 in ACCELERATE_MIXED_PRECISION, which transformers 4.x reads.
+    monkeypatch.setenv("ACCELERATE_MIXED_PRECISION", "fp16")
+    monkeypatch.setattr(decision, "_amp_dtype", lambda device: torch.bfloat16)
+    model = torch.nn.Linear(1, 1)
+    model._unsloth_forced_float32 = forced
+    args = _args(tmp_path)
+    assert not args.bf16 and not args.fp16
+    decision._clef_mixed_precision(model, args)
+    expected = "no" if forced else "bf16"
+    assert args.bf16 == (not forced) and not args.fp16, (args.bf16, args.fp16)
+    assert decision.os.environ["ACCELERATE_MIXED_PRECISION"] == expected
+    assert getattr(args, "mixed_precision", expected) == expected
+
+
+def test_clef_trains_under_fp16_autocast_on_a_gpu_without_bf16(tmp_path, monkeypatch):
+    # A T4: evaluate and serving autocast fp16, so training does too.
+    monkeypatch.setenv("ACCELERATE_MIXED_PRECISION", "no")
+    monkeypatch.setattr(decision, "_amp_dtype", lambda device: torch.float16)
+    model = torch.nn.Linear(1, 1)
+    model._unsloth_forced_float32 = False
+    args = _args(tmp_path)
+    decision._clef_mixed_precision(model, args)
+    assert args.fp16 and not args.bf16, (args.bf16, args.fp16)
+    assert decision.os.environ["ACCELERATE_MIXED_PRECISION"] == "fp16"
 
 
 def test_clef_calibration_with_every_holdout_decision_from_one_row():
@@ -1287,3 +1529,209 @@ def test_clef_save_keeps_the_source_tokenizer_files_byte_identical(clef_checkpoi
             assert (out / name).read_bytes() == (clef_checkpoint / name).read_bytes(), name
     # Without it transformers warns of an "incorrect regex pattern" when loading the tokenizer.
     assert "transformers_version" in json.loads((out / "config.json").read_text())
+
+
+def test_decision_forward_never_picks_cudnn_attention(checkpoint, tmp_path):
+    model, tokenizer = FastDecisionModel.from_pretrained(
+        str(checkpoint), full_finetuning = True, use_gradient_checkpointing = False
+    )
+    items, _ = FastDecisionModel.build_dataset([_row(i) for i in range(4)], tokenizer, model)
+    cudnn = []
+    forward = model.forward
+
+    def spy(*args, **kwargs):
+        cudnn.append(torch.backends.cuda.cudnn_sdp_enabled())
+        return forward(*args, **kwargs)
+
+    model.forward = spy
+    trainer = DecisionTrainer(
+        model = model, args = _args(tmp_path), train_dataset = items, processing_class = tokenizer
+    )
+    device = next(model.parameters()).device
+    batch = {
+        k: v.to(device) for k, v in DecisionDataCollator(tokenizer.pad_token_id)(items).items()
+    }
+    trainer.compute_loss(model, batch)
+    decision._logits(model, items, tokenizer.pad_token_id)
+    assert cudnn and not any(cudnn)
+
+
+def test_checkpointed_recompute_never_picks_cudnn_attention(checkpoint, tmp_path):
+    # The recompute runs in backward: cuDNN there saved other tensors than the forward (CheckpointError).
+    model, tokenizer = FastDecisionModel.from_pretrained(
+        str(checkpoint), full_finetuning = True, use_gradient_checkpointing = True
+    )
+    items, _ = FastDecisionModel.build_dataset([_row(i) for i in range(4)], tokenizer, model)
+    layer = model.encoder.layers[0]
+    cudnn = []
+    forward = layer.forward
+
+    def spy(*args, **kwargs):
+        cudnn.append(torch.backends.cuda.cudnn_sdp_enabled())
+        return forward(*args, **kwargs)
+
+    layer.forward = spy
+    trainer = DecisionTrainer(
+        model = model, args = _args(tmp_path), train_dataset = items, processing_class = tokenizer
+    )
+    device = next(model.parameters()).device
+    batch = {
+        k: v.to(device) for k, v in DecisionDataCollator(tokenizer.pad_token_id)(items).items()
+    }
+    trainer.accelerator.backward(trainer.compute_loss(model, batch))
+    assert len(cudnn) == 2 and not any(cudnn)
+
+
+def test_logits_batch_similar_lengths_and_keep_the_callers_order(checkpoint):
+    model, tokenizer = FastDecisionModel.from_pretrained(
+        str(checkpoint), full_finetuning = True, use_gradient_checkpointing = False
+    )
+    items, _ = FastDecisionModel.build_dataset([_row(i) for i in range(4)], tokenizer, model)
+    assert len({len(item["input_ids"]) for item in items}) > 1
+    widths = []
+    forward = model.forward
+
+    def spy(*args, **kwargs):
+        widths.append(kwargs["input_ids"].shape[1])
+        return forward(*args, **kwargs)
+
+    model.forward = spy
+    batched = decision._logits(model, items, tokenizer.pad_token_id, batch_size = 3)
+    assert widths == sorted(widths)
+    model.forward = forward
+    for item, logits in zip(items, batched):
+        alone = decision._logits(model, [item], tokenizer.pad_token_id)[0]
+        assert logits.shape == (len(item["markers"]),)
+        torch.testing.assert_close(logits, alone, rtol = 2e-2, atol = 2e-2)
+
+
+@pytest.mark.parametrize("scaling", [1, 2])
+def test_lean_lora_forward_matches_peft(checkpoint, scaling):
+    model, _ = FastDecisionModel.from_pretrained(
+        str(checkpoint), dtype = torch.float32, use_gradient_checkpointing = False
+    )
+    model = FastDecisionModel.get_peft_model(model, r = 4, lora_alpha = 4 * scaling)
+    layers = [m for m in model.encoder.modules() if hasattr(m, "_unsloth_peft_forward")]
+    from peft.tuners.lora.layer import Linear
+
+    if Linear.forward.__name__ == "unsloth_forward":
+        # An earlier FastModel load in this process compiled PEFT's forward; the lean one stays out.
+        assert not layers
+        return
+    assert layers and all(m.forward.__func__ is decision._lean_lora_forward for m in layers)
+    layer = layers[0]
+    torch.manual_seed(0)
+    with torch.no_grad():
+        layer.lora_B["default"].weight.normal_()
+    device = layer.lora_A["default"].weight.device
+    autocast = [False] + ([True] if device.type == "cuda" else [])
+    for enabled in autocast:
+        x = torch.randn(2, 5, layer.in_features, device = device, requires_grad = True)
+        outputs = []
+        for forward in (layer.forward, layer._unsloth_peft_forward):
+            # The dtype the model trains in on this GPU: fp16 on a T4, which cannot run bf16.
+            with torch.autocast(device.type, dtype = decision._amp_dtype(device), enabled = enabled):
+                out = forward(x)
+            grads = torch.autograd.grad(
+                out.float().square().sum(), [x, layer.lora_A["default"].weight]
+            )
+            outputs.append((out, *grads))
+        for lean, peft in zip(*outputs):
+            assert lean.dtype == peft.dtype and torch.equal(lean, peft)
+    # Disabled or merged adapters take PEFT's own path.
+    with model.encoder.disable_adapter():
+        x = torch.randn(2, 5, layer.in_features, device = device)
+        torch.testing.assert_close(layer(x), layer.base_layer(x))
+
+
+def test_compiled_layers_use_plain_sdpa_and_put_the_attention_back(checkpoint):
+    from transformers.integrations.sdpa_attention import sdpa_attention_forward
+
+    from unsloth.models import _decision_fast
+
+    model, _ = FastDecisionModel.from_pretrained(
+        str(checkpoint), full_finetuning = True, use_gradient_checkpointing = False
+    )
+    config = model.encoder.config
+    assert config._attn_implementation == "sdpa"
+    with _decision_fast._compilable_attention(model, False):
+        assert config._attn_implementation == "sdpa"
+    with _decision_fast._compilable_attention(model, True):
+        assert config._attn_implementation == "unsloth_decision_sdpa"
+    assert config._attn_implementation == "sdpa"
+    q, k, v = (torch.randn(2, 4, 6, 8) for _ in range(3))
+    mask = torch.ones(2, 1, 6, 6, dtype = torch.bool)
+    mask[1, ..., 4:] = False
+    module = model.encoder.layers[0].attn
+    ours, _ = _decision_fast._encoder_sdpa(module, q, k, v, mask, scaling = 0.5)
+    reference, _ = sdpa_attention_forward(module, q, k, v, mask, scaling = 0.5)
+    torch.testing.assert_close(ours, reference)
+
+
+def test_static_length_padding_leaves_the_loss_unchanged(checkpoint, tmp_path):
+    from unsloth.models import _decision_fast
+
+    model, tokenizer = FastDecisionModel.from_pretrained(
+        str(checkpoint), full_finetuning = True, use_gradient_checkpointing = False
+    )
+    for module in model.modules():
+        if isinstance(module, torch.nn.Dropout):
+            module.p = 0.0
+        if isinstance(module, torch.nn.MultiheadAttention):
+            module.dropout = 0.0
+    items, _ = FastDecisionModel.build_dataset([_row(i) for i in range(4)], tokenizer, model)
+    trainer = DecisionTrainer(
+        model = model, args = _args(tmp_path), train_dataset = items, processing_class = tokenizer
+    )
+    device = next(model.parameters()).device
+    batch = DecisionDataCollator(tokenizer.pad_token_id)(items)
+    assert batch["input_ids"].shape[1] % _decision_fast.STATIC_MULTIPLE
+    losses = []
+    for multiple in (0, _decision_fast.STATIC_MULTIPLE):
+        model._unsloth_pad_multiple = multiple
+        inputs = {k: v.to(device) for k, v in batch.items()}
+        padded = _decision_fast.pad_length(model, dict(inputs))
+        assert padded["input_ids"].shape[1] % (multiple or 1) == 0
+        with torch.no_grad():
+            losses.append(trainer.compute_loss(model, inputs))
+    model._unsloth_pad_multiple = 0
+    torch.testing.assert_close(losses[0], losses[1])
+
+
+def test_static_compiled_layers_run_eagerly_outside_training():
+    from unsloth.models import _decision_fast
+
+    calls = []
+    layer = torch.nn.Linear(2, 2)
+    call = _decision_fast._training_only(
+        layer, lambda *a, **k: calls.append("compiled") or layer._call_impl(*a, **k)
+    )
+    x = torch.randn(1, 2)
+    call(x)
+    layer.eval()
+    call(x)
+    assert calls == ["compiled"]
+
+
+@pytest.mark.parametrize("max_length, static", [(634, True), (4096, False), (None, False)])
+def test_short_data_compiles_static_buckets_and_long_data_dynamic(
+    checkpoint, monkeypatch, max_length, static
+):
+    from unsloth.models import _decision_fast
+
+    monkeypatch.setenv("UNSLOTH_DECISION_COMPILE", "1")
+    monkeypatch.setattr(_decision_fast, "_warm_up", lambda model, amp_dtype: None)
+    model, _ = FastDecisionModel.from_pretrained(
+        str(checkpoint), full_finetuning = True, use_gradient_checkpointing = False
+    )
+    layers = _decision_fast._encoder_layers(model)
+    limit = torch._dynamo.config.recompile_limit
+    with _decision_fast.compiled_encoder(model, 10, None, max_length) as compiled:
+        assert compiled
+        assert model._unsloth_pad_multiple == (_decision_fast.STATIC_MULTIPLE if static else 0)
+        assert all(layer._compiled_call_impl is not None for layer in layers)
+        assert all((layer._compiled_call_impl.__name__ == "call") == static for layer in layers)
+        assert (torch._dynamo.config.recompile_limit > limit) == (static and limit < 28)
+    assert all(layer._compiled_call_impl is None for layer in layers)
+    assert model._unsloth_pad_multiple == 0
+    assert torch._dynamo.config.recompile_limit == limit

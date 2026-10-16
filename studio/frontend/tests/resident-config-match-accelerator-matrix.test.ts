@@ -173,6 +173,7 @@ const FIELDS: FieldCase[] = [
     same: 16,
     different: 8,
   },
+  { key: "specDraftModel", statusKey: "spec_draft_model", same: "org/d", different: "org/e" },
   {
     key: "nParallel",
     statusKey: "requested_parallel_slots",
@@ -490,6 +491,11 @@ test("every PerModelConfig field is either compared or deliberately excluded", (
     "maxSeqLength",
     "enginePrecision",
     "engineParallelism",
+    "engineKvCacheDtype",
+    "engineSeed",
+    "engineGpuMemoryUtilization",
+    // Compared ahead of the table, against the status's requested load_in_4bit.
+    "loadIn4bit",
     // Qualifies selectedGpuIds rather than adding a dimension of its own: it is read, as
     // the reconciler's namespace argument, but /status has no field to compare it against.
     "selectedGpuIndexKind",

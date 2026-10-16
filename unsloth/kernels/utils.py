@@ -28,6 +28,7 @@ from ..device_type import (
     ALLOW_PREQUANTIZED_MODELS,
 )
 from ..bnb_availability import native_kernels_ready
+from .indexing import long_indexing
 from .fp8 import weight_dequant, fp8_linear, can_use_fp8_rowwise_gemv, fp8_rowwise_gemv
 from .nvfp4 import NVFP4QuantState, nvfp4_dequantize, nvfp4_linear
 
@@ -326,6 +327,31 @@ def QUANT_STATE(W):
     return getattr(W, "quant_state", None)
 
 
+# Set by models/fsdp2_qlora.prepare_fsdp2_qlora: only FSDP2-sharded 4-bit weights lose quant_state, so every
+# other LoRA forward keeps the single getattr(W, "quant_state") and never reaches _base_quant_state.
+_FSDP2_QLORA_PREPARED = False
+
+
+def _base_quant_state(base_layer, W):
+    """W's quant state, else its bitsandbytes Linear4bit's own copy of it. FSDP2 all-gathers the packed
+    bytes into a plain Parameter that drops `quant_state`; read without it, the packed (N, 1) buffer
+    would be taken for a dense weight."""
+    W_quant = getattr(W, "quant_state", None)
+    if W_quant is not None:
+        return W_quant
+    # Linear4bit keeps its copy as a plain attribute. getattr would go through nn.Module.__getattr__,
+    # which raises and catches for every dense weight: 10x this function's cost on each LoRA forward.
+    W_quant = base_layer.__dict__.get("quant_state", None)
+    if (
+        W_quant is None
+        or getattr(W, "ndim", 0) != 2
+        or W.shape[1] != 1
+        or not any(cls.__name__ == "Linear4bit" for cls in type(base_layer).__mro__)
+    ):
+        return None
+    return W_quant
+
+
 # fp8 weight dtypes: a weight_scale / weight_scale_inv is only a quant state while the weight
 # itself is still fp8. compressed-tensors layers expose an already-dequantized bf16 weight at
 # forward time while keeping a weight_scale, and reading that as a quant state routes it into
@@ -361,6 +387,25 @@ def _has_active_dora_adapter(proj):
     return any(adapter in magnitude for adapter in adapters)
 
 
+def _has_non_lora_adapter(proj):
+    # VeRA, LoHa, LoKr, IA3, OFT and AdaLoRA layers from peft.get_peft_model hold no lora_A Linears (#1385).
+    modules = proj._modules
+    return "base_layer" in modules and not isinstance(modules.get("lora_A"), torch.nn.ModuleDict)
+
+
+def _has_active_lora_bias(proj):
+    # PEFT lora_bias=True gives lora_B a bias, which the fast LoRA paths never add.
+    lora_B = getattr(proj, "lora_B", None)
+    if not lora_B or getattr(proj, "disable_adapters", True) or getattr(proj, "merged", False):
+        return False
+    adapters = getattr(proj, "active_adapters", None)
+    if adapters is None:
+        adapters = getattr(proj, "active_adapter", ())
+    if isinstance(adapters, str):
+        adapters = (adapters,)
+    return any(adapter in lora_B and lora_B[adapter].bias is not None for adapter in adapters)
+
+
 def has_mxfp4_base(*projs):
     """A packed MXFP4 base that cannot hand its bytes to the fused LoRA kernels (they would then hold a 16-bit
     weight until backward): use PEFT. Bases with ``mxfp4_quant_state`` pass ``weight_packed`` + that state instead."""
@@ -384,6 +429,15 @@ def _packed_base(base_layer):
     return base_layer.weight_packed, base_layer.mxfp4_quant_state()
 
 
+def _has_packed_qweight(proj):
+    # GPTQ / AWQ keep a packed qweight and no dense .weight tensor: only their own forward can run them.
+    base_layer = proj._modules.get("base_layer", proj)
+    return (
+        not isinstance(getattr(base_layer, "weight", None), torch_Tensor)
+        and _packed_base(base_layer) is None
+    )
+
+
 def _is_packed_state(quant_state):
     return getattr(type(quant_state), "_unsloth_packed_weight_state", False)
 
@@ -403,13 +457,16 @@ def get_lora_parameters(proj):
         if weight_fake_quantizer is not None:
             W = weight_fake_quantizer(W)
 
-    # Only fall back to a weight_scale(_inv) when the weight is still fp8; a bf16 weight (a decompressed
-    # compressed-tensors layer) must not carry a scale as its quant state or fast_gemv crashes.
     W_quant = getattr(W, "quant_state", None)
-    if W_quant is None and W.dtype in _FP8_WEIGHT_DTYPES:
-        W_quant = getattr(base_layer, "weight_scale_inv", None)
-        if W_quant is None:
-            W_quant = getattr(base_layer, "weight_scale", None)
+    if W_quant is None:
+        if _FSDP2_QLORA_PREPARED:
+            W_quant = _base_quant_state(base_layer, W)
+        # Only fall back to a weight_scale(_inv) when the weight is still fp8; a bf16 weight (a decompressed
+        # compressed-tensors layer) must not carry a scale as its quant state or fast_gemv crashes.
+        if W_quant is None and W.dtype in _FP8_WEIGHT_DTYPES:
+            W_quant = getattr(base_layer, "weight_scale_inv", None)
+            if W_quant is None:
+                W_quant = getattr(base_layer, "weight_scale", None)
 
     if getattr(base_layer, "quant_method", None) == "fp8":
         W.block_size = getattr(base_layer, "block_size", [128, 128])
@@ -461,13 +518,16 @@ def get_lora_parameters_bias(proj):
     packed = _packed_base(base_layer)
     W = base_layer.weight if packed is None else packed[0]
 
-    # Only fall back to a weight_scale(_inv) when the weight is still fp8; a bf16 weight (a decompressed
-    # compressed-tensors layer) must not carry a scale as its quant state or fast_gemv crashes.
     W_quant = getattr(W, "quant_state", None)
-    if W_quant is None and W.dtype in _FP8_WEIGHT_DTYPES:
-        W_quant = getattr(base_layer, "weight_scale_inv", None)
-        if W_quant is None:
-            W_quant = getattr(base_layer, "weight_scale", None)
+    if W_quant is None:
+        if _FSDP2_QLORA_PREPARED:
+            W_quant = _base_quant_state(base_layer, W)
+        # Only fall back to a weight_scale(_inv) when the weight is still fp8; a bf16 weight (a decompressed
+        # compressed-tensors layer) must not carry a scale as its quant state or fast_gemv crashes.
+        if W_quant is None and W.dtype in _FP8_WEIGHT_DTYPES:
+            W_quant = getattr(base_layer, "weight_scale_inv", None)
+            if W_quant is None:
+                W_quant = getattr(base_layer, "weight_scale", None)
 
     if getattr(base_layer, "quant_method", None) == "fp8":
         W.block_size = getattr(base_layer, "block_size", [128, 128])
@@ -559,21 +619,37 @@ def _scratch(kind, device, numel, dtype):
     return buffer[:numel]
 
 
+def _nf4_kernels_supported():
+    # ptxas rejects their ld eviction hints below sm_70 (Maxwell, Pascal).
+    if DEVICE_TYPE == "hip":
+        return True
+    return all(torch.cuda.get_device_capability(i)[0] >= 7 for i in range(DEVICE_COUNT))
+
+
 # Fused NF4 kernels, traceable by torch.compile and on the live stream by construction.
 # UNSLOTH_BNB_TRITON=0 keeps the bitsandbytes ctypes path.
 _USE_NF4_KERNELS = False
 _TRITON_GEMV_EAGER = False
+_GEMV_MAX_ROWS = 1
 _is_compiling = torch.compiler.is_compiling
 _current_device = torch.cuda.current_device
 if (
     DEVICE_TYPE in ("cuda", "hip")
     and HAS_CUDA_STREAM
     and os.environ.get("UNSLOTH_BNB_TRITON", "1") != "0"
+    and _nf4_kernels_supported()
 ):
     try:
         import triton
         from .nf4 import dequantize_nf4, dequantize_nf4_planned
-        from .nf4_gemv import gemv_nf4, gemv_nf4_planned, triton_gemv_eager
+        from .nf4_gemv import GEMV_MAX_ROWS as _GEMV_MAX_ROWS
+        from .nf4_gemv import (
+            gemv_nf4,
+            gemv_nf4_planned,
+            gemv_nf4_rows,
+            gemv_nf4_rows_planned,
+            triton_gemv_eager,
+        )
 
         _USE_NF4_KERNELS = True
         # Eager decode uses the Triton GEMV where it is faster; compiled code always does.
@@ -1383,13 +1459,145 @@ def _quant_state_dtype(quant_state):
     return getattr(quant_state, "dtype", None)
 
 
+# Max GEMV decode rows per compute capability, from end-to-end decode A/Bs (#2798). Fixed, not timed, so
+# decoding is reproducible; others dequantize. UNSLOTH_GEMV_MAX_ROWS overrides where the Triton GEMV runs.
+_GEMV_ROWS_BY_ARCH = {(7, 5): 4, (8, 0): 2, (8, 9): 4, (12, 0): 4}
+_GEMV_ROWS_CAP = {}
+
+
+def _gemv_rows_cap(device):
+    index = device.index
+    cap = _GEMV_ROWS_CAP.get(index)
+    if cap is None:
+        if "UNSLOTH_GEMV_MAX_ROWS" in os.environ:
+            cap = _GEMV_MAX_ROWS
+        else:
+            try:
+                # ROCm reports gfx versions here (gfx1200 is (12, 0)), so the table is CUDA only.
+                arch = None if torch.version.hip else torch.cuda.get_device_capability(device)
+            except Exception:
+                arch = None
+            cap = min(_GEMV_MAX_ROWS, _GEMV_ROWS_BY_ARCH.get(arch, 1))
+        _GEMV_ROWS_CAP[index] = cap
+    return cap
+
+
+def _gemv_rows(X, W, quant_state, out):
+    """One gemv_nf4_rows launch for 2.._GEMV_MAX_ROWS decode rows (#2798); None = dequantize."""
+    M = X.shape[0]
+    # First, so rows above the cap cost the dequantize path nothing.
+    if not 2 <= M <= _gemv_rows_cap(X.device) or W.device != X.device:
+        return None
+    eager = (
+        not _is_compiling()
+        and type(quant_state) is not list
+        and X.is_contiguous()
+        and X.device.index == _current_device()
+    )
+    if eager:
+        plans = getattr(quant_state, "_unsloth_gemv_rows", None)
+        plan = plans.get(M) if plans is not None else None
+        if (
+            plan
+            and plan[0] == W.data_ptr()
+            and plan[1] is quant_state.absmax
+            and plan[2] is X.dtype
+            and X.data_ptr() & 15 == plan[3]
+            and X.numel() == M * plan[7]
+            and (
+                plan[4] == plan[6]
+                if out is None
+                else (
+                    out.dtype is X.dtype
+                    and out.data_ptr() & 15 == 0
+                    and out.stride(0) == plan[4]
+                    and out.stride(-1) == 1
+                    and out.shape == (M, 1, plan[6])
+                    and out.device == X.device
+                )
+            )
+        ):
+            if out is None:
+                out = torch_empty((M, 1, plan[6]), dtype = X.dtype, device = X.device)
+            try:
+                if plan[5](X, out):
+                    return out
+            except Exception:
+                pass
+            plans.pop(M, None)
+    absmax, shape, dtype, blocksize, code, code2, absmax2, offset, blocksize2 = _unpack_quant_state(
+        quant_state
+    )
+    if (
+        shape[1] % blocksize != 0
+        or X.dtype not in (torch.float16, torch.bfloat16)
+        or X.numel() != M * shape[1]
+        or any(t is not None and t.device != X.device for t in (absmax, code, code2, absmax2))
+    ):
+        return None
+    if out is not None and (
+        out.device != X.device
+        or out.dtype != X.dtype
+        or out.stride(-1) != 1
+        or out.shape != (M, 1, shape[0])
+        or out.stride(0) < shape[0]
+    ):
+        return None
+    if not X.is_contiguous():
+        X = X.contiguous()
+    args = (absmax, code2, absmax2, offset, code, blocksize, blocksize2, shape)
+    try:
+        if out is None:
+            out = torch_empty((M, 1, shape[0]), dtype = X.dtype, device = X.device)
+        if not eager or out.data_ptr() & 15:
+            return gemv_nf4_rows(X, W, *args, out)
+        rerun = gemv_nf4_rows_planned(X, W, *args, out)
+        if rerun is not None:
+            _rows_plans(quant_state)[M] = _NF4Plan(
+                [
+                    W.data_ptr(),
+                    quant_state.absmax,
+                    X.dtype,
+                    X.data_ptr() & 15,
+                    out.stride(0),
+                    rerun,
+                    int(shape[0]),
+                    int(shape[1]),
+                ]
+            )
+        return out
+    except Exception as error:
+        if not _nf4_kernels_failed(error):
+            raise
+        return None
+
+
+class _NF4Plans(dict):
+    # Rows -> _NF4Plan; dropped by copies and pickles.
+    def __reduce__(self):
+        return (_no_plan, ())
+
+
+def _rows_plans(quant_state):
+    plans = getattr(quant_state, "_unsloth_gemv_rows", None)
+    if plans is None:
+        plans = quant_state._unsloth_gemv_rows = _NF4Plans()
+    return plans
+
+
 def fast_linear_forward(
     proj,
     X,
     temp_lora = None,
     out = None,
 ):
-    if _has_multiple_active_adapters(proj) or _has_active_dora_adapter(proj):
+    if (
+        _has_non_lora_adapter(proj)
+        or _has_multiple_active_adapters(proj)
+        or _has_active_dora_adapter(proj)
+        or _has_active_lora_bias(proj)
+        or _has_packed_qweight(proj)
+    ):
         result = proj(X)
         return result if out is None else out.copy_(result)
     W, W_quant, lora_A, lora_B, lora_S, bias = get_lora_parameters_bias(proj)
@@ -1415,6 +1623,14 @@ def fast_linear_forward(
     elif bsz == 1 and q_len == 1 and _quant_state_dtype(W_quant) != torch_float32:
         # The 4bit gemv kernels are fp16/bf16 only.
         out = fast_gemv(X, W, W_quant, out = out)
+    elif (
+        2 <= bsz <= _GEMV_MAX_ROWS
+        and _USE_NF4_KERNELS
+        and _TRITON_GEMV_EAGER
+        and _quant_state_dtype(W_quant) != torch_float32
+        and (rows := _gemv_rows(X, W, W_quant, out)) is not None
+    ):
+        out = rows
     else:
         W = fast_dequantize(W.t(), W_quant, use_global_buffer = True)
         out = torch_matmul(X, W, out = out)

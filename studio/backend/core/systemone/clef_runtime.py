@@ -11,6 +11,7 @@ own process: unloading ends it and the memory goes with it (as core/inference/st
 
 from __future__ import annotations
 
+import json
 import multiprocessing as mp
 import os
 import sys
@@ -45,10 +46,19 @@ class _Events:
 
 
 def _fast_paths(folder: str) -> None:
-    # The same prebuilt causal-conv1d a Qwen3.5 training run gets; the gated delta kernels ship with
-    # unsloth_zoo. A failed install leaves transformers' torch path, which is slower but right.
+    # Clef is a Qwen3.5 backbone: unsloth_zoo ships its gated delta kernels and a Triton causal conv,
+    # so nothing is installed. Where that conv cannot run (switched off, ROCm, no Triton) it gets the
+    # prebuilt causal-conv1d a training run would; a failed install leaves transformers' torch path.
     try:
+        from utils.ssm_runtime import zoo_triton_causal_conv1d_usable
+
+        if zoo_triton_causal_conv1d_usable():
+            # The hooks below also steer FLA off TileLang where it faults; keep that part.
+            from core.training.worker import _guard_fla_tilelang
+            _guard_fla_tilelang()
+            return
         from core.training.worker import _ensure_causal_conv1d_fast_path, _install_fast_path_hooks
+
         _ensure_causal_conv1d_fast_path(_Events(), folder, required = True)
         _install_fast_path_hooks(_Events(), folder, install_causal_conv1d = True)
     except Exception as exc:
@@ -67,7 +77,14 @@ def _load(folder: str):
     if not torch.cuda.is_available():
         raise ClefWorkerError("Clef needs an NVIDIA GPU; this machine has none torch can use.")
     free, _ = torch.cuda.mem_get_info()
-    load_in_4bit = free < _weight_bytes(Path(folder)) * _BF16_HEADROOM
+    path = Path(folder)
+    if (path / "config.json").is_file():
+        load_in_4bit = free < _weight_bytes(path) * _BF16_HEADROOM
+    else:
+        # LoRA adapters over a base LLM: served on the base they trained on (4-bit for QLoRA).
+        saved = path / "unsloth_decision_config.json"
+        config = json.loads(saved.read_text(encoding = "utf-8")) if saved.is_file() else {}
+        load_in_4bit = bool(config.get("load_in_4bit"))
     model, processor = FastDecisionModel.from_pretrained(
         folder,
         max_seq_length = MAX_LENGTH,
@@ -79,54 +96,9 @@ def _load(folder: str):
 
 
 def _decide(model, tokenizer, state, questions: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    import torch
-
-    from unsloth.models.clef import encode_record, systemone_answer
-    from unsloth.models.decision import QUESTION_TYPES, _clef_amp_dtype, _served_temperatures
-
-    encoded = encode_record(
-        tokenizer, {"state": state, "questions": questions}, max_length = MAX_LENGTH
-    )
-    device = next(model.parameters()).device
-    ids = torch.tensor([encoded.input_ids], device = device)
-    amp_dtype = _clef_amp_dtype(model, device)
-    with (
-        torch.inference_mode(),
-        torch.autocast(device.type, dtype = amp_dtype, enabled = amp_dtype is not None),
-    ):
-        logits, _ = model(input_ids = ids, attention_mask = torch.ones_like(ids), records = [encoded])
-    rows = [
-        row[: len(question.option_ids)]
-        for question, row in zip(encoded.questions, logits.float().cpu())
-    ]
     # The trainer's own rule: per type, or per (type, option count) bucket, after any folded scale.
-    scales = _served_temperatures(
-        model.decision_config,
-        rows,
-        [{"qtype": QUESTION_TYPES.index(q["type"])} for q in questions.values()],
-    )
-    answers = {}
-    for question, row, scale in zip(encoded.questions, rows, scales):
-        probabilities = (row / scale).softmax(-1).tolist()
-        answers[question.question_id] = systemone_answer(
-            questions[question.question_id], dict(zip(question.option_ids, probabilities))
-        )
-    return {
-        "answers": answers,
-        "input_tokens": len(encoded.input_ids),
-        "truncated": _truncated(tokenizer, state, questions, encoded),
-    }
-
-
-def _truncated(tokenizer, state, questions, encoded) -> bool:
-    # A cut state fills the budget exactly, but so does one that fits exactly: one more token of
-    # room tells them apart, and is only spent on prompts at the limit.
-    if len(encoded.input_ids) < MAX_LENGTH:
-        return False
-    from unsloth.models.clef import encode_record
-
-    record = {"state": state, "questions": questions}
-    return len(encode_record(tokenizer, record, max_length = MAX_LENGTH + 1).input_ids) > MAX_LENGTH
+    from unsloth.models.decision import _clef_decide
+    return _clef_decide(model, tokenizer, state, questions, max_length = MAX_LENGTH)
 
 
 def run_clef_worker(conn, folder: str) -> None:

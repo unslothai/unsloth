@@ -142,7 +142,8 @@ def file_times_ms(path: Path) -> tuple[int, int]:
 
 def _zstd_reader(raw):
     try:
-        from compression import zstd  # Python 3.14+
+        # novermin -- 3.14; the ImportError fallback to zstandard below is the guard, which vermin cannot see.
+        from compression import zstd  # novermin
         return zstd.ZstdFile(raw)
     except ImportError:
         import zstandard  # ImportError here means the caller skips the file

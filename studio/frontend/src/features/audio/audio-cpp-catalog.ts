@@ -56,6 +56,79 @@ const MB = 1024 * 1024;
 
 const folder = (name: string) => `${AUDIO_CPP_REPO}/${name}`;
 const ENGLISH = ["en"] as const;
+const COHERE_TRANSCRIBE_LANGUAGES = [
+  "en",
+  "fr",
+  "de",
+  "es",
+  "it",
+  "pt",
+  "nl",
+  "pl",
+  "el",
+  "ar",
+  "ja",
+  "zh",
+  "vi",
+  "ko",
+] as const;
+const FUN_ASR_LANGUAGES = ["zh", "en", "ja"] as const;
+const GIGAAM_LANGUAGES = ["ru", "en", "kk", "ky", "uz"] as const;
+const VOXTRAL_LANGUAGES = [
+  "en",
+  "fr",
+  "es",
+  "de",
+  "ru",
+  "zh",
+  "ja",
+  "it",
+  "pt",
+  "nl",
+  "ar",
+  "hi",
+  "ko",
+] as const;
+// Primaries of audio.cpp model_specs/nemotron_asr.json, plus "no", the picker's code for nb/nn.
+const NEMOTRON_ASR_LANGUAGES = [
+  "ar",
+  "bg",
+  "cs",
+  "da",
+  "de",
+  "el",
+  "en",
+  "es",
+  "et",
+  "fi",
+  "fr",
+  "he",
+  "hi",
+  "hr",
+  "hu",
+  "it",
+  "ja",
+  "ko",
+  "lt",
+  "lv",
+  "mt",
+  "nb",
+  "nl",
+  "nn",
+  "no",
+  "pl",
+  "pt",
+  "ro",
+  "ru",
+  "sk",
+  "sl",
+  "sv",
+  "th",
+  "tr",
+  "uk",
+  "vi",
+  "zh",
+] as const;
 
 export const AUDIO_CPP_MODELS: readonly AudioCppModel[] = [
   { id: folder("Kokoro-82M-GGUF"), task: "tts", needsEspeak: true },
@@ -142,20 +215,36 @@ export const AUDIO_CPP_MODELS: readonly AudioCppModel[] = [
   { id: folder("Parakeet-TDT-0.6B-v3-GGUF"), task: "asr" },
   { id: folder("Canary-180M-Flash-GGUF"), task: "asr", languages: ["en", "de", "es", "fr"] },
   { id: folder("Moonshine-Streaming-GGUF"), task: "asr", languages: ENGLISH },
-  { id: folder("Nemotron-3.5-ASR-Streaming-0.6B-GGUF"), task: "asr", languages: ENGLISH },
+  {
+    id: folder("Nemotron-3.5-ASR-Streaming-0.6B-GGUF"),
+    task: "asr",
+    languages: NEMOTRON_ASR_LANGUAGES,
+  },
   // Diarizes; Transcribe offers it for the Speakers switch.
   { id: folder("MOSS-Transcribe-Diarize-GGUF"), task: "asr" },
-  { id: folder("Citrinet-ASR-GGUF"), task: "asr" },
-  { id: folder("Cohere-Transcribe-GGUF"), task: "asr" },
-  { id: folder("Fun-ASR-Nano-2512-GGUF"), task: "asr" },
-  { id: folder("GigaAM-ASR-GGUF"), task: "asr" },
+  { id: folder("Citrinet-ASR-GGUF"), task: "asr", languages: ENGLISH },
+  {
+    id: folder("Cohere-Transcribe-GGUF"),
+    task: "asr",
+    languages: COHERE_TRANSCRIBE_LANGUAGES,
+  },
+  {
+    id: folder("Fun-ASR-Nano-2512-GGUF"),
+    task: "asr",
+    languages: FUN_ASR_LANGUAGES,
+  },
+  { id: folder("GigaAM-ASR-GGUF"), task: "asr", languages: GIGAAM_LANGUAGES },
   { id: folder("Granite-Speech-5.0-470M-TurboCTC-GGUF"), task: "asr", languages: ENGLISH },
-  { id: folder("Higgs-Audio-v3-STT-GGUF"), task: "asr" },
+  { id: folder("Higgs-Audio-v3-STT-GGUF"), task: "asr", languages: ENGLISH },
   { id: folder("Hviske-v5.3-GGUF"), task: "asr", languages: ["da"] },
   { id: folder("Kroko-ASR-GGUF"), task: "asr", languages: ENGLISH },
   { id: folder("Niagara-ASR-GGUF"), task: "asr", languages: ENGLISH },
   { id: folder("VibeVoice-ASR-GGUF"), task: "asr" },
-  { id: folder("Voxtral-Mini-4B-Realtime-2602-GGUF"), task: "asr" },
+  {
+    id: folder("Voxtral-Mini-4B-Realtime-2602-GGUF"),
+    task: "asr",
+    languages: VOXTRAL_LANGUAGES,
+  },
 ];
 
 /** Shared-repo folders the pickers leave out, and why; the nightly catalog check fails on an unclassified folder. */
@@ -166,6 +255,16 @@ export const AUDIO_CPP_UNOFFERED_FOLDERS: Readonly<Record<string, string>> = {
   "OWSM-GGUF": "needs a newer audio runtime",
   "Sidon-GGUF": "needs a newer audio runtime",
   "Smart-Turn-v3-GGUF": "needs a newer audio runtime",
+  "AST-AudioSet-GGUF": "needs a newer audio runtime",
+  "CED-GGUF": "needs a newer audio runtime",
+  "FireRedVAD-GGUF": "needs a newer audio runtime",
+  "Hviske-v6-GGUF": "needs a newer audio runtime",
+  "MicroWakeWord-GGUF": "needs a newer audio runtime",
+  "MossFormer2-GGUF": "needs a newer audio runtime",
+  "Phonon-2-GGUF": "needs a newer audio runtime",
+  "Sherpa-KWS-GGUF": "needs a newer audio runtime",
+  "TF-GridNet-GGUF": "needs a newer audio runtime",
+  "Voxtral-4B-TTS-2603-GGUF": "needs a newer audio runtime",
   "MioCodec-25Hz-44.1kHz-v2-GGUF": "the codec MioTTS downloads and loads with",
   "Qwen3-ForcedAligner-0.6B-GGUF": "the aligner Transcribe uses for Qwen3-ASR timestamps",
   "MiniMax-H3-Q4-GGUF": "an audio and video package Studio cannot load yet",
@@ -209,7 +308,7 @@ export function isConvertOnlyFamilyId(id: string | null | undefined): boolean {
   return CONVERT_ONLY_FAMILY_HINT.test(id ?? "");
 }
 
-/** Legacy Settings > Voice keys; the backend still maps each to its folder id (and variant). */
+/** Settings > Voice keys; the backend maps each to its folder id (and variant). */
 export interface AudioCppDictationModel {
   key: string;
   id: string;
@@ -237,6 +336,7 @@ export const AUDIO_CPP_DICTATION_MODELS = [
   dictation("audiocpp-canary-180m-flash", "Canary-180M-Flash-GGUF", 237.9),
   dictation("audiocpp-moonshine-tiny", "Moonshine-Streaming-GGUF", 57.6, "tiny"),
   dictation("audiocpp-moonshine-small", "Moonshine-Streaming-GGUF", 286.7, "small"),
+  dictation("audiocpp-moonshine-medium", "Moonshine-Streaming-GGUF", 301.0, "medium"),
   dictation(
     "audiocpp-nemotron-3.5-asr-0.6b",
     "Nemotron-3.5-ASR-Streaming-0.6B-GGUF",
@@ -275,6 +375,14 @@ export function audioCppDisplayName(id: string): string {
     return trimmed.slice(AUDIO_CPP_REPO.length + 1).split("/")[0] || trimmed;
   }
   return trimmed.split("/").pop() || trimmed;
+}
+
+/** Hub path of an umbrella folder (`<repo>/tree/main/<Folder>`); null for any other id. */
+export function audioCppHubPath(id: string): string | null {
+  if (!isAudioCppFolderId(id)) {
+    return null;
+  }
+  return `${AUDIO_CPP_REPO}/tree/main/${audioCppDisplayName(id)}`;
 }
 
 export function audioCppModelFor(id: string | null | undefined): AudioCppModel | null {

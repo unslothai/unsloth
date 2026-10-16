@@ -27,7 +27,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import ts from "typescript";
+import ts from "@typescript/typescript6";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SRC = path.join(HERE, "..", "src");
@@ -1524,7 +1524,6 @@ const KNOWN_DEEP_CYCLE_READS = new Map<string, number>([
   ["components/assistant-ui/thread.tsx: Sources", 1],
   ["components/assistant-ui/thread.tsx: TerminalToolUI", 1],
   ["components/assistant-ui/thread.tsx: ToolFallback", 1],
-  ["components/assistant-ui/thread.tsx: ToolGroup", 1],
   ["components/assistant-ui/thread.tsx: WebSearchToolUI", 1],
   ["components/ui/sidebar.tsx: SIDEBAR_WIDTH_DEFAULT", 1],
   ["features/chat/attachment-content.ts: MAX_OPEN_DOCUMENT_ARCHIVE_BYTES", 1],

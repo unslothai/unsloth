@@ -32,6 +32,9 @@ const windows = (
   grantsLockedByEnvironment: false,
   hostPrepMissing: [],
   prepareRepeatsAfterRestart: true,
+  builtinContainer: null,
+  windowsBuild: null,
+  builtinContainerBuild: null,
   ...overrides,
 });
 
@@ -188,6 +191,34 @@ test("the grants switch appears only with the opt-in on and a runtime installed"
   assert.equal(missing.optInDisabled, true);
 });
 
+test("the built-in container row shows only when MXC runs in it", () => {
+  const builtin = (overrides: Partial<WindowsSandboxStatus>) =>
+    windowsView(
+      windows({ allowDaclFallback: false, ...overrides }),
+      null,
+      false,
+    ).builtinInUse;
+  assert.equal(builtin({ builtinContainer: true }), true);
+  assert.equal(builtin({ builtinContainer: false }), false);
+  assert.equal(builtin({ builtinContainer: null }), false);
+  assert.equal(
+    builtin({ builtinContainer: true, allowDaclFallback: true }),
+    false,
+  );
+  assert.equal(
+    builtin({ builtinContainer: true, runtimeInstalled: false }),
+    false,
+  );
+  const view = windowsView(
+    windows({ allowDaclFallback: false, builtinContainer: true }),
+    null,
+    false,
+  );
+  assert.equal(view.optInChecked, false);
+  assert.equal(view.optInDisabled, false);
+  assert.equal(view.showPrepareButton, false);
+});
+
 test("a save in flight disables both switches", () => {
   const saving = windowsView(windows(), null, true);
   assert.equal(saving.optInDisabled, true);
@@ -233,7 +264,11 @@ test("the setup job's first read is held to the same rule", () => {
 });
 
 test("a missing runtime offers the install unless this Windows cannot run MXC", () => {
-  const missing = windowsView(windows({ runtimeInstalled: false }), null, false);
+  const missing = windowsView(
+    windows({ runtimeInstalled: false }),
+    null,
+    false,
+  );
   assert.equal(missing.runtimeMissing, true);
   assert.equal(missing.showInstallRuntime, true);
   assert.equal(missing.unsupported, null);
@@ -265,7 +300,31 @@ test("the tool rows keep only their badge while a section below has the answer",
     toolRowsQuiet(false, view({ hostPrepMissing: ["prepare-null-device"] })),
     true,
   );
-  assert.equal(toolRowsQuiet(false, view({ runtimeUnsupported: "build" })), true);
+  assert.equal(
+    toolRowsQuiet(false, view({ runtimeUnsupported: "build" })),
+    true,
+  );
   // Prepared, yet a tool still fails: its own reason is the only clue left.
   assert.equal(toolRowsQuiet(false, view({})), false);
+});
+
+test("a PC behind the Windows update that adds the built-in container is told which build", () => {
+  // #13656: a feature-update policy held 25H2 below 26200.9278.
+  const behind = {
+    windowsBuild: "26200.6584",
+    builtinContainerBuild: "26200.9278",
+  };
+  for (const builtinContainer of [false, null]) {
+    assert.deepEqual(
+      windowsView(windows({ ...behind, builtinContainer }), null, false)
+        .builtinUpdate,
+      { current: "26200.6584", required: "26200.9278" },
+    );
+  }
+  assert.equal(
+    windowsView(windows({ ...behind, builtinContainer: true }), null, false)
+      .builtinUpdate,
+    null,
+  );
+  assert.equal(windowsView(windows(), null, false).builtinUpdate, null);
 });

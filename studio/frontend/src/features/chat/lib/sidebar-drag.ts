@@ -19,7 +19,8 @@ import {
   type SidebarOrganizeBy,
 } from "../stores/sidebar-organization-store.ts";
 
-export type SidebarRowKind = "chat" | "project";
+/** `page` is a pinned browser page: shown in Pinned or a custom section only. */
+export type SidebarRowKind = "chat" | "project" | "page";
 /** A built-in list, or a custom section keyed by its order scope (`section:<id>`). */
 export type SidebarSection =
   | "pinned"
@@ -36,7 +37,7 @@ export interface SidebarDragItem {
   section: SidebarSection;
   /** Order scope of the list it was picked up from. */
   scope: string;
-  /** For a chat, the folder it is filed in. Null outside every folder, and for a folder. */
+  /** For a chat, the folder it is filed in. Null outside every folder, and for a folder or page. */
   projectId: string | null;
 }
 
@@ -68,6 +69,7 @@ export interface SidebarDropContext {
   /** The custom section each chat and folder is filed in. Pinned still draws a pinned row. */
   sectionByChatId: Readonly<Record<string, string>>;
   sectionByProjectId: Readonly<Record<string, string>>;
+  sectionByPageId: Readonly<Record<string, string>>;
   /** A custom section's chat sort. */
   sectionSort: (sectionId: string) => SidebarChatSort;
   /** Row ids per list, in drawn order. Pinned and every custom section are one list of folders
@@ -170,6 +172,7 @@ function ownSection(
     if (ctx.pinnedProjectIds.has(id)) return null;
     return ctx.sectionByProjectId[id] ?? null;
   }
+  if (kind === "page") return ctx.sectionByPageId[id] ?? null;
   if (ctx.pinnedChatIds.has(id)) return null;
   return ctx.sectionByChatId[id] ?? null;
 }
@@ -186,7 +189,11 @@ function leavingSection(
   if (!outcome || outcome === STAY) return outcome;
   if (outcome.action.kind === "reorder" || outcome.action.kind === "pin") return outcome;
   const filed =
-    drag.kind === "project" ? ctx.sectionByProjectId[drag.id] : ctx.sectionByChatId[drag.id];
+    drag.kind === "project"
+      ? ctx.sectionByProjectId[drag.id]
+      : drag.kind === "page"
+        ? ctx.sectionByPageId[drag.id]
+        : ctx.sectionByChatId[drag.id];
   if (!filed || outcome.effects.fileInSection) return outcome;
   return {
     ...outcome,
@@ -243,6 +250,8 @@ export function planSidebarDrop(
   if (zone.section === "pinned") {
     return leavingSection(drag, planPinnedDrop(drag, zone, edge, ctx), ctx);
   }
+  // Pages can't go in Projects, Recents or a folder.
+  if (drag.kind === "page") return null;
   return leavingSection(
     drag,
     drag.kind === "project"
@@ -347,10 +356,13 @@ function planPinnedDrop(
     return planChatDrop(drag, zone, edge, ctx);
   }
   const ids = ctx.orders.pinned;
+  // A page is in Pinned unless filed in a section.
   const inList =
     drag.kind === "project"
       ? ctx.pinnedProjectIds.has(drag.id)
-      : ctx.pinnedChatIds.has(drag.id);
+      : drag.kind === "page"
+        ? ownSection("page", drag.id, ctx) === null
+        : ctx.pinnedChatIds.has(drag.id);
   let target: { id: string; edge: DropEdge } | null = null;
   if (zone.row) {
     if (zone.folderId && zone.row.kind === "chat" && zone.block) {
@@ -366,21 +378,30 @@ function planPinnedDrop(
     // The section's own space: last.
     target = { id: ids[ids.length - 1], edge: "bottom" };
   }
-  if (!target) return null;
-  if (target.id === drag.id) return STAY;
+  if (target?.id === drag.id) return STAY;
   const resorts = ctx.pinnedSort !== "manual";
-  const next = inList
-    ? insertIdAt(ids, drag.id, target.id, target.edge)
-    : placeIdAt(ids, drag.id, target.id, target.edge);
+  // No target: Pinned is empty (shown while its pages are filed elsewhere), so this is its first row.
+  const next = !target
+    ? [drag.id]
+    : inList
+      ? insertIdAt(ids, drag.id, target.id, target.edge)
+      : placeIdAt(ids, drag.id, target.id, target.edge);
   if (next === ids) return STAY;
   // folderLine is the plain line unless the zone names a block end to land below, so the section's
   // own tail draws under the last row of the folder that ends it, not under that folder's title.
-  const cue = folderLine(PINNED_ORDER_SCOPE, target.id, target.edge, zone);
+  const cue = target
+    ? folderLine(PINNED_ORDER_SCOPE, target.id, target.edge, zone)
+    : ring(sectionRingKey("pinned"));
   const effects: SidebarDropEffects = {
     orders: [{ scope: PINNED_ORDER_SCOPE, ids: next }],
     switchSort: resorts ? "pinned" : undefined,
   };
   if (inList) return { action: { kind: "reorder" }, cue, effects };
+  if (drag.kind === "page") {
+    // Back to Pinned means leaving its section.
+    effects.fileInSection = { kind: "page", id: drag.id, sectionId: null };
+    return { action: { kind: "pin" }, cue, effects };
+  }
   if (drag.kind === "project") effects.pinProject = drag.id;
   else effects.pinChat = drag.id;
   return { action: { kind: "pin" }, cue, effects };
