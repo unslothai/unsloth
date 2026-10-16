@@ -306,3 +306,17 @@ def test_discard_is_refused_for_a_switch_hook_and_for_the_root(tmp_path, monkeyp
     assert not ok and "not an export method" in message and export.exists()
     ok, _, _ = post_hooks.run_hook("m", str(root), {}, root, lambda l, s: None, None, True)
     assert not ok and root.exists()
+
+
+def test_discard_also_removes_the_emptied_save_folder(tmp_path, monkeypatch):
+    out = tmp_path / "elsewhere" / "model.bin"
+    _write_hooks(tmp_path, monkeypatch, [{"id": "a", "command": _out_cmd(out), "method": METHOD}])
+    root = tmp_path / "exports"
+    export = _merged_export(root, "save/inner")
+    sibling = _merged_export(root, "other/inner")
+    ok, _, _ = post_hooks.run_hook("a", str(export), {}, root, lambda l, s: None, None, True)
+    assert ok and not (root / "save").exists() and sibling.exists() and root.exists()
+    keep = _merged_export(root, "shared/one")
+    _merged_export(root, "shared/two")
+    ok, _, _ = post_hooks.run_hook("a", str(keep), {}, root, lambda l, s: None, None, True)
+    assert ok and not keep.exists() and (root / "shared" / "two").exists()

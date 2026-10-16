@@ -354,6 +354,10 @@ def run_hook(
             )
         else:
             shutil.rmtree(requested, ignore_errors = True)
+            # Studio writes {save_dir}/{name}/: drop the save folder too once nothing else is in it.
+            parent = requested.parent
+            if parent != root and root in parent.parents and not any(parent.iterdir()):
+                parent.rmdir()
             details["discarded"] = str(requested)
             log(f"[post-export:{hook_id}] removed the intermediate export {requested}", "stdout")
     return True, f"{hook.get('label', hook_id)} finished in {secs} s", details
