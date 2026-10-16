@@ -1,19 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-"""main must be a fixed point of its own formatting hook.
-
-pre-commit runs `ruff-format-with-kwargs` on the files a PR touches, so a file
-that lands unformatted is never looked at again: the next PR to edit it inherits
-a red `pre-commit.ci - pr` for a diff it did not write, and the author goes
-looking for a defect that is not in their change. Two files reached main that
-way and sat there, one of them for months.
-
-The check is the real thing rather than `ruff format --check`. The hook is
-`enforce_kwargs_spacing --pre`, then `ruff format`, then `enforce_kwargs_spacing`
-again, and ruff only covers the middle pass, so a file can pass a ruff check
-cleanly and still be rewritten by the hook. It is run over copies, so a failing
-run reports the drift instead of quietly fixing it.
-"""
+"""Main must be a fixed point of the full pre-commit hook, not just ruff format --check."""
 
 from __future__ import annotations
 
@@ -43,53 +30,23 @@ from run_ruff_format import (  # noqa: E402
     version_mismatch,
 )
 
-#: What Windows' CreateProcess accepts for a whole command line, in characters. Documented by
-#: Microsoft as the lpCommandLine cap and unchanged since Windows XP. POSIX has no equivalent
-#: single limit (execve fails with E2BIG against ARG_MAX, ~2 MB on the runners), so Windows is
-#: the binding constraint and the only number worth pinning.
+# Windows' CreateProcess lpCommandLine cap in characters; the binding constraint across OSes.
 _WINDOWS_COMMAND_LINE_LIMIT = 32767
 
-#: Characters a single formatter invocation may build up to. The whole tracked set is ~2650
-#: files whose copied paths under a pytest tmp_path come to ~325,000 characters -- 9.9x the cap
-#: above -- so the single-invocation form this replaced could never run on Windows at all: it
-#: died at CreateProcess with `[WinError 206] The filename or extension is too long` before ruff
-#: opened one file. Nobody had seen it fail because every job that schedules this file is
-#: ubuntu-24.04, where execve's ARG_MAX is ~2 MB and the same argv fits easily.
-#:
-#: A LENGTH budget rather than a file COUNT. A count has to be re-tuned every time the tracked
-#: set or the path depth moves, and silently loses its margin in between: 200 files measured
-#: 26,687 characters here, only 1.2x under the cap, so a fifth more files would have put it back
-#: over. Accumulating by length is self-adjusting and needs no number kept in step with the
-#: repo. 8000 leaves 4x headroom for the argv-quoting model below being wrong.
-#:
-#: Batching at all is safe because the hook is per-file: it formats each path independently, so
-#: N calls over disjoint batches do exactly what one call over the union does.
+# Length budget per formatter invocation. All tracked paths together are ~10x the Windows cap
+# (WinError 206). A length, not a file count, so it self-adjusts; 8000 leaves 4x headroom.
+# Batching is safe because the hook formats each path independently.
 _FORMAT_ARGV_BUDGET = 8000
 
 _HOOK_ID = "ruff-format-with-kwargs"
-# The spacing pass refuses to rewrite itself ("skip modifying this script to
-# avoid self-edit loops"), so it is not a file the hook keeps at a fixed point
-# and checking it would fail main over a rewrite that never happens. Taken from
-# the module rather than spelled out, so moving or renaming it does not turn
-# this into a stale exclusion of nothing.
+# The spacing pass refuses to rewrite itself, so it is not kept at a fixed point.
 _SELF_SKIPPED = Path(enforce_kwargs_spacing.__file__).resolve()
-# The paths the hook is pointed at. `types: [python]` is what pre-commit filters
-# on, and the repo tracks no .pyi, so this is the same set.
+# `types: [python]` is what pre-commit filters on, and the repo tracks no .pyi.
 _TRACKED_GLOBS = ("*.py", "*.pyi")
 
 
 def hook_exclude_pattern(config_text: str, hook_id: str) -> str | None:
-    """The `exclude:` regex the named hook is configured with, or None.
-
-    Read out of .pre-commit-config.yaml rather than copied here. A second copy of
-    the exclusion list is a second thing to forget, and forgetting it in this
-    direction is the expensive one: this test would format a file the hook never
-    touches and fail main over it.
-
-    Scanned rather than parsed with PyYAML, matching how the version pin is read
-    next door: the block is found by its `- id:` and abandoned at the next `- id:`
-    or `- repo:`, which keeps the ruff hook's own `exclude: '\\.ipynb$'` out.
-    """
+    """Read the hook's exclude regex from .pre-commit-config.yaml, not a copy, so the two cannot drift."""
     lines = config_text.splitlines()
     inside = False
     for line in lines:
@@ -100,9 +57,7 @@ def hook_exclude_pattern(config_text: str, hook_id: str) -> str | None:
         if inside:
             if stripped.startswith("- id:") or stripped.startswith("- repo:"):
                 break
-            # The quoted form is tried first and keeps its contents verbatim: a
-            # regex may contain a `#`, and treating that as a comment would
-            # silently truncate the exclusion to a prefix that matches nothing.
+            # The quoted form keeps its contents verbatim: a regex may contain a `#`.
             quoted = re.fullmatch(r"exclude:\s*(['\"])(.*)\1\s*(?:#.*)?", stripped)
             if quoted:
                 return quoted.group(2)
@@ -134,11 +89,7 @@ def eligible_files(root: Path) -> list[str]:
 
 
 def _pinned_ruff_reason() -> str | None:
-    """Why this cannot be checked here, or None when it can.
-
-    ruff's formatting is not stable across releases, so another ruff answers a
-    different question, and the formatter refuses to run under one anyway.
-    """
+    """Returns why ruff cannot be checked here, or None; output differs between ruff releases."""
     pinned = pinned_ruff_version(CONFIG.read_text(encoding = "utf-8")) if CONFIG.exists() else None
     installed = installed_ruff_version()
     if installed is None:
@@ -149,16 +100,7 @@ def _pinned_ruff_reason() -> str | None:
 
 
 def guard_verdict(ruff_reason: str | None, in_ci: bool) -> str:
-    """`run`, `skip` or `fail`.
-
-    Skipping is for a contributor who has not installed the pinned ruff; making
-    them install one to run the rest of the suite would be rude. In CI it is the
-    wrong answer: the runner installs the pin in a step of its own, so a missing
-    ruff there means that step moved, was renamed, or a new job started calling
-    `pytest tests/` without it, and the guard would go green having checked
-    nothing. That is the failure this whole file exists to stop, applied to
-    itself, and it costs nothing to notice.
-    """
+    """Skip without the pinned ruff locally, but fail in CI so a moved install step cannot go green."""
     if ruff_reason is None:
         return "run"
     return "fail" if in_ci else "skip"
@@ -183,8 +125,7 @@ class TestTheExcludeComesFromTheConfig:
         re.compile(pattern)
 
     def test_it_reads_the_named_hook_and_not_a_neighbour(self):
-        # The ruff hook above ours carries `exclude: '\.ipynb$'`. Picking up the
-        # first exclude in the file would format the vendored tree and fail main.
+        # The ruff hook above ours carries its own exclude; the first one in the file is the wrong one.
         text = (
             "repos:\n"
             "  - repo: https://example.invalid/ruff\n"
@@ -207,21 +148,17 @@ class TestTheExcludeComesFromTheConfig:
         assert hook_exclude_pattern(text, "ruff-format-with-kwargs") is None
 
     def test_the_vendored_tree_and_the_generated_files_are_out(self):
-        # Named because they are the ones the hook skips deliberately: reformatting
-        # the vendored copy breaks its digest test.
+        # Reformatting the vendored copy breaks its digest test.
         names = eligible_files(_ROOT)
         assert names
         assert not [n for n in names if n.startswith("studio/backend/vendor/")]
         assert not [n for n in names if n.endswith("chat_templates.py")]
 
     def test_the_spacing_pass_is_not_asked_to_rewrite_itself(self):
-        # It declines by path identity, so a copy of it under another name would
-        # be rewritten and reported as drift the hook will never produce.
+        # It declines by path identity, so a renamed copy would be rewritten.
         names = eligible_files(_ROOT)
         assert _SELF_SKIPPED.is_file()
         assert not [n for n in names if (_ROOT / n).resolve() == _SELF_SKIPPED]
-        # And the rest of scripts/ is still in scope, including the hook entry
-        # point, which the spacing pass does rewrite.
         assert "scripts/run_ruff_format.py" in names
 
 
@@ -236,8 +173,7 @@ class TestTheGuardCannotGoGreenHavingCheckedNothing:
         assert guard_verdict("ruff is not installed here", in_ci = False) == "skip"
 
     def test_the_same_gap_in_ci_is_a_failure(self):
-        # Whichever reason it is: no ruff means the guard checked nothing, and a
-        # mismatched ruff means the workflow drifted off the pin it installs.
+        # No ruff means the guard checked nothing; a mismatched ruff means the workflow drifted.
         assert guard_verdict("ruff is not installed here", in_ci = True) == "fail"
         assert guard_verdict("the repo is formatted with ruff 0.6.9", in_ci = True) == "fail"
 
@@ -250,18 +186,7 @@ class TestTheGuardCannotGoGreenHavingCheckedNothing:
 
 
 def formatter_argvs(copies: list[str], head: list[str] | None = None) -> "list[list[str]]":
-    """Every command line the fixed-point guard will run, in order.
-
-    Batches are accumulated until adding the next path would take the command line past
-    `_FORMAT_ARGV_BUDGET`, so a single path longer than the budget still gets its own call
-    rather than being dropped -- the caller would rather run one over-long command and see the
-    OS refuse it than silently skip a file.
-
-    The guard and the Windows-limit test below both go through this, deliberately. A test that
-    only checked the budget constant would be measuring a number while the caller did something
-    else, and deleting the batching at the call site would leave it green. Here there is one
-    definition of what actually gets executed, so the limit test cannot drift away from the run.
-    """
+    """Batches up to _FORMAT_ARGV_BUDGET; an over-long path runs alone, never dropped."""
     head = head or [sys.executable, str(_ROOT / "scripts" / "run_ruff_format.py")]
     base = _command_line_length(head)
     argvs: list[list[str]] = []
@@ -280,15 +205,7 @@ def formatter_argvs(copies: list[str], head: list[str] | None = None) -> "list[l
 
 
 def _command_line_length(argv: list[str]) -> int:
-    """What Windows counts against its command-line cap for this argv.
-
-    CreateProcess is handed ONE string, so the cost is the arguments joined by the separating
-    spaces, plus a pair of quotes around every argument a runner path forces (the hosted image
-    checks out under `D:\\a\\unsloth\\unsloth`, no spaces, but `C:\\Users\\RUNNER~1\\AppData\\
-    Local\\Temp` is where tmp_path lands and a user name with a space is normal off CI). Counted
-    with the quotes always, because this is a headroom check and the cheap direction to be wrong
-    in is pessimistic.
-    """
+    """Windows CreateProcess cap: each argument's length plus two quotes and a space, always counted."""
     return sum(len(arg) + 3 for arg in argv)
 
 
@@ -311,13 +228,11 @@ def test_the_formatter_invocation_fits_in_a_windows_command_line():
     names = eligible_files(_ROOT)
     assert len(names) > 1000, f"only {len(names)} files matched; the file list has gone vacuous"
 
-    # A hosted Windows runner's pytest tmp_path. Longer than the Linux equivalent, which is the
-    # point: the platform with the smallest cap also has the longest prefix.
+    # A hosted Windows runner's tmp_path: the smallest cap also has the longest prefix.
     prefix = "C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\pytest-of-runner\\pytest-999\\test_0"
     copies = [prefix + "\\" + name for name in names]
 
     argvs = formatter_argvs(copies)
-    # Every path is still formatted: batching may not silently drop the tail.
     assert [arg for argv in argvs for arg in argv[2:]] == copies, "batching lost or reordered files"
 
     worst = max(_command_line_length(argv) for argv in argvs)
@@ -327,9 +242,7 @@ def test_the_formatter_invocation_fits_in_a_windows_command_line():
         f"this guard would die with WinError 206 on Windows before formatting anything. Lower "
         f"_FORMAT_ARGV_BUDGET (currently {_FORMAT_ARGV_BUDGET} over {len(names)} tracked files)."
     )
-    # Non-vacuous: the batching has to be doing something. One call with everything on it is the
-    # shape that was broken, and it must still be over the cap -- if it ever fits, this test is
-    # measuring nothing and the batching can go.
+    # Non-vacuous: if the unbatched call ever fits under the cap, batching can go.
     unbatched = _command_line_length([sys.executable, "run_ruff_format.py", *copies])
     assert unbatched > _WINDOWS_COMMAND_LINE_LIMIT, (
         f"the whole tracked set now builds a {unbatched}-character command line, under the "
@@ -338,9 +251,7 @@ def test_the_formatter_invocation_fits_in_a_windows_command_line():
     )
 
 
-# Each batch is run_ruff_format.py, which itself runs ruff and the spacing pass as children, so
-# stopping a batch has to stop its whole tree: killing the wrapper alone would leave the child it
-# was waiting on running, still using the runner and still writing to the copies.
+# Each batch spawns ruff and the spacing pass, so stopping one must kill its whole tree.
 _HAS_PROC = os.path.isdir("/proc/self")
 
 _OWN_GROUP = (
@@ -371,14 +282,7 @@ def _kill_tree(proc: subprocess.Popen) -> None:
 
 @contextlib.contextmanager
 def _timeout_signal_held():
-    """Defer SIGALRM (pytest-timeout's signal method) until the block has finished.
-
-    Masking the thread would not do: under xdist the kernel can hand the signal to another
-    thread, and CPython still runs the Python handler here at the next bytecode. So the handler
-    itself is swapped for one that only records the signal, and the signal is raised again once
-    the real handler is back. Windows has no SIGALRM, and pytest-timeout's thread method there
-    ends the whole process rather than raising into this one.
-    """
+    """Hold SIGALRM by swapping the handler for one that records it, then re-raise once the block ends."""
     if not hasattr(signal, "SIGALRM") or threading.current_thread() is not threading.main_thread():
         yield
         return
@@ -393,14 +297,7 @@ def _timeout_signal_held():
 
 
 def _run_side_by_side(argvs: list[list[str]], log_dir: Path) -> list[tuple[int, str]]:
-    """Run `argvs` at most `os.cpu_count()` at a time; (returncode, output) for each, in order.
-
-    Driven from the calling thread rather than a thread pool: pytest-timeout raises in this
-    thread, and a pool's shutdown would wait on worker threads blocked in subprocess.run, so a
-    stalled formatter would outlive the per-test timeout and hold the job to its own. Here the
-    exception lands in the polling loop and the finally kills whatever is still running.
-    Output goes to files so a chatty child can never block on a full pipe.
-    """
+    """Runs on the calling thread, not a pool, so a pytest-timeout raise reaches the kill loop."""
     log_dir.mkdir(parents = True, exist_ok = True)
     limit = max(1, min(len(argvs), os.cpu_count() or 1))
     results: list[tuple[int, str] | None] = [None] * len(argvs)
@@ -411,9 +308,7 @@ def _run_side_by_side(argvs: list[list[str]], log_dir: Path) -> list[tuple[int, 
             while queued and len(running) < limit:
                 index, argv = queued.pop(0)
                 log = log_dir / f"{index}.log"
-                # Held across the launch: pytest-timeout's SIGALRM landing between Popen returning
-                # and the process being recorded would leave nothing for the finally to kill. A
-                # held signal is raised again once the process is recorded.
+                # SIGALRM held across the launch so a timeout cannot land before the process is recorded.
                 with _timeout_signal_held(), open(log, "wb") as sink:
                     running[index] = (
                         subprocess.Popen(argv, stdout = sink, stderr = subprocess.STDOUT, **_OWN_GROUP),
@@ -448,9 +343,7 @@ def test_every_tracked_python_file_is_already_formatted(tmp_path):
     names = eligible_files(_ROOT)
     assert len(names) > 1000, f"only {len(names)} files matched; the file list has gone vacuous"
 
-    # ruff reads line-length and extend-exclude from the root pyproject.toml, and
-    # finds it by walking up from each file. Without this copy the run happens at
-    # ruff's default 88 columns and every long line looks like drift.
+    # ruff reads line-length from the root pyproject.toml, found by walking up from each file.
     shutil.copy2(_ROOT / "pyproject.toml", tmp_path / "pyproject.toml")
 
     originals: dict[str, bytes] = {}
@@ -463,11 +356,7 @@ def test_every_tracked_python_file_is_already_formatted(tmp_path):
         target.write_bytes(originals[name])
         copies.append(str(target))
 
-    # Batched, and through the same builder the Windows-limit test above measures. One call with
-    # all ~2650 paths on it is 9.9x over Windows' CreateProcess cap and dies with WinError 206.
-    # The batches touch disjoint files, so they run side by side: nearly all of the time is the
-    # hook's single-threaded Python passes (ruff itself is a fraction of a second), and run one
-    # after another on a loaded CI runner they went past pytest-timeout's 330 s.
+    # Batched to stay under the Windows cap, and run side by side to fit pytest-timeout's 330 s.
     for code, output in _run_side_by_side(formatter_argvs(copies), tmp_path / "formatter-logs"):
         assert code == 0, f"the formatter itself failed:\n{output}"
 
@@ -492,7 +381,6 @@ def test_a_timeout_in_the_polling_loop_kills_the_running_formatters(tmp_path, mo
         return started[-1]
 
     monkeypatch.setattr(subprocess, "Popen", popen)
-    # Like run_ruff_format.py waiting on ruff: the batch starts a child and blocks on it.
     pid_file = tmp_path / "grandchild.pid"
     wrapper = (
         "import subprocess, sys, time\n"
@@ -504,7 +392,6 @@ def test_a_timeout_in_the_polling_loop_kills_the_running_formatters(tmp_path, mo
     )
 
     def timeout(_seconds):
-        # Let the wrapper start its child first, the way a real timeout lands mid-format.
         deadline = real_monotonic() + 30
         while _read_pid(pid_file) is None and real_monotonic() < deadline:
             real_sleep(0.05)
@@ -518,11 +405,8 @@ def test_a_timeout_in_the_polling_loop_kills_the_running_formatters(tmp_path, mo
     assert all(proc.poll() is not None for proc in started), "a formatter outlived the timeout"
     grandchild = _read_pid(pid_file)
     assert grandchild is not None, "the batch never started its child"
-    # SIGKILL is sent at once, but the process only dies once it is next scheduled, and a
-    # grandchild still in Python's startup can sit in uninterruptible I/O on a loaded runner, so
-    # wait as long as the launch above may take. A group kill that missed it still fails, just
-    # later. The verdict is the last probe the loop took: probing again after it said "dead" could
-    # only disagree by racing the reaper.
+    # A grandchild in uninterruptible I/O dies only once scheduled, so wait as long as the launch
+    # may take. The verdict is the last probe taken.
     deadline = real_monotonic() + 30
     alive = _alive(grandchild)
     while alive and real_monotonic() < deadline:
@@ -541,7 +425,6 @@ def test_a_pid_reaped_between_the_two_probes_is_not_alive(monkeypatch):
     child = subprocess.Popen([sys.executable, "-c", "pass"])
     child.wait()
     assert not Path(f"/proc/{child.pid}").exists(), "the child was not reaped"
-    # Stand in for the probe that ran while the process was still a zombie.
     monkeypatch.setattr(os, "kill", lambda pid, sig: None)
     assert _alive(child.pid) is False
 
@@ -552,7 +435,7 @@ def test_without_proc_a_pid_the_signal_probe_finds_is_alive(monkeypatch):
 
     Reading it as death would pass the timeout test above even if the group kill missed.
     """
-    # A pid with no /proc entry, as every pid has on macOS, that the signal probe still finds.
+    # A pid with no /proc entry, as on macOS, that the signal probe still finds.
     child = subprocess.Popen([sys.executable, "-c", "pass"])
     child.wait()
     monkeypatch.setattr(sys.modules[__name__], "_HAS_PROC", False)
@@ -577,12 +460,9 @@ def _alive(pid: int) -> bool:
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
-    # macOS has no /proc, so the signal probe is the only answer there.
     if not _HAS_PROC:
         return True
-    # A killed child of an exited wrapper is reparented and reaped; until then it is a zombie.
-    # The reaper can finish between the signal probe above and this read, and a pid with no
-    # /proc entry left is gone, not alive.
+    # A killed orphan is a zombie until reaped; a pid with no /proc entry left is gone.
     try:
         with open(f"/proc/{pid}/stat", encoding = "utf-8") as stat:
             return stat.read().split(") ", 1)[1][0] != "Z"

@@ -13,6 +13,11 @@ const STUBS = {
     "export const getLocale = () => 'en'; export const translate = (key) => key;",
   ),
   "@/lib/open-link": stub("export const openExternalLink = () => {};"),
+  // globalThis.nativeViewZoom is the applied interface zoom; nativeViewZoomChanged announces a change.
+  "@/features/settings/lib/interface-scale-runtime": stub(
+    "export const getAppliedInterfaceZoom = () => globalThis.nativeViewZoom ?? 1;" +
+      " export const subscribeAppliedInterfaceZoom = (listener) => { globalThis.nativeViewZoomChanged = listener; return () => {}; };",
+  ),
   "@/lib/toast": stub(`
     const seen = (level) => (message) => void (globalThis.nativeViewSeen ??= []).push({ level, message });
     export const toast = Object.assign(seen("info"), { success: seen("success"), error: seen("error"), warning: seen("warning") });

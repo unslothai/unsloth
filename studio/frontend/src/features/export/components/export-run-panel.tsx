@@ -30,7 +30,7 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
-import type { ExportLogEntry } from "../api/export-api";
+import type { ExportDrafterInfo, ExportLogEntry } from "../api/export-api";
 import {
   EXPORT_METHODS,
   type ExportMethod,
@@ -104,6 +104,7 @@ export interface ExportRunPanelProps {
   destination: ExportDestination;
   onDestinationChange: (v: ExportDestination) => void;
   saveDirectory: string;
+  saveDirectoryInput: string;
   defaultSaveDirectory: string;
   saveDirectoryOverridden: boolean;
   onSaveDirectoryChange: (v: string | null) => void;
@@ -133,6 +134,7 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
     destination,
     onDestinationChange,
     saveDirectory,
+    saveDirectoryInput,
     defaultSaveDirectory,
     saveDirectoryOverridden,
     onSaveDirectoryChange,
@@ -217,6 +219,10 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
     (v) => findMergedFormat(v)?.label ?? v,
   );
   const showProgress = isExporting || isTerminal;
+  const hubRepoMissing =
+    destination === "hub" &&
+    !decisionNote &&
+    (!hfUsername.trim() || !modelName.trim());
 
   return (
     <div className="flex flex-col gap-4 rounded-2xl border border-border/50 bg-muted/20 p-4">
@@ -289,7 +295,7 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
               <div className="flex items-stretch gap-2">
                 <Input
                   className="min-w-0 flex-1 font-mono text-ui-12"
-                  value={saveDirectory}
+                  value={saveDirectoryInput}
                   onChange={(e) => onSaveDirectoryChange(e.target.value)}
                   spellCheck={false}
                   title={saveDirectory}
@@ -350,6 +356,11 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
                       />
                     </div>
                   </div>
+                  {hubRepoMissing && (
+                    <p className="-mt-2 text-ui-11 text-muted-foreground/70">
+                      Enter a Username / Org and Model Name to push to the Hub.
+                    </p>
+                  )}
 
                   <div className="flex flex-col gap-1.5">
                     <div className="flex items-center justify-between">
@@ -445,6 +456,9 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
                 </div>
               ));
             })()}
+            {run.result?.drafter ? (
+              <ExportDrafterNote drafter={run.result.drafter} />
+            ) : null}
           </div>
         </div>
       )}
@@ -615,7 +629,9 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
             <Button variant="outline" onClick={onClose}>
               Cancel
             </Button>
-            <Button onClick={onStart}>Start Export</Button>
+            <Button onClick={onStart} disabled={hubRepoMissing}>
+              Start Export
+            </Button>
           </>
         )}
         {isExporting && (
@@ -634,6 +650,24 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
         }
         onSelect={(path) => onSaveDirectoryChange(path)}
       />
+    </div>
+  );
+}
+
+function ExportDrafterNote({ drafter }: { drafter: ExportDrafterInfo }) {
+  return (
+    <div className="flex min-w-0 flex-col gap-0.5">
+      <span>
+        Includes trained drafter ({drafter.strategy === "mtp" ? "MTP" : "EAGLE-3"})
+      </span>
+      {drafter.vllm_command ? (
+        <code
+          className="select-all whitespace-pre-wrap break-all font-mono text-ui-12 text-foreground/90"
+          title={drafter.vllm_command}
+        >
+          {drafter.vllm_command}
+        </code>
+      ) : null}
     </div>
   );
 }

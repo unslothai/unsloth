@@ -1088,7 +1088,7 @@ test("a drop that moves writes its slot and takes the pin off after the move", (
     APP_SIDEBAR.indexOf("function commitDrop("),
     APP_SIDEBAR.indexOf("function dropCueClass("),
   );
-  assert.equal((commit.match(/setManualOrder\(/g) ?? []).length, 1);
+  assert.equal((commit.match(/writeManualOrder\(/g) ?? []).length, 1);
   // A slow move can be overtaken by a reorder of the list it lands in. The slot is re-aimed at
   // the list as it stands then, not written from the snapshot taken at the drop.
   assert.match(

@@ -12,6 +12,7 @@ const {
   wslNoticeKey,
   convertsToInteger,
   precisionAfterEngineSwitch,
+  supportsPrecision,
 } = await import("../src/features/model-picker/api/engines.ts");
 
 const installed: EngineStatus = {
@@ -125,4 +126,20 @@ test("switching to an engine that cannot convert resets INT4 / INT8 before loadi
   assert.equal(precisionAfterEngineSwitch("fp8", sglang), "fp8");
   assert.equal(precisionAfterEngineSwitch("int4", installed), "int4");
   assert.equal(precisionAfterEngineSwitch("int8", undefined), "int8");
+});
+
+test("an AMD build offers only the precisions it loads, and a retained 4-bit resets", () => {
+  const rocm = {
+    ...installed,
+    platform: "rocm" as const,
+    precisions: ["auto", "bf16", "fp16", "int8", "fp8"],
+  };
+  assert.equal(supportsPrecision(rocm, "int4"), false);
+  for (const precision of ["auto", "bf16", "fp16", "int8", "fp8"]) {
+    assert.equal(supportsPrecision(rocm, precision), true);
+  }
+  assert.equal(precisionAfterEngineSwitch("int4", rocm), "auto");
+  assert.equal(precisionAfterEngineSwitch("fp8", rocm), "fp8");
+  // An older backend reports no list, so nothing beyond the SGLang rule is withheld.
+  assert.equal(supportsPrecision(installed, "int4"), true);
 });

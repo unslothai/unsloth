@@ -44,6 +44,7 @@ import { sameGpuSelection } from "@/hooks/gpu-selection";
 import { resolveBatchSizeSeed } from "./resolve-batch-size-seed";
 import { resolveChatTemplateSeed } from "./resolve-chat-template-seed";
 import { resolveCtxPinSeed } from "./resolve-ctx-pin-seed";
+import { engineLaunchFieldsFrom } from "./engine-launch-fields";
 import { resolveLlamaExtraArgsSeed } from "./resolve-llama-extra-args-seed";
 import { shouldSeedVisionSwitch } from "./resolve-vision-switch-seed";
 
@@ -148,6 +149,23 @@ export type ApplyInferenceStatusOptions = {
   adoptingExistingServerModel?: boolean;
 };
 
+/** The resident engine launch settings, in the store's params shape. */
+function residentEngineParams(status: InferenceStatusResponse) {
+  return {
+    engine: status.engine ?? "auto",
+    enginePrecision: status.engine_precision ?? "auto",
+    engineParallelism: status.engine_parallelism ?? "tensor",
+    engineKvCacheDtype: status.engine_kv_cache_dtype ?? "auto",
+    engineSeed: status.engine_seed ?? null,
+    engineGpuMemoryUtilization: status.engine_gpu_memory_utilization ?? null,
+    // As requested, so a model started with --no-load-in-4bit reloads in 16-bit too. vLLM / SGLang
+    // record false because they take engine_precision instead, so they leave the choice alone.
+    ...((status.engine ?? "auto") === "auto"
+      ? { loadIn4bit: status.load_in_4bit !== false }
+      : {}),
+  };
+}
+
 /** Mirror refresh() hydration so adopted CLI models get reasoning/tools flags. */
 export function applyActiveModelStatusToStore(
   status: InferenceStatusResponse,
@@ -163,13 +181,19 @@ export function applyActiveModelStatusToStore(
     loadedEngine: status.engine ?? "auto",
     loadedEnginePrecision: status.engine_precision ?? "auto",
     loadedEngineParallelism: status.engine_parallelism ?? "tensor",
+    loadedEngineLaunch: engineLaunchFieldsFrom(status),
   });
   // Before the settings panel can open on it, which reads only the repo id.
   adoptCachedRepoConfig(checkpointId, status.gguf_variant ?? null);
 
   const store = useChatRuntimeStore.getState();
-  if ((store.params.engine ?? "auto") !== (status.engine ?? "auto") || (store.params.enginePrecision ?? "auto") !== (status.engine_precision ?? "auto") || (store.params.engineParallelism ?? "tensor") !== (status.engine_parallelism ?? "tensor")) {
-    store.setParams({ ...store.params, engine: status.engine ?? "auto", enginePrecision: status.engine_precision ?? "auto", engineParallelism: status.engine_parallelism ?? "tensor" });
+  const residentEngine = residentEngineParams(status);
+  if (
+    (Object.keys(residentEngine) as (keyof typeof residentEngine)[]).some(
+      (key) => (store.params[key] ?? null) !== residentEngine[key],
+    )
+  ) {
+    store.setParams({ ...store.params, ...residentEngine });
   }
   const previousCheckpoint =
     options.previousCheckpoint ?? store.params.checkpoint;
@@ -177,7 +201,7 @@ export function applyActiveModelStatusToStore(
   if (status.inference) {
     store.setParams(
       mergeBackendRecommendedInference({
-        current: { ...store.params, engine: status.engine ?? "auto", enginePrecision: status.engine_precision ?? "auto", engineParallelism: status.engine_parallelism ?? "tensor" },
+        current: { ...store.params, ...residentEngine },
         response: status,
         modelId: checkpointId,
         presetSource: store.activePresetSource,
@@ -494,6 +518,14 @@ export function applyActiveModelStatusToStore(
         ...((hydratingExistingModel ||
           prevState.specDraftNMax === prevState.loadedSpecDraftNMax) && {
           specDraftNMax: status.spec_draft_n_max ?? null,
+        }),
+      }),
+    ...(seedLoadParams &&
+      status.spec_draft_model !== undefined && {
+        loadedSpecDraftModel: status.spec_draft_model ?? null,
+        ...((hydratingExistingModel ||
+          prevState.specDraftModel === prevState.loadedSpecDraftModel) && {
+          specDraftModel: status.spec_draft_model ?? null,
         }),
       }),
     ...(seedLoadParams &&

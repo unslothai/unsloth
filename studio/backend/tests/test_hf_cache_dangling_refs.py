@@ -2865,11 +2865,9 @@ def test_a_payload_split_across_snapshots_is_not_advertised_runnable(tmp_path, m
 
 
 def test_a_complete_quant_family_does_not_vouch_for_a_torn_sibling(tmp_path):
-    """One quant label can cover several shard families and the lister offers only the
-    lexicographically first file under it, so grouping on the shard total alone let the complete B
-    family mark the torn A file downloadable."""
-    snapshot = tmp_path / "snap"
-    snapshot.mkdir()
+    """a complete sibling must not make the lexicographically selected torn family downloadable."""
+    snapshot = tmp_path / "models--org--Model-GGUF" / "snapshots" / "rev1"
+    snapshot.mkdir(parents = True)
     for name in (
         "A-Q4_K_M-00001-of-00002.gguf",
         "B-Q4_K_M-00001-of-00002.gguf",
@@ -3805,40 +3803,75 @@ def test_an_unreadable_manifest_keeps_the_fixed_denoiser_pair(tmp_path):
     assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is False
 
 
-def _snapshot_with(tmp_path, files: dict) -> Path:
-    snapshot = tmp_path / "snap"
-    snapshot.mkdir()
+def _snapshot_with(
+    tmp_path,
+    files: dict,
+    subdir: str = "snap",
+) -> Path:
+    snapshot = tmp_path / subdir
+    snapshot.mkdir(parents = True)
     for name, size in files.items():
         (snapshot / name).write_bytes(b"\0" * size)
     return snapshot
 
 
+_HF_SNAPSHOT = "models--org--Model-GGUF/snapshots/rev1"
+
+
 def test_a_torn_sibling_family_does_not_veto_the_quant_that_loads(tmp_path):
-    """Two families can share one quant label. The lister offers the lexicographically first file
-    and the loader loads that family alone, so the torn z- set beside a whole a-Q4_K_M.gguf is
-    never selected and must not make the label unavailable."""
+    """the selected complete family stays ready even when a torn sibling shares its quant."""
     snapshot = _snapshot_with(
         tmp_path,
         {"a-Q4_K_M.gguf": 64, "z-Q4_K_M-00001-of-00002.gguf": 16},
+        _HF_SNAPSHOT,
     )
     assert inventory_scan._completed_gguf_variants(snapshot) == {"Q4_K_M"}
     assert _local_offer(snapshot) == [("Q4_K_M", True)]
 
 
 def test_a_whole_sibling_family_does_not_vouch_for_the_torn_one_that_loads(tmp_path):
-    """The other direction, which is why this keys on the selected family rather than on any
-    complete one: the torn set sorts first, so that is what the loader picks."""
+    """the selected torn family stays incomplete even when a complete sibling shares its quant."""
     snapshot = _snapshot_with(
         tmp_path,
         {"a-Q4_K_M-00001-of-00002.gguf": 16, "z-Q4_K_M.gguf": 64},
+        _HF_SNAPSHOT,
     )
     assert inventory_scan._completed_gguf_variants(snapshot) == set()
     assert _local_offer(snapshot) == [("Q4_K_M", False)]
 
 
+def test_a_custom_folder_judges_each_build_at_one_quant_on_its_own_files(tmp_path):
+    """custom folders track readiness and default selection per build, even at one quant."""
+    import asyncio
+
+    from hub.services.models import gguf_variants
+    from utils.models.model_config import _find_local_gguf_by_variant
+
+    for files, offer, default, default_file in (
+        (
+            {"a-Q4_K_M.gguf": 64, "z-Q4_K_M-00001-of-00002.gguf": 16},
+            [("Q4_K_M", True), ("z-Q4_K_M", False)],
+            "Q4_K_M",
+            "a-Q4_K_M.gguf",
+        ),
+        (
+            {"a-Q4_K_M-00001-of-00002.gguf": 16, "z-Q4_K_M.gguf": 64},
+            [("Q4_K_M", False), ("z-Q4_K_M", True)],
+            "z-Q4_K_M",
+            "z-Q4_K_M.gguf",
+        ),
+    ):
+        folder = _snapshot_with(tmp_path, files, f"folder-{default}")
+        assert _local_offer(folder) == offer
+        response = asyncio.run(
+            gguf_variants.get_gguf_variants_response(str(folder), prefer_local_cache = True)
+        )
+        assert response.default_variant == default
+        assert Path(_find_local_gguf_by_variant(str(folder), default)).name == default_file
+
+
 def test_the_selected_family_is_judged_on_its_own_shards(tmp_path):
-    """A complete split set selected ahead of a torn sibling stays complete: the missing shard
-    belongs to a family nothing reads."""
+    """a missing shard in an unselected sibling must not make the selected family incomplete."""
     snapshot = _snapshot_with(
         tmp_path,
         {

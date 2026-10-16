@@ -1,23 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""`--resume` decides on the LATEST attempt at a cell, the same one everything else reads.
-
-`latest_attempt_rows` is the rule for the score (`report.build.score_payload`), the ratio
-(`ab.readings_by_arm`), the surface parity sweep and `--assert-liveness`. `_resume_set` read the
-payload raw, and it is the one reader whose disagreement skips work rather than adding it.
-
-HOW A SUPERSEDED SUCCESS GETS INTO A PAYLOAD WITHOUT ANYBODY DOING ANYTHING UNUSUAL. An A/B pair
-is re-run WHOLE (`ab.skippable_cells`), because an arm measured alone in a new session is a
-reading no table can contain. So a resume re-runs an arm that had ALREADY succeeded. If that
-retry fails while its partner succeeds -- one flaky cell, which is the reason `--resume` exists --
-the payload holds a completed row and a later failed row under the same deterministic `cell_id`.
-
-Read raw, the next `--resume` found the old success, skipped the whole pair, ran nothing and
-exited 0. Read through `latest_attempt_rows`, the same payload scores INCOMPLETE and
-`--assert-liveness` fails on it. A resume that can never re-run the cell that is broken is a gate
-nobody can satisfy by fixing the run, and an exit code of 0 over a rung that scored zero.
-"""
+"""--resume must read the latest attempt per cell, or a superseded success skips a broken cell."""
 
 from __future__ import annotations
 
@@ -99,9 +83,6 @@ def _paths(tmp_path, sessions):
     return paths
 
 
-# ── the decision ─────────────────────────────────────────────────────────────────────────────
-
-
 def test_a_cell_whose_latest_attempt_failed_is_not_skipped(tmp_path):
     """The interrupted A/B: the base arm succeeded, its rerun died, the treatment arm is fine."""
 
@@ -124,11 +105,7 @@ def test_a_cell_whose_latest_attempt_failed_is_not_skipped(tmp_path):
 
 
 def test_the_pair_is_therefore_re_run_and_the_run_is_not_a_no_op(tmp_path):
-    """The consequence, through the same pair rule `run()` applies and the score `--report` gives.
-
-    The rung scores INCOMPLETE off the failed retry, so a `--resume` that finds nothing to do
-    would exit 0 over a ladder that scored zero.
-    """
+    """A resume that finds nothing to re-run would exit 0 over a rung that scores INCOMPLETE."""
 
     paths = _paths(
         tmp_path,
@@ -147,9 +124,6 @@ def test_the_pair_is_therefore_re_run_and_the_run_is_not_a_no_op(tmp_path):
 
     assert score_payload(paths.payload_jsonl, [10_000]).rungs[0].complete is False
     assert skippable_cells(_work(), _resume_set(paths)) == set()
-
-
-# ── the controls ─────────────────────────────────────────────────────────────────────────────
 
 
 def test_a_cell_completed_once_and_never_re_run_is_skipped(tmp_path):
@@ -176,10 +150,7 @@ def test_a_cell_completed_once_and_never_re_run_is_skipped(tmp_path):
 
 
 def test_a_cell_that_died_and_was_then_re_run_successfully_is_skipped(tmp_path):
-    """The control on the direction: superseding must not turn into refusing to skip anything.
-
-    This is the case `--resume` was built for, and the LATEST attempt is the successful one.
-    """
+    """Control: a cell that failed and was then re-run successfully is still skipped on resume."""
 
     paths = _paths(
         tmp_path,

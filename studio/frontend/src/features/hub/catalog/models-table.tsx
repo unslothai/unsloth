@@ -1,14 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useVllmAvailable } from "@/features/model-picker";
-import { useHfEndpoint, useHubName } from "@/lib/hf-endpoint";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+import { useVllmAvailable, useVllmPlatform } from "@/features/model-picker";
 import {
   Tooltip,
   TooltipContent,
@@ -27,17 +20,12 @@ import {
   formatModelParamLabel,
   formatPipelineTag,
 } from "@/features/hub/lib/view-models";
-import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { cn, formatCompact } from "@/lib/utils";
 import {
   ArrowUpDownIcon,
-  Copy01Icon,
   Download01Icon,
   FavouriteIcon,
   LayoutTwoColumnIcon,
-  LeftToRightListBulletIcon,
-  LinkSquare02Icon,
-  MoreVerticalIcon,
   Refresh01Icon,
   ViewSidebarLeftIcon,
 } from "@hugeicons/core-free-icons";
@@ -46,8 +34,7 @@ import {
 } from "lucide-react";
 import type { IconSvgElement } from "@hugeicons/react";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { Fragment, type ReactNode, memo, useMemo } from "react";
-import { confirmExternalLink } from "../stores/external-link-confirm";
+import { type ReactNode, memo, useMemo } from "react";
 import type { DiscoverRow } from "../types";
 import { HubOptionMenu } from "./hub-option-menu";
 import {
@@ -55,11 +42,15 @@ import {
   buildRowStatusTooltip,
 } from "./models-catalog-rows";
 import { OwnerAvatar } from "./owner-avatar";
-import { AccessGlyphs, CapabilityPill } from "./shared";
+import { AccessGlyphs } from "./shared";
 
 export const RESULT_CARD_HEIGHT_PX = 78;
 export const RESULT_ROW_GAP_PX = 8;
 export const RESULT_ROW_HEIGHT_PX = RESULT_CARD_HEIGHT_PX + RESULT_ROW_GAP_PX;
+// Phone widths (below md) use a shorter card; ResultCard's max-md classes match it.
+export const RESULT_CARD_MOBILE_HEIGHT_PX = 66;
+export const RESULT_ROW_MOBILE_HEIGHT_PX =
+  RESULT_CARD_MOBILE_HEIGHT_PX + RESULT_ROW_GAP_PX;
 export const RESULT_GRID_HEIGHT_PX = 64;
 export const RESULT_GRID_ROW_GAP_PX = 8;
 export const RESULT_GRID_ROW_HEIGHT_PX =
@@ -69,20 +60,7 @@ export const RESULT_SPLIT_HEIGHT_PX = 56;
 export const RESULT_SPLIT_ROW_HEIGHT_PX =
   RESULT_SPLIT_HEIGHT_PX + RESULT_ROW_GAP_PX;
 
-export type AllModelsView = "grid" | "two" | "split";
-
-// Shared column widths so header and rows align: two flexible lead columns
-// (Model, Capabilities) plus fixed metric columns that drop on narrow viewports.
-const LIST_COLS = {
-  model: "flex min-w-0 flex-[2.4] items-center gap-3",
-  caps: "hidden min-w-0 flex-[1.7] items-center gap-1.5 md:flex",
-  capsModel: "hidden w-[calc(132px*var(--ui-space-scale,1))] shrink-0 items-center gap-1.5 md:flex",
-  size: "hidden w-[calc(60px*var(--ui-space-scale,1))] shrink-0 lg:block",
-  updated: "hidden w-[calc(82px*var(--ui-space-scale,1))] shrink-0 xl:block",
-  downloads: "hidden w-[calc(104px*var(--ui-space-scale,1))] shrink-0 items-center gap-1.5 sm:flex",
-  likes: "hidden w-[calc(76px*var(--ui-space-scale,1))] shrink-0 items-center gap-1.5 sm:flex",
-  actions: "flex w-[calc(64px*var(--ui-space-scale,1))] shrink-0 items-center justify-end gap-0.5",
-} as const;
+export type AllModelsView = "two" | "split";
 
 function ViewToggleButton({
   active,
@@ -280,9 +258,7 @@ export function HubListHeader({
                 aria-hidden="true"
                 className="hub-tab-toggle-pill pointer-events-none absolute inset-y-0 left-0 w-8 rounded-full transition-transform duration-200 ease-out"
                 style={{
-                  transform: `translateX(${
-                    (view === "split" ? 1 : view === "grid" ? 2 : 0) * 100
-                  }%)`,
+                  transform: `translateX(${view === "split" ? 100 : 0}%)`,
                 }}
               />
               <ViewToggleButton
@@ -297,32 +273,10 @@ export function HubListHeader({
                 icon={ViewSidebarLeftIcon}
                 onClick={() => onViewChange("split")}
               />
-              <ViewToggleButton
-                active={view === "grid"}
-                label="Compact"
-                icon={LeftToRightListBulletIcon}
-                onClick={() => onViewChange("grid")}
-              />
             </div>
           )}
         </div>
       )}
-    </div>
-  );
-}
-
-export function ResultListHeader({ isDataset }: { isDataset: boolean }) {
-  return (
-    <div className="flex w-full items-center gap-3 px-4 pb-2 text-ui-11 font-medium text-muted-foreground/55">
-      <span className={LIST_COLS.model}>{isDataset ? "Dataset" : "Model"}</span>
-      <span className={isDataset ? LIST_COLS.caps : LIST_COLS.capsModel}>
-        {isDataset ? "Details" : "Capabilities"}
-      </span>
-      <span className={LIST_COLS.size}>Size</span>
-      <span className={LIST_COLS.updated}>Updated</span>
-      <span className={LIST_COLS.downloads}>Downloads</span>
-      <span className={LIST_COLS.likes}>Likes</span>
-      <span className={LIST_COLS.actions} aria-hidden="true" />
     </div>
   );
 }
@@ -409,171 +363,13 @@ function VerifiedOwner({ owner }: { owner: string }) {
   );
 }
 
-function StatItem({ icon, value }: { icon: IconSvgElement; value: string }) {
-  return (
-    <span className="flex shrink-0 items-center gap-1.5">
-      <HugeiconsIcon
-        icon={icon}
-        strokeWidth={1.75}
-        className="size-3.5 shrink-0"
-      />
-      {value}
-    </span>
-  );
-}
-
-function CapabilitiesCell({
-  row,
-  taskLabel,
-  onSelect,
-}: {
-  row: DiscoverRow;
-  taskLabel: string | null;
-  onSelect: (id: string) => void;
-}) {
-  const caps = row.capabilities;
-  if (caps.length === 0 && !taskLabel) {
-    return null;
-  }
-  const max = 3;
-  const shown = caps.slice(0, max);
-  const extra = caps.length - shown.length;
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild={true}>
-        <div
-          className="pointer-events-auto flex w-full min-w-0 cursor-pointer items-center gap-1.5"
-          onClick={(event) => {
-            event.stopPropagation();
-            onSelect(row.id);
-          }}
-        >
-          {shown.map((capability) => (
-            <CapabilityPill
-              key={capability.key}
-              capability={capability}
-              iconOnly={true}
-              tooltip={false}
-            />
-          ))}
-          {extra > 0 && <span className="hub-chip shrink-0">+{extra}</span>}
-          {shown.length === 0 && taskLabel && (
-            <span className="truncate text-ui-12 text-muted-foreground/75">
-              {taskLabel}
-            </span>
-          )}
-        </div>
-      </TooltipTrigger>
-      <TooltipContent side="top" align="start" className="tooltip-compact">
-        <div className="flex flex-col items-start gap-1">
-          {taskLabel && (
-            <span className="text-ui-11 font-medium text-muted-foreground">
-              {taskLabel}
-            </span>
-          )}
-          {caps.map((capability) => (
-            <CapabilityPill key={capability.key} capability={capability} />
-          ))}
-        </div>
-      </TooltipContent>
-    </Tooltip>
-  );
-}
-
-function RowActions({
-  row,
-  isDataset,
-  onSelect,
-}: {
-  row: DiscoverRow;
-  isDataset: boolean;
-  onSelect: (id: string) => void;
-}) {
-  const hfEndpoint = useHfEndpoint();
-  const hubName = useHubName();
-  const hfUrl = `${hfEndpoint}/${isDataset ? "datasets/" : ""}${row.result.id}`;
-  const actionClass =
-    "pointer-events-auto inline-flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground/70 transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground focus-visible:text-foreground data-[state=open]:bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] data-[state=open]:text-foreground";
-  return (
-    <>
-      <Tooltip>
-        <TooltipTrigger asChild={true}>
-          <button
-            type="button"
-            aria-label={`Get ${row.repo}`}
-            onClick={(event) => {
-              event.stopPropagation();
-              onSelect(row.id);
-            }}
-            className={actionClass}
-          >
-            <HugeiconsIcon
-              icon={Download01Icon}
-              strokeWidth={1.75}
-              className="size-4"
-            />
-          </button>
-        </TooltipTrigger>
-        <TooltipContent side="top" className="tooltip-compact">
-          {isDataset ? "View dataset" : "View and download"}
-        </TooltipContent>
-      </Tooltip>
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild={true}>
-          <button
-            type="button"
-            aria-label={`More options for ${row.repo}`}
-            onClick={(event) => event.stopPropagation()}
-            className={actionClass}
-          >
-            <HugeiconsIcon
-              icon={MoreVerticalIcon}
-              strokeWidth={1.75}
-              className="size-4"
-            />
-          </button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="min-w-[calc(184px*var(--ui-space-scale,1))]">
-          <DropdownMenuItem
-            onClick={async (event) => {
-              event.stopPropagation();
-              await copyToClipboard(row.result.id);
-            }}
-          >
-            <HugeiconsIcon
-              icon={Copy01Icon}
-              strokeWidth={1.75}
-              className="size-4"
-            />
-            Copy ID
-          </DropdownMenuItem>
-          <DropdownMenuItem
-            onClick={(event) => {
-              event.stopPropagation();
-              if (!confirmExternalLink(hfUrl)) {
-                window.open(hfUrl, "_blank", "noopener,noreferrer");
-              }
-            }}
-          >
-            <HugeiconsIcon
-              icon={LinkSquare02Icon}
-              strokeWidth={1.75}
-              className="size-4"
-            />
-            Open on {hubName}
-          </DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
-    </>
-  );
-}
-
 function useResultRowModel(
   row: DiscoverRow,
   deviceType: string | null,
   isDataset: boolean,
 ) {
   const vllmAvailable = useVllmAvailable();
+  const vllmPlatform = useVllmPlatform();
   const support = useMemo(
     () =>
       isDataset
@@ -586,8 +382,9 @@ function useResultRowModel(
             deviceType,
             quantMethod: row.result.quantMethod,
             vllmAvailable,
+            vllmPlatform,
           }),
-    [isDataset, row.id, row.result, deviceType, vllmAvailable],
+    [isDataset, row.id, row.result, deviceType, vllmAvailable, vllmPlatform],
   );
   const sizeLabel = formatModelParamLabel(row.repo, row.result.totalParams);
   const taskLabel = isDataset
@@ -663,7 +460,8 @@ export const ResultCard = memo(function ResultCard({
       key: "updated",
       node: (
         <span className="shrink-0">
-          Updated {formatRelativeLong(row.result.updatedAt)}
+          <span className="hidden @[26rem]:inline">Updated </span>
+          {formatRelativeLong(row.result.updatedAt)}
         </span>
       ),
     });
@@ -674,17 +472,17 @@ export const ResultCard = memo(function ResultCard({
       type="button"
       aria-label={row.repo}
       onClick={() => onSelect(row.id)}
-      className="hub-result-row hub-result-card group/row flex h-full w-full cursor-pointer items-center gap-3.5 px-4 text-left outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset"
+      className="hub-result-row hub-result-card group/row @container flex h-full w-full cursor-pointer items-center gap-3.5 px-4 text-left max-md:gap-3 max-md:px-3 outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset"
     >
       <OwnerAvatar
         owner={row.owner}
         repoName={row.repo}
-        className="size-[calc(52px*var(--ui-space-scale,1))] shrink-0 rounded-[16px] text-ui-16 ring-1 ring-[rgb(0_0_0_/_calc(0.05*var(--contrast-edge-gain,1)))] dark:ring-[rgb(255_255_255_/_calc(0.1*var(--contrast-edge-gain,1)))]"
+        className="size-[calc(52px*var(--ui-space-scale,1))] shrink-0 rounded-[16px] text-ui-16 max-md:size-[calc(42px*var(--ui-space-scale,1))] max-md:rounded-[13px] max-md:text-ui-14 ring-1 ring-[rgb(0_0_0_/_calc(0.05*var(--contrast-edge-gain,1)))] dark:ring-[rgb(255_255_255_/_calc(0.1*var(--contrast-edge-gain,1)))]"
         remote={false}
       />
       <div className="flex min-w-0 flex-1 flex-col">
         <div className="flex min-w-0 items-center gap-2">
-          <span className="truncate text-ui-15 font-semibold leading-ui-18 text-foreground">
+          <span className="truncate text-ui-15 font-semibold leading-ui-18 text-foreground max-md:text-ui-14">
             {row.repo}
           </span>
           <TitleMarkers
@@ -701,18 +499,33 @@ export const ResultCard = memo(function ResultCard({
           <VerifiedOwner owner={row.owner} />
         </span>
         <div className="flex min-w-0 items-center gap-2 overflow-hidden text-ui-11p5 leading-ui-16 tabular-nums text-muted-foreground/65">
+          {/* Narrow cards drop the task label, then the date. */}
           {textParts.map((part, index) => (
-            <Fragment key={part.key}>
+            <span
+              key={part.key}
+              className={
+                part.key === "task"
+                  ? "hidden @[26rem]:contents"
+                  : part.key === "updated"
+                    ? "hidden @[19rem]:contents"
+                    : "contents"
+              }
+            >
               {index > 0 && (
                 <span
                   aria-hidden="true"
-                  className="shrink-0 text-muted-foreground/35"
+                  className={cn(
+                    "shrink-0 text-muted-foreground/35",
+                    index === 1 &&
+                      textParts[0].key === "task" &&
+                      "hidden @[26rem]:inline",
+                  )}
                 >
                   •
                 </span>
               )}
               {part.node}
-            </Fragment>
+            </span>
           ))}
           <span className="hub-meta-tag">
             <HugeiconsIcon
@@ -745,157 +558,6 @@ export const ResultCard = memo(function ResultCard({
         {tip}
       </TooltipContent>
     </Tooltip>
-  );
-});
-
-export const ResultGridRow = memo(function ResultGridRow({
-  row,
-  deviceType,
-  isDataset,
-  showFormatDot = true,
-  onSelect,
-}: {
-  row: DiscoverRow;
-  deviceType: string | null;
-  isDataset: boolean;
-  showFormatDot?: boolean;
-  onSelect: (id: string) => void;
-}) {
-  const {
-    support,
-    unsupported,
-    partial,
-    downloading,
-    onDevice,
-    sizeLabel,
-    taskLabel,
-  } =
-    useResultRowModel(row, deviceType, isDataset);
-  const sizeDisplay = isDataset ? null : sizeLabel;
-  const format =
-    isDataset || !showFormatDot
-      ? null
-      : row.result.isGguf
-        ? "gguf"
-        : "checkpoint";
-  const tip = buildRowStatusTooltip({
-    partialRepoId: partial ? row.result.id : undefined,
-    downloading,
-    unsupported,
-    unsupportedReason: support?.reason ?? null,
-    resourceLabel: isDataset ? "dataset" : "model",
-  });
-  const overlayButton = (
-    <button
-      type="button"
-      aria-label={row.repo}
-      onClick={() => onSelect(row.id)}
-      className="absolute inset-0 z-0 cursor-pointer rounded-[inherit] outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset"
-    />
-  );
-
-  return (
-    <div className="hub-result-row group/row relative flex h-full w-full items-center gap-3 px-4">
-      {tip ? (
-        <Tooltip>
-          <TooltipTrigger asChild={true}>{overlayButton}</TooltipTrigger>
-          <TooltipContent
-            side="top"
-            align="start"
-            className="tooltip-compact max-w-[calc(280px*var(--ui-space-scale,1))]"
-          >
-            {tip}
-          </TooltipContent>
-        </Tooltip>
-      ) : (
-        overlayButton
-      )}
-      <div className="pointer-events-none relative z-[1] flex w-full items-center gap-3">
-        <div className={LIST_COLS.model}>
-          <OwnerAvatar
-            owner={row.owner}
-            repoName={row.repo}
-            className="size-9 shrink-0 rounded-[12px] text-ui-13 ring-1 ring-[rgb(0_0_0_/_calc(0.05*var(--contrast-edge-gain,1)))] dark:ring-[rgb(255_255_255_/_calc(0.1*var(--contrast-edge-gain,1)))]"
-            remote={false}
-          />
-          <div className="min-w-0 flex-1">
-            <div className="flex min-w-0 items-center gap-1.5">
-              <span className="truncate text-ui-13p5 font-semibold leading-ui-17 text-foreground">
-                {row.repo}
-              </span>
-              <TitleMarkers
-                format={format}
-                gated={row.result.gated}
-                isPrivate={row.result.private}
-                partial={partial}
-                downloading={downloading}
-                unsupported={unsupported}
-                onDevice={onDevice}
-              />
-            </div>
-            <span className="mt-0.5 flex min-w-0 items-center gap-1 text-ui-11p5 leading-ui-15 text-muted-foreground/80">
-              <VerifiedOwner owner={row.owner} />
-            </span>
-          </div>
-        </div>
-        <div className={isDataset ? LIST_COLS.caps : LIST_COLS.capsModel}>
-          {isDataset ? (
-            row.summary ? (
-              <span className="truncate text-ui-12 text-muted-foreground/75">
-                {row.summary}
-              </span>
-            ) : null
-          ) : (
-            <CapabilitiesCell
-              row={row}
-              taskLabel={taskLabel}
-              onSelect={onSelect}
-            />
-          )}
-        </div>
-        <div
-          className={cn(
-            LIST_COLS.size,
-            "truncate text-ui-12 tabular-nums text-muted-foreground",
-          )}
-        >
-          {sizeDisplay ?? "—"}
-        </div>
-        <div
-          className={cn(
-            LIST_COLS.updated,
-            "truncate text-ui-12 tabular-nums text-muted-foreground",
-          )}
-        >
-          {formatRelativeShort(row.result.updatedAt)}
-        </div>
-        <div
-          className={cn(
-            LIST_COLS.downloads,
-            "text-ui-12 tabular-nums text-muted-foreground",
-          )}
-        >
-          <StatItem
-            icon={Download01Icon}
-            value={formatCompact(row.result.downloads)}
-          />
-        </div>
-        <div
-          className={cn(
-            LIST_COLS.likes,
-            "text-ui-12 tabular-nums text-muted-foreground",
-          )}
-        >
-          <StatItem
-            icon={FavouriteIcon}
-            value={formatCompact(row.result.likes)}
-          />
-        </div>
-        <div className={LIST_COLS.actions}>
-          <RowActions row={row} isDataset={isDataset} onSelect={onSelect} />
-        </div>
-      </div>
-    </div>
   );
 });
 

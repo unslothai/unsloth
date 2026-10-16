@@ -43,12 +43,14 @@ if sys.platform.startswith("linux") and "HSA_ENABLE_DXG_DETECTION" not in os.env
 logger = get_logger(__name__)
 from utils.child_stdio import utf8_child_env
 
-# Fresh spawned interpreter: re-apply the process-wide network injections.
+# Fresh spawned interpreter: re-apply the process-wide network injections and CPU thread caps.
+from utils.cpu_threads import install_openblas_runtime_cap
 from utils.native_tls import activate_native_tls
 from utils.happy_eyeballs import activate_happy_eyeballs
 
 activate_native_tls()
 activate_happy_eyeballs()
+install_openblas_runtime_cap()
 
 from utils.hardware import apply_gpu_ids
 from utils.hf_dataset_options import hf_dataset_split_instruction_names
@@ -75,13 +77,14 @@ from utils.kernel_install import (
     uninstall_command,
 )
 from utils.ssm_runtime import (
-    CAUSAL_CONV1D_MODEL_SUBSTRINGS as _CAUSAL_CONV1D_MODEL_SUBSTRINGS,
-    SSM_MODEL_SUBSTRINGS as _SSM_MODEL_SUBSTRINGS,
+    model_is_ssm as _model_is_ssm,
+    model_wants_causal_conv1d as _model_wants_causal_conv1d,
 )
 from utils.wheel_utils import (
     direct_wheel_url,
     flash_attn_wheel_url,
     install_wheel,
+    is_windows_wheel_env,
     probe_torch_wheel_env,
     url_exists,
 )
@@ -143,13 +146,81 @@ def _dataset_local_files_only(config: dict) -> bool:
     return bool(config.get("dataset_snapshot_path"))
 
 
+def _uses_mlx_training_backend() -> bool:
+    from core.training.training import should_use_mlx_training_backend
+    return should_use_mlx_training_backend()
+
+
+def _adapter_trains_embeddings(model) -> bool:
+    """Whether a loaded adapter already trains embed_tokens or lm_head in full (#13140)."""
+    for adapter in (getattr(model, "peft_config", None) or {}).values():
+        saved = list(getattr(adapter, "modules_to_save", None) or [])
+        saved += list(getattr(adapter, "modules_to_tie", None) or [])
+        if any(str(m).rsplit(".", 1)[-1] in ("embed_tokens", "lm_head") for m in saved):
+            return True
+    return False
+
+
+def _adapter_base_changed_error(config: dict) -> str | None:
+    """Refuse when the adapter now names a different base than the one checked at start (#13140)."""
+    # None: no adapter was admitted. "": an adapter that named no base, which must stay that way.
+    pinned = config.get("adapter_base_pin")
+    if pinned is None:
+        return None
+    from utils.models.model_config import get_base_model_from_lora
+
+    if (get_base_model_from_lora(str(config.get("model_name") or "")) or "") != pinned:
+        return "The adapter's base model changed after the run was checked. Start the run again."
+    return None
+
+
 def _untrainable_model_format_error(config: dict) -> str | None:
     model_format = str(config.get("model_format") or "").strip().lower()
     if model_format == "gguf":
         return "GGUF models are inference-only and cannot be trained."
     if model_format == "adapter":
+        # LoRA / CPT may continue from a saved adapter; full finetune still cannot (#13140).
+        # The embedding, decision and MLX runners wrap a fresh adapter; only the CUDA trainer continues one.
+        if config.get("training_type") in ("LoRA/QLoRA", "Continued Pretraining") and not (
+            config.get("is_embedding", False)
+            or config.get("is_decision", False)
+            or _uses_mlx_training_backend()
+        ):
+            from utils.paths import is_local_path
+
+            if not is_local_path(str(config.get("model_name") or "")):
+                return (
+                    "Continuing from a Hugging Face adapter repository is not supported yet. "
+                    "Download it to a local folder and select that folder."
+                )
+            if config.get("is_dataset_image") or config.get("is_dataset_audio"):
+                return (
+                    "Continuing a saved adapter on an image or audio dataset is not supported "
+                    "yet. Start from its base model instead."
+                )
+            return None
         return "Adapter models are inference-only and cannot be trained as base models."
     return None
+
+
+def _lora_uses_loftq(config: dict) -> bool:
+    """A resume rebuilds its adapter before loading the checkpoint, so it reruns LoftQ only when the checkpoint was
+    trained with it: runs saved while Studio never applied LoftQ kept the original base weights."""
+    if not config.get("use_loftq"):
+        return False
+    resume = config.get("resume_from_checkpoint")
+    if not resume:
+        return True
+    import json
+
+    from core.training.resume import get_resume_checkpoint_path
+
+    checkpoint = Path(get_resume_checkpoint_path(resume) or resume)
+    try:
+        saved = json.loads((checkpoint / "adapter_config.json").read_text(encoding = "utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(saved, dict) and saved.get("init_lora_weights") == "loftq"
 
 
 def _resolve_cached_model_load_name(config: dict) -> str:
@@ -448,10 +519,17 @@ def _verify_config_pins(config: dict, event_queue: Any) -> bool:
     return True
 
 
+def _mlx_diffusion_lm_error(config: dict, model_load_target: str) -> str | None:
+    from utils.models.diffusion_lm import mlx_refusal
+    return mlx_refusal(
+        model_load_target, _worker_hf_token(config), revision = config.get("model_revision")
+    )
+
+
 def _validate_training_worker_config(config: dict, event_queue: Any) -> bool:
     if not _verify_config_pins(config, event_queue):
         return False
-    format_error = _untrainable_model_format_error(config)
+    format_error = _untrainable_model_format_error(config) or _adapter_base_changed_error(config)
     if format_error:
         event_queue.put(
             {
@@ -770,6 +848,36 @@ def _pre_detect_training_model(
         load_in_4bit = _pre_detect_load_in_4bit(config, model_load_name, hf_token),
     )
     _check_finetune_targets_after_detect(trainer, config)
+    _apply_diffusion_lm_overrides(trainer, config)
+
+
+_LORA_DEFAULT_LR = 2e-4
+# Near-duplicate head rows for <|im_end|> / <tool_call> / ... (cosine 0.97): a 2e-4 LoRA swaps them in chat.
+_DIFFUSION_LM_LORA_LR = {"dream": 5e-5, "sdar": 5e-5}
+
+
+def _apply_diffusion_lm_overrides(trainer, config: dict) -> None:
+    """Text-diffusion runs never pack: packed rows would share one bidirectional attention window. Set before
+    the row bound and online tokenization read the flag, so their accounting matches what trains."""
+    profile = getattr(trainer, "diffusion_lm_profile", None)
+    if not profile:
+        return
+    config["diffusion_lm_profile"] = profile
+    if config.get("packing"):
+        config["packing"] = False
+        logger.info("Text-diffusion model (%s): sequence packing turned off", profile)
+    lowered = _DIFFUSION_LM_LORA_LR.get(profile)
+    try:
+        at_default = float(config.get("learning_rate", _LORA_DEFAULT_LR)) == _LORA_DEFAULT_LR
+    except (TypeError, ValueError):
+        at_default = False  # the trainer reports the invalid value itself
+    if lowered is not None and at_default:
+        config["learning_rate"] = lowered
+        logger.info(
+            "Text-diffusion model (%s): learning rate 2e-4 lowered to %g; set any other value to override",
+            profile,
+            lowered,
+        )
 
 
 _NOTHING_TO_TRAIN = (
@@ -895,6 +1003,30 @@ def _check_mlx_effective_targets(
     if _names_a_cpt_target(config.get("target_modules") or ()):
         return
     raise ValueError(_NOTHING_TO_TRAIN)
+
+
+def _fetch_spark_tts_repo(trainer, event_queue: Any, model_name: str) -> None:
+    """Spark-TTS encodes its dataset with the BiCodec weights in the model repo, so the repo is fetched before the
+    dataset step (#13458), under the model-load lifecycle so a stalled Xet download still respawns over HTTP."""
+    from utils.hf_xet_fallback import start_watchdog
+
+    _send_status(event_queue, "Loading model...")
+    event_queue.put({"type": "model_load_started", "ts": time.time()})
+    # The download lands under the resolved repo, not the "Spark-TTS-0.5B/LLM" alias.
+    watchdog_stop = start_watchdog(
+        repo_ids = list(dict.fromkeys([model_name, trainer.spark_tts_hub_repo()])),
+        on_stall = lambda msg: event_queue.put({"type": "stall", "message": msg, "ts": time.time()}),
+        xet_disabled = os.environ.get("HF_HUB_DISABLE_XET") == "1",
+    )
+    try:
+        trainer.resolve_spark_tts_repo(
+            on_model_resolved = lambda repo_id: event_queue.put(
+                {"type": "model_load_resolved", "repo_id": repo_id, "ts": time.time()}
+            ),
+        )
+    finally:
+        watchdog_stop.set()
+        event_queue.put({"type": "model_load_completed", "ts": time.time()})
 
 
 def _reload_dataset_with_remote_model_tokenizer(
@@ -1194,11 +1326,6 @@ def _decision_has_llm_backbone(model_load_target: str, hf_token: str | None) -> 
         return False
 
 
-def _model_wants_causal_conv1d(model_name: str) -> bool:
-    name = model_name.lower()
-    return any(key in name for key in _CAUSAL_CONV1D_MODEL_SUBSTRINGS)
-
-
 _hipcc_gcc_install_dir = hipcc_gcc_install_dir
 
 
@@ -1343,7 +1470,9 @@ def _attempt_package_install(
     # Set when a wheel installed but would not import; see the uninstall before the fallback.
     wheel_rejected = False
 
-    env = probe_torch_wheel_env(timeout = 30)
+    env = probe_torch_wheel_env(timeout = 30, include_windows = True)
+    # Windows is wheel-only: a PyPI fallback there is a source build needing MSVC + the CUDA toolkit.
+    wheel_only = sys.platform == "win32" or is_windows_wheel_env(env)
     if wheel_url_builder is not None:
         wheel_url = wheel_url_builder(env)
     else:
@@ -1379,17 +1508,23 @@ def _attempt_package_install(
             return True
         if outcome == "rejected":
             logger.warning(
-                "%s wheel installed but is not importable; falling back to PyPI",
+                "%s wheel installed but is not importable; %s",
                 display_name,
+                "removing it" if wheel_only else "falling back to PyPI",
             )
             wheel_rejected = True
     elif wheel_available is None:
         _send_status(
             event_queue,
-            f"Could not check the {display_name} prebuilt wheel; installing from PyPI.",
+            f"Could not check the {display_name} prebuilt wheel; "
+            + ("skipping it." if wheel_only else "installing from PyPI."),
         )
     else:
         logger.info("No published %s wheel found: %s", display_name, wheel_url)
+
+    if wheel_only:
+        logger.info("%s: no usable prebuilt wheel for Windows; skipping", display_name)
+        return False
 
     is_hip = env and env.get("hip_version")
     if is_hip and not shutil.which("hipcc"):
@@ -1482,20 +1617,11 @@ def _attempt_package_install(
                 f"{snippet}",
             )
         else:
-            if sys.platform == "win32":
-                # No prebuilt wheel and no source toolchain on Windows -- expected for packages like causal-conv1d.
-                # Log at info so users aren't alarmed by what looks like an error.
-                logger.info(
-                    "%s is not available on Windows (no prebuilt wheel); skipping",
-                    display_name,
-                )
-                logger.debug("Install output:\n%s", result.stdout)
-            else:
-                logger.error(
-                    "Failed to install %s from PyPI:\n%s",
-                    display_name,
-                    result.stdout,
-                )
+            logger.error(
+                "Failed to install %s from PyPI:\n%s",
+                display_name,
+                result.stdout,
+            )
         return False
 
     # rc=0 is not proof again here: pip/uv exit 0 on "Requirement already satisfied" without installing anything.
@@ -1534,9 +1660,6 @@ def _ensure_causal_conv1d_fast_path(
         required = _model_wants_causal_conv1d(model_name)
     if not required:
         return
-    if sys.platform == "win32":
-        logger.info("causal-conv1d: no prebuilt wheel for Windows; skipping")
-        return
 
     _install_package_wheel_first(event_queue = event_queue, **_pinned_kernel_kwargs(CAUSAL_CONV1D))
 
@@ -1555,8 +1678,21 @@ def _flash_linear_attention_importable() -> bool:
         return False
 
 
-def _ensure_mamba_ssm(event_queue: Any, model_name: str) -> None:
-    if not any(sub in model_name.lower() for sub in _SSM_MODEL_SUBSTRINGS):
+def _ensure_mamba_ssm(
+    event_queue: Any,
+    model_name: str,
+    *,
+    required: bool | None = None,
+) -> None:
+    # `required` is the config-resolved answer (resolved_model_is_ssm); the name is the fallback.
+    if required is None:
+        required = _model_is_ssm(model_name)
+    if not required:
+        return
+
+    if sys.platform == "win32" and importlib.util.find_spec("triton") is None:
+        # mamba_ssm imports triton at load and the wheel goes in --no-deps.
+        _send_status(event_queue, "mamba-ssm needs Triton on Windows (triton-windows); skipping it")
         return
 
     logger.info("SSM model detected; setting up mamba-ssm after causal-conv1d")
@@ -1975,9 +2111,6 @@ def _install_fast_path_hooks(
         return wrapper
 
     def _causal_conv1d_install(eq: Any) -> bool:
-        if sys.platform == "win32":
-            logger.info("causal-conv1d: no prebuilt wheel for Windows; skipping")
-            return False
         ok = _install_package_wheel_first(event_queue = eq, **_pinned_kernel_kwargs(CAUSAL_CONV1D))
         return bool(ok)
 
@@ -2008,7 +2141,7 @@ def _should_try_runtime_flash_attn_install(max_seq_length: int) -> bool:
         return False
     if max_seq_length < _FLASH_ATTN_RUNTIME_MIN_SEQ_LEN:
         return False
-    return sys.platform.startswith("linux")
+    return sys.platform.startswith("linux") or sys.platform == "win32"
 
 
 def _ensure_flash_attn_for_long_context(event_queue: Any, max_seq_length: int) -> None:
@@ -2054,6 +2187,28 @@ def _activate_transformers_version_or_warn(model_name: str, hf_token: str | None
             model_name,
             exc,
         )
+
+
+def _carry_mlx_chat_template_to_processor(model, tokenizer) -> bool:
+    """MLXTrainer saves the loader's processor when it has one, so a text run on a multimodal base checkpoint (Qwen3.5
+    Base) saved no template and Chat failed with "chat_template is not set". Give it the template the rows used."""
+    processor = getattr(model, "_processor", None)
+    if processor is None or processor is tokenizer:
+        return False
+    trained = tokenizer
+    if type(tokenizer).__name__ == "TokenizerWrapper":
+        trained = getattr(tokenizer, "_tokenizer", tokenizer)
+    template = getattr(trained, "chat_template", None)
+    if not template or getattr(processor, "chat_template", None):
+        return False
+    own = getattr(processor, "tokenizer", None)
+    if own is not None and own is not trained and getattr(own, "chat_template", None):
+        return False
+    processor.chat_template = template
+    if own is not None and own is not trained:
+        # Also carries get_chat_template's end-token remap.
+        processor.tokenizer = trained
+    return True
 
 
 def _mlx_vlm_max_resized_size(width: int, height: int, target: int) -> tuple[int, int]:
@@ -2392,6 +2547,11 @@ def _start_mlx_stop_poller(stop_queue):
         trainer = trainer_ref[0]
         if trainer is not None:
             trainer.stop_requested = True
+            # Early stopping set load_best_model_at_end; a manual stop keeps the current adapters instead, since the
+            # stop checkpoint stores this step's optimizer state next to them.
+            args = getattr(trainer, "args", None)
+            if getattr(args, "load_best_model_at_end", False):
+                args.load_best_model_at_end = False
 
     stop_thread = _start_worker_stop_poller(
         stop_queue,
@@ -2638,6 +2798,9 @@ def _finalize_mlx_training(
                 resume_blocked = True,
             )
             return
+    if not stopped_after_save and getattr(trainer, "_early_stopped", False):
+        # Zoo ends an early-stopped run without stop_requested, so it reads as a plain completion otherwise.
+        completion_message = "Training completed (stopped early: eval loss stopped improving)"
     send(
         "complete",
         output_dir = output_dir if bool(trainer.is_main_process) else None,
@@ -3141,6 +3304,14 @@ def _run_mlx_training(event_queue, stop_queue, config):
     except ImportError:
         _send("status", status_message = "Format helper unavailable, using raw dataset")
 
+    if not is_vlm and dataset_final_format:
+        # get_chat_template returns a new tokenizer unless it is an mlx-lm wrapper, so the rows' template stayed in
+        # the formatter; mirror the CUDA trainer and re-apply it here (no-op for models with a template).
+        from utils.datasets.chat_templates import get_training_chat_template
+        tokenizer = get_training_chat_template(tokenizer, model_name, dataset_final_format)
+        if _carry_mlx_chat_template_to_processor(model, tokenizer):
+            logger.info("Saving the training chat template with the processor")
+
     if eval_enabled and eval_dataset is None:
         from core.training.eval_dataset import (
             MIN_TOTAL_ROWS_FOR_EVAL,
@@ -3256,6 +3427,17 @@ def _run_mlx_training(event_queue, stop_queue, config):
         # Refills the gradient-norm chart. MLX returns a norm for free only under global-norm clipping; asking for it
         # beats switching clip modes, which would alter the loss trajectory and cost VLM runs mx.compile.
         mlx_config_kwargs["report_grad_norm"] = True
+    if (
+        "early_stopping_patience" in _supported_fields
+        and "load_best_model_at_end" in _supported_fields
+    ):
+        from core.training.early_stopping import early_stopping_patience
+
+        # Zoo counts patience in evaluations and restores the best adapters itself, the CUDA path's contract.
+        patience = early_stopping_patience(config.get("early_stopping_patience"))
+        if patience and eval_dataset is not None and eval_steps_value > 0:
+            mlx_config_kwargs["early_stopping_patience"] = patience
+            mlx_config_kwargs["load_best_model_at_end"] = True
     if "append_eos" in _supported_fields:
         # Unsloth SFT formatting owns rendered examples; raw/CPT text still needs MLX to append EOS.
         mlx_config_kwargs["append_eos"] = bool(raw_text_mode)
@@ -3303,10 +3485,25 @@ def _run_mlx_training(event_queue, stop_queue, config):
 
     # Auto-detect markers from the chat template first, manual table as fallback. Mirror the CUDA skips: raw/CPT text
     # has no chat turns. Check the resolved format too, since format_type="auto" can land on alpaca or raw.
+    from utils.datasets.pretokenized import has_custom_labels
+
+    if (
+        config.get("train_on_completions", False)
+        and dataset_final_format == "pretokenized"
+        and not has_custom_labels(dataset)
+    ):
+        # zoo's MLX masker re-tokenizes text, so token-id rows have nothing it can mask (CUDA masks input_ids).
+        _send(
+            "warning",
+            message = (
+                "'Train on completions' is not available for pre-tokenized datasets on Mac: "
+                "training will run on full sequences. Add a labels column to choose the trained tokens."
+            ),
+        )
     if (
         config.get("train_on_completions", False)
         and not raw_text_mode
-        and dataset_final_format != "raw_text"
+        and dataset_final_format not in ("raw_text", "pretokenized")
     ):
         _send("status", status_message = "Configuring response-only training...")
         # No catch: the helper handles detection failures and double misses, so an exception here is a real masking
@@ -3642,6 +3839,10 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     )
     os.environ["PYTHONWARNINGS"] = "ignore"  # before imports
 
+    from utils.security.hub_data_files import install as guard_hub_data_files
+
+    guard_hub_data_files()
+
     if not config.get("allow_ambient", True):
         from hub.utils.hf_tokens import apply_token_to_child_env, hf_token_arg, is_anonymous
 
@@ -3762,6 +3963,12 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
 
     _hw.detect_hardware()
     if mlx_backend_requested or should_use_mlx_training_backend(device = _hw.DEVICE):
+        diffusion_error = _mlx_diffusion_lm_error(config, model_load_target)
+        if diffusion_error:
+            event_queue.put(
+                {"type": "error", "error": diffusion_error, "stack": "", "ts": time.time()}
+            )
+            return
         run_mlx_training_process(
             event_queue = event_queue,
             stop_queue = stop_queue,
@@ -3821,16 +4028,21 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     # 2) mamba-ssm + flash-attn keep their substring / size gates.
     # 3) FLA gated-delta kernels: vendored by unsloth_zoo, nothing to install.
     # Laya decision models are ModernBERT encoders: none of these apply.
-    # Clef decision models are Qwen3.5 backbones and need the same gated-delta / conv kernels.
+    # Clef decision models are Qwen3.5 backbones: zoo's gated-delta and Triton conv kernels cover them.
     if (
         not config.get("is_decision")
         or config.get("decision_layout") in ("clef", "llm")
         or _decision_has_llm_backbone(model_load_target, _worker_hf_token(config))
     ):
         try:
-            from utils.ssm_runtime import resolved_model_wants_causal_conv1d
+            from utils.ssm_runtime import (
+                resolved_model_is_ssm,
+                resolved_model_wants_causal_conv1d,
+            )
 
-            wants_causal_conv1d = resolved_model_wants_causal_conv1d(
+            is_ssm = resolved_model_is_ssm(model_name, model_load_target, _worker_hf_token(config))
+            # Every mamba-ssm model also runs causal-conv1d.
+            wants_causal_conv1d = is_ssm or resolved_model_wants_causal_conv1d(
                 model_name,
                 model_load_target,
                 _worker_hf_token(config),
@@ -3845,7 +4057,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 model_name,
                 install_causal_conv1d = wants_causal_conv1d,
             )
-            _ensure_mamba_ssm(event_queue, model_name)
+            _ensure_mamba_ssm(event_queue, model_name, required = is_ssm)
             _ensure_flash_attn_for_long_context(
                 event_queue,
                 int(config.get("max_seq_length", 2048)),
@@ -4293,6 +4505,24 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         )
         return
 
+    if config.get("offload_layers"):
+        from utils.models.diffusion_lm import diffusion_lm_profile_for_model
+
+        # The diffusion load has no block swapping; off before the budget below sizes itself to offloading.
+        _diffusion = diffusion_lm_profile_for_model(
+            model_load_target, _worker_hf_token(config), revision = config.get("model_revision")
+        )
+        if _diffusion:
+            config["offload_layers"] = 0
+            event_queue.put(
+                {
+                    "type": "warning",
+                    "message": f"Layer offloading is not available for text-diffusion models ({_diffusion}); "
+                    "training without it.",
+                    "ts": time.time(),
+                }
+            )
+
     # Offload layers sizes "auto" to what the allocator may use, so a budget makes the run fit in it,
     # and two runs on one card can each take their share.
     # ── 2b. Training VRAM budget ──
@@ -4514,6 +4744,12 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 )
         max_train_rows = resumed_rows
 
+        if getattr(trainer, "_audio_type", None) == "bicodec":
+            _fetch_spark_tts_repo(trainer, event_queue, model_name)
+            if trainer.should_stop:
+                event_queue.put({"type": "complete", "output_dir": None, "ts": time.time()})
+                return
+
         _send_status(event_queue, "Loading and formatting dataset...")
         dataset, eval_dataset = _load_training_dataset()
 
@@ -4562,6 +4798,12 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         # recover a stalled Xet download via respawn.
         _send_status(event_queue, "Loading model...")
         from utils.hf_xet_fallback import start_watchdog
+
+        # Recheck right before the load: the adapter folder may have been edited since start (#13140).
+        base_error = _adapter_base_changed_error(config)
+        if base_error:
+            event_queue.put({"type": "error", "error": base_error, "stack": "", "ts": time.time()})
+            return
 
         event_queue.put({"type": "model_load_started", "ts": time.time()})
         _load_watchdog_stop = start_watchdog(
@@ -4749,8 +4991,9 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 lora_dropout = config.get("lora_dropout", 0.0),
                 use_gradient_checkpointing = config.get("gradient_checkpointing", "unsloth"),
                 use_rslora = config.get("use_rslora", False),
-                use_loftq = config.get("use_loftq", False),
+                use_loftq = _lora_uses_loftq(config),
                 use_dora = config.get("use_dora", False),
+                random_state = config.get("random_seed", 3407),
             )
         elif use_lora:
             _send_status(event_queue, "Configuring LoRA adapters...")
@@ -4766,8 +5009,9 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 lora_dropout = config.get("lora_dropout", 0.0),
                 use_gradient_checkpointing = config.get("gradient_checkpointing", "unsloth"),
                 use_rslora = config.get("use_rslora", False),
-                use_loftq = config.get("use_loftq", False),
+                use_loftq = _lora_uses_loftq(config),
                 use_dora = config.get("use_dora", False),
+                random_state = config.get("random_seed", 3407),
             )
         else:
             _send_status(event_queue, "Preparing model for full finetuning...")
@@ -4791,6 +5035,10 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     }
                 )
             return
+
+        if is_cpt and not cpt_trains_embeddings:
+            # A continued adapter keeps its own modules_to_save, so it may train them anyway.
+            cpt_trains_embeddings = _adapter_trains_embeddings(getattr(trainer, "model", None))
 
         lr_default = "5e-5" if is_cpt else "2e-4"
         try:
@@ -4884,6 +5132,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             tensorboard_dir = tensorboard_dir,
             eval_dataset = eval_dataset,
             eval_steps = eval_steps,
+            early_stopping_patience = config.get("early_stopping_patience", 0),
             max_seq_length = config.get("max_seq_length", 2048),
             vision_image_size = config.get("vision_image_size"),
             optim = config.get("optim", "adamw_8bit"),
@@ -4895,6 +5144,20 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         _tqdm_stop.set()
 
         progress = trainer.get_training_progress()
+        drafter_note = ""
+        # A Stop during the drafter phase drops only the drafter; the fine-tune is already saved.
+        stopped_in_training = trainer.should_stop
+        if config.get("drafter") and not progress.error and not trainer.should_stop:
+            from core.training.drafter import run_drafter_phase
+
+            manifest = run_drafter_phase(trainer, config, output_dir, event_queue, _send_status)
+            if manifest is not None:
+                label = "MTP head" if manifest["strategy"] == "mtp" else "EAGLE-3 drafter"
+                drafter_note = f"\nTrained {label} saved with the model."
+            progress = trainer.get_training_progress()
+        elif output_dir:
+            from core.training.drafter import discard_drafter_artifacts
+            discard_drafter_artifacts(output_dir)
         if progress.error:
             event_queue.put(
                 {
@@ -4906,13 +5169,14 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             )
         else:
             saved_output_dir = (
-                None if trainer.should_stop and not trainer.save_on_stop else output_dir
+                None if stopped_in_training and not trainer.save_on_stop else output_dir
             )
             event_queue.put(
                 {
                     "type": "complete",
                     "output_dir": saved_output_dir,
-                    "status_message": progress.status_message or "Training completed",
+                    "status_message": (progress.status_message or "Training completed")
+                    + drafter_note,
                     "ts": time.time(),
                 }
             )
@@ -5351,6 +5615,18 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
             if gradient_checkpointing in ("none", "", None):
                 gradient_checkpointing = False
 
+            from core.training.trainer import (
+                LOFTQ_SKIPPED_ON_QUANTIZED,
+                _has_quantized_weights,
+                _loftq_peft_kwargs,
+            )
+
+            use_loftq = _lora_uses_loftq(config)
+            # The fast encoder prepares an intrinsically quantized repo for k-bit training, and LoftQ fails on it.
+            if use_loftq and _has_quantized_weights(model):
+                _send_status(event_queue, LOFTQ_SKIPPED_ON_QUANTIZED)
+                use_loftq = False
+
             model = FastSentenceTransformer.get_peft_model(
                 model,
                 r = config.get("lora_r", 32),
@@ -5363,9 +5639,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
                 random_state = config.get("random_seed", 3407),
                 use_rslora = config.get("use_rslora", False),
                 use_dora = config.get("use_dora", False),
-                loftq_config = {"loftq_bits": 4, "loftq_iter": 1}
-                if config.get("use_loftq")
-                else None,
+                **_loftq_peft_kwargs(use_loftq),
                 task_type = "FEATURE_EXTRACTION",
             )
         except Exception as e:

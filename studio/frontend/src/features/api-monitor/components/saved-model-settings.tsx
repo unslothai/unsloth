@@ -40,6 +40,20 @@ function describeOverride(override: ApiModelOverride): string[] {
   if (override.engine_parallelism && override.engine_parallelism !== "tensor") {
     parts.push(`${override.engine_parallelism} parallel`);
   }
+  if (override.engine_kv_cache_dtype === "fp8") {
+    parts.push("FP8 KV cache");
+  }
+  if (override.engine_seed != null) {
+    parts.push(`seed ${override.engine_seed}`);
+  }
+  if (override.engine_gpu_memory_utilization != null) {
+    parts.push(
+      `${Math.round(override.engine_gpu_memory_utilization * 100)}% GPU memory`,
+    );
+  }
+  if (override.load_in_4bit === false && (override.engine ?? "auto") === "auto") {
+    parts.push("16-bit");
+  }
   if (override.custom_context_length) {
     parts.push(`${override.custom_context_length.toLocaleString()} context`);
   }

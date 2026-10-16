@@ -417,7 +417,11 @@ def _has_non_gguf_weights(path: Path) -> bool:
     try:
         # Only the safetensors arm needs the check: a weight ".bin" is recognised by its name prefix, which a
         # "._" already fails.
-        if any(not is_appledouble_metadata(f) for f in path.glob("*.safetensors")):
+        from core.inference.diffusion_lora import is_image_lora_file
+        if any(
+            not is_appledouble_metadata(f) and not is_image_lora_file(f)
+            for f in path.glob("*.safetensors")
+        ):
             return True
         return any(_is_weight_bin(f.name) for f in path.glob("*.bin"))
     except OSError:
@@ -433,10 +437,13 @@ def _servable_gguf_names(directory: Path) -> list[str]:
     """The ``.gguf`` names in *directory* that count as a model being present there. An imatrix is
     calibration data, not a model artifact; mmproj and MTP drafters DO count, since they are
     companions of a real model and presence is all they decide."""
+    from core.inference.diffusion_lora import is_image_lora_file
     return [
         p.name
         for p in directory.glob("*.gguf")
-        if not is_appledouble_metadata(p) and not _is_imatrix_path(p.name)
+        if not is_appledouble_metadata(p)
+        and not _is_imatrix_path(p.name)
+        and not is_image_lora_file(p)
     ]
 
 
@@ -524,6 +531,7 @@ def _scan_models_dir(
             ),
         )
     if limit is None or len(found) < limit:
+        from core.inference.diffusion_lora import is_image_lora_file
         for gguf_file in models_dir.glob("*.gguf"):
             if limit is not None and len(found) >= limit:
                 break
@@ -532,6 +540,7 @@ def _scan_models_dir(
                 gguf_file.is_file()
                 and _is_main_gguf_filename(gguf_file.name)
                 and not is_appledouble_metadata(gguf_file)
+                and not is_image_lora_file(gguf_file)
             ):
                 try:
                     updated_at = gguf_file.stat().st_mtime
@@ -712,6 +721,8 @@ def _scan_lmstudio_dir(
             ),
         ]
 
+    from core.inference.diffusion_lora import is_image_lora_file
+
     found: List[LocalModelInfo] = []
     for child in lm_dir.iterdir():
         try:
@@ -720,6 +731,7 @@ def _scan_lmstudio_dir(
                     _is_main_gguf_filename(child.name)
                     and child.is_file()
                     and not is_appledouble_metadata(child)
+                    and not is_image_lora_file(child)
                 ):
                     try:
                         updated_at = child.stat().st_mtime
@@ -762,7 +774,7 @@ def _scan_lmstudio_dir(
                             bool(_servable_gguf_names(model_dir))
                             or (model_dir / "config.json").exists()
                             or any(
-                                not is_appledouble_metadata(p)
+                                not is_appledouble_metadata(p) and not is_image_lora_file(p)
                                 for p in model_dir.glob("*.safetensors")
                             )
                         )
@@ -788,6 +800,7 @@ def _scan_lmstudio_dir(
                         _is_main_gguf_filename(model_dir.name)
                         and model_dir.is_file()
                         and not is_appledouble_metadata(model_dir)
+                        and not is_image_lora_file(model_dir)
                     ):
                         try:
                             updated_at = model_dir.stat().st_mtime
@@ -3181,7 +3194,7 @@ async def scan_diffusion_loras(
     """
     from core.inference import diffusion_lora
 
-    entries = diffusion_lora.list_loras(family = family)
+    entries = await asyncio.to_thread(diffusion_lora.list_loras, family = family)
     if account_access.managed_account():
         entries = await asyncio.to_thread(account_access.filter_model_rows, entries)
     return {
@@ -3194,6 +3207,7 @@ async def scan_diffusion_loras(
                 "families": list(e.families),
                 "size_bytes": e.size_bytes,
                 "weight_default": e.weight_default,
+                "fine_tuned": e.fine_tuned,
             }
             for e in entries
         ],
@@ -3367,30 +3381,30 @@ def _delete_gguf_variant_files(root: Path, variant: str) -> tuple[int, int]:
     deleted_bytes = 0
     from hub.utils.gguf import remove_appledouble_sidecar
 
+    from hub.utils.gguf import gguf_variant_keys_by_checkpoint
+
+    weights: list[tuple[Path, str]] = []
     for path in root.rglob("*"):
         if not path.is_file() or not _is_main_gguf_filename(path.name):
             continue
-        # Counted as a model if left in, so the reported count would follow the walk order; it still goes
-        # below, as metadata of the file it belongs to. Proven metadata only.
+        # proven AppleDouble metadata is removed with its weight, not counted as a model.
         if is_appledouble_metadata(path):
             continue
-        # Keyed on the path, not the basename: a repo holding several checkpoints at
-        # one quant would otherwise delete every one of them for a single row.
-        from utils.models.model_config import _gguf_variant_key
-
         try:
             relative = path.relative_to(root).as_posix()
         except ValueError:
             relative = path.name
-        if _gguf_variant_key(relative).lower() != variant.lower():
+        weights.append((path, relative))
+    # checkpoint-qualified keys isolate sibling builds that share a quant.
+    keys = gguf_variant_keys_by_checkpoint(relative for _path, relative in weights)
+    for path, relative in weights:
+        if keys[relative].lower() != variant.lower():
             continue
         try:
             deleted_bytes += path.stat().st_size
         except OSError:
             pass
         path.unlink()
-        # Skipped by the walk above, so this is its only chance to be reclaimed. Its bytes count
-        # toward what was freed even though it is not counted as a model.
         deleted_bytes += remove_appledouble_sidecar(path)
         deleted_count += 1
     return deleted_count, deleted_bytes
@@ -3404,11 +3418,7 @@ async def delete_finetuned_model(
     gguf_variant: Optional[str] = Body(None),
     current_subject: str = Depends(get_current_subject),
 ):
-    """Delete an Unsloth-trained or exported model from disk.
-
-    Only paths under Unsloth's outputs/exports roots are accepted.
-    Exported GGUF entries can delete one quant variant at a time.
-    """
+    """delete an Unsloth output, or one quant from an exported GGUF, within approved roots."""
     if source not in {"training", "exported"}:
         raise HTTPException(
             status_code = 400,
@@ -4829,6 +4839,7 @@ async def get_gguf_variants(
                 dependencies_resolved = bool(getattr(response, "dependencies_resolved", False)),
                 loadable_variants = getattr(response, "loadable_variants", None),
                 loadable = getattr(response, "loadable", None),
+                variant_format = getattr(response, "variant_format", None),
             ),
             via_api_key = via_api_key,
         )
@@ -5035,23 +5046,19 @@ def _one_shard_family_of(entries: list) -> list:
 
 
 def _main_variant_rank(rel_path: str, want: str) -> Optional[int]:
-    """How well *want* names this file's variant: 0 for its own key, 1 for the legacy quant-label spelling, None
-    for neither.
-
-    *want* is the request VERBATIM: the bare-quant folding is applied per comparison, because doing it once
-    up front strips a qualified key's own path punctuation and folds ``exp-a/`` into ``expa/``.
-    Directory-qualified keys keep their legacy bare spelling, since stored pins predate them. Root-level H3
-    stems do not: a bare quant names both FL2VA and Ref2VA, and picking the first file would load a
-    different task.
-    """
-    from hub.utils.gguf import is_qualified_gguf_variant_key
+    """rank an exact variant as 0, its legacy quant alias as 1, or no match as None without normalizing paths."""
+    from hub.utils.gguf import gguf_variant_family, is_qualified_gguf_variant_key
     from utils.models.model_config import _gguf_variant_key
 
     label = _main_variant_gguf_label(rel_path)
     if label is None:
         return None
     key = _gguf_variant_key(rel_path)
-    if _variant_keys_match(key, want):
+    # a second same-quant build in a custom folder is keyed by its family (#13926)
+    want_family = gguf_variant_family(want) if want.lower().endswith(".gguf") else want
+    if _variant_keys_match(key, want) or (
+        gguf_variant_family(rel_path).casefold() == want_family.strip().casefold()
+    ):
         return 0
     if is_qualified_gguf_variant_key(key) and "/" not in key.replace("\\", "/"):
         return None
@@ -5059,10 +5066,7 @@ def _main_variant_rank(rel_path: str, want: str) -> Optional[int]:
 
 
 def _variant_keys_match(key: str, want: str) -> bool:
-    """Whether *want* is *key*, for the exact-key test. ``_normalized_quant_label`` strips hyphens and
-    underscores, which is right for a bare quant (``UD-Q4_K_XL`` and ``udq4kxl`` are the same ask) and wrong
-    for a path: it folds ``exp-a/`` and ``expa/`` into one, so two advertised checkpoints both answered to
-    the other's key."""
+    """match exact variant keys without folding punctuation in qualified paths."""
     from hub.utils.gguf import is_qualified_gguf_variant_key
 
     if is_qualified_gguf_variant_key(key) or is_qualified_gguf_variant_key(want):
@@ -5726,6 +5730,27 @@ def _resolve_cached_model_path(repo_id: str, variant: Optional[str]) -> Path:
     raise HTTPException(status_code = 404, detail = "Cached model path not found")
 
 
+def _resolve_cached_path_for_row(repo_id: str, variant: Optional[str]) -> Path:
+    """``_resolve_cached_model_path`` for a picker row id. An audio.cpp umbrella folder row resolves
+    to its own variant's file, or without a variant to its folder, never the repo's snapshot root."""
+    from core.inference.audio_cpp_models import cached_folder_target, folder_snapshot_dir
+
+    folder = cached_folder_target(repo_id, variant)
+    if folder is None:
+        if not _is_valid_repo_id(repo_id):
+            raise HTTPException(status_code = 400, detail = "Invalid repo_id format")
+        return _resolve_cached_model_path(repo_id, variant)
+    umbrella, keys = folder
+    if not keys:
+        raise HTTPException(status_code = 404, detail = "Model not found in cache")
+    if variant:
+        return _resolve_cached_model_path(umbrella, keys[0])
+    path = folder_snapshot_dir(repo_id)
+    if path is None:
+        raise HTTPException(status_code = 404, detail = "Cached model path not found")
+    return path
+
+
 class CachedModelPathResponse(BaseModel):
     path: str
     is_dir: bool
@@ -5740,9 +5765,7 @@ async def get_cached_model_path(
     """Absolute on-disk path of a cached repo or one of its GGUF variants."""
     if account_access.managed_account():
         await asyncio.to_thread(account_access.require_model_access, repo_id)
-    if not _is_valid_repo_id(repo_id):
-        raise HTTPException(status_code = 400, detail = "Invalid repo_id format")
-    path = await asyncio.to_thread(_resolve_cached_model_path, repo_id, variant.strip() or None)
+    path = await asyncio.to_thread(_resolve_cached_path_for_row, repo_id, variant.strip() or None)
     return {"path": str(path), "is_dir": path.is_dir()}
 
 
@@ -5758,10 +5781,8 @@ async def reveal_cached_model(
         await asyncio.to_thread(account_access.require_model_access, repo_id)
     from utils.paths.path_utils import reveal_in_file_manager
 
-    if not _is_valid_repo_id(repo_id):
-        raise HTTPException(status_code = 400, detail = "Invalid repo_id format")
     variant = (variant or "").strip() or None
-    path = await asyncio.to_thread(_resolve_cached_model_path, repo_id, variant)
+    path = await asyncio.to_thread(_resolve_cached_path_for_row, repo_id, variant)
     try:
         await asyncio.to_thread(reveal_in_file_manager, path)
     except Exception as e:
