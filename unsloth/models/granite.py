@@ -467,7 +467,8 @@ def GraniteModel_fast_forward_inference(
         layer_device, _ = per_layer_device(decoder_layer)
         hidden_states, position_ids = move_to_device(layer_device, hidden_states, position_ids)
 
-        residual = hidden_states
+        # fast_rms_layernorm_inference normalizes in place, so keep a copy for the residual.
+        residual = hidden_states.clone()
         hidden_states = fast_rms_layernorm_inference(decoder_layer.input_layernorm, hidden_states)
         hidden_states, present_key_value = GraniteAttention_fast_forward_inference(
             decoder_layer.self_attn,
@@ -481,7 +482,7 @@ def GraniteModel_fast_forward_inference(
 
         hidden_states = torch.add(residual, hidden_states, alpha = residual_multiplier)
 
-        residual = hidden_states
+        residual = hidden_states.clone()
         hidden_states = fast_rms_layernorm_inference(
             decoder_layer.post_attention_layernorm, hidden_states
         )
