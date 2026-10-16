@@ -118,7 +118,7 @@ def test_catalog_prefixes_ids_and_drops_the_remotes_own_links(monkeypatch):
     assert seen["auth"] == f"Bearer {REMOTE_KEY}"
 
 
-def test_catalog_leaves_out_media_models_no_endpoint_forwards(monkeypatch):
+def test_catalog_lists_only_media_models_whose_endpoint_forwards(monkeypatch):
     linked_instances_db.create_instance("wsl", "http://remote", REMOTE_KEY)
     rows = [
         {"id": "unsloth/chat"},
@@ -128,7 +128,8 @@ def test_catalog_leaves_out_media_models_no_endpoint_forwards(monkeypatch):
     ]
     _remote(lambda request: httpx.Response(200, json = {"data": rows}), monkeypatch)
     models = asyncio.run(linked_instances.catalog_objects(_request({})))
-    assert [m["id"] for m in models] == ["@wsl/unsloth/chat"]
+    # Image generation forwards a linked id; speech does not yet.
+    assert [m["id"] for m in models] == ["@wsl/unsloth/chat", "@wsl/unsloth/flux"]
 
 
 def test_offline_instance_contributes_no_models(monkeypatch):

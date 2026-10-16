@@ -348,7 +348,7 @@ async def probe(instance: dict) -> dict:
 
 
 # Media models carry a task; only tasks whose endpoint forwards a linked id are advertised.
-FORWARDED_TASKS: frozenset[str] = frozenset()
+FORWARDED_TASKS: frozenset[str] = frozenset({"text-to-image"})
 
 
 async def _instance_catalog(instance: dict) -> list[dict]:
