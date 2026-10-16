@@ -2347,7 +2347,8 @@ def test_changing_the_extra_trim_discards_the_old_boundary(monkeypatch):
     del stored[1]["metadata"]["custom"]["contextTruncation"]["boundary_headroom_ratio"]
     assert llama_cpp._sticky_compaction_boundary("t1", compaction_headroom_ratio = 0.0) == 12
 
-    # A checkpoint reset ignores headroom, so its depth is never refused over the ratio.
+    # A checkpoint reset spends headroom only on the turn in progress, which its depth never
+    # counts, so that depth is never refused over the ratio.
     stored[1]["metadata"]["custom"]["contextTruncation"] = {
         "fits": True,
         "boundary_messages": 12,
