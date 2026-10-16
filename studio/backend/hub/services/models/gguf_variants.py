@@ -37,6 +37,7 @@ from hub.utils.hf_cache_state import (
 from hub.utils.gguf import (
     GgufVariantInfo,
     extract_quant_label,
+    gguf_variant_family,
     gguf_variant_key,
     iter_hf_cache_snapshots,
     is_big_endian_gguf_path,
@@ -1699,8 +1700,15 @@ async def get_gguf_variants_answer(
             if local_target.is_file():
                 # the loader opens this file whatever variant is named, so same-quant sibling builds
                 # listed beside it would load these weights
+                # by shard-stripped family: a split row is listed under its first shard
+                target_family = gguf_variant_family(local_target.name).lower()
                 chosen = next(
-                    (v for v in variants if Path(v.filename).name == local_target.name), None
+                    (
+                        v
+                        for v in variants
+                        if gguf_variant_family(Path(v.filename).name).lower() == target_family
+                    ),
+                    None,
                 )
                 if chosen is not None:
                     chosen_key = gguf_variant_key(chosen.filename).lower()

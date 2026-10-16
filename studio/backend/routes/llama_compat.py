@@ -335,7 +335,14 @@ async def _chat_catalog() -> list[dict]:
 
 async def _catalog_row(model_id: str) -> tuple[str, dict, bool]:
     # The caller's own catalog, so a managed account only reaches models listed to it.
-    matched = _catalog_match(await _chat_catalog(), model_id)
+    catalog = await _chat_catalog()
+    matched = _catalog_match(catalog, model_id)
+    if matched is None and ":" in model_id:
+        from core.inference.local_model_resolver import local_gguf_pinned_variant
+
+        # a cold index cannot vouch for a build key yet: scan once, off the loop, then retry
+        if await asyncio.to_thread(local_gguf_pinned_variant, model_id) is not None:
+            matched = _catalog_match(catalog, model_id)
     if matched is None:
         raise HTTPException(status_code = 404, detail = "Model not found")
     return matched

@@ -1471,6 +1471,28 @@ def test_an_indexed_build_key_matches_its_listed_base_row(monkeypatch, _no_local
     assert mod._catalog_match(catalog, QWEN + ":gamma-Q4_K_M") is None
 
 
+def test_a_build_key_is_matched_after_a_cold_index_scan(monkeypatch, _no_local_gguf):
+    import asyncio
+
+    warm = []
+
+    def _pinned(requested, allow_scan = True):
+        if allow_scan:
+            warm.append(requested)
+        return "beta-Q4_K_M" if warm and requested == QWEN + ":beta-Q4_K_M" else None
+
+    monkeypatch.setattr(_no_local_gguf, "local_gguf_pinned_variant", _pinned)
+    catalog = [{"id": QWEN, "object": "model"}]
+    mod, _calls = _management(backend = _Backend(), catalog = catalog)
+
+    async def _catalog():
+        return catalog
+
+    monkeypatch.setattr(mod, "_chat_catalog", _catalog)
+
+    assert asyncio.run(mod._catalog_row(QWEN + ":beta-Q4_K_M"))[0] == QWEN + ":beta-Q4_K_M"
+
+
 def test_management_unload_of_a_bare_id_ignores_the_preferred_quant(monkeypatch, _no_local_gguf):
     """A bare id resolves to the preferred quant on disk, which need not be the resident one."""
     monkeypatch.setattr(

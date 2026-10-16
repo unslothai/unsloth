@@ -273,6 +273,25 @@ def test_a_direct_file_listing_offers_no_same_quant_sibling_build(tmp_path):
     assert {"alpha-Q4_K_M.gguf", "gamma-Q8_0.gguf"} <= files
 
 
+def test_a_direct_non_first_shard_lists_no_same_quant_sibling(tmp_path):
+    import asyncio
+
+    from hub.services.models.gguf_variants import get_gguf_variants_response
+
+    (tmp_path / "config.json").write_text("{}")
+    (tmp_path / "alpha-Q4_K_M-00001-of-00002.gguf").write_bytes(b"x" * 60)
+    (tmp_path / "alpha-Q4_K_M-00002-of-00002.gguf").write_bytes(b"x" * 60)
+    (tmp_path / "beta-Q4_K_M.gguf").write_bytes(b"x" * 90)
+
+    response = asyncio.run(
+        get_gguf_variants_response(
+            str(tmp_path / "alpha-Q4_K_M-00002-of-00002.gguf"), prefer_local_cache = True
+        )
+    )
+
+    assert "beta-Q4_K_M.gguf" not in {v.filename for v in response.variants}
+
+
 def test_a_bare_named_sibling_cannot_collide_with_the_legacy_quant_key(tmp_path):
     import asyncio
 
