@@ -242,13 +242,14 @@ export const ModelsToolbar = memo(function ModelsToolbar({
     () =>
       SORT_OPTIONS.filter(
         (option) =>
-          hubSource !== "modelscope" ||
-          (option.value !== "createdAt" && option.value !== "fresh"),
+          // Latest ranks Hugging Face models; datasets and ModelScope have no such ranking.
+          !(option.value === "fresh" && (isDataset || hubSource === "modelscope")) &&
+          (hubSource !== "modelscope" || option.value !== "createdAt"),
       ).map((option) => ({
         value: option.value,
         label: option.label,
       })),
-    [hubSource],
+    [hubSource, isDataset],
   );
   // pl-4 / pr-3.5: the model picker's dropdown insets, so the two read alike.
   const triggerBase = cn(
@@ -503,7 +504,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
                   className="size-3.5 shrink-0"
                 />
                 <span className="truncate">
-                  {sortOptions.find((option) => option.value === sortBy)
+                  {SORT_OPTIONS.find((option) => option.value === sortBy)
                     ?.label ?? sortBy}
                 </span>
               </span>

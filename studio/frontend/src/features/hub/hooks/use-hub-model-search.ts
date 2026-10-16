@@ -480,10 +480,25 @@ const FRESH_POOL = 100;
 /** Ranks the newest and the most trending uploads together, then carries on through the rest by date. */
 async function* freshChannelIterator(
   channel: HfModelSearchChannel,
-  opts: Omit<Parameters<typeof createChannelIterator>[1], "sortBy">,
+  opts: Omit<Parameters<typeof createChannelIterator>[1], "sortBy" | "task"> & {
+    /** Scopes both candidate listings, so the pool is the newest and trending of these tasks. */
+    tasks?: readonly PipelineType[];
+  },
 ): AsyncGenerator<unknown> {
+  const { tasks = [], ...listingOpts } = opts;
   const listing = (sortBy: HfSortKey) =>
-    createChannelIterator(channel, { ...opts, sortBy, sortDirection: "desc" });
+    mergeTaskIterators(
+      tasks,
+      (task, signal) =>
+        createChannelIterator(channel, {
+          ...listingOpts,
+          sortBy,
+          sortDirection: "desc",
+          signal,
+          task,
+        }),
+      opts.signal,
+    );
   const newest = listing("createdAt");
   // Read by hand: breaking out of a for-await would close the listing the tail continues.
   const take = async (iter: AsyncGenerator<unknown>) => {
@@ -519,6 +534,7 @@ function createChannelIterator(
     accessToken?: string;
     signal: AbortSignal;
     parameterFilter?: string;
+    task?: PipelineType;
   },
 ): AsyncGenerator<unknown> {
   if (opts.sortBy === "fresh") {
@@ -533,6 +549,7 @@ function createChannelIterator(
       ...(queryString ? { query: queryString } : {}),
       ...(channel.owner ? { owner: channel.owner } : {}),
       ...(channelTags ? { tags: channelTags } : {}),
+      ...(opts.task ? { task: opts.task } : {}),
     },
     additionalFields: ALL_FIELDS,
     fetch: makeSortFetch(
@@ -806,9 +823,9 @@ export function useHubModelSearch(
         );
       }
       // Latest picked from the sort menu: the same ranking as the feed, over the chosen uploaders.
-      if (sortBy === "fresh") {
-        const tasks = normalizeTaskFilter(task);
-        const ranked = freshChannelIterator(
+      // An owner/repo query keeps the pinned-publisher path below, by date.
+      if (sortBy === "fresh" && !isPublisherQuery) {
+        return freshChannelIterator(
           { owner: unslothOnly ? "unsloth" : undefined },
           {
             query: trimmed || undefined,
@@ -816,15 +833,9 @@ export function useHubModelSearch(
             accessToken,
             signal,
             parameterFilter: filterRange,
+            tasks: normalizeTaskFilter(task),
           },
         );
-        return tasks.length === 0
-          ? ranked
-          : (async function* () {
-              for await (const model of ranked) {
-                if (taskMatches((model as { task?: string }).task, tasks)) yield model;
-              }
-            })();
       }
       if (!trimmed) {
         // No query: show priority models first (with full metadata), then general unsloth listing
@@ -905,6 +916,7 @@ export function useHubModelSearch(
       trimmed,
       searchQuery,
       pinnedId,
+      isPublisherQuery,
       task,
       accessToken,
       stablePriorityIds,

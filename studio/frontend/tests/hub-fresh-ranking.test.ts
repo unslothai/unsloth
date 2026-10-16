@@ -91,6 +91,14 @@ test("Latest picked from the sort menu, outside any section, ranks the same way"
   const hook = readSrc("features/hub/hooks/use-hub-model-search.ts");
   assert.match(
     hook,
-    /if \(sortBy === "fresh"\) \{[\s\S]*?freshChannelIterator\(\n\s*\{ owner: unslothOnly \? "unsloth" : undefined \},/,
+    /if \(sortBy === "fresh" && !isPublisherQuery\) \{[\s\S]*?freshChannelIterator\(\n\s*\{ owner: unslothOnly \? "unsloth" : undefined \},[\s\S]*?tasks: normalizeTaskFilter\(task\),/,
   );
+  // The task scopes both candidate listings, not only the ranked result.
+  assert.match(hook, /\.\.\.\(opts\.task \? \{ task: opts\.task \} : \{\}\),/);
+});
+
+test("datasets and ModelScope never offer Latest", () => {
+  const toolbar = readSrc("features/hub/catalog/models-toolbar.tsx");
+  assert.match(toolbar, /!\(option\.value === "fresh" && \(isDataset \|\| hubSource === "modelscope"\)\)/);
+  assert.match(readSrc("features/hub/hub-page.tsx"), /isDatasetMode && requestedSort === "fresh"\n\s*\? "createdAt"/);
 });
