@@ -1009,8 +1009,8 @@ mod pac {
                     },
                 }));
             }
-            // An empty answer means direct, as browsers read one.
-            if routes.is_empty() {
+            // An empty answer means direct, as browsers read one; one with nothing usable, no route.
+            if proxies.len() == 0 {
                 routes.push(None);
             }
             Some(routes)
@@ -1053,7 +1053,7 @@ mod pac {
                 ) => address == same,
                 (earlier, later) => earlier == later,
             });
-            if routes.is_empty() {
+            if entries.is_empty() {
                 routes.push(None);
             }
             routes
@@ -1279,9 +1279,10 @@ mod pac {
                 },
             };
             let mut routes: Vec<_> = entries.iter().filter_map(route).collect();
+            let answered = !entries.is_empty();
             unsafe { WinHttpFreeProxyResult(&mut result) };
-            // An empty answer means direct, as browsers read one.
-            if routes.is_empty() {
+            // An empty answer means direct, as browsers read one; one with nothing usable, no route.
+            if !answered {
                 routes.push(None);
             }
             Ok(routes)
@@ -1852,6 +1853,8 @@ mod tests {
             pac::desktop::from_entries(&entries, &to),
             [Some(http), socks("127.0.0.1:2"), socks("127.0.0.1:4"), None]
         );
+        assert!(pac::desktop::from_entries(&["https://127.0.0.1:1"], &to).is_empty());
+        assert_eq!(pac::desktop::from_entries(&[] as &[&str], &to), [None]);
         // Proxy variables replace the desktop's settings rather than mixing with them.
         let env = |name: &str| (name == "https_proxy").then(|| "http://127.0.0.1:8".to_string());
         assert!(linux_proxies(env).pac.is_none());
