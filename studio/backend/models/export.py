@@ -398,3 +398,37 @@ class LlmCompressorExportProbeResponse(BaseModel):
     python_executable: str
     has_pip: bool
     has_uv: bool
+
+
+class PostExportHookOption(BaseModel):
+    """One user-selectable option of a post-export hook; values are limited to ``choices``."""
+
+    name: str
+    label: str
+    default: str = ""
+    choices: List[str] = Field(default_factory = list)
+
+
+class PostExportHook(BaseModel):
+    """A post-export hook as the UI sees it. The command itself stays on the server."""
+
+    id: str
+    label: str
+    description: str = ""
+    applies_to: List[str] = Field(default_factory = list)
+    available: bool = True
+    options: List[PostExportHookOption] = Field(default_factory = list)
+
+
+class PostExportHooksResponse(BaseModel):
+    hooks: List[PostExportHook] = Field(default_factory = list)
+
+
+class RunPostExportHookRequest(BaseModel):
+    """Run one configured hook on a finished export (path relative to the exports folder, or absolute inside it)."""
+
+    hook_id: str = Field(..., description = "Hook id from post_export_hooks.json")
+    export_path: str = Field(
+        ..., description = "The export's output_path as returned by the export call"
+    )
+    options: Dict[str, str] = Field(default_factory = dict)

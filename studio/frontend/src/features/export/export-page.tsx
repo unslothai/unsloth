@@ -72,6 +72,10 @@ import {
 } from "./api/export-api";
 import { adapterCompatibilityTip, type AdapterFormat } from "./constants";
 import { ExportRunPanel } from "./components/export-run-panel";
+import {
+  PostExportHooksPicker,
+  type SelectedPostExportHook,
+} from "./components/post-export-hooks";
 import { ImageLoraExportCard } from "./components/image-lora-export-card";
 import { MethodPicker } from "./components/method-picker";
 import { Q4nxConvertCard } from "./components/q4nx-convert-card";
@@ -214,6 +218,7 @@ export function ExportPage() {
 
   // Seed the method + quants from a live run so navigating away and back (which remounts this
   // page) keeps the selection. The run lives in the global store; only this form state is local.
+  const [postHooks, setPostHooks] = useState<SelectedPostExportHook[]>([]);
   const [exportMethod, setExportMethod] = useState<ExportMethod | null>(() => {
     const s = useExportRuntimeStore.getState();
     return isExportPanelActive(s) && s.summary ? s.summary.method : null;
@@ -964,6 +969,10 @@ export function ExportPage() {
       token,
       privateRepo,
       installMissingDependencies,
+      postExportHooks:
+        destination === "local" && (effectiveMethod === "merged" || effectiveMethod === "lora")
+          ? postHooks
+          : [],
       baseModelId: selectedModelData?.base_model ?? undefined,
       summary: {
         baseModelName: sourceBaseModelName,
@@ -976,6 +985,7 @@ export function ExportPage() {
       },
     });
   }, [
+    postHooks,
     checkpoint,
     checkpointsForModel,
     sourceMode,
@@ -2013,6 +2023,15 @@ export function ExportPage() {
                   )}
                 </div>
               )}
+              {(exportMethod === "merged" || exportMethod === "lora") &&
+                !exportUnsupported && (
+                  <PostExportHooksPicker
+                    exportType={exportMethod}
+                    localOnly={destination === "local"}
+                    value={postHooks}
+                    onChange={setPostHooks}
+                  />
+                )}
               {estimatedSize && (
                 <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
                   <HugeiconsIcon

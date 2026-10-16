@@ -7,6 +7,7 @@ import {
   cleanupExport,
   exportGGUF,
   exportLoRA,
+  runPostExportHook,
   exportMerged,
   getExportStatus,
   isRecoverableTransportError,
@@ -179,6 +180,8 @@ export interface RunExportParams {
   loraGguf?: boolean;
   adapterFormat?: "mlx" | "peft";
   loraGgufOuttype?: string;
+  /** Selected post-export hooks, run on each local output after the export succeeds. */
+  postExportHooks?: { id: string; label: string; options: Record<string, string> }[];
   saveDirectory: string;
   destination: ExportDestination;
   repoId?: string;
@@ -584,6 +587,36 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
           });
         }
         drafter = exportDrafterFrom(loraDetails);
+      }
+      if (!isCurrent()) return;
+
+      // 3. Post-export hooks (e.g. another runtime's format) on each local merged/LoRA output.
+      const hooks = params.postExportHooks ?? [];
+      if (hooks.length > 0 && params.destination !== "hub") {
+        for (const out of outputs.slice()) {
+          for (const hook of hooks) {
+            if (!isCurrent()) return;
+            // The export itself already succeeded: a failing hook is reported beside it, not as an export error.
+            try {
+              const res = await runPostExportHook({
+                hook_id: hook.id,
+                export_path: out.path,
+                options: hook.options,
+              });
+              const produced = res.details?.output_path;
+              outputs.push({
+                label: hook.label,
+                path:
+                  typeof produced === "string" && produced ? produced : out.path,
+              });
+            } catch (hookErr) {
+              outputs.push({
+                label: `${hook.label}: failed (${hookErr instanceof Error ? hookErr.message : String(hookErr)})`,
+                path: out.path,
+              });
+            }
+          }
+        }
       }
       if (!isCurrent()) return;
 

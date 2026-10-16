@@ -216,6 +216,45 @@ export async function exportMerged(params: {
   return parseJson<ExportOperationResponse>(response);
 }
 
+export interface PostExportHookOption {
+  name: string;
+  label: string;
+  default: string;
+  choices: string[];
+}
+
+/** An admin-configured post-export hook (post_export_hooks.json); the command stays on the server. */
+export interface PostExportHook {
+  id: string;
+  label: string;
+  description: string;
+  applies_to: string[];
+  available: boolean;
+  options: PostExportHookOption[];
+}
+
+export async function fetchPostExportHooks(
+  exportType?: string,
+): Promise<PostExportHook[]> {
+  const q = exportType ? `?export_type=${encodeURIComponent(exportType)}` : "";
+  const response = await authFetch(`/api/export/hooks${q}`);
+  return (await parseJson<{ hooks: PostExportHook[] }>(response)).hooks ?? [];
+}
+
+/** Run one hook on a finished export; its output streams into the export log. */
+export async function runPostExportHook(params: {
+  hook_id: string;
+  export_path: string;
+  options: Record<string, string>;
+}): Promise<ExportOperationResponse> {
+  const response = await authFetch("/api/export/hooks/run", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(params),
+  });
+  return parseJson<ExportOperationResponse>(response);
+}
+
 export async function exportBase(params: {
   save_directory: string;
   push_to_hub?: boolean;
