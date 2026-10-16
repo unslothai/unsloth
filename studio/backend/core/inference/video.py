@@ -1416,6 +1416,9 @@ class _PlannedFetch(NamedTuple):
     repo: str
     revision: Optional[str]
     files: tuple
+    # The encoder components the plan left out (hosted pre-cast checkpoints it expected to find); _run_load re-plans
+    # the base when the actual fetches skip a different set.
+    skip_te: tuple = ()
 
 
 def _sibling_etag(sibling: Any) -> Optional[str]:
@@ -1423,6 +1426,16 @@ def _sibling_etag(sibling: Any) -> Optional[str]:
     lfs = getattr(sibling, "lfs", None)
     sha = getattr(lfs, "sha256", None) or (lfs.get("sha256") if isinstance(lfs, dict) else None)
     return sha or getattr(sibling, "blob_id", None) or None
+
+
+def _keep_fetched_checkpoint(
+    replanned: dict[str, "_PlannedFetch"], previous: dict[str, "_PlannedFetch"]
+) -> dict[str, "_PlannedFetch"]:
+    """A re-plan made after the checkpoint was fetched keeps the checkpoint entry it was fetched under."""
+    out = dict(replanned)
+    if _FETCH_CHECKPOINT in previous:
+        out[_FETCH_CHECKPOINT] = previous[_FETCH_CHECKPOINT]
+    return out
 
 
 def _plan_fetch(
@@ -1440,11 +1453,7 @@ def _plan_fetch(
     repo = _video_fetch_repo(logical, hf_token, files = wanted, checkpoint = checkpoint) or logical
     meta = {s.rfilename: s for s in (getattr(info, "siblings", None) or [])}
     files = tuple(
-        (
-            name,
-            _sibling_etag(meta[name]) if name in meta else None,
-            int(getattr(meta.get(name), "size", 0) or 0),
-        )
+        (name, _sibling_etag(meta[name]) if name in meta else None, int(getattr(meta.get(name), "size", 0) or 0))
         for name in wanted
     )
     revision = getattr(info, "sha", None) if repo.lower() == (listing or "").lower() else None
@@ -1721,7 +1730,7 @@ def _video_cached_completeness(repo_id: str) -> int:
     try:
         import json
 
-        from .diffusion_families import _cached_revisions
+        from .diffusion_families import _WEIGHT_SUFFIXES, _cached_revisions
 
         best = -1
         for rev in _cached_revisions(Path(hub_cache_dir()), repo_id):
@@ -1749,6 +1758,12 @@ def _video_cached_completeness(repo_id: str) -> int:
                 if not folder.is_dir() or not any(p.is_file() for p in folder.iterdir()):
                     continue
                 complete = True
+                # A model component (it has a config.json) needs real weights, not just the configs an interrupted
+                # pull leaves; scheduler / tokenizer folders carry no weights and count on any file.
+                if (folder / "config.json").is_file() and not any(
+                    p.is_file() and p.suffix.lower() in _WEIGHT_SUFFIXES for p in folder.iterdir()
+                ):
+                    complete = False
                 for shard_index in folder.glob("*.index.json"):
                     weight_map = (
                         json.loads(shard_index.read_text(encoding = "utf-8")).get("weight_map") or {}
@@ -3930,9 +3945,7 @@ class VideoBackend:
                         checkpoint = True,
                     )
                 )
-                checkpoint_revision = (
-                    checkpoint_plan.revision if checkpoint_plan is not None else None
-                )
+                checkpoint_revision = checkpoint_plan.revision if checkpoint_plan is not None else None
                 checkpoint_local = Path(
                     hf_hub_download_with_xet_fallback(
                         checkpoint_repo,
@@ -3998,8 +4011,9 @@ class VideoBackend:
                         h3_te_scheme = h3_te_scheme,
                         local_files_only = local_files_only,
                         ltx25_dev = ltx25_dev,
-                        planned_files = (planned_files := {}),
+                        planned_files = (replanned := {}),
                     )
+                    planned_files = _keep_fetched_checkpoint(replanned, planned_files)
                     with self._lock:
                         if self._load_token == token and self._loading is not None:
                             self._loading.expected_bytes = expected
@@ -4066,8 +4080,40 @@ class VideoBackend:
                     local_files_only = local_files_only,
                     scheme = h3_auto_denoiser or video_auto_denoiser or requested_denoiser,
                 )
-            base_fetch_choice: dict[str, str] = {}
             base_plan = planned_files.get(_FETCH_BASE)
+            actual_te_skip = tuple(te_skipped) + tuple(h3_te_skipped)
+            if base_plan is not None and set(base_plan.skip_te) != set(actual_te_skip):
+                # An encoder fetch fell back (or found more than planned): the base file set changed, so its repo /
+                # revision choice is settled again on the new names, and progress follows.
+                expected = self._estimate_download_bytes(
+                    kwargs["repo_id"],
+                    kwargs.get("gguf_filename"),
+                    base,
+                    kwargs.get("hf_token"),
+                    kind,
+                    ltx23 = ltx23,
+                    te_sources = te_sources,
+                    skip_transformer_weights = skip_transformer_weights,
+                    skip_transformer_components = skip_transformer_components,
+                    h3_task = kwargs.get("h3_task"),
+                    h3_te_scheme = h3_te_scheme,
+                    local_files_only = local_files_only,
+                    ltx25_dev = ltx25_dev,
+                    planned_files = (replanned := {}),
+                    skip_te_override = actual_te_skip,
+                )
+                planned_files = _keep_fetched_checkpoint(replanned, planned_files)
+                with self._lock:
+                    if self._load_token == token and self._loading is not None:
+                        self._loading.expected_bytes = expected
+                        if hasattr(self._loading, "fetch_plan"):
+                            self._loading.fetch_plan = planned_files
+                base_plan = planned_files.get(_FETCH_BASE)
+            checkpoint_plan = planned_files.get(_FETCH_CHECKPOINT)
+            if checkpoint_plan is not None:
+                # Assembly opens the very file the prefetch pinned, never a re-resolved newer one.
+                kwargs["_checkpoint_fetch"] = (checkpoint_plan.repo, checkpoint_plan.revision)
+            base_fetch_choice: dict[str, str] = {}
             base_local = self._predownload_base(
                 base,
                 kwargs.get("hf_token"),
@@ -4092,6 +4138,7 @@ class VideoBackend:
             # The repo the exact-name check staged the base into: re-deciding at assembly without the names would flip a
             # partially cached upstream back in (LTX-2.3 resolves every component through it).
             kwargs["_base_fetch_repo"] = base_fetch_choice.get("repo")
+            kwargs["_base_fetch_revision"] = base_fetch_choice.get("revision")
             from .safetensors_pread import pread_safetensors
 
             with pread_safetensors():
@@ -5871,6 +5918,7 @@ class VideoBackend:
         local_files_only: bool = False,
         ltx25_dev: bool = False,
         planned_files: Optional[dict[str, "_PlannedFetch"]] = None,
+        skip_te_override: Optional[tuple[str, ...]] = None,
     ) -> Optional[int]:
         """Total bytes this load will pull (checkpoint + companions), or None.
 
@@ -5895,9 +5943,13 @@ class VideoBackend:
 
             total = 0
             api = HfApi(token = hf_token or None)
-            skip_te_components = tuple(self._te_prequant_hub_files(te_sources or {}, api))
-            if self._h3_te_quant_hub_files(h3_te_scheme, api)[1]:
-                skip_te_components = skip_te_components + ("text_encoder",)
+            if skip_te_override is not None:
+                # The encoder fetches already ran: plan around what they actually staged.
+                skip_te_components = tuple(skip_te_override)
+            else:
+                skip_te_components = tuple(self._te_prequant_hub_files(te_sources or {}, api))
+                if self._h3_te_quant_hub_files(h3_te_scheme, api)[1]:
+                    skip_te_components = skip_te_components + ("text_encoder",)
             planned: dict[str, _PlannedFetch] = {}
             if gguf_filename and not Path(repo_id).expanduser().exists():
                 listing = _video_listing_repo(repo_id)
@@ -5928,7 +5980,7 @@ class VideoBackend:
                 total += sum(size for _, size in base_files)
                 planned[_FETCH_BASE] = _plan_fetch(
                     base, listing, info, [name for name, _ in base_files], hf_token
-                )
+                )._replace(skip_te = tuple(skip_te_components))
             if planned_files is not None:
                 planned_files.update(planned)
             return total or None
@@ -6649,6 +6701,8 @@ class VideoBackend:
             )
             if fetch_choice is not None:
                 fetch_choice["repo"] = base
+                if revision:
+                    fetch_choice["revision"] = revision
             for name, _ in files:
                 # Explicit check: a cached file returns without consulting the event, so a warm-cache sweep would run to
                 # completion after a cancel.
@@ -6728,6 +6782,7 @@ class VideoBackend:
         roots = [Path(hub_cache_dir())]
         try:
             from huggingface_hub import constants
+
             if Path(constants.HF_HUB_CACHE) != roots[0]:
                 roots.append(Path(constants.HF_HUB_CACHE))
         except Exception:  # noqa: BLE001 -- the live root alone
@@ -6748,10 +6803,7 @@ class VideoBackend:
                     folder = root / ("models--" + repo.replace("/", "--"))
                     try:
                         if etag:
-                            candidates = [
-                                folder / "blobs" / etag,
-                                folder / "blobs" / f"{etag}.incomplete",
-                            ]
+                            candidates = [folder / "blobs" / etag, folder / "blobs" / f"{etag}.incomplete"]
                         else:
                             ref = folder / "refs" / "main"
                             rev = entry.revision or (
@@ -6871,6 +6923,8 @@ class VideoBackend:
         _load_token: Optional[int] = None,
         _base_local_dir: Optional[str] = None,
         _base_fetch_repo: Optional[str] = None,
+        _base_fetch_revision: Optional[str] = None,
+        _checkpoint_fetch: Optional[tuple[str, Optional[str]]] = None,
         _te_prequant_skipped: tuple[str, ...] = (),
         _h3_auto_denoiser_planned: Optional[str] = None,
         _video_auto_denoiser_planned: Optional[str] = None,
@@ -7009,7 +7063,11 @@ class VideoBackend:
             if kind == "single_file":
                 comfy_checkpoint = str(
                     self._resolve_checkpoint_path(
-                        repo_id, gguf_filename, hf_token, local_files_only = local_files_only
+                        repo_id,
+                        gguf_filename,
+                        hf_token,
+                        local_files_only = local_files_only,
+                        fetch = _checkpoint_fetch,
                     )
                 )
                 if not _is_trusted_video_repo(repo_id):
@@ -7041,6 +7099,7 @@ class VideoBackend:
                 _load_token = _load_token,
                 _base_local_dir = _base_local_dir,
                 _base_fetch_repo = _base_fetch_repo,
+                _base_fetch_revision = _base_fetch_revision,
                 # Settled before the pull when the pull acted on it; None when it did not.
                 _h3_auto_denoiser_planned = _h3_auto_denoiser_planned,
                 _nvfp4_install_outcome = _nvfp4_install_outcome,
@@ -7100,7 +7159,11 @@ class VideoBackend:
         ltx_keys = None
         if kind != "pipeline":
             checkpoint_path = self._resolve_checkpoint_path(
-                repo_id, gguf_filename, hf_token, local_files_only = local_files_only
+                repo_id,
+                gguf_filename,
+                hf_token,
+                local_files_only = local_files_only,
+                fetch = _checkpoint_fetch,
             )
             # Admitted per file from an untrusted repo: prove each file is a safetensors container before any probe.
             untrusted_single_file = kind == "single_file" and not _is_trusted_video_repo(repo_id)
@@ -7167,7 +7230,11 @@ class VideoBackend:
             if getattr(fam, "is_moe", False):
                 # Both experts stay loaded, so price the pair; the planner splits the total per expert.
                 partner_path = self._resolve_moe_partner_path(
-                    repo_id, gguf_filename, hf_token, local_files_only = local_files_only
+                    repo_id,
+                    gguf_filename,
+                    hf_token,
+                    local_files_only = local_files_only,
+                    fetch = _checkpoint_fetch,
                 )
                 partner_mib, partner_scan = _price_checkpoint(partner_path)
                 if (comfy_scan is None) != (partner_scan is None):
@@ -7611,7 +7678,12 @@ class VideoBackend:
             pipe_kwargs.update({name: None for name in LTX25_NONE_COMPONENTS})
         if kind == "pipeline":
             # The pre-downloaded snapshot dir keeps from_pretrained off the hub; hub id when pre-download was skipped.
-            pipe = pipeline_cls.from_pretrained(_base_local_dir or fetch_base, **pipe_kwargs)
+            pipe = pipeline_cls.from_pretrained(
+                _base_local_dir or fetch_base,
+                # A hub id here reads the plan's commit; the staged dir already is that commit.
+                **({"revision": _base_fetch_revision} if _base_fetch_revision and not _base_local_dir else {}),
+                **pipe_kwargs,
+            )
         else:
             transformer_cls = getattr(diffusers, fam.transformer_class)
             # checkpoint_path was resolved (and downloaded) by the memory-planning branch above.
@@ -7728,6 +7800,7 @@ class VideoBackend:
                 pipe = load_ltx23_pipeline(
                     checkpoint_path,
                     base_repo = fetch_base,
+                    revision = _base_fetch_revision,
                     torch_dtype = dtype,
                     is_gguf = kind == "gguf",
                     hf_token = hf_token,
@@ -8748,6 +8821,7 @@ class VideoBackend:
         _load_token: Optional[int] = None,
         _base_local_dir: Optional[str] = None,
         _base_fetch_repo: Optional[str] = None,
+        _base_fetch_revision: Optional[str] = None,
         _h3_auto_denoiser_planned: Optional[str] = None,
         _nvfp4_install_outcome: Optional[tuple[bool, str]] = None,
         local_files_only: bool = False,
@@ -8810,7 +8884,9 @@ class VideoBackend:
         if hf_token:
             load_kwargs["token"] = hf_token
         pipe = diffusers.ModularPipeline.from_pretrained(
-            _base_local_dir or fetch_base, **load_kwargs
+            _base_local_dir or fetch_base,
+            **({"revision": _base_fetch_revision} if _base_fetch_revision and not _base_local_dir else {}),
+            **load_kwargs,
         )
         transformer_quant_engaged: Optional[str] = None
         transformer_quant_reason = "released bfloat16 components"
@@ -9204,11 +9280,15 @@ class VideoBackend:
         )
         # The index is byte identical, so every spec still names the upstream id; load_components would read those
         # from the vendor repo under a different cache key than the mirror the base was staged into.
-        offline_sources = {
-            **offline_sources,
-            **_h3_mirrored_component_sources(
-                pipe, base, fetch_base, local_files_only = local_files_only, cache_dir = hub_cache_dir()
-            ),
+        mirrored_sources = _h3_mirrored_component_sources(
+            pipe, base, fetch_base, local_files_only = local_files_only, cache_dir = hub_cache_dir()
+        )
+        offline_sources = {**offline_sources, **mirrored_sources}
+        # The redirected components read the plan's commit of the staged repo (a snapshot folder needs none).
+        component_revisions = {
+            name: _base_fetch_revision
+            for name, source in mirrored_sources.items()
+            if _base_fetch_revision and source == fetch_base
         }
         pipe.load_components(
             workflow = workflow,
@@ -9217,6 +9297,7 @@ class VideoBackend:
             local_files_only = local_files_only,
             **({"token": hf_token} if hf_token else {}),
             **({"pretrained_model_name_or_path": offline_sources} if offline_sources else {}),
+            **({"revision": component_revisions} if component_revisions else {}),
         )
         # The video VAE loads at float32 and the decode runs under float16 autocast, so both copies are resident for the
         # whole decode. Pre-casting the decoder removes the pair without changing a single output value. The encoder
@@ -9878,8 +9959,12 @@ class VideoBackend:
         gguf_filename: Optional[str],
         hf_token: Optional[str],
         local_files_only: bool = False,
+        fetch: Optional[tuple[str, Optional[str]]] = None,
     ) -> Path:
         """The local checkpoint file for a gguf/single_file load (downloads if hub).
+
+        ``fetch``: the load plan's ``(repo, revision)`` for the checkpoint, so assembly opens the exact file the
+        prefetch pinned; absent, the repo is settled here and ``main`` is followed.
 
         ``local_files_only`` resolves it from the cache instead: an API-initiated load has already
         been told the checkpoint is staged, and this call runs a second time inside load_pipeline
@@ -9893,11 +9978,16 @@ class VideoBackend:
             return root
         from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
 
+        fetch_repo, revision = fetch or (
+            _video_fetch_repo(repo_id, hf_token, files = (gguf_filename or "",), checkpoint = True),
+            None,
+        )
         return Path(
             hf_hub_download_with_xet_fallback(
-                _video_fetch_repo(repo_id, hf_token, files = (gguf_filename or "",), checkpoint = True),
+                fetch_repo,
                 gguf_filename or "",
                 hf_token,
+                revision = revision,
                 reuse_other_cache_root = True,
                 local_files_only = local_files_only,
                 gguf_header_delta = True,
@@ -9910,6 +10000,7 @@ class VideoBackend:
         gguf_filename: Optional[str],
         hf_token: Optional[str],
         local_files_only: bool = False,
+        fetch: Optional[tuple[str, Optional[str]]] = None,
     ) -> Path:
         """The OTHER expert's file of a dual-expert pick (same folder / repo, paired by name; downloads if hub)."""
         root = Path(repo_id).expanduser()
@@ -9925,7 +10016,7 @@ class VideoBackend:
         if partner is None:
             raise ValueError(f"'{gguf_filename}' does not name a high_noise / low_noise expert.")
         return VideoBackend._resolve_checkpoint_path(
-            repo_id, partner, hf_token, local_files_only = local_files_only
+            repo_id, partner, hf_token, local_files_only = local_files_only, fetch = fetch
         )
 
     # ── generation ───────────────────────────────────────────────────────────

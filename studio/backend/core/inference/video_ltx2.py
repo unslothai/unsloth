@@ -1568,6 +1568,7 @@ def _assemble_ltx23_pipeline(
     transformer_override: Optional[Any] = None,
     device: Optional[Any] = None,
     text_encoder_device: Optional[Any] = None,
+    revision: Optional[str] = None,
 ) -> Any:
     """Full LTX-2.3 pipeline from a single-file/GGUF checkpoint. Assembled per-component
     (constructor, not from_pretrained) because the base model_index pins LTX2Vocoder while 2.3
@@ -1678,8 +1679,15 @@ def _assemble_ltx23_pipeline(
     # mid-session change searches the OTHER root, so under local_files_only it raises for a base that is fully
     # downloaded, after eviction.
     cache_dir = _live_cache_dir()
+    # ``revision``: the load plan's commit for the base, so the components come from the snapshot it staged (passed only
+    # when set, so an unpinned load calls exactly as before).
+    pinned: dict[str, Any] = {"revision": revision} if revision else {}
     index = LTX2Pipeline.load_config(
-        base_repo, token = hf_token, local_files_only = local_files_only, cache_dir = cache_dir
+        base_repo,
+        token = hf_token,
+        local_files_only = local_files_only,
+        cache_dir = cache_dir,
+        **pinned,
     )
 
     def _sub(name: str, **extra: Any) -> Any:
@@ -1691,6 +1699,7 @@ def _assemble_ltx23_pipeline(
             token = hf_token,
             local_files_only = local_files_only,
             cache_dir = cache_dir,
+            **pinned,
             **extra,
         )
 
