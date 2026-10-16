@@ -13,7 +13,7 @@ import {
   MoreHorizontalIcon,
   PencilEdit02Icon,
   ApiIcon,
-  TimeScheduleIcon,
+  Clock01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Reorder, useDragControls } from "motion/react";
@@ -45,7 +45,7 @@ const ITEM_META: Record<
   recipes: { icon: ChefHatIcon, labelKey: "shell.navigation.recipes" },
   export: { icon: Download01Icon, labelKey: "shell.navigation.export" },
   api: { icon: ApiIcon, labelKey: "shell.navigation.api" },
-  tasks: { icon: TimeScheduleIcon, labelKey: "shell.navigation.tasks" },
+  tasks: { icon: Clock01Icon, labelKey: "shell.navigation.tasks" },
 };
 
 function FixedRow({ icon, label }: { icon: IconSvgElement; label: string }) {

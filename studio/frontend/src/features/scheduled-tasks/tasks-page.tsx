@@ -4,11 +4,12 @@
 import {
   Add01Icon,
   Delete02Icon,
+  FilterMailIcon,
   MoreHorizontalIcon,
   PauseIcon,
   PencilEdit02Icon,
   PlayIcon,
-  TimeScheduleIcon,
+  Clock01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
@@ -27,8 +28,10 @@ import {
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
+  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -53,6 +56,44 @@ const OVERDUE_REFRESH_MS = 5_000;
 
 const ROW_BUTTON =
   "flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50 data-[state=open]:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:data-[state=open]:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]";
+
+type TaskStatus = ScheduledTask["status"];
+
+const STATUSES: TaskStatus[] = ["active", "paused", "completed"];
+const STATUS_LABEL = {
+  active: "scheduledTasks.active",
+  paused: "scheduledTasks.paused",
+  completed: "scheduledTasks.completed",
+} as const satisfies Record<TaskStatus, TranslationKey>;
+const FILTER_KEY = "unsloth_scheduled_tasks_filter";
+
+function loadFilter(): TaskStatus[] {
+  try {
+    const saved: unknown = JSON.parse(localStorage.getItem(FILTER_KEY) ?? "null");
+    if (Array.isArray(saved)) return STATUSES.filter((status) => saved.includes(status));
+  } catch {
+    // Unreadable storage shows every task.
+  }
+  return STATUSES;
+}
+
+function saveFilter(shown: TaskStatus[]): void {
+  try {
+    localStorage.setItem(FILTER_KEY, JSON.stringify(shown));
+  } catch {
+    // Without storage the filter resets on the next visit.
+  }
+}
+
+// Soonest next run first; paused and then completed tasks follow, most recently changed first.
+function compareTasks(a: ScheduledTask, b: ScheduledTask): number {
+  const rank = STATUSES.indexOf(a.status) - STATUSES.indexOf(b.status);
+  if (rank !== 0) return rank;
+  if (a.nextRunAt !== null && b.nextRunAt !== null && a.nextRunAt !== b.nextRunAt) {
+    return a.nextRunAt - b.nextRunAt;
+  }
+  return b.updatedAt - a.updatedAt;
+}
 
 function scheduleText(
   schedule: TaskSchedule,
@@ -122,7 +163,7 @@ function TaskRow({
           task.status === "active" && "group-hover/task-row:bg-primary/10 group-hover/task-row:text-primary",
         )}
       >
-        <HugeiconsIcon icon={TimeScheduleIcon} strokeWidth={1.75} className="size-5" />
+        <HugeiconsIcon icon={Clock01Icon} strokeWidth={1.75} className="size-5" />
       </span>
       <div className="flex min-w-0 flex-1 flex-col gap-1">
         <div className="flex min-w-0 items-center gap-2">
@@ -246,6 +287,17 @@ export function TasksPage() {
   // undefined: closed; null: creating a new task.
   const [editing, setEditing] = useState<ScheduledTask | null | undefined>(undefined);
   const [deleting, setDeleting] = useState<ScheduledTask | null>(null);
+  const [shown, setShown] = useState<TaskStatus[]>(loadFilter);
+  const visibleTasks = useMemo(
+    () => tasks.filter((task) => shown.includes(task.status)).sort(compareTasks),
+    [tasks, shown],
+  );
+
+  function toggleStatus(status: TaskStatus, on: boolean) {
+    const next = STATUSES.filter((candidate) => (candidate === status ? on : shown.includes(candidate)));
+    setShown(next);
+    saveFilter(next);
+  }
 
   useEffect(() => {
     void refresh();
@@ -331,7 +383,7 @@ export function TasksPage() {
       ) : tasks.length === 0 ? (
         <div className="mt-16 flex flex-col items-center gap-2 text-center">
           <span className="mb-2 flex size-12 items-center justify-center rounded-2xl bg-muted text-foreground/70">
-            <HugeiconsIcon icon={TimeScheduleIcon} strokeWidth={1.75} className="size-6" />
+            <HugeiconsIcon icon={Clock01Icon} strokeWidth={1.75} className="size-6" />
           </span>
           <p className="text-ui-15 font-semibold text-foreground">{t("scheduledTasks.emptyTitle")}</p>
           <p className="max-w-sm text-sm text-muted-foreground">
@@ -347,16 +399,57 @@ export function TasksPage() {
           </Button>
         </div>
       ) : (
-        <div className="mt-12 flex flex-col">
-          {tasks.map((task) => (
-            <TaskRow
-              key={task.id}
-              task={task}
-              now={now}
-              onEdit={() => setEditing(task)}
-              onDelete={() => setDeleting(task)}
-            />
-          ))}
+        <div className="mt-10 flex flex-col">
+          <div className="flex items-center justify-between pb-2 pl-5 pr-3">
+            <h2 className="text-ui-13 font-medium text-muted-foreground">
+              {t("scheduledTasks.upcoming")}
+            </h2>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  type="button"
+                  aria-label={t("scheduledTasks.filter")}
+                  title={t("scheduledTasks.filter")}
+                  className={cn(ROW_BUTTON, shown.length < STATUSES.length && "text-foreground")}
+                >
+                  <HugeiconsIcon icon={FilterMailIcon} strokeWidth={1.75} className="size-4" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent
+                align="end"
+                className="app-user-menu menu-soft-surface ring-0 w-52 py-2 font-heading rounded-[14px] border-0"
+              >
+                <DropdownMenuLabel className="text-muted-foreground">
+                  {t("scheduledTasks.filterBy")}
+                </DropdownMenuLabel>
+                {STATUSES.map((status) => (
+                  <DropdownMenuCheckboxItem
+                    key={status}
+                    checked={shown.includes(status)}
+                    onCheckedChange={(on) => toggleStatus(status, on)}
+                    onSelect={(event) => event.preventDefault()}
+                  >
+                    {t(STATUS_LABEL[status])}
+                  </DropdownMenuCheckboxItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+          {visibleTasks.length === 0 ? (
+            <p className="px-5 py-4 text-ui-13 text-muted-foreground">
+              {t("scheduledTasks.noMatches")}
+            </p>
+          ) : (
+            visibleTasks.map((task) => (
+              <TaskRow
+                key={task.id}
+                task={task}
+                now={now}
+                onEdit={() => setEditing(task)}
+                onDelete={() => setDeleting(task)}
+              />
+            ))
+          )}
         </div>
       )}
 

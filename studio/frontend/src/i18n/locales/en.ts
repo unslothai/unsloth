@@ -784,7 +784,7 @@ export const en = {
       images: "Images",
       video: "Video",
       audio: "Audio",
-      tasks: "Tasks",
+      tasks: "Scheduled",
       // Hover text while the row spins, before this machine's capability is measured.
       trainChecking: "Checking this machine for training support...",
       videoChecking: "Checking this machine for video support...",
@@ -4145,13 +4145,19 @@ export const en = {
     resetDescription: "Every skill goes back to how a fresh install has it: your skills and Claude skills on, bundled skills off. Your on and off choices are cleared.",
     reset: "Reset",
   },
-  // The Tasks page: prompts that run on a schedule, each run answered in a new chat.
+  // The Scheduled page: prompts that run on a schedule, each run answered in a new chat.
   scheduledTasks: {
-    title: "Scheduled tasks",
+    title: "Scheduled",
     description: "Run a prompt on a schedule. Each run opens a new chat with the answer.",
     // Said once under the heading: nothing runs while Unsloth is closed or no model is loaded.
     runsWhileOpen: "Tasks run on the model loaded in Chat while Unsloth is open.",
     newTask: "New task",
+    upcoming: "Upcoming",
+    // The list's status filter: a menu of Active, Paused and Completed.
+    filterBy: "Filter by",
+    filter: "Filter tasks",
+    active: "Active",
+    noMatches: "No scheduled tasks",
     emptyTitle: "No scheduled tasks yet",
     emptyDescription: "Get a daily summary, a weekly reminder, or anything else you want done on a schedule.",
     createFirst: "Create a task",

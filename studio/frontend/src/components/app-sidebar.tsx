@@ -139,7 +139,7 @@ import {
   ArrowUpDownIcon,
   LayerIcon,
   ApiIcon,
-  TimeScheduleIcon,
+  Clock01Icon,
 } from "@hugeicons/core-free-icons";
 import { AiSpeechIcon, MessageCircleIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 import {
@@ -3483,7 +3483,7 @@ export function AppSidebar() {
       },
     },
     tasks: {
-      icon: TimeScheduleIcon,
+      icon: Clock01Icon,
       label: t("shell.navigation.tasks"),
       active: pathname === "/tasks",
       onClick: () => {
