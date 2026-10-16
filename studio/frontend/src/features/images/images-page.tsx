@@ -2620,7 +2620,8 @@ export function ImagesPage({
       : undefined,
   );
   useEffect(() => {
-    if (imagesMachine) void refreshLinkedMachines();
+    // Forced: the list may be cached from before the instance was removed in Settings.
+    if (imagesMachine) void refreshLinkedMachines(true);
   }, [imagesMachine]);
 
   const refreshStatus = useCallback(async () => {
@@ -3690,6 +3691,33 @@ export function ImagesPage({
     if (l) void handleLoad(l.repoId, { kind: l.kind, filename: l.filename, displayRepoId: l.displayRepoId });
   }, [handleLoad]);
 
+  const switchImagesMachine = useCallback(
+    (machine: string | null) => {
+      setImagesMachine(machine);
+      setImagesMachineState(machine);
+      // The shelf belongs to the old machine: drop it, fence any listing still in flight, refetch.
+      stripEpoch.current += 1;
+      galleryCache.images = [];
+      galleryCache.hasMore = false;
+      setImages([]);
+      setHasMore(false);
+      void loadGallery();
+      void refreshStatus();
+    },
+    [loadGallery, refreshStatus],
+  );
+
+  // A removed linked instance leaves its id stored; once the list has loaded without it, use this machine.
+  const imagesMachineGone = useLinkedMachinesStore(
+    (state) =>
+      imagesMachine !== null &&
+      state.loadedAt > 0 &&
+      !state.instances.some((i) => i.id === imagesMachine),
+  );
+  useEffect(() => {
+    if (imagesMachineGone) switchImagesMachine(null);
+  }, [imagesMachineGone, switchImagesMachine]);
+
   // Every pick supersedes the one before it, whichever route it takes: a staged download
   // outlives its pick, and the direct-local branches call handleLoad rather than loadOrStage,
   // so clearing only inside loadOrStage left the old job free to load the abandoned model. A
@@ -3714,16 +3742,7 @@ export function ImagesPage({
       if (machine !== getImagesMachine()) {
         // Progress, Stop and the gallery all follow the machine, so it never moves under active work.
         if (busy !== null) return;
-        setImagesMachine(machine);
-        setImagesMachineState(machine);
-        // The shelf belongs to the old machine: drop it, fence any listing still in flight, refetch.
-        stripEpoch.current += 1;
-        galleryCache.images = [];
-        galleryCache.hasMore = false;
-        setImages([]);
-        setHasMore(false);
-        void loadGallery();
-        void refreshStatus();
+        switchImagesMachine(machine);
       }
       const meta: ModelSelectorChangeMeta = machine
         ? { ...pickMeta, source: "local" }
@@ -3916,13 +3935,13 @@ export function ImagesPage({
       currentLoadAdvanced,
       familyOverride,
       handleLoad,
-      loadGallery,
       loadGgufRepoPick,
       loadOrStage,
       pickGuard,
       quant,
       refreshStatus,
       revertPick,
+      switchImagesMachine,
     ],
   );
 
