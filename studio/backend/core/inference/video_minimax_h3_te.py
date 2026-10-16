@@ -66,7 +66,10 @@ H3_TE_QUANT_REPO = "unsloth/MiniMax-H3-FP8"
 # two levels of scale and a per-tensor global scale, a different loader and a different kernel, and shipping it needs
 # its own numerical verification. The table is the one place to add it.
 H3_TE_QUANT_FILES: dict[str, str] = {
-    "int8": "text_encoders/qwen3vl_32b_minimax_h3_int8_convrot.safetensors",
+    # Built from the official MiniMaxAI text_encoder/ with Studio's quantize_convrot_int8_weight and uploaded under
+    # text_encoders/official/. Byte-identical to the text_encoders/ copy that came from the Comfy-Org repack, which
+    # stays in place for released builds; this build reads only the official-provenance path.
+    "int8": "text_encoders/official/qwen3vl_32b_minimax_h3_int8_convrot.safetensors",
 }
 
 # The scheme an UNSET ``text_encoder_quant`` resolves to on a device that supports it. The released conditioner is a

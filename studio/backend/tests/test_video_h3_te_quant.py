@@ -94,7 +94,7 @@ def test_the_hosted_filename_comes_from_an_unsloth_repo():
     assert H3_TE_QUANT_REPO in {repo for _, repo in (h3.prequant_repos or ())}
     assert (
         h3_te_quant_filename("int8")
-        == "text_encoders/qwen3vl_32b_minimax_h3_int8_convrot.safetensors"
+        == "text_encoders/official/qwen3vl_32b_minimax_h3_int8_convrot.safetensors"
     )
     assert h3_te_quant_filename("fp8") is None
     assert h3_te_quant_filename(None) is None
