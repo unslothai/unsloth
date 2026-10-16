@@ -1753,6 +1753,8 @@ class TrainingBackend:
         self._pump_running = False
 
         config = _build_training_worker_config(kwargs)
+        # Activation capture files its records under the run.
+        config["job_id"] = job_id
         hf_token = hf_token_arg(
             config["hf_token"], allow_ambient_token = config.get("allow_ambient", True)
         )

@@ -209,11 +209,7 @@ def run(args):
     # Activation capture setup (optional)
     capture_callback = None
     if args.capture_activations:
-        from unsloth import (
-            ActivationCaptureConfig,
-            ActivationCapture,
-            ActivationCaptureCallback,
-        )
+        from unsloth.activation_capture import ActivationCaptureConfig
         _capture_cfg = ActivationCaptureConfig(
             output_dir = args.capture_output_dir,
             capture_interval = args.capture_interval,
