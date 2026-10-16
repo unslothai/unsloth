@@ -2694,7 +2694,6 @@ def _load_transformer_config(
     for root in _config_cache_roots(checkpoint_path, cache_dir):
         try:
             from .diffusion_families import pinned_revision_kwargs
-
             return transformer_cls.load_config(
                 base,
                 subfolder = subfolder,

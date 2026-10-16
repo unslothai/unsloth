@@ -443,6 +443,7 @@ def load_latent_upsampler(
     local_files_only: bool = False,
 ) -> Any:
     from diffusers.pipelines.ltx2.latent_upsampler import LTX2LatentUpsamplerModel
+
     if is_ltx25_single_file_base(base_repo):
         from safetensors.torch import load_file
 

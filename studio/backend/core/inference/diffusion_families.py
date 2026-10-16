@@ -1312,7 +1312,9 @@ class pinned_repo_revision:
     A no-op when either is missing or ``repo`` is a local path."""
 
     def __init__(self, repo: Optional[str], revision: Optional[str]):
-        self._key = (repo or "").strip().lower() if repo and revision and not _is_local_path(repo) else ""
+        self._key = (
+            (repo or "").strip().lower() if repo and revision and not _is_local_path(repo) else ""
+        )
         self._revision = revision
         self._token = None
 
