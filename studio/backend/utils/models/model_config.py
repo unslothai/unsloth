@@ -3384,7 +3384,7 @@ def _find_local_gguf_by_variant(
             f"{m.group(1) or ''}{m.group(2)}" for m in _GGUF_KNOWN_QUANT_RE.finditer(basename_stem)
         ]
         if not _variant_matches(
-            variant, quant, fallback_variant, stripped, *stem_tokens
+            variant, quant, fallback_variant, rel, stripped, *stem_tokens
         ) or _is_big_endian_gguf_path(rel, quant):
             continue
         matches.append(f)

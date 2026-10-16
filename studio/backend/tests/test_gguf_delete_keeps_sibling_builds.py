@@ -89,6 +89,50 @@ def test_a_custom_folder_lists_every_build_at_one_quant(tmp_path):
     }
 
 
+def test_a_bare_named_sibling_cannot_collide_with_the_legacy_quant_key(tmp_path):
+    import asyncio
+
+    from hub.services.models.gguf_variants import get_gguf_variants_response
+    from routes.models import _delete_gguf_variant_files, _resolve_quant_gguf
+    from utils.models.model_config import _find_local_gguf_by_variant
+
+    names = [
+        "0-model-Q4_K_M.gguf",
+        "Q4_K_M-00001-of-00002.gguf",
+        "Q4_K_M-00002-of-00002.gguf",
+    ]
+    for index, name in enumerate(names, 1):
+        (tmp_path / name).write_bytes(b"x" * (index * 16))
+
+    variants, _ = list_local_gguf_variants(str(tmp_path))
+    listed = {v.quant: (v.filename, v.size_bytes) for v in variants}
+    sibling_key = names[1]
+    assert listed == {"Q4_K_M": (names[0], 16), sibling_key: (names[1], 80)}
+    assert Path(_find_local_gguf_by_variant(str(tmp_path), "Q4_K_M")).name == names[0]
+    assert Path(_find_local_gguf_by_variant(str(tmp_path), sibling_key)).name == names[1]
+    resolved, size = _resolve_quant_gguf(str(tmp_path), sibling_key, True)
+    assert Path(resolved).name == names[1]
+    assert size == 80
+    response = asyncio.run(get_gguf_variants_response(str(tmp_path), prefer_local_cache = True))
+    assert response.default_variant == sibling_key
+    assert response.loadable_variants[:2] == [sibling_key, "Q4_K_M"]
+    assert _delete_gguf_variant_files(tmp_path, sibling_key)[0] == 2
+    assert (tmp_path / names[0]).exists()
+    assert not (tmp_path / names[1]).exists()
+    assert not (tmp_path / names[2]).exists()
+
+
+def test_an_ordinary_models_prefixed_folder_is_not_an_hf_snapshot(tmp_path):
+    folder = tmp_path / "models--custom-collections" / "ordinary-folder"
+    folder.mkdir(parents = True)
+    names = ["alpha-Q4_K_M.gguf", "beta-Q4_K_M.gguf"]
+    for name in names:
+        (folder / name).write_bytes(b"x")
+
+    variants, _ = list_local_gguf_variants(str(folder))
+    assert {variant.filename for variant in variants} == set(names)
+
+
 def test_split_build_labels_leave_other_rows_alone(tmp_path):
     for rel in ("model-Q6_K.gguf", "other-Q6_K.gguf", "distilled/model-Q6_K.gguf", "m-Q8_0.gguf"):
         (tmp_path / rel).parent.mkdir(parents = True, exist_ok = True)

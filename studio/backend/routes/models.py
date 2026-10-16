@@ -5063,8 +5063,9 @@ def _main_variant_rank(rel_path: str, want: str) -> Optional[int]:
         return None
     key = _gguf_variant_key(rel_path)
     # A custom folder keys a second build at one quant by its family (#13926), which the loader also accepts.
+    want_family = gguf_variant_family(want) if want.lower().endswith(".gguf") else want
     if _variant_keys_match(key, want) or (
-        gguf_variant_family(rel_path).casefold() == want.strip().casefold()
+        gguf_variant_family(rel_path).casefold() == want_family.strip().casefold()
     ):
         return 0
     if is_qualified_gguf_variant_key(key) and "/" not in key.replace("\\", "/"):

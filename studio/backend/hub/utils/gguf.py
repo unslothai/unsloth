@@ -567,12 +567,22 @@ def gguf_variant_keys_by_checkpoint(
     keys: dict[str, str] = {}
     for key, members in _paths_by_variant_key(paths).items():
         identity_listed = listed[key] if listed and key in listed else _listed_identity(members)
+        colliding: dict[Optional[str], list[str]] = {}
+        for path in members:
+            identity = _checkpoint_identity(path)
+            family = gguf_variant_family(path.replace("\\", "/"))
+            if identity != identity_listed and family.casefold() == key.casefold():
+                colliding.setdefault(identity, []).append(path.replace("\\", "/"))
+        collision_keys = {
+            identity: min(identity_paths) for identity, identity_paths in colliding.items()
+        }
         for path in members:
             normalized = path.replace("\\", "/")
-            if _checkpoint_identity(path) == identity_listed:
+            identity = _checkpoint_identity(path)
+            if identity == identity_listed:
                 keys[path] = gguf_variant_key(normalized)
             else:
-                keys[path] = gguf_variant_family(normalized)
+                keys[path] = collision_keys.get(identity, gguf_variant_family(normalized))
     return keys
 
 
@@ -1457,7 +1467,8 @@ def list_local_gguf_variants(
     main_files: list[tuple[str, int]] = []
     has_vision = False
     # Match the cache dir of ANY H3 bundle repo: the aggregation runs over whichever mirror the user actually downloaded. A whole SEGMENT, not a substring: "models--unsloth--MiniMax-H3-GGUF-mirror" (and -v2, -i1) contains the marker while being an ordinary chat repo, and the denoiser filter then left it with no quants, which withholds the auto-switch entry so a downloaded model 404s.
-    segments = set(root.as_posix().lower().split("/"))
+    path_segments = root.as_posix().lower().split("/")
+    segments = set(path_segments)
     h3_bundle_repo = next(
         (r for r in _H3_BUNDLE_REPOS if f"models--{r.replace('/', '--')}" in segments), None
     )
@@ -1498,7 +1509,12 @@ def list_local_gguf_variants(
     # Outside the HF cache no remote listing has to agree with these keys, so builds sharing a quant (five NVFP4 builds in one custom folder, #13926) each keep a row instead of all but the first being hidden. The first keeps the bare quant, so a pin on it still names the same file.
     keys = (
         None
-        if any(segment.startswith("models--") for segment in segments)
+        if any(
+            segment.startswith("models--")
+            and index + 2 < len(path_segments)
+            and path_segments[index + 1] == "snapshots"
+            for index, segment in enumerate(path_segments)
+        )
         else gguf_variant_keys_by_checkpoint(rel for rel, _size in main_files)
     )
     variants = [
