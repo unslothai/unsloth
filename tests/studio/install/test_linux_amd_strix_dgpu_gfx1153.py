@@ -624,7 +624,9 @@ def test_setup_sh_name_inference_keeps_the_covered_peer_guard(mkt, lspci, expect
     from test_rdna1_unsupported_message_8529 import _SETUP_SH, _sh_function_body
 
     src = _SETUP_SH.read_text(encoding = "utf-8")
-    start = src.index('        _setup_gfx=$(_setup_supported_gfx_from_name "$_setup_mkt") || _setup_gfx=""')
+    start = src.index(
+        '        _setup_gfx=$(_setup_supported_gfx_from_name "$_setup_mkt") || _setup_gfx=""'
+    )
     end_marker = '            [ -n "$_setup_k2_peer" ] || _setup_gfx=gfx1153\n        fi\n'
     end = src.index(end_marker, start) + len(end_marker)
     bin_dir = tmp_path / "bin"
