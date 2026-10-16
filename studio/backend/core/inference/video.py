@@ -1629,7 +1629,6 @@ def _video_repo_aliases(repo_id: Optional[str]) -> tuple[str, ...]:
 def _video_fetch_key(repo_id: Optional[str]) -> str:
     """The key ``_VideoLoadingState.fetch_repos`` records a pair's fetch choice under: the upstream id, lowercased."""
     from .diffusion_families import canonical_base
-
     return canonical_base(repo_id).strip().lower()
 
 
@@ -6531,9 +6530,7 @@ class VideoBackend:
                 key = _video_fetch_key(rid)
                 reading.setdefault(
                     key,
-                    fetch_repos.get(key)
-                    or _video_fetch_repo(rid, checkpoint = is_checkpoint)
-                    or rid,
+                    fetch_repos.get(key) or _video_fetch_repo(rid, checkpoint = is_checkpoint) or rid,
                 )
         downloaded = sum(self._cache_bytes(rid) for rid in dict.fromkeys(reading.values()))
         expected = loading.expected_bytes
@@ -9634,9 +9631,7 @@ class VideoBackend:
 
         return Path(
             hf_hub_download_with_xet_fallback(
-                _video_fetch_repo(
-                    repo_id, hf_token, files = (gguf_filename or "",), checkpoint = True
-                ),
+                _video_fetch_repo(repo_id, hf_token, files = (gguf_filename or "",), checkpoint = True),
                 gguf_filename or "",
                 hf_token,
                 reuse_other_cache_root = True,
