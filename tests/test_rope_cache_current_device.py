@@ -218,3 +218,53 @@ def test_gemma_builds_only_the_requested_device():
     assert rope.multi_gpu_cos_cached[3].shape[0] == 73728
     # Gemma keeps its cache in float32 whatever the input dtype.
     assert rope.multi_gpu_cos_cached[3].dtype == torch.float32
+
+
+def test_granite_decode_reads_rows_past_max_seq_length():
+    # GraniteModel_fast_forward_inference indexes the cache it fetches once per step at the decode
+    # position, which runs past max_seq_length; the eager cache held max_position_embeddings rows.
+    tree = ast.parse((REPO_ROOT / "unsloth" / "models" / "granite.py").read_text(encoding = "utf-8"))
+    fn = next(
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "GraniteModel_fast_forward_inference"
+    )
+    call = next(
+        n
+        for n in ast.walk(fn)
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Attribute)
+        and n.func.attr == "get_cached"
+    )
+    max_seq_length, seq_len, q_len = 32768, 32790, 1
+    rows = eval(
+        compile(ast.Expression(call.args[0]), "granite.py", "eval"),
+        {"max": max},
+        {
+            "self": types.SimpleNamespace(max_seq_length = max_seq_length),
+            "seq_len": seq_len,
+            "q_len": q_len,
+        },
+    )
+    rope = _llama(1 << 17)
+    # Prefill of a 32760 token prompt through LlamaModel_fast_forward.
+    rope.extend_rope_embedding(
+        _x(0), 1 << 17, materialize_len = max(32760, max_seq_length)
+    )
+    cos, sin = rope.get_cached(rows, 0)
+    assert cos.shape[0] > seq_len
+    ref_cos, _ = _reference(cos.shape[0])
+    assert torch.equal(cos[seq_len], ref_cos[seq_len])
+
+
+def test_covered_reads_still_rebuild_a_device_left_stale_by_growth():
+    rope = _llama(1 << 17)
+    rope.get_cached(10, 1)
+    rope.extend_rope_embedding(_x(0, torch.float16), 50000)
+    # Device 1 already holds 32768 rows covering 10, but growth changed the dtype.
+    cos, _ = rope.get_cached(10, 1)
+    assert cos.dtype == torch.float16 and cos.shape[0] == 57344
+    ref_cos, _ = _reference(57344, torch.float16)
+    assert torch.equal(cos, ref_cos)
+    rope.extend_rope_embedding(_x(1, torch.float16), 11)
+    assert rope.multi_gpu_cos_cached[1] is cos

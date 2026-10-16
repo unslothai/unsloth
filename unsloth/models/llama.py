@@ -2121,6 +2121,8 @@ class _PerDeviceRopeCache:
         # Bumped whenever the eager code rebuilt every device (growth), so stale devices rebuild.
         self._rope_cache_version = 0
         self._rope_cache_versions = [None] * DEVICE_COUNT
+        # Rows each device can serve without bookkeeping; reset on growth. Read per layer per decode step.
+        self._rope_rows_ready = [0] * DEVICE_COUNT
         # Never fewer rows than the eager cache started with, so those positions stay valid.
         self._rope_cache_floor = self.current_rope_size
         self._rope_cache_needed = self.current_rope_size
@@ -2152,12 +2154,14 @@ class _PerDeviceRopeCache:
             device_index = get_current_device()
         if self._rope_cache_stale(self.multi_gpu_cos_cached[device_index], device_index):
             self._build_rope_cache(device_index)
+            self._rope_rows_ready[device_index] = self.multi_gpu_cos_cached[device_index].shape[0]
         return device_index
 
     def _grow_rope_cache(self, seq_len, dtype):
         self.current_rope_size = seq_len
         self._rope_cache_dtype = dtype
         self._rope_cache_version += 1
+        self._rope_rows_ready = [0] * DEVICE_COUNT
 
     def _need_rope_rows(self, seq_len):
         if seq_len > self._rope_cache_needed:
@@ -2187,6 +2191,8 @@ class _PerDeviceRopeCache:
         device_index = None,
     ):
         if seq_len is not None:
+            if device_index is not None and seq_len <= self._rope_rows_ready[device_index]:
+                return self.multi_gpu_cos_cached[device_index], self.multi_gpu_sin_cached[device_index]
             self._need_rope_rows(seq_len)
         device_index = self._ensure_rope_cache(device_index)
         return self.multi_gpu_cos_cached[device_index], self.multi_gpu_sin_cached[device_index]
@@ -2199,7 +2205,12 @@ class _PerDeviceRopeCache:
     ):
         # seq_len moves current_rope_size and the dtype as before; materialize_len (default seq_len)
         # is how many rows x's device needs now.
-        self._need_rope_rows(seq_len if materialize_len is None else materialize_len)
+        rows = seq_len if materialize_len is None else materialize_len
+        if seq_len <= self.current_rope_size:
+            device_index = x.device.index
+            if device_index is not None and rows <= self._rope_rows_ready[device_index]:
+                return
+        self._need_rope_rows(rows)
         if seq_len > self.current_rope_size:
             self._grow_rope_cache(_round_rope_size(seq_len), x.dtype)
         self._ensure_rope_cache(x.device.index)
