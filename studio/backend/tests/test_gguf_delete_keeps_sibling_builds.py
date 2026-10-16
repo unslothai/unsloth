@@ -152,6 +152,42 @@ def test_direct_file_reads_sibling_context_from_the_sibling_file(tmp_path, monke
     assert set(reads) == {tmp_path / name for name in names}
 
 
+def test_ready_sibling_keeps_its_context_when_the_other_build_is_partial(tmp_path, monkeypatch):
+    import asyncio
+
+    from routes import models as models_route
+
+    partial = "alpha-Q4_K_M-00001-of-00002.gguf"
+    ready = "beta-Q4_K_M.gguf"
+    for name in (partial, ready):
+        (tmp_path / name).write_bytes(b"x")
+    contexts = {partial: 4096, ready: 8192}
+    reads = []
+
+    async def read_context(model, _is_local):
+        source = Path(model)
+        reads.append(source)
+        return contexts.get(source.name, 1024)
+
+    monkeypatch.setattr(models_route, "_read_native_context_length_bounded", read_context)
+    response = asyncio.run(
+        models_route.get_gguf_variants(
+            repo_id = str(tmp_path),
+            prefer_local_cache = True,
+            hf_token = None,
+            hf_token_header = None,
+            current_subject = "test-user",
+            via_api_key = False,
+        )
+    )
+
+    rows = {variant.filename: variant for variant in response.variants}
+    assert rows[partial].downloaded is False
+    assert rows[ready].downloaded is True
+    assert rows[ready].context_length == contexts[ready]
+    assert set(reads) == {tmp_path, tmp_path / ready}
+
+
 def test_a_bare_named_sibling_cannot_collide_with_the_legacy_quant_key(tmp_path):
     import asyncio
 
