@@ -176,12 +176,12 @@ export const BUDGET = {
   // 95), with no single import doing it: Deep research under Tools in the + menu (#13959) took main over, and
   // the connection name and provider menu order (#13964) and the attachment card polish (#13970) add the rest.
   // Raised by that growth so main's margin stays where it was.
-  // The Hub fit filter sizing safetensors rows the way transformers loads them adds 602 B raw / 284 B transfer
-  // (6,791,768 -> 6,792,370 B raw, 2,037,833 -> 2,038,117 B transfer against 23bbee09b1, one machine and build,
+  // The Hub fit filter sizing safetensors rows the way transformers loads them adds 600 B raw / 302 B transfer
+  // (6,791,768 -> 6,792,368 B raw, 2,037,833 -> 2,038,135 B transfer against 23bbee09b1, one machine and build,
   // Node 26, chunk count unchanged at 95). A synchronous predicate in a module already in the startup set, so
   // nothing to lazy-load; raised by that growth.
-  transferBytes: 2_042_877,
-  rawBytes: 6_792_530,
+  transferBytes: 2_042_895,
+  rawBytes: 6_792_528,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

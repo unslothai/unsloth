@@ -245,9 +245,9 @@ function fitsTransformersLoad(
   const fits = (requiredGb: number, budgetGb: number) =>
     checkVramFit(requiredGb, budgetGb) !== "exceeds";
   const bnbGb = estimateLoadingVram(model.totalParams, "qlora");
-  const storedGb = model.estimatedSizeBytes
-    ? model.estimatedSizeBytes / 1024 ** 3 + LOADING_OVERHEAD_GB
-    : bnbGb;
+  const storedBytes =
+    model.estimatedSizeBytes ?? estimateQuantBytes(model.totalParams);
+  const storedGb = storedBytes / 1024 ** 3 + LOADING_OVERHEAD_GB;
   if (
     quant &&
     fits(storedGb, gpu.memoryTotalGb + (quant === "bitsandbytes" ? swapGb : 0))

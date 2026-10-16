@@ -109,6 +109,8 @@ test("a safetensors row on a discrete GPU is sized like its badge, with RAM only
   assert.equal(hfModelFitsDevice(prequant("bitsandbytes", 40e9), cuda), true);
   assert.equal(hfModelFitsDevice(prequant("compressed-tensors", 100e9), cuda), true);
   assert.equal(hfModelFitsDevice(prequant("fp8", 100e9), cuda), false);
+  // With no byte size, a packed checkpoint is sized as the smallest quant, not the bnb rebuild.
+  assert.equal(hfModelFitsDevice({ ...row("org/m-32B", 32e9), quantMethod: "gptq" }, xpu), true);
   // Host pools, MLX ids, Images / Video rows and GGUF keep the quant rule.
   assert.equal(hfModelFitsDevice(row("org/m-32B", 32e9), xpu, { hostPooledMemory: true }), true);
   assert.equal(hfModelFitsDevice(row("mlx-community/m-32B", 32e9), xpu), true);
