@@ -2,6 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
+import type { VoiceOrbState } from "@/features/chat/voice/orb-state";
+import {
+  VOICE_DEFAULT_STT_MODEL,
+  migrateVoiceTtsModel,
+} from "@/features/chat/voice/voice-models";
 import { forgetThreadReads } from "../api/thread-read-cache.ts";
 import type { ImageDisclosure } from "../api/mcp-image";
 import {
@@ -175,6 +180,9 @@ export type PermissionMode = "ask" | "auto" | "off" | "full";
 export type SandboxLevel = "high" | "low";
 export const CHAT_WEB_FETCH_TOOLS_ENABLED_KEY =
   "unsloth_chat_web_fetch_tools_enabled";
+const CHAT_VOICE_MODEL_ID_KEY = "unsloth_chat_voice_model_id";
+const CHAT_VOICE_SAVED_ID_KEY = "unsloth_chat_voice_saved_id";
+const CHAT_STT_MODEL_ID_KEY = "unsloth_chat_stt_model_id";
 export const CHAT_RAG_SOURCE_KEY = "unsloth_chat_rag_source";
 export const CHAT_RAG_MODE_KEY = "unsloth_chat_rag_mode";
 export const CHAT_RAG_TOP_K_KEY = "unsloth_chat_rag_top_k";
@@ -2021,6 +2029,7 @@ function saveString(key: string, value: string): void {
   persistSetting(key, value);
 }
 
+
 // Canonicalises any backend value onto the Speculative Decoding modes; legacy backend-only
 // aliases map to their closest UI mode.
 export function normalizeSpeculativeType(
@@ -2677,11 +2686,65 @@ type ChatRuntimeStore = {
   // Expiry (ms) of the active native path token: the desktop host prunes file leases on a TTL,
   // so a reload prompts re-selection instead of reusing a dead token.
   activeNativePathExpiresAtMs: number | null;
+  /**
+   * Voice conversation mode state (set by the composer voice control).
+   * - "off"         — inactive
+   * - "configuring" — armed, voice picker visible, loop NOT started
+   * - "active"      — loop running (mic auto-start enabled)
+   * Not persisted — resets to "off" on page load.
+   */
+  voiceMode: "off" | "configuring" | "active";
+  /** The audio.cpp voice the loop speaks with. Persisted. */
+  selectedVoiceModelId: string;
+  /** A saved Audio voice for a voice that can clone; "" is the model's own. Persisted. */
+  selectedVoiceId: string;
+  /** The transcription model the loop listens with. Persisted. */
+  selectedSttModelId: string;
+  /** True while the voice slot (TTS) is loading, so the orb can show a loading
+   *  state instead of appearing ready to listen. Not persisted. */
+  voiceSlotLoading: boolean;
+  /** True only when the backend voice slot is actually loaded with the selected
+   *  voice (synced from /voice/status), so the top-bar speak icon goes green.
+   *  Distinct from a mere selection, which persists but doesn't load the slot.
+   *  Not persisted. */
+  voiceSlotLoaded: boolean;
+  /** True while a batch STT engine is turning an utterance into text, so the orb
+   *  shows a processing state instead of appearing idle. The streaming engine the
+   *  loop runs on today never sets it; it is the hook a batch engine needs. Not
+   *  persisted. */
+  voiceTranscribing: boolean;
+  /** True while the mic is actively hearing your voice (VAD above the floor), so
+   *  the orb shows a distinct "hearing you" colour -- immediate feedback that your
+   *  speech is being captured. Not persisted. */
+  voiceHearing: boolean;
+  /** Derived orb state written by the voice control; consumed by VoiceOrb. The
+   *  union lives with deriveOrbState, which is what produces every value here. */
+  voiceOrbState: VoiceOrbState | null;
+  /** When voice mode is active, whether the full-screen orb is minimized so the
+   *  chat is visible while speech-to-speech keeps running. Not persisted. */
+  voiceOrbCollapsed: boolean;
+  /** Reloads the backend voice slot if a voice is selected but the slot is
+   *  unloaded (after a remount, auth bounce, or backend relaunch). Set by
+   *  ChatPage; called by the TTS player to self-heal a 400 (slot gone). Resolves
+   *  true once a matching slot is loaded. Null until ChatPage mounts. Not
+   *  persisted. */
+  ensureVoiceSlotLoaded: (() => Promise<boolean>) | null;
+  setEnsureVoiceSlotLoaded: (fn: (() => Promise<boolean>) | null) => void;
   hydratePersistedSettings: () => Promise<void>;
   beginModelLoading: (phase?: ModelLifecyclePhase) => ModelLifecycleLease | null;
   endModelLoading: (lease: ModelLifecycleLease) => void;
   setLoadingModelPick: (pick: LoadingModelPick | null) => void;
   clearLoadingModelPick: (expected: LoadingModelPick) => void;
+  setVoiceMode: (mode: "off" | "configuring" | "active") => void;
+  setSelectedVoiceModelId: (id: string) => void;
+  setSelectedVoiceId: (id: string) => void;
+  setSelectedSttModelId: (id: string) => void;
+  setVoiceSlotLoading: (loading: boolean) => void;
+  setVoiceSlotLoaded: (loaded: boolean) => void;
+  setVoiceTranscribing: (transcribing: boolean) => void;
+  setVoiceHearing: (hearing: boolean) => void;
+  setVoiceOrbState: (state: VoiceOrbState | null) => void;
+  setVoiceOrbCollapsed: (collapsed: boolean) => void;
   setModelRequiresTrustRemoteCode: (required: boolean) => void;
   setParams: (
     params: InferenceParams,
@@ -4476,6 +4539,18 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   activeLoadId: null,
   activeNativePathToken: null,
   activeNativePathExpiresAtMs: null,
+  voiceMode: "off" as const,
+  // An Orpheus pick from the llama-server voice slot falls back to the default voice.
+  selectedVoiceModelId: migrateVoiceTtsModel(loadString(CHAT_VOICE_MODEL_ID_KEY, "")),
+  selectedVoiceId: loadString(CHAT_VOICE_SAVED_ID_KEY, ""),
+  selectedSttModelId: loadString(CHAT_STT_MODEL_ID_KEY, "") || VOICE_DEFAULT_STT_MODEL,
+  voiceSlotLoading: false,
+  voiceSlotLoaded: false,
+  voiceTranscribing: false,
+  voiceHearing: false,
+  voiceOrbState: null,
+  voiceOrbCollapsed: false,
+  ensureVoiceSlotLoaded: null,
   hydratePersistedSettings: async () => {
     if (get().settingsHydrated) {
       return;
@@ -4690,6 +4765,36 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       }
       return { loadingModelPick: null };
     }),
+  setVoiceMode: (voiceMode) =>
+    // Leaving voice mode always resets the minimized/collapsed orb view so the
+    // next session starts expanded, and clears any lingering "hearing" state.
+    set(
+      voiceMode === "off"
+        ? { voiceMode, voiceOrbCollapsed: false, voiceHearing: false }
+        : { voiceMode },
+    ),
+  setVoiceHearing: (voiceHearing) => set({ voiceHearing }),
+  setVoiceOrbState: (voiceOrbState) => set({ voiceOrbState }),
+  setVoiceOrbCollapsed: (voiceOrbCollapsed) => set({ voiceOrbCollapsed }),
+  setEnsureVoiceSlotLoaded: (ensureVoiceSlotLoaded) => set({ ensureVoiceSlotLoaded }),
+  setSelectedVoiceModelId: (selectedVoiceModelId) =>
+    set(() => {
+      saveString(CHAT_VOICE_MODEL_ID_KEY, selectedVoiceModelId);
+      return { selectedVoiceModelId };
+    }),
+  setSelectedVoiceId: (selectedVoiceId) =>
+    set(() => {
+      saveString(CHAT_VOICE_SAVED_ID_KEY, selectedVoiceId);
+      return { selectedVoiceId };
+    }),
+  setSelectedSttModelId: (selectedSttModelId) =>
+    set(() => {
+      saveString(CHAT_STT_MODEL_ID_KEY, selectedSttModelId);
+      return { selectedSttModelId };
+    }),
+  setVoiceSlotLoading: (voiceSlotLoading) => set({ voiceSlotLoading }),
+  setVoiceSlotLoaded: (voiceSlotLoaded) => set({ voiceSlotLoaded }),
+  setVoiceTranscribing: (voiceTranscribing) => set({ voiceTranscribing }),
   setModelRequiresTrustRemoteCode: (modelRequiresTrustRemoteCode) =>
     set({ modelRequiresTrustRemoteCode }),
   setParams: (params, options) => {

@@ -219,12 +219,15 @@ export function createConfiguredUtterance(
   return utterance;
 }
 
-/** Generate speech via the loaded TTS audio model; returns a WAV data URL. */
+/** Generate speech via the loaded TTS audio model; returns a WAV data URL. Voice mode
+ *  names its own model and voice, read aloud uses whatever is loaded and the setting. */
 export async function generateStudioTtsAudio(
   text: string,
   signal?: AbortSignal,
+  options?: { model: string; voiceId: string },
 ): Promise<string> {
-  const { ttsStudioVoiceId } = useVoiceSettingsStore.getState();
+  const ttsStudioVoiceId =
+    options?.voiceId ?? useVoiceSettingsStore.getState().ttsStudioVoiceId;
   const response = await authFetch("/api/inference/audio/generate", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -234,6 +237,7 @@ export async function generateStudioTtsAudio(
       // Read aloud is not a Speak run, so it stays out of Speak's history.
       persist: false,
       max_tokens: TTS_MAX_TOKENS,
+      ...(options ? { model: options.model } : {}),
       ...(ttsStudioVoiceId ? { voice_id: ttsStudioVoiceId } : {}),
     }),
     signal,
@@ -250,7 +254,7 @@ export async function generateStudioTtsAudio(
     }
     // Only this 404 is about the voice; another one (a model hidden from the account) must not
     // drop the user's choice.
-    if (ttsStudioVoiceId && /saved voice no longer exists/i.test(detail)) {
+    if (!options && ttsStudioVoiceId && /saved voice no longer exists/i.test(detail)) {
       useVoiceSettingsStore.getState().setTtsStudioVoiceId("");
       throw new Error(
         "The saved voice for read aloud no longer exists. Read aloud now uses the model's own voice.",

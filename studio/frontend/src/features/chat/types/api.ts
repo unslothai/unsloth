@@ -60,6 +60,8 @@ export interface LoadModelRequest {
   /** Start a fresh runtime even when the active settings already match. */
   force_reload?: boolean;
   alongside?: boolean;
+  /** Voice mode's speaking model: kept next to the chat model even with multi-model off. */
+  voice?: boolean;
   /** Stop any chats still generating instead of getting a 409: a load replaces the single
    *  llama-server they all decode on. Set only after the user confirms. */
   force_cancel_active?: boolean;

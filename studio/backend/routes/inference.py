@@ -18222,6 +18222,11 @@ async def load_model_gated(
     from core.inference.llama_cpp import GpuMemoryShortError
     from core.inference.llama_keepwarm import inference_lifecycle_gate, model_load_gate
 
+    if request.voice and not await asyncio.to_thread(_is_voice_model, request):
+        raise HTTPException(
+            status_code = 400,
+            detail = "Only an audio.cpp speech or transcription model can load as voice mode's voice.",
+        )
     extra = None
     evicted: list[str] = []
     attempt = _begin_load_attempt(request, current_subject)
@@ -18295,6 +18300,12 @@ async def load_model_gated(
                             if exc.capped:
                                 request = request.model_copy(update = {"force_alongside": True})
                                 continue
+                            if request.voice:
+                                # Voice mode speaks for the chat model, so it never replaces it.
+                                raise HTTPException(
+                                    status_code = 409,
+                                    detail = "Not enough memory to keep the voice loaded next to the chat model.",
+                                )
                             # Fits nowhere beside the others: replace the active model, as before,
                             # unless its chats refuse that, checked before anything else changes.
                             routed_slot.set(None)
@@ -18398,6 +18409,17 @@ def _primary_model_label() -> Optional[str]:
     return getattr(_peek_inference_backend(), "active_model_name", None)
 
 
+def _is_voice_model(request: LoadRequest) -> bool:
+    """``voice`` keeps a slot with multi-model off, so it is honoured for voice mode's models only."""
+    from core.inference.audio_cpp_models import resolve
+
+    try:
+        model = resolve(request.model_path, request.gguf_variant, request.hf_token)
+    except Exception:  # noqa: BLE001 - unresolvable is not a voice
+        return False
+    return model is not None and not model.unsupported and model.task in ("tts", "asr")
+
+
 async def _select_load_slot(request: LoadRequest) -> Optional[_ExtraSlot]:
     """The extra slot already serving the model, or a new one for ``alongside``. None is the primary."""
     from core.inference.npu_backend import is_npu_model_path
@@ -18423,8 +18445,9 @@ async def _select_load_slot(request: LoadRequest) -> Optional[_ExtraSlot]:
     if not await asyncio.to_thread(get_multi_model_enabled):
         if model_slots.slots:
             await asyncio.to_thread(model_slots.unload_idle)
-        return None
-    if not request.alongside:
+        if not request.voice:
+            return None
+    if not (request.alongside or request.voice):
         return None
     orchestrator = _peek_inference_backend()
     if getattr(orchestrator, "_managed_engine", None) is not None:
@@ -18436,6 +18459,7 @@ async def _select_load_slot(request: LoadRequest) -> Optional[_ExtraSlot]:
         await asyncio.to_thread(LlamaCppBackend),
         await asyncio.to_thread(InferenceOrchestrator),
         current_account_id(),
+        voice = request.voice,
     )
     slot.llama._owns_pidfile = False
     register_serving_backend(slot.llama)
