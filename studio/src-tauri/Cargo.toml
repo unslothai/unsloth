@@ -29,6 +29,9 @@ semver = "1"
 hmac = "0.13"
 sha2 = "0.11"
 reqwest = { version = "0.13", features = ["json"] }
+# The system proxy browser-panel pages go through (browser_proxy.rs); reqwest already builds both.
+hyper-util = { version = "0.1.20", features = ["client-proxy", "client-proxy-system"] }
+http = "1"
 tokio = { version = "1", features = ["full"] }
 log = "0.4"
 simplelog = "0.12"

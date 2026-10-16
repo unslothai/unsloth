@@ -5690,6 +5690,8 @@ dependencies = [
  "glib",
  "gtk",
  "hmac",
+ "http",
+ "hyper-util",
  "libc",
  "log",
  "minisign-verify 0.3.0",
