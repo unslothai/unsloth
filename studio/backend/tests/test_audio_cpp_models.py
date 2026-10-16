@@ -3092,3 +3092,14 @@ def test_audio_page_local_filename_pick_uses_audio_cpp(hub, tmp_path, family, fi
     assert config.audio_cpp.family == family
     assert config.path == str(weights)
     assert config.is_gguf is False  # audio.cpp, never llama-server
+
+
+def test_filename_variant_matches_a_windows_local_primary():
+    filename = "breeze-tts-2-q8_0.gguf"
+    variant = AudioCppVariant(
+        "Q8_0",
+        (RepoFile(filename),),
+        rf"C:\models\breeze_tts\{filename}",
+    )
+
+    assert acm.match_variant((variant,), filename) is variant
