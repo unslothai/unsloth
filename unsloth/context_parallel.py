@@ -52,18 +52,16 @@ def _ring_sdpa_backends():
     cudnn = getattr(SDPBackend, "CUDNN_ATTENTION", None)
     op = getattr(torch.ops.aten, "_scaled_dot_product_cudnn_attention", None)
     if cudnn is not None and op is not None:
-        import importlib
-        for name in (
-            "torch.distributed.tensor.experimental._context_parallel._attention",
-            "torch.distributed.tensor.experimental._attention",
-        ):
+        try:
+            from torch.distributed.tensor.experimental._context_parallel import _attention
+        except ImportError:
             try:
-                handled = getattr(importlib.import_module(name), "custom_ops", None)
+                from torch.distributed.tensor.experimental import _attention
             except ImportError:
-                continue
-            if isinstance(handled, dict) and op.default in handled:
-                backends.append(cudnn)
-                break
+                _attention = None
+        handled = getattr(_attention, "custom_ops", None)
+        if isinstance(handled, dict) and op.default in handled:
+            backends.append(cudnn)
     return backends
 
 
