@@ -80,6 +80,32 @@ def test_a_custom_folder_lists_every_build_at_one_quant(tmp_path):
     assert listed == {"NVFP4": names[0], **{name[: -len(".gguf")]: name for name in names[1:]}}
     for quant, filename in listed.items():
         assert Path(_find_local_gguf_by_variant(str(folder), quant)).name == filename
+    # Every build is named, the bare-keyed first one too.
+    assert {v.display_label for v in variants} == {
+        f"NVFP4 · {name[: -len('.gguf')]}" for name in names
+    }
+
+
+def test_split_build_labels_leave_other_rows_alone(tmp_path):
+    for rel in ("model-Q6_K.gguf", "other-Q6_K.gguf", "distilled/model-Q6_K.gguf", "m-Q8_0.gguf"):
+        (tmp_path / rel).parent.mkdir(parents = True, exist_ok = True)
+        (tmp_path / rel).write_bytes(b"x" * 64)
+    labels = {v.filename: v.display_label for v in list_local_gguf_variants(str(tmp_path))[0]}
+    assert labels == {
+        "model-Q6_K.gguf": "Q6_K · model-Q6_K",
+        "other-Q6_K.gguf": "Q6_K · other-Q6_K",
+        # a directory already tells this checkpoint apart, and an unsplit quant needs no name
+        "distilled/model-Q6_K.gguf": "Q6_K · distilled",
+        "m-Q8_0.gguf": None,
+    }
+
+    # Two builds in one quant folder: the folder alone names neither.
+    quant_dir = tmp_path / "quant-dir" / "Q4_K_M"
+    quant_dir.mkdir(parents = True)
+    for name in ("a-Q4_K_M.gguf", "b-Q4_K_M.gguf"):
+        (quant_dir / name).write_bytes(b"x" * 64)
+    labels = {v.display_label for v in list_local_gguf_variants(str(quant_dir.parent))[0]}
+    assert labels == {"Q4_K_M · Q4_K_M/a-Q4_K_M", "Q4_K_M · Q4_K_M/b-Q4_K_M"}
 
 
 def test_quant_key_case_exposes_and_deletes_the_same_build(tmp_path):

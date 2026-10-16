@@ -1507,4 +1507,25 @@ def list_local_gguf_variants(
     ]
     variants.sort(key = lambda variant: -variant.size_bytes)
     _apply_gguf_display_labels(variants, directory, model_root)
+    if keys:
+        _label_split_builds(variants, keys)
     return variants, has_vision
+
+
+def _label_split_builds(variants: list[GgufVariantInfo], keys: dict[str, str]) -> None:
+    """Name every build of a quant that *keys* split into several rows by its file, the bare-keyed first one included, so none of them reads as the quant alone."""
+    split = {
+        variant.filename
+        for variant in variants
+        if keys.get(variant.filename, variant.quant) != gguf_variant_key(variant.filename)
+    }
+    split_tokens = {(quant_token_with_bpw(name) or "").lower() for name in split}
+    for variant in variants:
+        token = quant_token_with_bpw(variant.filename)
+        if token is None or token.lower() not in split_tokens:
+            continue
+        # A directory-qualified sibling keeps its directory label; only the split builds are renamed.
+        if variant.filename not in split and variant.quant.lower() != token.lower():
+            continue
+        scope = _variant_scope_label(variant.filename, with_stem = True)
+        variant.display_label = f"{extract_quant_token(variant.filename)} · {scope}"
