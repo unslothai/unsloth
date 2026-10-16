@@ -34,10 +34,7 @@ _FENCED: set[str] = set()
 
 
 class ActiveGeneration:
-    """Registers one in-flight generation for the duration of the block.
-
-    Each __enter__ mints its own handle, so overlapping uses never clobber.
-    """
+    """uses a unique handle so overlapping registrations cannot clobber each other."""
 
     __slots__ = (
         "thread_id",
@@ -74,8 +71,7 @@ class ActiveGeneration:
 
     def __enter__(self) -> "ActiveGeneration":
         with _LOCK:
-            # A durable supervisor registers before model loading starts and the route later enters its normal
-            # tracker with that same event and run, so borrow the outer registration.
+            # borrow the supervisor's pre-load registration when the route reuses its event and run.
             if self.run_id:
                 for entry in _ACTIVE.values():
                     if (
@@ -143,8 +139,7 @@ def snapshot(
     *,
     include_external: bool = True,
 ) -> list[dict[str, Any]]:
-    """In-flight generations, newest last; ``account_id`` None (all) is shutdown/arbiter only.
-    ``exclude`` leaves out the runs holding those cancel events."""
+    """in-flight generations, newest last; ``account_id=None`` is for shutdown or the arbiter."""
     with _LOCK:
         entries = _matching(account_id, exclude, only, include_external = include_external)
     entries.sort(key = lambda e: e["started_at"])
@@ -169,11 +164,7 @@ def active_thread_ids(
     *,
     include_external: bool = True,
 ) -> list[str]:
-    """Distinct conversation ids with a generation in flight, in start order.
-
-    A first turn that races persistence has no thread id yet: count() sees it,
-    this cannot name it.
-    """
+    """distinct conversation ids in start order; an unpersisted first turn cannot be named."""
     seen: list[str] = []
     for e in snapshot(account_id, exclude, only, include_external = include_external):
         tid = e["thread_id"]
@@ -195,7 +186,7 @@ def count(
 
 
 def foreign_count(account_id: str) -> int:
-    """Generations in flight for OTHER accounts, which a load or unload must not interrupt."""
+    """generations for other accounts that load and unload must not interrupt."""
     with _LOCK:
         return sum(
             1 for e in _ACTIVE.values() if e["account_id"] != account_id and not e["external"]
@@ -208,8 +199,7 @@ def cancel_all(
     *,
     include_external: bool = True,
 ) -> int:
-    """Signal in-flight generations to stop, returning the count. Request-driven callers must pass
-    ``account_id``; None means everyone and is for shutdown only."""
+    """request callers must pass ``account_id``; None cancels every account during shutdown."""
     with _LOCK:
         events = [
             e["event"] for e in _matching(account_id, exclude, include_external = include_external)
@@ -223,7 +213,7 @@ def cancel_all(
 
 
 def cancel_thread(thread_id: str, account_id: Optional[str] = None) -> int:
-    """Signal ``thread_id``'s generations; thread ids are client-chosen, so scope by account."""
+    """thread ids are client-chosen, so cancellation is scoped by account."""
     if not thread_id:
         return 0
     scope = account_id or current_account_id()
