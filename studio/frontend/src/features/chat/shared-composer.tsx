@@ -2620,7 +2620,15 @@ export function SharedComposer({
         className={
           ragEnabled && !ragDisabled ? "text-primary font-medium" : undefined
         }
-        onSelect={() => setRagEnabled(!ragEnabled)}
+        onSelect={() => {
+          // As in the main composer: a hidden files panel comes back rather than RAG turning off.
+          const { ragPanelHidden, setRagPanelHidden } = useChatRuntimeStore.getState();
+          if (ragEnabled && ragPanelHidden) {
+            setRagPanelHidden(false);
+            return;
+          }
+          setRagEnabled(!ragEnabled);
+        }}
       >
         <HugeiconsIcon icon={FileDatabaseIcon} strokeWidth={2} />
         Chat with files

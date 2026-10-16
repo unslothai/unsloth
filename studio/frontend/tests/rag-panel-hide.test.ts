@@ -23,6 +23,11 @@ test("turning RAG on, picking a source or switching chats shows the panel again"
   assert.match(store, /ragSource,\n\s*ragPanelHidden: false,/);
   assert.match(bar, /setRagPanelHidden\(false\);\n\s*\}, \[threadItemId\]\);/);
   assert.match(thread, /if \(ragEnabled && ragPanelHidden\) \{\n\s*setRagPanelHidden\(false\);\n\s*return;/);
+  // Compare's + menu too: the regular view stays mounted behind it.
+  assert.match(
+    readSrc("features/chat/shared-composer.tsx"),
+    /if \(ragEnabled && ragPanelHidden\) \{\n\s*setRagPanelHidden\(false\);\n\s*return;/,
+  );
 });
 
 test("header controls use the app's tooltip, not the browser's title", () => {
