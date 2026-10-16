@@ -689,3 +689,37 @@ def test_without_a_uuid_column_every_named_card_needs_a_row(host, monkeypatch):
     mask = f"{GPU0},{GPU1}"
     assert LlamaCppBackend._whole_gpu_mask_rows(mask, [], {0, 1}) == {0, 1}
     assert LlamaCppBackend._whole_gpu_mask_rows(mask, [], {0}) is None
+
+
+def test_a_failed_probe_keeps_a_newer_answer_from_another_caller(host, monkeypatch, calls):
+    host(TWO_SLICES, [38000], None)
+
+    def fails_after_a_peer_answers():
+        nvidia._store_mig_gpu_indices(frozenset({0}), nvidia.gpu_query._static_gen)
+        return None
+
+    monkeypatch.setattr(nvidia, "_query_mig_gpu_indices", fails_after_a_peer_answers)
+    assert nvidia.get_mig_gpu_indices() == {0}
+    assert nvidia._mig_indices_cache[2:] == (frozenset({0}), True)
+    assert nvidia.get_mig_gpu_indices_or_none() == {0}
+
+
+def test_unknown_mig_discovery_is_not_no_mig(host, monkeypatch, calls):
+    now = [1000.0]
+    monkeypatch.setattr(nvidia.time, "monotonic", lambda: now[0])
+    host(TWO_SLICES, [38000], None)
+    calls["list_fails"] = True
+    assert nvidia.get_mig_gpu_indices_or_none() is None
+    assert nvidia.get_mig_gpu_indices() == set()
+    calls["list_fails"] = False
+    now[0] += nvidia._MIG_FAILURE_RETRY_S
+    assert nvidia.get_mig_gpu_indices_or_none() == {0}
+    now[0] += 61
+    calls["list_empty"] = True
+    # The last answer still sizes polls, but discovery itself is unknown again.
+    assert nvidia.get_mig_gpu_indices() == {0}
+    assert nvidia.get_mig_gpu_indices_or_none() is None
+    calls["list_empty"] = False
+    nvidia.gpu_query.invalidate_static("test")
+    host([(GPU0, [])], [38000], None)
+    assert nvidia.get_mig_gpu_indices_or_none() == set()
