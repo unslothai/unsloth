@@ -230,13 +230,18 @@ def test_a_configuration_import_alone_needs_no_restart(monkeypatch):
     assert inference_worker._ensure_ssm_kernels([("acme/hybrid", "acme/hybrid")], queue) is True
 
 
+def _remote(checkpoint, auto_map):
+    from utils import ssm_runtime
+    return ssm_runtime.remote_code_modules(checkpoint, {"auto_map": auto_map})
+
+
 @pytest.mark.parametrize(
     "module",
     [
-        # transformers 5.x spells "-" and "." in the repo name out.
+        # 4.57+ / 5.x sanitize "-" and "." in the repo id, under the commit hash.
         "transformers_modules.nvidia.NVIDIA_hyphen_Nemotron_hyphen_Nano_hyphen_9B_hyphen_v2"
         ".0123abcd.modeling_nemotron_h",
-        # 4.x keeps them.
+        # Older 4.x kept them.
         "transformers_modules.nvidia.NVIDIA-Nemotron-Nano-9B-v2.0123abcd.modeling_nemotron_h",
     ],
 )
@@ -245,21 +250,86 @@ def test_an_imported_remote_code_modeling_module_needs_a_restart(monkeypatch, mo
 
     monkeypatch.setitem(sys.modules, module, SimpleNamespace())
     model = "nvidia/NVIDIA-Nemotron-Nano-9B-v2"
-    # Found by the checkpoint it came from, even with no model type resolved.
-    assert ssm_runtime.modeling_modules_needing_restart(set(), (model,)) == [module]
-    assert module in ssm_runtime.modeling_modules_needing_restart({"nemotron_h"})
-    monkeypatch.setattr(ssm_runtime, "provision_ssm_kernels", _fake_provision(["mamba_ssm"], set()))
+    remote = _remote(model, {"AutoModelForCausalLM": "modeling_nemotron_h.NemotronHForCausalLM"})
+    assert ssm_runtime.modeling_modules_needing_restart(set(), remote) == [module]
+    monkeypatch.setattr(
+        ssm_runtime,
+        "provision_ssm_kernels",
+        lambda probe, target, hf_token, **k: (
+            ssm_runtime.SsmKernels(True, True, True, probe, frozenset(), remote),
+            ["mamba_ssm"],
+        ),
+    )
     queue = _Queue()
     assert inference_worker._ensure_ssm_kernels([(model, model)], queue) is False
     assert queue[-1]["error_kind"] == inference_worker.SSM_RESTART_REQUIRED
 
 
-def test_another_remote_models_modules_are_not_a_reason_to_restart(monkeypatch):
+def test_any_auto_map_module_name_counts_not_just_modeling(monkeypatch, tmp_path):
+    # transformers loads whatever module auto_map names: `model.CustomForCausalLM` is `model`.
     from utils import ssm_runtime
 
-    other = "transformers_modules.acme.Some_hyphen_Chat.0123.modeling_chat"
-    monkeypatch.setitem(sys.modules, other, SimpleNamespace())
-    config = "transformers_modules.nvidia.Nemotron_hyphen_H.0123.configuration_nemotron_h"
-    monkeypatch.setitem(sys.modules, config, SimpleNamespace())
-    found = ssm_runtime.modeling_modules_needing_restart({"nemotron_h"}, ("nvidia/Nemotron-H",))
-    assert other not in found and config not in found
+    checkpoint = tmp_path / "custom-remote-checkpoint"
+    checkpoint.mkdir()
+    remote = _remote(str(checkpoint), {"AutoModelForCausalLM": "model.CustomForCausalLM"})
+    for name in (
+        # 5.x: local folder name, then a source-files hash.
+        "transformers_modules.custom_hyphen_remote_hyphen_checkpoint.abc123.model",
+        # 4.57: the local folder name alone.
+        "transformers_modules.custom_hyphen_remote_hyphen_checkpoint.model",
+    ):
+        monkeypatch.setitem(sys.modules, name, SimpleNamespace())
+        assert name in ssm_runtime.modeling_modules_needing_restart(set(), remote)
+
+
+def test_a_namesake_from_another_repo_does_not_match():
+    from utils import ssm_runtime
+
+    remote = _remote("Qwen/Qwen3-Next", {"AutoModelForCausalLM": "modeling_qwen.QwenForCausalLM"})
+    namesakes = [
+        "transformers_modules.other.Qwen3_hyphen_Next_hyphen_FineTune.0123.modeling_qwen",
+        "transformers_modules.Qwen.Qwen3_hyphen_Next_hyphen_FineTune.0123.modeling_qwen",
+        "transformers_modules.Qwen.Qwen3_hyphen_Next.0123.modeling_qwen_extra",
+        "transformers_modules.Qwen.Qwen3_hyphen_Next.0123.configuration_qwen",
+    ]
+    for name in namesakes:
+        assert not ssm_runtime._is_remote_code_module(name, remote), name
+    assert ssm_runtime._is_remote_code_module(
+        "transformers_modules.Qwen.Qwen3_hyphen_Next.0123.modeling_qwen", remote
+    )
+
+
+def test_code_in_another_repo_is_found_under_that_repo():
+    from utils import ssm_runtime
+
+    remote = _remote("acme/finetune", {"AutoModel": "nvidia/Base--model.Custom"})
+    assert ssm_runtime._is_remote_code_module("transformers_modules.nvidia.Base.0123.model", remote)
+    assert not ssm_runtime._is_remote_code_module(
+        "transformers_modules.acme.finetune.0123.model", remote
+    )
+
+
+def test_config_and_tokenizer_auto_map_entries_are_not_implementations():
+    remote = _remote(
+        "acme/hybrid",
+        {
+            "AutoConfig": "configuration_hybrid.HybridConfig",
+            "AutoTokenizer": ["tokenization_hybrid.HybridTokenizer", None],
+        },
+    )
+    assert remote == frozenset()
+
+
+def test_the_resolved_config_carries_its_remote_code(monkeypatch):
+    from utils import ssm_runtime
+
+    monkeypatch.setattr(
+        ssm_runtime,
+        "_resolved_model_config",
+        lambda target, token: {
+            "model_type": "nemotron_h",
+            "auto_map": {"AutoModelForCausalLM": "model.NemotronHForCausalLM"},
+        },
+    )
+    kernels = ssm_runtime.resolve_ssm_kernels("acme/hybrid", "acme/hybrid", None)
+    assert (("acme", "hybrid"), ("model",)) in kernels.remote_code

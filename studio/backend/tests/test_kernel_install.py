@@ -139,6 +139,15 @@ _COLAB = _env("2.11.0+cu130", "13.0")
 _COLAB_XFORMERS = f"{_PT}/cu130/xformers-0.0.35-py39-none-manylinux_2_28_x86_64.whl"
 
 
+@pytest.fixture(autouse = True)
+def _nothing_installed_and_online(monkeypatch):
+    # Tests that need an installed distribution say so; the host's own packages and offline
+    # switches must not decide them.
+    monkeypatch.setattr(kernel_install, "_installed_version", lambda distribution: None)
+    for name in ("UV_OFFLINE", "HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"):
+        monkeypatch.delenv(name, raising = False)
+
+
 @pytest.fixture
 def uv(monkeypatch):
     def use(available, outside_venv = False):
@@ -547,7 +556,11 @@ def test_install_kernels_without_gpu_installs_mamba_ssm_headless(uv, monkeypatch
     )
 
 
-def test_a_requested_kernel_skipped_without_a_gpu_is_not_a_silent_success(monkeypatch, capsys):
+@pytest.mark.parametrize("strict, code", [(False, 0), (True, 2)])
+def test_a_requested_kernel_skipped_without_a_gpu_is_listed_and_fails_only_with_strict(
+    monkeypatch, capsys, strict, code
+):
+    # 9f5b13325 and 4a6429a65 exit 0 here, and `set -e` install scripts rely on it.
     monkeypatch.delenv("UNSLOTH_INSTALL_KERNELS_WITHOUT_GPU", raising = False)
     monkeypatch.setattr(kernel_install, "probe_torch_wheel_env", lambda **kwargs: _COLAB)
     run = _Runner([], capability = "None")
@@ -557,11 +570,82 @@ def test_a_requested_kernel_skipped_without_a_gpu_is_not_a_silent_success(monkey
         "install_kernel",
         lambda name, env, **kwargs: real(name, env, run = run, exists = lambda url: True, **kwargs),
     )
-    assert kernel_install.main(["mamba_ssm"]) != 0
+    assert kernel_install.main(["mamba_ssm"] + (["--strict"] if strict else [])) == code
     assert run.installer_calls == []
     out = capsys.readouterr().out
     assert "--without-gpu" in out
     assert "not installed on this machine: mamba_ssm" in out
+
+
+@pytest.mark.parametrize(
+    "name, env, capability",
+    [
+        # A ROCm source build: no CUDA wheel resolves.
+        ("causal_conv1d", None, "9 0"),
+        # A GPU-hidden builder with an earlier install.
+        ("mamba_ssm", _COLAB, "None"),
+        ("flash_attn", _COLAB, "None"),
+    ],
+)
+def test_an_already_working_kernel_is_success_before_any_skip(
+    monkeypatch, capsys, name, env, capability
+):
+    monkeypatch.setattr(
+        kernel_install,
+        "_installed_version",
+        lambda distribution: "1.0" if distribution == kernel_install.KERNELS[name][0] else None,
+    )
+    monkeypatch.setattr(kernel_install, "probe_torch_wheel_env", lambda **kwargs: env)
+    run = _Runner([True], capability = capability)
+    real = kernel_install.install_kernel
+    monkeypatch.setattr(
+        kernel_install,
+        "install_kernel",
+        lambda n, e, **kwargs: real(n, e, run = run, exists = lambda url: True, **kwargs),
+    )
+    assert kernel_install.main([name, "--strict"]) == 0
+    assert run.installer_calls == []
+    assert not any("get_device_capability" in " ".join(c) for c in run.calls)
+    out = capsys.readouterr().out
+    assert f"{name} already installed and loads" in out
+    assert "not installed on this machine" not in out
+
+
+def test_an_installed_kernel_that_does_not_load_still_installs(uv, monkeypatch):
+    uv(False)
+    run = _Runner([False, False, True], capability = "9 0")
+    monkeypatch.setattr(kernel_install, "_installed_version", lambda distribution: "1.0")
+    assert (
+        kernel_install.install_kernel("causal_conv1d", _COLAB, run = run, exists = lambda url: True)
+        == 0
+    )
+    assert run.installer_calls
+
+
+@pytest.mark.parametrize("variable", ["UV_OFFLINE", "HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"])
+def test_the_cli_installs_nothing_offline(monkeypatch, capsys, variable):
+    monkeypatch.setenv(variable, "1")
+    run = _Runner([], capability = "9 0")
+    url_checks = []
+    assert (
+        kernel_install.install_kernel(
+            "causal_conv1d", _COLAB, run = run, exists = lambda url: url_checks.append(url)
+        )
+        == 0
+    )
+    assert run.calls == [] and url_checks == []
+    assert "offline" in capsys.readouterr().out
+
+
+def test_offline_an_already_working_kernel_still_succeeds(monkeypatch, capsys):
+    monkeypatch.setenv("UV_OFFLINE", "1")
+    monkeypatch.setattr(kernel_install, "_installed_version", lambda distribution: "1.0")
+    run = _Runner([True], capability = "9 0")
+    assert (
+        kernel_install.install_kernel("causal_conv1d", _COLAB, run = run, exists = lambda url: True)
+        == 0
+    )
+    assert "already installed and loads" in capsys.readouterr().out
 
 
 def test_the_default_run_lists_skipped_kernels_and_keeps_its_exit_code(monkeypatch, capsys):
@@ -825,3 +909,29 @@ def test_the_hip_probe_reads_torch_version_hip():
         return SimpleNamespace(returncode = 0, stdout = "True\n")
 
     assert kernel_install._torch_is_hip(run) is True
+
+
+def test_install_wheel_never_falls_back_to_pip_under_uv_offline(monkeypatch):
+    # uv refuses the index under UV_OFFLINE; pip has no such switch and would reach it.
+    from utils import wheel_utils
+
+    monkeypatch.setattr(wheel_utils.shutil, "which", lambda name: "/usr/bin/uv")
+    calls = []
+
+    def run(cmd, **kwargs):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 1, stdout = "offline")
+
+    monkeypatch.setenv("UV_OFFLINE", "1")
+    attempts = wheel_utils.install_wheel(
+        "https://example.invalid/k.whl", python_executable = sys.executable, use_uv = True, run = run
+    )
+    assert [installer for installer, _ in attempts] == ["uv"]
+    assert all(cmd[0] == "uv" for cmd in calls)
+
+    monkeypatch.delenv("UV_OFFLINE")
+    calls.clear()
+    attempts = wheel_utils.install_wheel(
+        "https://example.invalid/k.whl", python_executable = sys.executable, use_uv = True, run = run
+    )
+    assert [installer for installer, _ in attempts] == ["uv", "pip"]

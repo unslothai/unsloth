@@ -31,10 +31,45 @@ class _ClosedQueue:
 
 
 def test_a_nemotron_h_export_provisions_kernels_before_the_backend_import(monkeypatch, tmp_path):
+    order = [step for step in _run_export(monkeypatch, tmp_path, {}) if step[0] != "window"]
+    assert order[0] == ("provision", True, True)
+    assert order.index(("provision", True, True)) < order.index(("import",))
+    assert ("load",) in order
+
+
+@pytest.mark.parametrize("device_backend", ["cpu", "mlx"])
+def test_a_cpu_or_mlx_export_makes_no_extra_connectivity_probe(
+    monkeypatch, tmp_path, device_backend
+):
+    # 9f5b13325 entered no "installing SSM kernels" window; an export that installs nothing must not.
+    order = _run_export(monkeypatch, tmp_path, {"device_backend": device_backend})
+    assert ("window", "installing SSM kernels") not in order
+    assert not any(step[0] == "provision" for step in order)
+    assert ("load",) in order
+
+
+def test_a_cuda_export_still_opens_the_window_to_install(monkeypatch, tmp_path):
+    order = _run_export(monkeypatch, tmp_path, {"device_backend": "cuda"})
+    assert order.index(("window", "installing SSM kernels")) < order.index(
+        ("provision", True, True)
+    )
+
+
+def _run_export(monkeypatch, tmp_path, extra_config):
+    import contextlib
+
+    monkeypatch.setattr(export_worker.sys, "platform", "linux")
     checkpoint = tmp_path / "nemotron-export"
     checkpoint.mkdir()
     (checkpoint / "config.json").write_text(json.dumps({"model_type": "nemotron_h"}))
     order: list = []
+
+    @contextlib.contextmanager
+    def _window(step = None):
+        order.append(("window", step))
+        yield
+
+    monkeypatch.setattr(export_worker, "_offline_window_if_unreachable", _window)
 
     def _ensure(probe, **kwargs):
         order.append(("provision", kwargs["is_ssm"], kwargs["mamba_ssm_required"]))
@@ -76,11 +111,9 @@ def test_a_nemotron_h_export_provisions_kernels_before_the_backend_import(monkey
     export_worker.run_export_process(
         cmd_queue = _ClosedQueue(),
         resp_queue = queue,
-        config = {"checkpoint_path": str(checkpoint), "allow_ambient": True},
+        config = {"checkpoint_path": str(checkpoint), "allow_ambient": True, **extra_config},
     )
-    assert order[0] == ("provision", True, True)
-    assert order.index(("provision", True, True)) < order.index(("import",))
-    assert ("load",) in order
+    return order
 
 
 def test_a_failed_required_install_stops_the_export_before_the_import(monkeypatch, tmp_path):

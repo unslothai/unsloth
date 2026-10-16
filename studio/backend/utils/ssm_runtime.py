@@ -99,6 +99,9 @@ class SsmKernels(NamedTuple):
     mamba_ssm_required: bool
     probe: str
     model_types: frozenset[str] = frozenset()
+    # (dynamic-module namespace, implementation module) pairs from the config's auto_map, as
+    # transformers names them under transformers_modules (see remote_code_modules).
+    remote_code: frozenset = frozenset()
 
 
 def _base_model_type(model_type: str) -> str:
@@ -302,7 +305,9 @@ def resolve_ssm_kernels(
     model_config = _resolved_model_config(target, hf_token)
     model_types: frozenset[str] = frozenset()
     is_ssm = required = wants = None
+    remote_code: frozenset = frozenset()
     if model_config is not None:
+        remote_code = remote_code_modules(target, model_config)
         model_types = frozenset(
             _base_model_type(model_type) for model_type in _config_identifiers(model_config)[0]
         )
@@ -327,6 +332,7 @@ def resolve_ssm_kernels(
         mamba_ssm_required = bool(is_ssm and required),
         probe = probe,
         model_types = model_types,
+        remote_code = remote_code,
     )
 
 
@@ -388,38 +394,84 @@ def refresh_transformers_kernel_gates() -> None:
         logger.debug("Could not refresh transformers' hub kernel map: %s", exc)
 
 
-def _squash(value: str) -> str:
-    # transformers spells "-" / "." in a remote-code module path as _hyphen_ / _dot_ (5.x) or
-    # keeps them (4.x); compare letters and digits only.
-    value = value.replace("_hyphen_", "").replace("_dot_", "")
-    return "".join(ch for ch in value.lower() if ch.isalnum())
+def _sanitized_module_name(name: str) -> str:
+    # transformers.dynamic_module_utils._sanitize_module_name (4.57+, 5.x).
+    name = name.replace(".", "_dot_").replace("-", "_hyphen_")
+    return f"_{name}" if name and name[0].isdigit() else name
 
 
-def modeling_modules_needing_restart(model_types, model_ids = ()) -> list[str]:
-    """The already-imported modeling modules of *model_types* (``transformers.models.<type>.
-    modeling_*``) and of the remote-code checkpoints *model_ids* (``transformers_modules.*.
-    modeling_*``). Each captured its kernel functions (module globals, hub-kernel decorators) when
-    it was imported, so a kernel installed after that is only picked up by a fresh process. A
-    configuration or tokenizer module captures none, so importing one alone needs no restart."""
+def _dynamic_module_namespaces(checkpoint: str) -> set[tuple[str, ...]]:
+    """The transformers_modules package(s) transformers puts *checkpoint*'s remote code under: a
+    Hub repo by its id (org, name), a local folder by its name. Sanitized as 4.57+ and 5.x spell
+    them, and raw as older 4.x did."""
+    checkpoint = str(checkpoint).strip()
+    if not checkpoint:
+        return set()
+    if os.path.isdir(checkpoint):
+        parts = [os.path.basename(os.path.normpath(checkpoint))]
+    else:
+        parts = checkpoint.split("/")
+    if not all(parts):
+        return set()
+    return {tuple(parts), tuple(_sanitized_module_name(part) for part in parts)}
+
+
+def remote_code_modules(checkpoint: str, model_config: dict) -> frozenset:
+    """The (namespace, module) pairs of the model classes a config's ``auto_map`` points at: an
+    entry ``"model.CustomForCausalLM"`` is module ``model`` of *checkpoint*, and
+    ``"org/repo--model.Custom"`` module ``model`` of ``org/repo``. Any module name counts, not just
+    ``modeling_*``; AutoConfig / AutoTokenizer / processor entries capture no kernels."""
+    auto_map = model_config.get("auto_map") if isinstance(model_config, dict) else None
+    if not isinstance(auto_map, dict):
+        return frozenset()
+    pairs = set()
+    for key, value in auto_map.items():
+        if not str(key).startswith("AutoModel"):
+            continue
+        for reference in value if isinstance(value, (list, tuple)) else (value,):
+            if not isinstance(reference, str) or "." not in reference:
+                continue
+            source, _, reference = reference.rpartition("--")
+            module = tuple(reference.rsplit(".", 1)[0].split("."))
+            for namespace in _dynamic_module_namespaces(source or checkpoint):
+                pairs.add((namespace, module))
+    return frozenset(pairs)
+
+
+def _is_remote_code_module(name: str, remote_code) -> bool:
+    # transformers_modules.<namespace>[.<commit or source hash>].<module>, matched exactly.
+    parts = tuple(name.split("."))
+    if parts[0] != "transformers_modules":
+        return False
+    for namespace, module in remote_code:
+        if parts[1 : 1 + len(namespace)] != namespace:
+            continue
+        rest = parts[1 + len(namespace) :]
+        if rest == module or (len(rest) == len(module) + 1 and rest[1:] == module):
+            return True
+    return False
+
+
+def modeling_modules_needing_restart(model_types, remote_code = ()) -> list[str]:
+    """The already-imported implementation modules of *model_types* (``transformers.models.<type>.
+    modeling_*``) and of the selected checkpoint's remote code (*remote_code*, from
+    :func:`remote_code_modules`). Each captured its kernel functions (module globals, hub-kernel
+    decorators) when it was imported, so a kernel installed after that is only picked up by a fresh
+    process. A configuration or tokenizer module captures none, so importing one needs no restart."""
     model_types = {model_type for model_type in model_types if model_type}
-    repo_keys = {
-        _squash(str(model_id).replace("\\", "/").rstrip("/").rsplit("/", 1)[-1])
-        for model_id in model_ids
-        if model_id
-    }
-    repo_keys.discard("")
     stale = []
     for name in list(sys.modules):
         parts = name.split(".")
-        if not parts[-1].startswith("modeling_"):
-            continue
-        if parts[0] == "transformers" and len(parts) == 4 and parts[1] == "models":
-            if parts[2] in model_types:
+        if parts[0] == "transformers":
+            if (
+                len(parts) == 4
+                and parts[1] == "models"
+                and parts[2] in model_types
+                and parts[3].startswith("modeling_")
+            ):
                 stale.append(name)
-        elif parts[0] == "transformers_modules" and len(parts) > 2:
-            package = _squash(".".join(parts[1:-1]))
-            if any(t in parts[-1] for t in model_types) or any(k in package for k in repo_keys):
-                stale.append(name)
+        elif remote_code and _is_remote_code_module(name, remote_code):
+            stale.append(name)
     return sorted(stale)
 
 

@@ -668,15 +668,18 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
 
     # Before Unsloth and the modeling import: transformers captures its kernel gates at import, and
     # some remote modeling code (Nemotron-H) cannot import at all without mamba-ssm.
-    with _offline_window_if_unreachable(step = "installing SSM kernels"):
-        if not _provision_ssm_kernels(
-            checkpoint_path,
-            config.get("base_model") or None,
-            config.get("hf_token"),
-            resp_queue,
-            config.get("device_backend"),
-        ):
-            return
+    # Decided before the connectivity window: an MLX / CPU / macOS export installs nothing, so it
+    # makes no extra Hub reachability probe either.
+    if _export_uses_cuda_kernels(config.get("device_backend")):
+        with _offline_window_if_unreachable(step = "installing SSM kernels"):
+            if not _provision_ssm_kernels(
+                checkpoint_path,
+                config.get("base_model") or None,
+                config.get("hf_token"),
+                resp_queue,
+                config.get("device_backend"),
+            ):
+                return
 
     try:
         _send_response(

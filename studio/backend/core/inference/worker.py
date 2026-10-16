@@ -418,7 +418,7 @@ def _ensure_ssm_kernels(
                 probe, config_target or probe, hf_token, status_cb = _ssm_status
             )
             stale = (
-                modeling_modules_needing_restart(kernels.model_types, (probe, config_target))
+                modeling_modules_needing_restart(kernels.model_types, kernels.remote_code)
                 if installed
                 else []
             )

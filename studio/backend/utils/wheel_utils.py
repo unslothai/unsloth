@@ -478,6 +478,25 @@ def flash_attn_wheel_url(env: dict[str, str] | None) -> str | None:
     )
 
 
+_UV_OFFLINE_TRUE_VALUES = frozenset({"1", "true", "t", "yes", "y", "on"})
+_HF_OFFLINE_TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
+
+
+def uv_offline() -> bool:
+    """UV_OFFLINE, the operator's no-network switch for installs, in uv's boolish spellings."""
+    return os.environ.get("UV_OFFLINE", "").strip().lower() in _UV_OFFLINE_TRUE_VALUES
+
+
+def package_installs_offline_env() -> bool:
+    """The environment half of utils.utils.package_installs_offline, for callers that cannot import
+    the backend (`unsloth install-kernels` runs under --no-deps): HF_HUB_OFFLINE,
+    TRANSFORMERS_OFFLINE or UV_OFFLINE."""
+    return uv_offline() or any(
+        os.environ.get(name, "").strip().lower() in _HF_OFFLINE_TRUE_VALUES
+        for name in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE")
+    )
+
+
 def install_wheel(
     wheel_url: str,
     *,
@@ -509,6 +528,9 @@ def install_wheel(
         )
         attempts.append(("uv", result))
         if result.returncode == 0:
+            return attempts
+        # uv refused the network under UV_OFFLINE; pip has no such switch and would reach it.
+        if uv_offline():
             return attempts
 
     pip_cmd = [python_executable, "-m", "pip", "install", "--no-deps"]

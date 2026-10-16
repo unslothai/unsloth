@@ -11,6 +11,7 @@ The CLI is wheel-only (never a source build) and uses --no-deps so torch is neve
 from __future__ import annotations
 
 import argparse
+import importlib.metadata
 import os
 import platform
 import shutil
@@ -30,6 +31,7 @@ from utils.wheel_utils import (
     direct_wheel_url,
     flash_attn_wheel_url,
     install_wheel,
+    package_installs_offline_env,
     probe_torch_wheel_env,
     redact_url_credentials,
     url_exists,
@@ -343,6 +345,13 @@ def _loads(check: str, run: Callable[..., subprocess.CompletedProcess]) -> bool:
     return result.returncode == 0
 
 
+def _installed_version(distribution: str) -> str | None:
+    try:
+        return importlib.metadata.version(distribution)
+    except Exception:
+        return None
+
+
 def _outside_venv() -> bool:
     # Colab and other system interpreters: uv refuses them without --system.
     return sys.prefix == sys.base_prefix
@@ -368,7 +377,6 @@ def install_kernel(
     # install_without_gpu: no visible GPU yet (an image build for the GPU it will run on) still
     # installs. Each kernel left uninstalled for this machine is appended to *skipped*.
     distribution, check = KERNELS[name]
-    url = resolve_wheel_url(name, env)
 
     def skip(message: str) -> int:
         print(message)
@@ -376,6 +384,17 @@ def install_kernel(
             skipped.append(name)
         return 0
 
+    # A copy that already loads (a ROCm source build, a GPU-hidden image builder's earlier install)
+    # is success whatever the wheel, GPU and network checks below would say.
+    if not dry_run and _installed_version(distribution) is not None and _loads(check, run):
+        print(f"Unsloth: {name} already installed and loads.")
+        return 0
+    if package_installs_offline_env():
+        return skip(
+            f"Unsloth: not installing {name} while offline "
+            "(UV_OFFLINE / HF_HUB_OFFLINE / TRANSFORMERS_OFFLINE)."
+        )
+    url = resolve_wheel_url(name, env)
     if name in _GPU_GATED and url is not None:
         capability = _gpu_capability(run)
         if capability is None and not install_without_gpu:
@@ -460,6 +479,11 @@ def main(argv: list[str] | None = None) -> int:
             f"visible, e.g. in an image build; also {_WITHOUT_GPU_ENV}=1"
         ),
     )
+    parser.add_argument(
+        "--strict",
+        action = "store_true",
+        help = "exit 2 when a requested kernel was skipped (no GPU, no wheel, offline)",
+    )
     args = parser.parse_args(argv)
     without_gpu = args.without_gpu or os.environ.get(_WITHOUT_GPU_ENV, "").strip().lower() in (
         "1",
@@ -483,8 +507,8 @@ def main(argv: list[str] | None = None) -> int:
         )
     if skipped:
         print(f"Unsloth: not installed on this machine: {', '.join(skipped)}.")
-        # Kernels asked for by name and not installed are not a success.
-        if args.kernels and status == 0:
+        # A skip stays exit 0, as scripts running under `set -e` expect; --strict opts in.
+        if args.strict and status == 0:
             status = 2
     return status
 
