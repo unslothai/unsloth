@@ -472,11 +472,10 @@ def test_the_launch_charges_the_fitters_margin_only_when_fit_stays_on():
     assert "supports_fit_target=use_fitand" in call
     # And a pass-through --fit-target raises the margin above either: entry 0 of a
     # per-device list on a one-model-device child, the largest entry otherwise.
-    assert "_fit_margin_reader(_fit_extras,_fit_env)or0.0" in call
-    pre = compact[compact.index("_fit_margin_reader=(") : compact.index("_fit_margin_mib=(")]
-    assert "fit_target_first_device_margin_inif" in pre
+    assert "_fit_user_margin_mibor0.0" in call
+    pre = compact[compact.index("_fit_user_margin_mib,_=") : compact.index("_fit_margin_mib=(")]
+    assert "_child_fit_target_margin_mib(_fit_extras,_fit_env," in pre
     assert "_child_has_one_model_device(_fit_extras,_fit_env)" in pre
-    assert "elsefit_target_margin_in" in pre
     assert "fit_margin_mib=_fit_margin_mib" in call
 
 
@@ -2498,7 +2497,7 @@ def _placed_launch(
         {},
         int(expert_gib * GIB),
     )
-    caps = dict(LlamaCppBackend.probe_server_capabilities.__func__(LlamaCppBackend, None))
+    caps = dict(LlamaCppBackend.probe_server_capabilities.__func__(LlamaCppBackend, "/nonexistent"))
     caps.update(_CACHE_CAPS_ON)
     caps["supports_load_mode"] = True
     load_kwargs = dict(extra_args = list(extra_args))

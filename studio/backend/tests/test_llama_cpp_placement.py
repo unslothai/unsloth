@@ -3279,7 +3279,7 @@ def test_the_launched_load_mode_is_recorded_in_the_memory_state(tmp_path, monkey
     monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: False)
     monkeypatch.setattr(mm, "should_mlock", lambda: False)
 
-    caps = dict(LlamaCppBackend.probe_server_capabilities.__func__(LlamaCppBackend, None))
+    caps = dict(LlamaCppBackend.probe_server_capabilities.__func__(LlamaCppBackend, "/nonexistent"))
     caps["supports_load_mode"] = True
     backend, gguf = _backend(tmp_path, vulkan = False, memory = [(0, 40000, 48000)])
     with patch.object(LlamaCppBackend, "probe_server_capabilities", lambda *a, **k: caps):
@@ -3316,7 +3316,7 @@ def test_a_fit_derived_load_mode_is_recorded_too(tmp_path, monkeypatch):
     monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: False)
     monkeypatch.setattr(mm, "should_mlock", lambda: False)
 
-    caps = dict(LlamaCppBackend.probe_server_capabilities.__func__(LlamaCppBackend, None))
+    caps = dict(LlamaCppBackend.probe_server_capabilities.__func__(LlamaCppBackend, "/nonexistent"))
     caps["supports_load_mode"] = True
     backend, gguf = _backend(tmp_path, vulkan = False, memory = [(0, 40000, 48000)])
     with (
@@ -5066,7 +5066,11 @@ def _cache_launch(
         dict(lazy or {}),
         int(expert_gib * _GIB) if moe else 0,
     )
-    full_caps = dict(LlamaCppBackend.probe_server_capabilities.__func__(LlamaCppBackend, None))
+    # Fallback capabilities, never the host's real llama-server: an installed build
+    # answering supports_fit_ctx and the like would change what these fixtures emit.
+    full_caps = dict(
+        LlamaCppBackend.probe_server_capabilities.__func__(LlamaCppBackend, "/nonexistent")
+    )
     full_caps.update(_CACHE_CAPS_ON if caps is None else caps)
     backend.probe_server_capabilities = lambda _binary = None: full_caps
     if host_guard:
@@ -5464,7 +5468,11 @@ def _priced_cache_launch(
     backend._estimate_kv_cache_bytes = lambda *a, **k: _GIB // 4
     backend._available_system_memory_mib = lambda: int(ram_gib * 1024)
     backend._gguf_tensor_scan = lambda _path: ("qwen3moe", {}, 15 * _GIB)
-    full_caps = dict(LlamaCppBackend.probe_server_capabilities.__func__(LlamaCppBackend, None))
+    # Fallback capabilities, never the host's real llama-server: an installed build
+    # answering supports_fit_ctx and the like would change what these fixtures emit.
+    full_caps = dict(
+        LlamaCppBackend.probe_server_capabilities.__func__(LlamaCppBackend, "/nonexistent")
+    )
     full_caps.update(_CACHE_CAPS_ON)
     full_caps.update(caps_extra or {})
     backend.probe_server_capabilities = lambda _binary = None: full_caps
@@ -5657,18 +5665,22 @@ def test_a_projector_none_with_a_conflicting_placement_keeps_the_split(
         ([], {"MTMD_BACKEND_DEVICE": "none"}, False),
         (["--no-mmproj-offload"], {}, False),
         (["--mmproj-device", "none", "--mmproj-offload"], {}, True),
-        (["--mmproj-offload", "--mmproj-device", "none"], {}, True),
-        (["--mmproj-device", "none"], {"LLAMA_ARG_MMPROJ_OFFLOAD": "1"}, True),
-        (["--mmproj-device", "none", "-mmdev", "CUDA1"], {}, None),
-        (["--mmproj-device", "CUDA1"], {"MTMD_BACKEND_DEVICE": "none"}, None),
-        (["--mmproj-device", "NONE"], {}, None),
-        ([], {"MTMD_BACKEND_DEVICE": "CPU"}, None),
+        # Device none after an offload-on clears mmproj_use_gpu (last wins).
+        (["--mmproj-offload", "--mmproj-device", "none"], {}, False),
+        (["--mmproj-device", "none"], {"LLAMA_ARG_MMPROJ_OFFLOAD": "1"}, False),
+        # Any other name sets mmproj_use_gpu: offloaded, to that device.
+        (["--mmproj-device", "none", "-mmdev", "CUDA1"], {}, True),
+        (["--mmproj-device", "CUDA1"], {"MTMD_BACKEND_DEVICE": "none"}, True),
+        (["--no-mmproj-offload", "--mmproj-device", "CUDA0"], {}, True),
+        (["--mmproj-device", "NONE"], {}, True),
+        ([], {"MTMD_BACKEND_DEVICE": "CPU"}, True),
         ([], {}, None),
     ],
 )
 def test_the_resolved_projector_offload_reads_device_none(extra_args, env, expected):
-    """Device none is host RAM only where both offload spellings are silent; an explicit
-    offload keeps its (conservative) answer."""
+    """The boolean view of the ordered placement (env, then argv, last wins): device none
+    is host RAM whatever came before it, a named device is offloaded even after an
+    offload-off, and only silence on every placement option is None."""
     assert llama_cpp_module._resolved_mmproj_offload(extra_args, env) is expected
 
 
@@ -6206,7 +6218,11 @@ def test_a_cache_crash_retries_once_without_the_cache(
     backend._estimate_kv_cache_bytes = lambda *a, **k: _GIB // 4
     backend._available_system_memory_mib = lambda: 256 * 1024
     backend._gguf_tensor_scan = lambda _path: ("qwen3moe", {}, 15 * _GIB)
-    full_caps = dict(LlamaCppBackend.probe_server_capabilities.__func__(LlamaCppBackend, None))
+    # Fallback capabilities, never the host's real llama-server: an installed build
+    # answering supports_fit_ctx and the like would change what these fixtures emit.
+    full_caps = dict(
+        LlamaCppBackend.probe_server_capabilities.__func__(LlamaCppBackend, "/nonexistent")
+    )
     full_caps.update(_CACHE_CAPS_ON)
     backend.probe_server_capabilities = lambda _binary = None: full_caps
 
@@ -6580,7 +6596,7 @@ def test_the_apu_guard_prices_only_resident_weights(tmp_path, monkeypatch, lazy_
         {"per_layer_token_embd.weight": _QWEN38_PLE},
         0,
     )
-    caps = dict(LlamaCppBackend.probe_server_capabilities.__func__(LlamaCppBackend, None))
+    caps = dict(LlamaCppBackend.probe_server_capabilities.__func__(LlamaCppBackend, "/nonexistent"))
     caps.update(_CACHE_CAPS_ON)
     backend.probe_server_capabilities = lambda _binary = None: caps
 
