@@ -168,6 +168,22 @@ function stubFetch(handler: (url: string) => { status: number; body: unknown }) 
 // Unlinking a folder deletes its job rows, and so does the terminal-job prune, so
 // a watcher can outlive the job it polls. Riding that 404 out through the retry
 // budget gates the composer for a minute on work that already ended.
+test("a cancelled folder job immediately releases the project gate", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const fetched = stubFetch(() => ({
+    status: 200,
+    body: { id: "job-cancelled", linkedFolderId: "folder", status: "cancelled", error: null },
+  }));
+  try {
+    rag.watchProjectFolderJob("p-folder-cancelled", "job-cancelled");
+    for (let tick = 0; tick < 10; tick += 1) await Promise.resolve();
+    assert.equal(rag.projectWorkCount("p-folder-cancelled"), 0);
+    assert.equal(fetched.urls.length, 1);
+  } finally {
+    fetched.restore();
+  }
+});
+
 test("a folder job that no longer exists releases the gate at once", async () => {
   const fetched = stubFetch(() => ({ status: 404, body: { detail: "Job not found" } }));
   try {

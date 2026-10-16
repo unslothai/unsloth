@@ -989,6 +989,8 @@ def folder_job_events(
                 if event["status"] == "completed"
                 else "error"
                 if event["status"] == "failed"
+                else "cancelled"
+                if event["status"] == "cancelled"
                 else "progress"
             )
             yield f"data: {json.dumps(view)}\n\n"
