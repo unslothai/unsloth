@@ -321,18 +321,34 @@ def _close_preview() -> None:
             entry["worker"].close()
 
 
+def _start_preview_worker(specs: list[dict], mode: str) -> RewardWorker:
+    from core.inference.os_sandbox import SandboxUnavailableError
+    try:
+        return RewardWorker(specs, mode = mode, batch_timeout = 30.0).start()
+    except SandboxUnavailableError as exc:
+        raise PythonRewardError(
+            f"Python rewards need the OS sandbox, and it is not available here ({exc}). "
+            f"{exc.remediation or ''} Training refuses them the same way unless the run sets "
+            'grpo_python_reward_isolation to "auto".'
+        ) from exc
+
+
 def preview_python_scores(
     specs: list[dict],
     text: str,
     row: dict[str, Any],
     prompt: Optional[str] = None,
     owner: Optional[str] = None,
+    mode: str = "required",
 ) -> tuple[dict[str, Optional[float]], dict[str, Any]]:
     """Score one reply for the Try it box. The worker is kept warm for a couple of minutes,
-    since the box re-scores on every edit."""
+    since the box re-scores on every edit. ``mode`` is the os_sandbox mode, as in training:
+    ``required`` refuses a host without OS isolation, ``auto`` is the opt-in to software safeguards."""
     # Keyed by account: a warm worker keeps the reward's module state, which must not carry one
     # account's rows into another account's scores.
-    key = json.dumps([owner, [[s["name"], s["entry"], s["code"]] for s in specs]], sort_keys = True)
+    key = json.dumps(
+        [owner, mode, [[s["name"], s["entry"], s["code"]] for s in specs]], sort_keys = True
+    )
     stale = []
     with _preview_lock:
         entry = _previews.get(key)
@@ -361,7 +377,7 @@ def preview_python_scores(
     try:
         with entry["start"]:
             if entry["worker"] is None:
-                entry["worker"] = RewardWorker(specs, batch_timeout = 30.0).start()
+                entry["worker"] = _start_preview_worker(specs, mode)
         worker = entry["worker"]
         scores = worker.score([s["name"] for s in specs], prompts, completions, kwargs)
         failed = False

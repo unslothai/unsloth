@@ -240,13 +240,25 @@ def test_worker_files_are_removed_on_close(worker_factory):
 def client(tmp_path, monkeypatch):
     monkeypatch.setattr(rewards, "_user_root", lambda: tmp_path / "rewards")
     real = python_rewards.RewardWorker
-    monkeypatch.setattr(
-        python_rewards, "RewardWorker", lambda specs, **kw: real(specs, mode = "full", **kw)
-    )
+    modes = []
+
+    def worker(
+        specs,
+        *,
+        mode = "auto",
+        **kw,
+    ):
+        # The mode the preview asked for is recorded, then "full" so this runs on any host.
+        modes.append(mode)
+        return real(specs, mode = "full", **kw)
+
+    monkeypatch.setattr(python_rewards, "RewardWorker", worker)
     app = FastAPI()
     app.include_router(router, prefix = "/api/rewards")
     app.dependency_overrides[get_current_subject] = lambda: "test"
-    yield TestClient(app)
+    client = TestClient(app)
+    client.worker_modes = modes
+    yield client
     python_rewards._close_preview()
 
 
@@ -348,6 +360,37 @@ def test_a_preview_row_keeps_its_value_types(client):
         "row": {"level": 3, "meta": {"bonus": 2}},
     }
     assert _preview_as(client, "acct-a", payload) == 5.0
+
+
+ONE = "def reward(completions, **kw):\n    return [1.0] * len(completions)\n"
+
+
+def test_a_python_preview_needs_the_os_sandbox_unless_opted_out(client):
+    md = _python_md("one", ONE)
+    payload = {"rewards": [{"markdown": md}], "completion": "x"}
+    _preview_as(client, "acct-a", payload)
+    _preview_as(client, "acct-a", {**payload, "python_reward_isolation": "auto"})
+    assert client.worker_modes == ["required", "auto"]
+
+
+def test_a_python_preview_without_the_os_sandbox_is_a_400(client, monkeypatch):
+    from core.inference.os_sandbox import SandboxUnavailableError
+
+    class NoSandbox:
+        def __init__(self, specs, **kw):
+            pass
+
+        def start(self):
+            raise SandboxUnavailableError("no bubblewrap", remediation = "Install bubblewrap.")
+
+    monkeypatch.setattr(python_rewards, "RewardWorker", NoSandbox)
+    md = _python_md("one", ONE)
+    response = client.post(
+        "/api/rewards/preview", json = {"rewards": [{"markdown": md}], "completion": "x"}
+    )
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert "no bubblewrap" in detail and "grpo_python_reward_isolation" in detail
 
 
 def _os_sandbox_available() -> bool:

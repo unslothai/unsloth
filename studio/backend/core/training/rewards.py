@@ -474,6 +474,7 @@ def preview_scores(
     row: Optional[dict] = None,
     prompt: Optional[str] = None,
     owner: Optional[str] = None,
+    python_isolation: str = "required",
 ) -> tuple[list[dict], Optional[dict]]:
     """Scores in ``specs`` order, plus the isolation the Python ones ran under (None if none did)."""
     python = [s for s in specs if s.get("kind") == "python"]
@@ -485,7 +486,7 @@ def preview_scores(
             row = {"answer": reference}
         try:
             python_scores, isolation = preview_python_scores(
-                python, text, row or {}, prompt, owner = owner
+                python, text, row or {}, prompt, owner = owner, mode = python_isolation
             )
         except PythonRewardError as exc:
             raise RewardError(str(exc)) from exc

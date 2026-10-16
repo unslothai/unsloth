@@ -68,6 +68,8 @@ class RewardPreviewRequest(BaseModel):
     # Row 1 of the dataset with its own value types, as a Python reward gets it in training.
     row: Optional[dict[StrictStr, JsonValue]] = Field(None, max_length = 64)
     prompt: Optional[StrictStr] = Field(None, max_length = 16 * 1024)
+    # Same choice as a run's grpo_python_reward_isolation: no OS sandbox, no Python preview.
+    python_reward_isolation: Literal["required", "auto"] = "required"
 
 
 class RewardPreviewScore(BaseModel):
@@ -133,6 +135,7 @@ def preview_rewards(
             payload.row,
             payload.prompt,
             owner = current_account_id(),
+            python_isolation = payload.python_reward_isolation,
         )
     except RewardError as exc:
         raise _http_error(exc) from exc
