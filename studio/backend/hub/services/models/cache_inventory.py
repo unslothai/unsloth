@@ -607,8 +607,6 @@ def _scan_cached_gguf(
         variant_states = None
 
     seen_lower: dict[str, dict] = {}
-    # Every root's copy of each artifact mirror, so the GGUF row counts folders cached in another root too.
-    artifact_paths = _artifact_repo_paths(cache_scans)
     repo_cache_roots: dict[str, set[Path]] = {}
     for hf_cache in cache_scans:
         for repo_info in hf_cache.repos:
@@ -691,10 +689,12 @@ def _scan_cached_gguf(
                     except Exception:
                         pass
                 row_size = max(total_size, variant_state_size)
-                # An artifact mirror's diffusers folders are listed nowhere else (see _scan_cached_models), and a
-                # whole-repo delete of this row removes them, so the row counts them.
+                # An artifact mirror's diffusers folders IN THIS ROOT are listed nowhere else (see
+                # _scan_cached_models), and this row's whole-repo delete removes them, so the row counts them. A copy
+                # in another root is that root's own companion row: a delete is scoped to one cache root, so counting
+                # it here would promise bytes this row's delete never frees.
                 if _hosts_artifacts(repo_id):
-                    row_size += artifact_folder_bytes(*artifact_paths.get(repo_id.lower(), [repo_path]))
+                    row_size += artifact_folder_bytes(repo_path)
                 row = {
                     "repo_id": repo_id,
                     "size_bytes": row_size,
@@ -1226,9 +1226,13 @@ def _scan_cached_models(
                 # row. Deletes are whole-repo or per-quant, so such a row's delete would wipe the quants, and a
                 # pipeline pick of the -GGUF id is refused anyway.
                 any_root_gguf = has_main_gguf or repo_id.lower() in artifact_gguf_keys
-                if any_root_gguf and _hosts_artifacts(repo_id):
+                if has_main_gguf and _hosts_artifacts(repo_id):
                     skipped_gguf += 1
                     continue
+                # Its GGUF in ANOTHER cache root: this copy holds only the folders that GGUF loads its companions
+                # from. Its own row, so its delete (scoped to this root) frees exactly what it shows, but a companion,
+                # never a pipeline or single-file pick.
+                cross_root_folders = any_root_gguf and _hosts_artifacts(repo_id)
                 # The FP8 artifact mirror (unsloth/Qwen-Image-2.1-Turbo-FP8): its folders are what a pick of the BASE
                 # fetches, and a pipeline pick of the repo itself is refused, so the row stays the root checkpoint row
                 # released builds listed, whatever part of the folders is cached.
@@ -1352,7 +1356,7 @@ def _scan_cached_models(
                         )
                     ),
                     # Listed so tens of GB of companion weights stay visible and deletable, but flagged so no picker offers a denoiser-less repo as a load.
-                    "companion": _cached_row_companion(repo_id, load_snapshot),
+                    "companion": cross_root_folders or _cached_row_companion(repo_id, load_snapshot),
                     "diffusers": _cached_row_is_diffusers(repo_info, load_snapshot),
                     **local_metadata,
                 }
@@ -1439,19 +1443,6 @@ def artifact_folder_bytes(*repo_paths: Path) -> int:
         except (OSError, ValueError):
             continue
     return sum(seen.values())
-
-
-def _artifact_repo_paths(cache_scans) -> dict[str, list[Path]]:
-    """``{repo_id_lower: [repo dir, ...]}`` for every cache root's copy of an artifact mirror."""
-    out: dict[str, list[Path]] = {}
-    for hf_cache in cache_scans or ():
-        for repo in getattr(hf_cache, "repos", ()) or ():
-            try:
-                if str(repo.repo_type) == "model" and _hosts_artifacts(repo.repo_id):
-                    out.setdefault(repo.repo_id.lower(), []).append(Path(repo.repo_path))
-            except Exception:  # noqa: BLE001 -- one unreadable entry never hides the rest
-                continue
-    return out
 
 
 def _artifact_gguf_repo_ids(cache_scans) -> set[str]:

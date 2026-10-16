@@ -5538,8 +5538,11 @@ def cached_model_rows(cache_scans = None) -> list[dict]:
                 # Pass the snapshot path too so the config check also hides custom Whisper checkpoints.
                 if _is_hidden_model(repo_id, str(repo_info.repo_path)):
                     continue
-                if _repo_has_gguf_files(repo_info) or repo_id.lower() in artifact_gguf_keys:
+                if _repo_has_gguf_files(repo_info):
                     continue
+                # Its GGUF in another root: listed (its delete is scoped to this root and frees what it shows) but as
+                # a companion of that GGUF, never a single-file or pipeline pick.
+                cross_root_folders = repo_id.lower() in artifact_gguf_keys
                 selected, model_load_id = _repo_model_selection(repo_info, active_root)
                 if _recovered_repo_is_unusable_by_repo_id(repo_info):
                     # That guard withheld these because this schema could describe neither a partial nor a path; it now
@@ -5569,7 +5572,7 @@ def cached_model_rows(cache_scans = None) -> list[dict]:
                 # A companion-only prefetch (manifest + VAE/TE but no transformer shards) is not a loadable pipeline; treat it as partial.
                 # The FP8 artifact mirror lists as its root checkpoint, as released builds did: its diffusers folders
                 # belong to the BASE pick, and a pipeline pick of the repo itself is refused.
-                artifact_checkpoint = _repo_hosts_artifacts(repo_id)
+                artifact_checkpoint = _repo_hosts_artifacts(repo_id) and not cross_root_folders
                 is_partial = _cached_repo_partial(repo_id, Path(repo_info.repo_path), selected) or (
                     not artifact_checkpoint and _repo_pipeline_missing_denoiser(repo_info, selected)
                 )
@@ -5612,7 +5615,7 @@ def cached_model_rows(cache_scans = None) -> list[dict]:
                         row["partial"] = True
                     # Listed, so tens of GB of companion weights stay visible and deletable,
                     # but flagged, so no picker offers a denoiser-less repo as a load.
-                    if _is_sd_cpp_companion_repo(repo_id):
+                    if _is_sd_cpp_companion_repo(repo_id) or cross_root_folders:
                         row["companion"] = True
                     # Flag diffusion repos with no pipeline index: loadable only via from_single_file, so pickers must not offer a pipeline load.
                     if row["task"] is not None and not has_pipeline_index:

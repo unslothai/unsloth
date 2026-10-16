@@ -401,9 +401,10 @@ def test_progress_of_a_gguf_picked_from_an_artifact_mirror_counts_only_what_it_l
     assert progress["bytes_downloaded"] == 5_000 + sum(pipeline.values()) + 1_000
 
 
-def test_a_gguf_and_its_folders_split_across_cache_roots_make_one_sized_gguf_row(monkeypatch, tmp_path):
-    """The quant cached in one root, the base's folders (fetched after a cache-folder change) in the other: both
-    cached-model scans and On Device show one GGUF row counting the folders, never a separate folders row."""
+def test_a_gguf_and_its_folders_split_across_cache_roots_keep_one_row_per_root(monkeypatch, tmp_path):
+    """The quant cached in one root, the base's folders (fetched after a cache-folder change) in the other. A delete
+    is scoped to one cache root, so each root keeps its own row and each row's size is what its delete frees: the
+    GGUF row counts only its own root, and the folders copy is the GGUF's companion, never a pick."""
     from types import SimpleNamespace
 
     from hub.services.models import cache_inventory, local_inventory
@@ -421,14 +422,19 @@ def test_a_gguf_and_its_folders_split_across_cache_roots_make_one_sized_gguf_row
         cache_inventory.hf_cache_scan, "is_snapshot_partial", lambda *_a, **_k: False
     )
     monkeypatch.setattr(cache_inventory, "_cached_row_task", lambda *_a, **_k: "text-to-image")
-    assert [
+    folder_rows = [
         r for r in cache_inventory._scan_cached_models(active_hub_cache = folder_root) if r["repo_id"] == repo
-    ] == []
+    ]
+    assert len(folder_rows) == 1
+    assert folder_rows[0]["companion"] is True and not folder_rows[0]["single_file"]
+    assert folder_rows[0]["cache_path"] == str(in_folder_root.repo_path)
+    assert folder_rows[0]["size_bytes"] > 0
     gguf_rows = [
         r for r in cache_inventory._scan_cached_gguf(active_hub_cache = folder_root) if r["repo_id"] == repo
     ]
     assert len(gguf_rows) == 1
-    assert gguf_rows[0]["size_bytes"] > 5_000 + folder_bytes
+    assert gguf_rows[0]["size_bytes"] == 5_000
+    assert gguf_rows[0]["cache_path"] == str(in_gguf_root.repo_path)
 
     merged = local_inventory._merge_artifact_mirror_roots(
         [
@@ -437,13 +443,16 @@ def test_a_gguf_and_its_folders_split_across_cache_roots_make_one_sized_gguf_row
         ]
     )
     rows = [r for r in merged if r.model_id == repo]
-    assert [r.model_format for r in rows] == ["gguf"]
-    assert rows[0].size_bytes > 5_000 + folder_bytes
+    gguf = [r for r in rows if r.model_format == "gguf"]
+    others = [r for r in rows if r.model_format != "gguf"]
+    assert len(gguf) == 1 and gguf[0].size_bytes == 5_000
+    assert others and all(r.partial and r.companion_prefetch for r in others)
 
 
-def test_a_custom_folder_with_the_gguf_and_folders_in_two_caches_shows_one_gguf_row(tmp_path):
+def test_a_custom_folder_with_the_gguf_and_folders_in_two_caches_keeps_one_row_per_cache(tmp_path):
     """A registered custom scan folder can hold several HF caches; the GGUF in one and the mirror's folders in the
-    other are merged like the top-level roots, so deleting a separate folders row cannot strip the GGUF's companions."""
+    other are treated like the top-level roots: the GGUF row counts only its own cache, and any folders row is the
+    GGUF's companion prefetch, never a pick."""
     from hub.services.models import local_inventory
 
     repo = "unsloth/Z-Image-GGUF"
@@ -459,8 +468,10 @@ def test_a_custom_folder_with_the_gguf_and_folders_in_two_caches_shows_one_gguf_
         for r in local_inventory._scan_custom_folder(folder, hf_caches = [(first, None), (second, None)])
         if r.model_id == repo
     ]
-    assert [r.model_format for r in rows] == ["gguf"]
-    assert rows[0].size_bytes > 5_000 + folder_bytes
+    gguf = [r for r in rows if r.model_format == "gguf"]
+    assert len(gguf) == 1 and gguf[0].size_bytes == 5_000
+    assert all(r.partial and r.companion_prefetch for r in rows if r.model_format != "gguf")
+    assert folder_bytes > 0
 
 
 _SHAPES = {
@@ -666,7 +677,7 @@ def test_a_stale_incomplete_blob_from_a_cancelled_sibling_is_not_progress(monkey
     assert backend.load_progress()["bytes_downloaded"] == 2_000
 
 
-def test_a_folders_only_copy_in_the_other_root_is_neither_a_cached_row_nor_an_orphan(monkeypatch, tmp_path):
+def test_a_folders_only_copy_in_the_other_root_is_a_companion_row_and_no_orphan(monkeypatch, tmp_path):
     """The GGUF in one cache root, the mirror's folders in the other: the compatibility cached-models route lists no
     single-file row for the folders copy, and Free up space does not offer it, since the installed GGUF loads its
     companions from it."""
@@ -685,10 +696,95 @@ def test_a_folders_only_copy_in_the_other_root_is_neither_a_cached_row_nor_an_or
     monkeypatch.setattr(models_route, "_cached_repo_task", lambda *_a, **_k: "text-to-image")
     monkeypatch.setattr(models_route, "_cached_repo_partial", lambda *_a, **_k: False)
     monkeypatch.setattr(models_route.account_access, "filter_model_rows", lambda rows: rows)
-    assert [r for r in models_route.cached_model_rows(scans) if r["repo_id"] == repo] == []
+    rows = [r for r in models_route.cached_model_rows(scans) if r["repo_id"] == repo]
+    # Listed (its delete is scoped to its own root) but as the GGUF's companion, never a single-file pick.
+    assert len(rows) == 1 and rows[0].get("companion") is True and not rows[0].get("single_file")
 
     monkeypatch.setattr("utils.paths.storage_roots.cache_root", lambda: tmp_path / "app-cache")
     monkeypatch.setattr(cache_inventory, "all_hf_cache_scans", lambda: scans)
     monkeypatch.setattr(companion_cleanup.cache_inventory, "all_hf_cache_scans", lambda: scans)
     offered = asyncio.run(companion_cleanup.orphan_companions_response())["companions"]
     assert [c for c in offered if c["repo_id"] == repo] == []
+
+
+def test_a_resumed_planned_blob_counts_its_earlier_bytes_and_a_siblings_never_counts(monkeypatch, tmp_path):
+    """huggingface_hub writes a file to ``blobs/<blob key>.incomplete``. A planned shard resumed at 90% counts its
+    90% at once (not 0% until it finishes), while another download's blob in the same repo, new or old, counts
+    nothing."""
+    from core.inference.diffusion import _LoadingState
+
+    repo = "unsloth/FLUX.1-dev-GGUF"
+    planned = ((repo, "flux1-dev-Q4_K_M.gguf", 10_000),)
+    _snapshot(tmp_path, repo, {"README.md": 10})
+    blobs = tmp_path / f"models--{repo.replace('/', '--')}" / "blobs"
+    blobs.mkdir(parents = True, exist_ok = True)
+    (blobs / "a1b2.incomplete").write_bytes(b"\0" * 9_000)  # this file, resumed
+    (blobs / "ffff.incomplete").write_bytes(b"\0" * 4_000)  # a cancelled sibling quant
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_hub_cache_repo_dirs",
+        staticmethod(lambda repo_id: [tmp_path / f"models--{repo_id.replace('/', '--')}"]),
+    )
+    backend = DiffusionBackend()
+    backend._loading = _LoadingState(
+        repo_id = repo,
+        base_repo = "black-forest-labs/FLUX.1-dev",
+        gguf_filename = planned[0][1],
+        planned_files = planned,
+        expected_bytes = 10_000,
+        incomplete_baseline = DiffusionBackend._incomplete_blob_sizes({repo}),
+        planned_blob_keys = {(repo.lower(), planned[0][1]): "a1b2"},
+    )
+    assert backend.load_progress()["bytes_downloaded"] == 9_000
+    (blobs / "eeee.incomplete").write_bytes(b"\0" * 3_000)  # another download starting after the load
+    assert backend.load_progress()["bytes_downloaded"] == 9_000
+
+
+def test_the_mirror_is_chosen_again_once_the_plan_widens_to_transformer_shards(monkeypatch):
+    """FLUX.1-dev's companions are cached upstream but its transformer is not. An explicit transformer quant widens
+    the plan to the dense shards after the companion-only mirror choice kept the gated upstream; the final list must
+    move the fetch to unsloth/FLUX.1-dev, or the shards 401 for an anonymous user."""
+    from types import SimpleNamespace
+
+    from huggingface_hub import HfApi
+
+    base = "black-forest-labs/FLUX.1-dev"
+    siblings = [
+        SimpleNamespace(rfilename = n, size = s, lfs = None, blob_id = f"b-{n}")
+        for n, s in {
+            "model_index.json": 7,
+            "text_encoder/model.safetensors": 900,
+            "vae/diffusion_pytorch_model.safetensors": 300,
+            "transformer/config.json": 2,
+            "transformer/diffusion_pytorch_model.safetensors": 9_000,
+        }.items()
+    ]
+    asked = []
+
+    def model_info(self, repo_id, *a, **k):
+        asked.append(repo_id)
+        return SimpleNamespace(sha = "0" * 40, siblings = siblings)
+
+    monkeypatch.setattr(HfApi, "model_info", model_info)
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_NO_MIRROR", raising = False)
+    # The upstream cache holds everything but the dense transformer shards.
+    monkeypatch.setattr(
+        df,
+        "_upstream_is_cached",
+        lambda repo_id, files = None, **k: not any(
+            f.startswith("transformer/") and f != "transformer/config.json" for f in (files or ())
+        ),
+    )
+    fetch_repos: dict = {}
+    _total, files = DiffusionBackend._estimate_download_bytes(
+        "unsloth/FLUX.1-dev-GGUF",
+        None,
+        base,
+        None,
+        kind = "gguf",
+        include_transformer = lambda companions, transformer_files: True,
+        fetch_repos_out = fetch_repos,
+    )
+    assert "transformer/diffusion_pytorch_model.safetensors" in files
+    assert fetch_repos[base] == "unsloth/FLUX.1-dev"
+    assert asked[-1] == "unsloth/FLUX.1-dev"

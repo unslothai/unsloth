@@ -799,38 +799,21 @@ def _merge_artifact_mirror_roots(
     rows_by_root: list[tuple[Path, List[LocalModelInfo]]],
 ) -> List[LocalModelInfo]:
     """The cross-root half of ``_artifact_mirror_rows``, which sees one cache root at a time. When an artifact
-    mirror's GGUF sits in one root and its diffusers folders in another, the folders-only root's row is dropped and
-    its folder bytes counted on the GGUF row, so On Device shows one correctly sized GGUF row, as when both share a
-    root. Every other row passes through unchanged."""
-    merged: List[LocalModelInfo] = [row for _root, rows in rows_by_root for row in rows]
-    gguf_roots: dict[str, list[Path]] = {}
-    all_roots: dict[str, list[Path]] = {}
-    for root, rows in rows_by_root:
-        for row in rows:
-            model_id = row.model_id or ""
-            if not model_id or not _hosts_artifacts(model_id):
-                continue
-            repo_dir = Path(root) / f"models--{model_id.replace('/', '--')}"
-            all_roots.setdefault(model_id.lower(), []).append(repo_dir)
-            if row.model_format == "gguf":
-                gguf_roots.setdefault(model_id.lower(), []).append(repo_dir)
-    split = {key for key, dirs in all_roots.items() if key in gguf_roots and set(dirs) - set(gguf_roots[key])}
-    if not split:
-        return merged
-    from hub.services.models.cache_inventory import artifact_folder_bytes
-
+    mirror's GGUF sits in one root and its diffusers folders in another, each root keeps its own row, because a delete
+    is scoped to one root: the GGUF row counts only its own root, and the folders-only row stays partial and flagged as
+    the GGUF's companion prefetch, never a pick. Every other row passes through unchanged."""
+    gguf_ids = {
+        (row.model_id or "").lower()
+        for _root, rows in rows_by_root
+        for row in rows
+        if row.model_format == "gguf" and row.model_id and _hosts_artifacts(row.model_id)
+    }
     out: List[LocalModelInfo] = []
-    for row in merged:
-        key = (row.model_id or "").lower()
-        if key not in split:
+    for _root, rows in rows_by_root:
+        for row in rows:
+            if row.model_format != "gguf" and (row.model_id or "").lower() in gguf_ids:
+                row = row.model_copy(update = {"partial": True, "companion_prefetch": True})
             out.append(row)
-            continue
-        if row.model_format != "gguf":
-            continue  # the folders-only root: its bytes are counted on the GGUF row below
-        dirs = list(dict.fromkeys(all_roots[key]))
-        own = artifact_folder_bytes(*gguf_roots[key])
-        extra = max(0, artifact_folder_bytes(*dirs) - own)
-        out.append(row.model_copy(update = {"size_bytes": int(row.size_bytes or 0) + extra}))
     return out
 
 
