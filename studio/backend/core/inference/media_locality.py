@@ -327,7 +327,7 @@ def _pipeline_components_present(root: Path) -> bool:
 
 
 def flux3_seeded_cache_repo(path: Any) -> Optional[str]:
-    """The Hub repo id of a FLUX.3 snapshot in the HF cache whose only gap is the dense transformer weights (what a
+    """The Hub repo id of a FLUX.3 snapshot in the HF cache (the one refs/main names) whose only gap is the dense transformer weights (what a
     download planned around a hosted pre-quantized seed leaves), or None. Everything else the loader opens, the
     transformer config included, must be there."""
     import json
@@ -335,6 +335,10 @@ def flux3_seeded_cache_repo(path: Any) -> Optional[str]:
         snapshot = Path(path)
         repo_dir = snapshot.parent.parent
         if snapshot.parent.name != "snapshots" or not repo_dir.name.startswith("models--"):
+            return None
+        # A load by repo id resolves refs/main, so only the snapshot main names may be rewritten: another (or a
+        # commit-pinned) snapshot would be swapped for a different one.
+        if (repo_dir / "refs" / "main").read_text(encoding = "utf-8").strip() != snapshot.name:
             return None
         index = json.loads((snapshot / "modular_model_index.json").read_text(encoding = "utf-8-sig"))
         if not isinstance(index, dict) or not _is_flux3_manifest(index):

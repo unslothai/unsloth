@@ -1749,7 +1749,22 @@ def _seeded_snapshot(tmp_path, repo = "black-forest-labs/flux-3-image-klein"):
     snapshot.parent.mkdir(parents = True)
     _official_layout(tmp_path, "distilled", True).rename(snapshot)
     (snapshot / "transformer" / "model.safetensors").unlink()
+    (snapshot.parent.parent / "refs").mkdir()
+    (snapshot.parent.parent / "refs" / "main").write_text("abc123")
     return snapshot
+
+
+def test_only_the_snapshot_main_names_is_loaded_by_repo_id(tmp_path):
+    # A load by repo id resolves refs/main: a commit-pinned snapshot (no refs/main) or one main no longer names keeps
+    # its path, or the switch would load a different snapshot than the one the picker chose.
+    from core.inference.media_locality import flux3_seeded_cache_repo
+
+    snapshot = _seeded_snapshot(tmp_path)
+    assert flux3_seeded_cache_repo(snapshot) == "black-forest-labs/flux-3-image-klein"
+    (snapshot.parent.parent / "refs" / "main").write_text("def456")
+    assert flux3_seeded_cache_repo(snapshot) is None
+    (snapshot.parent.parent / "refs" / "main").unlink()
+    assert flux3_seeded_cache_repo(snapshot) is None
 
 
 def test_a_seeded_flux3_snapshot_is_planned_against_its_repo(tmp_path, monkeypatch):
