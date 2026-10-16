@@ -364,7 +364,8 @@ fn exception_list<'a>(
 
 /// Whether an exception covers `host`, as macOS and Windows match them: `*` stands for any run of
 /// characters and an entry without one names that host alone (`*.corp.example` leaves
-/// `corp.example` to the proxy); Windows' `<local>` is any name without a dot.
+/// `corp.example` to the proxy); Windows' `<local>` is any name without a dot, and an IPv4
+/// network (`17.0.0.0/8`, or macOS' short `17.1/16`) covers the addresses written in it.
 fn excepted(exceptions: &[String], host: &str) -> bool {
     fn matches(pattern: &[u8], host: &[u8]) -> bool {
         match pattern.split_first() {
@@ -373,10 +374,29 @@ fn excepted(exceptions: &[String], host: &str) -> bool {
             Some((first, rest)) => host.first() == Some(first) && matches(rest, &host[1..]),
         }
     }
+    fn network(entry: &str) -> Option<(u32, u32)> {
+        let (address, bits) = entry.split_once('/')?;
+        let bits: u32 = bits.parse().ok().filter(|bits| *bits <= 32)?;
+        let mut octets = [0u8; 4];
+        let parts: Vec<&str> = address.split('.').collect();
+        if parts.len() > 4 {
+            return None;
+        }
+        for (octet, part) in octets.iter_mut().zip(parts) {
+            *octet = part.parse().ok()?;
+        }
+        let mask = u32::MAX.checked_shl(32 - bits).unwrap_or(0);
+        Some((u32::from_be_bytes(octets) & mask, mask))
+    }
     let host = host.trim_end_matches('.').to_ascii_lowercase();
     exceptions.iter().any(|entry| match entry.as_str() {
         "<local>" => !host.contains(['.', ':']),
-        entry => matches(entry.as_bytes(), host.as_bytes()),
+        entry => match network(entry) {
+            Some((network, mask)) => host
+                .parse::<std::net::Ipv4Addr>()
+                .is_ok_and(|address| u32::from(address) & mask == network),
+            None => matches(entry.as_bytes(), host.as_bytes()),
+        },
     })
 }
 
@@ -1583,7 +1603,14 @@ mod tests {
     #[tokio::test]
     async fn exceptions_match_as_the_system_does() {
         let none = |_: &str| None;
-        let entries = ["*.corp.example", "Intranet.example", "<local>", "10.*"];
+        let entries = [
+            "*.corp.example",
+            "Intranet.example",
+            "<local>",
+            "10.*",
+            "17.0.0.0/8",
+            "18.1/16",
+        ];
         let exceptions = exception_list(entries.into_iter(), &none);
         for (host, expected) in [
             ("wiki.corp.example", true),
@@ -1594,6 +1621,10 @@ mod tests {
             ("a.intranet.example", false),
             ("printer", true),
             ("10.1.2.3", true),
+            ("17.1.2.3", true),
+            ("18.1.9.9", true),
+            ("18.2.0.1", false),
+            ("seventeen.example", false),
             ("example.com", false),
         ] {
             assert_eq!(excepted(&exceptions, host), expected, "{host}");
