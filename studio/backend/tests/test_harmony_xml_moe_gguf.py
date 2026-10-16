@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A Harmony-style 501B MoE GGUF (llama.cpp arch ``beam``) loads the right files, sampling and effort.
+"""A Harmony-style large MoE GGUF architecture loads the right files, sampling and effort.
 
 - Files: twelve 50 GB split quant folders, no mmproj and no drafter. Every folder must
   resolve to its own first shard and siblings, and the default pick is UD-Q4_K_XL.

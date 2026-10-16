@@ -8204,7 +8204,7 @@ _MUSE_SPARK_REASONING_EFFORT = {
 }
 
 
-# The arch "beam" template takes an int or minimal/low/medium/high/xhigh/max and
+# One Harmony-style template takes an int or minimal/low/medium/high/xhigh/max and
 # raise_exception()s on any other string, so the OpenAI "none" sentinel would fail the
 # render. It cannot turn reasoning off: "none" takes the smallest trained budget.
 _MINIMAL_FLOOR_REASONING_EFFORT = {
@@ -8212,7 +8212,7 @@ _MINIMAL_FLOOR_REASONING_EFFORT = {
 }
 
 # Architectures whose templates emit tool calls llama-server's chat parser cannot read
-# yet: arch "beam" declares tools and replies with Harmony headers carrying XML
+# yet: one Harmony-style template declares tools and replies with Harmony headers carrying XML
 # argument bodies (<|constrain|>xml), which the gpt-oss parser rejects with a 500
 # mid-stream. Studio withholds tools for them so plain chat keeps working.
 _TOOL_CALLS_UNPARSED_ARCHS = frozenset({"beam"})
