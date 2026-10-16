@@ -667,6 +667,14 @@ def _open_hub_repo(hf_api, repo_id, private):
     return repo_id
 
 
+def _hub_push_token(hf_token: HfTokenArg) -> HfTokenArg:
+    if hf_token is None:
+        from huggingface_hub import get_token
+
+        return get_token()
+    return hf_token
+
+
 def _push_mlx_merged(
     model, tokenizer, *, save_method, output_path, output_is_fresh, repo_id, hf_token, private
 ):
@@ -1441,6 +1449,7 @@ class ExportBackend:
                 output_path = str(Path(final_dir).resolve())
 
             if push_to_hub:
+                hf_token = _hub_push_token(hf_token)
                 if not repo_id or not hf_token:
                     return (
                         False,
@@ -1597,6 +1606,7 @@ class ExportBackend:
                 output_path = str(Path(save_directory).resolve())
 
             if push_to_hub:
+                hf_token = _hub_push_token(hf_token)
                 if not repo_id or not hf_token:
                     return (
                         False,
@@ -1919,6 +1929,7 @@ class ExportBackend:
                         )
 
             if push_to_hub:
+                hf_token = _hub_push_token(hf_token)
                 if not repo_id or not hf_token:
                     return (
                         False,
@@ -2477,6 +2488,7 @@ class ExportBackend:
                 output_path = str(Path(save_directory).resolve())
 
             if push_to_hub:
+                hf_token = _hub_push_token(hf_token)
                 if not repo_id or not hf_token:
                     return (
                         False,
