@@ -297,6 +297,27 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "auth_prefix": "Bearer ",
         "notes": "DashScope API key. China mainland: override base URL to https://dashscope.aliyuncs.com/compatible-mode/v1",
     },
+    "qwencloud": {
+        "display_name": "QwenCloud",
+        "base_url": "https://maas.qwencloudapi.com/compatible-mode/v1",
+        "default_models": [
+            "qwen3.8-max",
+            "qwen3.7-plus",
+            "qwen3.8-flash",
+        ],
+        "supports_streaming": True,
+        "supports_vision": True,
+        "supports_tool_calling": True,
+        "studio_tools": True,
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+        "notes": "QwenCloud pay-as-you-go API key (sk-ws-) from https://home.qwencloud.com/api-keys",
+        "model_id_denylist": re.compile(
+            r"(?:^|-)(?:realtime|livetranslate|tts|asr|s2s|embedding|rerank|ocr)\b"
+            r"|^(?:qwen-audio|qwen-image|wan\d|z-image|cosyvoice|happyhorse|happyoyster|"
+            r"tongyi-tingwu|ccai-pro|pre-mock)"
+        ),
+    },
     "huggingface": {
         "display_name": "Hugging Face",
         "base_url": "https://router.huggingface.co/v1",

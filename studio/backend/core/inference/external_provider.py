@@ -46,7 +46,7 @@ _CONTINUATION_FLAG_PROVIDERS = frozenset({"vllm", "llama_cpp"})
 
 # custom may reject include_usage; OpenAI Responses returns usage without it; listed streams need it.
 _USAGE_STREAM_OPTION_PROVIDERS = frozenset(
-    {"vllm", "llama_cpp", "ollama", "openrouter", "kimi", "lemonade", "qwen"}
+    {"vllm", "llama_cpp", "ollama", "openrouter", "kimi", "lemonade", "qwen", "qwencloud"}
 )
 
 # launch-time windows are absent from catalogues; custom covers unregistered self-hosted servers.
@@ -1839,7 +1839,7 @@ class ExternalProviderClient:
             _apply_mistral_reasoning_controls(body, model, enable_thinking, reasoning_effort)
         elif self.provider_type == "deepseek":
             _apply_deepseek_reasoning_controls(body, enable_thinking, reasoning_effort)
-        elif self.provider_type == "qwen":
+        elif self.provider_type in ("qwen", "qwencloud"):
             _apply_qwen_reasoning_controls(body, enable_thinking)
         elif self.provider_type == "huggingface":
             _apply_passthrough_reasoning_effort(body, enable_thinking, reasoning_effort)

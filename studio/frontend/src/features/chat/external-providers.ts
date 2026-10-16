@@ -282,7 +282,7 @@ export function providerModelSupportsVision(
 // Mirrors _MIXED_CATALOG_PROVIDER_TYPES in studio/backend/routes/inference.py: vision for
 // the family, unknown for a given model, so an MCP picture is not sent to one the
 // registry says nothing about.
-const MIXED_CATALOG_PROVIDER_TYPES = new Set(["huggingface", "openrouter", "qwen"]);
+const MIXED_CATALOG_PROVIDER_TYPES = new Set(["huggingface", "openrouter", "qwen", "qwencloud"]);
 
 /** Whether the backend's external tool loop will hand this model an MCP picture -- the
  *  same rule as its _external_takes_mcp_images, so envelopes the backend would strip

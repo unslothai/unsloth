@@ -1766,7 +1766,13 @@ class ResearchSupervisor:
             )
         if not omit_sampling and inference.get("topP") is not None:
             payload["top_p"] = inference["topP"]
-        if inference.get("providerType") in ("deepseek", "huggingface", "qwen", "mistral"):
+        if inference.get("providerType") in (
+            "deepseek",
+            "huggingface",
+            "qwen",
+            "qwencloud",
+            "mistral",
+        ):
             # These providers forward reasoning fields verbatim, and a strict upstream rejects one the model lacks.
             # Mistral documents reasoning_effort for mistral-small-latest and mistral-medium-3-5 only, so the
             # planner opt-out must not reach mistral-large and the other non-reasoning models.
