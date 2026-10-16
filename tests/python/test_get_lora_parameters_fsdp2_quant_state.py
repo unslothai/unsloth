@@ -14,7 +14,7 @@ _SOURCE = Path(__file__).parents[2] / "unsloth" / "kernels" / "utils.py"
 _HELPERS = ("_packed_base", "_is_packed_state", "_base_quant_state")
 
 
-def _load_function(name):
+def _load_function(name, fsdp2_qlora_prepared = True):
     # Extract functions from kernels/utils.py without importing unsloth (which needs a GPU).
     tree = ast.parse(_SOURCE.read_text(encoding = "utf-8"))
     funcs = [
@@ -23,7 +23,11 @@ def _load_function(name):
         if isinstance(node, ast.FunctionDef) and node.name in (name, *_HELPERS)
     ]
     assert [f.name for f in funcs].count(name) == 1, (name, funcs)
-    namespace = {"torch_Tensor": torch.Tensor, "_FP8_WEIGHT_DTYPES": ()}
+    namespace = {
+        "torch_Tensor": torch.Tensor,
+        "_FP8_WEIGHT_DTYPES": (),
+        "_FSDP2_QLORA_PREPARED": fsdp2_qlora_prepared,
+    }
     module = ast.Module(body = funcs, type_ignores = [])
     ast.fix_missing_locations(module)
     exec(compile(module, str(_SOURCE), "exec"), namespace)
@@ -115,3 +119,12 @@ def test_dense_weight_never_takes_the_module_getattr_path():
     lookups.clear()
     assert get_lora_parameters(proj)[1] is None
     assert "quant_state" not in lookups, lookups
+
+
+def test_fallback_only_after_fsdp2_qlora_preparation():
+    # Without prepare_fsdp2_qlora no weight can lose its quant_state, so the default LoRA forward keeps
+    # the merge base's single getattr and never consults the base layer.
+    for name in ("get_lora_parameters", "get_lora_parameters_bias"):
+        fn = _load_function(name, fsdp2_qlora_prepared = False)
+        proj, _ = _fsdp2_unsharded_4bit()
+        assert fn(proj)[1] is None
