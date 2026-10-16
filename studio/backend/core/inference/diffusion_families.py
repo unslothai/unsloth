@@ -458,11 +458,12 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # Qwen3-VL-4B pre-cast fp8, the int8 ConvRot encoder's fallback (diffusion_te_prequant.TE_INT8_CONVROT_FILES).
         # Byte-identical to the distilled repo's: the two bases ship the same text_encoder/ shards.
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/flux-3-image-klein-base-FP8"),),
-        # No te_quant_auto: an unset request keeps the bf16 encoder. Against it (bf16 DiT, 19 cases, 25 steps CFG 3.5,
-        # B200, same-GPU A/A bit-identical) the hosted int8 ConvRot file scores LPIPS-alex mean 0.023 / max 0.121, SSIM
-        # 0.973, and layerwise fp8 0.035 / 0.132, SSIM 0.960, which is also what an auto int8 pick falls back to when
-        # the file cannot be loaded (a local folder, a Hub without it). The encoder drops 8.27 -> 4.89 GiB resident,
-        # but the planner's choice at 24 and 32 GiB does not change, so nothing that loads today needs it to fit.
+        # int8 ConvRot by default, as BFL's ComfyUI templates load qwen3vl_4b_int8_convrot (4 of 5 workflows in
+        # black-forest-labs/flux-3-image-klein-comfy). Against the bf16 encoder (bf16 DiT, 19 cases, 25 steps CFG 3.5,
+        # B200, same-GPU A/A bit-identical) the hosted file scores LPIPS-alex mean 0.023 / max 0.121, SSIM 0.973;
+        # layerwise fp8, the fallback when the file cannot be loaded, 0.035 / 0.132, SSIM 0.960. Resident encoder
+        # 8.27 -> 4.89 GiB, load 18.4 -> 1.8 s.
+        te_quant_auto = "int8",
         base_repo = "black-forest-labs/flux-3-image-klein-base",
         aliases = ("flux-3-image-klein-base", "flux3-image-klein-base", "flux3-klein-base"),
         reference = True,
@@ -499,8 +500,9 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         transformer_class = "Flux3Transformer2DModel",
         # Qwen3-VL-4B pre-cast fp8, the int8 ConvRot encoder's fallback (diffusion_te_prequant.TE_INT8_CONVROT_FILES).
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/flux-3-image-klein-FP8"),),
-        # No te_quant_auto, as on the base: int8 ConvRot 0.017 / 0.098 LPIPS-alex, SSIM 0.974, fp8 0.038 / 0.220, SSIM
-        # 0.945 against the bf16 encoder (19 cases, 16 steps), with the same unchanged 24 / 32 GiB placement.
+        # int8 ConvRot by default, as on the base and in BFL's ComfyUI templates: 0.017 / 0.098 LPIPS-alex, SSIM 0.974,
+        # fp8 fallback 0.038 / 0.220, SSIM 0.945 against the bf16 encoder (19 cases, 16 steps).
+        te_quant_auto = "int8",
         base_repo = "black-forest-labs/flux-3-image-klein",
         aliases = ("flux-3-image-klein", "flux3-image-klein", "flux3-klein"),
         reference = True,

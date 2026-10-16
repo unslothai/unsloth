@@ -296,3 +296,16 @@ def test_an_invisible_repo_falls_back_to_the_dense_encoder(tmp_path, monkeypatch
     assert sources
     # Nothing resolves on the Hub, so the plan keeps the dense text_encoder/ shards.
     assert tpq.te_prequant_hub_files(sources, Invisible()) == {}
+
+
+def test_both_flux3_families_default_to_the_hosted_int8_convrot_encoder():
+    # BFL's ComfyUI templates load qwen3vl_4b_int8_convrot, so an unset request gets the hosted int8 file; "none"
+    # still reaches the released bf16 encoder.
+    from core.inference.diffusion_families import _FAMILIES as FAMILIES
+    from core.inference.diffusion_precision import resolve_te_quant_request
+
+    for name in ("flux.3-klein", "flux.3-klein-base"):
+        fam = next(f for f in FAMILIES if f.name == name)
+        assert fam.te_quant_auto == "int8", name
+        assert resolve_te_quant_request(None, fam.te_quant_auto) == ("int8", True)
+        assert resolve_te_quant_request("none", fam.te_quant_auto)[0] is None
