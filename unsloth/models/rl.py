@@ -838,7 +838,9 @@ def _park_optimizer_enabled(trainer):
     if not torch.cuda.is_available():
         return False
     # DeepSpeed / FSDP own their optimizer state layout; moving it behind their back is unsafe.
-    if getattr(trainer, "is_deepspeed_enabled", False) or getattr(trainer, "is_fsdp_enabled", False):
+    if getattr(trainer, "is_deepspeed_enabled", False) or getattr(
+        trainer, "is_fsdp_enabled", False
+    ):
         return False
     # DDP may keep grads as bucket views; replacing them would detach the views.
     if getattr(getattr(trainer, "args", None), "world_size", 1) > 1:

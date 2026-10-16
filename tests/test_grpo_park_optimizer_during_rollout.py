@@ -41,7 +41,11 @@ def _load():
     cuda.synchronize = lambda device = None: cuda.calls.append("synchronize")
     cuda.empty_cache = lambda: cuda.calls.append("empty_cache")
 
-    def empty_like(tensor, pin_memory = False, **kwargs):
+    def empty_like(
+        tensor,
+        pin_memory = False,
+        **kwargs,
+    ):
         return torch.empty_like(tensor, **kwargs)
 
     namespace["torch"] = types.SimpleNamespace(
@@ -82,9 +86,7 @@ def _run(monkeypatch, enabled):
     fns, cuda = _load()
     trainer, model, optimizer = _trainer_after_one_step()
     before = _snapshot(optimizer, model)
-    original_state = {
-        (id(p), k): v for p, s in optimizer.state.items() for k, v in s.items()
-    }
+    original_state = {(id(p), k): v for p, s in optimizer.state.items() for k, v in s.items()}
     seen = {}
 
     class Trainer:
@@ -166,10 +168,16 @@ def test_gate_skips_without_optimizer_or_under_deepspeed():
 
 def test_no_parked_tensor_is_alive_at_empty_cache():
     import weakref
+
     fns, cuda = _load()
     trainer, model, optimizer = _trainer_after_one_step()
     refs = [weakref.ref(p.grad) for p in model.parameters()]
-    refs += [weakref.ref(v) for s in optimizer.state.values() for v in s.values() if isinstance(v, torch.Tensor)]
+    refs += [
+        weakref.ref(v)
+        for s in optimizer.state.values()
+        for v in s.values()
+        if isinstance(v, torch.Tensor)
+    ]
     alive = []
     cuda.empty_cache = lambda: alive.append(sum(r() is not None for r in refs))
     record = fns["_park_optimizer_to_host"](trainer)
