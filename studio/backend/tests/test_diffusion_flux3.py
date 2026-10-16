@@ -1403,6 +1403,10 @@ _OFFICIAL_LISTING = (
 
 def _fake_hub(monkeypatch, repo_files):
     import huggingface_hub
+    from core.inference.diffusion_families import mirror_repo
+
+    # A gated BFL base is fetched from its byte-identical unsloth mirror, which the Hub lists the same way.
+    repo_files = {**{mirror_repo(r): f for r, f in repo_files.items() if mirror_repo(r)}, **repo_files}
     class _Api:
         def __init__(self, *a, **k):
             pass
@@ -1452,7 +1456,13 @@ def test_companion_staging_is_scoped_to_the_folders_flux3_loads(tmp_path, monkey
         memory_verdict = False,
         discover_text_encoders = False,
     )
-    files = sorted(f for e in plan["entries"] if e["repo_id"] == DISTILLED for f in e["files"])
+    # Staged from the ungated unsloth mirror of the gated BFL repo, never from BFL itself.
+    assert {e["repo_id"] for e in plan["entries"]} & {DISTILLED, "unsloth/flux-3-image-klein"} == {
+        "unsloth/flux-3-image-klein"
+    }
+    files = sorted(
+        f for e in plan["entries"] if e["repo_id"] == "unsloth/flux-3-image-klein" for f in e["files"]
+    )
     assert files == [
         "modular_model_index.json",
         "text_encoder/config.json",

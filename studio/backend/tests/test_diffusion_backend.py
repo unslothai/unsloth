@@ -229,7 +229,7 @@ def _all_cached(monkeypatch):
 
 def test_gated_mirror_table_round_trips():
     """Both directions, exact case: canonical_base must hand back a real repo id."""
-    assert len(_MIRROR_PAIRS) == 25
+    assert len(_MIRROR_PAIRS) == 27
     for upstream, mirror in _MIRROR_PAIRS:
         assert mirror_repo(upstream) == mirror
         assert canonical_base(mirror) == upstream
@@ -251,7 +251,7 @@ def test_only_the_genuinely_gated_half_reads_as_gated():
     exists". Klein base-4B is the one that makes this concrete: a default trainable base, which
     is mirrored, and which the Hub serves anonymously.
     """
-    assert len(_GATED_MIRROR_PAIRS) == 12
+    assert len(_GATED_MIRROR_PAIRS) == 14
     assert len(_UNGATED_MIRROR_PAIRS) == 13
     for upstream, _mirror in _GATED_MIRROR_PAIRS:
         assert upstream_is_gated(upstream), upstream
