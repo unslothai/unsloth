@@ -125,17 +125,7 @@ function capProviderMenuAtItem(item: HTMLElement | null) {
   const viewport = item.closest<HTMLElement>("[data-radix-select-viewport]");
   top -= viewport?.scrollTop ?? 0;
   top += Number.parseFloat(getComputedStyle(content).paddingBottom) || 0;
-  const apply = (extra: number) => {
-    content.style.maxHeight = `min(var(--radix-select-content-available-height), ${top + extra}px)`;
-  };
-  apply(0);
-  // Radix mounts its scroll-down chevron once the list overflows; it takes height from the list.
-  requestAnimationFrame(() => {
-    const chevron = content.querySelector<HTMLElement>(
-      "[data-slot=select-scroll-down-button]",
-    );
-    if (chevron) apply(chevron.offsetHeight);
-  });
+  content.style.maxHeight = `min(var(--radix-select-content-available-height), ${top}px)`;
 }
 
 function parseManualModelIds(text: string): string[] {
@@ -1566,7 +1556,8 @@ export function ChatProvidersSettings({
                   >
                     <SelectValue placeholder="Choose a connection" />
                   </SelectTrigger>
-                  <SelectContent>
+                  {/* No scroll chevrons: the list scrolls by wheel, trackpad and keyboard. */}
+                  <SelectContent className="[&_[data-slot=select-scroll-down-button]]:hidden [&_[data-slot=select-scroll-up-button]]:hidden">
                     <SelectGroup>
                       <SelectItem value={LEGACY_CUSTOM_PROVIDER_TYPE}>
                         <span className="flex min-w-0 items-center gap-2">
