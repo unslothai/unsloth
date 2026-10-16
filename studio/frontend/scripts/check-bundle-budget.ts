@@ -207,8 +207,11 @@ export const BUDGET = {
   // 2,051,025 B transfer against d2bb8d702d): the unseen-runs store behind the notice dots on the sidebar's
   // Scheduled and More icons, the scheduled-chat mark on Recents rows and "Sent by scheduled task" over its
   // prompt, the sidebar's new-task "+", and their strings. The chunk count goes 100 -> 101. Raised by that growth.
-  transferBytes: 2_051_391,
-  rawBytes: 6_816_718,
+  // The scheduled task results poll's claim across an account's tabs and the saved-at stamp on its record add
+  // 688 B raw / 214 B transfer (6,816,102 -> 6,816,790 B raw, 2,050,957 -> 2,051,171 B transfer against
+  // 0704214ca1, one machine and build, Node 22, chunk count unchanged at 101). Raised by that growth.
+  transferBytes: 2_051_605,
+  rawBytes: 6_817_406,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
