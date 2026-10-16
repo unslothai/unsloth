@@ -421,7 +421,7 @@ def FalconH1DecoderLayer_fast_forward(
         hidden_states += residual
     else:
         residual = hidden_states
-        hidden_states = fast_rms_layernorm(self.input_layernorm, hidden_states)
+        hidden_states = fast_rms_layernorm(self.input_layernorm, hidden_states, reuse_grad = True)
 
         mamba_hidden_states = self.mamba(
             hidden_states = hidden_states,
@@ -451,7 +451,7 @@ def FalconH1DecoderLayer_fast_forward(
         hidden_states = residual + hidden_states
 
         residual = hidden_states
-        hidden_states = fast_rms_layernorm(self.pre_ff_layernorm, hidden_states)
+        hidden_states = fast_rms_layernorm(self.pre_ff_layernorm, hidden_states, reuse_grad = True)
         hidden_states = self.feed_forward(hidden_states)
         hidden_states = residual + hidden_states
 
