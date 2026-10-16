@@ -9117,6 +9117,113 @@ printf "  ${C_TITLE}%s${C_RST}\n" "Unsloth Studio installed!"
 printf "  ${C_DIM}%s${C_RST}\n" "$RULE"
 echo ""
 
+# Everything below is behind this gate, and it opens NOT ONE file off an aarch64 Linux box, so a
+# normal install never pays for the feature existing.
+_unsloth_is_dgx_spark() {
+    # `${OS:-}` rather than `$OS`: under a future `set -u` an unbound variable would abort the whole
+    # install rather than skip a hint nobody asked for.
+    [ "${OS:-}" = "linux" ] || return 1
+    case "${_ARCH:-}" in aarch64|arm64) ;; *) return 1 ;; esac
+    grep -qiE 'dgx[_ -]*spark' /etc/dgx-release 2>/dev/null && return 0
+    grep -qiE 'dgx[_ -]*spark' /sys/class/dmi/id/product_name 2>/dev/null
+}
+
+# A cabled rail is an ACTIVE IB port whose netdev also has carrier: together those two say the QSFP
+# cable is seated AND trained at the far end. sysfs globs only, no subprocess.
+_unsloth_spark_cable_present() {
+    for _sp_port in /sys/class/infiniband/*/ports/1; do
+        [ -r "$_sp_port/state" ] || continue
+        grep -qi active "$_sp_port/state" 2>/dev/null || continue
+        _sp_nd=$(cat "$_sp_port/gid_attrs/ndevs/0" 2>/dev/null) || continue
+        [ -n "$_sp_nd" ] || continue
+        if [ "$(cat "/sys/class/net/$_sp_nd/carrier" 2>/dev/null)" = "1" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Names of the netdevs behind cabled RoCE rails (sysfs only, same facts as above).
+_unsloth_spark_cabled_netdevs() {
+    for _sp_port in /sys/class/infiniband/*/ports/1; do
+        [ -r "$_sp_port/state" ] || continue
+        grep -qi active "$_sp_port/state" 2>/dev/null || continue
+        _sp_nd=$(cat "$_sp_port/gid_attrs/ndevs/0" 2>/dev/null) || continue
+        [ -n "$_sp_nd" ] || continue
+        if [ "$(cat "/sys/class/net/$_sp_nd/carrier" 2>/dev/null)" = "1" ]; then
+            printf '%s\n' "$_sp_nd"
+        fi
+    done
+}
+
+# The QSFP hot-plug throttle is NOT detected here on purpose. carrier_up_count looks like the signal
+# but is not one: a node at count=7 measured a full 97.97 Gb/s per rail, so asserting a throttle
+# from it reports a broken link on a healthy machine.
+_unsloth_spark_perf_hint() {
+    substep "If the link ever measures far below ~98 Gb/s per rail, the usual cause"
+    substep "is the cable having been connected after boot; reboot both Sparks with"
+    substep "it plugged in. Check any time with:  unsloth spark status --benchmark"
+}
+
+_unsloth_spark_solo_hint() {
+    echo ""
+    step "spark" "DGX Spark detected (single)" "$C_OK"
+    substep "121.69 GiB is usable, not 128 -- ~6.3 GiB is firmware-reserved."
+    substep "For NVFP4 models, kernel choice is worth up to 6.2x on prefill."
+    substep "See what applies to your workload:  unsloth spark kernels"
+    echo ""
+}
+
+_unsloth_spark_cluster_offer() {
+    _unsloth_is_dgx_spark || return 0
+
+    case "${UNSLOTH_SPARK_CLUSTER:-}" in
+        0|no|NO|false|FALSE|off|OFF) return 0 ;;
+    esac
+
+    # Idempotent: "configured" means a previous run saved a plan AND a cabled rail still carries
+    # IPv4, so the question is settled.
+    _sp_state=$({ "$VENV_DIR/bin/python" -m studio.spark_cluster detect 2>/dev/null || true; } \
+        | sed -n 's/.*"state"[[:space:]]*:[[:space:]]*"\([a-z_]*\)".*/\1/p')
+    if [ "$_sp_state" = "configured" ]; then
+        step "spark" "second Spark already paired" "$C_OK"
+        return 0
+    fi
+
+    if ! _unsloth_spark_cable_present; then
+        _unsloth_spark_solo_hint
+        return 0
+    fi
+
+    echo ""
+    step "spark" "a second DGX Spark is cabled to this one" "$C_OK"
+    substep "Unsloth can set up the 200GbE RoCE link between them"
+    substep "(static IPs on both rails, MTU 9000, and GB10-correct NCCL defaults)."
+    # Say what a second Spark buys: the intuitive answer is wrong, and users otherwise pair two
+    # machines expecting a speedup they will not get.
+    substep "What it buys: ~2x faster tokens for a single request (tensor parallel),"
+    substep "and room for models too large for one Spark. It does NOT speed up a"
+    substep "model that already fits -- splitting one of those measures 0.92x."
+    _unsloth_spark_perf_hint
+
+
+    # Opt-in by variable, never by question: a new installer prompt stalls `curl ... | sh` and
+    # persists an answer nobody can find again.
+    case "${UNSLOTH_SPARK_CLUSTER:-}" in
+        1|yes|YES|true|TRUE|on|ON)
+            # --yes because the variable IS the consent.
+            "$VENV_DIR/bin/python" -m studio.spark_cluster setup --yes || true
+            ;;
+        *)
+            substep "To pair them:  unsloth spark setup"
+            substep "(or re-run this installer with UNSLOTH_SPARK_CLUSTER=1)"
+            ;;
+    esac
+    echo ""
+}
+
+_unsloth_spark_cluster_offer
+
 if [ "$_INSTALL_SYSTEMD" = true ]; then
     _install_systemd_user_service
     if [ "$_SYSTEMD_STARTED" = true ]; then

@@ -56,6 +56,7 @@ from .loader_utils import (
     is_distributed,
     is_automatic_device_map,
     prepare_device_map,
+    notify_device_map_cannot_span_sparks,
     requested_device_map,
     _offline_aware_load,
     _restore_load_scoped_env,
@@ -1180,6 +1181,7 @@ class FastLanguageModel(FastLlamaModel):
 
         # Distributed-safe placement: under torchrun / accelerate launch each rank must load on its own device. Quantized weights make it mandatory, since Accelerate raises device relocation errors on them, but a 16-bit load needs it just as much: an unchosen placement ends up dispatching to cuda:0, so all the ranks land on card 0 and contend for it while the rest of the cards stay empty (#3459). A device the caller named is left alone.
         device_map = deepspeed_zero3_device_map(requested_device_map(device_map))
+        notify_device_map_cannot_span_sparks(device_map)
         if is_automatic_device_map(device_map):
             distributed_device_map, is_dist = prepare_device_map()
             if is_dist:
@@ -2175,6 +2177,7 @@ class FastModel(FastBaseModel):
 
         # Distributed-safe placement: under torchrun / accelerate launch each rank must load on its own device. Quantized weights make it mandatory, since Accelerate raises device relocation errors on them, but a 16-bit load needs it just as much: an unchosen placement ends up dispatching to cuda:0, so all the ranks land on card 0 and contend for it while the rest of the cards stay empty (#3459). A device the caller named is left alone.
         device_map = deepspeed_zero3_device_map(requested_device_map(device_map))
+        notify_device_map_cannot_span_sparks(device_map)
         if is_automatic_device_map(device_map):
             distributed_device_map, is_dist = prepare_device_map()
             if is_dist:

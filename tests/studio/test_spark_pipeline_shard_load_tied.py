@@ -1,0 +1,273 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""`--shard-load` on a checkpoint whose lm_head is tied to the embedding."""
+
+from __future__ import annotations
+
+import glob
+import importlib.util
+import os
+from pathlib import Path
+
+import pytest
+
+REPO = Path(__file__).resolve().parents[2]
+
+
+def _pipeline_module():
+    spec = importlib.util.spec_from_file_location(
+        "spark_pipeline", REPO / "studio" / "spark_pipeline.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _saved(transformers, tmp_path, *, tied: bool) -> str:
+    config = transformers.LlamaConfig(
+        vocab_size = 64,
+        hidden_size = 32,
+        intermediate_size = 64,
+        num_hidden_layers = 4,
+        num_attention_heads = 4,
+        num_key_value_heads = 4,
+        max_position_embeddings = 32,
+        tie_word_embeddings = tied,
+    )
+    out = str(tmp_path / ("tied" if tied else "untied"))
+    transformers.LlamaForCausalLM(config).save_pretrained(out, safe_serialization = True)
+    return out
+
+
+def _keys(directory: str) -> set:
+    from safetensors import safe_open
+
+    found = set()
+    for shard in glob.glob(os.path.join(directory, "*.safetensors")):
+        with safe_open(shard, framework = "pt") as handle:
+            found |= set(handle.keys())
+    return found
+
+
+def test_a_tied_head_loads_from_the_embedding_it_is_tied_to(tmp_path) -> None:
+    torch = pytest.importorskip("torch")
+    transformers = pytest.importorskip("transformers")
+    pipeline = _pipeline_module()
+
+    saved = _saved(transformers, tmp_path, tied = True)
+    assert "lm_head.weight" not in _keys(saved)
+    assert "model.embed_tokens.weight" in _keys(saved)
+
+    model, _, _ = pipeline.build_stage_model(
+        saved,
+        rank = 1,
+        world = 2,
+        device = "cpu",
+        shard_load = True,
+        dtype = torch.float32,
+        log = lambda *a, **k: None,
+    )
+    assert not model.lm_head.weight.is_meta
+
+    from safetensors import safe_open
+
+    for shard in glob.glob(os.path.join(saved, "*.safetensors")):
+        with safe_open(shard, framework = "pt") as handle:
+            if "model.embed_tokens.weight" in handle.keys():
+                want = handle.get_tensor("model.embed_tokens.weight")
+    assert torch.equal(model.lm_head.weight, want.to(torch.float32))
+
+
+def test_a_stage_holding_both_keeps_them_one_tensor(tmp_path) -> None:
+    """Two copies would let the optimizer update halves of a weight the model shares."""
+    torch = pytest.importorskip("torch")
+    transformers = pytest.importorskip("transformers")
+    pipeline = _pipeline_module()
+
+    saved = _saved(transformers, tmp_path, tied = True)
+    model, _, _ = pipeline.build_stage_model(
+        saved,
+        rank = 0,
+        world = 1,
+        device = "cpu",
+        shard_load = True,
+        dtype = torch.float32,
+        log = lambda *a, **k: None,
+    )
+    embed = model.get_input_embeddings().weight
+    assert model.lm_head.weight.data_ptr() == embed.data_ptr()
+    # One Parameter object, not two sharing storage: AdamW would otherwise step it twice.
+    assert model.lm_head.weight is embed
+    assert sum(p is embed for p in model.parameters()) == 1
+
+
+def test_an_untied_checkpoint_is_unaffected(tmp_path) -> None:
+    """The head is in the shards under its own name, and nothing here should change that."""
+    torch = pytest.importorskip("torch")
+    transformers = pytest.importorskip("transformers")
+    pipeline = _pipeline_module()
+
+    saved = _saved(transformers, tmp_path, tied = False)
+    assert "lm_head.weight" in _keys(saved)
+
+    model, _, _ = pipeline.build_stage_model(
+        saved,
+        rank = 1,
+        world = 2,
+        device = "cpu",
+        shard_load = True,
+        dtype = torch.float32,
+        log = lambda *a, **k: None,
+    )
+    # The last stage has no embedding at all, so the head must have come from its own key.
+    assert not model.lm_head.weight.is_meta
+    assert isinstance(model.get_input_embeddings(), torch.nn.Identity)
+
+
+@pytest.mark.parametrize(
+    "schedule,world,expected",
+    [
+        ("1f1b", 2, True),
+        ("gpipe", 2, True),
+        ("interleaved", 2, True),
+        ("zbv", 2, False),  # a V layout puts the first and last stage on one rank
+        ("dualpipev", 2, False),
+        ("1f1b", 1, False),  # one rank is one parameter
+    ],
+)
+def test_a_tied_checkpoint_is_refused_only_where_it_would_actually_split(
+    schedule: str, world: int, expected: bool
+) -> None:
+    pipeline = _pipeline_module()
+    plan = pipeline.torch_pp_plan(schedule, world, microbatches = 4, virtual_stages = 2, n_layers = 8)
+    problem = pipeline.tied_split_problem(
+        tied = True, full_finetune = True, world = world, stage_to_rank = plan["stage_to_rank"]
+    )
+    assert bool(problem) is expected, f"{schedule} world={world}: {problem}"
+    if problem:
+        assert "tie" in problem and "zbv" in problem
+
+
+def test_lora_and_untied_checkpoints_are_not_refused() -> None:
+    """LoRA freezes the base weights, so tied weights cannot drift; an untied checkpoint has nothing to
+    keep equal in the first place."""
+    pipeline = _pipeline_module()
+    mapping = pipeline.stage_to_rank_map(2, 2, "loop")
+    assert pipeline.tied_split_problem(True, False, 2, mapping) is None
+    assert pipeline.tied_split_problem(False, True, 2, mapping) is None
+
+
+def test_the_legacy_backend_is_covered_without_a_plan() -> None:
+    """`--pp-backend legacy` builds no stage_to_rank map, and embedding and head still land on the
+    first and last rank."""
+    pipeline = _pipeline_module()
+    assert pipeline.tied_split_problem(True, True, 2, None)
+    assert pipeline.tied_split_problem(True, True, 1, None) is None
+
+
+def test_a_non_final_gpt_neox_stage_drops_its_output_head(tmp_path) -> None:
+    """GPT-NeoX calls its final norm `final_layer_norm`, and its head `embed_out` before
+    transformers 5; a stage looking only for `norm` and `lm_head` kept them on every rank."""
+    torch = pytest.importorskip("torch")
+    transformers = pytest.importorskip("transformers")
+    pipeline = _pipeline_module()
+
+    out = str(tmp_path / "neox")
+    transformers.GPTNeoXForCausalLM(
+        transformers.GPTNeoXConfig(
+            vocab_size = 64,
+            hidden_size = 32,
+            intermediate_size = 64,
+            num_hidden_layers = 4,
+            num_attention_heads = 4,
+            max_position_embeddings = 32,
+        )
+    ).save_pretrained(out, safe_serialization = True)
+    model, _, _ = pipeline.build_stage_model(
+        out,
+        rank = 0,
+        world = 2,
+        device = "cpu",
+        shard_load = True,
+        dtype = torch.float32,
+        log = lambda *a, **k: None,
+    )
+    head = "embed_out" if hasattr(model, "embed_out") else "lm_head"
+    assert isinstance(getattr(model, head), torch.nn.Identity)
+    assert isinstance(model.gpt_neox.final_layer_norm, torch.nn.Identity)
+    assert not any(
+        name.startswith((head, "gpt_neox.final_layer_norm")) for name, _ in model.named_parameters()
+    )
+
+
+@pytest.mark.parametrize("shard_load", [True, False])
+@pytest.mark.parametrize("arch", ["gemma3", "gpt_neox"])
+def test_shard_load_computes_every_rotary_buffer(tmp_path, arch: str, shard_load: bool) -> None:
+    """Gemma 3 keeps a second rotary for local layers and GPT-NeoX keeps its own under
+    `gpt_neox`; rebuilding only `model.rotary_emb` left theirs as uninitialised storage."""
+    torch = pytest.importorskip("torch")
+    transformers = pytest.importorskip("transformers")
+    pipeline = _pipeline_module()
+
+    if arch == "gemma3":
+        model = transformers.Gemma3ForCausalLM(
+            transformers.Gemma3TextConfig(
+                vocab_size = 64,
+                hidden_size = 32,
+                intermediate_size = 64,
+                num_hidden_layers = 2,
+                num_attention_heads = 4,
+                num_key_value_heads = 4,
+                head_dim = 8,
+                sliding_window = 8,
+            )
+        )
+    else:
+        model = transformers.GPTNeoXForCausalLM(
+            transformers.GPTNeoXConfig(
+                vocab_size = 64,
+                hidden_size = 32,
+                intermediate_size = 64,
+                num_hidden_layers = 2,
+                num_attention_heads = 4,
+                max_position_embeddings = 32,
+            )
+        )
+    out = str(tmp_path / arch)
+    model.save_pretrained(out, safe_serialization = True)
+    loaded, _, _ = pipeline.build_stage_model(
+        out,
+        rank = 0,
+        world = 1,
+        device = "cpu",
+        shard_load = shard_load,
+        dtype = torch.float32,
+        log = lambda *a, **k: None,
+    )
+    want = dict(model.named_buffers())
+    got = dict(loaded.named_buffers())
+    rotary = [k for k in want if "inv_freq" in k]
+    assert rotary
+    for k in rotary:
+        assert torch.equal(got[k], want[k]), k
+
+
+def test_auto_shard_load_sizes_an_fp8_checkpoint_at_its_bf16_footprint(tmp_path) -> None:
+    """On disk an FP8 checkpoint is half of what a stage holds after the bf16 cast."""
+    import importlib.util as iu
+    import json
+    import struct
+
+    spec = iu.spec_from_file_location("spark_cluster_sizes", REPO / "studio" / "spark_cluster.py")
+    cluster = iu.module_from_spec(spec)
+    spec.loader.exec_module(cluster)
+    header = {
+        "w": {"dtype": "F8_E4M3", "shape": [1024, 1024], "data_offsets": [0, 1024 * 1024]},
+        "n": {"dtype": "I32", "shape": [4], "data_offsets": [1024 * 1024, 1024 * 1024 + 16]},
+    }
+    blob = json.dumps(header).encode()
+    with open(tmp_path / "model.safetensors", "wb") as handle:
+        handle.write(struct.pack("<Q", len(blob)) + blob)
+    got = cluster.bf16_resident_gib(str(tmp_path))
+    assert got == (2 * 1024 * 1024 + 16) / 2**30

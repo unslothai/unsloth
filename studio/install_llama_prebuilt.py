@@ -4709,6 +4709,16 @@ def paired_runtime_dll_patterns(choice: AssetChoice) -> list[str]:
     return []
 
 
+RPC_SERVER_NAMES = ("ggml-rpc-server", "rpc-server")
+# First fork release shipping the executable; earlier bundles had only the client library.
+RPC_SERVER_FIRST_PUBLISHED_BUILD = 10796
+
+
+def rpc_server_names_for_host(host: HostInfo) -> tuple[str, ...]:
+    ext = ".exe" if host.is_windows else ""
+    return tuple(name + ext for name in RPC_SERVER_NAMES)
+
+
 def runtime_patterns_for_choice(choice: AssetChoice) -> list[str]:
     return runtime_patterns_for_install_kind(choice.install_kind, choice.source_label)
 
@@ -4720,10 +4730,8 @@ def runtime_patterns_for_install_kind(
     # repackage the SO/DLL set (e.g. ggml-org/llama.cpp#23462 split the
     # per-binary entry code into paired ``lib<binary>-impl.so`` shared
     # libraries between b9279 and b9283) without us re-enumerating
-    # every new file. Unsloth invokes llama-server, llama-quantize, and the
     # DiffusionGemma visual-server (when the bundle ships it, for native
-    # DiffusionGemma serving); other CLIs upstream ships (llama-cli,
-    # llama-bench, ...) are skipped.
+    # DiffusionGemma serving), and ggml-rpc-server.
     if install_kind in {
         "linux-cpu",
         "linux-cuda",
@@ -4732,12 +4740,19 @@ def runtime_patterns_for_install_kind(
         "linux-arm64",
         "linux-vulkan",
     }:
-        return ["llama-server", "llama-quantize", "llama-diffusion-gemma-visual-server", "lib*.so*"]
+        return [
+            "llama-server",
+            "llama-quantize",
+            "llama-diffusion-gemma-visual-server",
+            *RPC_SERVER_NAMES,
+            "lib*.so*",
+        ]
     if install_kind in {"macos-arm64", "macos-x64"}:
         return [
             "llama-server",
             "llama-quantize",
             "llama-diffusion-gemma-visual-server",
+            *RPC_SERVER_NAMES,
             # Optional Metal memory probe; missing bundles keep the conservative estimate.
             "llama-fit-params",
             "lib*.dylib",
@@ -4755,6 +4770,7 @@ def runtime_patterns_for_install_kind(
             "llama-server.exe",
             "llama-quantize.exe",
             "llama-diffusion-gemma-visual-server.exe",
+            *(name + ".exe" for name in RPC_SERVER_NAMES),
             "*.dll",
         ]
     raise PrebuiltFallback(f"unsupported install kind for runtime overlay: {install_kind}")
@@ -5563,6 +5579,12 @@ def install_from_archives(
     os.chmod(source_server, 0o755)
     os.chmod(source_quantize, 0o755)
     ensure_fit_params_executable(install_dir)
+    # Extraction does not keep exec bits and rpc_server_binary() skips a file without X_OK, so this
+    # needs the same chmod as the two primaries.
+    for rpc_name in rpc_server_names_for_host(host):
+        rpc_server = build_bin / rpc_name
+        if rpc_server.is_file():
+            os.chmod(rpc_server, 0o755)
 
     root_server = install_dir / "llama-server"
     root_quantize = install_dir / "llama-quantize"
@@ -9227,8 +9249,10 @@ def existing_install_current_without_plan(
         )
     except Exception:  # noqa: BLE001
         return False
-    # The one backfill that is not a release change, so it has to be asked separately.
-    if _diffusion_visual_server_missing_for_marker(install_dir, host, marker):
+    # The backfills that are not a release change, so they have to be asked separately.
+    if _diffusion_visual_server_missing_for_marker(install_dir, host, marker) or _rpc_server_owed(
+        install_dir, host, marker.get("source"), marker.get("release_tag")
+    ):
         return False
     # "already matches" is what setup.sh and setup.ps1 grep for to report the install up to date.
     log(
@@ -9964,9 +9988,8 @@ def validate_prebuilt_attempts(
                 choice = attempt,
                 approved_checksums = approved_checksums,
             )
-            # Skip a matching candidate unless it still needs the DiffusionGemma
-            # backfill re-extract (gated per-attempt, not per-plan).
-            and not diffusion_visual_server_backfill_needed(existing_install_dir, host, attempt)
+            # Gated per-attempt, not per-plan.
+            and bundle_backfill_reason(existing_install_dir, host, attempt) is None
         ):
             log(
                 "existing llama.cpp install already matches fallback candidate "
@@ -10826,6 +10849,49 @@ def diffusion_visual_server_backfill_needed(
     return True
 
 
+def _rpc_server_owed(
+    install_dir: Path, host: HostInfo, source_label: "str | None", release_tag: "str | None"
+) -> bool:
+    """True when an install has the libggml-rpc client but not the ggml-rpc-server beside it."""
+    if source_label == "published":
+        build = _release_build_number(release_tag)
+        if build is None or build < RPC_SERVER_FIRST_PUBLISHED_BUILD:
+            return False
+    runtime_dir = install_runtime_dir(install_dir, host)
+    rpc_library = (
+        ("ggml-rpc.dll",) if host.is_windows else ("libggml-rpc.so*", "libggml-rpc*.dylib")
+    )
+    if not any(any(runtime_dir.glob(pattern)) for pattern in rpc_library):
+        return False
+    for name in rpc_server_names_for_host(host):
+        for cand in (
+            install_dir / name,
+            install_dir / "build" / "bin" / name,
+            install_dir / "build" / "bin" / "Release" / name,
+        ):
+            if cand.is_file():
+                return False
+    return True
+
+
+def rpc_server_backfill_needed(install_dir: Path, host: HostInfo, choice: AssetChoice) -> bool:
+    """True when an existing install matches the tag but lacks the ggml-rpc-server the chosen bundle
+    ships."""
+    patterns = runtime_patterns_for_choice(choice)
+    if not any(name in patterns for name in rpc_server_names_for_host(host)):
+        return False
+    return _rpc_server_owed(install_dir, host, choice.source_label, choice.tag)
+
+
+def bundle_backfill_reason(install_dir: Path, host: HostInfo, choice: AssetChoice) -> str | None:
+    """Why a tag-matching install must still be re-extracted, or None when it is complete."""
+    if diffusion_visual_server_backfill_needed(install_dir, host, choice):
+        return "is missing the DiffusionGemma visual-server"
+    if rpc_server_backfill_needed(install_dir, host, choice):
+        return "is missing ggml-rpc-server"
+    return None
+
+
 def _causal_chain(exc: BaseException) -> Iterable[BaseException]:
     seen: set[int] = set()
     current: BaseException | None = exc
@@ -11448,10 +11514,11 @@ def install_prebuilt(
 
             if release_plans and existing_install_matches_plan(install_dir, host, release_plans[0]):
                 current = release_plans[0]
-                if diffusion_visual_server_backfill_needed(install_dir, host, current.attempts[0]):
+                backfill_reason = bundle_backfill_reason(install_dir, host, current.attempts[0])
+                if backfill_reason:
                     log(
-                        f"existing install matches {current.release_tag} but is missing the "
-                        "DiffusionGemma visual-server; re-extracting the bundle to backfill it"
+                        f"existing install matches {current.release_tag} but {backfill_reason}; "
+                        "re-extracting the bundle to backfill it"
                     )
                 else:
                     log(
@@ -11472,12 +11539,12 @@ def install_prebuilt(
                     iter_release_plans(release_plans, published_repo)
                 ):
                     choice = plan.attempts[0]
-                    backfill = diffusion_visual_server_backfill_needed(install_dir, host, choice)
+                    backfill_reason = bundle_backfill_reason(install_dir, host, choice)
                     if existing_install_matches_plan(install_dir, host, plan):
-                        if backfill:
+                        if backfill_reason:
                             log(
-                                f"existing install matches fallback {plan.release_tag} but is missing "
-                                "the DiffusionGemma visual-server; re-extracting to backfill it"
+                                f"existing install matches fallback {plan.release_tag} but "
+                                f"{backfill_reason}; re-extracting to backfill it"
                             )
                         else:
                             log(
