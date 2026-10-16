@@ -1205,6 +1205,7 @@ mod pac {
                     let missing = [
                         ERROR_WINHTTP_AUTODETECTION_FAILED,
                         ERROR_WINHTTP_UNABLE_TO_DOWNLOAD_SCRIPT,
+                        ERROR_TIMEOUT,
                     ];
                     if missing.contains(&error) {
                         *FAILED.lock().ok()? = Some((key, Instant::now()));
