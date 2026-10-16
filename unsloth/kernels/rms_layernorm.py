@@ -483,7 +483,12 @@ def _settings(n_cols):
 
 def _launch(wrap, kernel, grid, args, n_tensors, constexprs, device, **options):
     # Eager CUDA skips Triton's arg binding (triton_launch.py); traced / non-Triton keep kernel[grid].
-    if triton_launch._ENABLED and wrap is _eager_kernel and device.type == "cuda" and not torch.compiler.is_compiling():
+    if (
+        triton_launch._ENABLED
+        and wrap is _eager_kernel
+        and device.type == "cuda"
+        and not torch.compiler.is_compiling()
+    ):
         fn = kernel
         if isinstance(kernel, triton.runtime.autotuner.Heuristics):
             # What Heuristics.run does; these heuristics only read their own constexpr.

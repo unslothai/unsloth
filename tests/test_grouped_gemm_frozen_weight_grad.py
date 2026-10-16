@@ -29,13 +29,21 @@ def _run(x_grad, w_grad, monkeypatch):
     calls = []
     for name in ("grouped_gemm_dX", "grouped_gemm_dW"):
         real = getattr(interface, name)
-        monkeypatch.setattr(interface, name, lambda *a, real = real, name = name, **k: calls.append(name) or real(*a, **k))
+        monkeypatch.setattr(
+            interface,
+            name,
+            lambda *a, real = real, name = name, **k: calls.append(name) or real(*a, **k),
+        )
     torch.manual_seed(0)
     X = torch.randn(T, K, device = "cuda", dtype = torch.float16, requires_grad = x_grad)
     W = torch.randn(E, N, K, device = "cuda", dtype = torch.float16, requires_grad = w_grad)
     m_sizes = torch.full((E,), T // E, device = "cuda", dtype = torch.int32)
-    bias = torch.zeros(N, device = "cuda", dtype = torch.float16, requires_grad = True)  # something always trains
-    out = interface.grouped_gemm(X = X, W = W, m_sizes = m_sizes, topk = 1, permute_x = False, permute_y = False, autotune = True)
+    bias = torch.zeros(
+        N, device = "cuda", dtype = torch.float16, requires_grad = True
+    )  # something always trains
+    out = interface.grouped_gemm(
+        X = X, W = W, m_sizes = m_sizes, topk = 1, permute_x = False, permute_y = False, autotune = True
+    )
     (out + bias).float().square().sum().backward()
     ref_X, ref_W = X.detach().float().requires_grad_(), W.detach().float().requires_grad_()
     ref = torch.cat([ref_X[e * (T // E) : (e + 1) * (T // E)] @ ref_W[e].T for e in range(E)])
@@ -43,17 +51,22 @@ def _run(x_grad, w_grad, monkeypatch):
     return calls, X, W, ref_X, ref_W
 
 
-@pytest.mark.parametrize("x_grad, w_grad, want", [
-    (True, False, ["grouped_gemm_dX"]),
-    (False, True, ["grouped_gemm_dW"]),
-    (True, True, ["grouped_gemm_dW", "grouped_gemm_dX"]),
-    (False, False, []),
-])
+@pytest.mark.parametrize(
+    "x_grad, w_grad, want",
+    [
+        (True, False, ["grouped_gemm_dX"]),
+        (False, True, ["grouped_gemm_dW"]),
+        (True, True, ["grouped_gemm_dW", "grouped_gemm_dX"]),
+        (False, False, []),
+    ],
+)
 def test_backward_launches_only_the_needed_kernels(x_grad, w_grad, want, monkeypatch):
     calls, X, W, ref_X, ref_W = _run(x_grad, w_grad, monkeypatch)
     assert sorted(calls) == sorted(want)
     for t, ref, needed in ((X, ref_X, x_grad), (W, ref_W, w_grad)):
         if needed:
-            torch.testing.assert_close(t.grad.float(), ref.grad, rtol = 2e-2, atol = 2e-2 * ref.grad.abs().max().item())
+            torch.testing.assert_close(
+                t.grad.float(), ref.grad, rtol = 2e-2, atol = 2e-2 * ref.grad.abs().max().item()
+            )
         else:
             assert t.grad is None
