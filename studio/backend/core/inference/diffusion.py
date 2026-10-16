@@ -3589,6 +3589,24 @@ class DiffusionBackend:
             planned_quant, auto = resolve_te_quant_request(
                 text_encoder_quant, getattr(fam, "te_quant_auto", None)
             )
+            auto_scheme = planned_quant if auto else None
+            if auto_scheme is not None:
+                from .diffusion_te_prequant import (
+                    te_prequant_sources_confirmed,
+                    te_prequant_sources_for_base,
+                )
+
+                hosted = te_prequant_sources_for_base(
+                    fam,
+                    base,
+                    te_quant_mode = planned_quant,
+                    target = self._target_for_ordinal(fam, None),
+                )
+                if not hosted or not te_prequant_sources_confirmed(
+                    hosted, local_files_only = local_files_only
+                ):
+                    # Without its hosted file the default loads dense, and the ComfyUI copy is that encoder.
+                    auto_scheme = None
 
             def _fits(overrides: Any) -> None:
                 verify_override_fit(
@@ -3606,7 +3624,7 @@ class DiffusionBackend:
                 model_index = index,
                 family = fam.name,
                 fits = _fits,
-                auto_scheme = planned_quant if auto else None,
+                auto_scheme = auto_scheme,
             )
         except Exception as exc:  # noqa: BLE001 - the base repo's encoder is always the fallback
             logger.info(
