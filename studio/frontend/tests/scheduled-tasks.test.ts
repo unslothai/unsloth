@@ -169,10 +169,9 @@ test("announcing resumes from a record saved within the catch-up window, by this
   // `since` is the server's time: a browser clock behind it or far ahead of it is no reason to drop it.
   assert.deepEqual(readSeenRuns(stored(now, now + 3_600_000), now), { since: now + 3_600_000, ids: ["run-1"] });
   assert.deepEqual(readSeenRuns(stored(now, now - 3 * CATCH_UP_MS), now)?.since, now - 3 * CATCH_UP_MS);
-  assert.equal(readSeenRuns(stored(now - CATCH_UP_MS - 1), now), null);
-  // A clock set back since the save puts the save ahead of it, within the same window.
-  assert.notEqual(readSeenRuns(stored(now + 60_000), now), null);
-  assert.equal(readSeenRuns(stored(now + CATCH_UP_MS + 1), now), null);
+  // A clock set back since the save puts the save ahead of it, which counts as recent.
+  assert.deepEqual(readSeenRuns(stored(now + 60_000), now), { since: 5_000, ids: ["run-1"] });
+  assert.deepEqual(readSeenRuns(stored(now + 2 * CATCH_UP_MS), now), { since: 5_000, ids: ["run-1"] });
   assert.equal(readSeenRuns(null, now), null);
   assert.equal(readSeenRuns("not json", now), null);
   assert.equal(readSeenRuns(JSON.stringify({ ids: [], savedAt: now }), now), null);
@@ -182,6 +181,15 @@ test("announcing resumes from a record saved within the catch-up window, by this
   // What is saved reads back.
   const seen = { since: 5_000, ids: ["a"] };
   assert.deepEqual(readSeenRuns(serializeSeenRuns(seen, now), now + 60_000), seen);
+});
+
+test("a record older than the catch-up window resumes from that window before now, on the server's clock", () => {
+  // Saved two days ago, a minute behind the server then: the server's now is about since + slack + age.
+  const savedAt = 1_000_000_000;
+  const now = savedAt + 2 * CATCH_UP_MS;
+  const since = 7_000_000;
+  const resumed = readSeenRuns(JSON.stringify({ since, ids: ["old"], savedAt }), now);
+  assert.deepEqual(resumed, { since: since + 60_000 + CATCH_UP_MS, ids: [] });
 });
 
 test("the record moves on every poll, a minute behind the server, and remembers what it announced", () => {

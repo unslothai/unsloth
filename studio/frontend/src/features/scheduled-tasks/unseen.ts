@@ -6,9 +6,20 @@
  *  is touched). In the startup bundle, beside the results poll that fills it. */
 
 import { create } from "zustand";
-import { AUTH_SESSION_CLEARED_EVENT } from "@/features/auth";
+import {
+  AUTH_SESSION_CLEARED_EVENT,
+  AUTH_SESSION_STORED_EVENT,
+  getAuthToken,
+  sessionAccount,
+} from "@/features/auth";
+import { UNSEEN_KEY_PREFIX } from "./results";
 
-const STORAGE_KEY = "unsloth_scheduled_tasks_unseen";
+/** The signed-in account's record, or none while signed out. Each account keeps its own, so
+ *  signing out or into another account does not count as having looked. */
+function storageKey(): string | null {
+  const token = getAuthToken();
+  return token ? UNSEEN_KEY_PREFIX + (sessionAccount(token)?.username ?? "") : null;
+}
 
 interface Stored {
   /** Task id -> the chat its finished run made, or null for a failed run. */
@@ -25,8 +36,10 @@ interface UnseenState extends Stored {
 }
 
 function load(): Stored {
+  const key = storageKey();
+  if (key === null) return { tasks: {}, page: false };
   try {
-    const value = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "null") as Partial<Stored> | null;
+    const value = JSON.parse(localStorage.getItem(key) ?? "null") as Partial<Stored> | null;
     if (value && typeof value.tasks === "object" && value.tasks !== null) {
       return { tasks: value.tasks, page: value.page === true };
     }
@@ -37,8 +50,10 @@ function load(): Stored {
 }
 
 function save({ tasks, page }: Stored): void {
+  const key = storageKey();
+  if (key === null) return;
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ tasks, page }));
+    localStorage.setItem(key, JSON.stringify({ tasks, page }));
   } catch {
     // Without storage the dots last until the next launch.
   }
@@ -73,8 +88,11 @@ export const useUnseenScheduledRuns = create<UnseenState>()((set, get) => {
 });
 
 if (typeof window !== "undefined") {
+  // Signing out hides the markers but keeps them for the account; signing in shows its own.
   window.addEventListener(AUTH_SESSION_CLEARED_EVENT, () => {
     useUnseenScheduledRuns.setState({ tasks: {}, page: false });
-    save({ tasks: {}, page: false });
+  });
+  window.addEventListener(AUTH_SESSION_STORED_EVENT, () => {
+    useUnseenScheduledRuns.setState(load());
   });
 }

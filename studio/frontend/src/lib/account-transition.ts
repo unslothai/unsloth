@@ -46,6 +46,8 @@ export const ACCOUNT_CHROME_PREFIXES = [
 export const ACCOUNT_KEYED_PREFIXES = [
   // The scheduled task results poll's cursor: a time and the run ids it has announced.
   "unsloth_scheduled_tasks_seen:",
+  // Its unseen-run markers: task ids, and the chats their latest runs made.
+  "unsloth_scheduled_tasks_unseen:",
 ] as const;
 /** Per-tab flags about the browser session, not the account. Never add content. */
 export const ACCOUNT_SESSION_CHROME_KEYS = new Set([USER_STOPPED_KEY]);

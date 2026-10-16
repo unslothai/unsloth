@@ -391,6 +391,21 @@ def task_exists(task_id: str) -> bool:
         conn.close()
 
 
+def _trim_history(conn: sqlite3.Connection, task_id: str) -> None:
+    """Drop the task's finished runs past the newest RUN_HISTORY_LIMIT."""
+    conn.execute(
+        f"""
+        DELETE FROM scheduled_task_runs
+        WHERE task_id = ? AND status NOT IN {_ACTIVE} AND rowid NOT IN (
+            SELECT rowid FROM scheduled_task_runs
+            WHERE task_id = ? AND status NOT IN {_ACTIVE}
+            ORDER BY created_at DESC, rowid DESC LIMIT ?
+        )
+        """,
+        (task_id, task_id, RUN_HISTORY_LIMIT),
+    )
+
+
 def finish_run(
     run_id: str,
     worker_id: str,
@@ -428,17 +443,7 @@ def finish_run(
             """,
             (status, now_ms(), thread_id, model, error_code, error, run_id),
         )
-        conn.execute(
-            f"""
-            DELETE FROM scheduled_task_runs
-            WHERE task_id = ? AND status NOT IN {_ACTIVE} AND rowid NOT IN (
-                SELECT rowid FROM scheduled_task_runs
-                WHERE task_id = ? AND status NOT IN {_ACTIVE}
-                ORDER BY created_at DESC, rowid DESC LIMIT ?
-            )
-            """,
-            (row["task_id"], row["task_id"], RUN_HISTORY_LIMIT),
-        )
+        _trim_history(conn, row["task_id"])
         conn.commit()
         return True
     except Exception:
@@ -466,18 +471,19 @@ def recover_stale_runs(stale_before: int) -> int:
         ):
             return 0
         conn.execute("BEGIN IMMEDIATE")
-        run_ids = [
-            row[0]
-            for row in conn.execute(
-                f"SELECT id FROM scheduled_task_runs WHERE {stale}", (stale_before,)
-            ).fetchall()
-        ]
+        rows = conn.execute(
+            f"SELECT id, task_id FROM scheduled_task_runs WHERE {stale}", (stale_before,)
+        ).fetchall()
+        run_ids = [row["id"] for row in rows]
         conn.executemany(
             "UPDATE scheduled_task_runs"
             " SET status = 'failed', finished_at = ?, error_code = 'interrupted', error = NULL"
             " WHERE id = ?",
             [(now_ms(), run_id) for run_id in run_ids],
         )
+        # As finish_run does: a task whose runs keep ending this way must not pile them up.
+        for task_id in {row["task_id"] for row in rows}:
+            _trim_history(conn, task_id)
         conn.commit()
     except Exception:
         conn.rollback()

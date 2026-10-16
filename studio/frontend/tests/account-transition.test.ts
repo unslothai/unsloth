@@ -18,7 +18,7 @@ import {
   transitionBrowserAccount,
 } from "../src/lib/account-transition.ts";
 import { RUNTIME_REPAIR_KEY } from "../src/hooks/runtime-repair-history.ts";
-import { SEEN_KEY_PREFIX } from "../src/features/scheduled-tasks/results.ts";
+import { SEEN_KEY_PREFIX, UNSEEN_KEY_PREFIX } from "../src/features/scheduled-tasks/results.ts";
 
 function browserWith(
   values: Record<string, string> = {},
@@ -151,6 +151,7 @@ test("switch removes every content prefix and preserves only listed chrome and u
     unrelated: "keep",
     "unsloth_web_update_dismissed:pip:1": "keep",
     [`${SEEN_KEY_PREFIX}unsloth`]: "keep",
+    [`${UNSEEN_KEY_PREFIX}unsloth`]: "keep",
     [BROWSER_ACCOUNT_KEY]: "unsloth",
   });
   const changed = await transitionBrowserAccount(
@@ -170,10 +171,12 @@ test("switch removes every content prefix and preserves only listed chrome and u
     assert.equal(b.data.get(key), "chrome");
   assert.equal(b.data.get("unrelated"), "keep");
   assert.equal(b.data.get("unsloth_web_update_dismissed:pip:1"), "keep");
-  // The owner's scheduled task results record waits for the owner, so nothing finished meanwhile
-  // goes unannounced.
-  assert.equal(b.data.get(`${SEEN_KEY_PREFIX}unsloth`), "keep");
-  assert.ok(ACCOUNT_KEYED_PREFIXES.some((prefix) => SEEN_KEY_PREFIX.startsWith(prefix)));
+  // The owner's scheduled task records wait for the owner: nothing finished meanwhile goes
+  // unannounced, and nothing it had not opened loses its dot.
+  for (const prefix of [SEEN_KEY_PREFIX, UNSEEN_KEY_PREFIX]) {
+    assert.equal(b.data.get(`${prefix}unsloth`), "keep");
+    assert.ok(ACCOUNT_KEYED_PREFIXES.some((kept) => prefix.startsWith(kept)));
+  }
   assert.equal(b.data.get("unsloth_auth_token"), "alice-token");
   assert.equal(b.data.get(BROWSER_ACCOUNT_KEY), "alice");
   assert.deepEqual(b.replaced, ["/change-password"]);

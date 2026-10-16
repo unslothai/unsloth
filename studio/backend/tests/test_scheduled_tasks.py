@@ -269,6 +269,16 @@ def test_finishing_settles_only_the_owners_run_and_bounds_the_history(monkeypatc
     assert [run["errorCode"] for run in db.list_runs("task-1")] == ["empty", "empty"]
 
 
+def test_the_sweep_keeps_a_task_s_history_bounded_too(monkeypatch):
+    monkeypatch.setattr(db, "RUN_HISTORY_LIMIT", 2)
+    make_task()
+    for _ in range(3):
+        db.request_run("task-1")
+        db.claim_next(db.now_ms(), "crashed", next_run_for)
+        assert db.recover_stale_runs(db.now_ms() + scheduler_module._STALE_RUN_MS + 1) == 1
+    assert [run["errorCode"] for run in db.list_runs("task-1")] == ["interrupted", "interrupted"]
+
+
 def test_a_deleted_chat_unlinks_from_its_run():
     make_task()
     studio_db.upsert_chat_thread(

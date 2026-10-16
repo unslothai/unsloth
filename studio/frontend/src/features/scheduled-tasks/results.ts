@@ -15,6 +15,8 @@ export const SCHEDULED_TASK_RUNS_FINISHED_EVENT = "unsloth-scheduled-task-runs-f
 /** Where the results poll keeps each account's record, the account's name appended. Listed in
  *  `ACCOUNT_KEYED_PREFIXES`, so switching accounts leaves it for when this one signs in again. */
 export const SEEN_KEY_PREFIX = "unsloth_scheduled_tasks_seen:";
+/** Where each account's unseen-run markers are kept, the same way. */
+export const UNSEEN_KEY_PREFIX = "unsloth_scheduled_tasks_unseen:";
 
 export const ACTIVE_POLL_MS = 2_000;
 export const IDLE_POLL_MS = 5 * 60_000;
@@ -60,10 +62,13 @@ export function serializeSeenRuns(seen: SeenRuns, now: number): string {
   return JSON.stringify({ since: seen.since, ids: seen.ids, savedAt: now });
 }
 
-/** The stored record, if it was saved within the catch-up window. Its age is read on this
- *  browser's clock, from `savedAt`: `since` is the server's time, which this clock need not agree
- *  with. Without one, announcing starts from the server's present and covers only what finishes
- *  from then on. */
+/** The stored record to resume from. Without one, announcing starts from the server's present and
+ *  covers only what finishes from then on.
+ *
+ *  Its age is read on this browser's clock, from `savedAt`: `since` is the server's time, which this
+ *  clock need not agree with. One saved longer ago than the catch-up window resumes from that window
+ *  before now on the server's clock, which its `since` plus that age approximates, so a run that
+ *  finished just before Studio was reopened is still announced and older ones are not. */
 export function readSeenRuns(stored: string | null, now: number): SeenRuns | null {
   let value: unknown;
   try {
@@ -73,8 +78,10 @@ export function readSeenRuns(stored: string | null, now: number): SeenRuns | nul
   }
   const { since, ids, savedAt } = (value ?? {}) as Partial<SeenRuns & { savedAt: number }>;
   if (typeof since !== "number" || !Number.isFinite(since)) return null;
-  // Either way: a clock set back since the save puts it in the future.
-  if (typeof savedAt !== "number" || !(Math.abs(now - savedAt) <= CATCH_UP_MS)) return null;
+  if (typeof savedAt !== "number" || !Number.isFinite(savedAt)) return null;
+  // A clock set back since the save puts it in the future, which is recent enough.
+  const age = now - savedAt;
+  if (age > CATCH_UP_MS) return { since: since + CURSOR_SLACK_MS + age - CATCH_UP_MS, ids: [] };
   return {
     since,
     ids: (Array.isArray(ids) ? ids : [])
