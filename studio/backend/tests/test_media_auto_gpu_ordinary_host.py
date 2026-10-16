@@ -497,3 +497,49 @@ def test_mig_listing_parses_slices():
         lambda argv, **_k: types.SimpleNamespace(returncode = 0, stdout = out),
     ):
         assert hw._nvidia_mig_gpu_indices_or_none() == {0}
+
+
+def test_fastest_first_mask_with_an_integrated_card_keeps_torch(monkeypatch):
+    # [] = mapping known but an integrated card is mapped: its nvidia-smi row is a carve-out.
+    torch_calls, reads = _fastest_first_host(monkeypatch, [])
+    with patch.dict(os.environ, _FASTEST, clear = True):
+        assert hw._smi_rows_for_cuda_ordinals([0, 1]) is None
+        assert hw._smi_rows_for_cuda_ordinals([0, 1]) is None
+        hw.auto_select_gpu_ids("m", required_override_gb = 8.0)
+    assert torch_calls == [[0, 1]]
+    assert reads == [1]  # cached, the child is not re-run
+
+
+@pytest.mark.parametrize(
+    "child_out, expected",
+    [
+        ("0000:3b:00.0 0\n0000:1a:00.0 0\n", [1, 0]),
+        ("0000:3b:00.0 0\n0000:1a:00.0 1\n", []),  # integrated card mapped
+        ("0000:3b:00.0\n", None),  # no attribute: unreadable
+    ],
+)
+def test_cuda_ordinal_rows_parse_bus_ids_and_integrated(monkeypatch, child_out, expected):
+    import subprocess
+
+    from utils.hardware import nvidia
+
+    child = types.SimpleNamespace(returncode = 0, stdout = child_out)
+    smi = types.SimpleNamespace(returncode = 0, stdout = "0, 00000000:1A:00.0\n1, 00000000:3B:00.0\n")
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: child)
+    monkeypatch.setattr(nvidia.gpu_query, "run_nvidia_smi", lambda *a, **k: smi)
+    assert nvidia.get_cuda_ordinal_smi_rows() == expected
+
+
+def test_identity_compares_every_listed_row_not_a_stale_count(monkeypatch):
+    # A torch-fallback count of 2 must not hide a third, different card nvidia-smi lists.
+    from utils.hardware import nvidia
+
+    row = ("NVIDIA A100-SXM4-80GB", "81920 MiB", "8.0", "1410 MHz")
+    other = ("NVIDIA RTX A6000", "49140 MiB", "8.6", "2100 MHz")
+    monkeypatch.setattr(hw, "IS_ROCM", False)
+    monkeypatch.setattr(hw, "get_physical_gpu_count", lambda: 2)
+    monkeypatch.setattr(nvidia, "get_card_identities", lambda: {0: row, 1: row, 2: other})
+    monkeypatch.setattr(hw, "_cuda_card_identities", {})
+    monkeypatch.setattr(hw, "_nvidia_mig_gpu_indices_or_none", lambda: set())
+    assert hw._cuda_cards_identical() is False
+    assert hw._cuda_cards_identical([0, 1]) is True

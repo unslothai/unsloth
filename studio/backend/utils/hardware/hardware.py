@@ -2060,6 +2060,9 @@ def _cuda_cards_identical(gpu_ids: Optional[list[int]] = None) -> Optional[bool]
         if not identities:
             return None
         _cuda_card_identities = identities
+    if gpu_ids is None:
+        # Every row nvidia-smi lists, not just the count: a torch-fallback count can miss cards.
+        wanted = sorted(_cuda_card_identities)
     rows = [_cuda_card_identities.get(gpu_id) for gpu_id in wanted]
     if not rows or any(row is None for row in rows):
         return None
@@ -2120,9 +2123,11 @@ def _smi_rows_for_cuda_ordinals(parent_ids: list[int]) -> Optional[Dict[str, Any
             rows = nvidia.get_cuda_ordinal_smi_rows()
         except Exception:
             rows = None
-        if not rows:
+        if rows is None:
             return None
         _cuda_ordinal_rows_cache[key] = rows
+    if not rows:  # an integrated card: keep the pool-aware torch telemetry
+        return None
     if len(rows) != len(parent_ids) or len(set(rows)) != len(rows):
         return None
     result = _smi_query(

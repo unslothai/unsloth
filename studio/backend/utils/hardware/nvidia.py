@@ -532,9 +532,14 @@ if lib.cuDeviceGetCount(ctypes.byref(count)) != 0:
 for ordinal in range(count.value):
     dev = ctypes.c_int(0)
     buf = ctypes.create_string_buffer(64)
-    if lib.cuDeviceGet(ctypes.byref(dev), ordinal) != 0 or lib.cuDeviceGetPCIBusId(buf, 64, dev) != 0:
+    integrated = ctypes.c_int(0)
+    if (
+        lib.cuDeviceGet(ctypes.byref(dev), ordinal) != 0
+        or lib.cuDeviceGetPCIBusId(buf, 64, dev) != 0
+        or lib.cuDeviceGetAttribute(ctypes.byref(integrated), 18, dev) != 0  # CU_DEVICE_ATTRIBUTE_INTEGRATED
+    ):
         sys.exit(5)
-    print(buf.value.decode())
+    print(buf.value.decode(), integrated.value)
 """
 
 
@@ -554,7 +559,8 @@ def get_cuda_ordinal_smi_rows() -> Optional[list[int]]:
 
     Establishes the ordinal mapping under any CUDA_DEVICE_ORDER / numeric mask without opening a CUDA
     context here: the ordinals come from a short child on the driver API, the rows from nvidia-smi.
-    None when either side is unreadable or the two do not join.
+    None when either side is unreadable or the two do not join; [] when an integrated card is among them,
+    whose nvidia-smi memory is a carve-out rather than its shared pool.
     """
     import sys
 
@@ -592,9 +598,13 @@ def get_cuda_ordinal_smi_rows() -> Optional[list[int]]:
         row_by_bus[key] = int(index)
     rows = []
     for line in child.stdout.strip().splitlines():
-        key = _normalize_bus_id(line)
-        if key not in row_by_bus:
+        bus_id, _, integrated = line.strip().partition(" ")
+        key = _normalize_bus_id(bus_id)
+        if key not in row_by_bus or integrated not in ("0", "1"):
             return None
+        if integrated == "1":
+            # The row is a carve-out or N/A; only torch reports the shared pool. Known, so cacheable.
+            return []
         rows.append(row_by_bus[key])
     return rows or None
 
