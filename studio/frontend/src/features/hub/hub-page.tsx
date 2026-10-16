@@ -1620,7 +1620,7 @@ export function ModelsPage() {
     );
   }, [loadingModel, selectedModel]);
 
-  const { vramInfo, minMemory } = useHubModelVram(selectedModel, gpu);
+  const { vramInfo } = useHubModelVram(selectedModel, gpu);
 
   const gpuLabel = gpu.available
     ? `${Math.round(gpu.dedicatedMemoryTotalGb)} GiB`
@@ -1789,7 +1789,6 @@ export function ModelsPage() {
       isActive,
       activeGgufVariant,
       isLoadingThisModel,
-      minMemory,
       vramInfo,
       gpuGb: inferenceGpu.available ? inferenceGpu.memoryTotalGb : undefined,
       gpuCount: inferenceGpu.deviceCount,
@@ -1802,7 +1801,6 @@ export function ModelsPage() {
       isActive,
       activeGgufVariant,
       isLoadingThisModel,
-      minMemory,
       vramInfo,
       inferenceGpu.available,
       inferenceGpu.memoryTotalGb,

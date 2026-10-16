@@ -18,7 +18,6 @@ import {
 } from "@/components/ui/tooltip";
 import { useVramBudgetFraction } from "@/hooks/use-vram-budget-fraction";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
-import { ggufVariantFitSizeBytes } from "@/lib/gguf-fit";
 import { cn } from "@/lib/utils";
 import {
   Alert02Icon,
@@ -27,7 +26,7 @@ import {
   Share05Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import {
   downloadManager,
   jobKeyOf,
@@ -109,8 +108,6 @@ interface LocalOnDeviceCardProps {
   onRun?: (selection: HubModelRunSelection) => void;
   runPending?: boolean;
   onChange?: () => void;
-  /** The selected quant's size on a multi-quant GGUF folder, for the Memory stat. */
-  onSelectedBytesChange?: (modelId: string, bytes: number | null) => void;
 }
 
 function formatAdapterLabel(
@@ -260,7 +257,6 @@ export function LocalOnDeviceCard({
   onRun,
   runPending = false,
   onChange,
-  onSelectedBytesChange,
 }: LocalOnDeviceCardProps) {
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [updateOpen, setUpdateOpen] = useState(false);
@@ -416,13 +412,6 @@ export function LocalOnDeviceCard({
     defaultVariant: currentVariantState.defaultVariant,
   });
   const selectedQuant = selectedVariant?.quant ?? null;
-  const selectedBytes =
-    needsVariantSelection && selectedVariant
-      ? ggufVariantFitSizeBytes(selectedVariant)
-      : null;
-  useEffect(() => {
-    onSelectedBytesChange?.(modelId, selectedBytes);
-  }, [onSelectedBytesChange, modelId, selectedBytes]);
   // True while a managed download/update for this repo+variant is in flight.
   const updateJobActive = useDownloadManagerStore((s) =>
     repoId

@@ -2,18 +2,12 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 // The Hub detail pills reuse the sidebar's Video and Library icons, Base chips draw
-// Hugeicons' Layer, and a GGUF's Memory stat reads the selected quant's size.
+// Hugeicons' Layer, and the stats row has no Memory pill.
 
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
-
-registerBundlerResolver();
-
-const { ggufMemoryLabel } = await import(
-  "../src/features/hub/hooks/use-hub-model-vram.ts"
-);
+import { readSrc } from "./helpers/kit.ts";
 
 function sidebarIcon(row: string): string {
   const sidebar = readSrc("components/app-sidebar.tsx");
@@ -46,24 +40,7 @@ test("every Base chip draws Layer", () => {
   assert.match(reference.slice(0, 1500), /icon=\{LayerIcon\}/);
 });
 
-test("a GGUF's memory is the selected quant, else the earlier estimate", () => {
-  assert.equal(ggufMemoryLabel(null, 45_500_000_000), "46 GB");
-  assert.equal(ggufMemoryLabel("120 GB", 4_500_000_000), "4.5 GB");
-  assert.equal(ggufMemoryLabel("3 GB", null), "3 GB");
-  assert.equal(ggufMemoryLabel(null, 0), null);
-});
-
-test("both GGUF cards report their selected quant to the Memory stat", () => {
+test("the detail stats carry no Memory pill", () => {
   const inspector = readSrc("features/hub/catalog/model-inspector.tsx");
-  assert.match(inspector, /<LocalOnDeviceCard[\s\S]*?onSelectedBytesChange=\{onSelectedGgufBytesChange\}/);
-  assert.match(inspector, /<DownloadSection[\s\S]*?onSelectedGgufBytesChange=\{onSelectedGgufBytesChange\}/);
-  const local = readSrc("features/hub/catalog/local-on-device-card.tsx");
-  assert.match(local, /onSelectedBytesChange\?\.\(modelId, selectedBytes\)/);
-});
-
-test("the reported quant size is the fit size, so a zero download size still counts", () => {
-  for (const file of ["gguf-download-card.tsx", "local-on-device-card.tsx"]) {
-    const src = readSrc(`features/hub/catalog/${file}`);
-    assert.match(src, /\? ggufVariantFitSizeBytes\(selected(?:Variant)?\)/, file);
-  }
+  assert.doesNotMatch(inspector, /label="Memory"|RamMemoryIcon|minMemory/);
 });

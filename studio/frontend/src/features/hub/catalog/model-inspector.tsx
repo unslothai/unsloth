@@ -38,17 +38,15 @@ import {
   LibrariesIcon,
   LicenseIcon,
   PackageIcon,
-  RamMemoryIcon,
   Share05Icon,
 } from "@hugeicons/core-free-icons";
 import { TextToSpeechIcon } from "@/lib/hugeicons-derived";
 import type { IconSvgElement } from "@hugeicons/react";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { memo, useCallback, useDeferredValue, useMemo, useState } from "react";
+import { memo, useDeferredValue, useMemo } from "react";
 import { selectActiveJob, useDownloadManagerStore } from "../download-manager";
 import { useCopyFeedback } from "../hooks/use-copy-feedback";
 import { useDatasetSize } from "../hooks/use-dataset-size";
-import { ggufMemoryLabel } from "../hooks/use-hub-model-vram";
 import {
   type HubModelRunSelection,
   hubModelRunsOnAudioPage,
@@ -419,7 +417,6 @@ export type ModelInspectorRuntime = {
   isActive: boolean;
   activeGgufVariant: string | null;
   isLoadingThisModel: boolean;
-  minMemory: string | null;
   vramInfo: {
     est: number;
     status: "fits" | "tight" | "exceeds";
@@ -464,7 +461,6 @@ export const ModelInspector = memo(function ModelInspector({
     isActive,
     activeGgufVariant,
     isLoadingThisModel,
-    minMemory,
     vramInfo,
     gpuGb,
     gpuCount,
@@ -476,19 +472,6 @@ export const ModelInspector = memo(function ModelInspector({
     onRun,
     runConfigPending = false,
   } = actions;
-  const [selectedGguf, setSelectedGguf] = useState<{
-    repoId: string;
-    bytes: number | null;
-  } | null>(null);
-  const onSelectedGgufBytesChange = useCallback(
-    (repoId: string, bytes: number | null) =>
-      setSelectedGguf((prev) =>
-        prev?.repoId === repoId && prev.bytes === bytes
-          ? prev
-          : { repoId, bytes },
-      ),
-    [],
-  );
   const deviceType = usePlatformStore((s) => s.deviceType);
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
   const chatOnlyMeasured = usePlatformStore(
@@ -636,19 +619,6 @@ export const ModelInspector = memo(function ModelInspector({
       ? (selection: HubModelRunSelection) => onRun(selection, mediaPage)
       : undefined;
 
-  const downloadRepoId = model.isLocal
-    ? (model.hubRepoId ?? model.id)
-    : model.id;
-  // Each card reports under the id it was given; only the mounted one counts.
-  const ggufCardKey =
-    model.isLocal && !hasActiveHubDownload ? model.id : downloadRepoId;
-  const memoryLabel =
-    !isDataset && (model.isGguf || Boolean(preferredGgufFile))
-      ? ggufMemoryLabel(
-          minMemory,
-          selectedGguf?.repoId === ggufCardKey ? selectedGguf.bytes : null,
-        )
-      : minMemory;
   const languages = parseLanguageTags(model.tags);
   const datasetSizeBytes =
     datasetSize?.numBytesParquet ?? datasetSize?.numBytesOriginal ?? null;
@@ -784,14 +754,13 @@ export const ModelInspector = memo(function ModelInspector({
               onRun={runAction}
               runPending={runConfigPending}
               onChange={onInventoryChange}
-              onSelectedBytesChange={onSelectedGgufBytesChange}
             />
           ) : (
             <DownloadSection
               showMemoryBar={!runsOnMediaRuntime}
               mediaPage={mediaPage}
               assetRuntime={mediaPage ?? (["text-to-speech", "text-to-audio"].includes(model.pipelineTag ?? model.task ?? "") ? "audio" : undefined)}
-              repoId={downloadRepoId}
+              repoId={model.isLocal ? (model.hubRepoId ?? model.id) : model.id}
               isGguf={model.isGguf}
               {...downloadState}
               companionPrefetch={model.companionPrefetch === true}
@@ -811,7 +780,6 @@ export const ModelInspector = memo(function ModelInspector({
               onChange={onInventoryChange}
               isMlx={isMlx}
               onRunPrecision={precisionRunAction}
-              onSelectedGgufBytesChange={onSelectedGgufBytesChange}
             />
           )}
         </InspectorDownloadSlot>
@@ -863,13 +831,6 @@ export const ModelInspector = memo(function ModelInspector({
               label="Library"
               value={libraryLabel}
               icon={LibrariesIcon}
-            />
-          )}
-          {!isDataset && (
-            <StatRow
-              label="Memory"
-              value={memoryLabel ?? "N/A"}
-              icon={RamMemoryIcon}
             />
           )}
           {isDataset && datasetSize?.numRows != null && (

@@ -37,7 +37,6 @@ export function DownloadSection({
   assetRuntime,
   isMlx = false,
   onRunPrecision,
-  onSelectedGgufBytesChange,
 }: {
   repoId: string;
   isGguf: boolean;
@@ -68,7 +67,6 @@ export function DownloadSection({
   assetRuntime?: AssetRuntime;
   isMlx?: boolean;
   onRunPrecision?: (selection: HubModelRunSelection) => void;
-  onSelectedGgufBytesChange?: (repoId: string, bytes: number | null) => void;
 }) {
   if (isGguf || preferredGgufFile) {
     return (
@@ -89,7 +87,6 @@ export function DownloadSection({
         onChange={onChange}
         showMemoryBar={showMemoryBar}
         mediaPage={mediaPage}
-        onSelectedBytesChange={onSelectedGgufBytesChange}
       />
     );
   }

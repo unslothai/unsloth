@@ -33,11 +33,7 @@ import {
 import { useVramBudgetFraction } from "@/hooks/use-vram-budget-fraction";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
-import {
-  type GgufFitClass,
-  classifyGgufVariantFit,
-  ggufVariantFitSizeBytes,
-} from "@/lib/gguf-fit";
+import { type GgufFitClass, classifyGgufVariantFit } from "@/lib/gguf-fit";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
@@ -677,7 +673,6 @@ export function GgufDownloadCard({
   onChange,
   showMemoryBar = true,
   mediaPage,
-  onSelectedBytesChange,
 }: {
   repoId: string;
   isActive: boolean;
@@ -706,8 +701,6 @@ export function GgufDownloadCard({
   /** Selects the companion download planner and hides llama.cpp fit badges,
    *  whose memory and offload rules do not apply to media models. */
   mediaPage?: MediaStudioPage;
-  /** The selected quant's full size, which the detail view shows as its memory floor. */
-  onSelectedBytesChange?: (repoId: string, bytes: number | null) => void;
 }) {
   const mediaRuntime = mediaPage !== undefined;
   const hfToken = useHfTokenStore((s) => s.token);
@@ -802,10 +795,6 @@ export function GgufDownloadCard({
   const selected =
     sortedVariants?.find((v) => ggufVariantsMatch(v.quant, selectedQuant)) ??
     null;
-  const selectedBytes = selected ? ggufVariantFitSizeBytes(selected) : null;
-  useEffect(() => {
-    onSelectedBytesChange?.(repoId, selectedBytes);
-  }, [onSelectedBytesChange, repoId, selectedBytes]);
   const companionBytesByKey = useMediaCompanionBytes(
     mediaPage,
     repoId,
