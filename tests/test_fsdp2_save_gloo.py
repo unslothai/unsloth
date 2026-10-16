@@ -304,6 +304,15 @@ def _case_dcp_bnb(rank, world_size, m):
     except AttributeError as error:
         out["before"] = f"AttributeError: {error}"
     out["installed"] = m.install_dcp_bnb_state_dict()
+    # What Trainer.save_model asks for through accelerate's get_state_dict: a full state dict, frozen
+    # weights included. bitsandbytes' extra keys cannot be resolved on a sharded weight either way.
+    try:
+        full = dcp.get_model_state_dict(
+            model, options = StateDictOptions(full_state_dict = True, cpu_offload = True)
+        )
+        out["full_sharded_keys"] = sorted(full)
+    except AttributeError as error:
+        out["full_sharded_keys"] = f"AttributeError: {error}"
     sd = dcp.get_model_state_dict(model, options = options)
     out["after_keys"] = sorted(sd)
     expected = {k: v.clone() for k, v in sd.items()}
@@ -497,6 +506,7 @@ def test_dcp_state_dict_of_bitsandbytes_4bit():
     assert r["before"].startswith("AttributeError") and "absmax" in r["before"], r
     assert r["installed"], r
     assert r["after_keys"] == ["1.bias", "1.weight"], r
+    assert r["full_sharded_keys"] == ["0.weight", "1.bias", "1.weight"], r["full_sharded_keys"]
     assert all(x["roundtrip"] for x in results.values()), results
     assert "0.weight.absmax" in r["full_keys"], r["full_keys"]
     assert r["adapter_keys"] == ["lora_A.default.weight", "lora_B.default.weight"], r[

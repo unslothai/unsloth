@@ -252,6 +252,23 @@ def _drops_frozen_weights(kwargs):
     return bool(getattr(kwargs.get("options", None), "ignore_frozen_params", False))
 
 
+def _has_sharded_4bit(args, kwargs):
+    """A Linear4bit whose weight FSDP2 made a DTensor: DCP cannot resolve `weight.absmax` on it at all,
+    so keeping bitsandbytes' entries only raises (Trainer.save_model -> accelerate get_state_dict)."""
+    model = args[0] if args else kwargs.get("model", None)
+    DTensor = _dtensor_class()
+    if DTensor is None or not isinstance(model, torch.nn.Module):
+        return False
+    try:
+        from bitsandbytes.nn import Linear4bit
+    except Exception:
+        return False
+    return any(
+        isinstance(m, Linear4bit) and isinstance(getattr(m, "weight", None), DTensor)
+        for m in model.modules()
+    )
+
+
 def _wrap_accelerate_adapter_only():
     try:
         import accelerate.utils.fsdp_utils as fsdp_utils
@@ -308,7 +325,7 @@ def install_dcp_bnb_state_dict():
     def _wrap(fn):
         @functools.wraps(fn)
         def wrapper(*args, **kwargs):
-            if not _drops_frozen_weights(kwargs):
+            if not (_drops_frozen_weights(kwargs) or _has_sharded_4bit(args, kwargs)):
                 return fn(*args, **kwargs)
             _DCP_DEPTH[0] += 1
             try:
