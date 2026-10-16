@@ -107,6 +107,7 @@ import {
   DashboardCircleIcon,
   Delete02Icon,
   Download01Icon,
+  Exchange01Icon,
   Edit03Icon,
   FolderExportIcon,
   Folder01Icon,
@@ -3448,6 +3449,18 @@ export function AppSidebar() {
             module.preloadRecipes(),
           ),
         );
+      },
+    },
+    convert: {
+      icon: Exchange01Icon,
+      label: t("shell.navigation.convert"),
+      active: pathname === "/convert" || pathname.startsWith("/convert/"),
+      onClick: () => {
+        navigate({ to: "/convert" });
+        closeMobileIfOpen();
+      },
+      onIntent: () => {
+        preloadSilently(router.preloadRoute({ to: "/convert" }));
       },
     },
     export: {

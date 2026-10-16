@@ -5,6 +5,7 @@ import {
   ChefHatIcon,
   DashboardCircleIcon,
   Download01Icon,
+  Exchange01Icon,
   DragDropVerticalIcon,
   FlimSlateIcon,
   Folder01Icon,
@@ -42,6 +43,7 @@ const ITEM_META: Record<
   video: { icon: FlimSlateIcon, labelKey: "shell.navigation.video" },
   audio: { icon: AiSpeechIcon, labelKey: "shell.navigation.audio" },
   recipes: { icon: ChefHatIcon, labelKey: "shell.navigation.recipes" },
+  convert: { icon: Exchange01Icon, labelKey: "shell.navigation.convert" },
   export: { icon: Download01Icon, labelKey: "shell.navigation.export" },
   api: { icon: ApiIcon, labelKey: "shell.navigation.api" },
 };

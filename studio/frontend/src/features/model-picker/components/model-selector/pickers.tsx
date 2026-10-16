@@ -252,6 +252,7 @@ import {
   recommendedEmptyState,
   searchRowFitsDevice,
   searchableRecommendedIds,
+  isOpenVinoId,
 } from "./recommended-fit";
 import {
   ggufVariantsMatchForPicker,
@@ -4879,7 +4880,11 @@ export function HubModelPicker({
 
   // Non-GGUF cached rows are hidden in chat-only mode, so the empty-state logic must use this or the
   // picker can go blank. A task-scoped picker is exempt: the image backend loads local pipelines.
-  const visibleCachedModelRows = chatOnly && !task ? [] : visibleCachedModels;
+  // OpenVINO IRs stay: chat-only installs serve them through the sidecar.
+  const visibleCachedModelRows =
+    chatOnly && !task
+      ? visibleCachedModels.filter((c) => isOpenVinoId(c.repo_id))
+      : visibleCachedModels;
 
   const visibleAdditionalOnDeviceModels = useMemo(() => {
     const alreadyListed = new Set(
