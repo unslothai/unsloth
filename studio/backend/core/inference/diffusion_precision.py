@@ -164,6 +164,7 @@ def preflight_te_quant(
     target: Any,
     *,
     supplied: Any = (),
+    local_files_only: Optional[bool] = None,
 ) -> Optional[str]:
     """The text-encoder mode a pre-load gate must check for an EXPLICIT request: None when an int8 request will
     load the hosted int8 ConvRot file (plain tensors, no torchao, offload-safe, runs on MPS), else the mode the
@@ -179,10 +180,22 @@ def preflight_te_quant(
         explicit_int8_takes_hosted_file,
     )
 
-    if explicit_int8_takes_hosted_file(fam, base, target, supplied = supplied or ()):
+    if explicit_int8_takes_hosted_file(
+        fam, base, target, supplied = supplied or (), local_files_only = local_files_only
+    ):
         return None
-    takes = explicit_int8_hosted_components(fam, base, target, supplied = supplied or ())
+    takes = explicit_int8_hosted_components(
+        fam, base, target, supplied = supplied or (), local_files_only = local_files_only
+    )
     missing = [c for c, ok in takes.items() if not ok]
+    supplied_hosted = [c for c in missing if c in set(supplied or ())]
+    if supplied_hosted and len(missing) < len(takes):
+        # A supplied dense encoder in one hosted slot beside a hosted int8 file in another: mixed precisions.
+        raise RuntimeError(
+            f"Text encoder precision int8 would load the hosted int8 ConvRot file for some {family} text encoders, "
+            f"but the supplied {', '.join(supplied_hosted)} is not int8, so the encoders would load at mixed "
+            "precisions. Choose fp8 or Dense (bf16), or supply every text encoder."
+        )
     if missing and len(missing) < len(takes):
         # Some encoders would load their hosted int8 file and the rest fall back (HiDream: T5 int8 beside an fp8
         # Llama), a mixed build quantize_text_encoders refuses only after the download and the eviction. Refuse here.

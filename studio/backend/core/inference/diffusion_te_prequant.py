@@ -353,6 +353,7 @@ def explicit_int8_hosted_components(
     target: Any,
     *,
     supplied: Iterable[str] = (),
+    local_files_only: Optional[bool] = None,
 ) -> dict[str, bool]:
     """``{component: takes its hosted int8 ConvRot file}`` for every encoder ``fam`` hosts one for that no supplied
     encoder replaces (HiDream's text_encoder_4 included): the device runs the file, the lm_head trim is on (else the
@@ -362,6 +363,8 @@ def explicit_int8_hosted_components(
     out: dict[str, bool] = {}
     for component in TE_INT8_CONVROT_FILES.get(name, {}):
         if component in set(supplied or ()):
+            # A supplied encoder replaces the hosted file in this slot, so the slot does not take int8.
+            out[component] = False
             continue
         try:
             standalone: dict[str, str] = {}
@@ -382,7 +385,9 @@ def explicit_int8_hosted_components(
             out[component] = bool(
                 got is not None
                 and not (got.kind == "repo" and _is_fp8_te_name(got.filename))
-                and te_prequant_sources_confirmed({component: replace(got, fallback_filenames = ())})
+                and te_prequant_sources_confirmed(
+                    {component: replace(got, fallback_filenames = ())}, local_files_only = local_files_only
+                )
             )
         except Exception:  # noqa: BLE001 - unanswerable: not granted
             out[component] = False
@@ -395,6 +400,7 @@ def explicit_int8_takes_hosted_file(
     target: Any,
     *,
     supplied: Iterable[str] = (),
+    local_files_only: Optional[bool] = None,
 ) -> bool:
     """Whether an explicit int8 request on ``fam`` / ``base`` will load the hosted int8 ConvRot file for EVERY
     encoder the family hosts one for (see ``explicit_int8_hosted_components``), with none replaced by a supplied
@@ -403,7 +409,9 @@ def explicit_int8_takes_hosted_file(
     name = str(getattr(fam, "name", "") or "").strip().lower()
     if not TE_INT8_CONVROT_FILES.get(name):
         return False
-    takes = explicit_int8_hosted_components(fam, base, target, supplied = supplied)
+    takes = explicit_int8_hosted_components(
+        fam, base, target, supplied = supplied, local_files_only = local_files_only
+    )
     return len(takes) == len(TE_INT8_CONVROT_FILES[name]) and all(takes.values())
 
 
@@ -428,7 +436,9 @@ def _hub_offline() -> bool:
         return False
 
 
-def te_prequant_sources_confirmed(sources: dict[str, "TePrequantSource"]) -> bool:
+def te_prequant_sources_confirmed(
+    sources: dict[str, "TePrequantSource"], *, local_files_only: Optional[bool] = None
+) -> bool:
     """Whether every hosted pre-cast file in ``sources`` is CONFIRMED: on disk (path, mirror, Hub cache), or listed
     by the Hub. Offline, or when the Hub cannot answer, only what is on disk counts. An automatic pick budgets the
     dense encoder unless this holds, since that is what its load falls back to."""
@@ -449,7 +459,16 @@ def te_prequant_sources_confirmed(sources: dict[str, "TePrequantSource"]) -> boo
             pending[component] = source
     if not pending:
         return True
-    if _hub_offline():
+    if local_files_only is None:
+        # Inside a load the prequant layer records the load's own local_files_only.
+        try:
+            from .diffusion_prequant import _LOCAL_FILES_ONLY
+
+            local_files_only = bool(_LOCAL_FILES_ONLY.get())
+        except Exception:  # noqa: BLE001
+            local_files_only = False
+    if local_files_only or _hub_offline():
+        # A load that may not fetch can only use what is on disk.
         return False
     key = tuple(
         sorted((c, s.location, tuple(te_candidate_filenames(s))) for c, s in pending.items())
@@ -1288,7 +1307,7 @@ def _te_prequant_pipe_kwargs(
                     failures = failures,
                 )
             if encoder is None and _picked_automatically(te_quant_mode) and te_prequant_sources_confirmed(
-                {component: source}
+                {component: source}, local_files_only = local_files_only
             ):
                 # The file is there but did not build: the plan priced it, not the dense encoder.
                 built_failed[component] = getattr(source, "filename", None) or str(source.location)

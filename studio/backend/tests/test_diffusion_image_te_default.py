@@ -569,7 +569,7 @@ def test_mps_automatic_int8_prices_the_file_only_once_it_is_confirmed(
 
     monkeypatch.setattr(pq, "prefer_cached_pickle_twins", lambda repo, names, **k: names)
     monkeypatch.setattr(pq, "first_cached_as_resolved", lambda *a, **k: None)
-    monkeypatch.setattr(tpq, "te_prequant_sources_confirmed", lambda sources: confirmed)
+    monkeypatch.setattr(tpq, "te_prequant_sources_confirmed", lambda sources, **k: confirmed)
     fam = _fam("flux.2-dev")
     mode, _ = resolve_te_quant_request(None, fam.te_quant_auto)
     got = DiffusionBackend._precast_text_encoder_mib(fam, fam.base_repo, MPS_BF16, mode)
@@ -678,7 +678,7 @@ def _preflight(fam, te_mode):
 
 @pytest.mark.parametrize("name", ["qwen-image", "flux.2-dev", "krea-2", "z-image"])
 def test_mps_preflight_accepts_explicit_int8_on_a_family_hosting_the_int8_file(name, monkeypatch):
-    monkeypatch.setattr(tpq, "te_prequant_sources_confirmed", lambda sources: True)
+    monkeypatch.setattr(tpq, "te_prequant_sources_confirmed", lambda sources, **k: True)
     _preflight(_fam(name), "int8")
 
 
@@ -713,7 +713,7 @@ def _table_env(monkeypatch, device, present, keep_head):
     supported = lambda target, mode: getattr(target, "device", None) == "cuda"
     monkeypatch.setattr(prec, "te_quant_supported", supported)
     monkeypatch.setattr(D, "te_quant_supported", supported)
-    monkeypatch.setattr(tpq, "te_prequant_sources_confirmed", lambda sources: present)
+    monkeypatch.setattr(tpq, "te_prequant_sources_confirmed", lambda sources, **k: present)
     return _DEVICES[device]
 
 
@@ -970,7 +970,7 @@ def _failing_build(monkeypatch, *, confirmed, dense_cached, fetched):
     import core.inference.media_locality as ml
 
     monkeypatch.setattr(tpq, "load_prequant_text_encoder", lambda *a, **k: None)
-    monkeypatch.setattr(tpq, "te_prequant_sources_confirmed", lambda sources: confirmed)
+    monkeypatch.setattr(tpq, "te_prequant_sources_confirmed", lambda sources, **k: confirmed)
     monkeypatch.setattr(tpq, "_dense_component_cached", lambda *a, **k: dense_cached)
     monkeypatch.setattr(ml, "_hosted_component_cached", lambda *a, **k: dense_cached)
     monkeypatch.setattr(huggingface_hub, "snapshot_download", lambda repo, **k: fetched.append(repo) or repo)
@@ -1081,7 +1081,7 @@ def test_no_pick_budgets_above_origin_main_with_the_file_confirmed(key, monkeypa
     name, req, device = key.split("|")
     monkeypatch.delenv("UNSLOTH_TE_KEEP_LM_HEAD", raising = False)
     monkeypatch.setattr(prec, "te_quant_supported", lambda target, mode: getattr(target, "device", None) == "cuda")
-    monkeypatch.setattr(tpq, "te_prequant_sources_confirmed", lambda sources: True)
+    monkeypatch.setattr(tpq, "te_prequant_sources_confirmed", lambda sources, **k: True)
     fam = _fam(name)
     mode, _ = resolve_te_quant_request(None if req == "unset" else req, fam.te_quant_auto)
     target = CUDA_BF16 if device == "cuda" else MPS_TARGET
@@ -1162,7 +1162,7 @@ def _hidream_partial(monkeypatch, device, te4_present):
     monkeypatch.setattr(
         tpq,
         "te_prequant_sources_confirmed",
-        lambda sources: te4_present or "text_encoder_4" not in sources,
+        lambda sources, **k: te4_present or "text_encoder_4" not in sources,
     )
     return target
 
@@ -1194,3 +1194,98 @@ def test_explicit_hidream_int8_with_neither_file_is_not_a_partial_refusal(monkey
     target = _table_env(monkeypatch, "cuda", False, False)
     fam = _fam("hidream-i1")
     assert prec.preflight_te_quant("int8", fam, fam.base_repo, target) == "fp8"
+
+
+# ---- review round 8 ---------------------------------------------------------------------------------------------
+
+
+def _hub_lists_everything(monkeypatch):
+    import huggingface_hub
+
+    calls = []
+
+    class _Api:
+        def model_info(self, repo, files_metadata = False):
+            calls.append(repo)
+            names = [e[1] for comps in tpq.TE_INT8_CONVROT_FILES.values() for e in comps.values()]
+            return types.SimpleNamespace(siblings = [types.SimpleNamespace(rfilename = n, size = 1) for n in names])
+
+    monkeypatch.setattr(huggingface_hub, "HfApi", lambda *a, **k: _Api())
+    monkeypatch.setattr(tpq, "_held_locally", lambda *a, **k: False)
+    monkeypatch.setattr(tpq, "_hub_offline", lambda: False)
+    tpq._confirmed_cache.clear()
+    return calls
+
+
+def test_local_files_only_confirms_only_locally_held_files(monkeypatch):
+    calls = _hub_lists_everything(monkeypatch)
+    fam = _fam("qwen-image")
+    sources = tpq.te_prequant_sources_for_base(fam, fam.base_repo, te_quant_mode = "int8", target = CUDA_BF16)
+    assert not tpq.te_prequant_sources_confirmed(sources, local_files_only = True)
+    assert calls == []
+    assert tpq.te_prequant_sources_confirmed(sources, local_files_only = False)
+
+
+def test_local_files_only_is_read_from_the_load_when_not_passed(monkeypatch):
+    from core.inference.diffusion_prequant import _LOCAL_FILES_ONLY
+
+    calls = _hub_lists_everything(monkeypatch)
+    fam = _fam("qwen-image")
+    sources = tpq.te_prequant_sources_for_base(fam, fam.base_repo, te_quant_mode = "int8", target = CUDA_BF16)
+    token = _LOCAL_FILES_ONLY.set(True)
+    try:
+        assert not tpq.te_prequant_sources_confirmed(sources)
+    finally:
+        _LOCAL_FILES_ONLY.reset(token)
+    assert calls == []
+
+
+def test_local_only_preflight_refuses_mps_int8_for_a_file_that_is_not_held(monkeypatch):
+    _hub_lists_everything(monkeypatch)
+    import core.inference.diffusion as D
+    import core.inference.diffusion_precision as prec
+
+    monkeypatch.setattr(prec, "te_quant_supported", lambda target, mode: getattr(target, "device", None) == "cuda")
+    monkeypatch.setattr(D, "te_quant_supported", lambda target, mode: getattr(target, "device", None) == "cuda")
+    fam = _fam("krea-2")
+
+    def run(local):
+        D.DiffusionBackend()._assert_precision_for_target(
+            fam, MPS_TARGET, model_kind = "pipeline", pinned = None, te_mode = "int8", memory_mode = None,
+            cpu_offload = False, base_repo = fam.base_repo, local_files_only = local,
+        )
+
+    run(False)
+    with pytest.raises(RuntimeError):
+        run(True)
+
+
+def test_begin_load_and_the_gated_route_pass_local_files_only_to_the_preflight():
+    import inspect
+
+    import core.inference.diffusion as D
+    import routes.inference as R
+
+    src = inspect.getsource(D.DiffusionBackend.begin_load)
+    call = src.split("self.assert_precision_available(", 1)[1].split("with self._lock", 1)[0]
+    assert "local_files_only = local_files_only," in call
+    gated = inspect.getsource(R.load_diffusion_model_gated)
+    calls = gated.split("backend.assert_precision_available,")[1:]
+    assert calls and all("local_files_only = not user_initiated" in c.split("\n            )", 1)[0] for c in calls)
+
+
+def test_explicit_hidream_int8_with_a_supplied_te3_refuses_in_preflight(monkeypatch):
+    import core.inference.diffusion_precision as prec
+
+    target = _table_env(monkeypatch, "cuda", True, False)
+    fam = _fam("hidream-i1")
+    assert tpq.explicit_int8_hosted_components(fam, fam.base_repo, target, supplied = ("text_encoder_3",)) == {
+        "text_encoder_3": False,
+        "text_encoder_4": True,
+    }
+    with pytest.raises(RuntimeError, match = "supplied text_encoder_3 is not int8.*fp8 or Dense \\(bf16\\).*supply every"):
+        prec.preflight_te_quant("int8", fam, fam.base_repo, target, supplied = ("text_encoder_3",))
+    # supplying every hosted slot is not a mix
+    assert prec.preflight_te_quant(
+        "int8", fam, fam.base_repo, target, supplied = ("text_encoder_3", "text_encoder_4")
+    ) == "fp8"

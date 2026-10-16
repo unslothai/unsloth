@@ -2765,6 +2765,7 @@ class DiffusionBackend:
         gpu_ordinal: Optional[int] = None,
         repo_id: Optional[str] = None,
         base_repo: Optional[str] = None,
+        local_files_only: bool = False,
     ) -> None:
         """Raise ``RuntimeError`` (the route's 409) when an EXPLICIT precision cannot run here.
 
@@ -2807,6 +2808,7 @@ class DiffusionBackend:
                 cpu_offload = cpu_offload,
                 speed_mode = speed_mode,
                 base_repo = repo_id if model_kind == "pipeline" else base_repo,
+                local_files_only = local_files_only,
             )
 
     def _assert_precision_for_target(
@@ -2821,6 +2823,7 @@ class DiffusionBackend:
         cpu_offload: bool,
         speed_mode: Optional[str] = None,
         base_repo: Optional[str] = None,
+        local_files_only: bool = False,
     ) -> None:
         """The body of ``assert_precision_available``, run with the selected card current."""
         if pinned is not None and pinned != TQ_AUTO:
@@ -2920,7 +2923,12 @@ class DiffusionBackend:
         if te_effective is not None and normalize_te_quant(te_mode) == "int8":
             # int8 depends on whether the hosted int8 ConvRot file will really load for this base and device.
             te_effective = preflight_te_quant(
-                te_mode, fam, base_repo, target, supplied = _active_supplied_text_encoders()
+                te_mode,
+                fam,
+                base_repo,
+                target,
+                supplied = _active_supplied_text_encoders(),
+                local_files_only = local_files_only,
             )
         te_reason = None
         if te_quant_needs_resident_weights(te_effective) and not torchao_quantize_importable():
@@ -3874,6 +3882,7 @@ class DiffusionBackend:
             gpu_ordinal = gpu_ordinal,
             repo_id = repo_id,
             base_repo = base_repo,
+            local_files_only = local_files_only,
         )
 
         with self._lock, self._load_cancel_lock:
