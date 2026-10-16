@@ -394,13 +394,11 @@ def test_model_forward_longrope_offset_positions_match_transformers():
 
 
 @pytest.mark.parametrize("start", [0, 40000])
-def test_model_forward_longrope_under_compile_matches_eager_without_sync(monkeypatch, start):
-    # While tracing, the short / long choice is made in the graph: no .item() or int() on a tensor.
+def test_model_forward_longrope_under_compile_matches_eager(monkeypatch, start):
+    # While tracing, the choice still follows max(position_ids) + 1, so compiled runs match eager.
     position_ids = torch.arange(start, start + 4)[None]
     eager_cos, eager_sin = _model_forward_rope(_longrope(1 << 17, 4096), 4, position_ids, 1 << 17)
     monkeypatch.setattr(torch.compiler, "is_compiling", lambda: True)
-    monkeypatch.setattr(torch.Tensor, "item", lambda *args: pytest.fail("host sync"))
-    monkeypatch.setattr(torch.Tensor, "__int__", lambda *args: pytest.fail("host sync"))
     cos, sin = _model_forward_rope(_longrope(1 << 17, 4096), 4, position_ids, 1 << 17)
     assert torch.equal(cos[position_ids[0]], eager_cos[position_ids[0]])
     assert torch.equal(sin[position_ids[0]], eager_sin[position_ids[0]])

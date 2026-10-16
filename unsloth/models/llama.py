@@ -1430,7 +1430,6 @@ def LlamaModel_fast_forward(
         )
         device_index = hidden_states.device.index
         original = getattr(self.rotary_emb, "original_max_position_embeddings", None)
-        position_embeddings = None
         if (
             position_ids is not None
             and isinstance(self.rotary_emb, LongRopeRotaryEmbedding)
@@ -1438,26 +1437,11 @@ def LlamaModel_fast_forward(
         ):
             # transformers' longrope_frequency_update picks the factors from max(position_ids) + 1, a host
             # sync it pays too; other models and LongRoPE without position_ids stay sync-free.
-            if torch.compiler.is_compiling():
-                # Same choice inside the graph with no .item(): rows below the window come from the
-                # short or long cache by torch.where, rows past it only from the long cache (the short
-                # cache is never indexed there, as short is only chosen when every position is inside).
-                long_cos, long_sin = self.rotary_emb.get_cached(rope_rows, device_index)
-                short_cos, short_sin = self.rotary_emb.get_cached(rope_len, device_index)
-                use_long = position_ids.max() + 1 > original
-                position_embeddings = (
-                    torch.cat(
-                        (torch.where(use_long, long_cos[:original], short_cos), long_cos[original:])
-                    ),
-                    torch.cat(
-                        (torch.where(use_long, long_sin[:original], short_sin), long_sin[original:])
-                    ),
-                )
-            else:
-                rope_len = max(rope_len, int(position_ids.max()) + 1)
-        if position_embeddings is None:
-            # rope_rows only sizes the build; LongRoPE picks its short or long factors from rope_len.
-            position_embeddings = self.rotary_emb.get_cached(rope_len, device_index)
+            # Also under compile (one graph break): an in-graph choice would rebuild full-size hybrid
+            # tables every forward, and this forward is not compiled by Unsloth.
+            rope_len = max(rope_len, int(position_ids.max()) + 1)
+        # rope_rows only sizes the build; LongRoPE picks its short or long factors from rope_len.
+        position_embeddings = self.rotary_emb.get_cached(rope_len, device_index)
     else:
         position_embeddings = None
 
