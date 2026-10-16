@@ -991,7 +991,9 @@ def ltx23_prequant_eligible(
     from .diffusion_families import canonical_base, mirror_repo
 
     upstream = canonical_base(str(repo_id).strip())
-    for candidate in dict.fromkeys((str(repo_id).strip(), upstream, mirror_repo(upstream) or upstream)):
+    for candidate in dict.fromkeys(
+        (str(repo_id).strip(), upstream, mirror_repo(upstream) or upstream)
+    ):
         cached = _ltx23_hub_cached_file(candidate, str(checkpoint_filename))
         if cached is not None:
             break

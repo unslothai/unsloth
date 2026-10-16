@@ -159,9 +159,9 @@ def test_prequant_tables_fold_a_mirror_onto_its_upstream():
         for base, scheme, repo in fam.prequant_variant_repos:
             mirror = mirror_repo(base)
             if mirror:
-                assert vf.video_family_prequant_repo(fam, scheme, mirror) == vf.video_family_prequant_repo(
-                    fam, scheme, base
-                )
+                assert vf.video_family_prequant_repo(
+                    fam, scheme, mirror
+                ) == vf.video_family_prequant_repo(fam, scheme, base)
 
 
 def test_ltx25_single_file_release_recognised_under_its_mirror():
@@ -180,7 +180,9 @@ def test_a_gguf_pick_from_the_ltx25_gguf_repo_keeps_the_diffusers_base():
     assert ltx25_default_base("unsloth/LTX-2.5-GGUF") is None
     assert not is_ltx25_single_file_base("unsloth/LTX-2.5-GGUF", fold_mirror = False)
     fam = detect_video_family("unsloth/LTX-2.5-GGUF")
-    assert resolve_video_base_repo(fam, None, "unsloth/LTX-2.5-GGUF") == "Lightricks/LTX-2.5-Diffusers"
+    assert (
+        resolve_video_base_repo(fam, None, "unsloth/LTX-2.5-GGUF") == "Lightricks/LTX-2.5-Diffusers"
+    )
     # A DiT picked from the official single-file release still assembles from that release.
     assert ltx25_default_base("Lightricks/LTX-2.5") == "Lightricks/LTX-2.5"
 
@@ -190,7 +192,9 @@ def test_the_fp8_repos_still_resolve_their_own_prequant_rows():
     upstream base must not change which checkpoint repo a scheme resolves to."""
     for fam in vf._FAMILIES:
         for scheme, repo in fam.prequant_repos:
-            assert vf.video_family_prequant_repo(fam, scheme, fam.base_repo) == vf.video_family_prequant_repo(
+            assert vf.video_family_prequant_repo(
+                fam, scheme, fam.base_repo
+            ) == vf.video_family_prequant_repo(
                 fam, scheme, mirror_repo(fam.base_repo) or fam.base_repo
             )
 
@@ -202,11 +206,21 @@ def test_no_video_fetch_reads_a_comfy_or_third_party_repack(tmp_path, monkeypatc
     from core.inference.video_minimax_h3 import H3_AUDIO_VAE, H3_VIDEO_VAE, h3_component_source
     from core.inference.video_minimax_h3_te import h3_te_quant_source
 
-    monkeypatch.setattr("core.inference.diffusion_families._upstream_is_cached", lambda *_a, **_k: True)
-    for repo in ("unsloth/MiniMax-H3-GGUF", "unsloth/MiniMax-H3-FP8", "unsloth/Wan2.2-TI2V-5B-GGUF"):
+    monkeypatch.setattr(
+        "core.inference.diffusion_families._upstream_is_cached", lambda *_a, **_k: True
+    )
+    for repo in (
+        "unsloth/MiniMax-H3-GGUF",
+        "unsloth/MiniMax-H3-FP8",
+        "unsloth/Wan2.2-TI2V-5B-GGUF",
+    ):
         assert legacy_source_repo(repo) is None
         assert prefer_cached_legacy_source(repo, ("x.safetensors",)) == repo
-    assert h3_component_source(H3_VIDEO_VAE) == h3_component_source(H3_AUDIO_VAE) == "unsloth/MiniMax-H3-GGUF"
+    assert (
+        h3_component_source(H3_VIDEO_VAE)
+        == h3_component_source(H3_AUDIO_VAE)
+        == "unsloth/MiniMax-H3-GGUF"
+    )
     assert h3_te_quant_source("int8") == "unsloth/MiniMax-H3-FP8"
     from core.inference import video_minimax_h3, video_minimax_h3_te
 
@@ -216,7 +230,6 @@ def test_no_video_fetch_reads_a_comfy_or_third_party_repack(tmp_path, monkeypatc
 
 def test_ltx23_official_file_is_eligible_from_its_mirror():
     from core.inference.video_ltx2 import LTX23_PREQUANT_SOURCE_REPOS
-
     assert "unsloth/ltx-2.3-fp8" in LTX23_PREQUANT_SOURCE_REPOS
 
 
@@ -230,7 +243,12 @@ class _RecordingApi:
     def __init__(self, token = None):
         pass
 
-    def model_info(self, repo, files_metadata = True, **_kw):
+    def model_info(
+        self,
+        repo,
+        files_metadata = True,
+        **_kw,
+    ):
         type(self).calls.append(repo)
         return types.SimpleNamespace(
             sha = "0" * 40,
@@ -281,7 +299,9 @@ def test_checkpoint_pick_from_a_mirrored_repo_downloads_from_the_mirror(empty_ca
         "utils.hf_xet_fallback.hf_hub_download_with_xet_fallback",
         lambda repo, name, token, **kw: (seen.append(repo), str(empty_cache / name))[1],
     )
-    video_mod.VideoBackend._resolve_checkpoint_path("Lightricks/LTX-2.3", "ltx-2.3-22b-dev.safetensors", None)
+    video_mod.VideoBackend._resolve_checkpoint_path(
+        "Lightricks/LTX-2.3", "ltx-2.3-22b-dev.safetensors", None
+    )
     assert seen == ["unsloth/LTX-2.3-FP8"]
 
 

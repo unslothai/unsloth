@@ -1597,7 +1597,11 @@ def _video_listing_repo(repo_id: str) -> str:
     ``UNSLOTH_DIFFUSION_NO_MIRROR`` and never rewrites a local path."""
     from .diffusion_families import _is_local_path, mirror_repo
 
-    if not repo_id or os.environ.get("UNSLOTH_DIFFUSION_NO_MIRROR", "").strip() or _is_local_path(repo_id):
+    if (
+        not repo_id
+        or os.environ.get("UNSLOTH_DIFFUSION_NO_MIRROR", "").strip()
+        or _is_local_path(repo_id)
+    ):
         return repo_id
     return mirror_repo(repo_id) or repo_id
 
@@ -3475,9 +3479,7 @@ class VideoBackend:
         h3_native = is_h3_native(fam, resolve_video_model_kind(gguf_filename, model_kind))
         # Both ids: an install may hold the components under either the mirror or the repack it was mirrored from, and
         # whichever one this load reads must be protected.
-        claimed_assets = (
-            (H3_GGUF_REPO, H3_COMPONENT_REPO) if h3_native else ()
-        )
+        claimed_assets = (H3_GGUF_REPO, H3_COMPONENT_REPO) if h3_native else ()
         # Claim the hosted LTX-2.3 FP8 DiT repo with _loading.
         if _ltx23_prequant_serves_on_card(
             fam,
@@ -3751,7 +3753,9 @@ class VideoBackend:
                 partner = moe_partner_filename(kwargs["gguf_filename"])
                 if getattr(fam, "is_moe", False) and kind != "pipeline" and partner:
                     hf_hub_download_with_xet_fallback(
-                        _video_fetch_repo(kwargs["repo_id"], kwargs.get("hf_token"), files = (partner,)),
+                        _video_fetch_repo(
+                            kwargs["repo_id"], kwargs.get("hf_token"), files = (partner,)
+                        ),
                         partner,
                         kwargs.get("hf_token"),
                         cancel_event = cancel_event,
@@ -5987,7 +5991,9 @@ class VideoBackend:
                 )
                 # The same fetch-repo decision _predownload_base makes from the same names, so the staged entry is the
                 # repo the load then reads (its mirror, unless the upstream cache already holds every file).
-                fetch_base = _video_fetch_repo(base, hf_token, files = [n for n, _ in base_files]) or base
+                fetch_base = (
+                    _video_fetch_repo(base, hf_token, files = [n for n, _ in base_files]) or base
+                )
                 total += add(
                     fetch_base,
                     base_files,
@@ -6506,9 +6512,7 @@ class VideoBackend:
                 return ()
             ids = (loading.repo_id, loading.base_repo, *loading.asset_repos)
             # Both sides of a mirror pair: the fetch reads the mirror while status() names the upstream.
-            return tuple(
-                dict.fromkeys(alias for r in ids if r for alias in _video_repo_aliases(r))
-            )
+            return tuple(dict.fromkeys(alias for r in ids if r for alias in _video_repo_aliases(r)))
 
     def loaded_repo_ids(self) -> tuple[str, ...]:
         """Repo ids the COMMITTED model reads from disk (empty unless a native model is loaded).
@@ -7434,7 +7438,9 @@ class VideoBackend:
                     load_ltx25_transformer,
                 )
 
-                if comfy_scan is not None and is_ltx25_single_file_base(_base_local_dir or fetch_base):
+                if comfy_scan is not None and is_ltx25_single_file_base(
+                    _base_local_dir or fetch_base
+                ):
                     # The int8-convrot files quantize the text connectors too, and the pack-free assembly reads them from
                     # the DiT file: refuse before the DiT is read.
                     raise ValueError(
@@ -7485,7 +7491,8 @@ class VideoBackend:
                     )
                 else:
                     pipe = pipeline_cls.from_pretrained(
-                        _base_local_dir or fetch_base, **{**pipe_kwargs, "transformer": ltx25_transformer}
+                        _base_local_dir or fetch_base,
+                        **{**pipe_kwargs, "transformer": ltx25_transformer},
                     )
             else:
 

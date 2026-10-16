@@ -1281,7 +1281,9 @@ _VIDEO_UNGATED_MIRROR_PAIRS: tuple[tuple[str, str], ...] = (
     ("Lightricks/LTX-2.3", "unsloth/LTX-2.3-FP8"),
     ("MiniMaxAI/MiniMax-H3", "unsloth/MiniMax-H3"),
 )
-_VIDEO_MIRROR_PAIRS: tuple[tuple[str, str], ...] = _VIDEO_GATED_MIRROR_PAIRS + _VIDEO_UNGATED_MIRROR_PAIRS
+_VIDEO_MIRROR_PAIRS: tuple[tuple[str, str], ...] = (
+    _VIDEO_GATED_MIRROR_PAIRS + _VIDEO_UNGATED_MIRROR_PAIRS
+)
 
 _ALL_MIRROR_PAIRS: tuple[tuple[str, str], ...] = _MIRROR_PAIRS + _VIDEO_MIRROR_PAIRS
 _GATED_MIRRORS: dict[str, str] = {u.lower(): m for u, m in _ALL_MIRROR_PAIRS}
