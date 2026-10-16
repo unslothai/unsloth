@@ -23,13 +23,16 @@ class _OOMOnceModel(harness._Model):
         super().__init__(hidden_states = False)
         self.error = error
 
-    def forward(self, input_ids = None, packed_seq_lengths = None, **kwargs):
+    def forward(
+        self,
+        input_ids = None,
+        packed_seq_lengths = None,
+        **kwargs,
+    ):
         if packed_seq_lengths is not None and self.error is not None:
             error, self.error = self.error, None
             raise error
-        return super().forward(
-            input_ids = input_ids, packed_seq_lengths = packed_seq_lengths, **kwargs
-        )
+        return super().forward(input_ids = input_ids, packed_seq_lengths = packed_seq_lengths, **kwargs)
 
 
 class _OOMInVerifyModel(harness._Model):
@@ -39,13 +42,16 @@ class _OOMInVerifyModel(harness._Model):
         super().__init__(hidden_states = False)
         self.armed = True
 
-    def forward(self, input_ids = None, packed_seq_lengths = None, **kwargs):
+    def forward(
+        self,
+        input_ids = None,
+        packed_seq_lengths = None,
+        **kwargs,
+    ):
         if packed_seq_lengths is None and self.armed:
             self.armed = False
             raise torch.cuda.OutOfMemoryError("CUDA out of memory")
-        return super().forward(
-            input_ids = input_ids, packed_seq_lengths = packed_seq_lengths, **kwargs
-        )
+        return super().forward(input_ids = input_ids, packed_seq_lengths = packed_seq_lengths, **kwargs)
 
 
 def _shorter_batch():

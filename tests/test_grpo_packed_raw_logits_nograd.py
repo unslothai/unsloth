@@ -248,7 +248,11 @@ def _batch():
     )
 
 
-def _run_packed_block(hidden_states = False, model = None, **overrides):
+def _run_packed_block(
+    hidden_states = False,
+    model = None,
+    **overrides,
+):
     """Exec the real packed + verify block and hand back its locals."""
     if model is None:
         model = _Model(hidden_states = hidden_states)
