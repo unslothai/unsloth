@@ -1059,13 +1059,19 @@ def resolve_video_base_repo(
 
 
 def _prequant_base_key(repo_id: Optional[str]) -> str:
-    """The lookup key ``prequant_variant_repos`` is written against: trimmed and lowercased.
+    """The lookup key ``prequant_variant_repos`` is written against: the UPSTREAM id, trimmed and lowercased.
 
-    Deliberately local rather than reusing ``diffusion_families.canonical_base``: this module
-    header keeps the two registries apart so neither picker can reach the other's tables, and the
-    image mirror map holds image repos only, so importing it would buy nothing but the coupling.
+    A video base's byte-identical unsloth mirror (``diffusion_families._VIDEO_MIRROR_PAIRS``) folds onto the upstream
+    it copies, since the fetch sites hand the mirror id to the loaders and an unfolded mirror would miss every row.
+    Only the id map is read (a lazy import of a pure function), never the image family table, so the two pickers
+    stay apart.
     """
-    return (repo_id or "").strip().lower()
+    text = (repo_id or "").strip()
+    try:
+        from .diffusion_families import canonical_base
+    except Exception:  # noqa: BLE001 -- the fold is an addition; the plain key is the old behaviour
+        return text.lower()
+    return canonical_base(text).strip().lower()
 
 
 def video_family_prequant_repo(

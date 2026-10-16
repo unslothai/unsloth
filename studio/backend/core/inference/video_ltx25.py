@@ -379,6 +379,10 @@ def load_ltx25_transformer(
         "cache_dir": cache_dir,
         "local_files_only": local_files_only,
     }
+    from .diffusion_families import pinned_revision_kwargs
+
+    # The load plan's commit for a hub-id config (none for the bundled config dir or an unpinned load).
+    kwargs.update(pinned_revision_kwargs(kwargs["config"]))
     if is_gguf:
         kwargs["quantization_config"] = diffusers.GGUFQuantizationConfig(compute_dtype = torch_dtype)
     elif device is not None:
@@ -439,6 +443,7 @@ def load_latent_upsampler(
     local_files_only: bool = False,
 ) -> Any:
     from diffusers.pipelines.ltx2.latent_upsampler import LTX2LatentUpsamplerModel
+
     if is_ltx25_single_file_base(base_repo):
         from safetensors.torch import load_file
 
@@ -448,8 +453,11 @@ def load_latent_upsampler(
         return _build_from_config(
             LTX2LatentUpsamplerModel, LTX25_UPSAMPLER_CONFIG, load_file(path), {}, torch_dtype
         )
+    from .diffusion_families import pinned_revision_kwargs
+
     return LTX2LatentUpsamplerModel.from_pretrained(
         base_repo,
+        **pinned_revision_kwargs(base_repo),
         subfolder = LATENT_UPSAMPLER_SUBFOLDER,
         torch_dtype = torch_dtype,
         token = hf_token,
@@ -461,7 +469,7 @@ def load_latent_upsampler(
 # ── the split single-file layout as its own base ────────────────────────────
 
 
-def is_ltx25_single_file_base(base: Optional[str]) -> bool:
+def is_ltx25_single_file_base(base: Optional[str], *, fold_mirror: bool = True) -> bool:
     """Whether ``base`` is the split single-file release (hub id) or a local folder with its layout (the encoder file
     and the conv VAE beside the DiTs), rather than a Diffusers pack."""
     text = (base or "").strip()
@@ -472,7 +480,13 @@ def is_ltx25_single_file_base(base: Optional[str]) -> bool:
         return (path / LTX25_SINGLE_TEXT_ENCODER).is_file() and (
             path / LTX25_SINGLE_VIDEO_VAE
         ).is_file()
-    return text.lower() == LTX25_SINGLE_FILE_REPO.lower()
+    if not fold_mirror:
+        return text.lower() == LTX25_SINGLE_FILE_REPO.lower()
+    # The fetch sites hand the assembly the repo carrying the release's byte-identical files (unsloth/LTX-2.5-GGUF).
+    # ``fold_mirror=False`` is for a PICK's own repo: a GGUF picked from that repo keeps the Diffusers base.
+    from .diffusion_families import canonical_base
+
+    return canonical_base(text).lower() == LTX25_SINGLE_FILE_REPO.lower()
 
 
 def is_ltx25_single_file_listing(names: Any) -> bool:
@@ -498,7 +512,7 @@ def ltx25_single_file_companions(
 
 def ltx25_default_base(repo_id: Optional[str]) -> Optional[str]:
     """A DiT picked from the single-file release (or a local copy of it) uses that release as its base."""
-    return repo_id if is_ltx25_single_file_base(repo_id) else None
+    return repo_id if is_ltx25_single_file_base(repo_id, fold_mirror = False) else None
 
 
 def ltx25_companion_path(
@@ -518,10 +532,13 @@ def ltx25_companion_path(
         return str(target)
     from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
 
+    from .diffusion_families import pinned_revision_kwargs
+
     return hf_hub_download_with_xet_fallback(
         base,
         filename,
         hf_token,
+        **pinned_revision_kwargs(base),
         reuse_other_cache_root = True,
         local_files_only = local_files_only,
     )
@@ -1061,6 +1078,7 @@ def close_encoder(pipe: Any) -> None:
 def start_text_encoder(
     *,
     repo: str,
+    revision: Optional[str] = None,
     hf_token: Optional[str],
     cache_dir: Optional[str],
     local_files_only: bool,
@@ -1086,6 +1104,10 @@ def start_text_encoder(
         budget_mib = budget_mib,
         te_quant = te_quant,
     )
+    from .diffusion_families import pinned_revision_kwargs
+
+    # The worker is another process: the plan's commit travels in its config (absent when unpinned).
+    client.config.update({"revision": revision} if revision else pinned_revision_kwargs(repo))
     client.start()
     return client
 

@@ -350,6 +350,10 @@ _WAN_SIBLINGS = {
         _sib("text_encoder/model-00001-of-00001.safetensors", 11_000_000_000),
         _sib("vae/diffusion_pytorch_model.safetensors", 500_000_000),
     ],
+}
+# The base's unsloth mirror holds the same files at the same paths, and is the repo a default load fetches from.
+_WAN_SIBLINGS["unsloth/Wan2.2-T2V-A14B-FP8"] = _WAN_SIBLINGS[_WAN_T2V]
+_WAN_SIBLINGS |= {
     "unsloth/Wan2.2-T2V-A14B-NVFP4": [
         _sib("Wan2.2-T2V-A14B-NVFP4.pt", 8_000_000_000),
         _sib("Wan2.2-T2V-A14B-transformer_2-NVFP4.pt", 8_100_000_000),
