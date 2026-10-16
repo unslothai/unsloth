@@ -3083,7 +3083,6 @@ def test_audio_page_local_filename_pick_uses_audio_cpp(hub, tmp_path, family, fi
     weights = folder / filename
     weights.write_bytes(_gguf_bytes(family = family))
     listing = asyncio.run(get_gguf_variants_response(str(folder)))
-    # audio uses the advertised .gguf filename as gguf_variant.
     selected = next(v for v in listing.variants if v.filename == filename)
     config = ModelConfig.from_identifier(str(folder), gguf_variant = selected.filename)
 
@@ -3091,7 +3090,7 @@ def test_audio_page_local_filename_pick_uses_audio_cpp(hub, tmp_path, family, fi
     assert config.audio_cpp is not None
     assert config.audio_cpp.family == family
     assert config.path == str(weights)
-    assert config.is_gguf is False  # audio.cpp, never llama-server
+    assert config.is_gguf is False  # audio.cpp bypasses llama-server
 
 
 def test_filename_variant_matches_a_windows_local_primary():
