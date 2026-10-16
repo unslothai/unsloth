@@ -38099,7 +38099,12 @@ async def llama_tokenize(request: Request, current_subject: str = Depends(get_cu
     target_url = f"{llama_backend.base_url}/tokenize"
     _client = _cancelable_nonstreaming_client()
     try:
-        _resp = await _client.post(target_url, json = body, timeout = 30)
+        _resp = await _client.post(
+            target_url,
+            json = body,
+            headers = _openai_passthrough_upstream_headers(llama_backend = llama_backend),
+            timeout = 30,
+        )
     except httpx.RequestError as _exc:
         raise HTTPException(status_code = 502, detail = _friendly_error(_exc))
     finally:

@@ -418,3 +418,42 @@ def test_pypi_gguf_backend_is_reported_as_missing(monkeypatch):
     old.GGUFLM = type("GGUFLM", (), {})  # the PyPI class: no server-slot API
     monkeypatch.setitem(sys.modules, "lm_eval.models.gguf", old)
     assert not benchmark_routes._gguf_backend_supported()
+
+
+def test_tokenize_passthrough_sends_llama_server_key(monkeypatch):
+    # llama-server runs with --api-key by default; without the key every Evals run 401s here.
+    import httpx
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from auth.authentication import get_current_subject
+    from routes import inference as inference_routes
+
+    seen = []
+
+    def handler(req):
+        seen.append(req.headers.get("authorization"))
+        return httpx.Response(200, json = {"tokens": [1, 2]})
+
+    backend = SimpleNamespace(
+        is_loaded = True,
+        base_url = "http://llama.invalid",
+        _auth_headers = {"Authorization": "Bearer llama-key"},
+    )
+
+    async def passthrough(request, subject, gguf_only = False):
+        return await request.json()
+
+    monkeypatch.setattr(inference_routes, "get_llama_cpp_backend", lambda: backend)
+    monkeypatch.setattr(inference_routes, "_auto_switch_from_request_body", passthrough)
+    monkeypatch.setattr(
+        inference_routes,
+        "_cancelable_nonstreaming_client",
+        lambda: httpx.AsyncClient(transport = httpx.MockTransport(handler)),
+    )
+    app = FastAPI()
+    app.dependency_overrides[get_current_subject] = lambda: "unsloth"
+    app.include_router(inference_routes.router, prefix = "/v1")
+    res = TestClient(app).post("/v1/tokenize", json = {"content": "hi"})
+    assert res.status_code == 200, res.text
+    assert seen == ["Bearer llama-key"]
