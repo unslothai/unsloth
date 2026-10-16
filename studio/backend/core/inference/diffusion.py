@@ -30,7 +30,7 @@ import sys
 import threading
 import time
 import traceback
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
 
@@ -1298,6 +1298,9 @@ class _LoadingState:
     # to "which files of which repos does this load count", which expected_bytes is the sum of and load_progress
     # scans. Empty when the size estimate failed; load_progress then keeps its repo-level scan.
     planned_files: tuple[tuple[str, str, int], ...] = ()
+    # ``{incomplete blob path: size}`` in the planned repos when this load claimed them: a cancelled sibling download
+    # leaves ``*.incomplete`` blobs behind, and only growth past this snapshot is this load's own bytes.
+    incomplete_baseline: dict[str, int] = field(default_factory = dict)
     # (expected_bytes, downloaded) once every expected byte was on disk.
     finalized_scan: Optional[tuple[int, int]] = None
 
@@ -4256,6 +4259,9 @@ class DiffusionBackend:
                     planned_total = sum(size for _r, _n, size in planned_files)
                     if planned_total and planned_total == expected:
                         self._loading.planned_files = planned_files
+                        self._loading.incomplete_baseline = self._incomplete_blob_sizes(
+                            {repo for repo, _n, _s in planned_files}
+                        )
                     self._loading.expected_bytes = expected
                     if skip_transformer_weights:
                         # Claimed before a byte moves. File entry first: load_progress reads lock-free.
@@ -4372,7 +4378,9 @@ class DiffusionBackend:
             return _progress("finalizing", finalized[1], finalized[0], 1.0)
 
         if loading.planned_files and sum(size for _r, _n, size in loading.planned_files) > 0:
-            downloaded = self._planned_progress_bytes(loading.planned_files)
+            downloaded = self._planned_progress_bytes(
+                loading.planned_files, loading.incomplete_baseline
+            )
             return self._progress_from(loading, downloaded)
         # Sum checkpoint + companion cache, scanning the repo the bytes LAND in (the mirror when one was swapped in),
         # else a mirrored companion download reads as zero and the bar sits still.
@@ -5859,7 +5867,23 @@ class DiffusionBackend:
         return best
 
     @staticmethod
-    def _planned_progress_bytes(planned: Sequence[tuple[str, str, int]]) -> int:
+    def _incomplete_blob_sizes(repos) -> dict[str, int]:
+        """``{path: size}`` of every ``blobs/*.incomplete`` of ``repos`` across cache roots. Never raises."""
+        out: dict[str, int] = {}
+        for repo in repos:
+            for repo_dir in DiffusionBackend._hub_cache_repo_dirs(repo):
+                try:
+                    for entry in (repo_dir / "blobs").iterdir():
+                        if entry.name.endswith(".incomplete"):
+                            out[str(entry)] = entry.stat().st_size
+                except OSError:
+                    continue
+        return out
+
+    @staticmethod
+    def _planned_progress_bytes(
+        planned: Sequence[tuple[str, str, int]], baseline: Optional[dict[str, int]] = None
+    ) -> int:
         """Bytes on disk of exactly the files ``_planned_progress_files`` chose. Each finished file counts up to its
         planned size (its largest copy across cache roots); a repo's ``*.incomplete`` blobs are the file it is
         writing right now, capped so the repo never counts more than its planned files. Sibling quants, sample
@@ -5874,16 +5898,12 @@ class DiffusionBackend:
                 min(size, DiffusionBackend._cache_file_bytes(repo, name)) if size else 0
                 for name, size in files
             )
-            in_flight = 0
-            for repo_dir in DiffusionBackend._hub_cache_repo_dirs(repo):
-                try:
-                    in_flight += sum(
-                        entry.stat().st_size
-                        for entry in (repo_dir / "blobs").iterdir()
-                        if entry.name.endswith(".incomplete")
-                    )
-                except OSError:
-                    continue
+            # Only growth past the load's baseline: a stale blob a cancelled sibling download left behind is not
+            # this load's progress, while one this load resumes counts what it adds.
+            in_flight = sum(
+                max(0, size - (baseline or {}).get(path, 0))
+                for path, size in DiffusionBackend._incomplete_blob_sizes((repo,)).items()
+            )
             total += min(planned_total, done + in_flight)
         return total
 

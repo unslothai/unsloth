@@ -5520,6 +5520,15 @@ def cached_model_rows(cache_scans = None) -> list[dict]:
         active_root = None
 
     seen_lower: dict[str, dict] = {}
+    cache_scans = list(cache_scans)
+    # Across EVERY root, as the cached-model scan decides it: an artifact mirror whose GGUF sits in one root and
+    # whose diffusers folders sit in the other is a GGUF repo, so its folders-only copy is no row of this listing.
+    try:
+        from hub.services.models.cache_inventory import _artifact_gguf_repo_ids
+
+        artifact_gguf_keys = _artifact_gguf_repo_ids(cache_scans)
+    except Exception:  # noqa: BLE001 -- no table means no artifact mirrors
+        artifact_gguf_keys = set()
     for hf_cache in cache_scans:
         for repo_info in hf_cache.repos:
             try:
@@ -5529,7 +5538,7 @@ def cached_model_rows(cache_scans = None) -> list[dict]:
                 # Pass the snapshot path too so the config check also hides custom Whisper checkpoints.
                 if _is_hidden_model(repo_id, str(repo_info.repo_path)):
                     continue
-                if _repo_has_gguf_files(repo_info):
+                if _repo_has_gguf_files(repo_info) or repo_id.lower() in artifact_gguf_keys:
                     continue
                 selected, model_load_id = _repo_model_selection(repo_info, active_root)
                 if _recovered_repo_is_unusable_by_repo_id(repo_info):

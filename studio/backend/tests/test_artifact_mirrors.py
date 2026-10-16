@@ -610,3 +610,63 @@ def test_run_load_counts_a_prequant_denoiser_hosted_in_the_companion_mirror(monk
         expected,
         expected,
     )
+
+
+def test_a_stale_incomplete_blob_from_a_cancelled_sibling_is_not_progress(monkeypatch, tmp_path):
+    """A cancelled download of another quant left a large ``.incomplete`` blob in the same repo before this load
+    started. Only what appears or grows after the load's baseline is this load's progress."""
+    from core.inference.diffusion import _LoadingState
+
+    repo = "unsloth/FLUX.1-dev-GGUF"
+    planned = ((repo, "flux1-dev-Q4_K_M.gguf", 6_000),)
+    _snapshot(tmp_path, repo, {"README.md": 10})
+    blobs = tmp_path / f"models--{repo.replace('/', '--')}" / "blobs"
+    blobs.mkdir(parents = True, exist_ok = True)
+    (blobs / "stale.incomplete").write_bytes(b"\0" * 5_000)
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_hub_cache_repo_dirs",
+        staticmethod(lambda repo_id: [tmp_path / f"models--{repo_id.replace('/', '--')}"]),
+    )
+    backend = DiffusionBackend()
+    backend._loading = _LoadingState(
+        repo_id = repo,
+        base_repo = "black-forest-labs/FLUX.1-dev",
+        gguf_filename = planned[0][1],
+        planned_files = planned,
+        expected_bytes = 6_000,
+        incomplete_baseline = DiffusionBackend._incomplete_blob_sizes({repo}),
+    )
+    assert backend.load_progress()["bytes_downloaded"] == 0
+    (blobs / "mine.incomplete").write_bytes(b"\0" * 1_500)
+    with open(blobs / "stale.incomplete", "ab") as fh:  # a resumed blob counts only what it adds
+        fh.write(b"\0" * 500)
+    assert backend.load_progress()["bytes_downloaded"] == 2_000
+
+
+def test_a_folders_only_copy_in_the_other_root_is_neither_a_cached_row_nor_an_orphan(monkeypatch, tmp_path):
+    """The GGUF in one cache root, the mirror's folders in the other: the compatibility cached-models route lists no
+    single-file row for the folders copy, and Free up space does not offer it, since the installed GGUF loads its
+    companions from it."""
+    import asyncio
+    from types import SimpleNamespace
+
+    import routes.models as models_route
+    from hub.services.models import cache_inventory, companion_cleanup
+
+    repo = "unsloth/Z-Image-GGUF"
+    in_gguf_root = _cache_repo(tmp_path / "old", repo, {"z-image-Q4_K_M.gguf": 5_000})
+    in_folder_root = _cache_repo(tmp_path / "live", repo, dict(_FOLDERS))
+    scans = [SimpleNamespace(repos = [in_gguf_root]), SimpleNamespace(repos = [in_folder_root])]
+
+    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: tmp_path / "live")
+    monkeypatch.setattr(models_route, "_cached_repo_task", lambda *_a, **_k: "text-to-image")
+    monkeypatch.setattr(models_route, "_cached_repo_partial", lambda *_a, **_k: False)
+    monkeypatch.setattr(models_route.account_access, "filter_model_rows", lambda rows: rows)
+    assert [r for r in models_route.cached_model_rows(scans) if r["repo_id"] == repo] == []
+
+    monkeypatch.setattr("utils.paths.storage_roots.cache_root", lambda: tmp_path / "app-cache")
+    monkeypatch.setattr(cache_inventory, "all_hf_cache_scans", lambda: scans)
+    monkeypatch.setattr(companion_cleanup.cache_inventory, "all_hf_cache_scans", lambda: scans)
+    offered = asyncio.run(companion_cleanup.orphan_companions_response())["companions"]
+    assert [c for c in offered if c["repo_id"] == repo] == []
