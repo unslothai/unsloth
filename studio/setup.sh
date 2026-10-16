@@ -4450,6 +4450,10 @@ elif [ "$_setup_amd_detected" = true ]; then
     # Name-based arch inference when tools don't report gfx (mirrors setup.ps1 nameArchTable)
     elif [ -z "$_setup_gfx" ] && [ -n "$_setup_mkt" ]; then
         _setup_gfx=$(_setup_supported_gfx_from_name "$_setup_mkt") || _setup_gfx=""
+        # Krackan Point 2 names overlap the table's gfx1152 patterns (install.sh tests them first).
+        if printf '%s\n' "$_setup_mkt" | grep -Eqi '820M|Krackan ?(Point ?)?2|AI 5 (PRO )?330'; then
+            _setup_gfx=gfx1153
+        fi
         if [ -n "$_setup_gfx" ]; then
             substep "gfx arch inferred from GPU name: $_setup_gfx"
             substep "Tip: set UNSLOTH_ROCM_GFX_ARCH=$_setup_gfx to skip inference next time"

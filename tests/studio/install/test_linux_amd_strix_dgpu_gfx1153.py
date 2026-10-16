@@ -567,3 +567,30 @@ def test_setup_sh_forwards_an_inferred_gfx1153_to_llama_cpp(unsup, setup_gfx, ex
         '    if [ -n "${_setup_gfx:-}" ]; then\n        _PREBUILT_CMD+=(--rocm-gfx "$_setup_gfx")'
         in source
     )
+
+
+
+@_POSIX
+@pytest.mark.parametrize(
+    "name,expected",
+    [("AMD Ryzen AI 5 330 w/ Radeon 820M", "gfx1153"), ("Krackan Point 2", "gfx1153"), ("AMD Radeon 860M", "gfx1152")],
+)
+def test_setup_sh_name_inference_reads_krackan_point_2_first(name, expected):
+    # An older rocminfo / amd-smi gives only a marketing name; the gfx1152 table must not claim Krackan Point 2.
+    import subprocess
+
+    from test_rdna1_unsupported_message_8529 import _SETUP_SH, _sh_function_body
+
+    src = _SETUP_SH.read_text(encoding = "utf-8")
+    start = src.index("    elif [ -z \"$_setup_gfx\" ] && [ -n \"$_setup_mkt\" ]; then")
+    end = src.index("\n    fi\n", src.index("_setup_supported_gfx_from_name \"$_setup_mkt\"", start)) + len("\n    fi\n")
+    block = "if false; then :\n" + src[start:end]
+    script = "\n".join([
+        _sh_function_body(src, "_setup_supported_gfx_from_name"),
+        "substep() { :; }",
+        '_setup_gfx=""; _setup_mkt="$1"',
+        block,
+        'printf "%s" "$_setup_gfx"',
+    ])
+    out = subprocess.run(["bash", "-c", script, "bash", name], capture_output = True, text = True, timeout = 30)
+    assert out.stdout.strip() == expected, out.stderr
