@@ -152,15 +152,15 @@ def test_the_shipped_main_build_is_active_with_a_digest():
     assert module._diffusers_main_active() is True
 
 
-def test_the_flux3_pin_is_the_upstream_merge_commit():
-    """huggingface/diffusers#15046 merged on 2026-10-15 as 7ecb1e1b4 (tree identical to the tested PR head ec288418):
-    the pin names the merge commit on main, not the deleted PR branch's head, with that commit's archive digest."""
+def test_the_flux3_pin_is_main_with_the_merged_flux3_support():
+    """huggingface/diffusers#15046 merged on 2026-10-15 (7ecb1e1b4); the pin is main at d42ebf9c (2026-10-16, the
+    prompt upsampler block #15058), which carries it, with that commit's archive digest, not the PR branch head."""
     text = MAIN_FILE.read_text(encoding = "utf-8")
     (line,) = _requirements(MAIN_FILE)
-    assert line.endswith("@7ecb1e1b4fe500be7fb7381a7bb79a24d7fa3941"), line
+    assert line.endswith("@d42ebf9c6e0b46103b74283f5324357a67acaa04"), line
     assert "ec288418a5efa32e9fd49eb7b193babce920a106" not in line
     assert re.search(
-        r"^# archive-sha256: 0bde9c911fdffd53bbc1f0a956be97163dc28b9a80aa330ffc7168d2910d620b$", text, re.M
+        r"^# archive-sha256: c46925a12c1b64340272dbd4c5d72a4298ecd4c96cad2c9d549b85a99ffb491f$", text, re.M
     )
 
 
