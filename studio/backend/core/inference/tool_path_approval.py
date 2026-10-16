@@ -1235,9 +1235,16 @@ _COMMAND_OUTPUT_FLAGS = {
 # every operand but an `-i` value is written. `magick input-file ... output-file`: the last one is.
 _POSITIONAL_OUTPUT_COMMANDS = {"ffmpeg": "not_input", "magick": "last", "convert": "last"}
 
+# ffmpeg options whose value is a file it reads (`-filter_complex_script`, `-attach`, and the
+# `-/option file` form that loads an option's value from a file), and magick's read-only verb.
+_FFMPEG_INPUT_FLAGS = frozenset({"-i", "-filter_complex_script", "-filter_script", "-attach"})
+_MAGICK_READ_ONLY_VERBS = frozenset({"identify"})
+
 
 def _unlisted_command_operands(command, args) -> "list[tuple[str, bool]]":
     outputs = _POSITIONAL_OUTPUT_COMMANDS.get(command)
+    if command == "magick" and args and args[0] in _MAGICK_READ_ONLY_VERBS:
+        outputs = None
     output_flags = _OUTPUT_FILE_FLAGS | _COMMAND_OUTPUT_FLAGS.get(command, frozenset())
     operands = []
     writes_next = False
@@ -1255,7 +1262,10 @@ def _unlisted_command_operands(command, args) -> "list[tuple[str, bool]]":
         elif outputs == "last":
             writing = writing or index == len(args) - 1
         elif outputs == "not_input":
-            writing = writing or index == 0 or args[index - 1] != "-i"
+            previous = args[index - 1].split(":")[0] if index else ""
+            writing = writing or not (
+                previous in _FFMPEG_INPUT_FLAGS or previous.startswith("-/")
+            )
         # A lone rooted word is a Windows switch (`/E`), unless it is the file the command writes.
         if _looks_absolute(value) and (writing or not _BARE_SWITCH_RE.match(value)):
             operands.append((value, writing))

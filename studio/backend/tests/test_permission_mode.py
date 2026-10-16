@@ -4145,6 +4145,11 @@ _INDIRECT_BENIGN_TERMINAL = (
     "robocopy src dst /E",
     "magick in.png -resize 50% out.png",
     "pandoc in.docx --extract-media=media -o out.md",
+    "magick identify /usr/share/pixmaps/logo.png",
+    "ffmpeg -filter_complex_script /usr/share/doc/graph.txt -i in.wav out.wav",
+    "ffmpeg -i in.mp4 -filter_script:v /usr/share/doc/f.txt out.mp4",
+    "ffmpeg -i in.mp4 -attach /usr/share/fonts/a.ttf out.mkv",
+    "ffmpeg -i in.mp4 -/filter_complex /usr/share/doc/g.txt out.mp4",
 )
 
 _INDIRECT_BENIGN_PYTHON = (
