@@ -4998,14 +4998,7 @@ class ModelConfig:
         gguf_hint: Optional[str] = None,
         gguf_file: Optional[str] = None,
     ) -> Optional["ModelConfig"]:
-        """A GGUF only audio.cpp runs, as a speech or music config for the native-audio worker.
-
-        Called three ways: up front for an umbrella folder id (``audio-cpp/audio.cpp-gguf/<Folder>``,
-        which no repo probe below can read), for a local GGUF once found, and for a Hub repo once
-        its GGUF is known. The last two read the file's header, so an ordinary llama.cpp GGUF
-        returns None here at the cost of one header read. Raises ``ValueError`` for an audio.cpp
-        model Studio cannot run in this slot (speech-to-text, an unsupported task or variant).
-        """
+        """resolves umbrella or header-checked audio.cpp GGUFs; raises ValueError if unsupported."""
         try:
             from core.inference import audio_cpp_models
         except Exception:  # noqa: BLE001 - no audio.cpp support, no audio.cpp id
