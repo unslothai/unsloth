@@ -168,9 +168,7 @@ def _inventory_row(monkeypatch, tmp_path, repo: str, files: dict[str, int]) -> d
     monkeypatch.setattr(
         cache_inventory.hf_cache_scan, "is_snapshot_partial", lambda *_a, **_k: False
     )
-    monkeypatch.setattr(
-        cache_inventory, "_cached_row_task", lambda *_a, **_k: "text-to-image"
-    )
+    monkeypatch.setattr(cache_inventory, "_cached_row_task", lambda *_a, **_k: "text-to-image")
     rows = [
         r
         for r in cache_inventory._scan_cached_models(active_hub_cache = tmp_path)
@@ -199,7 +197,6 @@ def _route_row(monkeypatch, tmp_path, repo: str, files: dict[str, int]) -> dict:
     return rows[0]
 
 
-
 @pytest.mark.parametrize("cached", ["companions", "full"])
 @pytest.mark.parametrize("scan", [_inventory_row, _route_row])
 def test_the_fp8_artifact_mirror_lists_as_its_checkpoint_not_as_a_pipeline(
@@ -218,9 +215,9 @@ def test_the_fp8_artifact_mirror_lists_as_its_checkpoint_not_as_a_pipeline(
     assert row.get("load_id") in (None, row["repo_id"])
     if scan is _route_row:
         released = scan(monkeypatch, tmp_path / "released", _FP8_REPO, dict(_FP8_ROOT))
-        assert {k: released.get(k) for k in ("task", "single_file", "partial", "artifact_kind")} == {
-            k: row.get(k) for k in ("task", "single_file", "partial", "artifact_kind")
-        }
+        assert {
+            k: released.get(k) for k in ("task", "single_file", "partial", "artifact_kind")
+        } == {k: row.get(k) for k in ("task", "single_file", "partial", "artifact_kind")}
 
 
 @pytest.mark.parametrize("cached", ["companions", "full"])
@@ -245,10 +242,14 @@ def test_a_gguf_artifact_mirror_lists_only_its_gguf_row_which_counts_the_folders
     )
     monkeypatch.setattr(cache_inventory, "_cached_row_task", lambda *_a, **_k: "text-to-image")
     assert [
-        r for r in cache_inventory._scan_cached_models(active_hub_cache = tmp_path) if r["repo_id"] == repo
+        r
+        for r in cache_inventory._scan_cached_models(active_hub_cache = tmp_path)
+        if r["repo_id"] == repo
     ] == []
     gguf_rows = [
-        r for r in cache_inventory._scan_cached_gguf(active_hub_cache = tmp_path) if r["repo_id"] == repo
+        r
+        for r in cache_inventory._scan_cached_gguf(active_hub_cache = tmp_path)
+        if r["repo_id"] == repo
     ]
     assert len(gguf_rows) == 1
     # model_index.json is rewritten with real JSON, so count every other file exactly and that one as present.

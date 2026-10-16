@@ -744,7 +744,6 @@ def _artifact_mirror_rows(
     gguf_rows = [row for row in rows if row.model_format == "gguf"]
     if gguf_rows:
         from hub.services.models.cache_inventory import artifact_folder_bytes
-
         folder_bytes = artifact_folder_bytes(repo_dir)
         return [
             row.model_copy(update = {"size_bytes": int(row.size_bytes or 0) + folder_bytes})
