@@ -352,7 +352,7 @@ def _hybrid_packing_enabled() -> bool:
 
 
 # Auto-packed mixers (CUDA only). MoE router aux loss is computed over the whole packed row, not per document.
-_HYBRID_AUTO_KINDS = ("gated_delta",)
+_HYBRID_AUTO_KINDS = ("gated_delta", "ple")
 
 HYBRID_PACKING_STATS = {
     "probe_runs": 0,
@@ -397,9 +397,11 @@ _QKV_CONVS = ("q_conv1d", "k_conv1d", "v_conv1d")
 
 def _stateful_mixer_kind(module) -> Optional[str]:
     """How a token mixer carries state across positions: "gated_delta" / "ssd" (Mamba2-style
-    chunked scan) / "short_conv" take boundary metadata, "unsupported" leaks with no kernel
+    chunked scan) / "short_conv" / "ple" take boundary metadata, "unsupported" leaks with no kernel
     fix (Mamba1 selective scan, lightning attention, RWKV), None is stateless."""
     name = type(module).__name__
+    if name == "Qwen4ExpTextPLELayer":
+        return "ple"
     if name.endswith("GatedDeltaNet"):
         if hasattr(module, "conv1d"):
             return "gated_delta"
@@ -720,6 +722,11 @@ def _hybrid_varlen_dispatched(module) -> bool:
     kind = _stateful_mixer_kind(module)
     if kind == "short_conv":
         return bool(getattr(module, "_unsloth_varlen_conv_hit", False))
+    if kind == "ple":
+        return bool(
+            getattr(module, "_unsloth_varlen_conv_hit", False)
+            and getattr(module, "_unsloth_varlen_embedding_hit", False)
+        )
     if kind == "ssd":
         if getattr(module, "_unsloth_varlen_fused_hit", False):
             return True
@@ -1054,6 +1061,60 @@ def _wrap_short_conv_forward(module) -> None:
     module.forward = forward
 
 
+def _ple_input_with_gaps(tensor, varlen, gap, fill_value):
+    # Keep a single packed call, with only the finite history between documents cleared.
+    # Shapes supply the expanded length; no device scalar or per-document host loop is needed.
+    positions = torch.arange(tensor.shape[1], device = tensor.device)
+    positions = positions + varlen[1][0].to(device = tensor.device, dtype = torch.long) * gap
+    length = tensor.shape[1] + (varlen[0].numel() - 2) * gap
+    expanded = tensor.new_full((tensor.shape[0], length, *tensor.shape[2:]), fill_value)
+    return expanded.index_copy(1, positions, tensor), positions
+
+
+def _wrap_ple_boundaries(module) -> None:
+    # PLE's dilated convolution cannot use the usual causal-conv seq_idx kernel.
+    # Insert zero history before each document and gather only real outputs. The
+    # native convolution, SiLU, autocast and autograd all remain in use.
+    conv_orig = module._short_conv
+    embedding = module.ple_embedding
+    embedding_orig = embedding.forward
+
+    def packed_input(tensor, past_key_values):
+        varlen = getattr(module, "_unsloth_varlen", None)
+        if past_key_values is not None or varlen is None or tensor.shape[:2] != varlen[1].shape:
+            return None
+        return varlen
+
+    @wraps(conv_orig)
+    def short_conv(hidden_states, past_key_values):
+        varlen = packed_input(hidden_states, past_key_values)
+        if varlen is None:
+            return conv_orig(hidden_states, past_key_values)
+        expanded, positions = _ple_input_with_gaps(
+            hidden_states, varlen, module.short_conv_state_len, 0
+        )
+        output = conv_orig(expanded, past_key_values)
+        module._unsloth_varlen_conv_hit = True
+        return output.index_select(1, positions)
+
+    @wraps(embedding_orig)
+    def ngram_embedding(input_ids, past_key_values):
+        varlen = packed_input(input_ids, past_key_values)
+        if varlen is None:
+            return embedding_orig(input_ids, past_key_values)
+        # A packing boundary need not contain EOS. Synthetic EOS history gives
+        # the native hash the same context as a separate document's forward.
+        expanded, positions = _ple_input_with_gaps(
+            input_ids, varlen, embedding.context_len, embedding.eos_token_id
+        )
+        output = embedding_orig(expanded, past_key_values)
+        module._unsloth_varlen_embedding_hit = True
+        return output.index_select(1, positions)
+
+    module._short_conv = short_conv
+    embedding.forward = ngram_embedding
+
+
 def _uses_hub_conv(module) -> bool:
     globs = getattr(inspect.getmodule(type(module)), "__dict__", {})
     return "implementation" in _hub_closure(globs.get("causal_conv1d_fn"))
@@ -1154,6 +1215,7 @@ _HYBRID_PROBE_LENGTHS = (5, 1, 70, 7)
 _HYBRID_PROBE_RTOL = {torch.float32: 1e-4, torch.bfloat16: 2e-2, torch.float16: 1e-2}
 _HYBRID_SNAPSHOT_ATTRS = (
     "forward",
+    "_short_conv",
     "causal_conv1d_fn",
     "chunk_gated_delta_rule",
     "_unsloth_varlen",
@@ -1164,6 +1226,7 @@ _HYBRID_SNAPSHOT_ATTRS = (
     "_unsloth_varlen_conv_hit",
     "_unsloth_varlen_scan_hit",
     "_unsloth_varlen_kwargs_hit",
+    "_unsloth_varlen_embedding_hit",
 )
 _MISSING = object()
 
@@ -1172,6 +1235,8 @@ def _snapshot_mixers(modules):
     saved = []
     for module in modules:
         owners = [module] + [getattr(module, c, None) for c in _QKV_CONVS]
+        if _stateful_mixer_kind(module) == "ple":
+            owners.append(module.ple_embedding)
         for owner in owners:
             if isinstance(owner, torch.nn.Module):
                 state = {k: owner.__dict__.get(k, _MISSING) for k in _HYBRID_SNAPSHOT_ATTRS}
@@ -1189,6 +1254,9 @@ def _restore_mixers(saved) -> None:
 
 
 def _auto_hybrid_device_ok(module) -> bool:
+    # PLE uses native torch ops, and its large n-gram table may remain on CPU.
+    if _stateful_mixer_kind(module) == "ple":
+        return True
     weight = next(module.parameters(), None)
     return torch.version.hip is None and weight is not None and weight.device.type == "cuda"
 
@@ -1269,11 +1337,11 @@ def _hybrid_exactness_probe(module) -> Optional[str]:
 def patch_hybrid_linear_attention_varlen(model) -> bool:
     """Feed seq_idx / cu_seqlens to hybrid mixers; True when packing is active. Fail-closed, idempotent."""
     mixers = _iter_stateful_mixers(model)
-    # Short-conv-only models (LFM2) reset at seq_idx on both kernel and torch paths, so they pack by default.
-    short_conv_only = bool(mixers) and all(kind == "short_conv" for _, kind in mixers)
+    # LFM2 short convs and PLE have boundary-safe torch paths, so they also pack without CUDA.
+    torch_varlen_only = bool(mixers) and all(kind in ("short_conv", "ple") for _, kind in mixers)
     mode = _hybrid_packing_mode()
     auto_eligible = bool(mixers) and all(kind in _HYBRID_AUTO_KINDS for _, kind in mixers)
-    if not short_conv_only:
+    if not torch_varlen_only:
         if mode == "off" or (mode == "auto" and not auto_eligible):
             return False
     unsupported = sorted({type(m).__name__ for m, kind in mixers if kind == "unsupported"})
@@ -1282,7 +1350,8 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
     gated_delta_modules = [m for m, kind in mixers if kind in ("gated_delta", "gated_delta_qkv")]
     mamba2_modules = [m for m, kind in mixers if kind == "ssd"]
     short_conv_modules = [m for m, kind in mixers if kind == "short_conv"]
-    hybrid_modules = gated_delta_modules + mamba2_modules + short_conv_modules
+    ple_modules = [m for m, kind in mixers if kind == "ple"]
+    hybrid_modules = gated_delta_modules + mamba2_modules + short_conv_modules + ple_modules
     if not hybrid_modules:
         return _hybrid_reject("no stateful mixers found")
     kwargs_modules = [
@@ -1302,7 +1371,7 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
 
     hub_short_convs = [m for m in short_conv_modules if _uses_hub_conv(m)]
     probe_target = _probe_target(gated_delta_modules + kwargs_modules)
-    if mode == "auto" and not short_conv_only:
+    if mode == "auto" and not torch_varlen_only:
         if probe_target is None:
             return _hybrid_reject("no gated-delta mixer the exactness probe can run")
         # Every stateful mixer, kwargs-mode ones included (transformers 5.16+ Qwen mixers move there).
@@ -1393,6 +1462,11 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
     for module in short_conv_modules:
         if not getattr(module, "_unsloth_varlen_wrapped", False):
             _wrap_short_conv_forward(module)
+            module._unsloth_varlen = None
+            module._unsloth_varlen_wrapped = True
+    for module in ple_modules:
+        if not getattr(module, "_unsloth_varlen_wrapped", False):
+            _wrap_ple_boundaries(module)
             module._unsloth_varlen = None
             module._unsloth_varlen_wrapped = True
 
@@ -1490,6 +1564,7 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
                     module._unsloth_varlen_scan_hit = False
                     module._unsloth_varlen_fused_hit = False
                     module._unsloth_varlen_kwargs_hit = False
+                    module._unsloth_varlen_embedding_hit = False
             outer, _PACKED[0] = _PACKED[0], varlen
             try:
                 out = forward_orig(*args, **kwargs)
