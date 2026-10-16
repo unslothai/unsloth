@@ -5711,6 +5711,7 @@ dependencies = [
  "signal-hook",
  "simplelog",
  "strip-ansi-escapes",
+ "system-configuration",
  "tauri",
  "tauri-build",
  "tauri-plugin-autostart",
