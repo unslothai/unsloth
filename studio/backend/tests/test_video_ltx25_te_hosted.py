@@ -254,3 +254,73 @@ def test_none_keeps_bf16_and_dense_fallback_reads_the_hub_id(tmp_path, monkeypat
     _tok, model = worker._load(config)
     assert isinstance(model.model.language_model.layers[0].self_attn.q_proj, nn.Linear)
     assert config.get("_te_source") is None
+
+
+def _hf_cache_entry(root: Path, repo: str, filename: str, payload: bytes) -> Path:
+    commit = "0" * 40
+    folder = root / ("models--" + repo.replace("/", "--"))
+    (folder / "refs").mkdir(parents = True)
+    (folder / "refs" / "main").write_text(commit)
+    target = folder / "snapshots" / commit / filename
+    target.parent.mkdir(parents = True)
+    target.write_bytes(payload)
+    return target
+
+
+def test_hosted_path_resolves_a_copy_under_the_other_cache_root(tmp_path, monkeypatch):
+    # The server stages with reuse_other_cache_root, so a copy cached only under huggingface_hub's own root counts as
+    # staged (and the dense shards are dropped). The worker must find it too, offline.
+    import huggingface_hub.constants as hub_constants
+
+    repo, filename = "unsloth/LTX-2.5-FP8", "LTX-2.5-text_encoder-INT8-ConvRot.safetensors"
+    default_root, configured = tmp_path / "default", tmp_path / "configured"
+    configured.mkdir()
+    staged = _hf_cache_entry(default_root, repo, filename, b"hosted")
+    monkeypatch.setattr(hub_constants, "HF_HUB_CACHE", str(default_root))
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    spec = {"repo": repo, "filename": filename, "mirror_path": None}
+    common = {"token": None, "cache_dir": str(configured), "local_files_only": True}
+    assert Path(worker._hosted_path(spec, common)).read_bytes() == staged.read_bytes()
+    # A copy under the configured root still wins.
+    mine = _hf_cache_entry(configured, repo, filename, b"configured")
+    assert Path(worker._hosted_path(spec, common)) == mine
+
+
+def test_builder_drops_a_tied_lm_head(tmp_path, monkeypatch):
+    import build_ltx25_te_int8_convrot as builder
+
+    class _Tied(_TinyGemma):
+        def __init__(self):
+            super().__init__()
+            self.lm_head = nn.Linear(256, 16, bias = False)
+            self.lm_head.weight = self.model.language_model.embed_tokens.weight
+
+    def _load(config):
+        config["_te_source"] = "quantized_at_load"
+        return object(), _Tied().to(torch.bfloat16)
+
+    monkeypatch.setattr(worker, "_load", _load)
+    out = tmp_path / "hosted.safetensors"
+    builder.build("unused", out, base = BASE, device = "cpu")
+    from safetensors import safe_open
+
+    with safe_open(str(out), "pt") as fh:
+        keys = set(fh.keys())
+    assert "model.language_model.embed_tokens.weight" in keys
+    assert "lm_head.weight" not in keys
+
+
+def test_builder_builds_on_the_cpu_when_the_card_is_absent(tmp_path, monkeypatch):
+    import build_ltx25_te_int8_convrot as builder
+
+    seen: dict = {}
+
+    def _load(config):
+        seen.update(config)
+        config["_te_source"] = "quantized_at_load"
+        return object(), _TinyGemma().to(torch.bfloat16)
+
+    monkeypatch.setattr(worker, "_load", _load)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    builder.build("unused", tmp_path / "hosted.safetensors", base = BASE, device = "cuda:0")
+    assert seen["device"] == "cpu" and seen["resident"] is False

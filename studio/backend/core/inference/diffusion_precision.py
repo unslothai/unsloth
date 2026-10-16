@@ -246,14 +246,17 @@ def quantize_text_encoders(
     family: Optional[str] = None,
     offload_active: bool = False,
     logger: Any = None,
+    encoders: Optional[tuple[str, ...]] = None,
 ) -> TEQuantOutcome:
     """Quantise each present text encoder in place with ``mode``. Returns a ``TEQuantOutcome``
     carrying the mode applied (None when disabled, unsupported, or nothing was cast) plus WHY it
     differs from the request. ``int8`` needs a per-family schedule (``_TE_INT8_SKIP``); without one
     it falls back to ``fp8``. Under ``offload_active`` the torchao modes are skipped (their
     subclasses reject ``Module.to()``); layerwise ``fp8`` still engages. Best-effort: any failure
-    leaves the encoder dense."""
+    leaves the encoder dense. ``encoders`` limits the cast to those pipeline attributes (the rest stay as loaded),
+    e.g. HunyuanVideo-1.5's automatic fp8 targets its Qwen tower and leaves the ByT5 glyph encoder dense."""
     mode = normalize_te_quant(mode)
+    attrs = tuple(a for a in _TEXT_ENCODER_ATTRS if encoders is None or a in encoders)
     if mode is None:
         present = [a for a in _TEXT_ENCODER_ATTRS if getattr(pipe, a, None) is not None]
         stored_int8 = [a for a in present if _hosted_te_scheme(getattr(pipe, a)) == TE_QUANT_INT8]
@@ -266,7 +269,7 @@ def quantize_text_encoders(
             )
         return TEQuantOutcome(None)
     # A hosted int8 ConvRot encoder is already quantized (plain tensors, offload-safe): report it, never re-cast it.
-    present = [a for a in _TEXT_ENCODER_ATTRS if getattr(pipe, a, None) is not None]
+    present = [a for a in attrs if getattr(pipe, a, None) is not None]
     hosted_int8 = [a for a in present if _hosted_te_scheme(getattr(pipe, a)) == TE_QUANT_INT8]
     if mode == TE_QUANT_INT8 and hosted_int8 and len(hosted_int8) == len(present):
         return TEQuantOutcome(
@@ -331,7 +334,7 @@ def quantize_text_encoders(
         caster = _cast_fp8
     cast: list[str] = []
     failed: list[str] = []
-    for attr in _TEXT_ENCODER_ATTRS:
+    for attr in attrs:
         encoder = getattr(pipe, attr, None)
         if encoder is None:
             continue

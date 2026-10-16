@@ -301,6 +301,9 @@ class VideoFamily:
     # the default never costs a dense download plus an in-place cast. "none" / "off" still pin the released encoder.
     # MiniMax-H3 and LTX-2.5 resolve their own tri-state and leave this unset.
     te_quant_auto: Optional[str] = None
+    # The pipeline encoders that automatic pick casts, when not all of them (empty = every present encoder). An
+    # explicit text_encoder_quant still covers every encoder.
+    te_quant_auto_encoders: tuple[str, ...] = ()
     # Hosted PRE-QUANTIZED DENOISER checkpoints as (scheme, repo_id). The DiT, NOT the text encoder that
     # te_prequant_repos above covers: the two are separate artifacts because a load can take one without the other. Same
     # semantics as DiffusionFamily.prequant_repos, so the shared diffusion_prequant resolver reads this table through
@@ -891,6 +894,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         # language model unchanged (Apache-2.0), and the 480p and 720p repacks ship the same bytes.
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/HunyuanVideo-1.5-FP8"),),
         te_quant_auto = "fp8",
+        # Only the Qwen tower: the ByT5 glyph encoder (text_encoder_2) stays dense under the default.
+        te_quant_auto_encoders = ("text_encoder",),
         fp16_guard = "native",
         cudnn_benchmark = False,
         # Needs the capture-safe forward (diffusion_capture_safe) and the memoized trim (diffusion_attention).
@@ -931,6 +936,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         # language model unchanged (Apache-2.0), and the 480p and 720p repacks ship the same bytes.
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/HunyuanVideo-1.5-FP8"),),
         te_quant_auto = "fp8",
+        # Only the Qwen tower: the ByT5 glyph encoder (text_encoder_2) stays dense under the default.
+        te_quant_auto_encoders = ("text_encoder",),
         fp16_guard = "native",
         cudnn_benchmark = False,
     ),

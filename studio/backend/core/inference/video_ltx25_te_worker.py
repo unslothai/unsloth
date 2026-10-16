@@ -207,9 +207,24 @@ def _hosted_path(spec: dict, common: dict) -> str:
     mirror = spec.get("mirror_path")
     if mirror and os.path.isfile(mirror):
         return mirror
-    from huggingface_hub import hf_hub_download
+    from huggingface_hub import hf_hub_download, try_to_load_from_cache
 
-    return hf_hub_download(spec["repo"], spec["filename"], **common)
+    kwargs = dict(common)
+    # The server stages this file with reuse_other_cache_root (hf_hub_download_with_xet_fallback), so a copy cached
+    # only under huggingface_hub's own root counts as staged and the dense shards are dropped. Resolve it the same way,
+    # else a local_files_only load misses it here and has no dense encoder to fall back to.
+    if kwargs.get("cache_dir"):
+        try:
+            here = try_to_load_from_cache(
+                spec["repo"], spec["filename"], cache_dir = kwargs["cache_dir"]
+            )
+            if not isinstance(here, str):
+                elsewhere = try_to_load_from_cache(spec["repo"], spec["filename"], cache_dir = None)
+                if isinstance(elsewhere, str) and os.path.isfile(elsewhere):
+                    kwargs["cache_dir"] = None
+        except Exception:  # noqa: BLE001 -- an unreadable cache keeps the configured root
+            pass
+    return hf_hub_download(spec["repo"], spec["filename"], **kwargs)
 
 
 def _load_hosted(config: dict, model_cls: Any, dtype: Any, common: dict) -> Any:

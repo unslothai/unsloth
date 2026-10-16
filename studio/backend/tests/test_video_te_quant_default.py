@@ -373,3 +373,33 @@ def test_the_converter_can_store_a_tied_embedding_once(tmp_path, monkeypatch):
     assert loaded.encoder.embed_tokens.weight.data_ptr() == loaded.shared.weight.data_ptr()
     ids = torch.randint(0, 64, (1, 9))
     torch.testing.assert_close(_hidden(loaded, ids), _hidden(encoder, ids), rtol = 0, atol = 0)
+
+
+@pytest.mark.parametrize("name", ["hunyuanvideo-1.5", "hunyuanvideo-1.5-720p"])
+def test_hunyuanvideo_default_fp8_leaves_the_byt5_encoder_dense(name, monkeypatch):
+    import inspect
+
+    import core.inference.diffusion_precision as dp
+    import core.inference.video as video
+
+    fam = next(f for f in _FAMILIES if f.name == name)
+    assert fam.te_quant_auto_encoders == ("text_encoder",)
+    cast: list = []
+    monkeypatch.setattr(dp, "te_quant_supported", lambda *a, **k: True)
+    monkeypatch.setattr(dp, "_cast_fp8", lambda enc, tgt: cast.append(enc))
+    qwen, byt5 = object(), object()
+    pipe = types.SimpleNamespace(text_encoder = qwen, text_encoder_2 = byt5)
+    outcome = dp.quantize_text_encoders(
+        pipe, CUDA_BF16, mode = "fp8", family = name, encoders = fam.te_quant_auto_encoders
+    )
+    assert outcome.mode == "fp8" and not outcome.partial
+    assert cast == [qwen]
+    # An explicit fp8 (no encoders limit) still covers both towers.
+    cast.clear()
+    dp.quantize_text_encoders(pipe, CUDA_BF16, mode = "fp8", family = name)
+    assert cast == [qwen, byt5]
+    # The loader passes the limit only for the automatic pick.
+    src = inspect.getsource(video)
+    call = src[src.index("text_encoder_outcome = quantize_text_encoders(") :][:600]
+    assert 'getattr(fam, "te_quant_auto_encoders", None)' in call
+    assert "if text_encoder_quant_auto" in call

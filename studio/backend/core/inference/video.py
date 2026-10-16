@@ -7776,6 +7776,9 @@ class VideoBackend:
                 family = fam.name,
                 offload_active = plan.offload_policy != "none",
                 logger = logger,
+                encoders = (getattr(fam, "te_quant_auto_encoders", None) or None)
+                if text_encoder_quant_auto
+                else None,
             )
         text_encoder_quant_engaged = text_encoder_outcome.mode
         if (

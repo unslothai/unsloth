@@ -86,6 +86,7 @@ def build(
     from core.inference.video_ltx25 import LTX25_TE_HOSTED_FORMAT
     from core.inference.video_minimax_h3_te import _int8_convrot_linear_class
 
+    device = _available_device(torch, device)
     on_card = device.startswith(("cuda", "xpu"))
     config = {
         "repo": repo,
@@ -99,7 +100,13 @@ def build(
     if config.get("_te_source") != "quantized_at_load":
         raise SystemExit(f"expected the at-load build, got {config.get('_te_source')!r}")
     quantized = sum(1 for m in model.modules() if isinstance(m, _int8_convrot_linear_class()))
-    tensors = {k: v.detach().to("cpu").contiguous() for k, v in model.state_dict().items()}
+    state = model.state_dict()
+    # The tied head is the embedding under a second name; the loader re-ties it, so it never gets a key of its own.
+    # The dead-tail trim normally drops it already, but a kept head (or a trim that did not engage) must not ship a
+    # second 262k-vocab copy.
+    if _head_is_tied(state):
+        state.pop("lm_head.weight")
+    tensors = {k: v.detach().to("cpu").contiguous() for k, v in state.items()}
     del model
     names = sorted(tensors)
     try:
@@ -154,6 +161,32 @@ def build(
         "quantized_linears": quantized,
         "tensors": len(names),
     }
+
+
+def _available_device(torch, device: str) -> str:
+    """``device`` when its backend is usable here, else ``cpu``: the worker moves a resident build onto the device."""
+    kind = torch.device(device).type
+    backend = getattr(torch, kind, None) if kind in ("cuda", "xpu") else None
+    if backend is None:
+        return device
+    is_available = getattr(backend, "is_available", None)
+    if callable(is_available) and is_available():
+        return device
+    print(f"{device} is not available on this host; building on the CPU", file = sys.stderr)
+    return "cpu"
+
+
+def _head_is_tied(state: dict) -> bool:
+    """Whether ``lm_head.weight`` is the same storage as another tensor in ``state`` (the input embedding)."""
+    head = state.get("lm_head.weight")
+    if head is None:
+        return False
+    return any(
+        name != "lm_head.weight"
+        and t.shape == head.shape
+        and t.data_ptr() == head.data_ptr()
+        for name, t in state.items()
+    )
 
 
 if __name__ == "__main__":
