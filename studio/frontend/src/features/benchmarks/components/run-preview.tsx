@@ -197,16 +197,8 @@ export function RunPreviewCard({
 
       <section className="flex flex-col gap-3">
         <MetaRow
-          label="Runs"
-          value={
-            <>
-              {active.length} of {config.variants.length} settings
-              <span className="text-muted-foreground/70">
-                {" "}
-                · {active.length * perRow} generations
-              </span>
-            </>
-          }
+          label="Generations"
+          value={<span className="font-mono">{active.length * perRow}</span>}
         />
         {shown.map((b) => (
           <MetaRow
