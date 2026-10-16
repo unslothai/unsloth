@@ -68,10 +68,18 @@ import {
   type DecisionExportInfo,
   type DiffusionLmExportInfo,
   type ModelCheckpoints,
+  type PostExportHook,
   fetchCheckpointExportProbe,
+  fetchPostExportHooks,
 } from "./api/export-api";
 import { adapterCompatibilityTip, type AdapterFormat } from "./constants";
 import { ExportRunPanel } from "./components/export-run-panel";
+import {
+  HookOptionFields,
+  PostExportHooksPicker,
+  type SelectedPostExportHook,
+  defaultHookOptions,
+} from "./components/post-export-hooks";
 import { ImageLoraExportCard } from "./components/image-lora-export-card";
 import { MethodPicker } from "./components/method-picker";
 import { Q4nxConvertCard } from "./components/q4nx-convert-card";
@@ -214,6 +222,31 @@ export function ExportPage() {
 
   // Seed the method + quants from a live run so navigating away and back (which remounts this
   // page) keeps the selection. The run lives in the global store; only this form state is local.
+  const [postHooks, setPostHooks] = useState<SelectedPostExportHook[]>([]);
+  // Hooks configured as an export method of their own ("method" in post_export_hooks.json): picking one sets
+  // exportMethod to the export it is fed (its source) and runs the hook on that, which then replaces it.
+  const [methodHooks, setMethodHooks] = useState<PostExportHook[]>([]);
+  const [methodHookId, setMethodHookId] = useState<string | null>(null);
+  const [methodHookOptions, setMethodHookOptions] = useState<
+    Record<string, string>
+  >({});
+  useEffect(() => {
+    let alive = true;
+    fetchPostExportHooks()
+      .then((hooks) => {
+        if (alive) {
+          setMethodHooks(hooks.filter((h) => h.method));
+        }
+      })
+      .catch(() => {
+        if (alive) {
+          setMethodHooks([]);
+        }
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
   const [exportMethod, setExportMethod] = useState<ExportMethod | null>(() => {
     const s = useExportRuntimeStore.getState();
     return isExportPanelActive(s) && s.summary ? s.summary.method : null;
@@ -698,7 +731,42 @@ export function ExportPage() {
     localModelInputRef.current = localModelInput;
   }, [localModelInput]);
 
+  // The method hook in force: cleared whenever the source method is reset (an incompatible checkpoint).
+  const activeMethodHook =
+    exportMethod !== null && methodHookId !== null
+      ? (methodHooks.find((h) => h.id === methodHookId) ?? null)
+      : null;
+  const methodHookTitle = activeMethodHook
+    ? (activeMethodHook.method?.title ?? activeMethodHook.label)
+    : null;
+  // The built-in export a method hook is fed: "auto" is the adapter for an adapter run, else the merged model.
+  const methodHookSource = useCallback(
+    (hook: PostExportHook): "lora" | "merged" =>
+      hook.method?.source === "merged" ||
+      (hook.method?.source !== "lora" && !effectiveIsAdapter)
+        ? "merged"
+        : "lora",
+    [effectiveIsAdapter],
+  );
+
+  const handleMethodHookChange = (id: string) => {
+    const hook = methodHooks.find((h) => h.id === id);
+    if (!hook) {
+      return;
+    }
+    const source = methodHookSource(hook);
+    setMethodHookId(id);
+    setMethodHookOptions(defaultHookOptions(hook));
+    setExportMethod(source);
+    setQuantLevels([]);
+    if (source === "merged") {
+      setSelectedFormats(["16-bit"]);
+    }
+    setDestination("local");
+  };
+
   const handleMethodChange = (method: ExportMethod) => {
+    setMethodHookId(null);
     setExportMethod(method);
     if (method !== "gguf") {
       setQuantLevels([]);
@@ -879,6 +947,9 @@ export function ExportPage() {
     const checkpointPath = selectedCp?.path ?? null;
 
     const pushToHub = destination === "hub";
+    if (activeMethodHook && pushToHub) {
+      return;
+    }
     if (pushToHub && !isDecision && (!hfUsername.trim() || !modelName.trim()))
       return;
     const preparedToken = await prepareHfTokenForUse(hfToken, {
@@ -892,10 +963,16 @@ export function ExportPage() {
         ? `${hfUsername.trim()}/${modelName.trim()}`
         : undefined;
     const token = pushToHub && actionHfToken ? actionHfToken : undefined;
+    // A method hook's source is decided now, not when its card was clicked: the checkpoint's adapter
+    // metadata may not have loaded yet at that point.
+    const hookSource = activeMethodHook ? methodHookSource(activeMethodHook) : null;
+    const hookFormats = ["16-bit"];
     // The GGUF method with the LoRA target reuses the LoRA-adapter export path.
-    const effectiveMethod: ExportMethod = ggufAsLora ? "lora" : exportMethod;
+    const effectiveMethod: ExportMethod = hookSource ?? (ggufAsLora ? "lora" : exportMethod);
     const emitLoraGguf = ggufAsLora || (effectiveMethod === "lora" && loraAsGguf);
-    const methodLabel = isDecision
+    const methodLabel = methodHookTitle
+      ? methodHookTitle
+      : isDecision
       ? t("exportDecision.methodLabel")
       : ggufAsLora
         ? "GGUF LoRA adapter"
@@ -923,7 +1000,7 @@ export function ExportPage() {
     }
 
     let installMissingDependencies = false;
-    if (effectiveMethod === "merged") {
+    if (effectiveMethod === "merged" && !hookSource) {
       const llmCompressor = await confirmLlmCompressorInstallIfNeeded(
         selectedFormats,
       );
@@ -951,7 +1028,7 @@ export function ExportPage() {
               quantizations: quantizations.join(", "),
             })
         : undefined,
-      mergedSelections: selectedFormats.map((v) => ({
+      mergedSelections: (hookSource ? hookFormats : selectedFormats).map((v) => ({
         ...mergedFormatPayload(v),
         label: MERGED_FORMATS.find((f) => f.value === v)?.label ?? v,
       })),
@@ -964,6 +1041,18 @@ export function ExportPage() {
       token,
       privateRepo,
       installMissingDependencies,
+      postExportHooks: activeMethodHook
+        ? [
+            {
+              id: activeMethodHook.id,
+              label: methodHookTitle ?? activeMethodHook.label,
+              options: methodHookOptions,
+              asMethod: true,
+            },
+          ]
+        : destination === "local" && (effectiveMethod === "merged" || effectiveMethod === "lora")
+          ? postHooks
+          : [],
       baseModelId: selectedModelData?.base_model ?? undefined,
       summary: {
         baseModelName: sourceBaseModelName,
@@ -971,11 +1060,17 @@ export function ExportPage() {
         methodLabel,
         method: effectiveMethod,
         quantLevels,
-        mergedFormats: exportMethod === "merged" ? selectedFormats : [],
+        mergedFormats:
+          effectiveMethod === "merged" ? (hookSource ? hookFormats : selectedFormats) : [],
         destination,
       },
     });
   }, [
+    postHooks,
+    activeMethodHook,
+    methodHookSource,
+    methodHookTitle,
+    methodHookOptions,
     checkpoint,
     checkpointsForModel,
     sourceMode,
@@ -1589,9 +1684,46 @@ export function ExportPage() {
                             .filter(Boolean)
                             .join(" ") || undefined
                 }
+                extraMethods={methodHooks.map((h) => {
+                  const source = methodHookSource(h);
+                  const reason = exportUnsupported
+                    ? exportUnsupportedMessage
+                    : isDecision
+                      ? t("exportDecision.ggufOnly")
+                      : !effectiveIsAdapter && effectiveIsQuantized
+                        ? "Pre-quantized (BNB 4-bit) models cannot be exported without LoRA adapters"
+                        : source === "lora" && !effectiveIsAdapter
+                          ? "Needs a LoRA adapter checkpoint"
+                          : !h.applies_to.includes(source) ||
+                              diffusionDisabledMethods.includes(source)
+                            ? "Not available for this model"
+                            : h.available
+                              ? undefined
+                              : "Its command is not installed on this machine.";
+                  return {
+                    value: h.id,
+                    title: h.method?.title ?? h.label,
+                    description: h.method?.description || h.description,
+                    tooltip: h.method?.tooltip ?? "",
+                    disabled: reason !== undefined,
+                    disabledReason: reason ?? undefined,
+                  };
+                })}
+                extraValue={activeMethodHook?.id ?? null}
+                onExtraChange={handleMethodHookChange}
               />
 
-              {exportMethod === "merged" && !exportUnsupported && (
+              {activeMethodHook && activeMethodHook.options.length > 0 && (
+                <div className="space-y-2 rounded-lg border p-3">
+                  <HookOptionFields
+                    hook={activeMethodHook}
+                    value={methodHookOptions}
+                    onChange={setMethodHookOptions}
+                  />
+                </div>
+              )}
+
+              {exportMethod === "merged" && !exportUnsupported && !activeMethodHook && (
                 <div className="space-y-3">
                   <div className="space-y-2">
                     <div className="flex items-center justify-between">
@@ -1727,7 +1859,8 @@ export function ExportPage() {
 
               {exportMethod === "lora" &&
                 effectiveIsAdapter &&
-                !exportUnsupported && (
+                !exportUnsupported &&
+                !activeMethodHook && (
                   <div className="space-y-3">
                     <div className="space-y-2">
                       <div className="text-sm font-medium">Adapter format</div>
@@ -2013,7 +2146,17 @@ export function ExportPage() {
                   )}
                 </div>
               )}
-              {estimatedSize && (
+              {(exportMethod === "merged" || exportMethod === "lora") &&
+                !exportUnsupported &&
+                !activeMethodHook && (
+                  <PostExportHooksPicker
+                    exportType={exportMethod}
+                    localOnly={destination === "local"}
+                    value={postHooks}
+                    onChange={setPostHooks}
+                  />
+                )}
+              {estimatedSize && !activeMethodHook && (
                 <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
                   <HugeiconsIcon
                     icon={InformationCircleIcon}
@@ -2027,6 +2170,7 @@ export function ExportPage() {
               {showPanel && (
                 <ExportRunPanel
                   exportMethod={exportMethod}
+                  methodLabel={methodHookTitle ?? undefined}
                   quantLevels={quantLevels}
                   checkpoint={selectedExportSource}
                   baseModelName={sourceBaseModelName}
@@ -2053,7 +2197,9 @@ export function ExportPage() {
                       ? t("exportDecision.outputNote", {
                           path: decisionInfo.output_dir,
                         })
-                      : undefined
+                      : activeMethodHook
+                        ? `${methodHookTitle}: Studio exports the ${methodHookSource(activeMethodHook) === "lora" ? "LoRA adapter" : "merged model"} to a temporary folder, the hook converts it and writes its own output, and the temporary folder is removed afterwards.`
+                        : undefined
                   }
                 />
               )}

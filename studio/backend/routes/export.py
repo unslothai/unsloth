@@ -47,6 +47,8 @@ from models import (
     ExportCancelRequest,
     ExportStatusResponse,
     ExportOperationResponse,
+    PostExportHooksResponse,
+    RunPostExportHookRequest,
     ExportMergedModelRequest,
     ExportBaseModelRequest,
     ExportGGUFRequest,
@@ -910,3 +912,47 @@ async def stream_export_logs(
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@router.get("/hooks", response_model = PostExportHooksResponse)
+async def list_post_export_hooks(
+    export_type: Optional[str] = Query(None, description = "merged | lora: only hooks that apply"),
+    current_subject: str = Depends(get_current_subject),
+):
+    """Post-export hooks configured in post_export_hooks.json (see core/export/post_hooks.py)."""
+    del current_subject
+    from core.export.post_hooks import list_hooks
+
+    return PostExportHooksResponse(hooks = await asyncio.to_thread(list_hooks, export_type))
+
+
+@router.post("/hooks/run", response_model = ExportOperationResponse)
+async def run_post_export_hook(
+    request: RunPostExportHookRequest, current_subject: str = Depends(get_current_subject)
+):
+    """Run one configured hook on a finished export; its output goes to the export log stream."""
+    del current_subject
+    from core.export.post_hooks import run_hook
+    from utils.paths.storage_roots import exports_root
+
+    root = Path(exports_root())
+    target = Path(request.export_path)
+    if not target.is_absolute():
+        target = root / target
+    backend = get_export_backend()
+
+    def _log(line: str, stream: str) -> None:
+        backend._append_log({"line": line, "stream": stream})
+
+    ok, message, details = await asyncio.to_thread(
+        run_hook,
+        request.hook_id,
+        str(target),
+        request.options,
+        root,
+        _log,
+        discard_export = request.discard_export,
+    )
+    if not ok:
+        raise HTTPException(status_code = 400, detail = message)
+    return ExportOperationResponse(success = True, message = message, details = details)
