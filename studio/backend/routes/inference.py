@@ -42283,8 +42283,10 @@ def _anthropic_website_policy(tools: Optional[list]) -> Optional[dict]:
                 ("allowedDomains", "allowed_domains"),
                 ("blockedDomains", "blocked_domains"),
             ):
-                entries = td.get(field) or []
-                if isinstance(entries, list):
+                entries = td.get(field)
+                if entries is None:
+                    entries = []
+                elif isinstance(entries, list):
                     entries = [_anthropic_domain_entry(entry) for entry in entries]
                 declared[key] = entries
             declared = normalize_website_policy(declared)
@@ -44033,6 +44035,7 @@ async def anthropic_count_tokens(
     # Reject malformed tools before the switch, like /messages, so an invalid
     # count request can't evict the loaded model.
     _validate_anthropic_client_tools(payload.tools)
+    _anthropic_website_policy(payload.tools)
     # Counting compiles no output grammar, matching Anthropic's count_tokens behavior.
     _count_response_format = _anthropic_response_format(payload, require_llama_compatibility = False)
     _count_studio_tools = _anthropic_requested_studio_tools(payload.tools)

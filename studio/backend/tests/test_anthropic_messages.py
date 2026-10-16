@@ -4656,8 +4656,30 @@ class TestAnthropicMessagesToolRouting:
 
         assert backend.calls[0][1]["website_policy"] is None
 
-    def test_invalid_web_search_domain_is_rejected_before_generation(self, monkeypatch):
+    @pytest.mark.parametrize("allowed", [["https://docs.python.org"], "", {}])
+    def test_invalid_web_search_domain_is_rejected_before_generation(self, monkeypatch, allowed):
         backend = _mock_backend(monkeypatch)
+        payload = _basic_payload(
+            tools = [
+                {
+                    "type": "web_search_20250305",
+                    "name": "web_search",
+                    "allowed_domains": allowed,
+                }
+            ],
+        )
+
+        with pytest.raises(HTTPException) as exc:
+            _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+
+        assert exc.value.status_code == 400
+        assert exc.value.detail["error"]["type"] == "invalid_request_error"
+        assert backend.calls == []
+
+    def test_count_tokens_rejects_an_invalid_web_search_domain(self, monkeypatch):
+        from routes.inference import anthropic_count_tokens
+
+        _mock_backend(monkeypatch)
         payload = _basic_payload(
             tools = [
                 {
@@ -4669,11 +4691,9 @@ class TestAnthropicMessagesToolRouting:
         )
 
         with pytest.raises(HTTPException) as exc:
-            _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+            _drive(anthropic_count_tokens(payload, request = None, current_subject = "t"))
 
         assert exc.value.status_code == 400
-        assert exc.value.detail["error"]["type"] == "invalid_request_error"
-        assert backend.calls == []
 
     def test_server_tool_choice_must_be_in_the_selected_catalog(self, monkeypatch):
         backend = _mock_backend(monkeypatch)
