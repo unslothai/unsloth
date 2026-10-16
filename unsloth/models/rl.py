@@ -537,6 +537,7 @@ class Unsloth{RLConfig_name}({RLConfig_name}):
     """
     {__RLConfig_doc__}
     """
+    _unsloth_accepts_adamw_flash = True
     vllm_sampling_params: Optional[Any] = field(
         default = None,
         metadata = {{'help': 'vLLM SamplingParams'}},
@@ -3295,6 +3296,10 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                 f"    _unsloth_fsdp2 = _unsloth_fsdp2 or str(_unsloth_fsdp_cfg.get('fsdp_version', _unsloth_fsdp_cfg.get('version', {_FSDP_DEFAULT_VERSION}))) == '2'\n"
             )
         extra_args += (
+            "_unsloth_flash_adamw = str(getattr(optim, 'value', optim)).strip().lower() == 'adamw_flash'\n"
+            "if _unsloth_flash_adamw: optim = 'adamw_torch'\n"
+        )
+        extra_args += (
             "if _unsloth_fsdp2 and str(getattr(optim, 'value', optim)) == 'adamw_8bit':\n"
             "    print(\"Unsloth: FSDP2 shards parameters as DTensors, which bitsandbytes' 8-bit optimizers cannot step. Switching optim = 'adamw_8bit' to 'adamw_torch_fused'.\")\n"
             "    optim = 'adamw_torch_fused'\n"
@@ -3553,6 +3558,15 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         "                self.gradient_checkpointing_kwargs = _gc_kwargs\n"
     )
 
+    if "optim" in call_args:
+        RLConfig_post += (
+            "        from unsloth.optimizers.flash_adamw import is_flash_adamw_marked, mark_flash_adamw, unmark_flash_adamw\n"
+            "        if _unsloth_flash_adamw or is_flash_adamw_marked(self):\n"
+            "            mark_flash_adamw(self)\n"
+            "        else:\n"
+            "            unmark_flash_adamw(self)\n"
+        )
+
     RLTrainer_extras = patch_functions(
         RLTrainer, trainer_file, RLTrainer_name, all_imports, imports
     )
@@ -3624,13 +3638,21 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "trace.enabled"     : False,"""
 
         if DEVICE_TYPE == "cuda":
-            cuda_options = """
-            "triton.enable_persistent_tma_matmul": torch.cuda.get_device_capability()[0] >= 9,"""
+            # TMA only if every visible card is sm90+ (compile options are process-wide); an
+            # unreadable card is skipped by the probe, so a short list also means False.
+            all_sm90 = (
+                "(lambda caps: bool(caps) and len(caps) == torch.cuda.device_count() "
+                "and min(c[0] for c in caps) >= 9)"
+                '(__import__("unsloth.device_type", fromlist = ["cuda_visible_capabilities"])'
+                ".cuda_visible_capabilities())"
+            )
+            cuda_options = f"""
+            "triton.enable_persistent_tma_matmul": {all_sm90},"""
             # cutlass options were added in PyTorch 2.8.0.
             if torch_version >= Version("2.8.0"):
-                cuda_options += """
-            "cuda.cutlass_epilogue_fusion_enabled": torch.cuda.get_device_capability()[0] >= 9,
-            "cuda.cutlass_tma_only": torch.cuda.get_device_capability()[0] >= 9,"""
+                cuda_options += f"""
+            "cuda.cutlass_epilogue_fusion_enabled": {all_sm90},
+            "cuda.cutlass_tma_only": {all_sm90},"""
             cuda_options += """
             "cuda.compile_opt_level"              : "-O2",
             "cuda.enable_cuda_lto"                : True,

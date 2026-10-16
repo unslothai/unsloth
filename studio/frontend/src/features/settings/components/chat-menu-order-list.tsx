@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Switch } from "@/components/ui/switch";
-import { type PlusMenuItemId, usePlusMenuPrefsStore } from "@/features/chat";
+import { type PlusMenuItemId, keepSavedSlot, usePlusMenuPrefsStore } from "@/features/chat";
 import { useT } from "@/i18n";
 import {
   AttachmentIcon,
@@ -27,6 +27,26 @@ function FixedRow({ icon, label }: { icon: IconSvgElement; label: string }) {
     </div>
   );
 }
+
+function ToggleRow({ id, meta }: { id: PlusMenuItemId; meta: ItemMeta }) {
+  const pinned = usePlusMenuPrefsStore((s) => s.pins[id]);
+  const togglePin = usePlusMenuPrefsStore((s) => s.togglePin);
+  return (
+    <div data-menu-item={id} className="flex h-9 items-center gap-2.5 rounded-lg px-2">
+      <span className="size-4 shrink-0" aria-hidden="true" />
+      <span className="flex size-4 items-center justify-center text-foreground/80 [&_svg]:size-4">
+        {meta.icon}
+      </span>
+      <span className="text-ui-13 text-foreground">{meta.label}</span>
+      <Switch className="ml-auto" aria-label={meta.label} checked={pinned} onCheckedChange={() => togglePin(id)} />
+    </div>
+  );
+}
+
+const FIXED_TOGGLE: PlusMenuItemId = "deepResearch";
+// The stored order keeps every id; only the draggable ones are shown and moved here.
+const withFixed = (ids: PlusMenuItemId[]): PlusMenuItemId[] =>
+  keepSavedSlot(ids, usePlusMenuPrefsStore.getState().order, FIXED_TOGGLE);
 
 function MovableRow({
   id,
@@ -83,7 +103,7 @@ function MovableRow({
           e.preventDefault();
           const next = [...order];
           next.splice(to, 0, ...next.splice(index, 1));
-          setOrder(next);
+          setOrder(withFixed(next));
         }}
         className="flex size-4 shrink-0 cursor-grab touch-none items-center justify-center text-muted-foreground active:cursor-grabbing"
       >
@@ -123,10 +143,10 @@ export function ChatMenuOrderList({
     draftRef.current = ids;
     setDraftState(ids);
   };
-  const shown = draft ?? order;
+  const shown = (draft ?? order).filter((id) => id !== FIXED_TOGGLE);
   const drop = () => {
     if (draftRef.current) {
-      setOrder(draftRef.current);
+      setOrder(withFixed(draftRef.current));
     }
     setDraft(null);
   };
@@ -141,6 +161,7 @@ export function ChatMenuOrderList({
       />
       <FixedRow icon={InternetIcon} label={t("settings.chat.menu.webSearch")} />
       <FixedRow icon={CodeIcon} label={t("settings.chat.menu.tools")} />
+      <ToggleRow id={FIXED_TOGGLE} meta={items[FIXED_TOGGLE]} />
       <div className="mx-2 my-1 border-t border-border/70" />
       <Reorder.Group
         ref={listRef}
