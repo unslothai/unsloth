@@ -2405,6 +2405,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 _support_kwargs = {}
             if _support_kwargs:
                 from functools import partial
+
                 chunked_hidden_states_selective_log_softmax = partial(
                     chunked_hidden_states_selective_log_softmax,
                     **_support_kwargs,
