@@ -12,6 +12,7 @@ import os
 import re
 import sys
 import threading
+import types
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -123,8 +124,14 @@ def test_pdf_qa_fields_match_studio_alpaca_mapping():
     assert 'return roles.has("instruction") && roles.has("output");' in manual_mapping
 
 
-def test_pdf_qa_fields_are_detected_as_alpaca():
-    spec = importlib.util.spec_from_file_location("_pdf_qa_format_detection", FORMAT_DETECTION_PATH)
+def test_pdf_qa_fields_are_detected_as_alpaca(monkeypatch):
+    # A bare package resolves format_detection's sibling imports without running utils.datasets.
+    package = types.ModuleType("_pdf_qa_datasets")
+    package.__path__ = [str(FORMAT_DETECTION_PATH.parent)]
+    monkeypatch.setitem(sys.modules, package.__name__, package)
+    spec = importlib.util.spec_from_file_location(
+        "_pdf_qa_datasets.format_detection", FORMAT_DETECTION_PATH
+    )
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
