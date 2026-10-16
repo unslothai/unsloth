@@ -7510,21 +7510,60 @@ def _step(
 
 def _progress(label: str) -> None:
     """Print an in-place progress bar aligned to the step column layout."""
-    global _STEP, _PROGRESS_LINE_ACTIVE
+    global _STEP
     _STEP += 1
     if VERBOSE:
         return
+    _draw_progress(label, end = "\n" if _STEP >= _TOTAL else "")
+
+
+def _draw_progress(label: str, end: str = "") -> None:
+    global _PROGRESS_LINE_ACTIVE
     width = 20
     filled = int(width * _STEP / _TOTAL)
     bar = "=" * filled + "-" * (width - filled)
     pad = " " * (_COL - len(_LABEL))
-    end = "\n" if _STEP >= _TOTAL else ""
     try:
         sys.stdout.write(f"\r  {_dim(_LABEL)}{pad}[{bar}] {_STEP:2}/{_TOTAL}  {label:<20}{end}")
         sys.stdout.flush()
         _PROGRESS_LINE_ACTIVE = end == ""
     except OSError:
         pass
+
+
+def _stdout_is_tty() -> bool:
+    try:
+        return sys.stdout.isatty()
+    except (AttributeError, OSError, ValueError):
+        return False
+
+
+# Wide enough for "flash-attn 1234/1234 MiB"; the label after it is padded back to this width.
+_DOWNLOAD_PROGRESS_WIDTH = 40
+
+
+def _download_progress(label: str):
+    """Progress callback for install_wheel, so a long wheel download does not read as a hang.
+
+    Redrawn in place on the bar line when stdout is a terminal; otherwise a note at each
+    quarter, which keeps a captured log readable.
+    """
+    in_place = not VERBOSE and _PROGRESS_LINE_ACTIVE and _stdout_is_tty()
+    last_quarter = -1
+
+    def show(done: int, total: "int | None") -> None:
+        nonlocal last_quarter
+        size = f"{done >> 20}/{total >> 20} MiB" if total else f"{done >> 20} MiB"
+        if in_place:
+            text = label if total and done >= total else f"{label} {size}"
+            _draw_progress(f"{text:<{_DOWNLOAD_PROGRESS_WIDTH}}")
+            return
+        quarter = min(done * 4 // total, 4) if total else 0
+        if quarter > last_quarter:
+            last_quarter = quarter
+            _note(f"downloading the {label} wheel: {size}")
+
+    return show
 
 
 _ENV_FOR_CMD = object()
@@ -8607,6 +8646,7 @@ def _ensure_flash_attn() -> None:
             use_uv = USE_UV,
             uv_needs_system = UV_NEEDS_SYSTEM,
             reinstall = stale,
+            progress = _download_progress("flash-attn"),
         )
         if outcome == "installed":
             return

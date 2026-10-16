@@ -1104,6 +1104,35 @@ class TestProgressLineNotes:
         assert msg not in bar_lines[0], f"note glued onto the bar: {bar_lines[0]!r}"
         assert any(ln.strip() == msg for ln in out.split("\n")), out
 
+    def _download(self, *, tty: bool) -> str:
+        total = 400 << 20
+
+        def emit():
+            ips._progress("flash-attn")
+            show = ips._download_progress("flash-attn")
+            for done in range(0, total + 1, 10 << 20):
+                show(max(done, 1 << 20), total)
+
+        with mock.patch.object(ips, "_stdout_is_tty", return_value = tty):
+            return self._render(emit)
+
+    def test_captured_download_progress_is_a_note_per_quarter(self):
+        out = self._download(tty = False)
+        notes = [ln.strip() for ln in out.split("\n") if "downloading the flash-attn wheel" in ln]
+        assert notes == [
+            f"downloading the flash-attn wheel: {mib}/400 MiB" for mib in (1, 100, 200, 300, 400)
+        ], out
+
+    def test_terminal_download_progress_redraws_the_bar_line(self):
+        out = self._download(tty = True)
+        assert "\n" not in out, "the download must stay on the bar line"
+        frames = out.split("\r")[1:]
+        assert all(" 5/14  flash-attn" in frame for frame in frames), frames
+        assert "200/400 MiB" in frames[21]
+        # Finished: the plain label again, padded over the longest frame.
+        assert frames[-1].rstrip().endswith("flash-attn")
+        assert len(frames[-1]) >= max(len(frame) for frame in frames[1:])
+
     def test_note_aligns_under_the_step_value_column(self):
         out = self._render(lambda: (ips._progress("dependency overrides"), ips._note("hello")))
         note_line = next(ln for ln in out.split("\n") if ln.strip() == "hello")
@@ -1186,7 +1215,7 @@ class TestProgressLineNotes:
         allowed = [
             (n.lineno, n.end_lineno)
             for n in ast.walk(tree)
-            if isinstance(n, ast.FunctionDef) and n.name in {"_progress", "_end_progress_line"}
+            if isinstance(n, ast.FunctionDef) and n.name in {"_draw_progress", "_end_progress_line"}
         ]
         offenders = [
             n.lineno
@@ -1201,7 +1230,7 @@ class TestProgressLineNotes:
         ]
         assert not offenders, (
             f"install_python_stack.py:{offenders} write to sys.stdout directly; "
-            "only _progress()/_end_progress_line() may, everything else uses _safe_print()"
+            "only _draw_progress()/_end_progress_line() may, everything else uses _safe_print()"
         )
 
     def test_no_message_starts_with_a_newline(self):

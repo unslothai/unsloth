@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import http.client
 import json
 import logging
@@ -12,7 +13,9 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Callable
 
@@ -478,6 +481,68 @@ def flash_attn_wheel_url(env: dict[str, str] | None) -> str | None:
     )
 
 
+_WHEEL_DOWNLOAD_TIMEOUT = 60
+_WHEEL_DOWNLOAD_CHUNK = 1 << 20
+
+
+def download_wheel(
+    wheel_url: str,
+    dest_dir: str,
+    *,
+    progress: Callable[[int, int | None], None] | None = None,
+) -> str | None:
+    """Fetch ``wheel_url`` into ``dest_dir`` under its wheel filename; None when it cannot.
+
+    uv decides from a HEAD request whether a server serves byte ranges, and GitHub release
+    assets fail that check although a ranged GET works, so uv streams the whole wheel once
+    for its METADATA and then a second time to install it (astral-sh/uv#18998). Fetching
+    it here makes one transfer, and lets the caller show progress that uv's captured output
+    hides. None makes the caller hand the URL to uv / pip as before, so a host this cannot
+    reach is no worse off.
+    """
+    parts = urllib.parse.urlsplit(wheel_url)
+    filename = urllib.parse.unquote(parts.path.rsplit("/", 1)[-1])
+    # Userinfo is a credential urllib will not send; leave those URLs to uv / pip.
+    if parts.scheme not in ("http", "https") or "@" in parts.netloc:
+        return None
+    if not filename.endswith(".whl") or "/" in filename or "\\" in filename:
+        return None
+    # uv and pip enforce a #sha256= fragment on a URL but not on a local path, so check it here.
+    fragment = urllib.parse.parse_qs(parts.fragment)
+    want_sha256 = (fragment.get("sha256") or [""])[0].lower()
+    request_url = urllib.parse.urlunsplit(parts._replace(fragment = ""))
+    path = os.path.join(dest_dir, filename)
+    digest = hashlib.sha256()
+    shown = redact_url_credentials(wheel_url)
+    try:
+        with urllib.request.urlopen(request_url, timeout = _WHEEL_DOWNLOAD_TIMEOUT) as response:
+            length = response.headers.get("Content-Length")
+            total = int(length) if length and length.isdigit() else None
+            done = 0
+            with open(path, "wb") as fh:
+                while True:
+                    chunk = response.read(_WHEEL_DOWNLOAD_CHUNK)
+                    if not chunk:
+                        break
+                    fh.write(chunk)
+                    digest.update(chunk)
+                    done += len(chunk)
+                    if progress is not None:
+                        progress(done, total)
+        if total is not None and done != total:
+            raise OSError(f"received {done} of {total} bytes")
+    except (OSError, http.client.HTTPException, ValueError) as exc:
+        reason = f"HTTP {exc.code}" if isinstance(exc, urllib.error.HTTPError) else str(exc)
+        _logger.warning("download_wheel(%s): %s; installing from the URL instead", shown, reason)
+        return None
+    if want_sha256 and digest.hexdigest() != want_sha256:
+        _logger.warning(
+            "download_wheel(%s): sha256 mismatch; installing from the URL instead", shown
+        )
+        return None
+    return path
+
+
 def install_wheel(
     wheel_url: str,
     *,
@@ -486,6 +551,31 @@ def install_wheel(
     uv_needs_system: bool = False,
     reinstall: bool = False,
     run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+    progress: Callable[[int, int | None], None] | None = None,
+) -> list[tuple[str, subprocess.CompletedProcess[str]]]:
+    dest_dir = tempfile.mkdtemp(prefix = "unsloth-wheel-")
+    try:
+        local = download_wheel(wheel_url, dest_dir, progress = progress)
+        return _install_wheel_target(
+            local or wheel_url,
+            python_executable = python_executable,
+            use_uv = use_uv,
+            uv_needs_system = uv_needs_system,
+            reinstall = reinstall,
+            run = run,
+        )
+    finally:
+        shutil.rmtree(dest_dir, ignore_errors = True)
+
+
+def _install_wheel_target(
+    wheel_url: str,
+    *,
+    python_executable: str,
+    use_uv: bool,
+    uv_needs_system: bool,
+    reinstall: bool,
+    run: Callable[..., subprocess.CompletedProcess[str]],
 ) -> list[tuple[str, subprocess.CompletedProcess[str]]]:
     attempts: list[tuple[str, subprocess.CompletedProcess[str]]] = []
 
