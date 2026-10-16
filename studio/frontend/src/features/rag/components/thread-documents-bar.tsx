@@ -1324,6 +1324,9 @@ export function ThreadDocumentsBar({
     </div>
   ));
   const fileCount = documents.length + projectDocuments.length;
+  useEffect(() => {
+    useChatRuntimeStore.getState().setRagPanelFileCount(fileCount);
+  }, [fileCount]);
   const countSuffix = fileCount === 1 ? "1 file" : `${fileCount} files`;
   // Every branch, always the first fragment child: an "Add" must open after the source
   // moves, and deleting the active KB in it must not remount it.

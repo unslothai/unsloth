@@ -7,7 +7,7 @@ import {
 } from "lucide-react";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { FileDatabaseIcon } from "@hugeicons/core-free-icons";
+import { FileDatabaseIcon, SidebarTopIcon } from "@hugeicons/core-free-icons";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import {
@@ -42,6 +42,9 @@ export function KnowledgeBaseComposerButton({
   const ragDisabled = useRagToolDisabled();
   const ragSource = useChatRuntimeStore((s) => s.ragSource);
   const setRagSource = useChatRuntimeStore((s) => s.setRagSource);
+  const ragPanelHidden = useChatRuntimeStore((s) => s.ragPanelHidden);
+  const setRagPanelHidden = useChatRuntimeStore((s) => s.setRagPanelHidden);
+  const ragPanelFileCount = useChatRuntimeStore((s) => s.ragPanelFileCount);
   // The embedding model is a server setting only the owner can change.
   const isOwner = useIsAccountOwner();
 
@@ -162,6 +165,21 @@ export function KnowledgeBaseComposerButton({
             <EmbeddingModelMenuList onBack={() => setView("source")} />
           ) : (
             <>
+            {/* The way back to a panel its X hid, while retrieval carries on. */}
+            {ragPanelHidden ? (
+              <>
+                <DropdownMenuItem onSelect={() => setRagPanelHidden(false)}>
+                  <HugeiconsIcon icon={SidebarTopIcon} strokeWidth={2} />
+                  <span className="truncate">Show files</span>
+                  {ragPanelFileCount > 0 ? (
+                    <span className="ml-auto rounded-full bg-muted px-1.5 text-ui-11 tabular-nums text-muted-foreground">
+                      {ragPanelFileCount}
+                    </span>
+                  ) : null}
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+              </>
+            ) : null}
             <DropdownMenuLabel className="flex items-center justify-between gap-3">
               <span className="shrink-0">Retrieve from</span>
               {isOwner ? <EmbeddingModelMenuChip onOpen={() => setView("embedding")} /> : null}

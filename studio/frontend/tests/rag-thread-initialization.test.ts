@@ -60,6 +60,7 @@ function harness(
     ragEnabled: true,
     ragPanelHidden: false,
     setRagPanelHidden() {},
+    setRagPanelFileCount() {},
     ragSource: options.ragSource ?? { type: "thread" },
     activeProjectId: null,
     projectAttachmentTarget: "thread",
