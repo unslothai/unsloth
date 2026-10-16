@@ -248,9 +248,7 @@ def test_granite_decode_reads_rows_past_max_seq_length():
     )
     rope = _llama(1 << 17)
     # Prefill of a 32760 token prompt through LlamaModel_fast_forward.
-    rope.extend_rope_embedding(
-        _x(0), 1 << 17, materialize_len = max(32760, max_seq_length)
-    )
+    rope.extend_rope_embedding(_x(0), 1 << 17, materialize_len = max(32760, max_seq_length))
     cos, sin = rope.get_cached(rows, 0)
     assert cos.shape[0] > seq_len
     ref_cos, _ = _reference(cos.shape[0])

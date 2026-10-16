@@ -2192,7 +2192,9 @@ class _PerDeviceRopeCache:
     ):
         if seq_len is not None:
             if device_index is not None and seq_len <= self._rope_rows_ready[device_index]:
-                return self.multi_gpu_cos_cached[device_index], self.multi_gpu_sin_cached[device_index]
+                return self.multi_gpu_cos_cached[device_index], self.multi_gpu_sin_cached[
+                    device_index
+                ]
             self._need_rope_rows(seq_len)
         device_index = self._ensure_rope_cache(device_index)
         return self.multi_gpu_cos_cached[device_index], self.multi_gpu_sin_cached[device_index]
