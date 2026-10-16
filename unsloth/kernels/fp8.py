@@ -573,25 +573,7 @@ def can_use_fp8_rowwise_gemv(X, weight, weight_scale):
         return False
     if torch.is_grad_enabled() and (X.requires_grad or weight.requires_grad):
         return False
-    if _fp8_kernel_unsupported(weight):
-        return False
-    # The miscompile hits BLOCK_N 4 / 8 only; BLOCK_N 1 at 2 warps is exact on Triton 3.3 too.
-    return not _fp8_gemv_miscompiles(weight.device) or (
-        _gemv_block_n(weight.shape[0]) == 1 and _triton_builds_blackwell()
-    )
-
-
-@functools.lru_cache(maxsize = None)
-def _triton_builds_blackwell():
-    # Triton 3.2 bundles a ptxas without sm_100 / sm_120.
-    try:
-        return Version(triton.__version__).release[:2] >= (3, 3)
-    except Exception:
-        return False
-
-
-def _gemv_block_n(N):
-    return 1 if N <= 4096 else (4 if N <= 32768 else 8)
+    return not _fp8_kernel_unsupported(weight) and not _fp8_gemv_miscompiles(weight.device)
 
 
 def fp8_rowwise_gemv(X, weight, weight_scale):
@@ -601,7 +583,7 @@ def fp8_rowwise_gemv(X, weight, weight_scale):
     if not X.is_contiguous():
         X = X.contiguous()
     scale = weight_scale if weight_scale.is_contiguous() else weight_scale.contiguous()
-    block_n = _gemv_block_n(N)
+    block_n = 1 if N <= 4096 else (4 if N <= 32768 else 8)
     with _fp8_triton_device_context(X, static_device_count = True):
         _fp8_rowwise_gemv_kernel[(triton.cdiv(N, block_n),)](
             X,
