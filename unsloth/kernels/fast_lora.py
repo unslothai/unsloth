@@ -90,9 +90,10 @@ def _active_lora_adapter(proj):
     return adapter if adapter in proj.lora_A else None
 
 
-def _lora_dropout_p(proj, X):
+def _lora_dropout_p(proj, X, adapter = False):
     """Dropout probability of the active adapter, 0.0 when it is a no-op, None when only PEFT can run it."""
-    adapter = _active_lora_adapter(proj)
+    if adapter is False:
+        adapter = _active_lora_adapter(proj)
     dropout = getattr(proj, "lora_dropout", None)
     if adapter is None or dropout is None or adapter not in dropout:
         return 0.0
@@ -120,28 +121,29 @@ def _lora_B_bias(proj):
 
 
 def lora_bias_blocks_fused(proj):
-    return _has_active_lora_bias(proj) and not FUSED_LORA_BIAS
+    return not FUSED_LORA_BIAS and _has_active_lora_bias(proj)
 
 
 def _lora_dropout_and_bias(projs, X):
     """(dropout probabilities or None, lora_B biases) for the fused kernels, or None to use PEFT."""
-    dropout_p = []
+    dropout_p, biases = [], []
     for proj in projs:
-        # Enabled adapter missing from this projection: PEFT runs the base layer alone.
-        if (
-            not getattr(proj, "disable_adapters", True)
-            and not getattr(proj, "merged", False)
-            and _active_lora_adapter(proj) is None
-        ):
-            return None
-        p = _lora_dropout_p(proj, X)
+        adapter = _active_lora_adapter(proj)
+        if adapter is None:
+            # Enabled adapter missing from this projection: PEFT runs the base layer alone.
+            if not getattr(proj, "disable_adapters", True) and not getattr(proj, "merged", False):
+                return None
+            dropout_p.append(0.0)
+            biases.append(None)
+            continue
+        p = _lora_dropout_p(proj, X, adapter)
         if p is None:
             return None
         dropout_p.append(p)
+        biases.append(proj.lora_B[adapter].bias)
     if any(lora_bias_blocks_fused(proj) for proj in projs):
         return None
-    biases = tuple(_lora_B_bias(proj) for proj in projs)
-    return (tuple(dropout_p) if any(dropout_p) else None), biases
+    return (tuple(dropout_p) if any(dropout_p) else None), tuple(biases)
 
 
 def _dropout_forward(X, p):

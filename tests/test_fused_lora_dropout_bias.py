@@ -298,3 +298,21 @@ def test_active_adapter_absent_from_projection_falls_back(monkeypatch, dropout, 
     torch.testing.assert_close(fast_lora.apply_lora_o(block, X), block.o_proj.base_layer(X))
     fast_lora.apply_lora_qkv(block, X)
     assert spy.calls == []
+
+
+@pytest.mark.parametrize("lora_bias", [False, True])
+def test_routing_resolves_each_active_adapter_once(monkeypatch, lora_bias):
+    # The routing runs on every fused LoRA call, so it resolves each projection's adapter once and skips
+    # the lora_bias scan unless UNSLOTH_FUSED_LORA_BIAS=0.
+    model, block = _peft_block("cpu", torch.float32, 0.0, lora_bias)
+    projs = (block.q_proj, block.k_proj, block.v_proj)
+    real = fast_lora._active_lora_adapter
+    seen = []
+    monkeypatch.setattr(fast_lora, "_active_lora_adapter", lambda proj: seen.append(proj) or real(proj))
+    monkeypatch.setattr(
+        fast_lora, "_has_active_lora_bias", lambda proj: pytest.fail("lora_bias scanned with fused bias on")
+    )
+    dropout_p, biases = fast_lora._lora_dropout_and_bias(projs, torch.randn(2, 5, H))
+    assert dropout_p is None
+    assert len(seen) == len(projs)
+    assert all((b is not None) == lora_bias for b in biases)
