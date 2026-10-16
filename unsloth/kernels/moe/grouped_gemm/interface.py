@@ -727,7 +727,9 @@ class GroupedGemm(torch.autograd.Function):
         kernel_config_bwd_dX = ctx.kernel_config_bwd_dX
         kernel_config_bwd_dW = ctx.kernel_config_bwd_dW
         autotune = ctx.autotune
-        assert not ctx.fuse_mul_post, "fused_mul should only be used for inference, not for training"
+        assert (
+            not ctx.fuse_mul_post
+        ), "fused_mul should only be used for inference, not for training"
         # A frozen W (LoRA, dequantized quantized experts) or X needs no gradient: skip its kernel and
         # its (E, N, K) / activation sized buffer, as autograd would for torch._grouped_mm.
         dX_only = ctx.dX_only or not ctx.needs_input_grad[1]

@@ -80,8 +80,16 @@ def test_fused_mul_training_is_still_rejected_with_frozen_operands():
     gather = torch.arange(T, device = "cuda", dtype = torch.int32)
     topk_weights = torch.rand(T, device = "cuda", dtype = torch.float16, requires_grad = True)
     out = interface.grouped_gemm(
-        X = X, W = W, m_sizes = m_sizes, topk = 1, gather_indices = gather, permute_x = False, permute_y = True,
-        topk_weights = topk_weights, fuse_mul_post = True, autotune = True,
+        X = X,
+        W = W,
+        m_sizes = m_sizes,
+        topk = 1,
+        gather_indices = gather,
+        permute_x = False,
+        permute_y = True,
+        topk_weights = topk_weights,
+        fuse_mul_post = True,
+        autotune = True,
     )
     if not out.requires_grad:
         pytest.skip("fused mul output carries no graph here")
