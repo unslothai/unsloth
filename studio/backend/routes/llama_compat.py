@@ -318,8 +318,7 @@ def _catalog_match(catalog: list[dict], model_id: str) -> Optional[tuple[str, di
     from core.inference.local_model_resolver import local_gguf_pinned_variant
 
     base, sep, suffix = wanted.rpartition(":")
-    # Only a quant or an indexed build key: the resolver maps any other suffix (":latest", ":")
-    # back to the bare repo.
+    # only a quant or an indexed build key: any other suffix (":latest") means the bare repo
     named = sep and (
         looks_like_quant(suffix) or local_gguf_pinned_variant(wanted, allow_scan = False) is not None
     )

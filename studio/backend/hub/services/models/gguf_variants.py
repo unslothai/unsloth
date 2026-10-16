@@ -1698,8 +1698,7 @@ async def get_gguf_variants_answer(
         if local_target is not None:
             variants, has_vision = list_local_gguf_variants(local_id)
             if local_target.is_file():
-                # the loader opens this file whatever variant is named, so same-quant sibling builds
-                # listed beside it would load these weights
+                # the loader opens this file whatever variant is named: same-quant siblings would load it
                 # by shard-stripped family: a split row is listed under its first shard
                 target_family = gguf_variant_family(local_target.name).lower()
                 chosen = next(
