@@ -12,6 +12,7 @@ import {
   LibrariesIcon,
   MoreHorizontalIcon,
   PencilEdit02Icon,
+  Notebook01Icon,
   ApiIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -39,6 +40,7 @@ const ITEM_META: Record<
   hub: { icon: DashboardCircleIcon, labelKey: "shell.navigation.hub" },
   images: { icon: Image03Icon, labelKey: "shell.navigation.images" },
   train: { icon: TestTubeOutlineIcon, labelKey: "shell.navigation.train" },
+  notebooks: { icon: Notebook01Icon, labelKey: "shell.navigation.notebooks" },
   video: { icon: FlimSlateIcon, labelKey: "shell.navigation.video" },
   audio: { icon: AiSpeechIcon, labelKey: "shell.navigation.audio" },
   recipes: { icon: ChefHatIcon, labelKey: "shell.navigation.recipes" },

@@ -306,6 +306,7 @@ function isChatOnlyAllowed(pathname: string): boolean {
   if (CHAT_ONLY_ALLOWED.has(pathname)) return true;
   if (pathname === "/data-recipes" || pathname.startsWith("/data-recipes/"))
     return true;
+  if (pathname === "/notebooks") return true;
   // Images runs on CPU/MPS via the native sd.cpp engine, the very no-GPU setup it was added for. The chat-only flag is about training/export, so it must not redirect /images.
   if (pathname === "/images" || pathname.startsWith("/images/")) return true;
   // Audio inference is CPU-capable too: GGUF TTS through llama.cpp and STT through the whisper.cpp / mtmd sidecars.

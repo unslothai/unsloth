@@ -171,8 +171,11 @@ export const BUDGET = {
   // (6,788,764 -> 6,790,997 B raw, 2,041,243 -> 2,042,101 B transfer against 5e5511027, one machine and build,
   // Node 24, chunk count unchanged at 95). Lazy-loading the dialog cost more (2.7 KB transfer) and a 96th
   // startup chunk, so it is imported statically and the budget raised by that growth.
-  transferBytes: 2_042_291,
-  rawBytes: 6_791_181,
+  // The Notebooks page (#6650: its sidebar row, route and English strings; the page itself is lazy) adds
+  // 3,318 B raw / 1,005 B transfer against 9f5b133254 (one machine and build, Node 24, chunk count 95 -> 96: the
+  // shared open-link helper splits into its own eager chunk), raised by that.
+  transferBytes: 2_043_296,
+  rawBytes: 6_794_499,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

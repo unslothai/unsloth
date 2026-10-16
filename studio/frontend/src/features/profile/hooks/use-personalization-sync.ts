@@ -38,7 +38,8 @@ const PUSH_DEBOUNCE_MS = 800;
 // Version 2 payloads store the language preference ("auto" or a pinned locale). Version 1 always
 // serialized the resolved locale, so its "en" is usually the old default rather than an explicit
 // pick. Version 3 migrates untouched sidebar layouts to keep Video under More. Version 4 pins Video
-const PERSONALIZATION_VERSION = 5;
+// under Images, version 5 adds Library, version 6 adds Notebooks under Train.
+const PERSONALIZATION_VERSION = 6;
 
 type ProfileSnapshot = {
   displayName: string;

@@ -1,5 +1,5 @@
 # Model defaults for unsloth/Qwen2.5-1.5B-Instruct
-# Based on nemo_gym_sudoku.ipynb
+# Based on NeMo-Gym-Sudoku.ipynb
 # Also applies to: unsloth/Qwen2.5-1.5B-Instruct-unsloth-bnb-4bit, Qwen/Qwen2.5-1.5B-Instruct, unsloth/Qwen2.5-1.5B-Instruct-bnb-4bit
 
 training:

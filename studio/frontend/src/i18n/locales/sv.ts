@@ -830,6 +830,7 @@ export const sv = {
       library: "Bibliotek",
       hub: "Modellhub",
       train: "Träna",
+      notebooks: "Notebooks",
       recipes: "Recept",
       images: "Bilder",
       video: "Video",
@@ -4258,6 +4259,54 @@ export const sv = {
       datasetStreaming:
         "Datauppsättning: strömning (ingen fullständig hämtning)",
       modelWeights: "Modellvikter",
+    },
+  },
+  notebooks: {
+    routeTitle: "Notebooks",
+    title: "Unsloth-notebooks",
+    subtitle:
+      "Officiella finjusteringsrecept från unslothai/notebooks. Öppna i Colab eller förifyll Fine-tuning Studio.",
+    searchPlaceholder: "Sök notebooks …",
+    pickerPlaceholder: "Sök och välj en notebook …",
+    pickerEmpty: "Inga notebooks matchar sökningen.",
+    pickedSection: "Vald notebook",
+    resultsCount: "{count} notebooks",
+    allCategories: "Alla",
+    featured: "Utvald",
+    featuredSection: "Utvalda notebooks",
+    allSection: "Alla notebooks",
+    loading: "Läser in notebooks …",
+    loadFailed: "Det gick inte att läsa in notebooks",
+    emptyTitle: "Inga notebooks hittades",
+    emptyDescription: "Prova en annan sökning eller ett annat kategorifilter.",
+    useInStudio: "Använd i Studio",
+    openInColab: "Öppna i Colab",
+    viewOnGitHub: "GitHub",
+    studioModelReady: "Förifyller Studio: {model}",
+    studioManualConfigure:
+      "Öppnar Fine-tuning Studio. Välj en modell som passar den här notebooken.",
+    studioOpenedWithoutModel:
+      "Fine-tuning Studio har öppnats. Välj en modell som passar den här notebooken.",
+    studioDisabled: {
+      mlxUnavailable:
+        "Träning kräver MLX. Kör `unsloth studio update` för att aktivera Använd i Studio.",
+      intelMac: "Träning kräver Apple Silicon eller en GPU. Intel-Mac kan bara chatta.",
+      noGpu: "Träning kräver en NVIDIA- eller AMD-GPU.",
+      generic: "Träning är inte tillgänglig på den här enheten.",
+      unsupportedMethod:
+        "Studio tränar med SFT. Öppna den här notebooken i Colab för att köra förstärkningsinlärning.",
+    },
+    categories: {
+      sft: "Finjustering",
+      vision: "Vision",
+      grpo: "GRPO / RL",
+      audio: "Ljud / TTS",
+      embedding: "Inbäddning",
+      reasoning: "Resonemang",
+      code: "Kod",
+      inference: "Inferens",
+      raft: "RAFT",
+      classification: "Klassificering",
     },
   },
   modelMemory: {
