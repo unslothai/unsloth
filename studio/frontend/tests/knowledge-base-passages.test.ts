@@ -265,6 +265,14 @@ test("a large search shows the first 20 passages and holds the rest behind Show 
   }));
   const html = render(searchResult(rows));
   assert.equal(html.match(/data-slot="knowledge-base-passage"/g)?.length, 20);
+  // The cap follows retrieval order across documents, not each document's list.
+  const ranks = [...html.matchAll(/search results">#(?:<!-- -->)?(\d+)</g)].map(
+    (m) => Number(m[1]),
+  );
+  assert.deepEqual(
+    ranks.sort((a, b) => a - b),
+    Array.from({ length: 20 }, (_, i) => i + 1),
+  );
   assert.match(html, />Show 3 more passages</);
 });
 

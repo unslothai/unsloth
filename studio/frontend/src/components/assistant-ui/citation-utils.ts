@@ -169,14 +169,20 @@ export interface DocumentPassages {
   passages: Passage[];
 }
 
-/** Documents in chip order. Ranks skip unscored passages, so ranked ones after a whole-document read start at #1. */
+/**
+ * Documents in chip order. Ranks skip unscored passages, so ranked ones after a whole-document read start at #1.
+ * `limit` keeps the first passages in retrieval order, not per document.
+ */
 export function passagesPerDocument(
   citations: readonly Citation[],
+  limit = Number.POSITIVE_INFINITY,
 ): DocumentPassages[] {
   const groups = new Map<string, DocumentPassages>();
   let ranked = 0;
+  let kept = 0;
   for (const citation of citations) {
     if (!isPassage(citation)) continue;
+    if (kept++ >= limit) break;
     const key = documentKey(citation);
     let group = groups.get(key);
     if (!group) {
@@ -189,21 +195,6 @@ export function passagesPerDocument(
     });
   }
   return Array.from(groups.values());
-}
-
-export function firstPassages(
-  groups: readonly DocumentPassages[],
-  limit: number,
-): DocumentPassages[] {
-  const shown: DocumentPassages[] = [];
-  let room = limit;
-  for (const group of groups) {
-    if (room <= 0) break;
-    const passages = group.passages.slice(0, room);
-    room -= passages.length;
-    if (passages.length > 0) shown.push({ ...group, passages });
-  }
-  return shown;
 }
 
 /** Only PDFs drop `#` markers (added by their Markdown conversion); code and config keep their `#` comments. */

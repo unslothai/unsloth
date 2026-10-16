@@ -9,7 +9,7 @@ import { useMemo, useState } from "react";
 import {
   type Citation,
   type Passage,
-  firstPassages,
+  isPassage,
   passageDisplayText,
   passageNeedsClamp,
   passagesPerDocument,
@@ -79,11 +79,16 @@ export function KnowledgeBasePassages({
 }: {
   citations: readonly Citation[];
 }) {
-  const groups = useMemo(() => passagesPerDocument(citations), [citations]);
-  const total = groups.reduce((n, g) => n + g.passages.length, 0);
+  const total = useMemo(() => citations.filter(isPassage).length, [citations]);
   const [showAll, setShowAll] = useState(false);
-
-  const shown = showAll ? groups : firstPassages(groups, PASSAGES_SHOWN);
+  const shown = useMemo(
+    () =>
+      passagesPerDocument(
+        citations,
+        showAll ? Number.POSITIVE_INFINITY : PASSAGES_SHOWN,
+      ),
+    [citations, showAll],
+  );
   const shownCount = shown.reduce((n, g) => n + g.passages.length, 0);
 
   return (
