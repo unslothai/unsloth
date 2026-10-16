@@ -1908,6 +1908,28 @@ def test_a_build_loaded_by_its_stem_still_answers_its_canonical_key(monkeypatch)
     asyncio.run(inference_route._reject_unservable_model("org/model:alpha-Q4_K_M", _Req()))
 
 
+def test_a_rekeyed_slash_pin_is_admitted_for_a_bare_local_id(monkeypatch):
+    entry = resolver._LocalGgufEntry(
+        "custom",
+        "/models/custom",
+        ("Q4_K_M",),
+        build_aliases = (("q4_k_m/beta-q4_k_m", "Q4_K_M"),),
+        exact_builds = True,
+    )
+    monkeypatch.setattr(resolver, "_scan", (time.monotonic(), {"custom": entry}))
+    loaded = _Loaded("custom", "Q4_K_M/beta-Q4_K_M")
+    loaded.gguf_path = "/models/custom/Q4_K_M/beta-Q4_K_M.gguf"
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: loaded)
+    monkeypatch.setattr(
+        inference_route,
+        "get_inference_backend",
+        lambda: type("B", (), {"active_model_name": None})(),
+    )
+    monkeypatch.setattr(inference_route, "_unavailable_model_message", _fake_unavailable_message)
+
+    asyncio.run(inference_route._reject_unservable_model("custom:Q4_K_M/beta-Q4_K_M", _Req()))
+
+
 def test_a_remote_tag_that_names_no_quant_picks_the_preferred_one(hub):
     # ":latest" and ":8b" name no quant, so remote admission must default-select like a
     # bare repo id (as the local resolver does) instead of 404ing on a non-quant.

@@ -888,13 +888,17 @@ def test_a_quant_directory_build_pin_is_authorized_by_its_base_model(monkeypatch
         "_own_local_model_for_alias",
         lambda alias: "/models/custom" if alias == "custom-model" else None,
     )
-    monkeypatch.setattr(
-        resolver,
-        "local_gguf_pinned_variant",
-        lambda requested, **_: "Q4_K_M/beta-Q4_K_M" if requested == pinned else None,
-    )
+    scans = []
+
+    def _pinned(requested, allow_scan = True):
+        scans.append(allow_scan)
+        return "Q4_K_M/beta-Q4_K_M" if requested == pinned else None
+
+    monkeypatch.setattr(resolver, "local_gguf_pinned_variant", _pinned)
 
     asyncio.run(inference_route._require_named_model_access(pinned))
+    # a cold index after restart must not refuse the pin, so this lookup may scan
+    assert scans[-1] is True
     with pytest.raises(HTTPException) as refused:
         asyncio.run(inference_route._require_named_model_access("custom-model:Q4_K_M/other"))
     assert refused.value.status_code == 404

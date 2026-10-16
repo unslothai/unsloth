@@ -11074,6 +11074,8 @@ async def _reject_unservable_model(
         # would be answered by a resident Q4_K_M.
         # Off-loop: reads the Transformers singleton, and the llama.cpp short-circuits above
         # skip the offloaded reads, so on a restart this built the singleton on the loop.
+        # the resolver's colon base: split_model_ref keeps a slash-qualified pin whole
+        index_base = requested_model.rpartition(":")[0] or base
         resolved_is_resident = (
             resolved is not None
             and (
@@ -11082,7 +11084,7 @@ async def _reject_unservable_model(
                 )
             )[1]
         )
-        if resolved_is_resident and (not quantified or _resident_quant_is(variant, base)):
+        if resolved_is_resident and (not quantified or _resident_quant_is(variant, index_base)):
             return
         downloaded = resolved is not None
         # /v1/models may have advertised this id off its own scan while the index is cold.
@@ -11100,7 +11102,7 @@ async def _reject_unservable_model(
                 )
             )[1]
         )
-        if advertised_is_resident and (not quantified or _resident_quant_is(variant, base)):
+        if advertised_is_resident and (not quantified or _resident_quant_is(variant, index_base)):
             return
         # The exact ref may miss on the quant alone, so ask about the repo too.
         here = (
@@ -11203,7 +11205,7 @@ async def _require_named_model_access(
         if (
             pinned_base
             and pinned_base != alias
-            and local_gguf_pinned_variant(named_model, allow_scan = False) is not None
+            and await asyncio.to_thread(local_gguf_pinned_variant, named_model) is not None
             and await asyncio.to_thread(_own_local_model_for_alias, pinned_base) is not None
         ):
             return
