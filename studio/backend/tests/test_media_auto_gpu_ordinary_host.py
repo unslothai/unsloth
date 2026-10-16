@@ -78,7 +78,9 @@ def test_auto_returns_none_when_the_current_device_wins(monkeypatch, devices):
 
 def test_auto_keeps_card_zero_explicit_beside_a_mig_card(monkeypatch):
     # Identical physical rows, but card 1 is MIG: its slice size is not the row's.
-    _two_cards(monkeypatch, [_dev(0, 80.0, 0.5), _dev(1, 80.0, 0.5)], {0: (8, 0), 1: (8, 0)}, mig = {1})
+    _two_cards(
+        monkeypatch, [_dev(0, 80.0, 0.5), _dev(1, 80.0, 0.5)], {0: (8, 0), 1: (8, 0)}, mig = {1}
+    )
     assert dd.resolve_auto_cuda_ordinal() == 0
 
 
@@ -95,7 +97,12 @@ def test_auto_keeps_card_zero_explicit_on_mixed_cards(monkeypatch, devices, caps
     assert dd.resolve_auto_cuda_ordinal() == 0
 
 
-def _two_cards(monkeypatch, devices, caps, mig = ()):
+def _two_cards(
+    monkeypatch,
+    devices,
+    caps,
+    mig = (),
+):
     from utils.hardware import nvidia
 
     monkeypatch.setattr(nvidia, "get_compute_capabilities", lambda: dict(caps))
@@ -437,7 +444,9 @@ def test_catalog_compares_every_card_when_mask_ids_are_not_smi_rows(monkeypatch)
     asked = []
     # Rows 0 and 2 match, row 1 differs: only the all-cards answer is trustworthy.
     monkeypatch.setattr(
-        hw, "_cuda_cards_identical", lambda gpu_ids = None: asked.append(gpu_ids) or gpu_ids is not None
+        hw,
+        "_cuda_cards_identical",
+        lambda gpu_ids = None: asked.append(gpu_ids) or gpu_ids is not None,
     )
     _counting_target(monkeypatch, dd)
     ranks = _counting_rank(monkeypatch, answer = 0)
@@ -485,6 +494,8 @@ def test_mig_listing_parses_slices():
 
     out = "GPU 0: A100 (UUID: GPU-a)\n  MIG 3g.40gb Device 0: (UUID: MIG-x)\nGPU 1: A100 (UUID: GPU-b)\n"
     with _patch.object(
-        nvidia.gpu_query, "run_nvidia_smi", lambda argv, **_k: types.SimpleNamespace(returncode = 0, stdout = out)
+        nvidia.gpu_query,
+        "run_nvidia_smi",
+        lambda argv, **_k: types.SimpleNamespace(returncode = 0, stdout = out),
     ):
         assert hw._nvidia_mig_gpu_indices_or_none() == {0}
