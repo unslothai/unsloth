@@ -2036,7 +2036,12 @@ def test_the_pipeline_estimate_probes_the_flux3_index_for_a_cached_upstream(monk
     monkeypatch.setattr("huggingface_hub.HfApi", _Api)
     probes: list = []
 
-    def _prefer(repo_id, hf_token = None, files = None, **kw):
+    def _prefer(
+        repo_id,
+        hf_token = None,
+        files = None,
+        **kw,
+    ):
         probes.append(tuple(files or ()))
         # The upstream snapshot is cached: keep it when every probed file is there, else the mirror.
         return repo_id if files and set(files) <= set(names) else mirror

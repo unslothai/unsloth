@@ -5088,9 +5088,7 @@ class DiffusionBackend:
 
                 # The family's own index: FLUX.3 ships only modular_model_index.json, so probing
                 # model_index.json would never find a cached upstream and restage the mirror.
-                metadata_repo = prefer_ungated_mirror(
-                    repo_id, hf_token, files = (base_manifest,)
-                )
+                metadata_repo = prefer_ungated_mirror(repo_id, hf_token, files = (base_manifest,))
                 info, components, picked = _pipeline_listing(metadata_repo)
                 base_files = [s.rfilename for s in picked]
                 fetch_repo = prefer_ungated_mirror(repo_id, hf_token, files = base_files)

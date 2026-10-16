@@ -96,7 +96,11 @@ def _probe(index: int) -> bool:
     return q21._FUSION[index] is not None
 
 
-def _patch_global(mod: Any, index: int, logger: Any = None) -> bool:
+def _patch_global(
+    mod: Any,
+    index: int,
+    logger: Any = None,
+) -> bool:
     """No table (main d42ebf9c): swap the module global the attention processor calls."""
     from . import diffusion_qwenimage21_rope as q21
 

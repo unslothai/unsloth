@@ -389,7 +389,9 @@ def test_an_autocast_change_between_steps_matches_the_stock_forward(prefill, dec
 
 def test_an_unknown_build_token_metadata_keeps_the_stock_forward():
     """Both known sources (0.41.0, main d42ebf9c) are accepted; any other edit still falls back."""
-    assert q._FINGERPRINTS["build_token_metadata"] == frozenset({"51818c1674e0d406", "9282e4c4803957f8"})
+    assert q._FINGERPRINTS["build_token_metadata"] == frozenset(
+        {"51818c1674e0d406", "9282e4c4803957f8"}
+    )
     fake = types.SimpleNamespace(**vars(qmod))
 
     class QwenImage21Transformer2DModel(qmod.QwenImage21Transformer2DModel):
