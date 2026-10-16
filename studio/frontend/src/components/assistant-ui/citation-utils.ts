@@ -152,31 +152,24 @@ export function citedPagesPerDocument(
   );
 }
 
-/** Whether a citation has text to show as a passage; an empty chunk would render as a blank card. */
+/** An empty chunk would render as a blank card, so it is not a passage. */
 export function isPassage(citation: Citation): boolean {
   return citation.text.trim().length > 0;
 }
 
-/**
- * A retrieved passage and its 1-based position among the scored passages; null when unscored (a
- * whole-document read). When Studio merges a thread search with a project search, it runs across both.
- */
+/** rank: 1-based among scored passages, across a merged thread + project search; null for a whole-document read. */
 export interface Passage {
   citation: Citation;
   rank: number | null;
 }
 
-/** One document's passages, in retrieval order. */
 export interface DocumentPassages {
   key: string;
   filename: string;
   passages: Passage[];
 }
 
-/**
- * Passages grouped by document, documents in first-seen order (as their chips). Ranks count only
- * scored passages, so ranked project passages merged after a whole-document read still start at #1.
- */
+/** Documents in chip order. Ranks skip unscored passages, so ranked ones after a whole-document read start at #1. */
 export function passagesPerDocument(
   citations: readonly Citation[],
 ): DocumentPassages[] {
@@ -198,7 +191,6 @@ export function passagesPerDocument(
   return Array.from(groups.values());
 }
 
-/** The first `limit` passages across the groups, in order; groups left empty are dropped. */
 export function firstPassages(
   groups: readonly DocumentPassages[],
   limit: number,
@@ -214,11 +206,7 @@ export function firstPassages(
   return shown;
 }
 
-/**
- * A passage as shown: trimmed, with runs of blank lines folded so a clamped preview spends its lines
- * on text. A PDF loses the `#` heading markers its Markdown conversion adds; every other source keeps
- * its text as indexed, so code and config passages keep their `#` comments and indentation.
- */
+/** Only PDFs drop `#` markers (added by their Markdown conversion); code and config keep their `#` comments. */
 export function passageDisplayText(text: string, filename = ""): string {
   const folded = text.trim().replace(/\n(?:[ \t]*\n)+/g, "\n");
   return /\.pdf$/i.test(filename)
@@ -230,7 +218,6 @@ export function passageDisplayText(text: string, filename = ""): string {
 const PASSAGE_CLAMP_CHARS = 450;
 const PASSAGE_CLAMP_LINES = 4;
 
-/** Whether a passage is long enough to start clamped behind "Show more". */
 export function passageNeedsClamp(text: string): boolean {
   return (
     text.length > PASSAGE_CLAMP_CHARS ||

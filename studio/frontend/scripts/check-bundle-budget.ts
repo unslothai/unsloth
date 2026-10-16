@@ -196,9 +196,7 @@ export const BUDGET = {
   // 95). Nearly all of it is searching a model maker in the Model hub (#13998, +3,038 B raw / +1,000 B transfer):
   // its owner-to-uploads search lives in use-hub-model-search, a hook the startup screen already loads, so there
   // is no separate module to lazy-load. #13999 and #13993 add 79 B raw / 58 B transfer. Raised by that growth.
-  // The retrieved passage viewer (#13987) adds 3,027 B raw / 1,111 B transfer to the eager chat UI
-  // (6,800,906 -> 6,803,933 B raw, 2,045,420 -> 2,046,531 B transfer against 983226fa73, same machine,
-  // Node 24.16.0, 95 chunks on both builds). Raised by that growth to preserve main's existing margin.
+  // The retrieved passage viewer (#13987) adds 3,027 B raw / 1,111 B transfer to the eager chat UI. Raised by that.
   transferBytes: 2_046_892,
   rawBytes: 6_804_442,
 };

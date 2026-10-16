@@ -74,7 +74,6 @@ function PassageItem({ passage }: { passage: Passage }) {
   );
 }
 
-/** The retrieved passages, each under its document once, with its rank and where it opens. */
 export function KnowledgeBasePassages({
   citations,
 }: {
