@@ -2027,9 +2027,11 @@ def local_pipeline_components_are_complete(
 ) -> bool:
     """Check local component presence and known Diffusers/Transformers serialization layouts.
 
-    ``fixed_component_folders`` is for a loader that reads every component from a fixed folder of this root
-    (FLUX.3's assembler): each component is then checked at ``root/<folders.get(name, name)>`` and a modular spec's
-    ``pretrained_model_name_or_path`` / ``repo`` / ``subfolder`` is ignored, so the check matches what will load."""
+    ``fixed_component_folders`` is for a loader that reads a fixed set of components from fixed folders of this
+    root (FLUX.3's assembler): exactly the components it maps are checked, each at ``root/<folder>``, and a modular
+    spec's ``pretrained_model_name_or_path`` / ``repo`` / ``subfolder`` is ignored. Manifest entries outside the
+    map are not loaded, so they are not required either (FLUX.3's optional prompt upsampler, hosted in another
+    repo). The check then matches what will load."""
     if filename not in {"model_index.json", "modular_model_index.json"}:
         return False
     base = Path(root).expanduser()
@@ -2054,13 +2056,15 @@ def local_pipeline_components_are_complete(
                 name in caller_supplied and not (base / name).exists()
             ):
                 continue
+            if fixed_component_folders is not None and name not in fixed_component_folders:
+                continue
             declared = True
             component = base / name
             source = spec[2] if filename == "modular_model_index.json" and len(spec) >= 3 else None
             source = source if isinstance(source, dict) else {}
             repo = source.get("pretrained_model_name_or_path") or source.get("repo")
             if fixed_component_folders is not None:
-                component = base / fixed_component_folders.get(name, name)
+                component = base / fixed_component_folders[name]
             elif isinstance(repo, str) and repo.strip():
                 # A modular spec may load the component from another repo or folder instead.
                 repo = repo.strip()

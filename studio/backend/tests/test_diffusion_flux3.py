@@ -1027,3 +1027,139 @@ def test_status_lists_flux3_as_a_modular_image_family(monkeypatch):
     assert out["modular_families"] == [FLUX3_KLEIN_FAMILY_NAME, FLUX3_KLEIN_BASE_FAMILY_NAME]
     # The response model keeps it (a dropped field reaches the UI as no modular families at all).
     assert DiffusionStatusResponse(**out).modular_families == out["modular_families"]
+
+
+# ── upstream manifest change (2026-10-16): the official manifests list the optional prompt upsampler ─────────────
+def _official_manifest(variant, with_upsampler):
+    """The official modular_model_index.json before (2026-10-15) and after (2026-10-16) BFL added the prompt
+    upsampler components; same shape, abridged to what the checks read."""
+    repo = DISTILLED if variant == "distilled" else BASE
+    index = {
+        "_blocks_class_name": FLUX3_DISTILLED_BLOCKS if variant == "distilled" else FLUX3_BASE_BLOCKS,
+        "_class_name": "Flux3DistilledModularPipeline"
+        if variant == "distilled"
+        else "Flux3ModularPipeline",
+        "_diffusers_version": "0.41.0.dev0",
+    }
+
+    def entry(lib, cls, source, subfolder):
+        return [
+            lib,
+            cls,
+            {
+                "pretrained_model_name_or_path": source,
+                "revision": None,
+                "subfolder": subfolder,
+                "type_hint": [lib, cls],
+                "variant": None,
+            },
+        ]
+
+    index["text_encoder"] = entry(
+        "transformers", "Qwen3VLForConditionalGeneration", repo, "text_encoder"
+    )
+    index["tokenizer"] = entry("transformers", "Qwen3VLProcessor", repo, "text_encoder")
+    index["transformer"] = entry("diffusers", "Flux3Transformer2DModel", repo, "transformer")
+    index["vae"] = entry("diffusers", "AutoencoderKLFlux2", repo, "vae")
+    if with_upsampler:
+        pup = "black-forest-labs/flux-3-image-klein-pup"
+        index["prompt_upsampler"] = entry(
+            "transformers", "Qwen3_5ForConditionalGeneration", pup, ""
+        )
+        index["prompt_upsampler_processor"] = entry("transformers", "AutoProcessor", pup, "")
+    return index
+
+
+def _official_layout(tmp_path, variant, with_upsampler):
+    """A local copy of the official repo: the three component folders and the manifest, no upsampler (it lives in
+    another repo)."""
+    root = tmp_path / f"{variant}-{with_upsampler}"
+    for component in ("text_encoder", "transformer", "vae"):
+        folder = root / component
+        folder.mkdir(parents = True)
+        (folder / "config.json").write_text("{}")
+        (folder / "model.safetensors").write_bytes(b"\0" * 16)
+    (root / "text_encoder" / "tokenizer.json").write_text("{}")
+    (root / "text_encoder" / "tokenizer_config.json").write_text("{}")
+    (root / "text_encoder" / "preprocessor_config.json").write_text("{}")
+    (root / "modular_model_index.json").write_text(
+        json.dumps(_official_manifest(variant, with_upsampler))
+    )
+    return root
+
+
+_MANIFEST_CASES = [
+    (v, u) for v in ("distilled", "base") for u in (False, True)
+]
+
+
+@pytest.mark.parametrize("variant, with_upsampler", _MANIFEST_CASES)
+def test_local_validation_ignores_the_optional_prompt_upsampler(
+    tmp_path, monkeypatch, variant, with_upsampler
+):
+    from core.inference.diffusion import DiffusionBackend
+    from core.inference.diffusion_families import local_pipeline_components_are_complete
+    from core.inference.diffusion_flux3 import FLUX3_COMPONENT_FOLDERS
+
+    _flux3_installed(monkeypatch)
+    family = FLUX3_KLEIN_FAMILY_NAME if variant == "distilled" else FLUX3_KLEIN_BASE_FAMILY_NAME
+    root = _official_layout(tmp_path, variant, with_upsampler)
+    assert local_pipeline_components_are_complete(
+        root, "modular_model_index.json", fixed_component_folders = FLUX3_COMPONENT_FOLDERS
+    )
+    # A full pipeline pick, and the same folder as the companion base of a GGUF.
+    DiffusionBackend().validate_load_request(
+        str(root), family_override = family, model_kind = "pipeline"
+    )
+    ggufs = tmp_path / f"ggufs-{variant}-{with_upsampler}"
+    ggufs.mkdir()
+    (ggufs / "klein.gguf").write_bytes(b"GGUF")
+    DiffusionBackend().validate_load_request(
+        str(ggufs),
+        gguf_filename = "klein.gguf",
+        family_override = family,
+        model_kind = "gguf",
+        base_repo = str(root),
+    )
+    # The variant read off the manifest is unchanged by the extra entries.
+    DiffusionBackend().preflight_base_access(
+        str(root), _family(family), model_kind = "pipeline", allow_network = False
+    )
+    # A component the loader DOES read is still required.
+    for f in (root / "vae").iterdir():
+        f.unlink()
+    assert not local_pipeline_components_are_complete(
+        root, "modular_model_index.json", fixed_component_folders = FLUX3_COMPONENT_FOLDERS
+    )
+
+
+@pytest.mark.parametrize("variant, with_upsampler", _MANIFEST_CASES)
+def test_locality_does_not_require_the_upsampler_repo(tmp_path, variant, with_upsampler):
+    # The media auto-switch / cached-snapshot check: an official snapshot is ready without the ~19 GB pup repo.
+    from core.inference.media_locality import _pipeline_components_present
+
+    root = _official_layout(tmp_path, variant, with_upsampler)
+    assert _pipeline_components_present(root)
+    for f in (root / "transformer").iterdir():
+        f.unlink()
+    assert not _pipeline_components_present(root)
+
+
+@pytest.mark.parametrize("with_upsampler", [False, True])
+def test_the_download_plan_never_selects_the_upsampler(with_upsampler):
+    info = SimpleNamespace(
+        siblings = [
+            SimpleNamespace(rfilename = n)
+            for n in (
+                "modular_model_index.json",
+                "text_encoder/config.json",
+                "transformer/config.json",
+                "vae/config.json",
+            )
+        ],
+        sha = "x",
+    )
+    selected, _ignored = _pipeline_components_from_index(
+        DISTILLED, info, None, explicit_components = _explicit_pipeline_components(_family(FLUX3_KLEIN_FAMILY_NAME))
+    )
+    assert selected == frozenset(FLUX3_COMPONENTS)

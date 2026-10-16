@@ -40,9 +40,17 @@ FLUX3_BASE_BLOCKS = "Flux3AutoBlocks"
 # Folders a load reads. The tokenizer / processor files live in text_encoder/.
 FLUX3_COMPONENTS = ("text_encoder", "transformer", "vae")
 FLUX3_INDEX = "modular_model_index.json"
-# Where load_flux3_pipeline reads each manifest component from (the processor lives with the encoder). Fixed folders
-# of the repo, whatever source a modular spec names, so local validation checks exactly these.
-FLUX3_COMPONENT_FOLDERS = {"tokenizer": "text_encoder"}
+# The manifest components load_flux3_pipeline reads, and the folder of this repo each comes from (the processor
+# lives with the encoder), whatever source a modular spec names. Nothing else in the manifest is loaded: since
+# 2026-10-16 the official manifests also list the optional prompt upsampler (``prompt_upsampler`` /
+# ``prompt_upsampler_processor``, from the separate ~19 GB flux-3-image-klein-pup repo), which an image load never
+# needs. Validation and the locality checks read this map, so they require exactly what will load.
+FLUX3_COMPONENT_FOLDERS = {
+    "text_encoder": "text_encoder",
+    "tokenizer": "text_encoder",
+    "transformer": "transformer",
+    "vae": "vae",
+}
 
 
 def is_flux3_family(fam: Any) -> bool:

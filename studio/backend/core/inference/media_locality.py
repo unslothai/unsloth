@@ -296,6 +296,18 @@ def _pipeline_components_present(root: Path) -> bool:
             return False
         if not isinstance(index, dict):
             return False
+        if name == "modular_model_index.json" and _is_flux3_manifest(index):
+            # FLUX.3 loads a fixed set of components from fixed folders of this root and never follows a spec's
+            # source, so judge it on exactly those: the optional prompt upsampler the manifests list since
+            # 2026-10-16 lives in another (~19 GB) repo an image load never reads.
+            from core.inference.diffusion_families import local_pipeline_components_are_complete
+            from core.inference.diffusion_flux3 import FLUX3_COMPONENT_FOLDERS
+
+            if not local_pipeline_components_are_complete(
+                root, name, fixed_component_folders = FLUX3_COMPONENT_FOLDERS
+            ):
+                return False
+            continue
         for component, entry in index.items():
             if component.startswith("_") or not isinstance(entry, (list, tuple)):
                 continue
@@ -312,6 +324,12 @@ def _pipeline_components_present(root: Path) -> bool:
             if not _component_present(root / component):
                 return False
     return True
+
+
+def _is_flux3_manifest(index: dict) -> bool:
+    from core.inference.diffusion_flux3 import flux3_index_family
+
+    return flux3_index_family(index) is not None
 
 
 def _hosted_source(spec: Any) -> Optional[tuple[str, str, str, str]]:
