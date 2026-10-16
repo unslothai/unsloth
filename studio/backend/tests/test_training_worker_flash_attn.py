@@ -1780,11 +1780,7 @@ def test_optional_mamba_ssm_never_source_builds(monkeypatch, essential):
         "run",
         lambda cmd, **k: builds.append(cmd) or subprocess.CompletedProcess(cmd, 1, ""),
     )
-    if essential:
-        with pytest.raises(RuntimeError, match = "required by this Mamba model"):
-            worker._ensure_mamba_ssm([], "ai21labs/Jamba-v0.1", required = True, essential = True)
-    else:
-        worker._ensure_mamba_ssm([], "ai21labs/Jamba-v0.1", required = True, essential = False)
+    worker._ensure_mamba_ssm([], "ai21labs/Jamba-v0.1", required = True, essential = essential)
     assert bool([cmd for cmd in builds if "mamba-ssm==" in " ".join(cmd)]) is essential
 
 
@@ -1904,24 +1900,29 @@ def test_no_pinned_source_build_on_torch_213_and_later(monkeypatch, torch_mm):
     assert any("cannot be built from source" in message for message in statuses)
 
 
-# A model that cannot load without mamba-ssm stops the run with the error a chat load gives, not
-# deep inside the model load.
+# Training stays best effort as at 9f5b13325, even for the hybrids that need mamba-ssm: their
+# native transformers path can run without it, so a failed install never stops the run here.
 
 
-def test_a_required_hybrid_without_mamba_ssm_stops_training(monkeypatch):
+def test_a_required_hybrid_without_mamba_ssm_does_not_stop_training(monkeypatch):
     monkeypatch.setattr(worker.sys, "platform", "linux")
     monkeypatch.setattr(worker, "_install_package_wheel_first", lambda **k: False)
-    with pytest.raises(RuntimeError, match = "Could not install mamba-ssm, required"):
-        worker._ensure_mamba_ssm([], "tiiuae/Falcon-H1-0.5B", required = True, essential = True)
+    monkeypatch.setattr(worker, "probe_torch_wheel_env", lambda **k: {"cuda_version": "12.8"})
+    worker._ensure_mamba_ssm([], "tiiuae/Falcon-H1-0.5B", required = True, essential = True)
 
 
-def test_a_required_hybrid_on_windows_without_triton_stops_training(monkeypatch):
+def test_a_required_hybrid_on_windows_without_triton_does_not_stop_training(monkeypatch):
     monkeypatch.setattr(worker.sys, "platform", "win32")
     monkeypatch.setattr(
         worker.importlib.util, "find_spec", lambda name, *a: None if name == "triton" else object()
     )
-    with pytest.raises(RuntimeError, match = "triton-windows"):
-        worker._ensure_mamba_ssm([], "tiiuae/Falcon-H1-0.5B", required = True, essential = True)
+    install = mock.Mock()
+    monkeypatch.setattr(worker, "_install_package_wheel_first", install)
+    statuses = []
+    monkeypatch.setattr(worker, "_send_status", lambda queue, message: statuses.append(message))
+    worker._ensure_mamba_ssm([], "tiiuae/Falcon-H1-0.5B", required = True, essential = True)
+    assert not install.called
+    assert any("triton-windows" in message for message in statuses)
 
 
 @pytest.mark.parametrize(
