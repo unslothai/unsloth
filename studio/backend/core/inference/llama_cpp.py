@@ -7031,14 +7031,6 @@ def _draft_tensors_placed_off_card(
     )
 
 
-def _named_gpu_device(value: Optional[str]) -> bool:
-    """True when a companion device value names a card; cpu/none keep it on the host."""
-    if value is None:
-        return False
-    devs = [d.strip().lower() for d in str(value).split(",") if d.strip()]
-    return bool(devs) and not all(d in ("cpu", "none") for d in devs)
-
-
 def _moe_cache_requested(value: Optional[str]) -> bool:
     """True when a --moe-cache-mib value asks llama.cpp for an expert cache (0 is none)."""
     if value is None:
@@ -38386,13 +38378,15 @@ class LlamaCppBackend:
             # partial pattern moves a share nothing here can name. -cmoed / -ncmoed N and their
             # env twins append the same overrides.
             or _draft_tensors_placed_off_card(extra_args, source_env)
-            # A projector on a named card, the projector's twin of the draft pin: its bytes
-            # ride extra_resident_bytes, booked onto device 0, while llama.cpp loads it on the
-            # card named. cpu/none keep it off every card.
-            or _named_gpu_device(
-                _extra_args_device(extra_args, {"--mmproj-device", "-mmdev"})
-                or source_env.get("MTMD_BACKEND_DEVICE")
-            )
+            # ANY projector device, the projector's twin of the draft pin. A named card: its
+            # bytes ride extra_resident_bytes, booked onto device 0, while llama.cpp loads it on
+            # the card named. cpu/none: the projector never reaches a card, but the seam's
+            # sizing (_resolved_mmproj_offload) reads only the offload switches, so the plan
+            # charges it to VRAM and Rung 0 credits moving it off a card it was never on. And
+            # arg.cpp's -mmdev handler rewrites mmproj_use_gpu itself (a card sets it true,
+            # none false), so argv order against --[no-]mmproj-offload decides where it lands.
+            or _extra_args_set_any_flag(extra_args, {"--mmproj-device", "-mmdev"})
+            or source_env.get("MTMD_BACKEND_DEVICE") is not None
             # A user MoE expert cache is VRAM llama.cpp allocates on top of the plan, and the
             # plan pins --fit off, so nothing re-fits it. 0 allocates nothing.
             or _moe_cache_requested(

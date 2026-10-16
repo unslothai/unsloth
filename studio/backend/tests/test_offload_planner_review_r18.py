@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""An unpriceable CPU drafter, draft CPU-MoE pass-through, and the proactive ROCm arch gate."""
+"""An unpriceable CPU drafter, draft CPU-MoE pass-through, the proactive ROCm arch gate, and a
+projector device the seam cannot size."""
 
 from __future__ import annotations
 
@@ -204,3 +205,45 @@ def test_a_gate_that_leaves_other_devices_than_the_plan_revokes_it(tmp_path, mon
     assert "--tensor-split" not in cmd, cmd
     assert _flag(cmd, "--fit") == "on", cmd
     assert "-ot" not in cmd, cmd
+
+
+# --- a projector device of any value -----------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "env, extra_args",
+    [
+        ({}, ["-mmdev", "cpu"]),
+        ({}, ["--mmproj-device", "none"]),
+        ({}, ["--mmproj-device="]),
+        # -mmdev after --no-mmproj-offload sets mmproj_use_gpu back to true (arg.cpp handler).
+        ({}, ["--no-mmproj-offload", "-mmdev", "CUDA0"]),
+        ({"MTMD_BACKEND_DEVICE": "cpu"}, None),
+        ({"MTMD_BACKEND_DEVICE": "none"}, None),
+        ({"MTMD_BACKEND_DEVICE": ""}, None),
+    ],
+    ids = [
+        "mmdev_cpu",
+        "mmproj_none",
+        "mmproj_empty",
+        "offload_then_card",
+        "env_cpu",
+        "env_none",
+        "env_empty",
+    ],
+)
+def test_a_projector_device_of_any_value_declines(env, extra_args):
+    """_resolved_mmproj_offload reads only --[no-]mmproj-offload, so a cpu/none projector is
+    still charged to VRAM and Rung 0 may credit moving it off a card it never occupied."""
+    from core.inference.llama_cpp import LlamaCppBackend
+    from test_offload_planner_seam import _inputs, _Stub
+
+    full_env = {"UNSLOTH_SMART_OFFLOAD": "1", **env}
+    assert LlamaCppBackend._planner_may_run(extra_args, full_env) is False
+    assert _Stub()._planned_tensor_spill(_inputs(), extra_args = extra_args, env = full_env) is None
+
+
+def test_no_projector_device_still_plans():
+    from core.inference.llama_cpp import LlamaCppBackend
+    assert LlamaCppBackend._planner_may_run(["--no-mmproj-offload"], {"UNSLOTH_SMART_OFFLOAD": "1"})
+    assert LlamaCppBackend._planner_may_run(None, {"UNSLOTH_SMART_OFFLOAD": "1"})

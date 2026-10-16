@@ -367,12 +367,12 @@ def test_pass_through_placement_the_plan_cannot_price_declines(env, extra_args):
 @pytest.mark.parametrize(
     "env, extra_args",
     [
-        ({}, ["--mmproj-device", "none"]),
-        ({}, ["-mmdev", "cpu"]),
+        # A projector device of any value declines (test_offload_planner_review_r18): the seam
+        # cannot size a cpu/none projector it would otherwise charge to VRAM.
         ({}, ["--moe-cache-mib", "0"]),
         ({"LLAMA_ARG_MOE_CACHE_MIB": "0"}, None),
     ],
-    ids = ["mmproj_none", "mmproj_cpu", "moe_cache_zero", "moe_cache_env_zero"],
+    ids = ["moe_cache_zero", "moe_cache_env_zero"],
 )
 def test_placement_that_keeps_nothing_on_a_card_still_plans(env, extra_args):
     from core.inference.llama_cpp import LlamaCppBackend
