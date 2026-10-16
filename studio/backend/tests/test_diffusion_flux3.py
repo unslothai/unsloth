@@ -1475,7 +1475,15 @@ def test_the_dense_cache_probe_sees_only_the_flux3_transformer_folder(tmp_path, 
     monkeypatch.setattr(d, "hub_cache_dir", lambda: str(tmp_path / "cold"))
     seen = []
 
-    def _needed(self, fam, kwargs, *, companion_files = None, transformer_files = None, **_):
+    def _needed(
+        self,
+        fam,
+        kwargs,
+        *,
+        companion_files = None,
+        transformer_files = None,
+        **_,
+    ):
         seen.append(tuple(transformer_files or ()))
         return False
 
@@ -1506,7 +1514,10 @@ def test_the_flux3_single_file_transformer_config_comes_from_the_staged_base():
 
     src = inspect.getsource(d.DiffusionBackend)
     assert '"config": (_base_local_dir or fetch_base)\n' in src
-    assert "if is_flux3_family(fam)\n" in src.split('"config": (_base_local_dir or fetch_base)', 1)[1][:200]
+    assert (
+        "if is_flux3_family(fam)\n"
+        in src.split('"config": (_base_local_dir or fetch_base)', 1)[1][:200]
+    )
 
 
 def test_the_download_plan_reports_a_flux3_pick_of_the_other_variant(tmp_path, monkeypatch):
