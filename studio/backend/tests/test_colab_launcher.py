@@ -536,3 +536,17 @@ def test_stop_during_the_ready_transition_still_stops_the_vm(monkeypatch):
     cl._run_job(job)
     stopper[0].join(10)
     assert "stop" in fake.kinds() and cl.list_sessions() == []
+
+
+def test_a_fresh_uv_is_called_by_path_until_the_terminal_picks_it_up():
+    # astral's installer writes ~/.local/bin, which the terminal that ran it may not have on PATH.
+    assert cl.setup_commands("missing_cli", has_uv = False) == [
+        "curl -LsSf https://astral.sh/uv/install.sh | sh",
+        "~/.local/bin/uv tool install google-colab-cli",
+        "~/.local/bin/colab --auth oauth2 sessions",
+    ]
+    assert cl.setup_commands("missing_cli", has_uv = True) == [
+        "uv tool install google-colab-cli",
+        "colab --auth oauth2 sessions",
+    ]
+    assert cl.setup_commands("signed_out", has_uv = False) == ["colab --auth oauth2 sessions"]

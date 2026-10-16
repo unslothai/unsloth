@@ -101,7 +101,7 @@ function SetupCommands({
           <HugeiconsIcon icon={Copy01Icon} className="size-3.5" />
         </Button>
       </div>
-      {commands.some((c) => c.startsWith("colab --auth")) ? (
+      {commands.some((c) => c.includes("colab --auth")) ? (
         <p className="text-ui-11 leading-snug text-muted-foreground">
           {t("settings.apiKeys.linkedInstances.colab.signInNote")}
         </p>

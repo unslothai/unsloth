@@ -240,10 +240,10 @@ def run_shell(
     try:
         proc = subprocess.Popen(
             runner.argv(script),
-            stdin=subprocess.PIPE if stdin is not None else subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            env={**os.environ, "PYTHONUNBUFFERED": "1", "NO_COLOR": "1", "TERM": "dumb"},
+            stdin = subprocess.PIPE if stdin is not None else subprocess.DEVNULL,
+            stdout = subprocess.PIPE,
+            stderr = subprocess.STDOUT,
+            env = {**os.environ, "PYTHONUNBUFFERED": "1", "NO_COLOR": "1", "TERM": "dumb"},
             **kwargs,
         )
     except OSError as exc:
@@ -256,7 +256,7 @@ def run_shell(
             killed[reason] = True
             _terminate(proc)
 
-    timer = threading.Timer(timeout, _kill, args=("timeout",))
+    timer = threading.Timer(timeout, _kill, args = ("timeout",))
     timer.daemon = True
     timer.start()
     watcher = None
@@ -268,7 +268,7 @@ def run_shell(
                     _kill("cancel")
                     return
 
-        watcher = threading.Thread(target=_watch, daemon=True)
+        watcher = threading.Thread(target = _watch, daemon = True)
         watcher.start()
     if stdin is not None:
         try:
@@ -276,10 +276,10 @@ def run_shell(
             proc.stdin.close()
         except OSError:
             pass
-    tail: deque[str] = deque(maxlen=400)
+    tail: deque[str] = deque(maxlen = 400)
     try:
         for raw in proc.stdout:
-            line = raw.decode("utf-8", errors="replace").replace("\x00", "").rstrip("\r\n")
+            line = raw.decode("utf-8", errors = "replace").replace("\x00", "").rstrip("\r\n")
             line = line.split("\r")[-1]  # progress bars redraw with bare \r
             tail.append(line)
             if on_line:
@@ -296,11 +296,10 @@ def _terminate(proc: subprocess.Popen) -> None:
     try:
         if os.name != "nt":
             import signal
-
             os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
         else:
             proc.terminate()
-        proc.wait(timeout=15)
+        proc.wait(timeout = 15)
     except Exception:
         try:
             proc.kill()
@@ -318,9 +317,12 @@ def classify(text: str) -> Optional[str]:
 
 
 def setup_commands(state: str, *, has_uv: bool = True) -> list[str]:
+    # A fresh uv lands in ~/.local/bin, which the terminal that ran its installer may not have
+    # on PATH yet, so the commands after it name that directory.
+    bin_dir = "" if has_uv else "~/.local/bin/"
     install = [] if has_uv else ["curl -LsSf https://astral.sh/uv/install.sh | sh"]
-    install.append("uv tool install google-colab-cli")
-    signin = ["colab --auth oauth2 sessions"]
+    install.append(f"{bin_dir}uv tool install google-colab-cli")
+    signin = [f"{bin_dir}colab --auth oauth2 sessions"]
     if state == "unsupported":
         # Typed into a Windows terminal, so the rest has to be sent into the new distro.
         return ["wsl --install -d Ubuntu-24.04"] + [
@@ -334,7 +336,7 @@ def setup_commands(state: str, *, has_uv: bool = True) -> list[str]:
             "'jupyter-kernel-client @ git+https://github.com/googlecolab/jupyter-kernel-client.git'"
         ]
     if state == "signed_out":
-        return signin
+        return ["colab --auth oauth2 sessions"]
     return []
 
 
@@ -354,17 +356,17 @@ def capability(runner: Optional[Runner] = None) -> dict:
             "state": state,
             "ready": False,
             "message": "The Colab CLI runs on Linux and macOS. On Windows it needs WSL, which was not found.",
-            "setup": setup_commands(state, has_uv=False),
+            "setup": setup_commands(state, has_uv = False),
         }
     try:
-        result = run_shell(runner, PROBE_SCRIPT, timeout=PROBE_TIMEOUT)
+        result = run_shell(runner, PROBE_SCRIPT, timeout = PROBE_TIMEOUT)
     except LaunchError as exc:
         return {
             **base,
             "state": "unsupported",
             "ready": False,
             "message": str(exc),
-            "setup": setup_commands("unsupported", has_uv=False),
+            "setup": setup_commands("unsupported", has_uv = False),
         }
     facts: dict[str, str] = {}
     other: list[str] = []
@@ -404,7 +406,7 @@ def capability(runner: Optional[Runner] = None) -> dict:
         "state": state,
         "ready": state == "ready",
         "message": message,
-        "setup": setup_commands(state, has_uv=has_uv),
+        "setup": setup_commands(state, has_uv = has_uv),
     }
 
 
@@ -465,14 +467,14 @@ class LaunchJob:
     stage: str = "allocating"
     state: str = "running"  # running | ready | failed | cancelled
     error: Optional[str] = None
-    setup: list[str] = field(default_factory=list)
+    setup: list[str] = field(default_factory = list)
     instance_id: Optional[str] = None
-    started_at: str = field(default_factory=_now)
+    started_at: str = field(default_factory = _now)
     finished_at: Optional[str] = None
-    log: deque = field(default_factory=lambda: deque(maxlen=LOG_LINES))
-    cancel: threading.Event = field(default_factory=threading.Event)
-    _log_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
-    _state_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    log: deque = field(default_factory = lambda: deque(maxlen = LOG_LINES))
+    cancel: threading.Event = field(default_factory = threading.Event)
+    _log_lock: threading.Lock = field(default_factory = threading.Lock, repr = False)
+    _state_lock: threading.Lock = field(default_factory = threading.Lock, repr = False)
 
     def request_cancel(self) -> bool:
         """Cancel a running launch; False once it has finished (ready, failed or cancelled)."""
@@ -538,9 +540,9 @@ def start_launch(gpu: str, name: str) -> dict:
     with _lock:
         if _job and _job.state == "running":
             raise ValueError("A Colab launch is already in progress.")
-        _job = LaunchJob(id=uuid.uuid4().hex, name=name, gpu=gpu, session=session)
+        _job = LaunchJob(id = uuid.uuid4().hex, name = name, gpu = gpu, session = session)
         job = _job
-    threading.Thread(target=_run_job, args=(job,), name="colab-launch", daemon=True).start()
+    threading.Thread(target = _run_job, args = (job,), name = "colab-launch", daemon = True).start()
     return job.public()
 
 
@@ -569,7 +571,7 @@ def _step(
             job.add(line)
 
     result = run_shell(
-        runner, script, stdin=stdin, timeout=timeout, on_line=on_line, cancel=job.cancel
+        runner, script, stdin = stdin, timeout = timeout, on_line = on_line, cancel = job.cancel
     )
     if job.cancel.is_set():
         raise Cancelled()
@@ -590,7 +592,7 @@ def _run_job(job: LaunchJob) -> None:
         auth = cap["auth"]
         # Recorded before `colab new` returns: a timed-out allocation still bills and must be stoppable.
         linked_instances_db.record_colab_session(
-            job.session, job.name, job.gpu, auth=auth, runner=runner.kind, distro=runner.distro
+            job.session, job.name, job.gpu, auth = auth, runner = runner.kind, distro = runner.distro
         )
         allocated = True
         job.add(f"Allocating a Colab {job.gpu} VM ({job.session})...")
@@ -598,7 +600,7 @@ def _run_job(job: LaunchJob) -> None:
             job,
             runner,
             _colab(job.session, auth, "new", "-s", job.session, "--gpu", job.gpu),
-            timeout=ALLOCATE_TIMEOUT,
+            timeout = ALLOCATE_TIMEOUT,
         )
         if result.returncode != 0:
             kind = classify(result.output)
@@ -613,7 +615,7 @@ def _run_job(job: LaunchJob) -> None:
             raise LaunchError(f"colab new failed: {_last_line(result.output)}")
 
         job.stage = "installing"
-        install = INSTALL_SCRIPT.format(repo=REPO_URL, branch=REPO_BRANCH)
+        install = INSTALL_SCRIPT.format(repo = REPO_URL, branch = REPO_BRANCH)
         result = _step(
             job,
             runner,
@@ -627,8 +629,8 @@ def _run_job(job: LaunchJob) -> None:
                 "--timeout",
                 str(INSTALL_CELL_TIMEOUT),
             ),
-            stdin=install,
-            timeout=INSTALL_CELL_TIMEOUT + 300,
+            stdin = install,
+            timeout = INSTALL_CELL_TIMEOUT + 300,
         )
         # `colab exec` exits 0 even when the cell raised; only the marker counts.
         if INSTALL_OK not in result.output:
@@ -637,7 +639,7 @@ def _run_job(job: LaunchJob) -> None:
             )
 
         job.stage = "starting"
-        start = START_SCRIPT.format(launcher=LAUNCHER_SCRIPT)
+        start = START_SCRIPT.format(launcher = LAUNCHER_SCRIPT)
         script = _colab(
             job.session,
             auth,
@@ -649,7 +651,7 @@ def _run_job(job: LaunchJob) -> None:
             str(START_CELL_TIMEOUT),
         )
         started = True
-        result = _step(job, runner, script, stdin=start, timeout=START_CELL_TIMEOUT + 120)
+        result = _step(job, runner, script, stdin = start, timeout = START_CELL_TIMEOUT + 120)
         link = parse_link(result.output)
 
         job.stage = "linking"
@@ -679,7 +681,7 @@ def _run_job(job: LaunchJob) -> None:
         if allocated:
             job.add(f"Stopping {job.session} so it does not keep billing...")
             try:
-                _stop_session(job.session, drop_link=True)
+                _stop_session(job.session, drop_link = True)
                 job.add("Stopped.")
             except Exception as exc:
                 job.add(
@@ -692,7 +694,7 @@ def _forget_history(runner: Runner, session: str) -> None:
     # The start cell prints the link with its API key, and the CLI keeps a local history of it.
     # Run apart from the start step, so a timeout or cancel that kills that step still gets here.
     try:
-        run_shell(runner, f"rm -f {HISTORY_DIR}/{session}.jsonl", timeout=PROBE_TIMEOUT)
+        run_shell(runner, f"rm -f {HISTORY_DIR}/{session}.jsonl", timeout = PROBE_TIMEOUT)
     except Exception as exc:
         logger.warning(
             "Could not remove the Colab CLI history of %s: %s", session, _clean(str(exc))
@@ -712,10 +714,10 @@ def _stop_session(session: str, *, drop_link: bool) -> None:
     if runner is None:
         raise LaunchError("The Colab CLI is not reachable from this machine.")
     auth = record.get("auth") if record else None
-    result = run_shell(runner, _colab(session, auth, "stop", "-s", session), timeout=STOP_TIMEOUT)
+    result = run_shell(runner, _colab(session, auth, "stop", "-s", session), timeout = STOP_TIMEOUT)
     if result.timed_out or (result.returncode != 0 and "not found" not in result.output.lower()):
         status = run_shell(
-            runner, _colab(session, auth, "status", "-s", session), timeout=PROBE_TIMEOUT
+            runner, _colab(session, auth, "status", "-s", session), timeout = PROBE_TIMEOUT
         )
         if status.timed_out or session_alive(status.output, session):
             raise LaunchError(f"colab stop failed: {_last_line(result.output)}")
@@ -723,7 +725,6 @@ def _stop_session(session: str, *, drop_link: bool) -> None:
         linked_instances_db.delete_instance(record["instance_id"])
         try:
             from core.inference import linked_instances as linked
-
             linked.forget(record["instance_id"])
         except Exception:
             pass
@@ -743,7 +744,7 @@ def stop_session(session: str) -> None:
     # A running launch's own teardown stops the VM; one that just turned ready is stopped here.
     if job and job.session == session and job.request_cancel():
         return
-    _stop_session(session, drop_link=True)
+    _stop_session(session, drop_link = True)
 
 
 @atexit.register
