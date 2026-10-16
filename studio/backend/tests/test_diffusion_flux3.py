@@ -1213,12 +1213,16 @@ def test_the_base_access_probe_reads_the_modular_manifest(tmp_path, monkeypatch)
 
     class _Api:
         def model_info(self, *a, **k):
-            raise GatedRepoError("gated", response = SimpleNamespace(status_code = 401, headers = {}, request = None))
+            raise GatedRepoError(
+                "gated", response = SimpleNamespace(status_code = 401, headers = {}, request = None)
+            )
 
     monkeypatch.setattr(huggingface_hub, "HfApi", _Api)
     assert d._base_manifest_name(_family(FLUX3_KLEIN_FAMILY_NAME)) == "modular_model_index.json"
     assert d._base_manifest_name(_family("flux.2-klein")) == "model_index.json"
-    d._assert_base_repo_accessible(DISTILLED, None, d._base_manifest_name(_family(FLUX3_KLEIN_FAMILY_NAME)))
+    d._assert_base_repo_accessible(
+        DISTILLED, None, d._base_manifest_name(_family(FLUX3_KLEIN_FAMILY_NAME))
+    )
     # Every call site in the loader names the manifest instead of the conventional default.
     import ast
     import inspect
@@ -1253,7 +1257,9 @@ def test_restoring_skipped_shards_fetches_the_modular_manifest(monkeypatch, tmp_
         manifest = "modular_model_index.json",
     )
     assert out == str(tmp_path)
-    assert seen["files"][-1] == "modular_model_index.json" and "model_index.json" not in seen["files"]
+    assert (
+        seen["files"][-1] == "modular_model_index.json" and "model_index.json" not in seen["files"]
+    )
 
 
 def test_the_prefetch_hands_back_the_snapshot_of_a_modular_manifest(monkeypatch, tmp_path):
