@@ -36,11 +36,35 @@ def _fam(name):
     [
         # every Qwen2.5-VL-7B release shares Qwen-Image's file
         ("qwen-image-edit", "Qwen/Qwen-Image-Edit", "text_encoder", "unsloth/Qwen-Image-FP8", None),
-        ("qwen-image-edit", "Qwen/Qwen-Image-Edit-2509", "text_encoder", "unsloth/Qwen-Image-FP8", None),
-        ("qwen-image-edit", "Qwen/Qwen-Image-Edit-2511", "text_encoder", "unsloth/Qwen-Image-FP8", None),
-        ("qwen-image-layered", "Qwen/Qwen-Image-Layered", "text_encoder", "unsloth/Qwen-Image-FP8", None),
+        (
+            "qwen-image-edit",
+            "Qwen/Qwen-Image-Edit-2509",
+            "text_encoder",
+            "unsloth/Qwen-Image-FP8",
+            None,
+        ),
+        (
+            "qwen-image-edit",
+            "Qwen/Qwen-Image-Edit-2511",
+            "text_encoder",
+            "unsloth/Qwen-Image-FP8",
+            None,
+        ),
+        (
+            "qwen-image-layered",
+            "Qwen/Qwen-Image-Layered",
+            "text_encoder",
+            "unsloth/Qwen-Image-FP8",
+            None,
+        ),
         # every FLUX.1 release shares schnell's T5
-        ("flux.1-kontext", "black-forest-labs/FLUX.1-Kontext-dev", "text_encoder_2", "unsloth/FLUX.1-schnell-FP8", None),
+        (
+            "flux.1-kontext",
+            "black-forest-labs/FLUX.1-Kontext-dev",
+            "text_encoder_2",
+            "unsloth/FLUX.1-schnell-FP8",
+            None,
+        ),
         # HiDream's text_encoder_3 is the same T5, under another slot, for every distillation
         (
             "hidream-i1",
@@ -88,10 +112,15 @@ def _fam(name):
         ),
     ],
 )
-def test_identical_encoders_resolve_the_shared_file_for_their_base(name, base, component, repo, filename):
+def test_identical_encoders_resolve_the_shared_file_for_their_base(
+    name, base, component, repo, filename
+):
     fam = _fam(name)
     sources = tpq.te_prequant_sources_for_base(
-        fam, base, te_quant_mode = "int8" if filename and "INT8" in filename else "fp8", target = CUDA_BF16
+        fam,
+        base,
+        te_quant_mode = "int8" if filename and "INT8" in filename else "fp8",
+        target = CUDA_BF16,
     )
     assert component in sources, sources
     assert sources[component].location == repo
@@ -136,7 +165,10 @@ def test_klein_9b_int8_falls_back_to_its_own_fp8_file_never_the_4b_one():
 def test_a_different_encoder_never_takes_the_hosted_file(name, base):
     fam = _fam(name)
     for scheme in ("fp8", "int8"):
-        assert tpq.te_prequant_sources_for_base(fam, base, te_quant_mode = scheme, target = CUDA_BF16) == {}
+        assert (
+            tpq.te_prequant_sources_for_base(fam, base, te_quant_mode = scheme, target = CUDA_BF16)
+            == {}
+        )
 
 
 def test_equivalence_groups_hold_the_byte_identical_encoders():
@@ -204,7 +236,9 @@ def test_hosted_component_name_is_what_the_checkpoint_is_validated_against():
     }
     assert tpq._validate_checkpoint(ckpt, "fp8", src.component, "HiDream-ai/HiDream-I1-Full", None)
     # without the row's component the same file is refused for text_encoder_3
-    assert not tpq._validate_checkpoint(ckpt, "fp8", "text_encoder_3", "HiDream-ai/HiDream-I1-Full", None)
+    assert not tpq._validate_checkpoint(
+        ckpt, "fp8", "text_encoder_3", "HiDream-ai/HiDream-I1-Full", None
+    )
     # and the T5 row never leaks into a slot it does not name
     assert tpq.resolve_te_prequant_source(_fam("hidream-i1"), "text_encoder_2", "fp8") is None
     # FLUX.1's own row is unchanged (no hosted-component override)
@@ -226,7 +260,6 @@ def test_a_four_element_row_is_read_everywhere_a_row_is_unpacked():
 
 
 # ── loading: a text-only Qwen3 int8 ConvRot file (klein) ──────────────────────
-
 
 
 def _qwen3_config(tied):
@@ -258,7 +291,11 @@ def _int8_file(tmp_path, encoder, config):
     builder = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(builder)
     blob = torch.tensor(
-        list(json.dumps({"format": "int8_tensorwise", "convrot": True, "convrot_groupsize": GROUP}).encode()),
+        list(
+            json.dumps(
+                {"format": "int8_tensorwise", "convrot": True, "convrot_groupsize": GROUP}
+            ).encode()
+        ),
         dtype = torch.uint8,
     )
     state = {}
@@ -305,7 +342,9 @@ def test_text_only_qwen3_int8_convrot_file_loads_and_tracks_the_dense_hidden_sta
     path = _int8_file(tmp_path, dense, config)
     monkeypatch.setattr(ps, "_torchao_helpers", lambda: None)
     monkeypatch.setenv(ALLOW_LOCAL_PREQUANT_PATH_ENV, str(tmp_path))
-    monkeypatch.setattr(transformers.AutoConfig, "from_pretrained", lambda *_a, **_k: _qwen3_config(tied))
+    monkeypatch.setattr(
+        transformers.AutoConfig, "from_pretrained", lambda *_a, **_k: _qwen3_config(tied)
+    )
     failures: list = []
     encoder = tpq.load_prequant_text_encoder(
         "black-forest-labs/FLUX.2-klein-4B",
@@ -347,32 +386,55 @@ def test_t5_int8_convrot_file_loads_with_its_tied_embedding_and_tracks_dense(tmp
     from transformers import T5Config, T5EncoderModel
 
     def config():
-        c = T5Config(d_model = 256, d_ff = 512, d_kv = 64, num_heads = 4, num_layers = 2, vocab_size = 64,
-                     feed_forward_proj = "gated-gelu")
+        c = T5Config(
+            d_model = 256,
+            d_ff = 512,
+            d_kv = 64,
+            num_heads = 4,
+            num_layers = 2,
+            vocab_size = 64,
+            feed_forward_proj = "gated-gelu",
+        )
         c._attn_implementation = "eager"
         return c
 
     torch.manual_seed(1)
     dense = T5EncoderModel(config()).eval()
     blob = torch.tensor(
-        list(json.dumps({"format": "int8_tensorwise", "convrot": True, "convrot_groupsize": GROUP}).encode()),
+        list(
+            json.dumps(
+                {"format": "int8_tensorwise", "convrot": True, "convrot_groupsize": GROUP}
+            ).encode()
+        ),
         dtype = torch.uint8,
     )
-    linears = {n for n, m in dense.named_modules() if isinstance(m, torch.nn.Linear) and tpq.TE_INT8_CONVROT_LINEAR.search(n)}
+    linears = {
+        n
+        for n, m in dense.named_modules()
+        if isinstance(m, torch.nn.Linear) and tpq.TE_INT8_CONVROT_LINEAR.search(n)
+    }
     assert len(linears) == 2 * 7  # q, k, v, o, wi_0, wi_1, wo per block
     state = {}
     for k, v in dense.state_dict().items():
         prefix = k[:-7] if k.endswith(".weight") else None
         if prefix in linears:
             q, s = tpq.quantize_int8_convrot_weight(v, GROUP)
-            state[k], state[prefix + ".weight_scale"], state[prefix + ".comfy_quant"] = q, s, blob.clone()
+            state[k], state[prefix + ".weight_scale"], state[prefix + ".comfy_quant"] = (
+                q,
+                s,
+                blob.clone(),
+            )
         else:
             state[k] = v.detach().clone()
     meta = {
         ps.UNSLOTH_FORMAT_KEY: tpq.TE_PREQUANT_FORMAT_INT8_CONVROT,
         ps.UNSLOTH_METADATA_KEY: json.dumps(
-            {"scheme": "int8", "component": "text_encoder_2", "base_model_id": "black-forest-labs/FLUX.1-schnell",
-             "te_class": "T5EncoderModel"}
+            {
+                "scheme": "int8",
+                "component": "text_encoder_2",
+                "base_model_id": "black-forest-labs/FLUX.1-schnell",
+                "te_class": "T5EncoderModel",
+            }
         ),
         "tensor_names": json.dumps(sorted(state)),
         **{n: json.dumps({"_type": "Tensor"}) for n in state},

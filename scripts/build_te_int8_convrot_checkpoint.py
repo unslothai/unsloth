@@ -103,8 +103,12 @@ def main(argv = None) -> int:
         help = "ideogram4: build the encoder with Studio's Ideogram 4 loader (vendor fp8 + weight_scale "
         "dequantized to a bf16 Qwen3VLModel), then quantize it like --load transformers",
     )
-    p.add_argument("--te-class", default = None, help = "transformers class to load (--load transformers)")
-    p.add_argument("--base-model-id", default = None, help = "base_model_id to record (default: --base)")
+    p.add_argument(
+        "--te-class", default = None, help = "transformers class to load (--load transformers)"
+    )
+    p.add_argument(
+        "--base-model-id", default = None, help = "base_model_id to record (default: --base)"
+    )
     args = p.parse_args(argv)
     if args.load in ("transformers", "ideogram4"):
         return _main_transformers(args)
@@ -251,7 +255,9 @@ def _main_transformers(args) -> int:
             tensors[prefix + ".weight_scale"] = scale.cpu().contiguous()
             tensors[prefix + ".comfy_quant"] = blob.clone()
         else:
-            tensors[name] = tensor.detach().to("cpu", torch.bfloat16 if tensor.is_floating_point() else tensor.dtype)
+            tensors[name] = tensor.detach().to(
+                "cpu", torch.bfloat16 if tensor.is_floating_point() else tensor.dtype
+            )
             tensors[name] = tensors[name].contiguous().clone()
     if not linears:
         raise SystemExit(f"no Linear in {te_class} matched TE_INT8_CONVROT_LINEAR")
@@ -263,7 +269,10 @@ def _main_transformers(args) -> int:
         "te_class": te_class,
         "torch_dtype": "bfloat16",
         "quant": dict(
-            quant, weight_only = True, scale = "per_output_channel_absmax_over_127", linears = len(linears)
+            quant,
+            weight_only = True,
+            scale = "per_output_channel_absmax_over_127",
+            linears = len(linears),
         ),
         "lm_head": "dropped",
         "torch_version": torch.__version__,

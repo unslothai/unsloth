@@ -85,7 +85,10 @@ def test_none_still_pins_the_bf16_encoder(name, value):
     # Paired with the default: the same family resolves an unset request to a hosted scheme.
     assert resolve_te_quant_request(None, fam.te_quant_auto)[0] is not None
     assert resolve_te_quant_request(value, fam.te_quant_auto) == (None, False)
-    assert tpq.te_prequant_sources_for_base(fam, fam.base_repo, te_quant_mode = None, target = CUDA_BF16) == {}
+    assert (
+        tpq.te_prequant_sources_for_base(fam, fam.base_repo, te_quant_mode = None, target = CUDA_BF16)
+        == {}
+    )
 
 
 def test_every_image_family_is_either_defaulted_or_measured_and_kept_bf16():
@@ -109,7 +112,9 @@ def test_every_image_family_is_either_defaulted_or_measured_and_kept_bf16():
 def test_every_release_of_the_same_encoder_gets_the_default_file(name, base):
     fam = _fam(name)
     scheme, component, hosted, _fp8 = EXPECTED[name]
-    source = tpq.te_prequant_sources_for_base(fam, base, te_quant_mode = scheme, target = CUDA_BF16)[component]
+    source = tpq.te_prequant_sources_for_base(fam, base, te_quant_mode = scheme, target = CUDA_BF16)[
+        component
+    ]
     assert (source.location, source.filename) == hosted
 
 
@@ -133,7 +138,11 @@ def test_auto_int8_with_the_file_missing_on_mps_loads_dense_without_an_error(nam
     fam = _fam(name)
     with tpq.auto_te_request(True):
         out = tpq.te_prequant_pipe_kwargs(
-            fam, fam.base_repo, te_quant_mode = fam.te_quant_auto, target = MPS_BF16, dtype = None,
+            fam,
+            fam.base_repo,
+            te_quant_mode = fam.te_quant_auto,
+            target = MPS_BF16,
+            dtype = None,
             dense_source = "/somewhere/staged",
         )
     assert not any(k.startswith("text_encoder") for k in out)
@@ -143,7 +152,9 @@ def test_explicit_int8_with_the_file_missing_on_mps_is_still_refused(monkeypatch
     _missing_file(monkeypatch)
     fam = _fam("qwen-image")
     with tpq.auto_te_request(False), pytest.raises(RuntimeError, match = "could not be loaded"):
-        tpq.te_prequant_pipe_kwargs(fam, fam.base_repo, te_quant_mode = "int8", target = MPS_BF16, dtype = None)
+        tpq.te_prequant_pipe_kwargs(
+            fam, fam.base_repo, te_quant_mode = "int8", target = MPS_BF16, dtype = None
+        )
 
 
 def test_auto_with_the_dense_shards_left_out_fetches_them_instead_of_failing(monkeypatch, tmp_path):
@@ -156,7 +167,9 @@ def test_auto_with_the_dense_shards_left_out_fetches_them_instead_of_failing(mon
     import huggingface_hub
 
     monkeypatch.setattr(
-        huggingface_hub, "snapshot_download", lambda repo, **k: fetched.append((repo, k["allow_patterns"]))
+        huggingface_hub,
+        "snapshot_download",
+        lambda repo, **k: fetched.append((repo, k["allow_patterns"])),
     )
     fam = _fam("krea-2")
     snap = tmp_path / "models--krea--Krea-2-Turbo" / "snapshots" / "abc"
@@ -164,13 +177,23 @@ def test_auto_with_the_dense_shards_left_out_fetches_them_instead_of_failing(mon
     snap = str(snap)
     with tpq.auto_te_request(True):
         out = tpq.te_prequant_pipe_kwargs(
-            fam, fam.base_repo, te_quant_mode = "int8", target = CUDA_BF16, dtype = None, dense_source = snap
+            fam,
+            fam.base_repo,
+            te_quant_mode = "int8",
+            target = CUDA_BF16,
+            dtype = None,
+            dense_source = snap,
         )
     assert out == {} and fetched == [("krea/Krea-2-Turbo", ["text_encoder/*"])]
     # offline: nothing to fall back to, so the load explains itself as before
     with tpq.auto_te_request(True), pytest.raises(RuntimeError):
         tpq.te_prequant_pipe_kwargs(
-            fam, fam.base_repo, te_quant_mode = "int8", target = CUDA_BF16, dtype = None, dense_source = snap,
+            fam,
+            fam.base_repo,
+            te_quant_mode = "int8",
+            target = CUDA_BF16,
+            dtype = None,
+            dense_source = snap,
             local_files_only = True,
         )
 
@@ -184,7 +207,12 @@ def test_auto_on_a_device_that_cannot_run_the_scheme_keeps_the_dense_encoder(dev
     for name in sorted(EXPECTED):
         fam = _fam(name)
         # nothing pre-cast is planned or loaded ...
-        assert tpq.te_prequant_sources_for_base(fam, fam.base_repo, te_quant_mode = fam.te_quant_auto, target = target) == {}
+        assert (
+            tpq.te_prequant_sources_for_base(
+                fam, fam.base_repo, te_quant_mode = fam.te_quant_auto, target = target
+            )
+            == {}
+        )
         # ... and the in-place pass reports it unsupported instead of raising, leaving the encoder dense
         pipe = types.SimpleNamespace(text_encoder = torch.nn.Linear(4, 4))
         out = prec.quantize_text_encoders(pipe, target, mode = fam.te_quant_auto, family = name)
@@ -210,7 +238,9 @@ def test_the_auto_flag_follows_the_raw_request():
 # ── explicit int8 with the file missing: never worse than before the file existed ─
 
 
-@pytest.mark.parametrize("name", ["qwen-image", "qwen-image-edit", "qwen-image-layered", "flux.2-dev"])
+@pytest.mark.parametrize(
+    "name", ["qwen-image", "qwen-image-edit", "qwen-image-layered", "flux.2-dev"]
+)
 def test_explicit_int8_without_the_file_still_takes_the_torchao_int8_cast(name, monkeypatch):
     import core.inference.diffusion_precision as prec
 
@@ -245,13 +275,15 @@ def test_the_automatic_int8_default_never_plans_the_fp8_file_behind_it(name):
     assert auto and mode == "int8"
     component = EXPECTED[name][1]
     # outside a load (download plan, memory budget): the resolved mode itself carries the automatic pick
-    source = tpq.te_prequant_sources_for_base(fam, fam.base_repo, te_quant_mode = mode, target = CUDA_BF16)[component]
+    source = tpq.te_prequant_sources_for_base(
+        fam, fam.base_repo, te_quant_mode = mode, target = CUDA_BF16
+    )[component]
     assert "INT8" in source.filename and source.fallback_filenames == ()
     # inside a load: the raw request does
     with tpq.auto_te_request(True):
-        source = tpq.te_prequant_sources_for_base(fam, fam.base_repo, te_quant_mode = "int8", target = CUDA_BF16)[
-            component
-        ]
+        source = tpq.te_prequant_sources_for_base(
+            fam, fam.base_repo, te_quant_mode = "int8", target = CUDA_BF16
+        )[component]
     assert source.fallback_filenames == ()
 
 
@@ -261,8 +293,14 @@ def test_the_automatic_int8_default_without_its_file_keeps_the_dense_encoder(nam
 
     monkeypatch.setattr(prec, "te_quant_supported", lambda *a, **k: True)
     monkeypatch.setattr(prec, "torchao_quantize_importable", lambda: True)
-    monkeypatch.setattr(prec, "_cast_fp8", lambda *a, **k: pytest.fail("fp8 cast of an automatic int8 default"))
-    monkeypatch.setattr(prec, "_cast_int8_selective", lambda *a, **k: pytest.fail("torchao cast of an automatic default"))
+    monkeypatch.setattr(
+        prec, "_cast_fp8", lambda *a, **k: pytest.fail("fp8 cast of an automatic int8 default")
+    )
+    monkeypatch.setattr(
+        prec,
+        "_cast_int8_selective",
+        lambda *a, **k: pytest.fail("torchao cast of an automatic default"),
+    )
     mode, _ = resolve_te_quant_request(None, _fam(name).te_quant_auto)
     pipe = types.SimpleNamespace(text_encoder = torch.nn.Linear(4, 4))
     out = prec.quantize_text_encoders(pipe, CUDA_BF16, mode = mode, family = name)
@@ -285,14 +323,24 @@ def test_an_automatic_int8_file_that_will_not_build_is_not_retried_as_fp8(monkey
     fam = _fam("krea-2")
     with tpq.auto_te_request(True):
         tpq.te_prequant_pipe_kwargs(
-            fam, fam.base_repo, te_quant_mode = "int8", target = CUDA_BF16, dtype = None, dense_source = "/d"
+            fam,
+            fam.base_repo,
+            te_quant_mode = "int8",
+            target = CUDA_BF16,
+            dtype = None,
+            dense_source = "/d",
         )
     assert calls == ["Krea-2-Turbo-text_encoder-INT8-ConvRot.safetensors"]
     calls.clear()
     # explicit int8 keeps the int8 -> fp8 chain
     with tpq.auto_te_request(False):
         tpq.te_prequant_pipe_kwargs(
-            fam, fam.base_repo, te_quant_mode = "int8", target = CUDA_BF16, dtype = None, dense_source = "/d"
+            fam,
+            fam.base_repo,
+            te_quant_mode = "int8",
+            target = CUDA_BF16,
+            dtype = None,
+            dense_source = "/d",
         )
     assert calls == [
         "Krea-2-Turbo-text_encoder-INT8-ConvRot.safetensors",
@@ -303,7 +351,15 @@ def test_an_automatic_int8_file_that_will_not_build_is_not_retried_as_fp8(monkey
 # ---- memory budget: an automatic default budgets dense until its hosted file is confirmed ------------------------
 
 
-def _budget(monkeypatch, mode, *, held = False, listed = (), offline = False, hub_raises = False):
+def _budget(
+    monkeypatch,
+    mode,
+    *,
+    held = False,
+    listed = (),
+    offline = False,
+    hub_raises = False,
+):
     from core.inference.diffusion_precision import AutoTeQuant  # noqa: F401
 
     fam = _fam("qwen-image")
@@ -313,7 +369,11 @@ def _budget(monkeypatch, mode, *, held = False, listed = (), offline = False, hu
     calls = []
 
     class _Api:
-        def model_info(self, repo, files_metadata = False):
+        def model_info(
+            self,
+            repo,
+            files_metadata = False,
+        ):
             calls.append(repo)
             if hub_raises:
                 raise OSError("Hub unreachable")
@@ -331,7 +391,6 @@ def _budget(monkeypatch, mode, *, held = False, listed = (), offline = False, hu
 
 def _auto_int8():
     from core.inference.diffusion_precision import AutoTeQuant
-
     return AutoTeQuant("int8")
 
 

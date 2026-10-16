@@ -2494,7 +2494,6 @@ def _scheduled_family_without_a_hosted_int8_file(monkeypatch):
     """A family whose int8 is the torchao keep-bf16 cast. Every image family with a schedule (qwen-image, its edit and
     layered releases, FLUX.2-dev) now hosts an int8 ConvRot file, which loads as plain tensors and needs no torchao."""
     import core.inference.diffusion_precision as precision
-
     monkeypatch.setitem(precision._TE_INT8_SKIP, "scheduled-family", (6, 6))
 
 

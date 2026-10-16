@@ -394,7 +394,12 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # The 9B pair carries stock Qwen3-8B, a different model, so it has its own files (int8 ConvRot in
         # diffusion_te_prequant.TE_INT8_CONVROT_VARIANT_FILES).
         te_prequant_variant_repos = (
-            ("black-forest-labs/FLUX.2-klein-9B", "fp8", "text_encoder", "unsloth/FLUX.2-klein-9B-FP8"),
+            (
+                "black-forest-labs/FLUX.2-klein-9B",
+                "fp8",
+                "text_encoder",
+                "unsloth/FLUX.2-klein-9B-FP8",
+            ),
         ),
         # No te_quant_auto: an unset request keeps the bf16 encoder. ComfyUI loads qwen_3_4b bf16 for the 4B pair and
         # qwen_3_8b_fp8mixed for the 9B pair; against the bf16 encoder (bf16 DiT) the hosted int8 ConvRot files score

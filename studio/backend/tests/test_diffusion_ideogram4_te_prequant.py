@@ -53,7 +53,9 @@ def _stub_components(monkeypatch, calls, built):
     )
     monkeypatch.setattr(ideogram, "load_krea2_tokenizer", lambda *a, **k: component("tokenizer"))
     monkeypatch.setattr(
-        ideogram, "load_ideogram4_transformer", lambda repo, subfolder, *a, **k: component(subfolder)
+        ideogram,
+        "load_ideogram4_transformer",
+        lambda repo, subfolder, *a, **k: component(subfolder),
     )
     diffusers = sys.modules["diffusers"]
 
@@ -62,14 +64,18 @@ def _stub_components(monkeypatch, calls, built):
         return _FakePipe()
 
     diffusers.Ideogram4Pipeline = pipeline
-    diffusers.AutoencoderKLFlux2 = types.SimpleNamespace(from_pretrained = lambda *a, **k: component("vae"))
+    diffusers.AutoencoderKLFlux2 = types.SimpleNamespace(
+        from_pretrained = lambda *a, **k: component("vae")
+    )
     diffusers.FlowMatchEulerDiscreteScheduler = types.SimpleNamespace(
         from_pretrained = lambda *a, **k: component("scheduler")
     )
 
 
 @pytest.mark.parametrize("precast", [True, False])
-def test_ideogram_branch_takes_precast_text_encoder_else_dense(fake_runtime, tmp_path, monkeypatch, precast):
+def test_ideogram_branch_takes_precast_text_encoder_else_dense(
+    fake_runtime, tmp_path, monkeypatch, precast
+):
     calls: list = []
     built: dict = {}
     asked: list = []
@@ -116,4 +122,9 @@ def test_ideogram_hosted_te_resolves_for_the_upstream_and_mirror_base(monkeypatc
         assert sources["text_encoder"].location == _HOSTED
         assert sources["text_encoder"].filename == "ideogram-4-text_encoder-FP8.safetensors"
     # Dense (none) never resolves a pre-cast source, so the dense shards stay in the plan.
-    assert tp.te_prequant_sources_for_base(fam, "unsloth/ideogram-4-fp8", te_quant_mode = None, target = object()) == {}
+    assert (
+        tp.te_prequant_sources_for_base(
+            fam, "unsloth/ideogram-4-fp8", te_quant_mode = None, target = object()
+        )
+        == {}
+    )
