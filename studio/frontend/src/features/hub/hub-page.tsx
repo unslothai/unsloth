@@ -898,11 +898,14 @@ export function ModelsPage() {
 
   const requestedSort: HfSortKey =
     isFeedMode && liveListChannel ? liveListChannel.sort : sortBy;
-  // ModelScope has no creation-date sort; its closest is last modified.
+  // ModelScope has neither a creation-date sort nor trending; its closest is last modified.
   const effectiveSort: HfSortKey =
-    hubSource === "modelscope" && requestedSort === "createdAt"
+    hubSource === "modelscope" &&
+    (requestedSort === "createdAt" || requestedSort === "fresh")
       ? "lastModified"
-      : requestedSort;
+      : isDatasetMode && requestedSort === "fresh"
+        ? "createdAt"
+        : requestedSort;
   const effectiveDirection: HfSortDirection = isFeedMode ? "desc" : direction;
   // The format dropdown always filters the visible list, including the feed's "Latest" list, so
   // the default (Recommended) hides unrunnable checkpoints and picking a format changes the rows.
