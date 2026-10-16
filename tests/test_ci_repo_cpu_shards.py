@@ -1,24 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Guards that the sharded `Repo tests (CPU)` job still runs every test it used to.
-
-`Repo tests (CPU)` was one job discovering all of `tests/`. It is now three shards on three
-runners, and the whole risk of that is a test file landing in no shard: the job goes green
-faster having checked less, and nothing says so.
-
-So the split is not three allowlists. Two shards name their roots and the third is
-"everything under tests/ except those roots", which makes exactly-one-shard a property of
-the shape rather than of anyone remembering to edit the workflow. These tests hold that
-shape: every directory under tests/ is claimed once, the catch-all really is a catch-all,
-and the directories no shard runs are the ones that were already excluded, each still
-excluded for the reason another job covers it.
-
-The per-test-id partition was checked directly when the split landed, by running each shard
-and the old selection and diffing their JUnit reports: 8263 + 3559 + 7234 = 19056 ids, no
-overlap, no gap, and every id in the same state in both. That is a measurement of one tree;
-these tests are what keeps it true of the next one.
-"""
+"""Each tests/ directory is claimed by exactly one Repo tests (CPU) shard, the third a catch-all."""
 
 from pathlib import Path
 
@@ -31,8 +14,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 _BACKEND_CI = REPO_ROOT / ".github" / "workflows" / "studio-backend-ci.yml"
 _TESTS_DIR = REPO_ROOT / "tests"
 
-# Directories under tests/ that no shard runs, and what runs them instead. A shard losing a
-# directory would otherwise look exactly like one of these.
+# Directories under tests/ that no shard runs, and what runs them instead.
 _NOT_IN_ANY_SHARD = {
     "tests/qlora": "GPU-bound: needs real weights",
     "tests/saving": "GPU-bound: needs real weights",
@@ -87,13 +69,7 @@ def _claiming_shards(path: str, shards: dict) -> list:
 
 
 def _isolated_paths() -> list:
-    """Paths the job runs in their own pytest invocation instead of inside a shard.
-
-    The spoof files mutate hardware.py module globals and tests/studio/load_freeze asserts
-    wall-clock bounds, so both are ignored by their shard's discovery and named by a step of
-    their own. Read out of those steps rather than listed here, so moving one between the
-    two places cannot make it look dropped.
-    """
+    """Spoof files and load_freeze run in a separate step: they mutate module globals or assert timing."""
     paths = []
     for step in _backend_ci()["jobs"]["repo-cpu-tests"]["steps"]:
         run = str(step.get("run", ""))
@@ -116,7 +92,7 @@ class TestEveryTestFileLandsInExactlyOneShard:
             if any(_covers(excluded, path) for excluded in _NOT_IN_ANY_SHARD):
                 continue
             if any(_covers(named, path) for named in isolated):
-                continue  # run by its own step, for a state or timing reason
+                continue
             claiming = _claiming_shards(path, shards)
             if not claiming:
                 dropped.append(path)

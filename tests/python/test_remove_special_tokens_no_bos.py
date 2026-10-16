@@ -3,7 +3,7 @@ from pathlib import Path
 
 
 def _load_remove_special_tokens():
-    # Extract remove_special_tokens without importing unsloth (importing unsloth needs unsloth_zoo / a GPU).
+    # Load without importing unsloth, which needs unsloth_zoo / a GPU.
     source = Path(__file__).parents[2] / "unsloth" / "chat_templates.py"
     tree = ast.parse(source.read_text(encoding = "utf-8"))
     funcs = [
@@ -29,7 +29,6 @@ def test_no_bos_tokenizer_does_not_crash():
 
 
 def test_double_bos_is_stripped():
-    # A tokenizer with a BOS token still has a single leading BOS removed.
     remove_special_tokens = _load_remove_special_tokens()
     assert remove_special_tokens(_StubTokenizer("<s>"), "<s>Hello world") == "Hello world"
 

@@ -1,44 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""PR #10648: can the marker fast path keep a BROKEN prebuilt install?
-
-``studio update`` used to re-validate a kept prebuilt by re-reading the release and
-STARTING llama-server. The precheck replaces that with evidence recorded in the marker,
-so the question every test here asks is the same one: take a healthy install, damage
-exactly one thing, and see whether the fast path still says "already matches".
-
-Three components, three different amounts of evidence, so three different answers:
-
-  * llama (``_runtime_files_match``) records ``size`` for every allowlisted runtime file
-    and ``size + sha256`` for the three binaries a reuse decision would otherwise run.
-    Only the digest can see a corruption that preserves the byte count, which is why
-    ``test_llama_a_same_size_byte_flip_is_caught_only_by_the_digest`` is the load-bearing test
-    in this file.
-  * whisper (``installed_tree_is_intact``) now records the same two tiers in the same
-    ``runtime_files`` shape: ``size + sha256`` for ``whisper-server``, ``size`` for the
-    ggml libraries a slim bundle hardlinks. It previously recorded NO payload digests at
-    all -- it asked only that the server was a non-empty executable file and that a slim
-    bundle's wiring was still there by name, so a truncation that left bytes behind was
-    invisible to it. The three tests below that used to pin that weaker boundary now pin
-    the digest one; a marker with no record (every install predating the key) is still
-    kept and backfilled once, which ``test_pr10648_whisper_payload_digests.py`` owns.
-  * node (``_file_record_matches``) records ``sha256`` and never compares it: ``size``
-    and ``mtime_ns`` only, deliberately (see its docstring). Not exercised here beyond
-    its marker writer; ``test_install_node_prebuilt_logic.py`` owns that decision.
-
-Part 4 leaves integrity behind and tests the atomic marker rewriters the PR added
-(``prebuilt_core.write_live_marker``, ``install_node_prebuilt._write_metadata_payload``,
-``install_llama_prebuilt._write_marker``) as what they are: filesystem operations on a
-file that is already in service, which must keep its mode and its group, must never
-leave a ``.tmp-*`` sibling, and must never leave a torn marker -- ``load_prebuilt_metadata``
-reads an unparseable marker as "nothing installed".
-
-No network, no GPU. The release lookup and host detection are monkeypatched; every
-install tree is written under the test's own ``tmp_path``. POSIX-only cases (mode bits,
-``os.access(X_OK)``, symlinks, ``os.chown``) skip on Windows rather than being weakened,
-and the permission cases skip under root, which bypasses the bits they rely on.
-"""
+"""The fast path must not keep a broken install; only a sha256 digest catches a same-size flip."""
 
 import dataclasses
 import errno
@@ -69,8 +32,7 @@ CORE = _load("studio_prebuilt_core_pr10648_integrity", "prebuilt_core.py")
 NODE = _load("studio_install_node_prebuilt_pr10648_integrity", "install_node_prebuilt.py")
 WHISPER = _load("studio_install_whisper_prebuilt_pr10648_integrity", "install_whisper_prebuilt.py")
 
-# build_install writes a real install tree. Imported rather than re-implemented: a private
-# copy is how a fixture drifts from the tree the installer actually makes.
+# Imported, not copied, so the fixture cannot drift from the real tree.
 import test_keep_install_backcompat_9979 as KEEP  # noqa: E402
 
 MARKER_NAME = "UNSLOTH_PREBUILT_INFO.json"
@@ -116,12 +78,7 @@ def _release_checksums(*assets: "tuple[str, str, tuple[str, str]]"):
 
 
 def _fill_payload(install_dir: Path, host) -> None:
-    """Give every recorded file distinct, non-empty bytes.
-
-    build_install writes the payload libraries empty, and an empty file cannot be
-    truncated to half its length or have a byte flipped in it -- the two corruptions
-    that separate the size tier from the digest tier would silently become no-ops.
-    """
+    """Fills empty payload files with non-empty bytes; empty files cannot be truncated or bit-flipped."""
     runtime_dir = LLAMA.install_runtime_dir(install_dir, host)
     for path in sorted(runtime_dir.iterdir()):
         if path.is_file() and path.stat().st_size == 0:
@@ -134,12 +91,7 @@ def _install(
     *,
     host = LINUX,
 ) -> Path:
-    """A healthy install plus a marker written by the REAL write_prebuilt_metadata.
-
-    The fingerprint guard (step 4 of existing_install_current_without_plan) rejects any
-    marker it cannot recompute, so a hand-written one would make every "the fast path
-    accepts" baseline below pass for the wrong reason.
-    """
+    """Marker comes from real write_prebuilt_metadata: a hand-written one fails the fingerprint guard."""
     install_dir = KEEP.build_install(tmp_path, host = host, marker = None)
     _fill_payload(install_dir, host)
     choice = _asset_choice()
@@ -234,8 +186,7 @@ _CORRUPTIONS = {
     "delete": _delete,
 }
 
-# The digest tier on a Linux install: both copies of each binary, since the root and build/bin
-# layouts can rot independently, plus the DiffusionGemma visual server.
+# Both copies of each binary: the root and build/bin layouts can rot independently.
 HASHED_TIER = (
     "llama-server",
     "llama-quantize",
@@ -247,13 +198,8 @@ HASHED_TIER = (
 SIZE_TIER = ("build/bin/libggml.so", "build/bin/libllama.so")
 
 
-# ── PART 1: the corruption matrix ────────────────────────────────────────────────────
 def test_the_healthy_install_is_accepted_by_the_fast_path(tmp_path, monkeypatch):
-    """The baseline every corruption below is measured against.
-
-    Asserted again inside each corruption test before the damage is applied, so a test
-    that goes green can only have gone green because of the corruption it names.
-    """
+    """Each corruption test re-asserts this healthy baseline first, so a green result proves the damage."""
     install_dir = _install(tmp_path, monkeypatch)
 
     def boom(*_a, **_k):
@@ -282,14 +228,7 @@ def test_a_corrupted_recorded_binary_is_rejected(tmp_path, monkeypatch, relative
 
 @pytest.mark.parametrize("relative", HASHED_TIER)
 def test_llama_a_same_size_byte_flip_is_caught_only_by_the_digest(tmp_path, monkeypatch, relative):
-    """The case the whole two-tier record exists for.
-
-    One bit flipped, byte count identical, mode identical, and the file still parses as
-    whatever it was: every structural check in the precheck passes it. Nothing but the
-    recorded sha256 separates this install from the one that was downloaded -- and the
-    proof is the second half, which drops the digest and watches the same flip sail
-    through on size alone.
-    """
+    """A same-size byte flip passes every structural check; only the recorded sha256 catches it."""
     install_dir = _install(tmp_path, monkeypatch)
     assert _fast_path(install_dir) is True
     recorded_size = _marker(install_dir)["runtime_files"][relative]["size"]
@@ -412,14 +351,7 @@ def test_a_truncated_payload_library_is_rejected(tmp_path, monkeypatch, relative
 
 @pytest.mark.parametrize("relative", SIZE_TIER)
 def test_a_same_size_payload_rewrite_is_not_detected(tmp_path, monkeypatch, relative):
-    """The documented edge of the size tier, asserted so it is a decision and not a surprise.
-
-    runtime_file_records hashes three binaries and stats everything else, because hashing
-    300 MB of CUDA kernels on every update is not worth it. So a same-size rewrite of a
-    shared library is invisible here. Pre-existing in effect: the full re-validation only
-    ever globbed for existence and started llama-server, and a corrupt libggml this file
-    can write does not stop a stub from exiting 0 either -- asserted below.
-    """
+    """Documents the size-tier edge: a same-size rewrite of a shared library is not detected, by design."""
     install_dir = _install(tmp_path, monkeypatch)
     assert _fast_path(install_dir) is True
     target = install_dir / relative
@@ -429,17 +361,8 @@ def test_a_same_size_payload_rewrite_is_not_detected(tmp_path, monkeypatch, rela
     assert LLAMA._existing_install_runs(install_dir, LINUX) is True
 
 
-# ── PART 2: what the fingerprint does and does not cover ─────────────────────────────
 def test_runtime_files_is_not_an_input_to_the_marker_fingerprint(tmp_path, monkeypatch):
-    """Establishes the boundary the rest of Part 2 explores.
-
-    _marker_install_fingerprint reads twelve release-identity keys plus the upstream tag.
-    runtime_files is not among them, so the self-consistency guard that proves the marker
-    "was written whole by this installer" says nothing about the integrity record inside
-    it. Not a defect on its own -- the marker is a local unsigned file, and anyone who can
-    rewrite runtime_files can delete the marker outright, which costs a re-download rather
-    than keeping a broken install -- but it is what makes (a) and (c) below possible.
-    """
+    """runtime_files is outside the marker fingerprint; a rewritten record passes the consistency guard."""
     install_dir = _install(tmp_path, monkeypatch)
     marker = _marker(install_dir)
     before = LLAMA._marker_install_fingerprint(marker)
@@ -450,21 +373,12 @@ def test_runtime_files_is_not_an_input_to_the_marker_fingerprint(tmp_path, monke
     marker["runtime_files"] = {"llama-server": {"size": 1}}
     assert LLAMA._marker_install_fingerprint(marker) == before
 
-    # A release-identity key, by contrast, is covered.
     marker["release_tag"] = "release-2"
     assert LLAMA._marker_install_fingerprint(marker) != before
 
 
 def test_dropping_the_digest_from_one_entry_downgrades_it_to_the_size_tier(tmp_path, monkeypatch):
-    """(a) An entry with size but no sha256 is accepted, and checked on size alone.
-
-    _runtime_files_match treats a missing digest as "this file has none to check" --
-    the same shape the payload tier legitimately writes -- so the tiers are not carried
-    in the marker as a policy, only as the presence of a key. The install is genuinely
-    broken afterwards and the fast path keeps it; what makes that a boundary statement
-    rather than a bug report is that reaching it needs a write to the marker, and the
-    same write could have said anything at all.
-    """
+    """An entry without sha256 is checked on size alone; the digest tier is just the key's presence."""
     install_dir = _install(tmp_path, monkeypatch)
     assert _fast_path(install_dir) is True
 
@@ -479,7 +393,6 @@ def test_dropping_the_digest_from_one_entry_downgrades_it_to_the_size_tier(tmp_p
     assert _files_match(install_dir) is True
     assert _fast_path(install_dir) is True
 
-    # ... and the size half of that entry still bites.
     _truncate_half(install_dir / "llama-server")
     assert _fast_path(install_dir) is False
 
@@ -528,14 +441,7 @@ def test_a_marker_with_no_runtime_files_key_fails_closed(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("relative", ("llama-server", "build/bin/llama-server"))
 def test_deleting_one_entry_leaves_only_that_file_unchecked(tmp_path, monkeypatch, relative):
-    """(c) Removing an entry is not the same as emptying the record.
-
-    The loop iterates what is recorded, and the docstring is explicit that a binary
-    "never recorded is not evidence against the install" -- so a dropped entry leaves
-    that one file unchecked while every other entry still bites. The second half proves
-    the remaining entries are live, which is what makes the first half a scoped statement
-    rather than "the record can be switched off one key at a time".
-    """
+    """Dropping one runtime_files entry leaves only that file unchecked; the other entries still reject."""
     install_dir = _install(tmp_path, monkeypatch)
     payload = _marker(install_dir)
     payload["runtime_files"].pop(relative)
@@ -552,14 +458,12 @@ def test_deleting_one_entry_leaves_only_that_file_unchecked(tmp_path, monkeypatc
     assert _fast_path(install_dir) is False
 
 
-# ── PART 3: whisper, which records no payload digests ────────────────────────────────
 WHISPER_LINUX = whisper_host(WHISPER.HostInfo)
 _GGML_TREE = "ggml-tree-aaaa"
 
 
 def _whisper_selection(**overrides):
-    # CORE, not WHISPER.InstallSelection: this file loads its own prebuilt_core instance and
-    # the marker writer accepting it is part of what Part 3 says.
+    # CORE.InstallSelection: this file loads its own prebuilt_core instance.
     return CORE.InstallSelection(**whisper_selection_fields(WHISPER, **overrides))
 
 
@@ -621,13 +525,7 @@ def test_whisper_a_healthy_install_is_kept(tmp_path, monkeypatch):
 
 
 def test_whisper_records_the_digest_of_the_server_it_installed(tmp_path, monkeypatch):
-    """The premise of the next test, asserted rather than assumed.
-
-    asset_sha256 is the digest of the ARCHIVE, checked once at download time against the
-    release's checksum index; it says nothing about what is on disk a month later. The
-    marker now also records the extracted payload -- size + sha256 for whisper-server --
-    so a later no-network re-check has something to ask.
-    """
+    """asset_sha256 covers only the archive; the marker separately records whisper-server's digest."""
     install_dir = _whisper_install(tmp_path, monkeypatch)
     marker = _whisper_marker(install_dir)
     assert marker["asset_sha256"] == "c" * 64
@@ -638,13 +536,7 @@ def test_whisper_records_the_digest_of_the_server_it_installed(tmp_path, monkeyp
 
 
 def test_whisper_a_truncated_server_with_bytes_left_is_rejected(tmp_path, monkeypatch):
-    """A whisper-server left half-written by a full disk or an interrupted extract.
-
-    It is still a non-empty executable file, which is all the shape checks can see, so
-    before the payload record this install was KEPT and the failure surfaced when the
-    user pressed the dictation key instead of at update time. The recorded size and
-    digest are what turn it into a re-download, which is the repair the user wanted.
-    """
+    """A truncated whisper-server passes every shape check; the recorded size and digest reject it."""
     install_dir = _whisper_install(tmp_path, monkeypatch)
     server = WHISPER.installed_server_path(install_dir, WHISPER_LINUX)
     assert _whisper_keep(install_dir) is True
@@ -697,7 +589,6 @@ def test_whisper_a_slim_install_is_kept_only_while_its_paired_ggml_tree_stands(
 
     monkeypatch.setattr(WHISPER, "installed_llama_ggml_tree", lambda *_a, **_k: "ggml-tree-bbbb")
     assert _whisper_keep(install_dir) is False
-    # The tree on disk is untouched; only the pairing moved.
     assert WHISPER.installed_tree_is_intact(install_dir, WHISPER_LINUX) is True
 
     # A llama install that cannot say (predating ggml_tree) is not a licence to keep it.
@@ -716,13 +607,8 @@ def test_whisper_a_slim_install_missing_a_wired_library_is_rejected(tmp_path, mo
 
 
 def test_whisper_a_wired_library_truncated_to_one_byte_is_rejected(tmp_path, monkeypatch):
-    """A hardlinked ggml library left as a stub -- most of a CUDA or ROCm pairing's bytes.
-
-    linked_libraries is checked for PRESENCE by name, so before the payload record this
-    was "intact" and dictation failed at load time with a dynamic linker error. The
-    recorded size catches it for the price of a stat; the paired ggml tree above answers
-    the different question of whether llama's runtime moved out from under it.
-    """
+    """A ggml library truncated to a stub passes the by-name presence check; the recorded size
+    catches it."""
     install_dir = _whisper_install(tmp_path, monkeypatch, slim = True)
     bin_dir = WHISPER.runtime_bin_dir(install_dir, WHISPER_LINUX)
     (bin_dir / "libggml.so.0").write_bytes(b"\x00")
@@ -730,7 +616,6 @@ def test_whisper_a_wired_library_truncated_to_one_byte_is_rejected(tmp_path, mon
     assert _whisper_keep(install_dir) is False
 
 
-# ── PART 4: the marker rewrite as a filesystem operation ─────────────────────────────
 @dataclasses.dataclass(frozen = True)
 class _Writer:
     name: str
@@ -765,8 +650,7 @@ WRITERS = (
 )
 _WRITER_IDS = [writer.name for writer in WRITERS]
 
-# release_tag and tag are rendered in the Studio About tab through /api/system/hardware,
-# so a rewrite that drops them changes what the UI shows.
+# release_tag and tag are shown in the Studio About tab via /api/system/hardware.
 _LIVE_PAYLOAD = {
     "release_tag": "release-1",
     "tag": "b9001",
@@ -986,15 +870,7 @@ def test_a_platform_with_no_os_chown_at_all_still_writes(tmp_path, writer, monke
 
 @pytest.mark.parametrize("writer", WRITERS, ids = _WRITER_IDS)
 def test_a_replace_that_fails_leaves_the_previous_marker_whole(tmp_path, writer, monkeypatch):
-    """The reason for temp-and-replace at all.
-
-    An in-place rewrite truncates first, so an ENOSPC or an I/O error mid-write strands a
-    partial UNSLOTH_*_INFO.json -- and load_prebuilt_metadata reads an unparseable marker
-    as "nothing installed", retiring an install that is perfectly fine. Here the swap
-    itself fails: the previous marker must be byte-identical afterwards, and no .tmp-*
-    may survive inside the install directory, where _swap_into_place would carry it into
-    the live tree.
-    """
+    """Temp-and-replace: a failed swap must leave the previous marker byte-identical and no .tmp-* file."""
     path = _live_marker(tmp_path, writer)
     before = path.read_bytes()
 
@@ -1038,12 +914,7 @@ def test_a_write_that_fails_before_the_swap_strands_no_temp_file(tmp_path, write
 def test_the_llama_marker_survives_a_rewrite_and_the_fast_path_still_accepts_it(
     tmp_path, monkeypatch
 ):
-    """End to end: the real marker of a real install, through the real rewriter.
-
-    The reuse path rewrites a marker that is already in service, so the rewrite must
-    preserve every field the precheck reads back -- the fingerprint inputs, the
-    runtime_files record, and the release_tag/tag pair the About tab renders.
-    """
+    """A marker rewrite must keep the fields the precheck reads and the file's mode and group."""
     install_dir = _install(tmp_path, monkeypatch)
     marker_path = install_dir / MARKER_NAME
     marker_path.chmod(0o640)

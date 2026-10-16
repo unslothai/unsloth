@@ -6,17 +6,17 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { BulbIcon } from "@/lib/bulb-icon";
+import { AiSpeechIcon } from "@/lib/hugeicons-derived";
 import { cn } from "@/lib/utils";
 import {
-  BrainIcon,
   Chat01Icon,
   CodeIcon,
   GlobeIcon,
-  HeadphonesIcon,
   ImageIcon,
+  LayoutTable02Icon,
   LockIcon,
   LockKeyIcon,
-  SparklesIcon,
   ViewIcon,
   Wrench01Icon,
 } from "@hugeicons/core-free-icons";
@@ -24,13 +24,16 @@ import type { IconSvgElement } from "@hugeicons/react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { Capability, CapabilityKey } from "../lib/model-capabilities";
 
-const CAPABILITY_ICON: Record<CapabilityKey, IconSvgElement> = {
+// Reasoning draws the composer's thinking bulb instead (CapabilityGlyph).
+const CAPABILITY_ICON: Record<
+  Exclude<CapabilityKey, "reasoning">,
+  IconSvgElement
+> = {
   vision: ViewIcon,
-  audio: HeadphonesIcon,
+  audio: AiSpeechIcon,
   tools: Wrench01Icon,
-  reasoning: BrainIcon,
   code: CodeIcon,
-  embedding: SparklesIcon,
+  embedding: LayoutTable02Icon,
   diffusion: ImageIcon,
   multilingual: GlobeIcon,
   conversational: Chat01Icon,
@@ -149,11 +152,15 @@ export function CapabilityPill({
         CAPABILITY_TONE[capability.key],
       )}
     >
-      <HugeiconsIcon
-        icon={CAPABILITY_ICON[capability.key]}
-        strokeWidth={1.75}
-        className="size-3"
-      />
+      {capability.key === "reasoning" ? (
+        <BulbIcon className="size-3 shrink-0" />
+      ) : (
+        <HugeiconsIcon
+          icon={CAPABILITY_ICON[capability.key]}
+          strokeWidth={1.75}
+          className="size-3"
+        />
+      )}
       {!iconOnly && capability.label}
     </span>
   );

@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""docker/build.sh must hand docker a COMMIT, not a branch name.
-
-Docker matches a RUN layer on the command string alone -- "the files updated in the
-container aren't examined to determine if a cache hit exists" -- so a build arg that
-stays "main" makes the pip-install-from-git layer a cache hit on every rebuild and the
-image keeps the commits of the first build while the build reports success. The publish
-workflow already freezes both refs with git ls-remote; the local script has to as well.
-"""
+"""docker/build.sh must pass commits, not branch names, or Docker reuses a stale git-install layer."""
 
 from __future__ import annotations
 
@@ -48,7 +41,6 @@ def _run(
         _stub(bin_dir / name, body)
     _stub(bin_dir / "git", git_body)
     _stub(bin_dir / "docker", f'printf "%s\\n" "$@" > {args_file}\n')
-    # no network: the llama.cpp tag lookup must not reach github from a unit test
     _stub(bin_dir / "curl", "exit 1\n")
 
     env = dict(os.environ)
@@ -93,8 +85,6 @@ def test_the_default_main_refs_are_frozen_to_commits(tmp_path):
         "reuses the cached install layer and silently ships a stale image"
     )
     assert _build_arg(argv, "UNSLOTH_ZOO_REF") == ZOO_SHA
-    # the baked notebooks are the same shape of mutable-ref RUN layer, and the
-    # publish workflow already freezes this one
     assert _build_arg(argv, "UNSLOTH_NOTEBOOKS_REF") == NB_SHA
 
 
