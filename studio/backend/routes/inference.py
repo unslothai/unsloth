@@ -22135,7 +22135,8 @@ async def get_api_monitor_entry(
 
 def _decode_and_resize_image(backend, encoded: str):
     """Off the event loop. The decode is forced so a truncated picture is a bad request here, and
-    all but RGB/RGBA converts because CMYK, PA, F and LAB decode and none can be saved back."""
+    the result is flattened RGB: CMYK, PA, F and LAB decode and none can be saved back, and a plain
+    convert would turn a transparent background black under dark ink."""
     from PIL import Image
     from io import BytesIO
 
@@ -22144,10 +22145,7 @@ def _decode_and_resize_image(backend, encoded: str):
     image.load()
     image = exif_upright(image)
     # After the resize: converting first resamples interpolated RGB, a different picture.
-    image = _scaled_from_16_bit(backend.resize_image(image))
-    if image.mode not in ("RGB", "RGBA"):
-        image = image.convert("RGB")
-    return image
+    return _mcp_flattened_rgb(backend.resize_image(image))
 
 
 # Serving a whole conversation's images made the retained set grow with the request, where one
@@ -42057,24 +42055,11 @@ def _select_anthropic_server_tools(
     return [tool for tool in available if tool["function"]["name"] in selected_names]
 
 
-def _scaled_from_16_bit(image):
-    """8-bit values for a 16-bit source, which ``convert`` would otherwise read as 8-bit and clip
-    above 255, turning the picture nearly all white. The I;16 family only: plain "I" and "F"
-    declare no range, so a TIFF whose samples already sit in 0..255 would be scaled to black.
-    I;16B / I;16L reject point(), hence the normalisation to "I"."""
-    if not image.mode.startswith("I;16"):
-        return image
-    if image.mode != "I;16":
-        image = image.convert("I")
-    return image.point(lambda v: v * (1.0 / 257), mode = "L")
-
-
 def _pil_to_png_b64(img) -> str:
     buf = io.BytesIO()
     # Composited, not merely converted: convert("RGB") keeps whatever colour sits
     # under the alpha, so a transparent attachment whose background was never painted
-    # reaches the worker as black -- and its dark text with it. The ordinary IPC path
-    # carries the PNG's alpha through, so only this serialisation flattened it.
+    # reaches the worker as black -- and its dark text with it.
     _mcp_flattened_rgb(img).save(buf, format = "PNG")
     return base64.b64encode(buf.getvalue()).decode("ascii")
 
@@ -49157,16 +49142,29 @@ async def _selected_gpu_ordinal(gpu_ids, *, allow_ranking: bool = True) -> Optio
     trainer holds the cards: the ids are still validated and translated (mask plus nvidia-smi, no
     CUDA context), so a bad pick is refused at the plan rather than tens of gigabytes later.
     """
+    from core.inference import diffusion_device
     from core.inference.diffusion_device import (
         resolve_diffusion_device_target,
         resolve_selected_cuda_ordinal,
     )
 
-    if not gpu_ids:
+    if not gpu_ids and not allow_ranking:
         return None
     device = await asyncio.to_thread(lambda: resolve_diffusion_device_target().device)
     if device != "cuda":
         return None
+    if not gpu_ids:
+        # An auto-switch load uses the card its locality check planned against.
+        from core.inference.media_locality import planned_gpu_ordinal
+
+        pinned, ordinal = planned_gpu_ordinal()
+        if pinned:
+            return ordinal
+        # Automatic ranks the visible cards too (#8235); the current device is PCI slot 0.
+        # Pinned for this request, so begin_load's own fallback reuses it (None included).
+        ordinal = await asyncio.to_thread(diffusion_device.resolve_auto_cuda_ordinal)
+        diffusion_device._PLANNED_ORDINAL.set(ordinal)
+        return ordinal
     # The keyword only when it is not the default, so the ordinary path calls the resolver with
     # the same one-argument shape it always had (a monkeypatched seam still fits it).
     if allow_ranking:

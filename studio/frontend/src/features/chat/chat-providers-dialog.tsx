@@ -109,6 +109,25 @@ const CUSTOM_PROVIDER_MISSING_KEY_MESSAGE =
   "No API key found. Add a valid API key for this connection.";
 const HIDDEN_PROVIDER_TYPES = new Set(["qwen"]);
 
+// Ends the open provider menu just above this item so the rows from it on need a scroll.
+function capProviderMenuAtItem(item: HTMLElement | null) {
+  const content = item?.closest<HTMLElement>("[data-slot=select-content]");
+  if (!item || !content) return;
+  // offsetTop chain, not getBoundingClientRect: the open animation scales the menu.
+  let top = 0;
+  for (
+    let node: HTMLElement | null = item;
+    node && node !== content;
+    node = node.offsetParent as HTMLElement | null
+  ) {
+    top += node.offsetTop;
+  }
+  const viewport = item.closest<HTMLElement>("[data-radix-select-viewport]");
+  top -= viewport?.scrollTop ?? 0;
+  top += Number.parseFloat(getComputedStyle(content).paddingBottom) || 0;
+  content.style.maxHeight = `min(var(--radix-select-content-available-height), ${top}px)`;
+}
+
 function parseManualModelIds(text: string): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
@@ -341,6 +360,21 @@ export function ChatProvidersSettings({
     () => new Map(registry.map((entry) => [entry.provider_type, entry])),
     [registry],
   );
+  // Decision-only connections (TypeSafe, Liquid AI) sit last, below the menu's fold.
+  const menuRegistry = useMemo(() => {
+    const visible = registry.filter(
+      (entry) => !HIDDEN_PROVIDER_TYPES.has(entry.provider_type),
+    );
+    const isDecision = (entry: ProviderRegistryEntry) =>
+      isDecisionConnection({ providerType: entry.provider_type });
+    return [
+      ...visible.filter((entry) => !isDecision(entry)),
+      ...visible.filter(isDecision),
+    ];
+  }, [registry]);
+  const firstBelowFoldProviderType = menuRegistry.find((entry) =>
+    isDecisionConnection({ providerType: entry.provider_type }),
+  )?.provider_type;
   const selectedProviderContract = registryByType.get(
     toExternalBackendProviderType(providerType),
   );
@@ -381,10 +415,19 @@ export function ChatProvidersSettings({
     availableModels.length > 0;
   const missingModelCatalogBaseUrl =
     supportsRemoteModelCatalog(providerType) && baseUrlDraft.trim().length === 0;
-  const editingProviderHasSavedKey = Boolean(
-    editingProviderId &&
-      providers.find((provider) => provider.id === editingProviderId)?.hasApiKey,
-  );
+  const editingProvider = editingProviderId
+    ? providers.find((provider) => provider.id === editingProviderId)
+    : undefined;
+  const editingProviderHasSavedKey = Boolean(editingProvider?.hasApiKey);
+  const selectedProviderLabel = isCustomProviderType(providerType)
+    ? customProviderDisplayName(providerType)
+    : selectedProviderContract?.display_name;
+  // A saved connection reads as its name; only an unsaved draft is "New".
+  const formTitle = editingProviderId
+    ? editingProvider?.name || selectedProviderLabel || "Edit"
+    : selectedProviderLabel
+      ? `New ${selectedProviderLabel}`
+      : "New";
   const missingModelCatalogApiKey =
     !isCustomProvider &&
     !isCuratedModelList &&
@@ -1467,8 +1510,11 @@ export function ChatProvidersSettings({
               Connections
             </span>
             <span className="size-1 rounded-full bg-muted-foreground/35" />
-            <span className="truncate text-xs font-medium text-muted-foreground">
-              {editingProviderId ? "Edit" : "New"}
+            <span
+              className="truncate text-xs font-medium text-muted-foreground"
+              title={formTitle}
+            >
+              {formTitle}
             </span>
           </div>
         </header>
@@ -1510,8 +1556,19 @@ export function ChatProvidersSettings({
                   >
                     <SelectValue placeholder="Choose a connection" />
                   </SelectTrigger>
-                  <SelectContent>
+                  {/* No scroll chevrons: the list scrolls by wheel, trackpad and keyboard. */}
+                  <SelectContent className="[&_[data-slot=select-scroll-down-button]]:hidden [&_[data-slot=select-scroll-up-button]]:hidden">
                     <SelectGroup>
+                      <SelectItem value={LEGACY_CUSTOM_PROVIDER_TYPE}>
+                        <span className="flex min-w-0 items-center gap-2">
+                          <ApiProviderLogo
+                            providerType={LEGACY_CUSTOM_PROVIDER_TYPE}
+                            className="size-4"
+                            title={CUSTOM_PROVIDER_DISPLAY_NAME}
+                          />
+                          <span className="truncate">{CUSTOM_PROVIDER_DISPLAY_NAME}</span>
+                        </span>
+                      </SelectItem>
                       {CUSTOM_PROVIDER_PRESETS.map((preset) => (
                         <SelectItem
                           key={preset.providerType}
@@ -1527,28 +1584,18 @@ export function ChatProvidersSettings({
                           </span>
                         </SelectItem>
                       ))}
-                      <SelectItem value={LEGACY_CUSTOM_PROVIDER_TYPE}>
-                        <span className="flex min-w-0 items-center gap-2">
-                          <ApiProviderLogo
-                            providerType={LEGACY_CUSTOM_PROVIDER_TYPE}
-                            className="size-4"
-                            title={CUSTOM_PROVIDER_DISPLAY_NAME}
-                          />
-                          <span className="truncate">{CUSTOM_PROVIDER_DISPLAY_NAME}</span>
-                        </span>
-                      </SelectItem>
                     </SelectGroup>
                     <SelectSeparator />
                     <SelectGroup>
-                      {registry
-                        .filter(
-                          (entry) =>
-                            !HIDDEN_PROVIDER_TYPES.has(entry.provider_type),
-                        )
-                        .map((entry) => (
+                      {menuRegistry.map((entry) => (
                           <SelectItem
                             key={entry.provider_type}
                             value={entry.provider_type}
+                            ref={
+                              entry.provider_type === firstBelowFoldProviderType
+                                ? capProviderMenuAtItem
+                                : undefined
+                            }
                           >
                             <span className="flex min-w-0 items-center gap-2">
                               <ApiProviderLogo
