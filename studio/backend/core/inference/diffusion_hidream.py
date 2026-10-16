@@ -145,6 +145,9 @@ def hidream_te4_kwargs(
             cast_target = _Target()
             cast_target.dtype = dtype
             _cast_fp8(text_encoder_4, cast_target)
+            from .diffusion_precision import TE_RUNTIME_SCHEME_ATTR
+
+            setattr(text_encoder_4, TE_RUNTIME_SCHEME_ATTR, "fp8")
             logger.info("diffusion.hidream: TE4 layerwise fp8 cast engaged")
         except Exception as exc:  # noqa: BLE001 -- best-effort like the generic TE pass
             # A mid-pass failure can leave fp8 storage / upcast hooks behind, and a half-cast encoder cannot run dense,

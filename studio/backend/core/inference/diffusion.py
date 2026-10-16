@@ -6137,6 +6137,12 @@ class DiffusionBackend:
             sources = {c: v for c, v in (sources or {}).items() if c not in skip_components}
             if not sources:
                 return None
+            from .diffusion_precision import te_quant_picked_automatically
+            from .diffusion_te_prequant import te_prequant_sources_confirmed
+
+            if te_quant_picked_automatically(text_encoder_quant) and not te_prequant_sources_confirmed(sources):
+                # An automatic pick without a confirmed file loads the dense encoder: no pre-cast saving to price.
+                return None
             total = 0
             uncached = 0
             table_priced = 0
@@ -10215,7 +10221,8 @@ class DiffusionBackend:
                 from .diffusion_te_prequant import int8_convrot_te_runs_on
 
                 # Never below scanned dense shards: a bad checkpoint falls back to opening them. Not on MPS, where
-                # that failure raises instead (_te_prequant_pipe_kwargs, #11792).
+                # that failure raises instead (_te_prequant_pipe_kwargs, #11792). An automatic pick whose file is not
+                # confirmed never gets here: _precast_text_encoder_mib prices nothing for it, so the dense terms stand.
                 if not int8_convrot_te_runs_on(target):
                     precast_mib = max(int(precast_mib), scanned_te)
                 text_encoder_mib = max(0, int(text_encoder_mib or 0) - scanned_te) + int(

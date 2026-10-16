@@ -76,10 +76,7 @@ TE_INT8_CONVROT_FILES: dict[str, dict[str, tuple[str, ...]]] = {
     "flux.1-kontext": {"text_encoder_2": _T5_INT8},
     # Mistral-Small-3.2-24B (the Mistral3 conditional-generation class): the Pixtral vision tower and projector stay bf16.
     "flux.2-dev": {
-        "text_encoder": (
-            "unsloth/FLUX.2-dev-FP8",
-            "FLUX.2-dev-text_encoder-INT8-ConvRot.safetensors",
-        ),
+        "text_encoder": ("unsloth/FLUX.2-dev-FP8", "FLUX.2-dev-text_encoder-INT8-ConvRot.safetensors"),
     },
     # Qwen2.5-VL-7B, shared by every Qwen-Image release and HunyuanImage-2.1; the vision tower stays bf16 (edit runs
     # it).
@@ -89,17 +86,11 @@ TE_INT8_CONVROT_FILES: dict[str, dict[str, tuple[str, ...]]] = {
     "hunyuanimage-2.1": {"text_encoder": _QWEN25VL_INT8},
     # Z-Image's own Qwen3-4B, as the bare Qwen3Model the pipeline builds
     "z-image": {
-        "text_encoder": (
-            "unsloth/Z-Image-Turbo-FP8",
-            "Z-Image-Turbo-text_encoder-INT8-ConvRot.safetensors",
-        ),
+        "text_encoder": ("unsloth/Z-Image-Turbo-FP8", "Z-Image-Turbo-text_encoder-INT8-ConvRot.safetensors"),
     },
     # Krea's Qwen3-VL-4B, as Qwen3VLModel
     "krea-2": {
-        "text_encoder": (
-            "unsloth/Krea-2-Turbo-FP8",
-            "Krea-2-Turbo-text_encoder-INT8-ConvRot.safetensors",
-        ),
+        "text_encoder": ("unsloth/Krea-2-Turbo-FP8", "Krea-2-Turbo-text_encoder-INT8-ConvRot.safetensors"),
     },
     # HiDream-I1: text_encoder_3 is FLUX.1's T5-XXL (the third element names the component the file was built as), and
     # text_encoder_4 the Llama-3.1-8B-Instruct mirror, assembled by diffusion_hidream.hidream_te4_kwargs.
@@ -112,17 +103,11 @@ TE_INT8_CONVROT_FILES: dict[str, dict[str, tuple[str, ...]]] = {
     },
     # Ideogram 4's Qwen3-VL-8B (Qwen3VLModel), from the vendor fp8 shards dequantized the way the dense load does
     "ideogram-4": {
-        "text_encoder": (
-            "unsloth/ideogram-4-FP8",
-            "ideogram-4-text_encoder-INT8-ConvRot.safetensors",
-        ),
+        "text_encoder": ("unsloth/ideogram-4-FP8", "ideogram-4-text_encoder-INT8-ConvRot.safetensors"),
     },
     # Gemma-2-2B (Gemma2Model), stored fp32 on the Hub
     "lumina-2": {
-        "text_encoder": (
-            "unsloth/Lumina-Image-2.0-FP8",
-            "Lumina-Image-2.0-text_encoder-INT8-ConvRot.safetensors",
-        ),
+        "text_encoder": ("unsloth/Lumina-Image-2.0-FP8", "Lumina-Image-2.0-text_encoder-INT8-ConvRot.safetensors"),
     },
 }
 
@@ -170,6 +155,7 @@ def te_request_is_auto() -> bool:
 
 def _picked_automatically(mode: Any) -> bool:
     from .diffusion_precision import te_quant_picked_automatically
+
     return te_quant_picked_automatically(mode)
 
 
@@ -307,6 +293,7 @@ def te_prequant_budget_scale(
 def _auto_pick(te_quant_mode: Any) -> bool:
     try:
         from .diffusion_precision import te_quant_picked_automatically
+
         return te_quant_picked_automatically(te_quant_mode)
     except Exception:  # noqa: BLE001
         return False
@@ -320,6 +307,7 @@ _confirmed_cache: dict[tuple, tuple[float, bool]] = {}
 def _hub_offline() -> bool:
     try:
         from huggingface_hub import constants
+
         return bool(constants.HF_HUB_OFFLINE)
     except Exception:  # noqa: BLE001
         return False
@@ -348,15 +336,14 @@ def te_prequant_sources_confirmed(sources: dict[str, "TePrequantSource"]) -> boo
         return True
     if _hub_offline():
         return False
-    key = tuple(
-        sorted((c, s.location, tuple(te_candidate_filenames(s))) for c, s in pending.items())
-    )
+    key = tuple(sorted((c, s.location, tuple(te_candidate_filenames(s))) for c, s in pending.items()))
     now = time.monotonic()
     hit = _confirmed_cache.get(key)
     if hit is not None and now - hit[0] < _CONFIRMED_TTL_S:
         return hit[1]
     try:
         from huggingface_hub import HfApi
+
         found = te_prequant_hub_files(pending, HfApi())
         confirmed = all(c in found for c in pending)
     except Exception:  # noqa: BLE001 - an unanswerable Hub confirms nothing
@@ -520,6 +507,29 @@ def te_prequant_repo_filenames(repo_id: str, component: str, scheme: str) -> tup
     return (f"{stem}{SAFETENSORS_SUFFIX}", f"{stem}.pt")
 
 
+def te_prequant_companion_names(repo_id: str, families: Iterable[Any]) -> set[str]:
+    """Lowercased root file names a pre-cast text encoder can take in ``repo_id``: every ``te_prequant_repos`` row
+    (three fields, or four with the component the file was built as), every variant row, and the concrete int8
+    ConvRot files. Cache cleanup reads these as companions, not as an installed checkpoint."""
+    pairs: set[tuple[str, str]] = set()
+    for fam in families:
+        for row in getattr(fam, "te_prequant_repos", ()) or ():
+            if len(row) >= 3:
+                pairs.add((str(row[3] if len(row) > 3 else row[1]), str(row[0])))
+        for row in getattr(fam, "te_prequant_variant_repos", ()) or ():
+            if len(row) >= 4:
+                pairs.add((str(row[2]), str(row[1])))
+    pairs |= {(c, s) for c, _s in pairs for s in ("fp8", "int8")}
+    names = {n.lower() for c, s in pairs for n in te_prequant_repo_filenames(repo_id, c, s)}
+    key = str(repo_id or "").strip().lower()
+    entries = [e for comps in TE_INT8_CONVROT_FILES.values() for e in comps.values()]
+    entries += [e for bases in TE_INT8_CONVROT_VARIANT_FILES.values() for comps in bases.values() for e in comps.values()]
+    for entry in entries:
+        if len(entry) >= 2 and str(entry[0]).strip().lower() == key:
+            names.add(str(entry[1]).lower())
+    return names
+
+
 def te_prequant_repo_filename(repo_id: str, component: str, scheme: str) -> str:
     """The preferred checkpoint filename for ``(component, scheme)`` in ``repo_id``."""
     return te_prequant_repo_filenames(repo_id, component, scheme)[0]
@@ -648,6 +658,7 @@ def resolve_te_prequant_source(
 def _family_has_torchao_int8(fam: Any) -> bool:
     try:
         from .diffusion_precision import _TE_INT8_SKIP
+
         return _TE_INT8_SKIP.get(str(getattr(fam, "name", "") or "").lower()) is not None
     except Exception:  # noqa: BLE001
         return False
@@ -1198,12 +1209,7 @@ def _te_prequant_pipe_kwargs(
 
 
 def _fetch_dense_components(
-    source: str,
-    components: list,
-    *,
-    hf_token: Optional[str],
-    local_files_only: bool,
-    logger: Any = None,
+    source: str, components: list, *, hf_token: Optional[str], local_files_only: bool, logger: Any = None
 ) -> bool:
     """Bring the dense shards of ``components`` the plan left out back into ``source`` (a Hub cache snapshot or repo
     id) so assembly can load them. True when there is nothing to fetch or the fetch worked; False offline, for a local
@@ -1212,6 +1218,7 @@ def _fetch_dense_components(
         return True
     try:
         from .media_locality import _hosted_component_cached
+
         if all(_hosted_component_cached(source, c, "", "") for c in components):
             return True
     except Exception:  # noqa: BLE001 - unknown: try the fetch
@@ -1301,11 +1308,7 @@ def _build_int8_convrot_encoder(
         raise ValueError("the int8 ConvRot encoder carries no lm_head and needs the lm_head trim")
     if trim:
         trim_text_encoder(encoder)
-    if (
-        getattr(encoder, "lm_head", None) is not None
-        and not is_trimmed(encoder)
-        and config_ties_lm_head(config)
-    ):
+    if getattr(encoder, "lm_head", None) is not None and not is_trimmed(encoder) and config_ties_lm_head(config):
         # A tied head (FLUX.3's Qwen3-VL-4B) is kept by the trim, but this file has no lm_head key for it and the
         # family reads hidden states only, so drop it here: a meta head would fail the strict load below.
         head = encoder.lm_head
