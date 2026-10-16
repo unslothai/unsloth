@@ -7114,7 +7114,15 @@ const ComposerToolsMenu: FC<{
         className={
           ragEnabled && !ragDisabled ? "text-primary font-medium" : undefined
         }
-        onSelect={() => setRagEnabled(!ragEnabled)}
+        onSelect={() => {
+          // With the files panel hidden, the item brings it back rather than turning RAG off.
+          const { ragPanelHidden, setRagPanelHidden } = useChatRuntimeStore.getState();
+          if (ragEnabled && ragPanelHidden) {
+            setRagPanelHidden(false);
+            return;
+          }
+          setRagEnabled(!ragEnabled);
+        }}
       >
         <HugeiconsIcon icon={FileDatabaseIcon} strokeWidth={2} />
         Chat with files
