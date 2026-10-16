@@ -322,6 +322,7 @@ def _converter():
 def test_the_converter_can_store_a_tied_embedding_once(tmp_path, monkeypatch):
     """--drop-tied-copies writes UMT5's shared/embed_tokens pair once, the round trip still verifies, and the fp8
     loader fills the alias back from the model's own tie."""
+    pytest.importorskip("diffusers")  # _cast_fp8 installs diffusers' layerwise hooks
     import core.inference.prequant_safetensors as ps
     from core.inference.diffusion_precision import _cast_fp8
     from core.inference.diffusion_prequant import ALLOW_LOCAL_PREQUANT_PATH_ENV
