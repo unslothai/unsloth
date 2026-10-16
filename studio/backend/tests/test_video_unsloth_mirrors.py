@@ -322,3 +322,102 @@ def test_h3_vaes_are_read_from_the_official_provenance_paths():
 
     assert H3_VIDEO_VAE == "vae/official/minimax_h3_video_vae_fp16.safetensors"
     assert H3_AUDIO_VAE == "vae/official/minimax_h3_audio_vae_fp32.safetensors"
+
+
+def _partial_upstream_cache(root, repo, files):
+    """An upstream snapshot holding ``files`` (some weight, not the whole component set)."""
+    folder = root / ("models--" + repo.replace("/", "--"))
+    (folder / "refs").mkdir(parents = True, exist_ok = True)
+    (folder / "refs" / "main").write_text("a" * 40)
+    for name in files:
+        path = folder / "snapshots" / ("a" * 40) / name
+        path.parent.mkdir(parents = True, exist_ok = True)
+        path.write_bytes(b"x" * 10)
+    return folder
+
+
+def test_assembly_reads_the_repo_the_predownload_staged(empty_cache, monkeypatch):
+    """A partial upstream cache: the exact-name check stages into the mirror, and that choice reaches assembly
+    (the name-less default would flip back to the partial upstream)."""
+    import huggingface_hub
+
+    upstream = "Lightricks/LTX-2"
+    _partial_upstream_cache(empty_cache, upstream, ["vae/diffusion_pytorch_model.safetensors"])
+    assert video_mod._video_fetch_repo(upstream) == upstream  # the default assembly would re-decide to
+
+    monkeypatch.setattr(huggingface_hub, "HfApi", _RecordingApi)
+
+    def _download(repo, name, token, **_kw):
+        path = empty_cache / "snap" / name
+        path.parent.mkdir(parents = True, exist_ok = True)
+        path.write_bytes(b"x")
+        return str(path)
+
+    monkeypatch.setattr("utils.hf_xet_fallback.hf_hub_download_with_xet_fallback", _download)
+    backend = video_mod.VideoBackend()
+    choice: dict = {}
+    assert backend._predownload_base(upstream, None, "pipeline", fetch_choice = choice)
+    assert choice == {"repo": "unsloth/LTX-2-FP8"}
+
+    # _run_load forwards it, and load_pipeline / the H3 modular loader take it ahead of the name-less default.
+    import inspect
+
+    for fn in (video_mod.VideoBackend.load_pipeline, video_mod.VideoBackend._load_h3_modular_pipeline):
+        assert "_base_fetch_repo" in inspect.signature(fn).parameters
+    src = inspect.getsource(video_mod.VideoBackend._run_load)
+    assert 'kwargs["_base_fetch_repo"] = base_fetch_choice.get("repo")' in src
+    assert "fetch_choice = base_fetch_choice" in src
+
+
+def test_progress_counts_only_the_side_the_load_fetches(empty_cache, monkeypatch):
+    upstream, mirror = "Lightricks/LTX-2", "unsloth/LTX-2-FP8"
+    monkeypatch.setattr(video_mod, "hub_cache_dir", lambda: str(empty_cache))
+    _partial_upstream_cache(empty_cache, upstream, ["vae/diffusion_pytorch_model.safetensors"])
+    _partial_upstream_cache(empty_cache, mirror, ["transformer/diffusion_pytorch_model.safetensors"])
+    backend = video_mod.VideoBackend()
+    up_bytes = backend._cache_bytes(upstream)
+    mirror_bytes = backend._cache_bytes(mirror)
+    backend._loading = video_mod._VideoLoadingState(
+        repo_id = upstream, base_repo = upstream, expected_bytes = up_bytes + mirror_bytes
+    )
+    # What the predownload records once its exact-name check settles on the mirror.
+    backend._loading.fetch_repos = {"lightricks/ltx-2": mirror}
+    progress = backend.load_progress()
+    assert progress["phase"] == "downloading"
+    assert progress["downloaded_bytes"] == mirror_bytes
+    backend._loading.fetch_repos = {}
+    backend._note_load_fetch_repo(upstream, mirror)
+    assert backend._loading.fetch_repos == {"lightricks/ltx-2": mirror}
+
+
+def test_no_mirror_keeps_an_explicit_checkpoint_in_its_repo(empty_cache, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_NO_MIRROR", "1")
+    seen: list = []
+    monkeypatch.setattr(
+        "utils.hf_xet_fallback.hf_hub_download_with_xet_fallback",
+        lambda repo, name, token, **kw: (seen.append(repo), str(empty_cache / name))[1],
+    )
+    video_mod.VideoBackend._resolve_checkpoint_path("unsloth/LTX-2.5-GGUF", "ltx-2.5-Q4_K_M.gguf", None)
+    assert seen == ["unsloth/LTX-2.5-GGUF"]
+    # Base components still fold back onto the upstream under the opt-out.
+    assert video_mod._video_fetch_repo("unsloth/LTX-2.5-FP8") == "Lightricks/LTX-2.5-Diffusers"
+
+
+def test_ltx25_estimate_reads_shard_indexes_from_the_listing_mirror(empty_cache, monkeypatch):
+    import huggingface_hub
+
+    monkeypatch.setattr(huggingface_hub, "HfApi", _RecordingApi)
+    seen: list = []
+
+    def _plan_shards(info, base, hf_token):
+        seen.append(base)
+        return None
+
+    backend = video_mod.VideoBackend()
+    monkeypatch.setattr(backend, "_ltx25_plan_shards", _plan_shards)
+    monkeypatch.setattr(backend, "_te_prequant_hub_files", lambda *a, **k: ())
+    monkeypatch.setattr(backend, "_h3_te_quant_hub_files", lambda *a, **k: ((), ()))
+    backend._estimate_download_bytes(
+        "Lightricks/LTX-2.5-Diffusers", None, "Lightricks/LTX-2.5-Diffusers", None, "pipeline"
+    )
+    assert seen == ["unsloth/LTX-2.5-FP8"]
