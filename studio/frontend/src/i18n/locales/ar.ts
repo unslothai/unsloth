@@ -4115,6 +4115,8 @@ export const ar = {
     filter: "تصفية المهام",
     active: "نشطة",
     noMatches: "لا توجد مهام مجدولة",
+    search: "البحث في المهام المجدولة",
+    newResult: "نتيجة جديدة",
     emptyTitle: "لا توجد مهام مجدولة بعد",
     emptyDescription: "ملخص يومي، أو تذكير أسبوعي، أو أي شيء آخر تريد إنجازه وفق جدول.",
     createFirst: "إنشاء مهمة",

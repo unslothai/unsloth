@@ -4200,6 +4200,8 @@ export const fr = {
     filter: "Filtrer les tâches",
     active: "Actives",
     noMatches: "Aucune tâche planifiée",
+    search: "Rechercher des tâches planifiées",
+    newResult: "Nouveau résultat",
     emptyTitle: "Aucune tâche planifiée",
     emptyDescription: "Un résumé quotidien, un rappel hebdomadaire ou tout ce que vous voulez faire selon un planning.",
     createFirst: "Créer une tâche",

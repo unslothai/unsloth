@@ -4148,6 +4148,8 @@ export const ptBR = {
     filter: "Filtrar tarefas",
     active: "Ativas",
     noMatches: "Nenhuma tarefa agendada",
+    search: "Pesquisar tarefas agendadas",
+    newResult: "Novo resultado",
     emptyTitle: "Nenhuma tarefa agendada ainda",
     emptyDescription: "Um resumo diário, um lembrete semanal ou qualquer outra coisa que você queira em horários programados.",
     createFirst: "Criar uma tarefa",

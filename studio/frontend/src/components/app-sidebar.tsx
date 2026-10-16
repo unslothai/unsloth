@@ -141,7 +141,12 @@ import {
   ApiIcon,
   Clock01Icon,
 } from "@hugeicons/core-free-icons";
-import { AiSpeechIcon, MessageCircleIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
+import {
+  AiSpeechIcon,
+  MessageCircleIcon,
+  TestTubeOutlineIcon,
+  withNoticeDot,
+} from "@/lib/hugeicons-derived";
 import {
   Tooltip,
   TooltipContent,
@@ -305,6 +310,7 @@ import { ShutdownDialog } from "@/components/shutdown-dialog";
 import { buildChatItemMarkdown } from "@/features/chat/prompt-storage/prompt-storage-dialog";
 import { useActiveChatMenuStore } from "@/features/chat/stores/active-chat-menu-store";
 import { type PinnedPage, PinnedPageRow, usePinnedPages } from "@/features/browser";
+import { useUnseenScheduledRuns } from "@/features/scheduled-tasks";
 import { translate, useT, type TranslationKey } from "@/i18n";
 
 const RECENT_SLOT_NUMBERS = [1, 2, 3, 4, 5, 6] as const;
@@ -358,11 +364,15 @@ type NavRowDef = {
   // What that spinning row says on hover; detection can take minutes on a cold host.
   pendingTooltip?: string;
   badge?: string;
+  // Something new behind the row; its icon carries the dot, and More repeats it while unpinned.
+  dot?: boolean;
   onClick: () => void;
   onIntent?: () => void;
   className?: string;
   children?: ReactNode;
 };
+
+const CLOCK_NOTICE_ICON = withNoticeDot(Clock01Icon);
 
 // row kebab with centred dots: Hugeicons draws them half a unit low.
 const MoreVerticalCenteredIcon = MoreVerticalIcon.map(([tag, attrs]) => [
@@ -938,6 +948,7 @@ const MORE_DOTS_ICON: IconSvgElement = [
   ["circle", { cx: "12", cy: "12", r: "1", stroke: "currentColor", strokeWidth: "1.5", key: "1" }],
   ["circle", { cx: "19.5", cy: "12", r: "1", stroke: "currentColor", strokeWidth: "1.5", key: "2" }],
 ];
+const MORE_DOTS_NOTICE_ICON = withNoticeDot(MORE_DOTS_ICON);
 
 // A NavItem's affordances in dropdown-item form, for the "More" flyout.
 function MoreMenuItem({
@@ -1263,6 +1274,9 @@ export function AppSidebar() {
   // Route alone is not enough: a page can gate its tour behind a capability check, and an entry
   // that dispatches to nobody does nothing when clicked.
   const routeTourId = getTourId(pathname);
+  // A scheduled run finished while the user was on another page.
+  const scheduledNotice =
+    useUnseenScheduledRuns((state) => state.page) && pathname !== "/tasks";
   const tourAvailable = useTourAvailable(routeTourId);
   const {
     pinned,
@@ -3483,9 +3497,10 @@ export function AppSidebar() {
       },
     },
     tasks: {
-      icon: Clock01Icon,
+      icon: scheduledNotice ? CLOCK_NOTICE_ICON : Clock01Icon,
       label: t("shell.navigation.tasks"),
       active: pathname === "/tasks",
+      dot: scheduledNotice,
       onClick: () => {
         navigateFromRow({ to: "/tasks" });
         closeMobileIfOpen();
@@ -5510,8 +5525,8 @@ export function AppSidebar() {
                 )}
                 aria-hidden
               >
-                {/* Neutral: a finished reply is news, not a fault. */}
-                <span className="size-2 rounded-full bg-muted-foreground/60" />
+                {/* Accent, not a warning colour: a finished reply is news, not a fault. */}
+                <span className="size-2 rounded-full bg-primary" />
               </span>
             ) : null}
             {variant === "project" && (
@@ -6204,7 +6219,11 @@ export function AppSidebar() {
                             className="sidebar-nav-btn h-[calc(33px*var(--ui-space-scale,1))] rounded-full gap-[calc(8.5px*var(--ui-space-scale,1))] pl-3 pr-2.5 font-medium group-data-[collapsible=icon]:!p-0 group-data-[collapsible=icon]:!size-[calc(28px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:my-[calc(2.5px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:mx-auto"
                           >
                             <HugeiconsIcon
-                              icon={MORE_DOTS_ICON}
+                              icon={
+                                overflowNavIds.some((id) => navRows[id].dot)
+                                  ? MORE_DOTS_NOTICE_ICON
+                                  : MORE_DOTS_ICON
+                              }
                               strokeWidth={1.75}
                               className="size-icon! shrink-0 translate-x-0.5 group-data-[collapsible=icon]:translate-x-0 group-hover/menu-button:animate-icon-pop"
                             />
@@ -6229,7 +6248,7 @@ export function AppSidebar() {
                       side="right"
                       align="start"
                       sideOffset={6}
-                      className="sidebar-more-menu w-48 p-1"
+                      className="sidebar-more-menu w-48 p-1 [--icon-dot-ring:var(--popover)] dark:[--icon-dot-ring:var(--sidebar)]"
                       {...moreHover.content}
                       // The trigger handles its own presses.
                       onPointerDownOutside={(event) => {

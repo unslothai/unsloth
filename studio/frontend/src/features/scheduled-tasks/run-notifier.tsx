@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useNavigate } from "@tanstack/react-router";
+import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { useEffect, useRef } from "react";
 import {
   AUTH_SESSION_STORED_EVENT,
@@ -28,6 +28,7 @@ import {
   runErrorText,
   runsToAnnounce,
 } from "./results";
+import { useUnseenScheduledRuns } from "./unseen";
 
 // More than this at once, e.g. on reopening Studio, and one toast speaks for them all.
 const INDIVIDUAL_TOASTS = 2;
@@ -102,9 +103,18 @@ function notifySystem(runs: FinishedScheduledTaskRun[]): void {
 export function ScheduledTaskRunNotifier() {
   const navigate = useNavigate();
   const navigateRef = useRef(navigate);
+  const pathname = useRouterState({ select: (state) => state.location.pathname });
+  const pathnameRef = useRef(pathname);
+  const openThread = useRouterState({
+    select: (state) => (state.location.search as { thread?: unknown }).thread,
+  });
+  useEffect(() => {
+    if (typeof openThread === "string") useUnseenScheduledRuns.getState().clearThread(openThread);
+  }, [openThread]);
   useEffect(() => {
     navigateRef.current = navigate;
-  }, [navigate]);
+    pathnameRef.current = pathname;
+  }, [navigate, pathname]);
 
   useEffect(() => {
     let disposed = false;
@@ -128,6 +138,13 @@ export function ScheduledTaskRunNotifier() {
         notifyChatHistoryUpdated();
         useChatNavigationStore.getState().markThreadsUnread(threadIds);
       }
+      useUnseenScheduledRuns.getState().markFinished(
+        runs.map((run) => ({
+          taskId: run.taskId,
+          threadId: run.status === "succeeded" ? run.threadId : null,
+        })),
+        pathnameRef.current === "/tasks",
+      );
       window.dispatchEvent(new Event(SCHEDULED_TASK_RUNS_FINISHED_EVENT));
       const runs = runsToAnnounce(finished);
       if (runs.length === 0) return;

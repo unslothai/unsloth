@@ -4190,6 +4190,8 @@ export const it = {
     filter: "Filtra attività",
     active: "Attive",
     noMatches: "Nessuna attività pianificata",
+    search: "Cerca attività pianificate",
+    newResult: "Nuovo risultato",
     emptyTitle: "Ancora nessuna attività pianificata",
     emptyDescription: "Un riepilogo giornaliero, un promemoria settimanale o qualsiasi altra cosa da fare a orari prestabiliti.",
     createFirst: "Crea un’attività",

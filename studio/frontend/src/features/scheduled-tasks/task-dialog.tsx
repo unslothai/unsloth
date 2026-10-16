@@ -63,16 +63,25 @@ function askToNotify(): void {
   }
 }
 
-function Field({ id, label, children }: { id: string; label: string; children: ReactNode }) {
+// One line of the schedule card: the label on the left, its control on the right.
+function Row({ id, label, children }: { id?: string; label: string; children: ReactNode }) {
   return (
-    <div className="flex min-w-0 flex-col gap-1.5">
-      <label htmlFor={id} className="text-ui-13 font-medium text-foreground">
+    <div className="flex min-h-14 flex-wrap items-center justify-between gap-x-4 gap-y-2 px-5 py-2">
+      <label htmlFor={id} className="text-ui-15 text-foreground">
         {label}
       </label>
       {children}
     </div>
   );
 }
+
+const CARD =
+  "flex flex-col divide-y divide-border/70 overflow-hidden rounded-[20px] border border-border/70 dark:divide-[rgb(255_255_255_/_calc(0.1*var(--contrast-edge-gain,1)))] dark:border-[rgb(255_255_255_/_calc(0.12*var(--contrast-edge-gain,1)))]";
+// Controls sit flush in their row and read as its value, like a settings list.
+const BARE_SELECT =
+  "h-9 w-auto gap-1.5 border-none bg-transparent px-2 text-ui-15 text-muted-foreground shadow-none hover:text-foreground focus-visible:ring-1 dark:bg-transparent dark:hover:bg-transparent";
+const BARE_INPUT =
+  "h-9 w-auto border-none bg-transparent px-2 text-right text-ui-15 text-muted-foreground shadow-none focus-visible:ring-1 dark:bg-transparent";
 
 /** Creates a task, or edits `task`. Mounted while open, so each opening starts from the task. */
 export function TaskDialog({
@@ -143,7 +152,7 @@ export function TaskDialog({
       }}
     >
       <DialogContent
-        className="corner-squircle dialog-soft-surface gap-5 sm:max-w-lg"
+        className="corner-squircle dialog-soft-surface gap-4 sm:max-w-xl"
         onKeyDown={(event) => {
           if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
             event.preventDefault();
@@ -157,46 +166,45 @@ export function TaskDialog({
           </DialogTitle>
           <DialogDescription className="sr-only">{t("scheduledTasks.description")}</DialogDescription>
         </DialogHeader>
-        <Field id={`${ids}-name`} label={t("scheduledTasks.form.name")}>
+        <div className={CARD}>
           <Input
             id={`${ids}-name`}
+            aria-label={t("scheduledTasks.form.name")}
             value={title}
             onChange={(event) => setTitle(event.target.value)}
             maxLength={120}
             autoFocus={true}
             disabled={busy}
             placeholder={t("scheduledTasks.form.namePlaceholder")}
+            className="h-12 rounded-none border-none bg-transparent px-5 text-ui-15 font-medium shadow-none focus-visible:ring-0 dark:bg-transparent"
           />
-        </Field>
-        <div className="flex flex-col gap-1.5">
-          <label htmlFor={`${ids}-prompt`} className="text-ui-13 font-medium text-foreground">
-            {t("scheduledTasks.form.instructions")}
-          </label>
-          <p className="text-ui-13 text-muted-foreground">
-            {t("scheduledTasks.form.instructionsHint")}
-          </p>
           <Textarea
             id={`${ids}-prompt`}
+            aria-label={t("scheduledTasks.form.instructions")}
+            aria-describedby={`${ids}-prompt-hint`}
             value={prompt}
             onChange={(event) => setPrompt(event.target.value)}
             maxLength={20_000}
-            rows={4}
+            rows={5}
             disabled={busy}
             placeholder={t("scheduledTasks.form.instructionsPlaceholder")}
-            className="mt-0.5 max-h-60 rounded-[16px]"
+            className="max-h-60 min-h-32 resize-none rounded-none border-none bg-transparent px-5 py-3.5 text-ui-15 shadow-none focus-visible:ring-0 dark:bg-transparent"
           />
         </div>
-        <div className="grid gap-3 sm:grid-cols-3">
-          <Field id={`${ids}-repeat`} label={t("scheduledTasks.form.repeat")}>
+        <p id={`${ids}-prompt-hint`} className="sr-only">
+          {t("scheduledTasks.form.instructionsHint")}
+        </p>
+        <div className={CARD}>
+          <Row id={`${ids}-repeat`} label={t("scheduledTasks.form.repeat")}>
             <Select
               value={form.repeat}
               onValueChange={(value) => patchForm({ repeat: value as RepeatKind })}
               disabled={busy}
             >
-              <SelectTrigger id={`${ids}-repeat`} className="w-full">
+              <SelectTrigger id={`${ids}-repeat`} className={BARE_SELECT}>
                 <SelectValue />
               </SelectTrigger>
-              <SelectContent>
+              <SelectContent align="end">
                 {REPEAT_KINDS.map((kind) => (
                   <SelectItem key={kind} value={kind}>
                     {t(REPEAT_LABELS[kind])}
@@ -204,9 +212,9 @@ export function TaskDialog({
                 ))}
               </SelectContent>
             </Select>
-          </Field>
+          </Row>
           {form.repeat === "once" && (
-            <Field id={`${ids}-date`} label={t("scheduledTasks.form.date")}>
+            <Row id={`${ids}-date`} label={t("scheduledTasks.form.date")}>
               <Input
                 id={`${ids}-date`}
                 type="date"
@@ -214,20 +222,24 @@ export function TaskDialog({
                 min={localDateKey(now)}
                 onChange={(event) => patchForm({ date: event.target.value })}
                 disabled={busy}
+                className={BARE_INPUT}
               />
-            </Field>
+            </Row>
           )}
           {form.repeat === "monthly" && (
-            <Field id={`${ids}-day`} label={t("scheduledTasks.form.dayOfMonth")}>
+            <Row id={`${ids}-day`} label={t("scheduledTasks.form.dayOfMonth")}>
               <Select
                 value={String(form.dayOfMonth)}
                 onValueChange={(value) => patchForm({ dayOfMonth: Number(value) })}
                 disabled={busy}
               >
-                <SelectTrigger id={`${ids}-day`} className="w-full">
+                <SelectTrigger id={`${ids}-day`} className={BARE_SELECT}>
                   <SelectValue />
                 </SelectTrigger>
-                <SelectContent className="max-h-[min(--spacing(72),var(--radix-select-content-available-height))]">
+                <SelectContent
+                  align="end"
+                  className="max-h-[min(--spacing(72),var(--radix-select-content-available-height))]"
+                >
                   {DAYS_OF_MONTH.map((day) => (
                     <SelectItem key={day} value={String(day)}>
                       {day}
@@ -235,49 +247,47 @@ export function TaskDialog({
                   ))}
                 </SelectContent>
               </Select>
-            </Field>
+            </Row>
           )}
-          <Field id={`${ids}-time`} label={t("scheduledTasks.form.time")}>
+          {form.repeat === "weekly" && (
+            <Row label={t("scheduledTasks.form.days")}>
+              <div role="group" aria-label={t("scheduledTasks.form.days")} className="flex flex-wrap justify-end gap-1">
+                {ISO_WEEKDAYS.map((day) => {
+                  const selected = form.days.includes(day);
+                  return (
+                    <button
+                      key={day}
+                      type="button"
+                      aria-pressed={selected}
+                      title={weekdayName(day, locale, "long")}
+                      disabled={busy}
+                      onClick={() => toggleDay(day)}
+                      className={cn(
+                        "h-8 min-w-11 cursor-pointer rounded-full px-2.5 text-ui-13 font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50",
+                        selected
+                          ? "bg-primary text-primary-foreground"
+                          : "bg-muted text-muted-foreground hover:text-foreground",
+                      )}
+                    >
+                      {weekdayName(day, locale, "short")}
+                    </button>
+                  );
+                })}
+              </div>
+            </Row>
+          )}
+          <Row id={`${ids}-time`} label={t("scheduledTasks.form.time")}>
             <Input
               id={`${ids}-time`}
               type="time"
               value={form.time}
               onChange={(event) => patchForm({ time: event.target.value })}
               disabled={busy}
+              className={BARE_INPUT}
             />
-          </Field>
+          </Row>
         </div>
-        {form.repeat === "weekly" && (
-          <div className="flex flex-col gap-1.5">
-            <span className="text-ui-13 font-medium text-foreground">
-              {t("scheduledTasks.form.days")}
-            </span>
-            <div role="group" aria-label={t("scheduledTasks.form.days")} className="flex flex-wrap gap-1.5">
-              {ISO_WEEKDAYS.map((day) => {
-                const selected = form.days.includes(day);
-                return (
-                  <button
-                    key={day}
-                    type="button"
-                    aria-pressed={selected}
-                    title={weekdayName(day, locale, "long")}
-                    disabled={busy}
-                    onClick={() => toggleDay(day)}
-                    className={cn(
-                      "h-8 min-w-12 cursor-pointer rounded-full px-3 text-ui-13 font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50",
-                      selected
-                        ? "bg-primary text-primary-foreground"
-                        : "bg-muted text-muted-foreground hover:text-foreground",
-                    )}
-                  >
-                    {weekdayName(day, locale, "short")}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        )}
-        <p className="text-ui-13 text-muted-foreground">
+        <p className="-mt-2 px-1 text-ui-13 text-muted-foreground">
           {form.repeat === "monthly" && form.dayOfMonth > 28
             ? `${t("scheduledTasks.form.lastDayNote")} `
             : ""}
@@ -300,7 +310,7 @@ export function TaskDialog({
             <span />
           )}
           <span className="flex flex-wrap gap-2">
-            <Button type="button" variant="ghost" disabled={busy} onClick={onClose}>
+            <Button type="button" variant="muted" disabled={busy} onClick={onClose}>
               {t("common.cancel")}
             </Button>
             <Button type="button" disabled={!valid || busy} onClick={() => void save()}>

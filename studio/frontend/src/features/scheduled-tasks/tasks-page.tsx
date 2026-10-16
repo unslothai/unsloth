@@ -6,13 +6,13 @@ import {
   Delete02Icon,
   FilterMailIcon,
   MoreHorizontalIcon,
-  PauseIcon,
   PencilEdit02Icon,
-  PlayIcon,
+  Search01Icon,
   Clock01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
+import { PauseIcon, PlayIcon } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import {
@@ -34,6 +34,7 @@ import {
   DropdownMenuLabel,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
 import {
@@ -50,6 +51,7 @@ import { runErrorText } from "./results";
 import { type TaskSchedule, formatMoment, relativeTimeParts, summarizeSchedule } from "./schedule";
 import { useScheduledTasksStore } from "./store";
 import { TaskDialog } from "./task-dialog";
+import { useUnseenScheduledRuns } from "./unseen";
 
 // How often the page looks again at a task that is due but not yet running.
 const OVERDUE_REFRESH_MS = 5_000;
@@ -121,11 +123,13 @@ function useMinuteClock(): number {
 function TaskRow({
   task,
   now,
+  unseen,
   onEdit,
   onDelete,
 }: {
   task: ScheduledTask;
   now: number;
+  unseen: boolean;
   onEdit: () => void;
   onDelete: () => void;
 }) {
@@ -134,6 +138,7 @@ function TaskRow({
   const navigate = useNavigate();
   const update = useScheduledTasksStore((state) => state.update);
   const runNow = useScheduledTasksStore((state) => state.runNow);
+  const clearUnseen = useUnseenScheduledRuns((state) => state.clearTask);
   const [busy, setBusy] = useState(false);
   const run = task.lastRun;
   const running = run?.status === "queued" || run?.status === "running";
@@ -159,17 +164,27 @@ function TaskRow({
     <div className="group/task-row flex items-start gap-4 rounded-xl px-5 py-4 transition-colors duration-150 hover:bg-muted/70 dark:hover:bg-[rgb(255_255_255_/_calc(0.055*var(--contrast-wash-gain,1)))]">
       <span
         className={cn(
-          "mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-[10px] bg-muted text-foreground/70",
+          "relative mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-[10px] bg-muted text-foreground/70",
           task.status === "active" && "group-hover/task-row:bg-primary/10 group-hover/task-row:text-primary",
         )}
       >
         <HugeiconsIcon icon={Clock01Icon} strokeWidth={1.75} className="size-5" />
+        {unseen && (
+          <span
+            role="img"
+            aria-label={t("scheduledTasks.newResult")}
+            className="absolute -right-0.5 -top-0.5 size-2.5 rounded-full bg-primary ring-2 ring-background"
+          />
+        )}
       </span>
       <div className="flex min-w-0 flex-1 flex-col gap-1">
         <div className="flex min-w-0 items-center gap-2">
           <button
             type="button"
-            onClick={onEdit}
+            onClick={() => {
+              clearUnseen(task.id);
+              onEdit();
+            }}
             className="min-w-0 cursor-pointer truncate rounded-md text-left text-ui-15 font-semibold text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           >
             {task.title}
@@ -202,9 +217,10 @@ function TaskRow({
                 {" · "}
                 <button
                   type="button"
-                  onClick={() =>
-                    void navigate({ to: "/chat", search: { thread: run.threadId ?? undefined } })
-                  }
+                  onClick={() => {
+                    clearUnseen(task.id);
+                    void navigate({ to: "/chat", search: { thread: run.threadId ?? undefined } });
+                  }}
                   className="cursor-pointer font-medium text-foreground underline-offset-2 hover:underline"
                 >
                   {t("scheduledTasks.openChat")}
@@ -227,10 +243,13 @@ function TaskRow({
           aria-label={t("scheduledTasks.runNow")}
           title={t("scheduledTasks.runNow")}
           disabled={busy || running}
-          onClick={() => void act(() => runNow(task.id), "runFailed")}
+          onClick={() => {
+            clearUnseen(task.id);
+            void act(() => runNow(task.id), "runFailed");
+          }}
           className={ROW_BUTTON}
         >
-          <HugeiconsIcon icon={PlayIcon} strokeWidth={1.75} className="size-4" />
+          <PlayIcon strokeWidth={1.75} className="size-4" />
         </button>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
@@ -253,11 +272,11 @@ function TaskRow({
                   void act(() => update(task.id, { enabled: !task.enabled }), "updateFailed")
                 }
               >
-                <HugeiconsIcon
-                  icon={task.enabled ? PauseIcon : PlayIcon}
-                  strokeWidth={1.75}
-                  className="size-icon"
-                />
+                {task.enabled ? (
+                  <PauseIcon strokeWidth={1.75} className="size-icon" />
+                ) : (
+                  <PlayIcon strokeWidth={1.75} className="size-icon" />
+                )}
                 {task.enabled ? t("scheduledTasks.pause") : t("scheduledTasks.resume")}
               </DropdownMenuItem>
             )}
@@ -288,10 +307,26 @@ export function TasksPage() {
   const [editing, setEditing] = useState<ScheduledTask | null | undefined>(undefined);
   const [deleting, setDeleting] = useState<ScheduledTask | null>(null);
   const [shown, setShown] = useState<TaskStatus[]>(loadFilter);
-  const visibleTasks = useMemo(
-    () => tasks.filter((task) => shown.includes(task.status)).sort(compareTasks),
-    [tasks, shown],
-  );
+  const [query, setQuery] = useState("");
+  const visibleTasks = useMemo(() => {
+    const needle = query.trim().toLocaleLowerCase();
+    return tasks
+      .filter(
+        (task) =>
+          shown.includes(task.status) &&
+          (needle === "" ||
+            task.title.toLocaleLowerCase().includes(needle) ||
+            task.prompt.toLocaleLowerCase().includes(needle)),
+      )
+      .sort(compareTasks);
+  }, [tasks, shown, query]);
+  const unseenTasks = useUnseenScheduledRuns((state) => state.tasks);
+  const pageUnseen = useUnseenScheduledRuns((state) => state.page);
+  const clearPageUnseen = useUnseenScheduledRuns((state) => state.clearPage);
+
+  useEffect(() => {
+    if (pageUnseen) clearPageUnseen();
+  }, [pageUnseen, clearPageUnseen]);
 
   function toggleStatus(status: TaskStatus, on: boolean) {
     const next = STATUSES.filter((candidate) => (candidate === status ? on : shown.includes(candidate)));
@@ -344,21 +379,32 @@ export function TasksPage() {
 
   return (
     <main className="mx-auto w-full max-w-5xl 4xl:max-w-6xl px-6 pb-10 pt-8 max-sm:px-4 font-heading sm:px-10">
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div className="min-w-0">
-          <h1 className="text-ui-30 font-semibold leading-[1.04] tracking-[-0.028em] text-foreground sm:text-ui-34">
-            {t("scheduledTasks.title")}
-          </h1>
-          <p className="mt-2 text-ui-15 text-muted-foreground">{t("scheduledTasks.description")}</p>
-          <p className="mt-1 text-ui-13 text-muted-foreground">
-            {t("scheduledTasks.runsWhileOpen")}
-          </p>
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <h1 className="text-ui-30 font-semibold leading-[1.04] tracking-[-0.028em] text-foreground sm:text-ui-34">
+          {t("scheduledTasks.title")}
+        </h1>
+        {/* Same search pill as Projects. Below sm it wraps to its own row under the heading. */}
+        <div className="flex w-full min-w-0 items-center justify-end gap-3 sm:w-auto sm:flex-1">
+          <div className="relative min-w-0 flex-1 sm:max-w-md">
+            <span className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-muted-foreground">
+              <HugeiconsIcon icon={Search01Icon} strokeWidth={1.75} className="size-4" />
+            </span>
+            <Input
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder={t("scheduledTasks.search")}
+              aria-label={t("scheduledTasks.search")}
+              className="h-9 w-full rounded-full border-none bg-muted pl-10 pr-4 shadow-none dark:bg-card"
+            />
+          </div>
+          <Button onClick={() => setEditing(null)}>
+            <HugeiconsIcon icon={Add01Icon} strokeWidth={1.75} className="size-icon" />
+            {t("scheduledTasks.newTask")}
+          </Button>
         </div>
-        <Button onClick={() => setEditing(null)}>
-          <HugeiconsIcon icon={Add01Icon} strokeWidth={1.75} className="size-icon" />
-          {t("scheduledTasks.newTask")}
-        </Button>
       </div>
+      <p className="mt-2 text-ui-15 text-muted-foreground">{t("scheduledTasks.description")}</p>
+      <p className="mt-1 text-ui-13 text-muted-foreground">{t("scheduledTasks.runsWhileOpen")}</p>
 
       {loading && tasks.length === 0 ? (
         <div className="mt-12">
@@ -445,6 +491,7 @@ export function TasksPage() {
                 key={task.id}
                 task={task}
                 now={now}
+                unseen={task.id in unseenTasks}
                 onEdit={() => setEditing(task)}
                 onDelete={() => setDeleting(task)}
               />

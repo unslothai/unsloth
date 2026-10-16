@@ -4188,6 +4188,8 @@ export const es = {
     filter: "Filtrar tareas",
     active: "Activas",
     noMatches: "No hay tareas programadas",
+    search: "Buscar tareas programadas",
+    newResult: "Nuevo resultado",
     emptyTitle: "Aún no hay tareas programadas",
     emptyDescription: "Un resumen diario, un recordatorio semanal o cualquier otra cosa que quieras hacer de forma programada.",
     createFirst: "Crear una tarea",

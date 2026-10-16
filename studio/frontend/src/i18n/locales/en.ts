@@ -4158,6 +4158,9 @@ export const en = {
     filter: "Filter tasks",
     active: "Active",
     noMatches: "No scheduled tasks",
+    search: "Search scheduled tasks",
+    // Read out for the dot on a task whose latest run the user has not opened yet.
+    newResult: "New result",
     emptyTitle: "No scheduled tasks yet",
     emptyDescription: "Get a daily summary, a weekly reminder, or anything else you want done on a schedule.",
     createFirst: "Create a task",

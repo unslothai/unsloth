@@ -4368,6 +4368,8 @@ export const sv = {
     filter: "Filtrera uppgifter",
     active: "Aktiva",
     noMatches: "Inga schemalagda uppgifter",
+    search: "Sök schemalagda uppgifter",
+    newResult: "Nytt resultat",
     emptyTitle: "Inga schemalagda uppgifter än",
     emptyDescription: "En daglig sammanfattning, en påminnelse varje vecka eller något annat du vill få gjort enligt ett schema.",
     createFirst: "Skapa en uppgift",

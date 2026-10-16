@@ -4062,6 +4062,8 @@ export const ja = {
     filter: "タスクを絞り込む",
     active: "有効",
     noMatches: "スケジュール済みのタスクはありません",
+    search: "スケジュール済みタスクを検索",
+    newResult: "新しい結果",
     emptyTitle: "スケジュール済みのタスクはまだありません",
     emptyDescription: "毎日の要約、毎週のリマインダーなど、決まった時間に行いたいことを設定できます。",
     createFirst: "タスクを作成",

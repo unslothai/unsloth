@@ -4018,6 +4018,8 @@ export const zhCN = {
     filter: "筛选任务",
     active: "活跃",
     noMatches: "没有定时任务",
+    search: "搜索定时任务",
+    newResult: "新结果",
     emptyTitle: "还没有定时任务",
     emptyDescription: "每日摘要、每周提醒，或任何你想按计划完成的事情。",
     createFirst: "创建任务",

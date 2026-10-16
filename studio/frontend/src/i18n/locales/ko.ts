@@ -4104,6 +4104,8 @@ export const ko = {
     filter: "작업 필터",
     active: "활성",
     noMatches: "예약된 작업이 없습니다",
+    search: "예약된 작업 검색",
+    newResult: "새 결과",
     emptyTitle: "아직 예약된 작업이 없습니다",
     emptyDescription: "매일 요약, 매주 알림 등 정해진 일정에 하고 싶은 일을 설정하세요.",
     createFirst: "작업 만들기",

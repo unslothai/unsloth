@@ -4189,6 +4189,8 @@ export const de = {
     filter: "Aufgaben filtern",
     active: "Aktiv",
     noMatches: "Keine geplanten Aufgaben",
+    search: "Geplante Aufgaben durchsuchen",
+    newResult: "Neues Ergebnis",
     emptyTitle: "Noch keine geplanten Aufgaben",
     emptyDescription: "Eine tägliche Zusammenfassung, eine wöchentliche Erinnerung oder alles andere, was nach Zeitplan erledigt werden soll.",
     createFirst: "Aufgabe erstellen",
