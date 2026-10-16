@@ -406,7 +406,8 @@ def resolve_auto_cuda_ordinal() -> Optional[int]:
     single-GPU fit, ties to the lowest ordinal. Read from nvidia-smi alone (no CUDA context per card, so no
     torch fallback) and keyed through the parent-visible list, so a mask keeps deciding which cards exist.
 
-    None on one visible card (unchanged), a UUID/MIG mask (no physical ids), ROCm (an APU's free reading is the
+    None when the winner is the current device (ordinal 0, ties included), on one visible card (unchanged),
+    a UUID/MIG mask (no physical ids), ROCm (an APU's free reading is the
     shared host pool, which would outrank a discrete card), a CUDA order other than nvidia-smi's (its rows are
     then not torch's ordinals), an integrated GPU (its rows are a carve-out or N/A, and its real budget is the
     shared host pool), missing nvidia-smi telemetry and any failure. Never raises. Only cards at least as
@@ -456,7 +457,37 @@ def resolve_auto_cuda_ordinal() -> Optional[int]:
     if not free_by_ordinal:
         return None
     best = max(free_by_ordinal.values())
-    return min(o for o, free in free_by_ordinal.items() if best - free <= _AUTO_FREE_TIE_BYTES)
+    winner = min(o for o, free in free_by_ordinal.items() if best - free <= _AUTO_FREE_TIE_BYTES)
+    # The current device (or a tie with it) stays None, so generation gains no explicit set_device pins.
+    return winner or None
+
+
+def auto_cuda_ranking_possible() -> bool:
+    """Whether an automatic load could pick another card: NVIDIA CUDA with 2+ parent-visible GPUs.
+
+    Read from the cached device and mask only (no torch, no capability or dtype probe), so zero / one GPU,
+    ROCm, XPU, MPS and CPU keep the pre-ranking fast path. Never raises.
+    """
+    try:
+        from utils.hardware import hardware as hw
+
+        if hw.IS_ROCM or hw.get_device() != hw.DeviceType.CUDA:
+            return False
+        return len(hw.get_parent_visible_gpu_ids()) >= 2
+    except Exception:  # noqa: BLE001 -- unknown host keeps the current device
+        return False
+
+
+def auto_cuda_ordinal_for_load() -> Optional[int]:
+    """``resolve_auto_cuda_ordinal`` behind the cheap gate and the CUDA target check, for automatic loads."""
+    planned = _PLANNED_ORDINAL.get()
+    if planned is not _UNPLANNED:
+        return planned
+    if not auto_cuda_ranking_possible():
+        return None
+    if resolve_diffusion_device_target().device != "cuda":
+        return None
+    return resolve_auto_cuda_ordinal()
 
 
 @contextmanager

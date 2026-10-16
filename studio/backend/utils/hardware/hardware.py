@@ -2041,6 +2041,31 @@ def _mask_names_cuda_ordinals(parent_visible_spec: Dict[str, Any]) -> bool:
     return not _cuda_order_matches_smi()
 
 
+_cuda_card_identities: Dict[int, tuple] = {}
+
+
+def _cuda_cards_identical(gpu_ids: Optional[list[int]] = None) -> Optional[bool]:
+    """Whether the NVIDIA cards ``gpu_ids`` (default: every physical card) share one identity per nvidia-smi (name, total memory, compute cap, max SM clock), out of process. None when unknown. Read once and cached: a card's identity does not change, and a grown card count re-reads."""
+    global _cuda_card_identities
+    if IS_ROCM:
+        return None
+    count = get_physical_gpu_count()
+    wanted = list(range(count)) if gpu_ids is None else list(gpu_ids)
+    if not set(wanted) <= set(_cuda_card_identities) or len(_cuda_card_identities) < count:
+        try:
+            from . import nvidia
+            identities = nvidia.get_card_identities()
+        except Exception:
+            return None
+        if not identities:
+            return None
+        _cuda_card_identities = identities
+    rows = [_cuda_card_identities.get(gpu_id) for gpu_id in wanted]
+    if not rows or any(row is None for row in rows):
+        return None
+    return len(set(rows)) == 1
+
+
 def _amd_smi_ids_for_hip_ids(hip_ids: Optional[list[int]]) -> Optional[list[int]]:
     """Translate visible HIP ordinals to amd-smi physical GPU IDs."""
     if hip_ids is None or not hip_ids:
@@ -6105,7 +6130,9 @@ def auto_select_gpu_ids(
         metadata["selected_gpu_ids"] = parent_ids
         return parent_ids, metadata
 
-    if _mask_names_cuda_ordinals(parent_visible_spec):
+    # Identical cards enumerate in PCI order under FASTEST_FIRST too, so the SMI rows are already the
+    # cards the ids select; torch telemetry (a CUDA context per card) only when they differ.
+    if _mask_names_cuda_ordinals(parent_visible_spec) and _cuda_cards_identical() is not True:
         # The display keeps the CLI rows; ranking needs the cards the worker will get.
         utilization = {
             "devices": [

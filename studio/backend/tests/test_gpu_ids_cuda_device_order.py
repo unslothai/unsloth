@@ -95,6 +95,8 @@ def _host(monkeypatch, physical = 2):
     monkeypatch.setattr(hw, "rocm_gpu_ids_without_torch_kernels", lambda: set())
     monkeypatch.setattr(hw, "get_visible_gpu_utilization", _smi_utilization)
     monkeypatch.setattr(hw, "_torch_get_per_device_info", _torch_rows)
+    # A 3060 beside a 4090: FASTEST_FIRST reorders them.
+    monkeypatch.setattr(hw, "_cuda_cards_identical", lambda gpu_ids = None: False)
 
 
 def _auto(env):

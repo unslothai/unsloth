@@ -486,6 +486,40 @@ def get_compute_capabilities() -> dict[int, tuple[int, int]]:
     return capabilities
 
 
+def get_card_identities() -> dict[int, tuple[str, ...]]:
+    """nvidia-smi row index -> (name, total memory, compute cap, max SM clock), no mask and no torch.
+
+    These are what CUDA's FASTEST_FIRST heuristic orders by, so equal rows enumerate in PCI order.
+    {} when unreadable.
+    """
+    try:
+        result = gpu_query.run_nvidia_smi(
+            [
+                _nvidia_smi_executable(),
+                "--query-gpu=index,name,memory.total,compute_cap,clocks.max.sm",
+                "--format=csv,noheader",
+            ],
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 5,
+            env = child_env_without_native_path_secret(),
+            **_windows_hidden_subprocess_kwargs(),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return {}
+    if result.returncode != 0:
+        return {}
+    identities: dict[int, tuple[str, ...]] = {}
+    for line in result.stdout.strip().splitlines():
+        index, *fields = (part.strip() for part in line.split(","))
+        if not index.isdigit() or len(fields) != 4:
+            return {}
+        identities[int(index)] = tuple(fields)
+    return identities
+
+
 def get_physical_gpu_inventory() -> dict[str, Any]:
     """Every NVIDIA GPU the driver enumerates, with no visibility mask and no torch. Display-only inventory: ``index`` is nvidia-smi's own row number, a physical id and NOT something a caller may pin, because the whole point of this probe is that PyTorch cannot open these devices. A failed probe comes back as a structured unavailable result, so this never raises out of an endpoint."""
     rows = _query_gpu_inventory("get_physical_gpu_inventory")

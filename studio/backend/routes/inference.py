@@ -37054,31 +37054,41 @@ def _validated_media_picks(catalog_at: float) -> dict:
     with _MEDIA_PICK_CACHE_LOCK:
         if _MEDIA_PICK_CACHE["at"] == catalog_at:
             return _MEDIA_PICK_CACHE["picks"]
-        from core.inference.media_locality import is_edit_only, missing_download_bytes
+        from core.inference.media_locality import (
+            _PLANNED_ORDINAL,
+            catalog_gpu_ordinal,
+            is_edit_only,
+            missing_download_bytes,
+        )
         from core.inference.media_model_index import (
             available_media_model_ids,
             resolve_local_media_model,
         )
 
         picks: dict = {}
-        for task in _MEDIA_MODEL_TASKS:
-            rows = []
-            for model_id in available_media_model_ids(task):
-                pick = resolve_local_media_model(model_id, task = task)
-                if pick is None:
-                    continue
-                # The local catalog tags an instruction-editing checkpoint text-to-image, but it
-                # ships no txt2img workflow: the switch refuses it with a 400 and a resident one
-                # is refused by /v1/images/generations too.
-                if task == "text-to-image" and is_edit_only(pick):
-                    continue
-                try:
-                    local = missing_download_bytes(_media_owner(task), pick) == 0
-                except Exception as exc:  # noqa: BLE001
-                    logger.debug("media locality unavailable for %s: %s", model_id, exc)
-                    local = False
-                rows.append((model_id, pick, local))
-            picks[task] = rows
+        # One placement decision per refresh, never a live ranking per pick.
+        planned = _PLANNED_ORDINAL.set(catalog_gpu_ordinal())
+        try:
+            for task in _MEDIA_MODEL_TASKS:
+                rows = []
+                for model_id in available_media_model_ids(task):
+                    pick = resolve_local_media_model(model_id, task = task)
+                    if pick is None:
+                        continue
+                    # The local catalog tags an instruction-editing checkpoint text-to-image, but it
+                    # ships no txt2img workflow: the switch refuses it with a 400 and a resident one
+                    # is refused by /v1/images/generations too.
+                    if task == "text-to-image" and is_edit_only(pick):
+                        continue
+                    try:
+                        local = missing_download_bytes(_media_owner(task), pick) == 0
+                    except Exception as exc:  # noqa: BLE001
+                        logger.debug("media locality unavailable for %s: %s", model_id, exc)
+                        local = False
+                    rows.append((model_id, pick, local))
+                picks[task] = rows
+        finally:
+            _PLANNED_ORDINAL.reset(planned)
         _MEDIA_PICK_CACHE.update(at = catalog_at, picks = picks)
         return picks
 
@@ -49391,23 +49401,29 @@ async def _selected_gpu_ordinal(gpu_ids, *, allow_ranking: bool = True) -> Optio
         resolve_selected_cuda_ordinal,
     )
 
-    if not gpu_ids and not allow_ranking:
-        return None
-    device = await asyncio.to_thread(lambda: resolve_diffusion_device_target().device)
-    if device != "cuda":
-        return None
     if not gpu_ids:
+        if not allow_ranking:
+            return None
         # An auto-switch load uses the card its locality check planned against.
         from core.inference.media_locality import planned_gpu_ordinal
 
         pinned, ordinal = planned_gpu_ordinal()
         if pinned:
             return ordinal
+        # Zero / one GPU, ROCm, Apple and CPU: nothing to rank, so no device or dtype probe either.
+        if not diffusion_device.auto_cuda_ranking_possible():
+            return None
+        device = await asyncio.to_thread(lambda: resolve_diffusion_device_target().device)
+        if device != "cuda":
+            return None
         # Automatic ranks the visible cards too (#8235); the current device is PCI slot 0.
         # Pinned for this request, so begin_load's own fallback reuses it (None included).
         ordinal = await asyncio.to_thread(diffusion_device.resolve_auto_cuda_ordinal)
         diffusion_device._PLANNED_ORDINAL.set(ordinal)
         return ordinal
+    device = await asyncio.to_thread(lambda: resolve_diffusion_device_target().device)
+    if device != "cuda":
+        return None
     # The keyword only when it is not the default, so the ordinary path calls the resolver with
     # the same one-argument shape it always had (a monkeypatched seam still fits it).
     if allow_ranking:

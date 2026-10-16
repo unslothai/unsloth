@@ -98,7 +98,7 @@ from .diffusion_device import (
     install_frame_pad_fix,
     pin_cuda_ordinal,
     placed_cuda_ordinal,
-    resolve_auto_cuda_ordinal,
+    auto_cuda_ordinal_for_load,
     resolve_diffusion_device_target,
     resolve_selected_cuda_ordinal,
 )
@@ -3827,9 +3827,10 @@ class DiffusionBackend:
         # the contract says to drop. Re-ranked only when the caller did not already do it: free VRAM moves between the
         # route's preflight and here, so resolving twice can approve a scheme against one card and place the weights
         # on another.
-        if gpu_ordinal is None:
+        auto_ordinal = gpu_ordinal is None and not gpu_ids
+        if gpu_ordinal is None and gpu_ids:
             gpu_ordinal = (
-                (resolve_selected_cuda_ordinal(gpu_ids) if gpu_ids else resolve_auto_cuda_ordinal())
+                resolve_selected_cuda_ordinal(gpu_ids)
                 if resolve_diffusion_device_target().device == "cuda"
                 else None
             )
@@ -3847,6 +3848,9 @@ class DiffusionBackend:
             and resolve_model_kind(gguf_filename, model_kind) == "gguf"
         ):
             raise ValueError(_WHOLE_PIPELINE_GGUF_LORA_MSG)
+        if auto_ordinal:
+            # Automatic, after validation: one GPU, Apple, CPU and ROCm skip every probe here.
+            gpu_ordinal = auto_cuda_ordinal_for_load()
         # Refuse an EXPLICIT precision this host can never honor BEFORE the load starts, so the route answers 409 with
         # the reason instead of evicting the resident model, downloading several GB and only then failing. The
         # declines that need the real footprint can only be found mid-load and surface through load-progress.
