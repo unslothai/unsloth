@@ -3,8 +3,9 @@
 
 // Type-checks the frontend with `bun check` when a Bun that has it is on PATH, else with the
 // pinned TypeScript compiler. Usage: node scripts/typecheck.mjs [--tests]
-// UNSLOTH_TYPECHECK=auto (default) | tsc | bun. In auto mode a red Bun result is re-checked with
-// tsc, so the pinned compiler stays the authority and a different Bun can only make it faster.
+// UNSLOTH_TYPECHECK=auto (default) | tsc | bun. Bun is used only when the TypeScript version its
+// `check` follows (process.versions.typescript) is the one the project pins, so both apply the
+// same rules. In auto mode a red Bun result is also re-checked with tsc.
 
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
@@ -43,10 +44,9 @@ function hasCheckScript() {
   }
 }
 
-// Returns the Bun version string ("" if unknown) when `bun check` exists, else null.
-// Bun before 1.4.3 has no `check` command and would treat it as `bun run check`.
-function probeBun() {
-  const probe = spawnSync("bun", ["--help"], {
+// Output of a short bun command, or null when bun is missing or the command fails.
+function bunOutput(args) {
+  const probe = spawnSync("bun", args, {
     cwd: root,
     encoding: "utf8",
     // biome-ignore lint/style/useNamingConvention: environment variable names
@@ -59,11 +59,22 @@ function probeBun() {
   if (probe.error || probe.status !== 0 || typeof probe.stdout !== "string") {
     return null;
   }
-  const help = probe.stdout.replace(ansi, "").replace(/\r/g, "");
-  if (!/^ {2}check\s/m.test(help)) {
+  return probe.stdout.replace(ansi, "").replace(/\r/g, "");
+}
+
+// Returns the Bun version string ("" if unknown) when `bun check` exists, else null.
+// Bun before 1.4.3 has no `check` command and would treat it as `bun run check`.
+function probeBun() {
+  const help = bunOutput(["--help"]);
+  if (help === null || !/^ {2}check\s/m.test(help)) {
     return null;
   }
   return help.match(/\((\d+\.\d+\.\d+)[^)]*\)/)?.[1] ?? "";
+}
+
+// The TypeScript version `bun check` follows, "" if Bun does not say.
+function bunTypeScript() {
+  return bunOutput(["-p", "process.versions.typescript"])?.trim() ?? "";
 }
 
 function tsVersion() {
@@ -132,13 +143,29 @@ if (mode === "bun") {
       "UNSLOTH_TYPECHECK=bun, but no Bun with a `check` command (Bun >= 1.4.3) is on PATH",
     );
   }
+  const bunTs = bunTypeScript();
+  if (bunTs !== tsVersion()) {
+    fail(
+      `UNSLOTH_TYPECHECK=bun, but Bun ${version} follows TypeScript ${bunTs || "unknown"} and the project pins ${tsVersion() || "unknown"}`,
+    );
+  }
   process.exit(runBun(version));
 }
 if (mode !== "auto") {
   fail(`unknown UNSLOTH_TYPECHECK=${mode} (expected auto, tsc or bun)`, 2);
 }
 
-const bunVersion = hasCheckScript() ? null : probeBun();
+let bunVersion = hasCheckScript() ? null : probeBun();
+if (bunVersion !== null) {
+  const bunTs = bunTypeScript();
+  const projectTs = tsVersion();
+  if (!bunTs || bunTs !== projectTs) {
+    console.error(
+      `typecheck: Bun ${bunVersion} follows TypeScript ${bunTs || "unknown"}, not the pinned ${projectTs || "unknown"}; using tsc`,
+    );
+    bunVersion = null;
+  }
+}
 if (bunVersion !== null && runBun(bunVersion) === 0) {
   process.exit(0);
 }

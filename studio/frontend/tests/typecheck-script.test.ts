@@ -63,6 +63,7 @@ const TSC_ARGS = ["-b", "--pretty", "false"];
 const TSC_TEST_ARGS = ["-p", "tsconfig.test.json", "--pretty", "false"];
 const BUN_ARGS = ["check", "--build", "--no-pretty"];
 const BUN_TEST_ARGS = ["check", "--project=tsconfig.test.json", "--no-pretty"];
+const TS_PROBE = ["-p", "process.versions.typescript"];
 
 const FAKE_TSC = `const { appendFileSync } = require("node:fs");
 const { join } = require("node:path");
@@ -126,6 +127,10 @@ const args = process.argv.slice(2);
 appendFileSync(join(here, "bun.log"), JSON.stringify(args) + "\\n");
 if (args[0] === "--help") {
   process.stdout.write(readFileSync(join(here, "help.txt")));
+  process.exit(0);
+}
+if (args[0] === "-p") {
+  process.stdout.write((process.env.FAKE_BUN_TS || "7.0.2") + "\\n");
   process.exit(0);
 }
 process.exit(Number(process.env.FAKE_BUN_EXIT || 0));
@@ -207,7 +212,12 @@ test(
     const r = run(fx, ["--tests"]);
     assert.equal(r.status, 0, r.stderr);
     assert.match(r.stderr, /typecheck: bun check \(Bun 1\.4\.3\)/);
-    assert.deepEqual(fx.bunCalls(), [["--help"], BUN_ARGS, BUN_TEST_ARGS]);
+    assert.deepEqual(fx.bunCalls(), [
+      ["--help"],
+      TS_PROBE,
+      BUN_ARGS,
+      BUN_TEST_ARGS,
+    ]);
     assert.deepEqual(fx.tscCalls(), []);
   },
 );
@@ -216,7 +226,7 @@ test("colored CRLF help still counts as having check", POSIX_ONLY, () => {
   const fx = fixture({ bunHelp: COLOR_HELP });
   const r = run(fx);
   assert.equal(r.status, 0, r.stderr);
-  assert.deepEqual(fx.bunCalls(), [["--help"], BUN_ARGS]);
+  assert.deepEqual(fx.bunCalls(), [["--help"], TS_PROBE, BUN_ARGS]);
   assert.deepEqual(fx.tscCalls(), []);
 });
 
@@ -236,7 +246,7 @@ test(
     const r = run(green, ["--tests"], { FAKE_BUN_EXIT: "1" });
     assert.equal(r.status, 0, r.stderr);
     assert.match(r.stderr, /bun check reported errors; confirming with tsc/);
-    assert.deepEqual(green.bunCalls(), [["--help"], BUN_ARGS]);
+    assert.deepEqual(green.bunCalls(), [["--help"], TS_PROBE, BUN_ARGS]);
     assert.deepEqual(green.tscCalls(), [TSC_ARGS, TSC_TEST_ARGS]);
 
     const red = fixture({ bunHelp: NEW_HELP });
@@ -297,9 +307,44 @@ test("UNSLOTH_TYPECHECK=bun passes bun's exit code through", POSIX_ONLY, () => {
     FAKE_BUN_EXIT: "1",
   });
   assert.equal(r.status, 1);
-  assert.deepEqual(fx.bunCalls(), [["--help"], BUN_ARGS]);
+  assert.deepEqual(fx.bunCalls(), [["--help"], TS_PROBE, BUN_ARGS]);
   assert.deepEqual(fx.tscCalls(), []);
 });
+
+test(
+  "a Bun that follows another TypeScript version leaves auto mode on tsc",
+  POSIX_ONLY,
+  () => {
+    const fx = fixture({ bunHelp: NEW_HELP });
+    const r = run(fx, ["--tests"], { FAKE_BUN_TS: "7.1.0" });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(
+      r.stderr,
+      /follows TypeScript 7\.1\.0, not the pinned 7\.0\.2; using tsc/,
+    );
+    assert.deepEqual(fx.bunCalls(), [["--help"], TS_PROBE]);
+    assert.deepEqual(fx.tscCalls(), [TSC_ARGS, TSC_TEST_ARGS]);
+  },
+);
+
+test(
+  "UNSLOTH_TYPECHECK=bun refuses a Bun that follows another TypeScript version",
+  POSIX_ONLY,
+  () => {
+    const fx = fixture({ bunHelp: NEW_HELP });
+    const r = run(fx, ["--tests"], {
+      UNSLOTH_TYPECHECK: "bun",
+      FAKE_BUN_TS: "7.1.0",
+    });
+    assert.equal(r.status, 1);
+    assert.match(
+      r.stderr,
+      /follows TypeScript 7\.1\.0 and the project pins 7\.0\.2/,
+    );
+    assert.deepEqual(fx.bunCalls(), [["--help"], TS_PROBE]);
+    assert.deepEqual(fx.tscCalls(), []);
+  },
+);
 
 test("an unknown UNSLOTH_TYPECHECK value exits 2", () => {
   const fx = fixture();
