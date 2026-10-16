@@ -53,10 +53,10 @@ def layernorm_forward(
     W_row = tl.load(W + col_offsets, mask = mask, other = 0).to(tl.float32)
 
     mean_X = tl.sum(X_row, axis = 0) / n_cols
-    # (X[0] - mean) == -mean, so mask it out.
+    # mask invalid lanes because subtraction turns loaded zeros into -mean.
     XX = tl.where(mask, X_row - mean_X, 0)
     row_var = tl.sum(XX * XX, axis = 0) / n_cols
-    # Explicit float32 scalar to ensure correct type promotion on HIP/ROCm.
+    # explicit float32 scalar ensures correct type promotion on HIP/ROCm.
     eps_f32 = tl.full((), eps, tl.float32)
     inv_var = tl.math.rsqrt(row_var + eps_f32)
     tl.store(r, inv_var)
@@ -71,8 +71,7 @@ def layernorm_forward(
 def _layernorm_backward_row(
     dY, dX, X, W_row, r, mu, row_idx, col_offsets, mask, n_cols: tl.constexpr
 ):
-    # Approximately follows karpathy/llm.c doc/layernorm/layernorm.md
-    # Per torchtune's Fp32LayerNorm, all modules are in float32.
+    # based on karpathy/llm.c; float32 matches torchtune's Fp32LayerNorm.
     dY_row = tl.load(dY + col_offsets, mask = mask, other = 0).to(tl.float32)
     X_row = tl.load(X + col_offsets, mask = mask, other = 0).to(tl.float32)
 
@@ -95,9 +94,9 @@ def layernorm_backward(
     b,
     r,
     mu,
-    dY_row_stride: tl.constexpr,  # n_cols
+    dY_row_stride: tl.constexpr,
     dX_row_stride: tl.constexpr,
-    X_row_stride: tl.constexpr,  # n_cols
+    X_row_stride: tl.constexpr,
     n_cols: tl.constexpr,
     eps: tl.constexpr,
     LONG_INDEXING: tl.constexpr,
@@ -123,8 +122,7 @@ def layernorm_backward(
     )
 
 
-# dW / dB follow flash-linear-attention's layer_norm_bwd_kernel_row (fla/modules/norm/layernorm.py,
-# MIT licence, Copyright (c) 2023-2026 Songlin Yang, Yu Zhang, Zhiyuan Li).
+# MIT 2023-2026 Songlin Yang et al.: dW/dB follow flash-linear-attention's layer_norm_bwd_kernel_row
 @triton.jit
 def layernorm_backward_dw(
     dY,
@@ -281,7 +279,7 @@ class Fast_Layernorm(torch.autograd.Function):
         n_rows, n_cols = dY.shape
         device = dY.device
         train_w, train_b = ctx.needs_input_grad[1], ctx.needs_input_grad[2]
-        # Never into dY: autograd may hand the same grad to other nodes, or it is the caller's.
+        # do not write into dY because autograd may share it with other nodes or the caller
         dX = torch.empty_like(dY)
         LONG_INDEXING = long_indexing(dY, dX, X, block = ctx.BLOCK_SIZE)
 
@@ -308,7 +306,7 @@ class Fast_Layernorm(torch.autograd.Function):
             return dX.view(*shape), None, None, None
 
         programs, rows_per_program = _dw_programs(device, n_rows, ctx.num_warps)
-        # Every program stores its partial row, so empty suffices unless nothing launches.
+        # every program stores its partial row, so empty works unless no program launches
         alloc = torch.empty if n_rows > 0 else torch.zeros
         partials = alloc((train_w + train_b, programs, n_cols), dtype = torch.float32, device = device)
         dW = torch.empty(n_cols, dtype = W.dtype, device = device) if train_w else None

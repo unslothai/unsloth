@@ -85,7 +85,7 @@ def _rms_backward_row(
     TRAIN_W: tl.constexpr,
     FROM_Y: tl.constexpr,
 ):
-    # FROM_Y: X holds the forward output Y, and normed = Y / W (r still scales dX).
+    # with FROM_Y, X holds Y and normed = Y / W; r still scales dX.
     dY += row_idx * dY_row_stride
     X += row_idx * X_row_stride
     r += row_idx * r_row_stride
@@ -97,12 +97,12 @@ def _rms_backward_row(
 
     inv_var = tl.load(r).to(tl.float32)
     if FROM_Y:
-        # Masked lanes would be 0 / 0.
+        # masked lanes would divide 0 by 0.
         normed = tl.where(mask, X_row / (W_row + 1.0 if GEMMA else W_row), 0.0)
     else:
         normed = X_row * inv_var
     if TRAIN_W:
-        # dW before the row sum so the fp32 dY row is not held across it (fewer registers, all programs resident).
+        # accumulate dW before the row sum to free the fp32 dY row and keep all programs resident.
         if GEMMA:
             dW_acc += dY_row * normed
         else:
@@ -368,12 +368,12 @@ def _rms_backward_rows_block(
         dY_W = dY_rows * W_row[None, :]
 
     rowsum_dY_normed = _row_dot_in_row_kernel_order(dY_W, normed, ROWS, WARPS)
-    # Spelled as in the one-row kernel: an explicit fma here turns -0 into +0 on sm75.
+    # match one-row arithmetic because its fused multiply-add turns -0 into +0 on sm75.
     output = (inv_var / n_cols)[:, None] * (n_cols * dY_W - normed * rowsum_dY_normed[:, None])
     tl.store(dX + rows[:, None] * dX_row_stride + col_offsets[None, :], output, mask = mask)
-    # Masked rows load zeros, so they add nothing; dead code unless TRAIN_W.
+    # masked rows contribute zero; this dW path is dead unless TRAIN_W.
     if not GEMMA:
-        # The forward multiplies W by normed rounded to W's dtype.
+        # forward multiplies W by normed rounded to W's dtype.
         normed = normed.to(W.dtype.element_ty).to(tl.float32)
     return tl.sum(dY_rows * normed, axis = 0)
 
@@ -874,7 +874,7 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
         )
         ctx.save_for_backward(Y if ctx.FROM_Y else X, W, r)
         if ctx.FROM_Y:
-            # LoRA_QKV / LoRA_MLP then do not overwrite Y with their dX, nor views of it (tiled MLP).
+            # LoRA_QKV and LoRA_MLP use this marker to preserve Y and its tiled views.
             Y._unsloth_rmsnorm_saved = True
             if Y._base is not None:
                 Y._base._unsloth_rmsnorm_saved = True
@@ -887,7 +887,7 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
         dY = dY.reshape(-1, dim).contiguous()
         X, W, r = ctx.saved_tensors
         X = X.view(-1, dim)
-        # Never into dY: autograd may hand the same grad to other nodes, or it is the caller's.
+        # allocate dX because autograd may share dY with other nodes or the caller.
         dX = torch.empty_like(dY)
         with torch_gpu_device(dY.device):
             dW = _rms_backward(
@@ -906,7 +906,7 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
         return dX, dW, None, None, None
 
 
-# Compiled graphs take these ops: same kernels as the Function.
+# compiled graphs use these ops with the same kernels as the Function.
 _TRACEABLE = hasattr(torch.library, "triton_op") and hasattr(torch.library, "wrap_triton")
 
 
@@ -949,7 +949,7 @@ if _TRACEABLE:
     def _rms_layernorm_op(
         X: torch.Tensor, W: torch.Tensor, eps: float, gemma: bool
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        # Called eagerly (outside a compiled graph) the launch needs X's device made current.
+        # eager launches outside compiled graphs need X's device made current.
         with torch_gpu_device(X.device):
             return _rms_forward(X, W, eps, gemma, _traced_kernel)
 
@@ -976,7 +976,7 @@ if _TRACEABLE:
                 _traced_kernel,
                 train_w = train_w,
             )
-        # Empty dW = frozen (ops return tensors only).
+        # empty dW represents a frozen weight because ops return tensors only.
         return dX, dW if train_w else W.new_empty(0)
 
     def _rms_setup_context(ctx, inputs, output):

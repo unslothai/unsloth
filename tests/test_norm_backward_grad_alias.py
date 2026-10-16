@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-# The incoming grad of a norm backward can also belong to another node (y + s hands one
-# tensor to both branches) or to the caller (autograd.grad(..., grad_outputs)), so the
-# backward must not write dX over it.
+# incoming grads may be shared by nodes or passed through grad_outputs; do not overwrite them
 
 import pytest
 from real_accelerator import has_real_cuda
@@ -22,7 +20,6 @@ def _ln_fp64(x, W, b):
 
 
 def _graphs(norm, shape, device, dtype):
-    # Each returns (dX from the Unsloth norm, dX from the fp64 reference, grads to check unmodified).
     def user_grad(x, go, reference):
         out = torch.autograd.grad(norm(x), x, go)[0]
         x64 = x.detach().double().requires_grad_()
