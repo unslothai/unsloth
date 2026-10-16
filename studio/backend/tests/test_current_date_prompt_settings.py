@@ -215,10 +215,30 @@ class TestExternalProviderMessages:
         assert out[0]["content"] == "The current date is 2026-08-15.\n\nBe terse."
         assert out[1] == {"role": "user", "content": "hi"}
 
-    def test_other_local_servers_still_get_a_synthesized_system_turn(self):
+    @pytest.mark.parametrize("provider_type", ("llama_cpp", "vllm", "lemonade"))
+    def test_template_servers_keep_their_default_system_prompt_when_studio_sends_none(
+        self, provider_type
+    ):
+        import routes.inference as inference
+
+        messages = [{"role": "user", "content": "hi"}]
+        out = inference._prepend_current_date_to_messages(messages, provider_type = provider_type)
+        assert out is messages
+
+    @pytest.mark.parametrize("provider_type", ("llama_cpp", "vllm", "lemonade"))
+    def test_template_servers_still_date_a_system_turn_studio_composed(self, provider_type):
+        import routes.inference as inference
+
+        out = inference._prepend_current_date_to_messages(
+            [{"role": "system", "content": "Be terse."}, {"role": "user", "content": "hi"}],
+            provider_type = provider_type,
+        )
+        assert out[0]["content"] == "The current date is 2026-08-15.\n\nBe terse."
+
+    def test_custom_connections_still_get_a_synthesized_system_turn(self):
         import routes.inference as inference
         out = inference._prepend_current_date_to_messages(
-            [{"role": "user", "content": "hi"}], provider_type = "llama_cpp"
+            [{"role": "user", "content": "hi"}], provider_type = "custom"
         )
         assert out[0] == {"role": "system", "content": "The current date is 2026-08-15."}
 

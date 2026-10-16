@@ -220,11 +220,11 @@ def test_an_api_request_without_resolved_server_tools_stays_undated(monkeypatch)
     ]
 
 
-def test_an_ollama_connection_keeps_its_modelfile_prompt_when_studio_sends_no_system_turn(
-    monkeypatch,
+@pytest.mark.parametrize("provider_type", ("ollama", "llama_cpp", "vllm"))
+def test_a_local_server_keeps_its_own_system_prompt_when_studio_sends_no_system_turn(
+    monkeypatch, provider_type
 ):
-    # A synthesized date-only turn at index 0 is what displaces the Modelfile SYSTEM (#10436).
-    inf = _install(monkeypatch, "ollama")
+    inf = _install(monkeypatch, provider_type)
     monkeypatch.setattr(
         inf,
         "current_date_prompt_line",
@@ -263,10 +263,8 @@ def test_an_ollama_connection_still_dates_a_studio_composed_system_prompt(monkey
     ]
 
 
-@pytest.mark.parametrize("provider_type", ("llama_cpp", "vllm", "custom"))
-def test_the_other_self_hosted_providers_still_get_the_synthesized_turn(monkeypatch, provider_type):
-    """These have no Modelfile SYSTEM to lose, so the exemption must not widen to them."""
-    inf = _install(monkeypatch, provider_type)
+def test_a_custom_connection_still_gets_the_synthesized_turn(monkeypatch):
+    inf = _install(monkeypatch, "custom")
     monkeypatch.setattr(
         inf,
         "current_date_prompt_line",
