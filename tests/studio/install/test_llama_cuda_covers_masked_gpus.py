@@ -127,7 +127,8 @@ class TestLinux:
             MASKED_LINUX, release([LINUX_NEWER, LINUX_WIDE])
         )
         assert selection is not None
-        assert [a.bundle_profile for a in selection.attempts] == ["cuda12-wide"]
+        # The visible-only pick stays as the fallback attempt.
+        assert [a.bundle_profile for a in selection.attempts] == ["cuda12-wide", "cuda12-newer"]
         assert any("physical_sms=61,89" in line for line in selection.selection_log)
 
     def test_no_bundle_for_every_card_keeps_the_visible_choice_without_a_warning(self, monkeypatch):
@@ -146,7 +147,7 @@ class TestLinux:
             lambda *a, **k: m.CudaRuntimePreference(None, []),
         )
         attempts = m._linux_published_attempts(MASKED_LINUX, release([LINUX_NEWER, LINUX_WIDE]))
-        assert [a.bundle_profile for a in attempts] == ["cuda12-wide"]
+        assert [a.bundle_profile for a in attempts] == ["cuda12-wide", "cuda12-newer"]
 
 
 class TestWindows:
@@ -154,9 +155,40 @@ class TestWindows:
         attempts = m.published_windows_cuda_attempts(
             MASKED_WINDOWS, release([WIN_NEWER, WIN_WIDE]), None
         )
-        assert [a.bundle_profile for a in attempts] == ["cuda12-wide"]
+        assert [a.bundle_profile for a in attempts] == ["cuda12-wide", "cuda12-newer"]
 
     def test_no_bundle_for_every_card_keeps_the_visible_choice(self):
         attempts = m.published_windows_cuda_attempts(MASKED_WINDOWS, release([WIN_NEWER]), None)
         assert [a.bundle_profile for a in attempts] == ["cuda12-newer"]
         assert any("selecting for the visible GPUs" in line for line in attempts[0].selection_log)
+
+    def test_unknown_coverage_is_not_a_widening(self):
+        # A bundle without SM metadata cannot prove it covers the hidden card, so the visible pick stays.
+        unknown = m.PublishedLlamaArtifact(
+            asset_name = "llama-app-win-cuda12-unknown-x64.zip",
+            install_kind = "windows-cuda",
+            runtime_line = "cuda12",
+            coverage_class = "targeted",
+            supported_sms = [],
+            min_sm = None,
+            max_sm = None,
+            bundle_profile = "cuda12-unknown",
+            rank = 50,
+        )
+        attempts = m.published_windows_cuda_attempts(MASKED_WINDOWS, release([WIN_NEWER, unknown]), None)
+        assert "cuda12-newer" in [a.bundle_profile for a in attempts]
+
+
+class TestKeptInstallProfile:
+    def test_a_masked_mixed_host_records_its_physical_caps(self):
+        assert m.host_profile(MASKED_LINUX)["physical_compute_caps"] == ["61", "89"]
+
+    @pytest.mark.parametrize("physical", [["89"], []])
+    def test_other_hosts_keep_their_profile_keys(self, physical):
+        assert "physical_compute_caps" not in m.host_profile(host("Linux", ["89"], physical))
+
+
+@pytest.mark.parametrize("system", ["Linux", "Windows"])
+def test_unknown_visible_caps_keep_the_unknown_gpu_safeguard(system):
+    # An empty or unresolvable mask hides which card runs: no widening, main's safeguard decides.
+    assert m._mask_widened_sms(host(system, [], ["61", "89"], visible = "")) is None

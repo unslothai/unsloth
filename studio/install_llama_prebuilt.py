@@ -2006,11 +2006,12 @@ def _mask_widened_sms(host: HostInfo) -> list[str] | None:
     The mask is per process, the install tree is not: a bundle cut to the visible cards dies
     with "no kernel image" on the hidden one once the mask is gone, and torch / setup.sh
     already target every physical GPU. Coverage only widens; the mask still picks the card
-    at runtime. None when nothing is hidden or the physical caps are unknown.
+    at runtime. None when nothing is hidden or the physical caps are unknown, and when the
+    visible caps are unknown: the visible-only path's unknown-GPU safeguard then decides.
     """
     visible = normalize_compute_caps(host.compute_caps)
     physical = normalize_compute_caps(host.physical_compute_caps)
-    if not physical or set(physical) <= set(visible):
+    if not visible or not physical or set(physical) <= set(visible):
         return None
     return normalize_compute_caps(physical + visible)
 
@@ -2040,6 +2041,18 @@ def linux_cuda_choice_from_release(
                 host_sms = widened_sms,
             )
             if widened is not None:
+                # The visible-only picks stay as later attempts, should the wider one fail.
+                visible = linux_cuda_choice_from_release(
+                    host,
+                    release,
+                    preferred_runtime_line,
+                    selection_preamble,
+                    host_sms = normalize_compute_caps(host.compute_caps),
+                )
+                names = {a.name for a in widened.attempts}
+                widened.attempts.extend(
+                    a for a in (visible.attempts if visible else []) if a.name not in names
+                )
                 return widened
             # No bundle covers every physical card: keep the visible-only choice.
             selection_preamble.append(
@@ -3677,8 +3690,21 @@ def published_windows_cuda_attempts(
                 arch = arch,
                 host_sms = widened_sms,
             )
+            # Only bundles whose SM metadata proves they cover every card count as widening.
+            widened = [
+                a for a in widened if a.supported_sms and a.min_sm is not None and a.max_sm is not None
+            ]
             if widened:
-                return widened
+                names = {a.name for a in widened}
+                visible = published_windows_cuda_attempts(
+                    host,
+                    release,
+                    preferred_runtime_line,
+                    selection_preamble,
+                    arch = arch,
+                    host_sms = normalize_compute_caps(host.compute_caps),
+                )
+                return widened + [a for a in visible if a.name not in names]
             selection_preamble.append(
                 "windows_cuda_selection: no bundle covers physical_sms="
                 f"{','.join(widened_sms)}; selecting for the visible GPUs"
@@ -7532,6 +7558,12 @@ def host_profile(host: HostInfo) -> dict[str, Any]:
             list(host.driver_cuda_version) if host.driver_cuda_version else None
         ),
         "compute_caps": _sorted_labels(host.compute_caps),
+        # Only when a mask hides another SM (the selectors then widen), so other hosts keep their profile.
+        **(
+            {"physical_compute_caps": _sorted_labels(host.physical_compute_caps)}
+            if _mask_widened_sms(host) is not None
+            else {}
+        ),
         "has_rocm": bool(host.has_rocm),
         # Upstream ROCm assets go by the runtime's major.minor, which the GPU fields do not carry.
         "rocm_runtime": _rocm_runtime_for_profile(host),
