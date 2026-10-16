@@ -286,7 +286,9 @@ class _StateOffloader:
             if closure is None and _grad_only_step(optimizer):
                 # Unchunked weight_quant Q-GaLore still skips parameters without a gradient.
                 params = [
-                    p for group in optimizer.param_groups for p in group["params"]
+                    p
+                    for group in optimizer.param_groups
+                    for p in group["params"]
                     if p.grad is not None
                 ]
             self.restore(params)

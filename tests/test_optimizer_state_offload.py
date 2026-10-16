@@ -603,6 +603,7 @@ def test_weight_quant_q_galore_restores_only_active_state(monkeypatch):
     optimizer.step()
     # A closure still restores everything, as does a class that may touch gradless parameters.
     optimizer.step(lambda: None)
+
     class Custom(torch.optim.SGD):
         def step(self, closure = None):
             return None
