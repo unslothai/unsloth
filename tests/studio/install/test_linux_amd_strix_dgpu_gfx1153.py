@@ -495,6 +495,7 @@ _NAVI31_LINE = (
         ("", [_K2_LINE, _NAVI31_LINE], ""),
     ],
 )
+@_POSIX
 def test_setup_sh_runtime_less_summary_names_gfx1153(gpu_name, lspci, expected, tmp_path):
     # No rocminfo / amd-smi: the summary still warns for a lone Krackan Point 2, never beside a covered peer.
     assert _setup_unsupported_lookup(gpu_name, lspci, tmp_path) == expected
