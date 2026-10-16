@@ -4419,18 +4419,93 @@ html[data-chat-font] .aui-root {
 		}
 	}
 
-	/* Streamdown's table controls, drawn like the code block's (ACTION_BUTTON_CLASS in
-	   markdown-text.tsx). Without controls the table box is the only child. */
-	.aui-thread-root [data-streamdown="table-wrapper"] > div:first-child:not(:last-child) {
-		margin-right: calc(var(--spacing) * 1);
+	/* Markdown tables (markdown-table.tsx): rules only, no card. These selectors outrank the
+	   cell classes Streamdown hard-codes (text-sm, nowrap header, tinted thead, divide-y). */
+	.aui-md-table {
+		position: relative;
+		margin-block: calc(1rem * var(--ui-space-scale, 1));
 	}
 
-	.aui-thread-root [data-streamdown="table-wrapper"] > div > .relative {
+	/* Wide tables scroll inside the column instead of widening it. */
+	.aui-md-table-scroll {
+		max-width: 100%;
+		overflow-x: auto;
+	}
+
+	.aui-md-table table {
+		width: 100%;
+		border-collapse: collapse;
+	}
+
+	.aui-md-table thead {
+		background: transparent;
+	}
+
+	.aui-md-table thead > tr {
+		border-bottom: 1px solid var(--color-border);
+	}
+
+	.aui-md-table tbody > tr {
+		border-color: color-mix(in oklab, var(--color-border) 60%, transparent);
+	}
+
+	.aui-md-table :is(th, td) {
+		padding: calc(0.625rem * var(--ui-space-scale, 1)) calc(1rem * var(--ui-space-scale, 1));
+		font-size: inherit;
+		line-height: 1.5;
+		vertical-align: top;
+		white-space: normal;
+		/* A floor, so many columns scroll instead of breaking every word. */
+		min-width: 8rem;
+	}
+
+	.aui-md-table :is(th, td):first-child {
+		padding-inline-start: 0;
+	}
+
+	.aui-md-table :is(th, td):last-child {
+		padding-inline-end: 0;
+	}
+
+	.aui-md-table th {
+		font-weight: 600;
+	}
+
+	/* Copy, download and expand float over the header's right end; touch screens keep them shown. */
+	.aui-md-table-actions {
+		position: absolute;
+		top: calc(0.25rem * var(--ui-space-scale, 1));
+		right: 0;
+		display: flex;
+		align-items: center;
+		gap: 0.125rem;
+		padding-left: 1rem;
+		background: linear-gradient(to right, transparent, var(--background) 1rem);
+		opacity: 0;
+		pointer-events: none;
+		transition: opacity 120ms ease;
+	}
+
+	.aui-md-table:hover > .aui-md-table-actions,
+	.aui-md-table-actions:focus-within,
+	.aui-md-table-actions:has(> .relative > div) {
+		opacity: 1;
+		pointer-events: auto;
+	}
+
+	@media (hover: none) {
+		.aui-md-table-actions {
+			opacity: 1;
+			pointer-events: auto;
+		}
+	}
+
+	.aui-md-table-actions > .relative {
 		display: flex;
 	}
 
-	.aui-thread-root [data-streamdown="table-wrapper"] > div > button,
-	.aui-thread-root [data-streamdown="table-wrapper"] > div > .relative > button {
+	.aui-md-table-actions > button,
+	.aui-md-table-actions > .relative > button {
 		display: flex;
 		align-items: center;
 		justify-content: center;
@@ -4439,12 +4514,23 @@ html[data-chat-font] .aui-root {
 		padding: 0;
 		border-radius: 10px;
 		color: var(--color-chat-icon-fg);
+		cursor: pointer;
 	}
 
-	.aui-thread-root [data-streamdown="table-wrapper"] > div > button:hover:not(:disabled),
-	.aui-thread-root [data-streamdown="table-wrapper"] > div > .relative > button:hover:not(:disabled) {
+	.aui-md-table-actions > button:hover:not(:disabled),
+	.aui-md-table-actions > .relative > button:hover:not(:disabled) {
 		background-color: var(--color-chat-icon-bg-hover);
 		color: var(--color-chat-icon-fg-hover);
+	}
+
+	.aui-md-table-actions > button:disabled {
+		cursor: not-allowed;
+		opacity: 0.5;
+	}
+
+	.aui-md-table-dialog {
+		margin-block: 0;
+		font-size: 1rem;
 	}
 
 	/* Chat: use the app sans stack for UI + prose. */

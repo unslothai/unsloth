@@ -119,6 +119,7 @@ import {
   sandboxSessionIdFor,
   sandboxSessionInSrc,
 } from "./sandbox-files";
+import { MarkdownTable } from "./markdown-table";
 import { SearchImageElement, SearchImagesContext } from "./search-image";
 import { useSandboxImage } from "./use-sandbox-image";
 import { rehypeSandboxImages } from "./rehype-sandbox-images";
@@ -481,6 +482,7 @@ const STREAMDOWN_COMPONENTS = {
   // Module-scoped: Streamdown's memo comparator ignores `components`.
   [SEARCH_IMAGE_TAG]: SearchImageElement,
   img: MarkdownImage,
+  table: MarkdownTable,
 };
 // Through the sanitizer; the component drops tokens it cannot resolve.
 const STREAMDOWN_ALLOWED_TAGS = {
