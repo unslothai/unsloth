@@ -2833,10 +2833,12 @@ function canDeleteLoraModel(model: LoraModelOption): boolean {
 }
 
 
-// Recommended section sort: plain HF sort keys.
-type RecommendedSortKey = "trendingScore" | "lastModified";
+// Recommended section sort. Latest is the Model hub's ranking (trending weighed against release age);
+// the others are plain HF sort keys.
+type RecommendedSortKey = "fresh" | "trendingScore" | "lastModified";
 
 const RECOMMENDED_SORT_OPTIONS: HubOption<RecommendedSortKey>[] = [
+  { value: "fresh", label: "Latest" },
   { value: "trendingScore", label: "Trending" },
   { value: "lastModified", label: "Recent" },
 ];
@@ -3193,7 +3195,7 @@ export function HubModelPicker({
   const accessToken = hfApiToken(hfToken);
   // Recommended section: a live unsloth listing sorted by the dropdown, the same sort that drives search results.
   const [recommendedSort, setRecommendedSort] =
-    useState<RecommendedSortKey>("trendingScore");
+    useState<RecommendedSortKey>("fresh");
   const {
     results,
     isLoading,
@@ -3211,8 +3213,9 @@ export function HubModelPicker({
     keepUnsupportedTags: true,
     accessToken,
     // Only Recommended renders Hub results, so keep the Hub hooks idle on other tabs and preserve
-    // offline-local behavior.
-    enabled: online && section === "recommended",
+    // offline-local behavior. Search rows render only with a query (showHfSection); browse reads
+    // recommendedSearch, so an empty query would only fetch Latest's pools a second time.
+    enabled: online && section === "recommended" && debouncedQuery.trim().length > 0,
   });
   const recommendedSearch = useHubModelSearch("", {
     // Audio keeps only task rows, so an untasked listing pages forever without finding one.
