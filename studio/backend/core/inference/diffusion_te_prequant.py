@@ -322,7 +322,6 @@ def te_dense_sibling_gb(fam: Any, te_quant_mode: Any) -> float:
     """GB of the family's text-encoder term that stays dense bf16 beside a hosted pre-cast file for this pick."""
     try:
         from .diffusion_precision import TE_QUANT_INT8, normalize_te_quant
-
         if normalize_te_quant(te_quant_mode) != TE_QUANT_INT8 and not _auto_pick(te_quant_mode):
             return 0.0
     except Exception:  # noqa: BLE001
@@ -337,7 +336,6 @@ def _with_dense_siblings(fam: Any, base: Optional[str], te_quant_mode: Any, scal
         return scale
     try:
         from .diffusion_auto_policy import family_bf16_components_gb
-
         table = family_bf16_components_gb(fam, base)
         total = float(table[1]) if table else 0.0
     except Exception:  # noqa: BLE001
@@ -370,7 +368,6 @@ def explicit_int8_hosted_components(
             standalone: dict[str, str] = {}
             if component == "text_encoder_4":
                 from .diffusion_hidream import HIDREAM_LLAMA_REPO
-
                 standalone = {"text_encoder_4": HIDREAM_LLAMA_REPO}
             # TE4 is matched against its own standalone repo, the rest against the selected base.
             component_base = standalone.get(component) or base or getattr(fam, "base_repo", "")
@@ -386,7 +383,8 @@ def explicit_int8_hosted_components(
                 got is not None
                 and not (got.kind == "repo" and _is_fp8_te_name(got.filename))
                 and te_prequant_sources_confirmed(
-                    {component: replace(got, fallback_filenames = ())}, local_files_only = local_files_only
+                    {component: replace(got, fallback_filenames = ())},
+                    local_files_only = local_files_only,
                 )
             )
         except Exception:  # noqa: BLE001 - unanswerable: not granted
@@ -463,7 +461,6 @@ def te_prequant_sources_confirmed(
         # Inside a load the prequant layer records the load's own local_files_only.
         try:
             from .diffusion_prequant import _LOCAL_FILES_ONLY
-
             local_files_only = bool(_LOCAL_FILES_ONLY.get())
         except Exception:  # noqa: BLE001
             local_files_only = False
@@ -1306,8 +1303,12 @@ def _te_prequant_pipe_kwargs(
                     trim_lm_head = trim,
                     failures = failures,
                 )
-            if encoder is None and _picked_automatically(te_quant_mode) and te_prequant_sources_confirmed(
-                {component: source}, local_files_only = local_files_only
+            if (
+                encoder is None
+                and _picked_automatically(te_quant_mode)
+                and te_prequant_sources_confirmed(
+                    {component: source}, local_files_only = local_files_only
+                )
             ):
                 # The file is there but did not build: the plan priced it, not the dense encoder.
                 built_failed[component] = getattr(source, "filename", None) or str(source.location)

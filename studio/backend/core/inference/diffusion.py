@@ -6236,7 +6236,9 @@ class DiffusionBackend:
                 # Only the hosted encoders: a sibling no file replaces (CLIP-L, ByT5) is priced by its own dense
                 # shards, not as part of the pre-cast file.
                 hosted_gb = max(
-                    0.0, float(table[1]) - _TE_DENSE_SIBLING_GB.get(str(getattr(fam, "name", "") or ""), 0.0)
+                    0.0,
+                    float(table[1])
+                    - _TE_DENSE_SIBLING_GB.get(str(getattr(fam, "name", "") or ""), 0.0),
                 )
                 total += int(hosted_gb * (1000.0**3) * scale * share)
             if total <= 0:

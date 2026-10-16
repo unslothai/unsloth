@@ -200,7 +200,9 @@ def preflight_te_quant(
         # Some encoders would load their hosted int8 file and the rest fall back (HiDream: T5 int8 beside an fp8
         # Llama), a mixed build quantize_text_encoders refuses only after the download and the eviction. Refuse here.
         files = TE_INT8_CONVROT_FILES.get((family or "").strip().lower(), {})
-        named = ", ".join(f"{c} ({files[c][1]})" if c in files and len(files[c]) > 1 else c for c in missing)
+        named = ", ".join(
+            f"{c} ({files[c][1]})" if c in files and len(files[c]) > 1 else c for c in missing
+        )
         raise RuntimeError(
             f"Text encoder precision int8 needs the hosted int8 ConvRot file for every {family} text encoder, but "
             f"{named} is not available here while the others are, so the encoders would load at mixed precisions. "
@@ -422,7 +424,8 @@ def _quantize_text_encoders(
         dense = [a for a in present if a not in hosted]
         return TEQuantOutcome(
             mode,
-            f"hosted {mode} {', '.join(hosted)}" + (f"; {', '.join(dense)} kept bf16" if dense else ""),
+            f"hosted {mode} {', '.join(hosted)}"
+            + (f"; {', '.join(dense)} kept bf16" if dense else ""),
             RESOLVED_APPLIED,
         )
     downgrade_reason = ""
