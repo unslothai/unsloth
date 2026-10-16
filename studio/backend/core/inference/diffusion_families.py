@@ -1324,8 +1324,10 @@ _GATED_MIRROR_PAIRS: tuple[tuple[str, str], ...] = (
     ("black-forest-labs/FLUX.2-dev", "unsloth/FLUX.2-dev"),
     ("black-forest-labs/FLUX.2-klein-9B", "unsloth/FLUX.2-klein-9B"),
     ("black-forest-labs/FLUX.2-klein-base-9B", "unsloth/FLUX.2-klein-base-9B"),
-    ("black-forest-labs/flux-3-image-klein", "unsloth/flux-3-image-klein"),
-    ("black-forest-labs/flux-3-image-klein-base", "unsloth/flux-3-image-klein-base"),
+    # FLUX.3 keeps the upstream diffusers folders (modular manifest, text_encoder, transformer, vae; byte-identical)
+    # inside its FP8 repo beside the pre-quantized files, so no separate mirror repo is needed.
+    ("black-forest-labs/flux-3-image-klein", "unsloth/flux-3-image-klein-FP8"),
+    ("black-forest-labs/flux-3-image-klein-base", "unsloth/flux-3-image-klein-base-FP8"),
     ("krea/Krea-2-Turbo", "unsloth/Krea-2-Turbo"),
     ("krea/Krea-2-Raw", "unsloth/Krea-2-Raw"),
     ("ideogram-ai/ideogram-4-fp8", "unsloth/ideogram-4-fp8"),
