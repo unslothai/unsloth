@@ -5946,6 +5946,13 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	}
 }
 
+/* An odd-sized glyph in these 32px buttons sits on a half pixel, which paints it 0.5px right of
+   its circle; an even size centers it. After the block above, which it must outrank. */
+.aui-root :is(.aui-chat-icon-btn, .aui-md-table-actions button) svg:not(.unsloth-tick) {
+	width: round(var(--icon-size), 2px);
+	height: round(var(--icon-size), 2px);
+}
+
 /* Sonner injects fixed 13px toast text and 12px action labels at runtime;
    text follows the preference at full rate. Line heights are unitless so
    they track automatically. */
