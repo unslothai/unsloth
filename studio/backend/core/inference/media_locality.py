@@ -327,9 +327,11 @@ def _pipeline_components_present(root: Path) -> bool:
 
 
 def flux3_seeded_cache_repo(path: Any) -> Optional[str]:
-    """The Hub repo id of a FLUX.3 snapshot in the HF cache (the one refs/main names) whose only gap is the dense transformer weights (what a
-    download planned around a hosted pre-quantized seed leaves), or None. Everything else the loader opens, the
-    transformer config included, must be there."""
+    """The Hub repo id of a FLUX.3 snapshot in the HF cache (the one refs/main names) whose only gaps are the dense
+    transformer and text-encoder weights (what a download planned around a hosted pre-quantized seed leaves: the int8
+    ConvRot encoder is the default, so a normally staged snapshot holds no dense encoder shards either), or None.
+    Everything else the loader opens, both configs and the tokenizer included, must be there; whether the seeds or
+    the dense shards the load will open are cached is the download planner's question, asked of the repo id."""
     import json
     try:
         snapshot = Path(path)
@@ -349,7 +351,7 @@ def flux3_seeded_cache_repo(path: Any) -> Optional[str]:
         if not local_pipeline_components_are_complete(
             snapshot,
             "modular_model_index.json",
-            excluded_components = ("transformer",),
+            excluded_components = ("transformer", "text_encoder"),
             fixed_component_folders = FLUX3_COMPONENT_FOLDERS,
         ):
             return None

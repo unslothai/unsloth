@@ -2958,6 +2958,12 @@ class DiffusionBackend:
         # torchao. Refusing on the raw int8 rejected loads the runtime would run and report as fell_back.
         te_effective = effective_te_quant(te_mode, getattr(fam, "name", None))
         te_reason = None
+        if te_mode == "int8" and te_effective != te_mode:
+            from .diffusion_te_prequant import hosted_int8_convrot_te_runs_on
+            if hosted_int8_convrot_te_runs_on(fam, target):
+                # The family's hosted int8 ConvRot encoder (FLUX.3, Qwen-Image-2.1) is plain tensors and runs where the
+                # runtime-cast rewrite to fp8 does not (Apple Silicon): judge the file, not the downgrade.
+                te_effective = None
         if te_quant_needs_resident_weights(te_effective) and not torchao_quantize_importable():
             # The casters import torchao only after the pipeline is downloaded and built, so a broken or absent
             # install failed through load-progress instead of this 409.
@@ -5134,8 +5140,16 @@ class DiffusionBackend:
                         rfilename, include_transformer = include_transformer, manifest = base_manifest
                     )
 
-            base_info = api.model_info(base_repo, files_metadata = True, token = hf_token)
-            _record_revision(revisions_out, base_repo, base_info)
+            # FLUX.3's mirror is its FP8 repo, whose companion folders are BFL's byte for byte and whose extra root
+            # files base_filter never stages, so the listing comes from the repo the prefetch pulls: an anonymous
+            # load then never asks the gated vendor repo anything. Its revision is the mirror's, recorded under it.
+            listing_repo = (
+                prefer_ungated_mirror(base_repo, hf_token)
+                if companion_components is not None
+                else base_repo
+            )
+            base_info = api.model_info(listing_repo, files_metadata = True, token = hf_token)
+            _record_revision(revisions_out, listing_repo, base_info)
             if callable(include_transformer):
                 kept = [s.rfilename for s in base_info.siblings if not _dense_te_shard(s.rfilename)]
                 companions = tuple(
@@ -5178,7 +5192,7 @@ class DiffusionBackend:
                 sizes_out[base_repo] = sizes_out.get(base_repo, 0) + base_bytes
             if file_sizes_out is not None:
                 file_sizes_out.setdefault(base_repo, {}).update(base_sizes)
-            _record_revision(revisions_out, base_repo, base_info)
+            _record_revision(revisions_out, listing_repo, base_info)
         except Exception as exc:  # noqa: BLE001 - estimate is best-effort
             logger.warning("diffusion.size_estimate_failed: %s", exc)
             # Recorded so a caller that must not guess (media auto-switch refuses rather than download) can tell a
@@ -7621,6 +7635,12 @@ class DiffusionBackend:
                                             else _base_local_dir
                                         )
                                         or (fetch_base if local_files_only else None),
+                                        # the config from the dir assembly reads, the id for checkpoint compatibility
+                                        config_source = (
+                                            None
+                                            if fam.name == KREA2_FAMILY_NAME
+                                            else _base_local_dir
+                                        ),
                                     )
                                 )
                                 if pipeline_seed_scheme is not None:
@@ -7938,6 +7958,7 @@ class DiffusionBackend:
                                         local_files_only = local_files_only,
                                         dense_source = _base_local_dir
                                         or (fetch_base if local_files_only else None),
+                                        config_source = _base_local_dir,
                                     ).get("text_encoder"),
                                     family_name = fam.name,
                                 )
@@ -8007,6 +8028,7 @@ class DiffusionBackend:
                                         local_files_only = local_files_only,
                                         dense_source = _base_local_dir
                                         or (fetch_base if local_files_only else None),
+                                        config_source = _base_local_dir,
                                     )
                                 )
                                 self._raise_if_load_cancelled(_load_token)
@@ -9488,6 +9510,7 @@ class DiffusionBackend:
                     logger = logger,
                     local_files_only = local_files_only,
                     dense_source = base_local_dir or (base if local_files_only else None),
+                    config_source = base_local_dir,
                 ).get("text_encoder")
             check_cancelled()
             pipe = load_flux3_pipeline(
@@ -9517,6 +9540,7 @@ class DiffusionBackend:
                     logger = logger,
                     local_files_only = local_files_only,
                     dense_source = base_local_dir or (base if local_files_only else None),
+                    config_source = base_local_dir,
                 ).get("text_encoder")
             check_cancelled()
             pipe = load_krea2_pipeline(
@@ -9565,6 +9589,7 @@ class DiffusionBackend:
                     logger = logger,
                     local_files_only = local_files_only,
                     dense_source = base_local_dir or (base if local_files_only else None),
+                    config_source = base_local_dir,
                 )
             )
         check_cancelled()

@@ -1474,6 +1474,61 @@ def test_companion_staging_is_scoped_to_the_folders_flux3_loads(tmp_path, monkey
     ]
 
 
+def test_a_cold_gguf_plan_never_asks_the_gated_vendor_repo(tmp_path, monkeypatch):
+    # The companions are staged from unsloth/flux-3-image-klein-FP8, so their listing comes from there too: an
+    # anonymous cold load asks black-forest-labs/* nothing, not even model_info.
+    import huggingface_hub
+    from core.inference import diffusion as d
+
+    _flux3_installed(monkeypatch)
+    _fake_hub(monkeypatch, {DISTILLED: _OFFICIAL_LISTING})
+    asked = []
+    listing = huggingface_hub.HfApi.model_info
+
+    def model_info(self, repo, *a, **k):
+        asked.append(repo)
+        return listing(self, repo, *a, **k)
+
+    monkeypatch.setattr(huggingface_hub.HfApi, "model_info", model_info)
+    monkeypatch.setattr(d, "hub_cache_dir", lambda: str(tmp_path / "cold"))
+    picks = tmp_path / "picks"
+    picks.mkdir()
+    (picks / "klein.gguf").write_bytes(b"GGUF")
+    plan = d.DiffusionBackend().download_plan(
+        str(picks),
+        gguf_filename = "klein.gguf",
+        base_repo = DISTILLED,
+        model_kind = "gguf",
+        family_override = FLUX3_KLEIN_FAMILY_NAME,
+        allow_device_probe = False,
+        memory_verdict = False,
+        discover_text_encoders = False,
+    )
+    assert "unsloth/flux-3-image-klein-FP8" in asked
+    assert not [r for r in asked if r.startswith("black-forest-labs/")]
+    assert "text_encoder/config.json" in next(
+        e["files"] for e in plan["entries"] if e["repo_id"] == "unsloth/flux-3-image-klein-FP8"
+    )
+
+
+def test_the_flux3_manifest_check_reads_the_mirror_not_the_gated_repo(tmp_path, monkeypatch):
+    import huggingface_hub
+    from core.inference import diffusion_compat as compat
+
+    asked = []
+    manifest = tmp_path / "modular_model_index.json"
+    manifest.write_text(json.dumps(_official_manifest("distilled", False)))
+
+    def hf_hub_download(repo, filename, **k):
+        asked.append(repo)
+        return str(manifest)
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", hf_hub_download)
+    monkeypatch.setattr(compat, "_local_gguf_path", lambda *a: None)
+    assert compat._flux3_pipeline_index(DISTILLED, None, True) is not None
+    assert asked == ["unsloth/flux-3-image-klein-FP8"]
+
+
 def test_the_dense_cache_probe_sees_only_the_flux3_transformer_folder(tmp_path, monkeypatch):
     # The AUTO dense fast path asks whether the base transformer is cached; BFL's variants/ packages are not part of
     # it, or a cached dense transformer would read as missing and the GGUF would be kept.
@@ -1838,6 +1893,38 @@ def test_only_a_seeded_flux3_snapshot_is_mapped_to_its_repo(tmp_path):
         json.dumps({"_class_name": "QwenImagePipeline"})
     )
     assert flux3_seeded_cache_repo(manifest) is None
+
+
+def test_a_snapshot_staged_for_the_int8_encoder_seed_is_still_a_seeded_snapshot(tmp_path, monkeypatch):
+    # te_quant_auto is int8 ConvRot on both families, so a normally staged snapshot holds neither the dense
+    # transformer shards nor the dense text-encoder shards. Rejecting it read as UNSIZED_MISSING and blocked the
+    # media auto-switch; the planner, asked of the repo, decides whether the encoder seed is cached.
+    from core.inference import gpu_arbiter as arb
+    from core.inference import media_locality as locality
+    from core.inference.media_model_index import MediaModelPick
+
+    snapshot = _seeded_snapshot(tmp_path)
+    (snapshot / "text_encoder" / "model.safetensors").unlink()
+    assert locality.flux3_seeded_cache_repo(snapshot) == "black-forest-labs/flux-3-image-klein"
+    seen = []
+
+    class _Planner:
+        def download_plan(self, model_path, **kwargs):
+            seen.append(model_path)
+            return {"total_bytes": 0, "entries": []}
+
+    monkeypatch.setattr(locality, "plan_gpu_ordinal", lambda: None)
+    monkeypatch.setattr(locality, "planners_for", lambda owner, p: [_Planner()])
+    pick = MediaModelPick("black-forest-labs/flux-3-image-klein", str(snapshot))
+    assert locality.missing_download_bytes(arb.DIFFUSION, pick) == 0
+    assert seen == ["black-forest-labs/flux-3-image-klein"]
+    # the encoder config and the tokenizer are still read from the snapshot
+    (snapshot / "text_encoder" / "tokenizer.json").unlink()
+    assert locality.flux3_seeded_cache_repo(snapshot) is None
+    other = _seeded_snapshot(tmp_path / "c")
+    (other / "text_encoder" / "model.safetensors").unlink()
+    (other / "text_encoder" / "config.json").unlink()
+    assert locality.flux3_seeded_cache_repo(other) is None
 
 
 def test_the_auto_switch_loads_a_seeded_flux3_snapshot_by_repo(tmp_path, monkeypatch):
