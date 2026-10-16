@@ -46,7 +46,6 @@ export function composerColumnInset(
   );
 }
 
-/** Dock padding that lands on a measured column box. */
 export function composerInsetFromColumn(
   column: { left: number; right: number },
   dock: { left: number; right: number },

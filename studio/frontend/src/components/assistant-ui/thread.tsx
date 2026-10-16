@@ -2582,9 +2582,7 @@ const ThreadComposerDock: FC<{
     const resizeObserver = new ResizeObserver(() => apply());
     let observedFooter: Element | null = null;
     const apply = () => {
-      // The full-width footer is the column's real box. WebKit's both-edges gutter reserves
-      // twice the scrollbar on the right while clientWidth counts it once, so the
-      // computed box is only the fallback until the footer mounts.
+      // The footer is the real column box: WebKit's both-edges gutter reserves 2x the scrollbar on the right, clientWidth 1x.
       const footer = viewport.querySelector(
         ":scope > .aui-thread-viewport-footer",
       );

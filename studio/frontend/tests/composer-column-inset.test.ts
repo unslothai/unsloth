@@ -73,7 +73,6 @@ test("a one-sided gutter with a border, as the Windows low-scale viewport has", 
 });
 
 test("a measured column box wins over the computed one", () => {
-  // WebKit: both-edges reserves 26px on the right while clientWidth drops 13px.
   assert.deepEqual(
     composerInsetFromColumn(
       { left: 300, right: 1394 },
