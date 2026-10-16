@@ -171,8 +171,13 @@ export const BUDGET = {
   // (6,788,764 -> 6,790,997 B raw, 2,041,243 -> 2,042,101 B transfer against 5e5511027, one machine and build,
   // Node 24, chunk count unchanged at 95). Lazy-loading the dialog cost more (2.7 KB transfer) and a 96th
   // startup chunk, so it is imported statically and the budget raised by that growth.
-  transferBytes: 2_042_291,
-  rawBytes: 6_791_181,
+  // The Recents header "Delete all chats" item (#13779) adds 1,329 B raw / 299 B transfer to the eager startup
+  // set (6,791,021 -> 6,792,350 B raw, 2,042,078 -> 2,042,377 B transfer against 061d52577, one machine and
+  // build, chunk count unchanged at 95). Its confirmation reuses the already-eager shared Dialog, so the growth
+  // is the menu item and its strings in every eager locale rather than a lazy-loadable import; raised by that
+  // growth so main's margin stays where it was.
+  transferBytes: 2_042_590,
+  rawBytes: 6_792_510,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
