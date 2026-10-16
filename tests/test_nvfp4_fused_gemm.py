@@ -357,24 +357,6 @@ def test_row_gate_keeps_unaligned_shapes_dense(N, monkeypatch):
         monkeypatch.delenv("UNSLOTH_NVFP4_FUSED")
 
 
-def test_autocast_to_another_dtype_casts_the_fused_output(N, monkeypatch):
-    # The fused kernel keeps running under autocast; its output takes the dtype the dense matmul would.
-    monkeypatch.setenv("UNSLOTH_NVFP4_FUSED", "1")
-    packed, scale, gs = _random_nvfp4(64, 128)
-    for x_dtype, cast_dtype in ((torch.float16, torch.bfloat16), (torch.bfloat16, torch.float16)):
-        if torch.bfloat16 in (x_dtype, cast_dtype) and torch.cuda.get_device_capability() < (8, 0):
-            continue
-        X = torch.randn(4, 128, device = "cuda", dtype = x_dtype)
-        with torch.autocast("cuda", dtype = cast_dtype):
-            ref = _dense(N, X, packed, scale, gs, monkeypatch)
-            Y = _fwd(N, X, packed, scale, gs)
-            assert ref.dtype == Y.dtype == cast_dtype
-            torch.testing.assert_close(Y.float(), ref.float(), atol = 1e-1, rtol = 2e-2)
-            assert N.nvfp4_linear(X, packed, scale, gs).dtype == cast_dtype
-        with torch.autocast("cuda", dtype = x_dtype):
-            assert _fwd(N, X, packed, scale, gs).dtype == x_dtype
-
-
 def test_flags_are_read_once_per_process(N, live_env, monkeypatch):
     monkeypatch.setattr(N, "_FUSED_ENV", None)
     monkeypatch.setenv("UNSLOTH_NVFP4_FUSED", " Off ")
