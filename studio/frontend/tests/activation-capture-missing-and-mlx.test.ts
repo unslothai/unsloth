@@ -35,5 +35,5 @@ test("activation capture is off and hidden on the MLX trainer", () => {
     /if \(isMac && enableActivationCapture\) \{\s*useTrainingConfigStore\.setState\(\{ enableActivationCapture: false \}\);/,
   );
   const params = readSrc("features/studio/sections/params-section.tsx");
-  assert.match(params, /\{!store\.isAudioModel && !isMac && \(/);
+  assert.match(params, /\{activationCaptureApplies\(store\) && !isMac && \(/);
 });

@@ -23,6 +23,7 @@ import {
   useMaxStepsEpochsToggle,
   useTrainingConfigStore,
 } from "@/features/training";
+import { activationCaptureApplies } from "@/features/training/api/mappers";
 import { useT } from "@/i18n";
 import { InformationCircleIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -68,6 +69,8 @@ export function ParamsSection({
       setMaxSteps: state.setMaxSteps,
       setSaveSteps: state.setSaveSteps,
       isAudioModel: state.isAudioModel,
+      isEmbeddingModel: state.isEmbeddingModel,
+      modelType: state.modelType,
       enableActivationCapture: state.enableActivationCapture,
       setEnableActivationCapture: state.setEnableActivationCapture,
     })),
@@ -418,7 +421,7 @@ export function ParamsSection({
           </div>
 
           {/* Neuron Activation Capture: CUDA/ROCm trainer only, the MLX one has none. */}
-          {!store.isAudioModel && !isMac && (
+          {activationCaptureApplies(store) && !isMac && (
             <div className="flex items-center gap-2">
               <Checkbox
                 id="enableActivationCapture"

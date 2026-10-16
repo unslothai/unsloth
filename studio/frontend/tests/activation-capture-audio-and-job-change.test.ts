@@ -70,3 +70,21 @@ test("two overlapping fetches for the same job merge each step once", async () =
   const data = await second;
   assert.deepEqual(data?.records.map((r) => r.step), [1, 2, 3]);
 });
+
+test("embedding and decision runs start with capture off", () => {
+  store.setState({ enableActivationCapture: true, isAudioModel: false });
+  for (const patch of [
+    { isEmbeddingModel: true, modelType: "text" },
+    { isEmbeddingModel: false, modelType: "embeddings" },
+    { isEmbeddingModel: false, modelType: "decision" },
+  ] as const) {
+    store.setState(patch as never);
+    assert.equal(
+      buildTrainingStartPayload(store.getState(), null).enable_activation_capture,
+      false,
+      JSON.stringify(patch),
+    );
+  }
+  store.setState({ isEmbeddingModel: false, modelType: "text" } as never);
+  assert.equal(buildTrainingStartPayload(store.getState(), null).enable_activation_capture, true);
+});

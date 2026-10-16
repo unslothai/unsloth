@@ -8,6 +8,7 @@ import {
   useTrainingRuntimeStore,
 } from "@/features/training";
 import type { TrainingViewData } from "@/features/training";
+import { activationCaptureApplies } from "@/features/training/api/mappers";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
 import { type ReactElement, useCallback, useEffect, useState } from "react";
@@ -156,6 +157,7 @@ export function LiveTrainingView(): ReactElement {
       trainingMethod: state.trainingMethod,
       enableActivationCapture: state.enableActivationCapture,
       isAudioModel: state.isAudioModel,
+      isEmbeddingModel: state.isEmbeddingModel,
       dataset: state.dataset,
       modelType: state.modelType,
     })),
@@ -301,7 +303,7 @@ export function LiveTrainingView(): ReactElement {
 
           <TabsContent value="interpretability">
             {(runConfigOverride?.enableActivationCapture ??
-              (config.enableActivationCapture && !config.isAudioModel)) ? (
+              (config.enableActivationCapture && activationCaptureApplies(config))) ? (
               <InterpretabilitySection
                 isTraining={viewData.isTrainingRunning}
                 jobId={runtime.jobId}
