@@ -222,6 +222,7 @@ from .video_families import (
     validate_video_keyframe_conditioning,
     validate_video_reference_conditioning,
     validate_video_request_shape,
+    video_custom_size_bounds,
     video_family_prequant_available,
     video_family_prequant_repo,
     video_family_prequant_resident_gb,
@@ -11825,6 +11826,7 @@ class VideoBackend:
                 "duration_presets": list(fam.duration_presets),
                 "resolution_multiple": fam.resolution_multiple,
                 "resolution_presets": [list(p) for p in fam.resolution_presets],
+                **_custom_size_defaults(fam),
                 # Let the frontend preview the backend-owned "match source" rule.
                 "canvas_short_edge": _keyframe_canvas(fam)[0],
                 "canvas_max_pixels": _keyframe_canvas(fam)[1],
@@ -11837,6 +11839,17 @@ class VideoBackend:
             },
             "resolved": resolved,
         }
+
+
+def _custom_size_defaults(fam: Any) -> dict[str, Any]:
+    bounds = video_custom_size_bounds(fam)
+    if bounds is None:
+        return {}
+    return {
+        "custom_size_min_pixels": bounds[0],
+        "custom_size_max_pixels": bounds[1],
+        "custom_size_max_aspect": bounds[2],
+    }
 
 
 def _keyframe_canvas(fam: Any) -> tuple[Optional[int], Optional[int]]:

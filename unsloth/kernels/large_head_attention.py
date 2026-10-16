@@ -361,6 +361,32 @@ def _lh_bwd_dkdv(
     )
 
 
+def _bench_in_place(kernel_call, quantiles = None):
+    # Triton's default benchmarker allocates a 256 MB L2 flush buffer per autotune, enough to OOM a
+    # model that fits. Each config here only rewrites the call's own outputs, so time it in place.
+    kernel_call()
+    start, end = torch.cuda.Event(enable_timing = True), torch.cuda.Event(enable_timing = True)
+    start.record()
+    kernel_call()
+    end.record()
+    end.synchronize()
+    reps = max(1, min(25, int(10.0 / max(start.elapsed_time(end), 1e-3))))
+    start.record()
+    for _ in range(reps):
+        kernel_call()
+    end.record()
+    end.synchronize()
+    ms = start.elapsed_time(end) / reps
+    return [ms] * len(quantiles) if quantiles else ms
+
+
+# Triton 3.2's autotune() does not forward do_bench; the attribute works on every version.
+for _kernel in (_lh_fwd, _lh_bwd_dq, _lh_bwd_dkdv):
+    _kernel._do_bench = _bench_in_place
+    _kernel.do_bench = _bench_in_place
+del _kernel
+
+
 _LOG2E = 1.4426950408889634
 
 
@@ -709,12 +735,24 @@ def _shapes_qualify(query, key, value):
 _SELF_CHECK = {}
 
 
+def _measured_faster_on(device):
+    # Timed faster than SDPA on sm80+ only. Pre-Ampere (T4) also lacks the shared memory for the
+    # larger tiles and has no bf16, so it keeps SDPA without compiling or autotuning anything.
+    try:
+        return torch.cuda.get_device_capability(device)[0] >= 8
+    except Exception:
+        return False
+
+
 def _self_check(device, dtype):
     """One small fwd + bwd against SDPA math per (device, dtype) before first use."""
     key = (str(device), dtype)
     if key in _SELF_CHECK:
         return _SELF_CHECK[key]
     passed = False
+    if not _measured_faster_on(device):
+        _SELF_CHECK[key] = passed
+        return passed
     try:
         # A local generator: torch.manual_seed would reseed every CUDA device's RNG.
         gen = torch.Generator(device = device)
@@ -742,9 +780,8 @@ def _self_check(device, dtype):
             and ((a.float() - b).abs().max() <= 0.05 * b.abs().max() + 0.02).item()
             for a, b in zip((out, *grads), (ref, *ref_grads))
         )
-    except torch.cuda.OutOfMemoryError:
-        raise
     except Exception as exc:
+        # Includes OOM: the load worked before this check existed, so SDPA keeps it working.
         _warn_once(
             f"Unsloth: head_dim 512 attention kernel failed its self check ({exc}); using SDPA."
         )
@@ -824,13 +861,18 @@ def _make_router(original):
         ):
             B, S = query.shape[0], query.shape[2]
             intervals = None
+            compiling = torch.compiler.is_compiling()
             if attention_mask is None:
                 causal = is_causal if is_causal is not None else getattr(module, "is_causal", True)
                 intervals = _dense_intervals(B, S, bool(causal), query.device)
-            elif not torch.compiler.is_compiling():
-                # Reading a mask's structure needs a host sync; compiled graphs keep SDPA.
+            elif (
+                not compiling
+                and not (torch.is_tensor(attention_mask) and attention_mask.is_inference())
+                and _SELF_CHECK.get((str(query.device), query.dtype), True)
+            ):
+                # Reading a mask's structure needs a host sync; compiled graphs keep SDPA. Inference
+                # masks cannot cache the verdict across layers, so they keep SDPA too.
                 intervals = intervals_from_mask(attention_mask, B, S)
-            compiling = torch.compiler.is_compiling()
             if compiling:
                 checked = _SELF_CHECK.get((str(query.device), query.dtype), False)
             elif intervals is not None:
@@ -846,7 +888,8 @@ def _make_router(original):
                     LARGE_HEAD_ENGAGED["calls"] += 1
                     return out, None
                 except torch.cuda.OutOfMemoryError:
-                    raise
+                    # SDPA below either fits or raises the same OOM the previous path would.
+                    LARGE_HEAD_ENGAGED["fallback"] += 1
                 except Exception as exc:
                     LARGE_HEAD_ENGAGED["fallback"] += 1
                     _SELF_CHECK[(str(query.device), query.dtype)] = False
@@ -897,8 +940,10 @@ def patch_large_head_attention(model = None):
             }
         except Exception:
             targets = set()
-        for device, dtype in targets:
-            _self_check(device, dtype)
+        passed = [_self_check(device, dtype) for device, dtype in targets]
+        if passed and not any(passed):
+            # Every call would go back to SDPA, so leave it unwrapped.
+            return False
     try:
         from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
         current = ALL_ATTENTION_FUNCTIONS["sdpa"]

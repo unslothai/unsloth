@@ -347,11 +347,17 @@ def _probe_physical_gpu_inventory() -> Dict[str, Any]:
         if sysfs_devices:
             if any(device.get("vendor") == "amd" for device in sysfs_devices):
                 # The installers only ship a ROCm wheel for _ROCM_SUPPORTED_GFX, so an older card left on CPU torch on purpose must not read as broken. Attached to every AMD record, not matched one-to-one: setup.sh says the orderings need not agree.
-                _gfx = _linux_amd_gfx_candidates()
-                if _gfx:
-                    for device in sysfs_devices:
-                        if device.get("vendor") == "amd":
-                            device["gfx_candidates"] = _gfx
+                _gfx = _linux_amd_gfx_candidates() or _linux_kfd_gfx1153_candidates()
+                for device in sysfs_devices:
+                    if device.get("vendor") != "amd":
+                        continue
+                    if _gfx:
+                        device["gfx_candidates"] = _gfx
+                    elif re.search(
+                        _LINUX_KRACKAN2_NAME_RE, device.get("name") or "", re.IGNORECASE
+                    ):
+                        # Classified here, once per refresh, not on every health poll.
+                        device["gfx_candidates"] = ["gfx1153"]
             devices.extend(sysfs_devices)
             sources.append("sysfs-drm")
 
@@ -364,6 +370,18 @@ def _probe_physical_gpu_inventory() -> Dict[str, Any]:
         # Which vendors, not just that one exists: the cache carries the previous answer forward per vendor, and only a vendor named here may be carried.
         "unanswered": _unanswered,
     }
+
+
+def _linux_kfd_gfx1153_candidates() -> list[str]:
+    """KFD gfx targets when they include a gfx1153, else []. Without rocminfo or amd-smi this is the only reading that names a Krackan Point 2, which the Linux installers leave on CPU torch on purpose; any other arch keeps the conservative no-candidates answer. Never raises."""
+    try:
+        from utils.hardware.amd import amd_kfd_gpu_gfx_targets
+        targets = amd_kfd_gpu_gfx_targets() or []
+    except Exception as e:
+        logger.debug("KFD gfx target probe failed: %s", e)
+        return []
+    found = sorted({gfx for gfx in targets if gfx})
+    return found if "gfx1153" in found else []
 
 
 def _linux_amd_gfx_candidates() -> list[str]:
@@ -1075,11 +1093,6 @@ def _amd_device_can_establish_a_mismatch(device: Dict[str, Any]) -> bool:
         if gfx
     ]
     if not candidates:
-        # A lone Linux gfx1153 is declined by the installers, so its CPU wheel is no fault.
-        if platform.system() != "Windows" and re.search(
-            _LINUX_KRACKAN2_NAME_RE, device.get("name") or "", re.IGNORECASE
-        ):
-            return False
         # The DirectX registry publishes AdapterFamily only when the driver wrote one, so a supported Windows card can arrive with no arch. setup.ps1 answers that from the marketing name; the probe below can only speak for Linux.
         _named = _rocm_supported_gfx_from_gpu_name(device.get("name") or "")
         if _named:
@@ -6285,10 +6298,12 @@ def _with_mig_instance_memory(devices: list[Dict[str, Any]]) -> list[Dict[str, A
         return devices
     try:
         from . import nvidia
-        mig = nvidia.get_mig_gpu_indices() & {d.get("index") for d in devices}
+        mig_known = nvidia.get_mig_gpu_indices_or_none()
     except Exception:
         return devices
-    if not mig:
+    indices = {d.get("index") for d in devices}
+    mig = None if mig_known is None else mig_known & indices
+    if mig is not None and not mig:
         return devices
     slices: Dict[int, tuple[int, int]] = {}
     try:
@@ -6296,6 +6311,12 @@ def _with_mig_instance_memory(devices: list[Dict[str, Any]]) -> list[Dict[str, A
         slices = {idx: (free, total) for idx, free, total in LlamaCppBackend._get_gpu_memory_nvml()}
     except Exception as e:
         logger.debug("NVML MIG slice probe failed: %s", e)
+    if mig is None:
+        # MIG discovery failed: NVML reads slices and whole cards alike, so its readings
+        # replace the CLI's; without any the devices stand as before MIG support.
+        if not slices:
+            return devices
+        mig = set(slices) & indices
     out = []
     for device in devices:
         idx = device.get("index")
