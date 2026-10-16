@@ -18,9 +18,9 @@ import {
 } from "@/components/ui/panel-drag-overlay";
 
 import {
+  SPLIT_LIST_MIN_PX,
   clampSplitListWidth,
   keyboardSplitWidth,
-  SPLIT_LIST_MIN_PX,
   splitListMax,
 } from "../lib/split-width";
 
