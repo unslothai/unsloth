@@ -285,7 +285,6 @@ def _build_index(task: str) -> dict[str, MediaModelPick]:
                 # snapshot, and the picks must name that directory or the names resolve to
                 # nothing.
                 from hub.utils.gguf import select_gguf_cache_snapshot_for_repo_dir
-
                 serving = select_gguf_cache_snapshot_for_repo_dir(on_disk)
                 if serving is not None:
                     load_dir = serving[3]
