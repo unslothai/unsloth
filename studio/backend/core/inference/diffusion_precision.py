@@ -157,6 +157,21 @@ def effective_te_quant(mode: Optional[str], family: Optional[str]) -> Optional[s
     return normalized
 
 
+def hosted_int8_te_runs_on(mode: Optional[str], family: Optional[str], target: Any) -> bool:
+    """Whether an int8 request on ``family`` takes a hosted int8 ConvRot file that ``target`` runs as plain tensors
+    (Apple Silicon), where ``effective_te_quant``'s fp8 rewrite would make a preflight refuse a load the loader runs."""
+    try:
+        from .diffusion_te_prequant import int8_convrot_te_runs_on
+
+        return (
+            normalize_te_quant(mode) == TE_QUANT_INT8
+            and _family_hosts_te_int8(family)
+            and int8_convrot_te_runs_on(target)
+        )
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def te_quant_needs_resident_weights(mode: Optional[str]) -> bool:
     """Whether ``mode`` is a torchao text-encoder cast, which CPU offload rules out.
 
@@ -347,13 +362,16 @@ def _quantize_text_encoders(
         # The automatic default is the measured hosted file and nothing else: a runtime cast (fp8, torchao int8) has a
         # dense bf16 peak and is not what was measured, so without the file the released bf16 encoder stays.
         label = "int8 ConvRot" if mode == TE_QUANT_INT8 else mode
-        _note(
-            logger, f"automatic {label} text encoder not available; keeping the dense bf16 encoder"
-        )
+        why = "is not available (not published yet, offline, or refused, see the server log)"
+        if mode == TE_QUANT_INT8 and _family_hosts_te_int8(family):
+            from .diffusion_text_encoder_trim import KEEP_LM_HEAD_ENV, family_trims_lm_head
+
+            if not family_trims_lm_head(family):
+                why = f"carries no lm_head, which {KEEP_LM_HEAD_ENV} keeps"
+        _note(logger, f"automatic {label} text encoder not used; keeping the dense bf16 encoder")
         return TEQuantOutcome(
             None,
-            f"the hosted {label} text encoder is not available (not published yet, offline, or refused, see "
-            "the server log), so the automatic default kept the dense bf16 encoder",
+            f"the hosted {label} text encoder {why}, so the automatic default kept the dense bf16 encoder",
             RESOLVED_FELL_BACK,
         )
     downgrade_reason = ""

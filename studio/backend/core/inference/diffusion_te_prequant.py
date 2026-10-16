@@ -727,7 +727,10 @@ def te_prequant_sources(
         for component in components:
             source = resolve_te_prequant_source(fam, component, mode)
             if source is not None and auto and mode == "int8":
-                # An automatic int8 pick takes the int8 file or the dense encoder, never the fp8 file behind it.
+                # An automatic int8 pick takes the int8 file or the dense encoder, never the fp8 file behind it, nor
+                # the fp8 file put first by a kept lm_head (UNSLOTH_TE_KEEP_LM_HEAD).
+                if source.kind == "repo" and _is_fp8_te_name(source.filename):
+                    continue
                 source = replace(source, fallback_filenames = ())
             if source is not None and not fp8_runs:
                 if source.kind == "repo" and _is_fp8_te_name(source.filename):
@@ -1253,18 +1256,24 @@ def _fetch_dense_components(
 
         from utils.hf_cache_settings import active_hf_hub_cache
 
-        repo_id = source
+        repo_id, revision, cache_dir = source, None, active_hf_hub_cache()
         if os.path.isdir(str(source)):
             parts = os.path.normpath(str(source)).split(os.sep)
             if len(parts) < 3 or parts[-2] != "snapshots" or not parts[-3].startswith("models--"):
                 return False
             repo_id = parts[-3][len("models--") :].replace("--", "/")
-        snapshot_download(
+            # Into the SAME snapshot assembly opens: its cache root (the secondary one included) and its revision, so
+            # a staged snapshot gains the shards rather than a new one appearing elsewhere.
+            revision, cache_dir = parts[-1], os.sep.join(parts[:-3]) or os.sep
+        fetched = snapshot_download(
             repo_id,
             allow_patterns = [f"{c}/*" for c in components],
             token = hf_token,
-            cache_dir = active_hf_hub_cache(),
+            cache_dir = cache_dir,
+            revision = revision,
         )
+        if revision is not None and os.path.realpath(str(fetched)) != os.path.realpath(str(source)):
+            return False
         return True
     except Exception as exc:  # noqa: BLE001 - the strict refusal below still explains the load
         _warn(logger, "dense_fallback_fetch", exc)

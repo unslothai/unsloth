@@ -270,6 +270,7 @@ from .diffusion_step_skip import (
 from .diffusion_nvfp4_protect import protect_generation
 from .diffusion_precision import (
     effective_te_quant,
+    hosted_int8_te_runs_on,
     normalize_te_quant,
     quantize_text_encoders,
     resolve_te_quant_request,
@@ -2924,7 +2925,12 @@ class DiffusionBackend:
                 "torchao is not importable on this install, and these encoder modes are torchao "
                 "quantisations"
             )
-        elif te_effective is not None and not te_quant_supported(target, te_effective):
+        elif (
+            te_effective is not None
+            and not hosted_int8_te_runs_on(te_mode, getattr(fam, "name", None), target)
+            and not te_quant_supported(target, te_effective)
+        ):
+            # On MPS an int8 request takes the hosted int8 ConvRot file (plain tensors), which runs where fp8 does not.
             te_reason = te_quant_unsupported_reason(te_effective)
         elif te_quant_needs_resident_weights(te_effective) and _memory_request_forces_offload(
             memory_mode, cpu_offload

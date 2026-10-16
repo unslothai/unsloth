@@ -166,15 +166,15 @@ def test_auto_with_the_dense_shards_left_out_fetches_them_instead_of_failing(mon
     fetched = []
     import huggingface_hub
 
-    monkeypatch.setattr(
-        huggingface_hub,
-        "snapshot_download",
-        lambda repo, **k: fetched.append((repo, k["allow_patterns"])),
-    )
     fam = _fam("krea-2")
     snap = tmp_path / "models--krea--Krea-2-Turbo" / "snapshots" / "abc"
     snap.mkdir(parents = True)
     snap = str(snap)
+    monkeypatch.setattr(
+        huggingface_hub,
+        "snapshot_download",
+        lambda repo, **k: fetched.append((repo, k["allow_patterns"])) or snap,
+    )
     with tpq.auto_te_request(True):
         out = tpq.te_prequant_pipe_kwargs(
             fam,
@@ -579,3 +579,91 @@ def test_mps_automatic_int8_prices_the_file_only_once_it_is_confirmed(
     assert (
         DiffusionBackend._precast_text_encoder_mib(fam, fam.base_repo, MPS_BF16, "int8") is not None
     )
+
+
+# ---- review round 2 ---------------------------------------------------------------------------------------------
+
+
+def test_dense_fallback_fills_the_staged_snapshot_in_its_own_cache_root(monkeypatch, tmp_path):
+    import huggingface_hub
+
+    import core.inference.media_locality as ml
+
+    rev = "a" * 40
+    snap = tmp_path / "secondary" / "models--Qwen--Qwen-Image" / "snapshots" / rev
+    snap.mkdir(parents = True)
+    monkeypatch.setattr(ml, "_hosted_component_cached", lambda *a, **k: False)
+    calls = []
+
+    def fake_download(repo_id, **kwargs):
+        calls.append((repo_id, kwargs))
+        return str(snap)
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", fake_download)
+    assert tpq._fetch_dense_components(str(snap), ["text_encoder"], hf_token = None, local_files_only = False)
+    repo_id, kwargs = calls[0]
+    assert repo_id == "Qwen/Qwen-Image"
+    assert kwargs["cache_dir"] == str(tmp_path / "secondary")
+    assert kwargs["revision"] == rev
+    assert kwargs["allow_patterns"] == ["text_encoder/*"]
+
+
+def test_dense_fallback_into_another_snapshot_is_not_reported_as_filled(monkeypatch, tmp_path):
+    import huggingface_hub
+
+    import core.inference.media_locality as ml
+
+    snap = tmp_path / "models--Qwen--Qwen-Image" / "snapshots" / ("b" * 40)
+    snap.mkdir(parents = True)
+    monkeypatch.setattr(ml, "_hosted_component_cached", lambda *a, **k: False)
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", lambda *a, **k: str(tmp_path / "elsewhere"))
+    assert not tpq._fetch_dense_components(str(snap), ["text_encoder"], hf_token = None, local_files_only = False)
+
+
+@pytest.mark.parametrize("name", INT8_DEFAULTS)
+def test_a_kept_lm_head_keeps_the_automatic_int8_default_dense(name, monkeypatch):
+    import core.inference.diffusion_precision as prec
+    from core.inference.diffusion_text_encoder_trim import KEEP_LM_HEAD_ENV
+
+    monkeypatch.setenv(KEEP_LM_HEAD_ENV, "1")
+    fam = _fam(name)
+    mode, _ = resolve_te_quant_request(None, fam.te_quant_auto)
+    assert tpq.te_prequant_sources_for_base(fam, fam.base_repo, te_quant_mode = mode, target = CUDA_BF16) == {}
+    with tpq.auto_te_request(True):
+        assert tpq.te_prequant_sources_for_base(fam, fam.base_repo, te_quant_mode = "int8", target = CUDA_BF16) == {}
+    # an explicit int8 still takes the fp8 file, which carries the head
+    explicit = tpq.te_prequant_sources_for_base(fam, fam.base_repo, te_quant_mode = "int8", target = CUDA_BF16)
+    assert all("FP8" in s.filename for s in explicit.values()) and explicit
+    monkeypatch.setattr(prec, "te_quant_supported", lambda *a, **k: True)
+    out = prec.quantize_text_encoders(
+        types.SimpleNamespace(text_encoder = torch.nn.Linear(4, 4)), CUDA_BF16, mode = mode, family = name
+    )
+    assert out.mode is None and KEEP_LM_HEAD_ENV in out.reason
+
+
+MPS_TARGET = types.SimpleNamespace(device = "mps", dtype = torch.bfloat16, backend = "mps", supports_model_cpu_offload = False)
+
+
+def _preflight(fam, te_mode):
+    from core.inference.diffusion import DiffusionBackend
+
+    DiffusionBackend()._assert_precision_for_target(
+        fam,
+        MPS_TARGET,
+        model_kind = "pipeline",
+        pinned = None,
+        te_mode = te_mode,
+        memory_mode = None,
+        cpu_offload = False,
+        base_repo = fam.base_repo,
+    )
+
+
+@pytest.mark.parametrize("name", ["qwen-image", "flux.2-dev", "krea-2", "z-image"])
+def test_mps_preflight_accepts_explicit_int8_on_a_family_hosting_the_int8_file(name):
+    _preflight(_fam(name), "int8")
+
+
+def test_mps_preflight_still_refuses_explicit_fp8():
+    with pytest.raises(RuntimeError):
+        _preflight(_fam("qwen-image"), "fp8")
