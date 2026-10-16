@@ -15,6 +15,11 @@ triton = pytest.importorskip("triton")
 from triton.backends.compiler import GPUTarget
 from triton.compiler import ASTSource
 
+import inspect
+
+if "constexprs" not in inspect.signature(ASTSource.__init__).parameters:
+    pytest.skip("ASTSource takes constexprs from Triton 3.3", allow_module_level = True)
+
 from unsloth.kernels import cross_entropy_loss as ce_mod
 from unsloth.kernels import rope_embedding as rope_mod
 
@@ -70,4 +75,5 @@ def test_chunked_cross_entropy_skips_the_hint_on_sm100(capability, monkeypatch):
 def test_chunked_cross_entropy_streams_logits_from_volta(capability, monkeypatch):
     evict = _policy(capability, monkeypatch)
     assert evict == "evict_first"
-    assert "ld.global.L1::evict_first" in _compile(evict, 75).asm["ptx"]
+    # Each target's own lowering: sm_80+ adds an L2 cache policy to the load.
+    assert "ld.global.L1::evict_first" in _compile(evict, capability[0] * 10 + capability[1]).asm["ptx"]

@@ -573,7 +573,14 @@ def can_use_fp8_rowwise_gemv(X, weight, weight_scale):
         return False
     if torch.is_grad_enabled() and (X.requires_grad or weight.requires_grad):
         return False
-    return not _fp8_kernel_unsupported(weight) and not _fp8_gemv_miscompiles(weight.device)
+    if _fp8_kernel_unsupported(weight):
+        return False
+    # The miscompile hits BLOCK_N 4 / 8 only; BLOCK_N 1 at 2 warps is exact on Triton 3.3 too.
+    return _gemv_block_n(weight.shape[0]) == 1 or not _fp8_gemv_miscompiles(weight.device)
+
+
+def _gemv_block_n(N):
+    return 1 if N <= 4096 else (4 if N <= 32768 else 8)
 
 
 def fp8_rowwise_gemv(X, weight, weight_scale):
@@ -583,7 +590,7 @@ def fp8_rowwise_gemv(X, weight, weight_scale):
     if not X.is_contiguous():
         X = X.contiguous()
     scale = weight_scale if weight_scale.is_contiguous() else weight_scale.contiguous()
-    block_n = 1 if N <= 4096 else (4 if N <= 32768 else 8)
+    block_n = _gemv_block_n(N)
     with _fp8_triton_device_context(X, static_device_count = True):
         _fp8_rowwise_gemv_kernel[(triton.cdiv(N, block_n),)](
             X,

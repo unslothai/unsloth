@@ -348,9 +348,26 @@ def test_row_gate_keeps_unaligned_shapes_dense(N, monkeypatch):
         packed, scale, gs = _random_nvfp4(n, k)
         X = torch.randn(4, k, device = "cuda", dtype = dtype)
         assert N._fused_ok(X, packed, scale, gs, k) == want, (n, k)
+        # dX: the activation is (rows, N) and inner is N, but K still has to be aligned.
+        assert N._fused_ok(torch.randn(4, n, device = "cuda", dtype = dtype), packed, scale, gs, n) == want, (n, k)
         monkeypatch.setenv("UNSLOTH_NVFP4_FUSED", "1")
         assert N._fused_ok(X, packed, scale, gs, k)
         monkeypatch.delenv("UNSLOTH_NVFP4_FUSED")
+
+
+def test_autocast_to_another_dtype_keeps_the_dense_path(N, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_NVFP4_FUSED", "1")
+    packed, scale, gs = _random_nvfp4(64, 128)
+    for x_dtype, cast_dtype in ((torch.float16, torch.bfloat16), (torch.bfloat16, torch.float16)):
+        if torch.bfloat16 in (x_dtype, cast_dtype) and torch.cuda.get_device_capability() < (8, 0):
+            continue
+        X = torch.randn(4, 128, device = "cuda", dtype = x_dtype)
+        assert N._fused_ok(X, packed, scale, gs, 128)
+        with torch.autocast("cuda", dtype = cast_dtype):
+            assert not N._fused_ok(X, packed, scale, gs, 128)
+            assert N.nvfp4_linear(X, packed, scale, gs).dtype == cast_dtype
+        with torch.autocast("cuda", dtype = x_dtype):
+            assert N._fused_ok(X, packed, scale, gs, 128)
 
 
 def test_flags_are_read_once_per_process(N, live_env, monkeypatch):

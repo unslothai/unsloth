@@ -134,6 +134,23 @@ def test_compiled_calls_never_use_fast_launch(monkeypatch, kind, width, gemma):
 
 
 @pytest.mark.parametrize("train", [False, True], ids = ["frozen", "trainable"])
+@pytest.mark.parametrize("kind,gemma", [("rms", False), ("rms", True), ("ln", False)])
+def test_launcher_off_calls_triton_directly(monkeypatch, kind, gemma, train):
+    # HIP and UNSLOTH_TRITON_FAST_LAUNCH=0: no detour through launch(), as before the fast path.
+    calls = []
+    for module in (rms_layernorm, layernorm):
+        real = module.launch
+        monkeypatch.setattr(
+            module, "launch", lambda *a, real = real, **k: calls.append(a[0]) or real(*a, **k)
+        )
+    monkeypatch.setattr(triton_launch, "_ENABLED", False)
+    weight, bias = _module(kind, 256, train)
+    x, dy = _inputs(256)
+    _step(kind, gemma, x, weight, bias, dy)
+    assert calls == []
+
+
+@pytest.mark.parametrize("train", [False, True], ids = ["frozen", "trainable"])
 @pytest.mark.parametrize("kind,width,gemma", CASES)
 def test_cuda_graph_capture_replays(kind, width, gemma, train):
     weight, bias = _module(kind, width, train)

@@ -46,7 +46,7 @@ def test_gate(F, monkeypatch, capability, version, hip, expected):
 
 
 @pytest.mark.skipif(not has_real_cuda(), reason = "needs a GPU")
-@pytest.mark.parametrize("N, K", [(5000, 1536), (40000, 1024), (4096, 4096)])
+@pytest.mark.parametrize("N, K", [(5000, 1536), (40000, 1024), (4096, 4096), (4095, 4096), (33, 7)])
 def test_chosen_gemv_is_exact(F, N, K):
     if F._fp8_kernel_unsupported(torch.empty(1, device = "cuda", dtype = torch.float8_e4m3fn)):
         pytest.skip("no fp8e4nv Triton kernel on this device")
@@ -55,7 +55,7 @@ def test_chosen_gemv_is_exact(F, N, K):
     W = (torch.randn(N, K, device = "cuda", generator = g) * 0.5).to(torch.float8_e4m3fn)
     S = torch.rand(N, 1, device = "cuda", generator = g) + 0.5
     if not F.can_use_fp8_rowwise_gemv(X, W, S):
-        assert F._fp8_gemv_miscompiles(W.device)
+        assert F._fp8_gemv_miscompiles(W.device) and N > 4096
         return
     out = F.fp8_rowwise_gemv(X, W, S).float().reshape(-1)
     ref = (X.float() @ (W.float() * S).T).reshape(-1)

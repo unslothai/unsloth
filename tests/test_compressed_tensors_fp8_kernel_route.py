@@ -261,7 +261,7 @@ def test_decode_gemv_matches_the_dequantized_matmul(shape, rows):
     W, s = model.lin.weight, model.lin.weight_scale
     X = torch.randn(*rows, shape[1], device = dev, dtype = torch.bfloat16)
     with torch.no_grad():
-        if _fp8_gemv_miscompiles(W.device):
+        if _fp8_gemv_miscompiles(W.device) and shape[0] > 4096:
             assert not can_use_fp8_rowwise_gemv(X, W, s)
             pytest.skip(
                 "Triton < 3.4 miscompiles this GEMV on Blackwell; decode takes the dequant path"

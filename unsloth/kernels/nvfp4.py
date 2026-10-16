@@ -450,6 +450,9 @@ def _fused_ok(A, packed, scale, global_scale, inner):
         return False
     if A.dtype == torch.bfloat16 and _device_capability(index) < (8, 0):
         return False
+    # The dense matmul follows autocast; the fused kernels write A's dtype.
+    if torch.is_autocast_enabled("cuda") and torch.get_autocast_dtype("cuda") != A.dtype:
+        return False
     return (
         packed.device == A.device
         and scale.device == A.device
@@ -458,7 +461,7 @@ def _fused_ok(A, packed, scale, global_scale, inner):
         and packed.dtype == torch.uint8
         and packed.dim() == 2
         and packed.shape[0] > 0
-        and (mode in _FUSED_FORCE or (inner % 64 == 0 and packed.shape[0] % 64 == 0))
+        and (mode in _FUSED_FORCE or (packed.shape[0] % 64 == 0 and packed.shape[1] % 32 == 0))
         and not _is_transposed_view(packed)
         and scale.dtype in (torch.float8_e4m3fn, torch.float32, torch.float16, torch.bfloat16)
         and scale.dim() == 2
