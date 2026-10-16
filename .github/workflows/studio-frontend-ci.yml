@@ -4,10 +4,14 @@
 # Frontend PR gate: lockfile freshness, typecheck, build, and a bundle grep
 # that catches the 2026.5.1 chat-history regression at the JS level.
 #
-# biome runs as non-blocking for now: the codebase currently has accumulated
-# ~470 errors and ~1650 warnings against the existing biome config. Surfacing
-# the count in CI lets us drive it down without forcing a fleet-wide cleanup
-# in the same PR. Drop `continue-on-error` once that number is zero.
+# Biome is the primary linter for the Unsloth Studio frontend (`npm run lint`).
+# It runs as non-blocking for now: `biome check` (lint, format and import
+# order) currently reports ~4200 errors and ~38000 warnings against the
+# existing biome config. Surfacing the count in CI lets us drive it down
+# without forcing a fleet-wide cleanup in the same PR. Drop
+# `continue-on-error` once that number is zero. ESLint stays available as
+# `npm run lint:eslint` for the rules Biome has no full equivalent for
+# (mainly the React Compiler checks in eslint-plugin-react-hooks).
 
 name: Frontend CI
 

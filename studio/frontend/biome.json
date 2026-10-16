@@ -1,15 +1,14 @@
 {
-  "$schema": "https://biomejs.dev/schemas/1.9.4/schema.json",
+  "$schema": "https://biomejs.dev/schemas/2.5.15/schema.json",
   "files": {
-    "ignore": [
-      "dist",
-      "node_modules",
-      "test",
-      "test/**",
-      "**/._*",
-      "._*",
-      "**/.DS_Store",
-      "tsconfig*.json"
+    "includes": [
+      "**",
+      "!**/dist",
+      "!**/node_modules",
+      "!**/test",
+      "!**/._*",
+      "!**/.DS_Store",
+      "!**/tsconfig*.json"
     ]
   },
   "formatter": {
@@ -17,38 +16,84 @@
     "indentStyle": "space",
     "indentWidth": 2
   },
-  "organizeImports": {
-    "enabled": true
+  "css": {
+    "parser": {
+      "tailwindDirectives": true
+    }
+  },
+  "assist": {
+    "actions": {
+      "source": { "organizeImports": "on" }
+    }
   },
   "linter": {
     "enabled": true,
+    "domains": {
+      "astro": "none",
+      "drizzle": "none",
+      "next": "none",
+      "playwright": "none",
+      "qwik": "none",
+      "react": "all",
+      "reactNative": "none",
+      "solid": "none",
+      "svelte": "none",
+      "turborepo": "none",
+      "vue": "none"
+    },
     "rules": {
-      "recommended": true,
-      "a11y": { "all": true },
-      "complexity": { "all": true },
-      "correctness": { "all": true, "useImportExtensions": "off" },
-      "performance": { "all": true },
-      "security": { "all": true },
-      "style": {
-        "all": true,
-        "useNamingConvention": { "options": { "strictCase": false } }
+      "preset": "recommended",
+      "a11y": { "preset": "all" },
+      "complexity": { "preset": "all" },
+      "correctness": {
+        "preset": "all",
+        "useImportExtensions": "off",
+        "noUnresolvedImports": "off"
       },
-      "suspicious": { "all": true, "noReactSpecificProps": "off" }
+      "performance": { "preset": "all" },
+      "security": { "preset": "all" },
+      "style": {
+        "preset": "all",
+        "useNamingConvention": {
+          "level": "on",
+          "options": { "strictCase": false }
+        },
+        "noRestrictedImports": {
+          "level": "error",
+          "options": {
+            "patterns": [
+              {
+                "group": ["@/features/*/**"],
+                "message": "Import from feature index only: @/features/[name]"
+              },
+              {
+                "group": ["../features/*/**"],
+                "message": "Use absolute imports: @/features/[name]"
+              }
+            ]
+          }
+        },
+        "useComponentExportOnlyModules": {
+          "level": "warn",
+          "options": { "allowConstantExport": true }
+        }
+      },
+      "suspicious": { "preset": "all", "noReactSpecificProps": "off" }
     }
   },
   "overrides": [
     {
-      "include": ["scripts/**"],
+      "includes": ["**/scripts/**"],
       "linter": {
         "rules": {
           "correctness": { "noNodejsModules": "off" },
-          "suspicious": { "noConsole": "off", "noConsoleLog": "off" },
+          "suspicious": { "noConsole": "off" },
           "performance": { "useTopLevelRegex": "off" }
         }
       }
     },
     {
-      "include": ["vite.config.ts", "eslint.config.js"],
+      "includes": ["**/vite.config.ts", "**/eslint.config.js"],
       "linter": {
         "rules": {
           "correctness": { "noNodejsModules": "off" },
@@ -57,7 +102,7 @@
       }
     },
     {
-      "include": ["src/components/assistant-ui/reasoning.tsx"],
+      "includes": ["**/src/components/assistant-ui/reasoning.tsx"],
       "linter": {
         "rules": {
           "style": { "useNamingConvention": "off" }
@@ -65,7 +110,7 @@
       }
     },
     {
-      "include": ["src/components/assistant-ui/attachment.tsx"],
+      "includes": ["**/src/components/assistant-ui/attachment.tsx"],
       "linter": {
         "rules": {
           "style": { "useNamingConvention": "off" }
@@ -73,7 +118,7 @@
       }
     },
     {
-      "include": ["src/components/assistant-ui/tool-fallback.tsx"],
+      "includes": ["**/src/components/assistant-ui/tool-fallback.tsx"],
       "linter": {
         "rules": {
           "style": { "useNamingConvention": "off" }
@@ -81,15 +126,15 @@
       }
     },
     {
-      "include": ["src/components/component-example.tsx"],
+      "includes": ["**/src/components/component-example.tsx"],
       "linter": {
         "rules": {
-          "style": { "noNamespaceImport": "off" }
+          "performance": { "noNamespaceImport": "off" }
         }
       }
     },
     {
-      "include": ["src/config/env.ts"],
+      "includes": ["**/src/config/env.ts"],
       "linter": {
         "rules": {
           "style": { "useNamingConvention": "off" }
@@ -97,7 +142,7 @@
       }
     },
     {
-      "include": ["src/components/layout/index.ts"],
+      "includes": ["**/src/components/layout/index.ts"],
       "linter": {
         "rules": {
           "performance": { "noBarrelFile": "off" }
@@ -105,7 +150,7 @@
       }
     },
     {
-      "include": ["src/features/**/index.ts"],
+      "includes": ["**/src/features/**/index.ts"],
       "linter": {
         "rules": {
           "performance": { "noBarrelFile": "off" }
@@ -113,7 +158,7 @@
       }
     },
     {
-      "include": ["src/features/chat/thread-sidebar.tsx"],
+      "includes": ["**/src/features/chat/thread-sidebar.tsx"],
       "linter": {
         "rules": {
           "a11y": { "useSemanticElements": "off" }
@@ -121,7 +166,7 @@
       }
     },
     {
-      "include": ["src/features/chat/runtime-provider.tsx"],
+      "includes": ["**/src/features/chat/runtime-provider.tsx"],
       "linter": {
         "rules": {
           "style": { "useNamingConvention": "off" }
@@ -129,7 +174,7 @@
       }
     },
     {
-      "include": ["src/components/assistant-ui/thread.tsx"],
+      "includes": ["**/src/components/assistant-ui/thread.tsx"],
       "linter": {
         "rules": {
           "style": { "useNamingConvention": "off" }
@@ -137,15 +182,17 @@
       }
     },
     {
-      "include": ["src/components/ui/**"],
+      "includes": ["**/src/components/ui/**"],
       "linter": {
         "enabled": false
       },
       "formatter": {
         "enabled": false
       },
-      "organizeImports": {
-        "enabled": false
+      "assist": {
+        "actions": {
+          "source": { "organizeImports": "off" }
+        }
       }
     }
   ]

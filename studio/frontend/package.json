@@ -9,7 +9,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "lint": "eslint .",
+    "lint": "biome lint",
     "preview": "vite preview",
     "test": "node --experimental-strip-types --test \"tests/**/*.test.ts\"",
     "bundle:check": "node --experimental-strip-types scripts/check-bundle-budget.ts",
@@ -20,7 +20,8 @@
     "catalog:check": "node --experimental-strip-types --no-warnings src/features/model-picker/components/model-selector/model-catalog.check.ts",
     "catalog:check:network": "node --experimental-strip-types --no-warnings src/features/model-picker/components/model-selector/model-catalog.check.ts --network",
     "biome:check": "biome check",
-    "biome:fix": "biome check --write"
+    "biome:fix": "biome check --write",
+    "lint:eslint": "eslint ."
   },
   "dependencies": {
     "@assistant-ui/core": "0.1.17",
@@ -118,7 +119,7 @@
     "@babel/core": "7.29.7"
   },
   "devDependencies": {
-    "@biomejs/biome": "^1.9.4",
+    "@biomejs/biome": "2.5.15",
     "@eslint/js": "^9.39.1",
     "@tailwindcss/browser": "4.2.4",
     "@types/canvas-confetti": "^1.9.0",
@@ -140,7 +141,6 @@
     "vite": "^8.0.16"
   },
   "allowScripts": {
-    "@biomejs/biome@1.9.4": true,
     "msw@2.14.3": true,
     "fsevents": true
   }
