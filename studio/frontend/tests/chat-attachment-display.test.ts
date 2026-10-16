@@ -106,7 +106,7 @@ test("composer cards wrap for two rows, then become one scrolling strip", () => 
   assert.equal(composerAttachmentsOverflow(5, 724, quarter, 8, 1), true);
   assert.match(
     ATTACHMENT,
-    /const CARD_SLOT =\n\s*"shrink-0 w-\[calc\(\(100%_-_var\(--spacing\)\*6\)\/4\)\] min-w-\[calc\(7\.5rem\*var\(--ui-space-scale,1\)\)\]";/,
+    /const CARD_SLOT =\n\s*"shrink-0 w-\[calc\(\(100%_-_var\(--spacing\)\*6\)\/4\.15\)\] min-w-\[calc\(7\.5rem\*var\(--ui-space-scale,1\)\)\]";/,
   );
   assert.match(
     ATTACHMENT,
