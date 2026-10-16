@@ -4604,8 +4604,9 @@ class FastLlamaModel:
                 clean_gpu_cache()
 
         from .lora_init import fast_lora_init, record_fast_pissa
+        from ._utils import block_swap_shaped
 
-        with fast_lora_init() as fast:
+        with fast_lora_init() as fast, block_swap_shaped(model):
             model = _get_peft_model(model, lora_config)
         if fast["pissa"]:
             record_fast_pissa(model)

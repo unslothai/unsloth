@@ -8118,6 +8118,12 @@ def planned_prefetch_depth(device_map_planner_kwargs):
     return depth if depth == "auto" else int(depth)
 
 
+def block_swap_shaped(model):
+    """PEFT wraps MoE expert weights by their shape, which reads as empty on a layer offload_layers evicted."""
+    shaped = getattr(getattr(model, "_unsloth_block_swap", None), "shaped", None)
+    return shaped() if shaped is not None else contextlib.nullcontext()
+
+
 def finish_block_swap_load(
     model,
     state,
