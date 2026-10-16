@@ -2649,7 +2649,8 @@
       "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
       "severity": "HIGH",
       "evidence": "Obfusc: L140:     exec(compile(source, f\"<unsloth gdn replayssm: {cls.__name__}.{name}>\", \"exec\"), namespace, scope)\nExec: L140:     exec(compile(source, f\"<unsloth gdn replayssm: {cls.__name__}.{name}>\", \"exec\"), namespace, scope)",
-      "evidence_hash": "af9bbd099e27249e8568608b434a0caab1be4b7da651826363c6d83cc5eab5ed"
+      "evidence_hash": "af9bbd099e27249e8568608b434a0caab1be4b7da651826363c6d83cc5eab5ed",
+      "file_sha256": "91d58e26a91a1025e3b314e6917d1d4a6b2c7b98c134bcef0ef6af904cfd2b5b"
     },
     {
       "package": "unsloth-zoo",
