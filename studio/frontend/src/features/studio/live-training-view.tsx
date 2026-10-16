@@ -155,6 +155,7 @@ export function LiveTrainingView(): ReactElement {
       projectName: state.projectName,
       trainingMethod: state.trainingMethod,
       enableActivationCapture: state.enableActivationCapture,
+      isAudioModel: state.isAudioModel,
       dataset: state.dataset,
       modelType: state.modelType,
     })),
@@ -299,7 +300,8 @@ export function LiveTrainingView(): ReactElement {
           </TabsContent>
 
           <TabsContent value="interpretability">
-            {(runConfigOverride?.enableActivationCapture ?? config.enableActivationCapture) ? (
+            {(runConfigOverride?.enableActivationCapture ??
+              (config.enableActivationCapture && !config.isAudioModel)) ? (
               <InterpretabilitySection
                 isTraining={viewData.isTrainingRunning}
                 jobId={runtime.jobId}

@@ -23,7 +23,7 @@ test("the live tab prefers the run's capture flag over the form store", () => {
   const src = readSrc("features/studio/live-training-view.tsx");
   assert.match(
     src,
-    /\(runConfigOverride\?\.enableActivationCapture \?\? config\.enableActivationCapture\) \?/,
+    /\(runConfigOverride\?\.enableActivationCapture \?\?\s+\(config\.enableActivationCapture && !config\.isAudioModel\)\) \?/,
   );
   assert.doesNotMatch(src, /\{config\.enableActivationCapture \? \(/);
 });

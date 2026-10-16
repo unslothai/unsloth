@@ -211,9 +211,14 @@ def run(args):
 
     logging.getLogger("hf-to-gguf").setLevel(logging.WARNING)
 
+    is_mlx = _is_mlx_backend(unsloth)
+
     # Activation capture setup (optional)
     capture_callback = None
     if args.capture_activations:
+        if is_mlx:
+            # activation_capture imports torch and hooks torch modules; MLX has neither.
+            raise SystemExit("--capture_activations is not supported on the MLX backend.")
         from unsloth.activation_capture import ActivationCaptureConfig
         _capture_cfg = ActivationCaptureConfig(
             output_dir = args.capture_output_dir,
@@ -221,8 +226,6 @@ def run(args):
             max_channels = args.capture_max_channels,
         )
         # Capture object is created after the model is loaded (see below)
-
-    is_mlx = _is_mlx_backend(unsloth)
 
     # MLX routes get_peft_model to FastMLXModel, which ignores use_dora (plain LoRA).
     if args.use_dora and is_mlx:
