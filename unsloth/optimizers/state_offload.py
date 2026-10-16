@@ -58,6 +58,10 @@ _CHUNK_SAFE_MODULES = (
 
 
 def _chunk_safe(optimizer):
+    # Q-GaLore weight_quant swaps p.data for a one element placeholder inside step, so the full
+    # size gradients hidden between chunks can no longer be put back on it.
+    if any(group.get("weight_quant", False) for group in optimizer.param_groups):
+        return False
     for cls in type(optimizer).__mro__:
         if "step" in vars(cls):
             return cls.__module__.startswith(_CHUNK_SAFE_MODULES)

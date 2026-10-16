@@ -356,8 +356,8 @@ def flattened_rgb(image, background = None):
     """
     from PIL import Image, ImageChops, ImageStat
 
-    # Match routes/inference.py's _image_bytes_to_png_b64: scale declared I;16
-    # values to 8-bit before RGB conversion clips them. I;16B/I;16L must pass
+    # Scale declared I;16 values to 8-bit before RGB conversion clips them; plain
+    # "I" and "F" declare no range, so they convert as-is. I;16B/I;16L must pass
     # through "I" because they reject point().
     if image.mode.startswith("I;16"):
         if image.mode != "I;16":

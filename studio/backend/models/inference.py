@@ -2929,8 +2929,9 @@ class ChatCompletionRequest(BaseModel):
         description = (
             "[x-unsloth] Extra share of the prompt budget to drop when a rolling "
             "compaction fires, so the boundary can stay put for a stretch of turns. "
-            "0.25 is the process default (ROLLING_COMPACTION_HEADROOM_RATIO). Ignored "
-            "for checkpoint compaction. Unset keeps the process default."
+            "A checkpoint reset leaves the same share free when it keeps the tool calls "
+            "of the turn in progress. 0.25 is the process default "
+            "(ROLLING_COMPACTION_HEADROOM_RATIO). Unset keeps the process default."
         ),
     )
     compact_context: Optional[bool] = Field(
