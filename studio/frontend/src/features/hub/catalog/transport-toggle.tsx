@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { SegmentedPill } from "@/components/segmented-control";
 import {
   Tooltip,
   TooltipContent,
@@ -11,7 +12,7 @@ import {
   useTransportMode,
 } from "@/features/hub/download-manager";
 import { cn } from "@/lib/utils";
-import { useEffect } from "react";
+import { useEffect, useId } from "react";
 
 const OPTIONS: { value: "auto" | "http" | "xet"; label: string; hint: string }[] =
   [
@@ -34,6 +35,7 @@ const OPTIONS: { value: "auto" | "http" | "xet"; label: string; hint: string }[]
 
 export function TransportToggle() {
   const [mode, setMode] = useTransportMode();
+  const pillId = useId();
   const { capabilities, isLoading } = useDownloadTransportCapabilities();
   // Two questions. Xet cannot be CHOSEN until we know it runs here; the fallback may only fire
   // once we know it does NOT, or a loading tab shows HTTP for a stored Xet that was fine.
@@ -53,7 +55,7 @@ export function TransportToggle() {
   return (
     <fieldset
       aria-label="Download transport"
-      className="hub-tag-soft m-0 inline-flex h-[calc(26px*var(--ui-space-scale,1))] min-w-0 items-center gap-0.5 rounded-full border-0 p-0.5 text-ui-11"
+      className="hub-tag-soft isolate m-0 inline-flex h-[calc(26px*var(--ui-space-scale,1))] min-w-0 items-center gap-0.5 rounded-full border-0 p-0.5 text-ui-11"
     >
       {OPTIONS.map((opt) => {
         const active = mode === opt.value;
@@ -79,14 +81,17 @@ export function TransportToggle() {
                   if (!disabled) setMode(opt.value);
                 }}
                 className={cn(
-                  "inline-flex h-[calc(22px*var(--ui-space-scale,1))] items-center justify-center rounded-full px-2 font-medium tracking-tight transition-colors",
+                  "relative inline-flex h-[calc(22px*var(--ui-space-scale,1))] items-center justify-center rounded-full px-2 font-medium tracking-tight transition-colors",
                   disabled
                     ? "cursor-not-allowed text-muted-foreground/45"
                     : active
-                      ? "hub-tab-toggle-pill cursor-pointer text-foreground"
+                      ? "cursor-pointer text-foreground"
                       : "cursor-pointer text-muted-foreground hover:text-foreground/80",
                 )}
               >
+                {active && !disabled && (
+                  <SegmentedPill layoutId={`${pillId}-transport`} />
+                )}
                 {opt.label}
               </button>
             </TooltipTrigger>

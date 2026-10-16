@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { publicAssetUrl } from "@/components/mascot-img";
+import { SegmentedPill } from "@/components/segmented-control";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -21,7 +22,7 @@ import {
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { SLOTH_AVATARS } from "../sloth-avatars";
 import { loginDisplayName } from "../hooks/use-effective-profile";
 import { decodeJwtSubject } from "../utils/jwt-subject";
@@ -71,6 +72,7 @@ function readPersistedProfile(): {
 
 export function ProfilePersonalizationPanel() {
   const t = useT();
+  const pillId = useId();
   const displayName = useUserProfileStore((s) => s.displayName);
   const nickname = useUserProfileStore((s) => s.nickname);
   const avatarDataUrl = useUserProfileStore((s) => s.avatarDataUrl);
@@ -270,12 +272,15 @@ export function ProfilePersonalizationPanel() {
                       onClick={() => setAvatarShape(shape)}
                       aria-pressed={avatarShape === shape}
                       className={cn(
-                        "inline-flex h-8 items-center justify-center rounded-full px-3.5 text-ui-13 font-medium transition-colors",
+                        "relative inline-flex h-8 items-center justify-center rounded-full px-3.5 text-ui-13 font-medium transition-colors",
                         avatarShape === shape
-                          ? "hub-tab-toggle-pill text-foreground"
+                          ? "text-foreground"
                           : "text-muted-foreground hover:text-foreground",
                       )}
                     >
+                      {avatarShape === shape && (
+                        <SegmentedPill layoutId={`${pillId}-avatar-shape`} />
+                      )}
                       {shape === "circle"
                         ? t("settings.profile.avatarShapeCircle")
                         : t("settings.profile.avatarShapeRounded")}

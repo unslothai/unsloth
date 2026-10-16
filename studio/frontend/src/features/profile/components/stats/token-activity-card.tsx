@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { SegmentedPill } from "@/components/segmented-control";
 import { ChartContainer, ChartTooltip } from "@/components/ui/chart";
 import type { ChartConfig } from "@/components/ui/chart";
 import { useLocale, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import {
   Bar,
   BarChart,
@@ -373,6 +374,7 @@ function WeekChart({
 
 export function TokenActivityCard({ daily }: { daily: ProfileStatsDay[] }) {
   const t = useT();
+  const pillId = useId();
   const [mode, setMode] = useState<ActivityMode>("daily");
   const maxColumns = Math.ceil(daily.length / DAYS_PER_WEEK) + 1;
   const { ref, columns } = useVisibleColumns(maxColumns);
@@ -468,12 +470,15 @@ export function TokenActivityCard({ daily }: { daily: ProfileStatsDay[] }) {
                 onClick={() => setMode(option)}
                 aria-pressed={mode === option}
                 className={cn(
-                  "inline-flex h-8 items-center rounded-full px-3 text-ui-13 font-medium transition-colors",
+                  "relative inline-flex h-8 items-center rounded-full px-3 text-ui-13 font-medium transition-colors",
                   mode === option
-                    ? "hub-tab-toggle-pill text-foreground"
+                    ? "text-foreground"
                     : "text-muted-foreground hover:text-foreground",
                 )}
               >
+                {mode === option && (
+                  <SegmentedPill layoutId={`${pillId}-mode`} />
+                )}
                 {t(`settings.profile.stats.mode.${option}`)}
               </button>
             ))}

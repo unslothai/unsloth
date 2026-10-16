@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { SegmentedPill } from "@/components/segmented-control";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
@@ -8,7 +9,7 @@ import { useIsAccountOwner } from "@/features/auth";
 import { useT } from "@/i18n";
 import { DEFAULT_HF_ENDPOINT, type HubSource } from "@/lib/hf-endpoint";
 import { cn } from "@/lib/utils";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import {
   type HubEndpointSettings,
   type HubSettings,
@@ -28,6 +29,7 @@ const SOURCES: { value: HubSource; label: string }[] = [
 
 export function HubSettingsSection() {
   const t = useT();
+  const pillId = useId();
   const isOwner = useIsAccountOwner();
   const [settings, setSettings] = useState<HubSettings | null>(null);
   const [draftEndpoint, setDraftEndpoint] = useState("");
@@ -158,10 +160,11 @@ export function HubSettingsSection() {
                 className={cn(
                   "relative flex h-8 items-center rounded-full px-3 text-xs font-medium transition-colors disabled:cursor-not-allowed",
                   active
-                    ? "hub-tab-toggle-pill text-foreground"
+                    ? "text-foreground"
                     : "text-muted-foreground hover:text-foreground",
                 )}
               >
+                {active && <SegmentedPill layoutId={`${pillId}-source`} />}
                 <span className="relative z-10">{option.label}</span>
               </button>
             );

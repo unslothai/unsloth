@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { SegmentedPill } from "@/components/segmented-control";
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -44,7 +45,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { CursorInWindowIcon } from "@/lib/browser-use-icon";
 import { useNavigate } from "@tanstack/react-router";
 import { Columns2Icon } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import type { ReactNode } from "react";
 import {
   type CurrentDatePromptSettings,
@@ -281,6 +282,7 @@ function ToolResultLimitRow() {
 export function ChatTab() {
   const isOwner = useIsAccountOwner();
   const t = useT();
+  const pillId = useId();
   const navigate = useNavigate();
   const resetPlusMenu = usePlusMenuPrefsStore((state) => state.resetMenu);
   const autoTitle = useChatRuntimeStore((state) => state.autoTitle);
@@ -546,12 +548,15 @@ export function ChatTab() {
                 aria-pressed={autoScrollWhileGenerating === follow}
                 onClick={() => setAutoScrollWhileGenerating(follow)}
                 className={cn(
-                  "inline-flex h-8 cursor-pointer items-center rounded-full px-3.5 text-ui-12 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                  "relative inline-flex h-8 cursor-pointer items-center rounded-full px-3.5 text-ui-12 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
                   autoScrollWhileGenerating === follow
-                    ? "hub-tab-toggle-pill text-foreground"
+                    ? "text-foreground"
                     : "text-muted-foreground hover:text-foreground",
                 )}
               >
+                {autoScrollWhileGenerating === follow && (
+                  <SegmentedPill layoutId={`${pillId}-auto-scroll`} />
+                )}
                 {t(
                   follow
                     ? "settings.chat.autoScrollAuto"

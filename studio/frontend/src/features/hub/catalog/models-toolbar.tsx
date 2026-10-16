@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { SegmentedPill } from "@/components/segmented-control";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
@@ -22,7 +23,7 @@ import {
   SparklesIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { memo, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { HubCapabilityFilter } from "../lib/model-capabilities";
 import type {
   HubUploader,
@@ -127,6 +128,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
   onOpenFineTune: () => void;
   npuAvailable?: boolean;
 }) {
+  const viewPillId = useId();
   // Recent searches surface while the empty search field is focused, only on
   // Discover (on-device search is a local filter and isn't recorded).
   const recentSearches = useRecentSearches();
@@ -268,26 +270,19 @@ export const ModelsToolbar = memo(function ModelsToolbar({
         role="radiogroup"
         aria-label="View"
       >
-        <span
-          aria-hidden="true"
-          className={cn(
-            "hub-tab-toggle-pill",
-            "pointer-events-none absolute inset-y-0 left-0 w-1/2 rounded-full transition-transform duration-200 ease-out",
-            tab === "downloaded" ? "translate-x-full" : "translate-x-0",
-          )}
-        />
         <button
           type="button"
           role="radio"
           aria-checked={tab === "discover"}
           onClick={() => onTabChange("discover")}
           className={cn(
-            "relative z-10 inline-flex h-9 flex-1 items-center justify-center rounded-full px-3 text-ui-12p5 transition-colors",
+            "relative inline-flex h-9 flex-1 items-center justify-center rounded-full px-3 text-ui-12p5 transition-colors",
             tab === "discover"
               ? "text-foreground"
               : "text-muted-foreground hover:text-foreground",
           )}
         >
+          {tab === "discover" && <SegmentedPill layoutId={viewPillId} />}
           Discover
         </button>
         <button
@@ -296,12 +291,13 @@ export const ModelsToolbar = memo(function ModelsToolbar({
           aria-checked={tab === "downloaded"}
           onClick={() => onTabChange("downloaded")}
           className={cn(
-            "relative z-10 inline-flex h-9 flex-1 items-center justify-center rounded-full px-3 text-ui-12p5 transition-colors",
+            "relative inline-flex h-9 flex-1 items-center justify-center rounded-full px-3 text-ui-12p5 transition-colors",
             tab === "downloaded"
               ? "text-foreground"
               : "text-muted-foreground hover:text-foreground",
           )}
         >
+          {tab === "downloaded" && <SegmentedPill layoutId={viewPillId} />}
           On Device
         </button>
       </div>
