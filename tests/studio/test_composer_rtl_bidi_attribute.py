@@ -24,8 +24,7 @@ def _block_around(
 
 
 def test_main_composer_has_dir_auto():
-    # PR #5784 turned the attribute into a JSX conditional; anchor on the inner
-    # "Message input" literal, which survives both spellings.
+    # Anchor on the inner "Message input" literal, which survives the JSX conditional.
     block = _block_around(THREAD_TSX.read_text(encoding = "utf-8"), '"Message input"')
     assert 'dir="auto"' in block, 'main composer is missing dir="auto"'
 

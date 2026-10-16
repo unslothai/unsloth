@@ -332,10 +332,12 @@ pub async fn check_install_status() -> bool {
     #[cfg(target_os = "linux")]
     crate::process::scrub_appimage_python_env_tokio(&mut cmd);
 
-    // Tauri uses the legacy root regardless of UNSLOTH_STUDIO_HOME / STUDIO_HOME;
-    // probe subprocesses must follow the same isolation as process.rs.
+    // Inherited roots are dropped; the desktop's own root is passed instead, as in process.rs.
     cmd.env_remove("UNSLOTH_STUDIO_HOME");
     cmd.env_remove("STUDIO_HOME");
+    if let Some(root) = crate::studio_home::chosen_root() {
+        cmd.env(crate::studio_home::STUDIO_HOME_ENV, root);
+    }
 
     let mut child = match process::with_studio_runtime_launch_guard(|| {
         cmd.spawn().map_err(|error| error.to_string())
@@ -887,6 +889,7 @@ pub async fn start_install(
     backend_state: tauri::State<'_, BackendState>,
     update_state: tauri::State<'_, update::UpdateState>,
     diagnostics: tauri::State<'_, DiagnosticsState>,
+    skip_long_paths: Option<bool>,
 ) -> Result<(), String> {
     if has_owned_backend(&backend_state)? {
         return Err(
@@ -902,9 +905,12 @@ pub async fn start_install(
 
     let state = state.inner().clone();
     let diagnostics_state = diagnostics.inner().clone();
-    tokio::task::spawn_blocking(move || install::run_install(app, state, diagnostics_state))
-        .await
-        .map_err(|e| format!("Install task panicked: {e}"))?
+    let skip_long_paths = skip_long_paths.unwrap_or(false);
+    tokio::task::spawn_blocking(move || {
+        install::run_install(app, state, diagnostics_state, skip_long_paths)
+    })
+    .await
+    .map_err(|e| format!("Install task panicked: {e}"))?
 }
 
 /// Record that the user canceled a pending system-package elevation flow.

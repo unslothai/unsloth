@@ -298,7 +298,10 @@ Describe 'elevation prompts across the rerun' {
         function Write-StudioLine { param([string]$Text) }
         function Get-VcBuildCustomizationsDir { param($VsInstallPath, $Generator) $script:VsCustomDir }
     }
-    AfterEach { Remove-Item Env:UNSLOTH_SETUP_RERUN -ErrorAction SilentlyContinue }
+    AfterEach {
+        Remove-Item Env:UNSLOTH_SETUP_RERUN -ErrorAction SilentlyContinue
+        Remove-Item Env:UNSLOTH_SKIP_LONG_PATHS -ErrorAction SilentlyContinue
+    }
 
     It 'Long Paths runs at top level before the handoff, so the first pass has already asked' {
         $at = $script:SetupText.IndexOf('$LongPathsEnabled = $false')
@@ -316,6 +319,18 @@ Describe 'elevation prompts across the rerun' {
         $StageRoot = $null
         . ([scriptblock]::Create($script:LongPathsBlock))
         Should -Invoke Start-Process -Times $Expected -Exactly
+    }
+
+    It 'Long Paths: never asks again once the desktop app''s explainer was skipped (<Skip>)' -ForEach @(
+        @{ Skip = ''; Expected = 1 }, @{ Skip = '1'; Expected = 0 }
+    ) {
+        Mock Get-ItemProperty { [pscustomobject]@{ LongPathsEnabled = 0 } }
+        Mock Start-Process { [pscustomobject]@{ ExitCode = 0 } }
+        if ($Skip) { $env:UNSLOTH_SKIP_LONG_PATHS = $Skip }
+        $StageRoot = $null
+        . ([scriptblock]::Create($script:LongPathsBlock))
+        Should -Invoke Start-Process -Times $Expected -Exactly
+        $LongPathsEnabled | Should -Be ($Expected -eq 1)
     }
 
     It 'the VC++ runtime install runs at top level before the handoff' {

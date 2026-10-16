@@ -608,15 +608,6 @@
     },
     {
       "file": "tests/python/test_windows_installer_resolver_fallback.py",
-      "rule": "AV003",
-      "severity": "error",
-      "reason": "Docstring history of the resolver; names the construct that was removed.",
-      "digests": {
-        "dd96a7d7a070c0b7": 1
-      }
-    },
-    {
-      "file": "tests/python/test_windows_installer_resolver_fallback.py",
       "rule": "AV010",
       "severity": "warn",
       "reason": "pre-existing warning",
