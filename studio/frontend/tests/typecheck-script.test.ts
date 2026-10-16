@@ -114,20 +114,21 @@ function fixture(
   if (options.bunHelp !== undefined) {
     writeFileSync(join(root, "help.txt"), options.bunHelp);
     const bun = join(root, "bin", "bun");
+    // A node script, not sh: PATH holds only bin/ and node's own directory, which has no
+    // coreutils under setup-node, nvm and similar installs.
     writeFileSync(
       bun,
-      `#!/bin/sh
-here=$(dirname "$0")/..
-if [ "$1" = "--help" ]; then
-  printf '["--help"]\\n' >> "$here/bun.log"
-  cat "$here/help.txt"
-  exit 0
-fi
-printf '[' >> "$here/bun.log"
-sep=
-for a in "$@"; do printf '%s"%s"' "$sep" "$a" >> "$here/bun.log"; sep=,; done
-printf ']\\n' >> "$here/bun.log"
-exit "\${FAKE_BUN_EXIT:-0}"
+      `#!/usr/bin/env node
+const { appendFileSync, readFileSync } = require("node:fs");
+const { join } = require("node:path");
+const here = join(__dirname, "..");
+const args = process.argv.slice(2);
+appendFileSync(join(here, "bun.log"), JSON.stringify(args) + "\\n");
+if (args[0] === "--help") {
+  process.stdout.write(readFileSync(join(here, "help.txt")));
+  process.exit(0);
+}
+process.exit(Number(process.env.FAKE_BUN_EXIT || 0));
 `,
     );
     chmodSync(bun, 0o755);
