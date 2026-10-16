@@ -347,11 +347,10 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # Pre-cast T5-XXL (9.52 -> 5.90 GB; CLIP-L stays dense). One artifact serves schnell/dev/Krea-dev (T5 shards
         # are byte-identical).
         te_prequant_repos = (("fp8", "text_encoder_2", "unsloth/FLUX.1-schnell-FP8"),),
-        # Default: the hosted int8 ConvRot T5 (CLIP-L stays bf16). ComfyUI's FLUX.1 templates load t5xxl_fp16, so this
-        # is the best hosted scheme that holds up: against the bf16 encoder (bf16 DiT, schnell 4 steps, 24 prompts, same
-        # seeds, bf16 A/A repeat bit-identical) int8 scores LPIPS-alex mean 0.055, SSIM 0.927; layerwise fp8 0.096 /
-        # SSIM 0.894 on 12 of them, too far. T5 resident 8.87 -> 4.56 GiB.
-        te_quant_auto = "int8",
+        # No te_quant_auto: a small encoder (T5-XXL, 4.8B) stays bf16 unless ComfyUI's template quantizes it, and the
+        # FLUX.1 templates load t5xxl_fp16. Measured against the bf16 encoder (bf16 DiT, schnell 4 steps, 24 prompts,
+        # bf16 A/A repeat bit-identical): the hosted int8 ConvRot T5 scores LPIPS-alex mean 0.055, SSIM 0.927, layerwise
+        # fp8 0.096 on 12; both stay one explicit pick away (T5 resident 8.87 -> 4.56 GiB).
         aliases = ("flux1", "flux-1"),
         # LoRA training targets FLUX.1-dev via the DiT trainer (QLoRA nf4); the dev repo is gated
         trainable = True,
@@ -858,10 +857,10 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # shared with flux.2-klein-4B: klein ships stock Qwen3-4B (sha256-identical to unsloth/Qwen3-4B), while this
         # encoder is Z-Image's own variant of it (layer 35 MLP up/down_proj maxdiff 0.86 against klein's).
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/Z-Image-Turbo-FP8"),),
-        # int8 ConvRot by default (ComfyUI loads qwen_3_4b bf16 in 3 of 4 templates): against the bf16 encoder (bf16
-        # DiT, 8 steps, 12 prompts, bf16 A/A repeat bit-identical) LPIPS-alex mean 0.049 / max 0.078, SSIM 0.934;
-        # layerwise fp8 0.105. Resident 7.49 -> 4.11 GiB, load 2.7 -> 1.8 s.
-        te_quant_auto = "int8",
+        # No te_quant_auto: a small encoder (Qwen3-4B) stays bf16 unless ComfyUI's template quantizes it, and 3 of its
+        # 4 templates load qwen_3_4b bf16. Measured against the bf16 encoder (bf16 DiT, 8 steps, 12 prompts, bf16 A/A
+        # repeat bit-identical): int8 ConvRot LPIPS-alex mean 0.049, SSIM 0.934, layerwise fp8 0.105; both stay one
+        # explicit pick away (resident 7.49 -> 4.11 GiB).
         aliases = ("zimage", "z_image"),
         # LoRA training via the DiT trainer (bf16); defaults to the prequant nf4 repo for QLoRA
         trainable = True,
@@ -931,10 +930,10 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         ),
         # pre-cast Gemma2-2B TE; the Hub stores it fp32 (10.46 GB), so the 3.20 GB artifact is a 3.3x download cut
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/Lumina-Image-2.0-FP8"),),
-        # int8 ConvRot by default (ComfyUI ships gemma_2_2b_fp16 only): LPIPS-alex mean 0.015 / max 0.037, SSIM 0.986
-        # against the bf16 encoder (bf16 DiT, 50 steps, 8 prompts, bf16 A/A repeat bit-identical); layerwise fp8 0.177.
-        # Resident 4.87 -> 2.99 GiB, load 2.5 -> 0.7 s, download 10.46 (fp32) -> 3.21 GB.
-        te_quant_auto = "int8",
+        # No te_quant_auto: a small encoder (Gemma-2-2B) stays bf16 unless ComfyUI's template quantizes it, and ComfyUI
+        # ships gemma_2_2b_fp16 only. Measured against the bf16 encoder (bf16 DiT, 50 steps, 8 prompts, bf16 A/A repeat
+        # bit-identical): int8 ConvRot LPIPS-alex mean 0.015, SSIM 0.986, layerwise fp8 0.177; both stay one explicit
+        # pick away (resident 4.87 -> 2.99 GiB, download 10.46 GB fp32 -> 3.21 GB).
         aliases = ("lumina-image-2.0", "lumina-image-2", "lumina2"),
         fp16_incompatible = True,
     ),

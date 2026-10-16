@@ -32,7 +32,6 @@ _QWEN25VL_FP8 = ("unsloth/Qwen-Image-FP8", "Qwen-Image-text_encoder-FP8.safetens
 
 # family -> (scheme an unset request resolves to, component, hosted (repo, filename), fp8 (repo, filename) behind it)
 EXPECTED = {
-    "flux.1": ("int8", "text_encoder_2", _T5_INT8, _T5_FP8),
     "flux.1-kontext": ("fp8", "text_encoder_2", _T5_FP8, None),
     "flux.2-dev": (
         "int8",
@@ -46,27 +45,16 @@ EXPECTED = {
     "qwen-image-edit": ("int8", "text_encoder", _QWEN25VL_INT8, None),
     "qwen-image-layered": ("fp8", "text_encoder", _QWEN25VL_FP8, None),
     "hunyuanimage-2.1": ("int8", "text_encoder", _QWEN25VL_INT8, _QWEN25VL_FP8),
-    "z-image": (
-        "int8",
-        "text_encoder",
-        ("unsloth/Z-Image-Turbo-FP8", "Z-Image-Turbo-text_encoder-INT8-ConvRot.safetensors"),
-        ("unsloth/Z-Image-Turbo-FP8", "Z-Image-Turbo-text_encoder-FP8.safetensors"),
-    ),
     "krea-2": (
         "int8",
         "text_encoder",
         ("unsloth/Krea-2-Turbo-FP8", "Krea-2-Turbo-text_encoder-INT8-ConvRot.safetensors"),
         ("unsloth/Krea-2-Turbo-FP8", "Krea-2-Turbo-text_encoder-FP8.safetensors"),
     ),
-    "lumina-2": (
-        "int8",
-        "text_encoder",
-        ("unsloth/Lumina-Image-2.0-FP8", "Lumina-Image-2.0-text_encoder-INT8-ConvRot.safetensors"),
-        ("unsloth/Lumina-Image-2.0-FP8", "Lumina-Image-2.0-text_encoder-FP8.safetensors"),
-    ),
 }
-# Measured and deliberately left on the bf16 encoder by default.
-KEEP_BF16 = ("flux.2-klein", "hidream-i1", "ideogram-4", "sdxl")
+# Measured and deliberately left on the bf16 encoder by default: a small encoder (about 5B or less) stays bf16 unless
+# ComfyUI's template quantizes it (FLUX.1's T5, Z-Image, Lumina-2, klein), and HiDream / Ideogram 4 missed the bar.
+KEEP_BF16 = ("flux.1", "z-image", "lumina-2", "flux.2-klein", "hidream-i1", "ideogram-4", "sdxl")
 
 
 def _fam(name):
@@ -114,9 +102,7 @@ def test_every_image_family_is_either_defaulted_or_measured_and_kept_bf16():
         ("qwen-image", "Qwen/Qwen-Image-2512"),
         ("qwen-image-edit", "Qwen/Qwen-Image-Edit"),
         ("qwen-image-edit", "Qwen/Qwen-Image-Edit-2509"),
-        ("flux.1", "black-forest-labs/FLUX.1-dev"),
-        ("flux.1", "black-forest-labs/FLUX.1-Krea-dev"),
-        ("z-image", "Tongyi-MAI/Z-Image"),
+        ("flux.1-kontext", "black-forest-labs/FLUX.1-Kontext-dev"),
         ("krea-2", "krea/Krea-2-Raw"),
     ],
 )
@@ -172,15 +158,15 @@ def test_auto_with_the_dense_shards_left_out_fetches_them_instead_of_failing(mon
     monkeypatch.setattr(
         huggingface_hub, "snapshot_download", lambda repo, **k: fetched.append((repo, k["allow_patterns"]))
     )
-    fam = _fam("z-image")
-    snap = tmp_path / "models--Tongyi-MAI--Z-Image-Turbo" / "snapshots" / "abc"
+    fam = _fam("krea-2")
+    snap = tmp_path / "models--krea--Krea-2-Turbo" / "snapshots" / "abc"
     snap.mkdir(parents = True)
     snap = str(snap)
     with tpq.auto_te_request(True):
         out = tpq.te_prequant_pipe_kwargs(
             fam, fam.base_repo, te_quant_mode = "int8", target = CUDA_BF16, dtype = None, dense_source = snap
         )
-    assert out == {} and fetched == [("Tongyi-MAI/Z-Image-Turbo", ["text_encoder/*"])]
+    assert out == {} and fetched == [("krea/Krea-2-Turbo", ["text_encoder/*"])]
     # offline: nothing to fall back to, so the load explains itself as before
     with tpq.auto_te_request(True), pytest.raises(RuntimeError):
         tpq.te_prequant_pipe_kwargs(
@@ -296,12 +282,12 @@ def test_an_automatic_int8_file_that_will_not_build_is_not_retried_as_fp8(monkey
     import core.inference.media_locality as ml
 
     monkeypatch.setattr(ml, "_hosted_component_cached", lambda *a, **k: True)
-    fam = _fam("z-image")
+    fam = _fam("krea-2")
     with tpq.auto_te_request(True):
         tpq.te_prequant_pipe_kwargs(
             fam, fam.base_repo, te_quant_mode = "int8", target = CUDA_BF16, dtype = None, dense_source = "/d"
         )
-    assert calls == ["Z-Image-Turbo-text_encoder-INT8-ConvRot.safetensors"]
+    assert calls == ["Krea-2-Turbo-text_encoder-INT8-ConvRot.safetensors"]
     calls.clear()
     # explicit int8 keeps the int8 -> fp8 chain
     with tpq.auto_te_request(False):
@@ -309,6 +295,6 @@ def test_an_automatic_int8_file_that_will_not_build_is_not_retried_as_fp8(monkey
             fam, fam.base_repo, te_quant_mode = "int8", target = CUDA_BF16, dtype = None, dense_source = "/d"
         )
     assert calls == [
-        "Z-Image-Turbo-text_encoder-INT8-ConvRot.safetensors",
-        "Z-Image-Turbo-text_encoder-FP8.safetensors",
+        "Krea-2-Turbo-text_encoder-INT8-ConvRot.safetensors",
+        "Krea-2-Turbo-text_encoder-FP8.safetensors",
     ]
