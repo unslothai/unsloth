@@ -4429,31 +4429,40 @@ class DiffusionBackend:
             return _progress("finalizing", finalized[1], finalized[0], 1.0)
 
         if loading.planned_files and sum(size for _r, _n, size in loading.planned_files) > 0:
-            downloaded = self._planned_progress_bytes(
+            downloaded = DiffusionBackend._planned_progress_bytes(
                 loading.planned_files, loading.incomplete_baseline, loading.planned_blob_keys
             )
-            return self._progress_from(loading, downloaded)
+            return DiffusionBackend._progress_from(loading, downloaded)
         # Sum checkpoint + companion cache, scanning the repo the bytes LAND in (the mirror when one was swapped in),
         # else a mirrored companion download reads as zero and the bar sits still.
         companion = loading.fetch_repo or loading.base_repo
+
+        def _companion_progress_bytes(repo_id: str) -> int:
+            # An artifact mirror (``mirror_hosts_artifacts``) also holds root GGUF / prequant checkpoints the plan
+            # never counted, so only its diffusers part is scanned, plus the in-flight blobs (this load's own
+            # pipeline files). Every other repo is scanned exactly as before.
+            if mirror_hosts_artifacts(repo_id):
+                return self._cache_bytes(repo_id, pipeline_only = True, in_flight = True)
+            return self._cache_bytes(repo_id)
+
         if loading.base_repo and loading.base_repo == loading.repo_id:
             # Full pipeline: base IS the repo, so count it once. Summing would add the upstream's stale partial blobs,
             # the very thing that selects the mirror, to the mirror's live bytes, pushing the bar to 100% / finalizing
             # mid-download.
-            downloaded = self._companion_progress_bytes(companion or loading.repo_id)
+            downloaded = _companion_progress_bytes(companion or loading.repo_id)
         elif loading.gguf_filename and mirror_hosts_artifacts(loading.repo_id):
             # A GGUF picked straight from an artifact mirror: the repo is also the companion, and also holds sibling
             # quants and sample renders the plan never counted. The selected file, the pipeline folders and the
             # in-flight blobs are what this load downloads.
             downloaded = self._cache_file_bytes(
                 loading.repo_id, loading.gguf_filename
-            ) + self._companion_progress_bytes(loading.repo_id)
+            ) + _companion_progress_bytes(loading.repo_id)
             if companion and companion.lower() != loading.repo_id.lower():
-                downloaded += self._companion_progress_bytes(companion)
+                downloaded += _companion_progress_bytes(companion)
         else:
             downloaded = self._cache_bytes(loading.repo_id)
             if companion and companion != loading.repo_id:
-                downloaded += self._companion_progress_bytes(companion)
+                downloaded += _companion_progress_bytes(companion)
         # Repos read before files (_run_load stores files first), so every repo seen has its file entry.
         asset_repos = loading.asset_repos
         asset_files = loading.asset_files
@@ -4470,7 +4479,7 @@ class DiffusionBackend:
                 size,
                 self._cache_file_bytes(repo, filename) + max(0, self._cache_bytes(repo) - baseline),
             )
-        return self._progress_from(loading, downloaded)
+        return DiffusionBackend._progress_from(loading, downloaded)
 
     @staticmethod
     def _progress_from(loading: "_LoadingState", downloaded: int) -> dict[str, Any]:
@@ -6002,15 +6011,6 @@ class DiffusionBackend:
                     in_flight += max(0, size - (baseline or {}).get(path, 0))
             total += min(planned_total, sum(done_by_file.values()) + in_flight)
         return total
-
-    @staticmethod
-    def _companion_progress_bytes(repo_id: str) -> int:
-        """``_cache_bytes`` for the repo a load's pipeline bytes land in. An artifact mirror
-        (``mirror_hosts_artifacts``) also holds root GGUF / prequant checkpoints the plan never counted, so only
-        its diffusers part is scanned, plus the in-flight blobs, which are this load's own pipeline files."""
-        if mirror_hosts_artifacts(repo_id):
-            return DiffusionBackend._cache_bytes(repo_id, pipeline_only = True, in_flight = True)
-        return DiffusionBackend._cache_bytes(repo_id)
 
     @staticmethod
     def _cache_bytes(
