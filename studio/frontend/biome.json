@@ -182,6 +182,24 @@
       }
     },
     {
+      "includes": [
+        "**/smoke-code-block-flicker-main.tsx",
+        "**/smoke-find-in-page-main.tsx",
+        "**/smoke-link-definition-probe-main.tsx",
+        "**/smoke-reasoning-transcript-main.tsx",
+        "**/smoke-research-main.tsx",
+        "**/smoke-research-review-main.tsx",
+        "**/smoke-shortcuts-main.tsx",
+        "**/smoke-stream-pacing-main.tsx",
+        "**/tests/fixtures/mtp-download/main.tsx"
+      ],
+      "linter": {
+        "rules": {
+          "style": { "noRestrictedImports": "off" }
+        }
+      }
+    },
+    {
       "includes": ["**/src/components/ui/**"],
       "linter": {
         "enabled": false
