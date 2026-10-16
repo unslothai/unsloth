@@ -311,8 +311,9 @@ def test_active_adapter_absent_from_projection_falls_back(monkeypatch, dropout, 
 
 @pytest.mark.parametrize("lora_bias", [False, True])
 def test_routing_resolves_each_active_adapter_once(monkeypatch, lora_bias):
-    # The routing runs on every fused LoRA call, so it resolves each projection's adapter once and skips
-    # the lora_bias scan unless UNSLOTH_FUSED_LORA_BIAS=0.
+    # The routing runs on every fused LoRA call: the default config (no dropout, no bias) never reaches the
+    # general adapter resolution, the rest resolve each projection's adapter once, and the lora_bias scan
+    # is skipped unless UNSLOTH_FUSED_LORA_BIAS=0.
     model, block = _peft_block("cpu", torch.float32, 0.0, lora_bias)
     projs = (block.q_proj, block.k_proj, block.v_proj)
     real = fast_lora._active_lora_adapter
@@ -327,5 +328,37 @@ def test_routing_resolves_each_active_adapter_once(monkeypatch, lora_bias):
     )
     dropout_p, biases = fast_lora._lora_dropout_and_bias(projs, torch.randn(2, 5, H))
     assert dropout_p is None
-    assert len(seen) == len(projs)
+    assert len(seen) == (len(projs) if lora_bias else 0)
     assert all((b is not None) == lora_bias for b in biases)
+
+
+@pytest.mark.parametrize(
+    "state", ["train", "eval", "disabled", "merged", "absent", "list_adapter", "dropout", "bias"]
+)
+def test_plain_lora_shortcut_matches_general_routing(monkeypatch, state):
+    # The default-config shortcut must give the general routing's answer in every adapter state.
+    from peft import LoraConfig
+
+    model, block = _peft_block(
+        "cpu", torch.float32, 0.3 if state == "dropout" else 0.0, state == "bias"
+    )
+    if state == "eval":
+        model.eval()
+    elif state == "disabled":
+        model.base_model.disable_adapter_layers()
+    elif state == "merged":
+        block.q_proj.merge()
+    elif state == "absent":
+        model.add_adapter("other", LoraConfig(r = 4, lora_alpha = 8, target_modules = ["o_proj"]))
+        model.set_adapter("other")
+    elif state == "list_adapter":
+        for proj in (block.q_proj, block.k_proj, block.v_proj):
+            proj._active_adapter = ["default"]
+    projs = (block.q_proj, block.k_proj, block.v_proj)
+    X = torch.randn(2, 5, H)
+    plain = [fast_lora._is_plain_lora(proj) for proj in projs]
+    fast = fast_lora._lora_dropout_and_bias(projs, X)
+    monkeypatch.setattr(fast_lora, "_is_plain_lora", lambda proj: False)
+    general = fast_lora._lora_dropout_and_bias(projs, X)
+    assert fast == general
+    assert all(plain) == (state in ("train", "eval", "list_adapter"))

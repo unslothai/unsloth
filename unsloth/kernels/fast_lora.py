@@ -128,8 +128,38 @@ def lora_bias_blocks_fused(proj):
     return not FUSED_LORA_BIAS and _has_active_lora_bias(proj)
 
 
+def _is_plain_lora(proj):
+    # One enabled, unmerged adapter with no dropout module and no lora_B bias (the default LoRA config).
+    # Reads PEFT's instance state directly: getattr through nn.Module / properties costs more than the
+    # routing it guards. Anything else (or other PEFT internals) takes the general path below.
+    state = proj.__dict__
+    adapter = state.get("_active_adapter")
+    if type(adapter) is not str:
+        if type(adapter) is not list or len(adapter) != 1:
+            return False
+        adapter = adapter[0]
+    if state.get("_disable_adapters", True) or state.get("merged_adapters"):
+        return False
+    modules = proj._modules
+    dropout = modules.get("lora_dropout")
+    lora_B = modules.get("lora_B")
+    if dropout is None or lora_B is None:
+        return False
+    lora_B = lora_B._modules.get(adapter)
+    return (
+        type(dropout._modules.get(adapter)) is torch.nn.Identity
+        and lora_B is not None
+        and lora_B._parameters.get("bias") is None
+    )
+
+
 def _lora_dropout_and_bias(projs, X):
     """(dropout probabilities or None, lora_B biases) for the fused kernels, or None to use PEFT."""
+    for proj in projs:
+        if not _is_plain_lora(proj):
+            break
+    else:
+        return None, (None,) * len(projs)
     dropout_p, biases = [], []
     for proj in projs:
         adapter = _active_lora_adapter(proj)
